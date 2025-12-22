@@ -1,4 +1,2 @@
-abap-lsp.exe
-abap-lsp.pdb
-abap-lsp.rdi
 logs.txt
+bin/*
