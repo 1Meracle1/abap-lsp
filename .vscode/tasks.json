@@ -1,0 +1,48 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Build Server and Extension",
+      "dependsOn": ["Build Server", "Build Extension"],
+      // "problemMatcher": "$rustc"
+    },
+    {
+      "label": "Build Server",
+      "group": "build",
+      "type": "shell",
+      "command": "odin build .\\cmd\\abap-lsp\\ -debug",
+      // "problemMatcher": "$rustc"
+    },
+    {
+      "label": "Build Extension",
+      "type": "npm",
+      "script": "compile",
+      "group": "build",
+      "presentation": {
+        "panel": "dedicated",
+        "reveal": "never"
+      },
+      "problemMatcher": [
+        "$tsc"
+      ],
+      "path": "editors/vscode"
+    },
+    {
+      "type": "npm",
+      "script": "watch",
+      "isBackground": true,
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "presentation": {
+        "panel": "dedicated",
+        "reveal": "never"
+      },
+      "problemMatcher": [
+        "$tsc-watch"
+      ],
+      "path": "vscode_extension"
+    }
+  ]
+}

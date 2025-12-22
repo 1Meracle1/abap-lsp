@@ -1,0 +1,100 @@
+{
+	"$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+	"name": "ABAP",
+	"patterns": [
+		{
+			"include": "#keywords"
+		},
+		{
+			"include": "#strings"
+		},
+		{
+			"include": "#comments"
+		},
+		{
+			"include": "#numbers"
+		},
+		{
+			"name": "if-block",
+			"begin": "\\bIF\\b",
+			"beginCaptures": {
+				"0": {
+					"name": "keyword.control.if.abap"
+				}
+			},
+			"end": "\\bENDIF\\b",
+			"endCaptures": {
+				"0": {
+					"name": "keyword.control.endif.abap"
+				}
+			},
+			"patterns": [
+				{
+					"include": "#expressions"
+				}
+			]
+		},
+		{
+			"name": "loop-block",
+			"begin": "\\bLOOP\\b",
+			"beginCaptures": {
+				"0": {
+					"name": "keyword.control.loop.abap"
+				}
+			},
+			"end": "\\bENDLOOP\\b",
+			"endCaptures": {
+				"0": {
+					"name": "keyword.control.endloop.abap"
+				}
+			},
+			"patterns": [
+				{
+					"include": "#expressions"
+				}
+			]
+		}
+	],
+	"repository": {
+		"keywords": {
+			"patterns": [
+				{
+					"name": "keyword.control.abap",
+					"match": "\\b(COMPONENTS|DATA)\\b"
+				}
+			]
+		},
+		"strings": {
+			"name": "string.quoted.double.abap",
+			"begin": "'",
+			"end": "'",
+			"patterns": [
+				{
+					"name": "constant.character.escape.abap",
+					"match": "\\\\."
+				}
+			]
+		},
+		"comments": {
+			"patterns": [
+				{
+					"name": "comment.line.star.abap",
+					"match": "^[ \\t]*\\*.*$"
+				},
+				{
+					"name": "comment.line.double-quote.abap",
+					"match": "\".*$"
+				}
+			]
+		},
+		"numbers": {
+			"patterns": [
+				{
+					"name": "constant.numeric.abap",
+					"match": "\\b\\d+(\\.\\d+)?\\b"
+				}
+			]
+		}
+	},
+	"scopeName": "source.abap"
+}
