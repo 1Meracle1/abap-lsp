@@ -20,11 +20,12 @@ InitializeResult :: struct {
 }
 
 ServerCapabilities :: struct {
-	textDocumentSync:   TextDocumentSyncKind,
-	completionProvider: CompletionOptions,
-	definitionProvider: bool,
-	hoverProvider:      bool,
-	diagnosticProvider: Maybe(DiagnosticOptions),
+	textDocumentSync:         TextDocumentSyncKind,
+	completionProvider:       CompletionOptions,
+	definitionProvider:       bool,
+	hoverProvider:            bool,
+	diagnosticProvider:       Maybe(DiagnosticOptions),
+	semanticTokensProvider:   Maybe(SemanticTokensOptions),
 }
 
 DiagnosticOptions :: struct {
@@ -239,4 +240,72 @@ FullDocumentDiagnosticReport :: struct {
 	kind:     DocumentDiagnosticReportKind,
 	resultId: Maybe(string),
 	items:    []Diagnostic,
+}
+
+// ============================================================================
+// Semantic Tokens
+// ============================================================================
+
+// Parameters for textDocument/semanticTokens/full request
+SemanticTokensParams :: struct {
+	textDocument: TextDocumentIdentifier,
+}
+
+// Response for textDocument/semanticTokens/full
+SemanticTokens :: struct {
+	resultId: Maybe(string),
+	data:     []u32,
+}
+
+// Semantic token types - indices into the legend
+SemanticTokenType :: enum u32 {
+	Namespace     = 0,
+	Type          = 1,
+	Class         = 2,
+	Enum          = 3,
+	Interface     = 4,
+	Struct        = 5,
+	TypeParameter = 6,
+	Parameter     = 7,
+	Variable      = 8,
+	Property      = 9,
+	EnumMember    = 10,
+	Event         = 11,
+	Function      = 12,
+	Method        = 13,
+	Macro         = 14,
+	Keyword       = 15,
+	Modifier      = 16,
+	Comment       = 17,
+	String        = 18,
+	Number        = 19,
+	Regexp        = 20,
+	Operator      = 21,
+}
+
+// Semantic token modifiers - bit flags
+SemanticTokenModifier :: enum u32 {
+	Declaration    = 0,
+	Definition     = 1,
+	Readonly       = 2,
+	Static         = 3,
+	Deprecated     = 4,
+	Abstract       = 5,
+	Async          = 6,
+	Modification   = 7,
+	Documentation  = 8,
+	DefaultLibrary = 9,
+}
+
+// Legend describing available token types and modifiers
+SemanticTokensLegend :: struct {
+	tokenTypes:     []string,
+	tokenModifiers: []string,
+}
+
+// Options for semantic tokens provider
+SemanticTokensOptions :: struct {
+	legend: SemanticTokensLegend,
+	range:  bool,
+	full:   bool,
 }
