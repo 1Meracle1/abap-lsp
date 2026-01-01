@@ -29,7 +29,10 @@ unmarshal :: proc(json_value: json.Value, v: any, allocator: mem.Allocator) -> j
 		#partial switch variant in type_info.variant {
 		case Type_Info_Struct:
 			for field, i in variant.names[0:variant.field_count] {
-				a := any{rawptr(uintptr(v.data) + uintptr(variant.offsets[i])), variant.types[i].id}
+				a := any {
+					rawptr(uintptr(v.data) + uintptr(variant.offsets[i])),
+					variant.types[i].id,
+				}
 
 				//TEMP most likely have to rewrite the entire unmarshal using tags instead, because i sometimes have to support names like 'context', which can't be written like that
 				if field[len(field) - 1] == '_' {
@@ -61,12 +64,20 @@ unmarshal :: proc(json_value: json.Value, v: any, allocator: mem.Allocator) -> j
 		#partial switch variant in type_info.variant {
 		case Type_Info_Slice:
 			array := (^mem.Raw_Slice)(v.data)
-			data :=  mem.alloc(variant.elem.size * int(len(j)), variant.elem.align, allocator) or_else panic("OOM")
+			data :=
+				mem.alloc(
+					variant.elem.size * int(len(j)),
+					variant.elem.align,
+					allocator,
+				) or_else panic("OOM")
 			array.data = data
 			array.len = len(j)
 
 			for i in 0 ..< array.len {
-				a := any{rawptr(uintptr(array.data) + uintptr(variant.elem_size * i)), variant.elem.id}
+				a := any {
+					rawptr(uintptr(array.data) + uintptr(variant.elem_size * i)),
+					variant.elem.id,
+				}
 
 				if ret := unmarshal(j[i], a, allocator); ret != nil {
 					return ret
@@ -75,7 +86,12 @@ unmarshal :: proc(json_value: json.Value, v: any, allocator: mem.Allocator) -> j
 		case Type_Info_Dynamic_Array:
 			array := (^mem.Raw_Dynamic_Array)(v.data)
 			if array.data == nil {
-				array.data = mem.alloc(len(j) * variant.elem_size, variant.elem.align, allocator) or_else panic("OOM")
+				array.data =
+					mem.alloc(
+						len(j) * variant.elem_size,
+						variant.elem.align,
+						allocator,
+					) or_else panic("OOM")
 				array.len = len(j)
 				array.cap = len(j)
 				array.allocator = allocator
@@ -84,7 +100,10 @@ unmarshal :: proc(json_value: json.Value, v: any, allocator: mem.Allocator) -> j
 			}
 
 			for i in 0 ..< array.len {
-				a := any{rawptr(uintptr(array.data) + uintptr(variant.elem_size * i)), variant.elem.id}
+				a := any {
+					rawptr(uintptr(array.data) + uintptr(variant.elem_size * i)),
+					variant.elem.id,
+				}
 
 				if ret := unmarshal(j[i], a, allocator); ret != nil {
 					return ret
@@ -140,6 +159,30 @@ unmarshal :: proc(json_value: json.Value, v: any, allocator: mem.Allocator) -> j
 			tag_ptr := uintptr(v.data) + variant.tag_offset
 		}
 	case json.Float:
+		#partial switch variant in &type_info.variant {
+		case Type_Info_Float:
+			switch type_info.size {
+			case 8:
+				tmp := f64(j)
+				mem.copy(v.data, &tmp, type_info.size)
+			case 4:
+				tmp := f32(j)
+				mem.copy(v.data, &tmp, type_info.size)
+			case:
+				return .Unsupported_Type
+			}
+		case runtime.Type_Info_Integer:
+			switch type_info.size {
+			case 8:
+				tmp := i64(j)
+				mem.copy(v.data, &tmp, type_info.size)
+			case 4:
+				tmp := i32(j)
+				mem.copy(v.data, &tmp, type_info.size)
+			case:
+				return .Unsupported_Type
+			}
+		}
 		if _, ok := type_info.variant.(Type_Info_Float); ok {
 			switch type_info.size {
 			case 8:

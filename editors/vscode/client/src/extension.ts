@@ -5,32 +5,57 @@
 
 import * as path from 'path';
 import * as fs from "fs";
+import * as net from "net";
 import { workspace, ExtensionContext } from 'vscode';
 
 import {
 	LanguageClient,
 	LanguageClientOptions,
 	ServerOptions,
+	StreamInfo,
 	TransportKind
 } from 'vscode-languageclient/node';
 
 let client: LanguageClient;
 
 export function activate(context: ExtensionContext) {
-	const serverModule = context.asAbsolutePath(
-		path.join('.\\', '..', '..', 'abap-lsp.exe')
-	);
-	if (!fs.existsSync(serverModule)) {
-		console.error(`executable not found at: ${serverModule}`);
-		return;
-	}
-	const serverOptions: ServerOptions = {
-		command: serverModule,
-		args: [],
-		options: {
-			cwd: path.dirname(serverModule),
-		},
-		transport: TransportKind.stdio,
+	// let serverModule: string;
+	// const debugServerPath = process.env['__ABAP_LSP_SERVER_DEBUG'];
+	// if (debugServerPath) {
+	// 	serverModule = debugServerPath;
+	// 	if (process.platform === 'win32' && !serverModule.endsWith('.exe')) {
+	// 		serverModule += '.exe';
+	// 	}
+	// }
+	// const serverOptions: ServerOptions = {
+	// 	command: serverModule,
+	// 	args: [],
+	// 	options: {
+	// 		cwd: path.dirname(serverModule),
+	// 	},
+	// 	transport: TransportKind.stdio,
+	// };
+
+	const pipePath =
+		process.platform === "win32"
+			? "\\\\.\\pipe\\abap-ls"
+			: "/tmp/abap-ls";
+
+	const serverOptions: ServerOptions = () => {
+		return new Promise<StreamInfo>((resolve, reject) => {
+			const socket = net.connect(pipePath);
+
+			socket.on("connect", () => {
+				resolve({
+					writer: socket,
+					reader: socket,
+				});
+			});
+
+			socket.on("error", (err) => {
+				reject(err);
+			});
+		});
 	};
 
 	// Options to control the language client

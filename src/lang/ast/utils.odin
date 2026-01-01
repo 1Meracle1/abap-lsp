@@ -20,19 +20,30 @@ new_from_range :: proc($T: typeid, range: lexer.TextRange) -> ^T {
 }
 
 new_from_tokens :: proc($T: typeid, start_token: lexer.Token, end_token: lexer.Token) -> ^T {
-    range: lexer.TextRange
+	range: lexer.TextRange
 	range.start = start_token.range.start
 	range.end = end_token.range.end
 	return new_from_range(T, range)
 }
 
 new :: proc {
-    new_from_range,
+	new_from_range,
 	new_from_tokens,
 }
 
 new_ident :: proc(name_tok: lexer.Token) -> ^Ident {
-    node := new_from_range(Ident, name_tok.range)
-    node.name = name_tok.lit
-    return node
+	node := new_from_range(Ident, name_tok.range)
+	node.name = name_tok.lit
+	return node
+}
+
+new_data_inline_decl :: proc(
+	start_tok, end_tok: lexer.Token,
+	ident: ^Ident,
+	value: ^Expr,
+) -> ^Data_Inline_Decl {
+	node := new(Data_Inline_Decl, start_tok, end_tok)
+	node.ident = ident
+	node.value = value
+	return node
 }

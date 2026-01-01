@@ -1,5 +1,6 @@
 package lsp
 
+import "core:encoding/json"
 InitializeParams :: struct {
 	rootUri:          string,
 	workspaceFolders: []WorkspaceFolder,
@@ -21,9 +22,10 @@ ServerCapabilities :: struct {
 	textDocumentSync:   TextDocumentSyncKind,
 	completionProvider: CompletionOptions,
 	definitionProvider: bool,
+	hoverProvider:      bool,
 }
 
-TextDocumentSyncKind :: enum i32 {
+TextDocumentSyncKind :: enum int {
 	None        = 0,
 	Full        = 1,
 	Incremental = 2,
@@ -34,7 +36,7 @@ CompletionOptions :: struct {
 	resolveProvider:   bool,
 }
 
-ErrorCodes :: enum i32 {
+ErrorCodes :: enum int {
 	// Defined by JSON-RPC
 	ParseError                     = -32700,
 	InvalidRequest                 = -32600,
@@ -131,4 +133,63 @@ TextDocumentItem :: struct {
 	languageId: string,
 	version:    int,
 	text:       string,
+}
+
+TextDocumentIdentifier :: struct {
+	uri: string,
+}
+
+Position :: struct {
+	line:      int,
+	character: int,
+}
+
+TextDocumentPositionParams :: struct {
+	textDocument: TextDocumentIdentifier,
+	position:     Position,
+}
+
+WorkDoneProgressParams :: struct {
+	workDoneToken: json.Value,
+}
+
+HoverParams :: struct {
+	textDocument: TextDocumentIdentifier,
+	position:     Position,
+	// using text_document_position_params: TextDocumentPositionParams,
+	// using work_done_progress_params:     WorkDoneProgressParams,
+}
+
+Hover :: struct {
+	contents: MarkupContent,
+	range:    Maybe(Range),
+}
+
+MarkupKind :: string
+MarkupKind_PlainText :: "plaintext"
+MarkupKind_Markdown :: "markdown"
+
+MarkupContent :: struct {
+	kind:  MarkupKind,
+	value: string,
+}
+
+Range :: struct {
+	start: Position,
+	end:   Position,
+}
+
+VersionedTextDocumentIdentifier :: struct {
+	using text_document_identifier: TextDocumentIdentifier,
+	version:                        int,
+}
+
+TextDocumentContentChangeEvent :: struct {
+	range: Maybe(Range),
+	text:  string,
+}
+
+DidChangeTextDocumentParams :: struct {
+	textDocument:   VersionedTextDocumentIdentifier,
+	contentChanges: []TextDocumentContentChangeEvent,
 }

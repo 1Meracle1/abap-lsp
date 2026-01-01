@@ -26,6 +26,8 @@ parse_file :: proc(p: ^Parser, file: ^ast.File) {
 	if p.l.ch <= 0 {
 		return
 	}
+	file.range.start = 0
+	file.range.end = len(file.src)
 
 	advance_token(p)
 	for p.curr_tok.kind != .EOF {
@@ -44,7 +46,12 @@ parse_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			return parse_data_decl(p)
 		}
 	}
-	return nil
+
+	start_tok := p.curr_tok
+	end_tok := skip_to_new_line(p)
+	error(p, lexer.range_between(start_tok, end_tok), "unexpected statement")
+	bad_decl := ast.new(ast.Bad_Decl, start_tok, end_tok)
+	return bad_decl
 }
 
 parse_data_decl :: proc(p: ^Parser) -> ^ast.Decl {
@@ -83,6 +90,17 @@ parse_data_inline_decl :: proc(p: ^Parser, data_tok: lexer.Token) -> ^ast.Decl {
 	data_decl.ident = ast.new_ident(ident_tok)
 	data_decl.value = expr
 	return data_decl
+}
+
+skip_to_new_line :: proc(p: ^Parser) -> lexer.Token {
+	line_count := p.l.line_count
+	for p.curr_tok.kind != .EOF {
+		tok := advance_token(p)
+		if p.l.line_count > line_count {
+			return tok
+		}
+	}
+	return p.curr_tok
 }
 
 parse_expr :: proc(p: ^Parser) -> ^ast.Expr {

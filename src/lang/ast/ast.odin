@@ -208,5 +208,7 @@ Any_Stmt :: union {
 	^Block_Stmt,
 	^If_Stmt,
 	^Return_Stmt,
+	//
+	^Bad_Decl,
 	^Data_Inline_Decl,
 }

@@ -3,7 +3,6 @@ package jsonrpc
 import "core:bufio"
 import "core:fmt"
 import "core:io"
-import "core:log"
 import "core:strconv"
 import "core:strings"
 

@@ -1,0 +1,34 @@
+// raddbg 0.9.21 project file
+
+recent_file: path: "src/lsp/server.odin"
+recent_file: path: "src/lang/ast/lookup.odin"
+recent_file: path: "src/lsp/unmarshal.odin"
+recent_file: path: "../../../a/_work/1/s/src/vctools/crt/vcruntime/src/string/amd64/memset.asm"
+recent_file: path: "src/cache/cache.odin"
+recent_file: path: "src/lang/parser/parser.odin"
+recent_file: path: "src/lang/ast/utils.odin"
+recent_file: path: "bin/debug/abap-lsp.exe"
+target:
+{
+  executable: "bin/debug/abap-lsp.exe"
+  working_directory: ""
+  enabled: 1
+}
+breakpoint:
+{
+  source_location: "src/lang/parser/parser.odin:32:1"
+  hit_count: 0
+  enabled: 0
+}
+breakpoint:
+{
+  source_location: "src/lsp/server.odin:167:1"
+  hit_count: 0
+  enabled: 0
+}
+breakpoint:
+{
+  source_location: "src/lsp/unmarshal.odin:25:1"
+  hit_count: 0
+  enabled: 0
+}

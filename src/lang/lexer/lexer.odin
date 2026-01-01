@@ -14,6 +14,7 @@ Lexer :: struct {
 	read_pos:    int,
 	ch:          rune,
 	line_start:  int,
+	line_count: int,
 	error_count: int,
 }
 
@@ -25,6 +26,7 @@ init :: proc(l: ^Lexer, src: string, err: Error_Handler, err_userptr: rawptr) {
 	l.read_pos = 0
 	l.ch = ' '
 	l.line_start = 0
+	l.line_count = 0
 	l.error_count = 0
 
 	advance_rune(l)
@@ -143,6 +145,7 @@ advance_rune :: proc(l: ^Lexer) {
 		l.pos = l.read_pos
 		if l.ch == '\n' {
 			l.line_start = l.pos
+			l.line_count += 1
 		}
 		r, w := rune(l.src[l.read_pos]), 1
 		switch {
@@ -162,6 +165,7 @@ advance_rune :: proc(l: ^Lexer) {
 		l.pos = len(l.src)
 		if l.ch == '\n' {
 			l.line_start = l.pos
+			l.line_count += 1
 		}
 		l.ch = -1
 	}

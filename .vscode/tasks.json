@@ -3,14 +3,21 @@
   "tasks": [
     {
       "label": "Build Server and Extension",
-      "dependsOn": ["Build Server", "Build Extension"],
+      "dependsOn": ["Build Debug Server", "Run and Debug Server", "Build Extension"],
       // "problemMatcher": "$rustc"
     },
     {
-      "label": "Build Server",
+      "label": "Build Debug Server",
       "group": "build",
       "type": "shell",
-      "command": "odin build .\\cmd\\abap-lsp\\ -debug",
+      "command": ".\\build.bat debug abap-lsp",
+      // "problemMatcher": "$rustc"
+    },
+    {
+      "label": "Run and Debug Server",
+      "group": "build",
+      "type": "shell",
+      "command": "raddbg --project:.\\ols_raddbg_project --auto_run",
       // "problemMatcher": "$rustc"
     },
     {
