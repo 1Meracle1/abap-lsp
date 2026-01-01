@@ -131,7 +131,6 @@ parse_snapshot :: proc(snapshot: ^Snapshot, uri: string) {
 
 	p: parser.Parser
 	parser.parse_file(&p, file_ast)
-
-	snapshot.symbol_table = symbols.resolve_file(file_ast)
 	snapshot.ast = file_ast
+	snapshot.symbol_table = symbols.resolve_file(file_ast)
 }

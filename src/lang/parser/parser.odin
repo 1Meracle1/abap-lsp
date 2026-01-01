@@ -59,30 +59,65 @@ parse_data_decl :: proc(p: ^Parser) -> ^ast.Decl {
 	if p.curr_tok.kind == .LParen {
 		return parse_data_inline_decl(p, data_tok)
 	}
-	return nil
+	return parse_data_typed_decl(p, data_tok)
+}
+
+parse_data_typed_decl :: proc(p: ^Parser, data_tok: lexer.Token) -> ^ast.Decl {
+	if allow_token(p, .Colon) {
+		return parse_data_typed_multiple_decl(p, data_tok)
+	}
+	decl := parse_data_typed_single_decl(p, data_tok)
+	if decl != nil {
+		period_tok := expect_token(p, .Period)
+		decl.range.end = period_tok.range.end
+	}
+	return decl
+}
+
+parse_data_typed_single_decl :: proc(p: ^Parser, data_tok: lexer.Token) -> ^ast.Decl {
+	ident_tok := expect_token(p, .Ident)
+	expect_keyword_token(p, "TYPE")
+	type_expr := parse_expr(p)
+
+	data_decl := ast.new(ast.Data_Typed_Decl, data_tok, p.curr_tok)
+	data_decl.ident = ast.new_ident(ident_tok)
+	data_decl.typed = type_expr
+	return data_decl
+}
+
+parse_data_typed_multiple_decl :: proc(p: ^Parser, data_tok: lexer.Token) -> ^ast.Decl {
+	chain_decl := ast.new(ast.Data_Typed_Chain_Decl, data_tok.range)
+	chain_decl.decls = make([dynamic]^ast.Data_Typed_Decl)
+
+	for {
+		ident_tok := expect_token(p, .Ident)
+		expect_keyword_token(p, "TYPE")
+		type_expr := parse_expr(p)
+
+		decl := ast.new(ast.Data_Typed_Decl, ident_tok, p.prev_tok)
+		decl.ident = ast.new_ident(ident_tok)
+		decl.typed = type_expr
+		append(&chain_decl.decls, decl)
+
+		if allow_token(p, .Comma) {
+			// Continue parsing next declaration in chain
+			continue
+		}
+
+		// Expect period to end the chain
+		period_tok := expect_token(p, .Period)
+		chain_decl.range.end = period_tok.range.end
+		break
+	}
+
+	return chain_decl
 }
 
 parse_data_inline_decl :: proc(p: ^Parser, data_tok: lexer.Token) -> ^ast.Decl {
-	if lexer.have_space_between(p.prev_tok, p.curr_tok) {
-		error(
-			p,
-			lexer.range_between(p.prev_tok, p.curr_tok),
-			"unexpected space between 'DATA' and '('",
-		)
-	}
-	expect_token(p, .LParen)
-	ident_tok := expect_token(p, .Ident)
-	if p.curr_tok.kind == .RParen {
-		if lexer.have_space_between(p.prev_tok, p.curr_tok) {
-			error(
-				p,
-				lexer.range_between(p.prev_tok, p.curr_tok),
-				"unexpected space between identifier and ')'",
-			)
-		}
-	}
-	expect_token(p, .RParen)
-	expect_token(p, .Eq)
+	expect_token_space_req(p, .LParen, .WithoutLeadingSpace)
+	ident_tok := expect_token_space_req(p, .Ident, .WithoutLeadingSpace)
+	expect_token_space_req(p, .RParen, .WithoutLeadingSpace)
+	expect_token_space_req(p, .Eq, .WithLeadingTrailingSpace)
 	expr := parse_expr(p)
 	period_tok := expect_token(p, .Period)
 
@@ -147,29 +182,11 @@ parse_operand :: proc(p: ^Parser) -> ^ast.Expr {
 	return nil
 }
 
-to_upper :: proc(buffer: []byte, s: string) -> string {
-	length := 0
-	for r in s {
-		ur := unicode.to_upper(r)
-		if r < utf8.RUNE_SELF {
-			buffer[length] = byte(r)
-			length += 1
-		} else {
-			buf, w := utf8.encode_rune(r)
-			for i := 0; i < w; i += 1 {
-				buffer[length] = buf[i]
-				length += 1
-			}
-		}
-	}
-	return string(buffer[:length])
-}
-
 error :: proc(userptr: rawptr, range: lexer.TextRange, format: string, args: ..any) {
 	p := cast(^Parser)userptr
 	d: ast.Diagnostic
 	d.range = range
-	d.message = fmt.aprintf(format, args)
+	d.message = fmt.aprintf(format, ..args)
 	append(&p.file.syntax_errors, d)
 }
 
@@ -190,10 +207,123 @@ advance_token :: proc(p: ^Parser) -> lexer.Token {
 	return prev
 }
 
+expect_keyword_token :: proc(p: ^Parser, expected: string) -> lexer.Token {
+	prev := p.curr_tok
+	if prev.kind != .Ident {
+		error(p, prev.range, "expected identifier, got '%v'", prev.kind)
+	}
+	if len(p.curr_tok.lit) > 0 && len(p.curr_tok.lit) < len(p.keyword_buffer) {
+		keyword := to_upper(p.keyword_buffer[:], p.curr_tok.lit)
+		if keyword != expected {
+			error(p, prev.range, "expected '%s', got '%s'", expected, p.curr_tok.lit)
+		}
+	} else {
+		error(p, prev.range, "expected '%s', got '%s'", expected, p.curr_tok.lit)
+	}
+	advance_token(p)
+	return prev
+}
+
+Space_Requirement_Kind :: enum {
+	WithLeadingSpace,
+	WithoutLeadingSpace,
+	WithTrailingSpace,
+	WithoutTrailingSpace,
+	WithLeadingTrailingSpace,
+	WithoutLeadingTrailingSpace,
+}
+
+expect_token_space_req :: proc(
+	p: ^Parser,
+	kind: lexer.TokenKind,
+	space_req_kind: Space_Requirement_Kind,
+) -> lexer.Token {
+	expected_token_kind := p.curr_tok.kind == kind
+
+	space_before_check := true
+	if expected_token_kind {
+		#partial switch space_req_kind {
+		case .WithLeadingSpace:
+		case .WithoutLeadingSpace:
+		case .WithLeadingTrailingSpace:
+		case .WithoutLeadingTrailingSpace:
+			if lexer.have_space_between(p.prev_tok, p.curr_tok) {
+				if space_req_kind == .WithoutLeadingSpace ||
+				   space_req_kind == .WithLeadingTrailingSpace {
+					error(
+						p,
+						lexer.range_between(p.prev_tok, p.curr_tok),
+						"unexpected space between '%s' and '%s'",
+						p.prev_tok.lit,
+						p.curr_tok.lit,
+					)
+					space_before_check = false
+				}
+			} else {
+				if space_req_kind == .WithLeadingSpace ||
+				   space_req_kind == .WithLeadingTrailingSpace {
+					error(
+						p,
+						lexer.range_between(p.prev_tok, p.curr_tok),
+						"expected space between '%s' and '%s'",
+						p.prev_tok.lit,
+						p.curr_tok.lit,
+					)
+					space_before_check = false
+				}
+			}
+		}
+	}
+
+	tok := expect_token(p, kind)
+	if !space_before_check {
+		return tok
+	}
+
+	if expected_token_kind {
+		#partial switch space_req_kind {
+		case .WithTrailingSpace:
+		case .WithoutTrailingSpace:
+		case .WithLeadingTrailingSpace:
+		case .WithoutLeadingTrailingSpace:
+			if lexer.have_space_between(p.curr_tok, p.curr_tok) {
+				if space_req_kind == .WithoutTrailingSpace ||
+				   space_req_kind == .WithoutLeadingTrailingSpace {
+					error(
+						p,
+						lexer.range_between(p.prev_tok, p.curr_tok),
+						"unexpected space between '%s' and '%s'",
+						p.prev_tok.lit,
+						p.curr_tok.lit,
+					)
+				}
+			} else {
+				if space_req_kind == .WithTrailingSpace ||
+				   space_req_kind == .WithLeadingTrailingSpace {
+					error(
+						p,
+						lexer.range_between(p.prev_tok, p.curr_tok),
+						"expected space between '%s' and '%s'",
+						p.prev_tok.lit,
+						p.curr_tok.lit,
+					)
+				}
+			}
+		}
+	}
+	return tok
+}
+
 expect_token :: proc(p: ^Parser, kind: lexer.TokenKind) -> lexer.Token {
 	prev := p.curr_tok
 	if prev.kind != kind {
-		error(p, prev.range, "expected '%v', got '%v'", kind, prev.kind)
+		error(
+			p,
+			prev.range,
+			"expected '%s', got '%s'",
+			lexer.token_kind_string(kind),
+			lexer.token_kind_string(prev.kind),
+		)
 	}
 	advance_token(p)
 	return prev
@@ -205,4 +335,22 @@ allow_token :: proc(p: ^Parser, kind: lexer.TokenKind) -> bool {
 		return true
 	}
 	return false
+}
+
+to_upper :: proc(buffer: []byte, s: string) -> string {
+	length := 0
+	for r in s {
+		ur := unicode.to_upper(r)
+		if r < utf8.RUNE_SELF {
+			buffer[length] = byte(r)
+			length += 1
+		} else {
+			buf, w := utf8.encode_rune(r)
+			for i := 0; i < w; i += 1 {
+				buffer[length] = buf[i]
+				length += 1
+			}
+		}
+	}
+	return string(buffer[:length])
 }

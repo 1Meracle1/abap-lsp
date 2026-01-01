@@ -151,6 +151,11 @@ Data_Typed_Decl :: struct {
 	typed:      ^Expr,
 }
 
+Data_Typed_Chain_Decl :: struct {
+	using node: Decl,
+	decls:      [dynamic]^Data_Typed_Decl,
+}
+
 // Types
 
 Table_Type :: struct {
@@ -177,6 +182,8 @@ Any_Node :: union {
 	^Selector_Expr,
 	^Index_Expr,
 	^Call_Expr,
+	// Types
+	^Table_Type,
 	// Statements
 	^Bad_Stmt,
 	^Expr_Stmt,
@@ -187,6 +194,8 @@ Any_Node :: union {
 	// Declarations
 	^Bad_Decl,
 	^Data_Inline_Decl,
+	^Data_Typed_Decl,
+	^Data_Typed_Chain_Decl,
 }
 
 Any_Expr :: union {
@@ -199,6 +208,8 @@ Any_Expr :: union {
 	^Selector_Expr,
 	^Index_Expr,
 	^Call_Expr,
+	// Types
+	^Table_Type,
 }
 
 Any_Stmt :: union {
@@ -211,4 +222,6 @@ Any_Stmt :: union {
 	//
 	^Bad_Decl,
 	^Data_Inline_Decl,
+	^Data_Typed_Decl,
+	^Data_Typed_Chain_Decl,
 }

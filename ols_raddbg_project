@@ -22,12 +22,6 @@ breakpoint:
 }
 breakpoint:
 {
-  source_location: "src/lsp/server.odin:167:1"
-  hit_count: 0
-  enabled: 0
-}
-breakpoint:
-{
   source_location: "src/lsp/unmarshal.odin:25:1"
   hit_count: 0
   enabled: 0

@@ -1,6 +1,7 @@
 package lsp
 
 import "core:encoding/json"
+
 InitializeParams :: struct {
 	rootUri:          string,
 	workspaceFolders: []WorkspaceFolder,
@@ -23,6 +24,12 @@ ServerCapabilities :: struct {
 	completionProvider: CompletionOptions,
 	definitionProvider: bool,
 	hoverProvider:      bool,
+	diagnosticProvider: Maybe(DiagnosticOptions),
+}
+
+DiagnosticOptions :: struct {
+	interFileDependencies: bool,
+	workspaceDiagnostics:  bool,
 }
 
 TextDocumentSyncKind :: enum int {
@@ -180,8 +187,8 @@ Range :: struct {
 }
 
 VersionedTextDocumentIdentifier :: struct {
-	using text_document_identifier: TextDocumentIdentifier,
-	version:                        int,
+	uri:     string,
+	version: int,
 }
 
 TextDocumentContentChangeEvent :: struct {
@@ -192,4 +199,44 @@ TextDocumentContentChangeEvent :: struct {
 DidChangeTextDocumentParams :: struct {
 	textDocument:   VersionedTextDocumentIdentifier,
 	contentChanges: []TextDocumentContentChangeEvent,
+}
+
+// Diagnostic severity levels
+DiagnosticSeverity :: enum int {
+	Error       = 1,
+	Warning     = 2,
+	Information = 3,
+	Hint        = 4,
+}
+
+// A diagnostic (error, warning, etc.)
+Diagnostic :: struct {
+	range:    Range,
+	severity: Maybe(DiagnosticSeverity),
+	code:     Maybe(string),
+	source:   Maybe(string),
+	message:  string,
+}
+
+// Parameters for publishing diagnostics
+PublishDiagnosticsParams :: struct {
+	uri:         string,
+	version:     Maybe(int),
+	diagnostics: []Diagnostic,
+}
+
+// Parameters for textDocument/diagnostic request (pull-based)
+DocumentDiagnosticParams :: struct {
+	textDocument: TextDocumentIdentifier,
+}
+
+// Response for textDocument/diagnostic
+DocumentDiagnosticReportKind :: string
+DocumentDiagnosticReportKind_Full :: "full"
+DocumentDiagnosticReportKind_Unchanged :: "unchanged"
+
+FullDocumentDiagnosticReport :: struct {
+	kind:     DocumentDiagnosticReportKind,
+	resultId: Maybe(string),
+	items:    []Diagnostic,
 }

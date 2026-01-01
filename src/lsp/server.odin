@@ -8,6 +8,7 @@ import "core:log"
 import "core:strings"
 
 import "../lang/ast"
+import "../lang/lexer"
 import "../lang/symbols"
 
 Server :: struct {
@@ -27,6 +28,7 @@ server_start :: proc(stream: jsonrpc.Stream) {
 	request_handlers := make(map[string]handle_request_t)
 	request_handlers["initialize"] = handle_initialize
 	request_handlers["textDocument/hover"] = handle_hover
+	request_handlers["textDocument/diagnostic"] = handle_diagnostic
 
 	notif_handlers := make(map[string]handle_notification_t)
 	notif_handlers["textDocument/didOpen"] = handle_document_open
@@ -124,6 +126,11 @@ handle_initialize :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 				resolveProvider = false,
 			},
 			definitionProvider = false,
+			diagnosticProvider = nil,
+			// diagnosticProvider = DiagnosticOptions {
+			// 	interFileDependencies = false,
+			// 	workspaceDiagnostics  = false,
+			// },
 		},
 	}
 	reply(srv, id, result)
@@ -132,34 +139,50 @@ handle_initialize :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 handle_document_open :: proc(srv: ^Server, params: json.Value) {
 	document_open_params: DidOpenTextDocumentParams
 	if err := unmarshal(params, document_open_params, context.temp_allocator); err != nil {
-		descr := fmt.tprintf("document/didOpen request unmarshal failed: %v", err)
+		descr := fmt.tprintf("textDocument/didOpen request unmarshal failed: %v", err)
 		log_trace(srv, descr)
 		return
 	}
 
+	uri := document_open_params.textDocument.uri
 	cache.refresh_document(
 		srv.storage,
-		document_open_params.textDocument.uri,
+		uri,
 		document_open_params.textDocument.text,
 		document_open_params.textDocument.version,
 	)
+
+	// Publish diagnostics after refresh
+	snap := cache.get_snapshot(srv.storage, uri)
+	if snap != nil {
+		defer cache.release_snapshot(snap)
+		publish_diagnostics(srv, uri, snap)
+	}
 }
 
 handle_document_change :: proc(srv: ^Server, params: json.Value) {
 	document_change_params: DidChangeTextDocumentParams
 	if err := unmarshal(params, document_change_params, context.temp_allocator); err != nil {
-		descr := fmt.tprintf("document/didChange request unmarshal failed: %v", err)
+		descr := fmt.tprintf("textDocument/didChange request unmarshal failed: %v", err)
 		log_trace(srv, descr)
 		return
 	}
 
+	uri := document_change_params.textDocument.uri
 	for change in document_change_params.contentChanges {
 		cache.refresh_document(
 			srv.storage,
-			document_change_params.textDocument.uri,
+			uri,
 			change.text,
 			document_change_params.textDocument.version,
 		)
+	}
+
+	// Publish diagnostics after refresh
+	snap := cache.get_snapshot(srv.storage, uri)
+	if snap != nil {
+		defer cache.release_snapshot(snap)
+		publish_diagnostics(srv, uri, snap)
 	}
 }
 
@@ -185,7 +208,6 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 		reply(srv, id, json.Null(nil))
 		return
 	}
-
 	log_trace(srv, fmt.tprintf("hover at offset: %d", offset))
 
 	node := ast.find_node_at_offset(&snap.ast.node, offset)
@@ -201,7 +223,8 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 	case ^ast.Ident:
 		log_trace(srv, fmt.tprintf("found ident: %s", n.name))
 		if sym, ok := snap.symbol_table.symbols[n.name]; ok {
-			hover_text = fmt.tprintf("(%v) %s", sym.kind, sym.name)
+			type_str := format_type(sym.type_info)
+			hover_text = fmt.tprintf("%s: %s", sym.name, type_str)
 		} else {
 			hover_text = fmt.tprintf("(unknown) %s", n.name)
 		}
@@ -218,6 +241,45 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 	} else {
 		reply(srv, id, json.Null(nil))
 	}
+}
+
+handle_diagnostic :: proc(srv: ^Server, id: json.Value, params: json.Value) {
+	diagnostic_params: DocumentDiagnosticParams
+	if err := unmarshal(params, diagnostic_params, context.temp_allocator); err != nil {
+		descr := fmt.tprintf("diagnostic request unmarshal failed: %v", err)
+		log_trace(srv, descr)
+		reply_error(srv, id, .ParseError, descr)
+		return
+	}
+
+	snap := cache.get_snapshot(srv.storage, diagnostic_params.textDocument.uri)
+	if snap == nil {
+		// Return empty diagnostics if document not found
+		result := FullDocumentDiagnosticReport {
+			kind  = DocumentDiagnosticReportKind_Full,
+			items = {},
+		}
+		reply(srv, id, result)
+		return
+	}
+	defer cache.release_snapshot(snap)
+
+	diagnostics := make([dynamic]Diagnostic, context.temp_allocator)
+
+	for err in snap.ast.syntax_errors {
+		append(&diagnostics, Diagnostic{
+			range    = text_range_to_lsp_range(snap.text, err.range),
+			severity = .Error,
+			source   = "abap-lsp",
+			message  = err.message,
+		})
+	}
+
+	result := FullDocumentDiagnosticReport {
+		kind  = DocumentDiagnosticReportKind_Full,
+		items = diagnostics[:],
+	}
+	reply(srv, id, result)
 }
 
 position_to_offset :: proc(text: string, pos: Position) -> int {
@@ -255,6 +317,93 @@ position_to_offset :: proc(text: string, pos: Position) -> int {
 	return target_offset
 }
 
+offset_to_position :: proc(text: string, offset: int) -> Position {
+	line := 0
+	col := 0
+	for i := 0; i < offset && i < len(text); i += 1 {
+		if text[i] == '\n' {
+			line += 1
+			col = 0
+		} else {
+			col += 1
+		}
+	}
+	return Position{line = line, character = col}
+}
+
+text_range_to_lsp_range :: proc(text: string, range: lexer.TextRange) -> Range {
+	return Range{
+		start = offset_to_position(text, range.start),
+		end   = offset_to_position(text, range.end),
+	}
+}
+
+format_type :: proc(t: ^symbols.Type) -> string {
+	if t == nil {
+		return "unknown"
+	}
+
+	switch t.kind {
+	case .Unknown:
+		return "unknown"
+	case .Inferred:
+		return "inferred"
+	case .Integer:
+		return "i"
+	case .Float:
+		return "f"
+	case .String:
+		return "string"
+	case .Char:
+		return "c"
+	case .Numeric:
+		return "n"
+	case .Date:
+		return "d"
+	case .Time:
+		return "t"
+	case .Hex:
+		return "x"
+	case .XString:
+		return "xstring"
+	case .Table:
+		elem_str := format_type(t.elem_type)
+		return fmt.tprintf("TABLE OF %s", elem_str)
+	case .Structure:
+		return "structure"
+	case .Reference:
+		target_str := format_type(t.target_type)
+		return fmt.tprintf("REF TO %s", target_str)
+	case .Named:
+		if t.name != "" {
+			return t.name
+		}
+		return "named"
+	}
+	return "unknown"
+}
+
+publish_diagnostics :: proc(srv: ^Server, uri: string, snap: ^cache.Snapshot) {
+	diagnostics := make([dynamic]Diagnostic, context.temp_allocator)
+
+	for err in snap.ast.syntax_errors {
+		append(&diagnostics, Diagnostic{
+			range    = text_range_to_lsp_range(snap.text, err.range),
+			severity = .Error,
+			source   = "abap-lsp",
+			message  = err.message,
+		})
+	}
+
+	params := PublishDiagnosticsParams{
+		uri         = uri,
+		version     = snap.version,
+		diagnostics = diagnostics[:],
+	}
+
+	notify(srv, "textDocument/publishDiagnostics", params)
+}
+
 log_trace :: proc(srv: ^Server, message: string) {
 	log.infof("log_trace: %s", message)
 	message, _ := strings.replace_all(message, "\"", "\\\"", context.temp_allocator)
@@ -278,6 +427,25 @@ reply :: proc(srv: ^Server, id: json.Value, params: $T) {
 	}
 	log.infof("reply - id: %v, params: %s", id, string(data))
 	jsonrpc.write(&srv.stream, transmute([]byte)data)
+}
+
+notify :: proc(srv: ^Server, method: string, params: $T) {
+	notification := struct {
+		jsonrpc: string,
+		method:  string,
+		params:  T,
+	}{
+		jsonrpc = "2.0",
+		method  = method,
+		params  = params,
+	}
+	data, err := json.marshal(notification, allocator = context.temp_allocator)
+	if err != nil {
+		log.errorf("failed to marshal notification: %v", err)
+		return
+	}
+	log.infof("notify - method: %s, params: %s", method, string(data))
+	jsonrpc.write(&srv.stream, data)
 }
 
 reply_error :: proc(srv: ^Server, id: json.Value, error_code: ErrorCodes, message: string = "") {
