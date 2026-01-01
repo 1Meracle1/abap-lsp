@@ -44,7 +44,14 @@ parse_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 		switch keyword {
 		case "DATA":
 			return parse_data_decl(p)
+		case "FORM":
+			return parse_form_decl(p)
 		}
+	}
+
+	// Try to parse as an expression statement or assignment
+	if p.curr_tok.kind == .Ident {
+		return parse_expr_or_assign_stmt(p)
 	}
 
 	start_tok := p.curr_tok
@@ -127,6 +134,133 @@ parse_data_inline_decl :: proc(p: ^Parser, data_tok: lexer.Token) -> ^ast.Decl {
 	return data_decl
 }
 
+parse_form_decl :: proc(p: ^Parser) -> ^ast.Decl {
+	form_tok := expect_token(p, .Ident) // FORM keyword
+	ident_tok := expect_token(p, .Ident) // subroutine name
+
+	form_decl := ast.new(ast.Form_Decl, form_tok.range)
+	form_decl.ident = ast.new_ident(ident_tok)
+	form_decl.tables_params = make([dynamic]^ast.Form_Param)
+	form_decl.using_params = make([dynamic]^ast.Form_Param)
+	form_decl.changing_params = make([dynamic]^ast.Form_Param)
+	form_decl.body = make([dynamic]^ast.Stmt)
+
+	// Parse optional parameter sections: TABLES, USING, CHANGING
+	for p.curr_tok.kind == .Ident && p.curr_tok.kind != .Period {
+		if len(p.curr_tok.lit) > 0 && len(p.curr_tok.lit) < len(p.keyword_buffer) {
+			keyword := to_upper(p.keyword_buffer[:], p.curr_tok.lit)
+			switch keyword {
+			case "TABLES":
+				advance_token(p)
+				parse_form_params(p, &form_decl.tables_params, .Tables)
+			case "USING":
+				advance_token(p)
+				parse_form_params(p, &form_decl.using_params, .Using)
+			case "CHANGING":
+				advance_token(p)
+				parse_form_params(p, &form_decl.changing_params, .Changing)
+			case:
+				break
+			}
+		} else {
+			break
+		}
+	}
+
+	// Expect period to end the FORM header
+	expect_token(p, .Period)
+
+	// Parse body statements until ENDFORM
+	for p.curr_tok.kind != .EOF {
+		if p.curr_tok.kind == .Ident {
+			if len(p.curr_tok.lit) > 0 && len(p.curr_tok.lit) < len(p.keyword_buffer) {
+				keyword := to_upper(p.keyword_buffer[:], p.curr_tok.lit)
+				if keyword == "ENDFORM" {
+					break
+				}
+			}
+		}
+		stmt := parse_stmt(p)
+		if stmt != nil {
+			append(&form_decl.body, stmt)
+		}
+	}
+
+	// Expect ENDFORM
+	endform_tok := expect_keyword_token(p, "ENDFORM")
+	period_tok := expect_token(p, .Period)
+	form_decl.range.end = period_tok.range.end
+	_ = endform_tok
+
+	return form_decl
+}
+
+parse_form_params :: proc(
+	p: ^Parser,
+	params: ^[dynamic]^ast.Form_Param,
+	kind: ast.Form_Param_Kind,
+) {
+	for p.curr_tok.kind == .Ident {
+		// Check if this is the start of another section or end of params
+		if len(p.curr_tok.lit) > 0 && len(p.curr_tok.lit) < len(p.keyword_buffer) {
+			keyword := to_upper(p.keyword_buffer[:], p.curr_tok.lit)
+			if keyword == "TABLES" || keyword == "USING" || keyword == "CHANGING" {
+				break
+			}
+		}
+
+		param := ast.new(ast.Form_Param, p.curr_tok.range)
+		param.kind = kind
+		ident_tok := advance_token(p)
+		param.ident = ast.new_ident(ident_tok)
+
+		// Check for optional TYPE clause
+		if p.curr_tok.kind == .Ident {
+			if len(p.curr_tok.lit) > 0 && len(p.curr_tok.lit) < len(p.keyword_buffer) {
+				keyword := to_upper(p.keyword_buffer[:], p.curr_tok.lit)
+				if keyword == "TYPE" {
+					advance_token(p) // consume TYPE
+					param.typed = parse_expr(p)
+					param.range.end = p.prev_tok.range.end
+				}
+			}
+		}
+
+		append(params, param)
+
+		// If period, stop parsing params
+		if p.curr_tok.kind == .Period {
+			break
+		}
+	}
+}
+
+parse_expr_or_assign_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
+	start_tok := p.curr_tok
+	lhs := parse_expr(p)
+
+	// Check for assignment operator
+	if p.curr_tok.kind == .Eq {
+		op := advance_token(p)
+		rhs := parse_expr(p)
+		period_tok := expect_token(p, .Period)
+
+		assign_stmt := ast.new(ast.Assign_Stmt, start_tok, period_tok)
+		assign_stmt.lhs = make([]^ast.Expr, 1)
+		assign_stmt.lhs[0] = lhs
+		assign_stmt.op = op
+		assign_stmt.rhs = make([]^ast.Expr, 1)
+		assign_stmt.rhs[0] = rhs
+		return assign_stmt
+	}
+
+	// Not an assignment, treat as expression statement
+	period_tok := expect_token(p, .Period)
+	expr_stmt := ast.new(ast.Expr_Stmt, start_tok, period_tok)
+	expr_stmt.expr = lhs
+	return expr_stmt
+}
+
 skip_to_new_line :: proc(p: ^Parser) -> lexer.Token {
 	line_count := p.l.line_count
 	for p.curr_tok.kind != .EOF {
@@ -165,7 +299,26 @@ parse_unary_expr :: proc(p: ^Parser) -> ^ast.Expr {
 }
 
 parse_atom_expr :: proc(p: ^Parser, value: ^ast.Expr) -> ^ast.Expr {
-	return value
+	expr := value
+	loop: for {
+		#partial switch p.curr_tok.kind {
+		case .Minus, .FatArrow:
+			// Check if this is a selector (no space before the operator and followed by identifier)
+			if lexer.have_space_between(p.prev_tok, p.curr_tok) {
+				break loop
+			}
+			op := advance_token(p)
+			field_tok := expect_token(p, .Ident)
+			selector := ast.new(ast.Selector_Expr, lexer.TextRange{expr.range.start, field_tok.range.end})
+			selector.expr = expr
+			selector.op = op
+			selector.field = ast.new_ident(field_tok)
+			expr = selector
+		case:
+			break loop
+		}
+	}
+	return expr
 }
 
 parse_operand :: proc(p: ^Parser) -> ^ast.Expr {

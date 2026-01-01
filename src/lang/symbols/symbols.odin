@@ -3,45 +3,6 @@ package lang_symbols
 import "../lexer"
 import "../ast"
 
-// Type Kinds
-
-TypeKind :: enum {
-	Unknown,     // Type not yet resolved or unresolvable
-	Inferred,    // Type to be inferred from expression (DATA(x) = ...)
-	// Basic ABAP types
-	Integer,     // i
-	Float,       // f, p (packed/decimal)
-	String,      // string
-	Char,        // c
-	Numeric,     // n
-	Date,        // d
-	Time,        // t
-	Hex,         // x
-	XString,     // xstring
-	// Complex types
-	Table,       // TABLE OF ...
-	Structure,   // structured type
-	Reference,   // REF TO ...
-	// Named/user-defined
-	Named,       // reference to a named type (class, interface, etc.)
-}
-
-Type :: struct {
-	kind:         TypeKind,
-	// For Named types: the type name
-	name:         string,
-	// For Table types: element type
-	elem_type:    ^Type,
-	// For Reference types: target type
-	target_type:  ^Type,
-	// For Inferred types: the expression to infer from (kept for later resolution)
-	infer_source: ^ast.Expr,
-	// Original AST node that defined this type (for diagnostics/navigation)
-	ast_node:     ^ast.Expr,
-}
-
-// Symbol Kinds
-
 SymbolKind :: enum {
 	Variable,
 	Constant,
@@ -50,15 +11,29 @@ SymbolKind :: enum {
 	Method,
 	Class,
 	Interface,
+	Form,           // FORM subroutine
+	FormParameter,  // FORM parameter (TABLES, USING, CHANGING)
+}
+
+// Form parameter passing modes (mirrors ast.Form_Param_Kind)
+FormParamKind :: enum {
+	None,     // Not a form parameter
+	Tables,   // TABLES parameter
+	Using,    // USING parameter
+	Changing, // CHANGING parameter
 }
 
 Symbol :: struct {
-	name:       string,
-	kind:       SymbolKind,
-	range:      lexer.TextRange,
-	type_info:  ^Type,
+	name:            string,
+	kind:            SymbolKind,
+	range:           lexer.TextRange,
+	type_info:       ^Type,
 	// For chain declarations, track if this is part of a chain
-	is_chained: bool,
+	is_chained:      bool,
+	// For Form symbols: child symbol table containing parameters and locals
+	child_scope:     ^SymbolTable,
+	// For FormParameter symbols: the passing mode
+	form_param_kind: FormParamKind,
 }
 
 SymbolTable :: struct {
@@ -108,6 +83,12 @@ make_reference_type :: proc(table: ^SymbolTable, target: ^Type) -> ^Type {
 // Cleanup
 
 destroy_symbol_table :: proc(table: ^SymbolTable) {
+	// Recursively destroy child scopes (e.g., from Form declarations)
+	for _, sym in table.symbols {
+		if sym.child_scope != nil {
+			destroy_symbol_table(sym.child_scope)
+		}
+	}
 	for t in table.types {
 		free(t)
 	}

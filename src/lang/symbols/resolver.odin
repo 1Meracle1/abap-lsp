@@ -15,6 +15,8 @@ resolve_file :: proc(file: ^ast.File) -> ^SymbolTable {
 			resolve_typed_decl(table, d, false)
 		case ^ast.Data_Typed_Chain_Decl:
 			resolve_chain_decl(table, d)
+		case ^ast.Form_Decl:
+			resolve_form_decl(table, d)
 		}
 	}
 
@@ -64,6 +66,76 @@ resolve_chain_decl :: proc(table: ^SymbolTable, chain: ^ast.Data_Typed_Chain_Dec
 	for decl in chain.decls {
 		resolve_typed_decl(table, decl, true)
 	}
+}
+
+// FORM formname [TABLES ...] [USING ...] [CHANGING ...].
+// Resolves a FORM subroutine declaration and its parameters.
+resolve_form_decl :: proc(table: ^SymbolTable, form: ^ast.Form_Decl) {
+	name := form.ident.name
+	
+	// Create child scope for form's local symbols (parameters + locals)
+	child_table := new(SymbolTable)
+	child_table.symbols = make(map[string]Symbol)
+	child_table.types = make([dynamic]^Type)
+	
+	// Resolve TABLES parameters
+	for param in form.tables_params {
+		resolve_form_param(child_table, param, .Tables)
+	}
+	
+	// Resolve USING parameters
+	for param in form.using_params {
+		resolve_form_param(child_table, param, .Using)
+	}
+	
+	// Resolve CHANGING parameters
+	for param in form.changing_params {
+		resolve_form_param(child_table, param, .Changing)
+	}
+	
+	// Resolve local declarations in the body
+	for stmt in form.body {
+		#partial switch s in stmt.derived_stmt {
+		case ^ast.Data_Inline_Decl:
+			resolve_inline_decl(child_table, s)
+		case ^ast.Data_Typed_Decl:
+			resolve_typed_decl(child_table, s, false)
+		case ^ast.Data_Typed_Chain_Decl:
+			resolve_chain_decl(child_table, s)
+		}
+	}
+	
+	// Create the form symbol with its child scope
+	sym := Symbol {
+		name        = name,
+		kind        = .Form,
+		range       = form.ident.range,
+		type_info   = nil,  // Forms don't have a return type in ABAP
+		child_scope = child_table,
+	}
+	table.symbols[name] = sym
+}
+
+// Resolves a single FORM parameter (TABLES, USING, or CHANGING).
+resolve_form_param :: proc(table: ^SymbolTable, param: ^ast.Form_Param, param_kind: FormParamKind) {
+	name := param.ident.name
+	
+	// Resolve parameter type if specified
+	type_info: ^Type
+	if param.typed != nil {
+		type_info = resolve_type_expr(table, param.typed)
+	} else {
+		type_info = make_unknown_type(table)
+	}
+	
+	sym := Symbol {
+		name            = name,
+		kind            = .FormParameter,
+		range           = param.ident.range,
+		type_info       = type_info,
+		form_param_kind = param_kind,
+	}
+	table.symbols[name] = sym
 }
 
 // Resolves a type expression AST node into a Type structure.
