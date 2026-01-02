@@ -5,6 +5,7 @@ import "../ast"
 
 import "core:fmt"
 import "core:mem"
+import "core:strings"
 
 // Diagnostic represents a semantic error detected during symbol resolution
 Diagnostic :: struct {
@@ -65,16 +66,22 @@ add_diagnostic :: proc(table: ^SymbolTable, range: lexer.TextRange, message: str
 // Helper to add a symbol to the table with duplicate checking.
 // Returns true if the symbol was added, false if a duplicate was found.
 // For duplicates, a diagnostic is added to the table.
+// Names are normalized to uppercase for ABAP case-insensitivity.
 add_symbol :: proc(table: ^SymbolTable, sym: Symbol, allow_shadowing: bool = false) -> bool {
-	if existing, found := table.symbols[sym.name]; found {
+	upper_name := strings.to_lower(sym.name)
+	if existing, found := table.symbols[upper_name]; found {
 		if !allow_shadowing {
-			add_diagnostic(table, sym.range, fmt.tprintf("Duplicate symbol '%s'", sym.name))
+			add_diagnostic(table, sym.range, fmt.tprintf("Duplicate symbol '%s'", upper_name))
 		}
 		// Still overwrite (shadowing behavior) but return false to indicate duplicate
-		table.symbols[sym.name] = sym
+		modified_sym := sym
+		modified_sym.name = upper_name
+		table.symbols[upper_name] = modified_sym
 		return false
 	}
-	table.symbols[sym.name] = sym
+	modified_sym := sym
+	modified_sym.name = upper_name
+	table.symbols[upper_name] = modified_sym
 	return true
 }
 
@@ -99,7 +106,7 @@ make_inferred_type :: proc(table: ^SymbolTable, source_expr: ^ast.Expr) -> ^Type
 
 make_named_type :: proc(table: ^SymbolTable, name: string, ast_node: ^ast.Expr = nil) -> ^Type {
 	t := make_type(table, .Named)
-	t.name = name
+	t.name = strings.to_lower(name)
 	t.ast_node = ast_node
 	return t
 }
@@ -118,7 +125,7 @@ make_reference_type :: proc(table: ^SymbolTable, target: ^Type) -> ^Type {
 
 make_structure_type :: proc(table: ^SymbolTable, name: string) -> ^Type {
 	t := make_type(table, .Structure)
-	t.name = name
+	t.name = strings.to_lower(name)
 	t.fields = make([dynamic]StructField)
 	return t
 }
@@ -128,7 +135,7 @@ add_struct_field :: proc(t: ^Type, name: string, type_info: ^Type, length: int =
 		return
 	}
 	append(&t.fields, StructField{
-		name      = name,
+		name      = strings.to_lower(name),
 		type_info = type_info,
 		length    = length,
 	})

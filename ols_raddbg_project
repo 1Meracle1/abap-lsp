@@ -1,5 +1,6 @@
 // raddbg 0.9.21 project file
 
+recent_file: path: "src/lsp/completion.odin"
 recent_file: path: "src/lang/parser/parser.odin"
 recent_file: path: "tests/parser/parser.odin"
 recent_file: path: "../../../a/_work/1/s/src/vctools/crt/vcstartup/src/startup/exe_main.cpp"
@@ -41,4 +42,10 @@ breakpoint:
   source_location: "tests/parser/parser.odin:987:1"
   hit_count: 0
   enabled: 0
+}
+breakpoint:
+{
+  source_location: "src/lsp/completion.odin:190:1"
+  enabled: 0
+  hit_count: 0
 }

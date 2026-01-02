@@ -5,6 +5,7 @@ import "../lang/ast"
 import "../lang/symbols"
 import "core:encoding/json"
 import "core:fmt"
+import "core:strings"
 
 // ABAP keywords for completion
 ABAP_KEYWORDS :: []string{
@@ -188,6 +189,12 @@ handle_completion :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 collect_completion_items :: proc(snap: ^cache.Snapshot, offset: int) -> [dynamic]CompletionItem {
 	items := make([dynamic]CompletionItem, context.temp_allocator)
 
+	// Check if we're completing struct fields (after typing "var-" or "var-field-")
+	if struct_type := find_struct_type_at_cursor(snap, offset); struct_type != nil {
+		// Return only struct fields - don't mix with keywords
+		return struct_fields_to_completion_items(struct_type)
+	}
+
 	// Add ABAP keywords
 	for keyword in ABAP_KEYWORDS {
 		append(&items, CompletionItem{
@@ -215,6 +222,227 @@ collect_completion_items :: proc(snap: ^cache.Snapshot, offset: int) -> [dynamic
 	}
 
 	return items
+}
+
+// find_struct_type_at_cursor checks if the cursor is positioned after a '-' following
+// a structured variable (e.g., "my_struct-" or "my_struct-field-"), and returns
+// the structure type whose fields should be completed.
+// Supports nested access like: parent-child-| where child is also a structure.
+find_struct_type_at_cursor :: proc(snap: ^cache.Snapshot, offset: int) -> ^symbols.Type {
+	if len(snap.text) == 0 || offset < 2 {
+		return nil
+	}
+
+	// Parse the access chain backwards from cursor position
+	// e.g., for "my_struct-field-|" we get ["my_struct", "field"]
+	chain := parse_access_chain_backwards(snap.text, offset)
+	if len(chain) == 0 {
+		return nil
+	}
+	defer delete(chain)
+
+	// Resolve the chain to get the final struct type
+	return resolve_access_chain(snap, chain[:], offset)
+}
+
+// parse_access_chain_backwards scans backwards from the cursor to extract
+// the chain of identifiers separated by '-'.
+// For "parent-child-|" it returns ["parent", "child"]
+// For "parent-|" it returns ["parent"]
+// Returns empty if cursor is not after a '-'
+parse_access_chain_backwards :: proc(text: string, offset: int) -> [dynamic]string {
+	chain := make([dynamic]string, context.temp_allocator)
+
+	if offset < 2 || offset > len(text) {
+		return chain
+	}
+
+	pos := offset - 1
+
+	// Check if we're immediately after a '-'
+	if text[pos] != '-' {
+		return chain
+	}
+
+	// Scan backwards collecting identifiers
+	for {
+		// Move past the '-'
+		pos -= 1
+		if pos < 0 {
+			break
+		}
+
+		// Skip whitespace between identifier and '-'
+		for pos >= 0 && (text[pos] == ' ' || text[pos] == '\t') {
+			pos -= 1
+		}
+		if pos < 0 {
+			break
+		}
+
+		// Find the end of the identifier
+		ident_end := pos + 1
+
+		// Scan backwards to find start of identifier
+		for pos >= 0 && is_ident_char(text[pos]) {
+			pos -= 1
+		}
+		ident_start := pos + 1
+
+		if ident_start >= ident_end {
+			break
+		}
+
+		// Extract identifier (uppercase for ABAP case-insensitivity)
+		ident := strings.to_lower(text[ident_start:ident_end], context.temp_allocator)
+
+		// Insert at beginning of chain (we're parsing backwards)
+		inject_at(&chain, 0, ident)
+
+		// Check if there's another '-' before this identifier
+		// Skip whitespace
+		for pos >= 0 && (text[pos] == ' ' || text[pos] == '\t') {
+			pos -= 1
+		}
+
+		if pos < 0 || text[pos] != '-' {
+			// No more chain segments
+			break
+		}
+		// Continue to next segment (there's a '-' before this identifier)
+	}
+
+	return chain
+}
+
+// resolve_access_chain takes a chain of identifiers like ["parent", "child"]
+// and resolves through the type system to find the final struct type.
+// For "parent-child-|", it finds parent's type, then finds child field's type.
+resolve_access_chain :: proc(snap: ^cache.Snapshot, chain: []string, offset: int) -> ^symbols.Type {
+	if len(chain) == 0 {
+		return nil
+	}
+
+	// First element is the variable name - look it up in scope
+	var_name := chain[0]
+	var_type := lookup_variable_type(snap, var_name, offset)
+	if var_type == nil {
+		return nil
+	}
+
+	// Resolve the type if it's a named type
+	current_type := resolve_to_struct_type(snap, var_type)
+	if current_type == nil {
+		return nil
+	}
+
+	// Walk through the rest of the chain
+	for i := 1; i < len(chain); i += 1 {
+		field_name := chain[i]
+
+		// Find the field in the current struct
+		field_type: ^symbols.Type = nil
+		for &field in current_type.fields {
+			if strings.to_lower(field.name, context.temp_allocator) == field_name {
+				field_type = field.type_info
+				break
+			}
+		}
+
+		if field_type == nil {
+			return nil
+		}
+
+		// Resolve to struct type for next iteration
+		current_type = resolve_to_struct_type(snap, field_type)
+		if current_type == nil {
+			return nil
+		}
+	}
+
+	return current_type
+}
+
+// lookup_variable_type finds a variable by name in the appropriate scope
+// and returns its type.
+lookup_variable_type :: proc(snap: ^cache.Snapshot, var_name: string, offset: int) -> ^symbols.Type {
+	// First check local scope if we're inside a form
+	if enclosing_form := ast.find_enclosing_form(snap.ast, offset); enclosing_form != nil {
+		form_name := enclosing_form.ident.name
+		if form_sym, ok := snap.symbol_table.symbols[form_name]; ok {
+			if form_sym.child_scope != nil {
+				if local_sym, found := form_sym.child_scope.symbols[var_name]; found {
+					return local_sym.type_info
+				}
+			}
+		}
+	}
+
+	// Check global scope
+	if global_sym, found := snap.symbol_table.symbols[var_name]; found {
+		return global_sym.type_info
+	}
+
+	return nil
+}
+
+// resolve_to_struct_type resolves a type to its underlying structure type.
+// Handles named types by looking up the type definition.
+resolve_to_struct_type :: proc(snap: ^cache.Snapshot, type_info: ^symbols.Type) -> ^symbols.Type {
+	if type_info == nil {
+		return nil
+	}
+
+	#partial switch type_info.kind {
+	case .Structure:
+		return type_info
+
+	case .Named:
+		// Look up the type definition
+		if type_sym, found := snap.symbol_table.symbols[type_info.name]; found {
+			if type_sym.type_info != nil {
+				return resolve_to_struct_type(snap, type_sym.type_info)
+			}
+		}
+		return nil
+
+	case .Table:
+		// For tables, we could complete on the element type if it's a struct
+		// This handles cases like: itab[1]-field
+		// But for just "itab-", we don't complete (tables use [] for access)
+		return nil
+	}
+
+	return nil
+}
+
+// struct_fields_to_completion_items converts structure fields to completion items
+struct_fields_to_completion_items :: proc(struct_type: ^symbols.Type) -> [dynamic]CompletionItem {
+	items := make([dynamic]CompletionItem, context.temp_allocator)
+
+	if struct_type == nil || struct_type.kind != .Structure {
+		return items
+	}
+
+	for field in struct_type.fields {
+		detail := symbols.format_type(field.type_info)
+
+		append(&items, CompletionItem{
+			label  = field.name,
+			kind   = .Field,
+			detail = detail if len(detail) > 0 else nil,
+		})
+	}
+
+	return items
+}
+
+// is_ident_char returns true if the character is valid in an ABAP identifier
+is_ident_char :: proc(c: u8) -> bool {
+	return (c >= 'a' && c <= 'z') ||
+	       (c >= 'A' && c <= 'Z') ||
+	       (c >= '0' && c <= '9') ||
+	       c == '_'
 }
 
 // symbol_to_completion_item converts a Symbol to a CompletionItem

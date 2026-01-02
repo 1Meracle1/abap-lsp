@@ -51,7 +51,7 @@ read :: proc(stream: ^Stream) -> ([]byte, io.Error) {
 	body := make([dynamic]byte, content_len)
 	total_read := 0
 	for total_read < content_len {
-		actual_len, err := io.read_full(stream.input, body[total_read:])
+		actual_len, err := bufio.reader_read(&stream.reader, body[total_read:])
 		if err != nil {
 			return body[:], err
 		}

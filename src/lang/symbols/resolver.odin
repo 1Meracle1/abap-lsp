@@ -1,6 +1,7 @@
 package lang_symbols
 
 import "../ast"
+import "core:strings"
 
 resolve_file :: proc(file: ^ast.File) -> ^SymbolTable {
 	table := new(SymbolTable)
@@ -279,10 +280,10 @@ resolve_type_expr :: proc(table: ^SymbolTable, expr: ^ast.Expr) -> ^Type {
 }
 
 // Maps ABAP built-in type names to TypeKind
+// Input is normalized to uppercase for case-insensitive matching.
 builtin_type_from_name :: proc(name: string) -> TypeKind {
-	// ABAP type names are case-insensitive, but we store lowercase
-	// Caller should normalize if needed
-	switch name {
+	upper_name := strings.to_lower(name, context.temp_allocator)
+	switch upper_name {
 	case "i", "int4", "int8":
 		return .Integer
 	case "f", "p", "decfloat16", "decfloat34":
