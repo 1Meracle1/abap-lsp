@@ -44,6 +44,8 @@ parse_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 		switch keyword {
 		case "DATA":
 			return parse_data_decl(p)
+		case "TYPES":
+			return parse_types_decl(p)
 		case "FORM":
 			return parse_form_decl(p)
 		}
@@ -132,6 +134,56 @@ parse_data_inline_decl :: proc(p: ^Parser, data_tok: lexer.Token) -> ^ast.Decl {
 	data_decl.ident = ast.new_ident(ident_tok)
 	data_decl.value = expr
 	return data_decl
+}
+
+// TYPES declarations
+
+parse_types_decl :: proc(p: ^Parser) -> ^ast.Decl {
+	types_tok := expect_token(p, .Ident) // TYPES keyword
+	if allow_token(p, .Colon) {
+		return parse_types_chain_decl(p, types_tok)
+	}
+	return parse_types_single_decl(p, types_tok)
+}
+
+parse_types_single_decl :: proc(p: ^Parser, types_tok: lexer.Token) -> ^ast.Decl {
+	ident_tok := expect_token(p, .Ident)
+	expect_keyword_token(p, "TYPE")
+	type_expr := parse_expr(p)
+	period_tok := expect_token(p, .Period)
+
+	types_decl := ast.new(ast.Types_Decl, types_tok, period_tok)
+	types_decl.ident = ast.new_ident(ident_tok)
+	types_decl.typed = type_expr
+	return types_decl
+}
+
+parse_types_chain_decl :: proc(p: ^Parser, types_tok: lexer.Token) -> ^ast.Decl {
+	chain_decl := ast.new(ast.Types_Chain_Decl, types_tok.range)
+	chain_decl.decls = make([dynamic]^ast.Types_Decl)
+
+	for {
+		ident_tok := expect_token(p, .Ident)
+		expect_keyword_token(p, "TYPE")
+		type_expr := parse_expr(p)
+
+		decl := ast.new(ast.Types_Decl, ident_tok, p.prev_tok)
+		decl.ident = ast.new_ident(ident_tok)
+		decl.typed = type_expr
+		append(&chain_decl.decls, decl)
+
+		if allow_token(p, .Comma) {
+			// Continue parsing next declaration in chain
+			continue
+		}
+
+		// Expect period to end the chain
+		period_tok := expect_token(p, .Period)
+		chain_decl.range.end = period_tok.range.end
+		break
+	}
+
+	return chain_decl
 }
 
 parse_form_decl :: proc(p: ^Parser) -> ^ast.Decl {

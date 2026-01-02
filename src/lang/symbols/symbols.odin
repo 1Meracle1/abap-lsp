@@ -22,6 +22,7 @@ SymbolKind :: enum {
 	Interface,
 	Form,           // FORM subroutine
 	FormParameter,  // FORM parameter (TABLES, USING, CHANGING)
+	TypeDef,        // TYPES declaration (type definition/alias)
 }
 
 // Form parameter passing modes (mirrors ast.Form_Param_Kind)

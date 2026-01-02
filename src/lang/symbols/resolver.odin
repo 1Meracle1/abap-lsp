@@ -16,6 +16,10 @@ resolve_file :: proc(file: ^ast.File) -> ^SymbolTable {
 			resolve_typed_decl(table, d, false)
 		case ^ast.Data_Typed_Chain_Decl:
 			resolve_chain_decl(table, d)
+		case ^ast.Types_Decl:
+			resolve_types_decl(table, d, false)
+		case ^ast.Types_Chain_Decl:
+			resolve_types_chain_decl(table, d)
 		case ^ast.Form_Decl:
 			resolve_form_decl(table, d)
 		}
@@ -73,6 +77,35 @@ resolve_typed_decl :: proc(table: ^SymbolTable, decl: ^ast.Data_Typed_Decl, is_c
 resolve_chain_decl :: proc(table: ^SymbolTable, chain: ^ast.Data_Typed_Chain_Decl, is_global: bool = true) {
 	for decl in chain.decls {
 		resolve_typed_decl(table, decl, true, is_global)
+	}
+}
+
+// TYPES ty_name TYPE typename.
+// Type definition/alias.
+// is_global indicates if this is at file/global scope (where shadowing may be allowed)
+resolve_types_decl :: proc(table: ^SymbolTable, decl: ^ast.Types_Decl, is_chained: bool, is_global: bool = true) {
+	name := decl.ident.name
+	
+	// Extract type from the typed expression
+	type_info := resolve_type_expr(table, decl.typed)
+	
+	sym := Symbol {
+		name       = name,
+		kind       = .TypeDef,
+		range      = decl.ident.range,
+		type_info  = type_info,
+		is_chained = is_chained,
+	}
+	// Type names should generally not allow duplicates
+	add_symbol(table, sym, allow_shadowing = false)
+}
+
+// TYPES: ty1 TYPE t1, ty2 TYPE t2, ...
+// Chain of type definitions.
+// is_global indicates if this is at file/global scope (where shadowing may be allowed)
+resolve_types_chain_decl :: proc(table: ^SymbolTable, chain: ^ast.Types_Chain_Decl, is_global: bool = true) {
+	for decl in chain.decls {
+		resolve_types_decl(table, decl, true, is_global)
 	}
 }
 

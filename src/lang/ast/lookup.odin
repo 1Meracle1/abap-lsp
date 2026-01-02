@@ -57,6 +57,24 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 			}
 		}
 
+	case ^Types_Decl:
+		if res := find_node_at_offset(&n.ident.expr_base, offset); res != nil {
+			return res
+		}
+		if res := find_node_at_offset(&n.typed.expr_base, offset); res != nil {
+			return res
+		}
+
+	case ^Types_Chain_Decl:
+		for child in n.decls {
+			if res := find_node_at_offset(&child.ident.expr_base, offset); res != nil {
+				return res
+			}
+			if res := find_node_at_offset(&child.typed.expr_base, offset); res != nil {
+				return res
+			}
+		}
+
 	case ^Ident:
 		// Leaf node, return self
 		return node

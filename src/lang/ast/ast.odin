@@ -156,6 +156,19 @@ Data_Typed_Chain_Decl :: struct {
 	decls:      [dynamic]^Data_Typed_Decl,
 }
 
+// TYPES declarations (type definitions)
+
+Types_Decl :: struct {
+	using node: Decl,
+	ident:      ^Ident,
+	typed:      ^Expr,
+}
+
+Types_Chain_Decl :: struct {
+	using node: Decl,
+	decls:      [dynamic]^Types_Decl,
+}
+
 Form_Param_Kind :: enum {
 	Tables,
 	Using,
@@ -218,6 +231,8 @@ Any_Node :: union {
 	^Data_Inline_Decl,
 	^Data_Typed_Decl,
 	^Data_Typed_Chain_Decl,
+	^Types_Decl,
+	^Types_Chain_Decl,
 	^Form_Param,
 	^Form_Decl,
 }
@@ -248,5 +263,7 @@ Any_Stmt :: union {
 	^Data_Inline_Decl,
 	^Data_Typed_Decl,
 	^Data_Typed_Chain_Decl,
+	^Types_Decl,
+	^Types_Chain_Decl,
 	^Form_Decl,
 }

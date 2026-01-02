@@ -117,6 +117,35 @@ collect_tokens_from_stmt :: proc(tokens: ^[dynamic]SemanticToken, stmt: ^ast.Stm
 			}
 		}
 
+	case ^ast.Types_Decl:
+		// TYPES ty_name TYPE typename - ty_name is a type definition, typename is a type
+		if s.ident != nil {
+			append(tokens, SemanticToken{
+				offset    = s.ident.range.start,
+				length    = s.ident.range.end - s.ident.range.start,
+				type      = .Type,
+				modifiers = 1 << u32(SemanticTokenModifier.Declaration),
+			})
+		}
+		if s.typed != nil {
+			collect_tokens_from_type_expr(tokens, s.typed)
+		}
+
+	case ^ast.Types_Chain_Decl:
+		for decl in s.decls {
+			if decl.ident != nil {
+				append(tokens, SemanticToken{
+					offset    = decl.ident.range.start,
+					length    = decl.ident.range.end - decl.ident.range.start,
+					type      = .Type,
+					modifiers = 1 << u32(SemanticTokenModifier.Declaration),
+				})
+			}
+			if decl.typed != nil {
+				collect_tokens_from_type_expr(tokens, decl.typed)
+			}
+		}
+
 	case ^ast.Form_Decl:
 		// FORM name - name is a function
 		if s.ident != nil {
@@ -344,6 +373,8 @@ symbol_to_token_type :: proc(sym: symbols.Symbol) -> (SemanticTokenType, u32) {
 		return .Interface, modifiers
 	case .Form:
 		return .Function, modifiers
+	case .TypeDef:
+		return .Type, modifiers
 	}
 
 	return .Variable, modifiers

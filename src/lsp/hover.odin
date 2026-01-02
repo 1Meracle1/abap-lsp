@@ -49,6 +49,10 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 			if sym.kind == .Form {
 				// For FORM symbols, show the full signature
 				hover_text = format_form_signature(sym)
+			} else if sym.kind == .TypeDef {
+				// For TYPES symbols, show the type definition
+				type_str := symbols.format_type(sym.type_info)
+				hover_text = fmt.tprintf("(type) %s = %s", sym.name, type_str)
 			} else {
 				type_str := symbols.format_type(sym.type_info)
 				hover_text = fmt.tprintf("%s: %s", sym.name, type_str)
