@@ -3,6 +3,15 @@ package lang_symbols
 import "../lexer"
 import "../ast"
 
+import "core:fmt"
+import "core:mem"
+
+// Diagnostic represents a semantic error detected during symbol resolution
+Diagnostic :: struct {
+	range:   lexer.TextRange,
+	message: string,
+}
+
 SymbolKind :: enum {
 	Variable,
 	Constant,
@@ -37,9 +46,35 @@ Symbol :: struct {
 }
 
 SymbolTable :: struct {
-	symbols: map[string]Symbol,
+	symbols:     map[string]Symbol,
 	// Allocator for types (so they can be freed together)
-	types:   [dynamic]^Type,
+	types:       [dynamic]^Type,
+	// Semantic diagnostics detected during symbol resolution
+	diagnostics: [dynamic]Diagnostic,
+}
+
+// Helper to add a diagnostic to the symbol table
+add_diagnostic :: proc(table: ^SymbolTable, range: lexer.TextRange, message: string) {
+	append(&table.diagnostics, Diagnostic{
+		range   = range,
+		message = message,
+	})
+}
+
+// Helper to add a symbol to the table with duplicate checking.
+// Returns true if the symbol was added, false if a duplicate was found.
+// For duplicates, a diagnostic is added to the table.
+add_symbol :: proc(table: ^SymbolTable, sym: Symbol, allow_shadowing: bool = false) -> bool {
+	if existing, found := table.symbols[sym.name]; found {
+		if !allow_shadowing {
+			add_diagnostic(table, sym.range, fmt.tprintf("Duplicate symbol '%s'", sym.name))
+		}
+		// Still overwrite (shadowing behavior) but return false to indicate duplicate
+		table.symbols[sym.name] = sym
+		return false
+	}
+	table.symbols[sym.name] = sym
+	return true
 }
 
 // Helper to create types managed by the symbol table
@@ -80,6 +115,26 @@ make_reference_type :: proc(table: ^SymbolTable, target: ^Type) -> ^Type {
 	return t
 }
 
+// Collect all diagnostics from this table and all child scopes
+collect_all_diagnostics :: proc(table: ^SymbolTable, allocator: mem.Allocator = context.allocator) -> []Diagnostic {
+	result := make([dynamic]Diagnostic, allocator)
+	collect_diagnostics_recursive(table, &result)
+	return result[:]
+}
+
+collect_diagnostics_recursive :: proc(table: ^SymbolTable, result: ^[dynamic]Diagnostic) {
+	// Add diagnostics from this table
+	for diag in table.diagnostics {
+		append(result, diag)
+	}
+	// Recurse into child scopes
+	for _, sym in table.symbols {
+		if sym.child_scope != nil {
+			collect_diagnostics_recursive(sym.child_scope, result)
+		}
+	}
+}
+
 // Cleanup
 
 destroy_symbol_table :: proc(table: ^SymbolTable) {
@@ -94,5 +149,6 @@ destroy_symbol_table :: proc(table: ^SymbolTable) {
 	}
 	delete(table.types)
 	delete(table.symbols)
+	delete(table.diagnostics)
 	free(table)
 }

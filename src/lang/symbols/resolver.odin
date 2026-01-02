@@ -6,6 +6,7 @@ resolve_file :: proc(file: ^ast.File) -> ^SymbolTable {
 	table := new(SymbolTable)
 	table.symbols = make(map[string]Symbol)
 	table.types = make([dynamic]^Type)
+	table.diagnostics = make([dynamic]Diagnostic)
 
 	for decl in file.decls {
 		#partial switch d in decl.derived_stmt {
@@ -25,7 +26,8 @@ resolve_file :: proc(file: ^ast.File) -> ^SymbolTable {
 
 // DATA(var) = expression.
 // Type is inferred from the expression.
-resolve_inline_decl :: proc(table: ^SymbolTable, decl: ^ast.Data_Inline_Decl) {
+// is_global indicates if this is at file/global scope (where shadowing may be allowed)
+resolve_inline_decl :: proc(table: ^SymbolTable, decl: ^ast.Data_Inline_Decl, is_global: bool = true) {
 	name := decl.ident.name
 	
 	// Create an inferred type - actual type resolution happens later
@@ -39,12 +41,15 @@ resolve_inline_decl :: proc(table: ^SymbolTable, decl: ^ast.Data_Inline_Decl) {
 		type_info = type_info,
 		is_chained = false,
 	}
-	table.symbols[name] = sym
+	// Global DATA variables may allow shadowing (to be confirmed),
+	// but local variables (in FORM etc.) should not allow duplicates
+	add_symbol(table, sym, allow_shadowing = is_global)
 }
 
 // DATA var TYPE typename.
 // Type is explicitly specified.
-resolve_typed_decl :: proc(table: ^SymbolTable, decl: ^ast.Data_Typed_Decl, is_chained: bool) {
+// is_global indicates if this is at file/global scope (where shadowing may be allowed)
+resolve_typed_decl :: proc(table: ^SymbolTable, decl: ^ast.Data_Typed_Decl, is_chained: bool, is_global: bool = true) {
 	name := decl.ident.name
 	
 	// Extract type from the typed expression
@@ -57,14 +62,17 @@ resolve_typed_decl :: proc(table: ^SymbolTable, decl: ^ast.Data_Typed_Decl, is_c
 		type_info  = type_info,
 		is_chained = is_chained,
 	}
-	table.symbols[name] = sym
+	// Global DATA variables may allow shadowing (to be confirmed),
+	// but local variables (in FORM etc.) should not allow duplicates
+	add_symbol(table, sym, allow_shadowing = is_global)
 }
 
 // DATA: var1 TYPE t1, var2 TYPE t2, ...
 // Chain of typed declarations.
-resolve_chain_decl :: proc(table: ^SymbolTable, chain: ^ast.Data_Typed_Chain_Decl) {
+// is_global indicates if this is at file/global scope (where shadowing may be allowed)
+resolve_chain_decl :: proc(table: ^SymbolTable, chain: ^ast.Data_Typed_Chain_Decl, is_global: bool = true) {
 	for decl in chain.decls {
-		resolve_typed_decl(table, decl, true)
+		resolve_typed_decl(table, decl, true, is_global)
 	}
 }
 
@@ -77,6 +85,7 @@ resolve_form_decl :: proc(table: ^SymbolTable, form: ^ast.Form_Decl) {
 	child_table := new(SymbolTable)
 	child_table.symbols = make(map[string]Symbol)
 	child_table.types = make([dynamic]^Type)
+	child_table.diagnostics = make([dynamic]Diagnostic)
 	
 	// Resolve TABLES parameters
 	for param in form.tables_params {
@@ -93,19 +102,20 @@ resolve_form_decl :: proc(table: ^SymbolTable, form: ^ast.Form_Decl) {
 		resolve_form_param(child_table, param, .Changing)
 	}
 	
-	// Resolve local declarations in the body
+	// Resolve local declarations in the body (is_global=false: no shadowing allowed)
 	for stmt in form.body {
 		#partial switch s in stmt.derived_stmt {
 		case ^ast.Data_Inline_Decl:
-			resolve_inline_decl(child_table, s)
+			resolve_inline_decl(child_table, s, is_global = false)
 		case ^ast.Data_Typed_Decl:
-			resolve_typed_decl(child_table, s, false)
+			resolve_typed_decl(child_table, s, false, is_global = false)
 		case ^ast.Data_Typed_Chain_Decl:
-			resolve_chain_decl(child_table, s)
+			resolve_chain_decl(child_table, s, is_global = false)
 		}
 	}
 	
 	// Create the form symbol with its child scope
+	// FORM names should not be duplicated
 	sym := Symbol {
 		name        = name,
 		kind        = .Form,
@@ -113,10 +123,11 @@ resolve_form_decl :: proc(table: ^SymbolTable, form: ^ast.Form_Decl) {
 		type_info   = nil,  // Forms don't have a return type in ABAP
 		child_scope = child_table,
 	}
-	table.symbols[name] = sym
+	add_symbol(table, sym, allow_shadowing = false)
 }
 
 // Resolves a single FORM parameter (TABLES, USING, or CHANGING).
+// Parameters should not allow duplicates.
 resolve_form_param :: proc(table: ^SymbolTable, param: ^ast.Form_Param, param_kind: FormParamKind) {
 	name := param.ident.name
 	
@@ -135,7 +146,7 @@ resolve_form_param :: proc(table: ^SymbolTable, param: ^ast.Form_Param, param_ki
 		type_info       = type_info,
 		form_param_kind = param_kind,
 	}
-	table.symbols[name] = sym
+	add_symbol(table, sym, allow_shadowing = false)
 }
 
 // Resolves a type expression AST node into a Type structure.
