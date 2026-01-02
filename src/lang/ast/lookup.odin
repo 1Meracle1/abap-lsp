@@ -64,6 +64,11 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 		if res := find_node_at_offset(&n.typed.expr_base, offset); res != nil {
 			return res
 		}
+		if n.length != nil {
+			if res := find_node_at_offset(&n.length.expr_base, offset); res != nil {
+				return res
+			}
+		}
 
 	case ^Types_Chain_Decl:
 		for child in n.decls {
@@ -71,6 +76,20 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 				return res
 			}
 			if res := find_node_at_offset(&child.typed.expr_base, offset); res != nil {
+				return res
+			}
+		}
+
+	case ^Types_Struct_Decl:
+		// Check structure name
+		if n.ident != nil {
+			if res := find_node_at_offset(&n.ident.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		// Check components (fields and nested structures)
+		for comp in n.components {
+			if res := find_node_at_offset(&comp.stmt_base, offset); res != nil {
 				return res
 			}
 		}

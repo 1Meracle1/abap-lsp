@@ -146,6 +146,19 @@ collect_tokens_from_stmt :: proc(tokens: ^[dynamic]SemanticToken, stmt: ^ast.Stm
 			}
 		}
 
+	case ^ast.Types_Struct_Decl:
+		// TYPES: BEGIN OF struct_name, ... END OF struct_name
+		if s.ident != nil {
+			append(tokens, SemanticToken{
+				offset    = s.ident.range.start,
+				length    = s.ident.range.end - s.ident.range.start,
+				type      = .Type,
+				modifiers = 1 << u32(SemanticTokenModifier.Declaration),
+			})
+		}
+		// Collect tokens from components
+		collect_tokens_from_struct_components(tokens, s.components[:], snap)
+
 	case ^ast.Form_Decl:
 		// FORM name - name is a function
 		if s.ident != nil {
@@ -205,6 +218,45 @@ collect_tokens_from_stmt :: proc(tokens: ^[dynamic]SemanticToken, stmt: ^ast.Stm
 	case ^ast.Return_Stmt:
 		for result in s.results {
 			collect_tokens_from_expr(tokens, result, snap, nil)
+		}
+	}
+}
+
+// Collects tokens from structured type components (fields and nested structures)
+collect_tokens_from_struct_components :: proc(tokens: ^[dynamic]SemanticToken, components: []^ast.Stmt, snap: ^cache.Snapshot) {
+	for comp in components {
+		if comp == nil {
+			continue
+		}
+
+		#partial switch c in comp.derived_stmt {
+		case ^ast.Types_Decl:
+			// Field declaration
+			if c.ident != nil {
+				append(tokens, SemanticToken{
+					offset    = c.ident.range.start,
+					length    = c.ident.range.end - c.ident.range.start,
+					type      = .Property,
+					modifiers = 1 << u32(SemanticTokenModifier.Declaration),
+				})
+			}
+			if c.typed != nil {
+				collect_tokens_from_type_expr(tokens, c.typed)
+			}
+			// Length is a number literal, handled automatically if present
+
+		case ^ast.Types_Struct_Decl:
+			// Nested structure
+			if c.ident != nil {
+				append(tokens, SemanticToken{
+					offset    = c.ident.range.start,
+					length    = c.ident.range.end - c.ident.range.start,
+					type      = .Type,
+					modifiers = 1 << u32(SemanticTokenModifier.Declaration),
+				})
+			}
+			// Recursively collect tokens from nested structure
+			collect_tokens_from_struct_components(tokens, c.components[:], snap)
 		}
 	}
 }

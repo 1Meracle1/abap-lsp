@@ -116,6 +116,24 @@ make_reference_type :: proc(table: ^SymbolTable, target: ^Type) -> ^Type {
 	return t
 }
 
+make_structure_type :: proc(table: ^SymbolTable, name: string) -> ^Type {
+	t := make_type(table, .Structure)
+	t.name = name
+	t.fields = make([dynamic]StructField)
+	return t
+}
+
+add_struct_field :: proc(t: ^Type, name: string, type_info: ^Type, length: int = 0) {
+	if t == nil || t.kind != .Structure {
+		return
+	}
+	append(&t.fields, StructField{
+		name      = name,
+		type_info = type_info,
+		length    = length,
+	})
+}
+
 // Collect all diagnostics from this table and all child scopes
 collect_all_diagnostics :: proc(table: ^SymbolTable, allocator: mem.Allocator = context.allocator) -> []Diagnostic {
 	result := make([dynamic]Diagnostic, allocator)

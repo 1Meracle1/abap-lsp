@@ -150,11 +150,20 @@ parse_types_single_decl :: proc(p: ^Parser, types_tok: lexer.Token) -> ^ast.Decl
 	ident_tok := expect_token(p, .Ident)
 	expect_keyword_token(p, "TYPE")
 	type_expr := parse_expr(p)
+
+	// Check for optional LENGTH clause
+	length_expr: ^ast.Expr = nil
+	if check_keyword(p, "LENGTH") {
+		advance_token(p) // consume LENGTH
+		length_expr = parse_expr(p)
+	}
+
 	period_tok := expect_token(p, .Period)
 
 	types_decl := ast.new(ast.Types_Decl, types_tok, period_tok)
 	types_decl.ident = ast.new_ident(ident_tok)
 	types_decl.typed = type_expr
+	types_decl.length = length_expr
 	return types_decl
 }
 
@@ -163,13 +172,43 @@ parse_types_chain_decl :: proc(p: ^Parser, types_tok: lexer.Token) -> ^ast.Decl 
 	chain_decl.decls = make([dynamic]^ast.Types_Decl)
 
 	for {
+		// Check for BEGIN OF (start of structured type)
+		if check_keyword(p, "BEGIN") {
+			struct_decl := parse_types_struct_decl(p)
+			if struct_decl != nil {
+				// Convert chain to include the struct - we need to return it differently
+				// For now, if we have a BEGIN OF as the first element, return just the struct
+				if len(chain_decl.decls) == 0 {
+					if allow_token(p, .Comma) {
+						// There's more after the struct, continue as mixed chain
+						// For simplicity, we'll wrap the struct in the chain's range and return
+						// Actually, we need a different approach - return the struct directly
+						// and handle comma-separated structs
+					}
+					if allow_token(p, .Period) {
+						struct_decl.range.end = p.prev_tok.range.end
+					}
+					return struct_decl
+				}
+			}
+			break
+		}
+
 		ident_tok := expect_token(p, .Ident)
 		expect_keyword_token(p, "TYPE")
 		type_expr := parse_expr(p)
 
+		// Check for optional LENGTH clause
+		length_expr: ^ast.Expr = nil
+		if check_keyword(p, "LENGTH") {
+			advance_token(p) // consume LENGTH
+			length_expr = parse_expr(p)
+		}
+
 		decl := ast.new(ast.Types_Decl, ident_tok, p.prev_tok)
 		decl.ident = ast.new_ident(ident_tok)
 		decl.typed = type_expr
+		decl.length = length_expr
 		append(&chain_decl.decls, decl)
 
 		if allow_token(p, .Comma) {
@@ -184,6 +223,88 @@ parse_types_chain_decl :: proc(p: ^Parser, types_tok: lexer.Token) -> ^ast.Decl 
 	}
 
 	return chain_decl
+}
+
+// Parses a structured type: BEGIN OF name, ... components ..., END OF name
+parse_types_struct_decl :: proc(p: ^Parser) -> ^ast.Types_Struct_Decl {
+	begin_tok := expect_keyword_token(p, "BEGIN")
+	expect_keyword_token(p, "OF")
+	ident_tok := expect_token(p, .Ident)
+
+	struct_decl := ast.new(ast.Types_Struct_Decl, begin_tok.range)
+	struct_decl.ident = ast.new_ident(ident_tok)
+	struct_decl.components = make([dynamic]^ast.Stmt)
+
+	// Expect comma after BEGIN OF name
+	expect_token(p, .Comma)
+
+	// Parse components until END OF
+	for p.curr_tok.kind != .EOF {
+		// Check for END OF
+		if check_keyword(p, "END") {
+			break
+		}
+
+		// Check for nested BEGIN OF (nested structure)
+		if check_keyword(p, "BEGIN") {
+			nested_struct := parse_types_struct_decl(p)
+			if nested_struct != nil {
+				append(&struct_decl.components, &nested_struct.node)
+			}
+			// Expect comma after nested struct
+			if !allow_token(p, .Comma) {
+				break // END OF should follow
+			}
+			continue
+		}
+
+		// Parse regular field: name TYPE type [LENGTH n]
+		field_ident_tok := expect_token(p, .Ident)
+		expect_keyword_token(p, "TYPE")
+		type_expr := parse_expr(p)
+
+		// Check for optional LENGTH clause
+		length_expr: ^ast.Expr = nil
+		if check_keyword(p, "LENGTH") {
+			advance_token(p) // consume LENGTH
+			length_expr = parse_expr(p)
+		}
+
+		field_decl := ast.new(ast.Types_Decl, field_ident_tok, p.prev_tok)
+		field_decl.ident = ast.new_ident(field_ident_tok)
+		field_decl.typed = type_expr
+		field_decl.length = length_expr
+		append(&struct_decl.components, &field_decl.node)
+
+		if !allow_token(p, .Comma) {
+			break // END OF should follow
+		}
+	}
+
+	// Expect END OF name
+	expect_keyword_token(p, "END")
+	expect_keyword_token(p, "OF")
+	end_ident_tok := expect_token(p, .Ident)
+	struct_decl.range.end = end_ident_tok.range.end
+
+	// Verify the END OF name matches BEGIN OF name
+	if struct_decl.ident.name != end_ident_tok.lit {
+		error(p, end_ident_tok.range, "END OF '%s' does not match BEGIN OF '%s'", end_ident_tok.lit, struct_decl.ident.name)
+	}
+
+	return struct_decl
+}
+
+// Helper to check if current token is a specific keyword (without consuming)
+check_keyword :: proc(p: ^Parser, expected: string) -> bool {
+	if p.curr_tok.kind != .Ident {
+		return false
+	}
+	if len(p.curr_tok.lit) > 0 && len(p.curr_tok.lit) < len(p.keyword_buffer) {
+		keyword := to_upper(p.keyword_buffer[:], p.curr_tok.lit)
+		return keyword == expected
+	}
+	return false
 }
 
 parse_form_decl :: proc(p: ^Parser) -> ^ast.Decl {

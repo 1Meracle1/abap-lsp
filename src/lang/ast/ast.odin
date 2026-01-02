@@ -162,11 +162,26 @@ Types_Decl :: struct {
 	using node: Decl,
 	ident:      ^Ident,
 	typed:      ^Expr,
+	length:     ^Expr, // Optional LENGTH clause (e.g., TYPE c LENGTH 40)
 }
 
 Types_Chain_Decl :: struct {
 	using node: Decl,
 	decls:      [dynamic]^Types_Decl,
+}
+
+// Types_Struct_Decl represents a structured type definition:
+// TYPES: BEGIN OF struct_name,
+//          field1 TYPE type1,
+//          field2 TYPE type2,
+//          BEGIN OF nested,
+//            ...
+//          END OF nested,
+//        END OF struct_name.
+Types_Struct_Decl :: struct {
+	using node:  Decl,
+	ident:       ^Ident,
+	components:  [dynamic]^Stmt, // List of Types_Decl or Types_Struct_Decl
 }
 
 Form_Param_Kind :: enum {
@@ -233,6 +248,7 @@ Any_Node :: union {
 	^Data_Typed_Chain_Decl,
 	^Types_Decl,
 	^Types_Chain_Decl,
+	^Types_Struct_Decl,
 	^Form_Param,
 	^Form_Decl,
 }
@@ -265,5 +281,6 @@ Any_Stmt :: union {
 	^Data_Typed_Chain_Decl,
 	^Types_Decl,
 	^Types_Chain_Decl,
+	^Types_Struct_Decl,
 	^Form_Decl,
 }

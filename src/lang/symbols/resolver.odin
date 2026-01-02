@@ -20,6 +20,8 @@ resolve_file :: proc(file: ^ast.File) -> ^SymbolTable {
 			resolve_types_decl(table, d, false)
 		case ^ast.Types_Chain_Decl:
 			resolve_types_chain_decl(table, d)
+		case ^ast.Types_Struct_Decl:
+			resolve_types_struct_decl(table, d)
 		case ^ast.Form_Decl:
 			resolve_form_decl(table, d)
 		}
@@ -106,6 +108,60 @@ resolve_types_decl :: proc(table: ^SymbolTable, decl: ^ast.Types_Decl, is_chaine
 resolve_types_chain_decl :: proc(table: ^SymbolTable, chain: ^ast.Types_Chain_Decl, is_global: bool = true) {
 	for decl in chain.decls {
 		resolve_types_decl(table, decl, true, is_global)
+	}
+}
+
+// TYPES: BEGIN OF struct_name, ... END OF struct_name.
+// Resolves a structured type definition.
+resolve_types_struct_decl :: proc(table: ^SymbolTable, struct_decl: ^ast.Types_Struct_Decl) {
+	name := struct_decl.ident.name
+	
+	// Create a structure type
+	struct_type := make_structure_type(table, name)
+	
+	// Resolve each component (field or nested structure)
+	resolve_struct_components(table, struct_type, struct_decl.components[:])
+	
+	sym := Symbol {
+		name       = name,
+		kind       = .TypeDef,
+		range      = struct_decl.ident.range,
+		type_info  = struct_type,
+		is_chained = false,
+	}
+	add_symbol(table, sym, allow_shadowing = false)
+}
+
+// Recursively resolves structure components (fields and nested structures)
+resolve_struct_components :: proc(table: ^SymbolTable, struct_type: ^Type, components: []^ast.Stmt) {
+	for comp in components {
+		#partial switch c in comp.derived_stmt {
+		case ^ast.Types_Decl:
+			// Regular field
+			field_type := resolve_type_expr(table, c.typed)
+			
+			// Parse length if present
+			length_val := 0
+			if c.length != nil {
+				if lit, ok := c.length.derived_expr.(^ast.Basic_Lit); ok {
+					// Parse the number from the literal
+					for ch in lit.tok.lit {
+						if ch >= '0' && ch <= '9' {
+							length_val = length_val * 10 + int(ch - '0')
+						}
+					}
+				}
+			}
+			field_type.length = length_val
+			
+			add_struct_field(struct_type, c.ident.name, field_type, length_val)
+			
+		case ^ast.Types_Struct_Decl:
+			// Nested structure - create a nested structure type
+			nested_type := make_structure_type(table, c.ident.name)
+			resolve_struct_components(table, nested_type, c.components[:])
+			add_struct_field(struct_type, c.ident.name, nested_type, 0)
+		}
 	}
 }
 

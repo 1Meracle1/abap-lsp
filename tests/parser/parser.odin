@@ -81,6 +81,47 @@ types_chain :: proc(decls: ..struct {
 	return node
 }
 
+// Builder for structured types
+Types_Struct_Builder :: struct {
+	name:       string,
+	components: [dynamic]^ast.Stmt,
+}
+
+types_struct_builder :: proc(name: string) -> Types_Struct_Builder {
+	return Types_Struct_Builder{
+		name       = name,
+		components = make([dynamic]^ast.Stmt),
+	}
+}
+
+types_struct_with_field :: proc(
+	builder: Types_Struct_Builder,
+	field_name: string,
+	field_type: string,
+) -> Types_Struct_Builder {
+	b := builder
+	field := types_single(field_name, field_type)
+	append(&b.components, &field.node)
+	return b
+}
+
+types_struct_with_nested :: proc(
+	builder: Types_Struct_Builder,
+	nested: ^ast.Types_Struct_Decl,
+) -> Types_Struct_Builder {
+	b := builder
+	append(&b.components, &nested.node)
+	return b
+}
+
+types_struct_build :: proc(builder: Types_Struct_Builder) -> ^ast.Types_Struct_Decl {
+	node := ast.new(ast.Types_Struct_Decl, {})
+	node.ident = ident(builder.name)
+	node.components = builder.components
+	node.derived_stmt = node
+	return node
+}
+
 selector :: proc(
 	expr: ast.Any_Expr,
 	op_kind: lexer.TokenKind,
@@ -422,6 +463,25 @@ check_stmt :: proc(
 			}
 
 			check_expr(t, ex_decl.typed.derived_expr, ac_decl.typed, loc = loc)
+		}
+
+	case ^ast.Types_Struct_Decl:
+		ac, ok := actual_derived.(^ast.Types_Struct_Decl)
+		if !testing.expect(t, ok, fmt.tprintf("Expected Types_Struct_Decl, got %T", actual_derived), loc = loc) do return
+
+		if testing.expect(t, ac.ident != nil, "Actual struct ident is nil", loc = loc) {
+			testing.expect(
+				t,
+				ex.ident.name == ac.ident.name,
+				fmt.tprintf("Expected struct name '%s', got '%s'", ex.ident.name, ac.ident.name),
+				loc = loc,
+			)
+		}
+
+		if !testing.expect(t, len(ex.components) == len(ac.components), fmt.tprintf("Expected %d components, got %d", len(ex.components), len(ac.components)), loc = loc) do return
+
+		for i := 0; i < len(ex.components); i += 1 {
+			check_stmt(t, ex.components[i].derived_stmt, ac.components[i], loc = loc)
 		}
 
 	case ^ast.Assign_Stmt:
@@ -1191,4 +1251,206 @@ form_errornous_test :: proc(t: ^testing.T) {
 		len(file.syntax_errors) > 0,
 		fmt.tprintf("Expected syntax errors: %v", file.syntax_errors),
 	)
+}
+
+// --- Structured TYPES tests ---
+
+@(test)
+basic_struct_type_decl_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `TYPES: BEGIN OF street_type,
+         name TYPE c,
+         no   TYPE c,
+       END OF street_type.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 1,
+		fmt.tprintf("Expected 1 decl, got %v", len(file.decls)),
+	)
+	if len(file.decls) > 0 {
+		expected := types_struct_build(
+			types_struct_with_field(
+				types_struct_with_field(
+					types_struct_builder("street_type"),
+					"name",
+					"c",
+				),
+				"no",
+				"c",
+			),
+		)
+		check_stmt(t, expected, file.decls[0])
+	}
+}
+
+@(test)
+struct_type_with_nested_struct_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `TYPES: BEGIN OF address_type,
+         name   TYPE c,
+         BEGIN OF city,
+           zipcode TYPE n,
+           name TYPE c,
+         END OF city,
+       END OF address_type.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 1,
+		fmt.tprintf("Expected 1 decl, got %v", len(file.decls)),
+	)
+	if len(file.decls) > 0 {
+		// Build nested city structure
+		nested_city := types_struct_build(
+			types_struct_with_field(
+				types_struct_with_field(
+					types_struct_builder("city"),
+					"zipcode",
+					"n",
+				),
+				"name",
+				"c",
+			),
+		)
+		
+		// Build outer address_type structure with nested city
+		expected := types_struct_build(
+			types_struct_with_nested(
+				types_struct_with_field(
+					types_struct_builder("address_type"),
+					"name",
+					"c",
+				),
+				nested_city,
+			),
+		)
+		check_stmt(t, expected, file.decls[0])
+	}
+}
+
+@(test)
+struct_type_with_reference_to_another_struct_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `TYPES: BEGIN OF address_type,
+         name   TYPE c,
+         street TYPE street_type,
+       END OF address_type.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 1,
+		fmt.tprintf("Expected 1 decl, got %v", len(file.decls)),
+	)
+	if len(file.decls) > 0 {
+		expected := types_struct_build(
+			types_struct_with_field(
+				types_struct_with_field(
+					types_struct_builder("address_type"),
+					"name",
+					"c",
+				),
+				"street",
+				"street_type",
+			),
+		)
+		check_stmt(t, expected, file.decls[0])
+	}
+}
+
+@(test)
+type_reference_with_path_selector_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `TYPES zipcode_type TYPE address_type-city-zipcode.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 1,
+		fmt.tprintf("Expected 1 decl, got %v", len(file.decls)),
+	)
+	if len(file.decls) > 0 {
+		// The type is a selector expression: address_type-city-zipcode
+		ac, ok := file.decls[0].derived_stmt.(^ast.Types_Decl)
+		if !testing.expect(t, ok, "Expected Types_Decl") do return
+		
+		testing.expect(t, ac.ident != nil && ac.ident.name == "zipcode_type", "Expected ident 'zipcode_type'")
+		
+		// Check that the typed expression is a selector
+		selector, sok := ac.typed.derived_expr.(^ast.Selector_Expr)
+		testing.expect(t, sok, "Expected Selector_Expr for type")
+		if sok {
+			testing.expect(t, selector.field.name == "zipcode", fmt.tprintf("Expected field 'zipcode', got '%s'", selector.field.name))
+		}
+	}
+}
+
+@(test)
+complex_nested_struct_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `TYPES: BEGIN OF address_type,
+         name   TYPE c,
+         street TYPE street_type,
+         BEGIN OF city,
+           zipcode TYPE n,
+           name TYPE c,
+         END OF city,
+       END OF address_type.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 1,
+		fmt.tprintf("Expected 1 decl, got %v", len(file.decls)),
+	)
+	if len(file.decls) > 0 {
+		ac, ok := file.decls[0].derived_stmt.(^ast.Types_Struct_Decl)
+		if !testing.expect(t, ok, "Expected Types_Struct_Decl") do return
+		
+		testing.expect(t, ac.ident.name == "address_type", fmt.tprintf("Expected 'address_type', got '%s'", ac.ident.name))
+		testing.expect(t, len(ac.components) == 3, fmt.tprintf("Expected 3 components, got %d", len(ac.components)))
+	}
 }

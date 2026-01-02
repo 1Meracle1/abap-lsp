@@ -51,8 +51,12 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 				hover_text = format_form_signature(sym)
 			} else if sym.kind == .TypeDef {
 				// For TYPES symbols, show the type definition
-				type_str := symbols.format_type(sym.type_info)
-				hover_text = fmt.tprintf("(type) %s = %s", sym.name, type_str)
+				if sym.type_info != nil && sym.type_info.kind == .Structure {
+					hover_text = format_struct_type(sym)
+				} else {
+					type_str := symbols.format_type(sym.type_info)
+					hover_text = fmt.tprintf("(type) %s = %s", sym.name, type_str)
+				}
 			} else {
 				type_str := symbols.format_type(sym.type_info)
 				hover_text = fmt.tprintf("%s: %s", sym.name, type_str)
@@ -157,6 +161,70 @@ format_form_signature :: proc(sym: symbols.Symbol) -> string {
 	strings.write_string(&b, "\n```")
 
 	return strings.to_string(b)
+}
+
+// format_struct_type formats a structured type definition for hover display.
+// Output example:
+//   TYPES: BEGIN OF address_type,
+//            name TYPE c LENGTH 30,
+//            street TYPE street_type,
+//            BEGIN OF city,
+//              zipcode TYPE n LENGTH 5,
+//              name TYPE c LENGTH 40,
+//            END OF city,
+//          END OF address_type.
+format_struct_type :: proc(sym: symbols.Symbol) -> string {
+	if sym.kind != .TypeDef || sym.type_info == nil || sym.type_info.kind != .Structure {
+		return symbols.format_type(sym.type_info)
+	}
+
+	b: strings.Builder
+	strings.builder_init(&b, context.temp_allocator)
+
+	// Wrap in code block for proper Markdown rendering
+	strings.write_string(&b, "```abap\n")
+	strings.write_string(&b, "TYPES: BEGIN OF ")
+	strings.write_string(&b, sym.name)
+
+	format_struct_fields(&b, sym.type_info, 2)
+
+	strings.write_string(&b, ",\n       END OF ")
+	strings.write_string(&b, sym.name)
+	strings.write_string(&b, ".\n```")
+
+	return strings.to_string(b)
+}
+
+// Helper to format struct fields with proper indentation
+format_struct_fields :: proc(b: ^strings.Builder, t: ^symbols.Type, indent: int) {
+	if t == nil || t.kind != .Structure {
+		return
+	}
+
+	for field in t.fields {
+		strings.write_string(b, ",\n")
+		for _ in 0 ..< indent + 5 {
+			strings.write_byte(b, ' ')
+		}
+
+		if field.type_info != nil && field.type_info.kind == .Structure {
+			// Nested structure
+			strings.write_string(b, "BEGIN OF ")
+			strings.write_string(b, field.name)
+			format_struct_fields(b, field.type_info, indent + 2)
+			strings.write_string(b, ",\n")
+			for _ in 0 ..< indent + 5 {
+				strings.write_byte(b, ' ')
+			}
+			strings.write_string(b, "END OF ")
+			strings.write_string(b, field.name)
+		} else {
+			// Regular field
+			strings.write_string(b, field.name)
+			strings.write_string(b, " TYPE ")
+			strings.write_string(b, symbols.format_type(field.type_info))
+		}
+	}
 }
 
 // lookup_symbol_at_offset looks up a symbol by name, considering the scope at the given offset.

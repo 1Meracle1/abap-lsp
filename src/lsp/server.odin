@@ -178,12 +178,12 @@ handle_initialize :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 
 log_trace :: proc(srv: ^Server, message: string) {
 	log.infof("log_trace: %s", message)
-	message, _ := strings.replace_all(message, "\"", "\\\"", context.temp_allocator)
+	message_escaped, _ := strings.replace_all(message, "\"", "\\\"", context.temp_allocator)
 	b: strings.Builder
 	strings.builder_init(&b, context.temp_allocator)
-	strings.write_string(&b, `{"jsonrpc": "2.0","method":"$/logTrace","message":"`)
-	strings.write_string(&b, message)
-	strings.write_string(&b, `"}`)
+	strings.write_string(&b, `{"jsonrpc": "2.0","method":"$/logTrace","params":{"message":"`)
+	strings.write_string(&b, message_escaped)
+	strings.write_string(&b, `"}}`)
 	jsonrpc.write(&srv.stream, transmute([]byte)strings.to_string(b))
 }
 
