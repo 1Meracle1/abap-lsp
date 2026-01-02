@@ -146,7 +146,7 @@ parse_form_decl :: proc(p: ^Parser) -> ^ast.Decl {
 	form_decl.body = make([dynamic]^ast.Stmt)
 
 	// Parse optional parameter sections: TABLES, USING, CHANGING
-	for p.curr_tok.kind == .Ident && p.curr_tok.kind != .Period {
+	optional_param_section_loop: for p.curr_tok.kind == .Ident && p.curr_tok.kind != .Period {
 		if len(p.curr_tok.lit) > 0 && len(p.curr_tok.lit) < len(p.keyword_buffer) {
 			keyword := to_upper(p.keyword_buffer[:], p.curr_tok.lit)
 			switch keyword {
@@ -160,7 +160,7 @@ parse_form_decl :: proc(p: ^Parser) -> ^ast.Decl {
 				advance_token(p)
 				parse_form_params(p, &form_decl.changing_params, .Changing)
 			case:
-				break
+				break optional_param_section_loop
 			}
 		} else {
 			break

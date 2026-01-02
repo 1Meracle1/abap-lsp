@@ -1,12 +1,15 @@
 // raddbg 0.9.21 project file
 
+recent_file: path: "src/lang/parser/parser.odin"
+recent_file: path: "tests/parser/parser.odin"
+recent_file: path: "../../../a/_work/1/s/src/vctools/crt/vcstartup/src/startup/exe_main.cpp"
+recent_file: path: "src/lsp/hover.odin"
 recent_file: path: "src/lsp/server.odin"
 recent_file: path: "src/lang/symbols/types.odin"
 recent_file: path: "src/lang/ast/lookup.odin"
 recent_file: path: "../../../a/_work/1/s/src/vctools/crt/vcruntime/src/string/amd64/memset.asm"
 recent_file: path: "src/lsp/unmarshal.odin"
 recent_file: path: "src/cache/cache.odin"
-recent_file: path: "src/lang/parser/parser.odin"
 recent_file: path: "src/lang/ast/utils.odin"
 recent_file: path: "bin/debug/abap-lsp.exe"
 target:
@@ -24,6 +27,18 @@ breakpoint:
 breakpoint:
 {
   source_location: "src/lsp/unmarshal.odin:25:1"
+  hit_count: 0
+  enabled: 0
+}
+target:
+{
+  executable: "bin/debug/tests.exe"
+  working_directory: ""
+  enabled: 0
+}
+breakpoint:
+{
+  source_location: "tests/parser/parser.odin:987:1"
   hit_count: 0
   enabled: 0
 }

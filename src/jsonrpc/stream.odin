@@ -49,8 +49,15 @@ read :: proc(stream: ^Stream) -> ([]byte, io.Error) {
 		return nil, nil
 	}
 	body := make([dynamic]byte, content_len)
-	_, err := io.read_full(stream.input, body[:])
-	return body[:], err
+	total_read := 0
+	for total_read < content_len {
+		actual_len, err := io.read_full(stream.input, body[total_read:])
+		if err != nil {
+			return body[:], err
+		}
+		total_read += actual_len
+	}
+	return body[:], nil
 }
 
 write :: proc(stream: ^Stream, data: []byte) -> io.Error {

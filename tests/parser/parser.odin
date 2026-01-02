@@ -47,7 +47,10 @@ data_single_typed :: proc(name: string, type_name: string) -> ^ast.Data_Typed_De
 	return node
 }
 
-data_chain_typed :: proc(decls: ..struct{name: string, type_name: string}) -> ^ast.Data_Typed_Chain_Decl {
+data_chain_typed :: proc(decls: ..struct {
+		name:      string,
+		type_name: string,
+	}) -> ^ast.Data_Typed_Chain_Decl {
 	node := ast.new(ast.Data_Typed_Chain_Decl, {})
 	node.decls = make([dynamic]^ast.Data_Typed_Decl)
 	for d in decls {
@@ -57,7 +60,11 @@ data_chain_typed :: proc(decls: ..struct{name: string, type_name: string}) -> ^a
 	return node
 }
 
-selector :: proc(expr: ast.Any_Expr, op_kind: lexer.TokenKind, field_name: string) -> ^ast.Selector_Expr {
+selector :: proc(
+	expr: ast.Any_Expr,
+	op_kind: lexer.TokenKind,
+	field_name: string,
+) -> ^ast.Selector_Expr {
 	node := ast.new(ast.Selector_Expr, {})
 	#partial switch e in expr {
 	case ^ast.Ident:
@@ -97,7 +104,11 @@ assign :: proc(lhs: ast.Any_Expr, rhs: ast.Any_Expr) -> ^ast.Assign_Stmt {
 	return node
 }
 
-form_param :: proc(name: string, type_name: string = "", kind: ast.Form_Param_Kind = .Using) -> ^ast.Form_Param {
+form_param :: proc(
+	name: string,
+	type_name: string = "",
+	kind: ast.Form_Param_Kind = .Using,
+) -> ^ast.Form_Param {
 	node := ast.new(ast.Form_Param, {})
 	node.kind = kind
 	node.ident = ident(name)
@@ -116,16 +127,19 @@ Form_Decl_Builder :: struct {
 }
 
 form_decl_builder :: proc(name: string) -> Form_Decl_Builder {
-	return Form_Decl_Builder{
-		name            = name,
-		tables_params   = make([dynamic]^ast.Form_Param),
-		using_params    = make([dynamic]^ast.Form_Param),
+	return Form_Decl_Builder {
+		name = name,
+		tables_params = make([dynamic]^ast.Form_Param),
+		using_params = make([dynamic]^ast.Form_Param),
 		changing_params = make([dynamic]^ast.Form_Param),
-		body            = make([dynamic]^ast.Stmt),
+		body = make([dynamic]^ast.Stmt),
 	}
 }
 
-form_with_tables :: proc(builder: Form_Decl_Builder, params: ..^ast.Form_Param) -> Form_Decl_Builder {
+form_with_tables :: proc(
+	builder: Form_Decl_Builder,
+	params: ..^ast.Form_Param,
+) -> Form_Decl_Builder {
 	b := builder
 	for param in params {
 		param.kind = .Tables
@@ -134,7 +148,10 @@ form_with_tables :: proc(builder: Form_Decl_Builder, params: ..^ast.Form_Param) 
 	return b
 }
 
-form_with_using :: proc(builder: Form_Decl_Builder, params: ..^ast.Form_Param) -> Form_Decl_Builder {
+form_with_using :: proc(
+	builder: Form_Decl_Builder,
+	params: ..^ast.Form_Param,
+) -> Form_Decl_Builder {
 	b := builder
 	for param in params {
 		param.kind = .Using
@@ -143,7 +160,10 @@ form_with_using :: proc(builder: Form_Decl_Builder, params: ..^ast.Form_Param) -
 	return b
 }
 
-form_with_changing :: proc(builder: Form_Decl_Builder, params: ..^ast.Form_Param) -> Form_Decl_Builder {
+form_with_changing :: proc(
+	builder: Form_Decl_Builder,
+	params: ..^ast.Form_Param,
+) -> Form_Decl_Builder {
 	b := builder
 	for param in params {
 		param.kind = .Changing
@@ -232,7 +252,11 @@ check_expr :: proc(
 			testing.expect(
 				t,
 				ex.field.name == ac.field.name,
-				fmt.tprintf("Expected selector field '%s', got '%s'", ex.field.name, ac.field.name),
+				fmt.tprintf(
+					"Expected selector field '%s', got '%s'",
+					ex.field.name,
+					ac.field.name,
+				),
 				loc = loc,
 			)
 		}
@@ -309,11 +333,21 @@ check_stmt :: proc(
 			ex_decl := ex.decls[i]
 			ac_decl := ac.decls[i]
 
-			if testing.expect(t, ac_decl.ident != nil, fmt.tprintf("Actual ident[%d] is nil", i), loc = loc) {
+			if testing.expect(
+				t,
+				ac_decl.ident != nil,
+				fmt.tprintf("Actual ident[%d] is nil", i),
+				loc = loc,
+			) {
 				testing.expect(
 					t,
 					ex_decl.ident.name == ac_decl.ident.name,
-					fmt.tprintf("Expected chain decl[%d] ident '%s', got '%s'", i, ex_decl.ident.name, ac_decl.ident.name),
+					fmt.tprintf(
+						"Expected chain decl[%d] ident '%s', got '%s'",
+						i,
+						ex_decl.ident.name,
+						ac_decl.ident.name,
+					),
 					loc = loc,
 				)
 			}
@@ -412,7 +446,11 @@ check_form_param :: proc(
 		testing.expect(
 			t,
 			expected.ident.name == actual.ident.name,
-			fmt.tprintf("Expected param name '%s', got '%s'", expected.ident.name, actual.ident.name),
+			fmt.tprintf(
+				"Expected param name '%s', got '%s'",
+				expected.ident.name,
+				actual.ident.name,
+			),
 			loc = loc,
 		)
 	}
@@ -766,10 +804,7 @@ ENDFORM.`
 	)
 	if len(file.decls) > 0 {
 		expected := form_build(
-			form_with_changing(
-				form_decl_builder("my_sub"),
-				form_param("c_result"),
-			),
+			form_with_changing(form_decl_builder("my_sub"), form_param("c_result")),
 		)
 		check_stmt(t, expected, file.decls[0])
 	}
@@ -797,10 +832,7 @@ ENDFORM.`
 	)
 	if len(file.decls) > 0 {
 		expected := form_build(
-			form_with_tables(
-				form_decl_builder("my_sub"),
-				form_param("it_data"),
-			),
+			form_with_tables(form_decl_builder("my_sub"), form_param("it_data")),
 		)
 		check_stmt(t, expected, file.decls[0])
 	}
@@ -828,10 +860,7 @@ ENDFORM.`
 	)
 	if len(file.decls) > 0 {
 		expected := form_build(
-			form_with_using(
-				form_decl_builder("my_sub"),
-				form_param("p_value", "i"),
-			),
+			form_with_using(form_decl_builder("my_sub"), form_param("p_value", "i")),
 		)
 		check_stmt(t, expected, file.decls[0])
 	}
@@ -863,10 +892,7 @@ ENDFORM.`
 		expected := form_build(
 			form_with_changing(
 				form_with_using(
-					form_with_tables(
-						form_decl_builder("process_data"),
-						form_param("it_input"),
-					),
+					form_with_tables(form_decl_builder("process_data"), form_param("it_input")),
 					form_param("p_mode", "string"),
 				),
 				form_param("c_count", "i"),
@@ -900,10 +926,7 @@ ENDFORM.`
 	if len(file.decls) > 0 {
 		expected := form_build(
 			form_with_body(
-				form_with_using(
-					form_decl_builder("my_sub"),
-					form_param("p_val"),
-				),
+				form_with_using(form_decl_builder("my_sub"), form_param("p_val")),
 				assign(ident("lv_result"), ident("p_val")),
 			),
 		)
@@ -952,4 +975,20 @@ ENDFORM.`
 		)
 		check_stmt(t, expected, file.decls[0])
 	}
+}
+
+@(test)
+form_errornous_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = "*DATA lv_val TYPE i.\r\nDATA(lv_data) = 'hello'.\r\n\r\nDATA lv_var1 TYPE i.\r\n\r\nDATA: \r\n    lv_var2 TYPE i,\r\n    lv_var3 TYPE f.\r\n\r\nlv_var2 = 10.\r\n\r\nlv_var3 = lv_var2.\r\n\r\nFORM process_data TABLES it_input\r\n                   USING p_mode TYPE string\r\n                   CHANGING c_count TYPE i.\r\nENDFORM.\r\n\r\nFORM some_form\r\n    C.\r\n    DATA: \r\n        lv_var TYPE i,\r\n        lv_var2 TYPE string.\r\n    \r\nENDFORM."
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) > 0,
+		fmt.tprintf("Expected syntax errors: %v", file.syntax_errors),
+	)
 }
