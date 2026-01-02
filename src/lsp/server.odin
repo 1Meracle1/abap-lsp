@@ -26,6 +26,7 @@ server_start :: proc(stream: jsonrpc.Stream) {
 	request_handlers["textDocument/hover"] = handle_hover
 	request_handlers["textDocument/diagnostic"] = handle_diagnostic
 	request_handlers["textDocument/semanticTokens/full"] = handle_semantic_tokens
+	request_handlers["textDocument/completion"] = handle_completion
 
 	notif_handlers := make(map[string]handle_notification_t)
 	notif_handlers["textDocument/didOpen"] = handle_document_open
