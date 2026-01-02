@@ -35,6 +35,8 @@ ABAP_KEYWORDS :: []string{
 	"ENDINTERFACE",
 	"MODULE",
 	"ENDMODULE",
+	"DEFINITION",
+	"IMPLEMENTATION",
 	// Control flow
 	"IF",
 	"ELSE",
@@ -210,6 +212,30 @@ collect_completion_items :: proc(snap: ^cache.Snapshot, offset: int) -> [dynamic
 		if form_sym, ok := snap.symbol_table.symbols[form_name]; ok {
 			if form_sym.child_scope != nil {
 				for _, sym in form_sym.child_scope.symbols {
+					append(&items, symbol_to_completion_item(sym))
+				}
+			}
+		}
+	}
+
+	// If we're inside a class definition, add class members
+	if enclosing_class := ast.find_enclosing_class_def(snap.ast, offset); enclosing_class != nil {
+		class_name := enclosing_class.ident.name
+		if class_sym, ok := snap.symbol_table.symbols[class_name]; ok {
+			if class_sym.child_scope != nil {
+				for _, sym in class_sym.child_scope.symbols {
+					append(&items, symbol_to_completion_item(sym))
+				}
+			}
+		}
+	}
+
+	// If we're inside an interface, add interface members
+	if enclosing_iface := ast.find_enclosing_interface(snap.ast, offset); enclosing_iface != nil {
+		iface_name := enclosing_iface.ident.name
+		if iface_sym, ok := snap.symbol_table.symbols[iface_name]; ok {
+			if iface_sym.child_scope != nil {
+				for _, sym in iface_sym.child_scope.symbols {
 					append(&items, symbol_to_completion_item(sym))
 				}
 			}

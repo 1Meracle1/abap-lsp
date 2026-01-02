@@ -89,6 +89,8 @@ scan :: proc(l: ^Lexer) -> Token {
 			} else {
 				kind = .Minus
 			}
+		case '~':
+			kind = .Tilde
 		}
 	}
 

@@ -243,6 +243,150 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 				return res
 			}
 		}
+
+	// CLASS and INTERFACE declarations
+	case ^Class_Def_Decl:
+		if n.ident != nil {
+			if res := find_node_at_offset(&n.ident.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		if n.inheriting_from != nil {
+			if res := find_node_at_offset(&n.inheriting_from.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		for section in n.sections {
+			if res := find_node_at_offset(&section.node, offset); res != nil {
+				return res
+			}
+		}
+
+	case ^Class_Impl_Decl:
+		if n.ident != nil {
+			if res := find_node_at_offset(&n.ident.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		for method in n.methods {
+			if res := find_node_at_offset(&method.stmt_base, offset); res != nil {
+				return res
+			}
+		}
+
+	case ^Class_Section:
+		for t in n.types {
+			if res := find_node_at_offset(&t.stmt_base, offset); res != nil {
+				return res
+			}
+		}
+		for d in n.data {
+			if res := find_node_at_offset(&d.stmt_base, offset); res != nil {
+				return res
+			}
+		}
+		for m in n.methods {
+			if res := find_node_at_offset(&m.stmt_base, offset); res != nil {
+				return res
+			}
+		}
+		for i in n.interfaces {
+			if res := find_node_at_offset(&i.stmt_base, offset); res != nil {
+				return res
+			}
+		}
+
+	case ^Method_Decl:
+		if n.ident != nil {
+			if res := find_node_at_offset(&n.ident.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		for param in n.params {
+			if res := find_node_at_offset(&param.node, offset); res != nil {
+				return res
+			}
+		}
+		for exc in n.raising {
+			if res := find_node_at_offset(&exc.expr_base, offset); res != nil {
+				return res
+			}
+		}
+
+	case ^Method_Param:
+		if n.ident != nil {
+			if res := find_node_at_offset(&n.ident.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		if n.typed != nil {
+			if res := find_node_at_offset(&n.typed.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		if n.default != nil {
+			if res := find_node_at_offset(&n.default.expr_base, offset); res != nil {
+				return res
+			}
+		}
+
+	case ^Method_Impl:
+		if n.ident != nil {
+			if res := find_node_at_offset(&n.ident.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		for stmt in n.body {
+			if res := find_node_at_offset(&stmt.stmt_base, offset); res != nil {
+				return res
+			}
+		}
+
+	case ^Attr_Decl:
+		if n.ident != nil {
+			if res := find_node_at_offset(&n.ident.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		if n.typed != nil {
+			if res := find_node_at_offset(&n.typed.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		if n.value != nil {
+			if res := find_node_at_offset(&n.value.expr_base, offset); res != nil {
+				return res
+			}
+		}
+
+	case ^Interfaces_Decl:
+		for name in n.names {
+			if res := find_node_at_offset(&name.expr_base, offset); res != nil {
+				return res
+			}
+		}
+
+	case ^Interface_Decl:
+		if n.ident != nil {
+			if res := find_node_at_offset(&n.ident.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		for method in n.methods {
+			if res := find_node_at_offset(&method.stmt_base, offset); res != nil {
+				return res
+			}
+		}
+		for t in n.types {
+			if res := find_node_at_offset(&t.stmt_base, offset); res != nil {
+				return res
+			}
+		}
+		for d in n.data {
+			if res := find_node_at_offset(&d.stmt_base, offset); res != nil {
+				return res
+			}
+		}
 	}
 
 	return node
@@ -260,6 +404,78 @@ find_enclosing_form :: proc(file: ^File, offset: int) -> ^Form_Decl {
 			// Check if offset is within this form's range
 			if offset >= form.range.start && offset <= form.range.end {
 				return form
+			}
+		}
+	}
+
+	return nil
+}
+
+// find_enclosing_class_def finds the Class_Def_Decl that contains the given offset, if any.
+find_enclosing_class_def :: proc(file: ^File, offset: int) -> ^Class_Def_Decl {
+	if file == nil {
+		return nil
+	}
+
+	for decl in file.decls {
+		if class, ok := decl.derived_stmt.(^Class_Def_Decl); ok {
+			if offset >= class.range.start && offset <= class.range.end {
+				return class
+			}
+		}
+	}
+
+	return nil
+}
+
+// find_enclosing_class_impl finds the Class_Impl_Decl that contains the given offset, if any.
+find_enclosing_class_impl :: proc(file: ^File, offset: int) -> ^Class_Impl_Decl {
+	if file == nil {
+		return nil
+	}
+
+	for decl in file.decls {
+		if class, ok := decl.derived_stmt.(^Class_Impl_Decl); ok {
+			if offset >= class.range.start && offset <= class.range.end {
+				return class
+			}
+		}
+	}
+
+	return nil
+}
+
+// find_enclosing_interface finds the Interface_Decl that contains the given offset, if any.
+find_enclosing_interface :: proc(file: ^File, offset: int) -> ^Interface_Decl {
+	if file == nil {
+		return nil
+	}
+
+	for decl in file.decls {
+		if iface, ok := decl.derived_stmt.(^Interface_Decl); ok {
+			if offset >= iface.range.start && offset <= iface.range.end {
+				return iface
+			}
+		}
+	}
+
+	return nil
+}
+
+// find_enclosing_method_impl finds the Method_Impl that contains the given offset, if any.
+find_enclosing_method_impl :: proc(file: ^File, offset: int) -> ^Method_Impl {
+	if file == nil {
+		return nil
+	}
+
+	for decl in file.decls {
+		if class_impl, ok := decl.derived_stmt.(^Class_Impl_Decl); ok {
+			for method in class_impl.methods {
+				if method_impl, mok := method.derived_stmt.(^Method_Impl); mok {
+					if offset >= method_impl.range.start && offset <= method_impl.range.end {
+						return method_impl
+					}
+				}
 			}
 		}
 	}

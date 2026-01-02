@@ -219,6 +219,118 @@ collect_tokens_from_stmt :: proc(tokens: ^[dynamic]SemanticToken, stmt: ^ast.Stm
 		for result in s.results {
 			collect_tokens_from_expr(tokens, result, snap, nil)
 		}
+
+	case ^ast.Class_Def_Decl:
+		// CLASS name DEFINITION
+		if s.ident != nil {
+			append(tokens, SemanticToken{
+				offset    = s.ident.range.start,
+				length    = s.ident.range.end - s.ident.range.start,
+				type      = .Class,
+				modifiers = 1 << u32(SemanticTokenModifier.Declaration) | 1 << u32(SemanticTokenModifier.Definition),
+			})
+		}
+		// INHERITING FROM clause
+		if s.inheriting_from != nil {
+			collect_tokens_from_type_expr(tokens, s.inheriting_from)
+		}
+		// Collect tokens from sections
+		for section in s.sections {
+			collect_tokens_from_class_section(tokens, section, snap)
+		}
+
+	case ^ast.Class_Impl_Decl:
+		// CLASS name IMPLEMENTATION
+		if s.ident != nil {
+			append(tokens, SemanticToken{
+				offset    = s.ident.range.start,
+				length    = s.ident.range.end - s.ident.range.start,
+				type      = .Class,
+				modifiers = 0,
+			})
+		}
+		// Collect tokens from method implementations
+		for method in s.methods {
+			collect_tokens_from_stmt(tokens, method, snap)
+		}
+
+	case ^ast.Interface_Decl:
+		// INTERFACE name
+		if s.ident != nil {
+			append(tokens, SemanticToken{
+				offset    = s.ident.range.start,
+				length    = s.ident.range.end - s.ident.range.start,
+				type      = .Interface,
+				modifiers = 1 << u32(SemanticTokenModifier.Declaration) | 1 << u32(SemanticTokenModifier.Definition),
+			})
+		}
+		// Collect tokens from interface methods
+		for method in s.methods {
+			collect_tokens_from_stmt(tokens, method, snap)
+		}
+		for type_decl in s.types {
+			collect_tokens_from_stmt(tokens, type_decl, snap)
+		}
+		for data_decl in s.data {
+			collect_tokens_from_stmt(tokens, data_decl, snap)
+		}
+
+	case ^ast.Method_Decl:
+		// METHODS name
+		if s.ident != nil {
+			append(tokens, SemanticToken{
+				offset    = s.ident.range.start,
+				length    = s.ident.range.end - s.ident.range.start,
+				type      = .Method,
+				modifiers = 1 << u32(SemanticTokenModifier.Declaration),
+			})
+		}
+		// Collect tokens from parameters
+		for param in s.params {
+			collect_tokens_from_method_param(tokens, param)
+		}
+		// Collect tokens from raising clause
+		for exc in s.raising {
+			collect_tokens_from_type_expr(tokens, exc)
+		}
+
+	case ^ast.Method_Impl:
+		// METHOD name
+		if s.ident != nil {
+			collect_tokens_from_expr(tokens, s.ident, snap, nil)
+		}
+		// Collect tokens from method body
+		for body_stmt in s.body {
+			collect_tokens_from_stmt(tokens, body_stmt, snap)
+		}
+
+	case ^ast.Attr_Decl:
+		// DATA/CLASS-DATA attr TYPE type
+		if s.ident != nil {
+			append(tokens, SemanticToken{
+				offset    = s.ident.range.start,
+				length    = s.ident.range.end - s.ident.range.start,
+				type      = .Property,
+				modifiers = 1 << u32(SemanticTokenModifier.Declaration),
+			})
+		}
+		if s.typed != nil {
+			collect_tokens_from_type_expr(tokens, s.typed)
+		}
+		if s.value != nil {
+			collect_tokens_from_expr(tokens, s.value, snap, nil)
+		}
+
+	case ^ast.Interfaces_Decl:
+		// INTERFACES i1 i2 ...
+		for name in s.names {
+			append(tokens, SemanticToken{
+				offset    = name.range.start,
+				length    = name.range.end - name.range.start,
+				type      = .Interface,
+				modifiers = 0,
+			})
+		}
 	}
 }
 
@@ -276,6 +388,54 @@ collect_tokens_from_form_param :: proc(tokens: ^[dynamic]SemanticToken, param: ^
 	}
 	if param.typed != nil {
 		collect_tokens_from_type_expr(tokens, param.typed)
+	}
+}
+
+// Collects tokens from a class section (PUBLIC/PROTECTED/PRIVATE SECTION)
+collect_tokens_from_class_section :: proc(tokens: ^[dynamic]SemanticToken, section: ^ast.Class_Section, snap: ^cache.Snapshot) {
+	if section == nil {
+		return
+	}
+	
+	// Collect tokens from types
+	for type_decl in section.types {
+		collect_tokens_from_stmt(tokens, type_decl, snap)
+	}
+	
+	// Collect tokens from data/attributes
+	for data_decl in section.data {
+		collect_tokens_from_stmt(tokens, data_decl, snap)
+	}
+	
+	// Collect tokens from methods
+	for method_decl in section.methods {
+		collect_tokens_from_stmt(tokens, method_decl, snap)
+	}
+	
+	// Collect tokens from interfaces
+	for iface_decl in section.interfaces {
+		collect_tokens_from_stmt(tokens, iface_decl, snap)
+	}
+}
+
+// Collects tokens from a method parameter
+collect_tokens_from_method_param :: proc(tokens: ^[dynamic]SemanticToken, param: ^ast.Method_Param) {
+	if param == nil {
+		return
+	}
+	if param.ident != nil {
+		append(tokens, SemanticToken{
+			offset    = param.ident.range.start,
+			length    = param.ident.range.end - param.ident.range.start,
+			type      = .Parameter,
+			modifiers = 1 << u32(SemanticTokenModifier.Declaration),
+		})
+	}
+	if param.typed != nil {
+		collect_tokens_from_type_expr(tokens, param.typed)
+	}
+	if param.default != nil {
+		collect_tokens_from_expr(tokens, param.default, nil, nil)
 	}
 }
 

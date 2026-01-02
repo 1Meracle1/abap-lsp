@@ -206,6 +206,104 @@ Form_Decl :: struct {
 	body:             [dynamic]^Stmt,
 }
 
+// CLASS and INTERFACE declarations
+
+// Access modifiers for class members
+Access_Modifier :: enum {
+	Public,
+	Protected,
+	Private,
+}
+
+// Method parameter kinds
+Method_Param_Kind :: enum {
+	Importing,
+	Exporting,
+	Changing,
+	Returning,
+}
+
+// Method parameter
+Method_Param :: struct {
+	using node: Node,
+	kind:       Method_Param_Kind,
+	ident:      ^Ident,
+	typed:      ^Expr,
+	optional:   bool,      // OPTIONAL keyword
+	default:    ^Expr,     // DEFAULT value
+}
+
+// Method declaration (METHODS or CLASS-METHODS)
+Method_Decl :: struct {
+	using node:   Decl,
+	ident:        ^Ident,
+	is_class:     bool,        // CLASS-METHODS vs METHODS
+	is_abstract:  bool,        // ABSTRACT
+	is_final:     bool,        // FINAL
+	is_redefinition: bool,     // REDEFINITION
+	params:       [dynamic]^Method_Param,
+	raising:      [dynamic]^Expr,  // RAISING exceptions
+}
+
+// Attribute declaration (DATA or CLASS-DATA)
+Attr_Decl :: struct {
+	using node:   Decl,
+	ident:        ^Ident,
+	typed:        ^Expr,
+	is_class:     bool,        // CLASS-DATA vs DATA
+	is_read_only: bool,        // READ-ONLY
+	value:        ^Expr,       // VALUE clause
+}
+
+// INTERFACES declaration (implementing interfaces)
+Interfaces_Decl :: struct {
+	using node: Decl,
+	names:      [dynamic]^Ident,
+}
+
+// Section in a class definition (PUBLIC/PROTECTED/PRIVATE SECTION)
+Class_Section :: struct {
+	using node: Node,
+	access:     Access_Modifier,
+	types:      [dynamic]^Stmt,    // TYPES declarations
+	data:       [dynamic]^Stmt,    // DATA/CLASS-DATA declarations
+	methods:    [dynamic]^Stmt,    // METHODS/CLASS-METHODS declarations
+	interfaces: [dynamic]^Stmt,    // INTERFACES declarations
+}
+
+// CLASS DEFINITION declaration
+Class_Def_Decl :: struct {
+	using node:       Decl,
+	ident:            ^Ident,
+	is_abstract:      bool,
+	is_final:         bool,
+	inheriting_from:  ^Expr,       // INHERITING FROM class_name
+	sections:         [dynamic]^Class_Section,
+}
+
+// CLASS IMPLEMENTATION declaration
+Class_Impl_Decl :: struct {
+	using node: Decl,
+	ident:      ^Ident,
+	methods:    [dynamic]^Stmt,    // METHOD implementations
+}
+
+// METHOD implementation (inside CLASS IMPLEMENTATION)
+Method_Impl :: struct {
+	using node: Decl,
+	ident:      ^Expr,             // Can be simple ident or interface~method
+	body:       [dynamic]^Stmt,
+}
+
+// INTERFACE declaration
+Interface_Decl :: struct {
+	using node: Decl,
+	ident:      ^Ident,
+	methods:    [dynamic]^Stmt,    // Method declarations
+	types:      [dynamic]^Stmt,    // Type declarations
+	data:       [dynamic]^Stmt,    // Data/attribute declarations
+}
+
 // Types
 
 Table_Type :: struct {
@@ -251,6 +349,16 @@ Any_Node :: union {
 	^Types_Struct_Decl,
 	^Form_Param,
 	^Form_Decl,
+	// Class/Interface declarations
+	^Method_Param,
+	^Method_Decl,
+	^Attr_Decl,
+	^Interfaces_Decl,
+	^Class_Section,
+	^Class_Def_Decl,
+	^Class_Impl_Decl,
+	^Method_Impl,
+	^Interface_Decl,
 }
 
 Any_Expr :: union {
@@ -283,4 +391,12 @@ Any_Stmt :: union {
 	^Types_Chain_Decl,
 	^Types_Struct_Decl,
 	^Form_Decl,
+	// Class/Interface declarations
+	^Method_Decl,
+	^Attr_Decl,
+	^Interfaces_Decl,
+	^Class_Def_Decl,
+	^Class_Impl_Decl,
+	^Method_Impl,
+	^Interface_Decl,
 }

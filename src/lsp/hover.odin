@@ -49,6 +49,15 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 			if sym.kind == .Form {
 				// For FORM symbols, show the full signature
 				hover_text = format_form_signature(sym)
+			} else if sym.kind == .Class {
+				// For CLASS symbols, show the class definition
+				hover_text = format_class_signature(sym)
+			} else if sym.kind == .Interface {
+				// For INTERFACE symbols, show the interface definition
+				hover_text = format_interface_signature(sym)
+			} else if sym.kind == .Method {
+				// For METHOD symbols, show the method signature
+				hover_text = format_method_signature(sym)
 			} else if sym.kind == .TypeDef {
 				// For TYPES symbols, show the type definition
 				if sym.type_info != nil && sym.type_info.kind == .Structure {
@@ -245,10 +254,157 @@ lookup_symbol_at_offset :: proc(snap: ^cache.Snapshot, name: string, offset: int
 		}
 	}
 
+	// Check if we're inside a class definition
+	if enclosing_class := ast.find_enclosing_class_def(snap.ast, offset); enclosing_class != nil {
+		class_name := enclosing_class.ident.name
+		if class_sym, ok := snap.symbol_table.symbols[class_name]; ok {
+			if class_sym.child_scope != nil {
+				if sym, found := class_sym.child_scope.symbols[name]; found {
+					return sym, true
+				}
+			}
+		}
+	}
+
+	// Check if we're inside an interface
+	if enclosing_iface := ast.find_enclosing_interface(snap.ast, offset); enclosing_iface != nil {
+		iface_name := enclosing_iface.ident.name
+		if iface_sym, ok := snap.symbol_table.symbols[iface_name]; ok {
+			if iface_sym.child_scope != nil {
+				if sym, found := iface_sym.child_scope.symbols[name]; found {
+					return sym, true
+				}
+			}
+		}
+	}
+
 	// Fall back to global scope
 	if sym, ok := snap.symbol_table.symbols[name]; ok {
 		return sym, true
 	}
 
 	return {}, false
+}
+
+// format_class_signature formats a CLASS DEFINITION signature for hover display.
+format_class_signature :: proc(sym: symbols.Symbol) -> string {
+	if sym.kind != .Class {
+		return sym.name
+	}
+
+	b: strings.Builder
+	strings.builder_init(&b, context.temp_allocator)
+
+	strings.write_string(&b, "```abap\n")
+	strings.write_string(&b, "CLASS ")
+	strings.write_string(&b, sym.name)
+	strings.write_string(&b, " DEFINITION")
+
+	// Add members summary
+	if sym.child_scope != nil {
+		method_count := 0
+		attr_count := 0
+		type_count := 0
+		for _, member in sym.child_scope.symbols {
+			#partial switch member.kind {
+			case .Method:
+				method_count += 1
+			case .Field:
+				attr_count += 1
+			case .TypeDef:
+				type_count += 1
+			}
+		}
+		if method_count > 0 || attr_count > 0 || type_count > 0 {
+			strings.write_string(&b, "\n  * Methods: ")
+			strings.write_string(&b, fmt.tprintf("%d", method_count))
+			strings.write_string(&b, "\n  * Attributes: ")
+			strings.write_string(&b, fmt.tprintf("%d", attr_count))
+			if type_count > 0 {
+				strings.write_string(&b, "\n  * Types: ")
+				strings.write_string(&b, fmt.tprintf("%d", type_count))
+			}
+		}
+	}
+
+	strings.write_string(&b, "\n```")
+
+	return strings.to_string(b)
+}
+
+// format_interface_signature formats an INTERFACE signature for hover display.
+format_interface_signature :: proc(sym: symbols.Symbol) -> string {
+	if sym.kind != .Interface {
+		return sym.name
+	}
+
+	b: strings.Builder
+	strings.builder_init(&b, context.temp_allocator)
+
+	strings.write_string(&b, "```abap\n")
+	strings.write_string(&b, "INTERFACE ")
+	strings.write_string(&b, sym.name)
+
+	// Add members summary
+	if sym.child_scope != nil {
+		method_count := 0
+		for _, member in sym.child_scope.symbols {
+			if member.kind == .Method {
+				method_count += 1
+			}
+		}
+		if method_count > 0 {
+			strings.write_string(&b, "\n  * Methods: ")
+			strings.write_string(&b, fmt.tprintf("%d", method_count))
+		}
+	}
+
+	strings.write_string(&b, "\n```")
+
+	return strings.to_string(b)
+}
+
+// format_method_signature formats a METHOD signature for hover display.
+format_method_signature :: proc(sym: symbols.Symbol) -> string {
+	if sym.kind != .Method {
+		return sym.name
+	}
+
+	b: strings.Builder
+	strings.builder_init(&b, context.temp_allocator)
+
+	strings.write_string(&b, "```abap\n")
+	strings.write_string(&b, "METHODS ")
+	strings.write_string(&b, sym.name)
+
+	// Add parameters if child_scope exists
+	if sym.child_scope != nil {
+		importing := make([dynamic]symbols.Symbol, context.temp_allocator)
+		exporting := make([dynamic]symbols.Symbol, context.temp_allocator)
+		changing := make([dynamic]symbols.Symbol, context.temp_allocator)
+		returning := make([dynamic]symbols.Symbol, context.temp_allocator)
+
+		for _, param in sym.child_scope.symbols {
+			if param.kind == .Parameter {
+				// For now, just add to importing (we don't track param kind in Symbol yet)
+				append(&importing, param)
+			}
+		}
+
+		if len(importing) > 0 {
+			strings.write_string(&b, "\n  IMPORTING")
+			for param in importing {
+				strings.write_string(&b, " ")
+				strings.write_string(&b, param.name)
+				if param.type_info != nil && param.type_info.kind != .Unknown {
+					strings.write_string(&b, " TYPE ")
+					strings.write_string(&b, symbols.format_type(param.type_info))
+				}
+			}
+		}
+	}
+
+	strings.write_string(&b, "\n```")
+
+	return strings.to_string(b)
 }

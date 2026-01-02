@@ -25,6 +25,12 @@ resolve_file :: proc(file: ^ast.File) -> ^SymbolTable {
 			resolve_types_struct_decl(table, d)
 		case ^ast.Form_Decl:
 			resolve_form_decl(table, d)
+		case ^ast.Class_Def_Decl:
+			resolve_class_def_decl(table, d)
+		case ^ast.Class_Impl_Decl:
+			resolve_class_impl_decl(table, d)
+		case ^ast.Interface_Decl:
+			resolve_interface_decl(table, d)
 		}
 	}
 
@@ -314,4 +320,248 @@ selector_to_string :: proc(sel: ^ast.Selector_Expr) -> string {
 		return sel.field.name
 	}
 	return ""
+}
+
+// ============================================================================
+// CLASS and INTERFACE resolution
+// ============================================================================
+
+// Resolves a CLASS DEFINITION declaration.
+resolve_class_def_decl :: proc(table: ^SymbolTable, class_def: ^ast.Class_Def_Decl) {
+	name := class_def.ident.name
+	
+	// Create child scope for class members
+	child_table := new(SymbolTable)
+	child_table.symbols = make(map[string]Symbol)
+	child_table.types = make([dynamic]^Type)
+	child_table.diagnostics = make([dynamic]Diagnostic)
+	
+	// Resolve each section
+	for section in class_def.sections {
+		resolve_class_section(child_table, section)
+	}
+	
+	// Create the class type
+	class_type := make_type(table, .Named)
+	class_type.name = strings.to_lower(name)
+	
+	// Create the class symbol
+	sym := Symbol {
+		name        = name,
+		kind        = .Class,
+		range       = class_def.ident.range,
+		type_info   = class_type,
+		child_scope = child_table,
+	}
+	add_symbol(table, sym, allow_shadowing = false)
+}
+
+// Resolves a class section (PUBLIC/PROTECTED/PRIVATE SECTION)
+resolve_class_section :: proc(table: ^SymbolTable, section: ^ast.Class_Section) {
+	// Resolve types
+	for type_decl in section.types {
+		#partial switch t in type_decl.derived_stmt {
+		case ^ast.Types_Decl:
+			resolve_types_decl(table, t, false, false)
+		case ^ast.Types_Chain_Decl:
+			resolve_types_chain_decl(table, t, false)
+		case ^ast.Types_Struct_Decl:
+			resolve_types_struct_decl(table, t)
+		}
+	}
+	
+	// Resolve data/attributes
+	for data_decl in section.data {
+		#partial switch d in data_decl.derived_stmt {
+		case ^ast.Attr_Decl:
+			resolve_attr_decl(table, d)
+		case ^ast.Data_Typed_Decl:
+			resolve_typed_decl(table, d, false, false)
+		case ^ast.Data_Typed_Chain_Decl:
+			resolve_chain_decl(table, d, false)
+		}
+	}
+	
+	// Resolve methods
+	for method_decl in section.methods {
+		#partial switch m in method_decl.derived_stmt {
+		case ^ast.Method_Decl:
+			resolve_method_decl(table, m)
+		}
+	}
+	
+	// Resolve interfaces (INTERFACES keyword)
+	for iface_decl in section.interfaces {
+		#partial switch i in iface_decl.derived_stmt {
+		case ^ast.Interfaces_Decl:
+			// Note: interface implementations are handled separately
+			// For now, just acknowledge they're there
+		}
+	}
+}
+
+// Resolves an attribute declaration (DATA or CLASS-DATA in class)
+resolve_attr_decl :: proc(table: ^SymbolTable, attr: ^ast.Attr_Decl) {
+	name := attr.ident.name
+	
+	type_info := resolve_type_expr(table, attr.typed)
+	
+	sym := Symbol {
+		name      = name,
+		kind      = .Field,
+		range     = attr.ident.range,
+		type_info = type_info,
+	}
+	add_symbol(table, sym, allow_shadowing = false)
+}
+
+// Resolves a method declaration (METHODS or CLASS-METHODS)
+resolve_method_decl :: proc(table: ^SymbolTable, method: ^ast.Method_Decl) {
+	name := method.ident.name
+	
+	// Create child scope for method parameters
+	child_table := new(SymbolTable)
+	child_table.symbols = make(map[string]Symbol)
+	child_table.types = make([dynamic]^Type)
+	child_table.diagnostics = make([dynamic]Diagnostic)
+	
+	// Resolve parameters
+	for param in method.params {
+		resolve_method_param(child_table, param)
+	}
+	
+	sym := Symbol {
+		name        = name,
+		kind        = .Method,
+		range       = method.ident.range,
+		type_info   = nil, // Methods don't have a simple type
+		child_scope = child_table,
+	}
+	add_symbol(table, sym, allow_shadowing = false)
+}
+
+// Resolves a method parameter
+resolve_method_param :: proc(table: ^SymbolTable, param: ^ast.Method_Param) {
+	name := param.ident.name
+	
+	type_info: ^Type
+	if param.typed != nil {
+		type_info = resolve_type_expr(table, param.typed)
+	} else {
+		type_info = make_unknown_type(table)
+	}
+	
+	sym := Symbol {
+		name      = name,
+		kind      = .Parameter,
+		range     = param.ident.range,
+		type_info = type_info,
+	}
+	add_symbol(table, sym, allow_shadowing = false)
+}
+
+// Resolves a CLASS IMPLEMENTATION declaration.
+resolve_class_impl_decl :: proc(table: ^SymbolTable, class_impl: ^ast.Class_Impl_Decl) {
+	// For implementation, we primarily need to resolve local symbols in method bodies
+	// The class itself should already be registered from its DEFINITION
+	
+	for method in class_impl.methods {
+		#partial switch m in method.derived_stmt {
+		case ^ast.Method_Impl:
+			resolve_method_impl(table, m)
+		}
+	}
+}
+
+// Resolves a method implementation
+resolve_method_impl :: proc(table: ^SymbolTable, method_impl: ^ast.Method_Impl) {
+	// Create a local scope for the method body
+	// Note: we would ideally link this to the method declaration's scope
+	
+	child_table := new(SymbolTable)
+	child_table.symbols = make(map[string]Symbol)
+	child_table.types = make([dynamic]^Type)
+	child_table.diagnostics = make([dynamic]Diagnostic)
+	
+	// Resolve local declarations in the body
+	for stmt in method_impl.body {
+		#partial switch s in stmt.derived_stmt {
+		case ^ast.Data_Inline_Decl:
+			resolve_inline_decl(child_table, s, is_global = false)
+		case ^ast.Data_Typed_Decl:
+			resolve_typed_decl(child_table, s, false, is_global = false)
+		case ^ast.Data_Typed_Chain_Decl:
+			resolve_chain_decl(child_table, s, is_global = false)
+		}
+	}
+	
+	// Get method name for the symbol
+	method_name := ""
+	#partial switch n in method_impl.ident.derived_expr {
+	case ^ast.Ident:
+		method_name = n.name
+	case ^ast.Selector_Expr:
+		// For interface~method, use the full expression as name
+		if n.field != nil {
+			method_name = n.field.name
+		}
+	}
+	
+	// We don't add the method implementation as a new symbol since the method
+	// should already exist from the DEFINITION. Just store locals if needed.
+}
+
+// Resolves an INTERFACE declaration.
+resolve_interface_decl :: proc(table: ^SymbolTable, iface: ^ast.Interface_Decl) {
+	name := iface.ident.name
+	
+	// Create child scope for interface members
+	child_table := new(SymbolTable)
+	child_table.symbols = make(map[string]Symbol)
+	child_table.types = make([dynamic]^Type)
+	child_table.diagnostics = make([dynamic]Diagnostic)
+	
+	// Resolve methods
+	for method_decl in iface.methods {
+		#partial switch m in method_decl.derived_stmt {
+		case ^ast.Method_Decl:
+			resolve_method_decl(child_table, m)
+		}
+	}
+	
+	// Resolve types
+	for type_decl in iface.types {
+		#partial switch t in type_decl.derived_stmt {
+		case ^ast.Types_Decl:
+			resolve_types_decl(child_table, t, false, false)
+		case ^ast.Types_Chain_Decl:
+			resolve_types_chain_decl(child_table, t, false)
+		case ^ast.Types_Struct_Decl:
+			resolve_types_struct_decl(child_table, t)
+		}
+	}
+	
+	// Resolve data
+	for data_decl in iface.data {
+		#partial switch d in data_decl.derived_stmt {
+		case ^ast.Attr_Decl:
+			resolve_attr_decl(child_table, d)
+		case ^ast.Data_Typed_Decl:
+			resolve_typed_decl(child_table, d, false, false)
+		}
+	}
+	
+	// Create the interface type
+	iface_type := make_type(table, .Named)
+	iface_type.name = strings.to_lower(name)
+	
+	// Create the interface symbol
+	sym := Symbol {
+		name        = name,
+		kind        = .Interface,
+		range       = iface.ident.range,
+		type_info   = iface_type,
+		child_scope = child_table,
+	}
+	add_symbol(table, sym, allow_shadowing = false)
 }

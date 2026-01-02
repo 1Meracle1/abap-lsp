@@ -12,6 +12,7 @@ TokenKind :: enum u8 {
 	RParen, // )
 	Arrow, // ->
 	FatArrow, // =>
+	Tilde, // ~ (interface component access)
 	Eq, // =
 	Minus, // -
 	Plus, // +
@@ -67,6 +68,8 @@ token_kind_string :: proc(token_kind: TokenKind) -> string {
 		res = "->"
 	case .FatArrow:
 		res = "=>"
+	case .Tilde:
+		res = "~"
 	case .Eq:
 		res = "="
 	case .Minus:
