@@ -165,6 +165,155 @@ new_expr_inferred :: proc(args: ..ast.Any_Expr) -> ^ast.New_Expr {
 	return new_expr("", true, ..args)
 }
 
+// Builder for binary expressions (for logical/comparison expressions)
+binary_expr :: proc(left: ast.Any_Expr, op_lit: string, right: ast.Any_Expr) -> ^ast.Binary_Expr {
+	node := ast.new(ast.Binary_Expr, {})
+	#partial switch l in left {
+	case ^ast.Ident:
+		node.left = &l.node
+	case ^ast.Basic_Lit:
+		node.left = &l.node
+	case ^ast.Binary_Expr:
+		node.left = &l.node
+	case ^ast.Predicate_Expr:
+		node.left = &l.node
+	}
+	node.op.lit = op_lit
+	#partial switch r in right {
+	case ^ast.Ident:
+		node.right = &r.node
+	case ^ast.Basic_Lit:
+		node.right = &r.node
+	case ^ast.Binary_Expr:
+		node.right = &r.node
+	case ^ast.Predicate_Expr:
+		node.right = &r.node
+	}
+	node.derived_expr = node
+	return node
+}
+
+// Builder for predicate expressions (IS INITIAL, IS SUPPLIED, etc.)
+predicate_expr :: proc(
+	expr: ast.Any_Expr,
+	predicate: ast.Predicate_Kind,
+	is_negated: bool = false,
+) -> ^ast.Predicate_Expr {
+	node := ast.new(ast.Predicate_Expr, {})
+	#partial switch e in expr {
+	case ^ast.Ident:
+		node.expr = &e.node
+	case ^ast.Basic_Lit:
+		node.expr = &e.node
+	}
+	node.predicate = predicate
+	node.is_negated = is_negated
+	node.derived_expr = node
+	return node
+}
+
+// Builder for IF statements
+If_Stmt_Builder :: struct {
+	cond:            ast.Any_Expr,
+	body:            [dynamic]^ast.Stmt,
+	elseif_branches: [dynamic]^ast.Elseif_Branch,
+	else_body:       [dynamic]^ast.Stmt,
+}
+
+if_stmt_builder :: proc(cond: ast.Any_Expr) -> If_Stmt_Builder {
+	return If_Stmt_Builder {
+		cond = cond,
+		body = make([dynamic]^ast.Stmt),
+		elseif_branches = make([dynamic]^ast.Elseif_Branch),
+		else_body = make([dynamic]^ast.Stmt),
+	}
+}
+
+if_with_body :: proc(builder: If_Stmt_Builder, stmts: ..ast.Any_Stmt) -> If_Stmt_Builder {
+	b := builder
+	for stmt in stmts {
+		#partial switch s in stmt {
+		case ^ast.Assign_Stmt:
+			append(&b.body, &s.node)
+		case ^ast.Data_Typed_Decl:
+			append(&b.body, &s.node)
+		case ^ast.Data_Inline_Decl:
+			append(&b.body, &s.node)
+		case ^ast.Expr_Stmt:
+			append(&b.body, &s.node)
+		case ^ast.If_Stmt:
+			append(&b.body, &s.node)
+		}
+	}
+	return b
+}
+
+if_with_elseif :: proc(
+	builder: If_Stmt_Builder,
+	cond: ast.Any_Expr,
+	stmts: ..ast.Any_Stmt,
+) -> If_Stmt_Builder {
+	b := builder
+	branch := ast.new(ast.Elseif_Branch, {})
+	#partial switch c in cond {
+	case ^ast.Ident:
+		branch.cond = &c.node
+	case ^ast.Basic_Lit:
+		branch.cond = &c.node
+	case ^ast.Binary_Expr:
+		branch.cond = &c.node
+	case ^ast.Predicate_Expr:
+		branch.cond = &c.node
+	}
+	branch.body = make([dynamic]^ast.Stmt)
+	for stmt in stmts {
+		#partial switch s in stmt {
+		case ^ast.Assign_Stmt:
+			append(&branch.body, &s.node)
+		case ^ast.Data_Typed_Decl:
+			append(&branch.body, &s.node)
+		case ^ast.Expr_Stmt:
+			append(&branch.body, &s.node)
+		}
+	}
+	append(&b.elseif_branches, branch)
+	return b
+}
+
+if_with_else :: proc(builder: If_Stmt_Builder, stmts: ..ast.Any_Stmt) -> If_Stmt_Builder {
+	b := builder
+	for stmt in stmts {
+		#partial switch s in stmt {
+		case ^ast.Assign_Stmt:
+			append(&b.else_body, &s.node)
+		case ^ast.Data_Typed_Decl:
+			append(&b.else_body, &s.node)
+		case ^ast.Expr_Stmt:
+			append(&b.else_body, &s.node)
+		}
+	}
+	return b
+}
+
+if_build :: proc(builder: If_Stmt_Builder) -> ^ast.If_Stmt {
+	node := ast.new(ast.If_Stmt, {})
+	#partial switch c in builder.cond {
+	case ^ast.Ident:
+		node.cond = &c.node
+	case ^ast.Basic_Lit:
+		node.cond = &c.node
+	case ^ast.Binary_Expr:
+		node.cond = &c.node
+	case ^ast.Predicate_Expr:
+		node.cond = &c.node
+	}
+	node.body = builder.body
+	node.elseif_branches = builder.elseif_branches
+	node.else_body = builder.else_body
+	node.derived_stmt = node
+	return node
+}
+
 assign :: proc(lhs: ast.Any_Expr, rhs: ast.Any_Expr) -> ^ast.Assign_Stmt {
 	node := ast.new(ast.Assign_Stmt, {})
 	node.lhs = make([]^ast.Expr, 1)
@@ -373,6 +522,34 @@ check_expr :: proc(
 		for i := 0; i < len(ex.args); i += 1 {
 			check_expr(t, ex.args[i].derived_expr, ac.args[i], loc = loc)
 		}
+
+	case ^ast.Binary_Expr:
+		ac, ok := actual_derived.(^ast.Binary_Expr)
+		if !testing.expect(t, ok, fmt.tprintf("Expected Binary_Expr, got %T", actual_derived), loc = loc) do return
+		check_expr(t, ex.left.derived_expr, ac.left, loc = loc)
+		check_expr(t, ex.right.derived_expr, ac.right, loc = loc)
+
+	case ^ast.Predicate_Expr:
+		ac, ok := actual_derived.(^ast.Predicate_Expr)
+		if !testing.expect(t, ok, fmt.tprintf("Expected Predicate_Expr, got %T", actual_derived), loc = loc) do return
+		check_expr(t, ex.expr.derived_expr, ac.expr, loc = loc)
+		testing.expect(
+			t,
+			ex.predicate == ac.predicate,
+			fmt.tprintf("Expected predicate '%v', got '%v'", ex.predicate, ac.predicate),
+			loc = loc,
+		)
+		testing.expect(
+			t,
+			ex.is_negated == ac.is_negated,
+			fmt.tprintf("Expected is_negated '%v', got '%v'", ex.is_negated, ac.is_negated),
+			loc = loc,
+		)
+
+	case ^ast.Unary_Expr:
+		ac, ok := actual_derived.(^ast.Unary_Expr)
+		if !testing.expect(t, ok, fmt.tprintf("Expected Unary_Expr, got %T", actual_derived), loc = loc) do return
+		check_expr(t, ex.expr.derived_expr, ac.expr, loc = loc)
 
 	case:
 		testing.expect(
@@ -595,6 +772,41 @@ check_stmt :: proc(
 		if !testing.expect(t, len(ex.body) == len(ac.body), fmt.tprintf("Expected %d body statements, got %d", len(ex.body), len(ac.body)), loc = loc) do return
 		for i := 0; i < len(ex.body); i += 1 {
 			check_stmt(t, ex.body[i].derived_stmt, ac.body[i], loc = loc)
+		}
+
+	case ^ast.If_Stmt:
+		ac, ok := actual_derived.(^ast.If_Stmt)
+		if !testing.expect(t, ok, fmt.tprintf("Expected If_Stmt, got %T", actual_derived), loc = loc) do return
+
+		// Check condition
+		if ex.cond != nil {
+			check_expr(t, ex.cond.derived_expr, ac.cond, loc = loc)
+		}
+
+		// Check body statements
+		if !testing.expect(t, len(ex.body) == len(ac.body), fmt.tprintf("Expected %d body statements, got %d", len(ex.body), len(ac.body)), loc = loc) do return
+		for i := 0; i < len(ex.body); i += 1 {
+			check_stmt(t, ex.body[i].derived_stmt, ac.body[i], loc = loc)
+		}
+
+		// Check ELSEIF branches
+		if !testing.expect(t, len(ex.elseif_branches) == len(ac.elseif_branches), fmt.tprintf("Expected %d ELSEIF branches, got %d", len(ex.elseif_branches), len(ac.elseif_branches)), loc = loc) do return
+		for i := 0; i < len(ex.elseif_branches); i += 1 {
+			ex_branch := ex.elseif_branches[i]
+			ac_branch := ac.elseif_branches[i]
+			if ex_branch.cond != nil {
+				check_expr(t, ex_branch.cond.derived_expr, ac_branch.cond, loc = loc)
+			}
+			if !testing.expect(t, len(ex_branch.body) == len(ac_branch.body), fmt.tprintf("Expected %d body stmts in ELSEIF[%d], got %d", len(ex_branch.body), i, len(ac_branch.body)), loc = loc) do return
+			for j := 0; j < len(ex_branch.body); j += 1 {
+				check_stmt(t, ex_branch.body[j].derived_stmt, ac_branch.body[j], loc = loc)
+			}
+		}
+
+		// Check ELSE body statements
+		if !testing.expect(t, len(ex.else_body) == len(ac.else_body), fmt.tprintf("Expected %d ELSE body statements, got %d", len(ex.else_body), len(ac.else_body)), loc = loc) do return
+		for i := 0; i < len(ex.else_body); i += 1 {
+			check_stmt(t, ex.else_body[i].derived_stmt, ac.else_body[i], loc = loc)
 		}
 
 	case:
@@ -2954,6 +3166,731 @@ START-OF-SELECTION.
 				event.kind == .StartOfSelection,
 				"Event should be StartOfSelection",
 			)
+		}
+	}
+}
+
+// --- IF statement tests ---
+
+@(test)
+basic_if_statement_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `IF lv_var = 1.
+  lv_result = 10.
+ENDIF.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 1,
+		fmt.tprintf("Expected 1 decl, got %v", len(file.decls)),
+	)
+	if len(file.decls) > 0 {
+		if_stmt, ok := file.decls[0].derived_stmt.(^ast.If_Stmt)
+		if !testing.expect(t, ok, fmt.tprintf("Expected If_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+		// Check condition is a binary expression
+		testing.expect(t, if_stmt.cond != nil, "Condition should not be nil")
+		_, cond_ok := if_stmt.cond.derived_expr.(^ast.Binary_Expr)
+		testing.expect(t, cond_ok, "Condition should be Binary_Expr")
+
+		// Check body has one statement
+		testing.expect(
+			t,
+			len(if_stmt.body) == 1,
+			fmt.tprintf("Expected 1 body statement, got %d", len(if_stmt.body)),
+		)
+
+		// Check no ELSEIF branches
+		testing.expect(
+			t,
+			len(if_stmt.elseif_branches) == 0,
+			fmt.tprintf("Expected 0 ELSEIF branches, got %d", len(if_stmt.elseif_branches)),
+		)
+
+		// Check no ELSE body
+		testing.expect(
+			t,
+			len(if_stmt.else_body) == 0,
+			fmt.tprintf("Expected 0 ELSE body statements, got %d", len(if_stmt.else_body)),
+		)
+	}
+}
+
+@(test)
+if_with_else_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `IF lv_var > 0.
+  lv_result = 1.
+ELSE.
+  lv_result = 0.
+ENDIF.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 1,
+		fmt.tprintf("Expected 1 decl, got %v", len(file.decls)),
+	)
+	if len(file.decls) > 0 {
+		if_stmt, ok := file.decls[0].derived_stmt.(^ast.If_Stmt)
+		if !testing.expect(t, ok, "Expected If_Stmt") do return
+
+		testing.expect(
+			t,
+			len(if_stmt.body) == 1,
+			fmt.tprintf("Expected 1 IF body statement, got %d", len(if_stmt.body)),
+		)
+		testing.expect(
+			t,
+			len(if_stmt.elseif_branches) == 0,
+			fmt.tprintf("Expected 0 ELSEIF branches, got %d", len(if_stmt.elseif_branches)),
+		)
+		testing.expect(
+			t,
+			len(if_stmt.else_body) == 1,
+			fmt.tprintf("Expected 1 ELSE body statement, got %d", len(if_stmt.else_body)),
+		)
+	}
+}
+
+@(test)
+if_with_elseif_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `IF time < '120000'.
+  lv_period = 'AM'.
+ELSEIF time > '120000'.
+  lv_period = 'PM'.
+ELSE.
+  lv_period = 'NOON'.
+ENDIF.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 1,
+		fmt.tprintf("Expected 1 decl, got %v", len(file.decls)),
+	)
+	if len(file.decls) > 0 {
+		if_stmt, ok := file.decls[0].derived_stmt.(^ast.If_Stmt)
+		if !testing.expect(t, ok, "Expected If_Stmt") do return
+
+		testing.expect(
+			t,
+			len(if_stmt.body) == 1,
+			fmt.tprintf("Expected 1 IF body statement, got %d", len(if_stmt.body)),
+		)
+		testing.expect(
+			t,
+			len(if_stmt.elseif_branches) == 1,
+			fmt.tprintf("Expected 1 ELSEIF branch, got %d", len(if_stmt.elseif_branches)),
+		)
+		if len(if_stmt.elseif_branches) > 0 {
+			testing.expect(
+				t,
+				len(if_stmt.elseif_branches[0].body) == 1,
+				fmt.tprintf(
+					"Expected 1 ELSEIF body statement, got %d",
+					len(if_stmt.elseif_branches[0].body),
+				),
+			)
+		}
+		testing.expect(
+			t,
+			len(if_stmt.else_body) == 1,
+			fmt.tprintf("Expected 1 ELSE body statement, got %d", len(if_stmt.else_body)),
+		)
+	}
+}
+
+@(test)
+if_with_multiple_elseif_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `IF time < '120000'.
+  lv_period = 'AM'.
+ELSEIF time > '120000' AND time < '180000'.
+  lv_period = 'PM'.
+ELSEIF time >= '180000'.
+  lv_period = 'EVENING'.
+ELSE.
+  lv_period = 'UNKNOWN'.
+ENDIF.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 1,
+		fmt.tprintf("Expected 1 decl, got %v", len(file.decls)),
+	)
+	if len(file.decls) > 0 {
+		if_stmt, ok := file.decls[0].derived_stmt.(^ast.If_Stmt)
+		if !testing.expect(t, ok, "Expected If_Stmt") do return
+
+		testing.expect(
+			t,
+			len(if_stmt.elseif_branches) == 2,
+			fmt.tprintf("Expected 2 ELSEIF branches, got %d", len(if_stmt.elseif_branches)),
+		)
+		testing.expect(
+			t,
+			len(if_stmt.else_body) == 1,
+			fmt.tprintf("Expected 1 ELSE body statement, got %d", len(if_stmt.else_body)),
+		)
+	}
+}
+
+@(test)
+if_with_and_condition_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `IF lv_a > 0 AND lv_b < 10.
+  lv_result = 1.
+ENDIF.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if len(file.decls) > 0 {
+		if_stmt, ok := file.decls[0].derived_stmt.(^ast.If_Stmt)
+		if !testing.expect(t, ok, "Expected If_Stmt") do return
+
+		// Check that condition is a binary expression with AND
+		binary, bok := if_stmt.cond.derived_expr.(^ast.Binary_Expr)
+		if testing.expect(t, bok, "Condition should be Binary_Expr") {
+			testing.expect(
+				t,
+				binary.op.lit == "AND",
+				fmt.tprintf("Expected AND operator, got '%s'", binary.op.lit),
+			)
+		}
+	}
+}
+
+@(test)
+if_with_or_condition_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `IF lv_a = 1 OR lv_b = 2.
+  lv_result = 1.
+ENDIF.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if len(file.decls) > 0 {
+		if_stmt, ok := file.decls[0].derived_stmt.(^ast.If_Stmt)
+		if !testing.expect(t, ok, "Expected If_Stmt") do return
+
+		// Check that condition is a binary expression with OR
+		binary, bok := if_stmt.cond.derived_expr.(^ast.Binary_Expr)
+		if testing.expect(t, bok, "Condition should be Binary_Expr") {
+			testing.expect(
+				t,
+				binary.op.lit == "OR",
+				fmt.tprintf("Expected OR operator, got '%s'", binary.op.lit),
+			)
+		}
+	}
+}
+
+@(test)
+if_with_not_condition_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `IF NOT lv_flag = 'X'.
+  lv_result = 1.
+ENDIF.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if len(file.decls) > 0 {
+		if_stmt, ok := file.decls[0].derived_stmt.(^ast.If_Stmt)
+		if !testing.expect(t, ok, "Expected If_Stmt") do return
+
+		// Check that condition is a unary expression with NOT
+		unary, uok := if_stmt.cond.derived_expr.(^ast.Unary_Expr)
+		if testing.expect(t, uok, "Condition should be Unary_Expr") {
+			testing.expect(
+				t,
+				unary.op.lit == "NOT",
+				fmt.tprintf("Expected NOT operator, got '%s'", unary.op.lit),
+			)
+		}
+	}
+}
+
+@(test)
+if_with_is_initial_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `IF lv_var IS INITIAL.
+  lv_result = 1.
+ENDIF.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if len(file.decls) > 0 {
+		if_stmt, ok := file.decls[0].derived_stmt.(^ast.If_Stmt)
+		if !testing.expect(t, ok, "Expected If_Stmt") do return
+
+		pred, pok := if_stmt.cond.derived_expr.(^ast.Predicate_Expr)
+		if testing.expect(t, pok, "Condition should be Predicate_Expr") {
+			testing.expect(
+				t,
+				pred.predicate == .Initial,
+				fmt.tprintf("Expected Initial predicate, got %v", pred.predicate),
+			)
+			testing.expect(t, !pred.is_negated, "Expected is_negated to be false")
+		}
+	}
+}
+
+@(test)
+if_with_is_not_initial_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `IF lv_var IS NOT INITIAL.
+  lv_result = 1.
+ENDIF.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if len(file.decls) > 0 {
+		if_stmt, ok := file.decls[0].derived_stmt.(^ast.If_Stmt)
+		if !testing.expect(t, ok, "Expected If_Stmt") do return
+
+		pred, pok := if_stmt.cond.derived_expr.(^ast.Predicate_Expr)
+		if testing.expect(t, pok, "Condition should be Predicate_Expr") {
+			testing.expect(
+				t,
+				pred.predicate == .Initial,
+				fmt.tprintf("Expected Initial predicate, got %v", pred.predicate),
+			)
+			testing.expect(t, pred.is_negated, "Expected is_negated to be true")
+		}
+	}
+}
+
+@(test)
+if_with_is_supplied_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `IF p1 IS SUPPLIED.
+  lv_result = p1.
+ENDIF.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if len(file.decls) > 0 {
+		if_stmt, ok := file.decls[0].derived_stmt.(^ast.If_Stmt)
+		if !testing.expect(t, ok, "Expected If_Stmt") do return
+
+		pred, pok := if_stmt.cond.derived_expr.(^ast.Predicate_Expr)
+		if testing.expect(t, pok, "Condition should be Predicate_Expr") {
+			testing.expect(
+				t,
+				pred.predicate == .Supplied,
+				fmt.tprintf("Expected Supplied predicate, got %v", pred.predicate),
+			)
+		}
+	}
+}
+
+@(test)
+if_with_is_bound_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `IF lo_ref IS BOUND.
+  lv_result = 1.
+ENDIF.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if len(file.decls) > 0 {
+		if_stmt, ok := file.decls[0].derived_stmt.(^ast.If_Stmt)
+		if !testing.expect(t, ok, "Expected If_Stmt") do return
+
+		pred, pok := if_stmt.cond.derived_expr.(^ast.Predicate_Expr)
+		if testing.expect(t, pok, "Condition should be Predicate_Expr") {
+			testing.expect(
+				t,
+				pred.predicate == .Bound,
+				fmt.tprintf("Expected Bound predicate, got %v", pred.predicate),
+			)
+		}
+	}
+}
+
+@(test)
+if_with_complex_condition_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `IF p1 IS SUPPLIED AND p1 <= upper_limit.
+  lv_result = p1.
+ENDIF.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if len(file.decls) > 0 {
+		if_stmt, ok := file.decls[0].derived_stmt.(^ast.If_Stmt)
+		if !testing.expect(t, ok, "Expected If_Stmt") do return
+
+		// Should be AND with left = IS SUPPLIED predicate, right = comparison
+		binary, bok := if_stmt.cond.derived_expr.(^ast.Binary_Expr)
+		if testing.expect(t, bok, "Condition should be Binary_Expr") {
+			testing.expect(
+				t,
+				binary.op.lit == "AND",
+				fmt.tprintf("Expected AND operator, got '%s'", binary.op.lit),
+			)
+
+			// Left should be IS SUPPLIED predicate
+			_, lpok := binary.left.derived_expr.(^ast.Predicate_Expr)
+			testing.expect(t, lpok, "Left operand should be Predicate_Expr")
+
+			// Right should be comparison
+			_, rpok := binary.right.derived_expr.(^ast.Binary_Expr)
+			testing.expect(t, rpok, "Right operand should be Binary_Expr")
+		}
+	}
+}
+
+@(test)
+if_with_not_is_initial_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `IF NOT p IS INITIAL.
+  lv_result = 1.
+ENDIF.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if len(file.decls) > 0 {
+		if_stmt, ok := file.decls[0].derived_stmt.(^ast.If_Stmt)
+		if !testing.expect(t, ok, "Expected If_Stmt") do return
+
+		// Should be NOT with inner IS INITIAL
+		unary, uok := if_stmt.cond.derived_expr.(^ast.Unary_Expr)
+		if testing.expect(t, uok, "Condition should be Unary_Expr") {
+			testing.expect(
+				t,
+				unary.op.lit == "NOT",
+				fmt.tprintf("Expected NOT operator, got '%s'", unary.op.lit),
+			)
+
+			pred, pok := unary.expr.derived_expr.(^ast.Predicate_Expr)
+			if testing.expect(t, pok, "Inner expression should be Predicate_Expr") {
+				testing.expect(
+					t,
+					pred.predicate == .Initial,
+					fmt.tprintf("Expected Initial predicate, got %v", pred.predicate),
+				)
+			}
+		}
+	}
+}
+
+@(test)
+if_with_comparison_operators_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `IF lv_a < 10.
+ENDIF.
+IF lv_b > 20.
+ENDIF.
+IF lv_c <= 30.
+ENDIF.
+IF lv_d >= 40.
+ENDIF.
+IF lv_e <> 50.
+ENDIF.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 5,
+		fmt.tprintf("Expected 5 decls, got %v", len(file.decls)),
+	)
+
+	// Just verify all parsed as If_Stmt with Binary_Expr conditions
+	for i := 0; i < min(len(file.decls), 5); i += 1 {
+		if_stmt, ok := file.decls[i].derived_stmt.(^ast.If_Stmt)
+		if testing.expect(t, ok, fmt.tprintf("Decl[%d] should be If_Stmt", i)) {
+			_, bok := if_stmt.cond.derived_expr.(^ast.Binary_Expr)
+			testing.expect(t, bok, fmt.tprintf("Decl[%d] condition should be Binary_Expr", i))
+		}
+	}
+}
+
+@(test)
+if_nested_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `IF lv_a = 1.
+  IF lv_b = 2.
+    lv_result = 1.
+  ENDIF.
+ENDIF.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 1,
+		fmt.tprintf("Expected 1 decl, got %v", len(file.decls)),
+	)
+	if len(file.decls) > 0 {
+		outer_if, ok := file.decls[0].derived_stmt.(^ast.If_Stmt)
+		if !testing.expect(t, ok, "Expected If_Stmt") do return
+
+		testing.expect(
+			t,
+			len(outer_if.body) == 1,
+			fmt.tprintf("Expected 1 body statement, got %d", len(outer_if.body)),
+		)
+
+		if len(outer_if.body) > 0 {
+			inner_if, iok := outer_if.body[0].derived_stmt.(^ast.If_Stmt)
+			if testing.expect(t, iok, "Inner statement should be If_Stmt") {
+				testing.expect(
+					t,
+					len(inner_if.body) == 1,
+					fmt.tprintf(
+						"Expected 1 nested body statement, got %d",
+						len(inner_if.body),
+					),
+				)
+			}
+		}
+	}
+}
+
+@(test)
+if_with_data_declarations_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `IF lv_flag = 'X'.
+  DATA lv_local TYPE i.
+  lv_local = 10.
+ENDIF.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if len(file.decls) > 0 {
+		if_stmt, ok := file.decls[0].derived_stmt.(^ast.If_Stmt)
+		if !testing.expect(t, ok, "Expected If_Stmt") do return
+
+		testing.expect(
+			t,
+			len(if_stmt.body) == 2,
+			fmt.tprintf("Expected 2 body statements, got %d", len(if_stmt.body)),
+		)
+
+		if len(if_stmt.body) >= 2 {
+			_, dok := if_stmt.body[0].derived_stmt.(^ast.Data_Typed_Decl)
+			testing.expect(t, dok, "First body statement should be Data_Typed_Decl")
+
+			_, aok := if_stmt.body[1].derived_stmt.(^ast.Assign_Stmt)
+			testing.expect(t, aok, "Second body statement should be Assign_Stmt")
+		}
+	}
+}
+
+@(test)
+if_inside_form_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `FORM check_value USING p_val TYPE i.
+  IF p_val > 0.
+    lv_result = 1.
+  ELSE.
+    lv_result = 0.
+  ENDIF.
+ENDFORM.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 1,
+		fmt.tprintf("Expected 1 decl, got %v", len(file.decls)),
+	)
+	if len(file.decls) > 0 {
+		form, ok := file.decls[0].derived_stmt.(^ast.Form_Decl)
+		if !testing.expect(t, ok, "Expected Form_Decl") do return
+
+		testing.expect(
+			t,
+			len(form.body) == 1,
+			fmt.tprintf("Expected 1 body statement, got %d", len(form.body)),
+		)
+
+		if len(form.body) > 0 {
+			if_stmt, iok := form.body[0].derived_stmt.(^ast.If_Stmt)
+			if testing.expect(t, iok, "Body statement should be If_Stmt") {
+				testing.expect(
+					t,
+					len(if_stmt.body) == 1,
+					fmt.tprintf("Expected 1 IF body statement, got %d", len(if_stmt.body)),
+				)
+				testing.expect(
+					t,
+					len(if_stmt.else_body) == 1,
+					fmt.tprintf("Expected 1 ELSE body statement, got %d", len(if_stmt.else_body)),
+				)
+			}
+		}
+	}
+}
+
+@(test)
+if_inside_method_impl_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `CLASS c1 IMPLEMENTATION.
+  METHOD m1.
+    IF iv_input IS NOT INITIAL.
+      DATA lv_result TYPE i.
+      lv_result = iv_input.
+    ENDIF.
+  ENDMETHOD.
+ENDCLASS.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if len(file.decls) > 0 {
+		class_impl, ok := file.decls[0].derived_stmt.(^ast.Class_Impl_Decl)
+		if !testing.expect(t, ok, "Expected Class_Impl_Decl") do return
+
+		if len(class_impl.methods) > 0 {
+			method, mok := class_impl.methods[0].derived_stmt.(^ast.Method_Impl)
+			if testing.expect(t, mok, "Expected Method_Impl") {
+				testing.expect(
+					t,
+					len(method.body) == 1,
+					fmt.tprintf("Expected 1 method body statement, got %d", len(method.body)),
+				)
+
+				if len(method.body) > 0 {
+					_, iok := method.body[0].derived_stmt.(^ast.If_Stmt)
+					testing.expect(t, iok, "Method body should contain If_Stmt")
+				}
+			}
 		}
 	}
 }

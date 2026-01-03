@@ -168,16 +168,7 @@ resolve_form_decl :: proc(table: ^SymbolTable, form: ^ast.Form_Decl) {
 		resolve_form_param(child_table, param, .Changing)
 	}
 	
-	for stmt in form.body {
-		#partial switch s in stmt.derived_stmt {
-		case ^ast.Data_Inline_Decl:
-			resolve_inline_decl(child_table, s, is_global = false)
-		case ^ast.Data_Typed_Decl:
-			resolve_typed_decl(child_table, s, false, is_global = false)
-		case ^ast.Data_Typed_Chain_Decl:
-			resolve_chain_decl(child_table, s, is_global = false)
-		}
-	}
+	resolve_stmt_list(child_table, form.body[:])
 	
 	sym := Symbol {
 		name        = name,
@@ -413,16 +404,46 @@ resolve_method_impl :: proc(table: ^SymbolTable, method_impl: ^ast.Method_Impl) 
 	child_table.types = make([dynamic]^Type)
 	child_table.diagnostics = make([dynamic]Diagnostic)
 	
-	for stmt in method_impl.body {
-		#partial switch s in stmt.derived_stmt {
-		case ^ast.Data_Inline_Decl:
-			resolve_inline_decl(child_table, s, is_global = false)
-		case ^ast.Data_Typed_Decl:
-			resolve_typed_decl(child_table, s, false, is_global = false)
-		case ^ast.Data_Typed_Chain_Decl:
-			resolve_chain_decl(child_table, s, is_global = false)
-		}
+	resolve_stmt_list(child_table, method_impl.body[:])
+}
+
+// resolve_stmt_list resolves all statements in a list, recursively handling control structures
+resolve_stmt_list :: proc(table: ^SymbolTable, stmts: []^ast.Stmt) {
+	for stmt in stmts {
+		resolve_stmt(table, stmt)
 	}
+}
+
+// resolve_stmt resolves declarations in a single statement
+resolve_stmt :: proc(table: ^SymbolTable, stmt: ^ast.Stmt) {
+	if stmt == nil {
+		return
+	}
+	
+	#partial switch s in stmt.derived_stmt {
+	case ^ast.Data_Inline_Decl:
+		resolve_inline_decl(table, s, is_global = false)
+	case ^ast.Data_Typed_Decl:
+		resolve_typed_decl(table, s, false, is_global = false)
+	case ^ast.Data_Typed_Chain_Decl:
+		resolve_chain_decl(table, s, is_global = false)
+	case ^ast.If_Stmt:
+		resolve_if_stmt(table, s)
+	}
+}
+
+// resolve_if_stmt resolves declarations inside IF statement bodies
+resolve_if_stmt :: proc(table: ^SymbolTable, if_stmt: ^ast.If_Stmt) {
+	// Resolve declarations in the main IF body
+	resolve_stmt_list(table, if_stmt.body[:])
+	
+	// Resolve declarations in ELSEIF branches
+	for branch in if_stmt.elseif_branches {
+		resolve_stmt_list(table, branch.body[:])
+	}
+	
+	// Resolve declarations in ELSE body
+	resolve_stmt_list(table, if_stmt.else_body[:])
 }
 
 resolve_interface_decl :: proc(table: ^SymbolTable, iface: ^ast.Interface_Decl) {
@@ -511,16 +532,7 @@ resolve_event_block :: proc(table: ^SymbolTable, event: ^ast.Event_Block) {
 	child_table.diagnostics = make([dynamic]Diagnostic)
 	
 	// Resolve declarations in the event body
-	for stmt in event.body {
-		#partial switch s in stmt.derived_stmt {
-		case ^ast.Data_Inline_Decl:
-			resolve_inline_decl(child_table, s, is_global = false)
-		case ^ast.Data_Typed_Decl:
-			resolve_typed_decl(child_table, s, false, is_global = false)
-		case ^ast.Data_Typed_Chain_Decl:
-			resolve_chain_decl(child_table, s, is_global = false)
-		}
-	}
+	resolve_stmt_list(child_table, event.body[:])
 	
 	// Create a symbol for the event with a generated name based on kind
 	event_name := get_event_name(event.kind)
@@ -566,16 +578,7 @@ resolve_module_decl :: proc(table: ^SymbolTable, module: ^ast.Module_Decl) {
 	child_table.diagnostics = make([dynamic]Diagnostic)
 	
 	// Resolve declarations in the module body
-	for stmt in module.body {
-		#partial switch s in stmt.derived_stmt {
-		case ^ast.Data_Inline_Decl:
-			resolve_inline_decl(child_table, s, is_global = false)
-		case ^ast.Data_Typed_Decl:
-			resolve_typed_decl(child_table, s, false, is_global = false)
-		case ^ast.Data_Typed_Chain_Decl:
-			resolve_chain_decl(child_table, s, is_global = false)
-		}
-	}
+	resolve_stmt_list(child_table, module.body[:])
 	
 	sym := Symbol {
 		name        = name,

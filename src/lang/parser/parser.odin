@@ -66,6 +66,8 @@ parse_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			return parse_call_stmt(p)
 		case "MODULE":
 			return parse_module_decl(p)
+		case "IF":
+			return parse_if_stmt(p)
 		case "START":
 			if check_compound_keyword(p, "START", "OF", "SELECTION") {
 				return parse_event_block(p, "START-OF-SELECTION")
@@ -1528,4 +1530,210 @@ parse_module_decl :: proc(p: ^Parser) -> ^ast.Decl {
 	_ = endmodule_tok
 
 	return module_decl
+}
+
+// Syntax: IF condition. body... [ELSEIF condition. body...]* [ELSE. body...] ENDIF.
+parse_if_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
+	if_tok := expect_keyword_token(p, "IF")
+	cond := parse_logical_expr(p)
+	expect_token(p, .Period)
+
+	if_stmt := ast.new(ast.If_Stmt, if_tok.range)
+	if_stmt.cond = cond
+	if_stmt.body = make([dynamic]^ast.Stmt)
+	if_stmt.elseif_branches = make([dynamic]^ast.Elseif_Branch)
+	if_stmt.else_body = make([dynamic]^ast.Stmt)
+
+	for p.curr_tok.kind != .EOF {
+		if check_keyword(p, "ELSEIF") || check_keyword(p, "ELSE") || check_keyword(p, "ENDIF") {
+			break
+		}
+		stmt := parse_stmt(p)
+		if stmt != nil {
+			append(&if_stmt.body, stmt)
+		}
+	}
+
+	for check_keyword(p, "ELSEIF") {
+		elseif_tok := expect_keyword_token(p, "ELSEIF")
+		elseif_cond := parse_logical_expr(p)
+		expect_token(p, .Period)
+
+		elseif_branch := ast.new(ast.Elseif_Branch, elseif_tok.range)
+		elseif_branch.cond = elseif_cond
+		elseif_branch.body = make([dynamic]^ast.Stmt)
+
+		for p.curr_tok.kind != .EOF {
+			if check_keyword(p, "ELSEIF") || check_keyword(p, "ELSE") || check_keyword(p, "ENDIF") {
+				break
+			}
+			stmt := parse_stmt(p)
+			if stmt != nil {
+				append(&elseif_branch.body, stmt)
+			}
+		}
+		elseif_branch.range.end = p.prev_tok.range.end
+		append(&if_stmt.elseif_branches, elseif_branch)
+	}
+
+	if check_keyword(p, "ELSE") {
+		advance_token(p)
+		expect_token(p, .Period)
+
+		for p.curr_tok.kind != .EOF {
+			if check_keyword(p, "ENDIF") {
+				break
+			}
+			stmt := parse_stmt(p)
+			if stmt != nil {
+				append(&if_stmt.else_body, stmt)
+			}
+		}
+	}
+
+	endif_tok := expect_keyword_token(p, "ENDIF")
+	period_tok := expect_token(p, .Period)
+	if_stmt.range.end = period_tok.range.end
+	if_stmt.derived_stmt = if_stmt
+	_ = endif_tok
+
+	return if_stmt
+}
+
+parse_logical_expr :: proc(p: ^Parser) -> ^ast.Expr {
+	return parse_or_expr(p)
+}
+
+parse_or_expr :: proc(p: ^Parser) -> ^ast.Expr {
+	left := parse_and_expr(p)
+
+	for check_keyword(p, "OR") {
+		op_tok := advance_token(p)
+		right := parse_and_expr(p)
+		
+		binary := ast.new(ast.Binary_Expr, lexer.TextRange{left.range.start, right.range.end})
+		binary.left = left
+		binary.op = op_tok
+		binary.right = right
+		binary.derived_expr = binary
+		left = binary
+	}
+
+	return left
+}
+
+parse_and_expr :: proc(p: ^Parser) -> ^ast.Expr {
+	left := parse_not_expr(p)
+
+	for check_keyword(p, "AND") {
+		op_tok := advance_token(p)
+		right := parse_not_expr(p)
+		
+		binary := ast.new(ast.Binary_Expr, lexer.TextRange{left.range.start, right.range.end})
+		binary.left = left
+		binary.op = op_tok
+		binary.right = right
+		binary.derived_expr = binary
+		left = binary
+	}
+
+	return left
+}
+
+parse_not_expr :: proc(p: ^Parser) -> ^ast.Expr {
+	if check_keyword(p, "NOT") {
+		op_tok := advance_token(p)
+		expr := parse_not_expr(p)
+		
+		unary := ast.new(ast.Unary_Expr, lexer.TextRange{op_tok.range.start, expr.range.end})
+		unary.op = op_tok
+		unary.expr = expr
+		unary.derived_expr = unary
+		return unary
+	}
+	
+	return parse_comparison_expr(p)
+}
+
+parse_comparison_expr :: proc(p: ^Parser) -> ^ast.Expr {
+	left := parse_expr(p)
+
+	if check_keyword(p, "IS") {
+		return parse_is_predicate(p, left)
+	}
+
+	if is_comparison_op(p) {
+		op_tok := advance_token(p)
+		right := parse_expr(p)
+		
+		binary := ast.new(ast.Binary_Expr, lexer.TextRange{left.range.start, right.range.end})
+		binary.left = left
+		binary.op = op_tok
+		binary.right = right
+		binary.derived_expr = binary
+		return binary
+	}
+
+	return left
+}
+
+is_comparison_op :: proc(p: ^Parser) -> bool {
+	#partial switch p.curr_tok.kind {
+	case .Lt, .Gt, .Le, .Ge, .Ne, .Eq:
+		return true
+	}
+	if check_keyword(p, "EQ") || check_keyword(p, "NE") ||
+	   check_keyword(p, "LT") || check_keyword(p, "LE") ||
+	   check_keyword(p, "GT") || check_keyword(p, "GE") ||
+	   check_keyword(p, "CO") || check_keyword(p, "CN") ||
+	   check_keyword(p, "CA") || check_keyword(p, "NA") ||
+	   check_keyword(p, "CS") || check_keyword(p, "NS") ||
+	   check_keyword(p, "CP") || check_keyword(p, "NP") ||
+	   check_keyword(p, "BETWEEN") {
+		return true
+	}
+	return false
+}
+
+parse_is_predicate :: proc(p: ^Parser, expr: ^ast.Expr) -> ^ast.Expr {
+	is_tok := expect_keyword_token(p, "IS")
+	
+	is_negated := false
+	if check_keyword(p, "NOT") {
+		advance_token(p)
+		is_negated = true
+	}
+
+	predicate_kind: ast.Predicate_Kind
+	if check_keyword(p, "INITIAL") {
+		advance_token(p)
+		predicate_kind = .Initial
+	} else if check_keyword(p, "SUPPLIED") {
+		advance_token(p)
+		predicate_kind = .Supplied
+	} else if check_keyword(p, "BOUND") {
+		advance_token(p)
+		predicate_kind = .Bound
+	} else if check_keyword(p, "ASSIGNED") {
+		advance_token(p)
+		predicate_kind = .Assigned
+	} else if check_keyword(p, "REQUESTED") {
+		advance_token(p)
+		predicate_kind = .Requested
+	} else if check_keyword(p, "INSTANCE") {
+		advance_token(p)
+		expect_keyword_token(p, "OF")
+		predicate_kind = .Instance_Of
+		// TODO: parse the type expression after INSTANCE OF
+	} else {
+		error(p, p.curr_tok.range, "expected predicate after IS")
+		return expr
+	}
+
+	pred_expr := ast.new(ast.Predicate_Expr, lexer.TextRange{expr.range.start, p.prev_tok.range.end})
+	pred_expr.expr = expr
+	pred_expr.predicate = predicate_kind
+	pred_expr.is_negated = is_negated
+	pred_expr.derived_expr = pred_expr
+	return pred_expr
 }

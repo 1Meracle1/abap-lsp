@@ -129,10 +129,34 @@ Block_Stmt :: struct {
 }
 
 If_Stmt :: struct {
-	using node: Stmt,
+	using node:      Stmt,
+	cond:            ^Expr,
+	body:            [dynamic]^Stmt,
+	elseif_branches: [dynamic]^Elseif_Branch,
+	else_body:       [dynamic]^Stmt,
+}
+
+Elseif_Branch :: struct {
+	using node: Node,
 	cond:       ^Expr,
-	body:       ^Stmt,
-	else_stmt:  ^Stmt,
+	body:       [dynamic]^Stmt,
+}
+
+// Predicate expressions for IS INITIAL, IS SUPPLIED, IS BOUND, etc.
+Predicate_Expr :: struct {
+	using node: Expr,
+	expr:       ^Expr,
+	predicate:  Predicate_Kind,
+	is_negated: bool, // for IS NOT
+}
+
+Predicate_Kind :: enum {
+	Initial,
+	Supplied,
+	Bound,
+	Assigned,
+	Requested,
+	Instance_Of,
 }
 
 Return_Stmt :: struct {
@@ -353,6 +377,7 @@ Any_Node :: union {
 	^Index_Expr,
 	^Call_Expr,
 	^New_Expr,
+	^Predicate_Expr,
 	// Types
 	^Table_Type,
 	// Statements
@@ -361,6 +386,7 @@ Any_Node :: union {
 	^Assign_Stmt,
 	^Block_Stmt,
 	^If_Stmt,
+	^Elseif_Branch,
 	^Return_Stmt,
 	// Declarations
 	^Bad_Decl,
@@ -401,6 +427,7 @@ Any_Expr :: union {
 	^Index_Expr,
 	^Call_Expr,
 	^New_Expr,
+	^Predicate_Expr,
 	// Types
 	^Table_Type,
 }

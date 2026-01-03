@@ -187,13 +187,37 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 				return res
 			}
 		}
-		if n.body != nil {
-			if res := find_node_at_offset(&n.body.stmt_base, offset); res != nil {
+		for stmt in n.body {
+			if res := find_node_at_offset(&stmt.stmt_base, offset); res != nil {
 				return res
 			}
 		}
-		if n.else_stmt != nil {
-			if res := find_node_at_offset(&n.else_stmt.stmt_base, offset); res != nil {
+		for branch in n.elseif_branches {
+			if res := find_node_at_offset(&branch.node, offset); res != nil {
+				return res
+			}
+		}
+		for stmt in n.else_body {
+			if res := find_node_at_offset(&stmt.stmt_base, offset); res != nil {
+				return res
+			}
+		}
+
+	case ^Elseif_Branch:
+		if n.cond != nil {
+			if res := find_node_at_offset(&n.cond.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		for stmt in n.body {
+			if res := find_node_at_offset(&stmt.stmt_base, offset); res != nil {
+				return res
+			}
+		}
+
+	case ^Predicate_Expr:
+		if n.expr != nil {
+			if res := find_node_at_offset(&n.expr.expr_base, offset); res != nil {
 				return res
 			}
 		}

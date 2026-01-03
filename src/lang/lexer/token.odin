@@ -19,6 +19,11 @@ TokenKind :: enum u8 {
 	Plus, // +
 	Star, // *
 	Slash, // /
+	Lt, // <
+	Gt, // >
+	Le, // <=
+	Ge, // >=
+	Ne, // <>
 	Other, // Invalid?
 	EOF,
 }
@@ -83,6 +88,16 @@ token_kind_string :: proc(token_kind: TokenKind) -> string {
 		res = "*"
 	case .Slash:
 		res = "/"
+	case .Lt:
+		res = "<"
+	case .Gt:
+		res = ">"
+	case .Le:
+		res = "<="
+	case .Ge:
+		res = ">="
+	case .Ne:
+		res = "<>"
 	case .Other:
 		res = "other"
 	case .EOF:

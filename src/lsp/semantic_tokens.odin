@@ -19,7 +19,6 @@ handle_semantic_tokens :: proc(srv: ^Server, id: json.Value, params: json.Value)
 
 	snap := cache.get_snapshot(srv.storage, semantic_params.textDocument.uri)
 	if snap == nil {
-		// Return empty tokens if document not found
 		result := SemanticTokens {
 			data = {},
 		}
@@ -28,12 +27,8 @@ handle_semantic_tokens :: proc(srv: ^Server, id: json.Value, params: json.Value)
 	}
 	defer cache.release_snapshot(snap)
 
-	// Collect semantic tokens from AST and symbol table
 	tokens := collect_semantic_tokens(snap)
-
-	// Encode tokens to LSP format (delta-encoded)
 	encoded := encode_semantic_tokens(snap.text, tokens[:])
-
 	result := SemanticTokens {
 		data = encoded[:],
 	}
@@ -230,8 +225,18 @@ collect_tokens_from_stmt :: proc(
 
 	case ^ast.If_Stmt:
 		collect_tokens_from_expr(tokens, s.cond, snap, nil)
-		collect_tokens_from_stmt(tokens, s.body, snap)
-		collect_tokens_from_stmt(tokens, s.else_stmt, snap)
+		for body_stmt in s.body {
+			collect_tokens_from_stmt(tokens, body_stmt, snap)
+		}
+		for branch in s.elseif_branches {
+			collect_tokens_from_expr(tokens, branch.cond, snap, nil)
+			for branch_stmt in branch.body {
+				collect_tokens_from_stmt(tokens, branch_stmt, snap)
+			}
+		}
+		for else_stmt in s.else_body {
+			collect_tokens_from_stmt(tokens, else_stmt, snap)
+		}
 
 	case ^ast.Block_Stmt:
 		for block_stmt in s.stmts {
@@ -644,6 +649,9 @@ collect_tokens_from_expr :: proc(
 		for arg in e.args {
 			collect_tokens_from_expr(tokens, arg, snap, form_scope)
 		}
+
+	case ^ast.Predicate_Expr:
+		collect_tokens_from_expr(tokens, e.expr, snap, form_scope)
 	}
 }
 

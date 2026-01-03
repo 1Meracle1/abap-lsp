@@ -46,42 +46,38 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 		log_trace(srv, fmt.tprintf("found ident: %s", n.name))
 		// Look up symbol in the correct scope chain
 		if sym, ok := lookup_symbol_at_offset(snap, n.name, offset); ok {
-			if sym.kind == .Form {
-				// For FORM symbols, show the full signature
+			#partial switch sym.kind {
+			case .Form:
 				hover_text = format_form_signature(sym)
-			} else if sym.kind == .Class {
-				// For CLASS symbols, show the class definition
+			case .Class:
 				hover_text = format_class_signature(sym)
-			} else if sym.kind == .Interface {
-				// For INTERFACE symbols, show the interface definition
+			case .Interface:
 				hover_text = format_interface_signature(sym)
-			} else if sym.kind == .Method {
-				// For METHOD symbols, show the method signature
+			case .Method:
 				hover_text = format_method_signature(sym)
-			} else if sym.kind == .TypeDef {
-				// For TYPES symbols, show the type definition
+			case .TypeDef:
 				if sym.type_info != nil && sym.type_info.kind == .Structure {
 					hover_text = format_struct_type(sym)
 				} else {
 					type_str := symbols.format_type(sym.type_info)
 					hover_text = fmt.tprintf("(type) %s = %s", sym.name, type_str)
 				}
-			} else if sym.kind == .Report {
+			case .Report:
 				hover_text = fmt.tprintf("(report) %s", sym.name)
-			} else if sym.kind == .Include {
+			case .Include:
 				hover_text = fmt.tprintf("(include) %s", sym.name)
-			} else if sym.kind == .Event {
+			case .Event:
 				hover_text = format_event_signature(sym)
-			} else if sym.kind == .Module {
+			case .Module:
 				hover_text = format_module_signature(sym)
-			} else {
+			case:
 				type_str := symbols.format_type(sym.type_info)
 				hover_text = fmt.tprintf("%s: %s", sym.name, type_str)
 			}
 		} else {
 			hover_text = fmt.tprintf("(unknown) %s", n.name)
 		}
-	
+
 	case ^ast.New_Expr:
 		log_trace(srv, "found NEW expression")
 		if n.is_inferred {
@@ -90,9 +86,17 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 			if type_ident, ok := n.type_expr.derived_expr.(^ast.Ident); ok {
 				if sym, found := lookup_symbol_at_offset(snap, type_ident.name, offset); found {
 					if sym.kind == .Class {
-						hover_text = fmt.tprintf("NEW %s( ) - creates instance of class %s", type_ident.name, type_ident.name)
+						hover_text = fmt.tprintf(
+							"NEW %s( ) - creates instance of class %s",
+							type_ident.name,
+							type_ident.name,
+						)
 					} else {
-						hover_text = fmt.tprintf("NEW %s( ) - creates reference to %s", type_ident.name, type_ident.name)
+						hover_text = fmt.tprintf(
+							"NEW %s( ) - creates reference to %s",
+							type_ident.name,
+							type_ident.name,
+						)
 					}
 				} else {
 					hover_text = fmt.tprintf("NEW %s( ) - creates reference", type_ident.name)
@@ -160,7 +164,13 @@ format_form_signature :: proc(sym: symbols.Symbol) -> string {
 		}
 	}
 
-	write_params :: proc(b: ^strings.Builder, keyword: string, params: []symbols.Symbol, indent: int, is_first: ^bool) {
+	write_params :: proc(
+		b: ^strings.Builder,
+		keyword: string,
+		params: []symbols.Symbol,
+		indent: int,
+		is_first: ^bool,
+	) {
 		if len(params) == 0 {
 			return
 		}
@@ -253,7 +263,14 @@ format_struct_fields :: proc(b: ^strings.Builder, t: ^symbols.Type, indent: int)
 	}
 }
 
-lookup_symbol_at_offset :: proc(snap: ^cache.Snapshot, name: string, offset: int) -> (symbols.Symbol, bool) {
+lookup_symbol_at_offset :: proc(
+	snap: ^cache.Snapshot,
+	name: string,
+	offset: int,
+) -> (
+	symbols.Symbol,
+	bool,
+) {
 	if enclosing_form := ast.find_enclosing_form(snap.ast, offset); enclosing_form != nil {
 		form_name := enclosing_form.ident.name
 		if form_sym, ok := snap.symbol_table.symbols[form_name]; ok {
@@ -431,7 +448,7 @@ format_event_signature :: proc(sym: symbols.Symbol) -> string {
 	strings.builder_init(&b, context.temp_allocator)
 
 	strings.write_string(&b, "```abap\n")
-	
+
 	// Convert the event name to uppercase for display
 	event_name := strings.to_upper(sym.name, context.temp_allocator)
 	strings.write_string(&b, event_name)

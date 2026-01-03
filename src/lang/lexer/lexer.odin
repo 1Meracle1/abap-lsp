@@ -93,6 +93,23 @@ scan :: proc(l: ^Lexer) -> Token {
 			kind = .Tilde
 		case '#':
 			kind = .Hash
+		case '<':
+			if l.ch == '=' {
+				advance_rune(l)
+				kind = .Le
+			} else if l.ch == '>' {
+				advance_rune(l)
+				kind = .Ne
+			} else {
+				kind = .Lt
+			}
+		case '>':
+			if l.ch == '=' {
+				advance_rune(l)
+				kind = .Ge
+			} else {
+				kind = .Gt
+			}
 		}
 	}
 
