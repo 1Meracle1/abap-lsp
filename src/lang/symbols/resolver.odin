@@ -45,26 +45,35 @@ resolve_file :: proc(file: ^ast.File) -> ^SymbolTable {
 	return table
 }
 
-resolve_inline_decl :: proc(table: ^SymbolTable, decl: ^ast.Data_Inline_Decl, is_global: bool = true) {
+resolve_inline_decl :: proc(
+	table: ^SymbolTable,
+	decl: ^ast.Data_Inline_Decl,
+	is_global: bool = true,
+) {
 	name := decl.ident.name
-	
+
 	type_info := make_inferred_type(table, decl.value)
-	
+
 	sym := Symbol {
-		name      = name,
-		kind      = .Variable,
-		range     = decl.ident.range,
-		type_info = type_info,
+		name       = name,
+		kind       = .Variable,
+		range      = decl.ident.range,
+		type_info  = type_info,
 		is_chained = false,
 	}
 	add_symbol(table, sym, allow_shadowing = is_global)
 }
 
-resolve_typed_decl :: proc(table: ^SymbolTable, decl: ^ast.Data_Typed_Decl, is_chained: bool, is_global: bool = true) {
+resolve_typed_decl :: proc(
+	table: ^SymbolTable,
+	decl: ^ast.Data_Typed_Decl,
+	is_chained: bool,
+	is_global: bool = true,
+) {
 	name := decl.ident.name
-	
+
 	type_info := resolve_type_expr(table, decl.typed)
-	
+
 	sym := Symbol {
 		name       = name,
 		kind       = .Variable,
@@ -75,17 +84,26 @@ resolve_typed_decl :: proc(table: ^SymbolTable, decl: ^ast.Data_Typed_Decl, is_c
 	add_symbol(table, sym, allow_shadowing = is_global)
 }
 
-resolve_chain_decl :: proc(table: ^SymbolTable, chain: ^ast.Data_Typed_Chain_Decl, is_global: bool = true) {
+resolve_chain_decl :: proc(
+	table: ^SymbolTable,
+	chain: ^ast.Data_Typed_Chain_Decl,
+	is_global: bool = true,
+) {
 	for decl in chain.decls {
 		resolve_typed_decl(table, decl, true, is_global)
 	}
 }
 
-resolve_types_decl :: proc(table: ^SymbolTable, decl: ^ast.Types_Decl, is_chained: bool, is_global: bool = true) {
+resolve_types_decl :: proc(
+	table: ^SymbolTable,
+	decl: ^ast.Types_Decl,
+	is_chained: bool,
+	is_global: bool = true,
+) {
 	name := decl.ident.name
-	
+
 	type_info := resolve_type_expr(table, decl.typed)
-	
+
 	sym := Symbol {
 		name       = name,
 		kind       = .TypeDef,
@@ -96,7 +114,11 @@ resolve_types_decl :: proc(table: ^SymbolTable, decl: ^ast.Types_Decl, is_chaine
 	add_symbol(table, sym, allow_shadowing = false)
 }
 
-resolve_types_chain_decl :: proc(table: ^SymbolTable, chain: ^ast.Types_Chain_Decl, is_global: bool = true) {
+resolve_types_chain_decl :: proc(
+	table: ^SymbolTable,
+	chain: ^ast.Types_Chain_Decl,
+	is_global: bool = true,
+) {
 	for decl in chain.decls {
 		resolve_types_decl(table, decl, true, is_global)
 	}
@@ -104,11 +126,11 @@ resolve_types_chain_decl :: proc(table: ^SymbolTable, chain: ^ast.Types_Chain_De
 
 resolve_types_struct_decl :: proc(table: ^SymbolTable, struct_decl: ^ast.Types_Struct_Decl) {
 	name := struct_decl.ident.name
-	
+
 	struct_type := make_structure_type(table, name)
-	
+
 	resolve_struct_components(table, struct_type, struct_decl.components[:])
-	
+
 	sym := Symbol {
 		name       = name,
 		kind       = .TypeDef,
@@ -119,12 +141,16 @@ resolve_types_struct_decl :: proc(table: ^SymbolTable, struct_decl: ^ast.Types_S
 	add_symbol(table, sym, allow_shadowing = false)
 }
 
-resolve_struct_components :: proc(table: ^SymbolTable, struct_type: ^Type, components: []^ast.Stmt) {
+resolve_struct_components :: proc(
+	table: ^SymbolTable,
+	struct_type: ^Type,
+	components: []^ast.Stmt,
+) {
 	for comp in components {
 		#partial switch c in comp.derived_stmt {
 		case ^ast.Types_Decl:
 			field_type := resolve_type_expr(table, c.typed)
-			
+
 			length_val := 0
 			if c.length != nil {
 				if lit, ok := c.length.derived_expr.(^ast.Basic_Lit); ok {
@@ -137,9 +163,9 @@ resolve_struct_components :: proc(table: ^SymbolTable, struct_type: ^Type, compo
 				}
 			}
 			field_type.length = length_val
-			
+
 			add_struct_field(struct_type, c.ident.name, field_type, length_val)
-			
+
 		case ^ast.Types_Struct_Decl:
 			nested_type := make_structure_type(table, c.ident.name)
 			resolve_struct_components(table, nested_type, c.components[:])
@@ -150,26 +176,26 @@ resolve_struct_components :: proc(table: ^SymbolTable, struct_type: ^Type, compo
 
 resolve_form_decl :: proc(table: ^SymbolTable, form: ^ast.Form_Decl) {
 	name := form.ident.name
-	
+
 	child_table := new(SymbolTable)
 	child_table.symbols = make(map[string]Symbol)
 	child_table.types = make([dynamic]^Type)
 	child_table.diagnostics = make([dynamic]Diagnostic)
-	
+
 	for param in form.tables_params {
 		resolve_form_param(child_table, param, .Tables)
 	}
-	
+
 	for param in form.using_params {
 		resolve_form_param(child_table, param, .Using)
 	}
-	
+
 	for param in form.changing_params {
 		resolve_form_param(child_table, param, .Changing)
 	}
-	
+
 	resolve_stmt_list(child_table, form.body[:])
-	
+
 	sym := Symbol {
 		name        = name,
 		kind        = .Form,
@@ -180,16 +206,20 @@ resolve_form_decl :: proc(table: ^SymbolTable, form: ^ast.Form_Decl) {
 	add_symbol(table, sym, allow_shadowing = false)
 }
 
-resolve_form_param :: proc(table: ^SymbolTable, param: ^ast.Form_Param, param_kind: FormParamKind) {
+resolve_form_param :: proc(
+	table: ^SymbolTable,
+	param: ^ast.Form_Param,
+	param_kind: FormParamKind,
+) {
 	name := param.ident.name
-	
+
 	type_info: ^Type
 	if param.typed != nil {
 		type_info = resolve_type_expr(table, param.typed)
 	} else {
 		type_info = make_unknown_type(table)
 	}
-	
+
 	sym := Symbol {
 		name            = name,
 		kind            = .FormParameter,
@@ -204,7 +234,7 @@ resolve_type_expr :: proc(table: ^SymbolTable, expr: ^ast.Expr) -> ^Type {
 	if expr == nil {
 		return make_unknown_type(table)
 	}
-	
+
 	#partial switch e in expr.derived_expr {
 	case ^ast.Ident:
 		type_kind := builtin_type_from_name(e.name)
@@ -214,16 +244,16 @@ resolve_type_expr :: proc(table: ^SymbolTable, expr: ^ast.Expr) -> ^Type {
 			return t
 		}
 		return make_named_type(table, e.name, expr)
-		
+
 	case ^ast.Table_Type:
 		elem_type := resolve_type_expr(table, e.elem)
 		t := make_table_type(table, elem_type)
 		t.ast_node = expr
 		return t
-		
+
 	case ^ast.Selector_Expr:
 		return make_named_type(table, selector_to_string(e), expr)
-	
+
 	case ^ast.New_Expr:
 		// For NEW expressions, the type is either explicit or inferred
 		if e.is_inferred {
@@ -235,13 +265,13 @@ resolve_type_expr :: proc(table: ^SymbolTable, expr: ^ast.Expr) -> ^Type {
 			return make_reference_type(table, target_type)
 		}
 		return make_unknown_type(table)
-	
+
 	case ^ast.Call_Expr:
 		// For call expressions, we would need to resolve the return type of the method
 		// For now, return unknown type as we need more context to resolve method return types
 		return make_unknown_type(table)
 	}
-	
+
 	return make_unknown_type(table)
 }
 
@@ -279,19 +309,19 @@ selector_to_string :: proc(sel: ^ast.Selector_Expr) -> string {
 
 resolve_class_def_decl :: proc(table: ^SymbolTable, class_def: ^ast.Class_Def_Decl) {
 	name := class_def.ident.name
-	
+
 	child_table := new(SymbolTable)
 	child_table.symbols = make(map[string]Symbol)
 	child_table.types = make([dynamic]^Type)
 	child_table.diagnostics = make([dynamic]Diagnostic)
-	
+
 	for section in class_def.sections {
 		resolve_class_section(child_table, section)
 	}
-	
+
 	class_type := make_type(table, .Named)
 	class_type.name = strings.to_lower(name)
-	
+
 	sym := Symbol {
 		name        = name,
 		kind        = .Class,
@@ -313,7 +343,7 @@ resolve_class_section :: proc(table: ^SymbolTable, section: ^ast.Class_Section) 
 			resolve_types_struct_decl(table, t)
 		}
 	}
-	
+
 	for data_decl in section.data {
 		#partial switch d in data_decl.derived_stmt {
 		case ^ast.Attr_Decl:
@@ -324,14 +354,14 @@ resolve_class_section :: proc(table: ^SymbolTable, section: ^ast.Class_Section) 
 			resolve_chain_decl(table, d, false)
 		}
 	}
-	
+
 	for method_decl in section.methods {
 		#partial switch m in method_decl.derived_stmt {
 		case ^ast.Method_Decl:
 			resolve_method_decl(table, m)
 		}
 	}
-	
+
 	for iface_decl in section.interfaces {
 		#partial switch i in iface_decl.derived_stmt {
 		case ^ast.Interfaces_Decl:
@@ -341,9 +371,9 @@ resolve_class_section :: proc(table: ^SymbolTable, section: ^ast.Class_Section) 
 
 resolve_attr_decl :: proc(table: ^SymbolTable, attr: ^ast.Attr_Decl) {
 	name := attr.ident.name
-	
+
 	type_info := resolve_type_expr(table, attr.typed)
-	
+
 	sym := Symbol {
 		name      = name,
 		kind      = .Field,
@@ -355,16 +385,16 @@ resolve_attr_decl :: proc(table: ^SymbolTable, attr: ^ast.Attr_Decl) {
 
 resolve_method_decl :: proc(table: ^SymbolTable, method: ^ast.Method_Decl) {
 	name := method.ident.name
-	
+
 	child_table := new(SymbolTable)
 	child_table.symbols = make(map[string]Symbol)
 	child_table.types = make([dynamic]^Type)
 	child_table.diagnostics = make([dynamic]Diagnostic)
-	
+
 	for param in method.params {
 		resolve_method_param(child_table, param)
 	}
-	
+
 	sym := Symbol {
 		name        = name,
 		kind        = .Method,
@@ -377,14 +407,14 @@ resolve_method_decl :: proc(table: ^SymbolTable, method: ^ast.Method_Decl) {
 
 resolve_method_param :: proc(table: ^SymbolTable, param: ^ast.Method_Param) {
 	name := param.ident.name
-	
+
 	type_info: ^Type
 	if param.typed != nil {
 		type_info = resolve_type_expr(table, param.typed)
 	} else {
 		type_info = make_unknown_type(table)
 	}
-	
+
 	sym := Symbol {
 		name      = name,
 		kind      = .Parameter,
@@ -408,7 +438,7 @@ resolve_method_impl :: proc(table: ^SymbolTable, method_impl: ^ast.Method_Impl) 
 	child_table.symbols = make(map[string]Symbol)
 	child_table.types = make([dynamic]^Type)
 	child_table.diagnostics = make([dynamic]Diagnostic)
-	
+
 	resolve_stmt_list(child_table, method_impl.body[:])
 }
 
@@ -424,7 +454,7 @@ resolve_stmt :: proc(table: ^SymbolTable, stmt: ^ast.Stmt) {
 	if stmt == nil {
 		return
 	}
-	
+
 	#partial switch s in stmt.derived_stmt {
 	case ^ast.Data_Inline_Decl:
 		resolve_inline_decl(table, s, is_global = false)
@@ -434,38 +464,36 @@ resolve_stmt :: proc(table: ^SymbolTable, stmt: ^ast.Stmt) {
 		resolve_chain_decl(table, s, is_global = false)
 	case ^ast.If_Stmt:
 		resolve_if_stmt(table, s)
+	case ^ast.Case_Stmt:
+		resolve_case_stmt(table, s)
 	}
 }
 
-// resolve_if_stmt resolves declarations inside IF statement bodies
 resolve_if_stmt :: proc(table: ^SymbolTable, if_stmt: ^ast.If_Stmt) {
-	// Resolve declarations in the main IF body
 	resolve_stmt_list(table, if_stmt.body[:])
-	
-	// Resolve declarations in ELSEIF branches
+
 	for branch in if_stmt.elseif_branches {
 		resolve_stmt_list(table, branch.body[:])
 	}
-	
-	// Resolve declarations in ELSE body
+
 	resolve_stmt_list(table, if_stmt.else_body[:])
 }
 
 resolve_interface_decl :: proc(table: ^SymbolTable, iface: ^ast.Interface_Decl) {
 	name := iface.ident.name
-	
+
 	child_table := new(SymbolTable)
 	child_table.symbols = make(map[string]Symbol)
 	child_table.types = make([dynamic]^Type)
 	child_table.diagnostics = make([dynamic]Diagnostic)
-	
+
 	for method_decl in iface.methods {
 		#partial switch m in method_decl.derived_stmt {
 		case ^ast.Method_Decl:
 			resolve_method_decl(child_table, m)
 		}
 	}
-	
+
 	for type_decl in iface.types {
 		#partial switch t in type_decl.derived_stmt {
 		case ^ast.Types_Decl:
@@ -476,7 +504,7 @@ resolve_interface_decl :: proc(table: ^SymbolTable, iface: ^ast.Interface_Decl) 
 			resolve_types_struct_decl(child_table, t)
 		}
 	}
-	
+
 	for data_decl in iface.data {
 		#partial switch d in data_decl.derived_stmt {
 		case ^ast.Attr_Decl:
@@ -485,10 +513,10 @@ resolve_interface_decl :: proc(table: ^SymbolTable, iface: ^ast.Interface_Decl) 
 			resolve_typed_decl(child_table, d, false, false)
 		}
 	}
-	
+
 	iface_type := make_type(table, .Named)
 	iface_type.name = strings.to_lower(name)
-	
+
 	sym := Symbol {
 		name        = name,
 		kind        = .Interface,
@@ -504,7 +532,7 @@ resolve_report_decl :: proc(table: ^SymbolTable, report: ^ast.Report_Decl) {
 		return
 	}
 	name := report.name.name
-	
+
 	sym := Symbol {
 		name      = name,
 		kind      = .Report,
@@ -519,14 +547,14 @@ resolve_include_decl :: proc(table: ^SymbolTable, include: ^ast.Include_Decl) {
 		return
 	}
 	name := include.name.name
-	
+
 	sym := Symbol {
 		name      = name,
 		kind      = .Include,
 		range     = include.name.range,
 		type_info = nil,
 	}
-	add_symbol(table, sym, allow_shadowing = true)  // Allow shadowing for includes
+	add_symbol(table, sym, allow_shadowing = true) // Allow shadowing for includes
 }
 
 resolve_event_block :: proc(table: ^SymbolTable, event: ^ast.Event_Block) {
@@ -535,13 +563,13 @@ resolve_event_block :: proc(table: ^SymbolTable, event: ^ast.Event_Block) {
 	child_table.symbols = make(map[string]Symbol)
 	child_table.types = make([dynamic]^Type)
 	child_table.diagnostics = make([dynamic]Diagnostic)
-	
+
 	// Resolve declarations in the event body
 	resolve_stmt_list(child_table, event.body[:])
-	
+
 	// Create a symbol for the event with a generated name based on kind
 	event_name := get_event_name(event.kind)
-	
+
 	sym := Symbol {
 		name        = event_name,
 		kind        = .Event,
@@ -575,16 +603,16 @@ resolve_module_decl :: proc(table: ^SymbolTable, module: ^ast.Module_Decl) {
 		return
 	}
 	name := module.ident.name
-	
+
 	// Create a child scope for the module's local variables
 	child_table := new(SymbolTable)
 	child_table.symbols = make(map[string]Symbol)
 	child_table.types = make([dynamic]^Type)
 	child_table.diagnostics = make([dynamic]Diagnostic)
-	
+
 	// Resolve declarations in the module body
 	resolve_stmt_list(child_table, module.body[:])
-	
+
 	sym := Symbol {
 		name        = name,
 		kind        = .Module,
@@ -593,4 +621,10 @@ resolve_module_decl :: proc(table: ^SymbolTable, module: ^ast.Module_Decl) {
 		child_scope = child_table,
 	}
 	add_symbol(table, sym, allow_shadowing = true)
+}
+
+resolve_case_stmt :: proc(table: ^SymbolTable, case_stmt: ^ast.Case_Stmt) {
+	for branch in case_stmt.branches {
+		resolve_stmt_list(table, branch.body[:])
+	}
 }

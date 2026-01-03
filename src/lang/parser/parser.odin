@@ -86,6 +86,8 @@ parse_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			return parse_leave_stmt(p)
 		case "SET":
 			return parse_set_stmt(p)
+		case "CASE":
+			return parse_case_stmt(p)
 		}
 	}
 
@@ -608,51 +610,58 @@ parse_atom_expr :: proc(p: ^Parser, value: ^ast.Expr) -> ^ast.Expr {
 				break loop
 			}
 			lparen_tok := advance_token(p) // consume (
-			
+
 			call_expr := ast.new(ast.Call_Expr, lexer.TextRange{expr.range.start, 0})
 			call_expr.expr = expr
 			args := make([dynamic]^ast.Expr)
-			
+
 			// Parse arguments with safety limit to prevent infinite loops
 			max_iterations := 1000
 			iterations := 0
 			if p.curr_tok.kind != .RParen {
 				for iterations < max_iterations {
 					iterations += 1
-					
+
 					// Save position to detect if we make progress
 					prev_pos := p.curr_tok.range.start
-					
+
 					arg := parse_call_arg(p)
 					if arg != nil {
 						append(&args, arg)
 					}
-					
+
 					if p.curr_tok.kind == .RParen {
 						break
 					}
 					if p.curr_tok.kind == .EOF || p.curr_tok.kind == .Period {
 						break
 					}
-					
+
 					// If we didn't make any progress, skip the current token to avoid infinite loop
 					if p.curr_tok.range.start == prev_pos {
-						error(p, p.curr_tok.range, "unexpected token '%s' in function call", p.curr_tok.lit)
+						error(
+							p,
+							p.curr_tok.range,
+							"unexpected token '%s' in function call",
+							p.curr_tok.lit,
+						)
 						advance_token(p)
 						// Check again after advancing - might hit terminator
-						if p.curr_tok.kind == .RParen || p.curr_tok.kind == .EOF || p.curr_tok.kind == .Period {
+						if p.curr_tok.kind == .RParen ||
+						   p.curr_tok.kind == .EOF ||
+						   p.curr_tok.kind == .Period {
 							break
 						}
 					}
 				}
-				
+
 				// Safety: if we hit max iterations, skip to closing paren or statement end
 				if iterations >= max_iterations {
 					error(p, lparen_tok.range, "too many arguments or malformed function call")
 					skip_to_matching_paren_or_period(p)
 				}
 			}
-			
+
 			rparen_tok := expect_token(p, .RParen)
 			call_expr.args = args[:]
 			call_expr.range.end = rparen_tok.range.end
@@ -687,7 +696,7 @@ skip_to_matching_paren_or_period :: proc(p: ^Parser) {
 // parse_call_arg parses a single call argument, which may be a named argument like "param = value"
 parse_call_arg :: proc(p: ^Parser) -> ^ast.Expr {
 	start_tok := p.curr_tok
-	
+
 	// Check if this is a named argument (identifier followed by = with spaces)
 	if p.curr_tok.kind == .Ident {
 		// Save parser state
@@ -696,21 +705,24 @@ parse_call_arg :: proc(p: ^Parser) -> ^ast.Expr {
 		saved_pos := p.l.pos
 		saved_read_pos := p.l.read_pos
 		saved_ch := p.l.ch
-		
+
 		ident_tok := advance_token(p)
-		
+
 		// Check if next token is = with space before it (named argument pattern)
 		if p.curr_tok.kind == .Eq && lexer.have_space_between(ident_tok, p.curr_tok) {
 			advance_token(p) // consume =
 			value := parse_expr(p)
-			
-			named_arg := ast.new(ast.Named_Arg, lexer.TextRange{start_tok.range.start, value.range.end})
+
+			named_arg := ast.new(
+				ast.Named_Arg,
+				lexer.TextRange{start_tok.range.start, value.range.end},
+			)
 			named_arg.name = ast.new_ident(ident_tok)
 			named_arg.value = value
 			named_arg.derived_expr = named_arg
 			return named_arg
 		}
-		
+
 		// Not a named argument, restore parser state
 		p.prev_tok = saved_prev
 		p.curr_tok = saved_curr
@@ -718,7 +730,7 @@ parse_call_arg :: proc(p: ^Parser) -> ^ast.Expr {
 		p.l.read_pos = saved_read_pos
 		p.l.ch = saved_ch
 	}
-	
+
 	// Regular argument
 	arg := parse_expr(p)
 	return arg
@@ -736,10 +748,14 @@ parse_operand :: proc(p: ^Parser) -> ^ast.Expr {
 			return parse_conv_expr(p)
 		}
 		// Check for other constructor expressions that use # syntax
-		if check_keyword(p, "COND") || check_keyword(p, "SWITCH") ||
-		   check_keyword(p, "VALUE") || check_keyword(p, "REF") ||
-		   check_keyword(p, "CAST") || check_keyword(p, "EXACT") ||
-		   check_keyword(p, "CORRESPONDING") || check_keyword(p, "REDUCE") ||
+		if check_keyword(p, "COND") ||
+		   check_keyword(p, "SWITCH") ||
+		   check_keyword(p, "VALUE") ||
+		   check_keyword(p, "REF") ||
+		   check_keyword(p, "CAST") ||
+		   check_keyword(p, "EXACT") ||
+		   check_keyword(p, "CORRESPONDING") ||
+		   check_keyword(p, "REDUCE") ||
 		   check_keyword(p, "FILTER") {
 			return parse_constructor_expr(p)
 		}
@@ -753,7 +769,11 @@ parse_operand :: proc(p: ^Parser) -> ^ast.Expr {
 	case .Hash:
 		// Standalone # is not valid, but consume it to avoid infinite loops
 		hash_tok := advance_token(p)
-		error(p, hash_tok.range, "unexpected '#' token - type inference marker must follow a constructor keyword")
+		error(
+			p,
+			hash_tok.range,
+			"unexpected '#' token - type inference marker must follow a constructor keyword",
+		)
 		bad_expr := ast.new(ast.Bad_Expr, hash_tok.range)
 		return bad_expr
 	}
@@ -790,10 +810,10 @@ parse_new_expr :: proc(p: ^Parser) -> ^ast.Expr {
 		if p.curr_tok.kind != .RParen {
 			for iterations < max_iterations {
 				iterations += 1
-				
+
 				// Save position to detect if we make progress
 				prev_pos := p.curr_tok.range.start
-				
+
 				arg := parse_expr(p)
 				if arg != nil {
 					append(&new_expr.args, arg)
@@ -806,18 +826,25 @@ parse_new_expr :: proc(p: ^Parser) -> ^ast.Expr {
 				if p.curr_tok.kind == .EOF || p.curr_tok.kind == .Period {
 					break
 				}
-				
+
 				// If we didn't make any progress, skip the current token to avoid infinite loop
 				if p.curr_tok.range.start == prev_pos {
-					error(p, p.curr_tok.range, "unexpected token '%s' in NEW expression", p.curr_tok.lit)
+					error(
+						p,
+						p.curr_tok.range,
+						"unexpected token '%s' in NEW expression",
+						p.curr_tok.lit,
+					)
 					advance_token(p)
 					// Check again after advancing
-					if p.curr_tok.kind == .RParen || p.curr_tok.kind == .EOF || p.curr_tok.kind == .Period {
+					if p.curr_tok.kind == .RParen ||
+					   p.curr_tok.kind == .EOF ||
+					   p.curr_tok.kind == .Period {
 						break
 					}
 				}
 			}
-			
+
 			// Safety: if we hit max iterations, skip to closing paren or statement end
 			if iterations >= max_iterations {
 				error(p, lparen_tok.range, "too many arguments or malformed NEW expression")
@@ -845,10 +872,10 @@ parse_simple_type_expr :: proc(p: ^Parser) -> ^ast.Expr {
 	if p.curr_tok.kind != .Ident {
 		return nil
 	}
-	
+
 	tok := advance_token(p)
 	expr: ^ast.Expr = ast.new_ident(tok)
-	
+
 	// Handle selector expressions for types like my_class~ty_type or interface~method
 	// but NOT call expressions (parentheses belong to the constructor, not the type)
 	loop: for {
@@ -922,10 +949,10 @@ parse_constructor_body :: proc(p: ^Parser, keyword_tok: lexer.Token) -> ^ast.Exp
 		if p.curr_tok.kind != .RParen {
 			for iterations < max_iterations {
 				iterations += 1
-				
+
 				// Save position to detect if we make progress
 				prev_pos := p.curr_tok.range.start
-				
+
 				arg := parse_call_arg(p)
 				if arg != nil {
 					append(&constructor_expr.args, arg)
@@ -937,20 +964,31 @@ parse_constructor_body :: proc(p: ^Parser, keyword_tok: lexer.Token) -> ^ast.Exp
 				if p.curr_tok.kind == .EOF || p.curr_tok.kind == .Period {
 					break
 				}
-				
+
 				// If we didn't make any progress, skip the current token to avoid infinite loop
 				if p.curr_tok.range.start == prev_pos {
-					error(p, p.curr_tok.range, "unexpected token '%s' in constructor expression", p.curr_tok.lit)
+					error(
+						p,
+						p.curr_tok.range,
+						"unexpected token '%s' in constructor expression",
+						p.curr_tok.lit,
+					)
 					advance_token(p)
-					if p.curr_tok.kind == .RParen || p.curr_tok.kind == .EOF || p.curr_tok.kind == .Period {
+					if p.curr_tok.kind == .RParen ||
+					   p.curr_tok.kind == .EOF ||
+					   p.curr_tok.kind == .Period {
 						break
 					}
 				}
 			}
-			
+
 			// Safety: if we hit max iterations, skip to closing paren or statement end
 			if iterations >= max_iterations {
-				error(p, lparen_tok.range, "too many arguments or malformed constructor expression")
+				error(
+					p,
+					lparen_tok.range,
+					"too many arguments or malformed constructor expression",
+				)
 				skip_to_matching_paren_or_period(p)
 			}
 		}
@@ -2110,5 +2148,52 @@ parse_set_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	stmt := ast.new(ast.Set_Stmt, set_tok, end_tok)
 	stmt.expr = expr
 	stmt.kind = kind
+	return stmt
+}
+
+parse_case_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
+	case_tok := advance_token(p)
+	cond_expr := parse_expr(p)
+	expect_token(p, .Period)
+
+	branches := make([dynamic]ast.Case_When_Branch)
+	for p.curr_tok.kind != .EOF {
+		if check_keyword(p, "ENDCASE") {
+			break
+		}
+		if !check_keyword(p, "WHEN") {
+			error(p, p.curr_tok.range, "expected WHEN keyword")
+			break
+		}
+		advance_token(p)
+
+		branch: ast.Case_When_Branch
+		if check_keyword(p, "OTHERS") {
+			advance_token(p)
+			branch.is_others = true
+		} else {
+			branch.expr = parse_expr(p)
+		}
+		expect_token(p, .Period)
+
+		branch.body = make([dynamic]^ast.Stmt)
+		for p.curr_tok.kind != .EOF {
+			if check_keyword(p, "WHEN") || check_keyword(p, "ENDCASE") {
+				break
+			}
+			stmt := parse_stmt(p)
+			if stmt != nil {
+				append(&branch.body, stmt)
+			}
+		}
+
+		append(&branches, branch)
+	}
+
+	endcase_tok := expect_keyword_token(p, "ENDCASE")
+	expect_token(p, .Period)
+	stmt := ast.new(ast.Case_Stmt, case_tok, endcase_tok)
+	stmt.expr = cond_expr
+	stmt.branches = branches
 	return stmt
 }

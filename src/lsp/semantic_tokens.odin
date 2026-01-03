@@ -238,6 +238,17 @@ collect_tokens_from_stmt :: proc(
 			collect_tokens_from_stmt(tokens, else_stmt, snap)
 		}
 
+	case ^ast.Case_Stmt:
+		collect_tokens_from_expr(tokens, s.expr, snap, nil)
+		for branch in s.branches {
+			if !branch.is_others {
+				collect_tokens_from_expr(tokens, branch.expr, snap, nil)
+			}
+			for body_stmt in branch.body {
+				collect_tokens_from_stmt(tokens, body_stmt, snap)
+			}
+		}
+
 	case ^ast.Block_Stmt:
 		for block_stmt in s.stmts {
 			collect_tokens_from_stmt(tokens, block_stmt, snap)

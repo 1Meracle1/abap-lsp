@@ -266,6 +266,23 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 			}
 		}
 
+	case ^Case_Stmt:
+		if n.expr != nil {
+			if res := find_node_at_offset(&n.expr.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		for branch in n.branches {
+			if res := find_node_at_offset(&branch.expr.expr_base, offset); res != nil {
+				return res
+			}
+			for stmt in branch.body {
+				if res := find_node_at_offset(&stmt.stmt_base, offset); res != nil {
+					return res
+				}
+			}
+		}
+
 	case ^Form_Decl:
 		if n.ident != nil {
 			if res := find_node_at_offset(&n.ident.expr_base, offset); res != nil {

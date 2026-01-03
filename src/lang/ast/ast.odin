@@ -107,8 +107,8 @@ New_Expr :: struct {
 Constructor_Expr :: struct {
 	using node:  Expr,
 	keyword:     lexer.Token, // The constructor keyword (CONV, COND, etc.)
-	type_expr:   ^Expr,       // The type expression (nil if inferred)
-	is_inferred: bool,        // True if using # for type inference
+	type_expr:   ^Expr, // The type expression (nil if inferred)
+	is_inferred: bool, // True if using # for type inference
 	args:        [dynamic]^Expr,
 }
 
@@ -198,6 +198,18 @@ Set_Stmt :: struct {
 	using node: Stmt,
 	kind:       Set_Kind,
 	expr:       ^Expr,
+}
+
+Case_When_Branch :: struct {
+	is_others: bool, // WHEN OTHERS is used
+	expr:      ^Expr,
+	body:      [dynamic]^Stmt,
+}
+
+Case_Stmt :: struct {
+	using node: Stmt,
+	expr:       ^Expr,
+	branches:   [dynamic]Case_When_Branch,
 }
 
 // Declarations
@@ -429,6 +441,7 @@ Any_Node :: union {
 	^Modify_Screen_Stmt,
 	^Leave_Program_Stmt,
 	^Set_Stmt,
+	^Case_Stmt,
 	// Declarations
 	^Bad_Decl,
 	^Data_Inline_Decl,
@@ -485,6 +498,7 @@ Any_Stmt :: union {
 	^Modify_Screen_Stmt,
 	^Leave_Program_Stmt,
 	^Set_Stmt,
+	^Case_Stmt,
 	//
 	^Bad_Decl,
 	^Data_Inline_Decl,
