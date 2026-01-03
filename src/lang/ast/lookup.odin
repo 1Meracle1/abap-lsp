@@ -229,6 +229,19 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 			}
 		}
 
+	case ^Modify_Screen_Stmt:
+		return node
+
+	case ^Leave_Program_Stmt:
+		return node
+
+	case ^Set_Stmt:
+		if n.expr != nil {
+			if res := find_node_at_offset(&n.expr.expr_base, offset); res != nil {
+				return res
+			}
+		}
+
 	case ^Form_Decl:
 		if n.ident != nil {
 			if res := find_node_at_offset(&n.ident.expr_base, offset); res != nil {

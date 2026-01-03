@@ -80,6 +80,12 @@ parse_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			if check_compound_keyword(p, "TOP", "OF", "PAGE") {
 				return parse_event_block(p, "TOP-OF-PAGE")
 			}
+		case "MODIFY":
+			return parse_modify_stmt(p)
+		case "LEAVE":
+			return parse_leave_stmt(p)
+		case "SET":
+			return parse_set_stmt(p)
 		}
 	}
 
@@ -1564,7 +1570,9 @@ parse_if_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 		elseif_branch.body = make([dynamic]^ast.Stmt)
 
 		for p.curr_tok.kind != .EOF {
-			if check_keyword(p, "ELSEIF") || check_keyword(p, "ELSE") || check_keyword(p, "ENDIF") {
+			if check_keyword(p, "ELSEIF") ||
+			   check_keyword(p, "ELSE") ||
+			   check_keyword(p, "ENDIF") {
 				break
 			}
 			stmt := parse_stmt(p)
@@ -1610,7 +1618,7 @@ parse_or_expr :: proc(p: ^Parser) -> ^ast.Expr {
 	for check_keyword(p, "OR") {
 		op_tok := advance_token(p)
 		right := parse_and_expr(p)
-		
+
 		binary := ast.new(ast.Binary_Expr, lexer.TextRange{left.range.start, right.range.end})
 		binary.left = left
 		binary.op = op_tok
@@ -1628,7 +1636,7 @@ parse_and_expr :: proc(p: ^Parser) -> ^ast.Expr {
 	for check_keyword(p, "AND") {
 		op_tok := advance_token(p)
 		right := parse_not_expr(p)
-		
+
 		binary := ast.new(ast.Binary_Expr, lexer.TextRange{left.range.start, right.range.end})
 		binary.left = left
 		binary.op = op_tok
@@ -1644,14 +1652,14 @@ parse_not_expr :: proc(p: ^Parser) -> ^ast.Expr {
 	if check_keyword(p, "NOT") {
 		op_tok := advance_token(p)
 		expr := parse_not_expr(p)
-		
+
 		unary := ast.new(ast.Unary_Expr, lexer.TextRange{op_tok.range.start, expr.range.end})
 		unary.op = op_tok
 		unary.expr = expr
 		unary.derived_expr = unary
 		return unary
 	}
-	
+
 	return parse_comparison_expr(p)
 }
 
@@ -1665,7 +1673,7 @@ parse_comparison_expr :: proc(p: ^Parser) -> ^ast.Expr {
 	if is_comparison_op(p) {
 		op_tok := advance_token(p)
 		right := parse_expr(p)
-		
+
 		binary := ast.new(ast.Binary_Expr, lexer.TextRange{left.range.start, right.range.end})
 		binary.left = left
 		binary.op = op_tok
@@ -1682,13 +1690,20 @@ is_comparison_op :: proc(p: ^Parser) -> bool {
 	case .Lt, .Gt, .Le, .Ge, .Ne, .Eq:
 		return true
 	}
-	if check_keyword(p, "EQ") || check_keyword(p, "NE") ||
-	   check_keyword(p, "LT") || check_keyword(p, "LE") ||
-	   check_keyword(p, "GT") || check_keyword(p, "GE") ||
-	   check_keyword(p, "CO") || check_keyword(p, "CN") ||
-	   check_keyword(p, "CA") || check_keyword(p, "NA") ||
-	   check_keyword(p, "CS") || check_keyword(p, "NS") ||
-	   check_keyword(p, "CP") || check_keyword(p, "NP") ||
+	if check_keyword(p, "EQ") ||
+	   check_keyword(p, "NE") ||
+	   check_keyword(p, "LT") ||
+	   check_keyword(p, "LE") ||
+	   check_keyword(p, "GT") ||
+	   check_keyword(p, "GE") ||
+	   check_keyword(p, "CO") ||
+	   check_keyword(p, "CN") ||
+	   check_keyword(p, "CA") ||
+	   check_keyword(p, "NA") ||
+	   check_keyword(p, "CS") ||
+	   check_keyword(p, "NS") ||
+	   check_keyword(p, "CP") ||
+	   check_keyword(p, "NP") ||
 	   check_keyword(p, "BETWEEN") {
 		return true
 	}
@@ -1697,7 +1712,7 @@ is_comparison_op :: proc(p: ^Parser) -> bool {
 
 parse_is_predicate :: proc(p: ^Parser, expr: ^ast.Expr) -> ^ast.Expr {
 	is_tok := expect_keyword_token(p, "IS")
-	
+
 	is_negated := false
 	if check_keyword(p, "NOT") {
 		advance_token(p)
@@ -1730,10 +1745,74 @@ parse_is_predicate :: proc(p: ^Parser, expr: ^ast.Expr) -> ^ast.Expr {
 		return expr
 	}
 
-	pred_expr := ast.new(ast.Predicate_Expr, lexer.TextRange{expr.range.start, p.prev_tok.range.end})
+	pred_expr := ast.new(
+		ast.Predicate_Expr,
+		lexer.TextRange{expr.range.start, p.prev_tok.range.end},
+	)
 	pred_expr.expr = expr
 	pred_expr.predicate = predicate_kind
 	pred_expr.is_negated = is_negated
 	pred_expr.derived_expr = pred_expr
 	return pred_expr
+}
+
+parse_modify_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
+	modify_tok := advance_token(p)
+	if check_keyword(p, "SCREEN") {
+		advance_token(p)
+		expect_token(p, .Period)
+		stmt := ast.new(ast.Modify_Screen_Stmt, modify_tok, p.curr_tok)
+		return stmt
+	} else {
+		error(p, p.curr_tok.range, "expected SCREEN after MODIFY")
+		return nil
+	}
+}
+
+parse_leave_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
+	modify_tok := advance_token(p)
+	if check_keyword(p, "PROGRAM") {
+		advance_token(p)
+		expect_token(p, .Period)
+		stmt := ast.new(ast.Leave_Program_Stmt, modify_tok, p.curr_tok)
+		return stmt
+	} else {
+		error(p, p.curr_tok.range, "expected PROGRAM after LEAVE")
+		return nil
+	}
+}
+
+parse_set_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
+	set_tok := advance_token(p)
+	kind: ast.Set_Kind
+	if check_class_keyword(p, "PF", "STATUS") {
+		kind = .Pf_Status
+	} else if check_keyword(p, "TITLEBAR") {
+		kind = .Titlebar
+		advance_token(p)
+	} else if check_keyword(p, "SCREEN") {
+		kind = .Screen
+		advance_token(p)
+	} else {
+		if check_keyword(p, "CURSOR") {
+			advance_token(p)
+			if check_keyword(p, "FIELD") {
+				advance_token(p)
+				kind = .Cursor_Field
+			} else {
+				error(p, p.curr_tok.range, "expected FIELD after SET CURSOR")
+			}
+		} else {
+			// FIXME retrack first?
+			// return parse_expr_or_assign_stmt(p)
+			error(p, p.curr_tok.range, "expected CURSOR after SET")
+		}
+	}
+	expr := parse_expr(p)
+	end_tok := p.curr_tok
+	expect_token(p, .Period)
+	stmt := ast.new(ast.Set_Stmt, set_tok, end_tok)
+	stmt.expr = expr
+	stmt.kind = kind
+	return stmt
 }

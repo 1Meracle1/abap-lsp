@@ -64,6 +64,10 @@ ABAP_KEYWORDS :: []string{
 	"EXIT",
 	"CONTINUE",
 	"RETURN",
+	"SET PF-STATUS",
+	"SET TITLEBAR",
+	"SET CURSOR FIELD",
+	"SET SCREEN",
 	// Database operations
 	"SELECT",
 	"ENDSELECT",
@@ -75,8 +79,10 @@ ABAP_KEYWORDS :: []string{
 	"HAVING",
 	"INSERT",
 	"UPDATE",
-	"MODIFY",
+	"MODIFY TABLE",
+	"MODIFY SCREEN",
 	"DELETE",
+	"LEAVE PROGRAM",
 	// Internal table operations
 	"APPEND",
 	"COLLECT",

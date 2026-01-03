@@ -164,6 +164,27 @@ Return_Stmt :: struct {
 	results:    []^Expr,
 }
 
+Modify_Screen_Stmt :: struct {
+	using node: Stmt,
+}
+
+Leave_Program_Stmt :: struct {
+	using node: Stmt,
+}
+
+Set_Kind :: enum {
+	Pf_Status,
+	Titlebar,
+	Cursor_Field,
+	Screen,
+}
+
+Set_Stmt :: struct {
+	using node: Stmt,
+	kind:       Set_Kind,
+	expr:       ^Expr,
+}
+
 // Declarations
 
 Bad_Decl :: struct {
@@ -350,10 +371,10 @@ Module_Type :: enum {
 }
 
 Module_Decl :: struct {
-	using node:   Decl,
-	ident:        ^Ident,
-	module_type:  Module_Type,
-	body:         [dynamic]^Stmt,
+	using node:  Decl,
+	ident:       ^Ident,
+	module_type: Module_Type,
+	body:        [dynamic]^Stmt,
 }
 
 // Types
@@ -388,6 +409,9 @@ Any_Node :: union {
 	^If_Stmt,
 	^Elseif_Branch,
 	^Return_Stmt,
+	^Modify_Screen_Stmt,
+	^Leave_Program_Stmt,
+	^Set_Stmt,
 	// Declarations
 	^Bad_Decl,
 	^Data_Inline_Decl,
@@ -439,6 +463,9 @@ Any_Stmt :: union {
 	^Block_Stmt,
 	^If_Stmt,
 	^Return_Stmt,
+	^Modify_Screen_Stmt,
+	^Leave_Program_Stmt,
+	^Set_Stmt,
 	//
 	^Bad_Decl,
 	^Data_Inline_Decl,
