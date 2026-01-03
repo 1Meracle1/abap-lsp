@@ -26,6 +26,7 @@ SymbolKind :: enum {
 	Report,
 	Include,
 	Event,
+	Module,
 }
 
 FormParamKind :: enum {

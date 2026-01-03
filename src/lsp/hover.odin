@@ -72,6 +72,8 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 				hover_text = fmt.tprintf("(include) %s", sym.name)
 			} else if sym.kind == .Event {
 				hover_text = format_event_signature(sym)
+			} else if sym.kind == .Module {
+				hover_text = format_module_signature(sym)
 			} else {
 				type_str := symbols.format_type(sym.type_info)
 				hover_text = fmt.tprintf("%s: %s", sym.name, type_str)
@@ -286,6 +288,17 @@ lookup_symbol_at_offset :: proc(snap: ^cache.Snapshot, name: string, offset: int
 		}
 	}
 
+	if enclosing_module := ast.find_enclosing_module(snap.ast, offset); enclosing_module != nil {
+		module_name := enclosing_module.ident.name
+		if module_sym, ok := snap.symbol_table.symbols[module_name]; ok {
+			if module_sym.child_scope != nil {
+				if sym, found := module_sym.child_scope.symbols[name]; found {
+					return sym, true
+				}
+			}
+		}
+	}
+
 	if sym, ok := snap.symbol_table.symbols[name]; ok {
 		return sym, true
 	}
@@ -423,6 +436,22 @@ format_event_signature :: proc(sym: symbols.Symbol) -> string {
 	event_name := strings.to_upper(sym.name, context.temp_allocator)
 	strings.write_string(&b, event_name)
 	strings.write_string(&b, ".")
+	strings.write_string(&b, "\n```")
+
+	return strings.to_string(b)
+}
+
+format_module_signature :: proc(sym: symbols.Symbol) -> string {
+	if sym.kind != .Module {
+		return sym.name
+	}
+
+	b: strings.Builder
+	strings.builder_init(&b, context.temp_allocator)
+
+	strings.write_string(&b, "```abap\n")
+	strings.write_string(&b, "MODULE ")
+	strings.write_string(&b, sym.name)
 	strings.write_string(&b, "\n```")
 
 	return strings.to_string(b)

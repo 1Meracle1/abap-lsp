@@ -2705,3 +2705,255 @@ ENDCLASS.`
 		}
 	}
 }
+
+// --- MODULE tests ---
+
+@(test)
+basic_module_output_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `MODULE status_0100 OUTPUT.
+ENDMODULE.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 1,
+		fmt.tprintf("Expected 1 decl, got %v", len(file.decls)),
+	)
+	if len(file.decls) > 0 {
+		module, ok := file.decls[0].derived_stmt.(^ast.Module_Decl)
+		if !testing.expect(t, ok, fmt.tprintf("Expected Module_Decl, got %T", file.decls[0].derived_stmt)) do return
+
+		testing.expect(t, module.ident != nil, "Module ident should not be nil")
+		if module.ident != nil {
+			testing.expect(
+				t,
+				module.ident.name == "status_0100",
+				fmt.tprintf("Expected 'status_0100', got '%s'", module.ident.name),
+			)
+		}
+		testing.expect(
+			t,
+			module.module_type == .Output,
+			fmt.tprintf("Expected Output, got %v", module.module_type),
+		)
+		testing.expect(
+			t,
+			len(module.body) == 0,
+			fmt.tprintf("Expected 0 body statements, got %d", len(module.body)),
+		)
+	}
+}
+
+@(test)
+basic_module_input_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `MODULE user_command_0100 INPUT.
+ENDMODULE.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 1,
+		fmt.tprintf("Expected 1 decl, got %v", len(file.decls)),
+	)
+	if len(file.decls) > 0 {
+		module, ok := file.decls[0].derived_stmt.(^ast.Module_Decl)
+		if !testing.expect(t, ok, fmt.tprintf("Expected Module_Decl, got %T", file.decls[0].derived_stmt)) do return
+
+		testing.expect(t, module.ident != nil, "Module ident should not be nil")
+		if module.ident != nil {
+			testing.expect(
+				t,
+				module.ident.name == "user_command_0100",
+				fmt.tprintf("Expected 'user_command_0100', got '%s'", module.ident.name),
+			)
+		}
+		testing.expect(
+			t,
+			module.module_type == .Input,
+			fmt.tprintf("Expected Input, got %v", module.module_type),
+		)
+		testing.expect(
+			t,
+			len(module.body) == 0,
+			fmt.tprintf("Expected 0 body statements, got %d", len(module.body)),
+		)
+	}
+}
+
+@(test)
+module_with_body_statements_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `MODULE status_0100 OUTPUT.
+  DATA lv_text TYPE string.
+  lv_text = 'Hello'.
+ENDMODULE.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 1,
+		fmt.tprintf("Expected 1 decl, got %v", len(file.decls)),
+	)
+	if len(file.decls) > 0 {
+		module, ok := file.decls[0].derived_stmt.(^ast.Module_Decl)
+		if !testing.expect(t, ok, fmt.tprintf("Expected Module_Decl, got %T", file.decls[0].derived_stmt)) do return
+
+		testing.expect(
+			t,
+			module.ident.name == "status_0100",
+			fmt.tprintf("Expected 'status_0100', got '%s'", module.ident.name),
+		)
+		testing.expect(
+			t,
+			module.module_type == .Output,
+			fmt.tprintf("Expected Output, got %v", module.module_type),
+		)
+		testing.expect(
+			t,
+			len(module.body) == 2,
+			fmt.tprintf("Expected 2 body statements, got %d", len(module.body)),
+		)
+	}
+}
+
+@(test)
+multiple_modules_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `MODULE status_0100 OUTPUT.
+ENDMODULE.
+
+MODULE user_command_0100 INPUT.
+  DATA lv_ok_code TYPE sy.
+ENDMODULE.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 2,
+		fmt.tprintf("Expected 2 decls, got %v", len(file.decls)),
+	)
+
+	if len(file.decls) >= 2 {
+		// First module: OUTPUT
+		module1, ok1 := file.decls[0].derived_stmt.(^ast.Module_Decl)
+		if testing.expect(t, ok1, "First decl should be Module_Decl") {
+			testing.expect(
+				t,
+				module1.ident.name == "status_0100",
+				fmt.tprintf("Expected 'status_0100', got '%s'", module1.ident.name),
+			)
+			testing.expect(t, module1.module_type == .Output, "First module should be OUTPUT")
+		}
+
+		// Second module: INPUT
+		module2, ok2 := file.decls[1].derived_stmt.(^ast.Module_Decl)
+		if testing.expect(t, ok2, "Second decl should be Module_Decl") {
+			testing.expect(
+				t,
+				module2.ident.name == "user_command_0100",
+				fmt.tprintf("Expected 'user_command_0100', got '%s'", module2.ident.name),
+			)
+			testing.expect(t, module2.module_type == .Input, "Second module should be INPUT")
+			testing.expect(
+				t,
+				len(module2.body) == 1,
+				fmt.tprintf("Expected 1 body statement, got %d", len(module2.body)),
+			)
+		}
+	}
+}
+
+@(test)
+module_with_screen_program_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `REPORT ztest_screen.
+
+MODULE status_0100 OUTPUT.
+  DATA lv_title TYPE string.
+ENDMODULE.
+
+MODULE user_command_0100 INPUT.
+  DATA lv_ok_code TYPE sy.
+ENDMODULE.
+
+START-OF-SELECTION.
+  CALL SCREEN 100.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	// Expected: REPORT + MODULE OUTPUT + MODULE INPUT + START-OF-SELECTION = 4 decls
+	testing.expect(
+		t,
+		len(file.decls) == 4,
+		fmt.tprintf("Expected 4 decls, got %v", len(file.decls)),
+	)
+
+	if len(file.decls) >= 4 {
+		// First: REPORT
+		_, rok := file.decls[0].derived_stmt.(^ast.Report_Decl)
+		testing.expect(t, rok, "First decl should be Report_Decl")
+
+		// Second: MODULE OUTPUT
+		module1, ok1 := file.decls[1].derived_stmt.(^ast.Module_Decl)
+		if testing.expect(t, ok1, "Second decl should be Module_Decl") {
+			testing.expect(t, module1.module_type == .Output, "Second module should be OUTPUT")
+		}
+
+		// Third: MODULE INPUT
+		module2, ok2 := file.decls[2].derived_stmt.(^ast.Module_Decl)
+		if testing.expect(t, ok2, "Third decl should be Module_Decl") {
+			testing.expect(t, module2.module_type == .Input, "Third module should be INPUT")
+		}
+
+		// Fourth: START-OF-SELECTION
+		event, eok := file.decls[3].derived_stmt.(^ast.Event_Block)
+		if testing.expect(t, eok, "Fourth decl should be Event_Block") {
+			testing.expect(
+				t,
+				event.kind == .StartOfSelection,
+				"Event should be StartOfSelection",
+			)
+		}
+	}
+}

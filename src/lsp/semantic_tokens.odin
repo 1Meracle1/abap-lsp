@@ -397,6 +397,23 @@ collect_tokens_from_stmt :: proc(
 		if s.screen_no != nil {
 			collect_tokens_from_expr(tokens, s.screen_no, snap, nil)
 		}
+
+	case ^ast.Module_Decl:
+		if s.ident != nil {
+			append(
+				tokens,
+				SemanticToken {
+					offset = s.ident.range.start,
+					length = s.ident.range.end - s.ident.range.start,
+					type = .Function,
+					modifiers = 1 << u32(SemanticTokenModifier.Declaration) |
+					1 << u32(SemanticTokenModifier.Definition),
+				},
+			)
+		}
+		for body_stmt in s.body {
+			collect_tokens_from_stmt(tokens, body_stmt, snap)
+		}
 	}
 }
 
@@ -693,6 +710,8 @@ symbol_to_token_type :: proc(sym: symbols.Symbol) -> (SemanticTokenType, u32) {
 		return .Namespace, modifiers
 	case .Event:
 		return .Event, modifiers
+	case .Module:
+		return .Function, modifiers
 	}
 
 	return .Variable, modifiers

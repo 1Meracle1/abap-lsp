@@ -64,6 +64,8 @@ parse_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			return parse_at_event_block(p)
 		case "CALL":
 			return parse_call_stmt(p)
+		case "MODULE":
+			return parse_module_decl(p)
 		case "START":
 			if check_compound_keyword(p, "START", "OF", "SELECTION") {
 				return parse_event_block(p, "START-OF-SELECTION")
@@ -330,7 +332,7 @@ check_compound_keyword :: proc(p: ^Parser, first: string, second: string, third:
 	saved_ch := p.l.ch
 
 	advance_token(p) // consume first
-	if p.curr_tok.kind != .Minus {
+	if p.curr_tok.kind != .Minus || lexer.have_space_between(saved_curr, p.curr_tok) {
 		p.prev_tok = saved_prev
 		p.curr_tok = saved_curr
 		p.l.pos = saved_pos
@@ -340,7 +342,7 @@ check_compound_keyword :: proc(p: ^Parser, first: string, second: string, third:
 	}
 
 	advance_token(p) // consume -
-	if !check_keyword(p, second) {
+	if lexer.have_space_between(p.prev_tok, p.curr_tok) || !check_keyword(p, second) {
 		p.prev_tok = saved_prev
 		p.curr_tok = saved_curr
 		p.l.pos = saved_pos
@@ -350,7 +352,7 @@ check_compound_keyword :: proc(p: ^Parser, first: string, second: string, third:
 	}
 
 	advance_token(p) // consume second
-	if p.curr_tok.kind != .Minus {
+	if p.curr_tok.kind != .Minus || lexer.have_space_between(p.prev_tok, p.curr_tok) {
 		p.prev_tok = saved_prev
 		p.curr_tok = saved_curr
 		p.l.pos = saved_pos
@@ -360,7 +362,7 @@ check_compound_keyword :: proc(p: ^Parser, first: string, second: string, third:
 	}
 
 	advance_token(p) // consume -
-	if !check_keyword(p, third) {
+	if lexer.have_space_between(p.prev_tok, p.curr_tok) || !check_keyword(p, third) {
 		p.prev_tok = saved_prev
 		p.curr_tok = saved_curr
 		p.l.pos = saved_pos
@@ -1481,4 +1483,49 @@ parse_call_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	expr_stmt := ast.new(ast.Expr_Stmt, call_tok, period_tok)
 	expr_stmt.expr = expr
 	return expr_stmt
+}
+
+parse_module_decl :: proc(p: ^Parser) -> ^ast.Decl {
+	module_tok := expect_keyword_token(p, "MODULE")
+	ident_tok := expect_token(p, .Ident)
+
+	module_type: ast.Module_Type
+	if check_keyword(p, "OUTPUT") {
+		advance_token(p)
+		module_type = .Output
+	} else if check_keyword(p, "INPUT") {
+		advance_token(p)
+		module_type = .Input
+	} else {
+		error(p, p.curr_tok.range, "expected OUTPUT or INPUT after module name")
+		end_tok := skip_to_new_line(p)
+		bad_decl := ast.new(ast.Bad_Decl, module_tok, end_tok)
+		return bad_decl
+	}
+
+	expect_token(p, .Period)
+
+	module_decl := ast.new(ast.Module_Decl, module_tok.range)
+	module_decl.ident = ast.new_ident(ident_tok)
+	module_decl.module_type = module_type
+	module_decl.body = make([dynamic]^ast.Stmt)
+
+	for p.curr_tok.kind != .EOF {
+		if check_keyword(p, "ENDMODULE") {
+			break
+		}
+
+		stmt := parse_stmt(p)
+		if stmt != nil {
+			append(&module_decl.body, stmt)
+		}
+	}
+
+	endmodule_tok := expect_keyword_token(p, "ENDMODULE")
+	period_tok := expect_token(p, .Period)
+	module_decl.range.end = period_tok.range.end
+	module_decl.derived_stmt = module_decl
+	_ = endmodule_tok
+
+	return module_decl
 }

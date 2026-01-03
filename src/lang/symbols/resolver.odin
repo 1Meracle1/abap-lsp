@@ -37,6 +37,8 @@ resolve_file :: proc(file: ^ast.File) -> ^SymbolTable {
 			resolve_include_decl(table, d)
 		case ^ast.Event_Block:
 			resolve_event_block(table, d)
+		case ^ast.Module_Decl:
+			resolve_module_decl(table, d)
 		}
 	}
 
@@ -549,4 +551,38 @@ get_event_name :: proc(kind: ast.Event_Kind) -> string {
 		return "end-of-page"
 	}
 	return "unknown-event"
+}
+
+resolve_module_decl :: proc(table: ^SymbolTable, module: ^ast.Module_Decl) {
+	if module.ident == nil {
+		return
+	}
+	name := module.ident.name
+	
+	// Create a child scope for the module's local variables
+	child_table := new(SymbolTable)
+	child_table.symbols = make(map[string]Symbol)
+	child_table.types = make([dynamic]^Type)
+	child_table.diagnostics = make([dynamic]Diagnostic)
+	
+	// Resolve declarations in the module body
+	for stmt in module.body {
+		#partial switch s in stmt.derived_stmt {
+		case ^ast.Data_Inline_Decl:
+			resolve_inline_decl(child_table, s, is_global = false)
+		case ^ast.Data_Typed_Decl:
+			resolve_typed_decl(child_table, s, false, is_global = false)
+		case ^ast.Data_Typed_Chain_Decl:
+			resolve_chain_decl(child_table, s, is_global = false)
+		}
+	}
+	
+	sym := Symbol {
+		name        = name,
+		kind        = .Module,
+		range       = module.ident.range,
+		type_info   = nil,
+		child_scope = child_table,
+	}
+	add_symbol(table, sym, allow_shadowing = true)
 }

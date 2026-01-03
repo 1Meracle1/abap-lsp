@@ -320,6 +320,18 @@ Call_Screen_Stmt :: struct {
 	screen_no:  ^Expr,
 }
 
+Module_Type :: enum {
+	Output,
+	Input,
+}
+
+Module_Decl :: struct {
+	using node:   Decl,
+	ident:        ^Ident,
+	module_type:  Module_Type,
+	body:         [dynamic]^Stmt,
+}
+
 // Types
 
 Table_Type :: struct {
@@ -375,6 +387,7 @@ Any_Node :: union {
 	^Include_Decl,
 	^Event_Block,
 	^Call_Screen_Stmt,
+	^Module_Decl,
 }
 
 Any_Expr :: union {
@@ -421,4 +434,5 @@ Any_Stmt :: union {
 	^Include_Decl,
 	^Event_Block,
 	^Call_Screen_Stmt,
+	^Module_Decl,
 }

@@ -414,6 +414,18 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 				return res
 			}
 		}
+
+	case ^Module_Decl:
+		if n.ident != nil {
+			if res := find_node_at_offset(&n.ident.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		for stmt in n.body {
+			if res := find_node_at_offset(&stmt.stmt_base, offset); res != nil {
+				return res
+			}
+		}
 	}
 
 	return node
@@ -520,6 +532,23 @@ find_enclosing_event_block :: proc(file: ^File, offset: int) -> ^Event_Block {
 		if event, ok := decl.derived_stmt.(^Event_Block); ok {
 			if offset >= event.range.start && offset <= event.range.end {
 				return event
+			}
+		}
+	}
+
+	return nil
+}
+
+// find_enclosing_module finds the Module_Decl that contains the given offset, if any.
+find_enclosing_module :: proc(file: ^File, offset: int) -> ^Module_Decl {
+	if file == nil {
+		return nil
+	}
+
+	for decl in file.decls {
+		if module, ok := decl.derived_stmt.(^Module_Decl); ok {
+			if offset >= module.range.start && offset <= module.range.end {
+				return module
 			}
 		}
 	}

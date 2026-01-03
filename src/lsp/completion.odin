@@ -247,6 +247,17 @@ collect_completion_items :: proc(snap: ^cache.Snapshot, offset: int) -> [dynamic
 		}
 	}
 
+	if enclosing_module := ast.find_enclosing_module(snap.ast, offset); enclosing_module != nil {
+		module_name := enclosing_module.ident.name
+		if module_sym, ok := snap.symbol_table.symbols[module_name]; ok {
+			if module_sym.child_scope != nil {
+				for _, sym in module_sym.child_scope.symbols {
+					append(&items, symbol_to_completion_item(sym))
+				}
+			}
+		}
+	}
+
 	for _, sym in snap.symbol_table.symbols {
 		append(&items, symbol_to_completion_item(sym))
 	}
@@ -485,6 +496,9 @@ symbol_to_completion_item :: proc(sym: symbols.Symbol) -> CompletionItem {
 	case .Event:
 		kind = .Event
 		detail = "EVENT"
+	case .Module:
+		kind = .Function
+		detail = "MODULE"
 	}
 
 	return CompletionItem {
