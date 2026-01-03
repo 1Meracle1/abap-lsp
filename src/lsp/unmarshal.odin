@@ -6,10 +6,6 @@ import "core:encoding/json"
 import "core:mem"
 import "core:strings"
 
-/*
-	Right now union handling is type specific so you can only have one struct type, int type, etc.
-*/
-
 unmarshal :: proc(json_value: json.Value, v: any, allocator: mem.Allocator) -> json.Marshal_Error {
 
 	using runtime
@@ -34,7 +30,6 @@ unmarshal :: proc(json_value: json.Value, v: any, allocator: mem.Allocator) -> j
 					variant.types[i].id,
 				}
 
-				//TEMP most likely have to rewrite the entire unmarshal using tags instead, because i sometimes have to support names like 'context', which can't be written like that
 				if field[len(field) - 1] == '_' {
 					if ret := unmarshal(j[field[:len(field) - 1]], a, allocator); ret != nil {
 						return ret

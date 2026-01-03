@@ -156,13 +156,13 @@ Data_Typed_Chain_Decl :: struct {
 	decls:      [dynamic]^Data_Typed_Decl,
 }
 
-// TYPES declarations (type definitions)
+// TYPES declarations
 
 Types_Decl :: struct {
 	using node: Decl,
 	ident:      ^Ident,
 	typed:      ^Expr,
-	length:     ^Expr, // Optional LENGTH clause (e.g., TYPE c LENGTH 40)
+	length:     ^Expr, 
 }
 
 Types_Chain_Decl :: struct {
@@ -170,18 +170,10 @@ Types_Chain_Decl :: struct {
 	decls:      [dynamic]^Types_Decl,
 }
 
-// Types_Struct_Decl represents a structured type definition:
-// TYPES: BEGIN OF struct_name,
-//          field1 TYPE type1,
-//          field2 TYPE type2,
-//          BEGIN OF nested,
-//            ...
-//          END OF nested,
-//        END OF struct_name.
 Types_Struct_Decl :: struct {
 	using node:  Decl,
 	ident:       ^Ident,
-	components:  [dynamic]^Stmt, // List of Types_Decl or Types_Struct_Decl
+	components:  [dynamic]^Stmt,
 }
 
 Form_Param_Kind :: enum {
@@ -206,16 +198,12 @@ Form_Decl :: struct {
 	body:             [dynamic]^Stmt,
 }
 
-// CLASS and INTERFACE declarations
-
-// Access modifiers for class members
 Access_Modifier :: enum {
 	Public,
 	Protected,
 	Private,
 }
 
-// Method parameter kinds
 Method_Param_Kind :: enum {
 	Importing,
 	Exporting,
@@ -223,85 +211,76 @@ Method_Param_Kind :: enum {
 	Returning,
 }
 
-// Method parameter
 Method_Param :: struct {
 	using node: Node,
 	kind:       Method_Param_Kind,
 	ident:      ^Ident,
 	typed:      ^Expr,
-	optional:   bool,      // OPTIONAL keyword
-	default:    ^Expr,     // DEFAULT value
+	optional:   bool,      
+	default:    ^Expr,     
 }
 
-// Method declaration (METHODS or CLASS-METHODS)
 Method_Decl :: struct {
 	using node:   Decl,
 	ident:        ^Ident,
-	is_class:     bool,        // CLASS-METHODS vs METHODS
-	is_abstract:  bool,        // ABSTRACT
-	is_final:     bool,        // FINAL
-	is_redefinition: bool,     // REDEFINITION
+	is_class:     bool,       
+	is_abstract:  bool,       
+	is_final:     bool,       
+	is_redefinition: bool,    
 	params:       [dynamic]^Method_Param,
-	raising:      [dynamic]^Expr,  // RAISING exceptions
+	raising:      [dynamic]^Expr,  
 }
 
-// Attribute declaration (DATA or CLASS-DATA)
 Attr_Decl :: struct {
 	using node:   Decl,
 	ident:        ^Ident,
 	typed:        ^Expr,
-	is_class:     bool,        // CLASS-DATA vs DATA
-	is_read_only: bool,        // READ-ONLY
-	value:        ^Expr,       // VALUE clause
+	is_class:     bool,        
+	is_read_only: bool,        
+	value:        ^Expr,       
 }
 
-// INTERFACES declaration (implementing interfaces)
 Interfaces_Decl :: struct {
 	using node: Decl,
 	names:      [dynamic]^Ident,
 }
 
-// Section in a class definition (PUBLIC/PROTECTED/PRIVATE SECTION)
 Class_Section :: struct {
 	using node: Node,
 	access:     Access_Modifier,
-	types:      [dynamic]^Stmt,    // TYPES declarations
-	data:       [dynamic]^Stmt,    // DATA/CLASS-DATA declarations
-	methods:    [dynamic]^Stmt,    // METHODS/CLASS-METHODS declarations
-	interfaces: [dynamic]^Stmt,    // INTERFACES declarations
+	types:      [dynamic]^Stmt,    
+	data:       [dynamic]^Stmt,    
+	methods:    [dynamic]^Stmt,    
+	interfaces: [dynamic]^Stmt,    
 }
 
-// CLASS DEFINITION declaration
 Class_Def_Decl :: struct {
 	using node:       Decl,
 	ident:            ^Ident,
 	is_abstract:      bool,
 	is_final:         bool,
-	inheriting_from:  ^Expr,       // INHERITING FROM class_name
+	inheriting_from:  ^Expr,      
 	sections:         [dynamic]^Class_Section,
 }
 
-// CLASS IMPLEMENTATION declaration
 Class_Impl_Decl :: struct {
 	using node: Decl,
 	ident:      ^Ident,
-	methods:    [dynamic]^Stmt,    // METHOD implementations
+	methods:    [dynamic]^Stmt,
 }
 
-// METHOD implementation (inside CLASS IMPLEMENTATION)
 Method_Impl :: struct {
 	using node: Decl,
-	ident:      ^Expr,             // Can be simple ident or interface~method
+	ident:      ^Expr,      
 	body:       [dynamic]^Stmt,
 }
 
-// INTERFACE declaration
 Interface_Decl :: struct {
 	using node: Decl,
 	ident:      ^Ident,
-	methods:    [dynamic]^Stmt,    // Method declarations
-	types:      [dynamic]^Stmt,    // Type declarations
-	data:       [dynamic]^Stmt,    // Data/attribute declarations
+	methods:    [dynamic]^Stmt,   
+	types:      [dynamic]^Stmt,   
+	data:       [dynamic]^Stmt,   
 }
 
 // Types
@@ -310,12 +289,6 @@ Table_Type :: struct {
 	using node: Expr,
 	elem:       ^Expr,
 }
-
-// Struct_Type :: struct {
-// 	using node: Expr,
-// 	pointer: tokenizer.Pos,
-// 	elem:    ^Expr,
-// }
 
 Any_Node :: union {
 	^Program,

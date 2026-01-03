@@ -7,7 +7,6 @@ position_to_offset :: proc(text: string, pos: Position) -> int {
 	offset := 0
 	len_text := len(text)
 
-	// fast forward to line
 	for line < int(pos.line) && offset < len_text {
 		if text[offset] == '\n' {
 			line += 1
@@ -19,14 +18,11 @@ position_to_offset :: proc(text: string, pos: Position) -> int {
 		return -1
 	}
 
-	// add character offset
-	// TODO: handle utf-16 conversion properly if needed
 	target_offset := offset + int(pos.character)
 
-	// ensure we don't cross line boundary or EOF
 	for i := offset; i < target_offset && i < len_text; i += 1 {
 		if text[i] == '\n' {
-			return i // stop at newline
+			return i
 		}
 	}
 

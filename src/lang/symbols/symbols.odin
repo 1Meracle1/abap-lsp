@@ -7,7 +7,6 @@ import "core:fmt"
 import "core:mem"
 import "core:strings"
 
-// Diagnostic represents a semantic error detected during symbol resolution
 Diagnostic :: struct {
 	range:   lexer.TextRange,
 	message: string,
@@ -22,16 +21,15 @@ SymbolKind :: enum {
 	Class,
 	Interface,
 	Form,           // FORM subroutine
-	FormParameter,  // FORM parameter (TABLES, USING, CHANGING)
-	TypeDef,        // TYPES declaration (type definition/alias)
+	FormParameter,
+	TypeDef,
 }
 
-// Form parameter passing modes (mirrors ast.Form_Param_Kind)
 FormParamKind :: enum {
-	None,     // Not a form parameter
-	Tables,   // TABLES parameter
-	Using,    // USING parameter
-	Changing, // CHANGING parameter
+	None,
+	Tables,
+	Using,
+	Changing,
 }
 
 Symbol :: struct {
@@ -39,23 +37,17 @@ Symbol :: struct {
 	kind:            SymbolKind,
 	range:           lexer.TextRange,
 	type_info:       ^Type,
-	// For chain declarations, track if this is part of a chain
 	is_chained:      bool,
-	// For Form symbols: child symbol table containing parameters and locals
 	child_scope:     ^SymbolTable,
-	// For FormParameter symbols: the passing mode
 	form_param_kind: FormParamKind,
 }
 
 SymbolTable :: struct {
 	symbols:     map[string]Symbol,
-	// Allocator for types (so they can be freed together)
 	types:       [dynamic]^Type,
-	// Semantic diagnostics detected during symbol resolution
 	diagnostics: [dynamic]Diagnostic,
 }
 
-// Helper to add a diagnostic to the symbol table
 add_diagnostic :: proc(table: ^SymbolTable, range: lexer.TextRange, message: string) {
 	append(&table.diagnostics, Diagnostic{
 		range   = range,
@@ -63,17 +55,12 @@ add_diagnostic :: proc(table: ^SymbolTable, range: lexer.TextRange, message: str
 	})
 }
 
-// Helper to add a symbol to the table with duplicate checking.
-// Returns true if the symbol was added, false if a duplicate was found.
-// For duplicates, a diagnostic is added to the table.
-// Names are normalized to uppercase for ABAP case-insensitivity.
 add_symbol :: proc(table: ^SymbolTable, sym: Symbol, allow_shadowing: bool = false) -> bool {
 	upper_name := strings.to_lower(sym.name)
 	if existing, found := table.symbols[upper_name]; found {
 		if !allow_shadowing {
 			add_diagnostic(table, sym.range, fmt.tprintf("Duplicate symbol '%s'", upper_name))
 		}
-		// Still overwrite (shadowing behavior) but return false to indicate duplicate
 		modified_sym := sym
 		modified_sym.name = upper_name
 		table.symbols[upper_name] = modified_sym
@@ -84,8 +71,6 @@ add_symbol :: proc(table: ^SymbolTable, sym: Symbol, allow_shadowing: bool = fal
 	table.symbols[upper_name] = modified_sym
 	return true
 }
-
-// Helper to create types managed by the symbol table
 
 make_type :: proc(table: ^SymbolTable, kind: TypeKind) -> ^Type {
 	t := new(Type)
@@ -141,7 +126,6 @@ add_struct_field :: proc(t: ^Type, name: string, type_info: ^Type, length: int =
 	})
 }
 
-// Collect all diagnostics from this table and all child scopes
 collect_all_diagnostics :: proc(table: ^SymbolTable, allocator: mem.Allocator = context.allocator) -> []Diagnostic {
 	result := make([dynamic]Diagnostic, allocator)
 	collect_diagnostics_recursive(table, &result)
@@ -161,10 +145,7 @@ collect_diagnostics_recursive :: proc(table: ^SymbolTable, result: ^[dynamic]Dia
 	}
 }
 
-// Cleanup
-
 destroy_symbol_table :: proc(table: ^SymbolTable) {
-	// Recursively destroy child scopes (e.g., from Form declarations)
 	for _, sym in table.symbols {
 		if sym.child_scope != nil {
 			destroy_symbol_table(sym.child_scope)

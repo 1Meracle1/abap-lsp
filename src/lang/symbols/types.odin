@@ -5,48 +5,37 @@ import "../ast"
 import "core:fmt"
 
 TypeKind :: enum {
-	Unknown,     // Type not yet resolved or unresolvable
-	Inferred,    // Type to be inferred from expression (DATA(x) = ...)
-	// Basic ABAP types
-	Integer,     // i
-	Float,       // f, p (packed/decimal)
-	String,      // string
-	Char,        // c
-	Numeric,     // n
-	Date,        // d
-	Time,        // t
-	Hex,         // x
-	XString,     // xstring
-	// Complex types
-	Table,       // TABLE OF ...
-	Structure,   // structured type
-	Reference,   // REF TO ...
-	// Named/user-defined
-	Named,       // reference to a named type (class, interface, etc.)
+	Unknown,
+	Inferred,
+	Integer,
+	Float,
+	String,
+	Char,
+	Numeric,
+	Date,
+	Time,
+	Hex,
+	XString,
+	Table,
+	Structure,
+	Reference,
+	Named,
 }
 
-// StructField represents a field in a structured type
 StructField :: struct {
 	name:      string,
 	type_info: ^Type,
-	length:    int, // Optional length for c, n, x types (0 means not specified)
+	length:    int,
 }
 
 Type :: struct {
 	kind:         TypeKind,
-	// For Named types: the type name
 	name:         string,
-	// For Table types: element type
 	elem_type:    ^Type,
-	// For Reference types: target type
 	target_type:  ^Type,
-	// For Structure types: list of fields
 	fields:       [dynamic]StructField,
-	// For types with LENGTH clause (e.g., TYPE c LENGTH 40)
 	length:       int,
-	// For Inferred types: the expression to infer from (kept for later resolution)
 	infer_source: ^ast.Expr,
-	// Original AST node that defined this type (for diagnostics/navigation)
 	ast_node:     ^ast.Expr,
 }
 

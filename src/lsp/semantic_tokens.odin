@@ -69,7 +69,6 @@ collect_semantic_tokens :: proc(snap: ^cache.Snapshot) -> [dynamic]SemanticToken
 	return tokens
 }
 
-// Recursively collects tokens from a statement
 collect_tokens_from_stmt :: proc(tokens: ^[dynamic]SemanticToken, stmt: ^ast.Stmt, snap: ^cache.Snapshot) {
 	if stmt == nil {
 		return
@@ -77,7 +76,6 @@ collect_tokens_from_stmt :: proc(tokens: ^[dynamic]SemanticToken, stmt: ^ast.Stm
 
 	#partial switch s in stmt.derived_stmt {
 	case ^ast.Data_Inline_Decl:
-		// DATA(var) = expr - var is a variable declaration
 		if s.ident != nil {
 			append(tokens, SemanticToken{
 				offset    = s.ident.range.start,
@@ -89,7 +87,6 @@ collect_tokens_from_stmt :: proc(tokens: ^[dynamic]SemanticToken, stmt: ^ast.Stm
 		collect_tokens_from_expr(tokens, s.value, snap, nil)
 
 	case ^ast.Data_Typed_Decl:
-		// DATA var TYPE typename - var is a variable, typename is a type
 		if s.ident != nil {
 			append(tokens, SemanticToken{
 				offset    = s.ident.range.start,
@@ -118,7 +115,6 @@ collect_tokens_from_stmt :: proc(tokens: ^[dynamic]SemanticToken, stmt: ^ast.Stm
 		}
 
 	case ^ast.Types_Decl:
-		// TYPES ty_name TYPE typename - ty_name is a type definition, typename is a type
 		if s.ident != nil {
 			append(tokens, SemanticToken{
 				offset    = s.ident.range.start,
@@ -147,7 +143,6 @@ collect_tokens_from_stmt :: proc(tokens: ^[dynamic]SemanticToken, stmt: ^ast.Stm
 		}
 
 	case ^ast.Types_Struct_Decl:
-		// TYPES: BEGIN OF struct_name, ... END OF struct_name
 		if s.ident != nil {
 			append(tokens, SemanticToken{
 				offset    = s.ident.range.start,
@@ -156,11 +151,9 @@ collect_tokens_from_stmt :: proc(tokens: ^[dynamic]SemanticToken, stmt: ^ast.Stm
 				modifiers = 1 << u32(SemanticTokenModifier.Declaration),
 			})
 		}
-		// Collect tokens from components
 		collect_tokens_from_struct_components(tokens, s.components[:], snap)
 
 	case ^ast.Form_Decl:
-		// FORM name - name is a function
 		if s.ident != nil {
 			append(tokens, SemanticToken{
 				offset    = s.ident.range.start,
@@ -170,7 +163,6 @@ collect_tokens_from_stmt :: proc(tokens: ^[dynamic]SemanticToken, stmt: ^ast.Stm
 			})
 		}
 
-		// Get child scope for parameter/local resolution
 		form_scope: ^symbols.SymbolTable
 		if s.ident != nil {
 			if form_sym, ok := snap.symbol_table.symbols[s.ident.name]; ok {
@@ -178,7 +170,6 @@ collect_tokens_from_stmt :: proc(tokens: ^[dynamic]SemanticToken, stmt: ^ast.Stm
 			}
 		}
 
-		// Collect tokens from parameters
 		for param in s.tables_params {
 			collect_tokens_from_form_param(tokens, param)
 		}
@@ -189,7 +180,6 @@ collect_tokens_from_stmt :: proc(tokens: ^[dynamic]SemanticToken, stmt: ^ast.Stm
 			collect_tokens_from_form_param(tokens, param)
 		}
 
-		// Collect tokens from body statements
 		for body_stmt in s.body {
 			collect_tokens_from_stmt(tokens, body_stmt, snap)
 		}
@@ -230,17 +220,14 @@ collect_tokens_from_stmt :: proc(tokens: ^[dynamic]SemanticToken, stmt: ^ast.Stm
 				modifiers = 1 << u32(SemanticTokenModifier.Declaration) | 1 << u32(SemanticTokenModifier.Definition),
 			})
 		}
-		// INHERITING FROM clause
 		if s.inheriting_from != nil {
 			collect_tokens_from_type_expr(tokens, s.inheriting_from)
 		}
-		// Collect tokens from sections
 		for section in s.sections {
 			collect_tokens_from_class_section(tokens, section, snap)
 		}
 
 	case ^ast.Class_Impl_Decl:
-		// CLASS name IMPLEMENTATION
 		if s.ident != nil {
 			append(tokens, SemanticToken{
 				offset    = s.ident.range.start,
@@ -249,13 +236,11 @@ collect_tokens_from_stmt :: proc(tokens: ^[dynamic]SemanticToken, stmt: ^ast.Stm
 				modifiers = 0,
 			})
 		}
-		// Collect tokens from method implementations
 		for method in s.methods {
 			collect_tokens_from_stmt(tokens, method, snap)
 		}
 
 	case ^ast.Interface_Decl:
-		// INTERFACE name
 		if s.ident != nil {
 			append(tokens, SemanticToken{
 				offset    = s.ident.range.start,
@@ -264,7 +249,6 @@ collect_tokens_from_stmt :: proc(tokens: ^[dynamic]SemanticToken, stmt: ^ast.Stm
 				modifiers = 1 << u32(SemanticTokenModifier.Declaration) | 1 << u32(SemanticTokenModifier.Definition),
 			})
 		}
-		// Collect tokens from interface methods
 		for method in s.methods {
 			collect_tokens_from_stmt(tokens, method, snap)
 		}
@@ -276,7 +260,6 @@ collect_tokens_from_stmt :: proc(tokens: ^[dynamic]SemanticToken, stmt: ^ast.Stm
 		}
 
 	case ^ast.Method_Decl:
-		// METHODS name
 		if s.ident != nil {
 			append(tokens, SemanticToken{
 				offset    = s.ident.range.start,
@@ -285,27 +268,22 @@ collect_tokens_from_stmt :: proc(tokens: ^[dynamic]SemanticToken, stmt: ^ast.Stm
 				modifiers = 1 << u32(SemanticTokenModifier.Declaration),
 			})
 		}
-		// Collect tokens from parameters
 		for param in s.params {
 			collect_tokens_from_method_param(tokens, param)
 		}
-		// Collect tokens from raising clause
 		for exc in s.raising {
 			collect_tokens_from_type_expr(tokens, exc)
 		}
 
 	case ^ast.Method_Impl:
-		// METHOD name
 		if s.ident != nil {
 			collect_tokens_from_expr(tokens, s.ident, snap, nil)
 		}
-		// Collect tokens from method body
 		for body_stmt in s.body {
 			collect_tokens_from_stmt(tokens, body_stmt, snap)
 		}
 
 	case ^ast.Attr_Decl:
-		// DATA/CLASS-DATA attr TYPE type
 		if s.ident != nil {
 			append(tokens, SemanticToken{
 				offset    = s.ident.range.start,
@@ -322,7 +300,6 @@ collect_tokens_from_stmt :: proc(tokens: ^[dynamic]SemanticToken, stmt: ^ast.Stm
 		}
 
 	case ^ast.Interfaces_Decl:
-		// INTERFACES i1 i2 ...
 		for name in s.names {
 			append(tokens, SemanticToken{
 				offset    = name.range.start,
@@ -334,7 +311,6 @@ collect_tokens_from_stmt :: proc(tokens: ^[dynamic]SemanticToken, stmt: ^ast.Stm
 	}
 }
 
-// Collects tokens from structured type components (fields and nested structures)
 collect_tokens_from_struct_components :: proc(tokens: ^[dynamic]SemanticToken, components: []^ast.Stmt, snap: ^cache.Snapshot) {
 	for comp in components {
 		if comp == nil {
@@ -343,7 +319,6 @@ collect_tokens_from_struct_components :: proc(tokens: ^[dynamic]SemanticToken, c
 
 		#partial switch c in comp.derived_stmt {
 		case ^ast.Types_Decl:
-			// Field declaration
 			if c.ident != nil {
 				append(tokens, SemanticToken{
 					offset    = c.ident.range.start,
@@ -355,25 +330,21 @@ collect_tokens_from_struct_components :: proc(tokens: ^[dynamic]SemanticToken, c
 			if c.typed != nil {
 				collect_tokens_from_type_expr(tokens, c.typed)
 			}
-			// Length is a number literal, handled automatically if present
 
 		case ^ast.Types_Struct_Decl:
-			// Nested structure
 			if c.ident != nil {
 				append(tokens, SemanticToken{
 					offset    = c.ident.range.start,
 					length    = c.ident.range.end - c.ident.range.start,
 					type      = .Type,
-					modifiers = 1 << u32(SemanticTokenModifier.Declaration),
-				})
-			}
-			// Recursively collect tokens from nested structure
-			collect_tokens_from_struct_components(tokens, c.components[:], snap)
+				modifiers = 1 << u32(SemanticTokenModifier.Declaration),
+			})
+		}
+		collect_tokens_from_struct_components(tokens, c.components[:], snap)
 		}
 	}
 }
 
-// Collects tokens from a FORM parameter
 collect_tokens_from_form_param :: proc(tokens: ^[dynamic]SemanticToken, param: ^ast.Form_Param) {
 	if param == nil {
 		return
@@ -391,34 +362,28 @@ collect_tokens_from_form_param :: proc(tokens: ^[dynamic]SemanticToken, param: ^
 	}
 }
 
-// Collects tokens from a class section (PUBLIC/PROTECTED/PRIVATE SECTION)
 collect_tokens_from_class_section :: proc(tokens: ^[dynamic]SemanticToken, section: ^ast.Class_Section, snap: ^cache.Snapshot) {
 	if section == nil {
 		return
 	}
 	
-	// Collect tokens from types
 	for type_decl in section.types {
 		collect_tokens_from_stmt(tokens, type_decl, snap)
 	}
 	
-	// Collect tokens from data/attributes
 	for data_decl in section.data {
 		collect_tokens_from_stmt(tokens, data_decl, snap)
 	}
 	
-	// Collect tokens from methods
 	for method_decl in section.methods {
 		collect_tokens_from_stmt(tokens, method_decl, snap)
 	}
 	
-	// Collect tokens from interfaces
 	for iface_decl in section.interfaces {
 		collect_tokens_from_stmt(tokens, iface_decl, snap)
 	}
 }
 
-// Collects tokens from a method parameter
 collect_tokens_from_method_param :: proc(tokens: ^[dynamic]SemanticToken, param: ^ast.Method_Param) {
 	if param == nil {
 		return
@@ -439,7 +404,6 @@ collect_tokens_from_method_param :: proc(tokens: ^[dynamic]SemanticToken, param:
 	}
 }
 
-// Collects tokens from an expression
 collect_tokens_from_expr :: proc(tokens: ^[dynamic]SemanticToken, expr: ^ast.Expr, snap: ^cache.Snapshot, form_scope: ^symbols.SymbolTable) {
 	if expr == nil {
 		return
@@ -447,11 +411,9 @@ collect_tokens_from_expr :: proc(tokens: ^[dynamic]SemanticToken, expr: ^ast.Exp
 
 	#partial switch e in expr.derived_expr {
 	case ^ast.Ident:
-		// Determine token type based on symbol lookup
 		token_type := SemanticTokenType.Variable
 		modifiers: u32 = 0
 
-		// Try form scope first, then global scope
 		if form_scope != nil {
 			if sym, ok := form_scope.symbols[e.name]; ok {
 				token_type, modifiers = symbol_to_token_type(sym)
@@ -513,7 +475,6 @@ collect_tokens_from_expr :: proc(tokens: ^[dynamic]SemanticToken, expr: ^ast.Exp
 		collect_tokens_from_expr(tokens, e.index, snap, form_scope)
 
 	case ^ast.Call_Expr:
-		// For call expressions, the callee might be a function/method
 		if call_ident, ok := e.expr.derived_expr.(^ast.Ident); ok {
 			append(tokens, SemanticToken{
 				offset    = call_ident.range.start,
@@ -530,7 +491,6 @@ collect_tokens_from_expr :: proc(tokens: ^[dynamic]SemanticToken, expr: ^ast.Exp
 	}
 }
 
-// Collects tokens from a type expression
 collect_tokens_from_type_expr :: proc(tokens: ^[dynamic]SemanticToken, expr: ^ast.Expr) {
 	if expr == nil {
 		return
@@ -546,11 +506,9 @@ collect_tokens_from_type_expr :: proc(tokens: ^[dynamic]SemanticToken, expr: ^as
 		})
 
 	case ^ast.Table_Type:
-		// TABLE OF elem_type
 		collect_tokens_from_type_expr(tokens, e.elem)
 
 	case ^ast.Selector_Expr:
-		// Qualified type like package~type
 		collect_tokens_from_expr(tokens, e.expr, nil, nil)
 		if e.field != nil {
 			append(tokens, SemanticToken{
@@ -563,7 +521,6 @@ collect_tokens_from_type_expr :: proc(tokens: ^[dynamic]SemanticToken, expr: ^as
 	}
 }
 
-// Maps a symbol to a semantic token type
 symbol_to_token_type :: proc(sym: symbols.Symbol) -> (SemanticTokenType, u32) {
 	modifiers: u32 = 0
 
@@ -592,7 +549,6 @@ symbol_to_token_type :: proc(sym: symbols.Symbol) -> (SemanticTokenType, u32) {
 	return .Variable, modifiers
 }
 
-// Simple insertion sort for tokens by offset
 sort_tokens :: proc(tokens: ^[dynamic]SemanticToken) {
 	for i := 1; i < len(tokens); i += 1 {
 		key := tokens[i]
@@ -605,8 +561,6 @@ sort_tokens :: proc(tokens: ^[dynamic]SemanticToken) {
 	}
 }
 
-// Encodes tokens in LSP's delta format:
-// [deltaLine, deltaStartChar, length, tokenType, tokenModifiers] for each token
 encode_semantic_tokens :: proc(text: string, tokens: []SemanticToken) -> [dynamic]u32 {
 	encoded := make([dynamic]u32, context.temp_allocator)
 
@@ -614,12 +568,10 @@ encode_semantic_tokens :: proc(text: string, tokens: []SemanticToken) -> [dynami
 	prev_char := 0
 
 	for token in tokens {
-		// Convert offset to line/character
 		pos := offset_to_position(text, token.offset)
 		line := pos.line
 		char := pos.character
 
-		// Calculate deltas
 		delta_line := line - prev_line
 		delta_char: int
 		if delta_line == 0 {

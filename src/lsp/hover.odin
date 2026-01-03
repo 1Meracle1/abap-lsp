@@ -126,12 +126,10 @@ format_form_signature :: proc(sym: symbols.Symbol) -> string {
 			case .Changing:
 				append(&changing_params, param_sym)
 			case .None:
-			// Skip non-parameters (like local variables)
 			}
 		}
 	}
 
-	// Helper to write parameter list
 	write_params :: proc(b: ^strings.Builder, keyword: string, params: []symbols.Symbol, indent: int, is_first: ^bool) {
 		if len(params) == 0 {
 			return
@@ -172,16 +170,6 @@ format_form_signature :: proc(sym: symbols.Symbol) -> string {
 	return strings.to_string(b)
 }
 
-// format_struct_type formats a structured type definition for hover display.
-// Output example:
-//   TYPES: BEGIN OF address_type,
-//            name TYPE c LENGTH 30,
-//            street TYPE street_type,
-//            BEGIN OF city,
-//              zipcode TYPE n LENGTH 5,
-//              name TYPE c LENGTH 40,
-//            END OF city,
-//          END OF address_type.
 format_struct_type :: proc(sym: symbols.Symbol) -> string {
 	if sym.kind != .TypeDef || sym.type_info == nil || sym.type_info.kind != .Structure {
 		return symbols.format_type(sym.type_info)
@@ -204,7 +192,6 @@ format_struct_type :: proc(sym: symbols.Symbol) -> string {
 	return strings.to_string(b)
 }
 
-// Helper to format struct fields with proper indentation
 format_struct_fields :: proc(b: ^strings.Builder, t: ^symbols.Type, indent: int) {
 	if t == nil || t.kind != .Structure {
 		return
@@ -236,13 +223,8 @@ format_struct_fields :: proc(b: ^strings.Builder, t: ^symbols.Type, indent: int)
 	}
 }
 
-// lookup_symbol_at_offset looks up a symbol by name, considering the scope at the given offset.
-// It first checks if the offset is inside a form/function and looks in the local scope,
-// then falls back to the global scope.
 lookup_symbol_at_offset :: proc(snap: ^cache.Snapshot, name: string, offset: int) -> (symbols.Symbol, bool) {
-	// Check if we're inside a form declaration
 	if enclosing_form := ast.find_enclosing_form(snap.ast, offset); enclosing_form != nil {
-		// Get the form's name to find its symbol (which has the child_scope)
 		form_name := enclosing_form.ident.name
 		if form_sym, ok := snap.symbol_table.symbols[form_name]; ok {
 			// Look up in the form's local scope first
@@ -254,7 +236,6 @@ lookup_symbol_at_offset :: proc(snap: ^cache.Snapshot, name: string, offset: int
 		}
 	}
 
-	// Check if we're inside a class definition
 	if enclosing_class := ast.find_enclosing_class_def(snap.ast, offset); enclosing_class != nil {
 		class_name := enclosing_class.ident.name
 		if class_sym, ok := snap.symbol_table.symbols[class_name]; ok {
@@ -266,7 +247,6 @@ lookup_symbol_at_offset :: proc(snap: ^cache.Snapshot, name: string, offset: int
 		}
 	}
 
-	// Check if we're inside an interface
 	if enclosing_iface := ast.find_enclosing_interface(snap.ast, offset); enclosing_iface != nil {
 		iface_name := enclosing_iface.ident.name
 		if iface_sym, ok := snap.symbol_table.symbols[iface_name]; ok {
@@ -278,7 +258,6 @@ lookup_symbol_at_offset :: proc(snap: ^cache.Snapshot, name: string, offset: int
 		}
 	}
 
-	// Fall back to global scope
 	if sym, ok := snap.symbol_table.symbols[name]; ok {
 		return sym, true
 	}
@@ -286,7 +265,6 @@ lookup_symbol_at_offset :: proc(snap: ^cache.Snapshot, name: string, offset: int
 	return {}, false
 }
 
-// format_class_signature formats a CLASS DEFINITION signature for hover display.
 format_class_signature :: proc(sym: symbols.Symbol) -> string {
 	if sym.kind != .Class {
 		return sym.name
@@ -300,7 +278,6 @@ format_class_signature :: proc(sym: symbols.Symbol) -> string {
 	strings.write_string(&b, sym.name)
 	strings.write_string(&b, " DEFINITION")
 
-	// Add members summary
 	if sym.child_scope != nil {
 		method_count := 0
 		attr_count := 0
@@ -332,7 +309,6 @@ format_class_signature :: proc(sym: symbols.Symbol) -> string {
 	return strings.to_string(b)
 }
 
-// format_interface_signature formats an INTERFACE signature for hover display.
 format_interface_signature :: proc(sym: symbols.Symbol) -> string {
 	if sym.kind != .Interface {
 		return sym.name
@@ -345,7 +321,6 @@ format_interface_signature :: proc(sym: symbols.Symbol) -> string {
 	strings.write_string(&b, "INTERFACE ")
 	strings.write_string(&b, sym.name)
 
-	// Add members summary
 	if sym.child_scope != nil {
 		method_count := 0
 		for _, member in sym.child_scope.symbols {
@@ -364,7 +339,6 @@ format_interface_signature :: proc(sym: symbols.Symbol) -> string {
 	return strings.to_string(b)
 }
 
-// format_method_signature formats a METHOD signature for hover display.
 format_method_signature :: proc(sym: symbols.Symbol) -> string {
 	if sym.kind != .Method {
 		return sym.name
@@ -377,7 +351,6 @@ format_method_signature :: proc(sym: symbols.Symbol) -> string {
 	strings.write_string(&b, "METHODS ")
 	strings.write_string(&b, sym.name)
 
-	// Add parameters if child_scope exists
 	if sym.child_scope != nil {
 		importing := make([dynamic]symbols.Symbol, context.temp_allocator)
 		exporting := make([dynamic]symbols.Symbol, context.temp_allocator)
@@ -386,7 +359,6 @@ format_method_signature :: proc(sym: symbols.Symbol) -> string {
 
 		for _, param in sym.child_scope.symbols {
 			if param.kind == .Parameter {
-				// For now, just add to importing (we don't track param kind in Symbol yet)
 				append(&importing, param)
 			}
 		}

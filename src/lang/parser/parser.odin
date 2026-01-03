@@ -57,8 +57,7 @@ parse_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 		}
 	}
 
-	// Try to parse as an expression statement or assignment
-	if p.curr_tok.kind == .Ident {
+		if p.curr_tok.kind == .Ident {
 		return parse_expr_or_assign_stmt(p)
 	}
 
@@ -142,10 +141,8 @@ parse_data_inline_decl :: proc(p: ^Parser, data_tok: lexer.Token) -> ^ast.Decl {
 	return data_decl
 }
 
-// TYPES declarations
-
 parse_types_decl :: proc(p: ^Parser) -> ^ast.Decl {
-	types_tok := expect_token(p, .Ident) // TYPES keyword
+	types_tok := expect_token(p, .Ident)
 	if allow_token(p, .Colon) {
 		return parse_types_chain_decl(p, types_tok)
 	}
@@ -157,10 +154,9 @@ parse_types_single_decl :: proc(p: ^Parser, types_tok: lexer.Token) -> ^ast.Decl
 	expect_keyword_token(p, "TYPE")
 	type_expr := parse_expr(p)
 
-	// Check for optional LENGTH clause
 	length_expr: ^ast.Expr = nil
 	if check_keyword(p, "LENGTH") {
-		advance_token(p) // consume LENGTH
+		advance_token(p)
 		length_expr = parse_expr(p)
 	}
 
@@ -178,18 +174,11 @@ parse_types_chain_decl :: proc(p: ^Parser, types_tok: lexer.Token) -> ^ast.Decl 
 	chain_decl.decls = make([dynamic]^ast.Types_Decl)
 
 	for {
-		// Check for BEGIN OF (start of structured type)
-		if check_keyword(p, "BEGIN") {
+			if check_keyword(p, "BEGIN") {
 			struct_decl := parse_types_struct_decl(p)
 			if struct_decl != nil {
-				// Convert chain to include the struct - we need to return it differently
-				// For now, if we have a BEGIN OF as the first element, return just the struct
 				if len(chain_decl.decls) == 0 {
 					if allow_token(p, .Comma) {
-						// There's more after the struct, continue as mixed chain
-						// For simplicity, we'll wrap the struct in the chain's range and return
-						// Actually, we need a different approach - return the struct directly
-						// and handle comma-separated structs
 					}
 					if allow_token(p, .Period) {
 						struct_decl.range.end = p.prev_tok.range.end
@@ -204,10 +193,9 @@ parse_types_chain_decl :: proc(p: ^Parser, types_tok: lexer.Token) -> ^ast.Decl 
 		expect_keyword_token(p, "TYPE")
 		type_expr := parse_expr(p)
 
-		// Check for optional LENGTH clause
 		length_expr: ^ast.Expr = nil
 		if check_keyword(p, "LENGTH") {
-			advance_token(p) // consume LENGTH
+			advance_token(p)
 			length_expr = parse_expr(p)
 		}
 
@@ -218,11 +206,9 @@ parse_types_chain_decl :: proc(p: ^Parser, types_tok: lexer.Token) -> ^ast.Decl 
 		append(&chain_decl.decls, decl)
 
 		if allow_token(p, .Comma) {
-			// Continue parsing next declaration in chain
 			continue
 		}
 
-		// Expect period to end the chain
 		period_tok := expect_token(p, .Period)
 		chain_decl.range.end = period_tok.range.end
 		break
@@ -231,7 +217,6 @@ parse_types_chain_decl :: proc(p: ^Parser, types_tok: lexer.Token) -> ^ast.Decl 
 	return chain_decl
 }
 
-// Parses a structured type: BEGIN OF name, ... components ..., END OF name
 parse_types_struct_decl :: proc(p: ^Parser) -> ^ast.Types_Struct_Decl {
 	begin_tok := expect_keyword_token(p, "BEGIN")
 	expect_keyword_token(p, "OF")
@@ -241,38 +226,31 @@ parse_types_struct_decl :: proc(p: ^Parser) -> ^ast.Types_Struct_Decl {
 	struct_decl.ident = ast.new_ident(ident_tok)
 	struct_decl.components = make([dynamic]^ast.Stmt)
 
-	// Expect comma after BEGIN OF name
 	expect_token(p, .Comma)
 
-	// Parse components until END OF
 	for p.curr_tok.kind != .EOF {
-		// Check for END OF
 		if check_keyword(p, "END") {
 			break
 		}
 
-		// Check for nested BEGIN OF (nested structure)
 		if check_keyword(p, "BEGIN") {
 			nested_struct := parse_types_struct_decl(p)
 			if nested_struct != nil {
 				append(&struct_decl.components, &nested_struct.node)
 			}
-			// Expect comma after nested struct
 			if !allow_token(p, .Comma) {
-				break // END OF should follow
+				break
 			}
 			continue
 		}
 
-		// Parse regular field: name TYPE type [LENGTH n]
 		field_ident_tok := expect_token(p, .Ident)
 		expect_keyword_token(p, "TYPE")
 		type_expr := parse_expr(p)
 
-		// Check for optional LENGTH clause
 		length_expr: ^ast.Expr = nil
 		if check_keyword(p, "LENGTH") {
-			advance_token(p) // consume LENGTH
+			advance_token(p)
 			length_expr = parse_expr(p)
 		}
 
@@ -283,17 +261,15 @@ parse_types_struct_decl :: proc(p: ^Parser) -> ^ast.Types_Struct_Decl {
 		append(&struct_decl.components, &field_decl.node)
 
 		if !allow_token(p, .Comma) {
-			break // END OF should follow
+			break
 		}
 	}
 
-	// Expect END OF name
 	expect_keyword_token(p, "END")
 	expect_keyword_token(p, "OF")
 	end_ident_tok := expect_token(p, .Ident)
 	struct_decl.range.end = end_ident_tok.range.end
 
-	// Verify the END OF name matches BEGIN OF name
 	if struct_decl.ident.name != end_ident_tok.lit {
 		error(p, end_ident_tok.range, "END OF '%s' does not match BEGIN OF '%s'", end_ident_tok.lit, struct_decl.ident.name)
 	}
@@ -301,7 +277,6 @@ parse_types_struct_decl :: proc(p: ^Parser) -> ^ast.Types_Struct_Decl {
 	return struct_decl
 }
 
-// Helper to check if current token is a specific keyword (without consuming)
 check_keyword :: proc(p: ^Parser, expected: string) -> bool {
 	if p.curr_tok.kind != .Ident {
 		return false
@@ -313,25 +288,19 @@ check_keyword :: proc(p: ^Parser, expected: string) -> bool {
 	return false
 }
 
-// Helper to check for compound keywords like CLASS-DATA, CLASS-METHODS
-// Returns true if current token is `first` followed by `-` followed by `second`
-// Also consumes the three tokens (first, minus, second) if matched
 check_class_keyword :: proc(p: ^Parser, first: string, second: string) -> bool {
 	if !check_keyword(p, first) {
 		return false
 	}
 	
-	// Save current position to rollback if no match
 	saved_prev := p.prev_tok
 	saved_curr := p.curr_tok
 	saved_pos := p.l.pos
 	saved_read_pos := p.l.read_pos
 	saved_ch := p.l.ch
 	
-	// Check if next token is minus (with no space)
 	advance_token(p)
 	if p.curr_tok.kind != .Minus || lexer.have_space_between(saved_curr, p.curr_tok) {
-		// Rollback
 		p.prev_tok = saved_prev
 		p.curr_tok = saved_curr
 		p.l.pos = saved_pos
@@ -340,10 +309,8 @@ check_class_keyword :: proc(p: ^Parser, first: string, second: string) -> bool {
 		return false
 	}
 	
-	// Get the token after minus
 	advance_token(p)
 	if !check_keyword(p, second) || lexer.have_space_between(p.prev_tok, p.curr_tok) {
-		// Rollback - this is tricky, just return false for now
 		p.prev_tok = saved_prev
 		p.curr_tok = saved_curr
 		p.l.pos = saved_pos
@@ -352,14 +319,13 @@ check_class_keyword :: proc(p: ^Parser, first: string, second: string) -> bool {
 		return false
 	}
 	
-	// Consume the second keyword as well and return true
 	advance_token(p)
 	return true
 }
 
 parse_form_decl :: proc(p: ^Parser) -> ^ast.Decl {
-	form_tok := expect_token(p, .Ident) // FORM keyword
-	ident_tok := expect_token(p, .Ident) // subroutine name
+	form_tok := expect_token(p, .Ident)
+	ident_tok := expect_token(p, .Ident)
 
 	form_decl := ast.new(ast.Form_Decl, form_tok.range)
 	form_decl.ident = ast.new_ident(ident_tok)
@@ -368,7 +334,6 @@ parse_form_decl :: proc(p: ^Parser) -> ^ast.Decl {
 	form_decl.changing_params = make([dynamic]^ast.Form_Param)
 	form_decl.body = make([dynamic]^ast.Stmt)
 
-	// Parse optional parameter sections: TABLES, USING, CHANGING
 	optional_param_section_loop: for p.curr_tok.kind == .Ident && p.curr_tok.kind != .Period {
 		if len(p.curr_tok.lit) > 0 && len(p.curr_tok.lit) < len(p.keyword_buffer) {
 			keyword := to_upper(p.keyword_buffer[:], p.curr_tok.lit)
@@ -390,10 +355,8 @@ parse_form_decl :: proc(p: ^Parser) -> ^ast.Decl {
 		}
 	}
 
-	// Expect period to end the FORM header
 	expect_token(p, .Period)
 
-	// Parse body statements until ENDFORM
 	for p.curr_tok.kind != .EOF {
 		if p.curr_tok.kind == .Ident {
 			if len(p.curr_tok.lit) > 0 && len(p.curr_tok.lit) < len(p.keyword_buffer) {
@@ -409,7 +372,6 @@ parse_form_decl :: proc(p: ^Parser) -> ^ast.Decl {
 		}
 	}
 
-	// Expect ENDFORM
 	endform_tok := expect_keyword_token(p, "ENDFORM")
 	period_tok := expect_token(p, .Period)
 	form_decl.range.end = period_tok.range.end
@@ -424,7 +386,6 @@ parse_form_params :: proc(
 	kind: ast.Form_Param_Kind,
 ) {
 	for p.curr_tok.kind == .Ident {
-		// Check if this is the start of another section or end of params
 		if len(p.curr_tok.lit) > 0 && len(p.curr_tok.lit) < len(p.keyword_buffer) {
 			keyword := to_upper(p.keyword_buffer[:], p.curr_tok.lit)
 			if keyword == "TABLES" || keyword == "USING" || keyword == "CHANGING" {
@@ -437,12 +398,11 @@ parse_form_params :: proc(
 		ident_tok := advance_token(p)
 		param.ident = ast.new_ident(ident_tok)
 
-		// Check for optional TYPE clause
 		if p.curr_tok.kind == .Ident {
 			if len(p.curr_tok.lit) > 0 && len(p.curr_tok.lit) < len(p.keyword_buffer) {
 				keyword := to_upper(p.keyword_buffer[:], p.curr_tok.lit)
 				if keyword == "TYPE" {
-					advance_token(p) // consume TYPE
+					advance_token(p)
 					param.typed = parse_expr(p)
 					param.range.end = p.prev_tok.range.end
 				}
@@ -451,7 +411,6 @@ parse_form_params :: proc(
 
 		append(params, param)
 
-		// If period, stop parsing params
 		if p.curr_tok.kind == .Period {
 			break
 		}
@@ -462,7 +421,6 @@ parse_expr_or_assign_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	start_tok := p.curr_tok
 	lhs := parse_expr(p)
 
-	// Check for assignment operator
 	if p.curr_tok.kind == .Eq {
 		op := advance_token(p)
 		rhs := parse_expr(p)
@@ -477,7 +435,6 @@ parse_expr_or_assign_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 		return assign_stmt
 	}
 
-	// Not an assignment, treat as expression statement
 	period_tok := expect_token(p, .Period)
 	expr_stmt := ast.new(ast.Expr_Stmt, start_tok, period_tok)
 	expr_stmt.expr = lhs
@@ -526,7 +483,6 @@ parse_atom_expr :: proc(p: ^Parser, value: ^ast.Expr) -> ^ast.Expr {
 	loop: for {
 		#partial switch p.curr_tok.kind {
 		case .Minus, .FatArrow, .Tilde:
-			// Check if this is a selector (no space before the operator and followed by identifier)
 			if lexer.have_space_between(p.prev_tok, p.curr_tok) {
 				break loop
 			}
@@ -731,38 +687,29 @@ to_upper :: proc(buffer: []byte, s: string) -> string {
 	return string(buffer[:length])
 }
 
-// ============================================================================
-// CLASS and INTERFACE parsing
-// ============================================================================
-
-// Parses a CLASS declaration (either DEFINITION or IMPLEMENTATION)
 parse_class_decl :: proc(p: ^Parser) -> ^ast.Decl {
-	class_tok := expect_token(p, .Ident) // CLASS keyword
-	ident_tok := expect_token(p, .Ident) // class name
+	class_tok := expect_token(p, .Ident)
+	ident_tok := expect_token(p, .Ident)
 	
-	// Check if this is DEFINITION or IMPLEMENTATION
 	if check_keyword(p, "DEFINITION") {
 		return parse_class_def_decl(p, class_tok, ident_tok)
 	} else if check_keyword(p, "IMPLEMENTATION") {
 		return parse_class_impl_decl(p, class_tok, ident_tok)
 	}
 	
-	// Error: expected DEFINITION or IMPLEMENTATION
 	error(p, p.curr_tok.range, "expected DEFINITION or IMPLEMENTATION after class name")
 	end_tok := skip_to_new_line(p)
 	bad_decl := ast.new(ast.Bad_Decl, class_tok, end_tok)
 	return bad_decl
 }
 
-// Parses CLASS ... DEFINITION
 parse_class_def_decl :: proc(p: ^Parser, class_tok: lexer.Token, ident_tok: lexer.Token) -> ^ast.Decl {
-	expect_keyword_token(p, "DEFINITION") // consume DEFINITION
+	expect_keyword_token(p, "DEFINITION")
 	
 	class_decl := ast.new(ast.Class_Def_Decl, class_tok.range)
 	class_decl.ident = ast.new_ident(ident_tok)
 	class_decl.sections = make([dynamic]^ast.Class_Section)
 	
-	// Parse optional modifiers: ABSTRACT, FINAL, INHERITING FROM
 	for p.curr_tok.kind == .Ident && p.curr_tok.kind != .Period {
 		if check_keyword(p, "ABSTRACT") {
 			advance_token(p)
@@ -771,7 +718,7 @@ parse_class_def_decl :: proc(p: ^Parser, class_tok: lexer.Token, ident_tok: lexe
 			advance_token(p)
 			class_decl.is_final = true
 		} else if check_keyword(p, "INHERITING") {
-			advance_token(p) // consume INHERITING
+			advance_token(p)
 			expect_keyword_token(p, "FROM")
 			class_decl.inheriting_from = parse_expr(p)
 		} else {
@@ -779,25 +726,20 @@ parse_class_def_decl :: proc(p: ^Parser, class_tok: lexer.Token, ident_tok: lexe
 		}
 	}
 	
-	// Expect period after class header
 	expect_token(p, .Period)
 	
-	// Parse sections until ENDCLASS
 	for p.curr_tok.kind != .EOF {
 		if check_keyword(p, "ENDCLASS") {
 			break
 		}
 		
-		// Parse section (PUBLIC/PROTECTED/PRIVATE SECTION)
 		if section := parse_class_section(p); section != nil {
 			append(&class_decl.sections, section)
 		} else {
-			// Skip unknown statement
 			skip_to_new_line(p)
 		}
 	}
 	
-	// Expect ENDCLASS
 	endclass_tok := expect_keyword_token(p, "ENDCLASS")
 	period_tok := expect_token(p, .Period)
 	class_decl.range.end = period_tok.range.end
@@ -806,16 +748,14 @@ parse_class_def_decl :: proc(p: ^Parser, class_tok: lexer.Token, ident_tok: lexe
 	return class_decl
 }
 
-// Parses CLASS ... IMPLEMENTATION
 parse_class_impl_decl :: proc(p: ^Parser, class_tok: lexer.Token, ident_tok: lexer.Token) -> ^ast.Decl {
-	expect_keyword_token(p, "IMPLEMENTATION") // consume IMPLEMENTATION
+	expect_keyword_token(p, "IMPLEMENTATION")
 	expect_token(p, .Period)
 	
 	class_impl := ast.new(ast.Class_Impl_Decl, class_tok.range)
 	class_impl.ident = ast.new_ident(ident_tok)
 	class_impl.methods = make([dynamic]^ast.Stmt)
 	
-	// Parse method implementations until ENDCLASS
 	for p.curr_tok.kind != .EOF {
 		if check_keyword(p, "ENDCLASS") {
 			break
@@ -827,12 +767,10 @@ parse_class_impl_decl :: proc(p: ^Parser, class_tok: lexer.Token, ident_tok: lex
 				append(&class_impl.methods, method_impl)
 			}
 		} else {
-			// Skip unknown statement
 			skip_to_new_line(p)
 		}
 	}
 	
-	// Expect ENDCLASS
 	endclass_tok := expect_keyword_token(p, "ENDCLASS")
 	period_tok := expect_token(p, .Period)
 	class_impl.range.end = period_tok.range.end
@@ -841,7 +779,6 @@ parse_class_impl_decl :: proc(p: ^Parser, class_tok: lexer.Token, ident_tok: lex
 	return class_impl
 }
 
-// Parses a class section: PUBLIC/PROTECTED/PRIVATE SECTION
 parse_class_section :: proc(p: ^Parser) -> ^ast.Class_Section {
 	access: ast.Access_Modifier
 	
@@ -868,7 +805,6 @@ parse_class_section :: proc(p: ^Parser) -> ^ast.Class_Section {
 	section.methods = make([dynamic]^ast.Stmt)
 	section.interfaces = make([dynamic]^ast.Stmt)
 	
-	// Parse section contents until next SECTION or ENDCLASS
 	for p.curr_tok.kind != .EOF {
 		if check_keyword(p, "PUBLIC") || check_keyword(p, "PROTECTED") || 
 		   check_keyword(p, "PRIVATE") || check_keyword(p, "ENDCLASS") {
@@ -906,7 +842,6 @@ parse_class_section :: proc(p: ^Parser) -> ^ast.Class_Section {
 				append(&section.interfaces, ifaces_decl)
 			}
 		} else {
-			// Skip unknown content
 			skip_to_new_line(p)
 		}
 	}
@@ -914,24 +849,18 @@ parse_class_section :: proc(p: ^Parser) -> ^ast.Class_Section {
 	return section
 }
 
-// Parses DATA or CLASS-DATA declaration in a class
-// For regular DATA, the token is not yet consumed
-// For CLASS-DATA, check_class_keyword already consumed all tokens
 parse_class_data_decl :: proc(p: ^Parser, is_class: bool) -> ^ast.Stmt {
 	data_tok: lexer.Token
 	if is_class {
-		// check_class_keyword already consumed CLASS-DATA, p.prev_tok is DATA
 		data_tok = p.prev_tok
 	} else {
-		data_tok = advance_token(p) // consume DATA
+		data_tok = advance_token(p)
 	}
 	
 	if allow_token(p, .Colon) {
-		// Chain declaration: DATA: attr1 TYPE t1, attr2 TYPE t2.
 		return parse_class_data_chain_decl(p, data_tok, is_class)
 	}
 	
-	// Single declaration: DATA attr TYPE type.
 	return parse_class_data_single_decl(p, data_tok, is_class)
 }
 
@@ -940,7 +869,6 @@ parse_class_data_single_decl :: proc(p: ^Parser, data_tok: lexer.Token, is_class
 	expect_keyword_token(p, "TYPE")
 	type_expr := parse_expr(p)
 	
-	// Check for optional READ-ONLY
 	is_read_only := false
 	if check_keyword(p, "READ-ONLY") {
 		advance_token(p)
@@ -959,8 +887,6 @@ parse_class_data_single_decl :: proc(p: ^Parser, data_tok: lexer.Token, is_class
 }
 
 parse_class_data_chain_decl :: proc(p: ^Parser, data_tok: lexer.Token, is_class: bool) -> ^ast.Stmt {
-	// For simplicity, parse each item and return a chain (reuse Data_Typed_Chain_Decl)
-	// Actually we should create Attr_Decl for each
 	chain_decl := ast.new(ast.Data_Typed_Chain_Decl, data_tok.range)
 	chain_decl.decls = make([dynamic]^ast.Data_Typed_Decl)
 	
@@ -986,20 +912,15 @@ parse_class_data_chain_decl :: proc(p: ^Parser, data_tok: lexer.Token, is_class:
 	return chain_decl
 }
 
-// Parses METHODS or CLASS-METHODS declaration
-// For regular METHODS, the token is not yet consumed
-// For CLASS-METHODS, check_class_keyword already consumed all tokens
 parse_method_decl :: proc(p: ^Parser, is_class: bool) -> ^ast.Stmt {
 	method_tok: lexer.Token
 	if is_class {
-		// check_class_keyword already consumed CLASS-METHODS, p.prev_tok is METHODS
 		method_tok = p.prev_tok
 	} else {
-		method_tok = advance_token(p) // consume METHODS
+		method_tok = advance_token(p)
 	}
 	
 	if allow_token(p, .Colon) {
-		// Chain declaration - parse each method
 		return parse_method_chain_decl(p, method_tok, is_class)
 	}
 	
@@ -1015,7 +936,6 @@ parse_method_single_decl :: proc(p: ^Parser, method_tok: lexer.Token, is_class: 
 	method_decl.params = make([dynamic]^ast.Method_Param)
 	method_decl.raising = make([dynamic]^ast.Expr)
 	
-	// Parse optional modifiers and parameters
 	for p.curr_tok.kind != .EOF && p.curr_tok.kind != .Period {
 		if check_keyword(p, "ABSTRACT") {
 			advance_token(p)
@@ -1053,18 +973,15 @@ parse_method_single_decl :: proc(p: ^Parser, method_tok: lexer.Token, is_class: 
 }
 
 parse_method_chain_decl :: proc(p: ^Parser, method_tok: lexer.Token, is_class: bool) -> ^ast.Stmt {
-	// Parse first method and return it (simplified - in practice METHODS: is less common)
 	return parse_method_single_decl(p, method_tok, is_class)
 }
 
-// Parses method parameters (IMPORTING/EXPORTING/CHANGING/RETURNING)
 parse_method_params :: proc(
 	p: ^Parser,
 	params: ^[dynamic]^ast.Method_Param,
 	kind: ast.Method_Param_Kind,
 ) {
 	for p.curr_tok.kind == .Ident && p.curr_tok.kind != .Period {
-		// Check for next section keyword
 		if check_keyword(p, "IMPORTING") || check_keyword(p, "EXPORTING") ||
 		   check_keyword(p, "CHANGING") || check_keyword(p, "RETURNING") ||
 		   check_keyword(p, "RAISING") || check_keyword(p, "ABSTRACT") ||
@@ -1072,9 +989,8 @@ parse_method_params :: proc(
 			break
 		}
 		
-		// For RETURNING, expect VALUE(name)
 		if kind == .Returning && check_keyword(p, "VALUE") {
-			advance_token(p) // consume VALUE
+			advance_token(p)
 			expect_token(p, .LParen)
 			ident_tok := expect_token(p, .Ident)
 			expect_token(p, .RParen)
@@ -1083,7 +999,6 @@ parse_method_params :: proc(
 			param.kind = kind
 			param.ident = ast.new_ident(ident_tok)
 			
-			// TYPE clause
 			if check_keyword(p, "TYPE") {
 				advance_token(p)
 				param.typed = parse_expr(p)
@@ -1099,19 +1014,16 @@ parse_method_params :: proc(
 		param.kind = kind
 		param.ident = ast.new_ident(ident_tok)
 		
-		// Check for TYPE clause
 		if check_keyword(p, "TYPE") {
 			advance_token(p)
 			param.typed = parse_expr(p)
 		}
 		
-		// Check for OPTIONAL
 		if check_keyword(p, "OPTIONAL") {
 			advance_token(p)
 			param.optional = true
 		}
 		
-		// Check for DEFAULT
 		if check_keyword(p, "DEFAULT") {
 			advance_token(p)
 			param.default = parse_expr(p)
@@ -1121,7 +1033,6 @@ parse_method_params :: proc(
 	}
 }
 
-// Parses RAISING clause
 parse_raising_clause :: proc(p: ^Parser, raising: ^[dynamic]^ast.Expr) {
 	for p.curr_tok.kind == .Ident && p.curr_tok.kind != .Period {
 		if check_keyword(p, "IMPORTING") || check_keyword(p, "EXPORTING") ||
@@ -1134,14 +1045,12 @@ parse_raising_clause :: proc(p: ^Parser, raising: ^[dynamic]^ast.Expr) {
 	}
 }
 
-// Parses INTERFACES declaration (implementing interfaces in a class)
 parse_interfaces_decl :: proc(p: ^Parser) -> ^ast.Stmt {
 	ifaces_tok := expect_keyword_token(p, "INTERFACES")
 	
 	ifaces_decl := ast.new(ast.Interfaces_Decl, ifaces_tok.range)
 	ifaces_decl.names = make([dynamic]^ast.Ident)
 	
-	// Parse interface names
 	for p.curr_tok.kind == .Ident && p.curr_tok.kind != .Period {
 		ident_tok := advance_token(p)
 		append(&ifaces_decl.names, ast.new_ident(ident_tok))
@@ -1153,11 +1062,9 @@ parse_interfaces_decl :: proc(p: ^Parser) -> ^ast.Stmt {
 	return ifaces_decl
 }
 
-// Parses METHOD implementation (inside CLASS IMPLEMENTATION)
 parse_method_impl :: proc(p: ^Parser) -> ^ast.Stmt {
 	method_tok := expect_keyword_token(p, "METHOD")
 	
-	// Method name can be simple or interface~method
 	name_expr := parse_expr(p)
 	
 	expect_token(p, .Period)
@@ -1166,7 +1073,6 @@ parse_method_impl :: proc(p: ^Parser) -> ^ast.Stmt {
 	method_impl.ident = name_expr
 	method_impl.body = make([dynamic]^ast.Stmt)
 	
-	// Parse body until ENDMETHOD
 	for p.curr_tok.kind != .EOF {
 		if check_keyword(p, "ENDMETHOD") {
 			break
@@ -1187,10 +1093,9 @@ parse_method_impl :: proc(p: ^Parser) -> ^ast.Stmt {
 	return method_impl
 }
 
-// Parses INTERFACE declaration
 parse_interface_decl :: proc(p: ^Parser) -> ^ast.Decl {
-	iface_tok := expect_token(p, .Ident) // INTERFACE keyword
-	ident_tok := expect_token(p, .Ident) // interface name
+	iface_tok := expect_token(p, .Ident)
+	ident_tok := expect_token(p, .Ident)
 	
 	expect_token(p, .Period)
 	
@@ -1200,7 +1105,6 @@ parse_interface_decl :: proc(p: ^Parser) -> ^ast.Decl {
 	iface_decl.types = make([dynamic]^ast.Stmt)
 	iface_decl.data = make([dynamic]^ast.Stmt)
 	
-	// Parse contents until ENDINTERFACE
 	for p.curr_tok.kind != .EOF {
 		if check_keyword(p, "ENDINTERFACE") {
 			break
@@ -1227,7 +1131,6 @@ parse_interface_decl :: proc(p: ^Parser) -> ^ast.Decl {
 				append(&iface_decl.data, data_decl)
 			}
 		} else {
-			// Skip unknown content
 			skip_to_new_line(p)
 		}
 	}

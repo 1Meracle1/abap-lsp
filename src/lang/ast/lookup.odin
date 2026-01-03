@@ -14,8 +14,6 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 		return nil
 	}
 
-	// Try to find a more specific child node
-	// This depends on the exact node type
 	#partial switch n in node.derived {
 	case ^Program:
 		for _, file in n.files {
@@ -81,13 +79,11 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 		}
 
 	case ^Types_Struct_Decl:
-		// Check structure name
 		if n.ident != nil {
 			if res := find_node_at_offset(&n.ident.expr_base, offset); res != nil {
 				return res
 			}
 		}
-		// Check components (fields and nested structures)
 		for comp in n.components {
 			if res := find_node_at_offset(&comp.stmt_base, offset); res != nil {
 				return res
@@ -95,7 +91,6 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 		}
 
 	case ^Ident:
-		// Leaf node, return self
 		return node
 
 	case ^Basic_Lit:
@@ -199,31 +194,26 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 		}
 
 	case ^Form_Decl:
-		// Check form name
 		if n.ident != nil {
 			if res := find_node_at_offset(&n.ident.expr_base, offset); res != nil {
 				return res
 			}
 		}
-		// Check TABLES parameters
 		for param in n.tables_params {
 			if res := find_node_at_offset(&param.node, offset); res != nil {
 				return res
 			}
 		}
-		// Check USING parameters
 		for param in n.using_params {
 			if res := find_node_at_offset(&param.node, offset); res != nil {
 				return res
 			}
 		}
-		// Check CHANGING parameters
 		for param in n.changing_params {
 			if res := find_node_at_offset(&param.node, offset); res != nil {
 				return res
 			}
 		}
-		// Check body statements
 		for stmt in n.body {
 			if res := find_node_at_offset(&stmt.stmt_base, offset); res != nil {
 				return res
@@ -231,20 +221,17 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 		}
 
 	case ^Form_Param:
-		// Check parameter name
 		if n.ident != nil {
 			if res := find_node_at_offset(&n.ident.expr_base, offset); res != nil {
 				return res
 			}
 		}
-		// Check parameter type
 		if n.typed != nil {
 			if res := find_node_at_offset(&n.typed.expr_base, offset); res != nil {
 				return res
 			}
 		}
 
-	// CLASS and INTERFACE declarations
 	case ^Class_Def_Decl:
 		if n.ident != nil {
 			if res := find_node_at_offset(&n.ident.expr_base, offset); res != nil {

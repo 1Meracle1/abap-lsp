@@ -10,18 +10,13 @@ import "core:strings"
 import "core:sync"
 import "core:time"
 
-// Snapshot represents an immutable state of a document at a specific version
 Snapshot :: struct {
 	arena:        virtual.Arena,
 	allocator:    mem.Allocator,
-
-	//
 	text:         string,
 	version:      int,
 	ast:          ^ast.File,
 	symbol_table: ^symbols.SymbolTable,
-
-	// Reference counting
 	refs:         i32,
 }
 
@@ -79,7 +74,6 @@ refresh_document :: proc(c: ^Cache, uri: string, text: string, version: int) {
 	release_snapshot(old_snap)
 }
 
-// caller MUST call release_snapshot() when done
 get_snapshot :: proc(c: ^Cache, uri: string) -> ^Snapshot {
 	sync.recursive_mutex_lock(&c.documents_mu)
 	document, ok := c.documents[uri]
