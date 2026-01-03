@@ -650,6 +650,24 @@ collect_tokens_from_expr :: proc(
 			collect_tokens_from_expr(tokens, arg, snap, form_scope)
 		}
 
+	case ^ast.Named_Arg:
+		// Highlight the parameter name as a parameter
+		if e.name != nil {
+			append(
+				tokens,
+				SemanticToken {
+					offset = e.name.range.start,
+					length = e.name.range.end - e.name.range.start,
+					type = .Parameter,
+					modifiers = 0,
+				},
+			)
+		}
+		// Collect tokens from the value expression
+		if e.value != nil {
+			collect_tokens_from_expr(tokens, e.value, snap, form_scope)
+		}
+
 	case ^ast.Predicate_Expr:
 		collect_tokens_from_expr(tokens, e.expr, snap, form_scope)
 	}

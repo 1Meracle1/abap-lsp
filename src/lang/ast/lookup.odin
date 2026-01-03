@@ -140,6 +140,18 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 			}
 		}
 
+	case ^Constructor_Expr:
+		if n.type_expr != nil {
+			if res := find_node_at_offset(&n.type_expr.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		for arg in n.args {
+			if res := find_node_at_offset(&arg.expr_base, offset); res != nil {
+				return res
+			}
+		}
+
 	case ^New_Expr:
 		if n.type_expr != nil {
 			if res := find_node_at_offset(&n.type_expr.expr_base, offset); res != nil {
@@ -148,6 +160,18 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 		}
 		for arg in n.args {
 			if res := find_node_at_offset(&arg.expr_base, offset); res != nil {
+				return res
+			}
+		}
+
+	case ^Named_Arg:
+		if n.name != nil {
+			if res := find_node_at_offset(&n.name.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		if n.value != nil {
+			if res := find_node_at_offset(&n.value.expr_base, offset); res != nil {
 				return res
 			}
 		}

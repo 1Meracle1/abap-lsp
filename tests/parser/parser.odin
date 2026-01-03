@@ -161,6 +161,53 @@ new_expr :: proc(
 	return node
 }
 
+// Builder for Named argument expressions (param = value)
+named_arg :: proc(param_name: string, value: ast.Any_Expr) -> ^ast.Named_Arg {
+	node := ast.new(ast.Named_Arg, {})
+	node.name = ident(param_name)
+	#partial switch v in value {
+	case ^ast.Basic_Lit:
+		node.value = &v.node
+	case ^ast.Ident:
+		node.value = &v.node
+	case ^ast.Selector_Expr:
+		node.value = &v.node
+	case ^ast.Call_Expr:
+		node.value = &v.node
+	}
+	node.derived_expr = node
+	return node
+}
+
+// Builder for Call expressions
+call_expr :: proc(expr: ast.Any_Expr, args: ..ast.Any_Expr) -> ^ast.Call_Expr {
+	node := ast.new(ast.Call_Expr, {})
+	#partial switch e in expr {
+	case ^ast.Ident:
+		node.expr = &e.node
+	case ^ast.Selector_Expr:
+		node.expr = &e.node
+	case ^ast.Call_Expr:
+		node.expr = &e.node
+	}
+	arg_list := make([]^ast.Expr, len(args))
+	for arg, i in args {
+		#partial switch a in arg {
+		case ^ast.Basic_Lit:
+			arg_list[i] = &a.node
+		case ^ast.Ident:
+			arg_list[i] = &a.node
+		case ^ast.Selector_Expr:
+			arg_list[i] = &a.node
+		case ^ast.Named_Arg:
+			arg_list[i] = &a.node
+		}
+	}
+	node.args = arg_list
+	node.derived_expr = node
+	return node
+}
+
 new_expr_inferred :: proc(args: ..ast.Any_Expr) -> ^ast.New_Expr {
 	return new_expr("", true, ..args)
 }
@@ -519,6 +566,15 @@ check_expr :: proc(
 			)
 		}
 		if !testing.expect(t, len(ex.args) == len(ac.args), fmt.tprintf("Expected %d args, got %d", len(ex.args), len(ac.args)), loc = loc) do return
+		for i := 0; i < len(ex.args); i += 1 {
+			check_expr(t, ex.args[i].derived_expr, ac.args[i], loc = loc)
+		}
+
+	case ^ast.Call_Expr:
+		ac, ok := actual_derived.(^ast.Call_Expr)
+		if !testing.expect(t, ok, fmt.tprintf("Expected Call_Expr, got %T", actual_derived), loc = loc) do return
+		check_expr(t, ex.expr.derived_expr, ac.expr, loc = loc)
+		if !testing.expect(t, len(ex.args) == len(ac.args), fmt.tprintf("Expected %d call args, got %d", len(ex.args), len(ac.args)), loc = loc) do return
 		for i := 0; i < len(ex.args); i += 1 {
 			check_expr(t, ex.args[i].derived_expr, ac.args[i], loc = loc)
 		}
@@ -3161,11 +3217,7 @@ START-OF-SELECTION.
 		// Fourth: START-OF-SELECTION
 		event, eok := file.decls[3].derived_stmt.(^ast.Event_Block)
 		if testing.expect(t, eok, "Fourth decl should be Event_Block") {
-			testing.expect(
-				t,
-				event.kind == .StartOfSelection,
-				"Event should be StartOfSelection",
-			)
+			testing.expect(t, event.kind == .StartOfSelection, "Event should be StartOfSelection")
 		}
 	}
 }
@@ -3752,10 +3804,7 @@ ENDIF.`
 				testing.expect(
 					t,
 					len(inner_if.body) == 1,
-					fmt.tprintf(
-						"Expected 1 nested body statement, got %d",
-						len(inner_if.body),
-					),
+					fmt.tprintf("Expected 1 nested body statement, got %d", len(inner_if.body)),
 				)
 			}
 		}
@@ -3894,3 +3943,464 @@ ENDCLASS.`
 		}
 	}
 }
+
+// --- Arrow (->) Expression Tests ---
+
+@(test)
+arrow_selector_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `lv_result = lo_object->get_value.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 1,
+		fmt.tprintf("Expected 1 decl, got %v", len(file.decls)),
+	)
+	if len(file.decls) > 0 {
+		assign, ok := file.decls[0].derived_stmt.(^ast.Assign_Stmt)
+		if !testing.expect(t, ok, "Expected Assign_Stmt") do return
+
+		if len(assign.rhs) > 0 {
+			sel, sok := assign.rhs[0].derived_expr.(^ast.Selector_Expr)
+			if !testing.expect(t, sok, "Expected Selector_Expr on RHS") do return
+
+			testing.expect(
+				t,
+				sel.op.kind == .Arrow,
+				fmt.tprintf("Expected Arrow op, got %v", sel.op.kind),
+			)
+			testing.expect(
+				t,
+				sel.field.name == "get_value",
+				fmt.tprintf("Expected field 'get_value', got '%s'", sel.field.name),
+			)
+
+			// Check the base expression
+			base_ident, iok := sel.expr.derived_expr.(^ast.Ident)
+			if testing.expect(t, iok, "Expected Ident as base expression") {
+				testing.expect(
+					t,
+					base_ident.name == "lo_object",
+					fmt.tprintf("Expected 'lo_object', got '%s'", base_ident.name),
+				)
+			}
+		}
+	}
+}
+
+@(test)
+chained_arrow_selector_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `lv_result = lo_app->get_controller->get_view.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if len(file.decls) > 0 {
+		assign, ok := file.decls[0].derived_stmt.(^ast.Assign_Stmt)
+		if !testing.expect(t, ok, "Expected Assign_Stmt") do return
+
+		if len(assign.rhs) > 0 {
+			outer_sel, sok := assign.rhs[0].derived_expr.(^ast.Selector_Expr)
+			if !testing.expect(t, sok, "Expected outer Selector_Expr") do return
+
+			testing.expect(t, outer_sel.op.kind == .Arrow, "Expected Arrow op on outer selector")
+			testing.expect(t, outer_sel.field.name == "get_view", "Expected field 'get_view'")
+
+			inner_sel, isok := outer_sel.expr.derived_expr.(^ast.Selector_Expr)
+			if testing.expect(t, isok, "Expected inner Selector_Expr") {
+				testing.expect(
+					t,
+					inner_sel.op.kind == .Arrow,
+					"Expected Arrow op on inner selector",
+				)
+				testing.expect(
+					t,
+					inner_sel.field.name == "get_controller",
+					"Expected field 'get_controller'",
+				)
+			}
+		}
+	}
+}
+
+// --- Call Expression Tests ---
+
+@(test)
+simple_call_expr_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `lv_result = lo_object->get_value( ).`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if len(file.decls) > 0 {
+		assign, ok := file.decls[0].derived_stmt.(^ast.Assign_Stmt)
+		if !testing.expect(t, ok, "Expected Assign_Stmt") do return
+
+		if len(assign.rhs) > 0 {
+			call, cok := assign.rhs[0].derived_expr.(^ast.Call_Expr)
+			if !testing.expect(t, cok, "Expected Call_Expr on RHS") do return
+
+			testing.expect(t, len(call.args) == 0, "Expected 0 args")
+
+			// The callee should be a selector expression
+			sel, sok := call.expr.derived_expr.(^ast.Selector_Expr)
+			if testing.expect(t, sok, "Expected Selector_Expr as callee") {
+				testing.expect(t, sel.op.kind == .Arrow, "Expected Arrow op")
+				testing.expect(t, sel.field.name == "get_value", "Expected field 'get_value'")
+			}
+		}
+	}
+}
+
+@(test)
+call_expr_with_args_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `lv_result = lo_object->set_value( iv_value ).`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if len(file.decls) > 0 {
+		assign, ok := file.decls[0].derived_stmt.(^ast.Assign_Stmt)
+		if !testing.expect(t, ok, "Expected Assign_Stmt") do return
+
+		if len(assign.rhs) > 0 {
+			call, cok := assign.rhs[0].derived_expr.(^ast.Call_Expr)
+			if !testing.expect(t, cok, "Expected Call_Expr on RHS") do return
+
+			testing.expect(
+				t,
+				len(call.args) == 1,
+				fmt.tprintf("Expected 1 arg, got %d", len(call.args)),
+			)
+
+			if len(call.args) > 0 {
+				arg_ident, aok := call.args[0].derived_expr.(^ast.Ident)
+				if testing.expect(t, aok, "Expected Ident arg") {
+					testing.expect(t, arg_ident.name == "iv_value", "Expected arg 'iv_value'")
+				}
+			}
+		}
+	}
+}
+
+@(test)
+chained_call_expr_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `lv_result = lo_builder->set_name( lv_name )->build( ).`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if len(file.decls) > 0 {
+		assign, ok := file.decls[0].derived_stmt.(^ast.Assign_Stmt)
+		if !testing.expect(t, ok, "Expected Assign_Stmt") do return
+
+		if len(assign.rhs) > 0 {
+			// Outer call: ->build( )
+			outer_call, ocok := assign.rhs[0].derived_expr.(^ast.Call_Expr)
+			if !testing.expect(t, ocok, "Expected outer Call_Expr") do return
+
+			testing.expect(t, len(outer_call.args) == 0, "Expected 0 args for build()")
+
+			// The callee of build() is a selector
+			build_sel, bsok := outer_call.expr.derived_expr.(^ast.Selector_Expr)
+			if !testing.expect(t, bsok, "Expected Selector_Expr for build") do return
+
+			testing.expect(t, build_sel.field.name == "build", "Expected field 'build'")
+
+			// Inner call: ->set_name( lv_name )
+			inner_call, icok := build_sel.expr.derived_expr.(^ast.Call_Expr)
+			if !testing.expect(t, icok, "Expected inner Call_Expr for set_name") do return
+
+			testing.expect(
+				t,
+				len(inner_call.args) == 1,
+				fmt.tprintf("Expected 1 arg for set_name, got %d", len(inner_call.args)),
+			)
+		}
+	}
+}
+
+@(test)
+method_call_standalone_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `lo_object->process( ).`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if len(file.decls) > 0 {
+		expr_stmt, ok := file.decls[0].derived_stmt.(^ast.Expr_Stmt)
+		if !testing.expect(t, ok, "Expected Expr_Stmt") do return
+
+		call, cok := expr_stmt.expr.derived_expr.(^ast.Call_Expr)
+		if !testing.expect(t, cok, "Expected Call_Expr") do return
+
+		sel, sok := call.expr.derived_expr.(^ast.Selector_Expr)
+		if testing.expect(t, sok, "Expected Selector_Expr as callee") {
+			testing.expect(t, sel.op.kind == .Arrow, "Expected Arrow op")
+			testing.expect(t, sel.field.name == "process", "Expected field 'process'")
+		}
+	}
+}
+
+@(test)
+call_with_literal_arg_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `lv_result = lo_calc->add( 42 ).`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if len(file.decls) > 0 {
+		assign, ok := file.decls[0].derived_stmt.(^ast.Assign_Stmt)
+		if !testing.expect(t, ok, "Expected Assign_Stmt") do return
+
+		if len(assign.rhs) > 0 {
+			call, cok := assign.rhs[0].derived_expr.(^ast.Call_Expr)
+			if !testing.expect(t, cok, "Expected Call_Expr") do return
+
+			if len(call.args) > 0 {
+				lit, lok := call.args[0].derived_expr.(^ast.Basic_Lit)
+				if testing.expect(t, lok, "Expected Basic_Lit arg") {
+					testing.expect(t, lit.tok.lit == "42", "Expected arg '42'")
+				}
+			}
+		}
+	}
+}
+
+@(test)
+named_arg_single_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `lv_result = cl_class=>method( iv_param = 'value' ).`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if len(file.decls) > 0 {
+		assign, ok := file.decls[0].derived_stmt.(^ast.Assign_Stmt)
+		if !testing.expect(t, ok, "Expected Assign_Stmt") do return
+
+		if len(assign.rhs) > 0 {
+			call, cok := assign.rhs[0].derived_expr.(^ast.Call_Expr)
+			if !testing.expect(t, cok, "Expected Call_Expr") do return
+
+			testing.expect(
+				t,
+				len(call.args) == 1,
+				fmt.tprintf("Expected 1 arg, got %d", len(call.args)),
+			)
+
+			if len(call.args) > 0 {
+				named, nok := call.args[0].derived_expr.(^ast.Named_Arg)
+				if testing.expect(t, nok, "Expected Named_Arg") {
+					testing.expect(t, named.name.name == "iv_param", "Expected param name 'iv_param'")
+					lit, lok := named.value.derived_expr.(^ast.Basic_Lit)
+					if testing.expect(t, lok, "Expected Basic_Lit value") {
+						testing.expect(t, lit.tok.lit == "'value'", "Expected value \"'value'\"")
+					}
+				}
+			}
+		}
+	}
+}
+
+@(test)
+named_arg_multiple_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `lv_result = cl_class=>method( iv_param1 = 'value1' iv_param2 = 42 ).`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if len(file.decls) > 0 {
+		assign, ok := file.decls[0].derived_stmt.(^ast.Assign_Stmt)
+		if !testing.expect(t, ok, "Expected Assign_Stmt") do return
+
+		if len(assign.rhs) > 0 {
+			call, cok := assign.rhs[0].derived_expr.(^ast.Call_Expr)
+			if !testing.expect(t, cok, "Expected Call_Expr") do return
+
+			testing.expect(
+				t,
+				len(call.args) == 2,
+				fmt.tprintf("Expected 2 args, got %d", len(call.args)),
+			)
+
+			if len(call.args) >= 2 {
+				// Check first named arg
+				named1, n1ok := call.args[0].derived_expr.(^ast.Named_Arg)
+				if testing.expect(t, n1ok, "Expected first Named_Arg") {
+					testing.expect(t, named1.name.name == "iv_param1", "Expected param name 'iv_param1'")
+				}
+
+				// Check second named arg
+				named2, n2ok := call.args[1].derived_expr.(^ast.Named_Arg)
+				if testing.expect(t, n2ok, "Expected second Named_Arg") {
+					testing.expect(t, named2.name.name == "iv_param2", "Expected param name 'iv_param2'")
+				}
+			}
+		}
+	}
+}
+
+@(test)
+named_arg_multiline_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `mo_messages = /sttpec/cl_message_ctrl=>create(
+		iv_object    = 'ZATTP'
+		iv_subobject = 'SN_RESET'
+	).`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if len(file.decls) > 0 {
+		assign, ok := file.decls[0].derived_stmt.(^ast.Assign_Stmt)
+		if !testing.expect(t, ok, "Expected Assign_Stmt") do return
+
+		if len(assign.rhs) > 0 {
+			call, cok := assign.rhs[0].derived_expr.(^ast.Call_Expr)
+			if !testing.expect(t, cok, "Expected Call_Expr") do return
+
+			testing.expect(
+				t,
+				len(call.args) == 2,
+				fmt.tprintf("Expected 2 args, got %d", len(call.args)),
+			)
+
+			if len(call.args) >= 2 {
+				named1, n1ok := call.args[0].derived_expr.(^ast.Named_Arg)
+				if testing.expect(t, n1ok, "Expected first Named_Arg") {
+					testing.expect(t, named1.name.name == "iv_object", "Expected param name 'iv_object'")
+				}
+
+				named2, n2ok := call.args[1].derived_expr.(^ast.Named_Arg)
+				if testing.expect(t, n2ok, "Expected second Named_Arg") {
+					testing.expect(t, named2.name.name == "iv_subobject", "Expected param name 'iv_subobject'")
+				}
+			}
+		}
+	}
+}
+
+@(test)
+named_arg_with_ident_value_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `lv_result = cl_class=>method( iv_param = lv_value ).`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if len(file.decls) > 0 {
+		assign, ok := file.decls[0].derived_stmt.(^ast.Assign_Stmt)
+		if !testing.expect(t, ok, "Expected Assign_Stmt") do return
+
+		if len(assign.rhs) > 0 {
+			call, cok := assign.rhs[0].derived_expr.(^ast.Call_Expr)
+			if !testing.expect(t, cok, "Expected Call_Expr") do return
+
+			if len(call.args) > 0 {
+				named, nok := call.args[0].derived_expr.(^ast.Named_Arg)
+				if testing.expect(t, nok, "Expected Named_Arg") {
+					testing.expect(t, named.name.name == "iv_param", "Expected param name 'iv_param'")
+					ident_val, iok := named.value.derived_expr.(^ast.Ident)
+					if testing.expect(t, iok, "Expected Ident value") {
+						testing.expect(t, ident_val.name == "lv_value", "Expected value 'lv_value'")
+					}
+				}
+			}
+		}
+	}
+}
+
+@(test)
+full_file_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `
+      log_fatal( CONV #( TEXT-005 ) ).
+`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+}
+

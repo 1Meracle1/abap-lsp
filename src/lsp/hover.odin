@@ -107,6 +107,33 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 		} else {
 			hover_text = "NEW expression"
 		}
+
+	case ^ast.Call_Expr:
+		log_trace(srv, "found Call expression")
+		// Get the method name being called
+		method_name := get_call_method_name(n)
+		if method_name != "" {
+			hover_text = fmt.tprintf("(method call) %s( )", method_name)
+		} else {
+			hover_text = "(method call)"
+		}
+
+	case ^ast.Selector_Expr:
+		log_trace(srv, "found Selector expression")
+		if n.field != nil {
+			field_name := n.field.name
+			if sym, ok := lookup_symbol_at_offset(snap, field_name, offset); ok {
+				type_str := symbols.format_type(sym.type_info)
+				hover_text = fmt.tprintf("%s: %s", sym.name, type_str)
+			}
+		}
+
+	case ^ast.Named_Arg:
+		log_trace(srv, "found Named argument")
+		if n.name != nil {
+			hover_text = fmt.tprintf("(parameter) %s", n.name.name)
+		}
+
 	case:
 	// For other nodes, maybe just show the type of node?
 	// or nothing
@@ -472,4 +499,21 @@ format_module_signature :: proc(sym: symbols.Symbol) -> string {
 	strings.write_string(&b, "\n```")
 
 	return strings.to_string(b)
+}
+
+// get_call_method_name extracts the method name from a Call_Expr
+get_call_method_name :: proc(call: ^ast.Call_Expr) -> string {
+	if call == nil || call.expr == nil {
+		return ""
+	}
+
+	#partial switch e in call.expr.derived_expr {
+	case ^ast.Ident:
+		return e.name
+	case ^ast.Selector_Expr:
+		if e.field != nil {
+			return e.field.name
+		}
+	}
+	return ""
 }

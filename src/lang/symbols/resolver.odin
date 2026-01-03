@@ -235,6 +235,11 @@ resolve_type_expr :: proc(table: ^SymbolTable, expr: ^ast.Expr) -> ^Type {
 			return make_reference_type(table, target_type)
 		}
 		return make_unknown_type(table)
+	
+	case ^ast.Call_Expr:
+		// For call expressions, we would need to resolve the return type of the method
+		// For now, return unknown type as we need more context to resolve method return types
+		return make_unknown_type(table)
 	}
 	
 	return make_unknown_type(table)

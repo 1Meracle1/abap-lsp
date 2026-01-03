@@ -104,6 +104,21 @@ New_Expr :: struct {
 	args:        [dynamic]^Expr,
 }
 
+Constructor_Expr :: struct {
+	using node:  Expr,
+	keyword:     lexer.Token, // The constructor keyword (CONV, COND, etc.)
+	type_expr:   ^Expr,       // The type expression (nil if inferred)
+	is_inferred: bool,        // True if using # for type inference
+	args:        [dynamic]^Expr,
+}
+
+// Named argument in a call expression (e.g., iv_object = 'ZATTP')
+Named_Arg :: struct {
+	using node: Expr,
+	name:       ^Ident,
+	value:      ^Expr,
+}
+
 // Statements
 
 Bad_Stmt :: struct {
@@ -398,6 +413,8 @@ Any_Node :: union {
 	^Index_Expr,
 	^Call_Expr,
 	^New_Expr,
+	^Constructor_Expr,
+	^Named_Arg,
 	^Predicate_Expr,
 	// Types
 	^Table_Type,
@@ -451,6 +468,8 @@ Any_Expr :: union {
 	^Index_Expr,
 	^Call_Expr,
 	^New_Expr,
+	^Constructor_Expr,
+	^Named_Arg,
 	^Predicate_Expr,
 	// Types
 	^Table_Type,

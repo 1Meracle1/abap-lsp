@@ -294,7 +294,12 @@ parse_access_chain_backwards :: proc(text: string, offset: int) -> [dynamic]stri
 
 	pos := offset - 1
 
-	if text[pos] != '-' {
+	// Check for structure access (-) or arrow access (->)
+	is_arrow := false
+	if pos >= 1 && text[pos] == '>' && text[pos - 1] == '-' {
+		is_arrow = true
+		pos -= 1 // Move past the '>'
+	} else if text[pos] != '-' {
 		return chain
 	}
 
@@ -309,6 +314,23 @@ parse_access_chain_backwards :: proc(text: string, offset: int) -> [dynamic]stri
 		}
 		if pos < 0 {
 			break
+		}
+
+		// Skip past closing parenthesis if this is after a method call
+		if text[pos] == ')' {
+			paren_depth := 1
+			pos -= 1
+			for pos >= 0 && paren_depth > 0 {
+				if text[pos] == ')' {
+					paren_depth += 1
+				} else if text[pos] == '(' {
+					paren_depth -= 1
+				}
+				pos -= 1
+			}
+			if pos < 0 {
+				break
+			}
 		}
 
 		ident_end := pos + 1
@@ -330,7 +352,10 @@ parse_access_chain_backwards :: proc(text: string, offset: int) -> [dynamic]stri
 			pos -= 1
 		}
 
-		if pos < 0 || text[pos] != '-' {
+		// Check for next separator (- or ->)
+		if pos >= 1 && text[pos] == '>' && text[pos - 1] == '-' {
+			pos -= 1 // Skip '>'
+		} else if pos < 0 || text[pos] != '-' {
 			break
 		}
 	}
