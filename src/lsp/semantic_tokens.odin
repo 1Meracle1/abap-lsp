@@ -20,7 +20,9 @@ handle_semantic_tokens :: proc(srv: ^Server, id: json.Value, params: json.Value)
 	snap := cache.get_snapshot(srv.storage, semantic_params.textDocument.uri)
 	if snap == nil {
 		// Return empty tokens if document not found
-		result := SemanticTokens{data = {}}
+		result := SemanticTokens {
+			data = {},
+		}
 		reply(srv, id, result)
 		return
 	}
@@ -28,11 +30,13 @@ handle_semantic_tokens :: proc(srv: ^Server, id: json.Value, params: json.Value)
 
 	// Collect semantic tokens from AST and symbol table
 	tokens := collect_semantic_tokens(snap)
-	
+
 	// Encode tokens to LSP format (delta-encoded)
 	encoded := encode_semantic_tokens(snap.text, tokens[:])
 
-	result := SemanticTokens{data = encoded[:]}
+	result := SemanticTokens {
+		data = encoded[:],
+	}
 	reply(srv, id, result)
 }
 
@@ -55,12 +59,15 @@ collect_semantic_tokens :: proc(snap: ^cache.Snapshot) -> [dynamic]SemanticToken
 
 	// Collect tokens from comments
 	for comment in snap.ast.comments {
-		append(&tokens, SemanticToken{
-			offset    = comment.range.start,
-			length    = comment.range.end - comment.range.start,
-			type      = .Comment,
-			modifiers = 0,
-		})
+		append(
+			&tokens,
+			SemanticToken {
+				offset = comment.range.start,
+				length = comment.range.end - comment.range.start,
+				type = .Comment,
+				modifiers = 0,
+			},
+		)
 	}
 
 	// Sort tokens by offset for proper delta encoding
@@ -69,7 +76,11 @@ collect_semantic_tokens :: proc(snap: ^cache.Snapshot) -> [dynamic]SemanticToken
 	return tokens
 }
 
-collect_tokens_from_stmt :: proc(tokens: ^[dynamic]SemanticToken, stmt: ^ast.Stmt, snap: ^cache.Snapshot) {
+collect_tokens_from_stmt :: proc(
+	tokens: ^[dynamic]SemanticToken,
+	stmt: ^ast.Stmt,
+	snap: ^cache.Snapshot,
+) {
 	if stmt == nil {
 		return
 	}
@@ -77,23 +88,29 @@ collect_tokens_from_stmt :: proc(tokens: ^[dynamic]SemanticToken, stmt: ^ast.Stm
 	#partial switch s in stmt.derived_stmt {
 	case ^ast.Data_Inline_Decl:
 		if s.ident != nil {
-			append(tokens, SemanticToken{
-				offset    = s.ident.range.start,
-				length    = s.ident.range.end - s.ident.range.start,
-				type      = .Variable,
-				modifiers = 1 << u32(SemanticTokenModifier.Declaration),
-			})
+			append(
+				tokens,
+				SemanticToken {
+					offset = s.ident.range.start,
+					length = s.ident.range.end - s.ident.range.start,
+					type = .Variable,
+					modifiers = 1 << u32(SemanticTokenModifier.Declaration),
+				},
+			)
 		}
 		collect_tokens_from_expr(tokens, s.value, snap, nil)
 
 	case ^ast.Data_Typed_Decl:
 		if s.ident != nil {
-			append(tokens, SemanticToken{
-				offset    = s.ident.range.start,
-				length    = s.ident.range.end - s.ident.range.start,
-				type      = .Variable,
-				modifiers = 1 << u32(SemanticTokenModifier.Declaration),
-			})
+			append(
+				tokens,
+				SemanticToken {
+					offset = s.ident.range.start,
+					length = s.ident.range.end - s.ident.range.start,
+					type = .Variable,
+					modifiers = 1 << u32(SemanticTokenModifier.Declaration),
+				},
+			)
 		}
 		if s.typed != nil {
 			collect_tokens_from_type_expr(tokens, s.typed)
@@ -102,12 +119,15 @@ collect_tokens_from_stmt :: proc(tokens: ^[dynamic]SemanticToken, stmt: ^ast.Stm
 	case ^ast.Data_Typed_Chain_Decl:
 		for decl in s.decls {
 			if decl.ident != nil {
-				append(tokens, SemanticToken{
-					offset    = decl.ident.range.start,
-					length    = decl.ident.range.end - decl.ident.range.start,
-					type      = .Variable,
-					modifiers = 1 << u32(SemanticTokenModifier.Declaration),
-				})
+				append(
+					tokens,
+					SemanticToken {
+						offset = decl.ident.range.start,
+						length = decl.ident.range.end - decl.ident.range.start,
+						type = .Variable,
+						modifiers = 1 << u32(SemanticTokenModifier.Declaration),
+					},
+				)
 			}
 			if decl.typed != nil {
 				collect_tokens_from_type_expr(tokens, decl.typed)
@@ -116,12 +136,15 @@ collect_tokens_from_stmt :: proc(tokens: ^[dynamic]SemanticToken, stmt: ^ast.Stm
 
 	case ^ast.Types_Decl:
 		if s.ident != nil {
-			append(tokens, SemanticToken{
-				offset    = s.ident.range.start,
-				length    = s.ident.range.end - s.ident.range.start,
-				type      = .Type,
-				modifiers = 1 << u32(SemanticTokenModifier.Declaration),
-			})
+			append(
+				tokens,
+				SemanticToken {
+					offset = s.ident.range.start,
+					length = s.ident.range.end - s.ident.range.start,
+					type = .Type,
+					modifiers = 1 << u32(SemanticTokenModifier.Declaration),
+				},
+			)
 		}
 		if s.typed != nil {
 			collect_tokens_from_type_expr(tokens, s.typed)
@@ -130,12 +153,15 @@ collect_tokens_from_stmt :: proc(tokens: ^[dynamic]SemanticToken, stmt: ^ast.Stm
 	case ^ast.Types_Chain_Decl:
 		for decl in s.decls {
 			if decl.ident != nil {
-				append(tokens, SemanticToken{
-					offset    = decl.ident.range.start,
-					length    = decl.ident.range.end - decl.ident.range.start,
-					type      = .Type,
-					modifiers = 1 << u32(SemanticTokenModifier.Declaration),
-				})
+				append(
+					tokens,
+					SemanticToken {
+						offset = decl.ident.range.start,
+						length = decl.ident.range.end - decl.ident.range.start,
+						type = .Type,
+						modifiers = 1 << u32(SemanticTokenModifier.Declaration),
+					},
+				)
 			}
 			if decl.typed != nil {
 				collect_tokens_from_type_expr(tokens, decl.typed)
@@ -144,23 +170,30 @@ collect_tokens_from_stmt :: proc(tokens: ^[dynamic]SemanticToken, stmt: ^ast.Stm
 
 	case ^ast.Types_Struct_Decl:
 		if s.ident != nil {
-			append(tokens, SemanticToken{
-				offset    = s.ident.range.start,
-				length    = s.ident.range.end - s.ident.range.start,
-				type      = .Type,
-				modifiers = 1 << u32(SemanticTokenModifier.Declaration),
-			})
+			append(
+				tokens,
+				SemanticToken {
+					offset = s.ident.range.start,
+					length = s.ident.range.end - s.ident.range.start,
+					type = .Type,
+					modifiers = 1 << u32(SemanticTokenModifier.Declaration),
+				},
+			)
 		}
 		collect_tokens_from_struct_components(tokens, s.components[:], snap)
 
 	case ^ast.Form_Decl:
 		if s.ident != nil {
-			append(tokens, SemanticToken{
-				offset    = s.ident.range.start,
-				length    = s.ident.range.end - s.ident.range.start,
-				type      = .Function,
-				modifiers = 1 << u32(SemanticTokenModifier.Declaration) | 1 << u32(SemanticTokenModifier.Definition),
-			})
+			append(
+				tokens,
+				SemanticToken {
+					offset = s.ident.range.start,
+					length = s.ident.range.end - s.ident.range.start,
+					type = .Function,
+					modifiers = 1 << u32(SemanticTokenModifier.Declaration) |
+					1 << u32(SemanticTokenModifier.Definition),
+				},
+			)
 		}
 
 		form_scope: ^symbols.SymbolTable
@@ -213,12 +246,16 @@ collect_tokens_from_stmt :: proc(tokens: ^[dynamic]SemanticToken, stmt: ^ast.Stm
 	case ^ast.Class_Def_Decl:
 		// CLASS name DEFINITION
 		if s.ident != nil {
-			append(tokens, SemanticToken{
-				offset    = s.ident.range.start,
-				length    = s.ident.range.end - s.ident.range.start,
-				type      = .Class,
-				modifiers = 1 << u32(SemanticTokenModifier.Declaration) | 1 << u32(SemanticTokenModifier.Definition),
-			})
+			append(
+				tokens,
+				SemanticToken {
+					offset = s.ident.range.start,
+					length = s.ident.range.end - s.ident.range.start,
+					type = .Class,
+					modifiers = 1 << u32(SemanticTokenModifier.Declaration) |
+					1 << u32(SemanticTokenModifier.Definition),
+				},
+			)
 		}
 		if s.inheriting_from != nil {
 			collect_tokens_from_type_expr(tokens, s.inheriting_from)
@@ -229,12 +266,15 @@ collect_tokens_from_stmt :: proc(tokens: ^[dynamic]SemanticToken, stmt: ^ast.Stm
 
 	case ^ast.Class_Impl_Decl:
 		if s.ident != nil {
-			append(tokens, SemanticToken{
-				offset    = s.ident.range.start,
-				length    = s.ident.range.end - s.ident.range.start,
-				type      = .Class,
-				modifiers = 0,
-			})
+			append(
+				tokens,
+				SemanticToken {
+					offset = s.ident.range.start,
+					length = s.ident.range.end - s.ident.range.start,
+					type = .Class,
+					modifiers = 0,
+				},
+			)
 		}
 		for method in s.methods {
 			collect_tokens_from_stmt(tokens, method, snap)
@@ -242,12 +282,16 @@ collect_tokens_from_stmt :: proc(tokens: ^[dynamic]SemanticToken, stmt: ^ast.Stm
 
 	case ^ast.Interface_Decl:
 		if s.ident != nil {
-			append(tokens, SemanticToken{
-				offset    = s.ident.range.start,
-				length    = s.ident.range.end - s.ident.range.start,
-				type      = .Interface,
-				modifiers = 1 << u32(SemanticTokenModifier.Declaration) | 1 << u32(SemanticTokenModifier.Definition),
-			})
+			append(
+				tokens,
+				SemanticToken {
+					offset = s.ident.range.start,
+					length = s.ident.range.end - s.ident.range.start,
+					type = .Interface,
+					modifiers = 1 << u32(SemanticTokenModifier.Declaration) |
+					1 << u32(SemanticTokenModifier.Definition),
+				},
+			)
 		}
 		for method in s.methods {
 			collect_tokens_from_stmt(tokens, method, snap)
@@ -261,12 +305,15 @@ collect_tokens_from_stmt :: proc(tokens: ^[dynamic]SemanticToken, stmt: ^ast.Stm
 
 	case ^ast.Method_Decl:
 		if s.ident != nil {
-			append(tokens, SemanticToken{
-				offset    = s.ident.range.start,
-				length    = s.ident.range.end - s.ident.range.start,
-				type      = .Method,
-				modifiers = 1 << u32(SemanticTokenModifier.Declaration),
-			})
+			append(
+				tokens,
+				SemanticToken {
+					offset = s.ident.range.start,
+					length = s.ident.range.end - s.ident.range.start,
+					type = .Method,
+					modifiers = 1 << u32(SemanticTokenModifier.Declaration),
+				},
+			)
 		}
 		for param in s.params {
 			collect_tokens_from_method_param(tokens, param)
@@ -285,12 +332,15 @@ collect_tokens_from_stmt :: proc(tokens: ^[dynamic]SemanticToken, stmt: ^ast.Stm
 
 	case ^ast.Attr_Decl:
 		if s.ident != nil {
-			append(tokens, SemanticToken{
-				offset    = s.ident.range.start,
-				length    = s.ident.range.end - s.ident.range.start,
-				type      = .Property,
-				modifiers = 1 << u32(SemanticTokenModifier.Declaration),
-			})
+			append(
+				tokens,
+				SemanticToken {
+					offset = s.ident.range.start,
+					length = s.ident.range.end - s.ident.range.start,
+					type = .Property,
+					modifiers = 1 << u32(SemanticTokenModifier.Declaration),
+				},
+			)
 		}
 		if s.typed != nil {
 			collect_tokens_from_type_expr(tokens, s.typed)
@@ -301,17 +351,60 @@ collect_tokens_from_stmt :: proc(tokens: ^[dynamic]SemanticToken, stmt: ^ast.Stm
 
 	case ^ast.Interfaces_Decl:
 		for name in s.names {
-			append(tokens, SemanticToken{
-				offset    = name.range.start,
-				length    = name.range.end - name.range.start,
-				type      = .Interface,
-				modifiers = 0,
-			})
+			append(
+				tokens,
+				SemanticToken {
+					offset = name.range.start,
+					length = name.range.end - name.range.start,
+					type = .Interface,
+					modifiers = 0,
+				},
+			)
+		}
+
+	case ^ast.Report_Decl:
+		if s.name != nil {
+			append(
+				tokens,
+				SemanticToken {
+					offset = s.name.range.start,
+					length = s.name.range.end - s.name.range.start,
+					type = .Namespace,
+					modifiers = 1 << u32(SemanticTokenModifier.Declaration),
+				},
+			)
+		}
+
+	case ^ast.Include_Decl:
+		if s.name != nil {
+			append(
+				tokens,
+				SemanticToken {
+					offset = s.name.range.start,
+					length = s.name.range.end - s.name.range.start,
+					type = .Namespace,
+					modifiers = 0,
+				},
+			)
+		}
+
+	case ^ast.Event_Block:
+		for body_stmt in s.body {
+			collect_tokens_from_stmt(tokens, body_stmt, snap)
+		}
+
+	case ^ast.Call_Screen_Stmt:
+		if s.screen_no != nil {
+			collect_tokens_from_expr(tokens, s.screen_no, snap, nil)
 		}
 	}
 }
 
-collect_tokens_from_struct_components :: proc(tokens: ^[dynamic]SemanticToken, components: []^ast.Stmt, snap: ^cache.Snapshot) {
+collect_tokens_from_struct_components :: proc(
+	tokens: ^[dynamic]SemanticToken,
+	components: []^ast.Stmt,
+	snap: ^cache.Snapshot,
+) {
 	for comp in components {
 		if comp == nil {
 			continue
@@ -320,12 +413,15 @@ collect_tokens_from_struct_components :: proc(tokens: ^[dynamic]SemanticToken, c
 		#partial switch c in comp.derived_stmt {
 		case ^ast.Types_Decl:
 			if c.ident != nil {
-				append(tokens, SemanticToken{
-					offset    = c.ident.range.start,
-					length    = c.ident.range.end - c.ident.range.start,
-					type      = .Property,
-					modifiers = 1 << u32(SemanticTokenModifier.Declaration),
-				})
+				append(
+					tokens,
+					SemanticToken {
+						offset = c.ident.range.start,
+						length = c.ident.range.end - c.ident.range.start,
+						type = .Property,
+						modifiers = 1 << u32(SemanticTokenModifier.Declaration),
+					},
+				)
 			}
 			if c.typed != nil {
 				collect_tokens_from_type_expr(tokens, c.typed)
@@ -333,14 +429,17 @@ collect_tokens_from_struct_components :: proc(tokens: ^[dynamic]SemanticToken, c
 
 		case ^ast.Types_Struct_Decl:
 			if c.ident != nil {
-				append(tokens, SemanticToken{
-					offset    = c.ident.range.start,
-					length    = c.ident.range.end - c.ident.range.start,
-					type      = .Type,
-				modifiers = 1 << u32(SemanticTokenModifier.Declaration),
-			})
-		}
-		collect_tokens_from_struct_components(tokens, c.components[:], snap)
+				append(
+					tokens,
+					SemanticToken {
+						offset = c.ident.range.start,
+						length = c.ident.range.end - c.ident.range.start,
+						type = .Type,
+						modifiers = 1 << u32(SemanticTokenModifier.Declaration),
+					},
+				)
+			}
+			collect_tokens_from_struct_components(tokens, c.components[:], snap)
 		}
 	}
 }
@@ -350,51 +449,64 @@ collect_tokens_from_form_param :: proc(tokens: ^[dynamic]SemanticToken, param: ^
 		return
 	}
 	if param.ident != nil {
-		append(tokens, SemanticToken{
-			offset    = param.ident.range.start,
-			length    = param.ident.range.end - param.ident.range.start,
-			type      = .Parameter,
-			modifiers = 1 << u32(SemanticTokenModifier.Declaration),
-		})
+		append(
+			tokens,
+			SemanticToken {
+				offset = param.ident.range.start,
+				length = param.ident.range.end - param.ident.range.start,
+				type = .Parameter,
+				modifiers = 1 << u32(SemanticTokenModifier.Declaration),
+			},
+		)
 	}
 	if param.typed != nil {
 		collect_tokens_from_type_expr(tokens, param.typed)
 	}
 }
 
-collect_tokens_from_class_section :: proc(tokens: ^[dynamic]SemanticToken, section: ^ast.Class_Section, snap: ^cache.Snapshot) {
+collect_tokens_from_class_section :: proc(
+	tokens: ^[dynamic]SemanticToken,
+	section: ^ast.Class_Section,
+	snap: ^cache.Snapshot,
+) {
 	if section == nil {
 		return
 	}
-	
+
 	for type_decl in section.types {
 		collect_tokens_from_stmt(tokens, type_decl, snap)
 	}
-	
+
 	for data_decl in section.data {
 		collect_tokens_from_stmt(tokens, data_decl, snap)
 	}
-	
+
 	for method_decl in section.methods {
 		collect_tokens_from_stmt(tokens, method_decl, snap)
 	}
-	
+
 	for iface_decl in section.interfaces {
 		collect_tokens_from_stmt(tokens, iface_decl, snap)
 	}
 }
 
-collect_tokens_from_method_param :: proc(tokens: ^[dynamic]SemanticToken, param: ^ast.Method_Param) {
+collect_tokens_from_method_param :: proc(
+	tokens: ^[dynamic]SemanticToken,
+	param: ^ast.Method_Param,
+) {
 	if param == nil {
 		return
 	}
 	if param.ident != nil {
-		append(tokens, SemanticToken{
-			offset    = param.ident.range.start,
-			length    = param.ident.range.end - param.ident.range.start,
-			type      = .Parameter,
-			modifiers = 1 << u32(SemanticTokenModifier.Declaration),
-		})
+		append(
+			tokens,
+			SemanticToken {
+				offset = param.ident.range.start,
+				length = param.ident.range.end - param.ident.range.start,
+				type = .Parameter,
+				modifiers = 1 << u32(SemanticTokenModifier.Declaration),
+			},
+		)
 	}
 	if param.typed != nil {
 		collect_tokens_from_type_expr(tokens, param.typed)
@@ -404,7 +516,12 @@ collect_tokens_from_method_param :: proc(tokens: ^[dynamic]SemanticToken, param:
 	}
 }
 
-collect_tokens_from_expr :: proc(tokens: ^[dynamic]SemanticToken, expr: ^ast.Expr, snap: ^cache.Snapshot, form_scope: ^symbols.SymbolTable) {
+collect_tokens_from_expr :: proc(
+	tokens: ^[dynamic]SemanticToken,
+	expr: ^ast.Expr,
+	snap: ^cache.Snapshot,
+	form_scope: ^symbols.SymbolTable,
+) {
 	if expr == nil {
 		return
 	}
@@ -425,12 +542,15 @@ collect_tokens_from_expr :: proc(tokens: ^[dynamic]SemanticToken, expr: ^ast.Exp
 			}
 		}
 
-		append(tokens, SemanticToken{
-			offset    = e.range.start,
-			length    = e.range.end - e.range.start,
-			type      = token_type,
-			modifiers = modifiers,
-		})
+		append(
+			tokens,
+			SemanticToken {
+				offset = e.range.start,
+				length = e.range.end - e.range.start,
+				type = token_type,
+				modifiers = modifiers,
+			},
+		)
 
 	case ^ast.Basic_Lit:
 		token_type: SemanticTokenType
@@ -442,12 +562,15 @@ collect_tokens_from_expr :: proc(tokens: ^[dynamic]SemanticToken, expr: ^ast.Exp
 		case:
 			return // Skip other literals
 		}
-		append(tokens, SemanticToken{
-			offset    = e.range.start,
-			length    = e.range.end - e.range.start,
-			type      = token_type,
-			modifiers = 0,
-		})
+		append(
+			tokens,
+			SemanticToken {
+				offset = e.range.start,
+				length = e.range.end - e.range.start,
+				type = token_type,
+				modifiers = 0,
+			},
+		)
 
 	case ^ast.Binary_Expr:
 		collect_tokens_from_expr(tokens, e.left, snap, form_scope)
@@ -462,12 +585,15 @@ collect_tokens_from_expr :: proc(tokens: ^[dynamic]SemanticToken, expr: ^ast.Exp
 	case ^ast.Selector_Expr:
 		collect_tokens_from_expr(tokens, e.expr, snap, form_scope)
 		if e.field != nil {
-			append(tokens, SemanticToken{
-				offset    = e.field.range.start,
-				length    = e.field.range.end - e.field.range.start,
-				type      = .Property,
-				modifiers = 0,
-			})
+			append(
+				tokens,
+				SemanticToken {
+					offset = e.field.range.start,
+					length = e.field.range.end - e.field.range.start,
+					type = .Property,
+					modifiers = 0,
+				},
+			)
 		}
 
 	case ^ast.Index_Expr:
@@ -476,15 +602,28 @@ collect_tokens_from_expr :: proc(tokens: ^[dynamic]SemanticToken, expr: ^ast.Exp
 
 	case ^ast.Call_Expr:
 		if call_ident, ok := e.expr.derived_expr.(^ast.Ident); ok {
-			append(tokens, SemanticToken{
-				offset    = call_ident.range.start,
-				length    = call_ident.range.end - call_ident.range.start,
-				type      = .Function,
-				modifiers = 0,
-			})
+			append(
+				tokens,
+				SemanticToken {
+					offset = call_ident.range.start,
+					length = call_ident.range.end - call_ident.range.start,
+					type = .Function,
+					modifiers = 0,
+				},
+			)
 		} else {
 			collect_tokens_from_expr(tokens, e.expr, snap, form_scope)
 		}
+		for arg in e.args {
+			collect_tokens_from_expr(tokens, arg, snap, form_scope)
+		}
+
+	case ^ast.New_Expr:
+		// For NEW expressions, highlight the type if specified
+		if e.type_expr != nil {
+			collect_tokens_from_type_expr(tokens, e.type_expr)
+		}
+		// Collect tokens from arguments
 		for arg in e.args {
 			collect_tokens_from_expr(tokens, arg, snap, form_scope)
 		}
@@ -498,12 +637,15 @@ collect_tokens_from_type_expr :: proc(tokens: ^[dynamic]SemanticToken, expr: ^as
 
 	#partial switch e in expr.derived_expr {
 	case ^ast.Ident:
-		append(tokens, SemanticToken{
-			offset    = e.range.start,
-			length    = e.range.end - e.range.start,
-			type      = .Type,
-			modifiers = 0,
-		})
+		append(
+			tokens,
+			SemanticToken {
+				offset = e.range.start,
+				length = e.range.end - e.range.start,
+				type = .Type,
+				modifiers = 0,
+			},
+		)
 
 	case ^ast.Table_Type:
 		collect_tokens_from_type_expr(tokens, e.elem)
@@ -511,12 +653,15 @@ collect_tokens_from_type_expr :: proc(tokens: ^[dynamic]SemanticToken, expr: ^as
 	case ^ast.Selector_Expr:
 		collect_tokens_from_expr(tokens, e.expr, nil, nil)
 		if e.field != nil {
-			append(tokens, SemanticToken{
-				offset    = e.field.range.start,
-				length    = e.field.range.end - e.field.range.start,
-				type      = .Type,
-				modifiers = 0,
-			})
+			append(
+				tokens,
+				SemanticToken {
+					offset = e.field.range.start,
+					length = e.field.range.end - e.field.range.start,
+					type = .Type,
+					modifiers = 0,
+				},
+			)
 		}
 	}
 }
@@ -544,6 +689,10 @@ symbol_to_token_type :: proc(sym: symbols.Symbol) -> (SemanticTokenType, u32) {
 		return .Function, modifiers
 	case .TypeDef:
 		return .Type, modifiers
+	case .Report, .Include:
+		return .Namespace, modifiers
+	case .Event:
+		return .Event, modifiers
 	}
 
 	return .Variable, modifiers

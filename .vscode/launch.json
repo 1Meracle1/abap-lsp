@@ -37,7 +37,8 @@
         // "--disable-extensions",
         "--extensionDevelopmentPath=${workspaceFolder}/editors/vscode",
         // "--log abap-lsp-rs:debug"
-        "--folder-uri=D:/dev/abap/lsp_development_examples"
+        // "--folder-uri=D:/dev/abap/lsp_development_examples"
+        "--folder-uri=D:/dev/abap/customer_projects/ZTTRP001_US_SN_RESET"
       ],
       "outFiles": [
         "${workspaceFolder}/editors/vscode/out/**/*.js"

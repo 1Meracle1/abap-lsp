@@ -13,6 +13,7 @@ TokenKind :: enum u8 {
 	Arrow, // ->
 	FatArrow, // =>
 	Tilde, // ~ (interface component access)
+	Hash, // # (type inference marker)
 	Eq, // =
 	Minus, // -
 	Plus, // +
@@ -70,6 +71,8 @@ token_kind_string :: proc(token_kind: TokenKind) -> string {
 		res = "=>"
 	case .Tilde:
 		res = "~"
+	case .Hash:
+		res = "#"
 	case .Eq:
 		res = "="
 	case .Minus:

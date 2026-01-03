@@ -88,10 +88,7 @@ Types_Struct_Builder :: struct {
 }
 
 types_struct_builder :: proc(name: string) -> Types_Struct_Builder {
-	return Types_Struct_Builder{
-		name       = name,
-		components = make([dynamic]^ast.Stmt),
-	}
+	return Types_Struct_Builder{name = name, components = make([dynamic]^ast.Stmt)}
 }
 
 types_struct_with_field :: proc(
@@ -138,6 +135,34 @@ selector :: proc(
 	node.field = ident(field_name)
 	node.derived_expr = node
 	return node
+}
+
+// Builder for NEW expressions
+new_expr :: proc(
+	type_name: string,
+	is_inferred: bool = false,
+	args: ..ast.Any_Expr,
+) -> ^ast.New_Expr {
+	node := ast.new(ast.New_Expr, {})
+	node.is_inferred = is_inferred
+	if !is_inferred && type_name != "" {
+		node.type_expr = ident(type_name)
+	}
+	node.args = make([dynamic]^ast.Expr)
+	for arg in args {
+		#partial switch a in arg {
+		case ^ast.Basic_Lit:
+			append(&node.args, &a.node)
+		case ^ast.Ident:
+			append(&node.args, &a.node)
+		}
+	}
+	node.derived_expr = node
+	return node
+}
+
+new_expr_inferred :: proc(args: ..ast.Any_Expr) -> ^ast.New_Expr {
+	return new_expr("", true, ..args)
 }
 
 assign :: proc(lhs: ast.Any_Expr, rhs: ast.Any_Expr) -> ^ast.Assign_Stmt {
@@ -324,6 +349,31 @@ check_expr :: proc(
 		}
 		check_expr(t, ex.expr.derived_expr, ac.expr, loc = loc)
 
+	case ^ast.New_Expr:
+		ac, ok := actual_derived.(^ast.New_Expr)
+		if !testing.expect(t, ok, fmt.tprintf("Expected New_Expr, got %T", actual_derived), loc = loc) do return
+		testing.expect(
+			t,
+			ex.is_inferred == ac.is_inferred,
+			fmt.tprintf("Expected is_inferred '%v', got '%v'", ex.is_inferred, ac.is_inferred),
+			loc = loc,
+		)
+		if ex.type_expr != nil {
+			if !testing.expect(t, ac.type_expr != nil, "Actual type_expr is nil", loc = loc) do return
+			check_expr(t, ex.type_expr.derived_expr, ac.type_expr, loc = loc)
+		} else {
+			testing.expect(
+				t,
+				ac.type_expr == nil,
+				"Expected nil type_expr, got non-nil",
+				loc = loc,
+			)
+		}
+		if !testing.expect(t, len(ex.args) == len(ac.args), fmt.tprintf("Expected %d args, got %d", len(ex.args), len(ac.args)), loc = loc) do return
+		for i := 0; i < len(ex.args); i += 1 {
+			check_expr(t, ex.args[i].derived_expr, ac.args[i], loc = loc)
+		}
+
 	case:
 		testing.expect(
 			t,
@@ -426,7 +476,11 @@ check_stmt :: proc(
 			testing.expect(
 				t,
 				ex.ident.name == ac.ident.name,
-				fmt.tprintf("Expected Types_Decl ident '%s', got '%s'", ex.ident.name, ac.ident.name),
+				fmt.tprintf(
+					"Expected Types_Decl ident '%s', got '%s'",
+					ex.ident.name,
+					ac.ident.name,
+				),
 				loc = loc,
 			)
 		}
@@ -1280,11 +1334,7 @@ basic_struct_type_decl_test :: proc(t: ^testing.T) {
 	if len(file.decls) > 0 {
 		expected := types_struct_build(
 			types_struct_with_field(
-				types_struct_with_field(
-					types_struct_builder("street_type"),
-					"name",
-					"c",
-				),
+				types_struct_with_field(types_struct_builder("street_type"), "name", "c"),
 				"no",
 				"c",
 			),
@@ -1322,24 +1372,16 @@ struct_type_with_nested_struct_test :: proc(t: ^testing.T) {
 		// Build nested city structure
 		nested_city := types_struct_build(
 			types_struct_with_field(
-				types_struct_with_field(
-					types_struct_builder("city"),
-					"zipcode",
-					"n",
-				),
+				types_struct_with_field(types_struct_builder("city"), "zipcode", "n"),
 				"name",
 				"c",
 			),
 		)
-		
+
 		// Build outer address_type structure with nested city
 		expected := types_struct_build(
 			types_struct_with_nested(
-				types_struct_with_field(
-					types_struct_builder("address_type"),
-					"name",
-					"c",
-				),
+				types_struct_with_field(types_struct_builder("address_type"), "name", "c"),
 				nested_city,
 			),
 		)
@@ -1372,11 +1414,7 @@ struct_type_with_reference_to_another_struct_test :: proc(t: ^testing.T) {
 	if len(file.decls) > 0 {
 		expected := types_struct_build(
 			types_struct_with_field(
-				types_struct_with_field(
-					types_struct_builder("address_type"),
-					"name",
-					"c",
-				),
+				types_struct_with_field(types_struct_builder("address_type"), "name", "c"),
 				"street",
 				"street_type",
 			),
@@ -1408,14 +1446,22 @@ type_reference_with_path_selector_test :: proc(t: ^testing.T) {
 		// The type is a selector expression: address_type-city-zipcode
 		ac, ok := file.decls[0].derived_stmt.(^ast.Types_Decl)
 		if !testing.expect(t, ok, "Expected Types_Decl") do return
-		
-		testing.expect(t, ac.ident != nil && ac.ident.name == "zipcode_type", "Expected ident 'zipcode_type'")
-		
+
+		testing.expect(
+			t,
+			ac.ident != nil && ac.ident.name == "zipcode_type",
+			"Expected ident 'zipcode_type'",
+		)
+
 		// Check that the typed expression is a selector
 		selector, sok := ac.typed.derived_expr.(^ast.Selector_Expr)
 		testing.expect(t, sok, "Expected Selector_Expr for type")
 		if sok {
-			testing.expect(t, selector.field.name == "zipcode", fmt.tprintf("Expected field 'zipcode', got '%s'", selector.field.name))
+			testing.expect(
+				t,
+				selector.field.name == "zipcode",
+				fmt.tprintf("Expected field 'zipcode', got '%s'", selector.field.name),
+			)
 		}
 	}
 }
@@ -1449,9 +1495,17 @@ complex_nested_struct_test :: proc(t: ^testing.T) {
 	if len(file.decls) > 0 {
 		ac, ok := file.decls[0].derived_stmt.(^ast.Types_Struct_Decl)
 		if !testing.expect(t, ok, "Expected Types_Struct_Decl") do return
-		
-		testing.expect(t, ac.ident.name == "address_type", fmt.tprintf("Expected 'address_type', got '%s'", ac.ident.name))
-		testing.expect(t, len(ac.components) == 3, fmt.tprintf("Expected 3 components, got %d", len(ac.components)))
+
+		testing.expect(
+			t,
+			ac.ident.name == "address_type",
+			fmt.tprintf("Expected 'address_type', got '%s'", ac.ident.name),
+		)
+		testing.expect(
+			t,
+			len(ac.components) == 3,
+			fmt.tprintf("Expected 3 components, got %d", len(ac.components)),
+		)
 	}
 }
 
@@ -1481,14 +1535,26 @@ ENDINTERFACE.`
 	if len(file.decls) > 0 {
 		iface, ok := file.decls[0].derived_stmt.(^ast.Interface_Decl)
 		if !testing.expect(t, ok, fmt.tprintf("Expected Interface_Decl, got %T", file.decls[0].derived_stmt)) do return
-		
-		testing.expect(t, iface.ident.name == "i1", fmt.tprintf("Expected interface name 'i1', got '%s'", iface.ident.name))
-		testing.expect(t, len(iface.methods) == 1, fmt.tprintf("Expected 1 method, got %d", len(iface.methods)))
-		
+
+		testing.expect(
+			t,
+			iface.ident.name == "i1",
+			fmt.tprintf("Expected interface name 'i1', got '%s'", iface.ident.name),
+		)
+		testing.expect(
+			t,
+			len(iface.methods) == 1,
+			fmt.tprintf("Expected 1 method, got %d", len(iface.methods)),
+		)
+
 		if len(iface.methods) > 0 {
 			method, mok := iface.methods[0].derived_stmt.(^ast.Method_Decl)
 			if testing.expect(t, mok, "Expected Method_Decl") {
-				testing.expect(t, method.ident.name == "m1", fmt.tprintf("Expected method name 'm1', got '%s'", method.ident.name))
+				testing.expect(
+					t,
+					method.ident.name == "m1",
+					fmt.tprintf("Expected method name 'm1', got '%s'", method.ident.name),
+				)
 			}
 		}
 	}
@@ -1519,14 +1585,30 @@ ENDCLASS.`
 	if len(file.decls) > 0 {
 		class, ok := file.decls[0].derived_stmt.(^ast.Class_Def_Decl)
 		if !testing.expect(t, ok, fmt.tprintf("Expected Class_Def_Decl, got %T", file.decls[0].derived_stmt)) do return
-		
-		testing.expect(t, class.ident.name == "c1", fmt.tprintf("Expected class name 'c1', got '%s'", class.ident.name))
-		testing.expect(t, len(class.sections) == 1, fmt.tprintf("Expected 1 section, got %d", len(class.sections)))
-		
+
+		testing.expect(
+			t,
+			class.ident.name == "c1",
+			fmt.tprintf("Expected class name 'c1', got '%s'", class.ident.name),
+		)
+		testing.expect(
+			t,
+			len(class.sections) == 1,
+			fmt.tprintf("Expected 1 section, got %d", len(class.sections)),
+		)
+
 		if len(class.sections) > 0 {
 			section := class.sections[0]
-			testing.expect(t, section.access == .Public, fmt.tprintf("Expected PUBLIC section, got %v", section.access))
-			testing.expect(t, len(section.methods) == 1, fmt.tprintf("Expected 1 method, got %d", len(section.methods)))
+			testing.expect(
+				t,
+				section.access == .Public,
+				fmt.tprintf("Expected PUBLIC section, got %v", section.access),
+			)
+			testing.expect(
+				t,
+				len(section.methods) == 1,
+				fmt.tprintf("Expected 1 method, got %d", len(section.methods)),
+			)
 		}
 	}
 }
@@ -1550,7 +1632,7 @@ ENDCLASS.`
 	if len(file.decls) > 0 {
 		class, ok := file.decls[0].derived_stmt.(^ast.Class_Def_Decl)
 		if !testing.expect(t, ok, "Expected Class_Def_Decl") do return
-		
+
 		testing.expect(t, class.is_abstract, "Expected class to be ABSTRACT")
 		testing.expect(t, class.is_final, "Expected class to be FINAL")
 	}
@@ -1575,12 +1657,20 @@ ENDCLASS.`
 	if len(file.decls) > 0 {
 		class, ok := file.decls[0].derived_stmt.(^ast.Class_Def_Decl)
 		if !testing.expect(t, ok, "Expected Class_Def_Decl") do return
-		
-		testing.expect(t, class.ident.name == "c2", fmt.tprintf("Expected 'c2', got '%s'", class.ident.name))
+
+		testing.expect(
+			t,
+			class.ident.name == "c2",
+			fmt.tprintf("Expected 'c2', got '%s'", class.ident.name),
+		)
 		testing.expect(t, class.inheriting_from != nil, "Expected INHERITING FROM clause")
 		if class.inheriting_from != nil {
 			if parent_ident, pok := class.inheriting_from.derived_expr.(^ast.Ident); pok {
-				testing.expect(t, parent_ident.name == "c1", fmt.tprintf("Expected parent 'c1', got '%s'", parent_ident.name))
+				testing.expect(
+					t,
+					parent_ident.name == "c1",
+					fmt.tprintf("Expected parent 'c1', got '%s'", parent_ident.name),
+				)
 			}
 		}
 	}
@@ -1610,13 +1700,29 @@ ENDCLASS.`
 	if len(file.decls) > 0 {
 		class, ok := file.decls[0].derived_stmt.(^ast.Class_Def_Decl)
 		if !testing.expect(t, ok, "Expected Class_Def_Decl") do return
-		
-		testing.expect(t, len(class.sections) == 3, fmt.tprintf("Expected 3 sections, got %d", len(class.sections)))
-		
+
+		testing.expect(
+			t,
+			len(class.sections) == 3,
+			fmt.tprintf("Expected 3 sections, got %d", len(class.sections)),
+		)
+
 		if len(class.sections) >= 3 {
-			testing.expect(t, class.sections[0].access == .Public, "First section should be PUBLIC")
-			testing.expect(t, class.sections[1].access == .Protected, "Second section should be PROTECTED")
-			testing.expect(t, class.sections[2].access == .Private, "Third section should be PRIVATE")
+			testing.expect(
+				t,
+				class.sections[0].access == .Public,
+				"First section should be PUBLIC",
+			)
+			testing.expect(
+				t,
+				class.sections[1].access == .Protected,
+				"Second section should be PROTECTED",
+			)
+			testing.expect(
+				t,
+				class.sections[2].access == .Private,
+				"Third section should be PRIVATE",
+			)
 		}
 	}
 }
@@ -1644,14 +1750,26 @@ ENDCLASS.`
 	if len(file.decls) > 0 {
 		class, ok := file.decls[0].derived_stmt.(^ast.Class_Def_Decl)
 		if !testing.expect(t, ok, "Expected Class_Def_Decl") do return
-		
+
 		testing.expect(t, class.is_final, "Expected class to be FINAL")
-		testing.expect(t, len(class.sections) == 1, fmt.tprintf("Expected 1 section, got %d", len(class.sections)))
-		
+		testing.expect(
+			t,
+			len(class.sections) == 1,
+			fmt.tprintf("Expected 1 section, got %d", len(class.sections)),
+		)
+
 		if len(class.sections) > 0 {
 			section := class.sections[0]
-			testing.expect(t, len(section.data) == 2, fmt.tprintf("Expected 2 data declarations, got %d", len(section.data)))
-			testing.expect(t, len(section.methods) == 2, fmt.tprintf("Expected 2 method declarations, got %d", len(section.methods)))
+			testing.expect(
+				t,
+				len(section.data) == 2,
+				fmt.tprintf("Expected 2 data declarations, got %d", len(section.data)),
+			)
+			testing.expect(
+				t,
+				len(section.methods) == 2,
+				fmt.tprintf("Expected 2 method declarations, got %d", len(section.methods)),
+			)
 		}
 	}
 }
@@ -1676,17 +1794,29 @@ ENDCLASS.`
 	if len(file.decls) > 0 {
 		class, ok := file.decls[0].derived_stmt.(^ast.Class_Def_Decl)
 		if !testing.expect(t, ok, "Expected Class_Def_Decl") do return
-		
+
 		if len(class.sections) > 0 {
 			section := class.sections[0]
-			testing.expect(t, len(section.interfaces) == 1, fmt.tprintf("Expected 1 interface, got %d", len(section.interfaces)))
-			
+			testing.expect(
+				t,
+				len(section.interfaces) == 1,
+				fmt.tprintf("Expected 1 interface, got %d", len(section.interfaces)),
+			)
+
 			if len(section.interfaces) > 0 {
 				ifaces, iok := section.interfaces[0].derived_stmt.(^ast.Interfaces_Decl)
 				if testing.expect(t, iok, "Expected Interfaces_Decl") {
-					testing.expect(t, len(ifaces.names) == 1, fmt.tprintf("Expected 1 interface name, got %d", len(ifaces.names)))
+					testing.expect(
+						t,
+						len(ifaces.names) == 1,
+						fmt.tprintf("Expected 1 interface name, got %d", len(ifaces.names)),
+					)
 					if len(ifaces.names) > 0 {
-						testing.expect(t, ifaces.names[0].name == "i1", fmt.tprintf("Expected 'i1', got '%s'", ifaces.names[0].name))
+						testing.expect(
+							t,
+							ifaces.names[0].name == "i1",
+							fmt.tprintf("Expected 'i1', got '%s'", ifaces.names[0].name),
+						)
 					}
 				}
 			}
@@ -1715,17 +1845,33 @@ ENDCLASS.`
 	if len(file.decls) > 0 {
 		class_impl, ok := file.decls[0].derived_stmt.(^ast.Class_Impl_Decl)
 		if !testing.expect(t, ok, fmt.tprintf("Expected Class_Impl_Decl, got %T", file.decls[0].derived_stmt)) do return
-		
-		testing.expect(t, class_impl.ident.name == "c1", fmt.tprintf("Expected 'c1', got '%s'", class_impl.ident.name))
-		testing.expect(t, len(class_impl.methods) == 1, fmt.tprintf("Expected 1 method, got %d", len(class_impl.methods)))
-		
+
+		testing.expect(
+			t,
+			class_impl.ident.name == "c1",
+			fmt.tprintf("Expected 'c1', got '%s'", class_impl.ident.name),
+		)
+		testing.expect(
+			t,
+			len(class_impl.methods) == 1,
+			fmt.tprintf("Expected 1 method, got %d", len(class_impl.methods)),
+		)
+
 		if len(class_impl.methods) > 0 {
 			method, mok := class_impl.methods[0].derived_stmt.(^ast.Method_Impl)
 			if testing.expect(t, mok, "Expected Method_Impl") {
 				if method_ident, iok := method.ident.derived_expr.(^ast.Ident); iok {
-					testing.expect(t, method_ident.name == "m1", fmt.tprintf("Expected 'm1', got '%s'", method_ident.name))
+					testing.expect(
+						t,
+						method_ident.name == "m1",
+						fmt.tprintf("Expected 'm1', got '%s'", method_ident.name),
+					)
 				}
-				testing.expect(t, len(method.body) == 1, fmt.tprintf("Expected 1 body statement, got %d", len(method.body)))
+				testing.expect(
+					t,
+					len(method.body) == 1,
+					fmt.tprintf("Expected 1 body statement, got %d", len(method.body)),
+				)
 			}
 		}
 	}
@@ -1752,7 +1898,7 @@ ENDCLASS.`
 	if len(file.decls) > 0 {
 		class_impl, ok := file.decls[0].derived_stmt.(^ast.Class_Impl_Decl)
 		if !testing.expect(t, ok, "Expected Class_Impl_Decl") do return
-		
+
 		if len(class_impl.methods) > 0 {
 			method, mok := class_impl.methods[0].derived_stmt.(^ast.Method_Impl)
 			if testing.expect(t, mok, "Expected Method_Impl") {
@@ -1785,12 +1931,20 @@ ENDINTERFACE.`
 	if len(file.decls) > 0 {
 		iface, ok := file.decls[0].derived_stmt.(^ast.Interface_Decl)
 		if !testing.expect(t, ok, "Expected Interface_Decl") do return
-		
+
 		if len(iface.methods) > 0 {
 			method, mok := iface.methods[0].derived_stmt.(^ast.Method_Decl)
 			if testing.expect(t, mok, "Expected Method_Decl") {
-				testing.expect(t, method.ident.name == "process", fmt.tprintf("Expected 'process', got '%s'", method.ident.name))
-				testing.expect(t, len(method.params) == 2, fmt.tprintf("Expected 2 parameters, got %d", len(method.params)))
+				testing.expect(
+					t,
+					method.ident.name == "process",
+					fmt.tprintf("Expected 'process', got '%s'", method.ident.name),
+				)
+				testing.expect(
+					t,
+					len(method.params) == 2,
+					fmt.tprintf("Expected 2 parameters, got %d", len(method.params)),
+				)
 			}
 		}
 	}
@@ -1816,9 +1970,9 @@ ENDCLASS.`
 	if len(file.decls) > 0 {
 		class, ok := file.decls[0].derived_stmt.(^ast.Class_Def_Decl)
 		if !testing.expect(t, ok, "Expected Class_Def_Decl") do return
-		
+
 		testing.expect(t, class.is_abstract, "Class should be abstract")
-		
+
 		if len(class.sections) > 0 && len(class.sections[0].methods) > 0 {
 			method, mok := class.sections[0].methods[0].derived_stmt.(^ast.Method_Decl)
 			if testing.expect(t, mok, "Expected Method_Decl") {
@@ -1848,10 +2002,303 @@ ENDCLASS.`
 	if len(file.decls) > 0 {
 		class, ok := file.decls[0].derived_stmt.(^ast.Class_Def_Decl)
 		if !testing.expect(t, ok, "Expected Class_Def_Decl") do return
-		
+
 		if len(class.sections) > 0 {
 			section := class.sections[0]
-			testing.expect(t, len(section.types) == 1, fmt.tprintf("Expected 1 type, got %d", len(section.types)))
+			testing.expect(
+				t,
+				len(section.types) == 1,
+				fmt.tprintf("Expected 1 type, got %d", len(section.types)),
+			)
+		}
+	}
+}
+
+// --- REPORT, INCLUDE, EVENT, CALL SCREEN tests ---
+
+@(test)
+basic_report_decl_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `REPORT zttrp001_us_sn_reset.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 1,
+		fmt.tprintf("Expected 1 decl, got %v", len(file.decls)),
+	)
+	if len(file.decls) > 0 {
+		report, ok := file.decls[0].derived_stmt.(^ast.Report_Decl)
+		if !testing.expect(t, ok, fmt.tprintf("Expected Report_Decl, got %T", file.decls[0].derived_stmt)) do return
+
+		testing.expect(t, report.name != nil, "Report name should not be nil")
+		if report.name != nil {
+			testing.expect(
+				t,
+				report.name.name == "zttrp001_us_sn_reset",
+				fmt.tprintf("Expected 'zttrp001_us_sn_reset', got '%s'", report.name.name),
+			)
+		}
+	}
+}
+
+@(test)
+basic_include_decl_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `INCLUDE zttrp001_us_sn_reset_cl1.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 1,
+		fmt.tprintf("Expected 1 decl, got %v", len(file.decls)),
+	)
+	if len(file.decls) > 0 {
+		include, ok := file.decls[0].derived_stmt.(^ast.Include_Decl)
+		if !testing.expect(t, ok, fmt.tprintf("Expected Include_Decl, got %T", file.decls[0].derived_stmt)) do return
+
+		testing.expect(t, include.name != nil, "Include name should not be nil")
+		if include.name != nil {
+			testing.expect(
+				t,
+				include.name.name == "zttrp001_us_sn_reset_cl1",
+				fmt.tprintf("Expected 'zttrp001_us_sn_reset_cl1', got '%s'", include.name.name),
+			)
+		}
+	}
+}
+
+@(test)
+multiple_include_decls_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `INCLUDE zttrp001_us_sn_reset_top.
+INCLUDE zttrp001_us_sn_reset_sel.
+INCLUDE zttrp001_us_sn_reset_f01.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 3,
+		fmt.tprintf("Expected 3 decls, got %v", len(file.decls)),
+	)
+
+	expected_names := []string {
+		"zttrp001_us_sn_reset_top",
+		"zttrp001_us_sn_reset_sel",
+		"zttrp001_us_sn_reset_f01",
+	}
+	for i := 0; i < min(len(file.decls), 3); i += 1 {
+		include, ok := file.decls[i].derived_stmt.(^ast.Include_Decl)
+		if !testing.expect(t, ok, fmt.tprintf("Expected Include_Decl at %d", i)) do continue
+		if include.name != nil {
+			testing.expect(
+				t,
+				include.name.name == expected_names[i],
+				fmt.tprintf("Expected '%s', got '%s'", expected_names[i], include.name.name),
+			)
+		}
+	}
+}
+
+@(test)
+start_of_selection_event_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `START-OF-SELECTION.
+  DATA lv_var TYPE i.
+  lv_var = 1.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 1,
+		fmt.tprintf("Expected 1 decl, got %v", len(file.decls)),
+	)
+	if len(file.decls) > 0 {
+		event, ok := file.decls[0].derived_stmt.(^ast.Event_Block)
+		if !testing.expect(t, ok, fmt.tprintf("Expected Event_Block, got %T", file.decls[0].derived_stmt)) do return
+
+		testing.expect(
+			t,
+			event.kind == .StartOfSelection,
+			fmt.tprintf("Expected StartOfSelection, got %v", event.kind),
+		)
+		testing.expect(
+			t,
+			len(event.body) == 2,
+			fmt.tprintf("Expected 2 body statements, got %d", len(event.body)),
+		)
+	}
+}
+
+@(test)
+initialization_event_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `INITIALIZATION.
+  DATA lv_init TYPE string.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 1,
+		fmt.tprintf("Expected 1 decl, got %v", len(file.decls)),
+	)
+	if len(file.decls) > 0 {
+		event, ok := file.decls[0].derived_stmt.(^ast.Event_Block)
+		if !testing.expect(t, ok, fmt.tprintf("Expected Event_Block, got %T", file.decls[0].derived_stmt)) do return
+
+		testing.expect(
+			t,
+			event.kind == .Initialization,
+			fmt.tprintf("Expected Initialization, got %v", event.kind),
+		)
+		testing.expect(
+			t,
+			len(event.body) == 1,
+			fmt.tprintf("Expected 1 body statement, got %d", len(event.body)),
+		)
+	}
+}
+
+@(test)
+call_screen_stmt_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `CALL SCREEN 100.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 1,
+		fmt.tprintf("Expected 1 decl, got %v", len(file.decls)),
+	)
+	if len(file.decls) > 0 {
+		call_screen, ok := file.decls[0].derived_stmt.(^ast.Call_Screen_Stmt)
+		if !testing.expect(t, ok, fmt.tprintf("Expected Call_Screen_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+		testing.expect(t, call_screen.screen_no != nil, "Screen number should not be nil")
+		if call_screen.screen_no != nil {
+			if lit, lok := call_screen.screen_no.derived_expr.(^ast.Basic_Lit); lok {
+				testing.expect(
+					t,
+					lit.tok.lit == "100",
+					fmt.tprintf("Expected '100', got '%s'", lit.tok.lit),
+				)
+			}
+		}
+	}
+}
+
+@(test)
+full_report_program_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `REPORT zttrp001_us_sn_reset.
+
+INCLUDE zttrp001_us_sn_reset_cl1.
+INCLUDE zttrp001_us_sn_reset_top.
+INCLUDE zttrp001_us_sn_reset_sel.
+INCLUDE zttrp001_us_sn_reset_f01.
+INCLUDE zttrp001_us_sn_reset_tst1.
+
+START-OF-SELECTION.
+  DATA(lv_var) = 1.
+
+  CALL SCREEN 100.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	// Expected: 1 REPORT + 5 INCLUDEs + 1 START-OF-SELECTION = 7 top-level decls
+	testing.expect(
+		t,
+		len(file.decls) == 7,
+		fmt.tprintf("Expected 7 decls, got %v", len(file.decls)),
+	)
+
+	if len(file.decls) >= 7 {
+		// Check REPORT
+		report, rok := file.decls[0].derived_stmt.(^ast.Report_Decl)
+		testing.expect(t, rok, "First decl should be Report_Decl")
+		if rok {
+			testing.expect(
+				t,
+				report.name.name == "zttrp001_us_sn_reset",
+				fmt.tprintf(
+					"Expected report name 'zttrp001_us_sn_reset', got '%s'",
+					report.name.name,
+				),
+			)
+		}
+
+		// Check INCLUDEs (indices 1-5)
+		for i := 1; i <= 5; i += 1 {
+			_, iok := file.decls[i].derived_stmt.(^ast.Include_Decl)
+			testing.expect(t, iok, fmt.tprintf("Decl %d should be Include_Decl", i))
+		}
+
+		// Check START-OF-SELECTION event
+		event, eok := file.decls[6].derived_stmt.(^ast.Event_Block)
+		testing.expect(t, eok, "Last decl should be Event_Block")
+		if eok {
+			testing.expect(t, event.kind == .StartOfSelection, "Event should be StartOfSelection")
+			// Event body should have DATA inline + CALL SCREEN = 2 statements
+			testing.expect(
+				t,
+				len(event.body) == 2,
+				fmt.tprintf("Expected 2 body statements, got %d", len(event.body)),
+			)
 		}
 	}
 }
@@ -1921,5 +2368,340 @@ ENDCLASS.`
 		// Fourth: CLASS c2 IMPLEMENTATION
 		_, ok4 := file.decls[3].derived_stmt.(^ast.Class_Impl_Decl)
 		testing.expect(t, ok4, "Fourth decl should be Class_Impl_Decl")
+	}
+}
+
+// --- NEW instance operator tests ---
+
+@(test)
+new_expr_with_type_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `dref = NEW i( 555 ).`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 1,
+		fmt.tprintf("Expected 1 decl, got %v", len(file.decls)),
+	)
+	if len(file.decls) > 0 {
+		assign_stmt, ok := file.decls[0].derived_stmt.(^ast.Assign_Stmt)
+		if !testing.expect(t, ok, fmt.tprintf("Expected Assign_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+		testing.expect(t, len(assign_stmt.rhs) == 1, "Expected 1 rhs expression")
+		if len(assign_stmt.rhs) > 0 {
+			new_e, nok := assign_stmt.rhs[0].derived_expr.(^ast.New_Expr)
+			if !testing.expect(t, nok, fmt.tprintf("Expected New_Expr, got %T", assign_stmt.rhs[0].derived_expr)) do return
+
+			testing.expect(t, !new_e.is_inferred, "Expected is_inferred to be false")
+			testing.expect(t, new_e.type_expr != nil, "Expected type_expr to be non-nil")
+			if new_e.type_expr != nil {
+				type_ident, iok := new_e.type_expr.derived_expr.(^ast.Ident)
+				if testing.expect(t, iok, "Expected type_expr to be Ident") {
+					testing.expect(
+						t,
+						type_ident.name == "i",
+						fmt.tprintf("Expected type 'i', got '%s'", type_ident.name),
+					)
+				}
+			}
+			testing.expect(
+				t,
+				len(new_e.args) == 1,
+				fmt.tprintf("Expected 1 arg, got %d", len(new_e.args)),
+			)
+			if len(new_e.args) > 0 {
+				arg_lit, lok := new_e.args[0].derived_expr.(^ast.Basic_Lit)
+				if testing.expect(t, lok, "Expected arg to be Basic_Lit") {
+					testing.expect(
+						t,
+						arg_lit.tok.lit == "555",
+						fmt.tprintf("Expected '555', got '%s'", arg_lit.tok.lit),
+					)
+				}
+			}
+		}
+	}
+}
+
+@(test)
+new_expr_inferred_type_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `oref = NEW #( ).`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 1,
+		fmt.tprintf("Expected 1 decl, got %v", len(file.decls)),
+	)
+	if len(file.decls) > 0 {
+		assign_stmt, ok := file.decls[0].derived_stmt.(^ast.Assign_Stmt)
+		if !testing.expect(t, ok, fmt.tprintf("Expected Assign_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+		testing.expect(t, len(assign_stmt.rhs) == 1, "Expected 1 rhs expression")
+		if len(assign_stmt.rhs) > 0 {
+			new_e, nok := assign_stmt.rhs[0].derived_expr.(^ast.New_Expr)
+			if !testing.expect(t, nok, fmt.tprintf("Expected New_Expr, got %T", assign_stmt.rhs[0].derived_expr)) do return
+
+			testing.expect(t, new_e.is_inferred, "Expected is_inferred to be true")
+			testing.expect(
+				t,
+				new_e.type_expr == nil,
+				"Expected type_expr to be nil for inferred type",
+			)
+			testing.expect(
+				t,
+				len(new_e.args) == 0,
+				fmt.tprintf("Expected 0 args, got %d", len(new_e.args)),
+			)
+		}
+	}
+}
+
+@(test)
+new_expr_class_type_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `oref = NEW cls( ).`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 1,
+		fmt.tprintf("Expected 1 decl, got %v", len(file.decls)),
+	)
+	if len(file.decls) > 0 {
+		assign_stmt, ok := file.decls[0].derived_stmt.(^ast.Assign_Stmt)
+		if !testing.expect(t, ok, fmt.tprintf("Expected Assign_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+		testing.expect(t, len(assign_stmt.rhs) == 1, "Expected 1 rhs expression")
+		if len(assign_stmt.rhs) > 0 {
+			new_e, nok := assign_stmt.rhs[0].derived_expr.(^ast.New_Expr)
+			if !testing.expect(t, nok, fmt.tprintf("Expected New_Expr, got %T", assign_stmt.rhs[0].derived_expr)) do return
+
+			testing.expect(t, !new_e.is_inferred, "Expected is_inferred to be false")
+			testing.expect(t, new_e.type_expr != nil, "Expected type_expr to be non-nil")
+			if new_e.type_expr != nil {
+				type_ident, iok := new_e.type_expr.derived_expr.(^ast.Ident)
+				if testing.expect(t, iok, "Expected type_expr to be Ident") {
+					testing.expect(
+						t,
+						type_ident.name == "cls",
+						fmt.tprintf("Expected type 'cls', got '%s'", type_ident.name),
+					)
+				}
+			}
+			testing.expect(
+				t,
+				len(new_e.args) == 0,
+				fmt.tprintf("Expected 0 args, got %d", len(new_e.args)),
+			)
+		}
+	}
+}
+
+@(test)
+new_expr_in_inline_data_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `DATA(lo_obj) = NEW zcl_myclass( ).`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 1,
+		fmt.tprintf("Expected 1 decl, got %v", len(file.decls)),
+	)
+	if len(file.decls) > 0 {
+		data_inline, ok := file.decls[0].derived_stmt.(^ast.Data_Inline_Decl)
+		if !testing.expect(t, ok, fmt.tprintf("Expected Data_Inline_Decl, got %T", file.decls[0].derived_stmt)) do return
+
+		testing.expect(
+			t,
+			data_inline.ident.name == "lo_obj",
+			fmt.tprintf("Expected 'lo_obj', got '%s'", data_inline.ident.name),
+		)
+
+		if data_inline.value != nil {
+			new_e, nok := data_inline.value.derived_expr.(^ast.New_Expr)
+			if !testing.expect(t, nok, fmt.tprintf("Expected New_Expr, got %T", data_inline.value.derived_expr)) do return
+
+			testing.expect(t, !new_e.is_inferred, "Expected is_inferred to be false")
+			testing.expect(t, new_e.type_expr != nil, "Expected type_expr to be non-nil")
+			if new_e.type_expr != nil {
+				type_ident, iok := new_e.type_expr.derived_expr.(^ast.Ident)
+				if testing.expect(t, iok, "Expected type_expr to be Ident") {
+					testing.expect(
+						t,
+						type_ident.name == "zcl_myclass",
+						fmt.tprintf("Expected type 'zcl_myclass', got '%s'", type_ident.name),
+					)
+				}
+			}
+		}
+	}
+}
+
+@(test)
+new_expr_full_class_example_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `CLASS cls DEFINITION. 
+ENDCLASS.
+
+CLASS exa DEFINITION. 
+  PUBLIC SECTION. 
+    CLASS-METHODS main. 
+ENDCLASS.
+
+CLASS exa IMPLEMENTATION. 
+  METHOD main. 
+    DATA: dref TYPE i, 
+          oref TYPE i.
+
+    dref = NEW i( 555 ). 
+    oref = NEW #( ). 
+  ENDMETHOD. 
+ENDCLASS.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	// Expected: CLASS cls DEFINITION + CLASS exa DEFINITION + CLASS exa IMPLEMENTATION = 3 decls
+	testing.expect(
+		t,
+		len(file.decls) == 3,
+		fmt.tprintf("Expected 3 decls, got %v", len(file.decls)),
+	)
+
+	if len(file.decls) >= 3 {
+		// First: CLASS cls DEFINITION
+		cls_def, ok1 := file.decls[0].derived_stmt.(^ast.Class_Def_Decl)
+		testing.expect(t, ok1, "First decl should be Class_Def_Decl")
+		if ok1 {
+			testing.expect(
+				t,
+				cls_def.ident.name == "cls",
+				fmt.tprintf("Expected 'cls', got '%s'", cls_def.ident.name),
+			)
+		}
+
+		// Second: CLASS exa DEFINITION
+		exa_def, ok2 := file.decls[1].derived_stmt.(^ast.Class_Def_Decl)
+		testing.expect(t, ok2, "Second decl should be Class_Def_Decl")
+		if ok2 {
+			testing.expect(
+				t,
+				exa_def.ident.name == "exa",
+				fmt.tprintf("Expected 'exa', got '%s'", exa_def.ident.name),
+			)
+		}
+
+		// Third: CLASS exa IMPLEMENTATION
+		exa_impl, ok3 := file.decls[2].derived_stmt.(^ast.Class_Impl_Decl)
+		testing.expect(t, ok3, "Third decl should be Class_Impl_Decl")
+		if ok3 {
+			testing.expect(
+				t,
+				exa_impl.ident.name == "exa",
+				fmt.tprintf("Expected 'exa', got '%s'", exa_impl.ident.name),
+			)
+
+			// Check that the method implementation exists
+			testing.expect(
+				t,
+				len(exa_impl.methods) == 1,
+				fmt.tprintf("Expected 1 method, got %d", len(exa_impl.methods)),
+			)
+			if len(exa_impl.methods) > 0 {
+				method_impl, mok := exa_impl.methods[0].derived_stmt.(^ast.Method_Impl)
+				if testing.expect(t, mok, "Expected Method_Impl") {
+					// Method body should have DATA chain + 2 assignments = 3 statements
+					testing.expect(
+						t,
+						len(method_impl.body) == 3,
+						fmt.tprintf("Expected 3 body statements, got %d", len(method_impl.body)),
+					)
+
+					// Check the second assignment has a NEW i( 555 )
+					if len(method_impl.body) >= 2 {
+						assign1, aok := method_impl.body[1].derived_stmt.(^ast.Assign_Stmt)
+						if testing.expect(t, aok, "Expected second body stmt to be Assign_Stmt") {
+							if len(assign1.rhs) > 0 {
+								new_e, nok := assign1.rhs[0].derived_expr.(^ast.New_Expr)
+								if testing.expect(
+									t,
+									nok,
+									"Expected New_Expr in second assignment",
+								) {
+									testing.expect(
+										t,
+										!new_e.is_inferred,
+										"Expected explicit type for first NEW",
+									)
+								}
+							}
+						}
+					}
+
+					// Check the third assignment has a NEW #( )
+					if len(method_impl.body) >= 3 {
+						assign2, a2ok := method_impl.body[2].derived_stmt.(^ast.Assign_Stmt)
+						if testing.expect(t, a2ok, "Expected third body stmt to be Assign_Stmt") {
+							if len(assign2.rhs) > 0 {
+								new_e, n2ok := assign2.rhs[0].derived_expr.(^ast.New_Expr)
+								if testing.expect(
+									t,
+									n2ok,
+									"Expected New_Expr in third assignment",
+								) {
+									testing.expect(
+										t,
+										new_e.is_inferred,
+										"Expected inferred type for second NEW",
+									)
+								}
+							}
+						}
+					}
+				}
+			}
+		}
 	}
 }

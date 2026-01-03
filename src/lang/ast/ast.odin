@@ -97,6 +97,13 @@ Call_Expr :: struct {
 	args:       []^Expr,
 }
 
+New_Expr :: struct {
+	using node:  Expr,
+	type_expr:   ^Expr,
+	is_inferred: bool,
+	args:        [dynamic]^Expr,
+}
+
 // Statements
 
 Bad_Stmt :: struct {
@@ -162,7 +169,7 @@ Types_Decl :: struct {
 	using node: Decl,
 	ident:      ^Ident,
 	typed:      ^Expr,
-	length:     ^Expr, 
+	length:     ^Expr,
 }
 
 Types_Chain_Decl :: struct {
@@ -171,9 +178,9 @@ Types_Chain_Decl :: struct {
 }
 
 Types_Struct_Decl :: struct {
-	using node:  Decl,
-	ident:       ^Ident,
-	components:  [dynamic]^Stmt,
+	using node: Decl,
+	ident:      ^Ident,
+	components: [dynamic]^Stmt,
 }
 
 Form_Param_Kind :: enum {
@@ -190,12 +197,12 @@ Form_Param :: struct {
 }
 
 Form_Decl :: struct {
-	using node:       Decl,
-	ident:            ^Ident,
-	tables_params:    [dynamic]^Form_Param,
-	using_params:     [dynamic]^Form_Param,
-	changing_params:  [dynamic]^Form_Param,
-	body:             [dynamic]^Stmt,
+	using node:      Decl,
+	ident:           ^Ident,
+	tables_params:   [dynamic]^Form_Param,
+	using_params:    [dynamic]^Form_Param,
+	changing_params: [dynamic]^Form_Param,
+	body:            [dynamic]^Stmt,
 }
 
 Access_Modifier :: enum {
@@ -216,28 +223,28 @@ Method_Param :: struct {
 	kind:       Method_Param_Kind,
 	ident:      ^Ident,
 	typed:      ^Expr,
-	optional:   bool,      
-	default:    ^Expr,     
+	optional:   bool,
+	default:    ^Expr,
 }
 
 Method_Decl :: struct {
-	using node:   Decl,
-	ident:        ^Ident,
-	is_class:     bool,       
-	is_abstract:  bool,       
-	is_final:     bool,       
-	is_redefinition: bool,    
-	params:       [dynamic]^Method_Param,
-	raising:      [dynamic]^Expr,  
+	using node:      Decl,
+	ident:           ^Ident,
+	is_class:        bool,
+	is_abstract:     bool,
+	is_final:        bool,
+	is_redefinition: bool,
+	params:          [dynamic]^Method_Param,
+	raising:         [dynamic]^Expr,
 }
 
 Attr_Decl :: struct {
 	using node:   Decl,
 	ident:        ^Ident,
 	typed:        ^Expr,
-	is_class:     bool,        
-	is_read_only: bool,        
-	value:        ^Expr,       
+	is_class:     bool,
+	is_read_only: bool,
+	value:        ^Expr,
 }
 
 Interfaces_Decl :: struct {
@@ -248,19 +255,19 @@ Interfaces_Decl :: struct {
 Class_Section :: struct {
 	using node: Node,
 	access:     Access_Modifier,
-	types:      [dynamic]^Stmt,    
-	data:       [dynamic]^Stmt,    
-	methods:    [dynamic]^Stmt,    
-	interfaces: [dynamic]^Stmt,    
+	types:      [dynamic]^Stmt,
+	data:       [dynamic]^Stmt,
+	methods:    [dynamic]^Stmt,
+	interfaces: [dynamic]^Stmt,
 }
 
 Class_Def_Decl :: struct {
-	using node:       Decl,
-	ident:            ^Ident,
-	is_abstract:      bool,
-	is_final:         bool,
-	inheriting_from:  ^Expr,      
-	sections:         [dynamic]^Class_Section,
+	using node:      Decl,
+	ident:           ^Ident,
+	is_abstract:     bool,
+	is_final:        bool,
+	inheriting_from: ^Expr,
+	sections:        [dynamic]^Class_Section,
 }
 
 Class_Impl_Decl :: struct {
@@ -271,16 +278,46 @@ Class_Impl_Decl :: struct {
 
 Method_Impl :: struct {
 	using node: Decl,
-	ident:      ^Expr,      
+	ident:      ^Expr,
 	body:       [dynamic]^Stmt,
 }
 
 Interface_Decl :: struct {
 	using node: Decl,
 	ident:      ^Ident,
-	methods:    [dynamic]^Stmt,   
-	types:      [dynamic]^Stmt,   
-	data:       [dynamic]^Stmt,   
+	methods:    [dynamic]^Stmt,
+	types:      [dynamic]^Stmt,
+	data:       [dynamic]^Stmt,
+}
+
+Report_Decl :: struct {
+	using node: Decl,
+	name:       ^Ident,
+}
+
+Include_Decl :: struct {
+	using node: Decl,
+	name:       ^Ident,
+}
+
+Event_Kind :: enum {
+	StartOfSelection,
+	EndOfSelection,
+	Initialization,
+	AtSelectionScreen,
+	TopOfPage,
+	EndOfPage,
+}
+
+Event_Block :: struct {
+	using node: Decl,
+	kind:       Event_Kind,
+	body:       [dynamic]^Stmt,
+}
+
+Call_Screen_Stmt :: struct {
+	using node: Stmt,
+	screen_no:  ^Expr,
 }
 
 // Types
@@ -303,6 +340,7 @@ Any_Node :: union {
 	^Selector_Expr,
 	^Index_Expr,
 	^Call_Expr,
+	^New_Expr,
 	// Types
 	^Table_Type,
 	// Statements
@@ -332,6 +370,11 @@ Any_Node :: union {
 	^Class_Impl_Decl,
 	^Method_Impl,
 	^Interface_Decl,
+	// Report/Include/Events
+	^Report_Decl,
+	^Include_Decl,
+	^Event_Block,
+	^Call_Screen_Stmt,
 }
 
 Any_Expr :: union {
@@ -344,6 +387,7 @@ Any_Expr :: union {
 	^Selector_Expr,
 	^Index_Expr,
 	^Call_Expr,
+	^New_Expr,
 	// Types
 	^Table_Type,
 }
@@ -372,4 +416,9 @@ Any_Stmt :: union {
 	^Class_Impl_Decl,
 	^Method_Impl,
 	^Interface_Decl,
+	// Report/Include/Events
+	^Report_Decl,
+	^Include_Decl,
+	^Event_Block,
+	^Call_Screen_Stmt,
 }

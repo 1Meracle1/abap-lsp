@@ -140,6 +140,18 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 			}
 		}
 
+	case ^New_Expr:
+		if n.type_expr != nil {
+			if res := find_node_at_offset(&n.type_expr.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		for arg in n.args {
+			if res := find_node_at_offset(&arg.expr_base, offset); res != nil {
+				return res
+			}
+		}
+
 	case ^Expr_Stmt:
 		if res := find_node_at_offset(&n.expr.expr_base, offset); res != nil {
 			return res
@@ -374,6 +386,34 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 				return res
 			}
 		}
+
+	case ^Report_Decl:
+		if n.name != nil {
+			if res := find_node_at_offset(&n.name.expr_base, offset); res != nil {
+				return res
+			}
+		}
+
+	case ^Include_Decl:
+		if n.name != nil {
+			if res := find_node_at_offset(&n.name.expr_base, offset); res != nil {
+				return res
+			}
+		}
+
+	case ^Event_Block:
+		for stmt in n.body {
+			if res := find_node_at_offset(&stmt.stmt_base, offset); res != nil {
+				return res
+			}
+		}
+
+	case ^Call_Screen_Stmt:
+		if n.screen_no != nil {
+			if res := find_node_at_offset(&n.screen_no.expr_base, offset); res != nil {
+				return res
+			}
+		}
 	}
 
 	return node
@@ -463,6 +503,23 @@ find_enclosing_method_impl :: proc(file: ^File, offset: int) -> ^Method_Impl {
 						return method_impl
 					}
 				}
+			}
+		}
+	}
+
+	return nil
+}
+
+// find_enclosing_event_block finds the Event_Block that contains the given offset, if any.
+find_enclosing_event_block :: proc(file: ^File, offset: int) -> ^Event_Block {
+	if file == nil {
+		return nil
+	}
+
+	for decl in file.decls {
+		if event, ok := decl.derived_stmt.(^Event_Block); ok {
+			if offset >= event.range.start && offset <= event.range.end {
+				return event
 			}
 		}
 	}

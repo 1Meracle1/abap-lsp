@@ -66,12 +66,40 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 					type_str := symbols.format_type(sym.type_info)
 					hover_text = fmt.tprintf("(type) %s = %s", sym.name, type_str)
 				}
+			} else if sym.kind == .Report {
+				hover_text = fmt.tprintf("(report) %s", sym.name)
+			} else if sym.kind == .Include {
+				hover_text = fmt.tprintf("(include) %s", sym.name)
+			} else if sym.kind == .Event {
+				hover_text = format_event_signature(sym)
 			} else {
 				type_str := symbols.format_type(sym.type_info)
 				hover_text = fmt.tprintf("%s: %s", sym.name, type_str)
 			}
 		} else {
 			hover_text = fmt.tprintf("(unknown) %s", n.name)
+		}
+	
+	case ^ast.New_Expr:
+		log_trace(srv, "found NEW expression")
+		if n.is_inferred {
+			hover_text = "NEW #( ) - creates instance with inferred type"
+		} else if n.type_expr != nil {
+			if type_ident, ok := n.type_expr.derived_expr.(^ast.Ident); ok {
+				if sym, found := lookup_symbol_at_offset(snap, type_ident.name, offset); found {
+					if sym.kind == .Class {
+						hover_text = fmt.tprintf("NEW %s( ) - creates instance of class %s", type_ident.name, type_ident.name)
+					} else {
+						hover_text = fmt.tprintf("NEW %s( ) - creates reference to %s", type_ident.name, type_ident.name)
+					}
+				} else {
+					hover_text = fmt.tprintf("NEW %s( ) - creates reference", type_ident.name)
+				}
+			} else {
+				hover_text = "NEW type( ) - creates instance"
+			}
+		} else {
+			hover_text = "NEW expression"
 		}
 	case:
 	// For other nodes, maybe just show the type of node?
@@ -376,6 +404,25 @@ format_method_signature :: proc(sym: symbols.Symbol) -> string {
 		}
 	}
 
+	strings.write_string(&b, "\n```")
+
+	return strings.to_string(b)
+}
+
+format_event_signature :: proc(sym: symbols.Symbol) -> string {
+	if sym.kind != .Event {
+		return sym.name
+	}
+
+	b: strings.Builder
+	strings.builder_init(&b, context.temp_allocator)
+
+	strings.write_string(&b, "```abap\n")
+	
+	// Convert the event name to uppercase for display
+	event_name := strings.to_upper(sym.name, context.temp_allocator)
+	strings.write_string(&b, event_name)
+	strings.write_string(&b, ".")
 	strings.write_string(&b, "\n```")
 
 	return strings.to_string(b)

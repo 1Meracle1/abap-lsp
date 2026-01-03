@@ -1,7 +1,7 @@
 package lang_symbols
 
-import "../lexer"
 import "../ast"
+import "../lexer"
 
 import "core:fmt"
 import "core:mem"
@@ -20,9 +20,12 @@ SymbolKind :: enum {
 	Method,
 	Class,
 	Interface,
-	Form,           // FORM subroutine
+	Form,
 	FormParameter,
 	TypeDef,
+	Report,
+	Include,
+	Event,
 }
 
 FormParamKind :: enum {
@@ -49,10 +52,7 @@ SymbolTable :: struct {
 }
 
 add_diagnostic :: proc(table: ^SymbolTable, range: lexer.TextRange, message: string) {
-	append(&table.diagnostics, Diagnostic{
-		range   = range,
-		message = message,
-	})
+	append(&table.diagnostics, Diagnostic{range = range, message = message})
 }
 
 add_symbol :: proc(table: ^SymbolTable, sym: Symbol, allow_shadowing: bool = false) -> bool {
@@ -119,14 +119,16 @@ add_struct_field :: proc(t: ^Type, name: string, type_info: ^Type, length: int =
 	if t == nil || t.kind != .Structure {
 		return
 	}
-	append(&t.fields, StructField{
-		name      = strings.to_lower(name),
-		type_info = type_info,
-		length    = length,
-	})
+	append(
+		&t.fields,
+		StructField{name = strings.to_lower(name), type_info = type_info, length = length},
+	)
 }
 
-collect_all_diagnostics :: proc(table: ^SymbolTable, allocator: mem.Allocator = context.allocator) -> []Diagnostic {
+collect_all_diagnostics :: proc(
+	table: ^SymbolTable,
+	allocator: mem.Allocator = context.allocator,
+) -> []Diagnostic {
 	result := make([dynamic]Diagnostic, allocator)
 	collect_diagnostics_recursive(table, &result)
 	return result[:]

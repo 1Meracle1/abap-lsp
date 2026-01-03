@@ -24,6 +24,13 @@ ABAP_KEYWORDS :: []string{
 	"FORM",
 	"ENDFORM",
 	"PERFORM",
+	// Events
+	"START-OF-SELECTION",
+	"END-OF-SELECTION",
+	"INITIALIZATION",
+	"AT SELECTION-SCREEN",
+	"TOP-OF-PAGE",
+	"END-OF-PAGE",
 	"FUNCTION",
 	"ENDFUNCTION",
 	"METHOD",
@@ -109,13 +116,15 @@ ABAP_KEYWORDS :: []string{
 	"RETURNING",
 	"EXCEPTIONS",
 	// Access modifiers
-	"PUBLIC",
-	"PRIVATE",
-	"PROTECTED",
+	"PUBLIC SECTION",
+	"PRIVATE SECTION",
+	"PROTECTED SECTION",
 	"ABSTRACT",
 	"FINAL",
 	"STATIC",
 	"READ-ONLY",
+	"REDEFINITION",
+	"INTERFACES",
 	// Assignment
 	"MOVE",
 	"MOVE-CORRESPONDING",
@@ -123,6 +132,9 @@ ABAP_KEYWORDS :: []string{
 	"UNASSIGN",
 	// Other
 	"CALL",
+	"CALL SCREEN",
+	"CALL FUNCTION",
+	"CALL METHOD",
 	"ASSERT",
 	"MESSAGE",
 	"NEW",
@@ -464,6 +476,15 @@ symbol_to_completion_item :: proc(sym: symbols.Symbol) -> CompletionItem {
 	case .TypeDef:
 		kind = .Struct
 		detail = symbols.format_type(sym.type_info)
+	case .Report:
+		kind = .Module
+		detail = "REPORT"
+	case .Include:
+		kind = .File
+		detail = "INCLUDE"
+	case .Event:
+		kind = .Event
+		detail = "EVENT"
 	}
 
 	return CompletionItem {

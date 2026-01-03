@@ -31,6 +31,12 @@ resolve_file :: proc(file: ^ast.File) -> ^SymbolTable {
 			resolve_class_impl_decl(table, d)
 		case ^ast.Interface_Decl:
 			resolve_interface_decl(table, d)
+		case ^ast.Report_Decl:
+			resolve_report_decl(table, d)
+		case ^ast.Include_Decl:
+			resolve_include_decl(table, d)
+		case ^ast.Event_Block:
+			resolve_event_block(table, d)
 		}
 	}
 
@@ -224,6 +230,18 @@ resolve_type_expr :: proc(table: ^SymbolTable, expr: ^ast.Expr) -> ^Type {
 		
 	case ^ast.Selector_Expr:
 		return make_named_type(table, selector_to_string(e), expr)
+	
+	case ^ast.New_Expr:
+		// For NEW expressions, the type is either explicit or inferred
+		if e.is_inferred {
+			// Type is inferred from context (NEW #(...))
+			return make_inferred_type(table, expr)
+		} else if e.type_expr != nil {
+			// Type is explicitly specified (NEW type(...))
+			target_type := resolve_type_expr(table, e.type_expr)
+			return make_reference_type(table, target_type)
+		}
+		return make_unknown_type(table)
 	}
 	
 	return make_unknown_type(table)
@@ -451,4 +469,84 @@ resolve_interface_decl :: proc(table: ^SymbolTable, iface: ^ast.Interface_Decl) 
 		child_scope = child_table,
 	}
 	add_symbol(table, sym, allow_shadowing = false)
+}
+
+resolve_report_decl :: proc(table: ^SymbolTable, report: ^ast.Report_Decl) {
+	if report.name == nil {
+		return
+	}
+	name := report.name.name
+	
+	sym := Symbol {
+		name      = name,
+		kind      = .Report,
+		range     = report.name.range,
+		type_info = nil,
+	}
+	add_symbol(table, sym, allow_shadowing = false)
+}
+
+resolve_include_decl :: proc(table: ^SymbolTable, include: ^ast.Include_Decl) {
+	if include.name == nil {
+		return
+	}
+	name := include.name.name
+	
+	sym := Symbol {
+		name      = name,
+		kind      = .Include,
+		range     = include.name.range,
+		type_info = nil,
+	}
+	add_symbol(table, sym, allow_shadowing = true)  // Allow shadowing for includes
+}
+
+resolve_event_block :: proc(table: ^SymbolTable, event: ^ast.Event_Block) {
+	// Create a child scope for the event block's local variables
+	child_table := new(SymbolTable)
+	child_table.symbols = make(map[string]Symbol)
+	child_table.types = make([dynamic]^Type)
+	child_table.diagnostics = make([dynamic]Diagnostic)
+	
+	// Resolve declarations in the event body
+	for stmt in event.body {
+		#partial switch s in stmt.derived_stmt {
+		case ^ast.Data_Inline_Decl:
+			resolve_inline_decl(child_table, s, is_global = false)
+		case ^ast.Data_Typed_Decl:
+			resolve_typed_decl(child_table, s, false, is_global = false)
+		case ^ast.Data_Typed_Chain_Decl:
+			resolve_chain_decl(child_table, s, is_global = false)
+		}
+	}
+	
+	// Create a symbol for the event with a generated name based on kind
+	event_name := get_event_name(event.kind)
+	
+	sym := Symbol {
+		name        = event_name,
+		kind        = .Event,
+		range       = event.range,
+		type_info   = nil,
+		child_scope = child_table,
+	}
+	add_symbol(table, sym, allow_shadowing = true)
+}
+
+get_event_name :: proc(kind: ast.Event_Kind) -> string {
+	switch kind {
+	case .StartOfSelection:
+		return "start-of-selection"
+	case .EndOfSelection:
+		return "end-of-selection"
+	case .Initialization:
+		return "initialization"
+	case .AtSelectionScreen:
+		return "at-selection-screen"
+	case .TopOfPage:
+		return "top-of-page"
+	case .EndOfPage:
+		return "end-of-page"
+	}
+	return "unknown-event"
 }

@@ -14,7 +14,7 @@ Lexer :: struct {
 	read_pos:    int,
 	ch:          rune,
 	line_start:  int,
-	line_count: int,
+	line_count:  int,
 	error_count: int,
 }
 
@@ -91,6 +91,8 @@ scan :: proc(l: ^Lexer) -> Token {
 			}
 		case '~':
 			kind = .Tilde
+		case '#':
+			kind = .Hash
 		}
 	}
 
