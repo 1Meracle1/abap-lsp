@@ -10,6 +10,7 @@ TypeKind :: enum {
 	Integer,
 	Float,
 	String,
+	StringTemplate, // String template expression result
 	Char,
 	Numeric,
 	Date,
@@ -54,6 +55,8 @@ format_type :: proc(t: ^Type) -> string {
 	case .Float:
 		return "f"
 	case .String:
+		return "string"
+	case .StringTemplate:
 		return "string"
 	case .Char:
 		if t.length > 0 {

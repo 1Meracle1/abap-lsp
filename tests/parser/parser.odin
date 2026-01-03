@@ -4406,3 +4406,314 @@ while_loop_test :: proc(t: ^testing.T) {
 	)
 }
 
+// --- String Template Tests ---
+
+// Builder for string template expressions
+string_template :: proc(parts: ..ast.String_Template_Part) -> ^ast.String_Template_Expr {
+	node := ast.new(ast.String_Template_Expr, {})
+	node.parts = make([dynamic]ast.String_Template_Part)
+	for part in parts {
+		append(&node.parts, part)
+	}
+	node.derived_expr = node
+	return node
+}
+
+string_template_lit :: proc(literal: string) -> ast.String_Template_Part {
+	return ast.String_Template_Part {
+		is_expr = false,
+		literal = literal,
+	}
+}
+
+string_template_expr :: proc(expr: ast.Any_Expr) -> ast.String_Template_Part {
+	part := ast.String_Template_Part {
+		is_expr = true,
+	}
+	#partial switch e in expr {
+	case ^ast.Ident:
+		part.expr = &e.node
+	case ^ast.Selector_Expr:
+		part.expr = &e.node
+	case ^ast.Basic_Lit:
+		part.expr = &e.node
+	}
+	return part
+}
+
+// Check string template expression
+check_string_template :: proc(
+	t: ^testing.T,
+	expected: ^ast.String_Template_Expr,
+	actual: ^ast.String_Template_Expr,
+	loc := #caller_location,
+) {
+	if !testing.expect(t, len(expected.parts) == len(actual.parts), fmt.tprintf("Expected %d parts, got %d", len(expected.parts), len(actual.parts)), loc = loc) do return
+
+	for i := 0; i < len(expected.parts); i += 1 {
+		ex_part := expected.parts[i]
+		ac_part := actual.parts[i]
+
+		testing.expect(
+			t,
+			ex_part.is_expr == ac_part.is_expr,
+			fmt.tprintf("Part[%d] is_expr mismatch: expected %v, got %v", i, ex_part.is_expr, ac_part.is_expr),
+			loc = loc,
+		)
+
+		if !ex_part.is_expr {
+			testing.expect(
+				t,
+				ex_part.literal == ac_part.literal,
+				fmt.tprintf("Part[%d] literal mismatch: expected '%s', got '%s'", i, ex_part.literal, ac_part.literal),
+				loc = loc,
+			)
+		} else {
+			if ex_part.expr != nil {
+				check_expr(t, ex_part.expr.derived_expr, ac_part.expr, loc = loc)
+			}
+		}
+	}
+}
+
+@(test)
+basic_string_template_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `DATA(result) = |Hello World!|.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 1,
+		fmt.tprintf("Expected 1 decl, got %v", len(file.decls)),
+	)
+
+	if len(file.decls) > 0 {
+		decl, ok := file.decls[0].derived_stmt.(^ast.Data_Inline_Decl)
+		if !testing.expect(t, ok, "Expected Data_Inline_Decl") do return
+
+		template, tok := decl.value.derived_expr.(^ast.String_Template_Expr)
+		if !testing.expect(t, tok, "Expected String_Template_Expr") do return
+
+		testing.expect(t, len(template.parts) == 1, fmt.tprintf("Expected 1 part, got %d", len(template.parts)))
+		if len(template.parts) > 0 {
+			testing.expect(t, !template.parts[0].is_expr, "Expected literal part")
+			testing.expect(
+				t,
+				template.parts[0].literal == "Hello World!",
+				fmt.tprintf("Expected 'Hello World!', got '%s'", template.parts[0].literal),
+			)
+		}
+	}
+}
+
+@(test)
+string_template_concatenation_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `DATA(result) = |Hello| & | | & |World|.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 1,
+		fmt.tprintf("Expected 1 decl, got %v", len(file.decls)),
+	)
+
+	if len(file.decls) > 0 {
+		decl, ok := file.decls[0].derived_stmt.(^ast.Data_Inline_Decl)
+		if !testing.expect(t, ok, "Expected Data_Inline_Decl") do return
+
+		// Should be a binary expression (concatenation)
+		binary, bok := decl.value.derived_expr.(^ast.Binary_Expr)
+		if !testing.expect(t, bok, fmt.tprintf("Expected Binary_Expr, got %T", decl.value.derived_expr)) do return
+
+		testing.expect(
+			t,
+			binary.op.kind == .Ampersand,
+			fmt.tprintf("Expected Ampersand operator, got %v", binary.op.kind),
+		)
+	}
+}
+
+@(test)
+string_template_with_embedded_expr_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `DATA(result) = |Hello { lv_name }!|.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 1,
+		fmt.tprintf("Expected 1 decl, got %v", len(file.decls)),
+	)
+
+	if len(file.decls) > 0 {
+		decl, ok := file.decls[0].derived_stmt.(^ast.Data_Inline_Decl)
+		if !testing.expect(t, ok, "Expected Data_Inline_Decl") do return
+
+		template, tok := decl.value.derived_expr.(^ast.String_Template_Expr)
+		if !testing.expect(t, tok, fmt.tprintf("Expected String_Template_Expr, got %T", decl.value.derived_expr)) do return
+
+		// Should have 3 parts: "Hello ", embedded expr, "!"
+		testing.expect(
+			t,
+			len(template.parts) == 3,
+			fmt.tprintf("Expected 3 parts, got %d", len(template.parts)),
+		)
+
+		if len(template.parts) >= 3 {
+			// First part: "Hello "
+			testing.expect(t, !template.parts[0].is_expr, "Part 0 should be literal")
+			testing.expect(
+				t,
+				template.parts[0].literal == "Hello ",
+				fmt.tprintf("Expected 'Hello ', got '%s'", template.parts[0].literal),
+			)
+
+			// Second part: embedded expression
+			testing.expect(t, template.parts[1].is_expr, "Part 1 should be expression")
+			if template.parts[1].expr != nil {
+				ident, iok := template.parts[1].expr.derived_expr.(^ast.Ident)
+				if testing.expect(t, iok, "Expected Ident expression") {
+					testing.expect(
+						t,
+						ident.name == "lv_name",
+						fmt.tprintf("Expected 'lv_name', got '%s'", ident.name),
+					)
+				}
+			}
+
+			// Third part: "!"
+			testing.expect(t, !template.parts[2].is_expr, "Part 2 should be literal")
+			testing.expect(
+				t,
+				template.parts[2].literal == "!",
+				fmt.tprintf("Expected '!', got '%s'", template.parts[2].literal),
+			)
+		}
+	}
+}
+
+@(test)
+string_template_with_selector_expr_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `DATA(result) = |Hello { sy-uname }!|.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if len(file.decls) > 0 {
+		decl, ok := file.decls[0].derived_stmt.(^ast.Data_Inline_Decl)
+		if !testing.expect(t, ok, "Expected Data_Inline_Decl") do return
+
+		template, tok := decl.value.derived_expr.(^ast.String_Template_Expr)
+		if !testing.expect(t, tok, fmt.tprintf("Expected String_Template_Expr, got %T", decl.value.derived_expr)) do return
+
+		// Should have 3 parts
+		if len(template.parts) >= 2 {
+			// Second part should be a selector expression
+			testing.expect(t, template.parts[1].is_expr, "Part 1 should be expression")
+			if template.parts[1].expr != nil {
+				sel, sok := template.parts[1].expr.derived_expr.(^ast.Selector_Expr)
+				if testing.expect(t, sok, fmt.tprintf("Expected Selector_Expr, got %T", template.parts[1].expr.derived_expr)) {
+					testing.expect(t, sel.field.name == "uname", fmt.tprintf("Expected 'uname', got '%s'", sel.field.name))
+				}
+			}
+		}
+	}
+}
+
+@(test)
+empty_string_template_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `DATA(result) = ||.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if len(file.decls) > 0 {
+		decl, ok := file.decls[0].derived_stmt.(^ast.Data_Inline_Decl)
+		if !testing.expect(t, ok, "Expected Data_Inline_Decl") do return
+
+		template, tok := decl.value.derived_expr.(^ast.String_Template_Expr)
+		if !testing.expect(t, tok, fmt.tprintf("Expected String_Template_Expr, got %T", decl.value.derived_expr)) do return
+
+		// Empty template should have 0 parts
+		testing.expect(
+			t,
+			len(template.parts) == 0,
+			fmt.tprintf("Expected 0 parts, got %d", len(template.parts)),
+		)
+	}
+}
+
+@(test)
+string_template_only_embedded_expr_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `DATA(result) = |{ lv_value }|.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if len(file.decls) > 0 {
+		decl, ok := file.decls[0].derived_stmt.(^ast.Data_Inline_Decl)
+		if !testing.expect(t, ok, "Expected Data_Inline_Decl") do return
+
+		template, tok := decl.value.derived_expr.(^ast.String_Template_Expr)
+		if !testing.expect(t, tok, fmt.tprintf("Expected String_Template_Expr, got %T", decl.value.derived_expr)) do return
+
+		// Should have 1 part: the embedded expression
+		testing.expect(
+			t,
+			len(template.parts) == 1,
+			fmt.tprintf("Expected 1 part, got %d", len(template.parts)),
+		)
+
+		if len(template.parts) > 0 {
+			testing.expect(t, template.parts[0].is_expr, "Part should be expression")
+		}
+	}
+}
+

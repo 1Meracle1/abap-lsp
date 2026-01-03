@@ -246,6 +246,15 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 			}
 		}
 
+	case ^String_Template_Expr:
+		for part in n.parts {
+			if part.is_expr && part.expr != nil {
+				if res := find_node_at_offset(&part.expr.expr_base, offset); res != nil {
+					return res
+				}
+			}
+		}
+
 	case ^Return_Stmt:
 		for expr in n.results {
 			if res := find_node_at_offset(&expr.expr_base, offset); res != nil {

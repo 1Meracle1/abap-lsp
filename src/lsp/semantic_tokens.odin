@@ -687,6 +687,24 @@ collect_tokens_from_expr :: proc(
 
 	case ^ast.Predicate_Expr:
 		collect_tokens_from_expr(tokens, e.expr, snap, form_scope)
+
+	case ^ast.String_Template_Expr:
+		// Highlight the entire string template as a string
+		append(
+			tokens,
+			SemanticToken {
+				offset = e.range.start,
+				length = e.range.end - e.range.start,
+				type = .String,
+				modifiers = 0,
+			},
+		)
+		// Also collect tokens from embedded expressions
+		for part in e.parts {
+			if part.is_expr && part.expr != nil {
+				collect_tokens_from_expr(tokens, part.expr, snap, form_scope)
+			}
+		}
 	}
 }
 

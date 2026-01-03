@@ -561,6 +561,23 @@ parse_binary_expr :: proc(p: ^Parser) -> ^ast.Expr {
 	if expr == nil {
 		return ast.new(ast.Bad_Expr, start_tok, p.curr_tok)
 	}
+
+	// Handle string concatenation with &
+	for p.curr_tok.kind == .Ampersand {
+		op := advance_token(p)
+		right := parse_unary_expr(p)
+		if right == nil {
+			break
+		}
+
+		binary := ast.new(ast.Binary_Expr, lexer.TextRange{expr.range.start, right.range.end})
+		binary.left = expr
+		binary.op = op
+		binary.right = right
+		binary.derived_expr = binary
+		expr = binary
+	}
+
 	return expr
 }
 
@@ -768,6 +785,8 @@ parse_operand :: proc(p: ^Parser) -> ^ast.Expr {
 		basic_lit := ast.new(ast.Basic_Lit, tok.range)
 		basic_lit.tok = tok
 		return basic_lit
+	case .Pipe:
+		return parse_string_template(p)
 	case .Hash:
 		// Standalone # is not valid, but consume it to avoid infinite loops
 		hash_tok := advance_token(p)
@@ -780,6 +799,155 @@ parse_operand :: proc(p: ^Parser) -> ^ast.Expr {
 		return bad_expr
 	}
 	return nil
+}
+
+// parse_string_template parses a string template expression |...|
+// Syntax: |literal text { embedded_expr } more text|
+parse_string_template :: proc(p: ^Parser) -> ^ast.Expr {
+	start_pos := p.curr_tok.range.start
+	opening_pipe_end := p.curr_tok.range.end
+
+	template_expr := ast.new(ast.String_Template_Expr, lexer.TextRange{start_pos, 0})
+	template_expr.parts = make([dynamic]ast.String_Template_Part)
+
+	// Parse content between pipes - scan the source directly
+	end_pos := parse_string_template_content(p, template_expr, opening_pipe_end)
+
+	template_expr.range.end = end_pos
+	template_expr.derived_expr = template_expr
+	
+	return template_expr
+}
+
+// parse_string_template_content parses the content inside a string template
+// It scans the source directly to handle literal text and embedded expressions
+// Returns the position after the closing |
+parse_string_template_content :: proc(p: ^Parser, template_expr: ^ast.String_Template_Expr, start_pos: int) -> int {
+	pos := start_pos
+	literal_start := pos
+
+	for pos < len(p.file.src) {
+		ch := p.file.src[pos]
+
+		if ch == '|' {
+			// End of string template - save any pending literal
+			if pos > literal_start {
+				part := ast.String_Template_Part {
+					is_expr = false,
+					literal = p.file.src[literal_start:pos],
+					range   = lexer.TextRange{literal_start, pos},
+				}
+				append(&template_expr.parts, part)
+			}
+
+			// Position the lexer so that the next scan starts AFTER the closing |
+			// The closing | is at position pos, so next scan should start at pos+1
+			end_pos := pos + 1
+			
+			// Set up the lexer for the next token scan
+			// p.l.pos needs to be where scan will record token start
+			// p.l.read_pos needs to point to where we'll read the next char
+			// p.l.ch needs to be the character at read_pos
+			p.l.pos = end_pos
+			p.l.read_pos = end_pos
+			if end_pos < len(p.file.src) {
+				p.l.ch = rune(p.file.src[end_pos])
+				// Advance to set up pos/read_pos correctly for scan
+				lexer.advance_rune(&p.l)
+			} else {
+				p.l.ch = -1
+			}
+			
+			// Update the current token to represent the closing | 
+			// and then get the next token
+			p.prev_tok = p.curr_tok
+			p.curr_tok = lexer.scan(&p.l)
+			if p.curr_tok.kind != .EOF {
+				consume_comments(p)
+			}
+			
+			return end_pos
+		} else if ch == '{' {
+			// Embedded expression - save any pending literal first
+			if pos > literal_start {
+				part := ast.String_Template_Part {
+					is_expr = false,
+					literal = p.file.src[literal_start:pos],
+					range   = lexer.TextRange{literal_start, pos},
+				}
+				append(&template_expr.parts, part)
+			}
+
+			// Move past the { and sync lexer
+			expr_start := pos
+			after_brace := pos + 1
+			
+			// Position lexer after the {
+			p.l.pos = after_brace
+			p.l.read_pos = after_brace
+			if after_brace < len(p.file.src) {
+				p.l.ch = rune(p.file.src[after_brace])
+				lexer.advance_rune(&p.l)
+			} else {
+				p.l.ch = -1
+			}
+			
+			// Get the first token after { 
+			p.prev_tok = p.curr_tok
+			p.curr_tok = lexer.scan(&p.l)
+			if p.curr_tok.kind != .EOF {
+				consume_comments(p)
+			}
+			
+			embedded_expr := parse_expr(p)
+
+			// The expression should end at }
+			if p.curr_tok.kind == .RBrace {
+				pos = p.curr_tok.range.end
+				// Advance past the }
+				advance_token(p)
+				// Now we need to continue scanning the string template from pos
+				// The lexer is pointing somewhere after the }, but we need to scan
+				// the string template content again starting from pos
+			} else {
+				// Error - missing closing brace
+				error(p, p.curr_tok.range, "expected '}' after embedded expression in string template")
+				// Try to recover by finding } or |
+				pos = p.curr_tok.range.end
+				for pos < len(p.file.src) && p.file.src[pos] != '}' && p.file.src[pos] != '|' {
+					pos += 1
+				}
+				if pos < len(p.file.src) && p.file.src[pos] == '}' {
+					pos += 1
+				}
+			}
+
+			// Add the embedded expression part
+			part := ast.String_Template_Part {
+				is_expr = true,
+				expr    = embedded_expr,
+				range   = lexer.TextRange{expr_start, pos},
+			}
+			append(&template_expr.parts, part)
+
+			// Continue scanning from after the }
+			literal_start = pos
+		} else {
+			pos += 1
+		}
+	}
+
+	// If we get here, we hit EOF without finding closing |
+	error(p, lexer.TextRange{start_pos, pos}, "string template was not terminated")
+	if pos > literal_start {
+		part := ast.String_Template_Part {
+			is_expr = false,
+			literal = p.file.src[literal_start:pos],
+			range   = lexer.TextRange{literal_start, pos},
+		}
+		append(&template_expr.parts, part)
+	}
+	return pos
 }
 
 // parse_new_expr parses a NEW instance operator expression

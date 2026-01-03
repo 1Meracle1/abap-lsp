@@ -119,6 +119,20 @@ Named_Arg :: struct {
 	value:      ^Expr,
 }
 
+// String template part - either a literal string or an embedded expression
+String_Template_Part :: struct {
+	is_expr:  bool, // true if this is an embedded expression, false if literal
+	literal:  string, // literal text (if !is_expr)
+	expr:     ^Expr, // embedded expression (if is_expr)
+	range:    lexer.TextRange,
+}
+
+// String template expression (e.g., |Hello { name }!|)
+String_Template_Expr :: struct {
+	using node: Expr,
+	parts:      [dynamic]String_Template_Part,
+}
+
 // Statements
 
 Bad_Stmt :: struct {
@@ -434,6 +448,7 @@ Any_Node :: union {
 	^Constructor_Expr,
 	^Named_Arg,
 	^Predicate_Expr,
+	^String_Template_Expr,
 	// Types
 	^Table_Type,
 	// Statements
@@ -491,6 +506,7 @@ Any_Expr :: union {
 	^Constructor_Expr,
 	^Named_Arg,
 	^Predicate_Expr,
+	^String_Template_Expr,
 	// Types
 	^Table_Type,
 }

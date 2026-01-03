@@ -1,6 +1,7 @@
 package lang_symbols
 
 import "../ast"
+import "../lexer"
 import "core:strings"
 
 resolve_file :: proc(file: ^ast.File) -> ^SymbolTable {
@@ -269,6 +270,18 @@ resolve_type_expr :: proc(table: ^SymbolTable, expr: ^ast.Expr) -> ^Type {
 	case ^ast.Call_Expr:
 		// For call expressions, we would need to resolve the return type of the method
 		// For now, return unknown type as we need more context to resolve method return types
+		return make_unknown_type(table)
+
+	case ^ast.String_Template_Expr:
+		// String templates always result in a string type
+		return make_type(table, .StringTemplate)
+
+	case ^ast.Binary_Expr:
+		// Check if this is a string concatenation
+		if e.op.kind == .Ampersand {
+			// String concatenation results in a string
+			return make_type(table, .String)
+		}
 		return make_unknown_type(table)
 	}
 

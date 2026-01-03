@@ -134,6 +134,11 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 			hover_text = fmt.tprintf("(parameter) %s", n.name.name)
 		}
 
+	case ^ast.String_Template_Expr:
+		log_trace(srv, "found String Template expression")
+		// Build a preview of the string template
+		hover_text = "(string template) |...|"
+
 	case:
 	// For other nodes, maybe just show the type of node?
 	// or nothing

@@ -93,6 +93,14 @@ scan :: proc(l: ^Lexer) -> Token {
 			kind = .Tilde
 		case '#':
 			kind = .Hash
+		case '|':
+			kind = .Pipe
+		case '&':
+			kind = .Ampersand
+		case '{':
+			kind = .LBrace
+		case '}':
+			kind = .RBrace
 		case '<':
 			if l.ch == '=' {
 				advance_rune(l)

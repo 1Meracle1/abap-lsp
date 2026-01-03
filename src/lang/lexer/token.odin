@@ -5,11 +5,15 @@ TokenKind :: enum u8 {
 	Number,
 	Comment,
 	String, // '...'
+	StringTemplate, // |...|
+	StringTemplateLit, // literal part inside string template
 	Period, // .
 	Comma, // ,
 	Colon, // :
 	LParen, // (
 	RParen, // )
+	LBrace, // { (for string template expressions)
+	RBrace, // } (for string template expressions)
 	Arrow, // ->
 	FatArrow, // =>
 	Tilde, // ~ (interface component access)
@@ -24,6 +28,8 @@ TokenKind :: enum u8 {
 	Le, // <=
 	Ge, // >=
 	Ne, // <>
+	Pipe, // | (for string templates)
+	Ampersand, // & (for string concatenation)
 	Other, // Invalid?
 	EOF,
 }
@@ -60,6 +66,10 @@ token_kind_string :: proc(token_kind: TokenKind) -> string {
 		res = "comment"
 	case .String:
 		res = "string"
+	case .StringTemplate:
+		res = "string template"
+	case .StringTemplateLit:
+		res = "string template literal"
 	case .Period:
 		res = "."
 	case .Comma:
@@ -70,6 +80,10 @@ token_kind_string :: proc(token_kind: TokenKind) -> string {
 		res = "("
 	case .RParen:
 		res = ")"
+	case .LBrace:
+		res = "{"
+	case .RBrace:
+		res = "}"
 	case .Arrow:
 		res = "->"
 	case .FatArrow:
@@ -98,6 +112,10 @@ token_kind_string :: proc(token_kind: TokenKind) -> string {
 		res = ">="
 	case .Ne:
 		res = "<>"
+	case .Pipe:
+		res = "|"
+	case .Ampersand:
+		res = "&"
 	case .Other:
 		res = "other"
 	case .EOF:
