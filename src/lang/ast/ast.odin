@@ -212,6 +212,12 @@ Case_Stmt :: struct {
 	branches:   [dynamic]Case_When_Branch,
 }
 
+While_Stmt :: struct {
+	using node: Stmt,
+	cond:       ^Expr,
+	body:       [dynamic]^Stmt,
+}
+
 // Declarations
 
 Bad_Decl :: struct {
@@ -442,6 +448,7 @@ Any_Node :: union {
 	^Leave_Program_Stmt,
 	^Set_Stmt,
 	^Case_Stmt,
+	^While_Stmt,
 	// Declarations
 	^Bad_Decl,
 	^Data_Inline_Decl,
@@ -499,6 +506,7 @@ Any_Stmt :: union {
 	^Leave_Program_Stmt,
 	^Set_Stmt,
 	^Case_Stmt,
+	^While_Stmt,
 	//
 	^Bad_Decl,
 	^Data_Inline_Decl,

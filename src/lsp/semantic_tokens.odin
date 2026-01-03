@@ -249,6 +249,12 @@ collect_tokens_from_stmt :: proc(
 			}
 		}
 
+	case ^ast.While_Stmt:
+		collect_tokens_from_expr(tokens, s.cond, snap, nil)
+		for body_stmt in s.body {
+			collect_tokens_from_stmt(tokens, body_stmt, snap)
+		}
+
 	case ^ast.Block_Stmt:
 		for block_stmt in s.stmts {
 			collect_tokens_from_stmt(tokens, block_stmt, snap)

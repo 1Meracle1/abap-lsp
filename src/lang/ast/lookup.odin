@@ -283,6 +283,18 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 			}
 		}
 
+	case ^While_Stmt:
+		if n.cond != nil {
+			if res := find_node_at_offset(&n.cond.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		for stmt in n.body {
+			if res := find_node_at_offset(&stmt.stmt_base, offset); res != nil {
+				return res
+			}
+		}
+
 	case ^Form_Decl:
 		if n.ident != nil {
 			if res := find_node_at_offset(&n.ident.expr_base, offset); res != nil {

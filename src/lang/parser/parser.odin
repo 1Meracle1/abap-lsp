@@ -88,6 +88,8 @@ parse_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			return parse_set_stmt(p)
 		case "CASE":
 			return parse_case_stmt(p)
+		case "WHILE":
+			return parse_while_stmt(p)
 		}
 	}
 
@@ -2191,9 +2193,34 @@ parse_case_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	}
 
 	endcase_tok := expect_keyword_token(p, "ENDCASE")
-	expect_token(p, .Period)
-	stmt := ast.new(ast.Case_Stmt, case_tok, endcase_tok)
+	period_tok := expect_token(p, .Period)
+	stmt := ast.new(ast.Case_Stmt, case_tok, period_tok)
 	stmt.expr = cond_expr
 	stmt.branches = branches
 	return stmt
+}
+
+parse_while_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
+	while_tok := advance_token(p)
+	cond := parse_logical_expr(p)
+	expect_token(p, .Period)
+
+	while_stmt := ast.new(ast.While_Stmt, while_tok.range)
+	while_stmt.cond = cond
+	while_stmt.body = make([dynamic]^ast.Stmt)
+
+	for p.curr_tok.kind != .EOF {
+		if check_keyword(p, "ENDWHILE") {
+			break
+		}
+		stmt := parse_stmt(p)
+		if stmt != nil {
+			append(&while_stmt.body, stmt)
+		}
+	}
+
+	endwhile_tok := expect_keyword_token(p, "ENDWHILE")
+	period_tok := expect_token(p, .Period)
+	while_stmt.range.end = period_tok.range.end
+	return while_stmt
 }

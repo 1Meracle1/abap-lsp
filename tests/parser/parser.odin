@@ -4388,11 +4388,13 @@ named_arg_with_ident_value_test :: proc(t: ^testing.T) {
 }
 
 @(test)
-full_file_test :: proc(t: ^testing.T) {
+while_loop_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
 	file.fullpath = "test.abap"
 	file.src = `
-      log_fatal( CONV #( TEXT-005 ) ).
+    WHILE lv_string IS NOT INITIAL AND lv_index <= 4.
+    	lv_index = lv_index + 1.
+    ENDWHILE.
 `
 	p: parser.Parser
 	parser.parse_file(&p, file)

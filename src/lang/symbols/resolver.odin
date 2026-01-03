@@ -466,6 +466,8 @@ resolve_stmt :: proc(table: ^SymbolTable, stmt: ^ast.Stmt) {
 		resolve_if_stmt(table, s)
 	case ^ast.Case_Stmt:
 		resolve_case_stmt(table, s)
+	case ^ast.While_Stmt:
+		resolve_while_stmt(table, s)
 	}
 }
 
@@ -627,4 +629,8 @@ resolve_case_stmt :: proc(table: ^SymbolTable, case_stmt: ^ast.Case_Stmt) {
 	for branch in case_stmt.branches {
 		resolve_stmt_list(table, branch.body[:])
 	}
+}
+
+resolve_while_stmt :: proc(table: ^SymbolTable, while_stmt: ^ast.While_Stmt) {
+	resolve_stmt_list(table, while_stmt.body[:])
 }
