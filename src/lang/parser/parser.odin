@@ -92,6 +92,8 @@ parse_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			return parse_while_stmt(p)
 		case "CLEAR":
 			return parse_clear_stmt(p)
+		case "MESSAGE":
+			return parse_message_stmt(p)
 		}
 	}
 
@@ -2528,4 +2530,118 @@ parse_clear_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	clear_stmt := ast.new(ast.Clear_Stmt, clear_tok, end_tok)
 	clear_stmt.exprs = exprs
 	return clear_stmt
+}
+
+// MESSAGE statement parser
+// Syntax: MESSAGE { msg | text } [TYPE type] [DISPLAY LIKE display_type] [WITH v1 [v2 [v3 [v4]]]] [INTO data]
+// Examples:
+//   MESSAGE 'No display authorization.' TYPE 'I' DISPLAY LIKE 'E'.
+//   MESSAGE e899(/sttpec/int_msg) WITH lv_msgv1 lv_msgv2 lv_msgv3 lv_msgv4 INTO lv_dummy_msg.
+//   MESSAGE iv_msg TYPE 'I' DISPLAY LIKE 'E'.
+//   MESSAGE iv_msg TYPE 'I'.
+parse_message_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
+	message_tok := expect_keyword_token(p, "MESSAGE")
+
+	msg_stmt := ast.new(ast.Message_Stmt, message_tok.range)
+	msg_stmt.with_args = make([dynamic]^ast.Expr)
+
+	// Parse the message expression
+	// This can be:
+	// - A string literal: 'No display authorization.'
+	// - An identifier: iv_msg
+	// - A message ID: e899(/sttpec/int_msg) or e899(class_name)
+	msg_stmt.msg_expr = parse_message_id_or_expr(p)
+
+	// Parse optional clauses
+	for p.curr_tok.kind != .EOF && p.curr_tok.kind != .Period {
+		if check_keyword(p, "TYPE") {
+			advance_token(p)
+			msg_stmt.msg_type = parse_expr(p)
+		} else if check_keyword(p, "DISPLAY") {
+			advance_token(p)
+			expect_keyword_token(p, "LIKE")
+			msg_stmt.display_like = parse_expr(p)
+		} else if check_keyword(p, "WITH") {
+			advance_token(p)
+			// Parse up to 4 WITH arguments
+			for i := 0; i < 4 && p.curr_tok.kind != .EOF && p.curr_tok.kind != .Period; i += 1 {
+				// Check if next token is another keyword that would end WITH args
+				if check_keyword(p, "INTO") ||
+				   check_keyword(p, "TYPE") ||
+				   check_keyword(p, "DISPLAY") {
+					break
+				}
+				arg := parse_expr(p)
+				if arg != nil {
+					append(&msg_stmt.with_args, arg)
+				} else {
+					break
+				}
+			}
+		} else if check_keyword(p, "INTO") {
+			advance_token(p)
+			msg_stmt.into_target = parse_expr(p)
+		} else {
+			// Unknown token, break out
+			break
+		}
+	}
+
+	period_tok := expect_token(p, .Period)
+	msg_stmt.range.end = period_tok.range.end
+	msg_stmt.derived_stmt = msg_stmt
+	return msg_stmt
+}
+
+// parse_message_id_or_expr parses a message expression which can be:
+// - A string literal: 'text'
+// - An identifier: var_name
+// - A message ID: x999(class_name) where x is a message type (a,e,i,s,w,x)
+parse_message_id_or_expr :: proc(p: ^Parser) -> ^ast.Expr {
+	// Check if this is a message ID format: type+number followed by (class)
+	// e.g., e899(/sttpec/int_msg) or i001(class)
+	if p.curr_tok.kind == .Ident {
+		// Save parser state to backtrack if needed
+		saved_prev := p.prev_tok
+		saved_curr := p.curr_tok
+		saved_pos := p.l.pos
+		saved_read_pos := p.l.read_pos
+		saved_ch := p.l.ch
+
+		ident_tok := advance_token(p)
+
+		// Check if followed by ( without space (message class)
+		if p.curr_tok.kind == .LParen && !lexer.have_space_between(ident_tok, p.curr_tok) {
+			// This is a message ID with class: e899(class)
+			// Parse as a call expression for now
+			lparen_tok := advance_token(p) // consume (
+
+			// Parse the class name - could be /namespace/class or simple class
+			class_expr := parse_expr(p)
+
+			rparen_tok := expect_token(p, .RParen)
+
+			// Create a call expression to represent message_id(class)
+			call_expr := ast.new(
+				ast.Call_Expr,
+				lexer.TextRange{ident_tok.range.start, rparen_tok.range.end},
+			)
+			call_expr.expr = ast.new_ident(ident_tok)
+			args := make([]^ast.Expr, 1)
+			args[0] = class_expr
+			call_expr.args = args
+			call_expr.derived_expr = call_expr
+			return call_expr
+		}
+
+		// Not a message ID, restore and parse as regular expression
+		p.prev_tok = saved_prev
+		p.curr_tok = saved_curr
+		p.l.pos = saved_pos
+		p.l.read_pos = saved_read_pos
+		p.l.ch = saved_ch
+	}
+
+	// Parse as a regular expression (string literal, identifier, etc.)
+	return parse_expr(p)
 }

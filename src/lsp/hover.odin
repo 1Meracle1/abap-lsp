@@ -147,6 +147,10 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 		log_trace(srv, "found Parenthesized expression")
 		hover_text = "(parenthesized expression)"
 
+	case ^ast.Message_Stmt:
+		log_trace(srv, "found MESSAGE statement")
+		hover_text = "(statement) MESSAGE - displays a message to the user"
+
 	case:
 	// For other nodes, maybe just show the type of node?
 	// or nothing

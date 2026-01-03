@@ -441,6 +441,23 @@ collect_tokens_from_stmt :: proc(
 		for body_stmt in s.body {
 			collect_tokens_from_stmt(tokens, body_stmt, snap)
 		}
+
+	case ^ast.Message_Stmt:
+		if s.msg_expr != nil {
+			collect_tokens_from_expr(tokens, s.msg_expr, snap, nil)
+		}
+		if s.msg_type != nil {
+			collect_tokens_from_expr(tokens, s.msg_type, snap, nil)
+		}
+		if s.display_like != nil {
+			collect_tokens_from_expr(tokens, s.display_like, snap, nil)
+		}
+		for arg in s.with_args {
+			collect_tokens_from_expr(tokens, arg, snap, nil)
+		}
+		if s.into_target != nil {
+			collect_tokens_from_expr(tokens, s.into_target, snap, nil)
+		}
 	}
 }
 

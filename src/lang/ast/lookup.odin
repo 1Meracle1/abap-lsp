@@ -311,6 +311,33 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 			}
 		}
 
+	case ^Message_Stmt:
+		if n.msg_expr != nil {
+			if res := find_node_at_offset(&n.msg_expr.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		if n.msg_type != nil {
+			if res := find_node_at_offset(&n.msg_type.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		if n.display_like != nil {
+			if res := find_node_at_offset(&n.display_like.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		for arg in n.with_args {
+			if res := find_node_at_offset(&arg.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		if n.into_target != nil {
+			if res := find_node_at_offset(&n.into_target.expr_base, offset); res != nil {
+				return res
+			}
+		}
+
 	case ^Form_Decl:
 		if n.ident != nil {
 			if res := find_node_at_offset(&n.ident.expr_base, offset); res != nil {

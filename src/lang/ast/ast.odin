@@ -237,6 +237,17 @@ Clear_Stmt :: struct {
 	exprs:      [dynamic]^Expr,
 }
 
+// MESSAGE statement
+// Syntax: MESSAGE { msg | text } [TYPE type] [DISPLAY LIKE display_type] [WITH v1 [v2 [v3 [v4]]]] [INTO data]
+Message_Stmt :: struct {
+	using node:     Stmt,
+	msg_expr:       ^Expr, // The message expression (string literal, identifier, or message ID like e899(class))
+	msg_type:       ^Expr, // TYPE 'I' etc (optional)
+	display_like:   ^Expr, // DISPLAY LIKE 'E' (optional)
+	with_args:      [dynamic]^Expr, // WITH v1 v2 v3 v4 (up to 4 args)
+	into_target:    ^Expr, // INTO data (optional)
+}
+
 // Declarations
 
 Bad_Decl :: struct {
@@ -470,6 +481,7 @@ Any_Node :: union {
 	^Case_Stmt,
 	^While_Stmt,
 	^Clear_Stmt,
+	^Message_Stmt,
 	// Declarations
 	^Bad_Decl,
 	^Data_Inline_Decl,
@@ -530,6 +542,7 @@ Any_Stmt :: union {
 	^Case_Stmt,
 	^While_Stmt,
 	^Clear_Stmt,
+	^Message_Stmt,
 	//
 	^Bad_Decl,
 	^Data_Inline_Decl,

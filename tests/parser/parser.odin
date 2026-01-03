@@ -5192,3 +5192,233 @@ arithmetic_in_assignment_test :: proc(t: ^testing.T) {
 	}
 }
 
+// ========== MESSAGE statement tests ==========
+
+@(test)
+message_simple_text_test :: proc(t: ^testing.T) {
+	// MESSAGE 'No display authorization.' TYPE 'I' DISPLAY LIKE 'E'.
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `MESSAGE 'No display authorization.' TYPE 'I' DISPLAY LIKE 'E'.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) > 0, "Expected at least one declaration") do return
+
+	msg_stmt, ok := file.decls[0].derived_stmt.(^ast.Message_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Message_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	// Check msg_expr is a string literal
+	msg_lit, mok := msg_stmt.msg_expr.derived_expr.(^ast.Basic_Lit)
+	if testing.expect(t, mok, fmt.tprintf("Expected msg_expr to be Basic_Lit, got %T", msg_stmt.msg_expr.derived_expr)) {
+		testing.expect(t, msg_lit.tok.lit == "'No display authorization.'", fmt.tprintf("Expected message text, got '%s'", msg_lit.tok.lit))
+	}
+
+	// Check TYPE
+	if testing.expect(t, msg_stmt.msg_type != nil, "Expected msg_type to be set") {
+		type_lit, tok := msg_stmt.msg_type.derived_expr.(^ast.Basic_Lit)
+		if testing.expect(t, tok, "Expected msg_type to be Basic_Lit") {
+			testing.expect(t, type_lit.tok.lit == "'I'", fmt.tprintf("Expected 'I', got '%s'", type_lit.tok.lit))
+		}
+	}
+
+	// Check DISPLAY LIKE
+	if testing.expect(t, msg_stmt.display_like != nil, "Expected display_like to be set") {
+		disp_lit, dok := msg_stmt.display_like.derived_expr.(^ast.Basic_Lit)
+		if testing.expect(t, dok, "Expected display_like to be Basic_Lit") {
+			testing.expect(t, disp_lit.tok.lit == "'E'", fmt.tprintf("Expected 'E', got '%s'", disp_lit.tok.lit))
+		}
+	}
+}
+
+@(test)
+message_with_class_and_with_into_test :: proc(t: ^testing.T) {
+	// MESSAGE e899(/sttpec/int_msg) WITH lv_msgv1 lv_msgv2 lv_msgv3 lv_msgv4 INTO lv_dummy_msg.
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `MESSAGE e899(/sttpec/int_msg) WITH lv_msgv1 lv_msgv2 lv_msgv3 lv_msgv4 INTO lv_dummy_msg.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) > 0, "Expected at least one declaration") do return
+
+	msg_stmt, ok := file.decls[0].derived_stmt.(^ast.Message_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Message_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	// Check msg_expr is a call expression (message_id(class))
+	call_expr, cok := msg_stmt.msg_expr.derived_expr.(^ast.Call_Expr)
+	if testing.expect(t, cok, fmt.tprintf("Expected msg_expr to be Call_Expr, got %T", msg_stmt.msg_expr.derived_expr)) {
+		// Check the message ID
+		msg_ident, iok := call_expr.expr.derived_expr.(^ast.Ident)
+		if testing.expect(t, iok, "Expected call expr to be Ident") {
+			testing.expect(t, msg_ident.name == "e899", fmt.tprintf("Expected 'e899', got '%s'", msg_ident.name))
+		}
+		// Check the class argument
+		testing.expect(t, len(call_expr.args) == 1, fmt.tprintf("Expected 1 argument, got %d", len(call_expr.args)))
+	}
+
+	// Check WITH arguments (4 args)
+	testing.expect(t, len(msg_stmt.with_args) == 4, fmt.tprintf("Expected 4 WITH args, got %d", len(msg_stmt.with_args)))
+
+	// Check INTO target
+	if testing.expect(t, msg_stmt.into_target != nil, "Expected into_target to be set") {
+		into_ident, iok := msg_stmt.into_target.derived_expr.(^ast.Ident)
+		if testing.expect(t, iok, "Expected into_target to be Ident") {
+			testing.expect(t, into_ident.name == "lv_dummy_msg", fmt.tprintf("Expected 'lv_dummy_msg', got '%s'", into_ident.name))
+		}
+	}
+}
+
+@(test)
+message_info_with_class_test :: proc(t: ^testing.T) {
+	// MESSAGE i899(/sttpec/int_msg) WITH lv_msgv1 lv_msgv2 lv_msgv3 lv_msgv4 INTO lv_dummy_msg.
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `MESSAGE i899(/sttpec/int_msg) WITH lv_msgv1 lv_msgv2 lv_msgv3 lv_msgv4 INTO lv_dummy_msg.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) > 0, "Expected at least one declaration") do return
+
+	msg_stmt, ok := file.decls[0].derived_stmt.(^ast.Message_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Message_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	// Check msg_expr is a call expression (message_id(class))
+	call_expr, cok := msg_stmt.msg_expr.derived_expr.(^ast.Call_Expr)
+	if testing.expect(t, cok, fmt.tprintf("Expected msg_expr to be Call_Expr, got %T", msg_stmt.msg_expr.derived_expr)) {
+		// Check the message ID
+		msg_ident, iok := call_expr.expr.derived_expr.(^ast.Ident)
+		if testing.expect(t, iok, "Expected call expr to be Ident") {
+			testing.expect(t, msg_ident.name == "i899", fmt.tprintf("Expected 'i899', got '%s'", msg_ident.name))
+		}
+	}
+}
+
+@(test)
+message_variable_with_type_display_test :: proc(t: ^testing.T) {
+	// MESSAGE iv_msg TYPE 'I' DISPLAY LIKE 'E'.
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `MESSAGE iv_msg TYPE 'I' DISPLAY LIKE 'E'.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) > 0, "Expected at least one declaration") do return
+
+	msg_stmt, ok := file.decls[0].derived_stmt.(^ast.Message_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Message_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	// Check msg_expr is an identifier
+	msg_ident, mok := msg_stmt.msg_expr.derived_expr.(^ast.Ident)
+	if testing.expect(t, mok, fmt.tprintf("Expected msg_expr to be Ident, got %T", msg_stmt.msg_expr.derived_expr)) {
+		testing.expect(t, msg_ident.name == "iv_msg", fmt.tprintf("Expected 'iv_msg', got '%s'", msg_ident.name))
+	}
+
+	// Check TYPE
+	testing.expect(t, msg_stmt.msg_type != nil, "Expected msg_type to be set")
+
+	// Check DISPLAY LIKE
+	testing.expect(t, msg_stmt.display_like != nil, "Expected display_like to be set")
+}
+
+@(test)
+message_variable_type_only_test :: proc(t: ^testing.T) {
+	// MESSAGE iv_msg TYPE 'I'.
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `MESSAGE iv_msg TYPE 'I'.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) > 0, "Expected at least one declaration") do return
+
+	msg_stmt, ok := file.decls[0].derived_stmt.(^ast.Message_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Message_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	// Check msg_expr is an identifier
+	msg_ident, mok := msg_stmt.msg_expr.derived_expr.(^ast.Ident)
+	if testing.expect(t, mok, fmt.tprintf("Expected msg_expr to be Ident, got %T", msg_stmt.msg_expr.derived_expr)) {
+		testing.expect(t, msg_ident.name == "iv_msg", fmt.tprintf("Expected 'iv_msg', got '%s'", msg_ident.name))
+	}
+
+	// Check TYPE
+	testing.expect(t, msg_stmt.msg_type != nil, "Expected msg_type to be set")
+
+	// Check DISPLAY LIKE is not set
+	testing.expect(t, msg_stmt.display_like == nil, "Expected display_like to be nil")
+
+	// Check no WITH args
+	testing.expect(t, len(msg_stmt.with_args) == 0, fmt.tprintf("Expected 0 WITH args, got %d", len(msg_stmt.with_args)))
+
+	// Check INTO is not set
+	testing.expect(t, msg_stmt.into_target == nil, "Expected into_target to be nil")
+}
+
+@(test)
+message_simple_class_only_test :: proc(t: ^testing.T) {
+	// MESSAGE e001(myclass).
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `MESSAGE e001(myclass).`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) > 0, "Expected at least one declaration") do return
+
+	msg_stmt, ok := file.decls[0].derived_stmt.(^ast.Message_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Message_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	// Check msg_expr is a call expression (message_id(class))
+	call_expr, cok := msg_stmt.msg_expr.derived_expr.(^ast.Call_Expr)
+	if testing.expect(t, cok, fmt.tprintf("Expected msg_expr to be Call_Expr, got %T", msg_stmt.msg_expr.derived_expr)) {
+		// Check the message ID
+		msg_ident, iok := call_expr.expr.derived_expr.(^ast.Ident)
+		if testing.expect(t, iok, "Expected call expr to be Ident") {
+			testing.expect(t, msg_ident.name == "e001", fmt.tprintf("Expected 'e001', got '%s'", msg_ident.name))
+		}
+		// Check the class argument
+		if testing.expect(t, len(call_expr.args) == 1, fmt.tprintf("Expected 1 argument, got %d", len(call_expr.args))) {
+			class_ident, ciok := call_expr.args[0].derived_expr.(^ast.Ident)
+			if testing.expect(t, ciok, "Expected class to be Ident") {
+				testing.expect(t, class_ident.name == "myclass", fmt.tprintf("Expected 'myclass', got '%s'", class_ident.name))
+			}
+		}
+	}
+}
+
