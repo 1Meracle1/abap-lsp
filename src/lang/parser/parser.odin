@@ -90,6 +90,8 @@ parse_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			return parse_case_stmt(p)
 		case "WHILE":
 			return parse_while_stmt(p)
+		case "CLEAR":
+			return parse_clear_stmt(p)
 		}
 	}
 
@@ -889,7 +891,10 @@ parse_paren_expr :: proc(p: ^Parser) -> ^ast.Expr {
 	inner := parse_expr(p)
 	rparen_tok := expect_token(p, .RParen)
 
-	paren_expr := ast.new(ast.Paren_Expr, lexer.TextRange{lparen_tok.range.start, rparen_tok.range.end})
+	paren_expr := ast.new(
+		ast.Paren_Expr,
+		lexer.TextRange{lparen_tok.range.start, rparen_tok.range.end},
+	)
 	paren_expr.expr = inner
 	paren_expr.derived_expr = paren_expr
 	return paren_expr
@@ -909,14 +914,18 @@ parse_string_template :: proc(p: ^Parser) -> ^ast.Expr {
 
 	template_expr.range.end = end_pos
 	template_expr.derived_expr = template_expr
-	
+
 	return template_expr
 }
 
 // parse_string_template_content parses the content inside a string template
 // It scans the source directly to handle literal text and embedded expressions
 // Returns the position after the closing |
-parse_string_template_content :: proc(p: ^Parser, template_expr: ^ast.String_Template_Expr, start_pos: int) -> int {
+parse_string_template_content :: proc(
+	p: ^Parser,
+	template_expr: ^ast.String_Template_Expr,
+	start_pos: int,
+) -> int {
 	pos := start_pos
 	literal_start := pos
 
@@ -937,7 +946,7 @@ parse_string_template_content :: proc(p: ^Parser, template_expr: ^ast.String_Tem
 			// Position the lexer so that the next scan starts AFTER the closing |
 			// The closing | is at position pos, so next scan should start at pos+1
 			end_pos := pos + 1
-			
+
 			// Set up the lexer for the next token scan
 			// p.l.pos needs to be where scan will record token start
 			// p.l.read_pos needs to point to where we'll read the next char
@@ -951,15 +960,15 @@ parse_string_template_content :: proc(p: ^Parser, template_expr: ^ast.String_Tem
 			} else {
 				p.l.ch = -1
 			}
-			
-			// Update the current token to represent the closing | 
+
+			// Update the current token to represent the closing |
 			// and then get the next token
 			p.prev_tok = p.curr_tok
 			p.curr_tok = lexer.scan(&p.l)
 			if p.curr_tok.kind != .EOF {
 				consume_comments(p)
 			}
-			
+
 			return end_pos
 		} else if ch == '{' {
 			// Embedded expression - save any pending literal first
@@ -975,7 +984,7 @@ parse_string_template_content :: proc(p: ^Parser, template_expr: ^ast.String_Tem
 			// Move past the { and sync lexer
 			expr_start := pos
 			after_brace := pos + 1
-			
+
 			// Position lexer after the {
 			p.l.pos = after_brace
 			p.l.read_pos = after_brace
@@ -985,14 +994,14 @@ parse_string_template_content :: proc(p: ^Parser, template_expr: ^ast.String_Tem
 			} else {
 				p.l.ch = -1
 			}
-			
-			// Get the first token after { 
+
+			// Get the first token after {
 			p.prev_tok = p.curr_tok
 			p.curr_tok = lexer.scan(&p.l)
 			if p.curr_tok.kind != .EOF {
 				consume_comments(p)
 			}
-			
+
 			embedded_expr := parse_expr(p)
 
 			// The expression should end at }
@@ -1005,7 +1014,11 @@ parse_string_template_content :: proc(p: ^Parser, template_expr: ^ast.String_Tem
 				// the string template content again starting from pos
 			} else {
 				// Error - missing closing brace
-				error(p, p.curr_tok.range, "expected '}' after embedded expression in string template")
+				error(
+					p,
+					p.curr_tok.range,
+					"expected '}' after embedded expression in string template",
+				)
 				// Try to recover by finding } or |
 				pos = p.curr_tok.range.end
 				for pos < len(p.file.src) && p.file.src[pos] != '}' && p.file.src[pos] != '|' {
@@ -2485,4 +2498,34 @@ parse_while_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	period_tok := expect_token(p, .Period)
 	while_stmt.range.end = period_tok.range.end
 	return while_stmt
+}
+
+parse_clear_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
+	clear_tok := advance_token(p)
+	exprs := make([dynamic]^ast.Expr)
+	if allow_token(p, .Colon) {
+		for p.curr_tok.kind != .EOF {
+			expr := parse_expr(p)
+			if expr != nil {
+				append(&exprs, expr)
+			} else {
+				break
+			}
+			if p.curr_tok.kind == .Period {
+				break
+			}
+			if allow_token(p, .Comma) {
+				continue
+			}
+			error(p, p.curr_tok.range, "expected ','")
+			break
+		}
+	} else {
+		expr := parse_expr(p)
+		append(&exprs, expr)
+	}
+	end_tok := expect_token(p, .Period)
+	clear_stmt := ast.new(ast.Clear_Stmt, clear_tok, end_tok)
+	clear_stmt.exprs = exprs
+	return clear_stmt
 }

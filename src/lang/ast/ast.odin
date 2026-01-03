@@ -121,10 +121,10 @@ Named_Arg :: struct {
 
 // String template part - either a literal string or an embedded expression
 String_Template_Part :: struct {
-	is_expr:  bool, // true if this is an embedded expression, false if literal
-	literal:  string, // literal text (if !is_expr)
-	expr:     ^Expr, // embedded expression (if is_expr)
-	range:    lexer.TextRange,
+	is_expr: bool, // true if this is an embedded expression, false if literal
+	literal: string, // literal text (if !is_expr)
+	expr:    ^Expr, // embedded expression (if is_expr)
+	range:   lexer.TextRange,
 }
 
 // String template expression (e.g., |Hello { name }!|)
@@ -230,6 +230,11 @@ While_Stmt :: struct {
 	using node: Stmt,
 	cond:       ^Expr,
 	body:       [dynamic]^Stmt,
+}
+
+Clear_Stmt :: struct {
+	using node: Stmt,
+	exprs:      [dynamic]^Expr,
 }
 
 // Declarations
@@ -464,6 +469,7 @@ Any_Node :: union {
 	^Set_Stmt,
 	^Case_Stmt,
 	^While_Stmt,
+	^Clear_Stmt,
 	// Declarations
 	^Bad_Decl,
 	^Data_Inline_Decl,
@@ -523,6 +529,7 @@ Any_Stmt :: union {
 	^Set_Stmt,
 	^Case_Stmt,
 	^While_Stmt,
+	^Clear_Stmt,
 	//
 	^Bad_Decl,
 	^Data_Inline_Decl,

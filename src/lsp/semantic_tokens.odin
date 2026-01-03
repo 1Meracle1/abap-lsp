@@ -255,6 +255,11 @@ collect_tokens_from_stmt :: proc(
 			collect_tokens_from_stmt(tokens, body_stmt, snap)
 		}
 
+	case ^ast.Clear_Stmt:
+		for expr in s.exprs {
+			collect_tokens_from_expr(tokens, expr, snap, nil)
+		}
+
 	case ^ast.Block_Stmt:
 		for block_stmt in s.stmts {
 			collect_tokens_from_stmt(tokens, block_stmt, snap)

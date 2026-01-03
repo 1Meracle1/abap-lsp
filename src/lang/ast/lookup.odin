@@ -304,6 +304,13 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 			}
 		}
 
+	case ^Clear_Stmt:
+		for expr in n.exprs {
+			if res := find_node_at_offset(&expr.expr_base, offset); res != nil {
+				return res
+			}
+		}
+
 	case ^Form_Decl:
 		if n.ident != nil {
 			if res := find_node_at_offset(&n.ident.expr_base, offset); res != nil {
