@@ -282,7 +282,39 @@ resolve_type_expr :: proc(table: ^SymbolTable, expr: ^ast.Expr) -> ^Type {
 			// String concatenation results in a string
 			return make_type(table, .String)
 		}
+		// Check for arithmetic operations
+		if e.op.kind == .Plus || e.op.kind == .Minus || e.op.kind == .Star || e.op.kind == .Slash {
+			// Arithmetic operations - try to infer from operands
+			left_type := resolve_type_expr(table, e.left)
+			right_type := resolve_type_expr(table, e.right)
+
+			// If both are numeric types, result is numeric
+			if is_numeric_type(left_type) && is_numeric_type(right_type) {
+				// Division always returns float
+				if e.op.kind == .Slash {
+					return make_type(table, .Float)
+				}
+				// If either is float, result is float
+				if left_type.kind == .Float || right_type.kind == .Float {
+					return make_type(table, .Float)
+				}
+				return make_type(table, .Integer)
+			}
+			// Default to numeric type for arithmetic
+			return make_type(table, .Integer)
+		}
+		// Check for MOD/DIV keyword operators
+		if e.op.kind == .Ident {
+			op_upper := strings.to_upper(e.op.lit, context.temp_allocator)
+			if op_upper == "MOD" || op_upper == "DIV" {
+				return make_type(table, .Integer)
+			}
+		}
 		return make_unknown_type(table)
+
+	case ^ast.Paren_Expr:
+		// Parenthesized expression has the type of its inner expression
+		return resolve_type_expr(table, e.expr)
 	}
 
 	return make_unknown_type(table)
@@ -646,4 +678,16 @@ resolve_case_stmt :: proc(table: ^SymbolTable, case_stmt: ^ast.Case_Stmt) {
 
 resolve_while_stmt :: proc(table: ^SymbolTable, while_stmt: ^ast.While_Stmt) {
 	resolve_stmt_list(table, while_stmt.body[:])
+}
+
+// is_numeric_type checks if a type is a numeric type (integer, float, numeric)
+is_numeric_type :: proc(t: ^Type) -> bool {
+	if t == nil {
+		return false
+	}
+	#partial switch t.kind {
+	case .Integer, .Float, .Numeric:
+		return true
+	}
+	return false
 }

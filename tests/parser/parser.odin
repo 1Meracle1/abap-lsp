@@ -212,7 +212,7 @@ new_expr_inferred :: proc(args: ..ast.Any_Expr) -> ^ast.New_Expr {
 	return new_expr("", true, ..args)
 }
 
-// Builder for binary expressions (for logical/comparison expressions)
+// Builder for binary expressions (for logical/comparison/arithmetic expressions)
 binary_expr :: proc(left: ast.Any_Expr, op_lit: string, right: ast.Any_Expr) -> ^ast.Binary_Expr {
 	node := ast.new(ast.Binary_Expr, {})
 	#partial switch l in left {
@@ -224,8 +224,27 @@ binary_expr :: proc(left: ast.Any_Expr, op_lit: string, right: ast.Any_Expr) -> 
 		node.left = &l.node
 	case ^ast.Predicate_Expr:
 		node.left = &l.node
+	case ^ast.Unary_Expr:
+		node.left = &l.node
+	case ^ast.Paren_Expr:
+		node.left = &l.node
 	}
 	node.op.lit = op_lit
+	// Set the op kind based on the literal
+	switch op_lit {
+	case "+":
+		node.op.kind = .Plus
+	case "-":
+		node.op.kind = .Minus
+	case "*":
+		node.op.kind = .Star
+	case "/":
+		node.op.kind = .Slash
+	case "&":
+		node.op.kind = .Ampersand
+	case:
+		node.op.kind = .Ident // For keyword operators like MOD, DIV, AND, OR
+	}
 	#partial switch r in right {
 	case ^ast.Ident:
 		node.right = &r.node
@@ -235,6 +254,57 @@ binary_expr :: proc(left: ast.Any_Expr, op_lit: string, right: ast.Any_Expr) -> 
 		node.right = &r.node
 	case ^ast.Predicate_Expr:
 		node.right = &r.node
+	case ^ast.Unary_Expr:
+		node.right = &r.node
+	case ^ast.Paren_Expr:
+		node.right = &r.node
+	}
+	node.derived_expr = node
+	return node
+}
+
+// Builder for unary expressions
+unary_expr :: proc(op_lit: string, expr: ast.Any_Expr) -> ^ast.Unary_Expr {
+	node := ast.new(ast.Unary_Expr, {})
+	node.op.lit = op_lit
+	switch op_lit {
+	case "+":
+		node.op.kind = .Plus
+	case "-":
+		node.op.kind = .Minus
+	case:
+		node.op.kind = .Ident
+	}
+	#partial switch e in expr {
+	case ^ast.Ident:
+		node.expr = &e.node
+	case ^ast.Basic_Lit:
+		node.expr = &e.node
+	case ^ast.Binary_Expr:
+		node.expr = &e.node
+	case ^ast.Unary_Expr:
+		node.expr = &e.node
+	case ^ast.Paren_Expr:
+		node.expr = &e.node
+	}
+	node.derived_expr = node
+	return node
+}
+
+// Builder for parenthesized expressions
+paren_expr :: proc(inner: ast.Any_Expr) -> ^ast.Paren_Expr {
+	node := ast.new(ast.Paren_Expr, {})
+	#partial switch e in inner {
+	case ^ast.Ident:
+		node.expr = &e.node
+	case ^ast.Basic_Lit:
+		node.expr = &e.node
+	case ^ast.Binary_Expr:
+		node.expr = &e.node
+	case ^ast.Unary_Expr:
+		node.expr = &e.node
+	case ^ast.Paren_Expr:
+		node.expr = &e.node
 	}
 	node.derived_expr = node
 	return node
@@ -605,6 +675,11 @@ check_expr :: proc(
 	case ^ast.Unary_Expr:
 		ac, ok := actual_derived.(^ast.Unary_Expr)
 		if !testing.expect(t, ok, fmt.tprintf("Expected Unary_Expr, got %T", actual_derived), loc = loc) do return
+		check_expr(t, ex.expr.derived_expr, ac.expr, loc = loc)
+
+	case ^ast.Paren_Expr:
+		ac, ok := actual_derived.(^ast.Paren_Expr)
+		if !testing.expect(t, ok, fmt.tprintf("Expected Paren_Expr, got %T", actual_derived), loc = loc) do return
 		check_expr(t, ex.expr.derived_expr, ac.expr, loc = loc)
 
 	case:
@@ -4713,6 +4788,406 @@ string_template_only_embedded_expr_test :: proc(t: ^testing.T) {
 
 		if len(template.parts) > 0 {
 			testing.expect(t, template.parts[0].is_expr, "Part should be expression")
+		}
+	}
+}
+
+// --- Arithmetic Expression Tests ---
+
+@(test)
+arithmetic_simple_addition_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `DATA(result) = a + b.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if len(file.decls) > 0 {
+		decl, ok := file.decls[0].derived_stmt.(^ast.Data_Inline_Decl)
+		if !testing.expect(t, ok, "Expected Data_Inline_Decl") do return
+
+		binary, bok := decl.value.derived_expr.(^ast.Binary_Expr)
+		if !testing.expect(t, bok, fmt.tprintf("Expected Binary_Expr, got %T", decl.value.derived_expr)) do return
+
+		testing.expect(t, binary.op.kind == .Plus, fmt.tprintf("Expected Plus operator, got %v", binary.op.kind))
+
+		left_ident, lok := binary.left.derived_expr.(^ast.Ident)
+		if testing.expect(t, lok, "Left should be Ident") {
+			testing.expect(t, left_ident.name == "a", fmt.tprintf("Expected 'a', got '%s'", left_ident.name))
+		}
+
+		right_ident, rok := binary.right.derived_expr.(^ast.Ident)
+		if testing.expect(t, rok, "Right should be Ident") {
+			testing.expect(t, right_ident.name == "b", fmt.tprintf("Expected 'b', got '%s'", right_ident.name))
+		}
+	}
+}
+
+@(test)
+arithmetic_simple_subtraction_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `DATA(result) = x - y.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if len(file.decls) > 0 {
+		decl, ok := file.decls[0].derived_stmt.(^ast.Data_Inline_Decl)
+		if !testing.expect(t, ok, "Expected Data_Inline_Decl") do return
+
+		binary, bok := decl.value.derived_expr.(^ast.Binary_Expr)
+		if !testing.expect(t, bok, fmt.tprintf("Expected Binary_Expr, got %T", decl.value.derived_expr)) do return
+
+		testing.expect(t, binary.op.kind == .Minus, fmt.tprintf("Expected Minus operator, got %v", binary.op.kind))
+	}
+}
+
+@(test)
+arithmetic_multiplication_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `DATA(result) = a * b.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if len(file.decls) > 0 {
+		decl, ok := file.decls[0].derived_stmt.(^ast.Data_Inline_Decl)
+		if !testing.expect(t, ok, "Expected Data_Inline_Decl") do return
+
+		binary, bok := decl.value.derived_expr.(^ast.Binary_Expr)
+		if !testing.expect(t, bok, fmt.tprintf("Expected Binary_Expr, got %T", decl.value.derived_expr)) do return
+
+		testing.expect(t, binary.op.kind == .Star, fmt.tprintf("Expected Star operator, got %v", binary.op.kind))
+	}
+}
+
+@(test)
+arithmetic_division_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `DATA(result) = a / b.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if len(file.decls) > 0 {
+		decl, ok := file.decls[0].derived_stmt.(^ast.Data_Inline_Decl)
+		if !testing.expect(t, ok, "Expected Data_Inline_Decl") do return
+
+		binary, bok := decl.value.derived_expr.(^ast.Binary_Expr)
+		if !testing.expect(t, bok, fmt.tprintf("Expected Binary_Expr, got %T", decl.value.derived_expr)) do return
+
+		testing.expect(t, binary.op.kind == .Slash, fmt.tprintf("Expected Slash operator, got %v", binary.op.kind))
+	}
+}
+
+@(test)
+arithmetic_mod_operator_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `DATA(result) = a MOD b.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if len(file.decls) > 0 {
+		decl, ok := file.decls[0].derived_stmt.(^ast.Data_Inline_Decl)
+		if !testing.expect(t, ok, "Expected Data_Inline_Decl") do return
+
+		binary, bok := decl.value.derived_expr.(^ast.Binary_Expr)
+		if !testing.expect(t, bok, fmt.tprintf("Expected Binary_Expr, got %T", decl.value.derived_expr)) do return
+
+		// MOD is an identifier token
+		testing.expect(t, binary.op.kind == .Ident, fmt.tprintf("Expected Ident operator (MOD), got %v", binary.op.kind))
+	}
+}
+
+@(test)
+arithmetic_div_operator_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `DATA(result) = a DIV b.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if len(file.decls) > 0 {
+		decl, ok := file.decls[0].derived_stmt.(^ast.Data_Inline_Decl)
+		if !testing.expect(t, ok, "Expected Data_Inline_Decl") do return
+
+		binary, bok := decl.value.derived_expr.(^ast.Binary_Expr)
+		if !testing.expect(t, bok, fmt.tprintf("Expected Binary_Expr, got %T", decl.value.derived_expr)) do return
+
+		// DIV is an identifier token
+		testing.expect(t, binary.op.kind == .Ident, fmt.tprintf("Expected Ident operator (DIV), got %v", binary.op.kind))
+	}
+}
+
+@(test)
+arithmetic_operator_precedence_test :: proc(t: ^testing.T) {
+	// a + b * c should parse as a + (b * c) due to precedence
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `DATA(result) = a + b * c.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if len(file.decls) > 0 {
+		decl, ok := file.decls[0].derived_stmt.(^ast.Data_Inline_Decl)
+		if !testing.expect(t, ok, "Expected Data_Inline_Decl") do return
+
+		// Top level should be addition (lower precedence)
+		binary, bok := decl.value.derived_expr.(^ast.Binary_Expr)
+		if !testing.expect(t, bok, fmt.tprintf("Expected Binary_Expr, got %T", decl.value.derived_expr)) do return
+
+		testing.expect(t, binary.op.kind == .Plus, fmt.tprintf("Top level should be Plus, got %v", binary.op.kind))
+
+		// Left should be 'a'
+		left_ident, lok := binary.left.derived_expr.(^ast.Ident)
+		if testing.expect(t, lok, "Left should be Ident") {
+			testing.expect(t, left_ident.name == "a", fmt.tprintf("Expected 'a', got '%s'", left_ident.name))
+		}
+
+		// Right should be b * c (multiplication)
+		right_binary, rbok := binary.right.derived_expr.(^ast.Binary_Expr)
+		if testing.expect(t, rbok, "Right should be Binary_Expr (multiplication)") {
+			testing.expect(t, right_binary.op.kind == .Star, fmt.tprintf("Right Binary should be Star, got %v", right_binary.op.kind))
+		}
+	}
+}
+
+@(test)
+arithmetic_left_associativity_test :: proc(t: ^testing.T) {
+	// a - b - c should parse as (a - b) - c (left to right)
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `DATA(result) = a - b - c.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if len(file.decls) > 0 {
+		decl, ok := file.decls[0].derived_stmt.(^ast.Data_Inline_Decl)
+		if !testing.expect(t, ok, "Expected Data_Inline_Decl") do return
+
+		// Top level should be subtraction
+		binary, bok := decl.value.derived_expr.(^ast.Binary_Expr)
+		if !testing.expect(t, bok, fmt.tprintf("Expected Binary_Expr, got %T", decl.value.derived_expr)) do return
+
+		testing.expect(t, binary.op.kind == .Minus, fmt.tprintf("Top level should be Minus, got %v", binary.op.kind))
+
+		// Right should be 'c'
+		right_ident, rok := binary.right.derived_expr.(^ast.Ident)
+		if testing.expect(t, rok, "Right should be Ident") {
+			testing.expect(t, right_ident.name == "c", fmt.tprintf("Expected 'c', got '%s'", right_ident.name))
+		}
+
+		// Left should be (a - b) - another binary expr
+		left_binary, lbok := binary.left.derived_expr.(^ast.Binary_Expr)
+		if testing.expect(t, lbok, "Left should be Binary_Expr") {
+			testing.expect(t, left_binary.op.kind == .Minus, fmt.tprintf("Left Binary should be Minus, got %v", left_binary.op.kind))
+		}
+	}
+}
+
+@(test)
+arithmetic_with_numbers_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `DATA(result) = 10 + 20.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if len(file.decls) > 0 {
+		decl, ok := file.decls[0].derived_stmt.(^ast.Data_Inline_Decl)
+		if !testing.expect(t, ok, "Expected Data_Inline_Decl") do return
+
+		binary, bok := decl.value.derived_expr.(^ast.Binary_Expr)
+		if !testing.expect(t, bok, fmt.tprintf("Expected Binary_Expr, got %T", decl.value.derived_expr)) do return
+
+		left_lit, lok := binary.left.derived_expr.(^ast.Basic_Lit)
+		if testing.expect(t, lok, "Left should be Basic_Lit") {
+			testing.expect(t, left_lit.tok.lit == "10", fmt.tprintf("Expected '10', got '%s'", left_lit.tok.lit))
+		}
+
+		right_lit, rlok := binary.right.derived_expr.(^ast.Basic_Lit)
+		if testing.expect(t, rlok, "Right should be Basic_Lit") {
+			testing.expect(t, right_lit.tok.lit == "20", fmt.tprintf("Expected '20', got '%s'", right_lit.tok.lit))
+		}
+	}
+}
+
+@(test)
+arithmetic_unary_negation_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `DATA(result) = -a.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if len(file.decls) > 0 {
+		decl, ok := file.decls[0].derived_stmt.(^ast.Data_Inline_Decl)
+		if !testing.expect(t, ok, "Expected Data_Inline_Decl") do return
+
+		unary, uok := decl.value.derived_expr.(^ast.Unary_Expr)
+		if !testing.expect(t, uok, fmt.tprintf("Expected Unary_Expr, got %T", decl.value.derived_expr)) do return
+
+		testing.expect(t, unary.op.kind == .Minus, fmt.tprintf("Expected Minus operator, got %v", unary.op.kind))
+
+		inner_ident, iok := unary.expr.derived_expr.(^ast.Ident)
+		if testing.expect(t, iok, "Inner should be Ident") {
+			testing.expect(t, inner_ident.name == "a", fmt.tprintf("Expected 'a', got '%s'", inner_ident.name))
+		}
+	}
+}
+
+@(test)
+arithmetic_parenthesized_expr_test :: proc(t: ^testing.T) {
+	// (a + b) * c - parentheses should change precedence
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `DATA(result) = ( a + b ) * c.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if len(file.decls) > 0 {
+		decl, ok := file.decls[0].derived_stmt.(^ast.Data_Inline_Decl)
+		if !testing.expect(t, ok, "Expected Data_Inline_Decl") do return
+
+		// Top level should be multiplication
+		binary, bok := decl.value.derived_expr.(^ast.Binary_Expr)
+		if !testing.expect(t, bok, fmt.tprintf("Expected Binary_Expr, got %T", decl.value.derived_expr)) do return
+
+		testing.expect(t, binary.op.kind == .Star, fmt.tprintf("Top level should be Star, got %v", binary.op.kind))
+
+		// Left should be a parenthesized expression
+		paren, pok := binary.left.derived_expr.(^ast.Paren_Expr)
+		if testing.expect(t, pok, "Left should be Paren_Expr") {
+			// Inside paren should be addition
+			inner_binary, ibok := paren.expr.derived_expr.(^ast.Binary_Expr)
+			if testing.expect(t, ibok, "Inner should be Binary_Expr") {
+				testing.expect(t, inner_binary.op.kind == .Plus, fmt.tprintf("Inner should be Plus, got %v", inner_binary.op.kind))
+			}
+		}
+
+		// Right should be 'c'
+		right_ident, rok := binary.right.derived_expr.(^ast.Ident)
+		if testing.expect(t, rok, "Right should be Ident") {
+			testing.expect(t, right_ident.name == "c", fmt.tprintf("Expected 'c', got '%s'", right_ident.name))
+		}
+	}
+}
+
+@(test)
+arithmetic_complex_expression_test :: proc(t: ^testing.T) {
+	// a * b + c / d - e should parse correctly with precedence
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `DATA(result) = a * b + c / d - e.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if len(file.decls) > 0 {
+		decl, ok := file.decls[0].derived_stmt.(^ast.Data_Inline_Decl)
+		if !testing.expect(t, ok, "Expected Data_Inline_Decl") do return
+
+		// Expression should parse as ((a * b) + (c / d)) - e
+		binary, bok := decl.value.derived_expr.(^ast.Binary_Expr)
+		testing.expect(t, bok, fmt.tprintf("Expected Binary_Expr, got %T", decl.value.derived_expr))
+		// Just verify it parses without error - the exact structure is complex
+	}
+}
+
+@(test)
+arithmetic_in_assignment_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `result = a + b * c.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if len(file.decls) > 0 {
+		assign, ok := file.decls[0].derived_stmt.(^ast.Assign_Stmt)
+		if !testing.expect(t, ok, fmt.tprintf("Expected Assign_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+		// RHS should be a binary expression
+		if len(assign.rhs) > 0 {
+			binary, bok := assign.rhs[0].derived_expr.(^ast.Binary_Expr)
+			testing.expect(t, bok, fmt.tprintf("RHS should be Binary_Expr, got %T", assign.rhs[0].derived_expr))
 		}
 	}
 }

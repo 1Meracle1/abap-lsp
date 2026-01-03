@@ -139,6 +139,14 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 		// Build a preview of the string template
 		hover_text = "(string template) |...|"
 
+	case ^ast.Binary_Expr:
+		log_trace(srv, "found Binary expression")
+		hover_text = format_binary_expr_hover(n)
+
+	case ^ast.Paren_Expr:
+		log_trace(srv, "found Parenthesized expression")
+		hover_text = "(parenthesized expression)"
+
 	case:
 	// For other nodes, maybe just show the type of node?
 	// or nothing
@@ -521,4 +529,54 @@ get_call_method_name :: proc(call: ^ast.Call_Expr) -> string {
 		}
 	}
 	return ""
+}
+
+// format_binary_expr_hover formats hover text for a binary expression
+format_binary_expr_hover :: proc(expr: ^ast.Binary_Expr) -> string {
+	if expr == nil {
+		return ""
+	}
+
+	op_str := expr.op.lit
+	if op_str == "" {
+		// Use kind for operators that don't have literal text
+		#partial switch expr.op.kind {
+		case .Plus:
+			op_str = "+"
+		case .Minus:
+			op_str = "-"
+		case .Star:
+			op_str = "*"
+		case .Slash:
+			op_str = "/"
+		case .Ampersand:
+			op_str = "&"
+		case:
+			op_str = "?"
+		}
+	}
+
+	// Determine the operation type
+	op_type := ""
+	#partial switch expr.op.kind {
+	case .Plus, .Minus:
+		op_type = "arithmetic"
+	case .Star, .Slash:
+		op_type = "arithmetic"
+	case .Ampersand:
+		op_type = "string concatenation"
+	case .Ident:
+		upper_op := strings.to_upper(op_str, context.temp_allocator)
+		if upper_op == "MOD" || upper_op == "DIV" {
+			op_type = "arithmetic"
+		} else if upper_op == "AND" || upper_op == "OR" {
+			op_type = "logical"
+		} else {
+			op_type = "comparison"
+		}
+	case:
+		op_type = "binary"
+	}
+
+	return fmt.tprintf("(%s operation) %s", op_type, op_str)
 }

@@ -44,6 +44,16 @@ scan :: proc(l: ^Lexer) -> Token {
 	lit: string
 
 	switch ch := l.ch; true {
+	case ch == '/':
+		// Check if this is a namespace identifier (/NAMESPACE/IDENTIFIER) or division operator
+		// Peek ahead to see if followed by a letter (namespace) or not (division)
+		if is_namespace_start(l) {
+			lit = scan_identifier(l)
+			kind = .Ident
+		} else {
+			advance_rune(l)
+			kind = .Slash
+		}
 	case is_letter(ch):
 		lit = scan_identifier(l)
 		kind = .Ident
@@ -73,8 +83,8 @@ scan :: proc(l: ^Lexer) -> Token {
 			kind = .Plus
 		case '*':
 			kind = .Star
-		case '/':
-			kind = .Slash
+		// Note: '/' is handled above in the main switch to properly distinguish
+		// between division operator and namespace identifiers
 		case '=':
 			if l.ch == '>' {
 				advance_rune(l)
@@ -235,6 +245,23 @@ is_letter :: proc(r: rune) -> bool {
 		}
 	}
 	return unicode.is_letter(r)
+}
+
+// is_namespace_start checks if / at current position starts a namespace identifier
+// Namespace identifiers look like /NAMESPACE/IDENTIFIER where / is followed by a letter
+is_namespace_start :: proc(l: ^Lexer) -> bool {
+	if l.ch != '/' {
+		return false
+	}
+	// Peek at the next character without advancing
+	if l.read_pos < len(l.src) {
+		next_ch := rune(l.src[l.read_pos])
+		// If next char is a letter (not / and not space), this is a namespace identifier
+		if next_ch >= 'A' && next_ch <= 'Z' || next_ch >= 'a' && next_ch <= 'z' {
+			return true
+		}
+	}
+	return false
 }
 
 is_digit :: proc(r: rune) -> bool {

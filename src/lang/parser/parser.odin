@@ -552,18 +552,93 @@ skip_to_new_line :: proc(p: ^Parser) -> lexer.Token {
 }
 
 parse_expr :: proc(p: ^Parser) -> ^ast.Expr {
-	return parse_binary_expr(p)
+	return parse_concat_expr(p)
 }
 
-parse_binary_expr :: proc(p: ^Parser) -> ^ast.Expr {
+// parse_concat_expr handles string concatenation with & (lowest precedence in expressions)
+parse_concat_expr :: proc(p: ^Parser) -> ^ast.Expr {
 	start_tok := p.curr_tok
-	expr := parse_unary_expr(p)
+	expr := parse_additive_expr(p)
 	if expr == nil {
 		return ast.new(ast.Bad_Expr, start_tok, p.curr_tok)
 	}
 
 	// Handle string concatenation with &
 	for p.curr_tok.kind == .Ampersand {
+		op := advance_token(p)
+		right := parse_additive_expr(p)
+		if right == nil {
+			break
+		}
+
+		binary := ast.new(ast.Binary_Expr, lexer.TextRange{expr.range.start, right.range.end})
+		binary.left = expr
+		binary.op = op
+		binary.right = right
+		binary.derived_expr = binary
+		expr = binary
+	}
+
+	return expr
+}
+
+// parse_additive_expr handles + and - operators
+parse_additive_expr :: proc(p: ^Parser) -> ^ast.Expr {
+	expr := parse_multiplicative_expr(p)
+	if expr == nil {
+		return nil
+	}
+
+	for {
+		// Check for + or - with space around them (to distinguish from selectors)
+		is_additive := false
+		if p.curr_tok.kind == .Plus {
+			is_additive = true
+		} else if p.curr_tok.kind == .Minus && lexer.have_space_between(p.prev_tok, p.curr_tok) {
+			// Minus with leading space is additive, without space it could be a selector
+			is_additive = true
+		}
+
+		if !is_additive {
+			break
+		}
+
+		op := advance_token(p)
+		right := parse_multiplicative_expr(p)
+		if right == nil {
+			break
+		}
+
+		binary := ast.new(ast.Binary_Expr, lexer.TextRange{expr.range.start, right.range.end})
+		binary.left = expr
+		binary.op = op
+		binary.right = right
+		binary.derived_expr = binary
+		expr = binary
+	}
+
+	return expr
+}
+
+// parse_multiplicative_expr handles *, /, MOD, DIV operators
+parse_multiplicative_expr :: proc(p: ^Parser) -> ^ast.Expr {
+	expr := parse_unary_expr(p)
+	if expr == nil {
+		return nil
+	}
+
+	for {
+		is_mult := false
+		if p.curr_tok.kind == .Star || p.curr_tok.kind == .Slash {
+			is_mult = true
+		} else if check_keyword(p, "MOD") || check_keyword(p, "DIV") {
+			is_mult = true
+		}
+
+		if !is_mult {
+			break
+		}
+
 		op := advance_token(p)
 		right := parse_unary_expr(p)
 		if right == nil {
@@ -787,6 +862,13 @@ parse_operand :: proc(p: ^Parser) -> ^ast.Expr {
 		return basic_lit
 	case .Pipe:
 		return parse_string_template(p)
+	case .LParen:
+		// Parenthesized expression for grouping (e.g., (a + b) * c)
+		// Only parse as paren expr if there's a leading space (not a call)
+		if lexer.have_space_between(p.prev_tok, p.curr_tok) {
+			return parse_paren_expr(p)
+		}
+		return nil
 	case .Hash:
 		// Standalone # is not valid, but consume it to avoid infinite loops
 		hash_tok := advance_token(p)
@@ -799,6 +881,18 @@ parse_operand :: proc(p: ^Parser) -> ^ast.Expr {
 		return bad_expr
 	}
 	return nil
+}
+
+// parse_paren_expr parses a parenthesized expression ( expr )
+parse_paren_expr :: proc(p: ^Parser) -> ^ast.Expr {
+	lparen_tok := expect_token(p, .LParen)
+	inner := parse_expr(p)
+	rparen_tok := expect_token(p, .RParen)
+
+	paren_expr := ast.new(ast.Paren_Expr, lexer.TextRange{lparen_tok.range.start, rparen_tok.range.end})
+	paren_expr.expr = inner
+	paren_expr.derived_expr = paren_expr
+	return paren_expr
 }
 
 // parse_string_template parses a string template expression |...|
