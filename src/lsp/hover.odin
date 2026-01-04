@@ -74,6 +74,8 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 			case .Constant:
 				type_str := symbols.format_type(sym.type_info)
 				hover_text = fmt.tprintf("(constant) %s: %s", sym.name, type_str)
+			case .Control:
+				hover_text = fmt.tprintf("(control) %s", sym.name)
 			case:
 				type_str := symbols.format_type(sym.type_info)
 				hover_text = fmt.tprintf("%s: %s", sym.name, type_str)
@@ -224,6 +226,15 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 		if n.ident != nil {
 			hover_text = fmt.tprintf("(field-symbol declaration) %s", n.ident.name)
 		}
+
+	case ^ast.Controls_Decl:
+		if n.ident != nil {
+			kind_str := n.kind == .Tableview ? "TABLEVIEW" : "TABSTRIP"
+			hover_text = fmt.tprintf("(control declaration) %s TYPE %s", n.ident.name, kind_str)
+		}
+
+	case ^ast.Controls_Chain_Decl:
+		hover_text = "(chained CONTROLS declaration)"
 
 	case ^ast.Loop_Stmt:
 		switch n.kind {

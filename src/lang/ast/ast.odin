@@ -757,6 +757,29 @@ Field_Symbol_Decl :: struct {
 	typed:      ^Expr, // The type expression
 }
 
+// CONTROLS declaration control types
+Control_Kind :: enum {
+	Tableview, // TYPE TABLEVIEW USING SCREEN dynnr
+	Tabstrip,  // TYPE TABSTRIP
+}
+
+// CONTROLS declaration
+// Syntax: CONTROLS contrl TYPE TABLEVIEW USING SCREEN dynnr.
+// Syntax: CONTROLS contrl TYPE TABSTRIP.
+Controls_Decl :: struct {
+	using node:  Decl,
+	ident:       ^Ident,      // Control name
+	kind:        Control_Kind, // TABLEVIEW or TABSTRIP
+	screen_dynnr: ^Expr,       // Screen number for TABLEVIEW (nil for TABSTRIP)
+}
+
+// CONTROLS chain declaration
+// Syntax: CONTROLS: name1 TYPE TABSTRIP, name2 TYPE TABLEVIEW USING SCREEN 100.
+Controls_Chain_Decl :: struct {
+	using node: Decl,
+	decls:      [dynamic]^Controls_Decl,
+}
+
 Event_Kind :: enum {
 	StartOfSelection,
 	EndOfSelection,
@@ -904,6 +927,9 @@ Any_Node :: union {
 	^Module_Decl,
 	// Field symbols
 	^Field_Symbol_Decl,
+	// Controls
+	^Controls_Decl,
+	^Controls_Chain_Decl,
 }
 
 Any_Expr :: union {
@@ -980,4 +1006,7 @@ Any_Stmt :: union {
 	^Module_Decl,
 	// Field symbols
 	^Field_Symbol_Decl,
+	// Controls
+	^Controls_Decl,
+	^Controls_Chain_Decl,
 }

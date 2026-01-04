@@ -48,6 +48,10 @@ resolve_file :: proc(file: ^ast.File) -> ^SymbolTable {
 			resolve_module_decl(table, d)
 		case ^ast.Field_Symbol_Decl:
 			resolve_field_symbol_decl(table, d, is_global = true)
+		case ^ast.Controls_Decl:
+			resolve_controls_decl(table, d, is_global = true)
+		case ^ast.Controls_Chain_Decl:
+			resolve_controls_chain_decl(table, d, is_global = true)
 		}
 	}
 
@@ -993,4 +997,38 @@ resolve_select_stmt :: proc(table: ^SymbolTable, select_stmt: ^ast.Select_Stmt) 
 	
 	// Resolve statements in the SELECT loop body (for non-SINGLE selects)
 	resolve_stmt_list(table, select_stmt.body[:])
+}
+
+// resolve_controls_decl resolves a CONTROLS declaration
+resolve_controls_decl :: proc(
+	table: ^SymbolTable,
+	controls_decl: ^ast.Controls_Decl,
+	is_global: bool = true,
+) {
+	if controls_decl.ident == nil {
+		return
+	}
+	name := controls_decl.ident.name
+
+	// Controls don't have a traditional type, but we can create a named type
+	type_info := make_unknown_type(table)
+
+	sym := Symbol {
+		name      = name,
+		kind      = .Control,
+		range     = controls_decl.ident.range,
+		type_info = type_info,
+	}
+	add_symbol(table, sym, allow_shadowing = is_global)
+}
+
+// resolve_controls_chain_decl resolves a chained CONTROLS declaration
+resolve_controls_chain_decl :: proc(
+	table: ^SymbolTable,
+	chain: ^ast.Controls_Chain_Decl,
+	is_global: bool = true,
+) {
+	for decl in chain.decls {
+		resolve_controls_decl(table, decl, is_global)
+	}
 }

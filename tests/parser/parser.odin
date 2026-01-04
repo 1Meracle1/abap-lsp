@@ -10039,3 +10039,221 @@ constants_with_pragma_test :: proc(t: ^testing.T) {
 		fmt.tprintf("Expected at least 1 comment (pragma), got %d", len(file.comments)),
 	)
 }
+
+// ============================================================================
+// CONTROLS Declaration Tests
+// ============================================================================
+
+@(test)
+controls_tableview_test :: proc(t: ^testing.T) {
+	// CONTROLS contrl TYPE TABLEVIEW USING SCREEN dynnr.
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `CONTROLS tc_main TYPE TABLEVIEW USING SCREEN 100.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	controls_decl, ok := file.decls[0].derived_stmt.(^ast.Controls_Decl)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Controls_Decl, got %T", file.decls[0].derived_stmt)) do return
+
+	testing.expect(t, controls_decl.ident != nil, "Expected ident to be set")
+	testing.expect(
+		t,
+		controls_decl.ident.name == "tc_main",
+		fmt.tprintf("Expected 'tc_main', got '%s'", controls_decl.ident.name),
+	)
+
+	testing.expect(
+		t,
+		controls_decl.kind == .Tableview,
+		fmt.tprintf("Expected Tableview, got %v", controls_decl.kind),
+	)
+
+	testing.expect(t, controls_decl.screen_dynnr != nil, "Expected screen_dynnr to be set")
+}
+
+@(test)
+controls_tabstrip_test :: proc(t: ^testing.T) {
+	// CONTROLS contrl TYPE TABSTRIP.
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `CONTROLS tab_main TYPE TABSTRIP.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	controls_decl, ok := file.decls[0].derived_stmt.(^ast.Controls_Decl)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Controls_Decl, got %T", file.decls[0].derived_stmt)) do return
+
+	testing.expect(t, controls_decl.ident != nil, "Expected ident to be set")
+	testing.expect(
+		t,
+		controls_decl.ident.name == "tab_main",
+		fmt.tprintf("Expected 'tab_main', got '%s'", controls_decl.ident.name),
+	)
+
+	testing.expect(
+		t,
+		controls_decl.kind == .Tabstrip,
+		fmt.tprintf("Expected Tabstrip, got %v", controls_decl.kind),
+	)
+
+	testing.expect(
+		t,
+		controls_decl.screen_dynnr == nil,
+		"Expected screen_dynnr to be nil for TABSTRIP",
+	)
+}
+
+@(test)
+controls_chain_test :: proc(t: ^testing.T) {
+	// CONTROLS: name1 TYPE TABSTRIP.
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `CONTROLS: sn_reset_ts TYPE TABSTRIP.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	chain_decl, ok := file.decls[0].derived_stmt.(^ast.Controls_Chain_Decl)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Controls_Chain_Decl, got %T", file.decls[0].derived_stmt)) do return
+
+	if !testing.expect(t, len(chain_decl.decls) == 1, fmt.tprintf("Expected 1 decl in chain, got %d", len(chain_decl.decls))) do return
+
+	controls_decl := chain_decl.decls[0]
+	testing.expect(t, controls_decl.ident != nil, "Expected ident to be set")
+	testing.expect(
+		t,
+		controls_decl.ident.name == "sn_reset_ts",
+		fmt.tprintf("Expected 'sn_reset_ts', got '%s'", controls_decl.ident.name),
+	)
+
+	testing.expect(
+		t,
+		controls_decl.kind == .Tabstrip,
+		fmt.tprintf("Expected Tabstrip, got %v", controls_decl.kind),
+	)
+}
+
+@(test)
+controls_chain_multiple_test :: proc(t: ^testing.T) {
+	// CONTROLS: ts1 TYPE TABSTRIP, tc1 TYPE TABLEVIEW USING SCREEN 200.
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `CONTROLS: ts1 TYPE TABSTRIP, tc1 TYPE TABLEVIEW USING SCREEN 200.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	chain_decl, ok := file.decls[0].derived_stmt.(^ast.Controls_Chain_Decl)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Controls_Chain_Decl, got %T", file.decls[0].derived_stmt)) do return
+
+	if !testing.expect(t, len(chain_decl.decls) == 2, fmt.tprintf("Expected 2 decls in chain, got %d", len(chain_decl.decls))) do return
+
+	// Check first decl (TABSTRIP)
+	decl1 := chain_decl.decls[0]
+	testing.expect(
+		t,
+		decl1.ident.name == "ts1",
+		fmt.tprintf("Expected 'ts1', got '%s'", decl1.ident.name),
+	)
+	testing.expect(
+		t,
+		decl1.kind == .Tabstrip,
+		fmt.tprintf("Expected Tabstrip for first decl, got %v", decl1.kind),
+	)
+
+	// Check second decl (TABLEVIEW)
+	decl2 := chain_decl.decls[1]
+	testing.expect(
+		t,
+		decl2.ident.name == "tc1",
+		fmt.tprintf("Expected 'tc1', got '%s'", decl2.ident.name),
+	)
+	testing.expect(
+		t,
+		decl2.kind == .Tableview,
+		fmt.tprintf("Expected Tableview for second decl, got %v", decl2.kind),
+	)
+	testing.expect(t, decl2.screen_dynnr != nil, "Expected screen_dynnr to be set for TABLEVIEW")
+}
+
+@(test)
+controls_tableview_with_variable_screen_test :: proc(t: ^testing.T) {
+	// CONTROLS contrl TYPE TABLEVIEW USING SCREEN dynnr.
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `CONTROLS tc_orders TYPE TABLEVIEW USING SCREEN gv_dynnr.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	controls_decl, ok := file.decls[0].derived_stmt.(^ast.Controls_Decl)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Controls_Decl, got %T", file.decls[0].derived_stmt)) do return
+
+	testing.expect(t, controls_decl.ident != nil, "Expected ident to be set")
+	testing.expect(
+		t,
+		controls_decl.ident.name == "tc_orders",
+		fmt.tprintf("Expected 'tc_orders', got '%s'", controls_decl.ident.name),
+	)
+
+	testing.expect(
+		t,
+		controls_decl.kind == .Tableview,
+		fmt.tprintf("Expected Tableview, got %v", controls_decl.kind),
+	)
+
+	testing.expect(t, controls_decl.screen_dynnr != nil, "Expected screen_dynnr to be set")
+
+	// Verify it's a variable (identifier), not a literal number
+	if dynnr_ident, iok := controls_decl.screen_dynnr.derived_expr.(^ast.Ident); iok {
+		testing.expect(
+			t,
+			dynnr_ident.name == "gv_dynnr",
+			fmt.tprintf("Expected 'gv_dynnr', got '%s'", dynnr_ident.name),
+		)
+	} else {
+		testing.expect(
+			t,
+			false,
+			fmt.tprintf("Expected screen_dynnr to be Ident, got %T", controls_decl.screen_dynnr.derived_expr),
+		)
+	}
+}

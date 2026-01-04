@@ -28,6 +28,7 @@ SymbolKind :: enum {
 	Event,
 	Module,
 	FieldSymbol,
+	Control,
 }
 
 FormParamKind :: enum {

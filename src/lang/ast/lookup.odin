@@ -671,6 +671,25 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 			}
 		}
 
+	case ^Controls_Decl:
+		if n.ident != nil {
+			if res := find_node_at_offset(&n.ident.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		if n.screen_dynnr != nil {
+			if res := find_node_at_offset(&n.screen_dynnr.expr_base, offset); res != nil {
+				return res
+			}
+		}
+
+	case ^Controls_Chain_Decl:
+		for decl in n.decls {
+			if res := find_node_at_offset(&decl.decl_base.stmt_base, offset); res != nil {
+				return res
+			}
+		}
+
 	case ^Form_Decl:
 		if n.ident != nil {
 			if res := find_node_at_offset(&n.ident.expr_base, offset); res != nil {

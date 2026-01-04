@@ -14,6 +14,7 @@ ABAP_KEYWORDS :: []string{
 	"TYPES",
 	"CONSTANTS",
 	"FIELD-SYMBOLS",
+	"CONTROLS",
 	"PARAMETERS",
 	"SELECT-OPTIONS",
 	"TABLES",
@@ -534,6 +535,9 @@ symbol_to_completion_item :: proc(sym: symbols.Symbol) -> CompletionItem {
 	case .FieldSymbol:
 		kind = .Variable
 		detail = fmt.tprintf("FIELD-SYMBOL %s", symbols.format_type(sym.type_info))
+	case .Control:
+		kind = .Variable
+		detail = "CONTROLS"
 	}
 
 	return CompletionItem {

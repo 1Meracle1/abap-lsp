@@ -118,6 +118,8 @@ parse_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			if check_hyphenated_keyword(p, "FIELD", "SYMBOLS") {
 				return parse_field_symbol_decl(p)
 			}
+		case "CONTROLS":
+			return parse_controls_decl(p)
 		case "CONDENSE":
 			return parse_condense_stmt(p)
 		case "SELECT":
@@ -4014,6 +4016,90 @@ parse_field_symbol_assign_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	expr_stmt := ast.new(ast.Expr_Stmt, start_tok, period_tok)
 	expr_stmt.expr = lhs
 	return expr_stmt
+}
+
+// CONTROLS declaration parser
+// Syntax: CONTROLS contrl TYPE TABLEVIEW USING SCREEN dynnr.
+// Syntax: CONTROLS contrl TYPE TABSTRIP.
+// Syntax: CONTROLS: name1 TYPE TABSTRIP, name2 TYPE TABLEVIEW USING SCREEN 100.
+parse_controls_decl :: proc(p: ^Parser) -> ^ast.Stmt {
+	controls_tok := expect_keyword_token(p, "CONTROLS")
+
+	// Check for chained declaration with colon
+	if allow_token(p, .Colon) {
+		return parse_controls_chain_decl(p, controls_tok)
+	}
+
+	// Single declaration
+	decl := parse_controls_single_decl(p, controls_tok)
+	if decl != nil {
+		period_tok := expect_token(p, .Period)
+		decl.range.end = period_tok.range.end
+	}
+	return decl
+}
+
+// parse_controls_chain_decl parses a chained CONTROLS declaration
+// Syntax: CONTROLS: name1 TYPE TABSTRIP, name2 TYPE TABLEVIEW USING SCREEN 100.
+parse_controls_chain_decl :: proc(p: ^Parser, controls_tok: lexer.Token) -> ^ast.Stmt {
+	chain_decl := ast.new(ast.Controls_Chain_Decl, controls_tok.range)
+	chain_decl.decls = make([dynamic]^ast.Controls_Decl)
+
+	for {
+		decl := parse_controls_single_decl(p, controls_tok)
+		if decl != nil {
+			append(&chain_decl.decls, decl)
+		}
+
+		if p.curr_tok.kind == .Period {
+			break
+		}
+
+		if !allow_token(p, .Comma) {
+			error(p, p.curr_tok.range, "expected ',' or '.'")
+			break
+		}
+	}
+
+	period_tok := expect_token(p, .Period)
+	chain_decl.range.end = period_tok.range.end
+	chain_decl.derived_stmt = chain_decl
+	return chain_decl
+}
+
+// parse_controls_single_decl parses a single CONTROLS declaration
+// Syntax: contrl TYPE TABLEVIEW USING SCREEN dynnr
+// Syntax: contrl TYPE TABSTRIP
+parse_controls_single_decl :: proc(p: ^Parser, controls_tok: lexer.Token) -> ^ast.Controls_Decl {
+	// Parse control name
+	ident_tok := expect_token(p, .Ident)
+
+	// Expect TYPE keyword
+	expect_keyword_token(p, "TYPE")
+
+	// Parse control type (TABLEVIEW or TABSTRIP)
+	type_tok := expect_token(p, .Ident)
+	type_upper := to_upper(p.keyword_buffer[:], type_tok.lit)
+
+	controls_decl := ast.new(ast.Controls_Decl, controls_tok, p.curr_tok)
+	controls_decl.ident = ast.new_ident(ident_tok)
+
+	if type_upper == "TABLEVIEW" {
+		controls_decl.kind = .Tableview
+		// Parse USING SCREEN dynnr
+		expect_keyword_token(p, "USING")
+		expect_keyword_token(p, "SCREEN")
+		controls_decl.screen_dynnr = parse_expr(p)
+	} else if type_upper == "TABSTRIP" {
+		controls_decl.kind = .Tabstrip
+		controls_decl.screen_dynnr = nil
+	} else {
+		error(p, type_tok.range, "expected TABLEVIEW or TABSTRIP")
+		controls_decl.kind = .Tabstrip
+	}
+
+	controls_decl.derived_stmt = controls_decl
+	return controls_decl
 }
 
 // check_keyword_ahead checks if the next token (after current) is a specific keyword

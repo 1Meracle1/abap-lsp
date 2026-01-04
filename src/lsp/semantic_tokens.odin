@@ -574,6 +574,40 @@ collect_tokens_from_stmt :: proc(
 		if s.typed != nil {
 			collect_tokens_from_type_expr(tokens, s.typed)
 		}
+
+	case ^ast.Controls_Decl:
+		if s.ident != nil {
+			append(
+				tokens,
+				SemanticToken {
+					offset = s.ident.range.start,
+					length = s.ident.range.end - s.ident.range.start,
+					type = .Variable,
+					modifiers = 1 << u32(SemanticTokenModifier.Declaration),
+				},
+			)
+		}
+		if s.screen_dynnr != nil {
+			collect_tokens_from_expr(tokens, s.screen_dynnr, snap, nil)
+		}
+
+	case ^ast.Controls_Chain_Decl:
+		for decl in s.decls {
+			if decl.ident != nil {
+				append(
+					tokens,
+					SemanticToken {
+						offset = decl.ident.range.start,
+						length = decl.ident.range.end - decl.ident.range.start,
+						type = .Variable,
+						modifiers = 1 << u32(SemanticTokenModifier.Declaration),
+					},
+				)
+			}
+			if decl.screen_dynnr != nil {
+				collect_tokens_from_expr(tokens, decl.screen_dynnr, snap, nil)
+			}
+		}
 	
 	case ^ast.Condense_Stmt:
 		if s.text != nil {
@@ -1231,6 +1265,8 @@ symbol_to_token_type :: proc(sym: symbols.Symbol) -> (SemanticTokenType, u32) {
 	case .Module:
 		return .Function, modifiers
 	case .FieldSymbol:
+		return .Variable, modifiers
+	case .Control:
 		return .Variable, modifiers
 	}
 
