@@ -71,6 +71,9 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 			case .FieldSymbol:
 				type_str := symbols.format_type(sym.type_info)
 				hover_text = fmt.tprintf("(field-symbol) %s: %s", sym.name, type_str)
+			case .Constant:
+				type_str := symbols.format_type(sym.type_info)
+				hover_text = fmt.tprintf("(constant) %s: %s", sym.name, type_str)
 			case:
 				type_str := symbols.format_type(sym.type_info)
 				hover_text = fmt.tprintf("%s: %s", sym.name, type_str)

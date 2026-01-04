@@ -24,6 +24,12 @@ resolve_file :: proc(file: ^ast.File) -> ^SymbolTable {
 			resolve_types_chain_decl(table, d)
 		case ^ast.Types_Struct_Decl:
 			resolve_types_struct_decl(table, d)
+		case ^ast.Const_Decl:
+			resolve_const_decl(table, d, false)
+		case ^ast.Const_Chain_Decl:
+			resolve_const_chain_decl(table, d)
+		case ^ast.Const_Struct_Decl:
+			resolve_const_struct_decl(table, d)
 		case ^ast.Form_Decl:
 			resolve_form_decl(table, d)
 		case ^ast.Class_Def_Decl:
@@ -142,6 +148,74 @@ resolve_types_struct_decl :: proc(table: ^SymbolTable, struct_decl: ^ast.Types_S
 		is_chained = false,
 	}
 	add_symbol(table, sym, allow_shadowing = false)
+}
+
+// CONSTANTS resolution
+
+resolve_const_decl :: proc(
+	table: ^SymbolTable,
+	decl: ^ast.Const_Decl,
+	is_chained: bool,
+	is_global: bool = true,
+) {
+	name := decl.ident.name
+
+	type_info := resolve_type_expr(table, decl.typed)
+
+	sym := Symbol {
+		name       = name,
+		kind       = .Constant,
+		range      = decl.ident.range,
+		type_info  = type_info,
+		is_chained = is_chained,
+	}
+	add_symbol(table, sym, allow_shadowing = is_global)
+}
+
+resolve_const_chain_decl :: proc(
+	table: ^SymbolTable,
+	chain: ^ast.Const_Chain_Decl,
+	is_global: bool = true,
+) {
+	for decl in chain.decls {
+		resolve_const_decl(table, decl, true, is_global)
+	}
+}
+
+resolve_const_struct_decl :: proc(table: ^SymbolTable, struct_decl: ^ast.Const_Struct_Decl) {
+	name := struct_decl.ident.name
+
+	struct_type := make_structure_type(table, name)
+
+	resolve_const_struct_components(table, struct_type, struct_decl.components[:])
+
+	sym := Symbol {
+		name       = name,
+		kind       = .Constant,
+		range      = struct_decl.ident.range,
+		type_info  = struct_type,
+		is_chained = false,
+	}
+	add_symbol(table, sym, allow_shadowing = false)
+}
+
+resolve_const_struct_components :: proc(
+	table: ^SymbolTable,
+	struct_type: ^Type,
+	components: []^ast.Stmt,
+) {
+	for comp in components {
+		#partial switch c in comp.derived_stmt {
+		case ^ast.Const_Decl:
+			field_type := resolve_type_expr(table, c.typed)
+			add_struct_field(struct_type, c.ident.name, field_type, 0)
+
+		case ^ast.Const_Struct_Decl:
+			nested_type := make_structure_type(table, c.ident.name)
+			resolve_const_struct_components(table, nested_type, c.components[:])
+			add_struct_field(struct_type, c.ident.name, nested_type, 0)
+		}
+	}
 }
 
 resolve_struct_components :: proc(
@@ -556,6 +630,12 @@ resolve_stmt :: proc(table: ^SymbolTable, stmt: ^ast.Stmt) {
 		resolve_typed_decl(table, s, false, is_global = false)
 	case ^ast.Data_Typed_Chain_Decl:
 		resolve_chain_decl(table, s, is_global = false)
+	case ^ast.Const_Decl:
+		resolve_const_decl(table, s, false, is_global = false)
+	case ^ast.Const_Chain_Decl:
+		resolve_const_chain_decl(table, s, is_global = false)
+	case ^ast.Const_Struct_Decl:
+		resolve_const_struct_decl(table, s)
 	case ^ast.Field_Symbol_Decl:
 		resolve_field_symbol_decl(table, s, is_global = false)
 	case ^ast.If_Stmt:

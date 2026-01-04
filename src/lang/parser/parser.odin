@@ -46,6 +46,8 @@ parse_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			return parse_data_decl(p)
 		case "TYPES":
 			return parse_types_decl(p)
+		case "CONSTANTS":
+			return parse_constants_decl(p)
 		case "FORM":
 			return parse_form_decl(p)
 		case "CLASS":
@@ -392,6 +394,195 @@ parse_types_struct_decl :: proc(p: ^Parser) -> ^ast.Types_Struct_Decl {
 		)
 	}
 
+	return struct_decl
+}
+
+// CONSTANTS declarations parsing
+
+parse_constants_decl :: proc(p: ^Parser) -> ^ast.Decl {
+	const_tok := expect_token(p, .Ident)
+	if allow_token(p, .Colon) {
+		return parse_constants_chain_decl(p, const_tok)
+	}
+	return parse_constants_single_decl(p, const_tok)
+}
+
+parse_constants_single_decl :: proc(p: ^Parser, const_tok: lexer.Token) -> ^ast.Decl {
+	ident_tok := expect_token(p, .Ident)
+	
+	// Accept TYPE or LIKE
+	if check_keyword(p, "TYPE") || check_keyword(p, "LIKE") {
+		advance_token(p)
+	} else {
+		expect_keyword_token(p, "TYPE")
+	}
+	
+	type_expr := parse_type_expr(p)
+
+	// Parse optional LENGTH
+	if check_keyword(p, "LENGTH") {
+		advance_token(p)
+		parse_expr(p)
+	}
+
+	// CONSTANTS must have VALUE
+	value_expr: ^ast.Expr = nil
+	if check_keyword(p, "VALUE") {
+		advance_token(p)
+		value_expr = parse_expr(p)
+	}
+
+	period_tok := expect_token(p, .Period)
+
+	const_decl := ast.new(ast.Const_Decl, const_tok, period_tok)
+	const_decl.ident = ast.new_ident(ident_tok)
+	const_decl.typed = type_expr
+	const_decl.value = value_expr
+	const_decl.derived_stmt = const_decl
+	return const_decl
+}
+
+parse_constants_chain_decl :: proc(p: ^Parser, const_tok: lexer.Token) -> ^ast.Decl {
+	chain_decl := ast.new(ast.Const_Chain_Decl, const_tok.range)
+	chain_decl.decls = make([dynamic]^ast.Const_Decl)
+
+	for {
+		if check_keyword(p, "BEGIN") {
+			struct_decl := parse_constants_struct_decl(p)
+			if struct_decl != nil {
+				if len(chain_decl.decls) == 0 {
+					if allow_token(p, .Comma) {
+					}
+					if allow_token(p, .Period) {
+						struct_decl.range.end = p.prev_tok.range.end
+					}
+					return struct_decl
+				}
+			}
+			break
+		}
+
+		ident_tok := expect_token(p, .Ident)
+		
+		// Accept TYPE or LIKE
+		if check_keyword(p, "TYPE") || check_keyword(p, "LIKE") {
+			advance_token(p)
+		} else {
+			expect_keyword_token(p, "TYPE")
+		}
+		
+		type_expr := parse_type_expr(p)
+
+		// Parse optional LENGTH
+		if check_keyword(p, "LENGTH") {
+			advance_token(p)
+			parse_expr(p)
+		}
+
+		value_expr: ^ast.Expr = nil
+		if check_keyword(p, "VALUE") {
+			advance_token(p)
+			value_expr = parse_expr(p)
+		}
+
+		decl := ast.new(ast.Const_Decl, ident_tok, p.prev_tok)
+		decl.ident = ast.new_ident(ident_tok)
+		decl.typed = type_expr
+		decl.value = value_expr
+		decl.derived_stmt = decl
+		append(&chain_decl.decls, decl)
+
+		if allow_token(p, .Comma) {
+			continue
+		}
+
+		period_tok := expect_token(p, .Period)
+		chain_decl.range.end = period_tok.range.end
+		break
+	}
+
+	chain_decl.derived_stmt = chain_decl
+	return chain_decl
+}
+
+parse_constants_struct_decl :: proc(p: ^Parser) -> ^ast.Const_Struct_Decl {
+	begin_tok := expect_keyword_token(p, "BEGIN")
+	expect_keyword_token(p, "OF")
+	ident_tok := expect_token(p, .Ident)
+
+	struct_decl := ast.new(ast.Const_Struct_Decl, begin_tok.range)
+	struct_decl.ident = ast.new_ident(ident_tok)
+	struct_decl.components = make([dynamic]^ast.Stmt)
+
+	expect_token(p, .Comma)
+
+	for p.curr_tok.kind != .EOF {
+		if check_keyword(p, "END") {
+			break
+		}
+
+		if check_keyword(p, "BEGIN") {
+			nested_struct := parse_constants_struct_decl(p)
+			if nested_struct != nil {
+				append(&struct_decl.components, &nested_struct.node)
+			}
+			if !allow_token(p, .Comma) {
+				break
+			}
+			continue
+		}
+
+		field_ident_tok := expect_token(p, .Ident)
+		
+		// Accept TYPE or LIKE
+		if check_keyword(p, "TYPE") || check_keyword(p, "LIKE") {
+			advance_token(p)
+		} else {
+			expect_keyword_token(p, "TYPE")
+		}
+		
+		type_expr := parse_type_expr(p)
+
+		// Parse optional LENGTH
+		if check_keyword(p, "LENGTH") {
+			advance_token(p)
+			parse_expr(p)
+		}
+
+		value_expr: ^ast.Expr = nil
+		if check_keyword(p, "VALUE") {
+			advance_token(p)
+			value_expr = parse_expr(p)
+		}
+
+		field_decl := ast.new(ast.Const_Decl, field_ident_tok, p.prev_tok)
+		field_decl.ident = ast.new_ident(field_ident_tok)
+		field_decl.typed = type_expr
+		field_decl.value = value_expr
+		field_decl.derived_stmt = field_decl
+		append(&struct_decl.components, &field_decl.node)
+
+		if !allow_token(p, .Comma) {
+			break
+		}
+	}
+
+	expect_keyword_token(p, "END")
+	expect_keyword_token(p, "OF")
+	end_ident_tok := expect_token(p, .Ident)
+	struct_decl.range.end = end_ident_tok.range.end
+
+	if struct_decl.ident.name != end_ident_tok.lit {
+		error(
+			p,
+			end_ident_tok.range,
+			"END OF '%s' does not match BEGIN OF '%s'",
+			end_ident_tok.lit,
+			struct_decl.ident.name,
+		)
+	}
+
+	struct_decl.derived_stmt = struct_decl
 	return struct_decl
 }
 
@@ -2042,11 +2233,11 @@ to_upper :: proc(buffer: []byte, s: string) -> string {
 	length := 0
 	for r in s {
 		ur := unicode.to_upper(r)
-		if r < utf8.RUNE_SELF {
-			buffer[length] = byte(r)
+		if ur < utf8.RUNE_SELF {
+			buffer[length] = byte(ur)
 			length += 1
 		} else {
-			buf, w := utf8.encode_rune(r)
+			buf, w := utf8.encode_rune(ur)
 			for i := 0; i < w; i += 1 {
 				buffer[length] = buf[i]
 				length += 1

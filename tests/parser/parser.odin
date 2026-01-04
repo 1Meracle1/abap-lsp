@@ -119,6 +119,64 @@ types_struct_build :: proc(builder: Types_Struct_Builder) -> ^ast.Types_Struct_D
 	return node
 }
 
+// CONSTANTS builders
+
+const_single :: proc(name: string, type_name: string, value: ast.Any_Expr = nil) -> ^ast.Const_Decl {
+	node := ast.new(ast.Const_Decl, {})
+	node.ident = ident(name)
+	node.typed = ident(type_name)
+	if value != nil {
+		#partial switch v in value {
+		case ^ast.Basic_Lit:
+			node.value = &v.node
+		case ^ast.Ident:
+			node.value = &v.node
+		}
+	}
+	node.derived_stmt = node
+	return node
+}
+
+const_chain :: proc(decls: ..^ast.Const_Decl) -> ^ast.Const_Chain_Decl {
+	node := ast.new(ast.Const_Chain_Decl, {})
+	node.decls = make([dynamic]^ast.Const_Decl)
+	for d in decls {
+		append(&node.decls, d)
+	}
+	node.derived_stmt = node
+	return node
+}
+
+// Builder for CONSTANTS structured types
+Const_Struct_Builder :: struct {
+	name:       string,
+	components: [dynamic]^ast.Stmt,
+}
+
+const_struct_builder :: proc(name: string) -> Const_Struct_Builder {
+	return Const_Struct_Builder{name = name, components = make([dynamic]^ast.Stmt)}
+}
+
+const_struct_with_field :: proc(
+	builder: Const_Struct_Builder,
+	field_name: string,
+	field_type: string,
+	value: ast.Any_Expr = nil,
+) -> Const_Struct_Builder {
+	b := builder
+	field := const_single(field_name, field_type, value)
+	append(&b.components, &field.node)
+	return b
+}
+
+const_struct_build :: proc(builder: Const_Struct_Builder) -> ^ast.Const_Struct_Decl {
+	node := ast.new(ast.Const_Struct_Decl, {})
+	node.ident = ident(builder.name)
+	node.components = builder.components
+	node.derived_stmt = node
+	return node
+}
+
 selector :: proc(
 	expr: ast.Any_Expr,
 	op_kind: lexer.TokenKind,
@@ -944,6 +1002,73 @@ check_stmt :: proc(
 				t,
 				ex.ident.name == ac.ident.name,
 				fmt.tprintf("Expected struct name '%s', got '%s'", ex.ident.name, ac.ident.name),
+				loc = loc,
+			)
+		}
+
+		if !testing.expect(t, len(ex.components) == len(ac.components), fmt.tprintf("Expected %d components, got %d", len(ex.components), len(ac.components)), loc = loc) do return
+
+		for i := 0; i < len(ex.components); i += 1 {
+			check_stmt(t, ex.components[i].derived_stmt, ac.components[i], loc = loc)
+		}
+
+	case ^ast.Const_Decl:
+		ac, ok := actual_derived.(^ast.Const_Decl)
+		if !testing.expect(t, ok, fmt.tprintf("Expected Const_Decl, got %T", actual_derived), loc = loc) do return
+
+		if testing.expect(t, ac.ident != nil, "Actual const ident is nil", loc = loc) {
+			testing.expect(t, ex.ident != nil, "Expected ident is nil")
+			testing.expect(
+				t,
+				ex.ident.name == ac.ident.name,
+				fmt.tprintf("Expected Const_Decl ident '%s', got '%s'", ex.ident.name, ac.ident.name),
+				loc = loc,
+			)
+		}
+
+		check_expr(t, ex.typed.derived_expr, ac.typed, loc = loc)
+
+		if ex.value != nil {
+			if !testing.expect(t, ac.value != nil, "Expected value, got nil", loc = loc) do return
+			check_expr(t, ex.value.derived_expr, ac.value, loc = loc)
+		}
+
+	case ^ast.Const_Chain_Decl:
+		ac, ok := actual_derived.(^ast.Const_Chain_Decl)
+		if !testing.expect(t, ok, fmt.tprintf("Expected Const_Chain_Decl, got %T", actual_derived), loc = loc) do return
+
+		if !testing.expect(t, len(ex.decls) == len(ac.decls), fmt.tprintf("Expected %d decls in chain, got %d", len(ex.decls), len(ac.decls)), loc = loc) do return
+
+		for i := 0; i < len(ex.decls); i += 1 {
+			ex_decl := ex.decls[i]
+			ac_decl := ac.decls[i]
+
+			if testing.expect(t, ac_decl.ident != nil, fmt.tprintf("Actual ident[%d] is nil", i), loc = loc) {
+				testing.expect(
+					t,
+					ex_decl.ident.name == ac_decl.ident.name,
+					fmt.tprintf("Expected chain decl[%d] ident '%s', got '%s'", i, ex_decl.ident.name, ac_decl.ident.name),
+					loc = loc,
+				)
+			}
+
+			check_expr(t, ex_decl.typed.derived_expr, ac_decl.typed, loc = loc)
+
+			if ex_decl.value != nil {
+				if !testing.expect(t, ac_decl.value != nil, fmt.tprintf("Expected value[%d], got nil", i), loc = loc) do return
+				check_expr(t, ex_decl.value.derived_expr, ac_decl.value, loc = loc)
+			}
+		}
+
+	case ^ast.Const_Struct_Decl:
+		ac, ok := actual_derived.(^ast.Const_Struct_Decl)
+		if !testing.expect(t, ok, fmt.tprintf("Expected Const_Struct_Decl, got %T", actual_derived), loc = loc) do return
+
+		if testing.expect(t, ac.ident != nil, "Actual const struct ident is nil", loc = loc) {
+			testing.expect(
+				t,
+				ex.ident.name == ac.ident.name,
+				fmt.tprintf("Expected const struct name '%s', got '%s'", ex.ident.name, ac.ident.name),
 				loc = loc,
 			)
 		}
@@ -9715,5 +9840,202 @@ select_for_all_entries_test :: proc(t: ^testing.T) {
 		t,
 		len(select_stmt.order_by) == 1,
 		fmt.tprintf("Expected 1 ORDER BY (PRIMARY KEY), got %d", len(select_stmt.order_by)),
+	)
+}
+
+// --- CONSTANTS Parsing Tests ---
+
+@(test)
+constants_single_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `constants con_sflight type lvc_fname value 'ALV_T_T2'.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 1,
+		fmt.tprintf("Expected 1 declaration, got %d", len(file.decls)),
+	)
+
+	if len(file.decls) < 1 {
+		return
+	}
+
+	const_decl, ok := file.decls[0].derived_stmt.(^ast.Const_Decl)
+	if !ok {
+		// Print what we actually got
+		#partial switch v in file.decls[0].derived_stmt {
+		case ^ast.Data_Typed_Decl:
+			testing.expect(t, false, "Got Data_Typed_Decl instead of Const_Decl")
+		case ^ast.Assign_Stmt:
+			testing.expect(t, false, "Got Assign_Stmt instead of Const_Decl")
+		case ^ast.Expr_Stmt:
+			testing.expect(t, false, "Got Expr_Stmt instead of Const_Decl")
+		case ^ast.Bad_Decl:
+			testing.expect(t, false, "Got Bad_Decl instead of Const_Decl")
+		case:
+			testing.expect(t, false, fmt.tprintf("Expected Const_Decl, got %T", file.decls[0].derived_stmt))
+		}
+		return
+	}
+
+	testing.expect(t, const_decl.ident != nil, "Expected ident")
+	if const_decl.ident != nil {
+		testing.expect(
+			t,
+			const_decl.ident.name == "con_sflight",
+			fmt.tprintf("Expected 'con_sflight', got '%s'", const_decl.ident.name),
+		)
+	}
+
+	testing.expect(t, const_decl.value != nil, "Expected value")
+}
+
+@(test)
+constants_chain_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `CONSTANTS: lc_one_fetch_size     TYPE i VALUE 50,
+               lc_total_records_size TYPE i VALUE 1000,
+               lc_date_initial       TYPE d VALUE '00000000'.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 1,
+		fmt.tprintf("Expected 1 declaration, got %d", len(file.decls)),
+	)
+
+	if len(file.decls) < 1 {
+		return
+	}
+
+	chain_decl, ok := file.decls[0].derived_stmt.(^ast.Const_Chain_Decl)
+	testing.expect(t, ok, fmt.tprintf("Expected Const_Chain_Decl, got %T", file.decls[0].derived_stmt))
+
+	if !ok {
+		return
+	}
+
+	testing.expect(
+		t,
+		len(chain_decl.decls) == 3,
+		fmt.tprintf("Expected 3 decls in chain, got %d", len(chain_decl.decls)),
+	)
+
+	if len(chain_decl.decls) >= 3 {
+		testing.expect(t, chain_decl.decls[0].ident.name == "lc_one_fetch_size", "First const name mismatch")
+		testing.expect(t, chain_decl.decls[1].ident.name == "lc_total_records_size", "Second const name mismatch")
+		testing.expect(t, chain_decl.decls[2].ident.name == "lc_date_initial", "Third const name mismatch")
+	}
+}
+
+@(test)
+constants_struct_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `CONSTANTS: BEGIN OF c_sn_reset_ts,
+             tab1 LIKE sy-ucomm VALUE 'SN_RESET_TS_FC1',
+             tab2 LIKE sy-ucomm VALUE 'SN_RESET_TS_FC2',
+           END OF c_sn_reset_ts.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 1,
+		fmt.tprintf("Expected 1 declaration, got %d", len(file.decls)),
+	)
+
+	if len(file.decls) < 1 {
+		return
+	}
+
+	struct_decl, ok := file.decls[0].derived_stmt.(^ast.Const_Struct_Decl)
+	testing.expect(t, ok, fmt.tprintf("Expected Const_Struct_Decl, got %T", file.decls[0].derived_stmt))
+
+	if !ok {
+		return
+	}
+
+	testing.expect(t, struct_decl.ident != nil, "Expected ident")
+	if struct_decl.ident != nil {
+		testing.expect(
+			t,
+			struct_decl.ident.name == "c_sn_reset_ts",
+			fmt.tprintf("Expected 'c_sn_reset_ts', got '%s'", struct_decl.ident.name),
+		)
+	}
+
+	testing.expect(
+		t,
+		len(struct_decl.components) == 2,
+		fmt.tprintf("Expected 2 components, got %d", len(struct_decl.components)),
+	)
+}
+
+@(test)
+constants_with_pragma_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `CONSTANTS: lc_date_initial TYPE d VALUE '00000000' ##NEEDED.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 1,
+		fmt.tprintf("Expected 1 declaration, got %d", len(file.decls)),
+	)
+
+	if len(file.decls) < 1 {
+		return
+	}
+
+	chain_decl, ok := file.decls[0].derived_stmt.(^ast.Const_Chain_Decl)
+	testing.expect(t, ok, fmt.tprintf("Expected Const_Chain_Decl, got %T", file.decls[0].derived_stmt))
+
+	if !ok {
+		return
+	}
+
+	testing.expect(
+		t,
+		len(chain_decl.decls) == 1,
+		fmt.tprintf("Expected 1 decl in chain, got %d", len(chain_decl.decls)),
+	)
+
+	// Check that the pragma was lexed as a comment and didn't break parsing
+	testing.expect(
+		t,
+		len(file.comments) >= 1,
+		fmt.tprintf("Expected at least 1 comment (pragma), got %d", len(file.comments)),
 	)
 }

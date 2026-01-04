@@ -62,8 +62,8 @@ scan :: proc(l: ^Lexer) -> Token {
 	case ch == '*' && l.pos == l.line_start || ch == '"':
 		kind, lit = scan_comment(l)
 	case ch == '#' && peek_byte(l) == '#':
-		// Pragma statement (e.g., ##ENH_OK) - treat as comment
-		kind, lit = scan_comment(l)
+		// Pragma statement (e.g., ##ENH_OK ##NEEDED) - scan only the pragma word
+		kind, lit = scan_pragma(l)
 	case:
 		advance_rune(l)
 		switch ch {
@@ -166,6 +166,32 @@ scan_comment :: proc(l: ^Lexer) -> (TokenKind, string) {
 		}
 	}
 	return .Comment, string(l.src[start:l.pos])
+}
+
+// scan_pragma scans a pragma (##WORD) and returns it as a comment token
+// Only scans the word following ##, allowing other tokens on the same line
+scan_pragma :: proc(l: ^Lexer) -> (TokenKind, string) {
+	start := l.pos
+	advance_rune(l) // consume first #
+	advance_rune(l) // consume second #
+	// Scan the pragma word (letters, digits, underscores)
+	for is_pragma_char(l.ch) {
+		advance_rune(l)
+	}
+	return .Comment, string(l.src[start:l.pos])
+}
+
+// is_pragma_char checks if a character is valid in a pragma identifier
+is_pragma_char :: proc(r: rune) -> bool {
+	if r < utf8.RUNE_SELF {
+		switch r {
+		case '_':
+			return true
+		case 'A' ..= 'Z', 'a' ..= 'z', '0' ..= '9':
+			return true
+		}
+	}
+	return false
 }
 
 scan_number :: proc(l: ^Lexer) -> (TokenKind, string) {

@@ -604,6 +604,26 @@ Types_Chain_Decl :: struct {
 	decls:      [dynamic]^Types_Decl,
 }
 
+// CONSTANTS declarations
+
+Const_Decl :: struct {
+	using node: Decl,
+	ident:      ^Ident,
+	typed:      ^Expr,
+	value:      ^Expr,
+}
+
+Const_Chain_Decl :: struct {
+	using node: Decl,
+	decls:      [dynamic]^Const_Decl,
+}
+
+Const_Struct_Decl :: struct {
+	using node: Decl,
+	ident:      ^Ident,
+	components: [dynamic]^Stmt,
+}
+
 Types_Struct_Decl :: struct {
 	using node: Decl,
 	ident:      ^Ident,
@@ -861,6 +881,9 @@ Any_Node :: union {
 	^Types_Decl,
 	^Types_Chain_Decl,
 	^Types_Struct_Decl,
+	^Const_Decl,
+	^Const_Chain_Decl,
+	^Const_Struct_Decl,
 	^Form_Param,
 	^Form_Decl,
 	// Class/Interface declarations
@@ -937,6 +960,9 @@ Any_Stmt :: union {
 	^Types_Decl,
 	^Types_Chain_Decl,
 	^Types_Struct_Decl,
+	^Const_Decl,
+	^Const_Chain_Decl,
+	^Const_Struct_Decl,
 	^Form_Decl,
 	// Class/Interface declarations
 	^Method_Decl,
