@@ -133,6 +133,18 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 			}
 		}
 
+	case ^Data_Struct_Decl:
+		if n.ident != nil {
+			if res := find_node_at_offset(&n.ident.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		for comp in n.components {
+			if res := find_node_at_offset(&comp.stmt_base, offset); res != nil {
+				return res
+			}
+		}
+
 	case ^Ident:
 		return node
 

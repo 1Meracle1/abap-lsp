@@ -177,6 +177,46 @@ const_struct_build :: proc(builder: Const_Struct_Builder) -> ^ast.Const_Struct_D
 	return node
 }
 
+// Builder for DATA structured types
+Data_Struct_Builder :: struct {
+	name:       string,
+	components: [dynamic]^ast.Stmt,
+}
+
+data_struct_builder :: proc(name: string) -> Data_Struct_Builder {
+	return Data_Struct_Builder{name = name, components = make([dynamic]^ast.Stmt)}
+}
+
+data_struct_with_field :: proc(
+	builder: Data_Struct_Builder,
+	field_name: string,
+	field_type: string,
+	value: ast.Any_Expr = nil,
+) -> Data_Struct_Builder {
+	b := builder
+	field := data_single_typed(field_name, field_type)
+	if value != nil {
+		#partial switch v in value {
+		case ^ast.Basic_Lit:
+			field.value = &v.node
+		case ^ast.Ident:
+			field.value = &v.node
+		case ^ast.Selector_Expr:
+			field.value = &v.node
+		}
+	}
+	append(&b.components, &field.node)
+	return b
+}
+
+data_struct_build :: proc(builder: Data_Struct_Builder) -> ^ast.Data_Struct_Decl {
+	node := ast.new(ast.Data_Struct_Decl, {})
+	node.ident = ident(builder.name)
+	node.components = builder.components
+	node.derived_stmt = node
+	return node
+}
+
 selector :: proc(
 	expr: ast.Any_Expr,
 	op_kind: lexer.TokenKind,
@@ -10256,4 +10296,256 @@ controls_tableview_with_variable_screen_test :: proc(t: ^testing.T) {
 			fmt.tprintf("Expected screen_dynnr to be Ident, got %T", controls_decl.screen_dynnr.derived_expr),
 		)
 	}
+}
+
+// ============================================================================
+// DATA Structure Declaration Tests
+// ============================================================================
+
+@(test)
+data_struct_simple_test :: proc(t: ^testing.T) {
+	// DATA: BEGIN OF name, field1 TYPE type1, field2 TYPE type2, END OF name.
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `DATA: BEGIN OF ls_data,
+        field1 TYPE i,
+        field2 TYPE string,
+      END OF ls_data.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 1,
+		fmt.tprintf("Expected 1 declaration, got %d", len(file.decls)),
+	)
+
+	if len(file.decls) < 1 {
+		return
+	}
+
+	struct_decl, ok := file.decls[0].derived_stmt.(^ast.Data_Struct_Decl)
+	testing.expect(t, ok, fmt.tprintf("Expected Data_Struct_Decl, got %T", file.decls[0].derived_stmt))
+
+	if !ok {
+		return
+	}
+
+	testing.expect(t, struct_decl.ident != nil, "Expected ident")
+	if struct_decl.ident != nil {
+		testing.expect(
+			t,
+			struct_decl.ident.name == "ls_data",
+			fmt.tprintf("Expected 'ls_data', got '%s'", struct_decl.ident.name),
+		)
+	}
+
+	testing.expect(
+		t,
+		len(struct_decl.components) == 2,
+		fmt.tprintf("Expected 2 components, got %d", len(struct_decl.components)),
+	)
+}
+
+@(test)
+data_struct_with_like_test :: proc(t: ^testing.T) {
+	// DATA: BEGIN OF name, field LIKE sy-field, END OF name.
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `DATA: BEGIN OF g_sn_reset_ts,
+        subscreen   LIKE sy-dynnr,
+        prog        LIKE sy-repid VALUE 'ZTTRP001_US_SN_RESET',
+        pressed_tab LIKE sy-ucomm VALUE c_sn_reset_ts-tab1,
+      END OF g_sn_reset_ts.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 1,
+		fmt.tprintf("Expected 1 declaration, got %d", len(file.decls)),
+	)
+
+	if len(file.decls) < 1 {
+		return
+	}
+
+	struct_decl, ok := file.decls[0].derived_stmt.(^ast.Data_Struct_Decl)
+	testing.expect(t, ok, fmt.tprintf("Expected Data_Struct_Decl, got %T", file.decls[0].derived_stmt))
+
+	if !ok {
+		return
+	}
+
+	testing.expect(t, struct_decl.ident != nil, "Expected ident")
+	if struct_decl.ident != nil {
+		testing.expect(
+			t,
+			struct_decl.ident.name == "g_sn_reset_ts",
+			fmt.tprintf("Expected 'g_sn_reset_ts', got '%s'", struct_decl.ident.name),
+		)
+	}
+
+	testing.expect(
+		t,
+		len(struct_decl.components) == 3,
+		fmt.tprintf("Expected 3 components, got %d", len(struct_decl.components)),
+	)
+
+	// Check first component
+	if len(struct_decl.components) >= 1 {
+		comp1, ok1 := struct_decl.components[0].derived_stmt.(^ast.Data_Typed_Decl)
+		testing.expect(t, ok1, "Expected first component to be Data_Typed_Decl")
+		if ok1 && comp1.ident != nil {
+			testing.expect(
+				t,
+				comp1.ident.name == "subscreen",
+				fmt.tprintf("Expected 'subscreen', got '%s'", comp1.ident.name),
+			)
+		}
+	}
+
+	// Check second component has VALUE
+	if len(struct_decl.components) >= 2 {
+		comp2, ok2 := struct_decl.components[1].derived_stmt.(^ast.Data_Typed_Decl)
+		testing.expect(t, ok2, "Expected second component to be Data_Typed_Decl")
+		if ok2 {
+			testing.expect(t, comp2.value != nil, "Expected second component to have VALUE")
+		}
+	}
+
+	// Check third component has VALUE
+	if len(struct_decl.components) >= 3 {
+		comp3, ok3 := struct_decl.components[2].derived_stmt.(^ast.Data_Typed_Decl)
+		testing.expect(t, ok3, "Expected third component to be Data_Typed_Decl")
+		if ok3 {
+			testing.expect(t, comp3.value != nil, "Expected third component to have VALUE")
+		}
+	}
+}
+
+@(test)
+data_struct_nested_test :: proc(t: ^testing.T) {
+	// DATA: BEGIN OF outer, BEGIN OF inner, f TYPE i, END OF inner, END OF outer.
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `DATA: BEGIN OF ls_outer,
+        BEGIN OF ls_inner,
+          field1 TYPE i,
+        END OF ls_inner,
+        field2 TYPE string,
+      END OF ls_outer.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 1,
+		fmt.tprintf("Expected 1 declaration, got %d", len(file.decls)),
+	)
+
+	if len(file.decls) < 1 {
+		return
+	}
+
+	struct_decl, ok := file.decls[0].derived_stmt.(^ast.Data_Struct_Decl)
+	testing.expect(t, ok, fmt.tprintf("Expected Data_Struct_Decl, got %T", file.decls[0].derived_stmt))
+
+	if !ok {
+		return
+	}
+
+	testing.expect(t, struct_decl.ident != nil, "Expected ident")
+	if struct_decl.ident != nil {
+		testing.expect(
+			t,
+			struct_decl.ident.name == "ls_outer",
+			fmt.tprintf("Expected 'ls_outer', got '%s'", struct_decl.ident.name),
+		)
+	}
+
+	testing.expect(
+		t,
+		len(struct_decl.components) == 2,
+		fmt.tprintf("Expected 2 components (nested struct + field2), got %d", len(struct_decl.components)),
+	)
+
+	// Check first component is a nested struct
+	if len(struct_decl.components) >= 1 {
+		nested, ok_nested := struct_decl.components[0].derived_stmt.(^ast.Data_Struct_Decl)
+		testing.expect(t, ok_nested, fmt.tprintf("Expected first component to be Data_Struct_Decl, got %T", struct_decl.components[0].derived_stmt))
+		if ok_nested && nested.ident != nil {
+			testing.expect(
+				t,
+				nested.ident.name == "ls_inner",
+				fmt.tprintf("Expected 'ls_inner', got '%s'", nested.ident.name),
+			)
+			testing.expect(
+				t,
+				len(nested.components) == 1,
+				fmt.tprintf("Expected 1 component in nested struct, got %d", len(nested.components)),
+			)
+		}
+	}
+}
+
+@(test)
+data_struct_with_type_test :: proc(t: ^testing.T) {
+	// DATA: BEGIN OF name, field TYPE type, END OF name.
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `DATA: BEGIN OF ls_result,
+        matnr TYPE mara-matnr,
+        werks TYPE marc-werks,
+        lgort TYPE mard-lgort,
+      END OF ls_result.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 1,
+		fmt.tprintf("Expected 1 declaration, got %d", len(file.decls)),
+	)
+
+	if len(file.decls) < 1 {
+		return
+	}
+
+	struct_decl, ok := file.decls[0].derived_stmt.(^ast.Data_Struct_Decl)
+	testing.expect(t, ok, fmt.tprintf("Expected Data_Struct_Decl, got %T", file.decls[0].derived_stmt))
+
+	if !ok {
+		return
+	}
+
+	testing.expect(
+		t,
+		len(struct_decl.components) == 3,
+		fmt.tprintf("Expected 3 components, got %d", len(struct_decl.components)),
+	)
 }

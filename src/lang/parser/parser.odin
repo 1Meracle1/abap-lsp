@@ -200,6 +200,22 @@ parse_data_typed_multiple_decl :: proc(p: ^Parser, data_tok: lexer.Token) -> ^as
 	chain_decl.decls = make([dynamic]^ast.Data_Typed_Decl)
 
 	for {
+		// Check for BEGIN OF structure declaration
+		if check_keyword(p, "BEGIN") {
+			struct_decl := parse_data_struct_decl(p)
+			if struct_decl != nil {
+				if len(chain_decl.decls) == 0 {
+					if allow_token(p, .Comma) {
+					}
+					if allow_token(p, .Period) {
+						struct_decl.range.end = p.prev_tok.range.end
+					}
+					return struct_decl
+				}
+			}
+			break
+		}
+
 		ident_tok := expect_token(p, .Ident)
 
 		// Accept TYPE or LIKE
@@ -241,6 +257,94 @@ parse_data_typed_multiple_decl :: proc(p: ^Parser, data_tok: lexer.Token) -> ^as
 	}
 
 	return chain_decl
+}
+
+// parse_data_struct_decl parses DATA structure declarations:
+// DATA: BEGIN OF name,
+//         field1 TYPE/LIKE type1 [VALUE val1],
+//         field2 TYPE/LIKE type2 [VALUE val2],
+//       END OF name.
+parse_data_struct_decl :: proc(p: ^Parser) -> ^ast.Data_Struct_Decl {
+	begin_tok := expect_keyword_token(p, "BEGIN")
+	expect_keyword_token(p, "OF")
+	ident_tok := expect_token(p, .Ident)
+
+	struct_decl := ast.new(ast.Data_Struct_Decl, begin_tok.range)
+	struct_decl.ident = ast.new_ident(ident_tok)
+	struct_decl.components = make([dynamic]^ast.Stmt)
+
+	expect_token(p, .Comma)
+
+	for p.curr_tok.kind != .EOF {
+		if check_keyword(p, "END") {
+			break
+		}
+
+		// Check for nested BEGIN OF
+		if check_keyword(p, "BEGIN") {
+			nested_struct := parse_data_struct_decl(p)
+			if nested_struct != nil {
+				append(&struct_decl.components, &nested_struct.node)
+			}
+			if !allow_token(p, .Comma) {
+				break
+			}
+			continue
+		}
+
+		field_ident_tok := expect_token(p, .Ident)
+
+		// Accept TYPE or LIKE
+		if check_keyword(p, "TYPE") || check_keyword(p, "LIKE") {
+			advance_token(p)
+		} else {
+			expect_keyword_token(p, "TYPE")
+		}
+
+		type_expr := parse_type_expr(p)
+
+		// Parse optional LENGTH
+		if check_keyword(p, "LENGTH") {
+			advance_token(p)
+			parse_expr(p)
+		}
+
+		// Parse optional VALUE
+		value_expr: ^ast.Expr = nil
+		if check_keyword(p, "VALUE") {
+			advance_token(p)
+			value_expr = parse_expr(p)
+		}
+
+		field_decl := ast.new(ast.Data_Typed_Decl, field_ident_tok, p.prev_tok)
+		field_decl.ident = ast.new_ident(field_ident_tok)
+		field_decl.typed = type_expr
+		field_decl.value = value_expr
+		field_decl.derived_stmt = field_decl
+		append(&struct_decl.components, &field_decl.node)
+
+		if !allow_token(p, .Comma) {
+			break
+		}
+	}
+
+	expect_keyword_token(p, "END")
+	expect_keyword_token(p, "OF")
+	end_ident_tok := expect_token(p, .Ident)
+	struct_decl.range.end = end_ident_tok.range.end
+
+	if struct_decl.ident.name != end_ident_tok.lit {
+		error(
+			p,
+			end_ident_tok.range,
+			"END OF '%s' does not match BEGIN OF '%s'",
+			end_ident_tok.lit,
+			struct_decl.ident.name,
+		)
+	}
+
+	struct_decl.derived_stmt = struct_decl
+	return struct_decl
 }
 
 parse_data_inline_decl :: proc(p: ^Parser, data_tok: lexer.Token) -> ^ast.Decl {

@@ -236,6 +236,11 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 	case ^ast.Controls_Chain_Decl:
 		hover_text = "(chained CONTROLS declaration)"
 
+	case ^ast.Data_Struct_Decl:
+		if n.ident != nil {
+			hover_text = fmt.tprintf("(data structure) %s", n.ident.name)
+		}
+
 	case ^ast.Loop_Stmt:
 		switch n.kind {
 		case .At:

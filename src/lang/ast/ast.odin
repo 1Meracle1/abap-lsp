@@ -630,6 +630,13 @@ Types_Struct_Decl :: struct {
 	components: [dynamic]^Stmt,
 }
 
+// DATA structure declaration (DATA: BEGIN OF name, ... END OF name.)
+Data_Struct_Decl :: struct {
+	using node: Decl,
+	ident:      ^Ident,
+	components: [dynamic]^Stmt,
+}
+
 Form_Param_Kind :: enum {
 	Tables,
 	Using,
@@ -901,6 +908,7 @@ Any_Node :: union {
 	^Data_Inline_Decl,
 	^Data_Typed_Decl,
 	^Data_Typed_Chain_Decl,
+	^Data_Struct_Decl,
 	^Types_Decl,
 	^Types_Chain_Decl,
 	^Types_Struct_Decl,
@@ -983,6 +991,7 @@ Any_Stmt :: union {
 	^Data_Inline_Decl,
 	^Data_Typed_Decl,
 	^Data_Typed_Chain_Decl,
+	^Data_Struct_Decl,
 	^Types_Decl,
 	^Types_Chain_Decl,
 	^Types_Struct_Decl,

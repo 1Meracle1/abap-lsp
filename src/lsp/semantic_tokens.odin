@@ -234,6 +234,20 @@ collect_tokens_from_stmt :: proc(
 		}
 		collect_tokens_from_const_struct_components(tokens, s.components[:], snap)
 
+	case ^ast.Data_Struct_Decl:
+		if s.ident != nil {
+			append(
+				tokens,
+				SemanticToken {
+					offset = s.ident.range.start,
+					length = s.ident.range.end - s.ident.range.start,
+					type = .Variable,
+					modifiers = 1 << u32(SemanticTokenModifier.Declaration),
+				},
+			)
+		}
+		collect_tokens_from_data_struct_components(tokens, s.components[:], snap)
+
 	case ^ast.Form_Decl:
 		if s.ident != nil {
 			append(
@@ -910,6 +924,53 @@ collect_tokens_from_const_struct_components :: proc(
 				)
 			}
 			collect_tokens_from_const_struct_components(tokens, c.components[:], snap)
+		}
+	}
+}
+
+collect_tokens_from_data_struct_components :: proc(
+	tokens: ^[dynamic]SemanticToken,
+	components: []^ast.Stmt,
+	snap: ^cache.Snapshot,
+) {
+	for comp in components {
+		if comp == nil {
+			continue
+		}
+
+		#partial switch c in comp.derived_stmt {
+		case ^ast.Data_Typed_Decl:
+			if c.ident != nil {
+				append(
+					tokens,
+					SemanticToken {
+						offset = c.ident.range.start,
+						length = c.ident.range.end - c.ident.range.start,
+						type = .Property,
+						modifiers = 1 << u32(SemanticTokenModifier.Declaration),
+					},
+				)
+			}
+			if c.typed != nil {
+				collect_tokens_from_type_expr(tokens, c.typed)
+			}
+			if c.value != nil {
+				collect_tokens_from_expr(tokens, c.value, snap, nil)
+			}
+
+		case ^ast.Data_Struct_Decl:
+			if c.ident != nil {
+				append(
+					tokens,
+					SemanticToken {
+						offset = c.ident.range.start,
+						length = c.ident.range.end - c.ident.range.start,
+						type = .Property,
+						modifiers = 1 << u32(SemanticTokenModifier.Declaration),
+					},
+				)
+			}
+			collect_tokens_from_data_struct_components(tokens, c.components[:], snap)
 		}
 	}
 }

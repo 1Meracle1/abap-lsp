@@ -406,6 +406,7 @@ resolve_access_chain :: proc(snap: ^cache.Snapshot, chain: []string, offset: int
 }
 
 lookup_variable_type :: proc(snap: ^cache.Snapshot, var_name: string, offset: int) -> ^symbols.Type {
+	// Check enclosing form scope
 	if enclosing_form := ast.find_enclosing_form(snap.ast, offset); enclosing_form != nil {
 		form_name := enclosing_form.ident.name
 		if form_sym, ok := snap.symbol_table.symbols[form_name]; ok {
@@ -417,6 +418,43 @@ lookup_variable_type :: proc(snap: ^cache.Snapshot, var_name: string, offset: in
 		}
 	}
 
+	// Check enclosing class scope
+	if enclosing_class := ast.find_enclosing_class_def(snap.ast, offset); enclosing_class != nil {
+		class_name := enclosing_class.ident.name
+		if class_sym, ok := snap.symbol_table.symbols[class_name]; ok {
+			if class_sym.child_scope != nil {
+				if local_sym, found := class_sym.child_scope.symbols[var_name]; found {
+					return local_sym.type_info
+				}
+			}
+		}
+	}
+
+	// Check enclosing interface scope
+	if enclosing_iface := ast.find_enclosing_interface(snap.ast, offset); enclosing_iface != nil {
+		iface_name := enclosing_iface.ident.name
+		if iface_sym, ok := snap.symbol_table.symbols[iface_name]; ok {
+			if iface_sym.child_scope != nil {
+				if local_sym, found := iface_sym.child_scope.symbols[var_name]; found {
+					return local_sym.type_info
+				}
+			}
+		}
+	}
+
+	// Check enclosing module scope
+	if enclosing_module := ast.find_enclosing_module(snap.ast, offset); enclosing_module != nil {
+		module_name := enclosing_module.ident.name
+		if module_sym, ok := snap.symbol_table.symbols[module_name]; ok {
+			if module_sym.child_scope != nil {
+				if local_sym, found := module_sym.child_scope.symbols[var_name]; found {
+					return local_sym.type_info
+				}
+			}
+		}
+	}
+
+	// Check global symbol table
 	if global_sym, found := snap.symbol_table.symbols[var_name]; found {
 		return global_sym.type_info
 	}
