@@ -3245,7 +3245,12 @@ parse_append_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 		// Check for optional ASSIGNING clause
 		if check_keyword(p, "ASSIGNING") {
 			advance_token(p) // consume ASSIGNING
-			append_stmt.assigning_target = parse_field_symbol_ref(p)
+			// Check for inline FIELD-SYMBOL declaration: ASSIGNING FIELD-SYMBOL(<fs>)
+			if check_hyphenated_keyword(p, "FIELD", "SYMBOL") {
+				append_stmt.assigning_target = parse_inline_field_symbol(p)
+			} else {
+				append_stmt.assigning_target = parse_field_symbol_ref(p)
+			}
 		}
 
 		period_tok := expect_token(p, .Period)
@@ -3278,7 +3283,12 @@ parse_append_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	// Check for optional ASSIGNING clause
 	if check_keyword(p, "ASSIGNING") {
 		advance_token(p) // consume ASSIGNING
-		append_stmt.assigning_target = parse_field_symbol_ref(p)
+		// Check for inline FIELD-SYMBOL declaration: ASSIGNING FIELD-SYMBOL(<fs>)
+		if check_hyphenated_keyword(p, "FIELD", "SYMBOL") {
+			append_stmt.assigning_target = parse_inline_field_symbol(p)
+		} else {
+			append_stmt.assigning_target = parse_field_symbol_ref(p)
+		}
 	}
 
 	period_tok := expect_token(p, .Period)
