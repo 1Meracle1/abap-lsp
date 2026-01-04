@@ -151,6 +151,19 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 		log_trace(srv, "found MESSAGE statement")
 		hover_text = "(statement) MESSAGE - displays a message to the user"
 
+	case ^ast.Insert_Stmt:
+		log_trace(srv, "found INSERT statement")
+		switch n.kind {
+		case .Into_Table:
+			hover_text = "(statement) INSERT ... INTO TABLE - inserts data into an internal table"
+		case .Into_Db:
+			hover_text = "(statement) INSERT INTO ... VALUES - inserts data into a database table"
+		case .From_Wa:
+			hover_text = "(statement) INSERT ... FROM - inserts data from a work area into a database table"
+		case .From_Table:
+			hover_text = "(statement) INSERT ... FROM TABLE - inserts data from an internal table into a database table"
+		}
+
 	case ^ast.Table_Type:
 		log_trace(srv, "found Table Type expression")
 		table_kind_str := ""

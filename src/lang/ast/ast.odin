@@ -248,6 +248,28 @@ Message_Stmt :: struct {
 	into_target:  ^Expr, // INTO data (optional)
 }
 
+// INSERT statement kinds
+Insert_Kind :: enum {
+	Into_Table,   // INSERT expr INTO TABLE itab
+	Into_Db,      // INSERT INTO target VALUES wa
+	From_Wa,      // INSERT target FROM wa
+	From_Table,   // INSERT target FROM TABLE itab
+}
+
+// INSERT statement
+// Syntax variations:
+// - INSERT VALUE #( ... ) INTO TABLE itab.
+// - INSERT INTO target VALUES wa.
+// - INSERT target FROM wa.
+// - INSERT target FROM TABLE itab.
+Insert_Stmt :: struct {
+	using node:   Stmt,
+	kind:         Insert_Kind,
+	value_expr:   ^Expr, // The value/expression to insert (for Into_Table, Into_Db)
+	target:       ^Expr, // The target table (internal or database table)
+	source:       ^Expr, // The source work area or table (for From_Wa, From_Table)
+}
+
 // Declarations
 
 Bad_Decl :: struct {
@@ -512,6 +534,7 @@ Any_Node :: union {
 	^While_Stmt,
 	^Clear_Stmt,
 	^Message_Stmt,
+	^Insert_Stmt,
 	// Declarations
 	^Bad_Decl,
 	^Data_Inline_Decl,
@@ -575,6 +598,7 @@ Any_Stmt :: union {
 	^While_Stmt,
 	^Clear_Stmt,
 	^Message_Stmt,
+	^Insert_Stmt,
 	//
 	^Bad_Decl,
 	^Data_Inline_Decl,

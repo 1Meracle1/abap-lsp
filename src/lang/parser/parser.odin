@@ -94,6 +94,8 @@ parse_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			return parse_clear_stmt(p)
 		case "MESSAGE":
 			return parse_message_stmt(p)
+		case "INSERT":
+			return parse_insert_stmt(p)
 		}
 	}
 
@@ -2920,4 +2922,60 @@ parse_message_id_or_expr :: proc(p: ^Parser) -> ^ast.Expr {
 
 	// Parse as a regular expression (string literal, identifier, etc.)
 	return parse_expr(p)
+}
+
+// INSERT statement parser
+// Syntax variations:
+// - INSERT VALUE #( ... ) INTO TABLE itab.
+// - INSERT INTO target VALUES wa.
+// - INSERT target FROM wa.
+// - INSERT target FROM TABLE itab.
+parse_insert_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
+	insert_tok := expect_keyword_token(p, "INSERT")
+
+	insert_stmt := ast.new(ast.Insert_Stmt, insert_tok.range)
+
+	// Check for "INSERT INTO target VALUES wa" form
+	if check_keyword(p, "INTO") {
+		advance_token(p) // consume INTO
+		insert_stmt.target = parse_expr(p)
+		expect_keyword_token(p, "VALUES")
+		insert_stmt.source = parse_expr(p)
+		insert_stmt.kind = .Into_Db
+	} else {
+		// Parse the value expression or target identifier
+		value_or_target := parse_expr(p)
+
+		// Check what comes next to determine the form
+		if check_keyword(p, "INTO") {
+			// INSERT expr INTO TABLE itab form
+			advance_token(p) // consume INTO
+			expect_keyword_token(p, "TABLE")
+			insert_stmt.value_expr = value_or_target
+			insert_stmt.target = parse_expr(p)
+			insert_stmt.kind = .Into_Table
+		} else if check_keyword(p, "FROM") {
+			// INSERT target FROM [TABLE] source form
+			advance_token(p) // consume FROM
+			insert_stmt.target = value_or_target
+
+			if check_keyword(p, "TABLE") {
+				advance_token(p) // consume TABLE
+				insert_stmt.source = parse_expr(p)
+				insert_stmt.kind = .From_Table
+			} else {
+				insert_stmt.source = parse_expr(p)
+				insert_stmt.kind = .From_Wa
+			}
+		} else {
+			// Simple INSERT expr form - treat as insert into table
+			insert_stmt.value_expr = value_or_target
+			insert_stmt.kind = .Into_Table
+		}
+	}
+
+	period_tok := expect_token(p, .Period)
+	insert_stmt.range.end = period_tok.range.end
+	insert_stmt.derived_stmt = insert_stmt
+	return insert_stmt
 }

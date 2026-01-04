@@ -458,6 +458,17 @@ collect_tokens_from_stmt :: proc(
 		if s.into_target != nil {
 			collect_tokens_from_expr(tokens, s.into_target, snap, nil)
 		}
+
+	case ^ast.Insert_Stmt:
+		if s.value_expr != nil {
+			collect_tokens_from_expr(tokens, s.value_expr, snap, nil)
+		}
+		if s.target != nil {
+			collect_tokens_from_expr(tokens, s.target, snap, nil)
+		}
+		if s.source != nil {
+			collect_tokens_from_expr(tokens, s.source, snap, nil)
+		}
 	}
 }
 

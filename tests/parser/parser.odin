@@ -5770,3 +5770,200 @@ data_sorted_table_test :: proc(t: ^testing.T) {
 	testing.expect(t, table_type.kind == .Sorted, fmt.tprintf("Expected Sorted, got %v", table_type.kind))
 }
 
+// --- INSERT statement tests ---
+
+@(test)
+insert_value_into_table_test :: proc(t: ^testing.T) {
+	// INSERT VALUE #( dispno = '001' descr = '001 - active' ) INTO TABLE mt_cdispos_map.
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `INSERT VALUE #( dispno = '001' descr = '001 - active' ) INTO TABLE mt_cdispos_map.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	insert_stmt, ok := file.decls[0].derived_stmt.(^ast.Insert_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Insert_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	testing.expect(t, insert_stmt.kind == .Into_Table, fmt.tprintf("Expected Into_Table kind, got %v", insert_stmt.kind))
+	testing.expect(t, insert_stmt.value_expr != nil, "Expected value_expr to be set")
+	testing.expect(t, insert_stmt.target != nil, "Expected target to be set")
+
+	// Check target is identifier
+	if target_ident, iok := insert_stmt.target.derived_expr.(^ast.Ident); iok {
+		testing.expect(t, target_ident.name == "mt_cdispos_map", fmt.tprintf("Expected 'mt_cdispos_map', got '%s'", target_ident.name))
+	} else {
+		testing.expect(t, false, fmt.tprintf("Expected target to be Ident, got %T", insert_stmt.target.derived_expr))
+	}
+}
+
+@(test)
+insert_into_db_values_test :: proc(t: ^testing.T) {
+	// INSERT INTO target VALUES wa.
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `INSERT INTO ztable VALUES wa.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	insert_stmt, ok := file.decls[0].derived_stmt.(^ast.Insert_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Insert_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	testing.expect(t, insert_stmt.kind == .Into_Db, fmt.tprintf("Expected Into_Db kind, got %v", insert_stmt.kind))
+	testing.expect(t, insert_stmt.target != nil, "Expected target to be set")
+	testing.expect(t, insert_stmt.source != nil, "Expected source to be set")
+
+	// Check target is identifier
+	if target_ident, iok := insert_stmt.target.derived_expr.(^ast.Ident); iok {
+		testing.expect(t, target_ident.name == "ztable", fmt.tprintf("Expected 'ztable', got '%s'", target_ident.name))
+	} else {
+		testing.expect(t, false, fmt.tprintf("Expected target to be Ident, got %T", insert_stmt.target.derived_expr))
+	}
+
+	// Check source is identifier
+	if source_ident, sok := insert_stmt.source.derived_expr.(^ast.Ident); sok {
+		testing.expect(t, source_ident.name == "wa", fmt.tprintf("Expected 'wa', got '%s'", source_ident.name))
+	} else {
+		testing.expect(t, false, fmt.tprintf("Expected source to be Ident, got %T", insert_stmt.source.derived_expr))
+	}
+}
+
+@(test)
+insert_from_wa_test :: proc(t: ^testing.T) {
+	// INSERT target FROM wa.
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `INSERT ztable FROM wa.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	insert_stmt, ok := file.decls[0].derived_stmt.(^ast.Insert_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Insert_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	testing.expect(t, insert_stmt.kind == .From_Wa, fmt.tprintf("Expected From_Wa kind, got %v", insert_stmt.kind))
+	testing.expect(t, insert_stmt.target != nil, "Expected target to be set")
+	testing.expect(t, insert_stmt.source != nil, "Expected source to be set")
+
+	// Check target is identifier
+	if target_ident, iok := insert_stmt.target.derived_expr.(^ast.Ident); iok {
+		testing.expect(t, target_ident.name == "ztable", fmt.tprintf("Expected 'ztable', got '%s'", target_ident.name))
+	} else {
+		testing.expect(t, false, fmt.tprintf("Expected target to be Ident, got %T", insert_stmt.target.derived_expr))
+	}
+
+	// Check source is identifier
+	if source_ident, sok := insert_stmt.source.derived_expr.(^ast.Ident); sok {
+		testing.expect(t, source_ident.name == "wa", fmt.tprintf("Expected 'wa', got '%s'", source_ident.name))
+	} else {
+		testing.expect(t, false, fmt.tprintf("Expected source to be Ident, got %T", insert_stmt.source.derived_expr))
+	}
+}
+
+@(test)
+insert_from_table_test :: proc(t: ^testing.T) {
+	// INSERT target FROM TABLE itab.
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `INSERT ztable FROM TABLE itab.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	insert_stmt, ok := file.decls[0].derived_stmt.(^ast.Insert_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Insert_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	testing.expect(t, insert_stmt.kind == .From_Table, fmt.tprintf("Expected From_Table kind, got %v", insert_stmt.kind))
+	testing.expect(t, insert_stmt.target != nil, "Expected target to be set")
+	testing.expect(t, insert_stmt.source != nil, "Expected source to be set")
+
+	// Check target is identifier
+	if target_ident, iok := insert_stmt.target.derived_expr.(^ast.Ident); iok {
+		testing.expect(t, target_ident.name == "ztable", fmt.tprintf("Expected 'ztable', got '%s'", target_ident.name))
+	} else {
+		testing.expect(t, false, fmt.tprintf("Expected target to be Ident, got %T", insert_stmt.target.derived_expr))
+	}
+
+	// Check source is identifier
+	if source_ident, sok := insert_stmt.source.derived_expr.(^ast.Ident); sok {
+		testing.expect(t, source_ident.name == "itab", fmt.tprintf("Expected 'itab', got '%s'", source_ident.name))
+	} else {
+		testing.expect(t, false, fmt.tprintf("Expected source to be Ident, got %T", insert_stmt.source.derived_expr))
+	}
+}
+
+@(test)
+insert_in_method_body_test :: proc(t: ^testing.T) {
+	// Test INSERT statement inside a method body
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `CLASS zcl_test IMPLEMENTATION.
+  METHOD test_insert.
+    INSERT VALUE #( id = 1 ) INTO TABLE lt_data.
+    INSERT ztable FROM ls_data.
+  ENDMETHOD.
+ENDCLASS.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	class_impl, ok := file.decls[0].derived_stmt.(^ast.Class_Impl_Decl)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Class_Impl_Decl, got %T", file.decls[0].derived_stmt)) do return
+
+	if !testing.expect(t, len(class_impl.methods) == 1, fmt.tprintf("Expected 1 method, got %d", len(class_impl.methods))) do return
+
+	method_impl, mok := class_impl.methods[0].derived_stmt.(^ast.Method_Impl)
+	if !testing.expect(t, mok, fmt.tprintf("Expected Method_Impl, got %T", class_impl.methods[0].derived_stmt)) do return
+
+	// Method body should have 2 INSERT statements
+	if !testing.expect(t, len(method_impl.body) == 2, fmt.tprintf("Expected 2 body statements, got %d", len(method_impl.body))) do return
+
+	// First INSERT
+	insert1, i1ok := method_impl.body[0].derived_stmt.(^ast.Insert_Stmt)
+	if testing.expect(t, i1ok, fmt.tprintf("Expected first Insert_Stmt, got %T", method_impl.body[0].derived_stmt)) {
+		testing.expect(t, insert1.kind == .Into_Table, fmt.tprintf("Expected Into_Table, got %v", insert1.kind))
+	}
+
+	// Second INSERT
+	insert2, i2ok := method_impl.body[1].derived_stmt.(^ast.Insert_Stmt)
+	if testing.expect(t, i2ok, fmt.tprintf("Expected second Insert_Stmt, got %T", method_impl.body[1].derived_stmt)) {
+		testing.expect(t, insert2.kind == .From_Wa, fmt.tprintf("Expected From_Wa, got %v", insert2.kind))
+	}
+}
+
