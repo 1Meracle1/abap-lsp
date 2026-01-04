@@ -556,6 +556,13 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 			}
 		}
 
+	case ^Condense_Stmt:
+		if n.text != nil {
+			if res := find_node_at_offset(&n.text.expr_base, offset); res != nil {
+				return res
+			}
+		}
+
 	case ^Field_Symbol_Decl:
 		if n.ident != nil {
 			if res := find_node_at_offset(&n.ident.expr_base, offset); res != nil {

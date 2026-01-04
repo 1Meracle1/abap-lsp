@@ -418,6 +418,11 @@ Delete_Stmt :: struct {
 	index_expr: ^Expr, // INDEX expression
 }
 
+Condense_Stmt :: struct {
+	using node: Stmt,
+	text:       ^Expr,
+}
+
 
 // Declarations
 
@@ -701,6 +706,7 @@ Any_Node :: union {
 	^Read_Table_Stmt,
 	^Authority_Check_Stmt,
 	^Delete_Stmt,
+	^Condense_Stmt,
 	// Declarations
 	^Bad_Decl,
 	^Data_Inline_Decl,
@@ -774,6 +780,7 @@ Any_Stmt :: union {
 	^Read_Table_Stmt,
 	^Authority_Check_Stmt,
 	^Delete_Stmt,
+	^Condense_Stmt,
 	// Declarations
 	^Bad_Decl,
 	^Data_Inline_Decl,

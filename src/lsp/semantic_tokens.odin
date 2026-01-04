@@ -517,6 +517,11 @@ collect_tokens_from_stmt :: proc(
 		if s.typed != nil {
 			collect_tokens_from_type_expr(tokens, s.typed)
 		}
+	
+	case ^ast.Condense_Stmt:
+		if s.text != nil {
+			collect_tokens_from_expr(tokens, s.text, snap, nil)
+		}
 
 	case ^ast.Loop_Stmt:
 		if s.itab != nil {

@@ -116,6 +116,8 @@ parse_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			if check_hyphenated_keyword(p, "FIELD", "SYMBOLS") {
 				return parse_field_symbol_decl(p)
 			}
+		case "CONDENSE":
+			return parse_condense_stmt(p)
 		}
 	}
 
@@ -3714,4 +3716,13 @@ parse_delete_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	stmt.range.end = period_tok.range.end
 	stmt.derived_stmt = stmt
 	return stmt
+}
+
+parse_condense_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
+	condense_tok := expect_keyword_token(p, "CONDENSE")
+	text_expr := parse_expr(p)
+	period_tok := expect_token(p, .Period)
+	condense_stmt := ast.new(ast.Condense_Stmt, condense_tok, period_tok)
+	condense_stmt.text = text_expr
+	return condense_stmt
 }

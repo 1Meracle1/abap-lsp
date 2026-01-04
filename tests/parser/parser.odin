@@ -8561,3 +8561,18 @@ delete_where_test :: proc(t: ^testing.T) {
 		testing.expect(t, false, fmt.tprintf("Expected where_cond to be Binary_Expr, got %T", delete_stmt.where_cond.derived_expr))
 	}
 }
+
+@(test)
+condense_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `CONDENSE text.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+}

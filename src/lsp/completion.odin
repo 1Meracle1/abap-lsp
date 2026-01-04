@@ -83,6 +83,7 @@ ABAP_KEYWORDS :: []string{
 	"MODIFY SCREEN",
 	"DELETE",
 	"LEAVE PROGRAM",
+	"CONDENSE",
 	// Internal table operations
 	"APPEND",
 	"COLLECT",
