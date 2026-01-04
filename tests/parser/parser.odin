@@ -711,6 +711,38 @@ check_stmt :: proc(
 	actual_derived := actual.derived_stmt
 
 	#partial switch ex in expected {
+	case ^ast.Authority_Check_Stmt:
+		ac, ok := actual_derived.(^ast.Authority_Check_Stmt)
+		if !testing.expect(t, ok, fmt.tprintf("Expected Authority_Check_Stmt, got %T", actual_derived), loc = loc) do return
+
+		check_expr(t, ex.object.derived_expr, ac.object, loc = loc)
+
+		if ex.user != nil {
+			if !testing.expect(t, ac.user != nil, "Expected user, got nil", loc = loc) do return
+			check_expr(t, ex.user.derived_expr, ac.user, loc = loc)
+		} else {
+			testing.expect(t, ac.user == nil, "Expected nil user", loc = loc)
+		}
+
+		if !testing.expect(t, len(ex.ids) == len(ac.ids), fmt.tprintf("Expected %d ids, got %d", len(ex.ids), len(ac.ids)), loc = loc) do return
+
+		for i := 0; i < len(ex.ids); i += 1 {
+			ex_id := ex.ids[i]
+			ac_id := ac.ids[i]
+
+			check_expr(t, ex_id.id.derived_expr, ac_id.id, loc = loc)
+			testing.expect(t, ex_id.is_dummy == ac_id.is_dummy, "is_dummy mismatch", loc = loc)
+
+			if ex_id.field != nil {
+				if !testing.expect(t, ac_id.field != nil, "Expected field, got nil", loc = loc) do return
+				check_expr(t, ex_id.field.derived_expr, ac_id.field, loc = loc)
+			} else {
+				if !ex_id.is_dummy {
+					testing.expect(t, ac_id.field == nil, "Expected nil field", loc = loc)
+				}
+			}
+		}
+
 	case ^ast.Data_Inline_Decl:
 		ac, ok := actual_derived.(^ast.Data_Inline_Decl)
 		if !testing.expect(t, ok, fmt.tprintf("Expected Data_Inline_Decl, got %T", actual_derived), loc = loc) do return
@@ -1022,6 +1054,7 @@ basic_inline_data_decl_with_preceding_comment_test :: proc(t: ^testing.T) {
 	file.src = `*DATA lv_val TYPE i. 
 DATA(lv_value) = 1.`
 
+
 	p: parser.Parser
 	parser.parse_file(&p, file)
 
@@ -1073,6 +1106,7 @@ basic_chain_data_typed_decl_test :: proc(t: ^testing.T) {
 	file.fullpath = "test.abap"
 	file.src = `DATA: lv_var1 TYPE i,
       lv_var2 TYPE f.`
+
 
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -1259,6 +1293,7 @@ basic_empty_form_test :: proc(t: ^testing.T) {
 	file.src = `FORM my_subroutine.
 ENDFORM.`
 
+
 	p: parser.Parser
 	parser.parse_file(&p, file)
 
@@ -1285,6 +1320,7 @@ form_with_using_params_test :: proc(t: ^testing.T) {
 	file.fullpath = "test.abap"
 	file.src = `FORM my_sub USING p_value1 p_value2.
 ENDFORM.`
+
 
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -1319,6 +1355,7 @@ form_with_changing_params_test :: proc(t: ^testing.T) {
 	file.src = `FORM my_sub CHANGING c_result.
 ENDFORM.`
 
+
 	p: parser.Parser
 	parser.parse_file(&p, file)
 
@@ -1348,6 +1385,7 @@ form_with_tables_params_test :: proc(t: ^testing.T) {
 	file.src = `FORM my_sub TABLES it_data.
 ENDFORM.`
 
+
 	p: parser.Parser
 	parser.parse_file(&p, file)
 
@@ -1376,6 +1414,7 @@ form_with_typed_params_test :: proc(t: ^testing.T) {
 	file.fullpath = "test.abap"
 	file.src = `FORM my_sub USING p_value TYPE i.
 ENDFORM.`
+
 
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -1552,6 +1591,7 @@ basic_chain_types_decl_test :: proc(t: ^testing.T) {
 	file.src = `TYPES: ty_int TYPE i,
        ty_str TYPE string.`
 
+
 	p: parser.Parser
 	parser.parse_file(&p, file)
 
@@ -1628,6 +1668,7 @@ mixed_data_and_types_decl_test :: proc(t: ^testing.T) {
 	file.fullpath = "test.abap"
 	file.src = `TYPES ty_counter TYPE i.
 DATA lv_counter TYPE ty_counter.`
+
 
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -2577,6 +2618,7 @@ initialization_event_test :: proc(t: ^testing.T) {
 	file.src = `INITIALIZATION.
   DATA lv_init TYPE string.`
 
+
 	p: parser.Parser
 	parser.parse_file(&p, file)
 
@@ -3133,6 +3175,7 @@ basic_module_output_test :: proc(t: ^testing.T) {
 	file.src = `MODULE status_0100 OUTPUT.
 ENDMODULE.`
 
+
 	p: parser.Parser
 	parser.parse_file(&p, file)
 
@@ -3178,6 +3221,7 @@ basic_module_input_test :: proc(t: ^testing.T) {
 	file.fullpath = "test.abap"
 	file.src = `MODULE user_command_0100 INPUT.
 ENDMODULE.`
+
 
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -7784,5 +7828,53 @@ append_initial_line_assigning_field_symbol_test :: proc(t: ^testing.T) {
 				append_stmt.assigning_target.derived_expr,
 			),
 		)
+	}
+}
+
+@(test)
+authority_check_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src =
+	`AUTHORITY-CHECK OBJECT '/SCWM/QDOC'
+      ID 'ACTVT' FIELD '02'.
+
+AUTHORITY-CHECK OBJECT 'S_CARRID'
+    ID 'CARRID' FIELD carr
+    ID 'ACTVT'  FIELD '03'.`
+
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 2,
+		fmt.tprintf("Expected 2 decls, got %v", len(file.decls)),
+	)
+
+	if len(file.decls) == 2 {
+		// First Statement
+		stmt1 := ast.new(ast.Authority_Check_Stmt, {})
+		stmt1.object = lit("'/SCWM/QDOC'")
+		stmt1.ids = make([dynamic]ast.Authority_Check_Id)
+		append(&stmt1.ids, ast.Authority_Check_Id{id = lit("'ACTVT'"), field = lit("'02'")})
+		stmt1.derived_stmt = stmt1
+		check_stmt(t, stmt1, file.decls[0])
+
+		// Second Statement
+		stmt2 := ast.new(ast.Authority_Check_Stmt, {})
+		stmt2.object = lit("'S_CARRID'")
+		stmt2.ids = make([dynamic]ast.Authority_Check_Id)
+		append(&stmt2.ids, ast.Authority_Check_Id{id = lit("'CARRID'"), field = ident("carr")})
+		append(&stmt2.ids, ast.Authority_Check_Id{id = lit("'ACTVT'"), field = lit("'03'")})
+		stmt2.derived_stmt = stmt2
+		check_stmt(t, stmt2, file.decls[1])
 	}
 }

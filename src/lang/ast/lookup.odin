@@ -452,6 +452,30 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 			}
 		}
 
+	case ^Authority_Check_Stmt:
+		if n.object != nil {
+			if res := find_node_at_offset(&n.object.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		if n.user != nil {
+			if res := find_node_at_offset(&n.user.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		for id in n.ids {
+			if id.id != nil {
+				if res := find_node_at_offset(&id.id.expr_base, offset); res != nil {
+					return res
+				}
+			}
+			if id.field != nil {
+				if res := find_node_at_offset(&id.field.expr_base, offset); res != nil {
+					return res
+				}
+			}
+		}
+
 	case ^Field_Symbol_Decl:
 		if n.ident != nil {
 			if res := find_node_at_offset(&n.ident.expr_base, offset); res != nil {

@@ -100,6 +100,10 @@ parse_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			return parse_insert_stmt(p)
 		case "SORT":
 			return parse_sort_stmt(p)
+		case "AUTHORITY":
+			if check_hyphenated_keyword(p, "AUTHORITY", "CHECK") {
+				return parse_authority_check_stmt(p)
+			}
 		case "APPEND":
 			return parse_append_stmt(p)
 		case "FIELD":
@@ -3391,4 +3395,55 @@ parse_field_symbol_assign_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	expr_stmt := ast.new(ast.Expr_Stmt, start_tok, period_tok)
 	expr_stmt.expr = lhs
 	return expr_stmt
+}
+
+parse_authority_check_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
+	expect_keyword_token(p, "OBJECT")
+	object := parse_expr(p)
+
+	user: ^ast.Expr = nil
+	if check_keyword(p, "FOR") {
+		advance_token(p)
+		expect_keyword_token(p, "USER")
+		user = parse_expr(p)
+	}
+
+	stmt := ast.new(ast.Authority_Check_Stmt, object.range)
+	stmt.ids = make([dynamic]ast.Authority_Check_Id)
+
+	for {
+		if check_keyword(p, "ID") {
+			advance_token(p)
+			id_value := parse_expr(p)
+
+			field: ^ast.Expr = nil
+			is_dummy := false
+
+			if check_keyword(p, "FIELD") {
+				advance_token(p)
+				field = parse_expr(p)
+			} else if check_keyword(p, "DUMMY") {
+				advance_token(p)
+				is_dummy = true
+			} else {
+				error(p, p.curr_tok.range, "Expected FIELD or DUMMY after ID")
+			}
+
+			append(
+				&stmt.ids,
+				ast.Authority_Check_Id{id = id_value, field = field, is_dummy = is_dummy},
+			)
+
+		} else {
+			break
+		}
+	}
+
+	stmt.object = object
+	stmt.user = user
+
+	period_tok := expect_token(p, .Period)
+	stmt.range.end = period_tok.range.end
+	stmt.derived_stmt = stmt
+	return stmt
 }

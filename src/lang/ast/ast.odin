@@ -234,14 +234,14 @@ While_Stmt :: struct {
 
 // LOOP statement kinds
 Loop_Kind :: enum {
-	At,        // LOOP AT itab
+	At, // LOOP AT itab
 	At_Screen, // LOOP AT SCREEN
-	At_Group,  // LOOP AT GROUP group_var
+	At_Group, // LOOP AT GROUP group_var
 }
 
 // GROUP BY key specification
 Loop_Group_By :: struct {
-	name:       ^Ident,       // Optional group name
+	name:       ^Ident, // Optional group name
 	components: [dynamic]^Named_Arg, // Key components like (key1 = expr1 key2 = expr2)
 }
 
@@ -252,18 +252,18 @@ Loop_Group_By :: struct {
 // - LOOP AT GROUP group_var [INTO wa | ASSIGNING <fs>] [WHERE condition].
 // - LOOP AT SCREEN.
 Loop_Stmt :: struct {
-	using node:           Stmt,
-	kind:                 Loop_Kind,
-	itab:                 ^Expr,          // The internal table expression
-	into_target:          ^Expr,          // INTO target (work area or inline DATA)
-	assigning_target:     ^Expr,          // ASSIGNING <fs> target (field symbol)
-	from_expr:            ^Expr,          // FROM index expression
-	to_expr:              ^Expr,          // TO index expression
-	where_cond:           ^Expr,          // WHERE condition expression
-	transporting_no_fields: bool,         // TRANSPORTING NO FIELDS flag
-	group_by:             ^Loop_Group_By, // GROUP BY specification
-	group_var:            ^Expr,          // For LOOP AT GROUP: the group variable
-	body:                 [dynamic]^Stmt,
+	using node:             Stmt,
+	kind:                   Loop_Kind,
+	itab:                   ^Expr, // The internal table expression
+	into_target:            ^Expr, // INTO target (work area or inline DATA)
+	assigning_target:       ^Expr, // ASSIGNING <fs> target (field symbol)
+	from_expr:              ^Expr, // FROM index expression
+	to_expr:                ^Expr, // TO index expression
+	where_cond:             ^Expr, // WHERE condition expression
+	transporting_no_fields: bool, // TRANSPORTING NO FIELDS flag
+	group_by:               ^Loop_Group_By, // GROUP BY specification
+	group_var:              ^Expr, // For LOOP AT GROUP: the group variable
+	body:                   [dynamic]^Stmt,
 }
 
 Clear_Stmt :: struct {
@@ -304,6 +304,19 @@ Insert_Stmt :: struct {
 	source:     ^Expr, // The source work area or table (for From_Wa, From_Table)
 }
 
+Authority_Check_Id :: struct {
+	id:       ^Expr,
+	field:    ^Expr, // nil if DUMMY
+	is_dummy: bool,
+}
+
+Authority_Check_Stmt :: struct {
+	using node: Stmt,
+	object:     ^Expr,
+	user:       ^Expr,
+	ids:        [dynamic]Authority_Check_Id,
+}
+
 Sort_Order_Kind :: enum {
 	None, // ascending by default
 	Ascending,
@@ -324,9 +337,9 @@ Sort_Stmt :: struct {
 
 // APPEND statement kinds
 Append_Kind :: enum {
-	Simple,       // APPEND expr TO itab
+	Simple, // APPEND expr TO itab
 	Initial_Line, // APPEND INITIAL LINE TO itab [ASSIGNING <fs>]
-	Lines_Of,     // APPEND LINES OF itab2 TO itab1
+	Lines_Of, // APPEND LINES OF itab2 TO itab1
 }
 
 // APPEND statement
@@ -510,7 +523,7 @@ Include_Decl :: struct {
 Field_Symbol_Decl :: struct {
 	using node: Decl,
 	ident:      ^Ident, // The field symbol name (including angle brackets)
-	typed:      ^Expr,  // The type expression
+	typed:      ^Expr, // The type expression
 }
 
 Event_Kind :: enum {
@@ -620,6 +633,7 @@ Any_Node :: union {
 	^Insert_Stmt,
 	^Sort_Stmt,
 	^Append_Stmt,
+	^Authority_Check_Stmt,
 	// Declarations
 	^Bad_Decl,
 	^Data_Inline_Decl,
@@ -689,6 +703,7 @@ Any_Stmt :: union {
 	^Insert_Stmt,
 	^Sort_Stmt,
 	^Append_Stmt,
+	^Authority_Check_Stmt,
 	// Declarations
 	^Bad_Decl,
 	^Data_Inline_Decl,
