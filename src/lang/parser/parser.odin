@@ -2,6 +2,7 @@ package lang_parser
 
 import "../ast"
 import "../lexer"
+import "core:c"
 import "core:fmt"
 import "core:unicode"
 import "core:unicode/utf8"
@@ -2421,17 +2422,105 @@ parse_class_def_decl :: proc(
 	class_decl.ident = ast.new_ident(ident_tok)
 	class_decl.sections = make([dynamic]^ast.Class_Section)
 
+	if check_keyword(p, "FOR") {
+		advance_token(p)
+		if check_keyword(p, "TESTING") {
+			advance_token(p)
+			class_decl.flags += {.Testing}
+
+			if check_keyword(p, "DURATION") {
+				advance_token(p)
+				keyword := to_upper(p.keyword_buffer[:], p.curr_tok.lit)
+				switch keyword {
+				case "SHORT":
+					advance_token(p)
+					class_decl.duration = .Short
+				case "MEDIUM":
+					advance_token(p)
+					class_decl.duration = .Medium
+				case "LONG":
+					advance_token(p)
+					class_decl.duration = .Long
+				case:
+					error(p, p.curr_tok.range, "expected DURATION token (SHORT|MEDIUM|LONG)")
+				}
+			}
+
+			if check_keyword(p, "RISK") {
+				advance_token(p)
+				if check_keyword(p, "LEVEL") {
+					advance_token(p)
+					keyword := to_upper(p.keyword_buffer[:], p.curr_tok.lit)
+					switch keyword {
+					case "CRITICAL":
+						advance_token(p)
+						class_decl.risk_level = .Critical
+					case "DANGEROUS":
+						advance_token(p)
+						class_decl.risk_level = .Dangerous
+					case "HARMLESS":
+						advance_token(p)
+						class_decl.risk_level = .Harmless
+					case:
+						error(
+							p,
+							p.curr_tok.range,
+							"expected RISK LEVEL token (CRITICAL|DANGEROUS|HARMLESS)",
+						)
+					}
+				} else {
+					error(
+						p,
+						p.curr_tok.range,
+						"expected LEVEL after RISK in testing class definition",
+					)
+				}
+			}
+		} else {
+			error(p, p.curr_tok.range, "expected TESTING after FOR in class definition")
+		}
+	}
+
 	for p.curr_tok.kind == .Ident && p.curr_tok.kind != .Period {
-		if check_keyword(p, "ABSTRACT") {
-			advance_token(p)
-			class_decl.is_abstract = true
-		} else if check_keyword(p, "FINAL") {
-			advance_token(p)
-			class_decl.is_final = true
-		} else if check_keyword(p, "INHERITING") {
-			advance_token(p)
-			expect_keyword_token(p, "FROM")
-			class_decl.inheriting_from = parse_expr(p)
+		if len(p.curr_tok.lit) > 0 && len(p.curr_tok.lit) < len(p.keyword_buffer) {
+			keyword := to_upper(p.keyword_buffer[:], p.curr_tok.lit)
+			match_not_found := false
+			switch keyword {
+			case "ABSTRACT":
+				advance_token(p)
+				class_decl.flags += {.Abstract}
+			case "FINAL":
+				advance_token(p)
+				class_decl.flags += {.Final}
+			case "INHERITING":
+				advance_token(p)
+				expect_keyword_token(p, "FROM")
+				class_decl.inheriting_from = parse_expr(p)
+			case "CREATE":
+				advance_token(p)
+				keyword = to_upper(p.keyword_buffer[:], p.curr_tok.lit)
+				switch keyword {
+				case "PUBLIC":
+					advance_token(p)
+				case "PROTECTED":
+					advance_token(p)
+					class_decl.create_kind = .Protected
+				case "PRIVATE":
+					advance_token(p)
+					class_decl.create_kind = .Private
+				case:
+					error(
+						p,
+						p.curr_tok.range,
+						"expected CREATE visibility token (PUBLIC|PROTECTED|PRIVATE)",
+					)
+				}
+			case:
+				match_not_found = true
+			}
+			if match_not_found {
+				break
+			}
 		} else {
 			break
 		}
@@ -2653,60 +2742,88 @@ parse_method_decl :: proc(p: ^Parser, is_class: bool) -> ^ast.Stmt {
 		return parse_method_chain_decl(p, method_tok, is_class)
 	}
 
-	return parse_method_single_decl(p, method_tok, is_class)
+	method_decl := parse_method_single_decl(p, method_tok, is_class)
+	period_tok := expect_token(p, .Period)
+	method_decl.range.end = period_tok.range.end
+	return method_decl
 }
 
 parse_method_single_decl :: proc(
 	p: ^Parser,
 	method_tok: lexer.Token,
 	is_class: bool,
-) -> ^ast.Stmt {
+) -> ^ast.Method_Decl {
 	ident_tok := expect_token(p, .Ident)
 
 	method_decl := ast.new(ast.Method_Decl, method_tok.range)
 	method_decl.ident = ast.new_ident(ident_tok)
-	method_decl.is_class = is_class
+	if is_class {
+		method_decl.flags += {.Class}
+	}
 	method_decl.params = make([dynamic]^ast.Method_Param)
 	method_decl.raising = make([dynamic]^ast.Expr)
 
-	for p.curr_tok.kind != .EOF && p.curr_tok.kind != .Period {
-		if check_keyword(p, "ABSTRACT") {
+	if check_keyword(p, "FOR") {
+		advance_token(p)
+		if check_keyword(p, "TESTING") {
 			advance_token(p)
-			method_decl.is_abstract = true
-		} else if check_keyword(p, "FINAL") {
-			advance_token(p)
-			method_decl.is_final = true
-		} else if check_keyword(p, "REDEFINITION") {
-			advance_token(p)
-			method_decl.is_redefinition = true
-		} else if check_keyword(p, "IMPORTING") {
-			advance_token(p)
-			parse_method_params(p, &method_decl.params, .Importing)
-		} else if check_keyword(p, "EXPORTING") {
-			advance_token(p)
-			parse_method_params(p, &method_decl.params, .Exporting)
-		} else if check_keyword(p, "CHANGING") {
-			advance_token(p)
-			parse_method_params(p, &method_decl.params, .Changing)
-		} else if check_keyword(p, "RETURNING") {
-			advance_token(p)
-			parse_method_params(p, &method_decl.params, .Returning)
-		} else if check_keyword(p, "RAISING") {
-			advance_token(p)
-			parse_raising_clause(p, &method_decl.raising)
+			method_decl.flags += {.Testing}
 		} else {
-			break
+			error(p, p.curr_tok.range, "Expected TESTING after FOR")
+		}
+	} else {
+		for p.curr_tok.kind != .EOF && p.curr_tok.kind != .Period {
+			if check_keyword(p, "ABSTRACT") {
+				advance_token(p)
+				method_decl.flags += {.Abstract}
+			} else if check_keyword(p, "FINAL") {
+				advance_token(p)
+				method_decl.flags += {.Final}
+			} else if check_keyword(p, "REDEFINITION") {
+				advance_token(p)
+				method_decl.flags += {.Redefinition}
+			} else if check_keyword(p, "IMPORTING") {
+				advance_token(p)
+				parse_method_params(p, &method_decl.params, .Importing)
+			} else if check_keyword(p, "EXPORTING") {
+				advance_token(p)
+				parse_method_params(p, &method_decl.params, .Exporting)
+			} else if check_keyword(p, "CHANGING") {
+				advance_token(p)
+				parse_method_params(p, &method_decl.params, .Changing)
+			} else if check_keyword(p, "RETURNING") {
+				advance_token(p)
+				parse_method_params(p, &method_decl.params, .Returning)
+			} else if check_keyword(p, "RAISING") {
+				advance_token(p)
+				parse_raising_clause(p, &method_decl.raising)
+			} else {
+				break
+			}
 		}
 	}
 
-	period_tok := expect_token(p, .Period)
-	method_decl.range.end = period_tok.range.end
-	method_decl.derived_stmt = method_decl
 	return method_decl
 }
 
 parse_method_chain_decl :: proc(p: ^Parser, method_tok: lexer.Token, is_class: bool) -> ^ast.Stmt {
-	return parse_method_single_decl(p, method_tok, is_class)
+	chain_decl := ast.new(ast.Method_Chain_Decl, method_tok.range)
+	chain_decl.decls = make([dynamic]^ast.Method_Decl)
+
+	for {
+		decl := parse_method_single_decl(p, method_tok, is_class)
+		append(&chain_decl.decls, decl)
+
+		if allow_token(p, .Comma) {
+			continue
+		}
+
+		period_tok := expect_token(p, .Period)
+		chain_decl.range.end = period_tok.range.end
+		break
+	}
+
+	return chain_decl
 }
 
 parse_method_params :: proc(
@@ -2797,7 +2914,6 @@ parse_interfaces_decl :: proc(p: ^Parser) -> ^ast.Stmt {
 
 	period_tok := expect_token(p, .Period)
 	ifaces_decl.range.end = period_tok.range.end
-	ifaces_decl.derived_stmt = ifaces_decl
 	return ifaces_decl
 }
 
@@ -2826,8 +2942,6 @@ parse_method_impl :: proc(p: ^Parser) -> ^ast.Stmt {
 	endmethod_tok := expect_keyword_token(p, "ENDMETHOD")
 	period_tok := expect_token(p, .Period)
 	method_impl.range.end = period_tok.range.end
-	method_impl.derived_stmt = method_impl
-	_ = endmethod_tok
 
 	return method_impl
 }
@@ -2877,9 +2991,6 @@ parse_interface_decl :: proc(p: ^Parser) -> ^ast.Decl {
 	endiface_tok := expect_keyword_token(p, "ENDINTERFACE")
 	period_tok := expect_token(p, .Period)
 	iface_decl.range.end = period_tok.range.end
-	iface_decl.derived_stmt = iface_decl
-	_ = endiface_tok
-
 	return iface_decl
 }
 
@@ -2901,7 +3012,6 @@ parse_include_decl :: proc(p: ^Parser) -> ^ast.Decl {
 
 	include_decl := ast.new(ast.Include_Decl, include_tok, period_tok)
 	include_decl.name = ast.new_ident(name_tok)
-	include_decl.derived_stmt = include_decl
 	return include_decl
 }
 

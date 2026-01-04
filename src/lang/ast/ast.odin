@@ -681,15 +681,27 @@ Method_Param :: struct {
 	default:    ^Expr,
 }
 
+Method_Flag :: enum {
+	Class,
+	Abstract,
+	Final,
+	Redefinition,
+	Testing,
+}
+
+Method_Flags :: bit_set[Method_Flag]
+
 Method_Decl :: struct {
-	using node:      Decl,
-	ident:           ^Ident,
-	is_class:        bool,
-	is_abstract:     bool,
-	is_final:        bool,
-	is_redefinition: bool,
-	params:          [dynamic]^Method_Param,
-	raising:         [dynamic]^Expr,
+	using node: Decl,
+	ident:      ^Ident,
+	flags:      Method_Flags,
+	params:     [dynamic]^Method_Param,
+	raising:    [dynamic]^Expr,
+}
+
+Method_Chain_Decl :: struct {
+	using node: Decl,
+	decls:      [dynamic]^Method_Decl,
 }
 
 Attr_Decl :: struct {
@@ -715,13 +727,40 @@ Class_Section :: struct {
 	interfaces: [dynamic]^Stmt,
 }
 
+Class_Create_Kind :: enum {
+	Public,
+	Protected,
+	Private,
+}
+
+Class_Def_Flag :: enum {
+	Abstract,
+	Final,
+	Testing,
+}
+Class_Def_Flags :: bit_set[Class_Def_Flag]
+
+Class_Def_Risk_Level :: enum {
+	Critical,
+	Dangerous,
+	Harmless,
+}
+
+Class_Def_Duration :: enum {
+	Short,
+	Medium,
+	Long,
+}
+
 Class_Def_Decl :: struct {
 	using node:      Decl,
 	ident:           ^Ident,
-	is_abstract:     bool,
-	is_final:        bool,
+	flags:           Class_Def_Flags,
+	create_kind:     Class_Create_Kind,
 	inheriting_from: ^Expr,
 	sections:        [dynamic]^Class_Section,
+	risk_level:      Class_Def_Risk_Level,
+	duration:        Class_Def_Duration,
 }
 
 Class_Impl_Decl :: struct {
@@ -920,6 +959,7 @@ Any_Node :: union {
 	// Class/Interface declarations
 	^Method_Param,
 	^Method_Decl,
+	^Method_Chain_Decl,
 	^Attr_Decl,
 	^Interfaces_Decl,
 	^Class_Section,
@@ -1001,6 +1041,7 @@ Any_Stmt :: union {
 	^Form_Decl,
 	// Class/Interface declarations
 	^Method_Decl,
+	^Method_Chain_Decl,
 	^Attr_Decl,
 	^Interfaces_Decl,
 	^Class_Def_Decl,

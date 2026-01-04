@@ -1,6 +1,7 @@
 // raddbg 0.9.21 project file
 
 recent_file: path: "src/lang/parser/parser.odin"
+recent_file: path: "tests/parser/class_interface.odin"
 recent_file: path: "tests/parser/parser.odin"
 recent_file: path: "../toolchain/odin-windows-amd64-dev-2025-11/core/testing/runner.odin"
 recent_file: path: "../../../a/_work/1/s/src/vctools/crt/vcruntime/src/string/amd64/memset.asm"
@@ -47,6 +48,6 @@ breakpoint:
 }
 breakpoint:
 {
-  source_location: "tests/parser/parser.odin:4398:1"
+  source_location: "tests/parser/class_interface.odin:738:1"
   hit_count: 0
 }
