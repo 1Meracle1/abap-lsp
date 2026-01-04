@@ -40,6 +40,8 @@ resolve_file :: proc(file: ^ast.File) -> ^SymbolTable {
 			resolve_event_block(table, d)
 		case ^ast.Module_Decl:
 			resolve_module_decl(table, d)
+		case ^ast.Field_Symbol_Decl:
+			resolve_field_symbol_decl(table, d, is_global = true)
 		}
 	}
 
@@ -538,6 +540,8 @@ resolve_stmt :: proc(table: ^SymbolTable, stmt: ^ast.Stmt) {
 		resolve_typed_decl(table, s, false, is_global = false)
 	case ^ast.Data_Typed_Chain_Decl:
 		resolve_chain_decl(table, s, is_global = false)
+	case ^ast.Field_Symbol_Decl:
+		resolve_field_symbol_decl(table, s, is_global = false)
 	case ^ast.If_Stmt:
 		resolve_if_stmt(table, s)
 	case ^ast.Case_Stmt:
@@ -699,6 +703,32 @@ resolve_module_decl :: proc(table: ^SymbolTable, module: ^ast.Module_Decl) {
 		child_scope = child_table,
 	}
 	add_symbol(table, sym, allow_shadowing = true)
+}
+
+resolve_field_symbol_decl :: proc(
+	table: ^SymbolTable,
+	fs_decl: ^ast.Field_Symbol_Decl,
+	is_global: bool = true,
+) {
+	if fs_decl.ident == nil {
+		return
+	}
+	name := fs_decl.ident.name
+
+	type_info: ^Type
+	if fs_decl.typed != nil {
+		type_info = resolve_type_expr(table, fs_decl.typed)
+	} else {
+		type_info = make_unknown_type(table)
+	}
+
+	sym := Symbol {
+		name      = name,
+		kind      = .FieldSymbol,
+		range     = fs_decl.ident.range,
+		type_info = type_info,
+	}
+	add_symbol(table, sym, allow_shadowing = is_global)
 }
 
 resolve_case_stmt :: proc(table: ^SymbolTable, case_stmt: ^ast.Case_Stmt) {

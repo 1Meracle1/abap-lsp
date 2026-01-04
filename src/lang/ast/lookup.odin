@@ -393,6 +393,35 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 			}
 		}
 
+	case ^Append_Stmt:
+		if n.source != nil {
+			if res := find_node_at_offset(&n.source.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		if n.target != nil {
+			if res := find_node_at_offset(&n.target.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		if n.assigning_target != nil {
+			if res := find_node_at_offset(&n.assigning_target.expr_base, offset); res != nil {
+				return res
+			}
+		}
+
+	case ^Field_Symbol_Decl:
+		if n.ident != nil {
+			if res := find_node_at_offset(&n.ident.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		if n.typed != nil {
+			if res := find_node_at_offset(&n.typed.expr_base, offset); res != nil {
+				return res
+			}
+		}
+
 	case ^Form_Decl:
 		if n.ident != nil {
 			if res := find_node_at_offset(&n.ident.expr_base, offset); res != nil {

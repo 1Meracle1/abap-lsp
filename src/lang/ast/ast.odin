@@ -288,6 +288,26 @@ Sort_Stmt :: struct {
 	cols_by:    [dynamic]Sort_Cols_By,
 }
 
+// APPEND statement kinds
+Append_Kind :: enum {
+	Simple,       // APPEND expr TO itab
+	Initial_Line, // APPEND INITIAL LINE TO itab [ASSIGNING <fs>]
+	Lines_Of,     // APPEND LINES OF itab2 TO itab1
+}
+
+// APPEND statement
+// Syntax variations:
+// - APPEND expr TO itab.
+// - APPEND INITIAL LINE TO itab [ASSIGNING <fs>].
+// - APPEND LINES OF itab2 TO itab1.
+Append_Stmt :: struct {
+	using node:       Stmt,
+	kind:             Append_Kind,
+	source:           ^Expr, // The value/expression to append (for Simple, Lines_Of)
+	target:           ^Expr, // The target internal table
+	assigning_target: ^Expr, // Field symbol for ASSIGNING clause (optional)
+}
+
 // Declarations
 
 Bad_Decl :: struct {
@@ -449,6 +469,16 @@ Include_Decl :: struct {
 	name:       ^Ident,
 }
 
+// FIELD-SYMBOLS declaration
+// Syntax: FIELD-SYMBOLS <fs> TYPE type.
+// Syntax: FIELD-SYMBOLS <fs> LIKE expr.
+// Syntax: FIELD-SYMBOLS <fs> LIKE LINE OF itab.
+Field_Symbol_Decl :: struct {
+	using node: Decl,
+	ident:      ^Ident, // The field symbol name (including angle brackets)
+	typed:      ^Expr,  // The type expression
+}
+
 Event_Kind :: enum {
 	StartOfSelection,
 	EndOfSelection,
@@ -554,6 +584,7 @@ Any_Node :: union {
 	^Message_Stmt,
 	^Insert_Stmt,
 	^Sort_Stmt,
+	^Append_Stmt,
 	// Declarations
 	^Bad_Decl,
 	^Data_Inline_Decl,
@@ -580,6 +611,8 @@ Any_Node :: union {
 	^Event_Block,
 	^Call_Screen_Stmt,
 	^Module_Decl,
+	// Field symbols
+	^Field_Symbol_Decl,
 }
 
 Any_Expr :: union {
@@ -619,7 +652,8 @@ Any_Stmt :: union {
 	^Message_Stmt,
 	^Insert_Stmt,
 	^Sort_Stmt,
-	//
+	^Append_Stmt,
+	// Declarations
 	^Bad_Decl,
 	^Data_Inline_Decl,
 	^Data_Typed_Decl,
@@ -642,4 +676,6 @@ Any_Stmt :: union {
 	^Event_Block,
 	^Call_Screen_Stmt,
 	^Module_Decl,
+	// Field symbols
+	^Field_Symbol_Decl,
 }

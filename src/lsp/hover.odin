@@ -68,6 +68,9 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 				hover_text = format_event_signature(sym)
 			case .Module:
 				hover_text = format_module_signature(sym)
+			case .FieldSymbol:
+				type_str := symbols.format_type(sym.type_info)
+				hover_text = fmt.tprintf("(field-symbol) %s: %s", sym.name, type_str)
 			case:
 				type_str := symbols.format_type(sym.type_info)
 				hover_text = fmt.tprintf("%s: %s", sym.name, type_str)
@@ -149,6 +152,21 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 			hover_text = "(statement) INSERT ... FROM - inserts data from a work area into a database table"
 		case .From_Table:
 			hover_text = "(statement) INSERT ... FROM TABLE - inserts data from an internal table into a database table"
+		}
+
+	case ^ast.Append_Stmt:
+		switch n.kind {
+		case .Simple:
+			hover_text = "(statement) APPEND ... TO - appends a line to an internal table"
+		case .Initial_Line:
+			hover_text = "(statement) APPEND INITIAL LINE TO - appends an initial line to an internal table"
+		case .Lines_Of:
+			hover_text = "(statement) APPEND LINES OF ... TO - appends all lines from one table to another"
+		}
+
+	case ^ast.Field_Symbol_Decl:
+		if n.ident != nil {
+			hover_text = fmt.tprintf("(field-symbol declaration) %s", n.ident.name)
 		}
 
 	case ^ast.Table_Type:

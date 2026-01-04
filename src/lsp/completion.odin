@@ -478,7 +478,7 @@ symbol_to_completion_item :: proc(sym: symbols.Symbol) -> CompletionItem {
 	kind: CompletionItemKind
 	detail: string
 
-	switch sym.kind {
+	#partial switch sym.kind {
 	case .Variable:
 		kind = .Variable
 		detail = symbols.format_type(sym.type_info)
@@ -530,6 +530,9 @@ symbol_to_completion_item :: proc(sym: symbols.Symbol) -> CompletionItem {
 	case .Module:
 		kind = .Function
 		detail = "MODULE"
+	case .FieldSymbol:
+		kind = .Variable
+		detail = fmt.tprintf("FIELD-SYMBOL %s", symbols.format_type(sym.type_info))
 	}
 
 	return CompletionItem {

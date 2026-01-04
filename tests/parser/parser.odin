@@ -5967,3 +5967,499 @@ ENDCLASS.`
 	}
 }
 
+// ============================================================================
+// APPEND Statement Tests
+// ============================================================================
+
+@(test)
+append_simple_test :: proc(t: ^testing.T) {
+	// APPEND int TO itab.
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `APPEND int TO itab.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	append_stmt, ok := file.decls[0].derived_stmt.(^ast.Append_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Append_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	testing.expect(t, append_stmt.kind == .Simple, fmt.tprintf("Expected Simple kind, got %v", append_stmt.kind))
+	testing.expect(t, append_stmt.source != nil, "Expected source to be set")
+	testing.expect(t, append_stmt.target != nil, "Expected target to be set")
+
+	// Check source is identifier
+	if source_ident, sok := append_stmt.source.derived_expr.(^ast.Ident); sok {
+		testing.expect(t, source_ident.name == "int", fmt.tprintf("Expected 'int', got '%s'", source_ident.name))
+	} else {
+		testing.expect(t, false, fmt.tprintf("Expected source to be Ident, got %T", append_stmt.source.derived_expr))
+	}
+
+	// Check target is identifier
+	if target_ident, iok := append_stmt.target.derived_expr.(^ast.Ident); iok {
+		testing.expect(t, target_ident.name == "itab", fmt.tprintf("Expected 'itab', got '%s'", target_ident.name))
+	} else {
+		testing.expect(t, false, fmt.tprintf("Expected target to be Ident, got %T", append_stmt.target.derived_expr))
+	}
+}
+
+@(test)
+append_initial_line_test :: proc(t: ^testing.T) {
+	// APPEND INITIAL LINE TO itab.
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `APPEND INITIAL LINE TO itab.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	append_stmt, ok := file.decls[0].derived_stmt.(^ast.Append_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Append_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	testing.expect(t, append_stmt.kind == .Initial_Line, fmt.tprintf("Expected Initial_Line kind, got %v", append_stmt.kind))
+	testing.expect(t, append_stmt.source == nil, "Expected source to be nil for Initial_Line")
+	testing.expect(t, append_stmt.target != nil, "Expected target to be set")
+
+	// Check target is identifier
+	if target_ident, iok := append_stmt.target.derived_expr.(^ast.Ident); iok {
+		testing.expect(t, target_ident.name == "itab", fmt.tprintf("Expected 'itab', got '%s'", target_ident.name))
+	} else {
+		testing.expect(t, false, fmt.tprintf("Expected target to be Ident, got %T", append_stmt.target.derived_expr))
+	}
+}
+
+@(test)
+append_initial_line_assigning_test :: proc(t: ^testing.T) {
+	// APPEND INITIAL LINE TO itab ASSIGNING <line>.
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `APPEND INITIAL LINE TO itab ASSIGNING <line>.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	append_stmt, ok := file.decls[0].derived_stmt.(^ast.Append_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Append_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	testing.expect(t, append_stmt.kind == .Initial_Line, fmt.tprintf("Expected Initial_Line kind, got %v", append_stmt.kind))
+	testing.expect(t, append_stmt.target != nil, "Expected target to be set")
+	testing.expect(t, append_stmt.assigning_target != nil, "Expected assigning_target to be set")
+
+	// Check assigning target is field symbol
+	if fs_ident, fok := append_stmt.assigning_target.derived_expr.(^ast.Ident); fok {
+		testing.expect(t, fs_ident.name == "<line>", fmt.tprintf("Expected '<line>', got '%s'", fs_ident.name))
+	} else {
+		testing.expect(t, false, fmt.tprintf("Expected assigning_target to be Ident, got %T", append_stmt.assigning_target.derived_expr))
+	}
+}
+
+@(test)
+append_lines_of_test :: proc(t: ^testing.T) {
+	// APPEND LINES OF itab2 TO itab1.
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `APPEND LINES OF itab2 TO itab1.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	append_stmt, ok := file.decls[0].derived_stmt.(^ast.Append_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Append_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	testing.expect(t, append_stmt.kind == .Lines_Of, fmt.tprintf("Expected Lines_Of kind, got %v", append_stmt.kind))
+	testing.expect(t, append_stmt.source != nil, "Expected source to be set")
+	testing.expect(t, append_stmt.target != nil, "Expected target to be set")
+
+	// Check source is identifier
+	if source_ident, sok := append_stmt.source.derived_expr.(^ast.Ident); sok {
+		testing.expect(t, source_ident.name == "itab2", fmt.tprintf("Expected 'itab2', got '%s'", source_ident.name))
+	} else {
+		testing.expect(t, false, fmt.tprintf("Expected source to be Ident, got %T", append_stmt.source.derived_expr))
+	}
+
+	// Check target is identifier
+	if target_ident, iok := append_stmt.target.derived_expr.(^ast.Ident); iok {
+		testing.expect(t, target_ident.name == "itab1", fmt.tprintf("Expected 'itab1', got '%s'", target_ident.name))
+	} else {
+		testing.expect(t, false, fmt.tprintf("Expected target to be Ident, got %T", append_stmt.target.derived_expr))
+	}
+}
+
+@(test)
+append_to_field_symbol_selector_test :: proc(t: ^testing.T) {
+	// APPEND lv_epc TO <fs_unpack_data>-children.
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `APPEND lv_epc TO <fs_unpack_data>-children.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	append_stmt, ok := file.decls[0].derived_stmt.(^ast.Append_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Append_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	testing.expect(t, append_stmt.kind == .Simple, fmt.tprintf("Expected Simple kind, got %v", append_stmt.kind))
+	testing.expect(t, append_stmt.source != nil, "Expected source to be set")
+	testing.expect(t, append_stmt.target != nil, "Expected target to be set")
+
+	// Check source is identifier
+	if source_ident, sok := append_stmt.source.derived_expr.(^ast.Ident); sok {
+		testing.expect(t, source_ident.name == "lv_epc", fmt.tprintf("Expected 'lv_epc', got '%s'", source_ident.name))
+	} else {
+		testing.expect(t, false, fmt.tprintf("Expected source to be Ident, got %T", append_stmt.source.derived_expr))
+	}
+
+	// Check target is a selector expression
+	sel_expr, selok := append_stmt.target.derived_expr.(^ast.Selector_Expr)
+	if !testing.expect(t, selok, fmt.tprintf("Expected target to be Selector_Expr, got %T", append_stmt.target.derived_expr)) do return
+
+	// Check base is field symbol
+	if base_ident, bok := sel_expr.expr.derived_expr.(^ast.Ident); bok {
+		testing.expect(t, base_ident.name == "<fs_unpack_data>", fmt.tprintf("Expected '<fs_unpack_data>', got '%s'", base_ident.name))
+	} else {
+		testing.expect(t, false, fmt.tprintf("Expected base to be Ident, got %T", sel_expr.expr.derived_expr))
+	}
+
+	// Check field name
+	testing.expect(t, sel_expr.field != nil, "Expected field to be set")
+	testing.expect(t, sel_expr.field.name == "children", fmt.tprintf("Expected 'children', got '%s'", sel_expr.field.name))
+}
+
+@(test)
+append_value_constructor_test :: proc(t: ^testing.T) {
+	// APPEND VALUE #( code_urn = <fs_doc_info>-gs1_es ) TO lt_recv_objects.
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `APPEND VALUE #( code_urn = <fs_doc_info>-gs1_es ) TO lt_recv_objects.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	append_stmt, ok := file.decls[0].derived_stmt.(^ast.Append_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Append_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	testing.expect(t, append_stmt.kind == .Simple, fmt.tprintf("Expected Simple kind, got %v", append_stmt.kind))
+	testing.expect(t, append_stmt.source != nil, "Expected source to be set")
+	testing.expect(t, append_stmt.target != nil, "Expected target to be set")
+
+	// Check source is a Constructor_Expr (VALUE #(...))
+	constr_expr, cok := append_stmt.source.derived_expr.(^ast.Constructor_Expr)
+	if !testing.expect(t, cok, fmt.tprintf("Expected source to be Constructor_Expr, got %T", append_stmt.source.derived_expr)) do return
+
+	testing.expect(t, constr_expr.is_inferred, "Expected VALUE expression to be inferred (#)")
+	testing.expect(t, len(constr_expr.args) == 1, fmt.tprintf("Expected 1 argument, got %d", len(constr_expr.args)))
+
+	// Check target is identifier
+	if target_ident, iok := append_stmt.target.derived_expr.(^ast.Ident); iok {
+		testing.expect(t, target_ident.name == "lt_recv_objects", fmt.tprintf("Expected 'lt_recv_objects', got '%s'", target_ident.name))
+	} else {
+		testing.expect(t, false, fmt.tprintf("Expected target to be Ident, got %T", append_stmt.target.derived_expr))
+	}
+}
+
+@(test)
+append_selector_expr_test :: proc(t: ^testing.T) {
+	// APPEND <fs_doc_info>-gs1_es TO lt_upd_objs.
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `APPEND <fs_doc_info>-gs1_es TO lt_upd_objs.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	append_stmt, ok := file.decls[0].derived_stmt.(^ast.Append_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Append_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	testing.expect(t, append_stmt.kind == .Simple, fmt.tprintf("Expected Simple kind, got %v", append_stmt.kind))
+	testing.expect(t, append_stmt.source != nil, "Expected source to be set")
+	testing.expect(t, append_stmt.target != nil, "Expected target to be set")
+
+	// Check source is a selector expression
+	sel_expr, selok := append_stmt.source.derived_expr.(^ast.Selector_Expr)
+	if !testing.expect(t, selok, fmt.tprintf("Expected source to be Selector_Expr, got %T", append_stmt.source.derived_expr)) do return
+
+	// Check base is field symbol
+	if base_ident, bok := sel_expr.expr.derived_expr.(^ast.Ident); bok {
+		testing.expect(t, base_ident.name == "<fs_doc_info>", fmt.tprintf("Expected '<fs_doc_info>', got '%s'", base_ident.name))
+	} else {
+		testing.expect(t, false, fmt.tprintf("Expected base to be Ident, got %T", sel_expr.expr.derived_expr))
+	}
+
+	// Check field name
+	testing.expect(t, sel_expr.field != nil, "Expected field to be set")
+	testing.expect(t, sel_expr.field.name == "gs1_es", fmt.tprintf("Expected 'gs1_es', got '%s'", sel_expr.field.name))
+
+	// Check target is identifier
+	if target_ident, iok := append_stmt.target.derived_expr.(^ast.Ident); iok {
+		testing.expect(t, target_ident.name == "lt_upd_objs", fmt.tprintf("Expected 'lt_upd_objs', got '%s'", target_ident.name))
+	} else {
+		testing.expect(t, false, fmt.tprintf("Expected target to be Ident, got %T", append_stmt.target.derived_expr))
+	}
+}
+
+@(test)
+append_value_nested_constructor_test :: proc(t: ^testing.T) {
+	// APPEND VALUE #(
+	//   parent   = ls_ser_par-gs1_es_parent
+	//   pack_lvl = <fs_doc_info>-status_pack
+	//   children = VALUE #( ( lv_epc ) )
+	// ) TO lt_unpack_lvls.
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `APPEND VALUE #(
+                parent   = ls_ser_par-gs1_es_parent
+                pack_lvl = <fs_doc_info>-status_pack
+                children = VALUE #( ( lv_epc ) )
+              ) TO lt_unpack_lvls.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	append_stmt, ok := file.decls[0].derived_stmt.(^ast.Append_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Append_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	testing.expect(t, append_stmt.kind == .Simple, fmt.tprintf("Expected Simple kind, got %v", append_stmt.kind))
+	testing.expect(t, append_stmt.source != nil, "Expected source to be set")
+	testing.expect(t, append_stmt.target != nil, "Expected target to be set")
+
+	// Check source is a Constructor_Expr (VALUE #(...))
+	constr_expr, cok := append_stmt.source.derived_expr.(^ast.Constructor_Expr)
+	if !testing.expect(t, cok, fmt.tprintf("Expected source to be Constructor_Expr, got %T", append_stmt.source.derived_expr)) do return
+
+	testing.expect(t, constr_expr.is_inferred, "Expected VALUE expression to be inferred (#)")
+	testing.expect(t, len(constr_expr.args) == 3, fmt.tprintf("Expected 3 arguments, got %d", len(constr_expr.args)))
+
+	// Verify the third argument is a nested VALUE constructor
+	if len(constr_expr.args) >= 3 {
+		third_arg, naok := constr_expr.args[2].derived_expr.(^ast.Named_Arg)
+		if testing.expect(t, naok, fmt.tprintf("Expected third arg to be Named_Arg, got %T", constr_expr.args[2].derived_expr)) {
+			testing.expect(t, third_arg.name.name == "children", fmt.tprintf("Expected 'children', got '%s'", third_arg.name.name))
+			// Check it's a nested VALUE constructor
+			_, nested_cok := third_arg.value.derived_expr.(^ast.Constructor_Expr)
+			testing.expect(t, nested_cok, fmt.tprintf("Expected nested Constructor_Expr, got %T", third_arg.value.derived_expr))
+		}
+	}
+
+	// Check target is identifier
+	if target_ident, iok := append_stmt.target.derived_expr.(^ast.Ident); iok {
+		testing.expect(t, target_ident.name == "lt_unpack_lvls", fmt.tprintf("Expected 'lt_unpack_lvls', got '%s'", target_ident.name))
+	} else {
+		testing.expect(t, false, fmt.tprintf("Expected target to be Ident, got %T", append_stmt.target.derived_expr))
+	}
+}
+
+// ============================================================================
+// FIELD-SYMBOLS Declaration Tests
+// ============================================================================
+
+@(test)
+field_symbol_type_test :: proc(t: ^testing.T) {
+	// FIELD-SYMBOLS <fs> TYPE string.
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `FIELD-SYMBOLS <fs> TYPE string.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	fs_decl, ok := file.decls[0].derived_stmt.(^ast.Field_Symbol_Decl)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Field_Symbol_Decl, got %T", file.decls[0].derived_stmt)) do return
+
+	testing.expect(t, fs_decl.ident != nil, "Expected ident to be set")
+	testing.expect(t, fs_decl.typed != nil, "Expected typed to be set")
+
+	// Check field symbol name
+	testing.expect(t, fs_decl.ident.name == "<fs>", fmt.tprintf("Expected '<fs>', got '%s'", fs_decl.ident.name))
+
+	// Check type is identifier
+	if type_ident, iok := fs_decl.typed.derived_expr.(^ast.Ident); iok {
+		testing.expect(t, type_ident.name == "string", fmt.tprintf("Expected 'string', got '%s'", type_ident.name))
+	} else {
+		testing.expect(t, false, fmt.tprintf("Expected typed to be Ident, got %T", fs_decl.typed.derived_expr))
+	}
+}
+
+@(test)
+field_symbol_like_line_of_test :: proc(t: ^testing.T) {
+	// FIELD-SYMBOLS <line> LIKE LINE OF itab.
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `FIELD-SYMBOLS <line> LIKE LINE OF itab.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	fs_decl, ok := file.decls[0].derived_stmt.(^ast.Field_Symbol_Decl)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Field_Symbol_Decl, got %T", file.decls[0].derived_stmt)) do return
+
+	testing.expect(t, fs_decl.ident != nil, "Expected ident to be set")
+	testing.expect(t, fs_decl.typed != nil, "Expected typed to be set")
+
+	// Check field symbol name
+	testing.expect(t, fs_decl.ident.name == "<line>", fmt.tprintf("Expected '<line>', got '%s'", fs_decl.ident.name))
+
+	// Check type is Line_Type
+	line_type, lok := fs_decl.typed.derived_expr.(^ast.Line_Type)
+	if !testing.expect(t, lok, fmt.tprintf("Expected typed to be Line_Type, got %T", fs_decl.typed.derived_expr)) do return
+
+	// Check table reference
+	if table_ident, iok := line_type.table.derived_expr.(^ast.Ident); iok {
+		testing.expect(t, table_ident.name == "itab", fmt.tprintf("Expected 'itab', got '%s'", table_ident.name))
+	} else {
+		testing.expect(t, false, fmt.tprintf("Expected table to be Ident, got %T", line_type.table.derived_expr))
+	}
+}
+
+@(test)
+field_symbol_assignment_test :: proc(t: ^testing.T) {
+	// <line>-carrid = 'LH'.
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `<line>-carrid = 'LH'.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	assign_stmt, ok := file.decls[0].derived_stmt.(^ast.Assign_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Assign_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	testing.expect(t, len(assign_stmt.lhs) == 1, "Expected 1 lhs expression")
+	testing.expect(t, len(assign_stmt.rhs) == 1, "Expected 1 rhs expression")
+
+	// Check lhs is a selector expression
+	sel_expr, sok := assign_stmt.lhs[0].derived_expr.(^ast.Selector_Expr)
+	if !testing.expect(t, sok, fmt.tprintf("Expected lhs to be Selector_Expr, got %T", assign_stmt.lhs[0].derived_expr)) do return
+
+	// Check base is field symbol
+	if base_ident, bok := sel_expr.expr.derived_expr.(^ast.Ident); bok {
+		testing.expect(t, base_ident.name == "<line>", fmt.tprintf("Expected '<line>', got '%s'", base_ident.name))
+	} else {
+		testing.expect(t, false, fmt.tprintf("Expected base to be Ident, got %T", sel_expr.expr.derived_expr))
+	}
+
+	// Check field name
+	testing.expect(t, sel_expr.field != nil, "Expected field to be set")
+	testing.expect(t, sel_expr.field.name == "carrid", fmt.tprintf("Expected 'carrid', got '%s'", sel_expr.field.name))
+}
+
+@(test)
+field_symbol_with_append_test :: proc(t: ^testing.T) {
+	// Combined test: DATA, FIELD-SYMBOLS, APPEND, assignment
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `DATA itab TYPE TABLE OF spfli.
+FIELD-SYMBOLS <line> LIKE LINE OF itab.
+APPEND INITIAL LINE TO itab ASSIGNING <line>.
+<line>-carrid = 'LH'.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 4, fmt.tprintf("Expected 4 decls, got %d", len(file.decls))) do return
+
+	// First: DATA declaration
+	data_decl, dok := file.decls[0].derived_stmt.(^ast.Data_Typed_Decl)
+	if testing.expect(t, dok, fmt.tprintf("Expected Data_Typed_Decl, got %T", file.decls[0].derived_stmt)) {
+		testing.expect(t, data_decl.ident.name == "itab", fmt.tprintf("Expected 'itab', got '%s'", data_decl.ident.name))
+	}
+
+	// Second: FIELD-SYMBOLS declaration
+	fs_decl, fok := file.decls[1].derived_stmt.(^ast.Field_Symbol_Decl)
+	if testing.expect(t, fok, fmt.tprintf("Expected Field_Symbol_Decl, got %T", file.decls[1].derived_stmt)) {
+		testing.expect(t, fs_decl.ident.name == "<line>", fmt.tprintf("Expected '<line>', got '%s'", fs_decl.ident.name))
+	}
+
+	// Third: APPEND statement
+	append_stmt, aok := file.decls[2].derived_stmt.(^ast.Append_Stmt)
+	if testing.expect(t, aok, fmt.tprintf("Expected Append_Stmt, got %T", file.decls[2].derived_stmt)) {
+		testing.expect(t, append_stmt.kind == .Initial_Line, fmt.tprintf("Expected Initial_Line, got %v", append_stmt.kind))
+		testing.expect(t, append_stmt.assigning_target != nil, "Expected assigning_target to be set")
+	}
+
+	// Fourth: Assignment statement
+	_, asok := file.decls[3].derived_stmt.(^ast.Assign_Stmt)
+	testing.expect(t, asok, fmt.tprintf("Expected Assign_Stmt, got %T", file.decls[3].derived_stmt))
+}
+

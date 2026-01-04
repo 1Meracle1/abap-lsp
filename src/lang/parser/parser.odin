@@ -98,7 +98,18 @@ parse_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			return parse_insert_stmt(p)
 		case "SORT":
 			return parse_sort_stmt(p)
+		case "APPEND":
+			return parse_append_stmt(p)
+		case "FIELD":
+			if check_hyphenated_keyword(p, "FIELD", "SYMBOLS") {
+				return parse_field_symbol_decl(p)
+			}
 		}
+	}
+
+	// Check for field symbol identifiers (starting with <)
+	if p.curr_tok.kind == .Lt {
+		return parse_field_symbol_assign_stmt(p)
 	}
 
 	if p.curr_tok.kind == .Ident {
@@ -1163,6 +1174,9 @@ parse_operand :: proc(p: ^Parser) -> ^ast.Expr {
 			return parse_paren_expr(p)
 		}
 		return nil
+	case .Lt:
+		// Field symbol reference <fs> in an expression context
+		return parse_field_symbol_ref(p)
 	case .Hash:
 		// Standalone # is not valid, but consume it to avoid infinite loops
 		hash_tok := advance_token(p)
@@ -3031,4 +3045,163 @@ parse_sort_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	sort_stmt.cols_by = cols_by
 	sort_stmt.order = order_kind
 	return sort_stmt
+}
+
+// APPEND statement parser
+// Syntax variations:
+// - APPEND expr TO itab.
+// - APPEND INITIAL LINE TO itab [ASSIGNING <fs>].
+// - APPEND LINES OF itab2 TO itab1.
+parse_append_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
+	append_tok := expect_keyword_token(p, "APPEND")
+
+	append_stmt := ast.new(ast.Append_Stmt, append_tok.range)
+
+	// Check for INITIAL LINE form
+	if check_keyword(p, "INITIAL") {
+		advance_token(p) // consume INITIAL
+		expect_keyword_token(p, "LINE")
+		expect_keyword_token(p, "TO")
+		append_stmt.target = parse_expr(p)
+		append_stmt.kind = .Initial_Line
+
+		// Check for optional ASSIGNING clause
+		if check_keyword(p, "ASSIGNING") {
+			advance_token(p) // consume ASSIGNING
+			append_stmt.assigning_target = parse_field_symbol_ref(p)
+		}
+
+		period_tok := expect_token(p, .Period)
+		append_stmt.range.end = period_tok.range.end
+		append_stmt.derived_stmt = append_stmt
+		return append_stmt
+	}
+
+	// Check for LINES OF form
+	if check_keyword(p, "LINES") {
+		advance_token(p) // consume LINES
+		expect_keyword_token(p, "OF")
+		append_stmt.source = parse_expr(p)
+		expect_keyword_token(p, "TO")
+		append_stmt.target = parse_expr(p)
+		append_stmt.kind = .Lines_Of
+
+		period_tok := expect_token(p, .Period)
+		append_stmt.range.end = period_tok.range.end
+		append_stmt.derived_stmt = append_stmt
+		return append_stmt
+	}
+
+	// Simple APPEND expr TO itab form
+	append_stmt.source = parse_expr(p)
+	expect_keyword_token(p, "TO")
+	append_stmt.target = parse_expr(p)
+	append_stmt.kind = .Simple
+
+	// Check for optional ASSIGNING clause
+	if check_keyword(p, "ASSIGNING") {
+		advance_token(p) // consume ASSIGNING
+		append_stmt.assigning_target = parse_field_symbol_ref(p)
+	}
+
+	period_tok := expect_token(p, .Period)
+	append_stmt.range.end = period_tok.range.end
+	append_stmt.derived_stmt = append_stmt
+	return append_stmt
+}
+
+// parse_field_symbol_ref parses a field symbol reference <fs>
+parse_field_symbol_ref :: proc(p: ^Parser) -> ^ast.Expr {
+	if p.curr_tok.kind != .Lt {
+		error(p, p.curr_tok.range, "expected '<' for field symbol")
+		return nil
+	}
+
+	start_tok := advance_token(p) // consume <
+
+	// Parse the field symbol name
+	if p.curr_tok.kind != .Ident {
+		error(p, p.curr_tok.range, "expected field symbol name after '<'")
+		return nil
+	}
+
+	name_tok := advance_token(p) // consume identifier
+
+	// Expect closing >
+	if p.curr_tok.kind != .Gt {
+		error(p, p.curr_tok.range, "expected '>' to close field symbol")
+		return nil
+	}
+
+	end_tok := advance_token(p) // consume >
+
+	// Create identifier with angle brackets in the name
+	fs_name := fmt.tprintf("<%s>", name_tok.lit)
+	fs_ident := ast.new(ast.Ident, lexer.TextRange{start_tok.range.start, end_tok.range.end})
+	fs_ident.name = fs_name
+	fs_ident.derived_expr = fs_ident
+	return fs_ident
+}
+
+// FIELD-SYMBOLS declaration parser
+// Syntax: FIELD-SYMBOLS <fs> TYPE type.
+// Syntax: FIELD-SYMBOLS <fs> LIKE LINE OF itab.
+parse_field_symbol_decl :: proc(p: ^Parser) -> ^ast.Stmt {
+	// FIELD-SYMBOLS was already consumed by check_hyphenated_keyword
+	fs_tok := p.prev_tok
+
+	// Parse field symbol name <fs>
+	fs_ident := parse_field_symbol_ref(p)
+
+	fs_decl := ast.new(ast.Field_Symbol_Decl, fs_tok.range)
+	if ident, ok := fs_ident.derived_expr.(^ast.Ident); ok {
+		fs_decl.ident = ident
+	}
+
+	// Parse TYPE or LIKE clause
+	if check_keyword(p, "TYPE") || check_keyword(p, "LIKE") {
+		advance_token(p)
+		fs_decl.typed = parse_type_expr(p)
+	} else {
+		error(p, p.curr_tok.range, "expected TYPE or LIKE after field symbol name")
+	}
+
+	period_tok := expect_token(p, .Period)
+	fs_decl.range.end = period_tok.range.end
+	fs_decl.derived_stmt = fs_decl
+	return fs_decl
+}
+
+// parse_field_symbol_assign_stmt parses assignment statements starting with field symbol
+// e.g., <line>-carrid = '...'.
+parse_field_symbol_assign_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
+	start_tok := p.curr_tok
+	fs_expr := parse_field_symbol_ref(p)
+	if fs_expr == nil {
+		end_tok := skip_to_new_line(p)
+		bad_decl := ast.new(ast.Bad_Decl, start_tok, end_tok)
+		return bad_decl
+	}
+
+	// Check for selector expression (field access)
+	lhs := parse_atom_expr(p, fs_expr)
+
+	if p.curr_tok.kind == .Eq {
+		op := advance_token(p)
+		rhs := parse_expr(p)
+		period_tok := expect_token(p, .Period)
+
+		assign_stmt := ast.new(ast.Assign_Stmt, start_tok, period_tok)
+		assign_stmt.lhs = make([]^ast.Expr, 1)
+		assign_stmt.lhs[0] = lhs
+		assign_stmt.op = op
+		assign_stmt.rhs = make([]^ast.Expr, 1)
+		assign_stmt.rhs[0] = rhs
+		return assign_stmt
+	}
+
+	period_tok := expect_token(p, .Period)
+	expr_stmt := ast.new(ast.Expr_Stmt, start_tok, period_tok)
+	expr_stmt.expr = lhs
+	return expr_stmt
 }

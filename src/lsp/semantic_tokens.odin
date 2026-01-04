@@ -479,6 +479,33 @@ collect_tokens_from_stmt :: proc(
 				collect_tokens_from_expr(tokens, col.col, snap, nil)
 			}
 		}
+
+	case ^ast.Append_Stmt:
+		if s.source != nil {
+			collect_tokens_from_expr(tokens, s.source, snap, nil)
+		}
+		if s.target != nil {
+			collect_tokens_from_expr(tokens, s.target, snap, nil)
+		}
+		if s.assigning_target != nil {
+			collect_tokens_from_expr(tokens, s.assigning_target, snap, nil)
+		}
+
+	case ^ast.Field_Symbol_Decl:
+		if s.ident != nil {
+			append(
+				tokens,
+				SemanticToken {
+					offset = s.ident.range.start,
+					length = s.ident.range.end - s.ident.range.start,
+					type = .Variable,
+					modifiers = 1 << u32(SemanticTokenModifier.Declaration),
+				},
+			)
+		}
+		if s.typed != nil {
+			collect_tokens_from_type_expr(tokens, s.typed)
+		}
 	}
 }
 
@@ -836,6 +863,8 @@ symbol_to_token_type :: proc(sym: symbols.Symbol) -> (SemanticTokenType, u32) {
 		return .Event, modifiers
 	case .Module:
 		return .Function, modifiers
+	case .FieldSymbol:
+		return .Variable, modifiers
 	}
 
 	return .Variable, modifiers
