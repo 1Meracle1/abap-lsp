@@ -97,10 +97,31 @@ make_named_type :: proc(table: ^SymbolTable, name: string, ast_node: ^ast.Expr =
 	return t
 }
 
-make_table_type :: proc(table: ^SymbolTable, elem: ^Type) -> ^Type {
+make_table_type :: proc(table: ^SymbolTable, elem: ^Type, kind: TableTypeKind = .Any) -> ^Type {
 	t := make_type(table, .Table)
 	t.elem_type = elem
+	t.table_kind = kind
 	return t
+}
+
+make_line_of_type :: proc(table: ^SymbolTable, target: ^Type) -> ^Type {
+	t := make_type(table, .LineOf)
+	t.target_type = target
+	return t
+}
+
+make_table_key_info :: proc(table: ^SymbolTable, is_unique: bool = false, is_default: bool = false) -> ^TableKeyInfo {
+	key := new(TableKeyInfo)
+	key.is_unique = is_unique
+	key.is_default = is_default
+	key.components = make([dynamic]string)
+	return key
+}
+
+add_key_component :: proc(key: ^TableKeyInfo, component: string) {
+	if key != nil {
+		append(&key.components, strings.to_lower(component))
+	}
 }
 
 make_reference_type :: proc(table: ^SymbolTable, target: ^Type) -> ^Type {

@@ -130,12 +130,33 @@ parse_data_typed_decl :: proc(p: ^Parser, data_tok: lexer.Token) -> ^ast.Decl {
 
 parse_data_typed_single_decl :: proc(p: ^Parser, data_tok: lexer.Token) -> ^ast.Decl {
 	ident_tok := expect_token(p, .Ident)
-	expect_keyword_token(p, "TYPE")
-	type_expr := parse_expr(p)
+	
+	// Accept TYPE or LIKE
+	if check_keyword(p, "TYPE") || check_keyword(p, "LIKE") {
+		advance_token(p)
+	} else {
+		expect_keyword_token(p, "TYPE")
+	}
+	
+	type_expr := parse_type_expr(p)
+
+	// Parse optional LENGTH
+	if check_keyword(p, "LENGTH") {
+		advance_token(p)
+		// Skip LENGTH expression for now, but we could store it
+		parse_expr(p)
+	}
+
+	value_expr: ^ast.Expr = nil
+	if check_keyword(p, "VALUE") {
+		advance_token(p)
+		value_expr = parse_expr(p)
+	}
 
 	data_decl := ast.new(ast.Data_Typed_Decl, data_tok, p.curr_tok)
 	data_decl.ident = ast.new_ident(ident_tok)
 	data_decl.typed = type_expr
+	data_decl.value = value_expr
 	return data_decl
 }
 
@@ -145,12 +166,32 @@ parse_data_typed_multiple_decl :: proc(p: ^Parser, data_tok: lexer.Token) -> ^as
 
 	for {
 		ident_tok := expect_token(p, .Ident)
-		expect_keyword_token(p, "TYPE")
-		type_expr := parse_expr(p)
+		
+		// Accept TYPE or LIKE
+		if check_keyword(p, "TYPE") || check_keyword(p, "LIKE") {
+			advance_token(p)
+		} else {
+			expect_keyword_token(p, "TYPE")
+		}
+		
+		type_expr := parse_type_expr(p)
+
+		// Parse optional LENGTH
+		if check_keyword(p, "LENGTH") {
+			advance_token(p)
+			parse_expr(p)
+		}
+
+		value_expr: ^ast.Expr = nil
+		if check_keyword(p, "VALUE") {
+			advance_token(p)
+			value_expr = parse_expr(p)
+		}
 
 		decl := ast.new(ast.Data_Typed_Decl, ident_tok, p.prev_tok)
 		decl.ident = ast.new_ident(ident_tok)
 		decl.typed = type_expr
+		decl.value = value_expr
 		append(&chain_decl.decls, decl)
 
 		if allow_token(p, .Comma) {
@@ -192,7 +233,7 @@ parse_types_decl :: proc(p: ^Parser) -> ^ast.Decl {
 parse_types_single_decl :: proc(p: ^Parser, types_tok: lexer.Token) -> ^ast.Decl {
 	ident_tok := expect_token(p, .Ident)
 	expect_keyword_token(p, "TYPE")
-	type_expr := parse_expr(p)
+	type_expr := parse_type_expr(p)
 
 	length_expr: ^ast.Expr = nil
 	if check_keyword(p, "LENGTH") {
@@ -231,7 +272,7 @@ parse_types_chain_decl :: proc(p: ^Parser, types_tok: lexer.Token) -> ^ast.Decl 
 
 		ident_tok := expect_token(p, .Ident)
 		expect_keyword_token(p, "TYPE")
-		type_expr := parse_expr(p)
+		type_expr := parse_type_expr(p)
 
 		length_expr: ^ast.Expr = nil
 		if check_keyword(p, "LENGTH") {
@@ -286,7 +327,7 @@ parse_types_struct_decl :: proc(p: ^Parser) -> ^ast.Types_Struct_Decl {
 
 		field_ident_tok := expect_token(p, .Ident)
 		expect_keyword_token(p, "TYPE")
-		type_expr := parse_expr(p)
+		type_expr := parse_type_expr(p)
 
 		length_expr: ^ast.Expr = nil
 		if check_keyword(p, "LENGTH") {
@@ -332,6 +373,241 @@ check_keyword :: proc(p: ^Parser, expected: string) -> bool {
 		return keyword == expected
 	}
 	return false
+}
+
+// parse_type_expr parses a type expression, handling complex types like:
+// - STANDARD TABLE OF / SORTED TABLE OF / HASHED TABLE OF / TABLE OF
+// - REF TO
+// - LINE OF
+// - Simple types (identifiers, selectors)
+// - WITH KEY / WITH UNIQUE KEY / WITH NON-UNIQUE KEY clauses
+parse_type_expr :: proc(p: ^Parser) -> ^ast.Expr {
+	// Check for REF TO
+	if check_keyword(p, "REF") {
+		return parse_ref_type(p)
+	}
+	
+	// Check for LINE OF
+	if check_keyword(p, "LINE") {
+		return parse_line_type(p)
+	}
+	
+	// Check for table types: STANDARD TABLE OF, SORTED TABLE OF, HASHED TABLE OF, TABLE OF
+	// Also handle UNIQUE prefix for hashed tables
+	if check_keyword(p, "STANDARD") || check_keyword(p, "SORTED") || 
+	   check_keyword(p, "HASHED") || check_keyword(p, "TABLE") ||
+	   check_keyword(p, "UNIQUE") {
+		return parse_table_type(p)
+	}
+	
+	// Otherwise parse as a simple type expression (identifier or selector)
+	return parse_simple_type_expr(p)
+}
+
+// parse_ref_type parses: REF TO type
+parse_ref_type :: proc(p: ^Parser) -> ^ast.Expr {
+	ref_tok := expect_keyword_token(p, "REF")
+	expect_keyword_token(p, "TO")
+	
+	target := parse_simple_type_expr(p)
+	
+	ref_type := ast.new(ast.Ref_Type, lexer.TextRange{ref_tok.range.start, p.prev_tok.range.end})
+	ref_type.target = target
+	ref_type.derived_expr = ref_type
+	return ref_type
+}
+
+// parse_line_type parses: LINE OF table_var
+parse_line_type :: proc(p: ^Parser) -> ^ast.Expr {
+	line_tok := expect_keyword_token(p, "LINE")
+	expect_keyword_token(p, "OF")
+	
+	table_ref := parse_simple_type_expr(p)
+	
+	line_type := ast.new(ast.Line_Type, lexer.TextRange{line_tok.range.start, p.prev_tok.range.end})
+	line_type.table = table_ref
+	line_type.derived_expr = line_type
+	return line_type
+}
+
+// parse_table_type parses table types with optional key specifications:
+// - STANDARD TABLE OF type [WITH key_spec]
+// - SORTED TABLE OF type [WITH key_spec]
+// - HASHED TABLE OF type WITH key_spec
+// - TABLE OF type [WITH key_spec]
+// - UNIQUE [HASHED/SORTED] TABLE OF type WITH key_spec
+parse_table_type :: proc(p: ^Parser) -> ^ast.Expr {
+	start_tok := p.curr_tok
+	table_kind := ast.Table_Kind.Any
+	is_unique := false
+	
+	// Check for UNIQUE prefix
+	if check_keyword(p, "UNIQUE") {
+		advance_token(p)
+		is_unique = true
+	}
+	
+	// Determine table kind
+	if check_keyword(p, "STANDARD") {
+		advance_token(p)
+		table_kind = .Standard
+	} else if check_keyword(p, "SORTED") {
+		advance_token(p)
+		table_kind = .Sorted
+	} else if check_keyword(p, "HASHED") {
+		advance_token(p)
+		table_kind = .Hashed
+	}
+	
+	// Expect TABLE keyword
+	expect_keyword_token(p, "TABLE")
+	expect_keyword_token(p, "OF")
+	
+	// Parse element type
+	elem := parse_simple_type_expr(p)
+	
+	// Create table type node
+	table_type := ast.new(ast.Table_Type, lexer.TextRange{start_tok.range.start, p.prev_tok.range.end})
+	table_type.kind = table_kind
+	table_type.elem = elem
+	table_type.derived_expr = table_type
+	
+	// Parse optional WITH KEY clause(s)
+	for check_keyword(p, "WITH") {
+		key := parse_table_key(p, is_unique)
+		if key != nil {
+			if table_type.primary_key == nil {
+				table_type.primary_key = key
+			} else {
+				if table_type.secondary_keys == nil {
+					table_type.secondary_keys = make([dynamic]^ast.Table_Key)
+				}
+				append(&table_type.secondary_keys, key)
+			}
+		}
+		table_type.range.end = p.prev_tok.range.end
+		// Reset is_unique for secondary keys - they specify their own uniqueness
+		is_unique = false
+	}
+	
+	return table_type
+}
+
+// parse_table_key parses: WITH [UNIQUE|NON-UNIQUE] [SORTED|HASHED] KEY key_spec
+parse_table_key :: proc(p: ^Parser, default_unique: bool) -> ^ast.Table_Key {
+	if !check_keyword(p, "WITH") {
+		return nil
+	}
+	advance_token(p) // consume WITH
+	
+	key := new(ast.Table_Key)
+	key.is_unique = default_unique
+	key.components = make([dynamic]^ast.Ident)
+	
+	// Check for UNIQUE / NON-UNIQUE modifier
+	if check_keyword(p, "UNIQUE") {
+		advance_token(p)
+		key.is_unique = true
+	} else if check_hyphenated_keyword(p, "NON", "UNIQUE") {
+		// NON-UNIQUE was consumed by check_compound_keyword
+		key.is_unique = false
+	}
+	
+	// Check for SORTED / HASHED for secondary keys
+	if check_keyword(p, "SORTED") {
+		advance_token(p)
+	} else if check_keyword(p, "HASHED") {
+		advance_token(p)
+	}
+	
+	// Expect KEY keyword
+	if check_keyword(p, "KEY") {
+		advance_token(p)
+	} else if check_keyword(p, "DEFAULT") {
+		advance_token(p)
+		if check_keyword(p, "KEY") {
+			advance_token(p)
+		}
+		key.is_default = true
+		return key
+	} else {
+		// No KEY keyword, might be just WITH for other purposes
+		free(key)
+		return nil
+	}
+	
+	// Check for DEFAULT KEY
+	if check_keyword(p, "DEFAULT") {
+		advance_token(p)
+		if check_keyword(p, "KEY") {
+			advance_token(p)
+		}
+		key.is_default = true
+		return key
+	}
+	
+	// Check for named key (identifier before COMPONENTS or for simple key names)
+	// Parse key components - can be single identifier or list separated by commas
+	// Also check for COMPONENTS keyword for secondary keys
+	if check_keyword(p, "COMPONENTS") {
+		advance_token(p)
+	}
+	
+	// Parse key field names
+	for p.curr_tok.kind == .Ident {
+		// Check if it's a keyword that ends the key specification
+		if check_keyword(p, "WITH") || check_keyword(p, "VALUE") ||
+		   check_keyword(p, "LENGTH") || check_keyword(p, "READ") {
+			break
+		}
+		
+		field_tok := advance_token(p)
+		field_ident := ast.new_ident(field_tok)
+		append(&key.components, field_ident)
+		
+		// Check for comma separator
+		if !allow_token(p, .Comma) {
+			break
+		}
+	}
+	
+	return key
+}
+
+// Helper to check two-part compound keywords like NON-UNIQUE
+check_hyphenated_keyword :: proc(p: ^Parser, first: string, second: string) -> bool {
+	if !check_keyword(p, first) {
+		return false
+	}
+	
+	saved_prev := p.prev_tok
+	saved_curr := p.curr_tok
+	saved_pos := p.l.pos
+	saved_read_pos := p.l.read_pos
+	saved_ch := p.l.ch
+	
+	advance_token(p) // consume first
+	if p.curr_tok.kind != .Minus || lexer.have_space_between(saved_curr, p.curr_tok) {
+		p.prev_tok = saved_prev
+		p.curr_tok = saved_curr
+		p.l.pos = saved_pos
+		p.l.read_pos = saved_read_pos
+		p.l.ch = saved_ch
+		return false
+	}
+	
+	advance_token(p) // consume -
+	if lexer.have_space_between(p.prev_tok, p.curr_tok) || !check_keyword(p, second) {
+		p.prev_tok = saved_prev
+		p.curr_tok = saved_curr
+		p.l.pos = saved_pos
+		p.l.read_pos = saved_read_pos
+		p.l.ch = saved_ch
+		return false
+	}
+	
+	advance_token(p) // consume second
+	return true
 }
 
 // check_compound_keyword checks for a hyphenated keyword like START-OF-SELECTION
@@ -504,9 +780,9 @@ parse_form_params :: proc(
 		if p.curr_tok.kind == .Ident {
 			if len(p.curr_tok.lit) > 0 && len(p.curr_tok.lit) < len(p.keyword_buffer) {
 				keyword := to_upper(p.keyword_buffer[:], p.curr_tok.lit)
-				if keyword == "TYPE" {
+				if keyword == "TYPE" || keyword == "LIKE" {
 					advance_token(p)
-					param.typed = parse_expr(p)
+					param.typed = parse_type_expr(p)
 					param.range.end = p.prev_tok.range.end
 				}
 			}
@@ -1648,7 +1924,7 @@ parse_class_data_single_decl :: proc(
 ) -> ^ast.Stmt {
 	ident_tok := expect_token(p, .Ident)
 	expect_keyword_token(p, "TYPE")
-	type_expr := parse_expr(p)
+	type_expr := parse_type_expr(p)
 
 	is_read_only := false
 	if check_keyword(p, "READ-ONLY") {
@@ -1678,7 +1954,7 @@ parse_class_data_chain_decl :: proc(
 	for {
 		ident_tok := expect_token(p, .Ident)
 		expect_keyword_token(p, "TYPE")
-		type_expr := parse_expr(p)
+		type_expr := parse_type_expr(p)
 
 		decl := ast.new(ast.Data_Typed_Decl, ident_tok, p.prev_tok)
 		decl.ident = ast.new_ident(ident_tok)
@@ -1794,7 +2070,7 @@ parse_method_params :: proc(
 
 			if check_keyword(p, "TYPE") {
 				advance_token(p)
-				param.typed = parse_expr(p)
+				param.typed = parse_type_expr(p)
 			}
 
 			append(params, param)
@@ -1809,7 +2085,7 @@ parse_method_params :: proc(
 
 		if check_keyword(p, "TYPE") {
 			advance_token(p)
-			param.typed = parse_expr(p)
+			param.typed = parse_type_expr(p)
 		}
 
 		if check_keyword(p, "OPTIONAL") {

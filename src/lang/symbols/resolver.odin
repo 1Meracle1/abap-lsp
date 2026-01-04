@@ -248,7 +248,38 @@ resolve_type_expr :: proc(table: ^SymbolTable, expr: ^ast.Expr) -> ^Type {
 
 	case ^ast.Table_Type:
 		elem_type := resolve_type_expr(table, e.elem)
-		t := make_table_type(table, elem_type)
+		table_kind: TableTypeKind
+		switch e.kind {
+		case .Standard:
+			table_kind = .Standard
+		case .Sorted:
+			table_kind = .Sorted
+		case .Hashed:
+			table_kind = .Hashed
+		case .Any:
+			table_kind = .Any
+		}
+		t := make_table_type(table, elem_type, table_kind)
+		t.ast_node = expr
+		// Copy key information
+		if e.primary_key != nil {
+			key_info := make_table_key_info(table, e.primary_key.is_unique, e.primary_key.is_default)
+			for comp in e.primary_key.components {
+				add_key_component(key_info, comp.name)
+			}
+			t.primary_key = key_info
+		}
+		return t
+
+	case ^ast.Ref_Type:
+		target_type := resolve_type_expr(table, e.target)
+		t := make_reference_type(table, target_type)
+		t.ast_node = expr
+		return t
+
+	case ^ast.Line_Type:
+		table_type := resolve_type_expr(table, e.table)
+		t := make_line_of_type(table, table_type)
 		t.ast_node = expr
 		return t
 

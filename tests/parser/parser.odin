@@ -5422,3 +5422,351 @@ message_simple_class_only_test :: proc(t: ^testing.T) {
 	}
 }
 
+// --- Complex Type Tests ---
+
+@(test)
+data_standard_table_of_test :: proc(t: ^testing.T) {
+	// DATA: lt_idx_to_del TYPE STANDARD TABLE OF lvc_index.
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `DATA: lt_idx_to_del TYPE STANDARD TABLE OF lvc_index.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) > 0, "Expected at least one declaration") do return
+
+	chain, ok := file.decls[0].derived_stmt.(^ast.Data_Typed_Chain_Decl)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Data_Typed_Chain_Decl, got %T", file.decls[0].derived_stmt)) do return
+
+	if !testing.expect(t, len(chain.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(chain.decls))) do return
+
+	decl := chain.decls[0]
+	testing.expect(t, decl.ident.name == "lt_idx_to_del", fmt.tprintf("Expected 'lt_idx_to_del', got '%s'", decl.ident.name))
+
+	// Check that the type is a Table_Type
+	table_type, tok := decl.typed.derived_expr.(^ast.Table_Type)
+	if !testing.expect(t, tok, fmt.tprintf("Expected Table_Type, got %T", decl.typed.derived_expr)) do return
+
+	testing.expect(t, table_type.kind == .Standard, fmt.tprintf("Expected Standard, got %v", table_type.kind))
+
+	// Check element type
+	elem_ident, eok := table_type.elem.derived_expr.(^ast.Ident)
+	if testing.expect(t, eok, fmt.tprintf("Expected Ident for elem, got %T", table_type.elem.derived_expr)) {
+		testing.expect(t, elem_ident.name == "lvc_index", fmt.tprintf("Expected 'lvc_index', got '%s'", elem_ident.name))
+	}
+}
+
+@(test)
+data_table_of_simple_test :: proc(t: ^testing.T) {
+	// DATA: lt_data TYPE TABLE OF mytype.
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `DATA: lt_data TYPE TABLE OF mytype.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) > 0, "Expected at least one declaration") do return
+
+	chain, ok := file.decls[0].derived_stmt.(^ast.Data_Typed_Chain_Decl)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Data_Typed_Chain_Decl, got %T", file.decls[0].derived_stmt)) do return
+
+	decl := chain.decls[0]
+	table_type, tok := decl.typed.derived_expr.(^ast.Table_Type)
+	if !testing.expect(t, tok, fmt.tprintf("Expected Table_Type, got %T", decl.typed.derived_expr)) do return
+
+	testing.expect(t, table_type.kind == .Any, fmt.tprintf("Expected Any, got %v", table_type.kind))
+}
+
+@(test)
+data_hashed_table_with_key_test :: proc(t: ^testing.T) {
+	// DATA: lt_idx_to_del TYPE HASHED TABLE OF lvc_index WITH UNIQUE KEY col1.
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `DATA: lt_idx_to_del TYPE HASHED TABLE OF lvc_index WITH UNIQUE KEY col1.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) > 0, "Expected at least one declaration") do return
+
+	chain, ok := file.decls[0].derived_stmt.(^ast.Data_Typed_Chain_Decl)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Data_Typed_Chain_Decl, got %T", file.decls[0].derived_stmt)) do return
+
+	decl := chain.decls[0]
+	table_type, tok := decl.typed.derived_expr.(^ast.Table_Type)
+	if !testing.expect(t, tok, fmt.tprintf("Expected Table_Type, got %T", decl.typed.derived_expr)) do return
+
+	testing.expect(t, table_type.kind == .Hashed, fmt.tprintf("Expected Hashed, got %v", table_type.kind))
+
+	// Check primary key
+	if testing.expect(t, table_type.primary_key != nil, "Expected primary_key to be set") {
+		testing.expect(t, table_type.primary_key.is_unique, "Expected key to be unique")
+		if testing.expect(t, len(table_type.primary_key.components) == 1, fmt.tprintf("Expected 1 key component, got %d", len(table_type.primary_key.components))) {
+			testing.expect(t, table_type.primary_key.components[0].name == "col1", fmt.tprintf("Expected 'col1', got '%s'", table_type.primary_key.components[0].name))
+		}
+	}
+}
+
+@(test)
+data_ref_to_test :: proc(t: ^testing.T) {
+	// DATA lo_event TYPE REF TO lcl_event.
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `DATA lo_event TYPE REF TO lcl_event.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) > 0, "Expected at least one declaration") do return
+
+	decl, ok := file.decls[0].derived_stmt.(^ast.Data_Typed_Decl)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Data_Typed_Decl, got %T", file.decls[0].derived_stmt)) do return
+
+	testing.expect(t, decl.ident.name == "lo_event", fmt.tprintf("Expected 'lo_event', got '%s'", decl.ident.name))
+
+	// Check that the type is a Ref_Type
+	ref_type, rok := decl.typed.derived_expr.(^ast.Ref_Type)
+	if !testing.expect(t, rok, fmt.tprintf("Expected Ref_Type, got %T", decl.typed.derived_expr)) do return
+
+	// Check target type
+	target_ident, tok := ref_type.target.derived_expr.(^ast.Ident)
+	if testing.expect(t, tok, fmt.tprintf("Expected Ident for target, got %T", ref_type.target.derived_expr)) {
+		testing.expect(t, target_ident.name == "lcl_event", fmt.tprintf("Expected 'lcl_event', got '%s'", target_ident.name))
+	}
+}
+
+@(test)
+data_like_ref_to_test :: proc(t: ^testing.T) {
+	// DATA lo_event LIKE REF TO lcl_event.
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `DATA lo_event LIKE REF TO lcl_event.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) > 0, "Expected at least one declaration") do return
+
+	decl, ok := file.decls[0].derived_stmt.(^ast.Data_Typed_Decl)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Data_Typed_Decl, got %T", file.decls[0].derived_stmt)) do return
+
+	// Check that the type is a Ref_Type
+	ref_type, rok := decl.typed.derived_expr.(^ast.Ref_Type)
+	if !testing.expect(t, rok, fmt.tprintf("Expected Ref_Type, got %T", decl.typed.derived_expr)) do return
+
+	// Check target type
+	target_ident, tok := ref_type.target.derived_expr.(^ast.Ident)
+	if testing.expect(t, tok, fmt.tprintf("Expected Ident for target, got %T", ref_type.target.derived_expr)) {
+		testing.expect(t, target_ident.name == "lcl_event", fmt.tprintf("Expected 'lcl_event', got '%s'", target_ident.name))
+	}
+}
+
+@(test)
+data_line_of_test :: proc(t: ^testing.T) {
+	// DATA lv_var1 TYPE LINE OF lt_idx_to_del.
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `DATA lv_var1 TYPE LINE OF lt_idx_to_del.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) > 0, "Expected at least one declaration") do return
+
+	decl, ok := file.decls[0].derived_stmt.(^ast.Data_Typed_Decl)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Data_Typed_Decl, got %T", file.decls[0].derived_stmt)) do return
+
+	// Check that the type is a Line_Type
+	line_type, lok := decl.typed.derived_expr.(^ast.Line_Type)
+	if !testing.expect(t, lok, fmt.tprintf("Expected Line_Type, got %T", decl.typed.derived_expr)) do return
+
+	// Check table reference
+	table_ident, tok := line_type.table.derived_expr.(^ast.Ident)
+	if testing.expect(t, tok, fmt.tprintf("Expected Ident for table, got %T", line_type.table.derived_expr)) {
+		testing.expect(t, table_ident.name == "lt_idx_to_del", fmt.tprintf("Expected 'lt_idx_to_del', got '%s'", table_ident.name))
+	}
+}
+
+@(test)
+data_like_line_of_test :: proc(t: ^testing.T) {
+	// DATA lv_var1 LIKE LINE OF lt_idx_to_del.
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `DATA lv_var1 LIKE LINE OF lt_idx_to_del.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) > 0, "Expected at least one declaration") do return
+
+	decl, ok := file.decls[0].derived_stmt.(^ast.Data_Typed_Decl)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Data_Typed_Decl, got %T", file.decls[0].derived_stmt)) do return
+
+	// Check that the type is a Line_Type
+	line_type, lok := decl.typed.derived_expr.(^ast.Line_Type)
+	testing.expect(t, lok, fmt.tprintf("Expected Line_Type, got %T", decl.typed.derived_expr))
+}
+
+@(test)
+data_with_length_value_test :: proc(t: ^testing.T) {
+	// DATA lv_val TYPE i LENGTH 4 VALUE 1.
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `DATA lv_val TYPE i LENGTH 4 VALUE 1.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) > 0, "Expected at least one declaration") do return
+
+	decl, ok := file.decls[0].derived_stmt.(^ast.Data_Typed_Decl)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Data_Typed_Decl, got %T", file.decls[0].derived_stmt)) do return
+
+	testing.expect(t, decl.ident.name == "lv_val", fmt.tprintf("Expected 'lv_val', got '%s'", decl.ident.name))
+
+	// Check value is set
+	testing.expect(t, decl.value != nil, "Expected value to be set")
+}
+
+@(test)
+types_table_with_default_key_test :: proc(t: ^testing.T) {
+	// TYPES: src_line TYPE c LENGTH 72,
+	//        src TYPE STANDARD TABLE OF src_line WITH NON-UNIQUE DEFAULT KEY.
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `TYPES: src_line TYPE c LENGTH 72,
+           src TYPE STANDARD TABLE OF src_line
+                WITH NON-UNIQUE DEFAULT KEY.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) > 0, "Expected at least one declaration") do return
+
+	chain, ok := file.decls[0].derived_stmt.(^ast.Types_Chain_Decl)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Types_Chain_Decl, got %T", file.decls[0].derived_stmt)) do return
+
+	if !testing.expect(t, len(chain.decls) == 2, fmt.tprintf("Expected 2 decls, got %d", len(chain.decls))) do return
+
+	// Check second decl (the table type)
+	decl := chain.decls[1]
+	testing.expect(t, decl.ident.name == "src", fmt.tprintf("Expected 'src', got '%s'", decl.ident.name))
+
+	table_type, tok := decl.typed.derived_expr.(^ast.Table_Type)
+	if !testing.expect(t, tok, fmt.tprintf("Expected Table_Type, got %T", decl.typed.derived_expr)) do return
+
+	testing.expect(t, table_type.kind == .Standard, fmt.tprintf("Expected Standard, got %v", table_type.kind))
+
+	if testing.expect(t, table_type.primary_key != nil, "Expected primary_key to be set") {
+		testing.expect(t, table_type.primary_key.is_default, "Expected default key")
+		testing.expect(t, !table_type.primary_key.is_unique, "Expected non-unique key")
+	}
+}
+
+@(test)
+data_hashed_table_selector_type_test :: proc(t: ^testing.T) {
+	// DATA: itab TYPE HASHED TABLE OF example_data=>struc WITH UNIQUE KEY idx.
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `DATA: itab TYPE HASHED TABLE OF example_data=>struc WITH UNIQUE KEY idx.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) > 0, "Expected at least one declaration") do return
+
+	chain, ok := file.decls[0].derived_stmt.(^ast.Data_Typed_Chain_Decl)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Data_Typed_Chain_Decl, got %T", file.decls[0].derived_stmt)) do return
+
+	decl := chain.decls[0]
+	table_type, tok := decl.typed.derived_expr.(^ast.Table_Type)
+	if !testing.expect(t, tok, fmt.tprintf("Expected Table_Type, got %T", decl.typed.derived_expr)) do return
+
+	testing.expect(t, table_type.kind == .Hashed, fmt.tprintf("Expected Hashed, got %v", table_type.kind))
+
+	// Check element type is a selector expression
+	sel_expr, sok := table_type.elem.derived_expr.(^ast.Selector_Expr)
+	if testing.expect(t, sok, fmt.tprintf("Expected Selector_Expr for elem, got %T", table_type.elem.derived_expr)) {
+		testing.expect(t, sel_expr.field.name == "struc", fmt.tprintf("Expected 'struc', got '%s'", sel_expr.field.name))
+	}
+}
+
+@(test)
+data_sorted_table_test :: proc(t: ^testing.T) {
+	// DATA: lt_sorted TYPE SORTED TABLE OF mytype WITH UNIQUE KEY name.
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `DATA: lt_sorted TYPE SORTED TABLE OF mytype WITH UNIQUE KEY name.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) > 0, "Expected at least one declaration") do return
+
+	chain, ok := file.decls[0].derived_stmt.(^ast.Data_Typed_Chain_Decl)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Data_Typed_Chain_Decl, got %T", file.decls[0].derived_stmt)) do return
+
+	decl := chain.decls[0]
+	table_type, tok := decl.typed.derived_expr.(^ast.Table_Type)
+	if !testing.expect(t, tok, fmt.tprintf("Expected Table_Type, got %T", decl.typed.derived_expr)) do return
+
+	testing.expect(t, table_type.kind == .Sorted, fmt.tprintf("Expected Sorted, got %v", table_type.kind))
+}
+

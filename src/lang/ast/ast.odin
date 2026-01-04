@@ -240,12 +240,12 @@ Clear_Stmt :: struct {
 // MESSAGE statement
 // Syntax: MESSAGE { msg | text } [TYPE type] [DISPLAY LIKE display_type] [WITH v1 [v2 [v3 [v4]]]] [INTO data]
 Message_Stmt :: struct {
-	using node:     Stmt,
-	msg_expr:       ^Expr, // The message expression (string literal, identifier, or message ID like e899(class))
-	msg_type:       ^Expr, // TYPE 'I' etc (optional)
-	display_like:   ^Expr, // DISPLAY LIKE 'E' (optional)
-	with_args:      [dynamic]^Expr, // WITH v1 v2 v3 v4 (up to 4 args)
-	into_target:    ^Expr, // INTO data (optional)
+	using node:   Stmt,
+	msg_expr:     ^Expr, // The message expression (string literal, identifier, or message ID like e899(class))
+	msg_type:     ^Expr, // TYPE 'I' etc (optional)
+	display_like: ^Expr, // DISPLAY LIKE 'E' (optional)
+	with_args:    [dynamic]^Expr, // WITH v1 v2 v3 v4 (up to 4 args)
+	into_target:  ^Expr, // INTO data (optional)
 }
 
 // Declarations
@@ -264,6 +264,7 @@ Data_Typed_Decl :: struct {
 	using node: Decl,
 	ident:      ^Ident,
 	typed:      ^Expr,
+	value:      ^Expr,
 }
 
 Data_Typed_Chain_Decl :: struct {
@@ -442,9 +443,36 @@ Module_Decl :: struct {
 
 // Types
 
+Table_Kind :: enum {
+	Standard,
+	Sorted,
+	Hashed,
+	Any,
+}
+
+Table_Key :: struct {
+	is_unique:    bool,
+	is_default:   bool,
+	name:         ^Ident, // For named secondary keys
+	components:   [dynamic]^Ident, // Key components
+}
+
 Table_Type :: struct {
+	using node:   Expr,
+	kind:         Table_Kind,
+	elem:         ^Expr,
+	primary_key:  ^Table_Key,
+	secondary_keys: [dynamic]^Table_Key,
+}
+
+Ref_Type :: struct {
 	using node: Expr,
-	elem:       ^Expr,
+	target:     ^Expr,
+}
+
+Line_Type :: struct {
+	using node: Expr,
+	table:      ^Expr,
 }
 
 Any_Node :: union {
@@ -467,6 +495,8 @@ Any_Node :: union {
 	^String_Template_Expr,
 	// Types
 	^Table_Type,
+	^Ref_Type,
+	^Line_Type,
 	// Statements
 	^Bad_Stmt,
 	^Expr_Stmt,
@@ -527,6 +557,8 @@ Any_Expr :: union {
 	^String_Template_Expr,
 	// Types
 	^Table_Type,
+	^Ref_Type,
+	^Line_Type,
 }
 
 Any_Stmt :: union {

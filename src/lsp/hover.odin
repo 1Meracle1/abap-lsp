@@ -151,6 +151,29 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 		log_trace(srv, "found MESSAGE statement")
 		hover_text = "(statement) MESSAGE - displays a message to the user"
 
+	case ^ast.Table_Type:
+		log_trace(srv, "found Table Type expression")
+		table_kind_str := ""
+		switch n.kind {
+		case .Standard:
+			table_kind_str = "STANDARD TABLE"
+		case .Sorted:
+			table_kind_str = "SORTED TABLE"
+		case .Hashed:
+			table_kind_str = "HASHED TABLE"
+		case .Any:
+			table_kind_str = "TABLE"
+		}
+		hover_text = fmt.tprintf("(type) %s OF ...", table_kind_str)
+
+	case ^ast.Ref_Type:
+		log_trace(srv, "found Ref Type expression")
+		hover_text = "(type) REF TO - reference type"
+
+	case ^ast.Line_Type:
+		log_trace(srv, "found Line Type expression")
+		hover_text = "(type) LINE OF - line type of internal table"
+
 	case:
 	// For other nodes, maybe just show the type of node?
 	// or nothing

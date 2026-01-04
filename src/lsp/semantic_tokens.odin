@@ -749,6 +749,26 @@ collect_tokens_from_type_expr :: proc(tokens: ^[dynamic]SemanticToken, expr: ^as
 
 	case ^ast.Table_Type:
 		collect_tokens_from_type_expr(tokens, e.elem)
+		// Also collect tokens from key components
+		if e.primary_key != nil {
+			for comp in e.primary_key.components {
+				append(
+					tokens,
+					SemanticToken {
+						offset = comp.range.start,
+						length = comp.range.end - comp.range.start,
+						type = .Property,
+						modifiers = 0,
+					},
+				)
+			}
+		}
+
+	case ^ast.Ref_Type:
+		collect_tokens_from_type_expr(tokens, e.target)
+
+	case ^ast.Line_Type:
+		collect_tokens_from_type_expr(tokens, e.table)
 
 	case ^ast.Selector_Expr:
 		collect_tokens_from_expr(tokens, e.expr, nil, nil)

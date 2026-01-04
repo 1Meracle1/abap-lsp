@@ -1,7 +1,5 @@
 package lang_ast
 
-import "core:fmt"
-
 // find_node_at_offset traverses the AST to find the most specific node
 // that contains the given offset.
 find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
@@ -43,6 +41,11 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 		}
 		if res := find_node_at_offset(&n.typed.expr_base, offset); res != nil {
 			return res
+		}
+		if n.value != nil {
+			if res := find_node_at_offset(&n.value.expr_base, offset); res != nil {
+				return res
+			}
 		}
 
 	case ^Data_Typed_Chain_Decl:
@@ -148,6 +151,27 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 		}
 		for arg in n.args {
 			if res := find_node_at_offset(&arg.expr_base, offset); res != nil {
+				return res
+			}
+		}
+
+	case ^Table_Type:
+		if n.elem != nil {
+			if res := find_node_at_offset(&n.elem.expr_base, offset); res != nil {
+				return res
+			}
+		}
+
+	case ^Ref_Type:
+		if n.target != nil {
+			if res := find_node_at_offset(&n.target.expr_base, offset); res != nil {
+				return res
+			}
+		}
+
+	case ^Line_Type:
+		if n.table != nil {
+			if res := find_node_at_offset(&n.table.expr_base, offset); res != nil {
 				return res
 			}
 		}
