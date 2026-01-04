@@ -8748,3 +8748,272 @@ condense_test :: proc(t: ^testing.T) {
 		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
 	)
 }
+
+@(test)
+call_function_simple_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `CALL FUNCTION 'DD_DOMVALUES_GET'
+      EXPORTING
+        domname        = '/STTPEC/D_DOCTPE'
+        text           = abap_true
+        langu          = sy-langu
+      TABLES
+        dd07v_tab      = mt_dd_doctpe
+      EXCEPTIONS
+        wrong_textflag = 1
+        OTHERS         = 2.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 1,
+		fmt.tprintf("Expected 1 declaration, got %d", len(file.decls)),
+	)
+
+	if len(file.decls) < 1 {
+		return
+	}
+
+	// Check it's a Call_Function_Stmt
+	call_func, ok := file.decls[0].derived_stmt.(^ast.Call_Function_Stmt)
+	testing.expect(t, ok, fmt.tprintf("Expected Call_Function_Stmt, got %T", file.decls[0].derived_stmt))
+
+	if !ok {
+		return
+	}
+
+	// Check function name
+	testing.expect(t, call_func.func_name != nil, "Expected func_name to be set")
+	if func_lit, fok := call_func.func_name.derived_expr.(^ast.Basic_Lit); fok {
+		testing.expect(
+			t,
+			func_lit.tok.lit == "'DD_DOMVALUES_GET'",
+			fmt.tprintf("Expected 'DD_DOMVALUES_GET', got '%s'", func_lit.tok.lit),
+		)
+	}
+
+	// Check EXPORTING parameters
+	testing.expect(
+		t,
+		len(call_func.exporting) == 3,
+		fmt.tprintf("Expected 3 EXPORTING parameters, got %d", len(call_func.exporting)),
+	)
+
+	// Check TABLES parameters
+	testing.expect(
+		t,
+		len(call_func.tables) == 1,
+		fmt.tprintf("Expected 1 TABLES parameter, got %d", len(call_func.tables)),
+	)
+
+	// Check EXCEPTIONS parameters
+	testing.expect(
+		t,
+		len(call_func.exceptions) == 2,
+		fmt.tprintf("Expected 2 EXCEPTIONS parameters, got %d", len(call_func.exceptions)),
+	)
+}
+
+@(test)
+call_function_with_destination_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `CALL FUNCTION 'ZTT_DM_QUERY_HIERARCHY' DESTINATION mv_attp_dest
+        EXPORTING
+          iv_objcode       = ls_rel_req-gs1_es
+          iv_retrieve_hier = abap_true
+        IMPORTING
+          ev_objtype       = lv_objtype
+          es_lot_result    = ls_lot_result
+          es_item_result   = ls_item_result
+          es_cont_result   = ls_cont_result
+          et_hierarchy     = lt_hierarchy_res.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 1,
+		fmt.tprintf("Expected 1 declaration, got %d", len(file.decls)),
+	)
+
+	if len(file.decls) < 1 {
+		return
+	}
+
+	// Check it's a Call_Function_Stmt
+	call_func, ok := file.decls[0].derived_stmt.(^ast.Call_Function_Stmt)
+	testing.expect(t, ok, fmt.tprintf("Expected Call_Function_Stmt, got %T", file.decls[0].derived_stmt))
+
+	if !ok {
+		return
+	}
+
+	// Check function name
+	testing.expect(t, call_func.func_name != nil, "Expected func_name to be set")
+
+	// Check destination
+	testing.expect(t, call_func.destination != nil, "Expected destination to be set")
+	if dest_ident, dok := call_func.destination.derived_expr.(^ast.Ident); dok {
+		testing.expect(
+			t,
+			dest_ident.name == "mv_attp_dest",
+			fmt.tprintf("Expected 'mv_attp_dest', got '%s'", dest_ident.name),
+		)
+	}
+
+	// Check EXPORTING parameters
+	testing.expect(
+		t,
+		len(call_func.exporting) == 2,
+		fmt.tprintf("Expected 2 EXPORTING parameters, got %d", len(call_func.exporting)),
+	)
+
+	// Check IMPORTING parameters
+	testing.expect(
+		t,
+		len(call_func.importing) == 5,
+		fmt.tprintf("Expected 5 IMPORTING parameters, got %d", len(call_func.importing)),
+	)
+}
+
+@(test)
+call_function_with_changing_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `CALL FUNCTION 'ZTT_RFC_GET_OBJECT_DETLS' DESTINATION mv_attp_dest
+      EXPORTING
+        i_objcode   = lv_gs1_es
+      IMPORTING
+        es_trn_data = ls_trn_data
+      CHANGING
+        et_bapiret  = lt_return.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 1,
+		fmt.tprintf("Expected 1 declaration, got %d", len(file.decls)),
+	)
+
+	if len(file.decls) < 1 {
+		return
+	}
+
+	// Check it's a Call_Function_Stmt
+	call_func, ok := file.decls[0].derived_stmt.(^ast.Call_Function_Stmt)
+	testing.expect(t, ok, fmt.tprintf("Expected Call_Function_Stmt, got %T", file.decls[0].derived_stmt))
+
+	if !ok {
+		return
+	}
+
+	// Check EXPORTING parameters
+	testing.expect(
+		t,
+		len(call_func.exporting) == 1,
+		fmt.tprintf("Expected 1 EXPORTING parameter, got %d", len(call_func.exporting)),
+	)
+
+	// Check IMPORTING parameters
+	testing.expect(
+		t,
+		len(call_func.importing) == 1,
+		fmt.tprintf("Expected 1 IMPORTING parameter, got %d", len(call_func.importing)),
+	)
+
+	// Check CHANGING parameters
+	testing.expect(
+		t,
+		len(call_func.changing) == 1,
+		fmt.tprintf("Expected 1 CHANGING parameter, got %d", len(call_func.changing)),
+	)
+
+	// Check the changing parameter name
+	if len(call_func.changing) > 0 {
+		param := call_func.changing[0]
+		testing.expect(t, param.name != nil, "Expected parameter name to be set")
+		if param.name != nil {
+			testing.expect(
+				t,
+				param.name.name == "et_bapiret",
+				fmt.tprintf("Expected 'et_bapiret', got '%s'", param.name.name),
+			)
+		}
+	}
+}
+
+@(test)
+call_function_with_conv_expr_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `CALL FUNCTION 'ZTT_RFC_GET_OBJECT_DETLS' DESTINATION mv_attp_dest
+      EXPORTING
+        i_objcode   = CONV string( iv_gs1_es )
+      IMPORTING
+        es_trn_data = ls_trn_data.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 1,
+		fmt.tprintf("Expected 1 declaration, got %d", len(file.decls)),
+	)
+
+	if len(file.decls) < 1 {
+		return
+	}
+
+	// Check it's a Call_Function_Stmt
+	call_func, ok := file.decls[0].derived_stmt.(^ast.Call_Function_Stmt)
+	testing.expect(t, ok, fmt.tprintf("Expected Call_Function_Stmt, got %T", file.decls[0].derived_stmt))
+
+	if !ok {
+		return
+	}
+
+	// Check EXPORTING parameters has a CONV expression
+	testing.expect(
+		t,
+		len(call_func.exporting) == 1,
+		fmt.tprintf("Expected 1 EXPORTING parameter, got %d", len(call_func.exporting)),
+	)
+
+	if len(call_func.exporting) > 0 {
+		param := call_func.exporting[0]
+		testing.expect(t, param.value != nil, "Expected parameter value to be set")
+		// Check if value is a Constructor_Expr (CONV)
+		if param.value != nil {
+			_, is_constructor := param.value.derived_expr.(^ast.Constructor_Expr)
+			testing.expect(t, is_constructor, fmt.tprintf("Expected Constructor_Expr (CONV), got %T", param.value.derived_expr))
+		}
+	}
+}

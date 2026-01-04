@@ -2500,12 +2500,148 @@ parse_call_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 		return call_screen
 	}
 
-	// For other CALL types (FUNCTION, METHOD, etc.), treat as expression statement for now
+	if check_keyword(p, "FUNCTION") {
+		return parse_call_function_stmt(p, call_tok)
+	}
+
+	// For other CALL types (METHOD, etc.), treat as expression statement for now
 	expr := parse_expr(p)
 	period_tok := expect_token(p, .Period)
 	expr_stmt := ast.new(ast.Expr_Stmt, call_tok, period_tok)
 	expr_stmt.expr = expr
 	return expr_stmt
+}
+
+// parse_call_function_stmt parses a CALL FUNCTION statement
+// Syntax: CALL FUNCTION 'func_name' [DESTINATION dest]
+//         [EXPORTING param = value ...]
+//         [IMPORTING param = value ...]
+//         [TABLES param = value ...]
+//         [CHANGING param = value ...]
+//         [EXCEPTIONS name = value ...].
+parse_call_function_stmt :: proc(p: ^Parser, call_tok: lexer.Token) -> ^ast.Stmt {
+	expect_keyword_token(p, "FUNCTION")
+
+	// Parse function name (typically a string literal like 'FUNC_NAME')
+	func_name := parse_expr(p)
+
+	call_func := ast.new(ast.Call_Function_Stmt, call_tok.range)
+	call_func.func_name = func_name
+	call_func.exporting = make([dynamic]^ast.Call_Function_Param)
+	call_func.importing = make([dynamic]^ast.Call_Function_Param)
+	call_func.tables = make([dynamic]^ast.Call_Function_Param)
+	call_func.changing = make([dynamic]^ast.Call_Function_Param)
+	call_func.exceptions = make([dynamic]^ast.Call_Function_Param)
+	call_func.derived_stmt = call_func
+
+	// Parse optional DESTINATION
+	if check_keyword(p, "DESTINATION") {
+		advance_token(p)
+		call_func.destination = parse_expr(p)
+	}
+
+	// Parse the parameter sections (can appear in any order, each can appear at most once)
+	for p.curr_tok.kind != .Period && p.curr_tok.kind != .EOF {
+		if check_keyword(p, "EXPORTING") {
+			advance_token(p)
+			parse_call_function_params(p, &call_func.exporting, .Exporting)
+		} else if check_keyword(p, "IMPORTING") {
+			advance_token(p)
+			parse_call_function_params(p, &call_func.importing, .Importing)
+		} else if check_keyword(p, "TABLES") {
+			advance_token(p)
+			parse_call_function_params(p, &call_func.tables, .Tables)
+		} else if check_keyword(p, "CHANGING") {
+			advance_token(p)
+			parse_call_function_params(p, &call_func.changing, .Changing)
+		} else if check_keyword(p, "EXCEPTIONS") {
+			advance_token(p)
+			parse_call_function_params(p, &call_func.exceptions, .Exceptions)
+		} else {
+			// Unknown token, break to avoid infinite loop
+			break
+		}
+	}
+
+	period_tok := expect_token(p, .Period)
+	call_func.range.end = period_tok.range.end
+
+	return call_func
+}
+
+// parse_call_function_params parses a list of param = value pairs for CALL FUNCTION
+parse_call_function_params :: proc(
+	p: ^Parser,
+	params: ^[dynamic]^ast.Call_Function_Param,
+	kind: ast.Call_Function_Param_Kind,
+) {
+	// Parse parameters until we hit another section keyword or Period
+	for p.curr_tok.kind != .Period && p.curr_tok.kind != .EOF {
+		// Check if this is a new section keyword
+		if check_keyword(p, "EXPORTING") || check_keyword(p, "IMPORTING") ||
+		   check_keyword(p, "TABLES") || check_keyword(p, "CHANGING") ||
+		   check_keyword(p, "EXCEPTIONS") {
+			break
+		}
+
+		// Parse parameter name
+		if p.curr_tok.kind != .Ident {
+			break
+		}
+
+		param_name_tok := p.curr_tok
+		advance_token(p)
+
+		// Parse '='
+		if p.curr_tok.kind != .Eq {
+			// This might be the OTHERS keyword in EXCEPTIONS
+			if kind == .Exceptions && to_upper(p.keyword_buffer[:], param_name_tok.lit) == "OTHERS" {
+				// OTHERS = value
+				// But we already consumed the token, so put back logic...
+				// Actually, OTHERS is just another exception name, so continue normally
+			}
+			// If no '=', this might be a keyword; put it back and break
+			// Since we already consumed the name, we need to handle this case
+			error(p, p.curr_tok.range, "expected '=' after parameter name '%s'", param_name_tok.lit)
+			break
+		}
+		advance_token(p) // consume '='
+
+		// Parse parameter value expression
+		param_value := parse_call_function_param_value(p)
+
+		// Skip optional pragma like ##ENH_OK
+		skip_pragma(p)
+
+		// Create the parameter node
+		param := ast.new(ast.Call_Function_Param, param_name_tok.range)
+		param.kind = kind
+		param.name = ast.new_ident(param_name_tok)
+		param.value = param_value
+		if param_value != nil {
+			param.range.end = param_value.range.end
+		}
+		param.derived = param
+
+		append(params, param)
+	}
+}
+
+// parse_call_function_param_value parses a parameter value in a CALL FUNCTION
+// This can be a simple expression or a constructor like CONV string(...)
+parse_call_function_param_value :: proc(p: ^Parser) -> ^ast.Expr {
+	return parse_expr(p)
+}
+
+// skip_pragma skips ABAP pragmas like ##ENH_OK
+skip_pragma :: proc(p: ^Parser) {
+	// Pragmas start with ## - check if current token looks like a pragma
+	// The lexer might handle this differently, so we check for the pattern
+	if p.curr_tok.kind == .Ident && len(p.curr_tok.lit) >= 2 {
+		if p.curr_tok.lit[0] == '#' && p.curr_tok.lit[1] == '#' {
+			advance_token(p)
+		}
+	}
 }
 
 parse_module_decl :: proc(p: ^Parser) -> ^ast.Decl {

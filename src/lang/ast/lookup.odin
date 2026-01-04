@@ -570,6 +570,55 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 			}
 		}
 
+	case ^Call_Function_Stmt:
+		if n.func_name != nil {
+			if res := find_node_at_offset(&n.func_name.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		if n.destination != nil {
+			if res := find_node_at_offset(&n.destination.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		for param in n.exporting {
+			if res := find_node_at_offset(&param.node, offset); res != nil {
+				return res
+			}
+		}
+		for param in n.importing {
+			if res := find_node_at_offset(&param.node, offset); res != nil {
+				return res
+			}
+		}
+		for param in n.tables {
+			if res := find_node_at_offset(&param.node, offset); res != nil {
+				return res
+			}
+		}
+		for param in n.changing {
+			if res := find_node_at_offset(&param.node, offset); res != nil {
+				return res
+			}
+		}
+		for param in n.exceptions {
+			if res := find_node_at_offset(&param.node, offset); res != nil {
+				return res
+			}
+		}
+
+	case ^Call_Function_Param:
+		if n.name != nil {
+			if res := find_node_at_offset(&n.name.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		if n.value != nil {
+			if res := find_node_at_offset(&n.value.expr_base, offset); res != nil {
+				return res
+			}
+		}
+
 	case ^Field_Symbol_Decl:
 		if n.ident != nil {
 			if res := find_node_at_offset(&n.ident.expr_base, offset); res != nil {

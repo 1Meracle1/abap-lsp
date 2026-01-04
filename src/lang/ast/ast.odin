@@ -424,6 +424,41 @@ Condense_Stmt :: struct {
 	text:       ^Expr,
 }
 
+// CALL FUNCTION parameter kinds
+Call_Function_Param_Kind :: enum {
+	Exporting,
+	Importing,
+	Tables,
+	Changing,
+	Exceptions,
+}
+
+// CALL FUNCTION parameter (name = value pairs)
+Call_Function_Param :: struct {
+	using node: Node,
+	kind:       Call_Function_Param_Kind,
+	name:       ^Ident, // Parameter name
+	value:      ^Expr, // Parameter value
+}
+
+// CALL FUNCTION statement
+// Syntax: CALL FUNCTION 'func_name' [DESTINATION dest]
+//         [EXPORTING param = value ...]
+//         [IMPORTING param = value ...]
+//         [TABLES param = value ...]
+//         [CHANGING param = value ...]
+//         [EXCEPTIONS name = value ...].
+Call_Function_Stmt :: struct {
+	using node:   Stmt,
+	func_name:    ^Expr, // Function name (typically a string literal)
+	destination:  ^Expr, // Optional DESTINATION expression
+	exporting:    [dynamic]^Call_Function_Param,
+	importing:    [dynamic]^Call_Function_Param,
+	tables:       [dynamic]^Call_Function_Param,
+	changing:     [dynamic]^Call_Function_Param,
+	exceptions:   [dynamic]^Call_Function_Param,
+}
+
 
 // Declarations
 
@@ -708,6 +743,8 @@ Any_Node :: union {
 	^Authority_Check_Stmt,
 	^Delete_Stmt,
 	^Condense_Stmt,
+	^Call_Function_Stmt,
+	^Call_Function_Param,
 	// Declarations
 	^Bad_Decl,
 	^Data_Inline_Decl,
@@ -782,6 +819,7 @@ Any_Stmt :: union {
 	^Authority_Check_Stmt,
 	^Delete_Stmt,
 	^Condense_Stmt,
+	^Call_Function_Stmt,
 	// Declarations
 	^Bad_Decl,
 	^Data_Inline_Decl,

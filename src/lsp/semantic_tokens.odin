@@ -609,6 +609,50 @@ collect_tokens_from_stmt :: proc(
 				}
 			}
 		}
+
+	case ^ast.Call_Function_Stmt:
+		// Highlight the function name as a function
+		if s.func_name != nil {
+			collect_tokens_from_expr(tokens, s.func_name, snap, nil)
+		}
+		// Highlight destination if present
+		if s.destination != nil {
+			collect_tokens_from_expr(tokens, s.destination, snap, nil)
+		}
+		// Collect tokens from all parameter sections
+		collect_tokens_from_call_function_params(tokens, s.exporting[:], snap)
+		collect_tokens_from_call_function_params(tokens, s.importing[:], snap)
+		collect_tokens_from_call_function_params(tokens, s.tables[:], snap)
+		collect_tokens_from_call_function_params(tokens, s.changing[:], snap)
+		collect_tokens_from_call_function_params(tokens, s.exceptions[:], snap)
+	}
+}
+
+collect_tokens_from_call_function_params :: proc(
+	tokens: ^[dynamic]SemanticToken,
+	params: []^ast.Call_Function_Param,
+	snap: ^cache.Snapshot,
+) {
+	for param in params {
+		if param == nil {
+			continue
+		}
+		// Highlight parameter name as a parameter
+		if param.name != nil {
+			append(
+				tokens,
+				SemanticToken {
+					offset = param.name.range.start,
+					length = param.name.range.end - param.name.range.start,
+					type = .Parameter,
+					modifiers = 0,
+				},
+			)
+		}
+		// Collect tokens from the value expression
+		if param.value != nil {
+			collect_tokens_from_expr(tokens, param.value, snap, nil)
+		}
 	}
 }
 

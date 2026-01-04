@@ -299,6 +299,35 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 	case ^ast.Line_Type:
 		hover_text = "(type) LINE OF - line type of internal table"
 
+	case ^ast.Call_Function_Stmt:
+		if n.func_name != nil {
+			if lit, ok := n.func_name.derived_expr.(^ast.Basic_Lit); ok {
+				hover_text = fmt.tprintf("(statement) CALL FUNCTION %s - calls a function module", lit.tok.lit)
+			} else {
+				hover_text = "(statement) CALL FUNCTION - calls a function module"
+			}
+		} else {
+			hover_text = "(statement) CALL FUNCTION - calls a function module"
+		}
+
+	case ^ast.Call_Function_Param:
+		if n.name != nil {
+			param_kind_str := ""
+			switch n.kind {
+			case .Exporting:
+				param_kind_str = "EXPORTING"
+			case .Importing:
+				param_kind_str = "IMPORTING"
+			case .Tables:
+				param_kind_str = "TABLES"
+			case .Changing:
+				param_kind_str = "CHANGING"
+			case .Exceptions:
+				param_kind_str = "EXCEPTIONS"
+			}
+			hover_text = fmt.tprintf("(parameter) %s %s", param_kind_str, n.name.name)
+		}
+
 	case:
 	// For other nodes, maybe just show the type of node?
 	// or nothing

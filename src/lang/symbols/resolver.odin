@@ -568,6 +568,8 @@ resolve_stmt :: proc(table: ^SymbolTable, stmt: ^ast.Stmt) {
 		resolve_loop_stmt(table, s)
 	case ^ast.Read_Table_Stmt:
 		resolve_read_table_stmt(table, s)
+	case ^ast.Call_Function_Stmt:
+		resolve_call_function_stmt(table, s)
 	}
 }
 
@@ -845,4 +847,46 @@ resolve_read_table_stmt :: proc(table: ^SymbolTable, read_stmt: ^ast.Read_Table_
 			add_symbol(table, sym, allow_shadowing = false)
 		}
 	}
+}
+
+resolve_call_function_stmt :: proc(table: ^SymbolTable, call_func: ^ast.Call_Function_Stmt) {
+	// CALL FUNCTION doesn't typically introduce new symbols itself,
+	// but we need to check for any inline declarations in parameter values
+	// (e.g., DATA(lv_result) could theoretically appear in an importing parameter)
+	
+	// Check importing parameters for inline declarations
+	for param in call_func.importing {
+		if param.value != nil {
+			resolve_param_value_decl(table, param.value)
+		}
+	}
+	
+	// Check changing parameters for inline declarations
+	for param in call_func.changing {
+		if param.value != nil {
+			resolve_param_value_decl(table, param.value)
+		}
+	}
+	
+	// Check tables parameters for inline declarations
+	for param in call_func.tables {
+		if param.value != nil {
+			resolve_param_value_decl(table, param.value)
+		}
+	}
+}
+
+resolve_param_value_decl :: proc(table: ^SymbolTable, expr: ^ast.Expr) {
+	if expr == nil {
+		return
+	}
+	
+	// Check if this is an inline DATA declaration
+	if ident, ok := expr.derived_expr.(^ast.Ident); ok {
+		// Could be a simple variable reference, nothing to declare
+		return
+	}
+	
+	// For now, we don't handle inline declarations in CALL FUNCTION parameters
+	// as they are quite rare. This can be extended if needed.
 }
