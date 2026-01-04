@@ -328,6 +328,48 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 			}
 		}
 
+	case ^Loop_Stmt:
+		if n.itab != nil {
+			if res := find_node_at_offset(&n.itab.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		if n.into_target != nil {
+			if res := find_node_at_offset(&n.into_target.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		if n.assigning_target != nil {
+			if res := find_node_at_offset(&n.assigning_target.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		if n.from_expr != nil {
+			if res := find_node_at_offset(&n.from_expr.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		if n.to_expr != nil {
+			if res := find_node_at_offset(&n.to_expr.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		if n.where_cond != nil {
+			if res := find_node_at_offset(&n.where_cond.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		if n.group_var != nil {
+			if res := find_node_at_offset(&n.group_var.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		for stmt in n.body {
+			if res := find_node_at_offset(&stmt.stmt_base, offset); res != nil {
+				return res
+			}
+		}
+
 	case ^Clear_Stmt:
 		for expr in n.exprs {
 			if res := find_node_at_offset(&expr.expr_base, offset); res != nil {

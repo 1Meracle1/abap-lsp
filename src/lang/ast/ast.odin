@@ -232,6 +232,40 @@ While_Stmt :: struct {
 	body:       [dynamic]^Stmt,
 }
 
+// LOOP statement kinds
+Loop_Kind :: enum {
+	At,        // LOOP AT itab
+	At_Screen, // LOOP AT SCREEN
+	At_Group,  // LOOP AT GROUP group_var
+}
+
+// GROUP BY key specification
+Loop_Group_By :: struct {
+	name:       ^Ident,       // Optional group name
+	components: [dynamic]^Named_Arg, // Key components like (key1 = expr1 key2 = expr2)
+}
+
+// LOOP statement
+// Syntax variations:
+// - LOOP AT itab [INTO wa | ASSIGNING <fs> | TRANSPORTING NO FIELDS] [WHERE condition].
+// - LOOP AT itab ... GROUP BY key_spec [ASSIGNING <fs>].
+// - LOOP AT GROUP group_var [INTO wa | ASSIGNING <fs>] [WHERE condition].
+// - LOOP AT SCREEN.
+Loop_Stmt :: struct {
+	using node:           Stmt,
+	kind:                 Loop_Kind,
+	itab:                 ^Expr,          // The internal table expression
+	into_target:          ^Expr,          // INTO target (work area or inline DATA)
+	assigning_target:     ^Expr,          // ASSIGNING <fs> target (field symbol)
+	from_expr:            ^Expr,          // FROM index expression
+	to_expr:              ^Expr,          // TO index expression
+	where_cond:           ^Expr,          // WHERE condition expression
+	transporting_no_fields: bool,         // TRANSPORTING NO FIELDS flag
+	group_by:             ^Loop_Group_By, // GROUP BY specification
+	group_var:            ^Expr,          // For LOOP AT GROUP: the group variable
+	body:                 [dynamic]^Stmt,
+}
+
 Clear_Stmt :: struct {
 	using node: Stmt,
 	exprs:      [dynamic]^Expr,
@@ -580,6 +614,7 @@ Any_Node :: union {
 	^Set_Stmt,
 	^Case_Stmt,
 	^While_Stmt,
+	^Loop_Stmt,
 	^Clear_Stmt,
 	^Message_Stmt,
 	^Insert_Stmt,
@@ -648,6 +683,7 @@ Any_Stmt :: union {
 	^Set_Stmt,
 	^Case_Stmt,
 	^While_Stmt,
+	^Loop_Stmt,
 	^Clear_Stmt,
 	^Message_Stmt,
 	^Insert_Stmt,

@@ -548,6 +548,8 @@ resolve_stmt :: proc(table: ^SymbolTable, stmt: ^ast.Stmt) {
 		resolve_case_stmt(table, s)
 	case ^ast.While_Stmt:
 		resolve_while_stmt(table, s)
+	case ^ast.Loop_Stmt:
+		resolve_loop_stmt(table, s)
 	}
 }
 
@@ -739,6 +741,45 @@ resolve_case_stmt :: proc(table: ^SymbolTable, case_stmt: ^ast.Case_Stmt) {
 
 resolve_while_stmt :: proc(table: ^SymbolTable, while_stmt: ^ast.While_Stmt) {
 	resolve_stmt_list(table, while_stmt.body[:])
+}
+
+resolve_loop_stmt :: proc(table: ^SymbolTable, loop_stmt: ^ast.Loop_Stmt) {
+	// Handle inline DATA declaration in INTO clause
+	if loop_stmt.into_target != nil {
+		// Check if into_target is from an inline DATA declaration
+		// The into_target will be an Ident from the inline DATA parsing
+		if ident, ok := loop_stmt.into_target.derived_expr.(^ast.Ident); ok {
+			// Create inferred type from the loop table
+			type_info := make_inferred_type(table, loop_stmt.itab)
+
+			sym := Symbol {
+				name      = ident.name,
+				kind      = .Variable,
+				range     = ident.range,
+				type_info = type_info,
+			}
+			add_symbol(table, sym, allow_shadowing = false)
+		}
+	}
+
+	// Handle inline FIELD-SYMBOL declaration in ASSIGNING clause
+	if loop_stmt.assigning_target != nil {
+		if ident, ok := loop_stmt.assigning_target.derived_expr.(^ast.Ident); ok {
+			// Field symbols get the line type of the internal table
+			type_info := make_inferred_type(table, loop_stmt.itab)
+
+			sym := Symbol {
+				name      = ident.name,
+				kind      = .FieldSymbol,
+				range     = ident.range,
+				type_info = type_info,
+			}
+			add_symbol(table, sym, allow_shadowing = false)
+		}
+	}
+
+	// Resolve statements in the loop body
+	resolve_stmt_list(table, loop_stmt.body[:])
 }
 
 // is_numeric_type checks if a type is a numeric type (integer, float, numeric)

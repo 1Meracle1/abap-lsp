@@ -90,6 +90,8 @@ parse_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			return parse_case_stmt(p)
 		case "WHILE":
 			return parse_while_stmt(p)
+		case "LOOP":
+			return parse_loop_stmt(p)
 		case "CLEAR":
 			return parse_clear_stmt(p)
 		case "MESSAGE":
@@ -2804,6 +2806,181 @@ parse_while_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	period_tok := expect_token(p, .Period)
 	while_stmt.range.end = period_tok.range.end
 	return while_stmt
+}
+
+// LOOP statement parser
+// Syntax variations:
+// - LOOP AT itab [INTO wa | ASSIGNING <fs> | TRANSPORTING NO FIELDS] [FROM idx] [TO idx] [WHERE condition]. body... ENDLOOP.
+// - LOOP AT itab GROUP BY key [INTO wa | ASSIGNING <fs>]. body... ENDLOOP.
+// - LOOP AT GROUP group_var [INTO wa | ASSIGNING <fs>] [WHERE condition]. body... ENDLOOP.
+// - LOOP AT SCREEN. body... ENDLOOP.
+parse_loop_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
+	loop_tok := expect_keyword_token(p, "LOOP")
+
+	loop_stmt := ast.new(ast.Loop_Stmt, loop_tok.range)
+	loop_stmt.body = make([dynamic]^ast.Stmt)
+
+	// Expect AT keyword
+	expect_keyword_token(p, "AT")
+
+	// Check for LOOP AT SCREEN
+	if check_keyword(p, "SCREEN") {
+		advance_token(p)
+		loop_stmt.kind = .At_Screen
+		expect_token(p, .Period)
+	} else if check_keyword(p, "GROUP") {
+		// LOOP AT GROUP group_var
+		advance_token(p) // consume GROUP
+		loop_stmt.kind = .At_Group
+		loop_stmt.group_var = parse_expr(p)
+
+		// Parse optional clauses for LOOP AT GROUP
+		parse_loop_clauses(p, loop_stmt)
+		expect_token(p, .Period)
+	} else {
+		// Regular LOOP AT itab
+		loop_stmt.kind = .At
+		loop_stmt.itab = parse_expr(p)
+
+		// Parse optional clauses
+		parse_loop_clauses(p, loop_stmt)
+		expect_token(p, .Period)
+	}
+
+	// Parse body until ENDLOOP
+	for p.curr_tok.kind != .EOF {
+		if check_keyword(p, "ENDLOOP") {
+			break
+		}
+		stmt := parse_stmt(p)
+		if stmt != nil {
+			append(&loop_stmt.body, stmt)
+		}
+	}
+
+	endloop_tok := expect_keyword_token(p, "ENDLOOP")
+	period_tok := expect_token(p, .Period)
+	loop_stmt.range.end = period_tok.range.end
+	loop_stmt.derived_stmt = loop_stmt
+	_ = endloop_tok
+
+	return loop_stmt
+}
+
+// parse_loop_clauses parses the optional clauses of a LOOP statement
+parse_loop_clauses :: proc(p: ^Parser, loop_stmt: ^ast.Loop_Stmt) {
+	for p.curr_tok.kind != .EOF && p.curr_tok.kind != .Period {
+		if check_keyword(p, "INTO") {
+			advance_token(p)
+			// Check for inline DATA declaration: INTO DATA(var)
+			if check_keyword(p, "DATA") {
+				loop_stmt.into_target = parse_data_inline_expr(p)
+			} else {
+				loop_stmt.into_target = parse_expr(p)
+			}
+		} else if check_keyword(p, "ASSIGNING") {
+			advance_token(p)
+			// Check for inline FIELD-SYMBOL declaration: ASSIGNING FIELD-SYMBOL(<fs>)
+			if check_hyphenated_keyword(p, "FIELD", "SYMBOL") {
+				loop_stmt.assigning_target = parse_inline_field_symbol(p)
+			} else {
+				loop_stmt.assigning_target = parse_field_symbol_ref(p)
+			}
+		} else if check_keyword(p, "TRANSPORTING") {
+			advance_token(p)
+			expect_keyword_token(p, "NO")
+			expect_keyword_token(p, "FIELDS")
+			loop_stmt.transporting_no_fields = true
+		} else if check_keyword(p, "FROM") {
+			advance_token(p)
+			loop_stmt.from_expr = parse_expr(p)
+		} else if check_keyword(p, "TO") {
+			advance_token(p)
+			loop_stmt.to_expr = parse_expr(p)
+		} else if check_keyword(p, "WHERE") {
+			advance_token(p)
+			loop_stmt.where_cond = parse_logical_expr(p)
+		} else if check_keyword(p, "GROUP") {
+			advance_token(p)
+			expect_keyword_token(p, "BY")
+			loop_stmt.group_by = parse_loop_group_by(p)
+		} else {
+			// Unknown clause, break out
+			break
+		}
+	}
+}
+
+// parse_loop_group_by parses the GROUP BY clause of a LOOP statement
+// Syntax: GROUP BY ( key1 = expr1 key2 = expr2 ... ) or GROUP BY expr
+parse_loop_group_by :: proc(p: ^Parser) -> ^ast.Loop_Group_By {
+	group_by := new(ast.Loop_Group_By)
+	group_by.components = make([dynamic]^ast.Named_Arg)
+
+	// Check if it's a parenthesized group key specification
+	if p.curr_tok.kind == .LParen {
+		advance_token(p) // consume (
+
+		for p.curr_tok.kind != .EOF && p.curr_tok.kind != .RParen {
+			// Parse key component: name = expr
+			if p.curr_tok.kind == .Ident {
+				name_tok := advance_token(p)
+				if p.curr_tok.kind == .Eq {
+					advance_token(p) // consume =
+					value := parse_expr(p)
+
+					named_arg := ast.new(
+						ast.Named_Arg,
+						lexer.TextRange{name_tok.range.start, value.range.end},
+					)
+					named_arg.name = ast.new_ident(name_tok)
+					named_arg.value = value
+					named_arg.derived_expr = named_arg
+					append(&group_by.components, named_arg)
+				} else {
+					// Just a field name reference
+					break
+				}
+			} else {
+				break
+			}
+		}
+
+		if p.curr_tok.kind == .RParen {
+			advance_token(p) // consume )
+		}
+	} else {
+		// Simple expression as group key
+		// This is typically a field or a simple identifier
+	}
+
+	return group_by
+}
+
+// parse_data_inline_expr parses an inline DATA declaration in expression context
+// Syntax: DATA(var)
+parse_data_inline_expr :: proc(p: ^Parser) -> ^ast.Expr {
+	data_tok := expect_keyword_token(p, "DATA")
+	expect_token_space_req(p, .LParen, .WithoutLeadingSpace)
+	ident_tok := expect_token_space_req(p, .Ident, .WithoutLeadingSpace)
+	expect_token_space_req(p, .RParen, .WithoutLeadingSpace)
+
+	// Create a Data_Inline_Decl wrapped as expression
+	data_decl := ast.new(ast.Data_Inline_Decl, data_tok, p.prev_tok)
+	data_decl.ident = ast.new_ident(ident_tok)
+	data_decl.value = nil // Value is determined by the LOOP context
+	data_decl.derived_stmt = data_decl
+	return data_decl.ident
+}
+
+// parse_inline_field_symbol parses an inline FIELD-SYMBOL declaration
+// Syntax: FIELD-SYMBOL(<fs>)
+parse_inline_field_symbol :: proc(p: ^Parser) -> ^ast.Expr {
+	// FIELD-SYMBOL has already been consumed by check_hyphenated_keyword
+	expect_token_space_req(p, .LParen, .WithoutLeadingSpace)
+	fs_ref := parse_field_symbol_ref(p)
+	expect_token_space_req(p, .RParen, .WithoutLeadingSpace)
+	return fs_ref
 }
 
 parse_clear_stmt :: proc(p: ^Parser) -> ^ast.Stmt {

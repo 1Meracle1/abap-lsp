@@ -506,6 +506,50 @@ collect_tokens_from_stmt :: proc(
 		if s.typed != nil {
 			collect_tokens_from_type_expr(tokens, s.typed)
 		}
+
+	case ^ast.Loop_Stmt:
+		if s.itab != nil {
+			collect_tokens_from_expr(tokens, s.itab, snap, nil)
+		}
+		if s.into_target != nil {
+			collect_tokens_from_expr(tokens, s.into_target, snap, nil)
+		}
+		if s.assigning_target != nil {
+			collect_tokens_from_expr(tokens, s.assigning_target, snap, nil)
+		}
+		if s.from_expr != nil {
+			collect_tokens_from_expr(tokens, s.from_expr, snap, nil)
+		}
+		if s.to_expr != nil {
+			collect_tokens_from_expr(tokens, s.to_expr, snap, nil)
+		}
+		if s.where_cond != nil {
+			collect_tokens_from_expr(tokens, s.where_cond, snap, nil)
+		}
+		if s.group_var != nil {
+			collect_tokens_from_expr(tokens, s.group_var, snap, nil)
+		}
+		if s.group_by != nil {
+			for comp in s.group_by.components {
+				if comp.name != nil {
+					append(
+						tokens,
+						SemanticToken {
+							offset = comp.name.range.start,
+							length = comp.name.range.end - comp.name.range.start,
+							type = .Property,
+							modifiers = 0,
+						},
+					)
+				}
+				if comp.value != nil {
+					collect_tokens_from_expr(tokens, comp.value, snap, nil)
+				}
+			}
+		}
+		for body_stmt in s.body {
+			collect_tokens_from_stmt(tokens, body_stmt, snap)
+		}
 	}
 }
 

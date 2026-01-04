@@ -169,6 +169,26 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 			hover_text = fmt.tprintf("(field-symbol declaration) %s", n.ident.name)
 		}
 
+	case ^ast.Loop_Stmt:
+		switch n.kind {
+		case .At:
+			if n.transporting_no_fields {
+				hover_text = "(statement) LOOP AT ... TRANSPORTING NO FIELDS - iterates over internal table checking conditions"
+			} else if n.group_by != nil {
+				hover_text = "(statement) LOOP AT ... GROUP BY - iterates over internal table with grouping"
+			} else if n.assigning_target != nil {
+				hover_text = "(statement) LOOP AT ... ASSIGNING - iterates assigning each line to a field symbol"
+			} else if n.into_target != nil {
+				hover_text = "(statement) LOOP AT ... INTO - iterates copying each line into a work area"
+			} else {
+				hover_text = "(statement) LOOP AT - iterates over an internal table"
+			}
+		case .At_Screen:
+			hover_text = "(statement) LOOP AT SCREEN - iterates over screen elements for modification"
+		case .At_Group:
+			hover_text = "(statement) LOOP AT GROUP - iterates over members of a group created by GROUP BY"
+		}
+
 	case ^ast.Table_Type:
 		table_kind_str := ""
 		switch n.kind {

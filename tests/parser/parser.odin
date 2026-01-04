@@ -6463,3 +6463,345 @@ APPEND INITIAL LINE TO itab ASSIGNING <line>.
 	testing.expect(t, asok, fmt.tprintf("Expected Assign_Stmt, got %T", file.decls[3].derived_stmt))
 }
 
+// ============================================================================
+// LOOP Statement Tests
+// ============================================================================
+
+@(test)
+loop_at_screen_test :: proc(t: ^testing.T) {
+	// LOOP AT SCREEN. ENDLOOP.
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `LOOP AT SCREEN.
+      IF screen-name = 'SCREEN0100-RESET'.
+        screen-input = abap_false.
+        MODIFY SCREEN.
+      ENDIF.
+    ENDLOOP.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	loop_stmt, ok := file.decls[0].derived_stmt.(^ast.Loop_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Loop_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	testing.expect(t, loop_stmt.kind == .At_Screen, fmt.tprintf("Expected At_Screen kind, got %v", loop_stmt.kind))
+	testing.expect(t, len(loop_stmt.body) > 0, "Expected loop body to have statements")
+}
+
+@(test)
+loop_at_into_inline_data_test :: proc(t: ^testing.T) {
+	// LOOP AT lt_obj_del INTO DATA(lv_obj_del). ENDLOOP.
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `LOOP AT lt_obj_del INTO DATA(lv_obj_del).
+      log_info( |Deleted item { lv_obj_del }| ).
+    ENDLOOP.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	loop_stmt, ok := file.decls[0].derived_stmt.(^ast.Loop_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Loop_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	testing.expect(t, loop_stmt.kind == .At, fmt.tprintf("Expected At kind, got %v", loop_stmt.kind))
+	testing.expect(t, loop_stmt.itab != nil, "Expected itab to be set")
+	testing.expect(t, loop_stmt.into_target != nil, "Expected into_target to be set")
+
+	// Check itab is identifier
+	if itab_ident, iok := loop_stmt.itab.derived_expr.(^ast.Ident); iok {
+		testing.expect(t, itab_ident.name == "lt_obj_del", fmt.tprintf("Expected 'lt_obj_del', got '%s'", itab_ident.name))
+	} else {
+		testing.expect(t, false, fmt.tprintf("Expected itab to be Ident, got %T", loop_stmt.itab.derived_expr))
+	}
+
+	// Check into_target is identifier from inline DATA
+	if into_ident, iok := loop_stmt.into_target.derived_expr.(^ast.Ident); iok {
+		testing.expect(t, into_ident.name == "lv_obj_del", fmt.tprintf("Expected 'lv_obj_del', got '%s'", into_ident.name))
+	} else {
+		testing.expect(t, false, fmt.tprintf("Expected into_target to be Ident, got %T", loop_stmt.into_target.derived_expr))
+	}
+}
+
+@(test)
+loop_at_assigning_inline_field_symbol_test :: proc(t: ^testing.T) {
+	// LOOP AT mt_object_info ASSIGNING FIELD-SYMBOL(<fs_obj_info>). ENDLOOP.
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `LOOP AT mt_object_info ASSIGNING FIELD-SYMBOL(<fs_obj_info>).
+      <fs_obj_info>-status = '@09@N/A'.
+    ENDLOOP.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	loop_stmt, ok := file.decls[0].derived_stmt.(^ast.Loop_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Loop_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	testing.expect(t, loop_stmt.kind == .At, fmt.tprintf("Expected At kind, got %v", loop_stmt.kind))
+	testing.expect(t, loop_stmt.itab != nil, "Expected itab to be set")
+	testing.expect(t, loop_stmt.assigning_target != nil, "Expected assigning_target to be set")
+
+	// Check itab is identifier
+	if itab_ident, iok := loop_stmt.itab.derived_expr.(^ast.Ident); iok {
+		testing.expect(t, itab_ident.name == "mt_object_info", fmt.tprintf("Expected 'mt_object_info', got '%s'", itab_ident.name))
+	}
+
+	// Check assigning_target is identifier (field symbol)
+	if fs_ident, iok := loop_stmt.assigning_target.derived_expr.(^ast.Ident); iok {
+		testing.expect(t, fs_ident.name == "<fs_obj_info>", fmt.tprintf("Expected '<fs_obj_info>', got '%s'", fs_ident.name))
+	} else {
+		testing.expect(t, false, fmt.tprintf("Expected assigning_target to be Ident, got %T", loop_stmt.assigning_target.derived_expr))
+	}
+}
+
+@(test)
+loop_at_into_variable_test :: proc(t: ^testing.T) {
+	// LOOP AT ls_deliv_evt-objs INTO lv_epc. ENDLOOP.
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `LOOP AT ls_deliv_evt-objs INTO lv_epc.
+      IF sy-subrc = 0.
+        <fs_obj_info>-status = '@03@Failed'.
+      ENDIF.
+    ENDLOOP.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	loop_stmt, ok := file.decls[0].derived_stmt.(^ast.Loop_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Loop_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	testing.expect(t, loop_stmt.kind == .At, fmt.tprintf("Expected At kind, got %v", loop_stmt.kind))
+	testing.expect(t, loop_stmt.itab != nil, "Expected itab to be set")
+	testing.expect(t, loop_stmt.into_target != nil, "Expected into_target to be set")
+
+	// Check itab is selector expression (ls_deliv_evt-objs)
+	sel_expr, sok := loop_stmt.itab.derived_expr.(^ast.Selector_Expr)
+	if !testing.expect(t, sok, fmt.tprintf("Expected itab to be Selector_Expr, got %T", loop_stmt.itab.derived_expr)) do return
+
+	testing.expect(t, sel_expr.field != nil, "Expected field to be set")
+	testing.expect(t, sel_expr.field.name == "objs", fmt.tprintf("Expected 'objs', got '%s'", sel_expr.field.name))
+
+	// Check into_target is identifier
+	if into_ident, iok := loop_stmt.into_target.derived_expr.(^ast.Ident); iok {
+		testing.expect(t, into_ident.name == "lv_epc", fmt.tprintf("Expected 'lv_epc', got '%s'", into_ident.name))
+	}
+}
+
+@(test)
+loop_at_transporting_no_fields_where_test :: proc(t: ^testing.T) {
+	// LOOP AT buffer TRANSPORTING NO FIELDS WHERE table_line CS 'pattern'. ENDLOOP.
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `LOOP AT buffer TRANSPORTING NO FIELDS WHERE table_line CS 'CLASS measure IMPLEMENTATION'.
+      tabix = sy-tabix + 1.
+      EXIT.
+    ENDLOOP.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	loop_stmt, ok := file.decls[0].derived_stmt.(^ast.Loop_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Loop_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	testing.expect(t, loop_stmt.kind == .At, fmt.tprintf("Expected At kind, got %v", loop_stmt.kind))
+	testing.expect(t, loop_stmt.transporting_no_fields, "Expected transporting_no_fields to be true")
+	testing.expect(t, loop_stmt.where_cond != nil, "Expected where_cond to be set")
+
+	// Check itab is identifier
+	if itab_ident, iok := loop_stmt.itab.derived_expr.(^ast.Ident); iok {
+		testing.expect(t, itab_ident.name == "buffer", fmt.tprintf("Expected 'buffer', got '%s'", itab_ident.name))
+	}
+}
+
+@(test)
+loop_at_from_into_test :: proc(t: ^testing.T) {
+	// LOOP AT buffer FROM tabix INTO line. ENDLOOP.
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `LOOP AT buffer FROM tabix INTO line.
+      IF line CS 'ENDCLASS.'.
+        EXIT.
+      ENDIF.
+      APPEND line TO source.
+    ENDLOOP.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	loop_stmt, ok := file.decls[0].derived_stmt.(^ast.Loop_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Loop_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	testing.expect(t, loop_stmt.kind == .At, fmt.tprintf("Expected At kind, got %v", loop_stmt.kind))
+	testing.expect(t, loop_stmt.itab != nil, "Expected itab to be set")
+	testing.expect(t, loop_stmt.from_expr != nil, "Expected from_expr to be set")
+	testing.expect(t, loop_stmt.into_target != nil, "Expected into_target to be set")
+
+	// Check from_expr is identifier
+	if from_ident, iok := loop_stmt.from_expr.derived_expr.(^ast.Ident); iok {
+		testing.expect(t, from_ident.name == "tabix", fmt.tprintf("Expected 'tabix', got '%s'", from_ident.name))
+	}
+
+	// Check into_target is identifier
+	if into_ident, iok := loop_stmt.into_target.derived_expr.(^ast.Ident); iok {
+		testing.expect(t, into_ident.name == "line", fmt.tprintf("Expected 'line', got '%s'", into_ident.name))
+	}
+}
+
+@(test)
+loop_at_group_by_test :: proc(t: ^testing.T) {
+	// LOOP AT lt_mod_objs INTO ls_obj_info GROUP BY ( key = value ) ASSIGNING FIELD-SYMBOL(<fs>). ENDLOOP.
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `LOOP AT lt_mod_objs INTO ls_obj_info
+      GROUP BY ( locno   = ls_obj_info-locno
+                 docnum  = ls_obj_info-docnum
+                 doctpe  = ls_obj_info-doctpe
+                 objtype = ls_obj_info-objtype
+                 status_pack = ls_obj_info-status_pack )
+      ASSIGNING FIELD-SYMBOL(<fs_doc_grp>).
+    ENDLOOP.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	loop_stmt, ok := file.decls[0].derived_stmt.(^ast.Loop_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Loop_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	testing.expect(t, loop_stmt.kind == .At, fmt.tprintf("Expected At kind, got %v", loop_stmt.kind))
+	testing.expect(t, loop_stmt.itab != nil, "Expected itab to be set")
+	testing.expect(t, loop_stmt.into_target != nil, "Expected into_target to be set")
+	testing.expect(t, loop_stmt.group_by != nil, "Expected group_by to be set")
+	testing.expect(t, loop_stmt.assigning_target != nil, "Expected assigning_target to be set")
+
+	// Check group_by has components
+	if loop_stmt.group_by != nil {
+		testing.expect(t, len(loop_stmt.group_by.components) == 5, fmt.tprintf("Expected 5 group components, got %d", len(loop_stmt.group_by.components)))
+	}
+}
+
+@(test)
+loop_at_group_test :: proc(t: ^testing.T) {
+	// LOOP AT GROUP <fs_doc_grp> ASSIGNING FIELD-SYMBOL(<fs_doc_info>) WHERE condition. ENDLOOP.
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `LOOP AT GROUP <fs_doc_grp> ASSIGNING FIELD-SYMBOL(<fs_doc_info>)
+      WHERE status_pack > 0 AND objtype = '2'.
+    ENDLOOP.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	loop_stmt, ok := file.decls[0].derived_stmt.(^ast.Loop_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Loop_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	testing.expect(t, loop_stmt.kind == .At_Group, fmt.tprintf("Expected At_Group kind, got %v", loop_stmt.kind))
+	testing.expect(t, loop_stmt.group_var != nil, "Expected group_var to be set")
+	testing.expect(t, loop_stmt.assigning_target != nil, "Expected assigning_target to be set")
+	testing.expect(t, loop_stmt.where_cond != nil, "Expected where_cond to be set")
+
+	// Check group_var is identifier (field symbol)
+	if grp_ident, iok := loop_stmt.group_var.derived_expr.(^ast.Ident); iok {
+		testing.expect(t, grp_ident.name == "<fs_doc_grp>", fmt.tprintf("Expected '<fs_doc_grp>', got '%s'", grp_ident.name))
+	} else {
+		testing.expect(t, false, fmt.tprintf("Expected group_var to be Ident, got %T", loop_stmt.group_var.derived_expr))
+	}
+
+	// Check assigning_target is identifier (field symbol)
+	if fs_ident, iok := loop_stmt.assigning_target.derived_expr.(^ast.Ident); iok {
+		testing.expect(t, fs_ident.name == "<fs_doc_info>", fmt.tprintf("Expected '<fs_doc_info>', got '%s'", fs_ident.name))
+	}
+}
+
+@(test)
+loop_nested_test :: proc(t: ^testing.T) {
+	// Nested LOOP statements
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `LOOP AT outer_tab INTO wa_outer.
+      LOOP AT inner_tab INTO wa_inner.
+        process( wa_inner ).
+      ENDLOOP.
+    ENDLOOP.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	outer_loop, ok := file.decls[0].derived_stmt.(^ast.Loop_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Loop_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	testing.expect(t, len(outer_loop.body) == 1, fmt.tprintf("Expected 1 statement in outer loop body, got %d", len(outer_loop.body)))
+
+	// Check inner loop
+	if len(outer_loop.body) == 1 {
+		inner_loop, iok := outer_loop.body[0].derived_stmt.(^ast.Loop_Stmt)
+		if testing.expect(t, iok, fmt.tprintf("Expected inner Loop_Stmt, got %T", outer_loop.body[0].derived_stmt)) {
+			testing.expect(t, len(inner_loop.body) == 1, fmt.tprintf("Expected 1 statement in inner loop body, got %d", len(inner_loop.body)))
+		}
+	}
+}
+
