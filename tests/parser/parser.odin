@@ -1152,6 +1152,66 @@ DATA(lv_value) = 1.`
 }
 
 @(test)
+basic_inline_data_decl_with_preceding_pragma_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `##ENH_OK
+DATA(lv_value) = 1.`
+
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 1,
+		fmt.tprintf("Expected 1 decl, got %v", len(file.decls)),
+	)
+	if len(file.decls) > 0 {
+		expected := data_inline("lv_value", lit("1"))
+		check_stmt(t, expected, file.decls[0])
+	}
+}
+
+@(test)
+pragma_statements_ignored_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `##ENH_OK
+DATA lv_a TYPE i.
+##SOME_PRAGMA
+DATA lv_b TYPE string.`
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 2,
+		fmt.tprintf("Expected 2 decls, got %v", len(file.decls)),
+	)
+	
+	// Pragma lines should be stored as comments
+	testing.expect(
+		t,
+		len(file.comments) == 2,
+		fmt.tprintf("Expected 2 comments (pragmas), got %v", len(file.comments)),
+	)
+}
+
+@(test)
 basic_single_data_typed_decl_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
 	file.fullpath = "test.abap"

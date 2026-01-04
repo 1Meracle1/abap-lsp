@@ -61,6 +61,9 @@ scan :: proc(l: ^Lexer) -> Token {
 		kind, lit = scan_number(l)
 	case ch == '*' && l.pos == l.line_start || ch == '"':
 		kind, lit = scan_comment(l)
+	case ch == '#' && peek_byte(l) == '#':
+		// Pragma statement (e.g., ##ENH_OK) - treat as comment
+		kind, lit = scan_comment(l)
 	case:
 		advance_rune(l)
 		switch ch {
