@@ -18,6 +18,7 @@ TokenKind :: enum u8 {
 	FatArrow, // =>
 	Tilde, // ~ (interface component access)
 	Hash, // # (type inference marker)
+	At, // @ (host variable reference in Open SQL)
 	Eq, // =
 	Minus, // -
 	Plus, // +
@@ -92,6 +93,8 @@ token_kind_string :: proc(token_kind: TokenKind) -> string {
 		res = "~"
 	case .Hash:
 		res = "#"
+	case .At:
+		res = "@"
 	case .Eq:
 		res = "="
 	case .Minus:

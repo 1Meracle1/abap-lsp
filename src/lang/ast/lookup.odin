@@ -852,6 +852,97 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 				return res
 			}
 		}
+
+	case ^Select_Stmt:
+		// Check fields
+		for field in n.fields {
+			if res := find_node_at_offset(&field.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		// Check FROM table
+		if n.from_table != nil {
+			if res := find_node_at_offset(&n.from_table.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		// Check FROM alias
+		if n.from_alias != nil {
+			if res := find_node_at_offset(&n.from_alias.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		// Check joins
+		for join in n.joins {
+			if res := find_node_at_offset(&join.node, offset); res != nil {
+				return res
+			}
+		}
+		// Check INTO target
+		if n.into_target != nil {
+			if res := find_node_at_offset(&n.into_target.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		// Check WHERE condition
+		if n.where_cond != nil {
+			if res := find_node_at_offset(&n.where_cond.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		// Check ORDER BY
+		for col in n.order_by {
+			if res := find_node_at_offset(&col.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		// Check GROUP BY
+		for col in n.group_by {
+			if res := find_node_at_offset(&col.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		// Check HAVING condition
+		if n.having_cond != nil {
+			if res := find_node_at_offset(&n.having_cond.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		// Check FOR ALL ENTRIES
+		if n.for_all_entries != nil {
+			if res := find_node_at_offset(&n.for_all_entries.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		// Check UP TO ROWS
+		if n.up_to_rows != nil {
+			if res := find_node_at_offset(&n.up_to_rows.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		// Check body statements
+		for stmt in n.body {
+			if res := find_node_at_offset(&stmt.stmt_base, offset); res != nil {
+				return res
+			}
+		}
+
+	case ^Select_Join:
+		if n.table != nil {
+			if res := find_node_at_offset(&n.table.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		if n.alias != nil {
+			if res := find_node_at_offset(&n.alias.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		if n.on_cond != nil {
+			if res := find_node_at_offset(&n.on_cond.expr_base, offset); res != nil {
+				return res
+			}
+		}
 	}
 
 	return node

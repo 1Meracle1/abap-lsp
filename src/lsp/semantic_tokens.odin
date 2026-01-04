@@ -625,6 +625,80 @@ collect_tokens_from_stmt :: proc(
 		collect_tokens_from_call_function_params(tokens, s.tables[:], snap)
 		collect_tokens_from_call_function_params(tokens, s.changing[:], snap)
 		collect_tokens_from_call_function_params(tokens, s.exceptions[:], snap)
+
+	case ^ast.Select_Stmt:
+		// Collect tokens from field list
+		for field in s.fields {
+			collect_tokens_from_expr(tokens, field, snap, nil)
+		}
+		// Collect FROM table
+		if s.from_table != nil {
+			collect_tokens_from_expr(tokens, s.from_table, snap, nil)
+		}
+		// Collect FROM alias
+		if s.from_alias != nil {
+			append(
+				tokens,
+				SemanticToken {
+					offset = s.from_alias.range.start,
+					length = s.from_alias.range.end - s.from_alias.range.start,
+					type = .Variable,
+					modifiers = 1 << u32(SemanticTokenModifier.Declaration),
+				},
+			)
+		}
+		// Collect tokens from joins
+		for join in s.joins {
+			if join.table != nil {
+				collect_tokens_from_expr(tokens, join.table, snap, nil)
+			}
+			if join.alias != nil {
+				append(
+					tokens,
+					SemanticToken {
+						offset = join.alias.range.start,
+						length = join.alias.range.end - join.alias.range.start,
+						type = .Variable,
+						modifiers = 1 << u32(SemanticTokenModifier.Declaration),
+					},
+				)
+			}
+			if join.on_cond != nil {
+				collect_tokens_from_expr(tokens, join.on_cond, snap, nil)
+			}
+		}
+		// Collect INTO target
+		if s.into_target != nil {
+			collect_tokens_from_expr(tokens, s.into_target, snap, nil)
+		}
+		// Collect WHERE condition
+		if s.where_cond != nil {
+			collect_tokens_from_expr(tokens, s.where_cond, snap, nil)
+		}
+		// Collect ORDER BY columns
+		for col in s.order_by {
+			collect_tokens_from_expr(tokens, col, snap, nil)
+		}
+		// Collect GROUP BY columns
+		for col in s.group_by {
+			collect_tokens_from_expr(tokens, col, snap, nil)
+		}
+		// Collect HAVING condition
+		if s.having_cond != nil {
+			collect_tokens_from_expr(tokens, s.having_cond, snap, nil)
+		}
+		// Collect FOR ALL ENTRIES
+		if s.for_all_entries != nil {
+			collect_tokens_from_expr(tokens, s.for_all_entries, snap, nil)
+		}
+		// Collect UP TO ROWS
+		if s.up_to_rows != nil {
+			collect_tokens_from_expr(tokens, s.up_to_rows, snap, nil)
+		}
+		// Collect tokens from body statements
+		for body_stmt in s.body {
+			collect_tokens_from_stmt(tokens, body_stmt, snap)
+		}
 	}
 }
 

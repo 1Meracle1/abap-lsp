@@ -9017,3 +9017,340 @@ call_function_with_conv_expr_test :: proc(t: ^testing.T) {
 		}
 	}
 }
+
+// =====================================================
+// SELECT Statement Tests
+// =====================================================
+
+@(test)
+select_single_simple_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `SELECT SINGLE *
+      FROM tvarvc
+      INTO @DATA(ls_dummy_gln)
+      WHERE name EQ 'ZTT_DUMMY_GLN'
+      AND type EQ 'P'.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 1,
+		fmt.tprintf("Expected 1 declaration, got %d", len(file.decls)),
+	)
+
+	if len(file.decls) < 1 {
+		return
+	}
+
+	// Check it's a Select_Stmt
+	select_stmt, ok := file.decls[0].derived_stmt.(^ast.Select_Stmt)
+	testing.expect(t, ok, fmt.tprintf("Expected Select_Stmt, got %T", file.decls[0].derived_stmt))
+
+	if !ok {
+		return
+	}
+
+	// Check SINGLE modifier
+	testing.expect(t, select_stmt.is_single, "Expected is_single to be true")
+
+	// Check field list (should have * for SELECT *)
+	testing.expect(
+		t,
+		len(select_stmt.fields) == 1,
+		fmt.tprintf("Expected 1 field (*), got %d", len(select_stmt.fields)),
+	)
+
+	// Check FROM table
+	testing.expect(t, select_stmt.from_table != nil, "Expected from_table to be set")
+	if from_ident, fok := select_stmt.from_table.derived_expr.(^ast.Ident); fok {
+		testing.expect(
+			t,
+			from_ident.name == "tvarvc",
+			fmt.tprintf("Expected 'tvarvc', got '%s'", from_ident.name),
+		)
+	}
+
+	// Check INTO target
+	testing.expect(t, select_stmt.into_target != nil, "Expected into_target to be set")
+	testing.expect(t, select_stmt.into_kind == .Single, "Expected Single into_kind")
+
+	// Check WHERE condition
+	testing.expect(t, select_stmt.where_cond != nil, "Expected where_cond to be set")
+}
+
+@(test)
+select_with_join_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `SELECT c~carrname, p~connid, p~cityfrom, p~cityto
+       FROM scarr AS c
+            INNER JOIN spfli AS p
+                  ON c~carrid = p~carrid
+       WHERE p~cityfrom = @cityfrom
+       ORDER BY c~carrname, p~connid, p~cityfrom, p~cityto
+       INTO TABLE @DATA(result1)
+       UP TO 10 ROWS.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 1,
+		fmt.tprintf("Expected 1 declaration, got %d", len(file.decls)),
+	)
+
+	if len(file.decls) < 1 {
+		return
+	}
+
+	// Check it's a Select_Stmt
+	select_stmt, ok := file.decls[0].derived_stmt.(^ast.Select_Stmt)
+	testing.expect(t, ok, fmt.tprintf("Expected Select_Stmt, got %T", file.decls[0].derived_stmt))
+
+	if !ok {
+		return
+	}
+
+	// Check not SINGLE
+	testing.expect(t, !select_stmt.is_single, "Expected is_single to be false")
+
+	// Check field list (should have 4 fields)
+	testing.expect(
+		t,
+		len(select_stmt.fields) == 4,
+		fmt.tprintf("Expected 4 fields, got %d", len(select_stmt.fields)),
+	)
+
+	// Check FROM table with alias
+	testing.expect(t, select_stmt.from_table != nil, "Expected from_table to be set")
+	if from_ident, fok := select_stmt.from_table.derived_expr.(^ast.Ident); fok {
+		testing.expect(
+			t,
+			from_ident.name == "scarr",
+			fmt.tprintf("Expected 'scarr', got '%s'", from_ident.name),
+		)
+	}
+	testing.expect(t, select_stmt.from_alias != nil, "Expected from_alias to be set")
+	if select_stmt.from_alias != nil {
+		testing.expect(
+			t,
+			select_stmt.from_alias.name == "c",
+			fmt.tprintf("Expected alias 'c', got '%s'", select_stmt.from_alias.name),
+		)
+	}
+
+	// Check JOIN
+	testing.expect(
+		t,
+		len(select_stmt.joins) == 1,
+		fmt.tprintf("Expected 1 join, got %d", len(select_stmt.joins)),
+	)
+	if len(select_stmt.joins) > 0 {
+		join := select_stmt.joins[0]
+		testing.expect(t, join.kind == .Inner, "Expected Inner join")
+		if join_table, jok := join.table.derived_expr.(^ast.Ident); jok {
+			testing.expect(
+				t,
+				join_table.name == "spfli",
+				fmt.tprintf("Expected 'spfli', got '%s'", join_table.name),
+			)
+		}
+		testing.expect(t, join.alias != nil, "Expected join alias to be set")
+		testing.expect(t, join.on_cond != nil, "Expected ON condition to be set")
+	}
+
+	// Check INTO TABLE
+	testing.expect(t, select_stmt.into_target != nil, "Expected into_target to be set")
+	testing.expect(t, select_stmt.into_kind == .Table, "Expected Table into_kind")
+
+	// Check WHERE
+	testing.expect(t, select_stmt.where_cond != nil, "Expected where_cond to be set")
+
+	// Check ORDER BY
+	testing.expect(
+		t,
+		len(select_stmt.order_by) == 4,
+		fmt.tprintf("Expected 4 ORDER BY columns, got %d", len(select_stmt.order_by)),
+	)
+
+	// Check UP TO ROWS
+	testing.expect(t, select_stmt.up_to_rows != nil, "Expected up_to_rows to be set")
+}
+
+@(test)
+select_with_fields_clause_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `SELECT FROM scarr AS c
+            INNER JOIN spfli AS p
+                  ON c~carrid = p~carrid
+       FIELDS c~carrname, p~connid, p~cityfrom, p~cityto
+       WHERE p~cityfrom = @cityfrom
+       ORDER BY c~carrname, p~connid, p~cityfrom, p~cityto
+       INTO TABLE @DATA(result2)
+       UP TO 10 ROWS.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 1,
+		fmt.tprintf("Expected 1 declaration, got %d", len(file.decls)),
+	)
+
+	if len(file.decls) < 1 {
+		return
+	}
+
+	// Check it's a Select_Stmt
+	select_stmt, ok := file.decls[0].derived_stmt.(^ast.Select_Stmt)
+	testing.expect(t, ok, fmt.tprintf("Expected Select_Stmt, got %T", file.decls[0].derived_stmt))
+
+	if !ok {
+		return
+	}
+
+	// Check field list (should have 4 fields from FIELDS clause)
+	testing.expect(
+		t,
+		len(select_stmt.fields) == 4,
+		fmt.tprintf("Expected 4 fields, got %d", len(select_stmt.fields)),
+	)
+}
+
+@(test)
+select_with_aggregate_functions_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `SELECT FROM sflight
+       FIELDS carrid,
+              connid,
+              SUM( seatsocc ) AS seatsocc
+       WHERE carrid = 'LH'
+       GROUP BY carrid, connid
+       HAVING SUM( seatsocc ) > 1000
+       ORDER BY carrid, connid
+       INTO TABLE @DATA(result).`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 1,
+		fmt.tprintf("Expected 1 declaration, got %d", len(file.decls)),
+	)
+
+	if len(file.decls) < 1 {
+		return
+	}
+
+	// Check it's a Select_Stmt
+	select_stmt, ok := file.decls[0].derived_stmt.(^ast.Select_Stmt)
+	testing.expect(t, ok, fmt.tprintf("Expected Select_Stmt, got %T", file.decls[0].derived_stmt))
+
+	if !ok {
+		return
+	}
+
+	// Check field list (should have 3 fields including aggregate)
+	testing.expect(
+		t,
+		len(select_stmt.fields) == 3,
+		fmt.tprintf("Expected 3 fields, got %d", len(select_stmt.fields)),
+	)
+
+	// Check GROUP BY
+	testing.expect(
+		t,
+		len(select_stmt.group_by) == 2,
+		fmt.tprintf("Expected 2 GROUP BY columns, got %d", len(select_stmt.group_by)),
+	)
+
+	// Check HAVING
+	testing.expect(t, select_stmt.having_cond != nil, "Expected having_cond to be set")
+}
+
+@(test)
+select_for_all_entries_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `SELECT carrid, connid, fldate
+         FROM sflight
+         FOR ALL ENTRIES IN @entry_tab
+         WHERE carrid = @entry_tab-carrid AND
+               connid = @entry_tab-connid
+         ORDER BY PRIMARY KEY
+         INTO TABLE @DATA(result_tab).`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 1,
+		fmt.tprintf("Expected 1 declaration, got %d", len(file.decls)),
+	)
+
+	if len(file.decls) < 1 {
+		return
+	}
+
+	// Check it's a Select_Stmt
+	select_stmt, ok := file.decls[0].derived_stmt.(^ast.Select_Stmt)
+	testing.expect(t, ok, fmt.tprintf("Expected Select_Stmt, got %T", file.decls[0].derived_stmt))
+
+	if !ok {
+		return
+	}
+
+	// Check field list
+	testing.expect(
+		t,
+		len(select_stmt.fields) == 3,
+		fmt.tprintf("Expected 3 fields, got %d", len(select_stmt.fields)),
+	)
+
+	// Check FOR ALL ENTRIES
+	testing.expect(t, select_stmt.for_all_entries != nil, "Expected for_all_entries to be set")
+
+	// Check WHERE
+	testing.expect(t, select_stmt.where_cond != nil, "Expected where_cond to be set")
+
+	// Check ORDER BY PRIMARY KEY
+	testing.expect(
+		t,
+		len(select_stmt.order_by) == 1,
+		fmt.tprintf("Expected 1 ORDER BY (PRIMARY KEY), got %d", len(select_stmt.order_by)),
+	)
+}

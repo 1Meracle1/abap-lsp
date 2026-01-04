@@ -279,6 +279,37 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 			}
 		}
 
+	case ^ast.Select_Stmt:
+		if n.is_single {
+			if n.into_kind == .Table {
+				hover_text =
+				"(statement) SELECT SINGLE ... INTO TABLE - selects a single row into a table (unusual)"
+			} else {
+				hover_text =
+				"(statement) SELECT SINGLE - selects a single row from a database table"
+			}
+		} else if n.into_kind == .Table {
+			if len(n.joins) > 0 {
+				hover_text =
+				"(statement) SELECT ... JOIN ... INTO TABLE - joins tables and selects into an internal table"
+			} else if n.for_all_entries != nil {
+				hover_text =
+				"(statement) SELECT ... FOR ALL ENTRIES - selects rows based on entries in an internal table"
+			} else if len(n.group_by) > 0 {
+				hover_text =
+				"(statement) SELECT ... GROUP BY ... INTO TABLE - groups and aggregates data into an internal table"
+			} else {
+				hover_text =
+				"(statement) SELECT ... INTO TABLE - selects multiple rows into an internal table"
+			}
+		} else if len(n.body) > 0 {
+			hover_text =
+			"(statement) SELECT ... ENDSELECT - iterates over selected database rows"
+		} else {
+			hover_text =
+			"(statement) SELECT - reads data from a database table"
+		}
+
 	case ^ast.Table_Type:
 		table_kind_str := ""
 		switch n.kind {

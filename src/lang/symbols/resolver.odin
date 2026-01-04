@@ -570,6 +570,8 @@ resolve_stmt :: proc(table: ^SymbolTable, stmt: ^ast.Stmt) {
 		resolve_read_table_stmt(table, s)
 	case ^ast.Call_Function_Stmt:
 		resolve_call_function_stmt(table, s)
+	case ^ast.Select_Stmt:
+		resolve_select_stmt(table, s)
 	}
 }
 
@@ -889,4 +891,26 @@ resolve_param_value_decl :: proc(table: ^SymbolTable, expr: ^ast.Expr) {
 	
 	// For now, we don't handle inline declarations in CALL FUNCTION parameters
 	// as they are quite rare. This can be extended if needed.
+}
+
+resolve_select_stmt :: proc(table: ^SymbolTable, select_stmt: ^ast.Select_Stmt) {
+	// Handle inline DATA declaration in INTO clause
+	if select_stmt.into_target != nil {
+		// Check if into_target is from an inline DATA declaration
+		if ident, ok := select_stmt.into_target.derived_expr.(^ast.Ident); ok {
+			// Create inferred type - SELECT result type would be inferred from context
+			type_info := make_unknown_type(table)
+			
+			sym := Symbol {
+				name      = ident.name,
+				kind      = .Variable,
+				range     = ident.range,
+				type_info = type_info,
+			}
+			add_symbol(table, sym, allow_shadowing = false)
+		}
+	}
+	
+	// Resolve statements in the SELECT loop body (for non-SINGLE selects)
+	resolve_stmt_list(table, select_stmt.body[:])
 }

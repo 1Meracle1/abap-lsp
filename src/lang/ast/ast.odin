@@ -459,6 +459,55 @@ Call_Function_Stmt :: struct {
 	exceptions:   [dynamic]^Call_Function_Param,
 }
 
+// SELECT statement join kind
+Select_Join_Kind :: enum {
+	Inner,       // INNER JOIN
+	Left_Outer,  // LEFT OUTER JOIN
+	Right_Outer, // RIGHT OUTER JOIN
+}
+
+// SELECT statement join specification
+Select_Join :: struct {
+	using node:  Node,
+	kind:        Select_Join_Kind,
+	table:       ^Expr,             // Table name
+	alias:       ^Ident,            // AS alias (optional)
+	on_cond:     ^Expr,             // ON condition
+}
+
+// SELECT statement target kind
+Select_Into_Kind :: enum {
+	Single,       // INTO @wa or INTO @DATA(wa)
+	Table,        // INTO TABLE @itab or INTO TABLE @DATA(itab)
+	Corresponding, // INTO CORRESPONDING FIELDS OF TABLE @itab
+}
+
+// SELECT statement
+// Syntax variations:
+// - SELECT [SINGLE] fields FROM table [INTO target] [WHERE cond] [ORDER BY cols] [UP TO n ROWS].
+// - SELECT [SINGLE] * FROM table [AS alias] [INTO target] [WHERE cond].
+// - SELECT FROM table [AS alias] FIELDS field_list [WHERE cond] [INTO target].
+// - SELECT ... INNER JOIN ... ON ... [WHERE cond] [INTO target].
+// - SELECT ... FOR ALL ENTRIES IN itab WHERE ... [INTO target].
+// - SELECT ... GROUP BY cols HAVING cond [INTO target].
+Select_Stmt :: struct {
+	using node:          Stmt,
+	is_single:           bool,                    // SINGLE modifier
+	fields:              [dynamic]^Expr,          // Field list (* or specific fields)
+	from_table:          ^Expr,                   // FROM table expression
+	from_alias:          ^Ident,                  // AS alias for FROM table (optional)
+	joins:               [dynamic]^Select_Join,   // JOIN clauses
+	into_kind:           Select_Into_Kind,        // INTO target kind
+	into_target:         ^Expr,                   // INTO target (work area or inline DATA)
+	where_cond:          ^Expr,                   // WHERE condition
+	order_by:            [dynamic]^Expr,          // ORDER BY columns
+	group_by:            [dynamic]^Expr,          // GROUP BY columns
+	having_cond:         ^Expr,                   // HAVING condition
+	for_all_entries:     ^Expr,                   // FOR ALL ENTRIES IN itab
+	up_to_rows:          ^Expr,                   // UP TO n ROWS
+	body:                [dynamic]^Stmt,          // Body for SELECT loop (non-single)
+}
+
 
 // Declarations
 
@@ -745,6 +794,8 @@ Any_Node :: union {
 	^Condense_Stmt,
 	^Call_Function_Stmt,
 	^Call_Function_Param,
+	^Select_Stmt,
+	^Select_Join,
 	// Declarations
 	^Bad_Decl,
 	^Data_Inline_Decl,
@@ -820,6 +871,7 @@ Any_Stmt :: union {
 	^Delete_Stmt,
 	^Condense_Stmt,
 	^Call_Function_Stmt,
+	^Select_Stmt,
 	// Declarations
 	^Bad_Decl,
 	^Data_Inline_Decl,

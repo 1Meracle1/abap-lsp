@@ -103,6 +103,8 @@ scan :: proc(l: ^Lexer) -> Token {
 			kind = .Tilde
 		case '#':
 			kind = .Hash
+		case '@':
+			kind = .At
 		case '|':
 			kind = .Pipe
 		case '&':
