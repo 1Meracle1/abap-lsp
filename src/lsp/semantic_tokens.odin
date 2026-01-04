@@ -900,8 +900,12 @@ collect_tokens_from_expr :: proc(
 		if e.where_cond != nil {
 			collect_tokens_from_expr(tokens, e.where_cond, snap, form_scope)
 		}
-		// Collect tokens from the result expression
-		if e.result_expr != nil {
+		// Collect tokens from result arguments (new field)
+		for arg in e.result_args {
+			collect_tokens_from_expr(tokens, arg, snap, form_scope)
+		}
+		// Also check legacy result_expr for backward compatibility
+		if e.result_expr != nil && len(e.result_args) == 0 {
 			collect_tokens_from_expr(tokens, e.result_expr, snap, form_scope)
 		}
 

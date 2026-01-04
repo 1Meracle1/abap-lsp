@@ -216,7 +216,14 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 				return res
 			}
 		}
-		if n.result_expr != nil {
+		// Check result_args (new field)
+		for arg in n.result_args {
+			if res := find_node_at_offset(&arg.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		// Also check legacy result_expr for backward compatibility
+		if n.result_expr != nil && len(n.result_args) == 0 {
 			if res := find_node_at_offset(&n.result_expr.expr_base, offset); res != nil {
 				return res
 			}

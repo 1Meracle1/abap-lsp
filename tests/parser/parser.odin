@@ -183,6 +183,7 @@ named_arg :: proc(param_name: string, value: ast.Any_Expr) -> ^ast.Named_Arg {
 for_expr :: proc(var_name: string, itab: ast.Any_Expr, where_cond: ast.Any_Expr = nil, result: ast.Any_Expr = nil) -> ^ast.For_Expr {
 	node := ast.new(ast.For_Expr, {})
 	node.var_name = ident(var_name)
+	node.result_args = make([dynamic]^ast.Expr)
 	#partial switch v in itab {
 	case ^ast.Ident:
 		node.itab = &v.node
@@ -201,8 +202,13 @@ for_expr :: proc(var_name: string, itab: ast.Any_Expr, where_cond: ast.Any_Expr 
 		#partial switch r in result {
 		case ^ast.Ident:
 			node.result_expr = &r.node
+			append(&node.result_args, &r.node)
 		case ^ast.Selector_Expr:
 			node.result_expr = &r.node
+			append(&node.result_args, &r.node)
+		case ^ast.Named_Arg:
+			node.result_expr = &r.node
+			append(&node.result_args, &r.node)
 		}
 	}
 	node.derived_expr = node
@@ -8493,6 +8499,172 @@ value_for_where_test :: proc(t: ^testing.T) {
 						t,
 						result_ident.name == "ls_hier",
 						fmt.tprintf("Expected 'ls_hier', got '%s'", result_ident.name),
+					)
+				}
+			}
+		}
+	}
+}
+
+@(test)
+value_for_named_arg_result_test :: proc(t: ^testing.T) {
+	// lt_unpack_chil = VALUE #( FOR ls_child IN ls_unpack_level-children ( code_urn = ls_child ) ).
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `lt_unpack_chil = VALUE #( FOR ls_child IN ls_unpack_level-children ( code_urn = ls_child ) ).`
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	assign, ok := file.decls[0].derived_stmt.(^ast.Assign_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Assign_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	if !testing.expect(t, len(assign.rhs) > 0, "Expected RHS") do return
+
+	constr_expr, cok := assign.rhs[0].derived_expr.(^ast.Constructor_Expr)
+	if !testing.expect(t, cok, fmt.tprintf("Expected Constructor_Expr, got %T", assign.rhs[0].derived_expr)) do return
+
+	testing.expect(t, constr_expr.is_inferred, "Expected inferred type (#)")
+	testing.expect(
+		t,
+		len(constr_expr.args) >= 1,
+		fmt.tprintf("Expected at least 1 argument, got %d", len(constr_expr.args)),
+	)
+
+	// Check the first argument is a FOR expression
+	if len(constr_expr.args) > 0 {
+		for_expr, fok := constr_expr.args[0].derived_expr.(^ast.For_Expr)
+		if testing.expect(t, fok, fmt.tprintf("Expected For_Expr, got %T", constr_expr.args[0].derived_expr)) {
+			// Check loop variable
+			testing.expect(
+				t,
+				for_expr.var_name != nil && for_expr.var_name.name == "ls_child",
+				fmt.tprintf("Expected 'ls_child', got '%v'", for_expr.var_name),
+			)
+
+			// Check itab - should be a selector expression (ls_unpack_level-children)
+			testing.expect(t, for_expr.itab != nil, "Expected itab to be set")
+			if for_expr.itab != nil {
+				itab_sel, iok := for_expr.itab.derived_expr.(^ast.Selector_Expr)
+				if testing.expect(t, iok, fmt.tprintf("Expected itab to be Selector_Expr, got %T", for_expr.itab.derived_expr)) {
+					testing.expect(
+						t,
+						itab_sel.field != nil && itab_sel.field.name == "children",
+						fmt.tprintf("Expected 'children', got '%v'", itab_sel.field),
+					)
+				}
+			}
+
+			// Check result_args - should have one Named_Arg (code_urn = ls_child)
+			testing.expect(
+				t,
+				len(for_expr.result_args) >= 1,
+				fmt.tprintf("Expected at least 1 result_arg, got %d", len(for_expr.result_args)),
+			)
+			if len(for_expr.result_args) > 0 {
+				named_arg, nok := for_expr.result_args[0].derived_expr.(^ast.Named_Arg)
+				if testing.expect(t, nok, fmt.tprintf("Expected result_args[0] to be Named_Arg, got %T", for_expr.result_args[0].derived_expr)) {
+					testing.expect(
+						t,
+						named_arg.name != nil && named_arg.name.name == "code_urn",
+						fmt.tprintf("Expected name 'code_urn', got '%v'", named_arg.name),
+					)
+					if named_arg.value != nil {
+						val_ident, vok := named_arg.value.derived_expr.(^ast.Ident)
+						if testing.expect(t, vok, "Expected value to be Ident") {
+							testing.expect(
+								t,
+								val_ident.name == "ls_child",
+								fmt.tprintf("Expected 'ls_child', got '%s'", val_ident.name),
+							)
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+@(test)
+value_for_multiple_named_args_test :: proc(t: ^testing.T) {
+	// Test FOR with multiple named arguments in result: ( field1 = val1 field2 = val2 )
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `lt_result = VALUE #( FOR ls_row IN lt_data ( field1 = ls_row-a field2 = ls_row-b ) ).`
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	assign, ok := file.decls[0].derived_stmt.(^ast.Assign_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Assign_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	if !testing.expect(t, len(assign.rhs) > 0, "Expected RHS") do return
+
+	constr_expr, cok := assign.rhs[0].derived_expr.(^ast.Constructor_Expr)
+	if !testing.expect(t, cok, fmt.tprintf("Expected Constructor_Expr, got %T", assign.rhs[0].derived_expr)) do return
+
+	testing.expect(t, constr_expr.is_inferred, "Expected inferred type (#)")
+	testing.expect(
+		t,
+		len(constr_expr.args) >= 1,
+		fmt.tprintf("Expected at least 1 argument, got %d", len(constr_expr.args)),
+	)
+
+	// Check the first argument is a FOR expression
+	if len(constr_expr.args) > 0 {
+		for_expr, fok := constr_expr.args[0].derived_expr.(^ast.For_Expr)
+		if testing.expect(t, fok, fmt.tprintf("Expected For_Expr, got %T", constr_expr.args[0].derived_expr)) {
+			// Check loop variable
+			testing.expect(
+				t,
+				for_expr.var_name != nil && for_expr.var_name.name == "ls_row",
+				fmt.tprintf("Expected 'ls_row', got '%v'", for_expr.var_name),
+			)
+
+			// Check itab
+			testing.expect(t, for_expr.itab != nil, "Expected itab to be set")
+
+			// Check result_args - should have two Named_Args
+			testing.expect(
+				t,
+				len(for_expr.result_args) == 2,
+				fmt.tprintf("Expected 2 result_args, got %d", len(for_expr.result_args)),
+			)
+			
+			if len(for_expr.result_args) >= 1 {
+				named_arg1, nok1 := for_expr.result_args[0].derived_expr.(^ast.Named_Arg)
+				if testing.expect(t, nok1, fmt.tprintf("Expected result_args[0] to be Named_Arg, got %T", for_expr.result_args[0].derived_expr)) {
+					testing.expect(
+						t,
+						named_arg1.name != nil && named_arg1.name.name == "field1",
+						fmt.tprintf("Expected name 'field1', got '%v'", named_arg1.name),
+					)
+				}
+			}
+			
+			if len(for_expr.result_args) >= 2 {
+				named_arg2, nok2 := for_expr.result_args[1].derived_expr.(^ast.Named_Arg)
+				if testing.expect(t, nok2, fmt.tprintf("Expected result_args[1] to be Named_Arg, got %T", for_expr.result_args[1].derived_expr)) {
+					testing.expect(
+						t,
+						named_arg2.name != nil && named_arg2.name.name == "field2",
+						fmt.tprintf("Expected name 'field2', got '%v'", named_arg2.name),
 					)
 				}
 			}

@@ -134,13 +134,14 @@ String_Template_Expr :: struct {
 }
 
 // FOR expression in constructor expressions (VALUE, REDUCE, etc.)
-// Syntax: FOR var IN itab [WHERE ( condition )]
+// Syntax: FOR var IN itab [WHERE ( condition )] [( result_expr | named_args... )]
 For_Expr :: struct {
-	using node:  Expr,
-	var_name:    ^Ident, // Loop variable name
-	itab:        ^Expr, // Internal table to iterate over
-	where_cond:  ^Expr, // Optional WHERE condition
-	result_expr: ^Expr, // Result expression (what to produce for each iteration)
+	using node:   Expr,
+	var_name:     ^Ident, // Loop variable name
+	itab:         ^Expr, // Internal table to iterate over
+	where_cond:   ^Expr, // Optional WHERE condition
+	result_expr:  ^Expr, // Result expression (what to produce for each iteration) - deprecated, use result_args
+	result_args:  [dynamic]^Expr, // Result arguments (named args like field1 = val1, or single expression)
 }
 
 // Statements

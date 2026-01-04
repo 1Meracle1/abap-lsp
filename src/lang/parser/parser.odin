@@ -1609,10 +1609,11 @@ parse_constructor_body :: proc(p: ^Parser, keyword_tok: lexer.Token) -> ^ast.Exp
 }
 
 // parse_for_expr parses a FOR expression in constructor expressions
-// Syntax: FOR var IN itab [WHERE ( condition )] [( result_expr )]
+// Syntax: FOR var IN itab [WHERE ( condition )] [( result_args... )]
 parse_for_expr :: proc(p: ^Parser) -> ^ast.Expr {
 	for_tok := expect_keyword_token(p, "FOR")
 	for_expr := ast.new(ast.For_Expr, for_tok.range)
+	for_expr.result_args = make([dynamic]^ast.Expr)
 
 	// Parse loop variable name
 	if p.curr_tok.kind == .Ident {
@@ -1648,9 +1649,32 @@ parse_for_expr :: proc(p: ^Parser) -> ^ast.Expr {
 	}
 
 	// Check for result expression (parenthesized)
+	// Can contain single expression or multiple named args like ( field1 = val1 field2 = val2 )
 	if p.curr_tok.kind == .LParen {
 		advance_token(p) // consume (
-		for_expr.result_expr = parse_expr(p)
+		
+		// Parse result arguments (can be named args or regular expressions)
+		max_iterations := 100
+		iterations := 0
+		for p.curr_tok.kind != .RParen && p.curr_tok.kind != .EOF && p.curr_tok.kind != .Period && iterations < max_iterations {
+			iterations += 1
+			prev_pos := p.curr_tok.range.start
+			
+			arg := parse_call_arg(p)
+			if arg != nil {
+				append(&for_expr.result_args, arg)
+				// For backward compatibility, also set result_expr to first arg
+				if for_expr.result_expr == nil {
+					for_expr.result_expr = arg
+				}
+			}
+			
+			// If we didn't make progress, break to avoid infinite loop
+			if p.curr_tok.range.start == prev_pos {
+				break
+			}
+		}
+		
 		expect_token(p, .RParen) // consume )
 	}
 
