@@ -348,6 +348,22 @@ resolve_type_expr :: proc(table: ^SymbolTable, expr: ^ast.Expr) -> ^Type {
 	case ^ast.Paren_Expr:
 		// Parenthesized expression has the type of its inner expression
 		return resolve_type_expr(table, e.expr)
+
+	case ^ast.Constructor_Expr:
+		// For VALUE, COND, SWITCH, etc. constructor expressions
+		if e.is_inferred {
+			return make_inferred_type(table, expr)
+		} else if e.type_expr != nil {
+			return resolve_type_expr(table, e.type_expr)
+		}
+		return make_unknown_type(table)
+
+	case ^ast.For_Expr:
+		// FOR expressions produce elements of the iterable's type
+		if e.itab != nil {
+			return make_inferred_type(table, e.itab)
+		}
+		return make_unknown_type(table)
 	}
 
 	return make_unknown_type(table)

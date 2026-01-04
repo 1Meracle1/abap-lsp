@@ -96,6 +96,8 @@ parse_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			return parse_clear_stmt(p)
 		case "MESSAGE":
 			return parse_message_stmt(p)
+		case "DELETE":
+			return parse_delete_stmt(p)
 		case "INSERT":
 			return parse_insert_stmt(p)
 		case "SORT":
@@ -1407,7 +1409,8 @@ parse_new_expr :: proc(p: ^Parser) -> ^ast.Expr {
 				// Save position to detect if we make progress
 				prev_pos := p.curr_tok.range.start
 
-				arg := parse_expr(p)
+				// Use parse_call_arg to support named arguments (e.g., container_name = 'value')
+				arg := parse_call_arg(p)
 				if arg != nil {
 					append(&new_expr.args, arg)
 				}
@@ -1546,9 +1549,17 @@ parse_constructor_body :: proc(p: ^Parser, keyword_tok: lexer.Token) -> ^ast.Exp
 				// Save position to detect if we make progress
 				prev_pos := p.curr_tok.range.start
 
-				arg := parse_call_arg(p)
-				if arg != nil {
-					append(&constructor_expr.args, arg)
+				// Check for FOR clause (e.g., FOR var IN itab WHERE (...))
+				if check_keyword(p, "FOR") {
+					for_expr := parse_for_expr(p)
+					if for_expr != nil {
+						append(&constructor_expr.args, for_expr)
+					}
+				} else {
+					arg := parse_call_arg(p)
+					if arg != nil {
+						append(&constructor_expr.args, arg)
+					}
 				}
 
 				if p.curr_tok.kind == .RParen {
@@ -1593,6 +1604,57 @@ parse_constructor_body :: proc(p: ^Parser, keyword_tok: lexer.Token) -> ^ast.Exp
 	}
 
 	return constructor_expr
+}
+
+// parse_for_expr parses a FOR expression in constructor expressions
+// Syntax: FOR var IN itab [WHERE ( condition )] [( result_expr )]
+parse_for_expr :: proc(p: ^Parser) -> ^ast.Expr {
+	for_tok := expect_keyword_token(p, "FOR")
+	for_expr := ast.new(ast.For_Expr, for_tok.range)
+
+	// Parse loop variable name
+	if p.curr_tok.kind == .Ident {
+		var_tok := advance_token(p)
+		for_expr.var_name = ast.new_ident(var_tok)
+	} else {
+		error(p, p.curr_tok.range, "expected identifier after FOR")
+		return for_expr
+	}
+
+	// Expect IN keyword
+	if !check_keyword(p, "IN") {
+		error(p, p.curr_tok.range, "expected 'IN' after FOR variable")
+		return for_expr
+	}
+	advance_token(p) // consume IN
+
+	// Parse internal table expression
+	for_expr.itab = parse_expr(p)
+
+	// Check for optional WHERE clause
+	if check_keyword(p, "WHERE") {
+		advance_token(p) // consume WHERE
+		// WHERE is followed by a parenthesized condition
+		if p.curr_tok.kind == .LParen {
+			advance_token(p) // consume (
+			for_expr.where_cond = parse_logical_expr(p)
+			expect_token(p, .RParen) // consume )
+		} else {
+			// WHERE without parentheses
+			for_expr.where_cond = parse_logical_expr(p)
+		}
+	}
+
+	// Check for result expression (parenthesized)
+	if p.curr_tok.kind == .LParen {
+		advance_token(p) // consume (
+		for_expr.result_expr = parse_expr(p)
+		expect_token(p, .RParen) // consume )
+	}
+
+	for_expr.range.end = p.prev_tok.range.end
+	for_expr.derived_expr = for_expr
+	return for_expr
 }
 
 error :: proc(userptr: rawptr, range: lexer.TextRange, format: string, args: ..any) {
@@ -3605,6 +3667,48 @@ parse_authority_check_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 
 	stmt.object = object
 	stmt.user = user
+
+	period_tok := expect_token(p, .Period)
+	stmt.range.end = period_tok.range.end
+	stmt.derived_stmt = stmt
+	return stmt
+}
+
+parse_delete_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
+	delete_tok := expect_keyword_token(p, "DELETE")
+	stmt := ast.new(ast.Delete_Stmt, delete_tok.range)
+
+	// Check for ADJACENT DUPLICATES
+	if check_keyword(p, "ADJACENT") {
+		advance_token(p) // consume ADJACENT
+		expect_keyword_token(p, "DUPLICATES")
+		expect_keyword_token(p, "FROM")
+		stmt.kind = .Adjacent_Duplicates
+		stmt.target = parse_expr(p)
+
+		// Parsing other clauses for ADJACENT DUPLICATES can be added here
+		// For now we just check for optional comparing if strictness needed
+		if check_keyword(p, "COMPARING") {
+			// consume for now to avoid error, as it's common
+			advance_token(p)
+			for p.curr_tok.kind != .Period {
+				advance_token(p)
+			}
+		}
+	} else {
+		stmt.target = parse_expr(p)
+
+		if check_keyword(p, "WHERE") {
+			advance_token(p) // consume WHERE
+			stmt.kind = .Where
+			// Use parse_logical_expr to properly handle comparisons like gs1_es = lv_obj_del
+			stmt.where_cond = parse_logical_expr(p)
+		} else if check_keyword(p, "INDEX") {
+			advance_token(p) // consume INDEX
+			stmt.kind = .Index
+			stmt.index_expr = parse_expr(p)
+		}
+	}
 
 	period_tok := expect_token(p, .Period)
 	stmt.range.end = period_tok.range.end

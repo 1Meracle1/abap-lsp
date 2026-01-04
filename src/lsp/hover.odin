@@ -130,6 +130,30 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 			hover_text = fmt.tprintf("(parameter) %s", n.name.name)
 		}
 
+	case ^ast.For_Expr:
+		if n.var_name != nil {
+			hover_text = fmt.tprintf(
+				"(for expression) FOR %s IN ... - iterates over internal table",
+				n.var_name.name,
+			)
+		} else {
+			hover_text = "(for expression) FOR ... IN ... - iterates over internal table"
+		}
+
+	case ^ast.Constructor_Expr:
+		keyword_upper := strings.to_upper(n.keyword.lit, context.temp_allocator)
+		if n.is_inferred {
+			hover_text = fmt.tprintf("(%s expression) %s #( ) - constructor with inferred type", keyword_upper, keyword_upper)
+		} else if n.type_expr != nil {
+			if type_ident, ok := n.type_expr.derived_expr.(^ast.Ident); ok {
+				hover_text = fmt.tprintf("(%s expression) %s %s( ) - constructor", keyword_upper, keyword_upper, type_ident.name)
+			} else {
+				hover_text = fmt.tprintf("(%s expression) %s type( ) - constructor", keyword_upper, keyword_upper)
+			}
+		} else {
+			hover_text = fmt.tprintf("(%s expression) constructor", keyword_upper)
+		}
+
 	case ^ast.String_Template_Expr:
 		hover_text = "(string template) |...|"
 
@@ -149,9 +173,11 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 		case .Into_Db:
 			hover_text = "(statement) INSERT INTO ... VALUES - inserts data into a database table"
 		case .From_Wa:
-			hover_text = "(statement) INSERT ... FROM - inserts data from a work area into a database table"
+			hover_text =
+			"(statement) INSERT ... FROM - inserts data from a work area into a database table"
 		case .From_Table:
-			hover_text = "(statement) INSERT ... FROM TABLE - inserts data from an internal table into a database table"
+			hover_text =
+			"(statement) INSERT ... FROM TABLE - inserts data from an internal table into a database table"
 		}
 
 	case ^ast.Append_Stmt:
@@ -159,9 +185,24 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 		case .Simple:
 			hover_text = "(statement) APPEND ... TO - appends a line to an internal table"
 		case .Initial_Line:
-			hover_text = "(statement) APPEND INITIAL LINE TO - appends an initial line to an internal table"
+			hover_text =
+			"(statement) APPEND INITIAL LINE TO - appends an initial line to an internal table"
 		case .Lines_Of:
-			hover_text = "(statement) APPEND LINES OF ... TO - appends all lines from one table to another"
+			hover_text =
+			"(statement) APPEND LINES OF ... TO - appends all lines from one table to another"
+		}
+
+	case ^ast.Delete_Stmt:
+		switch n.kind {
+		case .Where:
+			hover_text =
+			"(statement) DELETE ... WHERE - deletes lines from an internal table that satisfy a condition"
+		case .Index:
+			hover_text =
+			"(statement) DELETE ... INDEX - deletes a line from an internal table by index"
+		case .Adjacent_Duplicates:
+			hover_text =
+			"(statement) DELETE ADJACENT DUPLICATES - deletes adjacent duplicate entries"
 		}
 
 	case ^ast.Field_Symbol_Decl:
@@ -173,51 +214,68 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 		switch n.kind {
 		case .At:
 			if n.transporting_no_fields {
-				hover_text = "(statement) LOOP AT ... TRANSPORTING NO FIELDS - iterates over internal table checking conditions"
+				hover_text =
+				"(statement) LOOP AT ... TRANSPORTING NO FIELDS - iterates over internal table checking conditions"
 			} else if n.group_by != nil {
-				hover_text = "(statement) LOOP AT ... GROUP BY - iterates over internal table with grouping"
+				hover_text =
+				"(statement) LOOP AT ... GROUP BY - iterates over internal table with grouping"
 			} else if n.assigning_target != nil {
-				hover_text = "(statement) LOOP AT ... ASSIGNING - iterates assigning each line to a field symbol"
+				hover_text =
+				"(statement) LOOP AT ... ASSIGNING - iterates assigning each line to a field symbol"
 			} else if n.into_target != nil {
-				hover_text = "(statement) LOOP AT ... INTO - iterates copying each line into a work area"
+				hover_text =
+				"(statement) LOOP AT ... INTO - iterates copying each line into a work area"
 			} else {
 				hover_text = "(statement) LOOP AT - iterates over an internal table"
 			}
 		case .At_Screen:
-			hover_text = "(statement) LOOP AT SCREEN - iterates over screen elements for modification"
+			hover_text =
+			"(statement) LOOP AT SCREEN - iterates over screen elements for modification"
 		case .At_Group:
-			hover_text = "(statement) LOOP AT GROUP - iterates over members of a group created by GROUP BY"
+			hover_text =
+			"(statement) LOOP AT GROUP - iterates over members of a group created by GROUP BY"
 		}
 
 	case ^ast.Read_Table_Stmt:
 		switch n.kind {
 		case .With_Key:
 			if n.transporting_no_fields {
-				hover_text = "(statement) READ TABLE ... WITH KEY ... TRANSPORTING NO FIELDS - checks if entry exists in table"
+				hover_text =
+				"(statement) READ TABLE ... WITH KEY ... TRANSPORTING NO FIELDS - checks if entry exists in table"
 			} else if n.assigning_target != nil {
-				hover_text = "(statement) READ TABLE ... WITH KEY ... ASSIGNING - reads entry by key and assigns to field symbol"
+				hover_text =
+				"(statement) READ TABLE ... WITH KEY ... ASSIGNING - reads entry by key and assigns to field symbol"
 			} else if n.into_target != nil {
-				hover_text = "(statement) READ TABLE ... WITH KEY ... INTO - reads entry by key into work area"
+				hover_text =
+				"(statement) READ TABLE ... WITH KEY ... INTO - reads entry by key into work area"
 			} else {
-				hover_text = "(statement) READ TABLE ... WITH KEY - reads entry from internal table by key"
+				hover_text =
+				"(statement) READ TABLE ... WITH KEY - reads entry from internal table by key"
 			}
 		case .With_Table_Key:
 			if n.transporting_no_fields {
-				hover_text = "(statement) READ TABLE ... WITH TABLE KEY ... TRANSPORTING NO FIELDS - checks if entry exists in table"
+				hover_text =
+				"(statement) READ TABLE ... WITH TABLE KEY ... TRANSPORTING NO FIELDS - checks if entry exists in table"
 			} else if n.assigning_target != nil {
-				hover_text = "(statement) READ TABLE ... WITH TABLE KEY ... ASSIGNING - reads entry by key and assigns to field symbol"
+				hover_text =
+				"(statement) READ TABLE ... WITH TABLE KEY ... ASSIGNING - reads entry by key and assigns to field symbol"
 			} else if n.into_target != nil {
-				hover_text = "(statement) READ TABLE ... WITH TABLE KEY ... INTO - reads entry by key into work area"
+				hover_text =
+				"(statement) READ TABLE ... WITH TABLE KEY ... INTO - reads entry by key into work area"
 			} else {
-				hover_text = "(statement) READ TABLE ... WITH TABLE KEY - reads entry from internal table by key"
+				hover_text =
+				"(statement) READ TABLE ... WITH TABLE KEY - reads entry from internal table by key"
 			}
 		case .Index:
 			if n.assigning_target != nil {
-				hover_text = "(statement) READ TABLE ... INDEX ... ASSIGNING - reads entry by index and assigns to field symbol"
+				hover_text =
+				"(statement) READ TABLE ... INDEX ... ASSIGNING - reads entry by index and assigns to field symbol"
 			} else if n.into_target != nil {
-				hover_text = "(statement) READ TABLE ... INDEX ... INTO - reads entry by index into work area"
+				hover_text =
+				"(statement) READ TABLE ... INDEX ... INTO - reads entry by index into work area"
 			} else {
-				hover_text = "(statement) READ TABLE ... INDEX - reads entry from internal table by index"
+				hover_text =
+				"(statement) READ TABLE ... INDEX - reads entry from internal table by index"
 			}
 		}
 

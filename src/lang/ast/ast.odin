@@ -133,6 +133,16 @@ String_Template_Expr :: struct {
 	parts:      [dynamic]String_Template_Part,
 }
 
+// FOR expression in constructor expressions (VALUE, REDUCE, etc.)
+// Syntax: FOR var IN itab [WHERE ( condition )]
+For_Expr :: struct {
+	using node:  Expr,
+	var_name:    ^Ident, // Loop variable name
+	itab:        ^Expr, // Internal table to iterate over
+	where_cond:  ^Expr, // Optional WHERE condition
+	result_expr: ^Expr, // Result expression (what to produce for each iteration)
+}
+
 // Statements
 
 Bad_Stmt :: struct {
@@ -387,6 +397,27 @@ Append_Stmt :: struct {
 	target:           ^Expr, // The target internal table
 	assigning_target: ^Expr, // Field symbol for ASSIGNING clause (optional)
 }
+
+// DELETE statement kinds
+Delete_Kind :: enum {
+	Where, // DELETE itab WHERE ...
+	Index, // DELETE itab INDEX idx
+	Adjacent_Duplicates, // DELETE ADJACENT DUPLICATES FROM itab ...
+}
+
+// DELETE statement
+// Syntax variations:
+// - DELETE itab WHERE ...
+// - DELETE itab INDEX idx.
+// - DELETE ADJACENT DUPLICATES FROM itab ...
+Delete_Stmt :: struct {
+	using node: Stmt,
+	kind:       Delete_Kind,
+	target:     ^Expr, // The internal table
+	where_cond: ^Expr, // WHERE condition
+	index_expr: ^Expr, // INDEX expression
+}
+
 
 // Declarations
 
@@ -643,6 +674,7 @@ Any_Node :: union {
 	^Named_Arg,
 	^Predicate_Expr,
 	^String_Template_Expr,
+	^For_Expr,
 	// Types
 	^Table_Type,
 	^Ref_Type,
@@ -668,6 +700,7 @@ Any_Node :: union {
 	^Append_Stmt,
 	^Read_Table_Stmt,
 	^Authority_Check_Stmt,
+	^Delete_Stmt,
 	// Declarations
 	^Bad_Decl,
 	^Data_Inline_Decl,
@@ -713,6 +746,7 @@ Any_Expr :: union {
 	^Named_Arg,
 	^Predicate_Expr,
 	^String_Template_Expr,
+	^For_Expr,
 	// Types
 	^Table_Type,
 	^Ref_Type,
@@ -739,6 +773,7 @@ Any_Stmt :: union {
 	^Append_Stmt,
 	^Read_Table_Stmt,
 	^Authority_Check_Stmt,
+	^Delete_Stmt,
 	// Declarations
 	^Bad_Decl,
 	^Data_Inline_Decl,

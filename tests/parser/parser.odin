@@ -179,6 +179,36 @@ named_arg :: proc(param_name: string, value: ast.Any_Expr) -> ^ast.Named_Arg {
 	return node
 }
 
+// Builder for For expressions (FOR var IN itab WHERE (...))
+for_expr :: proc(var_name: string, itab: ast.Any_Expr, where_cond: ast.Any_Expr = nil, result: ast.Any_Expr = nil) -> ^ast.For_Expr {
+	node := ast.new(ast.For_Expr, {})
+	node.var_name = ident(var_name)
+	#partial switch v in itab {
+	case ^ast.Ident:
+		node.itab = &v.node
+	case ^ast.Selector_Expr:
+		node.itab = &v.node
+	}
+	if where_cond != nil {
+		#partial switch w in where_cond {
+		case ^ast.Binary_Expr:
+			node.where_cond = &w.node
+		case ^ast.Ident:
+			node.where_cond = &w.node
+		}
+	}
+	if result != nil {
+		#partial switch r in result {
+		case ^ast.Ident:
+			node.result_expr = &r.node
+		case ^ast.Selector_Expr:
+			node.result_expr = &r.node
+		}
+	}
+	node.derived_expr = node
+	return node
+}
+
 // Builder for Call expressions
 call_expr :: proc(expr: ast.Any_Expr, args: ..ast.Any_Expr) -> ^ast.Call_Expr {
 	node := ast.new(ast.Call_Expr, {})
@@ -551,6 +581,26 @@ form_build :: proc(builder: Form_Decl_Builder) -> ^ast.Form_Decl {
 	return node
 }
 
+delete_stmt_where :: proc(target: ast.Any_Expr, cond: ast.Any_Expr) -> ^ast.Delete_Stmt {
+	node := ast.new(ast.Delete_Stmt, {})
+	node.kind = .Where
+
+	#partial switch t in target {
+	case ^ast.Ident:
+		node.target = &t.node
+	}
+
+	#partial switch c in cond {
+	case ^ast.Binary_Expr:
+		node.where_cond = &c.node
+	case ^ast.Predicate_Expr:
+		node.where_cond = &c.node
+	}
+
+	node.derived_stmt = node
+	return node
+}
+
 // --- Checkers ---
 
 check_expr :: proc(
@@ -741,6 +791,26 @@ check_stmt :: proc(
 					testing.expect(t, ac_id.field == nil, "Expected nil field", loc = loc)
 				}
 			}
+		}
+
+	case ^ast.Delete_Stmt:
+		ac, ok := actual_derived.(^ast.Delete_Stmt)
+		if !testing.expect(t, ok, fmt.tprintf("Expected Delete_Stmt, got %T", actual_derived), loc = loc) do return
+
+		testing.expect(
+			t,
+			ex.kind == ac.kind,
+			fmt.tprintf("Expected kind %v, got %v", ex.kind, ac.kind),
+			loc = loc,
+		)
+		check_expr(t, ex.target.derived_expr, ac.target, loc = loc)
+		if ex.where_cond != nil {
+			if !testing.expect(t, ac.where_cond != nil, "Expected where_cond, got nil", loc = loc) do return
+			check_expr(t, ex.where_cond.derived_expr, ac.where_cond, loc = loc)
+		}
+		if ex.index_expr != nil {
+			if !testing.expect(t, ac.index_expr != nil, "Expected index_expr, got nil", loc = loc) do return
+			check_expr(t, ex.index_expr.derived_expr, ac.index_expr, loc = loc)
 		}
 
 	case ^ast.Data_Inline_Decl:
@@ -8007,7 +8077,8 @@ read_table_with_key_inline_field_symbol_test :: proc(t: ^testing.T) {
 	// READ TABLE lt_unpack_lvls WITH KEY parent = ls_ser_par-gs1_es_parent ASSIGNING FIELD-SYMBOL(<fs_unpack_data>).
 	file := ast.new(ast.File, {})
 	file.fullpath = "test.abap"
-	file.src = `READ TABLE lt_unpack_lvls WITH KEY parent = ls_ser_par-gs1_es_parent ASSIGNING FIELD-SYMBOL(<fs_unpack_data>).`
+	file.src =
+	`READ TABLE lt_unpack_lvls WITH KEY parent = ls_ser_par-gs1_es_parent ASSIGNING FIELD-SYMBOL(<fs_unpack_data>).`
 	p: parser.Parser
 	parser.parse_file(&p, file)
 
@@ -8044,7 +8115,8 @@ read_table_transporting_no_fields_test :: proc(t: ^testing.T) {
 	// READ TABLE <fs_unpack_data>-children WITH KEY table_line = lv_epc TRANSPORTING NO FIELDS.
 	file := ast.new(ast.File, {})
 	file.fullpath = "test.abap"
-	file.src = `READ TABLE <fs_unpack_data>-children WITH KEY table_line = lv_epc TRANSPORTING NO FIELDS.`
+	file.src =
+	`READ TABLE <fs_unpack_data>-children WITH KEY table_line = lv_epc TRANSPORTING NO FIELDS.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
 
@@ -8064,7 +8136,11 @@ read_table_transporting_no_fields_test :: proc(t: ^testing.T) {
 		read_stmt.kind == .With_Key,
 		fmt.tprintf("Expected With_Key kind, got %v", read_stmt.kind),
 	)
-	testing.expect(t, read_stmt.transporting_no_fields, "Expected transporting_no_fields to be true")
+	testing.expect(
+		t,
+		read_stmt.transporting_no_fields,
+		"Expected transporting_no_fields to be true",
+	)
 
 	// Check itab is selector expression (<fs_unpack_data>-children)
 	sel_expr, sok := read_stmt.itab.derived_expr.(^ast.Selector_Expr)
@@ -8221,5 +8297,267 @@ read_table_multiple_key_components_test :: proc(t: ^testing.T) {
 			into_ident.name == "wa",
 			fmt.tprintf("Expected 'wa', got '%s'", into_ident.name),
 		)
+	}
+}
+
+// ============================================================================
+// NEW Expression with Named Arguments Tests
+// ============================================================================
+
+@(test)
+new_expr_with_named_arg_test :: proc(t: ^testing.T) {
+	// go_serdet_cont = NEW #( container_name = 'CCONTAINER_SER_DET' ).
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `go_serdet_cont = NEW #( container_name = 'CCONTAINER_SER_DET' ).`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	assign, ok := file.decls[0].derived_stmt.(^ast.Assign_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Assign_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	if !testing.expect(t, len(assign.rhs) > 0, "Expected RHS") do return
+
+	new_expr, nok := assign.rhs[0].derived_expr.(^ast.New_Expr)
+	if !testing.expect(t, nok, fmt.tprintf("Expected New_Expr, got %T", assign.rhs[0].derived_expr)) do return
+
+	testing.expect(t, new_expr.is_inferred, "Expected inferred type (#)")
+	testing.expect(
+		t,
+		len(new_expr.args) == 1,
+		fmt.tprintf("Expected 1 argument, got %d", len(new_expr.args)),
+	)
+
+	// Check the argument is a named argument
+	if len(new_expr.args) > 0 {
+		named_arg, naok := new_expr.args[0].derived_expr.(^ast.Named_Arg)
+		if testing.expect(t, naok, fmt.tprintf("Expected Named_Arg, got %T", new_expr.args[0].derived_expr)) {
+			testing.expect(
+				t,
+				named_arg.name.name == "container_name",
+				fmt.tprintf("Expected 'container_name', got '%s'", named_arg.name.name),
+			)
+			lit, lok := named_arg.value.derived_expr.(^ast.Basic_Lit)
+			if testing.expect(t, lok, "Expected Basic_Lit value") {
+				testing.expect(
+					t,
+					lit.tok.lit == "'CCONTAINER_SER_DET'",
+					fmt.tprintf("Expected \"'CCONTAINER_SER_DET'\", got '%s'", lit.tok.lit),
+				)
+			}
+		}
+	}
+}
+
+@(test)
+new_expr_with_ident_named_arg_test :: proc(t: ^testing.T) {
+	// go_serdet_alv = NEW #( i_parent = go_serdet_cont ).
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `go_serdet_alv = NEW #( i_parent = go_serdet_cont ).`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	assign, ok := file.decls[0].derived_stmt.(^ast.Assign_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Assign_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	if !testing.expect(t, len(assign.rhs) > 0, "Expected RHS") do return
+
+	new_expr, nok := assign.rhs[0].derived_expr.(^ast.New_Expr)
+	if !testing.expect(t, nok, fmt.tprintf("Expected New_Expr, got %T", assign.rhs[0].derived_expr)) do return
+
+	testing.expect(t, new_expr.is_inferred, "Expected inferred type (#)")
+	testing.expect(
+		t,
+		len(new_expr.args) == 1,
+		fmt.tprintf("Expected 1 argument, got %d", len(new_expr.args)),
+	)
+
+	// Check the argument is a named argument with identifier value
+	if len(new_expr.args) > 0 {
+		named_arg, naok := new_expr.args[0].derived_expr.(^ast.Named_Arg)
+		if testing.expect(t, naok, fmt.tprintf("Expected Named_Arg, got %T", new_expr.args[0].derived_expr)) {
+			testing.expect(
+				t,
+				named_arg.name.name == "i_parent",
+				fmt.tprintf("Expected 'i_parent', got '%s'", named_arg.name.name),
+			)
+			ident_val, iok := named_arg.value.derived_expr.(^ast.Ident)
+			if testing.expect(t, iok, "Expected Ident value") {
+				testing.expect(
+					t,
+					ident_val.name == "go_serdet_cont",
+					fmt.tprintf("Expected 'go_serdet_cont', got '%s'", ident_val.name),
+				)
+			}
+		}
+	}
+}
+
+// ============================================================================
+// VALUE FOR WHERE Expression Tests
+// ============================================================================
+
+@(test)
+value_for_where_test :: proc(t: ^testing.T) {
+	// lt_rel_req = VALUE #(
+	//         FOR ls_hier IN mt_obj_hier
+	//         WHERE ( requested = abap_true AND gs1_es_root = ls_obj_hier-gs1_es_root )
+	//         ( ls_hier )
+	//       ).
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src =
+	`lt_rel_req = VALUE #(
+        FOR ls_hier IN mt_obj_hier
+        WHERE ( requested = abap_true AND
+                gs1_es_root = ls_obj_hier-gs1_es_root )
+        ( ls_hier )
+      ).`
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	assign, ok := file.decls[0].derived_stmt.(^ast.Assign_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Assign_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	if !testing.expect(t, len(assign.rhs) > 0, "Expected RHS") do return
+
+	constr_expr, cok := assign.rhs[0].derived_expr.(^ast.Constructor_Expr)
+	if !testing.expect(t, cok, fmt.tprintf("Expected Constructor_Expr, got %T", assign.rhs[0].derived_expr)) do return
+
+	testing.expect(t, constr_expr.is_inferred, "Expected inferred type (#)")
+	testing.expect(
+		t,
+		len(constr_expr.args) >= 1,
+		fmt.tprintf("Expected at least 1 argument, got %d", len(constr_expr.args)),
+	)
+
+	// Check the first argument is a FOR expression
+	if len(constr_expr.args) > 0 {
+		for_expr, fok := constr_expr.args[0].derived_expr.(^ast.For_Expr)
+		if testing.expect(t, fok, fmt.tprintf("Expected For_Expr, got %T", constr_expr.args[0].derived_expr)) {
+			// Check loop variable
+			testing.expect(
+				t,
+				for_expr.var_name != nil && for_expr.var_name.name == "ls_hier",
+				fmt.tprintf("Expected 'ls_hier', got '%v'", for_expr.var_name),
+			)
+
+			// Check itab
+			testing.expect(t, for_expr.itab != nil, "Expected itab to be set")
+			if for_expr.itab != nil {
+				itab_ident, iok := for_expr.itab.derived_expr.(^ast.Ident)
+				if testing.expect(t, iok, "Expected itab to be Ident") {
+					testing.expect(
+						t,
+						itab_ident.name == "mt_obj_hier",
+						fmt.tprintf("Expected 'mt_obj_hier', got '%s'", itab_ident.name),
+					)
+				}
+			}
+
+			// Check WHERE condition is set
+			testing.expect(t, for_expr.where_cond != nil, "Expected where_cond to be set")
+
+			// Check result expression
+			testing.expect(t, for_expr.result_expr != nil, "Expected result_expr to be set")
+			if for_expr.result_expr != nil {
+				result_ident, rok := for_expr.result_expr.derived_expr.(^ast.Ident)
+				if testing.expect(t, rok, "Expected result_expr to be Ident") {
+					testing.expect(
+						t,
+						result_ident.name == "ls_hier",
+						fmt.tprintf("Expected 'ls_hier', got '%s'", result_ident.name),
+					)
+				}
+			}
+		}
+	}
+}
+
+@(test)
+delete_where_test :: proc(t: ^testing.T) {
+	// DELETE mt_object_info WHERE gs1_es = lv_obj_del.
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `DELETE mt_object_info WHERE gs1_es = lv_obj_del.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	delete_stmt, ok := file.decls[0].derived_stmt.(^ast.Delete_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Delete_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	testing.expect(
+		t,
+		delete_stmt.kind == .Where,
+		fmt.tprintf("Expected Where kind, got %v", delete_stmt.kind),
+	)
+	testing.expect(t, delete_stmt.target != nil, "Expected target to be set")
+	testing.expect(t, delete_stmt.where_cond != nil, "Expected where_cond to be set")
+
+	// Check target is identifier
+	if target_ident, iok := delete_stmt.target.derived_expr.(^ast.Ident); iok {
+		testing.expect(
+			t,
+			target_ident.name == "mt_object_info",
+			fmt.tprintf("Expected 'mt_object_info', got '%s'", target_ident.name),
+		)
+	} else {
+		testing.expect(t, false, fmt.tprintf("Expected target to be Ident, got %T", delete_stmt.target.derived_expr))
+	}
+
+	// Check where_cond is a binary expression (comparison)
+	if binary, bok := delete_stmt.where_cond.derived_expr.(^ast.Binary_Expr); bok {
+		// Check left side
+		if left_ident, lok := binary.left.derived_expr.(^ast.Ident); lok {
+			testing.expect(
+				t,
+				left_ident.name == "gs1_es",
+				fmt.tprintf("Expected 'gs1_es', got '%s'", left_ident.name),
+			)
+		}
+		// Check right side
+		if right_ident, rok := binary.right.derived_expr.(^ast.Ident); rok {
+			testing.expect(
+				t,
+				right_ident.name == "lv_obj_del",
+				fmt.tprintf("Expected 'lv_obj_del', got '%s'", right_ident.name),
+			)
+		}
+	} else {
+		testing.expect(t, false, fmt.tprintf("Expected where_cond to be Binary_Expr, got %T", delete_stmt.where_cond.derived_expr))
 	}
 }

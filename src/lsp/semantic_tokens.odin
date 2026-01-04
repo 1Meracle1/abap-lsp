@@ -491,6 +491,17 @@ collect_tokens_from_stmt :: proc(
 			collect_tokens_from_expr(tokens, s.assigning_target, snap, nil)
 		}
 
+	case ^ast.Delete_Stmt:
+		if s.target != nil {
+			collect_tokens_from_expr(tokens, s.target, snap, nil)
+		}
+		if s.where_cond != nil {
+			collect_tokens_from_expr(tokens, s.where_cond, snap, nil)
+		}
+		if s.index_expr != nil {
+			collect_tokens_from_expr(tokens, s.index_expr, snap, nil)
+		}
+
 	case ^ast.Field_Symbol_Decl:
 		if s.ident != nil {
 			append(
@@ -861,6 +872,42 @@ collect_tokens_from_expr :: proc(
 			if part.is_expr && part.expr != nil {
 				collect_tokens_from_expr(tokens, part.expr, snap, form_scope)
 			}
+		}
+
+	case ^ast.For_Expr:
+		// Highlight the loop variable as a variable
+		if e.var_name != nil {
+			append(
+				tokens,
+				SemanticToken {
+					offset = e.var_name.range.start,
+					length = e.var_name.range.end - e.var_name.range.start,
+					type = .Variable,
+					modifiers = 1 << u32(SemanticTokenModifier.Declaration),
+				},
+			)
+		}
+		// Collect tokens from the internal table expression
+		if e.itab != nil {
+			collect_tokens_from_expr(tokens, e.itab, snap, form_scope)
+		}
+		// Collect tokens from the WHERE condition
+		if e.where_cond != nil {
+			collect_tokens_from_expr(tokens, e.where_cond, snap, form_scope)
+		}
+		// Collect tokens from the result expression
+		if e.result_expr != nil {
+			collect_tokens_from_expr(tokens, e.result_expr, snap, form_scope)
+		}
+
+	case ^ast.Constructor_Expr:
+		// Collect tokens from the type expression if present
+		if e.type_expr != nil {
+			collect_tokens_from_type_expr(tokens, e.type_expr)
+		}
+		// Collect tokens from all arguments
+		for arg in e.args {
+			collect_tokens_from_expr(tokens, arg, snap, form_scope)
 		}
 	}
 }
