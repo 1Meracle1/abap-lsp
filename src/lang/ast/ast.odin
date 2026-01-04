@@ -250,10 +250,10 @@ Message_Stmt :: struct {
 
 // INSERT statement kinds
 Insert_Kind :: enum {
-	Into_Table,   // INSERT expr INTO TABLE itab
-	Into_Db,      // INSERT INTO target VALUES wa
-	From_Wa,      // INSERT target FROM wa
-	From_Table,   // INSERT target FROM TABLE itab
+	Into_Table, // INSERT expr INTO TABLE itab
+	Into_Db, // INSERT INTO target VALUES wa
+	From_Wa, // INSERT target FROM wa
+	From_Table, // INSERT target FROM TABLE itab
 }
 
 // INSERT statement
@@ -263,11 +263,29 @@ Insert_Kind :: enum {
 // - INSERT target FROM wa.
 // - INSERT target FROM TABLE itab.
 Insert_Stmt :: struct {
-	using node:   Stmt,
-	kind:         Insert_Kind,
-	value_expr:   ^Expr, // The value/expression to insert (for Into_Table, Into_Db)
-	target:       ^Expr, // The target table (internal or database table)
-	source:       ^Expr, // The source work area or table (for From_Wa, From_Table)
+	using node: Stmt,
+	kind:       Insert_Kind,
+	value_expr: ^Expr, // The value/expression to insert (for Into_Table, Into_Db)
+	target:     ^Expr, // The target table (internal or database table)
+	source:     ^Expr, // The source work area or table (for From_Wa, From_Table)
+}
+
+Sort_Order_Kind :: enum {
+	None, // ascending by default
+	Ascending,
+	Descending,
+}
+
+Sort_Cols_By :: struct {
+	col:   ^Expr,
+	order: Sort_Order_Kind,
+}
+
+Sort_Stmt :: struct {
+	using node: Stmt,
+	itab:       ^Expr,
+	order:      Sort_Order_Kind,
+	cols_by:    [dynamic]Sort_Cols_By,
 }
 
 // Declarations
@@ -473,17 +491,17 @@ Table_Kind :: enum {
 }
 
 Table_Key :: struct {
-	is_unique:    bool,
-	is_default:   bool,
-	name:         ^Ident, // For named secondary keys
-	components:   [dynamic]^Ident, // Key components
+	is_unique:  bool,
+	is_default: bool,
+	name:       ^Ident, // For named secondary keys
+	components: [dynamic]^Ident, // Key components
 }
 
 Table_Type :: struct {
-	using node:   Expr,
-	kind:         Table_Kind,
-	elem:         ^Expr,
-	primary_key:  ^Table_Key,
+	using node:     Expr,
+	kind:           Table_Kind,
+	elem:           ^Expr,
+	primary_key:    ^Table_Key,
 	secondary_keys: [dynamic]^Table_Key,
 }
 
@@ -535,6 +553,7 @@ Any_Node :: union {
 	^Clear_Stmt,
 	^Message_Stmt,
 	^Insert_Stmt,
+	^Sort_Stmt,
 	// Declarations
 	^Bad_Decl,
 	^Data_Inline_Decl,
@@ -599,6 +618,7 @@ Any_Stmt :: union {
 	^Clear_Stmt,
 	^Message_Stmt,
 	^Insert_Stmt,
+	^Sort_Stmt,
 	//
 	^Bad_Decl,
 	^Data_Inline_Decl,

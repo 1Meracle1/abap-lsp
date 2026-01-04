@@ -96,6 +96,8 @@ parse_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			return parse_message_stmt(p)
 		case "INSERT":
 			return parse_insert_stmt(p)
+		case "SORT":
+			return parse_sort_stmt(p)
 		}
 	}
 
@@ -132,14 +134,14 @@ parse_data_typed_decl :: proc(p: ^Parser, data_tok: lexer.Token) -> ^ast.Decl {
 
 parse_data_typed_single_decl :: proc(p: ^Parser, data_tok: lexer.Token) -> ^ast.Decl {
 	ident_tok := expect_token(p, .Ident)
-	
+
 	// Accept TYPE or LIKE
 	if check_keyword(p, "TYPE") || check_keyword(p, "LIKE") {
 		advance_token(p)
 	} else {
 		expect_keyword_token(p, "TYPE")
 	}
-	
+
 	type_expr := parse_type_expr(p)
 
 	// Parse optional LENGTH
@@ -168,14 +170,14 @@ parse_data_typed_multiple_decl :: proc(p: ^Parser, data_tok: lexer.Token) -> ^as
 
 	for {
 		ident_tok := expect_token(p, .Ident)
-		
+
 		// Accept TYPE or LIKE
 		if check_keyword(p, "TYPE") || check_keyword(p, "LIKE") {
 			advance_token(p)
 		} else {
 			expect_keyword_token(p, "TYPE")
 		}
-		
+
 		type_expr := parse_type_expr(p)
 
 		// Parse optional LENGTH
@@ -388,20 +390,22 @@ parse_type_expr :: proc(p: ^Parser) -> ^ast.Expr {
 	if check_keyword(p, "REF") {
 		return parse_ref_type(p)
 	}
-	
+
 	// Check for LINE OF
 	if check_keyword(p, "LINE") {
 		return parse_line_type(p)
 	}
-	
+
 	// Check for table types: STANDARD TABLE OF, SORTED TABLE OF, HASHED TABLE OF, TABLE OF
 	// Also handle UNIQUE prefix for hashed tables
-	if check_keyword(p, "STANDARD") || check_keyword(p, "SORTED") || 
-	   check_keyword(p, "HASHED") || check_keyword(p, "TABLE") ||
+	if check_keyword(p, "STANDARD") ||
+	   check_keyword(p, "SORTED") ||
+	   check_keyword(p, "HASHED") ||
+	   check_keyword(p, "TABLE") ||
 	   check_keyword(p, "UNIQUE") {
 		return parse_table_type(p)
 	}
-	
+
 	// Otherwise parse as a simple type expression (identifier or selector)
 	return parse_simple_type_expr(p)
 }
@@ -410,9 +414,9 @@ parse_type_expr :: proc(p: ^Parser) -> ^ast.Expr {
 parse_ref_type :: proc(p: ^Parser) -> ^ast.Expr {
 	ref_tok := expect_keyword_token(p, "REF")
 	expect_keyword_token(p, "TO")
-	
+
 	target := parse_simple_type_expr(p)
-	
+
 	ref_type := ast.new(ast.Ref_Type, lexer.TextRange{ref_tok.range.start, p.prev_tok.range.end})
 	ref_type.target = target
 	ref_type.derived_expr = ref_type
@@ -423,10 +427,13 @@ parse_ref_type :: proc(p: ^Parser) -> ^ast.Expr {
 parse_line_type :: proc(p: ^Parser) -> ^ast.Expr {
 	line_tok := expect_keyword_token(p, "LINE")
 	expect_keyword_token(p, "OF")
-	
+
 	table_ref := parse_simple_type_expr(p)
-	
-	line_type := ast.new(ast.Line_Type, lexer.TextRange{line_tok.range.start, p.prev_tok.range.end})
+
+	line_type := ast.new(
+		ast.Line_Type,
+		lexer.TextRange{line_tok.range.start, p.prev_tok.range.end},
+	)
 	line_type.table = table_ref
 	line_type.derived_expr = line_type
 	return line_type
@@ -442,13 +449,13 @@ parse_table_type :: proc(p: ^Parser) -> ^ast.Expr {
 	start_tok := p.curr_tok
 	table_kind := ast.Table_Kind.Any
 	is_unique := false
-	
+
 	// Check for UNIQUE prefix
 	if check_keyword(p, "UNIQUE") {
 		advance_token(p)
 		is_unique = true
 	}
-	
+
 	// Determine table kind
 	if check_keyword(p, "STANDARD") {
 		advance_token(p)
@@ -460,20 +467,23 @@ parse_table_type :: proc(p: ^Parser) -> ^ast.Expr {
 		advance_token(p)
 		table_kind = .Hashed
 	}
-	
+
 	// Expect TABLE keyword
 	expect_keyword_token(p, "TABLE")
 	expect_keyword_token(p, "OF")
-	
+
 	// Parse element type
 	elem := parse_simple_type_expr(p)
-	
+
 	// Create table type node
-	table_type := ast.new(ast.Table_Type, lexer.TextRange{start_tok.range.start, p.prev_tok.range.end})
+	table_type := ast.new(
+		ast.Table_Type,
+		lexer.TextRange{start_tok.range.start, p.prev_tok.range.end},
+	)
 	table_type.kind = table_kind
 	table_type.elem = elem
 	table_type.derived_expr = table_type
-	
+
 	// Parse optional WITH KEY clause(s)
 	for check_keyword(p, "WITH") {
 		key := parse_table_key(p, is_unique)
@@ -491,7 +501,7 @@ parse_table_type :: proc(p: ^Parser) -> ^ast.Expr {
 		// Reset is_unique for secondary keys - they specify their own uniqueness
 		is_unique = false
 	}
-	
+
 	return table_type
 }
 
@@ -501,11 +511,11 @@ parse_table_key :: proc(p: ^Parser, default_unique: bool) -> ^ast.Table_Key {
 		return nil
 	}
 	advance_token(p) // consume WITH
-	
+
 	key := new(ast.Table_Key)
 	key.is_unique = default_unique
 	key.components = make([dynamic]^ast.Ident)
-	
+
 	// Check for UNIQUE / NON-UNIQUE modifier
 	if check_keyword(p, "UNIQUE") {
 		advance_token(p)
@@ -514,14 +524,14 @@ parse_table_key :: proc(p: ^Parser, default_unique: bool) -> ^ast.Table_Key {
 		// NON-UNIQUE was consumed by check_compound_keyword
 		key.is_unique = false
 	}
-	
+
 	// Check for SORTED / HASHED for secondary keys
 	if check_keyword(p, "SORTED") {
 		advance_token(p)
 	} else if check_keyword(p, "HASHED") {
 		advance_token(p)
 	}
-	
+
 	// Expect KEY keyword
 	if check_keyword(p, "KEY") {
 		advance_token(p)
@@ -537,7 +547,7 @@ parse_table_key :: proc(p: ^Parser, default_unique: bool) -> ^ast.Table_Key {
 		free(key)
 		return nil
 	}
-	
+
 	// Check for DEFAULT KEY
 	if check_keyword(p, "DEFAULT") {
 		advance_token(p)
@@ -547,32 +557,34 @@ parse_table_key :: proc(p: ^Parser, default_unique: bool) -> ^ast.Table_Key {
 		key.is_default = true
 		return key
 	}
-	
+
 	// Check for named key (identifier before COMPONENTS or for simple key names)
 	// Parse key components - can be single identifier or list separated by commas
 	// Also check for COMPONENTS keyword for secondary keys
 	if check_keyword(p, "COMPONENTS") {
 		advance_token(p)
 	}
-	
+
 	// Parse key field names
 	for p.curr_tok.kind == .Ident {
 		// Check if it's a keyword that ends the key specification
-		if check_keyword(p, "WITH") || check_keyword(p, "VALUE") ||
-		   check_keyword(p, "LENGTH") || check_keyword(p, "READ") {
+		if check_keyword(p, "WITH") ||
+		   check_keyword(p, "VALUE") ||
+		   check_keyword(p, "LENGTH") ||
+		   check_keyword(p, "READ") {
 			break
 		}
-		
+
 		field_tok := advance_token(p)
 		field_ident := ast.new_ident(field_tok)
 		append(&key.components, field_ident)
-		
+
 		// Check for comma separator
 		if !allow_token(p, .Comma) {
 			break
 		}
 	}
-	
+
 	return key
 }
 
@@ -581,13 +593,13 @@ check_hyphenated_keyword :: proc(p: ^Parser, first: string, second: string) -> b
 	if !check_keyword(p, first) {
 		return false
 	}
-	
+
 	saved_prev := p.prev_tok
 	saved_curr := p.curr_tok
 	saved_pos := p.l.pos
 	saved_read_pos := p.l.read_pos
 	saved_ch := p.l.ch
-	
+
 	advance_token(p) // consume first
 	if p.curr_tok.kind != .Minus || lexer.have_space_between(saved_curr, p.curr_tok) {
 		p.prev_tok = saved_prev
@@ -597,7 +609,7 @@ check_hyphenated_keyword :: proc(p: ^Parser, first: string, second: string) -> b
 		p.l.ch = saved_ch
 		return false
 	}
-	
+
 	advance_token(p) // consume -
 	if lexer.have_space_between(p.prev_tok, p.curr_tok) || !check_keyword(p, second) {
 		p.prev_tok = saved_prev
@@ -607,7 +619,7 @@ check_hyphenated_keyword :: proc(p: ^Parser, first: string, second: string) -> b
 		p.l.ch = saved_ch
 		return false
 	}
-	
+
 	advance_token(p) // consume second
 	return true
 }
@@ -2978,4 +2990,45 @@ parse_insert_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	insert_stmt.range.end = period_tok.range.end
 	insert_stmt.derived_stmt = insert_stmt
 	return insert_stmt
+}
+
+parse_sort_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
+	sort_tok := expect_keyword_token(p, "SORT")
+	itab_expr := parse_expr(p)
+
+	order_kind: ast.Sort_Order_Kind
+	if check_keyword(p, "ASCENDING") {
+		advance_token(p)
+		order_kind = .Ascending
+	} else if check_keyword(p, "DESCENDING") {
+		advance_token(p)
+		order_kind = .Descending
+	}
+
+	cols_by := make([dynamic]ast.Sort_Cols_By)
+	if check_keyword(p, "BY") {
+		advance_token(p)
+		for p.curr_tok.kind != .EOF {
+			if p.curr_tok.kind == .Period {
+				break
+			}
+			col_expr := parse_expr(p)
+			col_order_kind: ast.Sort_Order_Kind
+			if check_keyword(p, "ASCENDING") {
+				advance_token(p)
+				col_order_kind = .Ascending
+			} else if check_keyword(p, "DESCENDING") {
+				advance_token(p)
+				col_order_kind = .Descending
+			}
+			append(&cols_by, ast.Sort_Cols_By{col = col_expr, order = col_order_kind})
+		}
+	}
+
+	period_tok := expect_token(p, .Period)
+	sort_stmt := ast.new(ast.Sort_Stmt, sort_tok, period_tok)
+	sort_stmt.itab = itab_expr
+	sort_stmt.cols_by = cols_by
+	sort_stmt.order = order_kind
+	return sort_stmt
 }

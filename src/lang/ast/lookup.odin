@@ -379,6 +379,20 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 			}
 		}
 
+	case ^Sort_Stmt:
+		if n.itab != nil {
+			if res := find_node_at_offset(&n.itab.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		for col in n.cols_by {
+			if col.col != nil {
+				if res := find_node_at_offset(&n.itab.expr_base, offset); res != nil {
+					return res
+				}
+			}
+		}
+
 	case ^Form_Decl:
 		if n.ident != nil {
 			if res := find_node_at_offset(&n.ident.expr_base, offset); res != nil {

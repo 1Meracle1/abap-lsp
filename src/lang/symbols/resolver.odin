@@ -544,9 +544,6 @@ resolve_stmt :: proc(table: ^SymbolTable, stmt: ^ast.Stmt) {
 		resolve_case_stmt(table, s)
 	case ^ast.While_Stmt:
 		resolve_while_stmt(table, s)
-	case ^ast.Insert_Stmt:
-		// INSERT statements may contain inline declarations in expressions
-		// but don't introduce symbols at statement level
 	}
 }
 

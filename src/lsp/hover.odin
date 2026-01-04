@@ -43,8 +43,6 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 
 	#partial switch n in node.derived {
 	case ^ast.Ident:
-		log_trace(srv, fmt.tprintf("found ident: %s", n.name))
-		// Look up symbol in the correct scope chain
 		if sym, ok := lookup_symbol_at_offset(snap, n.name, offset); ok {
 			#partial switch sym.kind {
 			case .Form:
@@ -79,7 +77,6 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 		}
 
 	case ^ast.New_Expr:
-		log_trace(srv, "found NEW expression")
 		if n.is_inferred {
 			hover_text = "NEW #( ) - creates instance with inferred type"
 		} else if n.type_expr != nil {
@@ -109,8 +106,6 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 		}
 
 	case ^ast.Call_Expr:
-		log_trace(srv, "found Call expression")
-		// Get the method name being called
 		method_name := get_call_method_name(n)
 		if method_name != "" {
 			hover_text = fmt.tprintf("(method call) %s( )", method_name)
@@ -119,7 +114,6 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 		}
 
 	case ^ast.Selector_Expr:
-		log_trace(srv, "found Selector expression")
 		if n.field != nil {
 			field_name := n.field.name
 			if sym, ok := lookup_symbol_at_offset(snap, field_name, offset); ok {
@@ -129,30 +123,23 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 		}
 
 	case ^ast.Named_Arg:
-		log_trace(srv, "found Named argument")
 		if n.name != nil {
 			hover_text = fmt.tprintf("(parameter) %s", n.name.name)
 		}
 
 	case ^ast.String_Template_Expr:
-		log_trace(srv, "found String Template expression")
-		// Build a preview of the string template
 		hover_text = "(string template) |...|"
 
 	case ^ast.Binary_Expr:
-		log_trace(srv, "found Binary expression")
 		hover_text = format_binary_expr_hover(n)
 
 	case ^ast.Paren_Expr:
-		log_trace(srv, "found Parenthesized expression")
 		hover_text = "(parenthesized expression)"
 
 	case ^ast.Message_Stmt:
-		log_trace(srv, "found MESSAGE statement")
 		hover_text = "(statement) MESSAGE - displays a message to the user"
 
 	case ^ast.Insert_Stmt:
-		log_trace(srv, "found INSERT statement")
 		switch n.kind {
 		case .Into_Table:
 			hover_text = "(statement) INSERT ... INTO TABLE - inserts data into an internal table"
@@ -165,7 +152,6 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 		}
 
 	case ^ast.Table_Type:
-		log_trace(srv, "found Table Type expression")
 		table_kind_str := ""
 		switch n.kind {
 		case .Standard:
@@ -180,11 +166,9 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 		hover_text = fmt.tprintf("(type) %s OF ...", table_kind_str)
 
 	case ^ast.Ref_Type:
-		log_trace(srv, "found Ref Type expression")
 		hover_text = "(type) REF TO - reference type"
 
 	case ^ast.Line_Type:
-		log_trace(srv, "found Line Type expression")
 		hover_text = "(type) LINE OF - line type of internal table"
 
 	case:

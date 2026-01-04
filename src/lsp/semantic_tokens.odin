@@ -469,6 +469,16 @@ collect_tokens_from_stmt :: proc(
 		if s.source != nil {
 			collect_tokens_from_expr(tokens, s.source, snap, nil)
 		}
+
+	case ^ast.Sort_Stmt:
+		if s.itab != nil {
+			collect_tokens_from_expr(tokens, s.itab, snap, nil)
+		}
+		for col in s.cols_by {
+			if col.col != nil {
+				collect_tokens_from_expr(tokens, col.col, snap, nil)
+			}
+		}
 	}
 }
 
