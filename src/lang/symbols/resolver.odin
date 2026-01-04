@@ -85,7 +85,7 @@ resolve_typed_decl :: proc(
 	is_chained: bool,
 	is_global: bool = true,
 ) {
-	name := decl.ident.name
+	name := get_decl_name(decl.ident)
 
 	type_info := resolve_type_expr(table, decl.typed)
 
@@ -252,7 +252,7 @@ resolve_data_struct_components :: proc(
 		#partial switch c in comp.derived_stmt {
 		case ^ast.Data_Typed_Decl:
 			field_type := resolve_type_expr(table, c.typed)
-			add_struct_field(struct_type, c.ident.name, field_type, 0)
+			add_struct_field(struct_type, get_decl_name(c.ident), field_type, 0)
 
 		case ^ast.Data_Struct_Decl:
 			nested_type := make_structure_type(table, c.ident.name)
@@ -383,7 +383,11 @@ resolve_type_expr :: proc(table: ^SymbolTable, expr: ^ast.Expr) -> ^Type {
 		t.ast_node = expr
 		// Copy key information
 		if e.primary_key != nil {
-			key_info := make_table_key_info(table, e.primary_key.is_unique, e.primary_key.is_default)
+			key_info := make_table_key_info(
+				table,
+				e.primary_key.is_unique,
+				e.primary_key.is_default,
+			)
 			for comp in e.primary_key.components {
 				add_key_component(key_info, comp.name)
 			}
@@ -515,6 +519,29 @@ builtin_type_from_name :: proc(name: string) -> TypeKind {
 selector_to_string :: proc(sel: ^ast.Selector_Expr) -> string {
 	if sel.field != nil {
 		return sel.field.name
+	}
+	return ""
+}
+
+get_decl_name :: proc(expr: ^ast.Expr) -> string {
+	if expr == nil {
+		return ""
+	}
+	#partial switch e in expr.derived_expr {
+	case ^ast.Ident:
+		return e.name
+	case ^ast.Selector_Expr:
+		// Build name: lhs-rhs
+		left := get_decl_name(e.expr)
+		right := ""
+		if e.field != nil {
+			right = e.field.name
+		}
+		if left == "" {
+			return right
+		}
+		// Allocate on temp allocator since this string needs to persist only for symbol creation
+		return strings.concatenate({left, "-", right}, context.temp_allocator)
 	}
 	return ""
 }
@@ -981,21 +1008,21 @@ resolve_call_function_stmt :: proc(table: ^SymbolTable, call_func: ^ast.Call_Fun
 	// CALL FUNCTION doesn't typically introduce new symbols itself,
 	// but we need to check for any inline declarations in parameter values
 	// (e.g., DATA(lv_result) could theoretically appear in an importing parameter)
-	
+
 	// Check importing parameters for inline declarations
 	for param in call_func.importing {
 		if param.value != nil {
 			resolve_param_value_decl(table, param.value)
 		}
 	}
-	
+
 	// Check changing parameters for inline declarations
 	for param in call_func.changing {
 		if param.value != nil {
 			resolve_param_value_decl(table, param.value)
 		}
 	}
-	
+
 	// Check tables parameters for inline declarations
 	for param in call_func.tables {
 		if param.value != nil {
@@ -1008,13 +1035,13 @@ resolve_param_value_decl :: proc(table: ^SymbolTable, expr: ^ast.Expr) {
 	if expr == nil {
 		return
 	}
-	
+
 	// Check if this is an inline DATA declaration
 	if ident, ok := expr.derived_expr.(^ast.Ident); ok {
 		// Could be a simple variable reference, nothing to declare
 		return
 	}
-	
+
 	// For now, we don't handle inline declarations in CALL FUNCTION parameters
 	// as they are quite rare. This can be extended if needed.
 }
@@ -1026,7 +1053,7 @@ resolve_select_stmt :: proc(table: ^SymbolTable, select_stmt: ^ast.Select_Stmt) 
 		if ident, ok := select_stmt.into_target.derived_expr.(^ast.Ident); ok {
 			// Create inferred type - SELECT result type would be inferred from context
 			type_info := make_unknown_type(table)
-			
+
 			sym := Symbol {
 				name      = ident.name,
 				kind      = .Variable,
@@ -1036,7 +1063,7 @@ resolve_select_stmt :: proc(table: ^SymbolTable, select_stmt: ^ast.Select_Stmt) 
 			add_symbol(table, sym, allow_shadowing = false)
 		}
 	}
-	
+
 	// Resolve statements in the SELECT loop body (for non-SINGLE selects)
 	resolve_stmt_list(table, select_stmt.body[:])
 }

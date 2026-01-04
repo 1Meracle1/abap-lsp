@@ -163,8 +163,35 @@ parse_data_typed_decl :: proc(p: ^Parser, data_tok: lexer.Token) -> ^ast.Decl {
 	return decl
 }
 
-parse_data_typed_single_decl :: proc(p: ^Parser, data_tok: lexer.Token) -> ^ast.Decl {
+// parse_data_decl_ident parses an identifier for a DATA declaration,
+// which may be a simple identifier or a selector expression (e.g., screen0100-serial)
+parse_data_decl_ident :: proc(p: ^Parser) -> ^ast.Expr {
 	ident_tok := expect_token(p, .Ident)
+	expr: ^ast.Expr = &ast.new_ident(ident_tok).node
+
+	// Check for selector expression (using - as separator)
+	for p.curr_tok.kind == .Minus {
+		minus_tok := advance_token(p)
+		field_tok := expect_token(p, .Ident)
+		field_ident := ast.new_ident(field_tok)
+
+		selector := ast.new(
+			ast.Selector_Expr,
+			lexer.TextRange{expr.range.start, field_tok.range.end},
+		)
+		selector.expr = expr
+		selector.op = minus_tok
+		selector.field = field_ident
+		selector.derived_expr = selector
+		expr = &selector.node
+	}
+
+	return expr
+}
+
+parse_data_typed_single_decl :: proc(p: ^Parser, data_tok: lexer.Token) -> ^ast.Decl {
+	// Parse identifier, which may be a selector expression (e.g., screen0100-serial)
+	ident_expr := parse_data_decl_ident(p)
 
 	// Accept TYPE or LIKE
 	if check_keyword(p, "TYPE") || check_keyword(p, "LIKE") {
@@ -189,7 +216,7 @@ parse_data_typed_single_decl :: proc(p: ^Parser, data_tok: lexer.Token) -> ^ast.
 	}
 
 	data_decl := ast.new(ast.Data_Typed_Decl, data_tok, p.curr_tok)
-	data_decl.ident = ast.new_ident(ident_tok)
+	data_decl.ident = ident_expr
 	data_decl.typed = type_expr
 	data_decl.value = value_expr
 	return data_decl
@@ -216,7 +243,8 @@ parse_data_typed_multiple_decl :: proc(p: ^Parser, data_tok: lexer.Token) -> ^as
 			break
 		}
 
-		ident_tok := expect_token(p, .Ident)
+		// Parse identifier, which may be a selector expression (e.g., screen0100-serial)
+		ident_expr := parse_data_decl_ident(p)
 
 		// Accept TYPE or LIKE
 		if check_keyword(p, "TYPE") || check_keyword(p, "LIKE") {
@@ -239,8 +267,11 @@ parse_data_typed_multiple_decl :: proc(p: ^Parser, data_tok: lexer.Token) -> ^as
 			value_expr = parse_expr(p)
 		}
 
-		decl := ast.new(ast.Data_Typed_Decl, ident_tok, p.prev_tok)
-		decl.ident = ast.new_ident(ident_tok)
+		decl := ast.new(
+			ast.Data_Typed_Decl,
+			lexer.TextRange{ident_expr.range.start, p.prev_tok.range.end},
+		)
+		decl.ident = ident_expr
 		decl.typed = type_expr
 		decl.value = value_expr
 		append(&chain_decl.decls, decl)
@@ -292,7 +323,8 @@ parse_data_struct_decl :: proc(p: ^Parser) -> ^ast.Data_Struct_Decl {
 			continue
 		}
 
-		field_ident_tok := expect_token(p, .Ident)
+		// Parse identifier, which may be a selector expression (e.g., screen0100-serial)
+		field_ident_expr := parse_data_decl_ident(p)
 
 		// Accept TYPE or LIKE
 		if check_keyword(p, "TYPE") || check_keyword(p, "LIKE") {
@@ -316,8 +348,11 @@ parse_data_struct_decl :: proc(p: ^Parser) -> ^ast.Data_Struct_Decl {
 			value_expr = parse_expr(p)
 		}
 
-		field_decl := ast.new(ast.Data_Typed_Decl, field_ident_tok, p.prev_tok)
-		field_decl.ident = ast.new_ident(field_ident_tok)
+		field_decl := ast.new(
+			ast.Data_Typed_Decl,
+			lexer.TextRange{field_ident_expr.range.start, p.prev_tok.range.end},
+		)
+		field_decl.ident = field_ident_expr
 		field_decl.typed = type_expr
 		field_decl.value = value_expr
 		field_decl.derived_stmt = field_decl
@@ -515,14 +550,14 @@ parse_constants_decl :: proc(p: ^Parser) -> ^ast.Decl {
 
 parse_constants_single_decl :: proc(p: ^Parser, const_tok: lexer.Token) -> ^ast.Decl {
 	ident_tok := expect_token(p, .Ident)
-	
+
 	// Accept TYPE or LIKE
 	if check_keyword(p, "TYPE") || check_keyword(p, "LIKE") {
 		advance_token(p)
 	} else {
 		expect_keyword_token(p, "TYPE")
 	}
-	
+
 	type_expr := parse_type_expr(p)
 
 	// Parse optional LENGTH
@@ -569,14 +604,14 @@ parse_constants_chain_decl :: proc(p: ^Parser, const_tok: lexer.Token) -> ^ast.D
 		}
 
 		ident_tok := expect_token(p, .Ident)
-		
+
 		// Accept TYPE or LIKE
 		if check_keyword(p, "TYPE") || check_keyword(p, "LIKE") {
 			advance_token(p)
 		} else {
 			expect_keyword_token(p, "TYPE")
 		}
-		
+
 		type_expr := parse_type_expr(p)
 
 		// Parse optional LENGTH
@@ -639,14 +674,14 @@ parse_constants_struct_decl :: proc(p: ^Parser) -> ^ast.Const_Struct_Decl {
 		}
 
 		field_ident_tok := expect_token(p, .Ident)
-		
+
 		// Accept TYPE or LIKE
 		if check_keyword(p, "TYPE") || check_keyword(p, "LIKE") {
 			advance_token(p)
 		} else {
 			expect_keyword_token(p, "TYPE")
 		}
-		
+
 		type_expr := parse_type_expr(p)
 
 		// Parse optional LENGTH
@@ -1800,7 +1835,10 @@ parse_format_option_kind :: proc(p: ^Parser) -> (ast.Embedded_Format_Kind, bool)
 }
 
 // parse_format_option_value parses the value for a format option
-parse_format_option_value :: proc(p: ^Parser, kind: ast.Embedded_Format_Kind) -> ast.Embedded_Format_Value {
+parse_format_option_value :: proc(
+	p: ^Parser,
+	kind: ast.Embedded_Format_Kind,
+) -> ast.Embedded_Format_Value {
 	if p.curr_tok.kind != .Ident {
 		return .Custom
 	}
@@ -2149,14 +2187,17 @@ parse_for_expr :: proc(p: ^Parser) -> ^ast.Expr {
 	// Can contain single expression or multiple named args like ( field1 = val1 field2 = val2 )
 	if p.curr_tok.kind == .LParen {
 		advance_token(p) // consume (
-		
+
 		// Parse result arguments (can be named args or regular expressions)
 		max_iterations := 100
 		iterations := 0
-		for p.curr_tok.kind != .RParen && p.curr_tok.kind != .EOF && p.curr_tok.kind != .Period && iterations < max_iterations {
+		for p.curr_tok.kind != .RParen &&
+		    p.curr_tok.kind != .EOF &&
+		    p.curr_tok.kind != .Period &&
+		    iterations < max_iterations {
 			iterations += 1
 			prev_pos := p.curr_tok.range.start
-			
+
 			arg := parse_call_arg(p)
 			if arg != nil {
 				append(&for_expr.result_args, arg)
@@ -2165,13 +2206,13 @@ parse_for_expr :: proc(p: ^Parser) -> ^ast.Expr {
 					for_expr.result_expr = arg
 				}
 			}
-			
+
 			// If we didn't make progress, break to avoid infinite loop
 			if p.curr_tok.range.start == prev_pos {
 				break
 			}
 		}
-		
+
 		expect_token(p, .RParen) // consume )
 	}
 
@@ -2575,12 +2616,16 @@ parse_class_data_chain_decl :: proc(
 	chain_decl.decls = make([dynamic]^ast.Data_Typed_Decl)
 
 	for {
-		ident_tok := expect_token(p, .Ident)
+		// Parse identifier, which may be a selector expression (e.g., screen0100-serial)
+		ident_expr := parse_data_decl_ident(p)
 		expect_keyword_token(p, "TYPE")
 		type_expr := parse_type_expr(p)
 
-		decl := ast.new(ast.Data_Typed_Decl, ident_tok, p.prev_tok)
-		decl.ident = ast.new_ident(ident_tok)
+		decl := ast.new(
+			ast.Data_Typed_Decl,
+			lexer.TextRange{ident_expr.range.start, p.prev_tok.range.end},
+		)
+		decl.ident = ident_expr
 		decl.typed = type_expr
 		append(&chain_decl.decls, decl)
 
@@ -3075,8 +3120,10 @@ parse_call_function_params :: proc(
 	// Parse parameters until we hit another section keyword or Period
 	for p.curr_tok.kind != .Period && p.curr_tok.kind != .EOF {
 		// Check if this is a new section keyword
-		if check_keyword(p, "EXPORTING") || check_keyword(p, "IMPORTING") ||
-		   check_keyword(p, "TABLES") || check_keyword(p, "CHANGING") ||
+		if check_keyword(p, "EXPORTING") ||
+		   check_keyword(p, "IMPORTING") ||
+		   check_keyword(p, "TABLES") ||
+		   check_keyword(p, "CHANGING") ||
 		   check_keyword(p, "EXCEPTIONS") {
 			break
 		}
@@ -3092,14 +3139,20 @@ parse_call_function_params :: proc(
 		// Parse '='
 		if p.curr_tok.kind != .Eq {
 			// This might be the OTHERS keyword in EXCEPTIONS
-			if kind == .Exceptions && to_upper(p.keyword_buffer[:], param_name_tok.lit) == "OTHERS" {
+			if kind == .Exceptions &&
+			   to_upper(p.keyword_buffer[:], param_name_tok.lit) == "OTHERS" {
 				// OTHERS = value
 				// But we already consumed the token, so put back logic...
 				// Actually, OTHERS is just another exception name, so continue normally
 			}
 			// If no '=', this might be a keyword; put it back and break
 			// Since we already consumed the name, we need to handle this case
-			error(p, p.curr_tok.range, "expected '=' after parameter name '%s'", param_name_tok.lit)
+			error(
+				p,
+				p.curr_tok.range,
+				"expected '=' after parameter name '%s'",
+				param_name_tok.lit,
+			)
 			break
 		}
 		advance_token(p) // consume '='
@@ -4478,50 +4531,50 @@ parse_condense_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 // - SELECT ... GROUP BY cols HAVING cond [INTO target].
 parse_select_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	select_tok := expect_keyword_token(p, "SELECT")
-	
+
 	stmt := ast.new(ast.Select_Stmt, select_tok.range)
 	stmt.fields = make([dynamic]^ast.Expr)
 	stmt.joins = make([dynamic]^ast.Select_Join)
 	stmt.order_by = make([dynamic]^ast.Expr)
 	stmt.group_by = make([dynamic]^ast.Expr)
 	stmt.body = make([dynamic]^ast.Stmt)
-	
+
 	// Check for SINGLE modifier
 	if check_keyword(p, "SINGLE") {
 		advance_token(p)
 		stmt.is_single = true
 	}
-	
+
 	// Parse field list or FROM keyword (for SELECT FROM table FIELDS ...)
 	if !check_keyword(p, "FROM") {
 		parse_select_field_list(p, stmt)
 	}
-	
+
 	// Parse FROM clause
 	if check_keyword(p, "FROM") {
 		advance_token(p)
 		stmt.from_table = parse_select_table_ref(p)
-		
+
 		// Check for AS alias
 		if check_keyword(p, "AS") {
 			advance_token(p)
 			alias_tok := expect_token(p, .Ident)
 			stmt.from_alias = ast.new_ident(alias_tok)
 		}
-		
+
 		// Parse optional JOINs
 		parse_select_joins(p, stmt)
 	}
-	
+
 	// Parse FIELDS clause (alternative field list position)
 	if check_keyword(p, "FIELDS") {
 		advance_token(p)
 		parse_select_field_list(p, stmt)
 	}
-	
+
 	// Parse remaining clauses in any order
 	parse_select_clauses(p, stmt)
-	
+
 	// Check if this is a SELECT loop (no SINGLE and has ENDSELECT)
 	// vs. a SELECT single/INTO TABLE (ends with period)
 	if p.curr_tok.kind == .Period {
@@ -4538,13 +4591,13 @@ parse_select_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 				append(&stmt.body, inner_stmt)
 			}
 		}
-		
+
 		endselect_tok := expect_keyword_token(p, "ENDSELECT")
 		period_tok := expect_token(p, .Period)
 		stmt.range.end = period_tok.range.end
 		_ = endselect_tok
 	}
-	
+
 	stmt.derived_stmt = stmt
 	return stmt
 }
@@ -4556,24 +4609,29 @@ parse_select_field_list :: proc(p: ^Parser, stmt: ^ast.Select_Stmt) {
 		if field != nil {
 			append(&stmt.fields, field)
 		}
-		
+
 		// Check for comma or continue if next is still a field
 		if allow_token(p, .Comma) {
 			continue
 		}
-		
+
 		// If next is a keyword that ends field list, break
-		if check_keyword(p, "FROM") || check_keyword(p, "INTO") || check_keyword(p, "WHERE") ||
-		   check_keyword(p, "ORDER") || check_keyword(p, "GROUP") || check_keyword(p, "FOR") ||
-		   check_keyword(p, "UP") || check_keyword(p, "HAVING") {
+		if check_keyword(p, "FROM") ||
+		   check_keyword(p, "INTO") ||
+		   check_keyword(p, "WHERE") ||
+		   check_keyword(p, "ORDER") ||
+		   check_keyword(p, "GROUP") ||
+		   check_keyword(p, "FOR") ||
+		   check_keyword(p, "UP") ||
+		   check_keyword(p, "HAVING") {
 			break
 		}
-		
+
 		// If next token looks like another field expression, continue without comma
 		if p.curr_tok.kind == .Ident || p.curr_tok.kind == .Star {
 			continue
 		}
-		
+
 		break
 	}
 }
@@ -4589,24 +4647,24 @@ parse_select_field_expr :: proc(p: ^Parser) -> ^ast.Expr {
 		star.derived_expr = star
 		return star
 	}
-	
+
 	// Parse field expression with optional alias (AS alias)
 	expr := parse_select_single_field(p)
-	
+
 	// Check for AS alias for the field
 	if check_keyword(p, "AS") {
 		advance_token(p)
 		// Parse alias name - this becomes a named arg
 		alias_tok := expect_token(p, .Ident)
 		alias_ident := ast.new_ident(alias_tok)
-		
+
 		named := ast.new(ast.Named_Arg, lexer.TextRange{expr.range.start, alias_tok.range.end})
 		named.name = alias_ident
 		named.value = expr
 		named.derived_expr = named
 		return named
 	}
-	
+
 	return expr
 }
 
@@ -4615,13 +4673,17 @@ parse_select_single_field :: proc(p: ^Parser) -> ^ast.Expr {
 	// Check for aggregate functions: SUM, COUNT, AVG, MIN, MAX
 	if p.curr_tok.kind == .Ident {
 		upper := to_upper(p.keyword_buffer[:], p.curr_tok.lit)
-		if upper == "SUM" || upper == "COUNT" || upper == "AVG" || upper == "MIN" || upper == "MAX" {
+		if upper == "SUM" ||
+		   upper == "COUNT" ||
+		   upper == "AVG" ||
+		   upper == "MIN" ||
+		   upper == "MAX" {
 			func_tok := advance_token(p)
 			func_ident := ast.new_ident(func_tok)
-			
+
 			// Expect ( arg )
 			expect_token(p, .LParen)
-			
+
 			// Check for * in COUNT(*)
 			arg: ^ast.Expr
 			if p.curr_tok.kind == .Star {
@@ -4633,10 +4695,13 @@ parse_select_single_field :: proc(p: ^Parser) -> ^ast.Expr {
 			} else {
 				arg = parse_select_single_field(p)
 			}
-			
+
 			rparen_tok := expect_token(p, .RParen)
-			
-			call := ast.new(ast.Call_Expr, lexer.TextRange{func_tok.range.start, rparen_tok.range.end})
+
+			call := ast.new(
+				ast.Call_Expr,
+				lexer.TextRange{func_tok.range.start, rparen_tok.range.end},
+			)
 			call.expr = func_ident
 			args := make([]^ast.Expr, 1)
 			args[0] = arg
@@ -4645,25 +4710,28 @@ parse_select_single_field :: proc(p: ^Parser) -> ^ast.Expr {
 			return call
 		}
 	}
-	
+
 	// Parse regular field expression (may include table~field)
 	first_tok := expect_token(p, .Ident)
 	expr: ^ast.Expr = ast.new_ident(first_tok)
-	
+
 	// Check for ~ (table~field notation)
 	if p.curr_tok.kind == .Tilde {
 		tilde_tok := advance_token(p)
 		field_tok := expect_token(p, .Ident)
 		field_ident := ast.new_ident(field_tok)
-		
-		sel := ast.new(ast.Selector_Expr, lexer.TextRange{first_tok.range.start, field_tok.range.end})
+
+		sel := ast.new(
+			ast.Selector_Expr,
+			lexer.TextRange{first_tok.range.start, field_tok.range.end},
+		)
 		sel.expr = expr
 		sel.op = tilde_tok
 		sel.field = field_ident
 		sel.derived_expr = sel
 		expr = sel
 	}
-	
+
 	return expr
 }
 
@@ -4677,7 +4745,7 @@ parse_select_table_ref :: proc(p: ^Parser) -> ^ast.Expr {
 parse_select_joins :: proc(p: ^Parser, stmt: ^ast.Select_Stmt) {
 	for p.curr_tok.kind != .EOF {
 		join_kind: ast.Select_Join_Kind
-		
+
 		if check_keyword(p, "INNER") {
 			advance_token(p)
 			expect_keyword_token(p, "JOIN")
@@ -4703,10 +4771,10 @@ parse_select_joins :: proc(p: ^Parser, stmt: ^ast.Select_Stmt) {
 		} else {
 			break
 		}
-		
+
 		// Parse joined table
 		join_table := parse_select_table_ref(p)
-		
+
 		// Check for AS alias
 		join_alias: ^ast.Ident = nil
 		if check_keyword(p, "AS") {
@@ -4714,14 +4782,14 @@ parse_select_joins :: proc(p: ^Parser, stmt: ^ast.Select_Stmt) {
 			alias_tok := expect_token(p, .Ident)
 			join_alias = ast.new_ident(alias_tok)
 		}
-		
+
 		// Parse ON condition
 		on_cond: ^ast.Expr = nil
 		if check_keyword(p, "ON") {
 			advance_token(p)
 			on_cond = parse_select_on_condition(p)
 		}
-		
+
 		join := new(ast.Select_Join)
 		join.kind = join_kind
 		join.table = join_table
@@ -4741,12 +4809,12 @@ parse_select_on_condition :: proc(p: ^Parser) -> ^ast.Expr {
 // This handles AND, OR, and comparison operators
 parse_select_logical_expr :: proc(p: ^Parser) -> ^ast.Expr {
 	left := parse_select_comparison_expr(p)
-	
+
 	for p.curr_tok.kind != .EOF {
 		if check_keyword(p, "AND") {
 			op_tok := advance_token(p)
 			right := parse_select_comparison_expr(p)
-			
+
 			bin := ast.new(ast.Binary_Expr, lexer.TextRange{left.range.start, right.range.end})
 			bin.left = left
 			bin.op = op_tok
@@ -4756,7 +4824,7 @@ parse_select_logical_expr :: proc(p: ^Parser) -> ^ast.Expr {
 		} else if check_keyword(p, "OR") {
 			op_tok := advance_token(p)
 			right := parse_select_comparison_expr(p)
-			
+
 			bin := ast.new(ast.Binary_Expr, lexer.TextRange{left.range.start, right.range.end})
 			bin.left = left
 			bin.op = op_tok
@@ -4767,20 +4835,24 @@ parse_select_logical_expr :: proc(p: ^Parser) -> ^ast.Expr {
 			break
 		}
 	}
-	
+
 	return left
 }
 
 // parse_select_comparison_expr parses a comparison in SELECT context
 parse_select_comparison_expr :: proc(p: ^Parser) -> ^ast.Expr {
 	left := parse_select_operand(p)
-	
+
 	// Check for comparison operators: =, <>, <, >, <=, >=, EQ, NE, LT, GT, LE, GE
-	if p.curr_tok.kind == .Eq || p.curr_tok.kind == .Lt || p.curr_tok.kind == .Gt ||
-	   p.curr_tok.kind == .Le || p.curr_tok.kind == .Ge || p.curr_tok.kind == .Ne {
+	if p.curr_tok.kind == .Eq ||
+	   p.curr_tok.kind == .Lt ||
+	   p.curr_tok.kind == .Gt ||
+	   p.curr_tok.kind == .Le ||
+	   p.curr_tok.kind == .Ge ||
+	   p.curr_tok.kind == .Ne {
 		op_tok := advance_token(p)
 		right := parse_select_operand(p)
-		
+
 		bin := ast.new(ast.Binary_Expr, lexer.TextRange{left.range.start, right.range.end})
 		bin.left = left
 		bin.op = op_tok
@@ -4788,13 +4860,17 @@ parse_select_comparison_expr :: proc(p: ^Parser) -> ^ast.Expr {
 		bin.derived_expr = bin
 		return bin
 	}
-	
+
 	// Check for keyword comparison operators
-	if check_keyword(p, "EQ") || check_keyword(p, "NE") || check_keyword(p, "LT") ||
-	   check_keyword(p, "GT") || check_keyword(p, "LE") || check_keyword(p, "GE") {
+	if check_keyword(p, "EQ") ||
+	   check_keyword(p, "NE") ||
+	   check_keyword(p, "LT") ||
+	   check_keyword(p, "GT") ||
+	   check_keyword(p, "LE") ||
+	   check_keyword(p, "GE") {
 		op_tok := advance_token(p)
 		right := parse_select_operand(p)
-		
+
 		bin := ast.new(ast.Binary_Expr, lexer.TextRange{left.range.start, right.range.end})
 		bin.left = left
 		bin.op = op_tok
@@ -4802,7 +4878,7 @@ parse_select_comparison_expr :: proc(p: ^Parser) -> ^ast.Expr {
 		bin.derived_expr = bin
 		return bin
 	}
-	
+
 	return left
 }
 
@@ -4811,15 +4887,15 @@ parse_select_operand :: proc(p: ^Parser) -> ^ast.Expr {
 	// Check for @ prefix (host variable reference)
 	if p.curr_tok.kind == .At {
 		at_tok := advance_token(p)
-		
+
 		// Check for DATA(...) inline declaration
 		if check_keyword(p, "DATA") {
 			return parse_data_inline_expr(p)
 		}
-		
+
 		// Parse the variable reference (may include structure access with -)
 		inner := parse_select_field_with_dash(p)
-		
+
 		// Wrap in a unary expression with @ operator
 		unary := ast.new(ast.Unary_Expr, lexer.TextRange{at_tok.range.start, inner.range.end})
 		unary.op = at_tok
@@ -4827,7 +4903,7 @@ parse_select_operand :: proc(p: ^Parser) -> ^ast.Expr {
 		unary.derived_expr = unary
 		return unary
 	}
-	
+
 	// Check for string literal
 	if p.curr_tok.kind == .String {
 		str_tok := advance_token(p)
@@ -4836,7 +4912,7 @@ parse_select_operand :: proc(p: ^Parser) -> ^ast.Expr {
 		lit.derived_expr = lit
 		return lit
 	}
-	
+
 	// Check for number literal
 	if p.curr_tok.kind == .Number {
 		num_tok := advance_token(p)
@@ -4845,7 +4921,7 @@ parse_select_operand :: proc(p: ^Parser) -> ^ast.Expr {
 		lit.derived_expr = lit
 		return lit
 	}
-	
+
 	// Parse field reference (table~field or just field, may include structure access with -)
 	return parse_select_field_with_dash(p)
 }
@@ -4854,19 +4930,22 @@ parse_select_operand :: proc(p: ^Parser) -> ^ast.Expr {
 // e.g., entry_tab-carrid, wa-field1-field2
 parse_select_field_with_dash :: proc(p: ^Parser) -> ^ast.Expr {
 	expr := parse_select_single_field(p)
-	
+
 	// Check for - (structure access)
 	for p.curr_tok.kind == .Minus {
 		// Check if next token is an identifier (not a space followed by something else)
 		// The - must be immediately followed by an identifier for structure access
 		minus_tok := advance_token(p)
-		
+
 		// If next token is an identifier without space, it's structure access
 		if p.curr_tok.kind == .Ident && !lexer.have_space_between(minus_tok, p.curr_tok) {
 			field_tok := advance_token(p)
 			field_ident := ast.new_ident(field_tok)
-			
-			sel := ast.new(ast.Selector_Expr, lexer.TextRange{expr.range.start, field_tok.range.end})
+
+			sel := ast.new(
+				ast.Selector_Expr,
+				lexer.TextRange{expr.range.start, field_tok.range.end},
+			)
 			sel.expr = expr
 			sel.op = minus_tok
 			sel.field = field_ident
@@ -4880,7 +4959,7 @@ parse_select_field_with_dash :: proc(p: ^Parser) -> ^ast.Expr {
 			break
 		}
 	}
-	
+
 	return expr
 }
 
@@ -4936,32 +5015,36 @@ parse_select_order_by :: proc(p: ^Parser, stmt: ^ast.Select_Stmt) {
 		append(&stmt.order_by, pk_ident)
 		return
 	}
-	
+
 	for p.curr_tok.kind != .EOF {
 		field := parse_select_single_field(p)
 		append(&stmt.order_by, field)
-		
+
 		// Check for ASCENDING/DESCENDING
 		if check_keyword(p, "ASCENDING") || check_keyword(p, "DESCENDING") {
 			advance_token(p)
 		}
-		
+
 		// Check for comma
 		if allow_token(p, .Comma) {
 			continue
 		}
-		
+
 		// Check for next clause keyword
-		if check_keyword(p, "INTO") || check_keyword(p, "WHERE") || check_keyword(p, "UP") ||
-		   check_keyword(p, "FOR") || check_keyword(p, "GROUP") || check_keyword(p, "HAVING") {
+		if check_keyword(p, "INTO") ||
+		   check_keyword(p, "WHERE") ||
+		   check_keyword(p, "UP") ||
+		   check_keyword(p, "FOR") ||
+		   check_keyword(p, "GROUP") ||
+		   check_keyword(p, "HAVING") {
 			break
 		}
-		
+
 		// If next token looks like another field, continue without comma
 		if p.curr_tok.kind == .Ident {
 			continue
 		}
-		
+
 		break
 	}
 }
@@ -4971,23 +5054,26 @@ parse_select_group_by :: proc(p: ^Parser, stmt: ^ast.Select_Stmt) {
 	for p.curr_tok.kind != .EOF {
 		field := parse_select_single_field(p)
 		append(&stmt.group_by, field)
-		
+
 		// Check for comma
 		if allow_token(p, .Comma) {
 			continue
 		}
-		
+
 		// Check for next clause keyword
-		if check_keyword(p, "INTO") || check_keyword(p, "WHERE") || check_keyword(p, "HAVING") ||
-		   check_keyword(p, "ORDER") || check_keyword(p, "UP") {
+		if check_keyword(p, "INTO") ||
+		   check_keyword(p, "WHERE") ||
+		   check_keyword(p, "HAVING") ||
+		   check_keyword(p, "ORDER") ||
+		   check_keyword(p, "UP") {
 			break
 		}
-		
+
 		// If next token looks like another field, continue without comma
 		if p.curr_tok.kind == .Ident {
 			continue
 		}
-		
+
 		break
 	}
 }
@@ -5009,11 +5095,11 @@ parse_select_into :: proc(p: ^Parser, stmt: ^ast.Select_Stmt) {
 	} else {
 		stmt.into_kind = .Single
 	}
-	
+
 	// Parse target - may have @ prefix
 	if p.curr_tok.kind == .At {
 		advance_token(p)
-		
+
 		// Check for DATA(...) inline declaration
 		if check_keyword(p, "DATA") {
 			stmt.into_target = parse_data_inline_expr(p)

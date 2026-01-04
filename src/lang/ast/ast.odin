@@ -121,19 +121,19 @@ Named_Arg :: struct {
 
 // Embedded expression formatting option kind
 Embedded_Format_Kind :: enum {
-	Alpha,   // ALPHA = IN/OUT
-	Date,    // DATE = ISO/USER/RAW/ENVIRONMENT
-	Time,    // TIME = ISO/USER/RAW/ENVIRONMENT
-	Width,   // WIDTH = n
-	Align,   // ALIGN = LEFT/RIGHT/CENTER
-	Pad,     // PAD = 'char'
-	Case,    // CASE = UPPER/LOWER/RAW
-	Sign,    // SIGN = LEFT/LEFTPLUS/LEFTSPACE/RIGHT/RIGHTPLUS/RIGHTSPACE
+	Alpha, // ALPHA = IN/OUT
+	Date, // DATE = ISO/USER/RAW/ENVIRONMENT
+	Time, // TIME = ISO/USER/RAW/ENVIRONMENT
+	Width, // WIDTH = n
+	Align, // ALIGN = LEFT/RIGHT/CENTER
+	Pad, // PAD = 'char'
+	Case, // CASE = UPPER/LOWER/RAW
+	Sign, // SIGN = LEFT/LEFTPLUS/LEFTSPACE/RIGHT/RIGHTPLUS/RIGHTSPACE
 	Decimals, // DECIMALS = n
 	Exponent, // EXPONENT = n
-	Zero,    // ZERO = YES/NO
-	Number,  // NUMBER = USER/RAW/ENVIRONMENT
-	Style,   // STYLE = SIMPLE/SIGN_AS_POSTFIX/SCALE_PRESERVING
+	Zero, // ZERO = YES/NO
+	Number, // NUMBER = USER/RAW/ENVIRONMENT
+	Style, // STYLE = SIMPLE/SIGN_AS_POSTFIX/SCALE_PRESERVING
 	Currency, // CURRENCY = currency_code
 	Country, // COUNTRY = country_code
 	Timestamp, // TIMESTAMP = SPACE/ISO/USER/ENVIRONMENT
@@ -142,37 +142,37 @@ Embedded_Format_Kind :: enum {
 
 // Embedded expression formatting option value
 Embedded_Format_Value :: enum {
-	In,       // ALPHA = IN
-	Out,      // ALPHA = OUT
-	Iso,      // DATE/TIME/TIMESTAMP = ISO
-	User,     // DATE/TIME/NUMBER/TIMESTAMP = USER
-	Raw,      // DATE/TIME/NUMBER/CASE = RAW
+	In, // ALPHA = IN
+	Out, // ALPHA = OUT
+	Iso, // DATE/TIME/TIMESTAMP = ISO
+	User, // DATE/TIME/NUMBER/TIMESTAMP = USER
+	Raw, // DATE/TIME/NUMBER/CASE = RAW
 	Environment, // DATE/TIME/NUMBER/TIMESTAMP = ENVIRONMENT
-	Left,     // ALIGN/SIGN = LEFT
-	Right,    // ALIGN/SIGN = RIGHT
-	Center,   // ALIGN = CENTER
-	Upper,    // CASE = UPPER
-	Lower,    // CASE = LOWER
-	Yes,      // ZERO = YES
-	No,       // ZERO = NO
-	Simple,   // STYLE = SIMPLE
+	Left, // ALIGN/SIGN = LEFT
+	Right, // ALIGN/SIGN = RIGHT
+	Center, // ALIGN = CENTER
+	Upper, // CASE = UPPER
+	Lower, // CASE = LOWER
+	Yes, // ZERO = YES
+	No, // ZERO = NO
+	Simple, // STYLE = SIMPLE
 	Scale_Preserving, // STYLE = SCALE_PRESERVING
 	Sign_As_Postfix, // STYLE = SIGN_AS_POSTFIX
 	Leftplus, // SIGN = LEFTPLUS
 	Leftspace, // SIGN = LEFTSPACE
 	Rightplus, // SIGN = RIGHTPLUS
 	Rightspace, // SIGN = RIGHTSPACE
-	Space,    // TIMESTAMP = SPACE
-	Custom,   // For numeric values (WIDTH, DECIMALS) or string values (PAD, CURRENCY)
+	Space, // TIMESTAMP = SPACE
+	Custom, // For numeric values (WIDTH, DECIMALS) or string values (PAD, CURRENCY)
 }
 
 // Embedded expression formatting option
 Embedded_Format_Option :: struct {
-	kind:       Embedded_Format_Kind,
-	value:      Embedded_Format_Value,
-	num_value:  int,    // For WIDTH, DECIMALS, EXPONENT
-	str_value:  string, // For PAD, CURRENCY, COUNTRY, TIMEZONE
-	range:      lexer.TextRange,
+	kind:      Embedded_Format_Kind,
+	value:     Embedded_Format_Value,
+	num_value: int, // For WIDTH, DECIMALS, EXPONENT
+	str_value: string, // For PAD, CURRENCY, COUNTRY, TIMEZONE
+	range:     lexer.TextRange,
 }
 
 // String template part - either a literal string or an embedded expression
@@ -193,12 +193,12 @@ String_Template_Expr :: struct {
 // FOR expression in constructor expressions (VALUE, REDUCE, etc.)
 // Syntax: FOR var IN itab [WHERE ( condition )] [( result_expr | named_args... )]
 For_Expr :: struct {
-	using node:   Expr,
-	var_name:     ^Ident, // Loop variable name
-	itab:         ^Expr, // Internal table to iterate over
-	where_cond:   ^Expr, // Optional WHERE condition
-	result_expr:  ^Expr, // Result expression (what to produce for each iteration) - deprecated, use result_args
-	result_args:  [dynamic]^Expr, // Result arguments (named args like field1 = val1, or single expression)
+	using node:  Expr,
+	var_name:    ^Ident, // Loop variable name
+	itab:        ^Expr, // Internal table to iterate over
+	where_cond:  ^Expr, // Optional WHERE condition
+	result_expr: ^Expr, // Result expression (what to produce for each iteration) - deprecated, use result_args
+	result_args: [dynamic]^Expr, // Result arguments (named args like field1 = val1, or single expression)
 }
 
 // Statements
@@ -506,36 +506,36 @@ Call_Function_Param :: struct {
 //         [CHANGING param = value ...]
 //         [EXCEPTIONS name = value ...].
 Call_Function_Stmt :: struct {
-	using node:   Stmt,
-	func_name:    ^Expr, // Function name (typically a string literal)
-	destination:  ^Expr, // Optional DESTINATION expression
-	exporting:    [dynamic]^Call_Function_Param,
-	importing:    [dynamic]^Call_Function_Param,
-	tables:       [dynamic]^Call_Function_Param,
-	changing:     [dynamic]^Call_Function_Param,
-	exceptions:   [dynamic]^Call_Function_Param,
+	using node:  Stmt,
+	func_name:   ^Expr, // Function name (typically a string literal)
+	destination: ^Expr, // Optional DESTINATION expression
+	exporting:   [dynamic]^Call_Function_Param,
+	importing:   [dynamic]^Call_Function_Param,
+	tables:      [dynamic]^Call_Function_Param,
+	changing:    [dynamic]^Call_Function_Param,
+	exceptions:  [dynamic]^Call_Function_Param,
 }
 
 // SELECT statement join kind
 Select_Join_Kind :: enum {
-	Inner,       // INNER JOIN
-	Left_Outer,  // LEFT OUTER JOIN
+	Inner, // INNER JOIN
+	Left_Outer, // LEFT OUTER JOIN
 	Right_Outer, // RIGHT OUTER JOIN
 }
 
 // SELECT statement join specification
 Select_Join :: struct {
-	using node:  Node,
-	kind:        Select_Join_Kind,
-	table:       ^Expr,             // Table name
-	alias:       ^Ident,            // AS alias (optional)
-	on_cond:     ^Expr,             // ON condition
+	using node: Node,
+	kind:       Select_Join_Kind,
+	table:      ^Expr, // Table name
+	alias:      ^Ident, // AS alias (optional)
+	on_cond:    ^Expr, // ON condition
 }
 
 // SELECT statement target kind
 Select_Into_Kind :: enum {
-	Single,       // INTO @wa or INTO @DATA(wa)
-	Table,        // INTO TABLE @itab or INTO TABLE @DATA(itab)
+	Single, // INTO @wa or INTO @DATA(wa)
+	Table, // INTO TABLE @itab or INTO TABLE @DATA(itab)
 	Corresponding, // INTO CORRESPONDING FIELDS OF TABLE @itab
 }
 
@@ -548,21 +548,21 @@ Select_Into_Kind :: enum {
 // - SELECT ... FOR ALL ENTRIES IN itab WHERE ... [INTO target].
 // - SELECT ... GROUP BY cols HAVING cond [INTO target].
 Select_Stmt :: struct {
-	using node:          Stmt,
-	is_single:           bool,                    // SINGLE modifier
-	fields:              [dynamic]^Expr,          // Field list (* or specific fields)
-	from_table:          ^Expr,                   // FROM table expression
-	from_alias:          ^Ident,                  // AS alias for FROM table (optional)
-	joins:               [dynamic]^Select_Join,   // JOIN clauses
-	into_kind:           Select_Into_Kind,        // INTO target kind
-	into_target:         ^Expr,                   // INTO target (work area or inline DATA)
-	where_cond:          ^Expr,                   // WHERE condition
-	order_by:            [dynamic]^Expr,          // ORDER BY columns
-	group_by:            [dynamic]^Expr,          // GROUP BY columns
-	having_cond:         ^Expr,                   // HAVING condition
-	for_all_entries:     ^Expr,                   // FOR ALL ENTRIES IN itab
-	up_to_rows:          ^Expr,                   // UP TO n ROWS
-	body:                [dynamic]^Stmt,          // Body for SELECT loop (non-single)
+	using node:      Stmt,
+	is_single:       bool, // SINGLE modifier
+	fields:          [dynamic]^Expr, // Field list (* or specific fields)
+	from_table:      ^Expr, // FROM table expression
+	from_alias:      ^Ident, // AS alias for FROM table (optional)
+	joins:           [dynamic]^Select_Join, // JOIN clauses
+	into_kind:       Select_Into_Kind, // INTO target kind
+	into_target:     ^Expr, // INTO target (work area or inline DATA)
+	where_cond:      ^Expr, // WHERE condition
+	order_by:        [dynamic]^Expr, // ORDER BY columns
+	group_by:        [dynamic]^Expr, // GROUP BY columns
+	having_cond:     ^Expr, // HAVING condition
+	for_all_entries: ^Expr, // FOR ALL ENTRIES IN itab
+	up_to_rows:      ^Expr, // UP TO n ROWS
+	body:            [dynamic]^Stmt, // Body for SELECT loop (non-single)
 }
 
 
@@ -580,7 +580,7 @@ Data_Inline_Decl :: struct {
 
 Data_Typed_Decl :: struct {
 	using node: Decl,
-	ident:      ^Ident,
+	ident:      ^Expr, // Can be ^Ident or ^Selector_Expr (e.g., screen0100-serial)
 	typed:      ^Expr,
 	value:      ^Expr,
 }
@@ -767,17 +767,17 @@ Field_Symbol_Decl :: struct {
 // CONTROLS declaration control types
 Control_Kind :: enum {
 	Tableview, // TYPE TABLEVIEW USING SCREEN dynnr
-	Tabstrip,  // TYPE TABSTRIP
+	Tabstrip, // TYPE TABSTRIP
 }
 
 // CONTROLS declaration
 // Syntax: CONTROLS contrl TYPE TABLEVIEW USING SCREEN dynnr.
 // Syntax: CONTROLS contrl TYPE TABSTRIP.
 Controls_Decl :: struct {
-	using node:  Decl,
-	ident:       ^Ident,      // Control name
-	kind:        Control_Kind, // TABLEVIEW or TABSTRIP
-	screen_dynnr: ^Expr,       // Screen number for TABLEVIEW (nil for TABSTRIP)
+	using node:   Decl,
+	ident:        ^Ident, // Control name
+	kind:         Control_Kind, // TABLEVIEW or TABSTRIP
+	screen_dynnr: ^Expr, // Screen number for TABLEVIEW (nil for TABSTRIP)
 }
 
 // CONTROLS chain declaration

@@ -121,7 +121,11 @@ types_struct_build :: proc(builder: Types_Struct_Builder) -> ^ast.Types_Struct_D
 
 // CONSTANTS builders
 
-const_single :: proc(name: string, type_name: string, value: ast.Any_Expr = nil) -> ^ast.Const_Decl {
+const_single :: proc(
+	name: string,
+	type_name: string,
+	value: ast.Any_Expr = nil,
+) -> ^ast.Const_Decl {
 	node := ast.new(ast.Const_Decl, {})
 	node.ident = ident(name)
 	node.typed = ident(type_name)
@@ -278,7 +282,12 @@ named_arg :: proc(param_name: string, value: ast.Any_Expr) -> ^ast.Named_Arg {
 }
 
 // Builder for For expressions (FOR var IN itab WHERE (...))
-for_expr :: proc(var_name: string, itab: ast.Any_Expr, where_cond: ast.Any_Expr = nil, result: ast.Any_Expr = nil) -> ^ast.For_Expr {
+for_expr :: proc(
+	var_name: string,
+	itab: ast.Any_Expr,
+	where_cond: ast.Any_Expr = nil,
+	result: ast.Any_Expr = nil,
+) -> ^ast.For_Expr {
 	node := ast.new(ast.For_Expr, {})
 	node.var_name = ident(var_name)
 	node.result_args = make([dynamic]^ast.Expr)
@@ -939,12 +948,7 @@ check_stmt :: proc(
 
 		if testing.expect(t, ac.ident != nil, "Actual ident is nil", loc = loc) {
 			testing.expect(t, ex.ident != nil, "Expected ident is nil") // Should be enforced by builder
-			testing.expect(
-				t,
-				ex.ident.name == ac.ident.name,
-				fmt.tprintf("Expected Decl ident '%s', got '%s'", ex.ident.name, ac.ident.name),
-				loc = loc,
-			)
+			check_expr(t, ex.ident.derived_expr, ac.ident, loc = loc)
 		}
 
 		check_expr(t, ex.typed.derived_expr, ac.typed, loc = loc)
@@ -965,17 +969,7 @@ check_stmt :: proc(
 				fmt.tprintf("Actual ident[%d] is nil", i),
 				loc = loc,
 			) {
-				testing.expect(
-					t,
-					ex_decl.ident.name == ac_decl.ident.name,
-					fmt.tprintf(
-						"Expected chain decl[%d] ident '%s', got '%s'",
-						i,
-						ex_decl.ident.name,
-						ac_decl.ident.name,
-					),
-					loc = loc,
-				)
+				check_expr(t, ex_decl.ident.derived_expr, ac_decl.ident, loc = loc)
 			}
 
 			check_expr(t, ex_decl.typed.derived_expr, ac_decl.typed, loc = loc)
@@ -1061,7 +1055,11 @@ check_stmt :: proc(
 			testing.expect(
 				t,
 				ex.ident.name == ac.ident.name,
-				fmt.tprintf("Expected Const_Decl ident '%s', got '%s'", ex.ident.name, ac.ident.name),
+				fmt.tprintf(
+					"Expected Const_Decl ident '%s', got '%s'",
+					ex.ident.name,
+					ac.ident.name,
+				),
 				loc = loc,
 			)
 		}
@@ -1083,11 +1081,21 @@ check_stmt :: proc(
 			ex_decl := ex.decls[i]
 			ac_decl := ac.decls[i]
 
-			if testing.expect(t, ac_decl.ident != nil, fmt.tprintf("Actual ident[%d] is nil", i), loc = loc) {
+			if testing.expect(
+				t,
+				ac_decl.ident != nil,
+				fmt.tprintf("Actual ident[%d] is nil", i),
+				loc = loc,
+			) {
 				testing.expect(
 					t,
 					ex_decl.ident.name == ac_decl.ident.name,
-					fmt.tprintf("Expected chain decl[%d] ident '%s', got '%s'", i, ex_decl.ident.name, ac_decl.ident.name),
+					fmt.tprintf(
+						"Expected chain decl[%d] ident '%s', got '%s'",
+						i,
+						ex_decl.ident.name,
+						ac_decl.ident.name,
+					),
 					loc = loc,
 				)
 			}
@@ -1108,7 +1116,11 @@ check_stmt :: proc(
 			testing.expect(
 				t,
 				ex.ident.name == ac.ident.name,
-				fmt.tprintf("Expected const struct name '%s', got '%s'", ex.ident.name, ac.ident.name),
+				fmt.tprintf(
+					"Expected const struct name '%s', got '%s'",
+					ex.ident.name,
+					ac.ident.name,
+				),
 				loc = loc,
 			)
 		}
@@ -1353,6 +1365,7 @@ DATA lv_a TYPE i.
 ##SOME_PRAGMA
 DATA lv_b TYPE string.`
 
+
 	p: parser.Parser
 	parser.parse_file(&p, file)
 
@@ -1367,7 +1380,7 @@ DATA lv_b TYPE string.`
 		len(file.decls) == 2,
 		fmt.tprintf("Expected 2 decls, got %v", len(file.decls)),
 	)
-	
+
 	// Pragma lines should be stored as comments
 	testing.expect(
 		t,
@@ -5448,7 +5461,8 @@ string_template_embedded_expr_in_value_constructor_test :: proc(t: ^testing.T) {
 	// Test the usage example from the user: embedded expression inside VALUE constructor
 	file := ast.new(ast.File, {})
 	file.fullpath = "test.abap"
-	file.src = `APPEND VALUE #(
+	file.src =
+	`APPEND VALUE #(
         gs1_es      = ls_item_result-gs1_es_b
         objtype     = ev_objtype
         gtin        = ls_item_result-gtin
@@ -5460,6 +5474,8 @@ string_template_embedded_expr_in_value_constructor_test :: proc(t: ^testing.T) {
         locno       = ls_item_result-locno
         status      = iv_status
       ) TO mt_object_info.`
+
+
 	p: parser.Parser
 	parser.parse_file(&p, file)
 
@@ -5478,18 +5494,27 @@ string_template_embedded_expr_in_value_constructor_test :: proc(t: ^testing.T) {
 
 	if len(file.decls) > 0 {
 		append_stmt, ok := file.decls[0].derived_stmt.(^ast.Append_Stmt)
-		testing.expect(t, ok, fmt.tprintf("Expected Append_Stmt, got %T", file.decls[0].derived_stmt))
+		testing.expect(
+			t,
+			ok,
+			fmt.tprintf("Expected Append_Stmt, got %T", file.decls[0].derived_stmt),
+		)
 
 		if ok && append_stmt.source != nil {
 			// The source should be a Constructor_Expr (VALUE #(...))
 			constr, cok := append_stmt.source.derived_expr.(^ast.Constructor_Expr)
-			if testing.expect(t, cok, fmt.tprintf("Expected Constructor_Expr, got %T", append_stmt.source.derived_expr)) {
+			if testing.expect(
+				t,
+				cok,
+				fmt.tprintf("Expected Constructor_Expr, got %T", append_stmt.source.derived_expr),
+			) {
 				// Find the matnr argument which should have a string template
 				for arg in constr.args {
 					if named, nok := arg.derived_expr.(^ast.Named_Arg); nok {
 						if named.name != nil && named.name.name == "matnr" {
 							// Check the value is a string template
-							if template, tok := named.value.derived_expr.(^ast.String_Template_Expr); tok {
+							if template, tok := named.value.derived_expr.(^ast.String_Template_Expr);
+							   tok {
 								testing.expect(
 									t,
 									len(template.parts) == 1,
@@ -5502,12 +5527,19 @@ string_template_embedded_expr_in_value_constructor_test :: proc(t: ^testing.T) {
 									testing.expect(
 										t,
 										len(part.format_options) == 1,
-										fmt.tprintf("Expected 1 format option, got %d", len(part.format_options)),
+										fmt.tprintf(
+											"Expected 1 format option, got %d",
+											len(part.format_options),
+										),
 									)
 
 									if len(part.format_options) > 0 {
 										opt := part.format_options[0]
-										testing.expect(t, opt.kind == .Alpha, "Expected Alpha format kind")
+										testing.expect(
+											t,
+											opt.kind == .Alpha,
+											"Expected Alpha format kind",
+										)
 										testing.expect(t, opt.value == .Out, "Expected Out value")
 									}
 								}
@@ -6454,8 +6486,11 @@ data_standard_table_of_test :: proc(t: ^testing.T) {
 	decl := chain.decls[0]
 	testing.expect(
 		t,
-		decl.ident.name == "lt_idx_to_del",
-		fmt.tprintf("Expected 'lt_idx_to_del', got '%s'", decl.ident.name),
+		decl.ident.derived_expr.(^ast.Ident).name == "lt_idx_to_del",
+		fmt.tprintf(
+			"Expected 'lt_idx_to_del', got '%s'",
+			decl.ident.derived_expr.(^ast.Ident).name,
+		),
 	)
 
 	// Check that the type is a Table_Type
@@ -6589,8 +6624,8 @@ data_ref_to_test :: proc(t: ^testing.T) {
 
 	testing.expect(
 		t,
-		decl.ident.name == "lo_event",
-		fmt.tprintf("Expected 'lo_event', got '%s'", decl.ident.name),
+		decl.ident.derived_expr.(^ast.Ident).name == "lo_event",
+		fmt.tprintf("Expected 'lo_event', got '%s'", decl.ident.derived_expr.(^ast.Ident).name),
 	)
 
 	// Check that the type is a Ref_Type
@@ -6737,8 +6772,8 @@ data_with_length_value_test :: proc(t: ^testing.T) {
 
 	testing.expect(
 		t,
-		decl.ident.name == "lv_val",
-		fmt.tprintf("Expected 'lv_val', got '%s'", decl.ident.name),
+		decl.ident.derived_expr.(^ast.Ident).name == "lv_val",
+		fmt.tprintf("Expected 'lv_val', got '%s'", decl.ident.derived_expr.(^ast.Ident).name),
 	)
 
 	// Check value is set
@@ -7848,8 +7883,11 @@ APPEND INITIAL LINE TO itab ASSIGNING <line>.
 	) {
 		testing.expect(
 			t,
-			data_decl.ident.name == "itab",
-			fmt.tprintf("Expected 'itab', got '%s'", data_decl.ident.name),
+			data_decl.ident.derived_expr.(^ast.Ident).name == "itab",
+			fmt.tprintf(
+				"Expected 'itab', got '%s'",
+				data_decl.ident.derived_expr.(^ast.Ident).name,
+			),
 		)
 	}
 
@@ -8873,7 +8911,11 @@ new_expr_with_named_arg_test :: proc(t: ^testing.T) {
 	// Check the argument is a named argument
 	if len(new_expr.args) > 0 {
 		named_arg, naok := new_expr.args[0].derived_expr.(^ast.Named_Arg)
-		if testing.expect(t, naok, fmt.tprintf("Expected Named_Arg, got %T", new_expr.args[0].derived_expr)) {
+		if testing.expect(
+			t,
+			naok,
+			fmt.tprintf("Expected Named_Arg, got %T", new_expr.args[0].derived_expr),
+		) {
 			testing.expect(
 				t,
 				named_arg.name.name == "container_name",
@@ -8926,7 +8968,11 @@ new_expr_with_ident_named_arg_test :: proc(t: ^testing.T) {
 	// Check the argument is a named argument with identifier value
 	if len(new_expr.args) > 0 {
 		named_arg, naok := new_expr.args[0].derived_expr.(^ast.Named_Arg)
-		if testing.expect(t, naok, fmt.tprintf("Expected Named_Arg, got %T", new_expr.args[0].derived_expr)) {
+		if testing.expect(
+			t,
+			naok,
+			fmt.tprintf("Expected Named_Arg, got %T", new_expr.args[0].derived_expr),
+		) {
 			testing.expect(
 				t,
 				named_arg.name.name == "i_parent",
@@ -8965,6 +9011,7 @@ value_for_where_test :: proc(t: ^testing.T) {
         ( ls_hier )
       ).`
 
+
 	p: parser.Parser
 	parser.parse_file(&p, file)
 
@@ -8994,7 +9041,11 @@ value_for_where_test :: proc(t: ^testing.T) {
 	// Check the first argument is a FOR expression
 	if len(constr_expr.args) > 0 {
 		for_expr, fok := constr_expr.args[0].derived_expr.(^ast.For_Expr)
-		if testing.expect(t, fok, fmt.tprintf("Expected For_Expr, got %T", constr_expr.args[0].derived_expr)) {
+		if testing.expect(
+			t,
+			fok,
+			fmt.tprintf("Expected For_Expr, got %T", constr_expr.args[0].derived_expr),
+		) {
 			// Check loop variable
 			testing.expect(
 				t,
@@ -9039,7 +9090,8 @@ value_for_named_arg_result_test :: proc(t: ^testing.T) {
 	// lt_unpack_chil = VALUE #( FOR ls_child IN ls_unpack_level-children ( code_urn = ls_child ) ).
 	file := ast.new(ast.File, {})
 	file.fullpath = "test.abap"
-	file.src = `lt_unpack_chil = VALUE #( FOR ls_child IN ls_unpack_level-children ( code_urn = ls_child ) ).`
+	file.src =
+	`lt_unpack_chil = VALUE #( FOR ls_child IN ls_unpack_level-children ( code_urn = ls_child ) ).`
 
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -9070,7 +9122,11 @@ value_for_named_arg_result_test :: proc(t: ^testing.T) {
 	// Check the first argument is a FOR expression
 	if len(constr_expr.args) > 0 {
 		for_expr, fok := constr_expr.args[0].derived_expr.(^ast.For_Expr)
-		if testing.expect(t, fok, fmt.tprintf("Expected For_Expr, got %T", constr_expr.args[0].derived_expr)) {
+		if testing.expect(
+			t,
+			fok,
+			fmt.tprintf("Expected For_Expr, got %T", constr_expr.args[0].derived_expr),
+		) {
 			// Check loop variable
 			testing.expect(
 				t,
@@ -9082,7 +9138,14 @@ value_for_named_arg_result_test :: proc(t: ^testing.T) {
 			testing.expect(t, for_expr.itab != nil, "Expected itab to be set")
 			if for_expr.itab != nil {
 				itab_sel, iok := for_expr.itab.derived_expr.(^ast.Selector_Expr)
-				if testing.expect(t, iok, fmt.tprintf("Expected itab to be Selector_Expr, got %T", for_expr.itab.derived_expr)) {
+				if testing.expect(
+					t,
+					iok,
+					fmt.tprintf(
+						"Expected itab to be Selector_Expr, got %T",
+						for_expr.itab.derived_expr,
+					),
+				) {
 					testing.expect(
 						t,
 						itab_sel.field != nil && itab_sel.field.name == "children",
@@ -9099,7 +9162,14 @@ value_for_named_arg_result_test :: proc(t: ^testing.T) {
 			)
 			if len(for_expr.result_args) > 0 {
 				named_arg, nok := for_expr.result_args[0].derived_expr.(^ast.Named_Arg)
-				if testing.expect(t, nok, fmt.tprintf("Expected result_args[0] to be Named_Arg, got %T", for_expr.result_args[0].derived_expr)) {
+				if testing.expect(
+					t,
+					nok,
+					fmt.tprintf(
+						"Expected result_args[0] to be Named_Arg, got %T",
+						for_expr.result_args[0].derived_expr,
+					),
+				) {
 					testing.expect(
 						t,
 						named_arg.name != nil && named_arg.name.name == "code_urn",
@@ -9126,7 +9196,8 @@ value_for_multiple_named_args_test :: proc(t: ^testing.T) {
 	// Test FOR with multiple named arguments in result: ( field1 = val1 field2 = val2 )
 	file := ast.new(ast.File, {})
 	file.fullpath = "test.abap"
-	file.src = `lt_result = VALUE #( FOR ls_row IN lt_data ( field1 = ls_row-a field2 = ls_row-b ) ).`
+	file.src =
+	`lt_result = VALUE #( FOR ls_row IN lt_data ( field1 = ls_row-a field2 = ls_row-b ) ).`
 
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -9157,7 +9228,11 @@ value_for_multiple_named_args_test :: proc(t: ^testing.T) {
 	// Check the first argument is a FOR expression
 	if len(constr_expr.args) > 0 {
 		for_expr, fok := constr_expr.args[0].derived_expr.(^ast.For_Expr)
-		if testing.expect(t, fok, fmt.tprintf("Expected For_Expr, got %T", constr_expr.args[0].derived_expr)) {
+		if testing.expect(
+			t,
+			fok,
+			fmt.tprintf("Expected For_Expr, got %T", constr_expr.args[0].derived_expr),
+		) {
 			// Check loop variable
 			testing.expect(
 				t,
@@ -9174,10 +9249,17 @@ value_for_multiple_named_args_test :: proc(t: ^testing.T) {
 				len(for_expr.result_args) == 2,
 				fmt.tprintf("Expected 2 result_args, got %d", len(for_expr.result_args)),
 			)
-			
+
 			if len(for_expr.result_args) >= 1 {
 				named_arg1, nok1 := for_expr.result_args[0].derived_expr.(^ast.Named_Arg)
-				if testing.expect(t, nok1, fmt.tprintf("Expected result_args[0] to be Named_Arg, got %T", for_expr.result_args[0].derived_expr)) {
+				if testing.expect(
+					t,
+					nok1,
+					fmt.tprintf(
+						"Expected result_args[0] to be Named_Arg, got %T",
+						for_expr.result_args[0].derived_expr,
+					),
+				) {
 					testing.expect(
 						t,
 						named_arg1.name != nil && named_arg1.name.name == "field1",
@@ -9185,10 +9267,17 @@ value_for_multiple_named_args_test :: proc(t: ^testing.T) {
 					)
 				}
 			}
-			
+
 			if len(for_expr.result_args) >= 2 {
 				named_arg2, nok2 := for_expr.result_args[1].derived_expr.(^ast.Named_Arg)
-				if testing.expect(t, nok2, fmt.tprintf("Expected result_args[1] to be Named_Arg, got %T", for_expr.result_args[1].derived_expr)) {
+				if testing.expect(
+					t,
+					nok2,
+					fmt.tprintf(
+						"Expected result_args[1] to be Named_Arg, got %T",
+						for_expr.result_args[1].derived_expr,
+					),
+				) {
 					testing.expect(
 						t,
 						named_arg2.name != nil && named_arg2.name.name == "field2",
@@ -9236,7 +9325,11 @@ delete_where_test :: proc(t: ^testing.T) {
 			fmt.tprintf("Expected 'mt_object_info', got '%s'", target_ident.name),
 		)
 	} else {
-		testing.expect(t, false, fmt.tprintf("Expected target to be Ident, got %T", delete_stmt.target.derived_expr))
+		testing.expect(
+			t,
+			false,
+			fmt.tprintf("Expected target to be Ident, got %T", delete_stmt.target.derived_expr),
+		)
 	}
 
 	// Check where_cond is a binary expression (comparison)
@@ -9258,7 +9351,14 @@ delete_where_test :: proc(t: ^testing.T) {
 			)
 		}
 	} else {
-		testing.expect(t, false, fmt.tprintf("Expected where_cond to be Binary_Expr, got %T", delete_stmt.where_cond.derived_expr))
+		testing.expect(
+			t,
+			false,
+			fmt.tprintf(
+				"Expected where_cond to be Binary_Expr, got %T",
+				delete_stmt.where_cond.derived_expr,
+			),
+		)
 	}
 }
 
@@ -9281,7 +9381,8 @@ condense_test :: proc(t: ^testing.T) {
 call_function_simple_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
 	file.fullpath = "test.abap"
-	file.src = `CALL FUNCTION 'DD_DOMVALUES_GET'
+	file.src =
+	`CALL FUNCTION 'DD_DOMVALUES_GET'
       EXPORTING
         domname        = '/STTPEC/D_DOCTPE'
         text           = abap_true
@@ -9291,6 +9392,8 @@ call_function_simple_test :: proc(t: ^testing.T) {
       EXCEPTIONS
         wrong_textflag = 1
         OTHERS         = 2.`
+
+
 	p: parser.Parser
 	parser.parse_file(&p, file)
 
@@ -9312,7 +9415,11 @@ call_function_simple_test :: proc(t: ^testing.T) {
 
 	// Check it's a Call_Function_Stmt
 	call_func, ok := file.decls[0].derived_stmt.(^ast.Call_Function_Stmt)
-	testing.expect(t, ok, fmt.tprintf("Expected Call_Function_Stmt, got %T", file.decls[0].derived_stmt))
+	testing.expect(
+		t,
+		ok,
+		fmt.tprintf("Expected Call_Function_Stmt, got %T", file.decls[0].derived_stmt),
+	)
 
 	if !ok {
 		return
@@ -9354,7 +9461,8 @@ call_function_simple_test :: proc(t: ^testing.T) {
 call_function_with_destination_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
 	file.fullpath = "test.abap"
-	file.src = `CALL FUNCTION 'ZTT_DM_QUERY_HIERARCHY' DESTINATION mv_attp_dest
+	file.src =
+	`CALL FUNCTION 'ZTT_DM_QUERY_HIERARCHY' DESTINATION mv_attp_dest
         EXPORTING
           iv_objcode       = ls_rel_req-gs1_es
           iv_retrieve_hier = abap_true
@@ -9364,6 +9472,8 @@ call_function_with_destination_test :: proc(t: ^testing.T) {
           es_item_result   = ls_item_result
           es_cont_result   = ls_cont_result
           et_hierarchy     = lt_hierarchy_res.`
+
+
 	p: parser.Parser
 	parser.parse_file(&p, file)
 
@@ -9385,7 +9495,11 @@ call_function_with_destination_test :: proc(t: ^testing.T) {
 
 	// Check it's a Call_Function_Stmt
 	call_func, ok := file.decls[0].derived_stmt.(^ast.Call_Function_Stmt)
-	testing.expect(t, ok, fmt.tprintf("Expected Call_Function_Stmt, got %T", file.decls[0].derived_stmt))
+	testing.expect(
+		t,
+		ok,
+		fmt.tprintf("Expected Call_Function_Stmt, got %T", file.decls[0].derived_stmt),
+	)
 
 	if !ok {
 		return
@@ -9423,13 +9537,16 @@ call_function_with_destination_test :: proc(t: ^testing.T) {
 call_function_with_changing_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
 	file.fullpath = "test.abap"
-	file.src = `CALL FUNCTION 'ZTT_RFC_GET_OBJECT_DETLS' DESTINATION mv_attp_dest
+	file.src =
+	`CALL FUNCTION 'ZTT_RFC_GET_OBJECT_DETLS' DESTINATION mv_attp_dest
       EXPORTING
         i_objcode   = lv_gs1_es
       IMPORTING
         es_trn_data = ls_trn_data
       CHANGING
         et_bapiret  = lt_return.`
+
+
 	p: parser.Parser
 	parser.parse_file(&p, file)
 
@@ -9451,7 +9568,11 @@ call_function_with_changing_test :: proc(t: ^testing.T) {
 
 	// Check it's a Call_Function_Stmt
 	call_func, ok := file.decls[0].derived_stmt.(^ast.Call_Function_Stmt)
-	testing.expect(t, ok, fmt.tprintf("Expected Call_Function_Stmt, got %T", file.decls[0].derived_stmt))
+	testing.expect(
+		t,
+		ok,
+		fmt.tprintf("Expected Call_Function_Stmt, got %T", file.decls[0].derived_stmt),
+	)
 
 	if !ok {
 		return
@@ -9496,11 +9617,14 @@ call_function_with_changing_test :: proc(t: ^testing.T) {
 call_function_with_conv_expr_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
 	file.fullpath = "test.abap"
-	file.src = `CALL FUNCTION 'ZTT_RFC_GET_OBJECT_DETLS' DESTINATION mv_attp_dest
+	file.src =
+	`CALL FUNCTION 'ZTT_RFC_GET_OBJECT_DETLS' DESTINATION mv_attp_dest
       EXPORTING
         i_objcode   = CONV string( iv_gs1_es )
       IMPORTING
         es_trn_data = ls_trn_data.`
+
+
 	p: parser.Parser
 	parser.parse_file(&p, file)
 
@@ -9522,7 +9646,11 @@ call_function_with_conv_expr_test :: proc(t: ^testing.T) {
 
 	// Check it's a Call_Function_Stmt
 	call_func, ok := file.decls[0].derived_stmt.(^ast.Call_Function_Stmt)
-	testing.expect(t, ok, fmt.tprintf("Expected Call_Function_Stmt, got %T", file.decls[0].derived_stmt))
+	testing.expect(
+		t,
+		ok,
+		fmt.tprintf("Expected Call_Function_Stmt, got %T", file.decls[0].derived_stmt),
+	)
 
 	if !ok {
 		return
@@ -9541,7 +9669,11 @@ call_function_with_conv_expr_test :: proc(t: ^testing.T) {
 		// Check if value is a Constructor_Expr (CONV)
 		if param.value != nil {
 			_, is_constructor := param.value.derived_expr.(^ast.Constructor_Expr)
-			testing.expect(t, is_constructor, fmt.tprintf("Expected Constructor_Expr (CONV), got %T", param.value.derived_expr))
+			testing.expect(
+				t,
+				is_constructor,
+				fmt.tprintf("Expected Constructor_Expr (CONV), got %T", param.value.derived_expr),
+			)
 		}
 	}
 }
@@ -9554,11 +9686,14 @@ call_function_with_conv_expr_test :: proc(t: ^testing.T) {
 select_single_simple_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
 	file.fullpath = "test.abap"
-	file.src = `SELECT SINGLE *
+	file.src =
+	`SELECT SINGLE *
       FROM tvarvc
       INTO @DATA(ls_dummy_gln)
       WHERE name EQ 'ZTT_DUMMY_GLN'
       AND type EQ 'P'.`
+
+
 	p: parser.Parser
 	parser.parse_file(&p, file)
 
@@ -9618,7 +9753,8 @@ select_single_simple_test :: proc(t: ^testing.T) {
 select_with_join_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
 	file.fullpath = "test.abap"
-	file.src = `SELECT c~carrname, p~connid, p~cityfrom, p~cityto
+	file.src =
+	`SELECT c~carrname, p~connid, p~cityfrom, p~cityto
        FROM scarr AS c
             INNER JOIN spfli AS p
                   ON c~carrid = p~carrid
@@ -9626,6 +9762,8 @@ select_with_join_test :: proc(t: ^testing.T) {
        ORDER BY c~carrname, p~connid, p~cityfrom, p~cityto
        INTO TABLE @DATA(result1)
        UP TO 10 ROWS.`
+
+
 	p: parser.Parser
 	parser.parse_file(&p, file)
 
@@ -9723,7 +9861,8 @@ select_with_join_test :: proc(t: ^testing.T) {
 select_with_fields_clause_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
 	file.fullpath = "test.abap"
-	file.src = `SELECT FROM scarr AS c
+	file.src =
+	`SELECT FROM scarr AS c
             INNER JOIN spfli AS p
                   ON c~carrid = p~carrid
        FIELDS c~carrname, p~connid, p~cityfrom, p~cityto
@@ -9731,6 +9870,8 @@ select_with_fields_clause_test :: proc(t: ^testing.T) {
        ORDER BY c~carrname, p~connid, p~cityfrom, p~cityto
        INTO TABLE @DATA(result2)
        UP TO 10 ROWS.`
+
+
 	p: parser.Parser
 	parser.parse_file(&p, file)
 
@@ -9770,7 +9911,8 @@ select_with_fields_clause_test :: proc(t: ^testing.T) {
 select_with_aggregate_functions_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
 	file.fullpath = "test.abap"
-	file.src = `SELECT FROM sflight
+	file.src =
+	`SELECT FROM sflight
        FIELDS carrid,
               connid,
               SUM( seatsocc ) AS seatsocc
@@ -9779,6 +9921,8 @@ select_with_aggregate_functions_test :: proc(t: ^testing.T) {
        HAVING SUM( seatsocc ) > 1000
        ORDER BY carrid, connid
        INTO TABLE @DATA(result).`
+
+
 	p: parser.Parser
 	parser.parse_file(&p, file)
 
@@ -9828,13 +9972,16 @@ select_with_aggregate_functions_test :: proc(t: ^testing.T) {
 select_for_all_entries_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
 	file.fullpath = "test.abap"
-	file.src = `SELECT carrid, connid, fldate
+	file.src =
+	`SELECT carrid, connid, fldate
          FROM sflight
          FOR ALL ENTRIES IN @entry_tab
          WHERE carrid = @entry_tab-carrid AND
                connid = @entry_tab-connid
          ORDER BY PRIMARY KEY
          INTO TABLE @DATA(result_tab).`
+
+
 	p: parser.Parser
 	parser.parse_file(&p, file)
 
@@ -9922,7 +10069,11 @@ constants_single_test :: proc(t: ^testing.T) {
 		case ^ast.Bad_Decl:
 			testing.expect(t, false, "Got Bad_Decl instead of Const_Decl")
 		case:
-			testing.expect(t, false, fmt.tprintf("Expected Const_Decl, got %T", file.decls[0].derived_stmt))
+			testing.expect(
+				t,
+				false,
+				fmt.tprintf("Expected Const_Decl, got %T", file.decls[0].derived_stmt),
+			)
 		}
 		return
 	}
@@ -9943,9 +10094,12 @@ constants_single_test :: proc(t: ^testing.T) {
 constants_chain_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
 	file.fullpath = "test.abap"
-	file.src = `CONSTANTS: lc_one_fetch_size     TYPE i VALUE 50,
+	file.src =
+	`CONSTANTS: lc_one_fetch_size     TYPE i VALUE 50,
                lc_total_records_size TYPE i VALUE 1000,
                lc_date_initial       TYPE d VALUE '00000000'.`
+
+
 	p: parser.Parser
 	parser.parse_file(&p, file)
 
@@ -9966,7 +10120,11 @@ constants_chain_test :: proc(t: ^testing.T) {
 	}
 
 	chain_decl, ok := file.decls[0].derived_stmt.(^ast.Const_Chain_Decl)
-	testing.expect(t, ok, fmt.tprintf("Expected Const_Chain_Decl, got %T", file.decls[0].derived_stmt))
+	testing.expect(
+		t,
+		ok,
+		fmt.tprintf("Expected Const_Chain_Decl, got %T", file.decls[0].derived_stmt),
+	)
 
 	if !ok {
 		return
@@ -9979,9 +10137,21 @@ constants_chain_test :: proc(t: ^testing.T) {
 	)
 
 	if len(chain_decl.decls) >= 3 {
-		testing.expect(t, chain_decl.decls[0].ident.name == "lc_one_fetch_size", "First const name mismatch")
-		testing.expect(t, chain_decl.decls[1].ident.name == "lc_total_records_size", "Second const name mismatch")
-		testing.expect(t, chain_decl.decls[2].ident.name == "lc_date_initial", "Third const name mismatch")
+		testing.expect(
+			t,
+			chain_decl.decls[0].ident.name == "lc_one_fetch_size",
+			"First const name mismatch",
+		)
+		testing.expect(
+			t,
+			chain_decl.decls[1].ident.name == "lc_total_records_size",
+			"Second const name mismatch",
+		)
+		testing.expect(
+			t,
+			chain_decl.decls[2].ident.name == "lc_date_initial",
+			"Third const name mismatch",
+		)
 	}
 }
 
@@ -9989,10 +10159,13 @@ constants_chain_test :: proc(t: ^testing.T) {
 constants_struct_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
 	file.fullpath = "test.abap"
-	file.src = `CONSTANTS: BEGIN OF c_sn_reset_ts,
+	file.src =
+	`CONSTANTS: BEGIN OF c_sn_reset_ts,
              tab1 LIKE sy-ucomm VALUE 'SN_RESET_TS_FC1',
              tab2 LIKE sy-ucomm VALUE 'SN_RESET_TS_FC2',
            END OF c_sn_reset_ts.`
+
+
 	p: parser.Parser
 	parser.parse_file(&p, file)
 
@@ -10013,7 +10186,11 @@ constants_struct_test :: proc(t: ^testing.T) {
 	}
 
 	struct_decl, ok := file.decls[0].derived_stmt.(^ast.Const_Struct_Decl)
-	testing.expect(t, ok, fmt.tprintf("Expected Const_Struct_Decl, got %T", file.decls[0].derived_stmt))
+	testing.expect(
+		t,
+		ok,
+		fmt.tprintf("Expected Const_Struct_Decl, got %T", file.decls[0].derived_stmt),
+	)
 
 	if !ok {
 		return
@@ -10060,7 +10237,11 @@ constants_with_pragma_test :: proc(t: ^testing.T) {
 	}
 
 	chain_decl, ok := file.decls[0].derived_stmt.(^ast.Const_Chain_Decl)
-	testing.expect(t, ok, fmt.tprintf("Expected Const_Chain_Decl, got %T", file.decls[0].derived_stmt))
+	testing.expect(
+		t,
+		ok,
+		fmt.tprintf("Expected Const_Chain_Decl, got %T", file.decls[0].derived_stmt),
+	)
 
 	if !ok {
 		return
@@ -10293,7 +10474,10 @@ controls_tableview_with_variable_screen_test :: proc(t: ^testing.T) {
 		testing.expect(
 			t,
 			false,
-			fmt.tprintf("Expected screen_dynnr to be Ident, got %T", controls_decl.screen_dynnr.derived_expr),
+			fmt.tprintf(
+				"Expected screen_dynnr to be Ident, got %T",
+				controls_decl.screen_dynnr.derived_expr,
+			),
 		)
 	}
 }
@@ -10307,10 +10491,13 @@ data_struct_simple_test :: proc(t: ^testing.T) {
 	// DATA: BEGIN OF name, field1 TYPE type1, field2 TYPE type2, END OF name.
 	file := ast.new(ast.File, {})
 	file.fullpath = "test.abap"
-	file.src = `DATA: BEGIN OF ls_data,
+	file.src =
+	`DATA: BEGIN OF ls_data,
         field1 TYPE i,
         field2 TYPE string,
       END OF ls_data.`
+
+
 	p: parser.Parser
 	parser.parse_file(&p, file)
 
@@ -10331,7 +10518,11 @@ data_struct_simple_test :: proc(t: ^testing.T) {
 	}
 
 	struct_decl, ok := file.decls[0].derived_stmt.(^ast.Data_Struct_Decl)
-	testing.expect(t, ok, fmt.tprintf("Expected Data_Struct_Decl, got %T", file.decls[0].derived_stmt))
+	testing.expect(
+		t,
+		ok,
+		fmt.tprintf("Expected Data_Struct_Decl, got %T", file.decls[0].derived_stmt),
+	)
 
 	if !ok {
 		return
@@ -10358,11 +10549,14 @@ data_struct_with_like_test :: proc(t: ^testing.T) {
 	// DATA: BEGIN OF name, field LIKE sy-field, END OF name.
 	file := ast.new(ast.File, {})
 	file.fullpath = "test.abap"
-	file.src = `DATA: BEGIN OF g_sn_reset_ts,
+	file.src =
+	`DATA: BEGIN OF g_sn_reset_ts,
         subscreen   LIKE sy-dynnr,
         prog        LIKE sy-repid VALUE 'ZTTRP001_US_SN_RESET',
         pressed_tab LIKE sy-ucomm VALUE c_sn_reset_ts-tab1,
       END OF g_sn_reset_ts.`
+
+
 	p: parser.Parser
 	parser.parse_file(&p, file)
 
@@ -10383,7 +10577,11 @@ data_struct_with_like_test :: proc(t: ^testing.T) {
 	}
 
 	struct_decl, ok := file.decls[0].derived_stmt.(^ast.Data_Struct_Decl)
-	testing.expect(t, ok, fmt.tprintf("Expected Data_Struct_Decl, got %T", file.decls[0].derived_stmt))
+	testing.expect(
+		t,
+		ok,
+		fmt.tprintf("Expected Data_Struct_Decl, got %T", file.decls[0].derived_stmt),
+	)
 
 	if !ok {
 		return
@@ -10441,12 +10639,15 @@ data_struct_nested_test :: proc(t: ^testing.T) {
 	// DATA: BEGIN OF outer, BEGIN OF inner, f TYPE i, END OF inner, END OF outer.
 	file := ast.new(ast.File, {})
 	file.fullpath = "test.abap"
-	file.src = `DATA: BEGIN OF ls_outer,
+	file.src =
+	`DATA: BEGIN OF ls_outer,
         BEGIN OF ls_inner,
           field1 TYPE i,
         END OF ls_inner,
         field2 TYPE string,
       END OF ls_outer.`
+
+
 	p: parser.Parser
 	parser.parse_file(&p, file)
 
@@ -10467,7 +10668,11 @@ data_struct_nested_test :: proc(t: ^testing.T) {
 	}
 
 	struct_decl, ok := file.decls[0].derived_stmt.(^ast.Data_Struct_Decl)
-	testing.expect(t, ok, fmt.tprintf("Expected Data_Struct_Decl, got %T", file.decls[0].derived_stmt))
+	testing.expect(
+		t,
+		ok,
+		fmt.tprintf("Expected Data_Struct_Decl, got %T", file.decls[0].derived_stmt),
+	)
 
 	if !ok {
 		return
@@ -10485,13 +10690,23 @@ data_struct_nested_test :: proc(t: ^testing.T) {
 	testing.expect(
 		t,
 		len(struct_decl.components) == 2,
-		fmt.tprintf("Expected 2 components (nested struct + field2), got %d", len(struct_decl.components)),
+		fmt.tprintf(
+			"Expected 2 components (nested struct + field2), got %d",
+			len(struct_decl.components),
+		),
 	)
 
 	// Check first component is a nested struct
 	if len(struct_decl.components) >= 1 {
 		nested, ok_nested := struct_decl.components[0].derived_stmt.(^ast.Data_Struct_Decl)
-		testing.expect(t, ok_nested, fmt.tprintf("Expected first component to be Data_Struct_Decl, got %T", struct_decl.components[0].derived_stmt))
+		testing.expect(
+			t,
+			ok_nested,
+			fmt.tprintf(
+				"Expected first component to be Data_Struct_Decl, got %T",
+				struct_decl.components[0].derived_stmt,
+			),
+		)
 		if ok_nested && nested.ident != nil {
 			testing.expect(
 				t,
@@ -10501,7 +10716,10 @@ data_struct_nested_test :: proc(t: ^testing.T) {
 			testing.expect(
 				t,
 				len(nested.components) == 1,
-				fmt.tprintf("Expected 1 component in nested struct, got %d", len(nested.components)),
+				fmt.tprintf(
+					"Expected 1 component in nested struct, got %d",
+					len(nested.components),
+				),
 			)
 		}
 	}
@@ -10512,11 +10730,14 @@ data_struct_with_type_test :: proc(t: ^testing.T) {
 	// DATA: BEGIN OF name, field TYPE type, END OF name.
 	file := ast.new(ast.File, {})
 	file.fullpath = "test.abap"
-	file.src = `DATA: BEGIN OF ls_result,
+	file.src =
+	`DATA: BEGIN OF ls_result,
         matnr TYPE mara-matnr,
         werks TYPE marc-werks,
         lgort TYPE mard-lgort,
       END OF ls_result.`
+
+
 	p: parser.Parser
 	parser.parse_file(&p, file)
 
@@ -10537,7 +10758,11 @@ data_struct_with_type_test :: proc(t: ^testing.T) {
 	}
 
 	struct_decl, ok := file.decls[0].derived_stmt.(^ast.Data_Struct_Decl)
-	testing.expect(t, ok, fmt.tprintf("Expected Data_Struct_Decl, got %T", file.decls[0].derived_stmt))
+	testing.expect(
+		t,
+		ok,
+		fmt.tprintf("Expected Data_Struct_Decl, got %T", file.decls[0].derived_stmt),
+	)
 
 	if !ok {
 		return
