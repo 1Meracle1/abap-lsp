@@ -155,7 +155,19 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 		}
 
 	case ^ast.String_Template_Expr:
-		hover_text = "(string template) |...|"
+		// Check if there are any formatting options in embedded expressions
+		has_format_options := false
+		for part in n.parts {
+			if part.is_expr && len(part.format_options) > 0 {
+				has_format_options = true
+				break
+			}
+		}
+		if has_format_options {
+			hover_text = "(string template) |...{ expr FORMAT = VALUE }...|"
+		} else {
+			hover_text = "(string template) |...|"
+		}
 
 	case ^ast.Binary_Expr:
 		hover_text = format_binary_expr_hover(n)

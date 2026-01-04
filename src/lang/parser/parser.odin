@@ -1326,6 +1326,9 @@ parse_string_template_content :: proc(
 
 			embedded_expr := parse_expr(p)
 
+			// Parse formatting options (e.g., ALPHA = OUT, WIDTH = 10)
+			format_options := parse_embedded_format_options(p)
+
 			// The expression should end at }
 			if p.curr_tok.kind == .RBrace {
 				pos = p.curr_tok.range.end
@@ -1353,9 +1356,10 @@ parse_string_template_content :: proc(
 
 			// Add the embedded expression part
 			part := ast.String_Template_Part {
-				is_expr = true,
-				expr    = embedded_expr,
-				range   = lexer.TextRange{expr_start, pos},
+				is_expr        = true,
+				expr           = embedded_expr,
+				format_options = format_options,
+				range          = lexer.TextRange{expr_start, pos},
 			}
 			append(&template_expr.parts, part)
 
@@ -1377,6 +1381,200 @@ parse_string_template_content :: proc(
 		append(&template_expr.parts, part)
 	}
 	return pos
+}
+
+// parse_embedded_format_options parses formatting options in an embedded expression
+// Syntax: { expr ALPHA = OUT WIDTH = 10 ... }
+// Returns a dynamic array of format options
+parse_embedded_format_options :: proc(p: ^Parser) -> [dynamic]ast.Embedded_Format_Option {
+	options := make([dynamic]ast.Embedded_Format_Option)
+
+	// Parse formatting options until we hit } or EOF
+	max_iterations := 20 // Safety limit
+	iterations := 0
+
+	for p.curr_tok.kind == .Ident && p.curr_tok.kind != .RBrace && p.curr_tok.kind != .EOF {
+		iterations += 1
+		if iterations > max_iterations {
+			break
+		}
+
+		// Check if this is a known format option keyword
+		opt_start := p.curr_tok.range.start
+		format_kind, is_format_option := parse_format_option_kind(p)
+		if !is_format_option {
+			// Not a format option, might be part of expression or error
+			break
+		}
+
+		// Expect = sign
+		if p.curr_tok.kind != .Eq {
+			// Not a valid format option, stop parsing
+			break
+		}
+		advance_token(p) // consume =
+
+		// Parse the value
+		option := ast.Embedded_Format_Option {
+			kind  = format_kind,
+			range = lexer.TextRange{opt_start, 0},
+		}
+
+		// Parse the value based on kind
+		if p.curr_tok.kind == .Ident {
+			// Parse keyword value (OUT, IN, ISO, etc.)
+			option.value = parse_format_option_value(p, format_kind)
+		} else if p.curr_tok.kind == .Number {
+			// Parse numeric value (for WIDTH, DECIMALS, etc.)
+			option.value = .Custom
+			option.num_value = parse_number_value(p)
+		} else if p.curr_tok.kind == .String {
+			// Parse string value (for PAD, CURRENCY, etc.)
+			option.value = .Custom
+			option.str_value = p.curr_tok.lit
+			advance_token(p)
+		} else {
+			// Invalid value, try to continue
+			advance_token(p)
+		}
+
+		option.range.end = p.prev_tok.range.end
+		append(&options, option)
+	}
+
+	return options
+}
+
+// parse_format_option_kind parses the format option keyword and returns its kind
+// Returns the kind and a boolean indicating if it was a valid format option
+parse_format_option_kind :: proc(p: ^Parser) -> (ast.Embedded_Format_Kind, bool) {
+	if p.curr_tok.kind != .Ident {
+		return .Alpha, false
+	}
+
+	keyword := to_upper(p.keyword_buffer[:], p.curr_tok.lit)
+	kind: ast.Embedded_Format_Kind
+	is_valid := true
+
+	switch keyword {
+	case "ALPHA":
+		kind = .Alpha
+	case "DATE":
+		kind = .Date
+	case "TIME":
+		kind = .Time
+	case "WIDTH":
+		kind = .Width
+	case "ALIGN":
+		kind = .Align
+	case "PAD":
+		kind = .Pad
+	case "CASE":
+		kind = .Case
+	case "SIGN":
+		kind = .Sign
+	case "DECIMALS":
+		kind = .Decimals
+	case "EXPONENT":
+		kind = .Exponent
+	case "ZERO":
+		kind = .Zero
+	case "NUMBER":
+		kind = .Number
+	case "STYLE":
+		kind = .Style
+	case "CURRENCY":
+		kind = .Currency
+	case "COUNTRY":
+		kind = .Country
+	case "TIMESTAMP":
+		kind = .Timestamp
+	case "TIMEZONE":
+		kind = .Timezone
+	case:
+		is_valid = false
+	}
+
+	if is_valid {
+		advance_token(p) // consume the keyword
+	}
+
+	return kind, is_valid
+}
+
+// parse_format_option_value parses the value for a format option
+parse_format_option_value :: proc(p: ^Parser, kind: ast.Embedded_Format_Kind) -> ast.Embedded_Format_Value {
+	if p.curr_tok.kind != .Ident {
+		return .Custom
+	}
+
+	keyword := to_upper(p.keyword_buffer[:], p.curr_tok.lit)
+	value: ast.Embedded_Format_Value = .Custom
+
+	switch keyword {
+	case "IN":
+		value = .In
+	case "OUT":
+		value = .Out
+	case "ISO":
+		value = .Iso
+	case "USER":
+		value = .User
+	case "RAW":
+		value = .Raw
+	case "ENVIRONMENT":
+		value = .Environment
+	case "LEFT":
+		value = .Left
+	case "RIGHT":
+		value = .Right
+	case "CENTER":
+		value = .Center
+	case "UPPER":
+		value = .Upper
+	case "LOWER":
+		value = .Lower
+	case "YES":
+		value = .Yes
+	case "NO":
+		value = .No
+	case "SIMPLE":
+		value = .Simple
+	case "SCALE_PRESERVING":
+		value = .Scale_Preserving
+	case "SIGN_AS_POSTFIX":
+		value = .Sign_As_Postfix
+	case "LEFTPLUS":
+		value = .Leftplus
+	case "LEFTSPACE":
+		value = .Leftspace
+	case "RIGHTPLUS":
+		value = .Rightplus
+	case "RIGHTSPACE":
+		value = .Rightspace
+	case "SPACE":
+		value = .Space
+	}
+
+	advance_token(p) // consume the value
+	return value
+}
+
+// parse_number_value parses a numeric value and returns it as an int
+parse_number_value :: proc(p: ^Parser) -> int {
+	if p.curr_tok.kind != .Number {
+		return 0
+	}
+
+	num_value := 0
+	for ch in p.curr_tok.lit {
+		if ch >= '0' && ch <= '9' {
+			num_value = num_value * 10 + int(ch - '0')
+		}
+	}
+
+	advance_token(p)
+	return num_value
 }
 
 // parse_new_expr parses a NEW instance operator expression

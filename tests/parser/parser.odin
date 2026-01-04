@@ -5155,6 +5155,309 @@ string_template_only_embedded_expr_test :: proc(t: ^testing.T) {
 	}
 }
 
+@(test)
+string_template_embedded_expr_alpha_out_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `DATA(result) = |{ ls_item_result-matnr ALPHA = OUT }|.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if len(file.decls) > 0 {
+		decl, ok := file.decls[0].derived_stmt.(^ast.Data_Inline_Decl)
+		if !testing.expect(t, ok, "Expected Data_Inline_Decl") do return
+
+		template, tok := decl.value.derived_expr.(^ast.String_Template_Expr)
+		if !testing.expect(t, tok, fmt.tprintf("Expected String_Template_Expr, got %T", decl.value.derived_expr)) do return
+
+		// Should have 1 part: the embedded expression
+		testing.expect(
+			t,
+			len(template.parts) == 1,
+			fmt.tprintf("Expected 1 part, got %d", len(template.parts)),
+		)
+
+		if len(template.parts) > 0 {
+			part := template.parts[0]
+			testing.expect(t, part.is_expr, "Part should be expression")
+
+			// Check the expression is a selector expression (ls_item_result-matnr)
+			if sel, sok := part.expr.derived_expr.(^ast.Selector_Expr); sok {
+				if sel.field != nil {
+					testing.expect(
+						t,
+						sel.field.name == "matnr",
+						fmt.tprintf("Expected field 'matnr', got '%s'", sel.field.name),
+					)
+				}
+			}
+
+			// Check formatting options
+			testing.expect(
+				t,
+				len(part.format_options) == 1,
+				fmt.tprintf("Expected 1 format option, got %d", len(part.format_options)),
+			)
+
+			if len(part.format_options) > 0 {
+				opt := part.format_options[0]
+				testing.expect(
+					t,
+					opt.kind == .Alpha,
+					fmt.tprintf("Expected Alpha format kind, got %v", opt.kind),
+				)
+				testing.expect(
+					t,
+					opt.value == .Out,
+					fmt.tprintf("Expected Out value, got %v", opt.value),
+				)
+			}
+		}
+	}
+}
+
+@(test)
+string_template_embedded_expr_alpha_in_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `DATA(result) = |{ ls_item_result-matnr ALPHA = IN }|.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if len(file.decls) > 0 {
+		decl, ok := file.decls[0].derived_stmt.(^ast.Data_Inline_Decl)
+		if !testing.expect(t, ok, "Expected Data_Inline_Decl") do return
+
+		template, tok := decl.value.derived_expr.(^ast.String_Template_Expr)
+		if !testing.expect(t, tok, fmt.tprintf("Expected String_Template_Expr, got %T", decl.value.derived_expr)) do return
+
+		// Should have 1 part: the embedded expression
+		testing.expect(
+			t,
+			len(template.parts) == 1,
+			fmt.tprintf("Expected 1 part, got %d", len(template.parts)),
+		)
+
+		if len(template.parts) > 0 {
+			part := template.parts[0]
+			testing.expect(t, part.is_expr, "Part should be expression")
+
+			// Check formatting options
+			testing.expect(
+				t,
+				len(part.format_options) == 1,
+				fmt.tprintf("Expected 1 format option, got %d", len(part.format_options)),
+			)
+
+			if len(part.format_options) > 0 {
+				opt := part.format_options[0]
+				testing.expect(
+					t,
+					opt.kind == .Alpha,
+					fmt.tprintf("Expected Alpha format kind, got %v", opt.kind),
+				)
+				testing.expect(
+					t,
+					opt.value == .In,
+					fmt.tprintf("Expected In value, got %v", opt.value),
+				)
+			}
+		}
+	}
+}
+
+@(test)
+string_template_embedded_expr_in_value_constructor_test :: proc(t: ^testing.T) {
+	// Test the usage example from the user: embedded expression inside VALUE constructor
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `APPEND VALUE #(
+        gs1_es      = ls_item_result-gs1_es_b
+        objtype     = ev_objtype
+        gtin        = ls_item_result-gtin
+        matnr       = |{ ls_item_result-matnr ALPHA = OUT }|
+        lotno       = ls_item_result-lotno
+        status_pack = ls_item_result-status_pack
+        gln         = ls_item_result-gln
+        gln_ext     = ls_item_result-gln_ext
+        locno       = ls_item_result-locno
+        status      = iv_status
+      ) TO mt_object_info.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	// Should parse as an APPEND statement
+	testing.expect(
+		t,
+		len(file.decls) == 1,
+		fmt.tprintf("Expected 1 declaration, got %d", len(file.decls)),
+	)
+
+	if len(file.decls) > 0 {
+		append_stmt, ok := file.decls[0].derived_stmt.(^ast.Append_Stmt)
+		testing.expect(t, ok, fmt.tprintf("Expected Append_Stmt, got %T", file.decls[0].derived_stmt))
+
+		if ok && append_stmt.source != nil {
+			// The source should be a Constructor_Expr (VALUE #(...))
+			constr, cok := append_stmt.source.derived_expr.(^ast.Constructor_Expr)
+			if testing.expect(t, cok, fmt.tprintf("Expected Constructor_Expr, got %T", append_stmt.source.derived_expr)) {
+				// Find the matnr argument which should have a string template
+				for arg in constr.args {
+					if named, nok := arg.derived_expr.(^ast.Named_Arg); nok {
+						if named.name != nil && named.name.name == "matnr" {
+							// Check the value is a string template
+							if template, tok := named.value.derived_expr.(^ast.String_Template_Expr); tok {
+								testing.expect(
+									t,
+									len(template.parts) == 1,
+									fmt.tprintf("Expected 1 part, got %d", len(template.parts)),
+								)
+
+								if len(template.parts) > 0 {
+									part := template.parts[0]
+									testing.expect(t, part.is_expr, "Part should be expression")
+									testing.expect(
+										t,
+										len(part.format_options) == 1,
+										fmt.tprintf("Expected 1 format option, got %d", len(part.format_options)),
+									)
+
+									if len(part.format_options) > 0 {
+										opt := part.format_options[0]
+										testing.expect(t, opt.kind == .Alpha, "Expected Alpha format kind")
+										testing.expect(t, opt.value == .Out, "Expected Out value")
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+@(test)
+string_template_multiple_format_options_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `DATA(result) = |{ lv_date DATE = ISO }|.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if len(file.decls) > 0 {
+		decl, ok := file.decls[0].derived_stmt.(^ast.Data_Inline_Decl)
+		if !testing.expect(t, ok, "Expected Data_Inline_Decl") do return
+
+		template, tok := decl.value.derived_expr.(^ast.String_Template_Expr)
+		if !testing.expect(t, tok, fmt.tprintf("Expected String_Template_Expr, got %T", decl.value.derived_expr)) do return
+
+		if len(template.parts) > 0 {
+			part := template.parts[0]
+			testing.expect(t, part.is_expr, "Part should be expression")
+
+			// Check formatting options
+			testing.expect(
+				t,
+				len(part.format_options) == 1,
+				fmt.tprintf("Expected 1 format option, got %d", len(part.format_options)),
+			)
+
+			if len(part.format_options) > 0 {
+				opt := part.format_options[0]
+				testing.expect(
+					t,
+					opt.kind == .Date,
+					fmt.tprintf("Expected Date format kind, got %v", opt.kind),
+				)
+				testing.expect(
+					t,
+					opt.value == .Iso,
+					fmt.tprintf("Expected Iso value, got %v", opt.value),
+				)
+			}
+		}
+	}
+}
+
+@(test)
+string_template_width_format_option_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `DATA(result) = |{ lv_number WIDTH = 10 }|.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if len(file.decls) > 0 {
+		decl, ok := file.decls[0].derived_stmt.(^ast.Data_Inline_Decl)
+		if !testing.expect(t, ok, "Expected Data_Inline_Decl") do return
+
+		template, tok := decl.value.derived_expr.(^ast.String_Template_Expr)
+		if !testing.expect(t, tok, fmt.tprintf("Expected String_Template_Expr, got %T", decl.value.derived_expr)) do return
+
+		if len(template.parts) > 0 {
+			part := template.parts[0]
+			testing.expect(t, part.is_expr, "Part should be expression")
+
+			// Check formatting options
+			testing.expect(
+				t,
+				len(part.format_options) == 1,
+				fmt.tprintf("Expected 1 format option, got %d", len(part.format_options)),
+			)
+
+			if len(part.format_options) > 0 {
+				opt := part.format_options[0]
+				testing.expect(
+					t,
+					opt.kind == .Width,
+					fmt.tprintf("Expected Width format kind, got %v", opt.kind),
+				)
+				testing.expect(
+					t,
+					opt.value == .Custom,
+					fmt.tprintf("Expected Custom value, got %v", opt.value),
+				)
+				testing.expect(
+					t,
+					opt.num_value == 10,
+					fmt.tprintf("Expected num_value 10, got %d", opt.num_value),
+				)
+			}
+		}
+	}
+}
+
 // --- Arithmetic Expression Tests ---
 
 @(test)

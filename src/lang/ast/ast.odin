@@ -119,12 +119,69 @@ Named_Arg :: struct {
 	value:      ^Expr,
 }
 
+// Embedded expression formatting option kind
+Embedded_Format_Kind :: enum {
+	Alpha,   // ALPHA = IN/OUT
+	Date,    // DATE = ISO/USER/RAW/ENVIRONMENT
+	Time,    // TIME = ISO/USER/RAW/ENVIRONMENT
+	Width,   // WIDTH = n
+	Align,   // ALIGN = LEFT/RIGHT/CENTER
+	Pad,     // PAD = 'char'
+	Case,    // CASE = UPPER/LOWER/RAW
+	Sign,    // SIGN = LEFT/LEFTPLUS/LEFTSPACE/RIGHT/RIGHTPLUS/RIGHTSPACE
+	Decimals, // DECIMALS = n
+	Exponent, // EXPONENT = n
+	Zero,    // ZERO = YES/NO
+	Number,  // NUMBER = USER/RAW/ENVIRONMENT
+	Style,   // STYLE = SIMPLE/SIGN_AS_POSTFIX/SCALE_PRESERVING
+	Currency, // CURRENCY = currency_code
+	Country, // COUNTRY = country_code
+	Timestamp, // TIMESTAMP = SPACE/ISO/USER/ENVIRONMENT
+	Timezone, // TIMEZONE = tz
+}
+
+// Embedded expression formatting option value
+Embedded_Format_Value :: enum {
+	In,       // ALPHA = IN
+	Out,      // ALPHA = OUT
+	Iso,      // DATE/TIME/TIMESTAMP = ISO
+	User,     // DATE/TIME/NUMBER/TIMESTAMP = USER
+	Raw,      // DATE/TIME/NUMBER/CASE = RAW
+	Environment, // DATE/TIME/NUMBER/TIMESTAMP = ENVIRONMENT
+	Left,     // ALIGN/SIGN = LEFT
+	Right,    // ALIGN/SIGN = RIGHT
+	Center,   // ALIGN = CENTER
+	Upper,    // CASE = UPPER
+	Lower,    // CASE = LOWER
+	Yes,      // ZERO = YES
+	No,       // ZERO = NO
+	Simple,   // STYLE = SIMPLE
+	Scale_Preserving, // STYLE = SCALE_PRESERVING
+	Sign_As_Postfix, // STYLE = SIGN_AS_POSTFIX
+	Leftplus, // SIGN = LEFTPLUS
+	Leftspace, // SIGN = LEFTSPACE
+	Rightplus, // SIGN = RIGHTPLUS
+	Rightspace, // SIGN = RIGHTSPACE
+	Space,    // TIMESTAMP = SPACE
+	Custom,   // For numeric values (WIDTH, DECIMALS) or string values (PAD, CURRENCY)
+}
+
+// Embedded expression formatting option
+Embedded_Format_Option :: struct {
+	kind:       Embedded_Format_Kind,
+	value:      Embedded_Format_Value,
+	num_value:  int,    // For WIDTH, DECIMALS, EXPONENT
+	str_value:  string, // For PAD, CURRENCY, COUNTRY, TIMEZONE
+	range:      lexer.TextRange,
+}
+
 // String template part - either a literal string or an embedded expression
 String_Template_Part :: struct {
-	is_expr: bool, // true if this is an embedded expression, false if literal
-	literal: string, // literal text (if !is_expr)
-	expr:    ^Expr, // embedded expression (if is_expr)
-	range:   lexer.TextRange,
+	is_expr:        bool, // true if this is an embedded expression, false if literal
+	literal:        string, // literal text (if !is_expr)
+	expr:           ^Expr, // embedded expression (if is_expr)
+	format_options: [dynamic]Embedded_Format_Option, // formatting options (if is_expr)
+	range:          lexer.TextRange,
 }
 
 // String template expression (e.g., |Hello { name }!|)
