@@ -550,6 +550,49 @@ collect_tokens_from_stmt :: proc(
 		for body_stmt in s.body {
 			collect_tokens_from_stmt(tokens, body_stmt, snap)
 		}
+
+	case ^ast.Read_Table_Stmt:
+		if s.itab != nil {
+			collect_tokens_from_expr(tokens, s.itab, snap, nil)
+		}
+		if s.index_expr != nil {
+			collect_tokens_from_expr(tokens, s.index_expr, snap, nil)
+		}
+		if s.using_key != nil {
+			append(
+				tokens,
+				SemanticToken {
+					offset = s.using_key.range.start,
+					length = s.using_key.range.end - s.using_key.range.start,
+					type = .Property,
+					modifiers = 0,
+				},
+			)
+		}
+		if s.into_target != nil {
+			collect_tokens_from_expr(tokens, s.into_target, snap, nil)
+		}
+		if s.assigning_target != nil {
+			collect_tokens_from_expr(tokens, s.assigning_target, snap, nil)
+		}
+		if s.key != nil {
+			for comp in s.key.components {
+				if comp.name != nil {
+					append(
+						tokens,
+						SemanticToken {
+							offset = comp.name.range.start,
+							length = comp.name.range.end - comp.name.range.start,
+							type = .Property,
+							modifiers = 0,
+						},
+					)
+				}
+				if comp.value != nil {
+					collect_tokens_from_expr(tokens, comp.value, snap, nil)
+				}
+			}
+		}
 	}
 }
 

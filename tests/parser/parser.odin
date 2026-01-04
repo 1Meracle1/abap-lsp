@@ -7878,3 +7878,348 @@ AUTHORITY-CHECK OBJECT 'S_CARRID'
 		check_stmt(t, stmt2, file.decls[1])
 	}
 }
+
+// ============================================================================
+// READ TABLE Statement Tests
+// ============================================================================
+
+@(test)
+read_table_with_key_assigning_test :: proc(t: ^testing.T) {
+	// READ TABLE mt_object_info WITH KEY gs1_es = lv_epc ASSIGNING <fs_obj_info>.
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `READ TABLE mt_object_info WITH KEY gs1_es = lv_epc ASSIGNING <fs_obj_info>.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	read_stmt, ok := file.decls[0].derived_stmt.(^ast.Read_Table_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Read_Table_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	testing.expect(
+		t,
+		read_stmt.kind == .With_Key,
+		fmt.tprintf("Expected With_Key kind, got %v", read_stmt.kind),
+	)
+	testing.expect(t, read_stmt.itab != nil, "Expected itab to be set")
+	testing.expect(t, read_stmt.key != nil, "Expected key to be set")
+	testing.expect(t, read_stmt.assigning_target != nil, "Expected assigning_target to be set")
+
+	// Check itab is identifier
+	if itab_ident, iok := read_stmt.itab.derived_expr.(^ast.Ident); iok {
+		testing.expect(
+			t,
+			itab_ident.name == "mt_object_info",
+			fmt.tprintf("Expected 'mt_object_info', got '%s'", itab_ident.name),
+		)
+	} else {
+		testing.expect(
+			t,
+			false,
+			fmt.tprintf("Expected itab to be Ident, got %T", read_stmt.itab.derived_expr),
+		)
+	}
+
+	// Check key has one component
+	testing.expect(
+		t,
+		len(read_stmt.key.components) == 1,
+		fmt.tprintf("Expected 1 key component, got %d", len(read_stmt.key.components)),
+	)
+
+	// Check key component
+	if len(read_stmt.key.components) >= 1 {
+		comp := read_stmt.key.components[0]
+		testing.expect(
+			t,
+			comp.name.name == "gs1_es",
+			fmt.tprintf("Expected key name 'gs1_es', got '%s'", comp.name.name),
+		)
+	}
+
+	// Check assigning_target is identifier (field symbol)
+	if fs_ident, iok := read_stmt.assigning_target.derived_expr.(^ast.Ident); iok {
+		testing.expect(
+			t,
+			fs_ident.name == "<fs_obj_info>",
+			fmt.tprintf("Expected '<fs_obj_info>', got '%s'", fs_ident.name),
+		)
+	}
+}
+
+@(test)
+read_table_with_key_into_inline_data_test :: proc(t: ^testing.T) {
+	// READ TABLE lt_obj_hier_upd WITH KEY gs1_es = lv_epc INTO DATA(ls_ser_par).
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `READ TABLE lt_obj_hier_upd WITH KEY gs1_es = lv_epc INTO DATA(ls_ser_par).`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	read_stmt, ok := file.decls[0].derived_stmt.(^ast.Read_Table_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Read_Table_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	testing.expect(
+		t,
+		read_stmt.kind == .With_Key,
+		fmt.tprintf("Expected With_Key kind, got %v", read_stmt.kind),
+	)
+	testing.expect(t, read_stmt.itab != nil, "Expected itab to be set")
+	testing.expect(t, read_stmt.key != nil, "Expected key to be set")
+	testing.expect(t, read_stmt.into_target != nil, "Expected into_target to be set")
+
+	// Check into_target is identifier from inline DATA
+	if into_ident, iok := read_stmt.into_target.derived_expr.(^ast.Ident); iok {
+		testing.expect(
+			t,
+			into_ident.name == "ls_ser_par",
+			fmt.tprintf("Expected 'ls_ser_par', got '%s'", into_ident.name),
+		)
+	} else {
+		testing.expect(
+			t,
+			false,
+			fmt.tprintf(
+				"Expected into_target to be Ident, got %T",
+				read_stmt.into_target.derived_expr,
+			),
+		)
+	}
+}
+
+@(test)
+read_table_with_key_inline_field_symbol_test :: proc(t: ^testing.T) {
+	// READ TABLE lt_unpack_lvls WITH KEY parent = ls_ser_par-gs1_es_parent ASSIGNING FIELD-SYMBOL(<fs_unpack_data>).
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `READ TABLE lt_unpack_lvls WITH KEY parent = ls_ser_par-gs1_es_parent ASSIGNING FIELD-SYMBOL(<fs_unpack_data>).`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	read_stmt, ok := file.decls[0].derived_stmt.(^ast.Read_Table_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Read_Table_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	testing.expect(
+		t,
+		read_stmt.kind == .With_Key,
+		fmt.tprintf("Expected With_Key kind, got %v", read_stmt.kind),
+	)
+	testing.expect(t, read_stmt.assigning_target != nil, "Expected assigning_target to be set")
+
+	// Check assigning_target is identifier (field symbol)
+	if fs_ident, iok := read_stmt.assigning_target.derived_expr.(^ast.Ident); iok {
+		testing.expect(
+			t,
+			fs_ident.name == "<fs_unpack_data>",
+			fmt.tprintf("Expected '<fs_unpack_data>', got '%s'", fs_ident.name),
+		)
+	}
+}
+
+@(test)
+read_table_transporting_no_fields_test :: proc(t: ^testing.T) {
+	// READ TABLE <fs_unpack_data>-children WITH KEY table_line = lv_epc TRANSPORTING NO FIELDS.
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `READ TABLE <fs_unpack_data>-children WITH KEY table_line = lv_epc TRANSPORTING NO FIELDS.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	read_stmt, ok := file.decls[0].derived_stmt.(^ast.Read_Table_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Read_Table_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	testing.expect(
+		t,
+		read_stmt.kind == .With_Key,
+		fmt.tprintf("Expected With_Key kind, got %v", read_stmt.kind),
+	)
+	testing.expect(t, read_stmt.transporting_no_fields, "Expected transporting_no_fields to be true")
+
+	// Check itab is selector expression (<fs_unpack_data>-children)
+	sel_expr, sok := read_stmt.itab.derived_expr.(^ast.Selector_Expr)
+	if !testing.expect(t, sok, fmt.tprintf("Expected itab to be Selector_Expr, got %T", read_stmt.itab.derived_expr)) do return
+
+	// Check base is field symbol
+	if base_ident, bok := sel_expr.expr.derived_expr.(^ast.Ident); bok {
+		testing.expect(
+			t,
+			base_ident.name == "<fs_unpack_data>",
+			fmt.tprintf("Expected '<fs_unpack_data>', got '%s'", base_ident.name),
+		)
+	}
+
+	// Check field name
+	testing.expect(
+		t,
+		sel_expr.field.name == "children",
+		fmt.tprintf("Expected 'children', got '%s'", sel_expr.field.name),
+	)
+
+	// Check key component
+	if len(read_stmt.key.components) >= 1 {
+		comp := read_stmt.key.components[0]
+		testing.expect(
+			t,
+			comp.name.name == "table_line",
+			fmt.tprintf("Expected key name 'table_line', got '%s'", comp.name.name),
+		)
+	}
+}
+
+@(test)
+read_table_index_using_key_test :: proc(t: ^testing.T) {
+	// READ TABLE itab INDEX idx USING KEY sort_key ASSIGNING FIELD-SYMBOL(<fs>).
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `READ TABLE itab INDEX idx USING KEY sort_key ASSIGNING FIELD-SYMBOL(<fs>).`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	read_stmt, ok := file.decls[0].derived_stmt.(^ast.Read_Table_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Read_Table_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	testing.expect(
+		t,
+		read_stmt.kind == .Index,
+		fmt.tprintf("Expected Index kind, got %v", read_stmt.kind),
+	)
+	testing.expect(t, read_stmt.itab != nil, "Expected itab to be set")
+	testing.expect(t, read_stmt.index_expr != nil, "Expected index_expr to be set")
+	testing.expect(t, read_stmt.using_key != nil, "Expected using_key to be set")
+	testing.expect(t, read_stmt.assigning_target != nil, "Expected assigning_target to be set")
+
+	// Check itab is identifier
+	if itab_ident, iok := read_stmt.itab.derived_expr.(^ast.Ident); iok {
+		testing.expect(
+			t,
+			itab_ident.name == "itab",
+			fmt.tprintf("Expected 'itab', got '%s'", itab_ident.name),
+		)
+	}
+
+	// Check index_expr is identifier
+	if idx_ident, iok := read_stmt.index_expr.derived_expr.(^ast.Ident); iok {
+		testing.expect(
+			t,
+			idx_ident.name == "idx",
+			fmt.tprintf("Expected 'idx', got '%s'", idx_ident.name),
+		)
+	}
+
+	// Check using_key
+	testing.expect(
+		t,
+		read_stmt.using_key.name == "sort_key",
+		fmt.tprintf("Expected 'sort_key', got '%s'", read_stmt.using_key.name),
+	)
+
+	// Check assigning_target is identifier (field symbol)
+	if fs_ident, iok := read_stmt.assigning_target.derived_expr.(^ast.Ident); iok {
+		testing.expect(
+			t,
+			fs_ident.name == "<fs>",
+			fmt.tprintf("Expected '<fs>', got '%s'", fs_ident.name),
+		)
+	}
+}
+
+@(test)
+read_table_multiple_key_components_test :: proc(t: ^testing.T) {
+	// READ TABLE lt_data WITH KEY field1 = val1 field2 = val2 INTO wa.
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `READ TABLE lt_data WITH KEY field1 = val1 field2 = val2 INTO wa.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	read_stmt, ok := file.decls[0].derived_stmt.(^ast.Read_Table_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Read_Table_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	testing.expect(
+		t,
+		read_stmt.kind == .With_Key,
+		fmt.tprintf("Expected With_Key kind, got %v", read_stmt.kind),
+	)
+	testing.expect(t, read_stmt.key != nil, "Expected key to be set")
+	testing.expect(t, read_stmt.into_target != nil, "Expected into_target to be set")
+
+	// Check key has two components
+	testing.expect(
+		t,
+		len(read_stmt.key.components) == 2,
+		fmt.tprintf("Expected 2 key components, got %d", len(read_stmt.key.components)),
+	)
+
+	// Check first key component
+	if len(read_stmt.key.components) >= 2 {
+		comp1 := read_stmt.key.components[0]
+		testing.expect(
+			t,
+			comp1.name.name == "field1",
+			fmt.tprintf("Expected first key name 'field1', got '%s'", comp1.name.name),
+		)
+
+		comp2 := read_stmt.key.components[1]
+		testing.expect(
+			t,
+			comp2.name.name == "field2",
+			fmt.tprintf("Expected second key name 'field2', got '%s'", comp2.name.name),
+		)
+	}
+
+	// Check into_target is identifier
+	if into_ident, iok := read_stmt.into_target.derived_expr.(^ast.Ident); iok {
+		testing.expect(
+			t,
+			into_ident.name == "wa",
+			fmt.tprintf("Expected 'wa', got '%s'", into_ident.name),
+		)
+	}
+}

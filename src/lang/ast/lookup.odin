@@ -452,6 +452,47 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 			}
 		}
 
+	case ^Read_Table_Stmt:
+		if n.itab != nil {
+			if res := find_node_at_offset(&n.itab.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		if n.index_expr != nil {
+			if res := find_node_at_offset(&n.index_expr.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		if n.using_key != nil {
+			if res := find_node_at_offset(&n.using_key.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		if n.into_target != nil {
+			if res := find_node_at_offset(&n.into_target.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		if n.assigning_target != nil {
+			if res := find_node_at_offset(&n.assigning_target.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		if n.key != nil {
+			for comp in n.key.components {
+				if comp.name != nil {
+					if res := find_node_at_offset(&comp.name.expr_base, offset); res != nil {
+						return res
+					}
+				}
+				if comp.value != nil {
+					if res := find_node_at_offset(&comp.value.expr_base, offset); res != nil {
+						return res
+					}
+				}
+			}
+		}
+
 	case ^Authority_Check_Stmt:
 		if n.object != nil {
 			if res := find_node_at_offset(&n.object.expr_base, offset); res != nil {

@@ -335,6 +335,39 @@ Sort_Stmt :: struct {
 	cols_by:    [dynamic]Sort_Cols_By,
 }
 
+// READ TABLE statement kinds
+Read_Table_Kind :: enum {
+	With_Key, // READ TABLE itab WITH KEY ...
+	With_Table_Key,
+	Index, // READ TABLE itab INDEX idx
+}
+
+// READ TABLE key specification
+Read_Table_Key :: struct {
+	key_name:   ^Ident, // For USING KEY key_name (optional named key)
+	components: [dynamic]^Named_Arg, // Key components like field1 = val1 field2 = val2
+	table_line: ^Expr, // For WITH KEY table_line = value
+}
+
+// READ TABLE statement
+// Syntax variations:
+// - READ TABLE itab WITH KEY field1 = val1 ... [USING KEY key_name] INTO wa.
+// - READ TABLE itab WITH KEY field1 = val1 ... ASSIGNING <fs>.
+// - READ TABLE itab WITH KEY field1 = val1 ... TRANSPORTING NO FIELDS.
+// - READ TABLE itab INDEX idx [USING KEY key_name] INTO wa.
+// - READ TABLE itab INDEX idx ASSIGNING FIELD-SYMBOL(<fs>).
+Read_Table_Stmt :: struct {
+	using node:             Stmt,
+	kind:                   Read_Table_Kind,
+	itab:                   ^Expr, // The internal table expression
+	key:                    ^Read_Table_Key, // WITH KEY specification
+	index_expr:             ^Expr, // INDEX expression
+	using_key:              ^Ident, // USING KEY key_name (optional)
+	into_target:            ^Expr, // INTO target (work area or inline DATA)
+	assigning_target:       ^Expr, // ASSIGNING <fs> target (field symbol)
+	transporting_no_fields: bool, // TRANSPORTING NO FIELDS flag
+}
+
 // APPEND statement kinds
 Append_Kind :: enum {
 	Simple, // APPEND expr TO itab
@@ -633,6 +666,7 @@ Any_Node :: union {
 	^Insert_Stmt,
 	^Sort_Stmt,
 	^Append_Stmt,
+	^Read_Table_Stmt,
 	^Authority_Check_Stmt,
 	// Declarations
 	^Bad_Decl,
@@ -703,6 +737,7 @@ Any_Stmt :: union {
 	^Insert_Stmt,
 	^Sort_Stmt,
 	^Append_Stmt,
+	^Read_Table_Stmt,
 	^Authority_Check_Stmt,
 	// Declarations
 	^Bad_Decl,

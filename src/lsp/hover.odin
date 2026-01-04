@@ -189,6 +189,38 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 			hover_text = "(statement) LOOP AT GROUP - iterates over members of a group created by GROUP BY"
 		}
 
+	case ^ast.Read_Table_Stmt:
+		switch n.kind {
+		case .With_Key:
+			if n.transporting_no_fields {
+				hover_text = "(statement) READ TABLE ... WITH KEY ... TRANSPORTING NO FIELDS - checks if entry exists in table"
+			} else if n.assigning_target != nil {
+				hover_text = "(statement) READ TABLE ... WITH KEY ... ASSIGNING - reads entry by key and assigns to field symbol"
+			} else if n.into_target != nil {
+				hover_text = "(statement) READ TABLE ... WITH KEY ... INTO - reads entry by key into work area"
+			} else {
+				hover_text = "(statement) READ TABLE ... WITH KEY - reads entry from internal table by key"
+			}
+		case .With_Table_Key:
+			if n.transporting_no_fields {
+				hover_text = "(statement) READ TABLE ... WITH TABLE KEY ... TRANSPORTING NO FIELDS - checks if entry exists in table"
+			} else if n.assigning_target != nil {
+				hover_text = "(statement) READ TABLE ... WITH TABLE KEY ... ASSIGNING - reads entry by key and assigns to field symbol"
+			} else if n.into_target != nil {
+				hover_text = "(statement) READ TABLE ... WITH TABLE KEY ... INTO - reads entry by key into work area"
+			} else {
+				hover_text = "(statement) READ TABLE ... WITH TABLE KEY - reads entry from internal table by key"
+			}
+		case .Index:
+			if n.assigning_target != nil {
+				hover_text = "(statement) READ TABLE ... INDEX ... ASSIGNING - reads entry by index and assigns to field symbol"
+			} else if n.into_target != nil {
+				hover_text = "(statement) READ TABLE ... INDEX ... INTO - reads entry by index into work area"
+			} else {
+				hover_text = "(statement) READ TABLE ... INDEX - reads entry from internal table by index"
+			}
+		}
+
 	case ^ast.Table_Type:
 		table_kind_str := ""
 		switch n.kind {

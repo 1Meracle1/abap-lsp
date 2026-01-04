@@ -106,6 +106,10 @@ parse_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			}
 		case "APPEND":
 			return parse_append_stmt(p)
+		case "READ":
+			if check_keyword_ahead(p, "TABLE") {
+				return parse_read_table_stmt(p)
+			}
 		case "FIELD":
 			if check_hyphenated_keyword(p, "FIELD", "SYMBOLS") {
 				return parse_field_symbol_decl(p)
@@ -3395,6 +3399,166 @@ parse_field_symbol_assign_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	expr_stmt := ast.new(ast.Expr_Stmt, start_tok, period_tok)
 	expr_stmt.expr = lhs
 	return expr_stmt
+}
+
+// check_keyword_ahead checks if the next token (after current) is a specific keyword
+// without consuming tokens
+check_keyword_ahead :: proc(p: ^Parser, expected: string) -> bool {
+	if !check_keyword(p, "READ") && p.curr_tok.kind != .Ident {
+		return false
+	}
+
+	// Save parser state
+	saved_prev := p.prev_tok
+	saved_curr := p.curr_tok
+	saved_pos := p.l.pos
+	saved_read_pos := p.l.read_pos
+	saved_ch := p.l.ch
+
+	advance_token(p) // Move to next token
+
+	result := check_keyword(p, expected)
+
+	// Restore parser state
+	p.prev_tok = saved_prev
+	p.curr_tok = saved_curr
+	p.l.pos = saved_pos
+	p.l.read_pos = saved_read_pos
+	p.l.ch = saved_ch
+
+	return result
+}
+
+// READ TABLE statement parser
+// Syntax variations:
+// - READ TABLE itab WITH TABLE KEY field1 = val1 ... [INTO wa | ASSIGNING <fs> | TRANSPORTING NO FIELDS].
+// - READ TABLE itab WITH KEY field1 = val1 ... [INTO wa | ASSIGNING <fs> | TRANSPORTING NO FIELDS].
+// - READ TABLE itab INDEX idx [USING KEY key_name] [INTO wa | ASSIGNING <fs>].
+parse_read_table_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
+	read_tok := expect_keyword_token(p, "READ")
+	expect_keyword_token(p, "TABLE")
+
+	read_stmt := ast.new(ast.Read_Table_Stmt, read_tok.range)
+	read_stmt.itab = parse_expr(p)
+
+	for p.curr_tok.kind != .EOF && p.curr_tok.kind != .Period {
+		if check_keyword(p, "WITH") {
+			advance_token(p)
+			if check_keyword(p, "TABLE") {
+				advance_token(p)
+				if check_keyword(p, "KEY") {
+					advance_token(p)
+					read_stmt.kind = .With_Table_Key
+					read_stmt.key = parse_read_table_key(p)
+				} else {
+					error(p, p.curr_tok.range, "expected KEY after WITH TABLE")
+					break
+				}
+			} else {
+				if check_keyword(p, "KEY") {
+					advance_token(p)
+					read_stmt.kind = .With_Key
+					read_stmt.key = parse_read_table_key(p)
+				} else {
+					error(p, p.curr_tok.range, "expected KEY after WITH")
+					break
+				}
+			}
+		} else if check_keyword(p, "INDEX") {
+			advance_token(p)
+			read_stmt.kind = .Index
+			read_stmt.index_expr = parse_expr(p)
+		} else if check_keyword(p, "USING") {
+			advance_token(p)
+			expect_keyword_token(p, "KEY")
+			if p.curr_tok.kind == .Ident {
+				key_name_tok := advance_token(p)
+				read_stmt.using_key = ast.new_ident(key_name_tok)
+			}
+		} else if check_keyword(p, "INTO") {
+			advance_token(p) // consume INTO
+			// Check for inline DATA declaration: INTO DATA(var)
+			if check_keyword(p, "DATA") {
+				read_stmt.into_target = parse_data_inline_expr(p)
+			} else {
+				read_stmt.into_target = parse_expr(p)
+			}
+		} else if check_keyword(p, "ASSIGNING") {
+			advance_token(p) // consume ASSIGNING
+			// Check for inline FIELD-SYMBOL declaration: ASSIGNING FIELD-SYMBOL(<fs>)
+			if check_hyphenated_keyword(p, "FIELD", "SYMBOL") {
+				read_stmt.assigning_target = parse_inline_field_symbol(p)
+			} else {
+				read_stmt.assigning_target = parse_field_symbol_ref(p)
+			}
+		} else if check_keyword(p, "TRANSPORTING") {
+			advance_token(p) // consume TRANSPORTING
+			expect_keyword_token(p, "NO")
+			expect_keyword_token(p, "FIELDS")
+			read_stmt.transporting_no_fields = true
+		} else {
+			// Unknown clause, break out
+			break
+		}
+	}
+
+	period_tok := expect_token(p, .Period)
+	read_stmt.range.end = period_tok.range.end
+	read_stmt.derived_stmt = read_stmt
+	return read_stmt
+}
+
+// parse_read_table_key parses the WITH KEY clause of a READ TABLE statement
+// Syntax: WITH KEY field1 = val1 field2 = val2 ... or WITH KEY table_line = value
+parse_read_table_key :: proc(p: ^Parser) -> ^ast.Read_Table_Key {
+	key := new(ast.Read_Table_Key)
+	key.components = make([dynamic]^ast.Named_Arg)
+
+	// Parse key components
+	for p.curr_tok.kind == .Ident && p.curr_tok.kind != .Period {
+		// Check if it's a keyword that ends the key specification
+		if check_keyword(p, "INTO") ||
+		   check_keyword(p, "ASSIGNING") ||
+		   check_keyword(p, "TRANSPORTING") ||
+		   check_keyword(p, "USING") {
+			break
+		}
+
+		// Save parser state to check for named component
+		saved_prev := p.prev_tok
+		saved_curr := p.curr_tok
+		saved_pos := p.l.pos
+		saved_read_pos := p.l.read_pos
+		saved_ch := p.l.ch
+
+		name_tok := advance_token(p)
+
+		// Check if next token is = (named component)
+		if p.curr_tok.kind == .Eq {
+			advance_token(p) // consume =
+			value := parse_expr(p)
+
+			named_arg := ast.new(
+				ast.Named_Arg,
+				lexer.TextRange{name_tok.range.start, value.range.end},
+			)
+			named_arg.name = ast.new_ident(name_tok)
+			named_arg.value = value
+			named_arg.derived_expr = named_arg
+			append(&key.components, named_arg)
+		} else {
+			// Not a named component - could be a simple key reference
+			// Restore and break
+			p.prev_tok = saved_prev
+			p.curr_tok = saved_curr
+			p.l.pos = saved_pos
+			p.l.read_pos = saved_read_pos
+			p.l.ch = saved_ch
+			break
+		}
+	}
+
+	return key
 }
 
 parse_authority_check_stmt :: proc(p: ^Parser) -> ^ast.Stmt {

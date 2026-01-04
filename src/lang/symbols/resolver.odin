@@ -550,6 +550,8 @@ resolve_stmt :: proc(table: ^SymbolTable, stmt: ^ast.Stmt) {
 		resolve_while_stmt(table, s)
 	case ^ast.Loop_Stmt:
 		resolve_loop_stmt(table, s)
+	case ^ast.Read_Table_Stmt:
+		resolve_read_table_stmt(table, s)
 	}
 }
 
@@ -792,4 +794,39 @@ is_numeric_type :: proc(t: ^Type) -> bool {
 		return true
 	}
 	return false
+}
+
+resolve_read_table_stmt :: proc(table: ^SymbolTable, read_stmt: ^ast.Read_Table_Stmt) {
+	// Handle inline DATA declaration in INTO clause
+	if read_stmt.into_target != nil {
+		// Check if into_target is from an inline DATA declaration
+		if ident, ok := read_stmt.into_target.derived_expr.(^ast.Ident); ok {
+			// Create inferred type from the internal table (line type)
+			type_info := make_inferred_type(table, read_stmt.itab)
+
+			sym := Symbol {
+				name      = ident.name,
+				kind      = .Variable,
+				range     = ident.range,
+				type_info = type_info,
+			}
+			add_symbol(table, sym, allow_shadowing = false)
+		}
+	}
+
+	// Handle inline FIELD-SYMBOL declaration in ASSIGNING clause
+	if read_stmt.assigning_target != nil {
+		if ident, ok := read_stmt.assigning_target.derived_expr.(^ast.Ident); ok {
+			// Field symbols get the line type of the internal table
+			type_info := make_inferred_type(table, read_stmt.itab)
+
+			sym := Symbol {
+				name      = ident.name,
+				kind      = .FieldSymbol,
+				range     = ident.range,
+				type_info = type_info,
+			}
+			add_symbol(table, sym, allow_shadowing = false)
+		}
+	}
 }
