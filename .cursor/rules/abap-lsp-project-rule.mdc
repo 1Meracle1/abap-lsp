@@ -1,0 +1,47 @@
+---
+alwaysApply: true
+---
+The project is written in Odin language, docs for the language - https://odin-lang.org/docs/overview/, docs for the packages - https://pkg.odin-lang.org/, location of odin.exe compiler and the base/core/vendor inbuilt libraries - D:\dev\odin\toolchain\odin-windows-amd64-dev-2025-11\
+
+It is a project that works as an LSP (Language Server Protocol) for SAP ABAP language (documentation for ABAP language - https://help.sap.com/doc/abapdocu_latest_index_htm/latest/en-US/ABENABAP.html)
+
+Source code lives in "src" folder, tests in "tests" folder.
+ABAP language specific functionality such as parsing and symbols resolution reside in folder src\lang
+- Abstract Syntax Tree: src\lang\ast
+- Lexer\Tokenizer: src\lang\lexer
+- Parser: src\lang\parser
+- Symbols Resolution: src\lang\symbols
+- LSP-specific stuff: src\lsp
+
+To build the project, thus checking if there are any compilation errors, run command ".\build.bat debug abap-lsp".
+
+To add a new AST node follow the following instructions:
+- expressions' structs should have "*_Expr" as a suffix in a name and "using node: Expr," as a struct member - they should also be added to Any_Node and Any_Expr unions
+- statements' structs should have "*_Stmt" as a suffix in a name and "using node: Stmt," as a struct member - they should also be added to Any_Node and Any_Stmt unions
+- declarations' structs should have "*_Decl" as a suffix in a name and "using node: Decl," as a struct member - they should also be added to Any_Node and Any_Stmt unions
+
+Every new node added (or any existing node being updated to it or any descendants of the used structs) to src\lang\ast\ast.odin's Any_Node requires corresponding adjustments of:
+- find_node_at_offset procedure at src\lang\ast\lookup.odin
+- src\lang\symbols\symbols.odin if there is a new declaration or type kind
+- src\lang\symbols\resolver.odin if there is a new declaration or a change of an existing declaration
+- src\lsp\hover.odin - if this is a new declaration or a change of an existing declaration
+- src\lsp\semantic_tokens.odin
+
+Every meaningful change to parsing logic, in src\lang\parser\parser.odin, with additions to parsing patterns should have new tests created under tests\parser directory, split into files whenever there is a big chunk of tests related to some part of the language (such as all declarations, or all OOP-related functionality).
+
+No need to add "stmt.derived_stmt = stmt" or "expr.derived_expr = expr" statements in the parsing logic while constructing the AST nodes, this is already taken care by src\lang\ast\utils.odin's new_from_range or new_from_tokens procedures - with the new procedure provided as a common overload entry point via 
+```
+new :: proc {
+	new_from_range,
+	new_from_tokens,
+}
+```
+
+
+
+## Platform
+This is Window development platform, if you would like to chain commands do so using ";" (semicolon) instead of "&&" (double ampersand), *.bat scripts should be run prefixed with ".\" (like ".\build.bat" or ".\test.bat").
+
+
+## Tests
+To run tests execute command ".\test.bat" - it runs all the tests and outputs errors if any found, otherwise confirming that all tests were successful.
