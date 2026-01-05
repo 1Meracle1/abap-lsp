@@ -201,6 +201,13 @@ For_Expr :: struct {
 	result_args: [dynamic]^Expr, // Result arguments (named args like field1 = val1, or single expression)
 }
 
+// Value row expression - represents a parenthesized group of arguments in VALUE constructor
+// Used for table rows like: VALUE #( ( field1 = val1 field2 = val2 ) ( field1 = val3 ) )
+Value_Row_Expr :: struct {
+	using node: Expr,
+	args:       [dynamic]^Expr, // Row arguments (named args or single expressions)
+}
+
 // Statements
 
 Bad_Stmt :: struct {
@@ -911,6 +918,7 @@ Any_Node :: union {
 	^Predicate_Expr,
 	^String_Template_Expr,
 	^For_Expr,
+	^Value_Row_Expr,
 	// Types
 	^Table_Type,
 	^Ref_Type,
@@ -996,6 +1004,7 @@ Any_Expr :: union {
 	^Predicate_Expr,
 	^String_Template_Expr,
 	^For_Expr,
+	^Value_Row_Expr,
 	// Types
 	^Table_Type,
 	^Ref_Type,

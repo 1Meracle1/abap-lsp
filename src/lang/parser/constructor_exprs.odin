@@ -61,6 +61,13 @@ parse_constructor_body :: proc(p: ^Parser, keyword_tok: lexer.Token) -> ^ast.Exp
 					if for_expr != nil {
 						append(&constructor_expr.args, for_expr)
 					}
+				} else if p.curr_tok.kind == .LParen {
+					// Nested parentheses - could be a table row in VALUE constructor
+					// e.g., VALUE #( ( field1 = val1 ) ( field2 = val2 ) )
+					row_expr := parse_value_row_expr(p)
+					if row_expr != nil {
+						append(&constructor_expr.args, row_expr)
+					}
 				} else {
 					arg := parse_call_arg(p)
 					if arg != nil {
@@ -275,4 +282,38 @@ parse_new_expr :: proc(p: ^Parser) -> ^ast.Expr {
 parse_new_type_expr :: proc(p: ^Parser) -> ^ast.Expr {
 	expr := parse_simple_type_expr(p)
 	return expr
+}
+
+// parse_value_row_expr parses a parenthesized group of arguments in VALUE constructor
+// This handles table rows like: ( field1 = val1 field2 = val2 )
+parse_value_row_expr :: proc(p: ^Parser) -> ^ast.Expr {
+	lparen_tok := expect_token(p, .LParen)
+	row_expr := ast.new(ast.Value_Row_Expr, lparen_tok.range)
+	row_expr.args = make([dynamic]^ast.Expr)
+
+	// Parse arguments within the row
+	max_iterations := 100
+	iterations := 0
+	for p.curr_tok.kind != .RParen &&
+	    p.curr_tok.kind != .EOF &&
+	    p.curr_tok.kind != .Period &&
+	    iterations < max_iterations {
+		iterations += 1
+		prev_pos := p.curr_tok.range.start
+
+		arg := parse_call_arg(p)
+		if arg != nil {
+			append(&row_expr.args, arg)
+		}
+
+		// If we didn't make progress, break to avoid infinite loop
+		if p.curr_tok.range.start == prev_pos {
+			break
+		}
+	}
+
+	rparen_tok := expect_token(p, .RParen)
+	row_expr.range.end = rparen_tok.range.end
+	row_expr.derived_expr = row_expr
+	return row_expr
 }

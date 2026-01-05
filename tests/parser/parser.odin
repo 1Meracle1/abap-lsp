@@ -10170,3 +10170,100 @@ data_struct_with_type_test :: proc(t: ^testing.T) {
 		fmt.tprintf("Expected 3 components, got %d", len(struct_decl.components)),
 	)
 }
+
+@(test)
+value_constructor_with_nested_rows_test :: proc(t: ^testing.T) {
+	// VALUE #( ( field = 'value1' ) ( field = 'value2' ) ) for internal table with row expressions
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src =
+		`lt_data = VALUE #( 
+        ( code_urn = '(01)00370461024038(21)0000000000002' )
+        ( code_urn = '(01)00370461024038(21)0000000000003' )
+      ).`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 1,
+		fmt.tprintf("Expected 1 declaration, got %d", len(file.decls)),
+	)
+
+	if len(file.decls) < 1 {
+		return
+	}
+
+	// Get the assignment statement
+	assign_stmt, ok := file.decls[0].derived_stmt.(^ast.Assign_Stmt)
+	testing.expect(
+		t,
+		ok,
+		fmt.tprintf("Expected Assign_Stmt, got %T", file.decls[0].derived_stmt),
+	)
+
+	if !ok || len(assign_stmt.rhs) == 0 {
+		return
+	}
+
+	// Check that the RHS is a Constructor_Expr (VALUE #(...))
+	constr, cok := assign_stmt.rhs[0].derived_expr.(^ast.Constructor_Expr)
+	testing.expect(
+		t,
+		cok,
+		fmt.tprintf("Expected Constructor_Expr, got %T", assign_stmt.rhs[0].derived_expr),
+	)
+
+	if !cok {
+		return
+	}
+
+	// Should have 2 row expressions as args
+	testing.expect(
+		t,
+		len(constr.args) == 2,
+		fmt.tprintf("Expected 2 row arguments, got %d", len(constr.args)),
+	)
+
+	if len(constr.args) < 2 {
+		return
+	}
+
+	// Each arg should be a Value_Row_Expr
+	row1, row1_ok := constr.args[0].derived_expr.(^ast.Value_Row_Expr)
+	testing.expect(
+		t,
+		row1_ok,
+		fmt.tprintf("Expected Value_Row_Expr for arg 0, got %T", constr.args[0].derived_expr),
+	)
+
+	row2, row2_ok := constr.args[1].derived_expr.(^ast.Value_Row_Expr)
+	testing.expect(
+		t,
+		row2_ok,
+		fmt.tprintf("Expected Value_Row_Expr for arg 1, got %T", constr.args[1].derived_expr),
+	)
+
+	// Each row should have 1 named argument
+	if row1_ok {
+		testing.expect(
+			t,
+			len(row1.args) == 1,
+			fmt.tprintf("Expected 1 arg in row 1, got %d", len(row1.args)),
+		)
+	}
+
+	if row2_ok {
+		testing.expect(
+			t,
+			len(row2.args) == 1,
+			fmt.tprintf("Expected 1 arg in row 2, got %d", len(row2.args)),
+		)
+	}
+}

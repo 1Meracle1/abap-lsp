@@ -285,6 +285,13 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 			}
 		}
 
+	case ^Value_Row_Expr:
+		for arg in n.args {
+			if res := find_node_at_offset(&arg.expr_base, offset); res != nil {
+				return res
+			}
+		}
+
 	case ^Expr_Stmt:
 		if res := find_node_at_offset(&n.expr.expr_base, offset); res != nil {
 			return res
