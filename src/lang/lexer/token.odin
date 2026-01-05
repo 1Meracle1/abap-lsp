@@ -31,6 +31,7 @@ TokenKind :: enum u8 {
 	Le, // <=
 	Ge, // >=
 	Ne, // <>
+	QuestionEq, // ?= (downcast assignment)
 	Pipe, // | (for string templates)
 	Ampersand, // & (for string concatenation)
 	Other, // Invalid?
@@ -121,6 +122,8 @@ token_kind_string :: proc(token_kind: TokenKind) -> string {
 		res = ">="
 	case .Ne:
 		res = "<>"
+	case .QuestionEq:
+		res = "?="
 	case .Pipe:
 		res = "|"
 	case .Ampersand:

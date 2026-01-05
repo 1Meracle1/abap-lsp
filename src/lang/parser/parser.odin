@@ -497,7 +497,7 @@ parse_expr_or_assign_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	start_tok := p.curr_tok
 	lhs := parse_expr(p)
 
-	if p.curr_tok.kind == .Eq {
+	if p.curr_tok.kind == .Eq || p.curr_tok.kind == .QuestionEq {
 		op := advance_token(p)
 		rhs := parse_expr(p)
 		period_tok := expect_token(p, .Period)
@@ -1653,7 +1653,7 @@ parse_field_symbol_assign_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	// Check for selector expression (field access)
 	lhs := parse_atom_expr(p, fs_expr)
 
-	if p.curr_tok.kind == .Eq {
+	if p.curr_tok.kind == .Eq || p.curr_tok.kind == .QuestionEq {
 		op := advance_token(p)
 		rhs := parse_expr(p)
 		period_tok := expect_token(p, .Period)

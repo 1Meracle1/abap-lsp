@@ -137,6 +137,13 @@ scan :: proc(l: ^Lexer) -> Token {
 			} else {
 				kind = .Gt
 			}
+		case '?':
+			if l.ch == '=' {
+				advance_rune(l)
+				kind = .QuestionEq
+			} else {
+				kind = .Other
+			}
 		}
 	}
 

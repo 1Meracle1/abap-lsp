@@ -600,6 +600,32 @@ assign :: proc(lhs: ast.Any_Expr, rhs: ast.Any_Expr) -> ^ast.Assign_Stmt {
 	return node
 }
 
+downcast_assign :: proc(lhs: ast.Any_Expr, rhs: ast.Any_Expr) -> ^ast.Assign_Stmt {
+	node := ast.new(ast.Assign_Stmt, {})
+	node.lhs = make([]^ast.Expr, 1)
+	node.rhs = make([]^ast.Expr, 1)
+
+	#partial switch l in lhs {
+	case ^ast.Ident:
+		node.lhs[0] = &l.node
+	case ^ast.Selector_Expr:
+		node.lhs[0] = &l.node
+	}
+
+	#partial switch r in rhs {
+	case ^ast.Basic_Lit:
+		node.rhs[0] = &r.node
+	case ^ast.Ident:
+		node.rhs[0] = &r.node
+	case ^ast.Selector_Expr:
+		node.rhs[0] = &r.node
+	}
+
+	node.op.kind = .QuestionEq
+	node.derived_stmt = node
+	return node
+}
+
 form_param :: proc(
 	name: string,
 	type_name: string = "",
@@ -1489,6 +1515,93 @@ simple_assignment_test :: proc(t: ^testing.T) {
 	if len(file.decls) > 0 {
 		expected := assign(ident("lv_var"), lit("1"))
 		check_stmt(t, expected, file.decls[0])
+	}
+}
+
+@(test)
+simple_downcast_assignment_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `lo_other ?= io_event.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 1,
+		fmt.tprintf("Expected 1 decl, got %v", len(file.decls)),
+	)
+	if len(file.decls) > 0 {
+		expected := downcast_assign(ident("lo_other"), ident("io_event"))
+		check_stmt(t, expected, file.decls[0])
+	}
+}
+
+@(test)
+downcast_assignment_with_method_call_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `lo_object ?= cl_factory=>get_instance( ).`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 1,
+		fmt.tprintf("Expected 1 decl, got %v", len(file.decls)),
+	)
+	if len(file.decls) > 0 {
+		assign, ok := file.decls[0].derived_stmt.(^ast.Assign_Stmt)
+		if !testing.expect(t, ok, fmt.tprintf("Expected Assign_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+		testing.expect(
+			t,
+			assign.op.kind == .QuestionEq,
+			fmt.tprintf("Expected QuestionEq operator, got %v", assign.op.kind),
+		)
+	}
+}
+
+@(test)
+downcast_assignment_with_field_access_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `lo_data ?= io_container->mo_data.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 1,
+		fmt.tprintf("Expected 1 decl, got %v", len(file.decls)),
+	)
+	if len(file.decls) > 0 {
+		assign, ok := file.decls[0].derived_stmt.(^ast.Assign_Stmt)
+		if !testing.expect(t, ok, fmt.tprintf("Expected Assign_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+		testing.expect(
+			t,
+			assign.op.kind == .QuestionEq,
+			fmt.tprintf("Expected QuestionEq operator, got %v", assign.op.kind),
+		)
 	}
 }
 
