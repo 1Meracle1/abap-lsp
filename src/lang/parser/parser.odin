@@ -247,8 +247,8 @@ parse_table_type :: proc(p: ^Parser) -> ^ast.Expr {
 	expect_keyword_token(p, "TABLE")
 	expect_keyword_token(p, "OF")
 
-	// Parse element type
-	elem := parse_simple_type_expr(p)
+	// Parse element type (can be simple type, REF TO, or nested table type)
+	elem := parse_type_expr(p)
 
 	// Create table type node
 	table_type := ast.new(

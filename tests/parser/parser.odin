@@ -10514,3 +10514,76 @@ table_expression_field_access_test :: proc(t: ^testing.T) {
 		)
 	}
 }
+
+@(test)
+types_table_of_ref_to_test :: proc(t: ^testing.T) {
+	// TYPES: tt_events TYPE STANDARD TABLE OF REF TO lcl_event WITH DEFAULT KEY.
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `TYPES: tt_events TYPE STANDARD TABLE OF REF TO lcl_event WITH DEFAULT KEY.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) > 0, "Expected at least one declaration") do return
+
+	// Should be a Types_Chain_Decl
+	chain_decl, ok := file.decls[0].derived_stmt.(^ast.Types_Chain_Decl)
+	testing.expect(t, ok, fmt.tprintf("Expected Types_Chain_Decl, got %T", file.decls[0].derived_stmt))
+	if !ok do return
+
+	if !testing.expect(t, len(chain_decl.decls) == 1, "Expected 1 type declaration in chain") do return
+
+	types_decl := chain_decl.decls[0]
+	testing.expect(
+		t,
+		types_decl.ident.name == "tt_events",
+		fmt.tprintf("Expected ident 'tt_events', got %s", types_decl.ident.name),
+	)
+
+	// The typed field should be a Table_Type
+	table_type, tok := types_decl.typed.derived_expr.(^ast.Table_Type)
+	testing.expect(t, tok, fmt.tprintf("Expected Table_Type, got %T", types_decl.typed.derived_expr))
+	if !tok do return
+
+	testing.expect(
+		t,
+		table_type.kind == .Standard,
+		fmt.tprintf("Expected Standard table kind, got %v", table_type.kind),
+	)
+
+	// The element type should be a Ref_Type
+	ref_type, rok := table_type.elem.derived_expr.(^ast.Ref_Type)
+	testing.expect(t, rok, fmt.tprintf("Expected Ref_Type as element, got %T", table_type.elem.derived_expr))
+	if !rok do return
+
+	// The target of REF TO should be lcl_event
+	target_ident, iok := ref_type.target.derived_expr.(^ast.Ident)
+	testing.expect(t, iok, fmt.tprintf("Expected Ident as REF TO target, got %T", ref_type.target.derived_expr))
+	if iok {
+		testing.expect(
+			t,
+			target_ident.name == "lcl_event",
+			fmt.tprintf("Expected target 'lcl_event', got %s", target_ident.name),
+		)
+	}
+
+	// Check that the table has a default key
+	testing.expect(
+		t,
+		table_type.primary_key != nil,
+		"Expected primary_key to be set",
+	)
+	if table_type.primary_key != nil {
+		testing.expect(
+			t,
+			table_type.primary_key.is_default,
+			"Expected primary key to be DEFAULT KEY",
+		)
+	}
+}
