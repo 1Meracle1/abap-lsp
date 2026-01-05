@@ -191,6 +191,12 @@ handle_completion :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 	}
 	defer cache.release_snapshot(snap)
 
+	// Get the effective symbol table (merged from project if available)
+	symbol_table := cache.get_effective_symbol_table(srv.storage, completion_params.textDocument.uri)
+	if symbol_table == nil {
+		symbol_table = snap.symbol_table
+	}
+
 	offset := position_to_offset(snap.text, completion_params.position)
 	if offset < 0 {
 		reply(srv, id, CompletionList{isIncomplete = false, items = {}})
@@ -198,7 +204,7 @@ handle_completion :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 	}
 	log_trace(srv, fmt.tprintf("completion at offset: %d", offset))
 
-	items := collect_completion_items(snap, offset)
+	items := collect_completion_items(snap, offset, symbol_table)
 
 	result := CompletionList {
 		isIncomplete = false,
@@ -207,10 +213,17 @@ handle_completion :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 	reply(srv, id, result)
 }
 
-collect_completion_items :: proc(snap: ^cache.Snapshot, offset: int) -> [dynamic]CompletionItem {
+collect_completion_items :: proc(
+	snap: ^cache.Snapshot,
+	offset: int,
+	symbol_table: ^symbols.SymbolTable = nil,
+) -> [dynamic]CompletionItem {
 	items := make([dynamic]CompletionItem, context.temp_allocator)
 
-	if struct_type := find_struct_type_at_cursor(snap, offset); struct_type != nil {
+	// Use provided symbol table or fall back to snapshot's own table
+	table := symbol_table if symbol_table != nil else snap.symbol_table
+
+	if struct_type := find_struct_type_at_cursor(snap, offset, table); struct_type != nil {
 		return struct_fields_to_completion_items(struct_type)
 	}
 
@@ -222,9 +235,13 @@ collect_completion_items :: proc(snap: ^cache.Snapshot, offset: int) -> [dynamic
 		})
 	}
 
+	if table == nil {
+		return items
+	}
+
 	if enclosing_form := ast.find_enclosing_form(snap.ast, offset); enclosing_form != nil {
 		form_name := enclosing_form.ident.name
-		if form_sym, ok := snap.symbol_table.symbols[form_name]; ok {
+		if form_sym, ok := table.symbols[form_name]; ok {
 			if form_sym.child_scope != nil {
 				for _, sym in form_sym.child_scope.symbols {
 					append(&items, symbol_to_completion_item(sym))
@@ -235,7 +252,7 @@ collect_completion_items :: proc(snap: ^cache.Snapshot, offset: int) -> [dynamic
 
 	if enclosing_class := ast.find_enclosing_class_def(snap.ast, offset); enclosing_class != nil {
 		class_name := enclosing_class.ident.name
-		if class_sym, ok := snap.symbol_table.symbols[class_name]; ok {
+		if class_sym, ok := table.symbols[class_name]; ok {
 			if class_sym.child_scope != nil {
 				for _, sym in class_sym.child_scope.symbols {
 					append(&items, symbol_to_completion_item(sym))
@@ -246,7 +263,7 @@ collect_completion_items :: proc(snap: ^cache.Snapshot, offset: int) -> [dynamic
 
 	if enclosing_iface := ast.find_enclosing_interface(snap.ast, offset); enclosing_iface != nil {
 		iface_name := enclosing_iface.ident.name
-		if iface_sym, ok := snap.symbol_table.symbols[iface_name]; ok {
+		if iface_sym, ok := table.symbols[iface_name]; ok {
 			if iface_sym.child_scope != nil {
 				for _, sym in iface_sym.child_scope.symbols {
 					append(&items, symbol_to_completion_item(sym))
@@ -257,7 +274,7 @@ collect_completion_items :: proc(snap: ^cache.Snapshot, offset: int) -> [dynamic
 
 	if enclosing_module := ast.find_enclosing_module(snap.ast, offset); enclosing_module != nil {
 		module_name := enclosing_module.ident.name
-		if module_sym, ok := snap.symbol_table.symbols[module_name]; ok {
+		if module_sym, ok := table.symbols[module_name]; ok {
 			if module_sym.child_scope != nil {
 				for _, sym in module_sym.child_scope.symbols {
 					append(&items, symbol_to_completion_item(sym))
@@ -266,14 +283,18 @@ collect_completion_items :: proc(snap: ^cache.Snapshot, offset: int) -> [dynamic
 		}
 	}
 
-	for _, sym in snap.symbol_table.symbols {
+	for _, sym in table.symbols {
 		append(&items, symbol_to_completion_item(sym))
 	}
 
 	return items
 }
 
-find_struct_type_at_cursor :: proc(snap: ^cache.Snapshot, offset: int) -> ^symbols.Type {
+find_struct_type_at_cursor :: proc(
+	snap: ^cache.Snapshot,
+	offset: int,
+	symbol_table: ^symbols.SymbolTable = nil,
+) -> ^symbols.Type {
 	if len(snap.text) == 0 || offset < 2 {
 		return nil
 	}
@@ -284,7 +305,7 @@ find_struct_type_at_cursor :: proc(snap: ^cache.Snapshot, offset: int) -> ^symbo
 	}
 	defer delete(chain)
 
-	return resolve_access_chain(snap, chain[:], offset)
+	return resolve_access_chain(snap, chain[:], offset, symbol_table)
 }
 
 parse_access_chain_backwards :: proc(text: string, offset: int) -> [dynamic]string {
@@ -365,18 +386,23 @@ parse_access_chain_backwards :: proc(text: string, offset: int) -> [dynamic]stri
 	return chain
 }
 
-resolve_access_chain :: proc(snap: ^cache.Snapshot, chain: []string, offset: int) -> ^symbols.Type {
+resolve_access_chain :: proc(
+	snap: ^cache.Snapshot,
+	chain: []string,
+	offset: int,
+	symbol_table: ^symbols.SymbolTable = nil,
+) -> ^symbols.Type {
 	if len(chain) == 0 {
 		return nil
 	}
 
 	var_name := chain[0]
-	var_type := lookup_variable_type(snap, var_name, offset)
+	var_type := lookup_variable_type(snap, var_name, offset, symbol_table)
 	if var_type == nil {
 		return nil
 	}
 
-	current_type := resolve_to_struct_type(snap, var_type)
+	current_type := resolve_to_struct_type(snap, var_type, symbol_table)
 	if current_type == nil {
 		return nil
 	}
@@ -396,7 +422,7 @@ resolve_access_chain :: proc(snap: ^cache.Snapshot, chain: []string, offset: int
 			return nil
 		}
 
-		current_type = resolve_to_struct_type(snap, field_type)
+		current_type = resolve_to_struct_type(snap, field_type, symbol_table)
 		if current_type == nil {
 			return nil
 		}
@@ -405,11 +431,22 @@ resolve_access_chain :: proc(snap: ^cache.Snapshot, chain: []string, offset: int
 	return current_type
 }
 
-lookup_variable_type :: proc(snap: ^cache.Snapshot, var_name: string, offset: int) -> ^symbols.Type {
+lookup_variable_type :: proc(
+	snap: ^cache.Snapshot,
+	var_name: string,
+	offset: int,
+	symbol_table: ^symbols.SymbolTable = nil,
+) -> ^symbols.Type {
+	// Use provided symbol table or fall back to snapshot's own table
+	table := symbol_table if symbol_table != nil else snap.symbol_table
+	if table == nil {
+		return nil
+	}
+
 	// Check enclosing form scope
 	if enclosing_form := ast.find_enclosing_form(snap.ast, offset); enclosing_form != nil {
 		form_name := enclosing_form.ident.name
-		if form_sym, ok := snap.symbol_table.symbols[form_name]; ok {
+		if form_sym, ok := table.symbols[form_name]; ok {
 			if form_sym.child_scope != nil {
 				if local_sym, found := form_sym.child_scope.symbols[var_name]; found {
 					return local_sym.type_info
@@ -421,7 +458,7 @@ lookup_variable_type :: proc(snap: ^cache.Snapshot, var_name: string, offset: in
 	// Check enclosing class scope
 	if enclosing_class := ast.find_enclosing_class_def(snap.ast, offset); enclosing_class != nil {
 		class_name := enclosing_class.ident.name
-		if class_sym, ok := snap.symbol_table.symbols[class_name]; ok {
+		if class_sym, ok := table.symbols[class_name]; ok {
 			if class_sym.child_scope != nil {
 				if local_sym, found := class_sym.child_scope.symbols[var_name]; found {
 					return local_sym.type_info
@@ -433,7 +470,7 @@ lookup_variable_type :: proc(snap: ^cache.Snapshot, var_name: string, offset: in
 	// Check enclosing interface scope
 	if enclosing_iface := ast.find_enclosing_interface(snap.ast, offset); enclosing_iface != nil {
 		iface_name := enclosing_iface.ident.name
-		if iface_sym, ok := snap.symbol_table.symbols[iface_name]; ok {
+		if iface_sym, ok := table.symbols[iface_name]; ok {
 			if iface_sym.child_scope != nil {
 				if local_sym, found := iface_sym.child_scope.symbols[var_name]; found {
 					return local_sym.type_info
@@ -445,7 +482,7 @@ lookup_variable_type :: proc(snap: ^cache.Snapshot, var_name: string, offset: in
 	// Check enclosing module scope
 	if enclosing_module := ast.find_enclosing_module(snap.ast, offset); enclosing_module != nil {
 		module_name := enclosing_module.ident.name
-		if module_sym, ok := snap.symbol_table.symbols[module_name]; ok {
+		if module_sym, ok := table.symbols[module_name]; ok {
 			if module_sym.child_scope != nil {
 				if local_sym, found := module_sym.child_scope.symbols[var_name]; found {
 					return local_sym.type_info
@@ -455,17 +492,24 @@ lookup_variable_type :: proc(snap: ^cache.Snapshot, var_name: string, offset: in
 	}
 
 	// Check global symbol table
-	if global_sym, found := snap.symbol_table.symbols[var_name]; found {
+	if global_sym, found := table.symbols[var_name]; found {
 		return global_sym.type_info
 	}
 
 	return nil
 }
 
-resolve_to_struct_type :: proc(snap: ^cache.Snapshot, type_info: ^symbols.Type) -> ^symbols.Type {
+resolve_to_struct_type :: proc(
+	snap: ^cache.Snapshot,
+	type_info: ^symbols.Type,
+	symbol_table: ^symbols.SymbolTable = nil,
+) -> ^symbols.Type {
 	if type_info == nil {
 		return nil
 	}
+
+	// Use provided symbol table or fall back to snapshot's own table
+	table := symbol_table if symbol_table != nil else snap.symbol_table
 
 	#partial switch type_info.kind {
 	case .Structure:
@@ -473,9 +517,11 @@ resolve_to_struct_type :: proc(snap: ^cache.Snapshot, type_info: ^symbols.Type) 
 
 	case .Named:
 		// Look up the type definition
-		if type_sym, found := snap.symbol_table.symbols[type_info.name]; found {
-			if type_sym.type_info != nil {
-				return resolve_to_struct_type(snap, type_sym.type_info)
+		if table != nil {
+			if type_sym, found := table.symbols[type_info.name]; found {
+				if type_sym.type_info != nil {
+					return resolve_to_struct_type(snap, type_sym.type_info, table)
+				}
 			}
 		}
 		return nil

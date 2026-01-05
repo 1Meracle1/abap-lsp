@@ -60,9 +60,15 @@ handle_diagnostic :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 	reply(srv, id, result)
 }
 
-publish_diagnostics :: proc(srv: ^Server, uri: string, snap: ^cache.Snapshot) {
+publish_diagnostics :: proc(
+	srv: ^Server,
+	uri: string,
+	snap: ^cache.Snapshot,
+	project: ^cache.Project = nil,
+) {
 	diagnostics := make([dynamic]Diagnostic, context.temp_allocator)
 
+	// Syntax errors from parser
 	for err in snap.ast.syntax_errors {
 		append(&diagnostics, Diagnostic{
 			range    = text_range_to_lsp_range(snap.text, err.range),
@@ -72,9 +78,23 @@ publish_diagnostics :: proc(srv: ^Server, uri: string, snap: ^cache.Snapshot) {
 		})
 	}
 
+	// Semantic errors from symbol resolver
 	if snap.symbol_table != nil {
 		semantic_errors := symbols.collect_all_diagnostics(snap.symbol_table, context.temp_allocator)
 		for err in semantic_errors {
+			append(&diagnostics, Diagnostic{
+				range    = text_range_to_lsp_range(snap.text, err.range),
+				severity = .Error,
+				source   = "abap-lsp",
+				message  = err.message,
+			})
+		}
+	}
+
+	// Project-level diagnostics (e.g., missing includes)
+	// Only show for the root file of the project
+	if project != nil && uri == project.root_uri {
+		for err in project.diagnostics {
 			append(&diagnostics, Diagnostic{
 				range    = text_range_to_lsp_range(snap.text, err.range),
 				severity = .Error,

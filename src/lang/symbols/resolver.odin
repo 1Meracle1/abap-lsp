@@ -10,6 +10,18 @@ resolve_file :: proc(file: ^ast.File) -> ^SymbolTable {
 	table.types = make([dynamic]^Type)
 	table.diagnostics = make([dynamic]Diagnostic)
 
+	resolve_file_into(file, table)
+
+	return table
+}
+
+// Resolve a file's declarations into an existing symbol table
+// Used for multi-file projects where symbols accumulate across files
+resolve_file_into :: proc(file: ^ast.File, table: ^SymbolTable) {
+	if file == nil || table == nil {
+		return
+	}
+
 	for decl in file.decls {
 		#partial switch d in decl.derived_stmt {
 		case ^ast.Data_Inline_Decl:
@@ -56,8 +68,6 @@ resolve_file :: proc(file: ^ast.File) -> ^SymbolTable {
 			resolve_controls_chain_decl(table, d, is_global = true)
 		}
 	}
-
-	return table
 }
 
 resolve_inline_decl :: proc(

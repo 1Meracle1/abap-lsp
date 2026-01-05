@@ -13,6 +13,11 @@ handle_document_open :: proc(srv: ^Server, params: json.Value) {
 	}
 
 	uri := document_open_params.textDocument.uri
+
+	// Ensure project context exists for this file
+	project := cache.ensure_project_context(srv.storage, uri)
+
+	// Refresh this document
 	cache.refresh_document(
 		srv.storage,
 		uri,
@@ -20,11 +25,17 @@ handle_document_open :: proc(srv: ^Server, params: json.Value) {
 		document_open_params.textDocument.version,
 	)
 
+	// If file belongs to a project, rebuild merged symbol table
+	if project != nil {
+		cache.invalidate_project(project)
+		cache.resolve_project(srv.storage, project)
+	}
+
 	// Publish diagnostics after refresh
 	snap := cache.get_snapshot(srv.storage, uri)
 	if snap != nil {
 		defer cache.release_snapshot(snap)
-		publish_diagnostics(srv, uri, snap)
+		publish_diagnostics(srv, uri, snap, project)
 	}
 }
 
@@ -37,6 +48,10 @@ handle_document_change :: proc(srv: ^Server, params: json.Value) {
 	}
 
 	uri := document_change_params.textDocument.uri
+
+	// Get project context for this file
+	project := cache.get_project_for_uri(srv.storage, uri)
+
 	for change in document_change_params.contentChanges {
 		cache.refresh_document(
 			srv.storage,
@@ -46,10 +61,16 @@ handle_document_change :: proc(srv: ^Server, params: json.Value) {
 		)
 	}
 
+	// If file belongs to a project, rebuild merged symbol table
+	if project != nil {
+		cache.invalidate_project(project)
+		cache.resolve_project(srv.storage, project)
+	}
+
 	// Publish diagnostics after refresh
 	snap := cache.get_snapshot(srv.storage, uri)
 	if snap != nil {
 		defer cache.release_snapshot(snap)
-		publish_diagnostics(srv, uri, snap)
+		publish_diagnostics(srv, uri, snap, project)
 	}
 }

@@ -14,7 +14,9 @@ Parser :: struct {
 	keyword_buffer: [128]byte,
 }
 
-parse_file :: proc(p: ^Parser, file: ^ast.File) {
+parse_file :: proc(p: ^Parser, file: ^ast.File, allocator := context.allocator) {
+	context.allocator = allocator
+
 	p.prev_tok = {}
 	p.curr_tok = {}
 

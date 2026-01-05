@@ -25,6 +25,12 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 	}
 	defer cache.release_snapshot(snap)
 
+	// Get the effective symbol table (merged from project if available)
+	symbol_table := cache.get_effective_symbol_table(srv.storage, hover_params.textDocument.uri)
+	if symbol_table == nil {
+		symbol_table = snap.symbol_table
+	}
+
 	offset := position_to_offset(snap.text, hover_params.position)
 	if offset < 0 {
 		reply(srv, id, json.Null(nil))
@@ -43,7 +49,7 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 
 	#partial switch n in node.derived {
 	case ^ast.Ident:
-		if sym, ok := lookup_symbol_at_offset(snap, n.name, offset); ok {
+		if sym, ok := lookup_symbol_at_offset(snap, n.name, offset, symbol_table); ok {
 			#partial switch sym.kind {
 			case .Form:
 				hover_text = format_form_signature(sym)
@@ -89,7 +95,7 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 			hover_text = "NEW #( ) - creates instance with inferred type"
 		} else if n.type_expr != nil {
 			if type_ident, ok := n.type_expr.derived_expr.(^ast.Ident); ok {
-				if sym, found := lookup_symbol_at_offset(snap, type_ident.name, offset); found {
+				if sym, found := lookup_symbol_at_offset(snap, type_ident.name, offset, symbol_table); found {
 					if sym.kind == .Class {
 						hover_text = fmt.tprintf(
 							"NEW %s( ) - creates instance of class %s",
@@ -124,7 +130,7 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 	case ^ast.Selector_Expr:
 		if n.field != nil {
 			field_name := n.field.name
-			if sym, ok := lookup_symbol_at_offset(snap, field_name, offset); ok {
+			if sym, ok := lookup_symbol_at_offset(snap, field_name, offset, symbol_table); ok {
 				type_str := symbols.format_type(sym.type_info)
 				hover_text = fmt.tprintf("%s: %s", sym.name, type_str)
 			}
@@ -550,13 +556,20 @@ lookup_symbol_at_offset :: proc(
 	snap: ^cache.Snapshot,
 	name: string,
 	offset: int,
+	symbol_table: ^symbols.SymbolTable = nil,
 ) -> (
 	symbols.Symbol,
 	bool,
 ) {
+	// Use provided symbol table or fall back to snapshot's own table
+	table := symbol_table if symbol_table != nil else snap.symbol_table
+	if table == nil {
+		return {}, false
+	}
+
 	if enclosing_form := ast.find_enclosing_form(snap.ast, offset); enclosing_form != nil {
 		form_name := enclosing_form.ident.name
-		if form_sym, ok := snap.symbol_table.symbols[form_name]; ok {
+		if form_sym, ok := table.symbols[form_name]; ok {
 			// Look up in the form's local scope first
 			if form_sym.child_scope != nil {
 				if sym, found := form_sym.child_scope.symbols[name]; found {
@@ -568,7 +581,7 @@ lookup_symbol_at_offset :: proc(
 
 	if enclosing_class := ast.find_enclosing_class_def(snap.ast, offset); enclosing_class != nil {
 		class_name := enclosing_class.ident.name
-		if class_sym, ok := snap.symbol_table.symbols[class_name]; ok {
+		if class_sym, ok := table.symbols[class_name]; ok {
 			if class_sym.child_scope != nil {
 				if sym, found := class_sym.child_scope.symbols[name]; found {
 					return sym, true
@@ -579,7 +592,7 @@ lookup_symbol_at_offset :: proc(
 
 	if enclosing_iface := ast.find_enclosing_interface(snap.ast, offset); enclosing_iface != nil {
 		iface_name := enclosing_iface.ident.name
-		if iface_sym, ok := snap.symbol_table.symbols[iface_name]; ok {
+		if iface_sym, ok := table.symbols[iface_name]; ok {
 			if iface_sym.child_scope != nil {
 				if sym, found := iface_sym.child_scope.symbols[name]; found {
 					return sym, true
@@ -590,7 +603,7 @@ lookup_symbol_at_offset :: proc(
 
 	if enclosing_module := ast.find_enclosing_module(snap.ast, offset); enclosing_module != nil {
 		module_name := enclosing_module.ident.name
-		if module_sym, ok := snap.symbol_table.symbols[module_name]; ok {
+		if module_sym, ok := table.symbols[module_name]; ok {
 			if module_sym.child_scope != nil {
 				if sym, found := module_sym.child_scope.symbols[name]; found {
 					return sym, true
@@ -599,7 +612,7 @@ lookup_symbol_at_offset :: proc(
 		}
 	}
 
-	if sym, ok := snap.symbol_table.symbols[name]; ok {
+	if sym, ok := table.symbols[name]; ok {
 		return sym, true
 	}
 

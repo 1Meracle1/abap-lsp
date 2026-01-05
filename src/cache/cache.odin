@@ -29,11 +29,14 @@ Document :: struct {
 Cache :: struct {
 	documents:    map[string]^Document,
 	documents_mu: sync.Recursive_Mutex,
+	projects:     map[string]^Project, // key = folder path
+	projects_mu:  sync.Recursive_Mutex,
 }
 
 init :: proc() -> ^Cache {
 	c := new(Cache)
 	c.documents = make(map[string]^Document)
+	c.projects = make(map[string]^Project)
 	return c
 }
 
@@ -46,6 +49,12 @@ destroy :: proc(c: ^Cache) {
 		free(doc)
 	}
 	delete(c.documents)
+
+	for _, project in c.projects {
+		destroy_project(project)
+	}
+	delete(c.projects)
+
 	free(c)
 }
 
@@ -127,4 +136,33 @@ parse_snapshot :: proc(snapshot: ^Snapshot, uri: string) {
 	parser.parse_file(&p, file_ast)
 	snapshot.ast = file_ast
 	snapshot.symbol_table = symbols.resolve_file(file_ast)
+}
+
+// Get the effective symbol table for a URI
+// Returns the project's merged symbol table if the file belongs to a project,
+// otherwise returns the file's own symbol table
+get_effective_symbol_table :: proc(c: ^Cache, uri: string) -> ^symbols.SymbolTable {
+	// Check if file belongs to a project with a merged symbol table
+	if project := get_project_for_uri(c, uri); project != nil {
+		if project.merged_symbol_table != nil {
+			return project.merged_symbol_table
+		}
+	}
+
+	// Fall back to file's own symbol table
+	snap := get_snapshot(c, uri)
+	if snap != nil {
+		defer release_snapshot(snap)
+		return snap.symbol_table
+	}
+
+	return nil
+}
+
+// Get project-level diagnostics for a URI (missing includes, etc.)
+get_project_diagnostics :: proc(c: ^Cache, uri: string) -> []symbols.Diagnostic {
+	if project := get_project_for_uri(c, uri); project != nil {
+		return project.diagnostics[:]
+	}
+	return nil
 }

@@ -120,7 +120,7 @@ handle_initialize :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 			textDocumentSync = .Full,
 			hoverProvider = true,
 			completionProvider = CompletionOptions {
-				triggerCharacters = {".", "-"},
+				triggerCharacters = {".", "-", ">"},
 				resolveProvider = false,
 			},
 			definitionProvider = false,
