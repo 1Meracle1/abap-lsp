@@ -156,10 +156,7 @@ parse_module_decl :: proc(p: ^Parser) -> ^ast.Decl {
 		advance_token(p)
 		module_type = .Input
 	} else {
-		error(p, p.curr_tok.range, "expected OUTPUT or INPUT after module name")
-		end_tok := skip_to_new_line(p)
-		bad_decl := ast.new(ast.Bad_Decl, module_tok, end_tok)
-		return bad_decl
+		module_type = .Input
 	}
 
 	expect_token(p, .Period)

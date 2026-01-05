@@ -3084,6 +3084,53 @@ ENDMODULE.`
 }
 
 @(test)
+basic_module_default_input_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `MODULE user_command_0100.
+ENDMODULE.`
+
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 1,
+		fmt.tprintf("Expected 1 decl, got %v", len(file.decls)),
+	)
+	if len(file.decls) > 0 {
+		module, ok := file.decls[0].derived_stmt.(^ast.Module_Decl)
+		if !testing.expect(t, ok, fmt.tprintf("Expected Module_Decl, got %T", file.decls[0].derived_stmt)) do return
+
+		testing.expect(t, module.ident != nil, "Module ident should not be nil")
+		if module.ident != nil {
+			testing.expect(
+				t,
+				module.ident.name == "user_command_0100",
+				fmt.tprintf("Expected 'user_command_0100', got '%s'", module.ident.name),
+			)
+		}
+		testing.expect(
+			t,
+			module.module_type == .Input,
+			fmt.tprintf("Expected Input, got %v", module.module_type),
+		)
+		testing.expect(
+			t,
+			len(module.body) == 0,
+			fmt.tprintf("Expected 0 body statements, got %d", len(module.body)),
+		)
+	}
+}
+
+@(test)
 module_with_body_statements_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
 	file.fullpath = "test.abap"
