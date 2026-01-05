@@ -444,6 +444,12 @@ Read_Table_Stmt :: struct {
 	transporting_no_fields: bool, // TRANSPORTING NO FIELDS flag
 }
 
+Read_Report_Stmt :: struct {
+	using node: Stmt,
+	prog:       ^Expr,
+	itab:       ^Ident,
+}
+
 // APPEND statement kinds
 Append_Kind :: enum {
 	Simple, // APPEND expr TO itab
@@ -952,6 +958,7 @@ Any_Node :: union {
 	^Sort_Stmt,
 	^Append_Stmt,
 	^Read_Table_Stmt,
+	^Read_Report_Stmt,
 	^Authority_Check_Stmt,
 	^Delete_Stmt,
 	^Condense_Stmt,
@@ -1040,6 +1047,7 @@ Any_Stmt :: union {
 	^Sort_Stmt,
 	^Append_Stmt,
 	^Read_Table_Stmt,
+	^Read_Report_Stmt,
 	^Authority_Check_Stmt,
 	^Delete_Stmt,
 	^Condense_Stmt,

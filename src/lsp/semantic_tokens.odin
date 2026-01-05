@@ -699,6 +699,14 @@ collect_tokens_from_stmt :: proc(
 			}
 		}
 
+	case ^ast.Read_Report_Stmt:
+		if s.prog != nil {
+			collect_tokens_from_expr(tokens, s.prog, snap, nil)
+		}
+		if s.itab != nil {
+			collect_tokens_from_expr(tokens, s.itab, snap, nil)
+		}
+
 	case ^ast.Call_Function_Stmt:
 		// Highlight the function name as a function
 		if s.func_name != nil {

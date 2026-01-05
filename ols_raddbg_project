@@ -50,4 +50,5 @@ breakpoint:
 {
   source_location: "tests/parser/class_interface.odin:738:1"
   hit_count: 0
+  enabled: 0
 }

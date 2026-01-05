@@ -131,7 +131,6 @@ parse_read_table_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 
 	period_tok := expect_token(p, .Period)
 	read_stmt.range.end = period_tok.range.end
-	read_stmt.derived_stmt = read_stmt
 	return read_stmt
 }
 
@@ -173,7 +172,6 @@ parse_delete_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 
 	period_tok := expect_token(p, .Period)
 	stmt.range.end = period_tok.range.end
-	stmt.derived_stmt = stmt
 	return stmt
 }
 
@@ -229,7 +227,6 @@ parse_insert_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 
 	period_tok := expect_token(p, .Period)
 	insert_stmt.range.end = period_tok.range.end
-	insert_stmt.derived_stmt = insert_stmt
 	return insert_stmt
 }
 
@@ -305,7 +302,6 @@ parse_append_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 
 		period_tok := expect_token(p, .Period)
 		append_stmt.range.end = period_tok.range.end
-		append_stmt.derived_stmt = append_stmt
 		return append_stmt
 	}
 
@@ -320,7 +316,6 @@ parse_append_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 
 		period_tok := expect_token(p, .Period)
 		append_stmt.range.end = period_tok.range.end
-		append_stmt.derived_stmt = append_stmt
 		return append_stmt
 	}
 
@@ -343,7 +338,6 @@ parse_append_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 
 	period_tok := expect_token(p, .Period)
 	append_stmt.range.end = period_tok.range.end
-	append_stmt.derived_stmt = append_stmt
 	return append_stmt
 }
 

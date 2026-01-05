@@ -183,3 +183,24 @@ parse_module_decl :: proc(p: ^Parser) -> ^ast.Decl {
 
 	return module_decl
 }
+
+parse_read_report_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
+	read_tok := expect_keyword_token(p, "READ")
+	expect_keyword_token(p, "REPORT")
+
+	prog_expr := parse_expr(p)
+
+	expect_keyword_token(p, "INTO")
+
+	itab_ident: ^ast.Ident
+	if p.curr_tok.kind == .Ident {
+		itab_tok := advance_token(p)
+		itab_ident = ast.new_ident(itab_tok)
+	}
+
+	period_tok := expect_token(p, .Period)
+	read_report_stmt := ast.new(ast.Read_Report_Stmt, read_tok, period_tok)
+	read_report_stmt.prog = prog_expr
+	read_report_stmt.itab = itab_ident
+	return read_report_stmt
+}

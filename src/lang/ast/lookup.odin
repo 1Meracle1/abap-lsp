@@ -590,6 +590,18 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 			}
 		}
 
+	case ^Read_Report_Stmt:
+		if n.prog != nil {
+			if res := find_node_at_offset(&n.prog.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		if n.itab != nil {
+			if res := find_node_at_offset(&n.itab.expr_base, offset); res != nil {
+				return res
+			}
+		}
+
 	case ^Authority_Check_Stmt:
 		if n.object != nil {
 			if res := find_node_at_offset(&n.object.expr_base, offset); res != nil {
