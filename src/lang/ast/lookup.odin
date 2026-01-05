@@ -844,6 +844,13 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 			}
 		}
 
+	case ^Method_Chain_Decl:
+		for decl in n.decls {
+			if res := find_node_at_offset(&decl.stmt_base, offset); res != nil {
+				return res
+			}
+		}
+
 	case ^Method_Param:
 		if n.ident != nil {
 			if res := find_node_at_offset(&n.ident.expr_base, offset); res != nil {

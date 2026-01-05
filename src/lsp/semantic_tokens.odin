@@ -404,6 +404,11 @@ collect_tokens_from_stmt :: proc(
 			collect_tokens_from_type_expr(tokens, exc)
 		}
 
+	case ^ast.Method_Chain_Decl:
+		for decl in s.decls {
+			collect_tokens_from_stmt(tokens, decl, snap)
+		}
+
 	case ^ast.Method_Impl:
 		if s.ident != nil {
 			collect_tokens_from_expr(tokens, s.ident, snap, nil)
@@ -705,6 +710,11 @@ collect_tokens_from_stmt :: proc(
 		}
 		if s.itab != nil {
 			collect_tokens_from_expr(tokens, s.itab, snap, nil)
+		}
+
+	case ^ast.Check_Stmt:
+		if s.cond != nil {
+			collect_tokens_from_expr(tokens, s.cond, snap, nil)
 		}
 
 	case ^ast.Call_Function_Stmt:
@@ -1139,6 +1149,11 @@ collect_tokens_from_expr :: proc(
 			collect_tokens_from_type_expr(tokens, e.type_expr)
 		}
 		// Collect tokens from arguments
+		for arg in e.args {
+			collect_tokens_from_expr(tokens, arg, snap, form_scope)
+		}
+
+	case ^ast.Value_Row_Expr:
 		for arg in e.args {
 			collect_tokens_from_expr(tokens, arg, snap, form_scope)
 		}

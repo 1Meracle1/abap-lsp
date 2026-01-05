@@ -598,6 +598,10 @@ resolve_class_section :: proc(table: ^SymbolTable, section: ^ast.Class_Section) 
 		#partial switch m in method_decl.derived_stmt {
 		case ^ast.Method_Decl:
 			resolve_method_decl(table, m)
+		case ^ast.Method_Chain_Decl:
+			for decl in m.decls {
+				resolve_method_decl(table, decl)
+			}
 		}
 	}
 
@@ -750,6 +754,10 @@ resolve_interface_decl :: proc(table: ^SymbolTable, iface: ^ast.Interface_Decl) 
 		#partial switch m in method_decl.derived_stmt {
 		case ^ast.Method_Decl:
 			resolve_method_decl(child_table, m)
+		case ^ast.Method_Chain_Decl:
+			for decl in m.decls {
+				resolve_method_decl(table, decl)
+			}
 		}
 	}
 
