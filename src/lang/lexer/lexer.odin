@@ -116,6 +116,10 @@ scan :: proc(l: ^Lexer) -> Token {
 			kind = .LBrace
 		case '}':
 			kind = .RBrace
+		case '[':
+			kind = .LBracket
+		case ']':
+			kind = .RBracket
 		case '<':
 			if l.ch == '=' {
 				advance_rune(l)

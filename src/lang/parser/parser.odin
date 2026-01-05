@@ -736,6 +736,24 @@ parse_atom_expr :: proc(p: ^Parser, value: ^ast.Expr) -> ^ast.Expr {
 			call_expr.range.end = rparen_tok.range.end
 			call_expr.derived_expr = call_expr
 			expr = call_expr
+		case .LBracket:
+			// Table expression - square brackets for internal table access
+			// Syntax: itab[ index ] or itab[ key = value ]
+			advance_token(p) // consume [
+
+			// Parse the index expression
+			index_expr := parse_expr(p)
+
+			rbracket_tok := expect_token(p, .RBracket)
+
+			table_expr := ast.new(
+				ast.Index_Expr,
+				lexer.TextRange{expr.range.start, rbracket_tok.range.end},
+			)
+			table_expr.expr = expr
+			table_expr.index = index_expr
+			table_expr.derived_expr = table_expr
+			expr = table_expr
 		case:
 			break loop
 		}

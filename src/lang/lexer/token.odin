@@ -14,6 +14,8 @@ TokenKind :: enum u8 {
 	RParen, // )
 	LBrace, // { (for string template expressions)
 	RBrace, // } (for string template expressions)
+	LBracket, // [ (for table expressions)
+	RBracket, // ] (for table expressions)
 	Arrow, // ->
 	FatArrow, // =>
 	Tilde, // ~ (interface component access)
@@ -85,6 +87,10 @@ token_kind_string :: proc(token_kind: TokenKind) -> string {
 		res = "{"
 	case .RBrace:
 		res = "}"
+	case .LBracket:
+		res = "["
+	case .RBracket:
+		res = "]"
 	case .Arrow:
 		res = "->"
 	case .FatArrow:

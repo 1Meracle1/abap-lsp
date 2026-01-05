@@ -10267,3 +10267,250 @@ value_constructor_with_nested_rows_test :: proc(t: ^testing.T) {
 		)
 	}
 }
+
+@(test)
+table_expression_index_access_test :: proc(t: ^testing.T) {
+	// Test: DATA(ls_exp) = it_exp[ lv_idx ].
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `DATA(ls_exp) = it_exp[ lv_idx ].`
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 1,
+		fmt.tprintf("Expected 1 declaration, got %d", len(file.decls)),
+	)
+
+	if len(file.decls) < 1 {
+		return
+	}
+
+	// Get the data inline declaration
+	data_decl, ok := file.decls[0].derived_stmt.(^ast.Data_Inline_Decl)
+	testing.expect(
+		t,
+		ok,
+		fmt.tprintf("Expected Data_Inline_Decl, got %T", file.decls[0].derived_stmt),
+	)
+
+	if !ok {
+		return
+	}
+
+	testing.expect(
+		t,
+		data_decl.ident != nil && data_decl.ident.name == "ls_exp",
+		fmt.tprintf("Expected ident 'ls_exp', got %v", data_decl.ident),
+	)
+
+	// Check that value is an Index_Expr
+	index_expr, iok := data_decl.value.derived_expr.(^ast.Index_Expr)
+	testing.expect(
+		t,
+		iok,
+		fmt.tprintf("Expected Index_Expr, got %T", data_decl.value.derived_expr),
+	)
+
+	if !iok {
+		return
+	}
+
+	// Check the table expression
+	table_ident, tok := index_expr.expr.derived_expr.(^ast.Ident)
+	testing.expect(
+		t,
+		tok && table_ident.name == "it_exp",
+		fmt.tprintf("Expected table ident 'it_exp', got %v", index_expr.expr),
+	)
+
+	// Check the index expression
+	idx_ident, idxok := index_expr.index.derived_expr.(^ast.Ident)
+	testing.expect(
+		t,
+		idxok && idx_ident.name == "lv_idx",
+		fmt.tprintf("Expected index ident 'lv_idx', got %v", index_expr.index),
+	)
+}
+
+@(test)
+table_expression_chained_access_test :: proc(t: ^testing.T) {
+	// Test: DATA(lo_exp_evt) = ls_exp-evts[ lv_evt_idx ].
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `DATA(lo_exp_evt) = ls_exp-evts[ lv_evt_idx ].`
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 1,
+		fmt.tprintf("Expected 1 declaration, got %d", len(file.decls)),
+	)
+
+	if len(file.decls) < 1 {
+		return
+	}
+
+	// Get the data inline declaration
+	data_decl, ok := file.decls[0].derived_stmt.(^ast.Data_Inline_Decl)
+	testing.expect(
+		t,
+		ok,
+		fmt.tprintf("Expected Data_Inline_Decl, got %T", file.decls[0].derived_stmt),
+	)
+
+	if !ok {
+		return
+	}
+
+	testing.expect(
+		t,
+		data_decl.ident != nil && data_decl.ident.name == "lo_exp_evt",
+		fmt.tprintf("Expected ident 'lo_exp_evt', got %v", data_decl.ident),
+	)
+
+	// Check that value is an Index_Expr
+	index_expr, iok := data_decl.value.derived_expr.(^ast.Index_Expr)
+	testing.expect(
+		t,
+		iok,
+		fmt.tprintf("Expected Index_Expr, got %T", data_decl.value.derived_expr),
+	)
+
+	if !iok {
+		return
+	}
+
+	// Check the table expression - should be a Selector_Expr (ls_exp-evts)
+	selector_expr, sok := index_expr.expr.derived_expr.(^ast.Selector_Expr)
+	testing.expect(
+		t,
+		sok,
+		fmt.tprintf("Expected Selector_Expr, got %T", index_expr.expr.derived_expr),
+	)
+
+	if sok {
+		// Check the base expression (ls_exp)
+		base_ident, bok := selector_expr.expr.derived_expr.(^ast.Ident)
+		testing.expect(
+			t,
+			bok && base_ident.name == "ls_exp",
+			fmt.tprintf("Expected base ident 'ls_exp', got %v", selector_expr.expr),
+		)
+
+		// Check the field (evts)
+		testing.expect(
+			t,
+			selector_expr.field != nil && selector_expr.field.name == "evts",
+			fmt.tprintf("Expected field 'evts', got %v", selector_expr.field),
+		)
+	}
+
+	// Check the index expression
+	idx_ident, idxok := index_expr.index.derived_expr.(^ast.Ident)
+	testing.expect(
+		t,
+		idxok && idx_ident.name == "lv_evt_idx",
+		fmt.tprintf("Expected index ident 'lv_evt_idx', got %v", index_expr.index),
+	)
+}
+
+@(test)
+table_expression_field_access_test :: proc(t: ^testing.T) {
+	// Test: lv_value = it_data[ 1 ]-field.
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `lv_value = it_data[ 1 ]-field.`
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 1,
+		fmt.tprintf("Expected 1 declaration, got %d", len(file.decls)),
+	)
+
+	if len(file.decls) < 1 {
+		return
+	}
+
+	// Get the assignment statement
+	assign_stmt, ok := file.decls[0].derived_stmt.(^ast.Assign_Stmt)
+	testing.expect(
+		t,
+		ok,
+		fmt.tprintf("Expected Assign_Stmt, got %T", file.decls[0].derived_stmt),
+	)
+
+	if !ok || len(assign_stmt.rhs) == 0 {
+		return
+	}
+
+	// Check that RHS is a Selector_Expr (table expression followed by field access)
+	selector_expr, sok := assign_stmt.rhs[0].derived_expr.(^ast.Selector_Expr)
+	testing.expect(
+		t,
+		sok,
+		fmt.tprintf("Expected Selector_Expr, got %T", assign_stmt.rhs[0].derived_expr),
+	)
+
+	if !sok {
+		return
+	}
+
+	// Check the field (field)
+	testing.expect(
+		t,
+		selector_expr.field != nil && selector_expr.field.name == "field",
+		fmt.tprintf("Expected field 'field', got %v", selector_expr.field),
+	)
+
+	// The base expression should be an Index_Expr
+	index_expr, iok := selector_expr.expr.derived_expr.(^ast.Index_Expr)
+	testing.expect(
+		t,
+		iok,
+		fmt.tprintf("Expected Index_Expr, got %T", selector_expr.expr.derived_expr),
+	)
+
+	if iok {
+		// Check the table (it_data)
+		table_ident, tok := index_expr.expr.derived_expr.(^ast.Ident)
+		testing.expect(
+			t,
+			tok && table_ident.name == "it_data",
+			fmt.tprintf("Expected table ident 'it_data', got %v", index_expr.expr),
+		)
+
+		// Check the index (1)
+		idx_lit, litok := index_expr.index.derived_expr.(^ast.Basic_Lit)
+		testing.expect(
+			t,
+			litok && idx_lit.tok.lit == "1",
+			fmt.tprintf("Expected index '1', got %v", index_expr.index),
+		)
+	}
+}
