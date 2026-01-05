@@ -124,6 +124,8 @@ parse_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			return parse_condense_stmt(p)
 		case "SELECT":
 			return parse_select_stmt(p)
+		case "CHECK":
+			return parse_check_stmt(p)
 		}
 	}
 
@@ -1399,7 +1401,20 @@ parse_is_predicate :: proc(p: ^Parser, expr: ^ast.Expr) -> ^ast.Expr {
 		advance_token(p)
 		expect_keyword_token(p, "OF")
 		predicate_kind = .Instance_Of
-		// TODO: parse the type expression after INSTANCE OF
+
+		// Parse the type expression after INSTANCE OF
+		type_ref := parse_simple_type_expr(p)
+
+		pred_expr := ast.new(
+			ast.Predicate_Expr,
+			lexer.TextRange{expr.range.start, p.prev_tok.range.end},
+		)
+		pred_expr.expr = expr
+		pred_expr.predicate = predicate_kind
+		pred_expr.is_negated = is_negated
+		pred_expr.type_ref = type_ref
+		pred_expr.derived_expr = pred_expr
+		return pred_expr
 	} else {
 		error(p, p.curr_tok.range, "expected predicate after IS")
 		return expr
@@ -1744,5 +1759,23 @@ parse_condense_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	condense_stmt := ast.new(ast.Condense_Stmt, condense_tok, period_tok)
 	condense_stmt.text = text_expr
 	return condense_stmt
+}
+
+// parse_check_stmt parses a CHECK statement
+// Syntax: CHECK logical_expression.
+// Examples:
+//   CHECK io_event IS BOUND.
+//   CHECK io_event IS INSTANCE OF lcl_object_event.
+//   CHECK ms_context-docnum = lo_other->ms_context-docnum.
+//   CHECK lines( mt_objects ) = lines( lo_other->mt_objects ).
+parse_check_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
+	check_tok := expect_keyword_token(p, "CHECK")
+	cond := parse_logical_expr(p)
+	period_tok := expect_token(p, .Period)
+
+	check_stmt := ast.new(ast.Check_Stmt, check_tok, period_tok)
+	check_stmt.cond = cond
+	check_stmt.derived_stmt = check_stmt
+	return check_stmt
 }
 

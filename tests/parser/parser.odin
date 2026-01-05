@@ -10587,3 +10587,301 @@ types_table_of_ref_to_test :: proc(t: ^testing.T) {
 		)
 	}
 }
+
+// --- CHECK statement tests ---
+
+@(test)
+check_stmt_is_bound_test :: proc(t: ^testing.T) {
+	// Test: CHECK io_event IS BOUND.
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `CHECK io_event IS BOUND.`
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 1,
+		fmt.tprintf("Expected 1 declaration, got %d", len(file.decls)),
+	)
+
+	if len(file.decls) < 1 {
+		return
+	}
+
+	// Check that we got a Check_Stmt
+	check_stmt, ok := file.decls[0].derived_stmt.(^ast.Check_Stmt)
+	testing.expect(
+		t,
+		ok,
+		fmt.tprintf("Expected Check_Stmt, got %T", file.decls[0].derived_stmt),
+	)
+
+	if !ok {
+		return
+	}
+
+	// Check that the condition is a Predicate_Expr (IS BOUND)
+	pred_expr, pok := check_stmt.cond.derived_expr.(^ast.Predicate_Expr)
+	testing.expect(
+		t,
+		pok,
+		fmt.tprintf("Expected Predicate_Expr, got %T", check_stmt.cond.derived_expr),
+	)
+
+	if pok {
+		testing.expect(
+			t,
+			pred_expr.predicate == .Bound,
+			fmt.tprintf("Expected predicate Bound, got %v", pred_expr.predicate),
+		)
+
+		// Check the base expression (io_event)
+		base_ident, bok := pred_expr.expr.derived_expr.(^ast.Ident)
+		testing.expect(
+			t,
+			bok && base_ident.name == "io_event",
+			fmt.tprintf("Expected ident 'io_event', got %v", pred_expr.expr),
+		)
+	}
+}
+
+@(test)
+check_stmt_is_instance_of_test :: proc(t: ^testing.T) {
+	// Test: CHECK io_event IS INSTANCE OF lcl_object_event.
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `CHECK io_event IS INSTANCE OF lcl_object_event.`
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 1,
+		fmt.tprintf("Expected 1 declaration, got %d", len(file.decls)),
+	)
+
+	if len(file.decls) < 1 {
+		return
+	}
+
+	// Check that we got a Check_Stmt
+	check_stmt, ok := file.decls[0].derived_stmt.(^ast.Check_Stmt)
+	testing.expect(
+		t,
+		ok,
+		fmt.tprintf("Expected Check_Stmt, got %T", file.decls[0].derived_stmt),
+	)
+
+	if !ok {
+		return
+	}
+
+	// Check that the condition is a Predicate_Expr (IS INSTANCE OF)
+	pred_expr, pok := check_stmt.cond.derived_expr.(^ast.Predicate_Expr)
+	testing.expect(
+		t,
+		pok,
+		fmt.tprintf("Expected Predicate_Expr, got %T", check_stmt.cond.derived_expr),
+	)
+
+	if pok {
+		testing.expect(
+			t,
+			pred_expr.predicate == .Instance_Of,
+			fmt.tprintf("Expected predicate Instance_Of, got %v", pred_expr.predicate),
+		)
+	}
+}
+
+@(test)
+check_stmt_equality_test :: proc(t: ^testing.T) {
+	// Test: CHECK ms_context-docnum = lo_other->ms_context-docnum.
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `CHECK ms_context-docnum = lo_other->ms_context-docnum.`
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 1,
+		fmt.tprintf("Expected 1 declaration, got %d", len(file.decls)),
+	)
+
+	if len(file.decls) < 1 {
+		return
+	}
+
+	// Check that we got a Check_Stmt
+	check_stmt, ok := file.decls[0].derived_stmt.(^ast.Check_Stmt)
+	testing.expect(
+		t,
+		ok,
+		fmt.tprintf("Expected Check_Stmt, got %T", file.decls[0].derived_stmt),
+	)
+
+	if !ok {
+		return
+	}
+
+	// Check that the condition is a Binary_Expr (equality comparison)
+	binary_expr, bok := check_stmt.cond.derived_expr.(^ast.Binary_Expr)
+	testing.expect(
+		t,
+		bok,
+		fmt.tprintf("Expected Binary_Expr, got %T", check_stmt.cond.derived_expr),
+	)
+
+	if bok {
+		// Check the operator is '='
+		testing.expect(
+			t,
+			binary_expr.op.kind == .Eq,
+			fmt.tprintf("Expected Eq operator, got %v", binary_expr.op.kind),
+		)
+
+		// LHS should be a selector expression (ms_context-docnum)
+		lhs_selector, lsok := binary_expr.left.derived_expr.(^ast.Selector_Expr)
+		testing.expect(
+			t,
+			lsok,
+			fmt.tprintf("Expected Selector_Expr for LHS, got %T", binary_expr.left.derived_expr),
+		)
+
+		if lsok {
+			testing.expect(
+				t,
+				lhs_selector.field.name == "docnum",
+				fmt.tprintf("Expected field 'docnum', got %s", lhs_selector.field.name),
+			)
+		}
+
+		// RHS should be a selector expression (lo_other->ms_context-docnum)
+		rhs_selector, rsok := binary_expr.right.derived_expr.(^ast.Selector_Expr)
+		testing.expect(
+			t,
+			rsok,
+			fmt.tprintf("Expected Selector_Expr for RHS, got %T", binary_expr.right.derived_expr),
+		)
+
+		if rsok {
+			testing.expect(
+				t,
+				rhs_selector.field.name == "docnum",
+				fmt.tprintf("Expected field 'docnum', got %s", rhs_selector.field.name),
+			)
+		}
+	}
+}
+
+@(test)
+check_stmt_function_call_equality_test :: proc(t: ^testing.T) {
+	// Test: CHECK lines( mt_objects ) = lines( lo_other->mt_objects ).
+	file := ast.new(ast.File, {})
+	file.fullpath = "test.abap"
+	file.src = `CHECK lines( mt_objects ) = lines( lo_other->mt_objects ).`
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 1,
+		fmt.tprintf("Expected 1 declaration, got %d", len(file.decls)),
+	)
+
+	if len(file.decls) < 1 {
+		return
+	}
+
+	// Check that we got a Check_Stmt
+	check_stmt, ok := file.decls[0].derived_stmt.(^ast.Check_Stmt)
+	testing.expect(
+		t,
+		ok,
+		fmt.tprintf("Expected Check_Stmt, got %T", file.decls[0].derived_stmt),
+	)
+
+	if !ok {
+		return
+	}
+
+	// Check that the condition is a Binary_Expr (equality comparison)
+	binary_expr, bok := check_stmt.cond.derived_expr.(^ast.Binary_Expr)
+	testing.expect(
+		t,
+		bok,
+		fmt.tprintf("Expected Binary_Expr, got %T", check_stmt.cond.derived_expr),
+	)
+
+	if bok {
+		// Check the operator is '='
+		testing.expect(
+			t,
+			binary_expr.op.kind == .Eq,
+			fmt.tprintf("Expected Eq operator, got %v", binary_expr.op.kind),
+		)
+
+		// LHS should be a call expression (lines( mt_objects ))
+		lhs_call, lcok := binary_expr.left.derived_expr.(^ast.Call_Expr)
+		testing.expect(
+			t,
+			lcok,
+			fmt.tprintf("Expected Call_Expr for LHS, got %T", binary_expr.left.derived_expr),
+		)
+
+		if lcok {
+			lhs_ident, liok := lhs_call.expr.derived_expr.(^ast.Ident)
+			testing.expect(
+				t,
+				liok && lhs_ident.name == "lines",
+				fmt.tprintf("Expected function 'lines', got %v", lhs_call.expr),
+			)
+		}
+
+		// RHS should also be a call expression (lines( lo_other->mt_objects ))
+		rhs_call, rcok := binary_expr.right.derived_expr.(^ast.Call_Expr)
+		testing.expect(
+			t,
+			rcok,
+			fmt.tprintf("Expected Call_Expr for RHS, got %T", binary_expr.right.derived_expr),
+		)
+
+		if rcok {
+			rhs_ident, riok := rhs_call.expr.derived_expr.(^ast.Ident)
+			testing.expect(
+				t,
+				riok && rhs_ident.name == "lines",
+				fmt.tprintf("Expected function 'lines', got %v", rhs_call.expr),
+			)
+		}
+	}
+}

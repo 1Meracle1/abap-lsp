@@ -252,6 +252,7 @@ Predicate_Expr :: struct {
 	expr:       ^Expr,
 	predicate:  Predicate_Kind,
 	is_negated: bool, // for IS NOT
+	type_ref:   ^Expr, // for IS INSTANCE OF - the type/class reference
 }
 
 Predicate_Kind :: enum {
@@ -486,6 +487,14 @@ Delete_Stmt :: struct {
 Condense_Stmt :: struct {
 	using node: Stmt,
 	text:       ^Expr,
+}
+
+// CHECK statement
+// Syntax: CHECK logical_expression.
+// Used to check a condition and exit the current processing block if false
+Check_Stmt :: struct {
+	using node: Stmt,
+	cond:       ^Expr, // The logical expression to check
 }
 
 // CALL FUNCTION parameter kinds
@@ -946,6 +955,7 @@ Any_Node :: union {
 	^Authority_Check_Stmt,
 	^Delete_Stmt,
 	^Condense_Stmt,
+	^Check_Stmt,
 	^Call_Function_Stmt,
 	^Call_Function_Param,
 	^Select_Stmt,
@@ -1033,6 +1043,7 @@ Any_Stmt :: union {
 	^Authority_Check_Stmt,
 	^Delete_Stmt,
 	^Condense_Stmt,
+	^Check_Stmt,
 	^Call_Function_Stmt,
 	^Select_Stmt,
 	// Declarations

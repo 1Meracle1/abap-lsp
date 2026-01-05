@@ -361,6 +361,11 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 				return res
 			}
 		}
+		if n.type_ref != nil {
+			if res := find_node_at_offset(&n.type_ref.expr_base, offset); res != nil {
+				return res
+			}
+		}
 
 	case ^String_Template_Expr:
 		for part in n.parts {
@@ -629,6 +634,13 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 	case ^Condense_Stmt:
 		if n.text != nil {
 			if res := find_node_at_offset(&n.text.expr_base, offset); res != nil {
+				return res
+			}
+		}
+
+	case ^Check_Stmt:
+		if n.cond != nil {
+			if res := find_node_at_offset(&n.cond.expr_base, offset); res != nil {
 				return res
 			}
 		}
