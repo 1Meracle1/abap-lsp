@@ -1,0 +1,16 @@
+// raddbg 0.9.21 project file
+
+recent_file: path: "src/sqlite_index_generator/persist.odin"
+recent_file: path: "src/sqlite_index_generator/main.odin"
+recent_file: path: "../toolchain/odin-windows-amd64-dev-2026-01/dist/core/os/os2/dir.odin"
+breakpoint:
+{
+  source_location: "src/sqlite_index_generator/main.odin:36:1"
+  hit_count: 1
+}
+target:
+{
+  executable: "bin/debug/sqlite_index_generator.exe"
+  working_directory: ""
+  enabled: 1
+}

@@ -24,3 +24,4 @@ if "%release%"=="1" set out=bin/release/
 
 if "%abap-lsp%"=="1" odin build src\abap-lsp %flags% -out:%out%abap-lsp.exe || exit /b 1
 if "%testbed%"=="1"  odin build src\testbed  %flags% -out:%out%testbed.exe || exit /b 1
+if "%sqlite_index_generator%"=="1"  odin build src\sqlite_index_generator  %flags% -out:%out%sqlite_index_generator.exe || exit /b 1

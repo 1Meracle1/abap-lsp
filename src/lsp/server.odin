@@ -9,26 +9,25 @@ import "core:strings"
 
 Server :: struct {
 	stream:     jsonrpc.Stream,
-	workspaces: []WorkspaceFolder,
-	storage:    ^cache.Cache,
+	workspaces: [dynamic]^cache.Workspace,
 }
 
-handle_request_t :: #type proc(srv: ^Server, id: json.Value, params: json.Value)
-handle_notification_t :: #type proc(srv: ^Server, params: json.Value)
+Request_Handler :: #type proc(srv: ^Server, id: json.Value, params: json.Value)
+Notification_Handler :: #type proc(srv: ^Server, params: json.Value)
 
 server_start :: proc(stream: jsonrpc.Stream) {
 	srv: Server
 	srv.stream = stream
-	srv.storage = cache.init()
+	srv.workspaces = make([dynamic]^cache.Workspace)
 
-	request_handlers := make(map[string]handle_request_t)
+	request_handlers := make(map[string]Request_Handler)
 	request_handlers["initialize"] = handle_initialize
 	request_handlers["textDocument/hover"] = handle_hover
 	request_handlers["textDocument/diagnostic"] = handle_diagnostic
 	request_handlers["textDocument/semanticTokens/full"] = handle_semantic_tokens
 	request_handlers["textDocument/completion"] = handle_completion
 
-	notif_handlers := make(map[string]handle_notification_t)
+	notif_handlers := make(map[string]Notification_Handler)
 	notif_handlers["textDocument/didOpen"] = handle_document_open
 	notif_handlers["textDocument/didChange"] = handle_document_change
 
@@ -113,7 +112,9 @@ handle_initialize :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 		return
 	}
 
-	srv.workspaces = initialize_params.workspaceFolders
+	for wspace in initialize_params.workspaceFolders {
+		append(&srv.workspaces, cache.workspace_init(wspace.uri, wspace.name))
+	}
 
 	result := InitializeResult {
 		capabilities = ServerCapabilities {
@@ -206,7 +207,7 @@ notify :: proc(srv: ^Server, method: string, params: $T) {
 		jsonrpc: string,
 		method:  string,
 		params:  T,
-	}{
+	} {
 		jsonrpc = "2.0",
 		method  = method,
 		params  = params,

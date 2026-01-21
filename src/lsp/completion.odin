@@ -8,7 +8,7 @@ import "core:fmt"
 import "core:strings"
 
 // ABAP keywords for completion
-ABAP_KEYWORDS :: []string{
+ABAP_KEYWORDS :: []string {
 	// Declarations
 	"DATA",
 	"TYPES",
@@ -191,8 +191,10 @@ handle_completion :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 	}
 	defer cache.release_snapshot(snap)
 
-	// Get the effective symbol table (merged from project if available)
-	symbol_table := cache.get_effective_symbol_table(srv.storage, completion_params.textDocument.uri)
+	symbol_table := cache.get_effective_symbol_table(
+		srv.storage,
+		completion_params.textDocument.uri,
+	)
 	if symbol_table == nil {
 		symbol_table = snap.symbol_table
 	}
@@ -223,16 +225,26 @@ collect_completion_items :: proc(
 	// Use provided symbol table or fall back to snapshot's own table
 	table := symbol_table if symbol_table != nil else snap.symbol_table
 
-	if struct_type := find_struct_type_at_cursor(snap, offset, table); struct_type != nil {
-		return struct_fields_to_completion_items(struct_type)
+	// Check for member access patterns (-, ->, =>)
+	member_access := find_member_access_at_cursor(snap, offset, table)
+
+	#partial switch member_access.access_kind {
+	case .Structure:
+		if member_access.struct_type != nil {
+			return struct_fields_to_completion_items(member_access.struct_type)
+		}
+	case .Instance:
+		if member_access.class_symbol != nil {
+			return class_instance_members_to_completion_items(member_access.class_symbol)
+		}
+	case .Static:
+		if member_access.class_symbol != nil {
+			return class_static_members_to_completion_items(member_access.class_symbol)
+		}
 	}
 
 	for keyword in ABAP_KEYWORDS {
-		append(&items, CompletionItem{
-			label  = keyword,
-			kind   = .Keyword,
-			detail = "keyword",
-		})
+		append(&items, CompletionItem{label = keyword, kind = .Keyword, detail = "keyword"})
 	}
 
 	if table == nil {
@@ -290,40 +302,96 @@ collect_completion_items :: proc(
 	return items
 }
 
+// Result of member access analysis at cursor position
+Member_Access_Result :: struct {
+	struct_type:  ^symbols.Type,
+	class_symbol: ^symbols.Symbol,
+	access_kind:  Access_Kind,
+}
+
+find_member_access_at_cursor :: proc(
+	snap: ^cache.Snapshot,
+	offset: int,
+	symbol_table: ^symbols.SymbolTable = nil,
+) -> Member_Access_Result {
+	result := Member_Access_Result{}
+
+	if len(snap.text) == 0 || offset < 2 {
+		return result
+	}
+
+	chain_result := parse_access_chain_backwards(snap.text, offset)
+	if len(chain_result.chain) == 0 {
+		return result
+	}
+	defer delete(chain_result.chain)
+
+	result.access_kind = chain_result.access_kind
+
+	#partial switch chain_result.access_kind {
+	case .Static:
+		result.class_symbol = resolve_class_for_static_access(
+			snap,
+			chain_result.chain[:],
+			symbol_table,
+		)
+	case .Instance:
+		result.class_symbol = resolve_class_for_instance_access(
+			snap,
+			chain_result.chain[:],
+			offset,
+			symbol_table,
+		)
+	case .Structure:
+		result.struct_type = resolve_access_chain(
+			snap,
+			chain_result.chain[:],
+			offset,
+			symbol_table,
+		)
+	}
+
+	return result
+}
+
+// Legacy function for backward compatibility
 find_struct_type_at_cursor :: proc(
 	snap: ^cache.Snapshot,
 	offset: int,
 	symbol_table: ^symbols.SymbolTable = nil,
 ) -> ^symbols.Type {
-	if len(snap.text) == 0 || offset < 2 {
-		return nil
-	}
-
-	chain := parse_access_chain_backwards(snap.text, offset)
-	if len(chain) == 0 {
-		return nil
-	}
-	defer delete(chain)
-
-	return resolve_access_chain(snap, chain[:], offset, symbol_table)
+	result := find_member_access_at_cursor(snap, offset, symbol_table)
+	return result.struct_type
 }
 
-parse_access_chain_backwards :: proc(text: string, offset: int) -> [dynamic]string {
-	chain := make([dynamic]string, context.temp_allocator)
+Access_Chain_Result :: struct {
+	chain:       [dynamic]string,
+	access_kind: Access_Kind,
+}
+
+parse_access_chain_backwards :: proc(text: string, offset: int) -> Access_Chain_Result {
+	result := Access_Chain_Result {
+		chain       = make([dynamic]string, context.temp_allocator),
+		access_kind = .None,
+	}
 
 	if offset < 2 || offset > len(text) {
-		return chain
+		return result
 	}
 
 	pos := offset - 1
 
-	// Check for structure access (-) or arrow access (->)
-	is_arrow := false
-	if pos >= 1 && text[pos] == '>' && text[pos - 1] == '-' {
-		is_arrow = true
+	// Check for static access (=>), instance access (->), or structure access (-)
+	if pos >= 1 && text[pos] == '>' && text[pos - 1] == '=' {
+		result.access_kind = .Static
 		pos -= 1 // Move past the '>'
-	} else if text[pos] != '-' {
-		return chain
+	} else if pos >= 1 && text[pos] == '>' && text[pos - 1] == '-' {
+		result.access_kind = .Instance
+		pos -= 1 // Move past the '>'
+	} else if text[pos] == '-' {
+		result.access_kind = .Structure
+	} else {
+		return result
 	}
 
 	for {
@@ -369,21 +437,23 @@ parse_access_chain_backwards :: proc(text: string, offset: int) -> [dynamic]stri
 
 		ident := strings.to_lower(text[ident_start:ident_end], context.temp_allocator)
 
-		inject_at(&chain, 0, ident)
+		inject_at(&result.chain, 0, ident)
 
 		for pos >= 0 && (text[pos] == ' ' || text[pos] == '\t') {
 			pos -= 1
 		}
 
-		// Check for next separator (- or ->)
-		if pos >= 1 && text[pos] == '>' && text[pos - 1] == '-' {
+		// Check for next separator (-, ->, or =>)
+		if pos >= 1 && text[pos] == '>' && text[pos - 1] == '=' {
+			pos -= 1 // Skip '>'
+		} else if pos >= 1 && text[pos] == '>' && text[pos - 1] == '-' {
 			pos -= 1 // Skip '>'
 		} else if pos < 0 || text[pos] != '-' {
 			break
 		}
 	}
 
-	return chain
+	return result
 }
 
 resolve_access_chain :: proc(
@@ -543,21 +613,186 @@ struct_fields_to_completion_items :: proc(struct_type: ^symbols.Type) -> [dynami
 	for field in struct_type.fields {
 		detail := symbols.format_type(field.type_info)
 
-		append(&items, CompletionItem{
-			label  = field.name,
-			kind   = .Field,
-			detail = detail if len(detail) > 0 else nil,
-		})
+		append(
+			&items,
+			CompletionItem {
+				label = field.name,
+				kind = .Field,
+				detail = detail if len(detail) > 0 else nil,
+			},
+		)
+	}
+
+	return items
+}
+
+// Resolve class symbol for static access (class_name=>)
+resolve_class_for_static_access :: proc(
+	snap: ^cache.Snapshot,
+	chain: []string,
+	symbol_table: ^symbols.SymbolTable = nil,
+) -> ^symbols.Symbol {
+	if len(chain) == 0 {
+		return nil
+	}
+
+	table := symbol_table if symbol_table != nil else snap.symbol_table
+	if table == nil {
+		return nil
+	}
+
+	// For static access, the first element should be a class name
+	class_name := chain[0]
+	if class_sym, found := table.symbols[class_name]; found {
+		if class_sym.kind == .Class || class_sym.kind == .Interface {
+			return &table.symbols[class_name]
+		}
+	}
+
+	return nil
+}
+
+// Resolve class symbol for instance access (obj->)
+resolve_class_for_instance_access :: proc(
+	snap: ^cache.Snapshot,
+	chain: []string,
+	offset: int,
+	symbol_table: ^symbols.SymbolTable = nil,
+) -> ^symbols.Symbol {
+	if len(chain) == 0 {
+		return nil
+	}
+
+	table := symbol_table if symbol_table != nil else snap.symbol_table
+	if table == nil {
+		return nil
+	}
+
+	// Get the type of the first variable in the chain
+	var_name := chain[0]
+	var_type := lookup_variable_type(snap, var_name, offset, symbol_table)
+	if var_type == nil {
+		return nil
+	}
+
+	// Resolve to the underlying class type
+	class_name := resolve_to_class_name(var_type, table)
+	if class_name == "" {
+		return nil
+	}
+
+	// Look up the class symbol
+	if class_sym, found := table.symbols[class_name]; found {
+		if class_sym.kind == .Class || class_sym.kind == .Interface {
+			return &table.symbols[class_name]
+		}
+	}
+
+	return nil
+}
+
+// Resolve type to underlying class name (handles REF TO, Named types)
+resolve_to_class_name :: proc(type_info: ^symbols.Type, table: ^symbols.SymbolTable) -> string {
+	if type_info == nil {
+		return ""
+	}
+
+	#partial switch type_info.kind {
+	case .Reference:
+		// REF TO class_name - get the target type
+		if type_info.target_type != nil {
+			return resolve_to_class_name(type_info.target_type, table)
+		}
+	case .Named:
+		// Check if this named type is a class
+		if table != nil {
+			if sym, found := table.symbols[type_info.name]; found {
+				if sym.kind == .Class || sym.kind == .Interface {
+					return type_info.name
+				}
+				// If it's a typedef, resolve further
+				if sym.kind == .TypeDef && sym.type_info != nil {
+					return resolve_to_class_name(sym.type_info, table)
+				}
+			}
+		}
+		return type_info.name
+	}
+
+	return ""
+}
+
+class_static_members_to_completion_items :: proc(
+	class_sym: ^symbols.Symbol,
+) -> [dynamic]CompletionItem {
+	items := make([dynamic]CompletionItem, context.temp_allocator)
+
+	if class_sym == nil || class_sym.child_scope == nil {
+		return items
+	}
+
+	for _, sym in class_sym.child_scope.symbols {
+		if sym.visibility != .Public {
+			continue
+		}
+		if !sym.is_static {
+			continue
+		}
+		if sym.kind != .Field && sym.kind != .Method {
+			continue
+		}
+
+		item := symbol_to_completion_item(sym)
+
+		if sym.kind == .Field {
+			if sym.type_info != nil {
+				item.detail = fmt.tprintf("CLASS-DATA %s", symbols.format_type(sym.type_info))
+			} else {
+				item.detail = "CLASS-DATA"
+			}
+		} else if sym.kind == .Method {
+			item.detail = "CLASS-METHODS"
+		}
+
+		append(&items, item)
+	}
+
+	return items
+}
+
+class_instance_members_to_completion_items :: proc(
+	class_sym: ^symbols.Symbol,
+) -> [dynamic]CompletionItem {
+	items := make([dynamic]CompletionItem, context.temp_allocator)
+
+	if class_sym == nil || class_sym.child_scope == nil {
+		return items
+	}
+
+	for _, sym in class_sym.child_scope.symbols {
+		if sym.visibility != .Public {
+			continue
+		}
+		if sym.kind != .Field && sym.kind != .Method {
+			continue
+		}
+		item := symbol_to_completion_item(sym)
+		append(&items, item)
 	}
 
 	return items
 }
 
 is_ident_char :: proc(c: u8) -> bool {
-	return (c >= 'a' && c <= 'z') ||
-	       (c >= 'A' && c <= 'Z') ||
-	       (c >= '0' && c <= '9') ||
-	       c == '_'
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'
+}
+
+// Access kind for member access completion
+Access_Kind :: enum {
+	None, // No access pattern detected
+	Structure, // Structure component access (-)
+	Instance, // Instance member access (->)
+	Static, // Static member access (=>)
 }
 
 symbol_to_completion_item :: proc(sym: symbols.Symbol) -> CompletionItem {
@@ -625,9 +860,8 @@ symbol_to_completion_item :: proc(sym: symbols.Symbol) -> CompletionItem {
 	}
 
 	return CompletionItem {
-		label  = sym.name,
-		kind   = kind,
+		label = sym.name,
+		kind = kind,
 		detail = detail if len(detail) > 0 else nil,
 	}
 }
-

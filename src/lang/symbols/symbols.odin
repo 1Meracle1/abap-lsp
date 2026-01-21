@@ -38,6 +38,13 @@ FormParamKind :: enum {
 	Changing,
 }
 
+Visibility :: enum {
+	None,
+	Public,
+	Protected,
+	Private,
+}
+
 Symbol :: struct {
 	name:            string,
 	kind:            SymbolKind,
@@ -46,6 +53,8 @@ Symbol :: struct {
 	is_chained:      bool,
 	child_scope:     ^SymbolTable,
 	form_param_kind: FormParamKind,
+	visibility:      Visibility,
+	is_static:       bool,
 }
 
 SymbolTable :: struct {
@@ -184,4 +193,38 @@ destroy_symbol_table :: proc(table: ^SymbolTable) {
 	delete(table.symbols)
 	delete(table.diagnostics)
 	free(table)
+}
+
+// clone_symbol_table creates a shallow copy of a symbol table for include processing.
+clone_symbol_table :: proc(source: ^SymbolTable, allocator := context.allocator) -> ^SymbolTable {
+	if source == nil {
+		return nil
+	}
+
+	cloned := new(SymbolTable, allocator)
+	cloned.symbols = make(map[string]Symbol, len(source.symbols), allocator)
+	cloned.types = make([dynamic]^Type, len(source.types), allocator)
+	cloned.diagnostics = make([dynamic]Diagnostic, allocator)
+
+	// Copy all symbols (shallow copy - child_scope references are shared)
+	for name, sym in source.symbols {
+		cloned.symbols[name] = sym
+	}
+
+	// Copy type references (not deep copy - types are shared)
+	for t in source.types {
+		append(&cloned.types, t)
+	}
+
+	// Diagnostics are NOT copied - each file accumulates its own diagnostics
+
+	return cloned
+}
+
+create_empty_symbol_table :: proc(allocator := context.allocator) -> ^SymbolTable {
+	table := new(SymbolTable, allocator)
+	table.symbols = make(map[string]Symbol, allocator)
+	table.types = make([dynamic]^Type, allocator)
+	table.diagnostics = make([dynamic]Diagnostic, allocator)
+	return table
 }

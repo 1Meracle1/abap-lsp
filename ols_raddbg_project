@@ -1,5 +1,8 @@
 // raddbg 0.9.21 project file
 
+recent_file: path: "src/lsp/document.odin"
+recent_file: path: "src/lsp/diagnostics.odin"
+recent_file: path: "src/cache/project.odin"
 recent_file: path: "src/lang/parser/parser.odin"
 recent_file: path: "tests/parser/class_interface.odin"
 recent_file: path: "tests/parser/parser.odin"
@@ -50,5 +53,17 @@ breakpoint:
 {
   source_location: "tests/parser/class_interface.odin:738:1"
   hit_count: 0
+  enabled: 0
+}
+breakpoint:
+{
+  source_location: "src/cache/project.odin:200:1"
+  hit_count: 1
+  enabled: 0
+}
+breakpoint:
+{
+  source_location: "src/lsp/diagnostics.odin:69:1"
+  hit_count: 4
   enabled: 0
 }

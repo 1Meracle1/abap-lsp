@@ -4,6 +4,7 @@ import "../../src/lang/ast"
 import "../../src/lang/parser"
 import "../../src/lang/symbols"
 import "core:fmt"
+import "core:strings"
 import "core:testing"
 
 @(test)
@@ -210,4 +211,121 @@ test_chain_decl_symbols :: proc(t: ^testing.T) {
 			fmt.tprintf("expected var2 String type, got %v", sym2.type_info.kind),
 		)
 	}
+}
+
+@(test)
+test_fat_arrow_error_with_variable :: proc(t: ^testing.T) {
+	// Using => with a variable (not a class) should produce an error
+	src := `DATA my_var TYPE i.
+my_var=>something( ).`
+	file := ast.new(ast.File, {})
+	file.src = src
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	table := symbols.resolve_file(file)
+	defer symbols.destroy_symbol_table(table)
+
+	if table == nil {
+		testing.expect(t, false, "symbol table should not be nil")
+		return
+	}
+
+	// Should have a diagnostic error because my_var is not a class
+	diags := symbols.collect_all_diagnostics(table)
+	testing.expect(
+		t,
+		len(diags) > 0,
+		"expected diagnostic error for using => with non-class symbol",
+	)
+
+	if len(diags) > 0 {
+		// Verify it's the right kind of error
+		found_fat_arrow_error := false
+		for diag in diags {
+			if strings.contains(diag.message, "class") || strings.contains(diag.message, "interface") {
+				found_fat_arrow_error = true
+				break
+			}
+		}
+		testing.expect(
+			t,
+			found_fat_arrow_error,
+			fmt.tprintf("expected error about class/interface, got: %v", diags[0].message),
+		)
+	}
+}
+
+@(test)
+test_fat_arrow_ok_with_class :: proc(t: ^testing.T) {
+	// Using => with a class should NOT produce an error
+	src := `CLASS my_class DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS some_method.
+ENDCLASS.
+my_class=>some_method( ).`
+	file := ast.new(ast.File, {})
+	file.src = src
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	table := symbols.resolve_file(file)
+	defer symbols.destroy_symbol_table(table)
+
+	if table == nil {
+		testing.expect(t, false, "symbol table should not be nil")
+		return
+	}
+
+	// Should NOT have a diagnostic error because my_class is a class
+	diags := symbols.collect_all_diagnostics(table)
+	fat_arrow_errors := 0
+	for diag in diags {
+		if strings.contains(diag.message, "'=>'") {
+			fat_arrow_errors += 1
+		}
+	}
+	testing.expect(
+		t,
+		fat_arrow_errors == 0,
+		fmt.tprintf("expected no fat arrow errors with class, got %d errors", fat_arrow_errors),
+	)
+}
+
+@(test)
+test_fat_arrow_ok_with_interface :: proc(t: ^testing.T) {
+	// Using => with an interface should NOT produce an error
+	src := `INTERFACE my_interface.
+  CLASS-METHODS some_method.
+ENDINTERFACE.
+my_interface=>some_method( ).`
+	file := ast.new(ast.File, {})
+	file.src = src
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	table := symbols.resolve_file(file)
+	defer symbols.destroy_symbol_table(table)
+
+	if table == nil {
+		testing.expect(t, false, "symbol table should not be nil")
+		return
+	}
+
+	// Should NOT have a diagnostic error because my_interface is an interface
+	diags := symbols.collect_all_diagnostics(table)
+	fat_arrow_errors := 0
+	for diag in diags {
+		if strings.contains(diag.message, "'=>'") {
+			fat_arrow_errors += 1
+		}
+	}
+	testing.expect(
+		t,
+		fat_arrow_errors == 0,
+		fmt.tprintf("expected no fat arrow errors with interface, got %d errors", fat_arrow_errors),
+	)
 }

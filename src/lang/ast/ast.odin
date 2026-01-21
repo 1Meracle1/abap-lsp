@@ -21,7 +21,6 @@ Diagnostic :: struct {
 
 File :: struct {
 	using node:    Node,
-	fullpath:      string,
 	src:           string,
 	decls:         [dynamic]^Stmt,
 	comments:      [dynamic]lexer.Token,

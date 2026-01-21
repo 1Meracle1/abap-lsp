@@ -17,7 +17,9 @@ handle_diagnostic :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 		return
 	}
 
-	snap := cache.get_snapshot(srv.storage, diagnostic_params.textDocument.uri)
+	uri := diagnostic_params.textDocument.uri
+
+	snap := cache.get_snapshot(srv.storage, uri)
 	if snap == nil {
 		result := FullDocumentDiagnosticReport {
 			kind  = DocumentDiagnosticReportKind_Full,
@@ -40,10 +42,35 @@ handle_diagnostic :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 		})
 	}
 
-	// Semantic errors from symbol resolver (e.g., duplicate symbols)
-	if snap.symbol_table != nil {
+	// Get the effective symbol table (from project if available, otherwise from snapshot)
+	effective_table := cache.get_effective_symbol_table(srv.storage, uri)
+	if effective_table != nil {
+		semantic_errors := symbols.collect_all_diagnostics(effective_table, context.temp_allocator)
+		for err in semantic_errors {
+			append(&diagnostics, Diagnostic{
+				range    = text_range_to_lsp_range(snap.text, err.range),
+				severity = .Error,
+				source   = "abap-lsp",
+				message  = err.message,
+			})
+		}
+	} else if snap.symbol_table != nil {
+		// Fall back to snapshot's symbol table for standalone files
 		semantic_errors := symbols.collect_all_diagnostics(snap.symbol_table, context.temp_allocator)
 		for err in semantic_errors {
+			append(&diagnostics, Diagnostic{
+				range    = text_range_to_lsp_range(snap.text, err.range),
+				severity = .Error,
+				source   = "abap-lsp",
+				message  = err.message,
+			})
+		}
+	}
+
+	// Add project-level diagnostics
+	project := cache.get_project_for_uri(srv.storage, uri)
+	if project != nil && uri == project.root_uri {
+		for err in project.diagnostics {
 			append(&diagnostics, Diagnostic{
 				range    = text_range_to_lsp_range(snap.text, err.range),
 				severity = .Error,
@@ -78,8 +105,20 @@ publish_diagnostics :: proc(
 		})
 	}
 
-	// Semantic errors from symbol resolver
-	if snap.symbol_table != nil {
+	// Get the effective symbol table (from project if available)
+	effective_table := cache.get_effective_symbol_table(srv.storage, uri)
+	if effective_table != nil {
+		semantic_errors := symbols.collect_all_diagnostics(effective_table, context.temp_allocator)
+		for err in semantic_errors {
+			append(&diagnostics, Diagnostic{
+				range    = text_range_to_lsp_range(snap.text, err.range),
+				severity = .Error,
+				source   = "abap-lsp",
+				message  = err.message,
+			})
+		}
+	} else if snap.symbol_table != nil {
+		// Fall back to snapshot's symbol table for standalone files
 		semantic_errors := symbols.collect_all_diagnostics(snap.symbol_table, context.temp_allocator)
 		for err in semantic_errors {
 			append(&diagnostics, Diagnostic{

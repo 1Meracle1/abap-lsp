@@ -14,29 +14,34 @@ handle_document_open :: proc(srv: ^Server, params: json.Value) {
 
 	uri := document_open_params.textDocument.uri
 
-	// Ensure project context exists for this file
-	project := cache.ensure_project_context(srv.storage, uri)
+	if len(srv.workspaces) == 0 {
+		return
+	}
+	workspace := srv.workspaces[0]
 
-	// Refresh this document
-	cache.refresh_document(
-		srv.storage,
+	document := cache.document_init(
+		workspace,
 		uri,
+		"",
 		document_open_params.textDocument.text,
 		document_open_params.textDocument.version,
 	)
 
-	// If file belongs to a project, rebuild merged symbol table
-	if project != nil {
-		cache.invalidate_project(project)
-		cache.resolve_project(srv.storage, project)
-	}
+	// // Ensure project context exists for this file
+	// project := cache.ensure_project_context(srv.storage, uri)
 
-	// Publish diagnostics after refresh
-	snap := cache.get_snapshot(srv.storage, uri)
-	if snap != nil {
-		defer cache.release_snapshot(snap)
-		publish_diagnostics(srv, uri, snap, project)
-	}
+	// // If file belongs to a project, rebuild merged symbol table
+	// if project != nil {
+	// 	cache.invalidate_project(project)
+	// 	cache.resolve_project(srv.storage, project)
+	// }
+
+	// // Publish diagnostics after refresh
+	// snap := cache.get_snapshot(srv.storage, uri)
+	// if snap != nil {
+	// 	defer cache.release_snapshot(snap)
+	// 	publish_diagnostics(srv, uri, snap, project)
+	// }
 }
 
 handle_document_change :: proc(srv: ^Server, params: json.Value) {

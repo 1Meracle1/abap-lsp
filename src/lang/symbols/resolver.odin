@@ -4,6 +4,241 @@ import "../ast"
 import "../lexer"
 import "core:strings"
 
+// Callback type for include resolution during project resolution
+// Returns the AST for the include file, or nil if not found
+Include_Resolver :: #type proc(include_name: string) -> ^ast.File
+
+// ProjectResolutionResult contains the symbol tables for each file in the project
+// after processing includes as text inclusions (like C/C++)
+ProjectResolutionResult :: struct {
+	// Symbol tables keyed by URI - each file gets its own symbol table
+	// that reflects the state AFTER processing that file (including accumulated symbols)
+	file_tables: map[string]^SymbolTable,
+	// The final merged symbol table after processing all files
+	merged_table: ^SymbolTable,
+}
+
+// resolve_project_files resolves symbols for a project treating INCLUDEs as text inclusions.
+// This implements the "State Cloning" pattern:
+// 1) Start with empty Symbol Table
+// 2) Process Root file declarations until INCLUDE
+// 3) Clone ST -> Pass to Include file
+// 4) Include file adds its symbols
+// 5) Save Resulting ST for Include file
+// 6) Continue in Root with the Resulting ST (accumulated symbols)
+//
+// Parameters:
+// - root_file: The AST of the root file (e.g., REPORT)
+// - root_uri: URI of the root file
+// - include_resolver: Callback to get AST for include files by name
+// - include_uris: Map from include name (lowercase) to URI
+resolve_project_files :: proc(
+	root_file: ^ast.File,
+	root_uri: string,
+	include_resolver: Include_Resolver,
+	include_uris: map[string]string,
+	allocator := context.allocator,
+) -> ^ProjectResolutionResult {
+	result := new(ProjectResolutionResult, allocator)
+	result.file_tables = make(map[string]^SymbolTable, allocator)
+	
+	// Start with empty symbol table
+	current_table := create_empty_symbol_table(allocator)
+	
+	// Process root file with include handling
+	if root_file != nil {
+		resolve_file_with_includes(
+			root_file,
+			root_uri,
+			current_table,
+			include_resolver,
+			include_uris,
+			result,
+			allocator,
+		)
+	}
+	
+	// Store the final table for the root file and as merged table
+	result.file_tables[root_uri] = current_table
+	result.merged_table = current_table
+	
+	// Run validation on root file with the merged table
+	validate_file(root_file, current_table)
+	
+	// Run validation on each include file with the merged table for lookups
+	// but their own table for diagnostics
+	for uri, table in result.file_tables {
+		if uri != root_uri {
+			// Get the AST for this include file
+			// We need to extract include name from URI - this is a bit awkward
+			// For now, we validate during resolution
+		}
+	}
+	
+	return result
+}
+
+// resolve_file_with_includes processes a file's declarations, handling INCLUDEs inline
+resolve_file_with_includes :: proc(
+	file: ^ast.File,
+	file_uri: string,
+	table: ^SymbolTable,
+	include_resolver: Include_Resolver,
+	include_uris: map[string]string,
+	result: ^ProjectResolutionResult,
+	allocator := context.allocator,
+) {
+	if file == nil || table == nil {
+		return
+	}
+	
+	for decl in file.decls {
+		#partial switch d in decl.derived_stmt {
+		case ^ast.Include_Decl:
+			// Process include: clone current state, resolve include, continue with result
+			if d.name != nil {
+				include_name := strings.to_lower(d.name.name, context.temp_allocator)
+				
+				// Get include file AST
+				include_ast := include_resolver(include_name)
+				if include_ast != nil {
+					// Get include URI from our map
+					include_uri := include_uris[include_name] if include_name in include_uris else ""
+					
+					if include_uri != "" {
+						// Clone current symbol table state for include file
+						include_table := clone_symbol_table(table, allocator)
+						
+						// Resolve include file into the cloned table
+						resolve_file_with_includes(
+							include_ast,
+							include_uri,
+							include_table,
+							include_resolver,
+							include_uris,
+							result,
+							allocator,
+						)
+						
+						// Store the include's resulting symbol table
+						result.file_tables[include_uri] = include_table
+						
+						// Run validation on include file
+						// Use merged table for lookups, include_table for diagnostics
+						validate_file_with_lookup(include_ast, table, include_table)
+						
+						// CRITICAL: Merge include's symbols back into current table
+						// This is what makes symbols from include visible in the rest of root
+						merge_symbols_into(table, include_table)
+					}
+				}
+				
+				// Also add the include itself as a symbol
+				resolve_include_decl(table, d)
+			}
+		case:
+			// Process normal declaration
+			resolve_decl_into(table, decl)
+		}
+	}
+}
+
+// merge_symbols_into copies new symbols from source into target
+// This is used to propagate symbols from include files back to the main file
+merge_symbols_into :: proc(target: ^SymbolTable, source: ^SymbolTable) {
+	if target == nil || source == nil {
+		return
+	}
+	
+	for name, sym in source.symbols {
+		if name not_in target.symbols {
+			target.symbols[name] = sym
+		}
+	}
+	
+	// Also merge types
+	for t in source.types {
+		// Check if type already exists (by pointer)
+		found := false
+		for existing_t in target.types {
+			if existing_t == t {
+				found = true
+				break
+			}
+		}
+		if !found {
+			append(&target.types, t)
+		}
+	}
+}
+
+// resolve_decl_into resolves a single top-level declaration into a symbol table
+resolve_decl_into :: proc(table: ^SymbolTable, decl: ^ast.Stmt) {
+	if decl == nil {
+		return
+	}
+	
+	#partial switch d in decl.derived_stmt {
+	case ^ast.Data_Inline_Decl:
+		resolve_inline_decl(table, d)
+	case ^ast.Data_Typed_Decl:
+		resolve_typed_decl(table, d, false)
+	case ^ast.Data_Typed_Chain_Decl:
+		resolve_chain_decl(table, d)
+	case ^ast.Types_Decl:
+		resolve_types_decl(table, d, false)
+	case ^ast.Types_Chain_Decl:
+		resolve_types_chain_decl(table, d)
+	case ^ast.Types_Struct_Decl:
+		resolve_types_struct_decl(table, d)
+	case ^ast.Const_Decl:
+		resolve_const_decl(table, d, false)
+	case ^ast.Const_Chain_Decl:
+		resolve_const_chain_decl(table, d)
+	case ^ast.Const_Struct_Decl:
+		resolve_const_struct_decl(table, d)
+	case ^ast.Data_Struct_Decl:
+		resolve_data_struct_decl(table, d)
+	case ^ast.Form_Decl:
+		resolve_form_decl(table, d)
+	case ^ast.Class_Def_Decl:
+		resolve_class_def_decl(table, d)
+	case ^ast.Class_Impl_Decl:
+		resolve_class_impl_decl(table, d)
+	case ^ast.Interface_Decl:
+		resolve_interface_decl(table, d)
+	case ^ast.Report_Decl:
+		resolve_report_decl(table, d)
+	case ^ast.Include_Decl:
+		resolve_include_decl(table, d)
+	case ^ast.Event_Block:
+		resolve_event_block(table, d)
+	case ^ast.Module_Decl:
+		resolve_module_decl(table, d)
+	case ^ast.Field_Symbol_Decl:
+		resolve_field_symbol_decl(table, d, is_global = true)
+	case ^ast.Controls_Decl:
+		resolve_controls_decl(table, d, is_global = true)
+	case ^ast.Controls_Chain_Decl:
+		resolve_controls_chain_decl(table, d, is_global = true)
+	}
+}
+
+// destroy_project_resolution_result frees all resources from project resolution
+destroy_project_resolution_result :: proc(result: ^ProjectResolutionResult) {
+	if result == nil {
+		return
+	}
+	
+	// Note: We don't destroy individual tables here because they share type references
+	// and child scopes. The merged_table is also in file_tables.
+	// In practice, these tables are allocated in the snapshot's arena and will be
+	// freed when the snapshot is released.
+	
+	delete(result.file_tables)
+	free(result)
+}
+
 resolve_file :: proc(file: ^ast.File) -> ^SymbolTable {
 	table := new(SymbolTable)
 	table.symbols = make(map[string]Symbol)
@@ -11,6 +246,10 @@ resolve_file :: proc(file: ^ast.File) -> ^SymbolTable {
 	table.diagnostics = make([dynamic]Diagnostic)
 
 	resolve_file_into(file, table)
+
+	// Run semantic validation after symbol resolution (for single-file mode)
+	// For multi-file projects, validation is run separately with the merged symbol table
+	validate_file(file, table)
 
 	return table
 }
@@ -582,6 +821,9 @@ resolve_class_def_decl :: proc(table: ^SymbolTable, class_def: ^ast.Class_Def_De
 }
 
 resolve_class_section :: proc(table: ^SymbolTable, section: ^ast.Class_Section) {
+	// Map AST access modifier to symbol visibility
+	visibility := access_to_visibility(section.access)
+
 	for type_decl in section.types {
 		#partial switch t in type_decl.derived_stmt {
 		case ^ast.Types_Decl:
@@ -596,7 +838,7 @@ resolve_class_section :: proc(table: ^SymbolTable, section: ^ast.Class_Section) 
 	for data_decl in section.data {
 		#partial switch d in data_decl.derived_stmt {
 		case ^ast.Attr_Decl:
-			resolve_attr_decl(table, d)
+			resolve_attr_decl(table, d, visibility)
 		case ^ast.Data_Typed_Decl:
 			resolve_typed_decl(table, d, false, false)
 		case ^ast.Data_Typed_Chain_Decl:
@@ -607,10 +849,10 @@ resolve_class_section :: proc(table: ^SymbolTable, section: ^ast.Class_Section) 
 	for method_decl in section.methods {
 		#partial switch m in method_decl.derived_stmt {
 		case ^ast.Method_Decl:
-			resolve_method_decl(table, m)
+			resolve_method_decl(table, m, visibility)
 		case ^ast.Method_Chain_Decl:
 			for decl in m.decls {
-				resolve_method_decl(table, decl)
+				resolve_method_decl(table, decl, visibility)
 			}
 		}
 	}
@@ -622,21 +864,35 @@ resolve_class_section :: proc(table: ^SymbolTable, section: ^ast.Class_Section) 
 	}
 }
 
-resolve_attr_decl :: proc(table: ^SymbolTable, attr: ^ast.Attr_Decl) {
+access_to_visibility :: proc(access: ast.Access_Modifier) -> Visibility {
+	switch access {
+	case .Public:
+		return .Public
+	case .Protected:
+		return .Protected
+	case .Private:
+		return .Private
+	}
+	return .None
+}
+
+resolve_attr_decl :: proc(table: ^SymbolTable, attr: ^ast.Attr_Decl, visibility: Visibility = .None) {
 	name := attr.ident.name
 
 	type_info := resolve_type_expr(table, attr.typed)
 
 	sym := Symbol {
-		name      = name,
-		kind      = .Field,
-		range     = attr.ident.range,
-		type_info = type_info,
+		name       = name,
+		kind       = .Field,
+		range      = attr.ident.range,
+		type_info  = type_info,
+		visibility = visibility,
+		is_static  = attr.is_class,
 	}
 	add_symbol(table, sym, allow_shadowing = false)
 }
 
-resolve_method_decl :: proc(table: ^SymbolTable, method: ^ast.Method_Decl) {
+resolve_method_decl :: proc(table: ^SymbolTable, method: ^ast.Method_Decl, visibility: Visibility = .None) {
 	name := method.ident.name
 
 	child_table := new(SymbolTable)
@@ -654,6 +910,8 @@ resolve_method_decl :: proc(table: ^SymbolTable, method: ^ast.Method_Decl) {
 		range       = method.ident.range,
 		type_info   = nil,
 		child_scope = child_table,
+		visibility  = visibility,
+		is_static   = .Class in method.flags,
 	}
 	add_symbol(table, sym, allow_shadowing = false)
 }
@@ -760,13 +1018,14 @@ resolve_interface_decl :: proc(table: ^SymbolTable, iface: ^ast.Interface_Decl) 
 	child_table.types = make([dynamic]^Type)
 	child_table.diagnostics = make([dynamic]Diagnostic)
 
+	// Interface members are implicitly public
 	for method_decl in iface.methods {
 		#partial switch m in method_decl.derived_stmt {
 		case ^ast.Method_Decl:
-			resolve_method_decl(child_table, m)
+			resolve_method_decl(child_table, m, .Public)
 		case ^ast.Method_Chain_Decl:
 			for decl in m.decls {
-				resolve_method_decl(table, decl)
+				resolve_method_decl(child_table, decl, .Public)
 			}
 		}
 	}
@@ -785,7 +1044,7 @@ resolve_interface_decl :: proc(table: ^SymbolTable, iface: ^ast.Interface_Decl) 
 	for data_decl in iface.data {
 		#partial switch d in data_decl.derived_stmt {
 		case ^ast.Attr_Decl:
-			resolve_attr_decl(child_table, d)
+			resolve_attr_decl(child_table, d, .Public)
 		case ^ast.Data_Typed_Decl:
 			resolve_typed_decl(child_table, d, false, false)
 		}
