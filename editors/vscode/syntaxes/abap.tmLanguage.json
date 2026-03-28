@@ -69,13 +69,74 @@
 			]
 		},
 		"strings": {
-			"name": "string.quoted.double.abap",
-			"begin": "'",
-			"end": "'",
 			"patterns": [
 				{
-					"name": "constant.character.escape.abap",
-					"match": "\\\\."
+					"name": "string.quoted.single.abap",
+					"begin": "'",
+					"beginCaptures": {
+						"0": {
+							"name": "punctuation.definition.string.begin.abap"
+						}
+					},
+					"end": "'",
+					"endCaptures": {
+						"0": {
+							"name": "punctuation.definition.string.end.abap"
+						}
+					},
+					"patterns": [
+						{
+							"name": "constant.character.escape.abap",
+							"match": "\\\\."
+						}
+					]
+				},
+				{
+					"name": "string.template.abap",
+					"begin": "\\|",
+					"beginCaptures": {
+						"0": {
+							"name": "punctuation.definition.string.begin.abap"
+						}
+					},
+					"end": "(?<!\\\\)\\|",
+					"endCaptures": {
+						"0": {
+							"name": "punctuation.definition.string.end.abap"
+						}
+					},
+					"patterns": [
+						{
+							"name": "constant.character.escape.abap",
+							"match": "\\\\[\\\\\\|\\{\\}]"
+						},
+						{
+							"name": "meta.interpolation.abap",
+							"begin": "(?<!\\\\)\\{",
+							"beginCaptures": {
+								"0": {
+									"name": "punctuation.section.interpolation.begin.abap"
+								}
+							},
+							"end": "(?<!\\\\)\\}",
+							"endCaptures": {
+								"0": {
+									"name": "punctuation.section.interpolation.end.abap"
+								}
+							},
+							"patterns": [
+								{
+									"include": "#keywords"
+								},
+								{
+									"include": "#numbers"
+								},
+								{
+									"include": "#strings"
+								}
+							]
+						}
+					]
 				}
 			]
 		},
