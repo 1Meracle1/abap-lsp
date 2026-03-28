@@ -65,9 +65,9 @@ workspace_deinit :: proc(workspace: ^Workspace) {
 	}
 	delete(workspace.documents)
 	delete(workspace.packages)
-	free(&workspace.uri)
-	free(&workspace.name)
-	free(&workspace.root_path)
+	delete(workspace.uri)
+	delete(workspace.name)
+	delete(workspace.root_path)
 	free(workspace)
 }
 

@@ -1,5 +1,9 @@
 // raddbg 0.9.25 project file
 
+recent_file: path: "src/cache/manifest.odin"
+recent_file: path: "../toolchain/odin-windows-amd64-dev-2026-02/base/runtime/heap_allocator.odin"
+recent_file: path: "../toolchain/odin-windows-amd64-dev-2026-02/base/runtime/heap_allocator_windows.odin"
+recent_file: path: "src/lang/parser/basic_decls.odin"
 recent_file: path: "src/lsp/document.odin"
 recent_file: path: "src/lsp/diagnostics.odin"
 recent_file: path: "src/cache/project.odin"
@@ -70,5 +74,5 @@ breakpoint:
 debug_info:
 {
   path: "D:/dev/odin/abap-lsp/bin/debug/abap-lsp.pdb"
-  timestamp: 66210523833838
+  timestamp: 66210526714549
 }

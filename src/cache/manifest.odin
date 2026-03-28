@@ -76,20 +76,20 @@ manifest_deinit :: proc(manifest: ^Manifest) {
 		return
 	}
 
-	free(&manifest.connection)
-	free(&manifest.resolution.dependency_mode)
-	free(&manifest.resolution.cache_dir)
+	delete(manifest.connection)
+	delete(manifest.resolution.dependency_mode)
+	delete(manifest.resolution.cache_dir)
 
 	for i in 0 ..< len(manifest.units) {
 		unit := &manifest.units[i]
-		free(&unit.name)
-		free(&unit.root_file)
-		free(&unit.adt_uri)
+		delete(unit.name)
+		delete(unit.root_file)
+		delete(unit.adt_uri)
 		for j in 0 ..< len(unit.members) {
 			member := &unit.members[j]
-			free(&member.file)
-			free(&member.object_name)
-			free(&member.adt_uri)
+			delete(member.file)
+			delete(member.object_name)
+			delete(member.adt_uri)
 		}
 		delete(unit.members)
 	}
@@ -260,26 +260,24 @@ manifest_apply_top_level :: proc(
 			log.warnf("%s:%d invalid manifest version: %s", source_path, line_no, value)
 		}
 	case "connection":
-		free(&manifest.connection)
+		delete(manifest.connection)
 		manifest.connection = value
 	case:
 		log.warnf("%s:%d unsupported top-level key: %s", source_path, line_no, key)
-		value_to_free := value
-		free(&value_to_free)
+		delete(value)
 	}
 }
 
 manifest_apply_resolution :: proc(manifest: ^Manifest, key: string, value: string) {
 	switch key {
 	case "dependency_mode":
-		free(&manifest.resolution.dependency_mode)
+		delete(manifest.resolution.dependency_mode)
 		manifest.resolution.dependency_mode = value
 	case "cache_dir":
-		free(&manifest.resolution.cache_dir)
+		delete(manifest.resolution.cache_dir)
 		manifest.resolution.cache_dir = value
 	case:
-		value_to_free := value
-		free(&value_to_free)
+		delete(value)
 	}
 }
 
@@ -294,25 +292,23 @@ manifest_apply_unit :: proc(
 	unit := &manifest.units[unit_index]
 	switch key {
 	case "name":
-		free(&unit.name)
+		delete(unit.name)
 		unit.name = value
 	case "kind":
 		unit.kind = parse_unit_kind(value)
 		if unit.kind == .Unknown {
 			log.warnf("%s:%d unknown unit kind: %s", source_path, line_no, value)
 		}
-		value_to_free := value
-		free(&value_to_free)
+		delete(value)
 	case "root_file":
-		free(&unit.root_file)
+		delete(unit.root_file)
 		unit.root_file = value
 	case "adt_uri":
-		free(&unit.adt_uri)
+		delete(unit.adt_uri)
 		unit.adt_uri = value
 	case:
 		log.warnf("%s:%d unsupported unit key: %s", source_path, line_no, key)
-		value_to_free := value
-		free(&value_to_free)
+		delete(value)
 	}
 }
 
@@ -325,8 +321,7 @@ manifest_apply_member :: proc(
 	line_no: int,
 ) {
 	if len(manifest.units[unit_index].members) == 0 {
-		value_to_free := value
-		free(&value_to_free)
+		delete(value)
 		return
 	}
 
@@ -337,21 +332,19 @@ manifest_apply_member :: proc(
 		if member.role == .Unknown {
 			log.warnf("%s:%d unknown unit member role: %s", source_path, line_no, value)
 		}
-		value_to_free := value
-		free(&value_to_free)
+		delete(value)
 	case "file":
-		free(&member.file)
+		delete(member.file)
 		member.file = value
 	case "object_name":
-		free(&member.object_name)
+		delete(member.object_name)
 		member.object_name = value
 	case "adt_uri":
-		free(&member.adt_uri)
+		delete(member.adt_uri)
 		member.adt_uri = value
 	case:
 		log.warnf("%s:%d unsupported unit member key: %s", source_path, line_no, key)
-		value_to_free := value
-		free(&value_to_free)
+		delete(value)
 	}
 }
 

@@ -49,8 +49,8 @@ document_init :: proc(
 
 document_deinit :: proc(document: ^Document) {
 	virtual.arena_destroy(&document.arena)
-	free(&document.uri)
-	free(&document.path)
+	delete(document.uri)
+	delete(document.path)
 	free(document)
 }
 

@@ -124,6 +124,20 @@ build_unit_member_uri_map :: proc(
 	return member_uris
 }
 
+build_folder_include_uri_map :: proc(uri: string, allocator := context.allocator) -> map[string]string {
+	include_uris := make(map[string]string, allocator)
+	folder_path := folder_from_uri(uri, context.temp_allocator)
+	files := list_abap_files(folder_path, context.temp_allocator)
+	for file_path in files {
+		file_uri := path_to_uri(file_path, allocator)
+		filename := filename_from_uri(file_uri, context.temp_allocator)
+		if len(filename) > 0 {
+			include_uris[filename] = file_uri
+		}
+	}
+	return include_uris
+}
+
 resolve_manifest_unit_file :: proc(
 	cache: ^Cache,
 	workspace: ^Workspace,
@@ -184,7 +198,7 @@ resolve_manifest_unit_file :: proc(
 				} else {
 					append_project_diagnostic(
 						project,
-						strings.concatenate({"INCLUDE not declared in manifest/local cache: ", include_name}, allocator),
+						strings.concatenate({"INCLUDE target not available locally: ", include_name}, allocator),
 					)
 				}
 
@@ -196,29 +210,26 @@ resolve_manifest_unit_file :: proc(
 	}
 }
 
-resolve_manifest_unit_project :: proc(
+resolve_local_project :: proc(
 	cache: ^Cache,
 	workspace: ^Workspace,
-	unit: ^Semantic_Unit,
+	root_uri: string,
+	include_uris: map[string]string,
+	unit_name: string,
 	allocator := context.allocator,
 ) -> ^Project {
-	if workspace == nil || unit == nil {
-		return nil
-	}
-
-	root_relative := unit_root_relative_path(unit, context.temp_allocator)
-	if len(root_relative) == 0 {
+	if workspace == nil || len(root_uri) == 0 {
 		return nil
 	}
 
 	project := new(Project, allocator)
-	project.root_uri = workspace_uri_for_relative_path(workspace, root_relative, allocator)
+	project.root_uri = strings.clone(root_uri, allocator)
 	project.diagnostics = make([dynamic]symbols.Diagnostic, allocator)
-	project.unit_name = strings.clone(unit.name, allocator)
+	project.unit_name = strings.clone(unit_name, allocator)
 
 	root_document := ensure_workspace_document_loaded(cache, workspace, project.root_uri)
 	if root_document == nil || root_document.ast == nil {
-		append_project_diagnostic(project, strings.concatenate({"Unable to load root file ", root_relative}, allocator))
+		append_project_diagnostic(project, strings.concatenate({"Unable to load root file ", root_uri}, allocator))
 		return project
 	}
 
@@ -226,7 +237,6 @@ resolve_manifest_unit_project :: proc(
 	project.resolution_result.file_tables = make(map[string]^symbols.SymbolTable, allocator)
 
 	current_table := symbols.create_empty_symbol_table(allocator)
-	include_uris := build_unit_member_uri_map(workspace, unit, context.temp_allocator)
 	active_stack := make([dynamic]string, context.temp_allocator)
 
 	resolve_manifest_unit_file(
@@ -248,6 +258,26 @@ resolve_manifest_unit_project :: proc(
 	return project
 }
 
+resolve_manifest_unit_project :: proc(
+	cache: ^Cache,
+	workspace: ^Workspace,
+	unit: ^Semantic_Unit,
+	allocator := context.allocator,
+) -> ^Project {
+	if workspace == nil || unit == nil {
+		return nil
+	}
+
+	root_relative := unit_root_relative_path(unit, context.temp_allocator)
+	if len(root_relative) == 0 {
+		return nil
+	}
+
+	root_uri := workspace_uri_for_relative_path(workspace, root_relative, allocator)
+	include_uris := build_unit_member_uri_map(workspace, unit, context.temp_allocator)
+	return resolve_local_project(cache, workspace, root_uri, include_uris, unit.name, allocator)
+}
+
 get_projects_for_uri :: proc(
 	cache: ^Cache,
 	uri: string,
@@ -262,6 +292,14 @@ get_projects_for_uri :: proc(
 	units := workspace_units_for_uri(workspace, uri, context.temp_allocator)
 	for unit in units {
 		project := resolve_manifest_unit_project(cache, workspace, unit, allocator)
+		if project != nil {
+			append(&result, project)
+		}
+	}
+
+	if len(result) == 0 {
+		include_uris := build_folder_include_uri_map(uri, context.temp_allocator)
+		project := resolve_local_project(cache, workspace, uri, include_uris, filename_from_uri(uri), allocator)
 		if project != nil {
 			append(&result, project)
 		}
