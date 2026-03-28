@@ -39,9 +39,9 @@ document_init :: proc(
 
 	document_refresh(document, text, version)
 
-    if existing_document, exists := workspace.documents[uri]; exists {
-        document_deinit(existing_document)
-    }
+	if existing_document, exists := workspace.documents[uri]; exists {
+		document_deinit(existing_document)
+	}
 	workspace.documents[uri] = document
 
 	return document
@@ -51,7 +51,7 @@ document_deinit :: proc(document: ^Document) {
 	virtual.arena_destroy(&document.arena)
 	free(&document.uri)
 	free(&document.path)
-    free(document)
+	free(document)
 }
 
 document_refresh :: proc(document: ^Document, text: string, version: int) {
@@ -63,7 +63,9 @@ document_refresh :: proc(document: ^Document, text: string, version: int) {
 	)
 
 	virtual.arena_free_all(&document.arena)
+	old_allocator := context.allocator
 	context.allocator = document.allocator
+	defer context.allocator = old_allocator
 
 	document.text = strings.clone(text)
 	document.version = version
@@ -72,7 +74,21 @@ document_refresh :: proc(document: ^Document, text: string, version: int) {
 	document.ast.src = text
 	p: parser.Parser
 	parser.parse_file(&p, document.ast)
-	document.symbol_table = nil
+	document_resolve_symbols(document)
+}
+
+document_resolve_symbols :: proc(document: ^Document) {
+	if document == nil || document.ast == nil {
+		document.symbol_table = nil
+		return
+	}
+
+	table := symbols.create_empty_symbol_table(document.allocator)
+	for decl in document.ast.decls {
+		symbols.resolve_decl_into(table, decl)
+	}
+	symbols.validate_file(document.ast, table)
+	document.symbol_table = table
 }
 
 document_resolve_package_context :: proc(document: ^Document) {

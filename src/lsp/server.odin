@@ -9,6 +9,7 @@ import "core:strings"
 
 Server :: struct {
 	stream:     jsonrpc.Stream,
+	storage:    ^cache.Cache,
 	workspaces: [dynamic]^cache.Workspace,
 }
 
@@ -18,6 +19,7 @@ Notification_Handler :: #type proc(srv: ^Server, params: json.Value)
 server_start :: proc(stream: jsonrpc.Stream) {
 	srv: Server
 	srv.stream = stream
+	srv.storage = cache.cache_init()
 	srv.workspaces = make([dynamic]^cache.Workspace)
 
 	request_handlers := make(map[string]Request_Handler)
@@ -113,7 +115,8 @@ handle_initialize :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 	}
 
 	for wspace in initialize_params.workspaceFolders {
-		append(&srv.workspaces, cache.workspace_init(wspace.uri, wspace.name))
+		workspace := cache.cache_add_workspace(srv.storage, wspace.uri, wspace.name)
+		append(&srv.workspaces, workspace)
 	}
 
 	result := InitializeResult {

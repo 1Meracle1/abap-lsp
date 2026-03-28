@@ -9,13 +9,30 @@
   "categories": [
     "Other"
   ],
-  "activationEvents": [
-  ],
+  "activationEvents": [],
   "main": "./client/out/extension",
   "contributes": {
+    "commands": [
+      {
+        "command": "abap-ls.configureSapConnection",
+        "title": "ABAP LSP: Configure SAP Connection"
+      },
+      {
+        "command": "abap-ls.searchRepositoryObjects",
+        "title": "ABAP LSP: Search Repository Objects"
+      },
+      {
+        "command": "abap-ls.initializeWorkspaceFromAdtObject",
+        "title": "ABAP LSP: Initialize Workspace From ADT Object"
+      },
+      {
+        "command": "abap-ls.refreshDependencyCache",
+        "title": "ABAP LSP: Refresh Dependency Cache"
+      }
+    ],
     "configuration": {
       "type": "object",
-      "title": "Example configuration",
+      "title": "ABAP LSP",
       "properties": {
         "abap-ls.maxNumberOfProblems": {
           "scope": "resource",
@@ -33,6 +50,18 @@
           ],
           "default": "verbose",
           "description": "Traces the communication between VS Code and the language server."
+        },
+        "abap-ls.sap.baseUrl": {
+          "scope": "resource",
+          "type": "string",
+          "default": "",
+          "description": "Base URL of the SAP system used for ADT requests, for example https://host.example.com."
+        },
+        "abap-ls.sap.username": {
+          "scope": "resource",
+          "type": "string",
+          "default": "",
+          "description": "SAP username used for ADT requests. Password is stored securely in VS Code secret storage."
         }
       }
     },

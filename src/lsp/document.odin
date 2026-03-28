@@ -17,12 +17,9 @@ handle_document_open :: proc(srv: ^Server, params: json.Value) {
 	if len(srv.workspaces) == 0 {
 		return
 	}
-	workspace := srv.workspaces[0]
-
-	document := cache.document_init(
-		workspace,
+	cache.refresh_document(
+		srv.storage,
 		uri,
-		"",
 		document_open_params.textDocument.text,
 		document_open_params.textDocument.version,
 	)

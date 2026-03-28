@@ -3,22 +3,23 @@
  * Licensed under the MIT License. See License.txt in the project root for license information.
  * ------------------------------------------------------------------------------------------ */
 
-import * as path from 'path';
 import * as fs from "fs";
 import * as net from "net";
-import { workspace, ExtensionContext } from 'vscode';
+import * as path from "path";
+import * as vscode from "vscode";
 
 import {
 	LanguageClient,
 	LanguageClientOptions,
 	ServerOptions,
 	StreamInfo,
-	TransportKind
-} from 'vscode-languageclient/node';
+} from "vscode-languageclient/node";
+import { AdtClient, AdtObjectRef, configureSapConnection, getSapConnectionConfig } from "./adt";
+import { ensureManifestUnit, inferManifestUnitSpec, targetWorkspaceFilePath } from "./manifest";
 
 let client: LanguageClient;
 
-export function activate(context: ExtensionContext) {
+export function activate(context: vscode.ExtensionContext) {
 	// let serverModule: string;
 	// const debugServerPath = process.env['__ABAP_LSP_SERVER_DEBUG'];
 	// if (debugServerPath) {
@@ -62,22 +63,24 @@ export function activate(context: ExtensionContext) {
 	const clientOptions: LanguageClientOptions = {
 		// Register the server for plain text documents
 		documentSelector: [
-			{ scheme: 'file', language: 'abap' },
-			{ scheme: 'untitled', language: 'abap' },
+			{ scheme: "file", language: "abap" },
+			{ scheme: "untitled", language: "abap" },
 		],
 		synchronize: {
 			// Notify the server about file changes to '.clientrc files contained in the workspace
-			fileEvents: workspace.createFileSystemWatcher('**/.clientrc')
-		}
+			fileEvents: vscode.workspace.createFileSystemWatcher("**/.clientrc"),
+		},
 	};
 
 	// Create the language client and start the client.
 	client = new LanguageClient(
-		'abap-ls',
-		'ABAP Language Server',
+		"abap-ls",
+		"ABAP Language Server",
 		serverOptions,
-		clientOptions
+		clientOptions,
 	);
+
+	registerCommands(context);
 
 	// Start the client. This will also launch the server
 	client.start();
@@ -88,6 +91,161 @@ export function deactivate(): Thenable<void> | undefined {
 		return undefined;
 	}
 	return client.stop();
+}
+
+function registerCommands(context: vscode.ExtensionContext): void {
+	context.subscriptions.push(
+		vscode.commands.registerCommand("abap-ls.configureSapConnection", async () => {
+			const workspaceFolder = await pickWorkspaceFolder();
+			if (!workspaceFolder) {
+				return;
+			}
+			await configureSapConnection(context, workspaceFolder);
+		}),
+	);
+
+	context.subscriptions.push(
+		vscode.commands.registerCommand("abap-ls.searchRepositoryObjects", async () => {
+			const workspaceFolder = await pickWorkspaceFolder();
+			if (!workspaceFolder) {
+				return;
+			}
+
+			const objectRef = await promptForRepositoryObject(context, workspaceFolder);
+			if (!objectRef) {
+				return;
+			}
+
+			await vscode.window.showInformationMessage(
+				`${objectRef.name} (${objectRef.type}) ${objectRef.packageName ? `in package ${objectRef.packageName}` : ""}`.trim(),
+				"Copy ADT URI",
+			).then(async (action) => {
+				if (action === "Copy ADT URI") {
+					await vscode.env.clipboard.writeText(objectRef.uri);
+				}
+			});
+		}),
+	);
+
+	context.subscriptions.push(
+		vscode.commands.registerCommand("abap-ls.initializeWorkspaceFromAdtObject", async () => {
+			const workspaceFolder = await pickWorkspaceFolder();
+			if (!workspaceFolder) {
+				return;
+			}
+
+			const objectRef = await promptForRepositoryObject(context, workspaceFolder);
+			if (!objectRef) {
+				return;
+			}
+
+			await vscode.window.withProgress(
+				{
+					location: vscode.ProgressLocation.Notification,
+					title: `Pulling ${objectRef.name} from SAP`,
+				},
+				async () => {
+					const connection = await getSapConnectionConfig(context, workspaceFolder);
+					if (!connection) {
+						return;
+					}
+
+					const adtClient = new AdtClient(connection);
+					const source = await adtClient.fetchObjectSource(objectRef.uri);
+					const filePath = targetWorkspaceFilePath(workspaceFolder, objectRef.name);
+					await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
+					await fs.promises.writeFile(filePath, source, "utf8");
+
+					const relativeFile = path.relative(workspaceFolder.uri.fsPath, filePath);
+					const manifestSpec = inferManifestUnitSpec(objectRef, relativeFile);
+					const manifestUri = await ensureManifestUnit(workspaceFolder, manifestSpec);
+					await adtClient.cacheRemoteObject(workspaceFolder, objectRef, source);
+
+					const document = await vscode.workspace.openTextDocument(vscode.Uri.file(filePath));
+					await vscode.window.showTextDocument(document, { preview: false });
+					void manifestUri;
+				},
+			);
+		}),
+	);
+
+	context.subscriptions.push(
+		vscode.commands.registerCommand("abap-ls.refreshDependencyCache", async () => {
+			const workspaceFolder = await pickWorkspaceFolder();
+			if (!workspaceFolder) {
+				return;
+			}
+
+			const cacheDir = path.join(workspaceFolder.uri.fsPath, ".abapls", "cache");
+			await fs.promises.rm(cacheDir, { recursive: true, force: true });
+			await fs.promises.mkdir(cacheDir, { recursive: true });
+			vscode.window.showInformationMessage("ABAP LSP dependency cache cleared.");
+		}),
+	);
+}
+
+async function promptForRepositoryObject(
+	context: vscode.ExtensionContext,
+	workspaceFolder: vscode.WorkspaceFolder,
+): Promise<AdtObjectRef | undefined> {
+	const query = await vscode.window.showInputBox({
+		prompt: "Search SAP repository objects",
+		placeHolder: "ZCL_*",
+		ignoreFocusOut: true,
+	});
+	if (!query?.trim()) {
+		return undefined;
+	}
+
+	const connection = await getSapConnectionConfig(context, workspaceFolder);
+	if (!connection) {
+		return undefined;
+	}
+
+	const adtClient = new AdtClient(connection);
+	const objects = await vscode.window.withProgress(
+		{
+			location: vscode.ProgressLocation.Notification,
+			title: `Searching SAP repository for ${query.trim()}`,
+		},
+		() => adtClient.searchRepositoryObjects(query.trim()),
+	);
+
+	if (objects.length === 0) {
+		vscode.window.showWarningMessage(`No ADT objects found for "${query.trim()}".`);
+		return undefined;
+	}
+
+	const selection = await vscode.window.showQuickPick(
+		objects.map((objectRef) => ({
+			label: objectRef.name,
+			description: `${objectRef.type} ${objectRef.packageName}`.trim(),
+			detail: `${objectRef.description} ${objectRef.uri}`.trim(),
+			objectRef,
+		})),
+		{
+			matchOnDescription: true,
+			matchOnDetail: true,
+			placeHolder: "Select an ADT repository object",
+		},
+	);
+
+	return selection?.objectRef;
+}
+
+async function pickWorkspaceFolder(): Promise<vscode.WorkspaceFolder | undefined> {
+	const folders = vscode.workspace.workspaceFolders ?? [];
+	if (folders.length === 0) {
+		vscode.window.showWarningMessage("Open a workspace folder first.");
+		return undefined;
+	}
+	if (folders.length === 1) {
+		return folders[0];
+	}
+
+	return vscode.window.showWorkspaceFolderPick({
+		placeHolder: "Select the workspace folder for ABAP LSP commands",
+	});
 }
 
 // function getPythonCommand(): string {

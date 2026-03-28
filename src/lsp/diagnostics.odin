@@ -8,6 +8,69 @@ import "../lang/ast"
 import "../lang/lexer"
 import "../lang/symbols"
 
+append_diagnostic_unique :: proc(diagnostics: ^[dynamic]Diagnostic, diagnostic: Diagnostic) {
+	for existing in diagnostics^ {
+		if existing.range.start.line == diagnostic.range.start.line &&
+			existing.range.start.character == diagnostic.range.start.character &&
+			existing.range.end.line == diagnostic.range.end.line &&
+			existing.range.end.character == diagnostic.range.end.character &&
+			existing.message == diagnostic.message &&
+			existing.source == diagnostic.source {
+			return
+		}
+	}
+	append(diagnostics, diagnostic)
+}
+
+append_symbol_diagnostics :: proc(
+	diagnostics: ^[dynamic]Diagnostic,
+	snap: ^cache.Snapshot,
+	table: ^symbols.SymbolTable,
+) {
+	if snap == nil || table == nil {
+		return
+	}
+
+	semantic_errors := symbols.collect_all_diagnostics(table, context.temp_allocator)
+	for err in semantic_errors {
+		append_diagnostic_unique(
+			diagnostics,
+			Diagnostic{
+				range    = text_range_to_lsp_range(snap.text, err.range),
+				severity = .Error,
+				source   = "abap-lsp",
+				message  = err.message,
+			},
+		)
+	}
+}
+
+append_project_diagnostics :: proc(
+	diagnostics: ^[dynamic]Diagnostic,
+	snap: ^cache.Snapshot,
+	uri: string,
+	projects: []^cache.Project,
+) {
+	for project in projects {
+		table := cache.get_file_symbol_table(project, uri)
+		append_symbol_diagnostics(diagnostics, snap, table)
+
+		if project != nil && uri == project.root_uri {
+			for err in project.diagnostics {
+				append_diagnostic_unique(
+					diagnostics,
+					Diagnostic{
+						range    = text_range_to_lsp_range(snap.text, err.range),
+						severity = .Error,
+						source   = "abap-lsp",
+						message  = err.message,
+					},
+				)
+			}
+		}
+	}
+}
+
 handle_diagnostic :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 	diagnostic_params: DocumentDiagnosticParams
 	if err := unmarshal(params, diagnostic_params, context.temp_allocator); err != nil {
@@ -34,7 +97,7 @@ handle_diagnostic :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 
 	// Syntax errors from parser
 	for err in snap.ast.syntax_errors {
-		append(&diagnostics, Diagnostic{
+		append_diagnostic_unique(&diagnostics, Diagnostic{
 			range    = text_range_to_lsp_range(snap.text, err.range),
 			severity = .Error,
 			source   = "abap-lsp",
@@ -42,42 +105,11 @@ handle_diagnostic :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 		})
 	}
 
-	// Get the effective symbol table (from project if available, otherwise from snapshot)
-	effective_table := cache.get_effective_symbol_table(srv.storage, uri)
-	if effective_table != nil {
-		semantic_errors := symbols.collect_all_diagnostics(effective_table, context.temp_allocator)
-		for err in semantic_errors {
-			append(&diagnostics, Diagnostic{
-				range    = text_range_to_lsp_range(snap.text, err.range),
-				severity = .Error,
-				source   = "abap-lsp",
-				message  = err.message,
-			})
-		}
+	projects := cache.get_projects_for_uri(srv.storage, uri, context.temp_allocator)
+	if len(projects) > 0 {
+		append_project_diagnostics(&diagnostics, snap, uri, projects)
 	} else if snap.symbol_table != nil {
-		// Fall back to snapshot's symbol table for standalone files
-		semantic_errors := symbols.collect_all_diagnostics(snap.symbol_table, context.temp_allocator)
-		for err in semantic_errors {
-			append(&diagnostics, Diagnostic{
-				range    = text_range_to_lsp_range(snap.text, err.range),
-				severity = .Error,
-				source   = "abap-lsp",
-				message  = err.message,
-			})
-		}
-	}
-
-	// Add project-level diagnostics
-	project := cache.get_project_for_uri(srv.storage, uri)
-	if project != nil && uri == project.root_uri {
-		for err in project.diagnostics {
-			append(&diagnostics, Diagnostic{
-				range    = text_range_to_lsp_range(snap.text, err.range),
-				severity = .Error,
-				source   = "abap-lsp",
-				message  = err.message,
-			})
-		}
+		append_symbol_diagnostics(&diagnostics, snap, snap.symbol_table)
 	}
 
 	result := FullDocumentDiagnosticReport {
@@ -93,11 +125,12 @@ publish_diagnostics :: proc(
 	snap: ^cache.Snapshot,
 	project: ^cache.Project = nil,
 ) {
+	_ = project
 	diagnostics := make([dynamic]Diagnostic, context.temp_allocator)
 
 	// Syntax errors from parser
 	for err in snap.ast.syntax_errors {
-		append(&diagnostics, Diagnostic{
+		append_diagnostic_unique(&diagnostics, Diagnostic{
 			range    = text_range_to_lsp_range(snap.text, err.range),
 			severity = .Error,
 			source   = "abap-lsp",
@@ -105,42 +138,11 @@ publish_diagnostics :: proc(
 		})
 	}
 
-	// Get the effective symbol table (from project if available)
-	effective_table := cache.get_effective_symbol_table(srv.storage, uri)
-	if effective_table != nil {
-		semantic_errors := symbols.collect_all_diagnostics(effective_table, context.temp_allocator)
-		for err in semantic_errors {
-			append(&diagnostics, Diagnostic{
-				range    = text_range_to_lsp_range(snap.text, err.range),
-				severity = .Error,
-				source   = "abap-lsp",
-				message  = err.message,
-			})
-		}
+	projects := cache.get_projects_for_uri(srv.storage, uri, context.temp_allocator)
+	if len(projects) > 0 {
+		append_project_diagnostics(&diagnostics, snap, uri, projects)
 	} else if snap.symbol_table != nil {
-		// Fall back to snapshot's symbol table for standalone files
-		semantic_errors := symbols.collect_all_diagnostics(snap.symbol_table, context.temp_allocator)
-		for err in semantic_errors {
-			append(&diagnostics, Diagnostic{
-				range    = text_range_to_lsp_range(snap.text, err.range),
-				severity = .Error,
-				source   = "abap-lsp",
-				message  = err.message,
-			})
-		}
-	}
-
-	// Project-level diagnostics (e.g., missing includes)
-	// Only show for the root file of the project
-	if project != nil && uri == project.root_uri {
-		for err in project.diagnostics {
-			append(&diagnostics, Diagnostic{
-				range    = text_range_to_lsp_range(snap.text, err.range),
-				severity = .Error,
-				source   = "abap-lsp",
-				message  = err.message,
-			})
-		}
+		append_symbol_diagnostics(&diagnostics, snap, snap.symbol_table)
 	}
 
 	params := PublishDiagnosticsParams{
