@@ -584,6 +584,24 @@ collect_tokens_from_stmt :: proc(
 			collect_tokens_from_type_expr(tokens, s.typed)
 		}
 
+	case ^ast.Field_Symbol_Chain_Decl:
+		for decl in s.decls {
+			if decl.ident != nil {
+				append(
+					tokens,
+					SemanticToken {
+						offset = decl.ident.range.start,
+						length = decl.ident.range.end - decl.ident.range.start,
+						type = .Variable,
+						modifiers = 1 << u32(SemanticTokenModifier.Declaration),
+					},
+				)
+			}
+			if decl.typed != nil {
+				collect_tokens_from_type_expr(tokens, decl.typed)
+			}
+		}
+
 	case ^ast.Controls_Decl:
 		if s.ident != nil {
 			append(

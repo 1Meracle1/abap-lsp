@@ -824,6 +824,13 @@ Field_Symbol_Decl :: struct {
 	typed:      ^Expr, // The type expression
 }
 
+// FIELD-SYMBOLS chain declaration
+// Syntax: FIELD-SYMBOLS: <fs1> TYPE type1, <fs2> TYPE type2.
+Field_Symbol_Chain_Decl :: struct {
+	using node: Decl,
+	decls:      [dynamic]^Field_Symbol_Decl,
+}
+
 // CONTROLS declaration control types
 Control_Kind :: enum {
 	Tableview, // TYPE TABLEVIEW USING SCREEN dynnr
@@ -999,6 +1006,7 @@ Any_Node :: union {
 	^Module_Decl,
 	// Field symbols
 	^Field_Symbol_Decl,
+	^Field_Symbol_Chain_Decl,
 	// Controls
 	^Controls_Decl,
 	^Controls_Chain_Decl,
@@ -1083,6 +1091,7 @@ Any_Stmt :: union {
 	^Module_Decl,
 	// Field symbols
 	^Field_Symbol_Decl,
+	^Field_Symbol_Chain_Decl,
 	// Controls
 	^Controls_Decl,
 	^Controls_Chain_Decl,

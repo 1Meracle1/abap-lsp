@@ -233,6 +233,9 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 			hover_text = fmt.tprintf("(field-symbol declaration) %s", n.ident.name)
 		}
 
+	case ^ast.Field_Symbol_Chain_Decl:
+		hover_text = "(chained FIELD-SYMBOLS declaration)"
+
 	case ^ast.Controls_Decl:
 		if n.ident != nil {
 			kind_str := n.kind == .Tableview ? "TABLEVIEW" : "TABSTRIP"

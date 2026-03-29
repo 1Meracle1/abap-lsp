@@ -288,17 +288,61 @@ parse_form_params :: proc(
 
 // FIELD-SYMBOLS declaration parser
 // Syntax: FIELD-SYMBOLS <fs> TYPE type.
+// Syntax: FIELD-SYMBOLS: <fs1> TYPE type1, <fs2> TYPE type2.
 // Syntax: FIELD-SYMBOLS <fs> LIKE LINE OF itab.
 parse_field_symbol_decl :: proc(p: ^Parser) -> ^ast.Stmt {
 	// FIELD-SYMBOLS was already consumed by check_hyphenated_keyword
 	fs_tok := p.prev_tok
 
+	if allow_token(p, .Colon) {
+		return parse_field_symbol_chain_decl(p, fs_tok)
+	}
+
+	decl := parse_field_symbol_single_decl(p, fs_tok)
+	if decl != nil {
+		period_tok := expect_token(p, .Period)
+		decl.range.end = period_tok.range.end
+	}
+	return decl
+}
+
+parse_field_symbol_chain_decl :: proc(p: ^Parser, fs_tok: lexer.Token) -> ^ast.Stmt {
+	chain_decl := ast.new(ast.Field_Symbol_Chain_Decl, fs_tok.range)
+	chain_decl.decls = make([dynamic]^ast.Field_Symbol_Decl)
+
+	for {
+		decl := parse_field_symbol_single_decl(p, fs_tok)
+		if decl != nil {
+			append(&chain_decl.decls, decl)
+		}
+
+		if p.curr_tok.kind == .Period {
+			break
+		}
+
+		if !allow_token(p, .Comma) {
+			error(p, p.curr_tok.range, "expected ',' or '.'")
+			break
+		}
+	}
+
+	period_tok := expect_token(p, .Period)
+	chain_decl.range.end = period_tok.range.end
+	return chain_decl
+}
+
+parse_field_symbol_single_decl :: proc(p: ^Parser, fs_tok: lexer.Token) -> ^ast.Field_Symbol_Decl {
+	fs_decl := ast.new(ast.Field_Symbol_Decl, fs_tok.range)
+
 	// Parse field symbol name <fs>
 	fs_ident := parse_field_symbol_ref(p)
-
-	fs_decl := ast.new(ast.Field_Symbol_Decl, fs_tok.range)
+	if fs_ident == nil {
+		return nil
+	}
 	if ident, ok := fs_ident.derived_expr.(^ast.Ident); ok {
 		fs_decl.ident = ident
+	} else {
+		error(p, fs_ident.range, "expected field symbol identifier")
 	}
 
 	// Parse TYPE or LIKE clause
@@ -308,10 +352,6 @@ parse_field_symbol_decl :: proc(p: ^Parser) -> ^ast.Stmt {
 	} else {
 		error(p, p.curr_tok.range, "expected TYPE or LIKE after field symbol name")
 	}
-
-	period_tok := expect_token(p, .Period)
-	fs_decl.range.end = period_tok.range.end
-	fs_decl.derived_stmt = fs_decl
 	return fs_decl
 }
 

@@ -217,6 +217,8 @@ resolve_decl_into :: proc(table: ^SymbolTable, decl: ^ast.Stmt) {
 		resolve_module_decl(table, d)
 	case ^ast.Field_Symbol_Decl:
 		resolve_field_symbol_decl(table, d, is_global = true)
+	case ^ast.Field_Symbol_Chain_Decl:
+		resolve_field_symbol_chain_decl(table, d, is_global = true)
 	case ^ast.Controls_Decl:
 		resolve_controls_decl(table, d, is_global = true)
 	case ^ast.Controls_Chain_Decl:
@@ -301,6 +303,8 @@ resolve_file_into :: proc(file: ^ast.File, table: ^SymbolTable) {
 			resolve_module_decl(table, d)
 		case ^ast.Field_Symbol_Decl:
 			resolve_field_symbol_decl(table, d, is_global = true)
+		case ^ast.Field_Symbol_Chain_Decl:
+			resolve_field_symbol_chain_decl(table, d, is_global = true)
 		case ^ast.Controls_Decl:
 			resolve_controls_decl(table, d, is_global = true)
 		case ^ast.Controls_Chain_Decl:
@@ -1015,6 +1019,8 @@ resolve_stmt :: proc(table: ^SymbolTable, stmt: ^ast.Stmt) {
 		resolve_data_struct_decl(table, s)
 	case ^ast.Field_Symbol_Decl:
 		resolve_field_symbol_decl(table, s, is_global = false)
+	case ^ast.Field_Symbol_Chain_Decl:
+		resolve_field_symbol_chain_decl(table, s, is_global = false)
 	case ^ast.If_Stmt:
 		resolve_if_stmt(table, s)
 	case ^ast.Case_Stmt:
@@ -1215,6 +1221,16 @@ resolve_field_symbol_decl :: proc(
 		type_info = type_info,
 	}
 	add_symbol(table, sym, allow_shadowing = is_global)
+}
+
+resolve_field_symbol_chain_decl :: proc(
+	table: ^SymbolTable,
+	chain: ^ast.Field_Symbol_Chain_Decl,
+	is_global: bool = true,
+) {
+	for decl in chain.decls {
+		resolve_field_symbol_decl(table, decl, is_global)
+	}
 }
 
 resolve_case_stmt :: proc(table: ^SymbolTable, case_stmt: ^ast.Case_Stmt) {

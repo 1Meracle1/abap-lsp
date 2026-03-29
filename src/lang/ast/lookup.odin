@@ -718,6 +718,13 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 			}
 		}
 
+	case ^Field_Symbol_Chain_Decl:
+		for decl in n.decls {
+			if res := find_node_at_offset(&decl.decl_base.stmt_base, offset); res != nil {
+				return res
+			}
+		}
+
 	case ^Controls_Decl:
 		if n.ident != nil {
 			if res := find_node_at_offset(&n.ident.expr_base, offset); res != nil {

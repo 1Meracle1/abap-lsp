@@ -5873,6 +5873,125 @@ field_symbol_type_test :: proc(t: ^testing.T) {
 }
 
 @(test)
+field_symbol_type_chain_single_test :: proc(t: ^testing.T) {
+	// FIELD-SYMBOLS:
+	//   <ls_response> TYPE zattp_s_eu_notif_gen.
+	file := ast.new(ast.File, {})
+	file.src = `FIELD-SYMBOLS:
+      <ls_response> TYPE zattp_s_eu_notif_gen.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	chain_decl, ok := file.decls[0].derived_stmt.(^ast.Field_Symbol_Chain_Decl)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Field_Symbol_Chain_Decl, got %T", file.decls[0].derived_stmt)) do return
+	if !testing.expect(t, len(chain_decl.decls) == 1, fmt.tprintf("Expected 1 decl in chain, got %d", len(chain_decl.decls))) do return
+
+	fs_decl := chain_decl.decls[0]
+	if !testing.expect(t, fs_decl.ident != nil, "Expected ident to be set") do return
+	if !testing.expect(t, fs_decl.typed != nil, "Expected typed to be set") do return
+
+	testing.expect(
+		t,
+		fs_decl.ident.name == "<ls_response>",
+		fmt.tprintf("Expected '<ls_response>', got '%s'", fs_decl.ident.name),
+	)
+
+	if type_ident, iok := fs_decl.typed.derived_expr.(^ast.Ident); iok {
+		testing.expect(
+			t,
+			type_ident.name == "zattp_s_eu_notif_gen",
+			fmt.tprintf("Expected 'zattp_s_eu_notif_gen', got '%s'", type_ident.name),
+		)
+	} else {
+		testing.expect(
+			t,
+			false,
+			fmt.tprintf("Expected typed to be Ident, got %T", fs_decl.typed.derived_expr),
+		)
+	}
+}
+
+@(test)
+field_symbol_type_chain_multiple_test :: proc(t: ^testing.T) {
+	// FIELD-SYMBOLS:
+	//   <ls_response1> TYPE zattp_s_eu_notif_gen,
+	//   <ls_response2> TYPE zattp_s_eu_notif_gen.
+	file := ast.new(ast.File, {})
+	file.src = `FIELD-SYMBOLS:
+      <ls_response1> TYPE zattp_s_eu_notif_gen,
+      <ls_response2> TYPE zattp_s_eu_notif_gen.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	chain_decl, ok := file.decls[0].derived_stmt.(^ast.Field_Symbol_Chain_Decl)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Field_Symbol_Chain_Decl, got %T", file.decls[0].derived_stmt)) do return
+	if !testing.expect(t, len(chain_decl.decls) == 2, fmt.tprintf("Expected 2 decls in chain, got %d", len(chain_decl.decls))) do return
+
+	decl1 := chain_decl.decls[0]
+	decl2 := chain_decl.decls[1]
+
+	if !testing.expect(t, decl1.ident != nil, "Expected first ident to be set") do return
+	if !testing.expect(t, decl2.ident != nil, "Expected second ident to be set") do return
+	if !testing.expect(t, decl1.typed != nil, "Expected first typed to be set") do return
+	if !testing.expect(t, decl2.typed != nil, "Expected second typed to be set") do return
+
+	testing.expect(
+		t,
+		decl1.ident.name == "<ls_response1>",
+		fmt.tprintf("Expected '<ls_response1>', got '%s'", decl1.ident.name),
+	)
+	testing.expect(
+		t,
+		decl2.ident.name == "<ls_response2>",
+		fmt.tprintf("Expected '<ls_response2>', got '%s'", decl2.ident.name),
+	)
+
+	if type_ident, iok := decl1.typed.derived_expr.(^ast.Ident); iok {
+		testing.expect(
+			t,
+			type_ident.name == "zattp_s_eu_notif_gen",
+			fmt.tprintf("Expected first type 'zattp_s_eu_notif_gen', got '%s'", type_ident.name),
+		)
+	} else {
+		testing.expect(
+			t,
+			false,
+			fmt.tprintf("Expected first typed to be Ident, got %T", decl1.typed.derived_expr),
+		)
+	}
+
+	if type_ident, iok := decl2.typed.derived_expr.(^ast.Ident); iok {
+		testing.expect(
+			t,
+			type_ident.name == "zattp_s_eu_notif_gen",
+			fmt.tprintf("Expected second type 'zattp_s_eu_notif_gen', got '%s'", type_ident.name),
+		)
+	} else {
+		testing.expect(
+			t,
+			false,
+			fmt.tprintf("Expected second typed to be Ident, got %T", decl2.typed.derived_expr),
+		)
+	}
+}
+
+@(test)
 field_symbol_like_line_of_test :: proc(t: ^testing.T) {
 	// FIELD-SYMBOLS <line> LIKE LINE OF itab.
 	file := ast.new(ast.File, {})
