@@ -24,21 +24,13 @@ handle_document_open :: proc(srv: ^Server, params: json.Value) {
 		document_open_params.textDocument.version,
 	)
 
-	// // Ensure project context exists for this file
-	// project := cache.ensure_project_context(srv.storage, uri)
-
-	// // If file belongs to a project, rebuild merged symbol table
-	// if project != nil {
-	// 	cache.invalidate_project(project)
-	// 	cache.resolve_project(srv.storage, project)
-	// }
-
-	// // Publish diagnostics after refresh
-	// snap := cache.get_snapshot(srv.storage, uri)
-	// if snap != nil {
-	// 	defer cache.release_snapshot(snap)
-	// 	publish_diagnostics(srv, uri, snap, project)
-	// }
+	// Publish diagnostics immediately on open so the client does not need
+	// to wait for the first edit before syntax/semantic errors appear.
+	snap := cache.get_snapshot(srv.storage, uri)
+	if snap != nil {
+		defer cache.release_snapshot(snap)
+		publish_diagnostics(srv, uri, snap)
+	}
 }
 
 handle_document_change :: proc(srv: ^Server, params: json.Value) {
