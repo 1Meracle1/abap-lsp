@@ -882,6 +882,7 @@ Class_Def_Flag :: enum {
 	Abstract,
 	Final,
 	Testing,
+	Shared_Memory,
 }
 Class_Def_Flags :: bit_set[Class_Def_Flag]
 
@@ -900,9 +901,13 @@ Class_Def_Duration :: enum {
 Class_Def_Decl :: struct {
 	using node:      Decl,
 	ident:           ^Ident,
+	visibility:      Access_Modifier,
 	flags:           Class_Def_Flags,
 	create_kind:     Class_Create_Kind,
 	inheriting_from: ^Expr,
+	behavior_of:     ^Expr,
+	friends:         [dynamic]^Expr,
+	global_friends:  bool,
 	sections:        [dynamic]^Class_Section,
 	risk_level:      Class_Def_Risk_Level,
 	duration:        Class_Def_Duration,

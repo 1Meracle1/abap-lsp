@@ -644,6 +644,81 @@ ENDCLASS.`
 }
 
 @(test)
+class_definition_with_full_header_options_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src = `CLASS zcl_my_class DEFINITION
+  PUBLIC
+  FINAL
+  CREATE PUBLIC
+  ABSTRACT
+  SHARED MEMORY
+  INHERITING FROM zcl_super_class
+  FRIENDS zcl_friend1 zcl_friend2.
+ENDCLASS.`
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if len(file.decls) > 0 {
+		class, ok := file.decls[0].derived_stmt.(^ast.Class_Def_Decl)
+		if !testing.expect(t, ok, "Expected Class_Def_Decl") do return
+
+		testing.expect(t, class.visibility == .Public)
+		testing.expect(t, .Final in class.flags, "Expected class to be FINAL")
+		testing.expect(t, .Abstract in class.flags, "Expected class to be ABSTRACT")
+		testing.expect(
+			t,
+			.Shared_Memory in class.flags,
+			"Expected class to be marked as SHARED MEMORY",
+		)
+		testing.expect(t, class.create_kind == .Public)
+		testing.expect(t, class.inheriting_from != nil, "Expected INHERITING FROM clause")
+		testing.expect(
+			t,
+			len(class.friends) == 2,
+			fmt.tprintf("Expected 2 friends, got %d", len(class.friends)),
+		)
+	}
+}
+
+@(test)
+class_definition_for_behavior_with_global_friends_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src = `CLASS lhc_behavior_handler DEFINITION
+  FOR BEHAVIOR OF zi_travel
+  GLOBAL FRIENDS zcl_behavior_test.
+ENDCLASS.`
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if len(file.decls) > 0 {
+		class, ok := file.decls[0].derived_stmt.(^ast.Class_Def_Decl)
+		if !testing.expect(t, ok, "Expected Class_Def_Decl") do return
+
+		testing.expect(t, class.behavior_of != nil, "Expected FOR BEHAVIOR OF clause")
+		testing.expect(t, class.global_friends, "Expected GLOBAL FRIENDS flag")
+		testing.expect(
+			t,
+			len(class.friends) == 1,
+			fmt.tprintf("Expected 1 friend, got %d", len(class.friends)),
+		)
+	}
+}
+
+@(test)
 class_definition_multiple_methods :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
 	file.src = `CLASS lcl_sn_reset DEFINITION.

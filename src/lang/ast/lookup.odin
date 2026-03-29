@@ -1000,6 +1000,16 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 				return res
 			}
 		}
+		if n.behavior_of != nil {
+			if res := find_node_at_offset(&n.behavior_of.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		for friend in n.friends {
+			if res := find_node_at_offset(&friend.expr_base, offset); res != nil {
+				return res
+			}
+		}
 		for section in n.sections {
 			if res := find_node_at_offset(&section.node, offset); res != nil {
 				return res

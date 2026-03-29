@@ -397,6 +397,12 @@ collect_tokens_from_stmt :: proc(
 		if s.inheriting_from != nil {
 			collect_tokens_from_type_expr(tokens, s.inheriting_from)
 		}
+		if s.behavior_of != nil {
+			collect_tokens_from_type_expr(tokens, s.behavior_of)
+		}
+		for friend in s.friends {
+			collect_tokens_from_type_expr(tokens, friend)
+		}
 		for section in s.sections {
 			collect_tokens_from_class_section(tokens, section, snap)
 		}

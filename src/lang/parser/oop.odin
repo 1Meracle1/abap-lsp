@@ -19,6 +19,96 @@ parse_class_decl :: proc(p: ^Parser) -> ^ast.Decl {
 	return bad_decl
 }
 
+is_class_def_option_start :: proc(p: ^Parser) -> bool {
+	if p.curr_tok.kind != .Ident {
+		return false
+	}
+
+	if len(p.curr_tok.lit) == 0 || len(p.curr_tok.lit) >= len(p.keyword_buffer) {
+		return false
+	}
+
+	keyword := to_upper(p.keyword_buffer[:], p.curr_tok.lit)
+	switch keyword {
+	case "PUBLIC", "ABSTRACT", "FINAL", "INHERITING", "CREATE", "FOR", "FRIENDS", "GLOBAL",
+		"SHARED":
+		return true
+	}
+	return false
+}
+
+parse_class_def_testing_options :: proc(p: ^Parser, class_decl: ^ast.Class_Def_Decl) {
+	class_decl.flags += {.Testing}
+
+	if check_keyword(p, "DURATION") {
+		advance_token(p)
+		keyword := to_upper(p.keyword_buffer[:], p.curr_tok.lit)
+		switch keyword {
+		case "SHORT":
+			advance_token(p)
+			class_decl.duration = .Short
+		case "MEDIUM":
+			advance_token(p)
+			class_decl.duration = .Medium
+		case "LONG":
+			advance_token(p)
+			class_decl.duration = .Long
+		case:
+			error(p, p.curr_tok.range, "expected DURATION token (SHORT|MEDIUM|LONG)")
+		}
+	}
+
+	if check_keyword(p, "RISK") {
+		advance_token(p)
+		if check_keyword(p, "LEVEL") {
+			advance_token(p)
+			keyword := to_upper(p.keyword_buffer[:], p.curr_tok.lit)
+			switch keyword {
+			case "CRITICAL":
+				advance_token(p)
+				class_decl.risk_level = .Critical
+			case "DANGEROUS":
+				advance_token(p)
+				class_decl.risk_level = .Dangerous
+			case "HARMLESS":
+				advance_token(p)
+				class_decl.risk_level = .Harmless
+			case:
+				error(
+					p,
+					p.curr_tok.range,
+					"expected RISK LEVEL token (CRITICAL|DANGEROUS|HARMLESS)",
+				)
+			}
+		} else {
+			error(
+				p,
+				p.curr_tok.range,
+				"expected LEVEL after RISK in testing class definition",
+			)
+		}
+	}
+}
+
+parse_class_def_friends :: proc(p: ^Parser, class_decl: ^ast.Class_Def_Decl) {
+	friend_count := len(class_decl.friends)
+	for p.curr_tok.kind == .Ident && p.curr_tok.kind != .Period {
+		if is_class_def_option_start(p) {
+			break
+		}
+
+		friend := parse_expr(p)
+		if friend == nil {
+			break
+		}
+		append(&class_decl.friends, friend)
+	}
+
+	if len(class_decl.friends) == friend_count {
+		error(p, p.curr_tok.range, "expected at least one class or interface after FRIENDS")
+	}
+}
+
 parse_class_def_decl :: proc(
 	p: ^Parser,
 	class_tok: lexer.Token,
@@ -28,78 +118,28 @@ parse_class_def_decl :: proc(
 
 	class_decl := ast.new(ast.Class_Def_Decl, class_tok.range)
 	class_decl.ident = ast.new_ident(ident_tok)
+	class_decl.visibility = .Public
+	class_decl.friends = make([dynamic]^ast.Expr)
 	class_decl.sections = make([dynamic]^ast.Class_Section)
-
-	if check_keyword(p, "FOR") {
-		advance_token(p)
-		if check_keyword(p, "TESTING") {
-			advance_token(p)
-			class_decl.flags += {.Testing}
-
-			if check_keyword(p, "DURATION") {
-				advance_token(p)
-				keyword := to_upper(p.keyword_buffer[:], p.curr_tok.lit)
-				switch keyword {
-				case "SHORT":
-					advance_token(p)
-					class_decl.duration = .Short
-				case "MEDIUM":
-					advance_token(p)
-					class_decl.duration = .Medium
-				case "LONG":
-					advance_token(p)
-					class_decl.duration = .Long
-				case:
-					error(p, p.curr_tok.range, "expected DURATION token (SHORT|MEDIUM|LONG)")
-				}
-			}
-
-			if check_keyword(p, "RISK") {
-				advance_token(p)
-				if check_keyword(p, "LEVEL") {
-					advance_token(p)
-					keyword := to_upper(p.keyword_buffer[:], p.curr_tok.lit)
-					switch keyword {
-					case "CRITICAL":
-						advance_token(p)
-						class_decl.risk_level = .Critical
-					case "DANGEROUS":
-						advance_token(p)
-						class_decl.risk_level = .Dangerous
-					case "HARMLESS":
-						advance_token(p)
-						class_decl.risk_level = .Harmless
-					case:
-						error(
-							p,
-							p.curr_tok.range,
-							"expected RISK LEVEL token (CRITICAL|DANGEROUS|HARMLESS)",
-						)
-					}
-				} else {
-					error(
-						p,
-						p.curr_tok.range,
-						"expected LEVEL after RISK in testing class definition",
-					)
-				}
-			}
-		} else {
-			error(p, p.curr_tok.range, "expected TESTING after FOR in class definition")
-		}
-	}
 
 	for p.curr_tok.kind == .Ident && p.curr_tok.kind != .Period {
 		if len(p.curr_tok.lit) > 0 && len(p.curr_tok.lit) < len(p.keyword_buffer) {
 			keyword := to_upper(p.keyword_buffer[:], p.curr_tok.lit)
 			match_not_found := false
 			switch keyword {
+			case "PUBLIC":
+				advance_token(p)
+				class_decl.visibility = .Public
 			case "ABSTRACT":
 				advance_token(p)
 				class_decl.flags += {.Abstract}
 			case "FINAL":
 				advance_token(p)
 				class_decl.flags += {.Final}
+			case "SHARED":
+				advance_token(p)
+				expect_keyword_token(p, "MEMORY")
+				class_decl.flags += {.Shared_Memory}
 			case "INHERITING":
 				advance_token(p)
 				expect_keyword_token(p, "FROM")
@@ -123,6 +163,26 @@ parse_class_def_decl :: proc(
 						"expected CREATE visibility token (PUBLIC|PROTECTED|PRIVATE)",
 					)
 				}
+			case "FOR":
+				advance_token(p)
+				if check_keyword(p, "TESTING") {
+					advance_token(p)
+					parse_class_def_testing_options(p, class_decl)
+				} else if check_keyword(p, "BEHAVIOR") {
+					advance_token(p)
+					expect_keyword_token(p, "OF")
+					class_decl.behavior_of = parse_expr(p)
+				} else {
+					error(p, p.curr_tok.range, "expected TESTING or BEHAVIOR after FOR in class definition")
+				}
+			case "GLOBAL":
+				advance_token(p)
+				expect_keyword_token(p, "FRIENDS")
+				class_decl.global_friends = true
+				parse_class_def_friends(p, class_decl)
+			case "FRIENDS":
+				advance_token(p)
+				parse_class_def_friends(p, class_decl)
 			case:
 				match_not_found = true
 			}
