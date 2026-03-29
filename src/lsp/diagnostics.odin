@@ -106,6 +106,7 @@ handle_diagnostic :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 	}
 
 	projects := cache.get_projects_for_uri(srv.storage, uri, context.temp_allocator)
+	defer cache.release_projects(projects)
 	if len(projects) > 0 {
 		append_project_diagnostics(&diagnostics, snap, uri, projects)
 	} else if snap.symbol_table != nil {
@@ -139,6 +140,7 @@ publish_diagnostics :: proc(
 	}
 
 	projects := cache.get_projects_for_uri(srv.storage, uri, context.temp_allocator)
+	defer cache.release_projects(projects)
 	if len(projects) > 0 {
 		append_project_diagnostics(&diagnostics, snap, uri, projects)
 	} else if snap.symbol_table != nil {

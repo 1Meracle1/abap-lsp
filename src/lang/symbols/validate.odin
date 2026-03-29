@@ -62,15 +62,15 @@ validate_stmt_ctx :: proc(ctx: ^Validation_Context, stmt: ^ast.Stmt) {
 	case ^ast.Data_Inline_Decl:
 		validate_expr_ctx(ctx, s.value)
 	case ^ast.Data_Typed_Decl:
-		validate_expr_ctx(ctx, s.typed)
+		validate_type_expr_ctx(ctx, s.typed)
 		validate_expr_ctx(ctx, s.value)
 	case ^ast.Const_Decl:
-		validate_expr_ctx(ctx, s.typed)
+		validate_type_expr_ctx(ctx, s.typed)
 		validate_expr_ctx(ctx, s.value)
 	case ^ast.Types_Decl:
-		validate_expr_ctx(ctx, s.typed)
+		validate_type_expr_ctx(ctx, s.typed)
 	case ^ast.Attr_Decl:
-		validate_expr_ctx(ctx, s.typed)
+		validate_type_expr_ctx(ctx, s.typed)
 		validate_expr_ctx(ctx, s.value)
 	case ^ast.Assign_Stmt:
 		for lhs in s.lhs {
@@ -135,10 +135,30 @@ validate_stmt_ctx :: proc(ctx: ^Validation_Context, stmt: ^ast.Stmt) {
 		}
 	case ^ast.Class_Impl_Decl:
 		// Validate class implementation methods
-		for method in s.methods {
-			#partial switch m in method.derived_stmt {
-			case ^ast.Method_Impl:
-				validate_stmt_list_ctx(ctx, m.body[:])
+		class_name := strings.to_lower(s.ident.name)
+		if class_sym, found := ctx.lookup_table.symbols[class_name]; found && class_sym.child_scope != nil {
+			for method in s.methods {
+				#partial switch m in method.derived_stmt {
+				case ^ast.Method_Impl:
+					method_name := strings.to_lower(get_decl_name(m.ident), context.temp_allocator)
+					if method_sym, ok := class_sym.child_scope.symbols[method_name]; ok &&
+					   method_sym.child_scope != nil {
+						child_ctx := Validation_Context{
+							lookup_table = method_sym.child_scope,
+							diag_table   = ctx.diag_table,
+						}
+						validate_stmt_list_ctx(&child_ctx, m.body[:])
+					} else {
+						validate_stmt_list_ctx(ctx, m.body[:])
+					}
+				}
+			}
+		} else {
+			for method in s.methods {
+				#partial switch m in method.derived_stmt {
+				case ^ast.Method_Impl:
+					validate_stmt_list_ctx(ctx, m.body[:])
+				}
 			}
 		}
 	case ^ast.Interface_Decl:
@@ -204,6 +224,9 @@ validate_expr_ctx :: proc(ctx: ^Validation_Context, expr: ^ast.Expr) {
 	}
 
 	#partial switch e in expr.derived_expr {
+	case ^ast.Ident:
+		validate_ident_expr_ctx(ctx, e)
+
 	case ^ast.Selector_Expr:
 		// Validate the selector expression
 		validate_selector_expr_ctx(ctx, e)
@@ -231,13 +254,13 @@ validate_expr_ctx :: proc(ctx: ^Validation_Context, expr: ^ast.Expr) {
 		}
 
 	case ^ast.New_Expr:
-		validate_expr_ctx(ctx, e.type_expr)
+		validate_type_expr_ctx(ctx, e.type_expr)
 		for arg in e.args {
 			validate_expr_ctx(ctx, arg)
 		}
 
 	case ^ast.Constructor_Expr:
-		validate_expr_ctx(ctx, e.type_expr)
+		validate_type_expr_ctx(ctx, e.type_expr)
 		for arg in e.args {
 			validate_expr_ctx(ctx, arg)
 		}
@@ -254,14 +277,52 @@ validate_expr_ctx :: proc(ctx: ^Validation_Context, expr: ^ast.Expr) {
 		}
 
 	case ^ast.Table_Type:
-		validate_expr_ctx(ctx, e.elem)
+		validate_type_expr_ctx(ctx, e.elem)
 
 	case ^ast.Ref_Type:
-		validate_expr_ctx(ctx, e.target)
+		validate_type_expr_ctx(ctx, e.target)
 
 	case ^ast.Line_Type:
-		validate_expr_ctx(ctx, e.table)
+		validate_type_expr_ctx(ctx, e.table)
 	}
+}
+
+validate_type_expr_ctx :: proc(ctx: ^Validation_Context, expr: ^ast.Expr) {
+	if expr == nil {
+		return
+	}
+
+	#partial switch e in expr.derived_expr {
+	case ^ast.Table_Type:
+		validate_type_expr_ctx(ctx, e.elem)
+	case ^ast.Ref_Type:
+		validate_type_expr_ctx(ctx, e.target)
+	case ^ast.Line_Type:
+		validate_type_expr_ctx(ctx, e.table)
+	case ^ast.Selector_Expr:
+		validate_type_expr_ctx(ctx, e.expr)
+	}
+}
+
+validate_ident_expr_ctx :: proc(ctx: ^Validation_Context, ident: ^ast.Ident) {
+	if ctx == nil || ident == nil || ctx.lookup_table == nil || ctx.diag_table == nil {
+		return
+	}
+
+	name := strings.to_lower(ident.name)
+	if len(name) == 0 {
+		return
+	}
+
+	if name in ctx.lookup_table.symbols {
+		return
+	}
+
+	add_diagnostic(
+		ctx.diag_table,
+		ident.range,
+		strings.concatenate({"Unknown symbol '", ident.name, "'"}, context.temp_allocator),
+	)
 }
 
 // validate_selector_expr validates that fat arrow (=>) is only used with class/interface names

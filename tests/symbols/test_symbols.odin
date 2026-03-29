@@ -329,3 +329,61 @@ my_interface=>some_method( ).`
 		fmt.tprintf("expected no fat arrow errors with interface, got %d errors", fat_arrow_errors),
 	)
 }
+
+@(test)
+test_unknown_symbol_in_expression :: proc(t: ^testing.T) {
+	src := `DATA lv_value TYPE i.
+lv_value = missing_var.`
+	file := ast.new(ast.File, {})
+	file.src = src
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	table := symbols.resolve_file(file)
+	defer symbols.destroy_symbol_table(table)
+
+	diags := symbols.collect_all_diagnostics(table)
+	found_unknown := false
+	for diag in diags {
+		if strings.contains(diag.message, "Unknown symbol 'missing_var'") {
+			found_unknown = true
+			break
+		}
+	}
+
+	testing.expect(t, found_unknown, "expected unresolved identifier diagnostic for missing_var")
+}
+
+@(test)
+test_method_impl_uses_declared_params :: proc(t: ^testing.T) {
+	src := `CLASS lcl_calc DEFINITION.
+  PUBLIC SECTION.
+    METHODS run IMPORTING iv_input TYPE i.
+ENDCLASS.
+CLASS lcl_calc IMPLEMENTATION.
+  METHOD run.
+    DATA lv_copy TYPE i.
+    lv_copy = iv_input.
+  ENDMETHOD.
+ENDCLASS.`
+	file := ast.new(ast.File, {})
+	file.src = src
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	table := symbols.resolve_file(file)
+	defer symbols.destroy_symbol_table(table)
+
+	diags := symbols.collect_all_diagnostics(table)
+	found_param_error := false
+	for diag in diags {
+		if strings.contains(diag.message, "iv_input") {
+			found_param_error = true
+			break
+		}
+	}
+
+	testing.expect(t, !found_param_error, "expected method parameter iv_input to resolve inside implementation")
+}

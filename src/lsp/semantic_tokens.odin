@@ -27,7 +27,13 @@ handle_semantic_tokens :: proc(srv: ^Server, id: json.Value, params: json.Value)
 	}
 	defer cache.release_snapshot(snap)
 
-	tokens := collect_semantic_tokens(snap)
+	symbol_table := cache.get_effective_symbol_table(srv.storage, semantic_params.textDocument.uri)
+	effective_snap := snap^
+	if symbol_table != nil {
+		effective_snap.symbol_table = symbol_table
+	}
+
+	tokens := collect_semantic_tokens(&effective_snap)
 	encoded := encode_semantic_tokens(snap.text, tokens[:])
 	result := SemanticTokens {
 		data = encoded[:],

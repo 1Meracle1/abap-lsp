@@ -3,94 +3,112 @@ package cache
 import "../lang/ast"
 import "../lang/parser"
 import "../lang/symbols"
+import "base:intrinsics"
 import "core:log"
-import "core:mem"
-import "core:mem/virtual"
 import "core:strings"
+import "core:sync"
 import "core:time"
 
-Document :: struct {
-	uri:          string,
-	path:         string,
-	arena:        virtual.Arena,
-	allocator:    mem.Allocator,
-	text:         string,
-	version:      int,
-	ast:          ^ast.File,
-	symbol_table: ^symbols.SymbolTable,
-	workspace:    ^Workspace,
-	pkg:          ^Package,
+document_entry_init :: proc(workspace: ^Workspace, uri: string, path: string) -> ^Document_Entry {
+	entry := new(Document_Entry)
+	entry.workspace = workspace
+	entry.uri = strings.clone(uri)
+	entry.path = strings.clone(path)
+	return entry
 }
 
-document_init :: proc(
-	workspace: ^Workspace,
-	uri: string,
-	path: string,
-	text: string,
-	version: int,
-) -> ^Document {
-	document := new(Document)
-	document.workspace = workspace
-	document.uri = strings.clone(uri)
-	document.path = strings.clone(path)
-
-	_ = virtual.arena_init_growing(&document.arena)
-	document.allocator = virtual.arena_allocator(&document.arena)
-
-	document_refresh(document, text, version)
-
-	if existing_document, exists := workspace.documents[uri]; exists {
-		document_deinit(existing_document)
+document_entry_deinit :: proc(entry: ^Document_Entry) {
+	if entry == nil {
+		return
 	}
-	workspace.documents[uri] = document
 
-	return document
+	if entry.current != nil {
+		release_snapshot(entry.current)
+	}
+	delete(entry.uri)
+	delete(entry.path)
+	free(entry)
 }
 
-document_deinit :: proc(document: ^Document) {
-	virtual.arena_destroy(&document.arena)
-	delete(document.uri)
-	delete(document.path)
-	free(document)
-}
+document_entry_publish :: proc(entry: ^Document_Entry, text: string, version: int) {
+	if entry == nil || entry.workspace == nil {
+		return
+	}
 
-document_refresh :: proc(document: ^Document, text: string, version: int) {
 	start := time.now()
 	defer log.infof(
 		"document_refresh took %.2fms for %s",
 		time.duration_milliseconds(time.since(start)),
-		document.path,
+		entry.path,
 	)
 
-	virtual.arena_free_all(&document.arena)
-	old_allocator := context.allocator
-	context.allocator = document.allocator
-	defer context.allocator = old_allocator
-
-	document.text = strings.clone(text)
-	document.version = version
-
-	document.ast = ast.new(ast.File, {})
-	document.ast.src = text
-	p: parser.Parser
-	parser.parse_file(&p, document.ast)
-	document_resolve_symbols(document)
-}
-
-document_resolve_symbols :: proc(document: ^Document) {
-	if document == nil || document.ast == nil {
-		document.symbol_table = nil
+	snapshot := create_snapshot(entry, text, version)
+	if snapshot == nil {
 		return
 	}
 
-	table := symbols.create_empty_symbol_table(document.allocator)
-	for decl in document.ast.decls {
-		symbols.resolve_decl_into(table, decl)
-	}
-	symbols.validate_file(document.ast, table)
-	document.symbol_table = table
+	old_snapshot: ^Snapshot
+	sync.rw_mutex_lock(&entry.lock)
+	old_snapshot = entry.current
+	entry.current = snapshot
+	sync.rw_mutex_unlock(&entry.lock)
+
+	release_snapshot(old_snapshot)
 }
 
-document_resolve_package_context :: proc(document: ^Document) {
+retain_snapshot :: proc(snapshot: ^Snapshot) {
+	if snapshot != nil {
+		_ = intrinsics.atomic_add(&snapshot.ref_count, 1)
+	}
+}
 
+release_snapshot :: proc(snapshot: ^Snapshot) {
+	if snapshot == nil {
+		return
+	}
+
+	old_count := intrinsics.atomic_sub(&snapshot.ref_count, 1)
+	if old_count == 1 {
+		arena_slot_release(snapshot.arena_slot)
+	}
+}
+
+create_snapshot :: proc(entry: ^Document_Entry, text: string, version: int) -> ^Snapshot {
+	slot := arena_slot_acquire(entry.workspace.doc_pool)
+	if slot == nil {
+		return nil
+	}
+
+	old_allocator := context.allocator
+	context.allocator = slot.allocator
+	defer context.allocator = old_allocator
+
+	snapshot := new(Snapshot, slot.allocator)
+	snapshot.ref_count = 1
+	snapshot.arena_slot = slot
+	snapshot.uri = strings.clone(entry.uri)
+	snapshot.path = strings.clone(entry.path)
+	snapshot.text = strings.clone(text)
+	snapshot.version = version
+
+	snapshot.ast = ast.new(ast.File, {})
+	snapshot.ast.src = snapshot.text
+
+	p: parser.Parser
+	parser.parse_file(&p, snapshot.ast)
+	snapshot.symbol_table = resolve_snapshot_symbols(snapshot)
+	return snapshot
+}
+
+resolve_snapshot_symbols :: proc(snapshot: ^Snapshot) -> ^symbols.SymbolTable {
+	if snapshot == nil || snapshot.ast == nil {
+		return nil
+	}
+
+	table := symbols.create_empty_symbol_table(context.allocator)
+	for decl in snapshot.ast.decls {
+		symbols.resolve_decl_into(table, decl)
+	}
+	symbols.validate_file(snapshot.ast, table)
+	return table
 }

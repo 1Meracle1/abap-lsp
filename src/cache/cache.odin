@@ -1,28 +1,62 @@
 package cache
 
+import "../lang/ast"
 import "../lang/symbols"
 import "core:strings"
+import "core:sync"
+
+Document_Entry :: struct {
+	lock:      sync.RW_Mutex,
+	workspace: ^Workspace,
+	uri:       string,
+	path:      string,
+	current:   ^Snapshot,
+}
+
+Project_Entry :: struct {
+	lock:    sync.RW_Mutex,
+	key:     string,
+	current: ^Project,
+}
+
+Snapshot :: struct {
+	ref_count:   i32,
+	arena_slot:  ^Arena_Slot,
+	uri:         string,
+	path:        string,
+	text:        string,
+	version:     int,
+	ast:         ^ast.File,
+	symbol_table: ^symbols.SymbolTable,
+}
+
+Project :: struct {
+	ref_count:         i32,
+	arena_slot:        ^Arena_Slot,
+	key:               string,
+	unit_name:         string,
+	root_uri:          string,
+	member_uris:       [dynamic]string,
+	diagnostics:       [dynamic]symbols.Diagnostic,
+	resolution_result: ^symbols.ProjectResolutionResult,
+	documents:         [dynamic]^Snapshot,
+}
 
 Workspace :: struct {
-	uri:       string,
-	name:      string,
-	root_path: string,
-	manifest:  ^Manifest,
-	packages:  map[string]^Package,
-	documents: map[string]^Document,
+	lock:         sync.RW_Mutex,
+	uri:          string,
+	name:         string,
+	root_path:    string,
+	manifest:     ^Manifest,
+	documents:    map[string]^Document_Entry,
+	projects:     map[string]^Project_Entry,
+	doc_pool:     ^Arena_Pool,
+	project_pool: ^Arena_Pool,
 }
 
 Cache :: struct {
+	lock:       sync.RW_Mutex,
 	workspaces: [dynamic]^Workspace,
-}
-
-Snapshot :: Document
-
-Project :: struct {
-	unit_name:         string,
-	root_uri:          string,
-	diagnostics:       [dynamic]symbols.Diagnostic,
-	resolution_result: ^symbols.ProjectResolutionResult,
 }
 
 cache_init :: proc() -> ^Cache {
@@ -35,10 +69,14 @@ cache_deinit :: proc(cache: ^Cache) {
 	if cache == nil {
 		return
 	}
-	for workspace in cache.workspaces {
-		workspace_deinit(workspace)
+
+	if sync.guard(&cache.lock) {
+		for workspace in cache.workspaces {
+			workspace_deinit(workspace)
+		}
+		delete(cache.workspaces)
 	}
-	delete(cache.workspaces)
+
 	free(cache)
 }
 
@@ -47,8 +85,10 @@ workspace_init :: proc(uri: string, name: string) -> ^Workspace {
 	workspace.uri = strings.clone(uri)
 	workspace.name = strings.clone(name)
 	workspace.root_path = uri_to_path(uri)
-	workspace.packages = make(map[string]^Package)
-	workspace.documents = make(map[string]^Document)
+	workspace.documents = make(map[string]^Document_Entry)
+	workspace.projects = make(map[string]^Project_Entry)
+	workspace.doc_pool = arena_pool_init(8)
+	workspace.project_pool = arena_pool_init(4)
 	workspace_load_manifest(workspace)
 	return workspace
 }
@@ -57,14 +97,23 @@ workspace_deinit :: proc(workspace: ^Workspace) {
 	if workspace == nil {
 		return
 	}
-	for _, document in workspace.documents {
-		document_deinit(document)
+
+	if sync.guard(&workspace.lock) {
+		for _, project_entry in workspace.projects {
+			project_entry_deinit(project_entry)
+		}
+		for _, document in workspace.documents {
+			document_entry_deinit(document)
+		}
+		delete(workspace.projects)
+		delete(workspace.documents)
 	}
+
 	if workspace.manifest != nil {
 		manifest_deinit(workspace.manifest)
 	}
-	delete(workspace.documents)
-	delete(workspace.packages)
+	arena_pool_deinit(workspace.project_pool)
+	arena_pool_deinit(workspace.doc_pool)
 	delete(workspace.uri)
 	delete(workspace.name)
 	delete(workspace.root_path)
@@ -72,8 +121,14 @@ workspace_deinit :: proc(workspace: ^Workspace) {
 }
 
 cache_add_workspace :: proc(cache: ^Cache, uri: string, name: string) -> ^Workspace {
+	if cache == nil {
+		return nil
+	}
+
 	workspace := workspace_init(uri, name)
-	append(&cache.workspaces, workspace)
+	if sync.guard(&cache.lock) {
+		append(&cache.workspaces, workspace)
+	}
 	return workspace
 }
 
@@ -84,28 +139,23 @@ workspace_for_uri :: proc(cache: ^Cache, uri: string) -> ^Workspace {
 
 	best_match: ^Workspace
 	best_match_len := -1
-	for workspace in cache.workspaces {
-		if len(workspace.uri) == 0 {
-			if best_match == nil {
-				best_match = workspace
+
+	if sync.shared_guard(&cache.lock) {
+		for workspace in cache.workspaces {
+			if len(workspace.uri) == 0 {
+				if best_match == nil {
+					best_match = workspace
+				}
+				continue
 			}
-			continue
+			if strings.has_prefix(uri, workspace.uri) && len(workspace.uri) > best_match_len {
+				best_match = workspace
+				best_match_len = len(workspace.uri)
+			}
 		}
-		if strings.has_prefix(uri, workspace.uri) && len(workspace.uri) > best_match_len {
-			best_match = workspace
-			best_match_len = len(workspace.uri)
-		}
 	}
 
-	if best_match != nil {
-		return best_match
-	}
-
-	if len(cache.workspaces) > 0 {
-		return cache.workspaces[0]
-	}
-
-	return nil
+	return best_match
 }
 
 get_snapshot :: proc(cache: ^Cache, uri: string) -> ^Snapshot {
@@ -113,78 +163,110 @@ get_snapshot :: proc(cache: ^Cache, uri: string) -> ^Snapshot {
 	if workspace == nil {
 		return nil
 	}
-	if document, ok := workspace.documents[uri]; ok {
-		return document
+
+	entry := workspace_get_document_entry(workspace, uri)
+	if entry == nil {
+		return nil
 	}
+
+	if sync.shared_guard(&entry.lock) {
+		snapshot := entry.current
+		retain_snapshot(snapshot)
+		return snapshot
+	}
+
 	return nil
 }
 
-release_snapshot :: proc(snapshot: ^Snapshot) {
-	_ = snapshot
+refresh_document :: proc(cache: ^Cache, uri: string, text: string, version: int) {
+	refresh_document_internal(cache, uri, text, version, true)
 }
 
-refresh_document :: proc(cache: ^Cache, uri: string, text: string, version: int) {
+refresh_document_internal :: proc(
+	cache: ^Cache,
+	uri: string,
+	text: string,
+	version: int,
+	invalidate_projects: bool,
+) {
 	workspace := workspace_for_uri(cache, uri)
 	if workspace == nil {
 		return
 	}
 
-	path := uri_to_path(uri)
-	if document, ok := workspace.documents[uri]; ok {
-		if len(document.path) == 0 {
-			document.path = strings.clone(path)
-		}
-		document_refresh(document, text, version)
+	path := uri_to_path(uri, context.temp_allocator)
+	entry := workspace_get_or_create_document_entry(workspace, uri, path)
+	if entry == nil {
 		return
 	}
 
-	document_init(workspace, uri, path, text, version)
+	document_entry_publish(entry, text, version)
+	if invalidate_projects {
+		workspace_invalidate_projects_for_uri(workspace, uri)
+	}
 }
 
 get_effective_symbol_table :: proc(cache: ^Cache, uri: string) -> ^symbols.SymbolTable {
 	projects := get_projects_for_uri(cache, uri, context.temp_allocator)
-	if len(projects) > 0 {
-		if len(projects) == 1 {
-			return get_file_symbol_table(projects[0], uri)
-		}
+	defer release_projects(projects)
 
-		base_table := get_file_symbol_table(projects[0], uri)
-		if base_table == nil {
-			base_table = symbols.create_empty_symbol_table(context.temp_allocator)
-		}
-		merged_table := symbols.clone_symbol_table(base_table, context.temp_allocator)
-		for project in projects[1:] {
-			merge_symbol_tables_for_lookup(merged_table, get_file_symbol_table(project, uri))
-		}
-		return merged_table
-	}
-
-	snap := get_snapshot(cache, uri)
-	if snap == nil {
+	if len(projects) == 0 {
 		return nil
 	}
-	return snap.symbol_table
-}
 
-get_project_for_uri :: proc(cache: ^Cache, uri: string) -> ^Project {
-	projects := get_projects_for_uri(cache, uri, context.temp_allocator)
-	if len(projects) > 0 {
-		return projects[0]
+	base_table := get_file_symbol_table(projects[0], uri)
+	if base_table == nil {
+		return symbols.create_empty_symbol_table(context.temp_allocator)
 	}
+
+	merged_table := symbols.clone_symbol_table(base_table, context.temp_allocator)
+	for project in projects[1:] {
+		merge_symbol_tables_for_lookup(merged_table, get_file_symbol_table(project, uri))
+	}
+	return merged_table
+}
+
+release_projects :: proc(projects: []^Project) {
+	for project in projects {
+		release_project(project)
+	}
+}
+
+workspace_get_document_entry :: proc(workspace: ^Workspace, uri: string) -> ^Document_Entry {
+	if workspace == nil {
+		return nil
+	}
+
+	if sync.shared_guard(&workspace.lock) {
+		if entry, ok := workspace.documents[uri]; ok {
+			return entry
+		}
+	}
+
 	return nil
 }
 
-invalidate_project :: proc(project: ^Project) {
-	_ = project
-}
+workspace_get_or_create_document_entry :: proc(
+	workspace: ^Workspace,
+	uri: string,
+	path: string,
+) -> ^Document_Entry {
+	if workspace == nil {
+		return nil
+	}
 
-resolve_project :: proc(cache: ^Cache, project: ^Project) {
-	_ = cache
-	_ = project
-}
+	if entry := workspace_get_document_entry(workspace, uri); entry != nil {
+		return entry
+	}
 
-update_package_for_document :: proc(workspace: ^Workspace, document: ^Document) -> ^Package {
-	_ = workspace
-	_ = document
-	return nil
+	entry := document_entry_init(workspace, uri, path)
+	if sync.guard(&workspace.lock) {
+		if existing, ok := workspace.documents[uri]; ok {
+			document_entry_deinit(entry)
+			return existing
+		}
+		workspace.documents[uri] = entry
+	}
+
+	return entry
 }

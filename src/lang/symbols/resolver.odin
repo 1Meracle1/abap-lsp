@@ -936,21 +936,53 @@ resolve_method_param :: proc(table: ^SymbolTable, param: ^ast.Method_Param) {
 }
 
 resolve_class_impl_decl :: proc(table: ^SymbolTable, class_impl: ^ast.Class_Impl_Decl) {
+	if class_impl.ident == nil {
+		return
+	}
+
+	class_name := strings.to_lower(class_impl.ident.name, context.temp_allocator)
+	if class_sym, ok := table.symbols[class_name]; ok && class_sym.child_scope != nil {
+		for method in class_impl.methods {
+			#partial switch m in method.derived_stmt {
+			case ^ast.Method_Impl:
+				resolve_method_impl(class_sym.child_scope, m)
+			}
+		}
+		return
+	}
+
 	for method in class_impl.methods {
 		#partial switch m in method.derived_stmt {
 		case ^ast.Method_Impl:
-			resolve_method_impl(table, m)
+			fallback_scope := create_empty_symbol_table(context.allocator)
+			resolve_stmt_list(fallback_scope, m.body[:])
 		}
 	}
 }
 
-resolve_method_impl :: proc(table: ^SymbolTable, method_impl: ^ast.Method_Impl) {
-	child_table := new(SymbolTable)
-	child_table.symbols = make(map[string]Symbol)
-	child_table.types = make([dynamic]^Type)
-	child_table.diagnostics = make([dynamic]Diagnostic)
+resolve_method_impl :: proc(class_scope: ^SymbolTable, method_impl: ^ast.Method_Impl) {
+	if class_scope == nil || method_impl.ident == nil {
+		return
+	}
 
+	method_name := strings.to_lower(get_decl_name(method_impl.ident), context.temp_allocator)
+	if method_sym, ok := class_scope.symbols[method_name]; ok {
+		if method_sym.child_scope == nil {
+			method_sym.child_scope = create_empty_symbol_table(context.allocator)
+			class_scope.symbols[method_name] = method_sym
+		}
+		resolve_stmt_list(method_sym.child_scope, method_impl.body[:])
+		return
+	}
+
+	child_table := create_empty_symbol_table(context.allocator)
 	resolve_stmt_list(child_table, method_impl.body[:])
+	class_scope.symbols[method_name] = Symbol{
+		name        = method_name,
+		kind        = .Method,
+		range       = method_impl.ident.range,
+		child_scope = child_table,
+	}
 }
 
 // resolve_stmt_list resolves all statements in a list, recursively handling control structures
