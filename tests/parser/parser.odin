@@ -7888,6 +7888,77 @@ call_function_with_conv_expr_test :: proc(t: ^testing.T) {
 	}
 }
 
+@(test)
+call_method_simple_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src = `CALL METHOD generate_notif_xml.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 1,
+		fmt.tprintf("Expected 1 declaration, got %d", len(file.decls)),
+	)
+
+	if len(file.decls) > 0 {
+		expected := expr_stmt(call_expr(ident("generate_notif_xml")))
+		check_stmt(t, expected, file.decls[0])
+	}
+}
+
+@(test)
+call_method_with_parameter_sections_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src =
+	`CALL METHOD zattp_cl_rep_utils=>get_evt_attr
+      EXPORTING
+        iv_param1 = 'some_value'
+      IMPORTING
+        ev_return_code     = ev_return_code
+        ev_response_string = ev_response_string
+        ev_reason          = ev_reason
+      CHANGING
+        cv_val = lv_value
+     .`
+
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 1,
+		fmt.tprintf("Expected 1 declaration, got %d", len(file.decls)),
+	)
+
+	if len(file.decls) > 0 {
+		expected := expr_stmt(
+			call_expr(
+				selector(ident("zattp_cl_rep_utils"), .FatArrow, "get_evt_attr"),
+				named_arg("iv_param1", lit("'some_value'")),
+				named_arg("ev_return_code", ident("ev_return_code")),
+				named_arg("ev_response_string", ident("ev_response_string")),
+				named_arg("ev_reason", ident("ev_reason")),
+				named_arg("cv_val", ident("lv_value")),
+			),
+		)
+		check_stmt(t, expected, file.decls[0])
+	}
+}
+
 // =====================================================
 // SELECT Statement Tests
 // =====================================================

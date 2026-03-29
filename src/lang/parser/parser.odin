@@ -1132,12 +1132,104 @@ parse_call_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 		return parse_call_function_stmt(p, call_tok)
 	}
 
+	if check_keyword(p, "METHOD") {
+		return parse_call_method_stmt(p, call_tok)
+	}
+
 	// For other CALL types (METHOD, etc.), treat as expression statement for now
 	expr := parse_expr(p)
 	period_tok := expect_token(p, .Period)
 	expr_stmt := ast.new(ast.Expr_Stmt, call_tok, period_tok)
 	expr_stmt.expr = expr
 	return expr_stmt
+}
+
+// parse_call_method_stmt parses old-style CALL METHOD statements
+// Syntax: CALL METHOD method.
+//         CALL METHOD class=>method
+//           EXPORTING param = value
+//           IMPORTING param = value
+//           CHANGING param = value.
+parse_call_method_stmt :: proc(p: ^Parser, call_tok: lexer.Token) -> ^ast.Stmt {
+	expect_keyword_token(p, "METHOD")
+
+	method_expr := parse_expr(p)
+
+	call_expr := ast.new(ast.Call_Expr, call_tok.range)
+	call_expr.expr = method_expr
+	method_args := make([dynamic]^ast.Expr)
+
+	for p.curr_tok.kind != .Period && p.curr_tok.kind != .EOF {
+		if check_keyword(p, "EXPORTING") ||
+		   check_keyword(p, "IMPORTING") ||
+		   check_keyword(p, "CHANGING") ||
+		   check_keyword(p, "RECEIVING") ||
+		   check_keyword(p, "EXCEPTIONS") {
+			advance_token(p)
+			parse_call_method_args(p, &method_args)
+			continue
+		}
+
+		break
+	}
+
+	period_tok := expect_token(p, .Period)
+	call_expr.args = method_args[:]
+	call_expr.range.end = period_tok.range.end
+	call_expr.derived_expr = call_expr
+
+	expr_stmt := ast.new(ast.Expr_Stmt, call_tok, period_tok)
+	expr_stmt.expr = call_expr
+	return expr_stmt
+}
+
+// parse_call_method_args parses old-style CALL METHOD parameter assignments.
+// It flattens sectioned parameters into named call arguments.
+parse_call_method_args :: proc(p: ^Parser, args: ^[dynamic]^ast.Expr) {
+	for p.curr_tok.kind != .Period && p.curr_tok.kind != .EOF {
+		if check_keyword(p, "EXPORTING") ||
+		   check_keyword(p, "IMPORTING") ||
+		   check_keyword(p, "CHANGING") ||
+		   check_keyword(p, "RECEIVING") ||
+		   check_keyword(p, "EXCEPTIONS") {
+			break
+		}
+
+		if p.curr_tok.kind != .Ident {
+			break
+		}
+
+		param_name_tok := p.curr_tok
+		advance_token(p)
+
+		if p.curr_tok.kind != .Eq {
+			error(
+				p,
+				p.curr_tok.range,
+				"expected '=' after parameter name '%s'",
+				param_name_tok.lit,
+			)
+			break
+		}
+		advance_token(p)
+
+		param_value := parse_expr(p)
+		if param_value == nil {
+			break
+		}
+
+		skip_pragma(p)
+
+		named_arg := ast.new(
+			ast.Named_Arg,
+			lexer.TextRange{param_name_tok.range.start, param_value.range.end},
+		)
+		named_arg.name = ast.new_ident(param_name_tok)
+		named_arg.value = param_value
+		named_arg.derived_expr = named_arg
+
+		append(args, &named_arg.node)
+	}
 }
 
 // parse_call_function_stmt parses a CALL FUNCTION statement

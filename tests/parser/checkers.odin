@@ -102,6 +102,19 @@ check_expr :: proc(
 			check_expr(t, ex.args[i].derived_expr, ac.args[i], loc = loc)
 		}
 
+	case ^ast.Named_Arg:
+		ac, ok := actual_derived.(^ast.Named_Arg)
+		if !testing.expect(t, ok, fmt.tprintf("Expected Named_Arg, got %T", actual_derived), loc = loc) do return
+		if testing.expect(t, ac.name != nil, "Actual named arg name is nil", loc = loc) {
+			testing.expect(
+				t,
+				ex.name.name == ac.name.name,
+				fmt.tprintf("Expected named arg '%s', got '%s'", ex.name.name, ac.name.name),
+				loc = loc,
+			)
+		}
+		check_expr(t, ex.value.derived_expr, ac.value, loc = loc)
+
 	case ^ast.Binary_Expr:
 		ac, ok := actual_derived.(^ast.Binary_Expr)
 		if !testing.expect(t, ok, fmt.tprintf("Expected Binary_Expr, got %T", actual_derived), loc = loc) do return
@@ -442,6 +455,11 @@ check_stmt :: proc(
 		for i := 0; i < len(ex.rhs); i += 1 {
 			check_expr(t, ex.rhs[i].derived_expr, ac.rhs[i], loc = loc)
 		}
+
+	case ^ast.Expr_Stmt:
+		ac, ok := actual_derived.(^ast.Expr_Stmt)
+		if !testing.expect(t, ok, fmt.tprintf("Expected Expr_Stmt, got %T", actual_derived), loc = loc) do return
+		check_expr(t, ex.expr.derived_expr, ac.expr, loc = loc)
 
 	case ^ast.Form_Decl:
 		ac, ok := actual_derived.(^ast.Form_Decl)

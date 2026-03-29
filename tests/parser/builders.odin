@@ -348,6 +348,22 @@ call_expr :: proc(expr: ast.Any_Expr, args: ..ast.Any_Expr) -> ^ast.Call_Expr {
 	return node
 }
 
+expr_stmt :: proc(expr: ast.Any_Expr) -> ^ast.Expr_Stmt {
+	node := ast.new(ast.Expr_Stmt, {})
+	#partial switch e in expr {
+	case ^ast.Ident:
+		node.expr = &e.node
+	case ^ast.Selector_Expr:
+		node.expr = &e.node
+	case ^ast.Call_Expr:
+		node.expr = &e.node
+	case ^ast.Named_Arg:
+		node.expr = &e.node
+	}
+	node.derived_stmt = node
+	return node
+}
+
 new_expr_inferred :: proc(args: ..ast.Any_Expr) -> ^ast.New_Expr {
 	return new_expr("", true, ..args)
 }
