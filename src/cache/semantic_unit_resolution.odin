@@ -3,6 +3,7 @@ package cache
 import "../lang/ast"
 import "../lang/lexer"
 import "../lang/symbols"
+
 import "base:intrinsics"
 import os "core:os/os2"
 import "core:path/filepath"
@@ -78,7 +79,7 @@ append_project_diagnostic :: proc(project: ^Project, message: string) {
 	append(
 		&project.diagnostics,
 		symbols.Diagnostic {
-			range   = lexer.TextRange {0, 0},
+			range = lexer.TextRange{0, 0},
 			message = strings.clone(message, context.allocator),
 		},
 	)
@@ -122,7 +123,10 @@ build_unit_member_uri_map :: proc(
 	return member_uris
 }
 
-build_folder_include_uri_map :: proc(uri: string, allocator := context.allocator) -> map[string]string {
+build_folder_include_uri_map :: proc(
+	uri: string,
+	allocator := context.allocator,
+) -> map[string]string {
 	include_uris := make(map[string]string, allocator)
 	folder_path := folder_from_uri(uri, context.temp_allocator)
 	files := list_abap_files(folder_path, context.temp_allocator)
@@ -179,7 +183,10 @@ get_file_symbol_table :: proc(project: ^Project, uri: string) -> ^symbols.Symbol
 	return project.resolution_result.merged_table
 }
 
-merge_symbol_tables_for_lookup :: proc(target: ^symbols.SymbolTable, source: ^symbols.SymbolTable) {
+merge_symbol_tables_for_lookup :: proc(
+	target: ^symbols.SymbolTable,
+	source: ^symbols.SymbolTable,
+) {
 	if target == nil || source == nil {
 		return
 	}
@@ -266,7 +273,10 @@ project_entry_publish :: proc(entry: ^Project_Entry, project: ^Project) {
 	release_project(old_project)
 }
 
-workspace_get_or_create_project_entry :: proc(workspace: ^Workspace, key: string) -> ^Project_Entry {
+workspace_get_or_create_project_entry :: proc(
+	workspace: ^Workspace,
+	key: string,
+) -> ^Project_Entry {
 	if workspace == nil {
 		return nil
 	}
@@ -498,7 +508,10 @@ build_local_project :: proc(
 
 	root_snapshot := ensure_workspace_document_loaded(cache, workspace, root_uri)
 	if root_snapshot == nil || root_snapshot.ast == nil {
-		append_project_diagnostic(project, strings.concatenate({"Unable to load root file ", root_uri}, slot.allocator))
+		append_project_diagnostic(
+			project,
+			strings.concatenate({"Unable to load root file ", root_uri}, slot.allocator),
+		)
 		return project
 	}
 	project_add_snapshot(project, root_snapshot)
@@ -587,13 +600,19 @@ resolve_project_file :: proc(
 				} else {
 					append_project_diagnostic(
 						project,
-						strings.concatenate({"Local INCLUDE file is missing: ", include_name}, context.allocator),
+						strings.concatenate(
+							{"Local INCLUDE file is missing: ", include_name},
+							context.allocator,
+						),
 					)
 				}
 			} else {
 				append_project_diagnostic(
 					project,
-					strings.concatenate({"INCLUDE target not available locally: ", include_name}, context.allocator),
+					strings.concatenate(
+						{"INCLUDE target not available locally: ", include_name},
+						context.allocator,
+					),
 				)
 			}
 

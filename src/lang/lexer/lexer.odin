@@ -54,6 +54,9 @@ scan :: proc(l: ^Lexer) -> Token {
 			advance_rune(l)
 			kind = .Slash
 		}
+	case ch == '<' && is_field_symbol_identifier_start(l):
+		lit = scan_field_symbol_identifier(l)
+		kind = .Ident
 	case is_letter(ch):
 		lit = scan_identifier(l)
 		kind = .Ident
@@ -221,6 +224,18 @@ scan_identifier :: proc(l: ^Lexer) -> string {
 	return string(l.src[start:l.pos])
 }
 
+scan_field_symbol_identifier :: proc(l: ^Lexer) -> string {
+	start := l.pos
+	advance_rune(l) // consume <
+	for is_letter(l.ch) || is_digit(l.ch) {
+		advance_rune(l)
+	}
+	if l.ch == '>' {
+		advance_rune(l)
+	}
+	return string(l.src[start:l.pos])
+}
+
 advance_rune :: proc(l: ^Lexer) {
 	if l.read_pos < len(l.src) {
 		l.pos = l.read_pos
@@ -303,6 +318,38 @@ is_namespace_start :: proc(l: ^Lexer) -> bool {
 			return true
 		}
 	}
+	return false
+}
+
+is_field_symbol_identifier_start :: proc(l: ^Lexer) -> bool {
+	if l.ch != '<' || l.read_pos >= len(l.src) {
+		return false
+	}
+
+	src := l.src[l.read_pos:]
+	next_rune, next_width := utf8.decode_rune_in_string(src)
+	if next_rune == utf8.RUNE_ERROR && next_width == 1 {
+		next_rune = rune(src[0])
+	}
+	if !is_letter(next_rune) {
+		return false
+	}
+
+	cursor := next_width
+	for cursor < len(src) {
+		r, w := utf8.decode_rune_in_string(src[cursor:])
+		if r == utf8.RUNE_ERROR && w == 1 {
+			r = rune(src[cursor])
+		}
+
+		if is_letter(r) || is_digit(r) {
+			cursor += w
+			continue
+		}
+
+		return r == '>'
+	}
+
 	return false
 }
 

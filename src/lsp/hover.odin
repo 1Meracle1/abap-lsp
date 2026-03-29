@@ -76,7 +76,11 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 				hover_text = format_module_signature(sym)
 			case .FieldSymbol:
 				type_str := symbols.format_type(sym.type_info)
-				hover_text = fmt.tprintf("(field-symbol) %s: %s", sym.name, type_str)
+				hover_text = fmt.tprintf(
+					"(field-symbol) %s: %s",
+					cache.xml_encode(sym.name, context.temp_allocator),
+					type_str,
+				)
 			case .Constant:
 				type_str := symbols.format_type(sym.type_info)
 				hover_text = fmt.tprintf("(constant) %s: %s", sym.name, type_str)
@@ -84,10 +88,17 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 				hover_text = fmt.tprintf("(control) %s", sym.name)
 			case:
 				type_str := symbols.format_type(sym.type_info)
-				hover_text = fmt.tprintf("%s: %s", sym.name, type_str)
+				hover_text = fmt.tprintf(
+					"(var) %s: %s",
+					cache.xml_encode(sym.name, context.temp_allocator),
+					type_str,
+				)
 			}
 		} else {
-			hover_text = fmt.tprintf("(unknown) %s", n.name)
+			hover_text = fmt.tprintf(
+				"(unknown) %s",
+				cache.xml_encode(n.name, context.temp_allocator),
+			)
 		}
 
 	case ^ast.New_Expr:
@@ -95,7 +106,12 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 			hover_text = "NEW #( ) - creates instance with inferred type"
 		} else if n.type_expr != nil {
 			if type_ident, ok := n.type_expr.derived_expr.(^ast.Ident); ok {
-				if sym, found := lookup_symbol_at_offset(snap, type_ident.name, offset, symbol_table); found {
+				if sym, found := lookup_symbol_at_offset(
+					snap,
+					type_ident.name,
+					offset,
+					symbol_table,
+				); found {
 					if sym.kind == .Class {
 						hover_text = fmt.tprintf(
 							"NEW %s( ) - creates instance of class %s",
@@ -154,12 +170,25 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 	case ^ast.Constructor_Expr:
 		keyword_upper := strings.to_upper(n.keyword.lit, context.temp_allocator)
 		if n.is_inferred {
-			hover_text = fmt.tprintf("(%s expression) %s #( ) - constructor with inferred type", keyword_upper, keyword_upper)
+			hover_text = fmt.tprintf(
+				"(%s expression) %s #( ) - constructor with inferred type",
+				keyword_upper,
+				keyword_upper,
+			)
 		} else if n.type_expr != nil {
 			if type_ident, ok := n.type_expr.derived_expr.(^ast.Ident); ok {
-				hover_text = fmt.tprintf("(%s expression) %s %s( ) - constructor", keyword_upper, keyword_upper, type_ident.name)
+				hover_text = fmt.tprintf(
+					"(%s expression) %s %s( ) - constructor",
+					keyword_upper,
+					keyword_upper,
+					type_ident.name,
+				)
 			} else {
-				hover_text = fmt.tprintf("(%s expression) %s type( ) - constructor", keyword_upper, keyword_upper)
+				hover_text = fmt.tprintf(
+					"(%s expression) %s type( ) - constructor",
+					keyword_upper,
+					keyword_upper,
+				)
 			}
 		} else {
 			hover_text = fmt.tprintf("(%s expression) constructor", keyword_upper)
@@ -207,11 +236,9 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 		case .Into_Db:
 			hover_text = "(statement) INSERT INTO ... VALUES - inserts data into a database table"
 		case .From_Wa:
-			hover_text =
-			"(statement) INSERT ... FROM - inserts data from a work area into a database table"
+			hover_text = "(statement) INSERT ... FROM - inserts data from a work area into a database table"
 		case .From_Table:
-			hover_text =
-			"(statement) INSERT ... FROM TABLE - inserts data from an internal table into a database table"
+			hover_text = "(statement) INSERT ... FROM TABLE - inserts data from an internal table into a database table"
 		}
 
 	case ^ast.Append_Stmt:
@@ -219,29 +246,24 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 		case .Simple:
 			hover_text = "(statement) APPEND ... TO - appends a line to an internal table"
 		case .Initial_Line:
-			hover_text =
-			"(statement) APPEND INITIAL LINE TO - appends an initial line to an internal table"
+			hover_text = "(statement) APPEND INITIAL LINE TO - appends an initial line to an internal table"
 		case .Lines_Of:
-			hover_text =
-			"(statement) APPEND LINES OF ... TO - appends all lines from one table to another"
+			hover_text = "(statement) APPEND LINES OF ... TO - appends all lines from one table to another"
 		}
 
 	case ^ast.Delete_Stmt:
 		switch n.kind {
 		case .Where:
-			hover_text =
-			"(statement) DELETE ... WHERE - deletes lines from an internal table that satisfy a condition"
+			hover_text = "(statement) DELETE ... WHERE - deletes lines from an internal table that satisfy a condition"
 		case .Index:
-			hover_text =
-			"(statement) DELETE ... INDEX - deletes a line from an internal table by index"
+			hover_text = "(statement) DELETE ... INDEX - deletes a line from an internal table by index"
 		case .Adjacent_Duplicates:
-			hover_text =
-			"(statement) DELETE ADJACENT DUPLICATES - deletes adjacent duplicate entries"
+			hover_text = "(statement) DELETE ADJACENT DUPLICATES - deletes adjacent duplicate entries"
 		}
 
 	case ^ast.Field_Symbol_Decl:
 		if n.ident != nil {
-			hover_text = fmt.tprintf("(field-symbol declaration) %s", n.ident.name)
+			hover_text = fmt.tprintf("(field-symbol declaration) `%s`", n.ident.name)
 		}
 
 	case ^ast.Field_Symbol_Chain_Decl:
@@ -265,100 +287,75 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 		switch n.kind {
 		case .At:
 			if n.transporting_no_fields {
-				hover_text =
-				"(statement) LOOP AT ... TRANSPORTING NO FIELDS - iterates over internal table checking conditions"
+				hover_text = "(statement) LOOP AT ... TRANSPORTING NO FIELDS - iterates over internal table checking conditions"
 			} else if n.group_by != nil {
-				hover_text =
-				"(statement) LOOP AT ... GROUP BY - iterates over internal table with grouping"
+				hover_text = "(statement) LOOP AT ... GROUP BY - iterates over internal table with grouping"
 			} else if n.assigning_target != nil {
-				hover_text =
-				"(statement) LOOP AT ... ASSIGNING - iterates assigning each line to a field symbol"
+				hover_text = "(statement) LOOP AT ... ASSIGNING - iterates assigning each line to a field symbol"
 			} else if n.into_target != nil {
-				hover_text =
-				"(statement) LOOP AT ... INTO - iterates copying each line into a work area"
+				hover_text = "(statement) LOOP AT ... INTO - iterates copying each line into a work area"
 			} else {
 				hover_text = "(statement) LOOP AT - iterates over an internal table"
 			}
 		case .At_Screen:
-			hover_text =
-			"(statement) LOOP AT SCREEN - iterates over screen elements for modification"
+			hover_text = "(statement) LOOP AT SCREEN - iterates over screen elements for modification"
 		case .At_Group:
-			hover_text =
-			"(statement) LOOP AT GROUP - iterates over members of a group created by GROUP BY"
+			hover_text = "(statement) LOOP AT GROUP - iterates over members of a group created by GROUP BY"
 		}
 
 	case ^ast.Read_Table_Stmt:
 		switch n.kind {
 		case .With_Key:
 			if n.transporting_no_fields {
-				hover_text =
-				"(statement) READ TABLE ... WITH KEY ... TRANSPORTING NO FIELDS - checks if entry exists in table"
+				hover_text = "(statement) READ TABLE ... WITH KEY ... TRANSPORTING NO FIELDS - checks if entry exists in table"
 			} else if n.assigning_target != nil {
-				hover_text =
-				"(statement) READ TABLE ... WITH KEY ... ASSIGNING - reads entry by key and assigns to field symbol"
+				hover_text = "(statement) READ TABLE ... WITH KEY ... ASSIGNING - reads entry by key and assigns to field symbol"
 			} else if n.into_target != nil {
-				hover_text =
-				"(statement) READ TABLE ... WITH KEY ... INTO - reads entry by key into work area"
+				hover_text = "(statement) READ TABLE ... WITH KEY ... INTO - reads entry by key into work area"
 			} else {
-				hover_text =
-				"(statement) READ TABLE ... WITH KEY - reads entry from internal table by key"
+				hover_text = "(statement) READ TABLE ... WITH KEY - reads entry from internal table by key"
 			}
 		case .With_Table_Key:
 			if n.transporting_no_fields {
-				hover_text =
-				"(statement) READ TABLE ... WITH TABLE KEY ... TRANSPORTING NO FIELDS - checks if entry exists in table"
+				hover_text = "(statement) READ TABLE ... WITH TABLE KEY ... TRANSPORTING NO FIELDS - checks if entry exists in table"
 			} else if n.assigning_target != nil {
-				hover_text =
-				"(statement) READ TABLE ... WITH TABLE KEY ... ASSIGNING - reads entry by key and assigns to field symbol"
+				hover_text = "(statement) READ TABLE ... WITH TABLE KEY ... ASSIGNING - reads entry by key and assigns to field symbol"
 			} else if n.into_target != nil {
-				hover_text =
-				"(statement) READ TABLE ... WITH TABLE KEY ... INTO - reads entry by key into work area"
+				hover_text = "(statement) READ TABLE ... WITH TABLE KEY ... INTO - reads entry by key into work area"
 			} else {
-				hover_text =
-				"(statement) READ TABLE ... WITH TABLE KEY - reads entry from internal table by key"
+				hover_text = "(statement) READ TABLE ... WITH TABLE KEY - reads entry from internal table by key"
 			}
 		case .Index:
 			if n.assigning_target != nil {
-				hover_text =
-				"(statement) READ TABLE ... INDEX ... ASSIGNING - reads entry by index and assigns to field symbol"
+				hover_text = "(statement) READ TABLE ... INDEX ... ASSIGNING - reads entry by index and assigns to field symbol"
 			} else if n.into_target != nil {
-				hover_text =
-				"(statement) READ TABLE ... INDEX ... INTO - reads entry by index into work area"
+				hover_text = "(statement) READ TABLE ... INDEX ... INTO - reads entry by index into work area"
 			} else {
-				hover_text =
-				"(statement) READ TABLE ... INDEX - reads entry from internal table by index"
+				hover_text = "(statement) READ TABLE ... INDEX - reads entry from internal table by index"
 			}
 		}
 
 	case ^ast.Select_Stmt:
 		if n.is_single {
 			if n.into_kind == .Table {
-				hover_text =
-				"(statement) SELECT SINGLE ... INTO TABLE - selects a single row into a table (unusual)"
+				hover_text = "(statement) SELECT SINGLE ... INTO TABLE - selects a single row into a table (unusual)"
 			} else {
-				hover_text =
-				"(statement) SELECT SINGLE - selects a single row from a database table"
+				hover_text = "(statement) SELECT SINGLE - selects a single row from a database table"
 			}
 		} else if n.into_kind == .Table {
 			if len(n.joins) > 0 {
-				hover_text =
-				"(statement) SELECT ... JOIN ... INTO TABLE - joins tables and selects into an internal table"
+				hover_text = "(statement) SELECT ... JOIN ... INTO TABLE - joins tables and selects into an internal table"
 			} else if n.for_all_entries != nil {
-				hover_text =
-				"(statement) SELECT ... FOR ALL ENTRIES - selects rows based on entries in an internal table"
+				hover_text = "(statement) SELECT ... FOR ALL ENTRIES - selects rows based on entries in an internal table"
 			} else if len(n.group_by) > 0 {
-				hover_text =
-				"(statement) SELECT ... GROUP BY ... INTO TABLE - groups and aggregates data into an internal table"
+				hover_text = "(statement) SELECT ... GROUP BY ... INTO TABLE - groups and aggregates data into an internal table"
 			} else {
-				hover_text =
-				"(statement) SELECT ... INTO TABLE - selects multiple rows into an internal table"
+				hover_text = "(statement) SELECT ... INTO TABLE - selects multiple rows into an internal table"
 			}
 		} else if len(n.body) > 0 {
-			hover_text =
-			"(statement) SELECT ... ENDSELECT - iterates over selected database rows"
+			hover_text = "(statement) SELECT ... ENDSELECT - iterates over selected database rows"
 		} else {
-			hover_text =
-			"(statement) SELECT - reads data from a database table"
+			hover_text = "(statement) SELECT - reads data from a database table"
 		}
 
 	case ^ast.Table_Type:
@@ -384,7 +381,10 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 	case ^ast.Call_Function_Stmt:
 		if n.func_name != nil {
 			if lit, ok := n.func_name.derived_expr.(^ast.Basic_Lit); ok {
-				hover_text = fmt.tprintf("(statement) CALL FUNCTION %s - calls a function module", lit.tok.lit)
+				hover_text = fmt.tprintf(
+					"(statement) CALL FUNCTION %s - calls a function module",
+					lit.tok.lit,
+				)
 			} else {
 				hover_text = "(statement) CALL FUNCTION - calls a function module"
 			}
@@ -626,11 +626,7 @@ lookup_symbol_at_offset :: proc(
 		}
 	}
 
-	if sym, ok := table.symbols[name]; ok {
-		return sym, true
-	}
-
-	return {}, false
+	return table.symbols[name]
 }
 
 format_class_signature :: proc(sym: symbols.Symbol) -> string {

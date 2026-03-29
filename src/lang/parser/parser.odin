@@ -1738,8 +1738,16 @@ parse_message_id_or_expr :: proc(p: ^Parser) -> ^ast.Expr {
 	return parse_expr(p)
 }
 
+is_field_symbol_ident_token :: proc(tok: lexer.Token) -> bool {
+	return tok.kind == .Ident && len(tok.lit) >= 3 && tok.lit[0] == '<' && tok.lit[len(tok.lit)-1] == '>'
+}
+
 // parse_field_symbol_ref parses a field symbol reference <fs>
 parse_field_symbol_ref :: proc(p: ^Parser) -> ^ast.Expr {
+	if is_field_symbol_ident_token(p.curr_tok) {
+		return ast.new_ident(advance_token(p))
+	}
+
 	if p.curr_tok.kind != .Lt {
 		error(p, p.curr_tok.range, "expected '<' for field symbol")
 		return nil
@@ -1763,7 +1771,7 @@ parse_field_symbol_ref :: proc(p: ^Parser) -> ^ast.Expr {
 
 	end_tok := advance_token(p) // consume >
 
-	// Create identifier with angle brackets in the name
+	// Support older split-token handling by reconstructing the identifier.
 	fs_name := fmt.tprintf("<%s>", name_tok.lit)
 	fs_ident := ast.new(ast.Ident, lexer.TextRange{start_tok.range.start, end_tok.range.end})
 	fs_ident.name = fs_name

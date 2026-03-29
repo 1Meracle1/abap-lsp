@@ -168,6 +168,15 @@ filename_from_uri :: proc(uri: string, allocator := context.allocator) -> string
 	return strings.to_lower(base, allocator)
 }
 
+xml_encode :: proc(value: string, allocator := context.allocator) -> string {
+	res, _ := strings.replace_all(value, "&", "&amp;", allocator)
+	res, _ = strings.replace_all(res, "\'", "&apos;", allocator)
+	res, _ = strings.replace_all(res, "<", "&lt;", allocator)
+	res, _ = strings.replace_all(res, ">", "&gt;", allocator)
+	res, _ = strings.replace_all(res, "\"", "&quot;", allocator)
+	return res
+}
+
 // List all .abap files in a folder (non-recursive)
 list_abap_files :: proc(folder_path: string, allocator := context.allocator) -> []string {
 	result := make([dynamic]string, allocator)
