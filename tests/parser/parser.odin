@@ -9745,3 +9745,130 @@ check_stmt_function_call_equality_test :: proc(t: ^testing.T) {
 		}
 	}
 }
+
+@(test)
+assert_stmt_is_assigned_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src = `ASSERT <ls_outbound> IS ASSIGNED.`
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 1,
+		fmt.tprintf("Expected 1 declaration, got %d", len(file.decls)),
+	)
+
+	if len(file.decls) < 1 {
+		return
+	}
+
+	assert_stmt, ok := file.decls[0].derived_stmt.(^ast.Assert_Stmt)
+	testing.expect(
+		t,
+		ok,
+		fmt.tprintf("Expected Assert_Stmt, got %T", file.decls[0].derived_stmt),
+	)
+
+	if !ok {
+		return
+	}
+
+	pred_expr, pok := assert_stmt.cond.derived_expr.(^ast.Predicate_Expr)
+	testing.expect(
+		t,
+		pok,
+		fmt.tprintf("Expected Predicate_Expr, got %T", assert_stmt.cond.derived_expr),
+	)
+
+	if !pok {
+		return
+	}
+
+	testing.expect(
+		t,
+		pred_expr.predicate == .Assigned,
+		fmt.tprintf("Expected predicate Assigned, got %v", pred_expr.predicate),
+	)
+
+	fs_ident, fok := pred_expr.expr.derived_expr.(^ast.Ident)
+	testing.expect(
+		t,
+		fok && fs_ident.name == "<ls_outbound>",
+		fmt.tprintf("Expected ident '<ls_outbound>', got %v", pred_expr.expr),
+	)
+}
+
+@(test)
+assert_stmt_equality_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src = `ASSERT gui_flag = abap_true.`
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 1,
+		fmt.tprintf("Expected 1 declaration, got %d", len(file.decls)),
+	)
+
+	if len(file.decls) < 1 {
+		return
+	}
+
+	assert_stmt, ok := file.decls[0].derived_stmt.(^ast.Assert_Stmt)
+	testing.expect(
+		t,
+		ok,
+		fmt.tprintf("Expected Assert_Stmt, got %T", file.decls[0].derived_stmt),
+	)
+
+	if !ok {
+		return
+	}
+
+	binary_expr, bok := assert_stmt.cond.derived_expr.(^ast.Binary_Expr)
+	testing.expect(
+		t,
+		bok,
+		fmt.tprintf("Expected Binary_Expr, got %T", assert_stmt.cond.derived_expr),
+	)
+
+	if !bok {
+		return
+	}
+
+	testing.expect(
+		t,
+		binary_expr.op.kind == .Eq,
+		fmt.tprintf("Expected Eq operator, got %v", binary_expr.op.kind),
+	)
+
+	lhs_ident, lok := binary_expr.left.derived_expr.(^ast.Ident)
+	testing.expect(
+		t,
+		lok && lhs_ident.name == "gui_flag",
+		fmt.tprintf("Expected ident 'gui_flag', got %v", binary_expr.left),
+	)
+
+	rhs_ident, rok := binary_expr.right.derived_expr.(^ast.Ident)
+	testing.expect(
+		t,
+		rok && rhs_ident.name == "abap_true",
+		fmt.tprintf("Expected ident 'abap_true', got %v", binary_expr.right),
+	)
+}

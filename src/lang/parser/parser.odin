@@ -132,6 +132,8 @@ parse_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			return parse_select_stmt(p)
 		case "CHECK":
 			return parse_check_stmt(p)
+		case "ASSERT":
+			return parse_assert_stmt(p)
 		}
 	}
 
@@ -2021,5 +2023,21 @@ parse_check_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	check_stmt.cond = cond
 	check_stmt.derived_stmt = check_stmt
 	return check_stmt
+}
+
+// parse_assert_stmt parses an ASSERT statement
+// Syntax: ASSERT logical_expression.
+// Examples:
+//   ASSERT <ls_outbound> IS ASSIGNED.
+//   ASSERT gui_flag = abap_true.
+parse_assert_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
+	assert_tok := expect_keyword_token(p, "ASSERT")
+	cond := parse_logical_expr(p)
+	period_tok := expect_token(p, .Period)
+
+	assert_stmt := ast.new(ast.Assert_Stmt, assert_tok, period_tok)
+	assert_stmt.cond = cond
+	assert_stmt.derived_stmt = assert_stmt
+	return assert_stmt
 }
 

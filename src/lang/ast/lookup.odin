@@ -689,6 +689,13 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 			}
 		}
 
+	case ^Assert_Stmt:
+		if n.cond != nil {
+			if res := find_node_at_offset(&n.cond.expr_base, offset); res != nil {
+				return res
+			}
+		}
+
 	case ^Call_Function_Stmt:
 		if n.func_name != nil {
 			if res := find_node_at_offset(&n.func_name.expr_base, offset); res != nil {

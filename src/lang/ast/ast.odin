@@ -516,6 +516,14 @@ Check_Stmt :: struct {
 	cond:       ^Expr, // The logical expression to check
 }
 
+// ASSERT statement
+// Syntax: ASSERT logical_expression.
+// Used to assert that a condition holds at runtime
+Assert_Stmt :: struct {
+	using node: Stmt,
+	cond:       ^Expr, // The logical expression to assert
+}
+
 // CALL FUNCTION parameter kinds
 Call_Function_Param_Kind :: enum {
 	Exporting,
@@ -984,6 +992,7 @@ Any_Node :: union {
 	^Delete_Stmt,
 	^Condense_Stmt,
 	^Check_Stmt,
+	^Assert_Stmt,
 	^Call_Function_Stmt,
 	^Call_Function_Param,
 	^Select_Stmt,
@@ -1075,6 +1084,7 @@ Any_Stmt :: union {
 	^Delete_Stmt,
 	^Condense_Stmt,
 	^Check_Stmt,
+	^Assert_Stmt,
 	^Call_Function_Stmt,
 	^Select_Stmt,
 	// Declarations

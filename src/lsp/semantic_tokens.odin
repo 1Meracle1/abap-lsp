@@ -761,6 +761,11 @@ collect_tokens_from_stmt :: proc(
 			collect_tokens_from_expr(tokens, s.cond, snap, nil)
 		}
 
+	case ^ast.Assert_Stmt:
+		if s.cond != nil {
+			collect_tokens_from_expr(tokens, s.cond, snap, nil)
+		}
+
 	case ^ast.Call_Function_Stmt:
 		// Highlight the function name as a function
 		if s.func_name != nil {
