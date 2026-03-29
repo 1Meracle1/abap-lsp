@@ -682,6 +682,23 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 			}
 		}
 
+	case ^Raise_Exception_Stmt:
+		if n.type_ref != nil {
+			if res := find_node_at_offset(&n.type_ref.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		if n.oref != nil {
+			if res := find_node_at_offset(&n.oref.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		for arg in n.exporting {
+			if res := find_node_at_offset(&arg.node, offset); res != nil {
+				return res
+			}
+		}
+
 	case ^Check_Stmt:
 		if n.cond != nil {
 			if res := find_node_at_offset(&n.cond.expr_base, offset); res != nil {

@@ -661,6 +661,17 @@ collect_tokens_from_stmt :: proc(
 			collect_tokens_from_expr(tokens, s.text, snap, nil)
 		}
 
+	case ^ast.Raise_Exception_Stmt:
+		if s.type_ref != nil {
+			collect_tokens_from_expr(tokens, s.type_ref, snap, nil)
+		}
+		if s.oref != nil {
+			collect_tokens_from_expr(tokens, s.oref, snap, nil)
+		}
+		for arg in s.exporting {
+			collect_tokens_from_expr(tokens, &arg.node, snap, nil)
+		}
+
 	case ^ast.Loop_Stmt:
 		if s.itab != nil {
 			collect_tokens_from_expr(tokens, s.itab, snap, nil)

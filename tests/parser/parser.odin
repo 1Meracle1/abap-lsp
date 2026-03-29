@@ -9872,3 +9872,90 @@ assert_stmt_equality_test :: proc(t: ^testing.T) {
 		fmt.tprintf("Expected ident 'abap_true', got %v", binary_expr.right),
 	)
 }
+
+@(test)
+raise_exception_type_stmt_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src = `RAISE EXCEPTION TYPE /sttp/cx_rep_exception.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 1,
+		fmt.tprintf("Expected 1 stmt, got %v", len(file.decls)),
+	)
+	if len(file.decls) > 0 {
+		expected := raise_exception_type(ident("/sttp/cx_rep_exception"))
+		check_stmt(t, expected, file.decls[0])
+	}
+}
+
+@(test)
+raise_exception_oref_stmt_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src = `RAISE EXCEPTION oref.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 1,
+		fmt.tprintf("Expected 1 stmt, got %v", len(file.decls)),
+	)
+	if len(file.decls) > 0 {
+		expected := raise_exception_oref(ident("oref"))
+		check_stmt(t, expected, file.decls[0])
+	}
+}
+
+@(test)
+raise_exception_type_exporting_stmt_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src = `RAISE EXCEPTION TYPE cx_sy_dynamic_osql_semantics
+      EXPORTING
+        textid = cx_sy_dynamic_osql_semantics=>unknown_table_name
+        token  = 'Test'.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 1,
+		fmt.tprintf("Expected 1 stmt, got %v", len(file.decls)),
+	)
+	if len(file.decls) > 0 {
+		expected := raise_exception_type(
+			ident("cx_sy_dynamic_osql_semantics"),
+			false,
+			named_arg(
+				"textid",
+				selector(
+					ident("cx_sy_dynamic_osql_semantics"),
+					.FatArrow,
+					"unknown_table_name",
+				),
+			),
+			named_arg("token", lit("'Test'")),
+		)
+		check_stmt(t, expected, file.decls[0])
+	}
+}

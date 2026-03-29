@@ -130,6 +130,8 @@ parse_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			return parse_condense_stmt(p)
 		case "SELECT":
 			return parse_select_stmt(p)
+		case "RAISE":
+			return parse_raise_stmt(p)
 		case "CHECK":
 			return parse_check_stmt(p)
 		case "ASSERT":
@@ -2005,6 +2007,86 @@ parse_condense_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	condense_stmt := ast.new(ast.Condense_Stmt, condense_tok, period_tok)
 	condense_stmt.text = text_expr
 	return condense_stmt
+}
+
+parse_raise_exception_exporting_args :: proc(p: ^Parser, args: ^[dynamic]^ast.Named_Arg) {
+	for p.curr_tok.kind != .Period && p.curr_tok.kind != .EOF {
+		if p.curr_tok.kind != .Ident {
+			break
+		}
+
+		param_name_tok := p.curr_tok
+		advance_token(p)
+
+		if p.curr_tok.kind != .Eq {
+			error(
+				p,
+				p.curr_tok.range,
+				"expected '=' after parameter name '%s'",
+				param_name_tok.lit,
+			)
+			break
+		}
+		advance_token(p)
+
+		param_value := parse_expr(p)
+		if param_value == nil {
+			break
+		}
+
+		skip_pragma(p)
+
+		named_arg := ast.new(
+			ast.Named_Arg,
+			lexer.TextRange{param_name_tok.range.start, param_value.range.end},
+		)
+		named_arg.name = ast.new_ident(param_name_tok)
+		named_arg.value = param_value
+		named_arg.derived_expr = named_arg
+
+		append(args, named_arg)
+	}
+}
+
+// parse_raise_stmt parses RAISE EXCEPTION statements.
+// Syntax:
+// - RAISE [RESUMABLE] EXCEPTION TYPE cx_class [EXPORTING p1 = a1 ...].
+// - RAISE [RESUMABLE] EXCEPTION oref.
+parse_raise_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
+	raise_tok := expect_keyword_token(p, "RAISE")
+
+	stmt := ast.new(ast.Raise_Exception_Stmt, raise_tok.range)
+	stmt.exporting = make([dynamic]^ast.Named_Arg)
+	stmt.derived_stmt = stmt
+
+	if check_keyword(p, "RESUMABLE") {
+		advance_token(p)
+		stmt.is_resumable = true
+	}
+
+	if !check_keyword(p, "EXCEPTION") {
+		error(p, p.curr_tok.range, "expected EXCEPTION after RAISE")
+		end_tok := skip_to_new_line(p)
+		stmt.range.end = end_tok.range.end
+		return stmt
+	}
+	advance_token(p)
+
+	if check_keyword(p, "TYPE") {
+		advance_token(p)
+		stmt.type_ref = parse_simple_type_expr(p)
+
+		if check_keyword(p, "EXPORTING") {
+			advance_token(p)
+			parse_raise_exception_exporting_args(p, &stmt.exporting)
+		}
+	} else {
+		stmt.oref = parse_expr(p)
+	}
+
+	period_tok := expect_token(p, .Period)
+	stmt.range.end = period_tok.range.end
+	return stmt
 }
 
 // parse_check_stmt parses a CHECK statement

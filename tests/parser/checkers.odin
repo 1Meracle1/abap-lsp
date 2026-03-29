@@ -229,6 +229,36 @@ check_stmt :: proc(
 			check_expr(t, ex.index_expr.derived_expr, ac.index_expr, loc = loc)
 		}
 
+	case ^ast.Raise_Exception_Stmt:
+		ac, ok := actual_derived.(^ast.Raise_Exception_Stmt)
+		if !testing.expect(t, ok, fmt.tprintf("Expected Raise_Exception_Stmt, got %T", actual_derived), loc = loc) do return
+
+		testing.expect(
+			t,
+			ex.is_resumable == ac.is_resumable,
+			fmt.tprintf("Expected is_resumable %v, got %v", ex.is_resumable, ac.is_resumable),
+			loc = loc,
+		)
+
+		if ex.type_ref != nil {
+			if !testing.expect(t, ac.type_ref != nil, "Expected type_ref, got nil", loc = loc) do return
+			check_expr(t, ex.type_ref.derived_expr, ac.type_ref, loc = loc)
+		} else {
+			testing.expect(t, ac.type_ref == nil, "Expected nil type_ref", loc = loc)
+		}
+
+		if ex.oref != nil {
+			if !testing.expect(t, ac.oref != nil, "Expected oref, got nil", loc = loc) do return
+			check_expr(t, ex.oref.derived_expr, ac.oref, loc = loc)
+		} else {
+			testing.expect(t, ac.oref == nil, "Expected nil oref", loc = loc)
+		}
+
+		if !testing.expect(t, len(ex.exporting) == len(ac.exporting), fmt.tprintf("Expected %d exporting args, got %d", len(ex.exporting), len(ac.exporting)), loc = loc) do return
+		for i := 0; i < len(ex.exporting); i += 1 {
+			check_expr(t, ex.exporting[i].derived_expr, &ac.exporting[i].node, loc = loc)
+		}
+
 	case ^ast.Data_Inline_Decl:
 		ac, ok := actual_derived.(^ast.Data_Inline_Decl)
 		if !testing.expect(t, ok, fmt.tprintf("Expected Data_Inline_Decl, got %T", actual_derived), loc = loc) do return

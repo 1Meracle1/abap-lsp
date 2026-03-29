@@ -508,6 +508,18 @@ Condense_Stmt :: struct {
 	text:       ^Expr,
 }
 
+// RAISE EXCEPTION statement
+// Syntax:
+// - RAISE [RESUMABLE] EXCEPTION TYPE cx_class [EXPORTING p1 = a1 ...].
+// - RAISE [RESUMABLE] EXCEPTION oref.
+Raise_Exception_Stmt :: struct {
+	using node:    Stmt,
+	is_resumable:  bool,
+	type_ref:      ^Expr, // Exception class after TYPE
+	oref:          ^Expr, // Exception object reference variant
+	exporting:     [dynamic]^Named_Arg,
+}
+
 // CHECK statement
 // Syntax: CHECK logical_expression.
 // Used to check a condition and exit the current processing block if false
@@ -991,6 +1003,7 @@ Any_Node :: union {
 	^Authority_Check_Stmt,
 	^Delete_Stmt,
 	^Condense_Stmt,
+	^Raise_Exception_Stmt,
 	^Check_Stmt,
 	^Assert_Stmt,
 	^Call_Function_Stmt,
@@ -1083,6 +1096,7 @@ Any_Stmt :: union {
 	^Authority_Check_Stmt,
 	^Delete_Stmt,
 	^Condense_Stmt,
+	^Raise_Exception_Stmt,
 	^Check_Stmt,
 	^Assert_Stmt,
 	^Call_Function_Stmt,

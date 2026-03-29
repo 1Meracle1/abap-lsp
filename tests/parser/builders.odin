@@ -278,6 +278,46 @@ named_arg :: proc(param_name: string, value: ast.Any_Expr) -> ^ast.Named_Arg {
 	return node
 }
 
+raise_exception_type :: proc(
+	type_ref: ast.Any_Expr,
+	is_resumable: bool = false,
+	exporting: ..^ast.Named_Arg,
+) -> ^ast.Raise_Exception_Stmt {
+	node := ast.new(ast.Raise_Exception_Stmt, {})
+	node.is_resumable = is_resumable
+	#partial switch e in type_ref {
+	case ^ast.Ident:
+		node.type_ref = &e.node
+	case ^ast.Selector_Expr:
+		node.type_ref = &e.node
+	}
+	node.exporting = make([dynamic]^ast.Named_Arg)
+	for arg in exporting {
+		append(&node.exporting, arg)
+	}
+	node.derived_stmt = node
+	return node
+}
+
+raise_exception_oref :: proc(
+	oref: ast.Any_Expr,
+	is_resumable: bool = false,
+) -> ^ast.Raise_Exception_Stmt {
+	node := ast.new(ast.Raise_Exception_Stmt, {})
+	node.is_resumable = is_resumable
+	node.exporting = make([dynamic]^ast.Named_Arg)
+	#partial switch e in oref {
+	case ^ast.Ident:
+		node.oref = &e.node
+	case ^ast.Selector_Expr:
+		node.oref = &e.node
+	case ^ast.Call_Expr:
+		node.oref = &e.node
+	}
+	node.derived_stmt = node
+	return node
+}
+
 // Builder for For expressions (FOR var IN itab WHERE (...))
 for_expr :: proc(
 	var_name: string,
