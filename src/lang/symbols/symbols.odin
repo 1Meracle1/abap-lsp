@@ -226,5 +226,50 @@ create_empty_symbol_table :: proc(allocator := context.allocator) -> ^SymbolTabl
 	table.symbols = make(map[string]Symbol, allocator)
 	table.types = make([dynamic]^Type, allocator)
 	table.diagnostics = make([dynamic]Diagnostic, allocator)
+	register_builtin_symbols(table)
 	return table
+}
+
+make_builtin_char_type :: proc(table: ^SymbolTable, length: int) -> ^Type {
+	t := make_type(table, .Char)
+	t.length = length
+	return t
+}
+
+register_builtin_symbols :: proc(table: ^SymbolTable) {
+	if table == nil {
+		return
+	}
+
+	syst_type := make_structure_type(table, "syst")
+	add_struct_field(syst_type, "subrc", make_type(table, .Integer))
+	add_struct_field(syst_type, "tabix", make_type(table, .Integer))
+	add_struct_field(syst_type, "index", make_type(table, .Integer))
+	add_struct_field(syst_type, "tfill", make_type(table, .Integer))
+	add_struct_field(syst_type, "tleng", make_type(table, .Integer))
+	add_struct_field(syst_type, "datum", make_type(table, .Date))
+	add_struct_field(syst_type, "uzeit", make_type(table, .Time))
+	add_struct_field(syst_type, "mandt", make_builtin_char_type(table, 3))
+	add_struct_field(syst_type, "uname", make_builtin_char_type(table, 12))
+	add_struct_field(syst_type, "langu", make_builtin_char_type(table, 1))
+	add_struct_field(syst_type, "batch", make_builtin_char_type(table, 1))
+	add_struct_field(syst_type, "cprog", make_builtin_char_type(table, 40))
+	add_struct_field(syst_type, "repid", make_builtin_char_type(table, 40))
+
+	add_symbol(
+		table,
+		Symbol{
+			name      = "syst",
+			kind      = .TypeDef,
+			type_info = syst_type,
+		},
+	)
+	add_symbol(
+		table,
+		Symbol{
+			name      = "sy",
+			kind      = .Variable,
+			type_info = syst_type,
+		},
+	)
 }

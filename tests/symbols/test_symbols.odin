@@ -356,6 +356,57 @@ lv_value = missing_var.`
 }
 
 @(test)
+test_builtin_sy_symbol_resolves :: proc(t: ^testing.T) {
+	src := `DATA lv_subrc TYPE i.
+lv_subrc = sy-subrc.`
+	file := ast.new(ast.File, {})
+	file.src = src
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	table := symbols.resolve_file(file)
+	defer symbols.destroy_symbol_table(table)
+
+	sy_sym, ok := table.symbols["sy"]
+	if !testing.expect(t, ok, "expected built-in symbol 'sy' to be present") do return
+
+	testing.expect(t, sy_sym.type_info != nil, "expected 'sy' to have type information")
+	if sy_sym.type_info != nil {
+		testing.expect(
+			t,
+			sy_sym.type_info.kind == .Structure,
+			fmt.tprintf("expected 'sy' to have structure type, got %v", sy_sym.type_info.kind),
+		)
+
+		has_subrc := false
+		for field in sy_sym.type_info.fields {
+			if field.name == "subrc" {
+				has_subrc = true
+				testing.expect(
+					t,
+					field.type_info != nil && field.type_info.kind == .Integer,
+					"expected sy-subrc to be an integer field",
+				)
+				break
+			}
+		}
+		testing.expect(t, has_subrc, "expected 'sy' structure to expose field 'subrc'")
+	}
+
+	diags := symbols.collect_all_diagnostics(table)
+	found_sy_error := false
+	for diag in diags {
+		if strings.contains(diag.message, "Unknown symbol 'sy'") {
+			found_sy_error = true
+			break
+		}
+	}
+
+	testing.expect(t, !found_sy_error, "expected built-in symbol 'sy' to resolve without diagnostics")
+}
+
+@(test)
 test_method_impl_uses_declared_params :: proc(t: ^testing.T) {
 	src := `CLASS lcl_calc DEFINITION.
   PUBLIC SECTION.

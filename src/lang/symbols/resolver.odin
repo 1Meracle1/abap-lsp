@@ -242,10 +242,7 @@ destroy_project_resolution_result :: proc(result: ^ProjectResolutionResult) {
 }
 
 resolve_file :: proc(file: ^ast.File) -> ^SymbolTable {
-	table := new(SymbolTable)
-	table.symbols = make(map[string]Symbol)
-	table.types = make([dynamic]^Type)
-	table.diagnostics = make([dynamic]Diagnostic)
+	table := create_empty_symbol_table()
 
 	resolve_file_into(file, table)
 
@@ -551,10 +548,7 @@ resolve_struct_components :: proc(
 resolve_form_decl :: proc(table: ^SymbolTable, form: ^ast.Form_Decl) {
 	name := form.ident.name
 
-	child_table := new(SymbolTable)
-	child_table.symbols = make(map[string]Symbol)
-	child_table.types = make([dynamic]^Type)
-	child_table.diagnostics = make([dynamic]Diagnostic)
+	child_table := create_empty_symbol_table(context.allocator)
 
 	for param in form.tables_params {
 		resolve_form_param(child_table, param, .Tables)
@@ -802,10 +796,7 @@ get_decl_name :: proc(expr: ^ast.Expr) -> string {
 resolve_class_def_decl :: proc(table: ^SymbolTable, class_def: ^ast.Class_Def_Decl) {
 	name := class_def.ident.name
 
-	child_table := new(SymbolTable)
-	child_table.symbols = make(map[string]Symbol)
-	child_table.types = make([dynamic]^Type)
-	child_table.diagnostics = make([dynamic]Diagnostic)
+	child_table := create_empty_symbol_table(context.allocator)
 
 	for section in class_def.sections {
 		resolve_class_section(child_table, section)
@@ -899,10 +890,7 @@ resolve_attr_decl :: proc(table: ^SymbolTable, attr: ^ast.Attr_Decl, visibility:
 resolve_method_decl :: proc(table: ^SymbolTable, method: ^ast.Method_Decl, visibility: Visibility = .None) {
 	name := method.ident.name
 
-	child_table := new(SymbolTable)
-	child_table.symbols = make(map[string]Symbol)
-	child_table.types = make([dynamic]^Type)
-	child_table.diagnostics = make([dynamic]Diagnostic)
+	child_table := create_empty_symbol_table(context.allocator)
 
 	for param in method.params {
 		resolve_method_param(child_table, param)
@@ -1096,10 +1084,7 @@ resolve_try_stmt :: proc(table: ^SymbolTable, try_stmt: ^ast.Try_Stmt) {
 resolve_interface_decl :: proc(table: ^SymbolTable, iface: ^ast.Interface_Decl) {
 	name := iface.ident.name
 
-	child_table := new(SymbolTable)
-	child_table.symbols = make(map[string]Symbol)
-	child_table.types = make([dynamic]^Type)
-	child_table.diagnostics = make([dynamic]Diagnostic)
+	child_table := create_empty_symbol_table(context.allocator)
 
 	// Interface members are implicitly public
 	for method_decl in iface.methods {
@@ -1178,10 +1163,7 @@ resolve_include_decl :: proc(table: ^SymbolTable, include: ^ast.Include_Decl) {
 
 resolve_event_block :: proc(table: ^SymbolTable, event: ^ast.Event_Block) {
 	// Create a child scope for the event block's local variables
-	child_table := new(SymbolTable)
-	child_table.symbols = make(map[string]Symbol)
-	child_table.types = make([dynamic]^Type)
-	child_table.diagnostics = make([dynamic]Diagnostic)
+	child_table := create_empty_symbol_table(context.allocator)
 
 	// Resolve declarations in the event body
 	resolve_stmt_list(child_table, event.body[:])
@@ -1224,10 +1206,7 @@ resolve_module_decl :: proc(table: ^SymbolTable, module: ^ast.Module_Decl) {
 	name := module.ident.name
 
 	// Create a child scope for the module's local variables
-	child_table := new(SymbolTable)
-	child_table.symbols = make(map[string]Symbol)
-	child_table.types = make([dynamic]^Type)
-	child_table.diagnostics = make([dynamic]Diagnostic)
+	child_table := create_empty_symbol_table(context.allocator)
 
 	// Resolve declarations in the module body
 	resolve_stmt_list(child_table, module.body[:])
