@@ -8,7 +8,6 @@ import "core:testing"
 @(test)
 read_report_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `READ REPORT im_prog INTO buffer.`
 	p: parser.Parser
 	parser.parse_file(&p, file)

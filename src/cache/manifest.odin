@@ -147,7 +147,7 @@ manifest_parse :: proc(text: string, source_path: string = "") -> ^Manifest {
 	line_no := 0
 	cursor := 0
 
-	for cursor <= len(text) {
+	for cursor < len(text) {
 		raw_line := manifest_next_line(text, &cursor)
 		line_no += 1
 		line := strings.trim_space(strip_manifest_comment(raw_line))

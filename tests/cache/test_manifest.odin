@@ -1,0 +1,84 @@
+package tests_cache
+
+import "../../src/cache"
+import "core:fmt"
+import "core:testing"
+
+@(test)
+test_manifest_parse_without_trailing_newline :: proc(t: ^testing.T) {
+	text := `version = 2
+connection = "DEV"
+
+[resolution]
+dependency_mode = "remote-on-demand"
+cache_dir = ".abapls/cache"
+
+[[unit]]
+name = "zcl_demo"
+kind = "global-class"
+root_file = "src/zcl_demo.clas.abap"`
+
+	manifest := cache.manifest_parse(text, "manifest-no-newline")
+	defer cache.manifest_deinit(manifest)
+
+	if !testing.expect(t, manifest != nil, "expected manifest to parse") do return
+
+	testing.expect(t, manifest.version == 2, fmt.tprintf("expected version 2, got %d", manifest.version))
+	testing.expect(
+		t,
+		manifest.connection == "DEV",
+		fmt.tprintf("expected connection DEV, got %q", manifest.connection),
+	)
+	testing.expect(t, len(manifest.units) == 1, fmt.tprintf("expected 1 unit, got %d", len(manifest.units)))
+
+	if len(manifest.units) > 0 {
+		unit := manifest.units[0]
+		testing.expect(t, unit.name == "zcl_demo", fmt.tprintf("expected unit name, got %q", unit.name))
+		testing.expect(t, unit.kind == .Global_Class, fmt.tprintf("expected global class, got %v", unit.kind))
+		testing.expect(
+			t,
+			unit.root_file == "src/zcl_demo.clas.abap",
+			fmt.tprintf("unexpected root file %q", unit.root_file),
+		)
+	}
+}
+
+@(test)
+test_manifest_parse_members_and_comments :: proc(t: ^testing.T) {
+	text := `version = 1 # comment
+
+[[unit]]
+name = "zfg_demo"
+kind = "function-group"
+root_file = "./src/saplzfg_demo.abap"
+
+[[unit.member]]
+role = "include"
+file = "src/lzfg_demotop.abap"
+object_name = "LZFG_DEMOTOP"
+
+[[unit.member]]
+role = "function-module"
+file = "src/lzfg_demou01.abap"
+object_name = "Z_FG_DEMO"` + "\n"
+
+	manifest := cache.manifest_parse(text, "manifest-members")
+	defer cache.manifest_deinit(manifest)
+
+	if !testing.expect(t, manifest != nil, "expected manifest to parse") do return
+	if !testing.expect(t, len(manifest.units) == 1, fmt.tprintf("expected 1 unit, got %d", len(manifest.units))) do return
+
+	unit := manifest.units[0]
+	testing.expect(t, len(unit.members) == 2, fmt.tprintf("expected 2 members, got %d", len(unit.members)))
+
+	if len(unit.members) >= 2 {
+		testing.expect(t, unit.members[0].role == .Include, fmt.tprintf("unexpected first role %v", unit.members[0].role))
+		testing.expect(t, unit.members[0].object_name == "LZFG_DEMOTOP", "expected include object name")
+		testing.expect(
+			t,
+			unit.members[1].role == .Function_Module,
+			fmt.tprintf("unexpected second role %v", unit.members[1].role),
+		)
+		testing.expect(t, unit.members[1].object_name == "Z_FG_DEMO", "expected function module object name")
+	}
+}

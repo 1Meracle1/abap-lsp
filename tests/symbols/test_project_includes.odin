@@ -23,14 +23,12 @@ gv_inc = gv_main.`
 	// Parse both files
 	main_ast := ast.new(ast.File, {})
 	main_ast.src = main_src
-	main_ast.fullpath = "file:///test/main.abap"
 	
 	p1: parser.Parser
 	parser.parse_file(&p1, main_ast)
 	
 	inc_ast := ast.new(ast.File, {})
 	inc_ast.src = inc_src
-	inc_ast.fullpath = "file:///test/inc.abap"
 	
 	p2: parser.Parser
 	parser.parse_file(&p2, inc_ast)

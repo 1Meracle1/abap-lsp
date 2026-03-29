@@ -1,16 +1,17 @@
 // raddbg 0.9.25 project file
 
-recent_file: path: "src/cache/manifest.odin"
+recent_file: path: "src/lang/parser/basic_decls.odin"
+recent_file: path: "src/lang/parser/parser.odin"
+recent_file: path: "src/lang/parser/oop.odin"
 recent_file: path: "src/cache/cache.odin"
 recent_file: path: "src/lsp/server.odin"
+recent_file: path: "src/cache/manifest.odin"
 recent_file: path: "../toolchain/odin-windows-amd64-dev-2026-02/base/runtime/dynamic_map_internal.odin"
 recent_file: path: "../toolchain/odin-windows-amd64-dev-2026-02/base/runtime/heap_allocator.odin"
 recent_file: path: "../toolchain/odin-windows-amd64-dev-2026-02/base/runtime/heap_allocator_windows.odin"
-recent_file: path: "src/lang/parser/basic_decls.odin"
 recent_file: path: "src/lsp/document.odin"
 recent_file: path: "src/lsp/diagnostics.odin"
 recent_file: path: "src/cache/project.odin"
-recent_file: path: "src/lang/parser/parser.odin"
 recent_file: path: "tests/parser/class_interface.odin"
 recent_file: path: "tests/parser/parser.odin"
 recent_file: path: "../toolchain/odin-windows-amd64-dev-2025-11/core/testing/runner.odin"
@@ -75,15 +76,11 @@ breakpoint:
 debug_info:
 {
   path: "D:/dev/odin/abap-lsp/bin/debug/abap-lsp.pdb"
-  timestamp: 66210577772248
+  timestamp: 66210578791415
 }
 breakpoint:
 {
   source_location: "src/lsp/server.odin:107:1"
   hit_count: 1
-}
-breakpoint:
-{
-  source_location: "src/cache/cache.odin:128:1"
-  hit_count: 1
+  enabled: 0
 }

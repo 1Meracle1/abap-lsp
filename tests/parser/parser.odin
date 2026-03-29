@@ -9,7 +9,6 @@ import "core:testing"
 @(test)
 basic_inline_data_decl_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `DATA(lv_value) = 1.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -34,7 +33,6 @@ basic_inline_data_decl_test :: proc(t: ^testing.T) {
 @(test)
 basic_inline_data_decl_with_preceding_comment_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `*DATA lv_val TYPE i. 
 DATA(lv_value) = 1.`
 
@@ -62,7 +60,6 @@ DATA(lv_value) = 1.`
 @(test)
 basic_inline_data_decl_with_preceding_pragma_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `##ENH_OK
 DATA(lv_value) = 1.`
 
@@ -90,7 +87,6 @@ DATA(lv_value) = 1.`
 @(test)
 pragma_statements_ignored_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `##ENH_OK
 DATA lv_a TYPE i.
 ##SOME_PRAGMA
@@ -123,7 +119,6 @@ DATA lv_b TYPE string.`
 @(test)
 basic_single_data_typed_decl_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `DATA lv_value TYPE i.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -148,7 +143,6 @@ basic_single_data_typed_decl_test :: proc(t: ^testing.T) {
 @(test)
 basic_chain_data_typed_decl_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `DATA: lv_var1 TYPE i,
       lv_var2 TYPE f.`
 
@@ -176,7 +170,6 @@ basic_chain_data_typed_decl_test :: proc(t: ^testing.T) {
 @(test)
 chain_data_typed_decl_three_vars_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `DATA: lv_int TYPE i, lv_float TYPE f, lv_string TYPE string.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -201,7 +194,6 @@ chain_data_typed_decl_three_vars_test :: proc(t: ^testing.T) {
 @(test)
 simple_assignment_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `lv_var = 1.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -226,7 +218,6 @@ simple_assignment_test :: proc(t: ^testing.T) {
 @(test)
 simple_downcast_assignment_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `lo_other ?= io_event.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -251,7 +242,6 @@ simple_downcast_assignment_test :: proc(t: ^testing.T) {
 @(test)
 downcast_assignment_with_method_call_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `lo_object ?= cl_factory=>get_instance( ).`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -282,7 +272,6 @@ downcast_assignment_with_method_call_test :: proc(t: ^testing.T) {
 @(test)
 downcast_assignment_with_field_access_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `lo_data ?= io_container->mo_data.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -313,7 +302,6 @@ downcast_assignment_with_field_access_test :: proc(t: ^testing.T) {
 @(test)
 assignment_with_struct_field_access_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `lv_struct-field1 = 1.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -338,7 +326,6 @@ assignment_with_struct_field_access_test :: proc(t: ^testing.T) {
 @(test)
 assignment_with_static_field_access_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `lv_class=>field1 = 1.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -363,7 +350,6 @@ assignment_with_static_field_access_test :: proc(t: ^testing.T) {
 @(test)
 assignment_with_chained_field_access_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `lv_struct-nested-field = 1.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -391,7 +377,6 @@ assignment_with_chained_field_access_test :: proc(t: ^testing.T) {
 @(test)
 assignment_with_mixed_access_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `lv_class=>struct-field = 1.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -421,7 +406,6 @@ assignment_with_mixed_access_test :: proc(t: ^testing.T) {
 @(test)
 basic_empty_form_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `FORM my_subroutine.
 ENDFORM.`
 
@@ -449,7 +433,6 @@ ENDFORM.`
 @(test)
 form_with_using_params_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `FORM my_sub USING p_value1 p_value2.
 ENDFORM.`
 
@@ -483,7 +466,6 @@ ENDFORM.`
 @(test)
 form_with_changing_params_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `FORM my_sub CHANGING c_result.
 ENDFORM.`
 
@@ -513,7 +495,6 @@ ENDFORM.`
 @(test)
 form_with_tables_params_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `FORM my_sub TABLES it_data.
 ENDFORM.`
 
@@ -543,7 +524,6 @@ ENDFORM.`
 @(test)
 form_with_typed_params_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `FORM my_sub USING p_value TYPE i.
 ENDFORM.`
 
@@ -573,7 +553,6 @@ ENDFORM.`
 @(test)
 form_with_all_param_sections_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src =
 	`FORM process_data TABLES it_input
                    USING p_mode TYPE string
@@ -612,7 +591,6 @@ ENDFORM.`
 @(test)
 form_with_body_statements_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `FORM my_sub USING p_val.
   lv_result = p_val.
 ENDFORM.`
@@ -646,7 +624,6 @@ ENDFORM.`
 @(test)
 form_with_multiple_body_statements_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src =
 	`FORM calculate USING p_a p_b CHANGING c_result.
   DATA lv_temp TYPE i.
@@ -694,7 +671,6 @@ ENDFORM.`
 @(test)
 basic_single_types_decl_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `TYPES ty_counter TYPE i.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -719,7 +695,6 @@ basic_single_types_decl_test :: proc(t: ^testing.T) {
 @(test)
 basic_chain_types_decl_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `TYPES: ty_int TYPE i,
        ty_str TYPE string.`
 
@@ -747,7 +722,6 @@ basic_chain_types_decl_test :: proc(t: ^testing.T) {
 @(test)
 chain_types_decl_three_types_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `TYPES: ty_id TYPE i, ty_name TYPE string, ty_amount TYPE f.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -772,7 +746,6 @@ chain_types_decl_three_types_test :: proc(t: ^testing.T) {
 @(test)
 types_with_custom_type_reference_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `TYPES ty_material TYPE matnr.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -797,7 +770,6 @@ types_with_custom_type_reference_test :: proc(t: ^testing.T) {
 @(test)
 mixed_data_and_types_decl_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `TYPES ty_counter TYPE i.
 DATA lv_counter TYPE ty_counter.`
 
@@ -827,7 +799,6 @@ DATA lv_counter TYPE ty_counter.`
 @(test)
 form_errornous_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src =
 	"*DATA lv_val TYPE i.\r\nDATA(lv_data) = 'hello'.\r\n\r\nDATA lv_var1 TYPE i.\r\n\r\nDATA: \r\n    lv_var2 TYPE i,\r\n    lv_var3 TYPE f.\r\n\r\nlv_var2 = 10.\r\n\r\nlv_var3 = lv_var2.\r\n\r\nFORM process_data TABLES it_input\r\n                   USING p_mode TYPE string\r\n                   CHANGING c_count TYPE i.\r\nENDFORM.\r\n\r\nFORM some_form\r\n    C.\r\n    DATA: \r\n        lv_var TYPE i,\r\n        lv_var2 TYPE string.\r\n    \r\nENDFORM."
 
@@ -846,7 +817,6 @@ form_errornous_test :: proc(t: ^testing.T) {
 @(test)
 basic_struct_type_decl_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src =
 	`TYPES: BEGIN OF street_type,
          name TYPE c,
@@ -883,7 +853,6 @@ basic_struct_type_decl_test :: proc(t: ^testing.T) {
 @(test)
 struct_type_with_nested_struct_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src =
 	`TYPES: BEGIN OF address_type,
          name   TYPE c,
@@ -932,7 +901,6 @@ struct_type_with_nested_struct_test :: proc(t: ^testing.T) {
 @(test)
 struct_type_with_reference_to_another_struct_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src =
 	`TYPES: BEGIN OF address_type,
          name   TYPE c,
@@ -969,7 +937,6 @@ struct_type_with_reference_to_another_struct_test :: proc(t: ^testing.T) {
 @(test)
 type_reference_with_path_selector_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `TYPES zipcode_type TYPE address_type-city-zipcode.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -1012,7 +979,6 @@ type_reference_with_path_selector_test :: proc(t: ^testing.T) {
 @(test)
 complex_nested_struct_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src =
 	`TYPES: BEGIN OF address_type,
          name   TYPE c,
@@ -1060,7 +1026,6 @@ complex_nested_struct_test :: proc(t: ^testing.T) {
 @(test)
 basic_report_decl_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `REPORT zttrp001_us_sn_reset.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -1094,7 +1059,6 @@ basic_report_decl_test :: proc(t: ^testing.T) {
 @(test)
 basic_include_decl_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `INCLUDE zttrp001_us_sn_reset_cl1.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -1128,7 +1092,6 @@ basic_include_decl_test :: proc(t: ^testing.T) {
 @(test)
 multiple_include_decls_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src =
 	`INCLUDE zttrp001_us_sn_reset_top.
 INCLUDE zttrp001_us_sn_reset_sel.
@@ -1171,7 +1134,6 @@ INCLUDE zttrp001_us_sn_reset_f01.`
 @(test)
 start_of_selection_event_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `START-OF-SELECTION.
   DATA lv_var TYPE i.
   lv_var = 1.`
@@ -1211,7 +1173,6 @@ start_of_selection_event_test :: proc(t: ^testing.T) {
 @(test)
 initialization_event_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `INITIALIZATION.
   DATA lv_init TYPE string.`
 
@@ -1250,7 +1211,6 @@ initialization_event_test :: proc(t: ^testing.T) {
 @(test)
 call_screen_stmt_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `CALL SCREEN 100.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -1286,7 +1246,6 @@ call_screen_stmt_test :: proc(t: ^testing.T) {
 @(test)
 full_report_program_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src =
 	`REPORT zttrp001_us_sn_reset.
 
@@ -1359,7 +1318,6 @@ START-OF-SELECTION.
 @(test)
 new_expr_with_type_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `dref = NEW i( 555 ).`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -1418,7 +1376,6 @@ new_expr_with_type_test :: proc(t: ^testing.T) {
 @(test)
 new_expr_inferred_type_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `oref = NEW #( ).`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -1461,7 +1418,6 @@ new_expr_inferred_type_test :: proc(t: ^testing.T) {
 @(test)
 new_expr_class_type_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `oref = NEW cls( ).`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -1510,7 +1466,6 @@ new_expr_class_type_test :: proc(t: ^testing.T) {
 @(test)
 new_expr_in_inline_data_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `DATA(lo_obj) = NEW zcl_myclass( ).`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -1559,7 +1514,6 @@ new_expr_in_inline_data_test :: proc(t: ^testing.T) {
 @(test)
 new_expr_full_class_example_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src =
 	`CLASS cls DEFINITION. 
 ENDCLASS.
@@ -1697,7 +1651,6 @@ ENDCLASS.`
 @(test)
 basic_module_output_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `MODULE status_0100 OUTPUT.
 ENDMODULE.`
 
@@ -1744,7 +1697,6 @@ ENDMODULE.`
 @(test)
 basic_module_input_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `MODULE user_command_0100 INPUT.
 ENDMODULE.`
 
@@ -1791,7 +1743,6 @@ ENDMODULE.`
 @(test)
 basic_module_default_input_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `MODULE user_command_0100.
 ENDMODULE.`
 
@@ -1838,7 +1789,6 @@ ENDMODULE.`
 @(test)
 module_with_body_statements_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src =
 	`MODULE status_0100 OUTPUT.
   DATA lv_text TYPE string.
@@ -1885,7 +1835,6 @@ ENDMODULE.`
 @(test)
 multiple_modules_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src =
 	`MODULE status_0100 OUTPUT.
 ENDMODULE.
@@ -1943,7 +1892,6 @@ ENDMODULE.`
 @(test)
 module_with_screen_program_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src =
 	`REPORT ztest_screen.
 
@@ -2005,7 +1953,6 @@ START-OF-SELECTION.
 @(test)
 basic_if_statement_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `IF lv_var = 1.
   lv_result = 10.
 ENDIF.`
@@ -2060,7 +2007,6 @@ ENDIF.`
 @(test)
 if_with_else_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `IF lv_var > 0.
   lv_result = 1.
 ELSE.
@@ -2107,7 +2053,6 @@ ENDIF.`
 @(test)
 if_with_elseif_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src =
 	`IF time < '120000'.
   lv_period = 'AM'.
@@ -2167,7 +2112,6 @@ ENDIF.`
 @(test)
 if_with_multiple_elseif_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src =
 	`IF time < '120000'.
   lv_period = 'AM'.
@@ -2214,7 +2158,6 @@ ENDIF.`
 @(test)
 if_with_and_condition_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `IF lv_a > 0 AND lv_b < 10.
   lv_result = 1.
 ENDIF.`
@@ -2248,7 +2191,6 @@ ENDIF.`
 @(test)
 if_with_or_condition_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `IF lv_a = 1 OR lv_b = 2.
   lv_result = 1.
 ENDIF.`
@@ -2282,7 +2224,6 @@ ENDIF.`
 @(test)
 if_with_not_condition_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `IF NOT lv_flag = 'X'.
   lv_result = 1.
 ENDIF.`
@@ -2316,7 +2257,6 @@ ENDIF.`
 @(test)
 if_with_is_initial_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `IF lv_var IS INITIAL.
   lv_result = 1.
 ENDIF.`
@@ -2350,7 +2290,6 @@ ENDIF.`
 @(test)
 if_with_is_not_initial_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `IF lv_var IS NOT INITIAL.
   lv_result = 1.
 ENDIF.`
@@ -2384,7 +2323,6 @@ ENDIF.`
 @(test)
 if_with_is_supplied_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `IF p1 IS SUPPLIED.
   lv_result = p1.
 ENDIF.`
@@ -2417,7 +2355,6 @@ ENDIF.`
 @(test)
 if_with_is_bound_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `IF lo_ref IS BOUND.
   lv_result = 1.
 ENDIF.`
@@ -2450,7 +2387,6 @@ ENDIF.`
 @(test)
 if_with_complex_condition_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `IF p1 IS SUPPLIED AND p1 <= upper_limit.
   lv_result = p1.
 ENDIF.`
@@ -2492,7 +2428,6 @@ ENDIF.`
 @(test)
 if_with_not_is_initial_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `IF NOT p IS INITIAL.
   lv_result = 1.
 ENDIF.`
@@ -2535,7 +2470,6 @@ ENDIF.`
 @(test)
 if_with_comparison_operators_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src =
 	`IF lv_a < 10.
 ENDIF.
@@ -2577,7 +2511,6 @@ ENDIF.`
 @(test)
 if_nested_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `IF lv_a = 1.
   IF lv_b = 2.
     lv_result = 1.
@@ -2625,7 +2558,6 @@ ENDIF.`
 @(test)
 if_with_data_declarations_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `IF lv_flag = 'X'.
   DATA lv_local TYPE i.
   lv_local = 10.
@@ -2664,7 +2596,6 @@ ENDIF.`
 @(test)
 if_inside_form_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src =
 	`FORM check_value USING p_val TYPE i.
   IF p_val > 0.
@@ -2720,7 +2651,6 @@ ENDFORM.`
 @(test)
 if_inside_method_impl_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src =
 	`CLASS c1 IMPLEMENTATION.
   METHOD m1.
@@ -2768,7 +2698,6 @@ ENDCLASS.`
 @(test)
 arrow_selector_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `lv_result = lo_object->get_value.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -2819,7 +2748,6 @@ arrow_selector_test :: proc(t: ^testing.T) {
 @(test)
 chained_arrow_selector_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `lv_result = lo_app->get_controller->get_view.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -2863,7 +2791,6 @@ chained_arrow_selector_test :: proc(t: ^testing.T) {
 @(test)
 simple_call_expr_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `lv_result = lo_object->get_value( ).`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -2897,7 +2824,6 @@ simple_call_expr_test :: proc(t: ^testing.T) {
 @(test)
 call_expr_with_args_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `lv_result = lo_object->set_value( iv_value ).`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -2935,7 +2861,6 @@ call_expr_with_args_test :: proc(t: ^testing.T) {
 @(test)
 chained_call_expr_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `lv_result = lo_builder->set_name( lv_name )->build( ).`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -2979,7 +2904,6 @@ chained_call_expr_test :: proc(t: ^testing.T) {
 @(test)
 method_call_standalone_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `lo_object->process( ).`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -3008,7 +2932,6 @@ method_call_standalone_test :: proc(t: ^testing.T) {
 @(test)
 call_with_literal_arg_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `lv_result = lo_calc->add( 42 ).`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -3040,7 +2963,6 @@ call_with_literal_arg_test :: proc(t: ^testing.T) {
 @(test)
 named_arg_single_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `lv_result = cl_class=>method( iv_param = 'value' ).`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -3086,7 +3008,6 @@ named_arg_single_test :: proc(t: ^testing.T) {
 @(test)
 named_arg_multiple_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `lv_result = cl_class=>method( iv_param1 = 'value1' iv_param2 = 42 ).`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -3139,7 +3060,6 @@ named_arg_multiple_test :: proc(t: ^testing.T) {
 @(test)
 named_arg_multiline_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src =
 	`mo_messages = /sttpec/cl_message_ctrl=>create(
 		iv_object    = 'ZATTP'
@@ -3196,7 +3116,6 @@ named_arg_multiline_test :: proc(t: ^testing.T) {
 @(test)
 named_arg_with_ident_value_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `lv_result = cl_class=>method( iv_param = lv_value ).`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -3240,7 +3159,6 @@ named_arg_with_ident_value_test :: proc(t: ^testing.T) {
 @(test)
 while_loop_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src =
 	`
     WHILE lv_string IS NOT INITIAL AND lv_index <= 4.
@@ -3339,7 +3257,6 @@ check_string_template :: proc(
 @(test)
 basic_string_template_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `DATA(result) = |Hello World!|.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -3382,7 +3299,6 @@ basic_string_template_test :: proc(t: ^testing.T) {
 @(test)
 string_template_concatenation_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `DATA(result) = |Hello| & | | & |World|.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -3418,7 +3334,6 @@ string_template_concatenation_test :: proc(t: ^testing.T) {
 @(test)
 string_template_with_embedded_expr_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `DATA(result) = |Hello { lv_name }!|.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -3485,7 +3400,6 @@ string_template_with_embedded_expr_test :: proc(t: ^testing.T) {
 @(test)
 string_template_with_selector_expr_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `DATA(result) = |Hello { sy-uname }!|.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -3531,7 +3445,6 @@ string_template_with_selector_expr_test :: proc(t: ^testing.T) {
 @(test)
 empty_string_template_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `DATA(result) = ||.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -3561,7 +3474,6 @@ empty_string_template_test :: proc(t: ^testing.T) {
 @(test)
 string_template_only_embedded_expr_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `DATA(result) = |{ lv_value }|.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -3595,7 +3507,6 @@ string_template_only_embedded_expr_test :: proc(t: ^testing.T) {
 @(test)
 string_template_embedded_expr_alpha_out_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `DATA(result) = |{ ls_item_result-matnr ALPHA = OUT }|.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -3662,7 +3573,6 @@ string_template_embedded_expr_alpha_out_test :: proc(t: ^testing.T) {
 @(test)
 string_template_embedded_expr_alpha_in_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `DATA(result) = |{ ls_item_result-matnr ALPHA = IN }|.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -3719,7 +3629,6 @@ string_template_embedded_expr_alpha_in_test :: proc(t: ^testing.T) {
 string_template_embedded_expr_in_value_constructor_test :: proc(t: ^testing.T) {
 	// Test the usage example from the user: embedded expression inside VALUE constructor
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src =
 	`APPEND VALUE #(
         gs1_es      = ls_item_result-gs1_es_b
@@ -3814,7 +3723,6 @@ string_template_embedded_expr_in_value_constructor_test :: proc(t: ^testing.T) {
 @(test)
 string_template_multiple_format_options_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `DATA(result) = |{ lv_date DATE = ISO }|.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -3863,7 +3771,6 @@ string_template_multiple_format_options_test :: proc(t: ^testing.T) {
 @(test)
 string_template_width_format_option_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `DATA(result) = |{ lv_number WIDTH = 10 }|.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -3919,7 +3826,6 @@ string_template_width_format_option_test :: proc(t: ^testing.T) {
 @(test)
 arithmetic_simple_addition_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `DATA(result) = a + b.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -3966,7 +3872,6 @@ arithmetic_simple_addition_test :: proc(t: ^testing.T) {
 @(test)
 arithmetic_simple_subtraction_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `DATA(result) = x - y.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -3995,7 +3900,6 @@ arithmetic_simple_subtraction_test :: proc(t: ^testing.T) {
 @(test)
 arithmetic_multiplication_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `DATA(result) = a * b.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -4024,7 +3928,6 @@ arithmetic_multiplication_test :: proc(t: ^testing.T) {
 @(test)
 arithmetic_division_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `DATA(result) = a / b.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -4053,7 +3956,6 @@ arithmetic_division_test :: proc(t: ^testing.T) {
 @(test)
 arithmetic_mod_operator_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `DATA(result) = a MOD b.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -4083,7 +3985,6 @@ arithmetic_mod_operator_test :: proc(t: ^testing.T) {
 @(test)
 arithmetic_div_operator_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `DATA(result) = a DIV b.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -4114,7 +4015,6 @@ arithmetic_div_operator_test :: proc(t: ^testing.T) {
 arithmetic_operator_precedence_test :: proc(t: ^testing.T) {
 	// a + b * c should parse as a + (b * c) due to precedence
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `DATA(result) = a + b * c.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -4165,7 +4065,6 @@ arithmetic_operator_precedence_test :: proc(t: ^testing.T) {
 arithmetic_left_associativity_test :: proc(t: ^testing.T) {
 	// a - b - c should parse as (a - b) - c (left to right)
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `DATA(result) = a - b - c.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -4215,7 +4114,6 @@ arithmetic_left_associativity_test :: proc(t: ^testing.T) {
 @(test)
 arithmetic_with_numbers_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `DATA(result) = 10 + 20.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -4256,7 +4154,6 @@ arithmetic_with_numbers_test :: proc(t: ^testing.T) {
 @(test)
 arithmetic_unary_negation_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `DATA(result) = -a.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -4295,7 +4192,6 @@ arithmetic_unary_negation_test :: proc(t: ^testing.T) {
 arithmetic_parenthesized_expr_test :: proc(t: ^testing.T) {
 	// (a + b) * c - parentheses should change precedence
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `DATA(result) = ( a + b ) * c.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -4350,7 +4246,6 @@ arithmetic_parenthesized_expr_test :: proc(t: ^testing.T) {
 arithmetic_complex_expression_test :: proc(t: ^testing.T) {
 	// a * b + c / d - e should parse correctly with precedence
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `DATA(result) = a * b + c / d - e.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -4379,7 +4274,6 @@ arithmetic_complex_expression_test :: proc(t: ^testing.T) {
 @(test)
 arithmetic_in_assignment_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `result = a + b * c.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -4412,7 +4306,6 @@ arithmetic_in_assignment_test :: proc(t: ^testing.T) {
 message_simple_text_test :: proc(t: ^testing.T) {
 	// MESSAGE 'No display authorization.' TYPE 'I' DISPLAY LIKE 'E'.
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `MESSAGE 'No display authorization.' TYPE 'I' DISPLAY LIKE 'E'.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -4471,7 +4364,6 @@ message_simple_text_test :: proc(t: ^testing.T) {
 message_with_class_and_with_into_test :: proc(t: ^testing.T) {
 	// MESSAGE e899(/sttpec/int_msg) WITH lv_msgv1 lv_msgv2 lv_msgv3 lv_msgv4 INTO lv_dummy_msg.
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src =
 	`MESSAGE e899(/sttpec/int_msg) WITH lv_msgv1 lv_msgv2 lv_msgv3 lv_msgv4 INTO lv_dummy_msg.`
 	p: parser.Parser
@@ -4536,7 +4428,6 @@ message_with_class_and_with_into_test :: proc(t: ^testing.T) {
 message_info_with_class_test :: proc(t: ^testing.T) {
 	// MESSAGE i899(/sttpec/int_msg) WITH lv_msgv1 lv_msgv2 lv_msgv3 lv_msgv4 INTO lv_dummy_msg.
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src =
 	`MESSAGE i899(/sttpec/int_msg) WITH lv_msgv1 lv_msgv2 lv_msgv3 lv_msgv4 INTO lv_dummy_msg.`
 	p: parser.Parser
@@ -4576,7 +4467,6 @@ message_info_with_class_test :: proc(t: ^testing.T) {
 message_variable_with_type_display_test :: proc(t: ^testing.T) {
 	// MESSAGE iv_msg TYPE 'I' DISPLAY LIKE 'E'.
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `MESSAGE iv_msg TYPE 'I' DISPLAY LIKE 'E'.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -4617,7 +4507,6 @@ message_variable_with_type_display_test :: proc(t: ^testing.T) {
 message_variable_type_only_test :: proc(t: ^testing.T) {
 	// MESSAGE iv_msg TYPE 'I'.
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `MESSAGE iv_msg TYPE 'I'.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -4668,7 +4557,6 @@ message_variable_type_only_test :: proc(t: ^testing.T) {
 message_simple_class_only_test :: proc(t: ^testing.T) {
 	// MESSAGE e001(myclass).
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `MESSAGE e001(myclass).`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -4724,7 +4612,6 @@ message_simple_class_only_test :: proc(t: ^testing.T) {
 data_standard_table_of_test :: proc(t: ^testing.T) {
 	// DATA: lt_idx_to_del TYPE STANDARD TABLE OF lvc_index.
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `DATA: lt_idx_to_del TYPE STANDARD TABLE OF lvc_index.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -4781,7 +4668,6 @@ data_standard_table_of_test :: proc(t: ^testing.T) {
 data_table_of_simple_test :: proc(t: ^testing.T) {
 	// DATA: lt_data TYPE TABLE OF mytype.
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `DATA: lt_data TYPE TABLE OF mytype.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -4812,7 +4698,6 @@ data_table_of_simple_test :: proc(t: ^testing.T) {
 data_hashed_table_with_key_test :: proc(t: ^testing.T) {
 	// DATA: lt_idx_to_del TYPE HASHED TABLE OF lvc_index WITH UNIQUE KEY col1.
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `DATA: lt_idx_to_del TYPE HASHED TABLE OF lvc_index WITH UNIQUE KEY col1.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -4865,7 +4750,6 @@ data_hashed_table_with_key_test :: proc(t: ^testing.T) {
 data_ref_to_test :: proc(t: ^testing.T) {
 	// DATA lo_event TYPE REF TO lcl_event.
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `DATA lo_event TYPE REF TO lcl_event.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -4910,7 +4794,6 @@ data_ref_to_test :: proc(t: ^testing.T) {
 data_like_ref_to_test :: proc(t: ^testing.T) {
 	// DATA lo_event LIKE REF TO lcl_event.
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `DATA lo_event LIKE REF TO lcl_event.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -4949,7 +4832,6 @@ data_like_ref_to_test :: proc(t: ^testing.T) {
 data_line_of_test :: proc(t: ^testing.T) {
 	// DATA lv_var1 TYPE LINE OF lt_idx_to_del.
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `DATA lv_var1 TYPE LINE OF lt_idx_to_del.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -4988,7 +4870,6 @@ data_line_of_test :: proc(t: ^testing.T) {
 data_like_line_of_test :: proc(t: ^testing.T) {
 	// DATA lv_var1 LIKE LINE OF lt_idx_to_del.
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `DATA lv_var1 LIKE LINE OF lt_idx_to_del.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -5013,7 +4894,6 @@ data_like_line_of_test :: proc(t: ^testing.T) {
 data_with_length_value_test :: proc(t: ^testing.T) {
 	// DATA lv_val TYPE i LENGTH 4 VALUE 1.
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `DATA lv_val TYPE i LENGTH 4 VALUE 1.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -5044,7 +4924,6 @@ types_table_with_default_key_test :: proc(t: ^testing.T) {
 	// TYPES: src_line TYPE c LENGTH 72,
 	//        src TYPE STANDARD TABLE OF src_line WITH NON-UNIQUE DEFAULT KEY.
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src =
 	`TYPES: src_line TYPE c LENGTH 72,
            src TYPE STANDARD TABLE OF src_line
@@ -5094,7 +4973,6 @@ types_table_with_default_key_test :: proc(t: ^testing.T) {
 data_hashed_table_selector_type_test :: proc(t: ^testing.T) {
 	// DATA: itab TYPE HASHED TABLE OF example_data=>struc WITH UNIQUE KEY idx.
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `DATA: itab TYPE HASHED TABLE OF example_data=>struc WITH UNIQUE KEY idx.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -5139,7 +5017,6 @@ data_hashed_table_selector_type_test :: proc(t: ^testing.T) {
 data_sorted_table_test :: proc(t: ^testing.T) {
 	// DATA: lt_sorted TYPE SORTED TABLE OF mytype WITH UNIQUE KEY name.
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `DATA: lt_sorted TYPE SORTED TABLE OF mytype WITH UNIQUE KEY name.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -5172,7 +5049,6 @@ data_sorted_table_test :: proc(t: ^testing.T) {
 insert_value_into_table_test :: proc(t: ^testing.T) {
 	// INSERT VALUE #( dispno = '001' descr = '001 - active' ) INTO TABLE mt_cdispos_map.
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `INSERT VALUE #( dispno = '001' descr = '001 - active' ) INTO TABLE mt_cdispos_map.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -5216,7 +5092,6 @@ insert_value_into_table_test :: proc(t: ^testing.T) {
 insert_into_db_values_test :: proc(t: ^testing.T) {
 	// INSERT INTO target VALUES wa.
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `INSERT INTO ztable VALUES wa.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -5275,7 +5150,6 @@ insert_into_db_values_test :: proc(t: ^testing.T) {
 insert_from_wa_test :: proc(t: ^testing.T) {
 	// INSERT target FROM wa.
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `INSERT ztable FROM wa.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -5334,7 +5208,6 @@ insert_from_wa_test :: proc(t: ^testing.T) {
 insert_from_table_test :: proc(t: ^testing.T) {
 	// INSERT target FROM TABLE itab.
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `INSERT ztable FROM TABLE itab.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -5393,7 +5266,6 @@ insert_from_table_test :: proc(t: ^testing.T) {
 insert_in_method_body_test :: proc(t: ^testing.T) {
 	// Test INSERT statement inside a method body
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src =
 	`CLASS zcl_test IMPLEMENTATION.
   METHOD test_insert.
@@ -5462,7 +5334,6 @@ ENDCLASS.`
 append_simple_test :: proc(t: ^testing.T) {
 	// APPEND int TO itab.
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `APPEND int TO itab.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -5521,7 +5392,6 @@ append_simple_test :: proc(t: ^testing.T) {
 append_initial_line_test :: proc(t: ^testing.T) {
 	// APPEND INITIAL LINE TO itab.
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `APPEND INITIAL LINE TO itab.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -5565,7 +5435,6 @@ append_initial_line_test :: proc(t: ^testing.T) {
 append_initial_line_assigning_test :: proc(t: ^testing.T) {
 	// APPEND INITIAL LINE TO itab ASSIGNING <line>.
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `APPEND INITIAL LINE TO itab ASSIGNING <line>.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -5612,7 +5481,6 @@ append_initial_line_assigning_test :: proc(t: ^testing.T) {
 append_lines_of_test :: proc(t: ^testing.T) {
 	// APPEND LINES OF itab2 TO itab1.
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `APPEND LINES OF itab2 TO itab1.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -5671,7 +5539,6 @@ append_lines_of_test :: proc(t: ^testing.T) {
 append_to_field_symbol_selector_test :: proc(t: ^testing.T) {
 	// APPEND lv_epc TO <fs_unpack_data>-children.
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `APPEND lv_epc TO <fs_unpack_data>-children.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -5742,7 +5609,6 @@ append_to_field_symbol_selector_test :: proc(t: ^testing.T) {
 append_value_constructor_test :: proc(t: ^testing.T) {
 	// APPEND VALUE #( code_urn = <fs_doc_info>-gs1_es ) TO lt_recv_objects.
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `APPEND VALUE #( code_urn = <fs_doc_info>-gs1_es ) TO lt_recv_objects.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -5797,7 +5663,6 @@ append_value_constructor_test :: proc(t: ^testing.T) {
 append_selector_expr_test :: proc(t: ^testing.T) {
 	// APPEND <fs_doc_info>-gs1_es TO lt_upd_objs.
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `APPEND <fs_doc_info>-gs1_es TO lt_upd_objs.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -5872,7 +5737,6 @@ append_value_nested_constructor_test :: proc(t: ^testing.T) {
 	//   children = VALUE #( ( lv_epc ) )
 	// ) TO lt_unpack_lvls.
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src =
 	`APPEND VALUE #(
                 parent   = ls_ser_par-gs1_es_parent
@@ -5967,7 +5831,6 @@ append_value_nested_constructor_test :: proc(t: ^testing.T) {
 field_symbol_type_test :: proc(t: ^testing.T) {
 	// FIELD-SYMBOLS <fs> TYPE string.
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `FIELD-SYMBOLS <fs> TYPE string.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -6013,7 +5876,6 @@ field_symbol_type_test :: proc(t: ^testing.T) {
 field_symbol_like_line_of_test :: proc(t: ^testing.T) {
 	// FIELD-SYMBOLS <line> LIKE LINE OF itab.
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `FIELD-SYMBOLS <line> LIKE LINE OF itab.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -6063,7 +5925,6 @@ field_symbol_like_line_of_test :: proc(t: ^testing.T) {
 field_symbol_assignment_test :: proc(t: ^testing.T) {
 	// <line>-carrid = 'LH'.
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `<line>-carrid = 'LH'.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -6114,7 +5975,6 @@ field_symbol_assignment_test :: proc(t: ^testing.T) {
 field_symbol_with_append_test :: proc(t: ^testing.T) {
 	// Combined test: DATA, FIELD-SYMBOLS, APPEND, assignment
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src =
 	`DATA itab TYPE TABLE OF spfli.
 FIELD-SYMBOLS <line> LIKE LINE OF itab.
@@ -6200,7 +6060,6 @@ APPEND INITIAL LINE TO itab ASSIGNING <line>.
 loop_at_screen_test :: proc(t: ^testing.T) {
 	// LOOP AT SCREEN. ENDLOOP.
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src =
 	`LOOP AT SCREEN.
       IF screen-name = 'SCREEN0100-RESET'.
@@ -6236,7 +6095,6 @@ loop_at_screen_test :: proc(t: ^testing.T) {
 loop_at_into_inline_data_test :: proc(t: ^testing.T) {
 	// LOOP AT lt_obj_del INTO DATA(lv_obj_del). ENDLOOP.
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src =
 	`LOOP AT lt_obj_del INTO DATA(lv_obj_del).
       log_info( |Deleted item { lv_obj_del }| ).
@@ -6303,7 +6161,6 @@ loop_at_into_inline_data_test :: proc(t: ^testing.T) {
 loop_at_assigning_inline_field_symbol_test :: proc(t: ^testing.T) {
 	// LOOP AT mt_object_info ASSIGNING FIELD-SYMBOL(<fs_obj_info>). ENDLOOP.
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src =
 	`LOOP AT mt_object_info ASSIGNING FIELD-SYMBOL(<fs_obj_info>).
       <fs_obj_info>-status = '@09@N/A'.
@@ -6364,7 +6221,6 @@ loop_at_assigning_inline_field_symbol_test :: proc(t: ^testing.T) {
 loop_at_into_variable_test :: proc(t: ^testing.T) {
 	// LOOP AT ls_deliv_evt-objs INTO lv_epc. ENDLOOP.
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src =
 	`LOOP AT ls_deliv_evt-objs INTO lv_epc.
       IF sy-subrc = 0.
@@ -6420,7 +6276,6 @@ loop_at_into_variable_test :: proc(t: ^testing.T) {
 loop_at_transporting_no_fields_where_test :: proc(t: ^testing.T) {
 	// LOOP AT buffer TRANSPORTING NO FIELDS WHERE table_line CS 'pattern'. ENDLOOP.
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src =
 	`LOOP AT buffer TRANSPORTING NO FIELDS WHERE table_line CS 'CLASS measure IMPLEMENTATION'.
       tabix = sy-tabix + 1.
@@ -6468,7 +6323,6 @@ loop_at_transporting_no_fields_where_test :: proc(t: ^testing.T) {
 loop_at_from_into_test :: proc(t: ^testing.T) {
 	// LOOP AT buffer FROM tabix INTO line. ENDLOOP.
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src =
 	`LOOP AT buffer FROM tabix INTO line.
       IF line CS 'ENDCLASS.'.
@@ -6524,7 +6378,6 @@ loop_at_from_into_test :: proc(t: ^testing.T) {
 loop_at_group_by_test :: proc(t: ^testing.T) {
 	// LOOP AT lt_mod_objs INTO ls_obj_info GROUP BY ( key = value ) ASSIGNING FIELD-SYMBOL(<fs>). ENDLOOP.
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src =
 	`LOOP AT lt_mod_objs INTO ls_obj_info
       GROUP BY ( locno   = ls_obj_info-locno
@@ -6574,7 +6427,6 @@ loop_at_group_by_test :: proc(t: ^testing.T) {
 loop_at_group_test :: proc(t: ^testing.T) {
 	// LOOP AT GROUP <fs_doc_grp> ASSIGNING FIELD-SYMBOL(<fs_doc_info>) WHERE condition. ENDLOOP.
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src =
 	`LOOP AT GROUP <fs_doc_grp> ASSIGNING FIELD-SYMBOL(<fs_doc_info>)
       WHERE status_pack > 0 AND objtype = '2'.
@@ -6636,7 +6488,6 @@ loop_at_group_test :: proc(t: ^testing.T) {
 loop_nested_test :: proc(t: ^testing.T) {
 	// Nested LOOP statements
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src =
 	`LOOP AT outer_tab INTO wa_outer.
       LOOP AT inner_tab INTO wa_inner.
@@ -6689,7 +6540,6 @@ loop_nested_test :: proc(t: ^testing.T) {
 append_initial_line_assigning_field_symbol_test :: proc(t: ^testing.T) {
 	// APPEND INITIAL LINE TO gt_serdet_fieldcat ASSIGNING FIELD-SYMBOL(<fs_fcat>).
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `APPEND INITIAL LINE TO gt_serdet_fieldcat ASSIGNING FIELD-SYMBOL(<fs_fcat>).`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -6735,7 +6585,6 @@ append_initial_line_assigning_field_symbol_test :: proc(t: ^testing.T) {
 @(test)
 authority_check_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src =
 	`AUTHORITY-CHECK OBJECT '/SCWM/QDOC'
       ID 'ACTVT' FIELD '02'.
@@ -6788,7 +6637,6 @@ AUTHORITY-CHECK OBJECT 'S_CARRID'
 read_table_with_key_assigning_test :: proc(t: ^testing.T) {
 	// READ TABLE mt_object_info WITH KEY gs1_es = lv_epc ASSIGNING <fs_obj_info>.
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `READ TABLE mt_object_info WITH KEY gs1_es = lv_epc ASSIGNING <fs_obj_info>.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -6859,7 +6707,6 @@ read_table_with_key_assigning_test :: proc(t: ^testing.T) {
 read_table_with_key_into_inline_data_test :: proc(t: ^testing.T) {
 	// READ TABLE lt_obj_hier_upd WITH KEY gs1_es = lv_epc INTO DATA(ls_ser_par).
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `READ TABLE lt_obj_hier_upd WITH KEY gs1_es = lv_epc INTO DATA(ls_ser_par).`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -6907,7 +6754,6 @@ read_table_with_key_into_inline_data_test :: proc(t: ^testing.T) {
 read_table_with_key_inline_field_symbol_test :: proc(t: ^testing.T) {
 	// READ TABLE lt_unpack_lvls WITH KEY parent = ls_ser_par-gs1_es_parent ASSIGNING FIELD-SYMBOL(<fs_unpack_data>).
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src =
 	`READ TABLE lt_unpack_lvls WITH KEY parent = ls_ser_par-gs1_es_parent ASSIGNING FIELD-SYMBOL(<fs_unpack_data>).`
 	p: parser.Parser
@@ -6945,7 +6791,6 @@ read_table_with_key_inline_field_symbol_test :: proc(t: ^testing.T) {
 read_table_transporting_no_fields_test :: proc(t: ^testing.T) {
 	// READ TABLE <fs_unpack_data>-children WITH KEY table_line = lv_epc TRANSPORTING NO FIELDS.
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src =
 	`READ TABLE <fs_unpack_data>-children WITH KEY table_line = lv_epc TRANSPORTING NO FIELDS.`
 	p: parser.Parser
@@ -7008,7 +6853,6 @@ read_table_transporting_no_fields_test :: proc(t: ^testing.T) {
 read_table_index_using_key_test :: proc(t: ^testing.T) {
 	// READ TABLE itab INDEX idx USING KEY sort_key ASSIGNING FIELD-SYMBOL(<fs>).
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `READ TABLE itab INDEX idx USING KEY sort_key ASSIGNING FIELD-SYMBOL(<fs>).`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -7073,7 +6917,6 @@ read_table_index_using_key_test :: proc(t: ^testing.T) {
 read_table_multiple_key_components_test :: proc(t: ^testing.T) {
 	// READ TABLE lt_data WITH KEY field1 = val1 field2 = val2 INTO wa.
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `READ TABLE lt_data WITH KEY field1 = val1 field2 = val2 INTO wa.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -7139,7 +6982,6 @@ read_table_multiple_key_components_test :: proc(t: ^testing.T) {
 new_expr_with_named_arg_test :: proc(t: ^testing.T) {
 	// go_serdet_cont = NEW #( container_name = 'CCONTAINER_SER_DET' ).
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `go_serdet_cont = NEW #( container_name = 'CCONTAINER_SER_DET' ).`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -7196,7 +7038,6 @@ new_expr_with_named_arg_test :: proc(t: ^testing.T) {
 new_expr_with_ident_named_arg_test :: proc(t: ^testing.T) {
 	// go_serdet_alv = NEW #( i_parent = go_serdet_cont ).
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `go_serdet_alv = NEW #( i_parent = go_serdet_cont ).`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -7261,7 +7102,6 @@ value_for_where_test :: proc(t: ^testing.T) {
 	//         ( ls_hier )
 	//       ).
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src =
 	`lt_rel_req = VALUE #(
         FOR ls_hier IN mt_obj_hier
@@ -7348,7 +7188,6 @@ value_for_where_test :: proc(t: ^testing.T) {
 value_for_named_arg_result_test :: proc(t: ^testing.T) {
 	// lt_unpack_chil = VALUE #( FOR ls_child IN ls_unpack_level-children ( code_urn = ls_child ) ).
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src =
 	`lt_unpack_chil = VALUE #( FOR ls_child IN ls_unpack_level-children ( code_urn = ls_child ) ).`
 
@@ -7454,7 +7293,6 @@ value_for_named_arg_result_test :: proc(t: ^testing.T) {
 value_for_multiple_named_args_test :: proc(t: ^testing.T) {
 	// Test FOR with multiple named arguments in result: ( field1 = val1 field2 = val2 )
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src =
 	`lt_result = VALUE #( FOR ls_row IN lt_data ( field1 = ls_row-a field2 = ls_row-b ) ).`
 
@@ -7552,7 +7390,6 @@ value_for_multiple_named_args_test :: proc(t: ^testing.T) {
 delete_where_test :: proc(t: ^testing.T) {
 	// DELETE mt_object_info WHERE gs1_es = lv_obj_del.
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `DELETE mt_object_info WHERE gs1_es = lv_obj_del.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -7624,7 +7461,6 @@ delete_where_test :: proc(t: ^testing.T) {
 @(test)
 condense_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `CONDENSE text.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -7639,7 +7475,6 @@ condense_test :: proc(t: ^testing.T) {
 @(test)
 call_function_simple_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src =
 	`CALL FUNCTION 'DD_DOMVALUES_GET'
       EXPORTING
@@ -7719,7 +7554,6 @@ call_function_simple_test :: proc(t: ^testing.T) {
 @(test)
 call_function_with_destination_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src =
 	`CALL FUNCTION 'ZTT_DM_QUERY_HIERARCHY' DESTINATION mv_attp_dest
         EXPORTING
@@ -7795,7 +7629,6 @@ call_function_with_destination_test :: proc(t: ^testing.T) {
 @(test)
 call_function_with_changing_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src =
 	`CALL FUNCTION 'ZTT_RFC_GET_OBJECT_DETLS' DESTINATION mv_attp_dest
       EXPORTING
@@ -7875,7 +7708,6 @@ call_function_with_changing_test :: proc(t: ^testing.T) {
 @(test)
 call_function_with_conv_expr_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src =
 	`CALL FUNCTION 'ZTT_RFC_GET_OBJECT_DETLS' DESTINATION mv_attp_dest
       EXPORTING
@@ -7944,7 +7776,6 @@ call_function_with_conv_expr_test :: proc(t: ^testing.T) {
 @(test)
 select_single_simple_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src =
 	`SELECT SINGLE *
       FROM tvarvc
@@ -8011,7 +7842,6 @@ select_single_simple_test :: proc(t: ^testing.T) {
 @(test)
 select_with_join_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src =
 	`SELECT c~carrname, p~connid, p~cityfrom, p~cityto
        FROM scarr AS c
@@ -8119,7 +7949,6 @@ select_with_join_test :: proc(t: ^testing.T) {
 @(test)
 select_with_fields_clause_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src =
 	`SELECT FROM scarr AS c
             INNER JOIN spfli AS p
@@ -8169,7 +7998,6 @@ select_with_fields_clause_test :: proc(t: ^testing.T) {
 @(test)
 select_with_aggregate_functions_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src =
 	`SELECT FROM sflight
        FIELDS carrid,
@@ -8230,7 +8058,6 @@ select_with_aggregate_functions_test :: proc(t: ^testing.T) {
 @(test)
 select_for_all_entries_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src =
 	`SELECT carrid, connid, fldate
          FROM sflight
@@ -8294,7 +8121,6 @@ select_for_all_entries_test :: proc(t: ^testing.T) {
 @(test)
 constants_single_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `constants con_sflight type lvc_fname value 'ALV_T_T2'.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -8352,7 +8178,6 @@ constants_single_test :: proc(t: ^testing.T) {
 @(test)
 constants_chain_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src =
 	`CONSTANTS: lc_one_fetch_size     TYPE i VALUE 50,
                lc_total_records_size TYPE i VALUE 1000,
@@ -8417,7 +8242,6 @@ constants_chain_test :: proc(t: ^testing.T) {
 @(test)
 constants_struct_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src =
 	`CONSTANTS: BEGIN OF c_sn_reset_ts,
              tab1 LIKE sy-ucomm VALUE 'SN_RESET_TS_FC1',
@@ -8474,7 +8298,6 @@ constants_struct_test :: proc(t: ^testing.T) {
 @(test)
 constants_with_pragma_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `CONSTANTS: lc_date_initial TYPE d VALUE '00000000' ##NEEDED.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -8528,7 +8351,6 @@ constants_with_pragma_test :: proc(t: ^testing.T) {
 controls_tableview_test :: proc(t: ^testing.T) {
 	// CONTROLS contrl TYPE TABLEVIEW USING SCREEN dynnr.
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `CONTROLS tc_main TYPE TABLEVIEW USING SCREEN 100.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -8564,7 +8386,6 @@ controls_tableview_test :: proc(t: ^testing.T) {
 controls_tabstrip_test :: proc(t: ^testing.T) {
 	// CONTROLS contrl TYPE TABSTRIP.
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `CONTROLS tab_main TYPE TABSTRIP.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -8604,7 +8425,6 @@ controls_tabstrip_test :: proc(t: ^testing.T) {
 controls_chain_test :: proc(t: ^testing.T) {
 	// CONTROLS: name1 TYPE TABSTRIP.
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `CONTROLS: sn_reset_ts TYPE TABSTRIP.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -8641,7 +8461,6 @@ controls_chain_test :: proc(t: ^testing.T) {
 controls_chain_multiple_test :: proc(t: ^testing.T) {
 	// CONTROLS: ts1 TYPE TABSTRIP, tc1 TYPE TABLEVIEW USING SCREEN 200.
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `CONTROLS: ts1 TYPE TABSTRIP, tc1 TYPE TABLEVIEW USING SCREEN 200.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -8691,7 +8510,6 @@ controls_chain_multiple_test :: proc(t: ^testing.T) {
 controls_tableview_with_variable_screen_test :: proc(t: ^testing.T) {
 	// CONTROLS contrl TYPE TABLEVIEW USING SCREEN dynnr.
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `CONTROLS tc_orders TYPE TABLEVIEW USING SCREEN gv_dynnr.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -8749,7 +8567,6 @@ controls_tableview_with_variable_screen_test :: proc(t: ^testing.T) {
 data_struct_simple_test :: proc(t: ^testing.T) {
 	// DATA: BEGIN OF name, field1 TYPE type1, field2 TYPE type2, END OF name.
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src =
 	`DATA: BEGIN OF ls_data,
         field1 TYPE i,
@@ -8807,7 +8624,6 @@ data_struct_simple_test :: proc(t: ^testing.T) {
 data_struct_with_like_test :: proc(t: ^testing.T) {
 	// DATA: BEGIN OF name, field LIKE sy-field, END OF name.
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src =
 	`DATA: BEGIN OF g_sn_reset_ts,
         subscreen   LIKE sy-dynnr,
@@ -8899,7 +8715,6 @@ data_struct_with_like_test :: proc(t: ^testing.T) {
 data_struct_nested_test :: proc(t: ^testing.T) {
 	// DATA: BEGIN OF outer, BEGIN OF inner, f TYPE i, END OF inner, END OF outer.
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src =
 	`DATA: BEGIN OF ls_outer,
         BEGIN OF ls_inner,
@@ -8990,7 +8805,6 @@ data_struct_nested_test :: proc(t: ^testing.T) {
 data_struct_with_type_test :: proc(t: ^testing.T) {
 	// DATA: BEGIN OF name, field TYPE type, END OF name.
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src =
 	`DATA: BEGIN OF ls_result,
         matnr TYPE mara-matnr,
@@ -9040,7 +8854,6 @@ data_struct_with_type_test :: proc(t: ^testing.T) {
 value_constructor_with_nested_rows_test :: proc(t: ^testing.T) {
 	// VALUE #( ( field = 'value1' ) ( field = 'value2' ) ) for internal table with row expressions
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src =
 		`lt_data = VALUE #( 
         ( code_urn = '(01)00370461024038(21)0000000000002' )
@@ -9137,7 +8950,6 @@ value_constructor_with_nested_rows_test :: proc(t: ^testing.T) {
 table_expression_index_access_test :: proc(t: ^testing.T) {
 	// Test: DATA(ls_exp) = it_exp[ lv_idx ].
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `DATA(ls_exp) = it_exp[ lv_idx ].`
 
 	p: parser.Parser
@@ -9210,7 +9022,6 @@ table_expression_index_access_test :: proc(t: ^testing.T) {
 table_expression_chained_access_test :: proc(t: ^testing.T) {
 	// Test: DATA(lo_exp_evt) = ls_exp-evts[ lv_evt_idx ].
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `DATA(lo_exp_evt) = ls_exp-evts[ lv_evt_idx ].`
 
 	p: parser.Parser
@@ -9300,7 +9111,6 @@ table_expression_chained_access_test :: proc(t: ^testing.T) {
 table_expression_field_access_test :: proc(t: ^testing.T) {
 	// Test: lv_value = it_data[ 1 ]-field.
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `lv_value = it_data[ 1 ]-field.`
 
 	p: parser.Parser
@@ -9384,7 +9194,6 @@ table_expression_field_access_test :: proc(t: ^testing.T) {
 types_table_of_ref_to_test :: proc(t: ^testing.T) {
 	// TYPES: tt_events TYPE STANDARD TABLE OF REF TO lcl_event WITH DEFAULT KEY.
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `TYPES: tt_events TYPE STANDARD TABLE OF REF TO lcl_event WITH DEFAULT KEY.`
 	p: parser.Parser
 	parser.parse_file(&p, file)
@@ -9459,7 +9268,6 @@ types_table_of_ref_to_test :: proc(t: ^testing.T) {
 check_stmt_is_bound_test :: proc(t: ^testing.T) {
 	// Test: CHECK io_event IS BOUND.
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `CHECK io_event IS BOUND.`
 
 	p: parser.Parser
@@ -9522,7 +9330,6 @@ check_stmt_is_bound_test :: proc(t: ^testing.T) {
 check_stmt_is_instance_of_test :: proc(t: ^testing.T) {
 	// Test: CHECK io_event IS INSTANCE OF lcl_object_event.
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `CHECK io_event IS INSTANCE OF lcl_object_event.`
 
 	p: parser.Parser
@@ -9577,7 +9384,6 @@ check_stmt_is_instance_of_test :: proc(t: ^testing.T) {
 check_stmt_equality_test :: proc(t: ^testing.T) {
 	// Test: CHECK ms_context-docnum = lo_other->ms_context-docnum.
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `CHECK ms_context-docnum = lo_other->ms_context-docnum.`
 
 	p: parser.Parser
@@ -9665,7 +9471,6 @@ check_stmt_equality_test :: proc(t: ^testing.T) {
 check_stmt_function_call_equality_test :: proc(t: ^testing.T) {
 	// Test: CHECK lines( mt_objects ) = lines( lo_other->mt_objects ).
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `CHECK lines( mt_objects ) = lines( lo_other->mt_objects ).`
 
 	p: parser.Parser

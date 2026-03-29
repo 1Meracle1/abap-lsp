@@ -8,7 +8,6 @@ import "core:testing"
 @(test)
 basic_interface_decl_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `INTERFACE i1.
   METHODS m1.
 ENDINTERFACE.`
@@ -59,7 +58,6 @@ ENDINTERFACE.`
 @(test)
 basic_class_definition_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `CLASS c1 DEFINITION.
   PUBLIC SECTION.
     METHODS m1.
@@ -114,7 +112,6 @@ ENDCLASS.`
 @(test)
 class_definition_with_modifiers_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `CLASS c1 DEFINITION ABSTRACT FINAL.
   PUBLIC SECTION.
 ENDCLASS.`
@@ -141,7 +138,6 @@ ENDCLASS.`
 @(test)
 class_definition_inheriting_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `CLASS c2 DEFINITION INHERITING FROM c1.
   PUBLIC SECTION.
 ENDCLASS.`
@@ -181,7 +177,6 @@ ENDCLASS.`
 @(test)
 class_with_multiple_sections_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `CLASS cls DEFINITION.
   PUBLIC SECTION.
     DATA attr1 TYPE i.
@@ -234,7 +229,6 @@ ENDCLASS.`
 @(test)
 class_with_class_data_and_methods_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `CLASS cls DEFINITION FINAL.
   PUBLIC SECTION.
     CLASS-DATA attr1 TYPE i.
@@ -283,7 +277,6 @@ ENDCLASS.`
 @(test)
 class_with_interfaces_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `CLASS c2 DEFINITION.
   PUBLIC SECTION.
     INTERFACES i1.
@@ -335,7 +328,6 @@ ENDCLASS.`
 @(test)
 class_implementation_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `CLASS c1 IMPLEMENTATION.
   METHOD m1.
     DATA lv_temp TYPE i.
@@ -390,7 +382,6 @@ ENDCLASS.`
 @(test)
 class_implementation_interface_method_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `CLASS c2 IMPLEMENTATION.
   METHOD i1~m1.
     DATA lv_val TYPE i.
@@ -425,7 +416,6 @@ ENDCLASS.`
 @(test)
 method_with_parameters_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `INTERFACE i1.
   METHODS process
     IMPORTING iv_input TYPE string
@@ -467,7 +457,6 @@ ENDINTERFACE.`
 @(test)
 method_abstract_redefinition_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `CLASS c1 DEFINITION ABSTRACT.
   PROTECTED SECTION.
     METHODS m1 ABSTRACT.
@@ -501,7 +490,6 @@ ENDCLASS.`
 @(test)
 class_with_types_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `CLASS cls DEFINITION.
   PUBLIC SECTION.
     TYPES ty_int TYPE i.
@@ -535,7 +523,6 @@ ENDCLASS.`
 @(test)
 full_class_and_interface_example_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `INTERFACE i1.
   METHODS m1.
 ENDINTERFACE.
@@ -605,7 +592,6 @@ ENDCLASS.`
 @(test)
 class_definition_create_private :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `CLASS lcl_sn_reset DEFINITION CREATE PRIVATE.
 ENDCLASS.`
 
@@ -633,7 +619,6 @@ ENDCLASS.`
 @(test)
 class_definition_create_default :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `CLASS lcl_sn_reset DEFINITION.
 ENDCLASS.`
 
@@ -661,7 +646,6 @@ ENDCLASS.`
 @(test)
 class_definition_multiple_methods :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `CLASS lcl_sn_reset DEFINITION.
   PUBLIC SECTION.
     METHODS:
@@ -726,7 +710,6 @@ ENDCLASS.`
 @(test)
 class_for_testing_definition_duration_risk :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `CLASS ltcl_testing_class DEFINITION FOR TESTING
   DURATION SHORT
   RISK LEVEL HARMLESS
@@ -766,7 +749,6 @@ ENDCLASS.`
 @(test)
 class_for_testing_with_methods_for_testing :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.fullpath = "test.abap"
 	file.src = `CLASS ltcl_testing_class DEFINITION FOR TESTING
   DURATION SHORT
   RISK LEVEL HARMLESS.
