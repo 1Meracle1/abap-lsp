@@ -368,6 +368,52 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 			}
 		}
 
+	case ^Try_Stmt:
+		for stmt in n.body {
+			if res := find_node_at_offset(&stmt.stmt_base, offset); res != nil {
+				return res
+			}
+		}
+		for branch in n.catch_branches {
+			if res := find_node_at_offset(&branch.node, offset); res != nil {
+				return res
+			}
+		}
+		if n.cleanup_branch != nil {
+			if res := find_node_at_offset(&n.cleanup_branch.node, offset); res != nil {
+				return res
+			}
+		}
+
+	case ^Try_Catch_Branch:
+		for class_ref in n.class_refs {
+			if res := find_node_at_offset(&class_ref.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		if n.into_target != nil {
+			if res := find_node_at_offset(&n.into_target.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		for stmt in n.body {
+			if res := find_node_at_offset(&stmt.stmt_base, offset); res != nil {
+				return res
+			}
+		}
+
+	case ^Try_Cleanup_Branch:
+		if n.into_target != nil {
+			if res := find_node_at_offset(&n.into_target.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		for stmt in n.body {
+			if res := find_node_at_offset(&stmt.stmt_base, offset); res != nil {
+				return res
+			}
+		}
+
 	case ^If_Stmt:
 		if n.cond != nil {
 			if res := find_node_at_offset(&n.cond.expr_base, offset); res != nil {

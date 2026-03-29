@@ -82,6 +82,8 @@ parse_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			}
 		case "IF":
 			return parse_if_stmt(p)
+		case "TRY":
+			return parse_try_stmt(p)
 		case "START":
 			if check_compound_keyword(p, "START", "OF", "SELECTION") {
 				return parse_event_block(p, "START-OF-SELECTION")
@@ -1637,6 +1639,16 @@ parse_data_inline_expr :: proc(p: ^Parser) -> ^ast.Expr {
 	data_decl.value = nil // Value is determined by the LOOP context
 	data_decl.derived_stmt = data_decl
 	return data_decl.ident
+}
+
+// parse_final_inline_expr parses an inline FINAL declaration in expression context.
+// Syntax: FINAL(var)
+parse_final_inline_expr :: proc(p: ^Parser) -> ^ast.Expr {
+	expect_keyword_token(p, "FINAL")
+	expect_token_space_req(p, .LParen, .WithoutLeadingSpace)
+	ident_tok := expect_token_space_req(p, .Ident, .WithoutLeadingSpace)
+	expect_token_space_req(p, .RParen, .WithoutLeadingSpace)
+	return ast.new_ident(ident_tok)
 }
 
 // parse_inline_field_symbol parses an inline FIELD-SYMBOL declaration

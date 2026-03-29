@@ -1021,6 +1021,8 @@ resolve_stmt :: proc(table: ^SymbolTable, stmt: ^ast.Stmt) {
 		resolve_field_symbol_decl(table, s, is_global = false)
 	case ^ast.Field_Symbol_Chain_Decl:
 		resolve_field_symbol_chain_decl(table, s, is_global = false)
+	case ^ast.Try_Stmt:
+		resolve_try_stmt(table, s)
 	case ^ast.If_Stmt:
 		resolve_if_stmt(table, s)
 	case ^ast.Case_Stmt:
@@ -1048,6 +1050,47 @@ resolve_if_stmt :: proc(table: ^SymbolTable, if_stmt: ^ast.If_Stmt) {
 	}
 
 	resolve_stmt_list(table, if_stmt.else_body[:])
+}
+
+resolve_try_stmt :: proc(table: ^SymbolTable, try_stmt: ^ast.Try_Stmt) {
+	resolve_stmt_list(table, try_stmt.body[:])
+
+	for branch in try_stmt.catch_branches {
+		if branch.into_target != nil {
+			if ident, ok := branch.into_target.derived_expr.(^ast.Ident); ok {
+				type_info := make_unknown_type(table)
+				if len(branch.class_refs) > 0 {
+					type_info = resolve_type_expr(table, branch.class_refs[0])
+				}
+
+				sym := Symbol {
+					name      = ident.name,
+					kind      = .Variable,
+					range     = ident.range,
+					type_info = type_info,
+				}
+				add_symbol(table, sym, allow_shadowing = false)
+			}
+		}
+
+		resolve_stmt_list(table, branch.body[:])
+	}
+
+	if try_stmt.cleanup_branch != nil {
+		if try_stmt.cleanup_branch.into_target != nil {
+			if ident, ok := try_stmt.cleanup_branch.into_target.derived_expr.(^ast.Ident); ok {
+				sym := Symbol {
+					name      = ident.name,
+					kind      = .Variable,
+					range     = ident.range,
+					type_info = make_unknown_type(table),
+				}
+				add_symbol(table, sym, allow_shadowing = false)
+			}
+		}
+
+		resolve_stmt_list(table, try_stmt.cleanup_branch.body[:])
+	}
 }
 
 resolve_interface_decl :: proc(table: ^SymbolTable, iface: ^ast.Interface_Decl) {

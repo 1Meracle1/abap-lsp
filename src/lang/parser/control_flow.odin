@@ -250,6 +250,121 @@ parse_modify_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	}
 }
 
+parse_try_into_target :: proc(p: ^Parser) -> ^ast.Expr {
+	if check_keyword(p, "DATA") {
+		return parse_data_inline_expr(p)
+	}
+	if check_keyword(p, "FINAL") {
+		return parse_final_inline_expr(p)
+	}
+	return parse_expr(p)
+}
+
+parse_try_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
+	try_tok := expect_keyword_token(p, "TRY")
+	expect_token(p, .Period)
+
+	try_stmt := ast.new(ast.Try_Stmt, try_tok.range)
+	try_stmt.body = make([dynamic]^ast.Stmt)
+	try_stmt.catch_branches = make([dynamic]^ast.Try_Catch_Branch)
+	try_stmt.derived_stmt = try_stmt
+
+	for p.curr_tok.kind != .EOF {
+		if check_keyword(p, "CATCH") ||
+		   check_keyword(p, "CLEANUP") ||
+		   check_keyword(p, "ENDTRY") {
+			break
+		}
+		stmt := parse_stmt(p)
+		if stmt != nil {
+			append(&try_stmt.body, stmt)
+		}
+	}
+
+	for check_keyword(p, "CATCH") {
+		catch_tok := expect_keyword_token(p, "CATCH")
+		catch_branch := ast.new(ast.Try_Catch_Branch, catch_tok.range)
+		catch_branch.class_refs = make([dynamic]^ast.Expr)
+		catch_branch.body = make([dynamic]^ast.Stmt)
+		catch_branch.derived = catch_branch
+
+		if check_keyword(p, "BEFORE") {
+			advance_token(p)
+			expect_keyword_token(p, "UNWIND")
+			catch_branch.before_unwind = true
+		}
+
+		for p.curr_tok.kind != .EOF {
+			if check_keyword(p, "INTO") || p.curr_tok.kind == .Period {
+				break
+			}
+			class_ref := parse_expr(p)
+			if class_ref == nil {
+				break
+			}
+			append(&catch_branch.class_refs, class_ref)
+		}
+
+		if check_keyword(p, "INTO") {
+			advance_token(p)
+			catch_branch.into_target = parse_try_into_target(p)
+		}
+
+		period_tok := expect_token(p, .Period)
+		catch_branch.range.end = period_tok.range.end
+
+		for p.curr_tok.kind != .EOF {
+			if check_keyword(p, "CATCH") ||
+			   check_keyword(p, "CLEANUP") ||
+			   check_keyword(p, "ENDTRY") {
+				break
+			}
+			stmt := parse_stmt(p)
+			if stmt != nil {
+				append(&catch_branch.body, stmt)
+			}
+		}
+
+		catch_branch.range.end = p.prev_tok.range.end
+		append(&try_stmt.catch_branches, catch_branch)
+	}
+
+	if check_keyword(p, "CLEANUP") {
+		cleanup_tok := expect_keyword_token(p, "CLEANUP")
+		cleanup_branch := ast.new(ast.Try_Cleanup_Branch, cleanup_tok.range)
+		cleanup_branch.body = make([dynamic]^ast.Stmt)
+		cleanup_branch.derived = cleanup_branch
+
+		if check_keyword(p, "INTO") {
+			advance_token(p)
+			cleanup_branch.into_target = parse_try_into_target(p)
+		}
+
+		period_tok := expect_token(p, .Period)
+		cleanup_branch.range.end = period_tok.range.end
+
+		for p.curr_tok.kind != .EOF {
+			if check_keyword(p, "ENDTRY") {
+				break
+			}
+			stmt := parse_stmt(p)
+			if stmt != nil {
+				append(&cleanup_branch.body, stmt)
+			}
+		}
+
+		cleanup_branch.range.end = p.prev_tok.range.end
+		try_stmt.cleanup_branch = cleanup_branch
+	}
+
+	endtry_tok := expect_keyword_token(p, "ENDTRY")
+	period_tok := expect_token(p, .Period)
+	try_stmt.range.end = period_tok.range.end
+	_ = endtry_tok
+
+	return try_stmt
+}
+
 // Syntax: IF condition. body... [ELSEIF condition. body...]* [ELSE. body...] ENDIF.
 parse_if_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	if_tok := expect_keyword_token(p, "IF")

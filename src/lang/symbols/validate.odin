@@ -88,6 +88,19 @@ validate_stmt_ctx :: proc(ctx: ^Validation_Context, stmt: ^ast.Stmt) {
 		validate_expr_ctx(ctx, s.target)
 	case ^ast.Expr_Stmt:
 		validate_expr_ctx(ctx, s.expr)
+	case ^ast.Try_Stmt:
+		validate_stmt_list_ctx(ctx, s.body[:])
+		for branch in s.catch_branches {
+			for class_ref in branch.class_refs {
+				validate_expr_ctx(ctx, class_ref)
+			}
+			validate_expr_ctx(ctx, branch.into_target)
+			validate_stmt_list_ctx(ctx, branch.body[:])
+		}
+		if s.cleanup_branch != nil {
+			validate_expr_ctx(ctx, s.cleanup_branch.into_target)
+			validate_stmt_list_ctx(ctx, s.cleanup_branch.body[:])
+		}
 	case ^ast.If_Stmt:
 		validate_expr_ctx(ctx, s.cond)
 		validate_stmt_list_ctx(ctx, s.body[:])

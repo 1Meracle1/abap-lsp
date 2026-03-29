@@ -258,6 +258,27 @@ Block_Stmt :: struct {
 	stmts:      []^Stmt,
 }
 
+Try_Catch_Branch :: struct {
+	using node:      Node,
+	before_unwind:   bool,
+	class_refs:      [dynamic]^Expr,
+	into_target:     ^Expr,
+	body:            [dynamic]^Stmt,
+}
+
+Try_Cleanup_Branch :: struct {
+	using node:  Node,
+	into_target: ^Expr,
+	body:        [dynamic]^Stmt,
+}
+
+Try_Stmt :: struct {
+	using node:       Stmt,
+	body:             [dynamic]^Stmt,
+	catch_branches:   [dynamic]^Try_Catch_Branch,
+	cleanup_branch:   ^Try_Cleanup_Branch,
+}
+
 If_Stmt :: struct {
 	using node:      Stmt,
 	cond:            ^Expr,
@@ -1049,6 +1070,9 @@ Any_Node :: union {
 	^Assign_Stmt,
 	^Assign_Field_Symbol_Stmt,
 	^Block_Stmt,
+	^Try_Catch_Branch,
+	^Try_Cleanup_Branch,
+	^Try_Stmt,
 	^If_Stmt,
 	^Elseif_Branch,
 	^Return_Stmt,
@@ -1148,6 +1172,7 @@ Any_Stmt :: union {
 	^Assign_Stmt,
 	^Assign_Field_Symbol_Stmt,
 	^Block_Stmt,
+	^Try_Stmt,
 	^If_Stmt,
 	^Return_Stmt,
 	^Modify_Screen_Stmt,

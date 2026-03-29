@@ -304,6 +304,30 @@ collect_tokens_from_stmt :: proc(
 	case ^ast.Expr_Stmt:
 		collect_tokens_from_expr(tokens, s.expr, snap, nil)
 
+	case ^ast.Try_Stmt:
+		for body_stmt in s.body {
+			collect_tokens_from_stmt(tokens, body_stmt, snap)
+		}
+		for branch in s.catch_branches {
+			for class_ref in branch.class_refs {
+				collect_tokens_from_expr(tokens, class_ref, snap, nil)
+			}
+			if branch.into_target != nil {
+				collect_tokens_from_expr(tokens, branch.into_target, snap, nil)
+			}
+			for branch_stmt in branch.body {
+				collect_tokens_from_stmt(tokens, branch_stmt, snap)
+			}
+		}
+		if s.cleanup_branch != nil {
+			if s.cleanup_branch.into_target != nil {
+				collect_tokens_from_expr(tokens, s.cleanup_branch.into_target, snap, nil)
+			}
+			for cleanup_stmt in s.cleanup_branch.body {
+				collect_tokens_from_stmt(tokens, cleanup_stmt, snap)
+			}
+		}
+
 	case ^ast.If_Stmt:
 		collect_tokens_from_expr(tokens, s.cond, snap, nil)
 		for body_stmt in s.body {
