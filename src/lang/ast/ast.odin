@@ -227,10 +227,13 @@ Assign_Stmt :: struct {
 
 Assign_Field_Symbol_Stmt :: struct {
 	using node:      Stmt,
+	component:       ^Expr,
+	structure:       ^Expr,
 	source:          ^Expr,
 	offset:          ^Expr,
 	length:          ^Expr,
 	length_is_star:  bool,
+	is_component:    bool,
 	is_dynamic:      bool,
 	is_table_field:  bool,
 	target:          ^Expr,

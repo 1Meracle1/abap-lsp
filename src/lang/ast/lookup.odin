@@ -310,6 +310,16 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 		}
 
 	case ^Assign_Field_Symbol_Stmt:
+		if n.component != nil {
+			if res := find_node_at_offset(&n.component.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		if n.structure != nil {
+			if res := find_node_at_offset(&n.structure.expr_base, offset); res != nil {
+				return res
+			}
+		}
 		if n.source != nil {
 			if res := find_node_at_offset(&n.source.expr_base, offset); res != nil {
 				return res

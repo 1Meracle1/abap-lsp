@@ -219,7 +219,9 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 		hover_text = "(statement) MESSAGE - displays a message to the user"
 
 	case ^ast.Assign_Field_Symbol_Stmt:
-		if n.is_table_field {
+		if n.is_component {
+			hover_text = "(statement) ASSIGN COMPONENT ... OF STRUCTURE ... TO - assigns a structure component to a field symbol"
+		} else if n.is_table_field {
 			hover_text = "(statement) ASSIGN TABLE FIELD - dynamically assigns a table work area to a field symbol"
 		} else if n.is_dynamic {
 			hover_text = "(statement) ASSIGN ( ... ) TO - dynamically assigns a data object to a field symbol"

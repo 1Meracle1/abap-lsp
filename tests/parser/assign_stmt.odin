@@ -164,3 +164,55 @@ assign_stmt_table_field_dynamic_test :: proc(t: ^testing.T) {
 		testing.expect(t, name.name == "dobj", fmt.tprintf("Expected 'dobj', got '%s'", name.name))
 	}
 }
+
+@(test)
+assign_component_of_structure_with_inline_field_symbol_and_pragma_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src = `ASSIGN COMPONENT 'EPCISDOCUMENT-EPCISBODY-EVENT_LIST-CHOICE' OF STRUCTURE <ls_outbound> TO FIELD-SYMBOL(<ls_event>) ##no_text.`
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	if !testing.expect(t, len(file.syntax_errors) == 0, fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors)) do return
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	stmt, ok := file.decls[0].derived_stmt.(^ast.Assign_Field_Symbol_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Assign_Field_Symbol_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	testing.expect(t, stmt.is_component, "Expected COMPONENT ASSIGN")
+	testing.expect(t, !stmt.is_dynamic, "Did not expect dynamic ASSIGN")
+	testing.expect(t, !stmt.is_table_field, "Did not expect TABLE FIELD ASSIGN")
+
+	if !testing.expect(t, stmt.component != nil, "Expected component expression") do return
+	component, cok := stmt.component.derived_expr.(^ast.Basic_Lit)
+	if testing.expect(t, cok, fmt.tprintf("Expected Basic_Lit component, got %T", stmt.component.derived_expr)) {
+		testing.expect(
+			t,
+			component.tok.lit == "'EPCISDOCUMENT-EPCISBODY-EVENT_LIST-CHOICE'",
+			fmt.tprintf("Expected component literal, got %s", component.tok.lit),
+		)
+	}
+
+	if !testing.expect(t, stmt.structure != nil, "Expected structure expression") do return
+	structure, sok := stmt.structure.derived_expr.(^ast.Ident)
+	if testing.expect(t, sok, fmt.tprintf("Expected Ident structure, got %T", stmt.structure.derived_expr)) {
+		testing.expect(
+			t,
+			structure.name == "<ls_outbound>",
+			fmt.tprintf("Expected '<ls_outbound>', got '%s'", structure.name),
+		)
+	}
+
+	if !testing.expect(t, stmt.target != nil, "Expected target expression") do return
+	target, tok := stmt.target.derived_expr.(^ast.Ident)
+	if testing.expect(t, tok, fmt.tprintf("Expected Ident target, got %T", stmt.target.derived_expr)) {
+		testing.expect(t, target.name == "<ls_event>", fmt.tprintf("Expected '<ls_event>', got '%s'", target.name))
+	}
+
+	testing.expect(
+		t,
+		len(file.comments) >= 1,
+		fmt.tprintf("Expected pragma to be collected as comment, got %d comments", len(file.comments)),
+	)
+}

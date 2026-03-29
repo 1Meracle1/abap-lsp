@@ -1688,13 +1688,25 @@ parse_assign_source_expr :: proc(
 	return source
 }
 
+parse_assign_component_structure_stmt :: proc(p: ^Parser, stmt: ^ast.Assign_Field_Symbol_Stmt) {
+	expect_keyword_token(p, "COMPONENT")
+	stmt.is_component = true
+	stmt.component = parse_expr(p)
+
+	expect_keyword_token(p, "OF")
+	expect_keyword_token(p, "STRUCTURE")
+	stmt.structure = parse_expr(p)
+}
+
 parse_assign_field_symbol_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	assign_tok := expect_keyword_token(p, "ASSIGN")
 
 	stmt := ast.new(ast.Assign_Field_Symbol_Stmt, assign_tok.range)
 	stmt.derived_stmt = stmt
 
-	if check_keyword(p, "TABLE") {
+	if check_keyword(p, "COMPONENT") {
+		parse_assign_component_structure_stmt(p, stmt)
+	} else if check_keyword(p, "TABLE") {
 		advance_token(p)
 		expect_keyword_token(p, "FIELD")
 		stmt.is_table_field = true

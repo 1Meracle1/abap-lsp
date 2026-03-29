@@ -282,6 +282,12 @@ collect_tokens_from_stmt :: proc(
 		}
 
 	case ^ast.Assign_Field_Symbol_Stmt:
+		if s.component != nil {
+			collect_tokens_from_expr(tokens, s.component, snap, nil)
+		}
+		if s.structure != nil {
+			collect_tokens_from_expr(tokens, s.structure, snap, nil)
+		}
 		if s.source != nil {
 			collect_tokens_from_expr(tokens, s.source, snap, nil)
 		}
