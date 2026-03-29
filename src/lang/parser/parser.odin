@@ -800,6 +800,18 @@ skip_to_matching_paren_or_period :: proc(p: ^Parser) {
 parse_call_arg :: proc(p: ^Parser) -> ^ast.Expr {
 	start_tok := p.curr_tok
 
+	// Modern method call expressions can still use ABAP parameter sections
+	// inside parentheses. Flatten them by skipping the section keyword.
+	if check_keyword(p, "EXPORTING") ||
+	   check_keyword(p, "IMPORTING") ||
+	   check_keyword(p, "CHANGING") ||
+	   check_keyword(p, "RECEIVING") ||
+	   check_keyword(p, "EXCEPTIONS") ||
+	   check_keyword(p, "TABLES") {
+		advance_token(p)
+		return nil
+	}
+
 	// Check if this is a named argument (identifier followed by = with spaces)
 	if p.curr_tok.kind == .Ident {
 		// Save parser state
@@ -839,9 +851,36 @@ parse_call_arg :: proc(p: ^Parser) -> ^ast.Expr {
 	return arg
 }
 
+is_inline_data_expr_start :: proc(p: ^Parser) -> bool {
+	if !check_keyword(p, "DATA") {
+		return false
+	}
+
+	saved_prev := p.prev_tok
+	saved_curr := p.curr_tok
+	saved_pos := p.l.pos
+	saved_read_pos := p.l.read_pos
+	saved_ch := p.l.ch
+
+	data_tok := advance_token(p)
+	is_inline_data := p.curr_tok.kind == .LParen &&
+		!lexer.have_space_between(data_tok, p.curr_tok)
+
+	p.prev_tok = saved_prev
+	p.curr_tok = saved_curr
+	p.l.pos = saved_pos
+	p.l.read_pos = saved_read_pos
+	p.l.ch = saved_ch
+
+	return is_inline_data
+}
+
 parse_operand :: proc(p: ^Parser) -> ^ast.Expr {
 	#partial switch p.curr_tok.kind {
 	case .Ident:
+		if is_inline_data_expr_start(p) {
+			return parse_data_inline_expr(p)
+		}
 		// Check for NEW keyword
 		if check_keyword(p, "NEW") {
 			return parse_new_expr(p)

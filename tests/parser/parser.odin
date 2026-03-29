@@ -7959,6 +7959,93 @@ call_method_with_parameter_sections_test :: proc(t: ^testing.T) {
 	}
 }
 
+@(test)
+modern_call_expr_stmt_with_inline_data_importing_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src =
+	`" Get event data
+/sttp/cl_rules=>get_event_data(
+   EXPORTING iv_evtid = mv_evtid
+   IMPORTING es_evt   = DATA(ls_evt) ).`
+
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 1,
+		fmt.tprintf("Expected 1 declaration, got %d", len(file.decls)),
+	)
+
+	if len(file.decls) > 0 {
+		expected := expr_stmt(
+			call_expr(
+				selector(ident("/sttp/cl_rules"), .FatArrow, "get_event_data"),
+				named_arg("iv_evtid", ident("mv_evtid")),
+				named_arg("es_evt", ident("ls_evt")),
+			),
+		)
+		check_stmt(t, expected, file.decls[0])
+	}
+}
+
+@(test)
+modern_call_expr_stmt_with_multiple_importing_args_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src =
+	`" Get event data
+/sttp/cl_rules=>get_object_data(
+   EXPORTING iv_evtid = mv_evtid
+   IMPORTING et_obj         = DATA(lt_obj)
+             et_obj_ids     = DATA(lt_obj_ids)
+             et_obj_itm     = DATA(lt_obj_itm)
+             et_obj_lot     = DATA(lt_obj_lot)
+             et_obj_dep_lot = DATA(lt_obj_dep_lot)
+             et_obj_scc     = DATA(lt_obj_scc)
+             et_evt_rel     = DATA(lt_evt_rel)
+     ).`
+
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 1,
+		fmt.tprintf("Expected 1 declaration, got %d", len(file.decls)),
+	)
+
+	if len(file.decls) > 0 {
+		expected := expr_stmt(
+			call_expr(
+				selector(ident("/sttp/cl_rules"), .FatArrow, "get_object_data"),
+				named_arg("iv_evtid", ident("mv_evtid")),
+				named_arg("et_obj", ident("lt_obj")),
+				named_arg("et_obj_ids", ident("lt_obj_ids")),
+				named_arg("et_obj_itm", ident("lt_obj_itm")),
+				named_arg("et_obj_lot", ident("lt_obj_lot")),
+				named_arg("et_obj_dep_lot", ident("lt_obj_dep_lot")),
+				named_arg("et_obj_scc", ident("lt_obj_scc")),
+				named_arg("et_evt_rel", ident("lt_evt_rel")),
+			),
+		)
+		check_stmt(t, expected, file.decls[0])
+	}
+}
+
 // =====================================================
 // SELECT Statement Tests
 // =====================================================
