@@ -277,7 +277,8 @@ workspace_get_or_create_project_entry :: proc(workspace: ^Workspace, key: string
 		}
 
 		entry := project_entry_init(key)
-		workspace.projects[key] = entry
+		map_key := strings.clone(key)
+		workspace.projects[map_key] = entry
 		return entry
 	}
 

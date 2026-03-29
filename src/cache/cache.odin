@@ -2,6 +2,7 @@ package cache
 
 import "../lang/ast"
 import "../lang/symbols"
+
 import "core:strings"
 import "core:sync"
 
@@ -99,10 +100,12 @@ workspace_deinit :: proc(workspace: ^Workspace) {
 	}
 
 	if sync.guard(&workspace.lock) {
-		for _, project_entry in workspace.projects {
+		for key, project_entry in workspace.projects {
+			delete(key)
 			project_entry_deinit(project_entry)
 		}
-		for _, document in workspace.documents {
+		for key, document in workspace.documents {
+			delete(key)
 			document_entry_deinit(document)
 		}
 		delete(workspace.projects)
@@ -260,12 +263,14 @@ workspace_get_or_create_document_entry :: proc(
 	}
 
 	entry := document_entry_init(workspace, uri, path)
+	key := strings.clone(uri)
 	if sync.guard(&workspace.lock) {
 		if existing, ok := workspace.documents[uri]; ok {
+			delete(key)
 			document_entry_deinit(entry)
 			return existing
 		}
-		workspace.documents[uri] = entry
+		workspace.documents[key] = entry
 	}
 
 	return entry
