@@ -324,6 +324,11 @@ Leave_Program_Stmt :: struct {
 	using node: Stmt,
 }
 
+Get_Time_Stamp_Stmt :: struct {
+	using node: Stmt,
+	target:     ^Expr,
+}
+
 Set_Kind :: enum {
 	Pf_Status,
 	Titlebar,
@@ -1078,6 +1083,7 @@ Any_Node :: union {
 	^Return_Stmt,
 	^Modify_Screen_Stmt,
 	^Leave_Program_Stmt,
+	^Get_Time_Stamp_Stmt,
 	^Set_Stmt,
 	^Case_Stmt,
 	^While_Stmt,
@@ -1177,6 +1183,7 @@ Any_Stmt :: union {
 	^Return_Stmt,
 	^Modify_Screen_Stmt,
 	^Leave_Program_Stmt,
+	^Get_Time_Stamp_Stmt,
 	^Set_Stmt,
 	^Case_Stmt,
 	^While_Stmt,

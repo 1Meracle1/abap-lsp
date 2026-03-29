@@ -6998,6 +6998,72 @@ describe_table_lines_inline_data_test :: proc(t: ^testing.T) {
 }
 
 @(test)
+get_time_stamp_field_inline_data_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src = `GET TIME STAMP FIELD DATA(lv_current_ts).`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	get_stmt, ok := file.decls[0].derived_stmt.(^ast.Get_Time_Stamp_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Get_Time_Stamp_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	if target_ident, tok := get_stmt.target.derived_expr.(^ast.Ident); tok {
+		testing.expect(
+			t,
+			target_ident.name == "lv_current_ts",
+			fmt.tprintf("Expected 'lv_current_ts', got '%s'", target_ident.name),
+		)
+	} else {
+		testing.expect(
+			t,
+			false,
+			fmt.tprintf("Expected target to be Ident, got %T", get_stmt.target.derived_expr),
+		)
+	}
+}
+
+@(test)
+get_time_stamp_field_ident_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src = `GET TIME STAMP FIELD lv_ts.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	get_stmt, ok := file.decls[0].derived_stmt.(^ast.Get_Time_Stamp_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Get_Time_Stamp_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	if target_ident, tok := get_stmt.target.derived_expr.(^ast.Ident); tok {
+		testing.expect(
+			t,
+			target_ident.name == "lv_ts",
+			fmt.tprintf("Expected 'lv_ts', got '%s'", target_ident.name),
+		)
+	} else {
+		testing.expect(
+			t,
+			false,
+			fmt.tprintf("Expected target to be Ident, got %T", get_stmt.target.derived_expr),
+		)
+	}
+}
+
+@(test)
 read_table_transporting_no_fields_test :: proc(t: ^testing.T) {
 	// READ TABLE <fs_unpack_data>-children WITH KEY table_line = lv_epc TRANSPORTING NO FIELDS.
 	file := ast.new(ast.File, {})

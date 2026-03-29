@@ -375,6 +375,11 @@ collect_tokens_from_stmt :: proc(
 			collect_tokens_from_expr(tokens, result, snap, nil)
 		}
 
+	case ^ast.Get_Time_Stamp_Stmt:
+		if s.target != nil {
+			collect_tokens_from_expr(tokens, s.target, snap, nil)
+		}
+
 	case ^ast.Class_Def_Decl:
 		// CLASS name DEFINITION
 		if s.ident != nil {

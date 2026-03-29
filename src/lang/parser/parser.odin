@@ -102,6 +102,10 @@ parse_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			return parse_assign_field_symbol_stmt(p)
 		case "LEAVE":
 			return parse_leave_stmt(p)
+		case "GET":
+			if check_keyword_ahead(p, "TIME") {
+				return parse_get_stmt(p)
+			}
 		case "SET":
 			return parse_set_stmt(p)
 		case "CASE":

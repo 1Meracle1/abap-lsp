@@ -250,6 +250,28 @@ parse_modify_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	}
 }
 
+// Syntax:
+// - GET TIME STAMP FIELD DATA(lv_current_ts).
+// - GET TIME STAMP FIELD lv_ts.
+parse_get_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
+	get_tok := expect_keyword_token(p, "GET")
+	expect_keyword_token(p, "TIME")
+	expect_keyword_token(p, "STAMP")
+	expect_keyword_token(p, "FIELD")
+
+	stmt := ast.new(ast.Get_Time_Stamp_Stmt, get_tok.range)
+	if check_keyword(p, "DATA") {
+		stmt.target = parse_data_inline_expr(p)
+	} else {
+		stmt.target = parse_expr(p)
+	}
+
+	period_tok := expect_token(p, .Period)
+	stmt.range.end = period_tok.range.end
+	stmt.derived_stmt = stmt
+	return stmt
+}
+
 parse_try_into_target :: proc(p: ^Parser) -> ^ast.Expr {
 	if check_keyword(p, "DATA") {
 		return parse_data_inline_expr(p)
