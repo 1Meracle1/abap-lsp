@@ -6,6 +6,7 @@ import "core:fmt"
 import "core:strings"
 
 import "../lang/ast"
+import "../lang/lexer"
 import "../lang/symbols"
 
 handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
@@ -47,9 +48,14 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 
 	hover_text := ""
 
-	#partial switch n in node.derived {
-	case ^ast.Ident:
-		if sym, ok := lookup_symbol_at_offset(snap, n.name, offset, symbol_table); ok {
+	if member_hover, ok := lookup_class_member_hover_at_offset(snap, offset); ok {
+		hover_text = member_hover
+	} else if param_hover, ok := lookup_method_param_hover_at_offset(snap, offset); ok {
+		hover_text = param_hover
+	} else {
+		#partial switch n in node.derived {
+		case ^ast.Ident:
+			if sym, ok := lookup_symbol_at_offset(snap, n.name, offset, symbol_table); ok {
 			#partial switch sym.kind {
 			case .Form:
 				hover_text = format_form_signature(sym)
@@ -74,6 +80,17 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 				hover_text = format_event_signature(sym)
 			case .Module:
 				hover_text = format_module_signature(sym)
+			case .Field:
+				if sym.visibility != .None {
+					hover_text = format_class_field_signature(sym)
+				} else {
+					type_str := symbols.format_type(sym.type_info)
+					hover_text = fmt.tprintf(
+						"(var) %s: %s",
+						cache.xml_encode(sym.name, context.temp_allocator),
+						type_str,
+					)
+				}
 			case .FieldSymbol:
 				type_str := symbols.format_type(sym.type_info)
 				hover_text = fmt.tprintf(
@@ -84,6 +101,9 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 			case .Constant:
 				type_str := symbols.format_type(sym.type_info)
 				hover_text = fmt.tprintf("(constant) %s: %s", sym.name, type_str)
+			case .Parameter:
+				type_str := symbols.format_type(sym.type_info)
+				hover_text = fmt.tprintf("(parameter) %s: %s", sym.name, type_str)
 			case .Control:
 				hover_text = fmt.tprintf("(control) %s", sym.name)
 			case:
@@ -94,22 +114,22 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 					type_str,
 				)
 			}
-		} else if field_name, field_type, ok := lookup_selector_field_at_offset(
-			snap,
-			offset,
-			symbol_table,
-		); ok {
-			hover_text = fmt.tprintf(
-				"%s: %s",
-				cache.xml_encode(field_name, context.temp_allocator),
-				symbols.format_type(field_type),
-			)
-		} else {
-			hover_text = fmt.tprintf(
-				"(unknown) %s",
-				cache.xml_encode(n.name, context.temp_allocator),
-			)
-		}
+			} else if field_name, field_type, ok := lookup_selector_field_at_offset(
+				snap,
+				offset,
+				symbol_table,
+			); ok {
+				hover_text = fmt.tprintf(
+					"%s: %s",
+					cache.xml_encode(field_name, context.temp_allocator),
+					symbols.format_type(field_type),
+				)
+			} else {
+				hover_text = fmt.tprintf(
+					"(unknown) %s",
+					cache.xml_encode(n.name, context.temp_allocator),
+				)
+			}
 
 	case ^ast.New_Expr:
 		if n.is_inferred {
@@ -452,9 +472,10 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 			hover_text = fmt.tprintf("(parameter) %s %s", param_kind_str, n.name.name)
 		}
 
-	case:
-	// For other nodes, maybe just show the type of node?
-	// or nothing
+		case:
+		// For other nodes, maybe just show the type of node?
+		// or nothing
+		}
 	}
 
 	if hover_text != "" {
@@ -465,6 +486,489 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 	} else {
 		reply(srv, id, json.Null(nil))
 	}
+}
+
+lookup_class_member_hover_at_offset :: proc(snap: ^cache.Snapshot, offset: int) -> (string, bool) {
+	if snap == nil {
+		return "", false
+	}
+
+	class_def := ast.find_enclosing_class_def(snap.ast, offset)
+	if class_def == nil {
+		return "", false
+	}
+
+	for section in class_def.sections {
+		for method_stmt in section.methods {
+			if hover_text, ok := class_method_hover_in_stmt(method_stmt, section.access, snap.text, offset); ok {
+				return hover_text, true
+			}
+		}
+
+		for data_stmt in section.data {
+			if hover_text, ok := class_data_hover_in_stmt(data_stmt, section.access, snap.text, offset); ok {
+				return hover_text, true
+			}
+		}
+	}
+
+	return "", false
+}
+
+class_method_hover_in_stmt :: proc(
+	stmt: ^ast.Stmt,
+	access: ast.Access_Modifier,
+	text: string,
+	offset: int,
+) -> (
+	string,
+	bool,
+) {
+	if stmt == nil {
+		return "", false
+	}
+
+	#partial switch decl in stmt.derived_stmt {
+	case ^ast.Method_Decl:
+		if decl.ident != nil && range_contains_offset(decl.ident.range, offset) {
+			return format_class_method_decl_signature(decl, access, text), true
+		}
+	case ^ast.Method_Chain_Decl:
+		for child in decl.decls {
+			if child != nil && child.ident != nil && range_contains_offset(child.ident.range, offset) {
+				return format_class_method_decl_signature(child, access, text), true
+			}
+		}
+	}
+
+	return "", false
+}
+
+class_data_hover_in_stmt :: proc(
+	stmt: ^ast.Stmt,
+	access: ast.Access_Modifier,
+	text: string,
+	offset: int,
+) -> (
+	string,
+	bool,
+) {
+	if stmt == nil {
+		return "", false
+	}
+
+	#partial switch decl in stmt.derived_stmt {
+	case ^ast.Attr_Decl:
+		if decl.ident != nil && range_contains_offset(decl.ident.range, offset) {
+			return format_class_attr_decl_signature(decl, access, text, stmt.range), true
+		}
+	case ^ast.Data_Typed_Chain_Decl:
+		is_static := class_data_stmt_is_static(stmt, text)
+		for child in decl.decls {
+			if child == nil {
+				continue
+			}
+			child_ident, ok := child.ident.derived_expr.(^ast.Ident)
+			if ok && range_contains_offset(child_ident.range, offset) {
+				return format_class_data_chain_decl_signature(child_ident, child.typed, access, is_static, text), true
+			}
+		}
+	}
+
+	return "", false
+}
+
+lookup_method_param_hover_at_offset :: proc(snap: ^cache.Snapshot, offset: int) -> (string, bool) {
+	if snap == nil {
+		return "", false
+	}
+
+	if class_def := ast.find_enclosing_class_def(snap.ast, offset); class_def != nil {
+		for section in class_def.sections {
+			for method_stmt in section.methods {
+				if hover_text, ok := method_param_hover_in_stmt(method_stmt, snap.text, offset); ok {
+					return hover_text, true
+				}
+			}
+		}
+	}
+
+	if iface := ast.find_enclosing_interface(snap.ast, offset); iface != nil {
+		for method_stmt in iface.methods {
+			if hover_text, ok := method_param_hover_in_stmt(method_stmt, snap.text, offset); ok {
+				return hover_text, true
+			}
+		}
+	}
+
+	return "", false
+}
+
+method_param_hover_in_stmt :: proc(stmt: ^ast.Stmt, text: string, offset: int) -> (string, bool) {
+	if stmt == nil {
+		return "", false
+	}
+
+	#partial switch decl in stmt.derived_stmt {
+	case ^ast.Method_Decl:
+		for param in decl.params {
+			if param != nil && param.ident != nil && range_contains_offset(param.ident.range, offset) {
+				return format_method_param_signature(param, text), true
+			}
+		}
+	case ^ast.Method_Chain_Decl:
+		for child in decl.decls {
+			if child == nil {
+				continue
+			}
+			for param in child.params {
+				if param != nil && param.ident != nil && range_contains_offset(param.ident.range, offset) {
+					return format_method_param_signature(param, text), true
+				}
+			}
+		}
+	}
+
+	return "", false
+}
+
+range_contains_offset :: proc(range: lexer.TextRange, offset: int) -> bool {
+	return offset >= range.start && offset <= range.end
+}
+
+slice_range_text :: proc(text: string, range: lexer.TextRange) -> string {
+	start := range.start
+	if start < 0 {
+		start = 0
+	}
+	if start > len(text) {
+		start = len(text)
+	}
+
+	end := range.end
+	if end < start {
+		end = start
+	}
+	if end > len(text) {
+		end = len(text)
+	}
+
+	return text[start:end]
+}
+
+slice_statement_text_from_start :: proc(text: string, start: int) -> string {
+	stmt_start := start
+	if stmt_start < 0 {
+		stmt_start = 0
+	}
+	if stmt_start >= len(text) {
+		return ""
+	}
+
+	end := stmt_start
+	for end < len(text) {
+		ch := text[end]
+		end += 1
+		if ch == '.' {
+			break
+		}
+	}
+
+	return strings.trim_space(text[stmt_start:end])
+}
+
+method_param_kind_to_string :: proc(kind: ast.Method_Param_Kind) -> string {
+	switch kind {
+	case .Importing:
+		return "IMPORTING"
+	case .Exporting:
+		return "EXPORTING"
+	case .Changing:
+		return "CHANGING"
+	case .Returning:
+		return "RETURNING"
+	}
+	return "PARAMETER"
+}
+
+method_param_has_ref_marker :: proc(text: string, param: ^ast.Method_Param) -> bool {
+	if param == nil || param.ident == nil {
+		return false
+	}
+	pos := param.ident.range.start - 1
+	if pos < 0 || pos >= len(text) {
+		return false
+	}
+	return text[pos] == '!'
+}
+
+class_data_stmt_is_static :: proc(stmt: ^ast.Stmt, text: string) -> bool {
+	if stmt == nil {
+		return false
+	}
+
+	stmt_text := slice_range_text(text, stmt.range)
+	stmt_upper := strings.to_upper(stmt_text, context.temp_allocator)
+	return strings.has_prefix(stmt_upper, "CLASS-DATA")
+}
+
+access_modifier_to_string :: proc(access: ast.Access_Modifier) -> string {
+	switch access {
+	case .Public:
+		return "PUBLIC"
+	case .Protected:
+		return "PROTECTED"
+	case .Private:
+		return "PRIVATE"
+	}
+	return ""
+}
+
+visibility_to_string :: proc(visibility: symbols.Visibility) -> string {
+	switch visibility {
+	case .None:
+		return ""
+	case .Public:
+		return "PUBLIC"
+	case .Protected:
+		return "PROTECTED"
+	case .Private:
+		return "PRIVATE"
+	}
+	return ""
+}
+
+write_member_section_header :: proc(
+	b: ^strings.Builder,
+	section_name: string,
+) {
+	if section_name == "" {
+		return
+	}
+
+	strings.write_string(b, section_name)
+	strings.write_string(b, " SECTION.\n")
+}
+
+format_class_attr_decl_signature :: proc(
+	attr: ^ast.Attr_Decl,
+	access: ast.Access_Modifier,
+	text: string,
+	stmt_range: lexer.TextRange,
+) -> string {
+	if attr == nil || attr.ident == nil {
+		return ""
+	}
+
+	b: strings.Builder
+	strings.builder_init(&b, context.temp_allocator)
+	strings.write_string(&b, "```abap\n")
+	write_member_section_header(&b, access_modifier_to_string(access))
+
+	if attr.is_class {
+		strings.write_string(&b, "CLASS-DATA ")
+	} else {
+		strings.write_string(&b, "DATA ")
+	}
+	strings.write_string(&b, attr.ident.name)
+	if attr.typed != nil {
+		strings.write_string(&b, " TYPE ")
+		strings.write_string(&b, slice_range_text(text, attr.typed.range))
+	}
+	attr_text := strings.to_upper(slice_statement_text_from_start(text, stmt_range.start), context.temp_allocator)
+	if attr.is_read_only || strings.contains(attr_text, "READ-ONLY") {
+		strings.write_string(&b, " READ-ONLY")
+	}
+	strings.write_string(&b, "\n```")
+
+	return strings.to_string(b)
+}
+
+format_method_param_signature :: proc(param: ^ast.Method_Param, text: string) -> string {
+	if param == nil || param.ident == nil {
+		return ""
+	}
+
+	b: strings.Builder
+	strings.builder_init(&b, context.temp_allocator)
+	strings.write_string(&b, "```abap\n")
+	strings.write_string(&b, method_param_kind_to_string(param.kind))
+	strings.write_string(&b, " ")
+
+	if param.kind == .Returning {
+		strings.write_string(&b, "VALUE(")
+		strings.write_string(&b, param.ident.name)
+		strings.write_string(&b, ")")
+	} else {
+		if method_param_has_ref_marker(text, param) {
+			strings.write_string(&b, "!")
+		}
+		strings.write_string(&b, param.ident.name)
+	}
+
+	if param.typed != nil {
+		strings.write_string(&b, " TYPE ")
+		strings.write_string(&b, slice_range_text(text, param.typed.range))
+	}
+	if param.optional {
+		strings.write_string(&b, " OPTIONAL")
+	}
+	if param.default != nil {
+		strings.write_string(&b, " DEFAULT ")
+		strings.write_string(&b, slice_range_text(text, param.default.range))
+	}
+
+	strings.write_string(&b, "\n```")
+	return strings.to_string(b)
+}
+
+format_class_data_chain_decl_signature :: proc(
+	ident: ^ast.Ident,
+	typed: ^ast.Expr,
+	access: ast.Access_Modifier,
+	is_static: bool,
+	text: string,
+) -> string {
+	if ident == nil {
+		return ""
+	}
+
+	b: strings.Builder
+	strings.builder_init(&b, context.temp_allocator)
+	strings.write_string(&b, "```abap\n")
+	write_member_section_header(&b, access_modifier_to_string(access))
+
+	if is_static {
+		strings.write_string(&b, "CLASS-DATA ")
+	} else {
+		strings.write_string(&b, "DATA ")
+	}
+	strings.write_string(&b, ident.name)
+	if typed != nil {
+		strings.write_string(&b, " TYPE ")
+		strings.write_string(&b, slice_range_text(text, typed.range))
+	}
+	strings.write_string(&b, "\n```")
+
+	return strings.to_string(b)
+}
+
+append_method_param_group :: proc(
+	b: ^strings.Builder,
+	text: string,
+	label: string,
+	params: [dynamic]^ast.Method_Param,
+	kind: ast.Method_Param_Kind,
+) {
+	group_count := 0
+	for param in params {
+		if param != nil && param.kind == kind {
+			group_count += 1
+		}
+	}
+	if group_count == 0 {
+		return
+	}
+
+	strings.write_string(b, "\n  ")
+	strings.write_string(b, label)
+	for param in params {
+		if param == nil || param.kind != kind || param.ident == nil {
+			continue
+		}
+		strings.write_string(b, "\n    ")
+		if kind == .Returning {
+			strings.write_string(b, "VALUE(")
+			strings.write_string(b, param.ident.name)
+			strings.write_string(b, ")")
+		} else {
+			strings.write_string(b, param.ident.name)
+		}
+		if param.typed != nil {
+			strings.write_string(b, " TYPE ")
+			strings.write_string(b, slice_range_text(text, param.typed.range))
+		}
+		if param.optional {
+			strings.write_string(b, " OPTIONAL")
+		}
+		if param.default != nil {
+			strings.write_string(b, " DEFAULT ")
+			strings.write_string(b, slice_range_text(text, param.default.range))
+		}
+	}
+}
+
+format_class_method_decl_signature :: proc(
+	method: ^ast.Method_Decl,
+	access: ast.Access_Modifier,
+	text: string,
+) -> string {
+	if method == nil || method.ident == nil {
+		return ""
+	}
+
+	b: strings.Builder
+	strings.builder_init(&b, context.temp_allocator)
+	strings.write_string(&b, "```abap\n")
+	write_member_section_header(&b, access_modifier_to_string(access))
+
+	method_text := slice_statement_text_from_start(text, method.range.start)
+	method_text_upper := strings.to_upper(method_text, context.temp_allocator)
+	if .Class in method.flags &&
+	   !strings.has_prefix(method_text_upper, "CLASS-METHODS") &&
+	   strings.has_prefix(method_text_upper, "METHODS") {
+		method_text = strings.concatenate({"CLASS-", method_text}, context.temp_allocator)
+	}
+	if method_text != "" {
+		strings.write_string(&b, method_text)
+	} else {
+		if .Class in method.flags {
+			strings.write_string(&b, "CLASS-METHODS ")
+		} else {
+			strings.write_string(&b, "METHODS ")
+		}
+		strings.write_string(&b, method.ident.name)
+		if .Abstract in method.flags {
+			strings.write_string(&b, " ABSTRACT")
+		}
+		if .Final in method.flags {
+			strings.write_string(&b, " FINAL")
+		}
+		if .Redefinition in method.flags {
+			strings.write_string(&b, " REDEFINITION")
+		}
+		if .Testing in method.flags {
+			strings.write_string(&b, " FOR TESTING")
+		}
+	}
+
+	strings.write_string(&b, "\n```")
+	return strings.to_string(b)
+}
+
+format_class_field_signature :: proc(sym: symbols.Symbol) -> string {
+	if sym.kind != .Field {
+		return sym.name
+	}
+
+	b: strings.Builder
+	strings.builder_init(&b, context.temp_allocator)
+	strings.write_string(&b, "```abap\n")
+	write_member_section_header(&b, visibility_to_string(sym.visibility))
+
+	if sym.is_static {
+		strings.write_string(&b, "CLASS-DATA ")
+	} else {
+		strings.write_string(&b, "DATA ")
+	}
+	strings.write_string(&b, sym.name)
+	if sym.type_info != nil && sym.type_info.kind != .Unknown {
+		strings.write_string(&b, " TYPE ")
+		strings.write_string(&b, symbols.format_type(sym.type_info))
+	}
+
+	strings.write_string(&b, "\n```")
+	return strings.to_string(b)
 }
 
 lookup_selector_field_at_offset :: proc(
@@ -740,10 +1244,10 @@ lookup_symbol_at_offset :: proc(
 
 	if enclosing_form := ast.find_enclosing_form(snap.ast, offset); enclosing_form != nil {
 		form_name := enclosing_form.ident.name
-		if form_sym, ok := table.symbols[form_name]; ok {
+		if form_sym, ok := lookup_symbol_in_scope(table, form_name); ok {
 			// Look up in the form's local scope first
 			if form_sym.child_scope != nil {
-				if sym, found := form_sym.child_scope.symbols[name]; found {
+				if sym, found := lookup_symbol_in_scope(form_sym.child_scope, name); found {
 					return sym, true
 				}
 			}
@@ -752,9 +1256,9 @@ lookup_symbol_at_offset :: proc(
 
 	if enclosing_class := ast.find_enclosing_class_def(snap.ast, offset); enclosing_class != nil {
 		class_name := enclosing_class.ident.name
-		if class_sym, ok := table.symbols[class_name]; ok {
+		if class_sym, ok := lookup_symbol_in_scope(table, class_name); ok {
 			if class_sym.child_scope != nil {
-				if sym, found := class_sym.child_scope.symbols[name]; found {
+				if sym, found := lookup_symbol_in_scope(class_sym.child_scope, name); found {
 					return sym, true
 				}
 			}
@@ -763,9 +1267,9 @@ lookup_symbol_at_offset :: proc(
 
 	if enclosing_iface := ast.find_enclosing_interface(snap.ast, offset); enclosing_iface != nil {
 		iface_name := enclosing_iface.ident.name
-		if iface_sym, ok := table.symbols[iface_name]; ok {
+		if iface_sym, ok := lookup_symbol_in_scope(table, iface_name); ok {
 			if iface_sym.child_scope != nil {
-				if sym, found := iface_sym.child_scope.symbols[name]; found {
+				if sym, found := lookup_symbol_in_scope(iface_sym.child_scope, name); found {
 					return sym, true
 				}
 			}
@@ -774,16 +1278,25 @@ lookup_symbol_at_offset :: proc(
 
 	if enclosing_module := ast.find_enclosing_module(snap.ast, offset); enclosing_module != nil {
 		module_name := enclosing_module.ident.name
-		if module_sym, ok := table.symbols[module_name]; ok {
+		if module_sym, ok := lookup_symbol_in_scope(table, module_name); ok {
 			if module_sym.child_scope != nil {
-				if sym, found := module_sym.child_scope.symbols[name]; found {
+				if sym, found := lookup_symbol_in_scope(module_sym.child_scope, name); found {
 					return sym, true
 				}
 			}
 		}
 	}
 
-	return table.symbols[name]
+	return lookup_symbol_in_scope(table, name)
+}
+
+lookup_symbol_in_scope :: proc(table: ^symbols.SymbolTable, name: string) -> (symbols.Symbol, bool) {
+	if table == nil {
+		return {}, false
+	}
+
+	key := strings.to_lower(name, context.temp_allocator)
+	return table.symbols[key]
 }
 
 format_class_signature :: proc(sym: symbols.Symbol) -> string {
@@ -869,7 +1382,12 @@ format_method_signature :: proc(sym: symbols.Symbol) -> string {
 	strings.builder_init(&b, context.temp_allocator)
 
 	strings.write_string(&b, "```abap\n")
-	strings.write_string(&b, "METHODS ")
+	write_member_section_header(&b, visibility_to_string(sym.visibility))
+	if sym.is_static {
+		strings.write_string(&b, "CLASS-METHODS ")
+	} else {
+		strings.write_string(&b, "METHODS ")
+	}
 	strings.write_string(&b, sym.name)
 
 	if sym.child_scope != nil {
