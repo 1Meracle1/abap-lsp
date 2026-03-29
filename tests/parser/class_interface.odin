@@ -455,6 +455,52 @@ ENDINTERFACE.`
 }
 
 @(test)
+class_method_with_reference_parameters_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src = `CLASS zcl_notifier DEFINITION.
+  PUBLIC SECTION.
+    METHODS send_notification
+      EXPORTING
+        !ev_return_code TYPE string
+        !ev_response_string TYPE string
+        !ev_reason TYPE string
+      RAISING
+        /sttp/cx_rep_exception.
+ENDCLASS.`
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if len(file.decls) > 0 {
+		class, ok := file.decls[0].derived_stmt.(^ast.Class_Def_Decl)
+		if !testing.expect(t, ok, "Expected Class_Def_Decl") do return
+
+		if len(class.sections) > 0 && len(class.sections[0].methods) > 0 {
+			method, mok := class.sections[0].methods[0].derived_stmt.(^ast.Method_Decl)
+			if !testing.expect(t, mok, "Expected Method_Decl") do return
+
+			testing.expect(t, len(method.params) == 3, fmt.tprintf("Expected 3 parameters, got %d", len(method.params)))
+			if len(method.params) >= 3 {
+				testing.expect(t, method.params[0].ident.name == "ev_return_code")
+				testing.expect(t, method.params[1].ident.name == "ev_response_string")
+				testing.expect(t, method.params[2].ident.name == "ev_reason")
+				testing.expect(t, method.params[0].kind == .Exporting)
+				testing.expect(t, method.params[1].kind == .Exporting)
+				testing.expect(t, method.params[2].kind == .Exporting)
+			}
+
+			testing.expect(t, len(method.raising) == 1, fmt.tprintf("Expected 1 raising type, got %d", len(method.raising)))
+		}
+	}
+}
+
+@(test)
 method_abstract_redefinition_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
 	file.src = `CLASS c1 DEFINITION ABSTRACT.

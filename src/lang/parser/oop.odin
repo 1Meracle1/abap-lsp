@@ -494,12 +494,28 @@ parse_method_chain_decl :: proc(p: ^Parser, method_tok: lexer.Token, is_class: b
 	return chain_decl
 }
 
+is_method_param_ref_marker :: proc(p: ^Parser) -> bool {
+	return p.curr_tok.range.end-p.curr_tok.range.start == 1 &&
+		p.file.src[p.curr_tok.range.start:p.curr_tok.range.end] == "!"
+}
+
+is_method_param_start :: proc(p: ^Parser) -> bool {
+	return (p.curr_tok.kind == .Ident && len(p.curr_tok.lit) > 0) || is_method_param_ref_marker(p)
+}
+
+parse_method_param_ident :: proc(p: ^Parser) -> lexer.Token {
+	if is_method_param_ref_marker(p) {
+		advance_token(p)
+	}
+	return expect_token(p, .Ident)
+}
+
 parse_method_params :: proc(
 	p: ^Parser,
 	params: ^[dynamic]^ast.Method_Param,
 	kind: ast.Method_Param_Kind,
 ) {
-	for p.curr_tok.kind == .Ident && p.curr_tok.kind != .Period {
+	for is_method_param_start(p) && p.curr_tok.kind != .Period {
 		if check_keyword(p, "IMPORTING") ||
 		   check_keyword(p, "EXPORTING") ||
 		   check_keyword(p, "CHANGING") ||
@@ -514,7 +530,7 @@ parse_method_params :: proc(
 		if kind == .Returning && check_keyword(p, "VALUE") {
 			advance_token(p)
 			expect_token(p, .LParen)
-			ident_tok := expect_token(p, .Ident)
+			ident_tok := parse_method_param_ident(p)
 			expect_token(p, .RParen)
 
 			param := ast.new(ast.Method_Param, ident_tok.range)
@@ -530,7 +546,7 @@ parse_method_params :: proc(
 			continue
 		}
 
-		ident_tok := advance_token(p)
+		ident_tok := parse_method_param_ident(p)
 
 		param := ast.new(ast.Method_Param, ident_tok.range)
 		param.kind = kind
