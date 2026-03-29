@@ -503,6 +503,26 @@ Delete_Stmt :: struct {
 	index_expr: ^Expr, // INDEX expression
 }
 
+Split_Mode :: enum {
+	None,
+	Character,
+	Byte,
+}
+
+// SPLIT statement
+// Syntax:
+// - SPLIT dobj AT sep INTO result1 result2 ...
+// - SPLIT dobj AT sep INTO TABLE result_tab
+// - ... [IN CHARACTER MODE | IN BYTE MODE]
+Split_Stmt :: struct {
+	using node:    Stmt,
+	source:        ^Expr,
+	separator:     ^Expr,
+	targets:       [dynamic]^Expr,
+	table_target:  ^Expr,
+	mode:          Split_Mode,
+}
+
 Condense_Stmt :: struct {
 	using node: Stmt,
 	text:       ^Expr,
@@ -1002,6 +1022,7 @@ Any_Node :: union {
 	^Read_Report_Stmt,
 	^Authority_Check_Stmt,
 	^Delete_Stmt,
+	^Split_Stmt,
 	^Condense_Stmt,
 	^Raise_Exception_Stmt,
 	^Check_Stmt,
@@ -1095,6 +1116,7 @@ Any_Stmt :: union {
 	^Read_Report_Stmt,
 	^Authority_Check_Stmt,
 	^Delete_Stmt,
+	^Split_Stmt,
 	^Condense_Stmt,
 	^Raise_Exception_Stmt,
 	^Check_Stmt,

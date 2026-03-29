@@ -7592,6 +7592,114 @@ condense_test :: proc(t: ^testing.T) {
 }
 
 @(test)
+split_into_targets_character_mode_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src = `SPLIT text AT ':' INTO part1 part2 IN CHARACTER MODE.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	split_stmt, ok := file.decls[0].derived_stmt.(^ast.Split_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Split_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	testing.expect(t, split_stmt.source != nil, "Expected source to be set")
+	testing.expect(t, split_stmt.separator != nil, "Expected separator to be set")
+	testing.expect(t, len(split_stmt.targets) == 2, fmt.tprintf("Expected 2 targets, got %d", len(split_stmt.targets)))
+	testing.expect(t, split_stmt.table_target == nil, "Expected table_target to be nil")
+	testing.expect(t, split_stmt.mode == .Character, fmt.tprintf("Expected Character mode, got %v", split_stmt.mode))
+
+	if source_ident, sok := split_stmt.source.derived_expr.(^ast.Ident); sok {
+		testing.expect(t, source_ident.name == "text", fmt.tprintf("Expected 'text', got '%s'", source_ident.name))
+	}
+	if separator_lit, lok := split_stmt.separator.derived_expr.(^ast.Basic_Lit); lok {
+		testing.expect(t, separator_lit.tok.lit == "':'", fmt.tprintf("Expected ':', got '%s'", separator_lit.tok.lit))
+	}
+	if len(split_stmt.targets) == 2 {
+		if target1, tok := split_stmt.targets[0].derived_expr.(^ast.Ident); tok {
+			testing.expect(t, target1.name == "part1", fmt.tprintf("Expected 'part1', got '%s'", target1.name))
+		}
+		if target2, tok := split_stmt.targets[1].derived_expr.(^ast.Ident); tok {
+			testing.expect(t, target2.name == "part2", fmt.tprintf("Expected 'part2', got '%s'", target2.name))
+		}
+	}
+}
+
+@(test)
+split_into_table_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src = `SPLIT ls_trn-trncode AT ':' INTO TABLE lt_split.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	split_stmt, ok := file.decls[0].derived_stmt.(^ast.Split_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Split_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	testing.expect(t, split_stmt.table_target != nil, "Expected table_target to be set")
+	testing.expect(t, len(split_stmt.targets) == 0, fmt.tprintf("Expected 0 targets, got %d", len(split_stmt.targets)))
+	testing.expect(t, split_stmt.mode == .None, fmt.tprintf("Expected None mode, got %v", split_stmt.mode))
+
+	if source_selector, sok := split_stmt.source.derived_expr.(^ast.Selector_Expr); sok {
+		if base_ident, bok := source_selector.expr.derived_expr.(^ast.Ident); bok {
+			testing.expect(t, base_ident.name == "ls_trn", fmt.tprintf("Expected 'ls_trn', got '%s'", base_ident.name))
+		}
+		testing.expect(t, source_selector.field.name == "trncode", fmt.tprintf("Expected 'trncode', got '%s'", source_selector.field.name))
+	} else {
+		testing.expect(t, false, fmt.tprintf("Expected source to be Selector_Expr, got %T", split_stmt.source.derived_expr))
+	}
+
+	if table_ident, tok := split_stmt.table_target.derived_expr.(^ast.Ident); tok {
+		testing.expect(t, table_ident.name == "lt_split", fmt.tprintf("Expected 'lt_split', got '%s'", table_ident.name))
+	}
+}
+
+@(test)
+split_into_table_inline_data_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src = `SPLIT text1 AT ':' INTO TABLE DATA(segments).`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	split_stmt, ok := file.decls[0].derived_stmt.(^ast.Split_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Split_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	testing.expect(t, split_stmt.table_target != nil, "Expected table_target to be set")
+	testing.expect(t, len(split_stmt.targets) == 0, fmt.tprintf("Expected 0 targets, got %d", len(split_stmt.targets)))
+
+	if table_ident, tok := split_stmt.table_target.derived_expr.(^ast.Ident); tok {
+		testing.expect(t, table_ident.name == "segments", fmt.tprintf("Expected 'segments', got '%s'", table_ident.name))
+	} else {
+		testing.expect(
+			t,
+			false,
+			fmt.tprintf("Expected table_target to be Ident, got %T", split_stmt.table_target.derived_expr),
+		)
+	}
+}
+
+@(test)
 call_function_simple_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
 	file.src =

@@ -263,6 +263,13 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 			hover_text = "(statement) DELETE ADJACENT DUPLICATES - deletes adjacent duplicate entries"
 		}
 
+	case ^ast.Split_Stmt:
+		if n.table_target != nil {
+			hover_text = "(statement) SPLIT ... INTO TABLE - splits a data object into an internal table"
+		} else {
+			hover_text = "(statement) SPLIT ... INTO - splits a data object into multiple target fields"
+		}
+
 	case ^ast.Field_Symbol_Decl:
 		if n.ident != nil {
 			hover_text = fmt.tprintf("(field-symbol declaration) `%s`", n.ident.name)

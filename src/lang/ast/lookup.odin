@@ -675,6 +675,30 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 			}
 		}
 
+	case ^Split_Stmt:
+		if n.source != nil {
+			if res := find_node_at_offset(&n.source.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		if n.separator != nil {
+			if res := find_node_at_offset(&n.separator.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		for target in n.targets {
+			if target != nil {
+				if res := find_node_at_offset(&target.expr_base, offset); res != nil {
+					return res
+				}
+			}
+		}
+		if n.table_target != nil {
+			if res := find_node_at_offset(&n.table_target.expr_base, offset); res != nil {
+				return res
+			}
+		}
+
 	case ^Condense_Stmt:
 		if n.text != nil {
 			if res := find_node_at_offset(&n.text.expr_base, offset); res != nil {

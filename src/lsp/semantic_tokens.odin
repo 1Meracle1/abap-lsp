@@ -588,6 +588,22 @@ collect_tokens_from_stmt :: proc(
 			collect_tokens_from_expr(tokens, s.index_expr, snap, nil)
 		}
 
+	case ^ast.Split_Stmt:
+		if s.source != nil {
+			collect_tokens_from_expr(tokens, s.source, snap, nil)
+		}
+		if s.separator != nil {
+			collect_tokens_from_expr(tokens, s.separator, snap, nil)
+		}
+		for target in s.targets {
+			if target != nil {
+				collect_tokens_from_expr(tokens, target, snap, nil)
+			}
+		}
+		if s.table_target != nil {
+			collect_tokens_from_expr(tokens, s.table_target, snap, nil)
+		}
+
 	case ^ast.Field_Symbol_Decl:
 		if s.ident != nil {
 			append(

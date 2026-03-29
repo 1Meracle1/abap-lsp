@@ -128,6 +128,8 @@ parse_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			}
 		case "CONDENSE":
 			return parse_condense_stmt(p)
+		case "SPLIT":
+			return parse_split_stmt(p)
 		case "SELECT":
 			return parse_select_stmt(p)
 		case "RAISE":
@@ -2046,6 +2048,56 @@ parse_condense_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	condense_stmt := ast.new(ast.Condense_Stmt, condense_tok, period_tok)
 	condense_stmt.text = text_expr
 	return condense_stmt
+}
+
+parse_split_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
+	split_tok := expect_keyword_token(p, "SPLIT")
+	stmt := ast.new(ast.Split_Stmt, split_tok.range)
+	stmt.targets = make([dynamic]^ast.Expr)
+
+	stmt.source = parse_expr(p)
+	expect_keyword_token(p, "AT")
+	stmt.separator = parse_expr(p)
+	expect_keyword_token(p, "INTO")
+
+	if check_keyword(p, "TABLE") {
+		advance_token(p)
+		if check_keyword(p, "DATA") {
+			stmt.table_target = parse_data_inline_expr(p)
+		} else {
+			stmt.table_target = parse_expr(p)
+		}
+	} else {
+		for p.curr_tok.kind != .EOF && p.curr_tok.kind != .Period {
+			if check_keyword(p, "IN") {
+				break
+			}
+
+			target := parse_expr(p)
+			if target == nil {
+				break
+			}
+			append(&stmt.targets, target)
+		}
+	}
+
+	if check_keyword(p, "IN") {
+		advance_token(p)
+		if check_keyword(p, "CHARACTER") {
+			advance_token(p)
+			stmt.mode = .Character
+		} else if check_keyword(p, "BYTE") {
+			advance_token(p)
+			stmt.mode = .Byte
+		} else {
+			error(p, p.curr_tok.range, "expected CHARACTER or BYTE after IN")
+		}
+		expect_keyword_token(p, "MODE")
+	}
+
+	period_tok := expect_token(p, .Period)
+	stmt.range.end = period_tok.range.end
+	return stmt
 }
 
 parse_raise_exception_exporting_args :: proc(p: ^Parser, args: ^[dynamic]^ast.Named_Arg) {
