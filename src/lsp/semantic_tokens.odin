@@ -281,6 +281,20 @@ collect_tokens_from_stmt :: proc(
 			collect_tokens_from_expr(tokens, rhs, snap, nil)
 		}
 
+	case ^ast.Assign_Field_Symbol_Stmt:
+		if s.source != nil {
+			collect_tokens_from_expr(tokens, s.source, snap, nil)
+		}
+		if s.offset != nil {
+			collect_tokens_from_expr(tokens, s.offset, snap, nil)
+		}
+		if s.length != nil {
+			collect_tokens_from_expr(tokens, s.length, snap, nil)
+		}
+		if s.target != nil {
+			collect_tokens_from_expr(tokens, s.target, snap, nil)
+		}
+
 	case ^ast.Expr_Stmt:
 		collect_tokens_from_expr(tokens, s.expr, snap, nil)
 

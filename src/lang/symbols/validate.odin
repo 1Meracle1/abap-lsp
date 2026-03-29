@@ -79,6 +79,11 @@ validate_stmt_ctx :: proc(ctx: ^Validation_Context, stmt: ^ast.Stmt) {
 		for rhs in s.rhs {
 			validate_expr_ctx(ctx, rhs)
 		}
+	case ^ast.Assign_Field_Symbol_Stmt:
+		validate_expr_ctx(ctx, s.source)
+		validate_expr_ctx(ctx, s.offset)
+		validate_expr_ctx(ctx, s.length)
+		validate_expr_ctx(ctx, s.target)
 	case ^ast.Expr_Stmt:
 		validate_expr_ctx(ctx, s.expr)
 	case ^ast.If_Stmt:

@@ -225,6 +225,17 @@ Assign_Stmt :: struct {
 	rhs:        []^Expr,
 }
 
+Assign_Field_Symbol_Stmt :: struct {
+	using node:      Stmt,
+	source:          ^Expr,
+	offset:          ^Expr,
+	length:          ^Expr,
+	length_is_star:  bool,
+	is_dynamic:      bool,
+	is_table_field:  bool,
+	target:          ^Expr,
+}
+
 Block_Stmt :: struct {
 	using node: Stmt,
 	label:      ^Expr,
@@ -948,6 +959,7 @@ Any_Node :: union {
 	^Bad_Stmt,
 	^Expr_Stmt,
 	^Assign_Stmt,
+	^Assign_Field_Symbol_Stmt,
 	^Block_Stmt,
 	^If_Stmt,
 	^Elseif_Branch,
@@ -1039,6 +1051,7 @@ Any_Stmt :: union {
 	^Bad_Stmt,
 	^Expr_Stmt,
 	^Assign_Stmt,
+	^Assign_Field_Symbol_Stmt,
 	^Block_Stmt,
 	^If_Stmt,
 	^Return_Stmt,

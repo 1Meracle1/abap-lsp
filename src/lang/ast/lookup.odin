@@ -309,6 +309,28 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 			}
 		}
 
+	case ^Assign_Field_Symbol_Stmt:
+		if n.source != nil {
+			if res := find_node_at_offset(&n.source.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		if n.offset != nil {
+			if res := find_node_at_offset(&n.offset.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		if n.length != nil {
+			if res := find_node_at_offset(&n.length.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		if n.target != nil {
+			if res := find_node_at_offset(&n.target.expr_base, offset); res != nil {
+				return res
+			}
+		}
+
 	case ^Block_Stmt:
 		if n.label != nil {
 			if res := find_node_at_offset(&n.label.expr_base, offset); res != nil {

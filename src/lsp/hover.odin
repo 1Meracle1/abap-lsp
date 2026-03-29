@@ -189,6 +189,17 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 	case ^ast.Message_Stmt:
 		hover_text = "(statement) MESSAGE - displays a message to the user"
 
+	case ^ast.Assign_Field_Symbol_Stmt:
+		if n.is_table_field {
+			hover_text = "(statement) ASSIGN TABLE FIELD - dynamically assigns a table work area to a field symbol"
+		} else if n.is_dynamic {
+			hover_text = "(statement) ASSIGN ( ... ) TO - dynamically assigns a data object to a field symbol"
+		} else if n.offset != nil || n.length != nil || n.length_is_star {
+			hover_text = "(statement) ASSIGN dobj+off(len) TO - assigns a subfield to a field symbol"
+		} else {
+			hover_text = "(statement) ASSIGN ... TO - assigns a data object to a field symbol"
+		}
+
 	case ^ast.Insert_Stmt:
 		switch n.kind {
 		case .Into_Table:

@@ -92,6 +92,8 @@ parse_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			}
 		case "MODIFY":
 			return parse_modify_stmt(p)
+		case "ASSIGN":
+			return parse_assign_field_symbol_stmt(p)
 		case "LEAVE":
 			return parse_leave_stmt(p)
 		case "SET":
@@ -666,10 +668,14 @@ parse_atom_expr :: proc(p: ^Parser, value: ^ast.Expr) -> ^ast.Expr {
 			// Handle TEXT-nnn text symbol references where nnn is a number
 			// Also allow numbers as selectors for error resilience
 			field_tok: lexer.Token
-			if p.curr_tok.kind == .Ident || p.curr_tok.kind == .Number {
+			if p.curr_tok.kind == .Ident || p.curr_tok.kind == .Number || p.curr_tok.kind == .Star {
 				field_tok = advance_token(p)
 			} else {
 				field_tok = expect_token(p, .Ident) // Will error but still advance
+			}
+			field_ident := ast.new_ident(field_tok)
+			if field_tok.kind == .Star {
+				field_ident.name = "*"
 			}
 			selector := ast.new(
 				ast.Selector_Expr,
@@ -677,7 +683,7 @@ parse_atom_expr :: proc(p: ^Parser, value: ^ast.Expr) -> ^ast.Expr {
 			)
 			selector.expr = expr
 			selector.op = op
-			selector.field = ast.new_ident(field_tok)
+			selector.field = field_ident
 			expr = selector
 		case .LParen:
 			// Call expression - parentheses immediately after expression (no space)
@@ -1494,6 +1500,128 @@ parse_inline_field_symbol :: proc(p: ^Parser) -> ^ast.Expr {
 	fs_ref := parse_field_symbol_ref(p)
 	expect_token_space_req(p, .RParen, .WithoutLeadingSpace)
 	return fs_ref
+}
+
+parse_assign_dynamic_source :: proc(p: ^Parser) -> ^ast.Expr {
+	lparen_tok := expect_token(p, .LParen)
+	inner := parse_expr(p)
+	rparen_tok := expect_token(p, .RParen)
+
+	paren_expr := ast.new(
+		ast.Paren_Expr,
+		lexer.TextRange{lparen_tok.range.start, rparen_tok.range.end},
+	)
+	paren_expr.expr = inner
+	paren_expr.derived_expr = paren_expr
+	return paren_expr
+}
+
+parse_assign_subfield_component :: proc(p: ^Parser) -> ^ast.Expr {
+	expr := parse_operand(p)
+	if expr == nil {
+		return nil
+	}
+
+	loop: for {
+		if expr == nil {
+			break loop
+		}
+
+		#partial switch p.curr_tok.kind {
+		case .Minus, .FatArrow, .Tilde, .Arrow:
+			if lexer.have_space_between(p.prev_tok, p.curr_tok) {
+				break loop
+			}
+			op := advance_token(p)
+			field_tok := expect_token(p, .Ident)
+			selector := ast.new(
+				ast.Selector_Expr,
+				lexer.TextRange{expr.range.start, field_tok.range.end},
+			)
+			selector.expr = expr
+			selector.op = op
+			selector.field = ast.new_ident(field_tok)
+			expr = selector
+		case .LBracket:
+			advance_token(p)
+			index_expr := parse_expr(p)
+			rbracket_tok := expect_token(p, .RBracket)
+
+			table_expr := ast.new(
+				ast.Index_Expr,
+				lexer.TextRange{expr.range.start, rbracket_tok.range.end},
+			)
+			table_expr.expr = expr
+			table_expr.index = index_expr
+			table_expr.derived_expr = table_expr
+			expr = table_expr
+		case:
+			break loop
+		}
+	}
+
+	return expr
+}
+
+parse_assign_source_expr :: proc(
+	p: ^Parser,
+	stmt: ^ast.Assign_Field_Symbol_Stmt,
+) -> ^ast.Expr {
+	if p.curr_tok.kind == .LParen {
+		stmt.is_dynamic = true
+		return parse_assign_dynamic_source(p)
+	}
+
+	source := parse_atom_expr(p, parse_operand(p))
+	if source == nil {
+		return nil
+	}
+
+	if p.curr_tok.kind == .Plus && !lexer.have_space_between(p.prev_tok, p.curr_tok) {
+		advance_token(p) // consume +
+		stmt.offset = parse_assign_subfield_component(p)
+
+		if p.curr_tok.kind == .LParen && !lexer.have_space_between(p.prev_tok, p.curr_tok) {
+			advance_token(p) // consume (
+			if p.curr_tok.kind == .Star {
+				stmt.length_is_star = true
+				advance_token(p)
+			} else {
+				stmt.length = parse_assign_subfield_component(p)
+			}
+			expect_token(p, .RParen)
+		}
+	}
+
+	return source
+}
+
+parse_assign_field_symbol_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
+	assign_tok := expect_keyword_token(p, "ASSIGN")
+
+	stmt := ast.new(ast.Assign_Field_Symbol_Stmt, assign_tok.range)
+	stmt.derived_stmt = stmt
+
+	if check_keyword(p, "TABLE") {
+		advance_token(p)
+		expect_keyword_token(p, "FIELD")
+		stmt.is_table_field = true
+		stmt.is_dynamic = true
+		stmt.source = parse_assign_dynamic_source(p)
+	} else {
+		stmt.source = parse_assign_source_expr(p, stmt)
+	}
+
+	expect_keyword_token(p, "TO")
+	if check_hyphenated_keyword(p, "FIELD", "SYMBOL") {
+		stmt.target = parse_inline_field_symbol(p)
+	} else {
+		stmt.target = parse_field_symbol_ref(p)
+	}
+
+	period_tok := expect_token(p, .Period)
+	stmt.range.end = period_tok.range.end
+	return stmt
 }
 
 // MESSAGE statement parser
