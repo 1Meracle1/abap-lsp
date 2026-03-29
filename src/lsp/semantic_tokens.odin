@@ -817,6 +817,23 @@ collect_tokens_from_stmt :: proc(
 		collect_tokens_from_call_function_params(tokens, s.changing[:], snap)
 		collect_tokens_from_call_function_params(tokens, s.exceptions[:], snap)
 
+	case ^ast.Create_Object_Stmt:
+		if s.target != nil {
+			collect_tokens_from_expr(tokens, s.target, snap, nil)
+		}
+		if s.type_ref != nil {
+			collect_tokens_from_expr(tokens, s.type_ref, snap, nil)
+		}
+		if s.area_handle != nil {
+			collect_tokens_from_expr(tokens, s.area_handle, snap, nil)
+		}
+		for arg in s.exporting {
+			collect_tokens_from_expr(tokens, &arg.node, snap, nil)
+		}
+		for arg in s.exceptions {
+			collect_tokens_from_expr(tokens, &arg.node, snap, nil)
+		}
+
 	case ^ast.Select_Stmt:
 		// Collect tokens from field list
 		for field in s.fields {

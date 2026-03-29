@@ -76,6 +76,10 @@ parse_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			return parse_at_event_block(p)
 		case "CALL":
 			return parse_call_stmt(p)
+		case "CREATE":
+			if check_keyword_ahead(p, "OBJECT") {
+				return parse_create_object_stmt(p)
+			}
 		case "IF":
 			return parse_if_stmt(p)
 		case "START":
@@ -2147,6 +2151,94 @@ parse_raise_exception_exporting_args :: proc(p: ^Parser, args: ^[dynamic]^ast.Na
 // Syntax:
 // - RAISE [RESUMABLE] EXCEPTION TYPE cx_class [EXPORTING p1 = a1 ...].
 // - RAISE [RESUMABLE] EXCEPTION oref.
+parse_create_object_args :: proc(p: ^Parser, args: ^[dynamic]^ast.Named_Arg) {
+	for p.curr_tok.kind != .Period && p.curr_tok.kind != .EOF {
+		if check_keyword(p, "EXPORTING") ||
+		   check_keyword(p, "EXCEPTIONS") ||
+		   check_keyword(p, "AREA") {
+			break
+		}
+
+		if p.curr_tok.kind != .Ident {
+			break
+		}
+
+		param_name_tok := p.curr_tok
+		advance_token(p)
+
+		if p.curr_tok.kind != .Eq {
+			error(
+				p,
+				p.curr_tok.range,
+				"expected '=' after parameter name '%s'",
+				param_name_tok.lit,
+			)
+			break
+		}
+		advance_token(p)
+
+		param_value := parse_expr(p)
+		if param_value == nil {
+			break
+		}
+
+		skip_pragma(p)
+
+		named_arg := ast.new(
+			ast.Named_Arg,
+			lexer.TextRange{param_name_tok.range.start, param_value.range.end},
+		)
+		named_arg.name = ast.new_ident(param_name_tok)
+		named_arg.value = param_value
+		named_arg.derived_expr = named_arg
+
+		append(args, named_arg)
+	}
+}
+
+// parse_create_object_stmt parses CREATE OBJECT statements.
+// Syntax:
+// - CREATE OBJECT oref.
+// - CREATE OBJECT oref TYPE class [EXPORTING p1 = a1 ...] [EXCEPTIONS exc = rc ...].
+// - CREATE OBJECT oref EXPORTING p1 = a1 ....
+parse_create_object_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
+	create_tok := expect_keyword_token(p, "CREATE")
+	expect_keyword_token(p, "OBJECT")
+
+	target := parse_expr(p)
+
+	stmt := ast.new(ast.Create_Object_Stmt, create_tok.range)
+	stmt.target = target
+	stmt.exporting = make([dynamic]^ast.Named_Arg)
+	stmt.exceptions = make([dynamic]^ast.Named_Arg)
+	stmt.derived_stmt = stmt
+
+	if check_keyword(p, "TYPE") {
+		advance_token(p)
+		stmt.type_ref = parse_expr(p)
+	}
+
+	for p.curr_tok.kind != .Period && p.curr_tok.kind != .EOF {
+		if check_keyword(p, "AREA") {
+			advance_token(p)
+			expect_keyword_token(p, "HANDLE")
+			stmt.area_handle = parse_expr(p)
+		} else if check_keyword(p, "EXPORTING") {
+			advance_token(p)
+			parse_create_object_args(p, &stmt.exporting)
+		} else if check_keyword(p, "EXCEPTIONS") {
+			advance_token(p)
+			parse_create_object_args(p, &stmt.exceptions)
+		} else {
+			break
+		}
+	}
+
+	period_tok := expect_token(p, .Period)
+	stmt.range.end = period_tok.range.end
+	return stmt
+}
+
 parse_raise_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	raise_tok := expect_keyword_token(p, "RAISE")
 

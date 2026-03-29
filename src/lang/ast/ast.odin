@@ -600,6 +600,17 @@ Call_Function_Stmt :: struct {
 	exceptions:  [dynamic]^Call_Function_Param,
 }
 
+// CREATE OBJECT statement
+// Syntax: CREATE OBJECT oref [TYPE class] [AREA HANDLE area] [EXPORTING p1 = a1 ...] [EXCEPTIONS exc = rc ...].
+Create_Object_Stmt :: struct {
+	using node:   Stmt,
+	target:       ^Expr,
+	type_ref:     ^Expr,
+	area_handle:  ^Expr,
+	exporting:    [dynamic]^Named_Arg,
+	exceptions:   [dynamic]^Named_Arg,
+}
+
 // SELECT statement join kind
 Select_Join_Kind :: enum {
 	Inner, // INNER JOIN
@@ -1039,6 +1050,7 @@ Any_Node :: union {
 	^Assert_Stmt,
 	^Call_Function_Stmt,
 	^Call_Function_Param,
+	^Create_Object_Stmt,
 	^Select_Stmt,
 	^Select_Join,
 	// Declarations
@@ -1133,6 +1145,7 @@ Any_Stmt :: union {
 	^Check_Stmt,
 	^Assert_Stmt,
 	^Call_Function_Stmt,
+	^Create_Object_Stmt,
 	^Select_Stmt,
 	// Declarations
 	^Bad_Decl,

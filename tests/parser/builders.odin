@@ -318,6 +318,43 @@ raise_exception_oref :: proc(
 	return node
 }
 
+create_object_stmt :: proc(
+	target: ast.Any_Expr,
+	type_ref: ast.Any_Expr = nil,
+	exporting: []^ast.Named_Arg = {},
+	exceptions: []^ast.Named_Arg = {},
+) -> ^ast.Create_Object_Stmt {
+	node := ast.new(ast.Create_Object_Stmt, {})
+	node.exporting = make([dynamic]^ast.Named_Arg)
+	node.exceptions = make([dynamic]^ast.Named_Arg)
+
+	#partial switch t in target {
+	case ^ast.Ident:
+		node.target = &t.node
+	case ^ast.Selector_Expr:
+		node.target = &t.node
+	}
+
+	if type_ref != nil {
+		#partial switch ty in type_ref {
+		case ^ast.Ident:
+			node.type_ref = &ty.node
+		case ^ast.Selector_Expr:
+			node.type_ref = &ty.node
+		}
+	}
+
+	for arg in exporting {
+		append(&node.exporting, arg)
+	}
+	for arg in exceptions {
+		append(&node.exceptions, arg)
+	}
+
+	node.derived_stmt = node
+	return node
+}
+
 // Builder for For expressions (FOR var IN itab WHERE (...))
 for_expr :: proc(
 	var_name: string,

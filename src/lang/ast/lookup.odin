@@ -798,6 +798,33 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 			}
 		}
 
+	case ^Create_Object_Stmt:
+		if n.target != nil {
+			if res := find_node_at_offset(&n.target.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		if n.type_ref != nil {
+			if res := find_node_at_offset(&n.type_ref.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		if n.area_handle != nil {
+			if res := find_node_at_offset(&n.area_handle.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		for arg in n.exporting {
+			if res := find_node_at_offset(&arg.node, offset); res != nil {
+				return res
+			}
+		}
+		for arg in n.exceptions {
+			if res := find_node_at_offset(&arg.node, offset); res != nil {
+				return res
+			}
+		}
+
 	case ^Field_Symbol_Decl:
 		if n.ident != nil {
 			if res := find_node_at_offset(&n.ident.expr_base, offset); res != nil {

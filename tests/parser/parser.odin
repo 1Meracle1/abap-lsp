@@ -8245,6 +8245,76 @@ modern_call_expr_stmt_with_multiple_importing_args_test :: proc(t: ^testing.T) {
 	}
 }
 
+@(test)
+create_object_with_single_exporting_arg_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src = `CREATE OBJECT lr_json_serializer EXPORTING data = <ls_event>.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 1,
+		fmt.tprintf("Expected 1 declaration, got %d", len(file.decls)),
+	)
+
+	if len(file.decls) > 0 {
+		expected := create_object_stmt(
+			ident("lr_json_serializer"),
+			nil,
+			[]^ast.Named_Arg {
+				named_arg("data", ident("<ls_event>")),
+			},
+		)
+		check_stmt(t, expected, file.decls[0])
+	}
+}
+
+@(test)
+create_object_with_multiline_exporting_args_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src =
+	`CREATE OBJECT lo_rest_client
+          EXPORTING
+            iv_rfc_destination = zattp_cl_rep_constants=>gcs_logport
+            iv_eo_id           = mv_eo_id.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 1,
+		fmt.tprintf("Expected 1 declaration, got %d", len(file.decls)),
+	)
+
+	if len(file.decls) > 0 {
+		expected := create_object_stmt(
+			ident("lo_rest_client"),
+			nil,
+			[]^ast.Named_Arg {
+				named_arg(
+					"iv_rfc_destination",
+					selector(ident("zattp_cl_rep_constants"), .FatArrow, "gcs_logport"),
+				),
+				named_arg("iv_eo_id", ident("mv_eo_id")),
+			},
+		)
+		check_stmt(t, expected, file.decls[0])
+	}
+}
+
 // =====================================================
 // SELECT Statement Tests
 // =====================================================

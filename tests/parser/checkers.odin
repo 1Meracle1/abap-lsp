@@ -491,6 +491,34 @@ check_stmt :: proc(
 		if !testing.expect(t, ok, fmt.tprintf("Expected Expr_Stmt, got %T", actual_derived), loc = loc) do return
 		check_expr(t, ex.expr.derived_expr, ac.expr, loc = loc)
 
+	case ^ast.Create_Object_Stmt:
+		ac, ok := actual_derived.(^ast.Create_Object_Stmt)
+		if !testing.expect(t, ok, fmt.tprintf("Expected Create_Object_Stmt, got %T", actual_derived), loc = loc) do return
+
+		if ex.target != nil {
+			if !testing.expect(t, ac.target != nil, "Expected target, got nil", loc = loc) do return
+			check_expr(t, ex.target.derived_expr, ac.target, loc = loc)
+		} else {
+			testing.expect(t, ac.target == nil, "Expected nil target", loc = loc)
+		}
+
+		if ex.type_ref != nil {
+			if !testing.expect(t, ac.type_ref != nil, "Expected type_ref, got nil", loc = loc) do return
+			check_expr(t, ex.type_ref.derived_expr, ac.type_ref, loc = loc)
+		} else {
+			testing.expect(t, ac.type_ref == nil, "Expected nil type_ref", loc = loc)
+		}
+
+		if !testing.expect(t, len(ex.exporting) == len(ac.exporting), fmt.tprintf("Expected %d exporting args, got %d", len(ex.exporting), len(ac.exporting)), loc = loc) do return
+		for i := 0; i < len(ex.exporting); i += 1 {
+			check_expr(t, ex.exporting[i].derived_expr, &ac.exporting[i].node, loc = loc)
+		}
+
+		if !testing.expect(t, len(ex.exceptions) == len(ac.exceptions), fmt.tprintf("Expected %d exceptions args, got %d", len(ex.exceptions), len(ac.exceptions)), loc = loc) do return
+		for i := 0; i < len(ex.exceptions); i += 1 {
+			check_expr(t, ex.exceptions[i].derived_expr, &ac.exceptions[i].node, loc = loc)
+		}
+
 	case ^ast.Form_Decl:
 		ac, ok := actual_derived.(^ast.Form_Decl)
 		if !testing.expect(t, ok, fmt.tprintf("Expected Form_Decl, got %T", actual_derived), loc = loc) do return
