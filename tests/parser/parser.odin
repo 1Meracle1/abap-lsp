@@ -2426,6 +2426,127 @@ ENDIF.`
 }
 
 @(test)
+if_with_parenthesized_or_and_predicate_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src = `IF ( ev_return_code = /iwcor/cl_rest_status_code=>gc_success_ok OR ev_return_code = /iwcor/cl_rest_status_code=>gc_success_accepted )
+      AND ls_response IS INITIAL.
+  lv_result = 1.
+ENDIF.`
+
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if len(file.decls) > 0 {
+		if_stmt, ok := file.decls[0].derived_stmt.(^ast.If_Stmt)
+		if !testing.expect(t, ok, "Expected If_Stmt") do return
+
+		and_expr, aok := if_stmt.cond.derived_expr.(^ast.Binary_Expr)
+		if !testing.expect(t, aok, "Condition should be Binary_Expr") do return
+		testing.expect(
+			t,
+			and_expr.op.lit == "AND",
+			fmt.tprintf("Expected AND operator, got '%s'", and_expr.op.lit),
+		)
+
+		left_paren, pok := and_expr.left.derived_expr.(^ast.Paren_Expr)
+		if !testing.expect(t, pok, "Left operand should be Paren_Expr") do return
+
+		or_expr, ook := left_paren.expr.derived_expr.(^ast.Binary_Expr)
+		if !testing.expect(t, ook, "Parenthesized expression should be Binary_Expr") do return
+		testing.expect(
+			t,
+			or_expr.op.lit == "OR",
+			fmt.tprintf("Expected OR operator, got '%s'", or_expr.op.lit),
+		)
+
+		_, lok := or_expr.left.derived_expr.(^ast.Binary_Expr)
+		testing.expect(t, lok, "Left OR operand should be Binary_Expr")
+
+		_, rok := or_expr.right.derived_expr.(^ast.Binary_Expr)
+		testing.expect(t, rok, "Right OR operand should be Binary_Expr")
+
+		pred, pred_ok := and_expr.right.derived_expr.(^ast.Predicate_Expr)
+		if testing.expect(t, pred_ok, "Right AND operand should be Predicate_Expr") {
+			testing.expect(
+				t,
+				pred.predicate == .Initial,
+				fmt.tprintf("Expected Initial predicate, got %v", pred.predicate),
+			)
+			testing.expect(t, !pred.is_negated, "Expected predicate not to be negated")
+		}
+	}
+}
+
+@(test)
+return_stmt_without_expr_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src = `RETURN.`
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if len(file.decls) > 0 {
+		return_stmt, ok := file.decls[0].derived_stmt.(^ast.Return_Stmt)
+		if !testing.expect(t, ok, "Expected Return_Stmt") do return
+
+		testing.expect(
+			t,
+			len(return_stmt.results) == 0,
+			fmt.tprintf("Expected 0 RETURN results, got %d", len(return_stmt.results)),
+		)
+	}
+}
+
+@(test)
+return_stmt_with_expr_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src = `RETURN lv_result.`
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if len(file.decls) > 0 {
+		return_stmt, ok := file.decls[0].derived_stmt.(^ast.Return_Stmt)
+		if !testing.expect(t, ok, "Expected Return_Stmt") do return
+
+		has_single_result := testing.expect(
+			t,
+			len(return_stmt.results) == 1,
+			fmt.tprintf("Expected 1 RETURN result, got %d", len(return_stmt.results)),
+		)
+		if !has_single_result do return
+
+		ident, iok := return_stmt.results[0].derived_expr.(^ast.Ident)
+		if testing.expect(t, iok, "Expected RETURN expression to be Ident") {
+			testing.expect(
+				t,
+				ident.name == "lv_result",
+				fmt.tprintf("Expected RETURN expr name 'lv_result', got '%s'", ident.name),
+			)
+		}
+	}
+}
+
+@(test)
 if_with_not_is_initial_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
 	file.src = `IF NOT p IS INITIAL.

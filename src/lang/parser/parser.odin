@@ -152,6 +152,8 @@ parse_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			return parse_raise_stmt(p)
 		case "CHECK":
 			return parse_check_stmt(p)
+		case "RETURN":
+			return parse_return_stmt(p)
 		case "ASSERT":
 			return parse_assert_stmt(p)
 		}
@@ -1488,8 +1490,27 @@ parse_not_expr :: proc(p: ^Parser) -> ^ast.Expr {
 	return parse_comparison_expr(p)
 }
 
+parse_logical_paren_expr :: proc(p: ^Parser) -> ^ast.Expr {
+	lparen_tok := expect_token(p, .LParen)
+	inner := parse_logical_expr(p)
+	rparen_tok := expect_token(p, .RParen)
+
+	paren_expr := ast.new(
+		ast.Paren_Expr,
+		lexer.TextRange{lparen_tok.range.start, rparen_tok.range.end},
+	)
+	paren_expr.expr = inner
+	paren_expr.derived_expr = paren_expr
+	return paren_expr
+}
+
 parse_comparison_expr :: proc(p: ^Parser) -> ^ast.Expr {
-	left := parse_expr(p)
+	left: ^ast.Expr
+	if p.curr_tok.kind == .LParen {
+		left = parse_logical_paren_expr(p)
+	} else {
+		left = parse_expr(p)
+	}
 
 	if check_keyword(p, "IS") {
 		return parse_is_predicate(p, left)
@@ -2417,6 +2438,28 @@ parse_check_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	check_stmt.cond = cond
 	check_stmt.derived_stmt = check_stmt
 	return check_stmt
+}
+
+// parse_return_stmt parses a RETURN statement
+// Syntax: RETURN [expr].
+parse_return_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
+	return_tok := expect_keyword_token(p, "RETURN")
+
+	return_stmt := ast.new(ast.Return_Stmt, return_tok.range)
+	results := make([dynamic]^ast.Expr)
+
+	if p.curr_tok.kind != .Period {
+		expr := parse_expr(p)
+		if expr != nil {
+			append(&results, expr)
+		}
+	}
+
+	period_tok := expect_token(p, .Period)
+	return_stmt.range.end = period_tok.range.end
+	return_stmt.results = results[:]
+	return_stmt.derived_stmt = return_stmt
+	return return_stmt
 }
 
 // parse_assert_stmt parses an ASSERT statement
