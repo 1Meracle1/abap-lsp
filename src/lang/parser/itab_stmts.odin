@@ -134,6 +134,29 @@ parse_read_table_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	return read_stmt
 }
 
+// DESCRIBE TABLE statement parser
+// Syntax:
+// - DESCRIBE TABLE itab LINES lv_lines.
+// - DESCRIBE TABLE itab LINES DATA(lv_lines).
+parse_describe_table_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
+	describe_tok := expect_keyword_token(p, "DESCRIBE")
+	expect_keyword_token(p, "TABLE")
+
+	describe_stmt := ast.new(ast.Describe_Table_Stmt, describe_tok.range)
+	describe_stmt.table = parse_expr(p)
+
+	expect_keyword_token(p, "LINES")
+	if check_keyword(p, "DATA") {
+		describe_stmt.lines_target = parse_data_inline_expr(p)
+	} else {
+		describe_stmt.lines_target = parse_expr(p)
+	}
+
+	period_tok := expect_token(p, .Period)
+	describe_stmt.range.end = period_tok.range.end
+	return describe_stmt
+}
+
 parse_delete_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	delete_tok := expect_keyword_token(p, "DELETE")
 	stmt := ast.new(ast.Delete_Stmt, delete_tok.range)

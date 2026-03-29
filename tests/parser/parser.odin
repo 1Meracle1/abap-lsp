@@ -6907,6 +6907,97 @@ read_table_with_key_inline_field_symbol_test :: proc(t: ^testing.T) {
 }
 
 @(test)
+describe_table_lines_test :: proc(t: ^testing.T) {
+	// DESCRIBE TABLE lt_split LINES lv_lines.
+	file := ast.new(ast.File, {})
+	file.src = `DESCRIBE TABLE lt_split LINES lv_lines.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	describe_stmt, ok := file.decls[0].derived_stmt.(^ast.Describe_Table_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Describe_Table_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	testing.expect(t, describe_stmt.table != nil, "Expected table to be set")
+	testing.expect(t, describe_stmt.lines_target != nil, "Expected lines_target to be set")
+
+	if table_ident, tok := describe_stmt.table.derived_expr.(^ast.Ident); tok {
+		testing.expect(
+			t,
+			table_ident.name == "lt_split",
+			fmt.tprintf("Expected 'lt_split', got '%s'", table_ident.name),
+		)
+	} else {
+		testing.expect(
+			t,
+			false,
+			fmt.tprintf("Expected table to be Ident, got %T", describe_stmt.table.derived_expr),
+		)
+	}
+
+	if lines_ident, lok := describe_stmt.lines_target.derived_expr.(^ast.Ident); lok {
+		testing.expect(
+			t,
+			lines_ident.name == "lv_lines",
+			fmt.tprintf("Expected 'lv_lines', got '%s'", lines_ident.name),
+		)
+	} else {
+		testing.expect(
+			t,
+			false,
+			fmt.tprintf(
+				"Expected lines_target to be Ident, got %T",
+				describe_stmt.lines_target.derived_expr,
+			),
+		)
+	}
+}
+
+@(test)
+describe_table_lines_inline_data_test :: proc(t: ^testing.T) {
+	// DESCRIBE TABLE lt_split LINES DATA(lv_lines).
+	file := ast.new(ast.File, {})
+	file.src = `DESCRIBE TABLE lt_split LINES DATA(lv_lines).`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	describe_stmt, ok := file.decls[0].derived_stmt.(^ast.Describe_Table_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Describe_Table_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	if lines_ident, lok := describe_stmt.lines_target.derived_expr.(^ast.Ident); lok {
+		testing.expect(
+			t,
+			lines_ident.name == "lv_lines",
+			fmt.tprintf("Expected 'lv_lines', got '%s'", lines_ident.name),
+		)
+	} else {
+		testing.expect(
+			t,
+			false,
+			fmt.tprintf(
+				"Expected lines_target to be Ident, got %T",
+				describe_stmt.lines_target.derived_expr,
+			),
+		)
+	}
+}
+
+@(test)
 read_table_transporting_no_fields_test :: proc(t: ^testing.T) {
 	// READ TABLE <fs_unpack_data>-children WITH KEY table_line = lv_epc TRANSPORTING NO FIELDS.
 	file := ast.new(ast.File, {})

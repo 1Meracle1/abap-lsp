@@ -114,6 +114,9 @@ validate_stmt_ctx :: proc(ctx: ^Validation_Context, stmt: ^ast.Stmt) {
 		validate_expr_ctx(ctx, s.itab)
 		validate_expr_ctx(ctx, s.into_target)
 		validate_expr_ctx(ctx, s.assigning_target)
+	case ^ast.Describe_Table_Stmt:
+		validate_expr_ctx(ctx, s.table)
+		validate_expr_ctx(ctx, s.lines_target)
 	case ^ast.Select_Stmt:
 		validate_expr_ctx(ctx, s.into_target)
 		validate_stmt_list_ctx(ctx, s.body[:])

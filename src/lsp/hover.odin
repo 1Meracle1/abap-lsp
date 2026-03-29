@@ -344,6 +344,9 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 			}
 		}
 
+	case ^ast.Describe_Table_Stmt:
+		hover_text = "(statement) DESCRIBE TABLE ... LINES - gets the number of lines in an internal table"
+
 	case ^ast.Select_Stmt:
 		if n.is_single {
 			if n.into_kind == .Table {

@@ -463,6 +463,15 @@ Read_Report_Stmt :: struct {
 	itab:       ^Ident,
 }
 
+// DESCRIBE TABLE statement
+// Syntax:
+// - DESCRIBE TABLE itab LINES lines.
+Describe_Table_Stmt :: struct {
+	using node:    Stmt,
+	table:         ^Expr,
+	lines_target:  ^Expr,
+}
+
 // APPEND statement kinds
 Append_Kind :: enum {
 	Simple, // APPEND expr TO itab
@@ -1020,6 +1029,7 @@ Any_Node :: union {
 	^Append_Stmt,
 	^Read_Table_Stmt,
 	^Read_Report_Stmt,
+	^Describe_Table_Stmt,
 	^Authority_Check_Stmt,
 	^Delete_Stmt,
 	^Split_Stmt,
@@ -1114,6 +1124,7 @@ Any_Stmt :: union {
 	^Append_Stmt,
 	^Read_Table_Stmt,
 	^Read_Report_Stmt,
+	^Describe_Table_Stmt,
 	^Authority_Check_Stmt,
 	^Delete_Stmt,
 	^Split_Stmt,

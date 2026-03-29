@@ -126,6 +126,10 @@ parse_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			} else if check_keyword_ahead(p, "REPORT") {
 				return parse_read_report_stmt(p)
 			}
+		case "DESCRIBE":
+			if check_keyword_ahead(p, "TABLE") {
+				return parse_describe_table_stmt(p)
+			}
 		case "CONDENSE":
 			return parse_condense_stmt(p)
 		case "SPLIT":

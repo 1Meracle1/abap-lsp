@@ -1031,6 +1031,8 @@ resolve_stmt :: proc(table: ^SymbolTable, stmt: ^ast.Stmt) {
 		resolve_loop_stmt(table, s)
 	case ^ast.Read_Table_Stmt:
 		resolve_read_table_stmt(table, s)
+	case ^ast.Describe_Table_Stmt:
+		resolve_describe_table_stmt(table, s)
 	case ^ast.Call_Function_Stmt:
 		resolve_call_function_stmt(table, s)
 	case ^ast.Select_Stmt:
@@ -1326,6 +1328,22 @@ resolve_read_table_stmt :: proc(table: ^SymbolTable, read_stmt: ^ast.Read_Table_
 			}
 			add_symbol(table, sym, allow_shadowing = false)
 		}
+	}
+}
+
+resolve_describe_table_stmt :: proc(table: ^SymbolTable, describe_stmt: ^ast.Describe_Table_Stmt) {
+	if describe_stmt.lines_target == nil {
+		return
+	}
+
+	if ident, ok := describe_stmt.lines_target.derived_expr.(^ast.Ident); ok {
+		sym := Symbol {
+			name      = ident.name,
+			kind      = .Variable,
+			range     = ident.range,
+			type_info = make_type(table, .Integer),
+		}
+		add_symbol(table, sym, allow_shadowing = false)
 	}
 }
 

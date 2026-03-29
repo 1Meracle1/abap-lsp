@@ -634,6 +634,18 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 			}
 		}
 
+	case ^Describe_Table_Stmt:
+		if n.table != nil {
+			if res := find_node_at_offset(&n.table.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		if n.lines_target != nil {
+			if res := find_node_at_offset(&n.lines_target.expr_base, offset); res != nil {
+				return res
+			}
+		}
+
 	case ^Authority_Check_Stmt:
 		if n.object != nil {
 			if res := find_node_at_offset(&n.object.expr_base, offset); res != nil {

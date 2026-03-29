@@ -783,6 +783,14 @@ collect_tokens_from_stmt :: proc(
 			collect_tokens_from_expr(tokens, s.itab, snap, nil)
 		}
 
+	case ^ast.Describe_Table_Stmt:
+		if s.table != nil {
+			collect_tokens_from_expr(tokens, s.table, snap, nil)
+		}
+		if s.lines_target != nil {
+			collect_tokens_from_expr(tokens, s.lines_target, snap, nil)
+		}
+
 	case ^ast.Check_Stmt:
 		if s.cond != nil {
 			collect_tokens_from_expr(tokens, s.cond, snap, nil)
