@@ -152,6 +152,13 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 			}
 		}
 
+	case ^ast.Substring_Expr:
+		if n.offset != nil || n.length != nil || n.length_is_star {
+			hover_text = "(substring expression) dobj+off(len)"
+		} else {
+			hover_text = "(substring expression) dobj(len)"
+		}
+
 	case ^ast.Named_Arg:
 		if n.name != nil {
 			hover_text = fmt.tprintf("(parameter) %s", n.name.name)
@@ -268,6 +275,13 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 			hover_text = "(statement) SPLIT ... INTO TABLE - splits a data object into an internal table"
 		} else {
 			hover_text = "(statement) SPLIT ... INTO - splits a data object into multiple target fields"
+		}
+
+	case ^ast.Concatenate_Stmt:
+		if n.separator != nil {
+			hover_text = "(statement) CONCATENATE ... INTO ... SEPARATED BY - joins values with a separator"
+		} else {
+			hover_text = "(statement) CONCATENATE ... INTO - joins values into a target field"
 		}
 
 	case ^ast.Field_Symbol_Decl:

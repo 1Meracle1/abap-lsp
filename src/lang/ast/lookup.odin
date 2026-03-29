@@ -189,6 +189,21 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 			return res
 		}
 
+	case ^Substring_Expr:
+		if res := find_node_at_offset(&n.expr.expr_base, offset); res != nil {
+			return res
+		}
+		if n.offset != nil {
+			if res := find_node_at_offset(&n.offset.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		if n.length != nil {
+			if res := find_node_at_offset(&n.length.expr_base, offset); res != nil {
+				return res
+			}
+		}
+
 	case ^Call_Expr:
 		if res := find_node_at_offset(&n.expr.expr_base, offset); res != nil {
 			return res
@@ -707,6 +722,25 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 		}
 		if n.table_target != nil {
 			if res := find_node_at_offset(&n.table_target.expr_base, offset); res != nil {
+				return res
+			}
+		}
+
+	case ^Concatenate_Stmt:
+		for source in n.sources {
+			if source != nil {
+				if res := find_node_at_offset(&source.expr_base, offset); res != nil {
+					return res
+				}
+			}
+		}
+		if n.target != nil {
+			if res := find_node_at_offset(&n.target.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		if n.separator != nil {
+			if res := find_node_at_offset(&n.separator.expr_base, offset); res != nil {
 				return res
 			}
 		}

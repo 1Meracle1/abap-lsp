@@ -90,6 +90,19 @@ Index_Expr :: struct {
 	index:      ^Expr,
 }
 
+// ABAP substring expression
+// Syntax:
+// - dobj(len)
+// - dobj+off(len)
+// - dobj+off(*)
+Substring_Expr :: struct {
+	using node:     Expr,
+	expr:           ^Expr,
+	offset:         ^Expr,
+	length:         ^Expr,
+	length_is_star: bool,
+}
+
 Call_Expr :: struct {
 	using node: Expr,
 	expr:       ^Expr,
@@ -530,6 +543,17 @@ Split_Stmt :: struct {
 	targets:       [dynamic]^Expr,
 	table_target:  ^Expr,
 	mode:          Split_Mode,
+}
+
+// CONCATENATE statement
+// Syntax:
+// - CONCATENATE dobj1 dobj2 ... INTO result
+// - CONCATENATE dobj1 dobj2 ... INTO result SEPARATED BY sep
+Concatenate_Stmt :: struct {
+	using node: Stmt,
+	sources:    [dynamic]^Expr,
+	target:     ^Expr,
+	separator:  ^Expr,
 }
 
 Condense_Stmt :: struct {
@@ -1006,6 +1030,7 @@ Any_Node :: union {
 	^Paren_Expr,
 	^Selector_Expr,
 	^Index_Expr,
+	^Substring_Expr,
 	^Call_Expr,
 	^New_Expr,
 	^Constructor_Expr,
@@ -1044,6 +1069,7 @@ Any_Node :: union {
 	^Authority_Check_Stmt,
 	^Delete_Stmt,
 	^Split_Stmt,
+	^Concatenate_Stmt,
 	^Condense_Stmt,
 	^Raise_Exception_Stmt,
 	^Check_Stmt,
@@ -1101,6 +1127,7 @@ Any_Expr :: union {
 	^Paren_Expr,
 	^Selector_Expr,
 	^Index_Expr,
+	^Substring_Expr,
 	^Call_Expr,
 	^New_Expr,
 	^Constructor_Expr,
@@ -1140,6 +1167,7 @@ Any_Stmt :: union {
 	^Authority_Check_Stmt,
 	^Delete_Stmt,
 	^Split_Stmt,
+	^Concatenate_Stmt,
 	^Condense_Stmt,
 	^Raise_Exception_Stmt,
 	^Check_Stmt,

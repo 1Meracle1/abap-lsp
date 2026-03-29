@@ -138,6 +138,8 @@ parse_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			return parse_condense_stmt(p)
 		case "SPLIT":
 			return parse_split_stmt(p)
+		case "CONCATENATE":
+			return parse_concatenate_stmt(p)
 		case "SELECT":
 			return parse_select_stmt(p)
 		case "RAISE":
@@ -2058,6 +2060,82 @@ parse_condense_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	return condense_stmt
 }
 
+concatenate_has_substring_length :: proc(p: ^Parser) -> bool {
+	if p.curr_tok.kind != .LParen || lexer.have_space_between(p.prev_tok, p.curr_tok) {
+		return false
+	}
+
+	saved_prev := p.prev_tok
+	saved_curr := p.curr_tok
+	saved_pos := p.l.pos
+	saved_read_pos := p.l.read_pos
+	saved_ch := p.l.ch
+
+	advance_token(p) // consume (
+	result := p.curr_tok.kind == .Number || p.curr_tok.kind == .Star
+
+	p.prev_tok = saved_prev
+	p.curr_tok = saved_curr
+	p.l.pos = saved_pos
+	p.l.read_pos = saved_read_pos
+	p.l.ch = saved_ch
+
+	return result
+}
+
+parse_concatenate_source_expr :: proc(p: ^Parser) -> ^ast.Expr {
+	source := parse_assign_subfield_component(p)
+	if source == nil {
+		return nil
+	}
+
+	offset: ^ast.Expr
+	length: ^ast.Expr
+	length_is_star := false
+	range_end := source.range.end
+	has_substring := false
+
+	if p.curr_tok.kind == .Plus && !lexer.have_space_between(p.prev_tok, p.curr_tok) {
+		has_substring = true
+		advance_token(p) // consume +
+		offset = parse_assign_subfield_component(p)
+		if offset != nil {
+			range_end = offset.range.end
+		}
+	}
+
+	if concatenate_has_substring_length(p) || (has_substring && p.curr_tok.kind == .LParen && !lexer.have_space_between(p.prev_tok, p.curr_tok)) {
+		has_substring = true
+		advance_token(p) // consume (
+		if p.curr_tok.kind == .Star {
+			length_is_star = true
+			range_end = p.curr_tok.range.end
+			advance_token(p)
+		} else {
+			length = parse_assign_subfield_component(p)
+			if length != nil {
+				range_end = length.range.end
+			}
+		}
+		rparen_tok := expect_token(p, .RParen)
+		range_end = rparen_tok.range.end
+	}
+
+	if !has_substring {
+		if p.curr_tok.kind == .LParen && !lexer.have_space_between(p.prev_tok, p.curr_tok) {
+			return parse_atom_expr(p, source)
+		}
+		return source
+	}
+
+	substring_expr := ast.new(ast.Substring_Expr, lexer.TextRange{source.range.start, range_end})
+	substring_expr.expr = source
+	substring_expr.offset = offset
+	substring_expr.length = length
+	substring_expr.length_is_star = length_is_star
+	return substring_expr
+}
+
 parse_split_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	split_tok := expect_keyword_token(p, "SPLIT")
 	stmt := ast.new(ast.Split_Stmt, split_tok.range)
@@ -2101,6 +2179,37 @@ parse_split_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			error(p, p.curr_tok.range, "expected CHARACTER or BYTE after IN")
 		}
 		expect_keyword_token(p, "MODE")
+	}
+
+	period_tok := expect_token(p, .Period)
+	stmt.range.end = period_tok.range.end
+	return stmt
+}
+
+parse_concatenate_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
+	concatenate_tok := expect_keyword_token(p, "CONCATENATE")
+	stmt := ast.new(ast.Concatenate_Stmt, concatenate_tok.range)
+	stmt.sources = make([dynamic]^ast.Expr)
+
+	for p.curr_tok.kind != .EOF && p.curr_tok.kind != .Period && !check_keyword(p, "INTO") {
+		source := parse_concatenate_source_expr(p)
+		if source == nil {
+			break
+		}
+		append(&stmt.sources, source)
+	}
+
+	expect_keyword_token(p, "INTO")
+	if check_keyword(p, "DATA") {
+		stmt.target = parse_data_inline_expr(p)
+	} else {
+		stmt.target = parse_expr(p)
+	}
+
+	if check_keyword(p, "SEPARATED") {
+		advance_token(p)
+		expect_keyword_token(p, "BY")
+		stmt.separator = parse_concatenate_source_expr(p)
 	}
 
 	period_tok := expect_token(p, .Period)

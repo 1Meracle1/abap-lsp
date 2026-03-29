@@ -604,6 +604,19 @@ collect_tokens_from_stmt :: proc(
 			collect_tokens_from_expr(tokens, s.table_target, snap, nil)
 		}
 
+	case ^ast.Concatenate_Stmt:
+		for source in s.sources {
+			if source != nil {
+				collect_tokens_from_expr(tokens, source, snap, nil)
+			}
+		}
+		if s.target != nil {
+			collect_tokens_from_expr(tokens, s.target, snap, nil)
+		}
+		if s.separator != nil {
+			collect_tokens_from_expr(tokens, s.separator, snap, nil)
+		}
+
 	case ^ast.Field_Symbol_Decl:
 		if s.ident != nil {
 			append(
@@ -1225,6 +1238,15 @@ collect_tokens_from_expr :: proc(
 	case ^ast.Index_Expr:
 		collect_tokens_from_expr(tokens, e.expr, snap, form_scope)
 		collect_tokens_from_expr(tokens, e.index, snap, form_scope)
+
+	case ^ast.Substring_Expr:
+		collect_tokens_from_expr(tokens, e.expr, snap, form_scope)
+		if e.offset != nil {
+			collect_tokens_from_expr(tokens, e.offset, snap, form_scope)
+		}
+		if e.length != nil {
+			collect_tokens_from_expr(tokens, e.length, snap, form_scope)
+		}
 
 	case ^ast.Call_Expr:
 		if call_ident, ok := e.expr.derived_expr.(^ast.Ident); ok {

@@ -7683,6 +7683,135 @@ condense_test :: proc(t: ^testing.T) {
 }
 
 @(test)
+concatenate_separated_by_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src = `CONCATENATE 'Document' mv_odlv INTO lv_delivery_msg SEPARATED BY ': '.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	concat_stmt, ok := file.decls[0].derived_stmt.(^ast.Concatenate_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Concatenate_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	testing.expect(t, len(concat_stmt.sources) == 2, fmt.tprintf("Expected 2 sources, got %d", len(concat_stmt.sources)))
+	testing.expect(t, concat_stmt.target != nil, "Expected target to be set")
+	testing.expect(t, concat_stmt.separator != nil, "Expected separator to be set")
+
+	if source_lit, sok := concat_stmt.sources[0].derived_expr.(^ast.Basic_Lit); sok {
+		testing.expect(t, source_lit.tok.lit == "'Document'", fmt.tprintf("Expected 'Document', got %s", source_lit.tok.lit))
+	} else {
+		testing.expect(t, false, fmt.tprintf("Expected first source to be Basic_Lit, got %T", concat_stmt.sources[0].derived_expr))
+	}
+
+	if source_ident, sok := concat_stmt.sources[1].derived_expr.(^ast.Ident); sok {
+		testing.expect(t, source_ident.name == "mv_odlv", fmt.tprintf("Expected mv_odlv, got %s", source_ident.name))
+	} else {
+		testing.expect(t, false, fmt.tprintf("Expected second source to be Ident, got %T", concat_stmt.sources[1].derived_expr))
+	}
+
+	if target_ident, tok := concat_stmt.target.derived_expr.(^ast.Ident); tok {
+		testing.expect(t, target_ident.name == "lv_delivery_msg", fmt.tprintf("Expected lv_delivery_msg, got %s", target_ident.name))
+	} else {
+		testing.expect(t, false, fmt.tprintf("Expected target to be Ident, got %T", concat_stmt.target.derived_expr))
+	}
+
+	if separator_lit, sok := concat_stmt.separator.derived_expr.(^ast.Basic_Lit); sok {
+		testing.expect(t, separator_lit.tok.lit == "': '", fmt.tprintf("Expected ': ', got %s", separator_lit.tok.lit))
+	} else {
+		testing.expect(t, false, fmt.tprintf("Expected separator to be Basic_Lit, got %T", concat_stmt.separator.derived_expr))
+	}
+}
+
+@(test)
+concatenate_without_separator_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src = `CONCATENATE lv_message ' (' lv_method_str ') ' INTO lv_message.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	concat_stmt, ok := file.decls[0].derived_stmt.(^ast.Concatenate_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Concatenate_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	testing.expect(t, len(concat_stmt.sources) == 4, fmt.tprintf("Expected 4 sources, got %d", len(concat_stmt.sources)))
+	testing.expect(t, concat_stmt.separator == nil, "Expected separator to be nil")
+
+	if target_ident, tok := concat_stmt.target.derived_expr.(^ast.Ident); tok {
+		testing.expect(t, target_ident.name == "lv_message", fmt.tprintf("Expected lv_message, got %s", target_ident.name))
+	} else {
+		testing.expect(t, false, fmt.tprintf("Expected target to be Ident, got %T", concat_stmt.target.derived_expr))
+	}
+}
+
+@(test)
+concatenate_with_substring_sources_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src = `CONCATENATE lv_ts(4) '-' lv_ts+4(2) '-' lv_ts+6(2) 'T' lv_ts+8(2) ':' lv_ts+10(2) ':' lv_ts+12(2) 'Z' INTO lv_string.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	concat_stmt, ok := file.decls[0].derived_stmt.(^ast.Concatenate_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Concatenate_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	testing.expect(t, len(concat_stmt.sources) == 12, fmt.tprintf("Expected 12 sources, got %d", len(concat_stmt.sources)))
+	testing.expect(t, concat_stmt.target != nil, "Expected target to be set")
+	testing.expect(t, concat_stmt.separator == nil, "Expected separator to be nil")
+
+	first_substring, sok := concat_stmt.sources[0].derived_expr.(^ast.Substring_Expr)
+	if !testing.expect(t, sok, fmt.tprintf("Expected first source to be Substring_Expr, got %T", concat_stmt.sources[0].derived_expr)) do return
+	if base_ident, bok := first_substring.expr.derived_expr.(^ast.Ident); bok {
+		testing.expect(t, base_ident.name == "lv_ts", fmt.tprintf("Expected lv_ts, got %s", base_ident.name))
+	}
+	testing.expect(t, first_substring.offset == nil, "Expected first substring offset to be nil")
+	if length_lit, lok := first_substring.length.derived_expr.(^ast.Basic_Lit); lok {
+		testing.expect(t, length_lit.tok.lit == "4", fmt.tprintf("Expected length 4, got %s", length_lit.tok.lit))
+	} else {
+		testing.expect(t, false, fmt.tprintf("Expected first substring length to be Basic_Lit, got %T", first_substring.length.derived_expr))
+	}
+
+	second_substring, s2ok := concat_stmt.sources[2].derived_expr.(^ast.Substring_Expr)
+	if !testing.expect(t, s2ok, fmt.tprintf("Expected third source to be Substring_Expr, got %T", concat_stmt.sources[2].derived_expr)) do return
+	if offset_lit, lok := second_substring.offset.derived_expr.(^ast.Basic_Lit); lok {
+		testing.expect(t, offset_lit.tok.lit == "4", fmt.tprintf("Expected offset 4, got %s", offset_lit.tok.lit))
+	} else {
+		testing.expect(t, false, fmt.tprintf("Expected second substring offset to be Basic_Lit, got %T", second_substring.offset.derived_expr))
+	}
+	if length_lit, lok := second_substring.length.derived_expr.(^ast.Basic_Lit); lok {
+		testing.expect(t, length_lit.tok.lit == "2", fmt.tprintf("Expected length 2, got %s", length_lit.tok.lit))
+	} else {
+		testing.expect(t, false, fmt.tprintf("Expected second substring length to be Basic_Lit, got %T", second_substring.length.derived_expr))
+	}
+
+	if target_ident, tok := concat_stmt.target.derived_expr.(^ast.Ident); tok {
+		testing.expect(t, target_ident.name == "lv_string", fmt.tprintf("Expected lv_string, got %s", target_ident.name))
+	} else {
+		testing.expect(t, false, fmt.tprintf("Expected target to be Ident, got %T", concat_stmt.target.derived_expr))
+	}
+}
+
+@(test)
 split_into_targets_character_mode_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
 	file.src = `SPLIT text AT ':' INTO part1 part2 IN CHARACTER MODE.`
