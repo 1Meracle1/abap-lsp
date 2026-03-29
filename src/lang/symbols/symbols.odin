@@ -236,6 +236,17 @@ make_builtin_char_type :: proc(table: ^SymbolTable, length: int) -> ^Type {
 	return t
 }
 
+add_builtin_constant :: proc(table: ^SymbolTable, name: string, type_info: ^Type) {
+	add_symbol(
+		table,
+		Symbol{
+			name      = name,
+			kind      = .Constant,
+			type_info = type_info,
+		},
+	)
+}
+
 register_builtin_symbols :: proc(table: ^SymbolTable) {
 	if table == nil {
 		return
@@ -272,4 +283,8 @@ register_builtin_symbols :: proc(table: ^SymbolTable) {
 			type_info = syst_type,
 		},
 	)
+
+	abap_bool_type := make_builtin_char_type(table, 1)
+	add_builtin_constant(table, "abap_true", abap_bool_type)
+	add_builtin_constant(table, "abap_false", abap_bool_type)
 }

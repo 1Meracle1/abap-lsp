@@ -1,7 +1,9 @@
 // raddbg 0.9.25 project file
 
-recent_file: path: "src/lsp/server.odin"
 recent_file: path: "src/lsp/hover.odin"
+recent_file: path: "src/lsp/completion.odin"
+recent_file: path: "../toolchain/odin-windows-amd64-dev-2026-02/base/runtime/error_checks.odin"
+recent_file: path: "src/lsp/server.odin"
 recent_file: path: "src/lang/symbols/types.odin"
 recent_file: path: "src/lang/ast/lookup.odin"
 recent_file: path: "../../../a/_work/1/s/src/vctools/crt/vcruntime/src/string/amd64/memset.asm"
@@ -25,7 +27,6 @@ recent_file: path: "tests/parser/class_interface.odin"
 recent_file: path: "tests/parser/parser.odin"
 recent_file: path: "../toolchain/odin-windows-amd64-dev-2025-11/core/testing/runner.odin"
 recent_file: path: "../toolchain/odin-windows-amd64-dev-2025-11/base/runtime/internal.odin"
-recent_file: path: "src/lsp/completion.odin"
 recent_file: path: "../../../a/_work/1/s/src/vctools/crt/vcstartup/src/startup/exe_main.cpp"
 recent_file: path: "src/lsp/unmarshal.odin"
 recent_file: path: "src/lang/ast/utils.odin"
@@ -81,7 +82,7 @@ breakpoint:
 debug_info:
 {
   path: "D:/dev/odin/abap-lsp/bin/debug/abap-lsp.pdb"
-  timestamp: 66210603121554
+  timestamp: 66210603993295
 }
 breakpoint:
 {

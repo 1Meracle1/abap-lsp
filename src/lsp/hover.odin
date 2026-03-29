@@ -94,6 +94,16 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 					type_str,
 				)
 			}
+		} else if field_name, field_type, ok := lookup_selector_field_at_offset(
+			snap,
+			offset,
+			symbol_table,
+		); ok {
+			hover_text = fmt.tprintf(
+				"%s: %s",
+				cache.xml_encode(field_name, context.temp_allocator),
+				symbols.format_type(field_type),
+			)
 		} else {
 			hover_text = fmt.tprintf(
 				"(unknown) %s",
@@ -149,6 +159,12 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 			if sym, ok := lookup_symbol_at_offset(snap, field_name, offset, symbol_table); ok {
 				type_str := symbols.format_type(sym.type_info)
 				hover_text = fmt.tprintf("%s: %s", sym.name, type_str)
+			} else if field_name, field_type, ok := lookup_selector_field_at_offset(
+				snap,
+				offset,
+				symbol_table,
+			); ok {
+				hover_text = fmt.tprintf("%s: %s", field_name, symbols.format_type(field_type))
 			}
 		}
 
@@ -449,6 +465,121 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 	} else {
 		reply(srv, id, json.Null(nil))
 	}
+}
+
+lookup_selector_field_at_offset :: proc(
+	snap: ^cache.Snapshot,
+	offset: int,
+	symbol_table: ^symbols.SymbolTable = nil,
+) -> (
+	string,
+	^symbols.Type,
+	bool,
+) {
+	chain := parse_selector_chain_at_offset(snap.text, offset)
+	if len(chain) < 2 {
+		return "", nil, false
+	}
+
+	current_type := lookup_variable_type(snap, chain[0], offset, symbol_table)
+	if current_type == nil {
+		return "", nil, false
+	}
+	current_type = resolve_to_struct_type(snap, current_type, symbol_table)
+	if current_type == nil {
+		return "", nil, false
+	}
+
+	for i := 1; i < len(chain); i += 1 {
+		field_name := chain[i]
+		field_type: ^symbols.Type = nil
+
+		for field in current_type.fields {
+			if strings.to_lower(field.name, context.temp_allocator) == field_name {
+				field_type = field.type_info
+				break
+			}
+		}
+
+		if field_type == nil {
+			return "", nil, false
+		}
+		if i == len(chain)-1 {
+			return field_name, field_type, true
+		}
+
+		current_type = resolve_to_struct_type(snap, field_type, symbol_table)
+		if current_type == nil {
+			return "", nil, false
+		}
+	}
+
+	return "", nil, false
+}
+
+parse_selector_chain_at_offset :: proc(text: string, offset: int) -> [dynamic]string {
+	chain := make([dynamic]string, context.temp_allocator)
+
+	if offset < 0 || offset > len(text) || len(text) == 0 {
+		return chain
+	}
+
+	pos := offset
+	if pos < len(text) && is_ident_char(text[pos]) {
+		// Keep current position when cursor is on an identifier character.
+	} else if pos > 0 && is_ident_char(text[pos-1]) {
+		pos -= 1
+	} else {
+		return chain
+	}
+
+	ident_start := pos
+	for ident_start > 0 && is_ident_char(text[ident_start-1]) {
+		ident_start -= 1
+	}
+
+	ident_end := pos + 1
+	for ident_end < len(text) && is_ident_char(text[ident_end]) {
+		ident_end += 1
+	}
+
+	append(&chain, strings.to_lower(text[ident_start:ident_end], context.temp_allocator))
+
+	pos = ident_start - 1
+
+	for pos >= 0 {
+		for pos >= 0 && (text[pos] == ' ' || text[pos] == '\t') {
+			pos -= 1
+		}
+		if pos < 0 || text[pos] != '-' {
+			break
+		}
+		if pos + 1 < len(text) && text[pos+1] == '>' {
+			break
+		}
+
+		pos -= 1
+		for pos >= 0 && (text[pos] == ' ' || text[pos] == '\t') {
+			pos -= 1
+		}
+		if pos < 0 || !is_ident_char(text[pos]) {
+			break
+		}
+
+		ident_end = pos + 1
+		for pos >= 0 && is_ident_char(text[pos]) {
+			pos -= 1
+		}
+		ident_start = pos + 1
+
+		inject_at(
+			&chain,
+			0,
+			strings.to_lower(text[ident_start:ident_end], context.temp_allocator),
+		)
+	}
+
+	return chain
 }
 
 // format_form_signature formats a complete FORM signature from the Form symbol.

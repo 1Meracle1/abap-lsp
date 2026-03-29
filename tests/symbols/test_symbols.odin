@@ -407,6 +407,62 @@ lv_subrc = sy-subrc.`
 }
 
 @(test)
+test_builtin_abap_bool_constants_resolve :: proc(t: ^testing.T) {
+	src := `CONSTANTS lc_true TYPE c LENGTH 1 VALUE abap_true.
+CONSTANTS lc_false TYPE c LENGTH 1 VALUE abap_false.`
+	file := ast.new(ast.File, {})
+	file.src = src
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	table := symbols.resolve_file(file)
+	defer symbols.destroy_symbol_table(table)
+
+	true_sym, ok := table.symbols["abap_true"]
+	if !testing.expect(t, ok, "expected built-in symbol 'abap_true' to be present") do return
+
+	false_sym, ok_false := table.symbols["abap_false"]
+	if !testing.expect(t, ok_false, "expected built-in symbol 'abap_false' to be present") do return
+
+	testing.expect(t, true_sym.kind == .Constant, fmt.tprintf("expected 'abap_true' to be a constant, got %v", true_sym.kind))
+	testing.expect(t, false_sym.kind == .Constant, fmt.tprintf("expected 'abap_false' to be a constant, got %v", false_sym.kind))
+
+	testing.expect(t, true_sym.type_info != nil, "expected 'abap_true' to have type information")
+	if true_sym.type_info != nil {
+		testing.expect(
+			t,
+			true_sym.type_info.kind == .Char && true_sym.type_info.length == 1,
+			fmt.tprintf("expected 'abap_true' to have type c length 1, got %v length %d", true_sym.type_info.kind, true_sym.type_info.length),
+		)
+	}
+
+	testing.expect(t, false_sym.type_info != nil, "expected 'abap_false' to have type information")
+	if false_sym.type_info != nil {
+		testing.expect(
+			t,
+			false_sym.type_info.kind == .Char && false_sym.type_info.length == 1,
+			fmt.tprintf("expected 'abap_false' to have type c length 1, got %v length %d", false_sym.type_info.kind, false_sym.type_info.length),
+		)
+	}
+
+	diags := symbols.collect_all_diagnostics(table)
+	found_true_error := false
+	found_false_error := false
+	for diag in diags {
+		if strings.contains(diag.message, "Unknown symbol 'abap_true'") {
+			found_true_error = true
+		}
+		if strings.contains(diag.message, "Unknown symbol 'abap_false'") {
+			found_false_error = true
+		}
+	}
+
+	testing.expect(t, !found_true_error, "expected built-in symbol 'abap_true' to resolve without diagnostics")
+	testing.expect(t, !found_false_error, "expected built-in symbol 'abap_false' to resolve without diagnostics")
+}
+
+@(test)
 test_method_impl_uses_declared_params :: proc(t: ^testing.T) {
 	src := `CLASS lcl_calc DEFINITION.
   PUBLIC SECTION.
