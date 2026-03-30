@@ -353,6 +353,13 @@ Get_Time_Stamp_Stmt :: struct {
 	target:     ^Expr,
 }
 
+// GET BADI badi_ref [FILTERS name = value ...].
+Get_Badi_Stmt :: struct {
+	using node: Stmt,
+	badi_ref:   ^Expr,
+	filters:    [dynamic]^Named_Arg,
+}
+
 Set_Kind :: enum {
 	Pf_Status,
 	Titlebar,
@@ -1118,6 +1125,7 @@ Any_Node :: union {
 	^Commit_Work_Stmt,
 	^Rollback_Work_Stmt,
 	^Get_Time_Stamp_Stmt,
+	^Get_Badi_Stmt,
 	^Set_Stmt,
 	^Case_Stmt,
 	^While_Stmt,
@@ -1222,6 +1230,7 @@ Any_Stmt :: union {
 	^Commit_Work_Stmt,
 	^Rollback_Work_Stmt,
 	^Get_Time_Stamp_Stmt,
+	^Get_Badi_Stmt,
 	^Set_Stmt,
 	^Case_Stmt,
 	^While_Stmt,

@@ -295,6 +295,36 @@ parse_get_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	return stmt
 }
 
+// GET BADI badi_ref [FILTERS name = expr ...].
+parse_get_badi_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
+	get_tok := expect_keyword_token(p, "GET")
+	expect_keyword_token(p, "BADI")
+	stmt := ast.new(ast.Get_Badi_Stmt, get_tok.range)
+	stmt.badi_ref = parse_expr(p)
+	if check_keyword(p, "FILTERS") {
+		advance_token(p)
+		for p.curr_tok.kind != .EOF && p.curr_tok.kind != .Period {
+			if p.curr_tok.kind != .Ident {
+				break
+			}
+			name_tok := advance_token(p)
+			expect_token(p, .Eq)
+			value := parse_expr(p)
+			named_arg := ast.new(
+				ast.Named_Arg,
+				lexer.TextRange{name_tok.range.start, value.range.end},
+			)
+			named_arg.name = ast.new_ident(name_tok)
+			named_arg.value = value
+			named_arg.derived_expr = named_arg
+			append(&stmt.filters, named_arg)
+		}
+	}
+	period_tok := expect_token(p, .Period)
+	stmt.range.end = period_tok.range.end
+	return stmt
+}
+
 parse_try_into_target :: proc(p: ^Parser) -> ^ast.Expr {
 	if check_keyword(p, "DATA") {
 		return parse_data_inline_expr(p)

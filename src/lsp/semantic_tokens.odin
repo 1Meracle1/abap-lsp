@@ -388,6 +388,14 @@ collect_tokens_from_stmt :: proc(
 			collect_tokens_from_expr(tokens, s.target, snap, nil)
 		}
 
+	case ^ast.Get_Badi_Stmt:
+		if s.badi_ref != nil {
+			collect_tokens_from_expr(tokens, s.badi_ref, snap, nil)
+		}
+		for f in s.filters {
+			collect_tokens_from_expr(tokens, f, snap, nil)
+		}
+
 	case ^ast.Class_Def_Decl:
 		// CLASS name DEFINITION
 		if s.ident != nil {

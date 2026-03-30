@@ -135,6 +135,11 @@ validate_stmt_ctx :: proc(ctx: ^Validation_Context, stmt: ^ast.Stmt) {
 		validate_expr_ctx(ctx, s.itab)
 		validate_expr_ctx(ctx, s.into_target)
 		validate_expr_ctx(ctx, s.assigning_target)
+	case ^ast.Get_Badi_Stmt:
+		validate_expr_ctx(ctx, s.badi_ref)
+		for f in s.filters {
+			validate_expr_ctx(ctx, f.value)
+		}
 	case ^ast.Describe_Table_Stmt:
 		validate_expr_ctx(ctx, s.table)
 		validate_expr_ctx(ctx, s.lines_target)

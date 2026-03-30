@@ -7444,6 +7444,79 @@ get_time_stamp_field_ident_test :: proc(t: ^testing.T) {
 }
 
 @(test)
+get_badi_simple_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src = `GET BADI lo_badi_md_attributes.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	badi_stmt, ok := file.decls[0].derived_stmt.(^ast.Get_Badi_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Get_Badi_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	if ref_ident, tok := badi_stmt.badi_ref.derived_expr.(^ast.Ident); tok {
+		testing.expect(
+			t,
+			ref_ident.name == "lo_badi_md_attributes",
+			fmt.tprintf("Expected 'lo_badi_md_attributes', got '%s'", ref_ident.name),
+		)
+	} else {
+		testing.expect(
+			t,
+			false,
+			fmt.tprintf("Expected badi_ref Ident, got %T", badi_stmt.badi_ref.derived_expr),
+		)
+	}
+	testing.expect(t, len(badi_stmt.filters) == 0, "Expected no FILTERS")
+}
+
+@(test)
+get_badi_filters_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src =
+	`GET BADI lo_badi_rule_processing FILTERS rule_type = <ls_rules>-rule_type.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	badi_stmt, ok := file.decls[0].derived_stmt.(^ast.Get_Badi_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Get_Badi_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	if ref_ident, tok := badi_stmt.badi_ref.derived_expr.(^ast.Ident); tok {
+		testing.expect(
+			t,
+			ref_ident.name == "lo_badi_rule_processing",
+			fmt.tprintf("Expected 'lo_badi_rule_processing', got '%s'", ref_ident.name),
+		)
+	} else {
+		testing.expect(
+			t,
+			false,
+			fmt.tprintf("Expected badi_ref Ident, got %T", badi_stmt.badi_ref.derived_expr),
+		)
+	}
+	if !testing.expect(t, len(badi_stmt.filters) == 1, "Expected 1 filter") do return
+	f0 := badi_stmt.filters[0]
+	if f0.name != nil {
+		testing.expect(t, f0.name.name == "rule_type", "filter name rule_type")
+	}
+}
+
+@(test)
 read_table_transporting_no_fields_test :: proc(t: ^testing.T) {
 	// READ TABLE <fs_unpack_data>-children WITH KEY table_line = lv_epc TRANSPORTING NO FIELDS.
 	file := ast.new(ast.File, {})
