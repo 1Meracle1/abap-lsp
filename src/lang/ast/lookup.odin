@@ -923,6 +923,38 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 			}
 		}
 
+	case ^Call_Badi_Stmt:
+		if n.badi_target != nil {
+			if res := find_node_at_offset(&n.badi_target.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		for param in n.exporting {
+			if res := find_node_at_offset(&param.node, offset); res != nil {
+				return res
+			}
+		}
+		for param in n.importing {
+			if res := find_node_at_offset(&param.node, offset); res != nil {
+				return res
+			}
+		}
+		for param in n.changing {
+			if res := find_node_at_offset(&param.node, offset); res != nil {
+				return res
+			}
+		}
+		for param in n.receiving {
+			if res := find_node_at_offset(&param.node, offset); res != nil {
+				return res
+			}
+		}
+		for param in n.exceptions {
+			if res := find_node_at_offset(&param.node, offset); res != nil {
+				return res
+			}
+		}
+
 	case ^Call_Function_Param:
 		if n.name != nil {
 			if res := find_node_at_offset(&n.name.expr_base, offset); res != nil {

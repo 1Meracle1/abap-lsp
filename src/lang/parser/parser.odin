@@ -1254,7 +1254,11 @@ parse_call_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 		return parse_call_method_stmt(p, call_tok)
 	}
 
-	// For other CALL types (METHOD, etc.), treat as expression statement for now
+	if check_keyword(p, "BADI") {
+		return parse_call_badi_stmt(p, call_tok)
+	}
+
+	// For other CALL types, treat as expression statement for now
 	expr := parse_expr(p)
 	period_tok := expect_token(p, .Period)
 	expr_stmt := ast.new(ast.Expr_Stmt, call_tok, period_tok)
@@ -1270,11 +1274,56 @@ parse_call_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 //           CHANGING param = value.
 parse_call_method_stmt :: proc(p: ^Parser, call_tok: lexer.Token) -> ^ast.Stmt {
 	expect_keyword_token(p, "METHOD")
+	return parse_call_keyworded_param_sections_stmt(p, call_tok)
+}
 
-	method_expr := parse_expr(p)
+// parse_call_badi_stmt parses CALL BADI badi_ref->method ...
+// Sections: EXPORTING, IMPORTING, CHANGING, RECEIVING, EXCEPTIONS (no TABLES / DESTINATION).
+parse_call_badi_stmt :: proc(p: ^Parser, call_tok: lexer.Token) -> ^ast.Stmt {
+	expect_keyword_token(p, "BADI")
+	badi_target := parse_expr(p)
+
+	stmt := ast.new(ast.Call_Badi_Stmt, call_tok.range)
+	stmt.badi_target = badi_target
+	stmt.exporting = make([dynamic]^ast.Call_Function_Param)
+	stmt.importing = make([dynamic]^ast.Call_Function_Param)
+	stmt.changing = make([dynamic]^ast.Call_Function_Param)
+	stmt.receiving = make([dynamic]^ast.Call_Function_Param)
+	stmt.exceptions = make([dynamic]^ast.Call_Function_Param)
+	stmt.derived_stmt = stmt
+
+	for p.curr_tok.kind != .Period && p.curr_tok.kind != .EOF {
+		if check_keyword(p, "EXPORTING") {
+			advance_token(p)
+			parse_call_function_params(p, &stmt.exporting, .Exporting)
+		} else if check_keyword(p, "IMPORTING") {
+			advance_token(p)
+			parse_call_function_params(p, &stmt.importing, .Importing)
+		} else if check_keyword(p, "CHANGING") {
+			advance_token(p)
+			parse_call_function_params(p, &stmt.changing, .Changing)
+		} else if check_keyword(p, "RECEIVING") {
+			advance_token(p)
+			parse_call_function_params(p, &stmt.receiving, .Receiving)
+		} else if check_keyword(p, "EXCEPTIONS") {
+			advance_token(p)
+			parse_call_function_params(p, &stmt.exceptions, .Exceptions)
+		} else {
+			break
+		}
+	}
+
+	period_tok := expect_token(p, .Period)
+	stmt.range.end = period_tok.range.end
+	return stmt
+}
+
+// Shared by CALL METHOD and CALL BADI after the distinguishing keyword is consumed.
+parse_call_keyworded_param_sections_stmt :: proc(p: ^Parser, call_tok: lexer.Token) -> ^ast.Stmt {
+	callee_expr := parse_expr(p)
 
 	call_expr := ast.new(ast.Call_Expr, call_tok.range)
-	call_expr.expr = method_expr
+	call_expr.expr = callee_expr
 	method_args := make([dynamic]^ast.Expr)
 
 	for p.curr_tok.kind != .Period && p.curr_tok.kind != .EOF {
@@ -1420,6 +1469,7 @@ parse_call_function_params :: proc(
 		   check_keyword(p, "IMPORTING") ||
 		   check_keyword(p, "TABLES") ||
 		   check_keyword(p, "CHANGING") ||
+		   check_keyword(p, "RECEIVING") ||
 		   check_keyword(p, "EXCEPTIONS") {
 			break
 		}

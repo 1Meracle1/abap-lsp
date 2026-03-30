@@ -457,6 +457,9 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 			hover_text = "(statement) CALL FUNCTION - calls a function module"
 		}
 
+	case ^ast.Call_Badi_Stmt:
+		hover_text = "(statement) CALL BADI - calls a BAdI implementation method"
+
 	case ^ast.Call_Function_Param:
 		if n.name != nil {
 			param_kind_str := ""
@@ -469,6 +472,8 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 				param_kind_str = "TABLES"
 			case .Changing:
 				param_kind_str = "CHANGING"
+			case .Receiving:
+				param_kind_str = "RECEIVING"
 			case .Exceptions:
 				param_kind_str = "EXCEPTIONS"
 			}

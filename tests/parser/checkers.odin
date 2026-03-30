@@ -158,6 +158,36 @@ check_expr :: proc(
 	}
 }
 
+check_call_function_param_list :: proc(
+	t: ^testing.T,
+	ex: []^ast.Call_Function_Param,
+	ac: []^ast.Call_Function_Param,
+	loc := #caller_location,
+) {
+	if !testing.expect(t, len(ex) == len(ac), fmt.tprintf("Expected %d call params, got %d", len(ex), len(ac)), loc = loc) {
+		return
+	}
+	for i := 0; i < len(ex); i += 1 {
+		ep := ex[i]
+		ap := ac[i]
+		testing.expect(t, ep.kind == ap.kind, fmt.tprintf("param[%d] kind mismatch", i), loc = loc)
+		if ep.name != nil && ap.name != nil {
+			testing.expect(
+				t,
+				ep.name.name == ap.name.name,
+				fmt.tprintf("param[%d] name '%s' vs '%s'", i, ep.name.name, ap.name.name),
+				loc = loc,
+			)
+		}
+		if ep.value != nil {
+			if !testing.expect(t, ap.value != nil, fmt.tprintf("param[%d] value nil", i), loc = loc) {
+				return
+			}
+			check_expr(t, ep.value.derived_expr, ap.value, loc = loc)
+		}
+	}
+}
+
 check_stmt :: proc(
 	t: ^testing.T,
 	expected: ast.Any_Stmt,
@@ -485,6 +515,19 @@ check_stmt :: proc(
 		for i := 0; i < len(ex.rhs); i += 1 {
 			check_expr(t, ex.rhs[i].derived_expr, ac.rhs[i], loc = loc)
 		}
+
+	case ^ast.Call_Badi_Stmt:
+		ac, ok := actual_derived.(^ast.Call_Badi_Stmt)
+		if !testing.expect(t, ok, fmt.tprintf("Expected Call_Badi_Stmt, got %T", actual_derived), loc = loc) do return
+		if ex.badi_target != nil {
+			if !testing.expect(t, ac.badi_target != nil, "Expected badi_target", loc = loc) do return
+			check_expr(t, ex.badi_target.derived_expr, ac.badi_target, loc = loc)
+		}
+		check_call_function_param_list(t, ex.exporting[:], ac.exporting[:], loc = loc)
+		check_call_function_param_list(t, ex.importing[:], ac.importing[:], loc = loc)
+		check_call_function_param_list(t, ex.changing[:], ac.changing[:], loc = loc)
+		check_call_function_param_list(t, ex.receiving[:], ac.receiving[:], loc = loc)
+		check_call_function_param_list(t, ex.exceptions[:], ac.exceptions[:], loc = loc)
 
 	case ^ast.Expr_Stmt:
 		ac, ok := actual_derived.(^ast.Expr_Stmt)

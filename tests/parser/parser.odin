@@ -8997,6 +8997,87 @@ call_method_with_parameter_sections_test :: proc(t: ^testing.T) {
 }
 
 @(test)
+call_badi_with_parameter_sections_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src =
+	`CALL BADI lo_badi_decode_proprocess->preprocess_object_code
+        EXPORTING
+          iv_objcode = lv_object_code
+        RECEIVING
+          rv_objcode = lv_object_code.
+
+CALL BADI lo_badi_id_enc_dec->decode
+        CHANGING
+          cv_successfully_decoded = ev_successfully_decoded
+          ct_encode_decode        = ct_encode_decode.
+
+CALL BADI mo_badi_md_attributes->save_custom
+          EXPORTING
+            it_gentab_del = ms_updates-gentab_del
+            it_gentab_upd = ms_updates-gentab_upd.`
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 3,
+		fmt.tprintf("Expected 3 statements, got %d", len(file.decls)),
+	)
+
+	if len(file.decls) > 2 {
+		exp0 := call_badi_stmt(
+			selector(ident("lo_badi_decode_proprocess"), .Arrow, "preprocess_object_code"),
+			Call_Badi_Stmt_Opts {
+				exporting = []^ast.Call_Function_Param {
+					call_func_param(.Exporting, "iv_objcode", ident("lv_object_code")),
+				},
+				receiving = []^ast.Call_Function_Param {
+					call_func_param(.Receiving, "rv_objcode", ident("lv_object_code")),
+				},
+			},
+		)
+		check_stmt(t, exp0, file.decls[0])
+
+		exp1 := call_badi_stmt(
+			selector(ident("lo_badi_id_enc_dec"), .Arrow, "decode"),
+			Call_Badi_Stmt_Opts {
+				changing = []^ast.Call_Function_Param {
+					call_func_param(.Changing, "cv_successfully_decoded", ident("ev_successfully_decoded")),
+					call_func_param(.Changing, "ct_encode_decode", ident("ct_encode_decode")),
+				},
+			},
+		)
+		check_stmt(t, exp1, file.decls[1])
+
+		exp2 := call_badi_stmt(
+			selector(ident("mo_badi_md_attributes"), .Arrow, "save_custom"),
+			Call_Badi_Stmt_Opts {
+				exporting = []^ast.Call_Function_Param {
+					call_func_param(
+						.Exporting,
+						"it_gentab_del",
+						selector(ident("ms_updates"), .Minus, "gentab_del"),
+					),
+					call_func_param(
+						.Exporting,
+						"it_gentab_upd",
+						selector(ident("ms_updates"), .Minus, "gentab_upd"),
+					),
+				},
+			},
+		)
+		check_stmt(t, exp2, file.decls[2])
+	}
+}
+
+@(test)
 modern_call_expr_stmt_with_inline_data_importing_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
 	file.src =

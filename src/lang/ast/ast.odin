@@ -647,12 +647,13 @@ Assert_Stmt :: struct {
 	cond:       ^Expr, // The logical expression to assert
 }
 
-// CALL FUNCTION parameter kinds
+// CALL FUNCTION / CALL BADI parameter section kinds (shared param node shape)
 Call_Function_Param_Kind :: enum {
 	Exporting,
 	Importing,
 	Tables,
 	Changing,
+	Receiving,
 	Exceptions,
 }
 
@@ -679,6 +680,19 @@ Call_Function_Stmt :: struct {
 	importing:   [dynamic]^Call_Function_Param,
 	tables:      [dynamic]^Call_Function_Param,
 	changing:    [dynamic]^Call_Function_Param,
+	exceptions:  [dynamic]^Call_Function_Param,
+}
+
+// CALL BADI statement
+// Syntax: CALL BADI badi_ref->method
+//         [EXPORTING ...] [IMPORTING ...] [CHANGING ...] [RECEIVING ...] [EXCEPTIONS ...].
+Call_Badi_Stmt :: struct {
+	using node:  Stmt,
+	badi_target: ^Expr, // e.g. lo_badi->preprocess
+	exporting:   [dynamic]^Call_Function_Param,
+	importing:   [dynamic]^Call_Function_Param,
+	changing:    [dynamic]^Call_Function_Param,
+	receiving:   [dynamic]^Call_Function_Param,
 	exceptions:  [dynamic]^Call_Function_Param,
 }
 
@@ -1147,6 +1161,7 @@ Any_Node :: union {
 	^Check_Stmt,
 	^Assert_Stmt,
 	^Call_Function_Stmt,
+	^Call_Badi_Stmt,
 	^Call_Function_Param,
 	^Create_Object_Stmt,
 	^Select_Stmt,
@@ -1252,6 +1267,7 @@ Any_Stmt :: union {
 	^Check_Stmt,
 	^Assert_Stmt,
 	^Call_Function_Stmt,
+	^Call_Badi_Stmt,
 	^Create_Object_Stmt,
 	^Select_Stmt,
 	// Declarations

@@ -1044,6 +1044,8 @@ resolve_stmt :: proc(
 		resolve_describe_table_stmt(table, s)
 	case ^ast.Call_Function_Stmt:
 		resolve_call_function_stmt(table, s)
+	case ^ast.Call_Badi_Stmt:
+		resolve_call_badi_stmt(table, s)
 	case ^ast.Select_Stmt:
 		resolve_select_stmt(table, s, syntax_taint)
 	}
@@ -1449,6 +1451,29 @@ resolve_param_value_decl :: proc(table: ^SymbolTable, expr: ^ast.Expr) {
 
 	// For now, we don't handle inline declarations in CALL FUNCTION parameters
 	// as they are quite rare. This can be extended if needed.
+}
+
+resolve_call_badi_stmt :: proc(table: ^SymbolTable, stmt: ^ast.Call_Badi_Stmt) {
+	for param in stmt.exporting {
+		if param.value != nil {
+			resolve_param_value_decl(table, param.value)
+		}
+	}
+	for param in stmt.importing {
+		if param.value != nil {
+			resolve_param_value_decl(table, param.value)
+		}
+	}
+	for param in stmt.changing {
+		if param.value != nil {
+			resolve_param_value_decl(table, param.value)
+		}
+	}
+	for param in stmt.receiving {
+		if param.value != nil {
+			resolve_param_value_decl(table, param.value)
+		}
+	}
 }
 
 resolve_select_stmt :: proc(

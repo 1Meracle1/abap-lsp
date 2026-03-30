@@ -355,6 +355,68 @@ create_object_stmt :: proc(
 	return node
 }
 
+call_func_param :: proc(
+	kind: ast.Call_Function_Param_Kind,
+	param_name: string,
+	value: ast.Any_Expr,
+) -> ^ast.Call_Function_Param {
+	p := ast.new(ast.Call_Function_Param, {})
+	p.kind = kind
+	p.name = ident(param_name)
+	#partial switch v in value {
+	case ^ast.Ident:
+		p.value = &v.node
+	case ^ast.Selector_Expr:
+		p.value = &v.node
+	case ^ast.Basic_Lit:
+		p.value = &v.node
+	case ^ast.Call_Expr:
+		p.value = &v.node
+	}
+	p.derived = p
+	return p
+}
+
+Call_Badi_Stmt_Opts :: struct {
+	exporting:  []^ast.Call_Function_Param,
+	importing:  []^ast.Call_Function_Param,
+	changing:   []^ast.Call_Function_Param,
+	receiving:  []^ast.Call_Function_Param,
+	exceptions: []^ast.Call_Function_Param,
+}
+
+call_badi_stmt :: proc(target: ast.Any_Expr, opts: Call_Badi_Stmt_Opts) -> ^ast.Call_Badi_Stmt {
+	node := ast.new(ast.Call_Badi_Stmt, {})
+	#partial switch e in target {
+	case ^ast.Ident:
+		node.badi_target = &e.node
+	case ^ast.Selector_Expr:
+		node.badi_target = &e.node
+	}
+	node.exporting = make([dynamic]^ast.Call_Function_Param)
+	node.importing = make([dynamic]^ast.Call_Function_Param)
+	node.changing = make([dynamic]^ast.Call_Function_Param)
+	node.receiving = make([dynamic]^ast.Call_Function_Param)
+	node.exceptions = make([dynamic]^ast.Call_Function_Param)
+	for p in opts.exporting {
+		append(&node.exporting, p)
+	}
+	for p in opts.importing {
+		append(&node.importing, p)
+	}
+	for p in opts.changing {
+		append(&node.changing, p)
+	}
+	for p in opts.receiving {
+		append(&node.receiving, p)
+	}
+	for p in opts.exceptions {
+		append(&node.exceptions, p)
+	}
+	node.derived_stmt = node
+	return node
+}
+
 // Builder for For expressions (FOR var IN itab WHERE (...))
 for_expr :: proc(
 	var_name: string,

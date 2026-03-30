@@ -889,6 +889,16 @@ collect_tokens_from_stmt :: proc(
 		collect_tokens_from_call_function_params(tokens, s.changing[:], snap)
 		collect_tokens_from_call_function_params(tokens, s.exceptions[:], snap)
 
+	case ^ast.Call_Badi_Stmt:
+		if s.badi_target != nil {
+			collect_tokens_from_expr(tokens, s.badi_target, snap, nil)
+		}
+		collect_tokens_from_call_function_params(tokens, s.exporting[:], snap)
+		collect_tokens_from_call_function_params(tokens, s.importing[:], snap)
+		collect_tokens_from_call_function_params(tokens, s.changing[:], snap)
+		collect_tokens_from_call_function_params(tokens, s.receiving[:], snap)
+		collect_tokens_from_call_function_params(tokens, s.exceptions[:], snap)
+
 	case ^ast.Create_Object_Stmt:
 		if s.target != nil {
 			collect_tokens_from_expr(tokens, s.target, snap, nil)
