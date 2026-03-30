@@ -835,6 +835,11 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 				return res
 			}
 		}
+		if n.from_source != nil {
+			if res := find_node_at_offset(&n.from_source.expr_base, offset); res != nil {
+				return res
+			}
+		}
 		if n.where_cond != nil {
 			if res := find_node_at_offset(&n.where_cond.expr_base, offset); res != nil {
 				return res

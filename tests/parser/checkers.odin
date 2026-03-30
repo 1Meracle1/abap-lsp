@@ -250,6 +250,12 @@ check_stmt :: proc(
 			loc = loc,
 		)
 		check_expr(t, ex.target.derived_expr, ac.target, loc = loc)
+		if ex.from_source != nil {
+			if !testing.expect(t, ac.from_source != nil, "Expected from_source, got nil", loc = loc) do return
+			check_expr(t, ex.from_source.derived_expr, ac.from_source, loc = loc)
+		} else {
+			testing.expect(t, ac.from_source == nil, "Expected nil from_source", loc = loc)
+		}
 		if ex.where_cond != nil {
 			if !testing.expect(t, ac.where_cond != nil, "Expected where_cond, got nil", loc = loc) do return
 			check_expr(t, ex.where_cond.derived_expr, ac.where_cond, loc = loc)

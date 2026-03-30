@@ -665,6 +665,9 @@ collect_tokens_from_stmt :: proc(
 		if s.target != nil {
 			collect_tokens_from_expr(tokens, s.target, snap, nil)
 		}
+		if s.from_source != nil {
+			collect_tokens_from_expr(tokens, s.from_source, snap, nil)
+		}
 		if s.where_cond != nil {
 			collect_tokens_from_expr(tokens, s.where_cond, snap, nil)
 		}

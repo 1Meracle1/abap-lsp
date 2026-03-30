@@ -597,6 +597,7 @@ Delete_Kind :: enum {
 	Where, // DELETE itab WHERE ...
 	Index, // DELETE itab INDEX idx
 	Adjacent_Duplicates, // DELETE ADJACENT DUPLICATES FROM itab ...
+	Table_From, // DELETE TABLE itab FROM wa.
 }
 
 // DELETE statement
@@ -604,12 +605,14 @@ Delete_Kind :: enum {
 // - DELETE itab WHERE ...
 // - DELETE itab INDEX idx.
 // - DELETE ADJACENT DUPLICATES FROM itab ...
+// - DELETE TABLE itab FROM wa.
 Delete_Stmt :: struct {
-	using node: Stmt,
-	kind:       Delete_Kind,
-	target:     ^Expr, // The internal table
-	where_cond: ^Expr, // WHERE condition
-	index_expr: ^Expr, // INDEX expression
+	using node:   Stmt,
+	kind:         Delete_Kind,
+	target:       ^Expr, // The internal table
+	where_cond:   ^Expr, // WHERE condition
+	index_expr:   ^Expr, // INDEX expression
+	from_source:  ^Expr, // DELETE TABLE ... FROM operand (work area / field symbol)
 }
 
 Split_Mode :: enum {

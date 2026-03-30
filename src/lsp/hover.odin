@@ -310,6 +310,8 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 			hover_text = "(statement) DELETE ... INDEX - deletes a line from an internal table by index"
 		case .Adjacent_Duplicates:
 			hover_text = "(statement) DELETE ADJACENT DUPLICATES - deletes adjacent duplicate entries"
+		case .Table_From:
+			hover_text = "(statement) DELETE TABLE ... FROM - deletes a table line matching a work area"
 		}
 
 	case ^ast.Split_Stmt:

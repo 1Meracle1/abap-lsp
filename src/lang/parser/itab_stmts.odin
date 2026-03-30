@@ -183,6 +183,13 @@ parse_delete_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 				advance_token(p)
 			}
 		}
+	} else if check_keyword(p, "TABLE") {
+		// DELETE TABLE itab FROM wa.
+		advance_token(p) // consume TABLE
+		stmt.kind = .Table_From
+		stmt.target = parse_expr(p)
+		expect_keyword_token(p, "FROM")
+		stmt.from_source = parse_expr(p)
 	} else {
 		stmt.target = parse_expr(p)
 

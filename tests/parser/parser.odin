@@ -8378,6 +8378,61 @@ delete_where_test :: proc(t: ^testing.T) {
 }
 
 @(test)
+delete_table_from_field_symbol_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src = `DELETE TABLE ct_gs1_es_pair FROM <ls_gs1_es_pair>.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	delete_stmt, ok := file.decls[0].derived_stmt.(^ast.Delete_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Delete_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	testing.expect(
+		t,
+		delete_stmt.kind == .Table_From,
+		fmt.tprintf("Expected Table_From kind, got %v", delete_stmt.kind),
+	)
+	testing.expect(t, delete_stmt.target != nil, "Expected target to be set")
+	testing.expect(t, delete_stmt.from_source != nil, "Expected from_source to be set")
+
+	if target_ident, iok := delete_stmt.target.derived_expr.(^ast.Ident); iok {
+		testing.expect(
+			t,
+			target_ident.name == "ct_gs1_es_pair",
+			fmt.tprintf("Expected 'ct_gs1_es_pair', got '%s'", target_ident.name),
+		)
+	} else {
+		testing.expect(
+			t,
+			false,
+			fmt.tprintf("Expected target to be Ident, got %T", delete_stmt.target.derived_expr),
+		)
+	}
+
+	if from_ident, fok := delete_stmt.from_source.derived_expr.(^ast.Ident); fok {
+		testing.expect(
+			t,
+			from_ident.name == "<ls_gs1_es_pair>",
+			fmt.tprintf("Expected '<ls_gs1_es_pair>', got '%s'", from_ident.name),
+		)
+	} else {
+		testing.expect(
+			t,
+			false,
+			fmt.tprintf("Expected from_source to be Ident, got %T", delete_stmt.from_source.derived_expr),
+		)
+	}
+}
+
+@(test)
 condense_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
 	file.src = `CONDENSE text.`
