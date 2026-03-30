@@ -579,6 +579,41 @@ parse_expr_or_assign_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	}
 
 	if p.curr_tok.kind != .Period {
+		// Classic macro call: one identifier as name, then one or more actual parameters until '.'.
+		if _, ok := lhs.derived_expr.(^ast.Ident); ok {
+			args: [dynamic]^ast.Expr
+			macro_arg_i := 0
+			for p.curr_tok.kind != .Period && p.curr_tok.kind != .EOF {
+				macro_arg_i += 1
+				if macro_arg_i > 512 {
+					error(p, start_tok.range, "macro invocation too long or malformed")
+					end_tok := skip_to_statement_end(p)
+					return ast.new(ast.Bad_Decl, start_tok, end_tok)
+				}
+				off_before := p.curr_tok.range.start
+				append(&args, parse_expr(p))
+				if p.curr_tok.range.start == off_before &&
+				   p.curr_tok.kind != .Period &&
+				   p.curr_tok.kind != .EOF {
+					error(
+						p,
+						p.curr_tok.range,
+						"expected expression in macro invocation",
+					)
+					break
+				}
+			}
+			if p.curr_tok.kind != .Period {
+				end_tok := skip_to_statement_end(p)
+				error(p, lexer.TextRange{start_tok.range.start, end_tok.range.end}, "expected '.' after macro invocation")
+				return ast.new(ast.Bad_Decl, start_tok, end_tok)
+			}
+			period_tok := advance_token(p)
+			macro_stmt := ast.new(ast.Macro_Call_Stmt, start_tok, period_tok)
+			macro_stmt.name = lhs
+			macro_stmt.args = args[:]
+			return macro_stmt
+		}
 		end_tok := skip_to_statement_end(p)
 		error(p, lexer.TextRange{start_tok.range.start, end_tok.range.end}, "unexpected tokens after expression")
 		bad_decl := ast.new(ast.Bad_Decl, start_tok, end_tok)
@@ -629,9 +664,31 @@ parse_concat_expr :: proc(p: ^Parser) -> ^ast.Expr {
 
 	// Handle string concatenation with &
 	for p.curr_tok.kind == .Ampersand {
+		// Do not commit '&' until we know the RHS exists; otherwise stmt-level code can
+		// see '.' (e.g. "lv = a &.") and mis-parse as "lv = a" + '.' → Expr_Stmt or wrong macro shape.
+		saved_prev := p.prev_tok
+		saved_curr := p.curr_tok
+		saved_pos := p.l.pos
+		saved_read_pos := p.l.read_pos
+		saved_ch := p.l.ch
+		saved_line_start := p.l.line_start
+		saved_line_count := p.l.line_count
+
 		op := advance_token(p)
 		right := parse_additive_expr(p)
+		// Adjacent && (two & with no operand between) is an empty concatenand — skip the second &.
+		if right == nil && p.curr_tok.kind == .Ampersand {
+			advance_token(p)
+			right = parse_additive_expr(p)
+		}
 		if right == nil {
+			p.prev_tok = saved_prev
+			p.curr_tok = saved_curr
+			p.l.pos = saved_pos
+			p.l.read_pos = saved_read_pos
+			p.l.ch = saved_ch
+			p.l.line_start = saved_line_start
+			p.l.line_count = saved_line_count
 			break
 		}
 

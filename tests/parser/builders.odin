@@ -78,6 +78,26 @@ types_chain :: proc(decls: ..struct {
 	return node
 }
 
+macro_call_stmt :: proc(name: string, args: ..ast.Any_Expr) -> ^ast.Macro_Call_Stmt {
+	node := ast.new(ast.Macro_Call_Stmt, {})
+	id := ident(name)
+	node.name = &id.node
+	arg_exprs := make([]^ast.Expr, len(args))
+	for a, i in args {
+		#partial switch v in a {
+		case ^ast.Ident:
+			arg_exprs[i] = &v.node
+		case ^ast.Basic_Lit:
+			arg_exprs[i] = &v.node
+		case:
+			fmt.println("macro_call_stmt: unsupported arg type", v)
+		}
+	}
+	node.args = arg_exprs
+	node.derived_stmt = node
+	return node
+}
+
 // Builder for structured types
 Types_Struct_Builder :: struct {
 	name:       string,

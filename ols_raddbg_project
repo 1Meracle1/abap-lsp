@@ -1,5 +1,9 @@
 // raddbg 0.9.25 project file
 
+recent_file: path: "src/lang/parser/parser.odin"
+recent_file: path: "../toolchain/odin-windows-amd64-dev-2026-02/core/mem/virtual/virtual.odin"
+recent_file: path: "../toolchain/odin-windows-amd64-dev-2026-02/core/sync/primitives.odin"
+recent_file: path: "src/lang/ast/utils.odin"
 recent_file: path: "src/lsp/remote_dependencies.odin"
 recent_file: path: "src/lang/symbols/validate.odin"
 recent_file: path: "src/cache/document.odin"
@@ -21,7 +25,6 @@ recent_file: path: "../toolchain/odin-windows-amd64-dev-2026-02/core/log/log.odi
 recent_file: path: "src/lsp/semantic_tokens.odin"
 recent_file: path: "src/lsp/document.odin"
 recent_file: path: "src/lang/parser/basic_decls.odin"
-recent_file: path: "src/lang/parser/parser.odin"
 recent_file: path: "src/lang/parser/oop.odin"
 recent_file: path: "src/cache/manifest.odin"
 recent_file: path: "../toolchain/odin-windows-amd64-dev-2026-02/base/runtime/dynamic_map_internal.odin"
@@ -35,7 +38,6 @@ recent_file: path: "../toolchain/odin-windows-amd64-dev-2025-11/core/testing/run
 recent_file: path: "../toolchain/odin-windows-amd64-dev-2025-11/base/runtime/internal.odin"
 recent_file: path: "../../../a/_work/1/s/src/vctools/crt/vcstartup/src/startup/exe_main.cpp"
 recent_file: path: "src/lsp/unmarshal.odin"
-recent_file: path: "src/lang/ast/utils.odin"
 recent_file: path: "bin/debug/abap-lsp.exe"
 target:
 {
@@ -88,7 +90,7 @@ breakpoint:
 debug_info:
 {
   path: "D:/dev/odin/abap-lsp/bin/debug/abap-lsp.pdb"
-  timestamp: 66210689786761
+  timestamp: 66210691289923
 }
 breakpoint:
 {
@@ -129,4 +131,9 @@ breakpoint:
 {
   source_location: "src/lsp/remote_dependencies.odin:20:1"
   hit_count: 0
+}
+breakpoint:
+{
+  source_location: "src/lang/parser/parser.odin:34:1"
+  hit_count: 1
 }

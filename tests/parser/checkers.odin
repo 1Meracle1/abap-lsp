@@ -534,6 +534,15 @@ check_stmt :: proc(
 		if !testing.expect(t, ok, fmt.tprintf("Expected Expr_Stmt, got %T", actual_derived), loc = loc) do return
 		check_expr(t, ex.expr.derived_expr, ac.expr, loc = loc)
 
+	case ^ast.Macro_Call_Stmt:
+		ac, ok := actual_derived.(^ast.Macro_Call_Stmt)
+		if !testing.expect(t, ok, fmt.tprintf("Expected Macro_Call_Stmt, got %T", actual_derived), loc = loc) do return
+		check_expr(t, ex.name.derived_expr, ac.name, loc = loc)
+		if !testing.expect(t, len(ex.args) == len(ac.args), fmt.tprintf("Expected %d macro args, got %d", len(ex.args), len(ac.args)), loc = loc) do return
+		for i := 0; i < len(ex.args); i += 1 {
+			check_expr(t, ex.args[i].derived_expr, ac.args[i], loc = loc)
+		}
+
 	case ^ast.Create_Object_Stmt:
 		ac, ok := actual_derived.(^ast.Create_Object_Stmt)
 		if !testing.expect(t, ok, fmt.tprintf("Expected Create_Object_Stmt, got %T", actual_derived), loc = loc) do return

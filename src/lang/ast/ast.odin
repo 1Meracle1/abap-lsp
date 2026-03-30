@@ -231,6 +231,14 @@ Expr_Stmt :: struct {
 	expr:       ^Expr,
 }
 
+// Classic ABAP macro invocation: macro_name [actual_param ...].
+// (Parameters are expanded textually; not a procedure call.)
+Macro_Call_Stmt :: struct {
+	using node: Stmt,
+	name:       ^Expr,
+	args:       []^Expr,
+}
+
 Assign_Stmt :: struct {
 	using node: Stmt,
 	lhs:        []^Expr,
@@ -1144,6 +1152,7 @@ Any_Node :: union {
 	// Statements
 	^Bad_Stmt,
 	^Expr_Stmt,
+	^Macro_Call_Stmt,
 	^Assign_Stmt,
 	^Move_Corresponding_Stmt,
 	^Assign_Field_Symbol_Stmt,
@@ -1254,6 +1263,7 @@ Any_Expr :: union {
 Any_Stmt :: union {
 	^Bad_Stmt,
 	^Expr_Stmt,
+	^Macro_Call_Stmt,
 	^Assign_Stmt,
 	^Move_Corresponding_Stmt,
 	^Assign_Field_Symbol_Stmt,

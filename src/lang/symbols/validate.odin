@@ -96,6 +96,11 @@ validate_stmt_ctx :: proc(ctx: ^Validation_Context, stmt: ^ast.Stmt) {
 		validate_expr_ctx(ctx, s.target)
 	case ^ast.Expr_Stmt:
 		validate_expr_ctx(ctx, s.expr)
+	case ^ast.Macro_Call_Stmt:
+		validate_expr_ctx(ctx, s.name)
+		for arg in s.args {
+			validate_expr_ctx(ctx, arg)
+		}
 	case ^ast.Try_Stmt:
 		validate_stmt_list_ctx(ctx, s.body[:])
 		for branch in s.catch_branches {

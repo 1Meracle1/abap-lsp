@@ -534,7 +534,7 @@ ENDCLASS.`
 @(test)
 test_syntax_tainted_top_level_statement_preserves_clean_symbols :: proc(t: ^testing.T) {
 	src := `DATA lv_before TYPE i.
-FOO BAR.
+lv_item->attr noise_token.
 DATA lv_after TYPE i.
 lv_before = lv_after.`
 	file := ast.new(ast.File, {})
@@ -556,7 +556,7 @@ lv_before = lv_after.`
 	diags := symbols.collect_all_diagnostics(table)
 	found_noise := false
 	for diag in diags {
-		if strings.contains(diag.message, "foo") || strings.contains(diag.message, "bar") {
+		if strings.contains(diag.message, "noise_token") || strings.contains(diag.message, "lv_item") {
 			found_noise = true
 			break
 		}
@@ -565,7 +565,7 @@ lv_before = lv_after.`
 
 	candidates := symbols.collect_all_remote_candidates(table)
 	for candidate in candidates {
-		if candidate.name == "foo" || candidate.name == "bar" {
+		if candidate.name == "noise_token" || candidate.name == "lv_item" {
 			found_noise = true
 			break
 		}
@@ -577,7 +577,7 @@ lv_before = lv_after.`
 test_syntax_tainted_form_declaration_is_skipped_entirely :: proc(t: ^testing.T) {
 	src := `FORM run.
   DATA lv_before TYPE i.
-  FOO BAR.
+  lv_item->attr noise_token.
   DATA lv_after TYPE i.
   lv_before = lv_after.
 ENDFORM.`
@@ -598,7 +598,7 @@ ENDFORM.`
 	diags := symbols.collect_all_diagnostics(table)
 	found_noise := false
 	for diag in diags {
-		if strings.contains(diag.message, "foo") || strings.contains(diag.message, "bar") {
+		if strings.contains(diag.message, "noise_token") || strings.contains(diag.message, "lv_item") {
 			found_noise = true
 			break
 		}

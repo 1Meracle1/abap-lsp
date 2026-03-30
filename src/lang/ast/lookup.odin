@@ -312,6 +312,16 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 			return res
 		}
 
+	case ^Macro_Call_Stmt:
+		if res := find_node_at_offset(&n.name.expr_base, offset); res != nil {
+			return res
+		}
+		for arg in n.args {
+			if res := find_node_at_offset(&arg.expr_base, offset); res != nil {
+				return res
+			}
+		}
+
 	case ^Assign_Stmt:
 		for expr in n.lhs {
 			if res := find_node_at_offset(&expr.expr_base, offset); res != nil {

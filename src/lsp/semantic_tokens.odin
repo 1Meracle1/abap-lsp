@@ -312,6 +312,12 @@ collect_tokens_from_stmt :: proc(
 	case ^ast.Expr_Stmt:
 		collect_tokens_from_expr(tokens, s.expr, snap, nil)
 
+	case ^ast.Macro_Call_Stmt:
+		collect_tokens_from_expr(tokens, s.name, snap, nil)
+		for arg in s.args {
+			collect_tokens_from_expr(tokens, arg, snap, nil)
+		}
+
 	case ^ast.Try_Stmt:
 		for body_stmt in s.body {
 			collect_tokens_from_stmt(tokens, body_stmt, snap)
