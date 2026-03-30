@@ -338,6 +338,16 @@ Leave_Program_Stmt :: struct {
 	using node: Stmt,
 }
 
+// COMMIT WORK.
+Commit_Work_Stmt :: struct {
+	using node: Stmt,
+}
+
+// ROLLBACK WORK.
+Rollback_Work_Stmt :: struct {
+	using node: Stmt,
+}
+
 Get_Time_Stamp_Stmt :: struct {
 	using node: Stmt,
 	target:     ^Expr,
@@ -1104,6 +1114,8 @@ Any_Node :: union {
 	^Modify_Screen_Stmt,
 	^Modify_From_Stmt,
 	^Leave_Program_Stmt,
+	^Commit_Work_Stmt,
+	^Rollback_Work_Stmt,
 	^Get_Time_Stamp_Stmt,
 	^Set_Stmt,
 	^Case_Stmt,
@@ -1206,6 +1218,8 @@ Any_Stmt :: union {
 	^Modify_Screen_Stmt,
 	^Modify_From_Stmt,
 	^Leave_Program_Stmt,
+	^Commit_Work_Stmt,
+	^Rollback_Work_Stmt,
 	^Get_Time_Stamp_Stmt,
 	^Set_Stmt,
 	^Case_Stmt,

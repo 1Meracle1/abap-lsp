@@ -507,6 +507,12 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 	case ^Leave_Program_Stmt:
 		return node
 
+	case ^Commit_Work_Stmt:
+		return node
+
+	case ^Rollback_Work_Stmt:
+		return node
+
 	case ^Get_Time_Stamp_Stmt:
 		if n.target != nil {
 			if res := find_node_at_offset(&n.target.expr_base, offset); res != nil {

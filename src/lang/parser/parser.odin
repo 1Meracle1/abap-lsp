@@ -151,6 +151,8 @@ parse_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			return parse_split_stmt(p)
 		case "CONCATENATE":
 			return parse_concatenate_stmt(p)
+		case "COMMIT":
+			return parse_commit_work_stmt(p)
 		case "SELECT":
 			return parse_select_stmt(p)
 		case "RAISE":
@@ -159,6 +161,8 @@ parse_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			return parse_check_stmt(p)
 		case "RETURN":
 			return parse_return_stmt(p)
+		case "ROLLBACK":
+			return parse_rollback_work_stmt(p)
 		case "ASSERT":
 			return parse_assert_stmt(p)
 		}

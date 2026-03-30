@@ -237,6 +237,22 @@ parse_leave_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	}
 }
 
+// COMMIT WORK.
+parse_commit_work_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
+	commit_tok := expect_keyword_token(p, "COMMIT")
+	expect_keyword_token(p, "WORK")
+	period_tok := expect_token(p, .Period)
+	return ast.new(ast.Commit_Work_Stmt, commit_tok, period_tok)
+}
+
+// ROLLBACK WORK.
+parse_rollback_work_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
+	rb_tok := expect_keyword_token(p, "ROLLBACK")
+	expect_keyword_token(p, "WORK")
+	period_tok := expect_token(p, .Period)
+	return ast.new(ast.Rollback_Work_Stmt, rb_tok, period_tok)
+}
+
 parse_modify_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	modify_tok := advance_token(p)
 	if check_keyword(p, "SCREEN") {
