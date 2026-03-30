@@ -1,19 +1,25 @@
 // raddbg 0.9.25 project file
 
+recent_file: path: "src/lsp/remote_dependencies.odin"
+recent_file: path: "src/lang/symbols/validate.odin"
+recent_file: path: "src/cache/document.odin"
+recent_file: path: "src/lang/symbols/symbols.odin"
+recent_file: path: "src/cache/cache.odin"
+recent_file: path: "../../../a/_work/1/s/src/vctools/crt/vcruntime/src/string/amd64/memcpy.asm"
+recent_file: path: "../toolchain/odin-windows-amd64-dev-2026-02/core/strings/strings.odin"
+recent_file: path: "../toolchain/odin-windows-amd64-dev-2026-02/base/runtime/core_builtin.odin"
+recent_file: path: "src/lsp/server.odin"
+recent_file: path: "src/cache/semantic_unit_resolution.odin"
 recent_file: path: "src/lsp/hover.odin"
 recent_file: path: "src/lsp/completion.odin"
 recent_file: path: "../toolchain/odin-windows-amd64-dev-2026-02/base/runtime/error_checks.odin"
-recent_file: path: "src/lsp/server.odin"
 recent_file: path: "src/lang/symbols/types.odin"
 recent_file: path: "src/lang/ast/lookup.odin"
 recent_file: path: "../../../a/_work/1/s/src/vctools/crt/vcruntime/src/string/amd64/memset.asm"
-recent_file: path: "src/cache/cache.odin"
 recent_file: path: "../toolchain/odin-windows-amd64-dev-2026-02/core/log/file_console_logger.odin"
 recent_file: path: "../toolchain/odin-windows-amd64-dev-2026-02/core/log/log.odin"
 recent_file: path: "src/lsp/semantic_tokens.odin"
 recent_file: path: "src/lsp/document.odin"
-recent_file: path: "src/cache/semantic_unit_resolution.odin"
-recent_file: path: "src/cache/document.odin"
 recent_file: path: "src/lang/parser/basic_decls.odin"
 recent_file: path: "src/lang/parser/parser.odin"
 recent_file: path: "src/lang/parser/oop.odin"
@@ -82,7 +88,7 @@ breakpoint:
 debug_info:
 {
   path: "D:/dev/odin/abap-lsp/bin/debug/abap-lsp.pdb"
-  timestamp: 66210610087037
+  timestamp: 66210679703870
 }
 breakpoint:
 {
@@ -107,4 +113,20 @@ breakpoint:
   source_location: "src/lsp/hover.odin:79:1"
   hit_count: 0
   enabled: 0
+}
+breakpoint:
+{
+  source_location: "src/lang/symbols/validate.odin:427:1"
+  enabled: 0
+  hit_count: 0
+}
+breakpoint:
+{
+  source_location: "src/lsp/remote_dependencies.odin:56:1"
+  hit_count: 0
+}
+breakpoint:
+{
+  source_location: "src/lsp/remote_dependencies.odin:20:1"
+  hit_count: 0
 }

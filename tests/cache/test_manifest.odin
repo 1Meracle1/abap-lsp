@@ -82,3 +82,36 @@ object_name = "Z_FG_DEMO"` + "\n"
 		testing.expect(t, unit.members[1].object_name == "Z_FG_DEMO", "expected function module object name")
 	}
 }
+
+@(test)
+test_manifest_dependency_unit_detection :: proc(t: ^testing.T) {
+	text := `version = 1
+connection = "default"
+
+[resolution]
+dependency_mode = "remote-on-demand"
+
+[[unit]]
+name = "zcl_remote_demo"
+kind = "global-class"
+root_file = ".abapls/cache/dependencies/global-class/zcl_remote_demo.abap"
+
+[[unit.member]]
+role = "dependency"
+file = ".abapls/cache/dependencies/global-class/zcl_remote_demo.abap"
+object_name = "ZCL_REMOTE_DEMO"` + "\n"
+
+	manifest := cache.manifest_parse(text, "manifest-dependency")
+	defer cache.manifest_deinit(manifest)
+
+	if !testing.expect(t, manifest != nil, "expected manifest to parse") do return
+	if !testing.expect(t, len(manifest.units) == 1, fmt.tprintf("expected 1 unit, got %d", len(manifest.units))) do return
+
+	unit := &manifest.units[0]
+	testing.expect(t, cache.unit_is_dependency(unit), "expected dependency unit to be detected")
+	testing.expect(
+		t,
+		unit.members[0].role == .Dependency,
+		fmt.tprintf("expected dependency role, got %v", unit.members[0].role),
+	)
+}

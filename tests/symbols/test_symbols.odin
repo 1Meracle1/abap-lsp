@@ -356,6 +356,42 @@ lv_value = missing_var.`
 }
 
 @(test)
+test_unknown_local_symbol_does_not_request_remote_resolution :: proc(t: ^testing.T) {
+	src := `DATA lv_value TYPE i.
+lv_value = missing_var.`
+	file := ast.new(ast.File, {})
+	file.src = src
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	table := symbols.resolve_file(file)
+	defer symbols.destroy_symbol_table(table)
+
+	candidates := symbols.collect_all_remote_candidates(table)
+	testing.expect(t, len(candidates) == 0, "expected local missing_var to avoid remote lookup candidates")
+}
+
+@(test)
+test_unknown_custom_type_records_remote_candidate :: proc(t: ^testing.T) {
+	src := `DATA lo_demo TYPE zcl_remote_demo.`
+	file := ast.new(ast.File, {})
+	file.src = src
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	table := symbols.resolve_file(file)
+	defer symbols.destroy_symbol_table(table)
+
+	candidates := symbols.collect_all_remote_candidates(table)
+	if !testing.expect(t, len(candidates) == 1, fmt.tprintf("expected 1 remote candidate, got %d", len(candidates))) do return
+
+	testing.expect(t, candidates[0].name == "zcl_remote_demo", fmt.tprintf("unexpected candidate name %q", candidates[0].name))
+	testing.expect(t, candidates[0].kind == .Type_Name, fmt.tprintf("unexpected candidate kind %v", candidates[0].kind))
+}
+
+@(test)
 test_builtin_sy_symbol_resolves :: proc(t: ^testing.T) {
 	src := `DATA lv_subrc TYPE i.
 lv_subrc = sy-subrc.`
@@ -493,4 +529,79 @@ ENDCLASS.`
 	}
 
 	testing.expect(t, !found_param_error, "expected method parameter iv_input to resolve inside implementation")
+}
+
+@(test)
+test_syntax_tainted_top_level_statement_preserves_clean_symbols :: proc(t: ^testing.T) {
+	src := `DATA lv_before TYPE i.
+MOVE-CORRESPONDING is_cusset TO ls_cusset.
+DATA lv_after TYPE i.
+lv_before = lv_after.`
+	file := ast.new(ast.File, {})
+	file.src = src
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	if !testing.expect(t, len(file.syntax_errors) > 0, "expected syntax errors for unsupported statement") do return
+
+	table := symbols.resolve_file(file)
+	defer symbols.destroy_symbol_table(table)
+
+	_, has_before := table.symbols["lv_before"]
+	_, has_after := table.symbols["lv_after"]
+	testing.expect(t, has_before, "expected lv_before to remain resolvable")
+	testing.expect(t, has_after, "expected lv_after to remain resolvable")
+
+	diags := symbols.collect_all_diagnostics(table)
+	found_noise := false
+	for diag in diags {
+		if strings.contains(diag.message, "is_cusset") || strings.contains(diag.message, "ls_cusset") {
+			found_noise = true
+			break
+		}
+	}
+	testing.expect(t, !found_noise, "expected no semantic diagnostics inside tainted statement")
+
+	candidates := symbols.collect_all_remote_candidates(table)
+	for candidate in candidates {
+		if candidate.name == "is_cusset" || candidate.name == "ls_cusset" {
+			found_noise = true
+			break
+		}
+	}
+	testing.expect(t, !found_noise, "expected no remote lookup candidates from tainted statement")
+}
+
+@(test)
+test_syntax_tainted_form_declaration_is_skipped_entirely :: proc(t: ^testing.T) {
+	src := `FORM run.
+  DATA lv_before TYPE i.
+  MOVE-CORRESPONDING is_cusset TO ls_cusset.
+  DATA lv_after TYPE i.
+  lv_before = lv_after.
+ENDFORM.`
+	file := ast.new(ast.File, {})
+	file.src = src
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	if !testing.expect(t, len(file.syntax_errors) > 0, "expected syntax errors for unsupported nested statement") do return
+
+	table := symbols.resolve_file(file)
+	defer symbols.destroy_symbol_table(table)
+
+	_, has_form := table.symbols["run"]
+	testing.expect(t, !has_form, "expected tainted FORM declaration to be skipped entirely")
+
+	diags := symbols.collect_all_diagnostics(table)
+	found_noise := false
+	for diag in diags {
+		if strings.contains(diag.message, "is_cusset") || strings.contains(diag.message, "ls_cusset") {
+			found_noise = true
+			break
+		}
+	}
+	testing.expect(t, !found_noise, "expected no semantic diagnostics from tainted nested statement")
 }

@@ -30,6 +30,7 @@ server_start :: proc(stream: jsonrpc.Stream) {
 	notif_handlers := make(map[string]Notification_Handler)
 	notif_handlers["textDocument/didOpen"] = handle_document_open
 	notif_handlers["textDocument/didChange"] = handle_document_change
+	notif_handlers[Remote_Dependencies_Updated_Notification] = handle_remote_dependencies_updated
 
 	initialized: bool
 

@@ -105,10 +105,6 @@ workspace_manifest_path :: proc(workspace: ^Workspace, allocator := context.allo
 }
 
 workspace_load_manifest :: proc(workspace: ^Workspace) {
-	if workspace == nil {
-		return
-	}
-
 	if workspace.manifest != nil {
 		manifest_deinit(workspace.manifest)
 		workspace.manifest = nil
@@ -475,6 +471,43 @@ unit_contains_relative_path :: proc(unit: ^Semantic_Unit, relative_path: string)
 	}
 
 	return false
+}
+
+unit_has_member_role :: proc(unit: ^Semantic_Unit, role: Unit_Member_Role) -> bool {
+	if unit == nil {
+		return false
+	}
+
+	for member in unit.members {
+		if member.role == role {
+			return true
+		}
+	}
+
+	return false
+}
+
+unit_is_dependency :: proc(unit: ^Semantic_Unit) -> bool {
+	return unit_has_member_role(unit, .Dependency)
+}
+
+workspace_dependency_units :: proc(
+	workspace: ^Workspace,
+	allocator := context.allocator,
+) -> []^Semantic_Unit {
+	result := make([dynamic]^Semantic_Unit, allocator)
+	if workspace == nil || workspace.manifest == nil {
+		return result[:]
+	}
+
+	for i in 0 ..< len(workspace.manifest.units) {
+		unit := &workspace.manifest.units[i]
+		if unit_is_dependency(unit) {
+			append(&result, unit)
+		}
+	}
+
+	return result[:]
 }
 
 normalize_manifest_path :: proc(path: string, allocator := context.allocator) -> string {

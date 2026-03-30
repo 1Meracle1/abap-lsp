@@ -26,10 +26,16 @@ interface HttpResponseData {
 	body: string;
 }
 
+interface GetSapConnectionOptions {
+	promptIfMissing?: boolean;
+}
+
 export async function getSapConnectionConfig(
 	context: vscode.ExtensionContext,
 	workspaceFolder: vscode.WorkspaceFolder,
+	options: GetSapConnectionOptions = {},
 ): Promise<SapConnectionConfig | undefined> {
+	const promptIfMissing = options.promptIfMissing ?? true;
 	const config = vscode.workspace.getConfiguration("abap-ls", workspaceFolder.uri);
 	const storedBaseUrl = (config.get<string>("sap.baseUrl") ?? "").trim();
 	const storedUsername = (config.get<string>("sap.username") ?? "").trim();
@@ -38,6 +44,9 @@ export async function getSapConnectionConfig(
 
 	let baseUrl = storedBaseUrl;
 	if (!baseUrl) {
+		if (!promptIfMissing) {
+			return undefined;
+		}
 		baseUrl = (await vscode.window.showInputBox({
 			prompt: "SAP base URL",
 			placeHolder: "https://host.example.com",
@@ -51,6 +60,9 @@ export async function getSapConnectionConfig(
 
 	let username = storedUsername;
 	if (!username) {
+		if (!promptIfMissing) {
+			return undefined;
+		}
 		username = (await vscode.window.showInputBox({
 			prompt: "SAP username",
 			ignoreFocusOut: true,
@@ -63,6 +75,9 @@ export async function getSapConnectionConfig(
 
 	let password = storedPassword;
 	if (!password) {
+		if (!promptIfMissing) {
+			return undefined;
+		}
 		password = (await vscode.window.showInputBox({
 			prompt: "SAP password",
 			password: true,
@@ -79,6 +94,54 @@ export async function getSapConnectionConfig(
 		username,
 		password,
 	};
+}
+
+export function isSupportedDependencyObject(objectRef: AdtObjectRef, kindHint?: string): boolean {
+	const loweredType = objectRef.type.toUpperCase();
+	const loweredUri = objectRef.uri.toLowerCase();
+
+	switch (kindHint) {
+		case "include":
+			return loweredUri.includes("/programs/includes/") || loweredType === "PROG/I";
+		case "static":
+			return loweredUri.includes("/oo/classes/") ||
+				loweredUri.includes("/oo/interfaces/") ||
+				loweredType.startsWith("CLAS/") ||
+				loweredType.startsWith("INTF/");
+	}
+
+	return loweredUri.includes("/programs/includes/") ||
+		loweredUri.includes("/programs/programs/") ||
+		loweredUri.includes("/oo/classes/") ||
+		loweredUri.includes("/oo/interfaces/") ||
+		loweredUri.includes("/functions/groups/") ||
+		loweredType === "PROG/I" ||
+		loweredType === "PROG/P" ||
+		loweredType.startsWith("CLAS/") ||
+		loweredType.startsWith("INTF/");
+}
+
+export function pickBestDependencyObject(
+	query: string,
+	objects: AdtObjectRef[],
+	kindHint?: string,
+): AdtObjectRef | undefined {
+	const normalizedQuery = query.trim().toLowerCase();
+	if (!normalizedQuery) {
+		return undefined;
+	}
+
+	const supported = objects.filter((objectRef) => isSupportedDependencyObject(objectRef, kindHint));
+	if (supported.length === 0) {
+		return undefined;
+	}
+
+	const exactMatches = supported.filter((objectRef) => objectRef.name.trim().toLowerCase() === normalizedQuery);
+	if (exactMatches.length > 0) {
+		return exactMatches[0];
+	}
+
+	return supported[0];
 }
 
 export async function configureSapConnection(

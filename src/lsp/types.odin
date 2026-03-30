@@ -13,6 +13,23 @@ WorkspaceFolder :: struct {
 	name: string,
 }
 
+RemoteDependencyCandidate :: struct {
+	name: string,
+	kind: string,
+}
+
+RemoteDependencyResolveParams :: struct {
+	workspaceUri: string,
+	sourceUri:    string,
+	candidates:   []RemoteDependencyCandidate,
+}
+
+RemoteDependenciesUpdatedParams :: struct {
+	workspaceUri: string,
+	sourceUri:    string,
+	fetched:      []string,
+}
+
 ClientCapabilities :: struct {}
 
 InitializeResult :: struct {

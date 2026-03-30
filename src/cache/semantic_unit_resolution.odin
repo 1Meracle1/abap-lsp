@@ -85,6 +85,35 @@ append_project_diagnostic :: proc(project: ^Project, message: string) {
 	)
 }
 
+append_project_remote_candidate :: proc(
+	project: ^Project,
+	name: string,
+	kind: symbols.Remote_Candidate_Kind,
+) {
+	if project == nil {
+		return
+	}
+
+	normalized_name := strings.to_lower(strings.trim_space(name), context.temp_allocator)
+	if len(normalized_name) == 0 {
+		return
+	}
+
+	for candidate in project.remote_candidates {
+		if candidate.kind == kind && candidate.name == normalized_name {
+			return
+		}
+	}
+
+	append(
+		&project.remote_candidates,
+		symbols.Remote_Candidate{
+			name = strings.clone(normalized_name, context.allocator),
+			kind = kind,
+		},
+	)
+}
+
 build_unit_member_uri_map :: proc(
 	workspace: ^Workspace,
 	unit: ^Semantic_Unit,
@@ -138,6 +167,177 @@ build_folder_include_uri_map :: proc(
 		}
 	}
 	return include_uris
+}
+
+clone_string_uri_map :: proc(
+	source: map[string]string,
+	allocator := context.allocator,
+) -> map[string]string {
+	cloned := make(map[string]string, allocator)
+	for key, value in source {
+		cloned[strings.clone(key, allocator)] = strings.clone(value, allocator)
+	}
+	return cloned
+}
+
+merge_include_uri_map :: proc(target: ^map[string]string, source: map[string]string) {
+	if target == nil {
+		return
+	}
+
+	for key, value in source {
+		if key not_in target^ {
+			target^[strings.clone(key, context.temp_allocator)] = strings.clone(value, context.temp_allocator)
+		}
+	}
+}
+
+build_workspace_dependency_include_uri_map :: proc(
+	workspace: ^Workspace,
+	allocator := context.allocator,
+) -> map[string]string {
+	include_uris := make(map[string]string, allocator)
+	if workspace == nil || !workspace_supports_remote_resolution(workspace) {
+		return include_uris
+	}
+
+	for unit in workspace_dependency_units(workspace, context.temp_allocator) {
+		if unit == nil || unit.kind != .Include {
+			continue
+		}
+
+		include_uri := workspace_uri_for_relative_path(
+			workspace,
+			unit_root_relative_path(unit, context.temp_allocator),
+			allocator,
+		)
+		if len(include_uri) == 0 {
+			continue
+		}
+
+		if len(unit.name) > 0 {
+			include_uris[strings.to_lower(unit.name, allocator)] = strings.clone(include_uri, allocator)
+		}
+
+		for member in unit.members {
+			if len(member.object_name) > 0 {
+				include_uris[strings.to_lower(member.object_name, allocator)] = strings.clone(include_uri, allocator)
+			}
+		}
+
+		filename := filename_from_uri(include_uri, allocator)
+		if len(filename) > 0 && filename not_in include_uris {
+			include_uris[filename] = strings.clone(include_uri, allocator)
+		}
+	}
+
+	return include_uris
+}
+
+project_source_tree_has_syntax_errors :: proc(
+	cache: ^Cache,
+	workspace: ^Workspace,
+	root_uri: string,
+	include_uris: map[string]string,
+) -> bool {
+	active_stack := make([dynamic]string, context.temp_allocator)
+	return file_or_includes_have_syntax_errors(cache, workspace, root_uri, include_uris, &active_stack)
+}
+
+file_or_includes_have_syntax_errors :: proc(
+	cache: ^Cache,
+	workspace: ^Workspace,
+	uri: string,
+	include_uris: map[string]string,
+	active_stack: ^[dynamic]string,
+) -> bool {
+	if cache == nil || workspace == nil || len(uri) == 0 || active_stack == nil {
+		return false
+	}
+	if stack_contains_uri(active_stack^[:], uri) {
+		return false
+	}
+
+	snapshot := ensure_workspace_document_loaded(cache, workspace, uri)
+	if snapshot == nil || snapshot.ast == nil {
+		return false
+	}
+	defer release_snapshot(snapshot)
+
+	if snapshot_has_syntax_errors(snapshot) {
+		return true
+	}
+
+	append(active_stack, strings.clone(uri, context.temp_allocator))
+	defer pop(active_stack)
+
+	for decl in snapshot.ast.decls {
+		#partial switch d in decl.derived_stmt {
+		case ^ast.Include_Decl:
+			if d.name == nil {
+				continue
+			}
+			include_name := strings.to_lower(d.name.name, context.temp_allocator)
+			if include_uri, ok := include_uris[include_name]; ok {
+				if file_or_includes_have_syntax_errors(
+					cache,
+					workspace,
+					include_uri,
+					include_uris,
+					active_stack,
+				) {
+					return true
+				}
+			}
+		}
+	}
+
+	return false
+}
+
+merge_remote_dependency_symbols_into_table :: proc(
+	cache: ^Cache,
+	workspace: ^Workspace,
+	project: ^Project,
+	table: ^symbols.SymbolTable,
+) {
+	if cache == nil || workspace == nil || project == nil || table == nil ||
+	   !workspace_supports_remote_resolution(workspace) {
+		return
+	}
+
+	for unit in workspace_dependency_units(workspace, context.temp_allocator) {
+		if unit == nil || unit.kind == .Include {
+			continue
+		}
+
+		dependency_relative := unit_root_relative_path(unit, context.temp_allocator)
+		if len(dependency_relative) == 0 {
+			continue
+		}
+
+		dependency_uri := workspace_uri_for_relative_path(workspace, dependency_relative, context.temp_allocator)
+		if len(dependency_uri) == 0 || dependency_uri == project.root_uri {
+			continue
+		}
+
+		dependency_snapshot := ensure_workspace_document_loaded(cache, workspace, dependency_uri)
+		if dependency_snapshot == nil || dependency_snapshot.ast == nil {
+			append_project_diagnostic(
+				project,
+				strings.concatenate(
+					{"Remote dependency file is missing: ", dependency_relative},
+					context.allocator,
+				),
+			)
+			continue
+		}
+		defer release_snapshot(dependency_snapshot)
+
+		dependency_table := symbols.create_empty_symbol_table(context.allocator)
+		symbols.resolve_file_into(dependency_snapshot.ast, dependency_table)
+		symbols.merge_symbols_into(table, dependency_table)
+	}
 }
 
 get_projects_for_uri :: proc(
@@ -228,9 +428,13 @@ release_project :: proc(project: ^Project) {
 	arena_slot_release(project.arena_slot)
 }
 
-project_entry_init :: proc(key: string) -> ^Project_Entry {
-	entry := new(Project_Entry)
-	entry.key = strings.clone(key)
+project_entry_init :: proc(workspace: ^Workspace, key: string) -> ^Project_Entry {
+	if workspace == nil {
+		return nil
+	}
+
+	entry := new(Project_Entry, workspace.persistent_allocator)
+	entry.key = strings.clone(key, workspace.persistent_allocator)
 	return entry
 }
 
@@ -286,8 +490,8 @@ workspace_get_or_create_project_entry :: proc(
 			return entry
 		}
 
-		entry := project_entry_init(key)
-		map_key := strings.clone(key)
+		entry := project_entry_init(workspace, key)
+		map_key := strings.clone(key, workspace.persistent_allocator)
 		workspace.projects[map_key] = entry
 		return entry
 	}
@@ -502,6 +706,7 @@ build_local_project :: proc(
 	project.unit_name = strings.clone(unit_name)
 	project.member_uris = make([dynamic]string, slot.allocator)
 	project.diagnostics = make([dynamic]symbols.Diagnostic, slot.allocator)
+	project.remote_candidates = make([dynamic]symbols.Remote_Candidate, slot.allocator)
 	project.documents = make([dynamic]^Snapshot, slot.allocator)
 	project.resolution_result = new(symbols.ProjectResolutionResult, slot.allocator)
 	project.resolution_result.file_tables = make(map[string]^symbols.SymbolTable, slot.allocator)
@@ -516,14 +721,28 @@ build_local_project :: proc(
 	}
 	project_add_snapshot(project, root_snapshot)
 
+	project_has_local_syntax_errors := project_source_tree_has_syntax_errors(
+		cache,
+		workspace,
+		root_uri,
+		include_uris,
+	)
 	current_table := symbols.create_empty_symbol_table(slot.allocator)
 	active_stack := make([dynamic]string, context.temp_allocator)
+	effective_include_uris := clone_string_uri_map(include_uris, context.temp_allocator)
+	if !project_has_local_syntax_errors {
+		merge_remote_dependency_symbols_into_table(cache, workspace, project, current_table)
+		merge_include_uri_map(
+			&effective_include_uris,
+			build_workspace_dependency_include_uri_map(workspace, context.temp_allocator),
+		)
+	}
 
 	resolve_project_file(
 		cache,
 		workspace,
 		root_snapshot,
-		include_uris,
+		effective_include_uris,
 		current_table,
 		project.resolution_result,
 		project,
@@ -570,8 +789,12 @@ resolve_project_file :: proc(
 
 	append(active_stack, strings.clone(snapshot.uri, context.temp_allocator))
 	defer pop(active_stack)
+	syntax_taint := symbols.build_syntax_taint_ranges(snapshot.ast, context.temp_allocator)
 
 	for decl in snapshot.ast.decls {
+		if symbols.statement_is_syntax_tainted(decl, syntax_taint) {
+			continue
+		}
 		#partial switch d in decl.derived_stmt {
 		case ^ast.Include_Decl:
 			if d.name == nil {
@@ -598,6 +821,7 @@ resolve_project_file :: proc(
 					symbols.validate_file_with_lookup(include_snapshot.ast, table, include_table)
 					symbols.merge_symbols_into(table, include_table)
 				} else {
+					append_project_remote_candidate(project, include_name, .Include)
 					append_project_diagnostic(
 						project,
 						strings.concatenate(
@@ -607,6 +831,7 @@ resolve_project_file :: proc(
 					)
 				}
 			} else {
+				append_project_remote_candidate(project, include_name, .Include)
 				append_project_diagnostic(
 					project,
 					strings.concatenate(
@@ -618,7 +843,7 @@ resolve_project_file :: proc(
 
 			symbols.resolve_include_decl(table, d)
 		case:
-			symbols.resolve_decl_into(table, decl)
+			symbols.resolve_decl_into_with_syntax_taint(table, decl, syntax_taint)
 		}
 	}
 }

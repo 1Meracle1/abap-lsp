@@ -3,6 +3,7 @@ package cache
 import "../lang/ast"
 import "../lang/symbols"
 
+import "core:mem"
 import "core:strings"
 import "core:sync"
 
@@ -39,20 +40,23 @@ Project :: struct {
 	root_uri:          string,
 	member_uris:       [dynamic]string,
 	diagnostics:       [dynamic]symbols.Diagnostic,
+	remote_candidates: [dynamic]symbols.Remote_Candidate,
 	resolution_result: ^symbols.ProjectResolutionResult,
 	documents:         [dynamic]^Snapshot,
 }
 
 Workspace :: struct {
-	lock:         sync.RW_Mutex,
-	uri:          string,
-	name:         string,
-	root_path:    string,
-	manifest:     ^Manifest,
-	documents:    map[string]^Document_Entry,
-	projects:     map[string]^Project_Entry,
-	doc_pool:     ^Arena_Pool,
-	project_pool: ^Arena_Pool,
+	lock:                     sync.RW_Mutex,
+	persistent_allocator:     mem.Allocator,
+	uri:                      string,
+	name:                     string,
+	root_path:                string,
+	manifest:                 ^Manifest,
+	documents:                map[string]^Document_Entry,
+	projects:                 map[string]^Project_Entry,
+	remote_resolution_seen:   map[string]bool,
+	doc_pool:                 ^Arena_Pool,
+	project_pool:             ^Arena_Pool,
 }
 
 Cache :: struct {
@@ -83,11 +87,13 @@ cache_deinit :: proc(cache: ^Cache) {
 
 workspace_init :: proc(uri: string, name: string) -> ^Workspace {
 	workspace := new(Workspace)
+	workspace.persistent_allocator = context.allocator
 	workspace.uri = strings.clone(uri)
 	workspace.name = strings.clone(name)
 	workspace.root_path = uri_to_path(uri)
 	workspace.documents = make(map[string]^Document_Entry)
 	workspace.projects = make(map[string]^Project_Entry)
+	workspace.remote_resolution_seen = make(map[string]bool)
 	workspace.doc_pool = arena_pool_init(8)
 	workspace.project_pool = arena_pool_init(4)
 	workspace_load_manifest(workspace)
@@ -110,6 +116,7 @@ workspace_deinit :: proc(workspace: ^Workspace) {
 		}
 		delete(workspace.projects)
 		delete(workspace.documents)
+		delete(workspace.remote_resolution_seen)
 	}
 
 	if workspace.manifest != nil {
@@ -159,6 +166,140 @@ workspace_for_uri :: proc(cache: ^Cache, uri: string) -> ^Workspace {
 	}
 
 	return best_match
+}
+
+workspace_supports_remote_resolution :: proc(workspace: ^Workspace) -> bool {
+	if workspace == nil || workspace.manifest == nil {
+		return false
+	}
+
+	if len(strings.trim_space(workspace.manifest.connection)) == 0 {
+		return false
+	}
+
+	return strings.to_lower(workspace.manifest.resolution.dependency_mode, context.temp_allocator) ==
+		"remote-on-demand"
+}
+
+workspace_uri_is_remote_dependency :: proc(workspace: ^Workspace, uri: string) -> bool {
+	if workspace == nil || len(uri) == 0 {
+		return false
+	}
+
+	for unit in workspace_units_for_uri(workspace, uri, context.temp_allocator) {
+		if unit_is_dependency(unit) {
+			return true
+		}
+	}
+
+	return false
+}
+
+workspace_open_document_uris :: proc(
+	workspace: ^Workspace,
+	allocator := context.allocator,
+) -> []string {
+	result := make([dynamic]string, allocator)
+	if workspace == nil {
+		return result[:]
+	}
+
+	if sync.shared_guard(&workspace.lock) {
+		for uri in workspace.documents {
+			append(&result, strings.clone(uri, allocator))
+		}
+	}
+
+	return result[:]
+}
+
+snapshot_has_syntax_errors :: proc(snapshot: ^Snapshot) -> bool {
+	return snapshot != nil && snapshot.ast != nil && len(snapshot.ast.syntax_errors) > 0
+}
+
+project_has_syntax_errors :: proc(project: ^Project) -> bool {
+	if project == nil {
+		return false
+	}
+
+	for snapshot in project.documents {
+		if snapshot_has_syntax_errors(snapshot) {
+			return true
+		}
+	}
+
+	return false
+}
+
+workspace_invalidate_all_projects :: proc(workspace: ^Workspace) {
+	if workspace == nil {
+		return
+	}
+
+	keys_to_remove := make([dynamic]string, context.temp_allocator)
+	if sync.guard(&workspace.lock) {
+		for key in workspace.projects {
+			append(&keys_to_remove, strings.clone(key, context.temp_allocator))
+		}
+		for key in keys_to_remove {
+			if entry, ok := workspace.projects[key]; ok {
+				delete_key(&workspace.projects, key)
+				project_entry_deinit(entry)
+			}
+		}
+	}
+}
+
+workspace_should_request_remote_candidate :: proc(
+	workspace: ^Workspace,
+	candidate: symbols.Remote_Candidate,
+) -> bool {
+	if workspace == nil {
+		return false
+	}
+
+	request_key := remote_candidate_request_key(candidate)
+	if len(request_key) == 0 {
+		return false
+	}
+
+	if sync.guard(&workspace.lock) {
+		if request_key in workspace.remote_resolution_seen {
+			return false
+		}
+		workspace.remote_resolution_seen[strings.clone(request_key, workspace.persistent_allocator)] = true
+	}
+
+	return true
+}
+
+remote_candidate_request_key :: proc(candidate: symbols.Remote_Candidate) -> string {
+	if len(candidate.name) == 0 {
+		return ""
+	}
+
+	return strings.concatenate(
+		{
+			remote_candidate_kind_label(candidate.kind),
+			":",
+			strings.to_lower(candidate.name, context.temp_allocator),
+		},
+		context.temp_allocator,
+	)
+}
+
+remote_candidate_kind_label :: proc(kind: symbols.Remote_Candidate_Kind) -> string {
+	switch kind {
+	case .Unknown_Symbol:
+		return "symbol"
+	case .Type_Name:
+		return "type"
+	case .Static_Target:
+		return "static"
+	case .Include:
+		return "include"
+	}
+	return "unknown"
 }
 
 get_snapshot :: proc(cache: ^Cache, uri: string) -> ^Snapshot {

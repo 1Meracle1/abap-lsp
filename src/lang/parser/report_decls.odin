@@ -138,7 +138,7 @@ parse_at_event_block :: proc(p: ^Parser) -> ^ast.Stmt {
 	}
 
 	// Unknown AT event, skip line
-	end_tok := skip_to_new_line(p)
+	end_tok := skip_to_statement_end(p)
 	error(p, lexer.range_between(start_tok, end_tok), "unknown AT event")
 	bad_decl := ast.new(ast.Bad_Decl, start_tok, end_tok)
 	return bad_decl

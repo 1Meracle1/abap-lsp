@@ -109,6 +109,7 @@ handle_diagnostic :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 	defer cache.release_projects(projects)
 	if len(projects) > 0 {
 		append_project_diagnostics(&diagnostics, snap, uri, projects)
+		maybe_request_remote_dependency_resolution(srv, uri, projects)
 	} else if snap.symbol_table != nil {
 		append_symbol_diagnostics(&diagnostics, snap, snap.symbol_table)
 	}
@@ -143,6 +144,7 @@ publish_diagnostics :: proc(
 	defer cache.release_projects(projects)
 	if len(projects) > 0 {
 		append_project_diagnostics(&diagnostics, snap, uri, projects)
+		maybe_request_remote_dependency_resolution(srv, uri, projects)
 	} else if snap.symbol_table != nil {
 		append_symbol_diagnostics(&diagnostics, snap, snap.symbol_table)
 	}

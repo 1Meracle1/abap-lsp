@@ -78,12 +78,9 @@ create_snapshot :: proc(entry: ^Document_Entry, text: string, version: int) -> ^
 	if slot == nil {
 		return nil
 	}
-
-	old_allocator := context.allocator
 	context.allocator = slot.allocator
-	defer context.allocator = old_allocator
 
-	snapshot := new(Snapshot, slot.allocator)
+	snapshot := new(Snapshot)
 	snapshot.ref_count = 1
 	snapshot.arena_slot = slot
 	snapshot.uri = strings.clone(entry.uri)
@@ -106,9 +103,7 @@ resolve_snapshot_symbols :: proc(snapshot: ^Snapshot) -> ^symbols.SymbolTable {
 	}
 
 	table := symbols.create_empty_symbol_table(context.allocator)
-	for decl in snapshot.ast.decls {
-		symbols.resolve_decl_into(table, decl)
-	}
+	symbols.resolve_file_into(snapshot.ast, table)
 	symbols.validate_file(snapshot.ast, table)
 	return table
 }

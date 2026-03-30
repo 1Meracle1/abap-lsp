@@ -169,7 +169,7 @@ parse_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	}
 
 	start_tok := p.curr_tok
-	end_tok := skip_to_new_line(p)
+	end_tok := skip_to_statement_end(p)
 	error(p, lexer.range_between(start_tok, end_tok), "unexpected statement")
 	bad_decl := ast.new(ast.Bad_Decl, start_tok, end_tok)
 	return bad_decl
@@ -541,7 +541,14 @@ parse_expr_or_assign_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 		return assign_stmt
 	}
 
-	period_tok := expect_token(p, .Period)
+	if p.curr_tok.kind != .Period {
+		end_tok := skip_to_statement_end(p)
+		error(p, lexer.TextRange{start_tok.range.start, end_tok.range.end}, "unexpected tokens after expression")
+		bad_decl := ast.new(ast.Bad_Decl, start_tok, end_tok)
+		return bad_decl
+	}
+
+	period_tok := advance_token(p)
 	expr_stmt := ast.new(ast.Expr_Stmt, start_tok, period_tok)
 	expr_stmt.expr = lhs
 	return expr_stmt
@@ -556,6 +563,19 @@ skip_to_new_line :: proc(p: ^Parser) -> lexer.Token {
 		}
 	}
 	return p.curr_tok
+}
+
+skip_to_statement_end :: proc(p: ^Parser) -> lexer.Token {
+	line_count := p.l.line_count
+	last_tok := p.curr_tok
+	for p.curr_tok.kind != .EOF {
+		tok := advance_token(p)
+		last_tok = tok
+		if tok.kind == .Period || p.l.line_count > line_count {
+			return tok
+		}
+	}
+	return last_tok
 }
 
 parse_expr :: proc(p: ^Parser) -> ^ast.Expr {

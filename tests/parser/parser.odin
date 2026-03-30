@@ -812,6 +812,31 @@ form_errornous_test :: proc(t: ^testing.T) {
 	)
 }
 
+@(test)
+statement_syntax_error_range_spans_full_unsupported_stmt_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src = `MOVE-CORRESPONDING is_cusset TO ls_cusset.
+DATA lv_ok TYPE i.`
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	if !testing.expect(
+		t,
+		len(file.syntax_errors) > 0,
+		fmt.tprintf("Expected syntax errors: %v", file.syntax_errors),
+	) {
+		return
+	}
+
+	err := file.syntax_errors[0]
+	testing.expect(
+		t,
+		file.src[err.range.start:err.range.end] == "MOVE-CORRESPONDING is_cusset TO ls_cusset.",
+		fmt.tprintf("unexpected syntax error slice %q", file.src[err.range.start:err.range.end]),
+	)
+}
+
 // --- Structured TYPES tests ---
 
 @(test)

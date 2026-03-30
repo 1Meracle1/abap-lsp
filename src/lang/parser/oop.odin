@@ -14,7 +14,7 @@ parse_class_decl :: proc(p: ^Parser) -> ^ast.Decl {
 	}
 
 	error(p, p.curr_tok.range, "expected DEFINITION or IMPLEMENTATION after class name")
-	end_tok := skip_to_new_line(p)
+	end_tok := skip_to_statement_end(p)
 	bad_decl := ast.new(ast.Bad_Decl, class_tok, end_tok)
 	return bad_decl
 }

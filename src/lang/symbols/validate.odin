@@ -21,7 +21,8 @@ validate_file_with_lookup :: proc(file: ^ast.File, lookup_table: ^SymbolTable, d
 
 	ctx := Validation_Context{
 		lookup_table = lookup_table,
-		diag_table = diag_table,
+		diag_table   = diag_table,
+		syntax_taint = build_syntax_taint_ranges(file, context.temp_allocator),
 	}
 
 	for decl in file.decls {
@@ -33,6 +34,7 @@ validate_file_with_lookup :: proc(file: ^ast.File, lookup_table: ^SymbolTable, d
 Validation_Context :: struct {
 	lookup_table: ^SymbolTable, // Table to use for symbol lookups
 	diag_table:   ^SymbolTable, // Table to store diagnostics in
+	syntax_taint: []lexer.TextRange,
 }
 
 // validate_stmt_list validates a list of statements
@@ -55,6 +57,9 @@ validate_stmt :: proc(table: ^SymbolTable, stmt: ^ast.Stmt) {
 
 validate_stmt_ctx :: proc(ctx: ^Validation_Context, stmt: ^ast.Stmt) {
 	if stmt == nil {
+		return
+	}
+	if statement_is_syntax_tainted(stmt, ctx.syntax_taint) {
 		return
 	}
 
@@ -140,7 +145,8 @@ validate_stmt_ctx :: proc(ctx: ^Validation_Context, stmt: ^ast.Stmt) {
 			// Create new context with child scope for lookups, but keep same diag_table
 			child_ctx := Validation_Context{
 				lookup_table = sym.child_scope,
-				diag_table = ctx.diag_table,
+				diag_table   = ctx.diag_table,
+				syntax_taint = ctx.syntax_taint,
 			}
 			validate_stmt_list_ctx(&child_ctx, s.body[:])
 		}
@@ -150,7 +156,8 @@ validate_stmt_ctx :: proc(ctx: ^Validation_Context, stmt: ^ast.Stmt) {
 		if sym, found := ctx.lookup_table.symbols[class_name]; found && sym.child_scope != nil {
 			child_ctx := Validation_Context{
 				lookup_table = sym.child_scope,
-				diag_table = ctx.diag_table,
+				diag_table   = ctx.diag_table,
+				syntax_taint = ctx.syntax_taint,
 			}
 			for section in s.sections {
 				validate_class_section_ctx(&child_ctx, section)
@@ -169,6 +176,7 @@ validate_stmt_ctx :: proc(ctx: ^Validation_Context, stmt: ^ast.Stmt) {
 						child_ctx := Validation_Context{
 							lookup_table = method_sym.child_scope,
 							diag_table   = ctx.diag_table,
+							syntax_taint = ctx.syntax_taint,
 						}
 						validate_stmt_list_ctx(&child_ctx, m.body[:])
 					} else {
@@ -190,7 +198,8 @@ validate_stmt_ctx :: proc(ctx: ^Validation_Context, stmt: ^ast.Stmt) {
 		if sym, found := ctx.lookup_table.symbols[iface_name]; found && sym.child_scope != nil {
 			child_ctx := Validation_Context{
 				lookup_table = sym.child_scope,
-				diag_table = ctx.diag_table,
+				diag_table   = ctx.diag_table,
+				syntax_taint = ctx.syntax_taint,
 			}
 			for data_decl in s.data {
 				validate_stmt_ctx(&child_ctx, data_decl)
@@ -202,7 +211,8 @@ validate_stmt_ctx :: proc(ctx: ^Validation_Context, stmt: ^ast.Stmt) {
 		if sym, found := ctx.lookup_table.symbols[event_name]; found && sym.child_scope != nil {
 			child_ctx := Validation_Context{
 				lookup_table = sym.child_scope,
-				diag_table = ctx.diag_table,
+				diag_table   = ctx.diag_table,
+				syntax_taint = ctx.syntax_taint,
 			}
 			validate_stmt_list_ctx(&child_ctx, s.body[:])
 		}
@@ -212,7 +222,8 @@ validate_stmt_ctx :: proc(ctx: ^Validation_Context, stmt: ^ast.Stmt) {
 			if sym, found := ctx.lookup_table.symbols[module_name]; found && sym.child_scope != nil {
 				child_ctx := Validation_Context{
 					lookup_table = sym.child_scope,
-					diag_table = ctx.diag_table,
+					diag_table   = ctx.diag_table,
+					syntax_taint = ctx.syntax_taint,
 				}
 				validate_stmt_list_ctx(&child_ctx, s.body[:])
 			}
@@ -316,6 +327,8 @@ validate_type_expr_ctx :: proc(ctx: ^Validation_Context, expr: ^ast.Expr) {
 	}
 
 	#partial switch e in expr.derived_expr {
+	case ^ast.Ident:
+		maybe_add_remote_candidate(ctx, e.name, .Type_Name)
 	case ^ast.Table_Type:
 		validate_type_expr_ctx(ctx, e.elem)
 	case ^ast.Ref_Type:
@@ -341,6 +354,7 @@ validate_ident_expr_ctx :: proc(ctx: ^Validation_Context, ident: ^ast.Ident) {
 		return
 	}
 
+	maybe_add_remote_candidate(ctx, ident.name, .Unknown_Symbol)
 	add_diagnostic(
 		ctx.diag_table,
 		ident.range,
@@ -394,6 +408,7 @@ validate_selector_expr_ctx :: proc(ctx: ^Validation_Context, sel: ^ast.Selector_
 	}
 	// If not found in symbol table, it might be defined elsewhere (external class)
 	// so we don't report an error for unknown symbols
+	maybe_add_remote_candidate(ctx, left_name, .Static_Target)
 }
 
 // get_selector_left_name extracts the identifier name from the left side of a selector
@@ -413,4 +428,38 @@ get_selector_left_name :: proc(expr: ^ast.Expr) -> string {
 	}
 
 	return ""
+}
+
+maybe_add_remote_candidate :: proc(
+	ctx: ^Validation_Context,
+	name: string,
+	kind: Remote_Candidate_Kind,
+) {
+	if !should_attempt_remote_lookup_name(name) {
+		return
+	}
+
+	lower_name := strings.to_lower(strings.trim_space(name), context.temp_allocator)
+	if len(lower_name) == 0 {
+		return
+	}
+	if ctx.lookup_table != nil && lower_name in ctx.lookup_table.symbols {
+		return
+	}
+
+	add_remote_candidate(ctx.diag_table, name, kind)
+}
+
+should_attempt_remote_lookup_name :: proc(name: string) -> bool {
+	trimmed := strings.trim_space(name)
+	if len(trimmed) == 0 {
+		return false
+	}
+
+	if trimmed[0] == '/' {
+		return true
+	}
+
+	lower_name := strings.to_lower(trimmed, context.temp_allocator)
+	return strings.has_prefix(lower_name, "z") || strings.has_prefix(lower_name, "y")
 }

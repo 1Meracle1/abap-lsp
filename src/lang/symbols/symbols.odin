@@ -12,6 +12,18 @@ Diagnostic :: struct {
 	message: string,
 }
 
+Remote_Candidate_Kind :: enum {
+	Unknown_Symbol,
+	Type_Name,
+	Static_Target,
+	Include,
+}
+
+Remote_Candidate :: struct {
+	name: string,
+	kind: Remote_Candidate_Kind,
+}
+
 SymbolKind :: enum {
 	Variable,
 	Constant,
@@ -58,13 +70,138 @@ Symbol :: struct {
 }
 
 SymbolTable :: struct {
-	symbols:     map[string]Symbol,
-	types:       [dynamic]^Type,
-	diagnostics: [dynamic]Diagnostic,
+	symbols:           map[string]Symbol,
+	types:             [dynamic]^Type,
+	diagnostics:       [dynamic]Diagnostic,
+	remote_candidates: [dynamic]Remote_Candidate,
+}
+
+build_syntax_taint_ranges :: proc(
+	file: ^ast.File,
+	allocator: mem.Allocator = context.allocator,
+) -> []lexer.TextRange {
+	ranges := make([dynamic]lexer.TextRange, allocator)
+	if file == nil || len(file.syntax_errors) == 0 {
+		return ranges[:]
+	}
+
+	for err in file.syntax_errors {
+		append_syntax_taint_range(&ranges, expand_syntax_error_range(file.src, err.range))
+	}
+
+	return ranges[:]
+}
+
+statement_is_syntax_tainted :: proc(stmt: ^ast.Stmt, ranges: []lexer.TextRange) -> bool {
+	if stmt == nil {
+		return false
+	}
+	return range_overlaps_syntax_taint(stmt.range, ranges)
+}
+
+range_overlaps_syntax_taint :: proc(range: lexer.TextRange, ranges: []lexer.TextRange) -> bool {
+	for taint in ranges {
+		if range.start < taint.end && taint.start < range.end {
+			return true
+		}
+	}
+	return false
+}
+
+expand_syntax_error_range :: proc(src: string, err: lexer.TextRange) -> lexer.TextRange {
+	if len(src) == 0 {
+		return err
+	}
+
+	start := clamp_offset(err.start, len(src))
+	end := clamp_offset(err.end, len(src))
+	if end < start {
+		end = start
+	}
+
+	for start > 0 {
+		ch := src[start - 1]
+		if ch == '.' || ch == '\n' || ch == '\r' {
+			break
+		}
+		start -= 1
+	}
+
+	for end < len(src) {
+		ch := src[end]
+		if ch == '\n' || ch == '\r' {
+			break
+		}
+		end += 1
+		if ch == '.' {
+			break
+		}
+	}
+
+	return lexer.TextRange{start, end}
+}
+
+clamp_offset :: proc(offset: int, upper_bound: int) -> int {
+	if offset < 0 {
+		return 0
+	}
+	if offset > upper_bound {
+		return upper_bound
+	}
+	return offset
+}
+
+append_syntax_taint_range :: proc(ranges: ^[dynamic]lexer.TextRange, incoming: lexer.TextRange) {
+	if ranges == nil {
+		return
+	}
+	merged := incoming
+	if merged.end < merged.start {
+		merged.end = merged.start
+	}
+
+	if len(ranges^) == 0 {
+		append(ranges, merged)
+		return
+	}
+
+	last := &ranges^[len(ranges^) - 1]
+	if merged.start <= last.end {
+		if merged.start < last.start {
+			last.start = merged.start
+		}
+		if merged.end > last.end {
+			last.end = merged.end
+		}
+		return
+	}
+
+	append(ranges, merged)
 }
 
 add_diagnostic :: proc(table: ^SymbolTable, range: lexer.TextRange, message: string) {
 	append(&table.diagnostics, Diagnostic{range = range, message = message})
+}
+
+add_remote_candidate :: proc(table: ^SymbolTable, name: string, kind: Remote_Candidate_Kind) {
+	normalized_name := strings.to_lower(strings.trim_space(name), context.temp_allocator)
+	if len(normalized_name) == 0 {
+		return
+	}
+
+	for candidate in table.remote_candidates {
+		if candidate.kind == kind && candidate.name == normalized_name {
+			return
+		}
+	}
+
+	append(
+		&table.remote_candidates,
+		Remote_Candidate{
+			name = strings.clone(normalized_name),
+			kind = kind,
+		},
+	)
 }
 
 add_symbol :: proc(table: ^SymbolTable, sym: Symbol, allow_shadowing: bool = false) -> bool {
@@ -167,6 +304,15 @@ collect_all_diagnostics :: proc(
 	return result[:]
 }
 
+collect_all_remote_candidates :: proc(
+	table: ^SymbolTable,
+	allocator: mem.Allocator = context.allocator,
+) -> []Remote_Candidate {
+	result := make([dynamic]Remote_Candidate, allocator)
+	collect_remote_candidates_recursive(table, &result)
+	return result[:]
+}
+
 collect_diagnostics_recursive :: proc(table: ^SymbolTable, result: ^[dynamic]Diagnostic) {
 	// Add diagnostics from this table
 	for diag in table.diagnostics {
@@ -178,6 +324,33 @@ collect_diagnostics_recursive :: proc(table: ^SymbolTable, result: ^[dynamic]Dia
 			collect_diagnostics_recursive(sym.child_scope, result)
 		}
 	}
+}
+
+collect_remote_candidates_recursive :: proc(
+	table: ^SymbolTable,
+	result: ^[dynamic]Remote_Candidate,
+) {
+	for candidate in table.remote_candidates {
+		append_remote_candidate_unique(result, candidate)
+	}
+
+	for _, sym in table.symbols {
+		if sym.child_scope != nil {
+			collect_remote_candidates_recursive(sym.child_scope, result)
+		}
+	}
+}
+
+append_remote_candidate_unique :: proc(
+	result: ^[dynamic]Remote_Candidate,
+	candidate: Remote_Candidate,
+) {
+	for existing in result^ {
+		if existing.kind == candidate.kind && existing.name == candidate.name {
+			return
+		}
+	}
+	append(result, candidate)
 }
 
 destroy_symbol_table :: proc(table: ^SymbolTable) {
@@ -192,6 +365,7 @@ destroy_symbol_table :: proc(table: ^SymbolTable) {
 	delete(table.types)
 	delete(table.symbols)
 	delete(table.diagnostics)
+	delete(table.remote_candidates)
 	free(table)
 }
 
@@ -205,6 +379,7 @@ clone_symbol_table :: proc(source: ^SymbolTable, allocator := context.allocator)
 	cloned.symbols = make(map[string]Symbol, len(source.symbols), allocator)
 	cloned.types = make([dynamic]^Type, len(source.types), allocator)
 	cloned.diagnostics = make([dynamic]Diagnostic, allocator)
+	cloned.remote_candidates = make([dynamic]Remote_Candidate, allocator)
 
 	// Copy all symbols (shallow copy - child_scope references are shared)
 	for name, sym in source.symbols {
@@ -226,6 +401,7 @@ create_empty_symbol_table :: proc(allocator := context.allocator) -> ^SymbolTabl
 	table.symbols = make(map[string]Symbol, allocator)
 	table.types = make([dynamic]^Type, allocator)
 	table.diagnostics = make([dynamic]Diagnostic, allocator)
+	table.remote_candidates = make([dynamic]Remote_Candidate, allocator)
 	register_builtin_symbols(table)
 	return table
 }

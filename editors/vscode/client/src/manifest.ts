@@ -92,6 +92,26 @@ export function targetWorkspaceFilePath(workspaceFolder: vscode.WorkspaceFolder,
 	return path.join(workspaceFolder.uri.fsPath, "src", `${objectName}.abap`);
 }
 
+export function targetDependencyWorkspaceFilePath(
+	workspaceFolder: vscode.WorkspaceFolder,
+	objectRef: AdtObjectRef,
+): string {
+	const kindDir = sanitizePathSegment(inferManifestUnitSpec(objectRef, "dependency.abap").kind);
+	const fileName = `${encodeURIComponent(objectRef.name)}.abap`;
+	return path.join(workspaceFolder.uri.fsPath, ".abapls", "cache", "dependencies", kindDir, fileName);
+}
+
+export async function ensureManifestDependencyUnit(
+	workspaceFolder: vscode.WorkspaceFolder,
+	objectRef: AdtObjectRef,
+	filePath: string,
+): Promise<vscode.Uri> {
+	const relativeFile = path.relative(workspaceFolder.uri.fsPath, filePath);
+	const unit = inferManifestUnitSpec(objectRef, relativeFile);
+	unit.role = "dependency";
+	return ensureManifestUnit(workspaceFolder, unit);
+}
+
 function renderManifestHeader(): string {
 	return `version = 1
 connection = "default"
@@ -121,6 +141,10 @@ function escapeTomlString(value: string): string {
 
 function normalizeRelativePath(value: string): string {
 	return value.replace(/\\/g, "/").replace(/^\.\//, "");
+}
+
+function sanitizePathSegment(value: string): string {
+	return value.replace(/[^a-zA-Z0-9._-]+/g, "-");
 }
 
 async function readTextIfExists(filePath: string): Promise<string | undefined> {

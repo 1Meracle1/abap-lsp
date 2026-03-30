@@ -91,8 +91,13 @@ resolve_file_with_includes :: proc(
 	if file == nil || table == nil {
 		return
 	}
+
+	syntax_taint := build_syntax_taint_ranges(file, context.temp_allocator)
 	
 	for decl in file.decls {
+		if statement_is_syntax_tainted(decl, syntax_taint) {
+			continue
+		}
 		#partial switch d in decl.derived_stmt {
 		case ^ast.Include_Decl:
 			// Process include: clone current state, resolve include, continue with result
@@ -138,7 +143,7 @@ resolve_file_with_includes :: proc(
 			}
 		case:
 			// Process normal declaration
-			resolve_decl_into(table, decl)
+			resolve_decl_into_with_syntax_taint(table, decl, syntax_taint)
 		}
 	}
 }
@@ -174,6 +179,14 @@ merge_symbols_into :: proc(target: ^SymbolTable, source: ^SymbolTable) {
 
 // resolve_decl_into resolves a single top-level declaration into a symbol table
 resolve_decl_into :: proc(table: ^SymbolTable, decl: ^ast.Stmt) {
+	resolve_decl_into_with_syntax_taint(table, decl, nil)
+}
+
+resolve_decl_into_with_syntax_taint :: proc(
+	table: ^SymbolTable,
+	decl: ^ast.Stmt,
+	syntax_taint: []lexer.TextRange,
+) {
 	if decl == nil {
 		return
 	}
@@ -200,21 +213,21 @@ resolve_decl_into :: proc(table: ^SymbolTable, decl: ^ast.Stmt) {
 	case ^ast.Data_Struct_Decl:
 		resolve_data_struct_decl(table, d)
 	case ^ast.Form_Decl:
-		resolve_form_decl(table, d)
+		resolve_form_decl(table, d, syntax_taint)
 	case ^ast.Class_Def_Decl:
-		resolve_class_def_decl(table, d)
+		resolve_class_def_decl(table, d, syntax_taint)
 	case ^ast.Class_Impl_Decl:
-		resolve_class_impl_decl(table, d)
+		resolve_class_impl_decl(table, d, syntax_taint)
 	case ^ast.Interface_Decl:
-		resolve_interface_decl(table, d)
+		resolve_interface_decl(table, d, syntax_taint)
 	case ^ast.Report_Decl:
 		resolve_report_decl(table, d)
 	case ^ast.Include_Decl:
 		resolve_include_decl(table, d)
 	case ^ast.Event_Block:
-		resolve_event_block(table, d)
+		resolve_event_block(table, d, syntax_taint)
 	case ^ast.Module_Decl:
-		resolve_module_decl(table, d)
+		resolve_module_decl(table, d, syntax_taint)
 	case ^ast.Field_Symbol_Decl:
 		resolve_field_symbol_decl(table, d, is_global = true)
 	case ^ast.Field_Symbol_Chain_Decl:
@@ -260,53 +273,13 @@ resolve_file_into :: proc(file: ^ast.File, table: ^SymbolTable) {
 		return
 	}
 
+	syntax_taint := build_syntax_taint_ranges(file, context.temp_allocator)
+
 	for decl in file.decls {
-		#partial switch d in decl.derived_stmt {
-		case ^ast.Data_Inline_Decl:
-			resolve_inline_decl(table, d)
-		case ^ast.Data_Typed_Decl:
-			resolve_typed_decl(table, d, false)
-		case ^ast.Data_Typed_Chain_Decl:
-			resolve_chain_decl(table, d)
-		case ^ast.Types_Decl:
-			resolve_types_decl(table, d, false)
-		case ^ast.Types_Chain_Decl:
-			resolve_types_chain_decl(table, d)
-		case ^ast.Types_Struct_Decl:
-			resolve_types_struct_decl(table, d)
-		case ^ast.Const_Decl:
-			resolve_const_decl(table, d, false)
-		case ^ast.Const_Chain_Decl:
-			resolve_const_chain_decl(table, d)
-		case ^ast.Const_Struct_Decl:
-			resolve_const_struct_decl(table, d)
-		case ^ast.Data_Struct_Decl:
-			resolve_data_struct_decl(table, d)
-		case ^ast.Form_Decl:
-			resolve_form_decl(table, d)
-		case ^ast.Class_Def_Decl:
-			resolve_class_def_decl(table, d)
-		case ^ast.Class_Impl_Decl:
-			resolve_class_impl_decl(table, d)
-		case ^ast.Interface_Decl:
-			resolve_interface_decl(table, d)
-		case ^ast.Report_Decl:
-			resolve_report_decl(table, d)
-		case ^ast.Include_Decl:
-			resolve_include_decl(table, d)
-		case ^ast.Event_Block:
-			resolve_event_block(table, d)
-		case ^ast.Module_Decl:
-			resolve_module_decl(table, d)
-		case ^ast.Field_Symbol_Decl:
-			resolve_field_symbol_decl(table, d, is_global = true)
-		case ^ast.Field_Symbol_Chain_Decl:
-			resolve_field_symbol_chain_decl(table, d, is_global = true)
-		case ^ast.Controls_Decl:
-			resolve_controls_decl(table, d, is_global = true)
-		case ^ast.Controls_Chain_Decl:
-			resolve_controls_chain_decl(table, d, is_global = true)
+		if statement_is_syntax_tainted(decl, syntax_taint) {
+			continue
 		}
+		resolve_decl_into_with_syntax_taint(table, decl, syntax_taint)
 	}
 }
 
@@ -545,7 +518,11 @@ resolve_struct_components :: proc(
 	}
 }
 
-resolve_form_decl :: proc(table: ^SymbolTable, form: ^ast.Form_Decl) {
+resolve_form_decl :: proc(
+	table: ^SymbolTable,
+	form: ^ast.Form_Decl,
+	syntax_taint: []lexer.TextRange,
+) {
 	name := form.ident.name
 
 	child_table := create_empty_symbol_table(context.allocator)
@@ -562,7 +539,7 @@ resolve_form_decl :: proc(table: ^SymbolTable, form: ^ast.Form_Decl) {
 		resolve_form_param(child_table, param, .Changing)
 	}
 
-	resolve_stmt_list(child_table, form.body[:])
+	resolve_stmt_list(child_table, form.body[:], syntax_taint)
 
 	sym := Symbol {
 		name        = name,
@@ -793,13 +770,17 @@ get_decl_name :: proc(expr: ^ast.Expr) -> string {
 	return ""
 }
 
-resolve_class_def_decl :: proc(table: ^SymbolTable, class_def: ^ast.Class_Def_Decl) {
+resolve_class_def_decl :: proc(
+	table: ^SymbolTable,
+	class_def: ^ast.Class_Def_Decl,
+	syntax_taint: []lexer.TextRange,
+) {
 	name := class_def.ident.name
 
 	child_table := create_empty_symbol_table(context.allocator)
 
 	for section in class_def.sections {
-		resolve_class_section(child_table, section)
+		resolve_class_section(child_table, section, syntax_taint)
 	}
 
 	class_type := make_type(table, .Named)
@@ -815,11 +796,18 @@ resolve_class_def_decl :: proc(table: ^SymbolTable, class_def: ^ast.Class_Def_De
 	add_symbol(table, sym, allow_shadowing = false)
 }
 
-resolve_class_section :: proc(table: ^SymbolTable, section: ^ast.Class_Section) {
+resolve_class_section :: proc(
+	table: ^SymbolTable,
+	section: ^ast.Class_Section,
+	syntax_taint: []lexer.TextRange,
+) {
 	// Map AST access modifier to symbol visibility
 	visibility := access_to_visibility(section.access)
 
 	for type_decl in section.types {
+		if statement_is_syntax_tainted(type_decl, syntax_taint) {
+			continue
+		}
 		#partial switch t in type_decl.derived_stmt {
 		case ^ast.Types_Decl:
 			resolve_types_decl(table, t, false, false)
@@ -831,6 +819,9 @@ resolve_class_section :: proc(table: ^SymbolTable, section: ^ast.Class_Section) 
 	}
 
 	for data_decl in section.data {
+		if statement_is_syntax_tainted(data_decl, syntax_taint) {
+			continue
+		}
 		#partial switch d in data_decl.derived_stmt {
 		case ^ast.Attr_Decl:
 			resolve_attr_decl(table, d, visibility)
@@ -842,6 +833,9 @@ resolve_class_section :: proc(table: ^SymbolTable, section: ^ast.Class_Section) 
 	}
 
 	for method_decl in section.methods {
+		if statement_is_syntax_tainted(method_decl, syntax_taint) {
+			continue
+		}
 		#partial switch m in method_decl.derived_stmt {
 		case ^ast.Method_Decl:
 			resolve_method_decl(table, m, visibility)
@@ -927,7 +921,11 @@ resolve_method_param :: proc(table: ^SymbolTable, param: ^ast.Method_Param) {
 	add_symbol(table, sym, allow_shadowing = false)
 }
 
-resolve_class_impl_decl :: proc(table: ^SymbolTable, class_impl: ^ast.Class_Impl_Decl) {
+resolve_class_impl_decl :: proc(
+	table: ^SymbolTable,
+	class_impl: ^ast.Class_Impl_Decl,
+	syntax_taint: []lexer.TextRange,
+) {
 	if class_impl.ident == nil {
 		return
 	}
@@ -935,24 +933,34 @@ resolve_class_impl_decl :: proc(table: ^SymbolTable, class_impl: ^ast.Class_Impl
 	class_name := strings.to_lower(class_impl.ident.name, context.temp_allocator)
 	if class_sym, ok := table.symbols[class_name]; ok && class_sym.child_scope != nil {
 		for method in class_impl.methods {
+			if statement_is_syntax_tainted(method, syntax_taint) {
+				continue
+			}
 			#partial switch m in method.derived_stmt {
 			case ^ast.Method_Impl:
-				resolve_method_impl(class_sym.child_scope, m)
+				resolve_method_impl(class_sym.child_scope, m, syntax_taint)
 			}
 		}
 		return
 	}
 
 	for method in class_impl.methods {
+		if statement_is_syntax_tainted(method, syntax_taint) {
+			continue
+		}
 		#partial switch m in method.derived_stmt {
 		case ^ast.Method_Impl:
 			fallback_scope := create_empty_symbol_table(context.allocator)
-			resolve_stmt_list(fallback_scope, m.body[:])
+			resolve_stmt_list(fallback_scope, m.body[:], syntax_taint)
 		}
 	}
 }
 
-resolve_method_impl :: proc(class_scope: ^SymbolTable, method_impl: ^ast.Method_Impl) {
+resolve_method_impl :: proc(
+	class_scope: ^SymbolTable,
+	method_impl: ^ast.Method_Impl,
+	syntax_taint: []lexer.TextRange,
+) {
 	if class_scope == nil || method_impl.ident == nil {
 		return
 	}
@@ -963,12 +971,12 @@ resolve_method_impl :: proc(class_scope: ^SymbolTable, method_impl: ^ast.Method_
 			method_sym.child_scope = create_empty_symbol_table(context.allocator)
 			class_scope.symbols[method_name] = method_sym
 		}
-		resolve_stmt_list(method_sym.child_scope, method_impl.body[:])
+		resolve_stmt_list(method_sym.child_scope, method_impl.body[:], syntax_taint)
 		return
 	}
 
 	child_table := create_empty_symbol_table(context.allocator)
-	resolve_stmt_list(child_table, method_impl.body[:])
+	resolve_stmt_list(child_table, method_impl.body[:], syntax_taint)
 	class_scope.symbols[method_name] = Symbol{
 		name        = method_name,
 		kind        = .Method,
@@ -978,15 +986,26 @@ resolve_method_impl :: proc(class_scope: ^SymbolTable, method_impl: ^ast.Method_
 }
 
 // resolve_stmt_list resolves all statements in a list, recursively handling control structures
-resolve_stmt_list :: proc(table: ^SymbolTable, stmts: []^ast.Stmt) {
+resolve_stmt_list :: proc(
+	table: ^SymbolTable,
+	stmts: []^ast.Stmt,
+	syntax_taint: []lexer.TextRange,
+) {
 	for stmt in stmts {
-		resolve_stmt(table, stmt)
+		resolve_stmt(table, stmt, syntax_taint)
 	}
 }
 
 // resolve_stmt resolves declarations in a single statement
-resolve_stmt :: proc(table: ^SymbolTable, stmt: ^ast.Stmt) {
+resolve_stmt :: proc(
+	table: ^SymbolTable,
+	stmt: ^ast.Stmt,
+	syntax_taint: []lexer.TextRange,
+) {
 	if stmt == nil {
+		return
+	}
+	if statement_is_syntax_tainted(stmt, syntax_taint) {
 		return
 	}
 
@@ -1010,15 +1029,15 @@ resolve_stmt :: proc(table: ^SymbolTable, stmt: ^ast.Stmt) {
 	case ^ast.Field_Symbol_Chain_Decl:
 		resolve_field_symbol_chain_decl(table, s, is_global = false)
 	case ^ast.Try_Stmt:
-		resolve_try_stmt(table, s)
+		resolve_try_stmt(table, s, syntax_taint)
 	case ^ast.If_Stmt:
-		resolve_if_stmt(table, s)
+		resolve_if_stmt(table, s, syntax_taint)
 	case ^ast.Case_Stmt:
-		resolve_case_stmt(table, s)
+		resolve_case_stmt(table, s, syntax_taint)
 	case ^ast.While_Stmt:
-		resolve_while_stmt(table, s)
+		resolve_while_stmt(table, s, syntax_taint)
 	case ^ast.Loop_Stmt:
-		resolve_loop_stmt(table, s)
+		resolve_loop_stmt(table, s, syntax_taint)
 	case ^ast.Read_Table_Stmt:
 		resolve_read_table_stmt(table, s)
 	case ^ast.Describe_Table_Stmt:
@@ -1026,22 +1045,22 @@ resolve_stmt :: proc(table: ^SymbolTable, stmt: ^ast.Stmt) {
 	case ^ast.Call_Function_Stmt:
 		resolve_call_function_stmt(table, s)
 	case ^ast.Select_Stmt:
-		resolve_select_stmt(table, s)
+		resolve_select_stmt(table, s, syntax_taint)
 	}
 }
 
-resolve_if_stmt :: proc(table: ^SymbolTable, if_stmt: ^ast.If_Stmt) {
-	resolve_stmt_list(table, if_stmt.body[:])
+resolve_if_stmt :: proc(table: ^SymbolTable, if_stmt: ^ast.If_Stmt, syntax_taint: []lexer.TextRange) {
+	resolve_stmt_list(table, if_stmt.body[:], syntax_taint)
 
 	for branch in if_stmt.elseif_branches {
-		resolve_stmt_list(table, branch.body[:])
+		resolve_stmt_list(table, branch.body[:], syntax_taint)
 	}
 
-	resolve_stmt_list(table, if_stmt.else_body[:])
+	resolve_stmt_list(table, if_stmt.else_body[:], syntax_taint)
 }
 
-resolve_try_stmt :: proc(table: ^SymbolTable, try_stmt: ^ast.Try_Stmt) {
-	resolve_stmt_list(table, try_stmt.body[:])
+resolve_try_stmt :: proc(table: ^SymbolTable, try_stmt: ^ast.Try_Stmt, syntax_taint: []lexer.TextRange) {
+	resolve_stmt_list(table, try_stmt.body[:], syntax_taint)
 
 	for branch in try_stmt.catch_branches {
 		if branch.into_target != nil {
@@ -1061,7 +1080,7 @@ resolve_try_stmt :: proc(table: ^SymbolTable, try_stmt: ^ast.Try_Stmt) {
 			}
 		}
 
-		resolve_stmt_list(table, branch.body[:])
+		resolve_stmt_list(table, branch.body[:], syntax_taint)
 	}
 
 	if try_stmt.cleanup_branch != nil {
@@ -1077,17 +1096,24 @@ resolve_try_stmt :: proc(table: ^SymbolTable, try_stmt: ^ast.Try_Stmt) {
 			}
 		}
 
-		resolve_stmt_list(table, try_stmt.cleanup_branch.body[:])
+		resolve_stmt_list(table, try_stmt.cleanup_branch.body[:], syntax_taint)
 	}
 }
 
-resolve_interface_decl :: proc(table: ^SymbolTable, iface: ^ast.Interface_Decl) {
+resolve_interface_decl :: proc(
+	table: ^SymbolTable,
+	iface: ^ast.Interface_Decl,
+	syntax_taint: []lexer.TextRange,
+) {
 	name := iface.ident.name
 
 	child_table := create_empty_symbol_table(context.allocator)
 
 	// Interface members are implicitly public
 	for method_decl in iface.methods {
+		if statement_is_syntax_tainted(method_decl, syntax_taint) {
+			continue
+		}
 		#partial switch m in method_decl.derived_stmt {
 		case ^ast.Method_Decl:
 			resolve_method_decl(child_table, m, .Public)
@@ -1099,6 +1125,9 @@ resolve_interface_decl :: proc(table: ^SymbolTable, iface: ^ast.Interface_Decl) 
 	}
 
 	for type_decl in iface.types {
+		if statement_is_syntax_tainted(type_decl, syntax_taint) {
+			continue
+		}
 		#partial switch t in type_decl.derived_stmt {
 		case ^ast.Types_Decl:
 			resolve_types_decl(child_table, t, false, false)
@@ -1110,6 +1139,9 @@ resolve_interface_decl :: proc(table: ^SymbolTable, iface: ^ast.Interface_Decl) 
 	}
 
 	for data_decl in iface.data {
+		if statement_is_syntax_tainted(data_decl, syntax_taint) {
+			continue
+		}
 		#partial switch d in data_decl.derived_stmt {
 		case ^ast.Attr_Decl:
 			resolve_attr_decl(child_table, d, .Public)
@@ -1161,12 +1193,16 @@ resolve_include_decl :: proc(table: ^SymbolTable, include: ^ast.Include_Decl) {
 	add_symbol(table, sym, allow_shadowing = true) // Allow shadowing for includes
 }
 
-resolve_event_block :: proc(table: ^SymbolTable, event: ^ast.Event_Block) {
+resolve_event_block :: proc(
+	table: ^SymbolTable,
+	event: ^ast.Event_Block,
+	syntax_taint: []lexer.TextRange,
+) {
 	// Create a child scope for the event block's local variables
 	child_table := create_empty_symbol_table(context.allocator)
 
 	// Resolve declarations in the event body
-	resolve_stmt_list(child_table, event.body[:])
+	resolve_stmt_list(child_table, event.body[:], syntax_taint)
 
 	// Create a symbol for the event with a generated name based on kind
 	event_name := get_event_name(event.kind)
@@ -1199,7 +1235,11 @@ get_event_name :: proc(kind: ast.Event_Kind) -> string {
 	return "unknown-event"
 }
 
-resolve_module_decl :: proc(table: ^SymbolTable, module: ^ast.Module_Decl) {
+resolve_module_decl :: proc(
+	table: ^SymbolTable,
+	module: ^ast.Module_Decl,
+	syntax_taint: []lexer.TextRange,
+) {
 	if module.ident == nil {
 		return
 	}
@@ -1209,7 +1249,7 @@ resolve_module_decl :: proc(table: ^SymbolTable, module: ^ast.Module_Decl) {
 	child_table := create_empty_symbol_table(context.allocator)
 
 	// Resolve declarations in the module body
-	resolve_stmt_list(child_table, module.body[:])
+	resolve_stmt_list(child_table, module.body[:], syntax_taint)
 
 	sym := Symbol {
 		name        = name,
@@ -1257,17 +1297,17 @@ resolve_field_symbol_chain_decl :: proc(
 	}
 }
 
-resolve_case_stmt :: proc(table: ^SymbolTable, case_stmt: ^ast.Case_Stmt) {
+resolve_case_stmt :: proc(table: ^SymbolTable, case_stmt: ^ast.Case_Stmt, syntax_taint: []lexer.TextRange) {
 	for branch in case_stmt.branches {
-		resolve_stmt_list(table, branch.body[:])
+		resolve_stmt_list(table, branch.body[:], syntax_taint)
 	}
 }
 
-resolve_while_stmt :: proc(table: ^SymbolTable, while_stmt: ^ast.While_Stmt) {
-	resolve_stmt_list(table, while_stmt.body[:])
+resolve_while_stmt :: proc(table: ^SymbolTable, while_stmt: ^ast.While_Stmt, syntax_taint: []lexer.TextRange) {
+	resolve_stmt_list(table, while_stmt.body[:], syntax_taint)
 }
 
-resolve_loop_stmt :: proc(table: ^SymbolTable, loop_stmt: ^ast.Loop_Stmt) {
+resolve_loop_stmt :: proc(table: ^SymbolTable, loop_stmt: ^ast.Loop_Stmt, syntax_taint: []lexer.TextRange) {
 	// Handle inline DATA declaration in INTO clause
 	if loop_stmt.into_target != nil {
 		// Check if into_target is from an inline DATA declaration
@@ -1303,7 +1343,7 @@ resolve_loop_stmt :: proc(table: ^SymbolTable, loop_stmt: ^ast.Loop_Stmt) {
 	}
 
 	// Resolve statements in the loop body
-	resolve_stmt_list(table, loop_stmt.body[:])
+	resolve_stmt_list(table, loop_stmt.body[:], syntax_taint)
 }
 
 // is_numeric_type checks if a type is a numeric type (integer, float, numeric)
@@ -1411,7 +1451,11 @@ resolve_param_value_decl :: proc(table: ^SymbolTable, expr: ^ast.Expr) {
 	// as they are quite rare. This can be extended if needed.
 }
 
-resolve_select_stmt :: proc(table: ^SymbolTable, select_stmt: ^ast.Select_Stmt) {
+resolve_select_stmt :: proc(
+	table: ^SymbolTable,
+	select_stmt: ^ast.Select_Stmt,
+	syntax_taint: []lexer.TextRange,
+) {
 	// Handle inline DATA declaration in INTO clause
 	if select_stmt.into_target != nil {
 		// Check if into_target is from an inline DATA declaration
@@ -1430,7 +1474,7 @@ resolve_select_stmt :: proc(table: ^SymbolTable, select_stmt: ^ast.Select_Stmt) 
 	}
 
 	// Resolve statements in the SELECT loop body (for non-SINGLE selects)
-	resolve_stmt_list(table, select_stmt.body[:])
+	resolve_stmt_list(table, select_stmt.body[:], syntax_taint)
 }
 
 // resolve_controls_decl resolves a CONTROLS declaration

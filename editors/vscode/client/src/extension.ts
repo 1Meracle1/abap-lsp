@@ -14,10 +14,41 @@ import {
 	ServerOptions,
 	StreamInfo,
 } from "vscode-languageclient/node";
-import { AdtClient, AdtObjectRef, configureSapConnection, getSapConnectionConfig } from "./adt";
-import { ensureManifestUnit, inferManifestUnitSpec, targetWorkspaceFilePath } from "./manifest";
+import {
+	AdtClient,
+	AdtObjectRef,
+	configureSapConnection,
+	getSapConnectionConfig,
+	pickBestDependencyObject,
+} from "./adt";
+import {
+	ensureManifestDependencyUnit,
+	ensureManifestUnit,
+	inferManifestUnitSpec,
+	targetDependencyWorkspaceFilePath,
+	targetWorkspaceFilePath,
+} from "./manifest";
 
 let client: LanguageClient;
+const pendingRemoteDependencyFetches = new Map<string, Promise<string | undefined>>();
+const negativeRemoteDependencyCache = new Set<string>();
+
+interface RemoteDependencyCandidate {
+	name: string;
+	kind: string;
+}
+
+interface RemoteDependencyResolveParams {
+	workspaceUri: string;
+	sourceUri: string;
+	candidates: RemoteDependencyCandidate[];
+}
+
+interface RemoteDependenciesUpdatedParams {
+	workspaceUri: string;
+	sourceUri: string;
+	fetched: string[];
+}
 
 export function activate(context: vscode.ExtensionContext) {
 	// let serverModule: string;
@@ -67,8 +98,11 @@ export function activate(context: vscode.ExtensionContext) {
 			{ scheme: "untitled", language: "abap" },
 		],
 		synchronize: {
-			// Notify the server about file changes to '.clientrc files contained in the workspace
-			fileEvents: vscode.workspace.createFileSystemWatcher("**/.clientrc"),
+			fileEvents: [
+				vscode.workspace.createFileSystemWatcher("**/.clientrc"),
+				vscode.workspace.createFileSystemWatcher("**/abapls.toml"),
+				vscode.workspace.createFileSystemWatcher("**/.abapls/cache/**/*.abap"),
+			],
 		},
 	};
 
@@ -81,6 +115,7 @@ export function activate(context: vscode.ExtensionContext) {
 	);
 
 	registerCommands(context);
+	registerClientNotifications(context);
 
 	// Start the client. This will also launch the server
 	client.start();
@@ -179,9 +214,107 @@ function registerCommands(context: vscode.ExtensionContext): void {
 			const cacheDir = path.join(workspaceFolder.uri.fsPath, ".abapls", "cache");
 			await fs.promises.rm(cacheDir, { recursive: true, force: true });
 			await fs.promises.mkdir(cacheDir, { recursive: true });
+			clearRemoteDependencyCaches(workspaceFolder);
 			vscode.window.showInformationMessage("ABAP LSP dependency cache cleared.");
 		}),
 	);
+}
+
+function registerClientNotifications(context: vscode.ExtensionContext): void {
+	client.onNotification(
+		"abapls/resolveRemoteDependencies",
+		(params: RemoteDependencyResolveParams) => {
+			void resolveRemoteDependencies(context, params);
+		},
+	);
+}
+
+async function resolveRemoteDependencies(
+	context: vscode.ExtensionContext,
+	params: RemoteDependencyResolveParams,
+): Promise<void> {
+	if (!params?.workspaceUri || !params.candidates?.length) {
+		return;
+	}
+
+	const workspaceFolder = workspaceFolderForUri(params.workspaceUri);
+	if (!workspaceFolder) {
+		return;
+	}
+
+	const connection = await getSapConnectionConfig(context, workspaceFolder, { promptIfMissing: false });
+	if (!connection) {
+		return;
+	}
+
+	const adtClient = new AdtClient(connection);
+	const fetched: string[] = [];
+
+	for (const candidate of params.candidates) {
+		const fetchedName = await resolveRemoteDependencyCandidate(
+			workspaceFolder,
+			adtClient,
+			candidate,
+		);
+		if (fetchedName) {
+			fetched.push(fetchedName);
+		}
+	}
+
+	if (fetched.length === 0) {
+		return;
+	}
+
+	const updateParams: RemoteDependenciesUpdatedParams = {
+		workspaceUri: params.workspaceUri,
+		sourceUri: params.sourceUri,
+		fetched,
+	};
+	await client.sendNotification("abapls/remoteDependenciesUpdated", updateParams);
+}
+
+async function resolveRemoteDependencyCandidate(
+	workspaceFolder: vscode.WorkspaceFolder,
+	adtClient: AdtClient,
+	candidate: RemoteDependencyCandidate,
+): Promise<string | undefined> {
+	const cacheKey = remoteDependencyCacheKey(workspaceFolder, candidate);
+	if (negativeRemoteDependencyCache.has(cacheKey)) {
+		return undefined;
+	}
+
+	const existing = pendingRemoteDependencyFetches.get(cacheKey);
+	if (existing) {
+		return existing;
+	}
+
+	const pending = (async () => {
+		try {
+			const objects = await adtClient.searchRepositoryObjects(candidate.name, 25);
+			const objectRef = pickBestDependencyObject(candidate.name, objects, candidate.kind);
+			if (!objectRef) {
+				negativeRemoteDependencyCache.add(cacheKey);
+				return undefined;
+			}
+
+			const source = await adtClient.fetchObjectSource(objectRef.uri);
+			const filePath = targetDependencyWorkspaceFilePath(workspaceFolder, objectRef);
+			await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
+			await fs.promises.writeFile(filePath, source, "utf8");
+			await ensureManifestDependencyUnit(workspaceFolder, objectRef, filePath);
+			await adtClient.cacheRemoteObject(workspaceFolder, objectRef, source);
+			return objectRef.name;
+		} catch (error) {
+			negativeRemoteDependencyCache.add(cacheKey);
+			console.warn(`ABAP LSP remote dependency lookup failed for ${candidate.name}:`, error);
+			return undefined;
+		} finally {
+			pendingRemoteDependencyFetches.delete(cacheKey);
+		}
+	})();
+
+	pendingRemoteDependencyFetches.set(cacheKey, pending);
+	return pending;
 }
 
 async function promptForRepositoryObject(
@@ -246,6 +379,33 @@ async function pickWorkspaceFolder(): Promise<vscode.WorkspaceFolder | undefined
 	return vscode.window.showWorkspaceFolderPick({
 		placeHolder: "Select the workspace folder for ABAP LSP commands",
 	});
+}
+
+function workspaceFolderForUri(workspaceUri: string): vscode.WorkspaceFolder | undefined {
+	const uri = vscode.Uri.parse(workspaceUri);
+	return vscode.workspace.getWorkspaceFolder(uri) ??
+		vscode.workspace.workspaceFolders?.find((folder) => folder.uri.toString() === workspaceUri);
+}
+
+function remoteDependencyCacheKey(
+	workspaceFolder: vscode.WorkspaceFolder,
+	candidate: RemoteDependencyCandidate,
+): string {
+	return `${workspaceFolder.uri.toString()}:${candidate.kind}:${candidate.name.toLowerCase()}`;
+}
+
+function clearRemoteDependencyCaches(workspaceFolder: vscode.WorkspaceFolder): void {
+	const prefix = `${workspaceFolder.uri.toString()}:`;
+	for (const key of negativeRemoteDependencyCache) {
+		if (key.startsWith(prefix)) {
+			negativeRemoteDependencyCache.delete(key);
+		}
+	}
+	for (const key of pendingRemoteDependencyFetches.keys()) {
+		if (key.startsWith(prefix)) {
+			pendingRemoteDependencyFetches.delete(key);
+		}
+	}
 }
 
 // function getPythonCommand(): string {
