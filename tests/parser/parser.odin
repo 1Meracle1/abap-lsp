@@ -7036,6 +7036,65 @@ loop_nested_test :: proc(t: ^testing.T) {
 }
 
 @(test)
+loop_at_with_where_and_at_endat_blocks_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src =
+	`LOOP AT cs_encode_decode-gs1_element INTO ls_gs1_element
+     WHERE gs1_application_ident IS NOT INITIAL.
+
+  lv_cnt = lv_cnt + 1.
+
+  AT FIRST.
+  ENDAT.
+
+  AT LAST.
+  ENDAT.
+
+  AT NEW gs1_application_ident.
+  ENDAT.
+
+  AT END OF gs1_application_ident.
+  ENDAT.
+
+ENDLOOP.`
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	loop_stmt, ok := file.decls[0].derived_stmt.(^ast.Loop_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Loop_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	testing.expect(t, loop_stmt.where_cond != nil, "Expected LOOP WHERE condition")
+	testing.expect(
+		t,
+		len(loop_stmt.body) == 5,
+		fmt.tprintf("Expected 5 stmts in loop body, got %d", len(loop_stmt.body)),
+	)
+
+	kinds := [?]ast.Loop_At_Control_Kind{.First, .Last, .New, .End_Of}
+	for at_stmt, i in loop_stmt.body[1:5] {
+		ac, aok := at_stmt.derived_stmt.(^ast.Loop_At_Control_Stmt)
+		if !testing.expect(t, aok, fmt.tprintf("Expected Loop_At_Control_Stmt at body[%d], got %T", i + 1, at_stmt.derived_stmt)) { continue }
+		testing.expect(
+			t,
+			ac.kind == kinds[i],
+			fmt.tprintf("AT block %d: expected kind %v, got %v", i, kinds[i], ac.kind),
+		)
+		if ac.kind == .New || ac.kind == .End_Of {
+			testing.expect(t, ac.field != nil, "Expected grouping field for AT NEW / AT END OF")
+		}
+	}
+}
+
+@(test)
 append_initial_line_assigning_field_symbol_test :: proc(t: ^testing.T) {
 	// APPEND INITIAL LINE TO gt_serdet_fieldcat ASSIGNING FIELD-SYMBOL(<fs_fcat>).
 	file := ast.new(ast.File, {})

@@ -99,6 +99,26 @@ parse_at_event_block :: proc(p: ^Parser) -> ^ast.Stmt {
 	start_tok := p.curr_tok
 	advance_token(p) // consume AT
 
+	if check_keyword(p, "FIRST") {
+		advance_token(p)
+		return parse_loop_at_control_stmt(p, start_tok, .First, nil)
+	}
+	if check_keyword(p, "LAST") {
+		advance_token(p)
+		return parse_loop_at_control_stmt(p, start_tok, .Last, nil)
+	}
+	if check_keyword(p, "NEW") {
+		advance_token(p)
+		field := parse_expr(p)
+		return parse_loop_at_control_stmt(p, start_tok, .New, field)
+	}
+	if check_keyword(p, "END") {
+		advance_token(p)
+		expect_keyword_token(p, "OF")
+		field := parse_expr(p)
+		return parse_loop_at_control_stmt(p, start_tok, .End_Of, field)
+	}
+
 	// Check for SELECTION-SCREEN
 	if check_class_keyword(p, "SELECTION", "SCREEN") {
 		// check_class_keyword already advanced past SELECTION-SCREEN

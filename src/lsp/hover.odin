@@ -370,6 +370,18 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 			hover_text = "(statement) LOOP AT GROUP - iterates over members of a group created by GROUP BY"
 		}
 
+	case ^ast.Loop_At_Control_Stmt:
+		switch n.kind {
+		case .First:
+			hover_text = "(statement) AT FIRST ... ENDAT - first iteration of LOOP AT"
+		case .Last:
+			hover_text = "(statement) AT LAST ... ENDAT - last iteration of LOOP AT"
+		case .New:
+			hover_text = "(statement) AT NEW ... ENDAT - start of group when control field changes"
+		case .End_Of:
+			hover_text = "(statement) AT END OF ... ENDAT - end of group for control field"
+		}
+
 	case ^ast.Read_Table_Stmt:
 		switch n.kind {
 		case .With_Key:

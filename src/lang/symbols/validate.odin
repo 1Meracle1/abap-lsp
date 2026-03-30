@@ -136,6 +136,9 @@ validate_stmt_ctx :: proc(ctx: ^Validation_Context, stmt: ^ast.Stmt) {
 		validate_expr_ctx(ctx, s.into_target)
 		validate_expr_ctx(ctx, s.assigning_target)
 		validate_stmt_list_ctx(ctx, s.body[:])
+	case ^ast.Loop_At_Control_Stmt:
+		validate_expr_ctx(ctx, s.field)
+		validate_stmt_list_ctx(ctx, s.body[:])
 	case ^ast.Read_Table_Stmt:
 		validate_expr_ctx(ctx, s.itab)
 		validate_expr_ctx(ctx, s.into_target)

@@ -832,6 +832,14 @@ collect_tokens_from_stmt :: proc(
 			collect_tokens_from_stmt(tokens, body_stmt, snap)
 		}
 
+	case ^ast.Loop_At_Control_Stmt:
+		if s.field != nil {
+			collect_tokens_from_expr(tokens, s.field, snap, nil)
+		}
+		for body_stmt in s.body {
+			collect_tokens_from_stmt(tokens, body_stmt, snap)
+		}
+
 	case ^ast.Read_Table_Stmt:
 		if s.itab != nil {
 			collect_tokens_from_expr(tokens, s.itab, snap, nil)

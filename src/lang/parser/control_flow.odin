@@ -135,6 +135,34 @@ parse_loop_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	return loop_stmt
 }
 
+// AT FIRST|LAST|NEW|END OF ... . ... ENDAT.  (precondition: leading AT already consumed)
+parse_loop_at_control_stmt :: proc(p: ^Parser, at_tok: lexer.Token, kind: ast.Loop_At_Control_Kind, field: ^ast.Expr) -> ^ast.Stmt {
+	expect_token(p, .Period)
+
+	stmt := ast.new(ast.Loop_At_Control_Stmt, at_tok.range)
+	stmt.kind = kind
+	stmt.field = field
+	stmt.body = make([dynamic]^ast.Stmt)
+
+	for p.curr_tok.kind != .EOF {
+		if check_keyword(p, "ENDAT") {
+			break
+		}
+		s := parse_stmt(p)
+		if s != nil {
+			append(&stmt.body, s)
+		}
+	}
+
+	endat_tok := expect_keyword_token(p, "ENDAT")
+	period_tok := expect_token(p, .Period)
+	stmt.range.end = period_tok.range.end
+	stmt.derived_stmt = stmt
+	_ = endat_tok
+
+	return stmt
+}
+
 // parse_loop_clauses parses the optional clauses of a LOOP statement
 parse_loop_clauses :: proc(p: ^Parser, loop_stmt: ^ast.Loop_Stmt) {
 	for p.curr_tok.kind != .EOF && p.curr_tok.kind != .Period {

@@ -433,6 +433,21 @@ Loop_Stmt :: struct {
 	body:                   [dynamic]^Stmt,
 }
 
+// AT ... ENDAT blocks inside LOOP AT (control levels / grouping)
+Loop_At_Control_Kind :: enum {
+	First, // AT FIRST. ... ENDAT.
+	Last, // AT LAST. ... ENDAT.
+	New, // AT NEW f. ... ENDAT.
+	End_Of, // AT END OF f. ... ENDAT.
+}
+
+Loop_At_Control_Stmt :: struct {
+	using node: Stmt,
+	kind:       Loop_At_Control_Kind,
+	field:      ^Expr, // set for .New and .End_Of (grouping field)
+	body:       [dynamic]^Stmt,
+}
+
 Clear_Stmt :: struct {
 	using node: Stmt,
 	exprs:      [dynamic]^Expr,
@@ -1177,6 +1192,7 @@ Any_Node :: union {
 	^Case_Stmt,
 	^While_Stmt,
 	^Loop_Stmt,
+	^Loop_At_Control_Stmt,
 	^Clear_Stmt,
 	^Write_Stmt,
 	^Message_Stmt,
@@ -1285,6 +1301,7 @@ Any_Stmt :: union {
 	^Case_Stmt,
 	^While_Stmt,
 	^Loop_Stmt,
+	^Loop_At_Control_Stmt,
 	^Clear_Stmt,
 	^Write_Stmt,
 	^Message_Stmt,
