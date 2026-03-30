@@ -109,6 +109,10 @@ parse_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			if check_keyword_ahead(p, "BADI") {
 				return parse_get_badi_stmt(p)
 			}
+		case "CONVERT":
+			if check_keyword_ahead(p, "DATE") {
+				return parse_convert_date_time_to_time_stamp_stmt(p)
+			}
 		case "SET":
 			return parse_set_stmt(p)
 		case "CASE":

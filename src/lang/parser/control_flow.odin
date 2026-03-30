@@ -323,6 +323,38 @@ parse_get_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	return stmt
 }
 
+// CONVERT DATE dat TIME tim INTO TIME STAMP tstamp [TIME ZONE tz].
+parse_convert_date_time_to_time_stamp_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
+	convert_tok := expect_keyword_token(p, "CONVERT")
+	expect_keyword_token(p, "DATE")
+	date_expr := parse_expr(p)
+	expect_keyword_token(p, "TIME")
+	time_expr := parse_expr(p)
+	expect_keyword_token(p, "INTO")
+	expect_keyword_token(p, "TIME")
+	expect_keyword_token(p, "STAMP")
+	stamp_target: ^ast.Expr
+	if check_keyword(p, "DATA") {
+		stamp_target = parse_data_inline_expr(p)
+	} else {
+		stamp_target = parse_expr(p)
+	}
+	time_zone: ^ast.Expr = nil
+	if check_keyword(p, "TIME") {
+		advance_token(p)
+		expect_keyword_token(p, "ZONE")
+		time_zone = parse_expr(p)
+	}
+	period_tok := expect_token(p, .Period)
+	stmt := ast.new(ast.Convert_Date_Time_To_Time_Stamp_Stmt, convert_tok, period_tok)
+	stmt.date = date_expr
+	stmt.time = time_expr
+	stmt.stamp = stamp_target
+	stmt.time_zone = time_zone
+	stmt.derived_stmt = stmt
+	return stmt
+}
+
 // GET BADI badi_ref [FILTERS name = expr ...].
 parse_get_badi_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	get_tok := expect_keyword_token(p, "GET")
@@ -397,15 +429,33 @@ parse_try_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			catch_branch.before_unwind = true
 		}
 
+		// Optional chaining colon: CATCH: cx_class ... (same idea as DATA:, WRITE:, etc.)
+		allow_token(p, .Colon)
+
 		for p.curr_tok.kind != .EOF {
+			skip_pragma(p)
 			if check_keyword(p, "INTO") || p.curr_tok.kind == .Period {
 				break
 			}
+			pos_before := p.curr_tok.range.start
 			class_ref := parse_expr(p)
 			if class_ref == nil {
 				break
 			}
+			// parse_expr can yield Bad_Expr without consuming (e.g. stray ':'); avoid spinning.
+			if p.curr_tok.range.start == pos_before {
+				error(
+					p,
+					p.curr_tok.range,
+					"expected exception class reference after CATCH",
+				)
+				if p.curr_tok.kind != .Period && !check_keyword(p, "INTO") {
+					advance_token(p)
+				}
+				break
+			}
 			append(&catch_branch.class_refs, class_ref)
+			skip_pragma(p)
 		}
 
 		if check_keyword(p, "INTO") {

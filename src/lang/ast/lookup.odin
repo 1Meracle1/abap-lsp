@@ -525,6 +525,28 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 			}
 		}
 
+	case ^Convert_Date_Time_To_Time_Stamp_Stmt:
+		if n.date != nil {
+			if res := find_node_at_offset(&n.date.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		if n.time != nil {
+			if res := find_node_at_offset(&n.time.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		if n.stamp != nil {
+			if res := find_node_at_offset(&n.stamp.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		if n.time_zone != nil {
+			if res := find_node_at_offset(&n.time_zone.expr_base, offset); res != nil {
+				return res
+			}
+		}
+
 	case ^Get_Badi_Stmt:
 		if n.badi_ref != nil {
 			if res := find_node_at_offset(&n.badi_ref.expr_base, offset); res != nil {

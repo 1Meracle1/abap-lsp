@@ -7508,6 +7508,134 @@ get_time_stamp_field_ident_test :: proc(t: ^testing.T) {
 }
 
 @(test)
+convert_date_time_to_time_stamp_multiline_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src =
+		`CONVERT DATE iv_date1 TIME lv_time1 INTO TIME STAMP lv_tstmp1
+    TIME ZONE lv_tzone1.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) {
+		return
+	}
+
+	conv, ok := file.decls[0].derived_stmt.(^ast.Convert_Date_Time_To_Time_Stamp_Stmt)
+	if !testing.expect(
+		t,
+		ok,
+		fmt.tprintf("Expected Convert_Date_Time_To_Time_Stamp_Stmt, got %T", file.decls[0].derived_stmt),
+	) {
+		return
+	}
+
+	if di, dok := conv.date.derived_expr.(^ast.Ident); dok {
+		testing.expect(t, di.name == "iv_date1", fmt.tprintf("date: expected iv_date1, got %s", di.name))
+	} else {
+		testing.expect(t, false, "date expr")
+	}
+	if ti, tok := conv.time.derived_expr.(^ast.Ident); tok {
+		testing.expect(t, ti.name == "lv_time1", fmt.tprintf("time: expected lv_time1, got %s", ti.name))
+	} else {
+		testing.expect(t, false, "time expr")
+	}
+	if si, sok := conv.stamp.derived_expr.(^ast.Ident); sok {
+		testing.expect(t, si.name == "lv_tstmp1", fmt.tprintf("stamp: expected lv_tstmp1, got %s", si.name))
+	} else {
+		testing.expect(t, false, "stamp expr")
+	}
+	if zi, zok := conv.time_zone.derived_expr.(^ast.Ident); zok {
+		testing.expect(t, zi.name == "lv_tzone1", fmt.tprintf("tz: expected lv_tzone1, got %s", zi.name))
+	} else {
+		testing.expect(t, false, "time_zone expr")
+	}
+}
+
+@(test)
+convert_date_time_to_time_stamp_single_line_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src =
+		`CONVERT DATE iv_date TIME lv_time INTO TIME STAMP rv_timestamp TIME ZONE iv_timezone.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) {
+		return
+	}
+
+	conv, ok := file.decls[0].derived_stmt.(^ast.Convert_Date_Time_To_Time_Stamp_Stmt)
+	if !testing.expect(
+		t,
+		ok,
+		fmt.tprintf("Expected Convert_Date_Time_To_Time_Stamp_Stmt, got %T", file.decls[0].derived_stmt),
+	) {
+		return
+	}
+
+	if di, dok := conv.date.derived_expr.(^ast.Ident); dok {
+		testing.expect(t, di.name == "iv_date", fmt.tprintf("date: expected iv_date, got %s", di.name))
+	} else {
+		testing.expect(t, false, "date expr")
+	}
+	if zi, zok := conv.time_zone.derived_expr.(^ast.Ident); zok {
+		testing.expect(
+			t,
+			zi.name == "iv_timezone",
+			fmt.tprintf("tz: expected iv_timezone, got %s", zi.name),
+		)
+	} else {
+		testing.expect(t, false, "time_zone expr")
+	}
+}
+
+@(test)
+convert_date_time_to_time_stamp_selector_timezone_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src =
+		`CONVERT DATE lv_modified_date_fr TIME iv_modified_time_fr
+      INTO TIME STAMP lv_mod_time_fr TIME ZONE sy-zonlo.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) {
+		return
+	}
+
+	conv, ok := file.decls[0].derived_stmt.(^ast.Convert_Date_Time_To_Time_Stamp_Stmt)
+	if !testing.expect(
+		t,
+		ok,
+		fmt.tprintf("Expected Convert_Date_Time_To_Time_Stamp_Stmt, got %T", file.decls[0].derived_stmt),
+	) {
+		return
+	}
+
+	sel, sel_ok := conv.time_zone.derived_expr.(^ast.Selector_Expr)
+	if !testing.expect(t, sel_ok, "time_zone should be Selector_Expr for sy-zonlo") {
+		return
+	}
+	testing.expect(t, sel.field.name == "zonlo", fmt.tprintf("field zonlo, got %s", sel.field.name))
+}
+
+@(test)
 get_badi_simple_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
 	file.src = `GET BADI lo_badi_md_attributes.`

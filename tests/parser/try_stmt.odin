@@ -151,3 +151,59 @@ ENDTRY.`
 		fmt.tprintf("Expected 1 CLEANUP body stmt, got %d", len(try_stmt.cleanup_branch.body)),
 	)
 }
+
+@(test)
+try_catch_colon_chain_and_pragma_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src = `TRY.
+        GET BADI lo_badi_md_attributes.
+      CATCH: cx_badi_not_implemented ##NO_HANDLER.
+        lv_flag = 1.
+      CATCH: cx_badi_unknown_error.
+        lv_flag = 2.
+    ENDTRY.`
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 stmt, got %d", len(file.decls))) do return
+
+	try_stmt, ok := file.decls[0].derived_stmt.(^ast.Try_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Try_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	if !testing.expect(t, len(try_stmt.body) == 1, fmt.tprintf("Expected 1 TRY body stmt, got %d", len(try_stmt.body))) do return
+	_, get_ok := try_stmt.body[0].derived_stmt.(^ast.Get_Badi_Stmt)
+	testing.expect(t, get_ok, fmt.tprintf("Expected GET BADI in TRY body, got %T", try_stmt.body[0].derived_stmt))
+
+	if !testing.expect(t, len(try_stmt.catch_branches) == 2, fmt.tprintf("Expected 2 CATCH branches, got %d", len(try_stmt.catch_branches))) do return
+
+	c0 := try_stmt.catch_branches[0]
+	if !testing.expect(t, len(c0.class_refs) == 1, fmt.tprintf("branch 0: expected 1 class ref, got %d", len(c0.class_refs))) do return
+	if id0, id0_ok := c0.class_refs[0].derived_expr.(^ast.Ident); id0_ok {
+		testing.expect(
+			t,
+			id0.name == "cx_badi_not_implemented",
+			fmt.tprintf("Expected cx_badi_not_implemented, got %s", id0.name),
+		)
+	} else {
+		testing.expect(t, false, "branch 0 class ref")
+	}
+	testing.expect(t, len(c0.body) == 1, fmt.tprintf("branch 0 body: expected 1 stmt, got %d", len(c0.body)))
+
+	c1 := try_stmt.catch_branches[1]
+	if !testing.expect(t, len(c1.class_refs) == 1, fmt.tprintf("branch 1: expected 1 class ref, got %d", len(c1.class_refs))) do return
+	if id1, id1_ok := c1.class_refs[0].derived_expr.(^ast.Ident); id1_ok {
+		testing.expect(
+			t,
+			id1.name == "cx_badi_unknown_error",
+			fmt.tprintf("Expected cx_badi_unknown_error, got %s", id1.name),
+		)
+	} else {
+		testing.expect(t, false, "branch 1 class ref")
+	}
+}
