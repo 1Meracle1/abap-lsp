@@ -373,6 +373,25 @@ collect_tokens_from_stmt :: proc(
 			collect_tokens_from_expr(tokens, expr, snap, nil)
 		}
 
+	case ^ast.Write_Stmt:
+		for &op in s.operands {
+			if op.format_len != nil {
+				collect_tokens_from_expr(tokens, op.format_len, snap, nil)
+			}
+			if op.data != nil {
+				collect_tokens_from_expr(tokens, op.data, snap, nil)
+			}
+			if op.to_target != nil {
+				collect_tokens_from_expr(tokens, op.to_target, snap, nil)
+			}
+			if op.decimals != nil {
+				collect_tokens_from_expr(tokens, op.decimals, snap, nil)
+			}
+			if op.time_zone != nil {
+				collect_tokens_from_expr(tokens, op.time_zone, snap, nil)
+			}
+		}
+
 	case ^ast.Block_Stmt:
 		for block_stmt in s.stmts {
 			collect_tokens_from_stmt(tokens, block_stmt, snap)

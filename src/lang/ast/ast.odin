@@ -430,6 +430,27 @@ Clear_Stmt :: struct {
 	exprs:      [dynamic]^Expr,
 }
 
+// WRITE operand (one target of WRITE / WRITE: ... , ... ).
+Write_Operand :: struct {
+	range:           lexer.TextRange,
+	line_feed:       bool, // leading /
+	format_len:      ^Expr, // optional (len) before data (outputs as /(len) in list form)
+	data:            ^Expr,
+	to_target:       ^Expr,
+	decimals:        ^Expr,
+	time_zone:       ^Expr,
+	left_justified:  bool,
+	right_justified: bool,
+	no_grouping:     bool,
+	no_sign:         bool,
+}
+
+// WRITE statement — list output, optional TO for string templates, formatting clauses.
+Write_Stmt :: struct {
+	using node: Stmt,
+	operands:   [dynamic]Write_Operand,
+}
+
 // MESSAGE statement
 // Syntax: MESSAGE { msg | text } [TYPE type] [DISPLAY LIKE display_type] [WITH v1 [v2 [v3 [v4]]]] [INTO data]
 Message_Stmt :: struct {
@@ -1145,6 +1166,7 @@ Any_Node :: union {
 	^While_Stmt,
 	^Loop_Stmt,
 	^Clear_Stmt,
+	^Write_Stmt,
 	^Message_Stmt,
 	^Insert_Stmt,
 	^Sort_Stmt,
@@ -1251,6 +1273,7 @@ Any_Stmt :: union {
 	^While_Stmt,
 	^Loop_Stmt,
 	^Clear_Stmt,
+	^Write_Stmt,
 	^Message_Stmt,
 	^Insert_Stmt,
 	^Sort_Stmt,

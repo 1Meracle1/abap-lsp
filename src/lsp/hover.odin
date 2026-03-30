@@ -261,6 +261,9 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 	case ^ast.Message_Stmt:
 		hover_text = "(statement) MESSAGE - displays a message to the user"
 
+	case ^ast.Write_Stmt:
+		hover_text = "(statement) WRITE - writes data to the current output list"
+
 	case ^ast.Assign_Field_Symbol_Stmt:
 		if n.is_component {
 			hover_text = "(statement) ASSIGN COMPONENT ... OF STRUCTURE ... TO - assigns a structure component to a field symbol"

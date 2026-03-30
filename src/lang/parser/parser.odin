@@ -148,6 +148,8 @@ parse_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			if check_keyword_ahead(p, "TABLE") {
 				return parse_describe_table_stmt(p)
 			}
+		case "WRITE":
+			return parse_write_stmt(p)
 		case "CONDENSE":
 			return parse_condense_stmt(p)
 		case "SPLIT":

@@ -624,6 +624,37 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 			}
 		}
 
+	case ^Write_Stmt:
+		for &op in n.operands {
+			if offset >= op.range.start && offset <= op.range.end {
+				if op.format_len != nil {
+					if res := find_node_at_offset(&op.format_len.expr_base, offset); res != nil {
+						return res
+					}
+				}
+				if op.data != nil {
+					if res := find_node_at_offset(&op.data.expr_base, offset); res != nil {
+						return res
+					}
+				}
+				if op.to_target != nil {
+					if res := find_node_at_offset(&op.to_target.expr_base, offset); res != nil {
+						return res
+					}
+				}
+				if op.decimals != nil {
+					if res := find_node_at_offset(&op.decimals.expr_base, offset); res != nil {
+						return res
+					}
+				}
+				if op.time_zone != nil {
+					if res := find_node_at_offset(&op.time_zone.expr_base, offset); res != nil {
+						return res
+					}
+				}
+			}
+		}
+
 	case ^Message_Stmt:
 		if n.msg_expr != nil {
 			if res := find_node_at_offset(&n.msg_expr.expr_base, offset); res != nil {
