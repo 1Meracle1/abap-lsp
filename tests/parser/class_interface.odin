@@ -455,6 +455,88 @@ ENDINTERFACE.`
 }
 
 @(test)
+class_methods_sap_helper_style_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src = `CLASS /STTP/CL_HELPER_UTILITIES DEFINITION
+  PUBLIC
+  CREATE PUBLIC .
+  PUBLIC SECTION.
+    CLASS-METHODS GET_HTTP_DESTINATION
+      IMPORTING
+        !IV_LOGSYS TYPE LOGSYS
+      EXPORTING
+        VALUE(EV_RFCDEST) TYPE RFCDEST
+        VALUE(EV_CLIENT) TYPE MANDT .
+    CLASS-METHODS DISPLAY_ALV_TABLE
+      IMPORTING
+        !IV_STRUCTURE_NAME TYPE TABNAME
+        !IV_CLIENT_NEVER_DISPLAY TYPE FLAG DEFAULT ABAP_TRUE
+        !IV_TITLE TYPE LVC_TITLE DEFAULT TEXT-002
+        !IV_START_COLUMN TYPE I OPTIONAL
+        !IV_SELECTION_MODE TYPE SALV_DE_CONSTANT DEFAULT IF_SALV_C_SELECTION_MODE=>CELL
+      EXPORTING
+        !EV_ALV_ROW TYPE SALV_DE_ROW
+        VALUE(EV_ALV_COLUMN) TYPE SALV_DE_COLUMN
+      CHANGING
+        !CT_GRID_DATA TYPE STANDARD TABLE
+        !CT_SELECTED_ROWS TYPE SALV_T_ROW OPTIONAL .
+ENDCLASS.`
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if len(file.decls) > 0 {
+		class, ok := file.decls[0].derived_stmt.(^ast.Class_Def_Decl)
+		if !testing.expect(t, ok, "Expected Class_Def_Decl") do return
+
+		testing.expect(t, class.ident.name == "/STTP/CL_HELPER_UTILITIES")
+		if len(class.sections) == 0 do return
+		section := class.sections[0]
+		testing.expect(t, len(section.methods) == 2, fmt.tprintf("Expected 2 methods, got %d", len(section.methods)))
+
+		get_http, mok := section.methods[0].derived_stmt.(^ast.Method_Decl)
+		if testing.expect(t, mok, "GET_HTTP_DESTINATION Method_Decl") {
+			testing.expect(t, .Class in get_http.flags)
+			testing.expect(t, get_http.ident.name == "GET_HTTP_DESTINATION")
+			testing.expect(t, len(get_http.params) == 3)
+			if len(get_http.params) >= 3 {
+				testing.expect(t, get_http.params[0].ident.name == "IV_LOGSYS")
+				testing.expect(t, get_http.params[0].kind == .Importing)
+				testing.expect(t, get_http.params[1].ident.name == "EV_RFCDEST")
+				testing.expect(t, get_http.params[1].kind == .Exporting)
+				testing.expect(t, get_http.params[2].ident.name == "EV_CLIENT")
+				testing.expect(t, get_http.params[2].kind == .Exporting)
+			}
+		}
+
+		display, dok := section.methods[1].derived_stmt.(^ast.Method_Decl)
+		if testing.expect(t, dok, "DISPLAY_ALV_TABLE Method_Decl") {
+			testing.expect(t, .Class in display.flags)
+			testing.expect(t, len(display.params) == 9, fmt.tprintf("param count %d", len(display.params)))
+			// CHANGING generic table: STANDARD TABLE without OF
+			last_changing := display.params[8]
+			testing.expect(t, last_changing.ident.name == "CT_SELECTED_ROWS")
+			testing.expect(t, last_changing.kind == .Changing)
+			testing.expect(t, last_changing.optional)
+
+			gen_table_param := display.params[7]
+			testing.expect(t, gen_table_param.ident.name == "CT_GRID_DATA")
+			tt, tt_ok := gen_table_param.typed.derived_expr.(^ast.Table_Type)
+			if testing.expect(t, tt_ok, "STANDARD TABLE type") {
+				testing.expect(t, tt.kind == .Standard)
+				testing.expect(t, tt.elem == nil, "generic STANDARD TABLE has no line type")
+			}
+		}
+	}
+}
+
+@(test)
 class_method_with_reference_parameters_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
 	file.src = `CLASS zcl_notifier DEFINITION.

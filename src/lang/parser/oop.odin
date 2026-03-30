@@ -546,7 +546,15 @@ parse_method_params :: proc(
 			continue
 		}
 
-		ident_tok := parse_method_param_ident(p)
+		ident_tok: lexer.Token
+		if (kind == .Exporting || kind == .Changing) && check_keyword(p, "VALUE") {
+			advance_token(p)
+			expect_token(p, .LParen)
+			ident_tok = parse_method_param_ident(p)
+			expect_token(p, .RParen)
+		} else {
+			ident_tok = parse_method_param_ident(p)
+		}
 
 		param := ast.new(ast.Method_Param, ident_tok.range)
 		param.kind = kind
