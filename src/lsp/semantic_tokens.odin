@@ -599,6 +599,14 @@ collect_tokens_from_stmt :: proc(
 			collect_tokens_from_expr(tokens, s.source, snap, nil)
 		}
 
+	case ^ast.Modify_From_Stmt:
+		if s.target != nil {
+			collect_tokens_from_expr(tokens, s.target, snap, nil)
+		}
+		if s.source != nil {
+			collect_tokens_from_expr(tokens, s.source, snap, nil)
+		}
+
 	case ^ast.Sort_Stmt:
 		if s.itab != nil {
 			collect_tokens_from_expr(tokens, s.itab, snap, nil)

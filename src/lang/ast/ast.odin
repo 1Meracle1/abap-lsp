@@ -327,6 +327,13 @@ Modify_Screen_Stmt :: struct {
 	using node: Stmt,
 }
 
+// MODIFY dbtab FROM wa.
+Modify_From_Stmt :: struct {
+	using node: Stmt,
+	target: ^Expr, // database table
+	source: ^Expr, // work area
+}
+
 Leave_Program_Stmt :: struct {
 	using node: Stmt,
 }
@@ -1095,6 +1102,7 @@ Any_Node :: union {
 	^Elseif_Branch,
 	^Return_Stmt,
 	^Modify_Screen_Stmt,
+	^Modify_From_Stmt,
 	^Leave_Program_Stmt,
 	^Get_Time_Stamp_Stmt,
 	^Set_Stmt,
@@ -1196,6 +1204,7 @@ Any_Stmt :: union {
 	^If_Stmt,
 	^Return_Stmt,
 	^Modify_Screen_Stmt,
+	^Modify_From_Stmt,
 	^Leave_Program_Stmt,
 	^Get_Time_Stamp_Stmt,
 	^Set_Stmt,

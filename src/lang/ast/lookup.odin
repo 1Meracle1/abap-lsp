@@ -491,6 +491,19 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 	case ^Modify_Screen_Stmt:
 		return node
 
+	case ^Modify_From_Stmt:
+		if n.target != nil {
+			if res := find_node_at_offset(&n.target.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		if n.source != nil {
+			if res := find_node_at_offset(&n.source.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		return node
+
 	case ^Leave_Program_Stmt:
 		return node
 

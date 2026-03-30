@@ -286,6 +286,9 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 			hover_text = "(statement) INSERT ... FROM TABLE - inserts data from an internal table into a database table"
 		}
 
+	case ^ast.Modify_From_Stmt:
+		hover_text = "(statement) MODIFY ... FROM - changes or adds a row in a database table from a work area"
+
 	case ^ast.Append_Stmt:
 		switch n.kind {
 		case .Simple:

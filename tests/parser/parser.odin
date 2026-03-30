@@ -5388,6 +5388,57 @@ insert_from_wa_test :: proc(t: ^testing.T) {
 }
 
 @(test)
+modify_from_wa_namespace_table_test :: proc(t: ^testing.T) {
+	// MODIFY /namespace/dbtab FROM wa.
+	file := ast.new(ast.File, {})
+	file.src = `MODIFY /cdbasis/cusset FROM ls_cusset.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	mod_stmt, ok := file.decls[0].derived_stmt.(^ast.Modify_From_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Modify_From_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	testing.expect(t, mod_stmt.target != nil, "Expected target to be set")
+	testing.expect(t, mod_stmt.source != nil, "Expected source to be set")
+
+	if target_ident, iok := mod_stmt.target.derived_expr.(^ast.Ident); iok {
+		testing.expect(
+			t,
+			target_ident.name == "/cdbasis/cusset",
+			fmt.tprintf("Expected '/cdbasis/cusset', got '%s'", target_ident.name),
+		)
+	} else {
+		testing.expect(
+			t,
+			false,
+			fmt.tprintf("Expected target to be Ident, got %T", mod_stmt.target.derived_expr),
+		)
+	}
+
+	if source_ident, sok := mod_stmt.source.derived_expr.(^ast.Ident); sok {
+		testing.expect(
+			t,
+			source_ident.name == "ls_cusset",
+			fmt.tprintf("Expected 'ls_cusset', got '%s'", source_ident.name),
+		)
+	} else {
+		testing.expect(
+			t,
+			false,
+			fmt.tprintf("Expected source to be Ident, got %T", mod_stmt.source.derived_expr),
+		)
+	}
+}
+
+@(test)
 insert_from_table_test :: proc(t: ^testing.T) {
 	// INSERT target FROM TABLE itab.
 	file := ast.new(ast.File, {})

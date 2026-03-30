@@ -244,10 +244,16 @@ parse_modify_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 		expect_token(p, .Period)
 		stmt := ast.new(ast.Modify_Screen_Stmt, modify_tok, p.curr_tok)
 		return stmt
-	} else {
-		error(p, p.curr_tok.range, "expected SCREEN after MODIFY")
-		return nil
 	}
+	// MODIFY dbtab FROM wa.
+	target := parse_expr(p)
+	expect_keyword_token(p, "FROM")
+	source := parse_expr(p)
+	period_tok := expect_token(p, .Period)
+	stmt := ast.new(ast.Modify_From_Stmt, modify_tok, period_tok)
+	stmt.target = target
+	stmt.source = source
+	return stmt
 }
 
 // Syntax:
