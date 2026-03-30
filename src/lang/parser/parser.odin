@@ -116,6 +116,11 @@ parse_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			return parse_loop_stmt(p)
 		case "CLEAR":
 			return parse_clear_stmt(p)
+		case "MOVE":
+			move_kw := p.curr_tok
+			if check_hyphenated_keyword(p, "MOVE", "CORRESPONDING") {
+				return parse_move_corresponding_stmt(p, move_kw)
+			}
 		case "MESSAGE":
 			return parse_message_stmt(p)
 		case "DELETE":
@@ -1444,14 +1449,22 @@ parse_call_function_param_value :: proc(p: ^Parser) -> ^ast.Expr {
 	return parse_expr(p)
 }
 
-// skip_pragma skips ABAP pragmas like ##ENH_OK
+// skip_pragma skips ABAP pragmas like ##ENH_OK (lexer emits these as .Comment)
 skip_pragma :: proc(p: ^Parser) {
-	// Pragmas start with ## - check if current token looks like a pragma
-	// The lexer might handle this differently, so we check for the pattern
-	if p.curr_tok.kind == .Ident && len(p.curr_tok.lit) >= 2 {
-		if p.curr_tok.lit[0] == '#' && p.curr_tok.lit[1] == '#' {
-			advance_token(p)
+	for {
+		if p.curr_tok.kind == .Comment && len(p.curr_tok.lit) >= 2 {
+			if p.curr_tok.lit[0] == '#' && p.curr_tok.lit[1] == '#' {
+				advance_token(p)
+				continue
+			}
 		}
+		if p.curr_tok.kind == .Ident && len(p.curr_tok.lit) >= 2 {
+			if p.curr_tok.lit[0] == '#' && p.curr_tok.lit[1] == '#' {
+				advance_token(p)
+				continue
+			}
+		}
+		break
 	}
 }
 

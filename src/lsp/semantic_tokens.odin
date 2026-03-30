@@ -281,6 +281,14 @@ collect_tokens_from_stmt :: proc(
 			collect_tokens_from_expr(tokens, rhs, snap, nil)
 		}
 
+	case ^ast.Move_Corresponding_Stmt:
+		if s.source != nil {
+			collect_tokens_from_expr(tokens, s.source, snap, nil)
+		}
+		if s.target != nil {
+			collect_tokens_from_expr(tokens, s.target, snap, nil)
+		}
+
 	case ^ast.Assign_Field_Symbol_Stmt:
 		if s.component != nil {
 			collect_tokens_from_expr(tokens, s.component, snap, nil)

@@ -29,7 +29,7 @@ test_remote_dependency_request_is_suppressed_by_syntax_errors :: proc(t: ^testin
 		store,
 		uri,
 		`DATA lv_before TYPE i.
-MOVE-CORRESPONDING is_cusset TO ls_cusset.
+MOVE-CORRESPONDING1 is_cusset TO ls_cusset.
 DATA lv_after TYPE zcl_remote_demo.`,
 		1,
 	)

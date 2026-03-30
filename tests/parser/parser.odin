@@ -815,7 +815,7 @@ form_errornous_test :: proc(t: ^testing.T) {
 @(test)
 statement_syntax_error_range_spans_full_unsupported_stmt_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
-	file.src = `MOVE-CORRESPONDING is_cusset TO ls_cusset.
+	file.src = `MOVE-CORRESPONDING1 is_cusset TO ls_cusset.
 DATA lv_ok TYPE i.`
 
 	p: parser.Parser
@@ -832,9 +832,46 @@ DATA lv_ok TYPE i.`
 	err := file.syntax_errors[0]
 	testing.expect(
 		t,
-		file.src[err.range.start:err.range.end] == "MOVE-CORRESPONDING is_cusset TO ls_cusset.",
+		file.src[err.range.start:err.range.end] == "MOVE-CORRESPONDING1 is_cusset TO ls_cusset.",
 		fmt.tprintf("unexpected syntax error slice %q", file.src[err.range.start:err.range.end]),
 	)
+}
+
+@(test)
+move_corresponding_stmt_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src =
+	`MOVE-CORRESPONDING is_cusset TO ls_cusset.
+MOVE-CORRESPONDING ls_bup TO es_bup_result ##ENH_OK.
+DATA lv_ok TYPE i.`
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+	testing.expect(t, len(file.decls) == 3, fmt.tprintf("Expected 3 stmts, got %v", len(file.decls)))
+	if len(file.decls) >= 3 {
+		mc0, ok0 := file.decls[0].derived_stmt.(^ast.Move_Corresponding_Stmt)
+		testing.expect(t, ok0, "expected MOVE-CORRESPONDING stmt")
+		if ok0 {
+			id_a, ok_a := mc0.source.derived_expr.(^ast.Ident)
+			id_b, ok_b := mc0.target.derived_expr.(^ast.Ident)
+			testing.expect(t, ok_a && id_a.name == "is_cusset", "expected source is_cusset")
+			testing.expect(t, ok_b && id_b.name == "ls_cusset", "expected target ls_cusset")
+		}
+		mc1, ok1 := file.decls[1].derived_stmt.(^ast.Move_Corresponding_Stmt)
+		testing.expect(t, ok1, "expected second MOVE-CORRESPONDING stmt")
+		if ok1 {
+			id_s, ok_s := mc1.source.derived_expr.(^ast.Ident)
+			id_t, ok_t := mc1.target.derived_expr.(^ast.Ident)
+			testing.expect(t, ok_s && id_s.name == "ls_bup", "expected source ls_bup")
+			testing.expect(t, ok_t && id_t.name == "es_bup_result", "expected target es_bup_result")
+		}
+	}
 }
 
 // --- Structured TYPES tests ---

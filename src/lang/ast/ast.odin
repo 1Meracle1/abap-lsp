@@ -238,6 +238,13 @@ Assign_Stmt :: struct {
 	rhs:        []^Expr,
 }
 
+// MOVE-CORRESPONDING source TO target.
+Move_Corresponding_Stmt :: struct {
+	using node: Stmt,
+	source:     ^Expr,
+	target:     ^Expr,
+}
+
 Assign_Field_Symbol_Stmt :: struct {
 	using node:      Stmt,
 	component:       ^Expr,
@@ -1078,6 +1085,7 @@ Any_Node :: union {
 	^Bad_Stmt,
 	^Expr_Stmt,
 	^Assign_Stmt,
+	^Move_Corresponding_Stmt,
 	^Assign_Field_Symbol_Stmt,
 	^Block_Stmt,
 	^Try_Catch_Branch,
@@ -1181,6 +1189,7 @@ Any_Stmt :: union {
 	^Bad_Stmt,
 	^Expr_Stmt,
 	^Assign_Stmt,
+	^Move_Corresponding_Stmt,
 	^Assign_Field_Symbol_Stmt,
 	^Block_Stmt,
 	^Try_Stmt,
