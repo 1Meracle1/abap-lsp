@@ -148,6 +148,11 @@ validate_stmt_ctx :: proc(ctx: ^Validation_Context, stmt: ^ast.Stmt) {
 		for f in s.filters {
 			validate_expr_ctx(ctx, f.value)
 		}
+	case ^ast.Set_Handler_Stmt:
+		for h in s.handlers {
+			validate_expr_ctx(ctx, h)
+		}
+		validate_expr_ctx(ctx, s.for_ref)
 	case ^ast.Call_Badi_Stmt:
 		validate_expr_ctx(ctx, s.badi_target)
 		for param in s.exporting {

@@ -1800,6 +1800,33 @@ parse_is_predicate :: proc(p: ^Parser, expr: ^ast.Expr) -> ^ast.Expr {
 
 parse_set_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	set_tok := advance_token(p)
+	if check_keyword(p, "HANDLER") {
+		advance_token(p)
+		handlers := make([dynamic]^ast.Expr)
+		for {
+			h := parse_expr(p)
+			if h == nil {
+				error(p, p.curr_tok.range, "expected handler method reference in SET HANDLER")
+				break
+			}
+			append(&handlers, h)
+			if check_keyword(p, "FOR") {
+				break
+			}
+			if p.curr_tok.kind == .Period {
+				error(p, p.curr_tok.range, "expected FOR before end of SET HANDLER statement")
+				break
+			}
+		}
+		expect_keyword_token(p, "FOR")
+		for_ref := parse_expr(p)
+		end_tok := p.curr_tok
+		expect_token(p, .Period)
+		stmt := ast.new(ast.Set_Handler_Stmt, set_tok, end_tok)
+		stmt.handlers = handlers
+		stmt.for_ref = for_ref
+		return stmt
+	}
 	kind: ast.Set_Kind
 	if check_class_keyword(p, "PF", "STATUS") {
 		kind = .Pf_Status

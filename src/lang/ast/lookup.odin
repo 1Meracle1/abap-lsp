@@ -595,6 +595,20 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 			}
 		}
 
+	case ^Set_Handler_Stmt:
+		for h in n.handlers {
+			if h != nil {
+				if res := find_node_at_offset(&h.expr_base, offset); res != nil {
+					return res
+				}
+			}
+		}
+		if n.for_ref != nil {
+			if res := find_node_at_offset(&n.for_ref.expr_base, offset); res != nil {
+				return res
+			}
+		}
+
 	case ^Case_Stmt:
 		if n.expr != nil {
 			if res := find_node_at_offset(&n.expr.expr_base, offset); res != nil {

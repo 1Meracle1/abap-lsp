@@ -7783,6 +7783,72 @@ get_badi_filters_test :: proc(t: ^testing.T) {
 }
 
 @(test)
+set_handler_static_method_for_event_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src = `SET HANDLER cl_alv_event_handler=>on_double_click FOR lr_events.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) {
+		return
+	}
+
+	sh, ok := file.decls[0].derived_stmt.(^ast.Set_Handler_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Set_Handler_Stmt, got %T", file.decls[0].derived_stmt)) {
+		return
+	}
+	if !testing.expect(t, len(sh.handlers) == 1, fmt.tprintf("Expected 1 handler, got %d", len(sh.handlers))) {
+		return
+	}
+	sel, sok := sh.handlers[0].derived_expr.(^ast.Selector_Expr)
+	if !testing.expect(t, sok, fmt.tprintf("Expected Selector_Expr, got %T", sh.handlers[0].derived_expr)) {
+		return
+	}
+	if cls, iok := sel.expr.derived_expr.(^ast.Ident); iok {
+		testing.expect(
+			t,
+			cls.name == "cl_alv_event_handler",
+			fmt.tprintf("class ref: got %s", cls.name),
+		)
+	} else {
+		testing.expect(t, false, "handler class ident")
+	}
+	testing.expect(t, sel.field != nil && sel.field.name == "on_double_click", "handler method field")
+
+	if ev, evok := sh.for_ref.derived_expr.(^ast.Ident); evok {
+		testing.expect(t, ev.name == "lr_events", fmt.tprintf("FOR ref: got %s", ev.name))
+	} else {
+		testing.expect(t, false, "FOR event ref ident")
+	}
+}
+
+@(test)
+set_handler_multiple_handlers_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src = `SET HANDLER cl_a=>h1 cl_b=>h2 FOR lo_evt.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	sh, ok := file.decls[0].derived_stmt.(^ast.Set_Handler_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Set_Handler_Stmt, got %T", file.decls[0].derived_stmt)) {
+		return
+	}
+	testing.expect(t, len(sh.handlers) == 2, "two handlers")
+}
+
+@(test)
 read_table_transporting_no_fields_test :: proc(t: ^testing.T) {
 	// READ TABLE <fs_unpack_data>-children WITH KEY table_line = lv_epc TRANSPORTING NO FIELDS.
 	file := ast.new(ast.File, {})

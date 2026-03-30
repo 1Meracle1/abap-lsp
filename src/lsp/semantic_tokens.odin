@@ -465,6 +465,14 @@ collect_tokens_from_stmt :: proc(
 			collect_tokens_from_expr(tokens, f, snap, nil)
 		}
 
+	case ^ast.Set_Handler_Stmt:
+		for h in s.handlers {
+			collect_tokens_from_expr(tokens, h, snap, nil)
+		}
+		if s.for_ref != nil {
+			collect_tokens_from_expr(tokens, s.for_ref, snap, nil)
+		}
+
 	case ^ast.Class_Def_Decl:
 		// CLASS name DEFINITION
 		if s.ident != nil {

@@ -399,6 +399,13 @@ Set_Stmt :: struct {
 	expr:       ^Expr,
 }
 
+// SET HANDLER handler_ref ... FOR event_ref.
+Set_Handler_Stmt :: struct {
+	using node: Stmt,
+	handlers:   [dynamic]^Expr,
+	for_ref:    ^Expr,
+}
+
 Case_When_Branch :: struct {
 	is_others: bool, // WHEN OTHERS is used
 	expr:      ^Expr,
@@ -1210,6 +1217,7 @@ Any_Node :: union {
 	^Convert_Time_Stamp_To_Date_Time_Stmt,
 	^Get_Badi_Stmt,
 	^Set_Stmt,
+	^Set_Handler_Stmt,
 	^Case_Stmt,
 	^While_Stmt,
 	^Loop_Stmt,
@@ -1321,6 +1329,7 @@ Any_Stmt :: union {
 	^Convert_Time_Stamp_To_Date_Time_Stmt,
 	^Get_Badi_Stmt,
 	^Set_Stmt,
+	^Set_Handler_Stmt,
 	^Case_Stmt,
 	^While_Stmt,
 	^Loop_Stmt,
