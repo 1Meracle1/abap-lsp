@@ -355,6 +355,43 @@ parse_convert_date_time_to_time_stamp_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	return stmt
 }
 
+// CONVERT TIME STAMP stamp [TIME ZONE tz] INTO DATE date TIME time.
+parse_convert_time_stamp_to_date_time_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
+	convert_tok := expect_keyword_token(p, "CONVERT")
+	expect_keyword_token(p, "TIME")
+	expect_keyword_token(p, "STAMP")
+	stamp_expr := parse_expr(p)
+	time_zone: ^ast.Expr = nil
+	if check_keyword(p, "TIME") {
+		advance_token(p)
+		expect_keyword_token(p, "ZONE")
+		time_zone = parse_expr(p)
+	}
+	expect_keyword_token(p, "INTO")
+	expect_keyword_token(p, "DATE")
+	date_target: ^ast.Expr
+	if check_keyword(p, "DATA") {
+		date_target = parse_data_inline_expr(p)
+	} else {
+		date_target = parse_expr(p)
+	}
+	expect_keyword_token(p, "TIME")
+	time_target: ^ast.Expr
+	if check_keyword(p, "DATA") {
+		time_target = parse_data_inline_expr(p)
+	} else {
+		time_target = parse_expr(p)
+	}
+	period_tok := expect_token(p, .Period)
+	stmt := ast.new(ast.Convert_Time_Stamp_To_Date_Time_Stmt, convert_tok, period_tok)
+	stmt.stamp = stamp_expr
+	stmt.time_zone = time_zone
+	stmt.date = date_target
+	stmt.time = time_target
+	stmt.derived_stmt = stmt
+	return stmt
+}
+
 // GET BADI badi_ref [FILTERS name = expr ...].
 parse_get_badi_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	get_tok := expect_keyword_token(p, "GET")

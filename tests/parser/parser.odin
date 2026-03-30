@@ -7636,6 +7636,80 @@ convert_date_time_to_time_stamp_selector_timezone_test :: proc(t: ^testing.T) {
 }
 
 @(test)
+convert_time_stamp_to_date_time_multiline_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src =
+		`CONVERT TIME STAMP lv_timestamp TIME ZONE iv_timezone
+      INTO DATE ev_date TIME ev_time.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) {
+		return
+	}
+
+	conv, ok := file.decls[0].derived_stmt.(^ast.Convert_Time_Stamp_To_Date_Time_Stmt)
+	if !testing.expect(
+		t,
+		ok,
+		fmt.tprintf("Expected Convert_Time_Stamp_To_Date_Time_Stmt, got %T", file.decls[0].derived_stmt),
+	) {
+		return
+	}
+
+	if si, sok := conv.stamp.derived_expr.(^ast.Ident); sok {
+		testing.expect(t, si.name == "lv_timestamp", fmt.tprintf("stamp: got %s", si.name))
+	} else {
+		testing.expect(t, false, "stamp expr")
+	}
+	if zi, zok := conv.time_zone.derived_expr.(^ast.Ident); zok {
+		testing.expect(t, zi.name == "iv_timezone", fmt.tprintf("tz: got %s", zi.name))
+	} else {
+		testing.expect(t, false, "time_zone expr")
+	}
+	if di, dok := conv.date.derived_expr.(^ast.Ident); dok {
+		testing.expect(t, di.name == "ev_date", fmt.tprintf("date: got %s", di.name))
+	} else {
+		testing.expect(t, false, "date target")
+	}
+	if ti, tok := conv.time.derived_expr.(^ast.Ident); tok {
+		testing.expect(t, ti.name == "ev_time", fmt.tprintf("time: got %s", ti.name))
+	} else {
+		testing.expect(t, false, "time target")
+	}
+}
+
+@(test)
+convert_time_stamp_to_date_time_no_timezone_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src = `CONVERT TIME STAMP lv_ts INTO DATE lv_d TIME lv_t.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) {
+		return
+	}
+
+	conv, ok := file.decls[0].derived_stmt.(^ast.Convert_Time_Stamp_To_Date_Time_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Convert_Time_Stamp_To_Date_Time_Stmt, got %T", file.decls[0].derived_stmt)) {
+		return
+	}
+	testing.expect(t, conv.time_zone == nil, "time_zone should be omitted")
+}
+
+@(test)
 get_badi_simple_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
 	file.src = `GET BADI lo_badi_md_attributes.`

@@ -370,6 +370,15 @@ Convert_Date_Time_To_Time_Stamp_Stmt :: struct {
 	time_zone:  ^Expr,
 }
 
+// CONVERT TIME STAMP stamp [TIME ZONE tz] INTO DATE date TIME time.
+Convert_Time_Stamp_To_Date_Time_Stmt :: struct {
+	using node: Stmt,
+	stamp:      ^Expr,
+	time_zone:  ^Expr,
+	date:       ^Expr,
+	time:       ^Expr,
+}
+
 // GET BADI badi_ref [FILTERS name = value ...].
 Get_Badi_Stmt :: struct {
 	using node: Stmt,
@@ -1198,6 +1207,7 @@ Any_Node :: union {
 	^Rollback_Work_Stmt,
 	^Get_Time_Stamp_Stmt,
 	^Convert_Date_Time_To_Time_Stamp_Stmt,
+	^Convert_Time_Stamp_To_Date_Time_Stmt,
 	^Get_Badi_Stmt,
 	^Set_Stmt,
 	^Case_Stmt,
@@ -1308,6 +1318,7 @@ Any_Stmt :: union {
 	^Rollback_Work_Stmt,
 	^Get_Time_Stamp_Stmt,
 	^Convert_Date_Time_To_Time_Stamp_Stmt,
+	^Convert_Time_Stamp_To_Date_Time_Stmt,
 	^Get_Badi_Stmt,
 	^Set_Stmt,
 	^Case_Stmt,

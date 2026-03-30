@@ -443,6 +443,20 @@ collect_tokens_from_stmt :: proc(
 			collect_tokens_from_expr(tokens, s.time_zone, snap, nil)
 		}
 
+	case ^ast.Convert_Time_Stamp_To_Date_Time_Stmt:
+		if s.stamp != nil {
+			collect_tokens_from_expr(tokens, s.stamp, snap, nil)
+		}
+		if s.time_zone != nil {
+			collect_tokens_from_expr(tokens, s.time_zone, snap, nil)
+		}
+		if s.date != nil {
+			collect_tokens_from_expr(tokens, s.date, snap, nil)
+		}
+		if s.time != nil {
+			collect_tokens_from_expr(tokens, s.time, snap, nil)
+		}
+
 	case ^ast.Get_Badi_Stmt:
 		if s.badi_ref != nil {
 			collect_tokens_from_expr(tokens, s.badi_ref, snap, nil)

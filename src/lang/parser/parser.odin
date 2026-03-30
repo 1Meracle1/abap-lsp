@@ -113,6 +113,9 @@ parse_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			if check_keyword_ahead(p, "DATE") {
 				return parse_convert_date_time_to_time_stamp_stmt(p)
 			}
+			if check_convert_time_stamp_into_date_time_prefix(p) {
+				return parse_convert_time_stamp_to_date_time_stmt(p)
+			}
 		case "SET":
 			return parse_set_stmt(p)
 		case "CASE":
@@ -2187,6 +2190,33 @@ parse_field_symbol_assign_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	expr_stmt := ast.new(ast.Expr_Stmt, start_tok, period_tok)
 	expr_stmt.expr = lhs
 	return expr_stmt
+}
+
+// True when current is CONVERT and the following tokens are TIME STAMP (not consumed).
+check_convert_time_stamp_into_date_time_prefix :: proc(p: ^Parser) -> bool {
+	saved_prev := p.prev_tok
+	saved_curr := p.curr_tok
+	saved_pos := p.l.pos
+	saved_read_pos := p.l.read_pos
+	saved_ch := p.l.ch
+
+	advance_token(p)
+	if !check_keyword(p, "TIME") {
+		p.prev_tok = saved_prev
+		p.curr_tok = saved_curr
+		p.l.pos = saved_pos
+		p.l.read_pos = saved_read_pos
+		p.l.ch = saved_ch
+		return false
+	}
+	advance_token(p)
+	ok := check_keyword(p, "STAMP")
+	p.prev_tok = saved_prev
+	p.curr_tok = saved_curr
+	p.l.pos = saved_pos
+	p.l.read_pos = saved_read_pos
+	p.l.ch = saved_ch
+	return ok
 }
 
 // check_keyword_ahead checks if the next token (after current) is a specific keyword
