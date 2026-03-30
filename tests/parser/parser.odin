@@ -8570,6 +8570,68 @@ delete_where_test :: proc(t: ^testing.T) {
 }
 
 @(test)
+delete_where_not_in_test :: proc(t: ^testing.T) {
+	// DELETE itab WHERE NOT field IN range (Open SQL-style range IN internal table WHERE)
+	file := ast.new(ast.File, {})
+	file.src = `DELETE lt_bupa_dat WHERE NOT bupid IN lr_address.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	delete_stmt, ok := file.decls[0].derived_stmt.(^ast.Delete_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Delete_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	testing.expect(t, delete_stmt.kind == .Where, "Expected Where kind")
+	if unary, uok := delete_stmt.where_cond.derived_expr.(^ast.Unary_Expr); uok {
+		testing.expect(
+			t,
+			unary.op.lit == "NOT",
+			fmt.tprintf("Expected NOT op, got '%s'", unary.op.lit),
+		)
+		if inner, iok := unary.expr.derived_expr.(^ast.Binary_Expr); iok {
+			testing.expect(
+				t,
+				inner.op.lit == "IN",
+				fmt.tprintf("Expected IN op, got '%s'", inner.op.lit),
+			)
+			if left_ident, lok := inner.left.derived_expr.(^ast.Ident); lok {
+				testing.expect(t, left_ident.name == "bupid", fmt.tprintf("left field: %s", left_ident.name))
+			} else {
+				testing.expect(t, false, fmt.tprintf("Expected Ident left, got %T", inner.left.derived_expr))
+			}
+			if right_ident, rok := inner.right.derived_expr.(^ast.Ident); rok {
+				testing.expect(
+					t,
+					right_ident.name == "lr_address",
+					fmt.tprintf("range: %s", right_ident.name),
+				)
+			} else {
+				testing.expect(t, false, fmt.tprintf("Expected Ident right, got %T", inner.right.derived_expr))
+			}
+		} else {
+			testing.expect(
+				t,
+				false,
+				fmt.tprintf("Expected Binary_Expr under NOT, got %T", unary.expr.derived_expr),
+			)
+		}
+	} else {
+		testing.expect(
+			t,
+			false,
+			fmt.tprintf("Expected Unary_Expr(NOT ...), got %T", delete_stmt.where_cond.derived_expr),
+		)
+	}
+}
+
+@(test)
 delete_table_from_field_symbol_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
 	file.src = `DELETE TABLE ct_gs1_es_pair FROM <ls_gs1_es_pair>.`

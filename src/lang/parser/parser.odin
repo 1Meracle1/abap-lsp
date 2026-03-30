@@ -1729,6 +1729,7 @@ is_comparison_op :: proc(p: ^Parser) -> bool {
 	   check_keyword(p, "NS") ||
 	   check_keyword(p, "CP") ||
 	   check_keyword(p, "NP") ||
+	   check_keyword(p, "IN") ||
 	   check_keyword(p, "BETWEEN") {
 		return true
 	}
