@@ -226,6 +226,28 @@ parse_type_expr :: proc(p: ^Parser) -> ^ast.Expr {
 	return parse_simple_type_expr(p)
 }
 
+// parse_optional_length_decimals parses optional LENGTH / DECIMALS clauses after
+// elementary types (e.g. TYPE p LENGTH 7 DECIMALS 0). Clauses may appear in either order.
+// If first_length is non-nil, the first LENGTH expression is stored at *first_length.
+parse_optional_length_decimals :: proc(p: ^Parser, first_length: ^^ast.Expr = nil) {
+	for {
+		if check_keyword(p, "LENGTH") {
+			advance_token(p)
+			e := parse_expr(p)
+			if first_length != nil && first_length^ == nil {
+				first_length^ = e
+			}
+			continue
+		}
+		if check_keyword(p, "DECIMALS") {
+			advance_token(p)
+			parse_expr(p)
+			continue
+		}
+		break
+	}
+}
+
 // parse_ref_type parses: REF TO type
 parse_ref_type :: proc(p: ^Parser) -> ^ast.Expr {
 	ref_tok := expect_keyword_token(p, "REF")
@@ -387,6 +409,7 @@ parse_table_key :: proc(p: ^Parser, default_unique: bool) -> ^ast.Table_Key {
 		if check_keyword(p, "WITH") ||
 		   check_keyword(p, "VALUE") ||
 		   check_keyword(p, "LENGTH") ||
+		   check_keyword(p, "DECIMALS") ||
 		   check_keyword(p, "READ") {
 			break
 		}

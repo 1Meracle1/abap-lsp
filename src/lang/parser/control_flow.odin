@@ -24,7 +24,8 @@ parse_case_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			advance_token(p)
 			branch.is_others = true
 		} else {
-			branch.expr = parse_expr(p)
+			// WHEN allows multiple alternatives: WHEN a OR b OR c.
+			branch.expr = parse_logical_expr(p)
 		}
 		expect_token(p, .Period)
 

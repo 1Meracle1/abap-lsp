@@ -2916,6 +2916,80 @@ ENDCLASS.`
 	}
 }
 
+// --- CASE statement tests ---
+
+@(test)
+case_when_with_or_alternatives_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src = `CASE <ls_encode_decode>-obj_code-code_binary(1).
+          WHEN gc_header_byte_sgtin_96
+          OR   gc_header_byte_sgtin_198.
+ENDCASE.`
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+	testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls)))
+	if len(file.decls) == 0 do return
+
+	case_stmt, ok := file.decls[0].derived_stmt.(^ast.Case_Stmt)
+	if !testing.expect(t, ok, "Expected Case_Stmt") do return
+
+	testing.expect(t, case_stmt.expr != nil, "CASE discriminant should not be nil")
+	_, call_ok := case_stmt.expr.derived_expr.(^ast.Call_Expr)
+	testing.expect(
+		t,
+		call_ok,
+		"CASE expression should end with Call_Expr for code_binary(1)",
+	)
+
+	testing.expect(
+		t,
+		len(case_stmt.branches) == 1,
+		fmt.tprintf("Expected 1 WHEN branch, got %d", len(case_stmt.branches)),
+	)
+	if len(case_stmt.branches) == 0 do return
+
+	bin, bok := case_stmt.branches[0].expr.derived_expr.(^ast.Binary_Expr)
+	if testing.expect(t, bok, "WHEN expression should be Binary_Expr (OR)") {
+		testing.expect(
+			t,
+			bin.op.lit == "OR",
+			fmt.tprintf("Expected OR operator, got '%s'", bin.op.lit),
+		)
+	}
+}
+
+@(test)
+case_when_or_single_line_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src = `CASE lv_x.
+WHEN 1 OR 2 OR 3.
+ENDCASE.`
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+	if len(file.decls) == 0 do return
+	case_stmt, ok := file.decls[0].derived_stmt.(^ast.Case_Stmt)
+	if !testing.expect(t, ok, "Expected Case_Stmt") do return
+	bin, bok := case_stmt.branches[0].expr.derived_expr.(^ast.Binary_Expr)
+	if !testing.expect(t, bok, "Expected chained OR") do return
+	testing.expect(t, bin.op.lit == "OR", "top should be OR")
+	_, inner := bin.left.derived_expr.(^ast.Binary_Expr)
+	testing.expect(t, inner, "chained WHEN OR should nest Binary_Expr")
+}
+
 // --- Arrow (->) Expression Tests ---
 
 @(test)
@@ -5140,6 +5214,38 @@ data_with_length_value_test :: proc(t: ^testing.T) {
 
 	// Check value is set
 	testing.expect(t, decl.value != nil, "Expected value to be set")
+}
+
+@(test)
+data_packed_type_length_decimals_test :: proc(t: ^testing.T) {
+	// DATA lv_gs1_company_prefix TYPE p LENGTH 7 DECIMALS 0.
+	file := ast.new(ast.File, {})
+	file.src = `DATA           lv_gs1_company_prefix          TYPE p LENGTH 7 DECIMALS 0.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) > 0, "Expected at least one declaration") do return
+
+	decl, ok := file.decls[0].derived_stmt.(^ast.Data_Typed_Decl)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Data_Typed_Decl, got %T", file.decls[0].derived_stmt)) do return
+
+	id, iok := decl.ident.derived_expr.(^ast.Ident)
+	if !testing.expect(t, iok, "Expected ident") do return
+	testing.expect(
+		t,
+		id.name == "lv_gs1_company_prefix",
+		fmt.tprintf("Expected 'lv_gs1_company_prefix', got '%s'", id.name),
+	)
+	tp, tok := decl.typed.derived_expr.(^ast.Ident)
+	if !testing.expect(t, tok, "Expected simple type ident") do return
+	testing.expect(t, tp.name == "p", fmt.tprintf("Expected type 'p', got '%s'", tp.name))
+	testing.expect(t, decl.value == nil, "Expected no VALUE clause")
 }
 
 @(test)

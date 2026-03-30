@@ -61,13 +61,7 @@ parse_data_typed_single_decl :: proc(p: ^Parser, data_tok: lexer.Token) -> ^ast.
 	}
 
 	type_expr := parse_type_expr(p)
-
-	// Parse optional LENGTH
-	if check_keyword(p, "LENGTH") {
-		advance_token(p)
-		// Skip LENGTH expression for now, but we could store it
-		parse_expr(p)
-	}
+	parse_optional_length_decimals(p)
 
 	value_expr: ^ast.Expr = nil
 	if check_keyword(p, "VALUE") {
@@ -114,12 +108,7 @@ parse_data_typed_multiple_decl :: proc(p: ^Parser, data_tok: lexer.Token) -> ^as
 		}
 
 		type_expr := parse_type_expr(p)
-
-		// Parse optional LENGTH
-		if check_keyword(p, "LENGTH") {
-			advance_token(p)
-			parse_expr(p)
-		}
+		parse_optional_length_decimals(p)
 
 		value_expr: ^ast.Expr = nil
 		if check_keyword(p, "VALUE") {
@@ -194,12 +183,7 @@ parse_data_struct_decl :: proc(p: ^Parser) -> ^ast.Data_Struct_Decl {
 		}
 
 		type_expr := parse_type_expr(p)
-
-		// Parse optional LENGTH
-		if check_keyword(p, "LENGTH") {
-			advance_token(p)
-			parse_expr(p)
-		}
+		parse_optional_length_decimals(p)
 
 		// Parse optional VALUE
 		value_expr: ^ast.Expr = nil

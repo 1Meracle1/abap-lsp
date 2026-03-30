@@ -24,12 +24,7 @@ parse_constants_single_decl :: proc(p: ^Parser, const_tok: lexer.Token) -> ^ast.
 	}
 
 	type_expr := parse_type_expr(p)
-
-	// Parse optional LENGTH
-	if check_keyword(p, "LENGTH") {
-		advance_token(p)
-		parse_expr(p)
-	}
+	parse_optional_length_decimals(p)
 
 	// CONSTANTS must have VALUE
 	value_expr: ^ast.Expr = nil
@@ -78,12 +73,7 @@ parse_constants_chain_decl :: proc(p: ^Parser, const_tok: lexer.Token) -> ^ast.D
 		}
 
 		type_expr := parse_type_expr(p)
-
-		// Parse optional LENGTH
-		if check_keyword(p, "LENGTH") {
-			advance_token(p)
-			parse_expr(p)
-		}
+		parse_optional_length_decimals(p)
 
 		value_expr: ^ast.Expr = nil
 		if check_keyword(p, "VALUE") {
@@ -148,12 +138,7 @@ parse_constants_struct_decl :: proc(p: ^Parser) -> ^ast.Const_Struct_Decl {
 		}
 
 		type_expr := parse_type_expr(p)
-
-		// Parse optional LENGTH
-		if check_keyword(p, "LENGTH") {
-			advance_token(p)
-			parse_expr(p)
-		}
+		parse_optional_length_decimals(p)
 
 		value_expr: ^ast.Expr = nil
 		if check_keyword(p, "VALUE") {

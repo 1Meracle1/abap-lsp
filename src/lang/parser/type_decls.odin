@@ -17,10 +17,7 @@ parse_types_single_decl :: proc(p: ^Parser, types_tok: lexer.Token) -> ^ast.Decl
 	type_expr := parse_type_expr(p)
 
 	length_expr: ^ast.Expr = nil
-	if check_keyword(p, "LENGTH") {
-		advance_token(p)
-		length_expr = parse_expr(p)
-	}
+	parse_optional_length_decimals(p, &length_expr)
 
 	period_tok := expect_token(p, .Period)
 
@@ -56,10 +53,7 @@ parse_types_chain_decl :: proc(p: ^Parser, types_tok: lexer.Token) -> ^ast.Decl 
 		type_expr := parse_type_expr(p)
 
 		length_expr: ^ast.Expr = nil
-		if check_keyword(p, "LENGTH") {
-			advance_token(p)
-			length_expr = parse_expr(p)
-		}
+		parse_optional_length_decimals(p, &length_expr)
 
 		decl := ast.new(ast.Types_Decl, ident_tok, p.prev_tok)
 		decl.ident = ast.new_ident(ident_tok)
@@ -111,10 +105,7 @@ parse_types_struct_decl :: proc(p: ^Parser) -> ^ast.Types_Struct_Decl {
 		type_expr := parse_type_expr(p)
 
 		length_expr: ^ast.Expr = nil
-		if check_keyword(p, "LENGTH") {
-			advance_token(p)
-			length_expr = parse_expr(p)
-		}
+		parse_optional_length_decimals(p, &length_expr)
 
 		field_decl := ast.new(ast.Types_Decl, field_ident_tok, p.prev_tok)
 		field_decl.ident = ast.new_ident(field_ident_tok)
