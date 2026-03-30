@@ -370,7 +370,7 @@ parse_class_data_chain_decl :: proc(
 	is_class: bool,
 ) -> ^ast.Stmt {
 	chain_decl := ast.new(ast.Data_Typed_Chain_Decl, data_tok.range)
-	chain_decl.decls = make([dynamic]^ast.Data_Typed_Decl)
+	chain_decl.parts = make([dynamic]^ast.Stmt)
 
 	for {
 		// Parse identifier, which may be a selector expression (e.g., screen0100-serial)
@@ -384,7 +384,7 @@ parse_class_data_chain_decl :: proc(
 		)
 		decl.ident = ident_expr
 		decl.typed = type_expr
-		append(&chain_decl.decls, decl)
+		append(&chain_decl.parts, &decl.node)
 
 		if allow_token(p, .Comma) {
 			continue

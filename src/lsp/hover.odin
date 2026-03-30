@@ -589,13 +589,47 @@ class_data_hover_in_stmt :: proc(
 		}
 	case ^ast.Data_Typed_Chain_Decl:
 		is_static := class_data_stmt_is_static(stmt, text)
-		for child in decl.decls {
-			if child == nil {
+		for part in decl.parts {
+			if part == nil {
 				continue
 			}
-			child_ident, ok := child.ident.derived_expr.(^ast.Ident)
-			if ok && range_contains_offset(child_ident.range, offset) {
-				return format_class_data_chain_decl_signature(child_ident, child.typed, access, is_static, text), true
+			#partial switch child in part.derived_stmt {
+			case ^ast.Data_Typed_Decl:
+				child_ident, ok := child.ident.derived_expr.(^ast.Ident)
+				if ok && range_contains_offset(child_ident.range, offset) {
+					return format_class_data_chain_decl_signature(
+						child_ident,
+						child.typed,
+						access,
+						is_static,
+						text,
+					),
+					true
+				}
+			case ^ast.Data_Struct_Decl:
+				if child.ident != nil && range_contains_offset(child.ident.range, offset) {
+					return fmt.tprintf("(data structure) %s", child.ident.name), true
+				}
+				for comp in child.components {
+					td, comp_typed := comp.derived_stmt.(^ast.Data_Typed_Decl)
+					if !comp_typed {
+						continue
+					}
+					if td.ident == nil {
+						continue
+					}
+					cident, iok := td.ident.derived_expr.(^ast.Ident)
+					if iok && range_contains_offset(cident.range, offset) {
+						return format_class_data_chain_decl_signature(
+							cident,
+							td.typed,
+							access,
+							is_static,
+							text,
+						),
+						true
+					}
+				}
 			}
 		}
 	}

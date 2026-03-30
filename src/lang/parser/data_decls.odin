@@ -76,25 +76,40 @@ parse_data_typed_single_decl :: proc(p: ^Parser, data_tok: lexer.Token) -> ^ast.
 	return data_decl
 }
 
+finish_data_chain_or_single_struct :: proc(
+	p: ^Parser,
+	chain_decl: ^ast.Data_Typed_Chain_Decl,
+) -> ^ast.Decl {
+	if allow_token(p, .Comma) {
+		// More chain members follow
+		return nil
+	}
+	period_tok := expect_token(p, .Period)
+	chain_decl.range.end = period_tok.range.end
+	if len(chain_decl.parts) == 1 {
+		if only_struct, ok := chain_decl.parts[0].derived_stmt.(^ast.Data_Struct_Decl); ok {
+			only_struct.range.end = period_tok.range.end
+			return only_struct
+		}
+	}
+	return chain_decl
+}
+
 parse_data_typed_multiple_decl :: proc(p: ^Parser, data_tok: lexer.Token) -> ^ast.Decl {
 	chain_decl := ast.new(ast.Data_Typed_Chain_Decl, data_tok.range)
-	chain_decl.decls = make([dynamic]^ast.Data_Typed_Decl)
+	chain_decl.parts = make([dynamic]^ast.Stmt)
 
 	for {
 		// Check for BEGIN OF structure declaration
 		if check_keyword(p, "BEGIN") {
 			struct_decl := parse_data_struct_decl(p)
 			if struct_decl != nil {
-				if len(chain_decl.decls) == 0 {
-					if allow_token(p, .Comma) {
-					}
-					if allow_token(p, .Period) {
-						struct_decl.range.end = p.prev_tok.range.end
-					}
-					return struct_decl
-				}
+				append(&chain_decl.parts, &struct_decl.node)
 			}
-			break
+			if done := finish_data_chain_or_single_struct(p, chain_decl); done != nil {
+				return done
+			}
+			continue
 		}
 
 		// Parse identifier, which may be a selector expression (e.g., screen0100-serial)
@@ -123,7 +138,7 @@ parse_data_typed_multiple_decl :: proc(p: ^Parser, data_tok: lexer.Token) -> ^as
 		decl.ident = ident_expr
 		decl.typed = type_expr
 		decl.value = value_expr
-		append(&chain_decl.decls, decl)
+		append(&chain_decl.parts, &decl.node)
 
 		if allow_token(p, .Comma) {
 			// Continue parsing next declaration in chain
@@ -175,15 +190,30 @@ parse_data_struct_decl :: proc(p: ^Parser) -> ^ast.Data_Struct_Decl {
 		// Parse identifier, which may be a selector expression (e.g., screen0100-serial)
 		field_ident_expr := parse_data_decl_ident(p)
 
-		// Accept TYPE or LIKE
-		if check_keyword(p, "TYPE") || check_keyword(p, "LIKE") {
-			advance_token(p)
+		type_expr: ^ast.Expr
+		if p.curr_tok.kind == .LParen && !lexer.have_space_between(p.prev_tok, p.curr_tok) {
+			// Legacy form: field(len) — elementary character type with length (TYPE c)
+			advance_token(p) // (
+			_ = parse_expr(p) // length (semantic detail; type stays plain c)
+			rparen_tok := expect_token(p, .RParen)
+			c_ty := ast.new(
+				ast.Ident,
+				lexer.TextRange{field_ident_expr.range.start, rparen_tok.range.end},
+			)
+			c_ty.name = "c"
+			c_ty.derived_expr = c_ty
+			type_expr = &c_ty.node
 		} else {
-			expect_keyword_token(p, "TYPE")
-		}
+			// Accept TYPE or LIKE
+			if check_keyword(p, "TYPE") || check_keyword(p, "LIKE") {
+				advance_token(p)
+			} else {
+				expect_keyword_token(p, "TYPE")
+			}
 
-		type_expr := parse_type_expr(p)
-		parse_optional_length_decimals(p)
+			type_expr = parse_type_expr(p)
+			parse_optional_length_decimals(p)
+		}
 
 		// Parse optional VALUE
 		value_expr: ^ast.Expr = nil

@@ -110,12 +110,28 @@ collect_tokens_from_stmt :: proc(
 		}
 
 	case ^ast.Data_Typed_Chain_Decl:
-		for decl in s.decls {
-			if decl.ident != nil {
-				collect_tokens_from_expr(tokens, decl.ident, snap, nil)
-			}
-			if decl.typed != nil {
-				collect_tokens_from_type_expr(tokens, decl.typed)
+		for part in s.parts {
+			#partial switch d in part.derived_stmt {
+			case ^ast.Data_Typed_Decl:
+				if d.ident != nil {
+					collect_tokens_from_expr(tokens, d.ident, snap, nil)
+				}
+				if d.typed != nil {
+					collect_tokens_from_type_expr(tokens, d.typed)
+				}
+			case ^ast.Data_Struct_Decl:
+				if d.ident != nil {
+					append(
+						tokens,
+						SemanticToken {
+							offset = d.ident.range.start,
+							length = d.ident.range.end - d.ident.range.start,
+							type = .Variable,
+							modifiers = 1 << u32(SemanticTokenModifier.Declaration),
+						},
+					)
+				}
+				collect_tokens_from_data_struct_components(tokens, d.components[:], snap)
 			}
 		}
 

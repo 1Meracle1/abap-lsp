@@ -45,13 +45,14 @@ data_single_typed :: proc(name: string, type_name: string) -> ^ast.Data_Typed_De
 }
 
 data_chain_typed :: proc(decls: ..struct {
-		name:      string,
-		type_name: string,
-	}) -> ^ast.Data_Typed_Chain_Decl {
+	name:      string,
+	type_name: string,
+}) -> ^ast.Data_Typed_Chain_Decl {
 	node := ast.new(ast.Data_Typed_Chain_Decl, {})
-	node.decls = make([dynamic]^ast.Data_Typed_Decl)
+	node.parts = make([dynamic]^ast.Stmt)
 	for d in decls {
-		append(&node.decls, data_single_typed(d.name, d.type_name))
+		td := data_single_typed(d.name, d.type_name)
+		append(&node.parts, &td.node)
 	}
 	node.derived_stmt = node
 	return node

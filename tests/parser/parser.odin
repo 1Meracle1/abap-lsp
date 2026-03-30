@@ -4924,9 +4924,10 @@ data_standard_table_of_test :: proc(t: ^testing.T) {
 	chain, ok := file.decls[0].derived_stmt.(^ast.Data_Typed_Chain_Decl)
 	if !testing.expect(t, ok, fmt.tprintf("Expected Data_Typed_Chain_Decl, got %T", file.decls[0].derived_stmt)) do return
 
-	if !testing.expect(t, len(chain.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(chain.decls))) do return
+	if !testing.expect(t, len(chain.parts) == 1, fmt.tprintf("Expected 1 chain part, got %d", len(chain.parts))) do return
 
-	decl := chain.decls[0]
+	decl, dok := chain.parts[0].derived_stmt.(^ast.Data_Typed_Decl)
+	if !testing.expect(t, dok, fmt.tprintf("Expected Data_Typed_Decl part, got %T", chain.parts[0].derived_stmt)) do return
 	testing.expect(
 		t,
 		decl.ident.derived_expr.(^ast.Ident).name == "lt_idx_to_del",
@@ -4980,7 +4981,8 @@ data_table_of_simple_test :: proc(t: ^testing.T) {
 	chain, ok := file.decls[0].derived_stmt.(^ast.Data_Typed_Chain_Decl)
 	if !testing.expect(t, ok, fmt.tprintf("Expected Data_Typed_Chain_Decl, got %T", file.decls[0].derived_stmt)) do return
 
-	decl := chain.decls[0]
+	decl, dok := chain.parts[0].derived_stmt.(^ast.Data_Typed_Decl)
+	if !testing.expect(t, dok, fmt.tprintf("Expected Data_Typed_Decl part, got %T", chain.parts[0].derived_stmt)) do return
 	table_type, tok := decl.typed.derived_expr.(^ast.Table_Type)
 	if !testing.expect(t, tok, fmt.tprintf("Expected Table_Type, got %T", decl.typed.derived_expr)) do return
 
@@ -5010,7 +5012,8 @@ data_hashed_table_with_key_test :: proc(t: ^testing.T) {
 	chain, ok := file.decls[0].derived_stmt.(^ast.Data_Typed_Chain_Decl)
 	if !testing.expect(t, ok, fmt.tprintf("Expected Data_Typed_Chain_Decl, got %T", file.decls[0].derived_stmt)) do return
 
-	decl := chain.decls[0]
+	decl, dok := chain.parts[0].derived_stmt.(^ast.Data_Typed_Decl)
+	if !testing.expect(t, dok, fmt.tprintf("Expected Data_Typed_Decl part, got %T", chain.parts[0].derived_stmt)) do return
 	table_type, tok := decl.typed.derived_expr.(^ast.Table_Type)
 	if !testing.expect(t, tok, fmt.tprintf("Expected Table_Type, got %T", decl.typed.derived_expr)) do return
 
@@ -5317,7 +5320,8 @@ data_hashed_table_selector_type_test :: proc(t: ^testing.T) {
 	chain, ok := file.decls[0].derived_stmt.(^ast.Data_Typed_Chain_Decl)
 	if !testing.expect(t, ok, fmt.tprintf("Expected Data_Typed_Chain_Decl, got %T", file.decls[0].derived_stmt)) do return
 
-	decl := chain.decls[0]
+	decl, dok := chain.parts[0].derived_stmt.(^ast.Data_Typed_Decl)
+	if !testing.expect(t, dok, fmt.tprintf("Expected Data_Typed_Decl part, got %T", chain.parts[0].derived_stmt)) do return
 	table_type, tok := decl.typed.derived_expr.(^ast.Table_Type)
 	if !testing.expect(t, tok, fmt.tprintf("Expected Table_Type, got %T", decl.typed.derived_expr)) do return
 
@@ -5361,7 +5365,8 @@ data_sorted_table_test :: proc(t: ^testing.T) {
 	chain, ok := file.decls[0].derived_stmt.(^ast.Data_Typed_Chain_Decl)
 	if !testing.expect(t, ok, fmt.tprintf("Expected Data_Typed_Chain_Decl, got %T", file.decls[0].derived_stmt)) do return
 
-	decl := chain.decls[0]
+	decl, dok := chain.parts[0].derived_stmt.(^ast.Data_Typed_Decl)
+	if !testing.expect(t, dok, fmt.tprintf("Expected Data_Typed_Decl part, got %T", chain.parts[0].derived_stmt)) do return
 	table_type, tok := decl.typed.derived_expr.(^ast.Table_Type)
 	if !testing.expect(t, tok, fmt.tprintf("Expected Table_Type, got %T", decl.typed.derived_expr)) do return
 
@@ -10427,6 +10432,72 @@ data_struct_with_type_test :: proc(t: ^testing.T) {
 		len(struct_decl.components) == 3,
 		fmt.tprintf("Expected 3 components, got %d", len(struct_decl.components)),
 	)
+}
+
+@(test)
+data_chain_multiple_structs_and_typed_test :: proc(t: ^testing.T) {
+	// DATA: with several BEGIN OF ... END OF blocks, legacy field(len) form, then typed vars.
+	file := ast.new(ast.File, {})
+	file.src =
+	`DATA:       BEGIN OF ls_dat,
+                  yyyy(4) ,
+                  mm(2) ,
+                  dd(2) ,
+                END OF ls_dat,
+
+                BEGIN OF ls_hdat,
+                  yyyy(4) ,
+                  mm(2) ,
+                  dd(2) ,
+                END OF ls_hdat,
+
+                lv_months   TYPE i,
+                lv_newmm    TYPE p,
+                lv_diffyyyy TYPE p.`
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) > 0, "Expected at least one declaration") do return
+
+	chain, ok := file.decls[0].derived_stmt.(^ast.Data_Typed_Chain_Decl)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Data_Typed_Chain_Decl, got %T", file.decls[0].derived_stmt)) do return
+
+	if !testing.expect(t, len(chain.parts) == 5, fmt.tprintf("Expected 5 chain parts, got %d", len(chain.parts))) do return
+
+	s1, ok1 := chain.parts[0].derived_stmt.(^ast.Data_Struct_Decl)
+	if !testing.expect(t, ok1, fmt.tprintf("part 0: expected Data_Struct_Decl, got %T", chain.parts[0].derived_stmt)) do return
+	if testing.expect(t, s1.ident != nil, "ls_dat ident") {
+		testing.expect(t, s1.ident.name == "ls_dat", fmt.tprintf("ls_dat name, got %s", s1.ident.name))
+	}
+	testing.expect(t, len(s1.components) == 3, fmt.tprintf("ls_dat 3 fields, got %d", len(s1.components)))
+
+	s2, ok2 := chain.parts[1].derived_stmt.(^ast.Data_Struct_Decl)
+	if !testing.expect(t, ok2, fmt.tprintf("part 1: expected Data_Struct_Decl, got %T", chain.parts[1].derived_stmt)) do return
+	if testing.expect(t, s2.ident != nil, "ls_hdat ident") {
+		testing.expect(t, s2.ident.name == "ls_hdat", fmt.tprintf("ls_hdat name, got %s", s2.ident.name))
+	}
+
+	for i in 2 ..< 5 {
+		v, vok := chain.parts[i].derived_stmt.(^ast.Data_Typed_Decl)
+		if !testing.expect(t, vok, fmt.tprintf("part %d: expected Data_Typed_Decl", i)) do return
+		idt, iok := v.ident.derived_expr.(^ast.Ident)
+		if !testing.expect(t, iok, "typed var ident") do return
+		switch i {
+		case 2:
+			testing.expect(t, idt.name == "lv_months", idt.name)
+		case 3:
+			testing.expect(t, idt.name == "lv_newmm", idt.name)
+		case 4:
+			testing.expect(t, idt.name == "lv_diffyyyy", idt.name)
+		}
+	}
 }
 
 @(test)

@@ -825,7 +825,8 @@ Data_Typed_Decl :: struct {
 
 Data_Typed_Chain_Decl :: struct {
 	using node: Decl,
-	decls:      [dynamic]^Data_Typed_Decl,
+	// Ordered chain members: each stmt is ^Data_Typed_Decl or ^Data_Struct_Decl
+	parts:      [dynamic]^Stmt,
 }
 
 // TYPES declarations

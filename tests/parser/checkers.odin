@@ -326,22 +326,10 @@ check_stmt :: proc(
 		ac, ok := actual_derived.(^ast.Data_Typed_Chain_Decl)
 		if !testing.expect(t, ok, fmt.tprintf("Expected Data_Typed_Chain_Decl, got %T", actual_derived), loc = loc) do return
 
-		if !testing.expect(t, len(ex.decls) == len(ac.decls), fmt.tprintf("Expected %d decls in chain, got %d", len(ex.decls), len(ac.decls)), loc = loc) do return
+		if !testing.expect(t, len(ex.parts) == len(ac.parts), fmt.tprintf("Expected %d chain parts, got %d", len(ex.parts), len(ac.parts)), loc = loc) do return
 
-		for i := 0; i < len(ex.decls); i += 1 {
-			ex_decl := ex.decls[i]
-			ac_decl := ac.decls[i]
-
-			if testing.expect(
-				t,
-				ac_decl.ident != nil,
-				fmt.tprintf("Actual ident[%d] is nil", i),
-				loc = loc,
-			) {
-				check_expr(t, ex_decl.ident.derived_expr, ac_decl.ident, loc = loc)
-			}
-
-			check_expr(t, ex_decl.typed.derived_expr, ac_decl.typed, loc = loc)
+		for i := 0; i < len(ex.parts); i += 1 {
+			check_stmt(t, ex.parts[i].derived_stmt, ac.parts[i], loc = loc)
 		}
 
 	case ^ast.Types_Decl:
