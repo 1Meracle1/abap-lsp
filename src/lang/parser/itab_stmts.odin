@@ -15,7 +15,8 @@ parse_read_table_key :: proc(p: ^Parser) -> ^ast.Read_Table_Key {
 		if check_keyword(p, "INTO") ||
 		   check_keyword(p, "ASSIGNING") ||
 		   check_keyword(p, "TRANSPORTING") ||
-		   check_keyword(p, "USING") {
+		   check_keyword(p, "USING") ||
+		   check_keyword(p, "BINARY") {
 			break
 		}
 
@@ -123,6 +124,10 @@ parse_read_table_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			expect_keyword_token(p, "NO")
 			expect_keyword_token(p, "FIELDS")
 			read_stmt.transporting_no_fields = true
+		} else if check_keyword(p, "BINARY") {
+			advance_token(p) // consume BINARY
+			expect_keyword_token(p, "SEARCH")
+			read_stmt.binary_search = true
 		} else {
 			// Unknown clause, break out
 			break

@@ -518,6 +518,7 @@ Read_Table_Stmt :: struct {
 	into_target:            ^Expr, // INTO target (work area or inline DATA)
 	assigning_target:       ^Expr, // ASSIGNING <fs> target (field symbol)
 	transporting_no_fields: bool, // TRANSPORTING NO FIELDS flag
+	binary_search:          bool, // BINARY SEARCH (optional, for sorted tables)
 }
 
 Read_Report_Stmt :: struct {

@@ -7524,6 +7524,196 @@ read_table_multiple_key_components_test :: proc(t: ^testing.T) {
 	}
 }
 
+@(test)
+read_table_transporting_then_key_binary_search_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src = `READ TABLE st_cust TRANSPORTING NO FIELDS
+      WITH KEY application = /sttp/cl_constants=>gc_custgen_app
+               component   = iv_cmp
+               parakey     = iv_key
+      BINARY SEARCH.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	read_stmt, ok := file.decls[0].derived_stmt.(^ast.Read_Table_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Read_Table_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	testing.expect(t, read_stmt.kind == .With_Key, "Expected With_Key")
+	testing.expect(t, read_stmt.transporting_no_fields, "Expected TRANSPORTING NO FIELDS")
+	testing.expect(t, read_stmt.binary_search, "Expected BINARY SEARCH")
+	testing.expect(
+		t,
+		len(read_stmt.key.components) == 3,
+		fmt.tprintf("Expected 3 key components, got %d", len(read_stmt.key.components)),
+	)
+}
+
+@(test)
+read_table_into_then_with_key_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src = `READ TABLE st_rtime INTO ls_rtime
+    WITH KEY id = iv_rtime_id.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	read_stmt, ok := file.decls[0].derived_stmt.(^ast.Read_Table_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Read_Table_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	testing.expect(t, read_stmt.kind == .With_Key, "Expected With_Key")
+	testing.expect(t, read_stmt.into_target != nil, "Expected INTO target")
+	testing.expect(t, read_stmt.key != nil && len(read_stmt.key.components) == 1, "Expected one WITH KEY component")
+}
+
+@(test)
+read_table_into_then_index_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src = `READ TABLE lt_file_name INTO lv_file_ext INDEX lv_cnt_lines.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	read_stmt, ok := file.decls[0].derived_stmt.(^ast.Read_Table_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Read_Table_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	testing.expect(t, read_stmt.kind == .Index, "Expected Index kind")
+	testing.expect(t, read_stmt.into_target != nil, "Expected INTO target")
+	testing.expect(t, read_stmt.index_expr != nil, "Expected INDEX expression")
+}
+
+@(test)
+read_table_assigning_field_symbol_with_key_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src = `READ TABLE lt_rfcdes ASSIGNING FIELD-SYMBOL(<ls_rfcdes>)
+      WITH KEY rfcdest = ls_system-rfc_destination.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	read_stmt, ok := file.decls[0].derived_stmt.(^ast.Read_Table_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Read_Table_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	testing.expect(t, read_stmt.kind == .With_Key, "Expected With_Key")
+	testing.expect(t, read_stmt.assigning_target != nil, "Expected ASSIGNING target")
+	if fs_ident, iok := read_stmt.assigning_target.derived_expr.(^ast.Ident); iok {
+		testing.expect(t, fs_ident.name == "<ls_rfcdes>", "Expected field symbol name")
+	}
+	testing.expect(
+		t,
+		len(read_stmt.key.components) == 1,
+		fmt.tprintf("Expected 1 key component, got %d", len(read_stmt.key.components)),
+	)
+}
+
+@(test)
+read_table_assigning_field_symbol_then_index_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src = `READ TABLE lt_locks ASSIGNING FIELD-SYMBOL(<ls_locks>) INDEX 1.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	read_stmt, ok := file.decls[0].derived_stmt.(^ast.Read_Table_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Read_Table_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	testing.expect(t, read_stmt.kind == .Index, "Expected Index kind")
+	testing.expect(t, read_stmt.assigning_target != nil, "Expected ASSIGNING target")
+	testing.expect(t, read_stmt.index_expr != nil, "Expected INDEX expression")
+}
+
+@(test)
+read_table_transporting_no_fields_single_key_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src = `READ TABLE st_gcp TRANSPORTING NO FIELDS
+        WITH KEY gs1_gcp = iv_gs1_gcp.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	read_stmt, ok := file.decls[0].derived_stmt.(^ast.Read_Table_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Read_Table_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	testing.expect(t, read_stmt.transporting_no_fields, "Expected TRANSPORTING NO FIELDS")
+	testing.expect(
+		t,
+		len(read_stmt.key.components) == 1,
+		fmt.tprintf("Expected 1 key component, got %d", len(read_stmt.key.components)),
+	)
+}
+
+@(test)
+read_table_with_key_selector_value_assigning_fs_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src =
+	`READ TABLE lt_gs1_gcp WITH KEY gs1_gcp = <ls_bup_gcp_ser>-gcp ASSIGNING <ls_gs1_gcp>.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	read_stmt, ok := file.decls[0].derived_stmt.(^ast.Read_Table_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Read_Table_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	testing.expect(t, read_stmt.kind == .With_Key, "Expected With_Key")
+	testing.expect(
+		t,
+		len(read_stmt.key.components) == 1,
+		fmt.tprintf("Expected 1 key component, got %d", len(read_stmt.key.components)),
+	)
+	if fs_ident, iok := read_stmt.assigning_target.derived_expr.(^ast.Ident); iok {
+		testing.expect(t, fs_ident.name == "<ls_gs1_gcp>", "Expected ASSIGNING field symbol")
+	}
+}
+
 // ============================================================================
 // NEW Expression with Named Arguments Tests
 // ============================================================================
