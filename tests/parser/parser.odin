@@ -11336,6 +11336,42 @@ call_transaction_without_authority_test :: proc(t: ^testing.T) {
 }
 
 @(test)
+call_transformation_source_xml_result_roots_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src =
+	`CALL TRANSFORMATION id SOURCE XML <ls_pers_xml>-data
+                                 RESULT root = <ls_sap_struct>.`
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(t, len(file.syntax_errors) == 0, fmt.tprintf("errors: %v", file.syntax_errors))
+	tr, ok := file.decls[0].derived_stmt.(^ast.Call_Transformation_Stmt)
+	testing.expect(t, ok, fmt.tprintf("want Call_Transformation_Stmt, got %T", file.decls[0].derived_stmt))
+	if !ok {
+		return
+	}
+
+	if tid, iok := tr.transformation.derived_expr.(^ast.Ident); iok {
+		testing.expect(t, tid.name == "id", fmt.tprintf("transformation id %s", tid.name))
+	} else {
+		testing.expect(t, false, "expected Ident transformation name")
+	}
+
+	testing.expect(t, tr.source != nil, "SOURCE XML operand")
+	testing.expect(t, tr.result_stream == nil, "RESULT uses root assignments, not RESULT XML")
+	testing.expect(t, len(tr.result_roots) == 1, fmt.tprintf("one RESULT root, got %d", len(tr.result_roots)))
+	if len(tr.result_roots) < 1 {
+		return
+	}
+	if rn := tr.result_roots[0].name; rn != nil {
+		testing.expect(t, rn.name == "root", fmt.tprintf("RESULT root name %s", rn.name))
+	} else {
+		testing.expect(t, false, "expected RESULT root ident")
+	}
+}
+
+@(test)
 call_function_simple_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
 	file.src =

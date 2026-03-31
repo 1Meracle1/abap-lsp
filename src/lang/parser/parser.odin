@@ -1614,6 +1614,10 @@ parse_call_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 		return parse_call_transaction_stmt(p, call_tok)
 	}
 
+	if check_keyword(p, "TRANSFORMATION") {
+		return parse_call_transformation_stmt(p, call_tok)
+	}
+
 	// CALL 'kernel_module' ... ID 'name' FIELD dobj ... (system C calls, directory APIs, etc.)
 	if p.curr_tok.kind == .String {
 		return parse_call_system_stmt(p, call_tok)
@@ -1692,6 +1696,134 @@ parse_call_transaction_stmt :: proc(p: ^Parser, call_tok: lexer.Token) -> ^ast.S
 			continue
 		}
 
+		break
+	}
+
+	period_tok := expect_token(p, .Period)
+	stmt.range.end = period_tok.range.end
+	return stmt
+}
+
+call_transformation_clause_starts_here :: proc(p: ^Parser) -> bool {
+	return(
+		check_keyword(p, "SOURCE") ||
+		check_keyword(p, "RESULT") ||
+		check_keyword(p, "OPTIONS") ||
+		check_keyword(p, "PARAMETERS")
+	)
+}
+
+parse_call_transformation_source_operand :: proc(p: ^Parser) -> ^ast.Expr {
+	if check_keyword(p, "XML") ||
+	   check_keyword(p, "ASXML") ||
+	   check_keyword(p, "BINARY") {
+		advance_token(p)
+	}
+	return parse_expr(p)
+}
+
+parse_call_transformation_result_roots :: proc(
+	p: ^Parser,
+	roots: ^[dynamic]^ast.Named_Arg,
+) {
+	for p.curr_tok.kind != .Period && p.curr_tok.kind != .EOF {
+		skip_pragma(p)
+		if call_transformation_clause_starts_here(p) {
+			break
+		}
+		if p.curr_tok.kind != .Ident {
+			break
+		}
+
+		param_name_tok := p.curr_tok
+		advance_token(p)
+
+		if p.curr_tok.kind != .Eq {
+			error(
+				p,
+				p.curr_tok.range,
+				"expected '=' after RESULT root '%s'",
+				param_name_tok.lit,
+			)
+			break
+		}
+		advance_token(p)
+
+		param_value := parse_expr(p)
+		if param_value == nil {
+			break
+		}
+
+		skip_pragma(p)
+
+		named_arg := ast.new(
+			ast.Named_Arg,
+			lexer.TextRange{param_name_tok.range.start, param_value.range.end},
+		)
+		named_arg.name = ast.new_ident(param_name_tok)
+		named_arg.value = param_value
+		named_arg.derived_expr = named_arg
+
+		append(roots, named_arg)
+	}
+}
+
+parse_call_transformation_result_section :: proc(
+	p: ^Parser,
+	stmt: ^ast.Call_Transformation_Stmt,
+) {
+	if check_keyword(p, "XML") ||
+	   check_keyword(p, "ASXML") ||
+	   check_keyword(p, "BINARY") {
+		advance_token(p)
+		stmt.result_stream = parse_expr(p)
+		return
+	}
+	parse_call_transformation_result_roots(p, &stmt.result_roots)
+}
+
+// parse_call_transformation_stmt parses CALL TRANSFORMATION (XSLT / simple transformation).
+parse_call_transformation_stmt :: proc(p: ^Parser, call_tok: lexer.Token) -> ^ast.Stmt {
+	expect_keyword_token(p, "TRANSFORMATION")
+	trans := parse_expr(p)
+
+	stmt := ast.new(ast.Call_Transformation_Stmt, call_tok.range)
+	stmt.transformation = trans
+	stmt.options = nil
+	stmt.source = nil
+	stmt.result_stream = nil
+	stmt.result_roots = make([dynamic]^ast.Named_Arg)
+
+	for p.curr_tok.kind != .Period && p.curr_tok.kind != .EOF {
+		skip_pragma(p)
+		skip_call_transaction_pragma_strings(p)
+
+		if check_keyword(p, "SOURCE") {
+			advance_token(p)
+			stmt.source = parse_call_transformation_source_operand(p)
+			continue
+		}
+		if check_keyword(p, "RESULT") {
+			advance_token(p)
+			parse_call_transformation_result_section(p, stmt)
+			continue
+		}
+		if check_keyword(p, "OPTIONS") {
+			advance_token(p)
+			stmt.options = parse_expr(p)
+			continue
+		}
+		if check_keyword(p, "PARAMETERS") {
+			advance_token(p)
+			if p.curr_tok.kind == .LParen {
+				advance_token(p)
+				skip_to_matching_paren_or_period(p)
+				if p.curr_tok.kind == .RParen {
+					advance_token(p)
+				}
+			}
+			continue
+		}
 		break
 	}
 

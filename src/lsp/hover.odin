@@ -571,6 +571,9 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 	case ^ast.Call_Transaction_Stmt:
 		hover_text = "(statement) CALL TRANSACTION - runs a transaction (dialog or batch via USING bdcdata / MODE)"
 
+	case ^ast.Call_Transformation_Stmt:
+		hover_text = "(statement) CALL TRANSFORMATION - runs an XSLT or simple transformation on/XML data"
+
 	case ^ast.Call_Function_Param:
 		if n.name != nil {
 			param_kind_str := ""

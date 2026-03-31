@@ -1315,6 +1315,19 @@ Call_Transaction_Stmt :: struct {
 	mode:          ^Expr,
 }
 
+// CALL TRANSFORMATION — XSLT / simple transformation
+// Syntax: CALL TRANSFORMATION id [OPTIONS opt] [PARAMETERS (...)]
+//         SOURCE { XML | ASXML | BINARY } operand
+//         [RESULT { XML | ASXML | BINARY } operand | root = dobj ...].
+Call_Transformation_Stmt :: struct {
+	using node:       Stmt,
+	transformation:   ^Expr,
+	options:          ^Expr,
+	source:           ^Expr,
+	result_stream:    ^Expr,
+	result_roots:     [dynamic]^Named_Arg,
+}
+
 Module_Type :: enum {
 	Output,
 	Input,
@@ -1491,6 +1504,7 @@ Any_Node :: union {
 	^Event_Block,
 	^Call_Screen_Stmt,
 	^Call_Transaction_Stmt,
+	^Call_Transformation_Stmt,
 	^Module_Decl,
 	// Field symbols
 	^Field_Symbol_Decl,
@@ -1614,6 +1628,7 @@ Any_Stmt :: union {
 	^Event_Block,
 	^Call_Screen_Stmt,
 	^Call_Transaction_Stmt,
+	^Call_Transformation_Stmt,
 	^Module_Decl,
 	// Field symbols
 	^Field_Symbol_Decl,

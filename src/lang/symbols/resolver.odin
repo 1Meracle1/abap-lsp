@@ -1135,6 +1135,8 @@ resolve_stmt :: proc(
 		resolve_call_badi_stmt(table, s)
 	case ^ast.Call_System_Stmt:
 		resolve_call_system_stmt(table, s)
+	case ^ast.Call_Transformation_Stmt:
+		resolve_call_transformation_stmt(table, s)
 	case ^ast.Select_Stmt:
 		resolve_select_stmt(table, s, syntax_taint)
 	case ^ast.Open_Cursor_Stmt:
@@ -1605,6 +1607,26 @@ resolve_call_system_stmt :: proc(table: ^SymbolTable, stmt: ^ast.Call_System_Stm
 		}
 		if param.field != nil {
 			resolve_param_value_decl(table, param.field)
+		}
+	}
+}
+
+resolve_call_transformation_stmt :: proc(table: ^SymbolTable, stmt: ^ast.Call_Transformation_Stmt) {
+	if stmt.transformation != nil {
+		resolve_param_value_decl(table, stmt.transformation)
+	}
+	if stmt.options != nil {
+		resolve_param_value_decl(table, stmt.options)
+	}
+	if stmt.source != nil {
+		resolve_param_value_decl(table, stmt.source)
+	}
+	if stmt.result_stream != nil {
+		resolve_param_value_decl(table, stmt.result_stream)
+	}
+	for root in stmt.result_roots {
+		if root.value != nil {
+			resolve_param_value_decl(table, root.value)
 		}
 	}
 }

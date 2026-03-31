@@ -1621,6 +1621,33 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 			}
 		}
 
+	case ^Call_Transformation_Stmt:
+		if n.transformation != nil {
+			if res := find_node_at_offset(&n.transformation.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		if n.options != nil {
+			if res := find_node_at_offset(&n.options.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		if n.source != nil {
+			if res := find_node_at_offset(&n.source.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		if n.result_stream != nil {
+			if res := find_node_at_offset(&n.result_stream.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		for root in n.result_roots {
+			if res := find_node_at_offset(&root.node, offset); res != nil {
+				return res
+			}
+		}
+
 	case ^Module_Decl:
 		if n.ident != nil {
 			if res := find_node_at_offset(&n.ident.expr_base, offset); res != nil {

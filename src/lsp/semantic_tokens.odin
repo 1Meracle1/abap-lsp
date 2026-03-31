@@ -741,6 +741,23 @@ collect_tokens_from_stmt :: proc(
 			collect_tokens_from_expr(tokens, s.mode, snap, nil)
 		}
 
+	case ^ast.Call_Transformation_Stmt:
+		if s.transformation != nil {
+			collect_tokens_from_expr(tokens, s.transformation, snap, nil)
+		}
+		if s.options != nil {
+			collect_tokens_from_expr(tokens, s.options, snap, nil)
+		}
+		if s.source != nil {
+			collect_tokens_from_expr(tokens, s.source, snap, nil)
+		}
+		if s.result_stream != nil {
+			collect_tokens_from_expr(tokens, s.result_stream, snap, nil)
+		}
+		for root in s.result_roots {
+			collect_tokens_from_expr(tokens, &root.node, snap, nil)
+		}
+
 	case ^ast.Module_Decl:
 		if s.ident != nil {
 			append(

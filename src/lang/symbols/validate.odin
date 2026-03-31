@@ -209,6 +209,20 @@ validate_stmt_ctx :: proc(ctx: ^Validation_Context, stmt: ^ast.Stmt) {
 		if s.mode != nil {
 			validate_expr_ctx(ctx, s.mode)
 		}
+	case ^ast.Call_Transformation_Stmt:
+		validate_expr_ctx(ctx, s.transformation)
+		if s.options != nil {
+			validate_expr_ctx(ctx, s.options)
+		}
+		if s.source != nil {
+			validate_expr_ctx(ctx, s.source)
+		}
+		if s.result_stream != nil {
+			validate_expr_ctx(ctx, s.result_stream)
+		}
+		for root in s.result_roots {
+			validate_expr_ctx(ctx, &root.node)
+		}
 	case ^ast.Describe_Table_Stmt:
 		validate_expr_ctx(ctx, s.table)
 		validate_expr_ctx(ctx, s.lines_target)
