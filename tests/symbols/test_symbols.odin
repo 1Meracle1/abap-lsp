@@ -1166,6 +1166,44 @@ ENDCLASS.`
 }
 
 @(test)
+test_method_body_types_table_of_local_struct_no_unknown_type_diag :: proc(t: ^testing.T) {
+	// TYPES inside METHOD implementation: table type may reference a struct from the same chain (ABAP forward refs in one TYPES: block).
+	src := `CLASS some_class DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS create_entry_cusset.
+ENDCLASS.
+
+CLASS some_class IMPLEMENTATION.
+  METHOD create_entry_cusset.
+    TYPES:
+      BEGIN OF ts_ui_funcs,
+        textid   TYPE char3,
+        text_add TYPE string,
+        disabled TYPE char01,
+      END OF ts_ui_funcs,
+      tt_ui_funcs TYPE STANDARD TABLE OF ts_ui_funcs.
+  ENDMETHOD.
+ENDCLASS.`
+	file := ast.new(ast.File, {})
+	file.src = src
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+	if !testing.expect(t, len(file.syntax_errors) == 0, fmt.tprintf("syntax: %v", file.syntax_errors)) do return
+
+	table := symbols.resolve_file(file)
+	defer symbols.destroy_symbol_table(table)
+
+	diags := symbols.collect_all_diagnostics(table)
+	for d in diags {
+		if strings.contains(d.message, "Unknown type 'ts_ui_funcs'") {
+			testing.expect(t, false, fmt.tprintf("method-local TYPES should resolve: %s", d.message))
+			return
+		}
+	}
+}
+
+@(test)
 test_data_typed_chain_unknown_type_in_class_method_diag :: proc(t: ^testing.T) {
 	// DATA: ... (chain) must run type validation; DDIC name /cdbasis/cusset is absent from workspace.
 	src := `CLASS some_class DEFINITION.

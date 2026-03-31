@@ -1239,6 +1239,12 @@ resolve_stmt :: proc(
 		resolve_field_symbol_decl(table, s, is_global = false)
 	case ^ast.Field_Symbol_Chain_Decl:
 		resolve_field_symbol_chain_decl(table, s, is_global = false)
+	case ^ast.Types_Decl:
+		resolve_types_decl(table, s, false, is_global = false)
+	case ^ast.Types_Chain_Decl:
+		resolve_types_chain_decl(table, s, false)
+	case ^ast.Types_Struct_Decl:
+		resolve_types_struct_decl(table, s)
 	case ^ast.Try_Stmt:
 		resolve_try_stmt(table, s, syntax_taint)
 	case ^ast.If_Stmt:
