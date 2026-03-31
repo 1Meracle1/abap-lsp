@@ -2499,6 +2499,45 @@ ENDIF.`
 }
 
 @(test)
+if_line_exists_table_key_components_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src = `IF line_exists( lt_cdpos_status[ KEY changenr COMPONENTS changenr = <ls_cdhdr>-changenr ] ).
+  EXIT.
+ENDIF.`
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %v", len(file.decls)))
+	if len(file.decls) < 1 {
+		return
+	}
+
+	if_stmt, ok := file.decls[0].derived_stmt.(^ast.If_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected If_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	call, cok := if_stmt.cond.derived_expr.(^ast.Call_Expr)
+	if !testing.expect(t, cok, "IF condition should be Call_Expr (line_exists)") do return
+	if !testing.expect(t, len(call.args) == 1, "line_exists should have one argument") do return
+	if len(call.args) < 1 || call.args[0] == nil {
+		return
+	}
+	idx, iok := call.args[0].derived_expr.(^ast.Index_Expr)
+	if !testing.expect(t, iok, "line_exists arg should be table Index_Expr") do return
+	testing.expect(t, idx.has_key_clause, "Index_Expr should record KEY COMPONENTS access")
+	if !testing.expect(t, idx.table_key_name != nil, "Index_Expr should have named table key") do return
+	testing.expect(t, idx.table_key_name.name == "changenr", "Named key should be changenr")
+	_, pred_ok := idx.index.derived_expr.(^ast.Binary_Expr)
+	testing.expect(t, pred_ok, "Key predicate should parse as binary (changenr = ...)")
+}
+
+@(test)
 if_with_else_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
 	file.src = `IF lv_var > 0.

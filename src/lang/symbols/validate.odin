@@ -358,6 +358,9 @@ validate_expr_ctx :: proc(ctx: ^Validation_Context, expr: ^ast.Expr) {
 
 	case ^ast.Index_Expr:
 		validate_expr_ctx(ctx, e.expr)
+		if e.table_key_name != nil {
+			validate_ident_expr_ctx(ctx, e.table_key_name)
+		}
 		validate_expr_ctx(ctx, e.index)
 
 	case ^ast.Call_Expr:

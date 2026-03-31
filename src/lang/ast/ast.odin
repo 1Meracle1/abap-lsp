@@ -89,6 +89,9 @@ Index_Expr :: struct {
 	using node: Expr,
 	expr:       ^Expr,
 	index:      ^Expr,
+	// Table expression with explicit table key: itab[ KEY [key_name] COMPONENTS comp = val ... ]
+	table_key_name: ^Ident, // Named secondary key; nil when KEY COMPONENTS ... (primary key) or no KEY clause
+	has_key_clause: bool, // True when leading KEY keyword was parsed as table-key access (not as identifier)
 }
 
 // ABAP substring expression

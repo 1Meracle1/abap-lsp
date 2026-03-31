@@ -1171,10 +1171,10 @@ parse_atom_expr :: proc(p: ^Parser, value: ^ast.Expr, allow_substring: bool = tr
 			expr = call_expr
 		case .LBracket:
 			// Table expression - square brackets for internal table access
-			// Syntax: itab[ index ] or itab[ key = value ] / itab[ c1 = a AND c2 = b ] — use logical expr so = and AND/OR parse.
+			// Syntax: itab[ index ] or itab[ key = value ] / itab[ KEY key COMPONENTS ... ] — use logical expr so = and AND/OR parse.
 			advance_token(p) // consume [
 
-			index_expr := parse_logical_expr(p)
+			index_expr, table_key_name, has_key_clause := parse_table_bracket_index_content(p)
 
 			rbracket_tok := expect_token(p, .RBracket)
 
@@ -1184,6 +1184,8 @@ parse_atom_expr :: proc(p: ^Parser, value: ^ast.Expr, allow_substring: bool = tr
 			)
 			table_expr.expr = expr
 			table_expr.index = index_expr
+			table_expr.table_key_name = table_key_name
+			table_expr.has_key_clause = has_key_clause
 			table_expr.derived_expr = table_expr
 			expr = table_expr
 		case:
@@ -1990,6 +1992,59 @@ parse_logical_expr :: proc(p: ^Parser) -> ^ast.Expr {
 	return parse_or_expr(p)
 }
 
+// parse_table_bracket_index_content parses the inside of itab[ ... ].
+// Handles ABAP table key access KEY [key_name] COMPONENTS predicate as well as index / free-key logical expressions.
+parse_table_bracket_index_content :: proc(
+	p: ^Parser,
+) -> (
+	index: ^ast.Expr,
+	table_key_name: ^ast.Ident,
+	has_key_clause: bool,
+) {
+	if !check_keyword(p, "KEY") {
+		return parse_logical_expr(p), nil, false
+	}
+
+	saved_prev := p.prev_tok
+	saved_curr := p.curr_tok
+	saved_pos := p.l.pos
+	saved_read_pos := p.l.read_pos
+	saved_ch := p.l.ch
+
+	advance_token(p) // KEY
+	if check_keyword(p, "COMPONENTS") {
+		advance_token(p)
+		return parse_logical_expr(p), nil, true
+	}
+
+	if p.curr_tok.kind == .Ident {
+		saved2_prev := p.prev_tok
+		saved2_curr := p.curr_tok
+		saved2_pos := p.l.pos
+		saved2_read_pos := p.l.read_pos
+		saved2_ch := p.l.ch
+
+		key_name_tok := advance_token(p)
+		if check_keyword(p, "COMPONENTS") {
+			advance_token(p)
+			return parse_logical_expr(p), ast.new_ident(key_name_tok), true
+		}
+
+		p.prev_tok = saved2_prev
+		p.curr_tok = saved2_curr
+		p.l.pos = saved2_pos
+		p.l.read_pos = saved2_read_pos
+		p.l.ch = saved2_ch
+	}
+
+	p.prev_tok = saved_prev
+	p.curr_tok = saved_curr
+	p.l.pos = saved_pos
+	p.l.read_pos = saved_read_pos
+	p.l.ch = saved_ch
+	return parse_logical_expr(p), nil, false
+}
+
 parse_or_expr :: proc(p: ^Parser) -> ^ast.Expr {
 	left := parse_and_expr(p)
 
@@ -2338,7 +2393,7 @@ parse_assign_subfield_component :: proc(p: ^Parser) -> ^ast.Expr {
 			expr = &selector.node
 		case .LBracket:
 			advance_token(p)
-			index_expr := parse_logical_expr(p)
+			index_expr, table_key_name, has_key_clause := parse_table_bracket_index_content(p)
 			rbracket_tok := expect_token(p, .RBracket)
 
 			table_expr := ast.new(
@@ -2347,6 +2402,8 @@ parse_assign_subfield_component :: proc(p: ^Parser) -> ^ast.Expr {
 			)
 			table_expr.expr = expr
 			table_expr.index = index_expr
+			table_expr.table_key_name = table_key_name
+			table_expr.has_key_clause = has_key_clause
 			table_expr.derived_expr = table_expr
 			expr = table_expr
 		case:

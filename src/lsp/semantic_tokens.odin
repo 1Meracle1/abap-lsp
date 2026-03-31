@@ -1583,6 +1583,9 @@ collect_tokens_from_expr :: proc(
 
 	case ^ast.Index_Expr:
 		collect_tokens_from_expr(tokens, e.expr, snap, form_scope)
+		if e.table_key_name != nil {
+			collect_tokens_from_expr(tokens, cast(^ast.Expr)e.table_key_name, snap, form_scope)
+		}
 		collect_tokens_from_expr(tokens, e.index, snap, form_scope)
 
 	case ^ast.Substring_Expr:
