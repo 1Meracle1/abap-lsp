@@ -547,7 +547,8 @@ parse_method_params :: proc(
 		}
 
 		ident_tok: lexer.Token
-		if (kind == .Exporting || kind == .Changing) && check_keyword(p, "VALUE") {
+		if (kind == .Importing || kind == .Exporting || kind == .Changing) &&
+		   check_keyword(p, "VALUE") {
 			advance_token(p)
 			expect_token(p, .LParen)
 			ident_tok = parse_method_param_ident(p)

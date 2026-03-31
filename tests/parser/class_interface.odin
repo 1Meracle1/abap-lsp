@@ -537,6 +537,71 @@ ENDCLASS.`
 }
 
 @(test)
+class_methods_value_on_importing_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src = `CLASS ZATTP_CL_REP_UTILS DEFINITION
+  PUBLIC
+  FINAL
+  CREATE PUBLIC .
+PUBLIC SECTION.
+CLASS-METHODS PROCESS_ORDER_CREATION
+    IMPORTING
+      VALUE(IS_GENERAL) TYPE ZATTP_RFC_GENERAL
+      VALUE(IT_ORD_HEADER) TYPE ZATTP_T_ORDER_HEADER
+      VALUE(IV_LOGSYS) TYPE LOGSYS
+      !IV_COMMIT TYPE XFELD
+    EXPORTING
+      !ES_RETURN TYPE BAPIRET2
+      VALUE(ET_RETURN) TYPE BAPIRET2_T
+      !ET_ERRORS_HDR TYPE ZATTP_T_DM_TRN_ORD
+    CHANGING
+      !CO_MESSAGES TYPE REF TO /STTP/CL_MESSAGES .
+ENDCLASS.`
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if len(file.decls) > 0 {
+		class, ok := file.decls[0].derived_stmt.(^ast.Class_Def_Decl)
+		if !testing.expect(t, ok, "Expected Class_Def_Decl") do return
+		testing.expect(t, class.ident.name == "ZATTP_CL_REP_UTILS")
+		if len(class.sections) == 0 do return
+		section := class.sections[0]
+		if len(section.methods) == 0 do return
+		method, mok := section.methods[0].derived_stmt.(^ast.Method_Decl)
+		if !testing.expect(t, mok, "Method_Decl") do return
+		testing.expect(t, method.ident.name == "PROCESS_ORDER_CREATION")
+		testing.expect(t, len(method.params) == 8, fmt.tprintf("param count %d", len(method.params)))
+		if len(method.params) >= 8 {
+			testing.expect(t, method.params[0].ident.name == "IS_GENERAL")
+			testing.expect(t, method.params[0].kind == .Importing)
+			testing.expect(t, method.params[1].ident.name == "IT_ORD_HEADER")
+			testing.expect(t, method.params[1].kind == .Importing)
+			testing.expect(t, method.params[2].ident.name == "IV_LOGSYS")
+			testing.expect(t, method.params[2].kind == .Importing)
+			testing.expect(t, method.params[3].ident.name == "IV_COMMIT")
+			testing.expect(t, method.params[3].kind == .Importing)
+			testing.expect(t, method.params[4].ident.name == "ES_RETURN")
+			testing.expect(t, method.params[4].kind == .Exporting)
+			testing.expect(t, method.params[5].ident.name == "ET_RETURN")
+			testing.expect(t, method.params[5].kind == .Exporting)
+			testing.expect(t, method.params[6].ident.name == "ET_ERRORS_HDR")
+			testing.expect(t, method.params[6].kind == .Exporting)
+			testing.expect(t, method.params[7].ident.name == "CO_MESSAGES")
+			testing.expect(t, method.params[7].kind == .Changing)
+			_, ref_ok := method.params[7].typed.derived_expr.(^ast.Ref_Type)
+			testing.expect(t, ref_ok, "CHANGING param should be REF TO type")
+		}
+	}
+}
+
+@(test)
 class_method_with_reference_parameters_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
 	file.src = `CLASS zcl_notifier DEFINITION.
