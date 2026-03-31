@@ -1014,6 +1014,19 @@ collect_tokens_from_stmt :: proc(
 		collect_tokens_from_call_function_params(tokens, s.receiving[:], snap)
 		collect_tokens_from_call_function_params(tokens, s.exceptions[:], snap)
 
+	case ^ast.Call_System_Stmt:
+		if s.module != nil {
+			collect_tokens_from_expr(tokens, s.module, snap, nil)
+		}
+		for param in s.params {
+			if param.id_name != nil {
+				collect_tokens_from_expr(tokens, param.id_name, snap, nil)
+			}
+			if param.field != nil {
+				collect_tokens_from_expr(tokens, param.field, snap, nil)
+			}
+		}
+
 	case ^ast.Create_Object_Stmt:
 		if s.target != nil {
 			collect_tokens_from_expr(tokens, s.target, snap, nil)

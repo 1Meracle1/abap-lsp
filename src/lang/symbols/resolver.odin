@@ -1058,6 +1058,8 @@ resolve_stmt :: proc(
 		resolve_call_function_stmt(table, s)
 	case ^ast.Call_Badi_Stmt:
 		resolve_call_badi_stmt(table, s)
+	case ^ast.Call_System_Stmt:
+		resolve_call_system_stmt(table, s)
 	case ^ast.Select_Stmt:
 		resolve_select_stmt(table, s, syntax_taint)
 	}
@@ -1492,6 +1494,17 @@ resolve_call_badi_stmt :: proc(table: ^SymbolTable, stmt: ^ast.Call_Badi_Stmt) {
 	for param in stmt.receiving {
 		if param.value != nil {
 			resolve_param_value_decl(table, param.value)
+		}
+	}
+}
+
+resolve_call_system_stmt :: proc(table: ^SymbolTable, stmt: ^ast.Call_System_Stmt) {
+	for param in stmt.params {
+		if param.id_name != nil {
+			resolve_param_value_decl(table, param.id_name)
+		}
+		if param.field != nil {
+			resolve_param_value_decl(table, param.field)
 		}
 	}
 }

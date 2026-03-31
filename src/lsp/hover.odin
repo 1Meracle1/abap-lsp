@@ -495,6 +495,20 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 	case ^ast.Call_Badi_Stmt:
 		hover_text = "(statement) CALL BADI - calls a BAdI implementation method"
 
+	case ^ast.Call_System_Stmt:
+		if n.module != nil {
+			if lit, ok := n.module.derived_expr.(^ast.Basic_Lit); ok {
+				hover_text = fmt.tprintf(
+					"(statement) CALL %s - system/kernel module",
+					lit.tok.lit,
+				)
+			} else {
+				hover_text = "(statement) CALL - system/kernel module"
+			}
+		} else {
+			hover_text = "(statement) CALL - system/kernel module"
+		}
+
 	case ^ast.Call_Function_Param:
 		if n.name != nil {
 			param_kind_str := ""

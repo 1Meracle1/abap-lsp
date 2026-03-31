@@ -787,6 +787,19 @@ Call_Badi_Stmt :: struct {
 	exceptions:  [dynamic]^Call_Function_Param,
 }
 
+// CALL system/kernel module (CALL 'C_DIR_READ_START' ID 'DIR' FIELD lv_path ...).
+Call_System_Param :: struct {
+	using node: Node,
+	id_name:    ^Expr, // Parameter id, usually a text field literal
+	field:      ^Expr, // Bound data object after FIELD
+}
+
+Call_System_Stmt :: struct {
+	using node: Stmt,
+	module:     ^Expr, // Module name, usually a text field literal
+	params:     [dynamic]^Call_System_Param,
+}
+
 // CREATE OBJECT statement
 // Syntax: CREATE OBJECT oref [TYPE class] [AREA HANDLE area] [EXPORTING p1 = a1 ...] [EXCEPTIONS exc = rc ...].
 Create_Object_Stmt :: struct {
@@ -1262,7 +1275,9 @@ Any_Node :: union {
 	^Assert_Stmt,
 	^Call_Function_Stmt,
 	^Call_Badi_Stmt,
+	^Call_System_Stmt,
 	^Call_Function_Param,
+	^Call_System_Param,
 	^Create_Object_Stmt,
 	^Select_Stmt,
 	^Select_Join,
@@ -1375,6 +1390,7 @@ Any_Stmt :: union {
 	^Assert_Stmt,
 	^Call_Function_Stmt,
 	^Call_Badi_Stmt,
+	^Call_System_Stmt,
 	^Create_Object_Stmt,
 	^Select_Stmt,
 	// Declarations

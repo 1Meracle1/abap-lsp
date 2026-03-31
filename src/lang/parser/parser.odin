@@ -1329,6 +1329,11 @@ parse_call_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 		return parse_call_badi_stmt(p, call_tok)
 	}
 
+	// CALL 'kernel_module' ... ID 'name' FIELD dobj ... (system C calls, directory APIs, etc.)
+	if p.curr_tok.kind == .String {
+		return parse_call_system_stmt(p, call_tok)
+	}
+
 	// For other CALL types, treat as expression statement for now
 	expr := parse_expr(p)
 	period_tok := expect_token(p, .Period)
@@ -1382,6 +1387,40 @@ parse_call_badi_stmt :: proc(p: ^Parser, call_tok: lexer.Token) -> ^ast.Stmt {
 		} else {
 			break
 		}
+	}
+
+	period_tok := expect_token(p, .Period)
+	stmt.range.end = period_tok.range.end
+	return stmt
+}
+
+// parse_call_system_stmt parses CALL 'name' followed by ID 'id' FIELD operand pairs.
+// Optional line comments / pragmas after the module literal are skipped by advance_token.
+parse_call_system_stmt :: proc(p: ^Parser, call_tok: lexer.Token) -> ^ast.Stmt {
+	module_expr := parse_expr(p)
+
+	stmt := ast.new(ast.Call_System_Stmt, call_tok.range)
+	stmt.module = module_expr
+	stmt.params = make([dynamic]^ast.Call_System_Param)
+	stmt.derived_stmt = stmt
+
+	for p.curr_tok.kind != .Period && p.curr_tok.kind != .EOF {
+		if !check_keyword(p, "ID") {
+			break
+		}
+		id_kw := advance_token(p)
+		id_name := parse_expr(p)
+		expect_keyword_token(p, "FIELD")
+		field_expr := parse_expr(p)
+		skip_pragma(p)
+
+		param := ast.new(
+			ast.Call_System_Param,
+			lexer.TextRange{id_kw.range.start, field_expr.range.end},
+		)
+		param.id_name = id_name
+		param.field = field_expr
+		append(&stmt.params, param)
 	}
 
 	period_tok := expect_token(p, .Period)

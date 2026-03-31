@@ -170,6 +170,12 @@ validate_stmt_ctx :: proc(ctx: ^Validation_Context, stmt: ^ast.Stmt) {
 		for param in s.exceptions {
 			validate_expr_ctx(ctx, param.value)
 		}
+	case ^ast.Call_System_Stmt:
+		validate_expr_ctx(ctx, s.module)
+		for param in s.params {
+			validate_expr_ctx(ctx, param.id_name)
+			validate_expr_ctx(ctx, param.field)
+		}
 	case ^ast.Describe_Table_Stmt:
 		validate_expr_ctx(ctx, s.table)
 		validate_expr_ctx(ctx, s.lines_target)

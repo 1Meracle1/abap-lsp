@@ -1080,6 +1080,30 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 			}
 		}
 
+	case ^Call_System_Stmt:
+		if n.module != nil {
+			if res := find_node_at_offset(&n.module.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		for param in n.params {
+			if res := find_node_at_offset(param, offset); res != nil {
+				return res
+			}
+		}
+
+	case ^Call_System_Param:
+		if n.id_name != nil {
+			if res := find_node_at_offset(&n.id_name.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		if n.field != nil {
+			if res := find_node_at_offset(&n.field.expr_base, offset); res != nil {
+				return res
+			}
+		}
+
 	case ^Call_Function_Param:
 		if n.name != nil {
 			if res := find_node_at_offset(&n.name.expr_base, offset); res != nil {
