@@ -5899,6 +5899,94 @@ data_with_length_value_test :: proc(t: ^testing.T) {
 }
 
 @(test)
+data_implicit_type_default_c_single_test :: proc(t: ^testing.T) {
+	// DATA name — TYPE omitted; default type is c length 1 in ABAP.
+	file := ast.new(ast.File, {})
+	file.src = `DATA lv_dummy.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) > 0, "Expected at least one declaration") do return
+
+	decl, ok := file.decls[0].derived_stmt.(^ast.Data_Typed_Decl)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Data_Typed_Decl, got %T", file.decls[0].derived_stmt)) do return
+
+	id, iok := decl.ident.derived_expr.(^ast.Ident)
+	if !testing.expect(t, iok, "Expected ident") do return
+	testing.expect(t, id.name == "lv_dummy", fmt.tprintf("Expected 'lv_dummy', got '%s'", id.name))
+
+	ctp, tok := decl.typed.derived_expr.(^ast.Ident)
+	if !testing.expect(t, tok, fmt.tprintf("Expected implicit type Ident c, got %T", decl.typed.derived_expr)) do return
+	testing.expect(t, ctp.name == "c", fmt.tprintf("Expected default type 'c', got '%s'", ctp.name))
+	testing.expect(t, decl.length == nil, "Length from parentheses should be absent")
+}
+
+@(test)
+data_implicit_type_default_c_chain_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src = `DATA: lv_a, lv_b.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	chain, ok := file.decls[0].derived_stmt.(^ast.Data_Typed_Chain_Decl)
+	if !testing.expect(t, ok, fmt.tprintf("Expected chain, got %T", file.decls[0].derived_stmt)) do return
+	if !testing.expect(t, len(chain.parts) == 2, fmt.tprintf("Expected 2 parts, got %d", len(chain.parts))) do return
+
+	p0, p0ok := chain.parts[0].derived_stmt.(^ast.Data_Typed_Decl)
+	if !testing.expect(t, p0ok, "part 0 Data_Typed_Decl") do return
+	p0id, p0idok := p0.ident.derived_expr.(^ast.Ident)
+	if !testing.expect(t, p0idok, "part 0 ident") do return
+	testing.expect(t, p0id.name == "lv_a", fmt.tprintf("Expected lv_a, got '%s'", p0id.name))
+	p0tp, p0tok := p0.typed.derived_expr.(^ast.Ident)
+	if !testing.expect(t, p0tok, "part 0 implicit c type") do return
+	testing.expect(t, p0tp.name == "c", "part 0 type c")
+
+	p1, p1ok := chain.parts[1].derived_stmt.(^ast.Data_Typed_Decl)
+	if !testing.expect(t, p1ok, "part 1 Data_Typed_Decl") do return
+	p1id, p1idok := p1.ident.derived_expr.(^ast.Ident)
+	if !testing.expect(t, p1idok, "part 1 ident") do return
+	testing.expect(t, p1id.name == "lv_b", fmt.tprintf("Expected lv_b, got '%s'", p1id.name))
+	p1tp, p1tok := p1.typed.derived_expr.(^ast.Ident)
+	if !testing.expect(t, p1tok, "part 1 implicit c type") do return
+	testing.expect(t, p1tp.name == "c", "part 1 type c")
+}
+
+@(test)
+data_implicit_type_legacy_length_in_parens_test :: proc(t: ^testing.T) {
+	// Legacy length before omitted TYPE — same as implicit TYPE c.
+	file := ast.new(ast.File, {})
+	file.src = `DATA lv_x(10).`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	decl, ok := file.decls[0].derived_stmt.(^ast.Data_Typed_Decl)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Data_Typed_Decl, got %T", file.decls[0].derived_stmt)) do return
+
+	ctp, tok := decl.typed.derived_expr.(^ast.Ident)
+	if !testing.expect(t, tok, "Expected implicit c") do return
+	testing.expect(t, ctp.name == "c", "implicit type c")
+	testing.expect(t, decl.length != nil, "Expected length expression from parens")
+}
+
+@(test)
 data_packed_type_length_decimals_test :: proc(t: ^testing.T) {
 	// DATA lv_gs1_company_prefix TYPE p LENGTH 7 DECIMALS 0.
 	file := ast.new(ast.File, {})

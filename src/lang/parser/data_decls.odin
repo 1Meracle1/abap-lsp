@@ -69,6 +69,18 @@ parse_data_decl_ident :: proc(p: ^Parser) -> ^ast.Expr {
 	return expr
 }
 
+// ABAP allows omission of TYPE/LIKE on DATA (default elementary type is c, length 1
+// unless legacy length in parentheses or TYPE ... LENGTH applies).
+make_implicit_default_char_type_expr :: proc(p: ^Parser, ident_expr: ^ast.Expr) -> ^ast.Expr {
+	c_ty := ast.new(
+		ast.Ident,
+		lexer.TextRange{ident_expr.range.start, p.prev_tok.range.end},
+	)
+	c_ty.name = "c"
+	c_ty.derived_expr = c_ty
+	return &c_ty.node
+}
+
 parse_data_typed_single_decl :: proc(
 	p: ^Parser,
 	keyword_tok: lexer.Token,
@@ -78,14 +90,13 @@ parse_data_typed_single_decl :: proc(
 	ident_expr := parse_data_decl_ident(p)
 	length_expr := parse_optional_const_length_in_parens(p)
 
-	// Accept TYPE or LIKE
+	type_expr: ^ast.Expr
 	if check_keyword(p, "TYPE") || check_keyword(p, "LIKE") {
 		advance_token(p)
+		type_expr = parse_type_expr(p)
 	} else {
-		expect_keyword_token(p, "TYPE")
+		type_expr = make_implicit_default_char_type_expr(p, ident_expr)
 	}
-
-	type_expr := parse_type_expr(p)
 	parse_optional_length_decimals(p, &length_expr)
 
 	value_expr: ^ast.Expr = nil
@@ -147,14 +158,13 @@ parse_data_typed_multiple_decl :: proc(
 		ident_expr := parse_data_decl_ident(p)
 		length_expr := parse_optional_const_length_in_parens(p)
 
-		// Accept TYPE or LIKE
+		type_expr: ^ast.Expr
 		if check_keyword(p, "TYPE") || check_keyword(p, "LIKE") {
 			advance_token(p)
+			type_expr = parse_type_expr(p)
 		} else {
-			expect_keyword_token(p, "TYPE")
+			type_expr = make_implicit_default_char_type_expr(p, ident_expr)
 		}
-
-		type_expr := parse_type_expr(p)
 		parse_optional_length_decimals(p, &length_expr)
 
 		value_expr: ^ast.Expr = nil
@@ -227,26 +237,13 @@ parse_data_struct_decl :: proc(p: ^Parser) -> ^ast.Data_Struct_Decl {
 		length_expr := parse_optional_const_length_in_parens(p)
 
 		type_expr: ^ast.Expr
-		if length_expr != nil && !(check_keyword(p, "TYPE") || check_keyword(p, "LIKE")) {
-			// Legacy: field(len), — implicit TYPE c before comma / VALUE / END OF
-			c_ty := ast.new(
-				ast.Ident,
-				lexer.TextRange{field_ident_expr.range.start, p.prev_tok.range.end},
-			)
-			c_ty.name = "c"
-			c_ty.derived_expr = c_ty
-			type_expr = &c_ty.node
-		} else {
-			// Accept TYPE or LIKE
-			if check_keyword(p, "TYPE") || check_keyword(p, "LIKE") {
-				advance_token(p)
-			} else {
-				expect_keyword_token(p, "TYPE")
-			}
-
+		if check_keyword(p, "TYPE") || check_keyword(p, "LIKE") {
+			advance_token(p)
 			type_expr = parse_type_expr(p)
-			parse_optional_length_decimals(p, &length_expr)
+		} else {
+			type_expr = make_implicit_default_char_type_expr(p, field_ident_expr)
 		}
+		parse_optional_length_decimals(p, &length_expr)
 
 		// Parse optional VALUE
 		value_expr: ^ast.Expr = nil
