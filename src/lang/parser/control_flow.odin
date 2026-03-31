@@ -536,6 +536,8 @@ parse_try_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			}
 			append(&catch_branch.class_refs, class_ref)
 			skip_pragma(p)
+			allow_token(p, .Comma)
+			skip_pragma(p)
 		}
 
 		if check_keyword(p, "INTO") {

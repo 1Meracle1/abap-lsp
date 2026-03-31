@@ -207,3 +207,98 @@ try_catch_colon_chain_and_pragma_test :: proc(t: ^testing.T) {
 		testing.expect(t, false, "branch 1 class ref")
 	}
 }
+
+@(test)
+try_catch_multiple_classes_no_into_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src = `TRY .
+
+      CATCH cx_parameter_invalid_range cx_parameter_invalid_type.
+        CLEAR ev_tstmp_long.
+    ENDTRY.`
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 stmt, got %d", len(file.decls))) do return
+
+	try_stmt, ok := file.decls[0].derived_stmt.(^ast.Try_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Try_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	testing.expect(t, len(try_stmt.body) == 0, fmt.tprintf("Expected empty TRY body, got %d", len(try_stmt.body)))
+	if !testing.expect(t, len(try_stmt.catch_branches) == 1, fmt.tprintf("Expected 1 CATCH branch, got %d", len(try_stmt.catch_branches))) do return
+
+	catch_branch := try_stmt.catch_branches[0]
+	if !testing.expect(t, len(catch_branch.class_refs) == 2, fmt.tprintf("Expected 2 class refs, got %d", len(catch_branch.class_refs))) do return
+
+	if id0, ok0 := catch_branch.class_refs[0].derived_expr.(^ast.Ident); ok0 {
+		testing.expect(t, id0.name == "cx_parameter_invalid_range", fmt.tprintf("class0: %s", id0.name))
+	} else {
+		testing.expect(t, false, "class0 ident")
+	}
+	if id1, ok1 := catch_branch.class_refs[1].derived_expr.(^ast.Ident); ok1 {
+		testing.expect(t, id1.name == "cx_parameter_invalid_type", fmt.tprintf("class1: %s", id1.name))
+	} else {
+		testing.expect(t, false, "class1 ident")
+	}
+	testing.expect(t, catch_branch.into_target == nil, "Did not expect INTO target")
+	testing.expect(t, len(catch_branch.body) == 1, fmt.tprintf("Expected 1 CATCH body stmt, got %d", len(catch_branch.body)))
+}
+
+@(test)
+try_catch_multiple_classes_multiline_header_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src = `TRY.
+CATCH cx_parameter_invalid_range
+  cx_parameter_invalid_type.
+  CLEAR ev_tstmp_long.
+ENDTRY.`
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 stmt, got %d", len(file.decls))) do return
+
+	try_stmt, ok := file.decls[0].derived_stmt.(^ast.Try_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Try_Stmt, got %T", file.decls[0].derived_stmt)) do return
+	if !testing.expect(t, len(try_stmt.catch_branches) == 1, fmt.tprintf("Expected 1 CATCH branch, got %d", len(try_stmt.catch_branches))) do return
+	catch_branch := try_stmt.catch_branches[0]
+	testing.expect(t, len(catch_branch.class_refs) == 2, fmt.tprintf("Expected 2 class refs, got %d", len(catch_branch.class_refs)))
+}
+
+@(test)
+try_catch_multiple_classes_optional_comma_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src = `TRY.
+CATCH cx_parameter_invalid_range, cx_parameter_invalid_type.
+  CLEAR ev.
+ENDTRY.`
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+	try_stmt, ok := file.decls[0].derived_stmt.(^ast.Try_Stmt)
+	if !testing.expect(t, ok, "Try_Stmt") do return
+	catch_branch := try_stmt.catch_branches[0]
+	testing.expect(t, len(catch_branch.class_refs) == 2, fmt.tprintf("Expected 2 class refs, got %d", len(catch_branch.class_refs)))
+	if id1, ok1 := catch_branch.class_refs[1].derived_expr.(^ast.Ident); ok1 {
+		testing.expect(t, id1.name == "cx_parameter_invalid_type", id1.name)
+	} else {
+		testing.expect(t, false, "second class ident")
+	}
+}
