@@ -386,6 +386,14 @@ validate_stmt_ctx :: proc(ctx: ^Validation_Context, stmt: ^ast.Stmt) {
 		validate_expr_ctx(ctx, s.length)
 		validate_type_expr_ctx(ctx, s.typed)
 		validate_expr_ctx(ctx, s.value)
+	case ^ast.Data_Typed_Chain_Decl:
+		for part in s.parts {
+			validate_stmt_ctx(ctx, part)
+		}
+	case ^ast.Data_Struct_Decl:
+		for comp in s.components {
+			validate_stmt_ctx(ctx, comp)
+		}
 	case ^ast.Const_Decl:
 		validate_expr_ctx(ctx, s.length)
 		validate_type_expr_ctx(ctx, s.typed)

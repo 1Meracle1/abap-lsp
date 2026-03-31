@@ -994,6 +994,43 @@ ENDCLASS.`
 }
 
 @(test)
+test_data_typed_chain_unknown_type_in_class_method_diag :: proc(t: ^testing.T) {
+	// DATA: ... (chain) must run type validation; DDIC name /cdbasis/cusset is absent from workspace.
+	src := `CLASS some_class DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS create_entry_cusset
+      IMPORTING
+        !is_cusset TYPE /cdbasis/cusset.
+ENDCLASS.
+
+CLASS some_class IMPLEMENTATION.
+  METHOD create_entry_cusset.
+    DATA: ls_cusset TYPE /cdbasis/cusset.
+  ENDMETHOD.
+ENDCLASS.`
+	file := ast.new(ast.File, {})
+	file.src = src
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+	if !testing.expect(t, len(file.syntax_errors) == 0, fmt.tprintf("syntax: %v", file.syntax_errors)) do return
+
+	table := symbols.resolve_file(file)
+	defer symbols.destroy_symbol_table(table)
+
+	diags := symbols.collect_all_diagnostics(table)
+	// Importing parameter and chained DATA local should each produce unknown type for the DDIC name.
+	count_cusset_unknown := 0
+	for d in diags {
+		if strings.contains(d.message, "Unknown type '") &&
+		   strings.contains(strings.to_lower(d.message, context.temp_allocator), "/cdbasis/cusset") {
+			count_cusset_unknown += 1
+		}
+	}
+	testing.expect(t, count_cusset_unknown >= 2, fmt.tprintf("expected >=2 Unknown type for /cdbasis/cusset, got %d", count_cusset_unknown))
+}
+
+@(test)
 test_method_raising_same_class_no_unknown_exception_diag :: proc(t: ^testing.T) {
 	src := `CLASS zcx_demo DEFINITION.
   PUBLIC SECTION.
