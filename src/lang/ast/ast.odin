@@ -611,6 +611,7 @@ Sort_Cols_By :: struct {
 Sort_Stmt :: struct {
 	using node: Stmt,
 	itab:       ^Expr,
+	stable:     bool, // SORT ... STABLE
 	order:      Sort_Order_Kind,
 	cols_by:    [dynamic]Sort_Cols_By,
 }

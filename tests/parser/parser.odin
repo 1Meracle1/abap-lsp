@@ -11484,6 +11484,32 @@ ENDCLASS.`
 }
 
 @(test)
+sort_stable_multiline_by_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src =
+	`SORT lt_cdpos STABLE
+  BY   changenr ASCENDING
+       chngind  DESCENDING.`
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(t, len(file.syntax_errors) == 0, fmt.tprintf("%v", file.syntax_errors))
+	testing.expect(t, len(file.decls) == 1)
+
+	sort_stmt, ok := file.decls[0].derived_stmt.(^ast.Sort_Stmt)
+	testing.expect(t, ok)
+	if !ok {
+		return
+	}
+	testing.expect(t, sort_stmt.stable)
+	testing.expect(t, sort_stmt.order == .None)
+	testing.expect(t, len(sort_stmt.cols_by) == 2)
+	testing.expect(t, sort_stmt.cols_by[0].order == .Ascending)
+	testing.expect(t, sort_stmt.cols_by[1].order == .Descending)
+}
+
+@(test)
 select_count_star_closed_before_if_in_method_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
 	file.src =

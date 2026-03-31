@@ -350,6 +350,12 @@ parse_sort_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	sort_tok := expect_keyword_token(p, "SORT")
 	itab_expr := parse_expr(p)
 
+	stable := false
+	if check_keyword(p, "STABLE") {
+		advance_token(p)
+		stable = true
+	}
+
 	order_kind: ast.Sort_Order_Kind
 	if check_keyword(p, "ASCENDING") {
 		advance_token(p)
@@ -382,6 +388,7 @@ parse_sort_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	period_tok := expect_token(p, .Period)
 	sort_stmt := ast.new(ast.Sort_Stmt, sort_tok, period_tok)
 	sort_stmt.itab = itab_expr
+	sort_stmt.stable = stable
 	sort_stmt.cols_by = cols_by
 	sort_stmt.order = order_kind
 	return sort_stmt

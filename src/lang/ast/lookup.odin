@@ -888,7 +888,7 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 		}
 		for col in n.cols_by {
 			if col.col != nil {
-				if res := find_node_at_offset(&n.itab.expr_base, offset); res != nil {
+				if res := find_node_at_offset(&col.col.expr_base, offset); res != nil {
 					return res
 				}
 			}
