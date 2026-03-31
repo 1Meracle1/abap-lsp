@@ -7,6 +7,7 @@ import "core:fmt"
 import "../lang/ast"
 import "../lang/lexer"
 import "../lang/symbols"
+import "core:strings"
 
 handle_semantic_tokens :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 	semantic_params: SemanticTokensParams
@@ -1554,8 +1555,14 @@ collect_tokens_from_expr :: proc(
 			token_type = .String
 		case .Number:
 			token_type = .Number
+		case .Ident:
+			// Open SQL: NULL after IS [NOT] is a keyword/literal, not a data object.
+			if strings.to_upper(e.tok.lit, context.temp_allocator) != "NULL" {
+				return
+			}
+			token_type = .Keyword
 		case:
-			return // Skip other literals
+			return // Skip other literals (e.g. *)
 		}
 		append(
 			tokens,

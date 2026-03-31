@@ -131,6 +131,13 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 				)
 			}
 
+	case ^ast.Basic_Lit:
+		if n.tok.kind == .Ident &&
+		   strings.to_upper(n.tok.lit, context.temp_allocator) == "NULL" {
+			hover_text =
+				"(Open SQL keyword) NULL — SQL null value; used in IS NULL and IS NOT NULL conditions."
+		}
+
 	case ^ast.New_Expr:
 		if n.is_inferred {
 			hover_text = "NEW #( ) - creates instance with inferred type"

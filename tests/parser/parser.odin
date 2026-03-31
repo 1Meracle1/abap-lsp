@@ -12117,6 +12117,78 @@ select_with_join_test :: proc(t: ^testing.T) {
 }
 
 @(test)
+select_alias_star_left_join_is_null_where_test :: proc(t: ^testing.T) {
+	// a~*, namespace table names, JOIN … ON …, INTO CORRESPONDING FIELDS OF TABLE,
+	// WHERE with parentheses and IS NULL / IS NOT NULL (Open SQL).
+	file := ast.new(ast.File, {})
+	file.src =
+	`SELECT a~* FROM /sttp/serprf_bup AS a LEFT JOIN /sttp/serprf_b_u AS b
+      ON a~ser_prflky = b~ser_prflky AND
+         a~country    = b~country AND
+         a~bupno      = b~bupno
+      INTO CORRESPONDING FIELDS OF TABLE @et_serprf_bupa_cty
+        WHERE a~country = @iv_country
+          AND a~bupno   = @iv_bupno AND
+              ( b~uom   = @iv_uom OR
+                b~ser_prflky IS NULL AND
+                b~country    IS NULL AND
+                b~bupno IS NULL ).`
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 1,
+		fmt.tprintf("Expected 1 declaration, got %d", len(file.decls)),
+	)
+
+	if len(file.decls) < 1 {
+		return
+	}
+
+	select_stmt, ok := file.decls[0].derived_stmt.(^ast.Select_Stmt)
+	testing.expect(t, ok, fmt.tprintf("Expected Select_Stmt, got %T", file.decls[0].derived_stmt))
+	if !ok {
+		return
+	}
+
+	testing.expect(t, len(select_stmt.fields) == 1, "Expected one selected field (a~*)")
+	if len(select_stmt.fields) > 0 {
+		sel, sok := select_stmt.fields[0].derived_expr.(^ast.Selector_Expr)
+		testing.expect(t, sok, "Expected a~* as Selector_Expr")
+		if sok {
+			_, star_ok := sel.field.derived_expr.(^ast.Basic_Lit)
+			testing.expect(t, star_ok, "Expected ~* field to be * literal")
+		}
+	}
+
+	testing.expect(t, select_stmt.from_table != nil, "Expected from_table")
+	if id, iok := select_stmt.from_table.derived_expr.(^ast.Ident); iok {
+		testing.expect(t, id.name == "/sttp/serprf_bup", "Expected namespace FROM table name")
+	}
+
+	testing.expect(t, len(select_stmt.joins) == 1, "Expected one LEFT JOIN")
+	if len(select_stmt.joins) == 1 {
+		testing.expect(t, select_stmt.joins[0].kind == .Left_Outer, "Expected LEFT OUTER join kind")
+	}
+
+	testing.expect(t, select_stmt.into_kind == .Corresponding, "INTO CORRESPONDING FIELDS")
+	testing.expect(
+		t,
+		select_stmt.into_corresponding_of_table,
+		"INTO CORRESPONDING FIELDS OF TABLE",
+	)
+	testing.expect(t, select_stmt.where_cond != nil, "Expected WHERE")
+}
+
+@(test)
 select_with_fields_clause_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
 	file.src =

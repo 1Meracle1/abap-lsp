@@ -360,16 +360,30 @@ parse_select_single_field :: proc(p: ^Parser) -> ^ast.Expr {
 	for {
 		if p.curr_tok.kind == .Tilde {
 			tilde_tok := advance_token(p)
-			field_tok := expect_token(p, .Ident)
-			field_ident := ast.new_ident(field_tok)
+			field_expr: ^ast.Expr
+			field_end: int
+			if p.curr_tok.kind == .Star {
+				// Open SQL: alias~* (all columns of aliased source)
+				star_tok := advance_token(p)
+				star := ast.new(ast.Basic_Lit, star_tok.range)
+				star.tok = star_tok
+				star.derived_expr = star
+				field_expr = star
+				field_end = star_tok.range.end
+			} else {
+				field_tok := expect_token(p, .Ident)
+				field_ident := ast.new_ident(field_tok)
+				field_expr = &field_ident.node
+				field_end = field_tok.range.end
+			}
 
 			sel := ast.new(
 				ast.Selector_Expr,
-				lexer.TextRange{expr.range.start, field_tok.range.end},
+				lexer.TextRange{expr.range.start, field_end},
 			)
 			sel.expr = expr
 			sel.op = tilde_tok
-			sel.field = &field_ident.node
+			sel.field = field_expr
 			sel.derived_expr = sel
 			expr = &sel.node
 			continue
@@ -477,25 +491,17 @@ parse_select_on_condition :: proc(p: ^Parser) -> ^ast.Expr {
 }
 
 // parse_select_logical_expr parses a logical expression in SELECT context
-// This handles AND, OR, and comparison operators
+// (WHERE, ON, HAVING). AND binds tighter than OR, matching Open SQL / SQL rules.
 parse_select_logical_expr :: proc(p: ^Parser) -> ^ast.Expr {
-	left := parse_select_comparison_expr(p)
+	return parse_select_or_expr(p)
+}
 
+parse_select_or_expr :: proc(p: ^Parser) -> ^ast.Expr {
+	left := parse_select_and_expr(p)
 	for p.curr_tok.kind != .EOF {
-		if check_keyword(p, "AND") {
+		if check_keyword(p, "OR") {
 			op_tok := advance_token(p)
-			right := parse_select_comparison_expr(p)
-
-			bin := ast.new(ast.Binary_Expr, lexer.TextRange{left.range.start, right.range.end})
-			bin.left = left
-			bin.op = op_tok
-			bin.right = right
-			bin.derived_expr = bin
-			left = bin
-		} else if check_keyword(p, "OR") {
-			op_tok := advance_token(p)
-			right := parse_select_comparison_expr(p)
-
+			right := parse_select_and_expr(p)
 			bin := ast.new(ast.Binary_Expr, lexer.TextRange{left.range.start, right.range.end})
 			bin.left = left
 			bin.op = op_tok
@@ -506,7 +512,25 @@ parse_select_logical_expr :: proc(p: ^Parser) -> ^ast.Expr {
 			break
 		}
 	}
+	return left
+}
 
+parse_select_and_expr :: proc(p: ^Parser) -> ^ast.Expr {
+	left := parse_select_comparison_expr(p)
+	for p.curr_tok.kind != .EOF {
+		if check_keyword(p, "AND") {
+			op_tok := advance_token(p)
+			right := parse_select_comparison_expr(p)
+			bin := ast.new(ast.Binary_Expr, lexer.TextRange{left.range.start, right.range.end})
+			bin.left = left
+			bin.op = op_tok
+			bin.right = right
+			bin.derived_expr = bin
+			left = bin
+		} else {
+			break
+		}
+	}
 	return left
 }
 
@@ -531,6 +555,36 @@ parse_select_comparison_expr :: proc(p: ^Parser) -> ^ast.Expr {
 		unary.expr = in_bin
 		unary.derived_expr = unary
 		return unary
+	}
+
+	// col IS [NOT] NULL (Open SQL)
+	if check_keyword(p, "IS") {
+		is_tok := advance_token(p)
+		is_not := false
+		not_tok: lexer.Token
+		if check_keyword(p, "NOT") {
+			not_tok = advance_token(p)
+			is_not = true
+		}
+		null_tok := expect_keyword_token(p, "NULL")
+		null_lit := ast.new(ast.Basic_Lit, null_tok.range)
+		null_lit.tok = null_tok
+		null_lit.derived_expr = null_lit
+
+		bin := ast.new(ast.Binary_Expr, lexer.TextRange{left.range.start, null_tok.range.end})
+		bin.left = left
+		bin.op = is_tok
+		bin.right = null_lit
+		bin.derived_expr = bin
+
+		if is_not {
+			unary := ast.new(ast.Unary_Expr, lexer.TextRange{left.range.start, null_tok.range.end})
+			unary.op = not_tok
+			unary.expr = bin
+			unary.derived_expr = unary
+			return unary
+		}
+		return bin
 	}
 
 	// Check for comparison operators: =, <>, <, >, <=, >=, EQ, NE, LT, GT, LE, GE
