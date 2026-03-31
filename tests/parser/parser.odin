@@ -10955,6 +10955,74 @@ ENDCLASS.`
 }
 
 @(test)
+select_count_star_closed_before_if_in_method_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src =
+	`CLASS zcl_foo DEFINITION.
+  PUBLIC SECTION.
+ENDCLASS.
+
+CLASS zcl_foo IMPLEMENTATION.
+  METHOD check_gln.
+    SELECT COUNT(*) FROM /sttp/bup INTO lv_count
+      WHERE bup_gln = iv_gln.
+    IF lv_count > 1.
+      WRITE / 'dup'.
+    ENDIF.
+  ENDMETHOD.
+ENDCLASS.`
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(t, len(file.syntax_errors) == 0, fmt.tprintf("%v", file.syntax_errors))
+
+	class_impl, iok := file.decls[1].derived_stmt.(^ast.Class_Impl_Decl)
+	testing.expect(t, iok)
+	if !iok {
+		return
+	}
+	method_impl, mok := class_impl.methods[0].derived_stmt.(^ast.Method_Impl)
+	testing.expect(t, mok)
+	if !mok {
+		return
+	}
+	testing.expect(t, len(method_impl.body) == 2)
+	sel, sok := method_impl.body[0].derived_stmt.(^ast.Select_Stmt)
+	testing.expect(t, sok)
+	if sok {
+		testing.expect(t, len(sel.body) == 0)
+		testing.expect(t, len(sel.fields) == 1)
+	}
+	_, iok2 := method_impl.body[1].derived_stmt.(^ast.If_Stmt)
+	testing.expect(t, iok2)
+}
+
+@(test)
+select_single_where_pragma_before_period_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src =
+	`SELECT SINGLE bupid FROM /sttp/bup INTO lv_bupid
+  WHERE bup_gln = iv_gln ##WARN_OK.
+ IF lv_bupid <> iv_bupid.
+ ENDIF.`
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(t, len(file.syntax_errors) == 0, fmt.tprintf("%v", file.syntax_errors))
+	testing.expect(t, len(file.decls) == 2)
+	sel, sok := file.decls[0].derived_stmt.(^ast.Select_Stmt)
+	testing.expect(t, sok)
+	if sok {
+		testing.expect(t, sel.is_single)
+		testing.expect(t, len(sel.body) == 0)
+	}
+	_, iok := file.decls[1].derived_stmt.(^ast.If_Stmt)
+	testing.expect(t, iok)
+}
+
+@(test)
 select_into_and_upto_before_from_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
 	file.src =

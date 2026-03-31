@@ -41,6 +41,8 @@ parse_select_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	// In ABAP, periods may end individual Open SQL clause lines before ENDSELECT, e.g.
 	//   WHERE ... .
 	//   ENDSELECT.
+	// Pragmas like ##WARN_OK sit before the closing period on the same Open SQL statement.
+	skip_pragma(p)
 	// Consume such a period then continue to ENDSELECT, loop body, or a true statement end.
 	for p.curr_tok.kind == .Period {
 		period_tok := expect_token(p, .Period)
@@ -66,6 +68,12 @@ parse_select_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 		stmt.appending ||
 		(stmt.into_kind == .Corresponding && stmt.into_corresponding_of_table)
 	if select_finishes_at_period {
+		return stmt
+	}
+
+	// SELECT COUNT(*) / SUM(...) / ... without GROUP BY returns one row; it does not open
+	// a SELECT ... ENDSELECT loop (unlike SELECT * INTO wa / ...).
+	if select_finishes_as_single_aggregate_row(p, stmt) {
 		return stmt
 	}
 
@@ -97,6 +105,44 @@ parse_select_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	stmt.range.end = period_tok.range.end
 	_ = endselect_tok
 	return stmt
+}
+
+// select_finishes_as_single_aggregate_row is true when every selected field is an Open SQL
+// aggregate (COUNT, SUM, …) and there is no GROUP BY, so the INTO target receives one row.
+select_finishes_as_single_aggregate_row :: proc(p: ^Parser, stmt: ^ast.Select_Stmt) -> bool {
+	if len(stmt.group_by) > 0 {
+		return false
+	}
+	if stmt.for_all_entries != nil {
+		return false
+	}
+	if len(stmt.fields) == 0 {
+		return false
+	}
+	for f in stmt.fields {
+		if !select_field_expr_is_sql_aggregate(p, f) {
+			return false
+		}
+	}
+	return true
+}
+
+select_field_expr_is_sql_aggregate :: proc(p: ^Parser, expr: ^ast.Expr) -> bool {
+	e := expr
+	for {
+		#partial switch x in e.derived_expr {
+		case ^ast.Named_Arg:
+			e = x.value
+			continue
+		case ^ast.Call_Expr:
+			if ident, ok := x.expr.derived_expr.(^ast.Ident); ok {
+				u := to_upper(p.keyword_buffer[:], ident.name)
+				return u == "COUNT" || u == "SUM" || u == "AVG" || u == "MIN" || u == "MAX"
+			}
+			return false
+		}
+		return false
+	}
 }
 
 // parse_select_field_list parses the field list in a SELECT statement
@@ -516,6 +562,10 @@ parse_select_field_with_dash :: proc(p: ^Parser) -> ^ast.Expr {
 // parse_select_clauses parses the remaining clauses of a SELECT statement
 parse_select_clauses :: proc(p: ^Parser, stmt: ^ast.Select_Stmt) {
 	for p.curr_tok.kind != .EOF && p.curr_tok.kind != .Period {
+		skip_pragma(p)
+		if p.curr_tok.kind == .EOF || p.curr_tok.kind == .Period {
+			break
+		}
 		if check_keyword(p, "ENDSELECT") {
 			break
 		} else if check_keyword(p, "FROM") {
