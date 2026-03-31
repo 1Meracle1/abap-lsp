@@ -309,7 +309,7 @@ resolve_typed_decl :: proc(
 	is_chained: bool,
 	is_global: bool = true,
 ) {
-	name := Decl_Name_From_Expr(decl.ident)
+	name := decl_name_from_expr(decl.ident)
 
 	type_info := resolve_type_expr(table, decl.typed)
 
@@ -611,7 +611,7 @@ resolve_data_struct_components :: proc(
 		#partial switch c in comp.derived_stmt {
 		case ^ast.Data_Typed_Decl:
 			field_type := resolve_type_expr(table, c.typed)
-			add_struct_field(struct_type, Decl_Name_From_Expr(c.ident), field_type, 0)
+			add_struct_field(struct_type, decl_name_from_expr(c.ident), field_type, 0)
 
 		case ^ast.Data_Struct_Decl:
 			nested_type := make_structure_type(table, c.ident.name)
@@ -889,7 +889,7 @@ selector_to_string :: proc(sel: ^ast.Selector_Expr) -> string {
 	return ast.selector_field_ident_name(sel)
 }
 
-Decl_Name_From_Expr :: proc(expr: ^ast.Expr) -> string {
+decl_name_from_expr :: proc(expr: ^ast.Expr) -> string {
 	if expr == nil {
 		return ""
 	}
@@ -898,7 +898,7 @@ Decl_Name_From_Expr :: proc(expr: ^ast.Expr) -> string {
 		return e.name
 	case ^ast.Selector_Expr:
 		// Build name: lhs-rhs
-		left := Decl_Name_From_Expr(e.expr)
+		left := decl_name_from_expr(e.expr)
 		right := ast.selector_field_ident_name(e)
 		if left == "" {
 			return right
@@ -1116,7 +1116,7 @@ resolve_method_impl :: proc(
 		return
 	}
 
-	method_name := strings.to_lower(Decl_Name_From_Expr(method_impl.ident), context.temp_allocator)
+	method_name := strings.to_lower(decl_name_from_expr(method_impl.ident), context.temp_allocator)
 	if method_sym, ok := class_scope.symbols[method_name]; ok {
 		if method_sym.child_scope == nil {
 			method_sym.child_scope = create_empty_symbol_table(context.allocator)

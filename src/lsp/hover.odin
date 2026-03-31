@@ -1434,7 +1434,7 @@ lookup_symbol_at_offset :: proc(
 			if class_sym, ok := lookup_symbol_in_scope(table, class_name); ok &&
 			   class_sym.child_scope != nil {
 				method_key := strings.to_lower(
-					symbols.Decl_Name_From_Expr(method_impl.ident),
+					symbols.decl_name_from_expr(method_impl.ident),
 					context.temp_allocator,
 				)
 				if method_key != "" {

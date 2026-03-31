@@ -619,7 +619,7 @@ validate_stmt_ctx :: proc(ctx: ^Validation_Context, stmt: ^ast.Stmt) {
 			for method in s.methods {
 				#partial switch m in method.derived_stmt {
 				case ^ast.Method_Impl:
-					method_name := strings.to_lower(Decl_Name_From_Expr(m.ident), context.temp_allocator)
+					method_name := strings.to_lower(decl_name_from_expr(m.ident), context.temp_allocator)
 					if method_sym, ok := class_sym.child_scope.symbols[method_name]; ok &&
 					   method_sym.child_scope != nil {
 						mod_lookup := ctx.module_lookup if ctx.module_lookup != nil else ctx.lookup_table
