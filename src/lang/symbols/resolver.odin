@@ -1118,6 +1118,8 @@ resolve_stmt :: proc(
 		resolve_call_system_stmt(table, s)
 	case ^ast.Select_Stmt:
 		resolve_select_stmt(table, s, syntax_taint)
+	case ^ast.Open_Cursor_Stmt:
+		resolve_open_cursor_stmt(table, s, syntax_taint)
 	}
 }
 
@@ -1565,6 +1567,27 @@ resolve_call_system_stmt :: proc(table: ^SymbolTable, stmt: ^ast.Call_System_Stm
 		}
 		if param.field != nil {
 			resolve_param_value_decl(table, param.field)
+		}
+	}
+}
+
+resolve_open_cursor_stmt :: proc(
+	table: ^SymbolTable,
+	stmt: ^ast.Open_Cursor_Stmt,
+	syntax_taint: []lexer.TextRange,
+) {
+	if stmt.cursor != nil {
+		sym := Symbol {
+			name      = stmt.cursor.name,
+			kind      = .Variable,
+			range     = stmt.cursor.range,
+			type_info = make_unknown_type(table),
+		}
+		add_symbol(table, sym, allow_shadowing = false)
+	}
+	if stmt.select_stmt != nil {
+		if sel, ok := stmt.select_stmt.derived_stmt.(^ast.Select_Stmt); ok {
+			resolve_select_stmt(table, sel, syntax_taint)
 		}
 	}
 }

@@ -1556,6 +1556,18 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 			}
 		}
 
+	case ^Open_Cursor_Stmt:
+		if n.cursor != nil {
+			if res := find_node_at_offset(&n.cursor.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		if n.select_stmt != nil {
+			if res := find_node_at_offset(&n.select_stmt.stmt_base, offset); res != nil {
+				return res
+			}
+		}
+
 	case ^Select_Stmt:
 		// Check fields
 		for field in n.fields {

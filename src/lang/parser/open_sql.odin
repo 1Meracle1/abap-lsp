@@ -13,6 +13,23 @@ import "../lexer"
 // - SELECT ... GROUP BY cols HAVING cond [INTO target].
 // - SELECT ... WHERE ... . ENDSELECT. (period may end the last Open SQL clause line before ENDSELECT)
 // - SELECT ... INTO TABLE / APPENDING ... / CORRESPONDING FIELDS OF TABLE ... . (no ENDSELECT)
+// - SELECT ... FOR OPEN CURSOR (no INTO / APPENDING / TABLE INTO) — ends at '.' without ENDSELECT
+parse_open_cursor_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
+	open_tok := expect_keyword_token(p, "OPEN")
+	expect_keyword_token(p, "CURSOR")
+	cursor_tok := expect_token(p, .Ident)
+	cursor := ast.new_ident(cursor_tok)
+	expect_keyword_token(p, "FOR")
+	inner := parse_select_stmt(p)
+	stmt := ast.new(
+		ast.Open_Cursor_Stmt,
+		lexer.TextRange{open_tok.range.start, inner.range.end},
+	)
+	stmt.cursor = cursor
+	stmt.select_stmt = inner
+	return stmt
+}
+
 parse_select_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	select_tok := expect_keyword_token(p, "SELECT")
 
@@ -63,10 +80,12 @@ parse_select_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 
 	// One-shot reads into an internal table (or appending) end with '.'; only
 	// SELECT ... INTO wa / CORRESPONDING FIELDS OF wa ... . ... ENDSELECT uses a loop body.
+	// SELECT without INTO/APPENDING (e.g. after OPEN CURSOR ... FOR) ends at '.'.
 	select_finishes_at_period :=
 		stmt.into_kind == .Table ||
 		stmt.appending ||
-		(stmt.into_kind == .Corresponding && stmt.into_corresponding_of_table)
+		(stmt.into_kind == .Corresponding && stmt.into_corresponding_of_table) ||
+		(!stmt.appending && stmt.into_target == nil)
 	if select_finishes_at_period {
 		return stmt
 	}
@@ -577,6 +596,9 @@ parse_select_field_with_dash :: proc(p: ^Parser) -> ^ast.Expr {
 parse_select_clauses :: proc(p: ^Parser, stmt: ^ast.Select_Stmt) {
 	for p.curr_tok.kind != .EOF && p.curr_tok.kind != .Period {
 		skip_pragma(p)
+		// Code inspector / pragma fragments as string literals between clauses, e.g.
+		// WHERE (lt_cond) " #EC CI_DYNWHERE.
+		skip_select_pragma_strings(p)
 		if p.curr_tok.kind == .EOF || p.curr_tok.kind == .Period {
 			break
 		}

@@ -200,6 +200,9 @@ validate_stmt_ctx :: proc(ctx: ^Validation_Context, stmt: ^ast.Stmt) {
 	case ^ast.Describe_Table_Stmt:
 		validate_expr_ctx(ctx, s.table)
 		validate_expr_ctx(ctx, s.lines_target)
+	case ^ast.Open_Cursor_Stmt:
+		validate_expr_ctx(ctx, &s.cursor.node)
+		validate_stmt_ctx(ctx, s.select_stmt)
 	case ^ast.Select_Stmt:
 		validate_expr_ctx(ctx, s.into_target)
 		validate_stmt_list_ctx(ctx, s.body[:])

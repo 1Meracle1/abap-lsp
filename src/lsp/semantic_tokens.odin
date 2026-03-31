@@ -1123,6 +1123,22 @@ collect_tokens_from_stmt :: proc(
 			collect_tokens_from_expr(tokens, &arg.node, snap, nil)
 		}
 
+	case ^ast.Open_Cursor_Stmt:
+		if s.cursor != nil {
+			append(
+				tokens,
+				SemanticToken {
+					offset = s.cursor.range.start,
+					length = s.cursor.range.end - s.cursor.range.start,
+					type = .Variable,
+					modifiers = 1 << u32(SemanticTokenModifier.Declaration),
+				},
+			)
+		}
+		if s.select_stmt != nil {
+			collect_tokens_from_stmt(tokens, s.select_stmt, snap)
+		}
+
 	case ^ast.Select_Stmt:
 		// Collect tokens from field list
 		for field in s.fields {

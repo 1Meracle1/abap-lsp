@@ -11349,6 +11349,45 @@ select_join_into_where_paren_dynamic_order_by_test :: proc(t: ^testing.T) {
 }
 
 @(test)
+open_cursor_for_select_join_where_string_pragma_order_by_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src =
+	`OPEN CURSOR cur FOR SELECT * FROM /sttp/bup AS a
+        JOIN /sttp/bupmap AS b ON b~bupid = a~bupid
+        WHERE (lt_cond)                               "#EC CI_DYNWHERE.
+        ORDER BY a~bupno.`
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(t, len(file.syntax_errors) == 0, fmt.tprintf("%v", file.syntax_errors))
+	testing.expect(t, len(file.decls) == 1)
+
+	open_stmt, ok := file.decls[0].derived_stmt.(^ast.Open_Cursor_Stmt)
+	testing.expect(t, ok)
+	if !ok {
+		return
+	}
+
+	testing.expect(t, open_stmt.cursor != nil && open_stmt.cursor.name == "cur")
+	testing.expect(t, open_stmt.select_stmt != nil)
+
+	select_stmt, ok2 := open_stmt.select_stmt.derived_stmt.(^ast.Select_Stmt)
+	testing.expect(t, ok2)
+	if !ok2 {
+		return
+	}
+
+	testing.expect(t, len(select_stmt.fields) == 1)
+	testing.expect(t, select_stmt.from_table != nil && select_stmt.from_alias != nil)
+	testing.expect(t, len(select_stmt.joins) == 1)
+	testing.expect(t, select_stmt.where_cond != nil)
+	testing.expect(t, len(select_stmt.order_by) == 1)
+	testing.expect(t, select_stmt.into_target == nil)
+	testing.expect(t, len(select_stmt.body) == 0)
+}
+
+@(test)
 select_into_table_closed_before_if_endif_method_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
 	file.src =

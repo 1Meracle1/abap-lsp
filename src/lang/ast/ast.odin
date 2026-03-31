@@ -936,6 +936,13 @@ Select_Stmt :: struct {
 	body:            [dynamic]^Stmt, // Body for SELECT loop (non-single)
 }
 
+// OPEN CURSOR ... FOR SELECT ... — database cursor over an Open SQL select (no INTO on inner SELECT).
+Open_Cursor_Stmt :: struct {
+	using node:    Stmt,
+	cursor:        ^Ident,
+	select_stmt:   ^Stmt, // ^Select_Stmt
+}
+
 
 // Declarations
 
@@ -1384,6 +1391,7 @@ Any_Node :: union {
 	^Call_System_Param,
 	^Create_Object_Stmt,
 	^Select_Stmt,
+	^Open_Cursor_Stmt,
 	^Select_Join,
 	// Declarations
 	^Bad_Decl,
@@ -1506,6 +1514,7 @@ Any_Stmt :: union {
 	^Call_System_Stmt,
 	^Create_Object_Stmt,
 	^Select_Stmt,
+	^Open_Cursor_Stmt,
 	// Declarations
 	^Bad_Decl,
 	^Data_Inline_Decl,
