@@ -246,6 +246,12 @@ parse_delete_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			advance_token(p) // consume INDEX
 			stmt.kind = .Index
 			stmt.index_expr = parse_expr(p)
+		} else if check_keyword(p, "FROM") {
+			// DELETE dbtab FROM TABLE itab. (Open SQL / DB delete from internal table)
+			advance_token(p) // consume FROM
+			expect_keyword_token(p, "TABLE")
+			stmt.kind = .Db_From_Table
+			stmt.from_source = parse_expr(p)
 		}
 	}
 

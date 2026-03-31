@@ -700,6 +700,7 @@ Delete_Kind :: enum {
 	Index, // DELETE itab INDEX idx
 	Adjacent_Duplicates, // DELETE ADJACENT DUPLICATES FROM itab ...
 	Table_From, // DELETE TABLE itab FROM wa.
+	Db_From_Table, // DELETE dbtab FROM TABLE itab. (database rows from internal table)
 }
 
 // DELETE statement
@@ -708,13 +709,14 @@ Delete_Kind :: enum {
 // - DELETE itab INDEX idx.
 // - DELETE ADJACENT DUPLICATES FROM itab ...
 // - DELETE TABLE itab FROM wa.
+// - DELETE dbtab FROM TABLE itab.  (e.g. namespace table /NS/obj)
 Delete_Stmt :: struct {
 	using node:   Stmt,
 	kind:         Delete_Kind,
-	target:       ^Expr, // The internal table
+	target:       ^Expr, // Internal table (Where, Index, Adjacent, Table_From) or dbtab (Db_From_Table)
 	where_cond:   ^Expr, // WHERE condition
 	index_expr:   ^Expr, // INDEX expression
-	from_source:  ^Expr, // DELETE TABLE ... FROM operand (work area / field symbol)
+	from_source:  ^Expr // DELETE TABLE itab FROM wa (work area); DELETE dbtab FROM TABLE itab (internal table)
 }
 
 Split_Mode :: enum {

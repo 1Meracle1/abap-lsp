@@ -9968,6 +9968,48 @@ delete_table_from_field_symbol_test :: proc(t: ^testing.T) {
 }
 
 @(test)
+delete_db_from_table_test :: proc(t: ^testing.T) {
+	// DELETE dbtab FROM TABLE itab. (namespace DDIC name + structured source)
+	file := ast.new(ast.File, {})
+	file.src = `DELETE /sttp/bup FROM TABLE is_updates-bup_del.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	delete_stmt, ok := file.decls[0].derived_stmt.(^ast.Delete_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Delete_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	testing.expect(
+		t,
+		delete_stmt.kind == .Db_From_Table,
+		fmt.tprintf("Expected Db_From_Table kind, got %v", delete_stmt.kind),
+	)
+	testing.expect(t, delete_stmt.target != nil, "Expected target (db table) to be set")
+	testing.expect(t, delete_stmt.from_source != nil, "Expected from_source (internal table) to be set")
+
+	if target_ident, iok := delete_stmt.target.derived_expr.(^ast.Ident); iok {
+		testing.expect(
+			t,
+			target_ident.name == "/sttp/bup",
+			fmt.tprintf("Expected '/sttp/bup', got '%s'", target_ident.name),
+		)
+	} else {
+		testing.expect(
+			t,
+			false,
+			fmt.tprintf("Expected target to be Ident, got %T", delete_stmt.target.derived_expr),
+		)
+	}
+}
+
+@(test)
 condense_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
 	file.src = `CONDENSE text.`
