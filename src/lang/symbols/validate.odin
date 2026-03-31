@@ -201,6 +201,14 @@ validate_stmt_ctx :: proc(ctx: ^Validation_Context, stmt: ^ast.Stmt) {
 			validate_expr_ctx(ctx, param.id_name)
 			validate_expr_ctx(ctx, param.field)
 		}
+	case ^ast.Call_Transaction_Stmt:
+		validate_expr_ctx(ctx, s.transaction)
+		if s.bdc_tab != nil {
+			validate_expr_ctx(ctx, s.bdc_tab)
+		}
+		if s.mode != nil {
+			validate_expr_ctx(ctx, s.mode)
+		}
 	case ^ast.Describe_Table_Stmt:
 		validate_expr_ctx(ctx, s.table)
 		validate_expr_ctx(ctx, s.lines_target)

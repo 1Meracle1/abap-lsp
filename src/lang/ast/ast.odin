@@ -1300,6 +1300,21 @@ Call_Screen_Stmt :: struct {
 	screen_no:  ^Expr,
 }
 
+Call_Transaction_Authority :: enum {
+	Unspecified,
+	With,
+	Without,
+}
+
+// CALL TRANSACTION tcod ... [WITH|WITHOUT AUTHORITY-CHECK] [USING bdc] [MODE m].
+Call_Transaction_Stmt :: struct {
+	using node:    Stmt,
+	transaction:   ^Expr,
+	authority:     Call_Transaction_Authority,
+	bdc_tab:       ^Expr,
+	mode:          ^Expr,
+}
+
 Module_Type :: enum {
 	Output,
 	Input,
@@ -1475,6 +1490,7 @@ Any_Node :: union {
 	^Include_Decl,
 	^Event_Block,
 	^Call_Screen_Stmt,
+	^Call_Transaction_Stmt,
 	^Module_Decl,
 	// Field symbols
 	^Field_Symbol_Decl,
@@ -1597,6 +1613,7 @@ Any_Stmt :: union {
 	^Include_Decl,
 	^Event_Block,
 	^Call_Screen_Stmt,
+	^Call_Transaction_Stmt,
 	^Module_Decl,
 	// Field symbols
 	^Field_Symbol_Decl,

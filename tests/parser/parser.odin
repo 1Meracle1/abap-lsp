@@ -11247,6 +11247,95 @@ split_into_table_inline_data_test :: proc(t: ^testing.T) {
 }
 
 @(test)
+call_transaction_with_pragma_authority_using_mode_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src =
+	`CALL TRANSACTION '/AIF/ERR'                  "#EC CI_USE_WANTED
+        WITH AUTHORITY-CHECK
+          USING lt_bdc_tab
+          MODE lv_mode.`
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+	testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 stmt, got %d", len(file.decls)))
+	if len(file.decls) < 1 {
+		return
+	}
+
+	ct, ok := file.decls[0].derived_stmt.(^ast.Call_Transaction_Stmt)
+	testing.expect(t, ok, fmt.tprintf("Expected Call_Transaction_Stmt, got %T", file.decls[0].derived_stmt))
+	if !ok {
+		return
+	}
+
+	testing.expect(t, ct.transaction != nil, "expected transaction expr")
+	if lit, lok := ct.transaction.derived_expr.(^ast.Basic_Lit); lok {
+		testing.expect(
+			t,
+			lit.tok.lit == "'/AIF/ERR'",
+			fmt.tprintf("transaction lit got %s", lit.tok.lit),
+		)
+	} else {
+		testing.expect(t, false, "expected string literal transaction")
+	}
+
+	testing.expect(t, ct.authority == .With, "expected WITH AUTHORITY-CHECK")
+
+	if bdc_id, bok := ct.bdc_tab.derived_expr.(^ast.Ident); bok {
+		testing.expect(t, bdc_id.name == "lt_bdc_tab", fmt.tprintf("bdc got %s", bdc_id.name))
+	} else {
+		testing.expect(t, false, "expected Ident bdc_tab")
+	}
+
+	if mode_id, mok := ct.mode.derived_expr.(^ast.Ident); mok {
+		testing.expect(t, mode_id.name == "lv_mode", fmt.tprintf("mode got %s", mode_id.name))
+	} else {
+		testing.expect(t, false, "expected Ident mode")
+	}
+}
+
+@(test)
+call_transaction_minimal_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src = `CALL TRANSACTION 'VA01'.`
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(t, len(file.syntax_errors) == 0, fmt.tprintf("errors: %v", file.syntax_errors))
+	ct, ok := file.decls[0].derived_stmt.(^ast.Call_Transaction_Stmt)
+	testing.expect(t, ok, fmt.tprintf("want Call_Transaction_Stmt, got %T", file.decls[0].derived_stmt))
+	testing.expect(t, ct.authority == .Unspecified, "default authority")
+	testing.expect(t, ct.bdc_tab == nil, "no USING")
+	testing.expect(t, ct.mode == nil, "no MODE")
+}
+
+@(test)
+call_transaction_without_authority_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src = `CALL TRANSACTION lv_tcode WITHOUT AUTHORITY-CHECK.`
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(t, len(file.syntax_errors) == 0, fmt.tprintf("errors: %v", file.syntax_errors))
+	ct, ok := file.decls[0].derived_stmt.(^ast.Call_Transaction_Stmt)
+	testing.expect(t, ok, fmt.tprintf("want Call_Transaction_Stmt, got %T", file.decls[0].derived_stmt))
+	testing.expect(t, ct.authority == .Without, "WITHOUT AUTHORITY-CHECK")
+	if id, iok := ct.transaction.derived_expr.(^ast.Ident); iok {
+		testing.expect(t, id.name == "lv_tcode", fmt.tprintf("tcode %s", id.name))
+	} else {
+		testing.expect(t, false, "expected Ident transaction")
+	}
+}
+
+@(test)
 call_function_simple_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
 	file.src =

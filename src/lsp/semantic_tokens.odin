@@ -730,6 +730,17 @@ collect_tokens_from_stmt :: proc(
 			collect_tokens_from_expr(tokens, s.screen_no, snap, nil)
 		}
 
+	case ^ast.Call_Transaction_Stmt:
+		if s.transaction != nil {
+			collect_tokens_from_expr(tokens, s.transaction, snap, nil)
+		}
+		if s.bdc_tab != nil {
+			collect_tokens_from_expr(tokens, s.bdc_tab, snap, nil)
+		}
+		if s.mode != nil {
+			collect_tokens_from_expr(tokens, s.mode, snap, nil)
+		}
+
 	case ^ast.Module_Decl:
 		if s.ident != nil {
 			append(

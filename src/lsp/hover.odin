@@ -568,6 +568,9 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 			hover_text = "(statement) CALL - system/kernel module"
 		}
 
+	case ^ast.Call_Transaction_Stmt:
+		hover_text = "(statement) CALL TRANSACTION - runs a transaction (dialog or batch via USING bdcdata / MODE)"
+
 	case ^ast.Call_Function_Param:
 		if n.name != nil {
 			param_kind_str := ""

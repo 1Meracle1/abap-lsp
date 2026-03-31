@@ -1604,6 +1604,23 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 			}
 		}
 
+	case ^Call_Transaction_Stmt:
+		if n.transaction != nil {
+			if res := find_node_at_offset(&n.transaction.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		if n.bdc_tab != nil {
+			if res := find_node_at_offset(&n.bdc_tab.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		if n.mode != nil {
+			if res := find_node_at_offset(&n.mode.expr_base, offset); res != nil {
+				return res
+			}
+		}
+
 	case ^Module_Decl:
 		if n.ident != nil {
 			if res := find_node_at_offset(&n.ident.expr_base, offset); res != nil {

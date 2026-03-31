@@ -1610,6 +1610,10 @@ parse_call_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 		return parse_call_badi_stmt(p, call_tok)
 	}
 
+	if check_keyword(p, "TRANSACTION") {
+		return parse_call_transaction_stmt(p, call_tok)
+	}
+
 	// CALL 'kernel_module' ... ID 'name' FIELD dobj ... (system C calls, directory APIs, etc.)
 	if p.curr_tok.kind == .String {
 		return parse_call_system_stmt(p, call_tok)
@@ -1621,6 +1625,79 @@ parse_call_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	expr_stmt := ast.new(ast.Expr_Stmt, call_tok, period_tok)
 	expr_stmt.expr = expr
 	return expr_stmt
+}
+
+// skip_call_transaction_pragma_strings skips code-inspector / pragma fragments written as string literals
+// after the transaction code (e.g. "#EC CI_USE_WANTED), same pattern as Open SQL JOIN clauses.
+skip_call_transaction_pragma_strings :: proc(p: ^Parser) {
+	for p.curr_tok.kind == .String {
+		advance_token(p)
+	}
+}
+
+// parse_call_transaction_stmt parses CALL TRANSACTION with optional authority, USING, MODE clauses.
+parse_call_transaction_stmt :: proc(p: ^Parser, call_tok: lexer.Token) -> ^ast.Stmt {
+	expect_keyword_token(p, "TRANSACTION")
+	transaction := parse_expr(p)
+	skip_pragma(p)
+	skip_call_transaction_pragma_strings(p)
+
+	stmt := ast.new(ast.Call_Transaction_Stmt, call_tok.range)
+	stmt.transaction = transaction
+	stmt.authority = .Unspecified
+	stmt.bdc_tab = nil
+	stmt.mode = nil
+
+	for p.curr_tok.kind != .Period && p.curr_tok.kind != .EOF {
+		skip_pragma(p)
+		skip_call_transaction_pragma_strings(p)
+
+		if check_keyword(p, "WITH") {
+			advance_token(p)
+			if check_hyphenated_keyword(p, "AUTHORITY", "CHECK") {
+				stmt.authority = .With
+				continue
+			}
+			error(
+				p,
+				p.curr_tok.range,
+				"expected AUTHORITY-CHECK after WITH in CALL TRANSACTION",
+			)
+			break
+		}
+
+		if check_keyword(p, "WITHOUT") {
+			advance_token(p)
+			if check_hyphenated_keyword(p, "AUTHORITY", "CHECK") {
+				stmt.authority = .Without
+				continue
+			}
+			error(
+				p,
+				p.curr_tok.range,
+				"expected AUTHORITY-CHECK after WITHOUT in CALL TRANSACTION",
+			)
+			break
+		}
+
+		if check_keyword(p, "USING") {
+			advance_token(p)
+			stmt.bdc_tab = parse_expr(p)
+			continue
+		}
+
+		if check_keyword(p, "MODE") {
+			advance_token(p)
+			stmt.mode = parse_expr(p)
+			continue
+		}
+
+		break
+	}
+
+	period_tok := expect_token(p, .Period)
+	stmt.range.end = period_tok.range.end
+	return stmt
 }
 
 // parse_call_method_stmt parses old-style CALL METHOD statements
