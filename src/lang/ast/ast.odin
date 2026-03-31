@@ -555,12 +555,16 @@ Insert_Kind :: enum {
 	Into_Db, // INSERT INTO target VALUES wa
 	From_Wa, // INSERT target FROM wa
 	From_Table, // INSERT target FROM TABLE itab
+	Lines_Of_Into_Table, // INSERT LINES OF itab_src INTO TABLE itab_tgt
+	Lines_Of_Into_Itab, // INSERT LINES OF itab_src INTO itab_tgt [INDEX idx]
 }
 
 // INSERT statement
 // Syntax variations:
 // - INSERT VALUE #( ... ) INTO TABLE itab.
 // - INSERT wa INTO itab [INDEX idx].
+// - INSERT LINES OF itab_src INTO TABLE itab_tgt.
+// - INSERT LINES OF itab_src INTO itab_tgt [INDEX idx].
 // - INSERT INTO target VALUES wa.
 // - INSERT target FROM wa.
 // - INSERT target FROM TABLE itab.
@@ -569,8 +573,8 @@ Insert_Stmt :: struct {
 	kind:         Insert_Kind,
 	value_expr:   ^Expr, // The value/expression to insert (for Into_Table, Into_Itab, Into_Db)
 	target:       ^Expr, // The target table (internal or database table)
-	source:       ^Expr, // The source work area or table (for From_Wa, From_Table)
-	index_expr:   ^Expr, // INDEX clause (Into_Itab only); nil if omitted
+	source:       ^Expr, // Source work area or table (From_Wa, From_Table, Lines_Of_*); Into_Db VALUES expr
+	index_expr:   ^Expr, // INDEX clause (Into_Itab, Lines_Of_Into_Itab); nil if omitted
 }
 
 Authority_Check_Id :: struct {

@@ -258,6 +258,8 @@ parse_delete_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 // Syntax variations:
 // - INSERT VALUE #( ... ) INTO TABLE itab.
 // - INSERT wa INTO itab [INDEX idx].
+// - INSERT LINES OF itab_src INTO TABLE itab_tgt.
+// - INSERT LINES OF itab_src INTO itab_tgt [INDEX idx].
 // - INSERT INTO target VALUES wa.
 // - INSERT target FROM wa.
 // - INSERT target FROM TABLE itab.
@@ -265,6 +267,29 @@ parse_insert_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	insert_tok := expect_keyword_token(p, "INSERT")
 
 	insert_stmt := ast.new(ast.Insert_Stmt, insert_tok.range)
+
+	// INSERT LINES OF ... INTO [TABLE] ...
+	if check_keyword(p, "LINES") {
+		advance_token(p) // consume LINES
+		expect_keyword_token(p, "OF")
+		insert_stmt.source = parse_expr(p)
+		expect_keyword_token(p, "INTO")
+		if check_keyword(p, "TABLE") {
+			advance_token(p) // consume TABLE
+			insert_stmt.target = parse_expr(p)
+			insert_stmt.kind = .Lines_Of_Into_Table
+		} else {
+			insert_stmt.target = parse_expr(p)
+			insert_stmt.kind = .Lines_Of_Into_Itab
+			if check_keyword(p, "INDEX") {
+				advance_token(p)
+				insert_stmt.index_expr = parse_expr(p)
+			}
+		}
+		period_tok := expect_token(p, .Period)
+		insert_stmt.range.end = period_tok.range.end
+		return insert_stmt
+	}
 
 	// Check for "INSERT INTO target VALUES wa" form
 	if check_keyword(p, "INTO") {

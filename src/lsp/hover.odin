@@ -297,6 +297,12 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 			hover_text = "(statement) INSERT ... FROM - inserts data from a work area into a database table"
 		case .From_Table:
 			hover_text = "(statement) INSERT ... FROM TABLE - inserts data from an internal table into a database table"
+		case .Lines_Of_Into_Table:
+			hover_text =
+				"(statement) INSERT LINES OF ... INTO TABLE - inserts multiple lines from one internal table into another"
+		case .Lines_Of_Into_Itab:
+			hover_text =
+				"(statement) INSERT LINES OF ... INTO ... [INDEX] - inserts multiple lines from an internal table (optional position)"
 		}
 
 	case ^ast.Modify_From_Stmt:

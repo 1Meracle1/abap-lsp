@@ -6217,6 +6217,87 @@ insert_from_table_test :: proc(t: ^testing.T) {
 }
 
 @(test)
+insert_lines_of_into_table_test :: proc(t: ^testing.T) {
+	// INSERT LINES OF lt_region INTO TABLE st_region.
+	file := ast.new(ast.File, {})
+	file.src = `INSERT LINES OF lt_region INTO TABLE st_region.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	insert_stmt, ok := file.decls[0].derived_stmt.(^ast.Insert_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Insert_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	testing.expect(
+		t,
+		insert_stmt.kind == .Lines_Of_Into_Table,
+		fmt.tprintf("Expected Lines_Of_Into_Table, got %v", insert_stmt.kind),
+	)
+	testing.expect(t, insert_stmt.source != nil, "Expected source to be set")
+	testing.expect(t, insert_stmt.target != nil, "Expected target to be set")
+	testing.expect(t, insert_stmt.value_expr == nil, "Expected no value_expr")
+
+	if src, sok := insert_stmt.source.derived_expr.(^ast.Ident); sok {
+		testing.expect(
+			t,
+			src.name == "lt_region",
+			fmt.tprintf("Expected source 'lt_region', got '%s'", src.name),
+		)
+	} else {
+		testing.expect(t, false, fmt.tprintf("Expected source Ident, got %T", insert_stmt.source.derived_expr))
+	}
+
+	if tgt, tok := insert_stmt.target.derived_expr.(^ast.Ident); tok {
+		testing.expect(
+			t,
+			tgt.name == "st_region",
+			fmt.tprintf("Expected target 'st_region', got '%s'", tgt.name),
+		)
+	} else {
+		testing.expect(t, false, fmt.tprintf("Expected target Ident, got %T", insert_stmt.target.derived_expr))
+	}
+}
+
+@(test)
+insert_lines_of_into_itab_index_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src = `INSERT LINES OF lt_a INTO lt_b INDEX 2.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	insert_stmt, ok := file.decls[0].derived_stmt.(^ast.Insert_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Insert_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	testing.expect(
+		t,
+		insert_stmt.kind == .Lines_Of_Into_Itab,
+		fmt.tprintf("Expected Lines_Of_Into_Itab, got %v", insert_stmt.kind),
+	)
+	testing.expect(t, insert_stmt.index_expr != nil, "Expected index_expr")
+
+	if idx, iok := insert_stmt.index_expr.derived_expr.(^ast.Basic_Lit); iok {
+		testing.expect(t, idx.tok.lit == "2", fmt.tprintf("Expected index '2', got '%s'", idx.tok.lit))
+	} else {
+		testing.expect(t, false, fmt.tprintf("Expected index Basic_Lit, got %T", insert_stmt.index_expr.derived_expr))
+	}
+}
+
+@(test)
 insert_in_method_body_test :: proc(t: ^testing.T) {
 	// Test INSERT statement inside a method body
 	file := ast.new(ast.File, {})
