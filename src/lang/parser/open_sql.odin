@@ -518,7 +518,7 @@ parse_select_comparison_expr :: proc(p: ^Parser) -> ^ast.Expr {
 	if check_keyword(p, "NOT") && check_keyword_ahead(p, "IN") {
 		not_tok := advance_token(p)
 		in_tok := advance_token(p)
-		right := parse_select_operand(p)
+		right := parse_select_in_rhs(p)
 
 		in_bin := ast.new(ast.Binary_Expr, lexer.TextRange{left.range.start, right.range.end})
 		in_bin.left = left
@@ -569,7 +569,46 @@ parse_select_comparison_expr :: proc(p: ^Parser) -> ^ast.Expr {
 		return bin
 	}
 
+	if check_keyword(p, "IN") {
+		in_tok := advance_token(p)
+		right := parse_select_in_rhs(p)
+
+		bin := ast.new(ast.Binary_Expr, lexer.TextRange{left.range.start, right.range.end})
+		bin.left = left
+		bin.op = in_tok
+		bin.right = right
+		bin.derived_expr = bin
+		return bin
+	}
+
 	return left
+}
+
+// parse_select_in_rhs parses the right-hand side of IN / NOT IN in Open SQL.
+// Either a single operand (internal table, parenthesized subexpression, @host, …) or
+// a parenthesized list of values: ( 'a', 'b', lv_x ).
+parse_select_in_rhs :: proc(p: ^Parser) -> ^ast.Expr {
+	if p.curr_tok.kind != .LParen {
+		return parse_select_operand(p)
+	}
+	lparen_tok := advance_token(p)
+	row_expr := ast.new(ast.Value_Row_Expr, lparen_tok.range)
+	row_expr.args = make([dynamic]^ast.Expr)
+	for p.curr_tok.kind != .RParen &&
+	    p.curr_tok.kind != .EOF &&
+	    p.curr_tok.kind != .Period {
+		arg := parse_select_operand(p)
+		if arg != nil {
+			append(&row_expr.args, arg)
+		}
+		if !allow_token(p, .Comma) {
+			break
+		}
+	}
+	rparen_tok := expect_token(p, .RParen)
+	row_expr.range.end = rparen_tok.range.end
+	row_expr.derived_expr = row_expr
+	return row_expr
 }
 
 // parse_select_operand parses an operand in a SELECT condition

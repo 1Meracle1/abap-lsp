@@ -12318,6 +12318,34 @@ select_appending_not_in_host_static_test :: proc(t: ^testing.T) {
 }
 
 @(test)
+select_where_in_list_namespace_static_dash_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src =
+	`SELECT *
+  INTO CORRESPONDING FIELDS OF TABLE lt_cdpos_nrobj_ser
+  FROM cdpos
+  WHERE objectclas = /sttp/cl_md_constants=>gcs_cd_objectclass-product
+  AND objectid = lv_objectid
+  AND tabname = /sttp/cl_md_constants=>gcs_tables_product-product
+  AND fname IN ('NROBJ_SER', 'PROD_CAT', 'COUNTRY', 'SERPRFLKY'). "#EC CI_NOORDER`
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(t, len(file.syntax_errors) == 0, fmt.tprintf("%v", file.syntax_errors))
+
+	select_stmt, ok := file.decls[0].derived_stmt.(^ast.Select_Stmt)
+	testing.expect(t, ok)
+	if !ok {
+		return
+	}
+
+	testing.expect(t, select_stmt.where_cond != nil)
+	testing.expect(t, select_stmt.into_kind == .Corresponding)
+	testing.expect(t, select_stmt.into_corresponding_of_table)
+}
+
+@(test)
 select_into_paren_list_join_inner_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
 	file.src =
