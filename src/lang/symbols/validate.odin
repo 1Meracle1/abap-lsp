@@ -20,9 +20,10 @@ validate_file_with_lookup :: proc(file: ^ast.File, lookup_table: ^SymbolTable, d
 	}
 
 	ctx := Validation_Context{
-		lookup_table = lookup_table,
-		diag_table   = diag_table,
-		syntax_taint = build_syntax_taint_ranges(file, context.temp_allocator),
+		lookup_table  = lookup_table,
+		diag_table    = diag_table,
+		syntax_taint  = build_syntax_taint_ranges(file, context.temp_allocator),
+		module_lookup = lookup_table,
 	}
 
 	for decl in file.decls {
@@ -32,9 +33,204 @@ validate_file_with_lookup :: proc(file: ^ast.File, lookup_table: ^SymbolTable, d
 
 // Validation context holds references to symbol tables for lookup and diagnostics
 Validation_Context :: struct {
-	lookup_table: ^SymbolTable, // Table to use for symbol lookups
+	lookup_table: ^SymbolTable, // Current scope (class body, form, …)
 	diag_table:   ^SymbolTable, // Table to store diagnostics in
 	syntax_taint: []lexer.TextRange,
+	// Module/file scope for names outside the current lookup_table (e.g. INHERITING FROM, INTERFACES).
+	// When nil, `lookup_table` is used for both.
+	module_lookup: ^SymbolTable,
+	// METHOD importing parameter names in the current signature; LIKE may refer to these without a workspace type.
+	method_param_names_for_like: ^map[string]bool,
+}
+
+module_scope_lookup :: proc(ctx: ^Validation_Context) -> ^SymbolTable {
+	if ctx == nil {
+		return nil
+	}
+	if ctx.module_lookup != nil {
+		return ctx.module_lookup
+	}
+	return ctx.lookup_table
+}
+
+// Context that uses module/file symbol table for lookups (same diagnostics and taint).
+module_expr_ctx :: proc(ctx: ^Validation_Context) -> Validation_Context {
+	out := ctx^
+	out.lookup_table = module_scope_lookup(ctx)
+	return out
+}
+
+typeexpr_root_lookup_key :: proc(expr: ^ast.Expr) -> string {
+	if expr == nil {
+		return ""
+	}
+	#partial switch e in expr.derived_expr {
+	case ^ast.Ident:
+		return strings.to_lower(e.name, context.temp_allocator)
+	case ^ast.Selector_Expr:
+		return strings.to_lower(ast.selector_field_ident_name(e), context.temp_allocator)
+	}
+	return ""
+}
+
+maybe_diagnostic_inherit_must_be_class :: proc(
+	module_ctx: ^Validation_Context,
+	diag_table: ^SymbolTable,
+	expr: ^ast.Expr,
+) {
+	if module_ctx == nil ||
+	   module_ctx.lookup_table == nil ||
+	   diag_table == nil ||
+	   expr == nil {
+		return
+	}
+	key := typeexpr_root_lookup_key(expr)
+	if key == "" {
+		return
+	}
+	if sym, ok := module_ctx.lookup_table.symbols[key]; ok && sym.kind != .Class {
+		add_diagnostic(diag_table, expr.range, "INHERITING FROM must reference a class")
+	}
+}
+
+maybe_diagnostic_behavior_must_be_interface :: proc(
+	module_ctx: ^Validation_Context,
+	diag_table: ^SymbolTable,
+	expr: ^ast.Expr,
+) {
+	if module_ctx == nil ||
+	   module_ctx.lookup_table == nil ||
+	   diag_table == nil ||
+	   expr == nil {
+		return
+	}
+	key := typeexpr_root_lookup_key(expr)
+	if key == "" {
+		return
+	}
+	if sym, ok := module_ctx.lookup_table.symbols[key]; ok && sym.kind != .Interface {
+		add_diagnostic(diag_table, expr.range, "BEHAVIOR OF must reference an interface")
+	}
+}
+
+maybe_diagnostic_friends_class_or_interface :: proc(
+	module_ctx: ^Validation_Context,
+	diag_table: ^SymbolTable,
+	expr: ^ast.Expr,
+) {
+	if module_ctx == nil ||
+	   module_ctx.lookup_table == nil ||
+	   diag_table == nil ||
+	   expr == nil {
+		return
+	}
+	key := typeexpr_root_lookup_key(expr)
+	if key == "" {
+		return
+	}
+	if sym, ok := module_ctx.lookup_table.symbols[key]; ok {
+		if sym.kind != .Class && sym.kind != .Interface {
+			add_diagnostic(
+				diag_table,
+				expr.range,
+				"FRIENDS must reference a class or interface",
+			)
+		}
+	}
+}
+
+validate_class_def_header_ctx :: proc(ctx: ^Validation_Context, decl: ^ast.Class_Def_Decl) {
+	if decl == nil {
+		return
+	}
+	mc := module_expr_ctx(ctx)
+	if decl.inheriting_from != nil {
+		validate_type_expr_ctx(&mc, decl.inheriting_from)
+		maybe_diagnostic_inherit_must_be_class(&mc, ctx.diag_table, decl.inheriting_from)
+	}
+	if decl.behavior_of != nil {
+		validate_type_expr_ctx(&mc, decl.behavior_of)
+		maybe_diagnostic_behavior_must_be_interface(&mc, ctx.diag_table, decl.behavior_of)
+	}
+	for f in decl.friends {
+		validate_type_expr_ctx(&mc, f)
+		maybe_diagnostic_friends_class_or_interface(&mc, ctx.diag_table, f)
+	}
+}
+
+validate_method_decl_ctx :: proc(ctx: ^Validation_Context, decl: ^ast.Method_Decl) {
+	if decl == nil {
+		return
+	}
+	like_names := make(map[string]bool, context.temp_allocator)
+	for param in decl.params {
+		if param != nil && param.ident != nil {
+			like_names[strings.to_lower(param.ident.name)] = true
+		}
+	}
+	mctx := ctx^
+	if len(like_names) > 0 {
+		mctx.method_param_names_for_like = &like_names
+	}
+	for param in decl.params {
+		if param == nil {
+			continue
+		}
+		validate_type_expr_ctx(&mctx, param.typed)
+		validate_type_expr_ctx(&mctx, param.likes)
+		validate_expr_ctx(ctx, param.default)
+	}
+	raise_ctx := module_expr_ctx(ctx)
+	for r in decl.raising {
+		validate_type_expr_ctx(&raise_ctx, r)
+	}
+}
+
+// validate_type_ident_ctx checks TYPE / LIKE / RAISING type spellings against the module/workspace table.
+// Emits "Unknown type" when not built-in and not TypeDef/Class/Interface; still records remote candidates for Z/Y/ RFC-style names.
+validate_type_ident_ctx :: proc(ctx: ^Validation_Context, ident: ^ast.Ident) {
+	if ctx == nil || ident == nil || ctx.diag_table == nil {
+		return
+	}
+	mod_table := module_scope_lookup(ctx)
+	if mod_table == nil {
+		return
+	}
+	name := ident.name
+	lower := strings.to_lower(name, context.temp_allocator)
+	if len(lower) == 0 {
+		return
+	}
+	if ctx.method_param_names_for_like != nil && lower in ctx.method_param_names_for_like {
+		return
+	}
+	if builtin_type_from_name(name) != .Unknown {
+		return
+	}
+	if sym, ok := mod_table.symbols[lower]; ok {
+		#partial switch sym.kind {
+		case .TypeDef, .Class, .Interface:
+			return
+		case:
+			add_diagnostic(
+				ctx.diag_table,
+				ident.range,
+				strings.concatenate(
+					{"'", name, "' cannot be used as a type here"},
+					context.temp_allocator,
+				),
+			)
+			return
+		}
+	}
+	remote_ctx := ctx^
+	remote_ctx.lookup_table = mod_table
+	maybe_add_remote_candidate(&remote_ctx, name, .Type_Name)
+	add_diagnostic(
+		ctx.diag_table,
+		ident.range,
+		strings.concatenate({"Unknown type '", name, "'"}, context.temp_allocator),
+	)
 }
 
 // validate_stmt_list validates a list of statements
@@ -236,26 +432,65 @@ validate_stmt_ctx :: proc(ctx: ^Validation_Context, stmt: ^ast.Stmt) {
 	case ^ast.Select_Stmt:
 		validate_expr_ctx(ctx, s.into_target)
 		validate_stmt_list_ctx(ctx, s.body[:])
+	case ^ast.Method_Decl:
+		validate_method_decl_ctx(ctx, s)
+	case ^ast.Method_Chain_Decl:
+		for d in s.decls {
+			validate_method_decl_ctx(ctx, d)
+		}
+	case ^ast.Interfaces_Decl:
+		mc := module_expr_ctx(ctx)
+		for id in s.names {
+			if id == nil {
+				continue
+			}
+			lc := strings.to_lower(id.name)
+			if sym, ok := mc.lookup_table.symbols[lc]; ok {
+				if sym.kind != .Interface {
+					add_diagnostic(
+						ctx.diag_table,
+						id.range,
+						strings.concatenate(
+							{
+								"'",
+								id.name,
+								"' is not an interface; INTERFACES expects an interface",
+							},
+							context.temp_allocator,
+						),
+					)
+				}
+			} else {
+				remote_ctx := ctx^
+				remote_ctx.lookup_table = module_scope_lookup(ctx)
+				maybe_add_remote_candidate(&remote_ctx, id.name, .Type_Name)
+			}
+		}
 	case ^ast.Form_Decl:
 		// Get child scope for form - use lookup_table for finding the scope
 		form_name := strings.to_lower(s.ident.name)
 		if sym, found := ctx.lookup_table.symbols[form_name]; found && sym.child_scope != nil {
+			mod_lookup := ctx.module_lookup if ctx.module_lookup != nil else ctx.lookup_table
 			// Create new context with child scope for lookups, but keep same diag_table
 			child_ctx := Validation_Context{
-				lookup_table = sym.child_scope,
-				diag_table   = ctx.diag_table,
-				syntax_taint = ctx.syntax_taint,
+				lookup_table  = sym.child_scope,
+				diag_table    = ctx.diag_table,
+				syntax_taint  = ctx.syntax_taint,
+				module_lookup = mod_lookup,
 			}
 			validate_stmt_list_ctx(&child_ctx, s.body[:])
 		}
 	case ^ast.Class_Def_Decl:
-		// Validate class definition
+		validate_class_def_header_ctx(ctx, s)
+		// Validate class definition body
 		class_name := strings.to_lower(s.ident.name)
 		if sym, found := ctx.lookup_table.symbols[class_name]; found && sym.child_scope != nil {
+			mod_lookup := ctx.module_lookup if ctx.module_lookup != nil else ctx.lookup_table
 			child_ctx := Validation_Context{
-				lookup_table = sym.child_scope,
-				diag_table   = ctx.diag_table,
-				syntax_taint = ctx.syntax_taint,
+				lookup_table  = sym.child_scope,
+				diag_table    = ctx.diag_table,
+				syntax_taint  = ctx.syntax_taint,
+				module_lookup = mod_lookup,
 			}
 			for section in s.sections {
 				validate_class_section_ctx(&child_ctx, section)
@@ -271,10 +506,12 @@ validate_stmt_ctx :: proc(ctx: ^Validation_Context, stmt: ^ast.Stmt) {
 					method_name := strings.to_lower(get_decl_name(m.ident), context.temp_allocator)
 					if method_sym, ok := class_sym.child_scope.symbols[method_name]; ok &&
 					   method_sym.child_scope != nil {
+						mod_lookup := ctx.module_lookup if ctx.module_lookup != nil else ctx.lookup_table
 						child_ctx := Validation_Context{
-							lookup_table = method_sym.child_scope,
-							diag_table   = ctx.diag_table,
-							syntax_taint = ctx.syntax_taint,
+							lookup_table  = method_sym.child_scope,
+							diag_table    = ctx.diag_table,
+							syntax_taint  = ctx.syntax_taint,
+							module_lookup = mod_lookup,
 						}
 						validate_stmt_list_ctx(&child_ctx, m.body[:])
 					} else {
@@ -294,10 +531,12 @@ validate_stmt_ctx :: proc(ctx: ^Validation_Context, stmt: ^ast.Stmt) {
 		// Validate interface members
 		iface_name := strings.to_lower(s.ident.name)
 		if sym, found := ctx.lookup_table.symbols[iface_name]; found && sym.child_scope != nil {
+			mod_lookup := ctx.module_lookup if ctx.module_lookup != nil else ctx.lookup_table
 			child_ctx := Validation_Context{
-				lookup_table = sym.child_scope,
-				diag_table   = ctx.diag_table,
-				syntax_taint = ctx.syntax_taint,
+				lookup_table  = sym.child_scope,
+				diag_table    = ctx.diag_table,
+				syntax_taint  = ctx.syntax_taint,
+				module_lookup = mod_lookup,
 			}
 			for data_decl in s.data {
 				validate_stmt_ctx(&child_ctx, data_decl)
@@ -307,10 +546,12 @@ validate_stmt_ctx :: proc(ctx: ^Validation_Context, stmt: ^ast.Stmt) {
 		// Get event child scope
 		event_name := get_event_name(s.kind)
 		if sym, found := ctx.lookup_table.symbols[event_name]; found && sym.child_scope != nil {
+			mod_lookup := ctx.module_lookup if ctx.module_lookup != nil else ctx.lookup_table
 			child_ctx := Validation_Context{
-				lookup_table = sym.child_scope,
-				diag_table   = ctx.diag_table,
-				syntax_taint = ctx.syntax_taint,
+				lookup_table  = sym.child_scope,
+				diag_table    = ctx.diag_table,
+				syntax_taint  = ctx.syntax_taint,
+				module_lookup = mod_lookup,
 			}
 			validate_stmt_list_ctx(&child_ctx, s.body[:])
 		}
@@ -318,10 +559,12 @@ validate_stmt_ctx :: proc(ctx: ^Validation_Context, stmt: ^ast.Stmt) {
 		if s.ident != nil {
 			module_name := strings.to_lower(s.ident.name)
 			if sym, found := ctx.lookup_table.symbols[module_name]; found && sym.child_scope != nil {
+				mod_lookup := ctx.module_lookup if ctx.module_lookup != nil else ctx.lookup_table
 				child_ctx := Validation_Context{
-					lookup_table = sym.child_scope,
-					diag_table   = ctx.diag_table,
-					syntax_taint = ctx.syntax_taint,
+					lookup_table  = sym.child_scope,
+					diag_table    = ctx.diag_table,
+					syntax_taint  = ctx.syntax_taint,
+					module_lookup = mod_lookup,
 				}
 				validate_stmt_list_ctx(&child_ctx, s.body[:])
 			}
@@ -341,6 +584,12 @@ validate_class_section_ctx :: proc(ctx: ^Validation_Context, section: ^ast.Class
 	}
 	for data_decl in section.data {
 		validate_stmt_ctx(ctx, data_decl)
+	}
+	for method_decl in section.methods {
+		validate_stmt_ctx(ctx, method_decl)
+	}
+	for iface_decl in section.interfaces {
+		validate_stmt_ctx(ctx, iface_decl)
 	}
 }
 
@@ -451,7 +700,7 @@ validate_type_expr_ctx :: proc(ctx: ^Validation_Context, expr: ^ast.Expr) {
 
 	#partial switch e in expr.derived_expr {
 	case ^ast.Ident:
-		maybe_add_remote_candidate(ctx, e.name, .Type_Name)
+		validate_type_ident_ctx(ctx, e)
 	case ^ast.Table_Type:
 		validate_type_expr_ctx(ctx, e.elem)
 	case ^ast.Ref_Type:

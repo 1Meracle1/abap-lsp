@@ -671,3 +671,223 @@ ENDFORM.`
 	}
 	testing.expect(t, !found_noise, "expected no semantic diagnostics from tainted nested statement")
 }
+
+@(test)
+test_class_def_inheriting_from_interface_diagnostic :: proc(t: ^testing.T) {
+	src := `INTERFACE zif_i.
+ENDINTERFACE.
+CLASS zcl_c DEFINITION INHERITING FROM zif_i.
+  PUBLIC SECTION.
+ENDCLASS.`
+	file := ast.new(ast.File, {})
+	file.src = src
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+	testing.expect(t, len(file.syntax_errors) == 0, fmt.tprintf("syntax errors: %v", file.syntax_errors))
+
+	table := symbols.resolve_file(file)
+	defer symbols.destroy_symbol_table(table)
+
+	diags := symbols.collect_all_diagnostics(table)
+	found := false
+	for diag in diags {
+		if strings.contains(diag.message, "INHERITING FROM must reference a class") {
+			found = true
+			break
+		}
+	}
+	testing.expect(t, found, "expected INHERITING FROM / class kind diagnostic")
+}
+
+@(test)
+test_class_def_interfaces_clause_non_interface_diagnostic :: proc(t: ^testing.T) {
+	src := `CLASS zcl_c DEFINITION.
+  PUBLIC SECTION.
+ENDCLASS.
+CLASS zcl_d DEFINITION.
+  PUBLIC SECTION.
+    INTERFACES zcl_c.
+ENDCLASS.`
+	file := ast.new(ast.File, {})
+	file.src = src
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+	testing.expect(t, len(file.syntax_errors) == 0, fmt.tprintf("syntax errors: %v", file.syntax_errors))
+
+	table := symbols.resolve_file(file)
+	defer symbols.destroy_symbol_table(table)
+
+	diags := symbols.collect_all_diagnostics(table)
+	found := false
+	for diag in diags {
+		if strings.contains(diag.message, "not an interface") &&
+		   strings.contains(diag.message, "INTERFACES") {
+			found = true
+			break
+		}
+	}
+	testing.expect(t, found, "expected INTERFACES / interface kind diagnostic")
+}
+
+@(test)
+test_class_def_friends_non_class_diagnostic :: proc(t: ^testing.T) {
+	src := `DATA gv TYPE i.
+CLASS zcl_c DEFINITION FRIENDS gv.
+  PUBLIC SECTION.
+ENDCLASS.`
+	file := ast.new(ast.File, {})
+	file.src = src
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+	testing.expect(t, len(file.syntax_errors) == 0, fmt.tprintf("syntax errors: %v", file.syntax_errors))
+
+	table := symbols.resolve_file(file)
+	defer symbols.destroy_symbol_table(table)
+
+	diags := symbols.collect_all_diagnostics(table)
+	found := false
+	for diag in diags {
+		if strings.contains(diag.message, "FRIENDS must reference a class or interface") {
+			found = true
+			break
+		}
+	}
+	testing.expect(t, found, "expected FRIENDS kind diagnostic")
+}
+
+@(test)
+test_class_def_behavior_of_non_interface_diagnostic :: proc(t: ^testing.T) {
+	src := `CLASS zcl_c DEFINITION.
+  PUBLIC SECTION.
+ENDCLASS.
+CLASS zcl_b DEFINITION FOR BEHAVIOR OF zcl_c.
+  PUBLIC SECTION.
+ENDCLASS.`
+	file := ast.new(ast.File, {})
+	file.src = src
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+	testing.expect(t, len(file.syntax_errors) == 0, fmt.tprintf("syntax errors: %v", file.syntax_errors))
+
+	table := symbols.resolve_file(file)
+	defer symbols.destroy_symbol_table(table)
+
+	diags := symbols.collect_all_diagnostics(table)
+	found := false
+	for diag in diags {
+		if strings.contains(diag.message, "BEHAVIOR OF must reference an interface") {
+			found = true
+			break
+		}
+	}
+	testing.expect(t, found, "expected BEHAVIOR OF / interface kind diagnostic")
+}
+
+@(test)
+test_exception_class_workspace_unknown_types_diag :: proc(t: ^testing.T) {
+	// Names like /STTP/..., CX_ROOT, DDIC rows are absent from a minimal workspace — expect Unknown type diagnostics,
+	// while INT2 is treated as a built-in and LIKE … TO sibling parameters are not required to resolve globally.
+	src := `CLASS /sttp/cx_rr_ru_rest_client DEFINITION
+  PUBLIC
+  INHERITING FROM /sttp/cx_base_exception
+  FINAL
+  CREATE PUBLIC .
+  PUBLIC SECTION.
+  METHODS constructor
+    IMPORTING
+      !textid LIKE textid OPTIONAL
+      !previous LIKE previous OPTIONAL
+      !messages TYPE REF TO /sttp/cl_messages OPTIONAL
+      !message TYPE bal_s_msg OPTIONAL
+      !message_text TYPE bapi_msg OPTIONAL
+      !returncode TYPE int2 OPTIONAL .
+  CLASS-METHODS raise_from_cx
+    IMPORTING
+      !io_previous TYPE REF TO cx_root
+    RAISING
+      /sttp/cx_rr_ru_rest_client .
+  CLASS-METHODS raise_with_sy_msg
+    RAISING
+      /sttp/cx_rr_ru_rest_client .
+  METHODS add_message_from_exception
+    IMPORTING
+      !io_messages TYPE REF TO /sttp/cl_messages .
+  PROTECTED SECTION.
+  PRIVATE SECTION.
+ENDCLASS.`
+	file := ast.new(ast.File, {})
+	file.src = src
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+	if !testing.expect(t, len(file.syntax_errors) == 0, fmt.tprintf("syntax: %v", file.syntax_errors)) do return
+
+	table := symbols.resolve_file(file)
+	defer symbols.destroy_symbol_table(table)
+
+	diags := symbols.collect_all_diagnostics(table)
+	unknown_type := 0
+	has_cx_root := false
+	has_base_exc := false
+	for d in diags {
+		if !strings.contains(d.message, "Unknown type '") {
+			continue
+		}
+		unknown_type += 1
+		if strings.contains(d.message, "cx_root") {
+			has_cx_root = true
+		}
+		if strings.contains(d.message, "cx_base_exception") {
+			has_base_exc = true
+		}
+	}
+	testing.expect(t, unknown_type >= 5, fmt.tprintf("expected several Unknown type diagnostics, got %d", unknown_type))
+	testing.expect(t, has_cx_root, "expected Unknown type for CX_ROOT (REF TO)")
+	testing.expect(t, has_base_exc, "expected Unknown type for /sttp/cx_base_exception (INHERITING FROM)")
+	found_int2 := false
+	for d in diags {
+		if strings.contains(d.message, "int2") {
+			found_int2 = true
+			break
+		}
+	}
+	testing.expect(t, !found_int2, "INT2 is built-in; should not produce Unknown type diagnostic")
+}
+
+@(test)
+test_class_def_valid_inheritance_and_interfaces_no_kind_errors :: proc(t: ^testing.T) {
+	src := `INTERFACE zif_i.
+ENDINTERFACE.
+CLASS zcl_parent DEFINITION.
+  PUBLIC SECTION.
+ENDCLASS.
+CLASS zcl_child DEFINITION INHERITING FROM zcl_parent.
+  PUBLIC SECTION.
+    INTERFACES zif_i.
+    METHODS m IMPORTING iv TYPE i.
+ENDCLASS.`
+	file := ast.new(ast.File, {})
+	file.src = src
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+	testing.expect(t, len(file.syntax_errors) == 0, fmt.tprintf("syntax errors: %v", file.syntax_errors))
+
+	table := symbols.resolve_file(file)
+	defer symbols.destroy_symbol_table(table)
+
+	diags := symbols.collect_all_diagnostics(table)
+	for diag in diags {
+		if strings.contains(diag.message, "INHERITING FROM must reference") ||
+		   strings.contains(diag.message, "INTERFACES expects") ||
+		   strings.contains(diag.message, "BEHAVIOR OF must") ||
+		   strings.contains(diag.message, "FRIENDS must") {
+			testing.expect(t, false, fmt.tprintf("unexpected class-def kind diagnostic: %s", diag.message))
+			return
+		}
+	}
+}

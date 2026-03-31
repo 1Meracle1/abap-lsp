@@ -863,7 +863,7 @@ resolve_type_expr :: proc(table: ^SymbolTable, expr: ^ast.Expr) -> ^Type {
 builtin_type_from_name :: proc(name: string) -> TypeKind {
 	upper_name := strings.to_lower(name, context.temp_allocator)
 	switch upper_name {
-	case "i", "int4", "int8":
+	case "i", "int1", "int2", "int4", "int8":
 		return .Integer
 	case "f", "p", "decfloat16", "decfloat34":
 		return .Float
