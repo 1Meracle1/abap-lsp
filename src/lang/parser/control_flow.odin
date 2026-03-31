@@ -76,6 +76,49 @@ parse_while_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	return while_stmt
 }
 
+// DO [. | n TIMES.] ... ENDDO.
+parse_do_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
+	do_tok := expect_keyword_token(p, "DO")
+	stmt := ast.new(ast.Do_Stmt, do_tok.range)
+	stmt.body = make([dynamic]^ast.Stmt)
+
+	if p.curr_tok.kind == .Period {
+		expect_token(p, .Period)
+	} else {
+		stmt.times = parse_expr(p)
+		expect_keyword_token(p, "TIMES")
+		expect_token(p, .Period)
+	}
+
+	for p.curr_tok.kind != .EOF {
+		if check_keyword(p, "ENDDO") {
+			break
+		}
+		s := parse_stmt(p)
+		if s != nil {
+			append(&stmt.body, s)
+		}
+	}
+
+	enddo_tok := expect_keyword_token(p, "ENDDO")
+	period_tok := expect_token(p, .Period)
+	stmt.range.end = period_tok.range.end
+	_ = enddo_tok
+	return stmt
+}
+
+parse_continue_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
+	tok := expect_keyword_token(p, "CONTINUE")
+	period_tok := expect_token(p, .Period)
+	return ast.new(ast.Continue_Stmt, tok, period_tok)
+}
+
+parse_exit_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
+	tok := expect_keyword_token(p, "EXIT")
+	period_tok := expect_token(p, .Period)
+	return ast.new(ast.Exit_Stmt, tok, period_tok)
+}
+
 // LOOP statement parser
 // Syntax variations:
 // - LOOP AT itab [INTO wa | ASSIGNING <fs> | TRANSPORTING NO FIELDS] [FROM idx] [TO idx] [WHERE condition]. body... ENDLOOP.

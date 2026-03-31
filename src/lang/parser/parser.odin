@@ -116,6 +116,8 @@ parse_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			if check_convert_time_stamp_into_date_time_prefix(p) {
 				return parse_convert_time_stamp_to_date_time_stmt(p)
 			}
+		case "CONTINUE":
+			return parse_continue_stmt(p)
 		case "SET":
 			return parse_set_stmt(p)
 		case "CASE":
@@ -155,6 +157,10 @@ parse_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			if check_keyword_ahead(p, "TABLE") {
 				return parse_describe_table_stmt(p)
 			}
+		case "DO":
+			return parse_do_stmt(p)
+		case "EXIT":
+			return parse_exit_stmt(p)
 		case "WRITE":
 			return parse_write_stmt(p)
 		case "CONDENSE":

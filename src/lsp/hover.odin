@@ -368,6 +368,19 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 			hover_text = fmt.tprintf("(data structure) %s", n.ident.name)
 		}
 
+	case ^ast.Do_Stmt:
+		if n.times != nil {
+			hover_text = "(statement) DO n TIMES ... ENDDO — counted loop"
+		} else {
+			hover_text = "(statement) DO ... ENDDO — loop until EXIT or error"
+		}
+
+	case ^ast.Continue_Stmt:
+		hover_text = "(statement) CONTINUE — skip to next iteration of the current loop"
+
+	case ^ast.Exit_Stmt:
+		hover_text = "(statement) EXIT — leave the current loop (or processing block)"
+
 	case ^ast.Loop_Stmt:
 		switch n.kind {
 		case .At:

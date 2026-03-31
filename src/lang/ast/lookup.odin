@@ -635,6 +635,24 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 			}
 		}
 
+	case ^Do_Stmt:
+		if n.times != nil {
+			if res := find_node_at_offset(&n.times.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		for stmt in n.body {
+			if res := find_node_at_offset(&stmt.stmt_base, offset); res != nil {
+				return res
+			}
+		}
+
+	case ^Continue_Stmt:
+		return node
+
+	case ^Exit_Stmt:
+		return node
+
 	case ^Loop_Stmt:
 		if n.itab != nil {
 			if res := find_node_at_offset(&n.itab.expr_base, offset); res != nil {

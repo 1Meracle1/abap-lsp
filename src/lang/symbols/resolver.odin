@@ -1046,6 +1046,8 @@ resolve_stmt :: proc(
 		resolve_case_stmt(table, s, syntax_taint)
 	case ^ast.While_Stmt:
 		resolve_while_stmt(table, s, syntax_taint)
+	case ^ast.Do_Stmt:
+		resolve_do_stmt(table, s, syntax_taint)
 	case ^ast.Loop_Stmt:
 		resolve_loop_stmt(table, s, syntax_taint)
 	case ^ast.Loop_At_Control_Stmt:
@@ -1321,6 +1323,10 @@ resolve_case_stmt :: proc(table: ^SymbolTable, case_stmt: ^ast.Case_Stmt, syntax
 
 resolve_while_stmt :: proc(table: ^SymbolTable, while_stmt: ^ast.While_Stmt, syntax_taint: []lexer.TextRange) {
 	resolve_stmt_list(table, while_stmt.body[:], syntax_taint)
+}
+
+resolve_do_stmt :: proc(table: ^SymbolTable, do_stmt: ^ast.Do_Stmt, syntax_taint: []lexer.TextRange) {
+	resolve_stmt_list(table, do_stmt.body[:], syntax_taint)
 }
 
 resolve_loop_at_control_stmt :: proc(

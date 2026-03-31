@@ -424,6 +424,23 @@ While_Stmt :: struct {
 	body:       [dynamic]^Stmt,
 }
 
+// DO [. | n TIMES.] ... ENDDO.
+Do_Stmt :: struct {
+	using node: Stmt,
+	times:      ^Expr, // nil for unconditional DO.
+	body:       [dynamic]^Stmt,
+}
+
+// CONTINUE. — next loop iteration
+Continue_Stmt :: struct {
+	using node: Stmt,
+}
+
+// EXIT. — leave current loop (or program context)
+Exit_Stmt :: struct {
+	using node: Stmt,
+}
+
 // LOOP statement kinds
 Loop_Kind :: enum {
 	At, // LOOP AT itab
@@ -1253,6 +1270,9 @@ Any_Node :: union {
 	^Set_Handler_Stmt,
 	^Case_Stmt,
 	^While_Stmt,
+	^Do_Stmt,
+	^Continue_Stmt,
+	^Exit_Stmt,
 	^Loop_Stmt,
 	^Loop_At_Control_Stmt,
 	^Clear_Stmt,
@@ -1368,6 +1388,9 @@ Any_Stmt :: union {
 	^Set_Handler_Stmt,
 	^Case_Stmt,
 	^While_Stmt,
+	^Do_Stmt,
+	^Continue_Stmt,
+	^Exit_Stmt,
 	^Loop_Stmt,
 	^Loop_At_Control_Stmt,
 	^Clear_Stmt,

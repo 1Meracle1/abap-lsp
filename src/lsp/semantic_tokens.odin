@@ -406,6 +406,14 @@ collect_tokens_from_stmt :: proc(
 			collect_tokens_from_stmt(tokens, body_stmt, snap)
 		}
 
+	case ^ast.Do_Stmt:
+		if s.times != nil {
+			collect_tokens_from_expr(tokens, s.times, snap, nil)
+		}
+		for body_stmt in s.body {
+			collect_tokens_from_stmt(tokens, body_stmt, snap)
+		}
+
 	case ^ast.Clear_Stmt:
 		for expr in s.exprs {
 			collect_tokens_from_expr(tokens, expr, snap, nil)
