@@ -983,6 +983,42 @@ DATA lv_ok TYPE i.`
 			id_t, ok_t := mc1.target.derived_expr.(^ast.Ident)
 			testing.expect(t, ok_s && id_s.name == "ls_bup", "expected source ls_bup")
 			testing.expect(t, ok_t && id_t.name == "es_bup_result", "expected target es_bup_result")
+			testing.expect(t, !mc1.keeping_target_lines, "expected no KEEPING TARGET LINES")
+		}
+	}
+}
+
+@(test)
+move_corresponding_keeping_target_lines_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src =
+	`MOVE-CORRESPONDING is_updates-bup_map_upd TO lt_bupid
+    KEEPING TARGET LINES.`
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+	testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 stmt, got %v", len(file.decls)))
+	if len(file.decls) >= 1 {
+		mc, ok := file.decls[0].derived_stmt.(^ast.Move_Corresponding_Stmt)
+		testing.expect(t, ok, "expected MOVE-CORRESPONDING stmt")
+		if ok {
+			testing.expect(t, mc.keeping_target_lines, "expected KEEPING TARGET LINES")
+			sel, ok_sel := mc.source.derived_expr.(^ast.Selector_Expr)
+			testing.expect(t, ok_sel, "expected selector source is_updates-bup_map_upd")
+			if ok_sel {
+				root, ok_root := sel.expr.derived_expr.(^ast.Ident)
+				field, ok_field := sel.field.derived_expr.(^ast.Ident)
+				testing.expect(t, ok_root && root.name == "is_updates", "expected root is_updates")
+				testing.expect(t, ok_field && field.name == "bup_map_upd", "expected field bup_map_upd")
+			}
+			id_t, ok_t := mc.target.derived_expr.(^ast.Ident)
+			testing.expect(t, ok_t && id_t.name == "lt_bupid", "expected target lt_bupid")
 		}
 	}
 }

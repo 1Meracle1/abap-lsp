@@ -252,11 +252,12 @@ Assign_Stmt :: struct {
 	rhs:        []^Expr,
 }
 
-// MOVE-CORRESPONDING source TO target.
+// MOVE-CORRESPONDING source TO target [KEEPING TARGET LINES].
 Move_Corresponding_Stmt :: struct {
 	using node: Stmt,
-	source:     ^Expr,
-	target:     ^Expr,
+	source:               ^Expr,
+	target:               ^Expr,
+	keeping_target_lines: bool,
 }
 
 Assign_Field_Symbol_Stmt :: struct {

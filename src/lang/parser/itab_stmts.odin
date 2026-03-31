@@ -504,16 +504,24 @@ parse_clear_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	return clear_stmt
 }
 
-// parse_move_corresponding_stmt parses MOVE-CORRESPONDING source TO target.
+// parse_move_corresponding_stmt parses MOVE-CORRESPONDING source TO target [KEEPING TARGET LINES].
 // MOVE-CORRESPONDING must already be consumed by check_hyphenated_keyword; first_tok is the leading MOVE token.
 parse_move_corresponding_stmt :: proc(p: ^Parser, first_tok: lexer.Token) -> ^ast.Stmt {
 	source := parse_expr(p)
 	expect_keyword_token(p, "TO")
 	target := parse_expr(p)
+	keeping_target_lines := false
+	if check_keyword(p, "KEEPING") {
+		advance_token(p)
+		expect_keyword_token(p, "TARGET")
+		expect_keyword_token(p, "LINES")
+		keeping_target_lines = true
+	}
 	skip_pragma(p)
 	period_tok := expect_token(p, .Period)
 	stmt := ast.new(ast.Move_Corresponding_Stmt, first_tok, period_tok)
 	stmt.source = source
 	stmt.target = target
+	stmt.keeping_target_lines = keeping_target_lines
 	return stmt
 }
