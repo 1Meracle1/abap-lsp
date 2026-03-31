@@ -5342,6 +5342,76 @@ data_standard_table_of_test :: proc(t: ^testing.T) {
 }
 
 @(test)
+data_like_standard_table_of_test :: proc(t: ^testing.T) {
+	// DATA: lt_cond LIKE STANDARD TABLE OF lv_cond.
+	file := ast.new(ast.File, {})
+	file.src = `DATA: lt_cond LIKE STANDARD TABLE OF lv_cond.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) > 0, "Expected at least one declaration") do return
+
+	chain, ok := file.decls[0].derived_stmt.(^ast.Data_Typed_Chain_Decl)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Data_Typed_Chain_Decl, got %T", file.decls[0].derived_stmt)) do return
+
+	decl, dok := chain.parts[0].derived_stmt.(^ast.Data_Typed_Decl)
+	if !testing.expect(t, dok, fmt.tprintf("Expected Data_Typed_Decl part, got %T", chain.parts[0].derived_stmt)) do return
+
+	table_type, tok := decl.typed.derived_expr.(^ast.Table_Type)
+	if !testing.expect(t, tok, fmt.tprintf("Expected Table_Type, got %T", decl.typed.derived_expr)) do return
+	testing.expect(t, table_type.kind == .Standard, fmt.tprintf("Expected Standard, got %v", table_type.kind))
+
+	elem_ident, eok := table_type.elem.derived_expr.(^ast.Ident)
+	if testing.expect(t, eok, fmt.tprintf("Expected Ident for elem, got %T", table_type.elem.derived_expr)) {
+		testing.expect(t, elem_ident.name == "lv_cond", elem_ident.name)
+	}
+}
+
+@(test)
+data_chain_legacy_length_and_like_std_table_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src =
+	`DATA:
+	    lv_prev(10)     TYPE          c,
+	    lv_prev_reg(10) TYPE          c,
+	    lv_cond(72)     TYPE          c,
+	    lv_error        TYPE          xfeld,
+	    lt_cond         LIKE STANDARD TABLE OF lv_cond,
+	    lt_cond_reg     LIKE STANDARD TABLE OF lv_cond.`
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) > 0, "Expected at least one declaration") do return
+	chain, ok := file.decls[0].derived_stmt.(^ast.Data_Typed_Chain_Decl)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Data_Typed_Chain_Decl, got %T", file.decls[0].derived_stmt)) do return
+	if !testing.expect(t, len(chain.parts) == 6, fmt.tprintf("Expected 6 parts, got %d", len(chain.parts))) do return
+
+	prev, p0ok := chain.parts[0].derived_stmt.(^ast.Data_Typed_Decl)
+	if !testing.expect(t, p0ok, "part 0 Data_Typed_Decl") do return
+	if !testing.expect(t, prev.length != nil, "lv_prev length") do return
+
+	reg, p5ok := chain.parts[5].derived_stmt.(^ast.Data_Typed_Decl)
+	if !testing.expect(t, p5ok, "part 5") do return
+	tab5, t5ok := reg.typed.derived_expr.(^ast.Table_Type)
+	if testing.expect(t, t5ok, "LIKE std table") {
+		testing.expect(t, tab5.kind == .Standard, fmt.tprintf("table kind %v", tab5.kind))
+	}
+}
+
+@(test)
 data_table_of_simple_test :: proc(t: ^testing.T) {
 	// DATA: lt_data TYPE TABLE OF mytype.
 	file := ast.new(ast.File, {})

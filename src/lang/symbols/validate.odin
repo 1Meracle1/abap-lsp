@@ -67,6 +67,7 @@ validate_stmt_ctx :: proc(ctx: ^Validation_Context, stmt: ^ast.Stmt) {
 	case ^ast.Data_Inline_Decl:
 		validate_expr_ctx(ctx, s.value)
 	case ^ast.Data_Typed_Decl:
+		validate_expr_ctx(ctx, s.length)
 		validate_type_expr_ctx(ctx, s.typed)
 		validate_expr_ctx(ctx, s.value)
 	case ^ast.Const_Decl:

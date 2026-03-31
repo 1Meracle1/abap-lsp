@@ -952,6 +952,8 @@ Data_Inline_Decl :: struct {
 Data_Typed_Decl :: struct {
 	using node: Decl,
 	ident:      ^Expr, // Can be ^Ident or ^Selector_Expr (e.g., screen0100-serial)
+	// Legacy length in parentheses before TYPE/LIKE (e.g. DATA: lv_x(10) TYPE c)
+	length:     ^Expr,
 	typed:      ^Expr,
 	value:      ^Expr,
 	// True for STATICS name TYPE ... — procedure-persistent storage (not CLASS-DATA)

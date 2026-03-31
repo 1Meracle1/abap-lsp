@@ -105,6 +105,9 @@ collect_tokens_from_stmt :: proc(
 		if s.ident != nil {
 			collect_tokens_from_expr(tokens, s.ident, snap, nil)
 		}
+		if s.length != nil {
+			collect_tokens_from_expr(tokens, s.length, snap, nil)
+		}
 		if s.typed != nil {
 			collect_tokens_from_type_expr(tokens, s.typed)
 		}
@@ -115,6 +118,9 @@ collect_tokens_from_stmt :: proc(
 			case ^ast.Data_Typed_Decl:
 				if d.ident != nil {
 					collect_tokens_from_expr(tokens, d.ident, snap, nil)
+				}
+				if d.length != nil {
+					collect_tokens_from_expr(tokens, d.length, snap, nil)
 				}
 				if d.typed != nil {
 					collect_tokens_from_type_expr(tokens, d.typed)
@@ -1351,6 +1357,9 @@ collect_tokens_from_data_struct_components :: proc(
 		case ^ast.Data_Typed_Decl:
 			if c.ident != nil {
 				collect_tokens_from_expr(tokens, c.ident, snap, nil)
+			}
+			if c.length != nil {
+				collect_tokens_from_expr(tokens, c.length, snap, nil)
 			}
 			if c.typed != nil {
 				collect_tokens_from_type_expr(tokens, c.typed)

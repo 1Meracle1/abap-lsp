@@ -76,6 +76,7 @@ parse_data_typed_single_decl :: proc(
 ) -> ^ast.Decl {
 	// Parse identifier, which may be a selector expression (e.g., screen0100-serial)
 	ident_expr := parse_data_decl_ident(p)
+	length_expr := parse_optional_const_length_in_parens(p)
 
 	// Accept TYPE or LIKE
 	if check_keyword(p, "TYPE") || check_keyword(p, "LIKE") {
@@ -85,7 +86,7 @@ parse_data_typed_single_decl :: proc(
 	}
 
 	type_expr := parse_type_expr(p)
-	parse_optional_length_decimals(p)
+	parse_optional_length_decimals(p, &length_expr)
 
 	value_expr: ^ast.Expr = nil
 	if check_keyword(p, "VALUE") {
@@ -95,6 +96,7 @@ parse_data_typed_single_decl :: proc(
 
 	data_decl := ast.new(ast.Data_Typed_Decl, keyword_tok, p.curr_tok)
 	data_decl.ident = ident_expr
+	data_decl.length = length_expr
 	data_decl.typed = type_expr
 	data_decl.value = value_expr
 	data_decl.is_static = is_static
@@ -143,6 +145,7 @@ parse_data_typed_multiple_decl :: proc(
 
 		// Parse identifier, which may be a selector expression (e.g., screen0100-serial)
 		ident_expr := parse_data_decl_ident(p)
+		length_expr := parse_optional_const_length_in_parens(p)
 
 		// Accept TYPE or LIKE
 		if check_keyword(p, "TYPE") || check_keyword(p, "LIKE") {
@@ -152,7 +155,7 @@ parse_data_typed_multiple_decl :: proc(
 		}
 
 		type_expr := parse_type_expr(p)
-		parse_optional_length_decimals(p)
+		parse_optional_length_decimals(p, &length_expr)
 
 		value_expr: ^ast.Expr = nil
 		if check_keyword(p, "VALUE") {
@@ -165,6 +168,7 @@ parse_data_typed_multiple_decl :: proc(
 			lexer.TextRange{ident_expr.range.start, p.prev_tok.range.end},
 		)
 		decl.ident = ident_expr
+		decl.length = length_expr
 		decl.typed = type_expr
 		decl.value = value_expr
 		decl.is_static = is_static
@@ -220,15 +224,14 @@ parse_data_struct_decl :: proc(p: ^Parser) -> ^ast.Data_Struct_Decl {
 		// Parse identifier, which may be a selector expression (e.g., screen0100-serial)
 		field_ident_expr := parse_data_decl_ident(p)
 
+		length_expr := parse_optional_const_length_in_parens(p)
+
 		type_expr: ^ast.Expr
-		if p.curr_tok.kind == .LParen && !lexer.have_space_between(p.prev_tok, p.curr_tok) {
-			// Legacy form: field(len) — elementary character type with length (TYPE c)
-			advance_token(p) // (
-			_ = parse_expr(p) // length (semantic detail; type stays plain c)
-			rparen_tok := expect_token(p, .RParen)
+		if length_expr != nil && !(check_keyword(p, "TYPE") || check_keyword(p, "LIKE")) {
+			// Legacy: field(len), — implicit TYPE c before comma / VALUE / END OF
 			c_ty := ast.new(
 				ast.Ident,
-				lexer.TextRange{field_ident_expr.range.start, rparen_tok.range.end},
+				lexer.TextRange{field_ident_expr.range.start, p.prev_tok.range.end},
 			)
 			c_ty.name = "c"
 			c_ty.derived_expr = c_ty
@@ -242,7 +245,7 @@ parse_data_struct_decl :: proc(p: ^Parser) -> ^ast.Data_Struct_Decl {
 			}
 
 			type_expr = parse_type_expr(p)
-			parse_optional_length_decimals(p)
+			parse_optional_length_decimals(p, &length_expr)
 		}
 
 		// Parse optional VALUE
@@ -257,6 +260,7 @@ parse_data_struct_decl :: proc(p: ^Parser) -> ^ast.Data_Struct_Decl {
 			lexer.TextRange{field_ident_expr.range.start, p.prev_tok.range.end},
 		)
 		field_decl.ident = field_ident_expr
+		field_decl.length = length_expr
 		field_decl.typed = type_expr
 		field_decl.value = value_expr
 		field_decl.derived_stmt = field_decl
