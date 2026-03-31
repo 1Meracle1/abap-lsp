@@ -7614,6 +7614,59 @@ append_value_constructor_test :: proc(t: ^testing.T) {
 }
 
 @(test)
+cond_constructor_with_when_then_else_test :: proc(t: ^testing.T) {
+	// COND with = comparisons, && concatenation, and string template (user-style snippets).
+	file := ast.new(ast.File, {})
+	file.src =
+		`lv_curr_node = COND string( WHEN lo_open_element->prefix = '' THEN to_lower( lo_open_element->qname-name ) ELSE to_lower( lo_open_element->prefix && ':' && lo_open_element->qname-name ) ).
+lv_current_tag_path =
+    COND string(
+      WHEN lv_current_tag_path = '' THEN to_lower( lo_open_element->prefix && ':' && lo_open_element->qname-name )
+      ELSE lv_current_tag_path && | | && to_lower( lo_open_element->prefix && ':' && lo_open_element->qname-name ) ).`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+	testing.expect(t, len(file.decls) == 2, fmt.tprintf("Expected 2 decls, got %d", len(file.decls)))
+	if len(file.decls) < 2 do return
+
+	for decl in file.decls {
+		assign_stmt, ok := decl.derived_stmt.(^ast.Assign_Stmt)
+		if !testing.expect(t, ok, fmt.tprintf("Expected Assign_Stmt, got %T", decl.derived_stmt)) do return
+
+		constr_expr, cok := assign_stmt.rhs[0].derived_expr.(^ast.Constructor_Expr)
+		if !testing.expect(t, cok, "COND should parse as Constructor_Expr") do return
+
+		testing.expect(
+			t,
+			strings.to_upper(constr_expr.keyword.lit, context.temp_allocator) == "COND",
+			"Expected COND keyword",
+		)
+		testing.expect(t, !constr_expr.is_inferred, "COND string( ) uses explicit type")
+		if !testing.expect(t, constr_expr.type_expr != nil, "Expected type_expr") do return
+		type_ident, tok_ok := constr_expr.type_expr.derived_expr.(^ast.Ident)
+		if !testing.expect(t, tok_ok, "COND type should be simple ident") do return
+		testing.expect(t, type_ident.name == "string", fmt.tprintf("type %s", type_ident.name))
+
+		// Flat args: [cond1, then1, else_expr]
+		testing.expect(
+			t,
+			len(constr_expr.args) == 3,
+			fmt.tprintf("Expected 3 COND args, got %d", len(constr_expr.args)),
+		)
+		if len(constr_expr.args) == 3 {
+			if _, ok := constr_expr.args[0].derived_expr.(^ast.Binary_Expr); ok {
+				testing.expect(t, true, "condition should include comparison")
+			}
+		}
+	}
+}
+
+@(test)
 append_selector_expr_test :: proc(t: ^testing.T) {
 	// APPEND <fs_doc_info>-gs1_es TO lt_upd_objs.
 	file := ast.new(ast.File, {})

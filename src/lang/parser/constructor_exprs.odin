@@ -18,6 +18,56 @@ parse_constructor_expr :: proc(p: ^Parser) -> ^ast.Expr {
 	return parse_constructor_body(p, keyword_tok)
 }
 
+constructor_keyword_is :: proc(p: ^Parser, keyword_tok: lexer.Token, expected: string) -> bool {
+	if keyword_tok.kind != .Ident {
+		return false
+	}
+	return to_upper(p.keyword_buffer[:], keyword_tok.lit) == expected
+}
+
+// parse_cond_constructor_args parses COND type( WHEN ... THEN ... [ WHEN ... THEN ... ] ELSE ... )
+// Args are stored flat as [cond1, then1, cond2, then2, ..., else_expr].
+parse_cond_constructor_args :: proc(
+	p: ^Parser,
+	constructor_expr: ^ast.Constructor_Expr,
+	lparen_tok: lexer.Token,
+) {
+	max_iterations := 1000
+	iterations := 0
+	for p.curr_tok.kind != .RParen &&
+	    p.curr_tok.kind != .EOF &&
+	    p.curr_tok.kind != .Period &&
+	    iterations < max_iterations {
+		iterations += 1
+		prev_pos := p.curr_tok.range.start
+
+		if check_keyword(p, "WHEN") {
+			advance_token(p)
+			cond := parse_logical_expr(p)
+			expect_keyword_token(p, "THEN")
+			then_expr := parse_expr(p)
+			append(&constructor_expr.args, cond)
+			append(&constructor_expr.args, then_expr)
+		} else if check_keyword(p, "ELSE") {
+			advance_token(p)
+			else_expr := parse_expr(p)
+			append(&constructor_expr.args, else_expr)
+			break
+		} else {
+			error(p, p.curr_tok.range, "expected WHEN or ELSE in COND constructor")
+			advance_token(p)
+		}
+
+		if p.curr_tok.range.start == prev_pos {
+			advance_token(p)
+		}
+	}
+	if iterations >= max_iterations {
+		error(p, lparen_tok.range, "too many branches or malformed COND constructor")
+		skip_to_matching_paren_or_period(p)
+	}
+}
+
 // parse_constructor_body parses the body of a constructor expression after the keyword
 // This handles both explicit type ( args ) and inferred type #( args )
 parse_constructor_body :: proc(p: ^Parser, keyword_tok: lexer.Token) -> ^ast.Expr {
@@ -45,10 +95,13 @@ parse_constructor_body :: proc(p: ^Parser, keyword_tok: lexer.Token) -> ^ast.Exp
 	if p.curr_tok.kind == .LParen {
 		lparen_tok := advance_token(p) // consume (
 
-		// Parse arguments with safety limit
-		max_iterations := 1000
-		iterations := 0
-		if p.curr_tok.kind != .RParen {
+		is_cond := constructor_keyword_is(p, keyword_tok, "COND")
+		if is_cond && p.curr_tok.kind != .RParen {
+			parse_cond_constructor_args(p, constructor_expr, lparen_tok)
+		} else if p.curr_tok.kind != .RParen {
+			// Parse arguments with safety limit
+			max_iterations := 1000
+			iterations := 0
 			for iterations < max_iterations {
 				iterations += 1
 

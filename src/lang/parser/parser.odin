@@ -760,11 +760,12 @@ check_class_keyword :: proc(p: ^Parser, first: string, second: string) -> bool {
 
 parse_expr_or_assign_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	start_tok := p.curr_tok
-	lhs := parse_expr(p)
+	// LHS must not consume `=` as a comparison (`lv = 1` is assignment, not a boolean expr).
+	lhs := parse_concat_expr(p)
 
 	if p.curr_tok.kind == .Eq || p.curr_tok.kind == .QuestionEq {
 		op := advance_token(p)
-		rhs := parse_expr(p)
+		rhs := parse_logical_expr(p)
 		skip_pragma(p)
 		period_tok := expect_token(p, .Period)
 
@@ -850,7 +851,10 @@ skip_to_statement_end :: proc(p: ^Parser) -> lexer.Token {
 }
 
 parse_expr :: proc(p: ^Parser) -> ^ast.Expr {
-	return parse_concat_expr(p)
+	// General expressions allow relational and logical operators (e.g. `a = b`, `x AND y`)
+	// as in assignment RHS, COND conditions, etc. Comparison operands use parse_concat_expr
+	// so string `&`/concatenation binds tighter than `=`.
+	return parse_logical_expr(p)
 }
 
 // parse_concat_expr handles string concatenation with & (lowest precedence in expressions)
@@ -2356,27 +2360,10 @@ parse_not_expr :: proc(p: ^Parser) -> ^ast.Expr {
 	return parse_comparison_expr(p)
 }
 
-parse_logical_paren_expr :: proc(p: ^Parser) -> ^ast.Expr {
-	lparen_tok := expect_token(p, .LParen)
-	inner := parse_logical_expr(p)
-	rparen_tok := expect_token(p, .RParen)
-
-	paren_expr := ast.new(
-		ast.Paren_Expr,
-		lexer.TextRange{lparen_tok.range.start, rparen_tok.range.end},
-	)
-	paren_expr.expr = inner
-	paren_expr.derived_expr = paren_expr
-	return paren_expr
-}
-
 parse_comparison_expr :: proc(p: ^Parser) -> ^ast.Expr {
-	left: ^ast.Expr
-	if p.curr_tok.kind == .LParen {
-		left = parse_logical_paren_expr(p)
-	} else {
-		left = parse_expr(p)
-	}
+	// Always go through concat/additive so `( a + b ) * c` is one operand; leading `(` is
+	// grouping via parse_paren_expr (inner = parse_logical_expr), not a separate parse stop.
+	left := parse_concat_expr(p)
 
 	if check_keyword(p, "IS") {
 		return parse_is_predicate(p, left)
@@ -2384,7 +2371,7 @@ parse_comparison_expr :: proc(p: ^Parser) -> ^ast.Expr {
 
 	if is_comparison_op(p) {
 		op_tok := advance_token(p)
-		right := parse_expr(p)
+		right := parse_concat_expr(p)
 
 		binary := ast.new(ast.Binary_Expr, lexer.TextRange{left.range.start, right.range.end})
 		binary.left = left
