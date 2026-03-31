@@ -5468,6 +5468,50 @@ message_simple_class_only_test :: proc(t: ^testing.T) {
 	}
 }
 
+@(test)
+message_with_escaped_pipe_in_string_template_test :: proc(t: ^testing.T) {
+	// String template contains \| for a literal pipe between placeholders; second WITH arg is static class ref.
+	file := ast.new(ast.File, {})
+	file.src =
+	`MESSAGE e011 WITH |{ ls_prod-country } \| { <ls_matmap>-logqs }| /sttp/cl_constants=>gcs_ac_activity-change INTO gv_dummy_msg.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) > 0, "Expected at least one declaration") do return
+
+	msg_stmt, ok := file.decls[0].derived_stmt.(^ast.Message_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Message_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	if testing.expect(t, msg_stmt.msg_expr != nil, "Expected msg_expr") {
+		me_id, mok := msg_stmt.msg_expr.derived_expr.(^ast.Ident)
+		if testing.expect(t, mok, "Expected msg_expr Ident") {
+			testing.expect(t, me_id.name == "e011", fmt.tprintf("msg id: got %s", me_id.name))
+		}
+	}
+
+	testing.expect(t, len(msg_stmt.with_args) == 2, fmt.tprintf("Expected 2 WITH args, got %d", len(msg_stmt.with_args)))
+
+	if testing.expect(t, len(msg_stmt.with_args) >= 1, "WITH template arg") {
+		tpl, tok := msg_stmt.with_args[0].derived_expr.(^ast.String_Template_Expr)
+		if testing.expect(t, tok, "Expected first WITH arg String_Template_Expr") {
+			testing.expect(t, len(tpl.parts) >= 3, fmt.tprintf("template parts: got %d", len(tpl.parts)))
+		}
+	}
+
+	if testing.expect(t, msg_stmt.into_target != nil, "INTO target") {
+		into_id, iok := msg_stmt.into_target.derived_expr.(^ast.Ident)
+		if testing.expect(t, iok, "INTO Ident") {
+			testing.expect(t, into_id.name == "gv_dummy_msg", fmt.tprintf("INTO: got %s", into_id.name))
+		}
+	}
+}
+
 // --- Complex Type Tests ---
 
 @(test)

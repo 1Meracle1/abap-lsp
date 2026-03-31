@@ -36,6 +36,11 @@ parse_string_template_content :: proc(
 		ch := p.file.src[pos]
 
 		if ch == '|' {
+			// \| is a literal pipe inside the template (ABAP string template escape)
+			if pos > 0 && p.file.src[pos - 1] == '\\' {
+				pos += 1
+				continue
+			}
 			// End of string template - save any pending literal
 			if pos > literal_start {
 				part := ast.String_Template_Part {
