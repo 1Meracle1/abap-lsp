@@ -302,7 +302,7 @@ parse_delete_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 // Syntax variations:
 // - INSERT VALUE #( ... ) INTO TABLE itab.
 // - INSERT wa INTO itab [INDEX idx].
-// - INSERT INITIAL LINE INTO itab [INDEX idx] [ASSIGNING <fs>].
+// - INSERT INITIAL LINE INTO [TABLE] itab [INDEX idx] [ASSIGNING <fs>].
 // - INSERT LINES OF itab_src INTO TABLE itab_tgt.
 // - INSERT LINES OF itab_src INTO itab_tgt [INDEX idx].
 // - INSERT INTO target VALUES wa.
@@ -323,11 +323,14 @@ parse_insert_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 
 	insert_stmt := ast.new(ast.Insert_Stmt, insert_tok.range)
 
-	// INSERT INITIAL LINE INTO itab [INDEX idx] [ASSIGNING <fs>].
+	// INSERT INITIAL LINE INTO [TABLE] itab [INDEX idx] [ASSIGNING <fs>].
 	if check_keyword(p, "INITIAL") {
 		advance_token(p)
 		expect_keyword_token(p, "LINE")
 		expect_keyword_token(p, "INTO")
+		if check_keyword(p, "TABLE") {
+			advance_token(p)
+		}
 		insert_stmt.target = parse_expr(p)
 		insert_stmt.kind = .Initial_Line_Into_Itab
 		if check_keyword(p, "INDEX") {

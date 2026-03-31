@@ -6552,6 +6552,47 @@ insert_initial_line_into_itab_only_test :: proc(t: ^testing.T) {
 }
 
 @(test)
+insert_initial_line_into_table_itab_assigning_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src =
+		`INSERT INITIAL LINE INTO TABLE st_hry_object ASSIGNING <ls_hry_object>.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	insert_stmt, ok := file.decls[0].derived_stmt.(^ast.Insert_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Insert_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	testing.expect(t, insert_stmt.kind == .Initial_Line_Into_Itab, "Expected Initial_Line_Into_Itab")
+	testing.expect(t, insert_stmt.index_expr == nil, "Expected no INDEX")
+	if tgt, tok := insert_stmt.target.derived_expr.(^ast.Ident); tok {
+		testing.expect(t, tgt.name == "st_hry_object", fmt.tprintf("Expected st_hry_object, got %s", tgt.name))
+	} else {
+		testing.expect(t, false, fmt.tprintf("Expected target Ident, got %T", insert_stmt.target.derived_expr))
+	}
+	if fs_ident, fok := insert_stmt.assigning_target.derived_expr.(^ast.Ident); fok {
+		testing.expect(
+			t,
+			fs_ident.name == "<ls_hry_object>",
+			fmt.tprintf("Expected '<ls_hry_object>', got '%s'", fs_ident.name),
+		)
+	} else {
+		testing.expect(
+			t,
+			false,
+			fmt.tprintf("Expected assigning_target Ident, got %T", insert_stmt.assigning_target.derived_expr),
+		)
+	}
+}
+
+@(test)
 insert_into_db_values_test :: proc(t: ^testing.T) {
 	// INSERT INTO target VALUES wa.
 	file := ast.new(ast.File, {})

@@ -578,7 +578,7 @@ Message_Stmt :: struct {
 Insert_Kind :: enum {
 	Into_Table, // INSERT expr INTO TABLE itab
 	Into_Itab, // INSERT expr INTO itab [INDEX idx]
-	Initial_Line_Into_Itab, // INSERT INITIAL LINE INTO itab [INDEX idx] [ASSIGNING <fs>]
+	Initial_Line_Into_Itab, // INSERT INITIAL LINE INTO [TABLE] itab [INDEX idx] [ASSIGNING <fs>]
 	Into_Db, // INSERT INTO target VALUES wa
 	From_Wa, // INSERT target FROM wa
 	From_Table, // INSERT target FROM TABLE itab
@@ -590,7 +590,7 @@ Insert_Kind :: enum {
 // Syntax variations:
 // - INSERT VALUE #( ... ) INTO TABLE itab.
 // - INSERT wa INTO itab [INDEX idx].
-// - INSERT INITIAL LINE INTO itab [INDEX idx] [ASSIGNING <fs>].
+// - INSERT INITIAL LINE INTO [TABLE] itab [INDEX idx] [ASSIGNING <fs>].
 // - INSERT LINES OF itab_src INTO TABLE itab_tgt.
 // - INSERT LINES OF itab_src INTO itab_tgt [INDEX idx].
 // - INSERT INTO target VALUES wa.

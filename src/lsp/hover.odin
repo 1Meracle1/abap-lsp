@@ -303,7 +303,7 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 			hover_text = "(statement) INSERT ... INTO ... [INDEX] - inserts a line into an internal table (optional position)"
 		case .Initial_Line_Into_Itab:
 			hover_text =
-				"(statement) INSERT INITIAL LINE INTO ... [INDEX] [ASSIGNING] - inserts an initial line into an internal table"
+				"(statement) INSERT INITIAL LINE INTO [TABLE] ... [INDEX] [ASSIGNING] - inserts an initial line into an internal table"
 		case .Into_Db:
 			hover_text = "(statement) INSERT INTO ... VALUES - inserts data into a database table"
 		case .From_Wa:
