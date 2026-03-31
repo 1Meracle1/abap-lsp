@@ -707,9 +707,11 @@ Concatenate_Stmt :: struct {
 	separator:  ^Expr,
 }
 
+// CONDENSE dobj [NO-GAPS].
 Condense_Stmt :: struct {
 	using node: Stmt,
 	text:       ^Expr,
+	no_gaps:    bool,
 }
 
 // TRANSLATE statement (classic character/string transforms)

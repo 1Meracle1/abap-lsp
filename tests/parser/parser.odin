@@ -9022,6 +9022,30 @@ condense_test :: proc(t: ^testing.T) {
 		len(file.syntax_errors) == 0,
 		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
 	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+	condense, ok := file.decls[0].derived_stmt.(^ast.Condense_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Condense_Stmt, got %T", file.decls[0].derived_stmt)) do return
+	testing.expect(t, !condense.no_gaps, "CONDENSE without NO-GAPS should have no_gaps = false")
+}
+
+@(test)
+condense_no_gaps_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src = `CONDENSE lv_gs1_element_delimiter NO-GAPS.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+	condense, ok := file.decls[0].derived_stmt.(^ast.Condense_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Condense_Stmt, got %T", file.decls[0].derived_stmt)) do return
+	testing.expect(t, condense.no_gaps, "CONDENSE ... NO-GAPS should set no_gaps = true")
 }
 
 @(test)

@@ -2544,9 +2544,14 @@ parse_authority_check_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 parse_condense_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	condense_tok := expect_keyword_token(p, "CONDENSE")
 	text_expr := parse_expr(p)
+	no_gaps := false
+	if check_hyphenated_keyword(p, "NO", "GAPS") {
+		no_gaps = true
+	}
 	period_tok := expect_token(p, .Period)
 	condense_stmt := ast.new(ast.Condense_Stmt, condense_tok, period_tok)
 	condense_stmt.text = text_expr
+	condense_stmt.no_gaps = no_gaps
 	return condense_stmt
 }
 
