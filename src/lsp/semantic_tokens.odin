@@ -690,8 +690,14 @@ collect_tokens_from_stmt :: proc(
 		if s.msg_expr != nil {
 			collect_tokens_from_expr(tokens, s.msg_expr, snap, nil)
 		}
+		if s.id_class != nil {
+			collect_tokens_from_expr(tokens, s.id_class, snap, nil)
+		}
 		if s.msg_type != nil {
 			collect_tokens_from_expr(tokens, s.msg_type, snap, nil)
+		}
+		if s.msg_number != nil {
+			collect_tokens_from_expr(tokens, s.msg_number, snap, nil)
 		}
 		if s.display_like != nil {
 			collect_tokens_from_expr(tokens, s.display_like, snap, nil)

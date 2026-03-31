@@ -761,8 +761,18 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 				return res
 			}
 		}
+		if n.id_class != nil {
+			if res := find_node_at_offset(&n.id_class.expr_base, offset); res != nil {
+				return res
+			}
+		}
 		if n.msg_type != nil {
 			if res := find_node_at_offset(&n.msg_type.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		if n.msg_number != nil {
+			if res := find_node_at_offset(&n.msg_number.expr_base, offset); res != nil {
 				return res
 			}
 		}

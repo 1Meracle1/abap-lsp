@@ -517,11 +517,15 @@ Write_Stmt :: struct {
 }
 
 // MESSAGE statement
-// Syntax: MESSAGE { msg | text } [TYPE type] [DISPLAY LIKE display_type] [WITH v1 [v2 [v3 [v4]]]] [INTO data]
+// Syntax:
+// - MESSAGE { msg | text } [TYPE type] [DISPLAY LIKE display_type] [WITH v1 [v2 [v3 [v4]]]] [INTO data]
+// - MESSAGE ID class TYPE type NUMBER num [WITH v1 [v2 [v3 [v4]]]] [INTO data] [DISPLAY LIKE ...]
 Message_Stmt :: struct {
 	using node:   Stmt,
-	msg_expr:     ^Expr, // The message expression (string literal, identifier, or message ID like e899(class))
+	msg_expr:     ^Expr, // Static / text form: string, variable, or e899(class). Nil when ID form.
+	id_class:     ^Expr, // ID class (MESSAGE ID class ...). Nil except for ID form.
 	msg_type:     ^Expr, // TYPE 'I' etc (optional)
+	msg_number:   ^Expr, // NUMBER 898 (optional; typical with ID form)
 	display_like: ^Expr, // DISPLAY LIKE 'E' (optional)
 	with_args:    [dynamic]^Expr, // WITH v1 v2 v3 v4 (up to 4 args)
 	into_target:  ^Expr, // INTO data (optional)

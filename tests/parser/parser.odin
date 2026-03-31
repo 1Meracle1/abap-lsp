@@ -4910,6 +4910,62 @@ message_variable_type_only_test :: proc(t: ^testing.T) {
 }
 
 @(test)
+message_id_type_number_with_into_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src =
+	`MESSAGE ID lv_msg_class TYPE iv_msg_type NUMBER 898 WITH lv_msgv1 lv_msgv2 lv_msgv3 lv_msgv4 INTO lv_dummy_msg.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) > 0, "Expected at least one declaration") do return
+
+	msg_stmt, ok := file.decls[0].derived_stmt.(^ast.Message_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Message_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	testing.expect(t, msg_stmt.msg_expr == nil, "Expected msg_expr nil for MESSAGE ID form")
+
+	if testing.expect(t, msg_stmt.id_class != nil, "Expected id_class") {
+		id_ident, iok := msg_stmt.id_class.derived_expr.(^ast.Ident)
+		if testing.expect(t, iok, "Expected id_class Ident") {
+			testing.expect(t, id_ident.name == "lv_msg_class", fmt.tprintf("id_class: got %s", id_ident.name))
+		}
+	}
+
+	if testing.expect(t, msg_stmt.msg_type != nil, "Expected msg_type") {
+		type_ident, tok := msg_stmt.msg_type.derived_expr.(^ast.Ident)
+		if testing.expect(t, tok, "Expected msg_type Ident") {
+			testing.expect(t, type_ident.name == "iv_msg_type", fmt.tprintf("msg_type: got %s", type_ident.name))
+		}
+	}
+
+	if testing.expect(t, msg_stmt.msg_number != nil, "Expected msg_number") {
+		num_lit, nok := msg_stmt.msg_number.derived_expr.(^ast.Basic_Lit)
+		if testing.expect(t, nok, "Expected msg_number Basic_Lit") {
+			testing.expect(t, num_lit.tok.lit == "898", fmt.tprintf("msg_number: got %s", num_lit.tok.lit))
+		}
+	}
+
+	testing.expect(t, len(msg_stmt.with_args) == 4, fmt.tprintf("WITH args: got %d", len(msg_stmt.with_args)))
+
+	if testing.expect(t, msg_stmt.into_target != nil, "Expected into_target") {
+		into_ident, iok := msg_stmt.into_target.derived_expr.(^ast.Ident)
+		if testing.expect(t, iok, "Expected into Ident") {
+			testing.expect(
+				t,
+				into_ident.name == "lv_dummy_msg",
+				fmt.tprintf("into: got %s", into_ident.name),
+			)
+		}
+	}
+}
+
+@(test)
 message_simple_class_only_test :: proc(t: ^testing.T) {
 	// MESSAGE e001(myclass).
 	file := ast.new(ast.File, {})

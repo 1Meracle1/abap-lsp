@@ -2077,26 +2077,31 @@ parse_assign_field_symbol_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 }
 
 // MESSAGE statement parser
-// Syntax: MESSAGE { msg | text } [TYPE type] [DISPLAY LIKE display_type] [WITH v1 [v2 [v3 [v4]]]] [INTO data]
+// Syntax: MESSAGE { msg | text | ID class TYPE type NUMBER num } [DISPLAY LIKE display_type] [WITH v1 [v2 [v3 [v4]]]] [INTO data]
 // Examples:
 //   MESSAGE 'No display authorization.' TYPE 'I' DISPLAY LIKE 'E'.
 //   MESSAGE e899(/sttpec/int_msg) WITH lv_msgv1 lv_msgv2 lv_msgv3 lv_msgv4 INTO lv_dummy_msg.
 //   MESSAGE iv_msg TYPE 'I' DISPLAY LIKE 'E'.
 //   MESSAGE iv_msg TYPE 'I'.
+//   MESSAGE ID lv_msg_class TYPE iv_msg_type NUMBER 898 WITH lv_msgv1 lv_msgv2 lv_msgv3 lv_msgv4 INTO lv_dummy_msg.
 parse_message_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	message_tok := expect_keyword_token(p, "MESSAGE")
 
 	msg_stmt := ast.new(ast.Message_Stmt, message_tok.range)
 	msg_stmt.with_args = make([dynamic]^ast.Expr)
 
-	// Parse the message expression
-	// This can be:
-	// - A string literal: 'No display authorization.'
-	// - An identifier: iv_msg
-	// - A message ID: e899(/sttpec/int_msg) or e899(class_name)
-	msg_stmt.msg_expr = parse_message_id_or_expr(p)
+	if check_keyword(p, "ID") {
+		advance_token(p)
+		msg_stmt.id_class = parse_expr(p)
+	} else {
+		// Parse the message expression:
+		// - A string literal: 'No display authorization.'
+		// - An identifier: iv_msg
+		// - A message ID: e899(/sttpec/int_msg) or e899(class_name)
+		msg_stmt.msg_expr = parse_message_id_or_expr(p)
+	}
 
-	// Parse optional clauses
+	// Parse optional clauses (order flexible except initial ID / msg choice)
 	for p.curr_tok.kind != .EOF && p.curr_tok.kind != .Period {
 		if check_keyword(p, "TYPE") {
 			advance_token(p)
@@ -2105,14 +2110,17 @@ parse_message_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			advance_token(p)
 			expect_keyword_token(p, "LIKE")
 			msg_stmt.display_like = parse_expr(p)
+		} else if check_keyword(p, "NUMBER") {
+			advance_token(p)
+			msg_stmt.msg_number = parse_expr(p)
 		} else if check_keyword(p, "WITH") {
 			advance_token(p)
 			// Parse up to 4 WITH arguments
 			for i := 0; i < 4 && p.curr_tok.kind != .EOF && p.curr_tok.kind != .Period; i += 1 {
-				// Check if next token is another keyword that would end WITH args
 				if check_keyword(p, "INTO") ||
 				   check_keyword(p, "TYPE") ||
-				   check_keyword(p, "DISPLAY") {
+				   check_keyword(p, "DISPLAY") ||
+				   check_keyword(p, "NUMBER") {
 					break
 				}
 				arg := parse_expr(p)
@@ -2126,7 +2134,6 @@ parse_message_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			advance_token(p)
 			msg_stmt.into_target = parse_expr(p)
 		} else {
-			// Unknown token, break out
 			break
 		}
 	}
