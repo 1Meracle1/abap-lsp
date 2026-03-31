@@ -2018,6 +2018,21 @@ parse_set_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 		stmt.for_ref = for_ref
 		return stmt
 	}
+	if check_keyword(p, "BIT") {
+		advance_token(p)
+		bit_position := parse_expr(p)
+		expect_keyword_token(p, "OF")
+		of_target := parse_expr(p)
+		expect_keyword_token(p, "TO")
+		to_value := parse_expr(p)
+		end_tok := p.curr_tok
+		expect_token(p, .Period)
+		bit_stmt := ast.new(ast.Set_Bit_Stmt, set_tok, end_tok)
+		bit_stmt.bit_position = bit_position
+		bit_stmt.of_target = of_target
+		bit_stmt.to_value = to_value
+		return bit_stmt
+	}
 	kind: ast.Set_Kind
 	if check_class_keyword(p, "PF", "STATUS") {
 		kind = .Pf_Status

@@ -503,6 +503,17 @@ collect_tokens_from_stmt :: proc(
 			collect_tokens_from_expr(tokens, s.for_ref, snap, nil)
 		}
 
+	case ^ast.Set_Bit_Stmt:
+		if s.bit_position != nil {
+			collect_tokens_from_expr(tokens, s.bit_position, snap, nil)
+		}
+		if s.of_target != nil {
+			collect_tokens_from_expr(tokens, s.of_target, snap, nil)
+		}
+		if s.to_value != nil {
+			collect_tokens_from_expr(tokens, s.to_value, snap, nil)
+		}
+
 	case ^ast.Class_Def_Decl:
 		// CLASS name DEFINITION
 		if s.ident != nil {

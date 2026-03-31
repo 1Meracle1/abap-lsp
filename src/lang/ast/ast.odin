@@ -406,6 +406,14 @@ Set_Handler_Stmt :: struct {
 	for_ref:    ^Expr,
 }
 
+// SET BIT position OF byte_string TO bit_value.
+Set_Bit_Stmt :: struct {
+	using node:    Stmt,
+	bit_position:  ^Expr,
+	of_target:     ^Expr,
+	to_value:      ^Expr,
+}
+
 Case_When_Branch :: struct {
 	is_others: bool, // WHEN OTHERS is used
 	expr:      ^Expr,
@@ -1295,6 +1303,7 @@ Any_Node :: union {
 	^Get_Badi_Stmt,
 	^Set_Stmt,
 	^Set_Handler_Stmt,
+	^Set_Bit_Stmt,
 	^Case_Stmt,
 	^While_Stmt,
 	^Do_Stmt,
@@ -1414,6 +1423,7 @@ Any_Stmt :: union {
 	^Get_Badi_Stmt,
 	^Set_Stmt,
 	^Set_Handler_Stmt,
+	^Set_Bit_Stmt,
 	^Case_Stmt,
 	^While_Stmt,
 	^Do_Stmt,

@@ -1,11 +1,11 @@
 // raddbg 0.9.25 project file
 
+recent_file: path: "src/lsp/remote_dependencies.odin"
 recent_file: path: "src/lang/parser/parser.odin"
 recent_file: path: "../toolchain/odin-windows-amd64-dev-2026-02/base/runtime/internal.odin"
 recent_file: path: "../toolchain/odin-windows-amd64-dev-2026-02/core/mem/virtual/virtual.odin"
 recent_file: path: "../toolchain/odin-windows-amd64-dev-2026-02/core/sync/primitives.odin"
 recent_file: path: "src/lang/ast/utils.odin"
-recent_file: path: "src/lsp/remote_dependencies.odin"
 recent_file: path: "src/lang/symbols/validate.odin"
 recent_file: path: "src/cache/document.odin"
 recent_file: path: "src/lang/symbols/symbols.odin"
@@ -91,7 +91,7 @@ breakpoint:
 debug_info:
 {
   path: "D:/dev/odin/abap-lsp/bin/debug/abap-lsp.pdb"
-  timestamp: 66210744458164
+  timestamp: 66210745731080
 }
 breakpoint:
 {
@@ -126,10 +126,5 @@ breakpoint:
 breakpoint:
 {
   source_location: "src/lsp/remote_dependencies.odin:56:1"
-  hit_count: 0
-}
-breakpoint:
-{
-  source_location: "src/lsp/remote_dependencies.odin:20:1"
   hit_count: 0
 }

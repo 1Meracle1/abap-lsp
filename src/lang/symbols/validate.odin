@@ -157,6 +157,10 @@ validate_stmt_ctx :: proc(ctx: ^Validation_Context, stmt: ^ast.Stmt) {
 			validate_expr_ctx(ctx, h)
 		}
 		validate_expr_ctx(ctx, s.for_ref)
+	case ^ast.Set_Bit_Stmt:
+		validate_expr_ctx(ctx, s.bit_position)
+		validate_expr_ctx(ctx, s.of_target)
+		validate_expr_ctx(ctx, s.to_value)
 	case ^ast.Call_Badi_Stmt:
 		validate_expr_ctx(ctx, s.badi_target)
 		for param in s.exporting {
