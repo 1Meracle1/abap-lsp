@@ -362,8 +362,13 @@ resolve_types_chain_decl :: proc(
 	chain: ^ast.Types_Chain_Decl,
 	is_global: bool = true,
 ) {
-	for decl in chain.decls {
-		resolve_types_decl(table, decl, true, is_global)
+	for part in chain.parts {
+		#partial switch d in part.derived_stmt {
+		case ^ast.Types_Decl:
+			resolve_types_decl(table, d, true, is_global)
+		case ^ast.Types_Struct_Decl:
+			resolve_types_struct_decl(table, d)
+		}
 	}
 }
 

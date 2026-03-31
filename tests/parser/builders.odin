@@ -71,9 +71,10 @@ types_chain :: proc(decls: ..struct {
 		type_name: string,
 	}) -> ^ast.Types_Chain_Decl {
 	node := ast.new(ast.Types_Chain_Decl, {})
-	node.decls = make([dynamic]^ast.Types_Decl)
+	node.parts = make([dynamic]^ast.Stmt)
 	for d in decls {
-		append(&node.decls, types_single(d.name, d.type_name))
+		td := types_single(d.name, d.type_name)
+		append(&node.parts, &td.node)
 	}
 	node.derived_stmt = node
 	return node

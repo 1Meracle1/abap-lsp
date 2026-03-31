@@ -356,32 +356,48 @@ check_stmt :: proc(
 		ac, ok := actual_derived.(^ast.Types_Chain_Decl)
 		if !testing.expect(t, ok, fmt.tprintf("Expected Types_Chain_Decl, got %T", actual_derived), loc = loc) do return
 
-		if !testing.expect(t, len(ex.decls) == len(ac.decls), fmt.tprintf("Expected %d decls in types chain, got %d", len(ex.decls), len(ac.decls)), loc = loc) do return
+		parts_eq := len(ex.parts) == len(ac.parts)
+		if !testing.expect(t, parts_eq, fmt.tprintf("Expected %d parts in types chain, got %d", len(ex.parts), len(ac.parts)), loc = loc) do return
 
-		for i := 0; i < len(ex.decls); i += 1 {
-			ex_decl := ex.decls[i]
-			ac_decl := ac.decls[i]
-
-			if testing.expect(
-				t,
-				ac_decl.ident != nil,
-				fmt.tprintf("Actual types ident[%d] is nil", i),
-				loc = loc,
-			) {
-				testing.expect(
+		for i := 0; i < len(ex.parts); i += 1 {
+			ex_part := ex.parts[i].derived_stmt
+			ac_part := ac.parts[i].derived_stmt
+			ex_td, ex_ok := ex_part.(^ast.Types_Decl)
+			ac_td, ac_ok := ac_part.(^ast.Types_Decl)
+			if ex_ok && ac_ok {
+				if testing.expect(
 					t,
-					ex_decl.ident.name == ac_decl.ident.name,
-					fmt.tprintf(
-						"Expected types chain decl[%d] ident '%s', got '%s'",
-						i,
-						ex_decl.ident.name,
-						ac_decl.ident.name,
-					),
+					ac_td.ident != nil,
+					fmt.tprintf("Actual types ident[%d] is nil", i),
 					loc = loc,
-				)
+				) {
+					testing.expect(
+						t,
+						ex_td.ident.name == ac_td.ident.name,
+						fmt.tprintf(
+							"Expected types chain decl[%d] ident '%s', got '%s'",
+							i,
+							ex_td.ident.name,
+							ac_td.ident.name,
+						),
+						loc = loc,
+					)
+				}
+				check_expr(t, ex_td.typed.derived_expr, ac_td.typed, loc = loc)
+				continue
 			}
-
-			check_expr(t, ex_decl.typed.derived_expr, ac_decl.typed, loc = loc)
+			ex_ts, ex_sok := ex_part.(^ast.Types_Struct_Decl)
+			ac_ts, ac_sok := ac_part.(^ast.Types_Struct_Decl)
+			if ex_sok && ac_sok {
+				check_stmt(t, ex_ts, ac.parts[i], loc = loc)
+				continue
+			}
+			testing.expect(
+				t,
+				false,
+				fmt.tprintf("types chain part[%d] kind mismatch", i),
+				loc = loc,
+			)
 		}
 
 	case ^ast.Types_Struct_Decl:

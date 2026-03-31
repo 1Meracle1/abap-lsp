@@ -2,6 +2,7 @@ package lang_parser
 
 import "../ast"
 import "../lexer"
+import "core:strings"
 
 parse_types_decl :: proc(p: ^Parser) -> ^ast.Decl {
 	types_tok := expect_token(p, .Ident)
@@ -28,24 +29,38 @@ parse_types_single_decl :: proc(p: ^Parser, types_tok: lexer.Token) -> ^ast.Decl
 	return types_decl
 }
 
+finish_types_chain_or_single_struct :: proc(
+	p: ^Parser,
+	chain_decl: ^ast.Types_Chain_Decl,
+) -> ^ast.Decl {
+	if allow_token(p, .Comma) {
+		return nil
+	}
+	period_tok := expect_token(p, .Period)
+	chain_decl.range.end = period_tok.range.end
+	if len(chain_decl.parts) == 1 {
+		if only_struct, ok := chain_decl.parts[0].derived_stmt.(^ast.Types_Struct_Decl); ok {
+			only_struct.range.end = period_tok.range.end
+			return only_struct
+		}
+	}
+	return chain_decl
+}
+
 parse_types_chain_decl :: proc(p: ^Parser, types_tok: lexer.Token) -> ^ast.Decl {
 	chain_decl := ast.new(ast.Types_Chain_Decl, types_tok.range)
-	chain_decl.decls = make([dynamic]^ast.Types_Decl)
+	chain_decl.parts = make([dynamic]^ast.Stmt)
 
 	for {
 		if check_keyword(p, "BEGIN") {
 			struct_decl := parse_types_struct_decl(p)
 			if struct_decl != nil {
-				if len(chain_decl.decls) == 0 {
-					if allow_token(p, .Comma) {
-					}
-					if allow_token(p, .Period) {
-						struct_decl.range.end = p.prev_tok.range.end
-					}
-					return struct_decl
-				}
+				append(&chain_decl.parts, &struct_decl.node)
 			}
-			break
+			if done := finish_types_chain_or_single_struct(p, chain_decl); done != nil {
+				return done
+			}
+			continue
 		}
 
 		ident_tok := expect_token(p, .Ident)
@@ -59,7 +74,7 @@ parse_types_chain_decl :: proc(p: ^Parser, types_tok: lexer.Token) -> ^ast.Decl 
 		decl.ident = ast.new_ident(ident_tok)
 		decl.typed = type_expr
 		decl.length = length_expr
-		append(&chain_decl.decls, decl)
+		append(&chain_decl.parts, &decl.node)
 
 		if allow_token(p, .Comma) {
 			continue
@@ -82,7 +97,7 @@ parse_types_struct_decl :: proc(p: ^Parser) -> ^ast.Types_Struct_Decl {
 	struct_decl.ident = ast.new_ident(ident_tok)
 	struct_decl.components = make([dynamic]^ast.Stmt)
 
-	expect_token(p, .Comma)
+	allow_token(p, .Comma)
 
 	for p.curr_tok.kind != .EOF {
 		if check_keyword(p, "END") {
@@ -123,7 +138,9 @@ parse_types_struct_decl :: proc(p: ^Parser) -> ^ast.Types_Struct_Decl {
 	end_ident_tok := expect_token(p, .Ident)
 	struct_decl.range.end = end_ident_tok.range.end
 
-	if struct_decl.ident.name != end_ident_tok.lit {
+	begin_name := strings.to_upper(struct_decl.ident.name, context.temp_allocator)
+	end_name := strings.to_upper(end_ident_tok.lit, context.temp_allocator)
+	if begin_name != end_name {
 		error(
 			p,
 			end_ident_tok.range,

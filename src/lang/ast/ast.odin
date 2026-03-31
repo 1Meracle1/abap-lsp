@@ -865,7 +865,8 @@ Types_Decl :: struct {
 
 Types_Chain_Decl :: struct {
 	using node: Decl,
-	decls:      [dynamic]^Types_Decl,
+	// Ordered chain members: each stmt is ^Types_Decl or ^Types_Struct_Decl
+	parts:      [dynamic]^Stmt,
 }
 
 // CONSTANTS declarations

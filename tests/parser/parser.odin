@@ -1083,6 +1083,65 @@ complex_nested_struct_test :: proc(t: ^testing.T) {
 	}
 }
 
+@(test)
+types_chain_elementary_and_struct_with_length_decimals_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src =
+	`TYPES:
+    te_path_name TYPE c LENGTH 75,
+    te_file_name TYPE c LENGTH 75,
+
+    BEGIN OF ts_dir_list,
+      dirname TYPE te_path_name,
+      name    TYPE te_file_name,
+      type    TYPE c LENGTH 10,
+      len     TYPE p LENGTH 15 DECIMALS 0,
+      owner   TYPE c LENGTH 8,
+      mtime   TYPE p LENGTH 11 DECIMALS 0,
+      mode    TYPE c LENGTH 9,
+      errno   TYPE c LENGTH 3,
+      errmsg  TYPE c LENGTH 40,
+    END OF ts_dir_list.`
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, "Expected 1 top-level decl") do return
+
+	chain, ok := file.decls[0].derived_stmt.(^ast.Types_Chain_Decl)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Types_Chain_Decl, got %T", file.decls[0].derived_stmt)) do return
+
+	if !testing.expect(t, len(chain.parts) == 3, fmt.tprintf("Expected 3 chain parts, got %d", len(chain.parts))) do return
+
+	d0, ok0 := chain.parts[0].derived_stmt.(^ast.Types_Decl)
+	if !testing.expect(t, ok0, "parts[0] Types_Decl") do return
+	testing.expect(t, d0.ident.name == "te_path_name", fmt.tprintf("ident %s", d0.ident.name))
+
+	d1, ok1 := chain.parts[1].derived_stmt.(^ast.Types_Decl)
+	if !testing.expect(t, ok1, "parts[1] Types_Decl") do return
+	testing.expect(t, d1.ident.name == "te_file_name", fmt.tprintf("ident %s", d1.ident.name))
+
+	st, ok2 := chain.parts[2].derived_stmt.(^ast.Types_Struct_Decl)
+	if !testing.expect(t, ok2, "parts[2] Types_Struct_Decl") do return
+	testing.expect(t, st.ident.name == "ts_dir_list", fmt.tprintf("struct %s", st.ident.name))
+	if !testing.expect(t, len(st.components) == 9, fmt.tprintf("Expected 9 fields, got %d", len(st.components))) do return
+
+	len_field, lf_ok := st.components[3].derived_stmt.(^ast.Types_Decl)
+	if testing.expect(t, lf_ok, "len field") {
+		testing.expect(t, len_field.ident.name == "len", fmt.tprintf("field %s", len_field.ident.name))
+		p_ty, pok := len_field.typed.derived_expr.(^ast.Ident)
+		if testing.expect(t, pok, "type p") {
+			testing.expect(t, p_ty.name == "p", fmt.tprintf("type %s", p_ty.name))
+		}
+	}
+}
+
 // --- REPORT, INCLUDE, EVENT, CALL SCREEN tests ---
 
 @(test)
@@ -5276,10 +5335,11 @@ types_table_with_default_key_test :: proc(t: ^testing.T) {
 	chain, ok := file.decls[0].derived_stmt.(^ast.Types_Chain_Decl)
 	if !testing.expect(t, ok, fmt.tprintf("Expected Types_Chain_Decl, got %T", file.decls[0].derived_stmt)) do return
 
-	if !testing.expect(t, len(chain.decls) == 2, fmt.tprintf("Expected 2 decls, got %d", len(chain.decls))) do return
+	if !testing.expect(t, len(chain.parts) == 2, fmt.tprintf("Expected 2 parts, got %d", len(chain.parts))) do return
 
 	// Check second decl (the table type)
-	decl := chain.decls[1]
+	decl, dok := chain.parts[1].derived_stmt.(^ast.Types_Decl)
+	if !testing.expect(t, dok, fmt.tprintf("Expected Types_Decl, got %T", chain.parts[1].derived_stmt)) do return
 	testing.expect(
 		t,
 		decl.ident.name == "src",
@@ -11191,9 +11251,10 @@ types_table_of_ref_to_test :: proc(t: ^testing.T) {
 	testing.expect(t, ok, fmt.tprintf("Expected Types_Chain_Decl, got %T", file.decls[0].derived_stmt))
 	if !ok do return
 
-	if !testing.expect(t, len(chain_decl.decls) == 1, "Expected 1 type declaration in chain") do return
+	if !testing.expect(t, len(chain_decl.parts) == 1, "Expected 1 type declaration in chain") do return
 
-	types_decl := chain_decl.decls[0]
+	types_decl, td_ok := chain_decl.parts[0].derived_stmt.(^ast.Types_Decl)
+	if !testing.expect(t, td_ok, fmt.tprintf("Expected Types_Decl, got %T", chain_decl.parts[0].derived_stmt)) do return
 	testing.expect(
 		t,
 		types_decl.ident.name == "tt_events",
