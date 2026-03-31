@@ -2,6 +2,7 @@ package lang_symbols
 
 import "../ast"
 import "../lexer"
+import "core:fmt"
 import "core:strings"
 
 // Callback type for include resolution during project resolution
@@ -389,6 +390,56 @@ resolve_types_struct_decl :: proc(table: ^SymbolTable, struct_decl: ^ast.Types_S
 	add_symbol(table, sym, allow_shadowing = false)
 }
 
+// Follow Named typedef symbols until we hit a concrete structure type (or give up).
+unwrap_typedef_structure :: proc(table: ^SymbolTable, start: ^Type) -> ^Type {
+	if start == nil {
+		return nil
+	}
+	cur := start
+	for _ in 0 ..< 16 {
+		if cur.kind == .Structure {
+			return cur
+		}
+		if cur.kind != .Named {
+			return nil
+		}
+		name := cur.name
+		if sym, ok := table.symbols[name]; ok && sym.kind == .TypeDef && sym.type_info != nil {
+			cur = sym.type_info
+			continue
+		}
+		return nil
+	}
+	return nil
+}
+
+// Flatten INCLUDE TYPE into the parent structure (ABAP: components with optional AS name prefix).
+resolve_types_include_into_struct :: proc(
+	table: ^SymbolTable,
+	struct_type: ^Type,
+	inc: ^ast.Types_Include_Type_Decl,
+) {
+	if inc == nil || inc.included == nil {
+		return
+	}
+	included_ty := resolve_type_expr(table, inc.included)
+	concrete := unwrap_typedef_structure(table, included_ty)
+	if concrete == nil || concrete.kind != .Structure {
+		return
+	}
+	prefix := ""
+	if inc.as_name != nil {
+		prefix = strings.to_lower(inc.as_name.name, context.temp_allocator)
+	}
+	for f in concrete.fields {
+		field_name := f.name
+		if len(prefix) > 0 {
+			field_name = fmt.tprintf("%s-%s", prefix, f.name)
+		}
+		add_struct_field(struct_type, field_name, f.type_info, f.length)
+	}
+}
+
 // CONSTANTS resolution
 
 resolve_const_decl :: proc(
@@ -524,6 +575,9 @@ resolve_struct_components :: proc(
 			nested_type := make_structure_type(table, c.ident.name)
 			resolve_struct_components(table, nested_type, c.components[:])
 			add_struct_field(struct_type, c.ident.name, nested_type, 0)
+
+		case ^ast.Types_Include_Type_Decl:
+			resolve_types_include_into_struct(table, struct_type, c)
 		}
 	}
 }

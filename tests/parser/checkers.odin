@@ -353,6 +353,22 @@ check_stmt :: proc(
 
 		check_expr(t, ex.typed.derived_expr, ac.typed, loc = loc)
 
+	case ^ast.Types_Include_Type_Decl:
+		ac, ok := actual_derived.(^ast.Types_Include_Type_Decl)
+		if !testing.expect(t, ok, fmt.tprintf("Expected Types_Include_Type_Decl, got %T", actual_derived), loc = loc) do return
+		check_expr(t, ex.included.derived_expr, ac.included, loc = loc)
+		if ex.as_name != nil {
+			if !testing.expect(t, ac.as_name != nil, "Expected AS ident, got nil", loc = loc) do return
+			testing.expect(
+				t,
+				ex.as_name.name == ac.as_name.name,
+				fmt.tprintf("Expected AS name '%s', got '%s'", ex.as_name.name, ac.as_name.name),
+				loc = loc,
+			)
+		} else {
+			testing.expect(t, ac.as_name == nil, "Expected nil AS name", loc = loc)
+		}
+
 	case ^ast.Types_Chain_Decl:
 		ac, ok := actual_derived.(^ast.Types_Chain_Decl)
 		if !testing.expect(t, ok, fmt.tprintf("Expected Types_Chain_Decl, got %T", actual_derived), loc = loc) do return

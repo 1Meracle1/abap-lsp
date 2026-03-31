@@ -987,7 +987,15 @@ Const_Struct_Decl :: struct {
 Types_Struct_Decl :: struct {
 	using node: Decl,
 	ident:      ^Ident,
+	// Members: ^Types_Decl, ^Types_Struct_Decl, ^Types_Include_Type_Decl
 	components: [dynamic]^Stmt,
+}
+
+// INCLUDE TYPE type [ AS name ] in a TYPES ... BEGIN OF ... block
+Types_Include_Type_Decl :: struct {
+	using node: Decl,
+	included:   ^Expr,
+	as_name:    ^Ident, // Optional; nil if AS clause omitted
 }
 
 // DATA structure declaration (DATA: BEGIN OF name, ... END OF name.)
@@ -1359,6 +1367,7 @@ Any_Node :: union {
 	^Types_Decl,
 	^Types_Chain_Decl,
 	^Types_Struct_Decl,
+	^Types_Include_Type_Decl,
 	^Const_Decl,
 	^Const_Chain_Decl,
 	^Const_Struct_Decl,
@@ -1477,6 +1486,7 @@ Any_Stmt :: union {
 	^Types_Decl,
 	^Types_Chain_Decl,
 	^Types_Struct_Decl,
+	^Types_Include_Type_Decl,
 	^Const_Decl,
 	^Const_Chain_Decl,
 	^Const_Struct_Decl,

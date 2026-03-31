@@ -149,6 +149,22 @@ types_struct_with_nested :: proc(
 	return b
 }
 
+types_struct_with_include_type :: proc(
+	builder: Types_Struct_Builder,
+	included_type: string,
+	as_name: string = "",
+) -> Types_Struct_Builder {
+	b := builder
+	inc := ast.new(ast.Types_Include_Type_Decl, {})
+	inc.included = ident(included_type)
+	if len(as_name) > 0 {
+		inc.as_name = ident(as_name)
+	}
+	inc.derived_stmt = inc
+	append(&b.components, &inc.node)
+	return b
+}
+
 types_struct_build :: proc(builder: Types_Struct_Builder) -> ^ast.Types_Struct_Decl {
 	node := ast.new(ast.Types_Struct_Decl, {})
 	node.ident = ident(builder.name)

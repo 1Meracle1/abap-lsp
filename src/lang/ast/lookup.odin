@@ -89,6 +89,18 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 			}
 		}
 
+	case ^Types_Include_Type_Decl:
+		if n.included != nil {
+			if res := find_node_at_offset(&n.included.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		if n.as_name != nil {
+			if res := find_node_at_offset(&n.as_name.expr_base, offset); res != nil {
+				return res
+			}
+		}
+
 	case ^Const_Decl:
 		if res := find_node_at_offset(&n.ident.expr_base, offset); res != nil {
 			return res

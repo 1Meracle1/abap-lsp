@@ -1242,6 +1242,22 @@ collect_tokens_from_struct_components :: proc(
 				)
 			}
 			collect_tokens_from_struct_components(tokens, c.components[:], snap)
+
+		case ^ast.Types_Include_Type_Decl:
+			if c.included != nil {
+				collect_tokens_from_type_expr(tokens, c.included)
+			}
+			if c.as_name != nil {
+				append(
+					tokens,
+					SemanticToken {
+						offset = c.as_name.range.start,
+						length = c.as_name.range.end - c.as_name.range.start,
+						type = .Property,
+						modifiers = 1 << u32(SemanticTokenModifier.Declaration),
+					},
+				)
+			}
 		}
 	}
 }

@@ -1210,6 +1210,49 @@ types_chain_elementary_and_struct_with_length_decimals_test :: proc(t: ^testing.
 	}
 }
 
+@(test)
+types_struct_include_type_and_nested_types_header_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src =
+	`TYPES:
+    BEGIN OF ts_buffer_role.
+    INCLUDE TYPE /sttp/bup AS bup.
+    TYPES:
+      bupno_ext        TYPE /sttp/e_bupno,
+      buptype          TYPE /sttp/e_buptype,
+      bup_role_variant TYPE /sttp/e_bup_role_variant,
+      logqs            TYPE /sttp/e_logqs,
+      delflag          TYPE /sttp/e_delflag,
+      address          TYPE /sttp/s_adr_att,
+      END OF ts_buffer_role .`
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	// TYPES: with only one struct is unwrapped to Types_Struct_Decl (see finish_types_chain_or_single_struct)
+	st, ok := file.decls[0].derived_stmt.(^ast.Types_Struct_Decl)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Types_Struct_Decl, got %T", file.decls[0].derived_stmt)) do return
+	if !testing.expect(t, st.ident.name == "ts_buffer_role", "struct name") do return
+	if !testing.expect(t, len(st.components) == 7, fmt.tprintf("Expected 7 components (1 INCLUDE + 6 fields), got %d", len(st.components))) do return
+
+	inc0, inc_ok := st.components[0].derived_stmt.(^ast.Types_Include_Type_Decl)
+	if !testing.expect(t, inc_ok, "component 0 is INCLUDE TYPE") do return
+	if !testing.expect(t, inc0.as_name != nil && inc0.as_name.name == "bup", "AS bup") do return
+
+	f1, f1_ok := st.components[1].derived_stmt.(^ast.Types_Decl)
+	if testing.expect(t, f1_ok, "field bupno_ext") {
+		testing.expect(t, f1.ident.name == "bupno_ext", "bupno_ext")
+	}
+}
+
 // --- REPORT, INCLUDE, EVENT, CALL SCREEN tests ---
 
 @(test)

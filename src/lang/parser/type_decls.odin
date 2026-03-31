@@ -98,10 +98,36 @@ parse_types_struct_decl :: proc(p: ^Parser) -> ^ast.Types_Struct_Decl {
 	struct_decl.components = make([dynamic]^ast.Stmt)
 
 	allow_token(p, .Comma)
+	allow_token(p, .Period)
 
 	for p.curr_tok.kind != .EOF {
 		if check_keyword(p, "END") {
 			break
+		}
+
+		// Optional nested "TYPES:" header inside the structure (ABAP allows chaining)
+		if check_keyword(p, "TYPES") {
+			advance_token(p)
+			allow_token(p, .Colon)
+			continue
+		}
+
+		if check_keyword(p, "INCLUDE") {
+			include_start := expect_keyword_token(p, "INCLUDE")
+			expect_keyword_token(p, "TYPE")
+			type_expr := parse_type_expr(p)
+			as_name: ^ast.Ident = nil
+			if check_keyword(p, "AS") {
+				advance_token(p)
+				as_tok := expect_token(p, .Ident)
+				as_name = ast.new_ident(as_tok)
+			}
+			period_tok := expect_token(p, .Period)
+			inc_decl := ast.new(ast.Types_Include_Type_Decl, include_start, period_tok)
+			inc_decl.included = type_expr
+			inc_decl.as_name = as_name
+			append(&struct_decl.components, &inc_decl.node)
+			continue
 		}
 
 		if check_keyword(p, "BEGIN") {
