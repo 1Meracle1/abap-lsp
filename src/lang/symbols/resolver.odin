@@ -1501,11 +1501,9 @@ resolve_loop_at_control_stmt :: proc(
 }
 
 resolve_loop_stmt :: proc(table: ^SymbolTable, loop_stmt: ^ast.Loop_Stmt, syntax_taint: []lexer.TextRange) {
-	// Handle inline DATA declaration in INTO clause
+	// Handle inline DATA declaration in INTO clause (INTO DATA(wa); bare INTO wa is an existing variable)
 	if loop_stmt.into_target != nil {
-		// Check if into_target is from an inline DATA declaration
-		// The into_target will be an Ident from the inline DATA parsing
-		if ident, ok := loop_stmt.into_target.derived_expr.(^ast.Ident); ok {
+		if ident, ok := loop_stmt.into_target.derived_expr.(^ast.Ident); ok && ident.inline_data_decl != nil {
 			// Create inferred type from the loop table
 			type_info := make_inferred_type(table, loop_stmt.itab)
 
@@ -1552,10 +1550,9 @@ is_numeric_type :: proc(t: ^Type) -> bool {
 }
 
 resolve_read_table_stmt :: proc(table: ^SymbolTable, read_stmt: ^ast.Read_Table_Stmt) {
-	// Handle inline DATA declaration in INTO clause
+	// Handle inline DATA declaration in INTO clause (INTO DATA(wa); bare INTO wa is an existing variable)
 	if read_stmt.into_target != nil {
-		// Check if into_target is from an inline DATA declaration
-		if ident, ok := read_stmt.into_target.derived_expr.(^ast.Ident); ok {
+		if ident, ok := read_stmt.into_target.derived_expr.(^ast.Ident); ok && ident.inline_data_decl != nil {
 			// Create inferred type from the internal table (line type)
 			type_info := make_inferred_type(table, read_stmt.itab)
 
@@ -1591,7 +1588,7 @@ resolve_describe_table_stmt :: proc(table: ^SymbolTable, describe_stmt: ^ast.Des
 		return
 	}
 
-	if ident, ok := describe_stmt.lines_target.derived_expr.(^ast.Ident); ok {
+	if ident, ok := describe_stmt.lines_target.derived_expr.(^ast.Ident); ok && ident.inline_data_decl != nil {
 		sym := Symbol {
 			name      = ident.name,
 			kind      = .Variable,
@@ -1814,24 +1811,39 @@ resolve_open_cursor_stmt :: proc(
 	}
 }
 
+// Registers variables only for Open SQL @DATA(...) / INTO DATA(...) targets (Ident.inline_data_decl).
+// Bare INTO host variables and @host are existing data objects and must not introduce a new symbol.
+add_symbols_for_open_sql_into_inline_data :: proc(table: ^SymbolTable, into_target: ^ast.Expr, type_info: ^Type) {
+	if into_target == nil || type_info == nil {
+		return
+	}
+	#partial switch e in into_target.derived_expr {
+	case ^ast.Value_Row_Expr:
+		for arg in e.args {
+			add_symbols_for_open_sql_into_inline_data(table, arg, type_info)
+		}
+	case ^ast.Ident:
+		if e.inline_data_decl == nil {
+			return
+		}
+		sym := Symbol {
+			name      = e.name,
+			kind      = .Variable,
+			range     = e.range,
+			type_info = type_info,
+		}
+		add_symbol(table, sym, allow_shadowing = false)
+	}
+}
+
 resolve_fetch_cursor_stmt :: proc(
 	table: ^SymbolTable,
 	stmt: ^ast.Fetch_Cursor_Stmt,
 	syntax_taint: []lexer.TextRange,
 ) {
 	_ = syntax_taint
-	// Same bare-name handling as SELECT INTO (inline types not modeled yet).
 	if stmt.into_target != nil {
-		if ident, ok := stmt.into_target.derived_expr.(^ast.Ident); ok {
-			type_info := make_unknown_type(table)
-			sym := Symbol {
-				name      = ident.name,
-				kind      = .Variable,
-				range     = ident.range,
-				type_info = type_info,
-			}
-			add_symbol(table, sym, allow_shadowing = false)
-		}
+		add_symbols_for_open_sql_into_inline_data(table, stmt.into_target, make_unknown_type(table))
 	}
 }
 
@@ -1840,21 +1852,8 @@ resolve_select_stmt :: proc(
 	select_stmt: ^ast.Select_Stmt,
 	syntax_taint: []lexer.TextRange,
 ) {
-	// Handle inline DATA declaration in INTO clause
 	if select_stmt.into_target != nil {
-		// Check if into_target is from an inline DATA declaration
-		if ident, ok := select_stmt.into_target.derived_expr.(^ast.Ident); ok {
-			// Create inferred type - SELECT result type would be inferred from context
-			type_info := make_unknown_type(table)
-
-			sym := Symbol {
-				name      = ident.name,
-				kind      = .Variable,
-				range     = ident.range,
-				type_info = type_info,
-			}
-			add_symbol(table, sym, allow_shadowing = false)
-		}
+		add_symbols_for_open_sql_into_inline_data(table, select_stmt.into_target, make_unknown_type(table))
 	}
 
 	// Resolve statements in the SELECT loop body (for non-SINGLE selects)

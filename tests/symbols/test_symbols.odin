@@ -564,6 +564,74 @@ ENDCLASS.`
 }
 
 @(test)
+test_select_into_exporting_param_not_duplicate_symbol :: proc(t: ^testing.T) {
+	src := `CLASS lcl_ui DEFINITION.
+  PUBLIC SECTION.
+    METHODS get_user_full_name
+      IMPORTING iv_user TYPE string
+      EXPORTING ev_name_text TYPE string.
+ENDCLASS.
+CLASS lcl_ui IMPLEMENTATION.
+  METHOD get_user_full_name.
+    SELECT SINGLE name_textc FROM user_addr INTO ev_name_text WHERE bname = iv_user.
+  ENDMETHOD.
+ENDCLASS.`
+	file := ast.new(ast.File, {})
+	file.src = src
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	table := symbols.resolve_file(file)
+	defer symbols.destroy_symbol_table(table)
+
+	for diag in symbols.collect_all_diagnostics(table) {
+		if strings.contains(diag.message, "Duplicate symbol") &&
+		   strings.contains(diag.message, "ev_name_text") {
+			testing.expect(
+				t,
+				false,
+				fmt.tprintf(
+					"SELECT INTO must not declare a new symbol for an existing exporting parameter: %s",
+					diag.message,
+				),
+			)
+			return
+		}
+	}
+}
+
+@(test)
+test_select_into_inline_data_still_declares_symbol :: proc(t: ^testing.T) {
+	src := `CLASS lcl DEFINITION.
+  PUBLIC SECTION.
+    METHODS run.
+ENDCLASS.
+CLASS lcl IMPLEMENTATION.
+  METHOD run.
+    SELECT SINGLE field FROM some_table INTO @DATA(lv_row) WHERE key = 'x'.
+    DATA lv_copy TYPE string.
+    lv_copy = lv_row.
+  ENDMETHOD.
+ENDCLASS.`
+	file := ast.new(ast.File, {})
+	file.src = src
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	table := symbols.resolve_file(file)
+	defer symbols.destroy_symbol_table(table)
+
+	for diag in symbols.collect_all_diagnostics(table) {
+		if strings.contains(diag.message, "Unknown symbol 'lv_row'") {
+			testing.expect(t, false, fmt.tprintf("lv_row should resolve after inline SELECT INTO: %s", diag.message))
+			return
+		}
+	}
+}
+
+@(test)
 test_method_call_importing_inline_data_symbol :: proc(t: ^testing.T) {
 	src := `CLASS lcl_demo DEFINITION.
   PUBLIC SECTION.
