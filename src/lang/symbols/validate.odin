@@ -306,14 +306,11 @@ validate_raising_type_ident_ctx :: proc(ctx: ^Validation_Context, ident: ^ast.Id
 	)
 }
 
-// validate_type_ident_ctx checks TYPE / LIKE type spellings against the module/workspace table.
+// validate_type_ident_ctx checks TYPE / LIKE simple identifier spellings.
+// Consults current scope (e.g. class PUBLIC SECTION), then enclosing class/interface scope (method bodies), then module/file scope.
 // Emits "Unknown type" when not built-in and not TypeDef/Class/Interface; still records remote candidates for Z/Y/ RFC-style names.
 validate_type_ident_ctx :: proc(ctx: ^Validation_Context, ident: ^ast.Ident) {
 	if ctx == nil || ident == nil || ctx.diag_table == nil {
-		return
-	}
-	mod_table := module_scope_lookup(ctx)
-	if mod_table == nil {
 		return
 	}
 	name := ident.name
@@ -330,25 +327,34 @@ validate_type_ident_ctx :: proc(ctx: ^Validation_Context, ident: ^ast.Ident) {
 	if is_char_builtin_type_name(name) {
 		return
 	}
-	if sym, ok := mod_table.symbols[lower]; ok {
-		#partial switch sym.kind {
-		case .TypeDef, .Class, .Interface:
-			return
-		case:
-			add_diagnostic(
-				ctx.diag_table,
-				ident.range,
-				strings.concatenate(
-					{"'", name, "' cannot be used as a type here"},
-					context.temp_allocator,
-				),
-			)
-			return
+	mod_table := module_scope_lookup(ctx)
+	type_lookup_tables := [?]^SymbolTable{ctx.lookup_table, ctx.enclosing_scope, mod_table}
+	for tab in type_lookup_tables {
+		if tab == nil {
+			continue
+		}
+		if sym, ok := tab.symbols[lower]; ok {
+			#partial switch sym.kind {
+			case .TypeDef, .Class, .Interface:
+				return
+			case:
+				add_diagnostic(
+					ctx.diag_table,
+					ident.range,
+					strings.concatenate(
+						{"'", name, "' cannot be used as a type here"},
+						context.temp_allocator,
+					),
+				)
+				return
+			}
 		}
 	}
-	remote_ctx := ctx^
-	remote_ctx.lookup_table = mod_table
-	maybe_add_remote_candidate(&remote_ctx, name, .Type_Name)
+	if mod_table != nil {
+		remote_ctx := ctx^
+		remote_ctx.lookup_table = mod_table
+		maybe_add_remote_candidate(&remote_ctx, name, .Type_Name)
+	}
 	add_diagnostic(
 		ctx.diag_table,
 		ident.range,
