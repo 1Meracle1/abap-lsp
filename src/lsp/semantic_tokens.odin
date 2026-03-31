@@ -770,6 +770,12 @@ collect_tokens_from_stmt :: proc(
 		if s.source != nil {
 			collect_tokens_from_expr(tokens, s.source, snap, nil)
 		}
+		if s.lines_from != nil {
+			collect_tokens_from_expr(tokens, s.lines_from, snap, nil)
+		}
+		if s.lines_to != nil {
+			collect_tokens_from_expr(tokens, s.lines_to, snap, nil)
+		}
 		if s.target != nil {
 			collect_tokens_from_expr(tokens, s.target, snap, nil)
 		}

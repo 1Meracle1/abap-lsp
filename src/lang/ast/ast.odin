@@ -675,10 +675,13 @@ Append_Kind :: enum {
 // - APPEND expr TO itab.
 // - APPEND INITIAL LINE TO itab [ASSIGNING <fs>].
 // - APPEND LINES OF itab2 TO itab1.
+// - APPEND LINES OF itab2 FROM idx_from TO idx_to TO itab_tgt. (line range, then target)
 Append_Stmt :: struct {
 	using node:       Stmt,
 	kind:             Append_Kind,
 	source:           ^Expr, // The value/expression to append (for Simple, Lines_Of)
+	lines_from:       ^Expr, // APPEND LINES OF ... FROM (start line index), optional
+	lines_to:         ^Expr, // ... TO ... (end line index) before final TO target, optional
 	target:           ^Expr, // The target internal table
 	assigning_target: ^Expr, // Field symbol for ASSIGNING clause (optional)
 }

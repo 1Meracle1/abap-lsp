@@ -392,6 +392,7 @@ parse_sort_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 // - APPEND expr TO itab.
 // - APPEND INITIAL LINE TO itab [ASSIGNING <fs>].
 // - APPEND LINES OF itab2 TO itab1.
+// - APPEND LINES OF itab_src [FROM idx1 TO idx2] TO itab_tgt.
 parse_append_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	append_tok := expect_keyword_token(p, "APPEND")
 
@@ -426,9 +427,16 @@ parse_append_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 		advance_token(p) // consume LINES
 		expect_keyword_token(p, "OF")
 		append_stmt.source = parse_expr(p)
+		append_stmt.kind = .Lines_Of
+		// Optional line range: FROM idx1 TO idx2 (then final TO names the target table)
+		if check_keyword(p, "FROM") {
+			advance_token(p)
+			append_stmt.lines_from = parse_expr(p)
+			expect_keyword_token(p, "TO")
+			append_stmt.lines_to = parse_expr(p)
+		}
 		expect_keyword_token(p, "TO")
 		append_stmt.target = parse_expr(p)
-		append_stmt.kind = .Lines_Of
 
 		period_tok := expect_token(p, .Period)
 		append_stmt.range.end = period_tok.range.end

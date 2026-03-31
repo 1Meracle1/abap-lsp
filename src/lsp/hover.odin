@@ -315,7 +315,8 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 		case .Initial_Line:
 			hover_text = "(statement) APPEND INITIAL LINE TO - appends an initial line to an internal table"
 		case .Lines_Of:
-			hover_text = "(statement) APPEND LINES OF ... TO - appends all lines from one table to another"
+			hover_text =
+				"(statement) APPEND LINES OF ... [FROM ... TO ...] TO - appends lines (or a line range) from one internal table to another"
 		}
 
 	case ^ast.Delete_Stmt:

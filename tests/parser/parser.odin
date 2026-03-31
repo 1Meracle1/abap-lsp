@@ -6641,6 +6641,61 @@ append_lines_of_test :: proc(t: ^testing.T) {
 }
 
 @(test)
+append_lines_of_from_to_to_test :: proc(t: ^testing.T) {
+	// APPEND LINES OF itab_src FROM idx_from TO idx_to TO itab_tgt.
+	file := ast.new(ast.File, {})
+	file.src = `
+APPEND LINES OF lt_cd_bup_gcp
+FROM lv_tabix_from
+TO lv_tabix_to
+TO ysttp_bup_gcp.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	append_stmt, ok := file.decls[0].derived_stmt.(^ast.Append_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Append_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	testing.expect(
+		t,
+		append_stmt.kind == .Lines_Of,
+		fmt.tprintf("Expected Lines_Of kind, got %v", append_stmt.kind),
+	)
+	testing.expect(t, append_stmt.source != nil, "Expected source to be set")
+	testing.expect(t, append_stmt.lines_from != nil, "Expected lines_from to be set")
+	testing.expect(t, append_stmt.lines_to != nil, "Expected lines_to to be set")
+	testing.expect(t, append_stmt.target != nil, "Expected target to be set")
+
+	if src, sok := append_stmt.source.derived_expr.(^ast.Ident); sok {
+		testing.expect(t, src.name == "lt_cd_bup_gcp", fmt.tprintf("Expected source name, got '%s'", src.name))
+	} else {
+		testing.expect(t, false, fmt.tprintf("Expected source Ident, got %T", append_stmt.source.derived_expr))
+	}
+	if lf, lfok := append_stmt.lines_from.derived_expr.(^ast.Ident); lfok {
+		testing.expect(t, lf.name == "lv_tabix_from", fmt.tprintf("Expected lines_from, got '%s'", lf.name))
+	} else {
+		testing.expect(t, false, fmt.tprintf("Expected lines_from Ident, got %T", append_stmt.lines_from.derived_expr))
+	}
+	if lt, ltok := append_stmt.lines_to.derived_expr.(^ast.Ident); ltok {
+		testing.expect(t, lt.name == "lv_tabix_to", fmt.tprintf("Expected lines_to, got '%s'", lt.name))
+	} else {
+		testing.expect(t, false, fmt.tprintf("Expected lines_to Ident, got %T", append_stmt.lines_to.derived_expr))
+	}
+	if tgt, tok := append_stmt.target.derived_expr.(^ast.Ident); tok {
+		testing.expect(t, tgt.name == "ysttp_bup_gcp", fmt.tprintf("Expected target, got '%s'", tgt.name))
+	} else {
+		testing.expect(t, false, fmt.tprintf("Expected target Ident, got %T", append_stmt.target.derived_expr))
+	}
+}
+
+@(test)
 append_to_field_symbol_selector_test :: proc(t: ^testing.T) {
 	// APPEND lv_epc TO <fs_unpack_data>-children.
 	file := ast.new(ast.File, {})
