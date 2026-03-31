@@ -2005,6 +2005,24 @@ parse_call_method_args :: proc(p: ^Parser, args: ^[dynamic]^ast.Expr) {
 
 // try_consume_call_function_in_task_clause parses optional IN BACKGROUND TASK or IN UPDATE TASK
 // after the function name (and optional first DESTINATION). Restores parser state on mismatch.
+// Optional task id / title after IN BACKGROUND TASK (e.g. a string literal) before DESTINATION or param sections.
+consume_optional_call_function_in_task_id :: proc(p: ^Parser) {
+	if p.curr_tok.kind == .Period || p.curr_tok.kind == .EOF {
+		return
+	}
+	if check_keyword(p, "DESTINATION") ||
+	   check_keyword(p, "EXPORTING") ||
+	   check_keyword(p, "IMPORTING") ||
+	   check_keyword(p, "TABLES") ||
+	   check_keyword(p, "CHANGING") ||
+	   check_keyword(p, "RECEIVING") ||
+	   check_keyword(p, "EXCEPTIONS") {
+		return
+	}
+	// Parsed for forward progress only; AST has no field for this id yet.
+	_ = parse_concat_expr(p)
+}
+
 try_consume_call_function_in_task_clause :: proc(p: ^Parser) -> bool {
 	if !check_keyword(p, "IN") {
 		return false
@@ -2021,12 +2039,14 @@ try_consume_call_function_in_task_clause :: proc(p: ^Parser) -> bool {
 		advance_token(p)
 		if check_keyword(p, "TASK") {
 			advance_token(p)
+			consume_optional_call_function_in_task_id(p)
 			return true
 		}
 	} else if check_keyword(p, "UPDATE") {
 		advance_token(p)
 		if check_keyword(p, "TASK") {
 			advance_token(p)
+			consume_optional_call_function_in_task_id(p)
 			return true
 		}
 	}
@@ -2097,8 +2117,8 @@ parse_call_function_destination_if_present :: proc(p: ^Parser, call_func: ^ast.C
 parse_call_function_stmt :: proc(p: ^Parser, call_tok: lexer.Token) -> ^ast.Stmt {
 	expect_keyword_token(p, "FUNCTION")
 
-	// Parse function name (typically a string literal like 'FUNC_NAME')
-	func_name := parse_expr(p)
+	// Stop before relational IN so 'name' IN UPDATE TASK is not one comparison expression.
+	func_name := parse_concat_expr(p)
 
 	call_func := ast.new(ast.Call_Function_Stmt, call_tok.range)
 	call_func.func_name = func_name
@@ -2503,7 +2523,9 @@ peek_starts_table_bracket_comparison :: proc(p: ^Parser) -> bool {
 		p.l.line_count = saved_line_count
 	}
 
-	lhs := parse_expr(p)
+	// Use concat-level parse only: full parse_expr would consume an entire comparison and
+	// leave the lexer on ']', so we'd miss implicit AND between key components.
+	lhs := parse_concat_expr(p)
 	if lhs == nil {
 		return false
 	}
@@ -3383,7 +3405,8 @@ parse_split_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 				break
 			}
 
-			target := parse_expr(p)
+			// Avoid parsing last target as "part IN CHARACTER" comparison before IN CHARACTER MODE.
+			target := parse_concat_expr(p)
 			if target == nil {
 				break
 			}
@@ -3481,28 +3504,29 @@ parse_replace_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 		stmt.is_regex = true
 	}
 
-	stmt.pattern = parse_expr(p)
+	// Avoid eating the following IN subject clause as relational IN (pattern IN subject).
+	stmt.pattern = parse_concat_expr(p)
 
 	if stmt.scope != .Simple {
 		expect_keyword_token(p, "IN")
-		stmt.subject = parse_expr(p)
+		stmt.subject = parse_concat_expr(p)
 		expect_keyword_token(p, "WITH")
-		stmt.replacement = parse_expr(p)
+		stmt.replacement = parse_concat_expr(p)
 	} else {
 		if check_keyword(p, "IN") {
 			advance_token(p)
-			stmt.subject = parse_expr(p)
+			stmt.subject = parse_concat_expr(p)
 			expect_keyword_token(p, "WITH")
-			stmt.replacement = parse_expr(p)
+			stmt.replacement = parse_concat_expr(p)
 		} else {
 			expect_keyword_token(p, "WITH")
-			stmt.replacement = parse_expr(p)
+			stmt.replacement = parse_concat_expr(p)
 			expect_keyword_token(p, "INTO")
 			stmt.into_form = true
 			if is_inline_data_expr_start(p) {
 				stmt.subject = parse_data_inline_expr(p)
 			} else {
-				stmt.subject = parse_expr(p)
+				stmt.subject = parse_concat_expr(p)
 			}
 		}
 	}
