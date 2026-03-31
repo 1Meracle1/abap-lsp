@@ -10659,6 +10659,96 @@ call_function_with_destination_test :: proc(t: ^testing.T) {
 }
 
 @(test)
+call_function_in_background_task_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src =
+	`CALL FUNCTION '/STTP/DISTR_SEND_ONLINE' IN BACKGROUND TASK "IN UPDATE TASK
+      EXPORTING
+        iv_object_type = /sttp/cl_distr_constants=>gcs_distr_object_type-bp
+        it_keys        = lt_distr_obj
+        it_keys_del    = lt_distr_obj_del.`
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+	testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls)))
+	if len(file.decls) < 1 {
+		return
+	}
+
+	call_func, ok := file.decls[0].derived_stmt.(^ast.Call_Function_Stmt)
+	testing.expect(t, ok, fmt.tprintf("Expected Call_Function_Stmt, got %T", file.decls[0].derived_stmt))
+	if !ok {
+		return
+	}
+
+	testing.expect(t, call_func.func_name != nil, "Expected func_name")
+	testing.expect(t, len(call_func.exporting) == 3, fmt.tprintf("exporting: want 3 got %d", len(call_func.exporting)))
+	testing.expect(t, call_func.destination == nil, "no DESTINATION in this snippet")
+}
+
+@(test)
+call_function_in_background_task_destination_after_clause_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src =
+	`CALL FUNCTION 'RFC_PING' IN BACKGROUND TASK DESTINATION mv_dest
+      EXPORTING
+        iv_x = lv_x.`
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+	testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls)))
+	if len(file.decls) < 1 {
+		return
+	}
+	call_func, ok := file.decls[0].derived_stmt.(^ast.Call_Function_Stmt)
+	testing.expect(t, ok, fmt.tprintf("Expected Call_Function_Stmt, got %T", file.decls[0].derived_stmt))
+	if !ok {
+		return
+	}
+	testing.expect(t, call_func.destination != nil, "DESTINATION after IN BACKGROUND TASK")
+	if call_func.destination != nil {
+		if id, dok := call_func.destination.derived_expr.(^ast.Ident); dok {
+			testing.expect(t, id.name == "mv_dest", fmt.tprintf("dest ident: got '%s'", id.name))
+		}
+	}
+}
+
+@(test)
+call_function_in_update_task_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src =
+	`CALL FUNCTION 'FUNC' IN UPDATE TASK
+      EXPORTING
+        a = lv_a.`
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+	if len(file.decls) < 1 {
+		return
+	}
+	_, ok := file.decls[0].derived_stmt.(^ast.Call_Function_Stmt)
+	testing.expect(t, ok, fmt.tprintf("Expected Call_Function_Stmt, got %T", file.decls[0].derived_stmt))
+}
+
+@(test)
 call_function_with_changing_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
 	file.src =

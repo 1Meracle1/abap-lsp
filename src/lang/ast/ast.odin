@@ -846,6 +846,7 @@ Call_Function_Param :: struct {
 
 // CALL FUNCTION statement
 // Syntax: CALL FUNCTION 'func_name' [DESTINATION dest]
+//         [IN BACKGROUND TASK | IN UPDATE TASK] [DESTINATION dest]
 //         [EXPORTING param = value ...]
 //         [IMPORTING param = value ...]
 //         [TABLES param = value ...]
