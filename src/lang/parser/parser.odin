@@ -2499,21 +2499,65 @@ parse_assign_field_symbol_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	return stmt
 }
 
-// MOVE source TO target.
-// Plain MOVE is represented as Assign_Stmt (target on lhs, source on rhs) with op token MOVE.
+// MOVE [source TO target] | MOVE: source TO target [, source TO target] ...
+// Plain / chained MOVE is Assign_Stmt (targets on lhs, sources on rhs) with op token MOVE.
 parse_move_stmt :: proc(p: ^Parser, move_tok: lexer.Token) -> ^ast.Stmt {
 	expect_keyword_token(p, "MOVE")
-	source := parse_expr(p)
-	expect_keyword_token(p, "TO")
-	target := parse_expr(p)
+
+	is_chain := false
+	if allow_token(p, .Colon) {
+		is_chain = true
+	}
+
+	if is_chain &&
+	   (p.curr_tok.kind == .Period || p.curr_tok.kind == .EOF) {
+		error(p, p.curr_tok.range, "expected source expression after MOVE:")
+		period_tok := expect_token(p, .Period)
+		assign_stmt := ast.new(ast.Assign_Stmt, move_tok, period_tok)
+		assign_stmt.op = move_tok
+		assign_stmt.lhs = nil
+		assign_stmt.rhs = nil
+		return assign_stmt
+	}
+
+	lhs_list: [dynamic]^ast.Expr
+	rhs_list: [dynamic]^ast.Expr
+	defer delete(lhs_list)
+	defer delete(rhs_list)
+
+	for {
+		source := parse_expr(p)
+		expect_keyword_token(p, "TO")
+		target := parse_expr(p)
+		append(&rhs_list, source)
+		append(&lhs_list, target)
+
+		if p.curr_tok.kind == .Comma {
+			if !is_chain {
+				error(
+					p,
+					p.curr_tok.range,
+					"use MOVE: when chaining several assignments separated by commas",
+				)
+			}
+			advance_token(p)
+			if p.curr_tok.kind == .Period {
+				error(p, p.curr_tok.range, "trailing comma before period in MOVE")
+				break
+			}
+			continue
+		}
+		break
+	}
+
 	period_tok := expect_token(p, .Period)
 
 	assign_stmt := ast.new(ast.Assign_Stmt, move_tok, period_tok)
-	assign_stmt.lhs = make([]^ast.Expr, 1)
-	assign_stmt.lhs[0] = target
 	assign_stmt.op = move_tok
-	assign_stmt.rhs = make([]^ast.Expr, 1)
-	assign_stmt.rhs[0] = source
+	assign_stmt.lhs = make([]^ast.Expr, len(lhs_list))
+	assign_stmt.rhs = make([]^ast.Expr, len(rhs_list))
+	copy(assign_stmt.lhs, lhs_list[:])
+	copy(assign_stmt.rhs, rhs_list[:])
 	return assign_stmt
 }
 

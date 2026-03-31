@@ -384,3 +384,41 @@ MOVE lv_date+4(2) TO lv_month.`
 		testing.expect(t, len2.tok.lit == "2", fmt.tprintf("len %s", len2.tok.lit))
 	}
 }
+
+@(test)
+move_chained_colon_stmt_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src = `MOVE: is_syst-sysname TO <ls_rng_sysname>-low,
+          'I'             TO <ls_rng_sysname>-sign,
+          'EQ'            TO <ls_rng_sysname>-option.`
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	if !testing.expect(t, len(file.syntax_errors) == 0, fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors)) do return
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 stmt, got %d", len(file.decls))) do return
+
+	assign, ok := file.decls[0].derived_stmt.(^ast.Assign_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("expected Assign_Stmt, got %T", file.decls[0].derived_stmt)) do return
+	if !testing.expect(t, len(assign.lhs) == 3 && len(assign.rhs) == 3, "expected 3 lhs/rhs pairs") do return
+
+	lit_expect :: proc(t: ^testing.T, e: ^ast.Expr, want_lit: string) -> bool {
+		l, lok := e.derived_expr.(^ast.Basic_Lit)
+		if !testing.expect(t, lok, fmt.tprintf("expected literal, got %T", e.derived_expr)) do return false
+		return testing.expect(t, l.tok.lit == want_lit, fmt.tprintf("want %s, got %s", want_lit, l.tok.lit))
+	}
+	if !lit_expect(t, assign.rhs[1], "'I'") do return
+	if !lit_expect(t, assign.rhs[2], "'EQ'") do return
+
+	fs_expect :: proc(t: ^testing.T, e: ^ast.Expr, want: string) -> bool {
+		id, iok := e.derived_expr.(^ast.Ident)
+		if !testing.expect(t, iok, fmt.tprintf("expected Ident, got %T", e.derived_expr)) do return false
+		return testing.expect(t, id.name == want, fmt.tprintf("want %s, got %s", want, id.name))
+	}
+	sel1, s1ok := assign.lhs[1].derived_expr.(^ast.Selector_Expr)
+	if !testing.expect(t, s1ok, fmt.tprintf("lhs[1]: want Selector_Expr, got %T", assign.lhs[1].derived_expr)) do return
+	if !fs_expect(t, sel1.expr, "<ls_rng_sysname>") do return
+	sel2, s2ok := assign.lhs[2].derived_expr.(^ast.Selector_Expr)
+	if !testing.expect(t, s2ok, fmt.tprintf("lhs[2]: want Selector_Expr, got %T", assign.lhs[2].derived_expr)) do return
+	if !fs_expect(t, sel2.expr, "<ls_rng_sysname>") do return
+}
