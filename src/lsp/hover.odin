@@ -973,6 +973,10 @@ format_method_param_signature :: proc(param: ^ast.Method_Param, text: string) ->
 		strings.write_string(&b, " TYPE ")
 		strings.write_string(&b, slice_range_text(text, param.typed.range))
 	}
+	if param.likes != nil {
+		strings.write_string(&b, " LIKE ")
+		strings.write_string(&b, slice_range_text(text, param.likes.range))
+	}
 	if param.optional {
 		strings.write_string(&b, " OPTIONAL")
 	}
@@ -1050,6 +1054,10 @@ append_method_param_group :: proc(
 		if param.typed != nil {
 			strings.write_string(b, " TYPE ")
 			strings.write_string(b, slice_range_text(text, param.typed.range))
+		}
+		if param.likes != nil {
+			strings.write_string(b, " LIKE ")
+			strings.write_string(b, slice_range_text(text, param.likes.range))
 		}
 		if param.optional {
 			strings.write_string(b, " OPTIONAL")

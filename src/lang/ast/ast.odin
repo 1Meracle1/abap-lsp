@@ -1119,6 +1119,7 @@ Method_Param :: struct {
 	kind:       Method_Param_Kind,
 	ident:      ^Ident,
 	typed:      ^Expr,
+	likes:      ^Expr,
 	optional:   bool,
 	default:    ^Expr,
 }

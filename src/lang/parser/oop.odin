@@ -545,6 +545,12 @@ parse_method_params :: proc(
 			if check_keyword(p, "TYPE") {
 				advance_token(p)
 				param.typed = parse_type_expr(p)
+			} else if check_keyword(p, "LIKE") {
+				advance_token(p)
+				param.likes = parse_simple_type_expr(p)
+				if param.likes == nil {
+					error(p, p.curr_tok.range, "expected data object name after LIKE")
+				}
 			}
 
 			append(params, param)
@@ -569,6 +575,12 @@ parse_method_params :: proc(
 		if check_keyword(p, "TYPE") {
 			advance_token(p)
 			param.typed = parse_type_expr(p)
+		} else if check_keyword(p, "LIKE") {
+			advance_token(p)
+			param.likes = parse_simple_type_expr(p)
+			if param.likes == nil {
+				error(p, p.curr_tok.range, "expected data object name after LIKE")
+			}
 		}
 
 		if check_keyword(p, "OPTIONAL") {
@@ -586,7 +598,7 @@ parse_method_params :: proc(
 }
 
 parse_raising_clause :: proc(p: ^Parser, raising: ^[dynamic]^ast.Expr) {
-	for p.curr_tok.kind == .Ident && p.curr_tok.kind != .Period {
+	for p.curr_tok.kind == .Ident {
 		if check_keyword(p, "IMPORTING") ||
 		   check_keyword(p, "EXPORTING") ||
 		   check_keyword(p, "CHANGING") ||

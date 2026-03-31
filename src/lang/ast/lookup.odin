@@ -1512,6 +1512,11 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 				return res
 			}
 		}
+		if n.likes != nil {
+			if res := find_node_at_offset(&n.likes.expr_base, offset); res != nil {
+				return res
+			}
+		}
 		if n.default != nil {
 			if res := find_node_at_offset(&n.default.expr_base, offset); res != nil {
 				return res

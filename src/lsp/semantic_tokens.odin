@@ -1560,6 +1560,9 @@ collect_tokens_from_method_param :: proc(
 	if param.typed != nil {
 		collect_tokens_from_type_expr(tokens, param.typed)
 	}
+	if param.likes != nil {
+		collect_tokens_from_type_expr(tokens, param.likes)
+	}
 	if param.default != nil {
 		collect_tokens_from_expr(tokens, param.default, nil, nil)
 	}

@@ -150,6 +150,8 @@ scan :: proc(l: ^Lexer) -> Token {
 			} else {
 				kind = .Other
 			}
+		case '!':
+			kind = .Other
 		}
 	}
 

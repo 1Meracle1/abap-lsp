@@ -1132,3 +1132,100 @@ ENDCLASS.`
 		}
 	}
 }
+
+@(test)
+class_definition_exception_like_params_and_class_methods_raising :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src = `CLASS /STTP/CX_RR_RU_REST_CLIENT DEFINITION
+  PUBLIC
+  INHERITING FROM /STTP/CX_BASE_EXCEPTION
+  FINAL
+  CREATE PUBLIC .
+
+PUBLIC SECTION.
+
+  METHODS CONSTRUCTOR
+    IMPORTING
+      !TEXTID LIKE TEXTID OPTIONAL
+      !PREVIOUS LIKE PREVIOUS OPTIONAL
+      !MESSAGES TYPE REF TO /STTP/CL_MESSAGES OPTIONAL
+      !MESSAGE TYPE BAL_S_MSG OPTIONAL
+      !MESSAGE_TEXT TYPE BAPI_MSG OPTIONAL
+      !RETURNCODE TYPE INT2 OPTIONAL .
+  CLASS-METHODS RAISE_FROM_CX
+    IMPORTING
+      !IO_PREVIOUS TYPE REF TO CX_ROOT
+    RAISING
+      /STTP/CX_RR_RU_REST_CLIENT .
+  CLASS-METHODS RAISE_WITH_SY_MSG
+    RAISING
+      /STTP/CX_RR_RU_REST_CLIENT .
+  METHODS ADD_MESSAGE_FROM_EXCEPTION
+    IMPORTING
+      !IO_MESSAGES TYPE REF TO /STTP/CL_MESSAGES .
+PROTECTED SECTION.
+PRIVATE SECTION.
+ENDCLASS.`
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	class, ok := file.decls[0].derived_stmt.(^ast.Class_Def_Decl)
+	if !testing.expect(t, ok, "Class_Def_Decl") do return
+
+	testing.expect(t, .Final in class.flags)
+	testing.expect(t, len(class.sections) == 3)
+	testing.expect(t, class.sections[0].access == .Public)
+	testing.expect(t, len(class.sections[0].methods) == 4)
+
+	ctor, ctor_ok := class.sections[0].methods[0].derived_stmt.(^ast.Method_Decl)
+	if !testing.expect(t, ctor_ok, "CONSTRUCTOR Method_Decl") do return
+	testing.expect(t, ctor.ident.name == "CONSTRUCTOR")
+	testing.expect(t, len(ctor.params) == 6)
+
+	for i in 0 ..< 6 {
+		testing.expect(t, ctor.params[i].kind == .Importing)
+	}
+
+	p0 := ctor.params[0]
+	testing.expect(t, p0.ident.name == "TEXTID")
+	testing.expect(t, p0.likes != nil && p0.typed == nil)
+	if id, ik := p0.likes.derived_expr.(^ast.Ident); ik {
+		testing.expect(t, id.name == "TEXTID")
+	}
+	testing.expect(t, p0.optional)
+
+	p1 := ctor.params[1]
+	testing.expect(t, p1.ident.name == "PREVIOUS")
+	testing.expect(t, p1.likes != nil && p1.typed == nil)
+
+	p2 := ctor.params[2]
+	testing.expect(t, p2.ident.name == "MESSAGES")
+	testing.expect(t, p2.typed != nil && p2.likes == nil)
+
+	raise_cx, rcx_ok := class.sections[0].methods[1].derived_stmt.(^ast.Method_Decl)
+	if !testing.expect(t, rcx_ok, "RAISE_FROM_CX") do return
+	testing.expect(t, raise_cx.ident.name == "RAISE_FROM_CX")
+	testing.expect(t, .Class in raise_cx.flags)
+	testing.expect(t, len(raise_cx.params) == 1)
+	testing.expect(t, raise_cx.params[0].ident.name == "IO_PREVIOUS")
+	testing.expect(t, len(raise_cx.raising) == 1)
+
+	raise_sy, rsy_ok := class.sections[0].methods[2].derived_stmt.(^ast.Method_Decl)
+	if !testing.expect(t, rsy_ok, "RAISE_WITH_SY_MSG") do return
+	testing.expect(t, raise_sy.ident.name == "RAISE_WITH_SY_MSG")
+	testing.expect(t, .Class in raise_sy.flags)
+	testing.expect(t, len(raise_sy.params) == 0)
+	testing.expect(t, len(raise_sy.raising) == 1)
+
+	add_msg, am_ok := class.sections[0].methods[3].derived_stmt.(^ast.Method_Decl)
+	if !testing.expect(t, am_ok, "ADD_MESSAGE_FROM_EXCEPTION") do return
+	testing.expect(t, add_msg.ident.name == "ADD_MESSAGE_FROM_EXCEPTION")
+	testing.expect(t, len(add_msg.params) == 1)
+}

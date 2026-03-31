@@ -991,6 +991,8 @@ resolve_method_param :: proc(table: ^SymbolTable, param: ^ast.Method_Param) {
 	type_info: ^Type
 	if param.typed != nil {
 		type_info = resolve_type_expr(table, param.typed)
+	} else if param.likes != nil {
+		type_info = resolve_type_expr(table, param.likes)
 	} else {
 		type_info = make_unknown_type(table)
 	}
