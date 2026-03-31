@@ -439,6 +439,11 @@ check_stmt :: proc(
 
 		check_expr(t, ex.typed.derived_expr, ac.typed, loc = loc)
 
+		if ex.length != nil {
+			if !testing.expect(t, ac.length != nil, "Expected length expr, got nil", loc = loc) do return
+			check_expr(t, ex.length.derived_expr, ac.length, loc = loc)
+		}
+
 		if ex.value != nil {
 			if !testing.expect(t, ac.value != nil, "Expected value, got nil", loc = loc) do return
 			check_expr(t, ex.value.derived_expr, ac.value, loc = loc)

@@ -10337,6 +10337,56 @@ constants_single_test :: proc(t: ^testing.T) {
 }
 
 @(test)
+constants_legacy_paren_length_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src =
+		`CONSTANTS lcv_max_microsecs(14) TYPE p DECIMALS 7 VALUE '0.9999999'.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 1,
+		fmt.tprintf("Expected 1 declaration, got %d", len(file.decls)),
+	)
+	if len(file.decls) < 1 {
+		return
+	}
+
+	const_decl, ok := file.decls[0].derived_stmt.(^ast.Const_Decl)
+	testing.expect(t, ok, fmt.tprintf("Expected Const_Decl, got %T", file.decls[0].derived_stmt))
+	if !ok {
+		return
+	}
+
+	testing.expect(
+		t,
+		const_decl.ident != nil && const_decl.ident.name == "lcv_max_microsecs",
+		"Constant name mismatch",
+	)
+	testing.expect(t, const_decl.length != nil, "Expected legacy (length) expr")
+	if const_decl.length != nil {
+		lit, lit_ok := const_decl.length.derived_expr.(^ast.Basic_Lit)
+		testing.expect(t, lit_ok, "Expected numeric literal for length")
+		if lit_ok {
+			testing.expect(t, lit.tok.lit == "14", fmt.tprintf("Expected length 14, got '%s'", lit.tok.lit))
+		}
+	}
+	testing.expect(t, const_decl.typed != nil, "Expected type expr")
+	if const_decl.typed != nil {
+		tid, tok := const_decl.typed.derived_expr.(^ast.Ident)
+		testing.expect(t, tok && tid.name == "p", "Expected TYPE p")
+	}
+	testing.expect(t, const_decl.value != nil, "Expected VALUE expr")
+}
+
+@(test)
 constants_chain_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
 	file.src =

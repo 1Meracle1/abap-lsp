@@ -212,6 +212,9 @@ collect_tokens_from_stmt :: proc(
 				},
 			)
 		}
+		if s.length != nil {
+			collect_tokens_from_expr(tokens, s.length, snap, nil)
+		}
 		if s.typed != nil {
 			collect_tokens_from_type_expr(tokens, s.typed)
 		}
@@ -232,6 +235,9 @@ collect_tokens_from_stmt :: proc(
 						1 << u32(SemanticTokenModifier.Readonly),
 					},
 				)
+			}
+			if decl.length != nil {
+				collect_tokens_from_expr(tokens, decl.length, snap, nil)
 			}
 			if decl.typed != nil {
 				collect_tokens_from_type_expr(tokens, decl.typed)
@@ -1235,6 +1241,9 @@ collect_tokens_from_const_struct_components :: proc(
 						1 << u32(SemanticTokenModifier.Readonly),
 					},
 				)
+			}
+			if c.length != nil {
+				collect_tokens_from_expr(tokens, c.length, snap, nil)
 			}
 			if c.typed != nil {
 				collect_tokens_from_type_expr(tokens, c.typed)

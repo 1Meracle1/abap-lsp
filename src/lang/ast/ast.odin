@@ -940,6 +940,8 @@ Types_Chain_Decl :: struct {
 Const_Decl :: struct {
 	using node: Decl,
 	ident:      ^Ident,
+	// Legacy length in parentheses before TYPE, e.g. CONSTANTS lcv(14) TYPE p ...
+	length:     ^Expr,
 	typed:      ^Expr,
 	value:      ^Expr,
 }

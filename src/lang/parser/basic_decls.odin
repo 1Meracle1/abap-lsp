@@ -5,6 +5,17 @@ import "../lexer"
 
 // CONSTANTS declarations parsing
 
+// parse_optional_const_length_in_parens parses legacy length in parentheses after the name
+// (e.g. CONSTANTS lcv_max_microsecs(14) TYPE p ...), before TYPE / LIKE.
+parse_optional_const_length_in_parens :: proc(p: ^Parser) -> ^ast.Expr {
+	if !allow_token(p, .LParen) {
+		return nil
+	}
+	e := parse_expr(p)
+	expect_token(p, .RParen)
+	return e
+}
+
 parse_constants_decl :: proc(p: ^Parser) -> ^ast.Decl {
 	const_tok := expect_token(p, .Ident)
 	if allow_token(p, .Colon) {
@@ -15,6 +26,7 @@ parse_constants_decl :: proc(p: ^Parser) -> ^ast.Decl {
 
 parse_constants_single_decl :: proc(p: ^Parser, const_tok: lexer.Token) -> ^ast.Decl {
 	ident_tok := expect_token(p, .Ident)
+	length_expr := parse_optional_const_length_in_parens(p)
 
 	// Accept TYPE or LIKE
 	if check_keyword(p, "TYPE") || check_keyword(p, "LIKE") {
@@ -24,7 +36,7 @@ parse_constants_single_decl :: proc(p: ^Parser, const_tok: lexer.Token) -> ^ast.
 	}
 
 	type_expr := parse_type_expr(p)
-	parse_optional_length_decimals(p)
+	parse_optional_length_decimals(p, &length_expr)
 
 	// CONSTANTS must have VALUE
 	value_expr: ^ast.Expr = nil
@@ -37,6 +49,7 @@ parse_constants_single_decl :: proc(p: ^Parser, const_tok: lexer.Token) -> ^ast.
 
 	const_decl := ast.new(ast.Const_Decl, const_tok, period_tok)
 	const_decl.ident = ast.new_ident(ident_tok)
+	const_decl.length = length_expr
 	const_decl.typed = type_expr
 	const_decl.value = value_expr
 	const_decl.derived_stmt = const_decl
@@ -64,6 +77,7 @@ parse_constants_chain_decl :: proc(p: ^Parser, const_tok: lexer.Token) -> ^ast.D
 		}
 
 		ident_tok := expect_token(p, .Ident)
+		length_expr := parse_optional_const_length_in_parens(p)
 
 		// Accept TYPE or LIKE
 		if check_keyword(p, "TYPE") || check_keyword(p, "LIKE") {
@@ -73,7 +87,7 @@ parse_constants_chain_decl :: proc(p: ^Parser, const_tok: lexer.Token) -> ^ast.D
 		}
 
 		type_expr := parse_type_expr(p)
-		parse_optional_length_decimals(p)
+		parse_optional_length_decimals(p, &length_expr)
 
 		value_expr: ^ast.Expr = nil
 		if check_keyword(p, "VALUE") {
@@ -83,6 +97,7 @@ parse_constants_chain_decl :: proc(p: ^Parser, const_tok: lexer.Token) -> ^ast.D
 
 		decl := ast.new(ast.Const_Decl, ident_tok, p.prev_tok)
 		decl.ident = ast.new_ident(ident_tok)
+		decl.length = length_expr
 		decl.typed = type_expr
 		decl.value = value_expr
 		decl.derived_stmt = decl
@@ -129,6 +144,7 @@ parse_constants_struct_decl :: proc(p: ^Parser) -> ^ast.Const_Struct_Decl {
 		}
 
 		field_ident_tok := expect_token(p, .Ident)
+		field_length_expr := parse_optional_const_length_in_parens(p)
 
 		// Accept TYPE or LIKE
 		if check_keyword(p, "TYPE") || check_keyword(p, "LIKE") {
@@ -138,7 +154,7 @@ parse_constants_struct_decl :: proc(p: ^Parser) -> ^ast.Const_Struct_Decl {
 		}
 
 		type_expr := parse_type_expr(p)
-		parse_optional_length_decimals(p)
+		parse_optional_length_decimals(p, &field_length_expr)
 
 		value_expr: ^ast.Expr = nil
 		if check_keyword(p, "VALUE") {
@@ -148,6 +164,7 @@ parse_constants_struct_decl :: proc(p: ^Parser) -> ^ast.Const_Struct_Decl {
 
 		field_decl := ast.new(ast.Const_Decl, field_ident_tok, p.prev_tok)
 		field_decl.ident = ast.new_ident(field_ident_tok)
+		field_decl.length = field_length_expr
 		field_decl.typed = type_expr
 		field_decl.value = value_expr
 		field_decl.derived_stmt = field_decl
