@@ -640,6 +640,38 @@ check_stmt :: proc(
 			check_expr(t, ex.exceptions[i].derived_expr, &ac.exceptions[i].node, loc = loc)
 		}
 
+	case ^ast.Create_Data_Stmt:
+		ac, ok := actual_derived.(^ast.Create_Data_Stmt)
+		if !testing.expect(t, ok, fmt.tprintf("Expected Create_Data_Stmt, got %T", actual_derived), loc = loc) do return
+
+		if ex.target != nil {
+			if !testing.expect(t, ac.target != nil, "Expected target, got nil", loc = loc) do return
+			check_expr(t, ex.target.derived_expr, ac.target, loc = loc)
+		} else {
+			testing.expect(t, ac.target == nil, "Expected nil target", loc = loc)
+		}
+
+		if ex.type_ref != nil {
+			if !testing.expect(t, ac.type_ref != nil, "Expected type_ref, got nil", loc = loc) do return
+			check_expr(t, ex.type_ref.derived_expr, ac.type_ref, loc = loc)
+		} else {
+			testing.expect(t, ac.type_ref == nil, "Expected nil type_ref", loc = loc)
+		}
+
+		if ex.like_ref != nil {
+			if !testing.expect(t, ac.like_ref != nil, "Expected like_ref, got nil", loc = loc) do return
+			check_expr(t, ex.like_ref.derived_expr, ac.like_ref, loc = loc)
+		} else {
+			testing.expect(t, ac.like_ref == nil, "Expected nil like_ref", loc = loc)
+		}
+
+		if ex.type_handle != nil {
+			if !testing.expect(t, ac.type_handle != nil, "Expected type_handle, got nil", loc = loc) do return
+			check_expr(t, ex.type_handle.derived_expr, ac.type_handle, loc = loc)
+		} else {
+			testing.expect(t, ac.type_handle == nil, "Expected nil type_handle", loc = loc)
+		}
+
 	case ^ast.Form_Decl:
 		ac, ok := actual_derived.(^ast.Form_Decl)
 		if !testing.expect(t, ok, fmt.tprintf("Expected Form_Decl, got %T", actual_derived), loc = loc) do return

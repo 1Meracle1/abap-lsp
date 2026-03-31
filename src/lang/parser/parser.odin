@@ -88,6 +88,9 @@ parse_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			if check_keyword_ahead(p, "OBJECT") {
 				return parse_create_object_stmt(p)
 			}
+			if check_keyword_ahead(p, "DATA") {
+				return parse_create_data_stmt(p)
+			}
 		case "IF":
 			return parse_if_stmt(p)
 		case "TRY":
@@ -3670,6 +3673,51 @@ parse_create_object_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 		} else {
 			break
 		}
+	}
+
+	period_tok := expect_token(p, .Period)
+	stmt.range.end = period_tok.range.end
+	return stmt
+}
+
+// parse_create_data_stmt parses CREATE DATA statements.
+// Syntax (partial):
+// - CREATE DATA dref TYPE type [LENGTH ...] [DECIMALS ...].
+// - CREATE DATA dref LIKE dobj.
+// - CREATE DATA dref TYPE HANDLE handle.
+parse_create_data_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
+	create_tok := expect_keyword_token(p, "CREATE")
+	expect_keyword_token(p, "DATA")
+
+	target := parse_expr(p)
+
+	stmt := ast.new(ast.Create_Data_Stmt, create_tok.range)
+	stmt.target = target
+	stmt.derived_stmt = stmt
+
+	for p.curr_tok.kind != .Period && p.curr_tok.kind != .EOF {
+		if check_keyword(p, "TYPE") {
+			advance_token(p)
+			if check_keyword(p, "HANDLE") {
+				advance_token(p)
+				stmt.type_handle = parse_expr(p)
+			} else {
+				stmt.type_ref = parse_type_expr(p)
+				parse_optional_length_decimals(p)
+			}
+			continue
+		}
+		if check_keyword(p, "LIKE") {
+			advance_token(p)
+			like_expr := parse_simple_type_expr(p)
+			if like_expr != nil {
+				stmt.like_ref = like_expr
+			} else {
+				stmt.like_ref = parse_expr(p)
+			}
+			continue
+		}
+		break
 	}
 
 	period_tok := expect_token(p, .Period)

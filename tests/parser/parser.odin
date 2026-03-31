@@ -12387,6 +12387,63 @@ create_object_with_multiline_exporting_args_test :: proc(t: ^testing.T) {
 	}
 }
 
+@(test)
+create_data_type_namespace_name_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src = `CREATE DATA lo_sap_struct TYPE /sttp/epcisdocument.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 1,
+		fmt.tprintf("Expected 1 declaration, got %d", len(file.decls)),
+	)
+
+	if len(file.decls) > 0 {
+		expected := create_data_stmt(
+			ident("lo_sap_struct"),
+			ident("/sttp/epcisdocument"),
+		)
+		check_stmt(t, expected, file.decls[0])
+	}
+}
+
+@(test)
+create_data_like_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src = `CREATE DATA lr_data LIKE gs_wa.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 1,
+		fmt.tprintf("Expected 1 declaration, got %d", len(file.decls)),
+	)
+
+	if len(file.decls) > 0 {
+		expected := create_data_stmt(
+			ident("lr_data"),
+			nil,
+			ident("gs_wa"),
+		)
+		check_stmt(t, expected, file.decls[0])
+	}
+}
+
 // =====================================================
 // SELECT Statement Tests
 // =====================================================

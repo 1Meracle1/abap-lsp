@@ -1339,6 +1339,28 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 			}
 		}
 
+	case ^Create_Data_Stmt:
+		if n.target != nil {
+			if res := find_node_at_offset(&n.target.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		if n.type_ref != nil {
+			if res := find_node_at_offset(&n.type_ref.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		if n.like_ref != nil {
+			if res := find_node_at_offset(&n.like_ref.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		if n.type_handle != nil {
+			if res := find_node_at_offset(&n.type_handle.expr_base, offset); res != nil {
+				return res
+			}
+		}
+
 	case ^Field_Symbol_Decl:
 		if n.ident != nil {
 			if res := find_node_at_offset(&n.ident.expr_base, offset); res != nil {

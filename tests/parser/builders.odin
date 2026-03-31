@@ -425,6 +425,60 @@ create_object_stmt :: proc(
 	return node
 }
 
+create_data_stmt :: proc(
+	target: ast.Any_Expr,
+	type_ref: ast.Any_Expr = nil,
+	like_ref: ast.Any_Expr = nil,
+	type_handle: ast.Any_Expr = nil,
+) -> ^ast.Create_Data_Stmt {
+	node := ast.new(ast.Create_Data_Stmt, {})
+
+	#partial switch t in target {
+	case ^ast.Ident:
+		node.target = &t.node
+	case ^ast.Selector_Expr:
+		node.target = &t.node
+	}
+
+	if type_ref != nil {
+		#partial switch ty in type_ref {
+		case ^ast.Ident:
+			node.type_ref = &ty.node
+		case ^ast.Selector_Expr:
+			node.type_ref = &ty.node
+		case ^ast.Table_Type:
+			node.type_ref = &ty.node
+		case ^ast.Ref_Type:
+			node.type_ref = &ty.node
+		case ^ast.Line_Type:
+			node.type_ref = &ty.node
+		case ^ast.Range_Type:
+			node.type_ref = &ty.node
+		}
+	}
+
+	if like_ref != nil {
+		#partial switch e in like_ref {
+		case ^ast.Ident:
+			node.like_ref = &e.node
+		case ^ast.Selector_Expr:
+			node.like_ref = &e.node
+		}
+	}
+
+	if type_handle != nil {
+		#partial switch e in type_handle {
+		case ^ast.Ident:
+			node.type_handle = &e.node
+		case ^ast.Selector_Expr:
+			node.type_handle = &e.node
+		}
+	}
+
+	node.derived_stmt = node
+	return node
+}
+
 call_func_param :: proc(
 	kind: ast.Call_Function_Param_Kind,
 	param_name: string,

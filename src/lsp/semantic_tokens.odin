@@ -1201,6 +1201,20 @@ collect_tokens_from_stmt :: proc(
 			collect_tokens_from_expr(tokens, &arg.node, snap, nil)
 		}
 
+	case ^ast.Create_Data_Stmt:
+		if s.target != nil {
+			collect_tokens_from_expr(tokens, s.target, snap, nil)
+		}
+		if s.type_ref != nil {
+			collect_tokens_from_type_expr(tokens, s.type_ref)
+		}
+		if s.like_ref != nil {
+			collect_tokens_from_expr(tokens, s.like_ref, snap, nil)
+		}
+		if s.type_handle != nil {
+			collect_tokens_from_expr(tokens, s.type_handle, snap, nil)
+		}
+
 	case ^ast.Open_Cursor_Stmt:
 		if s.cursor != nil {
 			append(

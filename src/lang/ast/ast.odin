@@ -922,6 +922,19 @@ Create_Object_Stmt :: struct {
 	exceptions:   [dynamic]^Named_Arg,
 }
 
+// CREATE DATA statement — allocates a data object addressed by a data reference variable.
+// Syntax (partial):
+// - CREATE DATA dref TYPE type.
+// - CREATE DATA dref LIKE dobj.
+// - CREATE DATA dref TYPE HANDLE handle. (runtime type descriptor)
+Create_Data_Stmt :: struct {
+	using node:    Stmt,
+	target:        ^Expr,
+	type_ref:      ^Expr, // TYPE <type_expr> (after TYPE, when not TYPE HANDLE)
+	like_ref:      ^Expr, // LIKE <data object>
+	type_handle:   ^Expr, // TYPE HANDLE <handle expression>
+}
+
 // SELECT statement join kind
 Select_Join_Kind :: enum {
 	Inner, // INNER JOIN
@@ -1471,6 +1484,7 @@ Any_Node :: union {
 	^Call_Function_Param,
 	^Call_System_Param,
 	^Create_Object_Stmt,
+	^Create_Data_Stmt,
 	^Select_Stmt,
 	^Open_Cursor_Stmt,
 	^Fetch_Cursor_Stmt,
@@ -1599,6 +1613,7 @@ Any_Stmt :: union {
 	^Call_Badi_Stmt,
 	^Call_System_Stmt,
 	^Create_Object_Stmt,
+	^Create_Data_Stmt,
 	^Select_Stmt,
 	^Open_Cursor_Stmt,
 	^Fetch_Cursor_Stmt,
