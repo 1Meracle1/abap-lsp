@@ -624,7 +624,7 @@ Read_Table_Kind :: enum {
 
 // READ TABLE key specification
 Read_Table_Key :: struct {
-	key_name:   ^Ident, // WITH TABLE KEY key_name COMPONENTS ... (optional; free key uses components only)
+	key_name:   ^Ident, // WITH KEY / WITH TABLE KEY key_name COMPONENTS ... (optional; free key uses components only)
 	components: [dynamic]^Named_Arg, // Key components like field1 = val1 field2 = val2
 	table_line: ^Expr, // For WITH KEY table_line = value
 }

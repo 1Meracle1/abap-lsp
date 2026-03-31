@@ -8937,6 +8937,65 @@ read_table_multiple_key_components_test :: proc(t: ^testing.T) {
 }
 
 @(test)
+read_table_with_key_named_key_components_into_test :: proc(t: ^testing.T) {
+	// READ TABLE ... INTO ... WITH KEY key_name COMPONENTS comp1 = ... comp2 = ...
+	file := ast.new(ast.File, {})
+	file.src = `READ TABLE st_buffer_role INTO ls_buffer_role
+      WITH KEY key_e
+      COMPONENTS bupno   = iv_bupno
+                 buptype = iv_buptype.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	read_stmt, ok := file.decls[0].derived_stmt.(^ast.Read_Table_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Read_Table_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	testing.expect(
+		t,
+		read_stmt.kind == .With_Key,
+		fmt.tprintf("Expected With_Key kind, got %v", read_stmt.kind),
+	)
+	testing.expect(t, read_stmt.key != nil && read_stmt.key.key_name != nil, "Expected named table key")
+	testing.expect(
+		t,
+		read_stmt.key.key_name.name == "key_e",
+		fmt.tprintf("Expected key name 'key_e', got '%s'", read_stmt.key.key_name.name),
+	)
+	testing.expect(
+		t,
+		len(read_stmt.key.components) == 2,
+		fmt.tprintf("Expected 2 key components, got %d", len(read_stmt.key.components)),
+	)
+	if len(read_stmt.key.components) >= 2 {
+		testing.expect(
+			t,
+			read_stmt.key.components[0].name.name == "bupno",
+			fmt.tprintf("Expected 'bupno', got '%s'", read_stmt.key.components[0].name.name),
+		)
+		testing.expect(
+			t,
+			read_stmt.key.components[1].name.name == "buptype",
+			fmt.tprintf("Expected 'buptype', got '%s'", read_stmt.key.components[1].name.name),
+		)
+	}
+	if into_ident, iok := read_stmt.into_target.derived_expr.(^ast.Ident); iok {
+		testing.expect(
+			t,
+			into_ident.name == "ls_buffer_role",
+			fmt.tprintf("Expected into 'ls_buffer_role', got '%s'", into_ident.name),
+		)
+	}
+}
+
+@(test)
 read_table_with_table_key_named_components_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
 	file.src = `READ TABLE st_buffer_role ASSIGNING <ls_buffer_role>

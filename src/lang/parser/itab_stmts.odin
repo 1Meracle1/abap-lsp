@@ -51,21 +51,12 @@ parse_read_table_key_component_assignments :: proc(p: ^Parser, key: ^ast.Read_Ta
 	}
 }
 
-// parse_read_table_key parses the WITH KEY clause of a READ TABLE statement
-// Syntax: WITH KEY field1 = val1 field2 = val2 ... or WITH KEY table_line = value
-parse_read_table_key :: proc(p: ^Parser) -> ^ast.Read_Table_Key {
-	key := new(ast.Read_Table_Key)
-	key.components = make([dynamic]^ast.Named_Arg)
-	parse_read_table_key_component_assignments(p, key)
-	return key
-}
-
-// parse_read_table_with_table_key_spec parses the key part after "WITH TABLE KEY".
+// parse_read_table_key parses the key specification after "WITH KEY" or "WITH TABLE KEY".
 // Syntax:
-// - WITH TABLE KEY comp1 = val1 ... (free key)
-// - WITH TABLE KEY key_name COMPONENTS comp1 = val1 ...
-// - WITH TABLE KEY COMPONENTS comp1 = val1 ... (primary table key)
-parse_read_table_with_table_key_spec :: proc(p: ^Parser) -> ^ast.Read_Table_Key {
+// - ... KEY comp1 = val1 ... (free key; component names only)
+// - ... KEY COMPONENTS comp1 = val1 ... (primary / unnamed table key)
+// - ... KEY key_name COMPONENTS comp1 = val1 ... (named secondary table key)
+parse_read_table_key :: proc(p: ^Parser) -> ^ast.Read_Table_Key {
 	if check_keyword(p, "COMPONENTS") {
 		key := new(ast.Read_Table_Key)
 		key.components = make([dynamic]^ast.Named_Arg)
@@ -98,13 +89,22 @@ parse_read_table_with_table_key_spec :: proc(p: ^Parser) -> ^ast.Read_Table_Key 
 		p.l.ch = saved_ch
 	}
 
+	key := new(ast.Read_Table_Key)
+	key.components = make([dynamic]^ast.Named_Arg)
+	parse_read_table_key_component_assignments(p, key)
+	return key
+}
+
+// parse_read_table_with_table_key_spec parses the key part after "WITH TABLE KEY".
+parse_read_table_with_table_key_spec :: proc(p: ^Parser) -> ^ast.Read_Table_Key {
 	return parse_read_table_key(p)
 }
 
 // READ TABLE statement parser
 // Syntax variations:
 // - READ TABLE itab WITH TABLE KEY [key_name] COMPONENTS field1 = val1 ... | WITH TABLE KEY field1 = val1 ...
-// - READ TABLE itab WITH KEY field1 = val1 ... [INTO wa | ASSIGNING <fs> | TRANSPORTING NO FIELDS].
+// - READ TABLE itab WITH KEY [key_name COMPONENTS | COMPONENTS] field1 = val1 ... | WITH KEY field1 = val1 ...
+//   [INTO wa | ASSIGNING <fs> | TRANSPORTING NO FIELDS].
 // - READ TABLE itab INDEX idx [USING KEY key_name] [INTO wa | ASSIGNING <fs>].
 parse_read_table_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	read_tok := expect_keyword_token(p, "READ")
