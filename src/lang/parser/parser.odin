@@ -2381,8 +2381,18 @@ parse_assign_subfield_component :: proc(p: ^Parser) -> ^ast.Expr {
 				field_expr = paren
 				end_at = rparen_tok.range.end
 			} else {
-				field_tok := expect_token(p, .Ident)
-				field_expr = &ast.new_ident(field_tok).node
+				// Match parse_atom_expr: TEXT-nnn text symbols use a numeric id; allow * for selections
+				field_tok: lexer.Token
+				if p.curr_tok.kind == .Ident || p.curr_tok.kind == .Number || p.curr_tok.kind == .Star {
+					field_tok = advance_token(p)
+				} else {
+					field_tok = expect_token(p, .Ident)
+				}
+				field_ident := ast.new_ident(field_tok)
+				if field_tok.kind == .Star {
+					field_ident.name = "*"
+				}
+				field_expr = &field_ident.node
 				end_at = field_tok.range.end
 			}
 			selector := ast.new(ast.Selector_Expr, lexer.TextRange{expr.range.start, end_at})

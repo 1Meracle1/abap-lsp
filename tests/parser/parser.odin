@@ -10805,6 +10805,65 @@ concatenate_respecting_blanks_then_separated_by_test :: proc(t: ^testing.T) {
 }
 
 @(test)
+concatenate_text_symbol_numeric_id_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src = `CONCATENATE ls_prod-country '|' text-001 INTO gv_dummy_msg SEPARATED BY space.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	concat_stmt, ok := file.decls[0].derived_stmt.(^ast.Concatenate_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Concatenate_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	testing.expect(t, len(concat_stmt.sources) == 3, fmt.tprintf("Expected 3 sources, got %d", len(concat_stmt.sources)))
+
+	country_sel, cok := concat_stmt.sources[0].derived_expr.(^ast.Selector_Expr)
+	if !testing.expect(t, cok, fmt.tprintf("Expected first source Selector_Expr, got %T", concat_stmt.sources[0].derived_expr)) do return
+	if b, bok := country_sel.expr.derived_expr.(^ast.Ident); bok {
+		testing.expect(t, b.name == "ls_prod", fmt.tprintf("Expected ls_prod, got %s", b.name))
+	} else {
+		testing.expect(t, false, fmt.tprintf("Expected base Ident, got %T", country_sel.expr.derived_expr))
+	}
+	if f, fok := country_sel.field.derived_expr.(^ast.Ident); fok {
+		testing.expect(t, f.name == "country", fmt.tprintf("Expected country, got %s", f.name))
+	} else {
+		testing.expect(t, false, fmt.tprintf("Expected field Ident country, got %T", country_sel.field.derived_expr))
+	}
+
+	if pipe_lit, pok := concat_stmt.sources[1].derived_expr.(^ast.Basic_Lit); pok {
+		testing.expect(t, pipe_lit.tok.lit == "'|'", fmt.tprintf("Expected '|', got %s", pipe_lit.tok.lit))
+	} else {
+		testing.expect(t, false, fmt.tprintf("Expected second source Basic_Lit, got %T", concat_stmt.sources[1].derived_expr))
+	}
+
+	text_sym_sel, tok := concat_stmt.sources[2].derived_expr.(^ast.Selector_Expr)
+	if !testing.expect(t, tok, fmt.tprintf("Expected third source Selector_Expr, got %T", concat_stmt.sources[2].derived_expr)) do return
+	if tb, tbok := text_sym_sel.expr.derived_expr.(^ast.Ident); tbok {
+		testing.expect(t, tb.name == "text", fmt.tprintf("Expected text, got %s", tb.name))
+	} else {
+		testing.expect(t, false, fmt.tprintf("Expected base Ident text, got %T", text_sym_sel.expr.derived_expr))
+	}
+	if tf, tfok := text_sym_sel.field.derived_expr.(^ast.Ident); tfok {
+		testing.expect(t, tf.name == "001", fmt.tprintf("Expected 001, got %s", tf.name))
+	} else {
+		testing.expect(t, false, fmt.tprintf("Expected field Ident 001, got %T", text_sym_sel.field.derived_expr))
+	}
+
+	if tgt, tgok := concat_stmt.target.derived_expr.(^ast.Ident); tgok {
+		testing.expect(t, tgt.name == "gv_dummy_msg", fmt.tprintf("Expected gv_dummy_msg, got %s", tgt.name))
+	} else {
+		testing.expect(t, false, fmt.tprintf("Expected target Ident, got %T", concat_stmt.target.derived_expr))
+	}
+}
+
+@(test)
 split_into_targets_character_mode_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
 	file.src = `SPLIT text AT ':' INTO part1 part2 IN CHARACTER MODE.`
