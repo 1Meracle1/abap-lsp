@@ -182,11 +182,110 @@ validate_method_decl_ctx :: proc(ctx: ^Validation_Context, decl: ^ast.Method_Dec
 	}
 	raise_ctx := module_expr_ctx(ctx)
 	for r in decl.raising {
-		validate_type_expr_ctx(&raise_ctx, r)
+		validate_raising_type_expr_ctx(&raise_ctx, r)
 	}
 }
 
-// validate_type_ident_ctx checks TYPE / LIKE / RAISING type spellings against the module/workspace table.
+// validate_raising_type_expr_ctx checks method/interface RAISING clauses: each name must resolve to a class
+// (exception class) in the module/workspace table — not a built-in, interface, typedef, or non-type symbol.
+validate_raising_type_expr_ctx :: proc(ctx: ^Validation_Context, expr: ^ast.Expr) {
+	if expr == nil {
+		return
+	}
+	#partial switch e in expr.derived_expr {
+	case ^ast.Ident:
+		validate_raising_type_ident_ctx(ctx, e)
+	case ^ast.Table_Type:
+		validate_raising_type_expr_ctx(ctx, e.elem)
+	case ^ast.Ref_Type:
+		validate_raising_type_expr_ctx(ctx, e.target)
+	case ^ast.Line_Type:
+		validate_raising_type_expr_ctx(ctx, e.table)
+	case ^ast.Range_Type:
+		validate_raising_type_expr_ctx(ctx, e.elem)
+	case ^ast.Selector_Expr:
+		validate_raising_type_expr_ctx(ctx, e.expr)
+		if e.field != nil {
+			validate_raising_type_expr_ctx(ctx, e.field)
+		}
+	case ^ast.Paren_Expr:
+		validate_raising_type_expr_ctx(ctx, e.expr)
+	case:
+		validate_type_expr_ctx(ctx, expr)
+	}
+}
+
+validate_raising_type_ident_ctx :: proc(ctx: ^Validation_Context, ident: ^ast.Ident) {
+	if ctx == nil || ident == nil || ctx.diag_table == nil {
+		return
+	}
+	mod_table := module_scope_lookup(ctx)
+	if mod_table == nil {
+		return
+	}
+	name := ident.name
+	lower := strings.to_lower(name, context.temp_allocator)
+	if len(lower) == 0 {
+		return
+	}
+	if ctx.method_param_names_for_like != nil && lower in ctx.method_param_names_for_like {
+		return
+	}
+	if builtin_type_from_name(name) != .Unknown {
+		add_diagnostic(
+			ctx.diag_table,
+			ident.range,
+			strings.concatenate(
+				{"RAISING must list an exception class; '", name, "' is a built-in type"},
+				context.temp_allocator,
+			),
+		)
+		return
+	}
+	if sym, ok := mod_table.symbols[lower]; ok {
+		if sym.kind == .Class {
+			return
+		}
+		kind_msg := "symbol"
+		#partial switch sym.kind {
+		case .Interface:
+			kind_msg = "an interface"
+		case .TypeDef:
+			kind_msg = "a type (TYPES)"
+		case .Variable, .Constant, .Parameter, .Field:
+			kind_msg = "a data object"
+		case .Method:
+			kind_msg = "a method"
+		case .Form, .FormParameter:
+			kind_msg = "a form or parameter"
+		}
+		add_diagnostic(
+			ctx.diag_table,
+			ident.range,
+			strings.concatenate(
+				{
+					"'",
+					name,
+					"' cannot be used in RAISING (expect an exception class; found ",
+					kind_msg,
+					")",
+				},
+				context.temp_allocator,
+			),
+		)
+		return
+	}
+	remote_ctx := ctx^
+	remote_ctx.lookup_table = mod_table
+	maybe_add_remote_candidate(&remote_ctx, name, .Type_Name)
+	add_diagnostic(
+		ctx.diag_table,
+		ident.range,
+		strings.concatenate({"Unknown exception class '", name, "'"}, context.temp_allocator),
+	)
+}
+
+// validate_type_ident_ctx checks TYPE / LIKE type spellings against the module/workspace table.
 // Emits "Unknown type" when not built-in and not TypeDef/Class/Interface; still records remote candidates for Z/Y/ RFC-style names.
 validate_type_ident_ctx :: proc(ctx: ^Validation_Context, ident: ^ast.Ident) {
 	if ctx == nil || ident == nil || ctx.diag_table == nil {
@@ -540,6 +639,9 @@ validate_stmt_ctx :: proc(ctx: ^Validation_Context, stmt: ^ast.Stmt) {
 			}
 			for data_decl in s.data {
 				validate_stmt_ctx(&child_ctx, data_decl)
+			}
+			for method_decl in s.methods {
+				validate_stmt_ctx(&child_ctx, method_decl)
 			}
 		}
 	case ^ast.Event_Block:

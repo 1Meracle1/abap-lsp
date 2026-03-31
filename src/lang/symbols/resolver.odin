@@ -1034,6 +1034,10 @@ resolve_method_decl :: proc(table: ^SymbolTable, method: ^ast.Method_Decl, visib
 	for param in method.params {
 		resolve_method_param(child_table, param)
 	}
+	// Exception names in RAISING are resolved as type expressions (Named / structured types).
+	for r in method.raising {
+		_ = resolve_type_expr(child_table, r)
+	}
 
 	sym := Symbol {
 		name        = name,

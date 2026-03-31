@@ -859,6 +859,115 @@ ENDCLASS.`
 }
 
 @(test)
+test_method_raising_same_class_no_unknown_exception_diag :: proc(t: ^testing.T) {
+	src := `CLASS zcx_demo DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS raise_me RAISING zcx_demo .
+ENDCLASS.`
+	file := ast.new(ast.File, {})
+	file.src = src
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+	testing.expect(t, len(file.syntax_errors) == 0, fmt.tprintf("syntax: %v", file.syntax_errors))
+
+	table := symbols.resolve_file(file)
+	defer symbols.destroy_symbol_table(table)
+
+	diags := symbols.collect_all_diagnostics(table)
+	for d in diags {
+		if strings.contains(d.message, "Unknown exception class") ||
+		   strings.contains(d.message, "RAISING must list") ||
+		   strings.contains(d.message, "cannot be used in RAISING") {
+			testing.expect(t, false, fmt.tprintf("unexpected RAISING diagnostic: %s", d.message))
+			return
+		}
+	}
+}
+
+@(test)
+test_method_raising_unknown_exception_class_diag :: proc(t: ^testing.T) {
+	src := `CLASS zcl_a DEFINITION.
+  PUBLIC SECTION.
+    METHODS m RAISING zcx_not_in_workspace .
+ENDCLASS.`
+	file := ast.new(ast.File, {})
+	file.src = src
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+	testing.expect(t, len(file.syntax_errors) == 0, fmt.tprintf("syntax: %v", file.syntax_errors))
+
+	table := symbols.resolve_file(file)
+	defer symbols.destroy_symbol_table(table)
+
+	diags := symbols.collect_all_diagnostics(table)
+	found := false
+	for d in diags {
+		if strings.contains(d.message, "Unknown exception class 'zcx_not_in_workspace'") {
+			found = true
+			break
+		}
+	}
+	testing.expect(t, found, "expected Unknown exception class diagnostic for RAISING")
+}
+
+@(test)
+test_method_raising_builtin_rejected :: proc(t: ^testing.T) {
+	src := `CLASS zcl_a DEFINITION.
+  PUBLIC SECTION.
+    METHODS m RAISING i .
+ENDCLASS.`
+	file := ast.new(ast.File, {})
+	file.src = src
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+	testing.expect(t, len(file.syntax_errors) == 0, fmt.tprintf("syntax: %v", file.syntax_errors))
+
+	table := symbols.resolve_file(file)
+	defer symbols.destroy_symbol_table(table)
+
+	diags := symbols.collect_all_diagnostics(table)
+	found := false
+	for d in diags {
+		if strings.contains(d.message, "RAISING must list an exception class") &&
+		   strings.contains(d.message, "built-in") {
+			found = true
+			break
+		}
+	}
+	testing.expect(t, found, "expected built-in rejected in RAISING")
+}
+
+@(test)
+test_interface_method_raising_resolves_class :: proc(t: ^testing.T) {
+	src := `CLASS zcx_i DEFINITION.
+  PUBLIC SECTION.
+ENDCLASS.
+INTERFACE zif_raisers.
+  METHODS m RAISING zcx_i .
+ENDINTERFACE.`
+	file := ast.new(ast.File, {})
+	file.src = src
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+	testing.expect(t, len(file.syntax_errors) == 0, fmt.tprintf("syntax: %v", file.syntax_errors))
+
+	table := symbols.resolve_file(file)
+	defer symbols.destroy_symbol_table(table)
+
+	diags := symbols.collect_all_diagnostics(table)
+	for d in diags {
+		if strings.contains(d.message, "Unknown exception class") {
+			testing.expect(t, false, fmt.tprintf("unexpected unknown exception: %s", d.message))
+			return
+		}
+	}
+}
+
+@(test)
 test_class_def_valid_inheritance_and_interfaces_no_kind_errors :: proc(t: ^testing.T) {
 	src := `INTERFACE zif_i.
 ENDINTERFACE.
