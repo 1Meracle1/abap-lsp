@@ -75,6 +75,9 @@ scan :: proc(l: ^Lexer) -> Token {
 		case '\'':
 			kind = .String
 			lit = scan_string(l)
+		case '`':
+			kind = .String
+			lit = scan_string_backtick(l)
 		case '.':
 			kind = .Period
 		case ',':
@@ -166,6 +169,30 @@ scan_string :: proc(l: ^Lexer) -> string {
 		if ch == '\'' {
 			break
 		}
+	}
+
+	return string(l.src[start:l.pos])
+}
+
+// ABAP character string template: `...` with `` as an escaped backtick
+scan_string_backtick :: proc(l: ^Lexer) -> string {
+	start := l.pos - 1
+
+	for {
+		ch := l.ch
+		if ch == '\n' || ch < 0 {
+			error(l, start, l.read_pos, "string template was not terminated")
+			break
+		}
+		if ch == '`' {
+			advance_rune(l)
+			if l.ch == '`' {
+				advance_rune(l)
+				continue
+			}
+			break
+		}
+		advance_rune(l)
 	}
 
 	return string(l.src[start:l.pos])

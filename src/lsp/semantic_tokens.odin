@@ -845,6 +845,17 @@ collect_tokens_from_stmt :: proc(
 			collect_tokens_from_expr(tokens, s.text, snap, nil)
 		}
 
+	case ^ast.Replace_Stmt:
+		if s.pattern != nil {
+			collect_tokens_from_expr(tokens, s.pattern, snap, nil)
+		}
+		if s.subject != nil {
+			collect_tokens_from_expr(tokens, s.subject, snap, nil)
+		}
+		if s.replacement != nil {
+			collect_tokens_from_expr(tokens, s.replacement, snap, nil)
+		}
+
 	case ^ast.Raise_Exception_Stmt:
 		if s.type_ref != nil {
 			collect_tokens_from_expr(tokens, s.type_ref, snap, nil)

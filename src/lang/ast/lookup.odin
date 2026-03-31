@@ -963,6 +963,23 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 			}
 		}
 
+	case ^Replace_Stmt:
+		if n.pattern != nil {
+			if res := find_node_at_offset(&n.pattern.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		if n.subject != nil {
+			if res := find_node_at_offset(&n.subject.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		if n.replacement != nil {
+			if res := find_node_at_offset(&n.replacement.expr_base, offset); res != nil {
+				return res
+			}
+		}
+
 	case ^Raise_Exception_Stmt:
 		if n.type_ref != nil {
 			if res := find_node_at_offset(&n.type_ref.expr_base, offset); res != nil {

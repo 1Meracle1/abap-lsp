@@ -328,6 +328,24 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 			hover_text = "(statement) CONCATENATE ... INTO - joins values into a target field"
 		}
 
+	case ^ast.Replace_Stmt:
+		switch n.scope {
+		case .Simple:
+			hover_text = "(statement) REPLACE ... WITH ... [INTO|IN ... WITH] - replaces text in a string"
+		case .All_Occurrences:
+			if n.is_regex {
+				hover_text = "(statement) REPLACE ALL OCCURRENCES OF REGEX - replaces all regex matches"
+			} else {
+				hover_text = "(statement) REPLACE ALL OCCURRENCES OF - replaces all occurrences in a string"
+			}
+		case .First_Occurrence:
+			if n.is_regex {
+				hover_text = "(statement) REPLACE FIRST OCCURRENCE OF REGEX - replaces the first regex match"
+			} else {
+				hover_text = "(statement) REPLACE FIRST OCCURRENCE OF - replaces the first occurrence in a string"
+			}
+		}
+
 	case ^ast.Field_Symbol_Decl:
 		if n.ident != nil {
 			hover_text = fmt.tprintf("(field-symbol declaration) `%s`", n.ident.name)

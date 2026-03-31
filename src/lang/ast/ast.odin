@@ -691,6 +691,23 @@ Condense_Stmt :: struct {
 	text:       ^Expr,
 }
 
+// REPLACE statement (classic, IN/INTO, ALL/FIRST OCCURRENCES, optional REGEX)
+Replace_Scope :: enum {
+	Simple,
+	All_Occurrences,
+	First_Occurrence,
+}
+
+Replace_Stmt :: struct {
+	using node:     Stmt,
+	scope:          Replace_Scope,
+	is_regex:       bool,
+	pattern:        ^Expr,
+	subject:        ^Expr, // IN subject … WITH … or … INTO subject
+	replacement:    ^Expr,
+	into_form:      bool, // Simple scope: WITH repl INTO subject (else IN subject WITH repl)
+}
+
 // RAISE EXCEPTION statement
 // Syntax:
 // - RAISE [RESUMABLE] EXCEPTION TYPE cx_class [EXPORTING p1 = a1 ...].
@@ -1239,6 +1256,7 @@ Any_Node :: union {
 	^Split_Stmt,
 	^Concatenate_Stmt,
 	^Condense_Stmt,
+	^Replace_Stmt,
 	^Raise_Exception_Stmt,
 	^Check_Stmt,
 	^Assert_Stmt,
@@ -1351,6 +1369,7 @@ Any_Stmt :: union {
 	^Split_Stmt,
 	^Concatenate_Stmt,
 	^Condense_Stmt,
+	^Replace_Stmt,
 	^Raise_Exception_Stmt,
 	^Check_Stmt,
 	^Assert_Stmt,

@@ -163,6 +163,8 @@ parse_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			return parse_split_stmt(p)
 		case "CONCATENATE":
 			return parse_concatenate_stmt(p)
+		case "REPLACE":
+			return parse_replace_stmt(p)
 		case "COMMIT":
 			return parse_commit_work_stmt(p)
 		case "SELECT":
@@ -2485,6 +2487,67 @@ parse_concatenate_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 
 	period_tok := expect_token(p, .Period)
 	stmt.range.end = period_tok.range.end
+	return stmt
+}
+
+// REPLACE [ALL OCCURRENCES OF | FIRST OCCURRENCE OF] [REGEX] pattern
+//
+//	IN subject WITH replacement.
+//
+// REPLACE pattern WITH replacement INTO subject.
+// REPLACE pattern IN subject WITH replacement.
+parse_replace_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
+	replace_tok := expect_keyword_token(p, "REPLACE")
+	stmt := ast.new(ast.Replace_Stmt, replace_tok.range)
+	stmt.scope = .Simple
+	stmt.into_form = false
+
+	if check_keyword(p, "ALL") {
+		advance_token(p)
+		expect_keyword_token(p, "OCCURRENCES")
+		expect_keyword_token(p, "OF")
+		stmt.scope = .All_Occurrences
+	} else if check_keyword(p, "FIRST") {
+		advance_token(p)
+		expect_keyword_token(p, "OCCURRENCE")
+		expect_keyword_token(p, "OF")
+		stmt.scope = .First_Occurrence
+	}
+
+	if check_keyword(p, "REGEX") {
+		advance_token(p)
+		stmt.is_regex = true
+	}
+
+	stmt.pattern = parse_expr(p)
+
+	if stmt.scope != .Simple {
+		expect_keyword_token(p, "IN")
+		stmt.subject = parse_expr(p)
+		expect_keyword_token(p, "WITH")
+		stmt.replacement = parse_expr(p)
+	} else {
+		if check_keyword(p, "IN") {
+			advance_token(p)
+			stmt.subject = parse_expr(p)
+			expect_keyword_token(p, "WITH")
+			stmt.replacement = parse_expr(p)
+		} else {
+			expect_keyword_token(p, "WITH")
+			stmt.replacement = parse_expr(p)
+			expect_keyword_token(p, "INTO")
+			stmt.into_form = true
+			if is_inline_data_expr_start(p) {
+				stmt.subject = parse_data_inline_expr(p)
+			} else {
+				stmt.subject = parse_expr(p)
+			}
+		}
+	}
+
+	period_tok := expect_token(p, .Period)
+	stmt.range.end = period_tok.range.end
+	stmt.derived_stmt = stmt
 	return stmt
 }
 
