@@ -5545,6 +5545,152 @@ types_table_with_default_key_test :: proc(t: ^testing.T) {
 }
 
 @(test)
+types_sorted_table_space_separated_key_and_named_secondary_keys_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src =
+	`TYPES: tt_buffer_role TYPE SORTED TABLE OF ts_buffer_role WITH UNIQUE KEY bupid buptype bup_role_variant
+                                          WITH UNIQUE SORTED KEY     key_e COMPONENTS bupno buptype bup_role_variant
+                                          WITH UNIQUE SORTED KEY     key_x COMPONENTS bupno_ext buptype logqs
+                                          WITH NON-UNIQUE SORTED KEY key_g COMPONENTS bup_gln .`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) > 0, "Expected at least one declaration") do return
+
+	chain, ok := file.decls[0].derived_stmt.(^ast.Types_Chain_Decl)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Types_Chain_Decl, got %T", file.decls[0].derived_stmt)) do return
+	if !testing.expect(t, len(chain.parts) == 1, fmt.tprintf("Expected 1 part, got %d", len(chain.parts))) do return
+
+	decl, dok := chain.parts[0].derived_stmt.(^ast.Types_Decl)
+	if !testing.expect(t, dok, fmt.tprintf("Expected Types_Decl, got %T", chain.parts[0].derived_stmt)) do return
+	testing.expect(
+		t,
+		decl.ident.derived_expr.(^ast.Ident).name == "tt_buffer_role",
+		fmt.tprintf("Expected tt_buffer_role, got '%s'", decl.ident.derived_expr.(^ast.Ident).name),
+	)
+
+	table_type, ttok := decl.typed.derived_expr.(^ast.Table_Type)
+	if !testing.expect(t, ttok, fmt.tprintf("Expected Table_Type, got %T", decl.typed.derived_expr)) do return
+	testing.expect(t, table_type.kind == .Sorted, fmt.tprintf("Expected Sorted, got %v", table_type.kind))
+
+	if testing.expect(t, table_type.primary_key != nil, "Expected primary_key") &&
+	   testing.expect(t, table_type.primary_key.name == nil, "Primary key should not be named") {
+		pk := table_type.primary_key
+		testing.expect(t, pk.is_unique, "Expected unique primary key")
+		if testing.expect(t, len(pk.components) == 3, fmt.tprintf("Expected 3 primary fields, got %d", len(pk.components))) {
+			testing.expect(t, pk.components[0].name == "bupid", "pk[0]")
+			testing.expect(t, pk.components[1].name == "buptype", "pk[1]")
+			testing.expect(t, pk.components[2].name == "bup_role_variant", "pk[2]")
+		}
+	}
+
+	if testing.expect(t, len(table_type.secondary_keys) == 3, fmt.tprintf("Expected 3 secondary keys, got %d", len(table_type.secondary_keys))) {
+		sk0 := table_type.secondary_keys[0]
+		testing.expect(t, sk0.is_unique, "sk0 unique")
+		if testing.expect(t, sk0.name != nil, "sk0 name") {
+			testing.expect(t, sk0.name.name == "key_e", fmt.tprintf("sk0 name, got %s", sk0.name.name))
+		}
+		if testing.expect(t, len(sk0.components) == 3, fmt.tprintf("sk0 comps %d", len(sk0.components))) {
+			testing.expect(t, sk0.components[0].name == "bupno", "")
+			testing.expect(t, sk0.components[1].name == "buptype", "")
+			testing.expect(t, sk0.components[2].name == "bup_role_variant", "")
+		}
+
+		sk2 := table_type.secondary_keys[2]
+		testing.expect(t, !sk2.is_unique, "sk2 non-unique")
+		if testing.expect(t, sk2.name != nil, "sk2 name") {
+			testing.expect(t, sk2.name.name == "key_g", "")
+		}
+		if testing.expect(t, len(sk2.components) == 1, "") {
+			testing.expect(t, sk2.components[0].name == "bup_gln", "")
+		}
+	}
+}
+
+@(test)
+types_sorted_table_two_secondary_keys_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src =
+	`TYPES: tt_buffer_bup TYPE SORTED TABLE OF ts_buffer_bup WITH UNIQUE KEY bupid
+                                          WITH UNIQUE SORTED KEY     key_e COMPONENTS bupno
+                                          WITH NON-UNIQUE SORTED KEY key_g COMPONENTS bup_gln .`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+	if !testing.expect(t, len(file.decls) > 0, "") do return
+
+	chain, ok := file.decls[0].derived_stmt.(^ast.Types_Chain_Decl)
+	if !testing.expect(t, ok, "") do return
+	decl, dok := chain.parts[0].derived_stmt.(^ast.Types_Decl)
+	if !testing.expect(t, dok, "") do return
+
+	table_type, ttok := decl.typed.derived_expr.(^ast.Table_Type)
+	if !testing.expect(t, ttok, "") do return
+
+	if testing.expect(t, table_type.primary_key != nil, "") {
+		testing.expect(t, len(table_type.primary_key.components) == 1, "single pk field")
+		testing.expect(t, table_type.primary_key.components[0].name == "bupid", "")
+	}
+	if testing.expect(t, len(table_type.secondary_keys) == 2, "") {
+		testing.expect(t, table_type.secondary_keys[0].name.name == "key_e", "")
+		testing.expect(t, len(table_type.secondary_keys[0].components) == 1, "")
+		testing.expect(t, table_type.secondary_keys[0].components[0].name == "bupno", "")
+		testing.expect(t, table_type.secondary_keys[1].name.name == "key_g", "")
+	}
+}
+
+@(test)
+types_standard_table_namespace_line_type_with_multi_key_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src =
+	`TYPES: tt_bup_gln_hs TYPE STANDARD TABLE OF /sttp/bup_gln_hs WITH KEY bupid bup_gln valid_from .`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+	if !testing.expect(t, len(file.decls) > 0, "") do return
+
+	chain, ok := file.decls[0].derived_stmt.(^ast.Types_Chain_Decl)
+	if !testing.expect(t, ok, "") do return
+	decl, dok := chain.parts[0].derived_stmt.(^ast.Types_Decl)
+	if !testing.expect(t, dok, "") do return
+
+	table_type, ttok := decl.typed.derived_expr.(^ast.Table_Type)
+	if !testing.expect(t, ttok, "") do return
+	testing.expect(t, table_type.kind == .Standard, "")
+
+	elem, eok := table_type.elem.derived_expr.(^ast.Ident)
+	if testing.expect(t, eok, "elem ident") {
+		testing.expect(t, elem.name == "/sttp/bup_gln_hs", fmt.tprintf("elem %s", elem.name))
+	}
+
+	if testing.expect(t, table_type.primary_key != nil, "") {
+		testing.expect(t, !table_type.primary_key.is_unique, "standard default key not unique prefix")
+		pk := table_type.primary_key
+		if testing.expect(t, len(pk.components) == 3, fmt.tprintf("pk len %d", len(pk.components))) {
+			testing.expect(t, pk.components[0].name == "bupid", "")
+			testing.expect(t, pk.components[1].name == "bup_gln", "")
+			testing.expect(t, pk.components[2].name == "valid_from", "")
+		}
+	}
+}
+
+@(test)
 data_hashed_table_selector_type_test :: proc(t: ^testing.T) {
 	// DATA: itab TYPE HASHED TABLE OF example_data=>struc WITH UNIQUE KEY idx.
 	file := ast.new(ast.File, {})

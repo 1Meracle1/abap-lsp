@@ -385,6 +385,34 @@ parse_table_type :: proc(p: ^Parser) -> ^ast.Expr {
 	return table_type
 }
 
+// parse_table_key_components parses key field names after KEY (or after COMPONENTS);
+// ABAP allows comma- or space-separated lists (e.g. WITH UNIQUE KEY a b c).
+parse_table_key_components :: proc(p: ^Parser, key: ^ast.Table_Key) {
+	for p.curr_tok.kind == .Ident {
+		// Stop if a statement/type clause starts rather than another field name
+		if check_keyword(p, "WITH") ||
+		   check_keyword(p, "VALUE") ||
+		   check_keyword(p, "LENGTH") ||
+		   check_keyword(p, "DECIMALS") ||
+		   check_keyword(p, "READ") {
+			break
+		}
+
+		field_tok := advance_token(p)
+		field_ident := ast.new_ident(field_tok)
+		append(&key.components, field_ident)
+
+		if allow_token(p, .Comma) {
+			continue
+		}
+		// Space-separated key fields (no comma)
+		if p.curr_tok.kind == .Ident {
+			continue
+		}
+		break
+	}
+}
+
 // parse_table_key parses: WITH [UNIQUE|NON-UNIQUE] [SORTED|HASHED] KEY key_spec
 parse_table_key :: proc(p: ^Parser, default_unique: bool) -> ^ast.Table_Key {
 	if !check_keyword(p, "WITH") {
@@ -438,34 +466,36 @@ parse_table_key :: proc(p: ^Parser, default_unique: bool) -> ^ast.Table_Key {
 		return key
 	}
 
-	// Check for named key (identifier before COMPONENTS or for simple key names)
-	// Parse key components - can be single identifier or list separated by commas
-	// Also check for COMPONENTS keyword for secondary keys
+	// Named secondary key: ... KEY key_name COMPONENTS comp1 comp2 ...
+	// vs primary table key: ... KEY comp1 comp2 ...
+	if p.curr_tok.kind == .Ident {
+		saved_prev := p.prev_tok
+		saved_curr := p.curr_tok
+		saved_pos := p.l.pos
+		saved_read_pos := p.l.read_pos
+		saved_ch := p.l.ch
+
+		name_tok := advance_token(p)
+		if check_keyword(p, "COMPONENTS") {
+			key.name = ast.new_ident(name_tok)
+			expect_keyword_token(p, "COMPONENTS")
+			parse_table_key_components(p, key)
+			return key
+		}
+
+		p.prev_tok = saved_prev
+		p.curr_tok = saved_curr
+		p.l.pos = saved_pos
+		p.l.read_pos = saved_read_pos
+		p.l.ch = saved_ch
+	}
+
+	// Optional leading COMPONENTS for aliases (e.g. KEY COMPONENTS f1 f2)
 	if check_keyword(p, "COMPONENTS") {
 		advance_token(p)
 	}
 
-	// Parse key field names
-	for p.curr_tok.kind == .Ident {
-		// Check if it's a keyword that ends the key specification
-		if check_keyword(p, "WITH") ||
-		   check_keyword(p, "VALUE") ||
-		   check_keyword(p, "LENGTH") ||
-		   check_keyword(p, "DECIMALS") ||
-		   check_keyword(p, "READ") {
-			break
-		}
-
-		field_tok := advance_token(p)
-		field_ident := ast.new_ident(field_tok)
-		append(&key.components, field_ident)
-
-		// Check for comma separator
-		if !allow_token(p, .Comma) {
-			break
-		}
-	}
-
+	parse_table_key_components(p, key)
 	return key
 }
 
