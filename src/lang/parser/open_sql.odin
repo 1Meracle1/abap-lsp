@@ -860,10 +860,11 @@ parse_select_into_paren_list :: proc(p: ^Parser) -> ^ast.Expr {
 	row_expr := ast.new(ast.Value_Row_Expr, lparen_tok.range)
 	row_expr.args = make([dynamic]^ast.Expr)
 
+	// INTO ( @host1, wa2, ... ) uses Open SQL host-variable rules (@); parse_expr does not treat `@`.
 	for p.curr_tok.kind != .RParen &&
 	    p.curr_tok.kind != .EOF &&
 	    p.curr_tok.kind != .Period {
-		arg := parse_expr(p)
+		arg := parse_select_operand(p)
 		if arg != nil {
 			append(&row_expr.args, arg)
 		}

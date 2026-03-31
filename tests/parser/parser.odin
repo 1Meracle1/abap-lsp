@@ -12603,6 +12603,36 @@ select_single_where_pragma_before_period_test :: proc(t: ^testing.T) {
 }
 
 @(test)
+select_single_into_paren_host_vars_pragma_before_where_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src =
+	`SELECT SINGLE gtin, country FROM /sttp/prod
+      INTO ( @ev_gtin, @ev_country ) ##WARN_OK
+      WHERE ncode_type = @iv_ncode_type
+        AND ncode      = @iv_ncode.`
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(t, len(file.syntax_errors) == 0, fmt.tprintf("%v", file.syntax_errors))
+	testing.expect(t, len(file.decls) == 1)
+	sel, sok := file.decls[0].derived_stmt.(^ast.Select_Stmt)
+	testing.expect(t, sok)
+	if !sok {
+		return
+	}
+	testing.expect(t, sel.is_single)
+	testing.expect(t, len(sel.fields) == 2)
+	testing.expect(t, sel.into_target != nil)
+	row, rok := sel.into_target.derived_expr.(^ast.Value_Row_Expr)
+	testing.expect(t, rok)
+	if rok {
+		testing.expect(t, len(row.args) == 2)
+	}
+	testing.expect(t, sel.where_cond != nil)
+}
+
+@(test)
 select_into_and_upto_before_from_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
 	file.src =
