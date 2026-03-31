@@ -392,6 +392,49 @@ test_unknown_custom_type_records_remote_candidate :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_nested_structure_type_component_chain_no_false_unknown_type :: proc(t: ^testing.T) {
+	// ABAP: TYPES ... TYPE structure-comp-subcomp — component names are not standalone types.
+	src := `TYPES:
+  BEGIN OF street_type,
+    name TYPE c LENGTH 40,
+    no   TYPE c LENGTH 4,
+  END OF street_type.
+
+TYPES:
+  BEGIN OF address_type,
+    name   TYPE c LENGTH 30,
+    street TYPE street_type,
+    BEGIN OF city,
+      zipcode TYPE n LENGTH 5,
+      name TYPE c LENGTH 40,
+    END OF city,
+  END OF address_type.
+
+TYPES zipcode_type TYPE address_type-city-zipcode.`
+	file := ast.new(ast.File, {})
+	file.src = src
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	table := symbols.resolve_file(file)
+	defer symbols.destroy_symbol_table(table)
+
+	diags := symbols.collect_all_diagnostics(table)
+	for diag in diags {
+		if strings.contains(diag.message, "Unknown type 'city'") ||
+		   strings.contains(diag.message, "Unknown type 'zipcode'") {
+			testing.expect(
+				t,
+				false,
+				fmt.tprintf("unexpected diagnostic: %s", diag.message),
+			)
+			return
+		}
+	}
+}
+
+@(test)
 test_builtin_sy_symbol_resolves :: proc(t: ^testing.T) {
 	src := `DATA lv_subrc TYPE i.
 lv_subrc = sy-subrc.`

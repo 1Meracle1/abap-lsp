@@ -886,7 +886,18 @@ builtin_type_from_name :: proc(name: string) -> TypeKind {
 }
 
 selector_to_string :: proc(sel: ^ast.Selector_Expr) -> string {
-	return ast.selector_field_ident_name(sel)
+	if sel == nil {
+		return ""
+	}
+	left := decl_name_from_expr(sel.expr)
+	right := ast.selector_field_ident_name(sel)
+	if left == "" {
+		return right
+	}
+	if right == "" {
+		return left
+	}
+	return strings.concatenate({left, "-", right}, context.temp_allocator)
 }
 
 decl_name_from_expr :: proc(expr: ^ast.Expr) -> string {

@@ -828,6 +828,29 @@ validate_expr_ctx :: proc(ctx: ^Validation_Context, expr: ^ast.Expr) {
 	}
 }
 
+// validate_type_selector_expr_ctx validates ABAP type component chains (e.g. address_type-city-zipcode):
+// the root must be a known type; each `-` suffix must be a structure component, not a standalone type name.
+validate_type_selector_expr_ctx :: proc(ctx: ^Validation_Context, e: ^ast.Selector_Expr) {
+	if ctx == nil || e == nil {
+		return
+	}
+	#partial switch lhs in e.expr.derived_expr {
+	case ^ast.Selector_Expr:
+		validate_type_selector_expr_ctx(ctx, lhs)
+	case ^ast.Ident:
+		validate_type_ident_ctx(ctx, lhs)
+	case:
+		validate_type_expr_ctx(ctx, e.expr)
+	}
+	if e.field != nil {
+		if id, ok := e.field.derived_expr.(^ast.Ident); ok {
+			validate_component_selector_field(ctx, e, id)
+		} else {
+			validate_type_expr_ctx(ctx, e.field)
+		}
+	}
+}
+
 validate_type_expr_ctx :: proc(ctx: ^Validation_Context, expr: ^ast.Expr) {
 	if expr == nil {
 		return
@@ -845,10 +868,7 @@ validate_type_expr_ctx :: proc(ctx: ^Validation_Context, expr: ^ast.Expr) {
 	case ^ast.Range_Type:
 		validate_type_expr_ctx(ctx, e.elem)
 	case ^ast.Selector_Expr:
-		validate_type_expr_ctx(ctx, e.expr)
-		if e.field != nil {
-			validate_type_expr_ctx(ctx, e.field)
-		}
+		validate_type_selector_expr_ctx(ctx, e)
 	}
 }
 
