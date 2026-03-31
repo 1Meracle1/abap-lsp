@@ -125,21 +125,35 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 		}
 
 	case ^Const_Chain_Decl:
-		for child in n.decls {
-			if res := find_node_at_offset(&child.ident.expr_base, offset); res != nil {
-				return res
-			}
-			if child.length != nil {
-				if res := find_node_at_offset(&child.length.expr_base, offset); res != nil {
+		for part in n.parts {
+			#partial switch child in part.derived_stmt {
+			case ^Const_Decl:
+				if res := find_node_at_offset(&child.ident.expr_base, offset); res != nil {
 					return res
 				}
-			}
-			if res := find_node_at_offset(&child.typed.expr_base, offset); res != nil {
-				return res
-			}
-			if child.value != nil {
-				if res := find_node_at_offset(&child.value.expr_base, offset); res != nil {
+				if child.length != nil {
+					if res := find_node_at_offset(&child.length.expr_base, offset); res != nil {
+						return res
+					}
+				}
+				if res := find_node_at_offset(&child.typed.expr_base, offset); res != nil {
 					return res
+				}
+				if child.value != nil {
+					if res := find_node_at_offset(&child.value.expr_base, offset); res != nil {
+						return res
+					}
+				}
+			case ^Const_Struct_Decl:
+				if child.ident != nil {
+					if res := find_node_at_offset(&child.ident.expr_base, offset); res != nil {
+						return res
+					}
+				}
+				for comp in child.components {
+					if res := find_node_at_offset(&comp.stmt_base, offset); res != nil {
+						return res
+					}
 				}
 			}
 		}

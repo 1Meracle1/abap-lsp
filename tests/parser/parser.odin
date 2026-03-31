@@ -13230,26 +13230,36 @@ constants_chain_test :: proc(t: ^testing.T) {
 
 	testing.expect(
 		t,
-		len(chain_decl.decls) == 3,
-		fmt.tprintf("Expected 3 decls in chain, got %d", len(chain_decl.decls)),
+		len(chain_decl.parts) == 3,
+		fmt.tprintf("Expected 3 decls in chain, got %d", len(chain_decl.parts)),
 	)
 
-	if len(chain_decl.decls) >= 3 {
-		testing.expect(
-			t,
-			chain_decl.decls[0].ident.name == "lc_one_fetch_size",
-			"First const name mismatch",
-		)
-		testing.expect(
-			t,
-			chain_decl.decls[1].ident.name == "lc_total_records_size",
-			"Second const name mismatch",
-		)
-		testing.expect(
-			t,
-			chain_decl.decls[2].ident.name == "lc_date_initial",
-			"Third const name mismatch",
-		)
+	if len(chain_decl.parts) >= 3 {
+		d0, ok0 := chain_decl.parts[0].derived_stmt.(^ast.Const_Decl)
+		d1, ok1 := chain_decl.parts[1].derived_stmt.(^ast.Const_Decl)
+		d2, ok2 := chain_decl.parts[2].derived_stmt.(^ast.Const_Decl)
+		testing.expect(t, ok0 && ok1 && ok2, "Expected chain parts to be Const_Decl")
+		if ok0 {
+			testing.expect(
+				t,
+				d0.ident.name == "lc_one_fetch_size",
+				"First const name mismatch",
+			)
+		}
+		if ok1 {
+			testing.expect(
+				t,
+				d1.ident.name == "lc_total_records_size",
+				"Second const name mismatch",
+			)
+		}
+		if ok2 {
+			testing.expect(
+				t,
+				d2.ident.name == "lc_date_initial",
+				"Third const name mismatch",
+			)
+		}
 	}
 }
 
@@ -13310,6 +13320,79 @@ constants_struct_test :: proc(t: ^testing.T) {
 }
 
 @(test)
+constants_struct_elem_types_namespace_comments_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src = `CONSTANTS:
+      BEGIN OF gcs_snr_pool_status,
+        created   TYPE /sttp/e_snr_status_pool VALUE '1', " Serial Number Pool Created
+        active    TYPE /sttp/e_snr_status_pool VALUE '2', " Serial Number Pool Active
+        protected TYPE /sttp/e_snr_status_pool VALUE '3', " Serial Number Pool Protected
+        closed    TYPE /sttp/e_snr_status_pool VALUE '4', " Serial Number Pool Closed
+      END OF gcs_snr_pool_status .`
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls)))
+	if len(file.decls) < 1 {
+		return
+	}
+
+	struct_decl, ok := file.decls[0].derived_stmt.(^ast.Const_Struct_Decl)
+	testing.expect(
+		t,
+		ok,
+		fmt.tprintf("Expected Const_Struct_Decl, got %T", file.decls[0].derived_stmt),
+	)
+	if !ok {
+		return
+	}
+
+	testing.expect(t, struct_decl.ident != nil && struct_decl.ident.name == "gcs_snr_pool_status")
+	testing.expect(t, len(struct_decl.components) == 4)
+}
+
+@(test)
+constants_chain_struct_and_scalar_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src =
+	`CONSTANTS: BEGIN OF gc_mix,
+             c TYPE c LENGTH 1 VALUE 'a',
+           END OF gc_mix,
+           lc_extra TYPE i VALUE 7.`
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+	testing.expect(t, len(file.decls) == 1)
+	if len(file.decls) < 1 {
+		return
+	}
+
+	chain_decl, ok := file.decls[0].derived_stmt.(^ast.Const_Chain_Decl)
+	testing.expect(t, ok, fmt.tprintf("Expected Const_Chain_Decl, got %T", file.decls[0].derived_stmt))
+	if !ok || len(chain_decl.parts) != 2 {
+		return
+	}
+
+	st, ok_s := chain_decl.parts[0].derived_stmt.(^ast.Const_Struct_Decl)
+	ex, ok_e := chain_decl.parts[1].derived_stmt.(^ast.Const_Decl)
+	testing.expect(t, ok_s && st.ident != nil && st.ident.name == "gc_mix")
+	testing.expect(t, ok_e && ex.ident != nil && ex.ident.name == "lc_extra")
+}
+
+@(test)
 constants_with_pragma_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
 	file.src = `CONSTANTS: lc_date_initial TYPE d VALUE '00000000' ##NEEDED.`
@@ -13345,8 +13428,8 @@ constants_with_pragma_test :: proc(t: ^testing.T) {
 
 	testing.expect(
 		t,
-		len(chain_decl.decls) == 1,
-		fmt.tprintf("Expected 1 decl in chain, got %d", len(chain_decl.decls)),
+		len(chain_decl.parts) == 1,
+		fmt.tprintf("Expected 1 decl in chain, got %d", len(chain_decl.parts)),
 	)
 
 	// Check that the pragma was lexed as a comment and didn't break parsing

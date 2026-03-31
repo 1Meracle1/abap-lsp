@@ -197,9 +197,9 @@ const_single :: proc(
 
 const_chain :: proc(decls: ..^ast.Const_Decl) -> ^ast.Const_Chain_Decl {
 	node := ast.new(ast.Const_Chain_Decl, {})
-	node.decls = make([dynamic]^ast.Const_Decl)
+	node.parts = make([dynamic]^ast.Stmt)
 	for d in decls {
-		append(&node.decls, d)
+		append(&node.parts, &d.node)
 	}
 	node.derived_stmt = node
 	return node

@@ -230,27 +230,44 @@ collect_tokens_from_stmt :: proc(
 		}
 
 	case ^ast.Const_Chain_Decl:
-		for decl in s.decls {
-			if decl.ident != nil {
-				append(
-					tokens,
-					SemanticToken {
-						offset = decl.ident.range.start,
-						length = decl.ident.range.end - decl.ident.range.start,
-						type = .Variable,
-						modifiers = 1 << u32(SemanticTokenModifier.Declaration) |
-						1 << u32(SemanticTokenModifier.Readonly),
-					},
-				)
-			}
-			if decl.length != nil {
-				collect_tokens_from_expr(tokens, decl.length, snap, nil)
-			}
-			if decl.typed != nil {
-				collect_tokens_from_type_expr(tokens, decl.typed)
-			}
-			if decl.value != nil {
-				collect_tokens_from_expr(tokens, decl.value, snap, nil)
+		for part in s.parts {
+			#partial switch decl in part.derived_stmt {
+			case ^ast.Const_Decl:
+				if decl.ident != nil {
+					append(
+						tokens,
+						SemanticToken {
+							offset = decl.ident.range.start,
+							length = decl.ident.range.end - decl.ident.range.start,
+							type = .Variable,
+							modifiers = 1 << u32(SemanticTokenModifier.Declaration) |
+							1 << u32(SemanticTokenModifier.Readonly),
+						},
+					)
+				}
+				if decl.length != nil {
+					collect_tokens_from_expr(tokens, decl.length, snap, nil)
+				}
+				if decl.typed != nil {
+					collect_tokens_from_type_expr(tokens, decl.typed)
+				}
+				if decl.value != nil {
+					collect_tokens_from_expr(tokens, decl.value, snap, nil)
+				}
+			case ^ast.Const_Struct_Decl:
+				if decl.ident != nil {
+					append(
+						tokens,
+						SemanticToken {
+							offset = decl.ident.range.start,
+							length = decl.ident.range.end - decl.ident.range.start,
+							type = .Variable,
+							modifiers = 1 << u32(SemanticTokenModifier.Declaration) |
+							1 << u32(SemanticTokenModifier.Readonly),
+						},
+					)
+				}
+				collect_tokens_from_const_struct_components(tokens, decl.components[:], snap)
 			}
 		}
 

@@ -290,6 +290,11 @@ parse_class_section :: proc(p: ^Parser) -> ^ast.Class_Section {
 			if types_decl != nil {
 				append(&section.types, types_decl)
 			}
+		} else if check_keyword(p, "CONSTANTS") {
+			const_decl := parse_constants_decl(p)
+			if const_decl != nil {
+				append(&section.data, const_decl)
+			}
 		} else if check_keyword(p, "DATA") {
 			data_decl := parse_class_data_decl(p, false)
 			if data_decl != nil {
@@ -675,6 +680,11 @@ parse_interface_decl :: proc(p: ^Parser) -> ^ast.Decl {
 			data_decl := parse_class_data_decl(p, false)
 			if data_decl != nil {
 				append(&iface_decl.data, data_decl)
+			}
+		} else if check_keyword(p, "CONSTANTS") {
+			const_decl := parse_constants_decl(p)
+			if const_decl != nil {
+				append(&iface_decl.data, const_decl)
 			}
 		} else {
 			skip_to_new_line(p)

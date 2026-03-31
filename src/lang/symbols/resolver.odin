@@ -447,6 +447,7 @@ resolve_const_decl :: proc(
 	decl: ^ast.Const_Decl,
 	is_chained: bool,
 	is_global: bool = true,
+	visibility: Visibility = .None,
 ) {
 	name := decl.ident.name
 
@@ -458,6 +459,7 @@ resolve_const_decl :: proc(
 		range      = decl.ident.range,
 		type_info  = type_info,
 		is_chained = is_chained,
+		visibility = visibility,
 	}
 	add_symbol(table, sym, allow_shadowing = is_global)
 }
@@ -466,13 +468,23 @@ resolve_const_chain_decl :: proc(
 	table: ^SymbolTable,
 	chain: ^ast.Const_Chain_Decl,
 	is_global: bool = true,
+	visibility: Visibility = .None,
 ) {
-	for decl in chain.decls {
-		resolve_const_decl(table, decl, true, is_global)
+	for part in chain.parts {
+		#partial switch p in part.derived_stmt {
+		case ^ast.Const_Decl:
+			resolve_const_decl(table, p, true, is_global, visibility)
+		case ^ast.Const_Struct_Decl:
+			resolve_const_struct_decl(table, p, visibility)
+		}
 	}
 }
 
-resolve_const_struct_decl :: proc(table: ^SymbolTable, struct_decl: ^ast.Const_Struct_Decl) {
+resolve_const_struct_decl :: proc(
+	table: ^SymbolTable,
+	struct_decl: ^ast.Const_Struct_Decl,
+	visibility: Visibility = .None,
+) {
 	name := struct_decl.ident.name
 
 	struct_type := make_structure_type(table, name)
@@ -485,6 +497,7 @@ resolve_const_struct_decl :: proc(table: ^SymbolTable, struct_decl: ^ast.Const_S
 		range      = struct_decl.ident.range,
 		type_info  = struct_type,
 		is_chained = false,
+		visibility = visibility,
 	}
 	add_symbol(table, sym, allow_shadowing = false)
 }
@@ -893,6 +906,12 @@ resolve_class_section :: proc(
 			resolve_typed_decl(table, d, false, false)
 		case ^ast.Data_Typed_Chain_Decl:
 			resolve_chain_decl(table, d, false)
+		case ^ast.Const_Decl:
+			resolve_const_decl(table, d, false, false, visibility)
+		case ^ast.Const_Chain_Decl:
+			resolve_const_chain_decl(table, d, false, visibility)
+		case ^ast.Const_Struct_Decl:
+			resolve_const_struct_decl(table, d, visibility)
 		}
 	}
 
@@ -1223,6 +1242,12 @@ resolve_interface_decl :: proc(
 			resolve_attr_decl(child_table, d, .Public)
 		case ^ast.Data_Typed_Decl:
 			resolve_typed_decl(child_table, d, false, false)
+		case ^ast.Const_Decl:
+			resolve_const_decl(child_table, d, false, false, .Public)
+		case ^ast.Const_Chain_Decl:
+			resolve_const_chain_decl(child_table, d, false, .Public)
+		case ^ast.Const_Struct_Decl:
+			resolve_const_struct_decl(child_table, d, .Public)
 		}
 	}
 

@@ -2,6 +2,7 @@ package lang_parser
 
 import "../ast"
 import "../lexer"
+import "core:strings"
 
 // CONSTANTS declarations parsing
 
@@ -56,24 +57,41 @@ parse_constants_single_decl :: proc(p: ^Parser, const_tok: lexer.Token) -> ^ast.
 	return const_decl
 }
 
+// finish_const_chain_or_single_struct ends a CONSTANTS: chain segment after a BEGIN…END OF block:
+// comma continues the chain; otherwise '.' closes it. A sole structured constant is unwrapped
+// to ^Const_Struct_Decl (same idea as DATA: BEGIN OF…).
+finish_const_chain_or_single_struct :: proc(
+	p: ^Parser,
+	chain_decl: ^ast.Const_Chain_Decl,
+) -> ^ast.Decl {
+	if allow_token(p, .Comma) {
+		return nil
+	}
+	period_tok := expect_token(p, .Period)
+	chain_decl.range.end = period_tok.range.end
+	if len(chain_decl.parts) == 1 {
+		if only_struct, ok := chain_decl.parts[0].derived_stmt.(^ast.Const_Struct_Decl); ok {
+			only_struct.range.end = period_tok.range.end
+			return only_struct
+		}
+	}
+	return chain_decl
+}
+
 parse_constants_chain_decl :: proc(p: ^Parser, const_tok: lexer.Token) -> ^ast.Decl {
 	chain_decl := ast.new(ast.Const_Chain_Decl, const_tok.range)
-	chain_decl.decls = make([dynamic]^ast.Const_Decl)
+	chain_decl.parts = make([dynamic]^ast.Stmt)
 
 	for {
 		if check_keyword(p, "BEGIN") {
 			struct_decl := parse_constants_struct_decl(p)
 			if struct_decl != nil {
-				if len(chain_decl.decls) == 0 {
-					if allow_token(p, .Comma) {
-					}
-					if allow_token(p, .Period) {
-						struct_decl.range.end = p.prev_tok.range.end
-					}
-					return struct_decl
-				}
+				append(&chain_decl.parts, &struct_decl.node)
 			}
-			break
+			if done := finish_const_chain_or_single_struct(p, chain_decl); done != nil {
+				return done
+			}
+			continue
 		}
 
 		ident_tok := expect_token(p, .Ident)
@@ -101,7 +119,7 @@ parse_constants_chain_decl :: proc(p: ^Parser, const_tok: lexer.Token) -> ^ast.D
 		decl.typed = type_expr
 		decl.value = value_expr
 		decl.derived_stmt = decl
-		append(&chain_decl.decls, decl)
+		append(&chain_decl.parts, &decl.node)
 
 		if allow_token(p, .Comma) {
 			continue
@@ -113,6 +131,12 @@ parse_constants_chain_decl :: proc(p: ^Parser, const_tok: lexer.Token) -> ^ast.D
 	}
 
 	chain_decl.derived_stmt = chain_decl
+	if len(chain_decl.parts) == 1 {
+		if only_struct, ok := chain_decl.parts[0].derived_stmt.(^ast.Const_Struct_Decl); ok {
+			only_struct.range.end = chain_decl.range.end
+			return only_struct
+		}
+	}
 	return chain_decl
 }
 
@@ -180,7 +204,9 @@ parse_constants_struct_decl :: proc(p: ^Parser) -> ^ast.Const_Struct_Decl {
 	end_ident_tok := expect_token(p, .Ident)
 	struct_decl.range.end = end_ident_tok.range.end
 
-	if struct_decl.ident.name != end_ident_tok.lit {
+	begin_name := strings.to_upper(struct_decl.ident.name, context.temp_allocator)
+	end_name := strings.to_upper(end_ident_tok.lit, context.temp_allocator)
+	if begin_name != end_name {
 		error(
 			p,
 			end_ident_tok.range,

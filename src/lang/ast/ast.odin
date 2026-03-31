@@ -1048,7 +1048,8 @@ Const_Decl :: struct {
 
 Const_Chain_Decl :: struct {
 	using node: Decl,
-	decls:      [dynamic]^Const_Decl,
+	// Ordered chain members: each stmt is ^Const_Decl or ^Const_Struct_Decl
+	parts:      [dynamic]^Stmt,
 }
 
 Const_Struct_Decl :: struct {

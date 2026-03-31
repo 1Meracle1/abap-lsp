@@ -485,37 +485,55 @@ check_stmt :: proc(
 		ac, ok := actual_derived.(^ast.Const_Chain_Decl)
 		if !testing.expect(t, ok, fmt.tprintf("Expected Const_Chain_Decl, got %T", actual_derived), loc = loc) do return
 
-		if !testing.expect(t, len(ex.decls) == len(ac.decls), fmt.tprintf("Expected %d decls in chain, got %d", len(ex.decls), len(ac.decls)), loc = loc) do return
+		if !testing.expect(t, len(ex.parts) == len(ac.parts), fmt.tprintf("Expected %d decls in chain, got %d", len(ex.parts), len(ac.parts)), loc = loc) do return
 
-		for i := 0; i < len(ex.decls); i += 1 {
-			ex_decl := ex.decls[i]
-			ac_decl := ac.decls[i]
-
-			if testing.expect(
-				t,
-				ac_decl.ident != nil,
-				fmt.tprintf("Actual ident[%d] is nil", i),
-				loc = loc,
-			) {
-				testing.expect(
+		for i := 0; i < len(ex.parts); i += 1 {
+			ex_part := ex.parts[i].derived_stmt
+			ac_part := ac.parts[i].derived_stmt
+			ex_cd, ex_ok := ex_part.(^ast.Const_Decl)
+			ac_cd, ac_ok := ac_part.(^ast.Const_Decl)
+			if ex_ok && ac_ok {
+				ex_decl := ex_cd
+				ac_decl := ac_cd
+				if testing.expect(
 					t,
-					ex_decl.ident.name == ac_decl.ident.name,
-					fmt.tprintf(
-						"Expected chain decl[%d] ident '%s', got '%s'",
-						i,
-						ex_decl.ident.name,
-						ac_decl.ident.name,
-					),
+					ac_decl.ident != nil,
+					fmt.tprintf("Actual ident[%d] is nil", i),
 					loc = loc,
-				)
-			}
+				) {
+					testing.expect(
+						t,
+						ex_decl.ident.name == ac_decl.ident.name,
+						fmt.tprintf(
+							"Expected chain decl[%d] ident '%s', got '%s'",
+							i,
+							ex_decl.ident.name,
+							ac_decl.ident.name,
+						),
+						loc = loc,
+					)
+				}
 
-			check_expr(t, ex_decl.typed.derived_expr, ac_decl.typed, loc = loc)
+				check_expr(t, ex_decl.typed.derived_expr, ac_decl.typed, loc = loc)
 
-			if ex_decl.value != nil {
-				if !testing.expect(t, ac_decl.value != nil, fmt.tprintf("Expected value[%d], got nil", i), loc = loc) do return
-				check_expr(t, ex_decl.value.derived_expr, ac_decl.value, loc = loc)
+				if ex_decl.value != nil {
+					if !testing.expect(t, ac_decl.value != nil, fmt.tprintf("Expected value[%d], got nil", i), loc = loc) do return
+					check_expr(t, ex_decl.value.derived_expr, ac_decl.value, loc = loc)
+				}
+				continue
 			}
+			ex_cs, ex_sok := ex_part.(^ast.Const_Struct_Decl)
+			ac_cs, ac_sok := ac_part.(^ast.Const_Struct_Decl)
+			if ex_sok && ac_sok {
+				check_stmt(t, ex_cs, ac.parts[i], loc = loc)
+				continue
+			}
+			testing.expect(
+				t,
+				false,
+				fmt.tprintf("const chain part[%d] kind mismatch", i),
+				loc = loc,
+			)
 		}
 
 	case ^ast.Const_Struct_Decl:

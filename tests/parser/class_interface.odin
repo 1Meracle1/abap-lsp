@@ -537,6 +537,59 @@ ENDCLASS.`
 }
 
 @(test)
+class_public_constants_struct_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src = `CLASS /sttp/cl_snr_constants DEFINITION
+  PUBLIC
+  INHERITING FROM /sttp/cl_constants
+  CREATE PUBLIC .
+
+  PUBLIC SECTION.
+CONSTANTS:
+      BEGIN OF gcs_snr_pool_status,
+        created   TYPE /sttp/e_snr_status_pool VALUE '1', " Serial Number Pool Created
+        active    TYPE /sttp/e_snr_status_pool VALUE '2', " Serial Number Pool Active
+        protected TYPE /sttp/e_snr_status_pool VALUE '3', " Serial Number Pool Protected
+        closed    TYPE /sttp/e_snr_status_pool VALUE '4', " Serial Number Pool Closed
+      END OF gcs_snr_pool_status .
+  PROTECTED SECTION.
+private section.
+ENDCLASS.`
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if len(file.decls) < 1 {
+		return
+	}
+	class_def, ok := file.decls[0].derived_stmt.(^ast.Class_Def_Decl)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Class_Def_Decl, got %T", file.decls[0].derived_stmt)) {
+		return
+	}
+	if !testing.expect(t, len(class_def.sections) >= 2, "Expected at least PUBLIC and PROTECTED sections") {
+		return
+	}
+	pub := class_def.sections[0]
+	testing.expect(t, pub.access == .Public)
+	testing.expect(t, len(pub.data) == 1, fmt.tprintf("Expected 1 data member in PUBLIC, got %d", len(pub.data)))
+	if len(pub.data) < 1 {
+		return
+	}
+	cs, cs_ok := pub.data[0].derived_stmt.(^ast.Const_Struct_Decl)
+	testing.expect(t, cs_ok, fmt.tprintf("Expected Const_Struct_Decl, got %T", pub.data[0].derived_stmt))
+	if cs_ok && cs.ident != nil {
+		testing.expect(t, cs.ident.name == "gcs_snr_pool_status")
+		testing.expect(t, len(cs.components) == 4)
+	}
+}
+
+@(test)
 class_methods_value_on_importing_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
 	file.src = `CLASS ZATTP_CL_REP_UTILS DEFINITION
