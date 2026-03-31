@@ -471,6 +471,9 @@ parse_clear_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			if p.curr_tok.kind == .Period {
 				break
 			}
+			if check_keyword(p, "WITH") {
+				break
+			}
 			if allow_token(p, .Comma) {
 				continue
 			}
@@ -481,9 +484,15 @@ parse_clear_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 		expr := parse_expr(p)
 		append(&exprs, expr)
 	}
+	with_expr: ^ast.Expr
+	if check_keyword(p, "WITH") {
+		advance_token(p)
+		with_expr = parse_expr(p)
+	}
 	end_tok := expect_token(p, .Period)
 	clear_stmt := ast.new(ast.Clear_Stmt, clear_tok, end_tok)
 	clear_stmt.exprs = exprs
+	clear_stmt.with_expr = with_expr
 	return clear_stmt
 }
 

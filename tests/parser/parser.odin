@@ -6362,6 +6362,76 @@ ENDCLASS.`
 }
 
 // ============================================================================
+// CLEAR statement tests
+// ============================================================================
+
+@(test)
+clear_with_reference_operand_test :: proc(t: ^testing.T) {
+	// CLEAR dobj WITH dobj2 — reference semantics (e.g. assign initial ref)
+	file := ast.new(ast.File, {})
+	file.src = `CLEAR ls_bupa_ref_nox WITH abap_true.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	clear_stmt, ok := file.decls[0].derived_stmt.(^ast.Clear_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Clear_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	testing.expect(t, len(clear_stmt.exprs) == 1, fmt.tprintf("Expected 1 cleared expr, got %d", len(clear_stmt.exprs)))
+	if targ, tok := clear_stmt.exprs[0].derived_expr.(^ast.Ident); tok {
+		testing.expect(
+			t,
+			targ.name == "ls_bupa_ref_nox",
+			fmt.tprintf("Expected ls_bupa_ref_nox, got %s", targ.name),
+		)
+	} else {
+		testing.expect(t, false, "Expected Ident for CLEAR target")
+	}
+
+	testing.expect(t, clear_stmt.with_expr != nil, "Expected WITH operand")
+	if with_id, wok := clear_stmt.with_expr.derived_expr.(^ast.Ident); wok {
+		testing.expect(t, with_id.name == "abap_true", fmt.tprintf("WITH: expected abap_true, got %s", with_id.name))
+	} else {
+		testing.expect(t, false, "Expected Ident for WITH operand")
+	}
+}
+
+@(test)
+clear_chained_single_target_with_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src = `CLEAR: lv_ref WITH abap_false.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	clear_stmt, ok := file.decls[0].derived_stmt.(^ast.Clear_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Clear_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	testing.expect(t, len(clear_stmt.exprs) == 1, fmt.tprintf("Expected 1 cleared expr, got %d", len(clear_stmt.exprs)))
+	if clear_stmt.with_expr == nil {
+		testing.expect(t, false, "Expected WITH operand")
+		return
+	}
+	if with_id, wok := clear_stmt.with_expr.derived_expr.(^ast.Ident); wok {
+		testing.expect(t, with_id.name == "abap_false", fmt.tprintf("WITH: expected abap_false, got %s", with_id.name))
+	} else {
+		testing.expect(t, false, "Expected Ident for WITH operand")
+	}
+}
+
+// ============================================================================
 // APPEND Statement Tests
 // ============================================================================
 

@@ -515,6 +515,7 @@ Loop_At_Control_Stmt :: struct {
 Clear_Stmt :: struct {
 	using node: Stmt,
 	exprs:      [dynamic]^Expr,
+	with_expr:  ^Expr, // CLEAR dobj WITH dobj2 (reference targets)
 }
 
 // WRITE operand (one target of WRITE / WRITE: ... , ... ).

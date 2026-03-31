@@ -779,6 +779,11 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 				return res
 			}
 		}
+		if n.with_expr != nil {
+			if res := find_node_at_offset(&n.with_expr.expr_base, offset); res != nil {
+				return res
+			}
+		}
 
 	case ^Write_Stmt:
 		for &op in n.operands {
