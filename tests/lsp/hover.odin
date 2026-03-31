@@ -262,3 +262,62 @@ ENDCLASS.`
 		fmt.tprintf("expected parameter hover, got %q", param_hover),
 	)
 }
+
+@(test)
+lookup_symbol_in_class_impl_method_body_test :: proc(t: ^testing.T) {
+	source :=
+		"CLASS /STTP/CL_UI_HELPER DEFINITION.\n" +
+		"  PUBLIC SECTION.\n" +
+		"    CLASS-METHODS GET_REF_UI_COCKPIT\n" +
+		"      EXPORTING\n" +
+		"        !EO_UI_COCKPIT TYPE REF TO /STTP/CL_UI_COCKPIT.\n" +
+		"  PRIVATE SECTION.\n" +
+		"    CLASS-DATA SO_UI_COCKPIT TYPE REF TO /STTP/CL_UI_COCKPIT.\n" +
+		"ENDCLASS.\n" +
+		"\n" +
+		"CLASS /STTP/CL_UI_HELPER IMPLEMENTATION.\n" +
+		"  METHOD GET_REF_UI_COCKPIT.\n" +
+		"    EO_UI_COCKPIT = SO_UI_COCKPIT.\n" +
+		"  ENDMETHOD.\n" +
+		"ENDCLASS.\n"
+
+	snap := make_snapshot(t, source)
+	if snap == nil do return
+	defer symbols.destroy_symbol_table(snap.symbol_table)
+
+	assign_pos := strings.index(source, "EO_UI_COCKPIT =")
+	if !testing.expect(t, assign_pos >= 0, "expected assignment in implementation") do return
+	eo_sym, eo_ok := lsp.lookup_symbol_at_offset(
+		snap,
+		"eo_ui_cockpit",
+		assign_pos + 3,
+		snap.symbol_table,
+	)
+	if !testing.expect(t, eo_ok, "expected lookup for exporting parameter in method body") do return
+	if !testing.expect(t, eo_sym.kind == .Parameter, "expected parameter symbol for EO_UI_COCKPIT") do return
+	if !testing.expect(t, eo_sym.type_info != nil, "expected type for EO_UI_COCKPIT") do return
+	eo_type_upper := strings.to_upper(symbols.format_type(eo_sym.type_info), context.temp_allocator)
+	testing.expect(
+		t,
+		strings.contains(eo_type_upper, "CL_UI_COCKPIT"),
+		fmt.tprintf("expected cockpit class in parameter type, got %q", eo_type_upper),
+	)
+
+	so_pos := strings.index(source, "= SO_UI_COCKPIT")
+	if !testing.expect(t, so_pos >= 0, "expected SO_UI_COCKPIT reference") do return
+	so_sym, so_ok := lsp.lookup_symbol_at_offset(
+		snap,
+		"so_ui_cockpit",
+		so_pos + 4,
+		snap.symbol_table,
+	)
+	if !testing.expect(t, so_ok, "expected lookup for class-data in method body") do return
+	if !testing.expect(t, so_sym.kind == .Field, "expected field symbol for SO_UI_COCKPIT") do return
+	if !testing.expect(t, so_sym.type_info != nil, "expected type for SO_UI_COCKPIT") do return
+	so_type_upper := strings.to_upper(symbols.format_type(so_sym.type_info), context.temp_allocator)
+	testing.expect(
+		t,
+		strings.contains(so_type_upper, "CL_UI_COCKPIT"),
+		fmt.tprintf("expected cockpit class in class-data type, got %q", so_type_upper),
+	)
+}

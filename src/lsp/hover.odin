@@ -1425,6 +1425,33 @@ lookup_symbol_at_offset :: proc(
 		}
 	}
 
+	// CLASS ... IMPLEMENTATION method bodies: parameters and locals sit on the method
+	// symbol's child scope; class attributes and components live on the class scope.
+	if method_impl := ast.find_enclosing_method_impl(snap.ast, offset); method_impl != nil {
+		if class_impl := ast.find_enclosing_class_impl(snap.ast, offset); class_impl != nil &&
+		   class_impl.ident != nil {
+			class_name := class_impl.ident.name
+			if class_sym, ok := lookup_symbol_in_scope(table, class_name); ok &&
+			   class_sym.child_scope != nil {
+				method_key := strings.to_lower(
+					symbols.Decl_Name_From_Expr(method_impl.ident),
+					context.temp_allocator,
+				)
+				if method_key != "" {
+					if method_sym, mok := class_sym.child_scope.symbols[method_key]; mok &&
+					   method_sym.child_scope != nil {
+						if sym, found := lookup_symbol_in_scope(method_sym.child_scope, name); found {
+							return sym, true
+						}
+					}
+				}
+				if sym, found := lookup_symbol_in_scope(class_sym.child_scope, name); found {
+					return sym, true
+				}
+			}
+		}
+	}
+
 	if enclosing_class := ast.find_enclosing_class_def(snap.ast, offset); enclosing_class != nil {
 		class_name := enclosing_class.ident.name
 		if class_sym, ok := lookup_symbol_in_scope(table, class_name); ok {
