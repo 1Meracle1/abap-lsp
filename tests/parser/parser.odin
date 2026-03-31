@@ -11311,6 +11311,93 @@ call_function_rfc_exceptions_message_test :: proc(t: ^testing.T) {
 }
 
 @(test)
+call_function_starting_new_task_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src =
+	`CALL FUNCTION '/STTP/SNR_NRLIST_GENERATE' STARTING NEW TASK lv_task
+          EXPORTING
+            iv_caller             = 'E'
+            it_snr_list_gen       = lt_snr_list_gen
+          EXCEPTIONS
+            communication_failure = 1
+            system_failure        = 2
+            resource_failure      = 3.`
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+	testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 declaration, got %d", len(file.decls)))
+	if len(file.decls) < 1 {
+		return
+	}
+	call_func, ok := file.decls[0].derived_stmt.(^ast.Call_Function_Stmt)
+	testing.expect(t, ok, fmt.tprintf("Expected Call_Function_Stmt, got %T", file.decls[0].derived_stmt))
+	if !ok {
+		return
+	}
+
+	testing.expect(t, call_func.starting_new_task != nil, "STARTING NEW TASK task id expected")
+	if tid, tid_ok := call_func.starting_new_task.derived_expr.(^ast.Ident); tid_ok {
+		testing.expect(
+			t,
+			tid.name == "lv_task",
+			fmt.tprintf("Expected task id lv_task, got '%s'", tid.name),
+		)
+	} else {
+		testing.expect(t, false, "Expected Ident for task id")
+	}
+
+	if func_lit, fk := call_func.func_name.derived_expr.(^ast.Basic_Lit); fk {
+		testing.expect(
+			t,
+			func_lit.tok.lit == "'/STTP/SNR_NRLIST_GENERATE'",
+			fmt.tprintf("Unexpected function literal %s", func_lit.tok.lit),
+		)
+	}
+
+	testing.expect(t, len(call_func.exporting) == 2, fmt.tprintf("exporting: want 2 got %d", len(call_func.exporting)))
+	testing.expect(t, len(call_func.exceptions) == 3, fmt.tprintf("exceptions: want 3 got %d", len(call_func.exceptions)))
+}
+
+@(test)
+call_function_starting_new_task_destination_order_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src =
+	`CALL FUNCTION 'Z_FM' STARTING NEW TASK lv_task DESTINATION mv_dest
+        EXPORTING
+          iv_x = lv_x.`
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+	testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls)))
+	if len(file.decls) < 1 {
+		return
+	}
+	call_func, ok := file.decls[0].derived_stmt.(^ast.Call_Function_Stmt)
+	testing.expect(t, ok, fmt.tprintf("Expected Call_Function_Stmt, got %T", file.decls[0].derived_stmt))
+	if !ok {
+		return
+	}
+	testing.expect(t, call_func.starting_new_task != nil, "task id")
+	testing.expect(t, call_func.destination != nil, "destination")
+	if d, dok := call_func.destination.derived_expr.(^ast.Ident); dok {
+		testing.expect(t, d.name == "mv_dest", fmt.tprintf("dest got %s", d.name))
+	}
+	testing.expect(t, len(call_func.exporting) == 1, fmt.tprintf("exporting count %d", len(call_func.exporting)))
+}
+
+@(test)
 call_function_with_destination_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
 	file.src =

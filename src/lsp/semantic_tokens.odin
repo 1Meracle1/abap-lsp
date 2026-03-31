@@ -1101,6 +1101,9 @@ collect_tokens_from_stmt :: proc(
 		if s.destination != nil {
 			collect_tokens_from_expr(tokens, s.destination, snap, nil)
 		}
+		if s.starting_new_task != nil {
+			collect_tokens_from_expr(tokens, s.starting_new_task, snap, nil)
+		}
 		// Collect tokens from all parameter sections
 		collect_tokens_from_call_function_params(tokens, s.exporting[:], snap)
 		collect_tokens_from_call_function_params(tokens, s.importing[:], snap)

@@ -858,6 +858,7 @@ Call_Function_Param :: struct {
 
 // CALL FUNCTION statement
 // Syntax: CALL FUNCTION 'func_name' [DESTINATION dest]
+//         [STARTING NEW TASK task_id]
 //         [IN BACKGROUND TASK | IN UPDATE TASK] [DESTINATION dest]
 //         [EXPORTING param = value ...]
 //         [IMPORTING param = value ...]
@@ -865,14 +866,15 @@ Call_Function_Param :: struct {
 //         [CHANGING param = value ...]
 //         [EXCEPTIONS name = value ...].
 Call_Function_Stmt :: struct {
-	using node:  Stmt,
-	func_name:   ^Expr, // Function name (typically a string literal)
-	destination: ^Expr, // Optional DESTINATION expression
-	exporting:   [dynamic]^Call_Function_Param,
-	importing:   [dynamic]^Call_Function_Param,
-	tables:      [dynamic]^Call_Function_Param,
-	changing:    [dynamic]^Call_Function_Param,
-	exceptions:  [dynamic]^Call_Function_Param,
+	using node:        Stmt,
+	func_name:         ^Expr, // Function name (typically a string literal)
+	destination:       ^Expr, // Optional DESTINATION expression
+	starting_new_task: ^Expr, // Optional asynchronous RFC task id (STARTING NEW TASK)
+	exporting:         [dynamic]^Call_Function_Param,
+	importing:         [dynamic]^Call_Function_Param,
+	tables:            [dynamic]^Call_Function_Param,
+	changing:          [dynamic]^Call_Function_Param,
+	exceptions:        [dynamic]^Call_Function_Param,
 }
 
 // CALL BADI statement

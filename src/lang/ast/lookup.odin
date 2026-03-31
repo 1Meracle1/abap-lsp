@@ -1187,6 +1187,11 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 				return res
 			}
 		}
+		if n.starting_new_task != nil {
+			if res := find_node_at_offset(&n.starting_new_task.expr_base, offset); res != nil {
+				return res
+			}
+		}
 		for param in n.exporting {
 			if res := find_node_at_offset(&param.node, offset); res != nil {
 				return res

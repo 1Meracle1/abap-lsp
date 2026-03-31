@@ -1821,15 +1821,54 @@ try_consume_call_function_in_task_clause :: proc(p: ^Parser) -> bool {
 	return false
 }
 
-parse_call_function_destination_if_present :: proc(p: ^Parser, call_func: ^ast.Call_Function_Stmt) {
+// try_consume_call_function_starting_new_task parses STARTING NEW TASK task_id after the function
+// name; restores lexer/parser state if STARTING is not followed by NEW TASK.
+try_consume_call_function_starting_new_task :: proc(p: ^Parser, call_func: ^ast.Call_Function_Stmt) -> bool {
+	if !check_keyword(p, "STARTING") {
+		return false
+	}
+
+	saved_prev := p.prev_tok
+	saved_curr := p.curr_tok
+	saved_pos := p.l.pos
+	saved_read_pos := p.l.read_pos
+	saved_ch := p.l.ch
+
+	advance_token(p) // STARTING
+	if !check_keyword(p, "NEW") {
+		p.prev_tok = saved_prev
+		p.curr_tok = saved_curr
+		p.l.pos = saved_pos
+		p.l.read_pos = saved_read_pos
+		p.l.ch = saved_ch
+		return false
+	}
+	advance_token(p)
+	if !check_keyword(p, "TASK") {
+		p.prev_tok = saved_prev
+		p.curr_tok = saved_curr
+		p.l.pos = saved_pos
+		p.l.read_pos = saved_read_pos
+		p.l.ch = saved_ch
+		return false
+	}
+	advance_token(p)
+	call_func.starting_new_task = parse_expr(p)
+	return true
+}
+
+parse_call_function_destination_if_present :: proc(p: ^Parser, call_func: ^ast.Call_Function_Stmt) -> bool {
 	if check_keyword(p, "DESTINATION") {
 		advance_token(p)
 		call_func.destination = parse_expr(p)
+		return true
 	}
+	return false
 }
 
 // parse_call_function_stmt parses a CALL FUNCTION statement
 // Syntax: CALL FUNCTION 'func_name' [DESTINATION dest]
+//         [STARTING NEW TASK task_id]
 //         [IN BACKGROUND TASK | IN UPDATE TASK [QUALIFIERS]]
 //         [DESTINATION dest]
 //         [EXPORTING param = value ...]
@@ -1852,12 +1891,18 @@ parse_call_function_stmt :: proc(p: ^Parser, call_tok: lexer.Token) -> ^ast.Stmt
 	call_func.exceptions = make([dynamic]^ast.Call_Function_Param)
 	call_func.derived_stmt = call_func
 
-	// Optional DESTINATION (RFC; may also appear again after IN ... TASK for background calls)
-	parse_call_function_destination_if_present(p, call_func)
-
-	// IN BACKGROUND TASK / IN UPDATE TASK before parameter sections
-	if try_consume_call_function_in_task_clause(p) {
-		parse_call_function_destination_if_present(p, call_func)
+	// Optional clauses (DESTINATION, STARTING NEW TASK, IN ... TASK) may appear in several orders
+	for {
+		if try_consume_call_function_starting_new_task(p, call_func) {
+			continue
+		}
+		if parse_call_function_destination_if_present(p, call_func) {
+			continue
+		}
+		if try_consume_call_function_in_task_clause(p) {
+			continue
+		}
+		break
 	}
 
 	// Parse the parameter sections (can appear in any order, each can appear at most once)
