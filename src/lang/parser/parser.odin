@@ -1124,11 +1124,10 @@ parse_atom_expr :: proc(p: ^Parser, value: ^ast.Expr, allow_substring: bool = tr
 			expr = call_expr
 		case .LBracket:
 			// Table expression - square brackets for internal table access
-			// Syntax: itab[ index ] or itab[ key = value ]
+			// Syntax: itab[ index ] or itab[ key = value ] / itab[ c1 = a AND c2 = b ] — use logical expr so = and AND/OR parse.
 			advance_token(p) // consume [
 
-			// Parse the index expression
-			index_expr := parse_expr(p)
+			index_expr := parse_logical_expr(p)
 
 			rbracket_tok := expect_token(p, .RBracket)
 
@@ -2234,7 +2233,7 @@ parse_assign_subfield_component :: proc(p: ^Parser) -> ^ast.Expr {
 			expr = &selector.node
 		case .LBracket:
 			advance_token(p)
-			index_expr := parse_expr(p)
+			index_expr := parse_logical_expr(p)
 			rbracket_tok := expect_token(p, .RBracket)
 
 			table_expr := ast.new(

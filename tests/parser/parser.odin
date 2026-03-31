@@ -4,6 +4,7 @@ import "../../src/lang/ast"
 import lexer "../../src/lang/lexer"
 import "../../src/lang/parser"
 import "core:fmt"
+import "core:strings"
 import "core:testing"
 
 @(test)
@@ -2278,6 +2279,62 @@ ENDIF.`
 			fmt.tprintf("Expected 0 ELSE body statements, got %d", len(if_stmt.else_body)),
 		)
 	}
+}
+
+@(test)
+if_line_exists_table_key_static_attr_or_chain_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src = `IF line_exists( lt_messages[ msgty = /sttp/cl_messages=>gc_msgtye ] )
+    OR line_exists( lt_messages[ msgty = /sttp/cl_messages=>gc_msgtya ] ).
+ENDIF.`
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %v", len(file.decls)))
+	if len(file.decls) < 1 {
+		return
+	}
+
+	if_stmt, ok := file.decls[0].derived_stmt.(^ast.If_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected If_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	or_expr, or_ok := if_stmt.cond.derived_expr.(^ast.Binary_Expr)
+	if !testing.expect(t, or_ok, "IF condition should be OR Binary_Expr") do return
+	testing.expect(
+		t,
+		strings.equal_fold(or_expr.op.lit, "OR"),
+		fmt.tprintf("Expected OR operator, got %v", or_expr.op.lit),
+	)
+
+	left_call, lc_ok := or_expr.left.derived_expr.(^ast.Call_Expr)
+	if !testing.expect(t, lc_ok, "Left of OR should be Call_Expr (line_exists)") do return
+	line_exists_id, le_ok := left_call.expr.derived_expr.(^ast.Ident)
+	if !testing.expect(t, le_ok, "Callee should be Ident") do return
+	testing.expect(
+		t,
+		line_exists_id.name == "line_exists",
+		fmt.tprintf("Expected line_exists, got %s", line_exists_id.name),
+	)
+	testing.expect(t, len(left_call.args) == 1, "line_exists should have one argument")
+
+	if len(left_call.args) < 1 || left_call.args[0] == nil {
+		return
+	}
+	idx0, i0_ok := left_call.args[0].derived_expr.(^ast.Index_Expr)
+	if !testing.expect(t, i0_ok, "line_exists arg should be table Index_Expr") do return
+	_, key_ok := idx0.index.derived_expr.(^ast.Binary_Expr)
+	testing.expect(t, key_ok, "Table key should parse as Binary_Expr (msgty = ...)")
+
+	right_call, rc_ok := or_expr.right.derived_expr.(^ast.Call_Expr)
+	if !testing.expect(t, rc_ok, "Right of OR should be Call_Expr") do return
+	testing.expect(t, len(right_call.args) == 1, "second line_exists should have one argument")
 }
 
 @(test)
