@@ -3470,6 +3470,7 @@ parse_concatenate_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 //
 // REPLACE pattern WITH replacement INTO subject.
 // REPLACE pattern IN subject WITH replacement.
+// ... [IN CHARACTER MODE | IN BYTE MODE].
 parse_replace_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	replace_tok := expect_keyword_token(p, "REPLACE")
 	stmt := ast.new(ast.Replace_Stmt, replace_tok.range)
@@ -3517,6 +3518,18 @@ parse_replace_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 				stmt.subject = parse_expr(p)
 			}
 		}
+	}
+
+	if check_keyword(p, "IN") {
+		advance_token(p)
+		if check_keyword(p, "CHARACTER") {
+			advance_token(p)
+		} else if check_keyword(p, "BYTE") {
+			advance_token(p)
+		} else {
+			error(p, p.curr_tok.range, "expected CHARACTER or BYTE after IN")
+		}
+		expect_keyword_token(p, "MODE")
 	}
 
 	period_tok := expect_token(p, .Period)

@@ -127,3 +127,40 @@ replace_all_occurrences_selector_test :: proc(t: ^testing.T) {
 	testing.expect(t, stmt.scope == .All_Occurrences, "scope")
 	testing.expect(t, !stmt.is_regex, "regex")
 }
+
+@(test)
+replace_all_occurrences_in_character_mode_multiline_test :: proc(t: ^testing.T) {
+	src :=
+		`REPLACE
+     ALL OCCURRENCES OF '%22'
+     IN                 iv_id
+     WITH               '"'
+     IN CHARACTER MODE.`
+	stmt := expect_replace_stmt(t, src)
+	if stmt == nil do return
+	testing.expect(t, stmt.scope == .All_Occurrences, "scope")
+	testing.expect(t, !stmt.is_regex, "regex")
+	if lit, ok := stmt.pattern.derived_expr.(^ast.Basic_Lit); ok {
+		testing.expect(t, lit.tok.lit == "'%22'", fmt.tprintf("pattern %s", lit.tok.lit))
+	} else {
+		testing.expect(t, false, "pattern literal")
+	}
+	if id, ok := stmt.subject.derived_expr.(^ast.Ident); ok {
+		testing.expect(t, id.name == "iv_id", "subject")
+	} else {
+		testing.expect(t, false, "subject ident")
+	}
+	if lit, ok := stmt.replacement.derived_expr.(^ast.Basic_Lit); ok {
+		testing.expect(t, lit.tok.lit == `'"'`, fmt.tprintf("replacement %s", lit.tok.lit))
+	} else {
+		testing.expect(t, false, "replacement literal")
+	}
+}
+
+@(test)
+replace_in_with_byte_mode_test :: proc(t: ^testing.T) {
+	src := `REPLACE ALL OCCURRENCES OF cl_abap_char_utilities=>newline IN lv_raw WITH '' IN BYTE MODE.`
+	stmt := expect_replace_stmt(t, src)
+	if stmt == nil do return
+	testing.expect(t, stmt.scope == .All_Occurrences, "scope")
+}
