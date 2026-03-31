@@ -931,6 +931,9 @@ collect_tokens_from_stmt :: proc(
 		if s.oref != nil {
 			collect_tokens_from_expr(tokens, s.oref, snap, nil)
 		}
+		if s.legacy_exception != nil {
+			collect_tokens_from_expr(tokens, s.legacy_exception, snap, nil)
+		}
 		for arg in s.exporting {
 			collect_tokens_from_expr(tokens, &arg.node, snap, nil)
 		}

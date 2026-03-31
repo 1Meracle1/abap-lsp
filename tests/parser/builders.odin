@@ -375,6 +375,19 @@ raise_exception_oref :: proc(
 	return node
 }
 
+raise_legacy_exception :: proc(name: ast.Any_Expr) -> ^ast.Raise_Exception_Stmt {
+	node := ast.new(ast.Raise_Exception_Stmt, {})
+	node.exporting = make([dynamic]^ast.Named_Arg)
+	#partial switch e in name {
+	case ^ast.Ident:
+		node.legacy_exception = &e.node
+	case ^ast.Selector_Expr:
+		node.legacy_exception = &e.node
+	}
+	node.derived_stmt = node
+	return node
+}
+
 create_object_stmt :: proc(
 	target: ast.Any_Expr,
 	type_ref: ast.Any_Expr = nil,

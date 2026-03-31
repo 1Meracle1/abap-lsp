@@ -1127,6 +1127,11 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 				return res
 			}
 		}
+		if n.legacy_exception != nil {
+			if res := find_node_at_offset(&n.legacy_exception.expr_base, offset); res != nil {
+				return res
+			}
+		}
 		for arg in n.exporting {
 			if res := find_node_at_offset(&arg.node, offset); res != nil {
 				return res

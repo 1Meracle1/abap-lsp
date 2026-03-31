@@ -284,6 +284,13 @@ check_stmt :: proc(
 			testing.expect(t, ac.oref == nil, "Expected nil oref", loc = loc)
 		}
 
+		if ex.legacy_exception != nil {
+			if !testing.expect(t, ac.legacy_exception != nil, "Expected legacy_exception, got nil", loc = loc) do return
+			check_expr(t, ex.legacy_exception.derived_expr, ac.legacy_exception, loc = loc)
+		} else {
+			testing.expect(t, ac.legacy_exception == nil, "Expected nil legacy_exception", loc = loc)
+		}
+
 		if !testing.expect(t, len(ex.exporting) == len(ac.exporting), fmt.tprintf("Expected %d exporting args, got %d", len(ex.exporting), len(ac.exporting)), loc = loc) do return
 		for i := 0; i < len(ex.exporting); i += 1 {
 			check_expr(t, ex.exporting[i].derived_expr, &ac.exporting[i].node, loc = loc)

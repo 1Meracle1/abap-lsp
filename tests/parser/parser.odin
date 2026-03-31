@@ -13365,6 +13365,30 @@ assert_stmt_equality_test :: proc(t: ^testing.T) {
 }
 
 @(test)
+raise_legacy_exception_stmt_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src = `RAISE lock_failure.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 1,
+		fmt.tprintf("Expected 1 stmt, got %v", len(file.decls)),
+	)
+	if len(file.decls) > 0 {
+		expected := raise_legacy_exception(ident("lock_failure"))
+		check_stmt(t, expected, file.decls[0])
+	}
+}
+
+@(test)
 raise_exception_type_stmt_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
 	file.src = `RAISE EXCEPTION TYPE /sttp/cx_rep_exception.`

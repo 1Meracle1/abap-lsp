@@ -781,16 +781,18 @@ Replace_Stmt :: struct {
 	into_form:      bool, // Simple scope: WITH repl INTO subject (else IN subject WITH repl)
 }
 
-// RAISE EXCEPTION statement
+// RAISE / RAISE EXCEPTION statement
 // Syntax:
+// - RAISE exc. (non-class-based exception)
 // - RAISE [RESUMABLE] EXCEPTION TYPE cx_class [EXPORTING p1 = a1 ...].
 // - RAISE [RESUMABLE] EXCEPTION oref.
 Raise_Exception_Stmt :: struct {
-	using node:    Stmt,
-	is_resumable:  bool,
-	type_ref:      ^Expr, // Exception class after TYPE
-	oref:          ^Expr, // Exception object reference variant
-	exporting:     [dynamic]^Named_Arg,
+	using node:       Stmt,
+	is_resumable:     bool,
+	type_ref:         ^Expr, // Exception class after TYPE
+	oref:             ^Expr, // Exception object reference variant
+	legacy_exception: ^Expr, // Non-class-based exception name (RAISE exc.)
+	exporting:        [dynamic]^Named_Arg,
 }
 
 // CHECK statement

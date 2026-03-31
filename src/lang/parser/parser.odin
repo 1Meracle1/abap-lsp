@@ -2963,10 +2963,6 @@ parse_raise_exception_exporting_args :: proc(p: ^Parser, args: ^[dynamic]^ast.Na
 	}
 }
 
-// parse_raise_stmt parses RAISE EXCEPTION statements.
-// Syntax:
-// - RAISE [RESUMABLE] EXCEPTION TYPE cx_class [EXPORTING p1 = a1 ...].
-// - RAISE [RESUMABLE] EXCEPTION oref.
 parse_create_object_args :: proc(p: ^Parser, args: ^[dynamic]^ast.Named_Arg) {
 	for p.curr_tok.kind != .Period && p.curr_tok.kind != .EOF {
 		if check_keyword(p, "EXPORTING") ||
@@ -3055,6 +3051,11 @@ parse_create_object_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	return stmt
 }
 
+// parse_raise_stmt parses RAISE statements.
+// Syntax:
+// - RAISE exc. (non-class-based exception)
+// - RAISE [RESUMABLE] EXCEPTION TYPE cx_class [EXPORTING p1 = a1 ...].
+// - RAISE [RESUMABLE] EXCEPTION oref.
 parse_raise_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	raise_tok := expect_keyword_token(p, "RAISE")
 
@@ -3067,24 +3068,34 @@ parse_raise_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 		stmt.is_resumable = true
 	}
 
-	if !check_keyword(p, "EXCEPTION") {
-		error(p, p.curr_tok.range, "expected EXCEPTION after RAISE")
-		end_tok := skip_to_new_line(p)
-		stmt.range.end = end_tok.range.end
-		return stmt
-	}
-	advance_token(p)
-
-	if check_keyword(p, "TYPE") {
+	if check_keyword(p, "EXCEPTION") {
 		advance_token(p)
-		stmt.type_ref = parse_simple_type_expr(p)
 
-		if check_keyword(p, "EXPORTING") {
+		if check_keyword(p, "TYPE") {
 			advance_token(p)
-			parse_raise_exception_exporting_args(p, &stmt.exporting)
+			stmt.type_ref = parse_simple_type_expr(p)
+
+			if check_keyword(p, "EXPORTING") {
+				advance_token(p)
+				parse_raise_exception_exporting_args(p, &stmt.exporting)
+			}
+		} else {
+			stmt.oref = parse_expr(p)
 		}
 	} else {
-		stmt.oref = parse_expr(p)
+		if stmt.is_resumable {
+			error(p, p.curr_tok.range, "expected EXCEPTION after RAISE RESUMABLE")
+			end_tok := skip_to_new_line(p)
+			stmt.range.end = end_tok.range.end
+			return stmt
+		}
+		stmt.legacy_exception = parse_expr(p)
+		if stmt.legacy_exception == nil {
+			error(p, p.curr_tok.range, "expected exception name after RAISE")
+			end_tok := skip_to_new_line(p)
+			stmt.range.end = end_tok.range.end
+			return stmt
+		}
 	}
 
 	period_tok := expect_token(p, .Period)
