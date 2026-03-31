@@ -414,6 +414,14 @@ Set_Bit_Stmt :: struct {
 	to_value:      ^Expr,
 }
 
+// GET BIT position OF byte_string INTO target.
+Get_Bit_Stmt :: struct {
+	using node:    Stmt,
+	bit_position:  ^Expr,
+	of_target:     ^Expr,
+	into_target:   ^Expr,
+}
+
 Case_When_Branch :: struct {
 	is_others: bool, // WHEN OTHERS is used
 	expr:      ^Expr,
@@ -1301,6 +1309,7 @@ Any_Node :: union {
 	^Convert_Date_Time_To_Time_Stamp_Stmt,
 	^Convert_Time_Stamp_To_Date_Time_Stmt,
 	^Get_Badi_Stmt,
+	^Get_Bit_Stmt,
 	^Set_Stmt,
 	^Set_Handler_Stmt,
 	^Set_Bit_Stmt,
@@ -1421,6 +1430,7 @@ Any_Stmt :: union {
 	^Convert_Date_Time_To_Time_Stamp_Stmt,
 	^Convert_Time_Stamp_To_Date_Time_Stmt,
 	^Get_Badi_Stmt,
+	^Get_Bit_Stmt,
 	^Set_Stmt,
 	^Set_Handler_Stmt,
 	^Set_Bit_Stmt,

@@ -8074,6 +8074,47 @@ set_bit_multiline_test :: proc(t: ^testing.T) {
 }
 
 @(test)
+get_bit_multiline_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src =
+	`GET BIT lv_bit_pos_source
+	        OF      iv_tag
+	        INTO    lv_bit_value.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) {
+		return
+	}
+
+	gb, ok := file.decls[0].derived_stmt.(^ast.Get_Bit_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Get_Bit_Stmt, got %T", file.decls[0].derived_stmt)) {
+		return
+	}
+	if !testing.expect(t, gb.bit_position != nil, "bit_position") do return
+	if !testing.expect(t, gb.of_target != nil, "of_target") do return
+	if !testing.expect(t, gb.into_target != nil, "into_target") do return
+	pa, pok := gb.bit_position.derived_expr.(^ast.Ident)
+	if testing.expect(t, pok, "bit_position ident") {
+		testing.expect(t, pa.name == "lv_bit_pos_source", "bit position name")
+	}
+	ofi, ofok := gb.of_target.derived_expr.(^ast.Ident)
+	if testing.expect(t, ofok, "of ident") {
+		testing.expect(t, ofi.name == "iv_tag", "OF target name")
+	}
+	intoi, intok := gb.into_target.derived_expr.(^ast.Ident)
+	if testing.expect(t, intok, "into ident") {
+		testing.expect(t, intoi.name == "lv_bit_value", "INTO target name")
+	}
+}
+
+@(test)
 read_table_transporting_no_fields_test :: proc(t: ^testing.T) {
 	// READ TABLE <fs_unpack_data>-children WITH KEY table_line = lv_epc TRANSPORTING NO FIELDS.
 	file := ast.new(ast.File, {})

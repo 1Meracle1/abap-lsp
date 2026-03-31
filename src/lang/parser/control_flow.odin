@@ -465,6 +465,29 @@ parse_get_badi_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	return stmt
 }
 
+// GET BIT position OF byte_string INTO target.
+parse_get_bit_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
+	get_tok := expect_keyword_token(p, "GET")
+	expect_keyword_token(p, "BIT")
+	bit_position := parse_expr(p)
+	expect_keyword_token(p, "OF")
+	of_target := parse_expr(p)
+	expect_keyword_token(p, "INTO")
+	into_target: ^ast.Expr
+	if check_keyword(p, "DATA") {
+		into_target = parse_data_inline_expr(p)
+	} else {
+		into_target = parse_expr(p)
+	}
+	end_tok := p.curr_tok
+	expect_token(p, .Period)
+	stmt := ast.new(ast.Get_Bit_Stmt, get_tok, end_tok)
+	stmt.bit_position = bit_position
+	stmt.of_target = of_target
+	stmt.into_target = into_target
+	return stmt
+}
+
 parse_try_into_target :: proc(p: ^Parser) -> ^ast.Expr {
 	if check_keyword(p, "DATA") {
 		return parse_data_inline_expr(p)

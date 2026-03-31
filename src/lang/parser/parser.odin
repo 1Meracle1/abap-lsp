@@ -105,6 +105,9 @@ parse_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 		case "LEAVE":
 			return parse_leave_stmt(p)
 		case "GET":
+			if check_keyword_ahead(p, "BIT") {
+				return parse_get_bit_stmt(p)
+			}
 			if check_keyword_ahead(p, "TIME") {
 				return parse_get_stmt(p)
 			}

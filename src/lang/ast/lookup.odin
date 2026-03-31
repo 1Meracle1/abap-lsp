@@ -633,6 +633,23 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 			}
 		}
 
+	case ^Get_Bit_Stmt:
+		if n.bit_position != nil {
+			if res := find_node_at_offset(&n.bit_position.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		if n.of_target != nil {
+			if res := find_node_at_offset(&n.of_target.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		if n.into_target != nil {
+			if res := find_node_at_offset(&n.into_target.expr_base, offset); res != nil {
+				return res
+			}
+		}
+
 	case ^Case_Stmt:
 		if n.expr != nil {
 			if res := find_node_at_offset(&n.expr.expr_base, offset); res != nil {
