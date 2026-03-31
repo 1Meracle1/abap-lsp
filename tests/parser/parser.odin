@@ -9533,6 +9533,52 @@ read_table_assigning_field_symbol_with_key_test :: proc(t: ^testing.T) {
 }
 
 @(test)
+read_table_with_key_multiline_hyphenated_key_components_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src = `READ TABLE et_prod_result ASSIGNING <ls_prod_result>
+      WITH KEY  prdid = <ls_gen_ext_result>-prdid
+                prodver-version = <ls_gen_ext_result>-version.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	read_stmt, ok := file.decls[0].derived_stmt.(^ast.Read_Table_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Read_Table_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	testing.expect(t, read_stmt.kind == .With_Key, "Expected With_Key")
+	testing.expect(t, read_stmt.assigning_target != nil, "Expected ASSIGNING target")
+	testing.expect(
+		t,
+		len(read_stmt.key.components) == 2,
+		fmt.tprintf("Expected 2 key components, got %d", len(read_stmt.key.components)),
+	)
+	if len(read_stmt.key.components) >= 1 {
+		testing.expect(
+			t,
+			read_stmt.key.components[0].name.name == "prdid",
+			fmt.tprintf("Expected first key name prdid, got %s", read_stmt.key.components[0].name.name),
+		)
+	}
+	if len(read_stmt.key.components) >= 2 {
+		testing.expect(
+			t,
+			read_stmt.key.components[1].name.name == "prodver-version",
+			fmt.tprintf(
+				"Expected second key name prodver-version, got %s",
+				read_stmt.key.components[1].name.name,
+			),
+		)
+	}
+}
+
+@(test)
 read_table_assigning_field_symbol_then_index_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
 	file.src = `READ TABLE lt_locks ASSIGNING FIELD-SYMBOL(<ls_locks>) INDEX 1.`

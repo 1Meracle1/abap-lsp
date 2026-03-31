@@ -2,20 +2,55 @@ package lang_parser
 
 import "../ast"
 import "../lexer"
+import "core:strings"
+
+// read_table_key_stops_component_list is true when the current token begins the next READ TABLE clause.
+read_table_key_stops_component_list :: proc(p: ^Parser) -> bool {
+	return check_keyword(p, "INTO") ||
+	       check_keyword(p, "ASSIGNING") ||
+	       check_keyword(p, "TRANSPORTING") ||
+	       check_keyword(p, "USING") ||
+	       check_keyword(p, "BINARY") ||
+	       check_keyword(p, "WITH")
+}
+
+// parse_read_table_key_component_field_ident parses the LHS of a key component: a simple name or
+// structure chain like prodver-version (ABAP selector, no spaces around '-').
+parse_read_table_key_component_field_ident :: proc(p: ^Parser) -> ^ast.Ident {
+	// Caller ensures we are at an Ident that is not read_table_key_stops_component_list.
+	if p.curr_tok.kind != .Ident {
+		return nil
+	}
+	first_tok := advance_token(p)
+	b: strings.Builder
+	strings.builder_init(&b, context.temp_allocator)
+	strings.write_string(&b, first_tok.lit)
+	end_tok := first_tok
+	for p.curr_tok.kind == .Minus {
+		minus_tok := p.curr_tok
+		if lexer.have_space_between(p.prev_tok, minus_tok) {
+			break
+		}
+		advance_token(p)
+		if p.curr_tok.kind != .Ident {
+			break
+		}
+		if lexer.have_space_between(minus_tok, p.curr_tok) {
+			break
+		}
+		strings.write_string(&b, "-")
+		field_tok := advance_token(p)
+		strings.write_string(&b, field_tok.lit)
+		end_tok = field_tok
+	}
+	ident := ast.new(ast.Ident, lexer.TextRange{first_tok.range.start, end_tok.range.end})
+	ident.name = strings.to_string(b)
+	return ident
+}
 
 // parse_read_table_key_component_assignments parses field = value pairs after WITH KEY / COMPONENTS.
 parse_read_table_key_component_assignments :: proc(p: ^Parser, key: ^ast.Read_Table_Key) {
-	for p.curr_tok.kind == .Ident {
-		// Check if it's a keyword that ends the key specification
-		if check_keyword(p, "INTO") ||
-		   check_keyword(p, "ASSIGNING") ||
-		   check_keyword(p, "TRANSPORTING") ||
-		   check_keyword(p, "USING") ||
-		   check_keyword(p, "BINARY") ||
-		   check_keyword(p, "WITH") {
-			break
-		}
-
+	for p.curr_tok.kind == .Ident && !read_table_key_stops_component_list(p) {
 		// Save parser state to check for named component
 		saved_prev := p.prev_tok
 		saved_curr := p.curr_tok
@@ -23,7 +58,7 @@ parse_read_table_key_component_assignments :: proc(p: ^Parser, key: ^ast.Read_Ta
 		saved_read_pos := p.l.read_pos
 		saved_ch := p.l.ch
 
-		name_tok := advance_token(p)
+		name_ident := parse_read_table_key_component_field_ident(p)
 
 		// Check if next token is = (named component)
 		if p.curr_tok.kind == .Eq {
@@ -32,15 +67,14 @@ parse_read_table_key_component_assignments :: proc(p: ^Parser, key: ^ast.Read_Ta
 
 			named_arg := ast.new(
 				ast.Named_Arg,
-				lexer.TextRange{name_tok.range.start, value.range.end},
+				lexer.TextRange{name_ident.range.start, value.range.end},
 			)
-			named_arg.name = ast.new_ident(name_tok)
+			named_arg.name = name_ident
 			named_arg.value = value
 			named_arg.derived_expr = named_arg
 			append(&key.components, named_arg)
 		} else {
-			// Not a named component - could be a simple key reference
-			// Restore and break
+			// Not a named component - restore and break
 			p.prev_tok = saved_prev
 			p.curr_tok = saved_curr
 			p.l.pos = saved_pos
