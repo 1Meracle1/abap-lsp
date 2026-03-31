@@ -289,6 +289,8 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 		switch n.kind {
 		case .Into_Table:
 			hover_text = "(statement) INSERT ... INTO TABLE - inserts data into an internal table"
+		case .Into_Itab:
+			hover_text = "(statement) INSERT ... INTO ... [INDEX] - inserts a line into an internal table (optional position)"
 		case .Into_Db:
 			hover_text = "(statement) INSERT INTO ... VALUES - inserts data into a database table"
 		case .From_Wa:

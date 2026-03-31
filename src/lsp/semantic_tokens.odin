@@ -741,6 +741,9 @@ collect_tokens_from_stmt :: proc(
 		if s.source != nil {
 			collect_tokens_from_expr(tokens, s.source, snap, nil)
 		}
+		if s.index_expr != nil {
+			collect_tokens_from_expr(tokens, s.index_expr, snap, nil)
+		}
 
 	case ^ast.Modify_From_Stmt:
 		if s.target != nil {

@@ -5913,6 +5913,85 @@ insert_value_into_table_test :: proc(t: ^testing.T) {
 }
 
 @(test)
+insert_into_itab_index_test :: proc(t: ^testing.T) {
+	// INSERT wa INTO itab INDEX idx.
+	file := ast.new(ast.File, {})
+	file.src = `INSERT lv_parent_bupid
+  INTO   lt_bupid
+  INDEX  1.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	insert_stmt, ok := file.decls[0].derived_stmt.(^ast.Insert_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Insert_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	testing.expect(
+		t,
+		insert_stmt.kind == .Into_Itab,
+		fmt.tprintf("Expected Into_Itab kind, got %v", insert_stmt.kind),
+	)
+	testing.expect(t, insert_stmt.value_expr != nil, "Expected value_expr to be set")
+	testing.expect(t, insert_stmt.target != nil, "Expected target to be set")
+	testing.expect(t, insert_stmt.index_expr != nil, "Expected index_expr to be set")
+
+	if v, vok := insert_stmt.value_expr.derived_expr.(^ast.Ident); vok {
+		testing.expect(
+			t,
+			v.name == "lv_parent_bupid",
+			fmt.tprintf("Expected value 'lv_parent_bupid', got '%s'", v.name),
+		)
+	} else {
+		testing.expect(t, false, fmt.tprintf("Expected value Ident, got %T", insert_stmt.value_expr.derived_expr))
+	}
+
+	if tgt, tok := insert_stmt.target.derived_expr.(^ast.Ident); tok {
+		testing.expect(
+			t,
+			tgt.name == "lt_bupid",
+			fmt.tprintf("Expected target 'lt_bupid', got '%s'", tgt.name),
+		)
+	} else {
+		testing.expect(t, false, fmt.tprintf("Expected target Ident, got %T", insert_stmt.target.derived_expr))
+	}
+
+	if idx, iok := insert_stmt.index_expr.derived_expr.(^ast.Basic_Lit); iok {
+		testing.expect(t, idx.tok.lit == "1", fmt.tprintf("Expected index '1', got '%s'", idx.tok.lit))
+	} else {
+		testing.expect(t, false, fmt.tprintf("Expected index Basic_Lit, got %T", insert_stmt.index_expr.derived_expr))
+	}
+}
+
+@(test)
+insert_into_itab_no_index_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src = `INSERT lv_row INTO lt_tab.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	insert_stmt, ok := file.decls[0].derived_stmt.(^ast.Insert_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Insert_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	testing.expect(t, insert_stmt.kind == .Into_Itab, fmt.tprintf("Expected Into_Itab, got %v", insert_stmt.kind))
+	testing.expect(t, insert_stmt.index_expr == nil, "Expected no INDEX clause")
+}
+
+@(test)
 insert_into_db_values_test :: proc(t: ^testing.T) {
 	// INSERT INTO target VALUES wa.
 	file := ast.new(ast.File, {})

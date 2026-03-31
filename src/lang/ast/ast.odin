@@ -551,6 +551,7 @@ Message_Stmt :: struct {
 // INSERT statement kinds
 Insert_Kind :: enum {
 	Into_Table, // INSERT expr INTO TABLE itab
+	Into_Itab, // INSERT expr INTO itab [INDEX idx]
 	Into_Db, // INSERT INTO target VALUES wa
 	From_Wa, // INSERT target FROM wa
 	From_Table, // INSERT target FROM TABLE itab
@@ -559,15 +560,17 @@ Insert_Kind :: enum {
 // INSERT statement
 // Syntax variations:
 // - INSERT VALUE #( ... ) INTO TABLE itab.
+// - INSERT wa INTO itab [INDEX idx].
 // - INSERT INTO target VALUES wa.
 // - INSERT target FROM wa.
 // - INSERT target FROM TABLE itab.
 Insert_Stmt :: struct {
-	using node: Stmt,
-	kind:       Insert_Kind,
-	value_expr: ^Expr, // The value/expression to insert (for Into_Table, Into_Db)
-	target:     ^Expr, // The target table (internal or database table)
-	source:     ^Expr, // The source work area or table (for From_Wa, From_Table)
+	using node:   Stmt,
+	kind:         Insert_Kind,
+	value_expr:   ^Expr, // The value/expression to insert (for Into_Table, Into_Itab, Into_Db)
+	target:       ^Expr, // The target table (internal or database table)
+	source:       ^Expr, // The source work area or table (for From_Wa, From_Table)
+	index_expr:   ^Expr, // INDEX clause (Into_Itab only); nil if omitted
 }
 
 Authority_Check_Id :: struct {

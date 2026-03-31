@@ -213,6 +213,7 @@ parse_delete_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 // INSERT statement parser
 // Syntax variations:
 // - INSERT VALUE #( ... ) INTO TABLE itab.
+// - INSERT wa INTO itab [INDEX idx].
 // - INSERT INTO target VALUES wa.
 // - INSERT target FROM wa.
 // - INSERT target FROM TABLE itab.
@@ -234,12 +235,23 @@ parse_insert_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 
 		// Check what comes next to determine the form
 		if check_keyword(p, "INTO") {
-			// INSERT expr INTO TABLE itab form
 			advance_token(p) // consume INTO
-			expect_keyword_token(p, "TABLE")
-			insert_stmt.value_expr = value_or_target
-			insert_stmt.target = parse_expr(p)
-			insert_stmt.kind = .Into_Table
+			if check_keyword(p, "TABLE") {
+				// INSERT expr INTO TABLE itab form
+				advance_token(p) // consume TABLE
+				insert_stmt.value_expr = value_or_target
+				insert_stmt.target = parse_expr(p)
+				insert_stmt.kind = .Into_Table
+			} else {
+				// INSERT expr INTO itab [INDEX idx].
+				insert_stmt.value_expr = value_or_target
+				insert_stmt.target = parse_expr(p)
+				insert_stmt.kind = .Into_Itab
+				if check_keyword(p, "INDEX") {
+					advance_token(p)
+					insert_stmt.index_expr = parse_expr(p)
+				}
+			}
 		} else if check_keyword(p, "FROM") {
 			// INSERT target FROM [TABLE] source form
 			advance_token(p) // consume FROM
