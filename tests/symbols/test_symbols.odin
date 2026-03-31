@@ -1068,3 +1068,39 @@ ENDCLASS.`
 		}
 	}
 }
+
+@(test)
+test_class_method_sees_class_data_in_body :: proc(t: ^testing.T) {
+	src := `CLASS lcl_helper DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS get_ref EXPORTING eo_r TYPE i.
+  PRIVATE SECTION.
+    CLASS-DATA so_cockpit TYPE i.
+ENDCLASS.
+
+CLASS lcl_helper IMPLEMENTATION.
+  METHOD get_ref.
+    eo_r = so_cockpit.
+  ENDMETHOD.
+ENDCLASS.`
+	file := ast.new(ast.File, {})
+	file.src = src
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+	testing.expect(t, len(file.syntax_errors) == 0, fmt.tprintf("syntax: %v", file.syntax_errors))
+
+	table := symbols.resolve_file(file)
+	defer symbols.destroy_symbol_table(table)
+
+	for diag in symbols.collect_all_diagnostics(table) {
+		if strings.contains(diag.message, "so_cockpit") {
+			testing.expect(
+				t,
+				false,
+				fmt.tprintf("CLASS-DATA should resolve in class method body: %s", diag.message),
+			)
+			return
+		}
+	}
+}

@@ -41,6 +41,23 @@ Validation_Context :: struct {
 	module_lookup: ^SymbolTable,
 	// METHOD importing parameter names in the current signature; LIKE may refer to these without a workspace type.
 	method_param_names_for_like: ^map[string]bool,
+	// Class/interface member scope when validating inside a method implementation (DATA, CLASS-DATA, methods, …).
+	// Lookups check lookup_table first (parameters, locals), then enclosing_scope.
+	enclosing_scope: ^SymbolTable,
+}
+
+// symbol_defined_in_validation_scope reports if `lower_name` is a symbol in the current scope chain.
+symbol_defined_in_validation_scope :: proc(ctx: ^Validation_Context, lower_name: string) -> bool {
+	if ctx == nil || len(lower_name) == 0 {
+		return false
+	}
+	if ctx.lookup_table != nil && lower_name in ctx.lookup_table.symbols {
+		return true
+	}
+	if ctx.enclosing_scope != nil && lower_name in ctx.enclosing_scope.symbols {
+		return true
+	}
+	return false
 }
 
 module_scope_lookup :: proc(ctx: ^Validation_Context) -> ^SymbolTable {
@@ -607,10 +624,11 @@ validate_stmt_ctx :: proc(ctx: ^Validation_Context, stmt: ^ast.Stmt) {
 					   method_sym.child_scope != nil {
 						mod_lookup := ctx.module_lookup if ctx.module_lookup != nil else ctx.lookup_table
 						child_ctx := Validation_Context{
-							lookup_table  = method_sym.child_scope,
-							diag_table    = ctx.diag_table,
-							syntax_taint  = ctx.syntax_taint,
-							module_lookup = mod_lookup,
+							lookup_table    = method_sym.child_scope,
+							diag_table      = ctx.diag_table,
+							syntax_taint    = ctx.syntax_taint,
+							module_lookup   = mod_lookup,
+							enclosing_scope = class_sym.child_scope,
 						}
 						validate_stmt_list_ctx(&child_ctx, m.body[:])
 					} else {
@@ -857,7 +875,7 @@ validate_ident_expr_ctx :: proc(ctx: ^Validation_Context, ident: ^ast.Ident) {
 		return
 	}
 
-	if name in ctx.lookup_table.symbols {
+	if symbol_defined_in_validation_scope(ctx, name) {
 		return
 	}
 
@@ -954,7 +972,7 @@ maybe_add_remote_candidate :: proc(
 	if len(lower_name) == 0 {
 		return
 	}
-	if ctx.lookup_table != nil && lower_name in ctx.lookup_table.symbols {
+	if symbol_defined_in_validation_scope(ctx, lower_name) {
 		return
 	}
 
