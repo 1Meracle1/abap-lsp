@@ -11320,6 +11320,35 @@ ENDSELECT.`
 }
 
 @(test)
+select_join_into_where_paren_dynamic_order_by_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src =
+	`SELECT * FROM /sttp/bup_reg AS br
+      INNER JOIN /sttp/reg AS rg ON br~regid = rg~regid
+      INTO CORRESPONDING FIELDS OF TABLE lt_reg
+      WHERE (lt_cond_reg) ORDER BY bupid.             "#EC CI_DYNWHERE.`
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(t, len(file.syntax_errors) == 0, fmt.tprintf("%v", file.syntax_errors))
+	testing.expect(t, len(file.decls) == 1)
+
+	select_stmt, ok := file.decls[0].derived_stmt.(^ast.Select_Stmt)
+	testing.expect(t, ok)
+	if !ok {
+		return
+	}
+
+	testing.expect(t, len(select_stmt.fields) == 1)
+	testing.expect(t, select_stmt.from_table != nil && select_stmt.from_alias != nil)
+	testing.expect(t, len(select_stmt.joins) == 1)
+	testing.expect(t, select_stmt.into_kind == .Corresponding && select_stmt.into_corresponding_of_table)
+	testing.expect(t, select_stmt.where_cond != nil)
+	testing.expect(t, len(select_stmt.order_by) == 1)
+}
+
+@(test)
 select_into_table_closed_before_if_endif_method_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
 	file.src =

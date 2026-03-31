@@ -480,6 +480,20 @@ parse_select_comparison_expr :: proc(p: ^Parser) -> ^ast.Expr {
 
 // parse_select_operand parses an operand in a SELECT condition
 parse_select_operand :: proc(p: ^Parser) -> ^ast.Expr {
+	// Dynamic WHERE / grouping: (itab_condition), ( a = b AND c = d ), etc.
+	if p.curr_tok.kind == .LParen {
+		lparen_tok := advance_token(p)
+		inner := parse_select_logical_expr(p)
+		rparen_tok := expect_token(p, .RParen)
+		paren := ast.new(
+			ast.Paren_Expr,
+			lexer.TextRange{lparen_tok.range.start, rparen_tok.range.end},
+		)
+		paren.expr = inner
+		paren.derived_expr = paren
+		return paren
+	}
+
 	// Check for @ prefix (host variable reference)
 	if p.curr_tok.kind == .At {
 		at_tok := advance_token(p)
