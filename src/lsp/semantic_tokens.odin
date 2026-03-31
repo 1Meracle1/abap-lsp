@@ -434,6 +434,13 @@ collect_tokens_from_stmt :: proc(
 			collect_tokens_from_expr(tokens, s.with_expr, snap, nil)
 		}
 
+	case ^ast.Unassign_Stmt:
+		for target in s.targets {
+			if target != nil {
+				collect_tokens_from_expr(tokens, target, snap, nil)
+			}
+		}
+
 	case ^ast.Write_Stmt:
 		for &op in s.operands {
 			if op.format_len != nil {

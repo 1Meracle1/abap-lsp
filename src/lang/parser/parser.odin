@@ -139,6 +139,8 @@ parse_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			return parse_loop_stmt(p)
 		case "CLEAR":
 			return parse_clear_stmt(p)
+		case "UNASSIGN":
+			return parse_unassign_stmt(p)
 		case "MOVE":
 			move_kw := p.curr_tok
 			if check_hyphenated_keyword(p, "MOVE", "CORRESPONDING") {

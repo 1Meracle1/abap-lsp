@@ -104,6 +104,10 @@ validate_stmt_ctx :: proc(ctx: ^Validation_Context, stmt: ^ast.Stmt) {
 		validate_expr_ctx(ctx, s.offset)
 		validate_expr_ctx(ctx, s.length)
 		validate_expr_ctx(ctx, s.target)
+	case ^ast.Unassign_Stmt:
+		for target in s.targets {
+			validate_expr_ctx(ctx, target)
+		}
 	case ^ast.Expr_Stmt:
 		validate_expr_ctx(ctx, s.expr)
 	case ^ast.Macro_Call_Stmt:

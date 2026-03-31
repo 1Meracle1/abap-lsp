@@ -519,6 +519,12 @@ Clear_Stmt :: struct {
 	with_expr:  ^Expr, // CLEAR dobj WITH dobj2 (reference targets)
 }
 
+// UNASSIGN <fs>. or UNASSIGN: <fs1>, <fs2>.
+Unassign_Stmt :: struct {
+	using node: Stmt,
+	targets:    [dynamic]^Expr, // field symbol references
+}
+
 // WRITE operand (one target of WRITE / WRITE: ... , ... ).
 Write_Operand :: struct {
 	range:           lexer.TextRange,
@@ -1380,6 +1386,7 @@ Any_Node :: union {
 	^Loop_Stmt,
 	^Loop_At_Control_Stmt,
 	^Clear_Stmt,
+	^Unassign_Stmt,
 	^Write_Stmt,
 	^Message_Stmt,
 	^Insert_Stmt,
@@ -1506,6 +1513,7 @@ Any_Stmt :: union {
 	^Loop_Stmt,
 	^Loop_At_Control_Stmt,
 	^Clear_Stmt,
+	^Unassign_Stmt,
 	^Write_Stmt,
 	^Message_Stmt,
 	^Insert_Stmt,

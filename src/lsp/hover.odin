@@ -272,6 +272,9 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 	case ^ast.Write_Stmt:
 		hover_text = "(statement) WRITE - writes data to the current output list"
 
+	case ^ast.Unassign_Stmt:
+		hover_text = "(statement) UNASSIGN - resets a field symbol (removes memory area assignment)"
+
 	case ^ast.Assign_Field_Symbol_Stmt:
 		if n.is_component {
 			hover_text = "(statement) ASSIGN COMPONENT ... OF STRUCTURE ... TO - assigns a structure component to a field symbol"

@@ -511,6 +511,35 @@ parse_clear_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	return clear_stmt
 }
 
+// parse_unassign_stmt parses UNASSIGN <fs>. or UNASSIGN: <fs1>, <fs2>, ...
+parse_unassign_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
+	unassign_tok := advance_token(p)
+	targets := make([dynamic]^ast.Expr)
+	if allow_token(p, .Colon) {
+		for p.curr_tok.kind != .EOF {
+			fs := parse_field_symbol_ref(p)
+			if fs != nil {
+				append(&targets, fs)
+			}
+			if p.curr_tok.kind == .Period {
+				break
+			}
+			if allow_token(p, .Comma) {
+				continue
+			}
+			error(p, p.curr_tok.range, "expected ',' or '.'")
+			break
+		}
+	} else {
+		fs := parse_field_symbol_ref(p)
+		append(&targets, fs)
+	}
+	end_tok := expect_token(p, .Period)
+	stmt := ast.new(ast.Unassign_Stmt, unassign_tok, end_tok)
+	stmt.targets = targets
+	return stmt
+}
+
 // parse_move_corresponding_stmt parses MOVE-CORRESPONDING source TO target [KEEPING TARGET LINES].
 // MOVE-CORRESPONDING must already be consumed by check_hyphenated_keyword; first_tok is the leading MOVE token.
 parse_move_corresponding_stmt :: proc(p: ^Parser, first_tok: lexer.Token) -> ^ast.Stmt {

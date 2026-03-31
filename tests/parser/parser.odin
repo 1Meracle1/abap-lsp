@@ -7351,9 +7351,66 @@ field_symbol_assignment_test :: proc(t: ^testing.T) {
 	testing.expect(t, sel_expr.field != nil, "Expected field to be set")
 	testing.expect(
 		t,
-ast.selector_field_ident_name(sel_expr) == "carrid",
+	ast.selector_field_ident_name(sel_expr) == "carrid",
 			fmt.tprintf("Expected 'carrid', got '%s'", ast.selector_field_ident_name(sel_expr)),
 	)
+}
+
+@(test)
+unassign_field_symbol_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src = `UNASSIGN <lv_field>.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	unassign_stmt, ok := file.decls[0].derived_stmt.(^ast.Unassign_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Unassign_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	if !testing.expect(t, len(unassign_stmt.targets) == 1, "Expected 1 target") do return
+	if ident, iok := unassign_stmt.targets[0].derived_expr.(^ast.Ident); iok {
+		testing.expect(t, ident.name == "<lv_field>", fmt.tprintf("Expected '<lv_field>', got '%s'", ident.name))
+	} else {
+		testing.expect(
+			t,
+			false,
+			fmt.tprintf("Expected Ident target, got %T", unassign_stmt.targets[0].derived_expr),
+		)
+	}
+}
+
+@(test)
+unassign_field_symbol_chained_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src = `UNASSIGN: <a>, <b>.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	unassign_stmt, ok := file.decls[0].derived_stmt.(^ast.Unassign_Stmt)
+	if !testing.expect(t, ok, "Expected Unassign_Stmt") do return
+	if !testing.expect(t, len(unassign_stmt.targets) == 2, "Expected 2 targets") do return
+	names := make([]string, 2)
+	for target, i in unassign_stmt.targets {
+		if ident, iok := target.derived_expr.(^ast.Ident); iok {
+			names[i] = ident.name
+		}
+	}
+	testing.expect(t, names[0] == "<a>" && names[1] == "<b>", fmt.tprintf("Got targets %v", names))
 }
 
 @(test)
