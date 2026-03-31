@@ -2894,8 +2894,30 @@ commit_work_stmt_test :: proc(t: ^testing.T) {
 	)
 
 	if len(file.decls) > 0 {
-		_, ok := file.decls[0].derived_stmt.(^ast.Commit_Work_Stmt)
+		commit_stmt, ok := file.decls[0].derived_stmt.(^ast.Commit_Work_Stmt)
 		testing.expect(t, ok, "Expected Commit_Work_Stmt")
+		testing.expect(t, commit_stmt != nil && !commit_stmt.and_wait, "Expected and_wait false")
+	}
+}
+
+@(test)
+commit_work_and_wait_stmt_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src = `COMMIT WORK AND WAIT.`
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if len(file.decls) > 0 {
+		commit_stmt, ok := file.decls[0].derived_stmt.(^ast.Commit_Work_Stmt)
+		testing.expect(t, ok, "Expected Commit_Work_Stmt")
+		testing.expect(t, commit_stmt != nil && commit_stmt.and_wait, "Expected and_wait true")
 	}
 }
 

@@ -309,12 +309,20 @@ parse_leave_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	}
 }
 
-// COMMIT WORK.
+// COMMIT WORK [AND WAIT].
 parse_commit_work_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	commit_tok := expect_keyword_token(p, "COMMIT")
 	expect_keyword_token(p, "WORK")
+	and_wait := false
+	if check_keyword(p, "AND") {
+		advance_token(p)
+		expect_keyword_token(p, "WAIT")
+		and_wait = true
+	}
 	period_tok := expect_token(p, .Period)
-	return ast.new(ast.Commit_Work_Stmt, commit_tok, period_tok)
+	stmt := ast.new(ast.Commit_Work_Stmt, commit_tok, period_tok)
+	stmt.and_wait = and_wait
+	return stmt
 }
 
 // ROLLBACK WORK.

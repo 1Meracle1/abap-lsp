@@ -353,9 +353,10 @@ Leave_Program_Stmt :: struct {
 	using node: Stmt,
 }
 
-// COMMIT WORK.
+// COMMIT WORK [AND WAIT].
 Commit_Work_Stmt :: struct {
 	using node: Stmt,
+	and_wait: bool,
 }
 
 // ROLLBACK WORK.
