@@ -544,6 +544,10 @@ call_expr :: proc(expr: ast.Any_Expr, args: ..ast.Any_Expr) -> ^ast.Call_Expr {
 	return node
 }
 
+empty_stmt :: proc() -> ^ast.Empty_Stmt {
+	return ast.new(ast.Empty_Stmt, {})
+}
+
 expr_stmt :: proc(expr: ast.Any_Expr) -> ^ast.Expr_Stmt {
 	node := ast.new(ast.Expr_Stmt, {})
 	#partial switch e in expr {

@@ -227,6 +227,11 @@ Bad_Stmt :: struct {
 	using node: Stmt,
 }
 
+// Empty statement: a single period (.), allowed in classic ABAP source.
+Empty_Stmt :: struct {
+	using node: Stmt,
+}
+
 Expr_Stmt :: struct {
 	using node: Stmt,
 	expr:       ^Expr,
@@ -1313,6 +1318,7 @@ Any_Node :: union {
 	^Range_Type,
 	// Statements
 	^Bad_Stmt,
+	^Empty_Stmt,
 	^Expr_Stmt,
 	^Macro_Call_Stmt,
 	^Assign_Stmt,
@@ -1439,6 +1445,7 @@ Any_Expr :: union {
 
 Any_Stmt :: union {
 	^Bad_Stmt,
+	^Empty_Stmt,
 	^Expr_Stmt,
 	^Macro_Call_Stmt,
 	^Assign_Stmt,

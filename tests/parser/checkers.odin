@@ -566,6 +566,10 @@ check_stmt :: proc(
 		if !testing.expect(t, ok, fmt.tprintf("Expected Expr_Stmt, got %T", actual_derived), loc = loc) do return
 		check_expr(t, ex.expr.derived_expr, ac.expr, loc = loc)
 
+	case ^ast.Empty_Stmt:
+		_, ok := actual_derived.(^ast.Empty_Stmt)
+		testing.expect(t, ok, fmt.tprintf("Expected Empty_Stmt, got %T", actual_derived), loc = loc)
+
 	case ^ast.Macro_Call_Stmt:
 		ac, ok := actual_derived.(^ast.Macro_Call_Stmt)
 		if !testing.expect(t, ok, fmt.tprintf("Expected Macro_Call_Stmt, got %T", actual_derived), loc = loc) do return

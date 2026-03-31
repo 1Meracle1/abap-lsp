@@ -333,6 +333,9 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 			return res
 		}
 
+	case ^Empty_Stmt:
+		return node
+
 	case ^Macro_Call_Stmt:
 		if res := find_node_at_offset(&n.name.expr_base, offset); res != nil {
 			return res

@@ -41,6 +41,12 @@ parse_file :: proc(p: ^Parser, file: ^ast.File, allocator := context.allocator) 
 }
 
 parse_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
+	// ABAP allows empty statements (a lone period).
+	if p.curr_tok.kind == .Period {
+		period_tok := advance_token(p)
+		return ast.new(ast.Empty_Stmt, period_tok.range)
+	}
+
 	if len(p.curr_tok.lit) > 0 && len(p.curr_tok.lit) < len(p.keyword_buffer) {
 		keyword := to_upper(p.keyword_buffer[:], p.curr_tok.lit)
 		switch keyword {

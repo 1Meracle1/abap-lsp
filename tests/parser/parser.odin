@@ -10327,6 +10327,66 @@ call_method_with_parameter_sections_test :: proc(t: ^testing.T) {
 }
 
 @(test)
+call_method_namespace_class_then_empty_stmt_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src =
+	`CALL METHOD /sttp/cl_md_utilities=>check_scn_profile_4_bp
+  EXPORTING
+    iv_scn_profile = is_bup-scn_profile
+  IMPORTING
+    eb_mismatch    = lb_mismatch
+    es_message     = ls_message.
+.`
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 2,
+		fmt.tprintf("Expected 2 statements, got %d", len(file.decls)),
+	)
+
+	if len(file.decls) >= 2 {
+		expected_call := expr_stmt(
+			call_expr(
+				selector(ident("/sttp/cl_md_utilities"), .FatArrow, "check_scn_profile_4_bp"),
+				named_arg("iv_scn_profile", selector(ident("is_bup"), .Minus, "scn_profile")),
+				named_arg("eb_mismatch", ident("lb_mismatch")),
+				named_arg("es_message", ident("ls_message")),
+			),
+		)
+		check_stmt(t, expected_call, file.decls[0])
+		check_stmt(t, empty_stmt(), file.decls[1])
+	}
+}
+
+@(test)
+empty_stmt_only_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src = `.`
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+	testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 stmt, got %d", len(file.decls)))
+	if len(file.decls) == 1 {
+		check_stmt(t, empty_stmt(), file.decls[0])
+	}
+}
+
+@(test)
 call_badi_with_parameter_sections_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
 	file.src =
