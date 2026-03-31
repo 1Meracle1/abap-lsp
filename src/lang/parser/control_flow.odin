@@ -647,6 +647,7 @@ parse_try_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 parse_if_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	if_tok := expect_keyword_token(p, "IF")
 	cond := parse_logical_expr(p)
+	skip_pragma(p)
 	expect_token(p, .Period)
 
 	if_stmt := ast.new(ast.If_Stmt, if_tok.range)
@@ -668,6 +669,7 @@ parse_if_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	for check_keyword(p, "ELSEIF") {
 		elseif_tok := expect_keyword_token(p, "ELSEIF")
 		elseif_cond := parse_logical_expr(p)
+		skip_pragma(p)
 		expect_token(p, .Period)
 
 		elseif_branch := ast.new(ast.Elseif_Branch, elseif_tok.range)
@@ -691,6 +693,7 @@ parse_if_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 
 	if check_keyword(p, "ELSE") {
 		advance_token(p)
+		skip_pragma(p)
 		expect_token(p, .Period)
 
 		for p.curr_tok.kind != .EOF {
@@ -705,6 +708,7 @@ parse_if_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	}
 
 	endif_tok := expect_keyword_token(p, "ENDIF")
+	skip_pragma(p)
 	period_tok := expect_token(p, .Period)
 	if_stmt.range.end = period_tok.range.end
 	if_stmt.derived_stmt = if_stmt

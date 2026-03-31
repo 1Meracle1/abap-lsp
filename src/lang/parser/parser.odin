@@ -760,6 +760,7 @@ parse_expr_or_assign_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	if p.curr_tok.kind == .Eq || p.curr_tok.kind == .QuestionEq {
 		op := advance_token(p)
 		rhs := parse_expr(p)
+		skip_pragma(p)
 		period_tok := expect_token(p, .Period)
 
 		assign_stmt := ast.new(ast.Assign_Stmt, start_tok, period_tok)
@@ -2002,7 +2003,7 @@ parse_table_bracket_index_content :: proc(
 	has_key_clause: bool,
 ) {
 	if !check_keyword(p, "KEY") {
-		return parse_logical_expr(p), nil, false
+		return parse_table_bracket_logical_expr(p), nil, false
 	}
 
 	saved_prev := p.prev_tok
@@ -2014,7 +2015,7 @@ parse_table_bracket_index_content :: proc(
 	advance_token(p) // KEY
 	if check_keyword(p, "COMPONENTS") {
 		advance_token(p)
-		return parse_logical_expr(p), nil, true
+		return parse_table_bracket_logical_expr(p), nil, true
 	}
 
 	if p.curr_tok.kind == .Ident {
@@ -2027,7 +2028,7 @@ parse_table_bracket_index_content :: proc(
 		key_name_tok := advance_token(p)
 		if check_keyword(p, "COMPONENTS") {
 			advance_token(p)
-			return parse_logical_expr(p), ast.new_ident(key_name_tok), true
+			return parse_table_bracket_logical_expr(p), ast.new_ident(key_name_tok), true
 		}
 
 		p.prev_tok = saved2_prev
@@ -2042,7 +2043,7 @@ parse_table_bracket_index_content :: proc(
 	p.l.pos = saved_pos
 	p.l.read_pos = saved_read_pos
 	p.l.ch = saved_ch
-	return parse_logical_expr(p), nil, false
+	return parse_table_bracket_logical_expr(p), nil, false
 }
 
 parse_or_expr :: proc(p: ^Parser) -> ^ast.Expr {
@@ -2220,6 +2221,107 @@ parse_is_predicate :: proc(p: ^Parser, expr: ^ast.Expr) -> ^ast.Expr {
 	pred_expr.is_negated = is_negated
 	pred_expr.derived_expr = pred_expr
 	return pred_expr
+}
+
+// peek_starts_table_bracket_comparison is true when another comparison begins inside itab[ ... ]
+// without an explicit AND (ABAP allows space-separated table key components).
+peek_starts_table_bracket_comparison :: proc(p: ^Parser) -> bool {
+	if p.curr_tok.kind == .RBracket {
+		return false
+	}
+	if check_keyword(p, "OR") || check_keyword(p, "AND") {
+		return false
+	}
+	if p.curr_tok.kind == .LParen {
+		return true
+	}
+	if check_keyword(p, "NOT") {
+		return true
+	}
+
+	saved_prev := p.prev_tok
+	saved_curr := p.curr_tok
+	saved_pos := p.l.pos
+	saved_read_pos := p.l.read_pos
+	saved_ch := p.l.ch
+	saved_line_start := p.l.line_start
+	saved_line_count := p.l.line_count
+
+	defer {
+		p.prev_tok = saved_prev
+		p.curr_tok = saved_curr
+		p.l.pos = saved_pos
+		p.l.read_pos = saved_read_pos
+		p.l.ch = saved_ch
+		p.l.line_start = saved_line_start
+		p.l.line_count = saved_line_count
+	}
+
+	lhs := parse_expr(p)
+	if lhs == nil {
+		return false
+	}
+	if check_keyword(p, "IS") {
+		return true
+	}
+	return is_comparison_op(p)
+}
+
+parse_table_bracket_and_chain :: proc(p: ^Parser) -> ^ast.Expr {
+	left := parse_not_expr(p)
+
+	for {
+		if check_keyword(p, "AND") {
+			op_tok := advance_token(p)
+			right := parse_not_expr(p)
+
+			binary := ast.new(ast.Binary_Expr, lexer.TextRange{left.range.start, right.range.end})
+			binary.left = left
+			binary.op = op_tok
+			binary.right = right
+			binary.derived_expr = binary
+			left = binary
+			continue
+		}
+		if !peek_starts_table_bracket_comparison(p) {
+			break
+		}
+		op_tok := lexer.Token {
+			kind  = .Ident,
+			lit   = "AND",
+			range = lexer.TextRange{left.range.end, p.curr_tok.range.start},
+		}
+		right := parse_not_expr(p)
+
+		binary := ast.new(ast.Binary_Expr, lexer.TextRange{left.range.start, right.range.end})
+		binary.left = left
+		binary.op = op_tok
+		binary.right = right
+		binary.derived_expr = binary
+		left = binary
+	}
+
+	return left
+}
+
+// parse_table_bracket_logical_expr parses itab[ ... ] conditions: OR of AND-chains, with implicit AND
+// between consecutive comparisons (table key rows).
+parse_table_bracket_logical_expr :: proc(p: ^Parser) -> ^ast.Expr {
+	left := parse_table_bracket_and_chain(p)
+
+	for check_keyword(p, "OR") {
+		op_tok := advance_token(p)
+		right := parse_table_bracket_and_chain(p)
+
+		binary := ast.new(ast.Binary_Expr, lexer.TextRange{left.range.start, right.range.end})
+		binary.left = left
+		binary.op = op_tok
+		binary.right = right
+		binary.derived_expr = binary
+		left = binary
+	}
+
+	return left
 }
 
 parse_set_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
@@ -2740,6 +2842,7 @@ parse_field_symbol_assign_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	if p.curr_tok.kind == .Eq || p.curr_tok.kind == .QuestionEq {
 		op := advance_token(p)
 		rhs := parse_expr(p)
+		skip_pragma(p)
 		period_tok := expect_token(p, .Period)
 
 		assign_stmt := ast.new(ast.Assign_Stmt, start_tok, period_tok)
@@ -2751,6 +2854,7 @@ parse_field_symbol_assign_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 		return assign_stmt
 	}
 
+	skip_pragma(p)
 	period_tok := expect_token(p, .Period)
 	expr_stmt := ast.new(ast.Expr_Stmt, start_tok, period_tok)
 	expr_stmt.expr = lhs

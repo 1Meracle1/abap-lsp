@@ -2538,6 +2538,54 @@ ENDIF.`
 }
 
 @(test)
+line_exists_and_assign_table_key_multi_component_pragma_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src = `IF line_exists( lt_ranges[ serno_from = lv_min_init serno_to = lv_max_init ] ) ##WARN_OK.
+        ls_range = lt_ranges[ serno_from = lv_min_init serno_to = lv_max_init ] ##WARN_OK.
+ENDIF.`
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 top-level stmt, got %v", len(file.decls)))
+
+	if_stmt, ok := file.decls[0].derived_stmt.(^ast.If_Stmt)
+	if !testing.expect(t, ok, "Should be If_Stmt") do return
+
+	call, cok := if_stmt.cond.derived_expr.(^ast.Call_Expr)
+	if !testing.expect(t, cok, "IF condition should be Call_Expr (line_exists)") do return
+	if !testing.expect(t, len(call.args) == 1, "line_exists should have one argument") do return
+	idx, iok := call.args[0].derived_expr.(^ast.Index_Expr)
+	if !testing.expect(t, iok, "line_exists arg should be table Index_Expr") do return
+	and1, aok := idx.index.derived_expr.(^ast.Binary_Expr)
+	if !testing.expect(t, aok, "Multi-component key should be AND binary") do return
+	_, lok := and1.left.derived_expr.(^ast.Binary_Expr)
+	if !testing.expect(t, lok, "Left of implicit AND should be first comp =") do return
+	_, rok := and1.right.derived_expr.(^ast.Binary_Expr)
+	if !testing.expect(t, rok, "Right of implicit AND should be second comp =") do return
+
+	testing.expect(t, len(if_stmt.body) == 1, "IF body should have assign stmt")
+	if len(if_stmt.body) < 1 {
+		return
+	}
+	assign, as_ok := if_stmt.body[0].derived_stmt.(^ast.Assign_Stmt)
+	if !testing.expect(t, as_ok, "IF body should be Assign_Stmt") do return
+	if len(assign.rhs) < 1 || assign.rhs[0] == nil {
+		return
+	}
+	idx2, i2_ok := assign.rhs[0].derived_expr.(^ast.Index_Expr)
+	if !testing.expect(t, i2_ok, "Assign RHS should be Index_Expr") do return
+	and2, a2_ok := idx2.index.derived_expr.(^ast.Binary_Expr)
+	testing.expect(t, a2_ok, "Assign table key should parse as implicit AND of comparisons")
+}
+
+@(test)
 if_with_else_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
 	file.src = `IF lv_var > 0.
