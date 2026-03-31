@@ -302,6 +302,7 @@ parse_delete_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 // Syntax variations:
 // - INSERT VALUE #( ... ) INTO TABLE itab.
 // - INSERT wa INTO itab [INDEX idx].
+// - INSERT INITIAL LINE INTO itab [INDEX idx] [ASSIGNING <fs>].
 // - INSERT LINES OF itab_src INTO TABLE itab_tgt.
 // - INSERT LINES OF itab_src INTO itab_tgt [INDEX idx].
 // - INSERT INTO target VALUES wa.
@@ -321,6 +322,30 @@ parse_insert_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	insert_tok := expect_keyword_token(p, "INSERT")
 
 	insert_stmt := ast.new(ast.Insert_Stmt, insert_tok.range)
+
+	// INSERT INITIAL LINE INTO itab [INDEX idx] [ASSIGNING <fs>].
+	if check_keyword(p, "INITIAL") {
+		advance_token(p)
+		expect_keyword_token(p, "LINE")
+		expect_keyword_token(p, "INTO")
+		insert_stmt.target = parse_expr(p)
+		insert_stmt.kind = .Initial_Line_Into_Itab
+		if check_keyword(p, "INDEX") {
+			advance_token(p)
+			insert_stmt.index_expr = parse_expr(p)
+		}
+		if check_keyword(p, "ASSIGNING") {
+			advance_token(p)
+			if check_hyphenated_keyword(p, "FIELD", "SYMBOL") {
+				insert_stmt.assigning_target = parse_inline_field_symbol(p)
+			} else {
+				insert_stmt.assigning_target = parse_field_symbol_ref(p)
+			}
+		}
+		period_tok := expect_token(p, .Period)
+		insert_stmt.range.end = period_tok.range.end
+		return insert_stmt
+	}
 
 	// INSERT LINES OF ... INTO [TABLE] ...
 	if check_keyword(p, "LINES") {

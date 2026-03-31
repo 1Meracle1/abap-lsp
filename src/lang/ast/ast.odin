@@ -572,6 +572,7 @@ Message_Stmt :: struct {
 Insert_Kind :: enum {
 	Into_Table, // INSERT expr INTO TABLE itab
 	Into_Itab, // INSERT expr INTO itab [INDEX idx]
+	Initial_Line_Into_Itab, // INSERT INITIAL LINE INTO itab [INDEX idx] [ASSIGNING <fs>]
 	Into_Db, // INSERT INTO target VALUES wa
 	From_Wa, // INSERT target FROM wa
 	From_Table, // INSERT target FROM TABLE itab
@@ -583,6 +584,7 @@ Insert_Kind :: enum {
 // Syntax variations:
 // - INSERT VALUE #( ... ) INTO TABLE itab.
 // - INSERT wa INTO itab [INDEX idx].
+// - INSERT INITIAL LINE INTO itab [INDEX idx] [ASSIGNING <fs>].
 // - INSERT LINES OF itab_src INTO TABLE itab_tgt.
 // - INSERT LINES OF itab_src INTO itab_tgt [INDEX idx].
 // - INSERT INTO target VALUES wa.
@@ -594,7 +596,8 @@ Insert_Stmt :: struct {
 	value_expr:   ^Expr, // The value/expression to insert (for Into_Table, Into_Itab, Into_Db)
 	target:       ^Expr, // The target table (internal or database table)
 	source:       ^Expr, // Source work area or table (From_Wa, From_Table, Lines_Of_*); Into_Db VALUES expr
-	index_expr:   ^Expr, // INDEX clause (Into_Itab, Lines_Of_Into_Itab); nil if omitted
+	index_expr:   ^Expr, // INDEX clause (Into_Itab, Lines_Of_Into_Itab, Initial_Line_Into_Itab); nil if omitted
+	assigning_target: ^Expr, // ASSIGNING clause (Initial_Line_Into_Itab); nil if omitted
 	accepting_duplicate_keys: bool, // INSERT ... FROM [TABLE] ... ACCEPTING DUPLICATE KEYS
 }
 

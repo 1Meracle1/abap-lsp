@@ -6284,6 +6284,94 @@ insert_into_itab_no_index_test :: proc(t: ^testing.T) {
 }
 
 @(test)
+insert_initial_line_into_itab_index_assigning_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src =
+	`INSERT INITIAL LINE INTO lt_range_def_history
+    INDEX                    sy-tabix
+    ASSIGNING                <ls_range_def_history>.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	insert_stmt, ok := file.decls[0].derived_stmt.(^ast.Insert_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Insert_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	testing.expect(
+		t,
+		insert_stmt.kind == .Initial_Line_Into_Itab,
+		fmt.tprintf("Expected Initial_Line_Into_Itab, got %v", insert_stmt.kind),
+	)
+	testing.expect(t, insert_stmt.value_expr == nil, "Expected no value_expr")
+	if tgt, tok := insert_stmt.target.derived_expr.(^ast.Ident); tok {
+		testing.expect(
+			t,
+			tgt.name == "lt_range_def_history",
+			fmt.tprintf("Expected target lt_range_def_history, got '%s'", tgt.name),
+		)
+	} else {
+		testing.expect(t, false, fmt.tprintf("Expected target Ident, got %T", insert_stmt.target.derived_expr))
+	}
+
+	if idx, iok := insert_stmt.index_expr.derived_expr.(^ast.Selector_Expr); iok {
+		base, bok := idx.expr.derived_expr.(^ast.Ident)
+		if testing.expect(t, bok, "Expected selector base Ident for sy-tabix") {
+			testing.expect(t, base.name == "sy", fmt.tprintf("Expected base sy, got %s", base.name))
+		}
+		field, fok := idx.field.derived_expr.(^ast.Ident)
+		if testing.expect(t, fok, "Expected selector field Ident for sy-tabix") {
+			testing.expect(t, field.name == "tabix", fmt.tprintf("Expected field tabix, got %s", field.name))
+		}
+	} else {
+		testing.expect(t, false, fmt.tprintf("Expected index Selector_Expr, got %T", insert_stmt.index_expr.derived_expr))
+	}
+
+	if fs_ident, fok := insert_stmt.assigning_target.derived_expr.(^ast.Ident); fok {
+		testing.expect(
+			t,
+			fs_ident.name == "<ls_range_def_history>",
+			fmt.tprintf("Expected '<ls_range_def_history>', got '%s'", fs_ident.name),
+		)
+	} else {
+		testing.expect(
+			t,
+			false,
+			fmt.tprintf("Expected assigning_target Ident, got %T", insert_stmt.assigning_target.derived_expr),
+		)
+	}
+}
+
+@(test)
+insert_initial_line_into_itab_only_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src = `INSERT INITIAL LINE INTO lt_tab.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	insert_stmt, ok := file.decls[0].derived_stmt.(^ast.Insert_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Insert_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	testing.expect(t, insert_stmt.kind == .Initial_Line_Into_Itab, "Expected Initial_Line_Into_Itab")
+	testing.expect(t, insert_stmt.index_expr == nil, "Expected no INDEX")
+	testing.expect(t, insert_stmt.assigning_target == nil, "Expected no ASSIGNING")
+}
+
+@(test)
 insert_into_db_values_test :: proc(t: ^testing.T) {
 	// INSERT INTO target VALUES wa.
 	file := ast.new(ast.File, {})

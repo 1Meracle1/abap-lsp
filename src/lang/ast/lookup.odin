@@ -898,6 +898,11 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 				return res
 			}
 		}
+		if n.assigning_target != nil {
+			if res := find_node_at_offset(&n.assigning_target.expr_base, offset); res != nil {
+				return res
+			}
+		}
 
 	case ^Sort_Stmt:
 		if n.itab != nil {
