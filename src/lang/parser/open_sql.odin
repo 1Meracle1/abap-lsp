@@ -12,6 +12,7 @@ import "../lexer"
 // - SELECT ... FOR ALL ENTRIES IN itab WHERE ... [INTO target].
 // - SELECT ... GROUP BY cols HAVING cond [INTO target].
 // - SELECT ... WHERE ... . ENDSELECT. (period may end the last Open SQL clause line before ENDSELECT)
+// - SELECT ... INTO TABLE / APPENDING ... / CORRESPONDING FIELDS OF TABLE ... . (no ENDSELECT)
 parse_select_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	select_tok := expect_keyword_token(p, "SELECT")
 
@@ -55,6 +56,16 @@ parse_select_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	}
 
 	if stmt.is_single {
+		return stmt
+	}
+
+	// One-shot reads into an internal table (or appending) end with '.'; only
+	// SELECT ... INTO wa / CORRESPONDING FIELDS OF wa ... . ... ENDSELECT uses a loop body.
+	select_finishes_at_period :=
+		stmt.into_kind == .Table ||
+		stmt.appending ||
+		(stmt.into_kind == .Corresponding && stmt.into_corresponding_of_table)
+	if select_finishes_at_period {
 		return stmt
 	}
 
@@ -675,8 +686,10 @@ parse_select_into_clause_body :: proc(p: ^Parser, stmt: ^ast.Select_Stmt) {
 		advance_token(p)
 		expect_keyword_token(p, "FIELDS")
 		expect_keyword_token(p, "OF")
+		stmt.into_corresponding_of_table = false
 		if check_keyword(p, "TABLE") {
 			advance_token(p)
+			stmt.into_corresponding_of_table = true
 		}
 		stmt.into_kind = .Corresponding
 	} else {

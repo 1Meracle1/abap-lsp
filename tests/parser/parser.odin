@@ -10438,6 +10438,72 @@ ENDSELECT.`
 }
 
 @(test)
+select_into_table_closed_before_if_endif_method_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src =
+	`CLASS zcl_foo DEFINITION.
+  PUBLIC SECTION.
+ENDCLASS.
+
+CLASS zcl_foo IMPLEMENTATION.
+  METHOD fill_application_ident_tab.
+
+    IF st_gs1_ai IS INITIAL.
+      SELECT *
+      INTO   TABLE st_gs1_ai
+      FROM   /sttp/gs1_ai
+      WHERE gs1_application_ident <> space.
+    ENDIF.
+
+    SORT st_gs1_ai
+    BY   gs1_application_ident ASCENDING.
+
+  ENDMETHOD.
+ENDCLASS.`
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(t, len(file.syntax_errors) == 0, fmt.tprintf("%v", file.syntax_errors))
+	testing.expect(t, len(file.decls) == 2)
+
+	class_impl, iok := file.decls[1].derived_stmt.(^ast.Class_Impl_Decl)
+	testing.expect(t, iok)
+	if !iok {
+		return
+	}
+	testing.expect(t, len(class_impl.methods) == 1)
+	method_impl, mok := class_impl.methods[0].derived_stmt.(^ast.Method_Impl)
+	testing.expect(t, mok)
+	if !mok {
+		return
+	}
+
+	testing.expect(
+		t,
+		len(method_impl.body) == 2,
+		fmt.tprintf("expected IF + SORT in method body, got %d stmts", len(method_impl.body)),
+	)
+
+	if_stmt, ifok := method_impl.body[0].derived_stmt.(^ast.If_Stmt)
+	testing.expect(t, ifok)
+	if !ifok {
+		return
+	}
+	testing.expect(
+		t,
+		len(if_stmt.body) == 1,
+		fmt.tprintf("expected SELECT inside IF, got %d", len(if_stmt.body)),
+	)
+	sel, selok := if_stmt.body[0].derived_stmt.(^ast.Select_Stmt)
+	testing.expect(t, selok)
+	if selok {
+		testing.expect(t, sel.into_kind == .Table)
+		testing.expect(t, len(sel.body) == 0)
+	}
+}
+
+@(test)
 select_into_and_upto_before_from_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
 	file.src =
@@ -10490,6 +10556,7 @@ select_fields_before_from_corresponding_test :: proc(t: ^testing.T) {
 	}
 
 	testing.expect(t, select_stmt.into_kind == .Corresponding)
+	testing.expect(t, select_stmt.into_corresponding_of_table)
 	testing.expect(t, select_stmt.from_table != nil)
 	testing.expect(t, select_stmt.for_all_entries != nil)
 }

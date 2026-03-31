@@ -913,6 +913,8 @@ Select_Stmt :: struct {
 	for_all_entries: ^Expr, // FOR ALL ENTRIES IN itab
 	up_to_rows:      ^Expr, // UP TO n ROWS
 	appending:       bool, // APPENDING CORRESPONDING FIELDS ... (SELECT append into table)
+	// True when INTO was CORRESPONDING FIELDS OF TABLE (...); false for OF wa (SELECT loop header).
+	into_corresponding_of_table: bool,
 	body:            [dynamic]^Stmt, // Body for SELECT loop (non-single)
 }
 
