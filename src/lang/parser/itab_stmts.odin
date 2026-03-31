@@ -3,20 +3,16 @@ package lang_parser
 import "../ast"
 import "../lexer"
 
-// parse_read_table_key parses the WITH KEY clause of a READ TABLE statement
-// Syntax: WITH KEY field1 = val1 field2 = val2 ... or WITH KEY table_line = value
-parse_read_table_key :: proc(p: ^Parser) -> ^ast.Read_Table_Key {
-	key := new(ast.Read_Table_Key)
-	key.components = make([dynamic]^ast.Named_Arg)
-
-	// Parse key components
-	for p.curr_tok.kind == .Ident && p.curr_tok.kind != .Period {
+// parse_read_table_key_component_assignments parses field = value pairs after WITH KEY / COMPONENTS.
+parse_read_table_key_component_assignments :: proc(p: ^Parser, key: ^ast.Read_Table_Key) {
+	for p.curr_tok.kind == .Ident {
 		// Check if it's a keyword that ends the key specification
 		if check_keyword(p, "INTO") ||
 		   check_keyword(p, "ASSIGNING") ||
 		   check_keyword(p, "TRANSPORTING") ||
 		   check_keyword(p, "USING") ||
-		   check_keyword(p, "BINARY") {
+		   check_keyword(p, "BINARY") ||
+		   check_keyword(p, "WITH") {
 			break
 		}
 
@@ -53,13 +49,61 @@ parse_read_table_key :: proc(p: ^Parser) -> ^ast.Read_Table_Key {
 			break
 		}
 	}
+}
 
+// parse_read_table_key parses the WITH KEY clause of a READ TABLE statement
+// Syntax: WITH KEY field1 = val1 field2 = val2 ... or WITH KEY table_line = value
+parse_read_table_key :: proc(p: ^Parser) -> ^ast.Read_Table_Key {
+	key := new(ast.Read_Table_Key)
+	key.components = make([dynamic]^ast.Named_Arg)
+	parse_read_table_key_component_assignments(p, key)
 	return key
+}
+
+// parse_read_table_with_table_key_spec parses the key part after "WITH TABLE KEY".
+// Syntax:
+// - WITH TABLE KEY comp1 = val1 ... (free key)
+// - WITH TABLE KEY key_name COMPONENTS comp1 = val1 ...
+// - WITH TABLE KEY COMPONENTS comp1 = val1 ... (primary table key)
+parse_read_table_with_table_key_spec :: proc(p: ^Parser) -> ^ast.Read_Table_Key {
+	if check_keyword(p, "COMPONENTS") {
+		key := new(ast.Read_Table_Key)
+		key.components = make([dynamic]^ast.Named_Arg)
+		advance_token(p)
+		parse_read_table_key_component_assignments(p, key)
+		return key
+	}
+
+	if p.curr_tok.kind == .Ident {
+		saved_prev := p.prev_tok
+		saved_curr := p.curr_tok
+		saved_pos := p.l.pos
+		saved_read_pos := p.l.read_pos
+		saved_ch := p.l.ch
+
+		name_tok := advance_token(p)
+		if check_keyword(p, "COMPONENTS") {
+			key := new(ast.Read_Table_Key)
+			key.components = make([dynamic]^ast.Named_Arg)
+			advance_token(p) // consume COMPONENTS
+			key.key_name = ast.new_ident(name_tok)
+			parse_read_table_key_component_assignments(p, key)
+			return key
+		}
+
+		p.prev_tok = saved_prev
+		p.curr_tok = saved_curr
+		p.l.pos = saved_pos
+		p.l.read_pos = saved_read_pos
+		p.l.ch = saved_ch
+	}
+
+	return parse_read_table_key(p)
 }
 
 // READ TABLE statement parser
 // Syntax variations:
-// - READ TABLE itab WITH TABLE KEY field1 = val1 ... [INTO wa | ASSIGNING <fs> | TRANSPORTING NO FIELDS].
+// - READ TABLE itab WITH TABLE KEY [key_name] COMPONENTS field1 = val1 ... | WITH TABLE KEY field1 = val1 ...
 // - READ TABLE itab WITH KEY field1 = val1 ... [INTO wa | ASSIGNING <fs> | TRANSPORTING NO FIELDS].
 // - READ TABLE itab INDEX idx [USING KEY key_name] [INTO wa | ASSIGNING <fs>].
 parse_read_table_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
@@ -77,7 +121,7 @@ parse_read_table_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 				if check_keyword(p, "KEY") {
 					advance_token(p)
 					read_stmt.kind = .With_Table_Key
-					read_stmt.key = parse_read_table_key(p)
+					read_stmt.key = parse_read_table_with_table_key_spec(p)
 				} else {
 					error(p, p.curr_tok.range, "expected KEY after WITH TABLE")
 					break

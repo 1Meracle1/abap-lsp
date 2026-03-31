@@ -8695,6 +8695,60 @@ read_table_multiple_key_components_test :: proc(t: ^testing.T) {
 }
 
 @(test)
+read_table_with_table_key_named_components_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src = `READ TABLE st_buffer_role ASSIGNING <ls_buffer_role>
+                            WITH TABLE KEY key_g
+                            COMPONENTS bup_gln = iv_gln.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	read_stmt, ok := file.decls[0].derived_stmt.(^ast.Read_Table_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Read_Table_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	testing.expect(
+		t,
+		read_stmt.kind == .With_Table_Key,
+		fmt.tprintf("Expected With_Table_Key kind, got %v", read_stmt.kind),
+	)
+	testing.expect(t, read_stmt.key != nil, "Expected key to be set")
+	testing.expect(t, read_stmt.key.key_name != nil, "Expected table key name")
+	testing.expect(
+		t,
+		read_stmt.key.key_name.name == "key_g",
+		fmt.tprintf("Expected key name 'key_g', got '%s'", read_stmt.key.key_name.name),
+	)
+	testing.expect(
+		t,
+		len(read_stmt.key.components) == 1,
+		fmt.tprintf("Expected 1 key component, got %d", len(read_stmt.key.components)),
+	)
+	if len(read_stmt.key.components) >= 1 {
+		comp := read_stmt.key.components[0]
+		testing.expect(
+			t,
+			comp.name.name == "bup_gln",
+			fmt.tprintf("Expected component 'bup_gln', got '%s'", comp.name.name),
+		)
+	}
+	if fs_ident, iok := read_stmt.assigning_target.derived_expr.(^ast.Ident); iok {
+		testing.expect(
+			t,
+			fs_ident.name == "<ls_buffer_role>",
+			fmt.tprintf("Expected field symbol '<ls_buffer_role>', got '%s'", fs_ident.name),
+		)
+	}
+}
+
+@(test)
 read_table_transporting_then_key_binary_search_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
 	file.src = `READ TABLE st_cust TRANSPORTING NO FIELDS

@@ -997,6 +997,17 @@ collect_tokens_from_stmt :: proc(
 			collect_tokens_from_expr(tokens, s.assigning_target, snap, nil)
 		}
 		if s.key != nil {
+			if s.key.key_name != nil {
+				append(
+					tokens,
+					SemanticToken {
+						offset = s.key.key_name.range.start,
+						length = s.key.key_name.range.end - s.key.key_name.range.start,
+						type = .Property,
+						modifiers = 0,
+					},
+				)
+			}
 			for comp in s.key.components {
 				if comp.name != nil {
 					append(
