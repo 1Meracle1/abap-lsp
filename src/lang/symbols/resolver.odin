@@ -631,20 +631,20 @@ resolve_struct_components :: proc(
 		case ^ast.Types_Decl:
 			field_type := resolve_type_expr(table, c.typed)
 
-			length_val := 0
+			// Only apply LENGTH clause when present; do not overwrite type-embedded lengths (e.g. char70).
 			if c.length != nil {
+				length_val := 0
 				if lit, ok := c.length.derived_expr.(^ast.Basic_Lit); ok {
-					// Parse the number from the literal
 					for ch in lit.tok.lit {
 						if ch >= '0' && ch <= '9' {
 							length_val = length_val * 10 + int(ch - '0')
 						}
 					}
 				}
+				field_type.length = length_val
 			}
-			field_type.length = length_val
 
-			add_struct_field(struct_type, c.ident.name, field_type, length_val)
+			add_struct_field(struct_type, c.ident.name, field_type, field_type.length)
 
 		case ^ast.Types_Struct_Decl:
 			nested_type := make_structure_type(table, c.ident.name)
@@ -721,6 +721,9 @@ resolve_type_expr :: proc(table: ^SymbolTable, expr: ^ast.Expr) -> ^Type {
 
 	#partial switch e in expr.derived_expr {
 	case ^ast.Ident:
+		if t, ok := resolve_char_builtin_ident(table, expr, e.name); ok {
+			return t
+		}
 		type_kind := builtin_type_from_name(e.name)
 		if type_kind != .Unknown {
 			t := make_type(table, type_kind)
@@ -858,6 +861,50 @@ resolve_type_expr :: proc(table: ^SymbolTable, expr: ^ast.Expr) -> ^Type {
 	}
 
 	return make_unknown_type(table)
+}
+
+// ABAP built-in CHAR spelled as CHAR, CHAR70, CHAR01, ... (length in the numeric suffix).
+is_char_builtin_type_name :: proc(name: string) -> bool {
+	lower := strings.to_lower(name, context.temp_allocator)
+	if lower == "char" {
+		return true
+	}
+	CHAR_PREFIX :: "char"
+	if len(lower) <= len(CHAR_PREFIX) || !strings.has_prefix(lower, CHAR_PREFIX) {
+		return false
+	}
+	suffix := lower[len(CHAR_PREFIX):]
+	if len(suffix) == 0 {
+		return false
+	}
+	for i in 0 ..< len(suffix) {
+		c := suffix[i]
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+resolve_char_builtin_ident :: proc(table: ^SymbolTable, ast_node: ^ast.Expr, name: string) -> (^Type, bool) {
+	if !is_char_builtin_type_name(name) {
+		return nil, false
+	}
+	lower := strings.to_lower(name, context.temp_allocator)
+	if lower == "char" {
+		t := make_type(table, .Char)
+		t.ast_node = ast_node
+		return t, true
+	}
+	CHAR_PREFIX :: "char"
+	suffix := lower[len(CHAR_PREFIX):]
+	n := 0
+	for i in 0 ..< len(suffix) {
+		n = n * 10 + int(suffix[i] - '0')
+	}
+	t := make_builtin_char_type(table, n)
+	t.ast_node = ast_node
+	return t, true
 }
 
 builtin_type_from_name :: proc(name: string) -> TypeKind {

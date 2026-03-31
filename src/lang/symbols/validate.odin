@@ -252,7 +252,7 @@ validate_raising_type_ident_ctx :: proc(ctx: ^Validation_Context, ident: ^ast.Id
 	if ctx.method_param_names_for_like != nil && lower in ctx.method_param_names_for_like {
 		return
 	}
-	if builtin_type_from_name(name) != .Unknown {
+	if builtin_type_from_name(name) != .Unknown || is_char_builtin_type_name(name) {
 		add_diagnostic(
 			ctx.diag_table,
 			ident.range,
@@ -325,6 +325,9 @@ validate_type_ident_ctx :: proc(ctx: ^Validation_Context, ident: ^ast.Ident) {
 		return
 	}
 	if builtin_type_from_name(name) != .Unknown {
+		return
+	}
+	if is_char_builtin_type_name(name) {
 		return
 	}
 	if sym, ok := mod_table.symbols[lower]; ok {

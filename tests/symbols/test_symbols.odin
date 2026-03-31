@@ -435,6 +435,79 @@ TYPES zipcode_type TYPE address_type-city-zipcode.`
 }
 
 @(test)
+test_char_length_suffix_builtin_type :: proc(t: ^testing.T) {
+	src := `TYPES:
+  BEGIN OF ts_ui_funcs,
+    fcode    TYPE char70,
+    textid   TYPE char3,
+    text_add TYPE string,
+    disabled TYPE char01,
+  END OF ts_ui_funcs.`
+	file := ast.new(ast.File, {})
+	file.src = src
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	table := symbols.resolve_file(file)
+	defer symbols.destroy_symbol_table(table)
+
+	sym, ok := table.symbols["ts_ui_funcs"]
+	if !testing.expect(t, ok, "expected typedef ts_ui_funcs") do return
+	if !testing.expect(t, sym.type_info != nil, "expected structure type") do return
+	if !testing.expect(t, sym.type_info.kind == .Structure, "expected Structure kind") do return
+
+	find_field :: proc(st: ^symbols.Type, field: string) -> ^symbols.StructField {
+		ln := strings.to_lower(field, context.temp_allocator)
+		for i in 0 ..< len(st.fields) {
+			if st.fields[i].name == ln {
+				return &st.fields[i]
+			}
+		}
+		return nil
+	}
+
+	st := sym.type_info
+	f_fcode := find_field(st, "fcode")
+	if testing.expect(t, f_fcode != nil, "field fcode") && f_fcode != nil {
+		testing.expect(t, f_fcode.type_info != nil && f_fcode.type_info.kind == .Char, "fcode is Char")
+		if f_fcode.type_info != nil {
+			testing.expect(t, f_fcode.type_info.length == 70, fmt.tprintf("fcode length 70, got %d", f_fcode.type_info.length))
+		}
+	}
+	f_textid := find_field(st, "textid")
+	if testing.expect(t, f_textid != nil, "field textid") && f_textid != nil && f_textid.type_info != nil {
+		testing.expect(t, f_textid.type_info.kind == .Char && f_textid.type_info.length == 3, "textid char3")
+	}
+	f_text_add := find_field(st, "text_add")
+	if testing.expect(t, f_text_add != nil, "field text_add") && f_text_add != nil && f_text_add.type_info != nil {
+		testing.expect(t, f_text_add.type_info.kind == .String, "text_add string")
+	}
+	f_disabled := find_field(st, "disabled")
+	if testing.expect(t, f_disabled != nil, "field disabled") && f_disabled != nil && f_disabled.type_info != nil {
+		testing.expect(t, f_disabled.type_info.kind == .Char && f_disabled.type_info.length == 1, "disabled char01")
+	}
+
+	candidates := symbols.collect_all_remote_candidates(table)
+	testing.expect(t, len(candidates) == 0, "charNN should not trigger remote type candidates")
+
+	diags := symbols.collect_all_diagnostics(table)
+	for diag in diags {
+		msg_l := strings.to_lower(diag.message, context.temp_allocator)
+		if strings.contains(msg_l, "unknown type 'char70'") ||
+		   strings.contains(msg_l, "unknown type 'char3'") ||
+		   strings.contains(msg_l, "unknown type 'char01'") {
+			testing.expect(
+				t,
+				false,
+				fmt.tprintf("char built-in must not be reported as unknown type: %s", diag.message),
+			)
+			return
+		}
+	}
+}
+
+@(test)
 test_builtin_sy_symbol_resolves :: proc(t: ^testing.T) {
 	src := `DATA lv_subrc TYPE i.
 lv_subrc = sy-subrc.`
