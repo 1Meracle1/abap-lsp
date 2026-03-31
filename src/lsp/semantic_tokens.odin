@@ -1265,6 +1265,9 @@ collect_tokens_from_call_function_params :: proc(
 		if param.value != nil {
 			collect_tokens_from_expr(tokens, param.value, snap, nil)
 		}
+		if param.message_value != nil {
+			collect_tokens_from_expr(tokens, param.message_value, snap, nil)
+		}
 	}
 }
 

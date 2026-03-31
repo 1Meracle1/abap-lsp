@@ -1265,6 +1265,11 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 				return res
 			}
 		}
+		if n.message_value != nil {
+			if res := find_node_at_offset(&n.message_value.expr_base, offset); res != nil {
+				return res
+			}
+		}
 
 	case ^Create_Object_Stmt:
 		if n.target != nil {

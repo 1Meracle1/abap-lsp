@@ -10782,6 +10782,67 @@ call_function_exceptions_multi_section_test :: proc(t: ^testing.T) {
 }
 
 @(test)
+call_function_rfc_exceptions_message_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src =
+	`CALL FUNCTION '/STTPEC/DEL_TRADE_ITEM_VARIANT'
+        DESTINATION <ls_logsys_rfc>-rfcdest
+        EXPORTING
+          iv_matnr_att          = ls_s_matmap-matnr_ext
+          iv_uom                = ls_s_prod_ver-uom
+          iv_gtin               = ls_s_prod-gtin
+        IMPORTING
+          ev_subrc              = <ls_logsys_rfc>-subrc
+        TABLES
+          et_bapirettab         = lt_bapirettab
+        EXCEPTIONS
+          system_failure        = 1 MESSAGE lv_system_message
+          communication_failure = 2 MESSAGE lv_system_message
+          OTHERS                = 3.`
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+	testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls)))
+	if len(file.decls) < 1 {
+		return
+	}
+	call_func, ok := file.decls[0].derived_stmt.(^ast.Call_Function_Stmt)
+	testing.expect(t, ok, fmt.tprintf("Expected Call_Function_Stmt, got %T", file.decls[0].derived_stmt))
+	if !ok {
+		return
+	}
+
+	testing.expect(t, call_func.destination != nil, "DESTINATION expression expected")
+	testing.expect(t, len(call_func.exporting) == 3, fmt.tprintf("exporting want 3 got %d", len(call_func.exporting)))
+	testing.expect(t, len(call_func.importing) == 1, fmt.tprintf("importing want 1 got %d", len(call_func.importing)))
+	testing.expect(t, len(call_func.tables) == 1, fmt.tprintf("tables want 1 got %d", len(call_func.tables)))
+	testing.expect(t, len(call_func.exceptions) == 3, fmt.tprintf("exceptions want 3 got %d", len(call_func.exceptions)))
+
+	testing.expect(
+		t,
+		call_func.exceptions[0].message_value != nil,
+		"system_failure should have MESSAGE operand",
+	)
+	testing.expect(
+		t,
+		call_func.exceptions[1].message_value != nil,
+		"communication_failure should have MESSAGE operand",
+	)
+	testing.expect(t, call_func.exceptions[2].is_others, "OTHERS row")
+	testing.expect(
+		t,
+		call_func.exceptions[2].message_value == nil,
+		"OTHERS has no MESSAGE in this sample",
+	)
+}
+
+@(test)
 call_function_with_destination_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
 	file.src =

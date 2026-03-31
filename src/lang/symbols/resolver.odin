@@ -1522,6 +1522,12 @@ resolve_call_function_stmt :: proc(table: ^SymbolTable, call_func: ^ast.Call_Fun
 			resolve_param_value_decl(table, param.value)
 		}
 	}
+
+	for param in call_func.exceptions {
+		if param.message_value != nil {
+			resolve_param_value_decl(table, param.message_value)
+		}
+	}
 }
 
 resolve_param_value_decl :: proc(table: ^SymbolTable, expr: ^ast.Expr) {
@@ -1558,6 +1564,11 @@ resolve_call_badi_stmt :: proc(table: ^SymbolTable, stmt: ^ast.Call_Badi_Stmt) {
 	for param in stmt.receiving {
 		if param.value != nil {
 			resolve_param_value_decl(table, param.value)
+		}
+	}
+	for param in stmt.exceptions {
+		if param.message_value != nil {
+			resolve_param_value_decl(table, param.message_value)
 		}
 	}
 }

@@ -179,6 +179,14 @@ check_call_function_param_list :: proc(
 			}
 			check_expr(t, ep.value.derived_expr, ap.value, loc = loc)
 		}
+		if ep.message_value != nil {
+			if !testing.expect(t, ap.message_value != nil, fmt.tprintf("param[%d] message_value nil", i), loc = loc) {
+				return
+			}
+			check_expr(t, ep.message_value.derived_expr, ap.message_value, loc = loc)
+		} else if ap.message_value != nil {
+			testing.expect(t, false, fmt.tprintf("param[%d] unexpected message_value", i), loc = loc)
+		}
 	}
 }
 

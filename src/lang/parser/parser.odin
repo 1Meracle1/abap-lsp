@@ -1930,6 +1930,14 @@ parse_call_function_params :: proc(
 		// Skip optional pragma like ##ENH_OK
 		skip_pragma(p)
 
+		// EXCEPTIONS exc = rc MESSAGE dobj — optional message target (RFC, communication_failure, etc.)
+		message_value: ^ast.Expr
+		if kind == .Exceptions && check_keyword(p, "MESSAGE") {
+			advance_token(p)
+			message_value = parse_call_function_param_value(p)
+			skip_pragma(p)
+		}
+
 		// Create the parameter node
 		param := ast.new(ast.Call_Function_Param, param_name_tok.range)
 		param.kind = kind
@@ -1941,7 +1949,10 @@ parse_call_function_params :: proc(
 			param.is_others = true
 		}
 		param.value = param_value
-		if param_value != nil {
+		param.message_value = message_value
+		if message_value != nil {
+			param.range.end = message_value.range.end
+		} else if param_value != nil {
 			param.range.end = param_value.range.end
 		}
 		param.derived = param

@@ -842,6 +842,8 @@ Call_Function_Param :: struct {
 	kind:       Call_Function_Param_Kind,
 	name:       ^Ident, // Parameter name
 	value:      ^Expr, // Parameter value
+	// EXCEPTIONS exc = n MESSAGE msg — optional message variable for RFC / classic exceptions
+	message_value: ^Expr,
 	// EXCEPTIONS OTHERS = n — ABAP catch-all; runtime sets sy-subrc from n when no named exception matches
 	is_others:  bool,
 }
