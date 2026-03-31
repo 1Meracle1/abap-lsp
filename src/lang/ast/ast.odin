@@ -582,7 +582,7 @@ Insert_Kind :: enum {
 // - INSERT LINES OF itab_src INTO itab_tgt [INDEX idx].
 // - INSERT INTO target VALUES wa.
 // - INSERT target FROM wa.
-// - INSERT target FROM TABLE itab.
+// - INSERT target FROM TABLE itab [ACCEPTING DUPLICATE KEYS].
 Insert_Stmt :: struct {
 	using node:   Stmt,
 	kind:         Insert_Kind,
@@ -590,6 +590,7 @@ Insert_Stmt :: struct {
 	target:       ^Expr, // The target table (internal or database table)
 	source:       ^Expr, // Source work area or table (From_Wa, From_Table, Lines_Of_*); Into_Db VALUES expr
 	index_expr:   ^Expr, // INDEX clause (Into_Itab, Lines_Of_Into_Itab); nil if omitted
+	accepting_duplicate_keys: bool, // INSERT ... FROM [TABLE] ... ACCEPTING DUPLICATE KEYS
 }
 
 Authority_Check_Id :: struct {

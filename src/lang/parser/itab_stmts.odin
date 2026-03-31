@@ -272,7 +272,17 @@ parse_delete_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 // - INSERT LINES OF itab_src INTO itab_tgt [INDEX idx].
 // - INSERT INTO target VALUES wa.
 // - INSERT target FROM wa.
-// - INSERT target FROM TABLE itab.
+// - INSERT target FROM TABLE itab [ACCEPTING DUPLICATE KEYS].
+parse_insert_optional_accepting_duplicate_keys :: proc(p: ^Parser, insert_stmt: ^ast.Insert_Stmt) {
+	if !check_keyword(p, "ACCEPTING") {
+		return
+	}
+	advance_token(p)
+	expect_keyword_token(p, "DUPLICATE")
+	expect_keyword_token(p, "KEYS")
+	insert_stmt.accepting_duplicate_keys = true
+}
+
 parse_insert_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	insert_tok := expect_keyword_token(p, "INSERT")
 
@@ -344,6 +354,7 @@ parse_insert_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 				insert_stmt.source = parse_expr(p)
 				insert_stmt.kind = .From_Wa
 			}
+			parse_insert_optional_accepting_duplicate_keys(p, insert_stmt)
 		} else {
 			// Simple INSERT expr form - treat as insert into table
 			insert_stmt.value_expr = value_or_target

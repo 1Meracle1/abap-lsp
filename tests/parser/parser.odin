@@ -6397,6 +6397,53 @@ insert_from_table_test :: proc(t: ^testing.T) {
 }
 
 @(test)
+insert_from_table_accepting_duplicate_keys_test :: proc(t: ^testing.T) {
+	// INSERT dbtab FROM TABLE itab ACCEPTING DUPLICATE KEYS. (Open SQL / DB insert from internal table)
+	file := ast.new(ast.File, {})
+	file.src = `INSERT /sttp/reg FROM TABLE is_updates-reg ACCEPTING DUPLICATE KEYS.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	insert_stmt, ok := file.decls[0].derived_stmt.(^ast.Insert_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Insert_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	testing.expect(
+		t,
+		insert_stmt.kind == .From_Table,
+		fmt.tprintf("Expected From_Table kind, got %v", insert_stmt.kind),
+	)
+	testing.expect(t, insert_stmt.accepting_duplicate_keys, "Expected accepting_duplicate_keys")
+
+	if target_ident, tok := insert_stmt.target.derived_expr.(^ast.Ident); tok {
+		testing.expect(
+			t,
+			target_ident.name == "/sttp/reg",
+			fmt.tprintf("Expected '/sttp/reg', got '%s'", target_ident.name),
+		)
+	} else {
+		testing.expect(t, false, fmt.tprintf("Expected target Ident, got %T", insert_stmt.target.derived_expr))
+	}
+
+	// is_updates-reg: structure-component selector
+	sel, sok := insert_stmt.source.derived_expr.(^ast.Selector_Expr)
+	if !testing.expect(t, sok, fmt.tprintf("Expected Selector_Expr source, got %T", insert_stmt.source.derived_expr)) do return
+	base, bok := sel.expr.derived_expr.(^ast.Ident)
+	if !testing.expect(t, bok, fmt.tprintf("Expected selector base Ident, got %T", sel.expr.derived_expr)) do return
+	testing.expect(t, base.name == "is_updates", fmt.tprintf("Expected base 'is_updates', got '%s'", base.name))
+	field, fok := sel.field.derived_expr.(^ast.Ident)
+	if !testing.expect(t, fok, "Expected selector field Ident") do return
+	testing.expect(t, field.name == "reg", fmt.tprintf("Expected field 'reg', got '%s'", field.name))
+}
+
+@(test)
 insert_lines_of_into_table_test :: proc(t: ^testing.T) {
 	// INSERT LINES OF lt_region INTO TABLE st_region.
 	file := ast.new(ast.File, {})
