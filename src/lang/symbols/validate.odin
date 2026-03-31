@@ -44,6 +44,10 @@ Validation_Context :: struct {
 	// Class/interface member scope when validating inside a method implementation (DATA, CLASS-DATA, methods, …).
 	// Lookups check lookup_table first (parameters, locals), then enclosing_scope.
 	enclosing_scope: ^SymbolTable,
+	// Set in instance method bodies: ABAP `me` references the current object (not in CLASS-METHODS).
+	allow_me_identifier: bool,
+	// Class symbol's Named type (class_sym.type_info); used to resolve me->attribute against the class scope.
+	self_class_type: ^Type,
 }
 
 // symbol_defined_in_validation_scope reports if `lower_name` is a symbol in the current scope chain.
@@ -623,12 +627,15 @@ validate_stmt_ctx :: proc(ctx: ^Validation_Context, stmt: ^ast.Stmt) {
 					if method_sym, ok := class_sym.child_scope.symbols[method_name]; ok &&
 					   method_sym.child_scope != nil {
 						mod_lookup := ctx.module_lookup if ctx.module_lookup != nil else ctx.lookup_table
+						instance_method := method_sym.kind == .Method && !method_sym.is_static
 						child_ctx := Validation_Context{
-							lookup_table    = method_sym.child_scope,
-							diag_table      = ctx.diag_table,
-							syntax_taint    = ctx.syntax_taint,
-							module_lookup   = mod_lookup,
-							enclosing_scope = class_sym.child_scope,
+							lookup_table        = method_sym.child_scope,
+							diag_table          = ctx.diag_table,
+							syntax_taint        = ctx.syntax_taint,
+							module_lookup       = mod_lookup,
+							enclosing_scope     = class_sym.child_scope,
+							allow_me_identifier = instance_method,
+							self_class_type     = class_sym.type_info if instance_method else nil,
 						}
 						validate_stmt_list_ctx(&child_ctx, m.body[:])
 					} else {
@@ -846,6 +853,41 @@ validate_component_selector_field :: proc(ctx: ^Validation_Context, sel: ^ast.Se
 	}
 	base_ty := expr_value_type(ctx.lookup_table, sel.expr)
 	struct_ty := structure_for_field_lookup(ctx.lookup_table, base_ty)
+	// Instance attribute access: me->attr (class members live on the class scope, not a Structure type).
+	if struct_ty == nil &&
+	   sel.op.kind == .Arrow &&
+	   ctx.allow_me_identifier &&
+	   ctx.self_class_type != nil {
+		if id, ok := sel.expr.derived_expr.(^ast.Ident); ok && strings.to_lower(id.name) == "me" {
+			mod := module_scope_lookup(ctx)
+			if mod != nil &&
+			   ctx.self_class_type.kind == .Named &&
+			   len(ctx.self_class_type.name) > 0 {
+				if csym, ok2 := mod.symbols[ctx.self_class_type.name]; ok2 &&
+				   csym.kind == .Class &&
+				   csym.child_scope != nil {
+					field_lc := strings.to_lower(field_ident.name)
+					for _, mem in csym.child_scope.symbols {
+						if mem.kind != .Field {
+							continue
+						}
+						if strings.to_lower(mem.name) == field_lc {
+							return
+						}
+					}
+					add_diagnostic(
+						ctx.diag_table,
+						field_ident.range,
+						strings.concatenate(
+							{"Unknown field '", field_ident.name, "' for class"},
+							context.temp_allocator,
+						),
+					)
+					return
+				}
+			}
+		}
+	}
 	if struct_ty == nil {
 		return
 	}
@@ -876,6 +918,10 @@ validate_ident_expr_ctx :: proc(ctx: ^Validation_Context, ident: ^ast.Ident) {
 	}
 
 	if symbol_defined_in_validation_scope(ctx, name) {
+		return
+	}
+
+	if name == "me" && ctx.allow_me_identifier {
 		return
 	}
 

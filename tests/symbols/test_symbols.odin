@@ -564,6 +564,73 @@ ENDCLASS.`
 }
 
 @(test)
+test_instance_method_me_object_ref_resolves :: proc(t: ^testing.T) {
+	src := `class /sttp/cl_ui_helper definition
+  public
+  final
+  create public .
+public section.
+  methods get_ref_ui_cockpit
+    exporting
+      !eo_ui_cockpit type ref to /sttp/cl_ui_cockpit .
+private section.
+  class-data so_ui_cockpit type ref to /sttp/cl_ui_cockpit .
+endclass.
+class /sttp/cl_ui_helper implementation.
+  method get_ref_ui_cockpit.
+    eo_ui_cockpit = me->so_ui_cockpit.
+  endmethod.
+endclass.`
+	file := ast.new(ast.File, {})
+	file.src = src
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	table := symbols.resolve_file(file)
+	defer symbols.destroy_symbol_table(table)
+
+	for diag in symbols.collect_all_diagnostics(table) {
+		if strings.contains(diag.message, "Unknown symbol 'me'") ||
+		   strings.contains(diag.message, "Unknown field 'so_ui_cockpit'") {
+			testing.expect(t, false, fmt.tprintf("unexpected diagnostic: %s", diag.message))
+			return
+		}
+	}
+}
+
+@(test)
+test_class_method_me_still_unknown :: proc(t: ^testing.T) {
+	src := `class lcl_t definition.
+  public section.
+    class-methods test.
+    class-data so_x type i.
+endclass.
+class lcl_t implementation.
+  method test.
+    so_x = me->so_x.
+  endmethod.
+endclass.`
+	file := ast.new(ast.File, {})
+	file.src = src
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	table := symbols.resolve_file(file)
+	defer symbols.destroy_symbol_table(table)
+
+	found_me_unknown := false
+	for diag in symbols.collect_all_diagnostics(table) {
+		if strings.contains(diag.message, "Unknown symbol 'me'") {
+			found_me_unknown = true
+			break
+		}
+	}
+	testing.expect(t, found_me_unknown, "expected 'me' to be unknown inside CLASS-METHODS implementation")
+}
+
+@(test)
 test_select_into_exporting_param_not_duplicate_symbol :: proc(t: ^testing.T) {
 	src := `CLASS lcl_ui DEFINITION.
   PUBLIC SECTION.

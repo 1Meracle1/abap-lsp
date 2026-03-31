@@ -55,7 +55,14 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 	} else {
 		#partial switch n in node.derived {
 		case ^ast.Ident:
-			if sym, ok := lookup_symbol_at_offset(snap, n.name, offset, symbol_table); ok {
+			if me_hover, ok := lookup_instance_method_me_hover_at_offset(
+				snap,
+				n,
+				offset,
+				symbol_table,
+			); ok {
+				hover_text = me_hover
+			} else if sym, ok := lookup_symbol_at_offset(snap, n.name, offset, symbol_table); ok {
 			#partial switch sym.kind {
 			case .Form:
 				hover_text = format_form_signature(sym)
@@ -765,6 +772,68 @@ lookup_method_param_hover_at_offset :: proc(snap: ^cache.Snapshot, offset: int) 
 	}
 
 	return "", false
+}
+
+// Hover for built-in `me`: current object reference in instance methods (METHODS, not CLASS-METHODS).
+lookup_instance_method_me_hover_at_offset :: proc(
+	snap: ^cache.Snapshot,
+	ident: ^ast.Ident,
+	offset: int,
+	symbol_table: ^symbols.SymbolTable,
+) -> (
+	string,
+	bool,
+) {
+	if snap == nil || ident == nil {
+		return "", false
+	}
+	if strings.to_lower(ident.name, context.temp_allocator) != "me" {
+		return "", false
+	}
+	if !range_contains_offset(ident.range, offset) {
+		return "", false
+	}
+	method_impl := ast.find_enclosing_method_impl(snap.ast, offset)
+	if method_impl == nil || method_impl.ident == nil {
+		return "", false
+	}
+	class_impl := ast.find_enclosing_class_impl(snap.ast, offset)
+	if class_impl == nil || class_impl.ident == nil {
+		return "", false
+	}
+
+	table := symbol_table if symbol_table != nil else snap.symbol_table
+	if table == nil {
+		return "", false
+	}
+
+	class_name := class_impl.ident.name
+	class_sym, class_ok := lookup_symbol_in_scope(table, class_name)
+	if !class_ok || class_sym.kind != .Class || class_sym.child_scope == nil {
+		return "", false
+	}
+
+	method_key := strings.to_lower(
+		symbols.decl_name_from_expr(method_impl.ident),
+		context.temp_allocator,
+	)
+	if method_key == "" {
+		return "", false
+	}
+	method_sym, mok := class_sym.child_scope.symbols[method_key]
+	if !mok || method_sym.kind != .Method || method_sym.is_static {
+		return "", false
+	}
+
+	class_display := cache.xml_encode(class_name, context.temp_allocator)
+	b: strings.Builder
+	strings.builder_init(&b, context.temp_allocator)
+	strings.write_string(&b, "```abap\n")
+	strings.write_string(&b, "me — current object instance\n")
+	strings.write_string(&b, "TYPE REF TO ")
+	strings.write_string(&b, class_display)
+	strings.write_string(&b, "\n```")
+	return strings.to_string(b), true
 }
 
 method_param_hover_in_stmt :: proc(stmt: ^ast.Stmt, text: string, offset: int) -> (string, bool) {
