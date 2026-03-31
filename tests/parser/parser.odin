@@ -7226,6 +7226,61 @@ free_chained_multiline_test :: proc(t: ^testing.T) {
 }
 
 // ============================================================================
+// REFRESH statement tests
+// ============================================================================
+
+@(test)
+refresh_single_target_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src = `REFRESH ct_range.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	refresh_stmt, ok := file.decls[0].derived_stmt.(^ast.Refresh_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Refresh_Stmt, got %T", file.decls[0].derived_stmt)) do return
+	if !testing.expect(t, len(refresh_stmt.exprs) == 1, fmt.tprintf("Expected 1 operand, got %d", len(refresh_stmt.exprs))) do return
+	if id, iok := refresh_stmt.exprs[0].derived_expr.(^ast.Ident); iok {
+		testing.expect(t, id.name == "ct_range", fmt.tprintf("operand: expected ct_range, got %s", id.name))
+	} else {
+		testing.expect(t, false, "Expected Ident for REFRESH target")
+	}
+}
+
+@(test)
+refresh_chained_targets_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src = `REFRESH: lv_var1, lv_var2.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	refresh_stmt, ok := file.decls[0].derived_stmt.(^ast.Refresh_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Refresh_Stmt, got %T", file.decls[0].derived_stmt)) do return
+	if !testing.expect(t, len(refresh_stmt.exprs) == 2, fmt.tprintf("Expected 2 operands, got %d", len(refresh_stmt.exprs))) do return
+	names := []string{"lv_var1", "lv_var2"}
+	for name, i in names {
+		if id, iok := refresh_stmt.exprs[i].derived_expr.(^ast.Ident); iok {
+			testing.expect(t, id.name == name, fmt.tprintf("expr[%d]: expected %s, got %s", i, name, id.name))
+		} else {
+			testing.expect(t, false, fmt.tprintf("expr[%d]: expected Ident", i))
+		}
+	}
+}
+
+// ============================================================================
 // APPEND Statement Tests
 // ============================================================================
 

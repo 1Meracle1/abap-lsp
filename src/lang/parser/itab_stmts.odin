@@ -625,6 +625,37 @@ parse_free_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	return stmt
 }
 
+// parse_refresh_stmt parses REFRESH itab. or REFRESH: itab1, itab2, ... (chained across lines).
+parse_refresh_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
+	refresh_tok := advance_token(p)
+	exprs := make([dynamic]^ast.Expr)
+	if allow_token(p, .Colon) {
+		for p.curr_tok.kind != .EOF {
+			expr := parse_expr(p)
+			if expr != nil {
+				append(&exprs, expr)
+			} else {
+				break
+			}
+			if p.curr_tok.kind == .Period {
+				break
+			}
+			if allow_token(p, .Comma) {
+				continue
+			}
+			error(p, p.curr_tok.range, "expected ','")
+			break
+		}
+	} else {
+		expr := parse_expr(p)
+		append(&exprs, expr)
+	}
+	end_tok := expect_token(p, .Period)
+	stmt := ast.new(ast.Refresh_Stmt, refresh_tok, end_tok)
+	stmt.exprs = exprs
+	return stmt
+}
+
 // parse_unassign_stmt parses UNASSIGN <fs>. or UNASSIGN: <fs1>, <fs2>, ...
 parse_unassign_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	unassign_tok := advance_token(p)

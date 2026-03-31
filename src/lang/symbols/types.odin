@@ -17,6 +17,7 @@ TypeKind :: enum {
 	Time,
 	Hex,
 	XString,
+	Data, // Generic TYPE data / REF TO data (any data object)
 	Table,
 	Structure,
 	Reference,
@@ -101,6 +102,8 @@ format_type :: proc(t: ^Type) -> string {
 		return "x"
 	case .XString:
 		return "xstring"
+	case .Data:
+		return "data"
 	case .Table:
 		elem_str := format_type(t.elem_type)
 		table_kind_str := ""

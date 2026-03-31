@@ -881,6 +881,8 @@ builtin_type_from_name :: proc(name: string) -> TypeKind {
 		return .Hex
 	case "xstring":
 		return .XString
+	case "data":
+		return .Data
 	}
 	return .Unknown
 }

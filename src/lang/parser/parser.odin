@@ -147,6 +147,8 @@ parse_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			if free_at_stmt_start_is_memory_stmt(p) {
 				return parse_free_stmt(p)
 			}
+		case "REFRESH":
+			return parse_refresh_stmt(p)
 		case "UNASSIGN":
 			return parse_unassign_stmt(p)
 		case "MOVE":

@@ -534,6 +534,12 @@ Free_Stmt :: struct {
 	exprs:      [dynamic]^Expr,
 }
 
+// REFRESH itab. or REFRESH: itab1, itab2, ... — reset internal table body / header state
+Refresh_Stmt :: struct {
+	using node: Stmt,
+	exprs:      [dynamic]^Expr,
+}
+
 // UNASSIGN <fs>. or UNASSIGN: <fs1>, <fs2>.
 Unassign_Stmt :: struct {
 	using node: Stmt,
@@ -1459,6 +1465,7 @@ Any_Node :: union {
 	^Loop_At_Control_Stmt,
 	^Clear_Stmt,
 	^Free_Stmt,
+	^Refresh_Stmt,
 	^Unassign_Stmt,
 	^Write_Stmt,
 	^Message_Stmt,
@@ -1590,6 +1597,7 @@ Any_Stmt :: union {
 	^Loop_At_Control_Stmt,
 	^Clear_Stmt,
 	^Free_Stmt,
+	^Refresh_Stmt,
 	^Unassign_Stmt,
 	^Write_Stmt,
 	^Message_Stmt,

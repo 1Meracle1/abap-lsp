@@ -1037,6 +1037,29 @@ ENDCLASS.`
 }
 
 @(test)
+test_ref_to_builtin_generic_data_no_unknown_type_diag :: proc(t: ^testing.T) {
+	src := "DATA lo_str TYPE REF TO data."
+	file := ast.new(ast.File, {})
+	file.src = src
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+	testing.expect(t, len(file.syntax_errors) == 0, fmt.tprintf("syntax: %v", file.syntax_errors))
+
+	table := symbols.resolve_file(file)
+	defer symbols.destroy_symbol_table(table)
+
+	diags := symbols.collect_all_diagnostics(table)
+	for d in diags {
+		lower := strings.to_lower(d.message, context.temp_allocator)
+		if strings.contains(lower, "unknown type 'data'") {
+			testing.expect(t, false, fmt.tprintf("REF TO data uses built-in generic type: %s", d.message))
+			return
+		}
+	}
+}
+
+@(test)
 test_data_typed_chain_unknown_type_in_class_method_diag :: proc(t: ^testing.T) {
 	// DATA: ... (chain) must run type validation; DDIC name /cdbasis/cusset is absent from workspace.
 	src := `CLASS some_class DEFINITION.
