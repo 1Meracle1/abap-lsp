@@ -11388,6 +11388,36 @@ open_cursor_for_select_join_where_string_pragma_order_by_test :: proc(t: ^testin
 }
 
 @(test)
+fetch_next_cursor_into_corresponding_package_size_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src =
+	`FETCH NEXT CURSOR cur INTO CORRESPONDING FIELDS OF TABLE lt_bupa_dat
+          PACKAGE SIZE lv_rows.`
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(t, len(file.syntax_errors) == 0, fmt.tprintf("%v", file.syntax_errors))
+	testing.expect(t, len(file.decls) == 1)
+
+	fetch_stmt, ok := file.decls[0].derived_stmt.(^ast.Fetch_Cursor_Stmt)
+	testing.expect(t, ok)
+	if !ok {
+		return
+	}
+
+	into_id, ok_into := fetch_stmt.into_target.derived_expr.(^ast.Ident)
+	testing.expect(t, ok_into && into_id != nil && into_id.name == "lt_bupa_dat")
+	pkg_id, ok_pkg := fetch_stmt.package_size.derived_expr.(^ast.Ident)
+	testing.expect(t, ok_pkg && pkg_id != nil && pkg_id.name == "lv_rows")
+	testing.expect(
+		t,
+		fetch_stmt.into_kind == .Corresponding && fetch_stmt.into_corresponding_of_table,
+	)
+	testing.expect(t, fetch_stmt.cursor != nil && fetch_stmt.cursor.name == "cur")
+}
+
+@(test)
 select_into_table_closed_before_if_endif_method_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
 	file.src =

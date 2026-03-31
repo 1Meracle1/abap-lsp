@@ -1568,6 +1568,23 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 			}
 		}
 
+	case ^Fetch_Cursor_Stmt:
+		if n.cursor != nil {
+			if res := find_node_at_offset(&n.cursor.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		if n.into_target != nil {
+			if res := find_node_at_offset(&n.into_target.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		if n.package_size != nil {
+			if res := find_node_at_offset(&n.package_size.expr_base, offset); res != nil {
+				return res
+			}
+		}
+
 	case ^Select_Stmt:
 		// Check fields
 		for field in n.fields {

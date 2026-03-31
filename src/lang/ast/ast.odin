@@ -943,6 +943,17 @@ Open_Cursor_Stmt :: struct {
 	select_stmt:   ^Stmt, // ^Select_Stmt
 }
 
+// FETCH NEXT CURSOR ... INTO ... [PACKAGE SIZE n]. — reads next rows from an opened database cursor.
+Fetch_Cursor_Stmt :: struct {
+	using node:                  Stmt,
+	cursor:                      ^Ident,
+	into_kind:                   Select_Into_Kind,
+	// True when INTO was CORRESPONDING FIELDS OF TABLE itab; false for OF wa.
+	into_corresponding_of_table: bool,
+	into_target:                 ^Expr,
+	package_size:                ^Expr, // optional (nil if absent)
+}
+
 
 // Declarations
 
@@ -1392,6 +1403,7 @@ Any_Node :: union {
 	^Create_Object_Stmt,
 	^Select_Stmt,
 	^Open_Cursor_Stmt,
+	^Fetch_Cursor_Stmt,
 	^Select_Join,
 	// Declarations
 	^Bad_Decl,
@@ -1515,6 +1527,7 @@ Any_Stmt :: union {
 	^Create_Object_Stmt,
 	^Select_Stmt,
 	^Open_Cursor_Stmt,
+	^Fetch_Cursor_Stmt,
 	// Declarations
 	^Bad_Decl,
 	^Data_Inline_Decl,

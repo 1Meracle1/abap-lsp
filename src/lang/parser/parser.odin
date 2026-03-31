@@ -202,6 +202,8 @@ parse_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			if check_keyword_ahead(p, "CURSOR") {
 				return parse_open_cursor_stmt(p)
 			}
+		case "FETCH":
+			return parse_fetch_cursor_stmt(p)
 		case "SELECT":
 			return parse_select_stmt(p)
 		case "RAISE":

@@ -3,6 +3,81 @@ package lang_parser
 import "../ast"
 import "../lexer"
 
+// Shared shape for Open SQL INTO / APPENDING ... target (SELECT, FETCH NEXT CURSOR, ...).
+Open_Sql_Into_Clause :: struct {
+	into_kind:                   ast.Select_Into_Kind,
+	into_corresponding_of_table: bool,
+	into_target:                 ^ast.Expr,
+}
+
+// parse_open_sql_into_clause parses the part after INTO or APPENDING (keyword already consumed for INTO;
+// for APPENDING, call parse_select_into_clause_body which uses this internally).
+parse_open_sql_into_clause :: proc(p: ^Parser) -> Open_Sql_Into_Clause {
+	clause: Open_Sql_Into_Clause
+	if check_keyword(p, "TABLE") {
+		advance_token(p)
+		clause.into_kind = .Table
+	} else if check_keyword(p, "CORRESPONDING") {
+		advance_token(p)
+		expect_keyword_token(p, "FIELDS")
+		expect_keyword_token(p, "OF")
+		clause.into_corresponding_of_table = false
+		if check_keyword(p, "TABLE") {
+			advance_token(p)
+			clause.into_corresponding_of_table = true
+		}
+		clause.into_kind = .Corresponding
+	} else {
+		clause.into_kind = .Single
+	}
+
+	if p.curr_tok.kind == .LParen {
+		clause.into_target = parse_select_into_paren_list(p)
+		return clause
+	}
+
+	if p.curr_tok.kind == .At {
+		advance_token(p)
+		if check_keyword(p, "DATA") {
+			clause.into_target = parse_data_inline_expr(p)
+		} else {
+			clause.into_target = parse_expr(p)
+		}
+		return clause
+	}
+
+	clause.into_target = parse_expr(p)
+	return clause
+}
+
+// FETCH NEXT CURSOR cur INTO ... [PACKAGE SIZE n].
+parse_fetch_cursor_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
+	fetch_tok := expect_keyword_token(p, "FETCH")
+	expect_keyword_token(p, "NEXT")
+	expect_keyword_token(p, "CURSOR")
+	cursor_tok := expect_token(p, .Ident)
+	cursor := ast.new_ident(cursor_tok)
+	expect_keyword_token(p, "INTO")
+	clause := parse_open_sql_into_clause(p)
+	package_size: ^ast.Expr
+	if check_keyword(p, "PACKAGE") {
+		advance_token(p)
+		expect_keyword_token(p, "SIZE")
+		package_size = parse_expr(p)
+	}
+	period_tok := expect_token(p, .Period)
+	stmt := ast.new(
+		ast.Fetch_Cursor_Stmt,
+		lexer.TextRange{fetch_tok.range.start, period_tok.range.end},
+	)
+	stmt.cursor = cursor
+	stmt.into_kind = clause.into_kind
+	stmt.into_corresponding_of_table = clause.into_corresponding_of_table
+	stmt.into_target = clause.into_target
+	stmt.package_size = package_size
+	return stmt
+}
+
 // parse_select_stmt parses a SELECT Open SQL statement
 // Syntax variations:
 // - SELECT [SINGLE] fields FROM table [INTO target] [WHERE cond] [ORDER BY cols] [UP TO n ROWS].
@@ -766,37 +841,8 @@ parse_select_into_paren_list :: proc(p: ^Parser) -> ^ast.Expr {
 
 // parse_select_into_clause_body parses the part after INTO or APPENDING (without consuming that keyword).
 parse_select_into_clause_body :: proc(p: ^Parser, stmt: ^ast.Select_Stmt) {
-	if check_keyword(p, "TABLE") {
-		advance_token(p)
-		stmt.into_kind = .Table
-	} else if check_keyword(p, "CORRESPONDING") {
-		advance_token(p)
-		expect_keyword_token(p, "FIELDS")
-		expect_keyword_token(p, "OF")
-		stmt.into_corresponding_of_table = false
-		if check_keyword(p, "TABLE") {
-			advance_token(p)
-			stmt.into_corresponding_of_table = true
-		}
-		stmt.into_kind = .Corresponding
-	} else {
-		stmt.into_kind = .Single
-	}
-
-	if p.curr_tok.kind == .LParen {
-		stmt.into_target = parse_select_into_paren_list(p)
-		return
-	}
-
-	if p.curr_tok.kind == .At {
-		advance_token(p)
-		if check_keyword(p, "DATA") {
-			stmt.into_target = parse_data_inline_expr(p)
-		} else {
-			stmt.into_target = parse_expr(p)
-		}
-		return
-	}
-
-	stmt.into_target = parse_expr(p)
+	clause := parse_open_sql_into_clause(p)
+	stmt.into_kind = clause.into_kind
+	stmt.into_corresponding_of_table = clause.into_corresponding_of_table
+	stmt.into_target = clause.into_target
 }

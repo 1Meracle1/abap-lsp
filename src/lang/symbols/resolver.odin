@@ -1120,6 +1120,8 @@ resolve_stmt :: proc(
 		resolve_select_stmt(table, s, syntax_taint)
 	case ^ast.Open_Cursor_Stmt:
 		resolve_open_cursor_stmt(table, s, syntax_taint)
+	case ^ast.Fetch_Cursor_Stmt:
+		resolve_fetch_cursor_stmt(table, s, syntax_taint)
 	}
 }
 
@@ -1588,6 +1590,27 @@ resolve_open_cursor_stmt :: proc(
 	if stmt.select_stmt != nil {
 		if sel, ok := stmt.select_stmt.derived_stmt.(^ast.Select_Stmt); ok {
 			resolve_select_stmt(table, sel, syntax_taint)
+		}
+	}
+}
+
+resolve_fetch_cursor_stmt :: proc(
+	table: ^SymbolTable,
+	stmt: ^ast.Fetch_Cursor_Stmt,
+	syntax_taint: []lexer.TextRange,
+) {
+	_ = syntax_taint
+	// Same bare-name handling as SELECT INTO (inline types not modeled yet).
+	if stmt.into_target != nil {
+		if ident, ok := stmt.into_target.derived_expr.(^ast.Ident); ok {
+			type_info := make_unknown_type(table)
+			sym := Symbol {
+				name      = ident.name,
+				kind      = .Variable,
+				range     = ident.range,
+				type_info = type_info,
+			}
+			add_symbol(table, sym, allow_shadowing = false)
 		}
 	}
 }

@@ -1139,6 +1139,17 @@ collect_tokens_from_stmt :: proc(
 			collect_tokens_from_stmt(tokens, s.select_stmt, snap)
 		}
 
+	case ^ast.Fetch_Cursor_Stmt:
+		if s.cursor != nil {
+			collect_tokens_from_expr(tokens, &s.cursor.node, snap, nil)
+		}
+		if s.into_target != nil {
+			collect_tokens_from_expr(tokens, s.into_target, snap, nil)
+		}
+		if s.package_size != nil {
+			collect_tokens_from_expr(tokens, s.package_size, snap, nil)
+		}
+
 	case ^ast.Select_Stmt:
 		// Collect tokens from field list
 		for field in s.fields {
