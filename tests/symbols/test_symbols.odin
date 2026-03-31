@@ -564,6 +564,40 @@ ENDCLASS.`
 }
 
 @(test)
+test_method_call_importing_inline_data_symbol :: proc(t: ^testing.T) {
+	src := `CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run.
+ENDCLASS.
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+    lcl_api=>get_msg( IMPORTING es_message = DATA(ls_message) ).
+    DATA lv_copy TYPE string.
+    lv_copy = ls_message.
+  ENDMETHOD.
+ENDCLASS.`
+	file := ast.new(ast.File, {})
+	file.src = src
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	table := symbols.resolve_file(file)
+	defer symbols.destroy_symbol_table(table)
+
+	for diag in symbols.collect_all_diagnostics(table) {
+		if strings.contains(diag.message, "Unknown symbol 'ls_message'") {
+			testing.expect(
+				t,
+				false,
+				fmt.tprintf("expected ls_message from IMPORTING = DATA(ls_message) to resolve: %s", diag.message),
+			)
+			return
+		}
+	}
+}
+
+@(test)
 test_syntax_tainted_top_level_statement_preserves_clean_symbols :: proc(t: ^testing.T) {
 	src := `DATA lv_before TYPE i.
 lv_item->attr noise_token.

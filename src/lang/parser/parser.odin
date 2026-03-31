@@ -2680,6 +2680,7 @@ parse_data_inline_expr :: proc(p: ^Parser) -> ^ast.Expr {
 	// Create a Data_Inline_Decl wrapped as expression
 	data_decl := ast.new(ast.Data_Inline_Decl, data_tok, p.prev_tok)
 	data_decl.ident = ast.new_ident(ident_tok)
+	data_decl.ident.inline_data_decl = data_decl
 	data_decl.value = nil // Value is determined by the LOOP context
 	data_decl.derived_stmt = data_decl
 	return data_decl.ident

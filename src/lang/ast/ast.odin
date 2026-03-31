@@ -52,6 +52,8 @@ Bad_Expr :: struct {
 Ident :: struct {
 	using node: Expr,
 	name:       string,
+	// Set when this identifier is the name from inline DATA(name) parsed as an expression.
+	inline_data_decl: ^Data_Inline_Decl,
 }
 
 Basic_Lit :: struct {

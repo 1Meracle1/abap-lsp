@@ -1207,6 +1207,16 @@ resolve_stmt :: proc(
 		resolve_open_cursor_stmt(table, s, syntax_taint)
 	case ^ast.Fetch_Cursor_Stmt:
 		resolve_fetch_cursor_stmt(table, s, syntax_taint)
+	case ^ast.Expr_Stmt:
+		resolve_expr_inline_declarations(table, s.expr)
+	case ^ast.Assign_Stmt:
+		for rhs_expr in s.rhs {
+			resolve_expr_inline_declarations(table, rhs_expr)
+		}
+	case ^ast.Message_Stmt:
+		if s.into_target != nil {
+			resolve_expr_inline_declarations(table, s.into_target)
+		}
 	}
 }
 
@@ -1621,19 +1631,103 @@ resolve_call_function_stmt :: proc(table: ^SymbolTable, call_func: ^ast.Call_Fun
 	}
 }
 
-resolve_param_value_decl :: proc(table: ^SymbolTable, expr: ^ast.Expr) {
+// resolve_expr_inline_declarations registers procedure-local variables introduced by
+// inline DATA(name) anywhere inside an expression (method call parameters, assignments, etc.).
+resolve_expr_inline_declarations :: proc(table: ^SymbolTable, expr: ^ast.Expr) {
 	if expr == nil {
 		return
 	}
 
-	// Check if this is an inline DATA declaration
-	if ident, ok := expr.derived_expr.(^ast.Ident); ok {
-		// Could be a simple variable reference, nothing to declare
-		return
+	#partial switch e in expr.derived_expr {
+	case ^ast.Ident:
+		if e.inline_data_decl != nil {
+			resolve_inline_decl(table, e.inline_data_decl, is_global = false)
+		}
+	case ^ast.Selector_Expr:
+		resolve_expr_inline_declarations(table, e.expr)
+		if e.field != nil {
+			resolve_expr_inline_declarations(table, e.field)
+		}
+	case ^ast.Unary_Expr:
+		resolve_expr_inline_declarations(table, e.expr)
+	case ^ast.Binary_Expr:
+		resolve_expr_inline_declarations(table, e.left)
+		resolve_expr_inline_declarations(table, e.right)
+	case ^ast.Paren_Expr:
+		resolve_expr_inline_declarations(table, e.expr)
+	case ^ast.Index_Expr:
+		resolve_expr_inline_declarations(table, e.expr)
+		resolve_expr_inline_declarations(table, e.index)
+	case ^ast.Substring_Expr:
+		resolve_expr_inline_declarations(table, e.expr)
+		if e.offset != nil {
+			resolve_expr_inline_declarations(table, e.offset)
+		}
+		if e.length != nil {
+			resolve_expr_inline_declarations(table, e.length)
+		}
+	case ^ast.Call_Expr:
+		resolve_expr_inline_declarations(table, e.expr)
+		for arg in e.args {
+			resolve_expr_inline_declarations(table, arg)
+		}
+	case ^ast.New_Expr:
+		if e.type_expr != nil {
+			resolve_expr_inline_declarations(table, e.type_expr)
+		}
+		for arg in e.args {
+			resolve_expr_inline_declarations(table, arg)
+		}
+	case ^ast.Constructor_Expr:
+		if e.type_expr != nil {
+			resolve_expr_inline_declarations(table, e.type_expr)
+		}
+		for arg in e.args {
+			resolve_expr_inline_declarations(table, arg)
+		}
+	case ^ast.Named_Arg:
+		resolve_expr_inline_declarations(table, e.value)
+	case ^ast.For_Expr:
+		resolve_expr_inline_declarations(table, e.itab)
+		if e.where_cond != nil {
+			resolve_expr_inline_declarations(table, e.where_cond)
+		}
+		if e.result_expr != nil {
+			resolve_expr_inline_declarations(table, e.result_expr)
+		}
+		for arg in e.result_args {
+			resolve_expr_inline_declarations(table, arg)
+		}
+	case ^ast.Value_Row_Expr:
+		for arg in e.args {
+			resolve_expr_inline_declarations(table, arg)
+		}
+	case ^ast.String_Template_Expr:
+		for part in e.parts {
+			if part.is_expr && part.expr != nil {
+				resolve_expr_inline_declarations(table, part.expr)
+			}
+		}
+	case ^ast.Predicate_Expr:
+		resolve_expr_inline_declarations(table, e.expr)
+		if e.type_ref != nil {
+			resolve_expr_inline_declarations(table, e.type_ref)
+		}
+	case ^ast.Table_Type:
+		resolve_expr_inline_declarations(table, e.elem)
+	case ^ast.Ref_Type:
+		resolve_expr_inline_declarations(table, e.target)
+	case ^ast.Line_Type:
+		resolve_expr_inline_declarations(table, e.table)
+	case ^ast.Range_Type:
+		resolve_expr_inline_declarations(table, e.elem)
+	case ^ast.Bad_Expr, ^ast.Basic_Lit:
+	// No sub-expressions
 	}
+}
 
-	// For now, we don't handle inline declarations in CALL FUNCTION parameters
-	// as they are quite rare. This can be extended if needed.
+resolve_param_value_decl :: proc(table: ^SymbolTable, expr: ^ast.Expr) {
+	resolve_expr_inline_declarations(table, expr)
 }
 
 resolve_call_badi_stmt :: proc(table: ^SymbolTable, stmt: ^ast.Call_Badi_Stmt) {
