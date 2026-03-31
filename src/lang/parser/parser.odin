@@ -2934,10 +2934,20 @@ parse_concatenate_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 		stmt.target = parse_expr(p)
 	}
 
-	if check_keyword(p, "SEPARATED") {
-		advance_token(p)
-		expect_keyword_token(p, "BY")
-		stmt.separator = parse_concatenate_source_expr(p)
+	for p.curr_tok.kind != .EOF && p.curr_tok.kind != .Period {
+		if check_keyword(p, "SEPARATED") {
+			advance_token(p)
+			expect_keyword_token(p, "BY")
+			stmt.separator = parse_concatenate_source_expr(p)
+			continue
+		}
+		if check_keyword(p, "RESPECTING") {
+			advance_token(p)
+			expect_keyword_token(p, "BLANKS")
+			stmt.respecting_blanks = true
+			continue
+		}
+		break
 	}
 
 	period_tok := expect_token(p, .Period)

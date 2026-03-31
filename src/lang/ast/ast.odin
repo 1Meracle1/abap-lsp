@@ -747,11 +747,13 @@ Split_Stmt :: struct {
 // Syntax:
 // - CONCATENATE dobj1 dobj2 ... INTO result
 // - CONCATENATE dobj1 dobj2 ... INTO result SEPARATED BY sep
+// - ... INTO result [RESPECTING BLANKS] [SEPARATED BY sep] (clause order flexible)
 Concatenate_Stmt :: struct {
-	using node: Stmt,
-	sources:    [dynamic]^Expr,
-	target:     ^Expr,
-	separator:  ^Expr,
+	using node:        Stmt,
+	sources:           [dynamic]^Expr,
+	target:            ^Expr,
+	separator:         ^Expr,
+	respecting_blanks: bool,
 }
 
 // CONDENSE dobj [NO-GAPS].

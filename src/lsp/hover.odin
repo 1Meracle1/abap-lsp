@@ -345,7 +345,11 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 		}
 
 	case ^ast.Concatenate_Stmt:
-		if n.separator != nil {
+		if n.separator != nil && n.respecting_blanks {
+			hover_text = "(statement) CONCATENATE ... INTO ... RESPECTING BLANKS SEPARATED BY - join with separator, keep source spaces"
+		} else if n.respecting_blanks {
+			hover_text = "(statement) CONCATENATE ... INTO ... RESPECTING BLANKS - joins values preserving trailing spaces in sources"
+		} else if n.separator != nil {
 			hover_text = "(statement) CONCATENATE ... INTO ... SEPARATED BY - joins values with a separator"
 		} else {
 			hover_text = "(statement) CONCATENATE ... INTO - joins values into a target field"

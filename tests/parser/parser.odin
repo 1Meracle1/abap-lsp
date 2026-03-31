@@ -10459,6 +10459,79 @@ concatenate_with_substring_sources_test :: proc(t: ^testing.T) {
 }
 
 @(test)
+concatenate_respecting_blanks_multiline_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src = `CONCATENATE lv_msg_obj
+              ' '
+              is_prod_att-gtin
+  INTO        lv_msg_obj
+  RESPECTING BLANKS.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	concat_stmt, ok := file.decls[0].derived_stmt.(^ast.Concatenate_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Concatenate_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	testing.expect(t, len(concat_stmt.sources) == 3, fmt.tprintf("Expected 3 sources, got %d", len(concat_stmt.sources)))
+	testing.expect(t, concat_stmt.separator == nil, "Expected separator to be nil")
+	testing.expect(t, concat_stmt.respecting_blanks, "Expected respecting_blanks")
+
+	if target_ident, tok := concat_stmt.target.derived_expr.(^ast.Ident); tok {
+		testing.expect(t, target_ident.name == "lv_msg_obj", fmt.tprintf("Expected lv_msg_obj, got %s", target_ident.name))
+	} else {
+		testing.expect(t, false, fmt.tprintf("Expected target to be Ident, got %T", concat_stmt.target.derived_expr))
+	}
+
+	sel, sok := concat_stmt.sources[2].derived_expr.(^ast.Selector_Expr)
+	if !testing.expect(t, sok, fmt.tprintf("Expected third source Selector_Expr, got %T", concat_stmt.sources[2].derived_expr)) do return
+	if base_ident, bok := sel.expr.derived_expr.(^ast.Ident); bok {
+		testing.expect(t, base_ident.name == "is_prod_att", fmt.tprintf("Expected is_prod_att, got %s", base_ident.name))
+	} else {
+		testing.expect(t, false, fmt.tprintf("Expected base Ident is_prod_att, got %T", sel.expr.derived_expr))
+	}
+	if field_ident, fok := sel.field.derived_expr.(^ast.Ident); fok {
+		testing.expect(t, field_ident.name == "gtin", fmt.tprintf("Expected gtin, got %s", field_ident.name))
+	} else {
+		testing.expect(t, false, fmt.tprintf("Expected field Ident gtin, got %T", sel.field.derived_expr))
+	}
+}
+
+@(test)
+concatenate_respecting_blanks_then_separated_by_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src = `CONCATENATE a b INTO c RESPECTING BLANKS SEPARATED BY space.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	concat_stmt, ok := file.decls[0].derived_stmt.(^ast.Concatenate_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Concatenate_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	testing.expect(t, concat_stmt.respecting_blanks, "Expected respecting_blanks")
+	testing.expect(t, concat_stmt.separator != nil, "Expected separator")
+	if sep_ident, sok := concat_stmt.separator.derived_expr.(^ast.Ident); sok {
+		testing.expect(t, sep_ident.name == "space", fmt.tprintf("Expected space, got %s", sep_ident.name))
+	} else {
+		testing.expect(t, false, fmt.tprintf("Expected separator Ident, got %T", concat_stmt.separator.derived_expr))
+	}
+}
+
+@(test)
 split_into_targets_character_mode_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
 	file.src = `SPLIT text AT ':' INTO part1 part2 IN CHARACTER MODE.`
