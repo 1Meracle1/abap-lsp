@@ -46,6 +46,8 @@ parse_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 		switch keyword {
 		case "DATA":
 			return parse_data_decl(p)
+		case "STATICS":
+			return parse_statics_decl(p)
 		case "TYPES":
 			return parse_types_decl(p)
 		case "CONSTANTS":

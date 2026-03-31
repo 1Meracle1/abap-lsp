@@ -11,6 +11,7 @@ import "core:strings"
 ABAP_KEYWORDS :: []string {
 	// Declarations
 	"DATA",
+	"STATICS",
 	"TYPES",
 	"CONSTANTS",
 	"FIELD-SYMBOLS",

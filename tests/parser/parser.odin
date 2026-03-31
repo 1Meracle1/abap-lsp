@@ -141,6 +141,74 @@ basic_single_data_typed_decl_test :: proc(t: ^testing.T) {
 }
 
 @(test)
+statics_single_typed_decl_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src = `STATICS sv_last_tzone  TYPE tznzone.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 1,
+		fmt.tprintf("Expected 1 decl, got %v", len(file.decls)),
+	)
+	if len(file.decls) > 0 {
+		expected := data_single_typed("sv_last_tzone", "tznzone", true)
+		check_stmt(t, expected, file.decls[0])
+	}
+}
+
+@(test)
+statics_single_typed_decl_like_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src = `STATICS sv_buf LIKE sy-msg.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %v", len(file.decls)))
+	if len(file.decls) > 0 {
+		data_decl, ok := file.decls[0].derived_stmt.(^ast.Data_Typed_Decl)
+		testing.expect(t, ok, "expected Data_Typed_Decl")
+		if ok {
+			testing.expect(t, data_decl.is_static, "expected STATICS decl")
+			id, iok := data_decl.ident.derived_expr.(^ast.Ident)
+			testing.expect(t, iok && id.name == "sv_buf", "ident sv_buf")
+		}
+	}
+}
+
+@(test)
+statics_chain_typed_decl_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src = `STATICS: sv_a TYPE i, sv_b TYPE string.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+	testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %v", len(file.decls)))
+	if len(file.decls) > 0 {
+		expected := statics_chain_typed({"sv_a", "i"}, {"sv_b", "string"})
+		check_stmt(t, expected, file.decls[0])
+	}
+}
+
+@(test)
 basic_chain_data_typed_decl_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
 	file.src = `DATA: lv_var1 TYPE i,

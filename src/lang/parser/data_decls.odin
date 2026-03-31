@@ -8,14 +8,34 @@ parse_data_decl :: proc(p: ^Parser) -> ^ast.Decl {
 	if p.curr_tok.kind == .LParen {
 		return parse_data_inline_decl(p, data_tok)
 	}
-	return parse_data_typed_decl(p, data_tok)
+	return parse_data_typed_decl(p, data_tok, false)
 }
 
-parse_data_typed_decl :: proc(p: ^Parser, data_tok: lexer.Token) -> ^ast.Decl {
-	if allow_token(p, .Colon) {
-		return parse_data_typed_multiple_decl(p, data_tok)
+// parse_statics_decl parses STATICS name TYPE/LIKE type [VALUE ...].
+parse_statics_decl :: proc(p: ^Parser) -> ^ast.Decl {
+	statics_tok := expect_token(p, .Ident)
+	if p.curr_tok.kind == .LParen {
+		error(
+			p,
+			p.curr_tok.range,
+			"STATICS requires a typed declaration (STATICS name TYPE ...).",
+		)
+		for p.curr_tok.kind != .Period && p.curr_tok.kind != .EOF {
+			advance_token(p)
+		}
+		if p.curr_tok.kind == .Period {
+			advance_token(p)
+		}
+		return nil
 	}
-	decl := parse_data_typed_single_decl(p, data_tok)
+	return parse_data_typed_decl(p, statics_tok, true)
+}
+
+parse_data_typed_decl :: proc(p: ^Parser, keyword_tok: lexer.Token, is_static: bool) -> ^ast.Decl {
+	if allow_token(p, .Colon) {
+		return parse_data_typed_multiple_decl(p, keyword_tok, is_static)
+	}
+	decl := parse_data_typed_single_decl(p, keyword_tok, is_static)
 	if decl != nil {
 		period_tok := expect_token(p, .Period)
 		decl.range.end = period_tok.range.end
@@ -49,7 +69,11 @@ parse_data_decl_ident :: proc(p: ^Parser) -> ^ast.Expr {
 	return expr
 }
 
-parse_data_typed_single_decl :: proc(p: ^Parser, data_tok: lexer.Token) -> ^ast.Decl {
+parse_data_typed_single_decl :: proc(
+	p: ^Parser,
+	keyword_tok: lexer.Token,
+	is_static: bool,
+) -> ^ast.Decl {
 	// Parse identifier, which may be a selector expression (e.g., screen0100-serial)
 	ident_expr := parse_data_decl_ident(p)
 
@@ -69,10 +93,11 @@ parse_data_typed_single_decl :: proc(p: ^Parser, data_tok: lexer.Token) -> ^ast.
 		value_expr = parse_expr(p)
 	}
 
-	data_decl := ast.new(ast.Data_Typed_Decl, data_tok, p.curr_tok)
+	data_decl := ast.new(ast.Data_Typed_Decl, keyword_tok, p.curr_tok)
 	data_decl.ident = ident_expr
 	data_decl.typed = type_expr
 	data_decl.value = value_expr
+	data_decl.is_static = is_static
 	return data_decl
 }
 
@@ -95,8 +120,12 @@ finish_data_chain_or_single_struct :: proc(
 	return chain_decl
 }
 
-parse_data_typed_multiple_decl :: proc(p: ^Parser, data_tok: lexer.Token) -> ^ast.Decl {
-	chain_decl := ast.new(ast.Data_Typed_Chain_Decl, data_tok.range)
+parse_data_typed_multiple_decl :: proc(
+	p: ^Parser,
+	keyword_tok: lexer.Token,
+	is_static: bool,
+) -> ^ast.Decl {
+	chain_decl := ast.new(ast.Data_Typed_Chain_Decl, keyword_tok.range)
 	chain_decl.parts = make([dynamic]^ast.Stmt)
 
 	for {
@@ -138,6 +167,7 @@ parse_data_typed_multiple_decl :: proc(p: ^Parser, data_tok: lexer.Token) -> ^as
 		decl.ident = ident_expr
 		decl.typed = type_expr
 		decl.value = value_expr
+		decl.is_static = is_static
 		append(&chain_decl.parts, &decl.node)
 
 		if allow_token(p, .Comma) {

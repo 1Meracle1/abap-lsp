@@ -916,6 +916,8 @@ Data_Typed_Decl :: struct {
 	ident:      ^Expr, // Can be ^Ident or ^Selector_Expr (e.g., screen0100-serial)
 	typed:      ^Expr,
 	value:      ^Expr,
+	// True for STATICS name TYPE ... — procedure-persistent storage (not CLASS-DATA)
+	is_static:  bool,
 }
 
 Data_Typed_Chain_Decl :: struct {

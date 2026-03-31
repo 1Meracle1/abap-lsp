@@ -36,10 +36,15 @@ data_inline :: proc(name: string, value: ast.Any_Expr) -> ^ast.Data_Inline_Decl 
 	return node
 }
 
-data_single_typed :: proc(name: string, type_name: string) -> ^ast.Data_Typed_Decl {
+data_single_typed :: proc(
+	name: string,
+	type_name: string,
+	is_static: bool = false,
+) -> ^ast.Data_Typed_Decl {
 	node := ast.new(ast.Data_Typed_Decl, {})
 	node.ident = ident(name)
 	node.typed = ident(type_name)
+	node.is_static = is_static
 	node.derived_stmt = node
 	return node
 }
@@ -51,7 +56,21 @@ data_chain_typed :: proc(decls: ..struct {
 	node := ast.new(ast.Data_Typed_Chain_Decl, {})
 	node.parts = make([dynamic]^ast.Stmt)
 	for d in decls {
-		td := data_single_typed(d.name, d.type_name)
+		td := data_single_typed(d.name, d.type_name, false)
+		append(&node.parts, &td.node)
+	}
+	node.derived_stmt = node
+	return node
+}
+
+statics_chain_typed :: proc(decls: ..struct {
+	name:      string,
+	type_name: string,
+}) -> ^ast.Data_Typed_Chain_Decl {
+	node := ast.new(ast.Data_Typed_Chain_Decl, {})
+	node.parts = make([dynamic]^ast.Stmt)
+	for d in decls {
+		td := data_single_typed(d.name, d.type_name, true)
 		append(&node.parts, &td.node)
 	}
 	node.derived_stmt = node

@@ -315,6 +315,13 @@ check_stmt :: proc(
 		ac, ok := actual_derived.(^ast.Data_Typed_Decl)
 		if !testing.expect(t, ok, fmt.tprintf("Expected Data_Typed_Decl, got %T", actual_derived), loc = loc) do return
 
+		testing.expect(
+			t,
+			ex.is_static == ac.is_static,
+			fmt.tprintf("Expected is_static %v, got %v", ex.is_static, ac.is_static),
+			loc = loc,
+		)
+
 		if testing.expect(t, ac.ident != nil, "Actual ident is nil", loc = loc) {
 			testing.expect(t, ex.ident != nil, "Expected ident is nil") // Should be enforced by builder
 			check_expr(t, ex.ident.derived_expr, ac.ident, loc = loc)
