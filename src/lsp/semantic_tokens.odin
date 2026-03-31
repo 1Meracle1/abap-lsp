@@ -1676,6 +1676,9 @@ collect_tokens_from_type_expr :: proc(tokens: ^[dynamic]SemanticToken, expr: ^as
 	case ^ast.Line_Type:
 		collect_tokens_from_type_expr(tokens, e.table)
 
+	case ^ast.Range_Type:
+		collect_tokens_from_type_expr(tokens, e.elem)
+
 	case ^ast.Selector_Expr:
 		collect_tokens_from_expr(tokens, e.expr, nil, nil)
 		if e.field != nil {

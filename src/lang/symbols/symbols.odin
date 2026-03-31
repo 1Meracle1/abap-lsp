@@ -258,6 +258,12 @@ make_line_of_type :: proc(table: ^SymbolTable, target: ^Type) -> ^Type {
 	return t
 }
 
+make_range_of_type :: proc(table: ^SymbolTable, elem: ^Type) -> ^Type {
+	t := make_type(table, .RangeOf)
+	t.elem_type = elem
+	return t
+}
+
 make_table_key_info :: proc(table: ^SymbolTable, is_unique: bool = false, is_default: bool = false) -> ^TableKeyInfo {
 	key := new(TableKeyInfo)
 	key.is_unique = is_unique

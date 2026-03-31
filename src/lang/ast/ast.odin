@@ -1272,6 +1272,12 @@ Line_Type :: struct {
 	table:      ^Expr,
 }
 
+// RANGE OF base_type — selection table / ranges type (SIGN, OPTION, LOW, HIGH)
+Range_Type :: struct {
+	using node: Expr,
+	elem:       ^Expr,
+}
+
 Any_Node :: union {
 	^Program,
 	^File,
@@ -1297,6 +1303,7 @@ Any_Node :: union {
 	^Table_Type,
 	^Ref_Type,
 	^Line_Type,
+	^Range_Type,
 	// Statements
 	^Bad_Stmt,
 	^Expr_Stmt,
@@ -1420,6 +1427,7 @@ Any_Expr :: union {
 	^Table_Type,
 	^Ref_Type,
 	^Line_Type,
+	^Range_Type,
 }
 
 Any_Stmt :: union {

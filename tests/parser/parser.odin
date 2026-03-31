@@ -836,6 +836,50 @@ types_with_custom_type_reference_test :: proc(t: ^testing.T) {
 }
 
 @(test)
+types_chain_range_of_namespaced_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src = `TYPES:
+    tt_bupid_rng TYPE RANGE OF /sttp/e_bupid .`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+	testing.expect(
+		t,
+		len(file.decls) == 1,
+		fmt.tprintf("Expected 1 decl, got %v", len(file.decls)),
+	)
+	if len(file.decls) == 0 do return
+
+	chain, ok := file.decls[0].derived_stmt.(^ast.Types_Chain_Decl)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Types_Chain_Decl, got %T", file.decls[0].derived_stmt)) {
+		return
+	}
+	if !testing.expect(t, len(chain.parts) == 1, fmt.tprintf("Expected 1 part, got %d", len(chain.parts))) {
+		return
+	}
+
+	decl, dok := chain.parts[0].derived_stmt.(^ast.Types_Decl)
+	if !testing.expect(t, dok, "parts[0] Types_Decl") do return
+	testing.expect(t, decl.ident.name == "tt_bupid_rng", decl.ident.name)
+
+	rt, rok := decl.typed.derived_expr.(^ast.Range_Type)
+	if !testing.expect(t, rok, fmt.tprintf("Expected Range_Type, got %T", decl.typed.derived_expr)) {
+		return
+	}
+
+	base_id, iok := rt.elem.derived_expr.(^ast.Ident)
+	if !testing.expect(t, iok, fmt.tprintf("Expected Ident for RANGE OF base, got %T", rt.elem.derived_expr)) {
+		return
+	}
+	testing.expect(t, base_id.name == "/sttp/e_bupid", base_id.name)
+}
+
+@(test)
 mixed_data_and_types_decl_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
 	file.src = `TYPES ty_counter TYPE i.

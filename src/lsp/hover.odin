@@ -499,6 +499,9 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 	case ^ast.Line_Type:
 		hover_text = "(type) LINE OF - line type of internal table"
 
+	case ^ast.Range_Type:
+		hover_text = "(type) RANGE OF - selection table / ranges type"
+
 	case ^ast.Call_Function_Stmt:
 		if n.func_name != nil {
 			if lit, ok := n.func_name.derived_expr.(^ast.Basic_Lit); ok {

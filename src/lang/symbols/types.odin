@@ -22,6 +22,7 @@ TypeKind :: enum {
 	Reference,
 	Named,
 	LineOf, // LINE OF table_type
+	RangeOf, // RANGE OF elementary_or_domain
 }
 
 // Table type kinds
@@ -136,6 +137,9 @@ format_type :: proc(t: ^Type) -> string {
 	case .LineOf:
 		target_str := format_type(t.target_type)
 		return fmt.tprintf("LINE OF %s", target_str)
+	case .RangeOf:
+		elem_str := format_type(t.elem_type)
+		return fmt.tprintf("RANGE OF %s", elem_str)
 	case .Structure:
 		if t.name != "" {
 			return t.name

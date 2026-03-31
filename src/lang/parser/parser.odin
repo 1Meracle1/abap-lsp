@@ -238,6 +238,7 @@ check_keyword :: proc(p: ^Parser, expected: string) -> bool {
 // - STANDARD TABLE OF / SORTED TABLE OF / HASHED TABLE OF / TABLE OF
 // - REF TO
 // - LINE OF
+// - RANGE OF
 // - Simple types (identifiers, selectors)
 // - WITH KEY / WITH UNIQUE KEY / WITH NON-UNIQUE KEY clauses
 parse_type_expr :: proc(p: ^Parser) -> ^ast.Expr {
@@ -249,6 +250,11 @@ parse_type_expr :: proc(p: ^Parser) -> ^ast.Expr {
 	// Check for LINE OF
 	if check_keyword(p, "LINE") {
 		return parse_line_type(p)
+	}
+
+	// Check for RANGE OF (selection table / ranges type)
+	if check_keyword(p, "RANGE") {
+		return parse_range_type(p)
 	}
 
 	// Check for table types: STANDARD TABLE OF, SORTED TABLE OF, HASHED TABLE OF, TABLE OF
@@ -314,6 +320,22 @@ parse_line_type :: proc(p: ^Parser) -> ^ast.Expr {
 	line_type.table = table_ref
 	line_type.derived_expr = line_type
 	return line_type
+}
+
+// parse_range_type parses: RANGE OF type
+parse_range_type :: proc(p: ^Parser) -> ^ast.Expr {
+	range_tok := expect_keyword_token(p, "RANGE")
+	expect_keyword_token(p, "OF")
+
+	elem := parse_type_expr(p)
+
+	range_type := ast.new(
+		ast.Range_Type,
+		lexer.TextRange{range_tok.range.start, p.prev_tok.range.end},
+	)
+	range_type.elem = elem
+	range_type.derived_expr = range_type
+	return range_type
 }
 
 // parse_table_type parses table types with optional key specifications:

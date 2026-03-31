@@ -390,6 +390,8 @@ validate_expr_ctx :: proc(ctx: ^Validation_Context, expr: ^ast.Expr) {
 
 	case ^ast.Line_Type:
 		validate_type_expr_ctx(ctx, e.table)
+	case ^ast.Range_Type:
+		validate_type_expr_ctx(ctx, e.elem)
 	}
 }
 
@@ -407,6 +409,8 @@ validate_type_expr_ctx :: proc(ctx: ^Validation_Context, expr: ^ast.Expr) {
 		validate_type_expr_ctx(ctx, e.target)
 	case ^ast.Line_Type:
 		validate_type_expr_ctx(ctx, e.table)
+	case ^ast.Range_Type:
+		validate_type_expr_ctx(ctx, e.elem)
 	case ^ast.Selector_Expr:
 		validate_type_expr_ctx(ctx, e.expr)
 		if e.field != nil {

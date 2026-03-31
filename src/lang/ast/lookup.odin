@@ -261,6 +261,13 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 			}
 		}
 
+	case ^Range_Type:
+		if n.elem != nil {
+			if res := find_node_at_offset(&n.elem.expr_base, offset); res != nil {
+				return res
+			}
+		}
+
 	case ^New_Expr:
 		if n.type_expr != nil {
 			if res := find_node_at_offset(&n.type_expr.expr_base, offset); res != nil {

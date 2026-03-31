@@ -695,6 +695,12 @@ resolve_type_expr :: proc(table: ^SymbolTable, expr: ^ast.Expr) -> ^Type {
 		t.ast_node = expr
 		return t
 
+	case ^ast.Range_Type:
+		elem_type := resolve_type_expr(table, e.elem)
+		t := make_range_of_type(table, elem_type)
+		t.ast_node = expr
+		return t
+
 	case ^ast.Selector_Expr:
 		return make_named_type(table, selector_to_string(e), expr)
 
