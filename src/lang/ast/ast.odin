@@ -708,6 +708,22 @@ Condense_Stmt :: struct {
 	text:       ^Expr,
 }
 
+// TRANSLATE statement (classic character/string transforms)
+// - TRANSLATE dobj TO UPPER | LOWER CASE.
+// - TRANSLATE dobj USING pattern.
+Translate_Kind :: enum {
+	Upper_Case,
+	Lower_Case,
+	Using,
+}
+
+Translate_Stmt :: struct {
+	using node:       Stmt,
+	target:           ^Expr,
+	kind:             Translate_Kind,
+	using_pattern:    ^Expr, // USING variant only
+}
+
 // REPLACE statement (classic, IN/INTO, ALL/FIRST OCCURRENCES, optional REGEX)
 Replace_Scope :: enum {
 	Simple,
@@ -1289,6 +1305,7 @@ Any_Node :: union {
 	^Split_Stmt,
 	^Concatenate_Stmt,
 	^Condense_Stmt,
+	^Translate_Stmt,
 	^Replace_Stmt,
 	^Raise_Exception_Stmt,
 	^Check_Stmt,
@@ -1407,6 +1424,7 @@ Any_Stmt :: union {
 	^Split_Stmt,
 	^Concatenate_Stmt,
 	^Condense_Stmt,
+	^Translate_Stmt,
 	^Replace_Stmt,
 	^Raise_Exception_Stmt,
 	^Check_Stmt,

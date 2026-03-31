@@ -165,6 +165,8 @@ parse_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			return parse_write_stmt(p)
 		case "CONDENSE":
 			return parse_condense_stmt(p)
+		case "TRANSLATE":
+			return parse_translate_stmt(p)
 		case "SPLIT":
 			return parse_split_stmt(p)
 		case "CONCATENATE":
@@ -2376,6 +2378,39 @@ parse_condense_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	condense_stmt := ast.new(ast.Condense_Stmt, condense_tok, period_tok)
 	condense_stmt.text = text_expr
 	return condense_stmt
+}
+
+parse_translate_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
+	translate_tok := expect_keyword_token(p, "TRANSLATE")
+	target := parse_expr(p)
+	kind: ast.Translate_Kind
+	using_pattern: ^ast.Expr = nil
+	if check_keyword(p, "TO") {
+		advance_token(p)
+		if check_keyword(p, "UPPER") {
+			advance_token(p)
+			expect_keyword_token(p, "CASE")
+			kind = .Upper_Case
+		} else if check_keyword(p, "LOWER") {
+			advance_token(p)
+			expect_keyword_token(p, "CASE")
+			kind = .Lower_Case
+		} else {
+			error(p, p.curr_tok.range, "expected UPPER or LOWER after TRANSLATE ... TO")
+		}
+	} else if check_keyword(p, "USING") {
+		advance_token(p)
+		using_pattern = parse_expr(p)
+		kind = .Using
+	} else {
+		error(p, p.curr_tok.range, "expected TO or USING after TRANSLATE target")
+	}
+	period_tok := expect_token(p, .Period)
+	stmt := ast.new(ast.Translate_Stmt, translate_tok, period_tok)
+	stmt.target = target
+	stmt.kind = kind
+	stmt.using_pattern = using_pattern
+	return stmt
 }
 
 concatenate_has_substring_length :: proc(p: ^Parser) -> bool {

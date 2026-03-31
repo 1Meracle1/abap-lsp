@@ -853,6 +853,14 @@ collect_tokens_from_stmt :: proc(
 			collect_tokens_from_expr(tokens, s.text, snap, nil)
 		}
 
+	case ^ast.Translate_Stmt:
+		if s.target != nil {
+			collect_tokens_from_expr(tokens, s.target, snap, nil)
+		}
+		if s.using_pattern != nil {
+			collect_tokens_from_expr(tokens, s.using_pattern, snap, nil)
+		}
+
 	case ^ast.Replace_Stmt:
 		if s.pattern != nil {
 			collect_tokens_from_expr(tokens, s.pattern, snap, nil)
