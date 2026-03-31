@@ -10149,6 +10149,134 @@ select_for_all_entries_test :: proc(t: ^testing.T) {
 	)
 }
 
+@(test)
+select_into_and_upto_before_from_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src =
+	`SELECT objid UP TO 1 ROWS
+  FROM /sttp/dm_obj_ids
+  INTO lv_objid
+  FOR ALL ENTRIES IN it_obj_ids[]
+  WHERE objid = it_obj_ids-objid
+  AND owner = iv_owner.`
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(t, len(file.syntax_errors) == 0, fmt.tprintf("%v", file.syntax_errors))
+	testing.expect(t, len(file.decls) == 1)
+
+	select_stmt, ok := file.decls[0].derived_stmt.(^ast.Select_Stmt)
+	testing.expect(t, ok)
+	if !ok {
+		return
+	}
+
+	testing.expect(t, len(select_stmt.fields) == 1)
+	testing.expect(t, select_stmt.up_to_rows != nil)
+	testing.expect(t, select_stmt.from_table != nil)
+	testing.expect(t, select_stmt.into_target != nil)
+	testing.expect(t, select_stmt.for_all_entries != nil)
+	testing.expect(t, select_stmt.where_cond != nil)
+}
+
+@(test)
+select_fields_before_from_corresponding_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src =
+	`SELECT *
+  INTO CORRESPONDING FIELDS OF TABLE lt_gs1_gcp
+  FROM /sttp/gs1_gcp
+  FOR ALL ENTRIES IN lt_gs1_gcp_fae
+  WHERE gs1_gcp = lt_gs1_gcp_fae-table_line.`
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(t, len(file.syntax_errors) == 0, fmt.tprintf("%v", file.syntax_errors))
+
+	select_stmt, ok := file.decls[0].derived_stmt.(^ast.Select_Stmt)
+	testing.expect(t, ok)
+	if !ok {
+		return
+	}
+
+	testing.expect(t, select_stmt.into_kind == .Corresponding)
+	testing.expect(t, select_stmt.from_table != nil)
+	testing.expect(t, select_stmt.for_all_entries != nil)
+}
+
+@(test)
+select_appending_not_in_host_static_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src =
+	`SELECT * APPENDING CORRESPONDING FIELDS OF TABLE lt_map
+  FROM /sttp/bupmap
+  WHERE bupid NOT IN lt_bupid_rng.`
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(t, len(file.syntax_errors) == 0, fmt.tprintf("%v", file.syntax_errors))
+
+	select_stmt, ok := file.decls[0].derived_stmt.(^ast.Select_Stmt)
+	testing.expect(t, ok)
+	if !ok {
+		return
+	}
+
+	testing.expect(t, select_stmt.appending)
+	testing.expect(t, select_stmt.where_cond != nil)
+
+	file2 := ast.new(ast.File, {})
+	file2.src =
+	`SELECT rfcdest FROM rfcdes INTO TABLE @DATA(lt_rfcdes)
+  WHERE rfctype = @/sttp/cl_constants=>gcs_rfctype-http_ext.`
+
+	parser.parse_file(&p, file2)
+	testing.expect(t, len(file2.syntax_errors) == 0, fmt.tprintf("%v", file2.syntax_errors))
+}
+
+@(test)
+select_into_paren_list_join_inner_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src =
+	`SELECT MAX( bup_role_variant ) COUNT( * )
+  INTO ( ls_bupmap-bup_role_variant , lv_number_of_lines )
+  FROM /sttp/bupmap
+  WHERE bupid = lv_bupid.`
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(t, len(file.syntax_errors) == 0, fmt.tprintf("%v", file.syntax_errors))
+
+	select_stmt, ok := file.decls[0].derived_stmt.(^ast.Select_Stmt)
+	testing.expect(t, ok)
+	if !ok {
+		return
+	}
+
+	row, row_ok := select_stmt.into_target.derived_expr.(^ast.Value_Row_Expr)
+	testing.expect(t, row_ok)
+	testing.expect(t, len(row.args) == 2)
+	testing.expect(t, len(select_stmt.fields) == 2)
+
+	file2 := ast.new(ast.File, {})
+	file2.src =
+	`SELECT SINGLE *
+  FROM ttzz AS tz
+  INNER JOIN ttzr AS tr
+  ON tz~zonerule = tr~zonerule
+  INTO CORRESPONDING FIELDS OF ls_tr
+  WHERE tz~tzone = lv_tzone.`
+
+	parser.parse_file(&p, file2)
+	testing.expect(t, len(file2.syntax_errors) == 0, fmt.tprintf("%v", file2.syntax_errors))
+	s2, ok2 := file2.decls[0].derived_stmt.(^ast.Select_Stmt)
+	testing.expect(t, ok2 && len(s2.joins) == 1)
+}
+
 // --- CONSTANTS Parsing Tests ---
 
 @(test)

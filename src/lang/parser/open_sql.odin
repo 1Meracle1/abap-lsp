@@ -27,34 +27,13 @@ parse_select_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 		stmt.is_single = true
 	}
 
-	// Parse field list or FROM keyword (for SELECT FROM table FIELDS ...)
+	// Leading field list (stops at FROM, INTO, WHERE, UP TO, …)
 	if !check_keyword(p, "FROM") {
 		parse_select_field_list(p, stmt)
 	}
 
-	// Parse FROM clause
-	if check_keyword(p, "FROM") {
-		advance_token(p)
-		stmt.from_table = parse_select_table_ref(p)
-
-		// Check for AS alias
-		if check_keyword(p, "AS") {
-			advance_token(p)
-			alias_tok := expect_token(p, .Ident)
-			stmt.from_alias = ast.new_ident(alias_tok)
-		}
-
-		// Parse optional JOINs
-		parse_select_joins(p, stmt)
-	}
-
-	// Parse FIELDS clause (alternative field list position)
-	if check_keyword(p, "FIELDS") {
-		advance_token(p)
-		parse_select_field_list(p, stmt)
-	}
-
-	// Parse remaining clauses in any order
+	// FROM, FIELDS, INTO, WHERE, … may appear in different orders (e.g. INTO before FROM,
+	// UP TO n ROWS before FROM, FOR ALL ENTRIES before/after INTO).
 	parse_select_clauses(p, stmt)
 
 	// Check if this is a SELECT loop (no SINGLE and has ENDSELECT)
@@ -84,7 +63,10 @@ parse_select_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 
 // parse_select_field_list parses the field list in a SELECT statement
 parse_select_field_list :: proc(p: ^Parser, stmt: ^ast.Select_Stmt) {
-	for p.curr_tok.kind != .EOF && !check_keyword(p, "FROM") && !check_keyword(p, "INTO") {
+	for p.curr_tok.kind != .EOF &&
+	    !check_keyword(p, "FROM") &&
+	    !check_keyword(p, "INTO") &&
+	    !check_keyword(p, "APPENDING") {
 		field := parse_select_field_expr(p)
 		if field != nil {
 			append(&stmt.fields, field)
@@ -103,7 +85,8 @@ parse_select_field_list :: proc(p: ^Parser, stmt: ^ast.Select_Stmt) {
 		   check_keyword(p, "GROUP") ||
 		   check_keyword(p, "FOR") ||
 		   check_keyword(p, "UP") ||
-		   check_keyword(p, "HAVING") {
+		   check_keyword(p, "HAVING") ||
+		   check_keyword(p, "APPENDING") {
 			break
 		}
 
@@ -191,25 +174,44 @@ parse_select_single_field :: proc(p: ^Parser) -> ^ast.Expr {
 		}
 	}
 
-	// Parse regular field expression (may include table~field)
+	// Parse regular field expression (table~field, class=>static_attr chains)
 	first_tok := expect_token(p, .Ident)
 	expr: ^ast.Expr = ast.new_ident(first_tok)
 
-	// Check for ~ (table~field notation)
-	if p.curr_tok.kind == .Tilde {
-		tilde_tok := advance_token(p)
-		field_tok := expect_token(p, .Ident)
-		field_ident := ast.new_ident(field_tok)
+	for {
+		if p.curr_tok.kind == .Tilde {
+			tilde_tok := advance_token(p)
+			field_tok := expect_token(p, .Ident)
+			field_ident := ast.new_ident(field_tok)
 
-		sel := ast.new(
-			ast.Selector_Expr,
-			lexer.TextRange{first_tok.range.start, field_tok.range.end},
-		)
-		sel.expr = expr
-		sel.op = tilde_tok
-		sel.field = field_ident
-		sel.derived_expr = sel
-		expr = sel
+			sel := ast.new(
+				ast.Selector_Expr,
+				lexer.TextRange{expr.range.start, field_tok.range.end},
+			)
+			sel.expr = expr
+			sel.op = tilde_tok
+			sel.field = field_ident
+			sel.derived_expr = sel
+			expr = sel
+			continue
+		}
+		if p.curr_tok.kind == .FatArrow && !lexer.have_space_between(p.prev_tok, p.curr_tok) {
+			fat_tok := advance_token(p)
+			field_tok := expect_token(p, .Ident)
+			field_ident := ast.new_ident(field_tok)
+
+			sel := ast.new(
+				ast.Selector_Expr,
+				lexer.TextRange{expr.range.start, field_tok.range.end},
+			)
+			sel.expr = expr
+			sel.op = fat_tok
+			sel.field = field_ident
+			sel.derived_expr = sel
+			expr = sel
+			continue
+		}
+		break
 	}
 
 	return expr
@@ -219,6 +221,14 @@ parse_select_single_field :: proc(p: ^Parser) -> ^ast.Expr {
 parse_select_table_ref :: proc(p: ^Parser) -> ^ast.Expr {
 	table_tok := expect_token(p, .Ident)
 	return ast.new_ident(table_tok)
+}
+
+// skip_select_pragma_strings skips ABAP pragma fragments written as string literals, e.g.
+// INNER JOIN t AS x "pragma text" ON ...
+skip_select_pragma_strings :: proc(p: ^Parser) {
+	for p.curr_tok.kind == .String {
+		advance_token(p)
+	}
 }
 
 // parse_select_joins parses JOIN clauses
@@ -262,6 +272,8 @@ parse_select_joins :: proc(p: ^Parser, stmt: ^ast.Select_Stmt) {
 			alias_tok := expect_token(p, .Ident)
 			join_alias = ast.new_ident(alias_tok)
 		}
+
+		skip_select_pragma_strings(p)
 
 		// Parse ON condition
 		on_cond: ^ast.Expr = nil
@@ -322,6 +334,25 @@ parse_select_logical_expr :: proc(p: ^Parser) -> ^ast.Expr {
 // parse_select_comparison_expr parses a comparison in SELECT context
 parse_select_comparison_expr :: proc(p: ^Parser) -> ^ast.Expr {
 	left := parse_select_operand(p)
+
+	// col NOT IN itab (Open SQL)
+	if check_keyword(p, "NOT") && check_keyword_ahead(p, "IN") {
+		not_tok := advance_token(p)
+		in_tok := advance_token(p)
+		right := parse_select_operand(p)
+
+		in_bin := ast.new(ast.Binary_Expr, lexer.TextRange{left.range.start, right.range.end})
+		in_bin.left = left
+		in_bin.op = in_tok
+		in_bin.right = right
+		in_bin.derived_expr = in_bin
+
+		unary := ast.new(ast.Unary_Expr, lexer.TextRange{left.range.start, right.range.end})
+		unary.op = not_tok
+		unary.expr = in_bin
+		unary.derived_expr = unary
+		return unary
+	}
 
 	// Check for comparison operators: =, <>, <, >, <=, >=, EQ, NE, LT, GT, LE, GE
 	if p.curr_tok.kind == .Eq ||
@@ -446,12 +477,38 @@ parse_select_field_with_dash :: proc(p: ^Parser) -> ^ast.Expr {
 // parse_select_clauses parses the remaining clauses of a SELECT statement
 parse_select_clauses :: proc(p: ^Parser, stmt: ^ast.Select_Stmt) {
 	for p.curr_tok.kind != .EOF && p.curr_tok.kind != .Period {
-		if check_keyword(p, "FOR") {
+		if check_keyword(p, "ENDSELECT") {
+			break
+		} else if check_keyword(p, "FROM") {
+			advance_token(p)
+			stmt.from_table = parse_select_table_ref(p)
+			if check_keyword(p, "AS") {
+				advance_token(p)
+				alias_tok := expect_token(p, .Ident)
+				stmt.from_alias = ast.new_ident(alias_tok)
+			}
+			skip_select_pragma_strings(p)
+			parse_select_joins(p, stmt)
+		} else if check_keyword(p, "FIELDS") {
+			advance_token(p)
+			parse_select_field_list(p, stmt)
+		} else if check_keyword(p, "APPENDING") {
+			advance_token(p)
+			stmt.appending = true
+			parse_select_into_clause_body(p, stmt)
+		} else if check_keyword(p, "INTO") {
+			advance_token(p)
+			parse_select_into_clause_body(p, stmt)
+		} else if check_keyword(p, "FOR") {
 			advance_token(p)
 			expect_keyword_token(p, "ALL")
 			expect_keyword_token(p, "ENTRIES")
 			expect_keyword_token(p, "IN")
 			stmt.for_all_entries = parse_select_operand(p)
+			if p.curr_tok.kind == .LBracket {
+				advance_token(p)
+				expect_token(p, .RBracket)
+			}
 		} else if check_keyword(p, "WHERE") {
 			advance_token(p)
 			stmt.where_cond = parse_select_logical_expr(p)
@@ -466,19 +523,12 @@ parse_select_clauses :: proc(p: ^Parser, stmt: ^ast.Select_Stmt) {
 		} else if check_keyword(p, "HAVING") {
 			advance_token(p)
 			stmt.having_cond = parse_select_logical_expr(p)
-		} else if check_keyword(p, "INTO") {
-			advance_token(p)
-			parse_select_into(p, stmt)
 		} else if check_keyword(p, "UP") {
 			advance_token(p)
 			expect_keyword_token(p, "TO")
 			stmt.up_to_rows = parse_expr(p)
 			expect_keyword_token(p, "ROWS")
-		} else if check_keyword(p, "ENDSELECT") {
-			// End of SELECT loop - don't consume, let outer handle it
-			break
 		} else {
-			// Unknown clause, break
 			break
 		}
 	}
@@ -516,7 +566,11 @@ parse_select_order_by :: proc(p: ^Parser, stmt: ^ast.Select_Stmt) {
 		   check_keyword(p, "UP") ||
 		   check_keyword(p, "FOR") ||
 		   check_keyword(p, "GROUP") ||
-		   check_keyword(p, "HAVING") {
+		   check_keyword(p, "HAVING") ||
+		   check_keyword(p, "FROM") ||
+		   check_keyword(p, "FIELDS") ||
+		   check_keyword(p, "APPENDING") ||
+		   check_keyword(p, "ENDSELECT") {
 			break
 		}
 
@@ -545,7 +599,10 @@ parse_select_group_by :: proc(p: ^Parser, stmt: ^ast.Select_Stmt) {
 		   check_keyword(p, "WHERE") ||
 		   check_keyword(p, "HAVING") ||
 		   check_keyword(p, "ORDER") ||
-		   check_keyword(p, "UP") {
+		   check_keyword(p, "UP") ||
+		   check_keyword(p, "FROM") ||
+		   check_keyword(p, "FOR") ||
+		   check_keyword(p, "ENDSELECT") {
 			break
 		}
 
@@ -558,9 +615,32 @@ parse_select_group_by :: proc(p: ^Parser, stmt: ^ast.Select_Stmt) {
 	}
 }
 
-// parse_select_into parses the INTO clause of a SELECT statement
-parse_select_into :: proc(p: ^Parser, stmt: ^ast.Select_Stmt) {
-	// Check for TABLE keyword
+// parse_select_into_paren_list parses INTO ( wa1, wa2, ... ).
+parse_select_into_paren_list :: proc(p: ^Parser) -> ^ast.Expr {
+	lparen_tok := expect_token(p, .LParen)
+	row_expr := ast.new(ast.Value_Row_Expr, lparen_tok.range)
+	row_expr.args = make([dynamic]^ast.Expr)
+
+	for p.curr_tok.kind != .RParen &&
+	    p.curr_tok.kind != .EOF &&
+	    p.curr_tok.kind != .Period {
+		arg := parse_expr(p)
+		if arg != nil {
+			append(&row_expr.args, arg)
+		}
+		if !allow_token(p, .Comma) {
+			break
+		}
+	}
+
+	rparen_tok := expect_token(p, .RParen)
+	row_expr.range.end = rparen_tok.range.end
+	row_expr.derived_expr = row_expr
+	return row_expr
+}
+
+// parse_select_into_clause_body parses the part after INTO or APPENDING (without consuming that keyword).
+parse_select_into_clause_body :: proc(p: ^Parser, stmt: ^ast.Select_Stmt) {
 	if check_keyword(p, "TABLE") {
 		advance_token(p)
 		stmt.into_kind = .Table
@@ -576,18 +656,20 @@ parse_select_into :: proc(p: ^Parser, stmt: ^ast.Select_Stmt) {
 		stmt.into_kind = .Single
 	}
 
-	// Parse target - may have @ prefix
+	if p.curr_tok.kind == .LParen {
+		stmt.into_target = parse_select_into_paren_list(p)
+		return
+	}
+
 	if p.curr_tok.kind == .At {
 		advance_token(p)
-
-		// Check for DATA(...) inline declaration
 		if check_keyword(p, "DATA") {
 			stmt.into_target = parse_data_inline_expr(p)
 		} else {
-			// Regular variable reference
 			stmt.into_target = parse_expr(p)
 		}
-	} else {
-		stmt.into_target = parse_expr(p)
+		return
 	}
+
+	stmt.into_target = parse_expr(p)
 }

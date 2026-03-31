@@ -357,6 +357,11 @@ validate_expr_ctx :: proc(ctx: ^Validation_Context, expr: ^ast.Expr) {
 			validate_expr_ctx(ctx, arg)
 		}
 
+	case ^ast.Value_Row_Expr:
+		for arg in e.args {
+			validate_expr_ctx(ctx, arg)
+		}
+
 	case ^ast.Table_Type:
 		validate_type_expr_ctx(ctx, e.elem)
 

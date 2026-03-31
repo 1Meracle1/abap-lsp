@@ -890,6 +890,7 @@ Select_Stmt :: struct {
 	having_cond:     ^Expr, // HAVING condition
 	for_all_entries: ^Expr, // FOR ALL ENTRIES IN itab
 	up_to_rows:      ^Expr, // UP TO n ROWS
+	appending:       bool, // APPENDING CORRESPONDING FIELDS ... (SELECT append into table)
 	body:            [dynamic]^Stmt, // Body for SELECT loop (non-single)
 }
 
