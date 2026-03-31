@@ -1105,14 +1105,18 @@ collect_tokens_from_call_function_params :: proc(
 		if param == nil {
 			continue
 		}
-		// Highlight parameter name as a parameter
+		// Highlight parameter name; EXCEPTIONS OTHERS is a language keyword (catch-all → sy-subrc)
 		if param.name != nil {
+			name_tok_type := SemanticTokenType.Parameter
+			if param.kind == .Exceptions && param.is_others {
+				name_tok_type = .Keyword
+			}
 			append(
 				tokens,
 				SemanticToken {
 					offset = param.name.range.start,
 					length = param.name.range.end - param.name.range.start,
-					type = .Parameter,
+					type = name_tok_type,
 					modifiers = 0,
 				},
 			)

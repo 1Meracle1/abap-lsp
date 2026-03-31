@@ -494,7 +494,14 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 			case .Exceptions:
 				param_kind_str = "EXCEPTIONS"
 			}
-			hover_text = fmt.tprintf("(parameter) %s %s", param_kind_str, n.name.name)
+			if n.kind == .Exceptions && n.is_others {
+				hover_text = fmt.tprintf(
+					"(keyword) %s OTHERS — catch-all exception; `sy-subrc` is set to the given value when no listed exception is raised",
+					param_kind_str,
+				)
+			} else {
+				hover_text = fmt.tprintf("(parameter) %s %s", param_kind_str, n.name.name)
+			}
 		}
 
 		case:

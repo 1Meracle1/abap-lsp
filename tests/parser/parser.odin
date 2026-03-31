@@ -9214,6 +9214,65 @@ call_function_simple_test :: proc(t: ^testing.T) {
 		len(call_func.exceptions) == 2,
 		fmt.tprintf("Expected 2 EXCEPTIONS parameters, got %d", len(call_func.exceptions)),
 	)
+
+	testing.expect(t, !call_func.exceptions[0].is_others, "named exception should not be is_others")
+	testing.expect(t, call_func.exceptions[1].is_others, "OTHERS exception param should set is_others")
+}
+
+@(test)
+call_function_exceptions_multi_section_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src =
+	`CALL FUNCTION 'FILE_GET_NAME_USING_PATH'
+      EXPORTING
+        logical_path               = iv_lg_fpath
+        parameter_1                = iv_lg_fpath_param_1
+        parameter_2                = iv_lg_fpath_param_2
+        parameter_3                = iv_lg_fpath_param_3
+        file_name                  = '*' " Dummy File Name
+      IMPORTING
+        file_name_with_path        = lv_ph_fpath
+      EXCEPTIONS
+        path_not_found             = 1
+        missing_parameter          = 2
+        operating_system_not_found = 3
+        file_system_not_found      = 4
+        OTHERS                     = 5.`
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls)))
+	if len(file.decls) < 1 {
+		return
+	}
+	call_func, ok := file.decls[0].derived_stmt.(^ast.Call_Function_Stmt)
+	testing.expect(t, ok, fmt.tprintf("Expected Call_Function_Stmt, got %T", file.decls[0].derived_stmt))
+	if !ok {
+		return
+	}
+
+	testing.expect(t, len(call_func.exporting) == 5, fmt.tprintf("exporting: want 5 got %d", len(call_func.exporting)))
+	testing.expect(t, len(call_func.importing) == 1, fmt.tprintf("importing: want 1 got %d", len(call_func.importing)))
+	testing.expect(t, len(call_func.exceptions) == 5, fmt.tprintf("exceptions: want 5 got %d", len(call_func.exceptions)))
+
+	for ex in call_func.exceptions[:4] {
+		testing.expect(t, !ex.is_others, fmt.tprintf("named exc %s not OTHERS", ex.name.name))
+	}
+	testing.expect(t, call_func.exceptions[4].is_others, "last EXCEPTIONS row should be OTHERS")
+	if call_func.exceptions[4].name != nil {
+		testing.expect(
+			t,
+			call_func.exceptions[4].name.name == "OTHERS",
+			fmt.tprintf("OTHERS ident: got '%s'", call_func.exceptions[4].name.name),
+		)
+	}
 }
 
 @(test)

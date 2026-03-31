@@ -1553,15 +1553,6 @@ parse_call_function_params :: proc(
 
 		// Parse '='
 		if p.curr_tok.kind != .Eq {
-			// This might be the OTHERS keyword in EXCEPTIONS
-			if kind == .Exceptions &&
-			   to_upper(p.keyword_buffer[:], param_name_tok.lit) == "OTHERS" {
-				// OTHERS = value
-				// But we already consumed the token, so put back logic...
-				// Actually, OTHERS is just another exception name, so continue normally
-			}
-			// If no '=', this might be a keyword; put it back and break
-			// Since we already consumed the name, we need to handle this case
 			error(
 				p,
 				p.curr_tok.range,
@@ -1582,6 +1573,12 @@ parse_call_function_params :: proc(
 		param := ast.new(ast.Call_Function_Param, param_name_tok.range)
 		param.kind = kind
 		param.name = ast.new_ident(param_name_tok)
+		if kind == .Exceptions &&
+		   len(param_name_tok.lit) > 0 &&
+		   len(param_name_tok.lit) < len(p.keyword_buffer) &&
+		   to_upper(p.keyword_buffer[:], param_name_tok.lit) == "OTHERS" {
+			param.is_others = true
+		}
 		param.value = param_value
 		if param_value != nil {
 			param.range.end = param_value.range.end
