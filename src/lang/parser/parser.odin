@@ -140,7 +140,10 @@ parse_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 		case "CLEAR":
 			return parse_clear_stmt(p)
 		case "FREE":
-			return parse_free_stmt(p)
+			// free( ). is a method call (callee "free"); FREE dobj. / FREE: ... is the memory statement.
+			if free_at_stmt_start_is_memory_stmt(p) {
+				return parse_free_stmt(p)
+			}
 		case "UNASSIGN":
 			return parse_unassign_stmt(p)
 		case "MOVE":
@@ -2933,6 +2936,30 @@ check_convert_time_stamp_into_date_time_prefix :: proc(p: ^Parser) -> bool {
 	p.l.read_pos = saved_read_pos
 	p.l.ch = saved_ch
 	return ok
+}
+
+// free_at_stmt_start_is_memory_stmt is false when the identifier is immediately followed by '('
+// with no intervening space (e.g. free( ).), so the statement is parsed as an expression call.
+// True for FREE itab., FREE ( itab )., FREE: ..., etc.
+free_at_stmt_start_is_memory_stmt :: proc(p: ^Parser) -> bool {
+	saved_prev := p.prev_tok
+	saved_curr := p.curr_tok
+	saved_pos := p.l.pos
+	saved_read_pos := p.l.read_pos
+	saved_ch := p.l.ch
+
+	advance_token(p)
+	next := p.curr_tok
+	is_paren_call :=
+		next.kind == .LParen && !lexer.have_space_between(saved_curr, next)
+
+	p.prev_tok = saved_prev
+	p.curr_tok = saved_curr
+	p.l.pos = saved_pos
+	p.l.read_pos = saved_read_pos
+	p.l.ch = saved_ch
+
+	return !is_paren_call
 }
 
 // check_keyword_ahead checks if the next token (after current) is a specific keyword

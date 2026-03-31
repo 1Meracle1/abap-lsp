@@ -7132,6 +7132,57 @@ clear_chained_single_target_with_test :: proc(t: ^testing.T) {
 }
 
 @(test)
+free_as_method_call_empty_parens_test :: proc(t: ^testing.T) {
+	// free( ). — method name + call, not the FREE memory statement (must touch '(').
+	file := ast.new(ast.File, {})
+	file.src = "free( )."
+	p: parser.Parser
+	parser.parse_file(&p, file)
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+	expr_stmt, ok := file.decls[0].derived_stmt.(^ast.Expr_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Expr_Stmt, got %T", file.decls[0].derived_stmt)) do return
+	call, cok := expr_stmt.expr.derived_expr.(^ast.Call_Expr)
+	if !testing.expect(t, cok, "Expected Call_Expr for free( )") do return
+	id, iok := call.expr.derived_expr.(^ast.Ident)
+	if !testing.expect(t, iok, "Expected Ident callee") do return
+	testing.expect(t, id.name == "free", fmt.tprintf("callee: expected free, got %s", id.name))
+	testing.expect(t, len(call.args) == 0, fmt.tprintf("expected no args, got %d", len(call.args)))
+}
+
+@(test)
+free_memory_stmt_with_spaced_paren_operand_test :: proc(t: ^testing.T) {
+	// FREE ( lt ). — memory statement: space before '(' so not parsed as method call.
+	file := ast.new(ast.File, {})
+	file.src = "FREE ( lt_data )."
+	p: parser.Parser
+	parser.parse_file(&p, file)
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+	free_stmt, ok := file.decls[0].derived_stmt.(^ast.Free_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Free_Stmt, got %T", file.decls[0].derived_stmt)) do return
+	if !testing.expect(t, len(free_stmt.exprs) == 1, fmt.tprintf("Expected 1 operand, got %d", len(free_stmt.exprs))) do return
+	operand := free_stmt.exprs[0]
+	inner := operand
+	if paren, pok := operand.derived_expr.(^ast.Paren_Expr); pok && paren.expr != nil {
+		inner = paren.expr
+	}
+	if id, iok := inner.derived_expr.(^ast.Ident); iok {
+		testing.expect(t, id.name == "lt_data", fmt.tprintf("operand: expected lt_data, got %s", id.name))
+	} else {
+		testing.expect(t, false, "Expected Ident (or Paren_Expr around it) for operand")
+	}
+}
+
+@(test)
 free_chained_multiline_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
 	file.src = `FREE:
