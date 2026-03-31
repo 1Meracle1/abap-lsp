@@ -342,8 +342,12 @@ parse_modify_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 		return stmt
 	}
 	// MODIFY dbtab FROM wa.
+	// MODIFY dbtab FROM TABLE itab.
 	target := parse_expr(p)
 	expect_keyword_token(p, "FROM")
+	if check_keyword(p, "TABLE") {
+		advance_token(p)
+	}
 	source := parse_expr(p)
 	period_tok := expect_token(p, .Period)
 	stmt := ast.new(ast.Modify_From_Stmt, modify_tok, period_tok)

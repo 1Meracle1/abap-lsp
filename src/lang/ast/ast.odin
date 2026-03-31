@@ -343,10 +343,11 @@ Modify_Screen_Stmt :: struct {
 }
 
 // MODIFY dbtab FROM wa.
+// MODIFY dbtab FROM TABLE itab.
 Modify_From_Stmt :: struct {
 	using node: Stmt,
 	target: ^Expr, // database table
-	source: ^Expr, // work area
+	source: ^Expr, // work area or internal table (after optional TABLE)
 }
 
 Leave_Program_Stmt :: struct {
@@ -711,6 +712,7 @@ Delete_Kind :: enum {
 // - DELETE ADJACENT DUPLICATES FROM itab ...
 // - DELETE TABLE itab FROM wa.
 // - DELETE dbtab FROM TABLE itab.  (e.g. namespace table /NS/obj)
+// - DELETE FROM dbtab WHERE ... (Open SQL style before table name)
 Delete_Stmt :: struct {
 	using node:   Stmt,
 	kind:         Delete_Kind,

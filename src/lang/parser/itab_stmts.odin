@@ -235,6 +235,10 @@ parse_delete_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 		expect_keyword_token(p, "FROM")
 		stmt.from_source = parse_expr(p)
 	} else {
+		// DELETE dbtab ... or DELETE FROM dbtab ... (Open SQL style)
+		if check_keyword(p, "FROM") {
+			advance_token(p)
+		}
 		stmt.target = parse_expr(p)
 
 		if check_keyword(p, "WHERE") {

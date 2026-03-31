@@ -6287,6 +6287,58 @@ modify_from_wa_namespace_table_test :: proc(t: ^testing.T) {
 }
 
 @(test)
+modify_from_table_namespace_dbtab_test :: proc(t: ^testing.T) {
+	// MODIFY dbtab FROM TABLE itab. (namespaced DDIC table)
+	file := ast.new(ast.File, {})
+	file.src = `MODIFY /sttp/bup_adr FROM TABLE is_updates-bup_adr.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	mod_stmt, ok := file.decls[0].derived_stmt.(^ast.Modify_From_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Modify_From_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	if target_ident, iok := mod_stmt.target.derived_expr.(^ast.Ident); iok {
+		testing.expect(
+			t,
+			target_ident.name == "/sttp/bup_adr",
+			fmt.tprintf("Expected '/sttp/bup_adr', got '%s'", target_ident.name),
+		)
+	} else {
+		testing.expect(
+			t,
+			false,
+			fmt.tprintf("Expected target to be Ident, got %T", mod_stmt.target.derived_expr),
+		)
+	}
+	if src_sel, sok := mod_stmt.source.derived_expr.(^ast.Selector_Expr); sok {
+		if base, bok := src_sel.expr.derived_expr.(^ast.Ident); bok {
+			testing.expect(t, base.name == "is_updates", "selector base")
+		} else {
+			testing.expect(t, false, "expected Ident base on source")
+		}
+		if fld, fok := src_sel.field.derived_expr.(^ast.Ident); fok {
+			testing.expect(t, fld.name == "bup_adr", "selector field")
+		} else {
+			testing.expect(t, false, "expected Ident field on source")
+		}
+	} else {
+		testing.expect(
+			t,
+			false,
+			fmt.tprintf("Expected source Selector_Expr, got %T", mod_stmt.source.derived_expr),
+		)
+	}
+}
+
+@(test)
 insert_from_table_test :: proc(t: ^testing.T) {
 	// INSERT target FROM TABLE itab.
 	file := ast.new(ast.File, {})
@@ -10029,6 +10081,42 @@ delete_db_from_table_test :: proc(t: ^testing.T) {
 			fmt.tprintf("Expected target to be Ident, got %T", delete_stmt.target.derived_expr),
 		)
 	}
+}
+
+@(test)
+delete_from_dbtab_where_in_test :: proc(t: ^testing.T) {
+	// DELETE FROM dbtab WHERE col IN itab. (Open SQL style + IN list / table)
+	file := ast.new(ast.File, {})
+	file.src = `DELETE FROM /sttp/bup_gcp WHERE bupid IN is_updates-bup_gcp_del.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	delete_stmt, ok := file.decls[0].derived_stmt.(^ast.Delete_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Delete_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	testing.expect(t, delete_stmt.kind == .Where, fmt.tprintf("Expected Where kind, got %v", delete_stmt.kind))
+	if target_ident, iok := delete_stmt.target.derived_expr.(^ast.Ident); iok {
+		testing.expect(
+			t,
+			target_ident.name == "/sttp/bup_gcp",
+			fmt.tprintf("Expected '/sttp/bup_gcp', got '%s'", target_ident.name),
+		)
+	} else {
+		testing.expect(
+			t,
+			false,
+			fmt.tprintf("Expected target Ident, got %T", delete_stmt.target.derived_expr),
+		)
+	}
+	testing.expect(t, delete_stmt.where_cond != nil, "WHERE condition")
 }
 
 @(test)
