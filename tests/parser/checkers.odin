@@ -54,17 +54,11 @@ check_expr :: proc(
 			fmt.tprintf("Expected selector op '%v', got '%v'", ex.op.kind, ac.op.kind),
 			loc = loc,
 		)
-		if testing.expect(t, ac.field != nil, "Actual selector field is nil", loc = loc) {
-			testing.expect(
-				t,
-				ex.field.name == ac.field.name,
-				fmt.tprintf(
-					"Expected selector field '%s', got '%s'",
-					ex.field.name,
-					ac.field.name,
-				),
-				loc = loc,
-			)
+		if ex.field != nil {
+			if !testing.expect(t, ac.field != nil, "Actual selector field is nil", loc = loc) do return
+			check_expr(t, ex.field.derived_expr, ac.field, loc = loc)
+		} else {
+			testing.expect(t, ac.field == nil, "Expected nil selector field", loc = loc)
 		}
 		check_expr(t, ex.expr.derived_expr, ac.expr, loc = loc)
 

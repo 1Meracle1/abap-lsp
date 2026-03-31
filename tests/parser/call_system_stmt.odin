@@ -43,7 +43,11 @@ call_system_dir_read_finish_test :: proc(t: ^testing.T) {
 		if testing.expect(t, b0_ok, "param0 base ident") {
 			testing.expect(t, base0.name == "ls_dir_list", fmt.tprintf("base %s", base0.name))
 		}
-		testing.expect(t, sel0.field.name == "errno", fmt.tprintf("field %s", sel0.field.name))
+		testing.expect(
+			t,
+			ast.selector_field_ident_name(sel0) == "errno",
+			fmt.tprintf("field %s", ast.selector_field_ident_name(sel0)),
+		)
 	}
 
 	p1 := call_stmt.params[1]
@@ -53,7 +57,11 @@ call_system_dir_read_finish_test :: proc(t: ^testing.T) {
 	}
 	sel1, f1_ok := p1.field.derived_expr.(^ast.Selector_Expr)
 	if testing.expect(t, f1_ok, "param1 field selector") {
-		testing.expect(t, sel1.field.name == "errmsg", fmt.tprintf("field %s", sel1.field.name))
+		testing.expect(
+			t,
+			ast.selector_field_ident_name(sel1) == "errmsg",
+			fmt.tprintf("field %s", ast.selector_field_ident_name(sel1)),
+		)
 	}
 }
 

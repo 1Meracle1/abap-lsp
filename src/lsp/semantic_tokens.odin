@@ -1478,15 +1478,19 @@ collect_tokens_from_expr :: proc(
 	case ^ast.Selector_Expr:
 		collect_tokens_from_expr(tokens, e.expr, snap, form_scope)
 		if e.field != nil {
-			append(
-				tokens,
-				SemanticToken {
-					offset = e.field.range.start,
-					length = e.field.range.end - e.field.range.start,
-					type = .Property,
-					modifiers = 0,
-				},
-			)
+			if id, ok := e.field.derived_expr.(^ast.Ident); ok {
+				append(
+					tokens,
+					SemanticToken {
+						offset = id.range.start,
+						length = id.range.end - id.range.start,
+						type = .Property,
+						modifiers = 0,
+					},
+				)
+			} else {
+				collect_tokens_from_expr(tokens, e.field, snap, form_scope)
+			}
 		}
 
 	case ^ast.Index_Expr:
@@ -1659,15 +1663,19 @@ collect_tokens_from_type_expr :: proc(tokens: ^[dynamic]SemanticToken, expr: ^as
 	case ^ast.Selector_Expr:
 		collect_tokens_from_expr(tokens, e.expr, nil, nil)
 		if e.field != nil {
-			append(
-				tokens,
-				SemanticToken {
-					offset = e.field.range.start,
-					length = e.field.range.end - e.field.range.start,
-					type = .Type,
-					modifiers = 0,
-				},
-			)
+			if id, ok := e.field.derived_expr.(^ast.Ident); ok {
+				append(
+					tokens,
+					SemanticToken {
+						offset = id.range.start,
+						length = id.range.end - id.range.start,
+						type = .Type,
+						modifiers = 0,
+					},
+				)
+			} else {
+				collect_tokens_from_type_expr(tokens, e.field)
+			}
 		}
 	}
 }

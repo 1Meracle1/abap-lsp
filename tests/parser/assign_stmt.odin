@@ -66,7 +66,11 @@ assign_stmt_with_object_deref_and_inline_field_symbol_test :: proc(t: ^testing.T
 		testing.expect(t, base.name == "mo_outbound", fmt.tprintf("Expected 'mo_outbound', got '%s'", base.name))
 	}
 	testing.expect(t, source.op.kind == .Arrow, fmt.tprintf("Expected Arrow, got %v", source.op.kind))
-	testing.expect(t, source.field.name == "*", fmt.tprintf("Expected '*', got '%s'", source.field.name))
+	testing.expect(
+		t,
+		ast.selector_field_ident_name(source) == "*",
+		fmt.tprintf("Expected '*', got '%s'", ast.selector_field_ident_name(source)),
+	)
 
 	target, tok := stmt.target.derived_expr.(^ast.Ident)
 	if testing.expect(t, tok, fmt.tprintf("Expected Ident target, got %T", stmt.target.derived_expr)) {
@@ -109,7 +113,11 @@ assign_stmt_with_selector_source_test :: proc(t: ^testing.T) {
 		testing.expect(t, base.name == "line2", fmt.tprintf("Expected 'line2', got '%s'", base.name))
 	}
 	testing.expect(t, source.op.kind == .Minus, fmt.tprintf("Expected Minus selector, got %v", source.op.kind))
-	testing.expect(t, source.field.name == "col2", fmt.tprintf("Expected 'col2', got '%s'", source.field.name))
+	testing.expect(
+		t,
+		ast.selector_field_ident_name(source) == "col2",
+		fmt.tprintf("Expected 'col2', got '%s'", ast.selector_field_ident_name(source)),
+	)
 }
 
 @(test)
@@ -135,7 +143,11 @@ assign_stmt_with_variable_offset_test :: proc(t: ^testing.T) {
 	source, ok := stmt.source.derived_expr.(^ast.Selector_Expr)
 	if !testing.expect(t, ok, fmt.tprintf("Expected Selector_Expr, got %T", stmt.source.derived_expr)) do return
 
-	testing.expect(t, source.field.name == "a", fmt.tprintf("Expected 'a', got '%s'", source.field.name))
+	testing.expect(
+		t,
+		ast.selector_field_ident_name(source) == "a",
+		fmt.tprintf("Expected 'a', got '%s'", ast.selector_field_ident_name(source)),
+	)
 
 	offset, ook := stmt.offset.derived_expr.(^ast.Ident)
 	if testing.expect(t, ook, fmt.tprintf("Expected Ident offset, got %T", stmt.offset.derived_expr)) {
@@ -145,6 +157,90 @@ assign_stmt_with_variable_offset_test :: proc(t: ^testing.T) {
 	length, lok := stmt.length.derived_expr.(^ast.Basic_Lit)
 	if testing.expect(t, lok, fmt.tprintf("Expected literal length, got %T", stmt.length.derived_expr)) {
 		testing.expect(t, length.tok.lit == "1", fmt.tprintf("Expected length '1', got '%s'", length.tok.lit))
+	}
+}
+
+@(test)
+assign_stmt_static_class_dynamic_attribute_test :: proc(t: ^testing.T) {
+	stmt := parse_single_assign_stmt(t, `ASSIGN if_http_status=>(lv_reason) TO <reason>.`)
+	if stmt == nil do return
+
+	source, ok := stmt.source.derived_expr.(^ast.Selector_Expr)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Selector_Expr, got %T", stmt.source.derived_expr)) do return
+
+	base, bok := source.expr.derived_expr.(^ast.Ident)
+	if testing.expect(t, bok, fmt.tprintf("Expected Ident base, got %T", source.expr.derived_expr)) {
+		testing.expect(
+			t,
+			base.name == "if_http_status",
+			fmt.tprintf("Expected 'if_http_status', got '%s'", base.name),
+		)
+	}
+	testing.expect(t, source.op.kind == .FatArrow, "Expected =>")
+
+	field_paren, pok := source.field.derived_expr.(^ast.Paren_Expr)
+	if !testing.expect(t, pok, "Expected Paren_Expr for dynamic attribute name") do return
+	inner, iok := field_paren.expr.derived_expr.(^ast.Ident)
+	if testing.expect(t, iok, fmt.tprintf("Expected Ident in parens, got %T", field_paren.expr.derived_expr)) {
+		testing.expect(t, inner.name == "lv_reason", fmt.tprintf("Expected lv_reason, got %s", inner.name))
+	}
+}
+
+@(test)
+assign_stmt_dynamic_class_and_attribute_test :: proc(t: ^testing.T) {
+	stmt := parse_single_assign_stmt(t, `ASSIGN (lv_class_name)=>(lv_reason) TO <reason>.`)
+	if stmt == nil do return
+
+	testing.expect(t, stmt.is_dynamic, "Expected dynamic ASSIGN (leading paren)")
+
+	source, ok := stmt.source.derived_expr.(^ast.Selector_Expr)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Selector_Expr, got %T", stmt.source.derived_expr)) do return
+
+	left_paren, lok := source.expr.derived_expr.(^ast.Paren_Expr)
+	if !testing.expect(t, lok, "Expected Paren_Expr for dynamic class") do return
+	class_var, cok := left_paren.expr.derived_expr.(^ast.Ident)
+	if testing.expect(t, cok, fmt.tprintf("Expected Ident, got %T", left_paren.expr.derived_expr)) {
+		testing.expect(t, class_var.name == "lv_class_name", fmt.tprintf("class var name, got %s", class_var.name))
+	}
+
+	field_paren, pok := source.field.derived_expr.(^ast.Paren_Expr)
+	if !testing.expect(t, pok, "Expected Paren_Expr for dynamic attribute") do return
+	attr_var, aok := field_paren.expr.derived_expr.(^ast.Ident)
+	if testing.expect(t, aok, fmt.tprintf("Expected Ident, got %T", field_paren.expr.derived_expr)) {
+		testing.expect(t, attr_var.name == "lv_reason", fmt.tprintf("attr var, got %s", attr_var.name))
+	}
+}
+
+@(test)
+call_method_static_class_dynamic_method_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src = `CALL METHOD zcl_foo=>(lv_meth).`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	if !testing.expect(t, len(file.syntax_errors) == 0, fmt.tprintf("errors: %v", file.syntax_errors)) do return
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("decls %d", len(file.decls))) do return
+
+	expr_stmt, ok := file.decls[0].derived_stmt.(^ast.Expr_Stmt)
+	if !testing.expect(t, ok, "Expr_Stmt") do return
+
+	call, cok := expr_stmt.expr.derived_expr.(^ast.Call_Expr)
+	if !testing.expect(t, cok, "Call_Expr") do return
+
+	sel, sok := call.expr.derived_expr.(^ast.Selector_Expr)
+	if !testing.expect(t, sok, "Selector callee") do return
+	testing.expect(t, sel.op.kind == .FatArrow, "=>")
+
+	base, bok := sel.expr.derived_expr.(^ast.Ident)
+	if testing.expect(t, bok, "class ident") {
+		testing.expect(t, base.name == "zcl_foo", fmt.tprintf("class %s", base.name))
+	}
+
+	fp, pok := sel.field.derived_expr.(^ast.Paren_Expr)
+	if !testing.expect(t, pok, "dynamic method name") do return
+	meth_var, mok := fp.expr.derived_expr.(^ast.Ident)
+	if testing.expect(t, mok, "meth ident") {
+		testing.expect(t, meth_var.name == "lv_meth", fmt.tprintf("meth %s", meth_var.name))
 	}
 }
 

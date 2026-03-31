@@ -81,7 +81,8 @@ Selector_Expr :: struct {
 	using node: Expr,
 	expr:       ^Expr,
 	op:         lexer.Token,
-	field:      ^Ident,
+	// Usually ^Ident; dynamic names use ^Paren_Expr, e.g. class=>(lv_attr), (lv_cls)=>(lv_attr).
+	field:      ^Expr,
 }
 
 Index_Expr :: struct {

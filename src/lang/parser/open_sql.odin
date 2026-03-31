@@ -214,7 +214,8 @@ parse_select_single_field :: proc(p: ^Parser) -> ^ast.Expr {
 
 	// Parse regular field expression (table~field, class=>static_attr chains)
 	first_tok := expect_token(p, .Ident)
-	expr: ^ast.Expr = ast.new_ident(first_tok)
+	root_ident := ast.new_ident(first_tok)
+	expr := &root_ident.node
 
 	for {
 		if p.curr_tok.kind == .Tilde {
@@ -228,9 +229,9 @@ parse_select_single_field :: proc(p: ^Parser) -> ^ast.Expr {
 			)
 			sel.expr = expr
 			sel.op = tilde_tok
-			sel.field = field_ident
+			sel.field = &field_ident.node
 			sel.derived_expr = sel
-			expr = sel
+			expr = &sel.node
 			continue
 		}
 		if p.curr_tok.kind == .FatArrow && !lexer.have_space_between(p.prev_tok, p.curr_tok) {
@@ -244,9 +245,9 @@ parse_select_single_field :: proc(p: ^Parser) -> ^ast.Expr {
 			)
 			sel.expr = expr
 			sel.op = fat_tok
-			sel.field = field_ident
+			sel.field = &field_ident.node
 			sel.derived_expr = sel
-			expr = sel
+			expr = &sel.node
 			continue
 		}
 		break
@@ -497,9 +498,9 @@ parse_select_field_with_dash :: proc(p: ^Parser) -> ^ast.Expr {
 			)
 			sel.expr = expr
 			sel.op = minus_tok
-			sel.field = field_ident
+			sel.field = &field_ident.node
 			sel.derived_expr = sel
-			expr = sel
+			expr = &sel.node
 		} else {
 			// It's a subtraction operator, put the minus back by creating a binary expression
 			// Actually, we can't put it back, so this might cause issues.

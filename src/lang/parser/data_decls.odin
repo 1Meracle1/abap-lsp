@@ -61,7 +61,7 @@ parse_data_decl_ident :: proc(p: ^Parser) -> ^ast.Expr {
 		)
 		selector.expr = expr
 		selector.op = minus_tok
-		selector.field = field_ident
+		selector.field = &field_ident.node
 		selector.derived_expr = selector
 		expr = &selector.node
 	}

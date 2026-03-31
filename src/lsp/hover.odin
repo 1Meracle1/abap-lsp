@@ -175,10 +175,18 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 
 	case ^ast.Selector_Expr:
 		if n.field != nil {
-			field_name := n.field.name
-			if sym, ok := lookup_symbol_at_offset(snap, field_name, offset, symbol_table); ok {
-				type_str := symbols.format_type(sym.type_info)
-				hover_text = fmt.tprintf("%s: %s", sym.name, type_str)
+			field_name := ast.selector_field_ident_name(n)
+			if field_name != "" {
+				if sym, ok := lookup_symbol_at_offset(snap, field_name, offset, symbol_table); ok {
+					type_str := symbols.format_type(sym.type_info)
+					hover_text = fmt.tprintf("%s: %s", sym.name, type_str)
+				} else if field_name, field_type, ok := lookup_selector_field_at_offset(
+					snap,
+					offset,
+					symbol_table,
+				); ok {
+					hover_text = fmt.tprintf("%s: %s", field_name, symbols.format_type(field_type))
+				}
 			} else if field_name, field_type, ok := lookup_selector_field_at_offset(
 				snap,
 				offset,
@@ -1576,9 +1584,7 @@ get_call_method_name :: proc(call: ^ast.Call_Expr) -> string {
 	case ^ast.Ident:
 		return e.name
 	case ^ast.Selector_Expr:
-		if e.field != nil {
-			return e.field.name
-		}
+		return ast.selector_field_ident_name(e)
 	}
 	return ""
 }

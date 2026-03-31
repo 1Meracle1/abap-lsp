@@ -751,10 +751,7 @@ builtin_type_from_name :: proc(name: string) -> TypeKind {
 }
 
 selector_to_string :: proc(sel: ^ast.Selector_Expr) -> string {
-	if sel.field != nil {
-		return sel.field.name
-	}
-	return ""
+	return ast.selector_field_ident_name(sel)
 }
 
 get_decl_name :: proc(expr: ^ast.Expr) -> string {
@@ -767,10 +764,7 @@ get_decl_name :: proc(expr: ^ast.Expr) -> string {
 	case ^ast.Selector_Expr:
 		// Build name: lhs-rhs
 		left := get_decl_name(e.expr)
-		right := ""
-		if e.field != nil {
-			right = e.field.name
-		}
+		right := ast.selector_field_ident_name(e)
 		if left == "" {
 			return right
 		}

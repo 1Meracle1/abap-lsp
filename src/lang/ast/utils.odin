@@ -37,6 +37,17 @@ new_ident :: proc(name_tok: lexer.Token) -> ^Ident {
 	return node
 }
 
+// Name of the selector's field when it is a simple identifier (or *); empty for dynamic (parenthesized) fields.
+selector_field_ident_name :: proc(sel: ^Selector_Expr) -> string {
+	if sel == nil || sel.field == nil {
+		return ""
+	}
+	if id, ok := sel.field.derived_expr.(^Ident); ok {
+		return id.name
+	}
+	return ""
+}
+
 new_data_inline_decl :: proc(
 	start_tok, end_tok: lexer.Token,
 	ident: ^Ident,

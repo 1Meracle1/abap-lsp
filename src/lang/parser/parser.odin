@@ -897,26 +897,42 @@ parse_atom_expr :: proc(p: ^Parser, value: ^ast.Expr, allow_substring: bool = tr
 				break loop
 			}
 			op := advance_token(p)
-			// Handle TEXT-nnn text symbol references where nnn is a number
-			// Also allow numbers as selectors for error resilience
-			field_tok: lexer.Token
-			if p.curr_tok.kind == .Ident || p.curr_tok.kind == .Number || p.curr_tok.kind == .Star {
-				field_tok = advance_token(p)
+			field_expr: ^ast.Expr
+			end_at: int
+			if p.curr_tok.kind == .LParen && !lexer.have_space_between(p.prev_tok, p.curr_tok) {
+				lparen_tok := advance_token(p)
+				inner := parse_expr(p)
+				rparen_tok := expect_token(p, .RParen)
+				paren := ast.new(
+					ast.Paren_Expr,
+					lexer.TextRange{lparen_tok.range.start, rparen_tok.range.end},
+				)
+				paren.expr = inner
+				paren.derived_expr = paren
+				field_expr = paren
+				end_at = rparen_tok.range.end
 			} else {
-				field_tok = expect_token(p, .Ident) // Will error but still advance
+				// Handle TEXT-nnn text symbol references where nnn is a number
+				// Also allow numbers as selectors for error resilience
+				field_tok: lexer.Token
+				if p.curr_tok.kind == .Ident || p.curr_tok.kind == .Number || p.curr_tok.kind == .Star {
+					field_tok = advance_token(p)
+				} else {
+					field_tok = expect_token(p, .Ident) // Will error but still advance
+				}
+				field_ident := ast.new_ident(field_tok)
+				if field_tok.kind == .Star {
+					field_ident.name = "*"
+				}
+				field_expr = &field_ident.node
+				end_at = field_tok.range.end
 			}
-			field_ident := ast.new_ident(field_tok)
-			if field_tok.kind == .Star {
-				field_ident.name = "*"
-			}
-			selector := ast.new(
-				ast.Selector_Expr,
-				lexer.TextRange{expr.range.start, field_tok.range.end},
-			)
+			selector := ast.new(ast.Selector_Expr, lexer.TextRange{expr.range.start, end_at})
 			selector.expr = expr
 			selector.op = op
-			selector.field = field_ident
-			expr = selector
+			selector.field = field_expr
+			selector.derived_expr = selector
+			expr = &selector.node
 		case .Plus:
 			// ABAP substring: dobj+off(len) or dobj+off(*) — '+' must touch the data object
 			if !allow_substring ||
@@ -1259,7 +1275,8 @@ parse_simple_type_expr :: proc(p: ^Parser) -> ^ast.Expr {
 	}
 
 	tok := advance_token(p)
-	expr: ^ast.Expr = ast.new_ident(tok)
+	root_ident := ast.new_ident(tok)
+	expr := &root_ident.node
 
 	// Handle selector expressions for types like my_class~ty_type or interface~method
 	// but NOT call expressions (parentheses belong to the constructor, not the type)
@@ -1271,14 +1288,16 @@ parse_simple_type_expr :: proc(p: ^Parser) -> ^ast.Expr {
 			}
 			op := advance_token(p)
 			field_tok := expect_token(p, .Ident)
+			field_ident := ast.new_ident(field_tok)
 			selector := ast.new(
 				ast.Selector_Expr,
 				lexer.TextRange{expr.range.start, field_tok.range.end},
 			)
 			selector.expr = expr
 			selector.op = op
-			selector.field = ast.new_ident(field_tok)
-			expr = selector
+			selector.field = &field_ident.node
+			selector.derived_expr = selector
+			expr = &selector.node
 		case:
 			break loop
 		}
@@ -2136,15 +2155,31 @@ parse_assign_subfield_component :: proc(p: ^Parser) -> ^ast.Expr {
 				break loop
 			}
 			op := advance_token(p)
-			field_tok := expect_token(p, .Ident)
-			selector := ast.new(
-				ast.Selector_Expr,
-				lexer.TextRange{expr.range.start, field_tok.range.end},
-			)
+			field_expr: ^ast.Expr
+			end_at: int
+			if p.curr_tok.kind == .LParen && !lexer.have_space_between(p.prev_tok, p.curr_tok) {
+				lparen_tok := advance_token(p)
+				inner := parse_expr(p)
+				rparen_tok := expect_token(p, .RParen)
+				paren := ast.new(
+					ast.Paren_Expr,
+					lexer.TextRange{lparen_tok.range.start, rparen_tok.range.end},
+				)
+				paren.expr = inner
+				paren.derived_expr = paren
+				field_expr = paren
+				end_at = rparen_tok.range.end
+			} else {
+				field_tok := expect_token(p, .Ident)
+				field_expr = &ast.new_ident(field_tok).node
+				end_at = field_tok.range.end
+			}
+			selector := ast.new(ast.Selector_Expr, lexer.TextRange{expr.range.start, end_at})
 			selector.expr = expr
 			selector.op = op
-			selector.field = ast.new_ident(field_tok)
-			expr = selector
+			selector.field = field_expr
+			selector.derived_expr = selector
+			expr = &selector.node
 		case .LBracket:
 			advance_token(p)
 			index_expr := parse_expr(p)
@@ -2172,7 +2207,9 @@ parse_assign_source_expr :: proc(
 ) -> ^ast.Expr {
 	if p.curr_tok.kind == .LParen {
 		stmt.is_dynamic = true
-		return parse_assign_dynamic_source(p)
+		paren_expr := parse_assign_dynamic_source(p)
+		// ASSIGN (dobj) TO ... or ASSIGN (cls)=>(attr) TO ... — continue chains after first parens.
+		return parse_atom_expr(p, paren_expr, true)
 	}
 
 	source := parse_atom_expr(p, parse_operand(p), false)

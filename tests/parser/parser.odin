@@ -1099,8 +1099,8 @@ type_reference_with_path_selector_test :: proc(t: ^testing.T) {
 		if sok {
 			testing.expect(
 				t,
-				selector.field.name == "zipcode",
-				fmt.tprintf("Expected field 'zipcode', got '%s'", selector.field.name),
+				ast.selector_field_ident_name(selector) == "zipcode",
+				fmt.tprintf("Expected field 'zipcode', got '%s'", ast.selector_field_ident_name(selector)),
 			)
 		}
 	}
@@ -3152,8 +3152,8 @@ arrow_selector_test :: proc(t: ^testing.T) {
 			)
 			testing.expect(
 				t,
-				sel.field.name == "get_value",
-				fmt.tprintf("Expected field 'get_value', got '%s'", sel.field.name),
+				ast.selector_field_ident_name(sel) == "get_value",
+				fmt.tprintf("Expected field 'get_value', got '%s'", ast.selector_field_ident_name(sel)),
 			)
 
 			// Check the base expression
@@ -3191,7 +3191,11 @@ chained_arrow_selector_test :: proc(t: ^testing.T) {
 			if !testing.expect(t, sok, "Expected outer Selector_Expr") do return
 
 			testing.expect(t, outer_sel.op.kind == .Arrow, "Expected Arrow op on outer selector")
-			testing.expect(t, outer_sel.field.name == "get_view", "Expected field 'get_view'")
+			testing.expect(
+				t,
+				ast.selector_field_ident_name(outer_sel) == "get_view",
+				"Expected field 'get_view'",
+			)
 
 			inner_sel, isok := outer_sel.expr.derived_expr.(^ast.Selector_Expr)
 			if testing.expect(t, isok, "Expected inner Selector_Expr") {
@@ -3202,7 +3206,7 @@ chained_arrow_selector_test :: proc(t: ^testing.T) {
 				)
 				testing.expect(
 					t,
-					inner_sel.field.name == "get_controller",
+					ast.selector_field_ident_name(inner_sel) == "get_controller",
 					"Expected field 'get_controller'",
 				)
 			}
@@ -3239,7 +3243,11 @@ simple_call_expr_test :: proc(t: ^testing.T) {
 			sel, sok := call.expr.derived_expr.(^ast.Selector_Expr)
 			if testing.expect(t, sok, "Expected Selector_Expr as callee") {
 				testing.expect(t, sel.op.kind == .Arrow, "Expected Arrow op")
-				testing.expect(t, sel.field.name == "get_value", "Expected field 'get_value'")
+				testing.expect(
+					t,
+					ast.selector_field_ident_name(sel) == "get_value",
+					"Expected field 'get_value'",
+				)
 			}
 		}
 	}
@@ -3310,7 +3318,11 @@ chained_call_expr_test :: proc(t: ^testing.T) {
 			build_sel, bsok := outer_call.expr.derived_expr.(^ast.Selector_Expr)
 			if !testing.expect(t, bsok, "Expected Selector_Expr for build") do return
 
-			testing.expect(t, build_sel.field.name == "build", "Expected field 'build'")
+			testing.expect(
+				t,
+				ast.selector_field_ident_name(build_sel) == "build",
+				"Expected field 'build'",
+			)
 
 			// Inner call: ->set_name( lv_name )
 			inner_call, icok := build_sel.expr.derived_expr.(^ast.Call_Expr)
@@ -3348,7 +3360,11 @@ method_call_standalone_test :: proc(t: ^testing.T) {
 		sel, sok := call.expr.derived_expr.(^ast.Selector_Expr)
 		if testing.expect(t, sok, "Expected Selector_Expr as callee") {
 			testing.expect(t, sel.op.kind == .Arrow, "Expected Arrow op")
-			testing.expect(t, sel.field.name == "process", "Expected field 'process'")
+			testing.expect(
+				t,
+				ast.selector_field_ident_name(sel) == "process",
+				"Expected field 'process'",
+			)
 		}
 	}
 }
@@ -3857,8 +3873,8 @@ string_template_with_selector_expr_test :: proc(t: ^testing.T) {
 				) {
 					testing.expect(
 						t,
-						sel.field.name == "uname",
-						fmt.tprintf("Expected 'uname', got '%s'", sel.field.name),
+						ast.selector_field_ident_name(sel) == "uname",
+						fmt.tprintf("Expected 'uname', got '%s'", ast.selector_field_ident_name(sel)),
 					)
 				}
 			}
@@ -3964,8 +3980,8 @@ string_template_embedded_expr_alpha_out_test :: proc(t: ^testing.T) {
 				if sel.field != nil {
 					testing.expect(
 						t,
-						sel.field.name == "matnr",
-						fmt.tprintf("Expected field 'matnr', got '%s'", sel.field.name),
+						ast.selector_field_ident_name(sel) == "matnr",
+						fmt.tprintf("Expected field 'matnr', got '%s'", ast.selector_field_ident_name(sel)),
 					)
 				}
 			}
@@ -5524,8 +5540,8 @@ data_hashed_table_selector_type_test :: proc(t: ^testing.T) {
 	) {
 		testing.expect(
 			t,
-			sel_expr.field.name == "struc",
-			fmt.tprintf("Expected 'struc', got '%s'", sel_expr.field.name),
+			ast.selector_field_ident_name(sel_expr) == "struc",
+			fmt.tprintf("Expected 'struc', got '%s'", ast.selector_field_ident_name(sel_expr)),
 		)
 	}
 }
@@ -6169,8 +6185,8 @@ append_to_field_symbol_selector_test :: proc(t: ^testing.T) {
 	testing.expect(t, sel_expr.field != nil, "Expected field to be set")
 	testing.expect(
 		t,
-		sel_expr.field.name == "children",
-		fmt.tprintf("Expected 'children', got '%s'", sel_expr.field.name),
+		ast.selector_field_ident_name(sel_expr) == "children",
+		fmt.tprintf("Expected 'children', got '%s'", ast.selector_field_ident_name(sel_expr)),
 	)
 }
 
@@ -6278,8 +6294,8 @@ append_selector_expr_test :: proc(t: ^testing.T) {
 	testing.expect(t, sel_expr.field != nil, "Expected field to be set")
 	testing.expect(
 		t,
-		sel_expr.field.name == "gs1_es",
-		fmt.tprintf("Expected 'gs1_es', got '%s'", sel_expr.field.name),
+ast.selector_field_ident_name(sel_expr) == "gs1_es",
+			fmt.tprintf("Expected 'gs1_es', got '%s'", ast.selector_field_ident_name(sel_expr)),
 	)
 
 	// Check target is identifier
@@ -6654,8 +6670,8 @@ field_symbol_assignment_test :: proc(t: ^testing.T) {
 	testing.expect(t, sel_expr.field != nil, "Expected field to be set")
 	testing.expect(
 		t,
-		sel_expr.field.name == "carrid",
-		fmt.tprintf("Expected 'carrid', got '%s'", sel_expr.field.name),
+ast.selector_field_ident_name(sel_expr) == "carrid",
+			fmt.tprintf("Expected 'carrid', got '%s'", ast.selector_field_ident_name(sel_expr)),
 	)
 }
 
@@ -6946,8 +6962,8 @@ loop_at_into_variable_test :: proc(t: ^testing.T) {
 	testing.expect(t, sel_expr.field != nil, "Expected field to be set")
 	testing.expect(
 		t,
-		sel_expr.field.name == "objs",
-		fmt.tprintf("Expected 'objs', got '%s'", sel_expr.field.name),
+ast.selector_field_ident_name(sel_expr) == "objs",
+			fmt.tprintf("Expected 'objs', got '%s'", ast.selector_field_ident_name(sel_expr)),
 	)
 
 	// Check into_target is identifier
@@ -7816,7 +7832,11 @@ convert_date_time_to_time_stamp_selector_timezone_test :: proc(t: ^testing.T) {
 	if !testing.expect(t, sel_ok, "time_zone should be Selector_Expr for sy-zonlo") {
 		return
 	}
-	testing.expect(t, sel.field.name == "zonlo", fmt.tprintf("field zonlo, got %s", sel.field.name))
+	testing.expect(
+		t,
+		ast.selector_field_ident_name(sel) == "zonlo",
+		fmt.tprintf("field zonlo, got %s", ast.selector_field_ident_name(sel)),
+	)
 }
 
 @(test)
@@ -8003,7 +8023,11 @@ set_handler_static_method_for_event_test :: proc(t: ^testing.T) {
 	} else {
 		testing.expect(t, false, "handler class ident")
 	}
-	testing.expect(t, sel.field != nil && sel.field.name == "on_double_click", "handler method field")
+	testing.expect(
+		t,
+		sel.field != nil && ast.selector_field_ident_name(sel) == "on_double_click",
+		"handler method field",
+	)
 
 	if ev, evok := sh.for_ref.derived_expr.(^ast.Ident); evok {
 		testing.expect(t, ev.name == "lr_events", fmt.tprintf("FOR ref: got %s", ev.name))
@@ -8161,8 +8185,8 @@ read_table_transporting_no_fields_test :: proc(t: ^testing.T) {
 	// Check field name
 	testing.expect(
 		t,
-		sel_expr.field.name == "children",
-		fmt.tprintf("Expected 'children', got '%s'", sel_expr.field.name),
+		ast.selector_field_ident_name(sel_expr) == "children",
+		fmt.tprintf("Expected 'children', got '%s'", ast.selector_field_ident_name(sel_expr)),
 	)
 
 	// Check key component
@@ -8763,7 +8787,7 @@ value_for_named_arg_result_test :: proc(t: ^testing.T) {
 				) {
 					testing.expect(
 						t,
-						itab_sel.field != nil && itab_sel.field.name == "children",
+						itab_sel.field != nil && ast.selector_field_ident_name(itab_sel) == "children",
 						fmt.tprintf("Expected 'children', got '%v'", itab_sel.field),
 					)
 				}
@@ -9325,7 +9349,11 @@ split_into_table_test :: proc(t: ^testing.T) {
 		if base_ident, bok := source_selector.expr.derived_expr.(^ast.Ident); bok {
 			testing.expect(t, base_ident.name == "ls_trn", fmt.tprintf("Expected 'ls_trn', got '%s'", base_ident.name))
 		}
-		testing.expect(t, source_selector.field.name == "trncode", fmt.tprintf("Expected 'trncode', got '%s'", source_selector.field.name))
+		testing.expect(
+			t,
+			ast.selector_field_ident_name(source_selector) == "trncode",
+			fmt.tprintf("Expected 'trncode', got '%s'", ast.selector_field_ident_name(source_selector)),
+		)
 	} else {
 		testing.expect(t, false, fmt.tprintf("Expected source to be Selector_Expr, got %T", split_stmt.source.derived_expr))
 	}
@@ -11725,7 +11753,7 @@ table_expression_chained_access_test :: proc(t: ^testing.T) {
 		// Check the field (evts)
 		testing.expect(
 			t,
-			selector_expr.field != nil && selector_expr.field.name == "evts",
+			selector_expr.field != nil && ast.selector_field_ident_name(selector_expr) == "evts",
 			fmt.tprintf("Expected field 'evts', got %v", selector_expr.field),
 		)
 	}
@@ -11791,7 +11819,7 @@ table_expression_field_access_test :: proc(t: ^testing.T) {
 	// Check the field (field)
 	testing.expect(
 		t,
-		selector_expr.field != nil && selector_expr.field.name == "field",
+		selector_expr.field != nil && ast.selector_field_ident_name(selector_expr) == "field",
 		fmt.tprintf("Expected field 'field', got %v", selector_expr.field),
 	)
 
@@ -12077,8 +12105,8 @@ check_stmt_equality_test :: proc(t: ^testing.T) {
 		if lsok {
 			testing.expect(
 				t,
-				lhs_selector.field.name == "docnum",
-				fmt.tprintf("Expected field 'docnum', got %s", lhs_selector.field.name),
+				ast.selector_field_ident_name(lhs_selector) == "docnum",
+				fmt.tprintf("Expected field 'docnum', got %s", ast.selector_field_ident_name(lhs_selector)),
 			)
 		}
 
@@ -12093,8 +12121,8 @@ check_stmt_equality_test :: proc(t: ^testing.T) {
 		if rsok {
 			testing.expect(
 				t,
-				rhs_selector.field.name == "docnum",
-				fmt.tprintf("Expected field 'docnum', got %s", rhs_selector.field.name),
+				ast.selector_field_ident_name(rhs_selector) == "docnum",
+				fmt.tprintf("Expected field 'docnum', got %s", ast.selector_field_ident_name(rhs_selector)),
 			)
 		}
 	}

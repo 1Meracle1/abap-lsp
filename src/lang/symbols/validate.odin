@@ -322,6 +322,9 @@ validate_expr_ctx :: proc(ctx: ^Validation_Context, expr: ^ast.Expr) {
 		validate_selector_expr_ctx(ctx, e)
 		// Also validate sub-expressions
 		validate_expr_ctx(ctx, e.expr)
+		if e.field != nil {
+			validate_expr_ctx(ctx, e.field)
+		}
 
 	case ^ast.Binary_Expr:
 		validate_expr_ctx(ctx, e.left)
@@ -398,6 +401,9 @@ validate_type_expr_ctx :: proc(ctx: ^Validation_Context, expr: ^ast.Expr) {
 		validate_type_expr_ctx(ctx, e.table)
 	case ^ast.Selector_Expr:
 		validate_type_expr_ctx(ctx, e.expr)
+		if e.field != nil {
+			validate_type_expr_ctx(ctx, e.field)
+		}
 	}
 }
 
@@ -437,6 +443,12 @@ validate_selector_expr_ctx :: proc(ctx: ^Validation_Context, sel: ^ast.Selector_
 	// Only validate fat arrow operator
 	if sel.op.kind != .FatArrow {
 		return
+	}
+
+	if sel.expr != nil {
+		if _, ok := sel.expr.derived_expr.(^ast.Paren_Expr); ok {
+			return
+		}
 	}
 
 	// Get the left-hand side identifier
@@ -483,9 +495,7 @@ get_selector_left_name :: proc(expr: ^ast.Expr) -> string {
 		return e.name
 	case ^ast.Selector_Expr:
 		// For nested selectors like package~class, get the rightmost field
-		if e.field != nil {
-			return e.field.name
-		}
+		return ast.selector_field_ident_name(e)
 	}
 
 	return ""
