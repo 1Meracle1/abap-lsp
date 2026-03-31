@@ -135,6 +135,18 @@ parse_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			if check_hyphenated_keyword(p, "MOVE", "CORRESPONDING") {
 				return parse_move_corresponding_stmt(p, move_kw)
 			}
+			// MOVE-something that is not MOVE-CORRESPONDING (e.g. typo MOVE-CORRESPONDING1)
+			if move_has_invalid_hyphenated_suffix(p) {
+				start_tok := p.curr_tok
+				end_tok := skip_to_statement_end(p)
+				error(
+					p,
+					lexer.TextRange{start_tok.range.start, end_tok.range.end},
+					"unexpected statement",
+				)
+				return ast.new(ast.Bad_Decl, start_tok, end_tok)
+			}
+			return parse_move_stmt(p, move_kw)
 		case "MESSAGE":
 			return parse_message_stmt(p)
 		case "DELETE":
@@ -490,6 +502,63 @@ check_hyphenated_keyword :: proc(p: ^Parser, first: string, second: string) -> b
 	return true
 }
 
+// True when current token starts MOVE-x where x is not CORRESPONDING (parser state unchanged).
+move_has_invalid_hyphenated_suffix :: proc(p: ^Parser) -> bool {
+	if !check_keyword(p, "MOVE") {
+		return false
+	}
+	saved_prev := p.prev_tok
+	saved_curr := p.curr_tok
+	saved_pos := p.l.pos
+	saved_read_pos := p.l.read_pos
+	saved_ch := p.l.ch
+
+	advance_token(p) // MOVE
+	if p.curr_tok.kind != .Minus || lexer.have_space_between(p.prev_tok, p.curr_tok) {
+		p.prev_tok = saved_prev
+		p.curr_tok = saved_curr
+		p.l.pos = saved_pos
+		p.l.read_pos = saved_read_pos
+		p.l.ch = saved_ch
+		return false
+	}
+	advance_token(p) // -
+	invalid := !check_keyword(p, "CORRESPONDING")
+
+	p.prev_tok = saved_prev
+	p.curr_tok = saved_curr
+	p.l.pos = saved_pos
+	p.l.read_pos = saved_read_pos
+	p.l.ch = saved_ch
+	return invalid
+}
+
+// Data object chain may use +off(len) unless an object ref (-> or =>) appears.
+expr_allows_abap_substring_offset :: proc(expr: ^ast.Expr) -> bool {
+	e := expr
+	for e != nil {
+		#partial switch x in e.derived_expr {
+		case ^ast.Selector_Expr:
+			if x.op.kind == .Arrow || x.op.kind == .FatArrow {
+				return false
+			}
+			e = x.expr
+		case ^ast.Index_Expr:
+			e = x.expr
+		case ^ast.Ident:
+			return true
+		case:
+			return false
+		}
+	}
+	return false
+}
+
+expr_is_bare_ident :: proc(expr: ^ast.Expr) -> bool {
+	_, ok := expr.derived_expr.(^ast.Ident)
+	return ok
+}
+
 // check_compound_keyword checks for a hyphenated keyword like START-OF-SELECTION
 // It returns true and advances the parser if the compound keyword matches
 check_compound_keyword :: proc(p: ^Parser, first: string, second: string, third: string) -> bool {
@@ -809,10 +878,10 @@ parse_unary_expr :: proc(p: ^Parser) -> ^ast.Expr {
 		unary_expr.expr = expr
 		return unary_expr
 	}
-	return parse_atom_expr(p, parse_operand(p))
+	return parse_atom_expr(p, parse_operand(p), true)
 }
 
-parse_atom_expr :: proc(p: ^Parser, value: ^ast.Expr) -> ^ast.Expr {
+parse_atom_expr :: proc(p: ^Parser, value: ^ast.Expr, allow_substring: bool = true) -> ^ast.Expr {
 	expr := value
 	loop: for {
 		// Early exit if expr is nil - can't build selector or call expressions
@@ -845,10 +914,84 @@ parse_atom_expr :: proc(p: ^Parser, value: ^ast.Expr) -> ^ast.Expr {
 			selector.op = op
 			selector.field = field_ident
 			expr = selector
+		case .Plus:
+			// ABAP substring: dobj+off(len) or dobj+off(*) — '+' must touch the data object
+			if !allow_substring ||
+			   !expr_allows_abap_substring_offset(expr) ||
+			   lexer.have_space_between(p.prev_tok, p.curr_tok) {
+				break loop
+			}
+			saved_prev := p.prev_tok
+			saved_curr := p.curr_tok
+			saved_pos := p.l.pos
+			saved_read_pos := p.l.read_pos
+			saved_ch := p.l.ch
+			saved_line_start := p.l.line_start
+			saved_line_count := p.l.line_count
+
+			advance_token(p) // +
+			offset := parse_assign_subfield_component(p)
+			if offset == nil ||
+			   p.curr_tok.kind != .LParen ||
+			   lexer.have_space_between(p.prev_tok, p.curr_tok) {
+				p.prev_tok = saved_prev
+				p.curr_tok = saved_curr
+				p.l.pos = saved_pos
+				p.l.read_pos = saved_read_pos
+				p.l.ch = saved_ch
+				p.l.line_start = saved_line_start
+				p.l.line_count = saved_line_count
+				break loop
+			}
+
+			advance_token(p) // (
+			length_is_star := false
+			length: ^ast.Expr
+			if p.curr_tok.kind == .Star {
+				length_is_star = true
+				advance_token(p)
+			} else {
+				length = parse_assign_subfield_component(p)
+			}
+			rparen_tok := expect_token(p, .RParen)
+			substr := ast.new(
+				ast.Substring_Expr,
+				lexer.TextRange{expr.range.start, rparen_tok.range.end},
+			)
+			substr.expr = expr
+			substr.offset = offset
+			substr.length = length
+			substr.length_is_star = length_is_star
+			expr = substr
 		case .LParen:
 			// Call expression - parentheses immediately after expression (no space)
 			if lexer.have_space_between(p.prev_tok, p.curr_tok) {
 				break loop
+			}
+			// ABAP substring dobj(len): only for a bare identifier (not struct-comp(len) or meth(...)).
+			if allow_substring &&
+			   expr_is_bare_ident(expr) &&
+			   concatenate_has_substring_length(p) {
+				advance_token(p) // (
+				length_is_star := false
+				length: ^ast.Expr
+				if p.curr_tok.kind == .Star {
+					length_is_star = true
+					advance_token(p)
+				} else {
+					length = parse_assign_subfield_component(p)
+				}
+				rparen_tok := expect_token(p, .RParen)
+				substr := ast.new(
+					ast.Substring_Expr,
+					lexer.TextRange{expr.range.start, rparen_tok.range.end},
+				)
+				substr.expr = expr
+				substr.offset = nil
+				substr.length = length
+				substr.length_is_star = length_is_star
+				expr = substr
+				continue
 			}
 			lparen_tok := advance_token(p) // consume (
 
@@ -2014,7 +2157,7 @@ parse_assign_source_expr :: proc(
 		return parse_assign_dynamic_source(p)
 	}
 
-	source := parse_atom_expr(p, parse_operand(p))
+	source := parse_atom_expr(p, parse_operand(p), false)
 	if source == nil {
 		return nil
 	}
@@ -2076,6 +2219,24 @@ parse_assign_field_symbol_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	period_tok := expect_token(p, .Period)
 	stmt.range.end = period_tok.range.end
 	return stmt
+}
+
+// MOVE source TO target.
+// Plain MOVE is represented as Assign_Stmt (target on lhs, source on rhs) with op token MOVE.
+parse_move_stmt :: proc(p: ^Parser, move_tok: lexer.Token) -> ^ast.Stmt {
+	expect_keyword_token(p, "MOVE")
+	source := parse_expr(p)
+	expect_keyword_token(p, "TO")
+	target := parse_expr(p)
+	period_tok := expect_token(p, .Period)
+
+	assign_stmt := ast.new(ast.Assign_Stmt, move_tok, period_tok)
+	assign_stmt.lhs = make([]^ast.Expr, 1)
+	assign_stmt.lhs[0] = target
+	assign_stmt.op = move_tok
+	assign_stmt.rhs = make([]^ast.Expr, 1)
+	assign_stmt.rhs[0] = source
+	return assign_stmt
 }
 
 // MESSAGE statement parser
@@ -2252,7 +2413,7 @@ parse_field_symbol_assign_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	}
 
 	// Check for selector expression (field access)
-	lhs := parse_atom_expr(p, fs_expr)
+	lhs := parse_atom_expr(p, fs_expr, true)
 
 	if p.curr_tok.kind == .Eq || p.curr_tok.kind == .QuestionEq {
 		op := advance_token(p)

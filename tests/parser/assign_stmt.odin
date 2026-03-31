@@ -216,3 +216,75 @@ assign_component_of_structure_with_inline_field_symbol_and_pragma_test :: proc(t
 		fmt.tprintf("Expected pragma to be collected as comment, got %d comments", len(file.comments)),
 	)
 }
+
+@(test)
+move_stmt_with_substring_offsets_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src = `MOVE '01' TO lv_date+6(2).
+MOVE lv_date(4) TO lv_year.
+MOVE lv_date+4(2) TO lv_month.`
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	if !testing.expect(t, len(file.syntax_errors) == 0, fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors)) do return
+	if !testing.expect(t, len(file.decls) == 3, fmt.tprintf("Expected 3 stmts, got %d", len(file.decls))) do return
+
+	for i in 0 ..< 3 {
+		assign, ok := file.decls[i].derived_stmt.(^ast.Assign_Stmt)
+		if !testing.expect(t, ok, fmt.tprintf("stmt %d: expected Assign_Stmt", i)) do return
+		if !testing.expect(t, assign.op.kind == .Ident, fmt.tprintf("stmt %d: expected MOVE as ident op", i)) do return
+	}
+
+	// MOVE '01' TO lv_date+6(2).
+	a0 := file.decls[0].derived_stmt.(^ast.Assign_Stmt)
+	rhs0, r0ok := a0.rhs[0].derived_expr.(^ast.Basic_Lit)
+	if testing.expect(t, r0ok, fmt.tprintf("rhs0: expected literal, got %T", a0.rhs[0].derived_expr)) {
+		testing.expect(t, rhs0.tok.lit == "'01'", fmt.tprintf("literal %s", rhs0.tok.lit))
+	}
+	t0, t0ok := a0.lhs[0].derived_expr.(^ast.Substring_Expr)
+	if !testing.expect(t, t0ok, fmt.tprintf("target0: expected Substring_Expr, got %T", a0.lhs[0].derived_expr)) do return
+	t0base, t0b := t0.expr.derived_expr.(^ast.Ident)
+	if testing.expect(t, t0b, fmt.tprintf("target0 base, got %T", t0.expr.derived_expr)) {
+		testing.expect(t, t0base.name == "lv_date", fmt.tprintf("base %s", t0base.name))
+	}
+	t0off, t0o := t0.offset.derived_expr.(^ast.Basic_Lit)
+	if testing.expect(t, t0o, fmt.tprintf("target0 offset, got %T", t0.offset.derived_expr)) {
+		testing.expect(t, t0off.tok.lit == "6", fmt.tprintf("off %s", t0off.tok.lit))
+	}
+	t0len, t0l := t0.length.derived_expr.(^ast.Basic_Lit)
+	if testing.expect(t, t0l, fmt.tprintf("target0 length, got %T", t0.length.derived_expr)) {
+		testing.expect(t, t0len.tok.lit == "2", fmt.tprintf("len %s", t0len.tok.lit))
+	}
+
+	// MOVE lv_date(4) TO lv_year.
+	a1 := file.decls[1].derived_stmt.(^ast.Assign_Stmt)
+	s1, s1ok := a1.rhs[0].derived_expr.(^ast.Substring_Expr)
+	if !testing.expect(t, s1ok, fmt.tprintf("rhs1: expected Substring_Expr, got %T", a1.rhs[0].derived_expr)) do return
+	base1, b1ok := s1.expr.derived_expr.(^ast.Ident)
+	if testing.expect(t, b1ok, fmt.tprintf("substring base, got %T", s1.expr.derived_expr)) {
+		testing.expect(t, base1.name == "lv_date", fmt.tprintf("base %s", base1.name))
+	}
+	if !testing.expect(t, s1.offset == nil, "lv_date(4) should have no offset") do return
+	len1, l1ok := s1.length.derived_expr.(^ast.Basic_Lit)
+	if testing.expect(t, l1ok, fmt.tprintf("length, got %T", s1.length.derived_expr)) {
+		testing.expect(t, len1.tok.lit == "4", fmt.tprintf("len %s", len1.tok.lit))
+	}
+	yy, yyok := a1.lhs[0].derived_expr.(^ast.Ident)
+	if testing.expect(t, yyok, fmt.tprintf("target lv_year, got %T", a1.lhs[0].derived_expr)) {
+		testing.expect(t, yy.name == "lv_year", fmt.tprintf("name %s", yy.name))
+	}
+
+	// MOVE lv_date+4(2) TO lv_month.
+	a2 := file.decls[2].derived_stmt.(^ast.Assign_Stmt)
+	s2, s2ok := a2.rhs[0].derived_expr.(^ast.Substring_Expr)
+	if !testing.expect(t, s2ok, fmt.tprintf("rhs2: expected Substring_Expr, got %T", a2.rhs[0].derived_expr)) do return
+	off2, o2ok := s2.offset.derived_expr.(^ast.Basic_Lit)
+	if testing.expect(t, o2ok, fmt.tprintf("offset, got %T", s2.offset.derived_expr)) {
+		testing.expect(t, off2.tok.lit == "4", fmt.tprintf("off %s", off2.tok.lit))
+	}
+	len2, l2ok := s2.length.derived_expr.(^ast.Basic_Lit)
+	if testing.expect(t, l2ok, fmt.tprintf("length2, got %T", s2.length.derived_expr)) {
+		testing.expect(t, len2.tok.lit == "2", fmt.tprintf("len %s", len2.tok.lit))
+	}
+}
