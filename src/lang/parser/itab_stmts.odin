@@ -591,6 +591,37 @@ parse_clear_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	return clear_stmt
 }
 
+// parse_free_stmt parses FREE dobj. or FREE: dobj1, dobj2, ... (chained across lines).
+parse_free_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
+	free_tok := advance_token(p)
+	exprs := make([dynamic]^ast.Expr)
+	if allow_token(p, .Colon) {
+		for p.curr_tok.kind != .EOF {
+			expr := parse_expr(p)
+			if expr != nil {
+				append(&exprs, expr)
+			} else {
+				break
+			}
+			if p.curr_tok.kind == .Period {
+				break
+			}
+			if allow_token(p, .Comma) {
+				continue
+			}
+			error(p, p.curr_tok.range, "expected ','")
+			break
+		}
+	} else {
+		expr := parse_expr(p)
+		append(&exprs, expr)
+	}
+	end_tok := expect_token(p, .Period)
+	stmt := ast.new(ast.Free_Stmt, free_tok, end_tok)
+	stmt.exprs = exprs
+	return stmt
+}
+
 // parse_unassign_stmt parses UNASSIGN <fs>. or UNASSIGN: <fs1>, <fs2>, ...
 parse_unassign_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	unassign_tok := advance_token(p)

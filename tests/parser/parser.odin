@@ -7090,6 +7090,49 @@ clear_chained_single_target_with_test :: proc(t: ^testing.T) {
 	}
 }
 
+@(test)
+free_chained_multiline_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src = `FREE:
+        st_evt_rel,
+        st_obj,
+        st_obj_ids,
+        st_obj_itm,
+        st_obj_lot,
+        st_obj_dep_lot,
+        st_obj_scc.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	free_stmt, ok := file.decls[0].derived_stmt.(^ast.Free_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Free_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	testing.expect(t, len(free_stmt.exprs) == 7, fmt.tprintf("Expected 7 targets, got %d", len(free_stmt.exprs)))
+	names := []string {
+		"st_evt_rel",
+		"st_obj",
+		"st_obj_ids",
+		"st_obj_itm",
+		"st_obj_lot",
+		"st_obj_dep_lot",
+		"st_obj_scc",
+	}
+	for name, i in names {
+		if id, iok := free_stmt.exprs[i].derived_expr.(^ast.Ident); iok {
+			testing.expect(t, id.name == name, fmt.tprintf("expr[%d]: expected %s, got %s", i, name, id.name))
+		} else {
+			testing.expect(t, false, fmt.tprintf("expr[%d]: expected Ident", i))
+		}
+	}
+}
+
 // ============================================================================
 // APPEND Statement Tests
 // ============================================================================

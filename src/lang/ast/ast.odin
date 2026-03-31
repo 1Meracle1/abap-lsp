@@ -526,6 +526,12 @@ Clear_Stmt :: struct {
 	with_expr:  ^Expr, // CLEAR dobj WITH dobj2 (reference targets)
 }
 
+// FREE dobj. or FREE: dobj1, dobj2, ... (chained; releases internal table / string memory)
+Free_Stmt :: struct {
+	using node: Stmt,
+	exprs:      [dynamic]^Expr,
+}
+
 // UNASSIGN <fs>. or UNASSIGN: <fs1>, <fs2>.
 Unassign_Stmt :: struct {
 	using node: Stmt,
@@ -1407,6 +1413,7 @@ Any_Node :: union {
 	^Loop_Stmt,
 	^Loop_At_Control_Stmt,
 	^Clear_Stmt,
+	^Free_Stmt,
 	^Unassign_Stmt,
 	^Write_Stmt,
 	^Message_Stmt,
@@ -1534,6 +1541,7 @@ Any_Stmt :: union {
 	^Loop_Stmt,
 	^Loop_At_Control_Stmt,
 	^Clear_Stmt,
+	^Free_Stmt,
 	^Unassign_Stmt,
 	^Write_Stmt,
 	^Message_Stmt,

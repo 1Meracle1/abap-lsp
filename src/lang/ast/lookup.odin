@@ -800,6 +800,13 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 			}
 		}
 
+	case ^Free_Stmt:
+		for expr in n.exprs {
+			if res := find_node_at_offset(&expr.expr_base, offset); res != nil {
+				return res
+			}
+		}
+
 	case ^Unassign_Stmt:
 		for target in n.targets {
 			if target != nil {
