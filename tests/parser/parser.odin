@@ -7945,6 +7945,62 @@ loop_at_assigning_inline_field_symbol_test :: proc(t: ^testing.T) {
 }
 
 @(test)
+loop_at_assigning_field_symbol_using_key_where_test :: proc(t: ^testing.T) {
+	// LOOP AT ... ASSIGNING FIELD-SYMBOL(<...>) USING KEY ... WHERE ... ENDLOOP.
+	file := ast.new(ast.File, {})
+	file.src =
+	`LOOP AT lt_cdpos_nrobj_ser ASSIGNING FIELD-SYMBOL(<ls_cdpos_nrobj_ser>) USING KEY changenr
+      WHERE changenr = <ls_cdhdr>-changenr.
+    ENDLOOP.`
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+
+	loop_stmt, ok := file.decls[0].derived_stmt.(^ast.Loop_Stmt)
+	if !testing.expect(t, ok, fmt.tprintf("Expected Loop_Stmt, got %T", file.decls[0].derived_stmt)) do return
+
+	testing.expect(t, loop_stmt.kind == .At, fmt.tprintf("Expected At kind, got %v", loop_stmt.kind))
+	testing.expect(t, loop_stmt.itab != nil, "Expected itab")
+	testing.expect(t, loop_stmt.assigning_target != nil, "Expected assigning_target")
+	testing.expect(t, loop_stmt.using_key != nil, "Expected using_key")
+	testing.expect(t, loop_stmt.where_cond != nil, "Expected where_cond")
+
+	if itab_ident, iok := loop_stmt.itab.derived_expr.(^ast.Ident); iok {
+		testing.expect(
+			t,
+			itab_ident.name == "lt_cdpos_nrobj_ser",
+			fmt.tprintf("Expected table name lt_cdpos_nrobj_ser, got '%s'", itab_ident.name),
+		)
+	} else {
+		testing.expect(t, false, "Expected itab to be Ident")
+	}
+
+	if fs_ident, iok := loop_stmt.assigning_target.derived_expr.(^ast.Ident); iok {
+		testing.expect(
+			t,
+			fs_ident.name == "<ls_cdpos_nrobj_ser>",
+			fmt.tprintf("Expected '<ls_cdpos_nrobj_ser>', got '%s'", fs_ident.name),
+		)
+	} else {
+		testing.expect(t, false, "Expected assigning_target to be Ident")
+	}
+
+	testing.expect(
+		t,
+		loop_stmt.using_key.name == "changenr",
+		fmt.tprintf("Expected USING KEY changenr, got '%s'", loop_stmt.using_key.name),
+	)
+}
+
+@(test)
 loop_at_into_variable_test :: proc(t: ^testing.T) {
 	// LOOP AT ls_deliv_evt-objs INTO lv_epc. ENDLOOP.
 	file := ast.new(ast.File, {})

@@ -121,7 +121,8 @@ parse_exit_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 
 // LOOP statement parser
 // Syntax variations:
-// - LOOP AT itab [INTO wa | ASSIGNING <fs> | TRANSPORTING NO FIELDS] [FROM idx] [TO idx] [WHERE condition]. body... ENDLOOP.
+// - LOOP AT itab [INTO wa | ASSIGNING <fs> | TRANSPORTING NO FIELDS] [USING KEY key_name]
+//   [FROM idx] [TO idx] [WHERE condition]. body... ENDLOOP.
 // - LOOP AT itab GROUP BY key [INTO wa | ASSIGNING <fs>]. body... ENDLOOP.
 // - LOOP AT GROUP group_var [INTO wa | ASSIGNING <fs>] [WHERE condition]. body... ENDLOOP.
 // - LOOP AT SCREEN. body... ENDLOOP.
@@ -236,6 +237,13 @@ parse_loop_clauses :: proc(p: ^Parser, loop_stmt: ^ast.Loop_Stmt) {
 		} else if check_keyword(p, "TO") {
 			advance_token(p)
 			loop_stmt.to_expr = parse_expr(p)
+		} else if check_keyword(p, "USING") {
+			advance_token(p)
+			expect_keyword_token(p, "KEY")
+			if p.curr_tok.kind == .Ident {
+				key_name_tok := advance_token(p)
+				loop_stmt.using_key = ast.new_ident(key_name_tok)
+			}
 		} else if check_keyword(p, "WHERE") {
 			advance_token(p)
 			loop_stmt.where_cond = parse_logical_expr(p)

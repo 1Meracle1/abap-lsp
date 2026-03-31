@@ -484,7 +484,8 @@ Loop_Group_By :: struct {
 
 // LOOP statement
 // Syntax variations:
-// - LOOP AT itab [INTO wa | ASSIGNING <fs> | TRANSPORTING NO FIELDS] [WHERE condition].
+// - LOOP AT itab [INTO wa | ASSIGNING <fs> | TRANSPORTING NO FIELDS] [USING KEY key_name]
+//   [WHERE condition].
 // - LOOP AT itab ... GROUP BY key_spec [ASSIGNING <fs>].
 // - LOOP AT GROUP group_var [INTO wa | ASSIGNING <fs>] [WHERE condition].
 // - LOOP AT SCREEN.
@@ -494,6 +495,7 @@ Loop_Stmt :: struct {
 	itab:                   ^Expr, // The internal table expression
 	into_target:            ^Expr, // INTO target (work area or inline DATA)
 	assigning_target:       ^Expr, // ASSIGNING <fs> target (field symbol)
+	using_key:              ^Ident, // USING KEY key_name (optional)
 	from_expr:              ^Expr, // FROM index expression
 	to_expr:                ^Expr, // TO index expression
 	where_cond:             ^Expr, // WHERE condition expression
