@@ -425,12 +425,16 @@ parse_table_type :: proc(p: ^Parser) -> ^ast.Expr {
 // ABAP allows comma- or space-separated lists (e.g. WITH UNIQUE KEY a b c).
 parse_table_key_components :: proc(p: ^Parser, key: ^ast.Table_Key) {
 	for p.curr_tok.kind == .Ident {
-		// Stop if a statement/type clause starts rather than another field name
+		// Stop if a statement/type clause starts rather than another field name.
+		// END/BEGIN: otherwise WITH KEY comp1 ... END OF name can treat END as a key component
+		// when the comma after the last component is omitted before a new line.
 		if check_keyword(p, "WITH") ||
 		   check_keyword(p, "VALUE") ||
 		   check_keyword(p, "LENGTH") ||
 		   check_keyword(p, "DECIMALS") ||
-		   check_keyword(p, "READ") {
+		   check_keyword(p, "READ") ||
+		   check_keyword(p, "END") ||
+		   check_keyword(p, "BEGIN") {
 			break
 		}
 
@@ -438,7 +442,36 @@ parse_table_key_components :: proc(p: ^Parser, key: ^ast.Table_Key) {
 		field_ident := ast.new_ident(field_tok)
 		append(&key.components, field_ident)
 
-		if allow_token(p, .Comma) {
+		if p.curr_tok.kind == .Comma {
+			// Comma either separates key components (KEY a, b) or ends the type before the
+			// next struct field (... KEY k, / newline / next_field TYPE ...). Do not consume
+			// a field-separator comma or we swallow the next member name as part of the key.
+			saved_prev := p.prev_tok
+			saved_curr := p.curr_tok
+			saved_pos := p.l.pos
+			saved_read_pos := p.l.read_pos
+			saved_ch := p.l.ch
+
+			advance_token(p) // comma
+			if p.curr_tok.kind != .Ident {
+				p.prev_tok = saved_prev
+				p.curr_tok = saved_curr
+				p.l.pos = saved_pos
+				p.l.read_pos = saved_read_pos
+				p.l.ch = saved_ch
+				break
+			}
+			advance_token(p) // possible struct field name
+			is_struct_field := check_keyword(p, "TYPE") || check_keyword(p, "LIKE")
+			p.prev_tok = saved_prev
+			p.curr_tok = saved_curr
+			p.l.pos = saved_pos
+			p.l.read_pos = saved_read_pos
+			p.l.ch = saved_ch
+			if is_struct_field {
+				break
+			}
+			advance_token(p) // comma between key fields
 			continue
 		}
 		// Space-separated key fields (no comma)

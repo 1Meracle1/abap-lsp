@@ -1334,6 +1334,131 @@ types_struct_include_type_and_nested_types_header_test :: proc(t: ^testing.T) {
 	}
 }
 
+@(test)
+types_struct_one_standard_table_field_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src =
+	`TYPES:
+    BEGIN OF ts_x,
+        prdid_must_contain TYPE STANDARD TABLE OF /sttp/e_prdid WITH NON-UNIQUE KEY table_line,
+      END OF ts_x.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+	testing.expect(t, len(file.syntax_errors) == 0, fmt.tprintf("errors: %v", file.syntax_errors))
+}
+
+@(test)
+types_struct_two_standard_table_fields_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src =
+	`TYPES:
+    BEGIN OF ts_x,
+        prdid_must_contain     TYPE STANDARD TABLE OF /sttp/e_prdid WITH NON-UNIQUE KEY table_line,
+        prdid_must_not_contain TYPE STANDARD TABLE OF /sttp/e_prdid WITH NON-UNIQUE KEY table_line,
+      END OF ts_x.`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+	testing.expect(t, len(file.syntax_errors) == 0, fmt.tprintf("errors: %v", file.syntax_errors))
+}
+
+@(test)
+types_struct_large_flat_with_namespace_and_std_table_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src =
+	`TYPES:
+    BEGIN OF ts_test_get_data_search,
+        test_number                 TYPE i,
+        ir_matnr                    TYPE /sttp/t_rng_matnr,
+        ir_matnr_ext                TYPE /sttp/t_rng_matnr,
+        iv_logqs                    TYPE /sttp/e_logqs,
+        ir_gtin                     TYPE /sttp/t_rng_gtin,
+        ir_prod_text                TYPE /sttp/t_rng_text060,
+        iv_country                  TYPE /sttp/e_country,
+        iv_prod_cat                 TYPE /sttp/e_prdcat,
+        iv_ncode                    TYPE /sttp/e_ncode,
+        iv_rcode                    TYPE /sttp/e_rcode,
+        iv_serprflky                TYPE /sttp/e_ser_prflky,
+        iv_sertype                  TYPE /sttp/e_sertype,
+        iv_status                   TYPE /sttp/e_status_prod,
+        iv_locno                    TYPE /sttp/e_locno,
+        iv_version                  TYPE /sttp/e_variant_prd,
+        iv_modified_user            TYPE uname,
+        iv_modified_date_fr         TYPE sydatum,
+        iv_modified_time_fr         TYPE syuzeit,
+        iv_modified_date_to         TYPE sydatum,
+        iv_modified_time_to         TYPE syuzeit,
+        ib_include_obsolete         TYPE xfeld,
+        ib_include_to_be_archived   TYPE xfeld,
+        ib_include_deleted_variants TYPE xfeld,
+        iv_maxhits                  TYPE /sttp/e_maxhits_db,
+        is_exclude_data             TYPE /sttp/s_prod_exclude,
+        et_prod_result              TYPE /sttp/t_prod_result,
+        prdid_must_contain          TYPE STANDARD TABLE OF /sttp/e_prdid WITH NON-UNIQUE KEY table_line,
+        prdid_must_not_contain      TYPE STANDARD TABLE OF /sttp/e_prdid WITH NON-UNIQUE KEY table_line,
+      END OF ts_test_get_data_search .`
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	if !testing.expect(t, len(file.decls) == 1, fmt.tprintf("Expected 1 decl, got %d", len(file.decls))) do return
+	st, ok := file.decls[0].derived_stmt.(^ast.Types_Struct_Decl)
+	if !testing.expect(t, ok, "Types_Struct_Decl") do return
+	testing.expect(t, st.ident.name == "ts_test_get_data_search", "struct name")
+	expected_names := []string {
+		"test_number",
+		"ir_matnr",
+		"ir_matnr_ext",
+		"iv_logqs",
+		"ir_gtin",
+		"ir_prod_text",
+		"iv_country",
+		"iv_prod_cat",
+		"iv_ncode",
+		"iv_rcode",
+		"iv_serprflky",
+		"iv_sertype",
+		"iv_status",
+		"iv_locno",
+		"iv_version",
+		"iv_modified_user",
+		"iv_modified_date_fr",
+		"iv_modified_time_fr",
+		"iv_modified_date_to",
+		"iv_modified_time_to",
+		"ib_include_obsolete",
+		"ib_include_to_be_archived",
+		"ib_include_deleted_variants",
+		"iv_maxhits",
+		"is_exclude_data",
+		"et_prod_result",
+		"prdid_must_contain",
+		"prdid_must_not_contain",
+	}
+	testing.expect(
+		t,
+		len(st.components) == len(expected_names),
+		fmt.tprintf("field count %d want %d", len(st.components), len(expected_names)),
+	)
+	if len(st.components) == len(expected_names) {
+		for c, i in st.components {
+			td, fok := c.derived_stmt.(^ast.Types_Decl)
+			if testing.expect(t, fok, fmt.tprintf("component %d Types_Decl", i)) {
+				testing.expect(
+					t,
+					td.ident.name == expected_names[i],
+					fmt.tprintf("idx %d got %s want %s", i, td.ident.name, expected_names[i]),
+				)
+			}
+		}
+	}
+}
+
 // --- REPORT, INCLUDE, EVENT, CALL SCREEN tests ---
 
 @(test)
