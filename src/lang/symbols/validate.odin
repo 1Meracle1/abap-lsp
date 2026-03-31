@@ -365,7 +365,19 @@ validate_expr_ctx :: proc(ctx: ^Validation_Context, expr: ^ast.Expr) {
 		// Also validate sub-expressions
 		validate_expr_ctx(ctx, e.expr)
 		if e.field != nil {
-			validate_expr_ctx(ctx, e.field)
+			// Component fields (sy-subrc, str-comp) are not global symbols; '=>' rhs isn't either.
+			if field_id, fid_ok := e.field.derived_expr.(^ast.Ident); fid_ok {
+				#partial switch e.op.kind {
+				case .Minus, .Tilde, .Arrow:
+					validate_component_selector_field(ctx, e, field_id)
+				case .FatArrow:
+				// static member name — not looked up as a scoped identifier
+				case:
+					validate_expr_ctx(ctx, e.field)
+				}
+			} else {
+				validate_expr_ctx(ctx, e.field)
+			}
 		}
 
 	case ^ast.Binary_Expr:
@@ -454,6 +466,34 @@ validate_type_expr_ctx :: proc(ctx: ^Validation_Context, expr: ^ast.Expr) {
 			validate_type_expr_ctx(ctx, e.field)
 		}
 	}
+}
+
+validate_component_selector_field :: proc(ctx: ^Validation_Context, sel: ^ast.Selector_Expr, field_ident: ^ast.Ident) {
+	if ctx == nil || sel == nil || field_ident == nil || ctx.lookup_table == nil || ctx.diag_table == nil {
+		return
+	}
+	if sel.expr == nil {
+		return
+	}
+	base_ty := expr_value_type(ctx.lookup_table, sel.expr)
+	struct_ty := structure_for_field_lookup(ctx.lookup_table, base_ty)
+	if struct_ty == nil {
+		return
+	}
+	field_lc := strings.to_lower(field_ident.name)
+	for f in struct_ty.fields {
+		if f.name == field_lc {
+			return
+		}
+	}
+	add_diagnostic(
+		ctx.diag_table,
+		field_ident.range,
+		strings.concatenate(
+			{"Unknown field '", field_ident.name, "' for structure"},
+			context.temp_allocator,
+		),
+	)
 }
 
 validate_ident_expr_ctx :: proc(ctx: ^Validation_Context, ident: ^ast.Ident) {

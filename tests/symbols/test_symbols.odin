@@ -431,15 +431,47 @@ lv_subrc = sy-subrc.`
 	}
 
 	diags := symbols.collect_all_diagnostics(table)
-	found_sy_error := false
+	found_sy_or_subrc_error := false
 	for diag in diags {
-		if strings.contains(diag.message, "Unknown symbol 'sy'") {
-			found_sy_error = true
+		if strings.contains(diag.message, "Unknown symbol 'sy'") ||
+		   strings.contains(diag.message, "Unknown symbol 'subrc'") ||
+		   strings.contains(diag.message, "Unknown field 'subrc'") {
+			found_sy_or_subrc_error = true
 			break
 		}
 	}
 
-	testing.expect(t, !found_sy_error, "expected built-in symbol 'sy' to resolve without diagnostics")
+	testing.expect(
+		t,
+		!found_sy_or_subrc_error,
+		"expected built-in 'sy' and component 'sy-subrc' to resolve without diagnostics",
+	)
+}
+
+@(test)
+test_if_sy_subrc_no_unknown_component_diagnostic :: proc(t: ^testing.T) {
+	src := `IF sy-subrc = 0.
+
+ENDIF.`
+	file := ast.new(ast.File, {})
+	file.src = src
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	table := symbols.resolve_file(file)
+	defer symbols.destroy_symbol_table(table)
+
+	for diag in symbols.collect_all_diagnostics(table) {
+		if strings.contains(diag.message, "subrc") {
+			testing.expect(
+				t,
+				false,
+				fmt.tprintf("unexpected diagnostic mentioning subrc: %s", diag.message),
+			)
+			return
+		}
+	}
 }
 
 @(test)

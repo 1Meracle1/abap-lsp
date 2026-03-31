@@ -413,6 +413,68 @@ unwrap_typedef_structure :: proc(table: ^SymbolTable, start: ^Type) -> ^Type {
 	return nil
 }
 
+// Underlying structure for component access (a-b, a~b, a->b): concrete STRUCTURE, or typedef resolved to one,
+// or LINE OF table row type.
+structure_for_field_lookup :: proc(table: ^SymbolTable, value_ty: ^Type) -> ^Type {
+	if value_ty == nil {
+		return nil
+	}
+	if value_ty.kind == .Structure {
+		return value_ty
+	}
+	if value_ty.kind == .Named {
+		if u := unwrap_typedef_structure(table, value_ty); u != nil {
+			return u
+		}
+		return nil
+	}
+	if value_ty.kind == .LineOf && value_ty.target_type != nil {
+		tab := value_ty.target_type
+		if tab.kind == .Table && tab.elem_type != nil {
+			return structure_for_field_lookup(table, tab.elem_type)
+		}
+	}
+	return nil
+}
+
+// Type of an expression for validating component selectors. Does not cover all expression forms.
+expr_value_type :: proc(table: ^SymbolTable, expr: ^ast.Expr) -> ^Type {
+	if expr == nil || table == nil {
+		return nil
+	}
+	#partial switch e in expr.derived_expr {
+	case ^ast.Ident:
+		name := strings.to_lower(e.name)
+		if sym, ok := table.symbols[name]; ok && sym.type_info != nil {
+			return sym.type_info
+		}
+		return nil
+	case ^ast.Selector_Expr:
+		if e.op.kind != .Minus && e.op.kind != .Tilde && e.op.kind != .Arrow {
+			return nil
+		}
+		base_ty := expr_value_type(table, e.expr)
+		struct_ty := structure_for_field_lookup(table, base_ty)
+		if struct_ty == nil {
+			return nil
+		}
+		field_name := ast.selector_field_ident_name(e)
+		if field_name == "" {
+			return nil
+		}
+		ln := strings.to_lower(field_name)
+		for f in struct_ty.fields {
+			if f.name == ln {
+				return f.type_info
+			}
+		}
+		return nil
+	case ^ast.Paren_Expr:
+		return expr_value_type(table, e.expr)
+	}
+	return nil
+}
+
 // Flatten INCLUDE TYPE into the parent structure (ABAP: components with optional AS name prefix).
 resolve_types_include_into_struct :: proc(
 	table: ^SymbolTable,
