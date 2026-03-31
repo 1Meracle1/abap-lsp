@@ -11,6 +11,7 @@ import "../lexer"
 // - SELECT ... INNER JOIN ... ON ... [WHERE cond] [INTO target].
 // - SELECT ... FOR ALL ENTRIES IN itab WHERE ... [INTO target].
 // - SELECT ... GROUP BY cols HAVING cond [INTO target].
+// - SELECT ... WHERE ... . ENDSELECT. (period may end the last Open SQL clause line before ENDSELECT)
 parse_select_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	select_tok := expect_keyword_token(p, "SELECT")
 
@@ -36,28 +37,54 @@ parse_select_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	// UP TO n ROWS before FROM, FOR ALL ENTRIES before/after INTO).
 	parse_select_clauses(p, stmt)
 
-	// Check if this is a SELECT loop (no SINGLE and has ENDSELECT)
-	// vs. a SELECT single/INTO TABLE (ends with period)
-	if p.curr_tok.kind == .Period {
+	// In ABAP, periods may end individual Open SQL clause lines before ENDSELECT, e.g.
+	//   WHERE ... .
+	//   ENDSELECT.
+	// Consume such a period then continue to ENDSELECT, loop body, or a true statement end.
+	for p.curr_tok.kind == .Period {
 		period_tok := expect_token(p, .Period)
 		stmt.range.end = period_tok.range.end
-	} else {
-		// This is a SELECT loop - parse body until ENDSELECT
-		for p.curr_tok.kind != .EOF {
-			if check_keyword(p, "ENDSELECT") {
-				break
-			}
-			inner_stmt := parse_stmt(p)
-			if inner_stmt != nil {
-				append(&stmt.body, inner_stmt)
-			}
+		if check_keyword(p, "ENDSELECT") {
+			endselect_tok := expect_keyword_token(p, "ENDSELECT")
+			final_period := expect_token(p, .Period)
+			stmt.range.end = final_period.range.end
+			_ = endselect_tok
+			return stmt
 		}
-
-		endselect_tok := expect_keyword_token(p, "ENDSELECT")
-		period_tok := expect_token(p, .Period)
-		stmt.range.end = period_tok.range.end
-		_ = endselect_tok
+		break
 	}
+
+	if stmt.is_single {
+		return stmt
+	}
+
+	if p.curr_tok.kind == .EOF {
+		return stmt
+	}
+
+	if check_keyword(p, "ENDSELECT") {
+		endselect_tok := expect_keyword_token(p, "ENDSELECT")
+		final_period := expect_token(p, .Period)
+		stmt.range.end = final_period.range.end
+		_ = endselect_tok
+		return stmt
+	}
+
+	// SELECT loop with (optional) body statements until ENDSELECT
+	for p.curr_tok.kind != .EOF {
+		if check_keyword(p, "ENDSELECT") {
+			break
+		}
+		inner_stmt := parse_stmt(p)
+		if inner_stmt != nil {
+			append(&stmt.body, inner_stmt)
+		}
+	}
+
+	endselect_tok := expect_keyword_token(p, "ENDSELECT")
+	period_tok := expect_token(p, .Period)
+	stmt.range.end = period_tok.range.end
+	_ = endselect_tok
 	return stmt
 }
 

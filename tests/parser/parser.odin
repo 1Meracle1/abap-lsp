@@ -10380,6 +10380,64 @@ select_for_all_entries_test :: proc(t: ^testing.T) {
 }
 
 @(test)
+select_endselect_after_where_period_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src =
+	`SELECT b~gtin
+  INTO ev_gtin UP TO 1 ROWS
+  FROM /sttp/prod_tdp AS a
+  JOIN /sttp/prod AS b ON a~prdid = b~prdid
+ WHERE a~tdprp_name  = gc_prop_name_cn_ncode_v
+   AND a~tdprp_value = lv_code8.
+ENDSELECT.`
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(t, len(file.syntax_errors) == 0, fmt.tprintf("%v", file.syntax_errors))
+	testing.expect(t, len(file.decls) == 1)
+
+	select_stmt, ok := file.decls[0].derived_stmt.(^ast.Select_Stmt)
+	testing.expect(t, ok)
+	if !ok {
+		return
+	}
+
+	testing.expect(t, !select_stmt.is_single)
+	testing.expect(t, len(select_stmt.fields) == 1)
+	testing.expect(t, select_stmt.into_target != nil)
+	testing.expect(t, select_stmt.up_to_rows != nil)
+	testing.expect(t, select_stmt.from_table != nil)
+	testing.expect(t, select_stmt.from_alias != nil && select_stmt.from_alias.name == "a")
+	testing.expect(t, len(select_stmt.joins) == 1)
+	testing.expect(t, select_stmt.where_cond != nil)
+	testing.expect(t, len(select_stmt.body) == 0)
+}
+
+@(test)
+select_endselect_with_body_after_where_period_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src =
+	`SELECT * FROM t INTO wa.
+  WRITE / wa-f1.
+ENDSELECT.`
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(t, len(file.syntax_errors) == 0, fmt.tprintf("%v", file.syntax_errors))
+	testing.expect(t, len(file.decls) == 1)
+
+	select_stmt, ok := file.decls[0].derived_stmt.(^ast.Select_Stmt)
+	testing.expect(t, ok)
+	if !ok {
+		return
+	}
+
+	testing.expect(t, len(select_stmt.body) == 1)
+}
+
+@(test)
 select_into_and_upto_before_from_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
 	file.src =
