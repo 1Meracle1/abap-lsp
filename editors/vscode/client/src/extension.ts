@@ -247,6 +247,9 @@ function registerCommands(context: vscode.ExtensionContext): void {
 			await fs.promises.rm(cacheDir, { recursive: true, force: true });
 			await fs.promises.mkdir(cacheDir, { recursive: true });
 			clearRemoteDependencyCaches(workspaceFolder);
+			await client.sendNotification("abapls/dependencyCacheCleared", {
+				workspaceUri: workspaceFolder.uri.toString(),
+			} satisfies WorkspaceManifestUpdatedParams);
 			vscode.window.showInformationMessage("ABAP LSP dependency cache cleared.");
 		}),
 	);

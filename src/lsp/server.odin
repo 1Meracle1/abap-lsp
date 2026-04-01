@@ -2,7 +2,7 @@ package lsp
 
 import "../cache"
 import "../jsonrpc"
-import lsp_runtime "../runtime"
+import "../thread_pool"
 import "core:encoding/json"
 import "core:fmt"
 import "core:log"
@@ -14,20 +14,20 @@ Server_Loop_Action :: enum {
 }
 
 Server :: struct {
-	stream:     jsonrpc.Stream,
-	storage:    ^cache.Cache,
-	worker_pool: ^lsp_runtime.Thread_Pool,
+	stream:                         jsonrpc.Stream,
+	storage:                        ^cache.Cache,
+	worker_pool:                    ^thread_pool.Thread_Pool,
 	// Client capabilities (after initialize)
-	client_work_done_progress: bool,
+	client_work_done_progress:      bool,
 	// Outbound JSON-RPC to client (workDoneProgress/create)
 	next_jsonrpc_out_id:            i64,
 	pending_outgoing_rpc_id:        i64,
 	pending_outgoing_rpc_done:      bool,
 	pending_outgoing_create_failed: bool,
 	// Filled by server_start so nested read/dispatch (progress wait) can handle other requests
-	dispatch_initialized:        ^bool,
-	dispatch_request_handlers:   ^map[string]Request_Handler,
-	dispatch_notif_handlers:     ^map[string]Notification_Handler,
+	dispatch_initialized:           ^bool,
+	dispatch_request_handlers:      ^map[string]Request_Handler,
+	dispatch_notif_handlers:        ^map[string]Notification_Handler,
 }
 
 Request_Handler :: #type proc(srv: ^Server, id: json.Value, params: json.Value)
@@ -37,12 +37,9 @@ server_start :: proc(stream: jsonrpc.Stream) {
 	srv: Server
 	srv.stream = stream
 	srv.storage = cache.cache_init()
-	srv.worker_pool = lsp_runtime.thread_pool_init(
-		context.allocator,
-		lsp_runtime.recommended_worker_count(),
-	)
 	defer cache.cache_deinit(srv.storage)
-	defer lsp_runtime.thread_pool_deinit(srv.worker_pool)
+	srv.worker_pool = thread_pool.init(thread_pool.recommended_worker_count())
+	defer thread_pool.deinit(srv.worker_pool)
 
 	request_handlers := make(map[string]Request_Handler)
 	request_handlers["initialize"] = handle_initialize
@@ -56,6 +53,7 @@ server_start :: proc(stream: jsonrpc.Stream) {
 	notif_handlers["textDocument/didChange"] = handle_document_change
 	notif_handlers[Remote_Dependencies_Updated_Notification] = handle_remote_dependencies_updated
 	notif_handlers[Workspace_Manifest_Updated_Notification] = handle_workspace_manifest_updated
+	notif_handlers[Dependency_Cache_Cleared_Notification] = handle_dependency_cache_cleared
 
 	initialized: bool
 
@@ -67,7 +65,7 @@ server_start :: proc(stream: jsonrpc.Stream) {
 
 	for {
 		defer free_all(context.temp_allocator)
-		_ = lsp_runtime.thread_pool_run_pending_completions(srv.worker_pool)
+		_ = thread_pool.run_pending_completions(srv.worker_pool)
 
 		data, err := jsonrpc.read(&srv.stream)
 		if err != nil {
@@ -91,7 +89,7 @@ server_start :: proc(stream: jsonrpc.Stream) {
 			break
 		}
 
-		_ = lsp_runtime.thread_pool_run_pending_completions(srv.worker_pool)
+		_ = thread_pool.run_pending_completions(srv.worker_pool)
 	}
 }
 
@@ -127,7 +125,10 @@ server_process_raw_message_bytes :: proc(
 					srv.pending_outgoing_rpc_done = true
 					srv.pending_outgoing_rpc_id = 0
 				} else {
-					log_trace(srv, fmt.tprintf("unhandled JSON-RPC response from client: %s", data))
+					log_trace(
+						srv,
+						fmt.tprintf("unhandled JSON-RPC response from client: %s", data),
+					)
 				}
 				return .Continue
 			}

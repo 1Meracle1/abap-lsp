@@ -102,29 +102,29 @@ workspace_init :: proc(uri: string, name: string) -> ^Workspace {
 }
 
 workspace_deinit :: proc(workspace: ^Workspace) {
-	// if sync.guard(&workspace.lock) {
-	// 	for key, project_entry in workspace.projects {
-	// 		delete(key)
-	// 		project_entry_deinit(project_entry)
-	// 	}
-	// 	for key, document in workspace.documents {
-	// 		delete(key)
-	// 		document_entry_deinit(document)
-	// 	}
-	// 	delete(workspace.projects)
-	// 	delete(workspace.documents)
-	// 	delete(workspace.remote_resolution_seen)
-	// }
+	if sync.guard(&workspace.lock) {
+		for key, project_entry in workspace.projects {
+			delete(key)
+			project_entry_deinit(project_entry)
+		}
+		for key, document in workspace.documents {
+			delete(key, workspace.persistent_allocator)
+			document_entry_deinit(document)
+		}
+		clear(&workspace.projects)
+		clear(&workspace.documents)
+		clear(&workspace.remote_resolution_seen)
+	}
 
-	// if workspace.manifest != nil {
-	// 	manifest_deinit(workspace.manifest)
-	// }
-	// arena_pool_deinit(workspace.project_pool)
-	// arena_pool_deinit(workspace.doc_pool)
-	// delete(workspace.uri)
-	// delete(workspace.name)
-	// delete(workspace.root_path)
-	// free(workspace)
+	if workspace.manifest != nil {
+		manifest_deinit(workspace.manifest)
+	}
+	arena_pool_deinit(workspace.project_pool)
+	arena_pool_deinit(workspace.doc_pool)
+	delete(workspace.uri)
+	delete(workspace.name)
+	delete(workspace.root_path)
+	free(workspace)
 }
 
 cache_add_workspace :: proc(cache: ^Cache, uri: string, name: string) -> ^Workspace {
@@ -229,8 +229,8 @@ project_has_syntax_errors :: proc(project: ^Project) -> bool {
 }
 
 workspace_invalidate_all_projects :: proc(workspace: ^Workspace) {
-	keys_to_remove := make([dynamic]string, context.temp_allocator)
 	if sync.guard(&workspace.lock) {
+		keys_to_remove := make([dynamic]string, 0, len(workspace.projects), context.temp_allocator)
 		for key in workspace.projects {
 			append(&keys_to_remove, strings.clone(key, context.temp_allocator))
 		}
@@ -240,6 +240,17 @@ workspace_invalidate_all_projects :: proc(workspace: ^Workspace) {
 				project_entry_deinit(entry)
 			}
 		}
+	}
+}
+
+// Clears bookkeeping that suppresses abapls/resolveRemoteDependencies for a candidate name.
+// Call when the on-disk dependency cache was removed so remote fetches can run again.
+workspace_clear_remote_resolution_seen :: proc(workspace: ^Workspace) {
+	if sync.guard(&workspace.lock) {
+		for k in workspace.remote_resolution_seen {
+			delete(k, workspace.persistent_allocator)
+		}
+		clear(&workspace.remote_resolution_seen)
 	}
 }
 
@@ -287,11 +298,15 @@ remote_candidate_kind_label :: proc(kind: symbols.Remote_Candidate_Kind) -> stri
 	return "unknown"
 }
 
-get_snapshot :: proc(cache: ^Cache, uri: string) -> ^Snapshot {
-	workspace := workspace_for_uri(cache, uri)
+// Snapshot for a URI when the owning workspace is already known (e.g. keys from workspace.documents).
+// Avoids workspace_for_uri; in multi-root setups a second lookup can pick a different folder and miss the map entry.
+get_snapshot_in_workspace :: proc(workspace: ^Workspace, uri: string) -> ^Snapshot {
+	if workspace == nil {
+		return nil
+	}
 
 	entry := workspace_get_document_entry(workspace, uri)
-	if entry == nil {
+	if entry == nil || entry.current == nil {
 		return nil
 	}
 
@@ -302,6 +317,14 @@ get_snapshot :: proc(cache: ^Cache, uri: string) -> ^Snapshot {
 	}
 
 	return nil
+}
+
+get_snapshot :: proc(cache: ^Cache, uri: string) -> ^Snapshot {
+	if cache == nil {
+		return nil
+	}
+	workspace := workspace_for_uri(cache, uri)
+	return get_snapshot_in_workspace(workspace, uri)
 }
 
 refresh_document :: proc(
@@ -354,6 +377,9 @@ release_projects :: proc(projects: []^Project) {
 }
 
 workspace_get_document_entry :: proc(workspace: ^Workspace, uri: string) -> ^Document_Entry {
+	if workspace == nil {
+		return nil
+	}
 	if sync.shared_guard(&workspace.lock) {
 		if entry, ok := workspace.documents[uri]; ok {
 			return entry
@@ -373,10 +399,10 @@ workspace_get_or_create_document_entry :: proc(
 	}
 
 	entry := document_entry_init(workspace, uri, path)
-	key := strings.clone(uri)
+	key := strings.clone(uri, workspace.persistent_allocator)
 	if sync.guard(&workspace.lock) {
 		if existing, ok := workspace.documents[uri]; ok {
-			delete(key)
+			delete(key, workspace.persistent_allocator)
 			document_entry_deinit(entry)
 			return existing
 		}

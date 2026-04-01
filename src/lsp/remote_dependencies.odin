@@ -10,6 +10,7 @@ import "core:strings"
 Remote_Dependency_Resolve_Notification :: "abapls/resolveRemoteDependencies"
 Remote_Dependencies_Updated_Notification :: "abapls/remoteDependenciesUpdated"
 Workspace_Manifest_Updated_Notification :: "abapls/workspaceManifestUpdated"
+Dependency_Cache_Cleared_Notification :: "abapls/dependencyCacheCleared"
 
 handle_remote_dependencies_updated :: proc(srv: ^Server, params: json.Value) {
 	updated_params: RemoteDependenciesUpdatedParams
@@ -70,6 +71,45 @@ handle_workspace_manifest_updated :: proc(srv: ^Server, params: json.Value) {
 
 	cache.workspace_load_manifest(workspace)
 	cache.workspace_invalidate_all_projects(workspace)
+}
+
+handle_dependency_cache_cleared :: proc(srv: ^Server, params: json.Value) {
+	cleared_params: WorkspaceManifestUpdatedParams
+	if err := unmarshal(params, cleared_params, context.temp_allocator); err != nil {
+		log_trace(srv, "dependency cache cleared notification unmarshal failed")
+		return
+	}
+
+	workspace := cache.workspace_for_uri(srv.storage, cleared_params.workspaceUri)
+	if workspace == nil {
+		return
+	}
+
+	log.infof("dependency cache cleared for workspace %s", cleared_params.workspaceUri)
+
+	wd, wd_ok := work_done_session_begin(srv, "ABAP: refreshing after dependency cache clear")
+	analysis_progress: cache.Analysis_Progress
+	prog: ^cache.Analysis_Progress = nil
+	if wd_ok {
+		defer work_done_session_end(&wd)
+		work_done_session_report(&wd, "Reloading workspace and re-resolving remote dependencies…")
+		work_done_fill_analysis_progress(&wd, &analysis_progress)
+		prog = &analysis_progress
+	}
+
+	cache.workspace_load_manifest(workspace)
+	cache.workspace_clear_remote_resolution_seen(workspace)
+	cache.workspace_invalidate_all_projects(workspace)
+
+	opened_uris := cache.workspace_open_document_uris(workspace, context.temp_allocator)
+	for uri in opened_uris {
+		snap := cache.get_snapshot_in_workspace(workspace, uri)
+		if snap == nil {
+			continue
+		}
+		publish_diagnostics(srv, uri, snap, nil, prog)
+		cache.release_snapshot(snap)
+	}
 }
 
 maybe_request_remote_dependency_resolution :: proc(

@@ -21,7 +21,8 @@ arena_pool_init :: proc(initial_slots: int) -> ^Arena_Pool {
 	pool := new(Arena_Pool)
 	xar.init(&pool.slots)
 	for _ in 0 ..< initial_slots {
-		xar.append(&pool.slots, arena_slot_create(pool))
+		slot := arena_slot_create(pool)
+		xar.append(&pool.slots, slot)
 	}
 
 	return pool

@@ -22,9 +22,10 @@ document_entry_deinit :: proc(entry: ^Document_Entry) {
 	if entry.current != nil {
 		release_snapshot(entry.current)
 	}
-	delete(entry.uri, entry.allocator)
-	delete(entry.path, entry.allocator)
-	free(entry, entry.allocator)
+	context.allocator = entry.allocator
+	delete(entry.uri)
+	delete(entry.path)
+	free(entry)
 }
 
 document_entry_publish :: proc(

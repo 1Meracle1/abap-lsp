@@ -5,6 +5,7 @@ import "../jsonrpc"
 import "core:os"
 import "core:os/os2"
 import "core:mem"
+import "core:mem/virtual"
 import "core:log"
 
 main :: proc() {
@@ -22,5 +23,9 @@ main :: proc() {
 	io_stream := stream_from_handle(handle)
 	stream := jsonrpc.init(io_stream, io_stream)
 	// stream := jsonrpc.init(os2.stdin.stream, os2.stdout.stream)
+
+	arena: virtual.Arena
+	_ = virtual.arena_init_growing(&arena)
+	context.allocator = virtual.arena_allocator(&arena)
 	lsp.server_start(stream)
 }
