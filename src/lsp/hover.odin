@@ -549,6 +549,9 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 	case ^ast.Fetch_Cursor_Stmt:
 		hover_text = "(statement) FETCH NEXT CURSOR ... INTO ... — reads the next rows from an open database cursor"
 
+	case ^ast.Close_Cursor_Stmt:
+		hover_text = "(statement) CLOSE CURSOR — closes an open database cursor"
+
 	case ^ast.Select_Stmt:
 		if n.is_single {
 			if n.into_kind == .Table {

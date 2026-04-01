@@ -1038,6 +1038,12 @@ Fetch_Cursor_Stmt :: struct {
 	package_size:                ^Expr, // optional (nil if absent)
 }
 
+// CLOSE CURSOR cur. — closes an open database cursor.
+Close_Cursor_Stmt :: struct {
+	using node: Stmt,
+	cursor:     ^Ident,
+}
+
 
 // Declarations
 
@@ -1528,6 +1534,7 @@ Any_Node :: union {
 	^Select_Stmt,
 	^Open_Cursor_Stmt,
 	^Fetch_Cursor_Stmt,
+	^Close_Cursor_Stmt,
 	^Select_Join,
 	// Declarations
 	^Bad_Decl,
@@ -1659,6 +1666,7 @@ Any_Stmt :: union {
 	^Select_Stmt,
 	^Open_Cursor_Stmt,
 	^Fetch_Cursor_Stmt,
+	^Close_Cursor_Stmt,
 	// Declarations
 	^Bad_Decl,
 	^Data_Inline_Decl,

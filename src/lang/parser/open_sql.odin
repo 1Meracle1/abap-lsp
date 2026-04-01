@@ -78,6 +78,21 @@ parse_fetch_cursor_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	return stmt
 }
 
+// CLOSE CURSOR cur.
+parse_close_cursor_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
+	close_tok := expect_keyword_token(p, "CLOSE")
+	expect_keyword_token(p, "CURSOR")
+	cursor_tok := expect_token(p, .Ident)
+	cursor := ast.new_ident(cursor_tok)
+	period_tok := expect_token(p, .Period)
+	stmt := ast.new(
+		ast.Close_Cursor_Stmt,
+		lexer.TextRange{close_tok.range.start, period_tok.range.end},
+	)
+	stmt.cursor = cursor
+	return stmt
+}
+
 // parse_select_stmt parses a SELECT Open SQL statement
 // Syntax variations:
 // - SELECT [SINGLE] fields FROM table [INTO target] [WHERE cond] [ORDER BY cols] [UP TO n ROWS].

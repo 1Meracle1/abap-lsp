@@ -696,6 +696,8 @@ validate_stmt_ctx :: proc(ctx: ^Validation_Context, stmt: ^ast.Stmt) {
 		validate_expr_ctx(ctx, &s.cursor.node)
 		validate_expr_ctx(ctx, s.into_target)
 		validate_expr_ctx(ctx, s.package_size)
+	case ^ast.Close_Cursor_Stmt:
+		validate_expr_ctx(ctx, &s.cursor.node)
 	case ^ast.Select_Stmt:
 		validate_expr_ctx(ctx, s.into_target)
 		validate_stmt_list_ctx(ctx, s.body[:])

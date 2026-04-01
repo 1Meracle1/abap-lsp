@@ -212,6 +212,10 @@ parse_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			return parse_replace_stmt(p)
 		case "COMMIT":
 			return parse_commit_work_stmt(p)
+		case "CLOSE":
+			if check_keyword_ahead(p, "CURSOR") {
+				return parse_close_cursor_stmt(p)
+			}
 		case "OPEN":
 			if check_keyword_ahead(p, "CURSOR") {
 				return parse_open_cursor_stmt(p)

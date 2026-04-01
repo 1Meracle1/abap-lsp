@@ -13084,6 +13084,25 @@ fetch_next_cursor_into_corresponding_package_size_test :: proc(t: ^testing.T) {
 }
 
 @(test)
+close_cursor_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src = `CLOSE CURSOR cur.`
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(t, len(file.syntax_errors) == 0, fmt.tprintf("%v", file.syntax_errors))
+	testing.expect(t, len(file.decls) == 1)
+
+	close_stmt, ok := file.decls[0].derived_stmt.(^ast.Close_Cursor_Stmt)
+	testing.expect(t, ok)
+	if !ok {
+		return
+	}
+	testing.expect(t, close_stmt.cursor != nil && close_stmt.cursor.name == "cur")
+}
+
+@(test)
 select_into_table_closed_before_if_endif_method_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
 	file.src =

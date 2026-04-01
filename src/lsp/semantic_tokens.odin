@@ -1258,6 +1258,11 @@ collect_tokens_from_stmt :: proc(
 			collect_tokens_from_expr(tokens, s.package_size, snap, nil)
 		}
 
+	case ^ast.Close_Cursor_Stmt:
+		if s.cursor != nil {
+			collect_tokens_from_expr(tokens, &s.cursor.node, snap, nil)
+		}
+
 	case ^ast.Select_Stmt:
 		// Collect tokens from field list
 		for field in s.fields {
