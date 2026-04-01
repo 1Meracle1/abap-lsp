@@ -9,11 +9,12 @@ import "core:strings"
 import "core:sync"
 import "core:time"
 
-document_entry_init :: proc(workspace: ^Workspace, uri: string, path: string) -> ^Document_Entry {
-	entry := new(Document_Entry)
+document_entry_init :: proc(workspace: ^Workspace, uri: string, path: string, allocator := context.allocator) -> ^Document_Entry {
+	entry := new(Document_Entry, allocator)
+	entry.allocator = allocator
 	entry.workspace = workspace
-	entry.uri = strings.clone(uri)
-	entry.path = strings.clone(path)
+	entry.uri = strings.clone(uri, allocator)
+	entry.path = strings.clone(path, allocator)
 	return entry
 }
 
@@ -21,9 +22,9 @@ document_entry_deinit :: proc(entry: ^Document_Entry) {
 	if entry.current != nil {
 		release_snapshot(entry.current)
 	}
-	delete(entry.uri)
-	delete(entry.path)
-	free(entry)
+	delete(entry.uri, entry.allocator)
+	delete(entry.path, entry.allocator)
+	free(entry, entry.allocator)
 }
 
 document_entry_publish :: proc(

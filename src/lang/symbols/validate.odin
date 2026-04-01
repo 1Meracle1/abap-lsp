@@ -567,6 +567,10 @@ validate_stmt_ctx :: proc(ctx: ^Validation_Context, stmt: ^ast.Stmt) {
 		}
 	case ^ast.Expr_Stmt:
 		validate_expr_ctx(ctx, s.expr)
+	case ^ast.Assert_Stmt:
+		validate_expr_ctx(ctx, s.cond)
+	case ^ast.Check_Stmt:
+		validate_expr_ctx(ctx, s.cond)
 	case ^ast.Macro_Call_Stmt:
 		validate_expr_ctx(ctx, s.name)
 		for arg in s.args {
@@ -966,6 +970,12 @@ validate_expr_ctx :: proc(ctx: ^Validation_Context, expr: ^ast.Expr) {
 		validate_expr_ctx(ctx, e.result_expr)
 		for arg in e.result_args {
 			validate_expr_ctx(ctx, arg)
+		}
+
+	case ^ast.Predicate_Expr:
+		validate_expr_ctx(ctx, e.expr)
+		if e.type_ref != nil {
+			validate_type_expr_ctx(ctx, e.type_ref)
 		}
 
 	case ^ast.Value_Row_Expr:

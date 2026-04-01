@@ -1444,6 +1444,80 @@ ENDCLASS.`
 	}
 }
 
+// ASSIGN COMPONENT ... TO FIELD-SYMBOL(<fs>) must register <fs> like other inline field symbols;
+// IS ASSIGNED / IS NOT INITIAL predicates must validate the subject expression.
+@(test)
+test_assign_component_inline_field_symbol_and_predicate_validation :: proc(t: ^testing.T) {
+	src := `CLASS lcl DEFINITION.
+  PUBLIC SECTION.
+    METHODS run.
+ENDCLASS.
+CLASS lcl IMPLEMENTATION.
+  METHOD run.
+    DATA lo_outbound TYPE REF TO DATA.
+    ASSIGN lo_outbound->* TO FIELD-SYMBOL(<ls_outbound>).
+    DATA lv_eo_id TYPE string.
+    ASSIGN COMPONENT 'REQUEST-DATA-EO_ID' OF STRUCTURE <ls_outbound> TO FIELD-SYMBOL(<ls_event_eo>) ##no_text.
+    ASSERT <ls_event_eo> IS ASSIGNED.
+    IF <ls_event_eo> IS NOT INITIAL.
+      lv_eo_id = <ls_event_eo>.
+    ENDIF.
+  ENDMETHOD.
+ENDCLASS.`
+	file := ast.new(ast.File, {})
+	file.src = src
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	table := symbols.resolve_file(file)
+	defer symbols.destroy_symbol_table(table)
+
+	for diag in symbols.collect_all_diagnostics(table) {
+		if strings.contains(diag.message, "Unknown symbol '<ls_event_eo>'") {
+			testing.expect(
+				t,
+				false,
+				fmt.tprintf(
+					"ASSIGN COMPONENT ... TO FIELD-SYMBOL should declare <ls_event_eo> for later use: %s",
+					diag.message,
+				),
+			)
+			return
+		}
+	}
+}
+
+@(test)
+test_assert_predicate_validates_subject_expression :: proc(t: ^testing.T) {
+	src := `CLASS c DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS m.
+ENDCLASS.
+CLASS c IMPLEMENTATION.
+  METHOD m.
+    ASSERT <no_such_fs> IS ASSIGNED.
+  ENDMETHOD.
+ENDCLASS.`
+	file := ast.new(ast.File, {})
+	file.src = src
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	table := symbols.resolve_file(file)
+	defer symbols.destroy_symbol_table(table)
+
+	found := false
+	for diag in symbols.collect_all_diagnostics(table) {
+		if strings.contains(diag.message, "Unknown symbol '<no_such_fs>'") {
+			found = true
+			break
+		}
+	}
+	testing.expect(t, found, "expected ASSERT ... IS ASSIGNED to validate the field symbol operand")
+}
+
 @(test)
 test_insert_initial_line_fs_unknown_field_diagnostic :: proc(t: ^testing.T) {
 	src := `CLASS c DEFINITION.
@@ -1541,6 +1615,40 @@ ENDCLASS.`
 				t,
 				false,
 				fmt.tprintf("expected ls_message from IMPORTING = DATA(ls_message) to resolve: %s", diag.message),
+			)
+			return
+		}
+	}
+}
+
+@(test)
+test_get_time_stamp_field_inline_data_declares_symbol :: proc(t: ^testing.T) {
+	src := `CLASS lcl DEFINITION.
+  PUBLIC SECTION.
+    METHODS run.
+ENDCLASS.
+CLASS lcl IMPLEMENTATION.
+  METHOD run.
+    DATA lv_ts TYPE string.
+    GET TIME STAMP FIELD DATA(lv_current_ts).
+    lv_ts = lv_current_ts.
+  ENDMETHOD.
+ENDCLASS.`
+	file := ast.new(ast.File, {})
+	file.src = src
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	table := symbols.resolve_file(file)
+	defer symbols.destroy_symbol_table(table)
+
+	for diag in symbols.collect_all_diagnostics(table) {
+		if strings.contains(diag.message, "Unknown symbol 'lv_current_ts'") {
+			testing.expect(
+				t,
+				false,
+				fmt.tprintf("lv_current_ts should resolve after GET TIME STAMP FIELD DATA(...): %s", diag.message),
 			)
 			return
 		}

@@ -1463,8 +1463,14 @@ resolve_stmt :: proc(
 		resolve_read_table_stmt(table, s)
 	case ^ast.Insert_Stmt:
 		resolve_insert_stmt(table, s)
+	case ^ast.Assign_Field_Symbol_Stmt:
+		resolve_assign_field_symbol_stmt(table, s)
 	case ^ast.Describe_Table_Stmt:
 		resolve_describe_table_stmt(table, s)
+	case ^ast.Get_Time_Stamp_Stmt:
+		if s.target != nil {
+			resolve_expr_inline_declarations(table, s.target)
+		}
 	case ^ast.Call_Function_Stmt:
 		resolve_call_function_stmt(table, s)
 	case ^ast.Call_Badi_Stmt:
@@ -1873,6 +1879,33 @@ resolve_insert_stmt :: proc(table: ^SymbolTable, insert_stmt: ^ast.Insert_Stmt) 
 		}
 		add_symbol(table, sym, allow_shadowing = false)
 	}
+}
+
+// Inline FIELD-SYMBOL: ASSIGN ... TO FIELD-SYMBOL(<fs>) declares <fs> for the rest of the scope.
+resolve_assign_field_symbol_stmt :: proc(table: ^SymbolTable, stmt: ^ast.Assign_Field_Symbol_Stmt) {
+	if stmt.target == nil {
+		return
+	}
+	ident, ok := stmt.target.derived_expr.(^ast.Ident)
+	if !ok || !ident.is_inline_field_symbol_decl {
+		return
+	}
+	type_info: ^Type
+	if stmt.is_component {
+		// Component type depends on dynamic name and structure shape; keep unknown for now.
+		type_info = make_unknown_type(table)
+	} else if stmt.source != nil {
+		type_info = make_inferred_type(table, stmt.source)
+	} else {
+		type_info = make_unknown_type(table)
+	}
+	sym := Symbol {
+		name      = ident.name,
+		kind      = .FieldSymbol,
+		range     = ident.range,
+		type_info = type_info,
+	}
+	add_symbol(table, sym, allow_shadowing = false)
 }
 
 resolve_describe_table_stmt :: proc(table: ^SymbolTable, describe_stmt: ^ast.Describe_Table_Stmt) {

@@ -9,6 +9,7 @@ import "core:sync"
 
 Document_Entry :: struct {
 	lock:      sync.RW_Mutex,
+	allocator: mem.Allocator,
 	workspace: ^Workspace,
 	uri:       string,
 	path:      string,
@@ -101,33 +102,29 @@ workspace_init :: proc(uri: string, name: string) -> ^Workspace {
 }
 
 workspace_deinit :: proc(workspace: ^Workspace) {
-	if workspace == nil {
-		return
-	}
+	// if sync.guard(&workspace.lock) {
+	// 	for key, project_entry in workspace.projects {
+	// 		delete(key)
+	// 		project_entry_deinit(project_entry)
+	// 	}
+	// 	for key, document in workspace.documents {
+	// 		delete(key)
+	// 		document_entry_deinit(document)
+	// 	}
+	// 	delete(workspace.projects)
+	// 	delete(workspace.documents)
+	// 	delete(workspace.remote_resolution_seen)
+	// }
 
-	if sync.guard(&workspace.lock) {
-		for key, project_entry in workspace.projects {
-			delete(key)
-			project_entry_deinit(project_entry)
-		}
-		for key, document in workspace.documents {
-			delete(key)
-			document_entry_deinit(document)
-		}
-		delete(workspace.projects)
-		delete(workspace.documents)
-		delete(workspace.remote_resolution_seen)
-	}
-
-	if workspace.manifest != nil {
-		manifest_deinit(workspace.manifest)
-	}
-	arena_pool_deinit(workspace.project_pool)
-	arena_pool_deinit(workspace.doc_pool)
-	delete(workspace.uri)
-	delete(workspace.name)
-	delete(workspace.root_path)
-	free(workspace)
+	// if workspace.manifest != nil {
+	// 	manifest_deinit(workspace.manifest)
+	// }
+	// arena_pool_deinit(workspace.project_pool)
+	// arena_pool_deinit(workspace.doc_pool)
+	// delete(workspace.uri)
+	// delete(workspace.name)
+	// delete(workspace.root_path)
+	// free(workspace)
 }
 
 cache_add_workspace :: proc(cache: ^Cache, uri: string, name: string) -> ^Workspace {
