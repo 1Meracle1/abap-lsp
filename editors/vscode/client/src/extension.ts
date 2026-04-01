@@ -212,12 +212,14 @@ function registerCommands(context: vscode.ExtensionContext): void {
 
 					const relativeFile = path.relative(workspaceFolder.uri.fsPath, filePath);
 					const manifestSpec = inferManifestUnitSpec(objectRef, relativeFile);
-					const manifestUri = await ensureManifestUnit(workspaceFolder, manifestSpec);
+					await ensureManifestUnit(workspaceFolder, manifestSpec);
+					// Server only loads abapls.toml at workspace init or on this notification;
+					// without it, remote-on-demand resolution stays disabled until restart.
+					await notifyWorkspaceManifestUpdated(workspaceFolder);
 					await adtClient.cacheRemoteObject(workspaceFolder, objectRef, source);
 
 					const document = await vscode.workspace.openTextDocument(vscode.Uri.file(filePath));
 					await vscode.window.showTextDocument(document, { preview: false });
-					void manifestUri;
 				},
 			);
 		}),
