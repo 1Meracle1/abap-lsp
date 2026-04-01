@@ -62,8 +62,12 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 				symbol_table,
 			); ok {
 				hover_text = me_hover
-			} else if sym, ok := lookup_symbol_at_offset(snap, n.name, offset, symbol_table); ok {
-			#partial switch sym.kind {
+			} else {
+				builtin_h := symbols.builtin_function_hover_markdown(n.name)
+				if len(builtin_h) > 0 {
+					hover_text = builtin_h
+				} else if sym, ok := lookup_symbol_at_offset(snap, n.name, offset, symbol_table); ok {
+				#partial switch sym.kind {
 			case .Form:
 				hover_text = format_form_signature(sym)
 			case .Class:
@@ -121,21 +125,22 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 					type_str,
 				)
 			}
-			} else if field_name, field_type, ok := lookup_selector_field_at_offset(
-				snap,
-				offset,
-				symbol_table,
-			); ok {
-				hover_text = fmt.tprintf(
-					"%s: %s",
-					cache.xml_encode(field_name, context.temp_allocator),
-					symbols.format_type(field_type),
-				)
-			} else {
-				hover_text = fmt.tprintf(
-					"(unknown) %s",
-					cache.xml_encode(n.name, context.temp_allocator),
-				)
+				} else if field_name, field_type, ok := lookup_selector_field_at_offset(
+					snap,
+					offset,
+					symbol_table,
+				); ok {
+					hover_text = fmt.tprintf(
+						"%s: %s",
+						cache.xml_encode(field_name, context.temp_allocator),
+						symbols.format_type(field_type),
+					)
+				} else {
+					hover_text = fmt.tprintf(
+						"(unknown) %s",
+						cache.xml_encode(n.name, context.temp_allocator),
+					)
+				}
 			}
 
 	case ^ast.Basic_Lit:
@@ -180,11 +185,19 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 		}
 
 	case ^ast.Call_Expr:
-		method_name := get_call_method_name(n)
-		if method_name != "" {
-			hover_text = fmt.tprintf("(method call) %s( )", method_name)
-		} else {
-			hover_text = "(method call)"
+		if id, id_ok := n.expr.derived_expr.(^ast.Ident); id_ok {
+			bh := symbols.builtin_function_hover_markdown(id.name)
+			if len(bh) > 0 {
+				hover_text = bh
+			}
+		}
+		if len(hover_text) == 0 {
+			method_name := get_call_method_name(n)
+			if method_name != "" {
+				hover_text = fmt.tprintf("(method call) %s( )", method_name)
+			} else {
+				hover_text = "(method call)"
+			}
 		}
 
 	case ^ast.Selector_Expr:

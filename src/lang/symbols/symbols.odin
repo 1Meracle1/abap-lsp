@@ -467,6 +467,14 @@ register_builtin_symbols :: proc(table: ^SymbolTable) {
 	)
 
 	abap_bool_type := make_builtin_char_type(table, 1)
+	add_symbol(
+		table,
+		Symbol{
+			name      = "abap_bool",
+			kind      = .TypeDef,
+			type_info = abap_bool_type,
+		},
+	)
 	add_builtin_constant(table, "abap_true", abap_bool_type)
 	add_builtin_constant(table, "abap_false", abap_bool_type)
 }

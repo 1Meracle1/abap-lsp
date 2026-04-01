@@ -797,7 +797,14 @@ validate_expr_ctx :: proc(ctx: ^Validation_Context, expr: ^ast.Expr) {
 		validate_expr_ctx(ctx, e.index)
 
 	case ^ast.Call_Expr:
-		validate_expr_ctx(ctx, e.expr)
+		#partial switch callee in e.expr.derived_expr {
+		case ^ast.Ident:
+			if !is_builtin_function_name(callee.name) {
+				validate_ident_expr_ctx(ctx, callee)
+			}
+		case:
+			validate_expr_ctx(ctx, e.expr)
+		}
 		for arg in e.args {
 			validate_expr_ctx(ctx, arg)
 		}

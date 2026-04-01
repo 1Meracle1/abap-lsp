@@ -795,8 +795,12 @@ resolve_type_expr :: proc(table: ^SymbolTable, expr: ^ast.Expr) -> ^Type {
 		return make_unknown_type(table)
 
 	case ^ast.Call_Expr:
-		// For call expressions, we would need to resolve the return type of the method
-		// For now, return unknown type as we need more context to resolve method return types
+		if id, ok := e.expr.derived_expr.(^ast.Ident); ok && is_builtin_function_name(id.name) {
+			t := make_type(table, .Integer)
+			t.ast_node = expr
+			return t
+		}
+		// User-defined calls: return type needs full call resolution
 		return make_unknown_type(table)
 
 	case ^ast.String_Template_Expr:
@@ -932,6 +936,53 @@ builtin_type_from_name :: proc(name: string) -> TypeKind {
 		return .Data
 	}
 	return .Unknown
+}
+
+// Built-in ABAP functions invoked as ident( ... ). Not declared in user programs; recognized for validation and typing.
+is_builtin_function_name :: proc(name: string) -> bool {
+	lower := strings.to_lower(name, context.temp_allocator)
+	switch lower {
+	case "strlen", "numofchar", "xstrlen", "lines", "charlen", "dbmaxlen":
+		return true
+	case:
+		return false
+	}
+}
+
+// builtin_function_hover_markdown returns documentation hover text for built-ins (empty string if not a known built-in).
+builtin_function_hover_markdown :: proc(name: string) -> string {
+	lower := strings.to_lower(name, context.temp_allocator)
+	sig: string
+	desc: string
+	switch lower {
+	case "charlen":
+		sig = "charlen( arg )"
+		desc = "Length of the first character of arg in the code page used: 1 for a single Unicode character; 2 for surrogate pairs."
+	case "dbmaxlen":
+		sig = "dbmaxlen( arg )"
+		desc = "Maximum length of a string defined in the ABAP Dictionary (RAWSTRING, SSTRING, STRING, or GEOM_EWKB). If the string is unrestricted, the constant abap_max_db_string_ln or abap_max_db_rawstring_ln from the type pool ABAP is returned. The latter is also returned for the built-in ABAP types string and xstring."
+	case "numofchar":
+		sig = "numofchar( arg )"
+		desc = "Number of characters in arg, where trailing blanks are neither counted in data objects with fixed lengths nor in data objects with the type string."
+	case "strlen":
+		sig = "strlen( arg )"
+		desc = "Number of characters in arg, where trailing blanks in data objects with fixed lengths are not counted, whereas in data objects with the type string they are."
+	case "xstrlen":
+		sig = "xstrlen( arg )"
+		desc = "Number of bytes in the byte string arg (xstring or byte-like type); trailing bytes with hexadecimal value 0 are not counted for fixed-length objects."
+	case "lines":
+		sig = "lines( arg )"
+		desc = "Number of rows currently in the internal table arg."
+	case:
+		return ""
+	}
+	b: strings.Builder
+	strings.builder_init(&b, context.temp_allocator)
+	strings.write_string(&b, "```abap\nBuilt-in: ")
+	strings.write_string(&b, sig)
+	strings.write_string(&b, " -> i\n```\n\n")
+	strings.write_string(&b, desc)
+	return strings.to_string(b)
 }
 
 selector_to_string :: proc(sel: ^ast.Selector_Expr) -> string {

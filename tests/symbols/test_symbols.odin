@@ -668,6 +668,97 @@ CONSTANTS lc_false TYPE c LENGTH 1 VALUE abap_false.`
 }
 
 @(test)
+test_builtin_abap_bool_type_in_data_no_unknown_type_diagnostic :: proc(t: ^testing.T) {
+	src := `DATA lv_flag TYPE abap_bool VALUE abap_false.`
+	file := ast.new(ast.File, {})
+	file.src = src
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	table := symbols.resolve_file(file)
+	defer symbols.destroy_symbol_table(table)
+
+	bool_sym, ok := table.symbols["abap_bool"]
+	if !testing.expect(t, ok, "expected built-in type 'abap_bool' in symbol table") do return
+	testing.expect(t, bool_sym.kind == .TypeDef, fmt.tprintf("expected 'abap_bool' to be TypeDef, got %v", bool_sym.kind))
+
+	for diag in symbols.collect_all_diagnostics(table) {
+		if strings.contains(diag.message, "Unknown type 'abap_bool'") {
+			testing.expect(t, false, fmt.tprintf("unexpected diagnostic: %s", diag.message))
+			return
+		}
+	}
+}
+
+@(test)
+test_builtin_strlen_call_no_unknown_symbol_diagnostic :: proc(t: ^testing.T) {
+	src := `DATA lv_text_add TYPE string.
+DATA lv_long_descr TYPE abap_bool.
+IF strlen( lv_text_add ) > 18.
+  lv_long_descr = abap_true.
+ENDIF.`
+	file := ast.new(ast.File, {})
+	file.src = src
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	table := symbols.resolve_file(file)
+	defer symbols.destroy_symbol_table(table)
+
+	for diag in symbols.collect_all_diagnostics(table) {
+		if strings.contains(diag.message, "Unknown symbol 'strlen'") {
+			testing.expect(t, false, fmt.tprintf("unexpected diagnostic: %s", diag.message))
+			return
+		}
+	}
+}
+
+@(test)
+test_builtin_string_measure_calls_no_unknown_symbol_diagnostics :: proc(t: ^testing.T) {
+	src := `DATA lv_c(10) TYPE c.
+DATA lv_s TYPE string.
+DATA lv_n TYPE i.
+lv_n = charlen( lv_s ) + dbmaxlen( lv_s ) + numofchar( lv_c ).`
+	file := ast.new(ast.File, {})
+	file.src = src
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	table := symbols.resolve_file(file)
+	defer symbols.destroy_symbol_table(table)
+
+	for name in ([]string{"charlen", "dbmaxlen", "numofchar"}) {
+		for diag in symbols.collect_all_diagnostics(table) {
+			if strings.contains(diag.message, fmt.tprintf("Unknown symbol '%s'", name)) {
+				testing.expect(t, false, fmt.tprintf("unexpected diagnostic: %s", diag.message))
+				return
+			}
+		}
+	}
+}
+
+@(test)
+test_builtin_function_hover_markdown :: proc(t: ^testing.T) {
+	h_len := symbols.builtin_function_hover_markdown("strlen")
+	if !testing.expect(t, len(h_len) > 0, "strlen hover") do return
+	testing.expect(t, strings.contains(h_len, "strlen"), h_len)
+	testing.expect(t, strings.contains(h_len, "type string"), h_len)
+
+	h_db := symbols.builtin_function_hover_markdown("dbmaxlen")
+	if !testing.expect(t, len(h_db) > 0, "dbmaxlen hover") do return
+	testing.expect(t, strings.contains(h_db, "ABAP Dictionary"), h_db)
+
+	h_ch := symbols.builtin_function_hover_markdown("charlen")
+	if !testing.expect(t, len(h_ch) > 0, "charlen hover") do return
+	testing.expect(t, strings.contains(h_ch, "surrogate"), h_ch)
+
+	testing.expect(t, len(symbols.builtin_function_hover_markdown("not_a_builtin")) == 0, "unknown builtin")
+}
+
+@(test)
 test_method_impl_uses_declared_params :: proc(t: ^testing.T) {
 	src := `CLASS lcl_calc DEFINITION.
   PUBLIC SECTION.
