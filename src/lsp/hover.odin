@@ -1242,7 +1242,7 @@ lookup_selector_field_at_offset :: proc(
 	if current_type == nil {
 		return "", nil, false
 	}
-	current_type = resolve_to_struct_type(snap, current_type, symbol_table)
+	current_type = resolve_to_struct_type(snap, offset, current_type, symbol_table)
 	if current_type == nil {
 		return "", nil, false
 	}
@@ -1265,7 +1265,7 @@ lookup_selector_field_at_offset :: proc(
 			return field_name, field_type, true
 		}
 
-		current_type = resolve_to_struct_type(snap, field_type, symbol_table)
+		current_type = resolve_to_struct_type(snap, offset, field_type, symbol_table)
 		if current_type == nil {
 			return "", nil, false
 		}

@@ -237,6 +237,11 @@ resolve_decl_into_with_syntax_taint :: proc(
 		resolve_controls_decl(table, d, is_global = true)
 	case ^ast.Controls_Chain_Decl:
 		resolve_controls_chain_decl(table, d, is_global = true)
+	case:
+		// Executable statements at program top-level (INSERT, READ TABLE, LOOP, etc.) live in
+		// file.decls like declarations; they must still run through resolve_stmt so inline
+		// DATA / FIELD-SYMBOL bindings are registered.
+		resolve_stmt(table, decl, syntax_taint)
 	}
 }
 

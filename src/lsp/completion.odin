@@ -244,6 +244,21 @@ collect_completion_items :: proc(
 		}
 	}
 
+	// Selector context (`foo-`, `<fs>-`, `obj->`, etc.) but type/member resolution failed —
+	// do not fall back to keywords and every symbol in scope.
+	if member_access.has_member_access_base && member_access.access_kind != .None {
+		member_resolved := false
+		#partial switch member_access.access_kind {
+		case .Structure:
+			member_resolved = member_access.struct_type != nil
+		case .Instance, .Static:
+			member_resolved = member_access.class_symbol != nil
+		}
+		if !member_resolved {
+			return items
+		}
+	}
+
 	for keyword in ABAP_KEYWORDS {
 		append(&items, CompletionItem{label = keyword, kind = .Keyword, detail = "keyword"})
 	}
@@ -258,6 +273,25 @@ collect_completion_items :: proc(
 			if form_sym.child_scope != nil {
 				for _, sym in form_sym.child_scope.symbols {
 					append(&items, symbol_to_completion_item(sym))
+				}
+			}
+		}
+	}
+
+	if method_impl := ast.find_enclosing_method_impl(snap.ast, offset); method_impl != nil {
+		if class_impl := ast.find_enclosing_class_impl(snap.ast, offset); class_impl != nil &&
+		   class_impl.ident != nil {
+			class_name := strings.to_lower(class_impl.ident.name, context.temp_allocator)
+			if class_sym, ok := table.symbols[class_name]; ok && class_sym.child_scope != nil {
+				method_name := strings.to_lower(
+					symbols.decl_name_from_expr(method_impl.ident),
+					context.temp_allocator,
+				)
+				if method_sym, ok2 := class_sym.child_scope.symbols[method_name]; ok2 &&
+				   method_sym.child_scope != nil {
+					for _, sym in method_sym.child_scope.symbols {
+						append(&items, symbol_to_completion_item(sym))
+					}
 				}
 			}
 		}
@@ -308,6 +342,8 @@ Member_Access_Result :: struct {
 	struct_type:  ^symbols.Type,
 	class_symbol: ^symbols.Symbol,
 	access_kind:  Access_Kind,
+	// True when a `-` / `->` / `=>` chain has a non-empty base (e.g. `<fs>` or `var`) before the operator.
+	has_member_access_base: bool,
 }
 
 find_member_access_at_cursor :: proc(
@@ -322,12 +358,13 @@ find_member_access_at_cursor :: proc(
 	}
 
 	chain_result := parse_access_chain_backwards(snap.text, offset)
-	if len(chain_result.chain) == 0 {
-		return result
-	}
 	defer delete(chain_result.chain)
 
 	result.access_kind = chain_result.access_kind
+	result.has_member_access_base = len(chain_result.chain) > 0
+	if len(chain_result.chain) == 0 {
+		return result
+	}
 
 	#partial switch chain_result.access_kind {
 	case .Static:
@@ -486,6 +523,82 @@ parse_access_chain_backwards :: proc(text: string, offset: int) -> Access_Chain_
 	return result
 }
 
+// Symbol visible at cursor: form locals, method locals, class / interface / module scopes, then globals.
+lookup_scoped_symbol :: proc(
+	snap: ^cache.Snapshot,
+	name: string,
+	offset: int,
+	symbol_table: ^symbols.SymbolTable,
+) -> (
+	sym: symbols.Symbol,
+	ok: bool,
+) {
+	table := symbol_table if symbol_table != nil else snap.symbol_table
+	if table == nil {
+		return {}, false
+	}
+
+	if enclosing_form := ast.find_enclosing_form(snap.ast, offset); enclosing_form != nil {
+		form_name := strings.to_lower(enclosing_form.ident.name, context.temp_allocator)
+		if form_sym, o1 := table.symbols[form_name]; o1 && form_sym.child_scope != nil {
+			if s, f := form_sym.child_scope.symbols[name]; f {
+				return s, true
+			}
+		}
+	}
+
+	if method_impl := ast.find_enclosing_method_impl(snap.ast, offset); method_impl != nil {
+		if class_impl := ast.find_enclosing_class_impl(snap.ast, offset); class_impl != nil &&
+		   class_impl.ident != nil {
+			class_name := strings.to_lower(class_impl.ident.name, context.temp_allocator)
+			if class_sym, o1 := table.symbols[class_name]; o1 && class_sym.child_scope != nil {
+				method_name := strings.to_lower(
+					symbols.decl_name_from_expr(method_impl.ident),
+					context.temp_allocator,
+				)
+				if method_sym, o2 := class_sym.child_scope.symbols[method_name]; o2 &&
+				   method_sym.child_scope != nil {
+					if s, f := method_sym.child_scope.symbols[name]; f {
+						return s, true
+					}
+				}
+			}
+		}
+	}
+
+	if enclosing_class := ast.find_enclosing_class_def(snap.ast, offset); enclosing_class != nil {
+		class_name := strings.to_lower(enclosing_class.ident.name, context.temp_allocator)
+		if class_sym, o1 := table.symbols[class_name]; o1 && class_sym.child_scope != nil {
+			if s, f := class_sym.child_scope.symbols[name]; f {
+				return s, true
+			}
+		}
+	}
+
+	if enclosing_iface := ast.find_enclosing_interface(snap.ast, offset); enclosing_iface != nil {
+		iface_name := strings.to_lower(enclosing_iface.ident.name, context.temp_allocator)
+		if iface_sym, o1 := table.symbols[iface_name]; o1 && iface_sym.child_scope != nil {
+			if s, f := iface_sym.child_scope.symbols[name]; f {
+				return s, true
+			}
+		}
+	}
+
+	if enclosing_module := ast.find_enclosing_module(snap.ast, offset); enclosing_module != nil {
+		module_name := strings.to_lower(enclosing_module.ident.name, context.temp_allocator)
+		if module_sym, o1 := table.symbols[module_name]; o1 && module_sym.child_scope != nil {
+			if s, f := module_sym.child_scope.symbols[name]; f {
+				return s, true
+			}
+		}
+	}
+
+	if s, f := table.symbols[name]; f {
+		return s, true
+	}
+	return {}, false
+}
+
 resolve_access_chain :: proc(
 	snap: ^cache.Snapshot,
 	chain: []string,
@@ -502,7 +615,7 @@ resolve_access_chain :: proc(
 		return nil
 	}
 
-	current_type := resolve_to_struct_type(snap, var_type, symbol_table)
+	current_type := resolve_to_struct_type(snap, offset, var_type, symbol_table)
 	if current_type == nil {
 		return nil
 	}
@@ -522,7 +635,7 @@ resolve_access_chain :: proc(
 			return nil
 		}
 
-		current_type = resolve_to_struct_type(snap, field_type, symbol_table)
+		current_type = resolve_to_struct_type(snap, offset, field_type, symbol_table)
 		if current_type == nil {
 			return nil
 		}
@@ -537,70 +650,135 @@ lookup_variable_type :: proc(
 	offset: int,
 	symbol_table: ^symbols.SymbolTable = nil,
 ) -> ^symbols.Type {
-	// Use provided symbol table or fall back to snapshot's own table
-	table := symbol_table if symbol_table != nil else snap.symbol_table
-	if table == nil {
+	if sym, ok := lookup_scoped_symbol(snap, var_name, offset, symbol_table); ok {
+		return sym.type_info
+	}
+	return nil
+}
+
+expr_value_type_for_completion :: proc(
+	snap: ^cache.Snapshot,
+	offset: int,
+	table: ^symbols.SymbolTable,
+	expr: ^ast.Expr,
+) -> ^symbols.Type {
+	if expr == nil || table == nil {
 		return nil
 	}
-
-	// Check enclosing form scope
-	if enclosing_form := ast.find_enclosing_form(snap.ast, offset); enclosing_form != nil {
-		form_name := enclosing_form.ident.name
-		if form_sym, ok := table.symbols[form_name]; ok {
-			if form_sym.child_scope != nil {
-				if local_sym, found := form_sym.child_scope.symbols[var_name]; found {
-					return local_sym.type_info
-				}
+	#partial switch e in expr.derived_expr {
+	case ^ast.Ident:
+		name := strings.to_lower(e.name, context.temp_allocator)
+		return lookup_variable_type(snap, name, offset, table)
+	case ^ast.Selector_Expr:
+		if e.op.kind != .Minus && e.op.kind != .Tilde && e.op.kind != .Arrow {
+			return nil
+		}
+		base_ty := expr_value_type_for_completion(snap, offset, table, e.expr)
+		struct_ty := structure_for_field_lookup_for_completion(snap, offset, table, base_ty)
+		if struct_ty == nil {
+			return nil
+		}
+		field_name := ast.selector_field_ident_name(e)
+		if field_name == "" {
+			return nil
+		}
+		ln := strings.to_lower(field_name, context.temp_allocator)
+		for f in struct_ty.fields {
+			if f.name == ln {
+				return f.type_info
 			}
 		}
+		return nil
+	case ^ast.Paren_Expr:
+		return expr_value_type_for_completion(snap, offset, table, e.expr)
 	}
+	return nil
+}
 
-	// Check enclosing class scope
-	if enclosing_class := ast.find_enclosing_class_def(snap.ast, offset); enclosing_class != nil {
-		class_name := enclosing_class.ident.name
-		if class_sym, ok := table.symbols[class_name]; ok {
-			if class_sym.child_scope != nil {
-				if local_sym, found := class_sym.child_scope.symbols[var_name]; found {
-					return local_sym.type_info
-				}
-			}
+unwrap_typedef_structure_for_completion :: proc(
+	snap: ^cache.Snapshot,
+	offset: int,
+	table: ^symbols.SymbolTable,
+	start: ^symbols.Type,
+) -> ^symbols.Type {
+	if start == nil {
+		return nil
+	}
+	cur := start
+	for _ in 0 ..< 16 {
+		if cur.kind == .Structure {
+			return cur
+		}
+		if cur.kind != .Named {
+			return nil
+		}
+		if sym, ok := lookup_scoped_symbol(snap, cur.name, offset, table); ok &&
+		   sym.kind == .TypeDef &&
+		   sym.type_info != nil {
+			cur = sym.type_info
+			continue
+		}
+		return nil
+	}
+	return nil
+}
+
+named_or_table_row_structure_for_completion :: proc(
+	snap: ^cache.Snapshot,
+	offset: int,
+	table: ^symbols.SymbolTable,
+	value_ty: ^symbols.Type,
+) -> ^symbols.Type {
+	if value_ty == nil {
+		return nil
+	}
+	t := value_ty
+	if t.kind == .Named {
+		if sym, ok := lookup_scoped_symbol(snap, t.name, offset, table); ok &&
+		   sym.kind == .TypeDef &&
+		   sym.type_info != nil {
+			t = sym.type_info
+		} else {
+			return nil
 		}
 	}
+	if t.kind == .Table && t.elem_type != nil {
+		return structure_for_field_lookup_for_completion(snap, offset, table, t.elem_type)
+	}
+	return nil
+}
 
-	// Check enclosing interface scope
-	if enclosing_iface := ast.find_enclosing_interface(snap.ast, offset); enclosing_iface != nil {
-		iface_name := enclosing_iface.ident.name
-		if iface_sym, ok := table.symbols[iface_name]; ok {
-			if iface_sym.child_scope != nil {
-				if local_sym, found := iface_sym.child_scope.symbols[var_name]; found {
-					return local_sym.type_info
-				}
-			}
+structure_for_field_lookup_for_completion :: proc(
+	snap: ^cache.Snapshot,
+	offset: int,
+	table: ^symbols.SymbolTable,
+	value_ty: ^symbols.Type,
+) -> ^symbols.Type {
+	if value_ty == nil {
+		return nil
+	}
+	if value_ty.kind == .Structure {
+		return value_ty
+	}
+	if value_ty.kind == .Inferred && value_ty.infer_source != nil {
+		src_ty := expr_value_type_for_completion(snap, offset, table, value_ty.infer_source)
+		return named_or_table_row_structure_for_completion(snap, offset, table, src_ty)
+	}
+	if value_ty.kind == .Named {
+		if u := unwrap_typedef_structure_for_completion(snap, offset, table, value_ty); u != nil {
+			return u
 		}
+		return named_or_table_row_structure_for_completion(snap, offset, table, value_ty)
 	}
-
-	// Check enclosing module scope
-	if enclosing_module := ast.find_enclosing_module(snap.ast, offset); enclosing_module != nil {
-		module_name := enclosing_module.ident.name
-		if module_sym, ok := table.symbols[module_name]; ok {
-			if module_sym.child_scope != nil {
-				if local_sym, found := module_sym.child_scope.symbols[var_name]; found {
-					return local_sym.type_info
-				}
-			}
-		}
+	if value_ty.kind == .LineOf && value_ty.target_type != nil {
+		return named_or_table_row_structure_for_completion(snap, offset, table, value_ty.target_type)
 	}
-
-	// Check global symbol table
-	if global_sym, found := table.symbols[var_name]; found {
-		return global_sym.type_info
-	}
-
 	return nil
 }
 
 resolve_to_struct_type :: proc(
 	snap: ^cache.Snapshot,
+	offset: int,
 	type_info: ^symbols.Type,
 	symbol_table: ^symbols.SymbolTable = nil,
 ) -> ^symbols.Type {
@@ -608,7 +786,6 @@ resolve_to_struct_type :: proc(
 		return nil
 	}
 
-	// Use provided symbol table or fall back to snapshot's own table
 	table := symbol_table if symbol_table != nil else snap.symbol_table
 
 	#partial switch type_info.kind {
@@ -617,24 +794,22 @@ resolve_to_struct_type :: proc(
 
 	case .Inferred:
 		if table != nil {
-			return symbols.structure_for_field_lookup(table, type_info)
+			return structure_for_field_lookup_for_completion(snap, offset, table, type_info)
 		}
 		return nil
 
 	case .Named:
-		// Look up the type definition
 		if table != nil {
-			if type_sym, found := table.symbols[type_info.name]; found {
-				if type_sym.type_info != nil {
-					return resolve_to_struct_type(snap, type_sym.type_info, table)
-				}
+			if sym, ok := lookup_scoped_symbol(snap, type_info.name, offset, table); ok &&
+			   sym.type_info != nil {
+				return resolve_to_struct_type(snap, offset, sym.type_info, table)
 			}
 		}
 		return nil
 
 	case .Table:
 		if type_info.elem_type != nil {
-			return resolve_to_struct_type(snap, type_info.elem_type, table)
+			return resolve_to_struct_type(snap, offset, type_info.elem_type, table)
 		}
 		return nil
 	}
