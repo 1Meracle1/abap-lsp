@@ -837,8 +837,16 @@ resolve_type_expr :: proc(table: ^SymbolTable, expr: ^ast.Expr) -> ^Type {
 
 	case ^ast.Call_Expr:
 		if id, ok := e.expr.derived_expr.(^ast.Ident); ok && is_builtin_function_name(id.name) {
-			t := make_type(table, .Integer)
-			t.ast_node = expr
+			lower := strings.to_lower(id.name, context.temp_allocator)
+			t: ^Type
+			if lower == "line_exists" {
+				// Predicate: true if a row matches the table expression (CHAR1 / abap_bool).
+				t = make_builtin_char_type(table, 1)
+				t.ast_node = expr
+			} else {
+				t = make_type(table, .Integer)
+				t.ast_node = expr
+			}
 			return t
 		}
 		// User-defined calls: return type needs full call resolution
@@ -1059,7 +1067,7 @@ builtin_type_from_name :: proc(name: string) -> TypeKind {
 is_builtin_function_name :: proc(name: string) -> bool {
 	lower := strings.to_lower(name, context.temp_allocator)
 	switch lower {
-	case "strlen", "numofchar", "xstrlen", "lines", "charlen", "dbmaxlen":
+	case "strlen", "numofchar", "xstrlen", "lines", "charlen", "dbmaxlen", "line_exists":
 		return true
 	case:
 		return false
@@ -1071,7 +1079,12 @@ builtin_function_hover_markdown :: proc(name: string) -> string {
 	lower := strings.to_lower(name, context.temp_allocator)
 	sig: string
 	desc: string
+	ret := "i"
 	switch lower {
+	case "line_exists":
+		sig = "line_exists( table_line )"
+		desc = "Predicate function (ABAP 7.40+): returns whether a row exists in an internal table for the given table expression (filter, key, or components). Replaces READ TABLE ... TRANSPORTING NO FIELDS probes and avoids CX_SY_ITAB_LINE_NOT_FOUND when checking for a matching row."
+		ret = "abap_bool"
 	case "charlen":
 		sig = "charlen( arg )"
 		desc = "Length of the first character of arg in the code page used: 1 for a single Unicode character; 2 for surrogate pairs."
@@ -1097,9 +1110,28 @@ builtin_function_hover_markdown :: proc(name: string) -> string {
 	strings.builder_init(&b, context.temp_allocator)
 	strings.write_string(&b, "```abap\nBuilt-in: ")
 	strings.write_string(&b, sig)
-	strings.write_string(&b, " -> i\n```\n\n")
+	strings.write_string(&b, " -> ")
+	strings.write_string(&b, ret)
+	strings.write_string(&b, "\n```\n\n")
 	strings.write_string(&b, desc)
 	return strings.to_string(b)
+}
+
+// builtin_typedef_description returns short documentation for built-in dictionary-style TYPE names (empty if none).
+builtin_typedef_description :: proc(name: string) -> string {
+	lower := strings.to_lower(name, context.temp_allocator)
+	switch lower {
+	case "tabname":
+		return "Table Name"
+	case "cdobjectcl":
+		return "Object class"
+	case "rs38l_fnam":
+		return "Name of Function Module"
+	case "memoryid":
+		return "Set/Get parameter ID"
+	case:
+		return ""
+	}
 }
 
 selector_to_string :: proc(sel: ^ast.Selector_Expr) -> string {

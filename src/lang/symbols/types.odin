@@ -95,6 +95,18 @@ format_type :: proc(t: ^Type) -> string {
 			if t.length == 50 && t.name == "symsgv" {
 				return "c LENGTH 50 (SYMSGV)"
 			}
+			if t.length == 30 && t.name == "tabname" {
+				return "c LENGTH 30 (TABNAME)"
+			}
+			if t.length == 15 && t.name == "cdobjectcl" {
+				return "c LENGTH 15 (CDOBJECTCL)"
+			}
+			if t.length == 30 && t.name == "rs38l_fnam" {
+				return "c LENGTH 30 (RS38L_FNAM)"
+			}
+			if t.length == 20 && t.name == "memoryid" {
+				return "c LENGTH 20 (MEMORYID)"
+			}
 			if t.length == 8 && t.name == "sydatum" {
 				return "c LENGTH 8 (YYYYMMDD)"
 			}

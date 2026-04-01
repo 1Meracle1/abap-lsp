@@ -82,6 +82,9 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 				} else {
 					type_str := symbols.format_type(sym.type_info)
 					hover_text = fmt.tprintf("(type) %s = %s", sym.name, type_str)
+					if desc := symbols.builtin_typedef_description(sym.name); len(desc) > 0 {
+						hover_text = fmt.tprintf("%s — %s", hover_text, desc)
+					}
 				}
 			case .Report:
 				hover_text = fmt.tprintf("(report) %s", sym.name)
@@ -1509,6 +1512,8 @@ append_sy_struct_field_doc :: proc(snap: ^cache.Snapshot, offset: int, hover: st
 	switch chain[len(chain) - 1] {
 	case "tcode":
 		return fmt.tprintf("%s — ABAP system field: current transaction code", hover)
+	case "dbcnt":
+		return fmt.tprintf("%s — ABAP System Field: Edited Database Table Rows", hover)
 	case:
 		return hover
 	}

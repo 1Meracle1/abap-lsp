@@ -533,6 +533,7 @@ lv_subrc = sy-subrc.`
 
 		has_subrc := false
 		has_tcode := false
+		has_dbcnt := false
 		for field in sy_sym.type_info.fields {
 			if field.name == "subrc" {
 				has_subrc = true
@@ -552,9 +553,18 @@ lv_subrc = sy-subrc.`
 					"expected sy-tcode to be character length 20",
 				)
 			}
+			if field.name == "dbcnt" {
+				has_dbcnt = true
+				testing.expect(
+					t,
+					field.type_info != nil && field.type_info.kind == .Integer,
+					"expected sy-dbcnt to be an integer (INT4) field",
+				)
+			}
 		}
 		testing.expect(t, has_subrc, "expected 'sy' structure to expose field 'subrc'")
 		testing.expect(t, has_tcode, "expected 'sy' structure to expose field 'tcode'")
+		testing.expect(t, has_dbcnt, "expected 'sy' structure to expose field 'dbcnt'")
 	}
 
 	diags := symbols.collect_all_diagnostics(table)
@@ -562,7 +572,8 @@ lv_subrc = sy-subrc.`
 	for diag in diags {
 		if strings.contains(diag.message, "Unknown symbol 'sy'") ||
 		   strings.contains(diag.message, "Unknown symbol 'subrc'") ||
-		   strings.contains(diag.message, "Unknown field 'subrc'") {
+		   strings.contains(diag.message, "Unknown field 'subrc'") ||
+		   strings.contains(diag.message, "Unknown field 'dbcnt'") {
 			found_sy_or_subrc_error = true
 			break
 		}
@@ -578,6 +589,27 @@ lv_subrc = sy-subrc.`
 @(test)
 test_data_type_sy_tabix_no_cannot_use_as_type_diagnostic :: proc(t: ^testing.T) {
 	src := `DATA lv_tabix TYPE sy-tabix.`
+	file := ast.new(ast.File, {})
+	file.src = src
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	table := symbols.resolve_file(file)
+	defer symbols.destroy_symbol_table(table)
+
+	for diag in symbols.collect_all_diagnostics(table) {
+		if strings.contains(diag.message, "cannot be used as a type") &&
+		   strings.contains(diag.message, "sy") {
+			testing.expect(t, false, fmt.tprintf("unexpected diagnostic: %s", diag.message))
+			return
+		}
+	}
+}
+
+@(test)
+test_data_type_sy_dbcnt_no_cannot_use_as_type_diagnostic :: proc(t: ^testing.T) {
+	src := `DATA lv_dbcnt TYPE sy-dbcnt.`
 	file := ast.new(ast.File, {})
 	file.src = src
 
@@ -792,6 +824,10 @@ test_builtin_numc_symsgv_sydatum_timestamp_cursor_typedefs :: proc(t: ^testing.T
 	src := `DATA n3 TYPE numc3.
 DATA n4 TYPE numc4.
 DATA m TYPE symsgv.
+DATA tn TYPE tabname.
+DATA coc TYPE cdobjectcl.
+DATA fn TYPE rs38l_fnam.
+DATA mid TYPE memoryid.
 DATA sd TYPE sydatum.
 DATA ts TYPE timestamp.
 DATA cur TYPE cursor.`
@@ -822,6 +858,38 @@ DATA cur TYPE cursor.`
 		testing.expect(t, sym.type_info.kind == .Char && sym.type_info.length == 50, "symsgv")
 	} else {
 		testing.expect(t, false, "symsgv typedef")
+	}
+
+	if sym, ok := table.symbols["tabname"]; ok && sym.type_info != nil {
+		testing.expect(t, sym.type_info.kind == .Char && sym.type_info.length == 30, "tabname")
+		ft := symbols.format_type(sym.type_info)
+		testing.expect(t, strings.contains(ft, "TABNAME"), fmt.tprintf("tabname format %q", ft))
+	} else {
+		testing.expect(t, false, "tabname typedef")
+	}
+
+	if sym, ok := table.symbols["cdobjectcl"]; ok && sym.type_info != nil {
+		testing.expect(t, sym.type_info.kind == .Char && sym.type_info.length == 15, "cdobjectcl")
+		fc := symbols.format_type(sym.type_info)
+		testing.expect(t, strings.contains(fc, "CDOBJECTCL"), fmt.tprintf("cdobjectcl format %q", fc))
+	} else {
+		testing.expect(t, false, "cdobjectcl typedef")
+	}
+
+	if sym, ok := table.symbols["rs38l_fnam"]; ok && sym.type_info != nil {
+		testing.expect(t, sym.type_info.kind == .Char && sym.type_info.length == 30, "rs38l_fnam")
+		fr := symbols.format_type(sym.type_info)
+		testing.expect(t, strings.contains(fr, "RS38L_FNAM"), fmt.tprintf("rs38l_fnam format %q", fr))
+	} else {
+		testing.expect(t, false, "rs38l_fnam typedef")
+	}
+
+	if sym, ok := table.symbols["memoryid"]; ok && sym.type_info != nil {
+		testing.expect(t, sym.type_info.kind == .Char && sym.type_info.length == 20, "memoryid")
+		fm := symbols.format_type(sym.type_info)
+		testing.expect(t, strings.contains(fm, "MEMORYID"), fmt.tprintf("memoryid format %q", fm))
+	} else {
+		testing.expect(t, false, "memoryid typedef")
 	}
 
 	if sym, ok := table.symbols["sydatum"]; ok && sym.type_info != nil {
@@ -955,6 +1023,31 @@ test_builtin_flag_type_same_as_abap_bool :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_builtin_line_exists_call_no_unknown_symbol_diagnostic :: proc(t: ^testing.T) {
+	src := `TYPES: BEGIN OF ty_msg,
+  msgty TYPE c,
+END OF ty_msg.
+DATA lt_messages TYPE TABLE OF ty_msg.
+IF line_exists( lt_messages[ msgty = 'W' ] ).
+ENDIF.`
+	file := ast.new(ast.File, {})
+	file.src = src
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	table := symbols.resolve_file(file)
+	defer symbols.destroy_symbol_table(table)
+
+	for diag in symbols.collect_all_diagnostics(table) {
+		if strings.contains(diag.message, "Unknown symbol 'line_exists'") {
+			testing.expect(t, false, fmt.tprintf("unexpected diagnostic: %s", diag.message))
+			return
+		}
+	}
+}
+
+@(test)
 test_builtin_strlen_call_no_unknown_symbol_diagnostic :: proc(t: ^testing.T) {
 	src := `DATA lv_text_add TYPE string.
 DATA lv_long_descr TYPE abap_bool.
@@ -1017,6 +1110,12 @@ test_builtin_function_hover_markdown :: proc(t: ^testing.T) {
 	h_ch := symbols.builtin_function_hover_markdown("charlen")
 	if !testing.expect(t, len(h_ch) > 0, "charlen hover") do return
 	testing.expect(t, strings.contains(h_ch, "surrogate"), h_ch)
+
+	h_le := symbols.builtin_function_hover_markdown("line_exists")
+	if !testing.expect(t, len(h_le) > 0, "line_exists hover") do return
+	testing.expect(t, strings.contains(h_le, "line_exists"), h_le)
+	testing.expect(t, strings.contains(h_le, "abap_bool"), h_le)
+	testing.expect(t, strings.contains(h_le, "table expression"), h_le)
 
 	testing.expect(t, len(symbols.builtin_function_hover_markdown("not_a_builtin")) == 0, "unknown builtin")
 }

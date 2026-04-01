@@ -462,6 +462,8 @@ register_builtin_symbols :: proc(table: ^SymbolTable) {
 	add_struct_field(syst_type, "index", make_type(table, .Integer))
 	add_struct_field(syst_type, "tfill", make_type(table, .Integer))
 	add_struct_field(syst_type, "tleng", make_type(table, .Integer))
+	// INT4: number of rows in last MODIFY or DELETE (SY-DBCNT).
+	add_struct_field(syst_type, "dbcnt", make_type(table, .Integer))
 	add_struct_field(syst_type, "datum", make_type(table, .Date))
 	add_struct_field(syst_type, "uzeit", make_type(table, .Time))
 	add_struct_field(syst_type, "mandt", make_builtin_char_type(table, 3))
@@ -554,6 +556,34 @@ register_builtin_symbols :: proc(table: ^SymbolTable) {
 	add_symbol(
 		table,
 		Symbol{name = "symsgv", kind = .TypeDef, type_info = symsgv_type},
+	)
+
+	tabname_type := make_builtin_char_type(table, 30)
+	tabname_type.name = "tabname"
+	add_symbol(
+		table,
+		Symbol{name = "tabname", kind = .TypeDef, type_info = tabname_type},
+	)
+
+	cdobjectcl_type := make_builtin_char_type(table, 15)
+	cdobjectcl_type.name = "cdobjectcl"
+	add_symbol(
+		table,
+		Symbol{name = "cdobjectcl", kind = .TypeDef, type_info = cdobjectcl_type},
+	)
+
+	rs38l_fnam_type := make_builtin_char_type(table, 30)
+	rs38l_fnam_type.name = "rs38l_fnam"
+	add_symbol(
+		table,
+		Symbol{name = "rs38l_fnam", kind = .TypeDef, type_info = rs38l_fnam_type},
+	)
+
+	memoryid_type := make_builtin_char_type(table, 20)
+	memoryid_type.name = "memoryid"
+	add_symbol(
+		table,
+		Symbol{name = "memoryid", kind = .TypeDef, type_info = memoryid_type},
 	)
 
 	sydatum_type := make_builtin_char_type(table, 8)
