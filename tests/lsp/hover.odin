@@ -264,6 +264,69 @@ ENDCLASS.`
 }
 
 @(test)
+hover_lookup_for_class_constants_nested_in_definition_test :: proc(t: ^testing.T) {
+	source := `CLASS ZATTP_CL_REP_CONSTANTS DEFINITION
+  PUBLIC
+  FINAL
+  CREATE PUBLIC .
+
+  PUBLIC SECTION.
+
+    CONSTANTS:
+      BEGIN OF gcs_aif_ifname,
+        BEGIN OF europe,
+          aggregation_epa_32 TYPE string VALUE 'ZEU_EPA_32',
+          dispatch_edp_33       TYPE string VALUE 'ZEU_EDP_33',
+        END OF europe,
+      END OF gcs_aif_ifname .
+ENDCLASS.`
+
+	snap := make_snapshot(t, source)
+	if snap == nil do return
+	defer symbols.destroy_symbol_table(snap.symbol_table)
+
+	class_def, ok := snap.ast.decls[0].derived_stmt.(^ast.Class_Def_Decl)
+	if !testing.expect(t, ok, "expected class definition") do return
+	if !testing.expect(t, len(class_def.sections) == 1, "expected one section") do return
+
+	outer, outer_ok := class_def.sections[0].data[0].derived_stmt.(^ast.Const_Struct_Decl)
+	if !testing.expect(t, outer_ok, "expected outer CONSTANTS struct") do return
+	if !testing.expect(t, len(outer.components) >= 1, "expected nested components") do return
+
+	europe, europe_ok := outer.components[0].derived_stmt.(^ast.Const_Struct_Decl)
+	if !testing.expect(t, europe_ok, "expected inner europe CONSTANTS struct") do return
+	if !testing.expect(t, len(europe.components) >= 1, "expected leaf constants") do return
+
+	leaf, leaf_ok := europe.components[0].derived_stmt.(^ast.Const_Decl)
+	if !testing.expect(t, leaf_ok, "expected leaf CONSTANTS decl") do return
+	if !testing.expect(t, leaf.ident != nil, "expected leaf ident") do return
+
+	leaf_hover, leaf_found := lsp.lookup_class_member_hover_at_offset(snap, leaf.ident.range.start)
+	if !testing.expect(t, leaf_found, "expected hover for nested class constant") do return
+	leaf_upper := strings.to_upper(leaf_hover, context.temp_allocator)
+	testing.expect(
+		t,
+		strings.contains(leaf_upper, "PUBLIC SECTION.") &&
+		strings.contains(leaf_upper, "CONSTANTS AGGREGATION_EPA_32 TYPE STRING") &&
+		strings.contains(leaf_upper, "VALUE 'ZEU_EPA_32'"),
+		fmt.tprintf("expected CONSTANTS leaf hover, got %q", leaf_hover),
+	)
+
+	if europe.ident != nil {
+		europe_hover, europe_found := lsp.lookup_class_member_hover_at_offset(
+			snap,
+			europe.ident.range.start,
+		)
+		if !testing.expect(t, europe_found, "expected hover for inner struct name") do return
+		testing.expect(
+			t,
+			strings.contains(europe_hover, "(constants structure) europe"),
+			fmt.tprintf("expected structure hover, got %q", europe_hover),
+		)
+	}
+}
+
+@(test)
 lookup_symbol_in_class_impl_method_body_test :: proc(t: ^testing.T) {
 	source :=
 		"CLASS /STTP/CL_UI_HELPER DEFINITION.\n" +
@@ -319,5 +382,59 @@ lookup_symbol_in_class_impl_method_body_test :: proc(t: ^testing.T) {
 		t,
 		strings.contains(so_type_upper, "CL_UI_COCKPIT"),
 		fmt.tprintf("expected cockpit class in class-data type, got %q", so_type_upper),
+	)
+}
+
+@(test)
+hover_nested_constants_usage_includes_value_test :: proc(t: ^testing.T) {
+	source :=
+		"CLASS zcl_demo DEFINITION\n" +
+		"  FINAL\n" +
+		"  CREATE PUBLIC .\n" +
+		"\n" +
+		"PUBLIC SECTION.\n" +
+		"  METHODS exec.\n" +
+		"\n" +
+		"PRIVATE SECTION.\n" +
+		"  CONSTANTS:\n" +
+		"    BEGIN OF gcs_const_level1,\n" +
+		"        BEGIN OF const_level2,\n" +
+		"          const_level3_1 TYPE string  VALUE 'VALUE1',\n" +
+		"          const_level3_2 TYPE string  VALUE 'VALUE2',\n" +
+		"        END OF const_level2,\n" +
+		"      END OF gcs_const_level1 .\n" +
+		"ENDCLASS.\n" +
+		"\n" +
+		"CLASS zcl_demo IMPLEMENTATION.\n" +
+		"  METHOD exec.\n" +
+		"      DATA(lv_some_val) = gcs_const_level1-const_level2-const_level3_1.\n" +
+		"  ENDMETHOD.\n" +
+		"ENDCLASS.\n"
+
+	snap := make_snapshot(t, source)
+	if snap == nil do return
+	defer symbols.destroy_symbol_table(snap.symbol_table)
+
+	use_idx := strings.last_index(source, "const_level3_1")
+	if !testing.expect(t, use_idx >= 0, "expected usage of const_level3_1") do return
+	cursor := use_idx + 8
+
+	field_name, field_type, const_init, ok := lsp.lookup_selector_field_at_offset(
+		snap,
+		cursor,
+		snap.symbol_table,
+	)
+	if !testing.expect(t, ok, "expected selector field lookup for nested constant") do return
+	if !testing.expect(t, field_type != nil, "expected field type") do return
+	if !testing.expect(t, const_init != nil, "expected const VALUE on struct field") do return
+
+	hover := lsp.format_field_hover_type_and_const(snap.text, field_name, field_type, const_init)
+	hover_u := strings.to_upper(hover, context.temp_allocator)
+	testing.expect(
+		t,
+		strings.contains(hover_u, "CONST_LEVEL3_1") &&
+		strings.contains(hover_u, "STRING") &&
+		strings.contains(hover_u, "'VALUE1'"),
+		fmt.tprintf("expected hover with VALUE, got %q", hover),
 	)
 }

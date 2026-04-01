@@ -562,6 +562,12 @@ lookup_scoped_symbol :: proc(
 						return s, true
 					}
 				}
+				// Constants, attributes, etc. from the class definition (including PRIVATE
+				// section) are in the class child_scope — visible in IMPLEMENTATION but not
+				// found while the cursor is outside the DEFINITION node's range.
+				if s, f := class_sym.child_scope.symbols[name]; f {
+					return s, true
+				}
 			}
 		}
 	}

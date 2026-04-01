@@ -1818,3 +1818,42 @@ ENDCLASS.`
 		}
 	}
 }
+
+@(test)
+test_class_constants_nested_struct_unknown_type_diagnostic :: proc(t: ^testing.T) {
+	// Nested CONSTANTS BEGIN OF … must still validate TYPE; unknown namespaced types should report diagnostics.
+	src := `CLASS zattp_cl_rep_constants DEFINITION
+  PUBLIC
+  FINAL
+  CREATE PUBLIC .
+  PUBLIC SECTION.
+    CONSTANTS:
+      BEGIN OF gcs_aif_ifname,
+        BEGIN OF europe,
+          aggregation_epa_32 TYPE /zfoo/unknown_if VALUE 'Z' ##no_text,
+        END OF europe,
+      END OF gcs_aif_ifname .
+ENDCLASS.`
+	file := ast.new(ast.File, {})
+	file.src = src
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+	testing.expect(t, len(file.syntax_errors) == 0, fmt.tprintf("syntax: %v", file.syntax_errors))
+
+	table := symbols.resolve_file(file)
+	defer symbols.destroy_symbol_table(table)
+
+	found_unknown := false
+	for diag in symbols.collect_all_diagnostics(table) {
+		if strings.contains(diag.message, "Unknown type '/zfoo/unknown_if'") {
+			found_unknown = true
+			break
+		}
+	}
+	testing.expect(
+		t,
+		found_unknown,
+		"expected Unknown type diagnostic for TYPE in nested CONSTANTS struct member",
+	)
+}

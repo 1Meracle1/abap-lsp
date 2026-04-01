@@ -43,9 +43,11 @@ TableKeyInfo :: struct {
 }
 
 StructField :: struct {
-	name:      string,
-	type_info: ^Type,
-	length:    int,
+	name:       string,
+	type_info:  ^Type,
+	length:     int,
+	// From CONSTANTS … VALUE …; nil for DATA / TYPES fields.
+	const_init: ^ast.Expr,
 }
 
 Type :: struct {

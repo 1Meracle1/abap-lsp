@@ -523,7 +523,7 @@ resolve_types_include_into_struct :: proc(
 		if len(prefix) > 0 {
 			field_name = fmt.tprintf("%s-%s", prefix, f.name)
 		}
-		add_struct_field(struct_type, field_name, f.type_info, f.length)
+		add_struct_field(struct_type, field_name, f.type_info, f.length, f.const_init)
 	}
 }
 
@@ -547,6 +547,7 @@ resolve_const_decl :: proc(
 		type_info  = type_info,
 		is_chained = is_chained,
 		visibility = visibility,
+		const_init = decl.value,
 	}
 	add_symbol(table, sym, allow_shadowing = is_global)
 }
@@ -585,6 +586,7 @@ resolve_const_struct_decl :: proc(
 		type_info  = struct_type,
 		is_chained = false,
 		visibility = visibility,
+		const_init = nil,
 	}
 	add_symbol(table, sym, allow_shadowing = false)
 }
@@ -598,12 +600,12 @@ resolve_const_struct_components :: proc(
 		#partial switch c in comp.derived_stmt {
 		case ^ast.Const_Decl:
 			field_type := resolve_type_expr(table, c.typed)
-			add_struct_field(struct_type, c.ident.name, field_type, 0)
+			add_struct_field(struct_type, c.ident.name, field_type, 0, c.value)
 
 		case ^ast.Const_Struct_Decl:
 			nested_type := make_structure_type(table, c.ident.name)
 			resolve_const_struct_components(table, nested_type, c.components[:])
-			add_struct_field(struct_type, c.ident.name, nested_type, 0)
+			add_struct_field(struct_type, c.ident.name, nested_type, 0, nil)
 		}
 	}
 }

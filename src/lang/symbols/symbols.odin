@@ -67,6 +67,8 @@ Symbol :: struct {
 	form_param_kind: FormParamKind,
 	visibility:      Visibility,
 	is_static:       bool,
+	// CONSTANTS … VALUE expr; nil if not a constant or no VALUE.
+	const_init:      ^ast.Expr,
 }
 
 SymbolTable :: struct {
@@ -291,13 +293,24 @@ make_structure_type :: proc(table: ^SymbolTable, name: string) -> ^Type {
 	return t
 }
 
-add_struct_field :: proc(t: ^Type, name: string, type_info: ^Type, length: int = 0) {
+add_struct_field :: proc(
+	t: ^Type,
+	name: string,
+	type_info: ^Type,
+	length: int = 0,
+	const_init: ^ast.Expr = nil,
+) {
 	if t == nil || t.kind != .Structure {
 		return
 	}
 	append(
 		&t.fields,
-		StructField{name = strings.to_lower(name), type_info = type_info, length = length},
+		StructField {
+			name       = strings.to_lower(name),
+			type_info  = type_info,
+			length     = length,
+			const_init = const_init,
+		},
 	)
 }
 

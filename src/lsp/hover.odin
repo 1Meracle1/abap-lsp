@@ -110,8 +110,13 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 					type_str,
 				)
 			case .Constant:
-				type_str := symbols.format_type(sym.type_info)
-				hover_text = fmt.tprintf("(constant) %s: %s", sym.name, type_str)
+				hover_text = format_field_hover_type_and_const(
+					snap.text,
+					sym.name,
+					sym.type_info,
+					sym.const_init,
+					true,
+				)
 			case .Parameter:
 				type_str := symbols.format_type(sym.type_info)
 				hover_text = fmt.tprintf("(parameter) %s: %s", sym.name, type_str)
@@ -125,15 +130,16 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 					type_str,
 				)
 			}
-				} else if field_name, field_type, ok := lookup_selector_field_at_offset(
+				} else if field_name, field_type, const_init, ok := lookup_selector_field_at_offset(
 					snap,
 					offset,
 					symbol_table,
 				); ok {
-					hover_text = fmt.tprintf(
-						"%s: %s",
+					hover_text = format_field_hover_type_and_const(
+						snap.text,
 						cache.xml_encode(field_name, context.temp_allocator),
-						symbols.format_type(field_type),
+						field_type,
+						const_init,
 					)
 				} else {
 					hover_text = fmt.tprintf(
@@ -205,21 +211,38 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 			field_name := ast.selector_field_ident_name(n)
 			if field_name != "" {
 				if sym, ok := lookup_symbol_at_offset(snap, field_name, offset, symbol_table); ok {
-					type_str := symbols.format_type(sym.type_info)
-					hover_text = fmt.tprintf("%s: %s", sym.name, type_str)
-				} else if field_name, field_type, ok := lookup_selector_field_at_offset(
+					force_const := sym.kind == .Constant
+					const_init := force_const ? sym.const_init : nil
+					hover_text = format_field_hover_type_and_const(
+						snap.text,
+						sym.name,
+						sym.type_info,
+						const_init,
+						force_const,
+					)
+				} else if field_name, field_type, const_init, ok := lookup_selector_field_at_offset(
 					snap,
 					offset,
 					symbol_table,
 				); ok {
-					hover_text = fmt.tprintf("%s: %s", field_name, symbols.format_type(field_type))
+					hover_text = format_field_hover_type_and_const(
+						snap.text,
+						field_name,
+						field_type,
+						const_init,
+					)
 				}
-			} else if field_name, field_type, ok := lookup_selector_field_at_offset(
+			} else if field_name, field_type, const_init, ok := lookup_selector_field_at_offset(
 				snap,
 				offset,
 				symbol_table,
 			); ok {
-				hover_text = fmt.tprintf("%s: %s", field_name, symbols.format_type(field_type))
+				hover_text = format_field_hover_type_and_const(
+					snap.text,
+					field_name,
+					field_type,
+					const_init,
+				)
 			}
 		}
 
@@ -707,6 +730,21 @@ class_data_hover_in_stmt :: proc(
 	}
 
 	#partial switch decl in stmt.derived_stmt {
+	case ^ast.Const_Decl:
+		if decl.ident != nil && range_contains_offset(decl.ident.range, offset) {
+			return format_class_const_decl_signature(decl, access, text), true
+		}
+	case ^ast.Const_Chain_Decl:
+		for part in decl.parts {
+			if part == nil {
+				continue
+			}
+			if hover, ok := class_constants_member_hover_in_stmt(part, access, text, offset); ok {
+				return hover, true
+			}
+		}
+	case ^ast.Const_Struct_Decl:
+		return class_constants_member_hover_in_stmt(stmt, access, text, offset)
 	case ^ast.Attr_Decl:
 		if decl.ident != nil && range_contains_offset(decl.ident.range, offset) {
 			return format_class_attr_decl_signature(decl, access, text, stmt.range), true
@@ -899,6 +937,30 @@ slice_range_text :: proc(text: string, range: lexer.TextRange) -> string {
 	}
 
 	return text[start:end]
+}
+
+// Hover text for a field/component type; if const_init is set (CONSTANTS VALUE), append ` = …`.
+// When force_constant_kind, use the `(constant)` label even if there is no VALUE (symbol kind constant).
+format_field_hover_type_and_const :: proc(
+	text: string,
+	display_name: string,
+	field_type: ^symbols.Type,
+	const_init: ^ast.Expr,
+	force_constant_kind: bool = false,
+) -> string {
+	type_str := symbols.format_type(field_type)
+	if const_init != nil {
+		return fmt.tprintf(
+			"(constant) %s: %s = %s",
+			display_name,
+			type_str,
+			slice_range_text(text, const_init.range),
+		)
+	}
+	if force_constant_kind {
+		return fmt.tprintf("(constant) %s: %s", display_name, type_str)
+	}
+	return fmt.tprintf("%s: %s", display_name, type_str)
 }
 
 slice_statement_text_from_start :: proc(text: string, start: int) -> string {
@@ -1102,6 +1164,74 @@ format_class_data_chain_decl_signature :: proc(
 	return strings.to_string(b)
 }
 
+format_class_const_decl_signature :: proc(
+	decl: ^ast.Const_Decl,
+	access: ast.Access_Modifier,
+	text: string,
+) -> string {
+	if decl == nil || decl.ident == nil {
+		return ""
+	}
+
+	b: strings.Builder
+	strings.builder_init(&b, context.temp_allocator)
+	strings.write_string(&b, "```abap\n")
+	write_member_section_header(&b, access_modifier_to_string(access))
+
+	strings.write_string(&b, "CONSTANTS ")
+	strings.write_string(&b, decl.ident.name)
+	if decl.length != nil {
+		strings.write_string(&b, "(")
+		strings.write_string(&b, slice_range_text(text, decl.length.range))
+		strings.write_string(&b, ")")
+	}
+	if decl.typed != nil {
+		strings.write_string(&b, " TYPE ")
+		strings.write_string(&b, slice_range_text(text, decl.typed.range))
+	}
+	if decl.value != nil {
+		strings.write_string(&b, " VALUE ")
+		strings.write_string(&b, slice_range_text(text, decl.value.range))
+	}
+	strings.write_string(&b, "\n```")
+
+	return strings.to_string(b)
+}
+
+// CONSTANTS in class definitions (including nested BEGIN OF … END OF) live in section.data; walk the AST
+// so leaf components get hover (they are not separate symbols on the class scope).
+class_constants_member_hover_in_stmt :: proc(
+	stmt: ^ast.Stmt,
+	access: ast.Access_Modifier,
+	text: string,
+	offset: int,
+) -> (
+	string,
+	bool,
+) {
+	if stmt == nil {
+		return "", false
+	}
+
+	#partial switch part in stmt.derived_stmt {
+	case ^ast.Const_Decl:
+		if part.ident != nil && range_contains_offset(part.ident.range, offset) {
+			return format_class_const_decl_signature(part, access, text), true
+		}
+	case ^ast.Const_Struct_Decl:
+		if part.ident != nil && range_contains_offset(part.ident.range, offset) {
+			return fmt.tprintf("(constants structure) %s", part.ident.name), true
+		}
+		for comp in part.components {
+			if hover, ok := class_constants_member_hover_in_stmt(comp, access, text, offset); ok {
+				return hover, true
+			}
+		}
+	}
+
+	return "", false
+}
+
 append_method_param_group :: proc(
 	b: ^strings.Builder,
 	text: string,
@@ -1231,47 +1361,50 @@ lookup_selector_field_at_offset :: proc(
 ) -> (
 	string,
 	^symbols.Type,
+	^ast.Expr,
 	bool,
 ) {
 	chain := parse_selector_chain_at_offset(snap.text, offset)
 	if len(chain) < 2 {
-		return "", nil, false
+		return "", nil, nil, false
 	}
 
 	current_type := lookup_variable_type(snap, chain[0], offset, symbol_table)
 	if current_type == nil {
-		return "", nil, false
+		return "", nil, nil, false
 	}
 	current_type = resolve_to_struct_type(snap, offset, current_type, symbol_table)
 	if current_type == nil {
-		return "", nil, false
+		return "", nil, nil, false
 	}
 
 	for i := 1; i < len(chain); i += 1 {
 		field_name := chain[i]
 		field_type: ^symbols.Type = nil
+		field_const: ^ast.Expr = nil
 
 		for field in current_type.fields {
 			if strings.to_lower(field.name, context.temp_allocator) == field_name {
 				field_type = field.type_info
+				field_const = field.const_init
 				break
 			}
 		}
 
 		if field_type == nil {
-			return "", nil, false
+			return "", nil, nil, false
 		}
 		if i == len(chain)-1 {
-			return field_name, field_type, true
+			return field_name, field_type, field_const, true
 		}
 
 		current_type = resolve_to_struct_type(snap, offset, field_type, symbol_table)
 		if current_type == nil {
-			return "", nil, false
+			return "", nil, nil, false
 		}
 	}
 
-	return "", nil, false
+	return "", nil, nil, false
 }
 
 parse_selector_chain_at_offset :: proc(text: string, offset: int) -> [dynamic]string {

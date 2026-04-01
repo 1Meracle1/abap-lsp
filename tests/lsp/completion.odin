@@ -112,6 +112,70 @@ ENDCLASS.`
 	testing.expectf(t, completion_has_label(items[:], "disabled"), "missing disabled in %s", labels_concat)
 }
 
+@(test)
+completion_nested_class_constants_selector_chain_test :: proc(t: ^testing.T) {
+	source := `CLASS zcl_demo DEFINITION
+  FINAL
+  CREATE PUBLIC .
+PUBLIC SECTION.
+  METHODS exec.
+PRIVATE SECTION.
+  CONSTANTS:
+    BEGIN OF gcs_const_level1,
+        BEGIN OF const_level2,
+          const_level3_1 TYPE string  VALUE 'VALUE1' ##no_text,
+          const_level3_2 TYPE string  VALUE 'VALUE2' ##no_text,
+        END OF const_level2,
+      END OF gcs_const_level1 .
+ENDCLASS.
+
+CLASS zcl_demo IMPLEMENTATION.
+  METHOD exec.
+      DATA(lv_some_val) = gcs_const_level1-const_level2-MARK.
+  ENDMETHOD.
+ENDCLASS.`
+	snap := make_snapshot(t, source)
+	if snap == nil do return
+
+	mark := "MARK."
+	midx := strings.index(snap.text, mark)
+	if !testing.expect(t, midx >= 0, "expected MARK placeholder in source") do return
+	offset := midx
+
+	items := lsp.collect_completion_items(snap, offset, snap.symbol_table)
+	labels_builder := strings.builder_make(context.temp_allocator)
+	for it, i in items {
+		if i > 0 do strings.write_string(&labels_builder, ", ")
+		strings.write_string(&labels_builder, it.label)
+	}
+	labels_concat := strings.to_string(labels_builder)
+	testing.expectf(t, len(items) == 2, "expected 2 leaf const fields, got %d: %s", len(items), labels_concat)
+	testing.expectf(
+		t,
+		completion_has_label(items[:], "const_level3_1"),
+		"missing const_level3_1 in %s",
+		labels_concat,
+	)
+	testing.expectf(
+		t,
+		completion_has_label(items[:], "const_level3_2"),
+		"missing const_level3_2 in %s",
+		labels_concat,
+	)
+
+	prefix2 := "gcs_const_level1-"
+	idx2 := strings.index(snap.text, prefix2)
+	if !testing.expect(t, idx2 >= 0, "expected gcs_const_level1- in source") do return
+	offset2 := idx2 + len(prefix2)
+	items2 := lsp.collect_completion_items(snap, offset2, snap.symbol_table)
+	testing.expectf(
+		t,
+		completion_has_label(items2[:], "const_level2"),
+		"after first dash: expected const_level2 in completions, got %d items",
+		len(items2),
+	)
+}
+
 completion_has_label :: proc(items: []lsp.CompletionItem, want: string) -> bool {
 	for it in items {
 		if it.label == want {
