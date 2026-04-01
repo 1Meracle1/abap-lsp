@@ -1151,6 +1151,23 @@ find_node_at_offset :: proc(node: ^Node, offset: int) -> ^Node {
 			}
 		}
 
+	case ^Shift_Stmt:
+		if n.target != nil {
+			if res := find_node_at_offset(&n.target.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		if n.by_places != nil {
+			if res := find_node_at_offset(&n.by_places.expr_base, offset); res != nil {
+				return res
+			}
+		}
+		if n.deleting_mask != nil {
+			if res := find_node_at_offset(&n.deleting_mask.expr_base, offset); res != nil {
+				return res
+			}
+		}
+
 	case ^Replace_Stmt:
 		if n.pattern != nil {
 			if res := find_node_at_offset(&n.pattern.expr_base, offset); res != nil {

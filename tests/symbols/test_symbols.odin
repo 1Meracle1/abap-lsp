@@ -668,6 +668,38 @@ CONSTANTS lc_false TYPE c LENGTH 1 VALUE abap_false.`
 }
 
 @(test)
+test_builtin_space_constant_and_shift_stmt :: proc(t: ^testing.T) {
+	src := `DATA lv_domvalue TYPE c LENGTH 10.
+SHIFT lv_domvalue LEFT DELETING LEADING space.`
+	file := ast.new(ast.File, {})
+	file.src = src
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	table := symbols.resolve_file(file)
+	defer symbols.destroy_symbol_table(table)
+
+	space_sym, ok := table.symbols["space"]
+	if !testing.expect(t, ok, "expected built-in symbol 'space' to be present") do return
+	testing.expect(t, space_sym.kind == .Constant, fmt.tprintf("expected 'space' constant, got %v", space_sym.kind))
+	if space_sym.type_info != nil {
+		testing.expect(
+			t,
+			space_sym.type_info.kind == .Char && space_sym.type_info.length == 1,
+			fmt.tprintf("expected 'space' c length 1, got %v", space_sym.type_info.kind),
+		)
+	}
+
+	for diag in symbols.collect_all_diagnostics(table) {
+		if strings.contains(diag.message, "Unknown symbol 'space'") {
+			testing.expect(t, false, fmt.tprintf("unexpected: %s", diag.message))
+			return
+		}
+	}
+}
+
+@(test)
 test_builtin_abap_bool_type_in_data_no_unknown_type_diagnostic :: proc(t: ^testing.T) {
 	src := `DATA lv_flag TYPE abap_bool VALUE abap_false.`
 	file := ast.new(ast.File, {})

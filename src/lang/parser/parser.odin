@@ -204,6 +204,8 @@ parse_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			return parse_translate_stmt(p)
 		case "SPLIT":
 			return parse_split_stmt(p)
+		case "SHIFT":
+			return parse_shift_stmt(p)
 		case "CONCATENATE":
 			return parse_concatenate_stmt(p)
 		case "REPLACE":
@@ -3280,6 +3282,74 @@ parse_condense_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	condense_stmt.text = text_expr
 	condense_stmt.no_gaps = no_gaps
 	return condense_stmt
+}
+
+// SHIFT dobj LEFT|RIGHT [DELETING LEADING|TRAILING mask].
+// SHIFT dobj BY num PLACES [LEFT|RIGHT] [CIRCULAR].
+parse_shift_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
+	shift_tok := expect_keyword_token(p, "SHIFT")
+	target := parse_expr(p)
+
+	by_places: ^ast.Expr = nil
+	direction := ast.Shift_Direction.None
+	circular := false
+	deleting := ast.Shift_Deleting_Kind.None
+	deleting_mask: ^ast.Expr = nil
+
+	if check_keyword(p, "BY") {
+		advance_token(p)
+		by_places = parse_expr(p)
+		expect_keyword_token(p, "PLACES")
+		if check_keyword(p, "LEFT") {
+			advance_token(p)
+			direction = .Left
+		} else if check_keyword(p, "RIGHT") {
+			advance_token(p)
+			direction = .Right
+		}
+		if check_keyword(p, "CIRCULAR") {
+			advance_token(p)
+			circular = true
+		}
+	} else {
+		if check_keyword(p, "LEFT") {
+			advance_token(p)
+			direction = .Left
+		} else if check_keyword(p, "RIGHT") {
+			advance_token(p)
+			direction = .Right
+		} else {
+			error(
+				p,
+				p.curr_tok.range,
+				"expected LEFT, RIGHT, or BY after SHIFT target",
+			)
+		}
+
+		if check_keyword(p, "DELETING") {
+			advance_token(p)
+			if check_keyword(p, "LEADING") {
+				advance_token(p)
+				deleting = .Leading
+			} else if check_keyword(p, "TRAILING") {
+				advance_token(p)
+				deleting = .Trailing
+			} else {
+				error(p, p.curr_tok.range, "expected LEADING or TRAILING after DELETING")
+			}
+			deleting_mask = parse_expr(p)
+		}
+	}
+
+	period_tok := expect_token(p, .Period)
+	stmt := ast.new(ast.Shift_Stmt, shift_tok, period_tok)
+	stmt.target = target
+	stmt.by_places = by_places
+	stmt.direction = direction
+	stmt.circular = circular
+	stmt.deleting = deleting
+	stmt.deleting_mask = deleting_mask
+	return stmt
 }
 
 parse_translate_stmt :: proc(p: ^Parser) -> ^ast.Stmt {

@@ -979,6 +979,17 @@ collect_tokens_from_stmt :: proc(
 			collect_tokens_from_expr(tokens, s.using_pattern, snap, nil)
 		}
 
+	case ^ast.Shift_Stmt:
+		if s.target != nil {
+			collect_tokens_from_expr(tokens, s.target, snap, nil)
+		}
+		if s.by_places != nil {
+			collect_tokens_from_expr(tokens, s.by_places, snap, nil)
+		}
+		if s.deleting_mask != nil {
+			collect_tokens_from_expr(tokens, s.deleting_mask, snap, nil)
+		}
+
 	case ^ast.Replace_Stmt:
 		if s.pattern != nil {
 			collect_tokens_from_expr(tokens, s.pattern, snap, nil)

@@ -477,4 +477,5 @@ register_builtin_symbols :: proc(table: ^SymbolTable) {
 	)
 	add_builtin_constant(table, "abap_true", abap_bool_type)
 	add_builtin_constant(table, "abap_false", abap_bool_type)
+	add_builtin_constant(table, "space", make_builtin_char_type(table, 1))
 }

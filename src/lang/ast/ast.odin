@@ -803,6 +803,31 @@ Translate_Stmt :: struct {
 	using_pattern:    ^Expr, // USING variant only
 }
 
+// SHIFT statement (classic character string shifting)
+// - SHIFT dobj LEFT | RIGHT [DELETING LEADING | TRAILING mask].
+// - SHIFT dobj BY num PLACES [LEFT | RIGHT] [CIRCULAR].
+Shift_Direction :: enum {
+	None,
+	Left,
+	Right,
+}
+
+Shift_Deleting_Kind :: enum {
+	None,
+	Leading,
+	Trailing,
+}
+
+Shift_Stmt :: struct {
+	using node:      Stmt,
+	target:          ^Expr,
+	by_places:       ^Expr, // BY n PLACES …; nil if that form is not used
+	direction:       Shift_Direction, // simple LEFT/RIGHT or direction after PLACES
+	circular:        bool, // only with BY … PLACES
+	deleting:        Shift_Deleting_Kind,
+	deleting_mask:   ^Expr,
+}
+
 // REPLACE statement (classic, IN/INTO, ALL/FIRST OCCURRENCES, optional REGEX)
 Replace_Scope :: enum {
 	Simple,
@@ -1483,6 +1508,7 @@ Any_Node :: union {
 	^Concatenate_Stmt,
 	^Condense_Stmt,
 	^Translate_Stmt,
+	^Shift_Stmt,
 	^Replace_Stmt,
 	^Raise_Exception_Stmt,
 	^Check_Stmt,
@@ -1615,6 +1641,7 @@ Any_Stmt :: union {
 	^Concatenate_Stmt,
 	^Condense_Stmt,
 	^Translate_Stmt,
+	^Shift_Stmt,
 	^Replace_Stmt,
 	^Raise_Exception_Stmt,
 	^Check_Stmt,
