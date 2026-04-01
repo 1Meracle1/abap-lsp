@@ -308,7 +308,8 @@ validate_raising_type_ident_ctx :: proc(ctx: ^Validation_Context, ident: ^ast.Id
 
 // validate_type_ident_ctx checks TYPE / LIKE simple identifier spellings.
 // Consults current scope (e.g. class PUBLIC SECTION), then enclosing class/interface scope (method bodies), then module/file scope.
-// Emits "Unknown type" when not built-in and not TypeDef/Class/Interface; still records remote candidates for Z/Y/ RFC-style names.
+// Emits "Unknown type" when not built-in and not a valid type denoter; still records remote candidates for Z/Y/ RFC-style names.
+// Structure-typed data objects (built-in `sy`, DATA BEGIN OF locals) name a flat struct and may prefix component types (TYPE sy-tabix).
 validate_type_ident_ctx :: proc(ctx: ^Validation_Context, ident: ^ast.Ident) {
 	if ctx == nil || ident == nil || ctx.diag_table == nil {
 		return
@@ -337,6 +338,11 @@ validate_type_ident_ctx :: proc(ctx: ^Validation_Context, ident: ^ast.Ident) {
 			#partial switch sym.kind {
 			case .TypeDef, .Class, .Interface:
 				return
+			case .Variable, .Constant:
+				if sym.type_info != nil && sym.type_info.kind == .Structure {
+					return
+				}
+				fallthrough
 			case:
 				add_diagnostic(
 					ctx.diag_table,
