@@ -68,7 +68,9 @@ Symbol :: struct {
 	visibility:      Visibility,
 	is_static:       bool,
 	// CONSTANTS … VALUE expr; nil if not a constant or no VALUE.
-	const_init:      ^ast.Expr,
+	const_init: ^ast.Expr,
+	// Built-in constants (no source VALUE): hover shows `(constant) name: type = literal`.
+	builtin_const_hover: string,
 }
 
 SymbolTable :: struct {
@@ -431,13 +433,20 @@ make_builtin_char_type :: proc(table: ^SymbolTable, length: int) -> ^Type {
 	return t
 }
 
-add_builtin_constant :: proc(table: ^SymbolTable, name: string, type_info: ^Type) {
+make_builtin_numeric_type :: proc(table: ^SymbolTable, length: int) -> ^Type {
+	t := make_type(table, .Numeric)
+	t.length = length
+	return t
+}
+
+add_builtin_constant :: proc(table: ^SymbolTable, name: string, type_info: ^Type, hover_literal: string = "") {
 	add_symbol(
 		table,
 		Symbol{
-			name      = name,
-			kind      = .Constant,
-			type_info = type_info,
+			name                = name,
+			kind                = .Constant,
+			type_info           = type_info,
+			builtin_const_hover = hover_literal,
 		},
 	)
 }
@@ -461,6 +470,8 @@ register_builtin_symbols :: proc(table: ^SymbolTable) {
 	add_struct_field(syst_type, "batch", make_builtin_char_type(table, 1))
 	add_struct_field(syst_type, "cprog", make_builtin_char_type(table, 40))
 	add_struct_field(syst_type, "repid", make_builtin_char_type(table, 40))
+	// Transaction code (system field SY-TCODE, data element TCODE).
+	add_struct_field(syst_type, "tcode", make_builtin_char_type(table, 20))
 
 	add_symbol(
 		table,
@@ -488,8 +499,8 @@ register_builtin_symbols :: proc(table: ^SymbolTable) {
 			type_info = abap_bool_type,
 		},
 	)
-	add_builtin_constant(table, "abap_true", abap_bool_type)
-	add_builtin_constant(table, "abap_false", abap_bool_type)
+	add_builtin_constant(table, "abap_true", abap_bool_type, "'X'")
+	add_builtin_constant(table, "abap_false", abap_bool_type, "''")
 	// Built-in type flag: same representation as abap_bool (CHAR1, space or 'X').
 	add_symbol(
 		table,
@@ -499,5 +510,70 @@ register_builtin_symbols :: proc(table: ^SymbolTable) {
 			type_info = abap_bool_type,
 		},
 	)
-	add_builtin_constant(table, "space", make_builtin_char_type(table, 1))
+	add_builtin_constant(table, "space", make_builtin_char_type(table, 1), "' '")
+
+	// Built-in GUID: RAW / byte sequence LENGTH 16 (dictionary RAW(16)).
+	guid_type := make_type(table, .Hex)
+	guid_type.length = 16
+	guid_type.name = "guid"
+	add_symbol(
+		table,
+		Symbol{
+			name      = "guid",
+			kind      = .TypeDef,
+			type_info = guid_type,
+		},
+	)
+	// XFELD: single-character flag (CHAR1 / abap_bool–like).
+	xfeld_type := make_builtin_char_type(table, 1)
+	xfeld_type.name = "xfeld"
+	add_symbol(
+		table,
+		Symbol{
+			name      = "xfeld",
+			kind      = .TypeDef,
+			type_info = xfeld_type,
+		},
+	)
+
+	numc3_type := make_builtin_numeric_type(table, 3)
+	numc3_type.name = "numc3"
+	add_symbol(
+		table,
+		Symbol{name = "numc3", kind = .TypeDef, type_info = numc3_type},
+	)
+	numc4_type := make_builtin_numeric_type(table, 4)
+	numc4_type.name = "numc4"
+	add_symbol(
+		table,
+		Symbol{name = "numc4", kind = .TypeDef, type_info = numc4_type},
+	)
+
+	symsgv_type := make_builtin_char_type(table, 50)
+	symsgv_type.name = "symsgv"
+	add_symbol(
+		table,
+		Symbol{name = "symsgv", kind = .TypeDef, type_info = symsgv_type},
+	)
+
+	sydatum_type := make_builtin_char_type(table, 8)
+	sydatum_type.name = "sydatum"
+	add_symbol(
+		table,
+		Symbol{name = "sydatum", kind = .TypeDef, type_info = sydatum_type},
+	)
+
+	timestamp_type := make_type(table, .Float)
+	timestamp_type.length = 15
+	timestamp_type.name = "timestamp"
+	add_symbol(
+		table,
+		Symbol{name = "timestamp", kind = .TypeDef, type_info = timestamp_type},
+	)
+
+	cursor_type := make_type(table, .Cursor)
+	add_symbol(
+		table,
+		Symbol{name = "cursor", kind = .TypeDef, type_info = cursor_type},
+	)
 }

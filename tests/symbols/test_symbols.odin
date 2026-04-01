@@ -532,6 +532,7 @@ lv_subrc = sy-subrc.`
 		)
 
 		has_subrc := false
+		has_tcode := false
 		for field in sy_sym.type_info.fields {
 			if field.name == "subrc" {
 				has_subrc = true
@@ -540,10 +541,20 @@ lv_subrc = sy-subrc.`
 					field.type_info != nil && field.type_info.kind == .Integer,
 					"expected sy-subrc to be an integer field",
 				)
-				break
+			}
+			if field.name == "tcode" {
+				has_tcode = true
+				testing.expect(
+					t,
+					field.type_info != nil &&
+					field.type_info.kind == .Char &&
+					field.type_info.length == 20,
+					"expected sy-tcode to be character length 20",
+				)
 			}
 		}
 		testing.expect(t, has_subrc, "expected 'sy' structure to expose field 'subrc'")
+		testing.expect(t, has_tcode, "expected 'sy' structure to expose field 'tcode'")
 	}
 
 	diags := symbols.collect_all_diagnostics(table)
@@ -665,6 +676,142 @@ CONSTANTS lc_false TYPE c LENGTH 1 VALUE abap_false.`
 
 	testing.expect(t, !found_true_error, "expected built-in symbol 'abap_true' to resolve without diagnostics")
 	testing.expect(t, !found_false_error, "expected built-in symbol 'abap_false' to resolve without diagnostics")
+
+	testing.expect(
+		t,
+		true_sym.builtin_const_hover == "'X'",
+		fmt.tprintf("expected abap_true hover literal, got %q", true_sym.builtin_const_hover),
+	)
+	testing.expect(
+		t,
+		false_sym.builtin_const_hover == "''",
+		fmt.tprintf("expected abap_false hover literal, got %q", false_sym.builtin_const_hover),
+	)
+}
+
+@(test)
+test_builtin_guid_and_xfeld_typedefs :: proc(t: ^testing.T) {
+	src := `DATA lv_g TYPE guid.
+DATA lv_x TYPE xfeld.`
+	file := ast.new(ast.File, {})
+	file.src = src
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	table := symbols.resolve_file(file)
+	defer symbols.destroy_symbol_table(table)
+
+	guid_td, ok_g := table.symbols["guid"]
+	if !testing.expect(t, ok_g, "expected built-in type 'guid'") do return
+	testing.expect(t, guid_td.kind == .TypeDef, "guid should be TypeDef")
+	if guid_td.type_info != nil {
+		testing.expect(
+			t,
+			guid_td.type_info.kind == .Hex && guid_td.type_info.length == 16,
+			fmt.tprintf("guid backing type, got %v len %d", guid_td.type_info.kind, guid_td.type_info.length),
+		)
+		raw_fmt := symbols.format_type(guid_td.type_info)
+		testing.expect(
+			t,
+			strings.contains(raw_fmt, "RAW") && strings.contains(raw_fmt, "16"),
+			fmt.tprintf("expected RAW LENGTH 16 style format, got %q", raw_fmt),
+		)
+	}
+
+	xfeld_td, ok_x := table.symbols["xfeld"]
+	if !testing.expect(t, ok_x, "expected built-in type 'xfeld'") do return
+	if xfeld_td.type_info != nil {
+		ch1 := symbols.format_type(xfeld_td.type_info)
+		testing.expect(
+			t,
+			strings.contains(ch1, "char1") || strings.contains(strings.to_upper(ch1, context.temp_allocator), "LENGTH 1"),
+			fmt.tprintf("expected char1 / LENGTH 1 in xfeld format, got %q", ch1),
+		)
+	}
+
+	for diag in symbols.collect_all_diagnostics(table) {
+		if strings.contains(diag.message, "Unknown type") &&
+		   (strings.contains(diag.message, "guid") || strings.contains(diag.message, "xfeld")) {
+			testing.expect(t, false, fmt.tprintf("unexpected diagnostic: %s", diag.message))
+			return
+		}
+	}
+}
+
+@(test)
+test_builtin_numc_symsgv_sydatum_timestamp_cursor_typedefs :: proc(t: ^testing.T) {
+	src := `DATA n3 TYPE numc3.
+DATA n4 TYPE numc4.
+DATA m TYPE symsgv.
+DATA sd TYPE sydatum.
+DATA ts TYPE timestamp.
+DATA cur TYPE cursor.`
+	file := ast.new(ast.File, {})
+	file.src = src
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	table := symbols.resolve_file(file)
+	defer symbols.destroy_symbol_table(table)
+
+	if sym, ok := table.symbols["numc3"]; ok && sym.type_info != nil {
+		testing.expect(t, sym.type_info.kind == .Numeric && sym.type_info.length == 3, "numc3")
+		fmt3 := symbols.format_type(sym.type_info)
+		testing.expect(t, strings.contains(fmt3, "NUMC"), fmt.tprintf("numc3 format %q", fmt3))
+	} else {
+		testing.expect(t, false, "numc3 typedef")
+	}
+
+	if sym, ok := table.symbols["numc4"]; ok && sym.type_info != nil {
+		testing.expect(t, sym.type_info.kind == .Numeric && sym.type_info.length == 4, "numc4")
+	} else {
+		testing.expect(t, false, "numc4 typedef")
+	}
+
+	if sym, ok := table.symbols["symsgv"]; ok && sym.type_info != nil {
+		testing.expect(t, sym.type_info.kind == .Char && sym.type_info.length == 50, "symsgv")
+	} else {
+		testing.expect(t, false, "symsgv typedef")
+	}
+
+	if sym, ok := table.symbols["sydatum"]; ok && sym.type_info != nil {
+		testing.expect(t, sym.type_info.kind == .Char && sym.type_info.length == 8, "sydatum")
+		ds := symbols.format_type(sym.type_info)
+		testing.expect(t, strings.contains(ds, "YYYYMMDD"), fmt.tprintf("sydatum format %q", ds))
+	} else {
+		testing.expect(t, false, "sydatum typedef")
+	}
+
+	if sym, ok := table.symbols["timestamp"]; ok && sym.type_info != nil {
+		testing.expect(
+			t,
+			sym.type_info.kind == .Float && sym.type_info.length == 15,
+			"timestamp",
+		)
+		tsf := symbols.format_type(sym.type_info)
+		testing.expect(
+			t,
+			strings.contains(tsf, "timestamp") || strings.contains(tsf, "UTC") || strings.contains(tsf, "p LENGTH"),
+			fmt.tprintf("timestamp format %q", tsf),
+		)
+	} else {
+		testing.expect(t, false, "timestamp typedef")
+	}
+
+	if sym, ok := table.symbols["cursor"]; ok && sym.type_info != nil {
+		testing.expect(t, sym.type_info.kind == .Cursor, fmt.tprintf("cursor kind %v", sym.type_info.kind))
+	} else {
+		testing.expect(t, false, "cursor typedef")
+	}
+
+	for diag in symbols.collect_all_diagnostics(table) {
+		if strings.contains(diag.message, "Unknown type") {
+			testing.expect(t, false, fmt.tprintf("unexpected: %s", diag.message))
+			return
+		}
+	}
 }
 
 @(test)
@@ -683,6 +830,11 @@ SHIFT lv_domvalue LEFT DELETING LEADING space.`
 	space_sym, ok := table.symbols["space"]
 	if !testing.expect(t, ok, "expected built-in symbol 'space' to be present") do return
 	testing.expect(t, space_sym.kind == .Constant, fmt.tprintf("expected 'space' constant, got %v", space_sym.kind))
+	testing.expect(
+		t,
+		space_sym.builtin_const_hover == "' '",
+		fmt.tprintf("expected space hover literal, got %q", space_sym.builtin_const_hover),
+	)
 	if space_sym.type_info != nil {
 		testing.expect(
 			t,

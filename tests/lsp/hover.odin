@@ -438,3 +438,33 @@ hover_nested_constants_usage_includes_value_test :: proc(t: ^testing.T) {
 		fmt.tprintf("expected hover with VALUE, got %q", hover),
 	)
 }
+
+@(test)
+format_field_hover_builtin_constant_shows_literal :: proc(t: ^testing.T) {
+	table := symbols.create_empty_symbol_table()
+	defer symbols.destroy_symbol_table(table)
+
+	bool_sym, ok := table.symbols["abap_bool"]
+	if !testing.expect(t, ok, "abap_bool typedef") do return
+	if !testing.expect(t, bool_sym.type_info != nil, "abap_bool type") do return
+
+	h_true := lsp.format_field_hover_type_and_const(
+		"",
+		"abap_true",
+		bool_sym.type_info,
+		nil,
+		true,
+		"'X'",
+	)
+	testing.expect(t, strings.contains(h_true, "'X'"), fmt.tprintf("abap_true hover: %q", h_true))
+
+	h_false := lsp.format_field_hover_type_and_const(
+		"",
+		"abap_false",
+		bool_sym.type_info,
+		nil,
+		true,
+		"''",
+	)
+	testing.expect(t, strings.contains(h_false, "''"), fmt.tprintf("abap_false hover: %q", h_false))
+}

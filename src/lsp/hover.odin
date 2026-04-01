@@ -116,6 +116,7 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 					sym.type_info,
 					sym.const_init,
 					true,
+					sym.builtin_const_hover,
 				)
 			case .Parameter:
 				type_str := symbols.format_type(sym.type_info)
@@ -135,11 +136,15 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 					offset,
 					symbol_table,
 				); ok {
-					hover_text = format_field_hover_type_and_const(
-						snap.text,
-						cache.xml_encode(field_name, context.temp_allocator),
-						field_type,
-						const_init,
+					hover_text = append_sy_struct_field_doc(
+						snap,
+						offset,
+						format_field_hover_type_and_const(
+							snap.text,
+							cache.xml_encode(field_name, context.temp_allocator),
+							field_type,
+							const_init,
+						),
 					)
 				} else {
 					hover_text = fmt.tprintf(
@@ -213,23 +218,29 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 				if sym, ok := lookup_symbol_at_offset(snap, field_name, offset, symbol_table); ok {
 					force_const := sym.kind == .Constant
 					const_init := force_const ? sym.const_init : nil
+					builtin_hov := force_const ? sym.builtin_const_hover : ""
 					hover_text = format_field_hover_type_and_const(
 						snap.text,
 						sym.name,
 						sym.type_info,
 						const_init,
 						force_const,
+						builtin_hov,
 					)
 				} else if field_name, field_type, const_init, ok := lookup_selector_field_at_offset(
 					snap,
 					offset,
 					symbol_table,
 				); ok {
-					hover_text = format_field_hover_type_and_const(
-						snap.text,
-						field_name,
-						field_type,
-						const_init,
+					hover_text = append_sy_struct_field_doc(
+						snap,
+						offset,
+						format_field_hover_type_and_const(
+							snap.text,
+							field_name,
+							field_type,
+							const_init,
+						),
 					)
 				}
 			} else if field_name, field_type, const_init, ok := lookup_selector_field_at_offset(
@@ -237,11 +248,15 @@ handle_hover :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 				offset,
 				symbol_table,
 			); ok {
-				hover_text = format_field_hover_type_and_const(
-					snap.text,
-					field_name,
-					field_type,
-					const_init,
+				hover_text = append_sy_struct_field_doc(
+					snap,
+					offset,
+					format_field_hover_type_and_const(
+						snap.text,
+						field_name,
+						field_type,
+						const_init,
+					),
 				)
 			}
 		}
@@ -941,12 +956,14 @@ slice_range_text :: proc(text: string, range: lexer.TextRange) -> string {
 
 // Hover text for a field/component type; if const_init is set (CONSTANTS VALUE), append ` = …`.
 // When force_constant_kind, use the `(constant)` label even if there is no VALUE (symbol kind constant).
+// builtin_value: for built-in constants without AST VALUE (e.g. `abap_true` → `'X'`).
 format_field_hover_type_and_const :: proc(
 	text: string,
 	display_name: string,
 	field_type: ^symbols.Type,
 	const_init: ^ast.Expr,
 	force_constant_kind: bool = false,
+	builtin_value: string = "",
 ) -> string {
 	type_str := symbols.format_type(field_type)
 	if const_init != nil {
@@ -955,6 +972,14 @@ format_field_hover_type_and_const :: proc(
 			display_name,
 			type_str,
 			slice_range_text(text, const_init.range),
+		)
+	}
+	if len(builtin_value) > 0 {
+		return fmt.tprintf(
+			"(constant) %s: %s = %s",
+			display_name,
+			type_str,
+			builtin_value,
 		)
 	}
 	if force_constant_kind {
@@ -1470,6 +1495,20 @@ parse_selector_chain_at_offset :: proc(text: string, offset: int) -> [dynamic]st
 	}
 
 	return chain
+}
+
+// Extra documentation for built-in SY structure components when hovering a selector chain.
+append_sy_struct_field_doc :: proc(snap: ^cache.Snapshot, offset: int, hover: string) -> string {
+	chain := parse_selector_chain_at_offset(snap.text, offset)
+	if len(chain) < 2 || chain[0] != "sy" {
+		return hover
+	}
+	switch chain[len(chain) - 1] {
+	case "tcode":
+		return fmt.tprintf("%s — ABAP system field: current transaction code", hover)
+	case:
+		return hover
+	}
 }
 
 // format_form_signature formats a complete FORM signature from the Form symbol.

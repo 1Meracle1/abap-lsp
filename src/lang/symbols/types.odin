@@ -24,6 +24,7 @@ TypeKind :: enum {
 	Named,
 	LineOf, // LINE OF table_type
 	RangeOf, // RANGE OF elementary_or_domain
+	Cursor, // Open SQL database cursor (built-in type)
 }
 
 // Table type kinds
@@ -78,6 +79,9 @@ format_type :: proc(t: ^Type) -> string {
 	case .Integer:
 		return "i"
 	case .Float:
+		if t.length == 15 && t.name == "timestamp" {
+			return "p LENGTH 15 (UTC timestamp short form, YYYYMMDDhhmmss)"
+		}
 		return "f"
 	case .String:
 		return "string"
@@ -85,11 +89,26 @@ format_type :: proc(t: ^Type) -> string {
 		return "string"
 	case .Char:
 		if t.length > 0 {
+			if t.length == 1 && t.name == "xfeld" {
+				return "c LENGTH 1 (char1)"
+			}
+			if t.length == 50 && t.name == "symsgv" {
+				return "c LENGTH 50 (SYMSGV)"
+			}
+			if t.length == 8 && t.name == "sydatum" {
+				return "c LENGTH 8 (YYYYMMDD)"
+			}
 			return fmt.tprintf("c LENGTH %d", t.length)
 		}
 		return "c"
 	case .Numeric:
 		if t.length > 0 {
+			switch t.name {
+			case "numc3":
+				return "n LENGTH 3 (NUMC)"
+			case "numc4":
+				return "n LENGTH 4 (NUMC)"
+			}
 			return fmt.tprintf("n LENGTH %d", t.length)
 		}
 		return "n"
@@ -99,11 +118,16 @@ format_type :: proc(t: ^Type) -> string {
 		return "t"
 	case .Hex:
 		if t.length > 0 {
+			if t.length == 16 && t.name == "guid" {
+				return "RAW LENGTH 16 (byte sequence)"
+			}
 			return fmt.tprintf("x LENGTH %d", t.length)
 		}
 		return "x"
 	case .XString:
 		return "xstring"
+	case .Cursor:
+		return "cursor (Open SQL database cursor)"
 	case .Data:
 		return "data"
 	case .Table:
