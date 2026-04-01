@@ -5,6 +5,7 @@ import "../lang/symbols"
 
 import "core:log"
 import "core:encoding/json"
+import "core:strings"
 
 Remote_Dependency_Resolve_Notification :: "abapls/resolveRemoteDependencies"
 Remote_Dependencies_Updated_Notification :: "abapls/remoteDependenciesUpdated"
@@ -76,8 +77,22 @@ maybe_request_remote_dependency_resolution :: proc(
 	}
 
 	candidates := make([dynamic]RemoteDependencyCandidate, context.temp_allocator)
+	raw_candidates := make([dynamic]symbols.Remote_Candidate, context.temp_allocator)
 	for project in projects {
-		append_project_remote_candidates_for_notification(&candidates, workspace, project)
+		append_project_remote_candidates_for_notification(&raw_candidates, project)
+	}
+
+	for candidate in raw_candidates {
+		if !cache.workspace_should_request_remote_candidate(workspace, candidate) {
+			continue
+		}
+		append(
+			&candidates,
+			RemoteDependencyCandidate{
+				name = candidate.name,
+				kind = remote_candidate_kind_string(candidate.kind),
+			},
+		)
 	}
 
 	if len(candidates) == 0 {
@@ -92,20 +107,21 @@ maybe_request_remote_dependency_resolution :: proc(
 			workspaceUri       = workspace.uri,
 			sourceUri          = uri,
 			unknownSymbolMode  = cache.workspace_unknown_symbol_mode(workspace),
+			remoteRequestParallelism = cache.workspace_remote_request_parallelism(workspace),
+			remoteRequestsPerSecond = cache.workspace_remote_requests_per_second(workspace),
 			candidates         = candidates[:],
 		},
 	)
 }
 
 append_project_remote_candidates_for_notification :: proc(
-	candidates: ^[dynamic]RemoteDependencyCandidate,
-	workspace: ^cache.Workspace,
+	candidates: ^[dynamic]symbols.Remote_Candidate,
 	project: ^cache.Project,
 ) {
-	assert(candidates != nil && workspace != nil && project != nil)
+	assert(candidates != nil && project != nil)
 
 	for candidate in project.remote_candidates {
-		append_remote_candidate_for_notification(candidates, workspace, candidate)
+		append_remote_candidate_for_notification(candidates, candidate)
 	}
 
 	if project.resolution_result == nil {
@@ -117,32 +133,40 @@ append_project_remote_candidates_for_notification :: proc(
 			continue
 		}
 		for candidate in symbols.collect_all_remote_candidates(table, context.temp_allocator) {
-			append_remote_candidate_for_notification(candidates, workspace, candidate)
+			append_remote_candidate_for_notification(candidates, candidate)
 		}
 	}
 }
 
 append_remote_candidate_for_notification :: proc(
-	candidates: ^[dynamic]RemoteDependencyCandidate,
-	workspace: ^cache.Workspace,
+	candidates: ^[dynamic]symbols.Remote_Candidate,
 	candidate: symbols.Remote_Candidate,
 ) {
-	assert(candidates != nil && workspace != nil)
+	assert(candidates != nil)
 
-	if !cache.workspace_should_request_remote_candidate(workspace, candidate) {
+	normalized_name := strings.to_lower(strings.trim_space(candidate.name), context.temp_allocator)
+	if len(normalized_name) == 0 {
 		return
 	}
 
-	item := RemoteDependencyCandidate{
-		name = candidate.name,
-		kind = remote_candidate_kind_string(candidate.kind),
-	}
-	for existing in candidates^ {
-		if existing.name == item.name && existing.kind == item.kind {
-			return
+	for i in 0 ..< len(candidates^) {
+		existing := &candidates^[i]
+		if existing.name != normalized_name {
+			continue
 		}
+		if remote_candidate_kind_priority(candidate.kind) > remote_candidate_kind_priority(existing.kind) {
+			existing.kind = candidate.kind
+		}
+			return
 	}
-	append(candidates, item)
+
+	append(
+		candidates,
+		symbols.Remote_Candidate{
+			name = strings.clone(normalized_name, context.allocator),
+			kind = candidate.kind,
+		},
+	)
 }
 
 remote_candidate_kind_string :: proc(kind: symbols.Remote_Candidate_Kind) -> string {
@@ -157,4 +181,18 @@ remote_candidate_kind_string :: proc(kind: symbols.Remote_Candidate_Kind) -> str
 		return "symbol"
 	}
 	return "unknown"
+}
+
+remote_candidate_kind_priority :: proc(kind: symbols.Remote_Candidate_Kind) -> int {
+	switch kind {
+	case .Include:
+		return 4
+	case .Static_Target:
+		return 3
+	case .Type_Name:
+		return 2
+	case .Unknown_Symbol:
+		return 1
+	}
+	return 0
 }

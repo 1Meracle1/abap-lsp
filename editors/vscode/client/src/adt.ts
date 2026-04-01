@@ -30,6 +30,10 @@ interface GetSapConnectionOptions {
 	promptIfMissing?: boolean;
 }
 
+interface AdtClientOptions {
+	beforeRequest?: () => Promise<void>;
+}
+
 export async function getSapConnectionConfig(
 	context: vscode.ExtensionContext,
 	workspaceFolder: vscode.WorkspaceFolder,
@@ -189,7 +193,10 @@ export class AdtClient {
 	private csrfToken = "";
 	private cookies: string[] = [];
 
-	constructor(private readonly connection: SapConnectionConfig) {}
+	constructor(
+		private readonly connection: SapConnectionConfig,
+		private readonly options: AdtClientOptions = {},
+	) {}
 
 	async searchRepositoryObjects(query: string, maxResults: number = 51): Promise<AdtObjectRef[]> {
 		await this.ensureSession();
@@ -287,6 +294,8 @@ export class AdtClient {
 			headers?: Record<string, string>;
 		} = {},
 	): Promise<HttpResponseData> {
+		await this.options.beforeRequest?.();
+
 		const url = toAbsoluteUrl(this.connection.baseUrl, pathOrUrl);
 		const parsed = new URL(url);
 		const client = parsed.protocol === "https:" ? https : http;

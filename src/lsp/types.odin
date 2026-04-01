@@ -22,6 +22,8 @@ RemoteDependencyResolveParams :: struct {
 	workspaceUri:       string,
 	sourceUri:          string,
 	unknownSymbolMode: string,
+	remoteRequestParallelism: int,
+	remoteRequestsPerSecond: int,
 	candidates:         []RemoteDependencyCandidate,
 }
 

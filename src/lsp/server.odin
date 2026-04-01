@@ -2,6 +2,7 @@ package lsp
 
 import "../cache"
 import "../jsonrpc"
+import lsp_runtime "../runtime"
 import "core:encoding/json"
 import "core:fmt"
 import "core:log"
@@ -10,6 +11,7 @@ import "core:strings"
 Server :: struct {
 	stream:     jsonrpc.Stream,
 	storage:    ^cache.Cache,
+	worker_pool: ^lsp_runtime.Thread_Pool,
 }
 
 Request_Handler :: #type proc(srv: ^Server, id: json.Value, params: json.Value)
@@ -19,6 +21,12 @@ server_start :: proc(stream: jsonrpc.Stream) {
 	srv: Server
 	srv.stream = stream
 	srv.storage = cache.cache_init()
+	srv.worker_pool = lsp_runtime.thread_pool_init(
+		context.allocator,
+		lsp_runtime.recommended_worker_count(),
+	)
+	defer cache.cache_deinit(srv.storage)
+	defer lsp_runtime.thread_pool_deinit(srv.worker_pool)
 
 	request_handlers := make(map[string]Request_Handler)
 	request_handlers["initialize"] = handle_initialize
@@ -35,10 +43,11 @@ server_start :: proc(stream: jsonrpc.Stream) {
 
 	initialized: bool
 
-	log.info("starting server...")
+	log.infof("starting server with %d worker threads...", srv.worker_pool.worker_count)
 
 	for {
 		defer free_all(context.temp_allocator)
+		_ = lsp_runtime.thread_pool_run_pending_completions(srv.worker_pool)
 
 		data, err := jsonrpc.read(&srv.stream)
 		if err != nil {
@@ -102,6 +111,8 @@ server_start :: proc(stream: jsonrpc.Stream) {
 		} else {
 			log_trace(&srv, fmt.tprintf("received request that is not a json Object: %s", data))
 		}
+
+		_ = lsp_runtime.thread_pool_run_pending_completions(srv.worker_pool)
 	}
 }
 

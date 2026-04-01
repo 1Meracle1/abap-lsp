@@ -23,6 +23,8 @@ test_remote_dependency_request_is_suppressed_by_syntax_errors :: proc(t: ^testin
 	}
 	delete(workspace.manifest.connection)
 	workspace.manifest.connection = strings.clone("DEV")
+	delete(workspace.manifest.resolution.dependency_mode)
+	workspace.manifest.resolution.dependency_mode = strings.clone(cache.DEPENDENCY_MODE_REMOTE_ON_DEMAND)
 
 	uri := "file:///d%3A/dev/abap/lsp_syntax_gate/main.abap"
 	cache.refresh_document(
@@ -59,5 +61,35 @@ DATA lv_after TYPE zcl_remote_demo.`,
 		t,
 		len(workspace.remote_resolution_seen) == 0,
 		"expected syntax errors to suppress remote dependency requests",
+	)
+}
+
+@(test)
+test_remote_dependency_candidates_are_deduped_by_name :: proc(t: ^testing.T) {
+	candidates := make([dynamic]symbols.Remote_Candidate)
+	lsp.append_remote_candidate_for_notification(
+		&candidates,
+		symbols.Remote_Candidate{name = "zcl_demo", kind = .Unknown_Symbol},
+	)
+	lsp.append_remote_candidate_for_notification(
+		&candidates,
+		symbols.Remote_Candidate{name = "ZCL_DEMO", kind = .Static_Target},
+	)
+	lsp.append_remote_candidate_for_notification(
+		&candidates,
+		symbols.Remote_Candidate{name = " zcl_demo ", kind = .Type_Name},
+	)
+
+	if !testing.expect(t, len(candidates) == 1, "expected one candidate after dedupe") do return
+
+	testing.expect(
+		t,
+		candidates[0].name == "zcl_demo",
+		"expected deduped candidate name to be normalized",
+	)
+	testing.expect(
+		t,
+		candidates[0].kind == .Static_Target,
+		"expected strongest kind hint to be preserved",
 	)
 }

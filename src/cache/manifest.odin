@@ -17,7 +17,16 @@ Resolution_Config :: struct {
 	dependency_mode: string,
 	cache_dir:       string,
 	unknown_symbol_mode: string,
+	remote_request_parallelism: int,
+	remote_requests_per_second: int,
 }
+
+DEPENDENCY_MODE_REMOTE_ON_DEMAND :: "remote-on-demand"
+DEPENDENCY_MODE_LOCAL_FIRST :: "local-first"
+UNKNOWN_SYMBOL_MODE_REMOTE :: "remote"
+UNKNOWN_SYMBOL_MODE_LOG :: "log"
+DEFAULT_REMOTE_REQUEST_PARALLELISM :: 4
+DEFAULT_REMOTE_REQUESTS_PER_SECOND :: 8
 
 Unit_Kind :: enum {
 	Unknown,
@@ -66,18 +75,16 @@ Manifest_Section :: enum {
 manifest_init :: proc() -> ^Manifest {
 	manifest := new(Manifest)
 	manifest.version = 1
-	manifest.resolution.dependency_mode = strings.clone("remote-on-demand")
+	manifest.resolution.dependency_mode = strings.clone(DEPENDENCY_MODE_REMOTE_ON_DEMAND)
 	manifest.resolution.cache_dir = strings.clone(".abapls/cache")
-	manifest.resolution.unknown_symbol_mode = strings.clone("remote")
+	manifest.resolution.unknown_symbol_mode = strings.clone(UNKNOWN_SYMBOL_MODE_REMOTE)
+	manifest.resolution.remote_request_parallelism = DEFAULT_REMOTE_REQUEST_PARALLELISM
+	manifest.resolution.remote_requests_per_second = DEFAULT_REMOTE_REQUESTS_PER_SECOND
 	manifest.units = make([dynamic]Semantic_Unit)
 	return manifest
 }
 
 manifest_deinit :: proc(manifest: ^Manifest) {
-	if manifest == nil {
-		return
-	}
-
 	delete(manifest.connection)
 	delete(manifest.resolution.dependency_mode)
 	delete(manifest.resolution.cache_dir)
@@ -101,9 +108,6 @@ manifest_deinit :: proc(manifest: ^Manifest) {
 }
 
 workspace_manifest_path :: proc(workspace: ^Workspace, allocator := context.allocator) -> string {
-	if workspace == nil || len(workspace.root_path) == 0 {
-		return strings.clone("", allocator)
-	}
 	return filepath.join({workspace.root_path, "abapls.toml"}, allocator)
 }
 
@@ -122,20 +126,12 @@ workspace_load_manifest :: proc(workspace: ^Workspace) {
 }
 
 manifest_load_from_path :: proc(path: string) -> (^Manifest, bool) {
-	if len(path) == 0 {
-		return nil, false
-	}
-
 	data, err := os.read_entire_file_from_path(path, context.temp_allocator)
 	if err != nil {
 		return nil, false
 	}
 
 	manifest := manifest_parse(string(data), path)
-	if manifest == nil {
-		return nil, false
-	}
-
 	return manifest, true
 }
 
@@ -185,7 +181,7 @@ manifest_parse :: proc(text: string, source_path: string = "") -> ^Manifest {
 		case .Top_Level:
 			manifest_apply_top_level(manifest, key, value, source_path, line_no)
 		case .Resolution:
-			manifest_apply_resolution(manifest, key, value)
+			manifest_apply_resolution(manifest, key, value, source_path, line_no)
 		case .Unit:
 			if current_unit_index >= 0 {
 				manifest_apply_unit(manifest, current_unit_index, key, value, source_path, line_no)
@@ -267,7 +263,13 @@ manifest_apply_top_level :: proc(
 	}
 }
 
-manifest_apply_resolution :: proc(manifest: ^Manifest, key: string, value: string) {
+manifest_apply_resolution :: proc(
+	manifest: ^Manifest,
+	key: string,
+	value: string,
+	source_path: string,
+	line_no: int,
+) {
 	switch key {
 	case "dependency_mode":
 		delete(manifest.resolution.dependency_mode)
@@ -278,6 +280,20 @@ manifest_apply_resolution :: proc(manifest: ^Manifest, key: string, value: strin
 	case "unknown_symbol_mode":
 		delete(manifest.resolution.unknown_symbol_mode)
 		manifest.resolution.unknown_symbol_mode = value
+	case "remote_request_parallelism":
+		if parsed, ok := strconv.parse_int(value, 10); ok {
+			manifest.resolution.remote_request_parallelism = parsed
+		} else {
+			log.warnf("%s:%d invalid remote_request_parallelism: %s", source_path, line_no, value)
+		}
+		delete(value)
+	case "remote_requests_per_second":
+		if parsed, ok := strconv.parse_int(value, 10); ok {
+			manifest.resolution.remote_requests_per_second = parsed
+		} else {
+			log.warnf("%s:%d invalid remote_requests_per_second: %s", source_path, line_no, value)
+		}
+		delete(value)
 	case:
 		delete(value)
 	}
@@ -392,14 +408,35 @@ parse_member_role :: proc(value: string) -> Unit_Member_Role {
 	return .Unknown
 }
 
+normalize_dependency_mode :: proc(value: string, allocator := context.allocator) -> string {
+	mode := strings.to_lower(strings.trim_space(value), context.temp_allocator)
+	switch mode {
+	case DEPENDENCY_MODE_LOCAL_FIRST:
+		return strings.clone(DEPENDENCY_MODE_LOCAL_FIRST, allocator)
+	case DEPENDENCY_MODE_REMOTE_ON_DEMAND:
+		return strings.clone(DEPENDENCY_MODE_REMOTE_ON_DEMAND, allocator)
+	case:
+		return strings.clone(DEPENDENCY_MODE_REMOTE_ON_DEMAND, allocator)
+	}
+}
+
+normalize_unknown_symbol_mode :: proc(value: string, allocator := context.allocator) -> string {
+	mode := strings.to_lower(strings.trim_space(value), context.temp_allocator)
+	switch mode {
+	case UNKNOWN_SYMBOL_MODE_LOG:
+		return strings.clone(UNKNOWN_SYMBOL_MODE_LOG, allocator)
+	case UNKNOWN_SYMBOL_MODE_REMOTE:
+		return strings.clone(UNKNOWN_SYMBOL_MODE_REMOTE, allocator)
+	case:
+		return strings.clone(UNKNOWN_SYMBOL_MODE_REMOTE, allocator)
+	}
+}
+
 workspace_relative_path_from_uri :: proc(
 	workspace: ^Workspace,
 	uri: string,
 	allocator := context.allocator,
 ) -> string {
-	if workspace == nil {
-		return strings.clone("", allocator)
-	}
 	path := uri_to_path(uri, context.temp_allocator)
 	return workspace_relative_path(workspace, path, allocator)
 }
@@ -409,10 +446,6 @@ workspace_relative_path :: proc(
 	path: string,
 	allocator := context.allocator,
 ) -> string {
-	if workspace == nil || len(workspace.root_path) == 0 {
-		return strings.clone("", allocator)
-	}
-
 	root_normalized := normalize_manifest_path(workspace.root_path, context.temp_allocator)
 	path_normalized := normalize_manifest_path(path, context.temp_allocator)
 	if path_normalized == root_normalized {
@@ -446,10 +479,9 @@ workspace_units_for_relative_path :: proc(
 	allocator := context.allocator,
 ) -> []^Semantic_Unit {
 	result := make([dynamic]^Semantic_Unit, allocator)
-	if workspace == nil || workspace.manifest == nil || len(relative_path) == 0 {
+	if workspace.manifest == nil {
 		return result[:]
 	}
-
 	normalized_relative := normalize_manifest_path(relative_path, context.temp_allocator)
 	for i in 0 ..< len(workspace.manifest.units) {
 		unit := &workspace.manifest.units[i]
@@ -462,10 +494,6 @@ workspace_units_for_relative_path :: proc(
 }
 
 unit_contains_relative_path :: proc(unit: ^Semantic_Unit, relative_path: string) -> bool {
-	if unit == nil {
-		return false
-	}
-
 	if normalize_manifest_path(unit.root_file, context.temp_allocator) == relative_path {
 		return true
 	}
@@ -480,16 +508,11 @@ unit_contains_relative_path :: proc(unit: ^Semantic_Unit, relative_path: string)
 }
 
 unit_has_member_role :: proc(unit: ^Semantic_Unit, role: Unit_Member_Role) -> bool {
-	if unit == nil {
-		return false
-	}
-
 	for member in unit.members {
 		if member.role == role {
 			return true
 		}
 	}
-
 	return false
 }
 
@@ -502,17 +525,12 @@ workspace_dependency_units :: proc(
 	allocator := context.allocator,
 ) -> []^Semantic_Unit {
 	result := make([dynamic]^Semantic_Unit, allocator)
-	if workspace == nil || workspace.manifest == nil {
-		return result[:]
-	}
-
 	for i in 0 ..< len(workspace.manifest.units) {
 		unit := &workspace.manifest.units[i]
 		if unit_is_dependency(unit) {
 			append(&result, unit)
 		}
 	}
-
 	return result[:]
 }
 

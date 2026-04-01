@@ -15,7 +15,7 @@ workspace_uri_for_relative_path :: proc(
 	relative_path: string,
 	allocator := context.allocator,
 ) -> string {
-	if workspace == nil || len(workspace.root_path) == 0 {
+	if len(workspace.root_path) == 0 {
 		return strings.clone("", allocator)
 	}
 
@@ -29,10 +29,6 @@ ensure_workspace_document_loaded :: proc(
 	workspace: ^Workspace,
 	uri: string,
 ) -> ^Snapshot {
-	if workspace == nil || len(uri) == 0 {
-		return nil
-	}
-
 	if snapshot := get_snapshot(cache, uri); snapshot != nil {
 		return snapshot
 	}
@@ -48,10 +44,6 @@ ensure_workspace_document_loaded :: proc(
 }
 
 unit_root_relative_path :: proc(unit: ^Semantic_Unit, allocator := context.allocator) -> string {
-	if unit == nil {
-		return strings.clone("", allocator)
-	}
-
 	if len(unit.root_file) > 0 {
 		return normalize_manifest_path(unit.root_file, allocator)
 	}
@@ -73,9 +65,6 @@ unit_root_relative_path :: proc(unit: ^Semantic_Unit, allocator := context.alloc
 }
 
 append_project_diagnostic :: proc(project: ^Project, message: string) {
-	if project == nil {
-		return
-	}
 	append(
 		&project.diagnostics,
 		symbols.Diagnostic {
@@ -90,10 +79,6 @@ append_project_remote_candidate :: proc(
 	name: string,
 	kind: symbols.Remote_Candidate_Kind,
 ) {
-	if project == nil {
-		return
-	}
-
 	normalized_name := strings.to_lower(strings.trim_space(name), context.temp_allocator)
 	if len(normalized_name) == 0 {
 		return
@@ -120,10 +105,6 @@ build_unit_member_uri_map :: proc(
 	allocator := context.allocator,
 ) -> map[string]string {
 	member_uris := make(map[string]string, allocator)
-	if workspace == nil || unit == nil {
-		return member_uris
-	}
-
 	root_relative := unit_root_relative_path(unit, context.temp_allocator)
 	if len(root_relative) > 0 {
 		root_uri := workspace_uri_for_relative_path(workspace, root_relative, allocator)
@@ -181,10 +162,6 @@ clone_string_uri_map :: proc(
 }
 
 merge_include_uri_map :: proc(target: ^map[string]string, source: map[string]string) {
-	if target == nil {
-		return
-	}
-
 	for key, value in source {
 		if key not_in target^ {
 			target^[strings.clone(key, context.temp_allocator)] = strings.clone(value, context.temp_allocator)
@@ -197,12 +174,12 @@ build_workspace_dependency_include_uri_map :: proc(
 	allocator := context.allocator,
 ) -> map[string]string {
 	include_uris := make(map[string]string, allocator)
-	if workspace == nil || !workspace_supports_remote_resolution(workspace) {
+	if !workspace_supports_remote_resolution(workspace) {
 		return include_uris
 	}
 
 	for unit in workspace_dependency_units(workspace, context.temp_allocator) {
-		if unit == nil || unit.kind != .Include {
+		if unit.kind != .Include {
 			continue
 		}
 
@@ -301,13 +278,12 @@ merge_remote_dependency_symbols_into_table :: proc(
 	project: ^Project,
 	table: ^symbols.SymbolTable,
 ) {
-	if cache == nil || workspace == nil || project == nil || table == nil ||
-	   !workspace_supports_remote_resolution(workspace) {
+	if !workspace_supports_remote_resolution(workspace) {
 		return
 	}
 
 	for unit in workspace_dependency_units(workspace, context.temp_allocator) {
-		if unit == nil || unit.kind == .Include {
+		if unit.kind == .Include {
 			continue
 		}
 
@@ -372,7 +348,7 @@ get_projects_for_uri :: proc(
 }
 
 get_file_symbol_table :: proc(project: ^Project, uri: string) -> ^symbols.SymbolTable {
-	if project == nil || project.resolution_result == nil {
+	if project.resolution_result == nil {
 		return nil
 	}
 
@@ -387,10 +363,6 @@ merge_symbol_tables_for_lookup :: proc(
 	target: ^symbols.SymbolTable,
 	source: ^symbols.SymbolTable,
 ) {
-	if target == nil || source == nil {
-		return
-	}
-
 	symbols.merge_symbols_into(target, source)
 	for diag in source.diagnostics {
 		append(&target.diagnostics, diag)
@@ -407,16 +379,10 @@ stack_contains_uri :: proc(stack: []string, uri: string) -> bool {
 }
 
 retain_project :: proc(project: ^Project) {
-	if project != nil {
-		_ = intrinsics.atomic_add(&project.ref_count, 1)
-	}
+	_ = intrinsics.atomic_add(&project.ref_count, 1)
 }
 
 release_project :: proc(project: ^Project) {
-	if project == nil {
-		return
-	}
-
 	old_count := intrinsics.atomic_sub(&project.ref_count, 1)
 	if old_count != 1 {
 		return
@@ -429,33 +395,23 @@ release_project :: proc(project: ^Project) {
 }
 
 project_entry_init :: proc(workspace: ^Workspace, key: string) -> ^Project_Entry {
-	if workspace == nil {
-		return nil
-	}
-
 	entry := new(Project_Entry, workspace.persistent_allocator)
 	entry.key = strings.clone(key, workspace.persistent_allocator)
 	return entry
 }
 
 project_entry_deinit :: proc(entry: ^Project_Entry) {
-	if entry == nil {
-		return
-	}
-
 	release_project(entry.current)
 	delete(entry.key)
 	free(entry)
 }
 
 project_entry_get_snapshot :: proc(entry: ^Project_Entry) -> ^Project {
-	if entry == nil {
-		return nil
-	}
-
 	if sync.shared_guard(&entry.lock) {
 		project := entry.current
-		retain_project(project)
+		if project != nil {
+			retain_project(project)
+		}
 		return project
 	}
 
@@ -463,11 +419,6 @@ project_entry_get_snapshot :: proc(entry: ^Project_Entry) -> ^Project {
 }
 
 project_entry_publish :: proc(entry: ^Project_Entry, project: ^Project) {
-	if entry == nil {
-		release_project(project)
-		return
-	}
-
 	old_project: ^Project
 	sync.rw_mutex_lock(&entry.lock)
 	old_project = entry.current
@@ -481,10 +432,6 @@ workspace_get_or_create_project_entry :: proc(
 	workspace: ^Workspace,
 	key: string,
 ) -> ^Project_Entry {
-	if workspace == nil {
-		return nil
-	}
-
 	if sync.guard(&workspace.lock) {
 		if entry, ok := workspace.projects[key]; ok {
 			return entry
@@ -519,10 +466,6 @@ local_project_key :: proc(uri: string, allocator := context.allocator) -> string
 }
 
 workspace_invalidate_projects_for_uri :: proc(workspace: ^Workspace, uri: string) {
-	if workspace == nil {
-		return
-	}
-
 	keys_to_remove := make([dynamic]string, context.temp_allocator)
 
 	if workspace.manifest != nil {
@@ -552,10 +495,6 @@ workspace_invalidate_projects_for_uri :: proc(workspace: ^Workspace, uri: string
 }
 
 project_entry_matches_uri :: proc(entry: ^Project_Entry, uri: string) -> bool {
-	if entry == nil {
-		return false
-	}
-
 	if sync.shared_guard(&entry.lock) {
 		project := entry.current
 		if project == nil {
@@ -578,15 +517,7 @@ get_or_build_manifest_project :: proc(
 	unit: ^Semantic_Unit,
 	key: string,
 ) -> ^Project {
-	if workspace == nil || unit == nil {
-		return nil
-	}
-
 	entry := workspace_get_or_create_project_entry(workspace, key)
-	if entry == nil {
-		return nil
-	}
-
 	if project := project_entry_get_snapshot(entry); project != nil {
 		return project
 	}
@@ -662,9 +593,6 @@ build_manifest_project :: proc(
 	key: string,
 ) -> ^Project {
 	root_relative := unit_root_relative_path(unit, context.temp_allocator)
-	if len(root_relative) == 0 {
-		return nil
-	}
 
 	root_uri := workspace_uri_for_relative_path(workspace, root_relative, context.temp_allocator)
 	return build_local_project(
@@ -685,18 +613,8 @@ build_local_project :: proc(
 	unit_name: string,
 	key: string,
 ) -> ^Project {
-	if workspace == nil || len(root_uri) == 0 {
-		return nil
-	}
-
 	slot := arena_slot_acquire(workspace.project_pool)
-	if slot == nil {
-		return nil
-	}
-
-	old_allocator := context.allocator
 	context.allocator = slot.allocator
-	defer context.allocator = old_allocator
 
 	project := new(Project, slot.allocator)
 	project.ref_count = 1
@@ -757,10 +675,6 @@ build_local_project :: proc(
 }
 
 project_add_snapshot :: proc(project: ^Project, snapshot: ^Snapshot) {
-	if project == nil || snapshot == nil {
-		return
-	}
-
 	append(&project.documents, snapshot)
 	append(&project.member_uris, strings.clone(snapshot.uri, context.allocator))
 }
@@ -775,10 +689,6 @@ resolve_project_file :: proc(
 	project: ^Project,
 	active_stack: ^[dynamic]string,
 ) {
-	if snapshot == nil || snapshot.ast == nil || table == nil || result == nil {
-		return
-	}
-
 	if stack_contains_uri(active_stack^[:], snapshot.uri) {
 		append_project_diagnostic(
 			project,

@@ -94,6 +94,26 @@ Editor integration assets (for example VS Code grammar or extension metadata) li
 | `src/lang/symbols/` | Symbols, types, resolver, semantic validation. |
 | `tests/` | Package tests: `lexer`, `parser`, `symbols`, `cache`, `lsp`, etc. |
 
+## Remote Dependency Resolution
+
+When a workspace uses `abapls.toml` with `[resolution].dependency_mode = "remote-on-demand"`, the server can ask the editor integration to fetch missing remote dependencies via ADT. For local source trees, prefer `dependency_mode = "local-first"` so analysis stays workspace-only until you intentionally opt into remote fetches.
+
+Useful manifest knobs:
+
+```toml
+[resolution]
+dependency_mode = "local-first"
+unknown_symbol_mode = "log"
+remote_request_parallelism = 4
+remote_requests_per_second = 8
+```
+
+- `dependency_mode = "local-first"` keeps dependency resolution local; `remote-on-demand` enables ADT-backed dependency fetching.
+- `unknown_symbol_mode = "remote"` fetches dependencies automatically when `dependency_mode = "remote-on-demand"`; `log` records unresolved candidates to `.abapls/logs/unknown-symbols.log`.
+- `remote_request_parallelism` bounds how many dependency fetch jobs may be in flight at once on the client side.
+- `remote_requests_per_second` caps total ADT HTTP request throughput across those jobs.
+- The language server deduplicates candidates by normalized symbol name before notifying the client, so the same symbol is not requested repeatedly under different kind hints.
+
 ## Building
 
 On Windows, from the repo root:

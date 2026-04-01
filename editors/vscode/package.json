@@ -26,6 +26,10 @@
         "title": "ABAP LSP: Initialize Workspace From ADT Object"
       },
       {
+        "command": "abap-ls.createWorkspaceManifest",
+        "title": "ABAP LSP: Create Local-First Workspace Manifest"
+      },
+      {
         "command": "abap-ls.refreshDependencyCache",
         "title": "ABAP LSP: Refresh Dependency Cache"
       }

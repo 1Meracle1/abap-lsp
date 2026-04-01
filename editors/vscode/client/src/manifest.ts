@@ -12,8 +12,22 @@ export interface ManifestUnitSpec {
 	objectName: string;
 }
 
+export type ManifestDependencyMode = "remote-on-demand" | "local-first";
+export type ManifestUnknownSymbolMode = "remote" | "log";
+
+export interface ManifestOptions {
+	dependencyMode?: ManifestDependencyMode;
+	unknownSymbolMode?: ManifestUnknownSymbolMode;
+}
+
 export const manifestFileName = "abapls.toml";
 export const unknownSymbolLogPath = ".abapls/logs/unknown-symbols.log";
+export const defaultRemoteRequestParallelism = 4;
+export const defaultRemoteRequestsPerSecond = 8;
+export const dependencyModeRemoteOnDemand: ManifestDependencyMode = "remote-on-demand";
+export const dependencyModeLocalFirst: ManifestDependencyMode = "local-first";
+export const unknownSymbolModeRemote: ManifestUnknownSymbolMode = "remote";
+export const unknownSymbolModeLog: ManifestUnknownSymbolMode = "log";
 
 export function inferManifestUnitSpec(objectRef: AdtObjectRef, relativeFilePath: string): ManifestUnitSpec {
 	const normalizedFile = normalizeRelativePath(relativeFilePath);
@@ -71,13 +85,14 @@ export function inferManifestUnitSpec(objectRef: AdtObjectRef, relativeFilePath:
 export async function ensureManifestUnit(
 	workspaceFolder: vscode.WorkspaceFolder,
 	unit: ManifestUnitSpec,
+	options: ManifestOptions = {},
 ): Promise<vscode.Uri> {
 	const manifestPath = workspaceManifestPath(workspaceFolder);
 	const existing = await readTextIfExists(manifestPath);
 	const unitBlock = renderUnitBlock(unit);
 
 	if (!existing) {
-		const initialText = `${renderManifestHeader()}\n${unitBlock}`;
+		const initialText = `${renderManifestHeader(options)}\n${unitBlock}`;
 		await fs.promises.writeFile(manifestPath, initialText, "utf8");
 		return vscode.Uri.file(manifestPath);
 	}
@@ -97,6 +112,7 @@ export function workspaceManifestPath(workspaceFolder: vscode.WorkspaceFolder): 
 
 export async function ensureWorkspaceManifest(
 	workspaceFolder: vscode.WorkspaceFolder,
+	options: ManifestOptions = {},
 ): Promise<vscode.Uri> {
 	const manifestPath = workspaceManifestPath(workspaceFolder);
 	const existing = await readTextIfExists(manifestPath);
@@ -104,7 +120,7 @@ export async function ensureWorkspaceManifest(
 		return vscode.Uri.file(manifestPath);
 	}
 
-	await fs.promises.writeFile(manifestPath, `${renderManifestHeader()}\n`, "utf8");
+	await fs.promises.writeFile(manifestPath, `${renderManifestHeader(options)}\n`, "utf8");
 	return vscode.Uri.file(manifestPath);
 }
 
@@ -132,16 +148,23 @@ export async function ensureManifestDependencyUnit(
 	return ensureManifestUnit(workspaceFolder, unit);
 }
 
-function renderManifestHeader(): string {
+function renderManifestHeader(options: ManifestOptions = {}): string {
+	const dependencyMode = options.dependencyMode ?? dependencyModeRemoteOnDemand;
+	const unknownSymbolMode = options.unknownSymbolMode ??
+		(dependencyMode === dependencyModeLocalFirst ? unknownSymbolModeLog : unknownSymbolModeRemote);
 	return `version = 1
 connection = "default"
 
 [resolution]
-dependency_mode = "remote-on-demand"
+# "local-first" keeps dependency resolution inside the workspace; "remote-on-demand" enables ADT fetches.
+dependency_mode = "${dependencyMode}"
 cache_dir = ".abapls/cache"
-# "remote" performs ADT fetches; "log" writes unknown symbol candidates to ${unknownSymbolLogPath}
-unknown_symbol_mode = "remote"
-`;
+# "remote" performs ADT fetches when remote dependency resolution is enabled; "log" writes unknown symbol candidates to ${unknownSymbolLogPath}
+unknown_symbol_mode = "${unknownSymbolMode}"
+# Maximum number of remote dependency fetches in flight at once when dependency_mode = "remote-on-demand".
+remote_request_parallelism = ${defaultRemoteRequestParallelism}
+# Total ADT requests per second across all remote dependency fetches.
+remote_requests_per_second = ${defaultRemoteRequestsPerSecond}`;
 }
 
 function renderUnitBlock(unit: ManifestUnitSpec): string {

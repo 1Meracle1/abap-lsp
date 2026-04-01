@@ -95,7 +95,7 @@ workspace_init :: proc(uri: string, name: string) -> ^Workspace {
 	workspace.projects = make(map[string]^Project_Entry)
 	workspace.remote_resolution_seen = make(map[string]bool)
 	workspace.doc_pool = arena_pool_init(8)
-	workspace.project_pool = arena_pool_init(4)
+	workspace.project_pool = arena_pool_init(1)
 	workspace_load_manifest(workspace)
 	return workspace
 }
@@ -131,10 +131,6 @@ workspace_deinit :: proc(workspace: ^Workspace) {
 }
 
 cache_add_workspace :: proc(cache: ^Cache, uri: string, name: string) -> ^Workspace {
-	if cache == nil {
-		return nil
-	}
-
 	workspace := workspace_init(uri, name)
 	if sync.guard(&cache.lock) {
 		append(&cache.workspaces, workspace)
@@ -143,10 +139,6 @@ cache_add_workspace :: proc(cache: ^Cache, uri: string, name: string) -> ^Worksp
 }
 
 workspace_for_uri :: proc(cache: ^Cache, uri: string) -> ^Workspace {
-	if cache == nil {
-		return nil
-	}
-
 	best_match: ^Workspace
 	best_match_len := -1
 
@@ -169,7 +161,7 @@ workspace_for_uri :: proc(cache: ^Cache, uri: string) -> ^Workspace {
 }
 
 workspace_supports_remote_resolution :: proc(workspace: ^Workspace) -> bool {
-	if workspace == nil || workspace.manifest == nil {
+	if workspace.manifest == nil {
 		return false
 	}
 
@@ -177,25 +169,20 @@ workspace_supports_remote_resolution :: proc(workspace: ^Workspace) -> bool {
 		return false
 	}
 
-	return strings.to_lower(workspace.manifest.resolution.dependency_mode, context.temp_allocator) ==
-		"remote-on-demand"
+	return normalize_dependency_mode(workspace.manifest.resolution.dependency_mode, context.temp_allocator) ==
+		DEPENDENCY_MODE_REMOTE_ON_DEMAND
 }
 
 workspace_unknown_symbol_mode :: proc(workspace: ^Workspace, allocator := context.allocator) -> string {
-	if workspace == nil || workspace.manifest == nil {
-		return strings.clone("remote", allocator)
-	}
+	return normalize_unknown_symbol_mode(workspace.manifest.resolution.unknown_symbol_mode, allocator)
+}
 
-	mode := strings.to_lower(
-		strings.trim_space(workspace.manifest.resolution.unknown_symbol_mode),
-		context.temp_allocator,
-	)
-	switch mode {
-	case "log":
-		return strings.clone("log", allocator)
-	case:
-		return strings.clone("remote", allocator)
-	}
+workspace_remote_request_parallelism :: proc(workspace: ^Workspace) -> int {
+	return max(workspace.manifest.resolution.remote_request_parallelism, 1)
+}
+
+workspace_remote_requests_per_second :: proc(workspace: ^Workspace) -> int {
+	return max(workspace.manifest.resolution.remote_requests_per_second, 1)
 }
 
 workspace_uri_is_remote_dependency :: proc(workspace: ^Workspace, uri: string) -> bool {
@@ -231,14 +218,10 @@ workspace_open_document_uris :: proc(
 }
 
 snapshot_has_syntax_errors :: proc(snapshot: ^Snapshot) -> bool {
-	return snapshot != nil && snapshot.ast != nil && len(snapshot.ast.syntax_errors) > 0
+	return snapshot.ast != nil && len(snapshot.ast.syntax_errors) > 0
 }
 
 project_has_syntax_errors :: proc(project: ^Project) -> bool {
-	if project == nil {
-		return false
-	}
-
 	for snapshot in project.documents {
 		if snapshot_has_syntax_errors(snapshot) {
 			return true
@@ -249,10 +232,6 @@ project_has_syntax_errors :: proc(project: ^Project) -> bool {
 }
 
 workspace_invalidate_all_projects :: proc(workspace: ^Workspace) {
-	if workspace == nil {
-		return
-	}
-
 	keys_to_remove := make([dynamic]string, context.temp_allocator)
 	if sync.guard(&workspace.lock) {
 		for key in workspace.projects {
@@ -271,10 +250,6 @@ workspace_should_request_remote_candidate :: proc(
 	workspace: ^Workspace,
 	candidate: symbols.Remote_Candidate,
 ) -> bool {
-	if workspace == nil {
-		return false
-	}
-
 	request_key := remote_candidate_request_key(candidate)
 	if len(request_key) == 0 {
 		return false
@@ -291,18 +266,7 @@ workspace_should_request_remote_candidate :: proc(
 }
 
 remote_candidate_request_key :: proc(candidate: symbols.Remote_Candidate) -> string {
-	if len(candidate.name) == 0 {
-		return ""
-	}
-
-	return strings.concatenate(
-		{
-			remote_candidate_kind_label(candidate.kind),
-			":",
-			strings.to_lower(candidate.name, context.temp_allocator),
-		},
-		context.temp_allocator,
-	)
+	return strings.to_lower(candidate.name, context.temp_allocator)
 }
 
 remote_candidate_kind_label :: proc(kind: symbols.Remote_Candidate_Kind) -> string {
@@ -321,9 +285,6 @@ remote_candidate_kind_label :: proc(kind: symbols.Remote_Candidate_Kind) -> stri
 
 get_snapshot :: proc(cache: ^Cache, uri: string) -> ^Snapshot {
 	workspace := workspace_for_uri(cache, uri)
-	if workspace == nil {
-		return nil
-	}
 
 	entry := workspace_get_document_entry(workspace, uri)
 	if entry == nil {
@@ -351,16 +312,8 @@ refresh_document_internal :: proc(
 	invalidate_projects: bool,
 ) {
 	workspace := workspace_for_uri(cache, uri)
-	if workspace == nil {
-		return
-	}
-
 	path := uri_to_path(uri, context.temp_allocator)
 	entry := workspace_get_or_create_document_entry(workspace, uri, path)
-	if entry == nil {
-		return
-	}
-
 	document_entry_publish(entry, text, version)
 	if invalidate_projects {
 		workspace_invalidate_projects_for_uri(workspace, uri)
@@ -370,10 +323,6 @@ refresh_document_internal :: proc(
 get_effective_symbol_table :: proc(cache: ^Cache, uri: string) -> ^symbols.SymbolTable {
 	projects := get_projects_for_uri(cache, uri, context.temp_allocator)
 	defer release_projects(projects)
-
-	if len(projects) == 0 {
-		return nil
-	}
 
 	base_table := get_file_symbol_table(projects[0], uri)
 	if base_table == nil {
@@ -394,10 +343,6 @@ release_projects :: proc(projects: []^Project) {
 }
 
 workspace_get_document_entry :: proc(workspace: ^Workspace, uri: string) -> ^Document_Entry {
-	if workspace == nil {
-		return nil
-	}
-
 	if sync.shared_guard(&workspace.lock) {
 		if entry, ok := workspace.documents[uri]; ok {
 			return entry
@@ -412,10 +357,6 @@ workspace_get_or_create_document_entry :: proc(
 	uri: string,
 	path: string,
 ) -> ^Document_Entry {
-	if workspace == nil {
-		return nil
-	}
-
 	if entry := workspace_get_document_entry(workspace, uri); entry != nil {
 		return entry
 	}

@@ -124,10 +124,28 @@ test_manifest_unknown_symbol_mode_defaults_and_parse :: proc(t: ^testing.T) {
 	if !testing.expect(t, manifest != nil, "expected manifest") do return
 	testing.expect(
 		t,
-		manifest.resolution.unknown_symbol_mode == "remote",
+		manifest.resolution.unknown_symbol_mode == cache.UNKNOWN_SYMBOL_MODE_REMOTE,
 		fmt.tprintf(
 			"expected default unknown symbol mode remote, got %q",
 			manifest.resolution.unknown_symbol_mode,
+		),
+	)
+	testing.expect(
+		t,
+		manifest.resolution.remote_request_parallelism == cache.DEFAULT_REMOTE_REQUEST_PARALLELISM,
+		fmt.tprintf(
+			"expected default remote request parallelism %d, got %d",
+			cache.DEFAULT_REMOTE_REQUEST_PARALLELISM,
+			manifest.resolution.remote_request_parallelism,
+		),
+	)
+	testing.expect(
+		t,
+		manifest.resolution.remote_requests_per_second == cache.DEFAULT_REMOTE_REQUESTS_PER_SECOND,
+		fmt.tprintf(
+			"expected default remote requests per second %d, got %d",
+			cache.DEFAULT_REMOTE_REQUESTS_PER_SECOND,
+			manifest.resolution.remote_requests_per_second,
 		),
 	)
 
@@ -136,8 +154,10 @@ test_manifest_unknown_symbol_mode_defaults_and_parse :: proc(t: ^testing.T) {
 connection = "default"
 
 [resolution]
-dependency_mode = "remote-on-demand"
-unknown_symbol_mode = "log"` + "\n",
+dependency_mode = "local-first"
+unknown_symbol_mode = "log"
+remote_request_parallelism = 6
+remote_requests_per_second = 12` + "\n",
 		"manifest-unknown-symbol-mode",
 	)
 	defer cache.manifest_deinit(parsed)
@@ -145,10 +165,34 @@ unknown_symbol_mode = "log"` + "\n",
 	if !testing.expect(t, parsed != nil, "expected parsed manifest") do return
 	testing.expect(
 		t,
+		cache.normalize_dependency_mode(parsed.resolution.dependency_mode) == cache.DEPENDENCY_MODE_LOCAL_FIRST,
+		fmt.tprintf(
+			"expected parsed dependency mode local-first, got %q",
+			parsed.resolution.dependency_mode,
+		),
+	)
+	testing.expect(
+		t,
 		parsed.resolution.unknown_symbol_mode == "log",
 		fmt.tprintf(
 			"expected parsed unknown symbol mode log, got %q",
 			parsed.resolution.unknown_symbol_mode,
+		),
+	)
+	testing.expect(
+		t,
+		parsed.resolution.remote_request_parallelism == 6,
+		fmt.tprintf(
+			"expected parsed remote request parallelism 6, got %d",
+			parsed.resolution.remote_request_parallelism,
+		),
+	)
+	testing.expect(
+		t,
+		parsed.resolution.remote_requests_per_second == 12,
+		fmt.tprintf(
+			"expected parsed remote requests per second 12, got %d",
+			parsed.resolution.remote_requests_per_second,
 		),
 	)
 }

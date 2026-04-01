@@ -18,10 +18,6 @@ document_entry_init :: proc(workspace: ^Workspace, uri: string, path: string) ->
 }
 
 document_entry_deinit :: proc(entry: ^Document_Entry) {
-	if entry == nil {
-		return
-	}
-
 	if entry.current != nil {
 		release_snapshot(entry.current)
 	}
@@ -31,10 +27,6 @@ document_entry_deinit :: proc(entry: ^Document_Entry) {
 }
 
 document_entry_publish :: proc(entry: ^Document_Entry, text: string, version: int) {
-	if entry == nil || entry.workspace == nil {
-		return
-	}
-
 	start := time.now()
 	defer log.infof(
 		"document_refresh took %.2fms for %s",
@@ -43,30 +35,22 @@ document_entry_publish :: proc(entry: ^Document_Entry, text: string, version: in
 	)
 
 	snapshot := create_snapshot(entry, text, version)
-	if snapshot == nil {
-		return
-	}
 
 	old_snapshot: ^Snapshot
 	sync.rw_mutex_lock(&entry.lock)
 	old_snapshot = entry.current
 	entry.current = snapshot
 	sync.rw_mutex_unlock(&entry.lock)
-
-	release_snapshot(old_snapshot)
+	if old_snapshot != nil {
+		release_snapshot(old_snapshot)
+	}
 }
 
 retain_snapshot :: proc(snapshot: ^Snapshot) {
-	if snapshot != nil {
-		_ = intrinsics.atomic_add(&snapshot.ref_count, 1)
-	}
+	_ = intrinsics.atomic_add(&snapshot.ref_count, 1)
 }
 
 release_snapshot :: proc(snapshot: ^Snapshot) {
-	if snapshot == nil {
-		return
-	}
-
 	old_count := intrinsics.atomic_sub(&snapshot.ref_count, 1)
 	if old_count == 1 {
 		arena_slot_release(snapshot.arena_slot)
@@ -75,9 +59,6 @@ release_snapshot :: proc(snapshot: ^Snapshot) {
 
 create_snapshot :: proc(entry: ^Document_Entry, text: string, version: int) -> ^Snapshot {
 	slot := arena_slot_acquire(entry.workspace.doc_pool)
-	if slot == nil {
-		return nil
-	}
 	context.allocator = slot.allocator
 
 	snapshot := new(Snapshot)
@@ -98,10 +79,6 @@ create_snapshot :: proc(entry: ^Document_Entry, text: string, version: int) -> ^
 }
 
 resolve_snapshot_symbols :: proc(snapshot: ^Snapshot) -> ^symbols.SymbolTable {
-	if snapshot == nil || snapshot.ast == nil {
-		return nil
-	}
-
 	table := symbols.create_empty_symbol_table(context.allocator)
 	symbols.resolve_file_into(snapshot.ast, table)
 	symbols.validate_file(snapshot.ast, table)

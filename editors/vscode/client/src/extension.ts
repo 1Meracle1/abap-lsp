@@ -22,6 +22,7 @@ import {
 	pickBestDependencyObject,
 } from "./adt";
 import {
+	dependencyModeLocalFirst,
 	ensureManifestDependencyUnit,
 	ensureWorkspaceManifest,
 	ensureManifestUnit,
@@ -29,27 +30,31 @@ import {
 	manifestFileName,
 	targetDependencyWorkspaceFilePath,
 	targetWorkspaceFilePath,
+	unknownSymbolModeLog,
 	unknownSymbolLogPath,
+	unknownSymbolModeRemote,
 	workspaceManifestPath,
 } from "./manifest";
+import {
+	dedupeRemoteDependencyCandidates,
+	RemoteDependencyCandidate,
+	RemoteDependencyFetchPolicy,
+	RemoteDependencyScheduler,
+} from "./remoteDependencies";
 
 let client: LanguageClient;
 const pendingRemoteDependencyFetches = new Map<string, Promise<string | undefined>>();
 const negativeRemoteDependencyCache = new Set<string>();
+const remoteDependencySchedulers = new Map<string, RemoteDependencyScheduler>();
 const pendingWorkspaceConfigPrompts = new Set<string>();
 const dismissedWorkspaceConfigPrompts = new Set<string>();
-const unknownSymbolModeRemote = "remote";
-const unknownSymbolModeLog = "log";
-
-interface RemoteDependencyCandidate {
-	name: string;
-	kind: string;
-}
 
 interface RemoteDependencyResolveParams {
 	workspaceUri: string;
 	sourceUri: string;
 	unknownSymbolMode?: string;
+	remoteRequestParallelism?: number;
+	remoteRequestsPerSecond?: number;
 	candidates: RemoteDependencyCandidate[];
 }
 
@@ -219,6 +224,17 @@ function registerCommands(context: vscode.ExtensionContext): void {
 	);
 
 	context.subscriptions.push(
+		vscode.commands.registerCommand("abap-ls.createWorkspaceManifest", async () => {
+			const workspaceFolder = await pickWorkspaceFolder();
+			if (!workspaceFolder) {
+				return;
+			}
+
+			await createWorkspaceManifest(workspaceFolder, { openManifest: true });
+		}),
+	);
+
+	context.subscriptions.push(
 		vscode.commands.registerCommand("abap-ls.refreshDependencyCache", async () => {
 			const workspaceFolder = await pickWorkspaceFolder();
 			if (!workspaceFolder) {
@@ -284,8 +300,9 @@ async function resolveRemoteDependencies(
 	const fetchCandidates: RemoteDependencyCandidate[] = [];
 	const logCandidates: RemoteDependencyCandidate[] = [];
 	const unknownSymbolMode = normalizeUnknownSymbolMode(params.unknownSymbolMode);
+	const candidates = dedupeRemoteDependencyCandidates(params.candidates);
 
-	for (const candidate of params.candidates) {
+	for (const candidate of candidates) {
 		if (shouldLogUnknownSymbolCandidate(candidate, unknownSymbolMode)) {
 			logCandidates.push(candidate);
 			continue;
@@ -306,14 +323,22 @@ async function resolveRemoteDependencies(
 		return;
 	}
 
-	const adtClient = new AdtClient(connection);
-
-	for (const candidate of fetchCandidates) {
-		const fetchedName = await resolveRemoteDependencyCandidate(
-			workspaceFolder,
-			adtClient,
-			candidate,
-		);
+	const fetchPolicy: RemoteDependencyFetchPolicy = {
+		remoteRequestParallelism: params.remoteRequestParallelism,
+		remoteRequestsPerSecond: params.remoteRequestsPerSecond,
+	};
+	const scheduler = remoteDependencySchedulerForWorkspace(workspaceFolder, fetchPolicy);
+	const adtClient = new AdtClient(connection, {
+		beforeRequest: () => scheduler.beforeRequest(),
+	});
+	const fetchedNames = await Promise.all(
+		fetchCandidates.map((candidate) =>
+			scheduler.schedule(() =>
+				resolveRemoteDependencyCandidate(workspaceFolder, adtClient, candidate),
+			)
+		),
+	);
+	for (const fetchedName of fetchedNames) {
 		if (fetchedName) {
 			fetched.push(fetchedName);
 		}
@@ -361,23 +386,48 @@ async function maybePromptToCreateWorkspaceManifest(
 	try {
 		const createAction = `Create ${manifestFileName}`;
 		const action = await vscode.window.showInformationMessage(
-			`Create ${manifestFileName} in "${workspaceFolder.name}" with ABAP LSP defaults?`,
+			`Create a local-first ${manifestFileName} in "${workspaceFolder.name}"?`,
 			createAction,
 			"Not now",
 		);
 
 		if (action === createAction) {
-			await ensureWorkspaceManifest(workspaceFolder);
-			await notifyWorkspaceManifestUpdated(workspaceFolder);
-			void vscode.window.showInformationMessage(
-				`Created ${manifestFileName}. Set unknown_symbol_mode = "log" to capture unknown symbol candidates in ${unknownSymbolLogPath}.`,
-			);
+			await createWorkspaceManifest(workspaceFolder, { openManifest: true });
+			dismissedWorkspaceConfigPrompts.add(workspaceKey);
+			return;
 		}
 
-		dismissedWorkspaceConfigPrompts.add(workspaceKey);
+		if (action === "Not now") {
+			dismissedWorkspaceConfigPrompts.add(workspaceKey);
+		}
 	} finally {
 		pendingWorkspaceConfigPrompts.delete(workspaceKey);
 	}
+}
+
+async function createWorkspaceManifest(
+	workspaceFolder: vscode.WorkspaceFolder,
+	options: { openManifest?: boolean } = {},
+): Promise<void> {
+	const manifestPath = workspaceManifestPath(workspaceFolder);
+	const alreadyExists = await fileExists(manifestPath);
+	const manifestUri = await ensureWorkspaceManifest(workspaceFolder, {
+		dependencyMode: dependencyModeLocalFirst,
+		unknownSymbolMode: unknownSymbolModeLog,
+	});
+	await notifyWorkspaceManifestUpdated(workspaceFolder);
+	dismissedWorkspaceConfigPrompts.add(workspaceFolder.uri.toString());
+
+	if (options.openManifest) {
+		const document = await vscode.workspace.openTextDocument(manifestUri);
+		await vscode.window.showTextDocument(document, { preview: false });
+	}
+
+	void vscode.window.showInformationMessage(
+		alreadyExists
+			? `${manifestFileName} already exists. Use dependency_mode = "remote-on-demand" and unknown_symbol_mode = "remote" to enable ADT dependency fetches later.`
+			: `Created local-first ${manifestFileName}. Set dependency_mode = "remote-on-demand" and unknown_symbol_mode = "remote" to enable ADT dependency fetches later, or keep unknown_symbol_mode = "log" to capture candidates in ${unknownSymbolLogPath}.`,
+	);
 }
 
 async function resolveRemoteDependencyCandidate(
@@ -498,7 +548,7 @@ function remoteDependencyCacheKey(
 	workspaceFolder: vscode.WorkspaceFolder,
 	candidate: RemoteDependencyCandidate,
 ): string {
-	return `${workspaceFolder.uri.toString()}:${candidate.kind}:${candidate.name.toLowerCase()}`;
+	return `${workspaceFolder.uri.toString()}:${candidate.name.toLowerCase()}`;
 }
 
 function clearRemoteDependencyCaches(workspaceFolder: vscode.WorkspaceFolder): void {
@@ -513,6 +563,7 @@ function clearRemoteDependencyCaches(workspaceFolder: vscode.WorkspaceFolder): v
 			pendingRemoteDependencyFetches.delete(key);
 		}
 	}
+	remoteDependencySchedulers.delete(workspaceFolder.uri.toString());
 }
 
 function normalizeUnknownSymbolMode(value: string | undefined): string {
@@ -533,18 +584,34 @@ async function appendUnknownSymbolLog(
 	sourceUri: string,
 	candidates: RemoteDependencyCandidate[],
 ): Promise<void> {
-	if (candidates.length === 0) {
+	const dedupedCandidates = dedupeRemoteDependencyCandidates(candidates);
+	if (dedupedCandidates.length === 0) {
 		return;
 	}
 
 	const logPath = path.join(workspaceFolder.uri.fsPath, unknownSymbolLogPath);
 	const timestamp = new Date().toISOString();
-	const lines = candidates.map((candidate) =>
+	const lines = dedupedCandidates.map((candidate) =>
 		`${timestamp}\t${sourceUri}\t${candidate.kind}\t${candidate.name}\n`,
 	);
 
 	await fs.promises.mkdir(path.dirname(logPath), { recursive: true });
 	await fs.promises.appendFile(logPath, lines.join(""), "utf8");
+}
+
+function remoteDependencySchedulerForWorkspace(
+	workspaceFolder: vscode.WorkspaceFolder,
+	policy: RemoteDependencyFetchPolicy,
+): RemoteDependencyScheduler {
+	const key = workspaceFolder.uri.toString();
+	let scheduler = remoteDependencySchedulers.get(key);
+	if (!scheduler) {
+		scheduler = new RemoteDependencyScheduler();
+		remoteDependencySchedulers.set(key, scheduler);
+	}
+
+	scheduler.updatePolicy(policy);
+	return scheduler;
 }
 
 async function notifyWorkspaceManifestUpdated(
