@@ -23,15 +23,23 @@ import {
 } from "./adt";
 import {
 	ensureManifestDependencyUnit,
+	ensureWorkspaceManifest,
 	ensureManifestUnit,
 	inferManifestUnitSpec,
+	manifestFileName,
 	targetDependencyWorkspaceFilePath,
 	targetWorkspaceFilePath,
+	unknownSymbolLogPath,
+	workspaceManifestPath,
 } from "./manifest";
 
 let client: LanguageClient;
 const pendingRemoteDependencyFetches = new Map<string, Promise<string | undefined>>();
 const negativeRemoteDependencyCache = new Set<string>();
+const pendingWorkspaceConfigPrompts = new Set<string>();
+const dismissedWorkspaceConfigPrompts = new Set<string>();
+const unknownSymbolModeRemote = "remote";
+const unknownSymbolModeLog = "log";
 
 interface RemoteDependencyCandidate {
 	name: string;
@@ -41,6 +49,7 @@ interface RemoteDependencyCandidate {
 interface RemoteDependencyResolveParams {
 	workspaceUri: string;
 	sourceUri: string;
+	unknownSymbolMode?: string;
 	candidates: RemoteDependencyCandidate[];
 }
 
@@ -48,6 +57,10 @@ interface RemoteDependenciesUpdatedParams {
 	workspaceUri: string;
 	sourceUri: string;
 	fetched: string[];
+}
+
+interface WorkspaceManifestUpdatedParams {
+	workspaceUri: string;
 }
 
 export function activate(context: vscode.ExtensionContext) {
@@ -119,6 +132,7 @@ export function activate(context: vscode.ExtensionContext) {
 
 	// Start the client. This will also launch the server
 	client.start();
+	registerWorkspaceConfigPrompts(context);
 }
 
 export function deactivate(): Thenable<void> | undefined {
@@ -229,6 +243,30 @@ function registerClientNotifications(context: vscode.ExtensionContext): void {
 	);
 }
 
+function registerWorkspaceConfigPrompts(context: vscode.ExtensionContext): void {
+	context.subscriptions.push(
+		vscode.workspace.onDidOpenTextDocument((document) => {
+			void maybePromptToCreateWorkspaceManifest(document);
+		}),
+	);
+	context.subscriptions.push(
+		vscode.workspace.onDidSaveTextDocument((document) => {
+			if (path.basename(document.uri.fsPath) !== manifestFileName) {
+				return;
+			}
+			const workspaceFolder = vscode.workspace.getWorkspaceFolder(document.uri);
+			if (!workspaceFolder) {
+				return;
+			}
+			void notifyWorkspaceManifestUpdated(workspaceFolder);
+		}),
+	);
+
+	for (const document of vscode.workspace.textDocuments) {
+		void maybePromptToCreateWorkspaceManifest(document);
+	}
+}
+
 async function resolveRemoteDependencies(
 	context: vscode.ExtensionContext,
 	params: RemoteDependencyResolveParams,
@@ -242,15 +280,35 @@ async function resolveRemoteDependencies(
 		return;
 	}
 
+	const fetched: string[] = [];
+	const fetchCandidates: RemoteDependencyCandidate[] = [];
+	const logCandidates: RemoteDependencyCandidate[] = [];
+	const unknownSymbolMode = normalizeUnknownSymbolMode(params.unknownSymbolMode);
+
+	for (const candidate of params.candidates) {
+		if (shouldLogUnknownSymbolCandidate(candidate, unknownSymbolMode)) {
+			logCandidates.push(candidate);
+			continue;
+		}
+		fetchCandidates.push(candidate);
+	}
+
+	if (logCandidates.length > 0) {
+		await appendUnknownSymbolLog(workspaceFolder, params.sourceUri, logCandidates);
+	}
+
+	if (fetchCandidates.length === 0) {
+		return;
+	}
+
 	const connection = await getSapConnectionConfig(context, workspaceFolder, { promptIfMissing: false });
 	if (!connection) {
 		return;
 	}
 
 	const adtClient = new AdtClient(connection);
-	const fetched: string[] = [];
 
-	for (const candidate of params.candidates) {
+	for (const candidate of fetchCandidates) {
 		const fetchedName = await resolveRemoteDependencyCandidate(
 			workspaceFolder,
 			adtClient,
@@ -271,6 +329,55 @@ async function resolveRemoteDependencies(
 		fetched,
 	};
 	await client.sendNotification("abapls/remoteDependenciesUpdated", updateParams);
+}
+
+async function maybePromptToCreateWorkspaceManifest(
+	document: vscode.TextDocument,
+): Promise<void> {
+	if (document.languageId !== "abap" || document.uri.scheme !== "file") {
+		return;
+	}
+
+	const workspaceFolder = vscode.workspace.getWorkspaceFolder(document.uri);
+	if (!workspaceFolder) {
+		return;
+	}
+
+	const workspaceKey = workspaceFolder.uri.toString();
+	if (
+		pendingWorkspaceConfigPrompts.has(workspaceKey) ||
+		dismissedWorkspaceConfigPrompts.has(workspaceKey)
+	) {
+		return;
+	}
+
+	const manifestPath = workspaceManifestPath(workspaceFolder);
+	if (await fileExists(manifestPath)) {
+		dismissedWorkspaceConfigPrompts.add(workspaceKey);
+		return;
+	}
+
+	pendingWorkspaceConfigPrompts.add(workspaceKey);
+	try {
+		const createAction = `Create ${manifestFileName}`;
+		const action = await vscode.window.showInformationMessage(
+			`Create ${manifestFileName} in "${workspaceFolder.name}" with ABAP LSP defaults?`,
+			createAction,
+			"Not now",
+		);
+
+		if (action === createAction) {
+			await ensureWorkspaceManifest(workspaceFolder);
+			await notifyWorkspaceManifestUpdated(workspaceFolder);
+			void vscode.window.showInformationMessage(
+				`Created ${manifestFileName}. Set unknown_symbol_mode = "log" to capture unknown symbol candidates in ${unknownSymbolLogPath}.`,
+			);
+		}
+
+		dismissedWorkspaceConfigPrompts.add(workspaceKey);
+	} finally {
+		pendingWorkspaceConfigPrompts.delete(workspaceKey);
+	}
 }
 
 async function resolveRemoteDependencyCandidate(
@@ -405,6 +512,57 @@ function clearRemoteDependencyCaches(workspaceFolder: vscode.WorkspaceFolder): v
 		if (key.startsWith(prefix)) {
 			pendingRemoteDependencyFetches.delete(key);
 		}
+	}
+}
+
+function normalizeUnknownSymbolMode(value: string | undefined): string {
+	return value?.trim().toLowerCase() === unknownSymbolModeLog
+		? unknownSymbolModeLog
+		: unknownSymbolModeRemote;
+}
+
+function shouldLogUnknownSymbolCandidate(
+	candidate: RemoteDependencyCandidate,
+	unknownSymbolMode: string,
+): boolean {
+	return unknownSymbolMode === unknownSymbolModeLog && candidate.kind !== "include";
+}
+
+async function appendUnknownSymbolLog(
+	workspaceFolder: vscode.WorkspaceFolder,
+	sourceUri: string,
+	candidates: RemoteDependencyCandidate[],
+): Promise<void> {
+	if (candidates.length === 0) {
+		return;
+	}
+
+	const logPath = path.join(workspaceFolder.uri.fsPath, unknownSymbolLogPath);
+	const timestamp = new Date().toISOString();
+	const lines = candidates.map((candidate) =>
+		`${timestamp}\t${sourceUri}\t${candidate.kind}\t${candidate.name}\n`,
+	);
+
+	await fs.promises.mkdir(path.dirname(logPath), { recursive: true });
+	await fs.promises.appendFile(logPath, lines.join(""), "utf8");
+}
+
+async function notifyWorkspaceManifestUpdated(
+	workspaceFolder: vscode.WorkspaceFolder,
+): Promise<void> {
+	const params: WorkspaceManifestUpdatedParams = {
+		workspaceUri: workspaceFolder.uri.toString(),
+	};
+
+	await client.sendNotification("abapls/workspaceManifestUpdated", params);
+}
+
+async function fileExists(filePath: string): Promise<boolean> {
+	try {
+		await fs.promises.access(filePath, fs.constants.F_OK);
+		return true;
+	} catch {
+		return false;
 	}
 }
 

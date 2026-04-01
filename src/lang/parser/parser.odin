@@ -1728,6 +1728,29 @@ call_transformation_clause_starts_here :: proc(p: ^Parser) -> bool {
 	)
 }
 
+current_token_followed_by_eq :: proc(p: ^Parser) -> bool {
+	if p.curr_tok.kind != .Ident {
+		return false
+	}
+
+	saved_prev := p.prev_tok
+	saved_curr := p.curr_tok
+	saved_pos := p.l.pos
+	saved_read_pos := p.l.read_pos
+	saved_ch := p.l.ch
+
+	advance_token(p)
+	result := p.curr_tok.kind == .Eq
+
+	p.prev_tok = saved_prev
+	p.curr_tok = saved_curr
+	p.l.pos = saved_pos
+	p.l.read_pos = saved_read_pos
+	p.l.ch = saved_ch
+
+	return result
+}
+
 parse_call_transformation_source_operand :: proc(p: ^Parser) -> ^ast.Expr {
 	if check_keyword(p, "XML") ||
 	   check_keyword(p, "ASXML") ||
@@ -1743,10 +1766,10 @@ parse_call_transformation_result_roots :: proc(
 ) {
 	for p.curr_tok.kind != .Period && p.curr_tok.kind != .EOF {
 		skip_pragma(p)
-		if call_transformation_clause_starts_here(p) {
+		if p.curr_tok.kind != .Ident {
 			break
 		}
-		if p.curr_tok.kind != .Ident {
+		if call_transformation_clause_starts_here(p) && !current_token_followed_by_eq(p) {
 			break
 		}
 
@@ -3781,7 +3804,11 @@ parse_create_data_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 				advance_token(p)
 				stmt.type_handle = parse_expr(p)
 			} else {
-				stmt.type_ref = parse_type_expr(p)
+				if p.curr_tok.kind == .LParen {
+					stmt.type_ref = parse_expr(p)
+				} else {
+					stmt.type_ref = parse_type_expr(p)
+				}
 				parse_optional_length_decimals(p)
 			}
 			continue

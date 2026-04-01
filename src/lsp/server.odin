@@ -31,6 +31,7 @@ server_start :: proc(stream: jsonrpc.Stream) {
 	notif_handlers["textDocument/didOpen"] = handle_document_open
 	notif_handlers["textDocument/didChange"] = handle_document_change
 	notif_handlers[Remote_Dependencies_Updated_Notification] = handle_remote_dependencies_updated
+	notif_handlers[Workspace_Manifest_Updated_Notification] = handle_workspace_manifest_updated
 
 	initialized: bool
 

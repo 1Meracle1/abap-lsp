@@ -115,3 +115,40 @@ object_name = "ZCL_REMOTE_DEMO"` + "\n"
 		fmt.tprintf("expected dependency role, got %v", unit.members[0].role),
 	)
 }
+
+@(test)
+test_manifest_unknown_symbol_mode_defaults_and_parse :: proc(t: ^testing.T) {
+	manifest := cache.manifest_init()
+	defer cache.manifest_deinit(manifest)
+
+	if !testing.expect(t, manifest != nil, "expected manifest") do return
+	testing.expect(
+		t,
+		manifest.resolution.unknown_symbol_mode == "remote",
+		fmt.tprintf(
+			"expected default unknown symbol mode remote, got %q",
+			manifest.resolution.unknown_symbol_mode,
+		),
+	)
+
+	parsed := cache.manifest_parse(
+		`version = 1
+connection = "default"
+
+[resolution]
+dependency_mode = "remote-on-demand"
+unknown_symbol_mode = "log"` + "\n",
+		"manifest-unknown-symbol-mode",
+	)
+	defer cache.manifest_deinit(parsed)
+
+	if !testing.expect(t, parsed != nil, "expected parsed manifest") do return
+	testing.expect(
+		t,
+		parsed.resolution.unknown_symbol_mode == "log",
+		fmt.tprintf(
+			"expected parsed unknown symbol mode log, got %q",
+			parsed.resolution.unknown_symbol_mode,
+		),
+	)
+}

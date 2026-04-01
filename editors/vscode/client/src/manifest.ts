@@ -12,6 +12,9 @@ export interface ManifestUnitSpec {
 	objectName: string;
 }
 
+export const manifestFileName = "abapls.toml";
+export const unknownSymbolLogPath = ".abapls/logs/unknown-symbols.log";
+
 export function inferManifestUnitSpec(objectRef: AdtObjectRef, relativeFilePath: string): ManifestUnitSpec {
 	const normalizedFile = normalizeRelativePath(relativeFilePath);
 	const loweredUri = objectRef.uri.toLowerCase();
@@ -69,7 +72,7 @@ export async function ensureManifestUnit(
 	workspaceFolder: vscode.WorkspaceFolder,
 	unit: ManifestUnitSpec,
 ): Promise<vscode.Uri> {
-	const manifestPath = path.join(workspaceFolder.uri.fsPath, "abapls.toml");
+	const manifestPath = workspaceManifestPath(workspaceFolder);
 	const existing = await readTextIfExists(manifestPath);
 	const unitBlock = renderUnitBlock(unit);
 
@@ -85,6 +88,23 @@ export async function ensureManifestUnit(
 
 	const separator = existing.endsWith("\n") ? "\n" : "\n\n";
 	await fs.promises.writeFile(manifestPath, `${existing}${separator}${unitBlock}`, "utf8");
+	return vscode.Uri.file(manifestPath);
+}
+
+export function workspaceManifestPath(workspaceFolder: vscode.WorkspaceFolder): string {
+	return path.join(workspaceFolder.uri.fsPath, manifestFileName);
+}
+
+export async function ensureWorkspaceManifest(
+	workspaceFolder: vscode.WorkspaceFolder,
+): Promise<vscode.Uri> {
+	const manifestPath = workspaceManifestPath(workspaceFolder);
+	const existing = await readTextIfExists(manifestPath);
+	if (existing !== undefined) {
+		return vscode.Uri.file(manifestPath);
+	}
+
+	await fs.promises.writeFile(manifestPath, `${renderManifestHeader()}\n`, "utf8");
 	return vscode.Uri.file(manifestPath);
 }
 
@@ -118,11 +138,15 @@ connection = "default"
 
 [resolution]
 dependency_mode = "remote-on-demand"
-cache_dir = ".abapls/cache"`;
+cache_dir = ".abapls/cache"
+# "remote" performs ADT fetches; "log" writes unknown symbol candidates to ${unknownSymbolLogPath}
+unknown_symbol_mode = "remote"
+`;
 }
 
 function renderUnitBlock(unit: ManifestUnitSpec): string {
-	return `[[unit]]
+	return `
+[[unit]]
 name = "${escapeTomlString(unit.name)}"
 kind = "${escapeTomlString(unit.kind)}"
 root_file = "${escapeTomlString(normalizeRelativePath(unit.rootFile))}"

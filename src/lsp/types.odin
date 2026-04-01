@@ -19,15 +19,20 @@ RemoteDependencyCandidate :: struct {
 }
 
 RemoteDependencyResolveParams :: struct {
-	workspaceUri: string,
-	sourceUri:    string,
-	candidates:   []RemoteDependencyCandidate,
+	workspaceUri:       string,
+	sourceUri:          string,
+	unknownSymbolMode: string,
+	candidates:         []RemoteDependencyCandidate,
 }
 
 RemoteDependenciesUpdatedParams :: struct {
 	workspaceUri: string,
 	sourceUri:    string,
 	fetched:      []string,
+}
+
+WorkspaceManifestUpdatedParams :: struct {
+	workspaceUri: string,
 }
 
 ClientCapabilities :: struct {}

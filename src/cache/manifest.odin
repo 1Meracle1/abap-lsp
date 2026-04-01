@@ -16,6 +16,7 @@ Manifest :: struct {
 Resolution_Config :: struct {
 	dependency_mode: string,
 	cache_dir:       string,
+	unknown_symbol_mode: string,
 }
 
 Unit_Kind :: enum {
@@ -67,6 +68,7 @@ manifest_init :: proc() -> ^Manifest {
 	manifest.version = 1
 	manifest.resolution.dependency_mode = strings.clone("remote-on-demand")
 	manifest.resolution.cache_dir = strings.clone(".abapls/cache")
+	manifest.resolution.unknown_symbol_mode = strings.clone("remote")
 	manifest.units = make([dynamic]Semantic_Unit)
 	return manifest
 }
@@ -79,6 +81,7 @@ manifest_deinit :: proc(manifest: ^Manifest) {
 	delete(manifest.connection)
 	delete(manifest.resolution.dependency_mode)
 	delete(manifest.resolution.cache_dir)
+	delete(manifest.resolution.unknown_symbol_mode)
 
 	for i in 0 ..< len(manifest.units) {
 		unit := &manifest.units[i]
@@ -272,6 +275,9 @@ manifest_apply_resolution :: proc(manifest: ^Manifest, key: string, value: strin
 	case "cache_dir":
 		delete(manifest.resolution.cache_dir)
 		manifest.resolution.cache_dir = value
+	case "unknown_symbol_mode":
+		delete(manifest.resolution.unknown_symbol_mode)
+		manifest.resolution.unknown_symbol_mode = value
 	case:
 		delete(value)
 	}

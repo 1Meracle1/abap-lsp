@@ -8,6 +8,7 @@ import "core:encoding/json"
 
 Remote_Dependency_Resolve_Notification :: "abapls/resolveRemoteDependencies"
 Remote_Dependencies_Updated_Notification :: "abapls/remoteDependenciesUpdated"
+Workspace_Manifest_Updated_Notification :: "abapls/workspaceManifestUpdated"
 
 handle_remote_dependencies_updated :: proc(srv: ^Server, params: json.Value) {
 	updated_params: RemoteDependenciesUpdatedParams
@@ -36,6 +37,22 @@ handle_remote_dependencies_updated :: proc(srv: ^Server, params: json.Value) {
 	defer cache.release_snapshot(snap)
 
 	publish_diagnostics(srv, updated_params.sourceUri, snap)
+}
+
+handle_workspace_manifest_updated :: proc(srv: ^Server, params: json.Value) {
+	updated_params: WorkspaceManifestUpdatedParams
+	if err := unmarshal(params, updated_params, context.temp_allocator); err != nil {
+		log_trace(srv, "workspace manifest update unmarshal failed")
+		return
+	}
+
+	workspace := cache.workspace_for_uri(srv.storage, updated_params.workspaceUri)
+	if workspace == nil {
+		return
+	}
+
+	cache.workspace_load_manifest(workspace)
+	cache.workspace_invalidate_all_projects(workspace)
 }
 
 maybe_request_remote_dependency_resolution :: proc(
@@ -72,9 +89,10 @@ maybe_request_remote_dependency_resolution :: proc(
 		srv,
 		Remote_Dependency_Resolve_Notification,
 		RemoteDependencyResolveParams{
-			workspaceUri = workspace.uri,
-			sourceUri    = uri,
-			candidates   = candidates[:],
+			workspaceUri       = workspace.uri,
+			sourceUri          = uri,
+			unknownSymbolMode  = cache.workspace_unknown_symbol_mode(workspace),
+			candidates         = candidates[:],
 		},
 	)
 }

@@ -11489,6 +11489,34 @@ call_transformation_source_xml_result_roots_test :: proc(t: ^testing.T) {
 }
 
 @(test)
+call_transformation_result_keyword_root_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src = `CALL TRANSFORMATION id SOURCE XML lv_json RESULT result = ev_data.`
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(t, len(file.syntax_errors) == 0, fmt.tprintf("errors: %v", file.syntax_errors))
+	tr, ok := file.decls[0].derived_stmt.(^ast.Call_Transformation_Stmt)
+	testing.expect(t, ok, fmt.tprintf("want Call_Transformation_Stmt, got %T", file.decls[0].derived_stmt))
+	if !ok {
+		return
+	}
+
+	testing.expect(t, tr.result_stream == nil, "RESULT keyword root should not parse as stream result")
+	testing.expect(t, len(tr.result_roots) == 1, fmt.tprintf("one RESULT root, got %d", len(tr.result_roots)))
+	if len(tr.result_roots) == 0 {
+		return
+	}
+
+	testing.expect(t, tr.result_roots[0].name != nil, "expected RESULT root name")
+	if tr.result_roots[0].name != nil {
+		testing.expect(t, tr.result_roots[0].name.name == "result", fmt.tprintf("root name %s", tr.result_roots[0].name.name))
+	}
+	check_expr(t, ident("ev_data"), tr.result_roots[0].value)
+}
+
+@(test)
 call_function_simple_test :: proc(t: ^testing.T) {
 	file := ast.new(ast.File, {})
 	file.src =
@@ -12503,6 +12531,34 @@ create_data_like_test :: proc(t: ^testing.T) {
 			ident("lr_data"),
 			nil,
 			ident("gs_wa"),
+		)
+		check_stmt(t, expected, file.decls[0])
+	}
+}
+
+@(test)
+create_data_dynamic_type_test :: proc(t: ^testing.T) {
+	file := ast.new(ast.File, {})
+	file.src = `CREATE DATA lr_sap_data TYPE (ls_finf-ddicstructure).`
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	testing.expect(
+		t,
+		len(file.syntax_errors) == 0,
+		fmt.tprintf("Unexpected syntax errors: %v", file.syntax_errors),
+	)
+
+	testing.expect(
+		t,
+		len(file.decls) == 1,
+		fmt.tprintf("Expected 1 declaration, got %d", len(file.decls)),
+	)
+
+	if len(file.decls) > 0 {
+		expected := create_data_stmt(
+			ident("lr_sap_data"),
+			paren_expr(selector(ident("ls_finf"), .Minus, "ddicstructure")),
 		)
 		check_stmt(t, expected, file.decls[0])
 	}

@@ -448,6 +448,8 @@ create_data_stmt :: proc(
 			node.type_ref = &ty.node
 		case ^ast.Selector_Expr:
 			node.type_ref = &ty.node
+		case ^ast.Paren_Expr:
+			node.type_ref = &ty.node
 		case ^ast.Table_Type:
 			node.type_ref = &ty.node
 		case ^ast.Ref_Type:
@@ -723,6 +725,8 @@ paren_expr :: proc(inner: ast.Any_Expr) -> ^ast.Paren_Expr {
 	case ^ast.Ident:
 		node.expr = &e.node
 	case ^ast.Basic_Lit:
+		node.expr = &e.node
+	case ^ast.Selector_Expr:
 		node.expr = &e.node
 	case ^ast.Binary_Expr:
 		node.expr = &e.node

@@ -181,6 +181,23 @@ workspace_supports_remote_resolution :: proc(workspace: ^Workspace) -> bool {
 		"remote-on-demand"
 }
 
+workspace_unknown_symbol_mode :: proc(workspace: ^Workspace, allocator := context.allocator) -> string {
+	if workspace == nil || workspace.manifest == nil {
+		return strings.clone("remote", allocator)
+	}
+
+	mode := strings.to_lower(
+		strings.trim_space(workspace.manifest.resolution.unknown_symbol_mode),
+		context.temp_allocator,
+	)
+	switch mode {
+	case "log":
+		return strings.clone("log", allocator)
+	case:
+		return strings.clone("remote", allocator)
+	}
+}
+
 workspace_uri_is_remote_dependency :: proc(workspace: ^Workspace, uri: string) -> bool {
 	if workspace == nil || len(uri) == 0 {
 		return false
