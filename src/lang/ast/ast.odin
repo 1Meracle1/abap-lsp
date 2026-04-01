@@ -54,6 +54,8 @@ Ident :: struct {
 	name:       string,
 	// Set when this identifier is the name from inline DATA(name) parsed as an expression.
 	inline_data_decl: ^Data_Inline_Decl,
+	// True when parsed as ASSIGNING FIELD-SYMBOL(<fs>) / READ TABLE ... ASSIGNING FIELD-SYMBOL(<fs>), etc.
+	is_inline_field_symbol_decl: bool,
 }
 
 Basic_Lit :: struct {

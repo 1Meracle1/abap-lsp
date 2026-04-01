@@ -897,6 +897,147 @@ ENDCLASS.`
 }
 
 @(test)
+test_loop_assigning_existing_field_symbol_not_duplicate :: proc(t: ^testing.T) {
+	src := `CLASS some_class DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS create_entry_cusset.
+ENDCLASS.
+CLASS some_class IMPLEMENTATION.
+  METHOD create_entry_cusset.
+    TYPES:
+      BEGIN OF ts_ui_funcs,
+        textid   TYPE char3,
+        text_add TYPE string,
+        disabled TYPE char01,
+      END OF ts_ui_funcs,
+      tt_ui_funcs TYPE STANDARD TABLE OF ts_ui_funcs.
+    DATA lt_rep_response TYPE tt_ui_funcs.
+    FIELD-SYMBOLS: <ls_rep_response> TYPE ts_ui_funcs.
+    LOOP AT lt_rep_response ASSIGNING <ls_rep_response>.
+    ENDLOOP.
+  ENDMETHOD.
+ENDCLASS.`
+	file := ast.new(ast.File, {})
+	file.src = src
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	table := symbols.resolve_file(file)
+	defer symbols.destroy_symbol_table(table)
+
+	for diag in symbols.collect_all_diagnostics(table) {
+		if strings.contains(diag.message, "Duplicate symbol") &&
+		   strings.contains(diag.message, "<ls_rep_response>") {
+			testing.expect(
+				t,
+				false,
+				fmt.tprintf(
+					"LOOP ASSIGNING to an existing field symbol must not introduce a duplicate: %s",
+					diag.message,
+				),
+			)
+			return
+		}
+	}
+}
+
+@(test)
+test_loop_assigning_inline_field_symbol_still_declares :: proc(t: ^testing.T) {
+	src := `CLASS lcl DEFINITION.
+  PUBLIC SECTION.
+    METHODS run.
+ENDCLASS.
+CLASS lcl IMPLEMENTATION.
+  METHOD run.
+    TYPES ty_line TYPE string.
+    DATA lt TYPE STANDARD TABLE OF ty_line WITH DEFAULT KEY.
+    LOOP AT lt ASSIGNING FIELD-SYMBOL(<lv_line>).
+      <lv_line> = 'x'.
+    ENDLOOP.
+  ENDMETHOD.
+ENDCLASS.`
+	file := ast.new(ast.File, {})
+	file.src = src
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	table := symbols.resolve_file(file)
+	defer symbols.destroy_symbol_table(table)
+
+	for diag in symbols.collect_all_diagnostics(table) {
+		if strings.contains(diag.message, "Unknown symbol '<lv_line>'") ||
+		   strings.contains(diag.message, "Duplicate symbol '<lv_line>'") ||
+		   strings.contains(diag.message, "Inline FIELD-SYMBOL(...) is only valid") {
+			testing.expect(
+				t,
+				false,
+				fmt.tprintf("inline ASSIGNING FIELD-SYMBOL should declare <lv_line>: %s", diag.message),
+			)
+			return
+		}
+	}
+}
+
+@(test)
+test_loop_assigning_inline_field_symbol_without_prior_fs_decl :: proc(t: ^testing.T) {
+	src := `CLASS some_class DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS create_entry_cusset.
+ENDCLASS.
+CLASS some_class IMPLEMENTATION.
+  METHOD create_entry_cusset.
+    TYPES:
+      BEGIN OF ts_ui_funcs,
+        textid   TYPE char3,
+        text_add TYPE string,
+        disabled TYPE char01,
+      END OF ts_ui_funcs,
+      tt_ui_funcs TYPE STANDARD TABLE OF ts_ui_funcs.
+    DATA lt_rep_response TYPE tt_ui_funcs.
+    " FIELD-SYMBOLS: <ls_rep_response> TYPE ts_ui_funcs.
+    LOOP AT lt_rep_response ASSIGNING FIELD-SYMBOL(<ls_rep_response>).
+      <ls_rep_response>-textid = 'a01'.
+    ENDLOOP.
+  ENDMETHOD.
+ENDCLASS.`
+	file := ast.new(ast.File, {})
+	file.src = src
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	table := symbols.resolve_file(file)
+	defer symbols.destroy_symbol_table(table)
+
+	for diag in symbols.collect_all_diagnostics(table) {
+		if strings.contains(diag.message, "Inline FIELD-SYMBOL(...) is only valid") {
+			testing.expect(
+				t,
+				false,
+				fmt.tprintf(
+					"inline FIELD-SYMBOL in LOOP ASSIGNING must be allowed: %s",
+					diag.message,
+				),
+			)
+			return
+		}
+		if strings.contains(diag.message, "Unknown symbol '<ls_rep_response>'") {
+			testing.expect(
+				t,
+				false,
+				fmt.tprintf(
+					"loop body should see ASSIGNING FIELD-SYMBOL binding: %s",
+					diag.message,
+				),
+			)
+			return
+		}
+	}
+}
+
+@(test)
 test_select_into_inline_data_still_declares_symbol :: proc(t: ^testing.T) {
 	src := `CLASS lcl DEFINITION.
   PUBLIC SECTION.

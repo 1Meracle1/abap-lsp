@@ -2708,6 +2708,9 @@ parse_inline_field_symbol :: proc(p: ^Parser) -> ^ast.Expr {
 	expect_token_space_req(p, .LParen, .WithoutLeadingSpace)
 	fs_ref := parse_field_symbol_ref(p)
 	expect_token_space_req(p, .RParen, .WithoutLeadingSpace)
+	if ident, ok := fs_ref.derived_expr.(^ast.Ident); ok {
+		ident.is_inline_field_symbol_decl = true
+	}
 	return fs_ref
 }
 

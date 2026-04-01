@@ -1634,10 +1634,10 @@ resolve_loop_stmt :: proc(table: ^SymbolTable, loop_stmt: ^ast.Loop_Stmt, syntax
 		}
 	}
 
-	// Handle inline FIELD-SYMBOL declaration in ASSIGNING clause
+	// Inline FIELD-SYMBOL only: ASSIGNING <fs> uses an existing FIELD-SYMBOL declaration.
 	if loop_stmt.assigning_target != nil {
-		if ident, ok := loop_stmt.assigning_target.derived_expr.(^ast.Ident); ok {
-			// Field symbols get the line type of the internal table
+		if ident, ok := loop_stmt.assigning_target.derived_expr.(^ast.Ident); ok &&
+		   ident.is_inline_field_symbol_decl {
 			type_info := make_inferred_type(table, loop_stmt.itab)
 
 			sym := Symbol {
@@ -1683,10 +1683,10 @@ resolve_read_table_stmt :: proc(table: ^SymbolTable, read_stmt: ^ast.Read_Table_
 		}
 	}
 
-	// Handle inline FIELD-SYMBOL declaration in ASSIGNING clause
+	// Inline FIELD-SYMBOL only: ASSIGNING <fs> uses an existing FIELD-SYMBOL declaration.
 	if read_stmt.assigning_target != nil {
-		if ident, ok := read_stmt.assigning_target.derived_expr.(^ast.Ident); ok {
-			// Field symbols get the line type of the internal table
+		if ident, ok := read_stmt.assigning_target.derived_expr.(^ast.Ident); ok &&
+		   ident.is_inline_field_symbol_decl {
 			type_info := make_inferred_type(table, read_stmt.itab)
 
 			sym := Symbol {

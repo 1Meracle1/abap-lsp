@@ -48,6 +48,8 @@ Validation_Context :: struct {
 	allow_me_identifier: bool,
 	// Class symbol's Named type (class_sym.type_info); used to resolve me->attribute against the class scope.
 	self_class_type: ^Type,
+	// True only while validating expressions that may introduce FIELD-SYMBOL(<fs>) (ASSIGNING / ASSIGN ... TO FIELD-SYMBOL).
+	allow_inline_field_symbol_ident: bool,
 }
 
 // symbol_defined_in_validation_scope reports if `lower_name` is a symbol in the current scope chain.
@@ -442,7 +444,7 @@ validate_stmt_ctx :: proc(ctx: ^Validation_Context, stmt: ^ast.Stmt) {
 		validate_expr_ctx(ctx, s.source)
 		validate_expr_ctx(ctx, s.offset)
 		validate_expr_ctx(ctx, s.length)
-		validate_expr_ctx(ctx, s.target)
+		validate_expr_ctx_allow_inline_field_symbol(ctx, s.target)
 	case ^ast.Unassign_Stmt:
 		for target in s.targets {
 			validate_expr_ctx(ctx, target)
@@ -490,7 +492,7 @@ validate_stmt_ctx :: proc(ctx: ^Validation_Context, stmt: ^ast.Stmt) {
 	case ^ast.Loop_Stmt:
 		validate_expr_ctx(ctx, s.itab)
 		validate_expr_ctx(ctx, s.into_target)
-		validate_expr_ctx(ctx, s.assigning_target)
+		validate_expr_ctx_allow_inline_field_symbol(ctx, s.assigning_target)
 		validate_stmt_list_ctx(ctx, s.body[:])
 	case ^ast.Loop_At_Control_Stmt:
 		validate_expr_ctx(ctx, s.field)
@@ -498,7 +500,7 @@ validate_stmt_ctx :: proc(ctx: ^Validation_Context, stmt: ^ast.Stmt) {
 	case ^ast.Read_Table_Stmt:
 		validate_expr_ctx(ctx, s.itab)
 		validate_expr_ctx(ctx, s.into_target)
-		validate_expr_ctx(ctx, s.assigning_target)
+		validate_expr_ctx_allow_inline_field_symbol(ctx, s.assigning_target)
 	case ^ast.Get_Badi_Stmt:
 		validate_expr_ctx(ctx, s.badi_ref)
 		for f in s.filters {
@@ -749,6 +751,16 @@ validate_expr :: proc(table: ^SymbolTable, expr: ^ast.Expr) {
 	validate_expr_ctx(&ctx, expr)
 }
 
+// validate_expr_ctx_allow_inline_field_symbol validates an expression where FIELD-SYMBOL(<fs>) declares <fs>.
+validate_expr_ctx_allow_inline_field_symbol :: proc(ctx: ^Validation_Context, expr: ^ast.Expr) {
+	if ctx == nil || expr == nil {
+		return
+	}
+	c := ctx^
+	c.allow_inline_field_symbol_ident = true
+	validate_expr_ctx(&c, expr)
+}
+
 validate_expr_ctx :: proc(ctx: ^Validation_Context, expr: ^ast.Expr) {
 	if expr == nil {
 		return
@@ -959,6 +971,19 @@ validate_component_selector_field :: proc(ctx: ^Validation_Context, sel: ^ast.Se
 
 validate_ident_expr_ctx :: proc(ctx: ^Validation_Context, ident: ^ast.Ident) {
 	if ctx == nil || ident == nil || ctx.lookup_table == nil || ctx.diag_table == nil {
+		return
+	}
+
+	if ident.is_inline_field_symbol_decl {
+		if !ctx.allow_inline_field_symbol_ident {
+			add_diagnostic(
+				ctx.diag_table,
+				ident.range,
+				"Inline FIELD-SYMBOL(...) is only valid after ASSIGNING (LOOP AT, READ TABLE, …) or as the target of ASSIGN ... TO FIELD-SYMBOL(...)",
+			)
+			return
+		}
+		// Declaration site: do not require an existing symbol (resolver may also register it).
 		return
 	}
 
