@@ -316,7 +316,12 @@ resolve_typed_decl :: proc(
 ) {
 	name := decl_name_from_expr(decl.ident)
 
-	type_info := resolve_type_expr(table, decl.typed)
+	type_info: ^Type
+	if decl.is_like {
+		type_info = resolve_like_type_expr(table, decl.typed)
+	} else {
+		type_info = resolve_type_expr(table, decl.typed)
+	}
 
 	sym := Symbol {
 		name       = name,
@@ -637,7 +642,12 @@ resolve_data_struct_components :: proc(
 	for comp in components {
 		#partial switch c in comp.derived_stmt {
 		case ^ast.Data_Typed_Decl:
-			field_type := resolve_type_expr(table, c.typed)
+			field_type: ^Type
+			if c.is_like {
+				field_type = resolve_like_type_expr(table, c.typed)
+			} else {
+				field_type = resolve_type_expr(table, c.typed)
+			}
 			add_struct_field(struct_type, decl_name_from_expr(c.ident), field_type, 0)
 
 		case ^ast.Data_Struct_Decl:
@@ -726,7 +736,11 @@ resolve_form_param :: proc(
 
 	type_info: ^Type
 	if param.typed != nil {
-		type_info = resolve_type_expr(table, param.typed)
+		if param.is_like {
+			type_info = resolve_like_type_expr(table, param.typed)
+		} else {
+			type_info = resolve_type_expr(table, param.typed)
+		}
 	} else {
 		type_info = make_unknown_type(table)
 	}
@@ -892,6 +906,82 @@ resolve_type_expr :: proc(table: ^SymbolTable, expr: ^ast.Expr) -> ^Type {
 	}
 
 	return make_unknown_type(table)
+}
+
+// resolve_like_type_expr resolves TYPE clauses that use LIKE: operands are data objects (or
+// LINE OF / TABLE OF built from them), not only type names.
+resolve_like_type_expr :: proc(table: ^SymbolTable, expr: ^ast.Expr) -> ^Type {
+	if expr == nil {
+		return make_unknown_type(table)
+	}
+
+	#partial switch e in expr.derived_expr {
+	case ^ast.Ident:
+		name := strings.to_lower(e.name)
+		if sym, ok := table.symbols[name]; ok && sym.type_info != nil {
+			return sym.type_info
+		}
+		return make_unknown_type(table)
+
+	case ^ast.Table_Type:
+		elem_type := resolve_like_type_expr(table, e.elem)
+		table_kind: TableTypeKind
+		switch e.kind {
+		case .Standard:
+			table_kind = .Standard
+		case .Sorted:
+			table_kind = .Sorted
+		case .Hashed:
+			table_kind = .Hashed
+		case .Any:
+			table_kind = .Any
+		}
+		t := make_table_type(table, elem_type, table_kind)
+		t.ast_node = expr
+		if e.primary_key != nil {
+			key_info := make_table_key_info(
+				table,
+				e.primary_key.is_unique,
+				e.primary_key.is_default,
+			)
+			for comp in e.primary_key.components {
+				add_key_component(key_info, comp.name)
+			}
+			t.primary_key = key_info
+		}
+		return t
+
+	case ^ast.Line_Type:
+		table_type := resolve_like_type_expr(table, e.table)
+		t := make_line_of_type(table, table_type)
+		t.ast_node = expr
+		return t
+
+	case ^ast.Ref_Type:
+		target_type := resolve_like_type_expr(table, e.target)
+		t := make_reference_type(table, target_type)
+		t.ast_node = expr
+		return t
+
+	case ^ast.Range_Type:
+		elem_type := resolve_like_type_expr(table, e.elem)
+		t := make_range_of_type(table, elem_type)
+		t.ast_node = expr
+		return t
+
+	case ^ast.Selector_Expr:
+		ty := expr_value_type(table, expr)
+		if ty != nil {
+			return ty
+		}
+		return make_unknown_type(table)
+
+	case ^ast.Paren_Expr:
+		return resolve_like_type_expr(table, e.expr)
+
+	case:
+		return resolve_type_expr(table, expr)
+	}
 }
 
 // ABAP built-in CHAR spelled as CHAR, CHAR70, CHAR01, ... (length in the numeric suffix).
@@ -1196,7 +1286,7 @@ resolve_method_param :: proc(table: ^SymbolTable, param: ^ast.Method_Param) {
 	if param.typed != nil {
 		type_info = resolve_type_expr(table, param.typed)
 	} else if param.likes != nil {
-		type_info = resolve_type_expr(table, param.likes)
+		type_info = resolve_like_type_expr(table, param.likes)
 	} else {
 		type_info = make_unknown_type(table)
 	}
@@ -1600,7 +1690,11 @@ resolve_field_symbol_decl :: proc(
 
 	type_info: ^Type
 	if fs_decl.typed != nil {
-		type_info = resolve_type_expr(table, fs_decl.typed)
+		if fs_decl.is_like {
+			type_info = resolve_like_type_expr(table, fs_decl.typed)
+		} else {
+			type_info = resolve_type_expr(table, fs_decl.typed)
+		}
 	} else {
 		type_info = make_unknown_type(table)
 	}

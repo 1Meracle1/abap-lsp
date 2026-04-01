@@ -91,8 +91,13 @@ parse_data_typed_single_decl :: proc(
 	length_expr := parse_optional_const_length_in_parens(p)
 
 	type_expr: ^ast.Expr
-	if check_keyword(p, "TYPE") || check_keyword(p, "LIKE") {
+	is_like := false
+	if check_keyword(p, "TYPE") {
 		advance_token(p)
+		type_expr = parse_type_expr(p)
+	} else if check_keyword(p, "LIKE") {
+		advance_token(p)
+		is_like = true
 		type_expr = parse_type_expr(p)
 	} else {
 		type_expr = make_implicit_default_char_type_expr(p, ident_expr)
@@ -111,6 +116,7 @@ parse_data_typed_single_decl :: proc(
 	data_decl.typed = type_expr
 	data_decl.value = value_expr
 	data_decl.is_static = is_static
+	data_decl.is_like = is_like
 	return data_decl
 }
 
@@ -159,8 +165,13 @@ parse_data_typed_multiple_decl :: proc(
 		length_expr := parse_optional_const_length_in_parens(p)
 
 		type_expr: ^ast.Expr
-		if check_keyword(p, "TYPE") || check_keyword(p, "LIKE") {
+		is_like := false
+		if check_keyword(p, "TYPE") {
 			advance_token(p)
+			type_expr = parse_type_expr(p)
+		} else if check_keyword(p, "LIKE") {
+			advance_token(p)
+			is_like = true
 			type_expr = parse_type_expr(p)
 		} else {
 			type_expr = make_implicit_default_char_type_expr(p, ident_expr)
@@ -182,6 +193,7 @@ parse_data_typed_multiple_decl :: proc(
 		decl.typed = type_expr
 		decl.value = value_expr
 		decl.is_static = is_static
+		decl.is_like = is_like
 		append(&chain_decl.parts, &decl.node)
 
 		if allow_token(p, .Comma) {
@@ -237,8 +249,13 @@ parse_data_struct_decl :: proc(p: ^Parser) -> ^ast.Data_Struct_Decl {
 		length_expr := parse_optional_const_length_in_parens(p)
 
 		type_expr: ^ast.Expr
-		if check_keyword(p, "TYPE") || check_keyword(p, "LIKE") {
+		is_like := false
+		if check_keyword(p, "TYPE") {
 			advance_token(p)
+			type_expr = parse_type_expr(p)
+		} else if check_keyword(p, "LIKE") {
+			advance_token(p)
+			is_like = true
 			type_expr = parse_type_expr(p)
 		} else {
 			type_expr = make_implicit_default_char_type_expr(p, field_ident_expr)
@@ -260,6 +277,7 @@ parse_data_struct_decl :: proc(p: ^Parser) -> ^ast.Data_Struct_Decl {
 		field_decl.length = length_expr
 		field_decl.typed = type_expr
 		field_decl.value = value_expr
+		field_decl.is_like = is_like
 		field_decl.derived_stmt = field_decl
 		append(&struct_decl.components, &field_decl.node)
 

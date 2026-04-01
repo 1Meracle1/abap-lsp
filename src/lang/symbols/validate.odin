@@ -200,7 +200,7 @@ validate_method_decl_ctx :: proc(ctx: ^Validation_Context, decl: ^ast.Method_Dec
 			continue
 		}
 		validate_type_expr_ctx(&mctx, param.typed)
-		validate_type_expr_ctx(&mctx, param.likes)
+		validate_like_expr_ctx(&mctx, param.likes)
 		validate_expr_ctx(ctx, param.default)
 	}
 	raise_ctx := module_expr_ctx(ctx)
@@ -370,6 +370,98 @@ validate_type_ident_ctx :: proc(ctx: ^Validation_Context, ident: ^ast.Ident) {
 	)
 }
 
+// validate_like_ident_ctx checks that a simple name used in LIKE refers to a data object
+// (variable, constant, field symbol, form/method parameter, or structure field symbol in scope).
+validate_like_ident_ctx :: proc(ctx: ^Validation_Context, ident: ^ast.Ident) {
+	if ctx == nil || ident == nil || ctx.diag_table == nil {
+		return
+	}
+	name := ident.name
+	lower := strings.to_lower(name, context.temp_allocator)
+	if len(lower) == 0 {
+		return
+	}
+	if ctx.method_param_names_for_like != nil && lower in ctx.method_param_names_for_like {
+		return
+	}
+	mod_table := module_scope_lookup(ctx)
+	type_lookup_tables := [?]^SymbolTable{ctx.lookup_table, ctx.enclosing_scope, mod_table}
+	for tab in type_lookup_tables {
+		if tab == nil {
+			continue
+		}
+		if sym, ok := tab.symbols[lower]; ok {
+			#partial switch sym.kind {
+			case .Variable,
+			     .Constant,
+			     .FieldSymbol,
+			     .FormParameter,
+			     .Parameter,
+			     .Field:
+				return
+			case .TypeDef, .Class, .Interface:
+				add_diagnostic(
+					ctx.diag_table,
+					ident.range,
+					strings.concatenate(
+						{
+							"'",
+							name,
+							"' is a type or object type; use TYPE for types, not LIKE",
+						},
+						context.temp_allocator,
+					),
+				)
+				return
+			case:
+				add_diagnostic(
+					ctx.diag_table,
+					ident.range,
+					strings.concatenate(
+						{"'", name, "' cannot be used as a LIKE reference"},
+						context.temp_allocator,
+					),
+				)
+				return
+			}
+		}
+	}
+	if mod_table != nil {
+		remote_ctx := ctx^
+		remote_ctx.lookup_table = mod_table
+		maybe_add_remote_candidate(&remote_ctx, name, .Unknown_Symbol)
+	}
+	add_diagnostic(
+		ctx.diag_table,
+		ident.range,
+		strings.concatenate({"Unknown symbol '", name, "'"}, context.temp_allocator),
+	)
+}
+
+validate_like_expr_ctx :: proc(ctx: ^Validation_Context, expr: ^ast.Expr) {
+	if ctx == nil || expr == nil {
+		return
+	}
+	#partial switch e in expr.derived_expr {
+	case ^ast.Ident:
+		validate_like_ident_ctx(ctx, e)
+	case ^ast.Table_Type:
+		validate_like_expr_ctx(ctx, e.elem)
+	case ^ast.Ref_Type:
+		validate_like_expr_ctx(ctx, e.target)
+	case ^ast.Line_Type:
+		validate_like_expr_ctx(ctx, e.table)
+	case ^ast.Range_Type:
+		validate_like_expr_ctx(ctx, e.elem)
+	case ^ast.Selector_Expr:
+		validate_expr_ctx(ctx, expr)
+	case ^ast.Paren_Expr:
+		validate_like_expr_ctx(ctx, e.expr)
+	case:
+		validate_expr_ctx(ctx, expr)
+	}
+}
+
 // validate_stmt_list validates a list of statements
 validate_stmt_list :: proc(table: ^SymbolTable, stmts: []^ast.Stmt) {
 	ctx := Validation_Context{lookup_table = table, diag_table = table}
@@ -401,7 +493,11 @@ validate_stmt_ctx :: proc(ctx: ^Validation_Context, stmt: ^ast.Stmt) {
 		validate_expr_ctx(ctx, s.value)
 	case ^ast.Data_Typed_Decl:
 		validate_expr_ctx(ctx, s.length)
-		validate_type_expr_ctx(ctx, s.typed)
+		if s.is_like {
+			validate_like_expr_ctx(ctx, s.typed)
+		} else {
+			validate_type_expr_ctx(ctx, s.typed)
+		}
 		validate_expr_ctx(ctx, s.value)
 	case ^ast.Data_Typed_Chain_Decl:
 		for part in s.parts {
@@ -433,6 +529,18 @@ validate_stmt_ctx :: proc(ctx: ^Validation_Context, stmt: ^ast.Stmt) {
 		validate_stmt_list_ctx(ctx, s.components[:])
 	case ^ast.Types_Include_Type_Decl:
 		validate_type_expr_ctx(ctx, s.included)
+	case ^ast.Field_Symbol_Decl:
+		if s.is_like {
+			validate_like_expr_ctx(ctx, s.typed)
+		} else {
+			validate_type_expr_ctx(ctx, s.typed)
+		}
+	case ^ast.Field_Symbol_Chain_Decl:
+		for d in s.decls {
+			if d != nil {
+				validate_stmt_ctx(ctx, cast(^ast.Stmt)d)
+			}
+		}
 	case ^ast.Attr_Decl:
 		validate_type_expr_ctx(ctx, s.typed)
 		validate_expr_ctx(ctx, s.value)

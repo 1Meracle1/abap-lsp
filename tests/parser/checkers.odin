@@ -330,6 +330,12 @@ check_stmt :: proc(
 			fmt.tprintf("Expected is_static %v, got %v", ex.is_static, ac.is_static),
 			loc = loc,
 		)
+		testing.expect(
+			t,
+			ex.is_like == ac.is_like,
+			fmt.tprintf("Expected is_like %v, got %v", ex.is_like, ac.is_like),
+			loc = loc,
+		)
 
 		if testing.expect(t, ac.ident != nil, "Actual ident is nil", loc = loc) {
 			testing.expect(t, ex.ident != nil, "Expected ident is nil") // Should be enforced by builder

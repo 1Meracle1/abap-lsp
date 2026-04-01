@@ -298,8 +298,13 @@ parse_form_params :: proc(
 		if p.curr_tok.kind == .Ident {
 			if len(p.curr_tok.lit) > 0 && len(p.curr_tok.lit) < len(p.keyword_buffer) {
 				keyword := to_upper(p.keyword_buffer[:], p.curr_tok.lit)
-				if keyword == "TYPE" || keyword == "LIKE" {
+				if keyword == "TYPE" {
 					advance_token(p)
+					param.typed = parse_type_expr(p)
+					param.range.end = p.prev_tok.range.end
+				} else if keyword == "LIKE" {
+					advance_token(p)
+					param.is_like = true
 					param.typed = parse_type_expr(p)
 					param.range.end = p.prev_tok.range.end
 				}
@@ -374,8 +379,12 @@ parse_field_symbol_single_decl :: proc(p: ^Parser, fs_tok: lexer.Token) -> ^ast.
 	}
 
 	// Parse TYPE or LIKE clause
-	if check_keyword(p, "TYPE") || check_keyword(p, "LIKE") {
+	if check_keyword(p, "TYPE") {
 		advance_token(p)
+		fs_decl.typed = parse_type_expr(p)
+	} else if check_keyword(p, "LIKE") {
+		advance_token(p)
+		fs_decl.is_like = true
 		fs_decl.typed = parse_type_expr(p)
 	} else {
 		error(p, p.curr_tok.range, "expected TYPE or LIKE after field symbol name")

@@ -40,11 +40,13 @@ data_single_typed :: proc(
 	name: string,
 	type_name: string,
 	is_static: bool = false,
+	is_like: bool = false,
 ) -> ^ast.Data_Typed_Decl {
 	node := ast.new(ast.Data_Typed_Decl, {})
 	node.ident = ident(name)
 	node.typed = ident(type_name)
 	node.is_static = is_static
+	node.is_like = is_like
 	node.derived_stmt = node
 	return node
 }

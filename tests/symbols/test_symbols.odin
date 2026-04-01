@@ -597,6 +597,54 @@ test_data_type_sy_tabix_no_cannot_use_as_type_diagnostic :: proc(t: ^testing.T) 
 }
 
 @(test)
+test_data_like_table_and_line_no_cannot_use_as_type :: proc(t: ^testing.T) {
+	src := `TYPES:
+  BEGIN OF ts_ui_funcs,
+    textid   TYPE char3,
+    text_add TYPE string,
+    disabled TYPE char01,
+  END OF ts_ui_funcs,
+
+  tt_ui_funcs TYPE STANDARD TABLE OF ts_ui_funcs.
+
+DATA: lt_rep_response TYPE tt_ui_funcs.
+
+DATA:
+  lv_prev(10) TYPE          c,
+  lv_cond(72) TYPE          c,
+  lt_cond     LIKE TABLE OF lv_cond.
+DATA:
+  lr_nrspace_gcp    LIKE lt_rep_response,
+  lr_nrspace_gtin   LIKE lt_rep_response,
+  ls_nrspace        LIKE LINE OF lt_rep_response.`
+
+	file := ast.new(ast.File, {})
+	file.src = src
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	table := symbols.resolve_file(file)
+	defer symbols.destroy_symbol_table(table)
+
+	for diag in symbols.collect_all_diagnostics(table) {
+		if strings.contains(diag.message, "cannot be used as a type") {
+			testing.expect(t, false, fmt.tprintf("unexpected diagnostic: %s", diag.message))
+			return
+		}
+	}
+
+	if _, ok := table.symbols["lt_cond"]; !ok {
+		testing.expect(t, false, "expected lt_cond variable")
+		return
+	}
+	if _, ok := table.symbols["ls_nrspace"]; !ok {
+		testing.expect(t, false, "expected ls_nrspace variable")
+		return
+	}
+}
+
+@(test)
 test_if_sy_subrc_no_unknown_component_diagnostic :: proc(t: ^testing.T) {
 	src := `IF sy-subrc = 0.
 

@@ -5649,6 +5649,7 @@ data_like_standard_table_of_test :: proc(t: ^testing.T) {
 	if testing.expect(t, eok, fmt.tprintf("Expected Ident for elem, got %T", table_type.elem.derived_expr)) {
 		testing.expect(t, elem_ident.name == "lv_cond", elem_ident.name)
 	}
+	testing.expect(t, decl.is_like, "DATA ... LIKE should set is_like")
 }
 
 @(test)
@@ -5680,12 +5681,19 @@ data_chain_legacy_length_and_like_std_table_test :: proc(t: ^testing.T) {
 	prev, p0ok := chain.parts[0].derived_stmt.(^ast.Data_Typed_Decl)
 	if !testing.expect(t, p0ok, "part 0 Data_Typed_Decl") do return
 	if !testing.expect(t, prev.length != nil, "lv_prev length") do return
+	testing.expect(t, !prev.is_like, "TYPE clause should not set is_like")
 
 	reg, p5ok := chain.parts[5].derived_stmt.(^ast.Data_Typed_Decl)
 	if !testing.expect(t, p5ok, "part 5") do return
 	tab5, t5ok := reg.typed.derived_expr.(^ast.Table_Type)
 	if testing.expect(t, t5ok, "LIKE std table") {
 		testing.expect(t, tab5.kind == .Standard, fmt.tprintf("table kind %v", tab5.kind))
+	}
+	testing.expect(t, reg.is_like, "LIKE clause should set is_like")
+
+	lt_cond_part, p4ok := chain.parts[4].derived_stmt.(^ast.Data_Typed_Decl)
+	if testing.expect(t, p4ok, "part 4 Data_Typed_Decl") {
+		testing.expect(t, lt_cond_part.is_like, "part 4 LIKE")
 	}
 }
 
@@ -5915,6 +5923,7 @@ data_like_line_of_test :: proc(t: ^testing.T) {
 	// Check that the type is a Line_Type
 	line_type, lok := decl.typed.derived_expr.(^ast.Line_Type)
 	testing.expect(t, lok, fmt.tprintf("Expected Line_Type, got %T", decl.typed.derived_expr))
+	testing.expect(t, decl.is_like, "LIKE LINE OF should set is_like")
 }
 
 @(test)

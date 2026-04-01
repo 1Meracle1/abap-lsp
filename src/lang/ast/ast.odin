@@ -1060,6 +1060,8 @@ Data_Typed_Decl :: struct {
 	value:      ^Expr,
 	// True for STATICS name TYPE ... — procedure-persistent storage (not CLASS-DATA)
 	is_static:  bool,
+	// True when the clause was LIKE (references a data object / LINE OF / TABLE OF style), not TYPE.
+	is_like:    bool,
 }
 
 Data_Typed_Chain_Decl :: struct {
@@ -1138,6 +1140,8 @@ Form_Param :: struct {
 	kind:       Form_Param_Kind,
 	ident:      ^Ident,
 	typed:      ^Expr,
+	// True when the form parameter used LIKE instead of TYPE.
+	is_like:    bool,
 }
 
 Form_Decl :: struct {
@@ -1297,6 +1301,7 @@ Field_Symbol_Decl :: struct {
 	using node: Decl,
 	ident:      ^Ident, // The field symbol name (including angle brackets)
 	typed:      ^Expr, // The type expression
+	is_like:    bool,
 }
 
 // FIELD-SYMBOLS chain declaration
