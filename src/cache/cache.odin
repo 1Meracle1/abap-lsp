@@ -255,6 +255,13 @@ workspace_should_request_remote_candidate :: proc(
 		return false
 	}
 
+	if workspace_remote_candidate_has_cached_dependency(workspace, candidate) {
+		if sync.guard(&workspace.lock) {
+			workspace.remote_resolution_seen[strings.clone(request_key, workspace.persistent_allocator)] = true
+		}
+		return false
+	}
+
 	if sync.guard(&workspace.lock) {
 		if request_key in workspace.remote_resolution_seen {
 			return false

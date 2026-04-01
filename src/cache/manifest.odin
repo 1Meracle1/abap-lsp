@@ -1,5 +1,7 @@
 package cache
 
+import "../lang/symbols"
+
 import "core:log"
 import os "core:os/os2"
 import "core:path/filepath"
@@ -540,4 +542,68 @@ normalize_manifest_path :: proc(path: string, allocator := context.allocator) ->
 		return strings.clone(normalized[2:], allocator)
 	}
 	return strings.clone(normalized, allocator)
+}
+
+workspace_dependency_cached_file_exists :: proc(full_path: string) -> bool {
+	info, err := os.stat(full_path, context.temp_allocator)
+	if err != nil {
+		return false
+	}
+	os.file_info_delete(info, context.temp_allocator)
+	return true
+}
+
+remote_dependency_candidate_matches_cached_unit :: proc(
+	unit: ^Semantic_Unit,
+	normalized_relative_file: string,
+	normalized_candidate: string,
+) -> bool {
+	if len(unit.name) > 0 && strings.to_lower(unit.name, context.temp_allocator) == normalized_candidate {
+		return true
+	}
+	for member in unit.members {
+		if len(member.object_name) > 0 &&
+		   strings.to_lower(member.object_name, context.temp_allocator) == normalized_candidate {
+			return true
+		}
+	}
+	base := filepath.base(normalized_relative_file)
+	stem := base
+	lower_base := strings.to_lower(base, context.temp_allocator)
+	if strings.has_suffix(lower_base, ".abap") && len(base) > 5 {
+		stem = base[:len(base) - 5]
+	}
+	return strings.to_lower(stem, context.temp_allocator) == normalized_candidate
+}
+
+// True when abapls.toml already lists a dependency for this name and the cached source file exists.
+// Avoids mass ADT refetch after server restart for existing workspaces; use "Refresh Dependency Cache" to force re-pull.
+workspace_remote_candidate_has_cached_dependency :: proc(
+	workspace: ^Workspace,
+	candidate: symbols.Remote_Candidate,
+) -> bool {
+	if workspace == nil || workspace.manifest == nil {
+		return false
+	}
+	normalized := strings.to_lower(strings.trim_space(candidate.name), context.temp_allocator)
+	if len(normalized) == 0 {
+		return false
+	}
+
+	for unit in workspace_dependency_units(workspace, context.temp_allocator) {
+		rel := unit_root_relative_path(unit, context.temp_allocator)
+		if len(rel) == 0 {
+			continue
+		}
+		norm_rel := normalize_manifest_path(rel, context.temp_allocator)
+		full := filepath.join({workspace.root_path, norm_rel}, context.temp_allocator)
+		if !workspace_dependency_cached_file_exists(full) {
+			continue
+		}
+		if remote_dependency_candidate_matches_cached_unit(unit, norm_rel, normalized) {
+			return true
+		}
+	}
+
+	return false
 }
