@@ -24,6 +24,16 @@ handle_remote_dependencies_updated :: proc(srv: ^Server, params: json.Value) {
 		return
 	}
 
+	wd, wd_ok := work_done_session_begin(srv, "ABAP: refreshing after remote dependencies")
+	analysis_progress: cache.Analysis_Progress
+	prog: ^cache.Analysis_Progress = nil
+	if wd_ok {
+		defer work_done_session_end(&wd)
+		work_done_session_report(&wd, "Reloading workspace and rebuilding projects…")
+		work_done_fill_analysis_progress(&wd, &analysis_progress)
+		prog = &analysis_progress
+	}
+
 	cache.workspace_load_manifest(workspace)
 	cache.workspace_invalidate_all_projects(workspace)
 
@@ -37,7 +47,7 @@ handle_remote_dependencies_updated :: proc(srv: ^Server, params: json.Value) {
 	}
 	defer cache.release_snapshot(snap)
 
-	publish_diagnostics(srv, updated_params.sourceUri, snap)
+	publish_diagnostics(srv, updated_params.sourceUri, snap, nil, prog)
 }
 
 handle_workspace_manifest_updated :: proc(srv: ^Server, params: json.Value) {
@@ -50,6 +60,12 @@ handle_workspace_manifest_updated :: proc(srv: ^Server, params: json.Value) {
 	workspace := cache.workspace_for_uri(srv.storage, updated_params.workspaceUri)
 	if workspace == nil {
 		return
+	}
+
+	wd, wd_ok := work_done_session_begin(srv, "ABAP: workspace manifest updated")
+	if wd_ok {
+		defer work_done_session_end(&wd)
+		work_done_session_report(&wd, "Reloading manifest and invalidating projects…")
 	}
 
 	cache.workspace_load_manifest(workspace)

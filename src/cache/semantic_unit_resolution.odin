@@ -28,6 +28,7 @@ ensure_workspace_document_loaded :: proc(
 	cache: ^Cache,
 	workspace: ^Workspace,
 	uri: string,
+	progress: ^Analysis_Progress = nil,
 ) -> ^Snapshot {
 	if snapshot := get_snapshot(cache, uri); snapshot != nil {
 		return snapshot
@@ -39,7 +40,7 @@ ensure_workspace_document_loaded :: proc(
 		return nil
 	}
 
-	refresh_document_internal(cache, uri, string(data), 0, false)
+	refresh_document_internal(cache, uri, string(data), 0, false, progress)
 	return get_snapshot(cache, uri)
 }
 
@@ -216,9 +217,17 @@ project_source_tree_has_syntax_errors :: proc(
 	workspace: ^Workspace,
 	root_uri: string,
 	include_uris: map[string]string,
+	progress: ^Analysis_Progress = nil,
 ) -> bool {
 	active_stack := make([dynamic]string, context.temp_allocator)
-	return file_or_includes_have_syntax_errors(cache, workspace, root_uri, include_uris, &active_stack)
+	return file_or_includes_have_syntax_errors(
+		cache,
+		workspace,
+		root_uri,
+		include_uris,
+		&active_stack,
+		progress,
+	)
 }
 
 file_or_includes_have_syntax_errors :: proc(
@@ -227,6 +236,7 @@ file_or_includes_have_syntax_errors :: proc(
 	uri: string,
 	include_uris: map[string]string,
 	active_stack: ^[dynamic]string,
+	progress: ^Analysis_Progress = nil,
 ) -> bool {
 	if cache == nil || workspace == nil || len(uri) == 0 || active_stack == nil {
 		return false
@@ -235,7 +245,7 @@ file_or_includes_have_syntax_errors :: proc(
 		return false
 	}
 
-	snapshot := ensure_workspace_document_loaded(cache, workspace, uri)
+	snapshot := ensure_workspace_document_loaded(cache, workspace, uri, progress)
 	if snapshot == nil || snapshot.ast == nil {
 		return false
 	}
@@ -262,6 +272,7 @@ file_or_includes_have_syntax_errors :: proc(
 					include_uri,
 					include_uris,
 					active_stack,
+					progress,
 				) {
 					return true
 				}
@@ -277,6 +288,7 @@ merge_remote_dependency_symbols_into_table :: proc(
 	workspace: ^Workspace,
 	project: ^Project,
 	table: ^symbols.SymbolTable,
+	progress: ^Analysis_Progress = nil,
 ) {
 	if !workspace_supports_remote_resolution(workspace) {
 		return
@@ -297,7 +309,12 @@ merge_remote_dependency_symbols_into_table :: proc(
 			continue
 		}
 
-		dependency_snapshot := ensure_workspace_document_loaded(cache, workspace, dependency_uri)
+		analysis_progress_phase(
+			progress,
+			strings.concatenate({"Loading workspace dependency: ", dependency_relative}, context.temp_allocator),
+		)
+
+		dependency_snapshot := ensure_workspace_document_loaded(cache, workspace, dependency_uri, progress)
 		if dependency_snapshot == nil || dependency_snapshot.ast == nil {
 			append_project_diagnostic(
 				project,
@@ -320,6 +337,7 @@ get_projects_for_uri :: proc(
 	cache: ^Cache,
 	uri: string,
 	allocator := context.allocator,
+	progress: ^Analysis_Progress = nil,
 ) -> []^Project {
 	result := make([dynamic]^Project, allocator)
 	workspace := workspace_for_uri(cache, uri)
@@ -330,7 +348,7 @@ get_projects_for_uri :: proc(
 	units := workspace_units_for_uri(workspace, uri, context.temp_allocator)
 	for unit in units {
 		key := manifest_project_key(workspace, unit, context.temp_allocator)
-		project := get_or_build_manifest_project(cache, workspace, unit, key)
+		project := get_or_build_manifest_project(cache, workspace, unit, key, progress)
 		if project != nil {
 			append(&result, project)
 		}
@@ -338,7 +356,7 @@ get_projects_for_uri :: proc(
 
 	if len(result) == 0 {
 		key := local_project_key(uri, context.temp_allocator)
-		project := get_or_build_local_project(cache, workspace, uri, key)
+		project := get_or_build_local_project(cache, workspace, uri, key, progress)
 		if project != nil {
 			append(&result, project)
 		}
@@ -516,13 +534,14 @@ get_or_build_manifest_project :: proc(
 	workspace: ^Workspace,
 	unit: ^Semantic_Unit,
 	key: string,
+	progress: ^Analysis_Progress = nil,
 ) -> ^Project {
 	entry := workspace_get_or_create_project_entry(workspace, key)
 	if project := project_entry_get_snapshot(entry); project != nil {
 		return project
 	}
 
-	project := build_manifest_project(cache, workspace, unit, key)
+	project := build_manifest_project(cache, workspace, unit, key, progress)
 	if project == nil {
 		return nil
 	}
@@ -546,6 +565,7 @@ get_or_build_local_project :: proc(
 	workspace: ^Workspace,
 	uri: string,
 	key: string,
+	progress: ^Analysis_Progress = nil,
 ) -> ^Project {
 	if workspace == nil || len(uri) == 0 {
 		return nil
@@ -567,6 +587,7 @@ get_or_build_local_project :: proc(
 		build_folder_include_uri_map(uri, context.temp_allocator),
 		filename_from_uri(uri),
 		key,
+		progress,
 	)
 	if project == nil {
 		return nil
@@ -591,6 +612,7 @@ build_manifest_project :: proc(
 	workspace: ^Workspace,
 	unit: ^Semantic_Unit,
 	key: string,
+	progress: ^Analysis_Progress = nil,
 ) -> ^Project {
 	root_relative := unit_root_relative_path(unit, context.temp_allocator)
 
@@ -602,6 +624,7 @@ build_manifest_project :: proc(
 		build_unit_member_uri_map(workspace, unit, context.temp_allocator),
 		unit.name,
 		key,
+		progress,
 	)
 }
 
@@ -612,6 +635,7 @@ build_local_project :: proc(
 	include_uris: map[string]string,
 	unit_name: string,
 	key: string,
+	progress: ^Analysis_Progress = nil,
 ) -> ^Project {
 	slot := arena_slot_acquire(workspace.project_pool)
 	context.allocator = slot.allocator
@@ -629,7 +653,12 @@ build_local_project :: proc(
 	project.resolution_result = new(symbols.ProjectResolutionResult, slot.allocator)
 	project.resolution_result.file_tables = make(map[string]^symbols.SymbolTable, slot.allocator)
 
-	root_snapshot := ensure_workspace_document_loaded(cache, workspace, root_uri)
+	analysis_progress_phase(
+		progress,
+		strings.concatenate({"Semantic analysis: ", unit_name}, context.temp_allocator),
+	)
+
+	root_snapshot := ensure_workspace_document_loaded(cache, workspace, root_uri, progress)
 	if root_snapshot == nil || root_snapshot.ast == nil {
 		append_project_diagnostic(
 			project,
@@ -644,17 +673,20 @@ build_local_project :: proc(
 		workspace,
 		root_uri,
 		include_uris,
+		progress,
 	)
 	current_table := symbols.create_empty_symbol_table(slot.allocator)
 	active_stack := make([dynamic]string, context.temp_allocator)
 	effective_include_uris := clone_string_uri_map(include_uris, context.temp_allocator)
 	if !project_has_local_syntax_errors {
-		merge_remote_dependency_symbols_into_table(cache, workspace, project, current_table)
+		merge_remote_dependency_symbols_into_table(cache, workspace, project, current_table, progress)
 		merge_include_uri_map(
 			&effective_include_uris,
 			build_workspace_dependency_include_uri_map(workspace, context.temp_allocator),
 		)
 	}
+
+	analysis_progress_phase(progress, "Resolving includes and symbols…")
 
 	resolve_project_file(
 		cache,
@@ -665,6 +697,7 @@ build_local_project :: proc(
 		project.resolution_result,
 		project,
 		&active_stack,
+		progress,
 	)
 
 	project.resolution_result.file_tables[project.root_uri] = current_table
@@ -688,6 +721,7 @@ resolve_project_file :: proc(
 	result: ^symbols.ProjectResolutionResult,
 	project: ^Project,
 	active_stack: ^[dynamic]string,
+	progress: ^Analysis_Progress = nil,
 ) {
 	if stack_contains_uri(active_stack^[:], snapshot.uri) {
 		append_project_diagnostic(
@@ -713,7 +747,7 @@ resolve_project_file :: proc(
 
 			include_name := strings.to_lower(d.name.name, context.temp_allocator)
 			if include_uri, ok := include_uris[include_name]; ok {
-				include_snapshot := ensure_workspace_document_loaded(cache, workspace, include_uri)
+				include_snapshot := ensure_workspace_document_loaded(cache, workspace, include_uri, progress)
 				if include_snapshot != nil && include_snapshot.ast != nil {
 					project_add_snapshot(project, include_snapshot)
 					include_table := symbols.clone_symbol_table(table, context.allocator)
@@ -726,6 +760,7 @@ resolve_project_file :: proc(
 						result,
 						project,
 						active_stack,
+						progress,
 					)
 					result.file_tables[include_uri] = include_table
 					symbols.validate_file_with_lookup(include_snapshot.ast, table, include_table)

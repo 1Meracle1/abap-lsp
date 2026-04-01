@@ -5,7 +5,7 @@ import "core:encoding/json"
 InitializeParams :: struct {
 	rootUri:          string,
 	workspaceFolders: []WorkspaceFolder,
-	// capabilities: ClientCapabilities,
+	capabilities_:    ClientCapabilities `json:"capabilities"`,
 }
 
 WorkspaceFolder :: struct {
@@ -37,19 +37,26 @@ WorkspaceManifestUpdatedParams :: struct {
 	workspaceUri: string,
 }
 
-ClientCapabilities :: struct {}
+ClientCapabilities :: struct {
+	window_: WindowClientCapabilities `json:"window"`,
+}
+
+WindowClientCapabilities :: struct {
+	workDoneProgress: bool,
+}
 
 InitializeResult :: struct {
 	capabilities: ServerCapabilities,
 }
 
 ServerCapabilities :: struct {
-	textDocumentSync:         TextDocumentSyncKind,
-	completionProvider:       CompletionOptions,
-	definitionProvider:       bool,
-	hoverProvider:            bool,
-	diagnosticProvider:       Maybe(DiagnosticOptions),
-	semanticTokensProvider:   Maybe(SemanticTokensOptions),
+	textDocumentSync:          TextDocumentSyncKind,
+	completionProvider:        CompletionOptions,
+	definitionProvider:        bool,
+	hoverProvider:             bool,
+	diagnosticProvider:        Maybe(DiagnosticOptions),
+	semanticTokensProvider:    Maybe(SemanticTokensOptions),
+	workDoneProgressProvider: bool,
 }
 
 DiagnosticOptions :: struct {

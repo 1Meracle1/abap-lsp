@@ -26,7 +26,12 @@ document_entry_deinit :: proc(entry: ^Document_Entry) {
 	free(entry)
 }
 
-document_entry_publish :: proc(entry: ^Document_Entry, text: string, version: int) {
+document_entry_publish :: proc(
+	entry: ^Document_Entry,
+	text: string,
+	version: int,
+	progress: ^Analysis_Progress = nil,
+) {
 	start := time.now()
 	defer log.infof(
 		"document_refresh took %.2fms for %s",
@@ -34,7 +39,7 @@ document_entry_publish :: proc(entry: ^Document_Entry, text: string, version: in
 		entry.path,
 	)
 
-	snapshot := create_snapshot(entry, text, version)
+	snapshot := create_snapshot(entry, text, version, progress)
 
 	old_snapshot: ^Snapshot
 	sync.rw_mutex_lock(&entry.lock)
@@ -57,7 +62,12 @@ release_snapshot :: proc(snapshot: ^Snapshot) {
 	}
 }
 
-create_snapshot :: proc(entry: ^Document_Entry, text: string, version: int) -> ^Snapshot {
+create_snapshot :: proc(
+	entry: ^Document_Entry,
+	text: string,
+	version: int,
+	progress: ^Analysis_Progress = nil,
+) -> ^Snapshot {
 	slot := arena_slot_acquire(entry.workspace.doc_pool)
 	context.allocator = slot.allocator
 
@@ -75,6 +85,7 @@ create_snapshot :: proc(entry: ^Document_Entry, text: string, version: int) -> ^
 	p: parser.Parser
 	parser.parse_file(&p, snapshot.ast)
 	snapshot.symbol_table = resolve_snapshot_symbols(snapshot)
+	analysis_progress_parsed_file(progress, snapshot.path)
 	return snapshot
 }
 

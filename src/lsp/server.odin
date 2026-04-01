@@ -8,10 +8,26 @@ import "core:fmt"
 import "core:log"
 import "core:strings"
 
+Server_Loop_Action :: enum {
+	Continue,
+	Shutdown,
+}
+
 Server :: struct {
 	stream:     jsonrpc.Stream,
 	storage:    ^cache.Cache,
 	worker_pool: ^lsp_runtime.Thread_Pool,
+	// Client capabilities (after initialize)
+	client_work_done_progress: bool,
+	// Outbound JSON-RPC to client (workDoneProgress/create)
+	next_jsonrpc_out_id:            i64,
+	pending_outgoing_rpc_id:        i64,
+	pending_outgoing_rpc_done:      bool,
+	pending_outgoing_create_failed: bool,
+	// Filled by server_start so nested read/dispatch (progress wait) can handle other requests
+	dispatch_initialized:        ^bool,
+	dispatch_request_handlers:   ^map[string]Request_Handler,
+	dispatch_notif_handlers:     ^map[string]Notification_Handler,
 }
 
 Request_Handler :: #type proc(srv: ^Server, id: json.Value, params: json.Value)
@@ -43,6 +59,10 @@ server_start :: proc(stream: jsonrpc.Stream) {
 
 	initialized: bool
 
+	srv.dispatch_initialized = &initialized
+	srv.dispatch_request_handlers = &request_handlers
+	srv.dispatch_notif_handlers = &notif_handlers
+
 	log.infof("starting server with %d worker threads...", srv.worker_pool.worker_count)
 
 	for {
@@ -60,60 +80,97 @@ server_start :: proc(stream: jsonrpc.Stream) {
 		}
 		log.infof("raw message data: %s", data)
 
-		value, parse_err := json.parse(data, allocator = context.temp_allocator)
-		if parse_err != nil {
-			log_trace(&srv, fmt.tprintf("json parse error: %v", parse_err))
-			continue
-		}
-
-		if obj, obj_ok := value.(json.Object); obj_ok {
-			method_value, method_value_ok := obj["method"]
-			if !method_value_ok {
-				log_trace(&srv, fmt.tprintf("received request without 'method' field: %s", data))
-				continue
-			}
-			method, method_ok := obj["method"].(json.String)
-			if !method_ok {
-				log_trace(
-					&srv,
-					fmt.tprintf("received request with invalid 'method' field: %s", data),
-				)
-				continue
-			}
-
-			if id, id_ok := obj["id"]; id_ok {
-				if !initialized && method != "initialize" {
-					reply_error(&srv, id, .ServerNotInitialized)
-					continue
-				}
-
-				if handler, ok := request_handlers[method]; ok {
-					handler(&srv, id, obj["params"])
-				} else {
-					if method == "shutdown" {
-						log_trace(&srv, "shutdown request received")
-						break
-					}
-					reply_error(&srv, id, .MethodNotFound)
-				}
-			} else {
-				if !initialized {
-					if method == "initialized" {
-						initialized = true
-					}
-					continue
-				}
-
-				if handler, ok := notif_handlers[method]; ok {
-					handler(&srv, obj["params"])
-				}
-			}
-		} else {
-			log_trace(&srv, fmt.tprintf("received request that is not a json Object: %s", data))
+		action := server_process_raw_message_bytes(
+			&srv,
+			data,
+			&initialized,
+			request_handlers,
+			notif_handlers,
+		)
+		if action == .Shutdown {
+			break
 		}
 
 		_ = lsp_runtime.thread_pool_run_pending_completions(srv.worker_pool)
 	}
+}
+
+server_process_raw_message_bytes :: proc(
+	srv: ^Server,
+	data: []byte,
+	initialized: ^bool,
+	request_handlers: map[string]Request_Handler,
+	notif_handlers: map[string]Notification_Handler,
+) -> Server_Loop_Action {
+	value, parse_err := json.parse(data, allocator = context.temp_allocator)
+	if parse_err != nil {
+		log_trace(srv, fmt.tprintf("json parse error: %v", parse_err))
+		return .Continue
+	}
+
+	obj, obj_ok := value.(json.Object)
+	if !obj_ok {
+		log_trace(srv, fmt.tprintf("received message that is not a json Object: %s", data))
+		return .Continue
+	}
+
+	if _, has_method := obj["method"]; !has_method {
+		if id_val, id_ok := obj["id"]; id_ok {
+			_, has_res := obj["result"]
+			_, has_err := obj["error"]
+			if has_res || has_err {
+				if srv.pending_outgoing_rpc_id != 0 &&
+				   jsonrpc_response_id_matches(srv.pending_outgoing_rpc_id, id_val) {
+					if has_err {
+						srv.pending_outgoing_create_failed = true
+					}
+					srv.pending_outgoing_rpc_done = true
+					srv.pending_outgoing_rpc_id = 0
+				} else {
+					log_trace(srv, fmt.tprintf("unhandled JSON-RPC response from client: %s", data))
+				}
+				return .Continue
+			}
+		}
+		log_trace(srv, fmt.tprintf("JSON-RPC object without method: %s", data))
+		return .Continue
+	}
+
+	method, method_ok := obj["method"].(json.String)
+	if !method_ok {
+		log_trace(srv, fmt.tprintf("received request with invalid 'method' field: %s", data))
+		return .Continue
+	}
+
+	if id, id_ok := obj["id"]; id_ok {
+		if !initialized^ && method != "initialize" {
+			reply_error(srv, id, .ServerNotInitialized)
+			return .Continue
+		}
+
+		if handler, ok := request_handlers[method]; ok {
+			handler(srv, id, obj["params"])
+		} else {
+			if method == "shutdown" {
+				log_trace(srv, "shutdown request received")
+				return .Shutdown
+			}
+			reply_error(srv, id, .MethodNotFound)
+		}
+	} else {
+		if !initialized^ {
+			if method == "initialized" {
+				initialized^ = true
+			}
+			return .Continue
+		}
+
+		if handler, ok := notif_handlers[method]; ok {
+			handler(srv, obj["params"])
+		}
+	}
+
+	return .Continue
 }
 
 handle_initialize :: proc(srv: ^Server, id: json.Value, params: json.Value) {
@@ -129,9 +186,12 @@ handle_initialize :: proc(srv: ^Server, id: json.Value, params: json.Value) {
 		cache.cache_add_workspace(srv.storage, wspace.uri, wspace.name)
 	}
 
+	srv.client_work_done_progress = initialize_params.capabilities_.window_.workDoneProgress
+
 	result := InitializeResult {
 		capabilities = ServerCapabilities {
 			textDocumentSync = .Full,
+			workDoneProgressProvider = true,
 			hoverProvider = true,
 			completionProvider = CompletionOptions {
 				triggerCharacters = {"-", ">"},

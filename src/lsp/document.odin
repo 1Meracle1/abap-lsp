@@ -17,11 +17,23 @@ handle_document_open :: proc(srv: ^Server, params: json.Value) {
 	if srv.storage == nil {
 		return
 	}
+
+	wd, wd_ok := work_done_session_begin(srv, "ABAP: analyzing document")
+	analysis_progress: cache.Analysis_Progress
+	prog: ^cache.Analysis_Progress = nil
+	if wd_ok {
+		defer work_done_session_end(&wd)
+		work_done_session_report(&wd, "Parsing and loading semantic project…")
+		work_done_fill_analysis_progress(&wd, &analysis_progress)
+		prog = &analysis_progress
+	}
+
 	cache.refresh_document(
 		srv.storage,
 		uri,
 		document_open_params.textDocument.text,
 		document_open_params.textDocument.version,
+		prog,
 	)
 
 	// Publish diagnostics immediately on open so the client does not need
@@ -29,7 +41,7 @@ handle_document_open :: proc(srv: ^Server, params: json.Value) {
 	snap := cache.get_snapshot(srv.storage, uri)
 	if snap != nil {
 		defer cache.release_snapshot(snap)
-		publish_diagnostics(srv, uri, snap)
+		publish_diagnostics(srv, uri, snap, nil, prog)
 	}
 }
 
@@ -49,13 +61,14 @@ handle_document_change :: proc(srv: ^Server, params: json.Value) {
 			uri,
 			change.text,
 			document_change_params.textDocument.version,
+			nil,
 		)
 	}
 
-	// Publish diagnostics after refresh
+	// Publish diagnostics after refresh (no window progress: avoid noise on each keystroke)
 	snap := cache.get_snapshot(srv.storage, uri)
 	if snap != nil {
 		defer cache.release_snapshot(snap)
-		publish_diagnostics(srv, uri, snap)
+		publish_diagnostics(srv, uri, snap, nil, nil)
 	}
 }

@@ -331,18 +331,41 @@ async function resolveRemoteDependencies(
 	const adtClient = new AdtClient(connection, {
 		beforeRequest: () => scheduler.beforeRequest(),
 	});
-	const fetchedNames = await Promise.all(
-		fetchCandidates.map((candidate) =>
-			scheduler.schedule(() =>
-				resolveRemoteDependencyCandidate(workspaceFolder, adtClient, candidate),
-			)
-		),
+
+	const total = fetchCandidates.length;
+	await vscode.window.withProgress(
+		{
+			location: vscode.ProgressLocation.Notification,
+			title: `ABAP: fetching ${total} remote dependenc${total === 1 ? "y" : "ies"} from ADT`,
+			cancellable: false,
+		},
+		async (progress) => {
+			let completed = 0;
+			const fetchedNames = await Promise.all(
+				fetchCandidates.map((candidate) =>
+					scheduler.schedule(async () => {
+						try {
+							return await resolveRemoteDependencyCandidate(
+								workspaceFolder,
+								adtClient,
+								candidate,
+							);
+						} finally {
+							completed += 1;
+							progress.report({
+								message: `${completed}/${total}: ${candidate.name} (${candidate.kind})`,
+							});
+						}
+					}),
+				),
+			);
+			for (const fetchedName of fetchedNames) {
+				if (fetchedName) {
+					fetched.push(fetchedName);
+				}
+			}
+		},
 	);
-	for (const fetchedName of fetchedNames) {
-		if (fetchedName) {
-			fetched.push(fetchedName);
-		}
-	}
 
 	if (fetched.length === 0) {
 		return;

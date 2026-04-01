@@ -126,6 +126,7 @@ publish_diagnostics :: proc(
 	uri: string,
 	snap: ^cache.Snapshot,
 	project: ^cache.Project = nil,
+	analysis_progress: ^cache.Analysis_Progress = nil,
 ) {
 	_ = project
 	diagnostics := make([dynamic]Diagnostic, context.temp_allocator)
@@ -140,7 +141,12 @@ publish_diagnostics :: proc(
 		})
 	}
 
-	projects := cache.get_projects_for_uri(srv.storage, uri, context.temp_allocator)
+	projects := cache.get_projects_for_uri(
+		srv.storage,
+		uri,
+		context.temp_allocator,
+		analysis_progress,
+	)
 	defer cache.release_projects(projects)
 	if len(projects) > 0 {
 		append_project_diagnostics(&diagnostics, snap, uri, projects)

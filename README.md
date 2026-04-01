@@ -128,23 +128,10 @@ Debug is the default. For an optimized build:
 .\build.bat release abap-lsp
 ```
 
-Equivalent Odin invocations (after adjusting paths for your machine):
-
-```text
-odin build src\abap-lsp -debug -o:none -out:bin\debug\abap-lsp.exe
-odin build src\abap-lsp -o:speed -out:bin\release\abap-lsp.exe
-```
-
 ## Tests
 
 ```bat
 .\test.bat
-```
-
-Underlying command:
-
-```text
-odin test tests/ -all-packages -debug -o:none -out:bin/debug/tests.exe
 ```
 
 Run **build** and **tests** after non-trivial changes so compilation and behavior stay green.

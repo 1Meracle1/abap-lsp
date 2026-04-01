@@ -300,8 +300,14 @@ get_snapshot :: proc(cache: ^Cache, uri: string) -> ^Snapshot {
 	return nil
 }
 
-refresh_document :: proc(cache: ^Cache, uri: string, text: string, version: int) {
-	refresh_document_internal(cache, uri, text, version, true)
+refresh_document :: proc(
+	cache: ^Cache,
+	uri: string,
+	text: string,
+	version: int,
+	progress: ^Analysis_Progress = nil,
+) {
+	refresh_document_internal(cache, uri, text, version, true, progress)
 }
 
 refresh_document_internal :: proc(
@@ -310,11 +316,12 @@ refresh_document_internal :: proc(
 	text: string,
 	version: int,
 	invalidate_projects: bool,
+	progress: ^Analysis_Progress = nil,
 ) {
 	workspace := workspace_for_uri(cache, uri)
 	path := uri_to_path(uri, context.temp_allocator)
 	entry := workspace_get_or_create_document_entry(workspace, uri, path)
-	document_entry_publish(entry, text, version)
+	document_entry_publish(entry, text, version, progress)
 	if invalidate_projects {
 		workspace_invalidate_projects_for_uri(workspace, uri)
 	}
