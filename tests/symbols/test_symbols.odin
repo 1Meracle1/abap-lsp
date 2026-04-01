@@ -724,6 +724,37 @@ test_builtin_abap_bool_type_in_data_no_unknown_type_diagnostic :: proc(t: ^testi
 }
 
 @(test)
+test_builtin_flag_type_same_as_abap_bool :: proc(t: ^testing.T) {
+	src := `DATA lv_f TYPE flag VALUE abap_false.`
+	file := ast.new(ast.File, {})
+	file.src = src
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	table := symbols.resolve_file(file)
+	defer symbols.destroy_symbol_table(table)
+
+	flag_sym, ok := table.symbols["flag"]
+	if !testing.expect(t, ok, "expected built-in type 'flag' in symbol table") do return
+	testing.expect(t, flag_sym.kind == .TypeDef, fmt.tprintf("expected 'flag' to be TypeDef, got %v", flag_sym.kind))
+	if flag_sym.type_info != nil {
+		testing.expect(
+			t,
+			flag_sym.type_info.kind == .Char && flag_sym.type_info.length == 1,
+			fmt.tprintf("expected 'flag' as c length 1 like abap_bool, got %v", flag_sym.type_info.kind),
+		)
+	}
+
+	for diag in symbols.collect_all_diagnostics(table) {
+		if strings.contains(diag.message, "Unknown type 'flag'") {
+			testing.expect(t, false, fmt.tprintf("unexpected diagnostic: %s", diag.message))
+			return
+		}
+	}
+}
+
+@(test)
 test_builtin_strlen_call_no_unknown_symbol_diagnostic :: proc(t: ^testing.T) {
 	src := `DATA lv_text_add TYPE string.
 DATA lv_long_descr TYPE abap_bool.
@@ -1067,6 +1098,90 @@ ENDCLASS.`
 			return
 		}
 	}
+}
+
+@(test)
+test_insert_initial_line_assigning_inline_field_symbol :: proc(t: ^testing.T) {
+	src := `CLASS some_class DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS run.
+ENDCLASS.
+CLASS some_class IMPLEMENTATION.
+  METHOD run.
+    TYPES:
+      BEGIN OF ts_enc,
+        textid   TYPE char3,
+        text_add TYPE string,
+        disabled TYPE flag,
+      END OF ts_enc,
+      tt_enc TYPE STANDARD TABLE OF ts_enc.
+    DATA lt_rep_response TYPE tt_enc.
+    INSERT INITIAL LINE INTO TABLE lt_rep_response ASSIGNING FIELD-SYMBOL(<ls_enc>).
+    <ls_enc>-textid   = 'lv_company_prefix'.
+    <ls_enc>-text_add = 'lv_loc_reference'.
+    <ls_enc>-disabled = abap_false.
+  ENDMETHOD.
+ENDCLASS.`
+	file := ast.new(ast.File, {})
+	file.src = src
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	table := symbols.resolve_file(file)
+	defer symbols.destroy_symbol_table(table)
+
+	for diag in symbols.collect_all_diagnostics(table) {
+		if strings.contains(diag.message, "Unknown symbol '<ls_enc>'") ||
+		   strings.contains(diag.message, "Inline FIELD-SYMBOL(...) is only valid") ||
+		   strings.contains(diag.message, "Unknown type 'flag'") {
+			testing.expect(
+				t,
+				false,
+				fmt.tprintf("INSERT INITIAL LINE ASSIGNING FIELD-SYMBOL should declare <ls_enc>: %s", diag.message),
+			)
+			return
+		}
+	}
+}
+
+@(test)
+test_insert_initial_line_fs_unknown_field_diagnostic :: proc(t: ^testing.T) {
+	src := `CLASS c DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS m.
+ENDCLASS.
+CLASS c IMPLEMENTATION.
+  METHOD m.
+    TYPES:
+      BEGIN OF ts_ui_funcs,
+        textid   TYPE char3,
+        text_add TYPE string,
+        disabled TYPE char01,
+      END OF ts_ui_funcs,
+      tt_ui_funcs TYPE STANDARD TABLE OF ts_ui_funcs WITH DEFAULT KEY.
+    DATA lt_rep_response TYPE tt_ui_funcs.
+    INSERT INITIAL LINE INTO TABLE lt_rep_response ASSIGNING FIELD-SYMBOL(<ls_enc>).
+    <ls_enc>-disabled1 = abap_false.
+  ENDMETHOD.
+ENDCLASS.`
+	file := ast.new(ast.File, {})
+	file.src = src
+
+	p: parser.Parser
+	parser.parse_file(&p, file)
+
+	table := symbols.resolve_file(file)
+	defer symbols.destroy_symbol_table(table)
+
+	found := false
+	for diag in symbols.collect_all_diagnostics(table) {
+		if strings.contains(diag.message, "Unknown field 'disabled1'") {
+			found = true
+			break
+		}
+	}
+	testing.expect(t, found, "expected Unknown field diagnostic for typo disabled1 on INSERT ASSIGNING row type")
 }
 
 @(test)

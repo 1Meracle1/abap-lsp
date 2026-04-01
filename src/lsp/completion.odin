@@ -427,6 +427,35 @@ parse_access_chain_backwards :: proc(text: string, offset: int) -> Access_Chain_
 
 		ident_end := pos + 1
 
+		// Field symbol <fs> — component name is only inside angle brackets
+		if text[pos] == '>' {
+			gt_pos := pos
+			scan := pos - 1
+			for scan >= 0 && is_ident_char(text[scan]) {
+				scan -= 1
+			}
+			if scan >= 0 &&
+			   text[scan] == '<' &&
+			   scan + 1 < gt_pos {
+				full_fs := text[scan:gt_pos + 1]
+				ident := strings.to_lower(full_fs, context.temp_allocator)
+				inject_at(&result.chain, 0, ident)
+				pos = scan - 1
+				for pos >= 0 && (text[pos] == ' ' || text[pos] == '\t') {
+					pos -= 1
+				}
+				if pos >= 1 && text[pos] == '>' && text[pos - 1] == '=' {
+					pos -= 1
+				} else if pos >= 1 && text[pos] == '>' && text[pos - 1] == '-' {
+					pos -= 1
+				} else if pos < 0 || text[pos] != '-' {
+					break
+				}
+				continue
+			}
+			pos = gt_pos
+		}
+
 		for pos >= 0 && is_ident_char(text[pos]) {
 			pos -= 1
 		}
@@ -586,6 +615,12 @@ resolve_to_struct_type :: proc(
 	case .Structure:
 		return type_info
 
+	case .Inferred:
+		if table != nil {
+			return symbols.structure_for_field_lookup(table, type_info)
+		}
+		return nil
+
 	case .Named:
 		// Look up the type definition
 		if table != nil {
@@ -598,6 +633,9 @@ resolve_to_struct_type :: proc(
 		return nil
 
 	case .Table:
+		if type_info.elem_type != nil {
+			return resolve_to_struct_type(snap, type_info.elem_type, table)
+		}
 		return nil
 	}
 

@@ -413,8 +413,27 @@ unwrap_typedef_structure :: proc(table: ^SymbolTable, start: ^Type) -> ^Type {
 	return nil
 }
 
+// Table row type for `-comp` access: follow Named to typedef, then use table line (element) structure.
+named_or_table_row_structure :: proc(table: ^SymbolTable, value_ty: ^Type) -> ^Type {
+	if value_ty == nil {
+		return nil
+	}
+	t := value_ty
+	if t.kind == .Named {
+		if sym, ok := table.symbols[t.name]; ok && sym.kind == .TypeDef && sym.type_info != nil {
+			t = sym.type_info
+		} else {
+			return nil
+		}
+	}
+	if t.kind == .Table && t.elem_type != nil {
+		return structure_for_field_lookup(table, t.elem_type)
+	}
+	return nil
+}
+
 // Underlying structure for component access (a-b, a~b, a->b): concrete STRUCTURE, or typedef resolved to one,
-// or LINE OF table row type.
+// LINE OF table row type, table typed variable (Named → Table), or Inferred row from LOOP/READ/INSERT ASSIGNING.
 structure_for_field_lookup :: proc(table: ^SymbolTable, value_ty: ^Type) -> ^Type {
 	if value_ty == nil {
 		return nil
@@ -422,17 +441,18 @@ structure_for_field_lookup :: proc(table: ^SymbolTable, value_ty: ^Type) -> ^Typ
 	if value_ty.kind == .Structure {
 		return value_ty
 	}
+	if value_ty.kind == .Inferred && value_ty.infer_source != nil {
+		src_ty := expr_value_type(table, value_ty.infer_source)
+		return named_or_table_row_structure(table, src_ty)
+	}
 	if value_ty.kind == .Named {
 		if u := unwrap_typedef_structure(table, value_ty); u != nil {
 			return u
 		}
-		return nil
+		return named_or_table_row_structure(table, value_ty)
 	}
 	if value_ty.kind == .LineOf && value_ty.target_type != nil {
-		tab := value_ty.target_type
-		if tab.kind == .Table && tab.elem_type != nil {
-			return structure_for_field_lookup(table, tab.elem_type)
-		}
+		return named_or_table_row_structure(table, value_ty.target_type)
 	}
 	return nil
 }
@@ -1312,6 +1332,8 @@ resolve_stmt :: proc(
 		resolve_loop_at_control_stmt(table, s, syntax_taint)
 	case ^ast.Read_Table_Stmt:
 		resolve_read_table_stmt(table, s)
+	case ^ast.Insert_Stmt:
+		resolve_insert_stmt(table, s)
 	case ^ast.Describe_Table_Stmt:
 		resolve_describe_table_stmt(table, s)
 	case ^ast.Call_Function_Stmt:
@@ -1697,6 +1719,26 @@ resolve_read_table_stmt :: proc(table: ^SymbolTable, read_stmt: ^ast.Read_Table_
 			}
 			add_symbol(table, sym, allow_shadowing = false)
 		}
+	}
+}
+
+resolve_insert_stmt :: proc(table: ^SymbolTable, insert_stmt: ^ast.Insert_Stmt) {
+	if insert_stmt.kind != .Initial_Line_Into_Itab {
+		return
+	}
+	if insert_stmt.assigning_target == nil {
+		return
+	}
+	if ident, ok := insert_stmt.assigning_target.derived_expr.(^ast.Ident); ok &&
+	   ident.is_inline_field_symbol_decl {
+		type_info := make_inferred_type(table, insert_stmt.target)
+		sym := Symbol {
+			name      = ident.name,
+			kind      = .FieldSymbol,
+			range     = ident.range,
+			type_info = type_info,
+		}
+		add_symbol(table, sym, allow_shadowing = false)
 	}
 }
 

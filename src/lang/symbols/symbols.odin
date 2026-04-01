@@ -477,5 +477,14 @@ register_builtin_symbols :: proc(table: ^SymbolTable) {
 	)
 	add_builtin_constant(table, "abap_true", abap_bool_type)
 	add_builtin_constant(table, "abap_false", abap_bool_type)
+	// Built-in type flag: same representation as abap_bool (CHAR1, space or 'X').
+	add_symbol(
+		table,
+		Symbol{
+			name      = "flag",
+			kind      = .TypeDef,
+			type_info = abap_bool_type,
+		},
+	)
 	add_builtin_constant(table, "space", make_builtin_char_type(table, 1))
 }

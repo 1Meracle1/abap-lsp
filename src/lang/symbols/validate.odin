@@ -501,6 +501,12 @@ validate_stmt_ctx :: proc(ctx: ^Validation_Context, stmt: ^ast.Stmt) {
 		validate_expr_ctx(ctx, s.itab)
 		validate_expr_ctx(ctx, s.into_target)
 		validate_expr_ctx_allow_inline_field_symbol(ctx, s.assigning_target)
+	case ^ast.Insert_Stmt:
+		validate_expr_ctx(ctx, s.target)
+		validate_expr_ctx(ctx, s.value_expr)
+		validate_expr_ctx(ctx, s.source)
+		validate_expr_ctx(ctx, s.index_expr)
+		validate_expr_ctx_allow_inline_field_symbol(ctx, s.assigning_target)
 	case ^ast.Get_Badi_Stmt:
 		validate_expr_ctx(ctx, s.badi_ref)
 		for f in s.filters {
@@ -979,7 +985,7 @@ validate_ident_expr_ctx :: proc(ctx: ^Validation_Context, ident: ^ast.Ident) {
 			add_diagnostic(
 				ctx.diag_table,
 				ident.range,
-				"Inline FIELD-SYMBOL(...) is only valid after ASSIGNING (LOOP AT, READ TABLE, …) or as the target of ASSIGN ... TO FIELD-SYMBOL(...)",
+				"Inline FIELD-SYMBOL(...) is only valid after ASSIGNING (LOOP AT, READ TABLE, INSERT INITIAL LINE …) or as the target of ASSIGN ... TO FIELD-SYMBOL(...)",
 			)
 			return
 		}
