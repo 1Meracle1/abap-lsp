@@ -1,0 +1,11 @@
+[package]
+name = "abap_cache"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+abap_parser = { path = "../abap_parser" }
+abap_symbols = { path = "../abap_symbols" }
+parking_lot.workspace = true

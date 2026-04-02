@@ -13,6 +13,7 @@ import {
 	LanguageClientOptions,
 	ServerOptions,
 	StreamInfo,
+	TransportKind,
 } from "vscode-languageclient/node";
 import {
 	AdtClient,
@@ -69,44 +70,36 @@ interface WorkspaceManifestUpdatedParams {
 }
 
 export function activate(context: vscode.ExtensionContext) {
-	// let serverModule: string;
-	// const debugServerPath = process.env['__ABAP_LSP_SERVER_DEBUG'];
-	// if (debugServerPath) {
-	// 	serverModule = debugServerPath;
-	// 	if (process.platform === 'win32' && !serverModule.endsWith('.exe')) {
-	// 		serverModule += '.exe';
-	// 	}
-	// }
-	// const serverOptions: ServerOptions = {
-	// 	command: serverModule,
-	// 	args: [],
-	// 	options: {
-	// 		cwd: path.dirname(serverModule),
-	// 	},
-	// 	transport: TransportKind.stdio,
-	// };
-
 	const pipePath =
 		process.platform === "win32"
 			? "\\\\.\\pipe\\abap-ls"
 			: "/tmp/abap-ls";
+	const configuredServerPath = configuredServerExecutable();
+	const serverOptions: ServerOptions = configuredServerPath
+		? {
+			command: configuredServerPath,
+			args: [],
+			options: {
+				cwd: path.dirname(configuredServerPath),
+			},
+			transport: TransportKind.stdio,
+		}
+		: () => {
+			return new Promise<StreamInfo>((resolve, reject) => {
+				const socket = net.connect(pipePath);
 
-	const serverOptions: ServerOptions = () => {
-		return new Promise<StreamInfo>((resolve, reject) => {
-			const socket = net.connect(pipePath);
+				socket.on("connect", () => {
+					resolve({
+						writer: socket,
+						reader: socket,
+					});
+				});
 
-			socket.on("connect", () => {
-				resolve({
-					writer: socket,
-					reader: socket,
+				socket.on("error", (err) => {
+					reject(err);
 				});
 			});
-
-			socket.on("error", (err) => {
-				reject(err);
-			});
-		});
-	};
+		};
 
 	// Options to control the language client
 	const clientOptions: LanguageClientOptions = {
@@ -138,6 +131,22 @@ export function activate(context: vscode.ExtensionContext) {
 	// Start the client. This will also launch the server
 	client.start();
 	registerWorkspaceConfigPrompts(context);
+}
+
+function configuredServerExecutable(): string | undefined {
+	const configured =
+		process.env.__ABAP_LSP_SERVER_PATH ??
+		process.env.__ABAP_LSP_SERVER_DEBUG;
+	if (!configured?.trim()) {
+		return undefined;
+	}
+
+	const trimmed = configured.trim();
+	if (process.platform === "win32" && path.extname(trimmed).length === 0) {
+		return `${trimmed}.exe`;
+	}
+
+	return trimmed;
 }
 
 export function deactivate(): Thenable<void> | undefined {

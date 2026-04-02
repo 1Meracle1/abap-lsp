@@ -2,28 +2,32 @@
   "version": "2.0.0",
   "tasks": [
     {
-      "label": "Build Server and Extension",
-      "dependsOn": ["Build Debug and Run Server", "Build Extension"],
-      // "problemMatcher": "$rustc"
-    },
-    {
-      "label": "Build Debug and Run Server",
-      "dependsOn": ["Build Debug Server", "Run and Debug Server"],
-      "dependsOrder": "sequence"
-    },
-    {
-      "label": "Build Debug Server",
-      "group": "build",
+      "label": "Build Rust Workspace",
       "type": "shell",
-      "command": ".\\build.bat debug abap-lsp",
-      // "problemMatcher": "$rustc"
+      "command": ".\\build.bat",
+      "group": "build",
+      "problemMatcher": "$rustc"
     },
     {
-      "label": "Run and Debug Server",
-      "group": "build",
+      "label": "Build Rust Server",
       "type": "shell",
-      "command": "raddbg --project:.\\ols_raddbg_project --auto_run; Start-Sleep -Seconds 2",
-      // "problemMatcher": "$rustc"
+      "command": ".\\build.bat -p abap_lsp_server",
+      "group": "build",
+      "problemMatcher": "$rustc"
+    },
+    {
+      "label": "Build Rust Server (Release)",
+      "type": "shell",
+      "command": ".\\build.bat release -p abap_lsp_server",
+      "group": "build",
+      "problemMatcher": "$rustc"
+    },
+    {
+      "label": "Test Rust Workspace",
+      "type": "shell",
+      "command": ".\\test.bat",
+      "group": "test",
+      "problemMatcher": "$rustc"
     },
     {
       "label": "Build Extension",
@@ -40,21 +44,31 @@
       "path": "editors/vscode"
     },
     {
-      "type": "npm",
-      "script": "watch",
-      "isBackground": true,
-      "group": {
-        "kind": "build",
-        "isDefault": true
-      },
-      "presentation": {
-        "panel": "dedicated",
-        "reveal": "never"
-      },
-      "problemMatcher": [
-        "$tsc-watch"
-      ],
-      "path": "vscode_extension"
+      "label": "Build Rust Server and Extension",
+      "dependsOn": ["Build Rust Server", "Build Extension"],
+      "dependsOrder": "sequence"
+    },
+    {
+      "label": "Build Rust Server (Release) and Extension",
+      "dependsOn": ["Build Rust Server (Release)", "Build Extension"],
+      "dependsOrder": "sequence"
+    },
+    {
+      "label": "Build Legacy Server",
+      "type": "shell",
+      "command": ".\\legacy\\build.bat debug abap-lsp",
+      "group": "build"
+    },
+    {
+      "label": "Run Legacy Server",
+      "type": "shell",
+      "command": "raddbg --project:.\\legacy\\ols_raddbg_project --auto_run; Start-Sleep -Seconds 2",
+      "group": "build"
+    },
+    {
+      "label": "Build Legacy Server and Extension",
+      "dependsOn": ["Build Legacy Server", "Run Legacy Server", "Build Extension"],
+      "dependsOrder": "sequence"
     }
   ]
 }

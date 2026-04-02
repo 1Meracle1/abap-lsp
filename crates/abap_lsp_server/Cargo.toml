@@ -1,0 +1,13 @@
+[package]
+name = "abap_lsp_server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+abap_jsonrpc = { path = "../abap_jsonrpc" }
+abap_lsp = { path = "../abap_lsp" }
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

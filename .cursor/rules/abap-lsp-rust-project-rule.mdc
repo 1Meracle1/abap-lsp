@@ -1,0 +1,59 @@
+---
+alwaysApply: true
+---
+
+## Rust ABAP LSP Project Rule
+
+The repository root is now a Rust workspace. The previous Odin implementation has been archived under `legacy/`.
+
+### Workspace layout
+
+- `crates/abap_jsonrpc` -> blocking JSON-RPC framing only.
+- `crates/abap_lexer` -> tokenization, text ranges, low-level source utilities.
+- `crates/abap_ast` -> syntax tree definitions and node helpers.
+- `crates/abap_parser` -> syntax-only parser built on lexer + AST.
+- `crates/abap_symbols` -> symbols, name resolution, semantic validation.
+- `crates/abap_cache` -> workspace/document state, immutable snapshots, analysis publication.
+- `crates/abap_lsp` -> LSP handlers, protocol-facing types, custom notifications.
+- `crates/abap_lsp_server` -> executable entry point and blocking server loop.
+- `editors/vscode` -> VS Code client and ADT-mediated remote dependency fetches.
+- `legacy/` -> archived Odin implementation.
+
+### Dependency direction
+
+Lower layers must not depend on higher layers:
+
+- `abap_jsonrpc` is transport-only.
+- `abap_lexer` has no ABAP higher-layer dependencies.
+- `abap_ast` depends on `abap_lexer` only.
+- `abap_parser` depends on `abap_lexer` and `abap_ast`.
+- `abap_symbols` depends on `abap_lexer` and `abap_ast`.
+- `abap_cache` depends on `abap_parser`, `abap_symbols`, and shared lower-level crates.
+- `abap_lsp` depends on `abap_jsonrpc`, `abap_cache`, and protocol-related crates.
+- `abap_lsp_server` depends on `abap_lsp` and `abap_jsonrpc`.
+
+### Design defaults
+
+- Avoid async unless there is a measured reason to introduce it.
+- Prefer immutable published snapshots using `Arc`.
+- Keep one foreground protocol loop and move CPU-heavy work into bounded worker pools.
+- Keep SAP communication client-mediated first; the server should preserve the custom notification contract before attempting direct SAP transport.
+
+### Commands
+
+- Build: `.\build.bat`
+- Release build: `.\build.bat release`
+- Test: `.\test.bat`
+- Build a package: `cargo build -p abap_lsp_server`
+- Test a package: `cargo test -p abap_parser`
+
+### Migration guidance
+
+- Use `legacy/` as the behavior reference until Rust reaches parity.
+- Port tests with the crates they exercise rather than re-creating one monolithic root test suite.
+- Profile before introducing specialized allocation strategies.
+
+
+### Development standards
+
+- Always ask before adding any new dependency or modifying versions of the existing dependencies.
