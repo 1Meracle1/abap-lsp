@@ -217,7 +217,11 @@ impl SyntaxNode {
     }
 
     pub fn branch(kind: SyntaxKind, range: TextRange, children: Vec<SyntaxNode>) -> Self {
-        Self { kind, range, children }
+        Self {
+            kind,
+            range,
+            children,
+        }
     }
 }
 

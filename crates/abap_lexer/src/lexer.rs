@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 
-use unicode_general_category::{get_general_category, GeneralCategory};
+use unicode_general_category::{GeneralCategory, get_general_category};
 
 use crate::token::{TextRange, Token, TokenKind};
 
@@ -362,7 +362,11 @@ impl<'a> Lexer<'a> {
                     self.advance();
                     match self.ch {
                         None => {
-                            self.error(self.pos, self.read_pos, "string template escape incomplete");
+                            self.error(
+                                self.pos,
+                                self.read_pos,
+                                "string template escape incomplete",
+                            );
                         }
                         Some('|' | '{' | '}' | '\\' | 'n' | 'r' | 't') => {
                             self.advance();
@@ -591,15 +595,12 @@ fn is_unicode_letter(c: char) -> bool {
 
 #[inline]
 fn is_letter(c: char) -> bool {
-    matches!(c, '_' | '/')
-        || c.is_ascii_alphabetic()
-        || (c >= '\u{80}' && is_unicode_letter(c))
+    matches!(c, '_' | '/') || c.is_ascii_alphabetic() || (c >= '\u{80}' && is_unicode_letter(c))
 }
 
 #[inline]
 fn is_digit(c: char) -> bool {
-    c.is_ascii_digit()
-        || get_general_category(c) == GeneralCategory::DecimalNumber
+    c.is_ascii_digit() || get_general_category(c) == GeneralCategory::DecimalNumber
 }
 
 #[inline]
@@ -742,7 +743,13 @@ mod tests {
         let r = tokenize(src);
         assert_eq!(r.errors.len(), 0);
         let kinds: Vec<_> = r.tokens.iter().map(|t| t.kind).collect();
-        assert!(kinds.iter().filter(|k| **k == TokenKind::StringTemplate).count() >= 4);
+        assert!(
+            kinds
+                .iter()
+                .filter(|k| **k == TokenKind::StringTemplate)
+                .count()
+                >= 4
+        );
         assert!(kinds.contains(&TokenKind::StringTemplateLit));
     }
 
@@ -863,10 +870,18 @@ mod tests {
                  |Time: { sy-uzeit TIME = ISO }|";
         let r = tokenize(src);
         assert_eq!(r.errors.len(), 0);
-        assert!(r.tokens.iter().filter(|t| t.kind == TokenKind::StringTemplate).count() >= 8);
-        assert!(r.tokens.iter().any(|t| {
-            t.kind == TokenKind::StringTemplateLit && t.lexeme(src).contains("EUR")
-        }));
+        assert!(
+            r.tokens
+                .iter()
+                .filter(|t| t.kind == TokenKind::StringTemplate)
+                .count()
+                >= 8
+        );
+        assert!(
+            r.tokens.iter().any(|t| {
+                t.kind == TokenKind::StringTemplateLit && t.lexeme(src).contains("EUR")
+            })
+        );
     }
 
     #[test]
@@ -882,7 +897,10 @@ mod tests {
             .iter()
             .filter(|t| t.kind == TokenKind::StringTemplate)
             .count();
-        assert!(templates >= 8, "expected opening+closing pipes for four templates");
+        assert!(
+            templates >= 8,
+            "expected opening+closing pipes for four templates"
+        );
     }
 
     #[test]

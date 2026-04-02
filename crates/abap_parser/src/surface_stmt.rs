@@ -1,5 +1,5 @@
-use abap_ast::arena::{NodeId, SyntaxTreeBuilder};
 use abap_ast::SyntaxKind;
+use abap_ast::arena::{NodeId, SyntaxTreeBuilder};
 use abap_lexer::{Token, TokenKind};
 
 use crate::block_helpers::{
@@ -7,8 +7,8 @@ use crate::block_helpers::{
     skip_trivia,
 };
 use crate::stmt_period::{
-    is_definite_stmt_lead_keyword, scan_until_statement_period, token_begins_line,
-    unterminated_err_end, StmtPeriodScan,
+    StmtPeriodScan, is_definite_stmt_lead_keyword, scan_until_statement_period, token_begins_line,
+    unterminated_err_end,
 };
 use crate::syntax::token_leaf;
 
@@ -54,7 +54,12 @@ fn class_header_is_block(tokens: &[Token], source: &str, idx: usize) -> bool {
     true
 }
 
-fn select_header_is_flat(tokens: &[Token], source: &str, idx: usize, next_after_header: usize) -> bool {
+fn select_header_is_flat(
+    tokens: &[Token],
+    source: &str,
+    idx: usize,
+    next_after_header: usize,
+) -> bool {
     let mut i = idx + 1;
     let header_end = next_after_header.saturating_sub(1);
     while i < header_end {
@@ -87,11 +92,17 @@ fn select_header_is_flat(tokens: &[Token], source: &str, idx: usize, next_after_
                 {
                     j = skip_trivia(tokens, j + 1);
                 }
-                if tokens.get(j).is_some_and(|next| is_keyword(source, next, "of")) {
+                if tokens
+                    .get(j)
+                    .is_some_and(|next| is_keyword(source, next, "of"))
+                {
                     j = skip_trivia(tokens, j + 1);
                 }
             }
-            if tokens.get(j).is_some_and(|next| is_keyword(source, next, "table")) {
+            if tokens
+                .get(j)
+                .is_some_and(|next| is_keyword(source, next, "table"))
+            {
                 return true;
             }
         }
@@ -312,7 +323,12 @@ fn try_parse_block_stmt(
     Some((node, next_after))
 }
 
-fn match_hyphenated_keyword(source: &str, tokens: &[Token], idx: usize, parts: &[&str]) -> Option<usize> {
+fn match_hyphenated_keyword(
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    parts: &[&str],
+) -> Option<usize> {
     let mut i = idx;
     for (part_idx, part) in parts.iter().enumerate() {
         let tok = tokens.get(i)?;
@@ -489,7 +505,11 @@ pub fn try_parse_read_table_stmt(
     errors: &mut Vec<crate::ParseError>,
 ) -> Option<(NodeId, usize)> {
     let read_tok = tokens.get(idx)?;
-    if !is_keyword(source, read_tok, "read") || !tokens.get(idx + 1).is_some_and(|t| is_keyword(source, t, "table")) {
+    if !is_keyword(source, read_tok, "read")
+        || !tokens
+            .get(idx + 1)
+            .is_some_and(|t| is_keyword(source, t, "table"))
+    {
         return None;
     }
     match scan_read_table_stmt_period(tokens, source, idx + 2) {
@@ -498,8 +518,11 @@ pub fn try_parse_read_table_stmt(
             for t in &tokens[idx..=period_i] {
                 children.push(token_leaf(b, t));
             }
-            let node =
-                b.branch(SyntaxKind::ReadTableStmt, read_tok.range.start..tokens[period_i].range.end, &children);
+            let node = b.branch(
+                SyntaxKind::ReadTableStmt,
+                read_tok.range.start..tokens[period_i].range.end,
+                &children,
+            );
             Some((node, period_i + 1))
         }
         StmtPeriodScan::Unterminated { end_exclusive } => {
@@ -531,13 +554,19 @@ pub fn try_parse_event_block(
     }
     let body_start_idx = if is_keyword(source, start_tok, "initialization") {
         idx + 1
-    } else if let Some(next) = match_hyphenated_keyword(source, tokens, idx, &["start", "of", "selection"]) {
+    } else if let Some(next) =
+        match_hyphenated_keyword(source, tokens, idx, &["start", "of", "selection"])
+    {
         next
-    } else if let Some(next) = match_hyphenated_keyword(source, tokens, idx, &["end", "of", "selection"]) {
+    } else if let Some(next) =
+        match_hyphenated_keyword(source, tokens, idx, &["end", "of", "selection"])
+    {
         next
-    } else if let Some(next) = match_hyphenated_keyword(source, tokens, idx, &["top", "of", "page"]) {
+    } else if let Some(next) = match_hyphenated_keyword(source, tokens, idx, &["top", "of", "page"])
+    {
         next
-    } else if let Some(next) = match_hyphenated_keyword(source, tokens, idx, &["end", "of", "page"]) {
+    } else if let Some(next) = match_hyphenated_keyword(source, tokens, idx, &["end", "of", "page"])
+    {
         next
     } else {
         return None;
@@ -578,7 +607,11 @@ pub fn try_parse_event_block(
         .copied()
         .map(|id| b.span(id).end)
         .unwrap_or(start_tok.range.end);
-    let node = b.branch(SyntaxKind::EventBlock, start_tok.range.start..end, &children);
+    let node = b.branch(
+        SyntaxKind::EventBlock,
+        start_tok.range.start..end,
+        &children,
+    );
     Some((node, next))
 }
 
@@ -589,7 +622,16 @@ pub fn try_parse_form_decl(
     idx: usize,
     errors: &mut Vec<crate::ParseError>,
 ) -> Option<(NodeId, usize)> {
-    try_parse_block_stmt(b, source, tokens, idx, "form", "ENDFORM", SyntaxKind::FormDecl, errors)
+    try_parse_block_stmt(
+        b,
+        source,
+        tokens,
+        idx,
+        "form",
+        "ENDFORM",
+        SyntaxKind::FormDecl,
+        errors,
+    )
 }
 
 pub fn try_parse_module_decl(
@@ -720,7 +762,11 @@ pub fn try_parse_select_stmt(
             errors,
         );
         children.extend(end_children);
-        let node = b.branch(SyntaxKind::SelectStmt, select_tok.range.start..end_pos, &children);
+        let node = b.branch(
+            SyntaxKind::SelectStmt,
+            select_tok.range.start..end_pos,
+            &children,
+        );
         return Some((node, next_after));
     }
 
@@ -729,7 +775,11 @@ pub fn try_parse_select_stmt(
         .copied()
         .map(|id| b.span(id).end)
         .unwrap_or(select_tok.range.end);
-    let node = b.branch(SyntaxKind::SelectStmt, select_tok.range.start..end, &children);
+    let node = b.branch(
+        SyntaxKind::SelectStmt,
+        select_tok.range.start..end,
+        &children,
+    );
     Some((node, cursor))
 }
 
@@ -741,33 +791,67 @@ mod tests {
     fn parses_form_body() {
         let parsed = crate::parse("FORM run. DATA lv TYPE i. ENDFORM.");
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-        assert_eq!(parsed.file.count_kind(parsed.file.root(), SyntaxKind::FormDecl), 1);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::FormDecl),
+            1
+        );
     }
 
     #[test]
     fn parses_class_method_impl() {
-        let parsed = crate::parse(
-            "CLASS lcl IMPLEMENTATION. METHOD run. WRITE 'x'. ENDMETHOD. ENDCLASS.",
-        );
+        let parsed =
+            crate::parse("CLASS lcl IMPLEMENTATION. METHOD run. WRITE 'x'. ENDMETHOD. ENDCLASS.");
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-        assert_eq!(parsed.file.count_kind(parsed.file.root(), SyntaxKind::ClassDecl), 1);
-        assert_eq!(parsed.file.count_kind(parsed.file.root(), SyntaxKind::MethodDecl), 1);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::ClassDecl),
+            1
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::MethodDecl),
+            1
+        );
     }
 
     #[test]
     fn parses_select_endselect_block() {
         let parsed = crate::parse("SELECT * FROM t INTO wa. WRITE wa. ENDSELECT.");
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-        assert_eq!(parsed.file.count_kind(parsed.file.root(), SyntaxKind::SelectStmt), 1);
-        assert_eq!(parsed.file.count_kind(parsed.file.root(), SyntaxKind::WriteStmt), 1);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::SelectStmt),
+            1
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::WriteStmt),
+            1
+        );
     }
 
     #[test]
     fn parses_flat_select_into_table_without_endselect() {
         let parsed = crate::parse("SELECT * FROM t INTO TABLE lt_rows. WRITE 'x'.");
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-        assert_eq!(parsed.file.count_kind(parsed.file.root(), SyntaxKind::SelectStmt), 1);
-        assert_eq!(parsed.file.count_kind(parsed.file.root(), SyntaxKind::WriteStmt), 1);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::SelectStmt),
+            1
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::WriteStmt),
+            1
+        );
     }
 
     #[test]
@@ -776,17 +860,38 @@ mod tests {
             "SELECT MAX( bup_role_variant ) COUNT( * ) INTO ( lv_max, lv_count ) FROM demo. IF lv_count > 0. ENDIF.",
         );
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-        assert_eq!(parsed.file.count_kind(parsed.file.root(), SyntaxKind::SelectStmt), 1);
-        assert_eq!(parsed.file.count_kind(parsed.file.root(), SyntaxKind::IfStmt), 1);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::SelectStmt),
+            1
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::IfStmt),
+            1
+        );
     }
 
     #[test]
     fn parses_flat_select_count_into_scalar_without_endselect() {
-        let parsed =
-            crate::parse("SELECT COUNT( * ) FROM demo INTO lv_count WHERE key = value. IF lv_count > 0. ENDIF.");
+        let parsed = crate::parse(
+            "SELECT COUNT( * ) FROM demo INTO lv_count WHERE key = value. IF lv_count > 0. ENDIF.",
+        );
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-        assert_eq!(parsed.file.count_kind(parsed.file.root(), SyntaxKind::SelectStmt), 1);
-        assert_eq!(parsed.file.count_kind(parsed.file.root(), SyntaxKind::IfStmt), 1);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::SelectStmt),
+            1
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::IfStmt),
+            1
+        );
     }
 
     #[test]
@@ -795,17 +900,30 @@ mod tests {
             "CALL METHOD zcl_demo=>run\n  EXPORTING\n    iv_a = lv_a\n  IMPORTING\n    ev_b = lv_b.",
         );
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-        assert_eq!(parsed.file.count_kind(parsed.file.root(), SyntaxKind::SimpleStmt), 1);
-        assert_eq!(parsed.file.count_kind(parsed.file.root(), SyntaxKind::AssignStmt), 0);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::SimpleStmt),
+            1
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::AssignStmt),
+            0
+        );
     }
 
     #[test]
     fn parses_create_object_with_exporting_clause_as_one_statement() {
-        let parsed = crate::parse(
-            "CREATE OBJECT lo_client\n  EXPORTING\n    iv_dest = lv_dest.",
-        );
+        let parsed = crate::parse("CREATE OBJECT lo_client\n  EXPORTING\n    iv_dest = lv_dest.");
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-        assert_eq!(parsed.file.count_kind(parsed.file.root(), SyntaxKind::SimpleStmt), 1);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::SimpleStmt),
+            1
+        );
     }
 
     #[test]
@@ -814,7 +932,12 @@ mod tests {
             "CLASS lcl DEFINITION.\n  PUBLIC SECTION.\n    CLASS-DATA gv_value TYPE i.\n    CLASS-METHODS run\n      IMPORTING\n        iv_x TYPE i\n      EXPORTING\n        ev_y TYPE i.\nENDCLASS.",
         );
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-        assert_eq!(parsed.file.count_kind(parsed.file.root(), SyntaxKind::ClassDecl), 1);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::ClassDecl),
+            1
+        );
     }
 
     #[test]
@@ -823,7 +946,12 @@ mod tests {
             "READ TABLE lt_obj_hier_upd\n  WITH KEY gs1_es = lv_epc\n  INTO DATA(ls_ser_par).",
         );
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-        assert_eq!(parsed.file.count_kind(parsed.file.root(), SyntaxKind::ReadTableStmt), 1);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::ReadTableStmt),
+            1
+        );
     }
 
     #[test]
@@ -832,7 +960,12 @@ mod tests {
             "READ TABLE lt_unpack_lvls\n  WITH KEY parent = ls_ser_par-gs1_es_parent\n  ASSIGNING FIELD-SYMBOL(<fs_unpack_data>).",
         );
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-        assert_eq!(parsed.file.count_kind(parsed.file.root(), SyntaxKind::ReadTableStmt), 1);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::ReadTableStmt),
+            1
+        );
     }
 
     #[test]
@@ -841,7 +974,12 @@ mod tests {
             "READ TABLE <fs_unpack_data>-children\n  WITH KEY table_line = lv_epc\n  TRANSPORTING NO FIELDS.",
         );
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-        assert_eq!(parsed.file.count_kind(parsed.file.root(), SyntaxKind::ReadTableStmt), 1);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::ReadTableStmt),
+            1
+        );
     }
 
     #[test]
@@ -850,7 +988,12 @@ mod tests {
             "READ TABLE itab INDEX idx USING KEY sort_key ASSIGNING FIELD-SYMBOL(<fs>).",
         );
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-        assert_eq!(parsed.file.count_kind(parsed.file.root(), SyntaxKind::ReadTableStmt), 1);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::ReadTableStmt),
+            1
+        );
     }
 
     #[test]
@@ -859,7 +1002,12 @@ mod tests {
             "SELECT *\n  APPENDING CORRESPONDING FIELDS OF TABLE lt_rows\n  FROM demo\n  WHERE bupid = ls_key-bupid AND\n        regid = ls_key-regid.",
         );
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-        assert_eq!(parsed.file.count_kind(parsed.file.root(), SyntaxKind::SelectStmt), 1);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::SelectStmt),
+            1
+        );
     }
 
     #[test]
@@ -868,8 +1016,18 @@ mod tests {
             "cl_abap_message_digest=>calculate_hash_for_char(\n  EXPORTING\n    if_algorithm = lv_algorithm\n    if_data      = lv_data\n  IMPORTING\n    ef_hashstring = lv_hashstring\n).",
         );
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-        assert_eq!(parsed.file.count_kind(parsed.file.root(), SyntaxKind::SimpleStmt), 1);
-        assert_eq!(parsed.file.count_kind(parsed.file.root(), SyntaxKind::AssignStmt), 0);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::SimpleStmt),
+            1
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::AssignStmt),
+            0
+        );
     }
 
     #[test]
@@ -878,15 +1036,30 @@ mod tests {
             "RAISE EXCEPTION TYPE /sttp/cx_base_exception\n  EXPORTING\n    message_text = gv_dummy_msg\n    returncode   = /sttp/cl_constants=>gcs_rc-fail.",
         );
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-        assert_eq!(parsed.file.count_kind(parsed.file.root(), SyntaxKind::SimpleStmt), 1);
-        assert_eq!(parsed.file.count_kind(parsed.file.root(), SyntaxKind::AssignStmt), 0);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::SimpleStmt),
+            1
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::AssignStmt),
+            0
+        );
     }
 
     #[test]
     fn parses_endat_as_simple_stmt() {
         let parsed = crate::parse("ENDAT.");
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-        assert_eq!(parsed.file.count_kind(parsed.file.root(), SyntaxKind::SimpleStmt), 1);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::SimpleStmt),
+            1
+        );
     }
 
     #[test]
@@ -895,6 +1068,11 @@ mod tests {
             "CLASS lcl DEFINITION.\n  PUBLIC SECTION.\n    CLASS cl_demo DEFINITION LOAD.\nENDCLASS.",
         );
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-        assert_eq!(parsed.file.count_kind(parsed.file.root(), SyntaxKind::ClassDecl), 1);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::ClassDecl),
+            1
+        );
     }
 }

@@ -3,9 +3,9 @@ use std::net::{SocketAddr, TcpListener};
 
 use abap_jsonrpc::{JSON_RPC_VERSION, Response, read_frame, write_frame};
 use abap_lsp::{
-    CompletionParams, DidChangeTextDocumentParams, DidOpenTextDocumentParams, HoverParams, ServerConfig,
-    ServerState, completion, hover, initialize_result, publish_changed_document, publish_diagnostics_params,
-    publish_open_document,
+    CompletionParams, DidChangeTextDocumentParams, DidOpenTextDocumentParams, HoverParams,
+    SemanticTokensParams, ServerConfig, ServerState, completion, hover, initialize_result,
+    publish_changed_document, publish_diagnostics_params, publish_open_document, semantic_tokens,
 };
 use serde_json::{Value, json};
 use tracing::warn;
@@ -167,7 +167,8 @@ fn handle_message(
             if let Some(params) = parse_params::<DidChangeTextDocumentParams>(&message)? {
                 if let Some(snapshot) = publish_changed_document(state, &params) {
                     let params_value = serde_json::to_value(publish_diagnostics_params(&snapshot))?;
-                    notifications.push(("textDocument/publishDiagnostics".to_owned(), params_value));
+                    notifications
+                        .push(("textDocument/publishDiagnostics".to_owned(), params_value));
                 }
             }
             Ok(HandledMessage {
@@ -204,6 +205,23 @@ fn handle_message(
                 });
             };
             let result = serde_json::to_value(completion(state, &completion_params))?;
+            Ok(HandledMessage {
+                response: Some(Response::success(id.unwrap_or(Value::Null), result)),
+                notifications: Vec::new(),
+            })
+        }
+        Some("textDocument/semanticTokens/full") => {
+            let Some(st_params) = parse_params::<SemanticTokensParams>(&message)? else {
+                return Ok(HandledMessage {
+                    response: Some(Response::failure(
+                        id.unwrap_or(Value::Null),
+                        INVALID_REQUEST,
+                        "textDocument/semanticTokens/full requires params",
+                    )),
+                    notifications: Vec::new(),
+                });
+            };
+            let result = serde_json::to_value(semantic_tokens(state, &st_params))?;
             Ok(HandledMessage {
                 response: Some(Response::success(id.unwrap_or(Value::Null), result)),
                 notifications: Vec::new(),
@@ -365,5 +383,50 @@ mod tests {
             .expect("completion result");
         assert!(result.to_string().contains("alpha"));
         assert!(result.to_string().contains("amount"));
+    }
+
+    #[test]
+    fn handles_semantic_tokens_full_after_open_document() {
+        let mut state = ServerState::default();
+        let config = ServerConfig::default();
+
+        let opened = handle_message(
+            &mut state,
+            &config,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": {
+                    "textDocument": {
+                        "uri": "file:///st.abap",
+                        "languageId": "abap",
+                        "version": 1,
+                        "text": "DATA lv TYPE i."
+                    }
+                }
+            }),
+        )
+        .expect("didOpen");
+        assert!(opened.response.is_none());
+
+        let st_msg = handle_message(
+            &mut state,
+            &config,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "textDocument/semanticTokens/full",
+                "params": { "textDocument": { "uri": "file:///st.abap" } }
+            }),
+        )
+        .expect("semanticTokens");
+
+        let result = st_msg
+            .response
+            .expect("semanticTokens response")
+            .result
+            .expect("semanticTokens result");
+        let data = result.get("data").expect("data array");
+        assert!(data.as_array().is_some_and(|row| !row.is_empty()));
     }
 }

@@ -1,0 +1,316 @@
+//! Semantic highlighting via LSP `textDocument/semanticTokens/full`, driven by `UnitAnalysis`.
+
+use abap_cache::AnalysisSnapshot;
+use abap_symbols::{
+    ProjectAnalysis, ReferenceData, ReferenceKind, Resolution, SymbolData, SymbolHandle, SymbolKind,
+};
+use lsp_types::{SemanticToken, SemanticTokenModifier, SemanticTokenType, SemanticTokens};
+
+/// Legend and type indices must stay aligned with [`semantic_tokens_legend`].
+#[derive(Clone, Copy)]
+struct SemanticTokenTypeIndices {
+    type_: u32,
+    class: u32,
+    interface: u32,
+    parameter: u32,
+    variable: u32,
+    property: u32,
+    function: u32,
+    method: u32,
+    event: u32,
+}
+
+impl SemanticTokenTypeIndices {
+    fn from_legend(types: &[SemanticTokenType]) -> Self {
+        let idx = |tag: &str| {
+            types
+                .iter()
+                .position(|t| t.as_str() == tag)
+                .expect("legend contains tag") as u32
+        };
+        Self {
+            type_: idx("type"),
+            class: idx("class"),
+            interface: idx("interface"),
+            parameter: idx("parameter"),
+            variable: idx("variable"),
+            property: idx("property"),
+            function: idx("function"),
+            method: idx("method"),
+            event: idx("event"),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ModifierIndices {
+    declaration: u32,
+    readonly: u32,
+}
+
+impl ModifierIndices {
+    fn from_legend(modifiers: &[SemanticTokenModifier]) -> Self {
+        let bit = |tag: &str| {
+            1u32 << modifiers
+                .iter()
+                .position(|m| m.as_str() == tag)
+                .expect("legend contains modifier")
+        };
+        Self {
+            declaration: bit("declaration"),
+            readonly: bit("readonly"),
+        }
+    }
+}
+
+pub fn semantic_tokens_legend() -> lsp_types::SemanticTokensLegend {
+    lsp_types::SemanticTokensLegend {
+        token_types: vec![
+            SemanticTokenType::TYPE,
+            SemanticTokenType::CLASS,
+            SemanticTokenType::INTERFACE,
+            SemanticTokenType::PARAMETER,
+            SemanticTokenType::VARIABLE,
+            SemanticTokenType::PROPERTY,
+            SemanticTokenType::FUNCTION,
+            SemanticTokenType::METHOD,
+            SemanticTokenType::EVENT,
+        ],
+        token_modifiers: vec![
+            SemanticTokenModifier::DECLARATION,
+            SemanticTokenModifier::READONLY,
+        ],
+    }
+}
+
+fn lookup_symbol<'a>(project: &'a ProjectAnalysis, handle: SymbolHandle) -> Option<&'a SymbolData> {
+    let unit = project.units.get(handle.unit.as_usize())?;
+    unit.symbols.get(handle.symbol.as_usize())
+}
+
+fn symbol_kind_type_index(kind: SymbolKind, ix: SemanticTokenTypeIndices) -> u32 {
+    match kind {
+        SymbolKind::BuiltinType | SymbolKind::TypeDef => ix.type_,
+        SymbolKind::Class => ix.class,
+        SymbolKind::Interface => ix.interface,
+        SymbolKind::Parameter => ix.parameter,
+        SymbolKind::Method => ix.method,
+        SymbolKind::Form | SymbolKind::Module | SymbolKind::BuiltinRoutine => ix.function,
+        SymbolKind::Event => ix.event,
+        SymbolKind::Field => ix.property,
+        SymbolKind::Variable
+        | SymbolKind::FieldSymbol
+        | SymbolKind::Constant
+        | SymbolKind::BuiltinVariable
+        | SymbolKind::BuiltinConstant
+        | SymbolKind::Include
+        | SymbolKind::Control
+        | SymbolKind::Report => ix.variable,
+    }
+}
+
+fn reference_fallback_type(reference: &ReferenceData, ix: SemanticTokenTypeIndices) -> u32 {
+    match reference.kind {
+        ReferenceKind::TypeRef | ReferenceKind::StaticTarget => ix.type_,
+        ReferenceKind::RoutineCall => ix.function,
+        ReferenceKind::Include => ix.variable,
+        ReferenceKind::Identifier => ix.variable,
+    }
+}
+
+#[derive(Clone, Copy)]
+struct PendingToken {
+    start: usize,
+    end: usize,
+    /// Lower sorts earlier when spans tie-break (declaration beats use).
+    priority: u8,
+    token_type: u32,
+    modifiers: u32,
+}
+
+fn push_pending(
+    out: &mut Vec<PendingToken>,
+    start: usize,
+    end: usize,
+    priority: u8,
+    token_type: u32,
+    modifiers: u32,
+) {
+    if start < end {
+        out.push(PendingToken {
+            start,
+            end,
+            priority,
+            token_type,
+            modifiers,
+        });
+    }
+}
+
+fn collect_pending(
+    snapshot: &AnalysisSnapshot,
+    ty_ix: SemanticTokenTypeIndices,
+    mod_ix: ModifierIndices,
+) -> Vec<PendingToken> {
+    let mut pending = Vec::new();
+    let unit = snapshot.symbols.as_ref();
+    let project = snapshot.project.as_ref();
+
+    for symbol in &unit.symbols {
+        let mut mods = mod_ix.declaration;
+        if matches!(
+            symbol.kind,
+            SymbolKind::Constant | SymbolKind::BuiltinConstant
+        ) {
+            mods |= mod_ix.readonly;
+        }
+        push_pending(
+            &mut pending,
+            symbol.decl_range.start,
+            symbol.decl_range.end,
+            0,
+            symbol_kind_type_index(symbol.kind, ty_ix),
+            mods,
+        );
+    }
+
+    for reference in &unit.references {
+        let token_type = match &reference.resolution {
+            Some(Resolution::Symbol(handle)) => lookup_symbol(project, *handle)
+                .map(|symbol| symbol_kind_type_index(symbol.kind, ty_ix))
+                .unwrap_or_else(|| reference_fallback_type(reference, ty_ix)),
+            Some(Resolution::BuiltinType) => ty_ix.type_,
+            Some(Resolution::BuiltinRoutine) => ty_ix.function,
+            Some(Resolution::External) => reference_fallback_type(reference, ty_ix),
+            None => reference_fallback_type(reference, ty_ix),
+        };
+        push_pending(
+            &mut pending,
+            reference.range.start,
+            reference.range.end,
+            1,
+            token_type,
+            0,
+        );
+    }
+
+    for access in &unit.field_accesses {
+        for segment in &access.field_path {
+            push_pending(
+                &mut pending,
+                segment.range.start,
+                segment.range.end,
+                2,
+                ty_ix.property,
+                0,
+            );
+        }
+    }
+
+    pending
+}
+
+/// Prefer non-overlapping spans; on overlap, keep the narrower span; same span favors lower `priority`.
+fn merge_non_overlapping(mut pending: Vec<PendingToken>) -> Vec<(usize, usize, u32, u32)> {
+    pending.sort_by(|a, b| {
+        a.start
+            .cmp(&b.start)
+            .then(
+                a.end
+                    .saturating_sub(a.start)
+                    .cmp(&b.end.saturating_sub(b.start)),
+            )
+            .then(a.priority.cmp(&b.priority))
+    });
+
+    let mut out: Vec<(usize, usize, u32, u32)> = Vec::with_capacity(pending.len());
+    let mut last_end = 0usize;
+    for token in pending {
+        if token.start < last_end {
+            continue;
+        }
+        last_end = token.end;
+        out.push((token.start, token.end, token.token_type, token.modifiers));
+    }
+    out
+}
+
+fn byte_offset_to_line_character_utf16(text: &str, offset: usize) -> Option<(u32, u32)> {
+    if offset > text.len() {
+        return None;
+    }
+    let mut line = 0u32;
+    let mut line_start = 0usize;
+    for (idx, ch) in text.char_indices() {
+        if idx >= offset {
+            break;
+        }
+        if ch == '\n' {
+            line += 1;
+            line_start = idx + ch.len_utf8();
+        }
+    }
+    let line_end = text[line_start..]
+        .find('\n')
+        .map(|rel| line_start + rel)
+        .unwrap_or(text.len());
+    let line_text = text[line_start..line_end]
+        .strip_suffix('\r')
+        .unwrap_or(&text[line_start..line_end]);
+    if offset < line_start || offset > line_start + line_text.len() {
+        return None;
+    }
+    let character = line_text[..offset - line_start]
+        .chars()
+        .map(|ch| ch.len_utf16() as u32)
+        .sum();
+    Some((line, character))
+}
+
+fn encode_deltas(text: &str, merged: Vec<(usize, usize, u32, u32)>) -> Vec<SemanticToken> {
+    let mut out = Vec::with_capacity(merged.len());
+    let mut prev_line = 0u32;
+    let mut prev_char = 0u32;
+    for (start, end, token_type, token_modifiers_bitset) in merged {
+        let Some((line, character)) = byte_offset_to_line_character_utf16(text, start) else {
+            continue;
+        };
+        let length: u32 = text[start..end]
+            .chars()
+            .map(|ch| ch.len_utf16() as u32)
+            .sum();
+        if length == 0 {
+            continue;
+        }
+        let delta_line = line.saturating_sub(prev_line);
+        let delta_start = if delta_line == 0 {
+            character.saturating_sub(prev_char)
+        } else {
+            character
+        };
+        out.push(SemanticToken {
+            delta_line,
+            delta_start,
+            length,
+            token_type,
+            token_modifiers_bitset,
+        });
+
+        prev_line = line;
+        prev_char = character;
+    }
+    out
+}
+
+pub fn build_semantic_tokens(snapshot: &AnalysisSnapshot) -> SemanticTokens {
+    let legend = semantic_tokens_legend();
+    let ty_ix = SemanticTokenTypeIndices::from_legend(&legend.token_types);
+    let mod_ix = ModifierIndices::from_legend(&legend.token_modifiers);
+    let pending = collect_pending(snapshot, ty_ix, mod_ix);
+    let merged = merge_non_overlapping(pending);
+    let data = encode_deltas(snapshot.text.as_ref(), merged);
+    SemanticTokens {
+        result_id: None,
+        data,
+    }
+}

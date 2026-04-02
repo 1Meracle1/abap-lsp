@@ -1,11 +1,11 @@
 //! Statement-level assignment: `lhs = rhs .` or `lhs ?= rhs .`.
 
-use abap_ast::arena::{NodeId, SyntaxTreeBuilder};
 use abap_ast::SyntaxKind;
-use abap_lexer::{have_space_between, Token, TokenKind};
+use abap_ast::arena::{NodeId, SyntaxTreeBuilder};
+use abap_lexer::{Token, TokenKind, have_space_between};
 
 use crate::expr::parse_arithmetic_expr;
-use crate::stmt_period::{unterminated_err_end, scan_until_statement_period, StmtPeriodScan};
+use crate::stmt_period::{StmtPeriodScan, scan_until_statement_period, unterminated_err_end};
 
 fn token_leaf(b: &mut SyntaxTreeBuilder, token: &Token) -> NodeId {
     b.leaf(SyntaxKind::Token, token.range.clone())
@@ -49,9 +49,7 @@ fn find_stmt_level_assign_op(tokens: &[Token], start: usize) -> Option<usize> {
             TokenKind::LBrace => brace += 1,
             TokenKind::RBrace => brace -= 1,
             TokenKind::Period if paren == 0 && bracket == 0 && brace == 0 => return None,
-            TokenKind::Eq | TokenKind::QuestionEq
-                if paren == 0 && bracket == 0 && brace == 0 =>
-            {
+            TokenKind::Eq | TokenKind::QuestionEq if paren == 0 && bracket == 0 && brace == 0 => {
                 return Some(i);
             }
             _ => {}
@@ -175,8 +173,7 @@ pub fn try_parse_assign_stmt(
                 });
             } else {
                 errors.push(crate::ParseError {
-                    message: "syntax error: expected '.' to end assignment statement"
-                        .to_string(),
+                    message: "syntax error: expected '.' to end assignment statement".to_string(),
                     range: first.range.start..err_end,
                 });
             }
@@ -185,11 +182,7 @@ pub fn try_parse_assign_stmt(
             for t in &tokens[idx..end_exclusive] {
                 kids.push(token_leaf(b, t));
             }
-            let node = b.branch(
-                SyntaxKind::Error,
-                first.range.start..err_end,
-                &kids,
-            );
+            let node = b.branch(SyntaxKind::Error, first.range.start..err_end, &kids);
             let next = if tokens.get(end_exclusive).map(|t| t.kind) == Some(TokenKind::Eof) {
                 tokens.len()
             } else {
@@ -265,17 +258,23 @@ mod tests {
             0
         );
         assert_eq!(
-            parsed.file.count_kind(parsed.file.root(), SyntaxKind::Error),
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::Error),
             1
         );
     }
 
     #[test]
     fn assign_allows_table_expression_key_eq_in_rhs() {
-        let parsed = crate::parse("ls_range = lt_ranges[ serno_from = lv_min_init serno_to = lv_max_init ].");
+        let parsed = crate::parse(
+            "ls_range = lt_ranges[ serno_from = lv_min_init serno_to = lv_max_init ].",
+        );
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
         assert_eq!(
-            parsed.file.count_kind(parsed.file.root(), SyntaxKind::AssignStmt),
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::AssignStmt),
             1
         );
     }
@@ -284,7 +283,10 @@ mod tests {
     fn error_on_assign_without_period_at_eof() {
         let parsed = crate::parse("lv = 1");
         assert!(
-            parsed.errors.iter().any(|e| e.message.contains("expected '.'")),
+            parsed
+                .errors
+                .iter()
+                .any(|e| e.message.contains("expected '.'")),
             "{:?}",
             parsed.errors
         );
@@ -295,7 +297,9 @@ mod tests {
             0
         );
         assert_eq!(
-            parsed.file.count_kind(parsed.file.root(), SyntaxKind::Error),
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::Error),
             1
         );
     }
@@ -305,7 +309,10 @@ mod tests {
         let src = "lv_s = 'unterminated'\nDATA lv_after TYPE i.";
         let parsed = crate::parse(src);
         assert!(
-            parsed.errors.iter().any(|e| e.message.contains("expected '.'")),
+            parsed
+                .errors
+                .iter()
+                .any(|e| e.message.contains("expected '.'")),
             "{:?}",
             parsed.errors
         );
@@ -316,7 +323,9 @@ mod tests {
             0
         );
         assert_eq!(
-            parsed.file.count_kind(parsed.file.root(), SyntaxKind::Error),
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::Error),
             1
         );
         assert_eq!(

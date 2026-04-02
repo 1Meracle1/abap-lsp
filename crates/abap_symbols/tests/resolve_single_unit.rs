@@ -45,7 +45,8 @@ ENDFORM.
         .symbols
         .iter()
         .find(|symbol| {
-            symbol.kind == abap_symbols::SymbolKind::Parameter && symbol.name.as_ref() == "cv_result"
+            symbol.kind == abap_symbols::SymbolKind::Parameter
+                && symbol.name.as_ref() == "cv_result"
         })
         .expect("cv_result parameter");
     let dt = cv.declared_type.as_ref().expect("parameter declared type");
@@ -67,7 +68,9 @@ ENDFORM.
     let iv = unit
         .symbols
         .iter()
-        .find(|symbol| symbol.kind == abap_symbols::SymbolKind::Parameter && symbol.name.as_ref() == "iv")
+        .find(|symbol| {
+            symbol.kind == abap_symbols::SymbolKind::Parameter && symbol.name.as_ref() == "iv"
+        })
         .expect("iv parameter");
     let dt = iv.declared_type.as_ref().expect("declared type");
     assert_eq!(dt.namespace, abap_symbols::Namespace::Type);
@@ -100,10 +103,11 @@ fn reports_duplicate_declarations() {
     let parsed = parse(src);
     let unit = analyze_unit("file:///dupe.abap", src, &parsed);
 
-    assert!(unit
-        .diagnostics
-        .iter()
-        .any(|diag| diag.kind == DiagnosticKind::DuplicateDeclaration));
+    assert!(
+        unit.diagnostics
+            .iter()
+            .any(|diag| diag.kind == DiagnosticKind::DuplicateDeclaration)
+    );
 }
 
 #[test]
@@ -112,10 +116,11 @@ fn reports_wrong_namespace_for_type_references() {
     let parsed = parse(src);
     let unit = analyze_unit("file:///namespace.abap", src, &parsed);
 
-    assert!(unit
-        .diagnostics
-        .iter()
-        .any(|diag| diag.kind == DiagnosticKind::WrongNamespace));
+    assert!(
+        unit.diagnostics
+            .iter()
+            .any(|diag| diag.kind == DiagnosticKind::WrongNamespace)
+    );
 }
 
 #[test]
@@ -125,9 +130,14 @@ fn recovers_after_syntax_errors_and_keeps_later_resolution() {
     let unit = analyze_unit("file:///recover.abap", src, &parsed);
 
     assert!(!parsed.errors.is_empty());
-    assert!(unit.symbols.iter().any(|symbol| symbol.name.as_ref() == "ok"));
+    assert!(
+        unit.symbols
+            .iter()
+            .any(|symbol| symbol.name.as_ref() == "ok")
+    );
     assert!(unit.references.iter().any(|reference| {
-        reference.name.as_ref() == "ok" && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+        reference.name.as_ref() == "ok"
+            && matches!(reference.resolution, Some(Resolution::Symbol(_)))
     }));
 }
 
@@ -141,10 +151,12 @@ fn resolves_builtin_abap_boolean_constants_and_type() {
         symbol.kind == abap_symbols::SymbolKind::BuiltinType && symbol.name.as_ref() == "abap_bool"
     }));
     assert!(unit.symbols.iter().any(|symbol| {
-        symbol.kind == abap_symbols::SymbolKind::BuiltinConstant && symbol.name.as_ref() == "abap_true"
+        symbol.kind == abap_symbols::SymbolKind::BuiltinConstant
+            && symbol.name.as_ref() == "abap_true"
     }));
     assert!(unit.symbols.iter().any(|symbol| {
-        symbol.kind == abap_symbols::SymbolKind::BuiltinConstant && symbol.name.as_ref() == "abap_false"
+        symbol.kind == abap_symbols::SymbolKind::BuiltinConstant
+            && symbol.name.as_ref() == "abap_false"
     }));
     assert!(unit.references.iter().any(|reference| {
         reference.namespace == Namespace::Type
@@ -194,13 +206,21 @@ ENDIF.";
         ("rs38l_fnam", abap_symbols::SymbolKind::BuiltinType),
         ("memoryid", abap_symbols::SymbolKind::BuiltinType),
     ] {
-        assert!(unit
-            .symbols
-            .iter()
-            .any(|symbol| symbol.kind == kind && symbol.name.as_ref() == name));
+        assert!(
+            unit.symbols
+                .iter()
+                .any(|symbol| symbol.kind == kind && symbol.name.as_ref() == name)
+        );
     }
 
-    for type_name in ["guid", "xfeld", "tabname", "cdobjectcl", "rs38l_fnam", "memoryid"] {
+    for type_name in [
+        "guid",
+        "xfeld",
+        "tabname",
+        "cdobjectcl",
+        "rs38l_fnam",
+        "memoryid",
+    ] {
         assert!(unit.references.iter().any(|reference| {
             reference.namespace == Namespace::Type
                 && reference.name.as_ref() == type_name
@@ -223,16 +243,21 @@ ENDIF.";
         .iter()
         .find(|symbol| symbol.name.as_ref() == "sy")
         .expect("builtin sy symbol");
-    let sy_structure = unit
-        .structure(sy_symbol.structure.expect("sy structure metadata"));
-    assert!(sy_structure
-        .fields
-        .iter()
-        .any(|field| field.name.as_ref() == "subrc"));
-    assert!(!unit
-        .diagnostics
-        .iter()
-        .any(|diag| diag.message.contains("sy") || diag.message.contains("guid") || diag.message.contains("memoryid")));
+    let sy_structure = unit.structure(sy_symbol.structure.expect("sy structure metadata"));
+    assert!(
+        sy_structure
+            .fields
+            .iter()
+            .any(|field| field.name.as_ref() == "subrc")
+    );
+    assert!(
+        !unit
+            .diagnostics
+            .iter()
+            .any(|diag| diag.message.contains("sy")
+                || diag.message.contains("guid")
+                || diag.message.contains("memoryid"))
+    );
 }
 
 #[test]
@@ -266,10 +291,11 @@ fn rejects_unknown_sy_field_access() {
     let parsed = parse(src);
     let unit = analyze_unit("file:///bad_sy.abap", src, &parsed);
 
-    assert!(unit
-        .diagnostics
-        .iter()
-        .any(|diag| diag.kind == DiagnosticKind::UnknownField && diag.message.contains("nope")));
+    assert!(
+        unit.diagnostics
+            .iter()
+            .any(|diag| diag.kind == DiagnosticKind::UnknownField && diag.message.contains("nope"))
+    );
 }
 
 #[test]
@@ -287,22 +313,39 @@ ls_pair-a = 1.";
     let ty_pair = unit
         .symbols
         .iter()
-        .find(|symbol| symbol.kind == abap_symbols::SymbolKind::TypeDef && symbol.name.as_ref() == "ty_pair")
+        .find(|symbol| {
+            symbol.kind == abap_symbols::SymbolKind::TypeDef && symbol.name.as_ref() == "ty_pair"
+        })
         .expect("structured type symbol");
     let structure = unit.structure(ty_pair.structure.expect("type structure metadata"));
-    assert!(structure.fields.iter().any(|field| field.name.as_ref() == "a"));
-    assert!(structure.fields.iter().any(|field| field.name.as_ref() == "b"));
+    assert!(
+        structure
+            .fields
+            .iter()
+            .any(|field| field.name.as_ref() == "a")
+    );
+    assert!(
+        structure
+            .fields
+            .iter()
+            .any(|field| field.name.as_ref() == "b")
+    );
 
     let ls_pair = unit
         .symbols
         .iter()
-        .find(|symbol| symbol.kind == abap_symbols::SymbolKind::Variable && symbol.name.as_ref() == "ls_pair")
+        .find(|symbol| {
+            symbol.kind == abap_symbols::SymbolKind::Variable && symbol.name.as_ref() == "ls_pair"
+        })
         .expect("typed variable");
     assert_eq!(ls_pair.structure, ty_pair.structure);
-    assert!(!unit
-        .diagnostics
-        .iter()
-        .any(|diag| diag.kind == DiagnosticKind::UnknownField || diag.message.contains("ty_pair")));
+    assert!(
+        !unit
+            .diagnostics
+            .iter()
+            .any(|diag| diag.kind == DiagnosticKind::UnknownField
+                || diag.message.contains("ty_pair"))
+    );
 }
 
 #[test]
@@ -319,15 +362,30 @@ ls_date-yyyy = '2026'.";
     let ls_date = unit
         .symbols
         .iter()
-        .find(|symbol| symbol.kind == abap_symbols::SymbolKind::Variable && symbol.name.as_ref() == "ls_date")
+        .find(|symbol| {
+            symbol.kind == abap_symbols::SymbolKind::Variable && symbol.name.as_ref() == "ls_date"
+        })
         .expect("structured data symbol");
     let structure = unit.structure(ls_date.structure.expect("data structure metadata"));
-    assert!(structure.fields.iter().any(|field| field.name.as_ref() == "yyyy"));
-    assert!(structure.fields.iter().any(|field| field.name.as_ref() == "mm"));
-    assert!(!unit
-        .diagnostics
-        .iter()
-        .any(|diag| diag.kind == DiagnosticKind::UnknownField || diag.message.contains("ls_date")));
+    assert!(
+        structure
+            .fields
+            .iter()
+            .any(|field| field.name.as_ref() == "yyyy")
+    );
+    assert!(
+        structure
+            .fields
+            .iter()
+            .any(|field| field.name.as_ref() == "mm")
+    );
+    assert!(
+        !unit
+            .diagnostics
+            .iter()
+            .any(|diag| diag.kind == DiagnosticKind::UnknownField
+                || diag.message.contains("ls_date"))
+    );
 }
 
 #[test]
@@ -345,10 +403,13 @@ DATA lv_value TYPE ty_pair-a.";
             && reference.name.as_ref() == "ty_pair"
             && matches!(reference.resolution, Some(Resolution::Symbol(_)))
     }));
-    assert!(!unit
-        .diagnostics
-        .iter()
-        .any(|diag| diag.kind == DiagnosticKind::UnresolvedReference || diag.kind == DiagnosticKind::UnknownField));
+    assert!(
+        !unit
+            .diagnostics
+            .iter()
+            .any(|diag| diag.kind == DiagnosticKind::UnresolvedReference
+                || diag.kind == DiagnosticKind::UnknownField)
+    );
 }
 
 #[test]
@@ -366,7 +427,9 @@ DATA lv_value TYPE ty_pair-missing.";
     let unknown_field_diags: Vec<_> = unit
         .diagnostics
         .iter()
-        .filter(|diag| diag.kind == DiagnosticKind::UnknownField && diag.message.contains("missing"))
+        .filter(|diag| {
+            diag.kind == DiagnosticKind::UnknownField && diag.message.contains("missing")
+        })
         .collect();
     assert_eq!(unknown_field_diags.len(), 2);
 }
@@ -385,7 +448,9 @@ TYPES: BEGIN OF ty_outer,\n\
     let ty_outer = unit
         .symbols
         .iter()
-        .find(|symbol| symbol.kind == abap_symbols::SymbolKind::TypeDef && symbol.name.as_ref() == "ty_outer")
+        .find(|symbol| {
+            symbol.kind == abap_symbols::SymbolKind::TypeDef && symbol.name.as_ref() == "ty_outer"
+        })
         .expect("outer type");
     let outer_structure = unit.structure(ty_outer.structure.expect("outer structure"));
     let inner_field = outer_structure
@@ -394,10 +459,12 @@ TYPES: BEGIN OF ty_outer,\n\
         .find(|field| field.name.as_ref() == "inner")
         .expect("inner field");
     let inner_structure = unit.structure(inner_field.structure.expect("inner structure"));
-    assert!(inner_structure
-        .fields
-        .iter()
-        .any(|field| field.name.as_ref() == "a"));
+    assert!(
+        inner_structure
+            .fields
+            .iter()
+            .any(|field| field.name.as_ref() == "a")
+    );
 }
 
 #[test]
@@ -414,10 +481,13 @@ DATA lv_value TYPE ty_outer-inner-a.";
     let parsed = parse(src);
     let unit = analyze_unit("file:///nested_chain.abap", src, &parsed);
 
-    assert!(!unit
-        .diagnostics
-        .iter()
-        .any(|diag| diag.kind == DiagnosticKind::UnknownField || diag.kind == DiagnosticKind::UnresolvedReference));
+    assert!(
+        !unit
+            .diagnostics
+            .iter()
+            .any(|diag| diag.kind == DiagnosticKind::UnknownField
+                || diag.kind == DiagnosticKind::UnresolvedReference)
+    );
 }
 
 #[test]
@@ -437,7 +507,9 @@ DATA lv_value TYPE ty_outer-inner-missing.";
     let unknown_field_diags: Vec<_> = unit
         .diagnostics
         .iter()
-        .filter(|diag| diag.kind == DiagnosticKind::UnknownField && diag.message.contains("missing"))
+        .filter(|diag| {
+            diag.kind == DiagnosticKind::UnknownField && diag.message.contains("missing")
+        })
         .collect();
     assert_eq!(unknown_field_diags.len(), 2);
 }
@@ -454,7 +526,9 @@ TYPES: BEGIN OF ty_pair,\n\
     let ty_pair = unit
         .symbols
         .iter()
-        .find(|symbol| symbol.kind == abap_symbols::SymbolKind::TypeDef && symbol.name.as_ref() == "ty_pair")
+        .find(|symbol| {
+            symbol.kind == abap_symbols::SymbolKind::TypeDef && symbol.name.as_ref() == "ty_pair"
+        })
         .expect("pair type");
     let pair_structure = unit.structure(ty_pair.structure.expect("pair structure"));
     let field = pair_structure
@@ -487,7 +561,9 @@ DATA lv_value TYPE ty_outer-inner-a.";
     let ty_outer = unit
         .symbols
         .iter()
-        .find(|symbol| symbol.kind == abap_symbols::SymbolKind::TypeDef && symbol.name.as_ref() == "ty_outer")
+        .find(|symbol| {
+            symbol.kind == abap_symbols::SymbolKind::TypeDef && symbol.name.as_ref() == "ty_outer"
+        })
         .expect("outer type");
     let outer_structure = unit.structure(ty_outer.structure.expect("outer structure"));
     let inner_field = outer_structure
@@ -499,14 +575,19 @@ DATA lv_value TYPE ty_outer-inner-a.";
     assert_eq!(type_ref.namespace, Namespace::Type);
     assert_eq!(type_ref.base_name.as_ref(), "ty_inner");
     let inner_structure = unit.structure(inner_field.structure.expect("resolved inner structure"));
-    assert!(inner_structure
-        .fields
-        .iter()
-        .any(|field| field.name.as_ref() == "a"));
-    assert!(!unit
-        .diagnostics
-        .iter()
-        .any(|diag| diag.kind == DiagnosticKind::UnknownField || diag.kind == DiagnosticKind::UnresolvedReference));
+    assert!(
+        inner_structure
+            .fields
+            .iter()
+            .any(|field| field.name.as_ref() == "a")
+    );
+    assert!(
+        !unit
+            .diagnostics
+            .iter()
+            .any(|diag| diag.kind == DiagnosticKind::UnknownField
+                || diag.kind == DiagnosticKind::UnresolvedReference)
+    );
 }
 
 #[test]
@@ -525,7 +606,9 @@ TYPES: BEGIN OF ty_outer,\n\
     let ty_outer = unit
         .symbols
         .iter()
-        .find(|symbol| symbol.kind == abap_symbols::SymbolKind::TypeDef && symbol.name.as_ref() == "ty_outer")
+        .find(|symbol| {
+            symbol.kind == abap_symbols::SymbolKind::TypeDef && symbol.name.as_ref() == "ty_outer"
+        })
         .expect("outer type");
     let outer_structure_id = ty_outer.structure.expect("outer structure");
 
@@ -535,8 +618,14 @@ TYPES: BEGIN OF ty_outer,\n\
     let inner = unit
         .structure_field_info(outer_structure_id, "inner")
         .expect("inner field info");
-    assert_eq!(inner.type_ref.expect("inner type ref").base_name.as_ref(), "ty_inner");
-    assert!(matches!(inner.shape, StructureFieldShape::Structured { .. }));
+    assert_eq!(
+        inner.type_ref.expect("inner type ref").base_name.as_ref(),
+        "ty_inner"
+    );
+    assert!(matches!(
+        inner.shape,
+        StructureFieldShape::Structured { .. }
+    ));
 
     let label = unit
         .resolve_structure_field_path(outer_structure_id, &["label"])

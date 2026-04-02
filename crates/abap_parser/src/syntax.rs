@@ -1,7 +1,7 @@
 //! Build a structural syntax tree from flat tokens (string templates, interpolation, format specs).
 
-use abap_ast::arena::{NodeId, SyntaxTree, SyntaxTreeBuilder};
 use abap_ast::SyntaxKind;
+use abap_ast::arena::{NodeId, SyntaxTree, SyntaxTreeBuilder};
 use abap_lexer::{Token, TokenKind};
 
 use crate::block_helpers::ensure_forward_progress;
@@ -96,7 +96,10 @@ pub(crate) fn parse_char_string_template(
         }
     }
 
-    let range = tokens[start].range.start..tokens.get(i).map_or(tokens[start].range.end, |t| t.range.start);
+    let range = tokens[start].range.start
+        ..tokens
+            .get(i)
+            .map_or(tokens[start].range.end, |t| t.range.start);
     let node = b.branch(SyntaxKind::CharStringTemplate, range, &parts);
     (node, i)
 }
@@ -209,11 +212,7 @@ fn split_interpolation_body(
         let a = token_leaf(b, &body[name_i]);
         let e = token_leaf(b, &body[eq_i]);
         let v = token_leaf(b, &body[val_i]);
-        specs.push(b.branch(
-            SyntaxKind::TemplateFormatSpec,
-            spec_range,
-            &[a, e, v],
-        ));
+        specs.push(b.branch(SyntaxKind::TemplateFormatSpec, spec_range, &[a, e, v]));
         j = val_i + 1;
     }
 
@@ -240,16 +239,12 @@ mod tests {
         let interp = file
             .find_first_kind(file.root(), SyntaxKind::TemplateInterpolation)
             .expect("interpolation");
-        assert_eq!(
-            file.count_kind(interp, SyntaxKind::TemplateFormatSpec),
-            2
-        );
+        assert_eq!(file.count_kind(interp, SyntaxKind::TemplateFormatSpec), 2);
     }
 
     #[test]
     fn template_with_alpha_date_time() {
-        let src =
-            "|Material: { lv_matnr ALPHA = IN }| && |Date: { lv_date DATE = USER }| && |Time: { sy-uzeit TIME = ISO }|";
+        let src = "|Material: { lv_matnr ALPHA = IN }| && |Date: { lv_date DATE = USER }| && |Time: { sy-uzeit TIME = ISO }|";
         let file = tree_ok(src);
         assert_eq!(
             file.count_kind(file.root(), SyntaxKind::CharStringTemplate),
@@ -285,10 +280,7 @@ mod tests {
             .child_by_kind(tmpl, SyntaxKind::BinaryExpr)
             .expect("binary at root");
         let op = file.children(root).nth(1).unwrap();
-        assert_eq!(
-            file.range(op),
-            src.find('+').map(|s| s..s + 1).unwrap()
-        );
+        assert_eq!(file.range(op), src.find('+').map(|s| s..s + 1).unwrap());
         assert_eq!(
             file.kind(file.children(root).nth(2).unwrap()),
             SyntaxKind::BinaryExpr

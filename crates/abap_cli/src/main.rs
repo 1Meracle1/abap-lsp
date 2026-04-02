@@ -20,7 +20,7 @@ use abap_ast::arena::NodeId;
 use abap_lexer::tokenize;
 use abap_parser::parse;
 use abap_symbols::{DiagnosticKind, analyze_unit};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Command {
@@ -113,11 +113,7 @@ fn parse_cli_args(it: impl Iterator<Item = String>) -> Result<Cli, String> {
             "-" => path = Some(arg),
             s if !s.starts_with('-') => {
                 if path.is_some() {
-                    return Err(format!(
-                        "unexpected extra argument {:?}\n{}",
-                        s,
-                        usage()
-                    ));
+                    return Err(format!("unexpected extra argument {:?}\n{}", s, usage()));
                 }
                 path = Some(s.to_string());
             }
@@ -173,7 +169,9 @@ fn read_source(path: Option<&str>) -> Result<String, String> {
                 .map_err(|e| format!("stdin: {e}"))?;
             Ok(buf)
         }
-        Some(p) => std::fs::read_to_string(p).map_err(|e| format!("{}: {e}", Path::new(p).display())),
+        Some(p) => {
+            std::fs::read_to_string(p).map_err(|e| format!("{}: {e}", Path::new(p).display()))
+        }
     }
 }
 
@@ -200,14 +198,8 @@ fn ast_node_json(tree: &abap_ast::File, id: NodeId, source: &str) -> Value {
     let range = tree.range(id);
     let mut obj = serde_json::Map::new();
     obj.insert("kind".to_string(), json!(kind.as_str()));
-    obj.insert(
-        "id".to_string(),
-        json!(id.0),
-    );
-    obj.insert(
-        "range".to_string(),
-        json!([range.start, range.end]),
-    );
+    obj.insert("id".to_string(), json!(id.0));
+    obj.insert("range".to_string(), json!([range.start, range.end]));
 
     match kind {
         SyntaxKind::Token | SyntaxKind::ExprIdent | SyntaxKind::ExprLiteral => {
@@ -361,7 +353,12 @@ fn run() -> Result<i32, String> {
             let unknown: Vec<Value> = unit
                 .diagnostics
                 .iter()
-                .filter(|diag| matches!(diag.kind, DiagnosticKind::UnresolvedReference | DiagnosticKind::WrongNamespace))
+                .filter(|diag| {
+                    matches!(
+                        diag.kind,
+                        DiagnosticKind::UnresolvedReference | DiagnosticKind::WrongNamespace
+                    )
+                })
                 .map(|diag| {
                     json!({
                         "range": [diag.range.start, diag.range.end],

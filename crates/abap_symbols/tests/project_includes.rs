@@ -25,7 +25,8 @@ fn resolves_symbols_from_included_units() {
     let root = project.unit_by_uri("zmain.abap").expect("root unit");
     assert!(root.include_edges.iter().any(|edge| edge.target.is_some()));
     assert!(root.references.iter().any(|reference| {
-        reference.name.as_ref() == "lv_inc" && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+        reference.name.as_ref() == "lv_inc"
+            && matches!(reference.resolution, Some(Resolution::Symbol(_)))
     }));
 }
 
@@ -39,8 +40,10 @@ fn reports_unresolved_include_targets() {
         parse: &root_parse,
     }]);
 
-    assert!(project
-        .diagnostics
-        .iter()
-        .any(|diag| diag.kind == DiagnosticKind::UnresolvedInclude));
+    assert!(
+        project
+            .diagnostics
+            .iter()
+            .any(|diag| diag.kind == DiagnosticKind::UnresolvedInclude)
+    );
 }

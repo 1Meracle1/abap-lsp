@@ -9,7 +9,8 @@ use abap_lexer::{TextRange, Token, TokenKind};
 use crate::builtins::{BUILTIN_STRUCTURES, BUILTIN_SYMBOLS, BuiltinTypeKind};
 use crate::def_map::{
     Diagnostic, DiagnosticKind, FieldAccess, FieldAccessSegment, FieldTypeRefData, IncludeEdge,
-    ReferenceData, ReferenceKind, StructureData, StructureFieldData, SymbolData, SymbolKind, UnitAnalysis,
+    ReferenceData, ReferenceKind, StructureData, StructureFieldData, SymbolData, SymbolKind,
+    UnitAnalysis,
 };
 use crate::ids::{ReferenceId, ScopeId, StructureId, SymbolId, UnitId};
 use crate::scope::{Namespace, ScopeData, ScopeKind};
@@ -221,7 +222,12 @@ impl<'a> Collector<'a> {
                 structure: field
                     .structure
                     .map(|nested| self.register_structure(scope, nested))
-                    .or_else(|| field.type_ref.as_ref().and_then(|type_ref| self.resolve_field_type_ref(scope, type_ref))),
+                    .or_else(|| {
+                        field
+                            .type_ref
+                            .as_ref()
+                            .and_then(|type_ref| self.resolve_field_type_ref(scope, type_ref))
+                    }),
                 type_ref: field.type_ref,
             })
             .collect::<Vec<_>>();
@@ -233,14 +239,11 @@ impl<'a> Collector<'a> {
         for structure in BUILTIN_STRUCTURES {
             let id = self.push_structure(
                 Arc::<str>::from(structure.name),
-                structure
-                    .fields
-                    .iter()
-                    .map(|field| StructureFieldData {
-                        name: Arc::<str>::from(field.name),
-                        structure: None,
-                        type_ref: None,
-                    }),
+                structure.fields.iter().map(|field| StructureFieldData {
+                    name: Arc::<str>::from(field.name),
+                    structure: None,
+                    type_ref: None,
+                }),
             );
             structure_ids.insert(structure.name, id);
         }
@@ -337,19 +340,39 @@ impl<'a> Collector<'a> {
     fn walk_node(&mut self, node: NodeId, scope: ScopeId) {
         match self.file.kind(node) {
             SyntaxKind::Token | SyntaxKind::Error => {}
-            SyntaxKind::DataDecl | SyntaxKind::StaticsDecl => self.walk_data_like_decl(node, scope, SymbolKind::Variable),
+            SyntaxKind::DataDecl | SyntaxKind::StaticsDecl => {
+                self.walk_data_like_decl(node, scope, SymbolKind::Variable)
+            }
             SyntaxKind::TypesDecl => self.walk_data_like_decl(node, scope, SymbolKind::TypeDef),
-            SyntaxKind::ConstantsDecl => self.walk_data_like_decl(node, scope, SymbolKind::Constant),
-            SyntaxKind::FieldSymbolsDecl => self.walk_data_like_decl(node, scope, SymbolKind::FieldSymbol),
+            SyntaxKind::ConstantsDecl => {
+                self.walk_data_like_decl(node, scope, SymbolKind::Constant)
+            }
+            SyntaxKind::FieldSymbolsDecl => {
+                self.walk_data_like_decl(node, scope, SymbolKind::FieldSymbol)
+            }
             SyntaxKind::DataInlineDecl => self.walk_inline_decl(node, scope),
             SyntaxKind::IncludeStmt => self.walk_include_stmt(node, scope),
-            SyntaxKind::ReportStmt => self.walk_named_header_decl(node, scope, SymbolKind::Report, ScopeKind::File),
-            SyntaxKind::FormDecl => self.walk_block_decl(node, scope, SymbolKind::Form, ScopeKind::Form),
-            SyntaxKind::ModuleDecl => self.walk_block_decl(node, scope, SymbolKind::Module, ScopeKind::Module),
-            SyntaxKind::EventBlock => self.walk_block_decl(node, scope, SymbolKind::Event, ScopeKind::EventBlock),
-            SyntaxKind::ClassDecl => self.walk_block_decl(node, scope, SymbolKind::Class, ScopeKind::Class),
-            SyntaxKind::InterfaceDecl => self.walk_block_decl(node, scope, SymbolKind::Interface, ScopeKind::Interface),
-            SyntaxKind::MethodDecl => self.walk_block_decl(node, scope, SymbolKind::Method, ScopeKind::Method),
+            SyntaxKind::ReportStmt => {
+                self.walk_named_header_decl(node, scope, SymbolKind::Report, ScopeKind::File)
+            }
+            SyntaxKind::FormDecl => {
+                self.walk_block_decl(node, scope, SymbolKind::Form, ScopeKind::Form)
+            }
+            SyntaxKind::ModuleDecl => {
+                self.walk_block_decl(node, scope, SymbolKind::Module, ScopeKind::Module)
+            }
+            SyntaxKind::EventBlock => {
+                self.walk_block_decl(node, scope, SymbolKind::Event, ScopeKind::EventBlock)
+            }
+            SyntaxKind::ClassDecl => {
+                self.walk_block_decl(node, scope, SymbolKind::Class, ScopeKind::Class)
+            }
+            SyntaxKind::InterfaceDecl => {
+                self.walk_block_decl(node, scope, SymbolKind::Interface, ScopeKind::Interface)
+            }
+            SyntaxKind::MethodDecl => {
+                self.walk_block_decl(node, scope, SymbolKind::Method, ScopeKind::Method)
+            }
             SyntaxKind::IfStmt => self.walk_if_stmt(node, scope),
             SyntaxKind::ElseifClause => {
                 self.walk_nested_block(node, scope, ScopeKind::ElseifBranch);
@@ -365,7 +388,9 @@ impl<'a> Collector<'a> {
             SyntaxKind::LoopStmt => self.walk_nested_block(node, scope, ScopeKind::LoopBlock),
             SyntaxKind::TryStmt => self.walk_nested_block(node, scope, ScopeKind::TryBlock),
             SyntaxKind::CatchClause => self.walk_nested_block(node, scope, ScopeKind::CatchClause),
-            SyntaxKind::CleanupClause => self.walk_nested_block(node, scope, ScopeKind::CleanupClause),
+            SyntaxKind::CleanupClause => {
+                self.walk_nested_block(node, scope, ScopeKind::CleanupClause)
+            }
             SyntaxKind::SelectStmt => self.walk_nested_block(node, scope, ScopeKind::SelectBlock),
             SyntaxKind::TypeRefSimple => self.collect_type_ref(node, scope),
             SyntaxKind::ExprIdent
@@ -404,10 +429,13 @@ impl<'a> Collector<'a> {
 
     fn declare_decl_clause_symbol(&mut self, node: NodeId, scope: ScopeId, kind: SymbolKind) {
         if let Some((name, range, fields)) = self.begin_of_clause_parts(node) {
-            let structure = self.register_structure(scope, PendingStructure {
-                name: Arc::clone(&name),
-                fields,
-            });
+            let structure = self.register_structure(
+                scope,
+                PendingStructure {
+                    name: Arc::clone(&name),
+                    fields,
+                },
+            );
             self.declare_symbol(scope, name, kind, range, Some(structure), None);
             return;
         }
@@ -456,8 +484,16 @@ impl<'a> Collector<'a> {
     ) {
         if let Some((name, range)) = self.header_ident_after_keyword(node) {
             let owner = self.declare_plain_symbol(scope, name, kind, range);
-            let block_scope = if matches!(kind, SymbolKind::Form | SymbolKind::Module | SymbolKind::Event) {
-                self.push_scope(fallback_scope_kind, self.file.range(node), Some(scope), Some(owner))
+            let block_scope = if matches!(
+                kind,
+                SymbolKind::Form | SymbolKind::Module | SymbolKind::Event
+            ) {
+                self.push_scope(
+                    fallback_scope_kind,
+                    self.file.range(node),
+                    Some(scope),
+                    Some(owner),
+                )
             } else {
                 scope
             };
@@ -479,7 +515,8 @@ impl<'a> Collector<'a> {
             return;
         };
         let owner = self.declare_plain_symbol(scope, name, kind, range);
-        let child_scope = self.push_scope(scope_kind, self.file.range(node), Some(scope), Some(owner));
+        let child_scope =
+            self.push_scope(scope_kind, self.file.range(node), Some(scope), Some(owner));
         if scope_kind == ScopeKind::Form {
             self.declare_form_parameters_from_header(node, child_scope);
         }
@@ -557,8 +594,8 @@ impl<'a> Collector<'a> {
 
                     match section {
                         Some(FormHeaderParamSection::UsingOrChanging) => {
-                            if let Some(next_i) =
-                                self.try_consume_form_value_or_reference_param(&tokens, i, form_scope)
+                            if let Some(next_i) = self
+                                .try_consume_form_value_or_reference_param(&tokens, i, form_scope)
                             {
                                 i = next_i;
                                 continue;
@@ -573,12 +610,14 @@ impl<'a> Collector<'a> {
                                 let declared_type = match tokens.get(j) {
                                     Some(tok) if self.token_matches_keyword(tok, "type") => {
                                         j += 1;
-                                        while j < tokens.len() && tokens[j].kind == TokenKind::Comment {
+                                        while j < tokens.len()
+                                            && tokens[j].kind == TokenKind::Comment
+                                        {
                                             j += 1;
                                         }
                                         let expr_start = j;
-                                        let expr_end =
-                                            self.skip_form_header_type_expression(&tokens, expr_start);
+                                        let expr_end = self
+                                            .skip_form_header_type_expression(&tokens, expr_start);
                                         let dt = self.field_type_ref_from_token_slice(
                                             &tokens,
                                             expr_start,
@@ -590,12 +629,14 @@ impl<'a> Collector<'a> {
                                     }
                                     Some(tok) if self.token_matches_keyword(tok, "like") => {
                                         j += 1;
-                                        while j < tokens.len() && tokens[j].kind == TokenKind::Comment {
+                                        while j < tokens.len()
+                                            && tokens[j].kind == TokenKind::Comment
+                                        {
                                             j += 1;
                                         }
                                         let expr_start = j;
-                                        let expr_end =
-                                            self.skip_form_header_type_expression(&tokens, expr_start);
+                                        let expr_end = self
+                                            .skip_form_header_type_expression(&tokens, expr_start);
                                         let dt = self.field_type_ref_from_token_slice(
                                             &tokens,
                                             expr_start,
@@ -648,7 +689,9 @@ impl<'a> Collector<'a> {
             Some(t) if t.kind == TokenKind::Ident => *t,
             _ => return false,
         };
-        if self.token_matches_keyword(name, "value") || self.token_matches_keyword(name, "reference") {
+        if self.token_matches_keyword(name, "value")
+            || self.token_matches_keyword(name, "reference")
+        {
             return false;
         }
         let mut j = idx + 1;
@@ -667,7 +710,8 @@ impl<'a> Collector<'a> {
         scope: ScopeId,
     ) -> Option<usize> {
         let kw = tokens.get(i)?;
-        if !self.token_matches_keyword(kw, "value") && !self.token_matches_keyword(kw, "reference") {
+        if !self.token_matches_keyword(kw, "value") && !self.token_matches_keyword(kw, "reference")
+        {
             return None;
         }
         let mut j = i + 1;
@@ -723,11 +767,21 @@ impl<'a> Collector<'a> {
         let expr_end = self.skip_form_header_type_expression(tokens, expr_start);
         let declared_type =
             self.field_type_ref_from_token_slice(tokens, expr_start, expr_end, clause_ns);
-        self.declare_symbol(scope, name, SymbolKind::Parameter, range, None, declared_type);
+        self.declare_symbol(
+            scope,
+            name,
+            SymbolKind::Parameter,
+            range,
+            None,
+            declared_type,
+        );
         Some(expr_end)
     }
 
-    fn try_parse_simple_type_ref_chain_tokens(&self, tokens: &[&Token]) -> Option<(Arc<str>, Vec<Arc<str>>)> {
+    fn try_parse_simple_type_ref_chain_tokens(
+        &self,
+        tokens: &[&Token],
+    ) -> Option<(Arc<str>, Vec<Arc<str>>)> {
         if tokens.first()?.kind != TokenKind::Ident {
             return None;
         }
@@ -747,7 +801,9 @@ impl<'a> Collector<'a> {
             if id.kind != TokenKind::Ident {
                 return None;
             }
-            field_path.push(Arc::<str>::from(id.lexeme(self.source).to_ascii_lowercase()));
+            field_path.push(Arc::<str>::from(
+                id.lexeme(self.source).to_ascii_lowercase(),
+            ));
             i += 1;
         }
         Some((base_name, field_path))
@@ -768,7 +824,9 @@ impl<'a> Collector<'a> {
         if filtered.is_empty() {
             return None;
         }
-        if let Some((base_name, field_path)) = self.try_parse_simple_type_ref_chain_tokens(&filtered) {
+        if let Some((base_name, field_path)) =
+            self.try_parse_simple_type_ref_chain_tokens(&filtered)
+        {
             return Some(FieldTypeRefData {
                 namespace: clause_ns,
                 base_name,
@@ -815,7 +873,12 @@ impl<'a> Collector<'a> {
     }
 
     fn walk_if_stmt(&mut self, node: NodeId, scope: ScopeId) {
-        let branch_scope = self.push_scope(ScopeKind::IfBranch, self.file.range(node), Some(scope), None);
+        let branch_scope = self.push_scope(
+            ScopeKind::IfBranch,
+            self.file.range(node),
+            Some(scope),
+            None,
+        );
         for child in self.file.children(node) {
             match self.file.kind(child) {
                 SyntaxKind::ElseifClause | SyntaxKind::ElseClause => self.walk_node(child, scope),
@@ -833,7 +896,13 @@ impl<'a> Collector<'a> {
 
     fn collect_type_ref(&mut self, node: NodeId, scope: ScopeId) {
         if let Some((namespace, base_name, range, field_path)) = self.type_ref_access_chain(node) {
-            self.add_reference(scope, Arc::clone(&base_name), namespace, ReferenceKind::TypeRef, range);
+            self.add_reference(
+                scope,
+                Arc::clone(&base_name),
+                namespace,
+                ReferenceKind::TypeRef,
+                range,
+            );
             if !field_path.is_empty() {
                 self.field_accesses.push(FieldAccess {
                     scope,
@@ -850,7 +919,13 @@ impl<'a> Collector<'a> {
         match self.file.kind(node) {
             SyntaxKind::ExprIdent => {
                 if let Some((name, range)) = self.node_name(node) {
-                    self.add_reference(scope, name, Namespace::Value, ReferenceKind::Identifier, range);
+                    self.add_reference(
+                        scope,
+                        name,
+                        Namespace::Value,
+                        ReferenceKind::Identifier,
+                        range,
+                    );
                 }
             }
             SyntaxKind::SelectorExpr => self.collect_selector_expr(node, scope),
@@ -892,7 +967,9 @@ impl<'a> Collector<'a> {
     }
 
     fn collect_selector_expr(&mut self, node: NodeId, scope: ScopeId) {
-        if let Some((namespace, base_name, base_range, field_path)) = self.selector_access_chain(node) {
+        if let Some((namespace, base_name, base_range, field_path)) =
+            self.selector_access_chain(node)
+        {
             let kind = if namespace == Namespace::Type {
                 ReferenceKind::StaticTarget
             } else {
@@ -948,7 +1025,13 @@ impl<'a> Collector<'a> {
             match self.file.kind(callee) {
                 SyntaxKind::ExprIdent => {
                     if let Some((name, range)) = self.node_name(callee) {
-                        self.add_reference(scope, name, Namespace::Routine, ReferenceKind::RoutineCall, range);
+                        self.add_reference(
+                            scope,
+                            name,
+                            Namespace::Routine,
+                            ReferenceKind::RoutineCall,
+                            range,
+                        );
                     }
                 }
                 _ => self.collect_expr(callee, scope),
@@ -1027,7 +1110,12 @@ impl<'a> Collector<'a> {
 
             let namespace = type_namespace.unwrap_or(Namespace::Type);
             let (base_name, field_path) = self.type_ref_lookup_parts(child)?;
-            let symbol_id = self.lookup_structure_symbol(scope, namespace, base_name.as_ref(), !field_path.is_empty())?;
+            let symbol_id = self.lookup_structure_symbol(
+                scope,
+                namespace,
+                base_name.as_ref(),
+                !field_path.is_empty(),
+            )?;
             let structure_id = self.symbol(symbol_id).structure?;
             return self.resolve_structure_path(structure_id, &field_path);
         }
@@ -1041,17 +1129,18 @@ impl<'a> Collector<'a> {
         name: &str,
         in_type_position: bool,
     ) -> Option<SymbolId> {
-        self.lookup_symbol_in_scope_chain(scope, namespace, name).or_else(|| {
-            if !in_type_position {
-                return None;
-            }
-            let fallback = match namespace {
-                Namespace::Type => Namespace::Value,
-                Namespace::Value => Namespace::Type,
-                Namespace::Routine => return None,
-            };
-            self.lookup_symbol_in_scope_chain(scope, fallback, name)
-        })
+        self.lookup_symbol_in_scope_chain(scope, namespace, name)
+            .or_else(|| {
+                if !in_type_position {
+                    return None;
+                }
+                let fallback = match namespace {
+                    Namespace::Type => Namespace::Value,
+                    Namespace::Value => Namespace::Type,
+                    Namespace::Routine => return None,
+                };
+                self.lookup_symbol_in_scope_chain(scope, fallback, name)
+            })
     }
 
     fn resolve_structure_path(
@@ -1073,7 +1162,11 @@ impl<'a> Collector<'a> {
         Some(structure_id)
     }
 
-    fn resolve_field_type_ref(&self, scope: ScopeId, type_ref: &FieldTypeRefData) -> Option<StructureId> {
+    fn resolve_field_type_ref(
+        &self,
+        scope: ScopeId,
+        type_ref: &FieldTypeRefData,
+    ) -> Option<StructureId> {
         let symbol_id = self.lookup_structure_symbol(
             scope,
             type_ref.namespace,
@@ -1115,7 +1208,10 @@ impl<'a> Collector<'a> {
                 names.push(Arc::clone(&symbol.name));
             }
         }
-        if let Some(stem) = Path::new(self.uri.as_ref()).file_stem().and_then(|s| s.to_str()) {
+        if let Some(stem) = Path::new(self.uri.as_ref())
+            .file_stem()
+            .and_then(|s| s.to_str())
+        {
             names.push(Arc::<str>::from(stem.to_ascii_lowercase()));
         }
         names.sort();
@@ -1151,7 +1247,10 @@ impl<'a> Collector<'a> {
                         | "PRIVATE"
                         | "SECTION"
                 ) {
-                    return Some((Arc::<str>::from(text.to_ascii_lowercase()), token.range.clone()));
+                    return Some((
+                        Arc::<str>::from(text.to_ascii_lowercase()),
+                        token.range.clone(),
+                    ));
                 }
             }
         }
@@ -1164,7 +1263,10 @@ impl<'a> Collector<'a> {
             if let Some(token) = self.token_for_node(current)
                 && token.kind == TokenKind::Ident
             {
-                return Some((Arc::<str>::from(token.lexeme(self.source).to_ascii_lowercase()), token.range.clone()));
+                return Some((
+                    Arc::<str>::from(token.lexeme(self.source).to_ascii_lowercase()),
+                    token.range.clone(),
+                ));
             }
             for child in self.file.children(current).rev() {
                 stack.push(child);
@@ -1396,7 +1498,8 @@ impl<'a> Collector<'a> {
                 ))
             }
             SyntaxKind::SelectorExpr => {
-                let (base_namespace, base_name, base_range, mut field_path) = self.selector_access_chain(base)?;
+                let (base_namespace, base_name, base_range, mut field_path) =
+                    self.selector_access_chain(base)?;
                 field_path.push(FieldAccessSegment {
                     name: field_name,
                     range: field_range,

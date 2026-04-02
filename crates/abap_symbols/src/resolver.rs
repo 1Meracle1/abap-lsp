@@ -9,8 +9,7 @@ fn is_builtin_type(name: &str) -> bool {
     let lower = name.trim();
     matches!(
         lower,
-        "i"
-            | "int1"
+        "i" | "int1"
             | "int2"
             | "int4"
             | "int8"
@@ -102,20 +101,20 @@ pub fn resolve_unit(unit: &mut UnitAnalysis) {
                 Arc::clone(&reference.name),
             )
         };
-        let resolution = match lookup_reference_scope_chain(unit, &scope_index, scope, namespace, kind, &name)
-        {
-            Some(symbol) => Some(Resolution::Symbol(SymbolHandle {
-                unit: unit_id,
-                symbol,
-            })),
-            None if namespace == Namespace::Type && is_builtin_type(name.as_ref()) => {
-                Some(Resolution::BuiltinType)
-            }
-            None if namespace == Namespace::Routine && is_builtin_routine(name.as_ref()) => {
-                Some(Resolution::BuiltinRoutine)
-            }
-            None => None,
-        };
+        let resolution =
+            match lookup_reference_scope_chain(unit, &scope_index, scope, namespace, kind, &name) {
+                Some(symbol) => Some(Resolution::Symbol(SymbolHandle {
+                    unit: unit_id,
+                    symbol,
+                })),
+                None if namespace == Namespace::Type && is_builtin_type(name.as_ref()) => {
+                    Some(Resolution::BuiltinType)
+                }
+                None if namespace == Namespace::Routine && is_builtin_routine(name.as_ref()) => {
+                    Some(Resolution::BuiltinRoutine)
+                }
+                None => None,
+            };
         unit.references[idx].resolution = resolution;
     }
 }
@@ -165,7 +164,9 @@ pub fn resolve_project_cross_unit(units: &mut [UnitAnalysis]) {
             if reference.resolution.is_some() {
                 continue;
             }
-            let namespaces = if reference.kind == ReferenceKind::TypeRef && reference.namespace == Namespace::Value {
+            let namespaces = if reference.kind == ReferenceKind::TypeRef
+                && reference.namespace == Namespace::Value
+            {
                 [Namespace::Value, Namespace::Type]
             } else {
                 [reference.namespace, reference.namespace]

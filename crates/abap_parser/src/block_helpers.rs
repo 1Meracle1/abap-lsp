@@ -1,8 +1,8 @@
-use abap_ast::arena::{NodeId, SyntaxTreeBuilder};
 use abap_ast::SyntaxKind;
+use abap_ast::arena::{NodeId, SyntaxTreeBuilder};
 use abap_lexer::{Token, TokenKind};
 
-use crate::stmt_period::{scan_until_statement_period, unterminated_err_end, StmtPeriodScan};
+use crate::stmt_period::{StmtPeriodScan, scan_until_statement_period, unterminated_err_end};
 use crate::syntax::token_leaf;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -86,7 +86,9 @@ pub(crate) fn recover_skip_after_keyword(
     keyword: &str,
 ) -> usize {
     while idx < tokens.len() {
-        if tokens[idx].kind == TokenKind::Ident && tokens[idx].lexeme(source).eq_ignore_ascii_case(keyword) {
+        if tokens[idx].kind == TokenKind::Ident
+            && tokens[idx].lexeme(source).eq_ignore_ascii_case(keyword)
+        {
             let mut j = idx + 1;
             j = skip_trivia(tokens, j);
             if tokens.get(j).map(|t| t.kind) == Some(TokenKind::Period) {
@@ -153,7 +155,10 @@ pub(crate) fn parse_header_until_period(
                 start_tok.range.start..err_end,
                 &err_children,
             );
-            (vec![header], next_after_unterminated_scan(tokens, end_exclusive))
+            (
+                vec![header],
+                next_after_unterminated_scan(tokens, end_exclusive),
+            )
         }
     }
 }

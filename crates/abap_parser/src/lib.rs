@@ -1,20 +1,20 @@
-mod interner;
-mod expr;
-mod data_decl;
-mod block_helpers;
 mod assign_stmt;
-mod stmt_period;
-mod simple_stmt;
-mod if_stmt;
+mod block_helpers;
 mod control_stmt;
+mod data_decl;
+mod expr;
+mod if_stmt;
+mod interner;
+mod simple_stmt;
+mod stmt_period;
 mod surface_stmt;
 pub mod syntax;
 
+use crate::stmt_period::is_definite_stmt_lead_keyword;
 use abap_ast::SyntaxKind;
 use abap_ast::arena::{NodeId, SyntaxTreeBuilder};
 use abap_lexer::Token;
 use abap_lexer::TokenKind;
-use crate::stmt_period::is_definite_stmt_lead_keyword;
 
 fn prev_non_comment_is_ident(tokens: &[Token], idx: usize) -> bool {
     let mut j = idx;
@@ -65,7 +65,8 @@ pub(crate) fn parse_file_level_item(
     }
     if t.kind == TokenKind::Ident
         && t.lexeme(source).eq_ignore_ascii_case("statics")
-        && let Some((node, next)) = data_decl::try_parse_statics_decl(b, source, tokens, idx, errors)
+        && let Some((node, next)) =
+            data_decl::try_parse_statics_decl(b, source, tokens, idx, errors)
     {
         return (node, next);
     }
@@ -77,7 +78,8 @@ pub(crate) fn parse_file_level_item(
     }
     if t.kind == TokenKind::Ident
         && t.lexeme(source).eq_ignore_ascii_case("constants")
-        && let Some((node, next)) = data_decl::try_parse_constants_decl(b, source, tokens, idx, errors)
+        && let Some((node, next)) =
+            data_decl::try_parse_constants_decl(b, source, tokens, idx, errors)
     {
         return (node, next);
     }
@@ -88,12 +90,14 @@ pub(crate) fn parse_file_level_item(
         return (node, next);
     }
     if t.kind == TokenKind::Ident
-        && let Some((node, next)) = control_stmt::try_parse_case_stmt(b, source, tokens, idx, errors)
+        && let Some((node, next)) =
+            control_stmt::try_parse_case_stmt(b, source, tokens, idx, errors)
     {
         return (node, next);
     }
     if t.kind == TokenKind::Ident
-        && let Some((node, next)) = control_stmt::try_parse_while_stmt(b, source, tokens, idx, errors)
+        && let Some((node, next)) =
+            control_stmt::try_parse_while_stmt(b, source, tokens, idx, errors)
     {
         return (node, next);
     }
@@ -103,7 +107,8 @@ pub(crate) fn parse_file_level_item(
         return (node, next);
     }
     if t.kind == TokenKind::Ident
-        && let Some((node, next)) = control_stmt::try_parse_loop_stmt(b, source, tokens, idx, errors)
+        && let Some((node, next)) =
+            control_stmt::try_parse_loop_stmt(b, source, tokens, idx, errors)
     {
         return (node, next);
     }
@@ -113,72 +118,86 @@ pub(crate) fn parse_file_level_item(
         return (node, next);
     }
     if t.kind == TokenKind::Ident
-        && let Some((node, next)) = surface_stmt::try_parse_report_stmt(b, source, tokens, idx, errors)
+        && let Some((node, next)) =
+            surface_stmt::try_parse_report_stmt(b, source, tokens, idx, errors)
     {
         return (node, next);
     }
     if t.kind == TokenKind::Ident
-        && let Some((node, next)) = surface_stmt::try_parse_include_stmt(b, source, tokens, idx, errors)
+        && let Some((node, next)) =
+            surface_stmt::try_parse_include_stmt(b, source, tokens, idx, errors)
     {
         return (node, next);
     }
     if t.kind == TokenKind::Ident
-        && let Some((node, next)) = surface_stmt::try_parse_event_block(b, source, tokens, idx, errors)
+        && let Some((node, next)) =
+            surface_stmt::try_parse_event_block(b, source, tokens, idx, errors)
     {
         return (node, next);
     }
     if t.kind == TokenKind::Ident
-        && let Some((node, next)) = surface_stmt::try_parse_form_decl(b, source, tokens, idx, errors)
+        && let Some((node, next)) =
+            surface_stmt::try_parse_form_decl(b, source, tokens, idx, errors)
     {
         return (node, next);
     }
     if t.kind == TokenKind::Ident
-        && let Some((node, next)) = surface_stmt::try_parse_module_decl(b, source, tokens, idx, errors)
+        && let Some((node, next)) =
+            surface_stmt::try_parse_module_decl(b, source, tokens, idx, errors)
     {
         return (node, next);
     }
     if t.kind == TokenKind::Ident
-        && let Some((node, next)) = surface_stmt::try_parse_class_decl(b, source, tokens, idx, errors)
+        && let Some((node, next)) =
+            surface_stmt::try_parse_class_decl(b, source, tokens, idx, errors)
     {
         return (node, next);
     }
     if t.kind == TokenKind::Ident
-        && let Some((node, next)) = surface_stmt::try_parse_interface_decl(b, source, tokens, idx, errors)
+        && let Some((node, next)) =
+            surface_stmt::try_parse_interface_decl(b, source, tokens, idx, errors)
     {
         return (node, next);
     }
     if t.kind == TokenKind::Ident
-        && let Some((node, next)) = surface_stmt::try_parse_method_decl(b, source, tokens, idx, errors)
+        && let Some((node, next)) =
+            surface_stmt::try_parse_method_decl(b, source, tokens, idx, errors)
     {
         return (node, next);
     }
     if t.kind == TokenKind::Ident
-        && let Some((node, next)) = surface_stmt::try_parse_select_stmt(b, source, tokens, idx, errors)
+        && let Some((node, next)) =
+            surface_stmt::try_parse_select_stmt(b, source, tokens, idx, errors)
     {
         return (node, next);
     }
     if t.kind == TokenKind::Ident
-        && let Some((node, next)) = surface_stmt::try_parse_read_table_stmt(b, source, tokens, idx, errors)
+        && let Some((node, next)) =
+            surface_stmt::try_parse_read_table_stmt(b, source, tokens, idx, errors)
     {
         return (node, next);
     }
     if t.kind == TokenKind::Ident
-        && let Some((node, next)) = surface_stmt::try_parse_write_stmt(b, source, tokens, idx, errors)
+        && let Some((node, next)) =
+            surface_stmt::try_parse_write_stmt(b, source, tokens, idx, errors)
     {
         return (node, next);
     }
     if t.kind == TokenKind::Ident
-        && let Some((node, next)) = surface_stmt::try_parse_raise_stmt(b, source, tokens, idx, errors)
+        && let Some((node, next)) =
+            surface_stmt::try_parse_raise_stmt(b, source, tokens, idx, errors)
     {
         return (node, next);
     }
     if t.kind == TokenKind::Ident
-        && let Some((node, next)) = surface_stmt::try_parse_endat_stmt(b, source, tokens, idx, errors)
+        && let Some((node, next)) =
+            surface_stmt::try_parse_endat_stmt(b, source, tokens, idx, errors)
     {
         return (node, next);
     }
     if t.kind == TokenKind::Ident
-        && let Some((node, next)) = surface_stmt::try_parse_call_like_stmt(b, source, tokens, idx, errors)
+        && let Some((node, next)) =
+            surface_stmt::try_parse_call_like_stmt(b, source, tokens, idx, errors)
     {
         return (node, next);
     }
@@ -198,11 +217,7 @@ pub(crate) fn parse_file_level_item(
         });
         let a = syntax::token_leaf(b, t);
         let p = syntax::token_leaf(b, period);
-        let node = b.branch(
-            SyntaxKind::Error,
-            t.range.start..period.range.end,
-            &[a, p],
-        );
+        let node = b.branch(SyntaxKind::Error, t.range.start..period.range.end, &[a, p]);
         return (node, idx + 2);
     }
     if let Some((node, next)) = simple_stmt::try_parse_simple_stmt(b, source, tokens, idx, errors) {
@@ -235,7 +250,10 @@ pub struct ParseResult {
 }
 
 pub fn parse(source: &str) -> ParseResult {
-    let TokenizeResult { tokens, errors: lex_errors } = tokenize(source);
+    let TokenizeResult {
+        tokens,
+        errors: lex_errors,
+    } = tokenize(source);
     let mut errors: Vec<ParseError> = lex_errors
         .into_iter()
         .map(|e| ParseError {
@@ -295,7 +313,9 @@ mod tests {
             1
         );
         assert_eq!(
-            parsed.file.count_kind(root, SyntaxKind::TemplateInterpolation),
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::TemplateInterpolation),
             1
         );
         assert_eq!(
@@ -310,10 +330,7 @@ mod tests {
         assert!(parsed.errors.is_empty());
         let root = parsed.file.root();
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::DataDecl), 1);
-        assert_eq!(
-            parsed.file.count_kind(root, SyntaxKind::DataTypedClause),
-            2
-        );
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::DataTypedClause), 2);
     }
 
     #[test]
@@ -346,12 +363,17 @@ mod tests {
     fn simple_statement_requires_closing_period_before_eof() {
         let parsed = parse("REPORT zfoo");
         assert!(
-            parsed.errors.iter().any(|e| e.message.contains("expected '.'")),
+            parsed
+                .errors
+                .iter()
+                .any(|e| e.message.contains("expected '.'")),
             "{:?}",
             parsed.errors
         );
         assert_eq!(
-            parsed.file.count_kind(parsed.file.root(), SyntaxKind::SimpleStmt),
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::SimpleStmt),
             0
         );
     }
@@ -360,12 +382,17 @@ mod tests {
     fn simple_statement_split_across_lines_still_requires_period() {
         let parsed = parse("REPORT zfoo\nDATA lv TYPE i.");
         assert!(
-            parsed.errors.iter().any(|e| e.message.contains("expected '.'")),
+            parsed
+                .errors
+                .iter()
+                .any(|e| e.message.contains("expected '.'")),
             "{:?}",
             parsed.errors
         );
         assert_eq!(
-            parsed.file.count_kind(parsed.file.root(), SyntaxKind::DataDecl),
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::DataDecl),
             1
         );
     }

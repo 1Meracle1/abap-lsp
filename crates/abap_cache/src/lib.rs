@@ -4,8 +4,9 @@ use std::sync::Arc;
 
 use abap_parser::{ParseResult, parse};
 use abap_symbols::{
-    Namespace, ProjectAnalysis, ProjectInput, Resolution, ScopeId, StructureFieldInfo, StructureFieldShape,
-    StructureId, SymbolData, SymbolId, SymbolKind, UnitAnalysis, analyze_project,
+    Namespace, ProjectAnalysis, ProjectInput, Resolution, ScopeId, StructureFieldInfo,
+    StructureFieldShape, StructureId, SymbolData, SymbolId, SymbolKind, UnitAnalysis,
+    analyze_project,
 };
 use parking_lot::RwLock;
 
@@ -82,7 +83,11 @@ impl AnalysisSnapshot {
         self.symbols.structure_field_infos(structure_id)
     }
 
-    pub fn structure_field_info(&self, structure_id: StructureId, field_name: &str) -> Option<StructureFieldInfo> {
+    pub fn structure_field_info(
+        &self,
+        structure_id: StructureId,
+        field_name: &str,
+    ) -> Option<StructureFieldInfo> {
         self.symbols.structure_field_info(structure_id, field_name)
     }
 
@@ -91,10 +96,14 @@ impl AnalysisSnapshot {
         structure_id: StructureId,
         field_path: &[&str],
     ) -> Option<StructureFieldInfo> {
-        self.symbols.resolve_structure_field_path(structure_id, field_path)
+        self.symbols
+            .resolve_structure_field_path(structure_id, field_path)
     }
 
-    pub fn symbol_structure_field_infos(&self, symbol_id: SymbolId) -> Option<Vec<StructureFieldInfo>> {
+    pub fn symbol_structure_field_infos(
+        &self,
+        symbol_id: SymbolId,
+    ) -> Option<Vec<StructureFieldInfo>> {
         let structure_id = self.symbols.symbol(symbol_id).structure?;
         Some(self.structure_field_infos(structure_id))
     }
@@ -109,15 +118,16 @@ impl AnalysisSnapshot {
     }
 
     pub fn hovered_component_at(&self, offset: usize) -> Option<HoveredComponentInfo> {
-        let (access, segment_index) = self
-            .symbols
-            .field_accesses
-            .iter()
-            .find_map(|access| {
-                access.field_path.iter().enumerate().find_map(|(idx, segment)| {
-                    (segment.range.start <= offset && offset < segment.range.end).then_some((access, idx))
+        let (access, segment_index) = self.symbols.field_accesses.iter().find_map(|access| {
+            access
+                .field_path
+                .iter()
+                .enumerate()
+                .find_map(|(idx, segment)| {
+                    (segment.range.start <= offset && offset < segment.range.end)
+                        .then_some((access, idx))
                 })
-            })?;
+        })?;
         let (unit, symbol_id) = resolve_field_access_base_symbol(self, access)?;
         let symbol = unit.symbol(symbol_id);
         let structure_id = symbol.structure?;
@@ -180,7 +190,12 @@ impl AnalysisSnapshot {
             .symbols
             .iter()
             .filter(|symbol| symbol.decl_range.start <= offset && offset < symbol.decl_range.end)
-            .min_by_key(|symbol| symbol.decl_range.end.saturating_sub(symbol.decl_range.start))?;
+            .min_by_key(|symbol| {
+                symbol
+                    .decl_range
+                    .end
+                    .saturating_sub(symbol.decl_range.start)
+            })?;
 
         Some(HoveredSymbolInfo {
             range: symbol.decl_range.clone(),
@@ -200,7 +215,11 @@ impl AnalysisSnapshot {
         )?;
         let mut structure_id = unit.symbol(symbol_id).structure?;
         if !query.component_path.is_empty() {
-            let path: Vec<_> = query.component_path.iter().map(|part| part.as_ref()).collect();
+            let path: Vec<_> = query
+                .component_path
+                .iter()
+                .map(|part| part.as_ref())
+                .collect();
             let field = unit.resolve_structure_field_path(structure_id, &path)?;
             structure_id = match field.shape {
                 StructureFieldShape::Structured { structure } => structure,
@@ -217,9 +236,11 @@ impl AnalysisSnapshot {
                 declared_type: field.type_ref.as_ref().map(format_field_type_ref),
                 kind: match field.shape {
                     StructureFieldShape::Scalar => HoveredComponentKind::Scalar,
-                    StructureFieldShape::Structured { structure } => HoveredComponentKind::Structured {
-                        structure_name: Arc::clone(&unit.structure(structure).name),
-                    },
+                    StructureFieldShape::Structured { structure } => {
+                        HoveredComponentKind::Structured {
+                            structure_name: Arc::clone(&unit.structure(structure).name),
+                        }
+                    }
                 },
             })
             .collect();
@@ -233,12 +254,8 @@ impl AnalysisSnapshot {
 
     fn selector_completion_query_at(&self, offset: usize) -> Option<SelectorCompletionQuery> {
         let context = selector_completion_context(&self.parse, offset)?;
-        let query = parse_selector_completion_query(
-            self.text.as_ref(),
-            &self.parse,
-            offset,
-            &context,
-        )?;
+        let query =
+            parse_selector_completion_query(self.text.as_ref(), &self.parse, offset, &context)?;
         Some(SelectorCompletionQuery {
             scope: innermost_scope_at(&self.symbols, query.replace_range.start),
             base_name: query.base_name,
@@ -337,14 +354,10 @@ fn markdown_lines_for_resolution(
             }
             lines
         }
-        Resolution::BuiltinType => vec![
-            format!("`{at_name}`"),
-            "Built-in ABAP type".to_string(),
-        ],
-        Resolution::BuiltinRoutine => vec![
-            format!("`{at_name}`"),
-            "Built-in ABAP routine".to_string(),
-        ],
+        Resolution::BuiltinType => vec![format!("`{at_name}`"), "Built-in ABAP type".to_string()],
+        Resolution::BuiltinRoutine => {
+            vec![format!("`{at_name}`"), "Built-in ABAP routine".to_string()]
+        }
         Resolution::External => vec![
             format!("`{at_name}`"),
             "External reference (not resolved in this workspace)".to_string(),
@@ -406,27 +419,33 @@ fn resolve_symbol_from_context<'a>(
 ) -> Option<(&'a UnitAnalysis, SymbolId)> {
     let current_unit = &snapshot.symbols;
     let scope_index = build_scope_index(current_unit);
-    for namespace in [Some(namespace), fallback_namespace_for_context(namespace, in_type_position)] {
+    for namespace in [
+        Some(namespace),
+        fallback_namespace_for_context(namespace, in_type_position),
+    ] {
         let Some(namespace) = namespace else {
             continue;
         };
-        if let Some(symbol_id) = lookup_scope_chain(
-            current_unit,
-            &scope_index,
-            scope,
-            namespace,
-            name,
-        ) {
+        if let Some(symbol_id) =
+            lookup_scope_chain(current_unit, &scope_index, scope, namespace, name)
+        {
             return Some((current_unit, symbol_id));
         }
     }
 
-    let namespaces = [Some(namespace), fallback_namespace_for_context(namespace, in_type_position)];
+    let namespaces = [
+        Some(namespace),
+        fallback_namespace_for_context(namespace, in_type_position),
+    ];
     for namespace in namespaces {
         let Some(namespace) = namespace else {
             continue;
         };
-        for target in current_unit.include_edges.iter().filter_map(|edge| edge.target) {
+        for target in current_unit
+            .include_edges
+            .iter()
+            .filter_map(|edge| edge.target)
+        {
             let unit = &snapshot.project.units[target.as_usize()];
             if let Some(symbol_id) = unit
                 .symbols
@@ -466,7 +485,10 @@ fn resolve_symbol_from_context<'a>(
     None
 }
 
-fn fallback_namespace_for_context(namespace: Namespace, in_type_position: bool) -> Option<Namespace> {
+fn fallback_namespace_for_context(
+    namespace: Namespace,
+    in_type_position: bool,
+) -> Option<Namespace> {
     if !in_type_position {
         return None;
     }
@@ -486,7 +508,10 @@ fn innermost_scope_at(unit: &UnitAnalysis, offset: usize) -> ScopeId {
         .unwrap_or(unit.root_scope)
 }
 
-fn selector_completion_context(parse: &ParseResult, offset: usize) -> Option<SelectorCursorContext> {
+fn selector_completion_context(
+    parse: &ParseResult,
+    offset: usize,
+) -> Option<SelectorCursorContext> {
     let mut path = Vec::new();
     let mut stack = vec![(parse.file.root(), Vec::new())];
     while let Some((node, mut current_path)) = stack.pop() {
@@ -643,14 +668,24 @@ fn token_window_for_range(parse: &ParseResult, range: &Range<usize>) -> Option<(
     (start <= end).then_some((start, end + 1))
 }
 
-fn prefix_token_at_offset(parse: &ParseResult, start: usize, end: usize, offset: usize) -> Option<usize> {
+fn prefix_token_at_offset(
+    parse: &ParseResult,
+    start: usize,
+    end: usize,
+    offset: usize,
+) -> Option<usize> {
     (start..end).find(|&idx| {
         let token = &parse.tokens[idx];
         token.kind.as_str() == "Ident" && token.range.start <= offset && offset <= token.range.end
     })
 }
 
-fn first_token_starting_at_or_after(parse: &ParseResult, start: usize, end: usize, offset: usize) -> usize {
+fn first_token_starting_at_or_after(
+    parse: &ParseResult,
+    start: usize,
+    end: usize,
+    offset: usize,
+) -> usize {
     (start..end)
         .find(|&idx| parse.tokens[idx].range.start >= offset)
         .unwrap_or(end)
@@ -666,7 +701,11 @@ fn previous_significant_token(parse: &ParseResult, start: usize, mut end: usize)
     None
 }
 
-fn selector_operator_before_token(parse: &ParseResult, start: usize, end: usize) -> Option<(usize, SelectorOperator)> {
+fn selector_operator_before_token(
+    parse: &ParseResult,
+    start: usize,
+    end: usize,
+) -> Option<(usize, SelectorOperator)> {
     let op_idx = previous_significant_token(parse, start, end)?;
     let op = &parse.tokens[op_idx];
     let left_idx = previous_significant_token(parse, start, op_idx)?;
@@ -685,7 +724,12 @@ fn selector_operator_before_token(parse: &ParseResult, start: usize, end: usize)
     Some((op_idx, kind))
 }
 
-fn type_keyword_before_base(parse: &ParseResult, text: &str, start: usize, base_idx: usize) -> bool {
+fn type_keyword_before_base(
+    parse: &ParseResult,
+    text: &str,
+    start: usize,
+    base_idx: usize,
+) -> bool {
     let Some(keyword_idx) = previous_significant_token(parse, start, base_idx) else {
         return false;
     };
@@ -699,7 +743,12 @@ pub struct DocumentStore {
 }
 
 impl DocumentStore {
-    pub fn publish(&self, uri: impl Into<Arc<str>>, version: i32, text: &str) -> Arc<AnalysisSnapshot> {
+    pub fn publish(
+        &self,
+        uri: impl Into<Arc<str>>,
+        version: i32,
+        text: &str,
+    ) -> Arc<AnalysisSnapshot> {
         let uri = uri.into();
         let text = Arc::<str>::from(text);
         let parse = Arc::new(parse(&text));
@@ -718,10 +767,23 @@ impl DocumentStore {
             .collect();
         drop(existing);
 
-        if let Some(existing) = staged.iter_mut().find(|(existing_uri, _, _, _)| existing_uri.as_ref() == uri.as_ref()) {
-            *existing = (Arc::clone(&uri), version, Arc::clone(&text), Arc::clone(&parse));
+        if let Some(existing) = staged
+            .iter_mut()
+            .find(|(existing_uri, _, _, _)| existing_uri.as_ref() == uri.as_ref())
+        {
+            *existing = (
+                Arc::clone(&uri),
+                version,
+                Arc::clone(&text),
+                Arc::clone(&parse),
+            );
         } else {
-            staged.push((Arc::clone(&uri), version, Arc::clone(&text), Arc::clone(&parse)));
+            staged.push((
+                Arc::clone(&uri),
+                version,
+                Arc::clone(&text),
+                Arc::clone(&parse),
+            ));
         }
 
         let inputs: Vec<ProjectInput<'_>> = staged
@@ -779,11 +841,13 @@ mod tests {
         let snapshot = store.publish("file:///demo.abap", 1, "DATA foo TYPE i.");
 
         assert_eq!(store.len(), 1);
-        assert!(snapshot
-            .symbols
-            .symbols
-            .iter()
-            .any(|symbol| symbol.name.as_ref() == "foo"));
+        assert!(
+            snapshot
+                .symbols
+                .symbols
+                .iter()
+                .any(|symbol| symbol.name.as_ref() == "foo")
+        );
         assert_eq!(store.get("file:///demo.abap").unwrap().version, 1);
     }
 
@@ -814,7 +878,10 @@ DATA ls_outer TYPE ty_outer.",
             .expect("symbol field infos");
         assert_eq!(fields.len(), 1);
         assert_eq!(fields[0].name.as_ref(), "inner");
-        assert!(matches!(fields[0].shape, StructureFieldShape::Structured { .. }));
+        assert!(matches!(
+            fields[0].shape,
+            StructureFieldShape::Structured { .. }
+        ));
 
         let nested = snapshot
             .resolve_symbol_field_path(ls_outer.id, &["inner", "a"])

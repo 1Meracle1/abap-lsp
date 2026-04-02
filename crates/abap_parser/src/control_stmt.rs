@@ -1,14 +1,14 @@
-use abap_ast::arena::{NodeId, SyntaxTreeBuilder};
 use abap_ast::SyntaxKind;
+use abap_ast::arena::{NodeId, SyntaxTreeBuilder};
 use abap_lexer::{Token, TokenKind};
 
 use crate::block_helpers::{
-    error_token_children, is_keyword, next_after_unterminated_scan, parse_body_until_keywords,
-    parse_header_until_period, recover_skip_after_keyword, scan_boundary_keywords, skip_trivia,
-    Boundary,
+    Boundary, error_token_children, is_keyword, next_after_unterminated_scan,
+    parse_body_until_keywords, parse_header_until_period, recover_skip_after_keyword,
+    scan_boundary_keywords, skip_trivia,
 };
 use crate::expr::{parse_arithmetic_expr, parse_logical_expr};
-use crate::stmt_period::{scan_until_statement_period, unterminated_err_end, StmtPeriodScan};
+use crate::stmt_period::{StmtPeriodScan, scan_until_statement_period, unterminated_err_end};
 use crate::syntax::token_leaf;
 
 fn parse_end_keyword(
@@ -80,7 +80,11 @@ pub fn try_parse_while_stmt(
         StmtPeriodScan::Found(period_i) => {
             let cond = parse_logical_expr(b, source, &tokens[idx + 1..period_i], Some(while_tok));
             (
-                vec![token_leaf(b, while_tok), cond, token_leaf(b, &tokens[period_i])],
+                vec![
+                    token_leaf(b, while_tok),
+                    cond,
+                    token_leaf(b, &tokens[period_i]),
+                ],
                 period_i + 1,
             )
         }
@@ -96,7 +100,10 @@ pub fn try_parse_while_stmt(
                 while_tok.range.start..err_end,
                 &err_children,
             );
-            (vec![header], next_after_unterminated_scan(tokens, end_exclusive))
+            (
+                vec![header],
+                next_after_unterminated_scan(tokens, end_exclusive),
+            )
         }
     };
 
@@ -202,7 +209,11 @@ pub fn try_parse_loop_stmt(
         errors,
     );
     children.extend(end_children);
-    let node = b.branch(SyntaxKind::LoopStmt, loop_tok.range.start..end_pos, &children);
+    let node = b.branch(
+        SyntaxKind::LoopStmt,
+        loop_tok.range.start..end_pos,
+        &children,
+    );
     Some((node, next_after))
 }
 
@@ -222,7 +233,11 @@ pub fn try_parse_case_stmt(
         StmtPeriodScan::Found(period_i) => {
             let expr = parse_arithmetic_expr(b, source, &tokens[idx + 1..period_i], Some(case_tok));
             (
-                vec![token_leaf(b, case_tok), expr, token_leaf(b, &tokens[period_i])],
+                vec![
+                    token_leaf(b, case_tok),
+                    expr,
+                    token_leaf(b, &tokens[period_i]),
+                ],
                 period_i + 1,
             )
         }
@@ -238,7 +253,10 @@ pub fn try_parse_case_stmt(
                 case_tok.range.start..err_end,
                 &err_children,
             );
-            (vec![header], next_after_unterminated_scan(tokens, end_exclusive))
+            (
+                vec![header],
+                next_after_unterminated_scan(tokens, end_exclusive),
+            )
         }
     };
 
@@ -256,16 +274,25 @@ pub fn try_parse_case_stmt(
                     errors,
                     "syntax error: expected '.' after WHEN branch",
                 );
-                let (body, after_body) =
-                    parse_body_until_keywords(b, source, tokens, body_start, errors, &["WHEN", "ENDCASE"]);
+                let (body, after_body) = parse_body_until_keywords(
+                    b,
+                    source,
+                    tokens,
+                    body_start,
+                    errors,
+                    &["WHEN", "ENDCASE"],
+                );
                 when_children.extend(body);
                 let end = when_children
                     .last()
                     .copied()
                     .map(|id| b.span(id).end)
                     .unwrap_or(when_tok.range.end);
-                let clause =
-                    b.branch(SyntaxKind::WhenClause, when_tok.range.start..end, &when_children);
+                let clause = b.branch(
+                    SyntaxKind::WhenClause,
+                    when_tok.range.start..end,
+                    &when_children,
+                );
                 children.push(clause);
                 next = after_body;
             }
@@ -284,7 +311,11 @@ pub fn try_parse_case_stmt(
         errors,
     );
     children.extend(end_children);
-    let node = b.branch(SyntaxKind::CaseStmt, case_tok.range.start..end_pos, &children);
+    let node = b.branch(
+        SyntaxKind::CaseStmt,
+        case_tok.range.start..end_pos,
+        &children,
+    );
     Some((node, next_after))
 }
 
@@ -309,12 +340,21 @@ pub fn try_parse_try_stmt(
         errors,
         "syntax error: expected '.' after TRY",
     );
-    let (body, after_body) =
-        parse_body_until_keywords(b, source, tokens, next, errors, &["CATCH", "CLEANUP", "ENDTRY"]);
+    let (body, after_body) = parse_body_until_keywords(
+        b,
+        source,
+        tokens,
+        next,
+        errors,
+        &["CATCH", "CLEANUP", "ENDTRY"],
+    );
     children.extend(body);
     next = after_body;
 
-    while matches!(scan_boundary_keywords(source, tokens, next, &["CATCH"]), Some(Boundary::Keyword("CATCH"))) {
+    while matches!(
+        scan_boundary_keywords(source, tokens, next, &["CATCH"]),
+        Some(Boundary::Keyword("CATCH"))
+    ) {
         let catch_idx = skip_trivia(tokens, next);
         let catch_tok = &tokens[catch_idx];
         let (mut catch_children, body_start) = parse_header_until_period(
@@ -326,16 +366,25 @@ pub fn try_parse_try_stmt(
             errors,
             "syntax error: expected '.' after CATCH clause",
         );
-        let (catch_body, after_catch) =
-            parse_body_until_keywords(b, source, tokens, body_start, errors, &["CATCH", "CLEANUP", "ENDTRY"]);
+        let (catch_body, after_catch) = parse_body_until_keywords(
+            b,
+            source,
+            tokens,
+            body_start,
+            errors,
+            &["CATCH", "CLEANUP", "ENDTRY"],
+        );
         catch_children.extend(catch_body);
         let end = catch_children
             .last()
             .copied()
             .map(|id| b.span(id).end)
             .unwrap_or(catch_tok.range.end);
-        let clause =
-            b.branch(SyntaxKind::CatchClause, catch_tok.range.start..end, &catch_children);
+        let clause = b.branch(
+            SyntaxKind::CatchClause,
+            catch_tok.range.start..end,
+            &catch_children,
+        );
         children.push(clause);
         next = after_catch;
     }
@@ -363,8 +412,11 @@ pub fn try_parse_try_stmt(
             .copied()
             .map(|id| b.span(id).end)
             .unwrap_or(cleanup_tok.range.end);
-        let clause =
-            b.branch(SyntaxKind::CleanupClause, cleanup_tok.range.start..end, &cleanup_children);
+        let clause = b.branch(
+            SyntaxKind::CleanupClause,
+            cleanup_tok.range.start..end,
+            &cleanup_children,
+        );
         children.push(clause);
         next = after_cleanup;
     }
@@ -392,25 +444,60 @@ mod tests {
     fn parses_while_loop() {
         let parsed = crate::parse("WHILE lv > 0. lv = lv - 1. ENDWHILE.");
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-        assert_eq!(parsed.file.count_kind(parsed.file.root(), SyntaxKind::WhileStmt), 1);
-        assert_eq!(parsed.file.count_kind(parsed.file.root(), SyntaxKind::AssignStmt), 1);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::WhileStmt),
+            1
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::AssignStmt),
+            1
+        );
     }
 
     #[test]
     fn parses_case_when() {
         let parsed = crate::parse("CASE lv. WHEN 1. lv = 1. WHEN OTHERS. lv = 2. ENDCASE.");
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-        assert_eq!(parsed.file.count_kind(parsed.file.root(), SyntaxKind::CaseStmt), 1);
-        assert_eq!(parsed.file.count_kind(parsed.file.root(), SyntaxKind::WhenClause), 2);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::CaseStmt),
+            1
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::WhenClause),
+            2
+        );
     }
 
     #[test]
     fn parses_try_catch_cleanup() {
         let parsed = crate::parse("TRY. a = 1. CATCH cx_root. b = 2. CLEANUP. c = 3. ENDTRY.");
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-        assert_eq!(parsed.file.count_kind(parsed.file.root(), SyntaxKind::TryStmt), 1);
-        assert_eq!(parsed.file.count_kind(parsed.file.root(), SyntaxKind::CatchClause), 1);
-        assert_eq!(parsed.file.count_kind(parsed.file.root(), SyntaxKind::CleanupClause), 1);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::TryStmt),
+            1
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::CatchClause),
+            1
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::CleanupClause),
+            1
+        );
     }
 
     #[test]
@@ -419,6 +506,11 @@ mod tests {
             "LOOP AT it_reg_attr TRANSPORTING NO FIELDS\n  WHERE reg_valid_from IS INITIAL OR\n        reg_valid_from = ''.\nENDLOOP.",
         );
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-        assert_eq!(parsed.file.count_kind(parsed.file.root(), SyntaxKind::LoopStmt), 1);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::LoopStmt),
+            1
+        );
     }
 }

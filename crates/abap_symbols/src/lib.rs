@@ -9,8 +9,8 @@ mod validate;
 
 pub use def_map::{
     Diagnostic, DiagnosticKind, FieldAccess, FieldAccessSegment, FieldTypeRefData, IncludeEdge,
-    ReferenceData, ReferenceKind, Resolution, StructureData, StructureFieldData, StructureFieldInfo,
-    StructureFieldShape, SymbolData, SymbolKind, UnitAnalysis,
+    ReferenceData, ReferenceKind, Resolution, StructureData, StructureFieldData,
+    StructureFieldInfo, StructureFieldShape, SymbolData, SymbolKind, UnitAnalysis,
 };
 pub use ids::{ReferenceId, ScopeId, StructureId, SymbolHandle, SymbolId, UnitId};
 pub use project::{ProjectAnalysis, ProjectInput, analyze_project, analyze_unit};
@@ -28,10 +28,9 @@ mod tests {
         let parsed = parse(src);
         let unit = analyze_unit("file:///demo.abap", src, &parsed);
 
-        assert!(unit
-            .symbols
-            .iter()
-            .any(|symbol| symbol.kind == SymbolKind::Variable && symbol.name.as_ref() == "lv_value"));
+        assert!(unit.symbols.iter().any(
+            |symbol| symbol.kind == SymbolKind::Variable && symbol.name.as_ref() == "lv_value"
+        ));
         assert!(unit.references.iter().any(|reference| {
             reference.namespace == Namespace::Value
                 && reference.name.as_ref() == "lv_value"

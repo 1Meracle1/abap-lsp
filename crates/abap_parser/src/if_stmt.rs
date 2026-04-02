@@ -1,12 +1,12 @@
 //! `IF cond. … [ELSEIF cond. …]* [ELSE. …] ENDIF.` (classic ABAP).
 
-use abap_ast::arena::{NodeId, SyntaxTreeBuilder};
 use abap_ast::SyntaxKind;
+use abap_ast::arena::{NodeId, SyntaxTreeBuilder};
 use abap_lexer::{Token, TokenKind};
 
 use crate::block_helpers::ensure_forward_progress;
 use crate::expr::parse_logical_expr;
-use crate::stmt_period::{scan_until_statement_period, unterminated_err_end, StmtPeriodScan};
+use crate::stmt_period::{StmtPeriodScan, scan_until_statement_period, unterminated_err_end};
 use crate::syntax::token_leaf;
 
 #[derive(Clone, Copy)]
@@ -153,20 +153,14 @@ pub fn try_parse_if_stmt(
                 if_tok.range.start..err_end,
                 &header_children,
             );
-            (vec![header], next_after_unterminated_scan(tokens, end_exclusive))
+            (
+                vec![header],
+                next_after_unterminated_scan(tokens, end_exclusive),
+            )
         }
     };
 
-    let (body, after_body) = parse_body_until(
-        b,
-        source,
-        tokens,
-        next,
-        errors,
-        true,
-        true,
-        true,
-    );
+    let (body, after_body) = parse_body_until(b, source, tokens, next, errors, true, true, true);
     children.extend(body);
     next = after_body;
 
@@ -207,16 +201,8 @@ pub fn try_parse_if_stmt(
                 }
             };
         next = body_start;
-        let (arm_body, after_arm) = parse_body_until(
-            b,
-            source,
-            tokens,
-            next,
-            errors,
-            true,
-            true,
-            true,
-        );
+        let (arm_body, after_arm) =
+            parse_body_until(b, source, tokens, next, errors, true, true, true);
         next = after_arm;
         let end_span = arm_body
             .last()
@@ -265,16 +251,8 @@ pub fn try_parse_if_stmt(
         }
         let mut else_children = vec![token_leaf(b, else_tok), token_leaf(b, period_else)];
         next = j + 1;
-        let (else_body, after_else) = parse_body_until(
-            b,
-            source,
-            tokens,
-            next,
-            errors,
-            false,
-            false,
-            true,
-        );
+        let (else_body, after_else) =
+            parse_body_until(b, source, tokens, next, errors, false, false, true);
         next = after_else;
         let end_span = else_body
             .last()
@@ -297,12 +275,15 @@ pub fn try_parse_if_stmt(
             range: if_tok.range.start..source.len(),
         });
         let recover = recover_skip_after_endif(source, tokens, idx + 1);
-        let node = b.branch(SyntaxKind::IfStmt, if_tok.range.start..source.len(), &children);
+        let node = b.branch(
+            SyntaxKind::IfStmt,
+            if_tok.range.start..source.len(),
+            &children,
+        );
         return Some((node, recover));
     };
 
-    if endif_tok.kind != TokenKind::Ident
-        || !endif_tok.lexeme(source).eq_ignore_ascii_case("endif")
+    if endif_tok.kind != TokenKind::Ident || !endif_tok.lexeme(source).eq_ignore_ascii_case("endif")
     {
         errors.push(crate::ParseError {
             message: "syntax error: expected ENDIF".to_string(),
@@ -432,9 +413,24 @@ mod tests {
             "{:?}",
             parsed.errors
         );
-        assert_eq!(parsed.file.count_kind(parsed.file.root(), SyntaxKind::IfStmt), 1);
-        assert_eq!(parsed.file.count_kind(parsed.file.root(), SyntaxKind::AssignStmt), 1);
-        assert!(parsed.file.count_kind(parsed.file.root(), SyntaxKind::Error) >= 1);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::IfStmt),
+            1
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::AssignStmt),
+            1
+        );
+        assert!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::Error)
+                >= 1
+        );
     }
 
     #[test]
@@ -453,10 +449,30 @@ mod tests {
             "{:?}",
             parsed.errors
         );
-        assert_eq!(parsed.file.count_kind(parsed.file.root(), SyntaxKind::IfStmt), 1);
-        assert_eq!(parsed.file.count_kind(parsed.file.root(), SyntaxKind::ElseifClause), 1);
-        assert_eq!(parsed.file.count_kind(parsed.file.root(), SyntaxKind::ElseClause), 1);
-        assert_eq!(parsed.file.count_kind(parsed.file.root(), SyntaxKind::AssignStmt), 3);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::IfStmt),
+            1
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::ElseifClause),
+            1
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::ElseClause),
+            1
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::AssignStmt),
+            3
+        );
     }
 
     #[test]
@@ -471,8 +487,18 @@ mod tests {
             "{:?}",
             parsed.errors
         );
-        assert_eq!(parsed.file.count_kind(parsed.file.root(), SyntaxKind::IfStmt), 1);
-        assert_eq!(parsed.file.count_kind(parsed.file.root(), SyntaxKind::DataDecl), 1);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::IfStmt),
+            1
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::DataDecl),
+            1
+        );
     }
 
     #[test]
@@ -486,14 +512,31 @@ mod tests {
             "{:?}",
             parsed.errors
         );
-        assert_eq!(parsed.file.count_kind(parsed.file.root(), SyntaxKind::IfStmt), 1);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::IfStmt),
+            1
+        );
     }
 
     #[test]
     fn multiline_if_condition_continues_after_and() {
-        let parsed = parse("IF it_bup_reg_key IS INITIAL AND\n   ib_force_deletion = abap_true.\n  WRITE 'x'.\nENDIF.");
+        let parsed = parse(
+            "IF it_bup_reg_key IS INITIAL AND\n   ib_force_deletion = abap_true.\n  WRITE 'x'.\nENDIF.",
+        );
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-        assert_eq!(parsed.file.count_kind(parsed.file.root(), SyntaxKind::IfStmt), 1);
-        assert_eq!(parsed.file.count_kind(parsed.file.root(), SyntaxKind::WriteStmt), 1);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::IfStmt),
+            1
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::WriteStmt),
+            1
+        );
     }
 }

@@ -1,10 +1,10 @@
 //! Declaration parsing for `DATA`-family statements plus adjacent typed declaration forms.
 
-use abap_ast::arena::{NodeId, SyntaxTreeBuilder};
 use abap_ast::SyntaxKind;
-use abap_lexer::{have_space_between, Token, TokenKind};
+use abap_ast::arena::{NodeId, SyntaxTreeBuilder};
+use abap_lexer::{Token, TokenKind, have_space_between};
 
-use crate::stmt_period::{scan_until_statement_period, unterminated_err_end, StmtPeriodScan};
+use crate::stmt_period::{StmtPeriodScan, scan_until_statement_period, unterminated_err_end};
 
 fn token_leaf(b: &mut SyntaxTreeBuilder, token: &Token) -> NodeId {
     b.leaf(SyntaxKind::Token, token.range.clone())
@@ -38,7 +38,9 @@ pub fn try_parse_data_decl(
     }
 
     let malformed = match scan {
-        StmtPeriodScan::Found(period_i) => classify_malformed_data_decl(source, tokens, idx, period_i),
+        StmtPeriodScan::Found(period_i) => {
+            classify_malformed_data_decl(source, tokens, idx, period_i)
+        }
         StmtPeriodScan::Unterminated { end_exclusive } => {
             if looks_like_typed_data_candidate(source, &tokens[idx..end_exclusive]) {
                 Some("syntax error: expected '.' to end DATA declaration")
@@ -96,8 +98,9 @@ fn try_parse_structured_data_decl(
         while tokens.get(i).map(|t| t.kind) == Some(TokenKind::Comment) {
             i += 1;
         }
-        let (clause, next_i) = parse_data_typed_clause(b, source, tokens, i)
-            .or_else(|| parse_begin_of_decl_clause(b, source, tokens, i, SyntaxKind::DataTypedClause))?;
+        let (clause, next_i) = parse_data_typed_clause(b, source, tokens, i).or_else(|| {
+            parse_begin_of_decl_clause(b, source, tokens, i, SyntaxKind::DataTypedClause)
+        })?;
         clause_nodes.push(clause);
         i = next_i;
 
@@ -155,7 +158,10 @@ fn classify_malformed_data_decl(
     let mut saw_type = false;
     for (rel_i, tok) in stmt_tokens.iter().enumerate() {
         if tok.kind == TokenKind::Comma {
-            let prev_kind = rel_i.checked_sub(1).and_then(|j| stmt_tokens.get(j)).map(|t| t.kind);
+            let prev_kind = rel_i
+                .checked_sub(1)
+                .and_then(|j| stmt_tokens.get(j))
+                .map(|t| t.kind);
             let next_kind = stmt_tokens.get(rel_i + 1).map(|t| t.kind);
             if matches!(prev_kind, None | Some(TokenKind::Colon | TokenKind::Comma))
                 || matches!(next_kind, None | Some(TokenKind::Comma | TokenKind::Period))
@@ -166,10 +172,10 @@ fn classify_malformed_data_decl(
         if is_keyword(source, tok, "type") {
             saw_type = true;
             match stmt_tokens.get(rel_i + 1) {
-                None => return Some("syntax error: expected type name after TYPE in DATA declaration"),
-                Some(next)
-                    if matches!(next.kind, TokenKind::Comma | TokenKind::Period) =>
-                {
+                None => {
+                    return Some("syntax error: expected type name after TYPE in DATA declaration");
+                }
+                Some(next) if matches!(next.kind, TokenKind::Comma | TokenKind::Period) => {
                     return Some("syntax error: expected type name after TYPE in DATA declaration");
                 }
                 _ => {}
@@ -291,7 +297,10 @@ fn parse_simple_type_ref(
     }
     let start = first.range.start;
     let end = b.span(*children.last().unwrap()).end;
-    Some((b.branch(SyntaxKind::TypeRefSimple, start..end, &children), i))
+    Some((
+        b.branch(SyntaxKind::TypeRefSimple, start..end, &children),
+        i,
+    ))
 }
 
 fn parse_type_ref_tokens(
@@ -316,7 +325,10 @@ fn parse_type_ref_tokens(
     while i < tokens.len() {
         let tok = &tokens[i];
         if paren == 0 && bracket == 0 && brace == 0 {
-            if matches!(tok.kind, TokenKind::Comma | TokenKind::Period | TokenKind::Eof) {
+            if matches!(
+                tok.kind,
+                TokenKind::Comma | TokenKind::Period | TokenKind::Eof
+            ) {
                 break;
             }
             if tok.kind == TokenKind::Ident
@@ -346,7 +358,10 @@ fn parse_type_ref_tokens(
         children.push(token_leaf(b, t));
     }
     let end = b.span(*children.last().unwrap()).end;
-    Some((b.branch(SyntaxKind::TypeRefSimple, first.range.start..end, &children), i))
+    Some((
+        b.branch(SyntaxKind::TypeRefSimple, first.range.start..end, &children),
+        i,
+    ))
 }
 
 fn parse_optional_length_spec(
@@ -375,7 +390,12 @@ fn parse_optional_length_spec(
         {
             break;
         }
-        if i > start && matches!(tok.kind, TokenKind::Comma | TokenKind::Period | TokenKind::Eof) {
+        if i > start
+            && matches!(
+                tok.kind,
+                TokenKind::Comma | TokenKind::Period | TokenKind::Eof
+            )
+        {
             break;
         }
         if i > start
@@ -392,7 +412,10 @@ fn parse_optional_length_spec(
         children.push(token_leaf(b, t));
     }
     let end = b.span(*children.last().unwrap()).end;
-    Some((b.branch(SyntaxKind::LengthSpec, first.range.start..end, &children), i))
+    Some((
+        b.branch(SyntaxKind::LengthSpec, first.range.start..end, &children),
+        i,
+    ))
 }
 
 fn parse_value_clause(
@@ -408,7 +431,10 @@ fn parse_value_clause(
     let value_kw = token_leaf(b, value_tok);
     let (expr, next) = parse_type_ref_tokens(b, source, tokens, idx + 1, &[])?;
     let range = value_tok.range.start..b.span(expr).end;
-    Some((b.branch(SyntaxKind::ValueClause, range, &[value_kw, expr]), next))
+    Some((
+        b.branch(SyntaxKind::ValueClause, range, &[value_kw, expr]),
+        next,
+    ))
 }
 
 fn parse_inline_name(
@@ -421,7 +447,10 @@ fn parse_inline_name(
         return None;
     }
     let leaf = token_leaf(b, name_tok);
-    Some((b.branch(SyntaxKind::DataDeclName, name_tok.range.clone(), &[leaf]), idx + 1))
+    Some((
+        b.branch(SyntaxKind::DataDeclName, name_tok.range.clone(), &[leaf]),
+        idx + 1,
+    ))
 }
 
 fn match_hyphenated_keyword(
@@ -492,7 +521,11 @@ fn parse_optional_paren_length(
     let l = token_leaf(b, lparen);
     let r = token_leaf(b, rparen);
     Some((
-        b.branch(SyntaxKind::LengthSpec, lparen.range.start..rparen.range.end, &[l, expr, r]),
+        b.branch(
+            SyntaxKind::LengthSpec,
+            lparen.range.start..rparen.range.end,
+            &[l, expr, r],
+        ),
         next + 1,
     ))
 }
@@ -520,7 +553,12 @@ fn try_parse_data_inline_decl(
     }
     match scan_until_statement_period(tokens, source, i + 2) {
         StmtPeriodScan::Found(period_i) => {
-            let rhs = crate::expr::parse_arithmetic_expr(b, source, &tokens[i + 2..period_i], Some(eq_tok));
+            let rhs = crate::expr::parse_arithmetic_expr(
+                b,
+                source,
+                &tokens[i + 2..period_i],
+                Some(eq_tok),
+            );
             let data_leaf = token_leaf(b, data_tok);
             let lparen_leaf = token_leaf(b, lparen);
             let rparen_leaf = token_leaf(b, rparen);
@@ -569,20 +607,21 @@ fn parse_decl_clause(
     let (name, mut i) = parse_data_decl_name(b, source, tokens, idx)?;
     let mut children = vec![name];
 
-    if let Some((legacy_len, j)) =
-        parse_optional_paren_length(b, tokens, i)
-    {
+    if let Some((legacy_len, j)) = parse_optional_paren_length(b, tokens, i) {
         children.push(legacy_len);
         i = j;
     }
 
-    if let Some((length, j)) = parse_optional_length_spec(b, source, tokens, i, &["TYPE", "LIKE", "VALUE"]) {
+    if let Some((length, j)) =
+        parse_optional_length_spec(b, source, tokens, i, &["TYPE", "LIKE", "VALUE"])
+    {
         children.push(length);
         i = j;
     }
 
     let type_kw = tokens.get(i)?;
-    if !is_keyword(source, type_kw, "type") && !(allow_like && is_keyword(source, type_kw, "like")) {
+    if !is_keyword(source, type_kw, "type") && !(allow_like && is_keyword(source, type_kw, "like"))
+    {
         return None;
     }
     children.push(token_leaf(b, type_kw));
@@ -617,7 +656,10 @@ fn parse_begin_of_decl_clause(
     if !is_keyword(source, begin_tok, "begin") {
         return None;
     }
-    if !tokens.get(idx + 1).is_some_and(|tok| is_keyword(source, tok, "of")) {
+    if !tokens
+        .get(idx + 1)
+        .is_some_and(|tok| is_keyword(source, tok, "of"))
+    {
         return None;
     }
     if tokens.get(idx + 2)?.kind != TokenKind::Ident {
@@ -652,7 +694,11 @@ fn parse_begin_of_decl_clause(
                 for t in &tokens[idx..=i + 2] {
                     children.push(token_leaf(b, t));
                 }
-                let node = b.branch(node_kind, begin_tok.range.start..end_name.range.end, &children);
+                let node = b.branch(
+                    node_kind,
+                    begin_tok.range.start..end_name.range.end,
+                    &children,
+                );
                 return Some((node, i + 3));
             }
         }
@@ -691,8 +737,9 @@ fn try_parse_chained_decl(
         while tokens.get(i).map(|t| t.kind) == Some(TokenKind::Comment) {
             i += 1;
         }
-        let (clause, next_i) = parse_decl_clause(b, source, tokens, i, clause_kind, allow_like, allow_value)
-            .or_else(|| parse_begin_of_decl_clause(b, source, tokens, i, clause_kind))?;
+        let (clause, next_i) =
+            parse_decl_clause(b, source, tokens, i, clause_kind, allow_like, allow_value)
+                .or_else(|| parse_begin_of_decl_clause(b, source, tokens, i, clause_kind))?;
         clause_nodes.push(clause);
         i = next_i;
         let next = tokens.get(i)?;
@@ -789,8 +836,15 @@ pub fn try_parse_field_symbols_decl(
     };
     let mut clause_nodes = Vec::new();
     loop {
-        let (clause, next_i) =
-            parse_decl_clause(b, source, tokens, i, SyntaxKind::FieldSymbolClause, true, false)?;
+        let (clause, next_i) = parse_decl_clause(
+            b,
+            source,
+            tokens,
+            i,
+            SyntaxKind::FieldSymbolClause,
+            true,
+            false,
+        )?;
         clause_nodes.push(clause);
         i = next_i;
         let next = tokens.get(i)?;
@@ -803,8 +857,11 @@ pub fn try_parse_field_symbols_decl(
                 }
                 children.extend(clause_nodes);
                 children.push(token_leaf(b, next));
-                let node =
-                    b.branch(SyntaxKind::FieldSymbolsDecl, tokens[idx].range.start..next.range.end, &children);
+                let node = b.branch(
+                    SyntaxKind::FieldSymbolsDecl,
+                    tokens[idx].range.start..next.range.end,
+                    &children,
+                );
                 return Some((node, i + 1));
             }
             _ => return None,
@@ -815,9 +872,9 @@ pub fn try_parse_field_symbols_decl(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::syntax::build_file_tree;
     use abap_ast::File;
     use abap_lexer::tokenize;
-    use crate::syntax::build_file_tree;
 
     fn tree_ok(src: &str) -> File {
         let tok = tokenize(src);
@@ -831,18 +888,9 @@ mod tests {
     fn single_data_typed_decl() {
         let src = "DATA lv_count TYPE i.";
         let file = tree_ok(src);
-        assert_eq!(
-            file.count_kind(file.root(), SyntaxKind::DataDecl),
-            1
-        );
-        assert_eq!(
-            file.count_kind(file.root(), SyntaxKind::DataTypedClause),
-            1
-        );
-        assert_eq!(
-            file.count_kind(file.root(), SyntaxKind::TypeRefSimple),
-            1
-        );
+        assert_eq!(file.count_kind(file.root(), SyntaxKind::DataDecl), 1);
+        assert_eq!(file.count_kind(file.root(), SyntaxKind::DataTypedClause), 1);
+        assert_eq!(file.count_kind(file.root(), SyntaxKind::TypeRefSimple), 1);
     }
 
     #[test]
@@ -850,10 +898,7 @@ mod tests {
         let src = "DATA: lv_a TYPE i, lv_b TYPE string.";
         let file = tree_ok(src);
         assert_eq!(file.count_kind(file.root(), SyntaxKind::DataDecl), 1);
-        assert_eq!(
-            file.count_kind(file.root(), SyntaxKind::DataTypedClause),
-            2
-        );
+        assert_eq!(file.count_kind(file.root(), SyntaxKind::DataTypedClause), 2);
     }
 
     #[test]
@@ -866,10 +911,7 @@ mod tests {
     fn data_name_minus_chain() {
         let src = "DATA screen0100-serial TYPE c.";
         let file = tree_ok(src);
-        assert_eq!(
-            file.count_kind(file.root(), SyntaxKind::DataDeclName),
-            1
-        );
+        assert_eq!(file.count_kind(file.root(), SyntaxKind::DataDeclName), 1);
     }
 
     #[test]
@@ -897,7 +939,10 @@ mod tests {
     fn types_chain_decl() {
         let file = tree_ok("TYPES: ty_int TYPE i, ty_name TYPE string.");
         assert_eq!(file.count_kind(file.root(), SyntaxKind::TypesDecl), 1);
-        assert_eq!(file.count_kind(file.root(), SyntaxKind::TypesTypedClause), 2);
+        assert_eq!(
+            file.count_kind(file.root(), SyntaxKind::TypesTypedClause),
+            2
+        );
     }
 
     #[test]
@@ -911,8 +956,14 @@ mod tests {
     #[test]
     fn field_symbols_like_line_of() {
         let file = tree_ok("FIELD-SYMBOLS <line> LIKE LINE OF itab.");
-        assert_eq!(file.count_kind(file.root(), SyntaxKind::FieldSymbolsDecl), 1);
-        assert_eq!(file.count_kind(file.root(), SyntaxKind::FieldSymbolClause), 1);
+        assert_eq!(
+            file.count_kind(file.root(), SyntaxKind::FieldSymbolsDecl),
+            1
+        );
+        assert_eq!(
+            file.count_kind(file.root(), SyntaxKind::FieldSymbolClause),
+            1
+        );
     }
 
     #[test]
@@ -923,8 +974,9 @@ mod tests {
 
     #[test]
     fn constants_begin_end_of_clause() {
-        let file =
-            tree_ok("CONSTANTS: BEGIN OF gc_pair, a TYPE i VALUE 1, b TYPE i VALUE 2, END OF gc_pair.");
+        let file = tree_ok(
+            "CONSTANTS: BEGIN OF gc_pair, a TYPE i VALUE 1, b TYPE i VALUE 2, END OF gc_pair.",
+        );
         assert_eq!(file.count_kind(file.root(), SyntaxKind::ConstantsDecl), 1);
     }
 
@@ -951,7 +1003,9 @@ mod tests {
             parsed.errors
         );
         assert_eq!(
-            parsed.file.count_kind(parsed.file.root(), SyntaxKind::DataDecl),
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::DataDecl),
             0,
             "expected no DataDecl node for {src:?}"
         );
@@ -968,12 +1022,17 @@ mod tests {
             parsed.errors
         );
         assert_eq!(
-            parsed.file.count_kind(parsed.file.root(), SyntaxKind::DataDecl),
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::DataDecl),
             0,
             "expected malformed DATA to avoid DataDecl node for {src:?}"
         );
         assert!(
-            parsed.file.count_kind(parsed.file.root(), SyntaxKind::Error) >= 1,
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::Error)
+                >= 1,
             "expected malformed DATA to produce an Error node for {src:?}"
         );
     }
@@ -998,7 +1057,10 @@ mod tests {
             0
         );
         assert!(
-            parsed.errors.iter().any(|e| e.message.contains("expected '.'")),
+            parsed
+                .errors
+                .iter()
+                .any(|e| e.message.contains("expected '.'")),
             "{:?}",
             parsed.errors
         );
@@ -1044,7 +1106,9 @@ mod tests {
             parsed.errors
         );
         assert_eq!(
-            parsed.file.count_kind(parsed.file.root(), SyntaxKind::AssignStmt),
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::AssignStmt),
             1
         );
     }

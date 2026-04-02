@@ -33,7 +33,9 @@ fn build_scope_names(unit: &crate::UnitAnalysis) -> HashMap<Arc<str>, HashSet<Na
     scope_names
 }
 
-fn build_scope_index(unit: &crate::UnitAnalysis) -> Vec<HashMap<(Namespace, Arc<str>), Vec<SymbolId>>> {
+fn build_scope_index(
+    unit: &crate::UnitAnalysis,
+) -> Vec<HashMap<(Namespace, Arc<str>), Vec<SymbolId>>> {
     let mut out: Vec<HashMap<(Namespace, Arc<str>), Vec<SymbolId>>> =
         vec![HashMap::new(); unit.scopes.len()];
     for symbol in &unit.symbols {
@@ -107,7 +109,15 @@ pub fn validate_project(project: &mut ProjectAnalysis) {
         let retained: Vec<_> = unit
             .diagnostics
             .iter()
-            .filter(|diag| matches!(diag.kind, DiagnosticKind::DuplicateDeclaration | DiagnosticKind::ShadowedSymbol | DiagnosticKind::UnresolvedInclude | DiagnosticKind::IncludeCycle))
+            .filter(|diag| {
+                matches!(
+                    diag.kind,
+                    DiagnosticKind::DuplicateDeclaration
+                        | DiagnosticKind::ShadowedSymbol
+                        | DiagnosticKind::UnresolvedInclude
+                        | DiagnosticKind::IncludeCycle
+                )
+            })
             .cloned()
             .collect();
         unit.diagnostics = retained;
@@ -153,13 +163,18 @@ pub fn validate_project(project: &mut ProjectAnalysis) {
         }
 
         for access in &unit.field_accesses {
-            let Some(base_symbol_id) = resolve_field_access_base_symbol(unit, &scope_index, access) else {
+            let Some(base_symbol_id) = resolve_field_access_base_symbol(unit, &scope_index, access)
+            else {
                 continue;
             };
             let Some(mut structure_id) = unit.symbol(base_symbol_id).structure else {
                 continue;
             };
-            let subject = if access.in_type_position { "type" } else { "structure" };
+            let subject = if access.in_type_position {
+                "type"
+            } else {
+                "structure"
+            };
             let mut qualifier = access.base_name.to_string();
             for (idx, step) in access.field_path.iter().enumerate() {
                 let structure = unit.structure(structure_id);

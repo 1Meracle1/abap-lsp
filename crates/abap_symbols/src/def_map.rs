@@ -32,7 +32,10 @@ impl SymbolKind {
     pub const fn is_builtin(self) -> bool {
         matches!(
             self,
-            Self::BuiltinType | Self::BuiltinRoutine | Self::BuiltinConstant | Self::BuiltinVariable
+            Self::BuiltinType
+                | Self::BuiltinRoutine
+                | Self::BuiltinConstant
+                | Self::BuiltinVariable
         )
     }
 
@@ -224,7 +227,11 @@ impl UnitAnalysis {
         &self.scopes[id.as_usize()]
     }
 
-    pub fn structure_field(&self, structure_id: StructureId, field_name: &str) -> Option<&StructureFieldData> {
+    pub fn structure_field(
+        &self,
+        structure_id: StructureId,
+        field_name: &str,
+    ) -> Option<&StructureFieldData> {
         self.structure(structure_id)
             .fields
             .iter()
@@ -275,7 +282,9 @@ impl UnitAnalysis {
             let info = self.structure_field_info(current_structure, field_name)?;
             current_structure = match info.shape {
                 StructureFieldShape::Structured { structure } => structure,
-                StructureFieldShape::Scalar if *field_name == *field_path.last()? => current_structure,
+                StructureFieldShape::Scalar if *field_name == *field_path.last()? => {
+                    current_structure
+                }
                 StructureFieldShape::Scalar => return None,
             };
             current_info = Some(info);

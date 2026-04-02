@@ -1,3 +1,5 @@
+pub(crate) mod sem_tokens;
+
 use std::sync::Arc;
 
 use abap_cache::{AnalysisSnapshot, DocumentStore};
@@ -5,12 +7,16 @@ use abap_symbols::DiagnosticKind;
 use lsp_types::{
     CompletionItem, CompletionItemKind, CompletionOptions, Diagnostic, DiagnosticSeverity,
     Documentation, Hover, HoverContents, HoverProviderCapability, InitializeResult, MarkupContent,
-    MarkupKind, OneOf, Position, PublishDiagnosticsParams, Range, ServerCapabilities,
-    TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri,
+    MarkupKind, OneOf, Position, PublishDiagnosticsParams, Range, SemanticTokens,
+    SemanticTokensFullOptions, SemanticTokensOptions, SemanticTokensServerCapabilities,
+    ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri,
 };
 use serde::{Deserialize, Serialize};
 
-pub use lsp_types::{CompletionParams, CompletionResponse, DidChangeTextDocumentParams, DidOpenTextDocumentParams, HoverParams};
+pub use lsp_types::{
+    CompletionParams, CompletionResponse, DidChangeTextDocumentParams, DidOpenTextDocumentParams,
+    HoverParams, SemanticTokensParams,
+};
 pub use serde;
 
 pub const RESOLVE_REMOTE_DEPENDENCIES: &str = "abapls/resolveRemoteDependencies";
@@ -100,7 +106,8 @@ pub fn normalize_lsp_uri(raw: &str) -> String {
         out.push_str(&path[1..]);
         return out;
     }
-    if bytes.len() >= 4 && bytes[0].is_ascii_alphabetic() && path[1..4].eq_ignore_ascii_case("%3a") {
+    if bytes.len() >= 4 && bytes[0].is_ascii_alphabetic() && path[1..4].eq_ignore_ascii_case("%3a")
+    {
         let mut out = String::with_capacity(raw.len());
         out.push_str(PREFIX);
         out.push((bytes[0] as char).to_ascii_lowercase());
@@ -111,9 +118,16 @@ pub fn normalize_lsp_uri(raw: &str) -> String {
     raw.to_owned()
 }
 
-pub fn publish_open_document(state: &ServerState, params: &DidOpenTextDocumentParams) -> Arc<AnalysisSnapshot> {
+pub fn publish_open_document(
+    state: &ServerState,
+    params: &DidOpenTextDocumentParams,
+) -> Arc<AnalysisSnapshot> {
     let uri = normalize_lsp_uri(params.text_document.uri.as_str());
-    state.cache.publish(uri, params.text_document.version, &params.text_document.text)
+    state.cache.publish(
+        uri,
+        params.text_document.version,
+        &params.text_document.text,
+    )
 }
 
 pub fn publish_changed_document(
@@ -122,12 +136,18 @@ pub fn publish_changed_document(
 ) -> Option<Arc<AnalysisSnapshot>> {
     let change = params.content_changes.last()?;
     let uri = normalize_lsp_uri(params.text_document.uri.as_str());
-    Some(state.cache.publish(uri, params.text_document.version, &change.text))
+    Some(
+        state
+            .cache
+            .publish(uri, params.text_document.version, &change.text),
+    )
 }
 
 fn semantic_diagnostic_severity(kind: DiagnosticKind) -> DiagnosticSeverity {
     match kind {
-        DiagnosticKind::DuplicateDeclaration | DiagnosticKind::ShadowedSymbol => DiagnosticSeverity::WARNING,
+        DiagnosticKind::DuplicateDeclaration | DiagnosticKind::ShadowedSymbol => {
+            DiagnosticSeverity::WARNING
+        }
         DiagnosticKind::UnresolvedReference
         | DiagnosticKind::UnresolvedInclude
         | DiagnosticKind::IncludeCycle
@@ -196,7 +216,13 @@ pub fn publish_diagnostics_params(snapshot: &AnalysisSnapshot) -> PublishDiagnos
 }
 
 pub fn hover(state: &ServerState, params: &HoverParams) -> Option<Hover> {
-    let uri = normalize_lsp_uri(params.text_document_position_params.text_document.uri.as_str());
+    let uri = normalize_lsp_uri(
+        params
+            .text_document_position_params
+            .text_document
+            .uri
+            .as_str(),
+    );
     let snapshot = state.cache.get(&uri)?;
     let offset = position_to_offset(
         snapshot.text.as_ref(),
@@ -209,7 +235,10 @@ pub fn hover(state: &ServerState, params: &HoverParams) -> Option<Hover> {
     resolved_symbol_hover(&snapshot, symbol)
 }
 
-fn resolved_symbol_hover(snapshot: &AnalysisSnapshot, info: abap_cache::HoveredSymbolInfo) -> Option<Hover> {
+fn resolved_symbol_hover(
+    snapshot: &AnalysisSnapshot,
+    info: abap_cache::HoveredSymbolInfo,
+) -> Option<Hover> {
     let range = byte_range_to_lsp_range(snapshot.text.as_ref(), info.range)?;
     Some(Hover {
         contents: HoverContents::Markup(MarkupContent {
@@ -220,7 +249,10 @@ fn resolved_symbol_hover(snapshot: &AnalysisSnapshot, info: abap_cache::HoveredS
     })
 }
 
-fn structured_field_hover(snapshot: &AnalysisSnapshot, component: abap_cache::HoveredComponentInfo) -> Option<Hover> {
+fn structured_field_hover(
+    snapshot: &AnalysisSnapshot,
+    component: abap_cache::HoveredComponentInfo,
+) -> Option<Hover> {
     let range = byte_range_to_lsp_range(snapshot.text.as_ref(), component.range.clone())?;
     let mut lines = vec![format!("`{}`", component.field_name)];
     match component.kind {
@@ -253,7 +285,10 @@ fn structured_field_hover(snapshot: &AnalysisSnapshot, component: abap_cache::Ho
 pub fn completion(state: &ServerState, params: &CompletionParams) -> Option<CompletionResponse> {
     let uri = normalize_lsp_uri(params.text_document_position.text_document.uri.as_str());
     let snapshot = state.cache.get(&uri)?;
-    let offset = position_to_offset(snapshot.text.as_ref(), params.text_document_position.position)?;
+    let offset = position_to_offset(
+        snapshot.text.as_ref(),
+        params.text_document_position.position,
+    )?;
     let completion = snapshot.selector_completion_at(offset)?;
     let range = byte_range_to_lsp_range(snapshot.text.as_ref(), completion.replace_range)?;
     let items = completion
@@ -277,6 +312,15 @@ pub fn completion(state: &ServerState, params: &CompletionParams) -> Option<Comp
     Some(CompletionResponse::Array(items))
 }
 
+pub fn semantic_tokens(
+    state: &ServerState,
+    params: &SemanticTokensParams,
+) -> Option<SemanticTokens> {
+    let uri = normalize_lsp_uri(params.text_document.uri.as_str());
+    let snapshot = state.cache.get(&uri)?;
+    Some(sem_tokens::build_semantic_tokens(snapshot.as_ref()))
+}
+
 pub fn initialize_result(config: &ServerConfig) -> InitializeResult {
     InitializeResult {
         server_info: Some(lsp_types::ServerInfo {
@@ -291,6 +335,14 @@ pub fn initialize_result(config: &ServerConfig) -> InitializeResult {
                 ..CompletionOptions::default()
             }),
             definition_provider: Some(OneOf::Left(false)),
+            semantic_tokens_provider: Some(
+                SemanticTokensServerCapabilities::SemanticTokensOptions(SemanticTokensOptions {
+                    legend: sem_tokens::semantic_tokens_legend(),
+                    full: Some(SemanticTokensFullOptions::Bool(true)),
+                    range: None,
+                    work_done_progress_options: Default::default(),
+                }),
+            ),
             ..ServerCapabilities::default()
         },
     }
@@ -322,7 +374,9 @@ fn offset_to_position(text: &str, offset: usize) -> Option<Position> {
         .find('\n')
         .map(|rel| line_start + rel)
         .unwrap_or(text.len());
-    let line_text = text[line_start..line_end].strip_suffix('\r').unwrap_or(&text[line_start..line_end]);
+    let line_text = text[line_start..line_end]
+        .strip_suffix('\r')
+        .unwrap_or(&text[line_start..line_end]);
     if offset < line_start || offset > line_start + line_text.len() {
         return None;
     }
@@ -343,7 +397,9 @@ fn position_to_offset(text: &str, position: Position) -> Option<usize> {
         .find('\n')
         .map(|rel| line_start + rel)
         .unwrap_or(text.len());
-    let line_text = text[line_start..line_end].strip_suffix('\r').unwrap_or(&text[line_start..line_end]);
+    let line_text = text[line_start..line_end]
+        .strip_suffix('\r')
+        .unwrap_or(&text[line_start..line_end]);
     let mut utf16_units = 0u32;
     for (idx, ch) in line_text.char_indices() {
         if utf16_units == position.character {
@@ -364,7 +420,9 @@ fn completion_item_metadata(
     let detail = match &item.kind {
         abap_cache::HoveredComponentKind::Scalar => {
             lines.push("scalar component".to_string());
-            item.declared_type.clone().or_else(|| Some("scalar component".to_string()))
+            item.declared_type
+                .clone()
+                .or_else(|| Some("scalar component".to_string()))
         }
         abap_cache::HoveredComponentKind::Structured { structure_name } => {
             lines.push(format!("structured component of `{}`", structure_name));
@@ -389,15 +447,18 @@ mod tests {
     use std::str::FromStr;
 
     use lsp_types::{
-        DidChangeTextDocumentParams, DidOpenTextDocumentParams, Documentation, HoverContents, Position,
-        TextDocumentContentChangeEvent, TextDocumentIdentifier, TextDocumentItem,
+        DidChangeTextDocumentParams, DidOpenTextDocumentParams, Documentation, HoverContents,
+        Position, TextDocumentContentChangeEvent, TextDocumentIdentifier, TextDocumentItem,
         TextDocumentPositionParams, Uri, VersionedTextDocumentIdentifier,
     };
 
+    use crate::sem_tokens;
+
     use super::{
-        CompletionParams, CompletionResponse, DEPENDENCY_CACHE_CLEARED, REMOTE_DEPENDENCIES_UPDATED,
-        RESOLVE_REMOTE_DEPENDENCIES, ServerState, WORKSPACE_MANIFEST_UPDATED, HoverParams, completion,
-        hover, initialize_result, normalize_lsp_uri, publish_changed_document, publish_open_document,
+        CompletionParams, CompletionResponse, DEPENDENCY_CACHE_CLEARED, HoverParams,
+        REMOTE_DEPENDENCIES_UPDATED, RESOLVE_REMOTE_DEPENDENCIES, ServerState,
+        WORKSPACE_MANIFEST_UPDATED, completion, hover, initialize_result, normalize_lsp_uri,
+        publish_changed_document, publish_open_document,
     };
 
     #[test]
@@ -418,14 +479,69 @@ mod tests {
         let result = initialize_result(&Default::default());
 
         assert!(result.capabilities.text_document_sync.is_some());
+        assert!(result.capabilities.semantic_tokens_provider.is_some());
         assert!(result.server_info.is_some());
     }
 
     #[test]
+    fn semantic_tokens_marks_declarations_and_references() {
+        use lsp_types::SemanticTokenType;
+
+        let state = ServerState::default();
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///sem.abap").expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: "DATA lv TYPE i.\nlv = 1.".to_string(),
+                },
+            },
+        );
+
+        let snapshot = state.cache.get("file:///sem.abap").expect("snapshot");
+        let tokens = sem_tokens::build_semantic_tokens(snapshot.as_ref());
+        assert!(
+            !tokens.data.is_empty(),
+            "expected semantic tokens from symbol table"
+        );
+
+        let legend = sem_tokens::semantic_tokens_legend();
+        let var_idx = legend
+            .token_types
+            .iter()
+            .position(|t| *t == SemanticTokenType::VARIABLE)
+            .expect("legend has variable") as u32;
+        let decl_mod = 1u32
+            << legend
+                .token_modifiers
+                .iter()
+                .position(|m| m.as_str() == "declaration")
+                .expect("declaration modifier");
+        assert!(
+            tokens
+                .data
+                .iter()
+                .any(|t| t.token_type == var_idx && (t.token_modifiers_bitset & decl_mod) != 0),
+            "expected a declared variable token"
+        );
+    }
+
+    #[test]
     fn custom_notification_names_are_stable() {
-        assert_eq!(RESOLVE_REMOTE_DEPENDENCIES, "abapls/resolveRemoteDependencies");
-        assert_eq!(REMOTE_DEPENDENCIES_UPDATED, "abapls/remoteDependenciesUpdated");
-        assert_eq!(WORKSPACE_MANIFEST_UPDATED, "abapls/workspaceManifestUpdated");
+        assert_eq!(
+            RESOLVE_REMOTE_DEPENDENCIES,
+            "abapls/resolveRemoteDependencies"
+        );
+        assert_eq!(
+            REMOTE_DEPENDENCIES_UPDATED,
+            "abapls/remoteDependenciesUpdated"
+        );
+        assert_eq!(
+            WORKSPACE_MANIFEST_UPDATED,
+            "abapls/workspaceManifestUpdated"
+        );
         assert_eq!(DEPENDENCY_CACHE_CLEARED, "abapls/dependencyCacheCleared");
     }
 
@@ -582,8 +698,9 @@ ls_outer-inner-a = 1."
                     uri: uri.clone(),
                     language_id: "abap".to_string(),
                     version: 1,
-                    text: "DATA: BEGIN OF ls_date, yyyy(4), END OF ls_date.\nls_date-yyyy = '2026'."
-                        .to_string(),
+                    text:
+                        "DATA: BEGIN OF ls_date, yyyy(4), END OF ls_date.\nls_date-yyyy = '2026'."
+                            .to_string(),
                 },
             },
         );
@@ -597,7 +714,8 @@ ls_outer-inner-a = 1."
                 content_changes: vec![TextDocumentContentChangeEvent {
                     range: None,
                     range_length: None,
-                    text: "DATA: BEGIN OF ls_date, mm(2), END OF ls_date.\nls_date-mm = '04'.".to_string(),
+                    text: "DATA: BEGIN OF ls_date, mm(2), END OF ls_date.\nls_date-mm = '04'."
+                        .to_string(),
                 }],
             },
         );

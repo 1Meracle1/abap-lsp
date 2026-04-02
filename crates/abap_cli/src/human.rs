@@ -58,7 +58,11 @@ fn stderr_color_enabled() -> bool {
 }
 
 /// Writes rustc-style blocks to stderr. Returns true if anything was written.
-pub fn write_diagnostics(diagnostics: &[Diagnostic<'_>], source: &str, file_label: &str) -> io::Result<bool> {
+pub fn write_diagnostics(
+    diagnostics: &[Diagnostic<'_>],
+    source: &str,
+    file_label: &str,
+) -> io::Result<bool> {
     if diagnostics.is_empty() {
         return Ok(false);
     }
@@ -66,19 +70,20 @@ pub fn write_diagnostics(diagnostics: &[Diagnostic<'_>], source: &str, file_labe
     let color = stderr_color_enabled();
     let err_lbl = color_stderr(color, "1;31", "error");
     let lines = collect_lines(source);
-    let width = gutter_width(
-        lines
-            .last()
-            .map(|l| l.line_nr)
-            .unwrap_or(1),
-    );
+    let width = gutter_width(lines.last().map(|l| l.line_nr).unwrap_or(1));
 
     let mut stderr = io::stderr().lock();
     for d in diagnostics {
         writeln!(stderr, "{err_lbl}: {}", d.message, err_lbl = err_lbl)?;
 
         let (line, col) = line_col_for_byte(source, d.range.start);
-        writeln!(stderr, "{:>width$} --> {file}:{line}:{col}", "", width = width, file = file_label)?;
+        writeln!(
+            stderr,
+            "{:>width$} --> {file}:{line}:{col}",
+            "",
+            width = width,
+            file = file_label
+        )?;
 
         let affected: Vec<&LineSpan> = lines
             .iter()
@@ -96,9 +101,7 @@ pub fn write_diagnostics(diagnostics: &[Diagnostic<'_>], source: &str, file_labe
         writeln!(stderr, "{:>width$} |", "", width = width)?;
 
         for ln in affected {
-            let line_text = source
-                .get(ln.text_range.clone())
-                .unwrap_or("");
+            let line_text = source.get(ln.text_range.clone()).unwrap_or("");
             writeln!(
                 stderr,
                 "{:>width$} | {}",
@@ -148,21 +151,26 @@ fn line_col_for_byte(source: &str, byte_idx: usize) -> (usize, usize) {
     (line, col)
 }
 
-pub fn write_token_list(source: &str, tokens: &[abap_lexer::Token], use_color: bool) -> io::Result<()> {
+pub fn write_token_list(
+    source: &str,
+    tokens: &[abap_lexer::Token],
+    use_color: bool,
+) -> io::Result<()> {
     let mut out = io::stdout().lock();
     let hdr = color_if_stdout(use_color, "1", &format!("{} tokens:", tokens.len()));
     writeln!(out, "{hdr}")?;
     for t in tokens {
         let kind = format!("{:?}", t.kind);
         let lex = t.lexeme(source);
-        let preview = if lex.len() > 60 { format!("{}…", &lex[..60]) } else { lex.to_string() };
+        let preview = if lex.len() > 60 {
+            format!("{}…", &lex[..60])
+        } else {
+            lex.to_string()
+        };
         writeln!(
             out,
             "  {:18} {:>6}..{:<6}  {:?}",
-            kind,
-            t.range.start,
-            t.range.end,
-            preview,
+            kind, t.range.start, t.range.end, preview,
         )?;
     }
     Ok(())

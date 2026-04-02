@@ -75,8 +75,7 @@ impl SyntaxTree {
 
     /// First direct child of `parent` with `kind`.
     pub fn child_by_kind(&self, parent: NodeId, kind: SyntaxKind) -> Option<NodeId> {
-        self.children(parent)
-            .find(|&c| self.kind(c) == kind)
+        self.children(parent).find(|&c| self.kind(c) == kind)
     }
 
     /// Depth-first count of nodes with `kind` (for tests and benchmarks).
@@ -206,7 +205,11 @@ mod tests {
                 SyntaxNode::branch(
                     SyntaxKind::BinaryExpr,
                     1..9,
-                    vec![leaf(SyntaxKind::ExprIdent), leaf(SyntaxKind::Token), leaf(SyntaxKind::ExprLiteral)],
+                    vec![
+                        leaf(SyntaxKind::ExprIdent),
+                        leaf(SyntaxKind::Token),
+                        leaf(SyntaxKind::ExprLiteral),
+                    ],
                 ),
             ],
         );

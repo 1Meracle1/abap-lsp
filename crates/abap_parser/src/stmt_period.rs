@@ -109,7 +109,9 @@ fn is_condition_continuation_keyword(source: &str, tok: &Token) -> bool {
 pub(crate) enum StmtPeriodScan {
     Found(usize),
     /// No `.` before EOF or before a token that begins another statement.
-    Unterminated { end_exclusive: usize },
+    Unterminated {
+        end_exclusive: usize,
+    },
 }
 
 /// From `start` (inclusive), find the first top-level `.` that terminates this statement, or decide
@@ -178,7 +180,11 @@ pub(crate) fn scan_until_statement_period(
     }
 }
 
-pub(crate) fn unterminated_err_end(tokens: &[Token], end_exclusive: usize, fallback_start: usize) -> usize {
+pub(crate) fn unterminated_err_end(
+    tokens: &[Token],
+    end_exclusive: usize,
+    fallback_start: usize,
+) -> usize {
     if end_exclusive == 0 {
         return fallback_start;
     }

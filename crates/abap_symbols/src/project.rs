@@ -34,7 +34,13 @@ impl ProjectAnalysis {
 
 pub fn analyze_unit(uri: impl Into<Arc<str>>, source: &str, parse: &ParseResult) -> UnitAnalysis {
     let uri = uri.into();
-    let mut unit = collect_unit(UnitId(0), Arc::clone(&uri), source, &parse.file, &parse.tokens);
+    let mut unit = collect_unit(
+        UnitId(0),
+        Arc::clone(&uri),
+        source,
+        &parse.file,
+        &parse.tokens,
+    );
     resolve_unit(&mut unit);
     let mut project = ProjectAnalysis {
         units: vec![unit],
@@ -64,7 +70,9 @@ pub fn analyze_project(inputs: &[ProjectInput<'_>]) -> ProjectAnalysis {
         resolve_unit(&mut unit);
         uri_to_unit.insert(uri, unit_id);
         for name in &unit.provided_names {
-            provided_name_to_unit.entry(Arc::clone(name)).or_insert(unit_id);
+            provided_name_to_unit
+                .entry(Arc::clone(name))
+                .or_insert(unit_id);
         }
         units.push(unit);
     }

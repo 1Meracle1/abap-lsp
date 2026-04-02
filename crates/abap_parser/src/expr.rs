@@ -8,9 +8,9 @@
 //! `IS [NOT] INITIAL|…`; [`SyntaxKind::InstanceOfPredicate`] for `IS [NOT] INSTANCE OF type` (type =
 //! concat-expr). Comment tokens (including lexer `##…` pragmas) are skipped inside the expression parser.
 
-use abap_ast::arena::{NodeId, SyntaxTreeBuilder};
 use abap_ast::SyntaxKind;
-use abap_lexer::{have_space_between, Token, TokenKind};
+use abap_ast::arena::{NodeId, SyntaxTreeBuilder};
+use abap_lexer::{Token, TokenKind, have_space_between};
 
 fn token_leaf(b: &mut SyntaxTreeBuilder, token: &Token) -> NodeId {
     b.leaf(SyntaxKind::Token, token.range.clone())
@@ -40,9 +40,12 @@ fn ident_eq(source: &str, t: &Token, kw: &str) -> bool {
 
 fn is_comparison_op(source: &str, t: &Token) -> bool {
     match t.kind {
-        TokenKind::Lt | TokenKind::Gt | TokenKind::Le | TokenKind::Ge | TokenKind::Ne | TokenKind::Eq => {
-            true
-        }
+        TokenKind::Lt
+        | TokenKind::Gt
+        | TokenKind::Le
+        | TokenKind::Ge
+        | TokenKind::Ne
+        | TokenKind::Eq => true,
         TokenKind::Ident => {
             let s = t.lexeme(source);
             s.eq_ignore_ascii_case("EQ")
@@ -200,7 +203,8 @@ impl<'a, 'b> Parser<'a, 'b> {
             let is_selector = matches!(
                 curr.kind,
                 TokenKind::Arrow | TokenKind::FatArrow | TokenKind::Tilde
-            ) || (curr.kind == TokenKind::Minus && !have_space_between(self.prev, curr));
+            ) || (curr.kind == TokenKind::Minus
+                && !have_space_between(self.prev, curr));
             if is_selector {
                 let op_tok = self.bump()?;
                 let field_tok = self.curr()?;
@@ -210,9 +214,11 @@ impl<'a, 'b> Parser<'a, 'b> {
                 let field_tok = self.bump()?;
                 let op = token_leaf(self.b, op_tok);
                 let field_leaf = token_leaf(self.b, field_tok);
-                let field =
-                    self.b
-                        .branch(SyntaxKind::ExprIdent, field_tok.range.clone(), &[field_leaf]);
+                let field = self.b.branch(
+                    SyntaxKind::ExprIdent,
+                    field_tok.range.clone(),
+                    &[field_leaf],
+                );
                 let range = self.b.span(value).start..self.b.span(field).end;
                 value = self
                     .b
@@ -430,7 +436,10 @@ impl<'a, 'b> Parser<'a, 'b> {
             let t = self.bump()?;
             children.push(token_leaf(self.b, t));
             let end = self.b.span(*children.last().unwrap()).end;
-            return Some(self.b.branch(SyntaxKind::IsPredicate, start..end, &children));
+            return Some(
+                self.b
+                    .branch(SyntaxKind::IsPredicate, start..end, &children),
+            );
         }
 
         let t = self.bump()?;
@@ -451,18 +460,20 @@ impl<'a, 'b> Parser<'a, 'b> {
             let bad_leaf = token_leaf(self.b, bad);
             let r = self.b.span(left).start..bad.range.end;
             let bt = token_leaf(self.b, between_tok);
-            return Some(self.b.branch(SyntaxKind::Error, r, &[left, bt, low, bad_leaf]));
+            return Some(
+                self.b
+                    .branch(SyntaxKind::Error, r, &[left, bt, low, bad_leaf]),
+            );
         }
         let and_tok = self.bump()?;
         let high = self.parse_concat_expr()?;
         let r = self.b.span(left).start..self.b.span(high).end;
         let bt = token_leaf(self.b, between_tok);
         let at = token_leaf(self.b, and_tok);
-        Some(self.b.branch(
-            SyntaxKind::BetweenExpr,
-            r,
-            &[left, bt, low, at, high],
-        ))
+        Some(
+            self.b
+                .branch(SyntaxKind::BetweenExpr, r, &[left, bt, low, at, high]),
+        )
     }
 
     fn parse_operand(&mut self) -> Option<NodeId> {
@@ -488,12 +499,18 @@ impl<'a, 'b> Parser<'a, 'b> {
                 }
                 let t = self.bump()?;
                 let leaf = token_leaf(self.b, t);
-                Some(self.b.branch(SyntaxKind::ExprIdent, t.range.clone(), &[leaf]))
+                Some(
+                    self.b
+                        .branch(SyntaxKind::ExprIdent, t.range.clone(), &[leaf]),
+                )
             }
             TokenKind::Number | TokenKind::String => {
                 let t = self.bump()?;
                 let leaf = token_leaf(self.b, t);
-                Some(self.b.branch(SyntaxKind::ExprLiteral, t.range.clone(), &[leaf]))
+                Some(
+                    self.b
+                        .branch(SyntaxKind::ExprLiteral, t.range.clone(), &[leaf]),
+                )
             }
             TokenKind::LParen if have_space_between(self.prev, curr) => self.parse_paren_expr(),
             _ => None,
@@ -633,10 +650,7 @@ mod tests {
 
     fn bin_op_lexeme<'a>(source: &'a str, tree: &SyntaxTree, bin: NodeId) -> &'a str {
         let op = tree.children(bin).nth(1).expect("op slot");
-        let t = tree
-            .children(op)
-            .next()
-            .unwrap_or(op);
+        let t = tree.children(op).next().unwrap_or(op);
         let r = tree.range(t);
         source.get(r).unwrap_or("")
     }
@@ -688,7 +702,10 @@ mod tests {
         let tree = b.finish(root);
         let bnode = outer_binary(&tree, root);
         assert_eq!(bin_op_lexeme(&src, &tree, bnode), "-");
-        assert_eq!(tree.kind(tree.children(bnode).nth(2).unwrap()), SyntaxKind::ExprIdent);
+        assert_eq!(
+            tree.kind(tree.children(bnode).nth(2).unwrap()),
+            SyntaxKind::ExprIdent
+        );
         let left = tree.children(bnode).next().unwrap();
         assert_eq!(tree.kind(left), SyntaxKind::BinaryExpr);
         assert_eq!(bin_op_lexeme(&src, &tree, left), "-");
@@ -737,8 +754,7 @@ mod tests {
 
     #[test]
     fn parenthesized_addition_before_multiply() {
-        let (src, tokens, prev) =
-            expr_tokens_after_eq("DATA(result) = ( a + b ) * c.");
+        let (src, tokens, prev) = expr_tokens_after_eq("DATA(result) = ( a + b ) * c.");
         let mut b = SyntaxTreeBuilder::default();
         let root = parse_arithmetic_expr(&mut b, &src, &tokens, Some(&prev));
         let tree = b.finish(root);
@@ -813,10 +829,7 @@ mod tests {
         let mut b = SyntaxTreeBuilder::default();
         let root = parse_logical_expr(&mut b, src, &tok.tokens, None);
         let tree = b.finish(root);
-        assert_eq!(
-            tree.count_kind(root, SyntaxKind::InstanceOfPredicate),
-            1
-        );
+        assert_eq!(tree.count_kind(root, SyntaxKind::InstanceOfPredicate), 1);
     }
 
     #[test]

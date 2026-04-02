@@ -1,10 +1,10 @@
 //! Simple statements that are not structured further yet: a run of tokens up to a top-level `.`.
 
-use abap_ast::arena::{NodeId, SyntaxTreeBuilder};
 use abap_ast::SyntaxKind;
+use abap_ast::arena::{NodeId, SyntaxTreeBuilder};
 use abap_lexer::{Token, TokenKind};
 
-use crate::stmt_period::{scan_until_statement_period, unterminated_err_end, StmtPeriodScan};
+use crate::stmt_period::{StmtPeriodScan, scan_until_statement_period, unterminated_err_end};
 
 fn token_leaf(b: &mut SyntaxTreeBuilder, token: &Token) -> NodeId {
     b.leaf(SyntaxKind::Token, token.range.clone())
@@ -48,11 +48,7 @@ pub fn try_parse_simple_stmt(
             for t in &tokens[idx..end_exclusive] {
                 kids.push(token_leaf(b, t));
             }
-            let node = b.branch(
-                SyntaxKind::Error,
-                first.range.start..err_end,
-                &kids,
-            );
+            let node = b.branch(SyntaxKind::Error, first.range.start..err_end, &kids);
             let next = if tokens.get(end_exclusive).map(|t| t.kind) == Some(TokenKind::Eof) {
                 tokens.len()
             } else {
