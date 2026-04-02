@@ -3,6 +3,46 @@ use abap_parser::parse;
 use abap_symbols::{DiagnosticKind, Namespace, Resolution, StructureFieldShape, analyze_unit};
 
 #[test]
+fn resolves_form_changing_parameter_in_body() {
+    let src = r#"
+FORM some_form CHANGING cv_result TYPE string.
+    DATA:
+        lv_var1 TYPE i,
+        lv_var2 TYPE string.
+
+    lv_var2 = 'hello'.
+
+    cv_result = lv_var2.
+ENDFORM.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///form.abap", src, &parsed);
+
+    assert!(unit.symbols.iter().any(|symbol| {
+        symbol.kind == abap_symbols::SymbolKind::Parameter && symbol.name.as_ref() == "cv_result"
+    }));
+
+    let refs: Vec<_> = unit
+        .references
+        .iter()
+        .filter(|reference| reference.name.as_ref() == "cv_result")
+        .collect();
+    assert!(
+        refs.iter().all(|reference| reference.resolution.is_some()),
+        "expected cv_result references to resolve, got: {:?}",
+        refs
+    );
+
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains("cv_result")
+        }),
+        "unexpected unresolved diagnostic: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn resolves_local_references_in_scope() {
     let src = "DATA lv_value TYPE i. lv_value = lv_value + 1.";
     let parsed = parse(src);

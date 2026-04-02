@@ -33,6 +33,12 @@ struct PendingStructure {
     fields: Vec<PendingStructureField>,
 }
 
+#[derive(Clone, Copy)]
+enum FormHeaderParamSection {
+    Tables,
+    UsingOrChanging,
+}
+
 pub struct Collector<'a> {
     source: &'a str,
     file: &'a File,
@@ -467,9 +473,226 @@ impl<'a> Collector<'a> {
         };
         let owner = self.declare_plain_symbol(scope, name, kind, range);
         let child_scope = self.push_scope(scope_kind, self.file.range(node), Some(scope), Some(owner));
+        if scope_kind == ScopeKind::Form {
+            self.declare_form_parameters_from_header(node, child_scope);
+        }
         for child in self.file.children(node) {
             self.walk_node(child, child_scope);
         }
+    }
+
+    fn form_header_token_refs(&self, form_node: NodeId) -> Vec<&'a Token> {
+        let mut out = Vec::new();
+        for child in self.file.children(form_node) {
+            if self.file.kind(child) != SyntaxKind::Token {
+                break;
+            }
+            if let Some(token) = self.token_for_node(child) {
+                out.push(token);
+            }
+        }
+        out
+    }
+
+    fn declare_form_parameters_from_header(&mut self, form_node: NodeId, form_scope: ScopeId) {
+        let tokens = self.form_header_token_refs(form_node);
+        if tokens.len() < 2 {
+            return;
+        }
+        if !self.token_matches_keyword(tokens[0], "form") {
+            return;
+        }
+        let mut i = 1usize;
+        while i < tokens.len() && tokens[i].kind == TokenKind::Comment {
+            i += 1;
+        }
+        if tokens.get(i).map(|t| t.kind) != Some(TokenKind::Ident) {
+            return;
+        }
+        i += 1;
+
+        let mut section: Option<FormHeaderParamSection> = None;
+        let mut depth = 0i32;
+
+        while i < tokens.len() {
+            let t = tokens[i];
+            if t.kind == TokenKind::Comment {
+                i += 1;
+                continue;
+            }
+            match t.kind {
+                TokenKind::LParen => {
+                    depth += 1;
+                    i += 1;
+                }
+                TokenKind::RParen => {
+                    depth -= 1;
+                    i += 1;
+                }
+                TokenKind::Period if depth == 0 => break,
+                _ if depth == 0 && t.kind == TokenKind::Ident => {
+                    let lit = t.lexeme(self.source);
+                    if lit.eq_ignore_ascii_case("tables") {
+                        section = Some(FormHeaderParamSection::Tables);
+                        i += 1;
+                        continue;
+                    }
+                    if lit.eq_ignore_ascii_case("using") || lit.eq_ignore_ascii_case("changing") {
+                        section = Some(FormHeaderParamSection::UsingOrChanging);
+                        i += 1;
+                        continue;
+                    }
+                    if lit.eq_ignore_ascii_case("raises") {
+                        section = None;
+                        i += 1;
+                        continue;
+                    }
+
+                    match section {
+                        Some(FormHeaderParamSection::UsingOrChanging) => {
+                            if let Some(next_i) =
+                                self.try_consume_form_value_or_reference_param(&tokens, i, form_scope)
+                            {
+                                i = next_i;
+                                continue;
+                            }
+                            if self.form_header_starts_typed_param(&tokens, i) {
+                                let range = t.range.clone();
+                                let name = Arc::<str>::from(lit.to_ascii_lowercase());
+                                self.declare_plain_symbol(form_scope, name, SymbolKind::Parameter, range);
+                                i += 1;
+                                while i < tokens.len() && tokens[i].kind == TokenKind::Comment {
+                                    i += 1;
+                                }
+                                if i < tokens.len()
+                                    && (self.token_matches_keyword(tokens[i], "type")
+                                        || self.token_matches_keyword(tokens[i], "like"))
+                                {
+                                    i += 1;
+                                    i = self.skip_form_header_type_expression(&tokens, i);
+                                }
+                                continue;
+                            }
+                            i += 1;
+                        }
+                        Some(FormHeaderParamSection::Tables) => {
+                            i += 1;
+                        }
+                        None => {
+                            i += 1;
+                        }
+                    }
+                }
+                _ => {
+                    i += 1;
+                }
+            }
+        }
+    }
+
+    fn form_header_section_keyword(&self, token: &Token) -> bool {
+        token.kind == TokenKind::Ident
+            && matches!(
+                token.lexeme(self.source).to_ascii_uppercase().as_str(),
+                "TABLES" | "USING" | "CHANGING" | "RAISES"
+            )
+    }
+
+    fn form_header_starts_typed_param(&self, tokens: &[&Token], idx: usize) -> bool {
+        let name = match tokens.get(idx) {
+            Some(t) if t.kind == TokenKind::Ident => *t,
+            _ => return false,
+        };
+        if self.token_matches_keyword(name, "value") || self.token_matches_keyword(name, "reference") {
+            return false;
+        }
+        let mut j = idx + 1;
+        while j < tokens.len() && tokens[j].kind == TokenKind::Comment {
+            j += 1;
+        }
+        tokens.get(j).is_some_and(|tok| {
+            self.token_matches_keyword(tok, "type") || self.token_matches_keyword(tok, "like")
+        })
+    }
+
+    fn try_consume_form_value_or_reference_param(
+        &mut self,
+        tokens: &[&Token],
+        i: usize,
+        scope: ScopeId,
+    ) -> Option<usize> {
+        let kw = tokens.get(i)?;
+        if !self.token_matches_keyword(kw, "value") && !self.token_matches_keyword(kw, "reference") {
+            return None;
+        }
+        let mut j = i + 1;
+        while j < tokens.len() && tokens[j].kind == TokenKind::Comment {
+            j += 1;
+        }
+        if tokens.get(j).map(|t| t.kind) == Some(TokenKind::LParen) {
+            j += 1;
+            while j < tokens.len() && tokens[j].kind == TokenKind::Comment {
+                j += 1;
+            }
+            let inner = tokens.get(j)?;
+            if inner.kind != TokenKind::Ident {
+                return None;
+            }
+            let name = Arc::<str>::from(inner.lexeme(self.source).to_ascii_lowercase());
+            let range = inner.range.clone();
+            self.declare_plain_symbol(scope, name, SymbolKind::Parameter, range);
+            j += 1;
+            while j < tokens.len() && tokens[j].kind == TokenKind::Comment {
+                j += 1;
+            }
+            if tokens.get(j).map(|t| t.kind) != Some(TokenKind::RParen) {
+                return None;
+            }
+            j += 1;
+        } else {
+            let inner = tokens.get(j)?;
+            if inner.kind != TokenKind::Ident {
+                return None;
+            }
+            let name = Arc::<str>::from(inner.lexeme(self.source).to_ascii_lowercase());
+            let range = inner.range.clone();
+            self.declare_plain_symbol(scope, name, SymbolKind::Parameter, range);
+            j += 1;
+        }
+        while j < tokens.len() && tokens[j].kind == TokenKind::Comment {
+            j += 1;
+        }
+        if !self.token_matches_keyword(tokens.get(j)?, "type") && !self.token_matches_keyword(tokens.get(j)?, "like") {
+            return None;
+        }
+        j += 1;
+        Some(self.skip_form_header_type_expression(tokens, j))
+    }
+
+    fn skip_form_header_type_expression(&self, tokens: &[&Token], mut i: usize) -> usize {
+        let mut depth = 0i32;
+        while i < tokens.len() {
+            let t = tokens[i];
+            if t.kind == TokenKind::Comment {
+                i += 1;
+                continue;
+            }
+            match t.kind {
+                TokenKind::LParen => {
+                    depth += 1;
+                    i += 1;
+                }
+                TokenKind::RParen => {
+                    depth -= 1;
+                    i += 1;
+                }
+                TokenKind::Period if depth == 0 => return i,
+                _ if depth == 0 && self.form_header_section_keyword(t) => return i,
+                _ if depth == 0 && self.form_header_starts_typed_param(tokens, i) => return i,
+                _ => i += 1,
+            }
+        }
+        i
     }
 
     fn walk_if_stmt(&mut self, node: NodeId, scope: ScopeId) {

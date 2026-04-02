@@ -202,8 +202,22 @@ pub fn hover(state: &ServerState, params: &HoverParams) -> Option<Hover> {
         snapshot.text.as_ref(),
         params.text_document_position_params.position,
     )?;
-    let component = snapshot.hovered_component_at(offset)?;
-    structured_field_hover(&snapshot, component)
+    if let Some(component) = snapshot.hovered_component_at(offset) {
+        return structured_field_hover(&snapshot, component);
+    }
+    let symbol = snapshot.hovered_resolved_symbol_at(offset)?;
+    resolved_symbol_hover(&snapshot, symbol)
+}
+
+fn resolved_symbol_hover(snapshot: &AnalysisSnapshot, info: abap_cache::HoveredSymbolInfo) -> Option<Hover> {
+    let range = byte_range_to_lsp_range(snapshot.text.as_ref(), info.range)?;
+    Some(Hover {
+        contents: HoverContents::Markup(MarkupContent {
+            kind: MarkupKind::Markdown,
+            value: info.markdown_lines.join("\n\n"),
+        }),
+        range: Some(range),
+    })
 }
 
 fn structured_field_hover(snapshot: &AnalysisSnapshot, component: abap_cache::HoveredComponentInfo) -> Option<Hover> {
@@ -463,6 +477,48 @@ ls_outer-inner-a = 1."
         assert!(markup.value.contains("scalar component"));
         assert!(markup.value.contains("`TYPE i`"));
         assert!(markup.value.contains("`ls_outer-inner-a`"));
+    }
+
+    #[test]
+    fn hover_returns_resolved_variable_symbol() {
+        let state = ServerState::default();
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///hover_lv.abap").expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: "DATA lv TYPE i.\nlv = 1.".to_string(),
+                },
+            },
+        );
+        let text = "DATA lv TYPE i.\nlv = 1.";
+        let line_1_start = text.find('\n').expect("newline") + 1;
+        let lv_use_col = (text.rfind("lv").expect("lv use") - line_1_start) as u32;
+
+        let hover = hover(
+            &state,
+            &HoverParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///hover_lv.abap").expect("uri"),
+                    },
+                    position: Position {
+                        line: 1,
+                        character: lv_use_col + 1,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+            },
+        )
+        .expect("hover");
+
+        let HoverContents::Markup(markup) = hover.contents else {
+            panic!("expected markdown hover");
+        };
+        assert!(markup.value.contains("`lv`"));
+        assert!(markup.value.contains("Variable"));
     }
 
     #[test]

@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use abap_parser::{ParseResult, parse};
 use abap_symbols::{
-    Namespace, ProjectAnalysis, ProjectInput, ScopeId, StructureFieldInfo, StructureFieldShape, StructureId,
-    SymbolId, UnitAnalysis, analyze_project,
+    Namespace, ProjectAnalysis, ProjectInput, Resolution, ScopeId, StructureFieldInfo, StructureFieldShape,
+    StructureId, SymbolData, SymbolId, SymbolKind, UnitAnalysis, analyze_project,
 };
 use parking_lot::RwLock;
 
@@ -34,6 +34,14 @@ pub struct HoveredComponentInfo {
     pub declared_type: Option<String>,
     pub kind: HoveredComponentKind,
     pub in_type_position: bool,
+}
+
+/// Hover payload for a resolved reference or declaration at a byte offset (LSP-agnostic).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HoveredSymbolInfo {
+    pub range: Range<usize>,
+    pub display_name: Arc<str>,
+    pub markdown_lines: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -142,6 +150,45 @@ impl AnalysisSnapshot {
         })
     }
 
+    /// Hover for a resolved reference (narrowest matching range) or, if none, a symbol declaration
+    /// covering the offset.
+    pub fn hovered_resolved_symbol_at(&self, offset: usize) -> Option<HoveredSymbolInfo> {
+        if let Some((reference, resolution)) = self
+            .symbols
+            .references
+            .iter()
+            .filter_map(|reference| {
+                if reference.range.start <= offset && offset < reference.range.end {
+                    reference
+                        .resolution
+                        .map(|resolution| (reference, resolution))
+                } else {
+                    None
+                }
+            })
+            .min_by_key(|(reference, _)| reference.range.end.saturating_sub(reference.range.start))
+        {
+            return Some(HoveredSymbolInfo {
+                range: reference.range.clone(),
+                display_name: Arc::clone(&reference.name),
+                markdown_lines: markdown_lines_for_resolution(self, &reference.name, resolution),
+            });
+        }
+
+        let symbol = self
+            .symbols
+            .symbols
+            .iter()
+            .filter(|symbol| symbol.decl_range.start <= offset && offset < symbol.decl_range.end)
+            .min_by_key(|symbol| symbol.decl_range.end.saturating_sub(symbol.decl_range.start))?;
+
+        Some(HoveredSymbolInfo {
+            range: symbol.decl_range.clone(),
+            display_name: Arc::clone(&symbol.name),
+            markdown_lines: markdown_lines_for_declared_symbol(self.symbols.as_ref(), symbol),
+        })
+    }
+
     pub fn selector_completion_at(&self, offset: usize) -> Option<SelectorCompletionInfo> {
         let query = self.selector_completion_query_at(offset)?;
         let (unit, symbol_id) = resolve_symbol_from_context(
@@ -216,6 +263,80 @@ fn format_field_type_ref(type_ref: &abap_symbols::FieldTypeRefData) -> String {
         rendered.push_str(segment.as_ref());
     }
     format!("{keyword} {rendered}")
+}
+
+fn symbol_kind_label(kind: SymbolKind) -> &'static str {
+    match kind {
+        SymbolKind::BuiltinType => "Built-in type",
+        SymbolKind::BuiltinRoutine => "Built-in routine",
+        SymbolKind::BuiltinConstant => "Built-in constant",
+        SymbolKind::BuiltinVariable => "Built-in variable",
+        SymbolKind::Variable => "Variable",
+        SymbolKind::Constant => "Constant",
+        SymbolKind::TypeDef => "Type definition",
+        SymbolKind::FieldSymbol => "Field symbol",
+        SymbolKind::Form => "Form",
+        SymbolKind::Parameter => "Parameter",
+        SymbolKind::Class => "Class",
+        SymbolKind::Interface => "Interface",
+        SymbolKind::Method => "Method",
+        SymbolKind::Field => "Field",
+        SymbolKind::Include => "Include program",
+        SymbolKind::Event => "Event",
+        SymbolKind::Module => "Module",
+        SymbolKind::Control => "Control",
+        SymbolKind::Report => "Report",
+    }
+}
+
+fn symbol_type_line(unit: &UnitAnalysis, symbol: &SymbolData) -> Option<String> {
+    let structure_id = symbol.structure?;
+    let name = unit.structure(structure_id).name.as_ref();
+    Some(format!("Declared as TYPE `{name}`"))
+}
+
+fn markdown_lines_for_declared_symbol(unit: &UnitAnalysis, symbol: &SymbolData) -> Vec<String> {
+    let mut lines = vec![
+        format!("`{}`", symbol.name),
+        symbol_kind_label(symbol.kind).to_string(),
+    ];
+    if let Some(type_line) = symbol_type_line(unit, symbol) {
+        lines.push(type_line);
+    }
+    lines
+}
+
+fn markdown_lines_for_resolution(
+    snapshot: &AnalysisSnapshot,
+    at_name: &Arc<str>,
+    resolution: Resolution,
+) -> Vec<String> {
+    match resolution {
+        Resolution::Symbol(handle) => {
+            let unit = &snapshot.project.units[handle.unit.as_usize()];
+            let symbol = unit.symbol(handle.symbol);
+            let mut lines = vec![
+                format!("`{at_name}`"),
+                symbol_kind_label(symbol.kind).to_string(),
+            ];
+            if let Some(type_line) = symbol_type_line(unit, symbol) {
+                lines.push(type_line);
+            }
+            lines
+        }
+        Resolution::BuiltinType => vec![
+            format!("`{at_name}`"),
+            "Built-in ABAP type".to_string(),
+        ],
+        Resolution::BuiltinRoutine => vec![
+            format!("`{at_name}`"),
+            "Built-in ABAP routine".to_string(),
+        ],
+        Resolution::External => vec![
+            format!("`{at_name}`"),
+            "External reference (not resolved in this workspace)".to_string(),
+        ],
+    }
 }
 
 fn build_scope_index(unit: &UnitAnalysis) -> ScopeIndex {
@@ -719,6 +840,48 @@ ls_outer-inner-a = 1.";
         assert_eq!(hovered.field_name.as_ref(), "a");
         assert_eq!(hovered.declared_type.as_deref(), Some("TYPE i"));
         assert!(matches!(hovered.kind, HoveredComponentKind::Scalar));
+    }
+
+    #[test]
+    fn hovered_resolved_symbol_at_finds_resolved_reference() {
+        let store = DocumentStore::default();
+        let src = "DATA lv TYPE i.\nlv = 1.";
+        let snapshot = store.publish("file:///demo.abap", 1, src);
+        let offset = src.rfind("lv").expect("use of lv") + 1;
+
+        let hovered = snapshot
+            .hovered_resolved_symbol_at(offset)
+            .expect("resolved symbol hover");
+        assert_eq!(hovered.display_name.as_ref(), "lv");
+        assert!(
+            hovered.markdown_lines.iter().any(|line| line == "Variable"),
+            "{:?}",
+            hovered.markdown_lines
+        );
+    }
+
+    #[test]
+    fn hovered_resolved_symbol_at_falls_back_to_declaration() {
+        let store = DocumentStore::default();
+        let src = "DATA lv TYPE i.";
+        let snapshot = store.publish("file:///demo.abap", 1, src);
+        let offset = src.find("lv").expect("lv name") + 1;
+
+        let hovered = snapshot
+            .hovered_resolved_symbol_at(offset)
+            .expect("declaration hover");
+        assert_eq!(hovered.display_name.as_ref(), "lv");
+        assert!(hovered.markdown_lines.iter().any(|line| line == "Variable"));
+    }
+
+    #[test]
+    fn hovered_resolved_symbol_at_returns_none_on_whitespace() {
+        let store = DocumentStore::default();
+        let src = "DATA lv TYPE i.\n";
+        let snapshot = store.publish("file:///demo.abap", 1, src);
+        let offset = src.len() - 1;
+
+        assert!(snapshot.hovered_resolved_symbol_at(offset).is_none());
     }
 
     #[test]
