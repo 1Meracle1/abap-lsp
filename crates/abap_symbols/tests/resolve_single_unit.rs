@@ -1,6 +1,9 @@
 use abap_parser::parse;
 
-use abap_symbols::{DiagnosticKind, Namespace, Resolution, StructureFieldShape, analyze_unit};
+use abap_symbols::{
+    DiagnosticKind, Namespace, ReferenceKind, Resolution, StructureFieldShape, SymbolHandle,
+    analyze_unit,
+};
 
 #[test]
 fn resolves_form_changing_parameter_in_body() {
@@ -107,6 +110,59 @@ fn reports_duplicate_declarations() {
         unit.diagnostics
             .iter()
             .any(|diag| diag.kind == DiagnosticKind::DuplicateDeclaration)
+    );
+}
+
+#[test]
+fn class_definition_and_implementation_are_not_duplicate_class_declarations() {
+    let src = r#"
+CLASS some_class DEFINITION.
+  PUBLIC SECTION.
+    METHODS exec.
+  PRIVATE SECTION.
+ENDCLASS.
+
+CLASS some_class IMPLEMENTATION.
+  METHOD exec.
+  ENDMETHOD.
+ENDCLASS.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///class_impl.abap", src, &parsed);
+
+    let class_decls = unit
+        .symbols
+        .iter()
+        .filter(|s| {
+            s.kind == abap_symbols::SymbolKind::Class && s.name.as_ref() == "some_class"
+        })
+        .count();
+    assert_eq!(class_decls, 1);
+    assert!(
+        !unit.diagnostics.iter().any(|diag| diag.kind == DiagnosticKind::DuplicateDeclaration),
+        "CLASS ... IMPLEMENTATION is not a second declaration of the class"
+    );
+
+    let class = unit
+        .symbols
+        .iter()
+        .find(|s| s.kind == abap_symbols::SymbolKind::Class && s.name.as_ref() == "some_class")
+        .expect("class symbol");
+    let impl_header_ref = unit
+        .references
+        .iter()
+        .find(|r| {
+            r.name.as_ref() == "some_class"
+                && r.kind == ReferenceKind::TypeRef
+                && r.namespace == Namespace::Type
+        })
+        .expect("implementation header class name should be a type reference");
+    assert_eq!(
+        impl_header_ref.resolution,
+        Some(Resolution::Symbol(SymbolHandle {
+            unit: unit.unit_id,
+            symbol: class.id,
+        }))
     );
 }
 

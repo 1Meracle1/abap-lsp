@@ -364,9 +364,7 @@ impl<'a> Collector<'a> {
             SyntaxKind::EventBlock => {
                 self.walk_block_decl(node, scope, SymbolKind::Event, ScopeKind::EventBlock)
             }
-            SyntaxKind::ClassDecl => {
-                self.walk_block_decl(node, scope, SymbolKind::Class, ScopeKind::Class)
-            }
+            SyntaxKind::ClassDecl => self.walk_class_decl(node, scope),
             SyntaxKind::InterfaceDecl => {
                 self.walk_block_decl(node, scope, SymbolKind::Interface, ScopeKind::Interface)
             }
@@ -503,6 +501,42 @@ impl<'a> Collector<'a> {
         }
     }
 
+    fn walk_class_decl(&mut self, node: NodeId, scope: ScopeId) {
+        let is_implementation = self.class_header_has_implementation(node);
+        let Some((name, range)) = self.header_ident_after_keyword(node) else {
+            self.walk_children(node, scope);
+            return;
+        };
+        let mut impl_header_refs_class = false;
+        let owner = if is_implementation {
+            if let Some(existing) = self
+                .lookup_symbol_in_scope_chain(scope, Namespace::Type, name.as_ref())
+                .filter(|&id| self.symbol(id).kind == SymbolKind::Class)
+            {
+                impl_header_refs_class = true;
+                existing
+            } else {
+                self.declare_plain_symbol(scope, Arc::clone(&name), SymbolKind::Class, range.clone())
+            }
+        } else {
+            self.declare_plain_symbol(scope, Arc::clone(&name), SymbolKind::Class, range.clone())
+        };
+        if impl_header_refs_class {
+            self.add_reference(
+                scope,
+                name,
+                Namespace::Type,
+                ReferenceKind::TypeRef,
+                range,
+            );
+        }
+        let child_scope =
+            self.push_scope(ScopeKind::Class, self.file.range(node), Some(scope), Some(owner));
+        for child in self.file.children(node) {
+            self.walk_node(child, child_scope);
+        }
+    }
+
     fn walk_block_decl(
         &mut self,
         node: NodeId,
@@ -523,6 +557,21 @@ impl<'a> Collector<'a> {
         for child in self.file.children(node) {
             self.walk_node(child, child_scope);
         }
+    }
+
+    fn class_header_has_implementation(&self, node: NodeId) -> bool {
+        for child in self.file.children(node) {
+            let Some(token) = self.token_for_node(child) else {
+                continue;
+            };
+            if token.kind == TokenKind::Period {
+                break;
+            }
+            if self.token_matches_keyword(token, "implementation") {
+                return true;
+            }
+        }
+        false
     }
 
     fn form_header_token_refs(&self, form_node: NodeId) -> Vec<&'a Token> {
