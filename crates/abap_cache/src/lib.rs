@@ -290,9 +290,22 @@ fn symbol_kind_label(kind: SymbolKind) -> &'static str {
 }
 
 fn symbol_type_line(unit: &UnitAnalysis, symbol: &SymbolData) -> Option<String> {
-    let structure_id = symbol.structure?;
-    let name = unit.structure(structure_id).name.as_ref();
-    Some(format!("Declared as TYPE `{name}`"))
+    if let Some(structure_id) = symbol.structure {
+        let name = unit.structure(structure_id).name.as_ref();
+        return Some(format!("Declared as TYPE `{name}`"));
+    }
+    let type_ref = symbol.declared_type.as_ref()?;
+    let keyword = match type_ref.namespace {
+        Namespace::Type => "TYPE",
+        Namespace::Value => "LIKE",
+        Namespace::Routine => "TYPE",
+    };
+    let mut rendered = type_ref.base_name.to_string();
+    for segment in &type_ref.field_path {
+        rendered.push('-');
+        rendered.push_str(segment.as_ref());
+    }
+    Some(format!("Declared as {keyword} `{rendered}`"))
 }
 
 fn markdown_lines_for_declared_symbol(unit: &UnitAnalysis, symbol: &SymbolData) -> Vec<String> {
@@ -858,6 +871,14 @@ ls_outer-inner-a = 1.";
             "{:?}",
             hovered.markdown_lines
         );
+        assert!(
+            hovered
+                .markdown_lines
+                .iter()
+                .any(|line| line == "Declared as TYPE `i`"),
+            "{:?}",
+            hovered.markdown_lines
+        );
     }
 
     #[test]
@@ -872,6 +893,14 @@ ls_outer-inner-a = 1.";
             .expect("declaration hover");
         assert_eq!(hovered.display_name.as_ref(), "lv");
         assert!(hovered.markdown_lines.iter().any(|line| line == "Variable"));
+        assert!(
+            hovered
+                .markdown_lines
+                .iter()
+                .any(|line| line == "Declared as TYPE `i`"),
+            "{:?}",
+            hovered.markdown_lines
+        );
     }
 
     #[test]

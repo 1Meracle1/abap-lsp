@@ -139,6 +139,7 @@ impl<'a> Collector<'a> {
         kind: SymbolKind,
         decl_range: TextRange,
         structure: Option<StructureId>,
+        declared_type: Option<FieldTypeRefData>,
     ) -> SymbolId {
         let id = SymbolId(self.symbols.len() as u32);
         self.symbols.push(SymbolData {
@@ -148,6 +149,7 @@ impl<'a> Collector<'a> {
             scope,
             decl_range: decl_range.clone(),
             structure,
+            declared_type,
         });
         self.scopes[scope.as_usize()].declarations.push(id);
         for &namespace in kind.namespaces() {
@@ -193,7 +195,7 @@ impl<'a> Collector<'a> {
         kind: SymbolKind,
         decl_range: TextRange,
     ) -> SymbolId {
-        self.declare_symbol(scope, name, kind, decl_range, None)
+        self.declare_symbol(scope, name, kind, decl_range, None, None)
     }
 
     fn push_structure(
@@ -257,6 +259,7 @@ impl<'a> Collector<'a> {
                 symbol
                     .structure_name
                     .and_then(|name| structure_ids.get(name).copied()),
+                None,
             );
         }
     }
@@ -405,7 +408,7 @@ impl<'a> Collector<'a> {
                 name: Arc::clone(&name),
                 fields,
             });
-            self.declare_symbol(scope, name, kind, range, Some(structure));
+            self.declare_symbol(scope, name, kind, range, Some(structure), None);
             return;
         }
 
@@ -413,7 +416,11 @@ impl<'a> Collector<'a> {
             && let Some((name, range)) = self.node_name(name_node)
         {
             let structure = self.structure_from_typed_clause(node, scope);
-            self.declare_symbol(scope, name, kind, range, structure);
+            let declared_type = structure
+                .is_none()
+                .then(|| self.type_ref_from_typed_clause(node))
+                .flatten();
+            self.declare_symbol(scope, name, kind, range, structure, declared_type);
         }
     }
 
@@ -559,18 +566,56 @@ impl<'a> Collector<'a> {
                             if self.form_header_starts_typed_param(&tokens, i) {
                                 let range = t.range.clone();
                                 let name = Arc::<str>::from(lit.to_ascii_lowercase());
-                                self.declare_plain_symbol(form_scope, name, SymbolKind::Parameter, range);
-                                i += 1;
-                                while i < tokens.len() && tokens[i].kind == TokenKind::Comment {
-                                    i += 1;
+                                let mut j = i + 1;
+                                while j < tokens.len() && tokens[j].kind == TokenKind::Comment {
+                                    j += 1;
                                 }
-                                if i < tokens.len()
-                                    && (self.token_matches_keyword(tokens[i], "type")
-                                        || self.token_matches_keyword(tokens[i], "like"))
-                                {
-                                    i += 1;
-                                    i = self.skip_form_header_type_expression(&tokens, i);
-                                }
+                                let declared_type = match tokens.get(j) {
+                                    Some(tok) if self.token_matches_keyword(tok, "type") => {
+                                        j += 1;
+                                        while j < tokens.len() && tokens[j].kind == TokenKind::Comment {
+                                            j += 1;
+                                        }
+                                        let expr_start = j;
+                                        let expr_end =
+                                            self.skip_form_header_type_expression(&tokens, expr_start);
+                                        let dt = self.field_type_ref_from_token_slice(
+                                            &tokens,
+                                            expr_start,
+                                            expr_end,
+                                            Namespace::Type,
+                                        );
+                                        j = expr_end;
+                                        dt
+                                    }
+                                    Some(tok) if self.token_matches_keyword(tok, "like") => {
+                                        j += 1;
+                                        while j < tokens.len() && tokens[j].kind == TokenKind::Comment {
+                                            j += 1;
+                                        }
+                                        let expr_start = j;
+                                        let expr_end =
+                                            self.skip_form_header_type_expression(&tokens, expr_start);
+                                        let dt = self.field_type_ref_from_token_slice(
+                                            &tokens,
+                                            expr_start,
+                                            expr_end,
+                                            Namespace::Value,
+                                        );
+                                        j = expr_end;
+                                        dt
+                                    }
+                                    _ => None,
+                                };
+                                self.declare_symbol(
+                                    form_scope,
+                                    name,
+                                    SymbolKind::Parameter,
+                                    range,
+                                    None,
+                                    declared_type,
+                                );
+                                i = j;
                                 continue;
                             }
                             i += 1;
@@ -629,7 +674,7 @@ impl<'a> Collector<'a> {
         while j < tokens.len() && tokens[j].kind == TokenKind::Comment {
             j += 1;
         }
-        if tokens.get(j).map(|t| t.kind) == Some(TokenKind::LParen) {
+        let (name, range) = if tokens.get(j).map(|t| t.kind) == Some(TokenKind::LParen) {
             j += 1;
             while j < tokens.len() && tokens[j].kind == TokenKind::Comment {
                 j += 1;
@@ -640,7 +685,6 @@ impl<'a> Collector<'a> {
             }
             let name = Arc::<str>::from(inner.lexeme(self.source).to_ascii_lowercase());
             let range = inner.range.clone();
-            self.declare_plain_symbol(scope, name, SymbolKind::Parameter, range);
             j += 1;
             while j < tokens.len() && tokens[j].kind == TokenKind::Comment {
                 j += 1;
@@ -649,6 +693,7 @@ impl<'a> Collector<'a> {
                 return None;
             }
             j += 1;
+            (name, range)
         } else {
             let inner = tokens.get(j)?;
             if inner.kind != TokenKind::Ident {
@@ -656,17 +701,91 @@ impl<'a> Collector<'a> {
             }
             let name = Arc::<str>::from(inner.lexeme(self.source).to_ascii_lowercase());
             let range = inner.range.clone();
-            self.declare_plain_symbol(scope, name, SymbolKind::Parameter, range);
             j += 1;
-        }
+            (name, range)
+        };
         while j < tokens.len() && tokens[j].kind == TokenKind::Comment {
             j += 1;
         }
-        if !self.token_matches_keyword(tokens.get(j)?, "type") && !self.token_matches_keyword(tokens.get(j)?, "like") {
+        let type_tok = tokens.get(j)?;
+        let clause_ns = if self.token_matches_keyword(type_tok, "type") {
+            Namespace::Type
+        } else if self.token_matches_keyword(type_tok, "like") {
+            Namespace::Value
+        } else {
+            return None;
+        };
+        j += 1;
+        while j < tokens.len() && tokens[j].kind == TokenKind::Comment {
+            j += 1;
+        }
+        let expr_start = j;
+        let expr_end = self.skip_form_header_type_expression(tokens, expr_start);
+        let declared_type =
+            self.field_type_ref_from_token_slice(tokens, expr_start, expr_end, clause_ns);
+        self.declare_symbol(scope, name, SymbolKind::Parameter, range, None, declared_type);
+        Some(expr_end)
+    }
+
+    fn try_parse_simple_type_ref_chain_tokens(&self, tokens: &[&Token]) -> Option<(Arc<str>, Vec<Arc<str>>)> {
+        if tokens.first()?.kind != TokenKind::Ident {
             return None;
         }
-        j += 1;
-        Some(self.skip_form_header_type_expression(tokens, j))
+        let base_name = Arc::<str>::from(tokens[0].lexeme(self.source).to_ascii_lowercase());
+        let mut i = 1usize;
+        let mut field_path = Vec::new();
+        while i < tokens.len() {
+            let sel = tokens.get(i)?;
+            if !matches!(
+                sel.kind,
+                TokenKind::Minus | TokenKind::Arrow | TokenKind::Tilde | TokenKind::FatArrow
+            ) {
+                return None;
+            }
+            i += 1;
+            let id = tokens.get(i)?;
+            if id.kind != TokenKind::Ident {
+                return None;
+            }
+            field_path.push(Arc::<str>::from(id.lexeme(self.source).to_ascii_lowercase()));
+            i += 1;
+        }
+        Some((base_name, field_path))
+    }
+
+    fn field_type_ref_from_token_slice(
+        &self,
+        tokens: &[&Token],
+        start: usize,
+        end: usize,
+        clause_ns: Namespace,
+    ) -> Option<FieldTypeRefData> {
+        let filtered: Vec<&Token> = tokens[start..end]
+            .iter()
+            .copied()
+            .filter(|t| t.kind != TokenKind::Comment)
+            .collect();
+        if filtered.is_empty() {
+            return None;
+        }
+        if let Some((base_name, field_path)) = self.try_parse_simple_type_ref_chain_tokens(&filtered) {
+            return Some(FieldTypeRefData {
+                namespace: clause_ns,
+                base_name,
+                field_path,
+            });
+        }
+        let rendered = filtered
+            .iter()
+            .map(|t| t.lexeme(self.source))
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_ascii_lowercase();
+        Some(FieldTypeRefData {
+            namespace: clause_ns,
+            base_name: Arc::<str>::from(rendered),
+            field_path: Vec::new(),
+        })
     }
 
     fn skip_form_header_type_expression(&self, tokens: &[&Token], mut i: usize) -> usize {
@@ -856,6 +975,36 @@ impl<'a> Collector<'a> {
             return None;
         }
         Some((structure.name, self.file.range(node), structure.fields))
+    }
+
+    fn type_ref_from_typed_clause(&self, node: NodeId) -> Option<FieldTypeRefData> {
+        let mut type_namespace = None;
+        for child in self.file.children(node) {
+            if let Some(token) = self.token_for_node(child)
+                && token.kind == TokenKind::Ident
+            {
+                if token.lexeme(self.source).eq_ignore_ascii_case("type") {
+                    type_namespace = Some(Namespace::Type);
+                } else if token.lexeme(self.source).eq_ignore_ascii_case("like") {
+                    type_namespace = Some(Namespace::Value);
+                }
+                continue;
+            }
+
+            if self.file.kind(child) != SyntaxKind::TypeRefSimple {
+                continue;
+            }
+
+            let namespace = type_namespace.unwrap_or(Namespace::Type);
+            let (_, base_name, _, field_path) = self.type_ref_access_chain(child)?;
+            let field_path = field_path.into_iter().map(|segment| segment.name).collect();
+            return Some(FieldTypeRefData {
+                namespace,
+                base_name,
+                field_path,
+            });
+        }
+        None
     }
 
     fn structure_from_typed_clause(&self, node: NodeId, scope: ScopeId) -> Option<StructureId> {

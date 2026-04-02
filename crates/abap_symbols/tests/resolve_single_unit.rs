@@ -40,6 +40,39 @@ ENDFORM.
         "unexpected unresolved diagnostic: {:?}",
         unit.diagnostics
     );
+
+    let cv = unit
+        .symbols
+        .iter()
+        .find(|symbol| {
+            symbol.kind == abap_symbols::SymbolKind::Parameter && symbol.name.as_ref() == "cv_result"
+        })
+        .expect("cv_result parameter");
+    let dt = cv.declared_type.as_ref().expect("parameter declared type");
+    assert_eq!(dt.namespace, abap_symbols::Namespace::Type);
+    assert_eq!(dt.base_name.as_ref(), "string");
+    assert!(dt.field_path.is_empty());
+}
+
+#[test]
+fn form_value_parameter_records_declared_type() {
+    let src = r#"
+FORM f USING VALUE(iv) TYPE i.
+  iv = 1.
+ENDFORM.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///value_param.abap", src, &parsed);
+
+    let iv = unit
+        .symbols
+        .iter()
+        .find(|symbol| symbol.kind == abap_symbols::SymbolKind::Parameter && symbol.name.as_ref() == "iv")
+        .expect("iv parameter");
+    let dt = iv.declared_type.as_ref().expect("declared type");
+    assert_eq!(dt.namespace, abap_symbols::Namespace::Type);
+    assert_eq!(dt.base_name.as_ref(), "i");
+    assert!(dt.field_path.is_empty());
 }
 
 #[test]

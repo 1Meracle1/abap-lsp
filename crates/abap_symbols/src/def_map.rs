@@ -106,6 +106,8 @@ pub struct SymbolData {
     pub scope: ScopeId,
     pub decl_range: TextRange,
     pub structure: Option<StructureId>,
+    /// TYPE/LIKE clause from the declaration when present (e.g. built-ins without structure metadata).
+    pub declared_type: Option<FieldTypeRefData>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

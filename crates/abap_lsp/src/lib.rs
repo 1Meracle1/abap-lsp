@@ -519,6 +519,56 @@ ls_outer-inner-a = 1."
         };
         assert!(markup.value.contains("`lv`"));
         assert!(markup.value.contains("Variable"));
+        assert!(
+            markup.value.contains("Declared as TYPE `i`"),
+            "{}",
+            markup.value
+        );
+    }
+
+    #[test]
+    fn hover_returns_form_parameter_with_declared_type() {
+        let state = ServerState::default();
+        let text = "FORM f CHANGING cv TYPE string.\n  cv = 'x'.\nENDFORM.\n";
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///form_hover.abap").expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: text.to_string(),
+                },
+            },
+        );
+
+        let hover = hover(
+            &state,
+            &HoverParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///form_hover.abap").expect("uri"),
+                    },
+                    position: Position {
+                        line: 1,
+                        character: 3,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+            },
+        )
+        .expect("hover");
+
+        let HoverContents::Markup(markup) = hover.contents else {
+            panic!("expected markdown hover");
+        };
+        assert!(markup.value.contains("`cv`"));
+        assert!(markup.value.contains("Parameter"));
+        assert!(
+            markup.value.contains("Declared as TYPE `string`"),
+            "{}",
+            markup.value
+        );
     }
 
     #[test]
