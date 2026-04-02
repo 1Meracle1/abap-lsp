@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::def_map::{Resolution, UnitAnalysis};
+use crate::def_map::{ReferenceKind, Resolution, UnitAnalysis};
 use crate::ids::{ScopeId, SymbolHandle, SymbolId};
 use crate::scope::Namespace;
 
@@ -70,15 +70,40 @@ fn lookup_scope_chain(
     None
 }
 
+fn lookup_reference_scope_chain(
+    unit: &UnitAnalysis,
+    scope_index: &ScopeIndex,
+    scope: ScopeId,
+    namespace: Namespace,
+    kind: ReferenceKind,
+    name: &Arc<str>,
+) -> Option<SymbolId> {
+    if let Some(symbol) = lookup_scope_chain(unit, scope_index, scope, namespace, name) {
+        return Some(symbol);
+    }
+
+    if kind == ReferenceKind::TypeRef && namespace == Namespace::Value {
+        return lookup_scope_chain(unit, scope_index, scope, Namespace::Type, name);
+    }
+
+    None
+}
+
 pub fn resolve_unit(unit: &mut UnitAnalysis) {
     let scope_index = build_scope_index(unit);
     let unit_id = unit.unit_id;
     for idx in 0..unit.references.len() {
-        let (scope, namespace, name) = {
+        let (scope, namespace, kind, name) = {
             let reference = &unit.references[idx];
-            (reference.scope, reference.namespace, Arc::clone(&reference.name))
+            (
+                reference.scope,
+                reference.namespace,
+                reference.kind,
+                Arc::clone(&reference.name),
+            )
         };
-        let resolution = match lookup_scope_chain(unit, &scope_index, scope, namespace, &name) {
+        let resolution = match lookup_reference_scope_chain(unit, &scope_index, scope, namespace, kind, &name)
+        {
             Some(symbol) => Some(Resolution::Symbol(SymbolHandle {
                 unit: unit_id,
                 symbol,
@@ -140,25 +165,40 @@ pub fn resolve_project_cross_unit(units: &mut [UnitAnalysis]) {
             if reference.resolution.is_some() {
                 continue;
             }
-            for target in &include_targets {
-                if let Some(symbol_id) = per_unit_root_index[target.as_usize()]
-                    .get(&(reference.namespace, Arc::clone(&reference.name)))
-                    .copied()
-                {
-                    reference.resolution = Some(Resolution::Symbol(SymbolHandle {
-                        unit: *target,
-                        symbol: symbol_id,
-                    }));
+            let namespaces = if reference.kind == ReferenceKind::TypeRef && reference.namespace == Namespace::Value {
+                [Namespace::Value, Namespace::Type]
+            } else {
+                [reference.namespace, reference.namespace]
+            };
+            for namespace in namespaces {
+                for target in &include_targets {
+                    if let Some(symbol_id) = per_unit_root_index[target.as_usize()]
+                        .get(&(namespace, Arc::clone(&reference.name)))
+                        .copied()
+                    {
+                        reference.resolution = Some(Resolution::Symbol(SymbolHandle {
+                            unit: *target,
+                            symbol: symbol_id,
+                        }));
+                        break;
+                    }
+                }
+                if reference.resolution.is_some() {
                     break;
                 }
             }
             if reference.resolution.is_some() {
                 continue;
             }
-            if let Some(handles) = root_index.get(&(reference.namespace, Arc::clone(&reference.name)))
-                && let Some(symbol) = handles.first().copied()
-            {
-                reference.resolution = Some(Resolution::Symbol(symbol));
+            for namespace in namespaces {
+                if let Some(handles) = root_index.get(&(namespace, Arc::clone(&reference.name)))
+                    && let Some(symbol) = handles.first().copied()
+                {
+                    reference.resolution = Some(Resolution::Symbol(symbol));
+                    break;
+                }
+            }
+            if reference.resolution.is_some() {
                 continue;
             }
             if matches!(reference.namespace, Namespace::Type | Namespace::Routine)

@@ -66,6 +66,39 @@ fn resolve_symbol_in_scope_chain(
     None
 }
 
+fn resolve_field_access_base_symbol(
+    unit: &crate::UnitAnalysis,
+    scope_index: &[HashMap<(Namespace, Arc<str>), Vec<SymbolId>>],
+    access: &crate::FieldAccess,
+) -> Option<SymbolId> {
+    if let Some(symbol_id) = resolve_symbol_in_scope_chain(
+        unit,
+        scope_index,
+        access.scope,
+        access.base_namespace,
+        &access.base_name,
+    ) {
+        return Some(symbol_id);
+    }
+
+    if access.in_type_position {
+        let fallback_namespace = match access.base_namespace {
+            Namespace::Type => Namespace::Value,
+            Namespace::Value => Namespace::Type,
+            Namespace::Routine => return None,
+        };
+        return resolve_symbol_in_scope_chain(
+            unit,
+            scope_index,
+            access.scope,
+            fallback_namespace,
+            &access.base_name,
+        );
+    }
+
+    None
+}
+
 pub fn validate_project(project: &mut ProjectAnalysis) {
     let global_names = collect_global_names(project);
     project.diagnostics.clear();
@@ -120,33 +153,52 @@ pub fn validate_project(project: &mut ProjectAnalysis) {
         }
 
         for access in &unit.field_accesses {
-            let Some(base_symbol_id) = resolve_symbol_in_scope_chain(
-                unit,
-                &scope_index,
-                access.scope,
-                access.base_namespace,
-                &access.base_name,
-            ) else {
+            let Some(base_symbol_id) = resolve_field_access_base_symbol(unit, &scope_index, access) else {
                 continue;
             };
-            let Some(structure_id) = unit.symbol(base_symbol_id).structure else {
+            let Some(mut structure_id) = unit.symbol(base_symbol_id).structure else {
                 continue;
             };
-            let structure = unit.structure(structure_id);
-            if !structure
-                .fields
-                .iter()
-                .any(|field| field.name.as_ref() == access.field_name.as_ref())
-            {
-                let subject = if access.in_type_position { "built-in type" } else { "built-in structure" };
-                unit.diagnostics.push(Diagnostic {
-                    kind: DiagnosticKind::UnknownField,
-                    range: access.range.clone(),
-                    message: format!(
-                        "unknown field '{}' for {} '{}'",
-                        access.field_name, subject, access.base_name
-                    ),
-                });
+            let subject = if access.in_type_position { "type" } else { "structure" };
+            let mut qualifier = access.base_name.to_string();
+            for (idx, step) in access.field_path.iter().enumerate() {
+                let structure = unit.structure(structure_id);
+                let Some(field) = structure
+                    .fields
+                    .iter()
+                    .find(|field| field.name.as_ref() == step.name.as_ref())
+                else {
+                    unit.diagnostics.push(Diagnostic {
+                        kind: DiagnosticKind::UnknownField,
+                        range: step.range.clone(),
+                        message: format!(
+                            "unknown field '{}' for {} '{}'",
+                            step.name, subject, qualifier
+                        ),
+                    });
+                    break;
+                };
+
+                qualifier.push('-');
+                qualifier.push_str(field.name.as_ref());
+
+                if idx + 1 == access.field_path.len() {
+                    break;
+                }
+
+                let Some(next_structure_id) = field.structure else {
+                    let next_step = &access.field_path[idx + 1];
+                    unit.diagnostics.push(Diagnostic {
+                        kind: DiagnosticKind::UnknownField,
+                        range: next_step.range.clone(),
+                        message: format!(
+                            "unknown field '{}' for {} '{}'",
+                            next_step.name, subject, qualifier
+                        ),
+                    });
+                    break;
+                };
+                structure_id = next_structure_id;
             }
         }
 

@@ -1,6 +1,6 @@
 use abap_parser::parse;
 
-use abap_symbols::{DiagnosticKind, Namespace, Resolution, analyze_unit};
+use abap_symbols::{DiagnosticKind, Namespace, Resolution, StructureFieldShape, analyze_unit};
 
 #[test]
 fn resolves_local_references_in_scope() {
@@ -197,4 +197,282 @@ fn rejects_unknown_sy_field_access() {
         .diagnostics
         .iter()
         .any(|diag| diag.kind == DiagnosticKind::UnknownField && diag.message.contains("nope")));
+}
+
+#[test]
+fn collects_user_defined_begin_of_type_structure() {
+    let src = "\
+TYPES: BEGIN OF ty_pair,\n\
+         a TYPE i,\n\
+         b TYPE string,\n\
+       END OF ty_pair.\n\
+DATA ls_pair TYPE ty_pair.\n\
+ls_pair-a = 1.";
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///ty_pair.abap", src, &parsed);
+
+    let ty_pair = unit
+        .symbols
+        .iter()
+        .find(|symbol| symbol.kind == abap_symbols::SymbolKind::TypeDef && symbol.name.as_ref() == "ty_pair")
+        .expect("structured type symbol");
+    let structure = unit.structure(ty_pair.structure.expect("type structure metadata"));
+    assert!(structure.fields.iter().any(|field| field.name.as_ref() == "a"));
+    assert!(structure.fields.iter().any(|field| field.name.as_ref() == "b"));
+
+    let ls_pair = unit
+        .symbols
+        .iter()
+        .find(|symbol| symbol.kind == abap_symbols::SymbolKind::Variable && symbol.name.as_ref() == "ls_pair")
+        .expect("typed variable");
+    assert_eq!(ls_pair.structure, ty_pair.structure);
+    assert!(!unit
+        .diagnostics
+        .iter()
+        .any(|diag| diag.kind == DiagnosticKind::UnknownField || diag.message.contains("ty_pair")));
+}
+
+#[test]
+fn validates_user_defined_begin_of_data_components() {
+    let src = "\
+DATA: BEGIN OF ls_date,\n\
+        yyyy(4),\n\
+        mm(2),\n\
+      END OF ls_date.\n\
+ls_date-yyyy = '2026'.";
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///ls_date.abap", src, &parsed);
+
+    let ls_date = unit
+        .symbols
+        .iter()
+        .find(|symbol| symbol.kind == abap_symbols::SymbolKind::Variable && symbol.name.as_ref() == "ls_date")
+        .expect("structured data symbol");
+    let structure = unit.structure(ls_date.structure.expect("data structure metadata"));
+    assert!(structure.fields.iter().any(|field| field.name.as_ref() == "yyyy"));
+    assert!(structure.fields.iter().any(|field| field.name.as_ref() == "mm"));
+    assert!(!unit
+        .diagnostics
+        .iter()
+        .any(|diag| diag.kind == DiagnosticKind::UnknownField || diag.message.contains("ls_date")));
+}
+
+#[test]
+fn resolves_type_component_access_for_user_defined_structures() {
+    let src = "\
+TYPES: BEGIN OF ty_pair,\n\
+         a TYPE i,\n\
+       END OF ty_pair.\n\
+DATA lv_value TYPE ty_pair-a.";
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///type_component.abap", src, &parsed);
+
+    assert!(unit.references.iter().any(|reference| {
+        reference.namespace == Namespace::Value
+            && reference.name.as_ref() == "ty_pair"
+            && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+    }));
+    assert!(!unit
+        .diagnostics
+        .iter()
+        .any(|diag| diag.kind == DiagnosticKind::UnresolvedReference || diag.kind == DiagnosticKind::UnknownField));
+}
+
+#[test]
+fn rejects_unknown_user_defined_structure_fields() {
+    let src = "\
+TYPES: BEGIN OF ty_pair,\n\
+         a TYPE i,\n\
+       END OF ty_pair.\n\
+DATA ls_pair TYPE ty_pair.\n\
+ls_pair-missing = 1.\n\
+DATA lv_value TYPE ty_pair-missing.";
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///missing_field.abap", src, &parsed);
+
+    let unknown_field_diags: Vec<_> = unit
+        .diagnostics
+        .iter()
+        .filter(|diag| diag.kind == DiagnosticKind::UnknownField && diag.message.contains("missing"))
+        .collect();
+    assert_eq!(unknown_field_diags.len(), 2);
+}
+
+#[test]
+fn carries_nested_structure_metadata_on_fields() {
+    let src = "\
+TYPES: BEGIN OF ty_outer,\n\
+         BEGIN OF inner,\n\
+           a TYPE i,\n\
+         END OF inner,\n\
+       END OF ty_outer.";
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///nested_type.abap", src, &parsed);
+
+    let ty_outer = unit
+        .symbols
+        .iter()
+        .find(|symbol| symbol.kind == abap_symbols::SymbolKind::TypeDef && symbol.name.as_ref() == "ty_outer")
+        .expect("outer type");
+    let outer_structure = unit.structure(ty_outer.structure.expect("outer structure"));
+    let inner_field = outer_structure
+        .fields
+        .iter()
+        .find(|field| field.name.as_ref() == "inner")
+        .expect("inner field");
+    let inner_structure = unit.structure(inner_field.structure.expect("inner structure"));
+    assert!(inner_structure
+        .fields
+        .iter()
+        .any(|field| field.name.as_ref() == "a"));
+}
+
+#[test]
+fn validates_nested_selector_chains_for_user_defined_structures() {
+    let src = "\
+TYPES: BEGIN OF ty_outer,\n\
+         BEGIN OF inner,\n\
+           a TYPE i,\n\
+         END OF inner,\n\
+       END OF ty_outer.\n\
+DATA ls_outer TYPE ty_outer.\n\
+ls_outer-inner-a = 1.\n\
+DATA lv_value TYPE ty_outer-inner-a.";
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///nested_chain.abap", src, &parsed);
+
+    assert!(!unit
+        .diagnostics
+        .iter()
+        .any(|diag| diag.kind == DiagnosticKind::UnknownField || diag.kind == DiagnosticKind::UnresolvedReference));
+}
+
+#[test]
+fn rejects_unknown_nested_structure_fields() {
+    let src = "\
+TYPES: BEGIN OF ty_outer,\n\
+         BEGIN OF inner,\n\
+           a TYPE i,\n\
+         END OF inner,\n\
+       END OF ty_outer.\n\
+DATA ls_outer TYPE ty_outer.\n\
+ls_outer-inner-missing = 1.\n\
+DATA lv_value TYPE ty_outer-inner-missing.";
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///nested_missing.abap", src, &parsed);
+
+    let unknown_field_diags: Vec<_> = unit
+        .diagnostics
+        .iter()
+        .filter(|diag| diag.kind == DiagnosticKind::UnknownField && diag.message.contains("missing"))
+        .collect();
+    assert_eq!(unknown_field_diags.len(), 2);
+}
+
+#[test]
+fn exposes_declared_field_type_metadata_for_scalar_fields() {
+    let src = "\
+TYPES: BEGIN OF ty_pair,\n\
+         a TYPE i,\n\
+       END OF ty_pair.";
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///field_type_scalar.abap", src, &parsed);
+
+    let ty_pair = unit
+        .symbols
+        .iter()
+        .find(|symbol| symbol.kind == abap_symbols::SymbolKind::TypeDef && symbol.name.as_ref() == "ty_pair")
+        .expect("pair type");
+    let pair_structure = unit.structure(ty_pair.structure.expect("pair structure"));
+    let field = pair_structure
+        .fields
+        .iter()
+        .find(|field| field.name.as_ref() == "a")
+        .expect("scalar field");
+    let type_ref = field.type_ref.as_ref().expect("field type ref");
+    assert_eq!(type_ref.namespace, Namespace::Type);
+    assert_eq!(type_ref.base_name.as_ref(), "i");
+    assert!(type_ref.field_path.is_empty());
+    assert!(field.structure.is_none());
+}
+
+#[test]
+fn resolves_structured_fields_declared_via_type_reference() {
+    let src = "\
+TYPES: BEGIN OF ty_inner,\n\
+         a TYPE i,\n\
+       END OF ty_inner.\n\
+TYPES: BEGIN OF ty_outer,\n\
+         inner TYPE ty_inner,\n\
+       END OF ty_outer.\n\
+DATA ls_outer TYPE ty_outer.\n\
+ls_outer-inner-a = 1.\n\
+DATA lv_value TYPE ty_outer-inner-a.";
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///field_type_struct.abap", src, &parsed);
+
+    let ty_outer = unit
+        .symbols
+        .iter()
+        .find(|symbol| symbol.kind == abap_symbols::SymbolKind::TypeDef && symbol.name.as_ref() == "ty_outer")
+        .expect("outer type");
+    let outer_structure = unit.structure(ty_outer.structure.expect("outer structure"));
+    let inner_field = outer_structure
+        .fields
+        .iter()
+        .find(|field| field.name.as_ref() == "inner")
+        .expect("inner field");
+    let type_ref = inner_field.type_ref.as_ref().expect("inner type ref");
+    assert_eq!(type_ref.namespace, Namespace::Type);
+    assert_eq!(type_ref.base_name.as_ref(), "ty_inner");
+    let inner_structure = unit.structure(inner_field.structure.expect("resolved inner structure"));
+    assert!(inner_structure
+        .fields
+        .iter()
+        .any(|field| field.name.as_ref() == "a"));
+    assert!(!unit
+        .diagnostics
+        .iter()
+        .any(|diag| diag.kind == DiagnosticKind::UnknownField || diag.kind == DiagnosticKind::UnresolvedReference));
+}
+
+#[test]
+fn exposes_structure_field_query_info() {
+    let src = "\
+TYPES: BEGIN OF ty_inner,\n\
+         a TYPE i,\n\
+       END OF ty_inner.\n\
+TYPES: BEGIN OF ty_outer,\n\
+         inner TYPE ty_inner,\n\
+         label TYPE string,\n\
+       END OF ty_outer.";
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///field_query.abap", src, &parsed);
+
+    let ty_outer = unit
+        .symbols
+        .iter()
+        .find(|symbol| symbol.kind == abap_symbols::SymbolKind::TypeDef && symbol.name.as_ref() == "ty_outer")
+        .expect("outer type");
+    let outer_structure_id = ty_outer.structure.expect("outer structure");
+
+    let fields = unit.structure_field_infos(outer_structure_id);
+    assert_eq!(fields.len(), 2);
+
+    let inner = unit
+        .structure_field_info(outer_structure_id, "inner")
+        .expect("inner field info");
+    assert_eq!(inner.type_ref.expect("inner type ref").base_name.as_ref(), "ty_inner");
+    assert!(matches!(inner.shape, StructureFieldShape::Structured { .. }));
+
+    let label = unit
+        .resolve_structure_field_path(outer_structure_id, &["label"])
+        .expect("label field info");
+    assert!(matches!(label.shape, StructureFieldShape::Scalar));
+
+    let nested = unit
+        .resolve_structure_field_path(outer_structure_id, &["inner", "a"])
+        .expect("nested field info");
+    assert_eq!(nested.name.as_ref(), "a");
+    assert!(matches!(nested.shape, StructureFieldShape::Scalar));
 }

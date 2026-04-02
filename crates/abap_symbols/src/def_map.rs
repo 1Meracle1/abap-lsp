@@ -149,14 +149,42 @@ pub struct FieldAccess {
     pub scope: ScopeId,
     pub base_namespace: Namespace,
     pub base_name: Arc<str>,
-    pub field_name: Arc<str>,
-    pub range: TextRange,
+    pub field_path: Vec<FieldAccessSegment>,
     pub in_type_position: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FieldAccessSegment {
+    pub name: Arc<str>,
+    pub range: TextRange,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FieldTypeRefData {
+    pub namespace: Namespace,
+    pub base_name: Arc<str>,
+    pub field_path: Vec<Arc<str>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StructureFieldData {
     pub name: Arc<str>,
+    pub structure: Option<StructureId>,
+    pub type_ref: Option<FieldTypeRefData>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StructureFieldShape {
+    Scalar,
+    Structured { structure: StructureId },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StructureFieldInfo {
+    pub owner: StructureId,
+    pub name: Arc<str>,
+    pub shape: StructureFieldShape,
+    pub type_ref: Option<FieldTypeRefData>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -192,5 +220,64 @@ impl UnitAnalysis {
 
     pub fn scope(&self, id: ScopeId) -> &ScopeData {
         &self.scopes[id.as_usize()]
+    }
+
+    pub fn structure_field(&self, structure_id: StructureId, field_name: &str) -> Option<&StructureFieldData> {
+        self.structure(structure_id)
+            .fields
+            .iter()
+            .find(|field| field.name.as_ref() == field_name)
+    }
+
+    pub fn structure_field_info(
+        &self,
+        structure_id: StructureId,
+        field_name: &str,
+    ) -> Option<StructureFieldInfo> {
+        let field = self.structure_field(structure_id, field_name)?;
+        Some(StructureFieldInfo {
+            owner: structure_id,
+            name: Arc::clone(&field.name),
+            shape: match field.structure {
+                Some(structure) => StructureFieldShape::Structured { structure },
+                None => StructureFieldShape::Scalar,
+            },
+            type_ref: field.type_ref.clone(),
+        })
+    }
+
+    pub fn structure_field_infos(&self, structure_id: StructureId) -> Vec<StructureFieldInfo> {
+        self.structure(structure_id)
+            .fields
+            .iter()
+            .map(|field| StructureFieldInfo {
+                owner: structure_id,
+                name: Arc::clone(&field.name),
+                shape: match field.structure {
+                    Some(structure) => StructureFieldShape::Structured { structure },
+                    None => StructureFieldShape::Scalar,
+                },
+                type_ref: field.type_ref.clone(),
+            })
+            .collect()
+    }
+
+    pub fn resolve_structure_field_path(
+        &self,
+        structure_id: StructureId,
+        field_path: &[&str],
+    ) -> Option<StructureFieldInfo> {
+        let mut current_structure = structure_id;
+        let mut current_info = None;
+        for field_name in field_path {
+            let info = self.structure_field_info(current_structure, field_name)?;
+            current_structure = match info.shape {
+                StructureFieldShape::Structured { structure } => structure,
+                StructureFieldShape::Scalar if *field_name == *field_path.last()? => current_structure,
+                StructureFieldShape::Scalar => return None,
+            };
+            current_info = Some(info);
+        }
+        current_info
     }
 }
