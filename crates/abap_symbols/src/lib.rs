@@ -1,64 +1,40 @@
-use abap_ast::File;
-use abap_lexer::{TextRange, Token, TokenKind};
-use abap_parser::{Interner, Symbol as InternedSymbol};
+mod builtins;
+mod collector;
+mod def_map;
+mod ids;
+mod project;
+mod resolver;
+mod scope;
+mod validate;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SymbolKind {
-    Identifier,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Symbol {
-    pub name: InternedSymbol,
-    pub kind: SymbolKind,
-    pub range: TextRange,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct SymbolTable {
-    pub symbols: Vec<Symbol>,
-}
-
-pub fn index_file(
-    _file: &File,
-    tokens: &[Token],
-    token_symbols: &[Option<InternedSymbol>],
-) -> SymbolTable {
-    let symbols = tokens
-        .iter()
-        .zip(token_symbols.iter().copied())
-        .filter(|(token, _)| token.kind == TokenKind::Ident)
-        .filter_map(|(token, name)| {
-            name.map(|name| Symbol {
-                name,
-                kind: SymbolKind::Identifier,
-                range: token.range.clone(),
-            })
-        })
-        .collect();
-
-    SymbolTable { symbols }
-}
-
-pub fn resolve_name<'a>(interner: &'a Interner, symbol: &Symbol) -> &'a str {
-    interner.resolve(symbol.name)
-}
+pub use def_map::{
+    Diagnostic, DiagnosticKind, FieldAccess, IncludeEdge, ReferenceData, ReferenceKind, Resolution,
+    StructureData, StructureFieldData, SymbolData, SymbolKind, UnitAnalysis,
+};
+pub use ids::{ReferenceId, ScopeId, StructureId, SymbolHandle, SymbolId, UnitId};
+pub use project::{ProjectAnalysis, ProjectInput, analyze_project, analyze_unit};
+pub use scope::{Namespace, ScopeData, ScopeKind};
 
 #[cfg(test)]
 mod tests {
     use abap_parser::parse;
 
-    use super::{index_file, resolve_name};
+    use super::{Namespace, SymbolKind, analyze_unit};
 
     #[test]
-    fn collects_identifier_symbols() {
-        let parsed = parse("DATA foo data = 42.");
-        let table = index_file(&parsed.file, &parsed.tokens, &parsed.token_symbols);
+    fn collects_definitions_and_references() {
+        let src = "DATA lv_value TYPE i. lv_value = lv_value + 1.";
+        let parsed = parse(src);
+        let unit = analyze_unit("file:///demo.abap", src, &parsed);
 
-        assert_eq!(table.symbols.len(), 3);
-        assert!(table
+        assert!(unit
             .symbols
             .iter()
-            .any(|symbol| resolve_name(&parsed.interner, symbol) == "data"));
+            .any(|symbol| symbol.kind == SymbolKind::Variable && symbol.name.as_ref() == "lv_value"));
+        assert!(unit.references.iter().any(|reference| {
+            reference.namespace == Namespace::Value
+                && reference.name.as_ref() == "lv_value"
+                && reference.resolution.is_some()
+        }));
     }
 }

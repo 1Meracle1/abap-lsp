@@ -19,7 +19,7 @@ use abap_ast::SyntaxKind;
 use abap_ast::arena::NodeId;
 use abap_lexer::tokenize;
 use abap_parser::parse;
-use abap_symbols::{index_file, resolve_name};
+use abap_symbols::{DiagnosticKind, analyze_unit};
 use serde_json::{json, Value};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -346,19 +346,29 @@ fn run() -> Result<i32, String> {
         }
         Command::Symbols => {
             let parsed = parse(&source);
-            let table = index_file(&parsed.file, &parsed.tokens, &parsed.token_symbols);
-            let symbol_rows: Vec<Value> = table
+            let unit = analyze_unit(file_label.as_str(), &source, &parsed);
+            let symbol_rows: Vec<Value> = unit
                 .symbols
                 .iter()
-                .map(|s| {
+                .map(|symbol| {
                     json!({
-                        "name": resolve_name(&parsed.interner, s),
-                        "kind": format!("{:?}", s.kind),
-                        "range": [s.range.start, s.range.end],
+                        "name": symbol.name.to_string(),
+                        "kind": format!("{:?}", symbol.kind),
+                        "range": [symbol.decl_range.start, symbol.decl_range.end],
                     })
                 })
                 .collect();
-            let unknown: Vec<Value> = vec![];
+            let unknown: Vec<Value> = unit
+                .diagnostics
+                .iter()
+                .filter(|diag| matches!(diag.kind, DiagnosticKind::UnresolvedReference | DiagnosticKind::WrongNamespace))
+                .map(|diag| {
+                    json!({
+                        "range": [diag.range.start, diag.range.end],
+                        "message": diag.message,
+                    })
+                })
+                .collect();
 
             if cli.json_output {
                 let out = if cli.unknown_only {
@@ -384,14 +394,31 @@ fn run() -> Result<i32, String> {
             human::write_diagnostics(&diags, &source, &file_label).map_err(|e| e.to_string())?;
 
             if !parsed.errors.is_empty() && !cli.unknown_only {
-                let rows: Vec<(String, &str, Range<usize>)> = table
+                let rows: Vec<(String, &str, Range<usize>)> = unit
                     .symbols
                     .iter()
-                    .map(|s| {
+                    .map(|symbol| {
                         (
-                            resolve_name(&parsed.interner, s).to_string(),
-                            "Identifier",
-                            s.range.clone(),
+                            symbol.name.to_string(),
+                            match symbol.kind {
+                                abap_symbols::SymbolKind::BuiltinType => "BuiltinType",
+                                abap_symbols::SymbolKind::BuiltinConstant => "BuiltinConstant",
+                                abap_symbols::SymbolKind::BuiltinVariable => "BuiltinVariable",
+                                abap_symbols::SymbolKind::Variable => "Variable",
+                                abap_symbols::SymbolKind::Constant => "Constant",
+                                abap_symbols::SymbolKind::TypeDef => "Type",
+                                abap_symbols::SymbolKind::FieldSymbol => "FieldSymbol",
+                                abap_symbols::SymbolKind::Form => "Form",
+                                abap_symbols::SymbolKind::Class => "Class",
+                                abap_symbols::SymbolKind::Interface => "Interface",
+                                abap_symbols::SymbolKind::Method => "Method",
+                                abap_symbols::SymbolKind::Include => "Include",
+                                abap_symbols::SymbolKind::Event => "Event",
+                                abap_symbols::SymbolKind::Module => "Module",
+                                abap_symbols::SymbolKind::Report => "Report",
+                                _ => "Symbol",
+                            },
+                            symbol.decl_range.clone(),
                         )
                     })
                     .collect();
@@ -403,6 +430,7 @@ fn run() -> Result<i32, String> {
         }
         Command::Check => {
             let parsed = parse(&source);
+            let unit = analyze_unit(file_label.as_str(), &source, &parsed);
             let lex_parse: Vec<Value> = parsed
                 .errors
                 .iter()
@@ -416,11 +444,22 @@ fn run() -> Result<i32, String> {
                 .collect();
 
             if cli.json_output {
+                let semantic_diags: Vec<Value> = unit
+                    .diagnostics
+                    .iter()
+                    .map(|diag| {
+                        json!({
+                            "range": [diag.range.start, diag.range.end],
+                            "message": diag.message,
+                            "kind": format!("{:?}", diag.kind),
+                        })
+                    })
+                    .collect();
                 let out = json!({
                     "phase": "check",
                     "lex_parse_errors": lex_parse,
-                    "semantic_diagnostics": [],
-                    "semantic_note": "Type checking and deeper semantic validation are not implemented yet; this field is reserved.",
+                    "semantic_diagnostics": semantic_diags,
+                    "semantic_note": "Semantic checking currently covers symbol collection, lexical resolution, wrong-namespace diagnostics, and include resolution; deeper type checking is still reserved.",
                 });
                 println!(
                     "{}",
