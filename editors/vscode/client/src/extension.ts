@@ -70,36 +70,7 @@ interface WorkspaceManifestUpdatedParams {
 }
 
 export function activate(context: vscode.ExtensionContext) {
-	const pipePath =
-		process.platform === "win32"
-			? "\\\\.\\pipe\\abap-ls"
-			: "/tmp/abap-ls";
-	const configuredServerPath = configuredServerExecutable();
-	const serverOptions: ServerOptions = configuredServerPath
-		? {
-			command: configuredServerPath,
-			args: [],
-			options: {
-				cwd: path.dirname(configuredServerPath),
-			},
-			transport: TransportKind.stdio,
-		}
-		: () => {
-			return new Promise<StreamInfo>((resolve, reject) => {
-				const socket = net.connect(pipePath);
-
-				socket.on("connect", () => {
-					resolve({
-						writer: socket,
-						reader: socket,
-					});
-				});
-
-				socket.on("error", (err) => {
-					reject(err);
-				});
-			});
-		};
+	const serverOptions = buildServerOptions();
 
 	// Options to control the language client
 	const clientOptions: LanguageClientOptions = {
@@ -133,20 +104,80 @@ export function activate(context: vscode.ExtensionContext) {
 	registerWorkspaceConfigPrompts(context);
 }
 
-function configuredServerExecutable(): string | undefined {
+/**
+ * Production: `serverTransport` "stdio" — extension spawns `serverExecutable` (or __ABAP_LSP_SERVER_PATH / __ABAP_LSP_SERVER_DEBUG) and uses LSP over stdio.
+ * Development: start `abap_lsp_server --listen host:port` under a debugger, then set `serverTransport` "tcp" or `__ABAP_LSP_CONNECT=host:port` so the extension connects without spawning.
+ */
+function buildServerOptions(): ServerOptions {
+	const config = vscode.workspace.getConfiguration("abap-ls");
+	const connectOverride = process.env.__ABAP_LSP_CONNECT?.trim();
+	const useTcp =
+		Boolean(connectOverride) || config.get<string>("serverTransport") === "tcp";
+
+	const tcpAddress =
+		connectOverride ||
+		config.get<string>("serverTcpAddress")?.trim() ||
+		"127.0.0.1:9472";
+
+	if (useTcp) {
+		return () =>
+			new Promise<StreamInfo>((resolve, reject) => {
+				let connectOpts: net.SocketConnectOpts;
+				try {
+					connectOpts = parseHostPort(tcpAddress);
+				} catch (err) {
+					reject(err instanceof Error ? err : new Error(String(err)));
+					return;
+				}
+
+				const socket = net.connect(connectOpts);
+				socket.on("connect", () => {
+					resolve({ writer: socket, reader: socket });
+				});
+				socket.on("error", reject);
+			});
+	}
+
+	const pathFromEnv =
+		process.env.__ABAP_LSP_SERVER_PATH?.trim() ||
+		process.env.__ABAP_LSP_SERVER_DEBUG?.trim();
 	const configured =
-		process.env.__ABAP_LSP_SERVER_PATH ??
-		process.env.__ABAP_LSP_SERVER_DEBUG;
-	if (!configured?.trim()) {
-		return undefined;
+		pathFromEnv || config.get<string>("serverExecutable")?.trim();
+
+	if (!configured) {
+		void vscode.window.showErrorMessage(
+			'ABAP LSP: no server executable configured for stdio transport. Set abap-ls.serverExecutable, or __ABAP_LSP_SERVER_PATH, or switch abap-ls.serverTransport to "tcp" and run the server with --listen.',
+		);
+		return () =>
+			Promise.reject(new Error("ABAP LSP server executable path is not configured"));
 	}
 
-	const trimmed = configured.trim();
-	if (process.platform === "win32" && path.extname(trimmed).length === 0) {
-		return `${trimmed}.exe`;
-	}
+	const serverPath =
+		process.platform === "win32" && path.extname(configured).length === 0
+			? `${configured}.exe`
+			: configured;
 
-	return trimmed;
+	return {
+		command: serverPath,
+		args: [],
+		options: { cwd: path.dirname(serverPath) },
+		transport: TransportKind.stdio,
+	};
+}
+
+/** IPv4 / hostname and port only (e.g. 127.0.0.1:9472, localhost:9472). */
+function parseHostPort(addr: string): net.SocketConnectOpts {
+	const trimmed = addr.trim();
+	const colon = trimmed.lastIndexOf(":");
+	if (colon <= 0 || colon === trimmed.length - 1) {
+		throw new Error(`Invalid TCP address "${addr}" (expected host:port)`);
+	}
+	const host = trimmed.slice(0, colon);
+	const port = Number(trimmed.slice(colon + 1));
+	if (!Number.isInteger(port) || port < 1 || port > 65535) {
+		throw new Error(`Invalid port in TCP address "${addr}"`);
+	}
+	return { host, port };
 }
 
 export function deactivate(): Thenable<void> | undefined {

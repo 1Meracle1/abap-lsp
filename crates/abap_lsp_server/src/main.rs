@@ -1,4 +1,5 @@
-use std::io::{self, BufReader, BufWriter};
+use std::io::{self, BufRead, BufReader, BufWriter, Write};
+use std::net::{SocketAddr, TcpListener};
 
 use abap_jsonrpc::{JSON_RPC_VERSION, Response, read_frame, write_frame};
 use abap_lsp::{
@@ -18,21 +19,67 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .without_time()
         .init();
 
-    let stdin = io::stdin();
-    let stdout = io::stdout();
-    let mut reader = BufReader::new(stdin.lock());
-    let mut writer = BufWriter::new(stdout.lock());
+    if let Some(addr) = listen_address_from_cli_or_env()? {
+        let listener = TcpListener::bind(addr)?;
+        let bound = listener.local_addr()?;
+        tracing::info!(%bound, "waiting for a language client (TCP)");
+        let (stream, peer) = listener.accept()?;
+        tracing::info!(%peer, "language client connected");
+        let reader_stream = stream.try_clone()?;
+        let mut reader = BufReader::new(reader_stream);
+        let mut writer = BufWriter::new(stream);
+        serve(&mut reader, &mut writer)?;
+    } else {
+        let stdin = io::stdin();
+        let stdout = io::stdout();
+        let mut reader = BufReader::new(stdin.lock());
+        let mut writer = BufWriter::new(stdout.lock());
+        serve(&mut reader, &mut writer)?;
+    }
+
+    Ok(())
+}
+
+/// `--listen 127.0.0.1:9472` or env `ABAP_LSP_LISTEN` (same format). If unset, uses stdio.
+fn listen_address_from_cli_or_env() -> Result<Option<SocketAddr>, Box<dyn std::error::Error>> {
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        if arg == "--listen" || arg == "-l" {
+            let value = args
+                .next()
+                .ok_or("expected address after --listen (e.g. 127.0.0.1:9472)")?;
+            return Ok(Some(value.parse()?));
+        }
+        if let Some(rest) = arg.strip_prefix("--listen=") {
+            return Ok(Some(rest.parse()?));
+        }
+    }
+
+    if let Ok(raw) = std::env::var("ABAP_LSP_LISTEN") {
+        let trimmed = raw.trim();
+        if !trimmed.is_empty() {
+            return Ok(Some(trimmed.parse()?));
+        }
+    }
+
+    Ok(None)
+}
+
+fn serve(
+    reader: &mut impl BufRead,
+    writer: &mut impl Write,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut state = ServerState::default();
     let config = ServerConfig::default();
 
-    while let Some(frame) = read_frame(&mut reader)? {
+    while let Some(frame) = read_frame(reader)? {
         let message: Value = serde_json::from_slice(&frame)?;
         let method = message
             .get("method")
             .and_then(Value::as_str)
             .map(str::to_owned);
         if let Some(response) = handle_message(&mut state, &config, message)? {
-            send_response(&mut writer, &response)?;
+            send_response(writer, &response)?;
         }
 
         if state.shutdown_requested && method.as_deref() == Some("exit") {
@@ -44,7 +91,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn send_response(
-    writer: &mut BufWriter<std::io::StdoutLock<'_>>,
+    writer: &mut impl Write,
     response: &Response,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let payload = serde_json::to_vec(&json!({

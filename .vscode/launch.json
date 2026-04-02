@@ -82,6 +82,40 @@
       "sourceLanguages": [
         "rust"
       ]
+    },
+    {
+      "name": "Launch Rust Server (TCP, debug)",
+      "type": "lldb",
+      "request": "launch",
+      "program": "${workspaceFolder}/target/debug/abap_lsp_server.exe",
+      "args": [
+        "--listen",
+        "127.0.0.1:9472"
+      ],
+      "cwd": "${workspaceFolder}",
+      "preLaunchTask": "Build Rust Server",
+      "sourceLanguages": [
+        "rust"
+      ]
+    },
+    {
+      "name": "Run Extension (attach TCP server)",
+      "type": "extensionHost",
+      "request": "launch",
+      "runtimeExecutable": "${execPath}",
+      "args": [
+        "--extensionDevelopmentPath=${workspaceFolder}/editors/vscode"
+      ],
+      "outFiles": [
+        "${workspaceFolder}/editors/vscode/out/**/*.js"
+      ],
+      "preLaunchTask": "Build Extension",
+      "skipFiles": [
+        "<node_internals>/**/*.js"
+      ],
+      "env": {
+        "__ABAP_LSP_CONNECT": "127.0.0.1:9472"
+      }
     }
   ]
 }

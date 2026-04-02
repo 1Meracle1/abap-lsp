@@ -55,6 +55,28 @@
           "default": "verbose",
           "description": "Traces the communication between VS Code and the language server."
         },
+        "abap-ls.serverTransport": {
+          "scope": "window",
+          "type": "string",
+          "enum": [
+            "stdio",
+            "tcp"
+          ],
+          "default": "stdio",
+          "description": "How the extension connects to the language server: spawn abap-ls.serverExecutable and speak LSP over stdio (production), or connect to an already-running server over TCP (development / debugging)."
+        },
+        "abap-ls.serverExecutable": {
+          "scope": "window",
+          "type": "string",
+          "default": "",
+          "description": "Path to the abap_lsp_server binary when serverTransport is \"stdio\". Overrides are: environment variables __ABAP_LSP_SERVER_PATH or __ABAP_LSP_SERVER_DEBUG."
+        },
+        "abap-ls.serverTcpAddress": {
+          "scope": "window",
+          "type": "string",
+          "default": "127.0.0.1:9472",
+          "description": "host:port when serverTransport is \"tcp\" (or when __ABAP_LSP_CONNECT is set). Start the server with e.g. abap_lsp_server --listen 127.0.0.1:9472 or ABAP_LSP_LISTEN=127.0.0.1:9472."
+        },
         "abap-ls.sap.baseUrl": {
           "scope": "resource",
           "type": "string",
