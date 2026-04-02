@@ -61,6 +61,12 @@ struct SelectorCompletionQuery {
     in_type_position: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SelectorCursorContext {
+    range: Range<usize>,
+    in_type_position: bool,
+}
+
 type ScopeIndex = Vec<HashMap<(Namespace, Arc<str>), Vec<SymbolId>>>;
 
 impl AnalysisSnapshot {
@@ -179,7 +185,13 @@ impl AnalysisSnapshot {
     }
 
     fn selector_completion_query_at(&self, offset: usize) -> Option<SelectorCompletionQuery> {
-        let query = parse_selector_completion_query(self.text.as_ref(), offset)?;
+        let context = selector_completion_context(&self.parse, offset)?;
+        let query = parse_selector_completion_query(
+            self.text.as_ref(),
+            &self.parse,
+            offset,
+            &context,
+        )?;
         Some(SelectorCompletionQuery {
             scope: innermost_scope_at(&self.symbols, query.replace_range.start),
             base_name: query.base_name,
@@ -340,29 +352,123 @@ fn innermost_scope_at(unit: &UnitAnalysis, offset: usize) -> ScopeId {
         .unwrap_or(unit.root_scope)
 }
 
-fn parse_selector_completion_query(text: &str, offset: usize) -> Option<SelectorCompletionQuery> {
-    if offset > text.len() {
+fn selector_completion_context(parse: &ParseResult, offset: usize) -> Option<SelectorCursorContext> {
+    let mut path = Vec::new();
+    let mut stack = vec![(parse.file.root(), Vec::new())];
+    while let Some((node, mut current_path)) = stack.pop() {
+        let range = parse.file.range(node);
+        if !(range.start <= offset && offset <= range.end) {
+            continue;
+        }
+        current_path.push(node);
+        if current_path.len() > path.len() {
+            path = current_path.clone();
+        }
+        let children: Vec<_> = parse.file.children(node).collect();
+        for child in children.into_iter().rev() {
+            stack.push((child, current_path.clone()));
+        }
+    }
+
+    if let Some(type_ref) = path
+        .iter()
+        .rev()
+        .copied()
+        .find(|&node| parse.file.kind(node).as_str() == "TypeRefSimple")
+    {
+        return Some(SelectorCursorContext {
+            range: parse.file.range(type_ref),
+            in_type_position: true,
+        });
+    }
+
+    let container = path
+        .iter()
+        .rev()
+        .copied()
+        .find(|&node| is_selector_query_container(parse.file.kind(node).as_str()))?;
+    Some(SelectorCursorContext {
+        range: parse.file.range(container),
+        in_type_position: false,
+    })
+}
+
+fn is_selector_query_container(kind: &str) -> bool {
+    matches!(
+        kind,
+        "SelectorExpr"
+            | "CallExpr"
+            | "ConstructorExpr"
+            | "TemplateExpr"
+            | "BinaryExpr"
+            | "UnaryExpr"
+            | "ParenExpr"
+            | "IsPredicate"
+            | "InstanceOfPredicate"
+            | "BetweenExpr"
+            | "AssignStmt"
+            | "SimpleStmt"
+            | "Error"
+            | "WriteStmt"
+            | "ReadTableStmt"
+            | "SelectStmt"
+            | "IfStmt"
+            | "ElseifClause"
+            | "ElseClause"
+            | "CaseStmt"
+            | "WhenClause"
+            | "WhileStmt"
+            | "DoStmt"
+            | "LoopStmt"
+            | "TryStmt"
+            | "CatchClause"
+            | "CleanupClause"
+    )
+}
+
+fn parse_selector_completion_query(
+    text: &str,
+    parse: &ParseResult,
+    offset: usize,
+    context: &SelectorCursorContext,
+) -> Option<SelectorCompletionQuery> {
+    if offset > text.len() || offset < context.range.start || offset > context.range.end {
         return None;
     }
-    let trimmed_offset = skip_whitespace_backward(text, offset);
-    let prefix_start = scan_ident_start(text, trimmed_offset);
-    let prefix = Arc::<str>::from(text[prefix_start..trimmed_offset].to_ascii_lowercase());
-    let replace_range = prefix_start..trimmed_offset;
-    let mut cursor = skip_whitespace_backward(text, prefix_start);
+
+    let (token_start, token_end) = token_window_for_range(parse, &context.range)?;
+    let prefix_token = prefix_token_at_offset(parse, token_start, token_end, offset);
+    let (replace_range, prefix, cursor) = if let Some(prefix_idx) = prefix_token {
+        let prefix_token = &parse.tokens[prefix_idx];
+        let prefix_end = offset.min(prefix_token.range.end);
+        (
+            prefix_token.range.start..prefix_end,
+            Arc::<str>::from(text[prefix_token.range.start..prefix_end].to_ascii_lowercase()),
+            prefix_idx,
+        )
+    } else {
+        (
+            offset..offset,
+            Arc::<str>::from(""),
+            first_token_starting_at_or_after(parse, token_start, token_end, offset),
+        )
+    };
     let mut reversed_segments = Vec::new();
+    let mut cursor = cursor;
 
     loop {
-        let (op_start, op_kind) = selector_operator_before(text, cursor)?;
-        let ident_end = skip_whitespace_backward(text, op_start);
-        let ident_start = scan_ident_start(text, ident_end);
-        if ident_start == ident_end {
+        let (op_idx, op_kind) = selector_operator_before_token(parse, token_start, cursor)?;
+        let ident_idx = previous_significant_token(parse, token_start, op_idx)?;
+        let ident = &parse.tokens[ident_idx];
+        if ident.kind.as_str() != "Ident" {
             return None;
         }
-        let ident = Arc::<str>::from(text[ident_start..ident_end].to_ascii_lowercase());
-        reversed_segments.push(ident);
-        cursor = ident_start;
+        reversed_segments.push(Arc::<str>::from(
+            text[ident.range.start..ident.range.end].to_ascii_lowercase(),
+        ));
+        cursor = ident_idx;
 
-        if selector_operator_before(text, cursor).is_none() {
+        if selector_operator_before_token(parse, token_start, cursor).is_none() {
             let base_name = reversed_segments.pop()?;
             reversed_segments.reverse();
             let base_namespace = match op_kind {
@@ -376,7 +482,8 @@ fn parse_selector_completion_query(text: &str, offset: usize) -> Option<Selector
                 component_path: reversed_segments,
                 replace_range,
                 prefix,
-                in_type_position: is_type_position_query(text, cursor),
+                in_type_position: context.in_type_position
+                    || type_keyword_before_base(parse, text, token_start, cursor),
             });
         }
     }
@@ -390,91 +497,66 @@ enum SelectorOperator {
     FatArrow,
 }
 
-fn selector_operator_before(text: &str, end: usize) -> Option<(usize, SelectorOperator)> {
-    let end = skip_whitespace_backward(text, end);
-    if end == 0 {
-        return None;
-    }
-    let bytes = text.as_bytes();
-    let valid_left_neighbor = |op_start: usize| {
-        op_start > 0
-            && text[..op_start]
-                .chars()
-                .next_back()
-                .is_some_and(is_ident_char)
-    };
-    if bytes.get(end.wrapping_sub(1)) == Some(&b'>') {
-        if bytes.get(end.wrapping_sub(2)) == Some(&b'-') {
-            let op_start = end - 2;
-            if valid_left_neighbor(op_start) {
-                return Some((op_start, SelectorOperator::Arrow));
-            }
-            return None;
-        }
-        if bytes.get(end.wrapping_sub(2)) == Some(&b'=') {
-            let op_start = end - 2;
-            if valid_left_neighbor(op_start) {
-                return Some((op_start, SelectorOperator::FatArrow));
-            }
-            return None;
-        }
-    }
-    if bytes.get(end.wrapping_sub(1)) == Some(&b'~') {
-        let op_start = end - 1;
-        if valid_left_neighbor(op_start) {
-            return Some((op_start, SelectorOperator::Tilde));
-        }
-        return None;
-    }
-    if bytes.get(end.wrapping_sub(1)) == Some(&b'-') {
-        let op_start = end - 1;
-        if valid_left_neighbor(op_start) {
-            return Some((op_start, SelectorOperator::Minus));
+fn token_window_for_range(parse: &ParseResult, range: &Range<usize>) -> Option<(usize, usize)> {
+    let start = parse
+        .tokens
+        .iter()
+        .position(|token| token.kind.as_str() != "Eof" && token.range.end > range.start)?;
+    let end = parse
+        .tokens
+        .iter()
+        .rposition(|token| token.kind.as_str() != "Eof" && token.range.start < range.end)?;
+    (start <= end).then_some((start, end + 1))
+}
+
+fn prefix_token_at_offset(parse: &ParseResult, start: usize, end: usize, offset: usize) -> Option<usize> {
+    (start..end).find(|&idx| {
+        let token = &parse.tokens[idx];
+        token.kind.as_str() == "Ident" && token.range.start <= offset && offset <= token.range.end
+    })
+}
+
+fn first_token_starting_at_or_after(parse: &ParseResult, start: usize, end: usize, offset: usize) -> usize {
+    (start..end)
+        .find(|&idx| parse.tokens[idx].range.start >= offset)
+        .unwrap_or(end)
+}
+
+fn previous_significant_token(parse: &ParseResult, start: usize, mut end: usize) -> Option<usize> {
+    while end > start {
+        end -= 1;
+        if !matches!(parse.tokens[end].kind.as_str(), "Comment" | "Eof") {
+            return Some(end);
         }
     }
     None
 }
 
-fn scan_ident_start(text: &str, mut end: usize) -> usize {
-    while end > 0 {
-        let ch = text[..end].chars().next_back().unwrap_or_default();
-        if !is_ident_char(ch) {
-            break;
-        }
-        end -= ch.len_utf8();
+fn selector_operator_before_token(parse: &ParseResult, start: usize, end: usize) -> Option<(usize, SelectorOperator)> {
+    let op_idx = previous_significant_token(parse, start, end)?;
+    let op = &parse.tokens[op_idx];
+    let left_idx = previous_significant_token(parse, start, op_idx)?;
+    let left = &parse.tokens[left_idx];
+    if left.kind.as_str() != "Ident" || left.range.end < op.range.start {
+        return None;
     }
-    end
+
+    let kind = match op.kind.as_str() {
+        "Minus" => SelectorOperator::Minus,
+        "Arrow" => SelectorOperator::Arrow,
+        "Tilde" => SelectorOperator::Tilde,
+        "FatArrow" => SelectorOperator::FatArrow,
+        _ => return None,
+    };
+    Some((op_idx, kind))
 }
 
-fn is_ident_char(ch: char) -> bool {
-    ch.is_ascii_alphanumeric() || ch == '_' || ch == '<' || ch == '>'
-}
-
-fn skip_whitespace_backward(text: &str, mut end: usize) -> usize {
-    while end > 0 {
-        let ch = text[..end].chars().next_back().unwrap_or_default();
-        if !ch.is_whitespace() {
-            break;
-        }
-        end -= ch.len_utf8();
-    }
-    end
-}
-
-fn is_type_position_query(text: &str, base_start: usize) -> bool {
-    let statement_start = text[..base_start]
-        .rfind('.')
-        .map(|idx| idx + 1)
-        .unwrap_or(0);
-    let before = &text[statement_start..base_start];
-    let trimmed = before.trim_end();
-    let mut words = trimmed
-        .split(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_')
-        .filter(|part| !part.is_empty());
-    matches!(
-        words.next_back().map(|word| word.to_ascii_uppercase()),
-        Some(keyword) if keyword == "TYPE" || keyword == "LIKE"
-    )
+fn type_keyword_before_base(parse: &ParseResult, text: &str, start: usize, base_idx: usize) -> bool {
+    let Some(keyword_idx) = previous_significant_token(parse, start, base_idx) else {
+        return false;
+    };
+    let keyword = parse.tokens[keyword_idx].lexeme(text);
+    keyword.eq_ignore_ascii_case("type") || keyword.eq_ignore_ascii_case("like")
 }
 
 #[derive(Debug, Default)]
@@ -741,5 +823,52 @@ DATA lv_value TYPE ty_outer-inner-";
         let snapshot = store.publish("file:///demo.abap", 1, src);
 
         assert!(snapshot.selector_completion_at(src.len()).is_none());
+    }
+
+    #[test]
+    fn lists_selector_completion_items_inside_template_expression() {
+        let store = DocumentStore::default();
+        let src = "\
+TYPES: BEGIN OF ty_inner,
+         alpha TYPE i,
+       END OF ty_inner.
+TYPES: BEGIN OF ty_outer,
+         inner TYPE ty_inner,
+       END OF ty_outer.
+DATA ls_outer TYPE ty_outer.
+WRITE |TYPE { ls_outer-inner- }|.";
+        let snapshot = store.publish("file:///demo.abap", 1, src);
+        let offset = src.find("inner-").expect("selector") + "inner-".len();
+
+        let completion = snapshot
+            .selector_completion_at(offset)
+            .expect("selector completion");
+        assert!(!completion.in_type_position);
+        assert_eq!(completion.items.len(), 1);
+        assert_eq!(completion.items[0].name.as_ref(), "alpha");
+    }
+
+    #[test]
+    fn lists_selector_completion_items_in_unterminated_binary_expression() {
+        let store = DocumentStore::default();
+        let src = "\
+TYPES: BEGIN OF ty_inner,
+         alpha TYPE i,
+       END OF ty_inner.
+TYPES: BEGIN OF ty_outer,
+         inner TYPE ty_inner,
+       END OF ty_outer.
+DATA ls_outer TYPE ty_outer.
+DATA lv_total TYPE i.
+lv_total = ls_outer-inner- + 1";
+        let snapshot = store.publish("file:///demo.abap", 1, src);
+        let offset = src.find("inner-").expect("selector") + "inner-".len();
+
+        let completion = snapshot
+            .selector_completion_at(offset)
+            .expect("selector completion");
+        assert!(!completion.in_type_position);
+        assert_eq!(completion.items.len(), 1);
+        assert_eq!(completion.items[0].name.as_ref(), "alpha");
     }
 }
