@@ -4,7 +4,8 @@ use std::net::{SocketAddr, TcpListener};
 use abap_jsonrpc::{JSON_RPC_VERSION, Response, read_frame, write_frame};
 use abap_lsp::{
     CompletionParams, DidChangeTextDocumentParams, DidOpenTextDocumentParams, HoverParams, ServerConfig,
-    ServerState, completion, hover, initialize_result, publish_changed_document, publish_open_document,
+    ServerState, completion, hover, initialize_result, publish_changed_document, publish_diagnostics_params,
+    publish_open_document,
 };
 use serde_json::{Value, json};
 use tracing::warn;
@@ -78,7 +79,11 @@ fn serve(
             .get("method")
             .and_then(Value::as_str)
             .map(str::to_owned);
-        if let Some(response) = handle_message(&mut state, &config, message)? {
+        let handled = handle_message(&mut state, &config, message)?;
+        for (method, params) in handled.notifications {
+            send_notification(writer, &method, params)?;
+        }
+        if let Some(response) = handled.response {
             send_response(writer, &response)?;
         }
 
@@ -104,78 +109,147 @@ fn send_response(
     Ok(())
 }
 
+fn send_notification(
+    writer: &mut impl Write,
+    method: &str,
+    params: Value,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let payload = serde_json::to_vec(&json!({
+        "jsonrpc": JSON_RPC_VERSION,
+        "method": method,
+        "params": params,
+    }))?;
+    write_frame(writer, &payload)?;
+    Ok(())
+}
+
+struct HandledMessage {
+    response: Option<Response>,
+    notifications: Vec<(String, Value)>,
+}
+
 fn handle_message(
     state: &mut ServerState,
     config: &ServerConfig,
     message: Value,
-) -> Result<Option<Response>, Box<dyn std::error::Error>> {
+) -> Result<HandledMessage, Box<dyn std::error::Error>> {
     let method = message.get("method").and_then(Value::as_str);
     let id = message.get("id").cloned();
     match method {
         Some("initialize") => {
             let result = serde_json::to_value(initialize_result(config))?;
-            Ok(Some(Response::success(id.unwrap_or(Value::Null), result)))
+            Ok(HandledMessage {
+                response: Some(Response::success(id.unwrap_or(Value::Null), result)),
+                notifications: Vec::new(),
+            })
         }
         Some("shutdown") => {
             state.shutdown_requested = true;
-            Ok(Some(Response::success(id.unwrap_or(Value::Null), Value::Null)))
+            Ok(HandledMessage {
+                response: Some(Response::success(id.unwrap_or(Value::Null), Value::Null)),
+                notifications: Vec::new(),
+            })
         }
         Some("textDocument/didOpen") => {
+            let mut notifications = Vec::new();
             if let Some(params) = parse_params::<DidOpenTextDocumentParams>(&message)? {
-                publish_open_document(state, &params);
+                let snapshot = publish_open_document(state, &params);
+                let params_value = serde_json::to_value(publish_diagnostics_params(&snapshot))?;
+                notifications.push(("textDocument/publishDiagnostics".to_owned(), params_value));
             }
-            Ok(None)
+            Ok(HandledMessage {
+                response: None,
+                notifications,
+            })
         }
         Some("textDocument/didChange") => {
+            let mut notifications = Vec::new();
             if let Some(params) = parse_params::<DidChangeTextDocumentParams>(&message)? {
-                publish_changed_document(state, &params);
+                if let Some(snapshot) = publish_changed_document(state, &params) {
+                    let params_value = serde_json::to_value(publish_diagnostics_params(&snapshot))?;
+                    notifications.push(("textDocument/publishDiagnostics".to_owned(), params_value));
+                }
             }
-            Ok(None)
+            Ok(HandledMessage {
+                response: None,
+                notifications,
+            })
         }
         Some("textDocument/hover") => {
             let Some(hover_params) = parse_params::<HoverParams>(&message)? else {
-                return Ok(Some(Response::failure(
-                    id.unwrap_or(Value::Null),
-                    INVALID_REQUEST,
-                    "textDocument/hover requires params",
-                )));
+                return Ok(HandledMessage {
+                    response: Some(Response::failure(
+                        id.unwrap_or(Value::Null),
+                        INVALID_REQUEST,
+                        "textDocument/hover requires params",
+                    )),
+                    notifications: Vec::new(),
+                });
             };
             let result = serde_json::to_value(hover(state, &hover_params))?;
-            Ok(Some(Response::success(id.unwrap_or(Value::Null), result)))
+            Ok(HandledMessage {
+                response: Some(Response::success(id.unwrap_or(Value::Null), result)),
+                notifications: Vec::new(),
+            })
         }
         Some("textDocument/completion") => {
             let Some(completion_params) = parse_params::<CompletionParams>(&message)? else {
-                return Ok(Some(Response::failure(
-                    id.unwrap_or(Value::Null),
-                    INVALID_REQUEST,
-                    "textDocument/completion requires params",
-                )));
+                return Ok(HandledMessage {
+                    response: Some(Response::failure(
+                        id.unwrap_or(Value::Null),
+                        INVALID_REQUEST,
+                        "textDocument/completion requires params",
+                    )),
+                    notifications: Vec::new(),
+                });
             };
             let result = serde_json::to_value(completion(state, &completion_params))?;
-            Ok(Some(Response::success(id.unwrap_or(Value::Null), result)))
+            Ok(HandledMessage {
+                response: Some(Response::success(id.unwrap_or(Value::Null), result)),
+                notifications: Vec::new(),
+            })
         }
-        Some("exit") => Ok(None),
+        Some("initialized") | Some("$/progress") | Some("$/cancelRequest") => Ok(HandledMessage {
+            response: None,
+            notifications: Vec::new(),
+        }),
+        Some("exit") => Ok(HandledMessage {
+            response: None,
+            notifications: Vec::new(),
+        }),
         Some(other) => {
             if let Some(id) = id {
-                Ok(Some(Response::failure(
-                    id,
-                    METHOD_NOT_FOUND,
-                    format!("unsupported method: {other}"),
-                )))
+                Ok(HandledMessage {
+                    response: Some(Response::failure(
+                        id,
+                        METHOD_NOT_FOUND,
+                        format!("unsupported method: {other}"),
+                    )),
+                    notifications: Vec::new(),
+                })
             } else {
                 warn!("ignoring unsupported notification: {other}");
-                Ok(None)
+                Ok(HandledMessage {
+                    response: None,
+                    notifications: Vec::new(),
+                })
             }
         }
         None => {
             if let Some(id) = id {
-                Ok(Some(Response::failure(
-                    id,
-                    INVALID_REQUEST,
-                    "request is missing method",
-                )))
+                Ok(HandledMessage {
+                    response: Some(Response::failure(
+                        id,
+                        INVALID_REQUEST,
+                        "request is missing method",
+                    )),
+                    notifications: Vec::new(),
+                })
             } else {
-                Ok(None)
+                Ok(HandledMessage {
+                    response: None,
+                    notifications: Vec::new(),
+                })
             }
         }
     }
@@ -201,7 +275,7 @@ mod tests {
         let mut state = ServerState::default();
         let config = ServerConfig::default();
 
-        assert!(handle_message(
+        let opened = handle_message(
             &mut state,
             &config,
             json!({
@@ -217,10 +291,11 @@ mod tests {
                 }
             }),
         )
-        .expect("didOpen")
-        .is_none());
+        .expect("didOpen");
+        assert!(opened.response.is_none());
+        assert_eq!(opened.notifications.len(), 1);
 
-        let response = handle_message(
+        let hover_msg = handle_message(
             &mut state,
             &config,
             json!({
@@ -233,10 +308,13 @@ mod tests {
                 }
             }),
         )
-        .expect("hover")
-        .expect("hover response");
+        .expect("hover");
 
-        let result = response.result.expect("hover result");
+        let result = hover_msg
+            .response
+            .expect("hover response")
+            .result
+            .expect("hover result");
         assert!(result.to_string().contains("scalar component"));
         assert!(result.to_string().contains("TYPE i"));
     }
@@ -246,7 +324,7 @@ mod tests {
         let mut state = ServerState::default();
         let config = ServerConfig::default();
 
-        assert!(handle_message(
+        let opened = handle_message(
             &mut state,
             &config,
             json!({
@@ -262,10 +340,10 @@ mod tests {
                 }
             }),
         )
-        .expect("didOpen")
-        .is_none());
+        .expect("didOpen");
+        assert!(opened.response.is_none());
 
-        let response = handle_message(
+        let completion_msg = handle_message(
             &mut state,
             &config,
             json!({
@@ -278,10 +356,13 @@ mod tests {
                 }
             }),
         )
-        .expect("completion")
-        .expect("completion response");
+        .expect("completion");
 
-        let result = response.result.expect("completion result");
+        let result = completion_msg
+            .response
+            .expect("completion response")
+            .result
+            .expect("completion result");
         assert!(result.to_string().contains("alpha"));
         assert!(result.to_string().contains("amount"));
     }

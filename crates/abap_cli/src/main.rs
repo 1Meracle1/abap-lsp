@@ -370,6 +370,36 @@ fn run() -> Result<i32, String> {
                 })
                 .collect();
 
+            let field_access_rows: Vec<Value> = unit
+                .field_accesses
+                .iter()
+                .map(|fa| {
+                    json!({
+                        "base_name": fa.base_name.to_string(),
+                        "base_namespace": format!("{:?}", fa.base_namespace),
+                        "in_type_position": fa.in_type_position,
+                        "segments": fa.field_path.iter().map(|seg| json!({
+                            "name": seg.name.to_string(),
+                            "range": [seg.range.start, seg.range.end],
+                        })).collect::<Vec<_>>(),
+                    })
+                })
+                .collect();
+
+            let reference_rows: Vec<Value> = unit
+                .references
+                .iter()
+                .map(|reference| {
+                    json!({
+                        "name": reference.name.to_string(),
+                        "namespace": format!("{:?}", reference.namespace),
+                        "kind": format!("{:?}", reference.kind),
+                        "range": [reference.range.start, reference.range.end],
+                        "resolved": reference.resolution.is_some(),
+                    })
+                })
+                .collect();
+
             if cli.json_output {
                 let out = if cli.unknown_only {
                     json!({
@@ -380,6 +410,8 @@ fn run() -> Result<i32, String> {
                     json!({
                         "phase": "symbols",
                         "symbols": symbol_rows,
+                        "references": reference_rows,
+                        "field_accesses": field_access_rows,
                         "unknown_symbols": unknown,
                     })
                 };

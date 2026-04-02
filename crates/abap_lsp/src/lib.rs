@@ -1,9 +1,12 @@
-use abap_cache::DocumentStore;
+use std::sync::Arc;
+
+use abap_cache::{AnalysisSnapshot, DocumentStore};
+use abap_symbols::DiagnosticKind;
 use lsp_types::{
-    CompletionItem, CompletionItemKind, CompletionOptions, Documentation, Hover, HoverContents,
-    HoverProviderCapability, InitializeResult, MarkupContent, MarkupKind, OneOf, Position, Range,
-    ServerCapabilities,
-    TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit,
+    CompletionItem, CompletionItemKind, CompletionOptions, Diagnostic, DiagnosticSeverity,
+    Documentation, Hover, HoverContents, HoverProviderCapability, InitializeResult, MarkupContent,
+    MarkupKind, OneOf, Position, PublishDiagnosticsParams, Range, ServerCapabilities,
+    TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri,
 };
 use serde::{Deserialize, Serialize};
 
@@ -81,33 +84,129 @@ pub struct WorkspaceManifestUpdatedParams {
     pub workspace_uri: String,
 }
 
-pub fn publish_open_document(state: &ServerState, params: &DidOpenTextDocumentParams) {
-    state.cache.publish(
-        params.text_document.uri.to_string(),
-        params.text_document.version,
-        &params.text_document.text,
-    );
+/// Normalizes `file:` URIs so `DocumentStore` lookups stay stable (e.g. Windows `file:///C:/` vs `file:///c:/`).
+pub fn normalize_lsp_uri(raw: &str) -> String {
+    const PREFIX: &str = "file:///";
+    let lower = raw.to_ascii_lowercase();
+    if !lower.starts_with(PREFIX) {
+        return raw.to_owned();
+    }
+    let path = &raw[PREFIX.len()..];
+    let bytes = path.as_bytes();
+    if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+        let mut out = String::with_capacity(raw.len());
+        out.push_str(PREFIX);
+        out.push((bytes[0] as char).to_ascii_lowercase());
+        out.push_str(&path[1..]);
+        return out;
+    }
+    if bytes.len() >= 4 && bytes[0].is_ascii_alphabetic() && path[1..4].eq_ignore_ascii_case("%3a") {
+        let mut out = String::with_capacity(raw.len());
+        out.push_str(PREFIX);
+        out.push((bytes[0] as char).to_ascii_lowercase());
+        out.push(':');
+        out.push_str(&path[4..]);
+        return out;
+    }
+    raw.to_owned()
 }
 
-pub fn publish_changed_document(state: &ServerState, params: &DidChangeTextDocumentParams) {
-    let Some(change) = params.content_changes.last() else {
-        return;
-    };
-    state.cache.publish(
-        params.text_document.uri.to_string(),
-        params.text_document.version,
-        &change.text,
-    );
+pub fn publish_open_document(state: &ServerState, params: &DidOpenTextDocumentParams) -> Arc<AnalysisSnapshot> {
+    let uri = normalize_lsp_uri(params.text_document.uri.as_str());
+    state.cache.publish(uri, params.text_document.version, &params.text_document.text)
+}
+
+pub fn publish_changed_document(
+    state: &ServerState,
+    params: &DidChangeTextDocumentParams,
+) -> Option<Arc<AnalysisSnapshot>> {
+    let change = params.content_changes.last()?;
+    let uri = normalize_lsp_uri(params.text_document.uri.as_str());
+    Some(state.cache.publish(uri, params.text_document.version, &change.text))
+}
+
+fn semantic_diagnostic_severity(kind: DiagnosticKind) -> DiagnosticSeverity {
+    match kind {
+        DiagnosticKind::DuplicateDeclaration | DiagnosticKind::ShadowedSymbol => DiagnosticSeverity::WARNING,
+        DiagnosticKind::UnresolvedReference
+        | DiagnosticKind::UnresolvedInclude
+        | DiagnosticKind::IncludeCycle
+        | DiagnosticKind::WrongNamespace
+        | DiagnosticKind::UnknownField => DiagnosticSeverity::ERROR,
+    }
+}
+
+pub fn build_lsp_diagnostics(snapshot: &AnalysisSnapshot) -> Vec<Diagnostic> {
+    let text = snapshot.text.as_ref();
+    let mut out: Vec<Diagnostic> = snapshot
+        .parse
+        .errors
+        .iter()
+        .filter_map(|err| {
+            Some(Diagnostic {
+                range: byte_range_to_lsp_range(text, err.range.clone())?,
+                severity: Some(DiagnosticSeverity::ERROR),
+                code: None,
+                code_description: None,
+                source: Some("abap-parser".to_owned()),
+                message: err.message.clone(),
+                related_information: None,
+                tags: None,
+                data: None,
+            })
+        })
+        .collect();
+    for diag_inner in &snapshot.symbols.diagnostics {
+        let Some(range) = byte_range_to_lsp_range(text, diag_inner.range.clone()) else {
+            continue;
+        };
+        out.push(Diagnostic {
+            range,
+            severity: Some(semantic_diagnostic_severity(diag_inner.kind)),
+            code: None,
+            code_description: None,
+            source: Some("abap-symbols".to_owned()),
+            message: diag_inner.message.clone(),
+            related_information: None,
+            tags: None,
+            data: None,
+        });
+    }
+    out.sort_by(|a, b| {
+        a.range
+            .start
+            .line
+            .cmp(&b.range.start.line)
+            .then(a.range.start.character.cmp(&b.range.start.character))
+    });
+    out
+}
+
+pub fn publish_diagnostics_params(snapshot: &AnalysisSnapshot) -> PublishDiagnosticsParams {
+    let uri: Uri = snapshot
+        .uri
+        .as_ref()
+        .parse()
+        .expect("cached document URI must be a valid URL");
+    PublishDiagnosticsParams {
+        uri,
+        diagnostics: build_lsp_diagnostics(snapshot),
+        version: Some(snapshot.version),
+    }
 }
 
 pub fn hover(state: &ServerState, params: &HoverParams) -> Option<Hover> {
-    let uri = params.text_document_position_params.text_document.uri.as_str();
-    let snapshot = state.cache.get(uri)?;
+    let uri = normalize_lsp_uri(params.text_document_position_params.text_document.uri.as_str());
+    let snapshot = state.cache.get(&uri)?;
     let offset = position_to_offset(
         snapshot.text.as_ref(),
         params.text_document_position_params.position,
     )?;
     let component = snapshot.hovered_component_at(offset)?;
+    structured_field_hover(&snapshot, component)
+}
+
+fn structured_field_hover(snapshot: &AnalysisSnapshot, component: abap_cache::HoveredComponentInfo) -> Option<Hover> {
     let range = byte_range_to_lsp_range(snapshot.text.as_ref(), component.range.clone())?;
     let mut lines = vec![format!("`{}`", component.field_name)];
     match component.kind {
@@ -138,8 +237,8 @@ pub fn hover(state: &ServerState, params: &HoverParams) -> Option<Hover> {
 }
 
 pub fn completion(state: &ServerState, params: &CompletionParams) -> Option<CompletionResponse> {
-    let uri = params.text_document_position.text_document.uri.as_str();
-    let snapshot = state.cache.get(uri)?;
+    let uri = normalize_lsp_uri(params.text_document_position.text_document.uri.as_str());
+    let snapshot = state.cache.get(&uri)?;
     let offset = position_to_offset(snapshot.text.as_ref(), params.text_document_position.position)?;
     let completion = snapshot.selector_completion_at(offset)?;
     let range = byte_range_to_lsp_range(snapshot.text.as_ref(), completion.replace_range)?;
@@ -284,8 +383,21 @@ mod tests {
     use super::{
         CompletionParams, CompletionResponse, DEPENDENCY_CACHE_CLEARED, REMOTE_DEPENDENCIES_UPDATED,
         RESOLVE_REMOTE_DEPENDENCIES, ServerState, WORKSPACE_MANIFEST_UPDATED, HoverParams, completion,
-        hover, initialize_result, publish_changed_document, publish_open_document,
+        hover, initialize_result, normalize_lsp_uri, publish_changed_document, publish_open_document,
     };
+
+    #[test]
+    fn normalize_lsp_uri_lowercases_windows_file_drive_prefix() {
+        assert_eq!(
+            normalize_lsp_uri("file:///D:/project/foo.abap"),
+            "file:///d:/project/foo.abap"
+        );
+        assert_eq!(
+            normalize_lsp_uri("file:///d%3A/project/foo.abap"),
+            "file:///d:/project/foo.abap"
+        );
+        assert_eq!(normalize_lsp_uri("untitled:1"), "untitled:1");
+    }
 
     #[test]
     fn initialize_result_exposes_server_capabilities() {

@@ -51,6 +51,7 @@ version = "0.1.0"
 dependencies = [
  "abap_cache",
  "abap_jsonrpc",
+ "abap_symbols",
  "lsp-types",
  "serde",
  "serde_json",
