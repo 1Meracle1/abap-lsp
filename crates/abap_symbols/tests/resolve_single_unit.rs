@@ -320,6 +320,40 @@ ENDCLASS.
 }
 
 #[test]
+fn resolves_inherited_instance_methods_for_ref_typed_variables() {
+    let src = r#"
+CLASS zcl_ast_node DEFINITION ABSTRACT.
+  PUBLIC SECTION.
+    METHODS to_string ABSTRACT
+      RETURNING VALUE(rv_text) TYPE string.
+ENDCLASS.
+
+CLASS zcl_ast_node IMPLEMENTATION.
+ENDCLASS.
+
+CLASS zcl_expr DEFINITION ABSTRACT INHERITING FROM zcl_ast_node.
+ENDCLASS.
+
+CLASS zcl_expr IMPLEMENTATION.
+ENDCLASS.
+
+DATA lo_expr TYPE REF TO zcl_expr.
+DATA lv_text TYPE string.
+lv_text = lo_expr->to_string( ).
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///inherited_methods.abap", src, &parsed);
+
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnknownField && diag.message.contains("to_string")
+        }),
+        "unexpected diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn ignores_trailing_method_modifier_in_returning_type_recovery() {
     let src = r#"
 CLASS zcl_ast_node DEFINITION ABSTRACT.

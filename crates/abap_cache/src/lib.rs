@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -8,7 +8,7 @@ use abap_symbols::{
     FormParameterPassingKind, FormParameterSection, NamedArgumentAccess, NamedArgumentTarget,
     Namespace, PerformArgumentData, PerformCallData, PerformParameterSection, ProjectAnalysis,
     ProjectInput, Resolution, ScopeId, StructureFieldInfo, StructureFieldShape, StructureId,
-    SymbolData, SymbolId, SymbolKind, UnitAnalysis, Visibility, analyze_project,
+    SymbolData, SymbolId, SymbolKind, UnitAnalysis, UnitId, Visibility, analyze_project,
     builtin_routine_spec,
 };
 use parking_lot::RwLock;
@@ -317,15 +317,21 @@ impl AnalysisSnapshot {
                     &query.base_name,
                 )
         {
-            let mut items: Vec<_> = unit
-                .class_members_for(class_symbol_id)
+            let mut items: Vec<_> = collect_class_methods_in_hierarchy(self, unit, class_symbol_id)
+                .into_iter()
                 .filter(|member| {
+                    let (member_unit, member) = member;
                     (!requires_static || member.is_static)
-                        && member.kind == ClassMemberKind::Method
-                        && class_member_visible_to(self.symbols.as_ref(), query.scope, unit, member)
+                        && class_member_visible_to(
+                            self,
+                            self.symbols.as_ref(),
+                            query.scope,
+                            member_unit,
+                            member,
+                        )
                         && member.name.as_ref().starts_with(query.prefix.as_ref())
                 })
-                .map(|member| SelectorCompletionItem {
+                .map(|(_, member)| SelectorCompletionItem {
                     name: Arc::clone(&member.name),
                     declared_type: None,
                     declaration: Some(member.signature.to_string()),
@@ -672,6 +678,68 @@ fn resolve_direct_superclass_from_scope<'a>(
     (unit.symbol(symbol_id).kind == SymbolKind::Class).then_some((unit, symbol_id))
 }
 
+fn resolve_project_class_symbol<'a>(
+    snapshot: &'a AnalysisSnapshot,
+    preferred_unit: &'a UnitAnalysis,
+    name: &Arc<str>,
+) -> Option<(&'a UnitAnalysis, SymbolId)> {
+    preferred_unit
+        .symbols
+        .iter()
+        .find(|symbol| {
+            symbol.scope == preferred_unit.root_scope
+                && symbol.kind == SymbolKind::Class
+                && symbol.name == *name
+        })
+        .map(|symbol| (preferred_unit, symbol.id))
+        .or_else(|| {
+            snapshot.project.units.iter().find_map(|candidate_unit| {
+                candidate_unit
+                    .symbols
+                    .iter()
+                    .find(|symbol| {
+                        symbol.scope == candidate_unit.root_scope
+                            && symbol.kind == SymbolKind::Class
+                            && symbol.name == *name
+                    })
+                    .map(|symbol| (candidate_unit, symbol.id))
+            })
+        })
+}
+
+fn direct_superclass_from_class<'a>(
+    snapshot: &'a AnalysisSnapshot,
+    unit: &'a UnitAnalysis,
+    class_symbol: SymbolId,
+) -> Option<(&'a UnitAnalysis, SymbolId)> {
+    let inheritance = unit.class_superclass(class_symbol)?;
+    resolve_project_class_symbol(snapshot, unit, &inheritance.superclass_name)
+}
+
+fn class_is_or_inherits_from(
+    snapshot: &AnalysisSnapshot,
+    descendant: (UnitId, SymbolId),
+    ancestor: (UnitId, SymbolId),
+) -> bool {
+    let mut current = descendant;
+    let mut visited = HashSet::new();
+    loop {
+        if !visited.insert(current) {
+            return false;
+        }
+        if current == ancestor {
+            return true;
+        }
+        let unit = &snapshot.project.units[current.0.as_usize()];
+        let Some((next_unit, next_symbol)) =
+            direct_superclass_from_class(snapshot, unit, current.1)
+        else {
+            return false;
+        };
+        current = (next_unit.unit_id, next_symbol);
+    }
+}
+
 fn lookup_scope_chain(
     unit: &UnitAnalysis,
     scope_index: &ScopeIndex,
@@ -823,8 +891,18 @@ fn resolve_named_argument_parameter<'a>(
                 *base_namespace,
                 base_name,
             )?;
-            let member = unit.class_member(class_symbol_id, method_name)?;
+            let (member_unit, member) =
+                resolve_class_member_in_hierarchy(snapshot, unit, class_symbol_id, method_name)?;
             if member.kind != ClassMemberKind::Method || (requires_static && !member.is_static) {
+                return None;
+            }
+            if !class_member_visible_to(
+                snapshot,
+                snapshot.symbols.as_ref(),
+                access.scope,
+                member_unit,
+                member,
+            ) {
                 return None;
             }
             let parameter = member
@@ -1000,6 +1078,7 @@ fn enclosing_class_owner(unit: &UnitAnalysis, scope: ScopeId) -> Option<SymbolId
 }
 
 fn class_member_visible_to(
+    snapshot: &AnalysisSnapshot,
     caller_unit: &UnitAnalysis,
     caller_scope: ScopeId,
     target_unit: &UnitAnalysis,
@@ -1007,11 +1086,72 @@ fn class_member_visible_to(
 ) -> bool {
     match member.visibility {
         Visibility::Public => true,
-        Visibility::Protected | Visibility::Private => {
+        Visibility::Private => {
             caller_unit.unit_id == target_unit.unit_id
                 && enclosing_class_owner(caller_unit, caller_scope) == Some(member.class_symbol)
         }
+        Visibility::Protected => {
+            let Some(caller_class_symbol) = enclosing_class_owner(caller_unit, caller_scope) else {
+                return false;
+            };
+            class_is_or_inherits_from(
+                snapshot,
+                (caller_unit.unit_id, caller_class_symbol),
+                (target_unit.unit_id, member.class_symbol),
+            )
+        }
     }
+}
+
+fn resolve_class_member_in_hierarchy<'a>(
+    snapshot: &'a AnalysisSnapshot,
+    class_unit: &'a UnitAnalysis,
+    class_symbol: SymbolId,
+    member_name: &str,
+) -> Option<(&'a UnitAnalysis, &'a ClassMemberData)> {
+    let mut current = (class_unit.unit_id, class_symbol);
+    let mut visited = HashSet::new();
+    loop {
+        if !visited.insert(current) {
+            return None;
+        }
+        let unit = &snapshot.project.units[current.0.as_usize()];
+        if let Some(member) = unit.class_member(current.1, member_name) {
+            return Some((unit, member));
+        }
+        let (next_unit, next_symbol) = direct_superclass_from_class(snapshot, unit, current.1)?;
+        current = (next_unit.unit_id, next_symbol);
+    }
+}
+
+fn collect_class_methods_in_hierarchy<'a>(
+    snapshot: &'a AnalysisSnapshot,
+    class_unit: &'a UnitAnalysis,
+    class_symbol: SymbolId,
+) -> Vec<(&'a UnitAnalysis, &'a ClassMemberData)> {
+    let mut current = (class_unit.unit_id, class_symbol);
+    let mut visited_classes = HashSet::new();
+    let mut seen_names = HashSet::new();
+    let mut out = Vec::new();
+    loop {
+        if !visited_classes.insert(current) {
+            break;
+        }
+        let unit = &snapshot.project.units[current.0.as_usize()];
+        for member in unit.class_members_for(current.1) {
+            if member.kind != ClassMemberKind::Method || !seen_names.insert(Arc::clone(&member.name))
+            {
+                continue;
+            }
+            out.push((unit, member));
+        }
+        let Some((next_unit, next_symbol)) = direct_superclass_from_class(snapshot, unit, current.1)
+        else {
+            break;
+        };
+        current = (next_unit.unit_id, next_symbol);
+    }
+    out
 }
 
 fn resolve_class_selector_member<'a>(
@@ -1026,15 +1166,23 @@ fn resolve_class_selector_member<'a>(
     }
     let (class_unit, class_symbol_id, requires_static) =
         resolve_class_selector_base(snapshot, access, unit, symbol_id)?;
-    let member = class_unit.class_member(
+    let (member_unit, member) = resolve_class_member_in_hierarchy(
+        snapshot,
+        class_unit,
         class_symbol_id,
         access.field_path[segment_index].name.as_ref(),
     )?;
     if member.kind != ClassMemberKind::Method || (requires_static && !member.is_static) {
         return None;
     }
-    class_member_visible_to(snapshot.symbols.as_ref(), access.scope, class_unit, member)
-        .then_some(member)
+    class_member_visible_to(
+        snapshot,
+        snapshot.symbols.as_ref(),
+        access.scope,
+        member_unit,
+        member,
+    )
+    .then_some(member)
 }
 
 fn resolve_class_selector_base<'a>(
@@ -1825,6 +1973,45 @@ rv_text = |value: { lo_expr->to_string( ) }|.";
     }
 
     #[test]
+    fn finds_hovered_inherited_method_inside_assignment_template_expression() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS zcl_ast_node DEFINITION.
+  PUBLIC SECTION.
+    METHODS to_string
+      RETURNING VALUE(rv_text) TYPE string.
+ENDCLASS.
+
+CLASS zcl_ast_node IMPLEMENTATION.
+ENDCLASS.
+
+CLASS zcl_expr DEFINITION INHERITING FROM zcl_ast_node.
+ENDCLASS.
+
+CLASS zcl_expr IMPLEMENTATION.
+ENDCLASS.
+
+DATA lo_expr TYPE REF TO zcl_expr.
+DATA rv_text TYPE string.
+rv_text = |value: { lo_expr->to_string( ) }|.";
+        let snapshot = store.publish("file:///demo.abap", 1, src);
+        let offset = src.rfind("to_string").expect("method name") + 1;
+
+        let hovered = snapshot
+            .hovered_component_at(offset)
+            .expect("hovered method info");
+        assert_eq!(hovered.base_name.as_ref(), "lo_expr");
+        assert_eq!(hovered.field_name.as_ref(), "to_string");
+        assert!(matches!(hovered.kind, HoveredComponentKind::Method));
+        assert!(
+            hovered
+                .declaration
+                .as_deref()
+                .is_some_and(|declaration| declaration.contains("METHODS to_string"))
+        );
+    }
+
+    #[test]
     fn lists_method_completion_items_inside_assignment_template_expression() {
         let store = DocumentStore::default();
         let src = "\
@@ -1833,6 +2020,47 @@ CLASS zcl_expr DEFINITION.
     METHODS to_source.
     METHODS to_string
       RETURNING VALUE(rv_text) TYPE string.
+ENDCLASS.
+
+CLASS zcl_expr IMPLEMENTATION.
+ENDCLASS.
+
+DATA lo_expr TYPE REF TO zcl_expr.
+DATA rv_text TYPE string.
+rv_text = |value: { lo_expr->to_ }|.";
+        let snapshot = store.publish("file:///demo.abap", 1, src);
+        let offset = src.rfind("to_").expect("method prefix") + "to_".len();
+
+        let completion = snapshot
+            .selector_completion_at(offset)
+            .expect("selector completion");
+        assert!(!completion.in_type_position);
+        assert_eq!(
+            completion
+                .items
+                .iter()
+                .map(|item| item.name.as_ref())
+                .collect::<Vec<_>>(),
+            vec!["to_source", "to_string"]
+        );
+        assert_eq!(&src[completion.replace_range], "to_");
+    }
+
+    #[test]
+    fn lists_inherited_method_completion_items_inside_assignment_template_expression() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS zcl_ast_node DEFINITION.
+  PUBLIC SECTION.
+    METHODS to_source.
+    METHODS to_string
+      RETURNING VALUE(rv_text) TYPE string.
+ENDCLASS.
+
+CLASS zcl_ast_node IMPLEMENTATION.
+ENDCLASS.
+
+CLASS zcl_expr DEFINITION INHERITING FROM zcl_ast_node.
 ENDCLASS.
 
 CLASS zcl_expr IMPLEMENTATION.

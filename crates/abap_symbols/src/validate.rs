@@ -295,7 +295,74 @@ fn validate_super_constructor_calls(
     diagnostics
 }
 
+fn resolve_project_class_symbol<'a>(
+    project: &'a ProjectAnalysis,
+    preferred_unit: &'a crate::UnitAnalysis,
+    name: &Arc<str>,
+) -> Option<SymbolHandle> {
+    preferred_unit
+        .symbols
+        .iter()
+        .find(|symbol| {
+            symbol.scope == preferred_unit.root_scope
+                && symbol.kind == SymbolKind::Class
+                && symbol.name == *name
+        })
+        .map(|symbol| SymbolHandle {
+            unit: preferred_unit.unit_id,
+            symbol: symbol.id,
+        })
+        .or_else(|| {
+            project.units.iter().find_map(|candidate_unit| {
+                candidate_unit
+                    .symbols
+                    .iter()
+                    .find(|symbol| {
+                        symbol.scope == candidate_unit.root_scope
+                            && symbol.kind == SymbolKind::Class
+                            && symbol.name == *name
+                    })
+                    .map(|symbol| SymbolHandle {
+                        unit: candidate_unit.unit_id,
+                        symbol: symbol.id,
+                    })
+            })
+        })
+}
+
+fn direct_superclass_handle(
+    project: &ProjectAnalysis,
+    unit: &crate::UnitAnalysis,
+    class_symbol: SymbolId,
+) -> Option<SymbolHandle> {
+    let inheritance = unit.class_superclass(class_symbol)?;
+    resolve_project_class_symbol(project, unit, &inheritance.superclass_name)
+}
+
+fn class_is_or_inherits_from(
+    project: &ProjectAnalysis,
+    descendant: SymbolHandle,
+    ancestor: SymbolHandle,
+) -> bool {
+    let mut current = descendant;
+    let mut visited = HashSet::new();
+    loop {
+        if !visited.insert(current) {
+            return false;
+        }
+        if current == ancestor {
+            return true;
+        }
+        let unit = &project.units[current.unit.as_usize()];
+        let Some(next) = direct_superclass_handle(project, unit, current.symbol) else {
+            return false;
+        };
+        current = next;
+    }
+}
+
 fn class_member_visible_to(
+    project: &ProjectAnalysis,
     caller_unit: &crate::UnitAnalysis,
     caller_scope: ScopeId,
     target_unit: &crate::UnitAnalysis,
@@ -303,10 +370,49 @@ fn class_member_visible_to(
 ) -> bool {
     match member.visibility {
         Visibility::Public => true,
-        Visibility::Protected | Visibility::Private => {
+        Visibility::Private => {
             caller_unit.unit_id == target_unit.unit_id
                 && enclosing_class_owner(caller_unit, caller_scope) == Some(member.class_symbol)
         }
+        Visibility::Protected => {
+            let Some(caller_class_symbol) = enclosing_class_owner(caller_unit, caller_scope) else {
+                return false;
+            };
+            class_is_or_inherits_from(
+                project,
+                SymbolHandle {
+                    unit: caller_unit.unit_id,
+                    symbol: caller_class_symbol,
+                },
+                SymbolHandle {
+                    unit: target_unit.unit_id,
+                    symbol: member.class_symbol,
+                },
+            )
+        }
+    }
+}
+
+fn resolve_class_member_in_hierarchy<'a>(
+    project: &'a ProjectAnalysis,
+    class_unit: &'a crate::UnitAnalysis,
+    class_symbol: SymbolId,
+    member_name: &str,
+) -> Option<(&'a crate::UnitAnalysis, &'a crate::ClassMemberData)> {
+    let mut current = SymbolHandle {
+        unit: class_unit.unit_id,
+        symbol: class_symbol,
+    };
+    let mut visited = HashSet::new();
+    loop {
+        if !visited.insert(current) {
+            return None;
+        }
+        let unit = &project.units[current.unit.as_usize()];
+        if let Some(member) = unit.class_member(current.symbol, member_name) {
+            return Some((unit, member));
+        }
+        current = direct_superclass_handle(project, unit, current.symbol)?;
     }
 }
 
@@ -476,7 +582,12 @@ pub fn validate_project(project: &mut ProjectAnalysis) {
             let base_symbol = unit.symbol(base_symbol_id);
             if access.base_namespace == Namespace::Type && base_symbol.kind == SymbolKind::Class {
                 for (idx, step) in access.field_path.iter().enumerate() {
-                    let Some(member) = unit.class_member(base_symbol_id, step.name.as_ref()) else {
+                    let Some((member_unit, member)) = resolve_class_member_in_hierarchy(
+                        project,
+                        unit,
+                        base_symbol_id,
+                        step.name.as_ref(),
+                    ) else {
                         unit_diagnostics.push(Diagnostic {
                             kind: DiagnosticKind::UnknownField,
                             range: step.range.clone(),
@@ -489,7 +600,7 @@ pub fn validate_project(project: &mut ProjectAnalysis) {
                     };
                     if !member.is_static
                         || member.kind != ClassMemberKind::Method
-                        || !class_member_visible_to(unit, access.scope, unit, member)
+                        || !class_member_visible_to(project, unit, access.scope, member_unit, member)
                     {
                         unit_diagnostics.push(Diagnostic {
                             kind: DiagnosticKind::UnknownField,
@@ -520,7 +631,12 @@ pub fn validate_project(project: &mut ProjectAnalysis) {
                 let class_unit = &project.units[*class_unit_idx];
                 let class_name = Arc::clone(&class_unit.symbol(*class_symbol_id).name);
                 for (idx, step) in access.field_path.iter().enumerate() {
-                    let Some(member) = class_unit.class_member(*class_symbol_id, step.name.as_ref())
+                    let Some((member_unit, member)) = resolve_class_member_in_hierarchy(
+                        project,
+                        class_unit,
+                        *class_symbol_id,
+                        step.name.as_ref(),
+                    )
                     else {
                         unit_diagnostics.push(Diagnostic {
                             kind: DiagnosticKind::UnknownField,
@@ -534,7 +650,7 @@ pub fn validate_project(project: &mut ProjectAnalysis) {
                     };
                     if member.kind != ClassMemberKind::Method
                         || (*requires_static && !member.is_static)
-                        || !class_member_visible_to(unit, access.scope, class_unit, member)
+                        || !class_member_visible_to(project, unit, access.scope, member_unit, member)
                     {
                         let qualifier = if *requires_static {
                             "static member"
