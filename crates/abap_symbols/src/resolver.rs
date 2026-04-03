@@ -195,7 +195,10 @@ pub fn resolve_project_cross_unit(units: &mut [UnitAnalysis]) {
             .filter_map(|edge| edge.target)
             .collect();
         for reference_idx in 0..units[unit_idx].references.len() {
-            if units[unit_idx].references[reference_idx].resolution.is_some() {
+            if units[unit_idx].references[reference_idx]
+                .resolution
+                .is_some()
+            {
                 continue;
             }
             let mut resolved = None;

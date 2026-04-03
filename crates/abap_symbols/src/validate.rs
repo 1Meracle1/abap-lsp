@@ -148,7 +148,8 @@ fn resolve_class_symbol(
     scope: ScopeId,
     name: &Arc<str>,
 ) -> Option<SymbolHandle> {
-    if let Some(symbol) = resolve_symbol_in_scope_chain(unit, scope_index, scope, Namespace::Type, name)
+    if let Some(symbol) =
+        resolve_symbol_in_scope_chain(unit, scope_index, scope, Namespace::Type, name)
         && unit.symbol(symbol).kind == SymbolKind::Class
     {
         return Some(SymbolHandle {
@@ -242,7 +243,8 @@ fn validate_super_constructor_calls(
             continue;
         };
         let superclass_unit = &project.units[superclass.unit.as_usize()];
-        let Some(super_constructor) = superclass_unit.class_member(superclass.symbol, "constructor")
+        let Some(super_constructor) =
+            superclass_unit.class_member(superclass.symbol, "constructor")
         else {
             continue;
         };

@@ -309,12 +309,13 @@ impl AnalysisSnapshot {
     pub fn selector_completion_at(&self, offset: usize) -> Option<SelectorCompletionInfo> {
         let query = self.selector_completion_query_at(offset)?;
         if query.component_path.is_empty()
-            && let Some((unit, class_symbol_id, requires_static)) = resolve_method_target_from_context(
-                self,
-                query.scope,
-                query.base_namespace,
-                &query.base_name,
-            )
+            && let Some((unit, class_symbol_id, requires_static)) =
+                resolve_method_target_from_context(
+                    self,
+                    query.scope,
+                    query.base_namespace,
+                    &query.base_name,
+                )
         {
             let mut items: Vec<_> = unit
                 .class_members_for(class_symbol_id)

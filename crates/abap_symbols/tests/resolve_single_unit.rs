@@ -338,7 +338,8 @@ ENDCLASS.
     let parsed = parse(src);
     assert!(
         parsed.errors.iter().any(|err| {
-            err.message.contains("method modifier ABSTRACT must appear before parameter declarations")
+            err.message
+                .contains("method modifier ABSTRACT must appear before parameter declarations")
         }),
         "{:?}",
         parsed.errors
@@ -1084,6 +1085,66 @@ ENDCLASS.
 }
 
 #[test]
+fn resolves_constructor_signature_parameter_type_references() {
+    let src = r#"
+CLASS zcl_expr DEFINITION ABSTRACT.
+ENDCLASS.
+
+CLASS zcl_expr IMPLEMENTATION.
+ENDCLASS.
+
+CLASS zcl_binary_expr DEFINITION INHERITING FROM zcl_expr.
+  PUBLIC SECTION.
+    METHODS constructor
+      IMPORTING
+        io_left  TYPE REF TO zcl_expr
+        iv_op    TYPE string
+        io_right TYPE REF TO zcl_expr.
+ENDCLASS.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///constructor_signature.abap", src, &parsed);
+
+    let ctor_start = src
+        .find("METHODS constructor")
+        .expect("constructor signature start");
+
+    let class_refs: Vec<_> = unit
+        .references
+        .iter()
+        .filter(|reference| {
+            reference.kind == ReferenceKind::TypeRef
+                && reference.namespace == Namespace::Type
+                && reference.name.as_ref() == "zcl_expr"
+                && reference.range.start > ctor_start
+        })
+        .collect();
+    assert_eq!(
+        class_refs.len(),
+        2,
+        "expected constructor type refs, refs={class_refs:?}"
+    );
+    assert!(
+        class_refs
+            .iter()
+            .all(|reference| matches!(reference.resolution, Some(Resolution::Symbol(_)))),
+        "expected resolved class type refs, refs={class_refs:?}"
+    );
+
+    let string_ref = unit
+        .references
+        .iter()
+        .find(|reference| {
+            reference.kind == ReferenceKind::TypeRef
+                && reference.namespace == Namespace::Type
+                && reference.name.as_ref() == "string"
+                && reference.range.start > ctor_start
+        })
+        .expect("constructor string type reference");
+    assert_eq!(string_ref.resolution, Some(Resolution::BuiltinType));
+}
+
+#[test]
 fn resolves_constructor_arguments_and_token_only_statement_references() {
     let src = r#"
 CLASS zcl_ast_node DEFINITION ABSTRACT.
@@ -1334,8 +1395,7 @@ ENDCLASS.
     let unit = analyze_unit("file:///missing_super_ctor_args.abap", src, &parsed);
 
     assert!(unit.diagnostics.iter().any(|diag| {
-        diag.kind == DiagnosticKind::MissingSuperConstructorCall
-            && diag.message.contains("iv_kind")
+        diag.kind == DiagnosticKind::MissingSuperConstructorCall && diag.message.contains("iv_kind")
     }));
 }
 

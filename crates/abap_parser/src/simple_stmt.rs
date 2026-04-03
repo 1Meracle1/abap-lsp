@@ -191,7 +191,8 @@ ENDCLASS.";
         let parsed = crate::parse(src);
         assert!(
             parsed.errors.iter().any(|err| {
-                err.message.contains("method modifier ABSTRACT must appear before parameter declarations")
+                err.message
+                    .contains("method modifier ABSTRACT must appear before parameter declarations")
             }),
             "{:?}",
             parsed.errors

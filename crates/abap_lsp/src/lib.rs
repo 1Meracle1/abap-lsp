@@ -1024,6 +1024,169 @@ ENDCLASS.
     }
 
     #[test]
+    fn semantic_tokens_and_hover_cover_constructor_signature_parameters_and_types() {
+        use lsp_types::SemanticTokenType;
+
+        let state = ServerState::default();
+        let text = "\
+CLASS zcl_expr DEFINITION ABSTRACT.
+ENDCLASS.
+
+CLASS zcl_expr IMPLEMENTATION.
+ENDCLASS.
+
+CLASS zcl_binary_expr DEFINITION INHERITING FROM zcl_expr.
+  PUBLIC SECTION.
+    METHODS constructor
+      IMPORTING
+        io_left  TYPE REF TO zcl_expr
+        iv_op    TYPE string
+        io_right TYPE REF TO zcl_expr.
+ENDCLASS.
+";
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///hover_ctor_signature.abap").expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: text.to_string(),
+                },
+            },
+        );
+
+        let snapshot = state
+            .cache
+            .get("file:///hover_ctor_signature.abap")
+            .expect("snapshot");
+        let tokens = sem_tokens::build_semantic_tokens(snapshot.as_ref());
+        let legend = sem_tokens::semantic_tokens_legend();
+        let parameter_idx = legend
+            .token_types
+            .iter()
+            .position(|t| *t == SemanticTokenType::PARAMETER)
+            .expect("legend has parameter") as u32;
+        let type_idx = legend
+            .token_types
+            .iter()
+            .position(|t| *t == SemanticTokenType::TYPE)
+            .expect("legend has type") as u32;
+        let class_idx = legend
+            .token_types
+            .iter()
+            .position(|t| *t == SemanticTokenType::CLASS)
+            .expect("legend has class") as u32;
+
+        let io_left_line = text
+            .lines()
+            .enumerate()
+            .find(|(_, line)| line.contains("io_left"))
+            .expect("io_left line");
+        let io_left_col = io_left_line.1.find("io_left").expect("io_left col") as u32 + 1;
+        let zcl_expr_col = io_left_line.1.rfind("zcl_expr").expect("zcl_expr col") as u32 + 1;
+        assert_eq!(
+            semantic_token_type_at(&tokens, io_left_line.0 as u32, io_left_col),
+            Some(parameter_idx),
+            "expected constructor parameter name to highlight as parameter"
+        );
+        assert_eq!(
+            semantic_token_type_at(&tokens, io_left_line.0 as u32, zcl_expr_col),
+            Some(class_idx),
+            "expected constructor ref type to highlight as class"
+        );
+
+        let iv_op_line = text
+            .lines()
+            .enumerate()
+            .find(|(_, line)| line.contains("iv_op"))
+            .expect("iv_op line");
+        let iv_op_col = iv_op_line.1.find("iv_op").expect("iv_op col") as u32 + 1;
+        let string_col = iv_op_line.1.find("string").expect("string col") as u32 + 1;
+        assert_eq!(
+            semantic_token_type_at(&tokens, iv_op_line.0 as u32, iv_op_col),
+            Some(parameter_idx),
+            "expected constructor scalar parameter to highlight as parameter"
+        );
+        assert_eq!(
+            semantic_token_type_at(&tokens, iv_op_line.0 as u32, string_col),
+            Some(type_idx),
+            "expected constructor scalar type to highlight as type"
+        );
+
+        let io_left_hover = hover(
+            &state,
+            &HoverParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///hover_ctor_signature.abap").expect("uri"),
+                    },
+                    position: Position {
+                        line: io_left_line.0 as u32,
+                        character: io_left_col,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+            },
+        )
+        .expect("constructor parameter hover");
+        let HoverContents::Markup(io_left_markup) = io_left_hover.contents else {
+            panic!("expected markdown hover");
+        };
+        assert!(io_left_markup.value.contains("`io_left`"));
+        assert!(io_left_markup.value.contains("Parameter"));
+        assert!(
+            io_left_markup
+                .value
+                .contains("```abap\nTYPE REF TO zcl_expr\n```")
+        );
+
+        let zcl_expr_hover = hover(
+            &state,
+            &HoverParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///hover_ctor_signature.abap").expect("uri"),
+                    },
+                    position: Position {
+                        line: io_left_line.0 as u32,
+                        character: zcl_expr_col,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+            },
+        )
+        .expect("constructor ref type hover");
+        let HoverContents::Markup(zcl_expr_markup) = zcl_expr_hover.contents else {
+            panic!("expected markdown hover");
+        };
+        assert!(zcl_expr_markup.value.contains("`zcl_expr`"));
+        assert!(zcl_expr_markup.value.contains("Class"));
+
+        let string_hover = hover(
+            &state,
+            &HoverParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///hover_ctor_signature.abap").expect("uri"),
+                    },
+                    position: Position {
+                        line: iv_op_line.0 as u32,
+                        character: string_col,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+            },
+        )
+        .expect("constructor built-in type hover");
+        let HoverContents::Markup(string_markup) = string_hover.contents else {
+            panic!("expected markdown hover");
+        };
+        assert!(string_markup.value.contains("`string`"));
+        assert!(string_markup.value.contains("Built-in ABAP type"));
+    }
+
+    #[test]
     fn hover_returns_resolved_variable_symbol() {
         let state = ServerState::default();
         publish_open_document(
@@ -2066,7 +2229,10 @@ ENDCLASS.";
         assert!(
             items.iter().any(|item| item.label == "inherited_method"),
             "expected inherited parent method in completion items: {:?}",
-            items.iter().map(|item| item.label.clone()).collect::<Vec<_>>()
+            items
+                .iter()
+                .map(|item| item.label.clone())
+                .collect::<Vec<_>>()
         );
         assert!(
             items

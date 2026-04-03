@@ -1046,7 +1046,11 @@ impl<'a> Collector<'a> {
         None
     }
 
-    fn method_signature_header_modifier_span(&self, tokens: &[&Token], idx: usize) -> Option<usize> {
+    fn method_signature_header_modifier_span(
+        &self,
+        tokens: &[&Token],
+        idx: usize,
+    ) -> Option<usize> {
         let token = *tokens.get(idx)?;
         if self.token_matches_keyword(token, "abstract")
             || self.token_matches_keyword(token, "final")
@@ -1169,7 +1173,9 @@ impl<'a> Collector<'a> {
                 _ if depth == 0 && self.method_signature_stops_parameter_scan(token) => return idx,
                 _ if depth == 0
                     && (self.method_signature_section(token).is_some()
-                        || self.method_signature_header_modifier_span(tokens, idx).is_some()
+                        || self
+                            .method_signature_header_modifier_span(tokens, idx)
+                            .is_some()
                         || self.token_matches_keyword(token, "optional")
                         || self.token_matches_keyword(token, "default")
                         || self.token_matches_keyword(token, "preferred")
@@ -1679,6 +1685,180 @@ impl<'a> Collector<'a> {
         })
     }
 
+    fn collect_method_signature_type_refs(&mut self, tokens: &[&Token], scope: ScopeId) {
+        let Some((_, _, mut idx)) = self.class_member_statement_kind(tokens) else {
+            return;
+        };
+        while idx < tokens.len()
+            && matches!(
+                tokens[idx].kind,
+                TokenKind::Colon | TokenKind::Comma | TokenKind::Period
+            )
+        {
+            idx += 1;
+        }
+        if tokens.get(idx).map(|token| token.kind) != Some(TokenKind::Ident) {
+            return;
+        }
+        idx += 1;
+
+        let mut section = None;
+        let mut saw_parameter_section = false;
+        while idx < tokens.len() {
+            let token = tokens[idx];
+            if token.kind == TokenKind::Period {
+                break;
+            }
+            if let Some(next_idx) = self.method_signature_header_modifier_span(tokens, idx) {
+                if saw_parameter_section {
+                    break;
+                }
+                idx = next_idx;
+                continue;
+            }
+            section = match self.method_signature_section(token) {
+                Some(next_section) => {
+                    saw_parameter_section = true;
+                    idx += 1;
+                    Some(next_section)
+                }
+                None => section,
+            };
+            if self.method_signature_stops_parameter_scan(token) {
+                break;
+            }
+            if let Some(param_section) = section
+                && let Some((expr_start, expr_end, clause_ns, next_idx)) =
+                    self.method_signature_parameter_type_span(tokens, idx, param_section)
+            {
+                self.collect_type_ref_from_token_slice(
+                    tokens, expr_start, expr_end, clause_ns, scope,
+                );
+                idx = next_idx;
+                continue;
+            }
+            idx += 1;
+        }
+    }
+
+    fn method_signature_parameter_type_span(
+        &self,
+        tokens: &[&Token],
+        idx: usize,
+        section: MethodParamSection,
+    ) -> Option<(usize, usize, Namespace, usize)> {
+        let mut j = idx;
+        while matches!(
+            tokens.get(j).map(|token| token.kind),
+            Some(TokenKind::Colon | TokenKind::Comma)
+        ) {
+            j += 1;
+        }
+        let (_, _, mut j) = self.method_signature_parameter_name(tokens, j)?;
+        while matches!(
+            tokens.get(j).map(|token| token.kind),
+            Some(TokenKind::Colon | TokenKind::Comma)
+        ) {
+            j += 1;
+        }
+
+        let type_tok = tokens.get(j)?;
+        let clause_ns = if self.token_matches_keyword(type_tok, "type") {
+            Namespace::Type
+        } else if self.token_matches_keyword(type_tok, "like") {
+            Namespace::Value
+        } else if section == MethodParamSection::Returning
+            || section == MethodParamSection::Receiving
+        {
+            return None;
+        } else {
+            return None;
+        };
+        j += 1;
+        let expr_start = j;
+        let expr_end = self.skip_method_signature_type_expression(tokens, expr_start);
+        Some((expr_start, expr_end, clause_ns, expr_end))
+    }
+
+    fn collect_type_ref_from_token_slice(
+        &mut self,
+        tokens: &[&Token],
+        start: usize,
+        end: usize,
+        namespace: Namespace,
+        scope: ScopeId,
+    ) {
+        let Some((base_name, base_range, field_path)) =
+            self.type_ref_access_chain_from_tokens(&tokens[start..end])
+        else {
+            return;
+        };
+        self.add_reference(
+            scope,
+            Arc::clone(&base_name),
+            namespace,
+            ReferenceKind::TypeRef,
+            base_range,
+        );
+        if !field_path.is_empty() {
+            self.field_accesses.push(FieldAccess {
+                scope,
+                base_namespace: namespace,
+                base_name,
+                field_path,
+                in_type_position: true,
+            });
+        }
+    }
+
+    fn type_ref_access_chain_from_tokens(
+        &self,
+        tokens: &[&Token],
+    ) -> Option<(Arc<str>, TextRange, Vec<FieldAccessSegment>)> {
+        let filtered: Vec<_> = tokens
+            .iter()
+            .copied()
+            .filter(|token| token.kind != TokenKind::Comment)
+            .collect();
+        let mut idx = 0usize;
+        if filtered
+            .get(idx)
+            .is_some_and(|tok| self.token_matches_keyword(tok, "ref"))
+        {
+            let to_tok = filtered.get(idx + 1)?;
+            if !self.token_matches_keyword(to_tok, "to") {
+                return None;
+            }
+            idx += 2;
+        }
+        let base = *filtered.get(idx)?;
+        if base.kind != TokenKind::Ident {
+            return None;
+        }
+        let base_name = Arc::<str>::from(base.lexeme(self.source).to_ascii_lowercase());
+        let base_range = base.range.clone();
+        idx += 1;
+
+        let mut field_path = Vec::new();
+        while idx + 1 < filtered.len() {
+            let op = filtered[idx];
+            let field = filtered[idx + 1];
+            if !matches!(
+                op.kind,
+                TokenKind::Minus | TokenKind::Arrow | TokenKind::Tilde | TokenKind::FatArrow
+            ) || field.kind != TokenKind::Ident
+            {
+                break;
+            }
+            field_path.push(FieldAccessSegment {
+                name: Arc::<str>::from(field.lexeme(self.source).to_ascii_lowercase()),
+                range: field.range.clone(),
+            });
+            idx += 2;
+        }
+        Some((base_name, base_range, field_path))
+    }
+
     fn skip_form_header_type_expression(&self, tokens: &[&Token], mut i: usize) -> usize {
         let mut depth = 0i32;
         while i < tokens.len() {
@@ -1835,6 +2015,7 @@ impl<'a> Collector<'a> {
             .filter(|token| token.kind != TokenKind::Comment)
             .collect();
         if self.class_member_statement_kind(&significant).is_some() {
+            self.collect_method_signature_type_refs(&significant, scope);
             return;
         }
         self.collect_perform_stmt(&significant, scope);
