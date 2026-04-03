@@ -10,8 +10,9 @@ mod validate;
 pub use builtins::{BuiltinRoutineParamSpec, BuiltinRoutineSpec, builtin_routine_spec};
 pub use def_map::{
     ClassMemberData, ClassMemberKind, ClassMemberParameterData, Diagnostic, DiagnosticKind,
-    FieldAccess, FieldAccessSegment, FieldTypeRefData, FormParameterSection, FormRoutineData,
-    IncludeEdge, NamedArgumentAccess, NamedArgumentTarget, PerformCallData,
+    FieldAccess, FieldAccessSegment, FieldTypeRefData, FormParameterData,
+    FormParameterPassingKind, FormParameterSection, FormRoutineData, IncludeEdge,
+    NamedArgumentAccess, NamedArgumentTarget, PerformArgumentData, PerformCallData,
     PerformParameterSection, ReferenceData, ReferenceKind, Resolution, StructureData,
     StructureFieldData, StructureFieldInfo, StructureFieldShape, SymbolData, SymbolKind,
     UnitAnalysis, Visibility,

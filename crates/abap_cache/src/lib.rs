@@ -4,10 +4,12 @@ use std::sync::Arc;
 
 use abap_parser::{ParseResult, parse};
 use abap_symbols::{
-    ClassMemberData, ClassMemberKind, FieldTypeRefData, NamedArgumentAccess, NamedArgumentTarget,
-    Namespace, ProjectAnalysis, ProjectInput, Resolution, ScopeId, StructureFieldInfo,
-    StructureFieldShape, StructureId, SymbolData, SymbolId, SymbolKind, UnitAnalysis, Visibility,
-    analyze_project, builtin_routine_spec,
+    ClassMemberData, ClassMemberKind, FieldTypeRefData, FormParameterData,
+    FormParameterPassingKind, FormParameterSection, NamedArgumentAccess, NamedArgumentTarget,
+    Namespace, PerformArgumentData, PerformCallData, PerformParameterSection, ProjectAnalysis,
+    ProjectInput, Resolution, ScopeId, StructureFieldInfo, StructureFieldShape, StructureId,
+    SymbolData, SymbolId, SymbolKind, UnitAnalysis, Visibility, analyze_project,
+    builtin_routine_spec,
 };
 use parking_lot::RwLock;
 
@@ -86,6 +88,16 @@ struct SelectorCursorContext {
 struct NamedArgumentParameterInfo {
     name: Arc<str>,
     declared_type: Option<FieldTypeRefData>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FormParameterHoverInfo {
+    form_name: Arc<str>,
+    name: Arc<str>,
+    section: FormParameterSection,
+    passing: FormParameterPassingKind,
+    declared_type: Option<FieldTypeRefData>,
+    signature: String,
 }
 
 type ScopeIndex = Vec<HashMap<(Namespace, Arc<str>), Vec<SymbolId>>>;
@@ -207,6 +219,27 @@ impl AnalysisSnapshot {
             range: access.range.clone(),
             display_name: Arc::clone(&parameter.name),
             markdown_lines: markdown_lines_for_named_argument(access, &parameter),
+        })
+    }
+
+    pub fn hovered_perform_argument_at(&self, offset: usize) -> Option<HoveredSymbolInfo> {
+        let (perform_call, argument) = self
+            .symbols
+            .perform_calls
+            .iter()
+            .filter_map(|perform_call| {
+                perform_call
+                    .arguments
+                    .iter()
+                    .find(|argument| argument.range.start <= offset && offset < argument.range.end)
+                    .map(|argument| (perform_call, argument))
+            })
+            .min_by_key(|(_, argument)| argument.range.end.saturating_sub(argument.range.start))?;
+        let parameter = resolve_perform_argument_parameter(self, perform_call, argument)?;
+        Some(HoveredSymbolInfo {
+            range: argument.range.clone(),
+            display_name: Arc::clone(&parameter.name),
+            markdown_lines: markdown_lines_for_form_parameter(&parameter),
         })
     }
 
@@ -422,7 +455,90 @@ fn symbol_type_line(unit: &UnitAnalysis, symbol: &SymbolData) -> Option<String> 
     Some(format_hover_type_clause(&format_field_type_ref(type_ref)))
 }
 
+fn format_hover_abap(rendered: &str) -> String {
+    format!("```abap\n{rendered}\n```")
+}
+
+fn form_parameter_section_keyword(section: FormParameterSection) -> &'static str {
+    match section {
+        FormParameterSection::Tables => "TABLES",
+        FormParameterSection::Using => "USING",
+        FormParameterSection::Changing => "CHANGING",
+    }
+}
+
+fn render_form_parameter_signature(info: &FormParameterHoverInfo) -> String {
+    let rendered_name = match info.passing {
+        FormParameterPassingKind::Direct => info.name.to_string(),
+        FormParameterPassingKind::Value => format!("VALUE({})", info.name),
+        FormParameterPassingKind::Reference => format!("REFERENCE({})", info.name),
+    };
+    let mut rendered = rendered_name;
+    if let Some(type_clause) = info.declared_type.as_ref().map(format_field_type_ref) {
+        rendered.push(' ');
+        rendered.push_str(&type_clause);
+    }
+    rendered
+}
+
+fn render_form_parameter_signature_data(
+    unit: &UnitAnalysis,
+    parameter: &FormParameterData,
+) -> String {
+    let symbol = unit.symbol(parameter.symbol);
+    render_form_parameter_signature(&FormParameterHoverInfo {
+        form_name: Arc::from(""),
+        name: Arc::clone(&symbol.name),
+        section: parameter.section,
+        passing: parameter.passing,
+        declared_type: symbol.declared_type.clone(),
+        signature: String::new(),
+    })
+}
+
+fn render_form_signature(unit: &UnitAnalysis, symbol: &SymbolData) -> Option<String> {
+    let routine = unit.form_routine(symbol.id)?;
+    let mut lines = vec![format!("FORM {}", symbol.name)];
+    let mut current_section = None;
+    for parameter in &routine.parameters {
+        if current_section != Some(parameter.section) {
+            current_section = Some(parameter.section);
+            lines.push(format!(
+                "  {}",
+                form_parameter_section_keyword(parameter.section)
+            ));
+        }
+        lines.push(format!(
+            "    {}",
+            render_form_parameter_signature_data(unit, parameter)
+        ));
+    }
+    Some(lines.join("\n"))
+}
+
+fn markdown_lines_for_form_parameter(info: &FormParameterHoverInfo) -> Vec<String> {
+    vec![
+        format!("`{}`", info.name),
+        "Parameter".to_string(),
+        format_hover_abap(&info.signature),
+        format!("parameter of FORM `{}`", info.form_name),
+    ]
+}
+
+fn markdown_lines_for_form(unit: &UnitAnalysis, symbol: &SymbolData) -> Vec<String> {
+    if let Some(signature) = render_form_signature(unit, symbol) {
+        return vec![format_hover_abap(&signature)];
+    }
+    vec![format!("`{}`", symbol.name), "Form".to_string()]
+}
+
 fn markdown_lines_for_declared_symbol(unit: &UnitAnalysis, symbol: &SymbolData) -> Vec<String> {
+    if let Some(info) = form_parameter_hover_info(unit, symbol) {
+        return markdown_lines_for_form_parameter(&info);
+    }
+    if symbol.kind == SymbolKind::Form {
+        return markdown_lines_for_form(unit, symbol);
+    }
     let mut lines = vec![
         format!("`{}`", symbol.name),
         symbol_kind_label(symbol.kind).to_string(),
@@ -474,6 +590,12 @@ fn markdown_lines_for_resolution(
         Resolution::Symbol(handle) => {
             let unit = &snapshot.project.units[handle.unit.as_usize()];
             let symbol = unit.symbol(handle.symbol);
+            if let Some(info) = form_parameter_hover_info(unit, symbol) {
+                return markdown_lines_for_form_parameter(&info);
+            }
+            if symbol.kind == SymbolKind::Form {
+                return markdown_lines_for_form(unit, symbol);
+            }
             let mut lines = vec![
                 format!("`{at_name}`"),
                 symbol_kind_label(symbol.kind).to_string(),
@@ -553,6 +675,76 @@ fn resolve_field_access_base_symbol<'a>(
         &access.base_name,
         access.in_type_position,
     )
+}
+
+fn perform_section_to_form_section(section: PerformParameterSection) -> FormParameterSection {
+    match section {
+        PerformParameterSection::Tables => FormParameterSection::Tables,
+        PerformParameterSection::Using => FormParameterSection::Using,
+        PerformParameterSection::Changing => FormParameterSection::Changing,
+    }
+}
+
+fn form_parameter_hover_info(unit: &UnitAnalysis, symbol: &SymbolData) -> Option<FormParameterHoverInfo> {
+    if symbol.kind != SymbolKind::Parameter {
+        return None;
+    }
+    let form_symbol = unit.scope(symbol.scope).owner?;
+    let form_routine = unit.form_routine(form_symbol)?;
+    let parameter = form_routine
+        .parameters
+        .iter()
+        .find(|parameter| parameter.symbol == symbol.id)?;
+    let signature = render_form_signature(unit, unit.symbol(form_symbol))?;
+    Some(FormParameterHoverInfo {
+        form_name: Arc::clone(&unit.symbol(form_symbol).name),
+        name: Arc::clone(&symbol.name),
+        section: parameter.section,
+        passing: parameter.passing,
+        declared_type: symbol.declared_type.clone(),
+        signature,
+    })
+}
+
+fn form_parameter_hover_info_from_metadata(
+    unit: &UnitAnalysis,
+    form_symbol: SymbolId,
+    parameter: &FormParameterData,
+) -> Option<FormParameterHoverInfo> {
+    let symbol = unit.symbol(parameter.symbol);
+    let signature = render_form_signature(unit, unit.symbol(form_symbol))?;
+    Some(FormParameterHoverInfo {
+        form_name: Arc::clone(&unit.symbol(form_symbol).name),
+        name: Arc::clone(&symbol.name),
+        section: parameter.section,
+        passing: parameter.passing,
+        declared_type: symbol.declared_type.clone(),
+        signature,
+    })
+}
+
+fn resolve_perform_argument_parameter(
+    snapshot: &AnalysisSnapshot,
+    perform_call: &PerformCallData,
+    argument: &PerformArgumentData,
+) -> Option<FormParameterHoverInfo> {
+    let (unit, routine_symbol_id) = resolve_symbol_from_context(
+        snapshot,
+        perform_call.scope,
+        Namespace::Routine,
+        &perform_call.routine_name,
+        false,
+    )?;
+    if unit.symbol(routine_symbol_id).kind != SymbolKind::Form {
+        return None;
+    }
+    let parameter = unit
+        .form_routine(routine_symbol_id)?
+        .parameters
+        .iter()
+        .filter(|parameter| parameter.section == perform_section_to_form_section(argument.section))
+        .nth(argument.ordinal_in_section)?;
+    form_parameter_hover_info_from_metadata(unit, routine_symbol_id, parameter)
 }
 
 fn resolve_named_argument_parameter<'a>(

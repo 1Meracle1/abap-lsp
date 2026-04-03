@@ -3,7 +3,8 @@ use std::sync::Arc;
 
 use crate::builtins::builtin_routine_spec;
 use crate::def_map::{
-    Diagnostic, DiagnosticKind, FormParameterSection, PerformParameterSection, Resolution,
+    Diagnostic, DiagnosticKind, FormParameterData, FormParameterSection, PerformParameterSection,
+    Resolution,
 };
 use crate::ids::{ScopeId, SymbolId};
 use crate::project::ProjectAnalysis;
@@ -130,11 +131,10 @@ fn class_member_visible_to(
     }
 }
 
-fn count_form_section(parameters: &[FormParameterSection], section: FormParameterSection) -> usize {
+fn count_form_section(parameters: &[FormParameterData], section: FormParameterSection) -> usize {
     parameters
         .iter()
-        .copied()
-        .filter(|current| *current == section)
+        .filter(|current| current.section == section)
         .count()
 }
 
@@ -166,7 +166,7 @@ fn format_perform_signature(using_count: usize, changing_count: usize) -> String
 
 pub fn validate_project(project: &mut ProjectAnalysis) {
     let global_names = collect_global_names(project);
-    let form_signatures: HashMap<(u32, u32), Vec<FormParameterSection>> = project
+    let form_signatures: HashMap<(u32, u32), Vec<FormParameterData>> = project
         .units
         .iter()
         .flat_map(|unit| {

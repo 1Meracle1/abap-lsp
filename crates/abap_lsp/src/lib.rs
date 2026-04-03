@@ -233,6 +233,9 @@ pub fn hover(state: &ServerState, params: &HoverParams) -> Option<Hover> {
     if let Some(component) = snapshot.hovered_component_at(offset) {
         return structured_field_hover(&snapshot, component);
     }
+    if let Some(argument) = snapshot.hovered_perform_argument_at(offset) {
+        return resolved_symbol_hover(&snapshot, argument);
+    }
     if let Some(named_argument) = snapshot.hovered_named_argument_at(offset) {
         return resolved_symbol_hover(&snapshot, named_argument);
     }
@@ -1422,9 +1425,187 @@ START-OF-SELECTION.
         assert!(markup.value.contains("`cv`"));
         assert!(markup.value.contains("Parameter"));
         assert!(
-            markup.value.contains("```abap\nTYPE string\n```"),
+            markup
+                .value
+                .contains("```abap\nFORM f\n  CHANGING\n    cv TYPE string\n```"),
             "{}",
             markup.value
+        );
+        assert!(markup.value.contains("parameter of FORM `f`"));
+    }
+
+    #[test]
+    fn hover_returns_form_parameter_metadata_at_perform_statement_and_declaration() {
+        let state = ServerState::default();
+        let text = "\
+FORM f USING VALUE(iv_input) TYPE i CHANGING cv_text TYPE string.
+  cv_text = |{ iv_input }|.
+ENDFORM.
+
+START-OF-SELECTION.
+  DATA lv_input TYPE i VALUE 1.
+  DATA lv_text TYPE string.
+  PERFORM f USING lv_input CHANGING lv_text.
+";
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///perform_hover.abap").expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: text.to_string(),
+                },
+            },
+        );
+
+        let decl_hover = hover(
+            &state,
+            &HoverParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///perform_hover.abap").expect("uri"),
+                    },
+                    position: Position {
+                        line: 0,
+                        character: 20,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+            },
+        )
+        .expect("declaration hover");
+        let HoverContents::Markup(decl_markup) = decl_hover.contents else {
+            panic!("expected markdown hover");
+        };
+        assert!(
+            decl_markup.value.contains(
+                "```abap\nFORM f\n  USING\n    VALUE(iv_input) TYPE i\n  CHANGING\n    cv_text TYPE string\n```"
+            ),
+            "{}",
+            decl_markup.value
+        );
+        assert!(decl_markup.value.contains("parameter of FORM `f`"));
+
+        let call_hover = hover(
+            &state,
+            &HoverParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///perform_hover.abap").expect("uri"),
+                    },
+                    position: Position {
+                        line: 7,
+                        character: 18,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+            },
+        )
+        .expect("perform hover");
+        let HoverContents::Markup(call_markup) = call_hover.contents else {
+            panic!("expected markdown hover");
+        };
+        assert!(call_markup.value.contains("`iv_input`"), "{}", call_markup.value);
+        assert!(
+            call_markup.value.contains(
+                "```abap\nFORM f\n  USING\n    VALUE(iv_input) TYPE i\n  CHANGING\n    cv_text TYPE string\n```"
+            ),
+            "{}",
+            call_markup.value
+        );
+        assert!(call_markup.value.contains("parameter of FORM `f`"));
+    }
+
+    #[test]
+    fn hover_returns_form_signature_when_hovering_form_name() {
+        let state = ServerState::default();
+        let text = "\
+FORM f USING VALUE(iv_input) TYPE i CHANGING cv_text TYPE string.
+  cv_text = |{ iv_input }|.
+ENDFORM.
+
+START-OF-SELECTION.
+  DATA lv_input TYPE i VALUE 1.
+  DATA lv_text TYPE string.
+  PERFORM f USING lv_input CHANGING lv_text.
+";
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///form_name_hover.abap").expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: text.to_string(),
+                },
+            },
+        );
+
+        let decl_hover = hover(
+            &state,
+            &HoverParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///form_name_hover.abap").expect("uri"),
+                    },
+                    position: Position {
+                        line: 0,
+                        character: 5,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+            },
+        )
+        .expect("form declaration hover");
+        let HoverContents::Markup(decl_markup) = decl_hover.contents else {
+            panic!("expected markdown hover");
+        };
+        assert!(
+            decl_markup
+                .value
+                .contains(
+                    "```abap\nFORM f\n  USING\n    VALUE(iv_input) TYPE i\n  CHANGING\n    cv_text TYPE string\n```"
+                ),
+            "{}",
+            decl_markup.value
+        );
+        assert_eq!(
+            decl_markup.value,
+            "```abap\nFORM f\n  USING\n    VALUE(iv_input) TYPE i\n  CHANGING\n    cv_text TYPE string\n```"
+        );
+
+        let call_hover = hover(
+            &state,
+            &HoverParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///form_name_hover.abap").expect("uri"),
+                    },
+                    position: Position {
+                        line: 7,
+                        character: 10,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+            },
+        )
+        .expect("perform form hover");
+        let HoverContents::Markup(call_markup) = call_hover.contents else {
+            panic!("expected markdown hover");
+        };
+        assert!(
+            call_markup
+                .value
+                .contains(
+                    "```abap\nFORM f\n  USING\n    VALUE(iv_input) TYPE i\n  CHANGING\n    cv_text TYPE string\n```"
+                ),
+            "{}",
+            call_markup.value
+        );
+        assert_eq!(
+            call_markup.value,
+            "```abap\nFORM f\n  USING\n    VALUE(iv_input) TYPE i\n  CHANGING\n    cv_text TYPE string\n```"
         );
     }
 

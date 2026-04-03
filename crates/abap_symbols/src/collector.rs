@@ -9,8 +9,9 @@ use abap_lexer::{TextRange, Token, TokenKind, have_space_between};
 use crate::builtins::{BUILTIN_STRUCTURES, BUILTIN_SYMBOLS, BuiltinTypeKind};
 use crate::def_map::{
     ClassMemberData, ClassMemberKind, ClassMemberParameterData, Diagnostic, DiagnosticKind,
-    FieldAccess, FieldAccessSegment, FieldTypeRefData, FormParameterSection, FormRoutineData,
-    IncludeEdge, NamedArgumentAccess, NamedArgumentTarget, PerformCallData,
+    FieldAccess, FieldAccessSegment, FieldTypeRefData, FormParameterData,
+    FormParameterPassingKind, FormParameterSection, FormRoutineData, IncludeEdge,
+    NamedArgumentAccess, NamedArgumentTarget, PerformArgumentData, PerformCallData,
     PerformParameterSection, ReferenceData, ReferenceKind, StructureData, StructureFieldData,
     SymbolData, SymbolKind, UnitAnalysis, Visibility,
 };
@@ -41,6 +42,22 @@ enum FormHeaderParamSection {
     Tables,
     Using,
     Changing,
+}
+
+impl FormHeaderParamSection {
+    fn as_form_parameter_section(self) -> FormParameterSection {
+        match self {
+            Self::Tables => FormParameterSection::Tables,
+            Self::Using => FormParameterSection::Using,
+            Self::Changing => FormParameterSection::Changing,
+        }
+    }
+}
+
+struct FormConsumedParameter {
+    next_idx: usize,
+    symbol: SymbolId,
+    passing: FormParameterPassingKind,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1261,7 +1278,7 @@ impl<'a> Collector<'a> {
         &mut self,
         form_node: NodeId,
         form_scope: ScopeId,
-    ) -> Vec<FormParameterSection> {
+    ) -> Vec<FormParameterData> {
         let tokens = self.form_header_token_refs(form_node);
         if tokens.len() < 2 {
             return Vec::new();
@@ -1324,17 +1341,16 @@ impl<'a> Collector<'a> {
                     match section {
                         Some(FormHeaderParamSection::Using)
                         | Some(FormHeaderParamSection::Changing) => {
-                            if let Some(next_i) = self
+                            if let Some(consumed) = self
                                 .try_consume_form_value_or_reference_param(&tokens, i, form_scope)
                             {
-                                parameters.push(match section.expect("parameter section") {
-                                    FormHeaderParamSection::Tables => unreachable!(),
-                                    FormHeaderParamSection::Using => FormParameterSection::Using,
-                                    FormHeaderParamSection::Changing => {
-                                        FormParameterSection::Changing
-                                    }
+                                let current_section = section.expect("parameter section");
+                                parameters.push(FormParameterData {
+                                    symbol: consumed.symbol,
+                                    section: current_section.as_form_parameter_section(),
+                                    passing: consumed.passing,
                                 });
-                                i = next_i;
+                                i = consumed.next_idx;
                                 continue;
                             }
                             if self.form_header_starts_typed_param(&tokens, i) {
@@ -1385,7 +1401,7 @@ impl<'a> Collector<'a> {
                                     }
                                     _ => None,
                                 };
-                                self.declare_symbol(
+                                let symbol = self.declare_symbol(
                                     form_scope,
                                     name,
                                     SymbolKind::Parameter,
@@ -1393,12 +1409,12 @@ impl<'a> Collector<'a> {
                                     None,
                                     declared_type,
                                 );
-                                parameters.push(match section.expect("parameter section") {
-                                    FormHeaderParamSection::Tables => unreachable!(),
-                                    FormHeaderParamSection::Using => FormParameterSection::Using,
-                                    FormHeaderParamSection::Changing => {
-                                        FormParameterSection::Changing
-                                    }
+                                parameters.push(FormParameterData {
+                                    symbol,
+                                    section: section
+                                        .expect("parameter section")
+                                        .as_form_parameter_section(),
+                                    passing: FormParameterPassingKind::Direct,
                                 });
                                 i = j;
                                 continue;
@@ -1407,7 +1423,19 @@ impl<'a> Collector<'a> {
                         }
                         Some(FormHeaderParamSection::Tables) => {
                             if t.kind == TokenKind::Ident {
-                                parameters.push(FormParameterSection::Tables);
+                                let symbol = self.declare_symbol(
+                                    form_scope,
+                                    Arc::<str>::from(lit.to_ascii_lowercase()),
+                                    SymbolKind::Parameter,
+                                    t.range.clone(),
+                                    None,
+                                    None,
+                                );
+                                parameters.push(FormParameterData {
+                                    symbol,
+                                    section: FormParameterSection::Tables,
+                                    passing: FormParameterPassingKind::Direct,
+                                });
                             }
                             i += 1;
                         }
@@ -1456,12 +1484,15 @@ impl<'a> Collector<'a> {
         tokens: &[&Token],
         i: usize,
         scope: ScopeId,
-    ) -> Option<usize> {
+    ) -> Option<FormConsumedParameter> {
         let kw = tokens.get(i)?;
-        if !self.token_matches_keyword(kw, "value") && !self.token_matches_keyword(kw, "reference")
-        {
+        let passing = if self.token_matches_keyword(kw, "value") {
+            FormParameterPassingKind::Value
+        } else if self.token_matches_keyword(kw, "reference") {
+            FormParameterPassingKind::Reference
+        } else {
             return None;
-        }
+        };
         let mut j = i + 1;
         while j < tokens.len() && tokens[j].kind == TokenKind::Comment {
             j += 1;
@@ -1515,7 +1546,7 @@ impl<'a> Collector<'a> {
         let expr_end = self.skip_form_header_type_expression(tokens, expr_start);
         let declared_type =
             self.field_type_ref_from_token_slice(tokens, expr_start, expr_end, clause_ns);
-        self.declare_symbol(
+        let symbol = self.declare_symbol(
             scope,
             name,
             SymbolKind::Parameter,
@@ -1523,7 +1554,11 @@ impl<'a> Collector<'a> {
             None,
             declared_type,
         );
-        Some(expr_end)
+        Some(FormConsumedParameter {
+            next_idx: expr_end,
+            symbol,
+            passing,
+        })
     }
 
     fn try_parse_simple_type_ref_chain_tokens(
@@ -1803,9 +1838,13 @@ impl<'a> Collector<'a> {
         );
 
         let mut parameters = Vec::new();
+        let mut arguments = Vec::new();
         let mut section: Option<PerformParameterSection> = None;
         let mut highest_section_rank = 0u8;
         let mut section_order_invalid = false;
+        let mut tables_ordinal = 0usize;
+        let mut using_ordinal = 0usize;
+        let mut changing_ordinal = 0usize;
         let mut idx = 2usize;
 
         while idx < tokens.len() {
@@ -1846,6 +1885,30 @@ impl<'a> Collector<'a> {
                 continue;
             }
             parameters.push(current_section);
+            let ordinal_in_section = match current_section {
+                PerformParameterSection::Tables => {
+                    let current = tables_ordinal;
+                    tables_ordinal += 1;
+                    current
+                }
+                PerformParameterSection::Using => {
+                    let current = using_ordinal;
+                    using_ordinal += 1;
+                    current
+                }
+                PerformParameterSection::Changing => {
+                    let current = changing_ordinal;
+                    changing_ordinal += 1;
+                    current
+                }
+            };
+            if let Some(last_token) = tokens.get(next_idx.saturating_sub(1)) {
+                arguments.push(PerformArgumentData {
+                    range: tokens[idx].range.start..last_token.range.end,
+                    section: current_section,
+                    ordinal_in_section,
+                });
+            }
             idx = next_idx;
         }
 
@@ -1859,6 +1922,7 @@ impl<'a> Collector<'a> {
             routine_name,
             routine_range: routine.range.clone(),
             parameters,
+            arguments,
             section_order_invalid,
         });
     }

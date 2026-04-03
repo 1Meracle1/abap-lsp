@@ -227,10 +227,24 @@ pub enum FormParameterSection {
     Changing,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FormParameterPassingKind {
+    Direct,
+    Value,
+    Reference,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FormParameterData {
+    pub symbol: SymbolId,
+    pub section: FormParameterSection,
+    pub passing: FormParameterPassingKind,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FormRoutineData {
     pub symbol: SymbolId,
-    pub parameters: Vec<FormParameterSection>,
+    pub parameters: Vec<FormParameterData>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -276,12 +290,20 @@ pub enum PerformParameterSection {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PerformArgumentData {
+    pub range: TextRange,
+    pub section: PerformParameterSection,
+    pub ordinal_in_section: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PerformCallData {
     pub scope: ScopeId,
     pub range: TextRange,
     pub routine_name: Arc<str>,
     pub routine_range: TextRange,
     pub parameters: Vec<PerformParameterSection>,
+    pub arguments: Vec<PerformArgumentData>,
     pub section_order_invalid: bool,
 }
 
@@ -401,6 +423,13 @@ impl UnitAnalysis {
         self.form_routines
             .iter()
             .find(|routine| routine.symbol == symbol)
+    }
+
+    pub fn form_parameter(&self, symbol: SymbolId) -> Option<&FormParameterData> {
+        self.form_routines
+            .iter()
+            .flat_map(|routine| routine.parameters.iter())
+            .find(|parameter| parameter.symbol == symbol)
     }
 
     pub fn routine_parameters(
