@@ -685,7 +685,10 @@ fn perform_section_to_form_section(section: PerformParameterSection) -> FormPara
     }
 }
 
-fn form_parameter_hover_info(unit: &UnitAnalysis, symbol: &SymbolData) -> Option<FormParameterHoverInfo> {
+fn form_parameter_hover_info(
+    unit: &UnitAnalysis,
+    symbol: &SymbolData,
+) -> Option<FormParameterHoverInfo> {
     if symbol.kind != SymbolKind::Parameter {
         return None;
     }

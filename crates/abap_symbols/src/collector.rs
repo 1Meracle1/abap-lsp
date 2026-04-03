@@ -9,11 +9,10 @@ use abap_lexer::{TextRange, Token, TokenKind, have_space_between};
 use crate::builtins::{BUILTIN_STRUCTURES, BUILTIN_SYMBOLS, BuiltinTypeKind};
 use crate::def_map::{
     ClassMemberData, ClassMemberKind, ClassMemberParameterData, Diagnostic, DiagnosticKind,
-    FieldAccess, FieldAccessSegment, FieldTypeRefData, FormParameterData,
-    FormParameterPassingKind, FormParameterSection, FormRoutineData, IncludeEdge,
-    NamedArgumentAccess, NamedArgumentTarget, PerformArgumentData, PerformCallData,
-    PerformParameterSection, ReferenceData, ReferenceKind, StructureData, StructureFieldData,
-    SymbolData, SymbolKind, UnitAnalysis, Visibility,
+    FieldAccess, FieldAccessSegment, FieldTypeRefData, FormParameterData, FormParameterPassingKind,
+    FormParameterSection, FormRoutineData, IncludeEdge, NamedArgumentAccess, NamedArgumentTarget,
+    PerformArgumentData, PerformCallData, PerformParameterSection, ReferenceData, ReferenceKind,
+    StructureData, StructureFieldData, SymbolData, SymbolKind, UnitAnalysis, Visibility,
 };
 use crate::ids::{ReferenceId, ScopeId, StructureId, SymbolId, UnitId};
 use crate::scope::{Namespace, ScopeData, ScopeKind};

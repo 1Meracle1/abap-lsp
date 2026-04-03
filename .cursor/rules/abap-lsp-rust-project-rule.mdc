@@ -1,4 +1,5 @@
 ---
+description: Rust workspace layout, dependency boundaries, and SAP lookup guidance
 alwaysApply: true
 ---
 
@@ -8,6 +9,7 @@ The repository root is now a Rust workspace. The previous Odin implementation ha
 
 ### Workspace layout
 
+- `crates/abap_adt_cli` -> blocking CLI for SAP ADT repository search, source fetches, DDIC lookups, and child-object discovery.
 - `crates/abap_jsonrpc` -> blocking JSON-RPC framing only.
 - `crates/abap_lexer` -> tokenization, text ranges, low-level source utilities.
 - `crates/abap_ast` -> syntax tree definitions and node helpers.
@@ -44,6 +46,7 @@ Lower layers must not depend on higher layers:
 - Build: `.\build.bat`
 - Release build: `.\build.bat release`
 - Test: `.\test.bat`
+- ADT CLI help: `cargo run -p abap_adt_cli -- --help`
 - Build a package: `cargo build -p abap_lsp_server`
 - Test a package: `cargo test -p abap_parser`
 
@@ -57,3 +60,9 @@ Lower layers must not depend on higher layers:
 ### Development standards
 
 - Always ask before adding any new dependency or modifying versions of the existing dependencies.
+
+### Remote SAP lookup
+
+- When you need live SAP repository or DDIC data, prefer `abap-adt` over guessing or relying only on local files.
+- Use it to look up ABAP source, classes, interfaces, reports, includes, function groups, function modules, tables, views, structures, table types, and data elements.
+- Primary documentation: `docs/abap-adt-cli.md`

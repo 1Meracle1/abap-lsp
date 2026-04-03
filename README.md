@@ -6,6 +6,7 @@ The previous Odin implementation has been archived under `legacy/` so it remains
 
 ## Repository Layout
 
+- `crates/abap_adt_cli`: ADT query CLI for remote SAP search, source fetches, DDIC lookups, and child-object discovery.
 - `crates/abap_jsonrpc`: blocking JSON-RPC framing utilities.
 - `crates/abap_lexer`: tokenization and source ranges.
 - `crates/abap_ast`: syntax tree model and shared node types.
@@ -14,7 +15,7 @@ The previous Odin implementation has been archived under `legacy/` so it remains
 - `crates/abap_cache`: immutable snapshot publication and shared workspace state.
 - `crates/abap_lsp`: LSP protocol types, custom notifications, and handler scaffolding.
 - `crates/abap_lsp_server`: blocking server binary entry point.
-- `docs/`: migration, architecture, parity, and benchmarking guidance.
+- `docs/`: migration, architecture, parity, benchmarking, and tool usage guidance.
 - `legacy/`: archived Odin source tree, tests, build scripts, docs, and IDE config.
 - `editors/vscode/`: editor client integration and ADT-mediated remote dependency fetches.
 
@@ -46,11 +47,23 @@ Build a single package:
 
 ## Migration Docs
 
+- `docs/abap-adt-cli.md`
 - `docs/migration/repo-layout.md`
 - `docs/migration/frontend-porting.md`
 - `docs/architecture/concurrency.md`
 - `docs/architecture/remote-dependencies.md`
 - `docs/migration/parity-matrix.md`
+
+## Remote SAP Lookup
+
+Use `abap-adt` when you need live SAP information that is not available in the local workspace yet.
+
+- Search repository objects on the remote SAP system.
+- Fetch ABAP source for reports, includes, classes, interfaces, function groups, and function modules.
+- Fetch DDIC metadata for data elements, table types, structures, views, and tables.
+- Inspect child objects for packages, reports, and function groups.
+
+See `docs/abap-adt-cli.md` for command shapes, environment variables, `.env` loading, and examples.
 
 ## Legacy Odin Implementation
 
@@ -64,6 +77,7 @@ The Odin codebase has been moved into `legacy/`. Use the archived README and scr
 
 The Rust workspace currently provides:
 
+- a blocking ADT query CLI for remote SAP discovery and source lookups,
 - the crate layout and dependency boundaries for the rewrite,
 - a minimal blocking JSON-RPC transport,
 - a smoke-test LSP server binary over stdio,

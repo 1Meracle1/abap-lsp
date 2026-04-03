@@ -1506,7 +1506,11 @@ START-OF-SELECTION.
         let HoverContents::Markup(call_markup) = call_hover.contents else {
             panic!("expected markdown hover");
         };
-        assert!(call_markup.value.contains("`iv_input`"), "{}", call_markup.value);
+        assert!(
+            call_markup.value.contains("`iv_input`"),
+            "{}",
+            call_markup.value
+        );
         assert!(
             call_markup.value.contains(
                 "```abap\nFORM f\n  USING\n    VALUE(iv_input) TYPE i\n  CHANGING\n    cv_text TYPE string\n```"
