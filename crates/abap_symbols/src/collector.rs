@@ -364,9 +364,7 @@ impl<'a> Collector<'a> {
             SyntaxKind::ModuleDecl => {
                 self.walk_block_decl(node, scope, SymbolKind::Module, ScopeKind::Module)
             }
-            SyntaxKind::EventBlock => {
-                self.walk_block_decl(node, scope, SymbolKind::Event, ScopeKind::EventBlock)
-            }
+            SyntaxKind::EventBlock => self.walk_event_block(node, scope),
             SyntaxKind::ClassDecl => self.walk_class_decl(node, scope),
             SyntaxKind::InterfaceDecl => {
                 self.walk_block_decl(node, scope, SymbolKind::Interface, ScopeKind::Interface)
@@ -564,6 +562,23 @@ impl<'a> Collector<'a> {
         if scope_kind == ScopeKind::Form {
             self.declare_form_parameters_from_header(node, child_scope);
         }
+        for child in self.file.children(node) {
+            self.walk_node(child, child_scope);
+        }
+    }
+
+    fn walk_event_block(&mut self, node: NodeId, scope: ScopeId) {
+        let Some((name, range)) = self.event_block_header_name(node) else {
+            self.walk_children(node, scope);
+            return;
+        };
+        let owner = self.declare_plain_symbol(scope, name, SymbolKind::Event, range);
+        let child_scope = self.push_scope(
+            ScopeKind::EventBlock,
+            self.file.range(node),
+            Some(scope),
+            Some(owner),
+        );
         for child in self.file.children(node) {
             self.walk_node(child, child_scope);
         }
@@ -1582,6 +1597,62 @@ impl<'a> Collector<'a> {
             }
         }
         None
+    }
+
+    fn event_block_header_name(&self, node: NodeId) -> Option<(Arc<str>, TextRange)> {
+        let tokens: Vec<_> = self
+            .file
+            .children(node)
+            .filter_map(|child| self.token_for_node(child))
+            .take_while(|token| token.kind != TokenKind::Period)
+            .filter(|token| token.kind != TokenKind::Comment)
+            .collect();
+        let (first, last) = match tokens.as_slice() {
+            [token] if self.token_matches_keyword(token, "initialization") => (*token, *token),
+            [start, minus_1, of, minus_2, end]
+                if self.token_matches_keyword(start, "start")
+                    && minus_1.kind == TokenKind::Minus
+                    && self.token_matches_keyword(of, "of")
+                    && minus_2.kind == TokenKind::Minus
+                    && self.token_matches_keyword(end, "selection") =>
+            {
+                (*start, *end)
+            }
+            [start, minus_1, of, minus_2, end]
+                if self.token_matches_keyword(start, "end")
+                    && minus_1.kind == TokenKind::Minus
+                    && self.token_matches_keyword(of, "of")
+                    && minus_2.kind == TokenKind::Minus
+                    && self.token_matches_keyword(end, "selection") =>
+            {
+                (*start, *end)
+            }
+            [start, minus_1, of, minus_2, end]
+                if self.token_matches_keyword(start, "top")
+                    && minus_1.kind == TokenKind::Minus
+                    && self.token_matches_keyword(of, "of")
+                    && minus_2.kind == TokenKind::Minus
+                    && self.token_matches_keyword(end, "page") =>
+            {
+                (*start, *end)
+            }
+            [start, minus_1, of, minus_2, end]
+                if self.token_matches_keyword(start, "end")
+                    && minus_1.kind == TokenKind::Minus
+                    && self.token_matches_keyword(of, "of")
+                    && minus_2.kind == TokenKind::Minus
+                    && self.token_matches_keyword(end, "page") =>
+            {
+                (*start, *end)
+            }
+            _ => return None,
+        };
+        Some((
+            Arc::<str>::from(
+                self.source[first.range.start..last.range.end].to_ascii_lowercase(),
+            ),
+            first.range.start..last.range.end,
+        ))
     }
 
     fn constructor_type_ref(&self, node: NodeId) -> Option<(Arc<str>, TextRange)> {

@@ -602,6 +602,53 @@ some_class=>exec( )."
     }
 
     #[test]
+    fn semantic_tokens_mark_full_event_block_header() {
+        use lsp_types::SemanticTokenType;
+
+        let state = ServerState::default();
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///sem_event.abap").expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: "START-OF-SELECTION.\n".to_string(),
+                },
+            },
+        );
+
+        let snapshot = state
+            .cache
+            .get("file:///sem_event.abap")
+            .expect("snapshot");
+        let tokens = sem_tokens::build_semantic_tokens(snapshot.as_ref());
+        let legend = sem_tokens::semantic_tokens_legend();
+        let event_idx = legend
+            .token_types
+            .iter()
+            .position(|t| *t == SemanticTokenType::EVENT)
+            .expect("legend has event") as u32;
+        let decl_mod = 1u32
+            << legend
+                .token_modifiers
+                .iter()
+                .position(|m| m.as_str() == "declaration")
+                .expect("declaration modifier");
+
+        assert!(
+            tokens.data.iter().any(|token| {
+                token.delta_line == 0
+                    && token.delta_start == 0
+                    && token.length == "START-OF-SELECTION".len() as u32
+                    && token.token_type == event_idx
+                    && (token.token_modifiers_bitset & decl_mod) != 0
+            }),
+            "expected a declaration token spanning the full event header"
+        );
+    }
+
+    #[test]
     fn custom_notification_names_are_stable() {
         assert_eq!(
             RESOLVE_REMOTE_DEPENDENCIES,
@@ -758,6 +805,51 @@ some_class=>exec( iv_value = 1 )."
         assert!(markup.value.contains("`lv`"));
         assert!(markup.value.contains("Variable"));
         assert!(markup.value.contains("```abap\nTYPE i\n```"), "{}", markup.value);
+    }
+
+    #[test]
+    fn hover_on_event_block_of_returns_full_event_header() {
+        let state = ServerState::default();
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///hover_event.abap").expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: "START-OF-SELECTION.\n".to_string(),
+                },
+            },
+        );
+
+        let hover = hover(
+            &state,
+            &HoverParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///hover_event.abap").expect("uri"),
+                    },
+                    position: Position {
+                        line: 0,
+                        character: 7,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+            },
+        )
+        .expect("hover");
+
+        let HoverContents::Markup(markup) = hover.contents else {
+            panic!("expected markdown hover");
+        };
+        assert!(markup.value.contains("`start-of-selection`"));
+        assert!(markup.value.contains("Event"));
+
+        let range = hover.range.expect("hover range");
+        assert_eq!(range.start.line, 0);
+        assert_eq!(range.start.character, 0);
+        assert_eq!(range.end.line, 0);
+        assert_eq!(range.end.character, "START-OF-SELECTION".len() as u32);
     }
 
     #[test]

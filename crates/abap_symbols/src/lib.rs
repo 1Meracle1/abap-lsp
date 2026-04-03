@@ -38,4 +38,19 @@ mod tests {
                 && reference.resolution.is_some()
         }));
     }
+
+    #[test]
+    fn event_block_uses_full_hyphenated_keyword_as_symbol_name() {
+        let src = "START-OF-SELECTION.\n  DATA lv TYPE i.\n";
+        let parsed = parse(src);
+        let unit = analyze_unit("file:///event.abap", src, &parsed);
+
+        let event = unit
+            .symbols
+            .iter()
+            .find(|symbol| symbol.kind == SymbolKind::Event)
+            .expect("event symbol");
+        assert_eq!(event.name.as_ref(), "start-of-selection");
+        assert_eq!(&src[event.decl_range.clone()], "START-OF-SELECTION");
+    }
 }
