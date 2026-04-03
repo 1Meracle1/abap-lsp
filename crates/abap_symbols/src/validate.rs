@@ -296,16 +296,48 @@ fn validate_super_constructor_calls(
 }
 
 fn class_member_visible_to(
-    unit: &crate::UnitAnalysis,
-    access: &crate::FieldAccess,
+    caller_unit: &crate::UnitAnalysis,
+    caller_scope: ScopeId,
+    target_unit: &crate::UnitAnalysis,
     member: &crate::ClassMemberData,
 ) -> bool {
     match member.visibility {
         Visibility::Public => true,
         Visibility::Protected | Visibility::Private => {
-            enclosing_class_owner(unit, access.scope) == Some(member.class_symbol)
+            caller_unit.unit_id == target_unit.unit_id
+                && enclosing_class_owner(caller_unit, caller_scope) == Some(member.class_symbol)
         }
     }
+}
+
+fn resolve_class_selector_base<'a>(
+    project: &'a ProjectAnalysis,
+    unit: &crate::UnitAnalysis,
+    scope_index: &[HashMap<(Namespace, Arc<str>), Vec<SymbolId>>],
+    access: &crate::FieldAccess,
+    base_symbol_id: SymbolId,
+) -> Option<(&'a crate::UnitAnalysis, SymbolId, bool)> {
+    let base_symbol = unit.symbol(base_symbol_id);
+    if access.base_namespace == Namespace::Type && base_symbol.kind == SymbolKind::Class {
+        let class_unit = &project.units[unit.unit_id.as_usize()];
+        return Some((class_unit, base_symbol_id, true));
+    }
+    if access.base_namespace != Namespace::Value {
+        return None;
+    }
+    let declared_type = base_symbol.declared_type.as_ref()?;
+    if !declared_type.is_ref || !declared_type.field_path.is_empty() {
+        return None;
+    }
+    let class_handle = resolve_class_symbol(
+        project,
+        unit,
+        scope_index,
+        access.scope,
+        &declared_type.base_name,
+    )?;
+    let class_unit = &project.units[class_handle.unit.as_usize()];
+    Some((class_unit, class_handle.symbol, false))
 }
 
 fn count_form_section(parameters: &[FormParameterData], section: FormParameterSection) -> usize {
@@ -362,8 +394,20 @@ pub fn validate_project(project: &mut ProjectAnalysis) {
         let scope_index = build_scope_index(&project.units[unit_idx]);
         let constructor_diagnostics =
             validate_super_constructor_calls(project, &project.units[unit_idx], &scope_index);
+        let class_selector_bases: Vec<_> = project.units[unit_idx]
+            .field_accesses
+            .iter()
+            .map(|access| {
+                let unit = &project.units[unit_idx];
+                let base_symbol_id = resolve_field_access_base_symbol(unit, &scope_index, access)?;
+                resolve_class_selector_base(project, unit, &scope_index, access, base_symbol_id)
+                    .map(|(class_unit, class_symbol_id, requires_static)| {
+                        (class_unit.unit_id.as_usize(), class_symbol_id, requires_static)
+                    })
+            })
+            .collect();
 
-        let unit = &mut project.units[unit_idx];
+        let unit = &project.units[unit_idx];
         let retained: Vec<_> = unit
             .diagnostics
             .iter()
@@ -378,7 +422,7 @@ pub fn validate_project(project: &mut ProjectAnalysis) {
             })
             .cloned()
             .collect();
-        unit.diagnostics = retained;
+        let mut unit_diagnostics = retained;
 
         for reference in &unit.references {
             if reference.resolution.is_some() {
@@ -417,14 +461,14 @@ pub fn validate_project(project: &mut ProjectAnalysis) {
                 )
             };
 
-            unit.diagnostics.push(Diagnostic {
+            unit_diagnostics.push(Diagnostic {
                 kind,
                 range: reference.range.clone(),
                 message,
             });
         }
 
-        for access in &unit.field_accesses {
+        for (access, class_selector_base) in unit.field_accesses.iter().zip(&class_selector_bases) {
             let Some(base_symbol_id) = resolve_field_access_base_symbol(unit, &scope_index, access)
             else {
                 continue;
@@ -433,7 +477,7 @@ pub fn validate_project(project: &mut ProjectAnalysis) {
             if access.base_namespace == Namespace::Type && base_symbol.kind == SymbolKind::Class {
                 for (idx, step) in access.field_path.iter().enumerate() {
                     let Some(member) = unit.class_member(base_symbol_id, step.name.as_ref()) else {
-                        unit.diagnostics.push(Diagnostic {
+                        unit_diagnostics.push(Diagnostic {
                             kind: DiagnosticKind::UnknownField,
                             range: step.range.clone(),
                             message: format!(
@@ -445,9 +489,9 @@ pub fn validate_project(project: &mut ProjectAnalysis) {
                     };
                     if !member.is_static
                         || member.kind != ClassMemberKind::Method
-                        || !class_member_visible_to(unit, access, member)
+                        || !class_member_visible_to(unit, access.scope, unit, member)
                     {
-                        unit.diagnostics.push(Diagnostic {
+                        unit_diagnostics.push(Diagnostic {
                             kind: DiagnosticKind::UnknownField,
                             range: step.range.clone(),
                             message: format!(
@@ -459,12 +503,62 @@ pub fn validate_project(project: &mut ProjectAnalysis) {
                     }
                     if idx + 1 != access.field_path.len() {
                         let next_step = &access.field_path[idx + 1];
-                        unit.diagnostics.push(Diagnostic {
+                        unit_diagnostics.push(Diagnostic {
                             kind: DiagnosticKind::UnknownField,
                             range: next_step.range.clone(),
                             message: format!(
                                 "unknown static member '{}' for class '{}=>{}'",
                                 next_step.name, access.base_name, member.name
+                            ),
+                        });
+                        break;
+                    }
+                }
+                continue;
+            }
+            if let Some((class_unit_idx, class_symbol_id, requires_static)) = class_selector_base {
+                let class_unit = &project.units[*class_unit_idx];
+                let class_name = Arc::clone(&class_unit.symbol(*class_symbol_id).name);
+                for (idx, step) in access.field_path.iter().enumerate() {
+                    let Some(member) = class_unit.class_member(*class_symbol_id, step.name.as_ref())
+                    else {
+                        unit_diagnostics.push(Diagnostic {
+                            kind: DiagnosticKind::UnknownField,
+                            range: step.range.clone(),
+                            message: format!(
+                                "unknown member '{}' for class '{}'",
+                                step.name, class_name
+                            ),
+                        });
+                        break;
+                    };
+                    if member.kind != ClassMemberKind::Method
+                        || (*requires_static && !member.is_static)
+                        || !class_member_visible_to(unit, access.scope, class_unit, member)
+                    {
+                        let qualifier = if *requires_static {
+                            "static member"
+                        } else {
+                            "member"
+                        };
+                        unit_diagnostics.push(Diagnostic {
+                            kind: DiagnosticKind::UnknownField,
+                            range: step.range.clone(),
+                            message: format!(
+                                "unknown {} '{}' for class '{}'",
+                                qualifier, step.name, class_name
+                            ),
+                        });
+                        break;
+                    }
+                    if idx + 1 != access.field_path.len() {
+                        let next_step = &access.field_path[idx + 1];
+                        unit_diagnostics.push(Diagnostic {
+                            kind: DiagnosticKind::UnknownField,
+                            range: next_step.range.clone(),
+                            message: format!(
+                                "unknown member '{}' for class '{}->{}'",
+                                next_step.name, class_name, member.name
                             ),
                         });
                         break;
@@ -488,7 +582,7 @@ pub fn validate_project(project: &mut ProjectAnalysis) {
                     .iter()
                     .find(|field| field.name.as_ref() == step.name.as_ref())
                 else {
-                    unit.diagnostics.push(Diagnostic {
+                    unit_diagnostics.push(Diagnostic {
                         kind: DiagnosticKind::UnknownField,
                         range: step.range.clone(),
                         message: format!(
@@ -508,7 +602,7 @@ pub fn validate_project(project: &mut ProjectAnalysis) {
 
                 let Some(next_structure_id) = field.structure else {
                     let next_step = &access.field_path[idx + 1];
-                    unit.diagnostics.push(Diagnostic {
+                    unit_diagnostics.push(Diagnostic {
                         kind: DiagnosticKind::UnknownField,
                         range: next_step.range.clone(),
                         message: format!(
@@ -528,7 +622,7 @@ pub fn validate_project(project: &mut ProjectAnalysis) {
                 continue;
             };
             if builtin_routine_spec(routine_name.as_ref()).is_some() {
-                unit.diagnostics.push(Diagnostic {
+                unit_diagnostics.push(Diagnostic {
                     kind: DiagnosticKind::InvalidBuiltinNamedArgument,
                     range: named_argument.range.clone(),
                     message: format!(
@@ -541,7 +635,7 @@ pub fn validate_project(project: &mut ProjectAnalysis) {
 
         for perform_call in &unit.perform_calls {
             if perform_call.section_order_invalid {
-                unit.diagnostics.push(Diagnostic {
+                unit_diagnostics.push(Diagnostic {
                     kind: DiagnosticKind::InvalidPerformCall,
                     range: perform_call.range.clone(),
                     message: format!(
@@ -578,7 +672,7 @@ pub fn validate_project(project: &mut ProjectAnalysis) {
                 continue;
             }
 
-            unit.diagnostics.push(Diagnostic {
+            unit_diagnostics.push(Diagnostic {
                 kind: DiagnosticKind::InvalidPerformCall,
                 range: perform_call.range.clone(),
                 message: format!(
@@ -591,9 +685,14 @@ pub fn validate_project(project: &mut ProjectAnalysis) {
             });
         }
 
-        unit.diagnostics.extend(constructor_diagnostics);
+        unit_diagnostics.extend(constructor_diagnostics);
 
-        for diagnostic in &unit.diagnostics {
+        {
+            let unit = &mut project.units[unit_idx];
+            unit.diagnostics = unit_diagnostics;
+        }
+
+        for diagnostic in &project.units[unit_idx].diagnostics {
             project.diagnostics.push(diagnostic.clone());
         }
     }

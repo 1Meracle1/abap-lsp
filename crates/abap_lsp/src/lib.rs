@@ -2241,4 +2241,172 @@ ENDCLASS.";
                 .all(|item| item.kind == Some(lsp_types::CompletionItemKind::METHOD))
         );
     }
+
+    #[test]
+    fn semantic_tokens_and_hover_cover_template_interpolation_methods() {
+        use lsp_types::SemanticTokenType;
+
+        let state = ServerState::default();
+        let text = "\
+CLASS zcl_expr DEFINITION.
+  PUBLIC SECTION.
+    METHODS to_string
+      RETURNING VALUE(rv_text) TYPE string.
+ENDCLASS.
+
+CLASS zcl_expr IMPLEMENTATION.
+  METHOD to_string.
+    rv_text = 'expr'.
+  ENDMETHOD.
+ENDCLASS.
+
+DATA lo_expr TYPE REF TO zcl_expr.
+DATA mv_op TYPE string.
+DATA rv_text TYPE string.
+rv_text = |({ lo_expr->to_string( ) } { mv_op })|.";
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///template_hover.abap").expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: text.to_string(),
+                },
+            },
+        );
+
+        let snapshot = state
+            .cache
+            .get("file:///template_hover.abap")
+            .expect("snapshot");
+        let tokens = sem_tokens::build_semantic_tokens(snapshot.as_ref());
+        let legend = sem_tokens::semantic_tokens_legend();
+        let method_idx = legend
+            .token_types
+            .iter()
+            .position(|t| *t == SemanticTokenType::METHOD)
+            .expect("legend has method") as u32;
+        let variable_idx = legend
+            .token_types
+            .iter()
+            .position(|t| *t == SemanticTokenType::VARIABLE)
+            .expect("legend has variable") as u32;
+
+        let template_line = text
+            .lines()
+            .enumerate()
+            .find(|(_, line)| line.contains("rv_text = |("))
+            .expect("template line");
+        let method_col = template_line
+            .1
+            .find("to_string")
+            .expect("to_string column") as u32;
+        let mv_op_col = template_line.1.find("mv_op").expect("mv_op column") as u32;
+
+        assert_eq!(
+            semantic_token_type_at(&tokens, template_line.0 as u32, method_col),
+            Some(method_idx),
+            "expected template method call to be highlighted as a method"
+        );
+        assert_eq!(
+            semantic_token_type_at(&tokens, template_line.0 as u32, mv_op_col),
+            Some(variable_idx),
+            "expected template variable interpolation to be highlighted as a variable"
+        );
+
+        let hover = hover(
+            &state,
+            &HoverParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///template_hover.abap").expect("uri"),
+                    },
+                    position: Position {
+                        line: template_line.0 as u32,
+                        character: method_col + 1,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+            },
+        )
+        .expect("template method hover");
+        let HoverContents::Markup(markup) = hover.contents else {
+            panic!("expected markdown hover");
+        };
+        assert!(markup.value.contains("METHODS to_string"));
+        assert!(markup.value.contains("instance method of `lo_expr`"));
+    }
+
+    #[test]
+    fn completion_returns_methods_inside_assignment_template_expression() {
+        let state = ServerState::default();
+        let text = "\
+CLASS zcl_expr DEFINITION.
+  PUBLIC SECTION.
+    METHODS to_source.
+    METHODS to_string
+      RETURNING VALUE(rv_text) TYPE string.
+ENDCLASS.
+
+CLASS zcl_expr IMPLEMENTATION.
+ENDCLASS.
+
+DATA lo_expr TYPE REF TO zcl_expr.
+DATA rv_text TYPE string.
+rv_text = |value: { lo_expr->to_ }|.";
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///template_completion.abap").expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: text.to_string(),
+                },
+            },
+        );
+
+        let template_line = text
+            .lines()
+            .enumerate()
+            .find(|(_, line)| line.contains("lo_expr->to_"))
+            .expect("template completion line");
+        let character = template_line
+            .1
+            .find("to_")
+            .expect("completion column") as u32
+            + "to_".len() as u32;
+        let completion = completion(
+            &state,
+            &CompletionParams {
+                text_document_position: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///template_completion.abap").expect("uri"),
+                    },
+                    position: Position {
+                        line: template_line.0 as u32,
+                        character,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+                context: None,
+            },
+        )
+        .expect("completion");
+
+        let CompletionResponse::Array(items) = completion else {
+            panic!("expected array completion");
+        };
+        assert_eq!(
+            items.iter().map(|item| item.label.as_str()).collect::<Vec<_>>(),
+            vec!["to_source", "to_string"]
+        );
+        assert!(
+            items
+                .iter()
+                .all(|item| item.kind == Some(lsp_types::CompletionItemKind::METHOD))
+        );
+    }
 }

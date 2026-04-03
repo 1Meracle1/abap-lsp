@@ -1133,6 +1133,8 @@ fn is_selector_query_container(kind: &str) -> bool {
         "SelectorExpr"
             | "CallExpr"
             | "ConstructorExpr"
+            | "CharStringTemplate"
+            | "TemplateInterpolation"
             | "TemplateExpr"
             | "BinaryExpr"
             | "UnaryExpr"
@@ -1784,6 +1786,77 @@ WRITE |TYPE { ls_outer-inner- }|.";
         assert!(!completion.in_type_position);
         assert_eq!(completion.items.len(), 1);
         assert_eq!(completion.items[0].name.as_ref(), "alpha");
+    }
+
+    #[test]
+    fn finds_hovered_method_inside_assignment_template_expression() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS zcl_expr DEFINITION.
+  PUBLIC SECTION.
+    METHODS to_string
+      RETURNING VALUE(rv_text) TYPE string.
+ENDCLASS.
+
+CLASS zcl_expr IMPLEMENTATION.
+  METHOD to_string.
+    rv_text = 'expr'.
+  ENDMETHOD.
+ENDCLASS.
+
+DATA lo_expr TYPE REF TO zcl_expr.
+DATA rv_text TYPE string.
+rv_text = |value: { lo_expr->to_string( ) }|.";
+        let snapshot = store.publish("file:///demo.abap", 1, src);
+        let offset = src.rfind("to_string").expect("method name") + 1;
+
+        let hovered = snapshot
+            .hovered_component_at(offset)
+            .expect("hovered method info");
+        assert_eq!(hovered.base_name.as_ref(), "lo_expr");
+        assert_eq!(hovered.field_name.as_ref(), "to_string");
+        assert!(matches!(hovered.kind, HoveredComponentKind::Method));
+        assert!(
+            hovered
+                .declaration
+                .as_deref()
+                .is_some_and(|declaration| declaration.contains("METHODS to_string"))
+        );
+    }
+
+    #[test]
+    fn lists_method_completion_items_inside_assignment_template_expression() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS zcl_expr DEFINITION.
+  PUBLIC SECTION.
+    METHODS to_source.
+    METHODS to_string
+      RETURNING VALUE(rv_text) TYPE string.
+ENDCLASS.
+
+CLASS zcl_expr IMPLEMENTATION.
+ENDCLASS.
+
+DATA lo_expr TYPE REF TO zcl_expr.
+DATA rv_text TYPE string.
+rv_text = |value: { lo_expr->to_ }|.";
+        let snapshot = store.publish("file:///demo.abap", 1, src);
+        let offset = src.rfind("to_").expect("method prefix") + "to_".len();
+
+        let completion = snapshot
+            .selector_completion_at(offset)
+            .expect("selector completion");
+        assert!(!completion.in_type_position);
+        assert_eq!(
+            completion
+                .items
+                .iter()
+                .map(|item| item.name.as_ref())
+                .collect::<Vec<_>>(),
+            vec!["to_source", "to_string"]
+        );
+        assert_eq!(&src[completion.replace_range], "to_");
     }
 
     #[test]

@@ -1315,6 +1315,99 @@ START-OF-SELECTION.
 }
 
 #[test]
+fn resolves_template_interpolation_references_and_method_accesses() {
+    let src = r#"
+CLASS zcl_expr DEFINITION.
+  PUBLIC SECTION.
+    METHODS to_string
+      RETURNING VALUE(rv_text) TYPE string.
+ENDCLASS.
+
+CLASS zcl_expr IMPLEMENTATION.
+  METHOD to_string.
+    rv_text = 'expr'.
+  ENDMETHOD.
+ENDCLASS.
+
+DATA mo_left TYPE REF TO zcl_expr.
+DATA mo_right TYPE REF TO zcl_expr.
+DATA mv_op TYPE string.
+DATA rv_text TYPE string.
+
+rv_text = |({ mo_left->to_string( ) } { mv_op } { mo_right->to_string( ) })|.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///template_refs.abap", src, &parsed);
+
+    for name in ["mo_left", "mv_op", "mo_right"] {
+        assert!(
+            unit.references.iter().any(|reference| {
+                reference.kind == ReferenceKind::Identifier
+                    && reference.namespace == Namespace::Value
+                    && reference.name.as_ref() == name
+                    && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+            }),
+            "expected resolved template reference for `{name}`, refs={:?} diagnostics={:?}",
+            unit.references,
+            unit.diagnostics
+        );
+    }
+
+    let to_string_accesses = unit
+        .field_accesses
+        .iter()
+        .filter(|access| {
+            access
+                .field_path
+                .iter()
+                .any(|segment| segment.name.as_ref() == "to_string")
+        })
+        .count();
+    assert_eq!(to_string_accesses, 2, "expected two template method accesses");
+
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            matches!(
+                diag.kind,
+                DiagnosticKind::UnresolvedReference | DiagnosticKind::UnknownField
+            )
+        }),
+        "unexpected template diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn validates_unknown_template_interpolation_members() {
+    let src = r#"
+CLASS zcl_expr DEFINITION.
+  PUBLIC SECTION.
+    METHODS to_string
+      RETURNING VALUE(rv_text) TYPE string.
+ENDCLASS.
+
+CLASS zcl_expr IMPLEMENTATION.
+  METHOD to_string.
+    rv_text = 'expr'.
+  ENDMETHOD.
+ENDCLASS.
+
+DATA mo_left TYPE REF TO zcl_expr.
+DATA rv_text TYPE string.
+
+rv_text = |{ mo_left->missing( ) }|.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///template_unknown_member.abap", src, &parsed);
+
+    assert!(unit.diagnostics.iter().any(|diag| {
+        diag.kind == DiagnosticKind::UnknownField
+            && diag.message.contains("missing")
+            && diag.message.contains("zcl_expr")
+    }));
+}
+
+#[test]
 fn reports_builtin_routine_named_argument_passing_as_invalid() {
     let src = "DATA text TYPE string. DATA len TYPE i. len = strlen( val = text ).";
     let parsed = parse(src);

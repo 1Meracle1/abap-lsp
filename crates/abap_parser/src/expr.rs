@@ -8,6 +8,7 @@
 //! `IS [NOT] INITIAL|…`; [`SyntaxKind::InstanceOfPredicate`] for `IS [NOT] INSTANCE OF type` (type =
 //! concat-expr). Comment tokens (including lexer `##…` pragmas) are skipped inside the expression parser.
 
+use crate::syntax::parse_char_string_template;
 use abap_ast::SyntaxKind;
 use abap_ast::arena::{NodeId, SyntaxTreeBuilder};
 use abap_lexer::{Token, TokenKind, have_space_between};
@@ -479,6 +480,14 @@ impl<'a, 'b> Parser<'a, 'b> {
     fn parse_operand(&mut self) -> Option<NodeId> {
         let curr = self.curr()?;
         match curr.kind {
+            TokenKind::StringTemplate => {
+                let start = self.idx;
+                let (node, next) =
+                    parse_char_string_template(self.source, self.tokens, start, self.b);
+                self.idx = next;
+                self.prev = &self.tokens[next.saturating_sub(1)];
+                Some(node)
+            }
             TokenKind::Ident => {
                 let is_constructor_keyword = matches!(
                     curr.lexeme(self.source).to_ascii_uppercase().as_str(),
@@ -848,5 +857,29 @@ mod tests {
         let root = parsed.file.root();
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::DataInlineDecl), 1);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::ConstructorExpr), 1);
+    }
+
+    #[test]
+    fn assignment_rhs_template_builds_semantic_expression_nodes() {
+        let parsed = crate::parse(
+            "rv_text = |({ mo_left->to_string( ) } { mv_op } { mo_right->to_string( ) })|.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::CharStringTemplate), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::TemplateInterpolation), 3);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::SelectorExpr), 2);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::CallExpr), 2);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
+    }
+
+    #[test]
+    fn template_interpolation_can_contain_nested_template_operand() {
+        let parsed = crate::parse("rv_text = |prefix { |{ mv_inner }| } suffix|.");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::CharStringTemplate), 2);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::TemplateInterpolation), 2);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
     }
 }
