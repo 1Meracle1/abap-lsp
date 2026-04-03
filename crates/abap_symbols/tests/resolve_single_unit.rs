@@ -320,6 +320,48 @@ ENDCLASS.
 }
 
 #[test]
+fn ignores_trailing_method_modifier_in_returning_type_recovery() {
+    let src = r#"
+CLASS zcl_ast_node DEFINITION ABSTRACT.
+  PUBLIC SECTION.
+    METHODS to_string
+      RETURNING VALUE(rv_text) TYPE string
+      ABSTRACT.
+ENDCLASS.
+
+CLASS zcl_ast_node IMPLEMENTATION.
+  METHOD to_string.
+    rv_text = ``.
+  ENDMETHOD.
+ENDCLASS.
+"#;
+    let parsed = parse(src);
+    assert!(
+        parsed.errors.iter().any(|err| {
+            err.message.contains("method modifier ABSTRACT must appear before parameter declarations")
+        }),
+        "{:?}",
+        parsed.errors
+    );
+
+    let unit = analyze_unit("file:///method_modifier_recovery.abap", src, &parsed);
+    let rv_text = unit
+        .symbols
+        .iter()
+        .find(|symbol| {
+            symbol.kind == abap_symbols::SymbolKind::Parameter && symbol.name.as_ref() == "rv_text"
+        })
+        .expect("rv_text parameter");
+    let declared_type = rv_text
+        .declared_type
+        .as_ref()
+        .expect("rv_text declared type");
+    assert_eq!(declared_type.namespace, Namespace::Type);
+    assert_eq!(declared_type.base_name.as_ref(), "string");
+    assert!(declared_type.field_path.is_empty());
+}
+
+#[test]
 fn reports_unknown_static_class_member_access() {
     let src = r#"
 CLASS some_class DEFINITION.

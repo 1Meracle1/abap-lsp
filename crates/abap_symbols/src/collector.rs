@@ -977,18 +977,25 @@ impl<'a> Collector<'a> {
         idx += 1;
 
         let mut section = None;
+        let mut saw_parameter_section = false;
         while idx < significant.len() {
             let token = significant[idx];
             if token.kind == TokenKind::Period {
                 break;
             }
-            if self.token_matches_keyword(token, "redefinition") {
-                signature.is_redefinition = true;
-                idx += 1;
+            if let Some(next_idx) = self.method_signature_header_modifier_span(&significant, idx) {
+                if saw_parameter_section {
+                    break;
+                }
+                if self.token_matches_keyword(token, "redefinition") {
+                    signature.is_redefinition = true;
+                }
+                idx = next_idx;
                 continue;
             }
             section = match self.method_signature_section(token) {
                 Some(next_section) => {
+                    saw_parameter_section = true;
                     idx += 1;
                     Some(next_section)
                 }
@@ -1025,6 +1032,24 @@ impl<'a> Collector<'a> {
         }
         if self.token_matches_keyword(token, "returning") {
             return Some(MethodParamSection::Returning);
+        }
+        None
+    }
+
+    fn method_signature_header_modifier_span(&self, tokens: &[&Token], idx: usize) -> Option<usize> {
+        let token = *tokens.get(idx)?;
+        if self.token_matches_keyword(token, "abstract")
+            || self.token_matches_keyword(token, "final")
+            || self.token_matches_keyword(token, "redefinition")
+        {
+            return Some(idx + 1);
+        }
+        if self.token_matches_keyword(token, "for")
+            && tokens
+                .get(idx + 1)
+                .is_some_and(|next| self.token_matches_keyword(next, "testing"))
+        {
+            return Some(idx + 2);
         }
         None
     }
@@ -1134,6 +1159,7 @@ impl<'a> Collector<'a> {
                 _ if depth == 0 && self.method_signature_stops_parameter_scan(token) => return idx,
                 _ if depth == 0
                     && (self.method_signature_section(token).is_some()
+                        || self.method_signature_header_modifier_span(tokens, idx).is_some()
                         || self.token_matches_keyword(token, "optional")
                         || self.token_matches_keyword(token, "default")
                         || self.token_matches_keyword(token, "preferred")
