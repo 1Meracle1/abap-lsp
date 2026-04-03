@@ -1,10 +1,7 @@
-REPORT zsimple_ast.
-
 CLASS zcl_ast_node DEFINITION ABSTRACT.
   PUBLIC SECTION.
-    METHODS to_string
-      RETURNING VALUE(rv_text) TYPE string
-      ABSTRACT.
+    METHODS to_string ABSTRACT
+      RETURNING VALUE(rv_text) TYPE string.
 ENDCLASS.
 
 CLASS zcl_ast_node IMPLEMENTATION.
@@ -38,6 +35,7 @@ ENDCLASS.
 
 CLASS zcl_number_literal IMPLEMENTATION.
   METHOD constructor.
+    super->constructor( ).
     mv_value = iv_value.
   ENDMETHOD.
 
@@ -58,6 +56,7 @@ ENDCLASS.
 
 CLASS zcl_identifier IMPLEMENTATION.
   METHOD constructor.
+    super->constructor( ).
     mv_name = iv_name.
   ENDMETHOD.
 
@@ -83,6 +82,7 @@ ENDCLASS.
 
 CLASS zcl_binary_expr IMPLEMENTATION.
   METHOD constructor.
+    super->constructor( ).
     mo_left  = io_left.
     mv_op    = iv_op.
     mo_right = io_right.
@@ -108,6 +108,7 @@ ENDCLASS.
 
 CLASS zcl_assign_stmt IMPLEMENTATION.
   METHOD constructor.
+    super->constructor( ).
     mv_name = iv_name.
     mo_expr = io_expr.
   ENDMETHOD.
@@ -129,6 +130,7 @@ ENDCLASS.
 
 CLASS zcl_print_stmt IMPLEMENTATION.
   METHOD constructor.
+    super->constructor( ).
     mo_expr = io_expr.
   ENDMETHOD.
 
@@ -160,7 +162,7 @@ CLASS zcl_program IMPLEMENTATION.
 
     LOOP AT mt_statements INTO lo_stmt.
       IF rv_text IS NOT INITIAL.
-        rv_text = rv_text && cl_abap_char_utilities=>newline.
+        rv_text = rv_text && %_NEWLINE.
       ENDIF.
       rv_text = rv_text && lo_stmt->to_string( ).
     ENDLOOP.

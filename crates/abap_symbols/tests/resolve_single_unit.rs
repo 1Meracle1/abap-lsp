@@ -198,6 +198,61 @@ ENDCLASS.
 }
 
 #[test]
+fn resolves_class_definition_members_inside_implementation_methods() {
+    let src = r#"
+CLASS zcl_ast_node DEFINITION ABSTRACT.
+  PUBLIC SECTION.
+    METHODS to_string ABSTRACT
+      RETURNING VALUE(rv_text) TYPE string.
+ENDCLASS.
+
+CLASS zcl_ast_node IMPLEMENTATION.
+ENDCLASS.
+
+CLASS zcl_number_literal DEFINITION INHERITING FROM zcl_ast_node.
+  PUBLIC SECTION.
+    METHODS constructor
+      IMPORTING iv_value TYPE string.
+    METHODS to_string REDEFINITION.
+  PRIVATE SECTION.
+    DATA mv_value TYPE string.
+ENDCLASS.
+
+CLASS zcl_number_literal IMPLEMENTATION.
+  METHOD constructor.
+    mv_value = iv_value.
+  ENDMETHOD.
+
+  METHOD to_string.
+    rv_text = mv_value.
+  ENDMETHOD.
+ENDCLASS.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///class_member_resolution.abap", src, &parsed);
+
+    for name in ["iv_value", "mv_value", "rv_text"] {
+        assert!(
+            unit.references.iter().any(|reference| {
+                reference.namespace == Namespace::Value
+                    && reference.name.as_ref() == name
+                    && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+            }),
+            "expected `{name}` references to resolve, got refs={:?} diagnostics={:?}",
+            unit.references,
+            unit.diagnostics
+        );
+        assert!(
+            !unit.diagnostics.iter().any(|diag| {
+                diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains(name)
+            }),
+            "unexpected unresolved diagnostic for `{name}`: {:?}",
+            unit.diagnostics
+        );
+    }
+}
+
+#[test]
 fn reports_unknown_static_class_member_access() {
     let src = r#"
 CLASS some_class DEFINITION.

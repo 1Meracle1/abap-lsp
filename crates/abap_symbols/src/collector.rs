@@ -40,6 +40,28 @@ enum FormHeaderParamSection {
     UsingOrChanging,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MethodParamSection {
+    Importing,
+    Exporting,
+    Changing,
+    Receiving,
+    Returning,
+}
+
+#[derive(Debug, Clone)]
+struct PendingMethodParameter {
+    name: Arc<str>,
+    range: TextRange,
+    declared_type: Option<FieldTypeRefData>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct PendingMethodSignature {
+    parameters: Vec<PendingMethodParameter>,
+    is_redefinition: bool,
+}
+
 pub struct Collector<'a> {
     source: &'a str,
     file: &'a File,
@@ -55,6 +77,9 @@ pub struct Collector<'a> {
     include_edges: Vec<IncludeEdge>,
     field_accesses: Vec<FieldAccess>,
     class_members: Vec<ClassMemberData>,
+    class_definition_scopes: HashMap<SymbolId, ScopeId>,
+    class_superclasses: HashMap<SymbolId, Arc<str>>,
+    class_method_signatures: HashMap<SymbolId, HashMap<Arc<str>, PendingMethodSignature>>,
     scope_symbols: Vec<HashMap<ScopeLookupKey, Vec<SymbolId>>>,
 }
 
@@ -86,6 +111,9 @@ impl<'a> Collector<'a> {
             include_edges: Vec::new(),
             field_accesses: Vec::new(),
             class_members: Vec::new(),
+            class_definition_scopes: HashMap::new(),
+            class_superclasses: HashMap::new(),
+            class_method_signatures: HashMap::new(),
             scope_symbols: Vec::new(),
         }
     }
@@ -369,9 +397,7 @@ impl<'a> Collector<'a> {
             SyntaxKind::InterfaceDecl => {
                 self.walk_block_decl(node, scope, SymbolKind::Interface, ScopeKind::Interface)
             }
-            SyntaxKind::MethodDecl => {
-                self.walk_block_decl(node, scope, SymbolKind::Method, ScopeKind::Method)
-            }
+            SyntaxKind::MethodDecl => self.walk_method_decl(node, scope),
             SyntaxKind::IfStmt => self.walk_if_stmt(node, scope),
             SyntaxKind::ElseifClause => {
                 self.walk_nested_block(node, scope, ScopeKind::ElseifBranch);
@@ -531,12 +557,28 @@ impl<'a> Collector<'a> {
         if impl_header_refs_class {
             self.add_reference(scope, name, Namespace::Type, ReferenceKind::TypeRef, range);
         }
+        if !is_implementation
+            && let Some(superclass) = self.class_superclass_name(node)
+        {
+            self.class_superclasses.insert(owner, superclass);
+        }
+        let parent_scope = if is_implementation {
+            self.class_definition_scopes
+                .get(&owner)
+                .copied()
+                .or(Some(scope))
+        } else {
+            Some(scope)
+        };
         let child_scope = self.push_scope(
             ScopeKind::Class,
             self.file.range(node),
-            Some(scope),
+            parent_scope,
             Some(owner),
         );
+        if !is_implementation {
+            self.class_definition_scopes.insert(owner, child_scope);
+        }
         if !is_implementation {
             self.collect_class_definition_members(node, owner);
         }
@@ -561,6 +603,26 @@ impl<'a> Collector<'a> {
             self.push_scope(scope_kind, self.file.range(node), Some(scope), Some(owner));
         if scope_kind == ScopeKind::Form {
             self.declare_form_parameters_from_header(node, child_scope);
+        }
+        for child in self.file.children(node) {
+            self.walk_node(child, child_scope);
+        }
+    }
+
+    fn walk_method_decl(&mut self, node: NodeId, scope: ScopeId) {
+        let Some((name, range)) = self.header_ident_after_keyword(node) else {
+            self.walk_children(node, scope);
+            return;
+        };
+        let owner = self.declare_plain_symbol(scope, Arc::clone(&name), SymbolKind::Method, range);
+        let child_scope = self.push_scope(
+            ScopeKind::Method,
+            self.file.range(node),
+            Some(scope),
+            Some(owner),
+        );
+        if let Some(class_symbol) = self.enclosing_class_owner(scope) {
+            self.declare_method_signature_parameters(class_symbol, name.as_ref(), child_scope, scope);
         }
         for child in self.file.children(node) {
             self.walk_node(child, child_scope);
@@ -620,9 +682,36 @@ impl<'a> Collector<'a> {
             if let Some(member) =
                 self.class_member_from_simple_stmt(class_symbol, visibility, &tokens)
             {
+                if member.kind == ClassMemberKind::Method {
+                    let signature = self.parse_method_signature(&tokens);
+                    self.class_method_signatures
+                        .entry(class_symbol)
+                        .or_default()
+                        .insert(Arc::clone(&member.name), signature);
+                }
                 self.class_members.push(member);
             }
         }
+    }
+
+    fn class_superclass_name(&self, node: NodeId) -> Option<Arc<str>> {
+        let tokens = self.simple_stmt_tokens(node);
+        let significant: Vec<_> = tokens
+            .iter()
+            .copied()
+            .filter(|token| token.kind != TokenKind::Comment)
+            .collect();
+        for window in significant.windows(3) {
+            if self.token_matches_keyword(window[0], "inheriting")
+                && self.token_matches_keyword(window[1], "from")
+                && window[2].kind == TokenKind::Ident
+            {
+                return Some(Arc::<str>::from(
+                    window[2].lexeme(self.source).to_ascii_lowercase(),
+                ));
+            }
+        }
+        None
     }
 
     fn simple_stmt_tokens(&self, node: NodeId) -> Vec<&'a Token> {
@@ -761,6 +850,286 @@ impl<'a> Collector<'a> {
             prev_kind = Some(token.kind);
         }
         rendered
+    }
+
+    fn parse_method_signature(&self, tokens: &[&Token]) -> PendingMethodSignature {
+        let mut signature = PendingMethodSignature::default();
+        let significant: Vec<_> = tokens
+            .iter()
+            .copied()
+            .filter(|token| token.kind != TokenKind::Comment)
+            .collect();
+        let Some((_, _, mut idx)) = self.class_member_statement_kind(tokens) else {
+            return signature;
+        };
+        while idx < significant.len()
+            && matches!(
+                significant[idx].kind,
+                TokenKind::Colon | TokenKind::Comma | TokenKind::Period
+            )
+        {
+            idx += 1;
+        }
+        if significant.get(idx).map(|token| token.kind) != Some(TokenKind::Ident) {
+            return signature;
+        }
+        idx += 1;
+
+        let mut section = None;
+        while idx < significant.len() {
+            let token = significant[idx];
+            if token.kind == TokenKind::Period {
+                break;
+            }
+            if self.token_matches_keyword(token, "redefinition") {
+                signature.is_redefinition = true;
+                idx += 1;
+                continue;
+            }
+            section = match self.method_signature_section(token) {
+                Some(next_section) => {
+                    idx += 1;
+                    Some(next_section)
+                }
+                None => section,
+            };
+            if self.method_signature_stops_parameter_scan(token) {
+                break;
+            }
+            if let Some(param_section) = section
+                && let Some((param, next_idx)) =
+                    self.try_consume_method_signature_parameter(&significant, idx, param_section)
+            {
+                signature.parameters.push(param);
+                idx = next_idx;
+                continue;
+            }
+            idx += 1;
+        }
+        signature
+    }
+
+    fn method_signature_section(&self, token: &Token) -> Option<MethodParamSection> {
+        if self.token_matches_keyword(token, "importing") {
+            return Some(MethodParamSection::Importing);
+        }
+        if self.token_matches_keyword(token, "exporting") {
+            return Some(MethodParamSection::Exporting);
+        }
+        if self.token_matches_keyword(token, "changing") {
+            return Some(MethodParamSection::Changing);
+        }
+        if self.token_matches_keyword(token, "receiving") {
+            return Some(MethodParamSection::Receiving);
+        }
+        if self.token_matches_keyword(token, "returning") {
+            return Some(MethodParamSection::Returning);
+        }
+        None
+    }
+
+    fn method_signature_stops_parameter_scan(&self, token: &Token) -> bool {
+        token.kind == TokenKind::Period
+            || self.token_matches_keyword(token, "raising")
+            || self.token_matches_keyword(token, "exceptions")
+    }
+
+    fn try_consume_method_signature_parameter(
+        &self,
+        tokens: &[&Token],
+        idx: usize,
+        section: MethodParamSection,
+    ) -> Option<(PendingMethodParameter, usize)> {
+        let mut j = idx;
+        while matches!(tokens.get(j).map(|token| token.kind), Some(TokenKind::Colon | TokenKind::Comma))
+        {
+            j += 1;
+        }
+
+        let (name, range, mut j) = self.method_signature_parameter_name(tokens, j)?;
+        while matches!(tokens.get(j).map(|token| token.kind), Some(TokenKind::Colon | TokenKind::Comma))
+        {
+            j += 1;
+        }
+
+        let type_tok = tokens.get(j)?;
+        let clause_ns = if self.token_matches_keyword(type_tok, "type") {
+            Namespace::Type
+        } else if self.token_matches_keyword(type_tok, "like") {
+            Namespace::Value
+        } else if section == MethodParamSection::Returning || section == MethodParamSection::Receiving
+        {
+            return None;
+        } else {
+            return None;
+        };
+        j += 1;
+        let expr_start = j;
+        let expr_end = self.skip_method_signature_type_expression(tokens, expr_start);
+        Some((
+            PendingMethodParameter {
+                name,
+                range,
+                declared_type: self.field_type_ref_from_token_slice(
+                    tokens,
+                    expr_start,
+                    expr_end,
+                    clause_ns,
+                ),
+            },
+            expr_end,
+        ))
+    }
+
+    fn method_signature_parameter_name(
+        &self,
+        tokens: &[&Token],
+        idx: usize,
+    ) -> Option<(Arc<str>, TextRange, usize)> {
+        let token = *tokens.get(idx)?;
+        if self.token_matches_keyword(token, "value") || self.token_matches_keyword(token, "reference")
+        {
+            let lparen = tokens.get(idx + 1)?;
+            let ident = tokens.get(idx + 2)?;
+            let rparen = tokens.get(idx + 3)?;
+            if lparen.kind != TokenKind::LParen
+                || ident.kind != TokenKind::Ident
+                || rparen.kind != TokenKind::RParen
+            {
+                return None;
+            }
+            return Some((
+                Arc::<str>::from(ident.lexeme(self.source).to_ascii_lowercase()),
+                ident.range.clone(),
+                idx + 4,
+            ));
+        }
+        if token.kind != TokenKind::Ident {
+            return None;
+        }
+        Some((
+            Arc::<str>::from(token.lexeme(self.source).to_ascii_lowercase()),
+            token.range.clone(),
+            idx + 1,
+        ))
+    }
+
+    fn skip_method_signature_type_expression(&self, tokens: &[&Token], mut idx: usize) -> usize {
+        let mut depth = 0i32;
+        while idx < tokens.len() {
+            let token = tokens[idx];
+            match token.kind {
+                TokenKind::LParen => {
+                    depth += 1;
+                    idx += 1;
+                }
+                TokenKind::RParen => {
+                    depth -= 1;
+                    idx += 1;
+                }
+                TokenKind::Period if depth == 0 => return idx,
+                _ if depth == 0 && self.method_signature_stops_parameter_scan(token) => return idx,
+                _ if depth == 0
+                    && (self.method_signature_section(token).is_some()
+                        || self.token_matches_keyword(token, "optional")
+                        || self.token_matches_keyword(token, "default")
+                        || self.token_matches_keyword(token, "preferred")
+                        || self.method_signature_starts_parameter(tokens, idx)) =>
+                {
+                    return idx;
+                }
+                _ => idx += 1,
+            }
+        }
+        idx
+    }
+
+    fn method_signature_starts_parameter(&self, tokens: &[&Token], idx: usize) -> bool {
+        self.method_signature_parameter_name(tokens, idx)
+            .and_then(|(_, _, next_idx)| {
+                let next = tokens.get(next_idx)?;
+                if self.token_matches_keyword(next, "type") || self.token_matches_keyword(next, "like") {
+                    Some(())
+                } else {
+                    None
+                }
+            })
+            .is_some()
+    }
+
+    fn enclosing_class_owner(&self, scope: ScopeId) -> Option<SymbolId> {
+        let mut current = Some(scope);
+        while let Some(scope_id) = current {
+            let scope = &self.scopes[scope_id.as_usize()];
+            if scope.kind == ScopeKind::Class {
+                return scope.owner;
+            }
+            current = scope.parent;
+        }
+        None
+    }
+
+    fn declare_method_signature_parameters(
+        &mut self,
+        class_symbol: SymbolId,
+        method_name: &str,
+        method_scope: ScopeId,
+        lookup_scope: ScopeId,
+    ) {
+        let Some(parameters) = self
+            .class_method_signature(class_symbol, method_name, lookup_scope)
+            .map(|signature| signature.parameters.clone())
+        else {
+            return;
+        };
+        for param in parameters {
+            self.declare_symbol(
+                method_scope,
+                param.name,
+                SymbolKind::Parameter,
+                param.range,
+                None,
+                param.declared_type,
+            );
+        }
+    }
+
+    fn class_method_signature(
+        &self,
+        class_symbol: SymbolId,
+        method_name: &str,
+        lookup_scope: ScopeId,
+    ) -> Option<&PendingMethodSignature> {
+        self.class_method_signature_inner(class_symbol, method_name, lookup_scope, &mut Vec::new())
+    }
+
+    fn class_method_signature_inner<'b>(
+        &'b self,
+        class_symbol: SymbolId,
+        method_name: &str,
+        lookup_scope: ScopeId,
+        visited: &mut Vec<SymbolId>,
+    ) -> Option<&'b PendingMethodSignature> {
+        if visited.contains(&class_symbol) {
+            return None;
+        }
+        visited.push(class_symbol);
+
+        if let Some(signature) = self
+            .class_method_signatures
+            .get(&class_symbol)
+            .and_then(|methods| methods.get(method_name))
+        {
+            if !signature.is_redefinition || !signature.parameters.is_empty() {
+                return Some(signature);
+            }
+        }
+
+        let superclass_name = self.class_superclasses.get(&class_symbol)?;
+        let superclass_symbol = self
+            .lookup_symbol_in_scope_chain(lookup_scope, Namespace::Type, superclass_name.as_ref())
+            .filter(|&symbol_id| self.symbol(symbol_id).kind == SymbolKind::Class)?;
+        self.class_method_signature_inner(superclass_symbol, method_name, lookup_scope, visited)
     }
 
     fn form_header_token_refs(&self, form_node: NodeId) -> Vec<&'a Token> {
