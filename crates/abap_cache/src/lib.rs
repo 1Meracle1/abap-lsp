@@ -4,9 +4,9 @@ use std::sync::Arc;
 
 use abap_parser::{ParseResult, parse};
 use abap_symbols::{
-    Namespace, ProjectAnalysis, ProjectInput, Resolution, ScopeId, StructureFieldInfo,
-    StructureFieldShape, StructureId, SymbolData, SymbolId, SymbolKind, UnitAnalysis,
-    analyze_project,
+    ClassMemberData, ClassMemberKind, Namespace, ProjectAnalysis, ProjectInput, Resolution,
+    ScopeId, StructureFieldInfo, StructureFieldShape, StructureId, SymbolData, SymbolId,
+    SymbolKind, UnitAnalysis, Visibility, analyze_project,
 };
 use parking_lot::RwLock;
 
@@ -24,15 +24,18 @@ pub struct AnalysisSnapshot {
 pub enum HoveredComponentKind {
     Scalar,
     Structured { structure_name: Arc<str> },
+    Method,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HoveredComponentInfo {
     pub base_name: Arc<str>,
+    pub base_namespace: Namespace,
     pub component_path: Vec<Arc<str>>,
     pub field_name: Arc<str>,
     pub range: Range<usize>,
     pub declared_type: Option<String>,
+    pub declaration: Option<String>,
     pub kind: HoveredComponentKind,
     pub in_type_position: bool,
 }
@@ -49,6 +52,7 @@ pub struct HoveredSymbolInfo {
 pub struct SelectorCompletionItem {
     pub name: Arc<str>,
     pub declared_type: Option<String>,
+    pub declaration: Option<String>,
     pub kind: HoveredComponentKind,
 }
 
@@ -129,6 +133,26 @@ impl AnalysisSnapshot {
                 })
         })?;
         let (unit, symbol_id) = resolve_field_access_base_symbol(self, access)?;
+        if let Some(member) =
+            resolve_class_selector_member(self, access, segment_index, unit, symbol_id)
+        {
+            return Some(HoveredComponentInfo {
+                base_name: Arc::clone(&access.base_name),
+                base_namespace: access.base_namespace,
+                component_path: access
+                    .field_path
+                    .iter()
+                    .take(segment_index + 1)
+                    .map(|segment| Arc::clone(&segment.name))
+                    .collect(),
+                field_name: Arc::clone(&member.name),
+                range: access.field_path[segment_index].range.clone(),
+                declared_type: None,
+                declaration: Some(member.signature.to_string()),
+                kind: HoveredComponentKind::Method,
+                in_type_position: access.in_type_position,
+            });
+        }
         let symbol = unit.symbol(symbol_id);
         let structure_id = symbol.structure?;
         let field_path: Vec<_> = access
@@ -146,6 +170,7 @@ impl AnalysisSnapshot {
         };
         Some(HoveredComponentInfo {
             base_name: Arc::clone(&access.base_name),
+            base_namespace: access.base_namespace,
             component_path: access
                 .field_path
                 .iter()
@@ -155,6 +180,7 @@ impl AnalysisSnapshot {
             field_name: Arc::clone(&field.name),
             range: access.field_path[segment_index].range.clone(),
             declared_type: field.type_ref.as_ref().map(format_field_type_ref),
+            declaration: None,
             kind,
             in_type_position: access.in_type_position,
         })
@@ -182,6 +208,25 @@ impl AnalysisSnapshot {
                 range: reference.range.clone(),
                 display_name: Arc::clone(&reference.name),
                 markdown_lines: markdown_lines_for_resolution(self, &reference.name, resolution),
+            });
+        }
+
+        if let Some(member) = self
+            .symbols
+            .class_members
+            .iter()
+            .filter(|member| member.decl_range.start <= offset && offset < member.decl_range.end)
+            .min_by_key(|member| {
+                member
+                    .decl_range
+                    .end
+                    .saturating_sub(member.decl_range.start)
+            })
+        {
+            return Some(HoveredSymbolInfo {
+                range: member.decl_range.clone(),
+                display_name: Arc::clone(&member.name),
+                markdown_lines: markdown_lines_for_class_member(self.symbols.as_ref(), member),
             });
         }
 
@@ -213,6 +258,33 @@ impl AnalysisSnapshot {
             &query.base_name,
             query.in_type_position,
         )?;
+        let symbol = unit.symbol(symbol_id);
+        if query.base_namespace == Namespace::Type
+            && symbol.kind == SymbolKind::Class
+            && query.component_path.is_empty()
+        {
+            let mut items: Vec<_> = unit
+                .class_members_for(symbol_id)
+                .filter(|member| {
+                    member.is_static
+                        && member.kind == ClassMemberKind::Method
+                        && class_member_visible_to(self.symbols.as_ref(), query.scope, unit, member)
+                        && member.name.as_ref().starts_with(query.prefix.as_ref())
+                })
+                .map(|member| SelectorCompletionItem {
+                    name: Arc::clone(&member.name),
+                    declared_type: None,
+                    declaration: Some(member.signature.to_string()),
+                    kind: HoveredComponentKind::Method,
+                })
+                .collect();
+            items.sort_by(|left, right| left.name.cmp(&right.name));
+            return Some(SelectorCompletionInfo {
+                replace_range: query.replace_range,
+                items,
+                in_type_position: query.in_type_position,
+            });
+        }
         let mut structure_id = unit.symbol(symbol_id).structure?;
         if !query.component_path.is_empty() {
             let path: Vec<_> = query
@@ -234,6 +306,7 @@ impl AnalysisSnapshot {
             .map(|field| SelectorCompletionItem {
                 name: Arc::clone(&field.name),
                 declared_type: field.type_ref.as_ref().map(format_field_type_ref),
+                declaration: None,
                 kind: match field.shape {
                     StructureFieldShape::Scalar => HoveredComponentKind::Scalar,
                     StructureFieldShape::Structured { structure } => {
@@ -334,6 +407,27 @@ fn markdown_lines_for_declared_symbol(unit: &UnitAnalysis, symbol: &SymbolData) 
         lines.push(type_line);
     }
     lines
+}
+
+fn markdown_lines_for_class_member(unit: &UnitAnalysis, member: &ClassMemberData) -> Vec<String> {
+    let class_name = unit.symbol(member.class_symbol).name.as_ref();
+    let visibility = match member.visibility {
+        Visibility::Public => "Public",
+        Visibility::Protected => "Protected",
+        Visibility::Private => "Private",
+    };
+    let storage = if member.is_static {
+        "static"
+    } else {
+        "instance"
+    };
+    let kind = match member.kind {
+        ClassMemberKind::Method => "method",
+    };
+    vec![
+        format!("```abap\n{}\n```", member.signature),
+        format!("{visibility} {storage} {kind} of `{class_name}`"),
+    ]
 }
 
 fn markdown_lines_for_resolution(
@@ -497,6 +591,53 @@ fn fallback_namespace_for_context(
         Namespace::Value => Some(Namespace::Type),
         Namespace::Routine => None,
     }
+}
+
+fn enclosing_class_owner(unit: &UnitAnalysis, scope: ScopeId) -> Option<SymbolId> {
+    let mut current = Some(scope);
+    while let Some(scope_id) = current {
+        let scope = unit.scope(scope_id);
+        if scope.kind == abap_symbols::ScopeKind::Class {
+            return scope.owner;
+        }
+        current = scope.parent;
+    }
+    None
+}
+
+fn class_member_visible_to(
+    caller_unit: &UnitAnalysis,
+    caller_scope: ScopeId,
+    target_unit: &UnitAnalysis,
+    member: &ClassMemberData,
+) -> bool {
+    match member.visibility {
+        Visibility::Public => true,
+        Visibility::Protected | Visibility::Private => {
+            caller_unit.unit_id == target_unit.unit_id
+                && enclosing_class_owner(caller_unit, caller_scope) == Some(member.class_symbol)
+        }
+    }
+}
+
+fn resolve_class_selector_member<'a>(
+    snapshot: &'a AnalysisSnapshot,
+    access: &abap_symbols::FieldAccess,
+    segment_index: usize,
+    unit: &'a UnitAnalysis,
+    symbol_id: SymbolId,
+) -> Option<&'a ClassMemberData> {
+    if access.base_namespace != Namespace::Type || segment_index != 0 {
+        return None;
+    }
+    if unit.symbol(symbol_id).kind != SymbolKind::Class {
+        return None;
+    }
+    let member = unit.class_member(symbol_id, access.field_path[segment_index].name.as_ref())?;
+    if !member.is_static || member.kind != ClassMemberKind::Method {
+        return None;
+    }
+    class_member_visible_to(snapshot.symbols.as_ref(), access.scope, unit, member).then_some(member)
 }
 
 fn innermost_scope_at(unit: &UnitAnalysis, offset: usize) -> ScopeId {
@@ -923,6 +1064,41 @@ ls_outer-inner-a = 1.";
     }
 
     #[test]
+    fn finds_hovered_static_method_at_offset() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS some_class DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS exec
+      IMPORTING
+        iv_value TYPE i.
+ENDCLASS.
+
+some_class=>exec( iv_value = 1 ).";
+        let snapshot = store.publish("file:///demo.abap", 1, src);
+        let offset = src.rfind("exec").expect("method use") + 1;
+
+        let hovered = snapshot
+            .hovered_component_at(offset)
+            .expect("hovered method info");
+        assert_eq!(hovered.base_name.as_ref(), "some_class");
+        assert_eq!(hovered.field_name.as_ref(), "exec");
+        assert!(matches!(hovered.kind, HoveredComponentKind::Method));
+        assert!(
+            hovered
+                .declaration
+                .as_deref()
+                .is_some_and(|declaration| declaration.contains("CLASS-METHODS exec"))
+        );
+        assert!(
+            hovered
+                .declaration
+                .as_deref()
+                .is_some_and(|declaration| declaration.contains("iv_value TYPE i"))
+        );
+    }
+
+    #[test]
     fn hovered_resolved_symbol_at_finds_resolved_reference() {
         let store = DocumentStore::default();
         let src = "DATA lv TYPE i.\nlv = 1.";
@@ -1030,6 +1206,45 @@ ls_outer-inner-";
         assert_eq!(completion.items.len(), 1);
         assert_eq!(completion.items[0].name.as_ref(), "alpha");
         assert!(completion.replace_range.is_empty());
+    }
+
+    #[test]
+    fn lists_public_static_methods_after_fat_arrow() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS some_class DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS exec.
+    CLASS-METHODS expose.
+  PRIVATE SECTION.
+    CLASS-METHODS hidden.
+ENDCLASS.
+
+some_class=>e";
+        let snapshot = store.publish("file:///demo.abap", 1, src);
+
+        let completion = snapshot
+            .selector_completion_at(src.len())
+            .expect("selector completion");
+        assert_eq!(
+            completion
+                .items
+                .iter()
+                .map(|item| item.name.as_ref())
+                .collect::<Vec<_>>(),
+            vec!["exec", "expose"]
+        );
+        assert!(
+            completion
+                .items
+                .iter()
+                .all(|item| matches!(item.kind, HoveredComponentKind::Method))
+        );
+        assert!(completion.items.iter().all(|item| {
+            item.declaration
+                .as_deref()
+                .is_some_and(|decl| decl.contains("CLASS-METHODS"))
+        }));
     }
 
     #[test]

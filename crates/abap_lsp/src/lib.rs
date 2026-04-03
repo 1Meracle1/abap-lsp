@@ -254,22 +254,36 @@ fn structured_field_hover(
     component: abap_cache::HoveredComponentInfo,
 ) -> Option<Hover> {
     let range = byte_range_to_lsp_range(snapshot.text.as_ref(), component.range.clone())?;
+    let is_method = matches!(component.kind, abap_cache::HoveredComponentKind::Method);
     let mut lines = vec![format!("`{}`", component.field_name)];
-    match component.kind {
+    match &component.kind {
         abap_cache::HoveredComponentKind::Scalar => lines.push("scalar component".to_string()),
         abap_cache::HoveredComponentKind::Structured { structure_name } => {
             lines.push(format!("structured component of `{}`", structure_name))
+        }
+        abap_cache::HoveredComponentKind::Method => {
+            if let Some(declaration) = &component.declaration {
+                lines[0] = format!("```abap\n{}\n```", declaration);
+            }
+            lines.push(format!("static method of `{}`", component.base_name));
         }
     }
     if let Some(declared_type) = component.declared_type {
         lines.push(format!("declared as `{}`", declared_type));
     }
-    let mut path = component.base_name.to_string();
-    for segment in &component.component_path {
-        path.push('-');
-        path.push_str(segment.as_ref());
+    if !is_method {
+        let mut path = component.base_name.to_string();
+        let separator = if component.base_namespace == abap_symbols::Namespace::Type {
+            "=>"
+        } else {
+            "-"
+        };
+        for segment in &component.component_path {
+            path.push_str(separator);
+            path.push_str(segment.as_ref());
+        }
+        lines.push(format!("path: `{}`", path));
     }
-    lines.push(format!("path: `{}`", path));
     if component.in_type_position {
         lines.push("used in type position".to_string());
     }
@@ -298,7 +312,13 @@ pub fn completion(state: &ServerState, params: &CompletionParams) -> Option<Comp
             let (detail, documentation) = completion_item_metadata(&item);
             CompletionItem {
                 label: item.name.to_string(),
-                kind: Some(CompletionItemKind::FIELD),
+                kind: Some(match item.kind {
+                    abap_cache::HoveredComponentKind::Method => CompletionItemKind::METHOD,
+                    abap_cache::HoveredComponentKind::Scalar
+                    | abap_cache::HoveredComponentKind::Structured { .. } => {
+                        CompletionItemKind::FIELD
+                    }
+                }),
                 detail,
                 documentation,
                 text_edit: Some(lsp_types::CompletionTextEdit::Edit(TextEdit {
@@ -431,6 +451,13 @@ fn completion_item_metadata(
                 None => format!("structured component -> {structure_name}"),
             })
         }
+        abap_cache::HoveredComponentKind::Method => {
+            if let Some(declaration) = &item.declaration {
+                lines[0] = format!("```abap\n{}\n```", declaration);
+            }
+            lines.push("static method".to_string());
+            item.declaration.clone()
+        }
     };
     if let Some(declared_type) = &item.declared_type {
         lines.push(format!("declared as `{}`", declared_type));
@@ -529,6 +556,52 @@ mod tests {
     }
 
     #[test]
+    fn semantic_tokens_mark_static_method_declaration_and_use() {
+        use lsp_types::SemanticTokenType;
+
+        let state = ServerState::default();
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///sem_method.abap").expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: "\
+CLASS some_class DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS exec.
+ENDCLASS.
+
+some_class=>exec( )."
+                        .to_string(),
+                },
+            },
+        );
+
+        let snapshot = state
+            .cache
+            .get("file:///sem_method.abap")
+            .expect("snapshot");
+        let tokens = sem_tokens::build_semantic_tokens(snapshot.as_ref());
+        let legend = sem_tokens::semantic_tokens_legend();
+        let method_idx = legend
+            .token_types
+            .iter()
+            .position(|t| *t == SemanticTokenType::METHOD)
+            .expect("legend has method") as u32;
+        let method_tokens = tokens
+            .data
+            .iter()
+            .filter(|t| t.token_type == method_idx)
+            .count();
+        assert!(
+            method_tokens >= 2,
+            "expected declaration and call to be marked as methods"
+        );
+    }
+
+    #[test]
     fn custom_notification_names_are_stable() {
         assert_eq!(
             RESOLVE_REMOTE_DEPENDENCIES,
@@ -593,6 +666,55 @@ ls_outer-inner-a = 1."
         assert!(markup.value.contains("scalar component"));
         assert!(markup.value.contains("`TYPE i`"));
         assert!(markup.value.contains("`ls_outer-inner-a`"));
+    }
+
+    #[test]
+    fn hover_returns_static_method_metadata_for_fat_arrow_selector() {
+        let state = ServerState::default();
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///hover_method.abap").expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: "\
+CLASS some_class DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS exec
+      IMPORTING
+        iv_value TYPE i.
+ENDCLASS.
+
+some_class=>exec( iv_value = 1 )."
+                        .to_string(),
+                },
+            },
+        );
+
+        let hover = hover(
+            &state,
+            &HoverParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///hover_method.abap").expect("uri"),
+                    },
+                    position: Position {
+                        line: 7,
+                        character: 13,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+            },
+        )
+        .expect("hover");
+
+        let HoverContents::Markup(markup) = hover.contents else {
+            panic!("expected markdown hover");
+        };
+        assert!(markup.value.contains("CLASS-METHODS exec"));
+        assert!(markup.value.contains("iv_value TYPE i"));
+        assert!(markup.value.contains("static method of `some_class`"));
     }
 
     #[test]
@@ -798,5 +920,67 @@ ls_outer-inner-a"
         };
         assert!(markup.value.contains("scalar component"));
         assert!(markup.value.contains("declared as `TYPE i`"));
+    }
+
+    #[test]
+    fn completion_returns_public_static_methods_after_fat_arrow() {
+        let state = ServerState::default();
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///completion_method.abap").expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: "\
+CLASS some_class DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS exec.
+    CLASS-METHODS expose.
+  PRIVATE SECTION.
+    CLASS-METHODS hidden.
+ENDCLASS.
+
+some_class=>e"
+                        .to_string(),
+                },
+            },
+        );
+
+        let completion = completion(
+            &state,
+            &CompletionParams {
+                text_document_position: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///completion_method.abap").expect("uri"),
+                    },
+                    position: Position {
+                        line: 8,
+                        character: 12,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+                context: None,
+            },
+        )
+        .expect("completion");
+
+        let CompletionResponse::Array(items) = completion else {
+            panic!("expected array completion");
+        };
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].label, "exec");
+        assert_eq!(items[1].label, "expose");
+        assert!(
+            items
+                .iter()
+                .all(|item| item.kind == Some(lsp_types::CompletionItemKind::METHOD))
+        );
+        let Some(Documentation::MarkupContent(markup)) = &items[0].documentation else {
+            panic!("expected markdown docs");
+        };
+        assert!(markup.value.contains("CLASS-METHODS exec"));
+        assert!(markup.value.contains("static method"));
     }
 }

@@ -4,7 +4,8 @@ use std::sync::Arc;
 use crate::def_map::{Diagnostic, DiagnosticKind};
 use crate::ids::{ScopeId, SymbolId};
 use crate::project::ProjectAnalysis;
-use crate::scope::Namespace;
+use crate::scope::{Namespace, ScopeKind};
+use crate::{ClassMemberKind, SymbolKind, Visibility};
 
 fn collect_global_names(project: &ProjectAnalysis) -> HashMap<Arc<str>, HashSet<Namespace>> {
     let mut out: HashMap<Arc<str>, HashSet<Namespace>> = HashMap::new();
@@ -101,6 +102,31 @@ fn resolve_field_access_base_symbol(
     None
 }
 
+fn enclosing_class_owner(unit: &crate::UnitAnalysis, scope: ScopeId) -> Option<SymbolId> {
+    let mut current = Some(scope);
+    while let Some(scope_id) = current {
+        let scope = unit.scope(scope_id);
+        if scope.kind == ScopeKind::Class {
+            return scope.owner;
+        }
+        current = scope.parent;
+    }
+    None
+}
+
+fn class_member_visible_to(
+    unit: &crate::UnitAnalysis,
+    access: &crate::FieldAccess,
+    member: &crate::ClassMemberData,
+) -> bool {
+    match member.visibility {
+        Visibility::Public => true,
+        Visibility::Protected | Visibility::Private => {
+            enclosing_class_owner(unit, access.scope) == Some(member.class_symbol)
+        }
+    }
+}
+
 pub fn validate_project(project: &mut ProjectAnalysis) {
     let global_names = collect_global_names(project);
     project.diagnostics.clear();
@@ -167,6 +193,49 @@ pub fn validate_project(project: &mut ProjectAnalysis) {
             else {
                 continue;
             };
+            let base_symbol = unit.symbol(base_symbol_id);
+            if access.base_namespace == Namespace::Type && base_symbol.kind == SymbolKind::Class {
+                for (idx, step) in access.field_path.iter().enumerate() {
+                    let Some(member) = unit.class_member(base_symbol_id, step.name.as_ref()) else {
+                        unit.diagnostics.push(Diagnostic {
+                            kind: DiagnosticKind::UnknownField,
+                            range: step.range.clone(),
+                            message: format!(
+                                "unknown static member '{}' for class '{}'",
+                                step.name, access.base_name
+                            ),
+                        });
+                        break;
+                    };
+                    if !member.is_static
+                        || member.kind != ClassMemberKind::Method
+                        || !class_member_visible_to(unit, access, member)
+                    {
+                        unit.diagnostics.push(Diagnostic {
+                            kind: DiagnosticKind::UnknownField,
+                            range: step.range.clone(),
+                            message: format!(
+                                "unknown static member '{}' for class '{}'",
+                                step.name, access.base_name
+                            ),
+                        });
+                        break;
+                    }
+                    if idx + 1 != access.field_path.len() {
+                        let next_step = &access.field_path[idx + 1];
+                        unit.diagnostics.push(Diagnostic {
+                            kind: DiagnosticKind::UnknownField,
+                            range: next_step.range.clone(),
+                            message: format!(
+                                "unknown static member '{}' for class '{}=>{}'",
+                                next_step.name, access.base_name, member.name
+                            ),
+                        });
+                        break;
+                    }
+                }
+                continue;
+            }
             let Some(mut structure_id) = unit.symbol(base_symbol_id).structure else {
                 continue;
             };

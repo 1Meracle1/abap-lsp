@@ -28,6 +28,18 @@ pub enum SymbolKind {
     Report,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Visibility {
+    Public,
+    Protected,
+    Private,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClassMemberKind {
+    Method,
+}
+
 impl SymbolKind {
     pub const fn is_builtin(self) -> bool {
         matches!(
@@ -200,6 +212,17 @@ pub struct StructureData {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClassMemberData {
+    pub class_symbol: SymbolId,
+    pub name: Arc<str>,
+    pub kind: ClassMemberKind,
+    pub visibility: Visibility,
+    pub is_static: bool,
+    pub decl_range: TextRange,
+    pub signature: Arc<str>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnitAnalysis {
     pub unit_id: UnitId,
     pub uri: Arc<str>,
@@ -211,6 +234,7 @@ pub struct UnitAnalysis {
     pub diagnostics: Vec<Diagnostic>,
     pub include_edges: Vec<IncludeEdge>,
     pub field_accesses: Vec<FieldAccess>,
+    pub class_members: Vec<ClassMemberData>,
     pub provided_names: Vec<Arc<str>>,
 }
 
@@ -290,5 +314,20 @@ impl UnitAnalysis {
             current_info = Some(info);
         }
         current_info
+    }
+
+    pub fn class_member(&self, class_symbol: SymbolId, name: &str) -> Option<&ClassMemberData> {
+        self.class_members
+            .iter()
+            .find(|member| member.class_symbol == class_symbol && member.name.as_ref() == name)
+    }
+
+    pub fn class_members_for(
+        &self,
+        class_symbol: SymbolId,
+    ) -> impl Iterator<Item = &ClassMemberData> + '_ {
+        self.class_members
+            .iter()
+            .filter(move |member| member.class_symbol == class_symbol)
     }
 }

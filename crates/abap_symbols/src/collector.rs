@@ -8,9 +8,9 @@ use abap_lexer::{TextRange, Token, TokenKind};
 
 use crate::builtins::{BUILTIN_STRUCTURES, BUILTIN_SYMBOLS, BuiltinTypeKind};
 use crate::def_map::{
-    Diagnostic, DiagnosticKind, FieldAccess, FieldAccessSegment, FieldTypeRefData, IncludeEdge,
-    ReferenceData, ReferenceKind, StructureData, StructureFieldData, SymbolData, SymbolKind,
-    UnitAnalysis,
+    ClassMemberData, ClassMemberKind, Diagnostic, DiagnosticKind, FieldAccess, FieldAccessSegment,
+    FieldTypeRefData, IncludeEdge, ReferenceData, ReferenceKind, StructureData, StructureFieldData,
+    SymbolData, SymbolKind, UnitAnalysis, Visibility,
 };
 use crate::ids::{ReferenceId, ScopeId, StructureId, SymbolId, UnitId};
 use crate::scope::{Namespace, ScopeData, ScopeKind};
@@ -54,6 +54,7 @@ pub struct Collector<'a> {
     diagnostics: Vec<Diagnostic>,
     include_edges: Vec<IncludeEdge>,
     field_accesses: Vec<FieldAccess>,
+    class_members: Vec<ClassMemberData>,
     scope_symbols: Vec<HashMap<ScopeLookupKey, Vec<SymbolId>>>,
 }
 
@@ -84,6 +85,7 @@ impl<'a> Collector<'a> {
             diagnostics: Vec::new(),
             include_edges: Vec::new(),
             field_accesses: Vec::new(),
+            class_members: Vec::new(),
             scope_symbols: Vec::new(),
         }
     }
@@ -105,6 +107,7 @@ impl<'a> Collector<'a> {
             diagnostics: self.diagnostics,
             include_edges: self.include_edges,
             field_accesses: self.field_accesses,
+            class_members: self.class_members,
             provided_names,
         }
     }
@@ -406,6 +409,7 @@ impl<'a> Collector<'a> {
             | SyntaxKind::InstanceOfPredicate
             | SyntaxKind::BetweenExpr
             | SyntaxKind::AssignStmt => self.collect_expr(node, scope),
+            SyntaxKind::SimpleStmt => self.collect_simple_stmt(node, scope),
             _ => self.walk_children(node, scope),
         }
     }
@@ -516,22 +520,28 @@ impl<'a> Collector<'a> {
                 impl_header_refs_class = true;
                 existing
             } else {
-                self.declare_plain_symbol(scope, Arc::clone(&name), SymbolKind::Class, range.clone())
+                self.declare_plain_symbol(
+                    scope,
+                    Arc::clone(&name),
+                    SymbolKind::Class,
+                    range.clone(),
+                )
             }
         } else {
             self.declare_plain_symbol(scope, Arc::clone(&name), SymbolKind::Class, range.clone())
         };
         if impl_header_refs_class {
-            self.add_reference(
-                scope,
-                name,
-                Namespace::Type,
-                ReferenceKind::TypeRef,
-                range,
-            );
+            self.add_reference(scope, name, Namespace::Type, ReferenceKind::TypeRef, range);
         }
-        let child_scope =
-            self.push_scope(ScopeKind::Class, self.file.range(node), Some(scope), Some(owner));
+        let child_scope = self.push_scope(
+            ScopeKind::Class,
+            self.file.range(node),
+            Some(scope),
+            Some(owner),
+        );
+        if !is_implementation {
+            self.collect_class_definition_members(node, owner);
+        }
         for child in self.file.children(node) {
             self.walk_node(child, child_scope);
         }
@@ -572,6 +582,170 @@ impl<'a> Collector<'a> {
             }
         }
         false
+    }
+
+    fn collect_class_definition_members(&mut self, node: NodeId, class_symbol: SymbolId) {
+        let mut visibility = Visibility::Private;
+        let mut stack: Vec<_> = self.file.children(node).rev().collect();
+        while let Some(child) = stack.pop() {
+            if self.file.kind(child) != SyntaxKind::SimpleStmt {
+                for nested in self.file.children(child).rev() {
+                    stack.push(nested);
+                }
+                continue;
+            }
+            let tokens = self.simple_stmt_tokens(child);
+            if tokens.is_empty() {
+                continue;
+            }
+            if let Some(section_visibility) = self.class_section_visibility(&tokens) {
+                visibility = section_visibility;
+                continue;
+            }
+            if let Some(member) =
+                self.class_member_from_simple_stmt(class_symbol, visibility, &tokens)
+            {
+                self.class_members.push(member);
+            }
+        }
+    }
+
+    fn simple_stmt_tokens(&self, node: NodeId) -> Vec<&'a Token> {
+        self.file
+            .children(node)
+            .filter_map(|child| self.token_for_node(child))
+            .collect()
+    }
+
+    fn class_section_visibility(&self, tokens: &[&Token]) -> Option<Visibility> {
+        let significant: Vec<_> = tokens
+            .iter()
+            .copied()
+            .filter(|token| token.kind != TokenKind::Comment)
+            .collect();
+        if significant.len() < 3 || significant[2].kind != TokenKind::Period {
+            return None;
+        }
+        if !self.token_matches_keyword(significant[1], "section") {
+            return None;
+        }
+        if self.token_matches_keyword(significant[0], "public") {
+            return Some(Visibility::Public);
+        }
+        if self.token_matches_keyword(significant[0], "protected") {
+            return Some(Visibility::Protected);
+        }
+        if self.token_matches_keyword(significant[0], "private") {
+            return Some(Visibility::Private);
+        }
+        None
+    }
+
+    fn class_member_from_simple_stmt(
+        &self,
+        class_symbol: SymbolId,
+        visibility: Visibility,
+        tokens: &[&Token],
+    ) -> Option<ClassMemberData> {
+        let (kind, is_static, start_idx) = self.class_member_statement_kind(tokens)?;
+        let name_tok = self.class_member_name_token(tokens, start_idx)?;
+        Some(ClassMemberData {
+            class_symbol,
+            name: Arc::<str>::from(name_tok.lexeme(self.source).to_ascii_lowercase()),
+            kind,
+            visibility,
+            is_static,
+            decl_range: name_tok.range.clone(),
+            signature: Arc::<str>::from(self.render_statement_signature(tokens)),
+        })
+    }
+
+    fn class_member_statement_kind(
+        &self,
+        tokens: &[&Token],
+    ) -> Option<(ClassMemberKind, bool, usize)> {
+        let significant: Vec<_> = tokens
+            .iter()
+            .copied()
+            .filter(|token| token.kind != TokenKind::Comment)
+            .collect();
+        let first = *significant.first()?;
+        if self.token_matches_keyword(first, "methods") {
+            return Some((ClassMemberKind::Method, false, 1));
+        }
+        let second = *significant.get(1)?;
+        let third = *significant.get(2)?;
+        if self.token_matches_keyword(first, "class")
+            && second.kind == TokenKind::Minus
+            && self.token_matches_keyword(third, "methods")
+        {
+            return Some((ClassMemberKind::Method, true, 3));
+        }
+        None
+    }
+
+    fn class_member_name_token<'b>(
+        &self,
+        tokens: &'b [&'a Token],
+        mut significant_idx: usize,
+    ) -> Option<&'a Token> {
+        for token in tokens {
+            if token.kind == TokenKind::Comment {
+                continue;
+            }
+            if significant_idx > 0 {
+                significant_idx -= 1;
+                continue;
+            }
+            if matches!(
+                token.kind,
+                TokenKind::Colon | TokenKind::Comma | TokenKind::Period
+            ) {
+                continue;
+            }
+            if token.kind == TokenKind::Ident {
+                return Some(token);
+            }
+            break;
+        }
+        None
+    }
+
+    fn render_statement_signature(&self, tokens: &[&Token]) -> String {
+        let mut rendered = String::new();
+        let mut prev_kind = None;
+        for token in tokens {
+            if token.kind == TokenKind::Comment {
+                continue;
+            }
+            if token.kind == TokenKind::Period {
+                break;
+            }
+            let needs_space = !rendered.is_empty()
+                && !matches!(
+                    token.kind,
+                    TokenKind::Comma
+                        | TokenKind::Colon
+                        | TokenKind::Minus
+                        | TokenKind::RParen
+                        | TokenKind::RBracket
+                )
+                && !matches!(
+                    prev_kind,
+                    Some(
+                        TokenKind::LParen
+                            | TokenKind::LBracket
+                            | TokenKind::Colon
+                            | TokenKind::Minus
+                    )
+                );
+            if needs_space {
+                rendered.push(' ');
+            }
+            rendered.push_str(token.lexeme(self.source));
+            prev_kind = Some(token.kind);
+        }
+        rendered
     }
 
     fn form_header_token_refs(&self, form_node: NodeId) -> Vec<&'a Token> {
@@ -1012,6 +1186,61 @@ impl<'a> Collector<'a> {
                     }
                 }
             }
+        }
+    }
+
+    fn collect_simple_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        let tokens = self.simple_stmt_tokens(node);
+        let significant: Vec<_> = tokens
+            .into_iter()
+            .filter(|token| token.kind != TokenKind::Comment)
+            .collect();
+        let mut idx = 0usize;
+        while idx + 2 < significant.len() {
+            let base = significant[idx];
+            if base.kind != TokenKind::Ident {
+                idx += 1;
+                continue;
+            }
+
+            let mut cursor = idx;
+            let mut field_path = Vec::new();
+            while cursor + 2 < significant.len()
+                && significant[cursor + 1].kind == TokenKind::FatArrow
+                && significant[cursor + 2].kind == TokenKind::Ident
+            {
+                field_path.push(FieldAccessSegment {
+                    name: Arc::<str>::from(
+                        significant[cursor + 2]
+                            .lexeme(self.source)
+                            .to_ascii_lowercase(),
+                    ),
+                    range: significant[cursor + 2].range.clone(),
+                });
+                cursor += 2;
+            }
+
+            if field_path.is_empty() {
+                idx += 1;
+                continue;
+            }
+
+            let base_name = Arc::<str>::from(base.lexeme(self.source).to_ascii_lowercase());
+            self.add_reference(
+                scope,
+                Arc::clone(&base_name),
+                Namespace::Type,
+                ReferenceKind::StaticTarget,
+                base.range.clone(),
+            );
+            self.field_accesses.push(FieldAccess {
+                scope,
+                base_namespace: Namespace::Type,
+                base_name,
+                field_path,
+                in_type_position: false,
+            });
+            idx = cursor + 1;
         }
     }
 

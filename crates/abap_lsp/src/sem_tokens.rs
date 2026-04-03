@@ -174,6 +174,20 @@ fn collect_pending(
         );
     }
 
+    for member in &unit.class_members {
+        let token_type = match member.kind {
+            abap_symbols::ClassMemberKind::Method => ty_ix.method,
+        };
+        push_pending(
+            &mut pending,
+            member.decl_range.start,
+            member.decl_range.end,
+            0,
+            token_type,
+            mod_ix.declaration,
+        );
+    }
+
     for reference in &unit.references {
         let token_type = match &reference.resolution {
             Some(Resolution::Symbol(handle)) => lookup_symbol(project, *handle)
@@ -196,12 +210,20 @@ fn collect_pending(
 
     for access in &unit.field_accesses {
         for segment in &access.field_path {
+            let token_type = snapshot
+                .hovered_component_at(segment.range.start)
+                .map(|component| match component.kind {
+                    abap_cache::HoveredComponentKind::Scalar => ty_ix.property,
+                    abap_cache::HoveredComponentKind::Structured { .. } => ty_ix.property,
+                    abap_cache::HoveredComponentKind::Method => ty_ix.method,
+                })
+                .unwrap_or(ty_ix.property);
             push_pending(
                 &mut pending,
                 segment.range.start,
                 segment.range.end,
                 2,
-                ty_ix.property,
+                token_type,
                 0,
             );
         }

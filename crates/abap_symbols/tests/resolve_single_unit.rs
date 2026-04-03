@@ -133,13 +133,14 @@ ENDCLASS.
     let class_decls = unit
         .symbols
         .iter()
-        .filter(|s| {
-            s.kind == abap_symbols::SymbolKind::Class && s.name.as_ref() == "some_class"
-        })
+        .filter(|s| s.kind == abap_symbols::SymbolKind::Class && s.name.as_ref() == "some_class")
         .count();
     assert_eq!(class_decls, 1);
     assert!(
-        !unit.diagnostics.iter().any(|diag| diag.kind == DiagnosticKind::DuplicateDeclaration),
+        !unit
+            .diagnostics
+            .iter()
+            .any(|diag| diag.kind == DiagnosticKind::DuplicateDeclaration),
         "CLASS ... IMPLEMENTATION is not a second declaration of the class"
     );
 
@@ -164,6 +165,55 @@ ENDCLASS.
             symbol: class.id,
         }))
     );
+}
+
+#[test]
+fn collects_public_static_method_metadata_from_class_definition() {
+    let src = r#"
+CLASS some_class DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS exec
+      IMPORTING
+        iv_value TYPE i.
+ENDCLASS.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///class_methods.abap", src, &parsed);
+
+    let class_symbol = unit
+        .symbols
+        .iter()
+        .find(|symbol| {
+            symbol.kind == abap_symbols::SymbolKind::Class && symbol.name.as_ref() == "some_class"
+        })
+        .expect("class symbol");
+    let member = unit
+        .class_member(class_symbol.id, "exec")
+        .expect("class method metadata");
+    assert_eq!(member.kind, abap_symbols::ClassMemberKind::Method);
+    assert_eq!(member.visibility, abap_symbols::Visibility::Public);
+    assert!(member.is_static);
+    assert!(member.signature.contains("CLASS-METHODS exec"));
+    assert!(member.signature.contains("iv_value TYPE i"));
+}
+
+#[test]
+fn reports_unknown_static_class_member_access() {
+    let src = r#"
+CLASS some_class DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS exec.
+ENDCLASS.
+
+some_class=>exe( ).
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///unknown_static_method.abap", src, &parsed);
+
+    assert!(unit.diagnostics.iter().any(|diag| {
+        diag.kind == DiagnosticKind::UnknownField
+            && diag.message.contains("unknown static member 'exe'")
+    }));
 }
 
 #[test]
