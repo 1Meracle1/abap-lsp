@@ -213,6 +213,12 @@ pub struct StructureData {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClassMemberParameterData {
+    pub name: Arc<str>,
+    pub declared_type: Option<FieldTypeRefData>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClassMemberData {
     pub class_symbol: SymbolId,
     pub name: Arc<str>,
@@ -221,6 +227,27 @@ pub struct ClassMemberData {
     pub is_static: bool,
     pub decl_range: TextRange,
     pub signature: Arc<str>,
+    pub parameters: Vec<ClassMemberParameterData>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NamedArgumentTarget {
+    Constructor {
+        type_name: Arc<str>,
+    },
+    Method {
+        base_namespace: Namespace,
+        base_name: Arc<str>,
+        method_name: Arc<str>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NamedArgumentAccess {
+    pub scope: ScopeId,
+    pub name: Arc<str>,
+    pub range: TextRange,
+    pub target: NamedArgumentTarget,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -236,6 +263,7 @@ pub struct UnitAnalysis {
     pub include_edges: Vec<IncludeEdge>,
     pub field_accesses: Vec<FieldAccess>,
     pub class_members: Vec<ClassMemberData>,
+    pub named_arguments: Vec<NamedArgumentAccess>,
     pub provided_names: Vec<Arc<str>>,
 }
 

@@ -912,3 +912,229 @@ CREATE OBJECT lo_instance.
         unit.diagnostics
     );
 }
+
+#[test]
+fn resolves_superclass_reference_and_signature_parameters_in_class_definition() {
+    let src = r#"
+CLASS some_base DEFINITION.
+ENDCLASS.
+
+CLASS some_base IMPLEMENTATION.
+ENDCLASS.
+
+CLASS some_sub DEFINITION INHERITING FROM some_base.
+  PUBLIC SECTION.
+    METHODS exec
+      IMPORTING iv_input TYPE i
+      RETURNING VALUE(rv_output) TYPE string.
+ENDCLASS.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///class_signature.abap", src, &parsed);
+
+    let base = unit
+        .symbols
+        .iter()
+        .find(|symbol| {
+            symbol.kind == abap_symbols::SymbolKind::Class && symbol.name.as_ref() == "some_base"
+        })
+        .expect("base class symbol");
+
+    let superclass_ref = unit
+        .references
+        .iter()
+        .find(|reference| {
+            reference.kind == ReferenceKind::TypeRef
+                && reference.namespace == Namespace::Type
+                && reference.name.as_ref() == "some_base"
+                && src[reference.range.clone()].eq_ignore_ascii_case("some_base")
+        })
+        .expect("superclass reference");
+    assert_eq!(
+        superclass_ref.resolution,
+        Some(Resolution::Symbol(SymbolHandle {
+            unit: unit.unit_id,
+            symbol: base.id,
+        }))
+    );
+
+    for (name, type_name) in [("iv_input", "i"), ("rv_output", "string")] {
+        let param = unit
+            .symbols
+            .iter()
+            .find(|symbol| {
+                symbol.kind == abap_symbols::SymbolKind::Parameter && symbol.name.as_ref() == name
+            })
+            .expect("signature parameter symbol");
+        let declared_type = param.declared_type.as_ref().expect("parameter declared type");
+        assert_eq!(declared_type.namespace, Namespace::Type);
+        assert_eq!(declared_type.base_name.as_ref(), type_name);
+    }
+}
+
+#[test]
+fn resolves_constructor_arguments_and_token_only_statement_references() {
+    let src = r#"
+CLASS zcl_ast_node DEFINITION ABSTRACT.
+  PUBLIC SECTION.
+    METHODS to_string ABSTRACT
+      RETURNING VALUE(rv_text) TYPE string.
+ENDCLASS.
+
+CLASS zcl_ast_node IMPLEMENTATION.
+ENDCLASS.
+
+CLASS zcl_expr DEFINITION ABSTRACT INHERITING FROM zcl_ast_node.
+  PUBLIC SECTION.
+ENDCLASS.
+
+CLASS zcl_expr IMPLEMENTATION.
+ENDCLASS.
+
+CLASS zcl_stmt DEFINITION ABSTRACT INHERITING FROM zcl_ast_node.
+  PUBLIC SECTION.
+ENDCLASS.
+
+CLASS zcl_stmt IMPLEMENTATION.
+ENDCLASS.
+
+CLASS zcl_assign_stmt DEFINITION INHERITING FROM zcl_stmt.
+  PUBLIC SECTION.
+    METHODS constructor
+      IMPORTING
+        iv_name TYPE string
+        io_expr TYPE REF TO zcl_expr.
+ENDCLASS.
+
+CLASS zcl_assign_stmt IMPLEMENTATION.
+ENDCLASS.
+
+CLASS zcl_print_stmt DEFINITION INHERITING FROM zcl_stmt.
+  PUBLIC SECTION.
+    METHODS constructor
+      IMPORTING io_expr TYPE REF TO zcl_expr.
+ENDCLASS.
+
+CLASS zcl_print_stmt IMPLEMENTATION.
+ENDCLASS.
+
+CLASS zcl_program DEFINITION INHERITING FROM zcl_ast_node.
+  PUBLIC SECTION.
+    METHODS add_statement
+      IMPORTING io_stmt TYPE REF TO zcl_stmt.
+    METHODS to_string REDEFINITION.
+ENDCLASS.
+
+CLASS zcl_program IMPLEMENTATION.
+  METHOD add_statement.
+  ENDMETHOD.
+
+  METHOD to_string.
+  ENDMETHOD.
+ENDCLASS.
+
+START-OF-SELECTION.
+  DATA lo_expr1 TYPE REF TO zcl_expr.
+  DATA lo_assign TYPE REF TO zcl_assign_stmt.
+  DATA lo_print TYPE REF TO zcl_print_stmt.
+  DATA lo_prog TYPE REF TO zcl_program.
+
+  lo_assign = NEW zcl_assign_stmt(
+    iv_name = 'x'
+    io_expr = lo_expr1
+  ).
+  lo_prog->add_statement( lo_assign ).
+  lo_prog->add_statement( lo_print ).
+  WRITE / lo_prog->to_string( ).
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///simple_stmt_refs.abap", src, &parsed);
+
+    for name in ["lo_expr1", "lo_assign", "lo_print", "lo_prog"] {
+        assert!(
+            unit.references.iter().any(|reference| {
+                reference.kind == ReferenceKind::Identifier
+                    && reference.namespace == Namespace::Value
+                    && reference.name.as_ref() == name
+                    && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+            }),
+            "expected resolved value reference for `{name}`, refs={:?} diagnostics={:?}",
+            unit.references,
+            unit.diagnostics
+        );
+    }
+
+    let ctor_ref = unit
+        .references
+        .iter()
+        .find(|reference| {
+            reference.kind == ReferenceKind::TypeRef
+                && reference.namespace == Namespace::Type
+                && reference.name.as_ref() == "zcl_assign_stmt"
+        })
+        .expect("constructor type reference");
+    assert!(matches!(ctor_ref.resolution, Some(Resolution::Symbol(_))));
+
+    for member_name in ["add_statement", "to_string"] {
+        assert!(
+            unit.field_accesses.iter().any(|access| {
+                access.base_name.as_ref() == "lo_prog"
+                    && access
+                        .field_path
+                        .iter()
+                        .any(|segment| segment.name.as_ref() == member_name)
+            }),
+            "expected selector metadata for `{member_name}`"
+        );
+    }
+
+    assert!(
+        !unit
+            .diagnostics
+            .iter()
+            .any(|diag| diag.kind == DiagnosticKind::UnresolvedReference),
+        "unexpected unresolved diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn infers_inline_new_ref_type_and_collects_named_argument_accesses() {
+    let src = r#"
+CLASS zcl_program DEFINITION.
+  PUBLIC SECTION.
+    METHODS add_statement
+      IMPORTING io_stmt TYPE string.
+ENDCLASS.
+
+CLASS zcl_program IMPLEMENTATION.
+ENDCLASS.
+
+START-OF-SELECTION.
+  DATA(lo_prog) = NEW zcl_program( ).
+  lo_prog->add_statement( io_stmt = 'x' ).
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///inline_named_args.abap", src, &parsed);
+
+    let lo_prog = unit
+        .symbols
+        .iter()
+        .find(|symbol| {
+            symbol.kind == abap_symbols::SymbolKind::Variable && symbol.name.as_ref() == "lo_prog"
+        })
+        .expect("inline variable");
+    let declared_type = lo_prog.declared_type.as_ref().expect("inferred declared type");
+    assert!(declared_type.is_ref);
+    assert_eq!(declared_type.namespace, Namespace::Type);
+    assert_eq!(declared_type.base_name.as_ref(), "zcl_program");
+
+    assert!(unit.named_arguments.iter().any(|access| {
+        access.name.as_ref() == "io_stmt"
+            && matches!(
+                &access.target,
+                abap_symbols::NamedArgumentTarget::Method { method_name, .. }
+                    if method_name.as_ref() == "add_statement"
+            )
+    }));
+}

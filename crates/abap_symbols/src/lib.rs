@@ -8,10 +8,10 @@ mod scope;
 mod validate;
 
 pub use def_map::{
-    ClassMemberData, ClassMemberKind, Diagnostic, DiagnosticKind, FieldAccess, FieldAccessSegment,
-    FieldTypeRefData, IncludeEdge, ReferenceData, ReferenceKind, Resolution, StructureData,
-    StructureFieldData, StructureFieldInfo, StructureFieldShape, SymbolData, SymbolKind,
-    UnitAnalysis, Visibility,
+    ClassMemberData, ClassMemberKind, ClassMemberParameterData, Diagnostic, DiagnosticKind,
+    FieldAccess, FieldAccessSegment, FieldTypeRefData, IncludeEdge, NamedArgumentAccess,
+    NamedArgumentTarget, ReferenceData, ReferenceKind, Resolution, StructureData, StructureFieldData,
+    StructureFieldInfo, StructureFieldShape, SymbolData, SymbolKind, UnitAnalysis, Visibility,
 };
 pub use ids::{ReferenceId, ScopeId, StructureId, SymbolHandle, SymbolId, UnitId};
 pub use project::{ProjectAnalysis, ProjectInput, analyze_project, analyze_unit};

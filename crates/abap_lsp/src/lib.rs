@@ -231,6 +231,9 @@ pub fn hover(state: &ServerState, params: &HoverParams) -> Option<Hover> {
     if let Some(component) = snapshot.hovered_component_at(offset) {
         return structured_field_hover(&snapshot, component);
     }
+    if let Some(named_argument) = snapshot.hovered_named_argument_at(offset) {
+        return resolved_symbol_hover(&snapshot, named_argument);
+    }
     let symbol = snapshot.hovered_resolved_symbol_at(offset)?;
     resolved_symbol_hover(&snapshot, symbol)
 }
@@ -265,7 +268,12 @@ fn structured_field_hover(
             if let Some(declaration) = &component.declaration {
                 lines[0] = format!("```abap\n{}\n```", declaration);
             }
-            lines.push(format!("static method of `{}`", component.base_name));
+            let storage = if component.is_static_method {
+                "static"
+            } else {
+                "instance"
+            };
+            lines.push(format!("{storage} method of `{}`", component.base_name));
         }
     }
     if let Some(declared_type) = component.declared_type {
@@ -765,6 +773,106 @@ some_class=>exec( iv_value = 1 )."
     }
 
     #[test]
+    fn hover_returns_superclass_and_signature_parameter_metadata() {
+        let state = ServerState::default();
+        let text = "\
+CLASS some_base DEFINITION.
+ENDCLASS.
+
+CLASS some_base IMPLEMENTATION.
+ENDCLASS.
+
+CLASS some_sub DEFINITION INHERITING FROM some_base.
+  PUBLIC SECTION.
+    METHODS exec
+      IMPORTING iv_input TYPE i
+      RETURNING VALUE(rv_output) TYPE string.
+ENDCLASS.
+";
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///hover_signature.abap").expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: text.to_string(),
+                },
+            },
+        );
+
+        let superclass_line = text
+            .lines()
+            .enumerate()
+            .find(|(_, line)| line.contains("INHERITING FROM some_base"))
+            .expect("subclass header");
+        let superclass_col = superclass_line
+            .1
+            .find("some_base")
+            .expect("superclass column") as u32
+            + 1;
+        let superclass_hover = hover(
+            &state,
+            &HoverParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///hover_signature.abap").expect("uri"),
+                    },
+                    position: Position {
+                        line: superclass_line.0 as u32,
+                        character: superclass_col,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+            },
+        )
+        .expect("superclass hover");
+
+        let HoverContents::Markup(super_markup) = superclass_hover.contents else {
+            panic!("expected markdown hover");
+        };
+        assert!(super_markup.value.contains("`some_base`"));
+        assert!(super_markup.value.contains("Class"));
+
+        let param_line = text
+            .lines()
+            .enumerate()
+            .find(|(_, line)| line.contains("iv_input"))
+            .expect("parameter line")
+            .0 as u32;
+        let param_col = text
+            .lines()
+            .nth(param_line as usize)
+            .expect("parameter text")
+            .find("iv_input")
+            .expect("parameter column") as u32
+            + 1;
+        let param_hover = hover(
+            &state,
+            &HoverParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///hover_signature.abap").expect("uri"),
+                    },
+                    position: Position {
+                        line: param_line,
+                        character: param_col,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+            },
+        )
+        .expect("parameter hover");
+
+        let HoverContents::Markup(param_markup) = param_hover.contents else {
+            panic!("expected markdown hover");
+        };
+        assert!(param_markup.value.contains("`iv_input`"));
+        assert!(param_markup.value.contains("Parameter"));
+        assert!(param_markup.value.contains("```abap\nTYPE i\n```"));
+    }
+
+    #[test]
     fn hover_returns_resolved_variable_symbol() {
         let state = ServerState::default();
         publish_open_document(
@@ -805,6 +913,268 @@ some_class=>exec( iv_value = 1 )."
         assert!(markup.value.contains("`lv`"));
         assert!(markup.value.contains("Variable"));
         assert!(markup.value.contains("```abap\nTYPE i\n```"), "{}", markup.value);
+    }
+
+    #[test]
+    fn hover_returns_metadata_for_constructor_arguments_and_token_only_statements() {
+        let state = ServerState::default();
+        let text = "\
+CLASS zcl_ast_node DEFINITION ABSTRACT.
+  PUBLIC SECTION.
+    METHODS to_string ABSTRACT
+      RETURNING VALUE(rv_text) TYPE string.
+ENDCLASS.
+
+CLASS zcl_ast_node IMPLEMENTATION.
+ENDCLASS.
+
+CLASS zcl_expr DEFINITION ABSTRACT INHERITING FROM zcl_ast_node.
+  PUBLIC SECTION.
+ENDCLASS.
+
+CLASS zcl_expr IMPLEMENTATION.
+ENDCLASS.
+
+CLASS zcl_stmt DEFINITION ABSTRACT INHERITING FROM zcl_ast_node.
+  PUBLIC SECTION.
+ENDCLASS.
+
+CLASS zcl_stmt IMPLEMENTATION.
+ENDCLASS.
+
+CLASS zcl_assign_stmt DEFINITION INHERITING FROM zcl_stmt.
+  PUBLIC SECTION.
+    METHODS constructor
+      IMPORTING
+        iv_name TYPE string
+        io_expr TYPE REF TO zcl_expr.
+ENDCLASS.
+
+CLASS zcl_assign_stmt IMPLEMENTATION.
+ENDCLASS.
+
+CLASS zcl_print_stmt DEFINITION INHERITING FROM zcl_stmt.
+  PUBLIC SECTION.
+    METHODS constructor
+      IMPORTING io_expr TYPE REF TO zcl_expr.
+ENDCLASS.
+
+CLASS zcl_print_stmt IMPLEMENTATION.
+ENDCLASS.
+
+CLASS zcl_program DEFINITION INHERITING FROM zcl_ast_node.
+  PUBLIC SECTION.
+    METHODS add_statement
+      IMPORTING io_stmt TYPE REF TO zcl_stmt.
+    METHODS to_string REDEFINITION.
+ENDCLASS.
+
+CLASS zcl_program IMPLEMENTATION.
+  METHOD add_statement.
+  ENDMETHOD.
+
+  METHOD to_string.
+  ENDMETHOD.
+ENDCLASS.
+
+START-OF-SELECTION.
+  DATA lo_expr1 TYPE REF TO zcl_expr.
+  DATA lo_assign TYPE REF TO zcl_assign_stmt.
+  DATA lo_print TYPE REF TO zcl_print_stmt.
+  DATA lo_prog TYPE REF TO zcl_program.
+
+  lo_assign = NEW zcl_assign_stmt(
+    iv_name = 'x'
+    io_expr = lo_expr1
+  ).
+  lo_prog->add_statement( lo_assign ).
+  lo_prog->add_statement( lo_print ).
+  WRITE / lo_prog->to_string( ).
+";
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///hover_simple_ast.abap").expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: text.to_string(),
+                },
+            },
+        );
+
+        let lo_expr1_line = text
+            .lines()
+            .enumerate()
+            .find(|(_, line)| line.contains("io_expr = lo_expr1"))
+            .expect("constructor arg line");
+        let lo_expr1_col =
+            lo_expr1_line.1.find("lo_expr1").expect("constructor arg col") as u32 + 1;
+        let lo_expr1_hover = hover(
+            &state,
+            &HoverParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///hover_simple_ast.abap").expect("uri"),
+                    },
+                    position: Position {
+                        line: lo_expr1_line.0 as u32,
+                        character: lo_expr1_col,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+            },
+        )
+        .expect("constructor argument hover");
+        let HoverContents::Markup(lo_expr1_markup) = lo_expr1_hover.contents else {
+            panic!("expected markdown hover");
+        };
+        assert!(lo_expr1_markup.value.contains("`lo_expr1`"));
+        assert!(lo_expr1_markup.value.contains("Variable"));
+
+        let add_stmt_line = text
+            .lines()
+            .enumerate()
+            .find(|(_, line)| line.contains("add_statement( lo_assign )"))
+            .expect("method call line");
+        let add_stmt_col =
+            add_stmt_line.1.find("add_statement").expect("method name col") as u32 + 1;
+        let add_stmt_hover = hover(
+            &state,
+            &HoverParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///hover_simple_ast.abap").expect("uri"),
+                    },
+                    position: Position {
+                        line: add_stmt_line.0 as u32,
+                        character: add_stmt_col,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+            },
+        )
+        .expect("method hover");
+        let HoverContents::Markup(add_stmt_markup) = add_stmt_hover.contents else {
+            panic!("expected markdown hover");
+        };
+        assert!(add_stmt_markup.value.contains("METHODS add_statement"));
+        assert!(add_stmt_markup.value.contains("io_stmt TYPE REF TO zcl_stmt"));
+
+        let write_line = text
+            .lines()
+            .enumerate()
+            .find(|(_, line)| line.contains("WRITE / lo_prog->to_string"))
+            .expect("write line");
+        let to_string_col = write_line.1.find("to_string").expect("to_string col") as u32 + 1;
+        let to_string_hover = hover(
+            &state,
+            &HoverParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///hover_simple_ast.abap").expect("uri"),
+                    },
+                    position: Position {
+                        line: write_line.0 as u32,
+                        character: to_string_col,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+            },
+        )
+        .expect("write selector hover");
+        let HoverContents::Markup(to_string_markup) = to_string_hover.contents else {
+            panic!("expected markdown hover");
+        };
+        assert!(to_string_markup.value.contains("METHODS to_string"));
+        assert!(to_string_markup.value.contains("instance method of `lo_prog`"));
+    }
+
+    #[test]
+    fn hover_returns_instance_method_and_named_parameter_metadata_for_inline_new() {
+        let state = ServerState::default();
+        let text = "\
+CLASS zcl_program DEFINITION.
+  PUBLIC SECTION.
+    METHODS add_statement
+      IMPORTING io_stmt TYPE string.
+ENDCLASS.
+
+CLASS zcl_program IMPLEMENTATION.
+ENDCLASS.
+
+START-OF-SELECTION.
+  DATA(lo_prog) = NEW zcl_program( ).
+  lo_prog->add_statement( io_stmt = 'x' ).
+";
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///hover_inline_call.abap").expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: text.to_string(),
+                },
+            },
+        );
+
+        let method_line = text
+            .lines()
+            .enumerate()
+            .find(|(_, line)| line.contains("lo_prog->add_statement"))
+            .expect("method line");
+        let method_col = method_line.1.find("add_statement").expect("method col") as u32 + 1;
+        let method_hover = hover(
+            &state,
+            &HoverParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///hover_inline_call.abap").expect("uri"),
+                    },
+                    position: Position {
+                        line: method_line.0 as u32,
+                        character: method_col,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+            },
+        )
+        .expect("method hover");
+        let HoverContents::Markup(method_markup) = method_hover.contents else {
+            panic!("expected markdown hover");
+        };
+        assert!(method_markup.value.contains("METHODS add_statement"));
+        assert!(method_markup.value.contains("instance method of `lo_prog`"));
+
+        let param_line = text
+            .lines()
+            .enumerate()
+            .find(|(_, line)| line.contains("io_stmt = 'x'"))
+            .expect("parameter line");
+        let param_col = param_line.1.find("io_stmt").expect("parameter col") as u32 + 1;
+        let param_hover = hover(
+            &state,
+            &HoverParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///hover_inline_call.abap").expect("uri"),
+                    },
+                    position: Position {
+                        line: param_line.0 as u32,
+                        character: param_col,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+            },
+        )
+        .expect("parameter hover");
+        let HoverContents::Markup(param_markup) = param_hover.contents else {
+            panic!("expected markdown hover");
+        };
+        assert!(param_markup.value.contains("`io_stmt`"));
+        assert!(param_markup.value.contains("Parameter"));
+        assert!(param_markup.value.contains("```abap\nTYPE string\n```"));
     }
 
     #[test]

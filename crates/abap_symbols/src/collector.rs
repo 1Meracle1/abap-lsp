@@ -4,13 +4,14 @@ use std::sync::Arc;
 
 use abap_ast::arena::NodeId;
 use abap_ast::{File, SyntaxKind};
-use abap_lexer::{TextRange, Token, TokenKind};
+use abap_lexer::{TextRange, Token, TokenKind, have_space_between};
 
 use crate::builtins::{BUILTIN_STRUCTURES, BUILTIN_SYMBOLS, BuiltinTypeKind};
 use crate::def_map::{
-    ClassMemberData, ClassMemberKind, Diagnostic, DiagnosticKind, FieldAccess, FieldAccessSegment,
-    FieldTypeRefData, IncludeEdge, ReferenceData, ReferenceKind, StructureData, StructureFieldData,
-    SymbolData, SymbolKind, UnitAnalysis, Visibility,
+    ClassMemberData, ClassMemberKind, ClassMemberParameterData, Diagnostic, DiagnosticKind,
+    FieldAccess, FieldAccessSegment, FieldTypeRefData, IncludeEdge, NamedArgumentAccess,
+    NamedArgumentTarget, ReferenceData, ReferenceKind, StructureData, StructureFieldData, SymbolData,
+    SymbolKind, UnitAnalysis, Visibility,
 };
 use crate::ids::{ReferenceId, ScopeId, StructureId, SymbolId, UnitId};
 use crate::scope::{Namespace, ScopeData, ScopeKind};
@@ -77,6 +78,7 @@ pub struct Collector<'a> {
     include_edges: Vec<IncludeEdge>,
     field_accesses: Vec<FieldAccess>,
     class_members: Vec<ClassMemberData>,
+    named_arguments: Vec<NamedArgumentAccess>,
     class_definition_scopes: HashMap<SymbolId, ScopeId>,
     class_superclasses: HashMap<SymbolId, Arc<str>>,
     class_method_signatures: HashMap<SymbolId, HashMap<Arc<str>, PendingMethodSignature>>,
@@ -111,6 +113,7 @@ impl<'a> Collector<'a> {
             include_edges: Vec::new(),
             field_accesses: Vec::new(),
             class_members: Vec::new(),
+            named_arguments: Vec::new(),
             class_definition_scopes: HashMap::new(),
             class_superclasses: HashMap::new(),
             class_method_signatures: HashMap::new(),
@@ -136,6 +139,7 @@ impl<'a> Collector<'a> {
             include_edges: self.include_edges,
             field_accesses: self.field_accesses,
             class_members: self.class_members,
+            named_arguments: self.named_arguments,
             provided_names,
         }
     }
@@ -434,6 +438,7 @@ impl<'a> Collector<'a> {
             | SyntaxKind::BetweenExpr
             | SyntaxKind::AssignStmt => self.collect_expr(node, scope),
             SyntaxKind::SimpleStmt => self.collect_simple_stmt(node, scope),
+            SyntaxKind::WriteStmt => self.collect_write_stmt(node, scope),
             _ => self.walk_children(node, scope),
         }
     }
@@ -479,14 +484,50 @@ impl<'a> Collector<'a> {
     }
 
     fn walk_inline_decl(&mut self, node: NodeId, scope: ScopeId) {
+        let (structure, declared_type) = self.inline_decl_inferred_type(node, scope);
         for child in self.file.children(node) {
             if self.file.kind(child) == SyntaxKind::DataDeclName
                 && let Some((name, range)) = self.node_name(child)
             {
-                self.declare_plain_symbol(scope, name, SymbolKind::Variable, range);
+                self.declare_symbol(
+                    scope,
+                    name,
+                    SymbolKind::Variable,
+                    range,
+                    structure,
+                    declared_type.clone(),
+                );
             }
         }
         self.walk_children(node, scope);
+    }
+
+    fn inline_decl_inferred_type(
+        &self,
+        node: NodeId,
+        scope: ScopeId,
+    ) -> (Option<StructureId>, Option<FieldTypeRefData>) {
+        let mut stack = vec![node];
+        while let Some(current) = stack.pop() {
+            if self.file.kind(current) == SyntaxKind::ConstructorExpr
+                && let Some((type_name, _)) = self.constructor_type_ref(current)
+            {
+                let declared_type = FieldTypeRefData {
+                    namespace: Namespace::Type,
+                    is_ref: true,
+                    base_name: Arc::clone(&type_name),
+                    field_path: Vec::new(),
+                };
+                let structure = self
+                    .lookup_structure_symbol(scope, Namespace::Type, type_name.as_ref(), false)
+                    .and_then(|symbol_id| self.symbol(symbol_id).structure);
+                return (structure, Some(declared_type));
+            }
+            for child in self.file.children(current) {
+                stack.push(child);
+            }
+        }
+        (None, None)
     }
 
     fn walk_include_stmt(&mut self, node: NodeId, scope: ScopeId) {
@@ -558,9 +599,16 @@ impl<'a> Collector<'a> {
             self.add_reference(scope, name, Namespace::Type, ReferenceKind::TypeRef, range);
         }
         if !is_implementation
-            && let Some(superclass) = self.class_superclass_name(node)
+            && let Some((superclass, range)) = self.class_superclass_name(node)
         {
-            self.class_superclasses.insert(owner, superclass);
+            self.class_superclasses.insert(owner, Arc::clone(&superclass));
+            self.add_reference(
+                scope,
+                superclass,
+                Namespace::Type,
+                ReferenceKind::TypeRef,
+                range,
+            );
         }
         let parent_scope = if is_implementation {
             self.class_definition_scopes
@@ -679,11 +727,16 @@ impl<'a> Collector<'a> {
                 visibility = section_visibility;
                 continue;
             }
-            if let Some(member) =
+            if let Some(mut member) =
                 self.class_member_from_simple_stmt(class_symbol, visibility, &tokens)
             {
                 if member.kind == ClassMemberKind::Method {
                     let signature = self.parse_method_signature(&tokens);
+                    member.parameters = self.class_member_parameters(&signature);
+                    self.declare_method_signature_parameter_symbols(
+                        self.file.range(child),
+                        &signature,
+                    );
                     self.class_method_signatures
                         .entry(class_symbol)
                         .or_default()
@@ -694,7 +747,7 @@ impl<'a> Collector<'a> {
         }
     }
 
-    fn class_superclass_name(&self, node: NodeId) -> Option<Arc<str>> {
+    fn class_superclass_name(&self, node: NodeId) -> Option<(Arc<str>, TextRange)> {
         let tokens = self.simple_stmt_tokens(node);
         let significant: Vec<_> = tokens
             .iter()
@@ -706,8 +759,9 @@ impl<'a> Collector<'a> {
                 && self.token_matches_keyword(window[1], "from")
                 && window[2].kind == TokenKind::Ident
             {
-                return Some(Arc::<str>::from(
-                    window[2].lexeme(self.source).to_ascii_lowercase(),
+                return Some((
+                    Arc::<str>::from(window[2].lexeme(self.source).to_ascii_lowercase()),
+                    window[2].range.clone(),
                 ));
             }
         }
@@ -761,7 +815,22 @@ impl<'a> Collector<'a> {
             is_static,
             decl_range: name_tok.range.clone(),
             signature: Arc::<str>::from(self.render_statement_signature(tokens)),
+            parameters: Vec::new(),
         })
+    }
+
+    fn class_member_parameters(
+        &self,
+        signature: &PendingMethodSignature,
+    ) -> Vec<ClassMemberParameterData> {
+        signature
+            .parameters
+            .iter()
+            .map(|param| ClassMemberParameterData {
+                name: Arc::clone(&param.name),
+                declared_type: param.declared_type.clone(),
+            })
+            .collect()
     }
 
     fn class_member_statement_kind(
@@ -1090,6 +1159,29 @@ impl<'a> Collector<'a> {
                 param.range,
                 None,
                 param.declared_type,
+            );
+        }
+    }
+
+    fn declare_method_signature_parameter_symbols(
+        &mut self,
+        signature_range: TextRange,
+        signature: &PendingMethodSignature,
+    ) {
+        if signature.parameters.is_empty() {
+            return;
+        }
+        // Signature-only parameters should highlight and hover in the definition section,
+        // but they must not participate in body resolution for unrelated methods.
+        let signature_scope = self.push_scope(ScopeKind::Method, signature_range, None, None);
+        for param in &signature.parameters {
+            self.declare_symbol(
+                signature_scope,
+                Arc::clone(&param.name),
+                SymbolKind::Parameter,
+                param.range.clone(),
+                None,
+                param.declared_type.clone(),
             );
         }
     }
@@ -1556,6 +1648,28 @@ impl<'a> Collector<'a> {
                 if let Some((name, range)) = self.constructor_type_ref(node) {
                     self.add_reference(scope, name, Namespace::Type, ReferenceKind::TypeRef, range);
                 }
+                let tokens: Vec<_> = self
+                    .file
+                    .children(node)
+                    .filter_map(|child| self.token_for_node(child))
+                    .collect();
+                if let Some(lparen_idx) = tokens.iter().position(|token| token.kind == TokenKind::LParen)
+                    && let Some(rparen_idx) =
+                        self.find_matching_group_end(&tokens, lparen_idx, TokenKind::LParen, TokenKind::RParen)
+                {
+                    if let Some((type_name, _)) = self.constructor_type_ref(node) {
+                        self.collect_named_arguments_from_tokens(
+                            &tokens[lparen_idx + 1..rparen_idx],
+                            scope,
+                            NamedArgumentTarget::Constructor { type_name },
+                        );
+                    }
+                    self.collect_token_expression_refs(
+                        &tokens[lparen_idx + 1..rparen_idx],
+                        scope,
+                        true,
+                    );
+                }
                 for child in self.file.children(node) {
                     if self.file.kind(child) != SyntaxKind::Token {
                         self.collect_expr(child, scope);
@@ -1594,54 +1708,350 @@ impl<'a> Collector<'a> {
             .into_iter()
             .filter(|token| token.kind != TokenKind::Comment)
             .collect();
-        self.collect_create_object_stmt(&significant, scope);
-        let mut idx = 0usize;
-        while idx + 2 < significant.len() {
-            let base = significant[idx];
-            if base.kind != TokenKind::Ident {
-                idx += 1;
-                continue;
-            }
-
-            let mut cursor = idx;
-            let mut field_path = Vec::new();
-            while cursor + 2 < significant.len()
-                && significant[cursor + 1].kind == TokenKind::FatArrow
-                && significant[cursor + 2].kind == TokenKind::Ident
-            {
-                field_path.push(FieldAccessSegment {
-                    name: Arc::<str>::from(
-                        significant[cursor + 2]
-                            .lexeme(self.source)
-                            .to_ascii_lowercase(),
-                    ),
-                    range: significant[cursor + 2].range.clone(),
-                });
-                cursor += 2;
-            }
-
-            if field_path.is_empty() {
-                idx += 1;
-                continue;
-            }
-
-            let base_name = Arc::<str>::from(base.lexeme(self.source).to_ascii_lowercase());
-            self.add_reference(
-                scope,
-                Arc::clone(&base_name),
-                Namespace::Type,
-                ReferenceKind::StaticTarget,
-                base.range.clone(),
-            );
-            self.field_accesses.push(FieldAccess {
-                scope,
-                base_namespace: Namespace::Type,
-                base_name,
-                field_path,
-                in_type_position: false,
-            });
-            idx = cursor + 1;
+        if self.class_member_statement_kind(&significant).is_some() {
+            return;
         }
+        self.collect_create_object_stmt(&significant, scope);
+        self.collect_token_expression_refs(&significant, scope, false);
+    }
+
+    fn collect_write_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        let tokens = self.simple_stmt_tokens(node);
+        let significant: Vec<_> = tokens
+            .into_iter()
+            .filter(|token| token.kind != TokenKind::Comment)
+            .collect();
+        let Some((_, tail)) = significant.split_first() else {
+            return;
+        };
+        self.collect_token_expression_refs(tail, scope, true);
+    }
+
+    fn collect_token_expression_refs(
+        &mut self,
+        tokens: &[&Token],
+        scope: ScopeId,
+        allow_leading_value_ident: bool,
+    ) {
+        let mut idx = 0usize;
+        while idx < tokens.len() {
+            let token = tokens[idx];
+            match token.kind {
+                TokenKind::Comment => {
+                    idx += 1;
+                }
+                TokenKind::LParen => {
+                    if let Some(end_idx) =
+                        self.find_matching_group_end(tokens, idx, TokenKind::LParen, TokenKind::RParen)
+                    {
+                        self.collect_token_expression_refs(
+                            &tokens[idx + 1..end_idx],
+                            scope,
+                            true,
+                        );
+                        idx = end_idx + 1;
+                    } else {
+                        idx += 1;
+                    }
+                }
+                TokenKind::LBracket => {
+                    if let Some(end_idx) = self.find_matching_group_end(
+                        tokens,
+                        idx,
+                        TokenKind::LBracket,
+                        TokenKind::RBracket,
+                    ) {
+                        self.collect_token_expression_refs(
+                            &tokens[idx + 1..end_idx],
+                            scope,
+                            true,
+                        );
+                        idx = end_idx + 1;
+                    } else {
+                        idx += 1;
+                    }
+                }
+                TokenKind::LBrace => {
+                    if let Some(end_idx) =
+                        self.find_matching_group_end(tokens, idx, TokenKind::LBrace, TokenKind::RBrace)
+                    {
+                        self.collect_token_expression_refs(
+                            &tokens[idx + 1..end_idx],
+                            scope,
+                            true,
+                        );
+                        idx = end_idx + 1;
+                    } else {
+                        idx += 1;
+                    }
+                }
+                TokenKind::Ident => {
+                    if self.token_matches_keyword(token, "new") {
+                        idx = self.collect_new_expression_tokens(tokens, idx, scope);
+                        continue;
+                    }
+                    if let Some((next_idx, namespace, base_name, base_range, field_path)) =
+                        self.consume_selector_access_from_tokens(tokens, idx)
+                    {
+                        let method_name =
+                            field_path.last().map(|segment| Arc::clone(&segment.name));
+                        let kind = if namespace == Namespace::Type {
+                            ReferenceKind::StaticTarget
+                        } else {
+                            ReferenceKind::Identifier
+                        };
+                        self.add_reference(scope, base_name.clone(), namespace, kind, base_range);
+                        if !field_path.is_empty() {
+                            self.field_accesses.push(FieldAccess {
+                                scope,
+                                base_namespace: namespace,
+                                base_name: Arc::clone(&base_name),
+                                field_path,
+                                in_type_position: false,
+                            });
+                        }
+                        idx = next_idx;
+                        if tokens.get(idx).map(|token| token.kind) == Some(TokenKind::LParen)
+                            && let Some(end_idx) = self.find_matching_group_end(
+                                tokens,
+                                idx,
+                                TokenKind::LParen,
+                                TokenKind::RParen,
+                            )
+                        {
+                            if let Some(method_name) = method_name {
+                                self.collect_named_arguments_from_tokens(
+                                    &tokens[idx + 1..end_idx],
+                                    scope,
+                                    NamedArgumentTarget::Method {
+                                        base_namespace: namespace,
+                                        base_name: Arc::clone(&base_name),
+                                        method_name,
+                                    },
+                                );
+                            }
+                            self.collect_token_expression_refs(
+                                &tokens[idx + 1..end_idx],
+                                scope,
+                                true,
+                            );
+                            idx = end_idx + 1;
+                        }
+                        continue;
+                    }
+                    if self.token_is_expression_value_ident(
+                        tokens,
+                        idx,
+                        allow_leading_value_ident,
+                    ) {
+                        self.add_reference(
+                            scope,
+                            Arc::<str>::from(token.lexeme(self.source).to_ascii_lowercase()),
+                            Namespace::Value,
+                            ReferenceKind::Identifier,
+                            token.range.clone(),
+                        );
+                    }
+                    idx += 1;
+                }
+                _ => {
+                    idx += 1;
+                }
+            }
+        }
+    }
+
+    fn collect_new_expression_tokens(&mut self, tokens: &[&Token], idx: usize, scope: ScopeId) -> usize {
+        let mut cursor = idx + 1;
+        while matches!(tokens.get(cursor).map(|token| token.kind), Some(TokenKind::Comment)) {
+            cursor += 1;
+        }
+        let Some(lparen_idx) = tokens[cursor..]
+            .iter()
+            .position(|token| token.kind == TokenKind::LParen)
+            .map(|relative| cursor + relative)
+        else {
+            return idx + 1;
+        };
+        if let Some((name, range)) = self.simple_type_ref_base_from_tokens(&tokens[cursor..lparen_idx]) {
+            self.add_reference(scope, name, Namespace::Type, ReferenceKind::TypeRef, range);
+        }
+        if let Some(rparen_idx) =
+            self.find_matching_group_end(tokens, lparen_idx, TokenKind::LParen, TokenKind::RParen)
+        {
+            if let Some((name, _)) = self.simple_type_ref_base_from_tokens(&tokens[cursor..lparen_idx]) {
+                self.collect_named_arguments_from_tokens(
+                    &tokens[lparen_idx + 1..rparen_idx],
+                    scope,
+                    NamedArgumentTarget::Constructor { type_name: name },
+                );
+            }
+            self.collect_token_expression_refs(&tokens[lparen_idx + 1..rparen_idx], scope, true);
+            return rparen_idx + 1;
+        }
+        lparen_idx + 1
+    }
+
+    fn named_argument_target_for_callee(&self, callee: NodeId) -> Option<NamedArgumentTarget> {
+        let (base_namespace, base_name, _, field_path) = self.selector_access_chain(callee)?;
+        let method_name = field_path.last()?.name.clone();
+        Some(NamedArgumentTarget::Method {
+            base_namespace,
+            base_name,
+            method_name,
+        })
+    }
+
+    fn collect_named_arguments_from_tokens(
+        &mut self,
+        tokens: &[&Token],
+        scope: ScopeId,
+        target: NamedArgumentTarget,
+    ) {
+        let mut paren = 0i32;
+        let mut bracket = 0i32;
+        let mut brace = 0i32;
+        for window in tokens.windows(2) {
+            let current = window[0];
+            let next = window[1];
+            match current.kind {
+                TokenKind::LParen => paren += 1,
+                TokenKind::RParen => paren -= 1,
+                TokenKind::LBracket => bracket += 1,
+                TokenKind::RBracket => bracket -= 1,
+                TokenKind::LBrace => brace += 1,
+                TokenKind::RBrace => brace -= 1,
+                _ => {}
+            }
+            if paren != 0 || bracket != 0 || brace != 0 {
+                continue;
+            }
+            if current.kind == TokenKind::Ident && next.kind == TokenKind::Eq {
+                self.named_arguments.push(NamedArgumentAccess {
+                    scope,
+                    name: Arc::<str>::from(current.lexeme(self.source).to_ascii_lowercase()),
+                    range: current.range.clone(),
+                    target: target.clone(),
+                });
+            }
+        }
+    }
+
+    fn token_is_expression_value_ident(
+        &self,
+        tokens: &[&Token],
+        idx: usize,
+        allow_leading_value_ident: bool,
+    ) -> bool {
+        let token = tokens[idx];
+        if token.kind != TokenKind::Ident
+            || self.token_matches_keyword(token, "new")
+            || self.token_matches_keyword(token, "ref")
+            || self.token_matches_keyword(token, "to")
+        {
+            return false;
+        }
+        if matches!(
+            tokens.get(idx + 1).map(|token| token.kind),
+            Some(
+                TokenKind::Eq
+                    | TokenKind::Arrow
+                    | TokenKind::FatArrow
+                    | TokenKind::Tilde
+                    | TokenKind::Minus
+            )
+        ) {
+            return false;
+        }
+        let prev_kind = idx.checked_sub(1).and_then(|prev| tokens.get(prev)).map(|token| token.kind);
+        allow_leading_value_ident && idx == 0
+            || matches!(
+                prev_kind,
+                Some(
+                    TokenKind::Eq
+                        | TokenKind::Comma
+                        | TokenKind::LParen
+                        | TokenKind::LBracket
+                        | TokenKind::LBrace
+                        | TokenKind::Slash
+                        | TokenKind::Plus
+                        | TokenKind::Minus
+                        | TokenKind::Star
+                        | TokenKind::Ampersand
+                        | TokenKind::Lt
+                        | TokenKind::Gt
+                        | TokenKind::Le
+                        | TokenKind::Ge
+                        | TokenKind::Ne
+                        | TokenKind::QuestionEq
+                )
+            )
+    }
+
+    fn consume_selector_access_from_tokens(
+        &self,
+        tokens: &[&Token],
+        idx: usize,
+    ) -> Option<(usize, Namespace, Arc<str>, TextRange, Vec<FieldAccessSegment>)> {
+        let base = *tokens.get(idx)?;
+        if base.kind != TokenKind::Ident {
+            return None;
+        }
+        let mut cursor = idx;
+        let mut namespace = None;
+        let mut field_path = Vec::new();
+        while cursor + 2 < tokens.len() {
+            let op = tokens[cursor + 1];
+            let field = tokens[cursor + 2];
+            if field.kind != TokenKind::Ident {
+                break;
+            }
+            let step_namespace = match op.kind {
+                TokenKind::FatArrow => Namespace::Type,
+                TokenKind::Arrow | TokenKind::Tilde => Namespace::Value,
+                TokenKind::Minus
+                    if !have_space_between(tokens[cursor], op)
+                        && !have_space_between(op, field) =>
+                {
+                    Namespace::Value
+                }
+                _ => break,
+            };
+            namespace.get_or_insert(step_namespace);
+            field_path.push(FieldAccessSegment {
+                name: Arc::<str>::from(field.lexeme(self.source).to_ascii_lowercase()),
+                range: field.range.clone(),
+            });
+            cursor += 2;
+        }
+        Some((
+            cursor + 1,
+            namespace?,
+            Arc::<str>::from(base.lexeme(self.source).to_ascii_lowercase()),
+            base.range.clone(),
+            field_path,
+        ))
+    }
+
+    fn find_matching_group_end(
+        &self,
+        tokens: &[&Token],
+        start_idx: usize,
+        open_kind: TokenKind,
+        close_kind: TokenKind,
+    ) -> Option<usize> {
+        let mut depth = 0i32;
+        for (idx, token) in tokens.iter().enumerate().skip(start_idx) {
+            if token.kind == open_kind {
+                depth += 1;
+            } else if token.kind == close_kind {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(idx);
+                }
+            }
+        }
+        None
     }
 
     fn collect_create_object_stmt(&mut self, tokens: &[&Token], scope: ScopeId) {
@@ -1745,6 +2155,23 @@ impl<'a> Collector<'a> {
                     }
                 }
                 _ => self.collect_expr(callee, scope),
+            }
+            if let Some(target) = self.named_argument_target_for_callee(callee) {
+                let tokens: Vec<_> = self
+                    .file
+                    .children(node)
+                    .filter_map(|child| self.token_for_node(child))
+                    .collect();
+                if let Some(lparen_idx) = tokens.iter().position(|token| token.kind == TokenKind::LParen)
+                    && let Some(rparen_idx) =
+                        self.find_matching_group_end(&tokens, lparen_idx, TokenKind::LParen, TokenKind::RParen)
+                {
+                    self.collect_named_arguments_from_tokens(
+                        &tokens[lparen_idx + 1..rparen_idx],
+                        scope,
+                        target,
+                    );
+                }
             }
         }
         for child in children {

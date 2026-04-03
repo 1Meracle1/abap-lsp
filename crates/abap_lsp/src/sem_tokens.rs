@@ -229,6 +229,22 @@ fn collect_pending(
         }
     }
 
+    for named_argument in &unit.named_arguments {
+        if snapshot
+            .hovered_named_argument_at(named_argument.range.start)
+            .is_some()
+        {
+            push_pending(
+                &mut pending,
+                named_argument.range.start,
+                named_argument.range.end,
+                2,
+                ty_ix.parameter,
+                0,
+            );
+        }
+    }
+
     pending
 }
 

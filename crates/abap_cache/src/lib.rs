@@ -4,9 +4,10 @@ use std::sync::Arc;
 
 use abap_parser::{ParseResult, parse};
 use abap_symbols::{
-    ClassMemberData, ClassMemberKind, Namespace, ProjectAnalysis, ProjectInput, Resolution,
-    ScopeId, StructureFieldInfo, StructureFieldShape, StructureId, SymbolData, SymbolId,
-    SymbolKind, UnitAnalysis, Visibility, analyze_project,
+    ClassMemberData, ClassMemberKind, ClassMemberParameterData, NamedArgumentAccess,
+    NamedArgumentTarget, Namespace, ProjectAnalysis, ProjectInput, Resolution, ScopeId,
+    StructureFieldInfo, StructureFieldShape, StructureId, SymbolData, SymbolId, SymbolKind,
+    UnitAnalysis, Visibility, analyze_project,
 };
 use parking_lot::RwLock;
 
@@ -37,6 +38,7 @@ pub struct HoveredComponentInfo {
     pub declared_type: Option<String>,
     pub declaration: Option<String>,
     pub kind: HoveredComponentKind,
+    pub is_static_method: bool,
     pub in_type_position: bool,
 }
 
@@ -150,6 +152,7 @@ impl AnalysisSnapshot {
                 declared_type: None,
                 declaration: Some(member.signature.to_string()),
                 kind: HoveredComponentKind::Method,
+                is_static_method: member.is_static,
                 in_type_position: access.in_type_position,
             });
         }
@@ -182,7 +185,20 @@ impl AnalysisSnapshot {
             declared_type: field.type_ref.as_ref().map(format_field_type_ref),
             declaration: None,
             kind,
+            is_static_method: false,
             in_type_position: access.in_type_position,
+        })
+    }
+
+    pub fn hovered_named_argument_at(&self, offset: usize) -> Option<HoveredSymbolInfo> {
+        let access = self.symbols.named_arguments.iter().find(|access| {
+            access.range.start <= offset && offset < access.range.end
+        })?;
+        let parameter = resolve_named_argument_parameter(self, access)?;
+        Some(HoveredSymbolInfo {
+            range: access.range.clone(),
+            display_name: Arc::clone(&parameter.name),
+            markdown_lines: markdown_lines_for_named_argument(access, parameter),
         })
     }
 
@@ -409,6 +425,17 @@ fn markdown_lines_for_declared_symbol(unit: &UnitAnalysis, symbol: &SymbolData) 
     lines
 }
 
+fn markdown_lines_for_named_argument(
+    access: &NamedArgumentAccess,
+    parameter: &ClassMemberParameterData,
+) -> Vec<String> {
+    let mut lines = vec![format!("`{}`", access.name), "Parameter".to_string()];
+    if let Some(type_ref) = &parameter.declared_type {
+        lines.push(format_hover_type_clause(&format_field_type_ref(type_ref)));
+    }
+    lines
+}
+
 fn markdown_lines_for_class_member(unit: &UnitAnalysis, member: &ClassMemberData) -> Vec<String> {
     let class_name = unit.symbol(member.class_symbol).name.as_ref();
     let visibility = match member.visibility {
@@ -504,6 +531,43 @@ fn resolve_field_access_base_symbol<'a>(
     )
 }
 
+fn resolve_named_argument_parameter<'a>(
+    snapshot: &'a AnalysisSnapshot,
+    access: &NamedArgumentAccess,
+) -> Option<&'a ClassMemberParameterData> {
+    let member = match &access.target {
+        NamedArgumentTarget::Constructor { type_name } => {
+            let (unit, class_symbol_id) =
+                resolve_symbol_from_context(snapshot, access.scope, Namespace::Type, type_name, false)?;
+            if unit.symbol(class_symbol_id).kind != SymbolKind::Class {
+                return None;
+            }
+            unit.class_member(class_symbol_id, "constructor")?
+        }
+        NamedArgumentTarget::Method {
+            base_namespace,
+            base_name,
+            method_name,
+        } => {
+            let (unit, class_symbol_id, requires_static) = resolve_method_target_from_context(
+                snapshot,
+                access.scope,
+                *base_namespace,
+                base_name,
+            )?;
+            let member = unit.class_member(class_symbol_id, method_name)?;
+            if member.kind != ClassMemberKind::Method || (requires_static && !member.is_static) {
+                return None;
+            }
+            member
+        }
+    };
+    member
+        .parameters
+        .iter()
+        .find(|parameter| parameter.name == access.name)
+}
+
 fn resolve_symbol_from_context<'a>(
     snapshot: &'a AnalysisSnapshot,
     scope: ScopeId,
@@ -579,6 +643,35 @@ fn resolve_symbol_from_context<'a>(
     None
 }
 
+fn resolve_method_target_from_context<'a>(
+    snapshot: &'a AnalysisSnapshot,
+    scope: ScopeId,
+    namespace: Namespace,
+    name: &Arc<str>,
+) -> Option<(&'a UnitAnalysis, SymbolId, bool)> {
+    let (unit, symbol_id) = resolve_symbol_from_context(snapshot, scope, namespace, name, false)?;
+    let base_symbol = unit.symbol(symbol_id);
+    if namespace == Namespace::Type && base_symbol.kind == SymbolKind::Class {
+        return Some((unit, symbol_id, true));
+    }
+    if namespace != Namespace::Value {
+        return None;
+    }
+    let declared_type = base_symbol.declared_type.as_ref()?;
+    if !declared_type.is_ref || !declared_type.field_path.is_empty() {
+        return None;
+    }
+    let (class_unit, class_symbol_id) = resolve_symbol_from_context(
+        snapshot,
+        scope,
+        Namespace::Type,
+        &declared_type.base_name,
+        false,
+    )?;
+    (class_unit.symbol(class_symbol_id).kind == SymbolKind::Class)
+        .then_some((class_unit, class_symbol_id, false))
+}
+
 fn fallback_namespace_for_context(
     namespace: Namespace,
     in_type_position: bool,
@@ -627,17 +720,45 @@ fn resolve_class_selector_member<'a>(
     unit: &'a UnitAnalysis,
     symbol_id: SymbolId,
 ) -> Option<&'a ClassMemberData> {
-    if access.base_namespace != Namespace::Type || segment_index != 0 {
+    if segment_index != 0 {
         return None;
     }
-    if unit.symbol(symbol_id).kind != SymbolKind::Class {
+    let (class_unit, class_symbol_id, requires_static) =
+        resolve_class_selector_base(snapshot, access, unit, symbol_id)?;
+    let member =
+        class_unit.class_member(class_symbol_id, access.field_path[segment_index].name.as_ref())?;
+    if member.kind != ClassMemberKind::Method || (requires_static && !member.is_static) {
         return None;
     }
-    let member = unit.class_member(symbol_id, access.field_path[segment_index].name.as_ref())?;
-    if !member.is_static || member.kind != ClassMemberKind::Method {
+    class_member_visible_to(snapshot.symbols.as_ref(), access.scope, class_unit, member).then_some(member)
+}
+
+fn resolve_class_selector_base<'a>(
+    snapshot: &'a AnalysisSnapshot,
+    access: &abap_symbols::FieldAccess,
+    unit: &'a UnitAnalysis,
+    symbol_id: SymbolId,
+) -> Option<(&'a UnitAnalysis, SymbolId, bool)> {
+    let base_symbol = unit.symbol(symbol_id);
+    if access.base_namespace == Namespace::Type && base_symbol.kind == SymbolKind::Class {
+        return Some((unit, symbol_id, true));
+    }
+    if access.base_namespace != Namespace::Value {
         return None;
     }
-    class_member_visible_to(snapshot.symbols.as_ref(), access.scope, unit, member).then_some(member)
+    let declared_type = base_symbol.declared_type.as_ref()?;
+    if !declared_type.is_ref || !declared_type.field_path.is_empty() {
+        return None;
+    }
+    let (class_unit, class_symbol_id) = resolve_symbol_from_context(
+        snapshot,
+        access.scope,
+        Namespace::Type,
+        &declared_type.base_name,
+        false,
+    )?;
+    (class_unit.symbol(class_symbol_id).kind == SymbolKind::Class)
+        .then_some((class_unit, class_symbol_id, false))
 }
 
 fn innermost_scope_at(unit: &UnitAnalysis, offset: usize) -> ScopeId {
