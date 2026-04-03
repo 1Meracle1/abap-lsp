@@ -9,9 +9,10 @@ use abap_lexer::{TextRange, Token, TokenKind, have_space_between};
 use crate::builtins::{BUILTIN_STRUCTURES, BUILTIN_SYMBOLS, BuiltinTypeKind};
 use crate::def_map::{
     ClassMemberData, ClassMemberKind, ClassMemberParameterData, Diagnostic, DiagnosticKind,
-    FieldAccess, FieldAccessSegment, FieldTypeRefData, IncludeEdge, NamedArgumentAccess,
-    NamedArgumentTarget, ReferenceData, ReferenceKind, StructureData, StructureFieldData, SymbolData,
-    SymbolKind, UnitAnalysis, Visibility,
+    FieldAccess, FieldAccessSegment, FieldTypeRefData, FormParameterSection, FormRoutineData,
+    IncludeEdge, NamedArgumentAccess, NamedArgumentTarget, PerformCallData,
+    PerformParameterSection, ReferenceData, ReferenceKind, StructureData, StructureFieldData,
+    SymbolData, SymbolKind, UnitAnalysis, Visibility,
 };
 use crate::ids::{ReferenceId, ScopeId, StructureId, SymbolId, UnitId};
 use crate::scope::{Namespace, ScopeData, ScopeKind};
@@ -38,7 +39,8 @@ struct PendingStructure {
 #[derive(Clone, Copy)]
 enum FormHeaderParamSection {
     Tables,
-    UsingOrChanging,
+    Using,
+    Changing,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -78,7 +80,9 @@ pub struct Collector<'a> {
     include_edges: Vec<IncludeEdge>,
     field_accesses: Vec<FieldAccess>,
     class_members: Vec<ClassMemberData>,
+    form_routines: Vec<FormRoutineData>,
     named_arguments: Vec<NamedArgumentAccess>,
+    perform_calls: Vec<PerformCallData>,
     class_definition_scopes: HashMap<SymbolId, ScopeId>,
     class_superclasses: HashMap<SymbolId, Arc<str>>,
     class_method_signatures: HashMap<SymbolId, HashMap<Arc<str>, PendingMethodSignature>>,
@@ -113,7 +117,9 @@ impl<'a> Collector<'a> {
             include_edges: Vec::new(),
             field_accesses: Vec::new(),
             class_members: Vec::new(),
+            form_routines: Vec::new(),
             named_arguments: Vec::new(),
+            perform_calls: Vec::new(),
             class_definition_scopes: HashMap::new(),
             class_superclasses: HashMap::new(),
             class_method_signatures: HashMap::new(),
@@ -139,7 +145,9 @@ impl<'a> Collector<'a> {
             include_edges: self.include_edges,
             field_accesses: self.field_accesses,
             class_members: self.class_members,
+            form_routines: self.form_routines,
             named_arguments: self.named_arguments,
+            perform_calls: self.perform_calls,
             provided_names,
         }
     }
@@ -598,10 +606,9 @@ impl<'a> Collector<'a> {
         if impl_header_refs_class {
             self.add_reference(scope, name, Namespace::Type, ReferenceKind::TypeRef, range);
         }
-        if !is_implementation
-            && let Some((superclass, range)) = self.class_superclass_name(node)
-        {
-            self.class_superclasses.insert(owner, Arc::clone(&superclass));
+        if !is_implementation && let Some((superclass, range)) = self.class_superclass_name(node) {
+            self.class_superclasses
+                .insert(owner, Arc::clone(&superclass));
             self.add_reference(
                 scope,
                 superclass,
@@ -650,7 +657,11 @@ impl<'a> Collector<'a> {
         let child_scope =
             self.push_scope(scope_kind, self.file.range(node), Some(scope), Some(owner));
         if scope_kind == ScopeKind::Form {
-            self.declare_form_parameters_from_header(node, child_scope);
+            let parameters = self.declare_form_parameters_from_header(node, child_scope);
+            self.form_routines.push(FormRoutineData {
+                symbol: owner,
+                parameters,
+            });
         }
         for child in self.file.children(node) {
             self.walk_node(child, child_scope);
@@ -670,7 +681,12 @@ impl<'a> Collector<'a> {
             Some(owner),
         );
         if let Some(class_symbol) = self.enclosing_class_owner(scope) {
-            self.declare_method_signature_parameters(class_symbol, name.as_ref(), child_scope, scope);
+            self.declare_method_signature_parameters(
+                class_symbol,
+                name.as_ref(),
+                child_scope,
+                scope,
+            );
         }
         for child in self.file.children(node) {
             self.walk_node(child, child_scope);
@@ -1010,14 +1026,18 @@ impl<'a> Collector<'a> {
         section: MethodParamSection,
     ) -> Option<(PendingMethodParameter, usize)> {
         let mut j = idx;
-        while matches!(tokens.get(j).map(|token| token.kind), Some(TokenKind::Colon | TokenKind::Comma))
-        {
+        while matches!(
+            tokens.get(j).map(|token| token.kind),
+            Some(TokenKind::Colon | TokenKind::Comma)
+        ) {
             j += 1;
         }
 
         let (name, range, mut j) = self.method_signature_parameter_name(tokens, j)?;
-        while matches!(tokens.get(j).map(|token| token.kind), Some(TokenKind::Colon | TokenKind::Comma))
-        {
+        while matches!(
+            tokens.get(j).map(|token| token.kind),
+            Some(TokenKind::Colon | TokenKind::Comma)
+        ) {
             j += 1;
         }
 
@@ -1026,7 +1046,8 @@ impl<'a> Collector<'a> {
             Namespace::Type
         } else if self.token_matches_keyword(type_tok, "like") {
             Namespace::Value
-        } else if section == MethodParamSection::Returning || section == MethodParamSection::Receiving
+        } else if section == MethodParamSection::Returning
+            || section == MethodParamSection::Receiving
         {
             return None;
         } else {
@@ -1039,12 +1060,8 @@ impl<'a> Collector<'a> {
             PendingMethodParameter {
                 name,
                 range,
-                declared_type: self.field_type_ref_from_token_slice(
-                    tokens,
-                    expr_start,
-                    expr_end,
-                    clause_ns,
-                ),
+                declared_type: self
+                    .field_type_ref_from_token_slice(tokens, expr_start, expr_end, clause_ns),
             },
             expr_end,
         ))
@@ -1056,7 +1073,8 @@ impl<'a> Collector<'a> {
         idx: usize,
     ) -> Option<(Arc<str>, TextRange, usize)> {
         let token = *tokens.get(idx)?;
-        if self.token_matches_keyword(token, "value") || self.token_matches_keyword(token, "reference")
+        if self.token_matches_keyword(token, "value")
+            || self.token_matches_keyword(token, "reference")
         {
             let lparen = tokens.get(idx + 1)?;
             let ident = tokens.get(idx + 2)?;
@@ -1117,7 +1135,9 @@ impl<'a> Collector<'a> {
         self.method_signature_parameter_name(tokens, idx)
             .and_then(|(_, _, next_idx)| {
                 let next = tokens.get(next_idx)?;
-                if self.token_matches_keyword(next, "type") || self.token_matches_keyword(next, "like") {
+                if self.token_matches_keyword(next, "type")
+                    || self.token_matches_keyword(next, "like")
+                {
                     Some(())
                 } else {
                     None
@@ -1237,25 +1257,30 @@ impl<'a> Collector<'a> {
         out
     }
 
-    fn declare_form_parameters_from_header(&mut self, form_node: NodeId, form_scope: ScopeId) {
+    fn declare_form_parameters_from_header(
+        &mut self,
+        form_node: NodeId,
+        form_scope: ScopeId,
+    ) -> Vec<FormParameterSection> {
         let tokens = self.form_header_token_refs(form_node);
         if tokens.len() < 2 {
-            return;
+            return Vec::new();
         }
         if !self.token_matches_keyword(tokens[0], "form") {
-            return;
+            return Vec::new();
         }
         let mut i = 1usize;
         while i < tokens.len() && tokens[i].kind == TokenKind::Comment {
             i += 1;
         }
         if tokens.get(i).map(|t| t.kind) != Some(TokenKind::Ident) {
-            return;
+            return Vec::new();
         }
         i += 1;
 
         let mut section: Option<FormHeaderParamSection> = None;
         let mut depth = 0i32;
+        let mut parameters = Vec::new();
 
         while i < tokens.len() {
             let t = tokens[i];
@@ -1280,8 +1305,13 @@ impl<'a> Collector<'a> {
                         i += 1;
                         continue;
                     }
-                    if lit.eq_ignore_ascii_case("using") || lit.eq_ignore_ascii_case("changing") {
-                        section = Some(FormHeaderParamSection::UsingOrChanging);
+                    if lit.eq_ignore_ascii_case("using") {
+                        section = Some(FormHeaderParamSection::Using);
+                        i += 1;
+                        continue;
+                    }
+                    if lit.eq_ignore_ascii_case("changing") {
+                        section = Some(FormHeaderParamSection::Changing);
                         i += 1;
                         continue;
                     }
@@ -1292,10 +1322,18 @@ impl<'a> Collector<'a> {
                     }
 
                     match section {
-                        Some(FormHeaderParamSection::UsingOrChanging) => {
+                        Some(FormHeaderParamSection::Using)
+                        | Some(FormHeaderParamSection::Changing) => {
                             if let Some(next_i) = self
                                 .try_consume_form_value_or_reference_param(&tokens, i, form_scope)
                             {
+                                parameters.push(match section.expect("parameter section") {
+                                    FormHeaderParamSection::Tables => unreachable!(),
+                                    FormHeaderParamSection::Using => FormParameterSection::Using,
+                                    FormHeaderParamSection::Changing => {
+                                        FormParameterSection::Changing
+                                    }
+                                });
                                 i = next_i;
                                 continue;
                             }
@@ -1355,12 +1393,22 @@ impl<'a> Collector<'a> {
                                     None,
                                     declared_type,
                                 );
+                                parameters.push(match section.expect("parameter section") {
+                                    FormHeaderParamSection::Tables => unreachable!(),
+                                    FormHeaderParamSection::Using => FormParameterSection::Using,
+                                    FormHeaderParamSection::Changing => {
+                                        FormParameterSection::Changing
+                                    }
+                                });
                                 i = j;
                                 continue;
                             }
                             i += 1;
                         }
                         Some(FormHeaderParamSection::Tables) => {
+                            if t.kind == TokenKind::Ident {
+                                parameters.push(FormParameterSection::Tables);
+                            }
                             i += 1;
                         }
                         None => {
@@ -1373,6 +1421,7 @@ impl<'a> Collector<'a> {
                 }
             }
         }
+        parameters
     }
 
     fn form_header_section_keyword(&self, token: &Token) -> bool {
@@ -1609,7 +1658,8 @@ impl<'a> Collector<'a> {
     }
 
     fn collect_type_ref(&mut self, node: NodeId, scope: ScopeId) {
-        if let Some((namespace, _, base_name, range, field_path)) = self.type_ref_access_chain(node) {
+        if let Some((namespace, _, base_name, range, field_path)) = self.type_ref_access_chain(node)
+        {
             self.add_reference(
                 scope,
                 Arc::clone(&base_name),
@@ -1653,9 +1703,15 @@ impl<'a> Collector<'a> {
                     .children(node)
                     .filter_map(|child| self.token_for_node(child))
                     .collect();
-                if let Some(lparen_idx) = tokens.iter().position(|token| token.kind == TokenKind::LParen)
-                    && let Some(rparen_idx) =
-                        self.find_matching_group_end(&tokens, lparen_idx, TokenKind::LParen, TokenKind::RParen)
+                if let Some(lparen_idx) = tokens
+                    .iter()
+                    .position(|token| token.kind == TokenKind::LParen)
+                    && let Some(rparen_idx) = self.find_matching_group_end(
+                        &tokens,
+                        lparen_idx,
+                        TokenKind::LParen,
+                        TokenKind::RParen,
+                    )
                 {
                     if let Some((type_name, _)) = self.constructor_type_ref(node) {
                         self.collect_named_arguments_from_tokens(
@@ -1711,6 +1767,7 @@ impl<'a> Collector<'a> {
         if self.class_member_statement_kind(&significant).is_some() {
             return;
         }
+        self.collect_perform_stmt(&significant, scope);
         self.collect_create_object_stmt(&significant, scope);
         self.collect_token_expression_refs(&significant, scope, false);
     }
@@ -1727,6 +1784,85 @@ impl<'a> Collector<'a> {
         self.collect_token_expression_refs(tail, scope, true);
     }
 
+    fn collect_perform_stmt(&mut self, tokens: &[&Token], scope: ScopeId) {
+        if tokens.len() < 2 || !self.token_matches_keyword(tokens[0], "perform") {
+            return;
+        }
+        let routine = tokens[1];
+        if routine.kind != TokenKind::Ident {
+            return;
+        }
+
+        let routine_name = Arc::<str>::from(routine.lexeme(self.source).to_ascii_lowercase());
+        self.add_reference(
+            scope,
+            Arc::clone(&routine_name),
+            Namespace::Routine,
+            ReferenceKind::RoutineCall,
+            routine.range.clone(),
+        );
+
+        let mut parameters = Vec::new();
+        let mut section: Option<PerformParameterSection> = None;
+        let mut highest_section_rank = 0u8;
+        let mut section_order_invalid = false;
+        let mut idx = 2usize;
+
+        while idx < tokens.len() {
+            let token = tokens[idx];
+            if token.kind == TokenKind::Period {
+                break;
+            }
+
+            if token.kind == TokenKind::Ident {
+                let next_section = if self.token_matches_keyword(token, "tables") {
+                    Some((PerformParameterSection::Tables, 1))
+                } else if self.token_matches_keyword(token, "using") {
+                    Some((PerformParameterSection::Using, 2))
+                } else if self.token_matches_keyword(token, "changing") {
+                    Some((PerformParameterSection::Changing, 3))
+                } else {
+                    None
+                };
+                if let Some((next_section, rank)) = next_section {
+                    if rank <= highest_section_rank {
+                        section_order_invalid = true;
+                    } else {
+                        highest_section_rank = rank;
+                    }
+                    section = Some(next_section);
+                    idx += 1;
+                    continue;
+                }
+            }
+
+            let Some(current_section) = section else {
+                idx += 1;
+                continue;
+            };
+            let next_idx = self.consume_perform_argument(tokens, idx);
+            if next_idx == idx {
+                idx += 1;
+                continue;
+            }
+            parameters.push(current_section);
+            idx = next_idx;
+        }
+
+        let end = tokens
+            .last()
+            .map(|token| token.range.end)
+            .unwrap_or(routine.range.end);
+        self.perform_calls.push(PerformCallData {
+            scope,
+            range: tokens[0].range.start..end,
+            routine_name,
+            routine_range: routine.range.clone(),
+            parameters,
+            section_order_invalid,
+        });
+    }
+
     fn collect_token_expression_refs(
         &mut self,
         tokens: &[&Token],
@@ -1741,14 +1877,13 @@ impl<'a> Collector<'a> {
                     idx += 1;
                 }
                 TokenKind::LParen => {
-                    if let Some(end_idx) =
-                        self.find_matching_group_end(tokens, idx, TokenKind::LParen, TokenKind::RParen)
-                    {
-                        self.collect_token_expression_refs(
-                            &tokens[idx + 1..end_idx],
-                            scope,
-                            true,
-                        );
+                    if let Some(end_idx) = self.find_matching_group_end(
+                        tokens,
+                        idx,
+                        TokenKind::LParen,
+                        TokenKind::RParen,
+                    ) {
+                        self.collect_token_expression_refs(&tokens[idx + 1..end_idx], scope, true);
                         idx = end_idx + 1;
                     } else {
                         idx += 1;
@@ -1761,25 +1896,20 @@ impl<'a> Collector<'a> {
                         TokenKind::LBracket,
                         TokenKind::RBracket,
                     ) {
-                        self.collect_token_expression_refs(
-                            &tokens[idx + 1..end_idx],
-                            scope,
-                            true,
-                        );
+                        self.collect_token_expression_refs(&tokens[idx + 1..end_idx], scope, true);
                         idx = end_idx + 1;
                     } else {
                         idx += 1;
                     }
                 }
                 TokenKind::LBrace => {
-                    if let Some(end_idx) =
-                        self.find_matching_group_end(tokens, idx, TokenKind::LBrace, TokenKind::RBrace)
-                    {
-                        self.collect_token_expression_refs(
-                            &tokens[idx + 1..end_idx],
-                            scope,
-                            true,
-                        );
+                    if let Some(end_idx) = self.find_matching_group_end(
+                        tokens,
+                        idx,
+                        TokenKind::LBrace,
+                        TokenKind::RBrace,
+                    ) {
+                        self.collect_token_expression_refs(&tokens[idx + 1..end_idx], scope, true);
                         idx = end_idx + 1;
                     } else {
                         idx += 1;
@@ -1839,11 +1969,8 @@ impl<'a> Collector<'a> {
                         }
                         continue;
                     }
-                    if self.token_is_expression_value_ident(
-                        tokens,
-                        idx,
-                        allow_leading_value_ident,
-                    ) {
+                    if self.token_is_expression_value_ident(tokens, idx, allow_leading_value_ident)
+                    {
                         self.add_reference(
                             scope,
                             Arc::<str>::from(token.lexeme(self.source).to_ascii_lowercase()),
@@ -1861,9 +1988,17 @@ impl<'a> Collector<'a> {
         }
     }
 
-    fn collect_new_expression_tokens(&mut self, tokens: &[&Token], idx: usize, scope: ScopeId) -> usize {
+    fn collect_new_expression_tokens(
+        &mut self,
+        tokens: &[&Token],
+        idx: usize,
+        scope: ScopeId,
+    ) -> usize {
         let mut cursor = idx + 1;
-        while matches!(tokens.get(cursor).map(|token| token.kind), Some(TokenKind::Comment)) {
+        while matches!(
+            tokens.get(cursor).map(|token| token.kind),
+            Some(TokenKind::Comment)
+        ) {
             cursor += 1;
         }
         let Some(lparen_idx) = tokens[cursor..]
@@ -1873,13 +2008,17 @@ impl<'a> Collector<'a> {
         else {
             return idx + 1;
         };
-        if let Some((name, range)) = self.simple_type_ref_base_from_tokens(&tokens[cursor..lparen_idx]) {
+        if let Some((name, range)) =
+            self.simple_type_ref_base_from_tokens(&tokens[cursor..lparen_idx])
+        {
             self.add_reference(scope, name, Namespace::Type, ReferenceKind::TypeRef, range);
         }
         if let Some(rparen_idx) =
             self.find_matching_group_end(tokens, lparen_idx, TokenKind::LParen, TokenKind::RParen)
         {
-            if let Some((name, _)) = self.simple_type_ref_base_from_tokens(&tokens[cursor..lparen_idx]) {
+            if let Some((name, _)) =
+                self.simple_type_ref_base_from_tokens(&tokens[cursor..lparen_idx])
+            {
                 self.collect_named_arguments_from_tokens(
                     &tokens[lparen_idx + 1..rparen_idx],
                     scope,
@@ -1963,7 +2102,10 @@ impl<'a> Collector<'a> {
         ) {
             return false;
         }
-        let prev_kind = idx.checked_sub(1).and_then(|prev| tokens.get(prev)).map(|token| token.kind);
+        let prev_kind = idx
+            .checked_sub(1)
+            .and_then(|prev| tokens.get(prev))
+            .map(|token| token.kind);
         allow_leading_value_ident && idx == 0
             || matches!(
                 prev_kind,
@@ -1988,11 +2130,113 @@ impl<'a> Collector<'a> {
             )
     }
 
+    fn consume_perform_argument(&self, tokens: &[&Token], start: usize) -> usize {
+        let mut idx = start;
+        let mut paren = 0i32;
+        let mut bracket = 0i32;
+        let mut brace = 0i32;
+        let mut consumed_any = false;
+
+        while idx < tokens.len() {
+            let token = tokens[idx];
+            if paren == 0 && bracket == 0 && brace == 0 {
+                if token.kind == TokenKind::Period {
+                    break;
+                }
+                if token.kind == TokenKind::Ident
+                    && (self.token_matches_keyword(token, "tables")
+                        || self.token_matches_keyword(token, "using")
+                        || self.token_matches_keyword(token, "changing"))
+                {
+                    break;
+                }
+                if consumed_any && self.token_starts_perform_argument(tokens, idx) {
+                    break;
+                }
+            }
+
+            consumed_any = true;
+            match token.kind {
+                TokenKind::LParen => paren += 1,
+                TokenKind::RParen => paren -= 1,
+                TokenKind::LBracket => bracket += 1,
+                TokenKind::RBracket => bracket -= 1,
+                TokenKind::LBrace => brace += 1,
+                TokenKind::RBrace => brace -= 1,
+                _ => {}
+            }
+            idx += 1;
+        }
+
+        idx
+    }
+
+    fn token_starts_perform_argument(&self, tokens: &[&Token], idx: usize) -> bool {
+        let Some(token) = tokens.get(idx) else {
+            return false;
+        };
+        if !matches!(
+            token.kind,
+            TokenKind::Ident
+                | TokenKind::Number
+                | TokenKind::String
+                | TokenKind::StringTemplate
+                | TokenKind::LParen
+                | TokenKind::LBracket
+                | TokenKind::LBrace
+                | TokenKind::At
+                | TokenKind::Hash
+        ) {
+            return false;
+        }
+        if token.kind == TokenKind::Ident
+            && (self.token_matches_keyword(token, "tables")
+                || self.token_matches_keyword(token, "using")
+                || self.token_matches_keyword(token, "changing"))
+        {
+            return false;
+        }
+        let Some(prev) = idx.checked_sub(1).and_then(|prev_idx| tokens.get(prev_idx)) else {
+            return true;
+        };
+        have_space_between(prev, token)
+            && !matches!(
+                prev.kind,
+                TokenKind::Arrow
+                    | TokenKind::FatArrow
+                    | TokenKind::Tilde
+                    | TokenKind::Eq
+                    | TokenKind::Minus
+                    | TokenKind::Plus
+                    | TokenKind::Star
+                    | TokenKind::Slash
+                    | TokenKind::Lt
+                    | TokenKind::Gt
+                    | TokenKind::Le
+                    | TokenKind::Ge
+                    | TokenKind::Ne
+                    | TokenKind::QuestionEq
+                    | TokenKind::LParen
+                    | TokenKind::LBracket
+                    | TokenKind::LBrace
+                    | TokenKind::At
+                    | TokenKind::Hash
+                    | TokenKind::Ampersand
+                    | TokenKind::Pipe
+            )
+    }
+
     fn consume_selector_access_from_tokens(
         &self,
         tokens: &[&Token],
         idx: usize,
-    ) -> Option<(usize, Namespace, Arc<str>, TextRange, Vec<FieldAccessSegment>)> {
+    ) -> Option<(
+        usize,
+        Namespace,
+        Arc<str>,
+        TextRange,
+        Vec<FieldAccessSegment>,
+    )> {
         let base = *tokens.get(idx)?;
         if base.kind != TokenKind::Ident {
             return None;
@@ -2157,8 +2401,9 @@ impl<'a> Collector<'a> {
                             .children(node)
                             .filter_map(|child| self.token_for_node(child))
                             .collect();
-                        if let Some(lparen_idx) =
-                            tokens.iter().position(|token| token.kind == TokenKind::LParen)
+                        if let Some(lparen_idx) = tokens
+                            .iter()
+                            .position(|token| token.kind == TokenKind::LParen)
                             && let Some(rparen_idx) = self.find_matching_group_end(
                                 &tokens,
                                 lparen_idx,
@@ -2182,9 +2427,15 @@ impl<'a> Collector<'a> {
                     .children(node)
                     .filter_map(|child| self.token_for_node(child))
                     .collect();
-                if let Some(lparen_idx) = tokens.iter().position(|token| token.kind == TokenKind::LParen)
-                    && let Some(rparen_idx) =
-                        self.find_matching_group_end(&tokens, lparen_idx, TokenKind::LParen, TokenKind::RParen)
+                if let Some(lparen_idx) = tokens
+                    .iter()
+                    .position(|token| token.kind == TokenKind::LParen)
+                    && let Some(rparen_idx) = self.find_matching_group_end(
+                        &tokens,
+                        lparen_idx,
+                        TokenKind::LParen,
+                        TokenKind::RParen,
+                    )
                 {
                     self.collect_named_arguments_from_tokens(
                         &tokens[lparen_idx + 1..rparen_idx],
@@ -2464,9 +2715,7 @@ impl<'a> Collector<'a> {
             _ => return None,
         };
         Some((
-            Arc::<str>::from(
-                self.source[first.range.start..last.range.end].to_ascii_lowercase(),
-            ),
+            Arc::<str>::from(self.source[first.range.start..last.range.end].to_ascii_lowercase()),
             first.range.start..last.range.end,
         ))
     }
@@ -2755,7 +3004,13 @@ impl<'a> Collector<'a> {
     fn type_ref_access_chain(
         &self,
         node: NodeId,
-    ) -> Option<(Namespace, bool, Arc<str>, TextRange, Vec<FieldAccessSegment>)> {
+    ) -> Option<(
+        Namespace,
+        bool,
+        Arc<str>,
+        TextRange,
+        Vec<FieldAccessSegment>,
+    )> {
         let mut base_name = None;
         let mut base_range = None;
         let mut field_path = Vec::new();

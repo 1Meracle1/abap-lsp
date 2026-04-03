@@ -153,7 +153,8 @@ fn semantic_diagnostic_severity(kind: DiagnosticKind) -> DiagnosticSeverity {
         | DiagnosticKind::IncludeCycle
         | DiagnosticKind::WrongNamespace
         | DiagnosticKind::UnknownField
-        | DiagnosticKind::InvalidBuiltinNamedArgument => DiagnosticSeverity::ERROR,
+        | DiagnosticKind::InvalidBuiltinNamedArgument
+        | DiagnosticKind::InvalidPerformCall => DiagnosticSeverity::ERROR,
     }
 }
 
@@ -627,10 +628,7 @@ some_class=>exec( )."
             },
         );
 
-        let snapshot = state
-            .cache
-            .get("file:///sem_event.abap")
-            .expect("snapshot");
+        let snapshot = state.cache.get("file:///sem_event.abap").expect("snapshot");
         let tokens = sem_tokens::build_semantic_tokens(snapshot.as_ref());
         let legend = sem_tokens::semantic_tokens_legend();
         let event_idx = legend
@@ -913,7 +911,11 @@ ENDCLASS.
         };
         assert!(markup.value.contains("`lv`"));
         assert!(markup.value.contains("Variable"));
-        assert!(markup.value.contains("```abap\nTYPE i\n```"), "{}", markup.value);
+        assert!(
+            markup.value.contains("```abap\nTYPE i\n```"),
+            "{}",
+            markup.value
+        );
     }
 
     #[test]
@@ -1009,8 +1011,11 @@ START-OF-SELECTION.
             .enumerate()
             .find(|(_, line)| line.contains("io_expr = lo_expr1"))
             .expect("constructor arg line");
-        let lo_expr1_col =
-            lo_expr1_line.1.find("lo_expr1").expect("constructor arg col") as u32 + 1;
+        let lo_expr1_col = lo_expr1_line
+            .1
+            .find("lo_expr1")
+            .expect("constructor arg col") as u32
+            + 1;
         let lo_expr1_hover = hover(
             &state,
             &HoverParams {
@@ -1038,8 +1043,11 @@ START-OF-SELECTION.
             .enumerate()
             .find(|(_, line)| line.contains("add_statement( lo_assign )"))
             .expect("method call line");
-        let add_stmt_col =
-            add_stmt_line.1.find("add_statement").expect("method name col") as u32 + 1;
+        let add_stmt_col = add_stmt_line
+            .1
+            .find("add_statement")
+            .expect("method name col") as u32
+            + 1;
         let add_stmt_hover = hover(
             &state,
             &HoverParams {
@@ -1060,7 +1068,11 @@ START-OF-SELECTION.
             panic!("expected markdown hover");
         };
         assert!(add_stmt_markup.value.contains("METHODS add_statement"));
-        assert!(add_stmt_markup.value.contains("io_stmt TYPE REF TO zcl_stmt"));
+        assert!(
+            add_stmt_markup
+                .value
+                .contains("io_stmt TYPE REF TO zcl_stmt")
+        );
 
         let write_line = text
             .lines()
@@ -1088,7 +1100,11 @@ START-OF-SELECTION.
             panic!("expected markdown hover");
         };
         assert!(to_string_markup.value.contains("METHODS to_string"));
-        assert!(to_string_markup.value.contains("instance method of `lo_prog`"));
+        assert!(
+            to_string_markup
+                .value
+                .contains("instance method of `lo_prog`")
+        );
     }
 
     #[test]
@@ -1217,7 +1233,10 @@ START-OF-SELECTION.
                 work_done_progress_params: Default::default(),
             },
         );
-        assert!(param_hover.is_none(), "builtin named parameter should not hover");
+        assert!(
+            param_hover.is_none(),
+            "builtin named parameter should not hover"
+        );
 
         let snapshot = state
             .cache
@@ -1236,7 +1255,10 @@ START-OF-SELECTION.
             .position(|t| *t == SemanticTokenType::PARAMETER)
             .expect("legend has parameter") as u32;
         assert!(
-            !tokens.data.iter().any(|token| token.token_type == parameter_idx),
+            !tokens
+                .data
+                .iter()
+                .any(|token| token.token_type == parameter_idx),
             "builtin named argument label should not be highlighted as parameter"
         );
     }
@@ -1301,7 +1323,10 @@ START-OF-SELECTION.
                 work_done_progress_params: Default::default(),
             },
         );
-        assert!(param_hover.is_none(), "builtin named parameter should not hover");
+        assert!(
+            param_hover.is_none(),
+            "builtin named parameter should not hover"
+        );
 
         let snapshot = state
             .cache
@@ -1453,7 +1478,9 @@ CREATE OBJECT lo_instance.";
         assert!(markup.value.contains("`lo_instance`"));
         assert!(markup.value.contains("Variable"));
         assert!(
-            markup.value.contains("```abap\nTYPE REF TO some_class\n```"),
+            markup
+                .value
+                .contains("```abap\nTYPE REF TO some_class\n```"),
             "{}",
             markup.value
         );

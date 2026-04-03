@@ -146,6 +146,7 @@ pub enum DiagnosticKind {
     WrongNamespace,
     UnknownField,
     InvalidBuiltinNamedArgument,
+    InvalidPerformCall,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -219,6 +220,19 @@ pub struct ClassMemberParameterData {
     pub declared_type: Option<FieldTypeRefData>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FormParameterSection {
+    Tables,
+    Using,
+    Changing,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FormRoutineData {
+    pub symbol: SymbolId,
+    pub parameters: Vec<FormParameterSection>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClassMemberData {
     pub class_symbol: SymbolId,
@@ -254,6 +268,23 @@ pub struct NamedArgumentAccess {
     pub target: NamedArgumentTarget,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PerformParameterSection {
+    Tables,
+    Using,
+    Changing,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PerformCallData {
+    pub scope: ScopeId,
+    pub range: TextRange,
+    pub routine_name: Arc<str>,
+    pub routine_range: TextRange,
+    pub parameters: Vec<PerformParameterSection>,
+    pub section_order_invalid: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnitAnalysis {
     pub unit_id: UnitId,
@@ -267,7 +298,9 @@ pub struct UnitAnalysis {
     pub include_edges: Vec<IncludeEdge>,
     pub field_accesses: Vec<FieldAccess>,
     pub class_members: Vec<ClassMemberData>,
+    pub form_routines: Vec<FormRoutineData>,
     pub named_arguments: Vec<NamedArgumentAccess>,
+    pub perform_calls: Vec<PerformCallData>,
     pub provided_names: Vec<Arc<str>>,
 }
 
@@ -362,6 +395,12 @@ impl UnitAnalysis {
         self.class_members
             .iter()
             .filter(move |member| member.class_symbol == class_symbol)
+    }
+
+    pub fn form_routine(&self, symbol: SymbolId) -> Option<&FormRoutineData> {
+        self.form_routines
+            .iter()
+            .find(|routine| routine.symbol == symbol)
     }
 
     pub fn routine_parameters(

@@ -82,6 +82,73 @@ ENDFORM.
 }
 
 #[test]
+fn resolves_valid_perform_call_to_form() {
+    let src = r#"
+FORM process_data
+    USING pv_mode TYPE string
+    CHANGING cv_count TYPE i.
+ENDFORM.
+
+DATA lv_count TYPE i.
+PERFORM process_data USING 'demo' CHANGING lv_count.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///perform_valid.abap", src, &parsed);
+
+    assert!(unit.references.iter().any(|reference| {
+        reference.kind == ReferenceKind::RoutineCall
+            && reference.namespace == Namespace::Routine
+            && reference.name.as_ref() == "process_data"
+            && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+    }));
+    assert!(
+        !unit
+            .diagnostics
+            .iter()
+            .any(|diag| diag.kind == DiagnosticKind::InvalidPerformCall),
+        "unexpected PERFORM validation diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn rejects_invalid_perform_argument_shapes() {
+    let cases = [
+        "PERFORM process_data USING CHANGING lv_count.",
+        "PERFORM process_data USING 'sdf'.",
+        "PERFORM process_data USING lv_count.",
+        "PERFORM process_data USING CHANGING.",
+        "PERFORM process_data CHANGING lv_count.",
+        "PERFORM process_data CHANGING lv_coun.",
+        "PERFORM process_data.",
+    ];
+
+    for call in cases {
+        let src = format!(
+            r#"
+FORM process_data
+    USING pv_mode TYPE string
+    CHANGING cv_count TYPE i.
+ENDFORM.
+
+DATA lv_count TYPE i.
+{call}
+"#
+        );
+        let parsed = parse(&src);
+        let unit = analyze_unit("file:///perform_invalid.abap", &src, &parsed);
+
+        assert!(
+            unit.diagnostics
+                .iter()
+                .any(|diag| diag.kind == DiagnosticKind::InvalidPerformCall),
+            "expected invalid PERFORM diagnostic for {call:?}, got {:?}",
+            unit.diagnostics
+        );
+    }
+}
+
+#[test]
 fn resolves_local_references_in_scope() {
     let src = "DATA lv_value TYPE i. lv_value = lv_value + 1.";
     let parsed = parse(src);
@@ -820,8 +887,7 @@ ENDCLASS.
 
     assert!(
         !unit.diagnostics.iter().any(|diag| {
-            diag.kind == DiagnosticKind::UnresolvedReference
-                && diag.message.contains("some_class")
+            diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains("some_class")
         }),
         "unexpected unresolved diagnostic: {:?}",
         unit.diagnostics
@@ -966,7 +1032,10 @@ ENDCLASS.
                 symbol.kind == abap_symbols::SymbolKind::Parameter && symbol.name.as_ref() == name
             })
             .expect("signature parameter symbol");
-        let declared_type = param.declared_type.as_ref().expect("parameter declared type");
+        let declared_type = param
+            .declared_type
+            .as_ref()
+            .expect("parameter declared type");
         assert_eq!(declared_type.namespace, Namespace::Type);
         assert_eq!(declared_type.base_name.as_ref(), type_name);
     }
@@ -1124,7 +1193,10 @@ START-OF-SELECTION.
             symbol.kind == abap_symbols::SymbolKind::Variable && symbol.name.as_ref() == "lo_prog"
         })
         .expect("inline variable");
-    let declared_type = lo_prog.declared_type.as_ref().expect("inferred declared type");
+    let declared_type = lo_prog
+        .declared_type
+        .as_ref()
+        .expect("inferred declared type");
     assert!(declared_type.is_ref);
     assert_eq!(declared_type.namespace, Namespace::Type);
     assert_eq!(declared_type.base_name.as_ref(), "zcl_program");

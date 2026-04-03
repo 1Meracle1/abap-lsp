@@ -2,7 +2,9 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::builtins::builtin_routine_spec;
-use crate::def_map::{Diagnostic, DiagnosticKind};
+use crate::def_map::{
+    Diagnostic, DiagnosticKind, FormParameterSection, PerformParameterSection, Resolution,
+};
 use crate::ids::{ScopeId, SymbolId};
 use crate::project::ProjectAnalysis;
 use crate::scope::{Namespace, ScopeKind};
@@ -128,8 +130,54 @@ fn class_member_visible_to(
     }
 }
 
+fn count_form_section(parameters: &[FormParameterSection], section: FormParameterSection) -> usize {
+    parameters
+        .iter()
+        .copied()
+        .filter(|current| *current == section)
+        .count()
+}
+
+fn count_perform_section(
+    parameters: &[PerformParameterSection],
+    section: PerformParameterSection,
+) -> usize {
+    parameters
+        .iter()
+        .copied()
+        .filter(|current| *current == section)
+        .count()
+}
+
+fn format_perform_signature(using_count: usize, changing_count: usize) -> String {
+    let mut parts = Vec::new();
+    if using_count > 0 {
+        parts.push(format!("USING {using_count}"));
+    }
+    if changing_count > 0 {
+        parts.push(format!("CHANGING {changing_count}"));
+    }
+    if parts.is_empty() {
+        "no parameters".to_string()
+    } else {
+        parts.join(", ")
+    }
+}
+
 pub fn validate_project(project: &mut ProjectAnalysis) {
     let global_names = collect_global_names(project);
+    let form_signatures: HashMap<(u32, u32), Vec<FormParameterSection>> = project
+        .units
+        .iter()
+        .flat_map(|unit| {
+            unit.form_routines.iter().map(|routine| {
+                (
+                    (unit.unit_id.0, routine.symbol.0),
+                    routine.parameters.clone(),
+                )
+            })
+        })
+        .collect();
     project.diagnostics.clear();
 
     for unit in &mut project.units {
@@ -288,7 +336,8 @@ pub fn validate_project(project: &mut ProjectAnalysis) {
         }
 
         for named_argument in &unit.named_arguments {
-            let crate::NamedArgumentTarget::Routine { routine_name } = &named_argument.target else {
+            let crate::NamedArgumentTarget::Routine { routine_name } = &named_argument.target
+            else {
                 continue;
             };
             if builtin_routine_spec(routine_name.as_ref()).is_some() {
@@ -301,6 +350,58 @@ pub fn validate_project(project: &mut ProjectAnalysis) {
                     ),
                 });
             }
+        }
+
+        for perform_call in &unit.perform_calls {
+            if perform_call.section_order_invalid {
+                unit.diagnostics.push(Diagnostic {
+                    kind: DiagnosticKind::InvalidPerformCall,
+                    range: perform_call.range.clone(),
+                    message: format!(
+                        "PERFORM '{}' uses invalid TABLES/USING/CHANGING section order",
+                        perform_call.routine_name
+                    ),
+                });
+                continue;
+            }
+
+            let Some(reference) = unit.references.iter().find(|reference| {
+                reference.kind == crate::ReferenceKind::RoutineCall
+                    && reference.namespace == Namespace::Routine
+                    && reference.range == perform_call.routine_range
+                    && reference.name.as_ref() == perform_call.routine_name.as_ref()
+            }) else {
+                continue;
+            };
+            let Some(Resolution::Symbol(handle)) = reference.resolution else {
+                continue;
+            };
+            let Some(parameters) = form_signatures.get(&(handle.unit.0, handle.symbol.0)) else {
+                continue;
+            };
+
+            let expected_using = count_form_section(parameters, FormParameterSection::Using);
+            let expected_changing = count_form_section(parameters, FormParameterSection::Changing);
+            let actual_using =
+                count_perform_section(&perform_call.parameters, PerformParameterSection::Using);
+            let actual_changing =
+                count_perform_section(&perform_call.parameters, PerformParameterSection::Changing);
+
+            if expected_using == actual_using && expected_changing == actual_changing {
+                continue;
+            }
+
+            unit.diagnostics.push(Diagnostic {
+                kind: DiagnosticKind::InvalidPerformCall,
+                range: perform_call.range.clone(),
+                message: format!(
+                    "PERFORM '{}' expects {}, but call provides USING {} and CHANGING {} argument(s)",
+                    perform_call.routine_name,
+                    format_perform_signature(expected_using, expected_changing),
+                    actual_using,
+                    actual_changing
+                ),
+            });
         }
 
         for diagnostic in &unit.diagnostics {

@@ -197,9 +197,11 @@ impl AnalysisSnapshot {
     }
 
     pub fn hovered_named_argument_at(&self, offset: usize) -> Option<HoveredSymbolInfo> {
-        let access = self.symbols.named_arguments.iter().find(|access| {
-            access.range.start <= offset && offset < access.range.end
-        })?;
+        let access = self
+            .symbols
+            .named_arguments
+            .iter()
+            .find(|access| access.range.start <= offset && offset < access.range.end)?;
         let parameter = resolve_named_argument_parameter(self, access)?;
         Some(HoveredSymbolInfo {
             range: access.range.clone(),
@@ -559,8 +561,13 @@ fn resolve_named_argument_parameter<'a>(
 ) -> Option<NamedArgumentParameterInfo> {
     match &access.target {
         NamedArgumentTarget::Constructor { type_name } => {
-            let (unit, class_symbol_id) =
-                resolve_symbol_from_context(snapshot, access.scope, Namespace::Type, type_name, false)?;
+            let (unit, class_symbol_id) = resolve_symbol_from_context(
+                snapshot,
+                access.scope,
+                Namespace::Type,
+                type_name,
+                false,
+            )?;
             if unit.symbol(class_symbol_id).kind != SymbolKind::Class {
                 return None;
             }
@@ -727,8 +734,11 @@ fn resolve_method_target_from_context<'a>(
         &declared_type.base_name,
         false,
     )?;
-    (class_unit.symbol(class_symbol_id).kind == SymbolKind::Class)
-        .then_some((class_unit, class_symbol_id, false))
+    (class_unit.symbol(class_symbol_id).kind == SymbolKind::Class).then_some((
+        class_unit,
+        class_symbol_id,
+        false,
+    ))
 }
 
 fn fallback_namespace_for_context(
@@ -784,12 +794,15 @@ fn resolve_class_selector_member<'a>(
     }
     let (class_unit, class_symbol_id, requires_static) =
         resolve_class_selector_base(snapshot, access, unit, symbol_id)?;
-    let member =
-        class_unit.class_member(class_symbol_id, access.field_path[segment_index].name.as_ref())?;
+    let member = class_unit.class_member(
+        class_symbol_id,
+        access.field_path[segment_index].name.as_ref(),
+    )?;
     if member.kind != ClassMemberKind::Method || (requires_static && !member.is_static) {
         return None;
     }
-    class_member_visible_to(snapshot.symbols.as_ref(), access.scope, class_unit, member).then_some(member)
+    class_member_visible_to(snapshot.symbols.as_ref(), access.scope, class_unit, member)
+        .then_some(member)
 }
 
 fn resolve_class_selector_base<'a>(
@@ -816,8 +829,11 @@ fn resolve_class_selector_base<'a>(
         &declared_type.base_name,
         false,
     )?;
-    (class_unit.symbol(class_symbol_id).kind == SymbolKind::Class)
-        .then_some((class_unit, class_symbol_id, false))
+    (class_unit.symbol(class_symbol_id).kind == SymbolKind::Class).then_some((
+        class_unit,
+        class_symbol_id,
+        false,
+    ))
 }
 
 fn innermost_scope_at(unit: &UnitAnalysis, offset: usize) -> ScopeId {
