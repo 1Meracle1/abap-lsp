@@ -179,6 +179,7 @@ pub struct FieldAccessSegment {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FieldTypeRefData {
     pub namespace: Namespace,
+    pub is_ref: bool,
     pub base_name: Arc<str>,
     pub field_path: Vec<Arc<str>>,
 }

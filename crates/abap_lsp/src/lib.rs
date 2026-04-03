@@ -757,11 +757,7 @@ some_class=>exec( iv_value = 1 )."
         };
         assert!(markup.value.contains("`lv`"));
         assert!(markup.value.contains("Variable"));
-        assert!(
-            markup.value.contains("Declared as TYPE `i`"),
-            "{}",
-            markup.value
-        );
+        assert!(markup.value.contains("```abap\nTYPE i\n```"), "{}", markup.value);
     }
 
     #[test]
@@ -803,7 +799,63 @@ some_class=>exec( iv_value = 1 )."
         assert!(markup.value.contains("`cv`"));
         assert!(markup.value.contains("Parameter"));
         assert!(
-            markup.value.contains("Declared as TYPE `string`"),
+            markup.value.contains("```abap\nTYPE string\n```"),
+            "{}",
+            markup.value
+        );
+    }
+
+    #[test]
+    fn hover_preserves_ref_to_type_clause_for_variable() {
+        let state = ServerState::default();
+        let text = "\
+CLASS some_class DEFINITION.
+ENDCLASS.
+
+CLASS some_class IMPLEMENTATION.
+ENDCLASS.
+
+DATA lo_instance TYPE REF TO some_class.
+CREATE OBJECT lo_instance.";
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///hover_ref.abap").expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: text.to_string(),
+                },
+            },
+        );
+        let line_6_start = text.rmatch_indices('\n').nth(0).expect("last newline").0 + 1;
+        let lo_instance_use_col =
+            (text.rfind("lo_instance").expect("lo_instance use") - line_6_start) as u32;
+
+        let hover = hover(
+            &state,
+            &HoverParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///hover_ref.abap").expect("uri"),
+                    },
+                    position: Position {
+                        line: 6,
+                        character: lo_instance_use_col + 1,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+            },
+        )
+        .expect("hover");
+
+        let HoverContents::Markup(markup) = hover.contents else {
+            panic!("expected markdown hover");
+        };
+        assert!(markup.value.contains("`lo_instance`"));
+        assert!(markup.value.contains("Variable"));
+        assert!(
+            markup.value.contains("```abap\nTYPE REF TO some_class\n```"),
             "{}",
             markup.value
         );

@@ -347,12 +347,22 @@ fn format_field_type_ref(type_ref: &abap_symbols::FieldTypeRefData) -> String {
         Namespace::Value => "LIKE",
         Namespace::Routine => "TYPE",
     };
-    let mut rendered = type_ref.base_name.to_string();
+    let mut rendered = String::from(keyword);
+    if type_ref.is_ref {
+        rendered.push_str(" REF TO ");
+    } else {
+        rendered.push(' ');
+    }
+    rendered.push_str(type_ref.base_name.as_ref());
     for segment in &type_ref.field_path {
         rendered.push('-');
         rendered.push_str(segment.as_ref());
     }
-    format!("{keyword} {rendered}")
+    rendered
+}
+
+fn format_hover_type_clause(rendered_type: &str) -> String {
+    format!("```abap\n{rendered_type}\n```")
 }
 
 fn symbol_kind_label(kind: SymbolKind) -> &'static str {
@@ -382,20 +392,10 @@ fn symbol_kind_label(kind: SymbolKind) -> &'static str {
 fn symbol_type_line(unit: &UnitAnalysis, symbol: &SymbolData) -> Option<String> {
     if let Some(structure_id) = symbol.structure {
         let name = unit.structure(structure_id).name.as_ref();
-        return Some(format!("Declared as TYPE `{name}`"));
+        return Some(format_hover_type_clause(&format!("TYPE {name}")));
     }
     let type_ref = symbol.declared_type.as_ref()?;
-    let keyword = match type_ref.namespace {
-        Namespace::Type => "TYPE",
-        Namespace::Value => "LIKE",
-        Namespace::Routine => "TYPE",
-    };
-    let mut rendered = type_ref.base_name.to_string();
-    for segment in &type_ref.field_path {
-        rendered.push('-');
-        rendered.push_str(segment.as_ref());
-    }
-    Some(format!("Declared as {keyword} `{rendered}`"))
+    Some(format_hover_type_clause(&format_field_type_ref(type_ref)))
 }
 
 fn markdown_lines_for_declared_symbol(unit: &UnitAnalysis, symbol: &SymbolData) -> Vec<String> {
@@ -1118,7 +1118,7 @@ some_class=>exec( iv_value = 1 ).";
             hovered
                 .markdown_lines
                 .iter()
-                .any(|line| line == "Declared as TYPE `i`"),
+                .any(|line| line == "```abap\nTYPE i\n```"),
             "{:?}",
             hovered.markdown_lines
         );
@@ -1140,7 +1140,37 @@ some_class=>exec( iv_value = 1 ).";
             hovered
                 .markdown_lines
                 .iter()
-                .any(|line| line == "Declared as TYPE `i`"),
+                .any(|line| line == "```abap\nTYPE i\n```"),
+            "{:?}",
+            hovered.markdown_lines
+        );
+    }
+
+    #[test]
+    fn hovered_resolved_symbol_at_preserves_ref_to_type_clause() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS some_class DEFINITION.
+ENDCLASS.
+
+CLASS some_class IMPLEMENTATION.
+ENDCLASS.
+
+DATA lo_instance TYPE REF TO some_class.
+CREATE OBJECT lo_instance.";
+        let snapshot = store.publish("file:///demo.abap", 1, src);
+        let offset = src.rfind("lo_instance").expect("lo_instance use") + 1;
+
+        let hovered = snapshot
+            .hovered_resolved_symbol_at(offset)
+            .expect("resolved symbol hover");
+        assert_eq!(hovered.display_name.as_ref(), "lo_instance");
+        assert!(hovered.markdown_lines.iter().any(|line| line == "Variable"));
+        assert!(
+            hovered
+                .markdown_lines
+                .iter()
+                .any(|line| line == "```abap\nTYPE REF TO some_class\n```"),
             "{:?}",
             hovered.markdown_lines
         );

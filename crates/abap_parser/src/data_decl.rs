@@ -261,16 +261,32 @@ fn parse_data_decl_name(
 
 fn parse_simple_type_ref(
     b: &mut SyntaxTreeBuilder,
-    _source: &str,
+    source: &str,
     tokens: &[Token],
     idx: usize,
 ) -> Option<(NodeId, usize)> {
-    let first = tokens.get(idx)?;
+    let mut children = Vec::new();
+    let mut i = idx;
+    if tokens
+        .get(i)
+        .is_some_and(|tok| is_keyword(source, tok, "ref"))
+    {
+        let ref_tok = tokens.get(i)?;
+        let to_tok = tokens.get(i + 1)?;
+        if !is_keyword(source, to_tok, "to") {
+            return None;
+        }
+        children.push(token_leaf(b, ref_tok));
+        children.push(token_leaf(b, to_tok));
+        i += 2;
+    }
+
+    let first = tokens.get(i)?;
     if first.kind != TokenKind::Ident {
         return None;
     }
-    let mut children = vec![token_leaf(b, first)];
-    let mut i = idx + 1;
+    children.push(token_leaf(b, first));
+    i += 1;
     loop {
         let op = match tokens.get(i) {
             Some(t) => t,
@@ -920,6 +936,14 @@ mod tests {
         let file = tree_ok(src);
         let type_refs = file.count_kind(file.root(), SyntaxKind::TypeRefSimple);
         assert!(type_refs >= 1);
+    }
+
+    #[test]
+    fn data_ref_to_class_type_ref() {
+        let src = "DATA lo_instance TYPE REF TO some_class.";
+        let file = tree_ok(src);
+        assert_eq!(file.count_kind(file.root(), SyntaxKind::DataDecl), 1);
+        assert_eq!(file.count_kind(file.root(), SyntaxKind::TypeRefSimple), 1);
     }
 
     #[test]

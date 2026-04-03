@@ -744,3 +744,116 @@ TYPES: BEGIN OF ty_outer,\n\
     assert_eq!(nested.name.as_ref(), "a");
     assert!(matches!(nested.shape, StructureFieldShape::Scalar));
 }
+
+#[test]
+fn resolves_new_constructor_type_reference() {
+    let src = r#"
+CLASS some_class DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS exec.
+  PRIVATE SECTION.
+ENDCLASS.
+
+CLASS some_class IMPLEMENTATION.
+  METHOD exec.
+    DATA(lo_instance) = NEW some_class( ).
+  ENDMETHOD.
+ENDCLASS.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///new_ctor.abap", src, &parsed);
+
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference
+                && diag.message.contains("some_class")
+        }),
+        "unexpected unresolved diagnostic: {:?}",
+        unit.diagnostics
+    );
+
+    let class = unit
+        .symbols
+        .iter()
+        .find(|symbol| {
+            symbol.kind == abap_symbols::SymbolKind::Class && symbol.name.as_ref() == "some_class"
+        })
+        .expect("class symbol");
+
+    let ctor_ref = unit
+        .references
+        .iter()
+        .rfind(|reference| {
+            reference.kind == ReferenceKind::TypeRef
+                && reference.namespace == Namespace::Type
+                && reference.name.as_ref() == "some_class"
+        })
+        .expect("constructor type reference");
+
+    assert_eq!(
+        ctor_ref.resolution,
+        Some(Resolution::Symbol(SymbolHandle {
+            unit: unit.unit_id,
+            symbol: class.id,
+        }))
+    );
+}
+
+#[test]
+fn resolves_create_object_target_with_ref_to_type() {
+    let src = r#"
+CLASS some_class DEFINITION.
+ENDCLASS.
+
+CLASS some_class IMPLEMENTATION.
+ENDCLASS.
+
+DATA lo_instance TYPE REF TO some_class.
+CREATE OBJECT lo_instance.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///create_object.abap", src, &parsed);
+
+    let lo_instance = unit
+        .symbols
+        .iter()
+        .find(|symbol| {
+            symbol.kind == abap_symbols::SymbolKind::Variable
+                && symbol.name.as_ref() == "lo_instance"
+        })
+        .expect("lo_instance variable");
+    let declared_type = lo_instance
+        .declared_type
+        .as_ref()
+        .expect("declared ref type");
+    assert_eq!(declared_type.namespace, Namespace::Type);
+    assert!(declared_type.is_ref);
+    assert_eq!(declared_type.base_name.as_ref(), "some_class");
+    assert!(declared_type.field_path.is_empty());
+
+    let create_object_ref = unit
+        .references
+        .iter()
+        .find(|reference| {
+            reference.kind == ReferenceKind::Identifier
+                && reference.namespace == Namespace::Value
+                && reference.name.as_ref() == "lo_instance"
+        })
+        .expect("create object target reference");
+    assert_eq!(
+        create_object_ref.resolution,
+        Some(Resolution::Symbol(SymbolHandle {
+            unit: unit.unit_id,
+            symbol: lo_instance.id,
+        }))
+    );
+
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference
+                && (diag.message.contains("lo_instance") || diag.message.contains("some_class"))
+        }),
+        "unexpected unresolved diagnostic: {:?}",
+        unit.diagnostics
+    );
+}

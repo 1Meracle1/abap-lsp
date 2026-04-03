@@ -1004,12 +1004,25 @@ impl<'a> Collector<'a> {
     fn try_parse_simple_type_ref_chain_tokens(
         &self,
         tokens: &[&Token],
-    ) -> Option<(Arc<str>, Vec<Arc<str>>)> {
-        if tokens.first()?.kind != TokenKind::Ident {
+    ) -> Option<(bool, Arc<str>, Vec<Arc<str>>)> {
+        let mut i = 0usize;
+        let mut is_ref = false;
+        if tokens
+            .get(i)
+            .is_some_and(|tok| self.token_matches_keyword(tok, "ref"))
+        {
+            let to_tok = tokens.get(i + 1)?;
+            if !self.token_matches_keyword(to_tok, "to") {
+                return None;
+            }
+            is_ref = true;
+            i += 2;
+        }
+        if tokens.get(i)?.kind != TokenKind::Ident {
             return None;
         }
-        let base_name = Arc::<str>::from(tokens[0].lexeme(self.source).to_ascii_lowercase());
-        let mut i = 1usize;
+        let base_name = Arc::<str>::from(tokens[i].lexeme(self.source).to_ascii_lowercase());
+        i += 1;
         let mut field_path = Vec::new();
         while i < tokens.len() {
             let sel = tokens.get(i)?;
@@ -1029,7 +1042,7 @@ impl<'a> Collector<'a> {
             ));
             i += 1;
         }
-        Some((base_name, field_path))
+        Some((is_ref, base_name, field_path))
     }
 
     fn field_type_ref_from_token_slice(
@@ -1047,11 +1060,12 @@ impl<'a> Collector<'a> {
         if filtered.is_empty() {
             return None;
         }
-        if let Some((base_name, field_path)) =
+        if let Some((is_ref, base_name, field_path)) =
             self.try_parse_simple_type_ref_chain_tokens(&filtered)
         {
             return Some(FieldTypeRefData {
                 namespace: clause_ns,
+                is_ref,
                 base_name,
                 field_path,
             });
@@ -1064,6 +1078,7 @@ impl<'a> Collector<'a> {
             .to_ascii_lowercase();
         Some(FieldTypeRefData {
             namespace: clause_ns,
+            is_ref: false,
             base_name: Arc::<str>::from(rendered),
             field_path: Vec::new(),
         })
@@ -1118,7 +1133,7 @@ impl<'a> Collector<'a> {
     }
 
     fn collect_type_ref(&mut self, node: NodeId, scope: ScopeId) {
-        if let Some((namespace, base_name, range, field_path)) = self.type_ref_access_chain(node) {
+        if let Some((namespace, _, base_name, range, field_path)) = self.type_ref_access_chain(node) {
             self.add_reference(
                 scope,
                 Arc::clone(&base_name),
@@ -1154,7 +1169,7 @@ impl<'a> Collector<'a> {
             SyntaxKind::SelectorExpr => self.collect_selector_expr(node, scope),
             SyntaxKind::CallExpr => self.collect_call_expr(node, scope),
             SyntaxKind::ConstructorExpr => {
-                if let Some((name, range)) = self.first_ident_in(node) {
+                if let Some((name, range)) = self.constructor_type_ref(node) {
                     self.add_reference(scope, name, Namespace::Type, ReferenceKind::TypeRef, range);
                 }
                 for child in self.file.children(node) {
@@ -1195,6 +1210,7 @@ impl<'a> Collector<'a> {
             .into_iter()
             .filter(|token| token.kind != TokenKind::Comment)
             .collect();
+        self.collect_create_object_stmt(&significant, scope);
         let mut idx = 0usize;
         while idx + 2 < significant.len() {
             let base = significant[idx];
@@ -1241,6 +1257,38 @@ impl<'a> Collector<'a> {
                 in_type_position: false,
             });
             idx = cursor + 1;
+        }
+    }
+
+    fn collect_create_object_stmt(&mut self, tokens: &[&Token], scope: ScopeId) {
+        if tokens.len() < 3
+            || !self.token_matches_keyword(tokens[0], "create")
+            || !self.token_matches_keyword(tokens[1], "object")
+        {
+            return;
+        }
+
+        let target = tokens[2];
+        if target.kind == TokenKind::Ident {
+            let name = Arc::<str>::from(target.lexeme(self.source).to_ascii_lowercase());
+            self.add_reference(
+                scope,
+                name,
+                Namespace::Value,
+                ReferenceKind::Identifier,
+                target.range.clone(),
+            );
+        }
+
+        for idx in 3..tokens.len() {
+            let token = tokens[idx];
+            if !self.token_matches_keyword(token, "type") {
+                continue;
+            }
+            if let Some((name, range)) = self.simple_type_ref_base_from_tokens(&tokens[idx + 1..]) {
+                self.add_reference(scope, name, Namespace::Type, ReferenceKind::TypeRef, range);
+            }
+            break;
         }
     }
 
@@ -1357,10 +1405,11 @@ impl<'a> Collector<'a> {
             }
 
             let namespace = type_namespace.unwrap_or(Namespace::Type);
-            let (_, base_name, _, field_path) = self.type_ref_access_chain(child)?;
+            let (_, is_ref, base_name, _, field_path) = self.type_ref_access_chain(child)?;
             let field_path = field_path.into_iter().map(|segment| segment.name).collect();
             return Some(FieldTypeRefData {
                 namespace,
+                is_ref,
                 base_name,
                 field_path,
             });
@@ -1463,7 +1512,7 @@ impl<'a> Collector<'a> {
     }
 
     fn type_ref_lookup_parts(&self, node: NodeId) -> Option<(Arc<str>, Vec<Arc<str>>)> {
-        let (_, base_name, _, field_path) = self.type_ref_access_chain(node)?;
+        let (_, _, base_name, _, field_path) = self.type_ref_access_chain(node)?;
         Some((
             base_name,
             field_path.into_iter().map(|segment| segment.name).collect(),
@@ -1535,22 +1584,39 @@ impl<'a> Collector<'a> {
         None
     }
 
-    fn first_ident_in(&self, node: NodeId) -> Option<(Arc<str>, TextRange)> {
-        let mut stack = vec![node];
-        while let Some(current) = stack.pop() {
-            if let Some(token) = self.token_for_node(current)
-                && token.kind == TokenKind::Ident
-            {
-                return Some((
-                    Arc::<str>::from(token.lexeme(self.source).to_ascii_lowercase()),
-                    token.range.clone(),
-                ));
+    fn constructor_type_ref(&self, node: NodeId) -> Option<(Arc<str>, TextRange)> {
+        let tokens: Vec<_> = self
+            .file
+            .children(node)
+            .filter_map(|child| self.token_for_node(child))
+            .collect();
+        let end = tokens
+            .iter()
+            .position(|token| token.kind == TokenKind::LParen)
+            .unwrap_or(tokens.len());
+        self.simple_type_ref_base_from_tokens(tokens.get(1..end)?)
+    }
+
+    fn simple_type_ref_base_from_tokens(&self, tokens: &[&Token]) -> Option<(Arc<str>, TextRange)> {
+        let mut i = 0usize;
+        if tokens
+            .get(i)
+            .is_some_and(|tok| self.token_matches_keyword(tok, "ref"))
+        {
+            let to_tok = tokens.get(i + 1)?;
+            if !self.token_matches_keyword(to_tok, "to") {
+                return None;
             }
-            for child in self.file.children(current).rev() {
-                stack.push(child);
-            }
+            i += 2;
         }
-        None
+        let token = tokens.get(i)?;
+        if token.kind != TokenKind::Ident {
+            return None;
+        }
+        Some((
+            Arc::<str>::from(token.lexeme(self.source).to_ascii_lowercase()),
+            token.range.clone(),
+        ))
     }
 
     fn node_name(&self, node: NodeId) -> Option<(Arc<str>, TextRange)> {
@@ -1704,6 +1770,7 @@ impl<'a> Collector<'a> {
         }
         let namespace = namespace?;
         let mut base_name = None;
+        let mut is_ref = false;
         let mut field_path = Vec::new();
         let mut saw_selector = false;
         while idx < tokens.len() {
@@ -1713,6 +1780,15 @@ impl<'a> Collector<'a> {
                 continue;
             }
             if token.kind == TokenKind::Ident {
+                if base_name.is_none() && self.token_matches_keyword(token, "ref") {
+                    let to_tok = tokens.get(idx + 1)?;
+                    if !self.token_matches_keyword(to_tok, "to") {
+                        return None;
+                    }
+                    is_ref = true;
+                    idx += 2;
+                    continue;
+                }
                 let name = Arc::<str>::from(token.lexeme(self.source).to_ascii_lowercase());
                 if base_name.is_none() {
                     base_name = Some(name);
@@ -1740,6 +1816,7 @@ impl<'a> Collector<'a> {
         }
         Some(FieldTypeRefData {
             namespace,
+            is_ref,
             base_name: base_name?,
             field_path,
         })
@@ -1791,15 +1868,29 @@ impl<'a> Collector<'a> {
     fn type_ref_access_chain(
         &self,
         node: NodeId,
-    ) -> Option<(Namespace, Arc<str>, TextRange, Vec<FieldAccessSegment>)> {
+    ) -> Option<(Namespace, bool, Arc<str>, TextRange, Vec<FieldAccessSegment>)> {
         let mut base_name = None;
         let mut base_range = None;
         let mut field_path = Vec::new();
         let mut namespace = Namespace::Type;
+        let mut is_ref = false;
         let mut saw_selector = false;
+        let mut expect_to_after_ref = false;
         for child in self.file.children(node) {
             let token = self.token_for_node(child)?;
             if token.kind == TokenKind::Ident {
+                if base_name.is_none() && self.token_matches_keyword(token, "ref") {
+                    is_ref = true;
+                    expect_to_after_ref = true;
+                    continue;
+                }
+                if expect_to_after_ref {
+                    if self.token_matches_keyword(token, "to") {
+                        expect_to_after_ref = false;
+                        continue;
+                    }
+                    return None;
+                }
                 let name = Arc::<str>::from(token.lexeme(self.source).to_ascii_lowercase());
                 if base_name.is_none() {
                     base_range = Some(token.range.clone());
@@ -1827,7 +1918,7 @@ impl<'a> Collector<'a> {
             }
             return None;
         }
-        Some((namespace, base_name?, base_range?, field_path))
+        Some((namespace, is_ref, base_name?, base_range?, field_path))
     }
 }
 
