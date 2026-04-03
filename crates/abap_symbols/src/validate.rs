@@ -6,7 +6,7 @@ use crate::def_map::{
     Diagnostic, DiagnosticKind, FormParameterData, FormParameterSection, PerformParameterSection,
     Resolution,
 };
-use crate::ids::{ScopeId, SymbolId};
+use crate::ids::{ScopeId, SymbolHandle, SymbolId};
 use crate::project::ProjectAnalysis;
 use crate::scope::{Namespace, ScopeKind};
 use crate::{ClassMemberKind, SymbolKind, Visibility};
@@ -118,6 +118,181 @@ fn enclosing_class_owner(unit: &crate::UnitAnalysis, scope: ScopeId) -> Option<S
     None
 }
 
+fn enclosing_method_owner(unit: &crate::UnitAnalysis, scope: ScopeId) -> Option<SymbolId> {
+    let mut current = Some(scope);
+    while let Some(scope_id) = current {
+        let scope = unit.scope(scope_id);
+        if scope.kind == ScopeKind::Method {
+            return scope.owner;
+        }
+        current = scope.parent;
+    }
+    None
+}
+
+fn scope_descends_from(unit: &crate::UnitAnalysis, scope: ScopeId, ancestor: ScopeId) -> bool {
+    let mut current = Some(scope);
+    while let Some(scope_id) = current {
+        if scope_id == ancestor {
+            return true;
+        }
+        current = unit.scope(scope_id).parent;
+    }
+    false
+}
+
+fn resolve_class_symbol(
+    project: &ProjectAnalysis,
+    unit: &crate::UnitAnalysis,
+    scope_index: &[HashMap<(Namespace, Arc<str>), Vec<SymbolId>>],
+    scope: ScopeId,
+    name: &Arc<str>,
+) -> Option<SymbolHandle> {
+    if let Some(symbol) = resolve_symbol_in_scope_chain(unit, scope_index, scope, Namespace::Type, name)
+        && unit.symbol(symbol).kind == SymbolKind::Class
+    {
+        return Some(SymbolHandle {
+            unit: unit.unit_id,
+            symbol,
+        });
+    }
+
+    for candidate_unit in &project.units {
+        for symbol in &candidate_unit.symbols {
+            if symbol.scope == candidate_unit.root_scope
+                && symbol.kind == SymbolKind::Class
+                && symbol.name.as_ref() == name.as_ref()
+            {
+                return Some(SymbolHandle {
+                    unit: candidate_unit.unit_id,
+                    symbol: symbol.id,
+                });
+            }
+        }
+    }
+
+    None
+}
+
+fn is_valid_super_reference(unit: &crate::UnitAnalysis, scope: ScopeId) -> bool {
+    let Some(_) = enclosing_method_owner(unit, scope) else {
+        return false;
+    };
+    let Some(class_symbol) = enclosing_class_owner(unit, scope) else {
+        return false;
+    };
+    unit.class_superclass(class_symbol).is_some()
+}
+
+fn validate_super_constructor_calls(
+    project: &ProjectAnalysis,
+    unit: &crate::UnitAnalysis,
+    scope_index: &[HashMap<(Namespace, Arc<str>), Vec<SymbolId>>],
+) -> Vec<Diagnostic> {
+    let mut diagnostics = Vec::new();
+
+    for scope in &unit.scopes {
+        if scope.kind != ScopeKind::Method {
+            continue;
+        }
+        let Some(method_symbol) = scope.owner else {
+            continue;
+        };
+        let method = unit.symbol(method_symbol);
+        if method.name.as_ref() != "constructor" {
+            continue;
+        }
+        let Some(class_symbol) = enclosing_class_owner(unit, scope.id) else {
+            continue;
+        };
+        let Some(inheritance) = unit.class_superclass(class_symbol) else {
+            continue;
+        };
+
+        let superclass = resolve_class_symbol(
+            project,
+            unit,
+            scope_index,
+            scope.id,
+            &inheritance.superclass_name,
+        );
+
+        let has_super_call = unit.field_accesses.iter().any(|access| {
+            scope_descends_from(unit, access.scope, scope.id)
+                && access.base_namespace == Namespace::Value
+                && access.base_name.as_ref() == "super"
+                && access
+                    .field_path
+                    .last()
+                    .is_some_and(|segment| segment.name.as_ref() == "constructor")
+        });
+        if !has_super_call {
+            diagnostics.push(Diagnostic {
+                kind: DiagnosticKind::MissingSuperConstructorCall,
+                range: method.decl_range.clone(),
+                message: format!(
+                    "constructor of subclass '{}' must call super->constructor( )",
+                    unit.symbol(class_symbol).name
+                ),
+            });
+            continue;
+        }
+
+        let Some(superclass) = superclass else {
+            continue;
+        };
+        let superclass_unit = &project.units[superclass.unit.as_usize()];
+        let Some(super_constructor) = superclass_unit.class_member(superclass.symbol, "constructor")
+        else {
+            continue;
+        };
+        if super_constructor.parameters.is_empty() {
+            continue;
+        }
+
+        let provided_args: HashSet<&str> = unit
+            .named_arguments
+            .iter()
+            .filter(|argument| scope_descends_from(unit, argument.scope, scope.id))
+            .filter_map(|argument| match &argument.target {
+                crate::NamedArgumentTarget::Method {
+                    base_namespace,
+                    base_name,
+                    method_name,
+                } if *base_namespace == Namespace::Value
+                    && base_name.as_ref() == "super"
+                    && method_name.as_ref() == "constructor" =>
+                {
+                    Some(argument.name.as_ref())
+                }
+                _ => None,
+            })
+            .collect();
+
+        let missing: Vec<_> = super_constructor
+            .parameters
+            .iter()
+            .filter(|parameter| !provided_args.contains(parameter.name.as_ref()))
+            .map(|parameter| parameter.name.to_string())
+            .collect();
+        if missing.is_empty() {
+            continue;
+        }
+
+        diagnostics.push(Diagnostic {
+            kind: DiagnosticKind::MissingSuperConstructorCall,
+            range: method.decl_range.clone(),
+            message: format!(
+                "super->constructor( ) in subclass '{}' must pass parent constructor argument(s): {}",
+                unit.symbol(class_symbol).name,
+                missing.join(", ")
+            ),
+        });
+    }
+
+    diagnostics
+}
+
 fn class_member_visible_to(
     unit: &crate::UnitAnalysis,
     access: &crate::FieldAccess,
@@ -180,7 +355,13 @@ pub fn validate_project(project: &mut ProjectAnalysis) {
         .collect();
     project.diagnostics.clear();
 
-    for unit in &mut project.units {
+    for unit_idx in 0..project.units.len() {
+        let scope_names = build_scope_names(&project.units[unit_idx]);
+        let scope_index = build_scope_index(&project.units[unit_idx]);
+        let constructor_diagnostics =
+            validate_super_constructor_calls(project, &project.units[unit_idx], &scope_index);
+
+        let unit = &mut project.units[unit_idx];
         let retained: Vec<_> = unit
             .diagnostics
             .iter()
@@ -196,11 +377,15 @@ pub fn validate_project(project: &mut ProjectAnalysis) {
             .cloned()
             .collect();
         unit.diagnostics = retained;
-        let scope_names = build_scope_names(unit);
-        let scope_index = build_scope_index(unit);
 
         for reference in &unit.references {
             if reference.resolution.is_some() {
+                continue;
+            }
+            if reference.namespace == Namespace::Value
+                && reference.name.as_ref() == "super"
+                && is_valid_super_reference(unit, reference.scope)
+            {
                 continue;
             }
 
@@ -403,6 +588,8 @@ pub fn validate_project(project: &mut ProjectAnalysis) {
                 ),
             });
         }
+
+        unit.diagnostics.extend(constructor_diagnostics);
 
         for diagnostic in &unit.diagnostics {
             project.diagnostics.push(diagnostic.clone());

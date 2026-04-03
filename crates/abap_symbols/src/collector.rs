@@ -8,11 +8,12 @@ use abap_lexer::{TextRange, Token, TokenKind, have_space_between};
 
 use crate::builtins::{BUILTIN_STRUCTURES, BUILTIN_SYMBOLS, BuiltinTypeKind};
 use crate::def_map::{
-    ClassMemberData, ClassMemberKind, ClassMemberParameterData, Diagnostic, DiagnosticKind,
-    FieldAccess, FieldAccessSegment, FieldTypeRefData, FormParameterData, FormParameterPassingKind,
-    FormParameterSection, FormRoutineData, IncludeEdge, NamedArgumentAccess, NamedArgumentTarget,
-    PerformArgumentData, PerformCallData, PerformParameterSection, ReferenceData, ReferenceKind,
-    StructureData, StructureFieldData, SymbolData, SymbolKind, UnitAnalysis, Visibility,
+    ClassInheritanceData, ClassMemberData, ClassMemberKind, ClassMemberParameterData, Diagnostic,
+    DiagnosticKind, FieldAccess, FieldAccessSegment, FieldTypeRefData, FormParameterData,
+    FormParameterPassingKind, FormParameterSection, FormRoutineData, IncludeEdge,
+    NamedArgumentAccess, NamedArgumentTarget, PerformArgumentData, PerformCallData,
+    PerformParameterSection, ReferenceData, ReferenceKind, StructureData, StructureFieldData,
+    SymbolData, SymbolKind, UnitAnalysis, Visibility,
 };
 use crate::ids::{ReferenceId, ScopeId, StructureId, SymbolId, UnitId};
 use crate::scope::{Namespace, ScopeData, ScopeKind};
@@ -149,6 +150,14 @@ impl<'a> Collector<'a> {
         self.install_builtin_symbols(root_scope);
         self.walk_children(root, root_scope);
         let provided_names = self.provided_names();
+        let class_inheritance = self
+            .class_superclasses
+            .into_iter()
+            .map(|(class_symbol, superclass_name)| ClassInheritanceData {
+                class_symbol,
+                superclass_name,
+            })
+            .collect();
         UnitAnalysis {
             unit_id: self.unit_id,
             uri: self.uri,
@@ -161,6 +170,7 @@ impl<'a> Collector<'a> {
             include_edges: self.include_edges,
             field_accesses: self.field_accesses,
             class_members: self.class_members,
+            class_inheritance,
             form_routines: self.form_routines,
             named_arguments: self.named_arguments,
             perform_calls: self.perform_calls,

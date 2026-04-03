@@ -4,7 +4,7 @@ use std::sync::Arc;
 use crate::builtins::builtin_routine_spec;
 use crate::def_map::{ReferenceKind, Resolution, UnitAnalysis};
 use crate::ids::{ScopeId, SymbolHandle, SymbolId};
-use crate::scope::Namespace;
+use crate::scope::{Namespace, ScopeKind};
 
 fn is_builtin_type(name: &str) -> bool {
     let lower = name.trim();
@@ -86,6 +86,34 @@ fn lookup_reference_scope_chain(
     None
 }
 
+fn enclosing_class_owner(unit: &UnitAnalysis, scope: ScopeId) -> Option<SymbolId> {
+    let mut current = Some(scope);
+    while let Some(scope_id) = current {
+        let scope = unit.scope(scope_id);
+        if scope.kind == ScopeKind::Class {
+            return scope.owner;
+        }
+        current = scope.parent;
+    }
+    None
+}
+
+fn resolve_super_reference_in_unit(
+    unit: &UnitAnalysis,
+    scope_index: &ScopeIndex,
+    scope: ScopeId,
+) -> Option<SymbolId> {
+    let class_symbol = enclosing_class_owner(unit, scope)?;
+    let superclass = unit.class_superclass(class_symbol)?;
+    lookup_scope_chain(
+        unit,
+        scope_index,
+        scope,
+        Namespace::Type,
+        &superclass.superclass_name,
+    )
+}
+
 pub fn resolve_unit(unit: &mut UnitAnalysis) {
     let scope_index = build_scope_index(unit);
     let unit_id = unit.unit_id;
@@ -105,6 +133,14 @@ pub fn resolve_unit(unit: &mut UnitAnalysis) {
                     unit: unit_id,
                     symbol,
                 })),
+                None if namespace == Namespace::Value && name.as_ref() == "super" => {
+                    resolve_super_reference_in_unit(unit, &scope_index, scope).map(|symbol| {
+                        Resolution::Symbol(SymbolHandle {
+                            unit: unit_id,
+                            symbol,
+                        })
+                    })
+                }
                 None if namespace == Namespace::Type && is_builtin_type(name.as_ref()) => {
                     Some(Resolution::BuiltinType)
                 }
@@ -158,55 +194,88 @@ pub fn resolve_project_cross_unit(units: &mut [UnitAnalysis]) {
             .iter()
             .filter_map(|edge| edge.target)
             .collect();
-        for reference in &mut units[unit_idx].references {
-            if reference.resolution.is_some() {
+        for reference_idx in 0..units[unit_idx].references.len() {
+            if units[unit_idx].references[reference_idx].resolution.is_some() {
                 continue;
             }
-            let namespaces = if reference.kind == ReferenceKind::TypeRef
-                && reference.namespace == Namespace::Value
+            let mut resolved = None;
+            let reference_scope = units[unit_idx].references[reference_idx].scope;
+            let reference_namespace = units[unit_idx].references[reference_idx].namespace;
+            let reference_kind = units[unit_idx].references[reference_idx].kind;
+            let reference_name = Arc::clone(&units[unit_idx].references[reference_idx].name);
+
+            if reference_namespace == Namespace::Value && reference_name.as_ref() == "super" {
+                let class_symbol = enclosing_class_owner(&units[unit_idx], reference_scope);
+                let superclass_name = class_symbol.and_then(|class_symbol| {
+                    units[unit_idx]
+                        .class_superclass(class_symbol)
+                        .map(|inheritance| Arc::clone(&inheritance.superclass_name))
+                });
+                if let Some(superclass_name) = superclass_name {
+                    if let Some(symbol_id) = per_unit_root_index[unit_idx]
+                        .get(&(Namespace::Type, Arc::clone(&superclass_name)))
+                        .copied()
+                    {
+                        resolved = Some(Resolution::Symbol(SymbolHandle {
+                            unit: units[unit_idx].unit_id,
+                            symbol: symbol_id,
+                        }));
+                    }
+                    if resolved.is_none()
+                        && let Some(handles) = root_index.get(&(Namespace::Type, superclass_name))
+                        && let Some(symbol) = handles.first().copied()
+                    {
+                        resolved = Some(Resolution::Symbol(symbol));
+                    }
+                }
+            }
+
+            let namespaces = if reference_kind == ReferenceKind::TypeRef
+                && reference_namespace == Namespace::Value
             {
                 [Namespace::Value, Namespace::Type]
             } else {
-                [reference.namespace, reference.namespace]
+                [reference_namespace, reference_namespace]
             };
-            for namespace in namespaces {
-                for target in &include_targets {
-                    if let Some(symbol_id) = per_unit_root_index[target.as_usize()]
-                        .get(&(namespace, Arc::clone(&reference.name)))
-                        .copied()
-                    {
-                        reference.resolution = Some(Resolution::Symbol(SymbolHandle {
-                            unit: *target,
-                            symbol: symbol_id,
-                        }));
+            if resolved.is_none() {
+                for namespace in namespaces {
+                    for target in &include_targets {
+                        if let Some(symbol_id) = per_unit_root_index[target.as_usize()]
+                            .get(&(namespace, Arc::clone(&reference_name)))
+                            .copied()
+                        {
+                            resolved = Some(Resolution::Symbol(SymbolHandle {
+                                unit: *target,
+                                symbol: symbol_id,
+                            }));
+                            break;
+                        }
+                    }
+                    if resolved.is_some() {
                         break;
                     }
                 }
-                if reference.resolution.is_some() {
-                    break;
+            }
+            if resolved.is_none() {
+                for namespace in namespaces {
+                    if let Some(handles) = root_index.get(&(namespace, Arc::clone(&reference_name)))
+                        && let Some(symbol) = handles.first().copied()
+                    {
+                        resolved = Some(Resolution::Symbol(symbol));
+                        break;
+                    }
                 }
             }
-            if reference.resolution.is_some() {
-                continue;
-            }
-            for namespace in namespaces {
-                if let Some(handles) = root_index.get(&(namespace, Arc::clone(&reference.name)))
-                    && let Some(symbol) = handles.first().copied()
-                {
-                    reference.resolution = Some(Resolution::Symbol(symbol));
-                    break;
-                }
-            }
-            if reference.resolution.is_some() {
-                continue;
-            }
-            if matches!(reference.namespace, Namespace::Type | Namespace::Routine)
+            if resolved.is_none()
+                && matches!(reference_namespace, Namespace::Type | Namespace::Routine)
                 && symbol_by_unit
                     .iter()
-                    .any(|names| names.contains_key(&reference.name))
+                    .any(|names| names.contains_key(&reference_name))
             {
-                reference.resolution = Some(Resolution::External);
+                resolved = Some(Resolution::External);
             }
+
+            units[unit_idx].references[reference_idx].resolution = resolved;
         }
     }
 }

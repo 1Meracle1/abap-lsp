@@ -154,7 +154,8 @@ fn semantic_diagnostic_severity(kind: DiagnosticKind) -> DiagnosticSeverity {
         | DiagnosticKind::WrongNamespace
         | DiagnosticKind::UnknownField
         | DiagnosticKind::InvalidBuiltinNamedArgument
-        | DiagnosticKind::InvalidPerformCall => DiagnosticSeverity::ERROR,
+        | DiagnosticKind::InvalidPerformCall
+        | DiagnosticKind::MissingSuperConstructorCall => DiagnosticSeverity::ERROR,
     }
 }
 
@@ -501,6 +502,30 @@ mod tests {
         normalize_lsp_uri, publish_changed_document, publish_open_document,
     };
 
+    fn semantic_token_type_at(
+        tokens: &lsp_types::SemanticTokens,
+        line: u32,
+        character: u32,
+    ) -> Option<u32> {
+        let mut current_line = 0u32;
+        let mut current_char = 0u32;
+        for token in &tokens.data {
+            current_line += token.delta_line;
+            current_char = if token.delta_line == 0 {
+                current_char + token.delta_start
+            } else {
+                token.delta_start
+            };
+            if current_line == line
+                && current_char <= character
+                && character < current_char + token.length
+            {
+                return Some(token.token_type);
+            }
+        }
+        None
+    }
+
     #[test]
     fn normalize_lsp_uri_lowercases_windows_file_drive_prefix() {
         assert_eq!(
@@ -656,6 +681,130 @@ some_class=>exec( )."
             }),
             "expected a declaration token spanning the full event header"
         );
+    }
+
+    #[test]
+    fn semantic_tokens_and_hover_cover_super_constructor_call() {
+        use lsp_types::SemanticTokenType;
+
+        let state = ServerState::default();
+        let text = "\
+CLASS some_parent DEFINITION.
+  PUBLIC SECTION.
+    METHODS constructor
+      IMPORTING iv_value TYPE i.
+ENDCLASS.
+
+CLASS some_parent IMPLEMENTATION.
+  METHOD constructor.
+  ENDMETHOD.
+ENDCLASS.
+
+CLASS some_child DEFINITION INHERITING FROM some_parent.
+  PUBLIC SECTION.
+    METHODS constructor
+      IMPORTING iv_value TYPE i.
+ENDCLASS.
+
+CLASS some_child IMPLEMENTATION.
+  METHOD constructor.
+    super->constructor( iv_value = iv_value ).
+  ENDMETHOD.
+ENDCLASS.";
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///super_ctor_hover.abap").expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: text.to_string(),
+                },
+            },
+        );
+
+        let snapshot = state
+            .cache
+            .get("file:///super_ctor_hover.abap")
+            .expect("snapshot");
+        let tokens = sem_tokens::build_semantic_tokens(snapshot.as_ref());
+        let legend = sem_tokens::semantic_tokens_legend();
+        let class_idx = legend
+            .token_types
+            .iter()
+            .position(|t| *t == SemanticTokenType::CLASS)
+            .expect("legend has class") as u32;
+        let method_idx = legend
+            .token_types
+            .iter()
+            .position(|t| *t == SemanticTokenType::METHOD)
+            .expect("legend has method") as u32;
+
+        let super_line = text
+            .lines()
+            .enumerate()
+            .find(|(_, line)| line.contains("super->constructor"))
+            .expect("super call line");
+        let super_col = super_line.1.find("super").expect("super column") as u32;
+        let constructor_col = super_line
+            .1
+            .find("constructor")
+            .expect("constructor column") as u32;
+
+        assert_eq!(
+            semantic_token_type_at(&tokens, super_line.0 as u32, super_col),
+            Some(class_idx),
+            "expected `super` to be highlighted as a class-like reference"
+        );
+        assert_eq!(
+            semantic_token_type_at(&tokens, super_line.0 as u32, constructor_col),
+            Some(method_idx),
+            "expected `constructor` to be highlighted as a method"
+        );
+
+        let super_hover = hover(
+            &state,
+            &HoverParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///super_ctor_hover.abap").expect("uri"),
+                    },
+                    position: Position {
+                        line: super_line.0 as u32,
+                        character: super_col + 1,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+            },
+        )
+        .expect("super hover");
+        let HoverContents::Markup(super_markup) = super_hover.contents else {
+            panic!("expected markdown hover");
+        };
+        assert!(super_markup.value.contains("Direct superclass reference"));
+        assert!(super_markup.value.contains("some_parent"));
+
+        let constructor_hover = hover(
+            &state,
+            &HoverParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///super_ctor_hover.abap").expect("uri"),
+                    },
+                    position: Position {
+                        line: super_line.0 as u32,
+                        character: constructor_col + 1,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+            },
+        )
+        .expect("constructor hover");
+        let HoverContents::Markup(constructor_markup) = constructor_hover.contents else {
+            panic!("expected markdown hover");
+        };
+        assert!(constructor_markup.value.contains("METHODS constructor"));
+        assert!(constructor_markup.value.contains("iv_value TYPE i"));
     }
 
     #[test]
@@ -1844,5 +1993,86 @@ some_class=>e"
         };
         assert!(markup.value.contains("CLASS-METHODS exec"));
         assert!(markup.value.contains("static method"));
+    }
+
+    #[test]
+    fn completion_returns_inherited_methods_after_super_arrow() {
+        let state = ServerState::default();
+        let text = "\
+CLASS some_parent DEFINITION.
+  PUBLIC SECTION.
+    METHODS constructor.
+    METHODS inherited_method
+      IMPORTING iv_value TYPE i.
+ENDCLASS.
+
+CLASS some_parent IMPLEMENTATION.
+  METHOD constructor.
+  ENDMETHOD.
+  METHOD inherited_method.
+  ENDMETHOD.
+ENDCLASS.
+
+CLASS some_child DEFINITION INHERITING FROM some_parent.
+  PUBLIC SECTION.
+    METHODS constructor.
+ENDCLASS.
+
+CLASS some_child IMPLEMENTATION.
+  METHOD constructor.
+    super->i
+  ENDMETHOD.
+ENDCLASS.";
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///completion_super.abap").expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: text.to_string(),
+                },
+            },
+        );
+
+        let line = text
+            .lines()
+            .enumerate()
+            .find(|(_, line)| line.contains("super->i"))
+            .expect("super completion line");
+        let character = line.1.find("i").expect("completion column") as u32 + 1;
+        let completion = completion(
+            &state,
+            &CompletionParams {
+                text_document_position: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///completion_super.abap").expect("uri"),
+                    },
+                    position: Position {
+                        line: line.0 as u32,
+                        character,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+                context: None,
+            },
+        )
+        .expect("completion");
+
+        let CompletionResponse::Array(items) = completion else {
+            panic!("expected array completion");
+        };
+        assert!(
+            items.iter().any(|item| item.label == "inherited_method"),
+            "expected inherited parent method in completion items: {:?}",
+            items.iter().map(|item| item.label.clone()).collect::<Vec<_>>()
+        );
+        assert!(
+            items
+                .iter()
+                .filter(|item| item.label == "inherited_method")
+                .all(|item| item.kind == Some(lsp_types::CompletionItemKind::METHOD))
+        );
     }
 }

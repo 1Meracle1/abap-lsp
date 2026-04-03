@@ -308,22 +308,18 @@ impl AnalysisSnapshot {
 
     pub fn selector_completion_at(&self, offset: usize) -> Option<SelectorCompletionInfo> {
         let query = self.selector_completion_query_at(offset)?;
-        let (unit, symbol_id) = resolve_symbol_from_context(
-            self,
-            query.scope,
-            query.base_namespace,
-            &query.base_name,
-            query.in_type_position,
-        )?;
-        let symbol = unit.symbol(symbol_id);
-        if query.base_namespace == Namespace::Type
-            && symbol.kind == SymbolKind::Class
-            && query.component_path.is_empty()
+        if query.component_path.is_empty()
+            && let Some((unit, class_symbol_id, requires_static)) = resolve_method_target_from_context(
+                self,
+                query.scope,
+                query.base_namespace,
+                &query.base_name,
+            )
         {
             let mut items: Vec<_> = unit
-                .class_members_for(symbol_id)
+                .class_members_for(class_symbol_id)
                 .filter(|member| {
-                    member.is_static
+                    (!requires_static || member.is_static)
                         && member.kind == ClassMemberKind::Method
                         && class_member_visible_to(self.symbols.as_ref(), query.scope, unit, member)
                         && member.name.as_ref().starts_with(query.prefix.as_ref())
@@ -342,6 +338,13 @@ impl AnalysisSnapshot {
                 in_type_position: query.in_type_position,
             });
         }
+        let (unit, symbol_id) = resolve_symbol_from_context(
+            self,
+            query.scope,
+            query.base_namespace,
+            &query.base_name,
+            query.in_type_position,
+        )?;
         let mut structure_id = unit.symbol(symbol_id).structure?;
         if !query.component_path.is_empty() {
             let path: Vec<_> = query
@@ -590,6 +593,13 @@ fn markdown_lines_for_resolution(
         Resolution::Symbol(handle) => {
             let unit = &snapshot.project.units[handle.unit.as_usize()];
             let symbol = unit.symbol(handle.symbol);
+            if at_name.as_ref() == "super" && symbol.kind == SymbolKind::Class {
+                return vec![
+                    format!("`{at_name}`"),
+                    "Direct superclass reference".to_string(),
+                    format!("resolves to class `{}`", symbol.name),
+                ];
+            }
             if let Some(info) = form_parameter_hover_info(unit, symbol) {
                 return markdown_lines_for_form_parameter(&info);
             }
@@ -645,6 +655,22 @@ fn build_scope_index(unit: &UnitAnalysis) -> ScopeIndex {
     out
 }
 
+fn resolve_direct_superclass_from_scope<'a>(
+    snapshot: &'a AnalysisSnapshot,
+    scope: ScopeId,
+) -> Option<(&'a UnitAnalysis, SymbolId)> {
+    let class_symbol = enclosing_class_owner(snapshot.symbols.as_ref(), scope)?;
+    let inheritance = snapshot.symbols.class_superclass(class_symbol)?;
+    let (unit, symbol_id) = resolve_symbol_from_context(
+        snapshot,
+        scope,
+        Namespace::Type,
+        &inheritance.superclass_name,
+        false,
+    )?;
+    (unit.symbol(symbol_id).kind == SymbolKind::Class).then_some((unit, symbol_id))
+}
+
 fn lookup_scope_chain(
     unit: &UnitAnalysis,
     scope_index: &ScopeIndex,
@@ -668,6 +694,9 @@ fn resolve_field_access_base_symbol<'a>(
     snapshot: &'a AnalysisSnapshot,
     access: &abap_symbols::FieldAccess,
 ) -> Option<(&'a UnitAnalysis, SymbolId)> {
+    if access.base_namespace == Namespace::Value && access.base_name.as_ref() == "super" {
+        return resolve_direct_superclass_from_scope(snapshot, access.scope);
+    }
     resolve_symbol_from_context(
         snapshot,
         access.scope,
@@ -910,10 +939,17 @@ fn resolve_method_target_from_context<'a>(
     namespace: Namespace,
     name: &Arc<str>,
 ) -> Option<(&'a UnitAnalysis, SymbolId, bool)> {
+    if namespace == Namespace::Value && name.as_ref() == "super" {
+        let (unit, symbol_id) = resolve_direct_superclass_from_scope(snapshot, scope)?;
+        return Some((unit, symbol_id, false));
+    }
     let (unit, symbol_id) = resolve_symbol_from_context(snapshot, scope, namespace, name, false)?;
     let base_symbol = unit.symbol(symbol_id);
     if namespace == Namespace::Type && base_symbol.kind == SymbolKind::Class {
         return Some((unit, symbol_id, true));
+    }
+    if namespace == Namespace::Value && base_symbol.kind == SymbolKind::Class {
+        return Some((unit, symbol_id, false));
     }
     if namespace != Namespace::Value {
         return None;
@@ -1009,6 +1045,12 @@ fn resolve_class_selector_base<'a>(
     let base_symbol = unit.symbol(symbol_id);
     if access.base_namespace == Namespace::Type && base_symbol.kind == SymbolKind::Class {
         return Some((unit, symbol_id, true));
+    }
+    if access.base_namespace == Namespace::Value
+        && access.base_name.as_ref() == "super"
+        && base_symbol.kind == SymbolKind::Class
+    {
+        return Some((unit, symbol_id, false));
     }
     if access.base_namespace != Namespace::Value {
         return None;

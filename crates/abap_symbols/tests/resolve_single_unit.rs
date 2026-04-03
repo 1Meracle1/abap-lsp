@@ -1265,3 +1265,129 @@ fn reports_builtin_routine_named_argument_passing_as_invalid() {
             && diag.message.contains("named parameter passing")
     }));
 }
+
+#[test]
+fn reports_missing_super_constructor_call_in_subclass_constructor() {
+    let src = r#"
+CLASS zcl_parent DEFINITION.
+  PUBLIC SECTION.
+    METHODS constructor
+      IMPORTING iv_name TYPE string.
+ENDCLASS.
+
+CLASS zcl_parent IMPLEMENTATION.
+  METHOD constructor.
+  ENDMETHOD.
+ENDCLASS.
+
+CLASS zcl_child DEFINITION INHERITING FROM zcl_parent.
+  PUBLIC SECTION.
+    METHODS constructor
+      IMPORTING iv_name TYPE string.
+ENDCLASS.
+
+CLASS zcl_child IMPLEMENTATION.
+  METHOD constructor.
+  ENDMETHOD.
+ENDCLASS.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///missing_super_ctor.abap", src, &parsed);
+
+    assert!(unit.diagnostics.iter().any(|diag| {
+        diag.kind == DiagnosticKind::MissingSuperConstructorCall
+            && diag.message.contains("must call super->constructor( )")
+    }));
+}
+
+#[test]
+fn reports_missing_parent_constructor_arguments_in_super_call() {
+    let src = r#"
+CLASS zcl_parent DEFINITION.
+  PUBLIC SECTION.
+    METHODS constructor
+      IMPORTING
+        iv_name TYPE string
+        iv_kind TYPE string.
+ENDCLASS.
+
+CLASS zcl_parent IMPLEMENTATION.
+  METHOD constructor.
+  ENDMETHOD.
+ENDCLASS.
+
+CLASS zcl_child DEFINITION INHERITING FROM zcl_parent.
+  PUBLIC SECTION.
+    METHODS constructor
+      IMPORTING
+        iv_name TYPE string
+        iv_kind TYPE string.
+ENDCLASS.
+
+CLASS zcl_child IMPLEMENTATION.
+  METHOD constructor.
+    super->constructor( iv_name = iv_name ).
+  ENDMETHOD.
+ENDCLASS.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///missing_super_ctor_args.abap", src, &parsed);
+
+    assert!(unit.diagnostics.iter().any(|diag| {
+        diag.kind == DiagnosticKind::MissingSuperConstructorCall
+            && diag.message.contains("iv_kind")
+    }));
+}
+
+#[test]
+fn accepts_valid_super_constructor_call_without_unresolved_super() {
+    let src = r#"
+CLASS zcl_parent DEFINITION.
+  PUBLIC SECTION.
+    METHODS constructor
+      IMPORTING
+        iv_name TYPE string
+        iv_kind TYPE string.
+ENDCLASS.
+
+CLASS zcl_parent IMPLEMENTATION.
+  METHOD constructor.
+  ENDMETHOD.
+ENDCLASS.
+
+CLASS zcl_child DEFINITION INHERITING FROM zcl_parent.
+  PUBLIC SECTION.
+    METHODS constructor
+      IMPORTING
+        iv_name TYPE string
+        iv_kind TYPE string.
+ENDCLASS.
+
+CLASS zcl_child IMPLEMENTATION.
+  METHOD constructor.
+    super->constructor(
+      iv_name = iv_name
+      iv_kind = iv_kind
+    ).
+  ENDMETHOD.
+ENDCLASS.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///valid_super_ctor.abap", src, &parsed);
+
+    assert!(
+        !unit
+            .diagnostics
+            .iter()
+            .any(|diag| diag.kind == DiagnosticKind::MissingSuperConstructorCall),
+        "unexpected constructor diagnostics: {:?}",
+        unit.diagnostics
+    );
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains("super")
+        }),
+        "unexpected unresolved super diagnostic: {:?}",
+        unit.diagnostics
+    );
+}

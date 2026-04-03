@@ -147,6 +147,7 @@ pub enum DiagnosticKind {
     UnknownField,
     InvalidBuiltinNamedArgument,
     InvalidPerformCall,
+    MissingSuperConstructorCall,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -260,6 +261,12 @@ pub struct ClassMemberData {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClassInheritanceData {
+    pub class_symbol: SymbolId,
+    pub superclass_name: Arc<str>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NamedArgumentTarget {
     Constructor {
         type_name: Arc<str>,
@@ -320,6 +327,7 @@ pub struct UnitAnalysis {
     pub include_edges: Vec<IncludeEdge>,
     pub field_accesses: Vec<FieldAccess>,
     pub class_members: Vec<ClassMemberData>,
+    pub class_inheritance: Vec<ClassInheritanceData>,
     pub form_routines: Vec<FormRoutineData>,
     pub named_arguments: Vec<NamedArgumentAccess>,
     pub perform_calls: Vec<PerformCallData>,
@@ -417,6 +425,12 @@ impl UnitAnalysis {
         self.class_members
             .iter()
             .filter(move |member| member.class_symbol == class_symbol)
+    }
+
+    pub fn class_superclass(&self, class_symbol: SymbolId) -> Option<&ClassInheritanceData> {
+        self.class_inheritance
+            .iter()
+            .find(|inheritance| inheritance.class_symbol == class_symbol)
     }
 
     pub fn form_routine(&self, symbol: SymbolId) -> Option<&FormRoutineData> {
