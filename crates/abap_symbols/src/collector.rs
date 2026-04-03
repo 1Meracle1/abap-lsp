@@ -2147,11 +2147,31 @@ impl<'a> Collector<'a> {
                     if let Some((name, range)) = self.node_name(callee) {
                         self.add_reference(
                             scope,
-                            name,
+                            Arc::clone(&name),
                             Namespace::Routine,
                             ReferenceKind::RoutineCall,
                             range,
                         );
+                        let tokens: Vec<_> = self
+                            .file
+                            .children(node)
+                            .filter_map(|child| self.token_for_node(child))
+                            .collect();
+                        if let Some(lparen_idx) =
+                            tokens.iter().position(|token| token.kind == TokenKind::LParen)
+                            && let Some(rparen_idx) = self.find_matching_group_end(
+                                &tokens,
+                                lparen_idx,
+                                TokenKind::LParen,
+                                TokenKind::RParen,
+                            )
+                        {
+                            self.collect_named_arguments_from_tokens(
+                                &tokens[lparen_idx + 1..rparen_idx],
+                                scope,
+                                NamedArgumentTarget::Routine { routine_name: name },
+                            );
+                        }
                     }
                 }
                 _ => self.collect_expr(callee, scope),

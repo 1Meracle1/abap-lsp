@@ -152,7 +152,8 @@ fn semantic_diagnostic_severity(kind: DiagnosticKind) -> DiagnosticSeverity {
         | DiagnosticKind::UnresolvedInclude
         | DiagnosticKind::IncludeCycle
         | DiagnosticKind::WrongNamespace
-        | DiagnosticKind::UnknownField => DiagnosticSeverity::ERROR,
+        | DiagnosticKind::UnknownField
+        | DiagnosticKind::InvalidBuiltinNamedArgument => DiagnosticSeverity::ERROR,
     }
 }
 
@@ -492,8 +493,8 @@ mod tests {
     use super::{
         CompletionParams, CompletionResponse, DEPENDENCY_CACHE_CLEARED, HoverParams,
         REMOTE_DEPENDENCIES_UPDATED, RESOLVE_REMOTE_DEPENDENCIES, ServerState,
-        WORKSPACE_MANIFEST_UPDATED, completion, hover, initialize_result, normalize_lsp_uri,
-        publish_changed_document, publish_open_document,
+        WORKSPACE_MANIFEST_UPDATED, build_lsp_diagnostics, completion, hover, initialize_result,
+        normalize_lsp_uri, publish_changed_document, publish_open_document,
     };
 
     #[test]
@@ -1175,6 +1176,141 @@ START-OF-SELECTION.
         assert!(param_markup.value.contains("`io_stmt`"));
         assert!(param_markup.value.contains("Parameter"));
         assert!(param_markup.value.contains("```abap\nTYPE string\n```"));
+    }
+
+    #[test]
+    fn builtin_routine_named_parameters_produce_diagnostics_not_hover() {
+        use lsp_types::SemanticTokenType;
+
+        let state = ServerState::default();
+        let text = "DATA text TYPE string.\nDATA len TYPE i.\nlen = strlen( val = text ).";
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///hover_routine_named.abap").expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: text.to_string(),
+                },
+            },
+        );
+
+        let param_line = text
+            .lines()
+            .enumerate()
+            .find(|(_, line)| line.contains("val = text"))
+            .expect("parameter line");
+        let param_col = param_line.1.find("val").expect("parameter col") as u32 + 1;
+        let param_hover = hover(
+            &state,
+            &HoverParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///hover_routine_named.abap").expect("uri"),
+                    },
+                    position: Position {
+                        line: param_line.0 as u32,
+                        character: param_col,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+            },
+        );
+        assert!(param_hover.is_none(), "builtin named parameter should not hover");
+
+        let snapshot = state
+            .cache
+            .get("file:///hover_routine_named.abap")
+            .expect("snapshot");
+        let diagnostics = build_lsp_diagnostics(snapshot.as_ref());
+        assert!(diagnostics.iter().any(|diag| {
+            diag.message.contains("strlen") && diag.message.contains("named parameter passing")
+        }));
+
+        let tokens = sem_tokens::build_semantic_tokens(snapshot.as_ref());
+        let legend = sem_tokens::semantic_tokens_legend();
+        let parameter_idx = legend
+            .token_types
+            .iter()
+            .position(|t| *t == SemanticTokenType::PARAMETER)
+            .expect("legend has parameter") as u32;
+        assert!(
+            !tokens.data.iter().any(|token| token.token_type == parameter_idx),
+            "builtin named argument label should not be highlighted as parameter"
+        );
+    }
+
+    #[test]
+    fn builtin_routine_hover_uses_richer_shared_signatures() {
+        let state = ServerState::default();
+        let text = "DATA text TYPE string.\nDATA len TYPE i.\nlen = numofchar( arg = text ).";
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///hover_builtin_signature.abap").expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: text.to_string(),
+                },
+            },
+        );
+
+        let routine_line = text
+            .lines()
+            .enumerate()
+            .find(|(_, line)| line.contains("numofchar"))
+            .expect("routine line");
+        let routine_col = routine_line.1.find("numofchar").expect("routine col") as u32 + 1;
+        let routine_hover = hover(
+            &state,
+            &HoverParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///hover_builtin_signature.abap").expect("uri"),
+                    },
+                    position: Position {
+                        line: routine_line.0 as u32,
+                        character: routine_col,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+            },
+        )
+        .expect("routine hover");
+        let HoverContents::Markup(routine_markup) = routine_hover.contents else {
+            panic!("expected markdown hover");
+        };
+        assert!(routine_markup.value.contains("numofchar( arg )"));
+        assert!(routine_markup.value.contains("returns `i`"));
+
+        let param_col = routine_line.1.find("arg").expect("parameter col") as u32 + 1;
+        let param_hover = hover(
+            &state,
+            &HoverParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///hover_builtin_signature.abap").expect("uri"),
+                    },
+                    position: Position {
+                        line: routine_line.0 as u32,
+                        character: param_col,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+            },
+        );
+        assert!(param_hover.is_none(), "builtin named parameter should not hover");
+
+        let snapshot = state
+            .cache
+            .get("file:///hover_builtin_signature.abap")
+            .expect("snapshot");
+        let diagnostics = build_lsp_diagnostics(snapshot.as_ref());
+        assert!(diagnostics.iter().any(|diag| {
+            diag.message.contains("numofchar") && diag.message.contains("named parameter passing")
+        }));
     }
 
     #[test]

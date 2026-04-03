@@ -4,10 +4,10 @@ use std::sync::Arc;
 
 use abap_parser::{ParseResult, parse};
 use abap_symbols::{
-    ClassMemberData, ClassMemberKind, ClassMemberParameterData, NamedArgumentAccess,
-    NamedArgumentTarget, Namespace, ProjectAnalysis, ProjectInput, Resolution, ScopeId,
-    StructureFieldInfo, StructureFieldShape, StructureId, SymbolData, SymbolId, SymbolKind,
-    UnitAnalysis, Visibility, analyze_project,
+    ClassMemberData, ClassMemberKind, FieldTypeRefData, NamedArgumentAccess, NamedArgumentTarget,
+    Namespace, ProjectAnalysis, ProjectInput, Resolution, ScopeId, StructureFieldInfo,
+    StructureFieldShape, StructureId, SymbolData, SymbolId, SymbolKind, UnitAnalysis, Visibility,
+    analyze_project, builtin_routine_spec,
 };
 use parking_lot::RwLock;
 
@@ -80,6 +80,12 @@ struct SelectorCompletionQuery {
 struct SelectorCursorContext {
     range: Range<usize>,
     in_type_position: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NamedArgumentParameterInfo {
+    name: Arc<str>,
+    declared_type: Option<FieldTypeRefData>,
 }
 
 type ScopeIndex = Vec<HashMap<(Namespace, Arc<str>), Vec<SymbolId>>>;
@@ -198,7 +204,7 @@ impl AnalysisSnapshot {
         Some(HoveredSymbolInfo {
             range: access.range.clone(),
             display_name: Arc::clone(&parameter.name),
-            markdown_lines: markdown_lines_for_named_argument(access, parameter),
+            markdown_lines: markdown_lines_for_named_argument(access, &parameter),
         })
     }
 
@@ -427,7 +433,7 @@ fn markdown_lines_for_declared_symbol(unit: &UnitAnalysis, symbol: &SymbolData) 
 
 fn markdown_lines_for_named_argument(
     access: &NamedArgumentAccess,
-    parameter: &ClassMemberParameterData,
+    parameter: &NamedArgumentParameterInfo,
 ) -> Vec<String> {
     let mut lines = vec![format!("`{}`", access.name), "Parameter".to_string()];
     if let Some(type_ref) = &parameter.declared_type {
@@ -476,14 +482,30 @@ fn markdown_lines_for_resolution(
             lines
         }
         Resolution::BuiltinType => vec![format!("`{at_name}`"), "Built-in ABAP type".to_string()],
-        Resolution::BuiltinRoutine => {
-            vec![format!("`{at_name}`"), "Built-in ABAP routine".to_string()]
-        }
+        Resolution::BuiltinRoutine => markdown_lines_for_builtin_routine(at_name),
         Resolution::External => vec![
             format!("`{at_name}`"),
             "External reference (not resolved in this workspace)".to_string(),
         ],
     }
+}
+
+fn markdown_lines_for_builtin_routine(name: &Arc<str>) -> Vec<String> {
+    let Some(spec) = builtin_routine_spec(name.as_ref()) else {
+        return vec![format!("`{name}`"), "Built-in ABAP routine".to_string()];
+    };
+    let rendered_params = spec
+        .hover_params
+        .iter()
+        .copied()
+        .collect::<Vec<_>>()
+        .join(", ");
+    vec![
+        format!("```abap\n{}( {} )\n```", spec.name, rendered_params),
+        "Built-in ABAP routine".to_string(),
+        format!("returns `{}`", spec.return_type),
+        spec.description.to_string(),
+    ]
 }
 
 fn build_scope_index(unit: &UnitAnalysis) -> ScopeIndex {
@@ -534,16 +556,30 @@ fn resolve_field_access_base_symbol<'a>(
 fn resolve_named_argument_parameter<'a>(
     snapshot: &'a AnalysisSnapshot,
     access: &NamedArgumentAccess,
-) -> Option<&'a ClassMemberParameterData> {
-    let member = match &access.target {
+) -> Option<NamedArgumentParameterInfo> {
+    match &access.target {
         NamedArgumentTarget::Constructor { type_name } => {
             let (unit, class_symbol_id) =
                 resolve_symbol_from_context(snapshot, access.scope, Namespace::Type, type_name, false)?;
             if unit.symbol(class_symbol_id).kind != SymbolKind::Class {
                 return None;
             }
-            unit.class_member(class_symbol_id, "constructor")?
+            let parameter = unit
+                .class_member(class_symbol_id, "constructor")?
+                .parameters
+                .iter()
+                .find(|parameter| parameter.name == access.name)?;
+            Some(NamedArgumentParameterInfo {
+                name: Arc::clone(&parameter.name),
+                declared_type: parameter.declared_type.clone(),
+            })
         }
+        NamedArgumentTarget::Routine { routine_name } => resolve_routine_named_argument_parameter(
+            snapshot,
+            access.scope,
+            routine_name,
+            &access.name,
+        ),
         NamedArgumentTarget::Method {
             base_namespace,
             base_name,
@@ -559,13 +595,36 @@ fn resolve_named_argument_parameter<'a>(
             if member.kind != ClassMemberKind::Method || (requires_static && !member.is_static) {
                 return None;
             }
-            member
+            let parameter = member
+                .parameters
+                .iter()
+                .find(|parameter| parameter.name == access.name)?;
+            Some(NamedArgumentParameterInfo {
+                name: Arc::clone(&parameter.name),
+                declared_type: parameter.declared_type.clone(),
+            })
         }
-    };
-    member
-        .parameters
-        .iter()
-        .find(|parameter| parameter.name == access.name)
+    }
+}
+
+fn resolve_routine_named_argument_parameter(
+    snapshot: &AnalysisSnapshot,
+    scope: ScopeId,
+    routine_name: &Arc<str>,
+    parameter_name: &Arc<str>,
+) -> Option<NamedArgumentParameterInfo> {
+    if let Some((unit, routine_symbol_id)) =
+        resolve_symbol_from_context(snapshot, scope, Namespace::Routine, routine_name, false)
+    {
+        let parameter = unit
+            .routine_parameters(routine_symbol_id)
+            .find(|symbol| symbol.name == *parameter_name)?;
+        return Some(NamedArgumentParameterInfo {
+            name: Arc::clone(&parameter.name),
+            declared_type: parameter.declared_type.clone(),
+        });
+    }
+    None
 }
 
 fn resolve_symbol_from_context<'a>(

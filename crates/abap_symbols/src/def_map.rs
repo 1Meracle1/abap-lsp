@@ -145,6 +145,7 @@ pub enum DiagnosticKind {
     IncludeCycle,
     WrongNamespace,
     UnknownField,
+    InvalidBuiltinNamedArgument,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -234,6 +235,9 @@ pub struct ClassMemberData {
 pub enum NamedArgumentTarget {
     Constructor {
         type_name: Arc<str>,
+    },
+    Routine {
+        routine_name: Arc<str>,
     },
     Method {
         base_namespace: Namespace,
@@ -358,5 +362,17 @@ impl UnitAnalysis {
         self.class_members
             .iter()
             .filter(move |member| member.class_symbol == class_symbol)
+    }
+
+    pub fn routine_parameters(
+        &self,
+        routine_symbol: SymbolId,
+    ) -> impl Iterator<Item = &SymbolData> + '_ {
+        self.scopes
+            .iter()
+            .filter(move |scope| scope.owner == Some(routine_symbol))
+            .flat_map(|scope| scope.declarations.iter().copied())
+            .map(|symbol_id| self.symbol(symbol_id))
+            .filter(|symbol| symbol.kind == SymbolKind::Parameter)
     }
 }

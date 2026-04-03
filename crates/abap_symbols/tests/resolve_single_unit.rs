@@ -1138,3 +1138,16 @@ START-OF-SELECTION.
             )
     }));
 }
+
+#[test]
+fn reports_builtin_routine_named_argument_passing_as_invalid() {
+    let src = "DATA text TYPE string. DATA len TYPE i. len = strlen( val = text ).";
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///routine_named_args.abap", src, &parsed);
+
+    assert!(unit.diagnostics.iter().any(|diag| {
+        diag.kind == DiagnosticKind::InvalidBuiltinNamedArgument
+            && diag.message.contains("strlen")
+            && diag.message.contains("named parameter passing")
+    }));
+}

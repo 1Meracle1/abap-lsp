@@ -7,6 +7,7 @@ mod resolver;
 mod scope;
 mod validate;
 
+pub use builtins::{BuiltinRoutineParamSpec, BuiltinRoutineSpec, builtin_routine_spec};
 pub use def_map::{
     ClassMemberData, ClassMemberKind, ClassMemberParameterData, Diagnostic, DiagnosticKind,
     FieldAccess, FieldAccessSegment, FieldTypeRefData, IncludeEdge, NamedArgumentAccess,

@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use crate::builtins::builtin_routine_spec;
 use crate::def_map::{Diagnostic, DiagnosticKind};
 use crate::ids::{ScopeId, SymbolId};
 use crate::project::ProjectAnalysis;
@@ -283,6 +284,22 @@ pub fn validate_project(project: &mut ProjectAnalysis) {
                     break;
                 };
                 structure_id = next_structure_id;
+            }
+        }
+
+        for named_argument in &unit.named_arguments {
+            let crate::NamedArgumentTarget::Routine { routine_name } = &named_argument.target else {
+                continue;
+            };
+            if builtin_routine_spec(routine_name.as_ref()).is_some() {
+                unit.diagnostics.push(Diagnostic {
+                    kind: DiagnosticKind::InvalidBuiltinNamedArgument,
+                    range: named_argument.range.clone(),
+                    message: format!(
+                        "built-in function '{}' does not support named parameter passing",
+                        routine_name
+                    ),
+                });
             }
         }
 

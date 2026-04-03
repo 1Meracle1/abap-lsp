@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::builtins::builtin_routine_spec;
 use crate::def_map::{ReferenceKind, Resolution, UnitAnalysis};
 use crate::ids::{ScopeId, SymbolHandle, SymbolId};
 use crate::scope::Namespace;
@@ -29,10 +30,7 @@ fn is_builtin_type(name: &str) -> bool {
 }
 
 fn is_builtin_routine(name: &str) -> bool {
-    matches!(
-        name.trim(),
-        "strlen" | "numofchar" | "xstrlen" | "lines" | "charlen" | "dbmaxlen" | "line_exists"
-    )
+    builtin_routine_spec(name.trim()).is_some()
 }
 
 type ScopeIndex = Vec<HashMap<(Namespace, Arc<str>), Vec<SymbolId>>>;
