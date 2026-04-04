@@ -15,6 +15,53 @@ fn token_matches_keyword(source: &str, token: &Token, keyword: &str) -> bool {
     token.kind == TokenKind::Ident && token.lexeme(source).eq_ignore_ascii_case(keyword)
 }
 
+type SimpleStmtClassifier = fn(&str, &[&Token]) -> Option<SyntaxKind>;
+
+#[derive(Clone, Copy)]
+struct GuardedSimpleStmtClassifier {
+    lead_keywords: &'static [&'static str],
+    classify: SimpleStmtClassifier,
+}
+
+impl GuardedSimpleStmtClassifier {
+    const fn new(lead_keywords: &'static [&'static str], classify: SimpleStmtClassifier) -> Self {
+        Self {
+            lead_keywords,
+            classify,
+        }
+    }
+
+    fn matches(self, lead_keyword: &str) -> bool {
+        self.lead_keywords.is_empty()
+            || self
+                .lead_keywords
+                .iter()
+                .any(|keyword| lead_keyword.eq_ignore_ascii_case(keyword))
+    }
+}
+
+const STRUCTURAL_SIMPLE_STMT_CLASSIFIERS: &[GuardedSimpleStmtClassifier] = &[
+    GuardedSimpleStmtClassifier::new(
+        &["public", "protected", "private"],
+        classify_class_section_stmt,
+    ),
+    GuardedSimpleStmtClassifier::new(&["methods", "class"], classify_methods_stmt),
+    GuardedSimpleStmtClassifier::new(&[], classify_direct_call_stmt),
+];
+
+const KEYWORD_SIMPLE_STMT_KINDS: &[(&str, SyntaxKind)] = &[
+    ("assert", SyntaxKind::AssertStmt),
+    ("check", SyntaxKind::CheckStmt),
+    ("perform", SyntaxKind::PerformStmt),
+];
+
+fn significant_stmt_tokens(tokens: &[Token], idx: usize, period_i: usize) -> Vec<&Token> {
+    tokens[idx..=period_i]
+        .iter()
+        .filter(|token| token.kind != TokenKind::Comment)
+        .collect()
+}
+
 fn method_statement_name_idx(source: &str, significant: &[&Token]) -> Option<usize> {
     let first = *significant.first()?;
     if token_matches_keyword(source, first, "methods") {
@@ -367,32 +414,45 @@ fn direct_call_padding_is_valid(significant: &[&Token]) -> bool {
     }
 }
 
-fn simple_stmt_kind(source: &str, significant: &[&Token]) -> SyntaxKind {
-    if class_section_statement(source, significant) {
-        return SyntaxKind::ClassSectionStmt;
-    }
-    if method_statement_name_idx(source, significant).is_some() {
-        return SyntaxKind::MethodsStmt;
-    }
-    if direct_call_statement(significant) {
-        return if direct_call_padding_is_valid(significant) {
+fn classify_class_section_stmt(source: &str, significant: &[&Token]) -> Option<SyntaxKind> {
+    class_section_statement(source, significant).then_some(SyntaxKind::ClassSectionStmt)
+}
+
+fn classify_methods_stmt(source: &str, significant: &[&Token]) -> Option<SyntaxKind> {
+    method_statement_name_idx(source, significant).map(|_| SyntaxKind::MethodsStmt)
+}
+
+fn classify_direct_call_stmt(_source: &str, significant: &[&Token]) -> Option<SyntaxKind> {
+    direct_call_statement(significant).then(|| {
+        if direct_call_padding_is_valid(significant) {
             SyntaxKind::CallStmt
         } else {
             SyntaxKind::Error
-        };
-    }
+        }
+    })
+}
+
+fn simple_stmt_kind(source: &str, significant: &[&Token]) -> SyntaxKind {
     let Some(first) = significant.first() else {
         return SyntaxKind::UnparsedStmt;
     };
-    if token_matches_keyword(source, first, "assert") {
-        SyntaxKind::AssertStmt
-    } else if token_matches_keyword(source, first, "check") {
-        SyntaxKind::CheckStmt
-    } else if token_matches_keyword(source, first, "perform") {
-        SyntaxKind::PerformStmt
-    } else {
-        SyntaxKind::UnparsedStmt
+
+    let lead_keyword = first.lexeme(source);
+    for classifier in STRUCTURAL_SIMPLE_STMT_CLASSIFIERS {
+        if classifier.matches(lead_keyword)
+            && let Some(kind) = (classifier.classify)(source, significant)
+        {
+            return kind;
+        }
     }
+
+    for (keyword, kind) in KEYWORD_SIMPLE_STMT_KINDS {
+        if lead_keyword.eq_ignore_ascii_case(keyword) {
+            return *kind;
+        }
+    }
+
+    SyntaxKind::UnparsedStmt
 }
 
 fn validate_method_modifier_order(
@@ -454,17 +514,14 @@ fn validate_method_modifier_order(
 
 fn validate_unparsed_stmt(
     source: &str,
+    significant: &[&Token],
     tokens: &[Token],
     idx: usize,
     period_i: usize,
     errors: &mut Vec<crate::ParseError>,
 ) {
     validate_method_modifier_order(source, tokens, idx, period_i, errors);
-    let significant: Vec<_> = tokens[idx..=period_i]
-        .iter()
-        .filter(|token| token.kind != TokenKind::Comment)
-        .collect();
-    if direct_call_statement(&significant) && !direct_call_padding_is_valid(&significant) {
+    if direct_call_statement(significant) && !direct_call_padding_is_valid(significant) {
         errors.push(crate::ParseError {
             message: "syntax error: method call arguments must have whitespace or a line break immediately inside parentheses"
                 .to_string(),
@@ -496,11 +553,8 @@ pub fn try_parse_simple_stmt(
     match scan_until_statement_period(tokens, source, idx) {
         StmtPeriodScan::Found(period_i) => {
             let period_tok = &tokens[period_i];
-            validate_unparsed_stmt(source, tokens, idx, period_i, errors);
-            let significant: Vec<_> = tokens[idx..=period_i]
-                .iter()
-                .filter(|token| token.kind != TokenKind::Comment)
-                .collect();
+            let significant = significant_stmt_tokens(tokens, idx, period_i);
+            validate_unparsed_stmt(source, &significant, tokens, idx, period_i, errors);
             let kind = simple_stmt_kind(source, &significant);
             let kids = if kind == SyntaxKind::MethodsStmt {
                 build_methods_stmt_children(b, source, tokens, idx, period_i)

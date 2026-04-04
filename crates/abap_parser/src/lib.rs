@@ -30,6 +30,108 @@ fn prev_non_comment_is_ident(tokens: &[Token], idx: usize) -> bool {
     false
 }
 
+type ParseAttempt =
+    fn(&mut SyntaxTreeBuilder, &str, &[Token], usize, &mut Vec<ParseError>) -> Option<(NodeId, usize)>;
+
+#[derive(Clone, Copy)]
+struct GuardedParser {
+    lead_keywords: &'static [&'static str],
+    parser: ParseAttempt,
+}
+
+impl GuardedParser {
+    const fn new(lead_keywords: &'static [&'static str], parser: ParseAttempt) -> Self {
+        Self {
+            lead_keywords,
+            parser,
+        }
+    }
+}
+
+const IDENT_LEAD_PARSERS: &[GuardedParser] = &[
+    GuardedParser::new(&["data"], data_decl::try_parse_data_decl),
+    GuardedParser::new(&["if"], if_stmt::try_parse_if_stmt),
+    GuardedParser::new(&["statics"], data_decl::try_parse_statics_decl),
+    GuardedParser::new(&["types"], data_decl::try_parse_types_decl),
+    GuardedParser::new(&["constants"], data_decl::try_parse_constants_decl),
+    GuardedParser::new(&["field"], data_decl::try_parse_field_symbols_decl),
+    GuardedParser::new(&["case"], control_stmt::try_parse_case_stmt),
+    GuardedParser::new(&["while"], control_stmt::try_parse_while_stmt),
+    GuardedParser::new(&["do"], control_stmt::try_parse_do_stmt),
+    GuardedParser::new(&["loop"], control_stmt::try_parse_loop_stmt),
+    GuardedParser::new(&["try"], control_stmt::try_parse_try_stmt),
+    GuardedParser::new(&["report"], surface_stmt::try_parse_report_stmt),
+    GuardedParser::new(&["include"], surface_stmt::try_parse_include_stmt),
+    GuardedParser::new(
+        &["initialization", "start", "end", "top"],
+        surface_stmt::try_parse_event_block,
+    ),
+    GuardedParser::new(&["form"], surface_stmt::try_parse_form_decl),
+    GuardedParser::new(&["module"], surface_stmt::try_parse_module_decl),
+    GuardedParser::new(&["class"], surface_stmt::try_parse_class_decl),
+    GuardedParser::new(&["interface"], surface_stmt::try_parse_interface_decl),
+    GuardedParser::new(&["method"], surface_stmt::try_parse_method_decl),
+    GuardedParser::new(&["select"], surface_stmt::try_parse_select_stmt),
+    GuardedParser::new(&["read"], surface_stmt::try_parse_read_table_stmt),
+    GuardedParser::new(&["append"], surface_stmt::try_parse_append_stmt),
+    GuardedParser::new(&["write"], surface_stmt::try_parse_write_stmt),
+    GuardedParser::new(&["concatenate"], surface_stmt::try_parse_concatenate_stmt),
+    GuardedParser::new(&["raise"], surface_stmt::try_parse_raise_stmt),
+    GuardedParser::new(&["endat"], surface_stmt::try_parse_endat_stmt),
+    GuardedParser::new(&["get"], surface_stmt::try_parse_get_time_stamp_stmt),
+    GuardedParser::new(&["assign"], surface_stmt::try_parse_assign_keyword_stmt),
+    GuardedParser::new(&["call", "create"], surface_stmt::try_parse_call_like_stmt),
+];
+
+fn try_guarded_ident_parsers(
+    parsers: &[GuardedParser],
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    lead_keyword: &str,
+    errors: &mut Vec<ParseError>,
+) -> Option<(NodeId, usize)> {
+    for guarded in parsers {
+        if guarded
+            .lead_keywords
+            .iter()
+            .any(|keyword| lead_keyword.eq_ignore_ascii_case(keyword))
+            && let Some((node, next)) = (guarded.parser)(b, source, tokens, idx, errors)
+        {
+            return Some((node, next));
+        }
+    }
+    None
+}
+
+fn try_parse_lone_ident_stmt_error(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    errors: &mut Vec<ParseError>,
+) -> Option<(NodeId, usize)> {
+    let t = tokens.get(idx)?;
+    let period = tokens.get(idx + 1)?;
+    if t.kind != TokenKind::Ident
+        || period.kind != TokenKind::Period
+        || prev_non_comment_is_ident(tokens, idx)
+        || is_definite_stmt_lead_keyword(source, t)
+    {
+        return None;
+    }
+
+    errors.push(ParseError {
+        message: "syntax error: a lone identifier before '.' is not a valid statement".to_string(),
+        range: t.range.start..period.range.end,
+    });
+    let ident = syntax::token_leaf(b, t);
+    let dot = syntax::token_leaf(b, period);
+    let node = b.branch(SyntaxKind::Error, t.range.start..period.range.end, &[ident, dot]);
+    Some((node, idx + 2))
+}
+
 /// One top-level statement or template chunk (used by [`syntax::build_file_tree`] and `IF` bodies).
 pub(crate) fn parse_file_level_item(
     b: &mut SyntaxTreeBuilder,
@@ -39,211 +141,28 @@ pub(crate) fn parse_file_level_item(
     errors: &mut Vec<ParseError>,
 ) -> (NodeId, usize) {
     let t = &tokens[idx];
-    if t.kind == TokenKind::Eof {
-        return (syntax::token_leaf(b, t), idx + 1);
-    }
-
-    // Lexer already maps `"` … EOL and full-line `*` comments to [`TokenKind::Comment`]; surface them in the
-    // tree so later statements are not parsed as continuations of the previous construct.
-    if t.kind == TokenKind::Comment {
-        return (syntax::token_leaf(b, t), idx + 1);
-    }
-
-    if t.kind == TokenKind::StringTemplate {
-        let (node, next) = syntax::parse_char_string_template(source, tokens, idx, b);
-        return (node, next);
-    }
-    if t.kind == TokenKind::Ident
-        && t.lexeme(source).eq_ignore_ascii_case("data")
-        && let Some((node, next)) = data_decl::try_parse_data_decl(b, source, tokens, idx, errors)
-    {
-        return (node, next);
-    }
-    if t.kind == TokenKind::Ident && t.lexeme(source).eq_ignore_ascii_case("if") {
-        if let Some((node, next)) = if_stmt::try_parse_if_stmt(b, source, tokens, idx, errors) {
+    match t.kind {
+        TokenKind::Eof | TokenKind::Comment => return (syntax::token_leaf(b, t), idx + 1),
+        TokenKind::StringTemplate => {
+            let (node, next) = syntax::parse_char_string_template(source, tokens, idx, b);
             return (node, next);
         }
+        TokenKind::Ident => {
+            let lead_keyword = t.lexeme(source);
+            if let Some((node, next)) =
+                try_guarded_ident_parsers(IDENT_LEAD_PARSERS, b, source, tokens, idx, lead_keyword, errors)
+            {
+                return (node, next);
+            }
+        }
+        _ => {}
     }
-    if t.kind == TokenKind::Ident
-        && t.lexeme(source).eq_ignore_ascii_case("statics")
-        && let Some((node, next)) =
-            data_decl::try_parse_statics_decl(b, source, tokens, idx, errors)
-    {
-        return (node, next);
-    }
-    if t.kind == TokenKind::Ident
-        && t.lexeme(source).eq_ignore_ascii_case("types")
-        && let Some((node, next)) = data_decl::try_parse_types_decl(b, source, tokens, idx, errors)
-    {
-        return (node, next);
-    }
-    if t.kind == TokenKind::Ident
-        && t.lexeme(source).eq_ignore_ascii_case("constants")
-        && let Some((node, next)) =
-            data_decl::try_parse_constants_decl(b, source, tokens, idx, errors)
-    {
-        return (node, next);
-    }
-    if t.kind == TokenKind::Ident
-        && let Some((node, next)) =
-            data_decl::try_parse_field_symbols_decl(b, source, tokens, idx, errors)
-    {
-        return (node, next);
-    }
-    if t.kind == TokenKind::Ident
-        && let Some((node, next)) =
-            control_stmt::try_parse_case_stmt(b, source, tokens, idx, errors)
-    {
-        return (node, next);
-    }
-    if t.kind == TokenKind::Ident
-        && let Some((node, next)) =
-            control_stmt::try_parse_while_stmt(b, source, tokens, idx, errors)
-    {
-        return (node, next);
-    }
-    if t.kind == TokenKind::Ident
-        && let Some((node, next)) = control_stmt::try_parse_do_stmt(b, source, tokens, idx, errors)
-    {
-        return (node, next);
-    }
-    if t.kind == TokenKind::Ident
-        && let Some((node, next)) =
-            control_stmt::try_parse_loop_stmt(b, source, tokens, idx, errors)
-    {
-        return (node, next);
-    }
-    if t.kind == TokenKind::Ident
-        && let Some((node, next)) = control_stmt::try_parse_try_stmt(b, source, tokens, idx, errors)
-    {
-        return (node, next);
-    }
-    if t.kind == TokenKind::Ident
-        && let Some((node, next)) =
-            surface_stmt::try_parse_report_stmt(b, source, tokens, idx, errors)
-    {
-        return (node, next);
-    }
-    if t.kind == TokenKind::Ident
-        && let Some((node, next)) =
-            surface_stmt::try_parse_include_stmt(b, source, tokens, idx, errors)
-    {
-        return (node, next);
-    }
-    if t.kind == TokenKind::Ident
-        && let Some((node, next)) =
-            surface_stmt::try_parse_event_block(b, source, tokens, idx, errors)
-    {
-        return (node, next);
-    }
-    if t.kind == TokenKind::Ident
-        && let Some((node, next)) =
-            surface_stmt::try_parse_form_decl(b, source, tokens, idx, errors)
-    {
-        return (node, next);
-    }
-    if t.kind == TokenKind::Ident
-        && let Some((node, next)) =
-            surface_stmt::try_parse_module_decl(b, source, tokens, idx, errors)
-    {
-        return (node, next);
-    }
-    if t.kind == TokenKind::Ident
-        && let Some((node, next)) =
-            surface_stmt::try_parse_class_decl(b, source, tokens, idx, errors)
-    {
-        return (node, next);
-    }
-    if t.kind == TokenKind::Ident
-        && let Some((node, next)) =
-            surface_stmt::try_parse_interface_decl(b, source, tokens, idx, errors)
-    {
-        return (node, next);
-    }
-    if t.kind == TokenKind::Ident
-        && let Some((node, next)) =
-            surface_stmt::try_parse_method_decl(b, source, tokens, idx, errors)
-    {
-        return (node, next);
-    }
-    if t.kind == TokenKind::Ident
-        && let Some((node, next)) =
-            surface_stmt::try_parse_select_stmt(b, source, tokens, idx, errors)
-    {
-        return (node, next);
-    }
-    if t.kind == TokenKind::Ident
-        && let Some((node, next)) =
-            surface_stmt::try_parse_read_table_stmt(b, source, tokens, idx, errors)
-    {
-        return (node, next);
-    }
-    if t.kind == TokenKind::Ident
-        && let Some((node, next)) =
-            surface_stmt::try_parse_append_stmt(b, source, tokens, idx, errors)
-    {
-        return (node, next);
-    }
-    if t.kind == TokenKind::Ident
-        && let Some((node, next)) =
-            surface_stmt::try_parse_write_stmt(b, source, tokens, idx, errors)
-    {
-        return (node, next);
-    }
-    if t.kind == TokenKind::Ident
-        && let Some((node, next)) =
-            surface_stmt::try_parse_concatenate_stmt(b, source, tokens, idx, errors)
-    {
-        return (node, next);
-    }
-    if t.kind == TokenKind::Ident
-        && let Some((node, next)) =
-            surface_stmt::try_parse_raise_stmt(b, source, tokens, idx, errors)
-    {
-        return (node, next);
-    }
-    if t.kind == TokenKind::Ident
-        && let Some((node, next)) =
-            surface_stmt::try_parse_endat_stmt(b, source, tokens, idx, errors)
-    {
-        return (node, next);
-    }
-    if t.kind == TokenKind::Ident
-        && let Some((node, next)) =
-            surface_stmt::try_parse_get_time_stamp_stmt(b, source, tokens, idx, errors)
-    {
-        return (node, next);
-    }
-    if t.kind == TokenKind::Ident
-        && let Some((node, next)) =
-            surface_stmt::try_parse_assign_keyword_stmt(b, source, tokens, idx, errors)
-    {
-        return (node, next);
-    }
-    if t.kind == TokenKind::Ident
-        && let Some((node, next)) =
-            surface_stmt::try_parse_call_like_stmt(b, source, tokens, idx, errors)
-    {
-        return (node, next);
-    }
+
     if let Some((node, next)) = assign_stmt::try_parse_assign_stmt(b, source, tokens, idx, errors) {
         return (node, next);
     }
-    if t.kind == TokenKind::Ident
-        && tokens.get(idx + 1).map(|x| x.kind) == Some(TokenKind::Period)
-        && !prev_non_comment_is_ident(tokens, idx)
-        && !is_definite_stmt_lead_keyword(source, t)
-    {
-        let period = &tokens[idx + 1];
-        errors.push(ParseError {
-            message: "syntax error: a lone identifier before '.' is not a valid statement"
-                .to_string(),
-            range: t.range.start..period.range.end,
-        });
-        let a = syntax::token_leaf(b, t);
-        let p = syntax::token_leaf(b, period);
-        let node = b.branch(SyntaxKind::Error, t.range.start..period.range.end, &[a, p]);
-        return (node, idx + 2);
+    if let Some((node, next)) = try_parse_lone_ident_stmt_error(b, source, tokens, idx, errors) {
+        return (node, next);
     }
     if let Some((node, next)) = simple_stmt::try_parse_simple_stmt(b, source, tokens, idx, errors) {
         return (node, next);
@@ -356,6 +275,15 @@ mod tests {
         let root = parsed.file.root();
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::DataDecl), 1);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::DataTypedClause), 2);
+    }
+
+    #[test]
+    fn guarded_dispatch_handles_hyphenated_and_multiword_leads() {
+        let parsed = parse("FIELD-SYMBOLS <row> TYPE any.\nGET TIME STAMP FIELD lv_ts.");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::FieldSymbolsDecl), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::GetTimeStampStmt), 1);
     }
 
     #[test]

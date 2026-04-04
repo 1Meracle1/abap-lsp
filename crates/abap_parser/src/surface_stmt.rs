@@ -14,6 +14,50 @@ use crate::stmt_period::{
 use crate::syntax::token_leaf;
 use crate::type_ref::build_type_ref_node;
 
+#[derive(Clone, Copy)]
+enum EventBlockLead {
+    Single(&'static str),
+    Hyphenated(&'static [&'static str]),
+}
+
+const EVENT_BLOCK_LEADS: &[EventBlockLead] = &[
+    EventBlockLead::Single("initialization"),
+    EventBlockLead::Hyphenated(&["start", "of", "selection"]),
+    EventBlockLead::Hyphenated(&["end", "of", "selection"]),
+    EventBlockLead::Hyphenated(&["top", "of", "page"]),
+    EventBlockLead::Hyphenated(&["end", "of", "page"]),
+];
+
+const EVENT_BLOCK_BODY_BOUNDARY_KEYWORDS: &[&str] = &[
+    "START",
+    "END",
+    "INITIALIZATION",
+    "TOP",
+    "REPORT",
+    "INCLUDE",
+    "FORM",
+    "MODULE",
+    "CLASS",
+    "INTERFACE",
+];
+
+const GET_TIME_STAMP_FIELD_LEAD: &[&str] = &["get", "time", "stamp", "field"];
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CallLikeLeadKind {
+    CallMethod,
+    CallStmt,
+    CreateObject,
+}
+
+const CALL_LIKE_LEADS: &[(&[&str], CallLikeLeadKind)] = &[
+    (&["call", "method"], CallLikeLeadKind::CallMethod),
+    (&["call", "function"], CallLikeLeadKind::CallStmt),
+    (&["call", "transformation"], CallLikeLeadKind::CallStmt),
+    (&["call", "badi"], CallLikeLeadKind::CallStmt),
+    (&["create", "object"], CallLikeLeadKind::CreateObject),
+];
+
 fn scan_until_top_level_period(tokens: &[Token], start: usize) -> Option<usize> {
     let mut paren = 0i32;
     let mut bracket = 0i32;
@@ -70,11 +114,7 @@ fn validate_call_method_inline_args_spacing(
     idx: usize,
     period_i: usize,
 ) -> bool {
-    if !is_keyword(source, &tokens[idx], "call")
-        || !tokens
-            .get(idx + 1)
-            .is_some_and(|token| is_keyword(source, token, "method"))
-    {
+    if call_like_lead_kind(source, tokens, idx) != Some((CallLikeLeadKind::CallMethod, idx + 2)) {
         return true;
     }
 
@@ -266,6 +306,65 @@ fn scan_read_table_stmt_period(tokens: &[Token], source: &str, start: usize) -> 
     }
 }
 
+fn match_keyword_sequence(source: &str, tokens: &[Token], idx: usize, parts: &[&str]) -> Option<usize> {
+    let mut i = idx;
+    for part in parts {
+        let tok = tokens.get(i)?;
+        if !is_keyword(source, tok, part) {
+            return None;
+        }
+        i += 1;
+    }
+    Some(i)
+}
+
+fn call_like_lead_kind(
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+) -> Option<(CallLikeLeadKind, usize)> {
+    for (parts, kind) in CALL_LIKE_LEADS {
+        if let Some(next) = match_keyword_sequence(source, tokens, idx, parts) {
+            return Some((*kind, next));
+        }
+    }
+    None
+}
+
+fn token_children(b: &mut SyntaxTreeBuilder, tokens: &[Token], start: usize, end_exclusive: usize) -> Vec<NodeId> {
+    error_token_children(b, tokens, start, end_exclusive)
+}
+
+fn parse_stmt_with_period_scan<F>(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    scan_start: usize,
+    start_tok: &Token,
+    missing_period_message: &str,
+    errors: &mut Vec<crate::ParseError>,
+    next_on_unterminated: fn(&[Token], usize) -> usize,
+    on_found: F,
+) -> (NodeId, usize)
+where
+    F: FnOnce(&mut SyntaxTreeBuilder, usize, &mut Vec<crate::ParseError>) -> (NodeId, usize),
+{
+    match scan_until_statement_period(tokens, source, scan_start) {
+        StmtPeriodScan::Found(period_i) => on_found(b, period_i, errors),
+        StmtPeriodScan::Unterminated { end_exclusive } => {
+            let err_end = unterminated_err_end(tokens, end_exclusive, start_tok.range.end);
+            errors.push(crate::ParseError {
+                message: missing_period_message.to_string(),
+                range: start_tok.range.start..err_end,
+            });
+            let children = token_children(b, tokens, idx, end_exclusive);
+            let node = b.branch(SyntaxKind::Error, start_tok.range.start..err_end, &children);
+            (node, next_on_unterminated(tokens, end_exclusive))
+        }
+    }
+}
+
 fn parse_simple_keyword_stmt(
     b: &mut SyntaxTreeBuilder,
     source: &str,
@@ -280,36 +379,22 @@ fn parse_simple_keyword_stmt(
     if !is_keyword(source, tok, keyword) {
         return None;
     }
-    match scan_until_statement_period(tokens, source, idx + 1) {
-        StmtPeriodScan::Found(period_i) => {
-            let mut children = Vec::with_capacity(period_i - idx + 1);
-            for t in &tokens[idx..=period_i] {
-                children.push(token_leaf(b, t));
-            }
+    Some(parse_stmt_with_period_scan(
+        b,
+        source,
+        tokens,
+        idx,
+        idx + 1,
+        tok,
+        missing_period_message,
+        errors,
+        next_after_unterminated_scan,
+        |b, period_i, _errors| {
+            let children = token_children(b, tokens, idx, period_i + 1);
             let node = b.branch(kind, tok.range.start..tokens[period_i].range.end, &children);
-            Some((node, period_i + 1))
-        }
-        StmtPeriodScan::Unterminated { end_exclusive } => {
-            let err_end = unterminated_err_end(tokens, end_exclusive, tok.range.end);
-            errors.push(crate::ParseError {
-                message: missing_period_message.to_string(),
-                range: tok.range.start..err_end,
-            });
-            let mut children = Vec::with_capacity(end_exclusive.saturating_sub(idx));
-            for t in &tokens[idx..end_exclusive] {
-                children.push(token_leaf(b, t));
-            }
-            let node = b.branch(SyntaxKind::Error, tok.range.start..err_end, &children);
-            Some((
-                node,
-                if tokens.get(end_exclusive).map(|t| t.kind) == Some(TokenKind::Eof) {
-                    tokens.len()
-                } else {
-                    end_exclusive
-                },
-            ))
-        }
-    }
+            (node, period_i + 1)
+        },
+    ))
 }
 
 fn parse_inline_name(
@@ -504,6 +589,89 @@ fn scan_until_clause(
         i += 1;
     }
     i
+}
+
+fn scan_and_push_expr_clause<F>(
+    b: &mut SyntaxTreeBuilder,
+    children: &mut Vec<NodeId>,
+    source: &str,
+    tokens: &[Token],
+    expr_start: usize,
+    end_exclusive: usize,
+    prev_before_first: Option<&Token>,
+    clause_starts: &F,
+) -> usize
+where
+    F: Fn(&[Token], usize) -> bool,
+{
+    let expr_end = scan_until_clause(tokens, expr_start, end_exclusive, clause_starts);
+    push_expr_child(
+        b,
+        children,
+        source,
+        tokens,
+        expr_start,
+        expr_end,
+        prev_before_first,
+    );
+    expr_end
+}
+
+fn scan_and_push_assigning_target_clause<F>(
+    b: &mut SyntaxTreeBuilder,
+    children: &mut Vec<NodeId>,
+    source: &str,
+    tokens: &[Token],
+    expr_start: usize,
+    end_exclusive: usize,
+    prev_before_first: &Token,
+    clause_starts: &F,
+) -> usize
+where
+    F: Fn(&[Token], usize) -> bool,
+{
+    if let Some((inline_decl, next_i)) = try_parse_field_symbol_inline_decl(b, source, tokens, expr_start)
+    {
+        children.push(inline_decl);
+        next_i
+    } else {
+        scan_and_push_expr_clause(
+            b,
+            children,
+            source,
+            tokens,
+            expr_start,
+            end_exclusive,
+            Some(prev_before_first),
+            clause_starts,
+        )
+    }
+}
+
+fn scan_and_push_reference_into_clause<F>(
+    b: &mut SyntaxTreeBuilder,
+    children: &mut Vec<NodeId>,
+    source: &str,
+    tokens: &[Token],
+    into_idx: usize,
+    end_exclusive: usize,
+    clause_starts: &F,
+) -> usize
+where
+    F: Fn(&[Token], usize) -> bool,
+{
+    children.push(token_leaf(b, &tokens[into_idx - 1]));
+    children.push(token_leaf(b, &tokens[into_idx]));
+    scan_and_push_expr_clause(
+        b,
+        children,
+        source,
+        tokens,
+        into_idx + 1,
+        end_exclusive,
+        Some(&tokens[into_idx]),
+        clause_starts,
+    )
 }
 
 fn read_table_clause_starts(source: &str, tokens: &[Token], idx: usize) -> bool {
@@ -848,6 +1016,30 @@ fn match_hyphenated_keyword(
     Some(i)
 }
 
+fn event_block_header_end(source: &str, tokens: &[Token], idx: usize) -> Option<usize> {
+    let start_tok = tokens.get(idx)?;
+    if start_tok.kind != TokenKind::Ident {
+        return None;
+    }
+
+    for lead in EVENT_BLOCK_LEADS {
+        match lead {
+            EventBlockLead::Single(keyword) => {
+                if is_keyword(source, start_tok, keyword) {
+                    return Some(idx + 1);
+                }
+            }
+            EventBlockLead::Hyphenated(parts) => {
+                if let Some(next) = match_hyphenated_keyword(source, tokens, idx, parts) {
+                    return Some(next);
+                }
+            }
+        }
+    }
+
+    None
+}
+
 pub fn try_parse_report_stmt(
     b: &mut SyntaxTreeBuilder,
     source: &str,
@@ -970,29 +1162,25 @@ pub fn try_parse_get_time_stamp_stmt(
     errors: &mut Vec<crate::ParseError>,
 ) -> Option<(NodeId, usize)> {
     let get_tok = tokens.get(idx)?;
-    if !is_keyword(source, get_tok, "get")
-        || !tokens
-            .get(idx + 1)
-            .is_some_and(|token| is_keyword(source, token, "time"))
-        || !tokens
-            .get(idx + 2)
-            .is_some_and(|token| is_keyword(source, token, "stamp"))
-        || !tokens
-            .get(idx + 3)
-            .is_some_and(|token| is_keyword(source, token, "field"))
-    {
-        return None;
-    }
+    let lead_end = match_keyword_sequence(source, tokens, idx, GET_TIME_STAMP_FIELD_LEAD)?;
 
-    match scan_until_statement_period(tokens, source, idx + 4) {
-        StmtPeriodScan::Found(period_i) => {
+    Some(parse_stmt_with_period_scan(
+        b,
+        source,
+        tokens,
+        idx,
+        lead_end,
+        get_tok,
+        "syntax error: expected '.' after GET TIME STAMP FIELD statement",
+        errors,
+        |_, end_exclusive| end_exclusive,
+        |b, period_i, errors| {
             let mut children = Vec::with_capacity(period_i - idx + 1);
-            children.push(token_leaf(b, get_tok));
-            children.push(token_leaf(b, &tokens[idx + 1]));
-            children.push(token_leaf(b, &tokens[idx + 2]));
-            children.push(token_leaf(b, &tokens[idx + 3]));
+            for token in &tokens[idx..lead_end] {
+                children.push(token_leaf(b, token));
+            }
 
-            let target_start = skip_trivia(tokens, idx + 4);
+            let target_start = skip_trivia(tokens, lead_end);
             if target_start >= period_i {
                 errors.push(crate::ParseError {
                     message: "syntax error: expected target after GET TIME STAMP FIELD".to_string(),
@@ -1005,7 +1193,7 @@ pub fn try_parse_get_time_stamp_stmt(
                     get_tok.range.start..tokens[period_i].range.end,
                     &error_children,
                 );
-                return Some((node, period_i + 1));
+                return (node, period_i + 1);
             }
 
             if let Some((inline_decl, next_idx)) =
@@ -1021,7 +1209,7 @@ pub fn try_parse_get_time_stamp_stmt(
                     tokens,
                     target_start,
                     period_i,
-                    Some(&tokens[idx + 3]),
+                    Some(&tokens[lead_end - 1]),
                 );
             }
 
@@ -1031,23 +1219,9 @@ pub fn try_parse_get_time_stamp_stmt(
                 get_tok.range.start..tokens[period_i].range.end,
                 &children,
             );
-            Some((node, period_i + 1))
-        }
-        StmtPeriodScan::Unterminated { end_exclusive } => {
-            let err_end = unterminated_err_end(tokens, end_exclusive, get_tok.range.end);
-            errors.push(crate::ParseError {
-                message: "syntax error: expected '.' after GET TIME STAMP FIELD statement"
-                    .to_string(),
-                range: get_tok.range.start..err_end,
-            });
-            let mut children = Vec::with_capacity(end_exclusive.saturating_sub(idx));
-            for t in &tokens[idx..end_exclusive] {
-                children.push(token_leaf(b, t));
-            }
-            let node = b.branch(SyntaxKind::Error, get_tok.range.start..err_end, &children);
-            Some((node, end_exclusive))
-        }
-    }
+            (node, period_i + 1)
+        },
+    ))
 }
 
 pub fn try_parse_call_like_stmt(
@@ -1058,23 +1232,11 @@ pub fn try_parse_call_like_stmt(
     errors: &mut Vec<crate::ParseError>,
 ) -> Option<(NodeId, usize)> {
     let first = tokens.get(idx)?;
-    let is_call_stmt = is_keyword(source, first, "call")
-        && tokens.get(idx + 1).is_some_and(|t| {
-            is_keyword(source, t, "method")
-                || is_keyword(source, t, "function")
-                || is_keyword(source, t, "transformation")
-                || is_keyword(source, t, "badi")
-        });
-    let is_create_object = is_keyword(source, first, "create")
-        && tokens
-            .get(idx + 1)
-            .is_some_and(|t| is_keyword(source, t, "object"));
-    if !is_call_stmt && !is_create_object {
-        return None;
-    }
+    let (lead_kind, lead_end) = call_like_lead_kind(source, tokens, idx)?;
 
-    if let Some(period_i) = scan_until_top_level_period(tokens, idx + 1) {
-        if is_call_stmt && !validate_call_method_inline_args_spacing(source, tokens, idx, period_i)
+    if let Some(period_i) = scan_until_top_level_period(tokens, lead_end) {
+        if lead_kind == CallLikeLeadKind::CallMethod
+            && !validate_call_method_inline_args_spacing(source, tokens, idx, period_i)
         {
             errors.push(crate::ParseError {
                 message: "syntax error: method call arguments must have whitespace or a line break immediately inside parentheses"
@@ -1096,15 +1258,10 @@ pub fn try_parse_call_like_stmt(
         for t in &tokens[idx..=period_i] {
             children.push(token_leaf(b, t));
         }
-        let kind = if is_create_object {
-            SyntaxKind::CreateObjectStmt
-        } else if tokens
-            .get(idx + 1)
-            .is_some_and(|token| is_keyword(source, token, "method"))
-        {
-            SyntaxKind::CallMethodStmt
-        } else {
-            SyntaxKind::CallStmt
+        let kind = match lead_kind {
+            CallLikeLeadKind::CreateObject => SyntaxKind::CreateObjectStmt,
+            CallLikeLeadKind::CallMethod => SyntaxKind::CallMethodStmt,
+            CallLikeLeadKind::CallStmt => SyntaxKind::CallStmt,
         };
         let node = b.branch(
             kind,
@@ -1149,24 +1306,24 @@ pub fn try_parse_read_table_stmt(
     {
         return None;
     }
-    match scan_read_table_stmt_period(tokens, source, idx + 2) {
+
+    Some(match scan_read_table_stmt_period(tokens, source, idx + 2) {
         StmtPeriodScan::Found(period_i) => {
+            let clause_starts = |tokens: &[Token], idx: usize| read_table_clause_starts(source, tokens, idx);
             let mut children = Vec::with_capacity(period_i - idx + 1);
             children.push(token_leaf(b, read_tok));
             children.push(token_leaf(b, &tokens[idx + 1]));
 
             let mut i = idx + 2;
-            let source_end = scan_until_clause(tokens, i, period_i, |tokens, idx| {
-                read_table_clause_starts(source, tokens, idx)
-            });
-            push_expr_child(
+            let source_end = scan_and_push_expr_clause(
                 b,
                 &mut children,
                 source,
                 tokens,
                 i,
-                source_end,
+                period_i,
                 tokens.get(idx + 1),
+                &clause_starts,
             );
             i = source_end;
 
@@ -1174,43 +1331,30 @@ pub fn try_parse_read_table_stmt(
                 let token = &tokens[i];
                 if is_keyword(source, token, "into") {
                     children.push(token_leaf(b, token));
-                    let target_end = scan_until_clause(tokens, i + 1, period_i, |tokens, idx| {
-                        read_table_clause_starts(source, tokens, idx)
-                    });
-                    push_expr_child(
+                    i = scan_and_push_expr_clause(
                         b,
                         &mut children,
                         source,
                         tokens,
                         i + 1,
-                        target_end,
+                        period_i,
                         Some(token),
+                        &clause_starts,
                     );
-                    i = target_end;
                     continue;
                 }
                 if is_keyword(source, token, "assigning") {
                     children.push(token_leaf(b, token));
-                    if let Some((inline_decl, next_i)) =
-                        try_parse_field_symbol_inline_decl(b, source, tokens, i + 1)
-                    {
-                        children.push(inline_decl);
-                        i = next_i;
-                        continue;
-                    }
-                    let target_end = scan_until_clause(tokens, i + 1, period_i, |tokens, idx| {
-                        read_table_clause_starts(source, tokens, idx)
-                    });
-                    push_expr_child(
+                    i = scan_and_push_assigning_target_clause(
                         b,
                         &mut children,
                         source,
                         tokens,
                         i + 1,
-                        target_end,
-                        Some(token),
+                        period_i,
+                        token,
+                        &clause_starts,
                     );
-                    i = target_end;
                     continue;
                 }
                 if is_keyword(source, token, "reference")
@@ -1218,38 +1362,29 @@ pub fn try_parse_read_table_stmt(
                         .get(i + 1)
                         .is_some_and(|next| is_keyword(source, next, "into"))
                 {
-                    children.push(token_leaf(b, token));
-                    children.push(token_leaf(b, &tokens[i + 1]));
-                    let target_end = scan_until_clause(tokens, i + 2, period_i, |tokens, idx| {
-                        read_table_clause_starts(source, tokens, idx)
-                    });
-                    push_expr_child(
-                        b,
-                        &mut children,
-                        source,
-                        tokens,
-                        i + 2,
-                        target_end,
-                        Some(&tokens[i + 1]),
-                    );
-                    i = target_end;
-                    continue;
-                }
-                if is_keyword(source, token, "index") {
-                    children.push(token_leaf(b, token));
-                    let expr_end = scan_until_clause(tokens, i + 1, period_i, |tokens, idx| {
-                        read_table_clause_starts(source, tokens, idx)
-                    });
-                    push_expr_child(
+                    i = scan_and_push_reference_into_clause(
                         b,
                         &mut children,
                         source,
                         tokens,
                         i + 1,
-                        expr_end,
-                        Some(token),
+                        period_i,
+                        &clause_starts,
                     );
-                    i = expr_end;
+                    continue;
+                }
+                if is_keyword(source, token, "index") {
+                    children.push(token_leaf(b, token));
+                    i = scan_and_push_expr_clause(
+                        b,
+                        &mut children,
+                        source,
+                        tokens,
+                        i + 1,
+                        period_i,
+                        Some(token),
+                        &clause_starts,
+                    );
                     continue;
                 }
                 if is_keyword(source, token, "with") {
@@ -1257,7 +1392,7 @@ pub fn try_parse_read_table_stmt(
                     i += 1;
                     while i < period_i {
                         let current = &tokens[i];
-                        if read_table_clause_starts(source, tokens, i) {
+                        if clause_starts(tokens, i) {
                             break;
                         }
                         children.push(token_leaf(b, current));
@@ -1289,7 +1424,7 @@ pub fn try_parse_read_table_stmt(
                 read_tok.range.start..tokens[period_i].range.end,
                 &children,
             );
-            Some((node, period_i + 1))
+            (node, period_i + 1)
         }
         StmtPeriodScan::Unterminated { end_exclusive } => {
             let err_end = unterminated_err_end(tokens, end_exclusive, read_tok.range.end);
@@ -1297,14 +1432,11 @@ pub fn try_parse_read_table_stmt(
                 message: "syntax error: expected '.' after READ TABLE statement".to_string(),
                 range: read_tok.range.start..err_end,
             });
-            let mut children = Vec::with_capacity(end_exclusive.saturating_sub(idx));
-            for t in &tokens[idx..end_exclusive] {
-                children.push(token_leaf(b, t));
-            }
+            let children = token_children(b, tokens, idx, end_exclusive);
             let node = b.branch(SyntaxKind::Error, read_tok.range.start..err_end, &children);
-            Some((node, end_exclusive))
+            (node, end_exclusive)
         }
-    }
+    })
 }
 
 pub fn try_parse_append_stmt(
@@ -1318,92 +1450,98 @@ pub fn try_parse_append_stmt(
     if !is_keyword(source, append_tok, "append") {
         return None;
     }
-    match scan_until_statement_period(tokens, source, idx + 1) {
-        StmtPeriodScan::Found(period_i) => {
+    Some(parse_stmt_with_period_scan(
+        b,
+        source,
+        tokens,
+        idx,
+        idx + 1,
+        append_tok,
+        "syntax error: expected '.' after APPEND statement",
+        errors,
+        |_, end_exclusive| end_exclusive,
+        |b, period_i, _errors| {
+            let clause_starts = |tokens: &[Token], idx: usize| append_clause_starts(source, tokens, idx);
             let Some(to_idx) = (idx + 1..period_i).find(|&i| is_keyword(source, &tokens[i], "to"))
             else {
-                return None;
+                let children = token_children(b, tokens, idx, period_i + 1);
+                let node = b.branch(
+                    SyntaxKind::Error,
+                    append_tok.range.start..tokens[period_i].range.end,
+                    &children,
+                );
+                return (node, period_i + 1);
             };
             let mut children = Vec::with_capacity(period_i - idx + 1);
             children.push(token_leaf(b, append_tok));
 
-            let source_end = scan_until_clause(tokens, idx + 1, to_idx, |tokens, idx| {
-                append_clause_starts(source, tokens, idx)
-            });
-            push_expr_child(
+            let source_end = scan_and_push_expr_clause(
                 b,
                 &mut children,
                 source,
                 tokens,
                 idx + 1,
-                source_end,
+                to_idx,
                 Some(append_tok),
+                &clause_starts,
             );
             push_token_children(b, &mut children, tokens, source_end, to_idx);
 
             children.push(token_leaf(b, &tokens[to_idx]));
             let mut i = to_idx + 1;
-            let target_end = scan_until_clause(tokens, i, period_i, |tokens, idx| {
-                append_clause_starts(source, tokens, idx)
-            });
-            push_expr_child(
+            i = scan_and_push_expr_clause(
                 b,
                 &mut children,
                 source,
                 tokens,
                 i,
-                target_end,
+                period_i,
                 Some(&tokens[to_idx]),
+                &clause_starts,
             );
-            i = target_end;
 
             while i < period_i {
                 let token = &tokens[i];
                 if is_keyword(source, token, "assigning") {
                     children.push(token_leaf(b, token));
-                    if let Some((inline_decl, next_i)) =
-                        try_parse_field_symbol_inline_decl(b, source, tokens, i + 1)
-                    {
-                        children.push(inline_decl);
-                        i = next_i;
-                        continue;
-                    }
-                } else if is_keyword(source, token, "reference")
-                    && tokens
-                        .get(i + 1)
-                        .is_some_and(|next| is_keyword(source, next, "into"))
-                {
-                    children.push(token_leaf(b, token));
-                    children.push(token_leaf(b, &tokens[i + 1]));
-                    let expr_end = scan_until_clause(tokens, i + 2, period_i, |tokens, idx| {
-                        append_clause_starts(source, tokens, idx)
-                    });
-                    push_expr_child(
-                        b,
-                        &mut children,
-                        source,
-                        tokens,
-                        i + 2,
-                        expr_end,
-                        Some(&tokens[i + 1]),
-                    );
-                    i = expr_end;
-                    continue;
-                } else if is_keyword(source, token, "sorted") {
-                    children.push(token_leaf(b, token));
-                    let expr_end = scan_until_clause(tokens, i + 1, period_i, |tokens, idx| {
-                        append_clause_starts(source, tokens, idx)
-                    });
-                    push_expr_child(
+                    i = scan_and_push_assigning_target_clause(
                         b,
                         &mut children,
                         source,
                         tokens,
                         i + 1,
-                        expr_end,
-                        Some(token),
+                        period_i,
+                        token,
+                        &clause_starts,
                     );
-                    i = expr_end;
+                    continue;
+                } else if is_keyword(source, token, "reference")
+                    && tokens
+                        .get(i + 1)
+                        .is_some_and(|next| is_keyword(source, next, "into"))
+                {
+                    i = scan_and_push_reference_into_clause(
+                        b,
+                        &mut children,
+                        source,
+                        tokens,
+                        i + 1,
+                        period_i,
+                        &clause_starts,
+                    );
+                    continue;
+                } else if is_keyword(source, token, "sorted") {
+                    children.push(token_leaf(b, token));
+                    i = scan_and_push_expr_clause(
+                        b,
+                        &mut children,
+                        source,
+                        tokens,
+                        i + 1,
+                        period_i,
+                        Some(token),
+                        &clause_starts,
+                    );
                     continue;
                 }
                 children.push(token_leaf(b, token));
@@ -1415,26 +1553,9 @@ pub fn try_parse_append_stmt(
                 append_tok.range.start..tokens[period_i].range.end,
                 &children,
             );
-            Some((node, period_i + 1))
-        }
-        StmtPeriodScan::Unterminated { end_exclusive } => {
-            let err_end = unterminated_err_end(tokens, end_exclusive, append_tok.range.end);
-            errors.push(crate::ParseError {
-                message: "syntax error: expected '.' after APPEND statement".to_string(),
-                range: append_tok.range.start..err_end,
-            });
-            let mut children = Vec::with_capacity(end_exclusive.saturating_sub(idx));
-            for t in &tokens[idx..end_exclusive] {
-                children.push(token_leaf(b, t));
-            }
-            let node = b.branch(
-                SyntaxKind::Error,
-                append_tok.range.start..err_end,
-                &children,
-            );
-            Some((node, end_exclusive))
-        }
-    }
+            (node, period_i + 1)
+        },
+    ))
 }
 
 pub fn try_parse_assign_keyword_stmt(
@@ -1449,8 +1570,17 @@ pub fn try_parse_assign_keyword_stmt(
         return None;
     }
 
-    match scan_until_statement_period(tokens, source, idx + 1) {
-        StmtPeriodScan::Found(period_i) => {
+    Some(parse_stmt_with_period_scan(
+        b,
+        source,
+        tokens,
+        idx,
+        idx + 1,
+        assign_tok,
+        "syntax error: expected '.' after ASSIGN statement",
+        errors,
+        |_, end_exclusive| end_exclusive,
+        |b, period_i, _errors| {
             let mut children = Vec::with_capacity(period_i - idx + 1);
             let mut i = idx;
             while i < period_i {
@@ -1470,26 +1600,9 @@ pub fn try_parse_assign_keyword_stmt(
                 assign_tok.range.start..tokens[period_i].range.end,
                 &children,
             );
-            Some((node, period_i + 1))
-        }
-        StmtPeriodScan::Unterminated { end_exclusive } => {
-            let err_end = unterminated_err_end(tokens, end_exclusive, assign_tok.range.end);
-            errors.push(crate::ParseError {
-                message: "syntax error: expected '.' after ASSIGN statement".to_string(),
-                range: assign_tok.range.start..err_end,
-            });
-            let mut children = Vec::with_capacity(end_exclusive.saturating_sub(idx));
-            for t in &tokens[idx..end_exclusive] {
-                children.push(token_leaf(b, t));
-            }
-            let node = b.branch(
-                SyntaxKind::Error,
-                assign_tok.range.start..err_end,
-                &children,
-            );
-            Some((node, end_exclusive))
-        }
-    }
+            (node, period_i + 1)
+        },
+    ))
 }
 
 pub fn try_parse_event_block(
@@ -1500,28 +1613,7 @@ pub fn try_parse_event_block(
     errors: &mut Vec<crate::ParseError>,
 ) -> Option<(NodeId, usize)> {
     let start_tok = tokens.get(idx)?;
-    if start_tok.kind != TokenKind::Ident {
-        return None;
-    }
-    let body_start_idx = if is_keyword(source, start_tok, "initialization") {
-        idx + 1
-    } else if let Some(next) =
-        match_hyphenated_keyword(source, tokens, idx, &["start", "of", "selection"])
-    {
-        next
-    } else if let Some(next) =
-        match_hyphenated_keyword(source, tokens, idx, &["end", "of", "selection"])
-    {
-        next
-    } else if let Some(next) = match_hyphenated_keyword(source, tokens, idx, &["top", "of", "page"])
-    {
-        next
-    } else if let Some(next) = match_hyphenated_keyword(source, tokens, idx, &["end", "of", "page"])
-    {
-        next
-    } else {
-        return None;
-    };
+    let body_start_idx = event_block_header_end(source, tokens, idx)?;
 
     let (mut children, mut next) = parse_header_until_period(
         b,
@@ -1538,18 +1630,7 @@ pub fn try_parse_event_block(
         tokens,
         next,
         errors,
-        &[
-            "START",
-            "END",
-            "INITIALIZATION",
-            "TOP",
-            "REPORT",
-            "INCLUDE",
-            "FORM",
-            "MODULE",
-            "CLASS",
-            "INTERFACE",
-        ],
+        EVENT_BLOCK_BODY_BOUNDARY_KEYWORDS,
     );
     children.extend(body);
     next = after_body;
@@ -1786,6 +1867,21 @@ mod tests {
                 .count_kind(parsed.file.root(), SyntaxKind::FormDecl),
             1
         );
+    }
+
+    #[test]
+    fn parses_all_supported_event_block_leads() {
+        let parsed = crate::parse(
+            "INITIALIZATION.\nWRITE 'a'.\n\
+START-OF-SELECTION.\nWRITE 'b'.\n\
+END-OF-SELECTION.\nWRITE 'c'.\n\
+TOP-OF-PAGE.\nWRITE 'd'.\n\
+END-OF-PAGE.\nWRITE 'e'.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::EventBlock), 5);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::WriteStmt), 5);
     }
 
     #[test]
@@ -2232,6 +2328,22 @@ mod tests {
                 .count_kind(parsed.file.root(), SyntaxKind::CallStmt),
             1
         );
+    }
+
+    #[test]
+    fn parses_other_call_like_leads_as_call_stmt() {
+        for src in [
+            "CALL TRANSFORMATION id SOURCE text = lv_xml RESULT XML lv_out.",
+            "CALL BADI lo_badi->run.",
+        ] {
+            let parsed = crate::parse(src);
+            assert!(parsed.errors.is_empty(), "{src}: {:?}", parsed.errors);
+            assert_eq!(
+                parsed.file.count_kind(parsed.file.root(), SyntaxKind::CallStmt),
+                1,
+                "{src}"
+            );
+        }
     }
 
     #[test]
