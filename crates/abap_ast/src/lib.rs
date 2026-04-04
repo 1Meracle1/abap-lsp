@@ -110,6 +110,22 @@ pub enum SyntaxKind {
     DoStmt,
     /// `LOOP ... . ... ENDLOOP.`
     LoopStmt,
+    /// `AT source` inside `LOOP`.
+    LoopSourceClause,
+    /// `INTO target` inside `LOOP`.
+    LoopIntoClause,
+    /// `ASSIGNING target` inside `LOOP`.
+    LoopAssigningClause,
+    /// `REFERENCE INTO target` inside `LOOP`.
+    LoopReferenceIntoClause,
+    /// `WHERE cond` inside `LOOP`.
+    LoopWhereClause,
+    /// `FROM expr` inside `LOOP`.
+    LoopFromClause,
+    /// `TO expr` inside `LOOP`.
+    LoopToClause,
+    /// `STEP expr` inside `LOOP`.
+    LoopStepClause,
     /// `TRY. ... [CATCH ... . ...]* [CLEANUP. ...] ENDTRY.`
     TryStmt,
     /// `CATCH ... . ...`
@@ -124,6 +140,8 @@ pub enum SyntaxKind {
     MethodDecl,
     /// `SELECT ... .` or `SELECT ... . ... ENDSELECT.`
     SelectStmt,
+    /// `APPEND ... TO ... .`
+    AppendStmt,
     /// `READ TABLE ... .`
     ReadTableStmt,
     /// `WRITE ... .`
@@ -187,6 +205,14 @@ impl SyntaxKind {
             Self::WhileStmt => "WhileStmt",
             Self::DoStmt => "DoStmt",
             Self::LoopStmt => "LoopStmt",
+            Self::LoopSourceClause => "LoopSourceClause",
+            Self::LoopIntoClause => "LoopIntoClause",
+            Self::LoopAssigningClause => "LoopAssigningClause",
+            Self::LoopReferenceIntoClause => "LoopReferenceIntoClause",
+            Self::LoopWhereClause => "LoopWhereClause",
+            Self::LoopFromClause => "LoopFromClause",
+            Self::LoopToClause => "LoopToClause",
+            Self::LoopStepClause => "LoopStepClause",
             Self::TryStmt => "TryStmt",
             Self::CatchClause => "CatchClause",
             Self::CleanupClause => "CleanupClause",
@@ -194,6 +220,7 @@ impl SyntaxKind {
             Self::InterfaceDecl => "InterfaceDecl",
             Self::MethodDecl => "MethodDecl",
             Self::SelectStmt => "SelectStmt",
+            Self::AppendStmt => "AppendStmt",
             Self::ReadTableStmt => "ReadTableStmt",
             Self::WriteStmt => "WriteStmt",
             Self::IsPredicate => "IsPredicate",

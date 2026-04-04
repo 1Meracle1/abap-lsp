@@ -326,6 +326,74 @@ ENDLOOP.
 }
 
 #[test]
+fn resolves_append_source_and_target() {
+    let src = r#"
+DATA ls_evt TYPE string.
+TYPES ty_evt_tab TYPE STANDARD TABLE OF string WITH DEFAULT KEY.
+DATA lt_evt TYPE ty_evt_tab.
+
+APPEND ls_evt TO lt_evt.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///append_stmt.abap", src, &parsed);
+
+    for name in ["ls_evt", "lt_evt"] {
+        assert!(
+            unit.references.iter().any(|reference| {
+                reference.namespace == Namespace::Value
+                    && reference.kind == ReferenceKind::Identifier
+                    && reference.name.as_ref() == name
+                    && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+            }),
+            "expected resolved APPEND reference for `{name}`, refs={:?} diagnostics={:?}",
+            unit.references,
+            unit.diagnostics
+        );
+        assert!(
+            !unit.diagnostics.iter().any(|diag| {
+                diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains(name)
+            }),
+            "unexpected APPEND diagnostics for `{name}`: {:?}",
+            unit.diagnostics
+        );
+    }
+}
+
+#[test]
+fn resolves_read_table_source_and_target() {
+    let src = r#"
+TYPES ty_trn_tab TYPE STANDARD TABLE OF string WITH DEFAULT KEY.
+DATA lt_trn TYPE ty_trn_tab.
+DATA ls_trn TYPE string.
+
+READ TABLE lt_trn INTO ls_trn INDEX 1.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///read_table_stmt.abap", src, &parsed);
+
+    for name in ["lt_trn", "ls_trn"] {
+        assert!(
+            unit.references.iter().any(|reference| {
+                reference.namespace == Namespace::Value
+                    && reference.kind == ReferenceKind::Identifier
+                    && reference.name.as_ref() == name
+                    && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+            }),
+            "expected resolved READ TABLE reference for `{name}`, refs={:?} diagnostics={:?}",
+            unit.references,
+            unit.diagnostics
+        );
+        assert!(
+            !unit.diagnostics.iter().any(|diag| {
+                diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains(name)
+            }),
+            "unexpected READ TABLE diagnostics for `{name}`: {:?}",
+            unit.diagnostics
+        );
+    }
+}
+
+#[test]
 fn resolves_assign_to_inline_field_symbol() {
     let src = r#"
 DATA lv_value TYPE string.

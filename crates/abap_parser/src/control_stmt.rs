@@ -64,6 +64,178 @@ fn parse_end_keyword(
     )
 }
 
+fn parse_inline_name(
+    b: &mut SyntaxTreeBuilder,
+    tokens: &[Token],
+    idx: usize,
+) -> Option<(NodeId, usize)> {
+    let name_tok = tokens.get(idx)?;
+    if name_tok.kind != TokenKind::Ident {
+        return None;
+    }
+    let leaf = token_leaf(b, name_tok);
+    Some((
+        b.branch(SyntaxKind::DataDeclName, name_tok.range.clone(), &[leaf]),
+        idx + 1,
+    ))
+}
+
+fn try_parse_loop_inline_data_target(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+) -> Option<(NodeId, usize)> {
+    let data_tok = tokens.get(idx)?;
+    if !is_keyword(source, data_tok, "data") {
+        return None;
+    }
+    let lparen = tokens.get(idx + 1)?;
+    if lparen.kind != TokenKind::LParen {
+        return None;
+    }
+    let (name, next_idx) = parse_inline_name(b, tokens, idx + 2)?;
+    let rparen = tokens.get(next_idx)?;
+    if rparen.kind != TokenKind::RParen {
+        return None;
+    }
+    let data_leaf = token_leaf(b, data_tok);
+    let lparen_leaf = token_leaf(b, lparen);
+    let rparen_leaf = token_leaf(b, rparen);
+    Some((
+        b.branch(
+            SyntaxKind::DataInlineDecl,
+            data_tok.range.start..rparen.range.end,
+            &[data_leaf, lparen_leaf, name, rparen_leaf],
+        ),
+        next_idx + 1,
+    ))
+}
+
+fn try_parse_loop_inline_field_symbol_target(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+) -> Option<(NodeId, usize)> {
+    let field_tok = tokens.get(idx)?;
+    if !is_keyword(source, field_tok, "field")
+        || tokens.get(idx + 1).map(|tok| tok.kind) != Some(TokenKind::Minus)
+        || !tokens
+            .get(idx + 2)
+            .is_some_and(|tok| is_keyword(source, tok, "symbol"))
+    {
+        return None;
+    }
+
+    let lparen = tokens.get(idx + 3)?;
+    if lparen.kind != TokenKind::LParen {
+        return None;
+    }
+    let (name, next_idx) = parse_inline_name(b, tokens, idx + 4)?;
+    let rparen = tokens.get(next_idx)?;
+    if rparen.kind != TokenKind::RParen {
+        return None;
+    }
+    let field_leaf = token_leaf(b, field_tok);
+    let minus_leaf = token_leaf(b, &tokens[idx + 1]);
+    let symbol_leaf = token_leaf(b, &tokens[idx + 2]);
+    let lparen_leaf = token_leaf(b, lparen);
+    let rparen_leaf = token_leaf(b, rparen);
+
+    Some((
+        b.branch(
+            SyntaxKind::FieldSymbolInlineDecl,
+            field_tok.range.start..rparen.range.end,
+            &[field_leaf, minus_leaf, symbol_leaf, lparen_leaf, name, rparen_leaf],
+        ),
+        next_idx + 1,
+    ))
+}
+
+fn loop_clause_starts(source: &str, tokens: &[Token], idx: usize) -> bool {
+    let Some(token) = tokens.get(idx) else {
+        return false;
+    };
+    token.kind == TokenKind::Ident
+        && (is_keyword(source, token, "into")
+            || is_keyword(source, token, "assigning")
+            || is_keyword(source, token, "where")
+            || is_keyword(source, token, "using")
+            || is_keyword(source, token, "transporting")
+            || is_keyword(source, token, "group")
+            || is_keyword(source, token, "from")
+            || is_keyword(source, token, "to")
+            || is_keyword(source, token, "step")
+            || (is_keyword(source, token, "reference")
+                && tokens
+                    .get(idx + 1)
+                    .is_some_and(|next| is_keyword(source, next, "into"))))
+}
+
+fn scan_loop_expr_end(source: &str, tokens: &[Token], start: usize, end_exclusive: usize) -> usize {
+    let mut idx = start;
+    let mut paren = 0i32;
+    let mut bracket = 0i32;
+    let mut brace = 0i32;
+
+    while idx < end_exclusive {
+        let token = &tokens[idx];
+        if token.kind == TokenKind::Comment {
+            idx += 1;
+            continue;
+        }
+        if paren == 0
+            && bracket == 0
+            && brace == 0
+            && (token.kind == TokenKind::Period || loop_clause_starts(source, tokens, idx))
+        {
+            break;
+        }
+        match token.kind {
+            TokenKind::LParen => paren += 1,
+            TokenKind::RParen => paren -= 1,
+            TokenKind::LBracket => bracket += 1,
+            TokenKind::RBracket => bracket -= 1,
+            TokenKind::LBrace => brace += 1,
+            TokenKind::RBrace => brace -= 1,
+            _ => {}
+        }
+        idx += 1;
+    }
+
+    idx
+}
+
+fn parse_loop_clause_expr(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    expr_start: usize,
+    expr_end: usize,
+    prev_before_first: Option<&Token>,
+    kind: SyntaxKind,
+    keyword_tokens: &[usize],
+    logical: bool,
+) -> Option<NodeId> {
+    if expr_start >= expr_end {
+        return None;
+    }
+    let expr = if logical {
+        parse_logical_expr(b, source, &tokens[expr_start..expr_end], prev_before_first)
+    } else {
+        parse_arithmetic_expr(b, source, &tokens[expr_start..expr_end], prev_before_first)
+    };
+    let start = tokens[*keyword_tokens.first()?].range.start;
+    let end = b.span(expr).end;
+    let mut children: Vec<NodeId> = keyword_tokens
+        .iter()
+        .map(|&idx| token_leaf(b, &tokens[idx]))
+        .collect();
+    children.push(expr);
+    Some(b.branch(kind, start..end, &children))
+}
+
 pub fn try_parse_while_stmt(
     b: &mut SyntaxTreeBuilder,
     source: &str,
@@ -185,15 +357,182 @@ pub fn try_parse_loop_stmt(
         return None;
     }
 
-    let (mut children, mut next) = parse_header_until_period(
-        b,
-        source,
-        tokens,
-        idx,
-        idx + 1,
-        errors,
-        "syntax error: expected '.' after LOOP header",
-    );
+    let at_tok = tokens.get(idx + 1)?;
+    if !is_keyword(source, at_tok, "at") {
+        return None;
+    }
+
+    let (mut children, mut next) = match scan_until_statement_period(tokens, source, idx + 2) {
+        StmtPeriodScan::Found(period_i) => {
+            let mut children = vec![token_leaf(b, loop_tok), token_leaf(b, at_tok)];
+            let mut cursor = idx + 2;
+            let source_end = scan_loop_expr_end(source, tokens, cursor, period_i);
+            if let Some(source_clause) = parse_loop_clause_expr(
+                b,
+                source,
+                tokens,
+                cursor,
+                source_end,
+                Some(at_tok),
+                SyntaxKind::LoopSourceClause,
+                &[idx + 1],
+                false,
+            ) {
+                children.push(source_clause);
+            }
+            cursor = source_end;
+
+            while cursor < period_i {
+                let token = &tokens[cursor];
+                if is_keyword(source, token, "into") {
+                    let target_start = skip_trivia(tokens, cursor + 1);
+                    let target_end = scan_loop_expr_end(source, tokens, target_start, period_i);
+                    let mut clause_children = vec![token_leaf(b, token)];
+                    if let Some((inline_data, next_idx)) =
+                        try_parse_loop_inline_data_target(b, source, tokens, target_start)
+                    {
+                        clause_children.push(inline_data);
+                        cursor = next_idx;
+                    } else if target_start < target_end {
+                        let expr = parse_arithmetic_expr(
+                            b,
+                            source,
+                            &tokens[target_start..target_end],
+                            Some(token),
+                        );
+                        clause_children.push(expr);
+                        cursor = target_end;
+                    } else {
+                        cursor = target_start;
+                    }
+                    let end = clause_children
+                        .last()
+                        .copied()
+                        .map(|id| b.span(id).end)
+                        .unwrap_or(token.range.end);
+                    children.push(b.branch(
+                        SyntaxKind::LoopIntoClause,
+                        token.range.start..end,
+                        &clause_children,
+                    ));
+                    continue;
+                }
+                if is_keyword(source, token, "assigning") {
+                    let target_start = skip_trivia(tokens, cursor + 1);
+                    let target_end = scan_loop_expr_end(source, tokens, target_start, period_i);
+                    let mut clause_children = vec![token_leaf(b, token)];
+                    if let Some((inline_decl, next_idx)) =
+                        try_parse_loop_inline_field_symbol_target(b, source, tokens, target_start)
+                    {
+                        clause_children.push(inline_decl);
+                        cursor = next_idx;
+                    } else if target_start < target_end {
+                        let expr = parse_arithmetic_expr(
+                            b,
+                            source,
+                            &tokens[target_start..target_end],
+                            Some(token),
+                        );
+                        clause_children.push(expr);
+                        cursor = target_end;
+                    } else {
+                        cursor = target_start;
+                    }
+                    let end = clause_children
+                        .last()
+                        .copied()
+                        .map(|id| b.span(id).end)
+                        .unwrap_or(token.range.end);
+                    children.push(b.branch(
+                        SyntaxKind::LoopAssigningClause,
+                        token.range.start..end,
+                        &clause_children,
+                    ));
+                    continue;
+                }
+                if is_keyword(source, token, "reference")
+                    && tokens
+                        .get(cursor + 1)
+                        .is_some_and(|next| is_keyword(source, next, "into"))
+                {
+                    let into_tok = &tokens[cursor + 1];
+                    let target_start = skip_trivia(tokens, cursor + 2);
+                    let target_end = scan_loop_expr_end(source, tokens, target_start, period_i);
+                    let mut clause_children =
+                        vec![token_leaf(b, token), token_leaf(b, into_tok)];
+                    if target_start < target_end {
+                        let expr = parse_arithmetic_expr(
+                            b,
+                            source,
+                            &tokens[target_start..target_end],
+                            Some(into_tok),
+                        );
+                        clause_children.push(expr);
+                    }
+                    let end = clause_children
+                        .last()
+                        .copied()
+                        .map(|id| b.span(id).end)
+                        .unwrap_or(into_tok.range.end);
+                    children.push(b.branch(
+                        SyntaxKind::LoopReferenceIntoClause,
+                        token.range.start..end,
+                        &clause_children,
+                    ));
+                    cursor = target_end;
+                    continue;
+                }
+                let clause_kind = if is_keyword(source, token, "where") {
+                    Some((SyntaxKind::LoopWhereClause, true))
+                } else if is_keyword(source, token, "from") {
+                    Some((SyntaxKind::LoopFromClause, false))
+                } else if is_keyword(source, token, "to") {
+                    Some((SyntaxKind::LoopToClause, false))
+                } else if is_keyword(source, token, "step") {
+                    Some((SyntaxKind::LoopStepClause, false))
+                } else {
+                    None
+                };
+                if let Some((clause_kind, logical)) = clause_kind {
+                    let expr_start = skip_trivia(tokens, cursor + 1);
+                    let expr_end = scan_loop_expr_end(source, tokens, expr_start, period_i);
+                    if let Some(clause) = parse_loop_clause_expr(
+                        b,
+                        source,
+                        tokens,
+                        expr_start,
+                        expr_end,
+                        Some(token),
+                        clause_kind,
+                        &[cursor],
+                        logical,
+                    ) {
+                        children.push(clause);
+                    }
+                    cursor = expr_end;
+                    continue;
+                }
+                children.push(token_leaf(b, token));
+                cursor += 1;
+            }
+            children.push(token_leaf(b, &tokens[period_i]));
+            (children, period_i + 1)
+        }
+        StmtPeriodScan::Unterminated { end_exclusive } => {
+            let err_end = unterminated_err_end(tokens, end_exclusive, loop_tok.range.end);
+            errors.push(crate::ParseError {
+                message: "syntax error: expected '.' after LOOP header".to_string(),
+                range: loop_tok.range.start..err_end,
+            });
+            let err_children = error_token_children(b, tokens, idx, end_exclusive);
+            let header = b.branch(
+                SyntaxKind::Error,
+                loop_tok.range.start..err_end,
+                &err_children,
+            );
+            (vec![header], next_after_unterminated_scan(tokens, end_exclusive))
+        }
+    };
     let (body, after_body) =
         parse_body_until_keywords(b, source, tokens, next, errors, &["ENDLOOP"]);
     children.extend(body);

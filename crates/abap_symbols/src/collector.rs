@@ -459,6 +459,7 @@ impl<'a> Collector<'a> {
                 self.walk_nested_block(node, scope, ScopeKind::CleanupClause)
             }
             SyntaxKind::SelectStmt => self.walk_nested_block(node, scope, ScopeKind::SelectBlock),
+            SyntaxKind::AppendStmt | SyntaxKind::ReadTableStmt => self.walk_children(node, scope),
             SyntaxKind::TypeRefSimple => self.collect_type_ref(node, scope),
             SyntaxKind::ExprIdent
             | SyntaxKind::SelectorExpr
@@ -1977,14 +1978,20 @@ impl<'a> Collector<'a> {
             Some(scope),
             None,
         );
-        let header_tokens: Vec<_> = self
-            .simple_stmt_tokens(node)
-            .into_iter()
-            .take_while(|token| token.kind != TokenKind::Period)
-            .collect();
-        self.collect_loop_header(&header_tokens, child_scope);
+        self.collect_loop_header_node(node, child_scope);
         for child in self.file.children(node) {
-            self.walk_node(child, child_scope);
+            match self.file.kind(child) {
+                SyntaxKind::LoopSourceClause
+                | SyntaxKind::LoopIntoClause
+                | SyntaxKind::LoopAssigningClause
+                | SyntaxKind::LoopReferenceIntoClause
+                | SyntaxKind::LoopWhereClause
+                | SyntaxKind::LoopFromClause
+                | SyntaxKind::LoopToClause
+                | SyntaxKind::LoopStepClause
+                | SyntaxKind::Token => {}
+                _ => self.walk_node(child, child_scope),
+            }
         }
     }
 
@@ -1995,77 +2002,199 @@ impl<'a> Collector<'a> {
         }
     }
 
-    fn collect_loop_header(&mut self, tokens: &[&Token], scope: ScopeId) {
-        if tokens.len() < 3
-            || !self.token_matches_keyword(tokens[0], "loop")
-            || !self.token_matches_keyword(tokens[1], "at")
-        {
-            return;
-        }
-
-        let mut idx = 2usize;
-        let source_end = self.loop_header_expr_end(tokens, idx);
-        if source_end > idx {
-            self.collect_token_expression_refs(&tokens[idx..source_end], scope, true);
-        }
-        let source_line_metadata = self.loop_source_line_metadata(&tokens[idx..source_end], scope);
-        idx = source_end;
-
-        while idx < tokens.len() {
-            let token = tokens[idx];
-            if token.kind == TokenKind::Comment {
-                idx += 1;
-                continue;
-            }
-            if self.token_matches_keyword(token, "into") {
-                idx = self.collect_loop_target_clause(
-                    tokens,
-                    idx + 1,
-                    scope,
-                    SymbolKind::Variable,
-                    &source_line_metadata,
-                );
-                continue;
-            }
-            if self.token_matches_keyword(token, "assigning") {
-                idx = self.collect_loop_target_clause(
-                    tokens,
-                    idx + 1,
-                    scope,
-                    SymbolKind::FieldSymbol,
-                    &source_line_metadata,
-                );
-                continue;
-            }
-            if self.token_matches_keyword(token, "reference")
-                && tokens
-                    .get(idx + 1)
-                    .is_some_and(|next| self.token_matches_keyword(next, "into"))
-            {
-                idx = self.collect_loop_target_clause(
-                    tokens,
-                    idx + 2,
-                    scope,
-                    SymbolKind::Variable,
-                    &(None, None),
-                );
-                continue;
-            }
-            if self.token_matches_keyword(token, "where")
-                || self.token_matches_keyword(token, "from")
-                || self.token_matches_keyword(token, "to")
-                || self.token_matches_keyword(token, "step")
-            {
-                let expr_start = idx + 1;
-                let expr_end = self.loop_header_expr_end(tokens, expr_start);
-                if expr_end > expr_start {
-                    self.collect_token_expression_refs(&tokens[expr_start..expr_end], scope, true);
+    fn collect_loop_header_node(&mut self, node: NodeId, scope: ScopeId) {
+        let mut source_metadata = (None, None);
+        for child in self.file.children(node) {
+            match self.file.kind(child) {
+                SyntaxKind::LoopSourceClause => {
+                    if let Some(expr) = self.first_non_token_child(child) {
+                        self.collect_expr(expr, scope);
+                        source_metadata = self.loop_source_line_metadata_from_node(expr, scope);
+                    }
                 }
-                idx = expr_end;
-                continue;
+                SyntaxKind::LoopIntoClause => {
+                    if let Some(target) = self.first_non_token_child(child) {
+                        self.collect_loop_target_node(
+                            target,
+                            scope,
+                            SymbolKind::Variable,
+                            &source_metadata,
+                        );
+                    }
+                }
+                SyntaxKind::LoopAssigningClause => {
+                    if let Some(target) = self.first_non_token_child(child) {
+                        self.collect_loop_target_node(
+                            target,
+                            scope,
+                            SymbolKind::FieldSymbol,
+                            &source_metadata,
+                        );
+                    }
+                }
+                SyntaxKind::LoopReferenceIntoClause => {
+                    if let Some(target) = self.last_non_token_child(child) {
+                        self.collect_loop_target_node(
+                            target,
+                            scope,
+                            SymbolKind::Variable,
+                            &(None, None),
+                        );
+                    }
+                }
+                SyntaxKind::LoopWhereClause
+                | SyntaxKind::LoopFromClause
+                | SyntaxKind::LoopToClause
+                | SyntaxKind::LoopStepClause => {
+                    if let Some(expr) = self.first_non_token_child(child) {
+                        self.collect_expr(expr, scope);
+                    }
+                }
+                _ => {}
             }
-            idx += 1;
         }
+    }
+
+    fn collect_loop_target_node(
+        &mut self,
+        node: NodeId,
+        scope: ScopeId,
+        symbol_kind: SymbolKind,
+        inferred_metadata: &(Option<StructureId>, Option<FieldTypeRefData>),
+    ) {
+        match self.file.kind(node) {
+            SyntaxKind::DataInlineDecl if symbol_kind == SymbolKind::Variable => {
+                if let Some(name_node) = self
+                    .file
+                    .children(node)
+                    .find(|&child| self.file.kind(child) == SyntaxKind::DataDeclName)
+                    && let Some((name, range)) = self.node_name(name_node)
+                {
+                    self.declare_symbol(
+                        scope,
+                        name,
+                        SymbolKind::Variable,
+                        range,
+                        inferred_metadata.0,
+                        inferred_metadata.1.clone(),
+                    );
+                }
+            }
+            SyntaxKind::FieldSymbolInlineDecl if symbol_kind == SymbolKind::FieldSymbol => {
+                self.declare_inline_field_symbol_decl(
+                    node,
+                    scope,
+                    inferred_metadata.0,
+                    inferred_metadata.1.clone(),
+                );
+            }
+            _ => self.collect_expr(node, scope),
+        }
+    }
+
+    fn loop_source_line_metadata_from_node(
+        &self,
+        node: NodeId,
+        scope: ScopeId,
+    ) -> (Option<StructureId>, Option<FieldTypeRefData>) {
+        match self.file.kind(node) {
+            SyntaxKind::TemplateExpr => self
+                .first_non_token_child(node)
+                .map(|child| self.loop_source_line_metadata_from_node(child, scope))
+                .unwrap_or((None, None)),
+            SyntaxKind::ExprIdent => {
+                let Some((name, _)) = self.node_name(node) else {
+                    return (None, None);
+                };
+                let Some(symbol_id) =
+                    self.lookup_symbol_in_scope_chain(scope, Namespace::Value, name.as_ref())
+                else {
+                    return (None, None);
+                };
+                let symbol = self.symbol(symbol_id);
+                self.normalize_inferred_metadata(scope, symbol.structure, symbol.declared_type.clone())
+            }
+            SyntaxKind::SelectorExpr => {
+                let Some((namespace, base_name, _, field_path)) = self.selector_access_chain(node) else {
+                    return (None, None);
+                };
+                if namespace != Namespace::Value {
+                    return (None, None);
+                }
+                let Some(symbol_id) =
+                    self.lookup_symbol_in_scope_chain(scope, Namespace::Value, base_name.as_ref())
+                else {
+                    return (None, None);
+                };
+                if field_path.is_empty() {
+                    let symbol = self.symbol(symbol_id);
+                    return self.normalize_inferred_metadata(
+                        scope,
+                        symbol.structure,
+                        symbol.declared_type.clone(),
+                    );
+                }
+                self.loop_source_field_metadata(scope, symbol_id, &field_path)
+                    .map(|(structure, declared_type)| {
+                        self.normalize_inferred_metadata(scope, structure, declared_type)
+                    })
+                    .unwrap_or((None, None))
+            }
+            _ => (None, None),
+        }
+    }
+
+    fn loop_source_line_metadata(
+        &self,
+        tokens: &[&Token],
+        scope: ScopeId,
+    ) -> (Option<StructureId>, Option<FieldTypeRefData>) {
+        let filtered: Vec<_> = tokens
+            .iter()
+            .copied()
+            .filter(|token| token.kind != TokenKind::Comment)
+            .collect();
+        if filtered.len() == 1 && filtered[0].kind == TokenKind::Ident {
+            if let Some(symbol_id) = self.lookup_symbol_in_scope_chain(
+                scope,
+                Namespace::Value,
+                filtered[0].lexeme(self.source),
+            ) {
+                let symbol = self.symbol(symbol_id);
+                return self.normalize_inferred_metadata(
+                    scope,
+                    symbol.structure,
+                    symbol.declared_type.clone(),
+                );
+            }
+            return (None, None);
+        }
+        let Some((next_idx, namespace, base_name, _, field_path)) =
+            self.consume_selector_access_from_tokens(&filtered, 0)
+        else {
+            return (None, None);
+        };
+        if next_idx != filtered.len() || namespace != Namespace::Value {
+            return (None, None);
+        }
+        let Some(symbol_id) =
+            self.lookup_symbol_in_scope_chain(scope, Namespace::Value, base_name.as_ref())
+        else {
+            return (None, None);
+        };
+        if field_path.is_empty() {
+            let symbol = self.symbol(symbol_id);
+            return self.normalize_inferred_metadata(
+                scope,
+                symbol.structure,
+                symbol.declared_type.clone(),
+            );
+        }
+        self.loop_source_field_metadata(scope, symbol_id, &field_path)
+            .map(|(structure, declared_type)| {
+                self.normalize_inferred_metadata(scope, structure, declared_type)
+            })
+            .unwrap_or((None, None))
     }
 
     fn collect_loop_target_clause(
@@ -2163,59 +2292,6 @@ impl<'a> Collector<'a> {
         idx + 1
     }
 
-    fn loop_source_line_metadata(
-        &self,
-        tokens: &[&Token],
-        scope: ScopeId,
-    ) -> (Option<StructureId>, Option<FieldTypeRefData>) {
-        let filtered: Vec<_> = tokens
-            .iter()
-            .copied()
-            .filter(|token| token.kind != TokenKind::Comment)
-            .collect();
-        if filtered.len() == 1 && filtered[0].kind == TokenKind::Ident {
-            if let Some(symbol_id) = self.lookup_symbol_in_scope_chain(
-                scope,
-                Namespace::Value,
-                filtered[0].lexeme(self.source),
-            ) {
-                let symbol = self.symbol(symbol_id);
-                return self.normalize_inferred_metadata(
-                    scope,
-                    symbol.structure,
-                    symbol.declared_type.clone(),
-                );
-            }
-            return (None, None);
-        }
-        let Some((next_idx, namespace, base_name, _, field_path)) =
-            self.consume_selector_access_from_tokens(&filtered, 0)
-        else {
-            return (None, None);
-        };
-        if next_idx != filtered.len() || namespace != Namespace::Value {
-            return (None, None);
-        }
-        let Some(symbol_id) =
-            self.lookup_symbol_in_scope_chain(scope, Namespace::Value, base_name.as_ref())
-        else {
-            return (None, None);
-        };
-        if field_path.is_empty() {
-            let symbol = self.symbol(symbol_id);
-            return self.normalize_inferred_metadata(
-                scope,
-                symbol.structure,
-                symbol.declared_type.clone(),
-            );
-        }
-        self.loop_source_field_metadata(scope, symbol_id, &field_path)
-            .map(|(structure, declared_type)| {
-                self.normalize_inferred_metadata(scope, structure, declared_type)
-            })
-            .unwrap_or((None, None))
-    }
-
     fn loop_source_field_metadata(
         &self,
         scope: ScopeId,
@@ -2308,7 +2384,7 @@ impl<'a> Collector<'a> {
         (structure, declared_type)
     }
 
-    fn loop_header_expr_end(&self, tokens: &[&Token], start: usize) -> usize {
+    fn append_expr_end(&self, tokens: &[&Token], start: usize) -> usize {
         let mut idx = start;
         let mut paren = 0i32;
         let mut bracket = 0i32;
@@ -2323,7 +2399,7 @@ impl<'a> Collector<'a> {
             if paren == 0
                 && bracket == 0
                 && brace == 0
-                && (token.kind == TokenKind::Period || self.loop_header_starts_clause(tokens, idx))
+                && (token.kind == TokenKind::Period || self.append_starts_clause(tokens, idx))
             {
                 break;
             }
@@ -2342,20 +2418,13 @@ impl<'a> Collector<'a> {
         idx
     }
 
-    fn loop_header_starts_clause(&self, tokens: &[&Token], idx: usize) -> bool {
+    fn append_starts_clause(&self, tokens: &[&Token], idx: usize) -> bool {
         let Some(token) = tokens.get(idx) else {
             return false;
         };
         token.kind == TokenKind::Ident
-            && (self.token_matches_keyword(token, "into")
-                || self.token_matches_keyword(token, "assigning")
-                || self.token_matches_keyword(token, "where")
-                || self.token_matches_keyword(token, "using")
-                || self.token_matches_keyword(token, "transporting")
-                || self.token_matches_keyword(token, "group")
-                || self.token_matches_keyword(token, "from")
-                || self.token_matches_keyword(token, "to")
-                || self.token_matches_keyword(token, "step")
+            && (self.token_matches_keyword(token, "assigning")
+                || self.token_matches_keyword(token, "sorted")
                 || (self.token_matches_keyword(token, "reference")
                     && tokens
                         .get(idx + 1)
@@ -2485,7 +2554,87 @@ impl<'a> Collector<'a> {
         if self.collect_call_method_stmt(&significant, scope) {
             return;
         }
+        if self.collect_append_stmt(&significant, scope) {
+            return;
+        }
         self.collect_token_expression_refs(&significant, scope, false);
+    }
+
+    fn collect_append_stmt(&mut self, tokens: &[&Token], scope: ScopeId) -> bool {
+        if tokens.len() < 2 || !self.token_matches_keyword(tokens[0], "append") {
+            return false;
+        }
+
+        let Some(to_idx) = tokens
+            .iter()
+            .enumerate()
+            .skip(1)
+            .find_map(|(idx, token)| self.token_matches_keyword(token, "to").then_some(idx))
+        else {
+            self.collect_token_expression_refs(&tokens[1..], scope, true);
+            return true;
+        };
+
+        let source_tokens = &tokens[1..to_idx];
+        if source_tokens.len() >= 2
+            && self.token_matches_keyword(source_tokens[0], "lines")
+            && self.token_matches_keyword(source_tokens[1], "of")
+        {
+            self.collect_token_expression_refs(&source_tokens[2..], scope, true);
+        } else if !(
+            source_tokens.len() >= 2
+                && self.token_matches_keyword(source_tokens[0], "initial")
+                && self.token_matches_keyword(source_tokens[1], "line")
+        ) {
+            self.collect_token_expression_refs(source_tokens, scope, true);
+        }
+
+        let mut idx = to_idx + 1;
+        let target_end = self.append_expr_end(tokens, idx);
+        let target_tokens = &tokens[idx..target_end];
+        if !target_tokens.is_empty() {
+            self.collect_token_expression_refs(target_tokens, scope, true);
+        }
+        let target_line_metadata = self.loop_source_line_metadata(target_tokens, scope);
+        idx = target_end;
+
+        while idx < tokens.len() {
+            let token = tokens[idx];
+            if self.token_matches_keyword(token, "assigning") {
+                idx = self.collect_loop_target_clause(
+                    tokens,
+                    idx + 1,
+                    scope,
+                    SymbolKind::FieldSymbol,
+                    &target_line_metadata,
+                );
+                continue;
+            }
+            if self.token_matches_keyword(token, "reference")
+                && tokens
+                    .get(idx + 1)
+                    .is_some_and(|next| self.token_matches_keyword(next, "into"))
+            {
+                idx = self.collect_loop_target_clause(
+                    tokens,
+                    idx + 2,
+                    scope,
+                    SymbolKind::Variable,
+                    &(None, None),
+                );
+                continue;
+            }
+            if self.token_matches_keyword(token, "sorted") {
+                let expr_start = idx + 1;
+                let expr_end = self.append_expr_end(tokens, expr_start);
+                self.collect_token_expression_refs(&tokens[expr_start..expr_end], scope, true);
+                idx = expr_end;
+                continue;
+            }
+            idx += 1;
+        }
+
+        true
     }
 
     fn collect_assign_keyword_stmt(&mut self, node: NodeId, scope: ScopeId) {
@@ -3845,6 +3994,19 @@ impl<'a> Collector<'a> {
         let range = self.file.range(node);
         let idx = self.token_index_by_range.get(&(range.start, range.end))?;
         self.tokens.get(*idx)
+    }
+
+    fn first_non_token_child(&self, node: NodeId) -> Option<NodeId> {
+        self.file
+            .children(node)
+            .find(|&child| self.file.kind(child) != SyntaxKind::Token)
+    }
+
+    fn last_non_token_child(&self, node: NodeId) -> Option<NodeId> {
+        self.file
+            .children(node)
+            .filter(|&child| self.file.kind(child) != SyntaxKind::Token)
+            .last()
     }
 
     fn tokens_for_node_recursive(&self, node: NodeId, out: &mut Vec<&'a Token>) {

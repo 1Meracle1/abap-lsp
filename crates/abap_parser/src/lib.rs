@@ -179,6 +179,12 @@ pub(crate) fn parse_file_level_item(
     }
     if t.kind == TokenKind::Ident
         && let Some((node, next)) =
+            surface_stmt::try_parse_append_stmt(b, source, tokens, idx, errors)
+    {
+        return (node, next);
+    }
+    if t.kind == TokenKind::Ident
+        && let Some((node, next)) =
             surface_stmt::try_parse_write_stmt(b, source, tokens, idx, errors)
     {
         return (node, next);
