@@ -94,7 +94,7 @@ pub fn try_parse_class_data_decl(
         kw_end,
         SyntaxKind::DataDecl,
         SyntaxKind::DataTypedClause,
-        false,
+        true,
         false,
     )
 }
@@ -126,7 +126,7 @@ fn try_parse_structured_data_decl(
             tokens,
             i,
             SyntaxKind::DataTypedClause,
-            false,
+            true,
             has_colon,
         )
         .or_else(|| {
@@ -1221,6 +1221,24 @@ mod tests {
         assert_eq!(file.count_kind(file.root(), SyntaxKind::DataDecl), 1);
         assert_eq!(file.count_kind(file.root(), SyntaxKind::DataTypedClause), 2);
         assert_eq!(file.count_kind(file.root(), SyntaxKind::ValueClause), 1);
+    }
+
+    #[test]
+    fn chained_data_accepts_like_clauses() {
+        let src = "DATA: ls_line LIKE LINE OF itab, lt_copy LIKE itab.";
+        let file = tree_ok(src);
+        assert_eq!(file.count_kind(file.root(), SyntaxKind::DataDecl), 1);
+        assert_eq!(file.count_kind(file.root(), SyntaxKind::DataTypedClause), 2);
+        assert!(file.count_kind(file.root(), SyntaxKind::TypeRefSimple) >= 2);
+    }
+
+    #[test]
+    fn class_data_accepts_like_clause() {
+        let src = "CLASS-DATA gt_copy LIKE gt_source.";
+        let file = tree_ok(src);
+        assert_eq!(file.count_kind(file.root(), SyntaxKind::DataDecl), 1);
+        assert_eq!(file.count_kind(file.root(), SyntaxKind::DataTypedClause), 1);
+        assert_eq!(file.count_kind(file.root(), SyntaxKind::TypeRefSimple), 1);
     }
 
     #[test]
