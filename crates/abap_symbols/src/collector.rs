@@ -2371,7 +2371,31 @@ impl<'a> Collector<'a> {
 
     fn collect_generic_simple_stmt(&mut self, node: NodeId, scope: ScopeId) {
         let significant = self.significant_stmt_tokens(node);
+        if significant
+            .first()
+            .is_some_and(|token| self.token_matches_keyword(token, "clear"))
+        {
+            self.collect_clear_stmt(&significant, scope);
+            return;
+        }
         self.collect_token_expression_refs(&significant, scope, false);
+    }
+
+    fn collect_clear_stmt(&mut self, tokens: &[&Token], scope: ScopeId) {
+        if tokens.is_empty() || !self.token_matches_keyword(tokens[0], "clear") {
+            return;
+        }
+
+        let start_idx = if tokens.get(1).is_some_and(|token| token.kind == TokenKind::Colon) {
+            2
+        } else {
+            1
+        };
+        if start_idx >= tokens.len() {
+            return;
+        }
+
+        self.collect_token_expression_refs(&tokens[start_idx..], scope, true);
     }
 
     fn collect_get_time_stamp_stmt(&mut self, node: NodeId, scope: ScopeId) {

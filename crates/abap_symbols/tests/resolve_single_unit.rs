@@ -503,6 +503,40 @@ lv_current_ts = lv_current_ts.
 }
 
 #[test]
+fn resolves_clear_targets() {
+    let src = r#"
+DATA ls_trans TYPE string.
+DATA lv_state TYPE string.
+
+CLEAR ls_trans.
+CLEAR: lv_state, ls_trans.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///clear_stmt.abap", src, &parsed);
+
+    for name in ["ls_trans", "lv_state"] {
+        assert!(
+            unit.references.iter().any(|reference| {
+                reference.namespace == Namespace::Value
+                    && reference.kind == ReferenceKind::Identifier
+                    && reference.name.as_ref() == name
+                    && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+            }),
+            "expected resolved CLEAR reference for `{name}`, refs={:?} diagnostics={:?}",
+            unit.references,
+            unit.diagnostics
+        );
+        assert!(
+            !unit.diagnostics.iter().any(|diag| {
+                diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains(name)
+            }),
+            "unexpected CLEAR diagnostics for `{name}`: {:?}",
+            unit.diagnostics
+        );
+    }
+}
+
+#[test]
 fn resolves_get_time_stamp_inline_data_target() {
     let src = r#"
 GET TIME STAMP FIELD DATA(lv_current_ts).
