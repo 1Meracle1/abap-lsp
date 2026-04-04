@@ -48,7 +48,7 @@ Build a single package:
 ## Performance test
 
 ```bat
-cargo test -p abap_symbols large_file_phase_breakdown -- --ignored --nocapture
+.\perf_test.bat
 ```
 
 ## Migration Docs

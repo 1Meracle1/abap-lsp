@@ -245,6 +245,35 @@ impl AnalysisSnapshot {
         })
     }
 
+    pub fn classify_field_access_segment(
+        &self,
+        access: &abap_symbols::FieldAccess,
+        segment_index: usize,
+    ) -> Option<HoveredComponentKind> {
+        let (unit, symbol_id) = resolve_field_access_base_symbol(self, access)?;
+        if let Some((_, member)) =
+            resolve_class_selector_member(self, access, segment_index, unit, symbol_id)
+        {
+            return Some(hovered_component_kind_for_class_member(member));
+        }
+
+        let symbol = unit.symbol(symbol_id);
+        let structure_id = symbol.structure?;
+        let field_path: Vec<_> = access
+            .field_path
+            .iter()
+            .take(segment_index + 1)
+            .map(|segment| segment.name.as_ref())
+            .collect();
+        let field = unit.resolve_structure_field_path(structure_id, &field_path)?;
+        Some(match field.shape {
+            StructureFieldShape::Scalar => HoveredComponentKind::Scalar,
+            StructureFieldShape::Structured { structure } => HoveredComponentKind::Structured {
+                structure_name: Arc::clone(&unit.structure(structure).name),
+            },
+        })
+    }
+
     pub fn hovered_named_argument_at(&self, offset: usize) -> Option<HoveredSymbolInfo> {
         let access = self
             .symbols
@@ -257,6 +286,10 @@ impl AnalysisSnapshot {
             display_name: Arc::clone(&parameter.name),
             markdown_lines: markdown_lines_for_named_argument(access, &parameter),
         })
+    }
+
+    pub fn has_named_argument_parameter(&self, access: &NamedArgumentAccess) -> bool {
+        resolve_named_argument_parameter(self, access).is_some()
     }
 
     pub fn hovered_perform_argument_at(&self, offset: usize) -> Option<HoveredSymbolInfo> {

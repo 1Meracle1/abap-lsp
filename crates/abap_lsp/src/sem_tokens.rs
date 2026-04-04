@@ -1,5 +1,7 @@
 //! Semantic highlighting via LSP `textDocument/semanticTokens/full`, driven by `UnitAnalysis`.
 
+use std::sync::OnceLock;
+
 use abap_cache::AnalysisSnapshot;
 use abap_symbols::{
     ProjectAnalysis, ReferenceData, ReferenceKind, Resolution, SymbolData, SymbolHandle, SymbolKind,
@@ -20,27 +22,17 @@ struct SemanticTokenTypeIndices {
     event: u32,
 }
 
-impl SemanticTokenTypeIndices {
-    fn from_legend(types: &[SemanticTokenType]) -> Self {
-        let idx = |tag: &str| {
-            types
-                .iter()
-                .position(|t| t.as_str() == tag)
-                .expect("legend contains tag") as u32
-        };
-        Self {
-            type_: idx("type"),
-            class: idx("class"),
-            interface: idx("interface"),
-            parameter: idx("parameter"),
-            variable: idx("variable"),
-            property: idx("property"),
-            function: idx("function"),
-            method: idx("method"),
-            event: idx("event"),
-        }
-    }
-}
+const TOKEN_TYPE_INDICES: SemanticTokenTypeIndices = SemanticTokenTypeIndices {
+    type_: 0,
+    class: 1,
+    interface: 2,
+    parameter: 3,
+    variable: 4,
+    property: 5,
+    function: 6,
+    method: 7,
+    event: 8,
+};
 
 #[derive(Clone, Copy)]
 struct ModifierIndices {
@@ -48,23 +40,14 @@ struct ModifierIndices {
     readonly: u32,
 }
 
-impl ModifierIndices {
-    fn from_legend(modifiers: &[SemanticTokenModifier]) -> Self {
-        let bit = |tag: &str| {
-            1u32 << modifiers
-                .iter()
-                .position(|m| m.as_str() == tag)
-                .expect("legend contains modifier")
-        };
-        Self {
-            declaration: bit("declaration"),
-            readonly: bit("readonly"),
-        }
-    }
-}
+const MODIFIER_INDICES: ModifierIndices = ModifierIndices {
+    declaration: 1 << 0,
+    readonly: 1 << 1,
+};
 
-pub fn semantic_tokens_legend() -> lsp_types::SemanticTokensLegend {
-    lsp_types::SemanticTokensLegend {
+fn semantic_tokens_legend_static() -> &'static lsp_types::SemanticTokensLegend {
+    static LEGEND: OnceLock<lsp_types::SemanticTokensLegend> = OnceLock::new();
+    LEGEND.get_or_init(|| lsp_types::SemanticTokensLegend {
         token_types: vec![
             SemanticTokenType::TYPE,
             SemanticTokenType::CLASS,
@@ -80,7 +63,11 @@ pub fn semantic_tokens_legend() -> lsp_types::SemanticTokensLegend {
             SemanticTokenModifier::DECLARATION,
             SemanticTokenModifier::READONLY,
         ],
-    }
+    })
+}
+
+pub fn semantic_tokens_legend() -> lsp_types::SemanticTokensLegend {
+    semantic_tokens_legend_static().clone()
 }
 
 fn lookup_symbol<'a>(project: &'a ProjectAnalysis, handle: SymbolHandle) -> Option<&'a SymbolData> {
@@ -152,9 +139,26 @@ fn collect_pending(
     ty_ix: SemanticTokenTypeIndices,
     mod_ix: ModifierIndices,
 ) -> Vec<PendingToken> {
-    let mut pending = Vec::new();
     let unit = snapshot.symbols.as_ref();
     let project = snapshot.project.as_ref();
+    let structure_fields = unit
+        .structures
+        .iter()
+        .map(|structure| structure.fields.len())
+        .sum::<usize>();
+    let field_access_segments = unit
+        .field_accesses
+        .iter()
+        .map(|access| access.field_path.len())
+        .sum::<usize>();
+    let mut pending = Vec::with_capacity(
+        unit.symbols.len()
+            + structure_fields
+            + unit.class_members.len()
+            + unit.references.len()
+            + field_access_segments
+            + unit.named_arguments.len(),
+    );
 
     for symbol in &unit.symbols {
         let mut mods = mod_ix.declaration;
@@ -226,10 +230,10 @@ fn collect_pending(
     }
 
     for access in &unit.field_accesses {
-        for segment in &access.field_path {
+        for (segment_index, segment) in access.field_path.iter().enumerate() {
             let token_type = snapshot
-                .hovered_component_at(segment.range.start)
-                .map(|component| match component.kind {
+                .classify_field_access_segment(access, segment_index)
+                .map(|kind| match kind {
                     abap_cache::HoveredComponentKind::Scalar => ty_ix.property,
                     abap_cache::HoveredComponentKind::Structured { .. } => ty_ix.property,
                     abap_cache::HoveredComponentKind::Attribute => ty_ix.property,
@@ -248,10 +252,7 @@ fn collect_pending(
     }
 
     for named_argument in &unit.named_arguments {
-        if snapshot
-            .hovered_named_argument_at(named_argument.range.start)
-            .is_some()
-        {
+        if snapshot.has_named_argument_parameter(named_argument) {
             push_pending(
                 &mut pending,
                 named_argument.range.start,
@@ -291,50 +292,46 @@ fn merge_non_overlapping(mut pending: Vec<PendingToken>) -> Vec<(usize, usize, u
     out
 }
 
-fn byte_offset_to_line_character_utf16(text: &str, offset: usize) -> Option<(u32, u32)> {
-    if offset > text.len() {
+#[derive(Clone, Copy, Default)]
+struct TextCursor {
+    byte_offset: usize,
+    line: u32,
+    character: u32,
+}
+
+fn advance_cursor_to(text: &str, cursor: &mut TextCursor, target: usize) -> Option<(u32, u32)> {
+    if target < cursor.byte_offset || target > text.len() {
         return None;
     }
-    let mut line = 0u32;
-    let mut line_start = 0usize;
-    for (idx, ch) in text.char_indices() {
-        if idx >= offset {
-            break;
-        }
+    let segment = text.get(cursor.byte_offset..target)?;
+    for ch in segment.chars() {
         if ch == '\n' {
-            line += 1;
-            line_start = idx + ch.len_utf8();
+            cursor.line += 1;
+            cursor.character = 0;
+        } else {
+            cursor.character += ch.len_utf16() as u32;
         }
     }
-    let line_end = text[line_start..]
-        .find('\n')
-        .map(|rel| line_start + rel)
-        .unwrap_or(text.len());
-    let line_text = text[line_start..line_end]
-        .strip_suffix('\r')
-        .unwrap_or(&text[line_start..line_end]);
-    if offset < line_start || offset > line_start + line_text.len() {
-        return None;
-    }
-    let character = line_text[..offset - line_start]
-        .chars()
-        .map(|ch| ch.len_utf16() as u32)
-        .sum();
-    Some((line, character))
+    cursor.byte_offset = target;
+    Some((cursor.line, cursor.character))
 }
 
 fn encode_deltas(text: &str, merged: Vec<(usize, usize, u32, u32)>) -> Vec<SemanticToken> {
     let mut out = Vec::with_capacity(merged.len());
+    let mut cursor = TextCursor::default();
     let mut prev_line = 0u32;
     let mut prev_char = 0u32;
     for (start, end, token_type, token_modifiers_bitset) in merged {
-        let Some((line, character)) = byte_offset_to_line_character_utf16(text, start) else {
+        let Some((line, character)) = advance_cursor_to(text, &mut cursor, start) else {
             continue;
         };
-        let length: u32 = text[start..end]
-            .chars()
-            .map(|ch| ch.len_utf16() as u32)
-            .sum();
+        let Some((end_line, end_character)) = advance_cursor_to(text, &mut cursor, end) else {
+            continue;
+        };
+        if end_line != line {
+            continue;
+        }
+        let length = end_character.saturating_sub(character);
         if length == 0 {
             continue;
         }
@@ -359,14 +356,103 @@ fn encode_deltas(text: &str, merged: Vec<(usize, usize, u32, u32)>) -> Vec<Seman
 }
 
 pub fn build_semantic_tokens(snapshot: &AnalysisSnapshot) -> SemanticTokens {
-    let legend = semantic_tokens_legend();
-    let ty_ix = SemanticTokenTypeIndices::from_legend(&legend.token_types);
-    let mod_ix = ModifierIndices::from_legend(&legend.token_modifiers);
-    let pending = collect_pending(snapshot, ty_ix, mod_ix);
+    let pending = collect_pending(snapshot, TOKEN_TYPE_INDICES, MODIFIER_INDICES);
     let merged = merge_non_overlapping(pending);
     let data = encode_deltas(snapshot.text.as_ref(), merged);
     SemanticTokens {
         result_id: None,
         data,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::encode_deltas;
+
+    fn byte_offset_to_line_character_utf16_reference(text: &str, offset: usize) -> Option<(u32, u32)> {
+        if offset > text.len() {
+            return None;
+        }
+        let mut line = 0u32;
+        let mut line_start = 0usize;
+        for (idx, ch) in text.char_indices() {
+            if idx >= offset {
+                break;
+            }
+            if ch == '\n' {
+                line += 1;
+                line_start = idx + ch.len_utf8();
+            }
+        }
+        let line_end = text[line_start..]
+            .find('\n')
+            .map(|rel| line_start + rel)
+            .unwrap_or(text.len());
+        let line_text = text[line_start..line_end]
+            .strip_suffix('\r')
+            .unwrap_or(&text[line_start..line_end]);
+        if offset < line_start || offset > line_start + line_text.len() {
+            return None;
+        }
+        let character = line_text[..offset - line_start]
+            .chars()
+            .map(|ch| ch.len_utf16() as u32)
+            .sum();
+        Some((line, character))
+    }
+
+    fn encode_deltas_reference(
+        text: &str,
+        merged: Vec<(usize, usize, u32, u32)>,
+    ) -> Vec<lsp_types::SemanticToken> {
+        let mut out = Vec::with_capacity(merged.len());
+        let mut prev_line = 0u32;
+        let mut prev_char = 0u32;
+        for (start, end, token_type, token_modifiers_bitset) in merged {
+            let Some((line, character)) = byte_offset_to_line_character_utf16_reference(text, start)
+            else {
+                continue;
+            };
+            let length: u32 = text[start..end]
+                .chars()
+                .map(|ch| ch.len_utf16() as u32)
+                .sum();
+            if length == 0 {
+                continue;
+            }
+            let delta_line = line.saturating_sub(prev_line);
+            let delta_start = if delta_line == 0 {
+                character.saturating_sub(prev_char)
+            } else {
+                character
+            };
+            out.push(lsp_types::SemanticToken {
+                delta_line,
+                delta_start,
+                length,
+                token_type,
+                token_modifiers_bitset,
+            });
+            prev_line = line;
+            prev_char = character;
+        }
+        out
+    }
+
+    #[test]
+    fn encode_deltas_matches_reference_for_unicode_and_crlf() {
+        let text = "DATA lv.\r\nWRITE 'ab'.\r\nDATA lv_emoji TYPE string.\r\nlv_emoji = 'a😀b'.\r\n";
+        let merged = vec![
+            (5, 7, 4, 1),
+            (17, 19, 6, 0),
+            (28, 36, 4, 1),
+            (51, 59, 4, 0),
+            (63, 69, 4, 0),
+        ];
+
+        let actual = encode_deltas(text, merged.clone());
+        let expected = encode_deltas_reference(text, merged);
+
+        assert_eq!(actual, expected);
     }
 }
