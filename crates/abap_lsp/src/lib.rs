@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 
 pub use lsp_types::{
     CompletionParams, CompletionResponse, DidChangeTextDocumentParams, DidOpenTextDocumentParams,
-    GotoDefinitionParams, HoverParams, SemanticTokensParams,
+    GotoDefinitionParams, HoverParams, ReferenceParams, SemanticTokensParams,
 };
 pub use serde;
 
@@ -276,6 +276,37 @@ pub fn definition(
     Some(GotoDefinitionResponse::Scalar(Location { uri, range }))
 }
 
+pub fn references(state: &ServerState, params: &ReferenceParams) -> Option<Vec<Location>> {
+    let uri = normalize_lsp_uri(
+        params
+            .text_document_position
+            .text_document
+            .uri
+            .as_str(),
+    );
+    let snapshot = state.cache.get(&uri)?;
+    let offset = position_to_offset(snapshot.text.as_ref(), params.text_document_position.position)?;
+    let references = state
+        .cache
+        .references(&uri, offset, params.context.include_declaration)?;
+    let mut locations = Vec::with_capacity(references.len());
+    for reference in references {
+        let target_snapshot = if reference.uri.as_ref() == snapshot.uri.as_ref() {
+            Arc::clone(&snapshot)
+        } else {
+            state.cache.get(reference.uri.as_ref())?
+        };
+        let uri: Uri = reference
+            .uri
+            .as_ref()
+            .parse()
+            .expect("cached document URI must be a valid URL");
+        let range = byte_range_to_lsp_range(target_snapshot.text.as_ref(), reference.range)?;
+        locations.push(Location { uri, range });
+    }
+    Some(locations)
+}
+
 fn resolved_symbol_hover(
     snapshot: &AnalysisSnapshot,
     info: abap_cache::HoveredSymbolInfo,
@@ -401,6 +432,7 @@ pub fn initialize_result(config: &ServerConfig) -> InitializeResult {
                 ..CompletionOptions::default()
             }),
             definition_provider: Some(OneOf::Left(true)),
+            references_provider: Some(OneOf::Left(true)),
             semantic_tokens_provider: Some(
                 SemanticTokensServerCapabilities::SemanticTokensOptions(SemanticTokensOptions {
                     legend: sem_tokens::semantic_tokens_legend(),
@@ -530,10 +562,11 @@ mod tests {
 
     use super::{
         CompletionParams, CompletionResponse, DEPENDENCY_CACHE_CLEARED, GotoDefinitionParams,
-        HoverParams,
+        HoverParams, ReferenceParams,
         REMOTE_DEPENDENCIES_UPDATED, RESOLVE_REMOTE_DEPENDENCIES, ServerState,
         WORKSPACE_MANIFEST_UPDATED, build_lsp_diagnostics, completion, definition, hover,
         initialize_result, normalize_lsp_uri, publish_changed_document, publish_open_document,
+        references,
     };
 
     fn semantic_token_type_at(
@@ -583,7 +616,53 @@ mod tests {
             result.capabilities.definition_provider,
             Some(lsp_types::OneOf::Left(true))
         ));
+        assert!(matches!(
+            result.capabilities.references_provider,
+            Some(lsp_types::OneOf::Left(true))
+        ));
         assert!(result.server_info.is_some());
+    }
+
+    #[test]
+    fn references_return_locations_for_declaration_and_use() {
+        let state = ServerState::default();
+        let text = "DATA lv TYPE i.\nlv = 1.";
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///refs.abap").expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: text.to_string(),
+                },
+            },
+        );
+
+        let locations = references(
+            &state,
+            &ReferenceParams {
+                text_document_position: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///refs.abap").expect("uri"),
+                    },
+                    position: Position {
+                        line: 1,
+                        character: 1,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+                context: lsp_types::ReferenceContext {
+                    include_declaration: true,
+                },
+            },
+        )
+        .expect("references");
+
+        assert_eq!(locations.len(), 2);
+        assert_eq!(locations[0].range.start.line, 0);
+        assert_eq!(locations[1].range.start.line, 1);
     }
 
     #[test]

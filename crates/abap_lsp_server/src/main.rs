@@ -4,9 +4,10 @@ use std::net::{SocketAddr, TcpListener};
 use abap_jsonrpc::{JSON_RPC_VERSION, Response, read_frame, write_frame};
 use abap_lsp::{
     CompletionParams, DidChangeTextDocumentParams, DidOpenTextDocumentParams,
-    GotoDefinitionParams, HoverParams, SemanticTokensParams, ServerConfig, ServerState,
+    GotoDefinitionParams, HoverParams, ReferenceParams, SemanticTokensParams, ServerConfig,
+    ServerState,
     completion, definition, hover, initialize_result, publish_changed_document,
-    publish_diagnostics_params, publish_open_document, semantic_tokens,
+    publish_diagnostics_params, publish_open_document, references, semantic_tokens,
 };
 use serde_json::{Value, json};
 use tracing::warn;
@@ -206,6 +207,23 @@ fn handle_message(
                 });
             };
             let result = serde_json::to_value(definition(state, &definition_params))?;
+            Ok(HandledMessage {
+                response: Some(Response::success(id.unwrap_or(Value::Null), result)),
+                notifications: Vec::new(),
+            })
+        }
+        Some("textDocument/references") => {
+            let Some(reference_params) = parse_params::<ReferenceParams>(&message)? else {
+                return Ok(HandledMessage {
+                    response: Some(Response::failure(
+                        id.unwrap_or(Value::Null),
+                        INVALID_REQUEST,
+                        "textDocument/references requires params",
+                    )),
+                    notifications: Vec::new(),
+                });
+            };
+            let result = serde_json::to_value(references(state, &reference_params))?;
             Ok(HandledMessage {
                 response: Some(Response::success(id.unwrap_or(Value::Null), result)),
                 notifications: Vec::new(),
@@ -450,6 +468,55 @@ mod tests {
         assert!(result.to_string().contains("file:///definition.abap"));
         assert!(result.to_string().contains("\"line\":3"));
         assert!(result.to_string().contains("\"character\":16"));
+    }
+
+    #[test]
+    fn handles_references_after_open_document() {
+        let mut state = ServerState::default();
+        let config = ServerConfig::default();
+
+        let opened = handle_message(
+            &mut state,
+            &config,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": {
+                    "textDocument": {
+                        "uri": "file:///references.abap",
+                        "languageId": "abap",
+                        "version": 1,
+                        "text": "DATA lv TYPE i.\nlv = 1."
+                    }
+                }
+            }),
+        )
+        .expect("didOpen");
+        assert!(opened.response.is_none());
+
+        let references_msg = handle_message(
+            &mut state,
+            &config,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "textDocument/references",
+                "params": {
+                    "textDocument": { "uri": "file:///references.abap" },
+                    "position": { "line": 1, "character": 1 },
+                    "context": { "includeDeclaration": true }
+                }
+            }),
+        )
+        .expect("references");
+
+        let result = references_msg
+            .response
+            .expect("references response")
+            .result
+            .expect("references result");
+        let locations = result.as_array().expect("array result");
+        assert_eq!(locations.len(), 2);
     }
 
     #[test]
