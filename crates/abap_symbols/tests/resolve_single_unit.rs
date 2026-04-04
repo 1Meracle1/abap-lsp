@@ -168,6 +168,235 @@ fn resolves_local_references_in_scope() {
 }
 
 #[test]
+fn resolves_loop_source_and_inline_into_target() {
+    let src = r#"
+DATA lt_rows TYPE string.
+
+LOOP AT lt_rows INTO DATA(ls_row).
+  ls_row = ls_row.
+ENDLOOP.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///loop_inline_data.abap", src, &parsed);
+
+    let lt_rows_ref = unit
+        .references
+        .iter()
+        .find(|reference| {
+            reference.namespace == Namespace::Value
+                && reference.kind == ReferenceKind::Identifier
+                && reference.name.as_ref() == "lt_rows"
+        })
+        .expect("LOOP source reference");
+    assert!(
+        matches!(lt_rows_ref.resolution, Some(Resolution::Symbol(_))),
+        "expected LOOP source to resolve, refs={:?} diagnostics={:?}",
+        unit.references,
+        unit.diagnostics
+    );
+
+    let ls_row_symbol = unit
+        .symbols
+        .iter()
+        .find(|symbol| symbol.name.as_ref() == "ls_row")
+        .expect("inline LOOP target symbol");
+    assert_eq!(ls_row_symbol.kind, abap_symbols::SymbolKind::Variable);
+
+    let ls_row_refs: Vec<_> = unit
+        .references
+        .iter()
+        .filter(|reference| {
+            reference.namespace == Namespace::Value
+                && reference.kind == ReferenceKind::Identifier
+                && reference.name.as_ref() == "ls_row"
+        })
+        .collect();
+    assert_eq!(ls_row_refs.len(), 2, "expected body references, got {ls_row_refs:?}");
+    assert!(
+        ls_row_refs
+            .iter()
+            .all(|reference| matches!(reference.resolution, Some(Resolution::Symbol(_)))),
+        "expected LOOP target references to resolve, refs={:?} diagnostics={:?}",
+        unit.references,
+        unit.diagnostics
+    );
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference
+                && (diag.message.contains("lt_rows") || diag.message.contains("ls_row"))
+        }),
+        "unexpected LOOP diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn resolves_loop_source_and_inline_assigning_field_symbol() {
+    let src = r#"
+DATA lt_rows TYPE string.
+
+LOOP AT lt_rows ASSIGNING FIELD-SYMBOL(<ls_row>).
+  <ls_row> = <ls_row>.
+ENDLOOP.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///loop_inline_fs.abap", src, &parsed);
+
+    let lt_rows_ref = unit
+        .references
+        .iter()
+        .find(|reference| {
+            reference.namespace == Namespace::Value
+                && reference.kind == ReferenceKind::Identifier
+                && reference.name.as_ref() == "lt_rows"
+        })
+        .expect("LOOP source reference");
+    assert!(
+        matches!(lt_rows_ref.resolution, Some(Resolution::Symbol(_))),
+        "expected LOOP source to resolve, refs={:?} diagnostics={:?}",
+        unit.references,
+        unit.diagnostics
+    );
+
+    let fs_symbol = unit
+        .symbols
+        .iter()
+        .find(|symbol| symbol.name.as_ref() == "<ls_row>")
+        .expect("inline field-symbol target");
+    assert_eq!(fs_symbol.kind, abap_symbols::SymbolKind::FieldSymbol);
+
+    let fs_refs: Vec<_> = unit
+        .references
+        .iter()
+        .filter(|reference| {
+            reference.namespace == Namespace::Value
+                && reference.kind == ReferenceKind::Identifier
+                && reference.name.as_ref() == "<ls_row>"
+        })
+        .collect();
+    assert_eq!(fs_refs.len(), 2, "expected body references, got {fs_refs:?}");
+    assert!(
+        fs_refs
+            .iter()
+            .all(|reference| matches!(reference.resolution, Some(Resolution::Symbol(_)))),
+        "expected LOOP field-symbol references to resolve, refs={:?} diagnostics={:?}",
+        unit.references,
+        unit.diagnostics
+    );
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference
+                && (diag.message.contains("lt_rows") || diag.message.contains("<ls_row>"))
+        }),
+        "unexpected LOOP diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn infers_loop_inline_target_ref_type_from_source_table() {
+    let src = r#"
+CLASS zcl_stmt DEFINITION.
+  PUBLIC SECTION.
+    METHODS to_string RETURNING VALUE(rv_text) TYPE string.
+ENDCLASS.
+
+CLASS zcl_stmt IMPLEMENTATION.
+  METHOD to_string.
+    rv_text = 'stmt'.
+  ENDMETHOD.
+ENDCLASS.
+
+TYPES ty_stmt_tab TYPE STANDARD TABLE OF REF TO zcl_stmt WITH DEFAULT KEY.
+DATA lt_statements TYPE ty_stmt_tab.
+DATA lv_text TYPE string.
+
+LOOP AT lt_statements INTO DATA(lo_stmt).
+  lv_text = lo_stmt->to_string( ).
+ENDLOOP.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///loop_ref_rows.abap", src, &parsed);
+
+    let lo_stmt = unit
+        .symbols
+        .iter()
+        .find(|symbol| symbol.name.as_ref() == "lo_stmt")
+        .expect("inline LOOP ref target");
+    let declared_type = lo_stmt
+        .declared_type
+        .as_ref()
+        .expect("loop target declared type");
+    assert!(declared_type.is_ref);
+    assert_eq!(declared_type.namespace, Namespace::Type);
+    assert_eq!(declared_type.base_name.as_ref(), "zcl_stmt");
+    assert!(declared_type.field_path.is_empty());
+
+    assert!(
+        unit.field_accesses.iter().any(|access| {
+            access.base_name.as_ref() == "lo_stmt"
+                && access
+                    .field_path
+                    .iter()
+                    .any(|segment| segment.name.as_ref() == "to_string")
+        }),
+        "expected loop target method access, accesses={:?}",
+        unit.field_accesses
+    );
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            matches!(
+                diag.kind,
+                DiagnosticKind::UnresolvedReference | DiagnosticKind::UnknownField
+            ) && (diag.message.contains("lo_stmt") || diag.message.contains("to_string"))
+        }),
+        "unexpected LOOP ref diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn infers_loop_inline_target_structure_from_source_table() {
+    let src = r#"
+TYPES: BEGIN OF ty_row,
+         name TYPE string,
+       END OF ty_row.
+TYPES ty_row_tab TYPE STANDARD TABLE OF ty_row WITH DEFAULT KEY.
+DATA lt_rows TYPE ty_row_tab.
+
+LOOP AT lt_rows INTO DATA(ls_row).
+  ls_row-name = 'demo'.
+ENDLOOP.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///loop_struct_rows.abap", src, &parsed);
+
+    let ls_row = unit
+        .symbols
+        .iter()
+        .find(|symbol| symbol.name.as_ref() == "ls_row")
+        .expect("inline LOOP structured target");
+    let structure_id = ls_row.structure.expect("loop target structure");
+    let structure = unit.structure(structure_id);
+    assert!(
+        structure
+            .fields
+            .iter()
+            .any(|field| field.name.as_ref() == "name")
+    );
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            matches!(
+                diag.kind,
+                DiagnosticKind::UnresolvedReference | DiagnosticKind::UnknownField
+            ) && (diag.message.contains("ls_row") || diag.message.contains("name"))
+        }),
+        "unexpected LOOP structure diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn reports_duplicate_declarations() {
     let src = "DATA lv_value TYPE i. DATA lv_value TYPE i.";
     let parsed = parse(src);
