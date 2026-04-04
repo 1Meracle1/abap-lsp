@@ -574,6 +574,59 @@ CLEAR: lv_state, ls_trans.
 }
 
 #[test]
+fn resolves_convert_date_time_operands_and_statics_type_refs() {
+    let src = r#"
+FORM run USING iv_date TYPE d
+               iv_time TYPE t
+               iv_tzone TYPE tznzone.
+  STATICS sv_last_tzone TYPE tznzone.
+  STATICS sv_last_offset TYPE string.
+  DATA lv_timestamp TYPE timestamp.
+
+  CONVERT DATE iv_date TIME iv_time INTO TIME STAMP lv_timestamp TIME ZONE iv_tzone.
+ENDFORM.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///convert_stmt.abap", src, &parsed);
+
+    for (name, type_name) in [("sv_last_tzone", "tznzone"), ("sv_last_offset", "string")] {
+        let symbol = unit
+            .symbols
+            .iter()
+            .find(|symbol| {
+                symbol.kind == abap_symbols::SymbolKind::Variable && symbol.name.as_ref() == name
+            })
+            .unwrap_or_else(|| panic!("expected STATICS symbol `{name}`, symbols={:?}", unit.symbols));
+        let declared_type = symbol
+            .declared_type
+            .as_ref()
+            .unwrap_or_else(|| panic!("expected declared type for `{name}`"));
+        assert_eq!(declared_type.base_name.as_ref(), type_name);
+    }
+
+    for name in ["iv_date", "iv_time", "lv_timestamp", "iv_tzone"] {
+        assert!(
+            unit.references.iter().any(|reference| {
+                reference.namespace == Namespace::Value
+                    && reference.kind == ReferenceKind::Identifier
+                    && reference.name.as_ref() == name
+                    && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+            }),
+            "expected resolved CONVERT reference for `{name}`, refs={:?} diagnostics={:?}",
+            unit.references,
+            unit.diagnostics
+        );
+        assert!(
+            !unit.diagnostics.iter().any(|diag| {
+                diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains(name)
+            }),
+            "unexpected CONVERT diagnostics for `{name}`: {:?}",
+            unit.diagnostics
+        );
+    }
+}
+
+#[test]
 fn resolves_get_time_stamp_inline_data_target() {
     let src = r#"
 GET TIME STAMP FIELD DATA(lv_current_ts).
@@ -2483,6 +2536,102 @@ START-OF-SELECTION.
         "unexpected unresolved diagnostics: {:?}",
         unit.diagnostics
     );
+}
+
+#[test]
+fn resolves_replace_statement_operands_and_targets() {
+    let src = r#"
+CLASS zattp_cl_rep_constants DEFINITION.
+  PUBLIC SECTION.
+    CONSTANTS gv_url_locat_replace_from TYPE string VALUE 'from'.
+    CONSTANTS gv_url_locat_replace_to TYPE string VALUE 'to'.
+ENDCLASS.
+
+CLASS zattp_cl_rep_constants IMPLEMENTATION.
+ENDCLASS.
+
+TYPES: BEGIN OF ty_destination,
+         content TYPE string,
+       END OF ty_destination.
+
+FORM run USING iv_id TYPE string.
+  DATA ev_timestamp_iso TYPE string.
+  DATA ls_destination TYPE ty_destination.
+  FIELD-SYMBOLS <fs_destination> TYPE ty_destination.
+
+  ASSIGN ls_destination TO <fs_destination>.
+  REPLACE ',' IN ev_timestamp_iso WITH '.'.
+  REPLACE FIRST OCCURRENCE OF zattp_cl_rep_constants=>gv_url_locat_replace_from IN <fs_destination>-content WITH zattp_cl_rep_constants=>gv_url_locat_replace_to.
+  REPLACE ALL OCCURRENCES OF '%22' IN iv_id WITH '"' IN CHARACTER MODE.
+ENDFORM.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///replace_stmt.abap", src, &parsed);
+
+    for name in ["ev_timestamp_iso", "iv_id", "<fs_destination>"] {
+        assert!(
+            unit.references.iter().any(|reference| {
+                reference.namespace == Namespace::Value
+                    && reference.kind == ReferenceKind::Identifier
+                    && reference.name.as_ref() == name
+                    && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+            }),
+            "expected resolved REPLACE reference for `{name}`, refs={:?} diagnostics={:?}",
+            unit.references,
+            unit.diagnostics
+        );
+        assert!(
+            !unit.diagnostics.iter().any(|diag| {
+                diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains(name)
+            }),
+            "unexpected REPLACE diagnostics for `{name}`: {:?}",
+            unit.diagnostics
+        );
+    }
+
+    let static_target_refs = unit
+        .references
+        .iter()
+        .filter(|reference| {
+            reference.namespace == Namespace::Type
+                && reference.kind == ReferenceKind::StaticTarget
+                && reference.name.as_ref() == "zattp_cl_rep_constants"
+                && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+        })
+        .count();
+    assert!(
+        static_target_refs >= 2,
+        "expected resolved static REPLACE targets, refs={:?} diagnostics={:?}",
+        unit.references,
+        unit.diagnostics
+    );
+
+    assert!(
+        unit.field_accesses.iter().any(|access| {
+            access.base_namespace == Namespace::Value
+                && access.base_name.as_ref() == "<fs_destination>"
+                && access
+                    .field_path
+                    .iter()
+                    .any(|segment| segment.name.as_ref() == "content")
+        }),
+        "expected REPLACE target selector metadata, accesses={:?}",
+        unit.field_accesses
+    );
+    for member_name in ["gv_url_locat_replace_from", "gv_url_locat_replace_to"] {
+        assert!(
+            unit.field_accesses.iter().any(|access| {
+                access.base_namespace == Namespace::Type
+                    && access.base_name.as_ref() == "zattp_cl_rep_constants"
+                    && access
+                        .field_path
+                        .iter()
+                        .any(|segment| segment.name.as_ref() == member_name)
+            }),
+            "expected REPLACE static selector metadata for `{member_name}`, accesses={:?}",
+            unit.field_accesses
+        );
+    }
 }
 
 #[test]

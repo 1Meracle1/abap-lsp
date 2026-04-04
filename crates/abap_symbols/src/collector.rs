@@ -3112,6 +3112,20 @@ impl<'a> Collector<'a> {
             self.collect_clear_stmt(&significant, scope);
             return;
         }
+        if significant
+            .first()
+            .is_some_and(|token| self.token_matches_keyword(token, "convert"))
+        {
+            self.collect_convert_stmt(&significant, scope);
+            return;
+        }
+        if significant
+            .first()
+            .is_some_and(|token| self.token_matches_keyword(token, "replace"))
+        {
+            self.collect_replace_stmt(&significant, scope);
+            return;
+        }
         self.collect_token_expression_refs(&significant, scope, false);
     }
 
@@ -3133,6 +3147,145 @@ impl<'a> Collector<'a> {
         }
 
         self.collect_token_expression_refs(&tokens[start_idx..], scope, true);
+    }
+
+    fn collect_convert_stmt(&mut self, tokens: &[&Token], scope: ScopeId) {
+        if tokens.is_empty() || !self.token_matches_keyword(tokens[0], "convert") {
+            return;
+        }
+
+        let mut idx = 1usize;
+        if tokens
+            .get(idx)
+            .is_some_and(|token| self.token_matches_keyword(token, "date"))
+        {
+            idx += 1;
+            let end_idx = self.consume_concatenate_operand(tokens, idx, &["time", "into"]);
+            if end_idx > idx {
+                self.collect_token_expression_refs(&tokens[idx..end_idx], scope, true);
+            }
+            idx = end_idx;
+        }
+
+        if tokens
+            .get(idx)
+            .is_some_and(|token| self.token_matches_keyword(token, "time"))
+            && !tokens
+                .get(idx + 1)
+                .is_some_and(|token| self.token_matches_keyword(token, "zone"))
+        {
+            idx += 1;
+            let end_idx = self.consume_concatenate_operand(tokens, idx, &["into"]);
+            if end_idx > idx {
+                self.collect_token_expression_refs(&tokens[idx..end_idx], scope, true);
+            }
+            idx = end_idx;
+        }
+
+        if tokens
+            .get(idx)
+            .is_some_and(|token| self.token_matches_keyword(token, "into"))
+        {
+            idx += 1;
+        }
+        if tokens
+            .get(idx)
+            .is_some_and(|token| self.token_matches_keyword(token, "time"))
+        {
+            idx += 1;
+        }
+        if tokens
+            .get(idx)
+            .is_some_and(|token| self.token_matches_keyword(token, "stamp"))
+        {
+            idx += 1;
+        }
+
+        let target_end = self.consume_concatenate_operand(tokens, idx, &["time"]);
+        if target_end > idx {
+            self.collect_token_expression_refs(&tokens[idx..target_end], scope, true);
+        }
+        idx = target_end;
+
+        if tokens
+            .get(idx)
+            .is_some_and(|token| self.token_matches_keyword(token, "time"))
+            && tokens
+                .get(idx + 1)
+                .is_some_and(|token| self.token_matches_keyword(token, "zone"))
+        {
+            idx += 2;
+            let end_idx = self.consume_concatenate_operand(tokens, idx, &[]);
+            if end_idx > idx {
+                self.collect_token_expression_refs(&tokens[idx..end_idx], scope, true);
+            }
+        }
+    }
+
+    fn collect_replace_stmt(&mut self, tokens: &[&Token], scope: ScopeId) {
+        if tokens.is_empty() || !self.token_matches_keyword(tokens[0], "replace") {
+            return;
+        }
+
+        let mut idx = 1usize;
+        if tokens.get(idx).is_some_and(|token| {
+            self.token_matches_keyword(token, "first") || self.token_matches_keyword(token, "all")
+        }) {
+            idx += 1;
+            if tokens.get(idx).is_some_and(|token| {
+                self.token_matches_keyword(token, "occurrence")
+                    || self.token_matches_keyword(token, "occurrences")
+            }) {
+                idx += 1;
+            }
+        }
+        if tokens
+            .get(idx)
+            .is_some_and(|token| self.token_matches_keyword(token, "of"))
+        {
+            idx += 1;
+        }
+
+        let source_end = self.consume_concatenate_operand(tokens, idx, &["in", "with"]);
+        if source_end > idx {
+            self.collect_token_expression_refs(&tokens[idx..source_end], scope, true);
+        }
+        idx = source_end;
+
+        while idx < tokens.len() {
+            let token = tokens[idx];
+            if token.kind == TokenKind::Period {
+                break;
+            }
+            if self.token_matches_keyword(token, "in") {
+                if tokens.get(idx + 1).is_some_and(|next| {
+                    self.token_matches_keyword(next, "character")
+                        || self.token_matches_keyword(next, "byte")
+                }) && tokens
+                    .get(idx + 2)
+                    .is_some_and(|next| self.token_matches_keyword(next, "mode"))
+                {
+                    idx += 3;
+                    continue;
+                }
+
+                let end_idx = self.consume_concatenate_operand(tokens, idx + 1, &["with", "in"]);
+                if end_idx > idx + 1 {
+                    self.collect_token_expression_refs(&tokens[idx + 1..end_idx], scope, true);
+                }
+                idx = end_idx;
+                continue;
+            }
+            if self.token_matches_keyword(token, "with") {
+                let end_idx = self.consume_concatenate_operand(tokens, idx + 1, &["in"]);
+                if end_idx > idx + 1 {
+                    self.collect_token_expression_refs(&tokens[idx + 1..end_idx], scope, true);
+                }
+                idx = end_idx;
+                continue;
+            }
+            idx += 1;
+        }
     }
 
     fn collect_get_time_stamp_stmt(&mut self, node: NodeId, scope: ScopeId) {
