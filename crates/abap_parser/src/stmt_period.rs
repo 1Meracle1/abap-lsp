@@ -48,6 +48,7 @@ pub(crate) fn is_definite_stmt_lead_keyword(source: &str, tok: &Token) -> bool {
         || s.eq_ignore_ascii_case("WHEN")
         || s.eq_ignore_ascii_case("ENDCASE")
         || s.eq_ignore_ascii_case("WRITE")
+        || s.eq_ignore_ascii_case("CONCATENATE")
         || s.eq_ignore_ascii_case("CLASS")
         || s.eq_ignore_ascii_case("ENDCLASS")
         || s.eq_ignore_ascii_case("INTERFACE")

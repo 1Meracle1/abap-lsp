@@ -170,6 +170,8 @@ pub enum SyntaxKind {
     ReadTableStmt,
     /// `WRITE ... .`
     WriteStmt,
+    /// `CONCATENATE ... INTO ... .`
+    ConcatenateStmt,
     /// `IS [NOT] INITIAL|BOUND|ASSIGNED|REQUESTED|SUPPLIED` in logical conditions.
     IsPredicate,
     /// `IS [NOT] INSTANCE OF type` (type parsed as a concat-level expression).
@@ -259,6 +261,7 @@ impl SyntaxKind {
             Self::EndAtStmt => "EndAtStmt",
             Self::ReadTableStmt => "ReadTableStmt",
             Self::WriteStmt => "WriteStmt",
+            Self::ConcatenateStmt => "ConcatenateStmt",
             Self::IsPredicate => "IsPredicate",
             Self::InstanceOfPredicate => "InstanceOfPredicate",
             Self::BetweenExpr => "BetweenExpr",

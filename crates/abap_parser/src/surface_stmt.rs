@@ -754,6 +754,25 @@ pub fn try_parse_write_stmt(
     )
 }
 
+pub fn try_parse_concatenate_stmt(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    errors: &mut Vec<crate::ParseError>,
+) -> Option<(NodeId, usize)> {
+    parse_simple_keyword_stmt(
+        b,
+        source,
+        tokens,
+        idx,
+        SyntaxKind::ConcatenateStmt,
+        "concatenate",
+        errors,
+        "syntax error: expected '.' after CONCATENATE statement",
+    )
+}
+
 pub fn try_parse_raise_stmt(
     b: &mut SyntaxTreeBuilder,
     source: &str,
@@ -1581,6 +1600,20 @@ mod tests {
             parsed
                 .file
                 .count_kind(parsed.file.root(), SyntaxKind::WriteStmt),
+            1
+        );
+    }
+
+    #[test]
+    fn parses_concatenate_stmt() {
+        let parsed = crate::parse(
+            "CONCATENATE 'Document' mv_odlv INTO lv_delivery_msg SEPARATED BY ': '.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::ConcatenateStmt),
             1
         );
     }

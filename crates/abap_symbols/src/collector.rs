@@ -489,6 +489,7 @@ impl<'a> Collector<'a> {
             SyntaxKind::CreateObjectStmt => self.collect_create_object_stmt_node(node, scope),
             SyntaxKind::CallMethodStmt => self.collect_call_method_stmt_node(node, scope),
             SyntaxKind::WriteStmt => self.collect_write_stmt(node, scope),
+            SyntaxKind::ConcatenateStmt => self.collect_concatenate_stmt(node, scope),
             _ => self.walk_children(node, scope),
         }
     }
@@ -2506,6 +2507,91 @@ impl<'a> Collector<'a> {
         self.collect_token_expression_refs(tail, scope, true);
     }
 
+    fn collect_concatenate_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        let significant = self.significant_stmt_tokens(node);
+        if significant.is_empty() || !self.token_matches_keyword(significant[0], "concatenate") {
+            return;
+        }
+
+        let Some(into_idx) = self.find_top_level_keyword_index(&significant, 1, "into") else {
+            self.collect_token_expression_refs(&significant[1..], scope, true);
+            return;
+        };
+
+        let mut idx = 1usize;
+        while idx < into_idx {
+            let end_idx = self.consume_concatenate_operand(&significant, idx, &["into"]);
+            if end_idx == idx {
+                idx += 1;
+                continue;
+            }
+            self.collect_token_expression_refs(&significant[idx..end_idx], scope, true);
+            idx = end_idx;
+        }
+
+        idx = into_idx + 1;
+        let target_end = self.consume_concatenate_operand(
+            &significant,
+            idx,
+            &["separated", "respecting", "in"],
+        );
+        if target_end > idx {
+            self.collect_token_expression_refs(&significant[idx..target_end], scope, true);
+        }
+        idx = target_end;
+
+        while idx < significant.len() {
+            let token = significant[idx];
+            if token.kind == TokenKind::Period {
+                break;
+            }
+            if self.token_matches_keyword(token, "separated")
+                && significant
+                    .get(idx + 1)
+                    .is_some_and(|next| self.token_matches_keyword(next, "by"))
+            {
+                let sep_start = idx + 2;
+                let sep_end = self.consume_concatenate_operand(
+                    &significant,
+                    sep_start,
+                    &["respecting", "in"],
+                );
+                if sep_end > sep_start {
+                    self.collect_token_expression_refs(&significant[sep_start..sep_end], scope, true);
+                }
+                idx = sep_end;
+                continue;
+            }
+            if self.token_matches_keyword(token, "respecting") {
+                idx += 1;
+                if significant
+                    .get(idx)
+                    .is_some_and(|next| self.token_matches_keyword(next, "blanks"))
+                {
+                    idx += 1;
+                }
+                continue;
+            }
+            if self.token_matches_keyword(token, "in") {
+                idx += 1;
+                if significant.get(idx).is_some_and(|next| {
+                    self.token_matches_keyword(next, "character")
+                        || self.token_matches_keyword(next, "byte")
+                }) {
+                    idx += 1;
+                }
+                if significant
+                    .get(idx)
+                    .is_some_and(|next| self.token_matches_keyword(next, "mode"))
+                {
+                    idx += 1;
+                }
+                continue;
+            }
+            idx += 1;
+        }
+    }
+
     fn collect_perform_stmt(&mut self, tokens: &[&Token], scope: ScopeId) {
         if tokens.len() < 2 || !self.token_matches_keyword(tokens[0], "perform") {
             return;
@@ -3161,6 +3247,98 @@ impl<'a> Collector<'a> {
         }
 
         idx
+    }
+
+    fn find_top_level_keyword_index(
+        &self,
+        tokens: &[&Token],
+        start: usize,
+        keyword: &str,
+    ) -> Option<usize> {
+        let mut paren = 0i32;
+        let mut bracket = 0i32;
+        let mut brace = 0i32;
+        let mut idx = start;
+        while idx < tokens.len() {
+            let token = tokens[idx];
+            if paren == 0
+                && bracket == 0
+                && brace == 0
+                && self.token_matches_keyword(token, keyword)
+            {
+                return Some(idx);
+            }
+            match token.kind {
+                TokenKind::LParen => paren += 1,
+                TokenKind::RParen => paren -= 1,
+                TokenKind::LBracket => bracket += 1,
+                TokenKind::RBracket => bracket -= 1,
+                TokenKind::LBrace => brace += 1,
+                TokenKind::RBrace => brace -= 1,
+                _ => {}
+            }
+            idx += 1;
+        }
+        None
+    }
+
+    fn consume_concatenate_operand(
+        &self,
+        tokens: &[&Token],
+        start: usize,
+        clause_keywords: &[&str],
+    ) -> usize {
+        let mut idx = start;
+        let mut paren = 0i32;
+        let mut bracket = 0i32;
+        let mut brace = 0i32;
+        let mut consumed_any = false;
+
+        while idx < tokens.len() {
+            let token = tokens[idx];
+            if paren == 0 && bracket == 0 && brace == 0 {
+                if token.kind == TokenKind::Period {
+                    break;
+                }
+                if token.kind == TokenKind::Ident
+                    && clause_keywords
+                        .iter()
+                        .any(|keyword| self.token_matches_keyword(token, keyword))
+                {
+                    break;
+                }
+                if consumed_any && self.token_starts_concatenate_operand(tokens, idx) {
+                    break;
+                }
+            }
+
+            consumed_any = true;
+            match token.kind {
+                TokenKind::LParen => paren += 1,
+                TokenKind::RParen => paren -= 1,
+                TokenKind::LBracket => bracket += 1,
+                TokenKind::RBracket => bracket -= 1,
+                TokenKind::LBrace => brace += 1,
+                TokenKind::RBrace => brace -= 1,
+                _ => {}
+            }
+            idx += 1;
+        }
+
+        idx
+    }
+
+    fn token_starts_concatenate_operand(&self, tokens: &[&Token], idx: usize) -> bool {
+        if !self.token_starts_perform_argument(tokens, idx) {
+            return false;
+        }
+        let Some(prev) = idx.checked_sub(1).and_then(|prev_idx| tokens.get(prev_idx)) else {
+            return true;
+        };
+        !(prev.kind == TokenKind::Ident
+            && (self.token_matches_keyword(prev, "new")
+                || self.token_matches_keyword(prev, "ref")
+                || self.token_matches_keyword(prev, "to")))
     }
 
     fn token_starts_perform_argument(&self, tokens: &[&Token], idx: usize) -> bool {

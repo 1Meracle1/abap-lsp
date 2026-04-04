@@ -462,6 +462,67 @@ READ TABLE lt_trn INTO ls_trn INDEX 1.
 }
 
 #[test]
+fn resolves_concatenate_operands_and_selector_sources() {
+    let src = r#"
+CLASS zcl_program DEFINITION.
+  PUBLIC SECTION.
+    METHODS to_string RETURNING VALUE(rv_text) TYPE string.
+ENDCLASS.
+
+CLASS zcl_program IMPLEMENTATION.
+  METHOD to_string.
+  ENDMETHOD.
+ENDCLASS.
+
+DATA lo_prog TYPE REF TO zcl_program.
+DATA mv_odlv TYPE string.
+DATA lv_delivery_msg TYPE string.
+
+CONCATENATE lo_prog->to_string( ) mv_odlv INTO lv_delivery_msg SEPARATED BY ': '.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///concatenate_stmt.abap", src, &parsed);
+
+    for name in ["lo_prog", "mv_odlv", "lv_delivery_msg"] {
+        assert!(
+            unit.references.iter().any(|reference| {
+                reference.namespace == Namespace::Value
+                    && reference.kind == ReferenceKind::Identifier
+                    && reference.name.as_ref() == name
+                    && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+            }),
+            "expected resolved CONCATENATE reference for `{name}`, refs={:?} diagnostics={:?}",
+            unit.references,
+            unit.diagnostics
+        );
+    }
+
+    assert!(
+        unit.field_accesses.iter().any(|access| {
+            access.base_namespace == Namespace::Value
+                && access.base_name.as_ref() == "lo_prog"
+                && access
+                    .field_path
+                    .iter()
+                    .any(|segment| segment.name.as_ref() == "to_string")
+        }),
+        "expected CONCATENATE selector metadata, accesses={:?}",
+        unit.field_accesses
+    );
+
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference
+                && (diag.message.contains("lo_prog")
+                    || diag.message.contains("mv_odlv")
+                    || diag.message.contains("lv_delivery_msg"))
+        }),
+        "unexpected CONCATENATE diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn resolves_assign_to_inline_field_symbol() {
     let src = r#"
 DATA lv_value TYPE string.
