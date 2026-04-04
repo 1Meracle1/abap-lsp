@@ -109,7 +109,15 @@ fn try_parse_structured_data_decl(
             false,
         )
         .or_else(|| {
-            parse_begin_of_decl_clause(b, source, tokens, i, SyntaxKind::DataTypedClause)
+            parse_begin_of_decl_clause(
+                b,
+                source,
+                tokens,
+                i,
+                SyntaxKind::DataTypedClause,
+                false,
+                false,
+            )
         })?;
         clause_nodes.push(clause);
         i = next_i;
@@ -580,6 +588,28 @@ fn parse_begin_of_decl_clause(
     tokens: &[Token],
     idx: usize,
     node_kind: SyntaxKind,
+    allow_like: bool,
+    allow_value: bool,
+) -> Option<(NodeId, usize)> {
+    parse_structured_decl(
+        b,
+        source,
+        tokens,
+        idx,
+        node_kind,
+        allow_like,
+        allow_value,
+    )
+}
+
+fn parse_structured_decl(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    node_kind: SyntaxKind,
+    allow_like: bool,
+    allow_value: bool,
 ) -> Option<(NodeId, usize)> {
     let begin_tok = tokens.get(idx)?;
     if !is_keyword(source, begin_tok, "begin") {
@@ -595,45 +625,123 @@ fn parse_begin_of_decl_clause(
         return None;
     }
 
-    let mut depth = 1i32;
+    let mut children = vec![
+        token_leaf(b, begin_tok),
+        token_leaf(b, tokens.get(idx + 1)?),
+        token_leaf(b, tokens.get(idx + 2)?),
+    ];
     let mut i = idx + 3;
+    if tokens.get(i).map(|t| t.kind) == Some(TokenKind::Comma) {
+        children.push(token_leaf(b, tokens.get(i)?));
+        i += 1;
+    }
+
     while i < tokens.len() {
-        let tok = &tokens[i];
+        while tokens.get(i).map(|t| t.kind) == Some(TokenKind::Comment) {
+            children.push(token_leaf(b, tokens.get(i)?));
+            i += 1;
+        }
+        let tok = tokens.get(i)?;
         if tok.kind == TokenKind::Eof {
             return None;
         }
-        if is_keyword(source, tok, "begin")
+        if is_keyword(source, tok, "end")
             && tokens
                 .get(i + 1)
                 .is_some_and(|next| is_keyword(source, next, "of"))
         {
-            depth += 1;
-        } else if is_keyword(source, tok, "end")
-            && tokens
-                .get(i + 1)
-                .is_some_and(|next| is_keyword(source, next, "of"))
-        {
-            depth -= 1;
-            if depth == 0 {
-                let end_name = tokens.get(i + 2)?;
-                if end_name.kind != TokenKind::Ident {
-                    return None;
-                }
-                let mut children = Vec::with_capacity(i + 3 - idx);
-                for t in &tokens[idx..=i + 2] {
-                    children.push(token_leaf(b, t));
-                }
-                let node = b.branch(
-                    node_kind,
-                    begin_tok.range.start..end_name.range.end,
-                    &children,
-                );
-                return Some((node, i + 3));
+            let end_name = tokens.get(i + 2)?;
+            if end_name.kind != TokenKind::Ident {
+                return None;
             }
+            children.push(token_leaf(b, tok));
+            children.push(token_leaf(b, tokens.get(i + 1)?));
+            children.push(token_leaf(b, end_name));
+            let node = b.branch(
+                node_kind,
+                begin_tok.range.start..end_name.range.end,
+                &children,
+            );
+            return Some((node, i + 3));
         }
-        i += 1;
+
+        let (component, next_i) = parse_structured_decl(
+            b,
+            source,
+            tokens,
+            i,
+            SyntaxKind::StructuredDecl,
+            allow_like,
+            allow_value,
+        )
+        .or_else(|| {
+            parse_structured_field_clause(b, source, tokens, i, allow_like, allow_value)
+        })?;
+        children.push(component);
+        i = next_i;
+
+        while tokens.get(i).map(|t| t.kind) == Some(TokenKind::Comment) {
+            children.push(token_leaf(b, tokens.get(i)?));
+            i += 1;
+        }
+        if tokens.get(i).map(|t| t.kind) == Some(TokenKind::Comma) {
+            children.push(token_leaf(b, tokens.get(i)?));
+            i += 1;
+        }
     }
     None
+}
+
+fn parse_structured_field_clause(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    allow_like: bool,
+    allow_value: bool,
+) -> Option<(NodeId, usize)> {
+    parse_decl_clause(
+        b,
+        source,
+        tokens,
+        idx,
+        SyntaxKind::StructuredFieldClause,
+        allow_like,
+        allow_value,
+    )
+    .or_else(|| parse_untyped_structured_field_clause(b, source, tokens, idx))
+}
+
+fn parse_untyped_structured_field_clause(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+) -> Option<(NodeId, usize)> {
+    let (name, mut i) = parse_data_decl_name(b, source, tokens, idx)?;
+    let mut children = vec![name];
+
+    if let Some((legacy_len, j)) = parse_optional_paren_length(b, tokens, i) {
+        children.push(legacy_len);
+        i = j;
+    }
+
+    while let Some((length, j)) =
+        parse_optional_length_spec(b, source, tokens, i, &["TYPE", "LIKE", "VALUE"])
+    {
+        children.push(length);
+        i = j;
+    }
+
+    if tokens
+        .get(i)
+        .is_some_and(|tok| is_keyword(source, tok, "type") || is_keyword(source, tok, "like"))
+    {
+        return None;
+    }
+
+    let range = b.span(*children.first().unwrap()).start..b.span(*children.last().unwrap()).end;
+    Some((b.branch(SyntaxKind::StructuredFieldClause, range, &children), i))
 }
 
 fn try_parse_chained_decl(
@@ -668,7 +776,17 @@ fn try_parse_chained_decl(
         }
         let (clause, next_i) =
             parse_decl_clause(b, source, tokens, i, clause_kind, allow_like, allow_value)
-                .or_else(|| parse_begin_of_decl_clause(b, source, tokens, i, clause_kind))?;
+                .or_else(|| {
+                    parse_begin_of_decl_clause(
+                        b,
+                        source,
+                        tokens,
+                        i,
+                        clause_kind,
+                        allow_like,
+                        allow_value,
+                    )
+                })?;
         clause_nodes.push(clause);
         i = next_i;
         let next = tokens.get(i)?;
@@ -965,6 +1083,27 @@ mod tests {
     fn types_begin_end_of_clause() {
         let file = tree_ok("TYPES: BEGIN OF ty_pair, a TYPE i, b TYPE string, END OF ty_pair.");
         assert_eq!(file.count_kind(file.root(), SyntaxKind::TypesDecl), 1);
+    }
+
+    #[test]
+    fn structured_types_clause_parses_component_fields() {
+        let file = tree_ok(
+            "TYPES: BEGIN OF ts_cust_info, type TYPE char1, root TYPE string, END OF ts_cust_info.",
+        );
+        assert_eq!(file.count_kind(file.root(), SyntaxKind::TypesDecl), 1);
+        assert_eq!(file.count_kind(file.root(), SyntaxKind::StructuredFieldClause), 2);
+        assert_eq!(file.count_kind(file.root(), SyntaxKind::TypeRefSimple), 2);
+    }
+
+    #[test]
+    fn nested_structured_types_clause_creates_nested_nodes() {
+        let file = tree_ok(
+            "TYPES: BEGIN OF ty_outer, BEGIN OF inner, a TYPE i, END OF inner, END OF ty_outer.",
+        );
+        assert_eq!(file.count_kind(file.root(), SyntaxKind::TypesDecl), 1);
+        assert_eq!(file.count_kind(file.root(), SyntaxKind::StructuredDecl), 1);
+        assert_eq!(file.count_kind(file.root(), SyntaxKind::StructuredFieldClause), 1);
+        assert_eq!(file.count_kind(file.root(), SyntaxKind::TypeRefSimple), 1);
     }
 
     #[test]

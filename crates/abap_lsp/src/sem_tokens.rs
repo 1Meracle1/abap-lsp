@@ -174,6 +174,22 @@ fn collect_pending(
         );
     }
 
+    for structure in &unit.structures {
+        for field in &structure.fields {
+            let Some(decl_range) = field.decl_range.as_ref() else {
+                continue;
+            };
+            push_pending(
+                &mut pending,
+                decl_range.start,
+                decl_range.end,
+                0,
+                ty_ix.property,
+                mod_ix.declaration,
+            );
+        }
+    }
+
     for member in &unit.class_members {
         let token_type = match member.kind {
             abap_symbols::ClassMemberKind::Method => ty_ix.method,

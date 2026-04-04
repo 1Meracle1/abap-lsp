@@ -2130,6 +2130,94 @@ DATA lv_value TYPE ty_outer-inner-a.";
 }
 
 #[test]
+fn collects_structured_types_with_keyword_named_fields_and_table_aliases() {
+    let src = "\
+TYPES:\n\
+  BEGIN OF ts_cust_info,\n\
+    type     TYPE char1,\n\
+    root     TYPE string,\n\
+    tag_path TYPE string,\n\
+    intkey   TYPE /sttp/e_intkey,\n\
+    attr_int TYPE /sttp/e_attr_int,\n\
+  END OF ts_cust_info.\n\
+TYPES:\n\
+  tt_cust_info TYPE SORTED TABLE OF ts_cust_info WITH NON-UNIQUE KEY primary_key COMPONENTS root.\n\
+DATA ls_cust_info TYPE ts_cust_info.\n\
+DATA lt_cust_info TYPE tt_cust_info.\n\
+ls_cust_info-type = 'A'.\n\
+ls_cust_info-root = 'node'.";
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///structured_types_keyword_fields.abap", src, &parsed);
+
+    let ts_cust_info = unit
+        .symbols
+        .iter()
+        .find(|symbol| {
+            symbol.kind == abap_symbols::SymbolKind::TypeDef
+                && symbol.name.as_ref() == "ts_cust_info"
+        })
+        .expect("structured type symbol");
+    let structure = unit.structure(ts_cust_info.structure.expect("structure metadata"));
+    let type_field = structure
+        .fields
+        .iter()
+        .find(|field| field.name.as_ref() == "type")
+        .expect("field named type");
+    assert_eq!(
+        type_field
+            .type_ref
+            .as_ref()
+            .expect("field declared type")
+            .base_name
+            .as_ref(),
+        "char1"
+    );
+    assert!(
+        structure.fields.iter().any(|field| field.name.as_ref() == "root"),
+        "expected root field, fields={:?}",
+        structure.fields
+    );
+
+    let tt_cust_info = unit
+        .symbols
+        .iter()
+        .find(|symbol| {
+            symbol.kind == abap_symbols::SymbolKind::TypeDef
+                && symbol.name.as_ref() == "tt_cust_info"
+        })
+        .expect("table alias symbol");
+    let declared_type = tt_cust_info
+        .declared_type
+        .as_ref()
+        .expect("table alias declared type");
+    assert_eq!(declared_type.namespace, Namespace::Type);
+    assert_eq!(declared_type.base_name.as_ref(), "ts_cust_info");
+
+    let ls_cust_info = unit
+        .symbols
+        .iter()
+        .find(|symbol| {
+            symbol.kind == abap_symbols::SymbolKind::Variable
+                && symbol.name.as_ref() == "ls_cust_info"
+        })
+        .expect("structured variable");
+    assert_eq!(ls_cust_info.structure, ts_cust_info.structure);
+
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnknownField
+                || (diag.kind == DiagnosticKind::UnresolvedReference
+                    && (diag.message.contains("ts_cust_info")
+                        || diag.message.contains("tt_cust_info")
+                        || diag.message.contains("ls_cust_info")
+                        || diag.message.contains("lt_cust_info")))
+        }),
+        "unexpected diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn exposes_structure_field_query_info() {
     let src = "\
 TYPES: BEGIN OF ty_inner,\n\

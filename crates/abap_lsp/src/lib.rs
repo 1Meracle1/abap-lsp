@@ -589,6 +589,30 @@ mod tests {
         None
     }
 
+    fn semantic_token_positions(
+        tokens: &lsp_types::SemanticTokens,
+    ) -> Vec<(u32, u32, u32, u32, u32)> {
+        let mut current_line = 0u32;
+        let mut current_char = 0u32;
+        let mut out = Vec::with_capacity(tokens.data.len());
+        for token in &tokens.data {
+            current_line += token.delta_line;
+            current_char = if token.delta_line == 0 {
+                current_char + token.delta_start
+            } else {
+                token.delta_start
+            };
+            out.push((
+                current_line,
+                current_char,
+                token.length,
+                token.token_type,
+                token.token_modifiers_bitset,
+            ));
+        }
+        out
+    }
+
     #[test]
     fn normalize_lsp_uri_lowercases_windows_file_drive_prefix() {
         assert_eq!(
@@ -849,6 +873,69 @@ ENDCLASS.";
                 .iter()
                 .any(|t| t.token_type == var_idx && (t.token_modifiers_bitset & decl_mod) != 0),
             "expected a declared variable token"
+        );
+    }
+
+    #[test]
+    fn semantic_tokens_mark_structure_field_declarations_and_accesses() {
+        use lsp_types::SemanticTokenType;
+
+        let state = ServerState::default();
+        let text = "\
+TYPES: BEGIN OF ty_row,
+         field_a TYPE i,
+         field_b TYPE string,
+       END OF ty_row.
+DATA ls_row TYPE ty_row.
+ls_row-field_a = 1.";
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///sem_structure_fields.abap").expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: text.to_string(),
+                },
+            },
+        );
+
+        let snapshot = state
+            .cache
+            .get("file:///sem_structure_fields.abap")
+            .expect("snapshot");
+        let tokens = sem_tokens::build_semantic_tokens(snapshot.as_ref());
+        let legend = sem_tokens::semantic_tokens_legend();
+        let property_idx = legend
+            .token_types
+            .iter()
+            .position(|t| *t == SemanticTokenType::PROPERTY)
+            .expect("legend has property") as u32;
+        let decl_mod = 1u32
+            << legend
+                .token_modifiers
+                .iter()
+                .position(|m| m.as_str() == "declaration")
+                .expect("declaration modifier");
+
+        let positions = semantic_token_positions(&tokens);
+        assert!(
+            positions.iter().any(|&(line, character, _, token_type, modifiers)| {
+                line == 1
+                    && character == 9
+                    && token_type == property_idx
+                    && (modifiers & decl_mod) != 0
+            }),
+            "expected field declaration token, tokens={positions:?}"
+        );
+        assert!(
+            positions.iter().any(|&(line, character, _, token_type, modifiers)| {
+                line == 5
+                    && character == 7
+                    && token_type == property_idx
+                    && (modifiers & decl_mod) == 0
+            }),
+            "expected field access token, tokens={positions:?}"
         );
     }
 

@@ -68,6 +68,10 @@ pub enum SyntaxKind {
     TypesDecl,
     /// One `name TYPE type_ref` member under `TYPES`.
     TypesTypedClause,
+    /// `BEGIN OF ... END OF ...` declaration body nested inside a declaration clause.
+    StructuredDecl,
+    /// One component inside a structured declaration.
+    StructuredFieldClause,
     /// `CONSTANTS ... .`
     ConstantsDecl,
     /// One constant member with optional `VALUE`.
@@ -272,6 +276,8 @@ impl SyntaxKind {
             Self::StaticsDecl => "StaticsDecl",
             Self::TypesDecl => "TypesDecl",
             Self::TypesTypedClause => "TypesTypedClause",
+            Self::StructuredDecl => "StructuredDecl",
+            Self::StructuredFieldClause => "StructuredFieldClause",
             Self::ConstantsDecl => "ConstantsDecl",
             Self::ConstantClause => "ConstantClause",
             Self::FieldSymbolsDecl => "FieldSymbolsDecl",

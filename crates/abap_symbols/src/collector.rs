@@ -4690,16 +4690,14 @@ impl<'a> Collector<'a> {
         &self,
         node: NodeId,
     ) -> Option<(Arc<str>, TextRange, Vec<PendingStructureField>)> {
-        let tokens: Vec<_> = self
-            .file
-            .children(node)
-            .filter_map(|child| self.token_for_node(child))
-            .collect();
+        let mut tokens = Vec::new();
+        self.tokens_for_node_recursive(node, &mut tokens);
+        let name_range = tokens.get(2)?.range.clone();
         let (structure, consumed) = self.parse_begin_of_structure_tokens(&tokens, 0)?;
         if consumed != tokens.len() {
             return None;
         }
-        Some((structure.name, self.file.range(node), structure.fields))
+        Some((structure.name, name_range, structure.fields))
     }
 
     fn direct_type_ref_children(&self, node: NodeId) -> Vec<NodeId> {
