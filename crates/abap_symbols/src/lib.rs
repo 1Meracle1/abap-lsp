@@ -6,6 +6,8 @@ mod project;
 mod resolver;
 mod scope;
 mod validate;
+#[cfg(test)]
+mod perf_tests;
 
 pub use builtins::{BuiltinRoutineParamSpec, BuiltinRoutineSpec, builtin_routine_spec};
 pub use def_map::{
@@ -20,7 +22,10 @@ pub use def_map::{
     SymbolData, SymbolKind, UnitAnalysis, Visibility,
 };
 pub use ids::{ReferenceId, ScopeId, StructureId, SymbolHandle, SymbolId, UnitId};
-pub use project::{ProjectAnalysis, ProjectInput, analyze_project, analyze_unit};
+pub use project::{
+    ProjectAnalysis, ProjectInput, analyze_project, analyze_project_from_units, analyze_unit,
+    analyze_unit_locally,
+};
 pub use scope::{Namespace, ScopeData, ScopeKind};
 
 #[cfg(test)]

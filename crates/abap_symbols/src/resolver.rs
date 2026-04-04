@@ -34,9 +34,9 @@ fn is_builtin_routine(name: &str) -> bool {
     builtin_routine_spec(name.trim()).is_some()
 }
 
-type ScopeIndex = Vec<HashMap<(Namespace, Arc<str>), Vec<SymbolId>>>;
+pub(crate) type ScopeIndex = Vec<HashMap<(Namespace, Arc<str>), Vec<SymbolId>>>;
 
-fn build_scope_index(unit: &UnitAnalysis) -> ScopeIndex {
+pub(crate) fn build_scope_index(unit: &UnitAnalysis) -> ScopeIndex {
     let mut out: ScopeIndex = vec![HashMap::new(); unit.scopes.len()];
     for symbol in &unit.symbols {
         for &namespace in symbol.kind.namespaces() {
@@ -56,9 +56,10 @@ fn lookup_scope_chain(
     namespace: Namespace,
     name: &Arc<str>,
 ) -> Option<SymbolId> {
+    let key = (namespace, Arc::clone(name));
     let mut current = Some(scope);
     while let Some(scope_id) = current {
-        if let Some(symbols) = scope_index[scope_id.as_usize()].get(&(namespace, Arc::clone(name)))
+        if let Some(symbols) = scope_index[scope_id.as_usize()].get(&key)
             && let Some(symbol) = symbols.last().copied()
         {
             return Some(symbol);
@@ -115,8 +116,7 @@ fn resolve_super_reference_in_unit(
     )
 }
 
-pub fn resolve_unit(unit: &mut UnitAnalysis) {
-    let scope_index = build_scope_index(unit);
+pub(crate) fn resolve_unit_with_index(unit: &mut UnitAnalysis, scope_index: &ScopeIndex) {
     let unit_id = unit.unit_id;
     for idx in 0..unit.references.len() {
         let (scope, namespace, kind, name) = {
@@ -152,6 +152,12 @@ pub fn resolve_unit(unit: &mut UnitAnalysis) {
             };
         unit.references[idx].resolution = resolution;
     }
+}
+
+#[allow(dead_code)]
+pub fn resolve_unit(unit: &mut UnitAnalysis) {
+    let scope_index = build_scope_index(unit);
+    resolve_unit_with_index(unit, &scope_index);
 }
 
 pub fn resolve_project_cross_unit(units: &mut [UnitAnalysis]) {

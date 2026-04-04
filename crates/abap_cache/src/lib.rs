@@ -7,9 +7,9 @@ use abap_symbols::{
     ClassMemberData, ClassMemberKind, FieldTypeRefData, FormParameterData,
     FormParameterPassingKind, FormParameterSection, NamedArgumentAccess, NamedArgumentTarget,
     Namespace, PerformArgumentData, PerformCallData, PerformParameterSection, ProjectAnalysis,
-    ProjectInput, Resolution, ScopeId, StructureFieldInfo, StructureFieldShape, StructureId,
-    SymbolData, SymbolId, SymbolKind, UnitAnalysis, UnitId, Visibility, analyze_project,
-    builtin_routine_spec,
+    Resolution, ScopeId, StructureFieldInfo, StructureFieldShape, StructureId, SymbolData,
+    SymbolId, SymbolKind, UnitAnalysis, UnitId, Visibility, analyze_project_from_units,
+    analyze_unit_locally, builtin_routine_spec,
 };
 use parking_lot::RwLock;
 
@@ -21,6 +21,15 @@ pub struct AnalysisSnapshot {
     pub parse: Arc<ParseResult>,
     pub symbols: Arc<UnitAnalysis>,
     pub project: Arc<ProjectAnalysis>,
+}
+
+#[derive(Debug, Clone)]
+struct StagedDocument {
+    uri: Arc<str>,
+    version: i32,
+    text: Arc<str>,
+    parse: Arc<ParseResult>,
+    previous: Option<Arc<AnalysisSnapshot>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2397,6 +2406,109 @@ pub struct DocumentStore {
     documents: RwLock<HashMap<Arc<str>, Arc<AnalysisSnapshot>>>,
 }
 
+fn retain_local_analysis_state(unit: &mut UnitAnalysis) {
+    unit.diagnostics.retain(|diagnostic| {
+        matches!(
+            diagnostic.kind,
+            abap_symbols::DiagnosticKind::DuplicateDeclaration
+                | abap_symbols::DiagnosticKind::ShadowedSymbol
+        )
+    });
+    for edge in &mut unit.include_edges {
+        edge.target = None;
+    }
+    for reference in &mut unit.references {
+        match reference.resolution {
+            Some(Resolution::Symbol(handle)) if handle.unit == unit.unit_id => {}
+            Some(Resolution::BuiltinType | Resolution::BuiltinRoutine) => {}
+            _ => reference.resolution = None,
+        }
+    }
+}
+
+fn remap_local_unit_id(unit: &mut UnitAnalysis, unit_id: UnitId) {
+    let previous_unit_id = unit.unit_id;
+    if previous_unit_id == unit_id {
+        return;
+    }
+    unit.unit_id = unit_id;
+    for reference in &mut unit.references {
+        if let Some(Resolution::Symbol(handle)) = &mut reference.resolution
+            && handle.unit == previous_unit_id
+        {
+            handle.unit = unit_id;
+        }
+    }
+}
+
+fn reused_local_unit(snapshot: &AnalysisSnapshot, unit_id: UnitId) -> UnitAnalysis {
+    let mut unit = snapshot.symbols.as_ref().clone();
+    remap_local_unit_id(&mut unit, unit_id);
+    retain_local_analysis_state(&mut unit);
+    unit
+}
+
+fn staged_documents_for_publish(
+    existing: &HashMap<Arc<str>, Arc<AnalysisSnapshot>>,
+    uri: &Arc<str>,
+    version: i32,
+    text: &Arc<str>,
+    parse: &Arc<ParseResult>,
+) -> Vec<StagedDocument> {
+    let mut staged = Vec::with_capacity(existing.len() + usize::from(!existing.contains_key(uri.as_ref())));
+    let mut seen: HashSet<Arc<str>> = HashSet::new();
+
+    if let Some(project) = existing.values().next().map(|snapshot| Arc::clone(&snapshot.project)) {
+        for unit in &project.units {
+            if unit.uri.as_ref() == uri.as_ref() {
+                staged.push(StagedDocument {
+                    uri: Arc::clone(uri),
+                    version,
+                    text: Arc::clone(text),
+                    parse: Arc::clone(parse),
+                    previous: existing.get(uri.as_ref()).cloned(),
+                });
+                seen.insert(Arc::clone(uri));
+                continue;
+            }
+            if let Some(snapshot) = existing.get(unit.uri.as_ref()) {
+                staged.push(StagedDocument {
+                    uri: Arc::clone(&snapshot.uri),
+                    version: snapshot.version,
+                    text: Arc::clone(&snapshot.text),
+                    parse: Arc::clone(&snapshot.parse),
+                    previous: Some(Arc::clone(snapshot)),
+                });
+                seen.insert(Arc::clone(&snapshot.uri));
+            }
+        }
+    }
+
+    for snapshot in existing.values() {
+        if seen.insert(Arc::clone(&snapshot.uri)) {
+            staged.push(StagedDocument {
+                uri: Arc::clone(&snapshot.uri),
+                version: snapshot.version,
+                text: Arc::clone(&snapshot.text),
+                parse: Arc::clone(&snapshot.parse),
+                previous: Some(Arc::clone(snapshot)),
+            });
+        }
+    }
+
+    if seen.insert(Arc::clone(uri)) {
+        staged.push(StagedDocument {
+            uri: Arc::clone(uri),
+            version,
+            text: Arc::clone(text),
+            parse: Arc::clone(parse),
+            previous: existing.get(uri.as_ref()).cloned(),
+        });
+    }
+
+    staged
+}
+
 impl DocumentStore {
     pub fn publish(
         &self,
@@ -2406,70 +2518,71 @@ impl DocumentStore {
     ) -> Arc<AnalysisSnapshot> {
         let uri = uri.into();
         let text = Arc::<str>::from(text);
-        let parse = Arc::new(parse(&text));
-
         let existing = self.documents.read();
-        let mut staged: Vec<(Arc<str>, i32, Arc<str>, Arc<ParseResult>)> = existing
-            .values()
-            .map(|snapshot| {
-                (
-                    Arc::clone(&snapshot.uri),
-                    snapshot.version,
-                    Arc::clone(&snapshot.text),
-                    Arc::clone(&snapshot.parse),
-                )
-            })
-            .collect();
+        if let Some(current) = existing.get(uri.as_ref())
+            && current.text.as_ref() == text.as_ref()
+        {
+            let snapshot = Arc::new(AnalysisSnapshot {
+                uri: Arc::clone(&current.uri),
+                version,
+                text: Arc::clone(&current.text),
+                parse: Arc::clone(&current.parse),
+                symbols: Arc::clone(&current.symbols),
+                project: Arc::clone(&current.project),
+            });
+            drop(existing);
+            self.documents
+                .write()
+                .insert(Arc::clone(&uri), Arc::clone(&snapshot));
+            return snapshot;
+        }
+        let parse = Arc::new(parse(&text));
+        let staged = staged_documents_for_publish(&existing, &uri, version, &text, &parse);
         drop(existing);
 
-        if let Some(existing) = staged
-            .iter_mut()
-            .find(|(existing_uri, _, _, _)| existing_uri.as_ref() == uri.as_ref())
-        {
-            *existing = (
-                Arc::clone(&uri),
-                version,
-                Arc::clone(&text),
-                Arc::clone(&parse),
-            );
-        } else {
-            staged.push((
-                Arc::clone(&uri),
-                version,
-                Arc::clone(&text),
-                Arc::clone(&parse),
-            ));
-        }
-
-        let inputs: Vec<ProjectInput<'_>> = staged
+        let units: Vec<_> = staged
             .iter()
-            .map(|(uri, _, text, parse)| ProjectInput {
-                uri: uri.as_ref(),
-                source: text.as_ref(),
-                parse,
+            .enumerate()
+            .map(|(idx, entry)| {
+                let unit_id = UnitId(idx as u32);
+                if entry.uri.as_ref() == uri.as_ref() {
+                    analyze_unit_locally(
+                        unit_id,
+                        Arc::clone(&entry.uri),
+                        entry.text.as_ref(),
+                        entry.parse.as_ref(),
+                    )
+                } else {
+                    reused_local_unit(
+                        entry.previous
+                            .as_ref()
+                            .expect("unchanged staged document should have prior snapshot"),
+                        unit_id,
+                    )
+                }
             })
             .collect();
-        let project = Arc::new(analyze_project(&inputs));
+        let project = Arc::new(analyze_project_from_units(units));
 
         let mut rebuilt = HashMap::new();
         let mut published = None;
-        for (entry_uri, entry_version, entry_text, entry_parse) in staged {
+        for entry in staged {
             let unit = project
-                .unit_by_uri(entry_uri.as_ref())
+                .unit_by_uri(entry.uri.as_ref())
                 .cloned()
                 .expect("project analysis should include every published document");
             let snapshot = Arc::new(AnalysisSnapshot {
-                uri: Arc::clone(&entry_uri),
-                version: entry_version,
-                text: entry_text,
-                parse: entry_parse,
+                uri: Arc::clone(&entry.uri),
+                version: entry.version,
+                text: Arc::clone(&entry.text),
+                parse: Arc::clone(&entry.parse),
                 symbols: Arc::new(unit),
                 project: Arc::clone(&project),
             });
-            if entry_uri.as_ref() == uri.as_ref() {
+            if entry.uri.as_ref() == uri.as_ref() {
                 published = Some(Arc::clone(&snapshot));
             }
-            rebuilt.insert(entry_uri, snapshot);
+            rebuilt.insert(entry.uri, snapshot);
         }
 
         self.documents.write().clone_from(&rebuilt);
@@ -2519,6 +2632,7 @@ impl DocumentStore {
 mod tests {
     use super::{DefinitionTarget, DocumentStore, HoveredComponentKind, ReferenceTarget};
     use abap_symbols::StructureFieldShape;
+    use std::sync::Arc;
 
     fn assert_target_slice(target: &DefinitionTarget, uri: &str, text: &str, expected: &str) {
         assert_eq!(target.uri.as_ref(), uri);
@@ -2560,6 +2674,19 @@ mod tests {
                 .any(|symbol| symbol.name.as_ref() == "foo")
         );
         assert_eq!(store.get("file:///demo.abap").unwrap().version, 1);
+    }
+
+    #[test]
+    fn reuses_analysis_when_publish_text_is_unchanged() {
+        let store = DocumentStore::default();
+        let first = store.publish("file:///demo.abap", 1, "DATA foo TYPE i.");
+        let second = store.publish("file:///demo.abap", 2, "DATA foo TYPE i.");
+
+        assert_eq!(second.version, 2);
+        assert!(Arc::ptr_eq(&first.parse, &second.parse));
+        assert!(Arc::ptr_eq(&first.symbols, &second.symbols));
+        assert!(Arc::ptr_eq(&first.project, &second.project));
+        assert_eq!(store.get("file:///demo.abap").unwrap().version, 2);
     }
 
     #[test]
@@ -3343,6 +3470,33 @@ ENDCLASS.
             ],
         );
         assert_eq!(decl.version, 1);
+    }
+
+    #[test]
+    fn updating_one_document_keeps_cross_document_references_working() {
+        let store = DocumentStore::default();
+        let main_v1 = "DATA lv TYPE i.\nlv = 1.";
+        let main_v2 = "DATA lv TYPE i.\nlv = 2.";
+        let helper_src = "DATA lv_other TYPE i.\nlv = lv_other.";
+        store.publish("file:///main.abap", 1, main_v1);
+        store.publish("file:///helper.abap", 1, helper_src);
+        let main = store.publish("file:///main.abap", 2, main_v2);
+
+        let offset = main_v2.rfind("lv").expect("variable use") + 1;
+        let references = store
+            .references("file:///main.abap", offset, true)
+            .expect("references");
+
+        assert_reference_slices(
+            &references,
+            &[
+                ("file:///helper.abap", helper_src, "lv"),
+                ("file:///main.abap", main_v2, "lv"),
+                ("file:///main.abap", main_v2, "lv"),
+            ],
+        );
+        assert_eq!(main.version, 2);
+        assert_eq!(store.get("file:///helper.abap").unwrap().version, 1);
     }
 
     #[test]

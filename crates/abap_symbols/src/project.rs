@@ -6,8 +6,8 @@ use abap_parser::ParseResult;
 use crate::collector::collect_unit;
 use crate::def_map::{Diagnostic, DiagnosticKind, UnitAnalysis};
 use crate::ids::UnitId;
-use crate::resolver::{resolve_project_cross_unit, resolve_unit};
-use crate::validate::validate_project;
+use crate::resolver::{build_scope_index, resolve_project_cross_unit, resolve_unit_with_index};
+use crate::validate::validate_project_with_scope_indexes;
 
 #[derive(Debug, Clone, Copy)]
 pub struct ProjectInput<'a> {
@@ -32,49 +32,32 @@ impl ProjectAnalysis {
     }
 }
 
-pub fn analyze_unit(uri: impl Into<Arc<str>>, source: &str, parse: &ParseResult) -> UnitAnalysis {
+pub fn analyze_unit_locally(
+    unit_id: UnitId,
+    uri: impl Into<Arc<str>>,
+    source: &str,
+    parse: &ParseResult,
+) -> UnitAnalysis {
     let uri = uri.into();
-    let mut unit = collect_unit(
-        UnitId(0),
-        Arc::clone(&uri),
-        source,
-        &parse.file,
-        &parse.tokens,
-    );
-    resolve_unit(&mut unit);
-    let mut project = ProjectAnalysis {
-        units: vec![unit],
-        uri_to_unit: HashMap::from([(uri, UnitId(0))]),
-        provided_name_to_unit: HashMap::new(),
-        diagnostics: Vec::new(),
-    };
-    validate_project(&mut project);
-    project.units.pop().expect("single unit analysis")
+    let mut unit = collect_unit(unit_id, uri, source, &parse.file, &parse.tokens);
+    let scope_index = build_scope_index(&unit);
+    resolve_unit_with_index(&mut unit, &scope_index);
+    unit
 }
 
-pub fn analyze_project(inputs: &[ProjectInput<'_>]) -> ProjectAnalysis {
-    let mut units = Vec::with_capacity(inputs.len());
+pub fn analyze_project_from_units(mut units: Vec<UnitAnalysis>) -> ProjectAnalysis {
+    let scope_indexes: Vec<_> = units.iter().map(build_scope_index).collect();
     let mut uri_to_unit = HashMap::new();
     let mut provided_name_to_unit = HashMap::new();
 
-    for (idx, input) in inputs.iter().enumerate() {
-        let unit_id = UnitId(idx as u32);
-        let uri: Arc<str> = Arc::from(input.uri);
-        let mut unit = collect_unit(
-            unit_id,
-            Arc::clone(&uri),
-            input.source,
-            &input.parse.file,
-            &input.parse.tokens,
-        );
-        resolve_unit(&mut unit);
-        uri_to_unit.insert(uri, unit_id);
+    for unit in &units {
+        let unit_id = unit.unit_id;
+        uri_to_unit.insert(Arc::clone(&unit.uri), unit_id);
         for name in &unit.provided_names {
             provided_name_to_unit
                 .entry(Arc::clone(name))
                 .or_insert(unit_id);
         }
-        units.push(unit);
     }
 
     for unit in &mut units {
@@ -98,7 +81,7 @@ pub fn analyze_project(inputs: &[ProjectInput<'_>]) -> ProjectAnalysis {
         provided_name_to_unit,
         diagnostics: Vec::new(),
     };
-    validate_project(&mut project);
+    validate_project_with_scope_indexes(&mut project, &scope_indexes);
     for unit in &project.units {
         for diagnostic in &unit.diagnostics {
             if !project.diagnostics.contains(diagnostic) {
@@ -107,4 +90,30 @@ pub fn analyze_project(inputs: &[ProjectInput<'_>]) -> ProjectAnalysis {
         }
     }
     project
+}
+
+pub fn analyze_unit(uri: impl Into<Arc<str>>, source: &str, parse: &ParseResult) -> UnitAnalysis {
+    let uri = uri.into();
+    let mut unit = collect_unit(UnitId(0), Arc::clone(&uri), source, &parse.file, &parse.tokens);
+    let scope_indexes = vec![build_scope_index(&unit)];
+    resolve_unit_with_index(&mut unit, &scope_indexes[0]);
+    let mut project = ProjectAnalysis {
+        units: vec![unit],
+        uri_to_unit: HashMap::from([(uri, UnitId(0))]),
+        provided_name_to_unit: HashMap::new(),
+        diagnostics: Vec::new(),
+    };
+    validate_project_with_scope_indexes(&mut project, &scope_indexes);
+    project.units.pop().expect("single unit analysis")
+}
+
+pub fn analyze_project(inputs: &[ProjectInput<'_>]) -> ProjectAnalysis {
+    let units: Vec<_> = inputs
+        .iter()
+        .enumerate()
+        .map(|(idx, input)| {
+            analyze_unit_locally(UnitId(idx as u32), Arc::from(input.uri), input.source, input.parse)
+        })
+        .collect();
+    analyze_project_from_units(units)
 }

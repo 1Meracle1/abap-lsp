@@ -8,6 +8,7 @@ use crate::def_map::{
 };
 use crate::ids::{ScopeId, SymbolHandle, SymbolId};
 use crate::project::ProjectAnalysis;
+use crate::resolver::{ScopeIndex, build_scope_index};
 use crate::scope::{Namespace, ScopeKind};
 use crate::{SymbolKind, Visibility};
 
@@ -38,32 +39,17 @@ fn build_scope_names(unit: &crate::UnitAnalysis) -> HashMap<Arc<str>, HashSet<Na
     scope_names
 }
 
-fn build_scope_index(
-    unit: &crate::UnitAnalysis,
-) -> Vec<HashMap<(Namespace, Arc<str>), Vec<SymbolId>>> {
-    let mut out: Vec<HashMap<(Namespace, Arc<str>), Vec<SymbolId>>> =
-        vec![HashMap::new(); unit.scopes.len()];
-    for symbol in &unit.symbols {
-        for &namespace in symbol.kind.namespaces() {
-            out[symbol.scope.as_usize()]
-                .entry((namespace, Arc::clone(&symbol.name)))
-                .or_default()
-                .push(symbol.id);
-        }
-    }
-    out
-}
-
 fn resolve_symbol_in_scope_chain(
     unit: &crate::UnitAnalysis,
-    scope_index: &[HashMap<(Namespace, Arc<str>), Vec<SymbolId>>],
+    scope_index: &ScopeIndex,
     scope: ScopeId,
     namespace: Namespace,
     name: &Arc<str>,
 ) -> Option<SymbolId> {
+    let key = (namespace, Arc::clone(name));
     let mut current = Some(scope);
     while let Some(scope_id) = current {
-        if let Some(symbols) = scope_index[scope_id.as_usize()].get(&(namespace, Arc::clone(name)))
+        if let Some(symbols) = scope_index[scope_id.as_usize()].get(&key)
             && let Some(symbol_id) = symbols.last().copied()
         {
             return Some(symbol_id);
@@ -75,7 +61,7 @@ fn resolve_symbol_in_scope_chain(
 
 fn resolve_field_access_base_symbol(
     unit: &crate::UnitAnalysis,
-    scope_index: &[HashMap<(Namespace, Arc<str>), Vec<SymbolId>>],
+    scope_index: &ScopeIndex,
     access: &crate::FieldAccess,
 ) -> Option<SymbolId> {
     if let Some(symbol_id) = resolve_symbol_in_scope_chain(
@@ -144,7 +130,7 @@ fn scope_descends_from(unit: &crate::UnitAnalysis, scope: ScopeId, ancestor: Sco
 fn resolve_class_symbol(
     project: &ProjectAnalysis,
     unit: &crate::UnitAnalysis,
-    scope_index: &[HashMap<(Namespace, Arc<str>), Vec<SymbolId>>],
+    scope_index: &ScopeIndex,
     scope: ScopeId,
     name: &Arc<str>,
 ) -> Option<SymbolHandle> {
@@ -188,7 +174,7 @@ fn is_valid_super_reference(unit: &crate::UnitAnalysis, scope: ScopeId) -> bool 
 fn validate_super_constructor_calls(
     project: &ProjectAnalysis,
     unit: &crate::UnitAnalysis,
-    scope_index: &[HashMap<(Namespace, Arc<str>), Vec<SymbolId>>],
+    scope_index: &ScopeIndex,
 ) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
 
@@ -419,7 +405,7 @@ fn resolve_class_member_in_hierarchy<'a>(
 fn resolve_class_selector_base<'a>(
     project: &'a ProjectAnalysis,
     unit: &crate::UnitAnalysis,
-    scope_index: &[HashMap<(Namespace, Arc<str>), Vec<SymbolId>>],
+    scope_index: &ScopeIndex,
     access: &crate::FieldAccess,
     base_symbol_id: SymbolId,
 ) -> Option<(&'a crate::UnitAnalysis, SymbolId, bool)> {
@@ -492,7 +478,16 @@ fn format_perform_signature(using_count: usize, changing_count: usize) -> String
     }
 }
 
+#[allow(dead_code)]
 pub fn validate_project(project: &mut ProjectAnalysis) {
+    let scope_indexes: Vec<_> = project.units.iter().map(build_scope_index).collect();
+    validate_project_with_scope_indexes(project, &scope_indexes);
+}
+
+pub(crate) fn validate_project_with_scope_indexes(
+    project: &mut ProjectAnalysis,
+    scope_indexes: &[ScopeIndex],
+) {
     let global_names = collect_global_names(project);
     let form_signatures: HashMap<(u32, u32), Vec<FormParameterData>> = project
         .units
@@ -510,23 +505,26 @@ pub fn validate_project(project: &mut ProjectAnalysis) {
 
     for unit_idx in 0..project.units.len() {
         let scope_names = build_scope_names(&project.units[unit_idx]);
-        let scope_index = build_scope_index(&project.units[unit_idx]);
+        let scope_index = &scope_indexes[unit_idx];
         let constructor_diagnostics =
             validate_super_constructor_calls(project, &project.units[unit_idx], &scope_index);
-        let class_selector_bases: Vec<_> = project.units[unit_idx]
+        let field_access_bases: Vec<_> = project.units[unit_idx]
             .field_accesses
             .iter()
             .map(|access| {
                 let unit = &project.units[unit_idx];
                 let base_symbol_id = resolve_field_access_base_symbol(unit, &scope_index, access)?;
-                resolve_class_selector_base(project, unit, &scope_index, access, base_symbol_id)
-                    .map(|(class_unit, class_symbol_id, requires_static)| {
-                        (
-                            class_unit.unit_id.as_usize(),
-                            class_symbol_id,
-                            requires_static,
-                        )
-                    })
+                Some((
+                    base_symbol_id,
+                    resolve_class_selector_base(project, unit, &scope_index, access, base_symbol_id)
+                        .map(|(class_unit, class_symbol_id, requires_static)| {
+                            (
+                                class_unit.unit_id.as_usize(),
+                                class_symbol_id,
+                                requires_static,
+                            )
+                        }),
+                ))
             })
             .collect();
 
@@ -591,9 +589,8 @@ pub fn validate_project(project: &mut ProjectAnalysis) {
             });
         }
 
-        for (access, class_selector_base) in unit.field_accesses.iter().zip(&class_selector_bases) {
-            let Some(base_symbol_id) = resolve_field_access_base_symbol(unit, &scope_index, access)
-            else {
+        for (access, base_info) in unit.field_accesses.iter().zip(&field_access_bases) {
+            let Some((base_symbol_id, class_selector_base)) = *base_info else {
                 continue;
             };
             let base_symbol = unit.symbol(base_symbol_id);
@@ -654,13 +651,13 @@ pub fn validate_project(project: &mut ProjectAnalysis) {
                 && let Some((class_unit_idx, class_symbol_id, requires_static)) =
                     class_selector_base
             {
-                let class_unit = &project.units[*class_unit_idx];
-                let class_name = Arc::clone(&class_unit.symbol(*class_symbol_id).name);
+                let class_unit = &project.units[class_unit_idx];
+                let class_name = Arc::clone(&class_unit.symbol(class_symbol_id).name);
                 for (idx, step) in field_path.iter().enumerate() {
                     let Some((member_unit, member)) = resolve_class_member_in_hierarchy(
                         project,
                         class_unit,
-                        *class_symbol_id,
+                        class_symbol_id,
                         step.name.as_ref(),
                     ) else {
                         unit_diagnostics.push(Diagnostic {
@@ -673,7 +670,7 @@ pub fn validate_project(project: &mut ProjectAnalysis) {
                         });
                         break;
                     };
-                    if (*requires_static && !member.is_static)
+                    if (requires_static && !member.is_static)
                         || !class_member_visible_to(
                             project,
                             unit,
@@ -682,7 +679,7 @@ pub fn validate_project(project: &mut ProjectAnalysis) {
                             member,
                         )
                     {
-                        let qualifier = if *requires_static {
+                        let qualifier = if requires_static {
                             "static member"
                         } else {
                             "member"

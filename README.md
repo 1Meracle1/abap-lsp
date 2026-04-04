@@ -45,6 +45,12 @@ Build a single package:
 .\test.bat
 ```
 
+## Performance test
+
+```bat
+cargo test -p abap_symbols large_file_phase_breakdown -- --ignored --nocapture
+```
+
 ## Migration Docs
 
 - `docs/abap-adt-cli.md`

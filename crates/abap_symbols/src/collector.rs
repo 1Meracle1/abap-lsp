@@ -391,12 +391,12 @@ impl<'a> Collector<'a> {
         namespace: Namespace,
         name: &str,
     ) -> Option<SymbolId> {
+        let key = ScopeLookupKey {
+            namespace,
+            name: Arc::<str>::from(name),
+        };
         let mut current = self.scopes[scope.as_usize()].parent;
         while let Some(scope_id) = current {
-            let key = ScopeLookupKey {
-                namespace,
-                name: Arc::<str>::from(name),
-            };
             if let Some(symbols) = self.scope_symbols[scope_id.as_usize()].get(&key)
                 && let Some(symbol_id) = symbols.last().copied()
             {
@@ -413,12 +413,12 @@ impl<'a> Collector<'a> {
         namespace: Namespace,
         name: &str,
     ) -> Option<SymbolId> {
+        let key = ScopeLookupKey {
+            namespace,
+            name: Arc::<str>::from(name),
+        };
         let mut current = Some(scope);
         while let Some(scope_id) = current {
-            let key = ScopeLookupKey {
-                namespace,
-                name: Arc::<str>::from(name),
-            };
             if let Some(symbols) = self.scope_symbols[scope_id.as_usize()].get(&key)
                 && let Some(symbol_id) = symbols.last().copied()
             {

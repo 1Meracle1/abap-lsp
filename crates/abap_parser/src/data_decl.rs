@@ -1521,8 +1521,11 @@ mod tests {
     }
 
     #[test]
-    fn negative_like_instead_of_type() {
-        assert_not_classified_as_data_decl("DATA lv LIKE lv_other.");
+    fn single_data_like_decl() {
+        let file = tree_ok("DATA lv LIKE lv_other.");
+        assert_eq!(file.count_kind(file.root(), SyntaxKind::DataDecl), 1);
+        assert_eq!(file.count_kind(file.root(), SyntaxKind::DataTypedClause), 1);
+        assert_eq!(file.count_kind(file.root(), SyntaxKind::TypeRefSimple), 1);
     }
 
     #[test]
