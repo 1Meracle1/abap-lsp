@@ -12,8 +12,10 @@ use crate::def_map::{
     DiagnosticKind, FieldAccess, FieldAccessSegment, FieldTypeRefData, FormParameterData,
     FormParameterPassingKind, FormParameterSection, FormRoutineData, IncludeEdge,
     NamedArgumentAccess, NamedArgumentSection, NamedArgumentTarget, PerformArgumentData,
-    PerformCallData, PerformParameterSection, ReferenceData, ReferenceKind, StructureData,
-    StructureFieldData, SymbolData, SymbolKind, UnitAnalysis, Visibility,
+    PerformCallData, PerformParameterSection, ReferenceData, ReferenceKind, SqlNameRefData,
+    SqlNameRefKind, SqlPredicateData, SqlPredicateKind, SqlProjectionData, SqlProjectionKind,
+    SqlQueryData, SqlResolution, SqlSourceData, SqlSourceKind, SqlTargetData, SqlTargetKind,
+    StructureData, StructureFieldData, SymbolData, SymbolKind, UnitAnalysis, Visibility,
 };
 use crate::ids::{ReferenceId, ScopeId, StructureId, SymbolId, UnitId};
 use crate::scope::{Namespace, ScopeData, ScopeKind};
@@ -83,6 +85,14 @@ struct PendingMethodSignature {
     is_redefinition: bool,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SqlClauseKind {
+    Where,
+    JoinOn,
+    Having,
+    ForAllEntries,
+}
+
 pub struct Collector<'a> {
     source: &'a str,
     file: &'a File,
@@ -101,6 +111,12 @@ pub struct Collector<'a> {
     form_routines: Vec<FormRoutineData>,
     named_arguments: Vec<NamedArgumentAccess>,
     perform_calls: Vec<PerformCallData>,
+    sql_queries: Vec<SqlQueryData>,
+    sql_sources: Vec<SqlSourceData>,
+    sql_projections: Vec<SqlProjectionData>,
+    sql_name_refs: Vec<SqlNameRefData>,
+    sql_predicates: Vec<SqlPredicateData>,
+    sql_targets: Vec<SqlTargetData>,
     class_definition_scopes: HashMap<SymbolId, ScopeId>,
     class_superclasses: HashMap<SymbolId, Arc<str>>,
     class_method_signatures: HashMap<SymbolId, HashMap<Arc<str>, PendingMethodSignature>>,
@@ -138,6 +154,12 @@ impl<'a> Collector<'a> {
             form_routines: Vec::new(),
             named_arguments: Vec::new(),
             perform_calls: Vec::new(),
+            sql_queries: Vec::new(),
+            sql_sources: Vec::new(),
+            sql_projections: Vec::new(),
+            sql_name_refs: Vec::new(),
+            sql_predicates: Vec::new(),
+            sql_targets: Vec::new(),
             class_definition_scopes: HashMap::new(),
             class_superclasses: HashMap::new(),
             class_method_signatures: HashMap::new(),
@@ -175,6 +197,12 @@ impl<'a> Collector<'a> {
             form_routines: self.form_routines,
             named_arguments: self.named_arguments,
             perform_calls: self.perform_calls,
+            sql_queries: self.sql_queries,
+            sql_sources: self.sql_sources,
+            sql_projections: self.sql_projections,
+            sql_name_refs: self.sql_name_refs,
+            sql_predicates: self.sql_predicates,
+            sql_targets: self.sql_targets,
             provided_names,
         }
     }
@@ -463,7 +491,7 @@ impl<'a> Collector<'a> {
             SyntaxKind::CleanupClause => {
                 self.walk_nested_block(node, scope, ScopeKind::CleanupClause)
             }
-            SyntaxKind::SelectStmt => self.walk_nested_block(node, scope, ScopeKind::SelectBlock),
+            SyntaxKind::SelectStmt => self.collect_select_stmt(node, scope),
             SyntaxKind::AppendStmt | SyntaxKind::ModifyStmt | SyntaxKind::ReadTableStmt => {
                 self.walk_children(node, scope)
             }
@@ -1982,6 +2010,768 @@ impl<'a> Collector<'a> {
         for child in self.file.children(node) {
             self.walk_node(child, child_scope);
         }
+    }
+
+    fn select_stmt_has_endselect(&self, node: NodeId) -> bool {
+        self.file.children(node).any(|child| {
+            self.file.kind(child) == SyntaxKind::Token
+                && self
+                    .token_for_node(child)
+                    .is_some_and(|token| {
+                        token.kind == TokenKind::Ident
+                            && token.lexeme(self.source).eq_ignore_ascii_case("endselect")
+                    })
+        })
+    }
+
+    fn select_query_node(&self, node: NodeId) -> Option<NodeId> {
+        self.file
+            .children(node)
+            .find(|&child| self.file.kind(child) == SyntaxKind::SelectQuery)
+    }
+
+    fn collect_select_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        let has_endselect = self.select_stmt_has_endselect(node);
+        if has_endselect {
+            let child_scope =
+                self.push_scope(ScopeKind::SelectBlock, self.file.range(node), Some(scope), None);
+            if let Some(query_node) = self.select_query_node(node) {
+                self.collect_select_query(query_node, child_scope, true);
+            }
+            for child in self.file.children(node) {
+                match self.file.kind(child) {
+                    SyntaxKind::Token | SyntaxKind::SelectQuery => {}
+                    _ => self.walk_node(child, child_scope),
+                }
+            }
+        } else {
+            if let Some(query_node) = self.select_query_node(node) {
+                self.collect_select_query(query_node, scope, false);
+            }
+            for child in self.file.children(node) {
+                match self.file.kind(child) {
+                    SyntaxKind::Token | SyntaxKind::SelectQuery => {}
+                    _ => self.walk_node(child, scope),
+                }
+            }
+        }
+    }
+
+    fn collect_select_query(&mut self, node: NodeId, scope: ScopeId, has_endselect: bool) {
+        let query_id = self.sql_queries.len();
+        let mut projection_clause = None;
+        let mut from_clause = None;
+        let mut into_clause = None;
+        let mut where_clause = None;
+        let mut group_by_clause = None;
+        let mut having_clause = None;
+        let mut order_by_clause = None;
+        let mut for_all_entries_clause = None;
+        let mut up_to_clause = None;
+        let mut is_single = false;
+        let mut is_distinct = false;
+        let mut has_dynamic_where = false;
+
+        for child in self.file.children(node) {
+            match self.file.kind(child) {
+                SyntaxKind::Token => {
+                    if self
+                        .token_for_node(child)
+                        .is_some_and(|token| self.token_matches_keyword(token, "single"))
+                    {
+                        is_single = true;
+                    }
+                }
+                SyntaxKind::SelectDistinctClause => {
+                    is_distinct = true;
+                }
+                SyntaxKind::SelectProjectionList => {
+                    projection_clause = Some(self.file.range(child));
+                    self.collect_select_projection_list(query_id, child, scope);
+                }
+                SyntaxKind::SelectFromClause => {
+                    from_clause = Some(self.file.range(child));
+                    self.collect_select_from_clause(query_id, child, scope);
+                }
+                SyntaxKind::SelectIntoClause => {
+                    into_clause = Some(self.file.range(child));
+                    self.collect_select_into_clause(query_id, child, scope);
+                }
+                SyntaxKind::SelectWhereClause => {
+                    where_clause = Some(self.file.range(child));
+                    has_dynamic_where =
+                        self.file.count_kind(child, SyntaxKind::SqlDynamicWhere) > 0;
+                    self.collect_sql_clause(query_id, child, scope, SqlClauseKind::Where);
+                }
+                SyntaxKind::SelectGroupByClause => {
+                    group_by_clause = Some(self.file.range(child));
+                    self.collect_sql_host_refs_in_node(child, scope);
+                    self.collect_sql_name_refs_in_node(query_id, child, scope);
+                }
+                SyntaxKind::SelectHavingClause => {
+                    having_clause = Some(self.file.range(child));
+                    self.collect_sql_clause(query_id, child, scope, SqlClauseKind::Having);
+                }
+                SyntaxKind::SelectOrderByClause => {
+                    order_by_clause = Some(self.file.range(child));
+                    self.collect_sql_host_refs_in_node(child, scope);
+                    self.collect_sql_name_refs_in_node(query_id, child, scope);
+                }
+                SyntaxKind::SelectForAllEntriesClause => {
+                    for_all_entries_clause = Some(self.file.range(child));
+                    self.collect_sql_clause(query_id, child, scope, SqlClauseKind::ForAllEntries);
+                }
+                SyntaxKind::SelectUpToClause => {
+                    up_to_clause = Some(self.file.range(child));
+                    self.collect_sql_host_refs_in_node(child, scope);
+                }
+                _ => {}
+            }
+        }
+
+        self.sql_queries.push(SqlQueryData {
+            id: query_id,
+            scope,
+            range: self.file.range(node),
+            projection_clause,
+            from_clause,
+            into_clause,
+            where_clause,
+            group_by_clause,
+            having_clause,
+            order_by_clause,
+            for_all_entries_clause,
+            up_to_clause,
+            is_single,
+            is_distinct,
+            has_endselect,
+            has_dynamic_where,
+        });
+    }
+
+    fn collect_select_projection_list(&mut self, query_id: usize, node: NodeId, scope: ScopeId) {
+        for child in self.file.children(node) {
+            if self.file.kind(child) == SyntaxKind::SqlProjectionItem {
+                self.collect_sql_projection_item(query_id, child, scope);
+            }
+        }
+    }
+
+    fn collect_sql_projection_item(&mut self, query_id: usize, node: NodeId, scope: ScopeId) {
+        let mut tokens = Vec::new();
+        self.tokens_for_node_recursive(node, &mut tokens);
+        self.collect_sql_host_refs(&tokens, scope);
+
+        let alias = self
+            .file
+            .children(node)
+            .find(|&child| self.file.kind(child) == SyntaxKind::SqlAlias)
+            .and_then(|alias_node| self.node_name(alias_node));
+
+        let mut kind = SqlProjectionKind::Expression;
+        let mut source_alias = None;
+        let mut name = None;
+
+        for child in self.file.children(node) {
+            match self.file.kind(child) {
+                SyntaxKind::SqlStar => {
+                    kind = SqlProjectionKind::Star;
+                    self.push_sql_name_ref(
+                        query_id,
+                        scope,
+                        self.file.range(child),
+                        Arc::<str>::from("*"),
+                        None,
+                        SqlNameRefKind::Star,
+                    );
+                }
+                SyntaxKind::SqlQualifiedStar => {
+                    kind = SqlProjectionKind::QualifiedStar;
+                    if let Some((qualifier, range)) =
+                        self.sql_qualified_name_parts(child, true)
+                    {
+                        source_alias = Some(Arc::clone(&qualifier));
+                        self.push_sql_name_ref(
+                            query_id,
+                            scope,
+                            range,
+                            Arc::<str>::from("*"),
+                            Some(qualifier),
+                            SqlNameRefKind::QualifiedStar,
+                        );
+                    }
+                }
+                SyntaxKind::SqlColumnRef => {
+                    kind = SqlProjectionKind::Column;
+                    if let Some((qualifier, column, range)) =
+                        self.sql_column_ref_parts(child)
+                    {
+                        source_alias = qualifier.clone();
+                        name = Some(Arc::clone(&column));
+                        self.push_sql_name_ref(
+                            query_id,
+                            scope,
+                            range,
+                            column,
+                            qualifier,
+                            if source_alias.is_some() {
+                                SqlNameRefKind::QualifiedColumn
+                            } else {
+                                SqlNameRefKind::Column
+                            },
+                        );
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if matches!(kind, SqlProjectionKind::Expression)
+            && let Some(token) = tokens.first()
+            && token.kind == TokenKind::Ident
+            && tokens.get(1).is_some_and(|next| next.kind == TokenKind::LParen)
+        {
+            kind = SqlProjectionKind::Aggregate;
+            self.push_sql_name_ref(
+                query_id,
+                scope,
+                token.range.clone(),
+                Arc::<str>::from(token.lexeme(self.source).to_ascii_lowercase()),
+                None,
+                SqlNameRefKind::Aggregate,
+            );
+        }
+
+        if matches!(kind, SqlProjectionKind::Expression) {
+            self.collect_sql_name_refs_from_tokens(query_id, scope, &tokens);
+        }
+        self.sql_projections.push(SqlProjectionData {
+            query_id,
+            range: self.file.range(node),
+            kind,
+            source_alias,
+            name,
+            alias: alias.map(|(name, _)| name),
+        });
+    }
+
+    fn collect_select_from_clause(&mut self, query_id: usize, node: NodeId, scope: ScopeId) {
+        let mut saw_base_source = false;
+        for child in self.file.children(node) {
+            match self.file.kind(child) {
+                SyntaxKind::SqlDataSource => {
+                    let source_kind = if saw_base_source {
+                        SqlSourceKind::Join
+                    } else {
+                        SqlSourceKind::From
+                    };
+                    saw_base_source = true;
+                    self.collect_sql_data_source(query_id, child, scope, source_kind, None);
+                }
+                SyntaxKind::SelectJoinClause => {
+                    self.collect_select_join_clause(query_id, child, scope)
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn collect_select_join_clause(&mut self, query_id: usize, node: NodeId, scope: ScopeId) {
+        let mut join_tokens = Vec::new();
+        for child in self.file.children(node) {
+            match self.file.kind(child) {
+                SyntaxKind::Token => {
+                    if let Some(token) = self.token_for_node(child) {
+                        join_tokens.push(token);
+                    }
+                }
+                SyntaxKind::SqlDataSource => {
+                    let join_kind = self.token_span_text(&join_tokens);
+                    self.collect_sql_data_source(
+                        query_id,
+                        child,
+                        scope,
+                        SqlSourceKind::Join,
+                        join_kind,
+                    );
+                }
+                SyntaxKind::SqlPredicateExpr => {
+                    self.collect_sql_clause(query_id, child, scope, SqlClauseKind::JoinOn);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn collect_sql_data_source(
+        &mut self,
+        query_id: usize,
+        node: NodeId,
+        scope: ScopeId,
+        source_kind: SqlSourceKind,
+        join_kind: Option<Arc<str>>,
+    ) {
+        let mut tokens = Vec::new();
+        self.tokens_for_node_recursive(node, &mut tokens);
+        let alias_idx = tokens
+            .iter()
+            .position(|token| self.token_matches_keyword(token, "as"));
+        let name_tokens = alias_idx.map(|idx| &tokens[..idx]).unwrap_or(&tokens[..]);
+        let Some(name) = self.token_span_text(name_tokens) else {
+            return;
+        };
+        let name_range = self.token_span_range(name_tokens).unwrap_or_else(|| self.file.range(node));
+        let alias = self
+            .file
+            .children(node)
+            .find(|&child| self.file.kind(child) == SyntaxKind::SqlAlias)
+            .and_then(|alias_node| self.node_name(alias_node))
+            .map(|(name, _)| name);
+
+        self.sql_sources.push(SqlSourceData {
+            query_id,
+            range: self.file.range(node),
+            source_kind,
+            name: Arc::clone(&name),
+            alias: alias.clone(),
+            join_kind,
+            resolution: SqlResolution::External,
+        });
+        self.push_sql_name_ref(
+            query_id,
+            scope,
+            name_range,
+            name,
+            None,
+            SqlNameRefKind::Source,
+        );
+        if let Some(alias_name) = alias {
+            let alias_range = self
+                .file
+                .children(node)
+                .find(|&child| self.file.kind(child) == SyntaxKind::SqlAlias)
+                .map(|alias_node| self.file.range(alias_node))
+                .unwrap_or_else(|| self.file.range(node));
+            self.push_sql_name_ref(
+                query_id,
+                scope,
+                alias_range,
+                alias_name,
+                None,
+                SqlNameRefKind::Alias,
+            );
+        }
+    }
+
+    fn collect_select_into_clause(&mut self, query_id: usize, node: NodeId, scope: ScopeId) {
+        let mut tokens = Vec::new();
+        self.tokens_for_node_recursive(node, &mut tokens);
+        let is_appending = tokens
+            .first()
+            .is_some_and(|token| self.token_matches_keyword(token, "appending"));
+        let is_table = tokens
+            .iter()
+            .any(|token| self.token_matches_keyword(token, "table"));
+        let is_corresponding = tokens
+            .iter()
+            .any(|token| self.token_matches_keyword(token, "corresponding"));
+
+        let mut target_name = None;
+        let mut is_inline = false;
+        for child in self.file.children(node) {
+            match self.file.kind(child) {
+                SyntaxKind::DataInlineDecl => {
+                    is_inline = true;
+                    target_name = self.inline_decl_name(child);
+                    self.walk_inline_decl(child, scope);
+                }
+                SyntaxKind::FieldSymbolInlineDecl => {
+                    is_inline = true;
+                    target_name = self.inline_decl_name(child);
+                    self.declare_inline_field_symbol_decl(child, scope, None, None);
+                }
+                SyntaxKind::ExprIdent
+                | SyntaxKind::SelectorExpr
+                | SyntaxKind::CallExpr
+                | SyntaxKind::BinaryExpr
+                | SyntaxKind::UnaryExpr
+                | SyntaxKind::ParenExpr
+                | SyntaxKind::ConstructorExpr => {
+                    if target_name.is_none() {
+                        target_name = self.sql_target_name_from_expr(child);
+                    }
+                    self.collect_expr(child, scope);
+                }
+                _ => {}
+            }
+        }
+
+        self.sql_targets.push(SqlTargetData {
+            query_id,
+            scope,
+            range: self.file.range(node),
+            kind: if is_appending {
+                SqlTargetKind::Appending
+            } else {
+                SqlTargetKind::Into
+            },
+            target_name,
+            is_table,
+            is_corresponding,
+            is_inline,
+        });
+    }
+
+    fn collect_sql_clause(
+        &mut self,
+        query_id: usize,
+        node: NodeId,
+        scope: ScopeId,
+        kind: SqlClauseKind,
+    ) {
+        self.sql_predicates.push(SqlPredicateData {
+            query_id,
+            range: self.file.range(node),
+            kind: match kind {
+                SqlClauseKind::Where => {
+                    if self.file.count_kind(node, SyntaxKind::SqlDynamicWhere) > 0 {
+                        SqlPredicateKind::DynamicWhere
+                    } else {
+                        SqlPredicateKind::Where
+                    }
+                }
+                SqlClauseKind::JoinOn => SqlPredicateKind::JoinOn,
+                SqlClauseKind::Having => SqlPredicateKind::Having,
+                SqlClauseKind::ForAllEntries => SqlPredicateKind::ForAllEntries,
+            },
+        });
+
+        let mut tokens = Vec::new();
+        self.tokens_for_node_recursive(node, &mut tokens);
+        match kind {
+            SqlClauseKind::ForAllEntries => {
+                if let Some(in_idx) = tokens
+                    .iter()
+                    .position(|token| self.token_matches_keyword(token, "in"))
+                {
+                    let expr_start = in_idx + 1;
+                    if expr_start < tokens.len() {
+                        self.collect_token_expression_refs(&tokens[expr_start..], scope, true);
+                    }
+                }
+            }
+            _ => {
+                self.collect_sql_host_refs(&tokens, scope);
+                self.collect_sql_name_refs_from_tokens(query_id, scope, &tokens);
+            }
+        }
+    }
+
+    fn collect_sql_host_refs_in_node(&mut self, node: NodeId, scope: ScopeId) {
+        let mut tokens = Vec::new();
+        self.tokens_for_node_recursive(node, &mut tokens);
+        self.collect_sql_host_refs(&tokens, scope);
+    }
+
+    fn collect_sql_name_refs_in_node(&mut self, query_id: usize, node: NodeId, scope: ScopeId) {
+        let mut tokens = Vec::new();
+        self.tokens_for_node_recursive(node, &mut tokens);
+        self.collect_sql_name_refs_from_tokens(query_id, scope, &tokens);
+    }
+
+    fn collect_sql_host_refs(&mut self, tokens: &[&'a Token], scope: ScopeId) {
+        let mut idx = 0usize;
+        while idx < tokens.len() {
+            if tokens[idx].kind == TokenKind::At {
+                let expr_start = idx + 1;
+                let expr_end = self.sql_host_expr_end(tokens, expr_start);
+                if expr_start < expr_end {
+                    self.collect_token_expression_refs(&tokens[expr_start..expr_end], scope, true);
+                }
+                idx = expr_end.max(expr_start);
+            } else {
+                idx += 1;
+            }
+        }
+    }
+
+    fn collect_sql_name_refs_from_tokens(
+        &mut self,
+        query_id: usize,
+        scope: ScopeId,
+        tokens: &[&'a Token],
+    ) {
+        let mut idx = 0usize;
+        while idx < tokens.len() {
+            let token = tokens[idx];
+            match token.kind {
+                TokenKind::At => {
+                    idx = self.sql_host_expr_end(tokens, idx + 1);
+                }
+                TokenKind::Star => {
+                    self.push_sql_name_ref(
+                        query_id,
+                        scope,
+                        token.range.clone(),
+                        Arc::<str>::from("*"),
+                        None,
+                        SqlNameRefKind::Star,
+                    );
+                    idx += 1;
+                }
+                TokenKind::Ident => {
+                    if self.sql_token_is_keyword(token) {
+                        idx += 1;
+                        continue;
+                    }
+                    if tokens.get(idx + 1).is_some_and(|next| next.kind == TokenKind::Tilde)
+                        && let Some(third) = tokens.get(idx + 2)
+                    {
+                        if third.kind == TokenKind::Star {
+                            self.push_sql_name_ref(
+                                query_id,
+                                scope,
+                                token.range.start..third.range.end,
+                                Arc::<str>::from("*"),
+                                Some(Arc::<str>::from(token.lexeme(self.source).to_ascii_lowercase())),
+                                SqlNameRefKind::QualifiedStar,
+                            );
+                            idx += 3;
+                            continue;
+                        }
+                        if third.kind == TokenKind::Ident {
+                            self.push_sql_name_ref(
+                                query_id,
+                                scope,
+                                token.range.start..third.range.end,
+                                Arc::<str>::from(third.lexeme(self.source).to_ascii_lowercase()),
+                                Some(Arc::<str>::from(token.lexeme(self.source).to_ascii_lowercase())),
+                                SqlNameRefKind::QualifiedColumn,
+                            );
+                            idx += 3;
+                            continue;
+                        }
+                    }
+                    if tokens.get(idx + 1).is_some_and(|next| next.kind == TokenKind::LParen) {
+                        self.push_sql_name_ref(
+                            query_id,
+                            scope,
+                            token.range.clone(),
+                            Arc::<str>::from(token.lexeme(self.source).to_ascii_lowercase()),
+                            None,
+                            SqlNameRefKind::Aggregate,
+                        );
+                        idx += 1;
+                        continue;
+                    }
+                    if idx > 0 && self.token_matches_keyword(tokens[idx - 1], "as") {
+                        idx += 1;
+                        continue;
+                    }
+                    self.push_sql_name_ref(
+                        query_id,
+                        scope,
+                        token.range.clone(),
+                        Arc::<str>::from(token.lexeme(self.source).to_ascii_lowercase()),
+                        None,
+                        SqlNameRefKind::Column,
+                    );
+                    idx += 1;
+                }
+                _ => idx += 1,
+            }
+        }
+    }
+
+    fn push_sql_name_ref(
+        &mut self,
+        query_id: usize,
+        scope: ScopeId,
+        range: TextRange,
+        name: Arc<str>,
+        qualifier: Option<Arc<str>>,
+        kind: SqlNameRefKind,
+    ) {
+        self.sql_name_refs.push(SqlNameRefData {
+            query_id,
+            scope,
+            range,
+            name,
+            qualifier,
+            kind,
+            resolution: SqlResolution::External,
+        });
+    }
+
+    fn inline_decl_name(&self, node: NodeId) -> Option<Arc<str>> {
+        self.file
+            .children(node)
+            .find(|&child| self.file.kind(child) == SyntaxKind::DataDeclName)
+            .and_then(|name_node| self.node_name(name_node))
+            .map(|(name, _)| name)
+    }
+
+    fn sql_target_name_from_expr(&self, node: NodeId) -> Option<Arc<str>> {
+        match self.file.kind(node) {
+            SyntaxKind::ExprIdent => self.node_name(node).map(|(name, _)| name),
+            SyntaxKind::SelectorExpr => self
+                .selector_access_chain(node)
+                .map(|(_, base_name, _, _)| base_name),
+            _ => None,
+        }
+    }
+
+    fn sql_column_ref_parts(&self, node: NodeId) -> Option<(Option<Arc<str>>, Arc<str>, TextRange)> {
+        let mut tokens = Vec::new();
+        self.tokens_for_node_recursive(node, &mut tokens);
+        if tokens.len() == 1 && tokens[0].kind == TokenKind::Ident {
+            return Some((
+                None,
+                Arc::<str>::from(tokens[0].lexeme(self.source).to_ascii_lowercase()),
+                tokens[0].range.clone(),
+            ));
+        }
+        if tokens.len() == 3
+            && tokens[0].kind == TokenKind::Ident
+            && tokens[1].kind == TokenKind::Tilde
+            && tokens[2].kind == TokenKind::Ident
+        {
+            return Some((
+                Some(Arc::<str>::from(tokens[0].lexeme(self.source).to_ascii_lowercase())),
+                Arc::<str>::from(tokens[2].lexeme(self.source).to_ascii_lowercase()),
+                tokens[0].range.start..tokens[2].range.end,
+            ));
+        }
+        None
+    }
+
+    fn sql_qualified_name_parts(&self, node: NodeId, star: bool) -> Option<(Arc<str>, TextRange)> {
+        let mut tokens = Vec::new();
+        self.tokens_for_node_recursive(node, &mut tokens);
+        if tokens.len() == 3
+            && tokens[0].kind == TokenKind::Ident
+            && tokens[1].kind == TokenKind::Tilde
+            && ((star && tokens[2].kind == TokenKind::Star)
+                || (!star && tokens[2].kind == TokenKind::Ident))
+        {
+            return Some((
+                Arc::<str>::from(tokens[0].lexeme(self.source).to_ascii_lowercase()),
+                tokens[0].range.start..tokens[2].range.end,
+            ));
+        }
+        None
+    }
+
+    fn token_span_range(&self, tokens: &[&'a Token]) -> Option<TextRange> {
+        let first = tokens.first()?;
+        let last = tokens.last()?;
+        Some(first.range.start..last.range.end)
+    }
+
+    fn token_span_text(&self, tokens: &[&'a Token]) -> Option<Arc<str>> {
+        let range = self.token_span_range(tokens)?;
+        let text = self.source.get(range)?;
+        let lowered = text.trim().to_ascii_lowercase();
+        if lowered.is_empty() {
+            return None;
+        }
+        Some(Arc::<str>::from(lowered))
+    }
+
+    fn sql_token_is_keyword(&self, token: &Token) -> bool {
+        if token.kind != TokenKind::Ident {
+            return false;
+        }
+        matches!(
+            token.lexeme(self.source).to_ascii_lowercase().as_str(),
+            "select"
+                | "single"
+                | "distinct"
+                | "from"
+                | "into"
+                | "appending"
+                | "where"
+                | "group"
+                | "by"
+                | "having"
+                | "order"
+                | "for"
+                | "all"
+                | "entries"
+                | "in"
+                | "up"
+                | "to"
+                | "rows"
+                | "as"
+                | "join"
+                | "inner"
+                | "left"
+                | "right"
+                | "cross"
+                | "on"
+                | "and"
+                | "or"
+                | "not"
+                | "like"
+                | "between"
+                | "is"
+                | "null"
+                | "table"
+                | "corresponding"
+                | "fields"
+                | "of"
+                | "primary"
+                | "key"
+        )
+    }
+
+    fn sql_host_expr_end(&self, tokens: &[&'a Token], start: usize) -> usize {
+        let mut paren = 0i32;
+        let mut bracket = 0i32;
+        let mut brace = 0i32;
+        let mut idx = start;
+        while idx < tokens.len() {
+            let token = tokens[idx];
+            if paren == 0 && bracket == 0 && brace == 0 {
+                if token.kind == TokenKind::Comma
+                    || token.kind == TokenKind::Eq
+                    || token.kind == TokenKind::Lt
+                    || token.kind == TokenKind::Gt
+                    || token.kind == TokenKind::Le
+                    || token.kind == TokenKind::Ge
+                    || token.kind == TokenKind::Ne
+                    || self.sql_token_is_keyword(token)
+                {
+                    break;
+                }
+            }
+            match token.kind {
+                TokenKind::LParen => paren += 1,
+                TokenKind::RParen => {
+                    if paren == 0 {
+                        break;
+                    }
+                    paren -= 1;
+                }
+                TokenKind::LBracket => bracket += 1,
+                TokenKind::RBracket => {
+                    if bracket == 0 {
+                        break;
+                    }
+                    bracket -= 1;
+                }
+                TokenKind::LBrace => brace += 1,
+                TokenKind::RBrace => {
+                    if brace == 0 {
+                        break;
+                    }
+                    brace -= 1;
+                }
+                _ => {}
+            }
+            idx += 1;
+        }
+        idx
     }
 
     fn collect_loop_header_node(&mut self, node: NodeId, scope: ScopeId) {

@@ -113,6 +113,124 @@ pub enum Resolution {
     External,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SqlResolution {
+    Unresolved,
+    External,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SqlSourceKind {
+    From,
+    Join,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SqlQueryData {
+    pub id: usize,
+    pub scope: ScopeId,
+    pub range: TextRange,
+    pub projection_clause: Option<TextRange>,
+    pub from_clause: Option<TextRange>,
+    pub into_clause: Option<TextRange>,
+    pub where_clause: Option<TextRange>,
+    pub group_by_clause: Option<TextRange>,
+    pub having_clause: Option<TextRange>,
+    pub order_by_clause: Option<TextRange>,
+    pub for_all_entries_clause: Option<TextRange>,
+    pub up_to_clause: Option<TextRange>,
+    pub is_single: bool,
+    pub is_distinct: bool,
+    pub has_endselect: bool,
+    pub has_dynamic_where: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SqlSourceData {
+    pub query_id: usize,
+    pub range: TextRange,
+    pub source_kind: SqlSourceKind,
+    pub name: Arc<str>,
+    pub alias: Option<Arc<str>>,
+    pub join_kind: Option<Arc<str>>,
+    pub resolution: SqlResolution,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SqlProjectionKind {
+    Star,
+    QualifiedStar,
+    Column,
+    Aggregate,
+    Expression,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SqlProjectionData {
+    pub query_id: usize,
+    pub range: TextRange,
+    pub kind: SqlProjectionKind,
+    pub source_alias: Option<Arc<str>>,
+    pub name: Option<Arc<str>>,
+    pub alias: Option<Arc<str>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SqlNameRefKind {
+    Source,
+    Alias,
+    Column,
+    QualifiedColumn,
+    Star,
+    QualifiedStar,
+    Aggregate,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SqlNameRefData {
+    pub query_id: usize,
+    pub scope: ScopeId,
+    pub range: TextRange,
+    pub name: Arc<str>,
+    pub qualifier: Option<Arc<str>>,
+    pub kind: SqlNameRefKind,
+    pub resolution: SqlResolution,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SqlPredicateKind {
+    Where,
+    JoinOn,
+    Having,
+    DynamicWhere,
+    ForAllEntries,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SqlPredicateData {
+    pub query_id: usize,
+    pub range: TextRange,
+    pub kind: SqlPredicateKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SqlTargetKind {
+    Into,
+    Appending,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SqlTargetData {
+    pub query_id: usize,
+    pub scope: ScopeId,
+    pub range: TextRange,
+    pub kind: SqlTargetKind,
+    pub target_name: Option<Arc<str>>,
+    pub is_table: bool,
+    pub is_corresponding: bool,
+    pub is_inline: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SymbolData {
     pub id: SymbolId,
@@ -353,6 +471,12 @@ pub struct UnitAnalysis {
     pub form_routines: Vec<FormRoutineData>,
     pub named_arguments: Vec<NamedArgumentAccess>,
     pub perform_calls: Vec<PerformCallData>,
+    pub sql_queries: Vec<SqlQueryData>,
+    pub sql_sources: Vec<SqlSourceData>,
+    pub sql_projections: Vec<SqlProjectionData>,
+    pub sql_name_refs: Vec<SqlNameRefData>,
+    pub sql_predicates: Vec<SqlPredicateData>,
+    pub sql_targets: Vec<SqlTargetData>,
     pub provided_names: Vec<Arc<str>>,
 }
 

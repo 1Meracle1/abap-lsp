@@ -160,6 +160,50 @@ pub enum SyntaxKind {
     MethodDecl,
     /// `SELECT ... .` or `SELECT ... . ... ENDSELECT.`
     SelectStmt,
+    /// Structured SQL query payload inside `SELECT`.
+    SelectQuery,
+    /// Projection segment between `SELECT` and the next SQL clause.
+    SelectProjectionList,
+    /// `FROM ...`
+    SelectFromClause,
+    /// `INTO ...` or `APPENDING ...`
+    SelectIntoClause,
+    /// `WHERE ...`
+    SelectWhereClause,
+    /// `... JOIN ... [ON ...]`
+    SelectJoinClause,
+    /// `GROUP BY ...`
+    SelectGroupByClause,
+    /// `HAVING ...`
+    SelectHavingClause,
+    /// `ORDER BY ...`
+    SelectOrderByClause,
+    /// `FOR ALL ENTRIES IN ...`
+    SelectForAllEntriesClause,
+    /// `UP TO ... ROWS`
+    SelectUpToClause,
+    /// `DISTINCT`
+    SelectDistinctClause,
+    /// Table or view source in a SQL `FROM`/`JOIN`.
+    SqlDataSource,
+    /// SQL alias introduced via `AS`.
+    SqlAlias,
+    /// SQL column reference such as `field` or `alias~field`.
+    SqlColumnRef,
+    /// Plain `*`.
+    SqlStar,
+    /// Qualified `alias~*`.
+    SqlQualifiedStar,
+    /// One projection item inside a projection list.
+    SqlProjectionItem,
+    /// Predicate-like SQL clause content (`WHERE`, `HAVING`, `ON`).
+    SqlPredicateExpr,
+    /// Host ABAP expression introduced with `@`.
+    SqlHostExpr,
+    /// Dynamic SQL fragment such as `WHERE (lt_cond)`.
+    SqlDynamicWhere,
+    /// Parenthesized SQL grouping.
+    SqlParenGroup,
     /// `APPEND ... TO ... .`
     AppendStmt,
     /// `MODIFY ... FROM ... .`
@@ -274,6 +318,28 @@ impl SyntaxKind {
             Self::InterfaceDecl => "InterfaceDecl",
             Self::MethodDecl => "MethodDecl",
             Self::SelectStmt => "SelectStmt",
+            Self::SelectQuery => "SelectQuery",
+            Self::SelectProjectionList => "SelectProjectionList",
+            Self::SelectFromClause => "SelectFromClause",
+            Self::SelectIntoClause => "SelectIntoClause",
+            Self::SelectWhereClause => "SelectWhereClause",
+            Self::SelectJoinClause => "SelectJoinClause",
+            Self::SelectGroupByClause => "SelectGroupByClause",
+            Self::SelectHavingClause => "SelectHavingClause",
+            Self::SelectOrderByClause => "SelectOrderByClause",
+            Self::SelectForAllEntriesClause => "SelectForAllEntriesClause",
+            Self::SelectUpToClause => "SelectUpToClause",
+            Self::SelectDistinctClause => "SelectDistinctClause",
+            Self::SqlDataSource => "SqlDataSource",
+            Self::SqlAlias => "SqlAlias",
+            Self::SqlColumnRef => "SqlColumnRef",
+            Self::SqlStar => "SqlStar",
+            Self::SqlQualifiedStar => "SqlQualifiedStar",
+            Self::SqlProjectionItem => "SqlProjectionItem",
+            Self::SqlPredicateExpr => "SqlPredicateExpr",
+            Self::SqlHostExpr => "SqlHostExpr",
+            Self::SqlDynamicWhere => "SqlDynamicWhere",
+            Self::SqlParenGroup => "SqlParenGroup",
             Self::AppendStmt => "AppendStmt",
             Self::ModifyStmt => "ModifyStmt",
             Self::AssertStmt => "AssertStmt",

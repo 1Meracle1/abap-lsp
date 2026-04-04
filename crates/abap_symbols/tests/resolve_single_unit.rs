@@ -2,6 +2,7 @@ use abap_parser::parse;
 
 use abap_symbols::{
     DiagnosticKind, Namespace, ReferenceKind, Resolution, StructureFieldShape, SymbolHandle,
+    SqlNameRefKind, SqlPredicateKind, SqlProjectionKind, SqlSourceKind, SqlTargetKind,
     analyze_unit,
 };
 
@@ -616,6 +617,180 @@ lv_current_ts = lv_current_ts.
         "unexpected inline GET TIME STAMP diagnostics: {:?}",
         unit.diagnostics
     );
+}
+
+#[test]
+fn resolves_flat_select_inline_table_target_after_statement() {
+    let src = r#"
+SELECT rfcdest FROM rfcdes INTO TABLE @DATA(lt_rfcdes).
+WRITE lt_rfcdes.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///select_inline_table.abap", src, &parsed);
+
+    let symbol = unit
+        .symbols
+        .iter()
+        .find(|symbol| {
+            symbol.kind == abap_symbols::SymbolKind::Variable
+                && symbol.name.as_ref() == "lt_rfcdes"
+        })
+        .expect("inline SELECT target");
+    assert_eq!(symbol.kind, abap_symbols::SymbolKind::Variable);
+
+    let refs: Vec<_> = unit
+        .references
+        .iter()
+        .filter(|reference| {
+            reference.namespace == Namespace::Value
+                && reference.kind == ReferenceKind::Identifier
+                && reference.name.as_ref() == "lt_rfcdes"
+        })
+        .collect();
+    assert!(
+        refs.iter()
+            .all(|reference| matches!(reference.resolution, Some(Resolution::Symbol(_)))),
+        "expected inline SELECT refs to resolve, refs={:?} diagnostics={:?}",
+        unit.references,
+        unit.diagnostics
+    );
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference
+                && diag.message.contains("lt_rfcdes")
+        }),
+        "unexpected inline SELECT diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn collects_sql_semantics_for_host_var_select() {
+    let src = r#"
+DATA lv_carrid TYPE string.
+
+SELECT carrid
+  FROM sflight
+  INTO TABLE @DATA(lt_flights)
+  WHERE carrid = @lv_carrid
+  ORDER BY PRIMARY KEY.
+
+WRITE lt_flights.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///sql_host_var.abap", src, &parsed);
+
+    assert_eq!(unit.sql_queries.len(), 1, "{:?}", unit.sql_queries);
+    let query = &unit.sql_queries[0];
+    assert!(!query.has_endselect);
+    assert!(!query.is_distinct);
+    assert!(query.projection_clause.is_some());
+    assert!(query.from_clause.is_some());
+    assert!(query.into_clause.is_some());
+    assert!(query.where_clause.is_some());
+    assert!(query.order_by_clause.is_some());
+
+    assert_eq!(unit.sql_sources.len(), 1, "{:?}", unit.sql_sources);
+    let source = &unit.sql_sources[0];
+    assert_eq!(source.source_kind, SqlSourceKind::From);
+    assert_eq!(source.name.as_ref(), "sflight");
+    assert!(source.alias.is_none());
+
+    assert_eq!(unit.sql_projections.len(), 1, "{:?}", unit.sql_projections);
+    let projection = &unit.sql_projections[0];
+    assert_eq!(projection.kind, SqlProjectionKind::Column);
+    assert_eq!(projection.name.as_deref(), Some("carrid"));
+
+    assert_eq!(unit.sql_targets.len(), 1, "{:?}", unit.sql_targets);
+    let target = &unit.sql_targets[0];
+    assert_eq!(target.kind, SqlTargetKind::Into);
+    assert!(target.is_table);
+    assert!(target.is_inline);
+    assert_eq!(target.target_name.as_deref(), Some("lt_flights"));
+
+    assert!(unit.sql_name_refs.iter().any(|reference| {
+        reference.kind == SqlNameRefKind::Column && reference.name.as_ref() == "carrid"
+    }));
+    assert!(unit.references.iter().any(|reference| {
+        reference.namespace == Namespace::Value
+            && reference.name.as_ref() == "lv_carrid"
+            && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+    }));
+}
+
+#[test]
+fn collects_sql_semantics_for_join_dynamic_where_and_for_all_entries() {
+    let src = r#"
+DATA lt_keys TYPE string.
+DATA lt_cond TYPE string.
+
+SELECT DISTINCT a~bupid, b~*
+  FROM /sttp/bup AS a
+  JOIN /sttp/bupmap AS b ON b~bupid = a~bupid
+  FOR ALL ENTRIES IN lt_keys
+  INTO TABLE @DATA(lt_rows)
+  WHERE (lt_cond).
+
+WRITE lt_rows.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///sql_dynamic_where.abap", src, &parsed);
+
+    assert_eq!(unit.sql_queries.len(), 1, "{:?}", unit.sql_queries);
+    let query = &unit.sql_queries[0];
+    assert!(query.is_distinct);
+    assert!(query.has_dynamic_where);
+    assert!(query.for_all_entries_clause.is_some());
+
+    assert_eq!(unit.sql_sources.len(), 2, "{:?}", unit.sql_sources);
+    assert!(unit.sql_sources.iter().any(|source| {
+        source.source_kind == SqlSourceKind::From
+            && source.name.as_ref() == "/sttp/bup"
+            && source.alias.as_deref() == Some("a")
+    }));
+    assert!(unit.sql_sources.iter().any(|source| {
+        source.source_kind == SqlSourceKind::Join
+            && source.name.as_ref() == "/sttp/bupmap"
+            && source.alias.as_deref() == Some("b")
+    }));
+
+    assert!(unit.sql_predicates.iter().any(|predicate| {
+        predicate.kind == SqlPredicateKind::JoinOn
+    }));
+    assert!(unit.sql_predicates.iter().any(|predicate| {
+        predicate.kind == SqlPredicateKind::DynamicWhere
+    }));
+    assert!(unit.sql_predicates.iter().any(|predicate| {
+        predicate.kind == SqlPredicateKind::ForAllEntries
+    }));
+
+    assert!(unit.sql_name_refs.iter().any(|reference| {
+        reference.kind == SqlNameRefKind::QualifiedColumn
+            && reference.qualifier.as_deref() == Some("a")
+            && reference.name.as_ref() == "bupid"
+    }));
+    assert!(unit.sql_name_refs.iter().any(|reference| {
+        reference.kind == SqlNameRefKind::QualifiedStar
+            && reference.qualifier.as_deref() == Some("b")
+    }));
+
+    assert_eq!(unit.sql_targets.len(), 1, "{:?}", unit.sql_targets);
+    let target = &unit.sql_targets[0];
+    assert_eq!(target.kind, SqlTargetKind::Into);
+    assert_eq!(target.target_name.as_deref(), Some("lt_rows"));
+    assert!(target.is_inline);
+    assert!(target.is_table);
+
+    assert!(unit.references.iter().any(|reference| {
+        reference.namespace == Namespace::Value
+            && reference.name.as_ref() == "lt_keys"
+            && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+    }));
+    assert!(unit.references.iter().any(|reference| {
+        reference.namespace == Namespace::Value
+            && reference.name.as_ref() == "lt_rows"
+            && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+    }));
 }
 
 #[test]

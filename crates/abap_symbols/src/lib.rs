@@ -14,8 +14,10 @@ pub use def_map::{
     FormParameterPassingKind, FormParameterSection, FormRoutineData, IncludeEdge,
     NamedArgumentAccess, NamedArgumentSection, NamedArgumentTarget, PerformArgumentData,
     PerformCallData, PerformParameterSection, ReferenceData, ReferenceKind, Resolution,
-    StructureData, StructureFieldData, StructureFieldInfo, StructureFieldShape, SymbolData,
-    SymbolKind, UnitAnalysis, Visibility,
+    SqlNameRefData, SqlNameRefKind, SqlPredicateData, SqlPredicateKind, SqlProjectionData,
+    SqlProjectionKind, SqlQueryData, SqlResolution, SqlSourceData, SqlSourceKind, SqlTargetData,
+    SqlTargetKind, StructureData, StructureFieldData, StructureFieldInfo, StructureFieldShape,
+    SymbolData, SymbolKind, UnitAnalysis, Visibility,
 };
 pub use ids::{ReferenceId, ScopeId, StructureId, SymbolHandle, SymbolId, UnitId};
 pub use project::{ProjectAnalysis, ProjectInput, analyze_project, analyze_unit};
