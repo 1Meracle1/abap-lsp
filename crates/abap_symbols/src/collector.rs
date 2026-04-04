@@ -35,9 +35,17 @@ struct PendingStructureField {
 }
 
 #[derive(Debug, Clone)]
+enum PendingStructureMember {
+    Field(PendingStructureField),
+    Include {
+        type_ref: FieldTypeRefData,
+    },
+}
+
+#[derive(Debug, Clone)]
 struct PendingStructure {
     name: Arc<str>,
-    fields: Vec<PendingStructureField>,
+    members: Vec<PendingStructureMember>,
 }
 
 #[derive(Clone, Copy)]
@@ -312,24 +320,34 @@ impl<'a> Collector<'a> {
     }
 
     fn register_structure(&mut self, scope: ScopeId, structure: PendingStructure) -> StructureId {
-        let fields = structure
-            .fields
-            .into_iter()
-            .map(|field| StructureFieldData {
-                name: field.name,
-                decl_range: Some(field.decl_range),
-                structure: field
-                    .structure
-                    .map(|nested| self.register_structure(scope, nested))
-                    .or_else(|| {
-                        field
-                            .type_ref
-                            .as_ref()
-                            .and_then(|type_ref| self.resolve_field_type_ref(scope, type_ref))
-                    }),
-                type_ref: field.type_ref,
-            })
-            .collect::<Vec<_>>();
+        let mut fields = Vec::new();
+        for member in structure.members {
+            match member {
+                PendingStructureMember::Field(field) => {
+                    fields.push(StructureFieldData {
+                        name: field.name,
+                        decl_range: Some(field.decl_range),
+                        structure: field
+                            .structure
+                            .map(|nested| self.register_structure(scope, nested))
+                            .or_else(|| {
+                                field
+                                    .type_ref
+                                    .as_ref()
+                                    .and_then(|type_ref| self.resolve_field_type_ref(scope, type_ref))
+                            }),
+                        type_ref: field.type_ref,
+                    });
+                }
+                PendingStructureMember::Include { type_ref } => {
+                    if let Some(structure_id) = self.resolve_field_type_ref(scope, &type_ref)
+                        && let Some(included) = self.structure(structure_id)
+                    {
+                        fields.extend(included.fields.iter().cloned());
+                    }
+                }
+            }
+        }
         self.push_structure(structure.name, fields)
     }
 
@@ -548,18 +566,22 @@ impl<'a> Collector<'a> {
                     self.declare_decl_clause_symbol(child, scope, kind);
                     self.walk_children(child, scope);
                 }
+                SyntaxKind::StructuredDecl => {
+                    self.declare_structured_decl_symbol(child, scope, kind);
+                    self.walk_children(child, scope);
+                }
                 _ => self.walk_node(child, scope),
             }
         }
     }
 
     fn declare_decl_clause_symbol(&mut self, node: NodeId, scope: ScopeId, kind: SymbolKind) {
-        if let Some((name, range, fields)) = self.begin_of_clause_parts(node) {
+        if let Some((name, range, members)) = self.begin_of_clause_parts(node, scope) {
             let structure = self.register_structure(
                 scope,
                 PendingStructure {
                     name: Arc::clone(&name),
-                    fields,
+                    members,
                 },
             );
             self.declare_symbol(scope, name, kind, range, Some(structure), None);
@@ -572,6 +594,19 @@ impl<'a> Collector<'a> {
             let structure = self.structure_from_typed_clause(node, scope);
             let declared_type = self.type_ref_from_typed_clause(node);
             self.declare_symbol(scope, name, kind, range, structure, declared_type);
+        }
+    }
+
+    fn declare_structured_decl_symbol(&mut self, node: NodeId, scope: ScopeId, kind: SymbolKind) {
+        if let Some((name, range, members)) = self.begin_of_clause_parts(node, scope) {
+            let structure = self.register_structure(
+                scope,
+                PendingStructure {
+                    name: Arc::clone(&name),
+                    members,
+                },
+            );
+            self.declare_symbol(scope, name, kind, range, Some(structure), None);
         }
     }
 
@@ -4709,15 +4744,88 @@ impl<'a> Collector<'a> {
     fn begin_of_clause_parts(
         &self,
         node: NodeId,
-    ) -> Option<(Arc<str>, TextRange, Vec<PendingStructureField>)> {
-        let mut tokens = Vec::new();
-        self.tokens_for_node_recursive(node, &mut tokens);
-        let name_range = tokens.get(2)?.range.clone();
-        let (structure, consumed) = self.parse_begin_of_structure_tokens(&tokens, 0)?;
-        if consumed != tokens.len() {
+        scope: ScopeId,
+    ) -> Option<(Arc<str>, TextRange, Vec<PendingStructureMember>)> {
+        let name_range = self.structured_decl_name_range(node)?;
+        let structure = self.pending_structure_from_node(node, scope)?;
+        Some((structure.name, name_range, structure.members))
+    }
+
+    fn structured_decl_name_range(&self, node: NodeId) -> Option<TextRange> {
+        let mut tokens = self
+            .file
+            .children(node)
+            .filter_map(|child| self.token_for_node(child));
+        let begin_tok = tokens.next()?;
+        let of_tok = tokens.next()?;
+        let name_tok = tokens.next()?;
+        if !self.token_matches_keyword(begin_tok, "begin")
+            || !self.token_matches_keyword(of_tok, "of")
+            || name_tok.kind != TokenKind::Ident
+        {
             return None;
         }
-        Some((structure.name, name_range, structure.fields))
+        Some(name_tok.range.clone())
+    }
+
+    fn pending_structure_from_node(
+        &self,
+        node: NodeId,
+        scope: ScopeId,
+    ) -> Option<PendingStructure> {
+        let (name, _) = self.node_name(
+            self.file
+                .children(node)
+                .filter(|&child| self.file.kind(child) == SyntaxKind::Token)
+                .nth(2)?,
+        )?;
+        let mut members = Vec::new();
+        for child in self.file.children(node) {
+            match self.file.kind(child) {
+                SyntaxKind::StructuredDecl => {
+                    let nested = self.pending_structure_from_node(child, scope)?;
+                    let decl_range = self.structured_decl_name_range(child)?;
+                    members.push(PendingStructureMember::Field(PendingStructureField {
+                        name: Arc::clone(&nested.name),
+                        decl_range,
+                        structure: Some(nested),
+                        type_ref: None,
+                    }));
+                }
+                SyntaxKind::StructuredFieldClause | SyntaxKind::TypesTypedClause => {
+                    let field = self.pending_structure_field_from_clause(child, scope)?;
+                    members.push(PendingStructureMember::Field(field));
+                }
+                SyntaxKind::StructuredIncludeClause => {
+                    let type_ref = self.type_ref_from_structured_include_clause(child)?;
+                    members.push(PendingStructureMember::Include { type_ref });
+                }
+                _ => {}
+            }
+        }
+        Some(PendingStructure { name, members })
+    }
+
+    fn pending_structure_field_from_clause(
+        &self,
+        node: NodeId,
+        _scope: ScopeId,
+    ) -> Option<PendingStructureField> {
+        let name_node = self.first_non_token_child(node)?;
+        let (name, decl_range) = self.node_name(name_node)?;
+        Some(PendingStructureField {
+            name,
+            decl_range,
+            structure: None,
+            type_ref: self.type_ref_from_typed_clause(node),
+        })
+    }
+
+    fn type_ref_from_structured_include_clause(&self, node: NodeId) -> Option<FieldTypeRefData> {
+        self.file
+            .children(node)
+            .find(|&child| self.file.kind(child) == SyntaxKind::TypeRefSimple)
+            .and_then(|type_ref| self.field_type_ref_from_node(type_ref, Namespace::Type))
     }
 
     fn direct_type_ref_children(&self, node: NodeId) -> Vec<NodeId> {
@@ -5090,141 +5198,6 @@ impl<'a> Collector<'a> {
             expr_start += 1;
         }
         Some((tokens, namespace, expr_start))
-    }
-
-    fn parse_begin_of_structure_tokens(
-        &self,
-        tokens: &[&Token],
-        idx: usize,
-    ) -> Option<(PendingStructure, usize)> {
-        let begin_tok = tokens.get(idx)?;
-        let of_tok = tokens.get(idx + 1)?;
-        let name_tok = tokens.get(idx + 2)?;
-        if !self.token_matches_keyword(begin_tok, "begin")
-            || !self.token_matches_keyword(of_tok, "of")
-            || name_tok.kind != TokenKind::Ident
-        {
-            return None;
-        }
-
-        let mut fields = Vec::new();
-        let mut i = idx + 3;
-        while i < tokens.len() {
-            let token = tokens[i];
-            if token.kind == TokenKind::Comment || token.kind == TokenKind::Comma {
-                i += 1;
-                continue;
-            }
-            if self.token_matches_keyword(token, "end")
-                && tokens
-                    .get(i + 1)
-                    .is_some_and(|next| self.token_matches_keyword(next, "of"))
-            {
-                let end_name = tokens.get(i + 2)?;
-                if end_name.kind != TokenKind::Ident {
-                    return None;
-                }
-                return Some((
-                    PendingStructure {
-                        name: Arc::<str>::from(name_tok.lexeme(self.source).to_ascii_lowercase()),
-                        fields,
-                    },
-                    i + 3,
-                ));
-            }
-
-            if self.token_matches_keyword(token, "begin")
-                && tokens
-                    .get(i + 1)
-                    .is_some_and(|next| self.token_matches_keyword(next, "of"))
-            {
-                let (nested, next_i) = self.parse_begin_of_structure_tokens(tokens, i)?;
-                let name_tok = tokens.get(i + 2)?;
-                if name_tok.kind != TokenKind::Ident {
-                    return None;
-                }
-                fields.push(PendingStructureField {
-                    name: Arc::clone(&nested.name),
-                    decl_range: name_tok.range.clone(),
-                    structure: Some(nested),
-                    type_ref: None,
-                });
-                i = next_i;
-                continue;
-            }
-
-            if token.kind != TokenKind::Ident {
-                i += 1;
-                continue;
-            }
-
-            let field_name = Arc::<str>::from(token.lexeme(self.source).to_ascii_lowercase());
-            let next_i = self.skip_begin_of_field_clause(tokens, i + 1);
-            let type_ref = self.parse_begin_of_field_type_ref(&tokens[i + 1..next_i]);
-            i = next_i;
-            fields.push(PendingStructureField {
-                name: field_name,
-                decl_range: token.range.clone(),
-                structure: None,
-                type_ref,
-            });
-        }
-        None
-    }
-
-    fn skip_begin_of_field_clause(&self, tokens: &[&Token], mut idx: usize) -> usize {
-        let mut paren_depth = 0i32;
-        let mut bracket_depth = 0i32;
-        let mut brace_depth = 0i32;
-        while idx < tokens.len() {
-            let token = tokens[idx];
-            if paren_depth == 0
-                && bracket_depth == 0
-                && brace_depth == 0
-                && (token.kind == TokenKind::Comma
-                    || (self.token_matches_keyword(token, "begin")
-                        && tokens
-                            .get(idx + 1)
-                            .is_some_and(|next| self.token_matches_keyword(next, "of")))
-                    || (self.token_matches_keyword(token, "end")
-                        && tokens
-                            .get(idx + 1)
-                            .is_some_and(|next| self.token_matches_keyword(next, "of"))))
-            {
-                break;
-            }
-            match token.kind {
-                TokenKind::LParen => paren_depth += 1,
-                TokenKind::RParen => paren_depth -= 1,
-                TokenKind::LBracket => bracket_depth += 1,
-                TokenKind::RBracket => bracket_depth -= 1,
-                TokenKind::LBrace => brace_depth += 1,
-                TokenKind::RBrace => brace_depth -= 1,
-                _ => {}
-            }
-            idx += 1;
-        }
-        idx
-    }
-
-    fn parse_begin_of_field_type_ref(&self, tokens: &[&Token]) -> Option<FieldTypeRefData> {
-        let mut idx = 0usize;
-        let namespace = loop {
-            let token = *tokens.get(idx)?;
-            if self.token_matches_keyword(token, "type") {
-                idx += 1;
-                break Namespace::Type;
-            }
-            if self.token_matches_keyword(token, "like") {
-                idx += 1;
-                break Namespace::Value;
-            }
-            idx += 1;
-        };
-        while idx < tokens.len() && tokens[idx].kind == TokenKind::Comment {
-            idx += 1;
-        }
-        self.field_type_ref_from_token_slice(tokens, idx, tokens.len(), namespace)
     }
 
     fn selector_access_chain(

@@ -2198,6 +2198,57 @@ DATA lv_value TYPE ty_outer-inner-a.";
 }
 
 #[test]
+fn flattens_include_type_members_in_block_structured_types() {
+    let src = "\
+TYPES: BEGIN OF ty_inner,\n\
+         a TYPE i,\n\
+       END OF ty_inner.\n\
+TYPES: BEGIN OF ty_outer.\n\
+INCLUDE TYPE ty_inner AS inner.\n\
+TYPES: b TYPE string,\n\
+END OF ty_outer.\n\
+DATA ls_outer TYPE ty_outer.\n\
+ls_outer-a = 1.\n\
+DATA lv_value TYPE ty_outer-a.";
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///include_type_block.abap", src, &parsed);
+
+    let ty_outer = unit
+        .symbols
+        .iter()
+        .find(|symbol| {
+            symbol.kind == abap_symbols::SymbolKind::TypeDef && symbol.name.as_ref() == "ty_outer"
+        })
+        .expect("outer type");
+    let outer_structure = unit.structure(ty_outer.structure.expect("outer structure"));
+    assert!(
+        outer_structure
+            .fields
+            .iter()
+            .any(|field| field.name.as_ref() == "a"),
+        "expected included field, fields={:?}",
+        outer_structure.fields
+    );
+    assert!(
+        outer_structure
+            .fields
+            .iter()
+            .any(|field| field.name.as_ref() == "b"),
+        "expected local field, fields={:?}",
+        outer_structure.fields
+    );
+    assert!(
+        !unit
+            .diagnostics
+            .iter()
+            .any(|diag| diag.kind == DiagnosticKind::UnknownField
+                || diag.kind == DiagnosticKind::UnresolvedReference),
+        "unexpected diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn collects_structured_types_with_keyword_named_fields_and_table_aliases() {
     let src = "\
 TYPES:\n\

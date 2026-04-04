@@ -72,6 +72,8 @@ pub enum SyntaxKind {
     StructuredDecl,
     /// One component inside a structured declaration.
     StructuredFieldClause,
+    /// `INCLUDE TYPE ...` component inside a structured declaration.
+    StructuredIncludeClause,
     /// `CONSTANTS ... .`
     ConstantsDecl,
     /// One constant member with optional `VALUE`.
@@ -282,6 +284,7 @@ impl SyntaxKind {
             Self::TypesTypedClause => "TypesTypedClause",
             Self::StructuredDecl => "StructuredDecl",
             Self::StructuredFieldClause => "StructuredFieldClause",
+            Self::StructuredIncludeClause => "StructuredIncludeClause",
             Self::ConstantsDecl => "ConstantsDecl",
             Self::ConstantClause => "ConstantClause",
             Self::FieldSymbolsDecl => "FieldSymbolsDecl",
