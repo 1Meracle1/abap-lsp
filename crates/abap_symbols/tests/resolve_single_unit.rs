@@ -428,6 +428,42 @@ APPEND ls_evt TO lt_evt.
 }
 
 #[test]
+fn resolves_modify_source_and_target() {
+    let src = r#"
+TYPES ty_trans TYPE BEGIN OF ty_trans,
+        id TYPE i,
+      END OF ty_trans.
+DATA ls_trans TYPE ty_trans.
+DATA zatt_trans_cust TYPE ty_trans.
+
+MODIFY zatt_trans_cust FROM ls_trans.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///modify_stmt.abap", src, &parsed);
+
+    for name in ["zatt_trans_cust", "ls_trans"] {
+        assert!(
+            unit.references.iter().any(|reference| {
+                reference.namespace == Namespace::Value
+                    && reference.kind == ReferenceKind::Identifier
+                    && reference.name.as_ref() == name
+                    && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+            }),
+            "expected resolved MODIFY reference for `{name}`, refs={:?} diagnostics={:?}",
+            unit.references,
+            unit.diagnostics
+        );
+        assert!(
+            !unit.diagnostics.iter().any(|diag| {
+                diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains(name)
+            }),
+            "unexpected MODIFY diagnostics for `{name}`: {:?}",
+            unit.diagnostics
+        );
+    }
+}
+
+#[test]
 fn resolves_read_table_source_and_target() {
     let src = r#"
 TYPES ty_trn_tab TYPE STANDARD TABLE OF string WITH DEFAULT KEY.

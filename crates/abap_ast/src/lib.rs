@@ -162,6 +162,8 @@ pub enum SyntaxKind {
     SelectStmt,
     /// `APPEND ... TO ... .`
     AppendStmt,
+    /// `MODIFY ... FROM ... .`
+    ModifyStmt,
     /// `ASSERT ... .`
     AssertStmt,
     /// `CHECK ... .`
@@ -273,6 +275,7 @@ impl SyntaxKind {
             Self::MethodDecl => "MethodDecl",
             Self::SelectStmt => "SelectStmt",
             Self::AppendStmt => "AppendStmt",
+            Self::ModifyStmt => "ModifyStmt",
             Self::AssertStmt => "AssertStmt",
             Self::CheckStmt => "CheckStmt",
             Self::PerformStmt => "PerformStmt",

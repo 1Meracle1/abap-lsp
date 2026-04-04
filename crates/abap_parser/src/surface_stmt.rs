@@ -1074,6 +1074,17 @@ fn append_clause_starts(source: &str, tokens: &[Token], idx: usize) -> bool {
                     .is_some_and(|next| is_keyword(source, next, "into"))))
 }
 
+fn modify_clause_starts(source: &str, tokens: &[Token], idx: usize) -> bool {
+    let Some(token) = tokens.get(idx) else {
+        return false;
+    };
+    token.kind == TokenKind::Ident
+        && (is_keyword(source, token, "from")
+            || is_keyword(source, token, "index")
+            || is_keyword(source, token, "transporting")
+            || is_keyword(source, token, "where"))
+}
+
 fn scan_read_table_key_value_end(
     source: &str,
     tokens: &[Token],
@@ -2117,6 +2128,126 @@ pub fn try_parse_append_stmt(
     ))
 }
 
+pub fn try_parse_modify_stmt(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    errors: &mut Vec<crate::ParseError>,
+) -> Option<(NodeId, usize)> {
+    let modify_tok = tokens.get(idx)?;
+    if !is_keyword(source, modify_tok, "modify") {
+        return None;
+    }
+    Some(parse_stmt_with_period_scan(
+        b,
+        source,
+        tokens,
+        idx,
+        idx + 1,
+        modify_tok,
+        "syntax error: expected '.' after MODIFY statement",
+        errors,
+        |_, end_exclusive| end_exclusive,
+        |b, period_i, _errors| {
+            let clause_starts =
+                |tokens: &[Token], idx: usize| modify_clause_starts(source, tokens, idx);
+            let Some(from_idx) =
+                find_top_level_keyword_index(source, tokens, idx + 1, period_i, "from")
+            else {
+                let children = token_children(b, tokens, idx, period_i + 1);
+                let node = b.branch(
+                    SyntaxKind::Error,
+                    modify_tok.range.start..tokens[period_i].range.end,
+                    &children,
+                );
+                return (node, period_i + 1);
+            };
+
+            let mut children = Vec::with_capacity(period_i - idx + 1);
+            children.push(token_leaf(b, modify_tok));
+
+            let mut target_start = idx + 1;
+            if tokens
+                .get(target_start)
+                .is_some_and(|token| is_keyword(source, token, "table"))
+            {
+                children.push(token_leaf(b, &tokens[target_start]));
+                target_start += 1;
+            }
+
+            let target_end = scan_and_push_expr_clause(
+                b,
+                &mut children,
+                source,
+                tokens,
+                target_start,
+                from_idx,
+                Some(modify_tok),
+                &clause_starts,
+            );
+            push_token_children(b, &mut children, tokens, target_end, from_idx);
+
+            children.push(token_leaf(b, &tokens[from_idx]));
+            let mut i = from_idx + 1;
+            if tokens
+                .get(i)
+                .is_some_and(|token| is_keyword(source, token, "table"))
+            {
+                children.push(token_leaf(b, &tokens[i]));
+                i += 1;
+            }
+            i = scan_and_push_expr_clause(
+                b,
+                &mut children,
+                source,
+                tokens,
+                i,
+                period_i,
+                Some(&tokens[from_idx]),
+                &clause_starts,
+            );
+
+            while i < period_i {
+                let token = &tokens[i];
+                if is_keyword(source, token, "index") || is_keyword(source, token, "where") {
+                    children.push(token_leaf(b, token));
+                    i = scan_and_push_expr_clause(
+                        b,
+                        &mut children,
+                        source,
+                        tokens,
+                        i + 1,
+                        period_i,
+                        Some(token),
+                        &clause_starts,
+                    );
+                    continue;
+                }
+                if is_keyword(source, token, "transporting") {
+                    children.push(token_leaf(b, token));
+                    i += 1;
+                    while i < period_i && !clause_starts(tokens, i) {
+                        children.push(token_leaf(b, &tokens[i]));
+                        i += 1;
+                    }
+                    continue;
+                }
+                children.push(token_leaf(b, token));
+                i += 1;
+            }
+
+            children.push(token_leaf(b, &tokens[period_i]));
+            let node = b.branch(
+                SyntaxKind::ModifyStmt,
+                modify_tok.range.start..tokens[period_i].range.end,
+                &children,
+            );
+            (node, period_i + 1)
+        },
+    ))
+}
+
 pub fn try_parse_assign_keyword_stmt(
     b: &mut SyntaxTreeBuilder,
     source: &str,
@@ -2819,6 +2950,30 @@ END-OF-PAGE.\nWRITE 'e'.",
             .find_first_kind(parsed.file.root(), SyntaxKind::AppendStmt)
             .expect("append stmt");
         assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::TemplateExpr), 2);
+    }
+
+    #[test]
+    fn parses_modify_operands_as_ast_children() {
+        let parsed = crate::parse("MODIFY zatt_trans_cust FROM ls_trans.");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let stmt = parsed
+            .file
+            .find_first_kind(parsed.file.root(), SyntaxKind::ModifyStmt)
+            .expect("modify stmt");
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::TemplateExpr), 2);
+    }
+
+    #[test]
+    fn parses_modify_table_with_transporting_where() {
+        let parsed =
+            crate::parse("MODIFY TABLE lt_items FROM ls_item TRANSPORTING qty WHERE id = ls_item-id.");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::ModifyStmt),
+            1
+        );
     }
 
     #[test]

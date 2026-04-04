@@ -464,7 +464,9 @@ impl<'a> Collector<'a> {
                 self.walk_nested_block(node, scope, ScopeKind::CleanupClause)
             }
             SyntaxKind::SelectStmt => self.walk_nested_block(node, scope, ScopeKind::SelectBlock),
-            SyntaxKind::AppendStmt | SyntaxKind::ReadTableStmt => self.walk_children(node, scope),
+            SyntaxKind::AppendStmt | SyntaxKind::ModifyStmt | SyntaxKind::ReadTableStmt => {
+                self.walk_children(node, scope)
+            }
             SyntaxKind::TypeRefSimple => self.collect_type_ref(node, scope),
             SyntaxKind::ExprIdent
             | SyntaxKind::SelectorExpr
