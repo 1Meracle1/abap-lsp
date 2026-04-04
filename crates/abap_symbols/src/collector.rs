@@ -11,7 +11,8 @@ use crate::def_map::{
     ClassInheritanceData, ClassMemberData, ClassMemberKind, ClassMemberParameterData, Diagnostic,
     DiagnosticKind, FieldAccess, FieldAccessSegment, FieldTypeRefData, FormParameterData,
     FormParameterPassingKind, FormParameterSection, FormRoutineData, IncludeEdge,
-    NamedArgumentAccess, NamedArgumentTarget, PerformArgumentData, PerformCallData,
+    NamedArgumentAccess, NamedArgumentSection, NamedArgumentTarget, PerformArgumentData,
+    PerformCallData,
     PerformParameterSection, ReferenceData, ReferenceKind, StructureData, StructureFieldData,
     SymbolData, SymbolKind, UnitAnalysis, Visibility,
 };
@@ -2423,12 +2424,13 @@ impl<'a> Collector<'a> {
                             scope,
                             NamedArgumentTarget::Constructor { type_name },
                         );
+                    } else {
+                        self.collect_token_expression_refs(
+                            &tokens[lparen_idx + 1..rparen_idx],
+                            scope,
+                            true,
+                        );
                     }
-                    self.collect_token_expression_refs(
-                        &tokens[lparen_idx + 1..rparen_idx],
-                        scope,
-                        true,
-                    );
                 }
                 for child in self.file.children(node) {
                     if self.file.kind(child) != SyntaxKind::Token {
@@ -2480,6 +2482,9 @@ impl<'a> Collector<'a> {
         }
         self.collect_perform_stmt(&significant, scope);
         self.collect_create_object_stmt(&significant, scope);
+        if self.collect_call_method_stmt(&significant, scope) {
+            return;
+        }
         self.collect_token_expression_refs(&significant, scope, false);
     }
 
@@ -2789,12 +2794,13 @@ impl<'a> Collector<'a> {
                                         method_name,
                                     },
                                 );
+                            } else {
+                                self.collect_token_expression_refs(
+                                    &tokens[idx + 1..end_idx],
+                                    scope,
+                                    true,
+                                );
                             }
-                            self.collect_token_expression_refs(
-                                &tokens[idx + 1..end_idx],
-                                scope,
-                                true,
-                            );
                             idx = end_idx + 1;
                         }
                         continue;
@@ -2854,8 +2860,9 @@ impl<'a> Collector<'a> {
                     scope,
                     NamedArgumentTarget::Constructor { type_name: name },
                 );
+            } else {
+                self.collect_token_expression_refs(&tokens[lparen_idx + 1..rparen_idx], scope, true);
             }
-            self.collect_token_expression_refs(&tokens[lparen_idx + 1..rparen_idx], scope, true);
             return rparen_idx + 1;
         }
         lparen_idx + 1
@@ -2871,19 +2878,47 @@ impl<'a> Collector<'a> {
         })
     }
 
-    fn collect_named_arguments_from_tokens(
-        &mut self,
-        tokens: &[&Token],
-        scope: ScopeId,
-        target: NamedArgumentTarget,
-    ) {
+    fn named_argument_section(&self, token: &Token) -> Option<NamedArgumentSection> {
+        if self.token_matches_keyword(token, "exporting") {
+            return Some(NamedArgumentSection::Exporting);
+        }
+        if self.token_matches_keyword(token, "importing") {
+            return Some(NamedArgumentSection::Importing);
+        }
+        if self.token_matches_keyword(token, "changing") {
+            return Some(NamedArgumentSection::Changing);
+        }
+        if self.token_matches_keyword(token, "receiving") {
+            return Some(NamedArgumentSection::Receiving);
+        }
+        if self.token_matches_keyword(token, "exceptions") {
+            return Some(NamedArgumentSection::Exceptions);
+        }
+        None
+    }
+
+    fn named_argument_section_allows_inline_target(
+        &self,
+        section: Option<NamedArgumentSection>,
+    ) -> bool {
+        matches!(
+            section,
+            Some(
+                NamedArgumentSection::Importing
+                    | NamedArgumentSection::Changing
+                    | NamedArgumentSection::Receiving
+            )
+        )
+    }
+
+    fn call_argument_value_end(&self, tokens: &[&Token], start_idx: usize) -> usize {
         let mut paren = 0i32;
         let mut bracket = 0i32;
         let mut brace = 0i32;
-        for window in tokens.windows(2) {
-            let current = window[0];
-            let next = window[1];
-            match current.kind {
+        let mut idx = start_idx;
+        while idx < tokens.len() {
+            let token = tokens[idx];
+            match token.kind {
                 TokenKind::LParen => paren += 1,
                 TokenKind::RParen => paren -= 1,
                 TokenKind::LBracket => bracket += 1,
@@ -2892,18 +2927,223 @@ impl<'a> Collector<'a> {
                 TokenKind::RBrace => brace -= 1,
                 _ => {}
             }
-            if paren != 0 || bracket != 0 || brace != 0 {
-                continue;
+            if paren == 0 && bracket == 0 && brace == 0 {
+                if token.kind == TokenKind::Ident && self.named_argument_section(token).is_some() {
+                    break;
+                }
+                if token.kind == TokenKind::Ident
+                    && tokens.get(idx + 1).map(|next| next.kind) == Some(TokenKind::Eq)
+                {
+                    break;
+                }
             }
-            if current.kind == TokenKind::Ident && next.kind == TokenKind::Eq {
-                self.named_arguments.push(NamedArgumentAccess {
+            idx += 1;
+        }
+        idx
+    }
+
+    fn resolve_method_target_class_symbol(
+        &self,
+        scope: ScopeId,
+        base_namespace: Namespace,
+        base_name: &Arc<str>,
+    ) -> Option<SymbolId> {
+        match base_namespace {
+            Namespace::Type => self
+                .lookup_symbol_in_scope_chain(scope, Namespace::Type, base_name.as_ref())
+                .filter(|&symbol_id| self.symbol(symbol_id).kind == SymbolKind::Class),
+            Namespace::Value => {
+                let symbol_id =
+                    self.lookup_symbol_in_scope_chain(scope, Namespace::Value, base_name.as_ref())?;
+                let declared_type = self.symbol(symbol_id).declared_type.as_ref()?;
+                if !declared_type.is_ref || !declared_type.field_path.is_empty() {
+                    return None;
+                }
+                self.lookup_symbol_in_scope_chain(
                     scope,
-                    name: Arc::<str>::from(current.lexeme(self.source).to_ascii_lowercase()),
-                    range: current.range.clone(),
-                    target: target.clone(),
-                });
+                    declared_type.namespace,
+                    declared_type.base_name.as_ref(),
+                )
+                .filter(|&class_symbol_id| self.symbol(class_symbol_id).kind == SymbolKind::Class)
+            }
+            Namespace::Routine => None,
+        }
+    }
+
+    fn resolve_named_argument_declared_type(
+        &self,
+        scope: ScopeId,
+        target: &NamedArgumentTarget,
+        argument_name: &Arc<str>,
+    ) -> Option<FieldTypeRefData> {
+        match target {
+            NamedArgumentTarget::Constructor { type_name } => {
+                let class_symbol =
+                    self.lookup_symbol_in_scope_chain(scope, Namespace::Type, type_name.as_ref())?;
+                let signature = self.class_method_signature(class_symbol, "constructor", scope)?;
+                signature
+                    .parameters
+                    .iter()
+                    .find(|param| param.name == *argument_name)
+                    .and_then(|param| param.declared_type.clone())
+            }
+            NamedArgumentTarget::Routine { .. } => None,
+            NamedArgumentTarget::Method {
+                base_namespace,
+                base_name,
+                method_name,
+            } => {
+                let class_symbol = self.resolve_method_target_class_symbol(
+                    scope,
+                    *base_namespace,
+                    base_name,
+                )?;
+                let signature =
+                    self.class_method_signature(class_symbol, method_name.as_ref(), scope)?;
+                signature
+                    .parameters
+                    .iter()
+                    .find(|param| param.name == *argument_name)
+                    .and_then(|param| param.declared_type.clone())
             }
         }
+    }
+
+    fn declare_inline_named_argument_target(
+        &mut self,
+        scope: ScopeId,
+        target: &NamedArgumentTarget,
+        section: Option<NamedArgumentSection>,
+        argument_name: Arc<str>,
+        value_tokens: &[&Token],
+    ) -> bool {
+        if !self.named_argument_section_allows_inline_target(section) {
+            return false;
+        }
+        let mut idx = 0usize;
+        while matches!(
+            value_tokens.get(idx).map(|token| token.kind),
+            Some(TokenKind::Comment)
+        ) {
+            idx += 1;
+        }
+        let Some(token) = value_tokens.get(idx) else {
+            return false;
+        };
+        let declared_type = self.resolve_named_argument_declared_type(scope, target, &argument_name);
+        let structure = declared_type
+            .as_ref()
+            .and_then(|type_ref| self.resolve_field_type_ref(scope, type_ref));
+        if self.token_matches_keyword(token, "data")
+            && value_tokens.get(idx + 1).map(|token| token.kind) == Some(TokenKind::LParen)
+            && let Some(name_tok) = value_tokens.get(idx + 2)
+            && name_tok.kind == TokenKind::Ident
+            && value_tokens.get(idx + 3).map(|token| token.kind) == Some(TokenKind::RParen)
+        {
+            self.declare_symbol(
+                scope,
+                Arc::<str>::from(name_tok.lexeme(self.source).to_ascii_lowercase()),
+                SymbolKind::Variable,
+                name_tok.range.clone(),
+                structure,
+                declared_type,
+            );
+            return true;
+        }
+        if self.token_matches_keyword(token, "field")
+            && value_tokens.get(idx + 1).map(|token| token.kind) == Some(TokenKind::Minus)
+            && value_tokens
+                .get(idx + 2)
+                .is_some_and(|token| self.token_matches_keyword(token, "symbol"))
+            && value_tokens.get(idx + 3).map(|token| token.kind) == Some(TokenKind::LParen)
+            && let Some(name_tok) = value_tokens.get(idx + 4)
+            && name_tok.kind == TokenKind::Ident
+            && value_tokens.get(idx + 5).map(|token| token.kind) == Some(TokenKind::RParen)
+        {
+            self.declare_symbol(
+                scope,
+                Arc::<str>::from(name_tok.lexeme(self.source).to_ascii_lowercase()),
+                SymbolKind::FieldSymbol,
+                name_tok.range.clone(),
+                structure,
+                declared_type,
+            );
+            return true;
+        }
+        false
+    }
+
+    fn collect_call_argument_tokens(
+        &mut self,
+        tokens: &[&Token],
+        scope: ScopeId,
+        target: NamedArgumentTarget,
+    ) {
+        let mut idx = 0usize;
+        let mut segment_start = 0usize;
+        let mut current_section = None;
+        while idx < tokens.len() {
+            let token = tokens[idx];
+            if token.kind == TokenKind::Comment {
+                idx += 1;
+                continue;
+            }
+            if token.kind == TokenKind::Ident
+                && let Some(section) = self.named_argument_section(token)
+            {
+                if segment_start < idx {
+                    self.collect_token_expression_refs(&tokens[segment_start..idx], scope, true);
+                }
+                current_section = Some(section);
+                idx += 1;
+                segment_start = idx;
+                continue;
+            }
+            if token.kind == TokenKind::Ident
+                && tokens.get(idx + 1).map(|next| next.kind) == Some(TokenKind::Eq)
+            {
+                if segment_start < idx {
+                    self.collect_token_expression_refs(&tokens[segment_start..idx], scope, true);
+                }
+                let argument_name =
+                    Arc::<str>::from(token.lexeme(self.source).to_ascii_lowercase());
+                let value_start = idx + 2;
+                let value_end = self.call_argument_value_end(tokens, value_start);
+                self.named_arguments.push(NamedArgumentAccess {
+                    scope,
+                    name: Arc::clone(&argument_name),
+                    range: token.range.clone(),
+                    section: current_section,
+                    target: target.clone(),
+                });
+                let consumed_inline_target = self.declare_inline_named_argument_target(
+                    scope,
+                    &target,
+                    current_section,
+                    argument_name,
+                    &tokens[value_start..value_end],
+                );
+                if !consumed_inline_target {
+                    self.collect_token_expression_refs(&tokens[value_start..value_end], scope, true);
+                }
+                idx = value_end;
+                segment_start = idx;
+                continue;
+            }
+            idx += 1;
+        }
+        if segment_start < tokens.len() {
+            self.collect_token_expression_refs(&tokens[segment_start..], scope, true);
+        }
+    }
+
+    fn collect_named_arguments_from_tokens(
+        &mut self,
+        tokens: &[&Token],
+        scope: ScopeId,
+        target: NamedArgumentTarget,
+    ) {
+        self.collect_call_argument_tokens(tokens, scope, target);
     }
 
     fn token_is_expression_value_ident(
@@ -3160,6 +3400,55 @@ impl<'a> Collector<'a> {
             }
             break;
         }
+    }
+
+    fn collect_call_method_stmt(&mut self, tokens: &[&Token], scope: ScopeId) -> bool {
+        if tokens.len() < 3
+            || !self.token_matches_keyword(tokens[0], "call")
+            || !self.token_matches_keyword(tokens[1], "method")
+        {
+            return false;
+        }
+        let Some((next_idx, namespace, base_name, base_range, field_path)) =
+            self.consume_selector_access_from_tokens(tokens, 2)
+        else {
+            return false;
+        };
+        let method_name = field_path.last().map(|segment| Arc::clone(&segment.name));
+        let kind = if namespace == Namespace::Type {
+            ReferenceKind::StaticTarget
+        } else {
+            ReferenceKind::Identifier
+        };
+        self.add_reference(scope, Arc::clone(&base_name), namespace, kind, base_range);
+        if !field_path.is_empty() {
+            self.field_accesses.push(FieldAccess {
+                scope,
+                base_namespace: namespace,
+                base_name: Arc::clone(&base_name),
+                field_path,
+                in_type_position: false,
+            });
+        }
+        let args_end = tokens
+            .last()
+            .filter(|token| token.kind == TokenKind::Period)
+            .map(|_| tokens.len() - 1)
+            .unwrap_or(tokens.len());
+        if let Some(method_name) = method_name
+            && next_idx < args_end
+        {
+            self.collect_call_argument_tokens(
+                &tokens[next_idx..args_end],
+                scope,
+                NamedArgumentTarget::Method {
+                    base_namespace: namespace,
+                    base_name,
+                    method_name,
+                },
+            );
+        }
+        true
     }
 
     fn collect_selector_expr(&mut self, node: NodeId, scope: ScopeId) {

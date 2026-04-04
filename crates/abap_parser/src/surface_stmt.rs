@@ -1028,6 +1028,26 @@ mod tests {
     }
 
     #[test]
+    fn parses_legacy_call_method_with_inline_importing_targets_as_one_statement() {
+        let parsed = crate::parse(
+            "CALL METHOD zcl_demo=>get_event_data\n  EXPORTING\n    iv_evtid = mv_evtid\n  IMPORTING\n    es_evt = DATA(ls_evt)\n    et_items = DATA(lt_items).",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::SimpleStmt),
+            1
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::AssignStmt),
+            0
+        );
+    }
+
+    #[test]
     fn parses_create_object_with_exporting_clause_as_one_statement() {
         let parsed = crate::parse("CREATE OBJECT lo_client\n  EXPORTING\n    iv_dest = lv_dest.");
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
@@ -1165,6 +1185,26 @@ mod tests {
     fn parses_direct_static_method_call_with_named_args_as_simple_stmt() {
         let parsed = crate::parse(
             "cl_abap_message_digest=>calculate_hash_for_char(\n  EXPORTING\n    if_algorithm = lv_algorithm\n    if_data      = lv_data\n  IMPORTING\n    ef_hashstring = lv_hashstring\n).",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::SimpleStmt),
+            1
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::AssignStmt),
+            0
+        );
+    }
+
+    #[test]
+    fn parses_direct_static_method_call_with_inline_importing_data_targets() {
+        let parsed = crate::parse(
+            "zcl_demo=>get_event_data(\n  EXPORTING\n    iv_evtid = mv_evtid\n  IMPORTING\n    es_evt = DATA(ls_evt)\n    et_items = DATA(lt_items)\n).",
         );
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
         assert_eq!(

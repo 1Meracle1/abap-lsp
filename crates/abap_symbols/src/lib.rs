@@ -12,7 +12,7 @@ pub use def_map::{
     ClassInheritanceData, ClassMemberData, ClassMemberKind, ClassMemberParameterData, Diagnostic,
     DiagnosticKind, FieldAccess, FieldAccessSegment, FieldTypeRefData, FormParameterData,
     FormParameterPassingKind, FormParameterSection, FormRoutineData, IncludeEdge,
-    NamedArgumentAccess, NamedArgumentTarget, PerformArgumentData, PerformCallData,
+    NamedArgumentAccess, NamedArgumentSection, NamedArgumentTarget, PerformArgumentData, PerformCallData,
     PerformParameterSection, ReferenceData, ReferenceKind, Resolution, StructureData,
     StructureFieldData, StructureFieldInfo, StructureFieldShape, SymbolData, SymbolKind,
     UnitAnalysis, Visibility,

@@ -4,7 +4,10 @@ use abap_ast::SyntaxKind;
 use abap_ast::arena::{NodeId, SyntaxTreeBuilder};
 use abap_lexer::{Token, TokenKind, have_space_between};
 
-use crate::stmt_period::{StmtPeriodScan, scan_until_statement_period, unterminated_err_end};
+use crate::stmt_period::{
+    StmtPeriodScan, is_definite_stmt_lead_keyword, scan_until_statement_period, token_begins_line,
+    unterminated_err_end,
+};
 
 fn token_leaf(b: &mut SyntaxTreeBuilder, token: &Token) -> NodeId {
     b.leaf(SyntaxKind::Token, token.range.clone())
@@ -277,6 +280,15 @@ fn parse_type_ref_tokens(
                     .any(|kw| tok.lexeme(source).eq_ignore_ascii_case(kw))
             {
                 break;
+            }
+            if i > idx && tok.kind == TokenKind::Ident && token_begins_line(source, tok) {
+                if is_definite_stmt_lead_keyword(source, tok) {
+                    break;
+                }
+                let next_kind = tokens.get(i + 1).map(|next| next.kind);
+                if matches!(next_kind, Some(TokenKind::Eq | TokenKind::QuestionEq)) {
+                    break;
+                }
             }
         }
         match tok.kind {

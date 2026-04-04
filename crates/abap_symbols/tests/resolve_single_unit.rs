@@ -1836,6 +1836,152 @@ START-OF-SELECTION.
 }
 
 #[test]
+fn resolves_static_method_call_sections_and_inline_importing_targets() {
+    let src = r#"
+CLASS zcl_demo DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS get_event_data
+      IMPORTING iv_evtid TYPE i
+      EXPORTING es_evt TYPE string.
+    CLASS-METHODS get_hash
+      IMPORTING iv_text TYPE string
+      RETURNING VALUE(rv_hash) TYPE string.
+ENDCLASS.
+
+CLASS zcl_demo IMPLEMENTATION.
+ENDCLASS.
+
+START-OF-SELECTION.
+  DATA mv_evtid TYPE i.
+  DATA mv_text TYPE string.
+  zcl_demo=>get_event_data(
+    EXPORTING
+      iv_evtid = mv_evtid
+    IMPORTING
+      es_evt = DATA(ls_evt) ).
+  zcl_demo=>get_hash(
+    EXPORTING
+      iv_text = mv_text
+    RECEIVING
+      rv_hash = DATA(lv_hash) ).
+  ls_evt = `done`.
+  lv_hash = mv_text.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///static_method_call_sections.abap", src, &parsed);
+
+    for name in ["ls_evt", "lv_hash"] {
+        let symbol = unit
+            .symbols
+            .iter()
+            .find(|symbol| {
+                symbol.kind == abap_symbols::SymbolKind::Variable && symbol.name.as_ref() == name
+            })
+            .unwrap_or_else(|| panic!("expected inline variable symbol for `{name}`"));
+        let declared_type = symbol
+            .declared_type
+            .as_ref()
+            .unwrap_or_else(|| panic!("expected declared type for `{name}`"));
+        assert_eq!(declared_type.namespace, Namespace::Type);
+        assert_eq!(declared_type.base_name.as_ref(), "string");
+        assert!(declared_type.field_path.is_empty());
+    }
+
+    assert!(unit.named_arguments.iter().any(|access| {
+        access.name.as_ref() == "es_evt"
+            && access.section == Some(abap_symbols::NamedArgumentSection::Importing)
+    }));
+    assert!(unit.named_arguments.iter().any(|access| {
+        access.name.as_ref() == "rv_hash"
+            && access.section == Some(abap_symbols::NamedArgumentSection::Receiving)
+    }));
+
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            matches!(
+                diag.kind,
+                DiagnosticKind::UnresolvedReference | DiagnosticKind::UnknownField
+            )
+        }),
+        "unexpected diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn resolves_legacy_call_method_sections_and_inline_importing_targets() {
+    let src = r#"
+CLASS zcl_demo DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS get_event_data
+      IMPORTING iv_evtid TYPE i
+      EXPORTING es_evt TYPE string.
+    CLASS-METHODS get_hash
+      IMPORTING iv_text TYPE string
+      RETURNING VALUE(rv_hash) TYPE string.
+ENDCLASS.
+
+CLASS zcl_demo IMPLEMENTATION.
+ENDCLASS.
+
+START-OF-SELECTION.
+  DATA mv_evtid TYPE i.
+  DATA mv_text TYPE string.
+  CALL METHOD zcl_demo=>get_event_data
+    EXPORTING
+      iv_evtid = mv_evtid
+    IMPORTING
+      es_evt = DATA(ls_evt).
+  CALL METHOD zcl_demo=>get_hash
+    EXPORTING
+      iv_text = mv_text
+    RECEIVING
+      rv_hash = DATA(lv_hash).
+  ls_evt = `done`.
+  lv_hash = mv_text.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///legacy_call_method_sections.abap", src, &parsed);
+
+    for name in ["ls_evt", "lv_hash"] {
+        let symbol = unit
+            .symbols
+            .iter()
+            .find(|symbol| {
+                symbol.kind == abap_symbols::SymbolKind::Variable && symbol.name.as_ref() == name
+            })
+            .unwrap_or_else(|| panic!("expected inline variable symbol for `{name}`"));
+        let declared_type = symbol
+            .declared_type
+            .as_ref()
+            .unwrap_or_else(|| panic!("expected declared type for `{name}`"));
+        assert_eq!(declared_type.namespace, Namespace::Type);
+        assert_eq!(declared_type.base_name.as_ref(), "string");
+        assert!(declared_type.field_path.is_empty());
+    }
+
+    assert!(unit.named_arguments.iter().any(|access| {
+        access.name.as_ref() == "es_evt"
+            && access.section == Some(abap_symbols::NamedArgumentSection::Importing)
+    }));
+    assert!(unit.named_arguments.iter().any(|access| {
+        access.name.as_ref() == "rv_hash"
+            && access.section == Some(abap_symbols::NamedArgumentSection::Receiving)
+    }));
+
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            matches!(
+                diag.kind,
+                DiagnosticKind::UnresolvedReference | DiagnosticKind::UnknownField
+            )
+        }),
+        "unexpected diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn resolves_template_interpolation_references_and_method_accesses() {
     let src = r#"
 CLASS zcl_expr DEFINITION.

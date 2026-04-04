@@ -275,6 +275,15 @@ pub struct ClassInheritanceData {
     pub superclass_name: Arc<str>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NamedArgumentSection {
+    Exporting,
+    Importing,
+    Changing,
+    Receiving,
+    Exceptions,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NamedArgumentTarget {
     Constructor {
@@ -295,6 +304,7 @@ pub struct NamedArgumentAccess {
     pub scope: ScopeId,
     pub name: Arc<str>,
     pub range: TextRange,
+    pub section: Option<NamedArgumentSection>,
     pub target: NamedArgumentTarget,
 }
 
