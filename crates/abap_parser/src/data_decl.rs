@@ -4,10 +4,8 @@ use abap_ast::SyntaxKind;
 use abap_ast::arena::{NodeId, SyntaxTreeBuilder};
 use abap_lexer::{Token, TokenKind, have_space_between};
 
-use crate::stmt_period::{
-    StmtPeriodScan, is_definite_stmt_lead_keyword, scan_until_statement_period, token_begins_line,
-    unterminated_err_end,
-};
+use crate::stmt_period::{StmtPeriodScan, scan_until_statement_period, unterminated_err_end};
+use crate::type_ref::parse_type_ref_tokens;
 
 fn token_leaf(b: &mut SyntaxTreeBuilder, token: &Token) -> NodeId {
     b.leaf(SyntaxKind::Token, token.range.clone())
@@ -244,76 +242,6 @@ fn parse_data_decl_name(
     let start = first.range.start;
     let end = b.span(*children.last().unwrap()).end;
     Some((b.branch(SyntaxKind::DataDeclName, start..end, &children), i))
-}
-
-fn parse_type_ref_tokens(
-    b: &mut SyntaxTreeBuilder,
-    source: &str,
-    tokens: &[Token],
-    idx: usize,
-    stop_keywords: &[&str],
-) -> Option<(NodeId, usize)> {
-    let first = tokens.get(idx)?;
-    if matches!(
-        first.kind,
-        TokenKind::Comma | TokenKind::Period | TokenKind::Colon | TokenKind::Eof
-    ) {
-        return None;
-    }
-
-    let mut i = idx;
-    let mut paren = 0i32;
-    let mut bracket = 0i32;
-    let mut brace = 0i32;
-    while i < tokens.len() {
-        let tok = &tokens[i];
-        if paren == 0 && bracket == 0 && brace == 0 {
-            if matches!(
-                tok.kind,
-                TokenKind::Comma | TokenKind::Period | TokenKind::Eof
-            ) {
-                break;
-            }
-            if tok.kind == TokenKind::Ident
-                && stop_keywords
-                    .iter()
-                    .any(|kw| tok.lexeme(source).eq_ignore_ascii_case(kw))
-            {
-                break;
-            }
-            if i > idx && tok.kind == TokenKind::Ident && token_begins_line(source, tok) {
-                if is_definite_stmt_lead_keyword(source, tok) {
-                    break;
-                }
-                let next_kind = tokens.get(i + 1).map(|next| next.kind);
-                if matches!(next_kind, Some(TokenKind::Eq | TokenKind::QuestionEq)) {
-                    break;
-                }
-            }
-        }
-        match tok.kind {
-            TokenKind::LParen => paren += 1,
-            TokenKind::RParen => paren -= 1,
-            TokenKind::LBracket => bracket += 1,
-            TokenKind::RBracket => bracket -= 1,
-            TokenKind::LBrace => brace += 1,
-            TokenKind::RBrace => brace -= 1,
-            _ => {}
-        }
-        i += 1;
-    }
-    if i == idx {
-        return None;
-    }
-    let mut children = Vec::with_capacity(i - idx);
-    for t in &tokens[idx..i] {
-        children.push(token_leaf(b, t));
-    }
-    let end = b.span(*children.last().unwrap()).end;
-    Some((
-        b.branch(SyntaxKind::TypeRefSimple, first.range.start..end, &children),
-        i,
-    ))
 }
 
 fn parse_optional_length_spec(
@@ -881,6 +809,11 @@ mod tests {
         let file = tree_ok(src);
         let type_refs = file.count_kind(file.root(), SyntaxKind::TypeRefSimple);
         assert!(type_refs >= 1);
+        assert_eq!(
+            file.count_kind(file.root(), SyntaxKind::TypeRefSelectorChain),
+            1
+        );
+        assert_eq!(file.count_kind(file.root(), SyntaxKind::TypeRefName), 2);
     }
 
     #[test]
@@ -888,7 +821,19 @@ mod tests {
         let src = "DATA lo_instance TYPE REF TO some_class.";
         let file = tree_ok(src);
         assert_eq!(file.count_kind(file.root(), SyntaxKind::DataDecl), 1);
-        assert_eq!(file.count_kind(file.root(), SyntaxKind::TypeRefSimple), 1);
+        assert_eq!(file.count_kind(file.root(), SyntaxKind::TypeRefSimple), 2);
+        assert_eq!(file.count_kind(file.root(), SyntaxKind::TypeRefName), 1);
+    }
+
+    #[test]
+    fn table_wrapper_type_ref_nests_inner_type() {
+        let src = "TYPES ty_stmt_tab TYPE STANDARD TABLE OF REF TO zcl_stmt WITH DEFAULT KEY.";
+        let file = tree_ok(src);
+        let type_ref = file
+            .find_first_kind(file.root(), SyntaxKind::TypeRefSimple)
+            .expect("type ref");
+        assert_eq!(file.count_kind(type_ref, SyntaxKind::TypeRefName), 1);
+        assert!(file.count_kind(type_ref, SyntaxKind::TypeRefSimple) >= 2);
     }
 
     #[test]

@@ -147,7 +147,14 @@ fn try_parse_loop_inline_field_symbol_target(
         b.branch(
             SyntaxKind::FieldSymbolInlineDecl,
             field_tok.range.start..rparen.range.end,
-            &[field_leaf, minus_leaf, symbol_leaf, lparen_leaf, name, rparen_leaf],
+            &[
+                field_leaf,
+                minus_leaf,
+                symbol_leaf,
+                lparen_leaf,
+                name,
+                rparen_leaf,
+            ],
         ),
         next_idx + 1,
     ))
@@ -458,8 +465,7 @@ pub fn try_parse_loop_stmt(
                     let into_tok = &tokens[cursor + 1];
                     let target_start = skip_trivia(tokens, cursor + 2);
                     let target_end = scan_loop_expr_end(source, tokens, target_start, period_i);
-                    let mut clause_children =
-                        vec![token_leaf(b, token), token_leaf(b, into_tok)];
+                    let mut clause_children = vec![token_leaf(b, token), token_leaf(b, into_tok)];
                     if target_start < target_end {
                         let expr = parse_arithmetic_expr(
                             b,
@@ -530,7 +536,10 @@ pub fn try_parse_loop_stmt(
                 loop_tok.range.start..err_end,
                 &err_children,
             );
-            (vec![header], next_after_unterminated_scan(tokens, end_exclusive))
+            (
+                vec![header],
+                next_after_unterminated_scan(tokens, end_exclusive),
+            )
         }
     };
     let (body, after_body) =

@@ -809,7 +809,7 @@ impl<'a> Collector<'a> {
                         self.class_member_from_simple_stmt(class_symbol, visibility, &tokens)
                     {
                         if member.kind == ClassMemberKind::Method {
-                            let signature = self.parse_method_signature(&tokens);
+                            let signature = self.parse_method_signature(child, &tokens);
                             member.parameters = self.class_member_parameters(&signature);
                             self.declare_method_signature_parameter_symbols(
                                 self.file.range(child),
@@ -854,10 +854,11 @@ impl<'a> Collector<'a> {
     }
 
     fn simple_stmt_tokens(&self, node: NodeId) -> Vec<&'a Token> {
-        self.file
-            .children(node)
-            .filter_map(|child| self.token_for_node(child))
-            .collect()
+        let mut out = Vec::new();
+        for child in self.file.children(node) {
+            self.tokens_for_node_recursive(child, &mut out);
+        }
+        out
     }
 
     fn significant_stmt_tokens(&self, node: NodeId) -> Vec<&'a Token> {
@@ -1014,8 +1015,10 @@ impl<'a> Collector<'a> {
         rendered
     }
 
-    fn parse_method_signature(&self, tokens: &[&Token]) -> PendingMethodSignature {
+    fn parse_method_signature(&self, node: NodeId, tokens: &[&Token]) -> PendingMethodSignature {
         let mut signature = PendingMethodSignature::default();
+        let type_ref_nodes = self.direct_type_ref_children(node);
+        let mut type_ref_idx = 0usize;
         let significant: Vec<_> = tokens
             .iter()
             .copied()
@@ -1066,9 +1069,16 @@ impl<'a> Collector<'a> {
                 break;
             }
             if let Some(param_section) = section
-                && let Some((param, next_idx)) =
-                    self.try_consume_method_signature_parameter(&significant, idx, param_section)
+                && let Some((param, next_idx)) = self.try_consume_method_signature_parameter(
+                    &significant,
+                    idx,
+                    param_section,
+                    type_ref_nodes.get(type_ref_idx).copied(),
+                )
             {
+                if param.declared_type.is_some() {
+                    type_ref_idx += 1;
+                }
                 signature.parameters.push(param);
                 idx = next_idx;
                 continue;
@@ -1130,6 +1140,7 @@ impl<'a> Collector<'a> {
         tokens: &[&Token],
         idx: usize,
         section: MethodParamSection,
+        type_ref_node: Option<NodeId>,
     ) -> Option<(PendingMethodParameter, usize)> {
         let mut j = idx;
         while matches!(
@@ -1166,8 +1177,8 @@ impl<'a> Collector<'a> {
             PendingMethodParameter {
                 name,
                 range,
-                declared_type: self
-                    .field_type_ref_from_token_slice(tokens, expr_start, expr_end, clause_ns),
+                declared_type: type_ref_node
+                    .and_then(|node| self.field_type_ref_from_node(node, clause_ns)),
             },
             expr_end,
         ))
@@ -1356,11 +1367,18 @@ impl<'a> Collector<'a> {
     fn form_header_token_refs(&self, form_node: NodeId) -> Vec<&'a Token> {
         let mut out = Vec::new();
         for child in self.file.children(form_node) {
-            if self.file.kind(child) != SyntaxKind::Token {
-                break;
-            }
-            if let Some(token) = self.token_for_node(child) {
-                out.push(token);
+            match self.file.kind(child) {
+                SyntaxKind::Token => {
+                    if let Some(token) = self.token_for_node(child) {
+                        let is_period = token.kind == TokenKind::Period;
+                        out.push(token);
+                        if is_period {
+                            break;
+                        }
+                    }
+                }
+                SyntaxKind::TypeRefSimple => self.tokens_for_node_recursive(child, &mut out),
+                _ => break,
             }
         }
         out
@@ -1372,6 +1390,8 @@ impl<'a> Collector<'a> {
         form_scope: ScopeId,
     ) -> Vec<FormParameterData> {
         let tokens = self.form_header_token_refs(form_node);
+        let type_ref_nodes = self.direct_type_ref_children(form_node);
+        let mut type_ref_idx = 0usize;
         if tokens.len() < 2 {
             return Vec::new();
         }
@@ -1433,9 +1453,15 @@ impl<'a> Collector<'a> {
                     match section {
                         Some(FormHeaderParamSection::Using)
                         | Some(FormHeaderParamSection::Changing) => {
-                            if let Some(consumed) = self
-                                .try_consume_form_value_or_reference_param(&tokens, i, form_scope)
-                            {
+                            if let Some(consumed) = self.try_consume_form_value_or_reference_param(
+                                &tokens,
+                                i,
+                                form_scope,
+                                type_ref_nodes.get(type_ref_idx).copied(),
+                            ) {
+                                if self.symbol(consumed.symbol).declared_type.is_some() {
+                                    type_ref_idx += 1;
+                                }
                                 let current_section = section.expect("parameter section");
                                 parameters.push(FormParameterData {
                                     symbol: consumed.symbol,
@@ -1460,15 +1486,17 @@ impl<'a> Collector<'a> {
                                         {
                                             j += 1;
                                         }
-                                        let expr_start = j;
-                                        let expr_end = self
-                                            .skip_form_header_type_expression(&tokens, expr_start);
-                                        let dt = self.field_type_ref_from_token_slice(
-                                            &tokens,
-                                            expr_start,
-                                            expr_end,
-                                            Namespace::Type,
-                                        );
+                                        let expr_end =
+                                            self.skip_form_header_type_expression(&tokens, j);
+                                        let dt = type_ref_nodes
+                                            .get(type_ref_idx)
+                                            .copied()
+                                            .and_then(|node| {
+                                                self.field_type_ref_from_node(node, Namespace::Type)
+                                            });
+                                        if dt.is_some() {
+                                            type_ref_idx += 1;
+                                        }
                                         j = expr_end;
                                         dt
                                     }
@@ -1479,15 +1507,20 @@ impl<'a> Collector<'a> {
                                         {
                                             j += 1;
                                         }
-                                        let expr_start = j;
-                                        let expr_end = self
-                                            .skip_form_header_type_expression(&tokens, expr_start);
-                                        let dt = self.field_type_ref_from_token_slice(
-                                            &tokens,
-                                            expr_start,
-                                            expr_end,
-                                            Namespace::Value,
-                                        );
+                                        let expr_end =
+                                            self.skip_form_header_type_expression(&tokens, j);
+                                        let dt = type_ref_nodes
+                                            .get(type_ref_idx)
+                                            .copied()
+                                            .and_then(|node| {
+                                                self.field_type_ref_from_node(
+                                                    node,
+                                                    Namespace::Value,
+                                                )
+                                            });
+                                        if dt.is_some() {
+                                            type_ref_idx += 1;
+                                        }
                                         j = expr_end;
                                         dt
                                     }
@@ -1576,6 +1609,7 @@ impl<'a> Collector<'a> {
         tokens: &[&Token],
         i: usize,
         scope: ScopeId,
+        type_ref_node: Option<NodeId>,
     ) -> Option<FormConsumedParameter> {
         let kw = tokens.get(i)?;
         let passing = if self.token_matches_keyword(kw, "value") {
@@ -1637,7 +1671,7 @@ impl<'a> Collector<'a> {
         let expr_start = j;
         let expr_end = self.skip_form_header_type_expression(tokens, expr_start);
         let declared_type =
-            self.field_type_ref_from_token_slice(tokens, expr_start, expr_end, clause_ns);
+            type_ref_node.and_then(|node| self.field_type_ref_from_node(node, clause_ns));
         let symbol = self.declare_symbol(
             scope,
             name,
@@ -1808,129 +1842,9 @@ impl<'a> Collector<'a> {
         })
     }
 
-    fn collect_method_signature_type_refs(&mut self, tokens: &[&Token], scope: ScopeId) {
-        let Some((_, _, mut idx)) = self.class_member_statement_kind(tokens) else {
-            return;
-        };
-        while idx < tokens.len()
-            && matches!(
-                tokens[idx].kind,
-                TokenKind::Colon | TokenKind::Comma | TokenKind::Period
-            )
-        {
-            idx += 1;
-        }
-        if tokens.get(idx).map(|token| token.kind) != Some(TokenKind::Ident) {
-            return;
-        }
-        idx += 1;
-
-        let mut section = None;
-        let mut saw_parameter_section = false;
-        while idx < tokens.len() {
-            let token = tokens[idx];
-            if token.kind == TokenKind::Period {
-                break;
-            }
-            if let Some(next_idx) = self.method_signature_header_modifier_span(tokens, idx) {
-                if saw_parameter_section {
-                    break;
-                }
-                idx = next_idx;
-                continue;
-            }
-            section = match self.method_signature_section(token) {
-                Some(next_section) => {
-                    saw_parameter_section = true;
-                    idx += 1;
-                    Some(next_section)
-                }
-                None => section,
-            };
-            if self.method_signature_stops_parameter_scan(token) {
-                break;
-            }
-            if let Some(param_section) = section
-                && let Some((expr_start, expr_end, clause_ns, next_idx)) =
-                    self.method_signature_parameter_type_span(tokens, idx, param_section)
-            {
-                self.collect_type_ref_from_token_slice(
-                    tokens, expr_start, expr_end, clause_ns, scope,
-                );
-                idx = next_idx;
-                continue;
-            }
-            idx += 1;
-        }
-    }
-
-    fn method_signature_parameter_type_span(
-        &self,
-        tokens: &[&Token],
-        idx: usize,
-        section: MethodParamSection,
-    ) -> Option<(usize, usize, Namespace, usize)> {
-        let mut j = idx;
-        while matches!(
-            tokens.get(j).map(|token| token.kind),
-            Some(TokenKind::Colon | TokenKind::Comma)
-        ) {
-            j += 1;
-        }
-        let (_, _, mut j) = self.method_signature_parameter_name(tokens, j)?;
-        while matches!(
-            tokens.get(j).map(|token| token.kind),
-            Some(TokenKind::Colon | TokenKind::Comma)
-        ) {
-            j += 1;
-        }
-
-        let type_tok = tokens.get(j)?;
-        let clause_ns = if self.token_matches_keyword(type_tok, "type") {
-            Namespace::Type
-        } else if self.token_matches_keyword(type_tok, "like") {
-            Namespace::Value
-        } else if section == MethodParamSection::Returning
-            || section == MethodParamSection::Receiving
-        {
-            return None;
-        } else {
-            return None;
-        };
-        j += 1;
-        let expr_start = j;
-        let expr_end = self.skip_method_signature_type_expression(tokens, expr_start);
-        Some((expr_start, expr_end, clause_ns, expr_end))
-    }
-
-    fn collect_type_ref_from_token_slice(
-        &mut self,
-        tokens: &[&Token],
-        start: usize,
-        end: usize,
-        namespace: Namespace,
-        scope: ScopeId,
-    ) {
-        let Some((base_name, base_range, field_path)) =
-            self.type_ref_access_chain_from_tokens(&tokens[start..end])
-        else {
-            return;
-        };
-        self.add_reference(
-            scope,
-            Arc::clone(&base_name),
-            namespace,
-            ReferenceKind::TypeRef,
-            base_range,
-        );
-        if !field_path.is_empty() {
-            self.field_accesses.push(FieldAccess {
-                scope,
-                base_namespace: namespace,
-                base_name,
-                field_path,
-                in_type_position: true,
-            });
+    fn collect_method_signature_type_refs(&mut self, node: NodeId, scope: ScopeId) {
+        for type_ref in self.direct_type_ref_children(node) {
+            self.collect_type_ref(type_ref, scope);
         }
     }
 
@@ -2420,8 +2334,7 @@ impl<'a> Collector<'a> {
     }
 
     fn collect_methods_stmt(&mut self, node: NodeId, scope: ScopeId) {
-        let significant = self.significant_stmt_tokens(node);
-        self.collect_method_signature_type_refs(&significant, scope);
+        self.collect_method_signature_type_refs(node, scope);
     }
 
     fn collect_assert_or_check_stmt(&mut self, node: NodeId, scope: ScopeId) {
@@ -3557,12 +3470,82 @@ impl<'a> Collector<'a> {
         Some((structure.name, self.file.range(node), structure.fields))
     }
 
+    fn direct_type_ref_children(&self, node: NodeId) -> Vec<NodeId> {
+        self.file
+            .children(node)
+            .filter(|&child| self.file.kind(child) == SyntaxKind::TypeRefSimple)
+            .collect()
+    }
+
+    fn field_type_ref_from_node(
+        &self,
+        node: NodeId,
+        namespace: Namespace,
+    ) -> Option<FieldTypeRefData> {
+        let (_, is_ref, base_name, _, field_path) = self.type_ref_access_chain(node)?;
+        Some(FieldTypeRefData {
+            namespace,
+            is_ref,
+            base_name,
+            field_path: field_path.into_iter().map(|segment| segment.name).collect(),
+        })
+    }
+
+    fn typed_clause_type_ref_node(&self, node: NodeId) -> Option<(NodeId, Namespace)> {
+        let mut namespace = None;
+        for child in self.file.children(node) {
+            if let Some(token) = self.token_for_node(child) {
+                if self.token_matches_keyword(token, "type") {
+                    namespace = Some(Namespace::Type);
+                    continue;
+                }
+                if self.token_matches_keyword(token, "like") {
+                    namespace = Some(Namespace::Value);
+                    continue;
+                }
+            }
+            if let Some(namespace) = namespace
+                && self.file.kind(child) == SyntaxKind::TypeRefSimple
+            {
+                return Some((child, namespace));
+            }
+        }
+        None
+    }
+
     fn type_ref_from_typed_clause(&self, node: NodeId) -> Option<FieldTypeRefData> {
+        if let Some((type_ref_node, namespace)) = self.typed_clause_type_ref_node(node)
+            && let Some((_, is_ref, base_name, _, field_path)) =
+                self.type_ref_access_chain(type_ref_node)
+        {
+            return Some(FieldTypeRefData {
+                namespace,
+                is_ref,
+                base_name,
+                field_path: field_path.into_iter().map(|segment| segment.name).collect(),
+            });
+        }
         let (tokens, namespace, expr_start) = self.typed_clause_expr_tokens(node)?;
         self.field_type_ref_from_token_slice(&tokens, expr_start, tokens.len(), namespace)
     }
 
     fn structure_from_typed_clause(&self, node: NodeId, scope: ScopeId) -> Option<StructureId> {
+        if let Some((type_ref_node, namespace)) = self.typed_clause_type_ref_node(node)
+            && let Some((_, _, base_name, _, field_path)) =
+                self.type_ref_access_chain(type_ref_node)
+        {
+            let field_path_names = field_path
+                .iter()
+                .map(|segment| Arc::clone(&segment.name))
+                .collect::<Vec<_>>();
+            let symbol_id = self.lookup_structure_symbol(
+                scope,
+                namespace,
+                base_name.as_ref(),
+                !field_path_names.is_empty(),
+            )?;
+            return self.symbol(symbol_id).structure;
+        }
         let (tokens, namespace, expr_start) = self.typed_clause_expr_tokens(node)?;
         let (base_name, _, field_path) =
             self.type_ref_access_chain_from_tokens(&tokens[expr_start..tokens.len()])?;
@@ -4041,6 +4024,35 @@ impl<'a> Collector<'a> {
         }
     }
 
+    fn type_ref_selector_chain_access_chain(
+        &self,
+        node: NodeId,
+    ) -> Option<(Namespace, Arc<str>, TextRange, Vec<FieldAccessSegment>)> {
+        let mut children = self.file.children(node);
+        let base = children.next()?;
+        let (base_name, base_range) = self.node_name(base)?;
+        let mut namespace = None;
+        let mut field_path = Vec::new();
+        while let Some(op_node) = children.next() {
+            let segment_node = children.next()?;
+            let op = self.token_for_node(op_node)?;
+            if namespace.is_none() {
+                namespace = Some(match op.kind {
+                    TokenKind::FatArrow => Namespace::Type,
+                    _ => Namespace::Value,
+                });
+            }
+            let (name, range) = self.node_name(segment_node)?;
+            field_path.push(FieldAccessSegment { name, range });
+        }
+        Some((
+            namespace.unwrap_or(Namespace::Type),
+            base_name,
+            base_range,
+            field_path,
+        ))
+    }
+
     fn type_ref_access_chain(
         &self,
         node: NodeId,
@@ -4051,9 +4063,46 @@ impl<'a> Collector<'a> {
         TextRange,
         Vec<FieldAccessSegment>,
     )> {
-        let mut tokens = Vec::new();
-        self.tokens_for_node_recursive(node, &mut tokens);
-        self.type_ref_access_chain_from_filtered_tokens(&tokens)
+        match self.file.kind(node) {
+            SyntaxKind::TypeRefName => {
+                let (name, range) = self.node_name(node)?;
+                Some((Namespace::Type, false, name, range, Vec::new()))
+            }
+            SyntaxKind::TypeRefSelectorChain => {
+                let (namespace, base_name, base_range, field_path) =
+                    self.type_ref_selector_chain_access_chain(node)?;
+                Some((namespace, false, base_name, base_range, field_path))
+            }
+            SyntaxKind::TypeRefSimple => {
+                let mut is_ref = false;
+                for child in self.file.children(node) {
+                    if let Some(token) = self.token_for_node(child) {
+                        if self.token_matches_keyword(token, "ref") {
+                            is_ref = true;
+                        }
+                        continue;
+                    }
+                    if matches!(
+                        self.file.kind(child),
+                        SyntaxKind::TypeRefSimple
+                            | SyntaxKind::TypeRefName
+                            | SyntaxKind::TypeRefSelectorChain
+                    ) {
+                        let (namespace, nested_ref, base_name, base_range, field_path) =
+                            self.type_ref_access_chain(child)?;
+                        return Some((
+                            namespace,
+                            is_ref || nested_ref,
+                            base_name,
+                            base_range,
+                            field_path,
+                        ));
+                    }
+                }
+                None
+            }
+            _ => None,
+        }
     }
 }
 

@@ -70,6 +70,10 @@ pub enum SyntaxKind {
     DataDeclName,
     /// Type-like reference in declaration position (`i`, `LIKE LINE OF itab`, table types, `obj=>class` …).
     TypeRefSimple,
+    /// Base identifier inside a structured type reference.
+    TypeRefName,
+    /// Selector chain inside a structured type reference (`zif_demo=>ty_row`, `itab-line`, ...).
+    TypeRefSelectorChain,
     /// `VALUE expr` in a declaration.
     ValueClause,
     /// `LENGTH ...` / `DECIMALS ...` tail in declarations.
@@ -205,6 +209,8 @@ impl SyntaxKind {
             Self::FieldSymbolClause => "FieldSymbolClause",
             Self::DataDeclName => "DataDeclName",
             Self::TypeRefSimple => "TypeRefSimple",
+            Self::TypeRefName => "TypeRefName",
+            Self::TypeRefSelectorChain => "TypeRefSelectorChain",
             Self::ValueClause => "ValueClause",
             Self::LengthSpec => "LengthSpec",
             Self::AssignStmt => "AssignStmt",

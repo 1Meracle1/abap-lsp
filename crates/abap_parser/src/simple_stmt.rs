@@ -5,6 +5,7 @@ use abap_ast::arena::{NodeId, SyntaxTreeBuilder};
 use abap_lexer::{Token, TokenKind};
 
 use crate::stmt_period::{StmtPeriodScan, scan_until_statement_period, unterminated_err_end};
+use crate::type_ref::build_type_ref_node;
 
 fn token_leaf(b: &mut SyntaxTreeBuilder, token: &Token) -> NodeId {
     b.leaf(SyntaxKind::Token, token.range.clone())
@@ -56,6 +57,210 @@ fn method_signature_section(source: &str, token: &Token) -> bool {
         || token_matches_keyword(source, token, "returning")
         || token_matches_keyword(source, token, "raising")
         || token_matches_keyword(source, token, "exceptions")
+}
+
+fn method_signature_starts_parameter(
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    end: usize,
+) -> bool {
+    let Some(token) = tokens.get(idx) else {
+        return false;
+    };
+    if token.kind != TokenKind::Ident {
+        return false;
+    }
+    let mut j = idx;
+    if token_matches_keyword(source, token, "value")
+        || token_matches_keyword(source, token, "reference")
+    {
+        if tokens.get(j + 1).map(|t| t.kind) != Some(TokenKind::LParen)
+            || tokens.get(j + 2).map(|t| t.kind) != Some(TokenKind::Ident)
+            || tokens.get(j + 3).map(|t| t.kind) != Some(TokenKind::RParen)
+        {
+            return false;
+        }
+        j += 4;
+    } else {
+        j += 1;
+    }
+    while j < end && tokens[j].kind == TokenKind::Comment {
+        j += 1;
+    }
+    tokens.get(j).is_some_and(|t| {
+        token_matches_keyword(source, t, "type") || token_matches_keyword(source, t, "like")
+    })
+}
+
+fn skip_method_signature_type_expression(
+    source: &str,
+    tokens: &[Token],
+    mut idx: usize,
+    end: usize,
+) -> usize {
+    let mut depth = 0i32;
+    while idx < end {
+        let token = &tokens[idx];
+        match token.kind {
+            TokenKind::Comment => idx += 1,
+            TokenKind::LParen => {
+                depth += 1;
+                idx += 1;
+            }
+            TokenKind::RParen => {
+                depth -= 1;
+                idx += 1;
+            }
+            TokenKind::Period if depth == 0 => return idx,
+            _ if depth == 0
+                && (method_signature_section(source, token)
+                    || token_matches_keyword(source, token, "raising")
+                    || token_matches_keyword(source, token, "exceptions")
+                    || token_matches_keyword(source, token, "abstract")
+                    || token_matches_keyword(source, token, "final")
+                    || token_matches_keyword(source, token, "redefinition")
+                    || (token_matches_keyword(source, token, "for")
+                        && tokens.get(idx + 1).is_some_and(|next| {
+                            token_matches_keyword(source, next, "testing")
+                        }))
+                    || token_matches_keyword(source, token, "optional")
+                    || token_matches_keyword(source, token, "default")
+                    || token_matches_keyword(source, token, "preferred")
+                    || method_signature_starts_parameter(source, tokens, idx, end)) =>
+            {
+                return idx;
+            }
+            _ => idx += 1,
+        }
+    }
+    idx
+}
+
+fn methods_stmt_type_ref_ranges(
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    period_i: usize,
+) -> Vec<(usize, usize)> {
+    let significant: Vec<_> = tokens[idx..=period_i]
+        .iter()
+        .enumerate()
+        .filter(|(_, token)| token.kind != TokenKind::Comment)
+        .map(|(offset, token)| (idx + offset, token))
+        .collect();
+    let significant_tokens: Vec<_> = significant.iter().map(|(_, token)| *token).collect();
+    let Some(name_idx) = method_statement_name_idx(source, &significant_tokens) else {
+        return Vec::new();
+    };
+    if significant_tokens.get(name_idx).map(|token| token.kind) != Some(TokenKind::Ident) {
+        return Vec::new();
+    }
+    let mut ranges = Vec::new();
+    let mut i = name_idx + 1;
+    let mut saw_parameter_section = false;
+    while i < significant_tokens.len() {
+        let token = significant_tokens[i];
+        if token.kind == TokenKind::Period {
+            break;
+        }
+        if let Some(modifier_len) = method_header_modifier_len(source, &significant_tokens, i) {
+            if saw_parameter_section {
+                break;
+            }
+            i += modifier_len;
+            continue;
+        }
+        if method_signature_section(source, token) {
+            saw_parameter_section = true;
+            i += 1;
+            continue;
+        }
+        if token_matches_keyword(source, token, "raising")
+            || token_matches_keyword(source, token, "exceptions")
+        {
+            break;
+        }
+        let mut j = i;
+        while matches!(
+            significant_tokens.get(j).map(|token| token.kind),
+            Some(TokenKind::Colon | TokenKind::Comma)
+        ) {
+            j += 1;
+        }
+        let Some(name_token) = significant_tokens.get(j) else {
+            break;
+        };
+        let mut after_name = if token_matches_keyword(source, name_token, "value")
+            || token_matches_keyword(source, name_token, "reference")
+        {
+            j + 4
+        } else if name_token.kind == TokenKind::Ident {
+            j + 1
+        } else {
+            i += 1;
+            continue;
+        };
+        while matches!(
+            significant_tokens.get(after_name).map(|token| token.kind),
+            Some(TokenKind::Colon | TokenKind::Comma)
+        ) {
+            after_name += 1;
+        }
+        let Some(type_token) = significant_tokens.get(after_name) else {
+            break;
+        };
+        if !token_matches_keyword(source, type_token, "type")
+            && !token_matches_keyword(source, type_token, "like")
+        {
+            i += 1;
+            continue;
+        }
+        let raw_type_idx = significant[after_name].0;
+        let mut expr_start = raw_type_idx + 1;
+        while expr_start <= period_i && tokens[expr_start].kind == TokenKind::Comment {
+            expr_start += 1;
+        }
+        let expr_end =
+            skip_method_signature_type_expression(source, tokens, expr_start, period_i + 1);
+        if expr_start < expr_end {
+            ranges.push((expr_start, expr_end));
+        }
+        i = after_name + 1;
+    }
+    ranges
+}
+
+fn build_methods_stmt_children(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    period_i: usize,
+) -> Vec<NodeId> {
+    let ranges = methods_stmt_type_ref_ranges(source, tokens, idx, period_i);
+    if ranges.is_empty() {
+        return tokens[idx..=period_i]
+            .iter()
+            .map(|t| token_leaf(b, t))
+            .collect();
+    }
+    let mut children = Vec::with_capacity(period_i - idx + 1);
+    let mut i = idx;
+    let mut range_idx = 0usize;
+    while i <= period_i {
+        if let Some((start, end)) = ranges.get(range_idx).copied()
+            && i == start
+        {
+            children.push(build_type_ref_node(b, source, &tokens[start..end]));
+            i = end;
+            range_idx += 1;
+            continue;
+        }
+        children.push(token_leaf(b, &tokens[i]));
+        i += 1;
+    }
+    children
 }
 
 fn class_section_statement(source: &str, significant: &[&Token]) -> bool {
@@ -232,10 +437,14 @@ pub fn try_parse_simple_stmt(
                 .filter(|token| token.kind != TokenKind::Comment)
                 .collect();
             let kind = simple_stmt_kind(source, &significant);
-            let mut kids = Vec::with_capacity(period_i - idx + 1);
-            for t in &tokens[idx..=period_i] {
-                kids.push(token_leaf(b, t));
-            }
+            let kids = if kind == SyntaxKind::MethodsStmt {
+                build_methods_stmt_children(b, source, tokens, idx, period_i)
+            } else {
+                tokens[idx..=period_i]
+                    .iter()
+                    .map(|t| token_leaf(b, t))
+                    .collect()
+            };
             let node = b.branch(kind, first.range.start..period_tok.range.end, &kids);
             Some((node, period_i + 1))
         }
@@ -312,6 +521,28 @@ ENDCLASS.";
             parsed
                 .file
                 .count_kind(parsed.file.root(), SyntaxKind::MethodsStmt),
+            1
+        );
+    }
+
+    #[test]
+    fn methods_stmt_builds_structured_type_refs() {
+        let parsed = crate::parse(
+            "CLASS lcl DEFINITION.\n  PUBLIC SECTION.\n    METHODS run IMPORTING iv_x TYPE REF TO zif_demo=>ty_row.\nENDCLASS.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let methods = parsed
+            .file
+            .find_first_kind(parsed.file.root(), SyntaxKind::MethodsStmt)
+            .expect("methods stmt");
+        assert_eq!(
+            parsed.file.count_kind(methods, SyntaxKind::TypeRefSimple),
+            2
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(methods, SyntaxKind::TypeRefSelectorChain),
             1
         );
     }

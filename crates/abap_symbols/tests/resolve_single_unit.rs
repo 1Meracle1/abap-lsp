@@ -82,6 +82,40 @@ ENDFORM.
 }
 
 #[test]
+fn form_header_collects_structured_type_ref() {
+    let src = r#"
+INTERFACE zif_demo.
+  TYPES ty_row TYPE string.
+ENDINTERFACE.
+
+FORM run USING VALUE(io_row) TYPE REF TO zif_demo=>ty_row.
+ENDFORM.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///form_type_ref.abap", src, &parsed);
+
+    let io_row = unit
+        .symbols
+        .iter()
+        .find(|symbol| {
+            symbol.kind == abap_symbols::SymbolKind::Parameter && symbol.name.as_ref() == "io_row"
+        })
+        .expect("io_row parameter");
+    let dt = io_row.declared_type.as_ref().expect("declared type");
+    assert_eq!(dt.namespace, Namespace::Type);
+    assert!(dt.is_ref);
+    assert_eq!(dt.base_name.as_ref(), "zif_demo");
+    assert_eq!(dt.field_path.len(), 1);
+    assert_eq!(dt.field_path[0].as_ref(), "ty_row");
+
+    assert!(unit.references.iter().any(|reference| {
+        reference.kind == ReferenceKind::TypeRef
+            && reference.namespace == Namespace::Type
+            && reference.name.as_ref() == "zif_demo"
+    }));
+}
+
+#[test]
 fn chained_data_with_table_type_declares_all_symbols_without_unresolved_diagnostics() {
     let src = r#"
 FORM some_form.
@@ -111,6 +145,32 @@ ENDFORM.
             unit.diagnostics
         );
     }
+}
+
+#[test]
+fn collects_type_member_reference_inside_table_wrapper_type() {
+    let src = r#"
+INTERFACE zif_demo.
+  TYPES ty_row TYPE string.
+ENDINTERFACE.
+
+TYPES ty_tab TYPE STANDARD TABLE OF zif_demo=>ty_row WITH DEFAULT KEY.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///type_member_table_type.abap", src, &parsed);
+
+    assert!(unit.references.iter().any(|reference| {
+        reference.kind == ReferenceKind::TypeRef
+            && reference.namespace == Namespace::Type
+            && reference.name.as_ref() == "zif_demo"
+    }));
+    assert!(unit.field_accesses.iter().any(|access| {
+        access.in_type_position
+            && access.base_namespace == Namespace::Type
+            && access.base_name.as_ref() == "zif_demo"
+            && access.field_path.len() == 1
+            && access.field_path[0].name.as_ref() == "ty_row"
+    }));
 }
 
 #[test]
@@ -243,7 +303,11 @@ ENDLOOP.
                 && reference.name.as_ref() == "ls_row"
         })
         .collect();
-    assert_eq!(ls_row_refs.len(), 2, "expected body references, got {ls_row_refs:?}");
+    assert_eq!(
+        ls_row_refs.len(),
+        2,
+        "expected body references, got {ls_row_refs:?}"
+    );
     assert!(
         ls_row_refs
             .iter()
@@ -306,7 +370,11 @@ ENDLOOP.
                 && reference.name.as_ref() == "<ls_row>"
         })
         .collect();
-    assert_eq!(fs_refs.len(), 2, "expected body references, got {fs_refs:?}");
+    assert_eq!(
+        fs_refs.len(),
+        2,
+        "expected body references, got {fs_refs:?}"
+    );
     assert!(
         fs_refs
             .iter()
@@ -405,8 +473,7 @@ ASSIGN lv_value TO FIELD-SYMBOL(<lv_value>).
     let unit = analyze_unit("file:///assign_inline_fs.abap", src, &parsed);
 
     assert!(unit.symbols.iter().any(|symbol| {
-        symbol.kind == abap_symbols::SymbolKind::FieldSymbol
-            && symbol.name.as_ref() == "<lv_value>"
+        symbol.kind == abap_symbols::SymbolKind::FieldSymbol && symbol.name.as_ref() == "<lv_value>"
     }));
 
     assert!(unit.references.iter().any(|reference| {
@@ -424,7 +491,11 @@ ASSIGN lv_value TO FIELD-SYMBOL(<lv_value>).
                 && reference.name.as_ref() == "<lv_value>"
         })
         .collect();
-    assert_eq!(fs_refs.len(), 2, "expected body references, got {fs_refs:?}");
+    assert_eq!(
+        fs_refs.len(),
+        2,
+        "expected body references, got {fs_refs:?}"
+    );
     assert!(
         fs_refs
             .iter()
@@ -457,8 +528,7 @@ ASSIGN COMPONENT 'EVENT_LIST'
     let unit = analyze_unit("file:///assign_component_inline_fs.abap", src, &parsed);
 
     assert!(unit.symbols.iter().any(|symbol| {
-        symbol.kind == abap_symbols::SymbolKind::FieldSymbol
-            && symbol.name.as_ref() == "<ls_event>"
+        symbol.kind == abap_symbols::SymbolKind::FieldSymbol && symbol.name.as_ref() == "<ls_event>"
     }));
 
     assert!(unit.references.iter().any(|reference| {
@@ -476,7 +546,11 @@ ASSIGN COMPONENT 'EVENT_LIST'
                 && reference.name.as_ref() == "<ls_event>"
         })
         .collect();
-    assert_eq!(fs_refs.len(), 2, "expected body references, got {fs_refs:?}");
+    assert_eq!(
+        fs_refs.len(),
+        2,
+        "expected body references, got {fs_refs:?}"
+    );
     assert!(
         fs_refs
             .iter()
@@ -514,7 +588,11 @@ ASSERT <ls_outbound> IS ASSIGNED.
                 && reference.name.as_ref() == "<ls_outbound>"
         })
         .collect();
-    assert_eq!(refs.len(), 1, "expected ASSERT field-symbol reference, got {refs:?}");
+    assert_eq!(
+        refs.len(),
+        1,
+        "expected ASSERT field-symbol reference, got {refs:?}"
+    );
     assert!(
         refs.iter()
             .all(|reference| matches!(reference.resolution, Some(Resolution::Symbol(_)))),
@@ -2098,7 +2176,10 @@ rv_text = |({ mo_left->to_string( ) } { mv_op } { mo_right->to_string( ) })|.
                 .any(|segment| segment.name.as_ref() == "to_string")
         })
         .count();
-    assert_eq!(to_string_accesses, 2, "expected two template method accesses");
+    assert_eq!(
+        to_string_accesses, 2,
+        "expected two template method accesses"
+    );
 
     assert!(
         !unit.diagnostics.iter().any(|diag| {

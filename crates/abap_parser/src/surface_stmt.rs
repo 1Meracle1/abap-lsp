@@ -3,8 +3,8 @@ use abap_ast::arena::{NodeId, SyntaxTreeBuilder};
 use abap_lexer::{Token, TokenKind};
 
 use crate::block_helpers::{
-    is_keyword, parse_body_until_keywords, parse_header_until_period, recover_skip_after_keyword,
-    skip_trivia,
+    error_token_children, is_keyword, next_after_unterminated_scan, parse_body_until_keywords,
+    parse_header_until_period, recover_skip_after_keyword, skip_trivia,
 };
 use crate::expr::parse_arithmetic_expr;
 use crate::stmt_period::{
@@ -12,6 +12,7 @@ use crate::stmt_period::{
     unterminated_err_end,
 };
 use crate::syntax::token_leaf;
+use crate::type_ref::build_type_ref_node;
 
 fn scan_until_top_level_period(tokens: &[Token], start: usize) -> Option<usize> {
     let mut paren = 0i32;
@@ -516,6 +517,161 @@ fn try_parse_block_stmt(
     children.extend(end_children);
     let node = b.branch(kind, start_tok.range.start..end_pos, &children);
     Some((node, next_after))
+}
+
+fn form_header_section_keyword(source: &str, token: &Token) -> bool {
+    is_keyword(source, token, "tables")
+        || is_keyword(source, token, "using")
+        || is_keyword(source, token, "changing")
+        || is_keyword(source, token, "raises")
+}
+
+fn form_header_starts_typed_param(source: &str, tokens: &[Token], idx: usize, end: usize) -> bool {
+    let Some(token) = tokens.get(idx) else {
+        return false;
+    };
+    if token.kind != TokenKind::Ident {
+        return false;
+    }
+    let mut j = idx;
+    if is_keyword(source, token, "value") || is_keyword(source, token, "reference") {
+        if tokens.get(j + 1).map(|t| t.kind) != Some(TokenKind::LParen)
+            || tokens.get(j + 2).map(|t| t.kind) != Some(TokenKind::Ident)
+            || tokens.get(j + 3).map(|t| t.kind) != Some(TokenKind::RParen)
+        {
+            return false;
+        }
+        j += 4;
+    } else {
+        j += 1;
+    }
+    while j < end && tokens[j].kind == TokenKind::Comment {
+        j += 1;
+    }
+    tokens
+        .get(j)
+        .is_some_and(|t| is_keyword(source, t, "type") || is_keyword(source, t, "like"))
+}
+
+fn skip_form_header_type_expression(
+    source: &str,
+    tokens: &[Token],
+    mut idx: usize,
+    end: usize,
+) -> usize {
+    let mut depth = 0i32;
+    while idx < end {
+        let token = &tokens[idx];
+        match token.kind {
+            TokenKind::Comment => idx += 1,
+            TokenKind::LParen => {
+                depth += 1;
+                idx += 1;
+            }
+            TokenKind::RParen => {
+                depth -= 1;
+                idx += 1;
+            }
+            TokenKind::Period if depth == 0 => return idx,
+            _ if depth == 0 && form_header_section_keyword(source, token) => return idx,
+            _ if depth == 0 && form_header_starts_typed_param(source, tokens, idx, end) => {
+                return idx;
+            }
+            _ => idx += 1,
+        }
+    }
+    idx
+}
+
+fn form_header_type_ref_ranges(
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    period_i: usize,
+) -> Vec<(usize, usize)> {
+    let mut ranges = Vec::new();
+    let mut i = idx + 1;
+    while i <= period_i && tokens[i].kind == TokenKind::Comment {
+        i += 1;
+    }
+    if i > period_i || tokens[i].kind != TokenKind::Ident {
+        return ranges;
+    }
+    i += 1;
+
+    while i <= period_i {
+        let token = &tokens[i];
+        if token.kind == TokenKind::Comment {
+            i += 1;
+            continue;
+        }
+        if token.kind == TokenKind::Period {
+            break;
+        }
+        if form_header_section_keyword(source, token) {
+            i += 1;
+            continue;
+        }
+        if !form_header_starts_typed_param(source, tokens, i, period_i + 1) {
+            i += 1;
+            continue;
+        }
+        let mut j = i;
+        if is_keyword(source, &tokens[j], "value") || is_keyword(source, &tokens[j], "reference") {
+            j += 4;
+        } else {
+            j += 1;
+        }
+        while j <= period_i && tokens[j].kind == TokenKind::Comment {
+            j += 1;
+        }
+        if j > period_i {
+            break;
+        }
+        j += 1;
+        while j <= period_i && tokens[j].kind == TokenKind::Comment {
+            j += 1;
+        }
+        let expr_start = j;
+        let expr_end = skip_form_header_type_expression(source, tokens, expr_start, period_i + 1);
+        if expr_start < expr_end {
+            ranges.push((expr_start, expr_end));
+        }
+        i = expr_end;
+    }
+    ranges
+}
+
+fn build_form_header_children(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    period_i: usize,
+) -> Vec<NodeId> {
+    let ranges = form_header_type_ref_ranges(source, tokens, idx, period_i);
+    if ranges.is_empty() {
+        return tokens[idx..=period_i]
+            .iter()
+            .map(|t| token_leaf(b, t))
+            .collect();
+    }
+    let mut children = Vec::with_capacity(period_i - idx + 1);
+    let mut i = idx;
+    let mut range_idx = 0usize;
+    while i <= period_i {
+        if let Some((start, end)) = ranges.get(range_idx).copied()
+            && i == start
+        {
+            children.push(build_type_ref_node(b, source, &tokens[start..end]));
+            i = end;
+            range_idx += 1;
+            continue;
+        }
+        children.push(token_leaf(b, &tokens[i]));
+        i += 1;
+    }
+    children
 }
 
 fn match_hyphenated_keyword(
@@ -1141,16 +1297,54 @@ pub fn try_parse_form_decl(
     idx: usize,
     errors: &mut Vec<crate::ParseError>,
 ) -> Option<(NodeId, usize)> {
-    try_parse_block_stmt(
+    let start_tok = tokens.get(idx)?;
+    if !is_keyword(source, start_tok, "form") {
+        return None;
+    }
+    let (mut children, mut next) = match scan_until_statement_period(tokens, source, idx + 1) {
+        StmtPeriodScan::Found(period_i) => (
+            build_form_header_children(b, source, tokens, idx, period_i),
+            period_i + 1,
+        ),
+        StmtPeriodScan::Unterminated { end_exclusive } => {
+            let err_end = unterminated_err_end(tokens, end_exclusive, start_tok.range.end);
+            errors.push(crate::ParseError {
+                message: "syntax error: expected '.' after form header".to_string(),
+                range: start_tok.range.start..err_end,
+            });
+            let err_children = error_token_children(b, tokens, idx, end_exclusive);
+            let header = b.branch(
+                SyntaxKind::Error,
+                start_tok.range.start..err_end,
+                &err_children,
+            );
+            (
+                vec![header],
+                next_after_unterminated_scan(tokens, end_exclusive),
+            )
+        }
+    };
+    let (body, after_body) =
+        parse_body_until_keywords(b, source, tokens, next, errors, &["ENDFORM"]);
+    children.extend(body);
+    next = after_body;
+    let (end_children, next_after, end_pos) = parse_end_keyword(
         b,
         source,
         tokens,
-        idx,
-        "form",
+        next,
+        start_tok,
         "ENDFORM",
-        SyntaxKind::FormDecl,
+        "syntax error: expected ENDFORM",
         errors,
-    )
+    );
+    children.extend(end_children);
+    let node = b.branch(
+        SyntaxKind::FormDecl,
+        start_tok.range.start..end_pos,
+        &children,
+    );
+    Some((node, next_after))
 }
 
 pub fn try_parse_module_decl(
@@ -1314,6 +1508,24 @@ mod tests {
             parsed
                 .file
                 .count_kind(parsed.file.root(), SyntaxKind::FormDecl),
+            1
+        );
+    }
+
+    #[test]
+    fn parses_form_header_type_refs_structurally() {
+        let parsed =
+            crate::parse("FORM run USING VALUE(iv_row) TYPE REF TO zif_demo=>ty_row. ENDFORM.");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let form = parsed
+            .file
+            .find_first_kind(parsed.file.root(), SyntaxKind::FormDecl)
+            .expect("form");
+        assert_eq!(parsed.file.count_kind(form, SyntaxKind::TypeRefSimple), 2);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(form, SyntaxKind::TypeRefSelectorChain),
             1
         );
     }

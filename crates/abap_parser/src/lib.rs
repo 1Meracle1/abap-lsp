@@ -9,6 +9,7 @@ mod simple_stmt;
 mod stmt_period;
 mod surface_stmt;
 pub mod syntax;
+mod type_ref;
 
 use crate::stmt_period::is_definite_stmt_lead_keyword;
 use abap_ast::SyntaxKind;

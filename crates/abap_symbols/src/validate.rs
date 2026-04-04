@@ -449,7 +449,11 @@ fn resolve_class_selector_base<'a>(
 fn split_leading_deref<'a>(
     access: &'a crate::FieldAccess,
 ) -> (bool, &'a [crate::FieldAccessSegment]) {
-    if access.field_path.first().is_some_and(|segment| segment.is_deref()) {
+    if access
+        .field_path
+        .first()
+        .is_some_and(|segment| segment.is_deref())
+    {
         return (true, &access.field_path[1..]);
     }
     (false, &access.field_path)
@@ -648,7 +652,8 @@ pub fn validate_project(project: &mut ProjectAnalysis) {
                 continue;
             }
             if !has_leading_deref
-                && let Some((class_unit_idx, class_symbol_id, requires_static)) = class_selector_base
+                && let Some((class_unit_idx, class_symbol_id, requires_static)) =
+                    class_selector_base
             {
                 let class_unit = &project.units[*class_unit_idx];
                 let class_name = Arc::clone(&class_unit.symbol(*class_symbol_id).name);
