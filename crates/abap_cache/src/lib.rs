@@ -53,6 +53,12 @@ pub struct HoveredSymbolInfo {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DefinitionTarget {
+    pub uri: Arc<str>,
+    pub range: Range<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SelectorCompletionItem {
     pub name: Arc<str>,
     pub declared_type: Option<String>,
@@ -153,7 +159,7 @@ impl AnalysisSnapshot {
                 })
         })?;
         let (unit, symbol_id) = resolve_field_access_base_symbol(self, access)?;
-        if let Some(member) =
+        if let Some((_, member)) =
             resolve_class_selector_member(self, access, segment_index, unit, symbol_id)
         {
             return Some(HoveredComponentInfo {
@@ -243,6 +249,19 @@ impl AnalysisSnapshot {
         })
     }
 
+    pub fn definition_at(&self, offset: usize) -> Option<DefinitionTarget> {
+        if let Some(target) = self.definition_target_for_component_at(offset) {
+            return Some(target);
+        }
+        if let Some(target) = self.definition_target_for_perform_argument_at(offset) {
+            return Some(target);
+        }
+        if let Some(target) = self.definition_target_for_named_argument_at(offset) {
+            return Some(target);
+        }
+        self.definition_target_for_resolved_symbol_at(offset)
+    }
+
     /// Hover for a resolved reference (narrowest matching range) or, if none, a symbol declaration
     /// covering the offset.
     pub fn hovered_resolved_symbol_at(&self, offset: usize) -> Option<HoveredSymbolInfo> {
@@ -304,6 +323,110 @@ impl AnalysisSnapshot {
             display_name: Arc::clone(&symbol.name),
             markdown_lines: markdown_lines_for_declared_symbol(self.symbols.as_ref(), symbol),
         })
+    }
+
+    fn definition_target_for_component_at(&self, offset: usize) -> Option<DefinitionTarget> {
+        let (access, segment_index) = self.symbols.field_accesses.iter().find_map(|access| {
+            access
+                .field_path
+                .iter()
+                .enumerate()
+                .find_map(|(idx, segment)| {
+                    (segment.range.start <= offset && offset < segment.range.end)
+                        .then_some((access, idx))
+                })
+        })?;
+        let (unit, symbol_id) = resolve_field_access_base_symbol(self, access)?;
+        if let Some((member_unit, member)) =
+            resolve_class_selector_member(self, access, segment_index, unit, symbol_id)
+        {
+            return Some(definition_target_for_class_member(member_unit, member));
+        }
+        let symbol = unit.symbol(symbol_id);
+        let structure_id = symbol.structure?;
+        let field_path: Vec<_> = access
+            .field_path
+            .iter()
+            .take(segment_index + 1)
+            .map(|segment| segment.name.as_ref())
+            .collect();
+        let field = unit.resolve_structure_field_path(structure_id, &field_path)?;
+        let decl_range = field.decl_range?;
+        Some(definition_target_for_range(unit, decl_range))
+    }
+
+    fn definition_target_for_named_argument_at(&self, offset: usize) -> Option<DefinitionTarget> {
+        let access = self
+            .symbols
+            .named_arguments
+            .iter()
+            .find(|access| access.range.start <= offset && offset < access.range.end)?;
+        resolve_named_argument_target(self, access)
+    }
+
+    fn definition_target_for_perform_argument_at(
+        &self,
+        offset: usize,
+    ) -> Option<DefinitionTarget> {
+        let (perform_call, argument) = self
+            .symbols
+            .perform_calls
+            .iter()
+            .filter_map(|perform_call| {
+                perform_call
+                    .arguments
+                    .iter()
+                    .find(|argument| argument.range.start <= offset && offset < argument.range.end)
+                    .map(|argument| (perform_call, argument))
+            })
+            .min_by_key(|(_, argument)| argument.range.end.saturating_sub(argument.range.start))?;
+        resolve_perform_argument_target(self, perform_call, argument)
+    }
+
+    fn definition_target_for_resolved_symbol_at(&self, offset: usize) -> Option<DefinitionTarget> {
+        if let Some((reference, resolution)) = self
+            .symbols
+            .references
+            .iter()
+            .filter_map(|reference| {
+                if reference.range.start <= offset && offset < reference.range.end {
+                    reference
+                        .resolution
+                        .map(|resolution| (reference, resolution))
+                } else {
+                    None
+                }
+            })
+            .min_by_key(|(reference, _)| reference.range.end.saturating_sub(reference.range.start))
+        {
+            return definition_target_for_resolution(self, resolution).or_else(|| {
+                self.symbols
+                    .symbols
+                    .iter()
+                    .filter(|symbol| symbol.decl_range == reference.range)
+                    .min_by_key(|symbol| {
+                        symbol.decl_range.end.saturating_sub(symbol.decl_range.start)
+                    })
+                    .map(|symbol| definition_target_for_symbol(self.symbols.as_ref(), symbol))
+            });
+        }
+
+        if let Some(member) = self
+            .symbols
+            .class_members
+            .iter()
+            .filter(|member| member.decl_range.start <= offset && offset < member.decl_range.end)
+            .min_by_key(|member| member.decl_range.end.saturating_sub(member.decl_range.start))
+        {
+            return Some(definition_target_for_class_member(self.symbols.as_ref(), member));
+        }
+
+        self.symbols
+            .symbols
+            .iter()
+            .filter(|symbol| symbol.decl_range.start <= offset && offset < symbol.decl_range.end)
+            .min_by_key(|symbol| symbol.decl_range.end.saturating_sub(symbol.decl_range.start))
+            .map(|symbol| definition_target_for_symbol(self.symbols.as_ref(), symbol))
     }
 
     pub fn selector_completion_at(&self, offset: usize) -> Option<SelectorCompletionInfo> {
@@ -649,6 +772,44 @@ fn markdown_lines_for_builtin_routine(name: &Arc<str>) -> Vec<String> {
     ]
 }
 
+fn definition_target_for_symbol(unit: &UnitAnalysis, symbol: &SymbolData) -> DefinitionTarget {
+    DefinitionTarget {
+        uri: Arc::clone(&unit.uri),
+        range: symbol.decl_range.clone(),
+    }
+}
+
+fn definition_target_for_class_member(
+    unit: &UnitAnalysis,
+    member: &ClassMemberData,
+) -> DefinitionTarget {
+    DefinitionTarget {
+        uri: Arc::clone(&unit.uri),
+        range: member.decl_range.clone(),
+    }
+}
+
+fn definition_target_for_range(unit: &UnitAnalysis, range: Range<usize>) -> DefinitionTarget {
+    DefinitionTarget {
+        uri: Arc::clone(&unit.uri),
+        range,
+    }
+}
+
+fn definition_target_for_resolution(
+    snapshot: &AnalysisSnapshot,
+    resolution: Resolution,
+) -> Option<DefinitionTarget> {
+    match resolution {
+        Resolution::Symbol(handle) => {
+            let unit = &snapshot.project.units[handle.unit.as_usize()];
+            let symbol = unit.symbol(handle.symbol);
+            Some(definition_target_for_symbol(unit, symbol))
+        }
+        Resolution::BuiltinType | Resolution::BuiltinRoutine | Resolution::External => None,
+    }
+}
+
 fn build_scope_index(unit: &UnitAnalysis) -> ScopeIndex {
     let mut out: ScopeIndex = vec![HashMap::new(); unit.scopes.len()];
     for symbol in &unit.symbols {
@@ -848,6 +1009,33 @@ fn resolve_perform_argument_parameter(
     form_parameter_hover_info_from_metadata(unit, routine_symbol_id, parameter)
 }
 
+fn resolve_perform_argument_target(
+    snapshot: &AnalysisSnapshot,
+    perform_call: &PerformCallData,
+    argument: &PerformArgumentData,
+) -> Option<DefinitionTarget> {
+    let (unit, routine_symbol_id) = resolve_symbol_from_context(
+        snapshot,
+        perform_call.scope,
+        Namespace::Routine,
+        &perform_call.routine_name,
+        false,
+    )?;
+    if unit.symbol(routine_symbol_id).kind != SymbolKind::Form {
+        return None;
+    }
+    let parameter = unit
+        .form_routine(routine_symbol_id)?
+        .parameters
+        .iter()
+        .filter(|parameter| parameter.section == perform_section_to_form_section(argument.section))
+        .nth(argument.ordinal_in_section)?;
+    Some(definition_target_for_symbol(
+        unit,
+        unit.symbol(parameter.symbol),
+    ))
+}
+
 fn resolve_named_argument_parameter<'a>(
     snapshot: &'a AnalysisSnapshot,
     access: &NamedArgumentAccess,
@@ -913,6 +1101,76 @@ fn resolve_named_argument_parameter<'a>(
                 name: Arc::clone(&parameter.name),
                 declared_type: parameter.declared_type.clone(),
             })
+        }
+    }
+}
+
+fn resolve_named_argument_target(
+    snapshot: &AnalysisSnapshot,
+    access: &NamedArgumentAccess,
+) -> Option<DefinitionTarget> {
+    match &access.target {
+        NamedArgumentTarget::Constructor { type_name } => {
+            let (unit, class_symbol_id) = resolve_symbol_from_context(
+                snapshot,
+                access.scope,
+                Namespace::Type,
+                type_name,
+                false,
+            )?;
+            if unit.symbol(class_symbol_id).kind != SymbolKind::Class {
+                return None;
+            }
+            let parameter = unit
+                .class_member(class_symbol_id, "constructor")?
+                .parameters
+                .iter()
+                .find(|parameter| parameter.name == access.name)?;
+            Some(definition_target_for_range(unit, parameter.range.clone()))
+        }
+        NamedArgumentTarget::Routine { routine_name } => {
+            let (unit, routine_symbol_id) = resolve_symbol_from_context(
+                snapshot,
+                access.scope,
+                Namespace::Routine,
+                routine_name,
+                false,
+            )?;
+            let parameter = unit
+                .routine_parameters(routine_symbol_id)
+                .find(|symbol| symbol.name == access.name)?;
+            Some(definition_target_for_symbol(unit, parameter))
+        }
+        NamedArgumentTarget::Method {
+            base_namespace,
+            base_name,
+            method_name,
+        } => {
+            let (unit, class_symbol_id, requires_static) = resolve_method_target_from_context(
+                snapshot,
+                access.scope,
+                *base_namespace,
+                base_name,
+            )?;
+            let (member_unit, member) =
+                resolve_class_member_in_hierarchy(snapshot, unit, class_symbol_id, method_name)?;
+            if member.kind != ClassMemberKind::Method || (requires_static && !member.is_static) {
+                return None;
+            }
+            if !class_member_visible_to(
+                snapshot,
+                snapshot.symbols.as_ref(),
+                access.scope,
+                member_unit,
+                member,
+            ) {
+                return None;
+            }
+            let parameter = member
+                .parameters
+                .iter()
+                .find(|parameter| parameter.name == access.name)?;
+            Some(definition_target_for_range(member_unit, parameter.range.clone()))
         }
     }
 }
@@ -1160,7 +1418,7 @@ fn resolve_class_selector_member<'a>(
     segment_index: usize,
     unit: &'a UnitAnalysis,
     symbol_id: SymbolId,
-) -> Option<&'a ClassMemberData> {
+) -> Option<(&'a UnitAnalysis, &'a ClassMemberData)> {
     if segment_index != 0 {
         return None;
     }
@@ -1182,7 +1440,7 @@ fn resolve_class_selector_member<'a>(
         member_unit,
         member,
     )
-    .then_some(member)
+    .then_some((member_unit, member))
 }
 
 fn resolve_class_selector_base<'a>(
@@ -1557,8 +1815,13 @@ impl DocumentStore {
 
 #[cfg(test)]
 mod tests {
-    use super::{DocumentStore, HoveredComponentKind};
+    use super::{DefinitionTarget, DocumentStore, HoveredComponentKind};
     use abap_symbols::StructureFieldShape;
+
+    fn assert_target_slice(target: &DefinitionTarget, uri: &str, text: &str, expected: &str) {
+        assert_eq!(target.uri.as_ref(), uri);
+        assert_eq!(&text[target.range.clone()], expected);
+    }
 
     #[test]
     fn publishes_snapshots_immutably() {
@@ -1768,6 +2031,179 @@ CREATE OBJECT lo_instance.";
         let offset = src.len() - 1;
 
         assert!(snapshot.hovered_resolved_symbol_at(offset).is_none());
+    }
+
+    #[test]
+    fn definition_at_returns_variable_declaration() {
+        let store = DocumentStore::default();
+        let src = "DATA lv TYPE i.\nlv = 1.";
+        let snapshot = store.publish("file:///demo.abap", 1, src);
+        let offset = src.rfind("lv").expect("variable use") + 1;
+
+        let target = snapshot.definition_at(offset).expect("definition target");
+        assert_target_slice(&target, "file:///demo.abap", src, "lv");
+        assert_eq!(target.range.start, src.find("lv").expect("variable declaration"));
+    }
+
+    #[test]
+    fn definition_at_returns_definition_site_when_cursor_is_on_declaration() {
+        let store = DocumentStore::default();
+        let src = "DATA lv TYPE i.";
+        let snapshot = store.publish("file:///demo.abap", 1, src);
+        let decl_start = src.find("lv").expect("variable declaration");
+
+        let target = snapshot
+            .definition_at(decl_start + 1)
+            .expect("definition target");
+        assert_target_slice(&target, "file:///demo.abap", src, "lv");
+        assert_eq!(target.range, decl_start..decl_start + 2);
+    }
+
+    #[test]
+    fn definition_at_returns_type_declaration() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS some_class DEFINITION.
+ENDCLASS.
+
+CLASS some_class IMPLEMENTATION.
+ENDCLASS.
+
+DATA lo_instance TYPE REF TO some_class.
+CREATE OBJECT lo_instance.";
+        let snapshot = store.publish("file:///demo.abap", 1, src);
+        let type_use = src.rfind("some_class").expect("type reference use");
+
+        let target = snapshot.definition_at(type_use + 1).expect("definition target");
+        assert_target_slice(&target, "file:///demo.abap", src, "some_class");
+        assert_eq!(target.range.start, src.find("some_class").expect("class declaration"));
+    }
+
+    #[test]
+    fn definition_at_returns_selector_method_declaration() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS some_class DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS exec
+      IMPORTING
+        iv_value TYPE i.
+ENDCLASS.
+
+some_class=>exec( iv_value = 1 ).";
+        let snapshot = store.publish("file:///demo.abap", 1, src);
+        let method_use = src.rfind("exec").expect("method use");
+
+        let target = snapshot
+            .definition_at(method_use + 1)
+            .expect("definition target");
+        assert_target_slice(&target, "file:///demo.abap", src, "exec");
+        assert_eq!(target.range.start, src.find("exec").expect("method declaration"));
+    }
+
+    #[test]
+    fn definition_at_returns_structure_field_declaration() {
+        let store = DocumentStore::default();
+        let src = "\
+TYPES: BEGIN OF ty_inner,
+         alpha TYPE i,
+       END OF ty_inner.
+TYPES: BEGIN OF ty_outer,
+         inner TYPE ty_inner,
+       END OF ty_outer.
+DATA ls_outer TYPE ty_outer.
+ls_outer-inner-alpha = 1.";
+        let snapshot = store.publish("file:///demo.abap", 1, src);
+        let field_use = src.rfind("alpha").expect("field use");
+
+        let target = snapshot
+            .definition_at(field_use + 1)
+            .expect("definition target");
+        assert_target_slice(&target, "file:///demo.abap", src, "alpha");
+        assert_eq!(target.range.start, src.find("alpha").expect("field declaration"));
+    }
+
+    #[test]
+    fn definition_at_returns_named_argument_parameter_declaration() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS zcl_program DEFINITION.
+  PUBLIC SECTION.
+    METHODS add_statement
+      IMPORTING io_stmt TYPE string.
+ENDCLASS.
+
+CLASS zcl_program IMPLEMENTATION.
+ENDCLASS.
+
+START-OF-SELECTION.
+  DATA(lo_prog) = NEW zcl_program( ).
+  lo_prog->add_statement( io_stmt = 'x' ).";
+        let snapshot = store.publish("file:///demo.abap", 1, src);
+        let parameter_use = src.rfind("io_stmt").expect("named argument use");
+
+        let target = snapshot
+            .definition_at(parameter_use + 1)
+            .expect("definition target");
+        assert_target_slice(&target, "file:///demo.abap", src, "io_stmt");
+        assert_eq!(target.range.start, src.find("io_stmt").expect("parameter declaration"));
+    }
+
+    #[test]
+    fn definition_at_returns_form_parameter_declaration_for_perform_argument() {
+        let store = DocumentStore::default();
+        let src = "\
+FORM f USING VALUE(iv_input) TYPE i CHANGING cv_text TYPE string.
+  cv_text = |{ iv_input }|.
+ENDFORM.
+
+START-OF-SELECTION.
+  DATA lv_input TYPE i VALUE 1.
+  DATA lv_text TYPE string.
+  PERFORM f USING lv_input CHANGING lv_text.
+";
+        let snapshot = store.publish("file:///demo.abap", 1, src);
+        let argument_use = src.rfind("lv_input").expect("perform argument use");
+
+        let target = snapshot
+            .definition_at(argument_use + 1)
+            .expect("definition target");
+        assert_target_slice(&target, "file:///demo.abap", src, "iv_input");
+        assert_eq!(target.range.start, src.find("iv_input").expect("parameter declaration"));
+    }
+
+    #[test]
+    fn definition_at_returns_none_for_builtin_type() {
+        let store = DocumentStore::default();
+        let src = "DATA text TYPE string.";
+        let snapshot = store.publish("file:///demo.abap", 1, src);
+        let offset = src.find("string").expect("builtin type") + 1;
+
+        assert!(snapshot.definition_at(offset).is_none());
+    }
+
+    #[test]
+    fn definition_at_resolves_underlying_type_in_table_type_clause() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS zcl_stmt DEFINITION.
+ENDCLASS.
+
+CLASS zcl_stmt IMPLEMENTATION.
+ENDCLASS.
+
+CLASS zcl_program DEFINITION.
+  PUBLIC SECTION.
+    TYPES ty_stmt_tab TYPE STANDARD TABLE OF REF TO zcl_stmt WITH DEFAULT KEY.
+ENDCLASS.";
+        let snapshot = store.publish("file:///demo.abap", 1, src);
+        let type_use = src.rfind("zcl_stmt").expect("wrapped type use");
+
+        let target = snapshot
+            .definition_at(type_use + 1)
+            .expect("definition target");
+        assert_target_slice(&target, "file:///demo.abap", src, "zcl_stmt");
+        assert_eq!(target.range.start, src.find("zcl_stmt").expect("class declaration"));
     }
 
     #[test]

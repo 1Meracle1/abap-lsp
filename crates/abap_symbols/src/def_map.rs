@@ -190,6 +190,7 @@ pub struct FieldTypeRefData {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StructureFieldData {
     pub name: Arc<str>,
+    pub decl_range: Option<TextRange>,
     pub structure: Option<StructureId>,
     pub type_ref: Option<FieldTypeRefData>,
 }
@@ -204,6 +205,7 @@ pub enum StructureFieldShape {
 pub struct StructureFieldInfo {
     pub owner: StructureId,
     pub name: Arc<str>,
+    pub decl_range: Option<TextRange>,
     pub shape: StructureFieldShape,
     pub type_ref: Option<FieldTypeRefData>,
 }
@@ -218,6 +220,7 @@ pub struct StructureData {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClassMemberParameterData {
     pub name: Arc<str>,
+    pub range: TextRange,
     pub declared_type: Option<FieldTypeRefData>,
 }
 
@@ -367,6 +370,7 @@ impl UnitAnalysis {
         Some(StructureFieldInfo {
             owner: structure_id,
             name: Arc::clone(&field.name),
+            decl_range: field.decl_range.clone(),
             shape: match field.structure {
                 Some(structure) => StructureFieldShape::Structured { structure },
                 None => StructureFieldShape::Scalar,
@@ -382,6 +386,7 @@ impl UnitAnalysis {
             .map(|field| StructureFieldInfo {
                 owner: structure_id,
                 name: Arc::clone(&field.name),
+                decl_range: field.decl_range.clone(),
                 shape: match field.structure {
                     Some(structure) => StructureFieldShape::Structured { structure },
                     None => StructureFieldShape::Scalar,

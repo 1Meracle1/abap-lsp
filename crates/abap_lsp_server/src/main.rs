@@ -3,9 +3,10 @@ use std::net::{SocketAddr, TcpListener};
 
 use abap_jsonrpc::{JSON_RPC_VERSION, Response, read_frame, write_frame};
 use abap_lsp::{
-    CompletionParams, DidChangeTextDocumentParams, DidOpenTextDocumentParams, HoverParams,
-    SemanticTokensParams, ServerConfig, ServerState, completion, hover, initialize_result,
-    publish_changed_document, publish_diagnostics_params, publish_open_document, semantic_tokens,
+    CompletionParams, DidChangeTextDocumentParams, DidOpenTextDocumentParams,
+    GotoDefinitionParams, HoverParams, SemanticTokensParams, ServerConfig, ServerState,
+    completion, definition, hover, initialize_result, publish_changed_document,
+    publish_diagnostics_params, publish_open_document, semantic_tokens,
 };
 use serde_json::{Value, json};
 use tracing::warn;
@@ -188,6 +189,23 @@ fn handle_message(
                 });
             };
             let result = serde_json::to_value(hover(state, &hover_params))?;
+            Ok(HandledMessage {
+                response: Some(Response::success(id.unwrap_or(Value::Null), result)),
+                notifications: Vec::new(),
+            })
+        }
+        Some("textDocument/definition") => {
+            let Some(definition_params) = parse_params::<GotoDefinitionParams>(&message)? else {
+                return Ok(HandledMessage {
+                    response: Some(Response::failure(
+                        id.unwrap_or(Value::Null),
+                        INVALID_REQUEST,
+                        "textDocument/definition requires params",
+                    )),
+                    notifications: Vec::new(),
+                });
+            };
+            let result = serde_json::to_value(definition(state, &definition_params))?;
             Ok(HandledMessage {
                 response: Some(Response::success(id.unwrap_or(Value::Null), result)),
                 notifications: Vec::new(),
@@ -383,6 +401,55 @@ mod tests {
             .expect("completion result");
         assert!(result.to_string().contains("alpha"));
         assert!(result.to_string().contains("amount"));
+    }
+
+    #[test]
+    fn handles_definition_after_open_document() {
+        let mut state = ServerState::default();
+        let config = ServerConfig::default();
+
+        let opened = handle_message(
+            &mut state,
+            &config,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": {
+                    "textDocument": {
+                        "uri": "file:///definition.abap",
+                        "languageId": "abap",
+                        "version": 1,
+                        "text": "CLASS zcl_program DEFINITION.\n  PUBLIC SECTION.\n    METHODS add_statement\n      IMPORTING io_stmt TYPE string.\nENDCLASS.\n\nCLASS zcl_program IMPLEMENTATION.\nENDCLASS.\n\nSTART-OF-SELECTION.\n  DATA(lo_prog) = NEW zcl_program( ).\n  lo_prog->add_statement( io_stmt = 'x' )."
+                    }
+                }
+            }),
+        )
+        .expect("didOpen");
+        assert!(opened.response.is_none());
+
+        let definition_msg = handle_message(
+            &mut state,
+            &config,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "textDocument/definition",
+                "params": {
+                    "textDocument": { "uri": "file:///definition.abap" },
+                    "position": { "line": 11, "character": 27 }
+                }
+            }),
+        )
+        .expect("definition");
+
+        let result = definition_msg
+            .response
+            .expect("definition response")
+            .result
+            .expect("definition result");
+        assert!(result.to_string().contains("file:///definition.abap"));
+        assert!(result.to_string().contains("\"line\":3"));
+        assert!(result.to_string().contains("\"character\":16"));
     }
 
     #[test]

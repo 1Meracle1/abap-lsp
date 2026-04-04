@@ -27,6 +27,7 @@ struct ScopeLookupKey {
 #[derive(Debug, Clone)]
 struct PendingStructureField {
     name: Arc<str>,
+    decl_range: TextRange,
     structure: Option<PendingStructure>,
     type_ref: Option<FieldTypeRefData>,
 }
@@ -288,6 +289,7 @@ impl<'a> Collector<'a> {
             .into_iter()
             .map(|field| StructureFieldData {
                 name: field.name,
+                decl_range: Some(field.decl_range),
                 structure: field
                     .structure
                     .map(|nested| self.register_structure(scope, nested))
@@ -310,6 +312,7 @@ impl<'a> Collector<'a> {
                 Arc::<str>::from(structure.name),
                 structure.fields.iter().map(|field| StructureFieldData {
                     name: Arc::<str>::from(field.name),
+                    decl_range: None,
                     structure: None,
                     type_ref: None,
                 }),
@@ -870,6 +873,7 @@ impl<'a> Collector<'a> {
             .iter()
             .map(|param| ClassMemberParameterData {
                 name: Arc::clone(&param.name),
+                range: param.range.clone(),
                 declared_type: param.declared_type.clone(),
             })
             .collect()
@@ -1602,11 +1606,12 @@ impl<'a> Collector<'a> {
         })
     }
 
-    fn try_parse_simple_type_ref_chain_tokens(
+    fn try_parse_type_ref_prefix_tokens(
         &self,
         tokens: &[&Token],
-    ) -> Option<(bool, Arc<str>, Vec<Arc<str>>)> {
+    ) -> Option<(Namespace, bool, Arc<str>, TextRange, Vec<FieldAccessSegment>, usize)> {
         let mut i = 0usize;
+        let mut namespace = Namespace::Type;
         let mut is_ref = false;
         if tokens
             .get(i)
@@ -1619,31 +1624,88 @@ impl<'a> Collector<'a> {
             is_ref = true;
             i += 2;
         }
-        if tokens.get(i)?.kind != TokenKind::Ident {
+        let base = *tokens.get(i)?;
+        if base.kind != TokenKind::Ident {
             return None;
         }
-        let base_name = Arc::<str>::from(tokens[i].lexeme(self.source).to_ascii_lowercase());
+        let base_name = Arc::<str>::from(base.lexeme(self.source).to_ascii_lowercase());
+        let base_range = base.range.clone();
         i += 1;
         let mut field_path = Vec::new();
-        while i < tokens.len() {
-            let sel = tokens.get(i)?;
+        while i + 1 < tokens.len() {
+            let sel = tokens[i];
+            let id = tokens[i + 1];
             if !matches!(
                 sel.kind,
                 TokenKind::Minus | TokenKind::Arrow | TokenKind::Tilde | TokenKind::FatArrow
-            ) {
-                return None;
+            ) || id.kind != TokenKind::Ident
+            {
+                break;
             }
-            i += 1;
-            let id = tokens.get(i)?;
-            if id.kind != TokenKind::Ident {
-                return None;
+            if field_path.is_empty() && sel.kind != TokenKind::FatArrow {
+                namespace = Namespace::Value;
             }
-            field_path.push(Arc::<str>::from(
-                id.lexeme(self.source).to_ascii_lowercase(),
-            ));
-            i += 1;
+            field_path.push(FieldAccessSegment {
+                name: Arc::<str>::from(id.lexeme(self.source).to_ascii_lowercase()),
+                range: id.range.clone(),
+            });
+            i += 2;
         }
-        Some((is_ref, base_name, field_path))
+        Some((namespace, is_ref, base_name, base_range, field_path, i))
+    }
+
+    fn is_type_ref_wrapper_keyword(&self, token: &Token) -> bool {
+        token.kind == TokenKind::Ident
+            && [
+                "standard",
+                "sorted",
+                "hashed",
+                "table",
+                "line",
+                "range",
+                "with",
+                "default",
+                "unique",
+                "non-unique",
+                "empty",
+                "initial",
+                "key",
+            ]
+            .into_iter()
+            .any(|keyword| self.token_matches_keyword(token, keyword))
+    }
+
+    fn type_ref_candidate_starts(&self, tokens: &[&Token]) -> Vec<usize> {
+        let mut starts = Vec::new();
+        if let Some(first) = tokens.first()
+            && (self.token_matches_keyword(first, "ref") || !self.is_type_ref_wrapper_keyword(first))
+        {
+            starts.push(0);
+        }
+        for idx in 1..tokens.len() {
+            if self.token_matches_keyword(tokens[idx - 1], "of") {
+                starts.push(idx);
+            }
+        }
+        starts.sort_unstable();
+        starts.dedup();
+        starts
+    }
+
+    fn type_ref_access_chain_from_filtered_tokens(
+        &self,
+        tokens: &[&Token],
+    ) -> Option<(Namespace, bool, Arc<str>, TextRange, Vec<FieldAccessSegment>)> {
+        for start in self.type_ref_candidate_starts(tokens) {
+            let slice = &tokens[start..];
+            let Some((namespace, is_ref, base_name, base_range, field_path, _)) =
+                self.try_parse_type_ref_prefix_tokens(slice)
+            else {
+                continue;
+            };
+            return Some((namespace, is_ref, base_name, base_range, field_path));
+        }
+        None
     }
 
     fn field_type_ref_from_token_slice(
@@ -1661,14 +1723,14 @@ impl<'a> Collector<'a> {
         if filtered.is_empty() {
             return None;
         }
-        if let Some((is_ref, base_name, field_path)) =
-            self.try_parse_simple_type_ref_chain_tokens(&filtered)
+        if let Some((_, is_ref, base_name, _, field_path)) =
+            self.type_ref_access_chain_from_filtered_tokens(&filtered)
         {
             return Some(FieldTypeRefData {
                 namespace: clause_ns,
                 is_ref,
                 base_name,
-                field_path,
+                field_path: field_path.into_iter().map(|segment| segment.name).collect(),
             });
         }
         let rendered = filtered
@@ -1820,42 +1882,8 @@ impl<'a> Collector<'a> {
             .copied()
             .filter(|token| token.kind != TokenKind::Comment)
             .collect();
-        let mut idx = 0usize;
-        if filtered
-            .get(idx)
-            .is_some_and(|tok| self.token_matches_keyword(tok, "ref"))
-        {
-            let to_tok = filtered.get(idx + 1)?;
-            if !self.token_matches_keyword(to_tok, "to") {
-                return None;
-            }
-            idx += 2;
-        }
-        let base = *filtered.get(idx)?;
-        if base.kind != TokenKind::Ident {
-            return None;
-        }
-        let base_name = Arc::<str>::from(base.lexeme(self.source).to_ascii_lowercase());
-        let base_range = base.range.clone();
-        idx += 1;
-
-        let mut field_path = Vec::new();
-        while idx + 1 < filtered.len() {
-            let op = filtered[idx];
-            let field = filtered[idx + 1];
-            if !matches!(
-                op.kind,
-                TokenKind::Minus | TokenKind::Arrow | TokenKind::Tilde | TokenKind::FatArrow
-            ) || field.kind != TokenKind::Ident
-            {
-                break;
-            }
-            field_path.push(FieldAccessSegment {
-                name: Arc::<str>::from(field.lexeme(self.source).to_ascii_lowercase()),
-                range: field.range.clone(),
-            });
-            idx += 2;
-        }
+        let (_, _, base_name, base_range, field_path) =
+            self.type_ref_access_chain_from_filtered_tokens(&filtered)?;
         Some((base_name, base_range, field_path))
     }
 
@@ -2749,66 +2777,26 @@ impl<'a> Collector<'a> {
     }
 
     fn type_ref_from_typed_clause(&self, node: NodeId) -> Option<FieldTypeRefData> {
-        let mut type_namespace = None;
-        for child in self.file.children(node) {
-            if let Some(token) = self.token_for_node(child)
-                && token.kind == TokenKind::Ident
-            {
-                if token.lexeme(self.source).eq_ignore_ascii_case("type") {
-                    type_namespace = Some(Namespace::Type);
-                } else if token.lexeme(self.source).eq_ignore_ascii_case("like") {
-                    type_namespace = Some(Namespace::Value);
-                }
-                continue;
-            }
-
-            if self.file.kind(child) != SyntaxKind::TypeRefSimple {
-                continue;
-            }
-
-            let namespace = type_namespace.unwrap_or(Namespace::Type);
-            let (_, is_ref, base_name, _, field_path) = self.type_ref_access_chain(child)?;
-            let field_path = field_path.into_iter().map(|segment| segment.name).collect();
-            return Some(FieldTypeRefData {
-                namespace,
-                is_ref,
-                base_name,
-                field_path,
-            });
-        }
-        None
+        let (tokens, namespace, expr_start) = self.typed_clause_expr_tokens(node)?;
+        self.field_type_ref_from_token_slice(&tokens, expr_start, tokens.len(), namespace)
     }
 
     fn structure_from_typed_clause(&self, node: NodeId, scope: ScopeId) -> Option<StructureId> {
-        let mut type_namespace = None;
-        for child in self.file.children(node) {
-            if let Some(token) = self.token_for_node(child)
-                && token.kind == TokenKind::Ident
-            {
-                if token.lexeme(self.source).eq_ignore_ascii_case("type") {
-                    type_namespace = Some(Namespace::Type);
-                } else if token.lexeme(self.source).eq_ignore_ascii_case("like") {
-                    type_namespace = Some(Namespace::Value);
-                }
-                continue;
-            }
-
-            if self.file.kind(child) != SyntaxKind::TypeRefSimple {
-                continue;
-            }
-
-            let namespace = type_namespace.unwrap_or(Namespace::Type);
-            let (base_name, field_path) = self.type_ref_lookup_parts(child)?;
-            let symbol_id = self.lookup_structure_symbol(
-                scope,
-                namespace,
-                base_name.as_ref(),
-                !field_path.is_empty(),
-            )?;
-            let structure_id = self.symbol(symbol_id).structure?;
-            return self.resolve_structure_path(structure_id, &field_path);
-        }
-        None
+        let (tokens, namespace, expr_start) = self.typed_clause_expr_tokens(node)?;
+        let (base_name, _, field_path) =
+            self.type_ref_access_chain_from_tokens(&tokens[expr_start..tokens.len()])?;
+        let field_path_names = field_path
+            .iter()
+            .map(|segment| Arc::clone(&segment.name))
+            .collect::<Vec<_>>();
+        let symbol_id = self.lookup_structure_symbol(
+            scope,
+            namespace,
+            base_name.as_ref(),
+            !field_path_names.is_empty(),
+        )?;
+        let structure_id = self.symbol(symbol_id).structure?;
+        self.resolve_structure_path(structure_id, &field_path_names)
     }
 
     fn lookup_structure_symbol(
@@ -2871,14 +2859,6 @@ impl<'a> Collector<'a> {
 
     fn structure(&self, id: StructureId) -> Option<&StructureData> {
         self.structures.get(id.as_usize())
-    }
-
-    fn type_ref_lookup_parts(&self, node: NodeId) -> Option<(Arc<str>, Vec<Arc<str>>)> {
-        let (_, _, base_name, _, field_path) = self.type_ref_access_chain(node)?;
-        Some((
-            base_name,
-            field_path.into_iter().map(|segment| segment.name).collect(),
-        ))
     }
 
     fn provided_names(&self) -> Vec<Arc<str>> {
@@ -3054,8 +3034,42 @@ impl<'a> Collector<'a> {
         self.tokens.get(*idx)
     }
 
+    fn tokens_for_node_recursive(&self, node: NodeId, out: &mut Vec<&'a Token>) {
+        if let Some(token) = self.token_for_node(node) {
+            out.push(token);
+            return;
+        }
+        for child in self.file.children(node) {
+            self.tokens_for_node_recursive(child, out);
+        }
+    }
+
     fn token_matches_keyword(&self, token: &Token, keyword: &str) -> bool {
         token.kind == TokenKind::Ident && token.lexeme(self.source).eq_ignore_ascii_case(keyword)
+    }
+
+    fn typed_clause_expr_tokens(
+        &self,
+        node: NodeId,
+    ) -> Option<(Vec<&'a Token>, Namespace, usize)> {
+        let mut tokens = Vec::new();
+        self.tokens_for_node_recursive(node, &mut tokens);
+        let mut namespace = None;
+        for (idx, token) in tokens.iter().enumerate() {
+            if self.token_matches_keyword(token, "type") {
+                namespace = Some((Namespace::Type, idx + 1));
+                break;
+            }
+            if self.token_matches_keyword(token, "like") {
+                namespace = Some((Namespace::Value, idx + 1));
+                break;
+            }
+        }
+        let (namespace, mut expr_start) = namespace?;
+        while expr_start < tokens.len() && tokens[expr_start].kind == TokenKind::Comment {
+            expr_start += 1;
+        }
+        Some((tokens, namespace, expr_start))
     }
 
     fn parse_begin_of_structure_tokens(
@@ -3105,8 +3119,13 @@ impl<'a> Collector<'a> {
                     .is_some_and(|next| self.token_matches_keyword(next, "of"))
             {
                 let (nested, next_i) = self.parse_begin_of_structure_tokens(tokens, i)?;
+                let name_tok = tokens.get(i + 2)?;
+                if name_tok.kind != TokenKind::Ident {
+                    return None;
+                }
                 fields.push(PendingStructureField {
                     name: Arc::clone(&nested.name),
+                    decl_range: name_tok.range.clone(),
                     structure: Some(nested),
                     type_ref: None,
                 });
@@ -3125,6 +3144,7 @@ impl<'a> Collector<'a> {
             i = next_i;
             fields.push(PendingStructureField {
                 name: field_name,
+                decl_range: token.range.clone(),
                 structure: None,
                 type_ref,
             });
@@ -3168,74 +3188,23 @@ impl<'a> Collector<'a> {
     }
 
     fn parse_begin_of_field_type_ref(&self, tokens: &[&Token]) -> Option<FieldTypeRefData> {
-        let mut namespace = None;
         let mut idx = 0usize;
-        while idx < tokens.len() {
-            let token = tokens[idx];
+        let namespace = loop {
+            let token = *tokens.get(idx)?;
             if self.token_matches_keyword(token, "type") {
-                namespace = Some(Namespace::Type);
                 idx += 1;
-                break;
+                break Namespace::Type;
             }
             if self.token_matches_keyword(token, "like") {
-                namespace = Some(Namespace::Value);
                 idx += 1;
-                break;
+                break Namespace::Value;
             }
             idx += 1;
+        };
+        while idx < tokens.len() && tokens[idx].kind == TokenKind::Comment {
+            idx += 1;
         }
-        let namespace = namespace?;
-        let mut base_name = None;
-        let mut is_ref = false;
-        let mut field_path = Vec::new();
-        let mut saw_selector = false;
-        while idx < tokens.len() {
-            let token = tokens[idx];
-            if token.kind == TokenKind::Comment {
-                idx += 1;
-                continue;
-            }
-            if token.kind == TokenKind::Ident {
-                if base_name.is_none() && self.token_matches_keyword(token, "ref") {
-                    let to_tok = tokens.get(idx + 1)?;
-                    if !self.token_matches_keyword(to_tok, "to") {
-                        return None;
-                    }
-                    is_ref = true;
-                    idx += 2;
-                    continue;
-                }
-                let name = Arc::<str>::from(token.lexeme(self.source).to_ascii_lowercase());
-                if base_name.is_none() {
-                    base_name = Some(name);
-                } else if saw_selector {
-                    field_path.push(name);
-                    saw_selector = false;
-                } else {
-                    break;
-                }
-                idx += 1;
-                continue;
-            }
-            if matches!(
-                token.kind,
-                TokenKind::Minus | TokenKind::Arrow | TokenKind::Tilde | TokenKind::FatArrow
-            ) {
-                if base_name.is_some() {
-                    saw_selector = true;
-                    idx += 1;
-                    continue;
-                }
-                break;
-            }
-            break;
-        }
-        Some(FieldTypeRefData {
-            namespace,
-            is_ref,
-            base_name: base_name?,
-            field_path,
-        })
+        self.field_type_ref_from_token_slice(tokens, idx, tokens.len(), namespace)
     }
 
     fn selector_access_chain(
@@ -3291,56 +3260,9 @@ impl<'a> Collector<'a> {
         TextRange,
         Vec<FieldAccessSegment>,
     )> {
-        let mut base_name = None;
-        let mut base_range = None;
-        let mut field_path = Vec::new();
-        let mut namespace = Namespace::Type;
-        let mut is_ref = false;
-        let mut saw_selector = false;
-        let mut expect_to_after_ref = false;
-        for child in self.file.children(node) {
-            let token = self.token_for_node(child)?;
-            if token.kind == TokenKind::Ident {
-                if base_name.is_none() && self.token_matches_keyword(token, "ref") {
-                    is_ref = true;
-                    expect_to_after_ref = true;
-                    continue;
-                }
-                if expect_to_after_ref {
-                    if self.token_matches_keyword(token, "to") {
-                        expect_to_after_ref = false;
-                        continue;
-                    }
-                    return None;
-                }
-                let name = Arc::<str>::from(token.lexeme(self.source).to_ascii_lowercase());
-                if base_name.is_none() {
-                    base_range = Some(token.range.clone());
-                    base_name = Some(name);
-                } else if saw_selector {
-                    field_path.push(FieldAccessSegment {
-                        name,
-                        range: token.range.clone(),
-                    });
-                    saw_selector = false;
-                } else {
-                    return None;
-                }
-                continue;
-            }
-            if matches!(
-                token.kind,
-                TokenKind::Minus | TokenKind::Arrow | TokenKind::Tilde | TokenKind::FatArrow
-            ) {
-                if field_path.is_empty() && token.kind != TokenKind::FatArrow {
-                    namespace = Namespace::Value;
-                }
-                saw_selector = true;
-                continue;
-            }
-            return None;
-        }
-        Some((namespace, is_ref, base_name?, base_range?, field_path))
+        let mut tokens = Vec::new();
+        self.tokens_for_node_recursive(node, &mut tokens);
+        self.type_ref_access_chain_from_filtered_tokens(&tokens)
     }
 }
 

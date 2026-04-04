@@ -6,8 +6,9 @@ use abap_cache::{AnalysisSnapshot, DocumentStore};
 use abap_symbols::DiagnosticKind;
 use lsp_types::{
     CompletionItem, CompletionItemKind, CompletionOptions, Diagnostic, DiagnosticSeverity,
-    Documentation, Hover, HoverContents, HoverProviderCapability, InitializeResult, MarkupContent,
-    MarkupKind, OneOf, Position, PublishDiagnosticsParams, Range, SemanticTokens,
+    Documentation, GotoDefinitionResponse, Hover, HoverContents, HoverProviderCapability,
+    InitializeResult, Location, MarkupContent, MarkupKind, OneOf, Position,
+    PublishDiagnosticsParams, Range, SemanticTokens,
     SemanticTokensFullOptions, SemanticTokensOptions, SemanticTokensServerCapabilities,
     ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri,
 };
@@ -15,7 +16,7 @@ use serde::{Deserialize, Serialize};
 
 pub use lsp_types::{
     CompletionParams, CompletionResponse, DidChangeTextDocumentParams, DidOpenTextDocumentParams,
-    HoverParams, SemanticTokensParams,
+    GotoDefinitionParams, HoverParams, SemanticTokensParams,
 };
 pub use serde;
 
@@ -244,6 +245,37 @@ pub fn hover(state: &ServerState, params: &HoverParams) -> Option<Hover> {
     resolved_symbol_hover(&snapshot, symbol)
 }
 
+pub fn definition(
+    state: &ServerState,
+    params: &GotoDefinitionParams,
+) -> Option<GotoDefinitionResponse> {
+    let uri = normalize_lsp_uri(
+        params
+            .text_document_position_params
+            .text_document
+            .uri
+            .as_str(),
+    );
+    let snapshot = state.cache.get(&uri)?;
+    let offset = position_to_offset(
+        snapshot.text.as_ref(),
+        params.text_document_position_params.position,
+    )?;
+    let target = snapshot.definition_at(offset)?;
+    let target_snapshot = if target.uri.as_ref() == snapshot.uri.as_ref() {
+        Arc::clone(&snapshot)
+    } else {
+        state.cache.get(target.uri.as_ref())?
+    };
+    let uri: Uri = target
+        .uri
+        .as_ref()
+        .parse()
+        .expect("cached document URI must be a valid URL");
+    let range = byte_range_to_lsp_range(target_snapshot.text.as_ref(), target.range)?;
+    Some(GotoDefinitionResponse::Scalar(Location { uri, range }))
+}
+
 fn resolved_symbol_hover(
     snapshot: &AnalysisSnapshot,
     info: abap_cache::HoveredSymbolInfo,
@@ -368,7 +400,7 @@ pub fn initialize_result(config: &ServerConfig) -> InitializeResult {
                 trigger_characters: Some(vec!["-".to_string(), ">".to_string(), "~".to_string()]),
                 ..CompletionOptions::default()
             }),
-            definition_provider: Some(OneOf::Left(false)),
+            definition_provider: Some(OneOf::Left(true)),
             semantic_tokens_provider: Some(
                 SemanticTokensServerCapabilities::SemanticTokensOptions(SemanticTokensOptions {
                     legend: sem_tokens::semantic_tokens_legend(),
@@ -488,18 +520,20 @@ mod tests {
     use std::str::FromStr;
 
     use lsp_types::{
-        DidChangeTextDocumentParams, DidOpenTextDocumentParams, Documentation, HoverContents,
-        Position, TextDocumentContentChangeEvent, TextDocumentIdentifier, TextDocumentItem,
-        TextDocumentPositionParams, Uri, VersionedTextDocumentIdentifier,
+        DidChangeTextDocumentParams, DidOpenTextDocumentParams, Documentation,
+        GotoDefinitionResponse, HoverContents, Position, TextDocumentContentChangeEvent,
+        TextDocumentIdentifier, TextDocumentItem, TextDocumentPositionParams, Uri,
+        VersionedTextDocumentIdentifier,
     };
 
     use crate::sem_tokens;
 
     use super::{
-        CompletionParams, CompletionResponse, DEPENDENCY_CACHE_CLEARED, HoverParams,
+        CompletionParams, CompletionResponse, DEPENDENCY_CACHE_CLEARED, GotoDefinitionParams,
+        HoverParams,
         REMOTE_DEPENDENCIES_UPDATED, RESOLVE_REMOTE_DEPENDENCIES, ServerState,
-        WORKSPACE_MANIFEST_UPDATED, build_lsp_diagnostics, completion, hover, initialize_result,
-        normalize_lsp_uri, publish_changed_document, publish_open_document,
+        WORKSPACE_MANIFEST_UPDATED, build_lsp_diagnostics, completion, definition, hover,
+        initialize_result, normalize_lsp_uri, publish_changed_document, publish_open_document,
     };
 
     fn semantic_token_type_at(
@@ -545,7 +579,157 @@ mod tests {
 
         assert!(result.capabilities.text_document_sync.is_some());
         assert!(result.capabilities.semantic_tokens_provider.is_some());
+        assert!(matches!(
+            result.capabilities.definition_provider,
+            Some(lsp_types::OneOf::Left(true))
+        ));
         assert!(result.server_info.is_some());
+    }
+
+    #[test]
+    fn definition_returns_location_for_named_argument_parameter() {
+        let state = ServerState::default();
+        let text = "\
+CLASS zcl_program DEFINITION.
+  PUBLIC SECTION.
+    METHODS add_statement
+      IMPORTING io_stmt TYPE string.
+ENDCLASS.
+
+CLASS zcl_program IMPLEMENTATION.
+ENDCLASS.
+
+START-OF-SELECTION.
+  DATA(lo_prog) = NEW zcl_program( ).
+  lo_prog->add_statement( io_stmt = 'x' ).";
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///definition.abap").expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: text.to_string(),
+                },
+            },
+        );
+
+        let use_line = text
+            .lines()
+            .enumerate()
+            .find(|(_, line)| line.contains("io_stmt = 'x'"))
+            .expect("named argument line");
+        let use_col = use_line.1.find("io_stmt").expect("named argument column") as u32 + 1;
+
+        let result = definition(
+            &state,
+            &GotoDefinitionParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///definition.abap").expect("uri"),
+                    },
+                    position: Position {
+                        line: use_line.0 as u32,
+                        character: use_col,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            },
+        )
+        .expect("definition");
+
+        let GotoDefinitionResponse::Scalar(location) = result else {
+            panic!("expected scalar location");
+        };
+        assert_eq!(
+            location.uri,
+            Uri::from_str("file:///definition.abap").expect("uri")
+        );
+        assert_eq!(location.range.start.line, 3);
+        assert_eq!(location.range.start.character, 16);
+        assert_eq!(location.range.end.line, 3);
+        assert_eq!(location.range.end.character, 23);
+    }
+
+    #[test]
+    fn hover_and_definition_resolve_wrapped_table_element_type() {
+        let state = ServerState::default();
+        let text = "\
+CLASS zcl_stmt DEFINITION.
+ENDCLASS.
+
+CLASS zcl_stmt IMPLEMENTATION.
+ENDCLASS.
+
+CLASS zcl_program DEFINITION.
+  PUBLIC SECTION.
+    TYPES ty_stmt_tab TYPE STANDARD TABLE OF REF TO zcl_stmt WITH DEFAULT KEY.
+ENDCLASS.";
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///wrapped_type.abap").expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: text.to_string(),
+                },
+            },
+        );
+
+        let type_line = text
+            .lines()
+            .enumerate()
+            .find(|(_, line)| line.contains("STANDARD TABLE OF REF TO zcl_stmt"))
+            .expect("table type line");
+        let type_col = type_line.1.rfind("zcl_stmt").expect("wrapped type column") as u32 + 1;
+
+        let hover_result = hover(
+            &state,
+            &HoverParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///wrapped_type.abap").expect("uri"),
+                    },
+                    position: Position {
+                        line: type_line.0 as u32,
+                        character: type_col,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+            },
+        )
+        .expect("hover");
+        let HoverContents::Markup(markup) = hover_result.contents else {
+            panic!("expected markdown hover");
+        };
+        assert!(markup.value.contains("`zcl_stmt`"));
+        assert!(markup.value.contains("Class"));
+
+        let definition_result = definition(
+            &state,
+            &GotoDefinitionParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///wrapped_type.abap").expect("uri"),
+                    },
+                    position: Position {
+                        line: type_line.0 as u32,
+                        character: type_col,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            },
+        )
+        .expect("definition");
+        let GotoDefinitionResponse::Scalar(location) = definition_result else {
+            panic!("expected scalar location");
+        };
+        assert_eq!(location.range.start.line, 0);
+        assert_eq!(location.range.start.character, 6);
+        assert_eq!(location.range.end.character, 14);
     }
 
     #[test]
