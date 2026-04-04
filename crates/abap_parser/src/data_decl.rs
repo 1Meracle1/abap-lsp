@@ -591,15 +591,7 @@ fn parse_begin_of_decl_clause(
     allow_like: bool,
     allow_value: bool,
 ) -> Option<(NodeId, usize)> {
-    parse_structured_decl(
-        b,
-        source,
-        tokens,
-        idx,
-        node_kind,
-        allow_like,
-        allow_value,
-    )
+    parse_structured_decl(b, source, tokens, idx, node_kind, allow_like, allow_value)
 }
 
 fn parse_structured_decl(
@@ -674,9 +666,7 @@ fn parse_structured_decl(
             allow_like,
             allow_value,
         )
-        .or_else(|| {
-            parse_structured_field_clause(b, source, tokens, i, allow_like, allow_value)
-        })?;
+        .or_else(|| parse_structured_field_clause(b, source, tokens, i, allow_like, allow_value))?;
         children.push(component);
         i = next_i;
 
@@ -741,7 +731,10 @@ fn parse_untyped_structured_field_clause(
     }
 
     let range = b.span(*children.first().unwrap()).start..b.span(*children.last().unwrap()).end;
-    Some((b.branch(SyntaxKind::StructuredFieldClause, range, &children), i))
+    Some((
+        b.branch(SyntaxKind::StructuredFieldClause, range, &children),
+        i,
+    ))
 }
 
 fn try_parse_chained_decl(
@@ -774,19 +767,18 @@ fn try_parse_chained_decl(
         while tokens.get(i).map(|t| t.kind) == Some(TokenKind::Comment) {
             i += 1;
         }
-        let (clause, next_i) =
-            parse_decl_clause(b, source, tokens, i, clause_kind, allow_like, allow_value)
-                .or_else(|| {
-                    parse_begin_of_decl_clause(
-                        b,
-                        source,
-                        tokens,
-                        i,
-                        clause_kind,
-                        allow_like,
-                        allow_value,
-                    )
-                })?;
+        let (clause, next_i) = parse_decl_clause(
+            b,
+            source,
+            tokens,
+            i,
+            clause_kind,
+            allow_like,
+            allow_value,
+        )
+        .or_else(|| {
+            parse_begin_of_decl_clause(b, source, tokens, i, clause_kind, allow_like, allow_value)
+        })?;
         clause_nodes.push(clause);
         i = next_i;
         let next = tokens.get(i)?;
@@ -1091,7 +1083,10 @@ mod tests {
             "TYPES: BEGIN OF ts_cust_info, type TYPE char1, root TYPE string, END OF ts_cust_info.",
         );
         assert_eq!(file.count_kind(file.root(), SyntaxKind::TypesDecl), 1);
-        assert_eq!(file.count_kind(file.root(), SyntaxKind::StructuredFieldClause), 2);
+        assert_eq!(
+            file.count_kind(file.root(), SyntaxKind::StructuredFieldClause),
+            2
+        );
         assert_eq!(file.count_kind(file.root(), SyntaxKind::TypeRefSimple), 2);
     }
 
@@ -1102,7 +1097,10 @@ mod tests {
         );
         assert_eq!(file.count_kind(file.root(), SyntaxKind::TypesDecl), 1);
         assert_eq!(file.count_kind(file.root(), SyntaxKind::StructuredDecl), 1);
-        assert_eq!(file.count_kind(file.root(), SyntaxKind::StructuredFieldClause), 1);
+        assert_eq!(
+            file.count_kind(file.root(), SyntaxKind::StructuredFieldClause),
+            1
+        );
         assert_eq!(file.count_kind(file.root(), SyntaxKind::TypeRefSimple), 1);
     }
 

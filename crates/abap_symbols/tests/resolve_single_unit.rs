@@ -1,8 +1,8 @@
 use abap_parser::parse;
 
 use abap_symbols::{
-    DiagnosticKind, Namespace, ReferenceKind, Resolution, StructureFieldShape, SymbolHandle,
-    SqlNameRefKind, SqlPredicateKind, SqlProjectionKind, SqlSourceKind, SqlTargetKind,
+    DiagnosticKind, Namespace, ReferenceKind, Resolution, SqlNameRefKind, SqlPredicateKind,
+    SqlProjectionKind, SqlSourceKind, SqlTargetKind, StructureFieldShape, SymbolHandle,
     analyze_unit,
 };
 
@@ -596,7 +596,12 @@ ENDFORM.
             .find(|symbol| {
                 symbol.kind == abap_symbols::SymbolKind::Variable && symbol.name.as_ref() == name
             })
-            .unwrap_or_else(|| panic!("expected STATICS symbol `{name}`, symbols={:?}", unit.symbols));
+            .unwrap_or_else(|| {
+                panic!(
+                    "expected STATICS symbol `{name}`, symbols={:?}",
+                    unit.symbols
+                )
+            });
         let declared_type = symbol
             .declared_type
             .as_ref()
@@ -685,8 +690,7 @@ WRITE lt_rfcdes.
         .symbols
         .iter()
         .find(|symbol| {
-            symbol.kind == abap_symbols::SymbolKind::Variable
-                && symbol.name.as_ref() == "lt_rfcdes"
+            symbol.kind == abap_symbols::SymbolKind::Variable && symbol.name.as_ref() == "lt_rfcdes"
         })
         .expect("inline SELECT target");
     assert_eq!(symbol.kind, abap_symbols::SymbolKind::Variable);
@@ -709,8 +713,7 @@ WRITE lt_rfcdes.
     );
     assert!(
         !unit.diagnostics.iter().any(|diag| {
-            diag.kind == DiagnosticKind::UnresolvedReference
-                && diag.message.contains("lt_rfcdes")
+            diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains("lt_rfcdes")
         }),
         "unexpected inline SELECT diagnostics: {:?}",
         unit.diagnostics
@@ -807,15 +810,21 @@ WRITE lt_rows.
             && source.alias.as_deref() == Some("b")
     }));
 
-    assert!(unit.sql_predicates.iter().any(|predicate| {
-        predicate.kind == SqlPredicateKind::JoinOn
-    }));
-    assert!(unit.sql_predicates.iter().any(|predicate| {
-        predicate.kind == SqlPredicateKind::DynamicWhere
-    }));
-    assert!(unit.sql_predicates.iter().any(|predicate| {
-        predicate.kind == SqlPredicateKind::ForAllEntries
-    }));
+    assert!(
+        unit.sql_predicates
+            .iter()
+            .any(|predicate| { predicate.kind == SqlPredicateKind::JoinOn })
+    );
+    assert!(
+        unit.sql_predicates
+            .iter()
+            .any(|predicate| { predicate.kind == SqlPredicateKind::DynamicWhere })
+    );
+    assert!(
+        unit.sql_predicates
+            .iter()
+            .any(|predicate| { predicate.kind == SqlPredicateKind::ForAllEntries })
+    );
 
     assert!(unit.sql_name_refs.iter().any(|reference| {
         reference.kind == SqlNameRefKind::QualifiedColumn
@@ -2173,7 +2182,10 @@ ls_cust_info-root = 'node'.";
         "char1"
     );
     assert!(
-        structure.fields.iter().any(|field| field.name.as_ref() == "root"),
+        structure
+            .fields
+            .iter()
+            .any(|field| field.name.as_ref() == "root"),
         "expected root field, fields={:?}",
         structure.fields
     );
@@ -2613,6 +2625,88 @@ START-OF-SELECTION.
                         .any(|segment| segment.name.as_ref() == member_name)
             }),
             "expected selector metadata for `{member_name}`"
+        );
+    }
+
+    assert!(
+        !unit
+            .diagnostics
+            .iter()
+            .any(|diag| diag.kind == DiagnosticKind::UnresolvedReference),
+        "unexpected unresolved diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn resolves_cond_constructor_clause_references() {
+    let src = r#"
+CLASS lcl_element DEFINITION.
+  PUBLIC SECTION.
+    DATA prefix TYPE string.
+    DATA name TYPE string.
+    METHODS get_value
+      RETURNING VALUE(rv_text) TYPE string.
+ENDCLASS.
+
+CLASS lcl_element IMPLEMENTATION.
+  METHOD get_value.
+    rv_text = name.
+  ENDMETHOD.
+ENDCLASS.
+
+START-OF-SELECTION.
+  DATA lo_element TYPE REF TO lcl_element.
+  DATA lv_text TYPE string.
+
+  lv_text = COND string(
+    WHEN lo_element->prefix = '' THEN lo_element->get_value( )
+    ELSE lo_element->name
+  ).
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///cond_constructor.abap", src, &parsed);
+
+    assert!(
+        unit.references.iter().any(|reference| {
+            reference.namespace == Namespace::Value
+                && reference.kind == ReferenceKind::Identifier
+                && reference.name.as_ref() == "lo_element"
+                && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+        }),
+        "expected resolved COND value references, refs={:?} diagnostics={:?}",
+        unit.references,
+        unit.diagnostics
+    );
+
+    for member_name in ["prefix", "get_value", "name"] {
+        assert!(
+            unit.field_accesses.iter().any(|access| {
+                access.base_name.as_ref() == "lo_element"
+                    && access
+                        .field_path
+                        .iter()
+                        .any(|segment| segment.name.as_ref() == member_name)
+            }),
+            "expected selector metadata for `{member_name}` in COND expression"
+        );
+    }
+
+    for keyword in ["when", "then", "else"] {
+        assert!(
+            !unit
+                .references
+                .iter()
+                .any(|reference| reference.name.as_ref() == keyword),
+            "unexpected keyword reference `{keyword}`, refs={:?}",
+            unit.references
+        );
+        assert!(
+            !unit.diagnostics.iter().any(|diag| {
+                diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains(keyword)
+            }),
+            "unexpected unresolved diagnostic for `{keyword}`: {:?}",
+            unit.diagnostics
         );
     }
 

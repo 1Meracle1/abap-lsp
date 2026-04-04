@@ -920,21 +920,25 @@ ls_row-field_a = 1.";
 
         let positions = semantic_token_positions(&tokens);
         assert!(
-            positions.iter().any(|&(line, character, _, token_type, modifiers)| {
-                line == 1
-                    && character == 9
-                    && token_type == property_idx
-                    && (modifiers & decl_mod) != 0
-            }),
+            positions
+                .iter()
+                .any(|&(line, character, _, token_type, modifiers)| {
+                    line == 1
+                        && character == 9
+                        && token_type == property_idx
+                        && (modifiers & decl_mod) != 0
+                }),
             "expected field declaration token, tokens={positions:?}"
         );
         assert!(
-            positions.iter().any(|&(line, character, _, token_type, modifiers)| {
-                line == 5
-                    && character == 7
-                    && token_type == property_idx
-                    && (modifiers & decl_mod) == 0
-            }),
+            positions
+                .iter()
+                .any(|&(line, character, _, token_type, modifiers)| {
+                    line == 5
+                        && character == 7
+                        && token_type == property_idx
+                        && (modifiers & decl_mod) == 0
+                }),
             "expected field access token, tokens={positions:?}"
         );
     }

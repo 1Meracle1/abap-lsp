@@ -2015,12 +2015,10 @@ impl<'a> Collector<'a> {
     fn select_stmt_has_endselect(&self, node: NodeId) -> bool {
         self.file.children(node).any(|child| {
             self.file.kind(child) == SyntaxKind::Token
-                && self
-                    .token_for_node(child)
-                    .is_some_and(|token| {
-                        token.kind == TokenKind::Ident
-                            && token.lexeme(self.source).eq_ignore_ascii_case("endselect")
-                    })
+                && self.token_for_node(child).is_some_and(|token| {
+                    token.kind == TokenKind::Ident
+                        && token.lexeme(self.source).eq_ignore_ascii_case("endselect")
+                })
         })
     }
 
@@ -2033,8 +2031,12 @@ impl<'a> Collector<'a> {
     fn collect_select_stmt(&mut self, node: NodeId, scope: ScopeId) {
         let has_endselect = self.select_stmt_has_endselect(node);
         if has_endselect {
-            let child_scope =
-                self.push_scope(ScopeKind::SelectBlock, self.file.range(node), Some(scope), None);
+            let child_scope = self.push_scope(
+                ScopeKind::SelectBlock,
+                self.file.range(node),
+                Some(scope),
+                None,
+            );
             if let Some(query_node) = self.select_query_node(node) {
                 self.collect_select_query(query_node, child_scope, true);
             }
@@ -2187,9 +2189,7 @@ impl<'a> Collector<'a> {
                 }
                 SyntaxKind::SqlQualifiedStar => {
                     kind = SqlProjectionKind::QualifiedStar;
-                    if let Some((qualifier, range)) =
-                        self.sql_qualified_name_parts(child, true)
-                    {
+                    if let Some((qualifier, range)) = self.sql_qualified_name_parts(child, true) {
                         source_alias = Some(Arc::clone(&qualifier));
                         self.push_sql_name_ref(
                             query_id,
@@ -2203,9 +2203,7 @@ impl<'a> Collector<'a> {
                 }
                 SyntaxKind::SqlColumnRef => {
                     kind = SqlProjectionKind::Column;
-                    if let Some((qualifier, column, range)) =
-                        self.sql_column_ref_parts(child)
-                    {
+                    if let Some((qualifier, column, range)) = self.sql_column_ref_parts(child) {
                         source_alias = qualifier.clone();
                         name = Some(Arc::clone(&column));
                         self.push_sql_name_ref(
@@ -2229,7 +2227,9 @@ impl<'a> Collector<'a> {
         if matches!(kind, SqlProjectionKind::Expression)
             && let Some(token) = tokens.first()
             && token.kind == TokenKind::Ident
-            && tokens.get(1).is_some_and(|next| next.kind == TokenKind::LParen)
+            && tokens
+                .get(1)
+                .is_some_and(|next| next.kind == TokenKind::LParen)
         {
             kind = SqlProjectionKind::Aggregate;
             self.push_sql_name_ref(
@@ -2320,7 +2320,9 @@ impl<'a> Collector<'a> {
         let Some(name) = self.token_span_text(name_tokens) else {
             return;
         };
-        let name_range = self.token_span_range(name_tokens).unwrap_or_else(|| self.file.range(node));
+        let name_range = self
+            .token_span_range(name_tokens)
+            .unwrap_or_else(|| self.file.range(node));
         let alias = self
             .file
             .children(node)
@@ -2524,7 +2526,9 @@ impl<'a> Collector<'a> {
                         idx += 1;
                         continue;
                     }
-                    if tokens.get(idx + 1).is_some_and(|next| next.kind == TokenKind::Tilde)
+                    if tokens
+                        .get(idx + 1)
+                        .is_some_and(|next| next.kind == TokenKind::Tilde)
                         && let Some(third) = tokens.get(idx + 2)
                     {
                         if third.kind == TokenKind::Star {
@@ -2533,7 +2537,9 @@ impl<'a> Collector<'a> {
                                 scope,
                                 token.range.start..third.range.end,
                                 Arc::<str>::from("*"),
-                                Some(Arc::<str>::from(token.lexeme(self.source).to_ascii_lowercase())),
+                                Some(Arc::<str>::from(
+                                    token.lexeme(self.source).to_ascii_lowercase(),
+                                )),
                                 SqlNameRefKind::QualifiedStar,
                             );
                             idx += 3;
@@ -2545,14 +2551,19 @@ impl<'a> Collector<'a> {
                                 scope,
                                 token.range.start..third.range.end,
                                 Arc::<str>::from(third.lexeme(self.source).to_ascii_lowercase()),
-                                Some(Arc::<str>::from(token.lexeme(self.source).to_ascii_lowercase())),
+                                Some(Arc::<str>::from(
+                                    token.lexeme(self.source).to_ascii_lowercase(),
+                                )),
                                 SqlNameRefKind::QualifiedColumn,
                             );
                             idx += 3;
                             continue;
                         }
                     }
-                    if tokens.get(idx + 1).is_some_and(|next| next.kind == TokenKind::LParen) {
+                    if tokens
+                        .get(idx + 1)
+                        .is_some_and(|next| next.kind == TokenKind::LParen)
+                    {
                         self.push_sql_name_ref(
                             query_id,
                             scope,
@@ -2621,7 +2632,10 @@ impl<'a> Collector<'a> {
         }
     }
 
-    fn sql_column_ref_parts(&self, node: NodeId) -> Option<(Option<Arc<str>>, Arc<str>, TextRange)> {
+    fn sql_column_ref_parts(
+        &self,
+        node: NodeId,
+    ) -> Option<(Option<Arc<str>>, Arc<str>, TextRange)> {
         let mut tokens = Vec::new();
         self.tokens_for_node_recursive(node, &mut tokens);
         if tokens.len() == 1 && tokens[0].kind == TokenKind::Ident {
@@ -2637,7 +2651,9 @@ impl<'a> Collector<'a> {
             && tokens[2].kind == TokenKind::Ident
         {
             return Some((
-                Some(Arc::<str>::from(tokens[0].lexeme(self.source).to_ascii_lowercase())),
+                Some(Arc::<str>::from(
+                    tokens[0].lexeme(self.source).to_ascii_lowercase(),
+                )),
                 Arc::<str>::from(tokens[2].lexeme(self.source).to_ascii_lowercase()),
                 tokens[0].range.start..tokens[2].range.end,
             ));

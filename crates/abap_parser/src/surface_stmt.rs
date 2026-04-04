@@ -296,7 +296,8 @@ fn push_select_target_clause_children(
         select_target_clause_starts(source, tokens, idx)
     });
     if expr_start < target_end {
-        if let Some((inline_decl, next_idx)) = try_parse_data_inline_decl(b, source, tokens, expr_start)
+        if let Some((inline_decl, next_idx)) =
+            try_parse_data_inline_decl(b, source, tokens, expr_start)
             && next_idx == target_end
         {
             children.push(inline_decl);
@@ -334,7 +335,11 @@ enum SelectClauseKind {
     ForAllEntries,
 }
 
-fn select_clause_start_kind(source: &str, tokens: &[Token], idx: usize) -> Option<SelectClauseKind> {
+fn select_clause_start_kind(
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+) -> Option<SelectClauseKind> {
     let token = tokens.get(idx)?;
     if token.kind != TokenKind::Ident {
         return None;
@@ -466,7 +471,12 @@ fn find_top_level_keyword(
     None
 }
 
-fn find_top_level_alias_as(source: &str, tokens: &[Token], start: usize, end_exclusive: usize) -> Option<usize> {
+fn find_top_level_alias_as(
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    end_exclusive: usize,
+) -> Option<usize> {
     let mut paren = 0i32;
     let mut bracket = 0i32;
     let mut brace = 0i32;
@@ -545,8 +555,12 @@ fn build_sql_predicate_branch(
     if kind == SyntaxKind::SelectWhereClause {
         if predicate_start < end_exclusive
             && tokens.get(predicate_start).map(|token| token.kind) == Some(TokenKind::LParen)
-            && let Some(dynamic_end) =
-                find_matching_delim(tokens, predicate_start, TokenKind::LParen, TokenKind::RParen)
+            && let Some(dynamic_end) = find_matching_delim(
+                tokens,
+                predicate_start,
+                TokenKind::LParen,
+                TokenKind::RParen,
+            )
             && dynamic_end + 1 == end_exclusive
             && let Some(dynamic_node) = build_token_branch(
                 b,
@@ -563,8 +577,7 @@ fn build_sql_predicate_branch(
             tokens,
             predicate_start,
             end_exclusive,
-        )
-        {
+        ) {
             children.push(predicate_node);
         }
     } else if let Some(predicate_node) = build_token_branch(
@@ -594,8 +607,8 @@ fn build_select_join_clause(
     }
     let join_kw_idx = find_top_level_keyword(source, tokens, start, end_exclusive, "join")?;
     let source_start = skip_trivia(tokens, join_kw_idx + 1);
-    let on_idx =
-        find_top_level_keyword(source, tokens, source_start, end_exclusive, "on").unwrap_or(end_exclusive);
+    let on_idx = find_top_level_keyword(source, tokens, source_start, end_exclusive, "on")
+        .unwrap_or(end_exclusive);
     let mut children = Vec::new();
     push_token_children(b, &mut children, tokens, start, source_start);
     if let Some(source_node) = build_sql_data_source(b, source, tokens, source_start, on_idx) {
@@ -654,7 +667,12 @@ fn build_select_from_clause(
     Some(b.branch(SyntaxKind::SelectFromClause, range, &children))
 }
 
-fn find_projection_alias_start(source: &str, tokens: &[Token], start: usize, end_exclusive: usize) -> Option<usize> {
+fn find_projection_alias_start(
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    end_exclusive: usize,
+) -> Option<usize> {
     find_top_level_alias_as(source, tokens, start, end_exclusive)
 }
 
@@ -707,7 +725,8 @@ fn build_sql_projection_item(
         return None;
     }
     let mut children = Vec::new();
-    let alias_start = find_projection_alias_start(source, tokens, start, end_exclusive).unwrap_or(end_exclusive);
+    let alias_start =
+        find_projection_alias_start(source, tokens, start, end_exclusive).unwrap_or(end_exclusive);
     if let Some(value_node) = build_projection_value_node(b, tokens, start, alias_start) {
         children.push(value_node);
     } else {
@@ -752,9 +771,7 @@ fn build_select_projection_list(
             TokenKind::LBrace => brace += 1,
             TokenKind::RBrace => brace -= 1,
             TokenKind::Comma if paren == 0 && bracket == 0 && brace == 0 => {
-                if let Some(item) =
-                    build_sql_projection_item(b, source, tokens, item_start, idx)
-                {
+                if let Some(item) = build_sql_projection_item(b, source, tokens, item_start, idx) {
                     children.push(item);
                 }
                 item_start = idx + 1;
@@ -779,12 +796,20 @@ fn build_select_clause(
     end_exclusive: usize,
 ) -> Option<NodeId> {
     match kind {
-        SelectClauseKind::Distinct => {
-            build_token_branch(b, SyntaxKind::SelectDistinctClause, tokens, start, end_exclusive)
-        }
-        SelectClauseKind::UpTo => {
-            build_token_branch(b, SyntaxKind::SelectUpToClause, tokens, start, end_exclusive)
-        }
+        SelectClauseKind::Distinct => build_token_branch(
+            b,
+            SyntaxKind::SelectDistinctClause,
+            tokens,
+            start,
+            end_exclusive,
+        ),
+        SelectClauseKind::UpTo => build_token_branch(
+            b,
+            SyntaxKind::SelectUpToClause,
+            tokens,
+            start,
+            end_exclusive,
+        ),
         SelectClauseKind::From => build_select_from_clause(b, source, tokens, start, end_exclusive),
         SelectClauseKind::Into | SelectClauseKind::Appending => {
             let mut children = Vec::new();
@@ -800,18 +825,36 @@ fn build_select_clause(
             let range = tokens[start].range.start..tokens[end_exclusive - 1].range.end;
             Some(b.branch(SyntaxKind::SelectIntoClause, range, &children))
         }
-        SelectClauseKind::Where => {
-            build_sql_predicate_branch(b, SyntaxKind::SelectWhereClause, source, tokens, start, end_exclusive)
-        }
-        SelectClauseKind::GroupBy => {
-            build_token_branch(b, SyntaxKind::SelectGroupByClause, tokens, start, end_exclusive)
-        }
-        SelectClauseKind::Having => {
-            build_sql_predicate_branch(b, SyntaxKind::SelectHavingClause, source, tokens, start, end_exclusive)
-        }
-        SelectClauseKind::OrderBy => {
-            build_token_branch(b, SyntaxKind::SelectOrderByClause, tokens, start, end_exclusive)
-        }
+        SelectClauseKind::Where => build_sql_predicate_branch(
+            b,
+            SyntaxKind::SelectWhereClause,
+            source,
+            tokens,
+            start,
+            end_exclusive,
+        ),
+        SelectClauseKind::GroupBy => build_token_branch(
+            b,
+            SyntaxKind::SelectGroupByClause,
+            tokens,
+            start,
+            end_exclusive,
+        ),
+        SelectClauseKind::Having => build_sql_predicate_branch(
+            b,
+            SyntaxKind::SelectHavingClause,
+            source,
+            tokens,
+            start,
+            end_exclusive,
+        ),
+        SelectClauseKind::OrderBy => build_token_branch(
+            b,
+            SyntaxKind::SelectOrderByClause,
+            tokens,
+            start,
+            end_exclusive,
+        ),
         SelectClauseKind::ForAllEntries => build_token_branch(
             b,
             SyntaxKind::SelectForAllEntriesClause,
@@ -3472,18 +3515,36 @@ END-OF-PAGE.\nWRITE 'e'.",
 
     #[test]
     fn parses_flat_select_into_table_inline_data_target() {
-        let parsed =
-            crate::parse("SELECT rfcdest FROM rfcdes INTO TABLE @DATA(lt_rfcdes) WHERE mandt = sy-mandt.");
+        let parsed = crate::parse(
+            "SELECT rfcdest FROM rfcdes INTO TABLE @DATA(lt_rfcdes) WHERE mandt = sy-mandt.",
+        );
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
         let root = parsed.file.root();
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::SelectStmt), 1);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::DataInlineDecl), 1);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::SelectQuery), 1);
-        assert_eq!(parsed.file.count_kind(root, SyntaxKind::SelectProjectionList), 1);
-        assert_eq!(parsed.file.count_kind(root, SyntaxKind::SelectFromClause), 1);
-        assert_eq!(parsed.file.count_kind(root, SyntaxKind::SelectIntoClause), 1);
-        assert_eq!(parsed.file.count_kind(root, SyntaxKind::SelectWhereClause), 1);
-        assert_eq!(parsed.file.count_kind(root, SyntaxKind::SqlProjectionItem), 1);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::SelectProjectionList),
+            1
+        );
+        assert_eq!(
+            parsed.file.count_kind(root, SyntaxKind::SelectFromClause),
+            1
+        );
+        assert_eq!(
+            parsed.file.count_kind(root, SyntaxKind::SelectIntoClause),
+            1
+        );
+        assert_eq!(
+            parsed.file.count_kind(root, SyntaxKind::SelectWhereClause),
+            1
+        );
+        assert_eq!(
+            parsed.file.count_kind(root, SyntaxKind::SqlProjectionItem),
+            1
+        );
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::SqlColumnRef), 1);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::SqlDataSource), 1);
     }
@@ -3680,8 +3741,9 @@ END-OF-PAGE.\nWRITE 'e'.",
 
     #[test]
     fn parses_modify_table_with_transporting_where() {
-        let parsed =
-            crate::parse("MODIFY TABLE lt_items FROM ls_item TRANSPORTING qty WHERE id = ls_item-id.");
+        let parsed = crate::parse(
+            "MODIFY TABLE lt_items FROM ls_item TRANSPORTING qty WHERE id = ls_item-id.",
+        );
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
         assert_eq!(
             parsed
@@ -3784,15 +3846,50 @@ END-OF-PAGE.\nWRITE 'e'.",
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
         let root = parsed.file.root();
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::SelectQuery), 1);
-        assert_eq!(parsed.file.count_kind(root, SyntaxKind::SelectDistinctClause), 1);
-        assert_eq!(parsed.file.count_kind(root, SyntaxKind::SelectProjectionList), 1);
-        assert_eq!(parsed.file.count_kind(root, SyntaxKind::SelectFromClause), 1);
-        assert_eq!(parsed.file.count_kind(root, SyntaxKind::SelectJoinClause), 1);
-        assert_eq!(parsed.file.count_kind(root, SyntaxKind::SelectForAllEntriesClause), 1);
-        assert_eq!(parsed.file.count_kind(root, SyntaxKind::SelectIntoClause), 1);
-        assert_eq!(parsed.file.count_kind(root, SyntaxKind::SelectWhereClause), 1);
-        assert_eq!(parsed.file.count_kind(root, SyntaxKind::SelectOrderByClause), 1);
-        assert_eq!(parsed.file.count_kind(root, SyntaxKind::SqlQualifiedStar), 1);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::SelectDistinctClause),
+            1
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::SelectProjectionList),
+            1
+        );
+        assert_eq!(
+            parsed.file.count_kind(root, SyntaxKind::SelectFromClause),
+            1
+        );
+        assert_eq!(
+            parsed.file.count_kind(root, SyntaxKind::SelectJoinClause),
+            1
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::SelectForAllEntriesClause),
+            1
+        );
+        assert_eq!(
+            parsed.file.count_kind(root, SyntaxKind::SelectIntoClause),
+            1
+        );
+        assert_eq!(
+            parsed.file.count_kind(root, SyntaxKind::SelectWhereClause),
+            1
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::SelectOrderByClause),
+            1
+        );
+        assert_eq!(
+            parsed.file.count_kind(root, SyntaxKind::SqlQualifiedStar),
+            1
+        );
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::SqlDynamicWhere), 1);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::SqlAlias), 2);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::SqlDataSource), 2);

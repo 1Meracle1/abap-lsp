@@ -356,6 +356,31 @@ impl<'a, 'b> Parser<'a, 'b> {
         Some(expr)
     }
 
+    fn parse_complete_logical_expr(
+        &mut self,
+        tokens: &'a [Token],
+        prev_before_first: &'a Token,
+    ) -> Option<NodeId> {
+        if tokens.is_empty() {
+            return None;
+        }
+
+        let mut nested = Parser {
+            source: self.source,
+            tokens,
+            idx: 0,
+            prev: prev_before_first,
+            b: self.b,
+            paren_inner: ParenInner::Logical,
+        };
+        let expr = nested.parse_or_expr()?;
+        nested.skip_trivia();
+        if nested.idx != tokens.len() {
+            return None;
+        }
+        Some(expr)
+    }
+
     fn parse_substring_length_group_at(
         &mut self,
         lparen_idx: usize,
@@ -409,6 +434,67 @@ impl<'a, 'b> Parser<'a, 'b> {
                 }
                 _ => {}
             }
+        }
+        None
+    }
+
+    fn find_top_level_keyword_in_range(
+        &self,
+        start_idx: usize,
+        end_idx: usize,
+        keyword: &str,
+    ) -> Option<usize> {
+        let mut paren = 0i32;
+        let mut bracket = 0i32;
+        let mut brace = 0i32;
+        let mut idx = start_idx;
+        while idx < end_idx {
+            let token = &self.tokens[idx];
+            if paren == 0 && bracket == 0 && brace == 0 && ident_eq(self.source, token, keyword) {
+                return Some(idx);
+            }
+            match token.kind {
+                TokenKind::LParen => paren += 1,
+                TokenKind::RParen => paren -= 1,
+                TokenKind::LBracket => bracket += 1,
+                TokenKind::RBracket => bracket -= 1,
+                TokenKind::LBrace => brace += 1,
+                TokenKind::RBrace => brace -= 1,
+                _ => {}
+            }
+            idx += 1;
+        }
+        None
+    }
+
+    fn find_next_top_level_cond_clause_start(
+        &self,
+        start_idx: usize,
+        end_idx: usize,
+    ) -> Option<usize> {
+        let mut paren = 0i32;
+        let mut bracket = 0i32;
+        let mut brace = 0i32;
+        let mut idx = start_idx;
+        while idx < end_idx {
+            let token = &self.tokens[idx];
+            if paren == 0
+                && bracket == 0
+                && brace == 0
+                && (ident_eq(self.source, token, "WHEN") || ident_eq(self.source, token, "ELSE"))
+            {
+                return Some(idx);
+            }
+            match token.kind {
+                TokenKind::LParen => paren += 1,
+                TokenKind::RParen => paren -= 1,
+                TokenKind::LBracket => bracket += 1,
+                TokenKind::RBracket => bracket -= 1,
+                TokenKind::LBrace => brace += 1,
+                TokenKind::RBrace => brace -= 1,
+                _ => {}
+            }
+            idx += 1;
         }
         None
     }
@@ -764,8 +850,116 @@ impl<'a, 'b> Parser<'a, 'b> {
         Some(self.b.branch(kind, range, &[callee, args]))
     }
 
+    fn build_raw_call_positional_arg(&mut self, tokens: &'a [Token]) -> Option<NodeId> {
+        if tokens.is_empty() {
+            return None;
+        }
+        let children: Vec<_> = tokens
+            .iter()
+            .map(|token| token_leaf(self.b, token))
+            .collect();
+        Some(self.b.branch(
+            SyntaxKind::CallPositionalArg,
+            tokens.first()?.range.start..tokens.last()?.range.end,
+            &children,
+        ))
+    }
+
+    fn parse_cond_when_clause(&mut self, clause_start: usize, clause_end: usize) -> Option<NodeId> {
+        let when_tok = self.tokens.get(clause_start)?;
+        if !ident_eq(self.source, when_tok, "WHEN") {
+            return None;
+        }
+        let then_idx =
+            self.find_top_level_keyword_in_range(clause_start + 1, clause_end, "THEN")?;
+        let then_tok = self.tokens.get(then_idx)?;
+        let condition =
+            self.parse_complete_logical_expr(&self.tokens[clause_start + 1..then_idx], when_tok)?;
+        let value =
+            self.parse_complete_concat_expr(&self.tokens[then_idx + 1..clause_end], then_tok)?;
+        let children = [
+            token_leaf(self.b, when_tok),
+            condition,
+            token_leaf(self.b, then_tok),
+            value,
+        ];
+        Some(self.b.branch(
+            SyntaxKind::CallPositionalArg,
+            when_tok.range.start..self.b.span(value).end,
+            &children,
+        ))
+    }
+
+    fn parse_cond_else_clause(&mut self, clause_start: usize, clause_end: usize) -> Option<NodeId> {
+        let else_tok = self.tokens.get(clause_start)?;
+        if !ident_eq(self.source, else_tok, "ELSE") {
+            return None;
+        }
+        let value =
+            self.parse_complete_concat_expr(&self.tokens[clause_start + 1..clause_end], else_tok)?;
+        let children = [token_leaf(self.b, else_tok), value];
+        Some(self.b.branch(
+            SyntaxKind::CallPositionalArg,
+            else_tok.range.start..self.b.span(value).end,
+            &children,
+        ))
+    }
+
+    fn parse_cond_constructor_arg_list(&mut self) -> Option<NodeId> {
+        let lparen_idx = self.idx;
+        let lparen = self.tokens.get(lparen_idx)?;
+        if lparen.kind != TokenKind::LParen {
+            return None;
+        }
+        let rparen_idx = self.find_matching_paren_from(lparen_idx)?;
+        let rparen = self.tokens.get(rparen_idx)?;
+        let mut children = vec![token_leaf(self.b, lparen)];
+        let mut idx = lparen_idx + 1;
+
+        while idx < rparen_idx {
+            let token = &self.tokens[idx];
+            if token.kind == TokenKind::Comment {
+                idx += 1;
+                continue;
+            }
+
+            let clause_end = self
+                .find_next_top_level_cond_clause_start(idx + 1, rparen_idx)
+                .unwrap_or(rparen_idx);
+            let clause = if ident_eq(self.source, token, "WHEN") {
+                self.parse_cond_when_clause(idx, clause_end)
+            } else if ident_eq(self.source, token, "ELSE") {
+                self.parse_cond_else_clause(idx, clause_end)
+            } else {
+                self.build_raw_call_positional_arg(&self.tokens[idx..clause_end])
+            };
+
+            if let Some(clause) =
+                clause.or_else(|| self.build_raw_call_positional_arg(&self.tokens[idx..clause_end]))
+            {
+                children.push(clause);
+            }
+
+            if clause_end == idx {
+                idx += 1;
+            } else {
+                idx = clause_end;
+            }
+        }
+
+        children.push(token_leaf(self.b, rparen));
+        self.idx = rparen_idx + 1;
+        self.prev = rparen;
+        Some(self.b.branch(
+            SyntaxKind::CallArgList,
+            lparen.range.start..rparen.range.end,
+            &children,
+        ))
+    }
+
     fn parse_constructor_expr(&mut self) -> Option<NodeId> {
         let kw_tok = self.bump()?;
+        let is_cond = ident_eq(self.source, kw_tok, "COND");
         let mut children = vec![token_leaf(self.b, kw_tok)];
         self.skip_trivia();
         let type_start = self.idx;
@@ -802,7 +996,11 @@ impl<'a, 'b> Parser<'a, 'b> {
             .curr()
             .is_some_and(|token| token.kind == TokenKind::LParen)
         {
-            let args = self.parse_call_arg_list()?;
+            let args = if is_cond {
+                self.parse_cond_constructor_arg_list()?
+            } else {
+                self.parse_call_arg_list()?
+            };
             children.push(args);
         }
 
@@ -1421,6 +1619,24 @@ mod tests {
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::ConstructorExpr), 1);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::TypeRefSimple), 1);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::CallArgList), 1);
+    }
+
+    #[test]
+    fn cond_constructor_expr_builds_clause_expressions() {
+        let parsed = crate::parse(
+            "lv_curr_node = COND string( WHEN lo_open_element->prefix = '' THEN to_lower( lo_open_element->qname-name ) ELSE to_lower( lo_open_element->prefix && ':' && lo_open_element->qname-name ) ).",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::ConstructorExpr), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::CallArgList), 1);
+        assert_eq!(
+            parsed.file.count_kind(root, SyntaxKind::CallPositionalArg),
+            2
+        );
+        assert!(parsed.file.count_kind(root, SyntaxKind::BinaryExpr) >= 3);
+        assert!(parsed.file.count_kind(root, SyntaxKind::SelectorExpr) >= 4);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
     }
 
     #[test]
