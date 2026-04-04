@@ -1241,6 +1241,67 @@ ENDCLASS.
 }
 
 #[test]
+fn resolves_implicit_legacy_call_method_named_arguments() {
+    let src = r#"
+CLASS zcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS send_notification
+      EXPORTING ev_response_string TYPE string.
+    METHODS exec.
+  PRIVATE SECTION.
+    DATA mv_state TYPE string.
+ENDCLASS.
+
+CLASS zcl_demo IMPLEMENTATION.
+  METHOD send_notification.
+    ev_response_string = mv_state.
+  ENDMETHOD.
+
+  METHOD exec.
+    CALL METHOD send_notification
+      IMPORTING
+        ev_response_string = DATA(lv_response).
+    mv_state = lv_response.
+  ENDMETHOD.
+ENDCLASS.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///implicit_legacy_call_method.abap", src, &parsed);
+
+    let lv_response = unit
+        .symbols
+        .iter()
+        .find(|symbol| {
+            symbol.kind == abap_symbols::SymbolKind::Variable
+                && symbol.name.as_ref() == "lv_response"
+        })
+        .expect("implicit CALL METHOD inline target");
+    let declared_type = lv_response
+        .declared_type
+        .as_ref()
+        .expect("implicit CALL METHOD target declared type");
+    assert_eq!(declared_type.namespace, Namespace::Type);
+    assert_eq!(declared_type.base_name.as_ref(), "string");
+    assert!(declared_type.field_path.is_empty());
+
+    assert!(unit.named_arguments.iter().any(|argument| {
+        argument.name.as_ref() == "ev_response_string"
+            && argument.section == Some(abap_symbols::NamedArgumentSection::Importing)
+    }));
+
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            matches!(
+                diag.kind,
+                DiagnosticKind::UnresolvedReference | DiagnosticKind::UnknownField
+            )
+        }),
+        "unexpected diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn does_not_resolve_me_in_static_methods() {
     let src = r#"
 CLASS zcl_demo DEFINITION.

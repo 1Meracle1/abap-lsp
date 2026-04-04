@@ -4,6 +4,7 @@ use abap_ast::SyntaxKind;
 use abap_ast::arena::{NodeId, SyntaxTreeBuilder};
 use abap_lexer::{Token, TokenKind, have_space_between};
 
+use crate::expr::{parse_arithmetic_expr, parse_logical_expr};
 use crate::stmt_period::{StmtPeriodScan, scan_until_statement_period, unterminated_err_end};
 use crate::type_ref::build_type_ref_node;
 
@@ -537,6 +538,46 @@ fn validate_unparsed_stmt(
     }
 }
 
+fn build_assert_or_check_stmt_children(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    period_i: usize,
+) -> Vec<NodeId> {
+    let mut children = vec![token_leaf(b, &tokens[idx])];
+    if idx + 1 < period_i {
+        children.push(parse_logical_expr(
+            b,
+            source,
+            &tokens[idx + 1..period_i],
+            None,
+        ));
+    }
+    children.push(token_leaf(b, &tokens[period_i]));
+    children
+}
+
+fn build_direct_call_stmt_children(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    period_i: usize,
+) -> Vec<NodeId> {
+    let mut children = Vec::new();
+    if idx < period_i {
+        children.push(parse_arithmetic_expr(
+            b,
+            source,
+            &tokens[idx..period_i],
+            None,
+        ));
+    }
+    children.push(token_leaf(b, &tokens[period_i]));
+    children
+}
+
 /// Fallback parser for valid statement-shaped token runs when no dedicated parser claims them yet.
 pub fn try_parse_simple_stmt(
     b: &mut SyntaxTreeBuilder,
@@ -556,13 +597,20 @@ pub fn try_parse_simple_stmt(
             let significant = significant_stmt_tokens(tokens, idx, period_i);
             validate_unparsed_stmt(source, &significant, tokens, idx, period_i, errors);
             let kind = simple_stmt_kind(source, &significant);
-            let kids = if kind == SyntaxKind::MethodsStmt {
-                build_methods_stmt_children(b, source, tokens, idx, period_i)
-            } else {
-                tokens[idx..=period_i]
+            let kids = match kind {
+                SyntaxKind::MethodsStmt => {
+                    build_methods_stmt_children(b, source, tokens, idx, period_i)
+                }
+                SyntaxKind::AssertStmt | SyntaxKind::CheckStmt => {
+                    build_assert_or_check_stmt_children(b, source, tokens, idx, period_i)
+                }
+                SyntaxKind::CallStmt => {
+                    build_direct_call_stmt_children(b, source, tokens, idx, period_i)
+                }
+                _ => tokens[idx..=period_i]
                     .iter()
                     .map(|t| token_leaf(b, t))
-                    .collect()
+                    .collect(),
             };
             let node = b.branch(kind, first.range.start..period_tok.range.end, &kids);
             Some((node, period_i + 1))
@@ -728,5 +776,18 @@ ENDCLASS.";
                 .count_kind(parsed.file.root(), SyntaxKind::CallStmt),
             1
         );
+    }
+
+    #[test]
+    fn assert_check_and_direct_call_build_expression_children() {
+        let parsed = crate::parse(
+            "ASSERT lo_ref IS BOUND. CHECK lv_ok = abap_true. lo_prog->add_statement( lo_item ).",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert!(parsed.file.count_kind(root, SyntaxKind::IsPredicate) >= 1);
+        assert!(parsed.file.count_kind(root, SyntaxKind::BinaryExpr) >= 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::CallExpr), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::SelectorExpr), 1);
     }
 }

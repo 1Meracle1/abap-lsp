@@ -9,6 +9,7 @@
 //! concat-expr). Comment tokens (including lexer `##…` pragmas) are skipped inside the expression parser.
 
 use crate::syntax::parse_char_string_template;
+use crate::type_ref::build_type_ref_node;
 use abap_ast::SyntaxKind;
 use abap_ast::arena::{NodeId, SyntaxTreeBuilder};
 use abap_lexer::{Token, TokenKind, have_space_between};
@@ -68,6 +69,20 @@ fn is_comparison_op(source: &str, t: &Token) -> bool {
         }
         _ => false,
     }
+}
+
+#[inline]
+fn is_call_argument_section(source: &str, token: &Token) -> bool {
+    token.kind == TokenKind::Ident
+        && matches!(
+            token.lexeme(source).to_ascii_uppercase().as_str(),
+            "EXPORTING" | "IMPORTING" | "CHANGING" | "RECEIVING" | "EXCEPTIONS"
+        )
+}
+
+#[inline]
+fn slice_has_non_comment_token(tokens: &[Token]) -> bool {
+    tokens.iter().any(|token| token.kind != TokenKind::Comment)
 }
 
 impl<'a, 'b> Parser<'a, 'b> {
@@ -413,6 +428,300 @@ impl<'a, 'b> Parser<'a, 'b> {
         }
     }
 
+    fn call_argument_value_end(&self, tokens: &[Token], start_idx: usize) -> usize {
+        let mut paren = 0i32;
+        let mut bracket = 0i32;
+        let mut brace = 0i32;
+        let mut idx = start_idx;
+        while idx < tokens.len() {
+            let token = &tokens[idx];
+            match token.kind {
+                TokenKind::LParen => paren += 1,
+                TokenKind::RParen => paren -= 1,
+                TokenKind::LBracket => bracket += 1,
+                TokenKind::RBracket => bracket -= 1,
+                TokenKind::LBrace => brace += 1,
+                TokenKind::RBrace => brace -= 1,
+                _ => {}
+            }
+            if paren == 0 && bracket == 0 && brace == 0 {
+                if is_call_argument_section(self.source, token) {
+                    break;
+                }
+                if token.kind == TokenKind::Ident
+                    && tokens.get(idx + 1).map(|next| next.kind) == Some(TokenKind::Eq)
+                {
+                    break;
+                }
+            }
+            idx += 1;
+        }
+        idx
+    }
+
+    fn inline_name_node(&mut self, token: &Token) -> NodeId {
+        let leaf = token_leaf(self.b, token);
+        self.b
+            .branch(SyntaxKind::DataDeclName, token.range.clone(), &[leaf])
+    }
+
+    fn inline_name_spacing_is_valid(
+        &self,
+        tokens: &[Token],
+        lparen_idx: usize,
+        name_idx: usize,
+        rparen_idx: usize,
+    ) -> bool {
+        let lparen = &tokens[lparen_idx];
+        let name = &tokens[name_idx];
+        let rparen = &tokens[rparen_idx];
+        !have_space_between(lparen, name) && !have_space_between(name, rparen)
+    }
+
+    fn try_parse_call_inline_data_decl(&mut self, tokens: &[Token]) -> Option<NodeId> {
+        let data_tok = tokens.first()?;
+        if !ident_eq(self.source, data_tok, "DATA") {
+            return None;
+        }
+        if tokens.len() != 4 || tokens.get(1)?.kind != TokenKind::LParen {
+            return None;
+        }
+        let name_tok = tokens.get(2)?;
+        let rparen = tokens.get(3)?;
+        if name_tok.kind != TokenKind::Ident || rparen.kind != TokenKind::RParen {
+            return None;
+        }
+
+        let data_leaf = token_leaf(self.b, data_tok);
+        let lparen_leaf = token_leaf(self.b, &tokens[1]);
+        let name = self.inline_name_node(name_tok);
+        let rparen_leaf = token_leaf(self.b, rparen);
+        let kind = if self.inline_name_spacing_is_valid(tokens, 1, 2, 3) {
+            SyntaxKind::DataInlineDecl
+        } else {
+            SyntaxKind::Error
+        };
+        Some(self.b.branch(
+            kind,
+            data_tok.range.start..rparen.range.end,
+            &[data_leaf, lparen_leaf, name, rparen_leaf],
+        ))
+    }
+
+    fn try_parse_call_inline_field_symbol_decl(&mut self, tokens: &[Token]) -> Option<NodeId> {
+        let field_tok = tokens.first()?;
+        if !ident_eq(self.source, field_tok, "FIELD")
+            || tokens.get(1)?.kind != TokenKind::Minus
+            || !tokens
+                .get(2)
+                .is_some_and(|token| ident_eq(self.source, token, "SYMBOL"))
+            || tokens.get(3)?.kind != TokenKind::LParen
+            || tokens.len() != 6
+        {
+            return None;
+        }
+
+        let name_tok = tokens.get(4)?;
+        let rparen = tokens.get(5)?;
+        if name_tok.kind != TokenKind::Ident || rparen.kind != TokenKind::RParen {
+            return None;
+        }
+
+        let field_leaf = token_leaf(self.b, field_tok);
+        let minus_leaf = token_leaf(self.b, &tokens[1]);
+        let symbol_leaf = token_leaf(self.b, &tokens[2]);
+        let lparen_leaf = token_leaf(self.b, &tokens[3]);
+        let name = self.inline_name_node(name_tok);
+        let rparen_leaf = token_leaf(self.b, rparen);
+        let kind = if self.inline_name_spacing_is_valid(tokens, 3, 4, 5) {
+            SyntaxKind::FieldSymbolInlineDecl
+        } else {
+            SyntaxKind::Error
+        };
+        Some(self.b.branch(
+            kind,
+            field_tok.range.start..rparen.range.end,
+            &[
+                field_leaf,
+                minus_leaf,
+                symbol_leaf,
+                lparen_leaf,
+                name,
+                rparen_leaf,
+            ],
+        ))
+    }
+
+    fn parse_call_argument_value(
+        &mut self,
+        tokens: &'a [Token],
+        prev_before_first: &'a Token,
+    ) -> Option<NodeId> {
+        if tokens.is_empty() {
+            return None;
+        }
+        self.try_parse_call_inline_data_decl(tokens)
+            .or_else(|| self.try_parse_call_inline_field_symbol_decl(tokens))
+            .or_else(|| self.parse_complete_concat_expr(tokens, prev_before_first))
+    }
+
+    fn push_call_positional_arg(
+        &mut self,
+        items: &mut Vec<NodeId>,
+        tokens: &'a [Token],
+        start: usize,
+        end: usize,
+        prev_before_first: &'a Token,
+    ) {
+        let segment = &tokens[start..end];
+        if segment.is_empty() || !slice_has_non_comment_token(segment) {
+            return;
+        }
+
+        let mut children = Vec::new();
+        if let Some(value) = self.parse_call_argument_value(segment, prev_before_first) {
+            children.push(value);
+        } else {
+            children.extend(segment.iter().map(|token| token_leaf(self.b, token)));
+        }
+
+        items.push(self.b.branch(
+            SyntaxKind::CallPositionalArg,
+            segment.first().unwrap().range.start..segment.last().unwrap().range.end,
+            &children,
+        ));
+    }
+
+    fn build_call_named_arg(
+        &mut self,
+        tokens: &'a [Token],
+        idx: usize,
+        value_end: usize,
+    ) -> NodeId {
+        let name_tok = &tokens[idx];
+        let eq_tok = &tokens[idx + 1];
+        let value_tokens = &tokens[idx + 2..value_end];
+        let mut children = vec![token_leaf(self.b, name_tok), token_leaf(self.b, eq_tok)];
+        if let Some(value) = self.parse_call_argument_value(value_tokens, eq_tok) {
+            children.push(value);
+        } else {
+            children.extend(value_tokens.iter().map(|token| token_leaf(self.b, token)));
+        }
+
+        let end = value_tokens.last().unwrap_or(eq_tok).range.end;
+        self.b.branch(
+            SyntaxKind::CallNamedArg,
+            name_tok.range.start..end,
+            &children,
+        )
+    }
+
+    fn parse_call_arg_list(&mut self) -> Option<NodeId> {
+        let lparen_idx = self.idx;
+        let lparen = self.tokens.get(lparen_idx)?;
+        if lparen.kind != TokenKind::LParen {
+            return None;
+        }
+        let rparen_idx = self.find_matching_paren_from(lparen_idx)?;
+        let rparen = self.tokens.get(rparen_idx)?;
+        let inner = &self.tokens[lparen_idx + 1..rparen_idx];
+
+        let mut children = vec![token_leaf(self.b, lparen)];
+        let mut idx = 0usize;
+        let mut segment_start = 0usize;
+        let mut paren = 0i32;
+        let mut bracket = 0i32;
+        let mut brace = 0i32;
+
+        while idx < inner.len() {
+            let token = &inner[idx];
+            if token.kind == TokenKind::Comment {
+                idx += 1;
+                continue;
+            }
+
+            if paren == 0 && bracket == 0 && brace == 0 {
+                if is_call_argument_section(self.source, token) {
+                    let prev_before_first = if segment_start == 0 {
+                        lparen
+                    } else {
+                        &inner[segment_start - 1]
+                    };
+                    self.push_call_positional_arg(
+                        &mut children,
+                        inner,
+                        segment_start,
+                        idx,
+                        prev_before_first,
+                    );
+                    let section_leaf = token_leaf(self.b, token);
+                    children.push(self.b.branch(
+                        SyntaxKind::CallArgSection,
+                        token.range.clone(),
+                        &[section_leaf],
+                    ));
+                    idx += 1;
+                    segment_start = idx;
+                    continue;
+                }
+                if token.kind == TokenKind::Ident
+                    && inner.get(idx + 1).map(|next| next.kind) == Some(TokenKind::Eq)
+                {
+                    let prev_before_first = if segment_start == 0 {
+                        lparen
+                    } else {
+                        &inner[segment_start - 1]
+                    };
+                    self.push_call_positional_arg(
+                        &mut children,
+                        inner,
+                        segment_start,
+                        idx,
+                        prev_before_first,
+                    );
+                    let value_end = self.call_argument_value_end(inner, idx + 2);
+                    children.push(self.build_call_named_arg(inner, idx, value_end));
+                    idx = value_end;
+                    segment_start = idx;
+                    continue;
+                }
+            }
+
+            match token.kind {
+                TokenKind::LParen => paren += 1,
+                TokenKind::RParen => paren -= 1,
+                TokenKind::LBracket => bracket += 1,
+                TokenKind::RBracket => bracket -= 1,
+                TokenKind::LBrace => brace += 1,
+                TokenKind::RBrace => brace -= 1,
+                _ => {}
+            }
+            idx += 1;
+        }
+
+        let prev_before_first = if segment_start == 0 {
+            lparen
+        } else {
+            &inner[segment_start - 1]
+        };
+        self.push_call_positional_arg(
+            &mut children,
+            inner,
+            segment_start,
+            inner.len(),
+            prev_before_first,
+        );
+        children.push(token_leaf(self.b, rparen));
+
+        self.idx = rparen_idx + 1;
+        self.prev = rparen;
+        Some(self.b.branch(
+            SyntaxKind::CallArgList,
+            lparen.range.start..rparen.range.end,
+            &children,
+        ))
+    }
+
     fn node_can_start_substring(&self, node: NodeId) -> bool {
         let span = self.b.span(node);
         let mut saw_ident = false;
@@ -442,55 +751,28 @@ impl<'a, 'b> Parser<'a, 'b> {
         saw_ident
     }
 
-    fn parse_balanced_token_group(&mut self) -> Option<Vec<NodeId>> {
-        let lparen = self.bump()?;
-        debug_assert_eq!(lparen.kind, TokenKind::LParen);
-        let mut children = vec![token_leaf(self.b, lparen)];
-        let mut depth = 1i32;
-        while self.idx < self.tokens.len() {
-            let tok = self.bump()?;
-            match tok.kind {
-                TokenKind::LParen => depth += 1,
-                TokenKind::RParen => {
-                    depth -= 1;
-                    children.push(token_leaf(self.b, tok));
-                    if depth == 0 {
-                        return Some(children);
-                    }
-                    continue;
-                }
-                _ => {}
-            }
-            children.push(token_leaf(self.b, tok));
-        }
-        None
-    }
-
     fn parse_call_expr(&mut self, callee: NodeId) -> Option<NodeId> {
         let lparen_idx = self.idx;
         let rparen_idx = self.find_matching_paren_from(lparen_idx)?;
-        let mut children = vec![callee];
-        let extra = self.parse_balanced_token_group()?;
-        children.extend(extra);
-        let range = self.b.span(callee).start..self.b.span(*children.last().unwrap()).end;
+        let args = self.parse_call_arg_list()?;
+        let range = self.b.span(callee).start..self.b.span(args).end;
         let kind = if self.call_padding_is_valid(lparen_idx, rparen_idx) {
             SyntaxKind::CallExpr
         } else {
             SyntaxKind::Error
         };
-        Some(self.b.branch(kind, range, &children))
+        Some(self.b.branch(kind, range, &[callee, args]))
     }
 
     fn parse_constructor_expr(&mut self) -> Option<NodeId> {
         let kw_tok = self.bump()?;
         let mut children = vec![token_leaf(self.b, kw_tok)];
+        self.skip_trivia();
+        let type_start = self.idx;
 
         while let Some(curr) = self.curr() {
             if curr.kind == TokenKind::LParen {
-                let mut group = self.parse_balanced_token_group()?;
-                children.append(&mut group);
-                let range = kw_tok.range.start..self.b.span(*children.last().unwrap()).end;
-                return Some(self.b.branch(SyntaxKind::ConstructorExpr, range, &children));
+                break;
             }
             if matches!(
                 curr.kind,
@@ -506,6 +788,22 @@ impl<'a, 'b> Parser<'a, 'b> {
                 continue;
             }
             break;
+        }
+
+        if self.idx > type_start {
+            children.push(build_type_ref_node(
+                self.b,
+                self.source,
+                &self.tokens[type_start..self.idx],
+            ));
+        }
+
+        if self
+            .curr()
+            .is_some_and(|token| token.kind == TokenKind::LParen)
+        {
+            let args = self.parse_call_arg_list()?;
+            children.push(args);
         }
 
         let range = kw_tok.range.start..self.b.span(*children.last().unwrap()).end;
@@ -1061,6 +1359,8 @@ mod tests {
         let root = parsed.file.root();
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::SelectorExpr), 1);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::CallExpr), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::CallArgList), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::CallNamedArg), 1);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
     }
 
@@ -1119,6 +1419,26 @@ mod tests {
         let root = parsed.file.root();
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::DataInlineDecl), 1);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::ConstructorExpr), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::TypeRefSimple), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::CallArgList), 1);
+    }
+
+    #[test]
+    fn call_arg_list_tracks_sections_positional_and_inline_targets() {
+        let parsed = crate::parse(
+            "lv = zcl_demo=>run( lo_fallback exporting iv_text = mv_text importing ev_text = DATA(lv_text) ).",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::CallExpr), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::CallArgList), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::CallArgSection), 2);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::CallNamedArg), 2);
+        assert_eq!(
+            parsed.file.count_kind(root, SyntaxKind::CallPositionalArg),
+            1
+        );
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::DataInlineDecl), 1);
     }
 
     #[test]

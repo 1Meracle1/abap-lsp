@@ -1569,6 +1569,32 @@ fn resolve_named_argument_parameter<'a>(
             routine_name,
             &access.name,
         ),
+        NamedArgumentTarget::ImplicitMethod { method_name } => {
+            let unit = snapshot.symbols.as_ref();
+            let class_symbol_id = enclosing_class_owner(unit, access.scope)?;
+            let (member_unit, member) =
+                resolve_class_member_in_hierarchy(snapshot, unit, class_symbol_id, method_name)?;
+            if member.kind != ClassMemberKind::Method {
+                return None;
+            }
+            if !class_member_visible_to(
+                snapshot,
+                snapshot.symbols.as_ref(),
+                access.scope,
+                member_unit,
+                member,
+            ) {
+                return None;
+            }
+            let parameter = member
+                .parameters
+                .iter()
+                .find(|parameter| parameter.name == access.name)?;
+            Some(NamedArgumentParameterInfo {
+                name: Arc::clone(&parameter.name),
+                declared_type: parameter.declared_type.clone(),
+            })
+        }
         NamedArgumentTarget::Method {
             base_namespace,
             base_name,
@@ -1641,6 +1667,32 @@ fn resolve_named_argument_target(
                 .routine_parameters(routine_symbol_id)
                 .find(|symbol| symbol.name == access.name)?;
             Some(definition_target_for_symbol(unit, parameter))
+        }
+        NamedArgumentTarget::ImplicitMethod { method_name } => {
+            let unit = snapshot.symbols.as_ref();
+            let class_symbol_id = enclosing_class_owner(unit, access.scope)?;
+            let (member_unit, member) =
+                resolve_class_member_in_hierarchy(snapshot, unit, class_symbol_id, method_name)?;
+            if member.kind != ClassMemberKind::Method {
+                return None;
+            }
+            if !class_member_visible_to(
+                snapshot,
+                snapshot.symbols.as_ref(),
+                access.scope,
+                member_unit,
+                member,
+            ) {
+                return None;
+            }
+            let parameter = member
+                .parameters
+                .iter()
+                .find(|parameter| parameter.name == access.name)?;
+            Some(definition_target_for_range(
+                member_unit,
+                parameter.range.clone(),
+            ))
         }
         NamedArgumentTarget::Method {
             base_namespace,
@@ -1717,6 +1769,29 @@ fn resolve_named_argument_symbol(
                 unit: unit.unit_id,
                 symbol: parameter.id,
             })
+        }
+        NamedArgumentTarget::ImplicitMethod { method_name } => {
+            let unit = snapshot.symbols.as_ref();
+            let class_symbol_id = enclosing_class_owner(unit, access.scope)?;
+            let (member_unit, member) =
+                resolve_class_member_in_hierarchy(snapshot, unit, class_symbol_id, method_name)?;
+            if member.kind != ClassMemberKind::Method {
+                return None;
+            }
+            if !class_member_visible_to(
+                snapshot,
+                snapshot.symbols.as_ref(),
+                access.scope,
+                member_unit,
+                member,
+            ) {
+                return None;
+            }
+            let parameter = member
+                .parameters
+                .iter()
+                .find(|parameter| parameter.name == access.name)?;
+            symbol_handle_for_decl_range(member_unit, &parameter.range, SymbolKind::Parameter)
         }
         NamedArgumentTarget::Method {
             base_namespace,

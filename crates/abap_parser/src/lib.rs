@@ -30,8 +30,13 @@ fn prev_non_comment_is_ident(tokens: &[Token], idx: usize) -> bool {
     false
 }
 
-type ParseAttempt =
-    fn(&mut SyntaxTreeBuilder, &str, &[Token], usize, &mut Vec<ParseError>) -> Option<(NodeId, usize)>;
+type ParseAttempt = fn(
+    &mut SyntaxTreeBuilder,
+    &str,
+    &[Token],
+    usize,
+    &mut Vec<ParseError>,
+) -> Option<(NodeId, usize)>;
 
 #[derive(Clone, Copy)]
 struct GuardedParser {
@@ -128,7 +133,11 @@ fn try_parse_lone_ident_stmt_error(
     });
     let ident = syntax::token_leaf(b, t);
     let dot = syntax::token_leaf(b, period);
-    let node = b.branch(SyntaxKind::Error, t.range.start..period.range.end, &[ident, dot]);
+    let node = b.branch(
+        SyntaxKind::Error,
+        t.range.start..period.range.end,
+        &[ident, dot],
+    );
     Some((node, idx + 2))
 }
 
@@ -149,9 +158,15 @@ pub(crate) fn parse_file_level_item(
         }
         TokenKind::Ident => {
             let lead_keyword = t.lexeme(source);
-            if let Some((node, next)) =
-                try_guarded_ident_parsers(IDENT_LEAD_PARSERS, b, source, tokens, idx, lead_keyword, errors)
-            {
+            if let Some((node, next)) = try_guarded_ident_parsers(
+                IDENT_LEAD_PARSERS,
+                b,
+                source,
+                tokens,
+                idx,
+                lead_keyword,
+                errors,
+            ) {
                 return (node, next);
             }
         }
@@ -282,8 +297,14 @@ mod tests {
         let parsed = parse("FIELD-SYMBOLS <row> TYPE any.\nGET TIME STAMP FIELD lv_ts.");
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
         let root = parsed.file.root();
-        assert_eq!(parsed.file.count_kind(root, SyntaxKind::FieldSymbolsDecl), 1);
-        assert_eq!(parsed.file.count_kind(root, SyntaxKind::GetTimeStampStmt), 1);
+        assert_eq!(
+            parsed.file.count_kind(root, SyntaxKind::FieldSymbolsDecl),
+            1
+        );
+        assert_eq!(
+            parsed.file.count_kind(root, SyntaxKind::GetTimeStampStmt),
+            1
+        );
     }
 
     #[test]

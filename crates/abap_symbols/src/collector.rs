@@ -409,6 +409,12 @@ impl<'a> Collector<'a> {
         }
     }
 
+    fn node_has_structured_children(&self, node: NodeId) -> bool {
+        self.file
+            .children(node)
+            .any(|child| self.file.kind(child) != SyntaxKind::Token)
+    }
+
     fn walk_node(&mut self, node: NodeId, scope: ScopeId) {
         match self.file.kind(node) {
             SyntaxKind::Token | SyntaxKind::Error => {}
@@ -475,13 +481,16 @@ impl<'a> Collector<'a> {
             | SyntaxKind::InstanceOfPredicate
             | SyntaxKind::BetweenExpr
             | SyntaxKind::AssignStmt => self.collect_expr(node, scope),
+            SyntaxKind::AssignSourceExpr | SyntaxKind::CallMethodTarget => {
+                self.walk_children(node, scope)
+            }
             SyntaxKind::AssignKeywordStmt => self.collect_assign_keyword_stmt(node, scope),
             SyntaxKind::FieldSymbolInlineDecl => self.walk_inline_field_symbol_decl(node, scope),
             SyntaxKind::GetTimeStampStmt => self.collect_get_time_stamp_stmt(node, scope),
-            SyntaxKind::UnparsedStmt
-            | SyntaxKind::CallStmt
-            | SyntaxKind::RaiseStmt
-            | SyntaxKind::EndAtStmt => self.collect_generic_simple_stmt(node, scope),
+            SyntaxKind::CallStmt => self.collect_call_stmt(node, scope),
+            SyntaxKind::UnparsedStmt | SyntaxKind::RaiseStmt | SyntaxKind::EndAtStmt => {
+                self.collect_generic_simple_stmt(node, scope)
+            }
             SyntaxKind::MethodsStmt => self.collect_methods_stmt(node, scope),
             SyntaxKind::AssertStmt | SyntaxKind::CheckStmt => {
                 self.collect_assert_or_check_stmt(node, scope)
@@ -2120,59 +2129,6 @@ impl<'a> Collector<'a> {
         }
     }
 
-    fn loop_source_line_metadata(
-        &self,
-        tokens: &[&Token],
-        scope: ScopeId,
-    ) -> (Option<StructureId>, Option<FieldTypeRefData>) {
-        let filtered: Vec<_> = tokens
-            .iter()
-            .copied()
-            .filter(|token| token.kind != TokenKind::Comment)
-            .collect();
-        if filtered.len() == 1 && filtered[0].kind == TokenKind::Ident {
-            if let Some(symbol_id) = self.lookup_symbol_in_scope_chain(
-                scope,
-                Namespace::Value,
-                filtered[0].lexeme(self.source),
-            ) {
-                let symbol = self.symbol(symbol_id);
-                return self.normalize_inferred_metadata(
-                    scope,
-                    symbol.structure,
-                    symbol.declared_type.clone(),
-                );
-            }
-            return (None, None);
-        }
-        let Some((next_idx, namespace, base_name, _, field_path)) =
-            self.consume_selector_access_from_tokens(&filtered, 0)
-        else {
-            return (None, None);
-        };
-        if next_idx != filtered.len() || namespace != Namespace::Value {
-            return (None, None);
-        }
-        let Some(symbol_id) =
-            self.lookup_symbol_in_scope_chain(scope, Namespace::Value, base_name.as_ref())
-        else {
-            return (None, None);
-        };
-        if field_path.is_empty() {
-            let symbol = self.symbol(symbol_id);
-            return self.normalize_inferred_metadata(
-                scope,
-                symbol.structure,
-                symbol.declared_type.clone(),
-            );
-        }
-        self.loop_source_field_metadata(scope, symbol_id, &field_path)
-            .map(|(structure, declared_type)| {
-                self.normalize_inferred_metadata(scope, structure, declared_type)
-            })
-            .unwrap_or((None, None))
-    }
-
     fn loop_source_field_metadata(
         &self,
         scope: ScopeId,
@@ -2304,41 +2260,27 @@ impl<'a> Collector<'a> {
             SyntaxKind::SubstringExpr => self.collect_substring_expr(node, scope),
             SyntaxKind::CallExpr => self.collect_call_expr(node, scope),
             SyntaxKind::ConstructorExpr => {
-                if let Some((name, range)) = self.constructor_type_ref(node) {
-                    self.add_reference(scope, name, Namespace::Type, ReferenceKind::TypeRef, range);
+                let mut arg_list = None;
+                for child in self.file.children(node) {
+                    match self.file.kind(child) {
+                        SyntaxKind::TypeRefSimple => self.collect_type_ref(child, scope),
+                        SyntaxKind::CallArgList => arg_list = Some(child),
+                        SyntaxKind::Token => {}
+                        _ => self.collect_expr(child, scope),
+                    }
                 }
-                let tokens: Vec<_> = self
-                    .file
-                    .children(node)
-                    .filter_map(|child| self.token_for_node(child))
-                    .collect();
-                if let Some(lparen_idx) = tokens
-                    .iter()
-                    .position(|token| token.kind == TokenKind::LParen)
-                    && let Some(rparen_idx) = self.find_matching_group_end(
-                        &tokens,
-                        lparen_idx,
-                        TokenKind::LParen,
-                        TokenKind::RParen,
-                    )
-                {
+                if let Some(arg_list) = arg_list {
                     if let Some((type_name, _)) = self.constructor_type_ref(node) {
-                        self.collect_named_arguments_from_tokens(
-                            &tokens[lparen_idx + 1..rparen_idx],
+                        self.collect_call_argument_list(
+                            arg_list,
                             scope,
                             NamedArgumentTarget::Constructor { type_name },
                         );
                     } else {
-                        self.collect_token_expression_refs(
-                            &tokens[lparen_idx + 1..rparen_idx],
+                        self.collect_structured_argument_values(
+                            &self.file.children(arg_list).collect::<Vec<_>>(),
                             scope,
-                            true,
                         );
-                    }
-                }
-                for child in self.file.children(node) {
-                    if self.file.kind(child) != SyntaxKind::Token {
-                        self.collect_expr(child, scope);
                     }
                 }
             }
@@ -2386,7 +2328,10 @@ impl<'a> Collector<'a> {
             return;
         }
 
-        let start_idx = if tokens.get(1).is_some_and(|token| token.kind == TokenKind::Colon) {
+        let start_idx = if tokens
+            .get(1)
+            .is_some_and(|token| token.kind == TokenKind::Colon)
+        {
             2
         } else {
             1
@@ -2399,6 +2344,10 @@ impl<'a> Collector<'a> {
     }
 
     fn collect_get_time_stamp_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        if self.node_has_structured_children(node) {
+            self.walk_children(node, scope);
+            return;
+        }
         let mut significant = Vec::new();
         let mut inline_target = None;
         for child in self.file.children(node) {
@@ -2430,6 +2379,10 @@ impl<'a> Collector<'a> {
     }
 
     fn collect_assert_or_check_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        if self.node_has_structured_children(node) {
+            self.walk_children(node, scope);
+            return;
+        }
         let significant = self.significant_stmt_tokens(node);
         let Some((_, tail)) = significant.split_first() else {
             return;
@@ -2443,71 +2396,87 @@ impl<'a> Collector<'a> {
     }
 
     fn collect_create_object_stmt_node(&mut self, node: NodeId, scope: ScopeId) {
+        if self.node_has_structured_children(node) {
+            self.walk_children(node, scope);
+            return;
+        }
         let significant = self.significant_stmt_tokens(node);
         self.collect_create_object_stmt(&significant, scope);
     }
 
     fn collect_call_method_stmt_node(&mut self, node: NodeId, scope: ScopeId) {
-        let significant = self.significant_stmt_tokens(node);
-        self.collect_call_method_stmt(&significant, scope);
+        let mut target = None;
+        let mut arg_list = None;
+
+        for child in self.file.children(node) {
+            match self.file.kind(child) {
+                SyntaxKind::CallMethodTarget => {
+                    let Some(mut callee) = self.first_non_token_child(child) else {
+                        continue;
+                    };
+                    while self.file.kind(callee) == SyntaxKind::TemplateExpr {
+                        let Some(inner) = self.first_non_token_child(callee) else {
+                            break;
+                        };
+                        callee = inner;
+                    }
+                    match self.file.kind(callee) {
+                        SyntaxKind::ExprIdent => {
+                            let Some((method_name, _)) = self.node_name(callee) else {
+                                continue;
+                            };
+                            target = Some(NamedArgumentTarget::ImplicitMethod { method_name });
+                        }
+                        SyntaxKind::SelectorExpr => {
+                            self.collect_selector_expr(callee, scope);
+                            target = self.named_argument_target_for_callee(callee);
+                        }
+                        _ => self.collect_expr(callee, scope),
+                    }
+                }
+                SyntaxKind::CallArgList => arg_list = Some(child),
+                _ => {}
+            }
+        }
+
+        if let (Some(target), Some(arg_list)) = (target, arg_list) {
+            self.collect_call_argument_list(arg_list, scope, target);
+        }
+    }
+
+    fn collect_call_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        if self.node_has_structured_children(node) {
+            self.walk_children(node, scope);
+            return;
+        }
+        self.collect_generic_simple_stmt(node, scope);
     }
 
     fn collect_assign_keyword_stmt(&mut self, node: NodeId, scope: ScopeId) {
-        let mut tokens = Vec::new();
+        let mut source_expr = None;
         let mut inline_targets = Vec::new();
         for child in self.file.children(node) {
             match self.file.kind(child) {
-                SyntaxKind::Token => {
-                    if let Some(token) = self.token_for_node(child) {
-                        tokens.push(token);
-                    }
+                SyntaxKind::Token => {}
+                SyntaxKind::AssignSourceExpr => {
+                    let Some(expr) = self.first_non_token_child(child) else {
+                        continue;
+                    };
+                    source_expr = Some(expr);
+                    self.collect_expr(expr, scope);
                 }
-                SyntaxKind::FieldSymbolInlineDecl => {
-                    inline_targets.push(child);
-                }
+                SyntaxKind::FieldSymbolInlineDecl => inline_targets.push(child),
                 _ => self.walk_node(child, scope),
             }
         }
 
-        let significant: Vec<_> = tokens
-            .into_iter()
-            .filter(|token| token.kind != TokenKind::Comment)
-            .collect();
-        if significant.is_empty() || !self.token_matches_keyword(significant[0], "assign") {
+        if inline_targets.is_empty() {
             return;
         }
 
-        let Some(to_idx) = significant
-            .iter()
-            .position(|token| self.token_matches_keyword(token, "to"))
-        else {
-            self.collect_token_expression_refs(&significant[1..], scope, true);
-            return;
-        };
-
-        let source_tokens = &significant[1..to_idx];
-        if source_tokens
-            .first()
-            .is_some_and(|token| self.token_matches_keyword(token, "component"))
-        {
-            self.collect_assign_component_source(source_tokens, scope);
-        } else if !source_tokens.is_empty() {
-            self.collect_token_expression_refs(source_tokens, scope, true);
-        }
-
-        if inline_targets.is_empty() && to_idx + 1 < significant.len() {
-            self.collect_token_expression_refs(&significant[to_idx + 1..], scope, true);
-            return;
-        }
-
-        let inferred_metadata = if source_tokens
-            .first()
-            .is_some_and(|token| self.token_matches_keyword(token, "component"))
-        {
-            (None, None)
-        } else {
-            self.loop_source_line_metadata(source_tokens, scope)
-        };
+        let inferred_metadata = source_expr
+            .map(|expr| self.loop_source_line_metadata_from_node(expr, scope))
+            .unwrap_or((None, None));
         for target in inline_targets {
             self.declare_inline_field_symbol_decl(
                 target,
@@ -2518,34 +2487,11 @@ impl<'a> Collector<'a> {
         }
     }
 
-    fn collect_assign_component_source(&mut self, tokens: &[&Token], scope: ScopeId) {
-        let component_tokens = if tokens
-            .first()
-            .is_some_and(|token| self.token_matches_keyword(token, "component"))
-        {
-            &tokens[1..]
-        } else {
-            tokens
-        };
-
-        let Some(of_idx) = component_tokens.windows(2).position(|window| {
-            self.token_matches_keyword(window[0], "of")
-                && self.token_matches_keyword(window[1], "structure")
-        }) else {
-            self.collect_token_expression_refs(component_tokens, scope, true);
-            return;
-        };
-
-        if of_idx > 0 {
-            self.collect_token_expression_refs(&component_tokens[..of_idx], scope, true);
-        }
-        let structure_start = of_idx + 2;
-        if structure_start < component_tokens.len() {
-            self.collect_token_expression_refs(&component_tokens[structure_start..], scope, true);
-        }
-    }
-
     fn collect_write_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        if self.node_has_structured_children(node) {
+            self.walk_children(node, scope);
+            return;
+        }
         let tokens = self.simple_stmt_tokens(node);
         let significant: Vec<_> = tokens
             .into_iter()
@@ -2558,6 +2504,10 @@ impl<'a> Collector<'a> {
     }
 
     fn collect_concatenate_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        if self.node_has_structured_children(node) {
+            self.walk_children(node, scope);
+            return;
+        }
         let significant = self.significant_stmt_tokens(node);
         if significant.is_empty() || !self.token_matches_keyword(significant[0], "concatenate") {
             return;
@@ -3045,6 +2995,16 @@ impl<'a> Collector<'a> {
                     .and_then(|param| param.declared_type.clone())
             }
             NamedArgumentTarget::Routine { .. } => None,
+            NamedArgumentTarget::ImplicitMethod { method_name } => {
+                let class_symbol = self.enclosing_class_owner(scope)?;
+                let signature =
+                    self.class_method_signature(class_symbol, method_name.as_ref(), scope)?;
+                signature
+                    .parameters
+                    .iter()
+                    .find(|param| param.name == *argument_name)
+                    .and_then(|param| param.declared_type.clone())
+            }
             NamedArgumentTarget::Method {
                 base_namespace,
                 base_name,
@@ -3203,6 +3163,105 @@ impl<'a> Collector<'a> {
         target: NamedArgumentTarget,
     ) {
         self.collect_call_argument_tokens(tokens, scope, target);
+    }
+
+    fn call_arg_section_from_node(&self, node: NodeId) -> Option<NamedArgumentSection> {
+        self.file
+            .children(node)
+            .find_map(|child| self.token_for_node(child))
+            .and_then(|token| self.named_argument_section(token))
+    }
+
+    fn collect_structured_argument_values(&mut self, nodes: &[NodeId], scope: ScopeId) {
+        if nodes.is_empty() {
+            return;
+        }
+        if nodes
+            .iter()
+            .all(|&node| self.file.kind(node) == SyntaxKind::Token)
+        {
+            let mut tokens = Vec::new();
+            for &node in nodes {
+                self.tokens_for_node_recursive(node, &mut tokens);
+            }
+            self.collect_token_expression_refs(&tokens, scope, true);
+            return;
+        }
+
+        for &node in nodes {
+            match self.file.kind(node) {
+                SyntaxKind::DataInlineDecl => self.walk_inline_decl(node, scope),
+                SyntaxKind::FieldSymbolInlineDecl => {
+                    self.walk_inline_field_symbol_decl(node, scope)
+                }
+                SyntaxKind::Token => {}
+                _ => self.collect_expr(node, scope),
+            }
+        }
+    }
+
+    fn collect_structured_named_argument(
+        &mut self,
+        node: NodeId,
+        scope: ScopeId,
+        target: &NamedArgumentTarget,
+        section: Option<NamedArgumentSection>,
+    ) {
+        let mut children = self.file.children(node);
+        let Some(name_node) = children.next() else {
+            return;
+        };
+        let Some(name_token) = self.token_for_node(name_node) else {
+            return;
+        };
+        let argument_name = Arc::<str>::from(name_token.lexeme(self.source).to_ascii_lowercase());
+        self.named_arguments.push(NamedArgumentAccess {
+            scope,
+            name: Arc::clone(&argument_name),
+            range: name_token.range.clone(),
+            section,
+            target: target.clone(),
+        });
+
+        let value_children: Vec<_> = self.file.children(node).skip(2).collect();
+        let mut value_tokens = Vec::new();
+        for &child in &value_children {
+            self.tokens_for_node_recursive(child, &mut value_tokens);
+        }
+        let consumed_inline_target = self.declare_inline_named_argument_target(
+            scope,
+            target,
+            section,
+            argument_name,
+            &value_tokens,
+        );
+        if !consumed_inline_target {
+            self.collect_structured_argument_values(&value_children, scope);
+        }
+    }
+
+    fn collect_call_argument_list(
+        &mut self,
+        node: NodeId,
+        scope: ScopeId,
+        target: NamedArgumentTarget,
+    ) {
+        let mut current_section = None;
+        for child in self.file.children(node) {
+            match self.file.kind(child) {
+                SyntaxKind::CallArgSection => {
+                    current_section = self.call_arg_section_from_node(child);
+                }
+                SyntaxKind::CallNamedArg => {
+                    self.collect_structured_named_argument(child, scope, &target, current_section);
+                }
+                SyntaxKind::CallPositionalArg => {
+                    let value_children: Vec<_> = self.file.children(child).collect();
+                    self.collect_structured_argument_values(&value_children, scope);
+                }
+                _ => {}
+            }
+        }
     }
 
     fn token_is_expression_value_ident(
@@ -3553,55 +3612,6 @@ impl<'a> Collector<'a> {
         }
     }
 
-    fn collect_call_method_stmt(&mut self, tokens: &[&Token], scope: ScopeId) -> bool {
-        if tokens.len() < 3
-            || !self.token_matches_keyword(tokens[0], "call")
-            || !self.token_matches_keyword(tokens[1], "method")
-        {
-            return false;
-        }
-        let Some((next_idx, namespace, base_name, base_range, field_path)) =
-            self.consume_selector_access_from_tokens(tokens, 2)
-        else {
-            return false;
-        };
-        let method_name = field_path.last().map(|segment| Arc::clone(&segment.name));
-        let kind = if namespace == Namespace::Type {
-            ReferenceKind::StaticTarget
-        } else {
-            ReferenceKind::Identifier
-        };
-        self.add_reference(scope, Arc::clone(&base_name), namespace, kind, base_range);
-        if !field_path.is_empty() {
-            self.field_accesses.push(FieldAccess {
-                scope,
-                base_namespace: namespace,
-                base_name: Arc::clone(&base_name),
-                field_path,
-                in_type_position: false,
-            });
-        }
-        let args_end = tokens
-            .last()
-            .filter(|token| token.kind == TokenKind::Period)
-            .map(|_| tokens.len() - 1)
-            .unwrap_or(tokens.len());
-        if let Some(method_name) = method_name
-            && next_idx < args_end
-        {
-            self.collect_call_argument_tokens(
-                &tokens[next_idx..args_end],
-                scope,
-                NamedArgumentTarget::Method {
-                    base_namespace: namespace,
-                    base_name,
-                    method_name,
-                },
-            );
-        }
-        true
-    }
-
     fn collect_selector_expr(&mut self, node: NodeId, scope: ScopeId) {
         if let Some((namespace, base_name, base_range, field_path)) =
             self.selector_access_chain(node)
@@ -3695,6 +3705,7 @@ impl<'a> Collector<'a> {
     fn collect_call_expr(&mut self, node: NodeId, scope: ScopeId) {
         let mut children = self.file.children(node);
         if let Some(callee) = children.next() {
+            let arg_list = children.find(|&child| self.file.kind(child) == SyntaxKind::CallArgList);
             match self.file.kind(callee) {
                 SyntaxKind::ExprIdent => {
                     if let Some((name, range)) = self.node_name(callee) {
@@ -3705,23 +3716,9 @@ impl<'a> Collector<'a> {
                             ReferenceKind::RoutineCall,
                             range,
                         );
-                        let tokens: Vec<_> = self
-                            .file
-                            .children(node)
-                            .filter_map(|child| self.token_for_node(child))
-                            .collect();
-                        if let Some(lparen_idx) = tokens
-                            .iter()
-                            .position(|token| token.kind == TokenKind::LParen)
-                            && let Some(rparen_idx) = self.find_matching_group_end(
-                                &tokens,
-                                lparen_idx,
-                                TokenKind::LParen,
-                                TokenKind::RParen,
-                            )
-                        {
-                            self.collect_named_arguments_from_tokens(
-                                &tokens[lparen_idx + 1..rparen_idx],
+                        if let Some(arg_list) = arg_list {
+                            self.collect_call_argument_list(
+                                arg_list,
                                 scope,
                                 NamedArgumentTarget::Routine { routine_name: name },
                             );
@@ -3730,33 +3727,10 @@ impl<'a> Collector<'a> {
                 }
                 _ => self.collect_expr(callee, scope),
             }
-            if let Some(target) = self.named_argument_target_for_callee(callee) {
-                let tokens: Vec<_> = self
-                    .file
-                    .children(node)
-                    .filter_map(|child| self.token_for_node(child))
-                    .collect();
-                if let Some(lparen_idx) = tokens
-                    .iter()
-                    .position(|token| token.kind == TokenKind::LParen)
-                    && let Some(rparen_idx) = self.find_matching_group_end(
-                        &tokens,
-                        lparen_idx,
-                        TokenKind::LParen,
-                        TokenKind::RParen,
-                    )
-                {
-                    self.collect_named_arguments_from_tokens(
-                        &tokens[lparen_idx + 1..rparen_idx],
-                        scope,
-                        target,
-                    );
-                }
-            }
-        }
-        for child in children {
-            if self.file.kind(child) != SyntaxKind::Token {
-                self.collect_expr(child, scope);
+            if let Some(target) = self.named_argument_target_for_callee(callee)
+                && let Some(arg_list) = arg_list
+            {
+                self.collect_call_argument_list(arg_list, scope, target);
             }
         }
     }
@@ -4052,16 +4026,12 @@ impl<'a> Collector<'a> {
     }
 
     fn constructor_type_ref(&self, node: NodeId) -> Option<(Arc<str>, TextRange)> {
-        let tokens: Vec<_> = self
+        let type_ref = self
             .file
             .children(node)
-            .filter_map(|child| self.token_for_node(child))
-            .collect();
-        let end = tokens
-            .iter()
-            .position(|token| token.kind == TokenKind::LParen)
-            .unwrap_or(tokens.len());
-        self.simple_type_ref_base_from_tokens(tokens.get(1..end)?)
+            .find(|&child| self.file.kind(child) == SyntaxKind::TypeRefSimple)?;
+        let (_, _, base_name, range, _) = self.type_ref_access_chain(type_ref)?;
+        Some((base_name, range))
     }
 
     fn simple_type_ref_base_from_tokens(&self, tokens: &[&Token]) -> Option<(Arc<str>, TextRange)> {

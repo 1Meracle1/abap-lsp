@@ -46,6 +46,14 @@ pub enum SyntaxKind {
     SubstringExpr,
     /// Call-style postfix `callee( ... )`.
     CallExpr,
+    /// Parenthesized actual-parameter list of a call/constructor.
+    CallArgList,
+    /// Named actual-parameter section such as `EXPORTING`.
+    CallArgSection,
+    /// Named actual parameter such as `iv_name = expr`.
+    CallNamedArg,
+    /// Positional actual parameter segment.
+    CallPositionalArg,
     /// Constructor-style expression such as `NEW ty( ... )`.
     ConstructorExpr,
     /// `DATA [:`] … .` — classic typed declaration (here: explicit `TYPE` with simple type refs).
@@ -84,6 +92,8 @@ pub enum SyntaxKind {
     AssignStmt,
     /// `ASSIGN ... TO ... .`
     AssignKeywordStmt,
+    /// Source expression that drives `ASSIGN ... TO FIELD-SYMBOL(...)` metadata inference.
+    AssignSourceExpr,
     /// Inline target declaration `FIELD-SYMBOL(<fs>)`.
     FieldSymbolInlineDecl,
     /// A valid statement kept as raw tokens through a top-level `.` when no more specific kind applies yet.
@@ -164,6 +174,8 @@ pub enum SyntaxKind {
     CreateObjectStmt,
     /// `CALL METHOD ... .`
     CallMethodStmt,
+    /// Legacy `CALL METHOD` target/callee expression.
+    CallMethodTarget,
     /// `RAISE ... .`
     RaiseStmt,
     /// `ENDAT.`
@@ -203,6 +215,10 @@ impl SyntaxKind {
             Self::SelectorExpr => "SelectorExpr",
             Self::SubstringExpr => "SubstringExpr",
             Self::CallExpr => "CallExpr",
+            Self::CallArgList => "CallArgList",
+            Self::CallArgSection => "CallArgSection",
+            Self::CallNamedArg => "CallNamedArg",
+            Self::CallPositionalArg => "CallPositionalArg",
             Self::ConstructorExpr => "ConstructorExpr",
             Self::DataDecl => "DataDecl",
             Self::DataTypedClause => "DataTypedClause",
@@ -222,6 +238,7 @@ impl SyntaxKind {
             Self::LengthSpec => "LengthSpec",
             Self::AssignStmt => "AssignStmt",
             Self::AssignKeywordStmt => "AssignKeywordStmt",
+            Self::AssignSourceExpr => "AssignSourceExpr",
             Self::FieldSymbolInlineDecl => "FieldSymbolInlineDecl",
             Self::UnparsedStmt => "UnparsedStmt",
             Self::ClassSectionStmt => "ClassSectionStmt",
@@ -262,6 +279,7 @@ impl SyntaxKind {
             Self::CallStmt => "CallStmt",
             Self::CreateObjectStmt => "CreateObjectStmt",
             Self::CallMethodStmt => "CallMethodStmt",
+            Self::CallMethodTarget => "CallMethodTarget",
             Self::RaiseStmt => "RaiseStmt",
             Self::EndAtStmt => "EndAtStmt",
             Self::ReadTableStmt => "ReadTableStmt",

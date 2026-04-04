@@ -292,6 +292,9 @@ pub enum NamedArgumentTarget {
     Routine {
         routine_name: Arc<str>,
     },
+    ImplicitMethod {
+        method_name: Arc<str>,
+    },
     Method {
         base_namespace: Namespace,
         base_name: Arc<str>,
