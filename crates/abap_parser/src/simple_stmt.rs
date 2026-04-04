@@ -71,6 +71,54 @@ fn class_section_statement(source: &str, significant: &[&Token]) -> bool {
         && token_matches_keyword(source, second, "section")
 }
 
+fn direct_call_statement(significant: &[&Token]) -> bool {
+    let Some(last) = significant.last() else {
+        return false;
+    };
+    if last.kind != TokenKind::Period {
+        return false;
+    }
+
+    let mut paren = 0i32;
+    let mut bracket = 0i32;
+    let mut brace = 0i32;
+    let mut first_top_level_lparen = None;
+    for (idx, token) in significant.iter().enumerate() {
+        match token.kind {
+            TokenKind::LParen if paren == 0 && bracket == 0 && brace == 0 => {
+                first_top_level_lparen = Some(idx);
+                break;
+            }
+            TokenKind::LParen => paren += 1,
+            TokenKind::RParen => paren -= 1,
+            TokenKind::LBracket => bracket += 1,
+            TokenKind::RBracket => bracket -= 1,
+            TokenKind::LBrace => brace += 1,
+            TokenKind::RBrace => brace -= 1,
+            _ => {}
+        }
+    }
+
+    let Some(lparen_idx) = first_top_level_lparen else {
+        return false;
+    };
+    let target = &significant[..lparen_idx];
+    if target.is_empty() {
+        return false;
+    }
+
+    if target.len() == 1 {
+        return target[0].kind == TokenKind::Ident;
+    }
+
+    target.iter().any(|token| {
+        matches!(
+            token.kind,
+            TokenKind::Arrow | TokenKind::FatArrow | TokenKind::Tilde
+        )
+    })
+}
+
 fn simple_stmt_kind(source: &str, significant: &[&Token]) -> SyntaxKind {
     if class_section_statement(source, significant) {
         return SyntaxKind::ClassSectionStmt;
@@ -78,8 +126,11 @@ fn simple_stmt_kind(source: &str, significant: &[&Token]) -> SyntaxKind {
     if method_statement_name_idx(source, significant).is_some() {
         return SyntaxKind::MethodsStmt;
     }
+    if direct_call_statement(significant) {
+        return SyntaxKind::CallStmt;
+    }
     let Some(first) = significant.first() else {
-        return SyntaxKind::SimpleStmt;
+        return SyntaxKind::UnparsedStmt;
     };
     if token_matches_keyword(source, first, "assert") {
         SyntaxKind::AssertStmt
@@ -88,7 +139,7 @@ fn simple_stmt_kind(source: &str, significant: &[&Token]) -> SyntaxKind {
     } else if token_matches_keyword(source, first, "perform") {
         SyntaxKind::PerformStmt
     } else {
-        SyntaxKind::SimpleStmt
+        SyntaxKind::UnparsedStmt
     }
 }
 
@@ -149,7 +200,7 @@ fn validate_method_modifier_order(
     }
 }
 
-fn validate_simple_stmt(
+fn validate_unparsed_stmt(
     source: &str,
     tokens: &[Token],
     idx: usize,
@@ -159,8 +210,7 @@ fn validate_simple_stmt(
     validate_method_modifier_order(source, tokens, idx, period_i, errors);
 }
 
-/// `keyword token* .` for any leading identifier after dedicated parsers (`DATA`, `IF`, …) have
-/// declined.
+/// Fallback parser for valid statement-shaped token runs when no dedicated parser claims them yet.
 pub fn try_parse_simple_stmt(
     b: &mut SyntaxTreeBuilder,
     source: &str,
@@ -176,7 +226,7 @@ pub fn try_parse_simple_stmt(
     match scan_until_statement_period(tokens, source, idx) {
         StmtPeriodScan::Found(period_i) => {
             let period_tok = &tokens[period_i];
-            validate_simple_stmt(source, tokens, idx, period_i, errors);
+            validate_unparsed_stmt(source, tokens, idx, period_i, errors);
             let significant: Vec<_> = tokens[idx..=period_i]
                 .iter()
                 .filter(|token| token.kind != TokenKind::Comment)

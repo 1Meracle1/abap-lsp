@@ -385,7 +385,7 @@ mod tests {
         assert_eq!(
             parsed
                 .file
-                .count_kind(parsed.file.root(), SyntaxKind::SimpleStmt),
+                .count_kind(parsed.file.root(), SyntaxKind::UnparsedStmt),
             0
         );
     }

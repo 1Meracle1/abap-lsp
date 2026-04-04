@@ -80,8 +80,8 @@ pub enum SyntaxKind {
     AssignKeywordStmt,
     /// Inline target declaration `FIELD-SYMBOL(<fs>)`.
     FieldSymbolInlineDecl,
-    /// A simple line-oriented statement parsed as tokens through a top-level `.` when no more specific kind applies.
-    SimpleStmt,
+    /// A valid statement kept as raw tokens through a top-level `.` when no more specific kind applies yet.
+    UnparsedStmt,
     /// `PUBLIC SECTION.` / `PROTECTED SECTION.` / `PRIVATE SECTION.`
     ClassSectionStmt,
     /// `METHODS ... .` or `CLASS-METHODS ... .`
@@ -152,10 +152,16 @@ pub enum SyntaxKind {
     CheckStmt,
     /// `PERFORM ... .`
     PerformStmt,
+    /// `CALL FUNCTION ... .`, `CALL TRANSFORMATION ... .`, or `CALL BADI ... .`
+    CallStmt,
     /// `CREATE OBJECT ... .`
     CreateObjectStmt,
     /// `CALL METHOD ... .`
     CallMethodStmt,
+    /// `RAISE ... .`
+    RaiseStmt,
+    /// `ENDAT.`
+    EndAtStmt,
     /// `READ TABLE ... .`
     ReadTableStmt,
     /// `WRITE ... .`
@@ -204,7 +210,7 @@ impl SyntaxKind {
             Self::AssignStmt => "AssignStmt",
             Self::AssignKeywordStmt => "AssignKeywordStmt",
             Self::FieldSymbolInlineDecl => "FieldSymbolInlineDecl",
-            Self::SimpleStmt => "SimpleStmt",
+            Self::UnparsedStmt => "UnparsedStmt",
             Self::ClassSectionStmt => "ClassSectionStmt",
             Self::MethodsStmt => "MethodsStmt",
             Self::ReportStmt => "ReportStmt",
@@ -240,8 +246,11 @@ impl SyntaxKind {
             Self::AssertStmt => "AssertStmt",
             Self::CheckStmt => "CheckStmt",
             Self::PerformStmt => "PerformStmt",
+            Self::CallStmt => "CallStmt",
             Self::CreateObjectStmt => "CreateObjectStmt",
             Self::CallMethodStmt => "CallMethodStmt",
+            Self::RaiseStmt => "RaiseStmt",
+            Self::EndAtStmt => "EndAtStmt",
             Self::ReadTableStmt => "ReadTableStmt",
             Self::WriteStmt => "WriteStmt",
             Self::IsPredicate => "IsPredicate",

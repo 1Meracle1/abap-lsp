@@ -477,7 +477,10 @@ impl<'a> Collector<'a> {
             | SyntaxKind::AssignStmt => self.collect_expr(node, scope),
             SyntaxKind::AssignKeywordStmt => self.collect_assign_keyword_stmt(node, scope),
             SyntaxKind::FieldSymbolInlineDecl => self.walk_inline_field_symbol_decl(node, scope),
-            SyntaxKind::SimpleStmt => self.collect_generic_simple_stmt(node, scope),
+            SyntaxKind::UnparsedStmt
+            | SyntaxKind::CallStmt
+            | SyntaxKind::RaiseStmt
+            | SyntaxKind::EndAtStmt => self.collect_generic_simple_stmt(node, scope),
             SyntaxKind::MethodsStmt => self.collect_methods_stmt(node, scope),
             SyntaxKind::AssertStmt | SyntaxKind::CheckStmt => {
                 self.collect_assert_or_check_stmt(node, scope)

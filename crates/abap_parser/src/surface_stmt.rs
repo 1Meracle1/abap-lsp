@@ -610,7 +610,7 @@ pub fn try_parse_raise_stmt(
         source,
         tokens,
         idx,
-        SyntaxKind::SimpleStmt,
+        SyntaxKind::RaiseStmt,
         "raise",
         errors,
         "syntax error: expected '.' after RAISE statement",
@@ -629,7 +629,7 @@ pub fn try_parse_endat_stmt(
         source,
         tokens,
         idx,
-        SyntaxKind::SimpleStmt,
+        SyntaxKind::EndAtStmt,
         "endat",
         errors,
         "syntax error: expected '.' after ENDAT",
@@ -672,7 +672,7 @@ pub fn try_parse_call_like_stmt(
         {
             SyntaxKind::CallMethodStmt
         } else {
-            SyntaxKind::SimpleStmt
+            SyntaxKind::CallStmt
         };
         let node = b.branch(
             kind,
@@ -1610,7 +1610,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_direct_static_method_call_with_named_args_as_simple_stmt() {
+    fn parses_direct_static_method_call_with_named_args_as_call_stmt() {
         let parsed = crate::parse(
             "cl_abap_message_digest=>calculate_hash_for_char(\n  EXPORTING\n    if_algorithm = lv_algorithm\n    if_data      = lv_data\n  IMPORTING\n    ef_hashstring = lv_hashstring\n).",
         );
@@ -1618,7 +1618,7 @@ mod tests {
         assert_eq!(
             parsed
                 .file
-                .count_kind(parsed.file.root(), SyntaxKind::SimpleStmt),
+                .count_kind(parsed.file.root(), SyntaxKind::CallStmt),
             1
         );
         assert_eq!(
@@ -1638,7 +1638,7 @@ mod tests {
         assert_eq!(
             parsed
                 .file
-                .count_kind(parsed.file.root(), SyntaxKind::SimpleStmt),
+                .count_kind(parsed.file.root(), SyntaxKind::CallStmt),
             1
         );
         assert_eq!(
@@ -1658,7 +1658,7 @@ mod tests {
         assert_eq!(
             parsed
                 .file
-                .count_kind(parsed.file.root(), SyntaxKind::SimpleStmt),
+                .count_kind(parsed.file.root(), SyntaxKind::RaiseStmt),
             1
         );
         assert_eq!(
@@ -1670,13 +1670,37 @@ mod tests {
     }
 
     #[test]
-    fn parses_endat_as_simple_stmt() {
+    fn parses_endat_as_dedicated_stmt() {
         let parsed = crate::parse("ENDAT.");
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
         assert_eq!(
             parsed
                 .file
-                .count_kind(parsed.file.root(), SyntaxKind::SimpleStmt),
+                .count_kind(parsed.file.root(), SyntaxKind::EndAtStmt),
+            1
+        );
+    }
+
+    #[test]
+    fn parses_call_function_as_dedicated_stmt() {
+        let parsed = crate::parse("CALL FUNCTION 'RFC_PING'.");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::CallStmt),
+            1
+        );
+    }
+
+    #[test]
+    fn parses_direct_instance_method_call_as_call_stmt() {
+        let parsed = crate::parse("lo_handler->run( iv_mode = lv_mode ).");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::CallStmt),
             1
         );
     }
