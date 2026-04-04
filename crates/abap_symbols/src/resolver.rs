@@ -26,6 +26,7 @@ fn is_builtin_type(name: &str) -> bool {
             | "x"
             | "xstring"
             | "data"
+            | "any"
     ) || (lower.starts_with("char") && lower[4..].chars().all(|ch| ch.is_ascii_digit()))
 }
 

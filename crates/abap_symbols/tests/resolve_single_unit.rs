@@ -1764,6 +1764,30 @@ fn resolves_builtin_abap_boolean_constants_and_type() {
 }
 
 #[test]
+fn resolves_any_as_builtin_type() {
+    let src = "DATA lr_any TYPE any.";
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///builtin_any.abap", src, &parsed);
+
+    let any_ref = unit
+        .references
+        .iter()
+        .find(|reference| {
+            reference.kind == ReferenceKind::TypeRef
+                && reference.namespace == Namespace::Type
+                && reference.name.as_ref() == "any"
+        })
+        .expect("any type reference");
+    assert_eq!(any_ref.resolution, Some(Resolution::BuiltinType));
+    assert!(
+        !unit
+            .diagnostics
+            .iter()
+            .any(|diag| diag.message.contains("any"))
+    );
+}
+
+#[test]
 fn resolves_builtin_sy_and_common_ddic_aliases() {
     let src = "\
 DATA lv_tabix TYPE sy-tabix.\n\
