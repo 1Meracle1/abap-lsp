@@ -10,6 +10,7 @@ use crate::block_helpers::{
 use crate::expr::{parse_arithmetic_expr, parse_logical_expr};
 use crate::stmt_period::{StmtPeriodScan, scan_until_statement_period, unterminated_err_end};
 use crate::syntax::token_leaf;
+use crate::type_ref::build_type_ref_node;
 
 fn parse_end_keyword(
     b: &mut SyntaxTreeBuilder,
@@ -62,6 +63,97 @@ fn parse_end_keyword(
         j + 1,
         period_tok.range.end,
     )
+}
+
+fn scan_catch_type_ref_end(tokens: &[Token], idx: usize) -> usize {
+    let Some(first) = tokens.get(idx) else {
+        return idx;
+    };
+    if first.kind != TokenKind::Ident {
+        return idx;
+    }
+
+    let mut i = idx + 1;
+    while i + 1 < tokens.len() {
+        let op = &tokens[i];
+        let next = &tokens[i + 1];
+        if !matches!(
+            op.kind,
+            TokenKind::Minus | TokenKind::Arrow | TokenKind::FatArrow | TokenKind::Tilde
+        ) || next.kind != TokenKind::Ident
+        {
+            break;
+        }
+        i += 2;
+    }
+    i
+}
+
+fn parse_catch_header_until_period(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    catch_idx: usize,
+    errors: &mut Vec<crate::ParseError>,
+) -> (Vec<NodeId>, usize) {
+    let catch_tok = &tokens[catch_idx];
+    match scan_until_statement_period(tokens, source, catch_idx + 1) {
+        StmtPeriodScan::Found(period_i) => {
+            let mut children = vec![token_leaf(b, catch_tok)];
+            let mut cursor = catch_idx + 1;
+            while cursor < period_i {
+                let token = &tokens[cursor];
+                if token.kind == TokenKind::Comment {
+                    children.push(token_leaf(b, token));
+                    cursor += 1;
+                    continue;
+                }
+                if is_keyword(source, token, "into") {
+                    children.push(token_leaf(b, token));
+                    let target_start = skip_trivia(tokens, cursor + 1);
+                    if target_start < period_i {
+                        let expr =
+                            parse_arithmetic_expr(b, source, &tokens[target_start..period_i], None);
+                        children.push(expr);
+                    }
+                    cursor = period_i;
+                    continue;
+                }
+                if is_keyword(source, token, "before") || is_keyword(source, token, "unwind") {
+                    children.push(token_leaf(b, token));
+                    cursor += 1;
+                    continue;
+                }
+                let type_end = scan_catch_type_ref_end(tokens, cursor);
+                if type_end > cursor {
+                    children.push(build_type_ref_node(b, source, &tokens[cursor..type_end]));
+                    cursor = type_end;
+                    continue;
+                }
+                children.push(token_leaf(b, token));
+                cursor += 1;
+            }
+            children.push(token_leaf(b, &tokens[period_i]));
+            (children, period_i + 1)
+        }
+        StmtPeriodScan::Unterminated { end_exclusive } => {
+            let err_end = unterminated_err_end(tokens, end_exclusive, catch_tok.range.end);
+            errors.push(crate::ParseError {
+                message: "syntax error: expected '.' after CATCH clause".to_string(),
+                range: catch_tok.range.start..err_end,
+            });
+            let err_children = error_token_children(b, tokens, catch_idx, end_exclusive);
+            let header = b.branch(
+                SyntaxKind::Error,
+                catch_tok.range.start..err_end,
+                &err_children,
+            );
+            (
+                vec![header],
+                next_after_unterminated_scan(tokens, end_exclusive),
+            )
+        }
+    }
 }
 
 fn parse_inline_name(
@@ -745,15 +837,8 @@ pub fn try_parse_try_stmt(
     ) {
         let catch_idx = skip_trivia(tokens, next);
         let catch_tok = &tokens[catch_idx];
-        let (mut catch_children, body_start) = parse_header_until_period(
-            b,
-            source,
-            tokens,
-            catch_idx,
-            catch_idx + 1,
-            errors,
-            "syntax error: expected '.' after CATCH clause",
-        );
+        let (mut catch_children, body_start) =
+            parse_catch_header_until_period(b, source, tokens, catch_idx, errors);
         let (catch_body, after_catch) = parse_body_until_keywords(
             b,
             source,
@@ -886,6 +971,19 @@ mod tests {
                 .count_kind(parsed.file.root(), SyntaxKind::CleanupClause),
             1
         );
+    }
+
+    #[test]
+    fn parses_catch_type_and_into_target_with_pragma() {
+        let parsed = crate::parse(
+            "TRY. WRITE 'x'. CATCH cx_sxml_parse_error INTO lo_parse_error ##no_handler. WRITE 'y'. ENDTRY.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::TryStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::CatchClause), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::TypeRefSimple), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::ExprIdent), 1);
     }
 
     #[test]
