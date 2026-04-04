@@ -3245,6 +3245,12 @@ impl<'a> Collector<'a> {
         {
             idx += 1;
         }
+        if tokens
+            .get(idx)
+            .is_some_and(|token| self.token_matches_keyword(token, "regex"))
+        {
+            idx += 1;
+        }
 
         let source_end = self.consume_concatenate_operand(tokens, idx, &["in", "with"]);
         if source_end > idx {

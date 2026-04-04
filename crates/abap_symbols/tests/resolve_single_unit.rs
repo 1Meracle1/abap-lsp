@@ -2563,6 +2563,7 @@ FORM run USING iv_id TYPE string.
   REPLACE ',' IN ev_timestamp_iso WITH '.'.
   REPLACE FIRST OCCURRENCE OF zattp_cl_rep_constants=>gv_url_locat_replace_from IN <fs_destination>-content WITH zattp_cl_rep_constants=>gv_url_locat_replace_to.
   REPLACE ALL OCCURRENCES OF '%22' IN iv_id WITH '"' IN CHARACTER MODE.
+  REPLACE ALL OCCURRENCES OF REGEX '%2F|%2f' IN iv_id WITH '/' IN CHARACTER MODE.
 ENDFORM.
 "#;
     let parsed = parse(src);
