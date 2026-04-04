@@ -446,6 +446,15 @@ fn resolve_class_selector_base<'a>(
     Some((class_unit, class_handle.symbol, false))
 }
 
+fn split_leading_deref<'a>(
+    access: &'a crate::FieldAccess,
+) -> (bool, &'a [crate::FieldAccessSegment]) {
+    if access.field_path.first().is_some_and(|segment| segment.is_deref()) {
+        return (true, &access.field_path[1..]);
+    }
+    (false, &access.field_path)
+}
+
 fn count_form_section(parameters: &[FormParameterData], section: FormParameterSection) -> usize {
     parameters
         .iter()
@@ -508,7 +517,11 @@ pub fn validate_project(project: &mut ProjectAnalysis) {
                 let base_symbol_id = resolve_field_access_base_symbol(unit, &scope_index, access)?;
                 resolve_class_selector_base(project, unit, &scope_index, access, base_symbol_id)
                     .map(|(class_unit, class_symbol_id, requires_static)| {
-                        (class_unit.unit_id.as_usize(), class_symbol_id, requires_static)
+                        (
+                            class_unit.unit_id.as_usize(),
+                            class_symbol_id,
+                            requires_static,
+                        )
                     })
             })
             .collect();
@@ -580,8 +593,9 @@ pub fn validate_project(project: &mut ProjectAnalysis) {
                 continue;
             };
             let base_symbol = unit.symbol(base_symbol_id);
+            let (has_leading_deref, field_path) = split_leading_deref(access);
             if access.base_namespace == Namespace::Type && base_symbol.kind == SymbolKind::Class {
-                for (idx, step) in access.field_path.iter().enumerate() {
+                for (idx, step) in field_path.iter().enumerate() {
                     let Some((member_unit, member)) = resolve_class_member_in_hierarchy(
                         project,
                         unit,
@@ -600,7 +614,13 @@ pub fn validate_project(project: &mut ProjectAnalysis) {
                     };
                     if !member.is_static
                         || member.kind != ClassMemberKind::Method
-                        || !class_member_visible_to(project, unit, access.scope, member_unit, member)
+                        || !class_member_visible_to(
+                            project,
+                            unit,
+                            access.scope,
+                            member_unit,
+                            member,
+                        )
                     {
                         unit_diagnostics.push(Diagnostic {
                             kind: DiagnosticKind::UnknownField,
@@ -612,8 +632,8 @@ pub fn validate_project(project: &mut ProjectAnalysis) {
                         });
                         break;
                     }
-                    if idx + 1 != access.field_path.len() {
-                        let next_step = &access.field_path[idx + 1];
+                    if idx + 1 != field_path.len() {
+                        let next_step = &field_path[idx + 1];
                         unit_diagnostics.push(Diagnostic {
                             kind: DiagnosticKind::UnknownField,
                             range: next_step.range.clone(),
@@ -627,17 +647,18 @@ pub fn validate_project(project: &mut ProjectAnalysis) {
                 }
                 continue;
             }
-            if let Some((class_unit_idx, class_symbol_id, requires_static)) = class_selector_base {
+            if !has_leading_deref
+                && let Some((class_unit_idx, class_symbol_id, requires_static)) = class_selector_base
+            {
                 let class_unit = &project.units[*class_unit_idx];
                 let class_name = Arc::clone(&class_unit.symbol(*class_symbol_id).name);
-                for (idx, step) in access.field_path.iter().enumerate() {
+                for (idx, step) in field_path.iter().enumerate() {
                     let Some((member_unit, member)) = resolve_class_member_in_hierarchy(
                         project,
                         class_unit,
                         *class_symbol_id,
                         step.name.as_ref(),
-                    )
-                    else {
+                    ) else {
                         unit_diagnostics.push(Diagnostic {
                             kind: DiagnosticKind::UnknownField,
                             range: step.range.clone(),
@@ -650,7 +671,13 @@ pub fn validate_project(project: &mut ProjectAnalysis) {
                     };
                     if member.kind != ClassMemberKind::Method
                         || (*requires_static && !member.is_static)
-                        || !class_member_visible_to(project, unit, access.scope, member_unit, member)
+                        || !class_member_visible_to(
+                            project,
+                            unit,
+                            access.scope,
+                            member_unit,
+                            member,
+                        )
                     {
                         let qualifier = if *requires_static {
                             "static member"
@@ -667,8 +694,8 @@ pub fn validate_project(project: &mut ProjectAnalysis) {
                         });
                         break;
                     }
-                    if idx + 1 != access.field_path.len() {
-                        let next_step = &access.field_path[idx + 1];
+                    if idx + 1 != field_path.len() {
+                        let next_step = &field_path[idx + 1];
                         unit_diagnostics.push(Diagnostic {
                             kind: DiagnosticKind::UnknownField,
                             range: next_step.range.clone(),
@@ -682,6 +709,9 @@ pub fn validate_project(project: &mut ProjectAnalysis) {
                 }
                 continue;
             }
+            if has_leading_deref && field_path.is_empty() {
+                continue;
+            }
             let Some(mut structure_id) = unit.symbol(base_symbol_id).structure else {
                 continue;
             };
@@ -691,7 +721,10 @@ pub fn validate_project(project: &mut ProjectAnalysis) {
                 "structure"
             };
             let mut qualifier = access.base_name.to_string();
-            for (idx, step) in access.field_path.iter().enumerate() {
+            if has_leading_deref {
+                qualifier.push_str("->*");
+            }
+            for (idx, step) in field_path.iter().enumerate() {
                 let structure = unit.structure(structure_id);
                 let Some(field) = structure
                     .fields
@@ -712,12 +745,12 @@ pub fn validate_project(project: &mut ProjectAnalysis) {
                 qualifier.push('-');
                 qualifier.push_str(field.name.as_ref());
 
-                if idx + 1 == access.field_path.len() {
+                if idx + 1 == field_path.len() {
                     break;
                 }
 
                 let Some(next_structure_id) = field.structure else {
-                    let next_step = &access.field_path[idx + 1];
+                    let next_step = &field_path[idx + 1];
                     unit_diagnostics.push(Diagnostic {
                         kind: DiagnosticKind::UnknownField,
                         range: next_step.range.clone(),

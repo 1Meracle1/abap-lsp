@@ -8,9 +8,9 @@ use lsp_types::{
     CompletionItem, CompletionItemKind, CompletionOptions, Diagnostic, DiagnosticSeverity,
     Documentation, GotoDefinitionResponse, Hover, HoverContents, HoverProviderCapability,
     InitializeResult, Location, MarkupContent, MarkupKind, OneOf, Position,
-    PublishDiagnosticsParams, Range, SemanticTokens,
-    SemanticTokensFullOptions, SemanticTokensOptions, SemanticTokensServerCapabilities,
-    ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri,
+    PublishDiagnosticsParams, Range, SemanticTokens, SemanticTokensFullOptions,
+    SemanticTokensOptions, SemanticTokensServerCapabilities, ServerCapabilities,
+    TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri,
 };
 use serde::{Deserialize, Serialize};
 
@@ -277,15 +277,12 @@ pub fn definition(
 }
 
 pub fn references(state: &ServerState, params: &ReferenceParams) -> Option<Vec<Location>> {
-    let uri = normalize_lsp_uri(
-        params
-            .text_document_position
-            .text_document
-            .uri
-            .as_str(),
-    );
+    let uri = normalize_lsp_uri(params.text_document_position.text_document.uri.as_str());
     let snapshot = state.cache.get(&uri)?;
-    let offset = position_to_offset(snapshot.text.as_ref(), params.text_document_position.position)?;
+    let offset = position_to_offset(
+        snapshot.text.as_ref(),
+        params.text_document_position.position,
+    )?;
     let references = state
         .cache
         .references(&uri, offset, params.context.include_declaration)?;
@@ -562,11 +559,10 @@ mod tests {
 
     use super::{
         CompletionParams, CompletionResponse, DEPENDENCY_CACHE_CLEARED, GotoDefinitionParams,
-        HoverParams, ReferenceParams,
-        REMOTE_DEPENDENCIES_UPDATED, RESOLVE_REMOTE_DEPENDENCIES, ServerState,
-        WORKSPACE_MANIFEST_UPDATED, build_lsp_diagnostics, completion, definition, hover,
-        initialize_result, normalize_lsp_uri, publish_changed_document, publish_open_document,
-        references,
+        HoverParams, REMOTE_DEPENDENCIES_UPDATED, RESOLVE_REMOTE_DEPENDENCIES, ReferenceParams,
+        ServerState, WORKSPACE_MANIFEST_UPDATED, build_lsp_diagnostics, completion, definition,
+        hover, initialize_result, normalize_lsp_uri, publish_changed_document,
+        publish_open_document, references,
     };
 
     fn semantic_token_type_at(
@@ -2561,10 +2557,7 @@ rv_text = |({ lo_expr->to_string( ) } { mv_op })|.";
             .enumerate()
             .find(|(_, line)| line.contains("rv_text = |("))
             .expect("template line");
-        let method_col = template_line
-            .1
-            .find("to_string")
-            .expect("to_string column") as u32;
+        let method_col = template_line.1.find("to_string").expect("to_string column") as u32;
         let mv_op_col = template_line.1.find("mv_op").expect("mv_op column") as u32;
 
         assert_eq!(
@@ -2635,11 +2628,8 @@ rv_text = |value: { lo_expr->to_ }|.";
             .enumerate()
             .find(|(_, line)| line.contains("lo_expr->to_"))
             .expect("template completion line");
-        let character = template_line
-            .1
-            .find("to_")
-            .expect("completion column") as u32
-            + "to_".len() as u32;
+        let character =
+            template_line.1.find("to_").expect("completion column") as u32 + "to_".len() as u32;
         let completion = completion(
             &state,
             &CompletionParams {
@@ -2663,7 +2653,10 @@ rv_text = |value: { lo_expr->to_ }|.";
             panic!("expected array completion");
         };
         assert_eq!(
-            items.iter().map(|item| item.label.as_str()).collect::<Vec<_>>(),
+            items
+                .iter()
+                .map(|item| item.label.as_str())
+                .collect::<Vec<_>>(),
             vec!["to_source", "to_string"]
         );
         assert!(

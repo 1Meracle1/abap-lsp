@@ -179,6 +179,12 @@ pub struct FieldAccessSegment {
     pub range: TextRange,
 }
 
+impl FieldAccessSegment {
+    pub fn is_deref(&self) -> bool {
+        self.name.as_ref() == "*"
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FieldTypeRefData {
     pub namespace: Namespace,

@@ -447,15 +447,12 @@ impl AnalysisSnapshot {
             .named_arguments
             .iter()
             .find(|access| access.range.start <= offset && offset < access.range.end)?;
-        Some(ReferenceSearchTarget::Symbol(resolve_named_argument_symbol(
-            self, access,
-        )?))
+        Some(ReferenceSearchTarget::Symbol(
+            resolve_named_argument_symbol(self, access)?,
+        ))
     }
 
-    fn definition_target_for_perform_argument_at(
-        &self,
-        offset: usize,
-    ) -> Option<DefinitionTarget> {
+    fn definition_target_for_perform_argument_at(&self, offset: usize) -> Option<DefinitionTarget> {
         let (perform_call, argument) = self
             .symbols
             .perform_calls
@@ -487,11 +484,9 @@ impl AnalysisSnapshot {
                     .map(|argument| (perform_call, argument))
             })
             .min_by_key(|(_, argument)| argument.range.end.saturating_sub(argument.range.start))?;
-        Some(ReferenceSearchTarget::Symbol(resolve_perform_argument_symbol(
-            self,
-            perform_call,
-            argument,
-        )?))
+        Some(ReferenceSearchTarget::Symbol(
+            resolve_perform_argument_symbol(self, perform_call, argument)?,
+        ))
     }
 
     fn definition_target_for_resolved_symbol_at(&self, offset: usize) -> Option<DefinitionTarget> {
@@ -516,7 +511,10 @@ impl AnalysisSnapshot {
                     .iter()
                     .filter(|symbol| symbol.decl_range == reference.range)
                     .min_by_key(|symbol| {
-                        symbol.decl_range.end.saturating_sub(symbol.decl_range.start)
+                        symbol
+                            .decl_range
+                            .end
+                            .saturating_sub(symbol.decl_range.start)
                     })
                     .map(|symbol| definition_target_for_symbol(self.symbols.as_ref(), symbol))
             });
@@ -527,16 +525,29 @@ impl AnalysisSnapshot {
             .class_members
             .iter()
             .filter(|member| member.decl_range.start <= offset && offset < member.decl_range.end)
-            .min_by_key(|member| member.decl_range.end.saturating_sub(member.decl_range.start))
+            .min_by_key(|member| {
+                member
+                    .decl_range
+                    .end
+                    .saturating_sub(member.decl_range.start)
+            })
         {
-            return Some(definition_target_for_class_member(self.symbols.as_ref(), member));
+            return Some(definition_target_for_class_member(
+                self.symbols.as_ref(),
+                member,
+            ));
         }
 
         self.symbols
             .symbols
             .iter()
             .filter(|symbol| symbol.decl_range.start <= offset && offset < symbol.decl_range.end)
-            .min_by_key(|symbol| symbol.decl_range.end.saturating_sub(symbol.decl_range.start))
+            .min_by_key(|symbol| {
+                symbol
+                    .decl_range
+                    .end
+                    .saturating_sub(symbol.decl_range.start)
+            })
             .map(|symbol| definition_target_for_symbol(self.symbols.as_ref(), symbol))
     }
 
@@ -567,7 +578,12 @@ impl AnalysisSnapshot {
             .class_members
             .iter()
             .filter(|member| member.decl_range.start <= offset && offset < member.decl_range.end)
-            .min_by_key(|member| member.decl_range.end.saturating_sub(member.decl_range.start))
+            .min_by_key(|member| {
+                member
+                    .decl_range
+                    .end
+                    .saturating_sub(member.decl_range.start)
+            })
         {
             return Some(ReferenceSearchTarget::ClassMember {
                 unit: self.symbols.unit_id,
@@ -581,7 +597,12 @@ impl AnalysisSnapshot {
             .symbols
             .iter()
             .filter(|symbol| symbol.decl_range.start <= offset && offset < symbol.decl_range.end)
-            .min_by_key(|symbol| symbol.decl_range.end.saturating_sub(symbol.decl_range.start))
+            .min_by_key(|symbol| {
+                symbol
+                    .decl_range
+                    .end
+                    .saturating_sub(symbol.decl_range.start)
+            })
         {
             return Some(ReferenceSearchTarget::Symbol(abap_symbols::SymbolHandle {
                 unit: self.symbols.unit_id,
@@ -629,10 +650,7 @@ impl AnalysisSnapshot {
         }
     }
 
-    fn local_symbol_references(
-        &self,
-        handle: abap_symbols::SymbolHandle,
-    ) -> Vec<ReferenceTarget> {
+    fn local_symbol_references(&self, handle: abap_symbols::SymbolHandle) -> Vec<ReferenceTarget> {
         let related_handles = equivalent_symbol_handles(self.project.as_ref(), handle);
         let mut out: Vec<_> = self
             .symbols
@@ -744,7 +762,8 @@ impl AnalysisSnapshot {
                     .take(segment_index + 1)
                     .map(|segment| segment.name.as_ref())
                     .collect();
-                let Some(field) = unit.resolve_structure_field_path(structure_id, &field_path) else {
+                let Some(field) = unit.resolve_structure_field_path(structure_id, &field_path)
+                else {
                     continue;
                 };
                 if unit.unit_id == target_unit && field.owner == owner && field.name == *name {
@@ -1199,18 +1218,21 @@ fn equivalent_symbol_handles(
     }
     let mut out = vec![handle];
     if let Some(owner) = unit.scope(symbol.scope).owner {
-        out.extend(unit.routine_parameters(owner).filter(|candidate| candidate.name == symbol.name).map(
-            |candidate| abap_symbols::SymbolHandle {
-                unit: unit.unit_id,
-                symbol: candidate.id,
-            },
-        ));
+        out.extend(
+            unit.routine_parameters(owner)
+                .filter(|candidate| candidate.name == symbol.name)
+                .map(|candidate| abap_symbols::SymbolHandle {
+                    unit: unit.unit_id,
+                    symbol: candidate.id,
+                }),
+        );
     }
 
     let method_member = if let Some(owner) = unit.scope(symbol.scope).owner {
         let owner_symbol = unit.symbol(owner);
         if owner_symbol.kind == SymbolKind::Method {
-            enclosing_class_owner(unit, symbol.scope).map(|class_symbol| (class_symbol, &owner_symbol.name))
+            enclosing_class_owner(unit, symbol.scope)
+                .map(|class_symbol| (class_symbol, &owner_symbol.name))
         } else {
             None
         }
@@ -1219,16 +1241,24 @@ fn equivalent_symbol_handles(
             member
                 .parameters
                 .iter()
-                .any(|parameter| parameter.name == symbol.name && parameter.range == symbol.decl_range)
+                .any(|parameter| {
+                    parameter.name == symbol.name && parameter.range == symbol.decl_range
+                })
                 .then_some((member.class_symbol, &member.name))
         })
     };
 
     if let Some((class_symbol, method_name)) = method_member {
         if let Some(member) = unit.class_member(class_symbol, method_name.as_ref()) {
-            out.extend(member.parameters.iter().filter(|parameter| parameter.name == symbol.name).filter_map(
-                |parameter| symbol_handle_for_decl_range(unit, &parameter.range, SymbolKind::Parameter),
-            ));
+            out.extend(
+                member
+                    .parameters
+                    .iter()
+                    .filter(|parameter| parameter.name == symbol.name)
+                    .filter_map(|parameter| {
+                        symbol_handle_for_decl_range(unit, &parameter.range, SymbolKind::Parameter)
+                    }),
+            );
         }
         if let Some(method_symbol) = unit.symbols.iter().find(|candidate| {
             candidate.kind == SymbolKind::Method
@@ -1641,7 +1671,10 @@ fn resolve_named_argument_target(
                 .parameters
                 .iter()
                 .find(|parameter| parameter.name == access.name)?;
-            Some(definition_target_for_range(member_unit, parameter.range.clone()))
+            Some(definition_target_for_range(
+                member_unit,
+                parameter.range.clone(),
+            ))
         }
     }
 }
@@ -1941,13 +1974,15 @@ fn collect_class_methods_in_hierarchy<'a>(
         }
         let unit = &snapshot.project.units[current.0.as_usize()];
         for member in unit.class_members_for(current.1) {
-            if member.kind != ClassMemberKind::Method || !seen_names.insert(Arc::clone(&member.name))
+            if member.kind != ClassMemberKind::Method
+                || !seen_names.insert(Arc::clone(&member.name))
             {
                 continue;
             }
             out.push((unit, member));
         }
-        let Some((next_unit, next_symbol)) = direct_superclass_from_class(snapshot, unit, current.1)
+        let Some((next_unit, next_symbol)) =
+            direct_superclass_from_class(snapshot, unit, current.1)
         else {
             break;
         };
@@ -2397,10 +2432,7 @@ mod tests {
         assert_eq!(&text[target.range.clone()], expected);
     }
 
-    fn assert_reference_slices(
-        references: &[ReferenceTarget],
-        entries: &[(&str, &str, &str)],
-    ) {
+    fn assert_reference_slices(references: &[ReferenceTarget], entries: &[(&str, &str, &str)]) {
         let actual: Vec<_> = references
             .iter()
             .map(|reference| {
@@ -2640,7 +2672,10 @@ CREATE OBJECT lo_instance.";
 
         let target = snapshot.definition_at(offset).expect("definition target");
         assert_target_slice(&target, "file:///demo.abap", src, "lv");
-        assert_eq!(target.range.start, src.find("lv").expect("variable declaration"));
+        assert_eq!(
+            target.range.start,
+            src.find("lv").expect("variable declaration")
+        );
     }
 
     #[test]
@@ -2672,9 +2707,14 @@ CREATE OBJECT lo_instance.";
         let snapshot = store.publish("file:///demo.abap", 1, src);
         let type_use = src.rfind("some_class").expect("type reference use");
 
-        let target = snapshot.definition_at(type_use + 1).expect("definition target");
+        let target = snapshot
+            .definition_at(type_use + 1)
+            .expect("definition target");
         assert_target_slice(&target, "file:///demo.abap", src, "some_class");
-        assert_eq!(target.range.start, src.find("some_class").expect("class declaration"));
+        assert_eq!(
+            target.range.start,
+            src.find("some_class").expect("class declaration")
+        );
     }
 
     #[test]
@@ -2696,7 +2736,10 @@ some_class=>exec( iv_value = 1 ).";
             .definition_at(method_use + 1)
             .expect("definition target");
         assert_target_slice(&target, "file:///demo.abap", src, "exec");
-        assert_eq!(target.range.start, src.find("exec").expect("method declaration"));
+        assert_eq!(
+            target.range.start,
+            src.find("exec").expect("method declaration")
+        );
     }
 
     #[test]
@@ -2718,7 +2761,10 @@ ls_outer-inner-alpha = 1.";
             .definition_at(field_use + 1)
             .expect("definition target");
         assert_target_slice(&target, "file:///demo.abap", src, "alpha");
-        assert_eq!(target.range.start, src.find("alpha").expect("field declaration"));
+        assert_eq!(
+            target.range.start,
+            src.find("alpha").expect("field declaration")
+        );
     }
 
     #[test]
@@ -2744,7 +2790,10 @@ START-OF-SELECTION.
             .definition_at(parameter_use + 1)
             .expect("definition target");
         assert_target_slice(&target, "file:///demo.abap", src, "io_stmt");
-        assert_eq!(target.range.start, src.find("io_stmt").expect("parameter declaration"));
+        assert_eq!(
+            target.range.start,
+            src.find("io_stmt").expect("parameter declaration")
+        );
     }
 
     #[test]
@@ -2767,7 +2816,10 @@ START-OF-SELECTION.
             .definition_at(argument_use + 1)
             .expect("definition target");
         assert_target_slice(&target, "file:///demo.abap", src, "iv_input");
-        assert_eq!(target.range.start, src.find("iv_input").expect("parameter declaration"));
+        assert_eq!(
+            target.range.start,
+            src.find("iv_input").expect("parameter declaration")
+        );
     }
 
     #[test]
@@ -2801,7 +2853,10 @@ ENDCLASS.";
             .definition_at(type_use + 1)
             .expect("definition target");
         assert_target_slice(&target, "file:///demo.abap", src, "zcl_stmt");
-        assert_eq!(target.range.start, src.find("zcl_stmt").expect("class declaration"));
+        assert_eq!(
+            target.range.start,
+            src.find("zcl_stmt").expect("class declaration")
+        );
     }
 
     #[test]

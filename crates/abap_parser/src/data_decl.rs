@@ -98,7 +98,16 @@ fn try_parse_structured_data_decl(
         while tokens.get(i).map(|t| t.kind) == Some(TokenKind::Comment) {
             i += 1;
         }
-        let (clause, next_i) = parse_data_typed_clause(b, source, tokens, i).or_else(|| {
+        let (clause, next_i) = parse_decl_clause(
+            b,
+            source,
+            tokens,
+            i,
+            SyntaxKind::DataTypedClause,
+            false,
+            false,
+        )
+        .or_else(|| {
             parse_begin_of_decl_clause(b, source, tokens, i, SyntaxKind::DataTypedClause)
         })?;
         clause_nodes.push(clause);
@@ -197,31 +206,6 @@ fn classify_malformed_data_decl(
     None
 }
 
-fn parse_data_typed_clause(
-    b: &mut SyntaxTreeBuilder,
-    source: &str,
-    tokens: &[Token],
-    idx: usize,
-) -> Option<(NodeId, usize)> {
-    let (name, mut i) = parse_data_decl_name(b, source, tokens, idx)?;
-    let type_tok = tokens.get(i)?;
-    if !is_keyword(source, type_tok, "type") {
-        return None;
-    }
-    let type_leaf = token_leaf(b, type_tok);
-    i += 1;
-    let (type_ref, j) = parse_simple_type_ref(b, source, tokens, i)?;
-    let clause_range = b.span(name).start..b.span(type_ref).end;
-    Some((
-        b.branch(
-            SyntaxKind::DataTypedClause,
-            clause_range,
-            &[name, type_leaf, type_ref],
-        ),
-        j,
-    ))
-}
-
 fn parse_data_decl_name(
     b: &mut SyntaxTreeBuilder,
     _source: &str,
@@ -257,66 +241,6 @@ fn parse_data_decl_name(
     let start = first.range.start;
     let end = b.span(*children.last().unwrap()).end;
     Some((b.branch(SyntaxKind::DataDeclName, start..end, &children), i))
-}
-
-fn parse_simple_type_ref(
-    b: &mut SyntaxTreeBuilder,
-    source: &str,
-    tokens: &[Token],
-    idx: usize,
-) -> Option<(NodeId, usize)> {
-    let mut children = Vec::new();
-    let mut i = idx;
-    if tokens
-        .get(i)
-        .is_some_and(|tok| is_keyword(source, tok, "ref"))
-    {
-        let ref_tok = tokens.get(i)?;
-        let to_tok = tokens.get(i + 1)?;
-        if !is_keyword(source, to_tok, "to") {
-            return None;
-        }
-        children.push(token_leaf(b, ref_tok));
-        children.push(token_leaf(b, to_tok));
-        i += 2;
-    }
-
-    let first = tokens.get(i)?;
-    if first.kind != TokenKind::Ident {
-        return None;
-    }
-    children.push(token_leaf(b, first));
-    i += 1;
-    loop {
-        let op = match tokens.get(i) {
-            Some(t) => t,
-            None => break,
-        };
-        let is_sel = matches!(
-            op.kind,
-            TokenKind::Minus | TokenKind::FatArrow | TokenKind::Tilde | TokenKind::Arrow
-        );
-        if !is_sel {
-            break;
-        }
-        let prev = tokens.get(i.wrapping_sub(1))?;
-        if have_space_between(prev, op) {
-            break;
-        }
-        let field = tokens.get(i + 1)?;
-        if field.kind != TokenKind::Ident {
-            return None;
-        }
-        children.push(token_leaf(b, op));
-        children.push(token_leaf(b, field));
-        i += 2;
-    }
-    let start = first.range.start;
-    let end = b.span(*children.last().unwrap()).end;
-    Some((
-        b.branch(SyntaxKind::TypeRefSimple, start..end, &children),
-        i,
-    ))
 }
 
 fn parse_type_ref_tokens(
@@ -912,6 +836,15 @@ mod tests {
     #[test]
     fn chained_data_colon() {
         let src = "DATA: lv_a TYPE i, lv_b TYPE string.";
+        let file = tree_ok(src);
+        assert_eq!(file.count_kind(file.root(), SyntaxKind::DataDecl), 1);
+        assert_eq!(file.count_kind(file.root(), SyntaxKind::DataTypedClause), 2);
+    }
+
+    #[test]
+    fn chained_data_accepts_table_type_and_inline_comment() {
+        let src =
+            "DATA: lt_split TYPE STANDARD TABLE OF string, \" comment\n      ls_split TYPE string.";
         let file = tree_ok(src);
         assert_eq!(file.count_kind(file.root(), SyntaxKind::DataDecl), 1);
         assert_eq!(file.count_kind(file.root(), SyntaxKind::DataTypedClause), 2);

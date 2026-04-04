@@ -3,11 +3,10 @@ use std::net::{SocketAddr, TcpListener};
 
 use abap_jsonrpc::{JSON_RPC_VERSION, Response, read_frame, write_frame};
 use abap_lsp::{
-    CompletionParams, DidChangeTextDocumentParams, DidOpenTextDocumentParams,
-    GotoDefinitionParams, HoverParams, ReferenceParams, SemanticTokensParams, ServerConfig,
-    ServerState,
-    completion, definition, hover, initialize_result, publish_changed_document,
-    publish_diagnostics_params, publish_open_document, references, semantic_tokens,
+    CompletionParams, DidChangeTextDocumentParams, DidOpenTextDocumentParams, GotoDefinitionParams,
+    HoverParams, ReferenceParams, SemanticTokensParams, ServerConfig, ServerState, completion,
+    definition, hover, initialize_result, publish_changed_document, publish_diagnostics_params,
+    publish_open_document, references, semantic_tokens,
 };
 use serde_json::{Value, json};
 use tracing::warn;

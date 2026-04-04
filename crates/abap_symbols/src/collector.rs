@@ -474,6 +474,8 @@ impl<'a> Collector<'a> {
             | SyntaxKind::InstanceOfPredicate
             | SyntaxKind::BetweenExpr
             | SyntaxKind::AssignStmt => self.collect_expr(node, scope),
+            SyntaxKind::AssignKeywordStmt => self.collect_assign_keyword_stmt(node, scope),
+            SyntaxKind::FieldSymbolInlineDecl => self.walk_inline_field_symbol_decl(node, scope),
             SyntaxKind::SimpleStmt => self.collect_simple_stmt(node, scope),
             SyntaxKind::WriteStmt => self.collect_write_stmt(node, scope),
             _ => self.walk_children(node, scope),
@@ -512,10 +514,7 @@ impl<'a> Collector<'a> {
             && let Some((name, range)) = self.node_name(name_node)
         {
             let structure = self.structure_from_typed_clause(node, scope);
-            let declared_type = structure
-                .is_none()
-                .then(|| self.type_ref_from_typed_clause(node))
-                .flatten();
+            let declared_type = self.type_ref_from_typed_clause(node);
             self.declare_symbol(scope, name, kind, range, structure, declared_type);
         }
     }
@@ -537,6 +536,34 @@ impl<'a> Collector<'a> {
             }
         }
         self.walk_children(node, scope);
+    }
+
+    fn walk_inline_field_symbol_decl(&mut self, node: NodeId, scope: ScopeId) {
+        self.declare_inline_field_symbol_decl(node, scope, None, None);
+    }
+
+    fn declare_inline_field_symbol_decl(
+        &mut self,
+        node: NodeId,
+        scope: ScopeId,
+        structure: Option<StructureId>,
+        declared_type: Option<FieldTypeRefData>,
+    ) {
+        for child in self.file.children(node) {
+            if self.file.kind(child) == SyntaxKind::DataDeclName
+                && let Some((name, range)) = self.node_name(child)
+            {
+                self.declare_symbol(
+                    scope,
+                    name,
+                    SymbolKind::FieldSymbol,
+                    range,
+                    structure,
+                    declared_type.clone(),
+                );
+                break;
+            }
+        }
     }
 
     fn inline_decl_inferred_type(
@@ -1609,7 +1636,14 @@ impl<'a> Collector<'a> {
     fn try_parse_type_ref_prefix_tokens(
         &self,
         tokens: &[&Token],
-    ) -> Option<(Namespace, bool, Arc<str>, TextRange, Vec<FieldAccessSegment>, usize)> {
+    ) -> Option<(
+        Namespace,
+        bool,
+        Arc<str>,
+        TextRange,
+        Vec<FieldAccessSegment>,
+        usize,
+    )> {
         let mut i = 0usize;
         let mut namespace = Namespace::Type;
         let mut is_ref = false;
@@ -1678,7 +1712,8 @@ impl<'a> Collector<'a> {
     fn type_ref_candidate_starts(&self, tokens: &[&Token]) -> Vec<usize> {
         let mut starts = Vec::new();
         if let Some(first) = tokens.first()
-            && (self.token_matches_keyword(first, "ref") || !self.is_type_ref_wrapper_keyword(first))
+            && (self.token_matches_keyword(first, "ref")
+                || !self.is_type_ref_wrapper_keyword(first))
         {
             starts.push(0);
         }
@@ -1695,7 +1730,13 @@ impl<'a> Collector<'a> {
     fn type_ref_access_chain_from_filtered_tokens(
         &self,
         tokens: &[&Token],
-    ) -> Option<(Namespace, bool, Arc<str>, TextRange, Vec<FieldAccessSegment>)> {
+    ) -> Option<(
+        Namespace,
+        bool,
+        Arc<str>,
+        TextRange,
+        Vec<FieldAccessSegment>,
+    )> {
         for start in self.type_ref_candidate_starts(tokens) {
             let slice = &tokens[start..];
             let Some((namespace, is_ref, base_name, base_range, field_path, _)) =
@@ -1929,7 +1970,12 @@ impl<'a> Collector<'a> {
     }
 
     fn walk_loop_stmt(&mut self, node: NodeId, scope: ScopeId) {
-        let child_scope = self.push_scope(ScopeKind::LoopBlock, self.file.range(node), Some(scope), None);
+        let child_scope = self.push_scope(
+            ScopeKind::LoopBlock,
+            self.file.range(node),
+            Some(scope),
+            None,
+        );
         let header_tokens: Vec<_> = self
             .simple_stmt_tokens(node)
             .into_iter()
@@ -2162,7 +2208,7 @@ impl<'a> Collector<'a> {
                 symbol.declared_type.clone(),
             );
         }
-        self.loop_source_field_metadata(symbol_id, &field_path)
+        self.loop_source_field_metadata(scope, symbol_id, &field_path)
             .map(|(structure, declared_type)| {
                 self.normalize_inferred_metadata(scope, structure, declared_type)
             })
@@ -2171,22 +2217,58 @@ impl<'a> Collector<'a> {
 
     fn loop_source_field_metadata(
         &self,
+        scope: ScopeId,
         symbol_id: SymbolId,
         field_path: &[FieldAccessSegment],
     ) -> Option<(Option<StructureId>, Option<FieldTypeRefData>)> {
-        let mut structure_id = self.symbol(symbol_id).structure?;
-        for (idx, segment) in field_path.iter().enumerate() {
+        let mut structure = self.symbol(symbol_id).structure;
+        let mut declared_type = self.symbol(symbol_id).declared_type.clone();
+        for segment in field_path {
+            if segment.is_deref() {
+                let (next_structure, next_declared_type) =
+                    self.dereference_metadata(scope, structure, declared_type)?;
+                structure = next_structure;
+                declared_type = next_declared_type;
+                continue;
+            }
+            let structure_id = structure?;
             let field = self
                 .structure(structure_id)?
                 .fields
                 .iter()
                 .find(|field| field.name.as_ref() == segment.name.as_ref())?;
-            if idx + 1 == field_path.len() {
-                return Some((field.structure, field.type_ref.clone()));
-            }
-            structure_id = field.structure?;
+            structure = field.structure;
+            declared_type = field.type_ref.clone();
         }
-        None
+        Some((structure, declared_type))
+    }
+
+    fn dereference_metadata(
+        &self,
+        scope: ScopeId,
+        structure: Option<StructureId>,
+        declared_type: Option<FieldTypeRefData>,
+    ) -> Option<(Option<StructureId>, Option<FieldTypeRefData>)> {
+        let type_ref = declared_type?;
+        if !type_ref.is_ref {
+            return None;
+        }
+        let structure = structure.or_else(|| {
+            if type_ref.namespace != Namespace::Type || !type_ref.field_path.is_empty() {
+                return None;
+            }
+            self.lookup_symbol_in_scope_chain(scope, Namespace::Type, type_ref.base_name.as_ref())
+                .and_then(|symbol_id| self.symbol(symbol_id).structure)
+        });
+        Some((
+            structure,
+            Some(FieldTypeRefData {
+                namespace: type_ref.namespace,
+                is_ref: false,
+                base_name: type_ref.base_name,
+                field_path: type_ref.field_path,
+            }),
+        ))
     }
 
     fn normalize_inferred_metadata(
@@ -2202,13 +2284,17 @@ impl<'a> Collector<'a> {
             let Some(type_ref) = declared_type.as_ref() else {
                 break;
             };
-            if type_ref.namespace != Namespace::Type || type_ref.is_ref || !type_ref.field_path.is_empty()
+            if type_ref.namespace != Namespace::Type
+                || type_ref.is_ref
+                || !type_ref.field_path.is_empty()
             {
                 break;
             }
-            let Some(symbol_id) =
-                self.lookup_symbol_in_scope_chain(scope, Namespace::Type, type_ref.base_name.as_ref())
-            else {
+            let Some(symbol_id) = self.lookup_symbol_in_scope_chain(
+                scope,
+                Namespace::Type,
+                type_ref.base_name.as_ref(),
+            ) else {
                 break;
             };
             let symbol = self.symbol(symbol_id);
@@ -2386,9 +2472,105 @@ impl<'a> Collector<'a> {
             self.collect_method_signature_type_refs(&significant, scope);
             return;
         }
+        if significant.first().is_some_and(|token| {
+            self.token_matches_keyword(token, "assert") || self.token_matches_keyword(token, "check")
+        }) {
+            self.collect_token_expression_refs(&significant[1..], scope, true);
+            return;
+        }
         self.collect_perform_stmt(&significant, scope);
         self.collect_create_object_stmt(&significant, scope);
         self.collect_token_expression_refs(&significant, scope, false);
+    }
+
+    fn collect_assign_keyword_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        let mut tokens = Vec::new();
+        let mut inline_targets = Vec::new();
+        for child in self.file.children(node) {
+            match self.file.kind(child) {
+                SyntaxKind::Token => {
+                    if let Some(token) = self.token_for_node(child) {
+                        tokens.push(token);
+                    }
+                }
+                SyntaxKind::FieldSymbolInlineDecl => {
+                    inline_targets.push(child);
+                }
+                _ => self.walk_node(child, scope),
+            }
+        }
+
+        let significant: Vec<_> = tokens
+            .into_iter()
+            .filter(|token| token.kind != TokenKind::Comment)
+            .collect();
+        if significant.is_empty() || !self.token_matches_keyword(significant[0], "assign") {
+            return;
+        }
+
+        let Some(to_idx) = significant
+            .iter()
+            .position(|token| self.token_matches_keyword(token, "to"))
+        else {
+            self.collect_token_expression_refs(&significant[1..], scope, true);
+            return;
+        };
+
+        let source_tokens = &significant[1..to_idx];
+        if source_tokens.first().is_some_and(|token| self.token_matches_keyword(token, "component")) {
+            self.collect_assign_component_source(source_tokens, scope);
+        } else if !source_tokens.is_empty() {
+            self.collect_token_expression_refs(source_tokens, scope, true);
+        }
+
+        if inline_targets.is_empty() && to_idx + 1 < significant.len() {
+            self.collect_token_expression_refs(&significant[to_idx + 1..], scope, true);
+            return;
+        }
+
+        let inferred_metadata = if source_tokens
+            .first()
+            .is_some_and(|token| self.token_matches_keyword(token, "component"))
+        {
+            (None, None)
+        } else {
+            self.loop_source_line_metadata(source_tokens, scope)
+        };
+        for target in inline_targets {
+            self.declare_inline_field_symbol_decl(
+                target,
+                scope,
+                inferred_metadata.0,
+                inferred_metadata.1.clone(),
+            );
+        }
+    }
+
+    fn collect_assign_component_source(&mut self, tokens: &[&Token], scope: ScopeId) {
+        let component_tokens = if tokens
+            .first()
+            .is_some_and(|token| self.token_matches_keyword(token, "component"))
+        {
+            &tokens[1..]
+        } else {
+            tokens
+        };
+
+        let Some(of_idx) = component_tokens.windows(2).position(|window| {
+            self.token_matches_keyword(window[0], "of")
+                && self.token_matches_keyword(window[1], "structure")
+        }) else {
+            self.collect_token_expression_refs(component_tokens, scope, true);
+            return;
+        };
+
+        if of_idx > 0 {
+            self.collect_token_expression_refs(&component_tokens[..of_idx], scope, true);
+        }
+        let structure_start = of_idx + 2;
+        if structure_start < component_tokens.len() {
+            self.collect_token_expression_refs(&component_tokens[structure_start..], scope, true);
+        }
     }
 
     fn collect_write_stmt(&mut self, node: NodeId, scope: ScopeId) {
@@ -2895,7 +3077,9 @@ impl<'a> Collector<'a> {
         while cursor + 2 < tokens.len() {
             let op = tokens[cursor + 1];
             let field = tokens[cursor + 2];
-            if field.kind != TokenKind::Ident {
+            if field.kind != TokenKind::Ident
+                && !(op.kind == TokenKind::Arrow && field.kind == TokenKind::Star)
+            {
                 break;
             }
             let step_namespace = match op.kind {
@@ -3388,10 +3572,7 @@ impl<'a> Collector<'a> {
         token.kind == TokenKind::Ident && token.lexeme(self.source).eq_ignore_ascii_case(keyword)
     }
 
-    fn typed_clause_expr_tokens(
-        &self,
-        node: NodeId,
-    ) -> Option<(Vec<&'a Token>, Namespace, usize)> {
+    fn typed_clause_expr_tokens(&self, node: NodeId) -> Option<(Vec<&'a Token>, Namespace, usize)> {
         let mut tokens = Vec::new();
         self.tokens_for_node_recursive(node, &mut tokens);
         let mut namespace = None;

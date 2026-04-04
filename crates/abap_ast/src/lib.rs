@@ -76,6 +76,10 @@ pub enum SyntaxKind {
     LengthSpec,
     /// Assignment statement `lhs = rhs .` or `lhs ?= rhs .` (rhs parsed with the same expression subset as templates).
     AssignStmt,
+    /// `ASSIGN ... TO ... .`
+    AssignKeywordStmt,
+    /// Inline target declaration `FIELD-SYMBOL(<fs>)`.
+    FieldSymbolInlineDecl,
     /// A simple line-oriented statement parsed as tokens through a top-level `.` (e.g. `REPORT`, `WRITE`, incomplete `DATA` …).
     SimpleStmt,
     /// `REPORT ... .`
@@ -166,6 +170,8 @@ impl SyntaxKind {
             Self::ValueClause => "ValueClause",
             Self::LengthSpec => "LengthSpec",
             Self::AssignStmt => "AssignStmt",
+            Self::AssignKeywordStmt => "AssignKeywordStmt",
+            Self::FieldSymbolInlineDecl => "FieldSymbolInlineDecl",
             Self::SimpleStmt => "SimpleStmt",
             Self::ReportStmt => "ReportStmt",
             Self::IncludeStmt => "IncludeStmt",

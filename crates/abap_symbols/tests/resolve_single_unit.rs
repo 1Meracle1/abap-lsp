@@ -82,6 +82,38 @@ ENDFORM.
 }
 
 #[test]
+fn chained_data_with_table_type_declares_all_symbols_without_unresolved_diagnostics() {
+    let src = r#"
+FORM some_form.
+  DATA: ls_event TYPE string,
+        ls_choice TYPE string, " inline comment
+        lt_split TYPE STANDARD TABLE OF string,
+        ls_split TYPE string,
+        lv_lines TYPE i.
+ENDFORM.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///chained_data_table_type.abap", src, &parsed);
+
+    for name in ["ls_event", "ls_choice", "lt_split", "ls_split", "lv_lines"] {
+        assert!(
+            unit.symbols.iter().any(|symbol| {
+                symbol.kind == abap_symbols::SymbolKind::Variable && symbol.name.as_ref() == name
+            }),
+            "expected variable symbol for `{name}`, symbols={:?}",
+            unit.symbols
+        );
+        assert!(
+            !unit.diagnostics.iter().any(|diag| {
+                diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains(name)
+            }),
+            "unexpected unresolved diagnostic for `{name}`: {:?}",
+            unit.diagnostics
+        );
+    }
+}
+
+#[test]
 fn resolves_valid_perform_call_to_form() {
     let src = r#"
 FORM process_data
@@ -289,6 +321,232 @@ ENDLOOP.
                 && (diag.message.contains("lt_rows") || diag.message.contains("<ls_row>"))
         }),
         "unexpected LOOP diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn resolves_assign_to_inline_field_symbol() {
+    let src = r#"
+DATA lv_value TYPE string.
+
+ASSIGN lv_value TO FIELD-SYMBOL(<lv_value>).
+<lv_value> = <lv_value>.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///assign_inline_fs.abap", src, &parsed);
+
+    assert!(unit.symbols.iter().any(|symbol| {
+        symbol.kind == abap_symbols::SymbolKind::FieldSymbol
+            && symbol.name.as_ref() == "<lv_value>"
+    }));
+
+    assert!(unit.references.iter().any(|reference| {
+        reference.namespace == Namespace::Value
+            && reference.name.as_ref() == "lv_value"
+            && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+    }));
+
+    let fs_refs: Vec<_> = unit
+        .references
+        .iter()
+        .filter(|reference| {
+            reference.namespace == Namespace::Value
+                && reference.kind == ReferenceKind::Identifier
+                && reference.name.as_ref() == "<lv_value>"
+        })
+        .collect();
+    assert_eq!(fs_refs.len(), 2, "expected body references, got {fs_refs:?}");
+    assert!(
+        fs_refs
+            .iter()
+            .all(|reference| matches!(reference.resolution, Some(Resolution::Symbol(_)))),
+        "expected ASSIGN target references to resolve, refs={:?} diagnostics={:?}",
+        unit.references,
+        unit.diagnostics
+    );
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference
+                && (diag.message.contains("lv_value") || diag.message.contains("<lv_value>"))
+        }),
+        "unexpected ASSIGN diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn resolves_assign_component_to_inline_field_symbol() {
+    let src = r#"
+FIELD-SYMBOLS <ls_outbound> TYPE any.
+
+ASSIGN COMPONENT 'EVENT_LIST'
+  OF STRUCTURE <ls_outbound>
+  TO FIELD-SYMBOL(<ls_event>).
+<ls_event> = <ls_event>.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///assign_component_inline_fs.abap", src, &parsed);
+
+    assert!(unit.symbols.iter().any(|symbol| {
+        symbol.kind == abap_symbols::SymbolKind::FieldSymbol
+            && symbol.name.as_ref() == "<ls_event>"
+    }));
+
+    assert!(unit.references.iter().any(|reference| {
+        reference.namespace == Namespace::Value
+            && reference.name.as_ref() == "<ls_outbound>"
+            && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+    }));
+
+    let fs_refs: Vec<_> = unit
+        .references
+        .iter()
+        .filter(|reference| {
+            reference.namespace == Namespace::Value
+                && reference.kind == ReferenceKind::Identifier
+                && reference.name.as_ref() == "<ls_event>"
+        })
+        .collect();
+    assert_eq!(fs_refs.len(), 2, "expected body references, got {fs_refs:?}");
+    assert!(
+        fs_refs
+            .iter()
+            .all(|reference| matches!(reference.resolution, Some(Resolution::Symbol(_)))),
+        "expected ASSIGN COMPONENT target references to resolve, refs={:?} diagnostics={:?}",
+        unit.references,
+        unit.diagnostics
+    );
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference
+                && (diag.message.contains("<ls_outbound>") || diag.message.contains("<ls_event>"))
+        }),
+        "unexpected ASSIGN COMPONENT diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn resolves_assert_is_assigned_field_symbol_condition() {
+    let src = r#"
+FIELD-SYMBOLS <ls_outbound> TYPE any.
+
+ASSERT <ls_outbound> IS ASSIGNED.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///assert_is_assigned.abap", src, &parsed);
+
+    let refs: Vec<_> = unit
+        .references
+        .iter()
+        .filter(|reference| {
+            reference.namespace == Namespace::Value
+                && reference.kind == ReferenceKind::Identifier
+                && reference.name.as_ref() == "<ls_outbound>"
+        })
+        .collect();
+    assert_eq!(refs.len(), 1, "expected ASSERT field-symbol reference, got {refs:?}");
+    assert!(
+        refs.iter()
+            .all(|reference| matches!(reference.resolution, Some(Resolution::Symbol(_)))),
+        "expected ASSERT field-symbol reference to resolve, refs={:?} diagnostics={:?}",
+        unit.references,
+        unit.diagnostics
+    );
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference
+                && diag.message.contains("<ls_outbound>")
+        }),
+        "unexpected ASSERT diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn resolves_data_ref_dereference_selector_field_access() {
+    let src = r#"
+TYPES: BEGIN OF ty_row,
+         name TYPE string,
+       END OF ty_row.
+DATA lr_row TYPE REF TO ty_row.
+DATA lv_name TYPE string.
+
+lv_name = lr_row->*-name.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///deref_selector.abap", src, &parsed);
+
+    assert!(unit.references.iter().any(|reference| {
+        reference.namespace == Namespace::Value
+            && reference.name.as_ref() == "lr_row"
+            && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+    }));
+    assert!(
+        unit.field_accesses.iter().any(|access| {
+            access.base_name.as_ref() == "lr_row"
+                && access.field_path.len() == 2
+                && access.field_path[0].is_deref()
+                && access.field_path[1].name.as_ref() == "name"
+        }),
+        "expected dereference selector path, accesses={:?}",
+        unit.field_accesses
+    );
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            matches!(
+                diag.kind,
+                DiagnosticKind::UnresolvedReference | DiagnosticKind::UnknownField
+            ) && (diag.message.contains("lr_row") || diag.message.contains("name"))
+        }),
+        "unexpected dereference selector diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn infers_assign_inline_field_symbol_from_dereferenced_ref() {
+    let src = r#"
+TYPES: BEGIN OF ty_row,
+         name TYPE string,
+       END OF ty_row.
+DATA lr_row TYPE REF TO ty_row.
+
+ASSIGN lr_row->* TO FIELD-SYMBOL(<ls_row>).
+<ls_row>-name = 'demo'.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///assign_deref_inline_fs.abap", src, &parsed);
+
+    let fs_symbol = unit
+        .symbols
+        .iter()
+        .find(|symbol| symbol.name.as_ref() == "<ls_row>")
+        .expect("inline dereferenced field-symbol target");
+    assert_eq!(fs_symbol.kind, abap_symbols::SymbolKind::FieldSymbol);
+    assert!(
+        fs_symbol.structure.is_some(),
+        "expected inferred structure for dereferenced target, symbol={fs_symbol:?}"
+    );
+
+    assert!(
+        unit.field_accesses.iter().any(|access| {
+            access.base_name.as_ref() == "<ls_row>"
+                && access.field_path.len() == 1
+                && access.field_path[0].name.as_ref() == "name"
+        }),
+        "expected field-symbol field access, accesses={:?}",
+        unit.field_accesses
+    );
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            matches!(
+                diag.kind,
+                DiagnosticKind::UnresolvedReference | DiagnosticKind::UnknownField
+            ) && (diag.message.contains("<ls_row>") || diag.message.contains("name"))
+        }),
+        "unexpected dereferenced ASSIGN diagnostics: {:?}",
         unit.diagnostics
     );
 }

@@ -230,6 +230,68 @@ fn parse_simple_keyword_stmt(
     }
 }
 
+fn parse_inline_name(
+    b: &mut SyntaxTreeBuilder,
+    tokens: &[Token],
+    idx: usize,
+) -> Option<(NodeId, usize)> {
+    let name_tok = tokens.get(idx)?;
+    if name_tok.kind != TokenKind::Ident {
+        return None;
+    }
+    let leaf = token_leaf(b, name_tok);
+    Some((
+        b.branch(SyntaxKind::DataDeclName, name_tok.range.clone(), &[leaf]),
+        idx + 1,
+    ))
+}
+
+fn try_parse_field_symbol_inline_decl(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+) -> Option<(NodeId, usize)> {
+    let field_tok = tokens.get(idx)?;
+    if !is_keyword(source, field_tok, "field")
+        || tokens.get(idx + 1).map(|tok| tok.kind) != Some(TokenKind::Minus)
+        || !tokens
+            .get(idx + 2)
+            .is_some_and(|tok| is_keyword(source, tok, "symbol"))
+    {
+        return None;
+    }
+
+    let lparen = tokens.get(idx + 3)?;
+    if lparen.kind != TokenKind::LParen {
+        return None;
+    }
+    let (name, next_idx) = parse_inline_name(b, tokens, idx + 4)?;
+    let rparen = tokens.get(next_idx)?;
+    if rparen.kind != TokenKind::RParen {
+        return None;
+    }
+
+    let field_leaf = token_leaf(b, field_tok);
+    let minus_leaf = token_leaf(b, &tokens[idx + 1]);
+    let symbol_leaf = token_leaf(b, &tokens[idx + 2]);
+    let lparen_leaf = token_leaf(b, lparen);
+    let rparen_leaf = token_leaf(b, rparen);
+    let node = b.branch(
+        SyntaxKind::FieldSymbolInlineDecl,
+        field_tok.range.start..rparen.range.end,
+        &[
+            field_leaf,
+            minus_leaf,
+            symbol_leaf,
+            lparen_leaf,
+            name,
+            rparen_leaf,
+        ],
+    );
+    Some((node, next_idx + 1))
+}
+
 fn parse_end_keyword(
     b: &mut SyntaxTreeBuilder,
     source: &str,
@@ -536,6 +598,57 @@ pub fn try_parse_read_table_stmt(
                 children.push(token_leaf(b, t));
             }
             let node = b.branch(SyntaxKind::Error, read_tok.range.start..err_end, &children);
+            Some((node, end_exclusive))
+        }
+    }
+}
+
+pub fn try_parse_assign_keyword_stmt(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    errors: &mut Vec<crate::ParseError>,
+) -> Option<(NodeId, usize)> {
+    let assign_tok = tokens.get(idx)?;
+    if !is_keyword(source, assign_tok, "assign") {
+        return None;
+    }
+
+    match scan_until_statement_period(tokens, source, idx + 1) {
+        StmtPeriodScan::Found(period_i) => {
+            let mut children = Vec::with_capacity(period_i - idx + 1);
+            let mut i = idx;
+            while i < period_i {
+                if let Some((inline_decl, next_i)) =
+                    try_parse_field_symbol_inline_decl(b, source, tokens, i)
+                {
+                    children.push(inline_decl);
+                    i = next_i;
+                    continue;
+                }
+                children.push(token_leaf(b, &tokens[i]));
+                i += 1;
+            }
+            children.push(token_leaf(b, &tokens[period_i]));
+            let node = b.branch(
+                SyntaxKind::AssignKeywordStmt,
+                assign_tok.range.start..tokens[period_i].range.end,
+                &children,
+            );
+            Some((node, period_i + 1))
+        }
+        StmtPeriodScan::Unterminated { end_exclusive } => {
+            let err_end = unterminated_err_end(tokens, end_exclusive, assign_tok.range.end);
+            errors.push(crate::ParseError {
+                message: "syntax error: expected '.' after ASSIGN statement".to_string(),
+                range: assign_tok.range.start..err_end,
+            });
+            let mut children = Vec::with_capacity(end_exclusive.saturating_sub(idx));
+            for t in &tokens[idx..end_exclusive] {
+                children.push(token_leaf(b, t));
+            }
+            let node = b.branch(SyntaxKind::Error, assign_tok.range.start..err_end, &children);
             Some((node, end_exclusive))
         }
     }
@@ -992,6 +1105,44 @@ mod tests {
             parsed
                 .file
                 .count_kind(parsed.file.root(), SyntaxKind::ReadTableStmt),
+            1
+        );
+    }
+
+    #[test]
+    fn parses_assign_to_inline_field_symbol() {
+        let parsed = crate::parse("ASSIGN mo_outbound->* TO FIELD-SYMBOL(<ls_outbound>).");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::AssignKeywordStmt),
+            1
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::FieldSymbolInlineDecl),
+            1
+        );
+    }
+
+    #[test]
+    fn parses_assign_component_to_inline_field_symbol() {
+        let parsed = crate::parse(
+            "ASSIGN COMPONENT 'EPCISDOCUMENT-EPCISBODY-EVENT_LIST-CHOICE'\n  OF STRUCTURE <ls_outbound>\n  TO FIELD-SYMBOL(<ls_event>) ##no_text.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::AssignKeywordStmt),
+            1
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::FieldSymbolInlineDecl),
             1
         );
     }

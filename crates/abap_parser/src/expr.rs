@@ -209,7 +209,9 @@ impl<'a, 'b> Parser<'a, 'b> {
             if is_selector {
                 let op_tok = self.bump()?;
                 let field_tok = self.curr()?;
-                if field_tok.kind != TokenKind::Ident {
+                if field_tok.kind != TokenKind::Ident
+                    && !(op_tok.kind == TokenKind::Arrow && field_tok.kind == TokenKind::Star)
+                {
                     break;
                 }
                 let field_tok = self.bump()?;
@@ -851,6 +853,15 @@ mod tests {
     }
 
     #[test]
+    fn selector_deref_expr_on_assignment_rhs() {
+        let parsed = crate::parse("lv_name = lr_row->*-name.");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::SelectorExpr), 2);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
+    }
+
+    #[test]
     fn constructor_expr_inside_inline_data() {
         let parsed = crate::parse("DATA(lo_obj) = NEW zcl_demo( ).");
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
@@ -866,8 +877,16 @@ mod tests {
         );
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
         let root = parsed.file.root();
-        assert_eq!(parsed.file.count_kind(root, SyntaxKind::CharStringTemplate), 1);
-        assert_eq!(parsed.file.count_kind(root, SyntaxKind::TemplateInterpolation), 3);
+        assert_eq!(
+            parsed.file.count_kind(root, SyntaxKind::CharStringTemplate),
+            1
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::TemplateInterpolation),
+            3
+        );
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::SelectorExpr), 2);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::CallExpr), 2);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
@@ -878,8 +897,16 @@ mod tests {
         let parsed = crate::parse("rv_text = |prefix { |{ mv_inner }| } suffix|.");
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
         let root = parsed.file.root();
-        assert_eq!(parsed.file.count_kind(root, SyntaxKind::CharStringTemplate), 2);
-        assert_eq!(parsed.file.count_kind(root, SyntaxKind::TemplateInterpolation), 2);
+        assert_eq!(
+            parsed.file.count_kind(root, SyntaxKind::CharStringTemplate),
+            2
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::TemplateInterpolation),
+            2
+        );
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
     }
 }
