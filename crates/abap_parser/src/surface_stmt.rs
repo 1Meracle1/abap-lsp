@@ -6,7 +6,7 @@ use crate::block_helpers::{
     error_token_children, is_keyword, next_after_unterminated_scan, parse_body_until_keywords,
     parse_header_until_period, recover_skip_after_keyword, skip_trivia,
 };
-use crate::expr::parse_arithmetic_expr;
+use crate::expr::{parse_arithmetic_expr, parse_logical_expr};
 use crate::stmt_period::{
     StmtPeriodScan, is_definite_stmt_lead_keyword, scan_until_statement_period, token_begins_line,
     unterminated_err_end,
@@ -1283,6 +1283,26 @@ fn push_expr_child(
     ));
 }
 
+fn push_logical_expr_child(
+    b: &mut SyntaxTreeBuilder,
+    children: &mut Vec<NodeId>,
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    end_exclusive: usize,
+    prev_before_first: Option<&Token>,
+) {
+    if start >= end_exclusive {
+        return;
+    }
+    children.push(parse_logical_expr(
+        b,
+        source,
+        &tokens[start..end_exclusive],
+        prev_before_first,
+    ));
+}
+
 fn scan_until_clause(
     tokens: &[Token],
     start: usize,
@@ -1350,6 +1370,32 @@ where
 {
     let expr_end = scan_until_clause(tokens, expr_start, end_exclusive, clause_starts);
     push_expr_child(
+        b,
+        children,
+        source,
+        tokens,
+        expr_start,
+        expr_end,
+        prev_before_first,
+    );
+    expr_end
+}
+
+fn scan_and_push_logical_expr_clause<F>(
+    b: &mut SyntaxTreeBuilder,
+    children: &mut Vec<NodeId>,
+    source: &str,
+    tokens: &[Token],
+    expr_start: usize,
+    end_exclusive: usize,
+    prev_before_first: Option<&Token>,
+    clause_starts: &F,
+) -> usize
+where
+    F: Fn(&[Token], usize) -> bool,
+{
+    let expr_end = scan_until_clause(tokens, expr_start, end_exclusive, clause_starts);
+    push_logical_expr_child(
         b,
         children,
         source,
@@ -1817,6 +1863,34 @@ fn modify_clause_starts(source: &str, tokens: &[Token], idx: usize) -> bool {
             || is_keyword(source, token, "index")
             || is_keyword(source, token, "transporting")
             || is_keyword(source, token, "where"))
+}
+
+fn delete_clause_starts(source: &str, tokens: &[Token], idx: usize) -> bool {
+    let Some(token) = tokens.get(idx) else {
+        return false;
+    };
+    token.kind == TokenKind::Ident
+        && (is_keyword(source, token, "from")
+            || is_keyword(source, token, "where")
+            || is_keyword(source, token, "index")
+            || is_keyword(source, token, "using")
+            || is_keyword(source, token, "comparing"))
+}
+
+fn delete_stmt_kind(source: &str, tokens: &[Token], start: usize, period_i: usize) -> SyntaxKind {
+    let Some(from_idx) = find_top_level_keyword_index(source, tokens, start, period_i, "from")
+    else {
+        return SyntaxKind::DeleteStmt;
+    };
+    let table_idx = skip_trivia(tokens, from_idx + 1);
+    if tokens
+        .get(table_idx)
+        .is_some_and(|token| is_keyword(source, token, "table"))
+    {
+        SyntaxKind::DeleteDbTableStmt
+    } else {
+        SyntaxKind::DeleteStmt
+    }
 }
 
 fn scan_read_table_key_value_end(
@@ -2982,6 +3056,153 @@ pub fn try_parse_modify_stmt(
     ))
 }
 
+pub fn try_parse_delete_stmt(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    errors: &mut Vec<crate::ParseError>,
+) -> Option<(NodeId, usize)> {
+    let delete_tok = tokens.get(idx)?;
+    if !is_keyword(source, delete_tok, "delete") {
+        return None;
+    }
+    Some(parse_stmt_with_period_scan(
+        b,
+        source,
+        tokens,
+        idx,
+        idx + 1,
+        delete_tok,
+        "syntax error: expected '.' after DELETE statement",
+        errors,
+        |_, end_exclusive| end_exclusive,
+        |b, period_i, _errors| {
+            let clause_starts =
+                |tokens: &[Token], idx: usize| delete_clause_starts(source, tokens, idx);
+            let stmt_kind = delete_stmt_kind(source, tokens, idx + 1, period_i);
+            let mut children = Vec::with_capacity(period_i - idx + 1);
+            children.push(token_leaf(b, delete_tok));
+
+            let mut i = idx + 1;
+            if tokens
+                .get(i)
+                .is_some_and(|token| is_keyword(source, token, "adjacent"))
+                && tokens
+                    .get(i + 1)
+                    .is_some_and(|token| is_keyword(source, token, "duplicates"))
+            {
+                children.push(token_leaf(b, &tokens[i]));
+                children.push(token_leaf(b, &tokens[i + 1]));
+                i += 2;
+            } else {
+                i = scan_and_push_expr_clause(
+                    b,
+                    &mut children,
+                    source,
+                    tokens,
+                    i,
+                    period_i,
+                    Some(delete_tok),
+                    &clause_starts,
+                );
+            }
+
+            while i < period_i {
+                let token = &tokens[i];
+                if is_keyword(source, token, "from") {
+                    children.push(token_leaf(b, token));
+                    i += 1;
+                    if tokens
+                        .get(i)
+                        .is_some_and(|next| is_keyword(source, next, "table"))
+                    {
+                        children.push(token_leaf(b, &tokens[i]));
+                        i += 1;
+                    }
+                    i = scan_and_push_expr_clause(
+                        b,
+                        &mut children,
+                        source,
+                        tokens,
+                        i,
+                        period_i,
+                        Some(token),
+                        &clause_starts,
+                    );
+                    continue;
+                }
+                if is_keyword(source, token, "where") {
+                    children.push(token_leaf(b, token));
+                    i = scan_and_push_logical_expr_clause(
+                        b,
+                        &mut children,
+                        source,
+                        tokens,
+                        i + 1,
+                        period_i,
+                        Some(token),
+                        &clause_starts,
+                    );
+                    continue;
+                }
+                if is_keyword(source, token, "index") {
+                    children.push(token_leaf(b, token));
+                    i = scan_and_push_expr_clause(
+                        b,
+                        &mut children,
+                        source,
+                        tokens,
+                        i + 1,
+                        period_i,
+                        Some(token),
+                        &clause_starts,
+                    );
+                    continue;
+                }
+                if is_keyword(source, token, "using")
+                    && tokens
+                        .get(i + 1)
+                        .is_some_and(|next| is_keyword(source, next, "key"))
+                {
+                    children.push(token_leaf(b, token));
+                    children.push(token_leaf(b, &tokens[i + 1]));
+                    i = scan_and_push_expr_clause(
+                        b,
+                        &mut children,
+                        source,
+                        tokens,
+                        i + 2,
+                        period_i,
+                        Some(&tokens[i + 1]),
+                        &clause_starts,
+                    );
+                    continue;
+                }
+                if is_keyword(source, token, "comparing") {
+                    children.push(token_leaf(b, token));
+                    i += 1;
+                    while i < period_i && !clause_starts(tokens, i) {
+                        children.push(token_leaf(b, &tokens[i]));
+                        i += 1;
+                    }
+                    continue;
+                }
+                children.push(token_leaf(b, token));
+                i += 1;
+            }
+
+            children.push(token_leaf(b, &tokens[period_i]));
+            let node = b.branch(
+                stmt_kind,
+                delete_tok.range.start..tokens[period_i].range.end,
+                &children,
+            );
+            (node, period_i + 1)
+        },
+    ))
+}
+
 pub fn try_parse_assign_keyword_stmt(
     b: &mut SyntaxTreeBuilder,
     source: &str,
@@ -3751,6 +3972,48 @@ END-OF-PAGE.\nWRITE 'e'.",
                 .count_kind(parsed.file.root(), SyntaxKind::ModifyStmt),
             1
         );
+    }
+
+    #[test]
+    fn parses_delete_table_where_and_index_operands_as_ast_children() {
+        let parsed = crate::parse(
+            "DELETE lt_trans_del WHERE status_trn <> /sttp/cl_dm_constants=>gcs_stat_trn-deleted.\nDELETE lt_pay_header INDEX lv_index_hdr.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::DeleteStmt),
+            2
+        );
+        let stmt = parsed
+            .file
+            .find_first_kind(parsed.file.root(), SyntaxKind::DeleteStmt)
+            .expect("delete stmt");
+        assert!(parsed.file.count_kind(stmt, SyntaxKind::BinaryExpr) >= 1);
+        assert!(parsed.file.count_kind(stmt, SyntaxKind::SelectorExpr) >= 1);
+    }
+
+    #[test]
+    fn parses_delete_adjacent_duplicates_from_clause() {
+        let parsed = crate::parse("DELETE ADJACENT DUPLICATES FROM lt_gcp COMPARING gcp.");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let stmt = parsed
+            .file
+            .find_first_kind(parsed.file.root(), SyntaxKind::DeleteStmt)
+            .expect("delete stmt");
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::TemplateExpr), 1);
+    }
+
+    #[test]
+    fn parses_delete_from_table_clause_with_namespaced_dbtab() {
+        let parsed = crate::parse("DELETE /sttp/bup_adr FROM TABLE lt_bupa_adr.");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let stmt = parsed
+            .file
+            .find_first_kind(parsed.file.root(), SyntaxKind::DeleteDbTableStmt)
+            .expect("delete stmt");
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::TemplateExpr), 2);
     }
 
     #[test]

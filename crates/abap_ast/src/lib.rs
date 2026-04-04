@@ -212,6 +212,10 @@ pub enum SyntaxKind {
     AppendStmt,
     /// `MODIFY ... FROM ... .`
     ModifyStmt,
+    /// `DELETE itab ... .` and `DELETE ADJACENT DUPLICATES FROM itab ... .`
+    DeleteStmt,
+    /// `DELETE dbtab FROM TABLE itab .`
+    DeleteDbTableStmt,
     /// `ASSERT ... .`
     AssertStmt,
     /// `CHECK ... .`
@@ -348,6 +352,8 @@ impl SyntaxKind {
             Self::SqlParenGroup => "SqlParenGroup",
             Self::AppendStmt => "AppendStmt",
             Self::ModifyStmt => "ModifyStmt",
+            Self::DeleteStmt => "DeleteInternalTableStmt",
+            Self::DeleteDbTableStmt => "DeleteDbTableFromTableStmt",
             Self::AssertStmt => "AssertStmt",
             Self::CheckStmt => "CheckStmt",
             Self::PerformStmt => "PerformStmt",
