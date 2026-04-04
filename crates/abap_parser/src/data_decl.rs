@@ -106,7 +106,7 @@ fn try_parse_structured_data_decl(
             i,
             SyntaxKind::DataTypedClause,
             false,
-            false,
+            has_colon,
         )
         .or_else(|| {
             parse_begin_of_decl_clause(
@@ -116,7 +116,7 @@ fn try_parse_structured_data_decl(
                 i,
                 SyntaxKind::DataTypedClause,
                 false,
-                false,
+                has_colon,
             )
         })?;
         clause_nodes.push(clause);
@@ -947,6 +947,15 @@ mod tests {
         let file = tree_ok(src);
         assert_eq!(file.count_kind(file.root(), SyntaxKind::DataDecl), 1);
         assert_eq!(file.count_kind(file.root(), SyntaxKind::DataTypedClause), 2);
+    }
+
+    #[test]
+    fn chained_data_accepts_value_clause() {
+        let src = "DATA: lv_a TYPE i, lv_b TYPE int2 VALUE 1.";
+        let file = tree_ok(src);
+        assert_eq!(file.count_kind(file.root(), SyntaxKind::DataDecl), 1);
+        assert_eq!(file.count_kind(file.root(), SyntaxKind::DataTypedClause), 2);
+        assert_eq!(file.count_kind(file.root(), SyntaxKind::ValueClause), 1);
     }
 
     #[test]

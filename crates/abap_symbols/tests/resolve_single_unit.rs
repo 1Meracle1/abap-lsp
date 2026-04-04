@@ -149,6 +149,41 @@ ENDFORM.
 }
 
 #[test]
+fn chained_data_with_value_clause_declares_all_symbols_without_unresolved_diagnostics() {
+    let src = r#"
+FORM some_form.
+  DATA: lv_curr_node TYPE string,
+        lv_curr_node_nopref TYPE string,
+        lv_value TYPE string,
+        lv_counter TYPE int2 VALUE 1.
+
+  lv_curr_node = lv_value.
+  lv_curr_node_nopref = lv_curr_node.
+  lv_counter = lv_counter + 1.
+ENDFORM.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///chained_data_value_clause.abap", src, &parsed);
+
+    for name in ["lv_curr_node", "lv_curr_node_nopref", "lv_value", "lv_counter"] {
+        assert!(
+            unit.symbols.iter().any(|symbol| {
+                symbol.kind == abap_symbols::SymbolKind::Variable && symbol.name.as_ref() == name
+            }),
+            "expected variable symbol for `{name}`, symbols={:?}",
+            unit.symbols
+        );
+        assert!(
+            !unit.diagnostics.iter().any(|diag| {
+                diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains(name)
+            }),
+            "unexpected unresolved diagnostic for `{name}`: {:?}",
+            unit.diagnostics
+        );
+    }
+}
+
+#[test]
 fn collects_type_member_reference_inside_table_wrapper_type() {
     let src = r#"
 INTERFACE zif_demo.
