@@ -37,6 +37,7 @@ pub enum Visibility {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClassMemberKind {
+    Attribute,
     Method,
 }
 

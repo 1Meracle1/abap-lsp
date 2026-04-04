@@ -905,6 +905,9 @@ impl<'a> Collector<'a> {
                         self.class_members.push(member);
                     }
                 }
+                SyntaxKind::DataDecl | SyntaxKind::StaticsDecl | SyntaxKind::ConstantsDecl => {
+                    self.collect_class_attribute_members(child, class_symbol, visibility);
+                }
                 _ => {
                     for nested in self.file.children(child).rev() {
                         stack.push(nested);
@@ -990,6 +993,91 @@ impl<'a> Collector<'a> {
             is_static,
             decl_range: name_tok.range.clone(),
             signature: Arc::<str>::from(self.render_statement_signature(tokens)),
+            parameters: Vec::new(),
+        })
+    }
+
+    fn collect_class_attribute_members(
+        &mut self,
+        node: NodeId,
+        class_symbol: SymbolId,
+        visibility: Visibility,
+    ) {
+        let is_static = self.class_attribute_decl_is_static(node);
+        let signature = Arc::<str>::from(self.render_statement_signature(&self.simple_stmt_tokens(node)));
+        for child in self.file.children(node) {
+            match self.file.kind(child) {
+                SyntaxKind::DataTypedClause | SyntaxKind::ConstantClause | SyntaxKind::StructuredDecl => {
+                    if let Some(member) = self.class_attribute_member_from_clause(
+                        child,
+                        class_symbol,
+                        visibility,
+                        is_static,
+                        Arc::clone(&signature),
+                    ) {
+                        self.class_members.push(member);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn class_attribute_decl_is_static(&self, node: NodeId) -> bool {
+        let tokens = self.significant_stmt_tokens(node);
+        let Some(first) = tokens.first().copied() else {
+            return false;
+        };
+        if self.token_matches_keyword(first, "constants") || self.token_matches_keyword(first, "statics")
+        {
+            return true;
+        }
+        let Some(second) = tokens.get(1).copied() else {
+            return false;
+        };
+        let Some(third) = tokens.get(2).copied() else {
+            return false;
+        };
+        self.token_matches_keyword(first, "class")
+            && second.kind == TokenKind::Minus
+            && self.token_matches_keyword(third, "data")
+    }
+
+    fn class_attribute_member_from_clause(
+        &self,
+        node: NodeId,
+        class_symbol: SymbolId,
+        visibility: Visibility,
+        is_static: bool,
+        signature: Arc<str>,
+    ) -> Option<ClassMemberData> {
+        let (name, decl_range) = match self.file.kind(node) {
+            SyntaxKind::StructuredDecl => {
+                let name_node = self
+                    .file
+                    .children(node)
+                    .filter(|&child| self.file.kind(child) == SyntaxKind::Token)
+                    .nth(2)?;
+                let (name, _) = self.node_name(name_node)?;
+                (name, self.structured_decl_name_range(node)?)
+            }
+            SyntaxKind::DataTypedClause | SyntaxKind::ConstantClause => {
+                let name_node = self
+                    .file
+                    .children(node)
+                    .find(|&child| self.file.kind(child) == SyntaxKind::DataDeclName)?;
+                self.node_name(name_node)?
+            }
+            _ => return None,
+        };
+        Some(ClassMemberData {
+            class_symbol,
+            name,
+            kind: ClassMemberKind::Attribute,
+            visibility,
+            is_static,
+            decl_range,
+            signature,
             parameters: Vec::new(),
         })
     }

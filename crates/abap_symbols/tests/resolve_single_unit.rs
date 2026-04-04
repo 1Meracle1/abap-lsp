@@ -1388,6 +1388,60 @@ ENDCLASS.
 }
 
 #[test]
+fn resolves_public_class_data_static_members() {
+    let src = r#"
+CLASS zcl_demo DEFINITION.
+  PUBLIC SECTION.
+    CLASS-DATA gv_value TYPE i.
+ENDCLASS.
+
+CLASS zcl_demo IMPLEMENTATION.
+ENDCLASS.
+
+START-OF-SELECTION.
+  DATA lv_value TYPE i.
+  lv_value = zcl_demo=>gv_value.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///class_data_static_member.abap", src, &parsed);
+
+    let class_symbol = unit
+        .symbols
+        .iter()
+        .find(|symbol| {
+            symbol.kind == abap_symbols::SymbolKind::Class && symbol.name.as_ref() == "zcl_demo"
+        })
+        .expect("class symbol");
+    let member = unit
+        .class_member(class_symbol.id, "gv_value")
+        .expect("class attribute metadata");
+    assert_eq!(member.kind, abap_symbols::ClassMemberKind::Attribute);
+    assert_eq!(member.visibility, abap_symbols::Visibility::Public);
+    assert!(member.is_static);
+    assert!(member.signature.contains("CLASS-DATA gv_value TYPE i"));
+
+    assert!(
+        unit.field_accesses.iter().any(|access| {
+            access.base_namespace == Namespace::Type
+                && access.base_name.as_ref() == "zcl_demo"
+                && access
+                    .field_path
+                    .iter()
+                    .any(|segment| segment.name.as_ref() == "gv_value")
+        }),
+        "expected static class-data selector metadata, accesses={:?}",
+        unit.field_accesses
+    );
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnknownField && diag.message.contains("gv_value")
+        }),
+        "unexpected class-data diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn resolves_class_definition_members_inside_implementation_methods() {
     let src = r#"
 CLASS zcl_ast_node DEFINITION ABSTRACT.

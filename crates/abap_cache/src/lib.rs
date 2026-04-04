@@ -27,6 +27,7 @@ pub struct AnalysisSnapshot {
 pub enum HoveredComponentKind {
     Scalar,
     Structured { structure_name: Arc<str> },
+    Attribute,
     Method,
 }
 
@@ -196,7 +197,7 @@ impl AnalysisSnapshot {
                 range: access.field_path[segment_index].range.clone(),
                 declared_type: None,
                 declaration: Some(member.signature.to_string()),
-                kind: HoveredComponentKind::Method,
+                kind: hovered_component_kind_for_class_member(member),
                 is_static_method: member.is_static,
                 in_type_position: access.in_type_position,
             });
@@ -1054,6 +1055,7 @@ fn markdown_lines_for_class_member(unit: &UnitAnalysis, member: &ClassMemberData
         "instance"
     };
     let kind = match member.kind {
+        ClassMemberKind::Attribute => "attribute",
         ClassMemberKind::Method => "method",
     };
     vec![
@@ -2066,6 +2068,13 @@ fn collect_class_methods_in_hierarchy<'a>(
     out
 }
 
+fn hovered_component_kind_for_class_member(member: &ClassMemberData) -> HoveredComponentKind {
+    match member.kind {
+        ClassMemberKind::Attribute => HoveredComponentKind::Attribute,
+        ClassMemberKind::Method => HoveredComponentKind::Method,
+    }
+}
+
 fn resolve_class_selector_member<'a>(
     snapshot: &'a AnalysisSnapshot,
     access: &abap_symbols::FieldAccess,
@@ -2084,7 +2093,7 @@ fn resolve_class_selector_member<'a>(
         class_symbol_id,
         access.field_path[segment_index].name.as_ref(),
     )?;
-    if member.kind != ClassMemberKind::Method || (requires_static && !member.is_static) {
+    if requires_static && !member.is_static {
         return None;
     }
     class_member_visible_to(

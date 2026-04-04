@@ -15,6 +15,7 @@ fn assert_kind_count(src: &str, kind: SyntaxKind, expected: usize) {
 fn ports_legacy_data_and_statics_shapes() {
     assert_kind_count("DATA(lv_value) = 1.", SyntaxKind::DataInlineDecl, 1);
     assert_kind_count("DATA lv_value TYPE i.", SyntaxKind::DataDecl, 1);
+    assert_kind_count("CLASS-DATA gv_value TYPE i.", SyntaxKind::DataDecl, 1);
     assert_kind_count(
         "STATICS sv_last_tzone TYPE tznzone.",
         SyntaxKind::StaticsDecl,

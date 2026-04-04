@@ -192,6 +192,7 @@ fn collect_pending(
 
     for member in &unit.class_members {
         let token_type = match member.kind {
+            abap_symbols::ClassMemberKind::Attribute => ty_ix.property,
             abap_symbols::ClassMemberKind::Method => ty_ix.method,
         };
         push_pending(
@@ -231,6 +232,7 @@ fn collect_pending(
                 .map(|component| match component.kind {
                     abap_cache::HoveredComponentKind::Scalar => ty_ix.property,
                     abap_cache::HoveredComponentKind::Structured { .. } => ty_ix.property,
+                    abap_cache::HoveredComponentKind::Attribute => ty_ix.property,
                     abap_cache::HoveredComponentKind::Method => ty_ix.method,
                 })
                 .unwrap_or(ty_ix.property);

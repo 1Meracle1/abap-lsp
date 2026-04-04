@@ -78,6 +78,27 @@ pub fn try_parse_data_decl(
     Some((node, next))
 }
 
+pub fn try_parse_class_data_decl(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    _errors: &mut Vec<crate::ParseError>,
+) -> Option<(NodeId, usize)> {
+    let kw_end = match_hyphenated_keyword(source, tokens, idx, &["class", "data"])?;
+    try_parse_chained_decl_after_keyword_span(
+        b,
+        source,
+        tokens,
+        idx,
+        kw_end,
+        SyntaxKind::DataDecl,
+        SyntaxKind::DataTypedClause,
+        false,
+        false,
+    )
+}
+
 fn try_parse_structured_data_decl(
     b: &mut SyntaxTreeBuilder,
     source: &str,
@@ -784,8 +805,31 @@ fn try_parse_chained_decl(
     if !is_keyword(source, kw_tok, keyword) {
         return None;
     }
+    try_parse_chained_decl_after_keyword_span(
+        b,
+        source,
+        tokens,
+        idx,
+        idx + 1,
+        decl_kind,
+        clause_kind,
+        allow_like,
+        allow_value,
+    )
+}
 
-    let mut i = idx + 1;
+fn try_parse_chained_decl_after_keyword_span(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    kw_end: usize,
+    decl_kind: SyntaxKind,
+    clause_kind: SyntaxKind,
+    allow_like: bool,
+    allow_value: bool,
+) -> Option<(NodeId, usize)> {
+    let mut i = kw_end;
     let has_colon = match tokens.get(i).map(|t| t.kind) {
         Some(TokenKind::Colon) => {
             i += 1;
@@ -817,11 +861,14 @@ fn try_parse_chained_decl(
         match next.kind {
             TokenKind::Comma if has_colon => i += 1,
             TokenKind::Period => {
-                let mut children = Vec::with_capacity(clause_nodes.len() + 2);
-                children.push(token_leaf(b, kw_tok));
+                let mut children =
+                    Vec::with_capacity(clause_nodes.len() + (kw_end - idx) + 1);
+                for token in &tokens[idx..kw_end] {
+                    children.push(token_leaf(b, token));
+                }
                 children.extend(clause_nodes);
                 children.push(token_leaf(b, next));
-                let node = b.branch(decl_kind, kw_tok.range.start..next.range.end, &children);
+                let node = b.branch(decl_kind, tokens[idx].range.start..next.range.end, &children);
                 return Some((node, i + 1));
             }
             _ => return None,

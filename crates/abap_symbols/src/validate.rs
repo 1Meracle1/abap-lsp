@@ -9,7 +9,7 @@ use crate::def_map::{
 use crate::ids::{ScopeId, SymbolHandle, SymbolId};
 use crate::project::ProjectAnalysis;
 use crate::scope::{Namespace, ScopeKind};
-use crate::{ClassMemberKind, SymbolKind, Visibility};
+use crate::{SymbolKind, Visibility};
 
 fn collect_global_names(project: &ProjectAnalysis) -> HashMap<Arc<str>, HashSet<Namespace>> {
     let mut out: HashMap<Arc<str>, HashSet<Namespace>> = HashMap::new();
@@ -617,7 +617,6 @@ pub fn validate_project(project: &mut ProjectAnalysis) {
                         break;
                     };
                     if !member.is_static
-                        || member.kind != ClassMemberKind::Method
                         || !class_member_visible_to(
                             project,
                             unit,
@@ -674,8 +673,7 @@ pub fn validate_project(project: &mut ProjectAnalysis) {
                         });
                         break;
                     };
-                    if member.kind != ClassMemberKind::Method
-                        || (*requires_static && !member.is_static)
+                    if (*requires_static && !member.is_static)
                         || !class_member_visible_to(
                             project,
                             unit,

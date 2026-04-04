@@ -330,6 +330,17 @@ fn structured_field_hover(
         abap_cache::HoveredComponentKind::Structured { structure_name } => {
             lines.push(format!("structured component of `{}`", structure_name))
         }
+        abap_cache::HoveredComponentKind::Attribute => {
+            if let Some(declaration) = &component.declaration {
+                lines[0] = format!("```abap\n{}\n```", declaration);
+            }
+            let storage = if component.is_static_method {
+                "static"
+            } else {
+                "instance"
+            };
+            lines.push(format!("{storage} attribute of `{}`", component.base_name));
+        }
         abap_cache::HoveredComponentKind::Method => {
             if let Some(declaration) = &component.declaration {
                 lines[0] = format!("```abap\n{}\n```", declaration);
@@ -388,7 +399,8 @@ pub fn completion(state: &ServerState, params: &CompletionParams) -> Option<Comp
                 label: item.name.to_string(),
                 kind: Some(match item.kind {
                     abap_cache::HoveredComponentKind::Method => CompletionItemKind::METHOD,
-                    abap_cache::HoveredComponentKind::Scalar
+                    abap_cache::HoveredComponentKind::Attribute
+                    | abap_cache::HoveredComponentKind::Scalar
                     | abap_cache::HoveredComponentKind::Structured { .. } => {
                         CompletionItemKind::FIELD
                     }
@@ -525,6 +537,13 @@ fn completion_item_metadata(
                 Some(type_ref) => format!("{type_ref} -> {structure_name}"),
                 None => format!("structured component -> {structure_name}"),
             })
+        }
+        abap_cache::HoveredComponentKind::Attribute => {
+            if let Some(declaration) = &item.declaration {
+                lines[0] = format!("```abap\n{}\n```", declaration);
+            }
+            lines.push("class attribute".to_string());
+            item.declaration.clone()
         }
         abap_cache::HoveredComponentKind::Method => {
             if let Some(declaration) = &item.declaration {
