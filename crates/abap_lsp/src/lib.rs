@@ -2004,6 +2004,51 @@ START-OF-SELECTION.
     }
 
     #[test]
+    fn builtin_to_lower_hover_uses_shared_builtin_signature() {
+        let state = ServerState::default();
+        let text = "DATA text TYPE string.\nDATA lower TYPE string.\nlower = to_lower( text ).";
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///hover_builtin_to_lower.abap").expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: text.to_string(),
+                },
+            },
+        );
+
+        let routine_line = text
+            .lines()
+            .enumerate()
+            .find(|(_, line)| line.contains("to_lower"))
+            .expect("routine line");
+        let routine_col = routine_line.1.find("to_lower").expect("routine col") as u32 + 1;
+        let routine_hover = hover(
+            &state,
+            &HoverParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///hover_builtin_to_lower.abap").expect("uri"),
+                    },
+                    position: Position {
+                        line: routine_line.0 as u32,
+                        character: routine_col,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+            },
+        )
+        .expect("routine hover");
+        let HoverContents::Markup(routine_markup) = routine_hover.contents else {
+            panic!("expected markdown hover");
+        };
+        assert!(routine_markup.value.contains("to_lower( arg )"));
+        assert!(routine_markup.value.contains("returns `string`"));
+    }
+
+    #[test]
     fn hover_on_event_block_of_returns_full_event_header() {
         let state = ServerState::default();
         publish_open_document(

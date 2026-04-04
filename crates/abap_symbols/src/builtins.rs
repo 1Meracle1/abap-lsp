@@ -245,6 +245,13 @@ pub const BUILTIN_ROUTINES: &[BuiltinRoutineSpec] = &[
         description: "Number of characters in a text value.",
     },
     BuiltinRoutineSpec {
+        name: "to_lower",
+        params: ARG_STRING_PARAMS,
+        hover_params: &["arg"],
+        return_type: "string",
+        description: "Returns a text value converted to lowercase.",
+    },
+    BuiltinRoutineSpec {
         name: "xstrlen",
         params: ARG_XSTRING_PARAMS,
         hover_params: &["arg"],

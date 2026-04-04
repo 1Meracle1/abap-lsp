@@ -3117,6 +3117,23 @@ fn reports_builtin_routine_named_argument_passing_as_invalid() {
 }
 
 #[test]
+fn resolves_to_lower_as_builtin_routine() {
+    let src = "DATA text TYPE string. DATA lower TYPE string. lower = to_lower( text ).";
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///builtin_to_lower.abap", src, &parsed);
+
+    assert!(unit.references.iter().any(|reference| {
+        reference.kind == ReferenceKind::RoutineCall
+            && reference.namespace == Namespace::Routine
+            && reference.name.as_ref() == "to_lower"
+            && matches!(reference.resolution, Some(Resolution::BuiltinRoutine))
+    }));
+    assert!(!unit.diagnostics.iter().any(|diag| {
+        diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains("to_lower")
+    }));
+}
+
+#[test]
 fn substring_access_uses_value_namespace() {
     let src = "\
 DATA ls_time TYPE string.\n\
