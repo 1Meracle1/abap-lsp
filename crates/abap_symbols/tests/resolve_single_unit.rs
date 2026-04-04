@@ -987,6 +987,100 @@ lv_text = lo_expr->to_string( ).
 }
 
 #[test]
+fn resolves_me_as_current_instance_in_instance_methods() {
+    let src = r#"
+CLASS zcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS send_notification
+      EXPORTING ev_response_string TYPE string.
+    METHODS exec.
+  PRIVATE SECTION.
+    DATA mv_state TYPE string.
+ENDCLASS.
+
+CLASS zcl_demo IMPLEMENTATION.
+  METHOD send_notification.
+    ev_response_string = mv_state.
+  ENDMETHOD.
+
+  METHOD exec.
+    CALL METHOD me->send_notification
+      IMPORTING
+        ev_response_string = DATA(lv_response).
+    mv_state = lv_response.
+  ENDMETHOD.
+ENDCLASS.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///instance_me.abap", src, &parsed);
+
+    assert!(unit.references.iter().any(|reference| {
+        reference.namespace == Namespace::Value
+            && reference.name.as_ref() == "me"
+            && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+    }));
+    assert!(unit.field_accesses.iter().any(|access| {
+        access.base_namespace == Namespace::Value
+            && access.base_name.as_ref() == "me"
+            && access
+                .field_path
+                .iter()
+                .any(|segment| segment.name.as_ref() == "send_notification")
+    }));
+
+    let lv_response = unit
+        .symbols
+        .iter()
+        .find(|symbol| {
+            symbol.kind == abap_symbols::SymbolKind::Variable
+                && symbol.name.as_ref() == "lv_response"
+        })
+        .expect("inline IMPORTING target");
+    let declared_type = lv_response
+        .declared_type
+        .as_ref()
+        .expect("inline target declared type");
+    assert_eq!(declared_type.namespace, Namespace::Type);
+    assert_eq!(declared_type.base_name.as_ref(), "string");
+    assert!(declared_type.field_path.is_empty());
+
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            matches!(
+                diag.kind,
+                DiagnosticKind::UnresolvedReference | DiagnosticKind::UnknownField
+            ) && (diag.message.contains("me")
+                || diag.message.contains("send_notification")
+                || diag.message.contains("lv_response"))
+        }),
+        "unexpected diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn does_not_resolve_me_in_static_methods() {
+    let src = r#"
+CLASS zcl_demo DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS exec.
+ENDCLASS.
+
+CLASS zcl_demo IMPLEMENTATION.
+  METHOD exec.
+    me->exec( ).
+  ENDMETHOD.
+ENDCLASS.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///static_me.abap", src, &parsed);
+
+    assert!(unit.diagnostics.iter().any(|diag| {
+        diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains("me")
+    }));
+}
+
+#[test]
 fn ignores_trailing_method_modifier_in_returning_type_recovery() {
     let src = r#"
 CLASS zcl_ast_node DEFINITION ABSTRACT.

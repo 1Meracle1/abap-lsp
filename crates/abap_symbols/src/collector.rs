@@ -740,7 +740,12 @@ impl<'a> Collector<'a> {
             self.walk_children(node, scope);
             return;
         };
-        let owner = self.declare_plain_symbol(scope, Arc::clone(&name), SymbolKind::Method, range);
+        let owner = self.declare_plain_symbol(
+            scope,
+            Arc::clone(&name),
+            SymbolKind::Method,
+            range.clone(),
+        );
         let child_scope = self.push_scope(
             ScopeKind::Method,
             self.file.range(node),
@@ -754,6 +759,7 @@ impl<'a> Collector<'a> {
                 child_scope,
                 scope,
             );
+            self.declare_implicit_me_symbol(class_symbol, name.as_ref(), child_scope, &range);
         }
         for child in self.file.children(node) {
             self.walk_node(child, child_scope);
@@ -925,6 +931,41 @@ impl<'a> Collector<'a> {
                 declared_type: param.declared_type.clone(),
             })
             .collect()
+    }
+
+    fn class_member(&self, class_symbol: SymbolId, member_name: &str) -> Option<&ClassMemberData> {
+        self.class_members.iter().find(|member| {
+            member.class_symbol == class_symbol && member.name.as_ref() == member_name
+        })
+    }
+
+    fn declare_implicit_me_symbol(
+        &mut self,
+        class_symbol: SymbolId,
+        method_name: &str,
+        method_scope: ScopeId,
+        fallback_range: &TextRange,
+    ) {
+        let Some(member) = self.class_member(class_symbol, method_name) else {
+            return;
+        };
+        if member.kind != ClassMemberKind::Method || member.is_static {
+            return;
+        }
+        let class_name = Arc::clone(&self.symbol(class_symbol).name);
+        self.declare_symbol(
+            method_scope,
+            Arc::<str>::from("me"),
+            SymbolKind::Variable,
+            fallback_range.clone(),
+            None,
+            Some(FieldTypeRefData {
+                namespace: Namespace::Type,
+                is_ref: true,
+                base_name: class_name,
+                field_path: Vec::new(),
+            }),
+        );
     }
 
     fn class_member_statement_kind(
