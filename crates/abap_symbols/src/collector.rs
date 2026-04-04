@@ -477,6 +477,7 @@ impl<'a> Collector<'a> {
             | SyntaxKind::AssignStmt => self.collect_expr(node, scope),
             SyntaxKind::AssignKeywordStmt => self.collect_assign_keyword_stmt(node, scope),
             SyntaxKind::FieldSymbolInlineDecl => self.walk_inline_field_symbol_decl(node, scope),
+            SyntaxKind::GetTimeStampStmt => self.collect_get_time_stamp_stmt(node, scope),
             SyntaxKind::UnparsedStmt
             | SyntaxKind::CallStmt
             | SyntaxKind::RaiseStmt
@@ -2371,6 +2372,33 @@ impl<'a> Collector<'a> {
     fn collect_generic_simple_stmt(&mut self, node: NodeId, scope: ScopeId) {
         let significant = self.significant_stmt_tokens(node);
         self.collect_token_expression_refs(&significant, scope, false);
+    }
+
+    fn collect_get_time_stamp_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        let mut significant = Vec::new();
+        let mut inline_target = None;
+        for child in self.file.children(node) {
+            match self.file.kind(child) {
+                SyntaxKind::Token => {
+                    if let Some(token) = self.token_for_node(child)
+                        && token.kind != TokenKind::Comment
+                    {
+                        significant.push(token);
+                    }
+                }
+                SyntaxKind::DataInlineDecl => inline_target = Some(child),
+                _ => self.walk_node(child, scope),
+            }
+        }
+
+        if let Some(inline_decl) = inline_target {
+            self.walk_inline_decl(inline_decl, scope);
+            return;
+        }
+
+        if significant.len() > 4 {
+            self.collect_token_expression_refs(&significant[4..], scope, true);
+        }
     }
 
     fn collect_methods_stmt(&mut self, node: NodeId, scope: ScopeId) {

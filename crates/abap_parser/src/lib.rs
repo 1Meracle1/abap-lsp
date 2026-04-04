@@ -210,6 +210,12 @@ pub(crate) fn parse_file_level_item(
     }
     if t.kind == TokenKind::Ident
         && let Some((node, next)) =
+            surface_stmt::try_parse_get_time_stamp_stmt(b, source, tokens, idx, errors)
+    {
+        return (node, next);
+    }
+    if t.kind == TokenKind::Ident
+        && let Some((node, next)) =
             surface_stmt::try_parse_assign_keyword_stmt(b, source, tokens, idx, errors)
     {
         return (node, next);

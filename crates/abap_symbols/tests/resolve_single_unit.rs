@@ -462,6 +462,93 @@ READ TABLE lt_trn INTO ls_trn INDEX 1.
 }
 
 #[test]
+fn resolves_get_time_stamp_field_target() {
+    let src = r#"
+DATA lv_current_ts TYPE string.
+
+GET TIME STAMP FIELD lv_current_ts.
+lv_current_ts = lv_current_ts.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///get_time_stamp_field.abap", src, &parsed);
+
+    let refs: Vec<_> = unit
+        .references
+        .iter()
+        .filter(|reference| {
+            reference.namespace == Namespace::Value
+                && reference.kind == ReferenceKind::Identifier
+                && reference.name.as_ref() == "lv_current_ts"
+        })
+        .collect();
+    assert!(
+        refs.len() >= 3,
+        "expected GET TIME STAMP target and body refs, got {refs:?}"
+    );
+    assert!(
+        refs.iter()
+            .all(|reference| matches!(reference.resolution, Some(Resolution::Symbol(_)))),
+        "expected GET TIME STAMP target to resolve, refs={:?} diagnostics={:?}",
+        unit.references,
+        unit.diagnostics
+    );
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference
+                && diag.message.contains("lv_current_ts")
+        }),
+        "unexpected GET TIME STAMP diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn resolves_get_time_stamp_inline_data_target() {
+    let src = r#"
+GET TIME STAMP FIELD DATA(lv_current_ts).
+lv_current_ts = lv_current_ts.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///get_time_stamp_inline.abap", src, &parsed);
+
+    let symbol = unit
+        .symbols
+        .iter()
+        .find(|symbol| {
+            symbol.kind == abap_symbols::SymbolKind::Variable
+                && symbol.name.as_ref() == "lv_current_ts"
+        })
+        .expect("inline GET TIME STAMP target");
+    assert_eq!(symbol.kind, abap_symbols::SymbolKind::Variable);
+
+    let refs: Vec<_> = unit
+        .references
+        .iter()
+        .filter(|reference| {
+            reference.namespace == Namespace::Value
+                && reference.kind == ReferenceKind::Identifier
+                && reference.name.as_ref() == "lv_current_ts"
+        })
+        .collect();
+    assert_eq!(refs.len(), 2, "expected body references, got {refs:?}");
+    assert!(
+        refs.iter()
+            .all(|reference| matches!(reference.resolution, Some(Resolution::Symbol(_)))),
+        "expected inline GET TIME STAMP refs to resolve, refs={:?} diagnostics={:?}",
+        unit.references,
+        unit.diagnostics
+    );
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference
+                && diag.message.contains("lv_current_ts")
+        }),
+        "unexpected inline GET TIME STAMP diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn resolves_concatenate_operands_and_selector_sources() {
     let src = r#"
 CLASS zcl_program DEFINITION.

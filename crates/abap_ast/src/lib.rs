@@ -170,6 +170,8 @@ pub enum SyntaxKind {
     EndAtStmt,
     /// `READ TABLE ... .`
     ReadTableStmt,
+    /// `GET TIME STAMP FIELD ... .`
+    GetTimeStampStmt,
     /// `WRITE ... .`
     WriteStmt,
     /// `CONCATENATE ... INTO ... .`
@@ -263,6 +265,7 @@ impl SyntaxKind {
             Self::RaiseStmt => "RaiseStmt",
             Self::EndAtStmt => "EndAtStmt",
             Self::ReadTableStmt => "ReadTableStmt",
+            Self::GetTimeStampStmt => "GetTimeStampStmt",
             Self::WriteStmt => "WriteStmt",
             Self::ConcatenateStmt => "ConcatenateStmt",
             Self::IsPredicate => "IsPredicate",

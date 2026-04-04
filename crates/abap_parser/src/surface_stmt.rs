@@ -400,6 +400,51 @@ fn try_parse_field_symbol_inline_decl(
     Some((node, next_idx + 1))
 }
 
+fn try_parse_data_inline_decl(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+) -> Option<(NodeId, usize)> {
+    let data_tok = tokens.get(idx)?;
+    if !is_keyword(source, data_tok, "data") {
+        return None;
+    }
+    let lparen = tokens.get(idx + 1)?;
+    if lparen.kind != TokenKind::LParen {
+        return None;
+    }
+    let (name, next_idx) = parse_inline_name(b, tokens, idx + 2)?;
+    let rparen = tokens.get(next_idx)?;
+    if rparen.kind != TokenKind::RParen {
+        return None;
+    }
+    if !inline_name_spacing_is_valid(tokens, idx + 1, idx + 2, next_idx) {
+        let mut children = Vec::with_capacity(next_idx - idx + 1);
+        for token in &tokens[idx..=next_idx] {
+            children.push(token_leaf(b, token));
+        }
+        return Some((
+            b.branch(
+                SyntaxKind::Error,
+                data_tok.range.start..rparen.range.end,
+                &children,
+            ),
+            next_idx + 1,
+        ));
+    }
+
+    let data_leaf = token_leaf(b, data_tok);
+    let lparen_leaf = token_leaf(b, lparen);
+    let rparen_leaf = token_leaf(b, rparen);
+    let node = b.branch(
+        SyntaxKind::DataInlineDecl,
+        data_tok.range.start..rparen.range.end,
+        &[data_leaf, lparen_leaf, name, rparen_leaf],
+    );
+    Some((node, next_idx + 1))
+}
+
 fn push_token_children(
     b: &mut SyntaxTreeBuilder,
     children: &mut Vec<NodeId>,
@@ -915,6 +960,94 @@ pub fn try_parse_endat_stmt(
         errors,
         "syntax error: expected '.' after ENDAT",
     )
+}
+
+pub fn try_parse_get_time_stamp_stmt(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    errors: &mut Vec<crate::ParseError>,
+) -> Option<(NodeId, usize)> {
+    let get_tok = tokens.get(idx)?;
+    if !is_keyword(source, get_tok, "get")
+        || !tokens
+            .get(idx + 1)
+            .is_some_and(|token| is_keyword(source, token, "time"))
+        || !tokens
+            .get(idx + 2)
+            .is_some_and(|token| is_keyword(source, token, "stamp"))
+        || !tokens
+            .get(idx + 3)
+            .is_some_and(|token| is_keyword(source, token, "field"))
+    {
+        return None;
+    }
+
+    match scan_until_statement_period(tokens, source, idx + 4) {
+        StmtPeriodScan::Found(period_i) => {
+            let mut children = Vec::with_capacity(period_i - idx + 1);
+            children.push(token_leaf(b, get_tok));
+            children.push(token_leaf(b, &tokens[idx + 1]));
+            children.push(token_leaf(b, &tokens[idx + 2]));
+            children.push(token_leaf(b, &tokens[idx + 3]));
+
+            let target_start = skip_trivia(tokens, idx + 4);
+            if target_start >= period_i {
+                errors.push(crate::ParseError {
+                    message: "syntax error: expected target after GET TIME STAMP FIELD".to_string(),
+                    range: get_tok.range.start..tokens[period_i].range.end,
+                });
+                let mut error_children = children;
+                error_children.push(token_leaf(b, &tokens[period_i]));
+                let node = b.branch(
+                    SyntaxKind::Error,
+                    get_tok.range.start..tokens[period_i].range.end,
+                    &error_children,
+                );
+                return Some((node, period_i + 1));
+            }
+
+            if let Some((inline_decl, next_idx)) =
+                try_parse_data_inline_decl(b, source, tokens, target_start)
+                && skip_trivia(tokens, next_idx) == period_i
+            {
+                children.push(inline_decl);
+            } else {
+                push_expr_child(
+                    b,
+                    &mut children,
+                    source,
+                    tokens,
+                    target_start,
+                    period_i,
+                    Some(&tokens[idx + 3]),
+                );
+            }
+
+            children.push(token_leaf(b, &tokens[period_i]));
+            let node = b.branch(
+                SyntaxKind::GetTimeStampStmt,
+                get_tok.range.start..tokens[period_i].range.end,
+                &children,
+            );
+            Some((node, period_i + 1))
+        }
+        StmtPeriodScan::Unterminated { end_exclusive } => {
+            let err_end = unterminated_err_end(tokens, end_exclusive, get_tok.range.end);
+            errors.push(crate::ParseError {
+                message: "syntax error: expected '.' after GET TIME STAMP FIELD statement"
+                    .to_string(),
+                range: get_tok.range.start..err_end,
+            });
+            let mut children = Vec::with_capacity(end_exclusive.saturating_sub(idx));
+            for t in &tokens[idx..end_exclusive] {
+                children.push(token_leaf(b, t));
+            }
+            let node = b.branch(SyntaxKind::Error, get_tok.range.start..err_end, &children);
+            Some((node, end_exclusive))
+        }
+    }
 }
 
 pub fn try_parse_call_like_stmt(
@@ -2064,6 +2197,29 @@ mod tests {
                 .count_kind(parsed.file.root(), SyntaxKind::EndAtStmt),
             1
         );
+    }
+
+    #[test]
+    fn parses_get_time_stamp_field_stmt() {
+        let parsed = crate::parse("GET TIME STAMP FIELD lv_ts.");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::GetTimeStampStmt),
+            1
+        );
+    }
+
+    #[test]
+    fn parses_get_time_stamp_field_inline_data_target() {
+        let parsed = crate::parse("GET TIME STAMP FIELD DATA(lv_ts).");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let stmt = parsed
+            .file
+            .find_first_kind(parsed.file.root(), SyntaxKind::GetTimeStampStmt)
+            .expect("get time stamp stmt");
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::DataInlineDecl), 1);
     }
 
     #[test]
