@@ -2392,6 +2392,33 @@ fn reports_builtin_routine_named_argument_passing_as_invalid() {
 }
 
 #[test]
+fn substring_access_uses_value_namespace() {
+    let src = "\
+DATA ls_time TYPE string.\n\
+DATA lv_evt TYPE string.\n\
+DATA lv_long TYPE string.\n\
+lv_evt = ls_time+2(8).\n\
+lv_long = ls_time(14).";
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///substring_expr.abap", src, &parsed);
+
+    let ls_time_refs: Vec<_> = unit
+        .references
+        .iter()
+        .filter(|reference| reference.name.as_ref() == "ls_time")
+        .collect();
+    assert_eq!(ls_time_refs.len(), 2, "{:?}", ls_time_refs);
+    assert!(ls_time_refs.iter().all(|reference| {
+        reference.namespace == Namespace::Value
+            && reference.kind == ReferenceKind::Identifier
+            && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+    }));
+    assert!(!unit.diagnostics.iter().any(|diag| {
+        diag.kind == DiagnosticKind::WrongNamespace && diag.message.contains("ls_time")
+    }));
+}
+
+#[test]
 fn reports_missing_super_constructor_call_in_subclass_constructor() {
     let src = r#"
 CLASS zcl_parent DEFINITION.

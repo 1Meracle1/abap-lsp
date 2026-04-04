@@ -42,6 +42,8 @@ pub enum SyntaxKind {
     ExprLiteral,
     /// Selector chain such as `obj->field` or `cls=>member`.
     SelectorExpr,
+    /// ABAP offset/length access such as `text+2(8)` or `text(14)`.
+    SubstringExpr,
     /// Call-style postfix `callee( ... )`.
     CallExpr,
     /// Constructor-style expression such as `NEW ty( ... )`.
@@ -197,6 +199,7 @@ impl SyntaxKind {
             Self::ExprIdent => "ExprIdent",
             Self::ExprLiteral => "ExprLiteral",
             Self::SelectorExpr => "SelectorExpr",
+            Self::SubstringExpr => "SubstringExpr",
             Self::CallExpr => "CallExpr",
             Self::ConstructorExpr => "ConstructorExpr",
             Self::DataDecl => "DataDecl",

@@ -6,7 +6,7 @@ use abap_ast::arena::NodeId;
 use abap_ast::{File, SyntaxKind};
 use abap_lexer::{TextRange, Token, TokenKind, have_space_between};
 
-use crate::builtins::{BUILTIN_STRUCTURES, BUILTIN_SYMBOLS, BuiltinTypeKind};
+use crate::builtins::{BUILTIN_STRUCTURES, BUILTIN_SYMBOLS, BuiltinTypeKind, builtin_routine_spec};
 use crate::def_map::{
     ClassInheritanceData, ClassMemberData, ClassMemberKind, ClassMemberParameterData, Diagnostic,
     DiagnosticKind, FieldAccess, FieldAccessSegment, FieldTypeRefData, FormParameterData,
@@ -741,12 +741,8 @@ impl<'a> Collector<'a> {
             self.walk_children(node, scope);
             return;
         };
-        let owner = self.declare_plain_symbol(
-            scope,
-            Arc::clone(&name),
-            SymbolKind::Method,
-            range.clone(),
-        );
+        let owner =
+            self.declare_plain_symbol(scope, Arc::clone(&name), SymbolKind::Method, range.clone());
         let child_scope = self.push_scope(
             ScopeKind::Method,
             self.file.range(node),
@@ -2304,6 +2300,7 @@ impl<'a> Collector<'a> {
                 }
             }
             SyntaxKind::SelectorExpr => self.collect_selector_expr(node, scope),
+            SyntaxKind::SubstringExpr => self.collect_substring_expr(node, scope),
             SyntaxKind::CallExpr => self.collect_call_expr(node, scope),
             SyntaxKind::ConstructorExpr => {
                 if let Some((name, range)) = self.constructor_type_ref(node) {
@@ -2350,6 +2347,7 @@ impl<'a> Collector<'a> {
                     match self.file.kind(child) {
                         SyntaxKind::ExprIdent
                         | SyntaxKind::SelectorExpr
+                        | SyntaxKind::SubstringExpr
                         | SyntaxKind::CallExpr
                         | SyntaxKind::BinaryExpr
                         | SyntaxKind::UnaryExpr
@@ -2530,11 +2528,8 @@ impl<'a> Collector<'a> {
         }
 
         idx = into_idx + 1;
-        let target_end = self.consume_concatenate_operand(
-            &significant,
-            idx,
-            &["separated", "respecting", "in"],
-        );
+        let target_end =
+            self.consume_concatenate_operand(&significant, idx, &["separated", "respecting", "in"]);
         if target_end > idx {
             self.collect_token_expression_refs(&significant[idx..target_end], scope, true);
         }
@@ -2557,7 +2552,11 @@ impl<'a> Collector<'a> {
                     &["respecting", "in"],
                 );
                 if sep_end > sep_start {
-                    self.collect_token_expression_refs(&significant[sep_start..sep_end], scope, true);
+                    self.collect_token_expression_refs(
+                        &significant[sep_start..sep_end],
+                        scope,
+                        true,
+                    );
                 }
                 idx = sep_end;
                 continue;
@@ -3601,6 +3600,43 @@ impl<'a> Collector<'a> {
             && self.file.kind(field_node) != SyntaxKind::ExprIdent
         {
             self.collect_expr(field_node, scope);
+        }
+    }
+
+    fn collect_substring_expr(&mut self, node: NodeId, scope: ScopeId) {
+        let mut children = self.file.children(node);
+        let Some(base) = children.next() else {
+            return;
+        };
+
+        match self.file.kind(base) {
+            SyntaxKind::ExprIdent => {
+                if let Some((name, range)) = self.node_name(base) {
+                    let namespace = if self
+                        .lookup_symbol_in_scope_chain(scope, Namespace::Value, name.as_ref())
+                        .is_some()
+                        || builtin_routine_spec(name.as_ref()).is_none()
+                    {
+                        Namespace::Value
+                    } else {
+                        Namespace::Routine
+                    };
+                    let kind = if namespace == Namespace::Routine {
+                        ReferenceKind::RoutineCall
+                    } else {
+                        ReferenceKind::Identifier
+                    };
+                    self.add_reference(scope, name, namespace, kind, range);
+                }
+            }
+            SyntaxKind::SelectorExpr => self.collect_selector_expr(base, scope),
+            _ => self.collect_expr(base, scope),
+        }
+
+        for child in children {
+            if self.file.kind(child) != SyntaxKind::Token {
+                self.collect_expr(child, scope);
+            }
         }
     }
 

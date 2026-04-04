@@ -2,7 +2,7 @@
 
 use abap_ast::SyntaxKind;
 use abap_ast::arena::{NodeId, SyntaxTreeBuilder};
-use abap_lexer::{Token, TokenKind};
+use abap_lexer::{Token, TokenKind, have_space_between};
 
 use crate::stmt_period::{StmtPeriodScan, scan_until_statement_period, unterminated_err_end};
 use crate::type_ref::build_type_ref_node;
@@ -324,6 +324,49 @@ fn direct_call_statement(significant: &[&Token]) -> bool {
     })
 }
 
+fn direct_call_paren_pair(significant: &[&Token]) -> Option<(usize, usize)> {
+    let mut paren = 0i32;
+    let mut bracket = 0i32;
+    let mut brace = 0i32;
+    let mut first_top_level_lparen = None;
+    for (idx, token) in significant.iter().enumerate() {
+        match token.kind {
+            TokenKind::LParen if paren == 0 && bracket == 0 && brace == 0 => {
+                first_top_level_lparen = Some(idx);
+                paren += 1;
+            }
+            TokenKind::LParen => paren += 1,
+            TokenKind::RParen => {
+                paren -= 1;
+                if paren == 0 && bracket == 0 && brace == 0 {
+                    return first_top_level_lparen.map(|lparen_idx| (lparen_idx, idx));
+                }
+            }
+            TokenKind::LBracket => bracket += 1,
+            TokenKind::RBracket => bracket -= 1,
+            TokenKind::LBrace => brace += 1,
+            TokenKind::RBrace => brace -= 1,
+            _ => {}
+        }
+    }
+    None
+}
+
+fn direct_call_padding_is_valid(significant: &[&Token]) -> bool {
+    let Some((lparen_idx, rparen_idx)) = direct_call_paren_pair(significant) else {
+        return false;
+    };
+    let lparen = significant[lparen_idx];
+    let rparen = significant[rparen_idx];
+    let inner = &significant[lparen_idx + 1..rparen_idx];
+    match (inner.first(), inner.last()) {
+        (Some(first), Some(last)) => {
+            have_space_between(lparen, first) && have_space_between(last, rparen)
+        }
+        _ => have_space_between(lparen, rparen),
+    }
+}
+
 fn simple_stmt_kind(source: &str, significant: &[&Token]) -> SyntaxKind {
     if class_section_statement(source, significant) {
         return SyntaxKind::ClassSectionStmt;
@@ -332,7 +375,11 @@ fn simple_stmt_kind(source: &str, significant: &[&Token]) -> SyntaxKind {
         return SyntaxKind::MethodsStmt;
     }
     if direct_call_statement(significant) {
-        return SyntaxKind::CallStmt;
+        return if direct_call_padding_is_valid(significant) {
+            SyntaxKind::CallStmt
+        } else {
+            SyntaxKind::Error
+        };
     }
     let Some(first) = significant.first() else {
         return SyntaxKind::UnparsedStmt;
@@ -413,6 +460,24 @@ fn validate_unparsed_stmt(
     errors: &mut Vec<crate::ParseError>,
 ) {
     validate_method_modifier_order(source, tokens, idx, period_i, errors);
+    let significant: Vec<_> = tokens[idx..=period_i]
+        .iter()
+        .filter(|token| token.kind != TokenKind::Comment)
+        .collect();
+    if direct_call_statement(&significant) && !direct_call_padding_is_valid(&significant) {
+        errors.push(crate::ParseError {
+            message: "syntax error: method call arguments must have whitespace or a line break immediately inside parentheses"
+                .to_string(),
+            range: significant
+                .first()
+                .map(|token| token.range.start)
+                .unwrap_or(tokens[idx].range.start)
+                ..significant
+                    .last()
+                    .map(|token| token.range.end)
+                    .unwrap_or(tokens[period_i].range.end),
+        });
+    }
 }
 
 /// Fallback parser for valid statement-shaped token runs when no dedicated parser claims them yet.
@@ -567,5 +632,47 @@ ENDCLASS.";
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::AssertStmt), 1);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::CheckStmt), 1);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::PerformStmt), 1);
+    }
+
+    #[test]
+    fn rejects_instance_method_calls_without_inner_padding() {
+        for src in [
+            "lo_prog->add_statement(lo_assign ).",
+            "lo_prog->add_statement( lo_print).",
+        ] {
+            let parsed = crate::parse(src);
+            assert!(
+                parsed
+                    .errors
+                    .iter()
+                    .any(|err| err.message.contains("method call arguments")),
+                "{src}: {:?}",
+                parsed.errors
+            );
+            assert_eq!(
+                parsed
+                    .file
+                    .count_kind(parsed.file.root(), SyntaxKind::CallStmt),
+                0
+            );
+            assert!(
+                parsed
+                    .file
+                    .count_kind(parsed.file.root(), SyntaxKind::Error)
+                    >= 1
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_instance_method_calls_with_inner_padding() {
+        let parsed = crate::parse("lo_prog->add_statement( lo_print ).");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::CallStmt),
+            1
+        );
     }
 }

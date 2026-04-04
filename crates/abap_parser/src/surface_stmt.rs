@@ -1,6 +1,6 @@
 use abap_ast::SyntaxKind;
 use abap_ast::arena::{NodeId, SyntaxTreeBuilder};
-use abap_lexer::{Token, TokenKind};
+use abap_lexer::{Token, TokenKind, have_space_between};
 
 use crate::block_helpers::{
     error_token_children, is_keyword, next_after_unterminated_scan, parse_body_until_keywords,
@@ -35,6 +35,86 @@ fn scan_until_top_level_period(tokens: &[Token], start: usize) -> Option<usize> 
         i += 1;
     }
     None
+}
+
+fn call_method_clause_starts(source: &str, tokens: &[Token], idx: usize) -> bool {
+    let Some(token) = tokens.get(idx) else {
+        return false;
+    };
+    token.kind == TokenKind::Ident
+        && (is_keyword(source, token, "exporting")
+            || is_keyword(source, token, "importing")
+            || is_keyword(source, token, "changing")
+            || is_keyword(source, token, "receiving")
+            || is_keyword(source, token, "exceptions"))
+}
+
+fn call_inner_padding_is_valid(tokens: &[Token], lparen_idx: usize, rparen_idx: usize) -> bool {
+    let lparen = &tokens[lparen_idx];
+    let rparen = &tokens[rparen_idx];
+    let inner: Vec<_> = tokens[lparen_idx + 1..rparen_idx]
+        .iter()
+        .filter(|token| token.kind != TokenKind::Comment)
+        .collect();
+    match (inner.first(), inner.last()) {
+        (Some(first), Some(last)) => {
+            have_space_between(lparen, first) && have_space_between(last, rparen)
+        }
+        _ => have_space_between(lparen, rparen),
+    }
+}
+
+fn validate_call_method_inline_args_spacing(
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    period_i: usize,
+) -> bool {
+    if !is_keyword(source, &tokens[idx], "call")
+        || !tokens
+            .get(idx + 1)
+            .is_some_and(|token| is_keyword(source, token, "method"))
+    {
+        return true;
+    }
+
+    let mut paren = 0i32;
+    let mut bracket = 0i32;
+    let mut brace = 0i32;
+    let mut lparen_idx = None;
+    for i in idx + 2..period_i {
+        let token = &tokens[i];
+        if paren == 0 && bracket == 0 && brace == 0 && call_method_clause_starts(source, tokens, i)
+        {
+            break;
+        }
+        match token.kind {
+            TokenKind::LParen if paren == 0 && bracket == 0 && brace == 0 => {
+                if i > idx + 2 && !have_space_between(&tokens[i - 1], token) {
+                    lparen_idx = Some(i);
+                }
+                paren += 1;
+            }
+            TokenKind::LParen => paren += 1,
+            TokenKind::RParen => {
+                paren -= 1;
+                if paren == 0
+                    && bracket == 0
+                    && brace == 0
+                    && let Some(lparen_idx) = lparen_idx
+                {
+                    return call_inner_padding_is_valid(tokens, lparen_idx, i);
+                }
+            }
+            TokenKind::LBracket => bracket += 1,
+            TokenKind::RBracket => bracket -= 1,
+            TokenKind::LBrace => brace += 1,
+            TokenKind::RBrace => brace -= 1,
+            _ => {}
+        }
+    }
+
+    true
 }
 
 fn starts_hyphenated_keyword(tokens: &[Token], idx: usize) -> bool {
@@ -248,6 +328,18 @@ fn parse_inline_name(
     ))
 }
 
+fn inline_name_spacing_is_valid(
+    tokens: &[Token],
+    lparen_idx: usize,
+    name_idx: usize,
+    rparen_idx: usize,
+) -> bool {
+    let lparen = &tokens[lparen_idx];
+    let name = &tokens[name_idx];
+    let rparen = &tokens[rparen_idx];
+    !have_space_between(lparen, name) && !have_space_between(name, rparen)
+}
+
 fn try_parse_field_symbol_inline_decl(
     b: &mut SyntaxTreeBuilder,
     source: &str,
@@ -272,6 +364,20 @@ fn try_parse_field_symbol_inline_decl(
     let rparen = tokens.get(next_idx)?;
     if rparen.kind != TokenKind::RParen {
         return None;
+    }
+    if !inline_name_spacing_is_valid(tokens, idx + 3, idx + 4, next_idx) {
+        let mut children = Vec::with_capacity(next_idx - idx + 1);
+        for token in &tokens[idx..=next_idx] {
+            children.push(token_leaf(b, token));
+        }
+        return Some((
+            b.branch(
+                SyntaxKind::Error,
+                field_tok.range.start..rparen.range.end,
+                &children,
+            ),
+            next_idx + 1,
+        ));
     }
 
     let field_leaf = token_leaf(b, field_tok);
@@ -835,6 +941,24 @@ pub fn try_parse_call_like_stmt(
     }
 
     if let Some(period_i) = scan_until_top_level_period(tokens, idx + 1) {
+        if is_call_stmt && !validate_call_method_inline_args_spacing(source, tokens, idx, period_i)
+        {
+            errors.push(crate::ParseError {
+                message: "syntax error: method call arguments must have whitespace or a line break immediately inside parentheses"
+                    .to_string(),
+                range: first.range.start..tokens[period_i].range.end,
+            });
+            let mut children = Vec::with_capacity(period_i - idx + 1);
+            for t in &tokens[idx..=period_i] {
+                children.push(token_leaf(b, t));
+            }
+            let node = b.branch(
+                SyntaxKind::Error,
+                first.range.start..tokens[period_i].range.end,
+                &children,
+            );
+            return Some((node, period_i + 1));
+        }
         let mut children = Vec::with_capacity(period_i - idx + 1);
         for t in &tokens[idx..=period_i] {
             children.push(token_leaf(b, t));
@@ -1606,9 +1730,8 @@ mod tests {
 
     #[test]
     fn parses_concatenate_stmt() {
-        let parsed = crate::parse(
-            "CONCATENATE 'Document' mv_odlv INTO lv_delivery_msg SEPARATED BY ': '.",
-        );
+        let parsed =
+            crate::parse("CONCATENATE 'Document' mv_odlv INTO lv_delivery_msg SEPARATED BY ': '.");
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
         assert_eq!(
             parsed
@@ -1841,6 +1964,23 @@ mod tests {
     }
 
     #[test]
+    fn rejects_whitespace_inside_inline_field_symbol_parentheses() {
+        let parsed = crate::parse("ASSIGN mo_outbound->* TO FIELD-SYMBOL( <ls_outbound>).");
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::FieldSymbolInlineDecl),
+            0
+        );
+        assert!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::Error)
+                >= 1
+        );
+    }
+
+    #[test]
     fn parses_select_where_condition_split_after_and() {
         let parsed = crate::parse(
             "SELECT *\n  APPENDING CORRESPONDING FIELDS OF TABLE lt_rows\n  FROM demo\n  WHERE bupid = ls_key-bupid AND\n        regid = ls_key-regid.",
@@ -1946,6 +2086,48 @@ mod tests {
             parsed
                 .file
                 .count_kind(parsed.file.root(), SyntaxKind::CallStmt),
+            1
+        );
+    }
+
+    #[test]
+    fn rejects_call_method_inline_args_without_inner_padding() {
+        for src in [
+            "CALL METHOD lo_handler->run(iv_mode = lv_mode ).",
+            "CALL METHOD lo_handler->run( iv_mode = lv_mode).",
+        ] {
+            let parsed = crate::parse(src);
+            assert!(
+                parsed
+                    .errors
+                    .iter()
+                    .any(|err| err.message.contains("method call arguments")),
+                "{src}: {:?}",
+                parsed.errors
+            );
+            assert_eq!(
+                parsed
+                    .file
+                    .count_kind(parsed.file.root(), SyntaxKind::CallMethodStmt),
+                0
+            );
+            assert!(
+                parsed
+                    .file
+                    .count_kind(parsed.file.root(), SyntaxKind::Error)
+                    >= 1
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_call_method_inline_args_with_inner_padding() {
+        let parsed = crate::parse("CALL METHOD lo_handler->run( iv_mode = lv_mode ).");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::CallMethodStmt),
             1
         );
     }

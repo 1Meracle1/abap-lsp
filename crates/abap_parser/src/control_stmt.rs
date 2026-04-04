@@ -1,6 +1,6 @@
 use abap_ast::SyntaxKind;
 use abap_ast::arena::{NodeId, SyntaxTreeBuilder};
-use abap_lexer::{Token, TokenKind};
+use abap_lexer::{Token, TokenKind, have_space_between};
 
 use crate::block_helpers::{
     Boundary, error_token_children, is_keyword, next_after_unterminated_scan,
@@ -80,6 +80,18 @@ fn parse_inline_name(
     ))
 }
 
+fn inline_name_spacing_is_valid(
+    tokens: &[Token],
+    lparen_idx: usize,
+    name_idx: usize,
+    rparen_idx: usize,
+) -> bool {
+    let lparen = &tokens[lparen_idx];
+    let name = &tokens[name_idx];
+    let rparen = &tokens[rparen_idx];
+    !have_space_between(lparen, name) && !have_space_between(name, rparen)
+}
+
 fn try_parse_loop_inline_data_target(
     b: &mut SyntaxTreeBuilder,
     source: &str,
@@ -98,6 +110,20 @@ fn try_parse_loop_inline_data_target(
     let rparen = tokens.get(next_idx)?;
     if rparen.kind != TokenKind::RParen {
         return None;
+    }
+    if !inline_name_spacing_is_valid(tokens, idx + 1, idx + 2, next_idx) {
+        let mut children = Vec::with_capacity(next_idx - idx + 1);
+        for token in &tokens[idx..=next_idx] {
+            children.push(token_leaf(b, token));
+        }
+        return Some((
+            b.branch(
+                SyntaxKind::Error,
+                data_tok.range.start..rparen.range.end,
+                &children,
+            ),
+            next_idx + 1,
+        ));
     }
     let data_leaf = token_leaf(b, data_tok);
     let lparen_leaf = token_leaf(b, lparen);
@@ -136,6 +162,20 @@ fn try_parse_loop_inline_field_symbol_target(
     let rparen = tokens.get(next_idx)?;
     if rparen.kind != TokenKind::RParen {
         return None;
+    }
+    if !inline_name_spacing_is_valid(tokens, idx + 3, idx + 4, next_idx) {
+        let mut children = Vec::with_capacity(next_idx - idx + 1);
+        for token in &tokens[idx..=next_idx] {
+            children.push(token_leaf(b, token));
+        }
+        return Some((
+            b.branch(
+                SyntaxKind::Error,
+                field_tok.range.start..rparen.range.end,
+                &children,
+            ),
+            next_idx + 1,
+        ));
     }
     let field_leaf = token_leaf(b, field_tok);
     let minus_leaf = token_leaf(b, &tokens[idx + 1]);

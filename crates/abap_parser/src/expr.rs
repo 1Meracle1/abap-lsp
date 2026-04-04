@@ -229,6 +229,11 @@ impl<'a, 'b> Parser<'a, 'b> {
                 continue;
             }
 
+            if let Some(substring) = self.try_parse_substring_expr(value) {
+                value = substring;
+                continue;
+            }
+
             if curr.kind == TokenKind::LParen && !have_space_between(self.prev, curr) {
                 value = self.parse_call_expr(value)?;
                 continue;
@@ -237,6 +242,204 @@ impl<'a, 'b> Parser<'a, 'b> {
             break;
         }
         Some(value)
+    }
+
+    fn try_parse_substring_expr(&mut self, base: NodeId) -> Option<NodeId> {
+        if !self.node_can_start_substring(base) {
+            return None;
+        }
+
+        let saved_idx = self.idx;
+        let saved_prev = self.prev;
+
+        if let Some(expr) = self.try_parse_substring_with_offset(base) {
+            return Some(expr);
+        }
+        self.idx = saved_idx;
+        self.prev = saved_prev;
+
+        if let Some(expr) = self.try_parse_substring_without_offset(base) {
+            return Some(expr);
+        }
+        self.idx = saved_idx;
+        self.prev = saved_prev;
+        None
+    }
+
+    fn try_parse_substring_with_offset(&mut self, base: NodeId) -> Option<NodeId> {
+        let plus = self.curr()?;
+        if plus.kind != TokenKind::Plus || have_space_between(self.prev, plus) {
+            return None;
+        }
+
+        let plus_tok = self.bump()?;
+        let offset_start = self.idx;
+        let lparen_idx = self.find_tight_lparen_for_substring(offset_start)?;
+        let offset =
+            self.parse_complete_concat_expr(&self.tokens[offset_start..lparen_idx], plus_tok)?;
+        let (lparen, length, rparen, next_idx) =
+            self.parse_substring_length_group_at(lparen_idx)?;
+
+        self.idx = next_idx;
+        self.prev = rparen;
+
+        let plus_leaf = token_leaf(self.b, plus_tok);
+        let lparen_leaf = token_leaf(self.b, lparen);
+        let rparen_leaf = token_leaf(self.b, rparen);
+        let range = self.b.span(base).start..rparen.range.end;
+        Some(self.b.branch(
+            SyntaxKind::SubstringExpr,
+            range,
+            &[base, plus_leaf, offset, lparen_leaf, length, rparen_leaf],
+        ))
+    }
+
+    fn try_parse_substring_without_offset(&mut self, base: NodeId) -> Option<NodeId> {
+        let lparen = self.curr()?;
+        if lparen.kind != TokenKind::LParen || have_space_between(self.prev, lparen) {
+            return None;
+        }
+
+        let lparen_idx = self.idx;
+        let (lparen, length, rparen, next_idx) =
+            self.parse_substring_length_group_at(lparen_idx)?;
+        self.idx = next_idx;
+        self.prev = rparen;
+
+        let lparen_leaf = token_leaf(self.b, lparen);
+        let rparen_leaf = token_leaf(self.b, rparen);
+        let range = self.b.span(base).start..rparen.range.end;
+        Some(self.b.branch(
+            SyntaxKind::SubstringExpr,
+            range,
+            &[base, lparen_leaf, length, rparen_leaf],
+        ))
+    }
+
+    fn parse_complete_concat_expr(
+        &mut self,
+        tokens: &'a [Token],
+        prev_before_first: &'a Token,
+    ) -> Option<NodeId> {
+        if tokens.is_empty() {
+            return None;
+        }
+
+        let mut nested = Parser {
+            source: self.source,
+            tokens,
+            idx: 0,
+            prev: prev_before_first,
+            b: self.b,
+            paren_inner: ParenInner::Concat,
+        };
+        let expr = nested.parse_concat_expr()?;
+        nested.skip_trivia();
+        if nested.idx != tokens.len() {
+            return None;
+        }
+        Some(expr)
+    }
+
+    fn parse_substring_length_group_at(
+        &mut self,
+        lparen_idx: usize,
+    ) -> Option<(&'a Token, NodeId, &'a Token, usize)> {
+        let lparen = self.tokens.get(lparen_idx)?;
+        if lparen.kind != TokenKind::LParen {
+            return None;
+        }
+        let rparen_idx = self.find_matching_paren_from(lparen_idx)?;
+        let rparen = self.tokens.get(rparen_idx)?;
+        let length =
+            self.parse_complete_concat_expr(&self.tokens[lparen_idx + 1..rparen_idx], lparen)?;
+        Some((lparen, length, rparen, rparen_idx + 1))
+    }
+
+    fn find_tight_lparen_for_substring(&self, start_idx: usize) -> Option<usize> {
+        let mut idx = start_idx;
+        while idx < self.tokens.len() {
+            let token = &self.tokens[idx];
+            if token.kind == TokenKind::LParen
+                && idx > start_idx
+                && !have_space_between(&self.tokens[idx - 1], token)
+            {
+                return Some(idx);
+            }
+            if matches!(
+                token.kind,
+                TokenKind::Period
+                    | TokenKind::Comma
+                    | TokenKind::Eq
+                    | TokenKind::QuestionEq
+                    | TokenKind::RParen
+            ) {
+                return None;
+            }
+            idx += 1;
+        }
+        None
+    }
+
+    fn find_matching_paren_from(&self, start_idx: usize) -> Option<usize> {
+        let mut depth = 0i32;
+        for (idx, tok) in self.tokens.iter().enumerate().skip(start_idx) {
+            match tok.kind {
+                TokenKind::LParen => depth += 1,
+                TokenKind::RParen => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(idx);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    fn call_padding_is_valid(&self, lparen_idx: usize, rparen_idx: usize) -> bool {
+        let lparen = &self.tokens[lparen_idx];
+        let rparen = &self.tokens[rparen_idx];
+        let inner: Vec<_> = self.tokens[lparen_idx + 1..rparen_idx]
+            .iter()
+            .filter(|token| token.kind != TokenKind::Comment)
+            .collect();
+        match (inner.first(), inner.last()) {
+            (Some(first), Some(last)) => {
+                have_space_between(lparen, first) && have_space_between(last, rparen)
+            }
+            _ => have_space_between(lparen, rparen),
+        }
+    }
+
+    fn node_can_start_substring(&self, node: NodeId) -> bool {
+        let span = self.b.span(node);
+        let mut saw_ident = false;
+
+        for token in self
+            .tokens
+            .iter()
+            .filter(|token| token.range.start >= span.start && token.range.end <= span.end)
+        {
+            match token.kind {
+                TokenKind::Ident => saw_ident = true,
+                TokenKind::Minus => {}
+                TokenKind::Comment => {}
+                TokenKind::Arrow
+                | TokenKind::FatArrow
+                | TokenKind::Tilde
+                | TokenKind::LParen
+                | TokenKind::RParen
+                | TokenKind::LBracket
+                | TokenKind::RBracket
+                | TokenKind::LBrace
+                | TokenKind::RBrace => return false,
+                _ => return false,
+            }
+        }
+
+        saw_ident
     }
 
     fn parse_balanced_token_group(&mut self) -> Option<Vec<NodeId>> {
@@ -264,11 +467,18 @@ impl<'a, 'b> Parser<'a, 'b> {
     }
 
     fn parse_call_expr(&mut self, callee: NodeId) -> Option<NodeId> {
+        let lparen_idx = self.idx;
+        let rparen_idx = self.find_matching_paren_from(lparen_idx)?;
         let mut children = vec![callee];
         let extra = self.parse_balanced_token_group()?;
         children.extend(extra);
         let range = self.b.span(callee).start..self.b.span(*children.last().unwrap()).end;
-        Some(self.b.branch(SyntaxKind::CallExpr, range, &children))
+        let kind = if self.call_padding_is_valid(lparen_idx, rparen_idx) {
+            SyntaxKind::CallExpr
+        } else {
+            SyntaxKind::Error
+        };
+        Some(self.b.branch(kind, range, &children))
     }
 
     fn parse_constructor_expr(&mut self) -> Option<NodeId> {
@@ -672,6 +882,7 @@ mod tests {
             SyntaxKind::UnaryExpr,
             SyntaxKind::ParenExpr,
             SyntaxKind::SelectorExpr,
+            SyntaxKind::SubstringExpr,
             SyntaxKind::CallExpr,
             SyntaxKind::ConstructorExpr,
             SyntaxKind::IsPredicate,
@@ -850,6 +1061,28 @@ mod tests {
         let root = parsed.file.root();
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::SelectorExpr), 1);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::CallExpr), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
+    }
+
+    #[test]
+    fn call_expr_requires_padding_inside_parentheses() {
+        for src in [
+            "lv = lo_prog->add_statement(lo_assign).",
+            "lv = lo_prog->add_statement( lo_assign).",
+            "lv = lo_prog->add_statement(lo_assign ).",
+        ] {
+            let parsed = crate::parse(src);
+            let root = parsed.file.root();
+            assert_eq!(
+                parsed.file.count_kind(root, SyntaxKind::CallExpr),
+                0,
+                "{src}"
+            );
+            assert!(
+                parsed.file.count_kind(root, SyntaxKind::Error) >= 1,
+                "{src}"
+            );
+        }
     }
 
     #[test]
@@ -859,6 +1092,24 @@ mod tests {
         let root = parsed.file.root();
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::SelectorExpr), 2);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
+    }
+
+    #[test]
+    fn substring_length_on_assignment_rhs() {
+        let parsed = crate::parse("lv_text = ls_time(14).");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::SubstringExpr), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::CallExpr), 0);
+    }
+
+    #[test]
+    fn substring_offset_and_length_on_assignment_rhs() {
+        let parsed = crate::parse("lv_text = ls_time+2(8).");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::SubstringExpr), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::CallExpr), 0);
     }
 
     #[test]

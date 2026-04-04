@@ -333,6 +333,18 @@ fn parse_inline_name(
     ))
 }
 
+fn inline_name_spacing_is_valid(
+    tokens: &[Token],
+    lparen_idx: usize,
+    name_idx: usize,
+    rparen_idx: usize,
+) -> bool {
+    let lparen = &tokens[lparen_idx];
+    let name = &tokens[name_idx];
+    let rparen = &tokens[rparen_idx];
+    !have_space_between(lparen, name) && !have_space_between(name, rparen)
+}
+
 fn match_hyphenated_keyword(
     source: &str,
     tokens: &[Token],
@@ -426,6 +438,43 @@ fn try_parse_data_inline_decl(
     let rparen = tokens.get(i)?;
     if rparen.kind != TokenKind::RParen {
         return None;
+    }
+    if !inline_name_spacing_is_valid(tokens, idx + 1, idx + 2, i) {
+        match scan_until_statement_period(tokens, source, idx + 1) {
+            StmtPeriodScan::Found(period_i) => {
+                errors.push(crate::ParseError {
+                    message:
+                        "syntax error: inline DATA declaration must not contain whitespace inside parentheses"
+                            .to_string(),
+                    range: data_tok.range.start..tokens[period_i].range.end,
+                });
+                let mut children = Vec::with_capacity(period_i - idx + 1);
+                for t in &tokens[idx..=period_i] {
+                    children.push(token_leaf(b, t));
+                }
+                let node = b.branch(
+                    SyntaxKind::Error,
+                    data_tok.range.start..tokens[period_i].range.end,
+                    &children,
+                );
+                return Some((node, period_i + 1));
+            }
+            StmtPeriodScan::Unterminated { end_exclusive } => {
+                let err_end = unterminated_err_end(tokens, end_exclusive, data_tok.range.end);
+                errors.push(crate::ParseError {
+                    message:
+                        "syntax error: inline DATA declaration must not contain whitespace inside parentheses"
+                            .to_string(),
+                    range: data_tok.range.start..err_end,
+                });
+                let mut children = Vec::with_capacity(end_exclusive.saturating_sub(idx));
+                for t in &tokens[idx..end_exclusive] {
+                    children.push(token_leaf(b, t));
+                }
+                let node = b.branch(SyntaxKind::Error, data_tok.range.start..err_end, &children);
+                return Some((node, end_exclusive));
+            }
+        }
     }
     let eq_tok = tokens.get(i + 1)?;
     if eq_tok.kind != TokenKind::Eq {
@@ -840,6 +889,38 @@ mod tests {
     fn data_inline_decl() {
         let file = tree_ok("DATA(lv_value) = 1.");
         assert_eq!(file.count_kind(file.root(), SyntaxKind::DataInlineDecl), 1);
+    }
+
+    #[test]
+    fn data_inline_decl_rejects_whitespace_inside_parentheses() {
+        for src in [
+            "DATA( lv_var) = 1.",
+            "DATA( lv_var ) = 1.",
+            "DATA(lv_var ) = 1.",
+            "DATA(\nlv_var) = 1.",
+        ] {
+            let parsed = crate::parse(src);
+            assert!(
+                parsed
+                    .errors
+                    .iter()
+                    .any(|err| err.message.contains("inline DATA declaration")),
+                "{src}: {:?}",
+                parsed.errors
+            );
+            assert_eq!(
+                parsed
+                    .file
+                    .count_kind(parsed.file.root(), SyntaxKind::DataInlineDecl),
+                0
+            );
+            assert!(
+                parsed
+                    .file
+                    .count_kind(parsed.file.root(), SyntaxKind::Error)
+                    >= 1
+            );
+        }
     }
 
     #[test]
