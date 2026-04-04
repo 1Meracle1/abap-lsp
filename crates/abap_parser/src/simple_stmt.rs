@@ -58,6 +58,40 @@ fn method_signature_section(source: &str, token: &Token) -> bool {
         || token_matches_keyword(source, token, "exceptions")
 }
 
+fn class_section_statement(source: &str, significant: &[&Token]) -> bool {
+    let Some(first) = significant.first() else {
+        return false;
+    };
+    let Some(second) = significant.get(1) else {
+        return false;
+    };
+    (token_matches_keyword(source, first, "public")
+        || token_matches_keyword(source, first, "protected")
+        || token_matches_keyword(source, first, "private"))
+        && token_matches_keyword(source, second, "section")
+}
+
+fn simple_stmt_kind(source: &str, significant: &[&Token]) -> SyntaxKind {
+    if class_section_statement(source, significant) {
+        return SyntaxKind::ClassSectionStmt;
+    }
+    if method_statement_name_idx(source, significant).is_some() {
+        return SyntaxKind::MethodsStmt;
+    }
+    let Some(first) = significant.first() else {
+        return SyntaxKind::SimpleStmt;
+    };
+    if token_matches_keyword(source, first, "assert") {
+        SyntaxKind::AssertStmt
+    } else if token_matches_keyword(source, first, "check") {
+        SyntaxKind::CheckStmt
+    } else if token_matches_keyword(source, first, "perform") {
+        SyntaxKind::PerformStmt
+    } else {
+        SyntaxKind::SimpleStmt
+    }
+}
+
 fn validate_method_modifier_order(
     source: &str,
     tokens: &[Token],
@@ -143,15 +177,16 @@ pub fn try_parse_simple_stmt(
         StmtPeriodScan::Found(period_i) => {
             let period_tok = &tokens[period_i];
             validate_simple_stmt(source, tokens, idx, period_i, errors);
+            let significant: Vec<_> = tokens[idx..=period_i]
+                .iter()
+                .filter(|token| token.kind != TokenKind::Comment)
+                .collect();
+            let kind = simple_stmt_kind(source, &significant);
             let mut kids = Vec::with_capacity(period_i - idx + 1);
             for t in &tokens[idx..=period_i] {
                 kids.push(token_leaf(b, t));
             }
-            let node = b.branch(
-                SyntaxKind::SimpleStmt,
-                first.range.start..period_tok.range.end,
-                &kids,
-            );
+            let node = b.branch(kind, first.range.start..period_tok.range.end, &kids);
             Some((node, period_i + 1))
         }
         StmtPeriodScan::Unterminated { end_exclusive } => {
@@ -215,5 +250,41 @@ ENDCLASS.";
                 .count_kind(parsed.file.root(), SyntaxKind::ClassDecl),
             1
         );
+    }
+
+    #[test]
+    fn classifies_methods_statement_specifically() {
+        let parsed = crate::parse(
+            "CLASS lcl DEFINITION.\n  PUBLIC SECTION.\n    METHODS run IMPORTING iv_x TYPE i.\nENDCLASS.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::MethodsStmt),
+            1
+        );
+    }
+
+    #[test]
+    fn classifies_class_section_statement_specifically() {
+        let parsed = crate::parse("CLASS lcl DEFINITION. PUBLIC SECTION. ENDCLASS.");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::ClassSectionStmt),
+            1
+        );
+    }
+
+    #[test]
+    fn classifies_assert_check_and_perform_statements_specifically() {
+        let parsed = crate::parse("ASSERT lo_ref IS BOUND. CHECK lv_ok = abap_true. PERFORM run.");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::AssertStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::CheckStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::PerformStmt), 1);
     }
 }

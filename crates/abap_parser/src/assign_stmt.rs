@@ -16,6 +16,14 @@ fn is_data_keyword(source: &str, t: &Token) -> bool {
     t.kind == TokenKind::Ident && t.lexeme(source).eq_ignore_ascii_case("data")
 }
 
+#[inline]
+fn is_non_assignment_stmt_keyword(source: &str, t: &Token) -> bool {
+    t.kind == TokenKind::Ident
+        && (t.lexeme(source).eq_ignore_ascii_case("assert")
+            || t.lexeme(source).eq_ignore_ascii_case("check")
+            || t.lexeme(source).eq_ignore_ascii_case("perform"))
+}
+
 /// After a failed `DATA` typed declaration, `DATA lv = 1.` is still tokenized as `DATA` then `lv = 1 .`;
 /// suppress assignment on the second chunk so invalid inline/assignment-style `DATA` is not half-parsed.
 fn assign_preceded_by_data_keyword(tokens: &[Token], idx: usize, source: &str) -> bool {
@@ -105,7 +113,7 @@ pub fn try_parse_assign_stmt(
     errors: &mut Vec<crate::ParseError>,
 ) -> Option<(NodeId, usize)> {
     let first = tokens.get(idx)?;
-    if is_data_keyword(source, first) {
+    if is_data_keyword(source, first) || is_non_assignment_stmt_keyword(source, first) {
         return None;
     }
     if assign_preceded_by_data_keyword(tokens, idx, source) {

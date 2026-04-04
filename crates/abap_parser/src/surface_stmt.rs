@@ -664,8 +664,18 @@ pub fn try_parse_call_like_stmt(
         for t in &tokens[idx..=period_i] {
             children.push(token_leaf(b, t));
         }
+        let kind = if is_create_object {
+            SyntaxKind::CreateObjectStmt
+        } else if tokens
+            .get(idx + 1)
+            .is_some_and(|token| is_keyword(source, token, "method"))
+        {
+            SyntaxKind::CallMethodStmt
+        } else {
+            SyntaxKind::SimpleStmt
+        };
         let node = b.branch(
-            SyntaxKind::SimpleStmt,
+            kind,
             first.range.start..tokens[period_i].range.end,
             &children,
         );
@@ -714,8 +724,9 @@ pub fn try_parse_read_table_stmt(
             children.push(token_leaf(b, &tokens[idx + 1]));
 
             let mut i = idx + 2;
-            let source_end =
-                scan_until_clause(tokens, i, period_i, |tokens, idx| read_table_clause_starts(source, tokens, idx));
+            let source_end = scan_until_clause(tokens, i, period_i, |tokens, idx| {
+                read_table_clause_starts(source, tokens, idx)
+            });
             push_expr_child(
                 b,
                 &mut children,
@@ -877,16 +888,16 @@ pub fn try_parse_append_stmt(
     }
     match scan_until_statement_period(tokens, source, idx + 1) {
         StmtPeriodScan::Found(period_i) => {
-            let Some(to_idx) = (idx + 1..period_i)
-                .find(|&i| is_keyword(source, &tokens[i], "to"))
+            let Some(to_idx) = (idx + 1..period_i).find(|&i| is_keyword(source, &tokens[i], "to"))
             else {
                 return None;
             };
             let mut children = Vec::with_capacity(period_i - idx + 1);
             children.push(token_leaf(b, append_tok));
 
-            let source_end =
-                scan_until_clause(tokens, idx + 1, to_idx, |tokens, idx| append_clause_starts(source, tokens, idx));
+            let source_end = scan_until_clause(tokens, idx + 1, to_idx, |tokens, idx| {
+                append_clause_starts(source, tokens, idx)
+            });
             push_expr_child(
                 b,
                 &mut children,
@@ -900,8 +911,9 @@ pub fn try_parse_append_stmt(
 
             children.push(token_leaf(b, &tokens[to_idx]));
             let mut i = to_idx + 1;
-            let target_end =
-                scan_until_clause(tokens, i, period_i, |tokens, idx| append_clause_starts(source, tokens, idx));
+            let target_end = scan_until_clause(tokens, i, period_i, |tokens, idx| {
+                append_clause_starts(source, tokens, idx)
+            });
             push_expr_child(
                 b,
                 &mut children,
@@ -983,7 +995,11 @@ pub fn try_parse_append_stmt(
             for t in &tokens[idx..end_exclusive] {
                 children.push(token_leaf(b, t));
             }
-            let node = b.branch(SyntaxKind::Error, append_tok.range.start..err_end, &children);
+            let node = b.branch(
+                SyntaxKind::Error,
+                append_tok.range.start..err_end,
+                &children,
+            );
             Some((node, end_exclusive))
         }
     }
@@ -1034,7 +1050,11 @@ pub fn try_parse_assign_keyword_stmt(
             for t in &tokens[idx..end_exclusive] {
                 children.push(token_leaf(b, t));
             }
-            let node = b.branch(SyntaxKind::Error, assign_tok.range.start..err_end, &children);
+            let node = b.branch(
+                SyntaxKind::Error,
+                assign_tok.range.start..err_end,
+                &children,
+            );
             Some((node, end_exclusive))
         }
     }
@@ -1402,7 +1422,7 @@ mod tests {
         assert_eq!(
             parsed
                 .file
-                .count_kind(parsed.file.root(), SyntaxKind::SimpleStmt),
+                .count_kind(parsed.file.root(), SyntaxKind::CallMethodStmt),
             1
         );
         assert_eq!(
@@ -1422,7 +1442,7 @@ mod tests {
         assert_eq!(
             parsed
                 .file
-                .count_kind(parsed.file.root(), SyntaxKind::SimpleStmt),
+                .count_kind(parsed.file.root(), SyntaxKind::CallMethodStmt),
             1
         );
         assert_eq!(
@@ -1440,7 +1460,7 @@ mod tests {
         assert_eq!(
             parsed
                 .file
-                .count_kind(parsed.file.root(), SyntaxKind::SimpleStmt),
+                .count_kind(parsed.file.root(), SyntaxKind::CreateObjectStmt),
             1
         );
     }

@@ -12,9 +12,8 @@ use crate::def_map::{
     DiagnosticKind, FieldAccess, FieldAccessSegment, FieldTypeRefData, FormParameterData,
     FormParameterPassingKind, FormParameterSection, FormRoutineData, IncludeEdge,
     NamedArgumentAccess, NamedArgumentSection, NamedArgumentTarget, PerformArgumentData,
-    PerformCallData,
-    PerformParameterSection, ReferenceData, ReferenceKind, StructureData, StructureFieldData,
-    SymbolData, SymbolKind, UnitAnalysis, Visibility,
+    PerformCallData, PerformParameterSection, ReferenceData, ReferenceKind, StructureData,
+    StructureFieldData, SymbolData, SymbolKind, UnitAnalysis, Visibility,
 };
 use crate::ids::{ReferenceId, ScopeId, StructureId, SymbolId, UnitId};
 use crate::scope::{Namespace, ScopeData, ScopeKind};
@@ -478,7 +477,14 @@ impl<'a> Collector<'a> {
             | SyntaxKind::AssignStmt => self.collect_expr(node, scope),
             SyntaxKind::AssignKeywordStmt => self.collect_assign_keyword_stmt(node, scope),
             SyntaxKind::FieldSymbolInlineDecl => self.walk_inline_field_symbol_decl(node, scope),
-            SyntaxKind::SimpleStmt => self.collect_simple_stmt(node, scope),
+            SyntaxKind::SimpleStmt => self.collect_generic_simple_stmt(node, scope),
+            SyntaxKind::MethodsStmt => self.collect_methods_stmt(node, scope),
+            SyntaxKind::AssertStmt | SyntaxKind::CheckStmt => {
+                self.collect_assert_or_check_stmt(node, scope)
+            }
+            SyntaxKind::PerformStmt => self.collect_perform_stmt_node(node, scope),
+            SyntaxKind::CreateObjectStmt => self.collect_create_object_stmt_node(node, scope),
+            SyntaxKind::CallMethodStmt => self.collect_call_method_stmt_node(node, scope),
             SyntaxKind::WriteStmt => self.collect_write_stmt(node, scope),
             _ => self.walk_children(node, scope),
         }
@@ -787,36 +793,38 @@ impl<'a> Collector<'a> {
         let mut visibility = Visibility::Private;
         let mut stack: Vec<_> = self.file.children(node).rev().collect();
         while let Some(child) = stack.pop() {
-            if self.file.kind(child) != SyntaxKind::SimpleStmt {
-                for nested in self.file.children(child).rev() {
-                    stack.push(nested);
+            match self.file.kind(child) {
+                SyntaxKind::ClassSectionStmt => {
+                    let tokens = self.simple_stmt_tokens(child);
+                    if let Some(section_visibility) = self.class_section_visibility(&tokens) {
+                        visibility = section_visibility;
+                    }
                 }
-                continue;
-            }
-            let tokens = self.simple_stmt_tokens(child);
-            if tokens.is_empty() {
-                continue;
-            }
-            if let Some(section_visibility) = self.class_section_visibility(&tokens) {
-                visibility = section_visibility;
-                continue;
-            }
-            if let Some(mut member) =
-                self.class_member_from_simple_stmt(class_symbol, visibility, &tokens)
-            {
-                if member.kind == ClassMemberKind::Method {
-                    let signature = self.parse_method_signature(&tokens);
-                    member.parameters = self.class_member_parameters(&signature);
-                    self.declare_method_signature_parameter_symbols(
-                        self.file.range(child),
-                        &signature,
-                    );
-                    self.class_method_signatures
-                        .entry(class_symbol)
-                        .or_default()
-                        .insert(Arc::clone(&member.name), signature);
+                SyntaxKind::MethodsStmt => {
+                    let tokens = self.simple_stmt_tokens(child);
+                    if let Some(mut member) =
+                        self.class_member_from_simple_stmt(class_symbol, visibility, &tokens)
+                    {
+                        if member.kind == ClassMemberKind::Method {
+                            let signature = self.parse_method_signature(&tokens);
+                            member.parameters = self.class_member_parameters(&signature);
+                            self.declare_method_signature_parameter_symbols(
+                                self.file.range(child),
+                                &signature,
+                            );
+                            self.class_method_signatures
+                                .entry(class_symbol)
+                                .or_default()
+                                .insert(Arc::clone(&member.name), signature);
+                        }
+                        self.class_members.push(member);
+                    }
                 }
-                self.class_members.push(member);
+                _ => {
+                    for nested in self.file.children(child).rev() {
+                        stack.push(nested);
+                    }
+                }
             }
         }
     }
@@ -846,6 +854,13 @@ impl<'a> Collector<'a> {
         self.file
             .children(node)
             .filter_map(|child| self.token_for_node(child))
+            .collect()
+    }
+
+    fn significant_stmt_tokens(&self, node: NodeId) -> Vec<&'a Token> {
+        self.simple_stmt_tokens(node)
+            .into_iter()
+            .filter(|token| token.kind != TokenKind::Comment)
             .collect()
     }
 
@@ -2112,10 +2127,15 @@ impl<'a> Collector<'a> {
                     return (None, None);
                 };
                 let symbol = self.symbol(symbol_id);
-                self.normalize_inferred_metadata(scope, symbol.structure, symbol.declared_type.clone())
+                self.normalize_inferred_metadata(
+                    scope,
+                    symbol.structure,
+                    symbol.declared_type.clone(),
+                )
             }
             SyntaxKind::SelectorExpr => {
-                let Some((namespace, base_name, _, field_path)) = self.selector_access_chain(node) else {
+                let Some((namespace, base_name, _, field_path)) = self.selector_access_chain(node)
+                else {
                     return (None, None);
                 };
                 if namespace != Namespace::Value {
@@ -2195,101 +2215,6 @@ impl<'a> Collector<'a> {
                 self.normalize_inferred_metadata(scope, structure, declared_type)
             })
             .unwrap_or((None, None))
-    }
-
-    fn collect_loop_target_clause(
-        &mut self,
-        tokens: &[&Token],
-        mut idx: usize,
-        scope: ScopeId,
-        symbol_kind: SymbolKind,
-        inferred_metadata: &(Option<StructureId>, Option<FieldTypeRefData>),
-    ) -> usize {
-        while matches!(
-            tokens.get(idx).map(|token| token.kind),
-            Some(TokenKind::Comment)
-        ) {
-            idx += 1;
-        }
-        let Some(token) = tokens.get(idx) else {
-            return idx;
-        };
-
-        if symbol_kind == SymbolKind::Variable
-            && self.token_matches_keyword(token, "data")
-            && tokens.get(idx + 1).map(|token| token.kind) == Some(TokenKind::LParen)
-            && let Some(name_tok) = tokens.get(idx + 2)
-            && name_tok.kind == TokenKind::Ident
-            && tokens.get(idx + 3).map(|token| token.kind) == Some(TokenKind::RParen)
-        {
-            let name = Arc::<str>::from(name_tok.lexeme(self.source).to_ascii_lowercase());
-            self.declare_symbol(
-                scope,
-                name,
-                SymbolKind::Variable,
-                name_tok.range.clone(),
-                inferred_metadata.0,
-                inferred_metadata.1.clone(),
-            );
-            return idx + 4;
-        }
-
-        if symbol_kind == SymbolKind::FieldSymbol
-            && self.token_matches_keyword(token, "field")
-            && tokens.get(idx + 1).map(|token| token.kind) == Some(TokenKind::Minus)
-            && tokens
-                .get(idx + 2)
-                .is_some_and(|token| self.token_matches_keyword(token, "symbol"))
-            && tokens.get(idx + 3).map(|token| token.kind) == Some(TokenKind::LParen)
-            && let Some(name_tok) = tokens.get(idx + 4)
-            && name_tok.kind == TokenKind::Ident
-            && tokens.get(idx + 5).map(|token| token.kind) == Some(TokenKind::RParen)
-        {
-            let name = Arc::<str>::from(name_tok.lexeme(self.source).to_ascii_lowercase());
-            self.declare_symbol(
-                scope,
-                name,
-                SymbolKind::FieldSymbol,
-                name_tok.range.clone(),
-                inferred_metadata.0,
-                inferred_metadata.1.clone(),
-            );
-            return idx + 6;
-        }
-
-        if let Some((next_idx, namespace, base_name, base_range, field_path)) =
-            self.consume_selector_access_from_tokens(tokens, idx)
-        {
-            let kind = if namespace == Namespace::Type {
-                ReferenceKind::StaticTarget
-            } else {
-                ReferenceKind::Identifier
-            };
-            self.add_reference(scope, Arc::clone(&base_name), namespace, kind, base_range);
-            if !field_path.is_empty() {
-                self.field_accesses.push(FieldAccess {
-                    scope,
-                    base_namespace: namespace,
-                    base_name,
-                    field_path,
-                    in_type_position: false,
-                });
-            }
-            return next_idx;
-        }
-
-        if token.kind == TokenKind::Ident {
-            self.add_reference(
-                scope,
-                Arc::<str>::from(token.lexeme(self.source).to_ascii_lowercase()),
-                Namespace::Value,
-                ReferenceKind::Identifier,
-                token.range.clone(),
-            );
-            return idx + 1;
-        }
-
-        idx + 1
     }
 
     fn loop_source_field_metadata(
@@ -2382,53 +2307,6 @@ impl<'a> Collector<'a> {
             declared_type = symbol.declared_type.clone();
         }
         (structure, declared_type)
-    }
-
-    fn append_expr_end(&self, tokens: &[&Token], start: usize) -> usize {
-        let mut idx = start;
-        let mut paren = 0i32;
-        let mut bracket = 0i32;
-        let mut brace = 0i32;
-
-        while idx < tokens.len() {
-            let token = tokens[idx];
-            if token.kind == TokenKind::Comment {
-                idx += 1;
-                continue;
-            }
-            if paren == 0
-                && bracket == 0
-                && brace == 0
-                && (token.kind == TokenKind::Period || self.append_starts_clause(tokens, idx))
-            {
-                break;
-            }
-            match token.kind {
-                TokenKind::LParen => paren += 1,
-                TokenKind::RParen => paren -= 1,
-                TokenKind::LBracket => bracket += 1,
-                TokenKind::RBracket => bracket -= 1,
-                TokenKind::LBrace => brace += 1,
-                TokenKind::RBrace => brace -= 1,
-                _ => {}
-            }
-            idx += 1;
-        }
-
-        idx
-    }
-
-    fn append_starts_clause(&self, tokens: &[&Token], idx: usize) -> bool {
-        let Some(token) = tokens.get(idx) else {
-            return false;
-        };
-        token.kind == TokenKind::Ident
-            && (self.token_matches_keyword(token, "assigning")
-                || self.token_matches_keyword(token, "sorted")
-                || (self.token_matches_keyword(token, "reference")
-                    && tokens
-                        .get(idx + 1)
-                        .is_some_and(|next| self.token_matches_keyword(next, "into"))))
     }
 
     fn collect_type_ref(&mut self, node: NodeId, scope: ScopeId) {
@@ -2533,108 +2411,37 @@ impl<'a> Collector<'a> {
         }
     }
 
-    fn collect_simple_stmt(&mut self, node: NodeId, scope: ScopeId) {
-        let tokens = self.simple_stmt_tokens(node);
-        let significant: Vec<_> = tokens
-            .into_iter()
-            .filter(|token| token.kind != TokenKind::Comment)
-            .collect();
-        if self.class_member_statement_kind(&significant).is_some() {
-            self.collect_method_signature_type_refs(&significant, scope);
-            return;
-        }
-        if significant.first().is_some_and(|token| {
-            self.token_matches_keyword(token, "assert") || self.token_matches_keyword(token, "check")
-        }) {
-            self.collect_token_expression_refs(&significant[1..], scope, true);
-            return;
-        }
-        self.collect_perform_stmt(&significant, scope);
-        self.collect_create_object_stmt(&significant, scope);
-        if self.collect_call_method_stmt(&significant, scope) {
-            return;
-        }
-        if self.collect_append_stmt(&significant, scope) {
-            return;
-        }
+    fn collect_generic_simple_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        let significant = self.significant_stmt_tokens(node);
         self.collect_token_expression_refs(&significant, scope, false);
     }
 
-    fn collect_append_stmt(&mut self, tokens: &[&Token], scope: ScopeId) -> bool {
-        if tokens.len() < 2 || !self.token_matches_keyword(tokens[0], "append") {
-            return false;
-        }
+    fn collect_methods_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        let significant = self.significant_stmt_tokens(node);
+        self.collect_method_signature_type_refs(&significant, scope);
+    }
 
-        let Some(to_idx) = tokens
-            .iter()
-            .enumerate()
-            .skip(1)
-            .find_map(|(idx, token)| self.token_matches_keyword(token, "to").then_some(idx))
-        else {
-            self.collect_token_expression_refs(&tokens[1..], scope, true);
-            return true;
+    fn collect_assert_or_check_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        let significant = self.significant_stmt_tokens(node);
+        let Some((_, tail)) = significant.split_first() else {
+            return;
         };
+        self.collect_token_expression_refs(tail, scope, true);
+    }
 
-        let source_tokens = &tokens[1..to_idx];
-        if source_tokens.len() >= 2
-            && self.token_matches_keyword(source_tokens[0], "lines")
-            && self.token_matches_keyword(source_tokens[1], "of")
-        {
-            self.collect_token_expression_refs(&source_tokens[2..], scope, true);
-        } else if !(
-            source_tokens.len() >= 2
-                && self.token_matches_keyword(source_tokens[0], "initial")
-                && self.token_matches_keyword(source_tokens[1], "line")
-        ) {
-            self.collect_token_expression_refs(source_tokens, scope, true);
-        }
+    fn collect_perform_stmt_node(&mut self, node: NodeId, scope: ScopeId) {
+        let significant = self.significant_stmt_tokens(node);
+        self.collect_perform_stmt(&significant, scope);
+    }
 
-        let mut idx = to_idx + 1;
-        let target_end = self.append_expr_end(tokens, idx);
-        let target_tokens = &tokens[idx..target_end];
-        if !target_tokens.is_empty() {
-            self.collect_token_expression_refs(target_tokens, scope, true);
-        }
-        let target_line_metadata = self.loop_source_line_metadata(target_tokens, scope);
-        idx = target_end;
+    fn collect_create_object_stmt_node(&mut self, node: NodeId, scope: ScopeId) {
+        let significant = self.significant_stmt_tokens(node);
+        self.collect_create_object_stmt(&significant, scope);
+    }
 
-        while idx < tokens.len() {
-            let token = tokens[idx];
-            if self.token_matches_keyword(token, "assigning") {
-                idx = self.collect_loop_target_clause(
-                    tokens,
-                    idx + 1,
-                    scope,
-                    SymbolKind::FieldSymbol,
-                    &target_line_metadata,
-                );
-                continue;
-            }
-            if self.token_matches_keyword(token, "reference")
-                && tokens
-                    .get(idx + 1)
-                    .is_some_and(|next| self.token_matches_keyword(next, "into"))
-            {
-                idx = self.collect_loop_target_clause(
-                    tokens,
-                    idx + 2,
-                    scope,
-                    SymbolKind::Variable,
-                    &(None, None),
-                );
-                continue;
-            }
-            if self.token_matches_keyword(token, "sorted") {
-                let expr_start = idx + 1;
-                let expr_end = self.append_expr_end(tokens, expr_start);
-                self.collect_token_expression_refs(&tokens[expr_start..expr_end], scope, true);
-                idx = expr_end;
-                continue;
-            }
-            idx += 1;
-        }
-
-        true
+    fn collect_call_method_stmt_node(&mut self, node: NodeId, scope: ScopeId) {
+        let significant = self.significant_stmt_tokens(node);
+        self.collect_call_method_stmt(&significant, scope);
     }
 
     fn collect_assign_keyword_stmt(&mut self, node: NodeId, scope: ScopeId) {
@@ -2671,7 +2478,10 @@ impl<'a> Collector<'a> {
         };
 
         let source_tokens = &significant[1..to_idx];
-        if source_tokens.first().is_some_and(|token| self.token_matches_keyword(token, "component")) {
+        if source_tokens
+            .first()
+            .is_some_and(|token| self.token_matches_keyword(token, "component"))
+        {
             self.collect_assign_component_source(source_tokens, scope);
         } else if !source_tokens.is_empty() {
             self.collect_token_expression_refs(source_tokens, scope, true);
@@ -3010,7 +2820,11 @@ impl<'a> Collector<'a> {
                     NamedArgumentTarget::Constructor { type_name: name },
                 );
             } else {
-                self.collect_token_expression_refs(&tokens[lparen_idx + 1..rparen_idx], scope, true);
+                self.collect_token_expression_refs(
+                    &tokens[lparen_idx + 1..rparen_idx],
+                    scope,
+                    true,
+                );
             }
             return rparen_idx + 1;
         }
@@ -3142,11 +2956,8 @@ impl<'a> Collector<'a> {
                 base_name,
                 method_name,
             } => {
-                let class_symbol = self.resolve_method_target_class_symbol(
-                    scope,
-                    *base_namespace,
-                    base_name,
-                )?;
+                let class_symbol =
+                    self.resolve_method_target_class_symbol(scope, *base_namespace, base_name)?;
                 let signature =
                     self.class_method_signature(class_symbol, method_name.as_ref(), scope)?;
                 signature
@@ -3179,7 +2990,8 @@ impl<'a> Collector<'a> {
         let Some(token) = value_tokens.get(idx) else {
             return false;
         };
-        let declared_type = self.resolve_named_argument_declared_type(scope, target, &argument_name);
+        let declared_type =
+            self.resolve_named_argument_declared_type(scope, target, &argument_name);
         let structure = declared_type
             .as_ref()
             .and_then(|type_ref| self.resolve_field_type_ref(scope, type_ref));
@@ -3273,7 +3085,11 @@ impl<'a> Collector<'a> {
                     &tokens[value_start..value_end],
                 );
                 if !consumed_inline_target {
-                    self.collect_token_expression_refs(&tokens[value_start..value_end], scope, true);
+                    self.collect_token_expression_refs(
+                        &tokens[value_start..value_end],
+                        scope,
+                        true,
+                    );
                 }
                 idx = value_end;
                 segment_start = idx;

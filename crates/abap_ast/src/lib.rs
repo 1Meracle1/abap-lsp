@@ -80,8 +80,12 @@ pub enum SyntaxKind {
     AssignKeywordStmt,
     /// Inline target declaration `FIELD-SYMBOL(<fs>)`.
     FieldSymbolInlineDecl,
-    /// A simple line-oriented statement parsed as tokens through a top-level `.` (e.g. `REPORT`, `WRITE`, incomplete `DATA` …).
+    /// A simple line-oriented statement parsed as tokens through a top-level `.` when no more specific kind applies.
     SimpleStmt,
+    /// `PUBLIC SECTION.` / `PROTECTED SECTION.` / `PRIVATE SECTION.`
+    ClassSectionStmt,
+    /// `METHODS ... .` or `CLASS-METHODS ... .`
+    MethodsStmt,
     /// `REPORT ... .`
     ReportStmt,
     /// `INCLUDE ... .`
@@ -142,6 +146,16 @@ pub enum SyntaxKind {
     SelectStmt,
     /// `APPEND ... TO ... .`
     AppendStmt,
+    /// `ASSERT ... .`
+    AssertStmt,
+    /// `CHECK ... .`
+    CheckStmt,
+    /// `PERFORM ... .`
+    PerformStmt,
+    /// `CREATE OBJECT ... .`
+    CreateObjectStmt,
+    /// `CALL METHOD ... .`
+    CallMethodStmt,
     /// `READ TABLE ... .`
     ReadTableStmt,
     /// `WRITE ... .`
@@ -191,6 +205,8 @@ impl SyntaxKind {
             Self::AssignKeywordStmt => "AssignKeywordStmt",
             Self::FieldSymbolInlineDecl => "FieldSymbolInlineDecl",
             Self::SimpleStmt => "SimpleStmt",
+            Self::ClassSectionStmt => "ClassSectionStmt",
+            Self::MethodsStmt => "MethodsStmt",
             Self::ReportStmt => "ReportStmt",
             Self::IncludeStmt => "IncludeStmt",
             Self::FormDecl => "FormDecl",
@@ -221,6 +237,11 @@ impl SyntaxKind {
             Self::MethodDecl => "MethodDecl",
             Self::SelectStmt => "SelectStmt",
             Self::AppendStmt => "AppendStmt",
+            Self::AssertStmt => "AssertStmt",
+            Self::CheckStmt => "CheckStmt",
+            Self::PerformStmt => "PerformStmt",
+            Self::CreateObjectStmt => "CreateObjectStmt",
+            Self::CallMethodStmt => "CallMethodStmt",
             Self::ReadTableStmt => "ReadTableStmt",
             Self::WriteStmt => "WriteStmt",
             Self::IsPredicate => "IsPredicate",
