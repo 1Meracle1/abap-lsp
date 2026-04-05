@@ -1,0 +1,11 @@
+{
+	"comments": {
+		"lineComment": "\""
+	},
+	"folding": {
+		"markers": {
+			"start": "^[ \\t]*(?:CLASS\\b(?!-)|METHOD\\b|CASE\\b|IF\\b|INTERFACE\\b(?!-)|TRY\\b)",
+			"end": "^[ \\t]*END(?:CLASS|METHOD|CASE|IF|INTERFACE|TRY)\\b\\.?"
+		}
+	}
+}

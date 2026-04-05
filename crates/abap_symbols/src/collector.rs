@@ -2448,7 +2448,7 @@ impl<'a> Collector<'a> {
         }
 
         if matches!(kind, SqlProjectionKind::Expression) {
-            self.collect_sql_name_refs_from_tokens(query_id, scope, &tokens);
+            self.collect_sql_name_refs_from_tokens(query_id, scope, &tokens, false);
         }
         self.sql_projections.push(SqlProjectionData {
             query_id,
@@ -2678,7 +2678,7 @@ impl<'a> Collector<'a> {
             }
             _ => {
                 self.collect_sql_host_refs(&tokens, scope);
-                self.collect_sql_name_refs_from_tokens(query_id, scope, &tokens);
+                self.collect_sql_name_refs_from_tokens(query_id, scope, &tokens, true);
             }
         }
     }
@@ -2692,7 +2692,7 @@ impl<'a> Collector<'a> {
     fn collect_sql_name_refs_in_node(&mut self, query_id: usize, node: NodeId, scope: ScopeId) {
         let mut tokens = Vec::new();
         self.tokens_for_node_recursive(node, &mut tokens);
-        self.collect_sql_name_refs_from_tokens(query_id, scope, &tokens);
+        self.collect_sql_name_refs_from_tokens(query_id, scope, &tokens, false);
     }
 
     fn collect_sql_host_refs(&mut self, tokens: &[&'a Token], scope: ScopeId) {
@@ -2716,6 +2716,9 @@ impl<'a> Collector<'a> {
         query_id: usize,
         scope: ScopeId,
         tokens: &[&'a Token],
+        // When true (WHERE / HAVING / JOIN ON), bare identifiers that resolve as ABAP data objects
+        // are host variables, not unqualified SQL column names.
+        open_sql_predicate: bool,
     ) {
         let mut idx = 0usize;
         while idx < tokens.len() {
@@ -2793,11 +2796,37 @@ impl<'a> Collector<'a> {
                         idx += 1;
                         continue;
                     }
+                    let name = Arc::<str>::from(token.lexeme(self.source).to_ascii_lowercase());
+                    if open_sql_predicate {
+                        let next_kind = tokens.get(idx + 1).map(|next| next.kind);
+                        if !matches!(
+                            next_kind,
+                            Some(
+                                TokenKind::Tilde
+                                    | TokenKind::Minus
+                                    | TokenKind::Arrow
+                                    | TokenKind::FatArrow
+                            )
+                        ) && self
+                            .lookup_symbol_in_scope_chain(scope, Namespace::Value, name.as_ref())
+                            .is_some()
+                        {
+                            self.add_reference(
+                                scope,
+                                name,
+                                Namespace::Value,
+                                ReferenceKind::Identifier,
+                                token.range.clone(),
+                            );
+                            idx += 1;
+                            continue;
+                        }
+                    }
                     self.push_sql_name_ref(
                         query_id,
                         scope,
                         token.range.clone(),
-                        Arc::<str>::from(token.lexeme(self.source).to_ascii_lowercase()),
+                        name,
                         None,
                         SqlNameRefKind::Column,
                     );

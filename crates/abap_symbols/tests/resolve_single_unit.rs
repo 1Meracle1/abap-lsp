@@ -1067,6 +1067,41 @@ WRITE lt_flights.
 }
 
 #[test]
+fn open_sql_where_bare_ident_resolves_to_method_parameter_not_sql_column() {
+    let src = r#"
+CLASS zcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run IMPORTING iv_code_char TYPE string.
+ENDCLASS.
+
+CLASS zcl_demo IMPLEMENTATION.
+  METHOD run.
+    SELECT * FROM demo INTO TABLE @DATA(lt_rows) WHERE mandt = iv_code_char.
+  ENDMETHOD.
+ENDCLASS.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///opensql_where_param.abap", src, &parsed);
+
+    assert!(
+        !unit.sql_name_refs.iter().any(|reference| {
+            reference.kind == SqlNameRefKind::Column && reference.name.as_ref() == "iv_code_char"
+        }),
+        "host variable should not be recorded as Open SQL column: {:?}",
+        unit.sql_name_refs
+    );
+    assert!(
+        unit.references.iter().any(|reference| {
+            reference.namespace == Namespace::Value
+                && reference.name.as_ref() == "iv_code_char"
+                && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+        }),
+        "expected iv_code_char reference in WHERE, got {:?}",
+        unit.references
+    );
+}
+
+#[test]
 fn collects_sql_semantics_for_join_dynamic_where_and_for_all_entries() {
     let src = r#"
 DATA lt_keys TYPE string.

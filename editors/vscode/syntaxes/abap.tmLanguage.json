@@ -35,6 +35,106 @@
 			]
 		},
 		{
+			"name": "class-block",
+			"begin": "(?i:\\bCLASS\\b(?!-))",
+			"beginCaptures": {
+				"0": {
+					"name": "keyword.control.class.abap"
+				}
+			},
+			"end": "(?i:\\bENDCLASS\\b)",
+			"endCaptures": {
+				"0": {
+					"name": "keyword.control.endclass.abap"
+				}
+			},
+			"patterns": [
+				{
+					"include": "#expressions"
+				}
+			]
+		},
+		{
+			"name": "method-block",
+			"begin": "(?i:\\bMETHOD\\b)",
+			"beginCaptures": {
+				"0": {
+					"name": "keyword.control.method.abap"
+				}
+			},
+			"end": "(?i:\\bENDMETHOD\\b)",
+			"endCaptures": {
+				"0": {
+					"name": "keyword.control.endmethod.abap"
+				}
+			},
+			"patterns": [
+				{
+					"include": "#expressions"
+				}
+			]
+		},
+		{
+			"name": "case-block",
+			"begin": "(?i:\\bCASE\\b)",
+			"beginCaptures": {
+				"0": {
+					"name": "keyword.control.case.abap"
+				}
+			},
+			"end": "(?i:\\bENDCASE\\b)",
+			"endCaptures": {
+				"0": {
+					"name": "keyword.control.endcase.abap"
+				}
+			},
+			"patterns": [
+				{
+					"include": "#expressions"
+				}
+			]
+		},
+		{
+			"name": "interface-block",
+			"begin": "(?i:\\bINTERFACE\\b(?!-))",
+			"beginCaptures": {
+				"0": {
+					"name": "keyword.control.interface.abap"
+				}
+			},
+			"end": "(?i:\\bENDINTERFACE\\b)",
+			"endCaptures": {
+				"0": {
+					"name": "keyword.control.endinterface.abap"
+				}
+			},
+			"patterns": [
+				{
+					"include": "#expressions"
+				}
+			]
+		},
+		{
+			"name": "try-block",
+			"begin": "(?i:\\bTRY\\b)",
+			"beginCaptures": {
+				"0": {
+					"name": "keyword.control.try.abap"
+				}
+			},
+			"end": "(?i:\\bENDTRY\\b)",
+			"endCaptures": {
+				"0": {
+					"name": "keyword.control.endtry.abap"
+				}
+			},
+			"patterns": [
+				{
+					"include": "#expressions"
+				}
+			]
+		},
+		{
 			"name": "loop-block",
 			"begin": "(?i:\\bLOOP\\b)",
 			"beginCaptures": {
@@ -76,6 +176,22 @@
 		}
 	],
 	"repository": {
+		"expressions": {
+			"patterns": [
+				{
+					"include": "#keywords"
+				},
+				{
+					"include": "#strings"
+				},
+				{
+					"include": "#comments"
+				},
+				{
+					"include": "#numbers"
+				}
+			]
+		},
 		"keywords": {
 			"patterns": [
 				{
