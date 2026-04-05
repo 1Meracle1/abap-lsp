@@ -37,6 +37,8 @@ pub struct BuiltinRoutineSpec {
     pub hover_params: &'static [&'static str],
     pub return_type: &'static str,
     pub description: &'static str,
+    /// When false, named parameter passing (`name = value`) is reported as invalid (ABAP style for most built-ins).
+    pub supports_named_arguments: bool,
 }
 
 pub const SYST_FIELDS: &[BuiltinFieldSpec] = &[
@@ -291,6 +293,7 @@ pub const BUILTIN_ROUTINES: &[BuiltinRoutineSpec] = &[
         hover_params: &["table_line"],
         return_type: "abap_bool",
         description: "Predicate function: returns whether a row exists for the given internal table expression.",
+        supports_named_arguments: false,
     },
     BuiltinRoutineSpec {
         name: "charlen",
@@ -307,6 +310,7 @@ pub const BUILTIN_ROUTINES: &[BuiltinRoutineSpec] = &[
         hover_params: &["arg"],
         return_type: "i",
         description: "Length of the first character in the current code page.",
+        supports_named_arguments: false,
     },
     BuiltinRoutineSpec {
         name: "dbmaxlen",
@@ -314,6 +318,7 @@ pub const BUILTIN_ROUTINES: &[BuiltinRoutineSpec] = &[
         hover_params: &["arg"],
         return_type: "i",
         description: "Maximum ABAP Dictionary length for a string-like value.",
+        supports_named_arguments: false,
     },
     BuiltinRoutineSpec {
         name: "numofchar",
@@ -330,6 +335,7 @@ pub const BUILTIN_ROUTINES: &[BuiltinRoutineSpec] = &[
         hover_params: &["arg"],
         return_type: "i",
         description: "Number of characters in a text value.",
+        supports_named_arguments: false,
     },
     BuiltinRoutineSpec {
         name: "strlen",
@@ -337,6 +343,28 @@ pub const BUILTIN_ROUTINES: &[BuiltinRoutineSpec] = &[
         hover_params: &["arg"],
         return_type: "i",
         description: "Number of characters in a text value.",
+        supports_named_arguments: false,
+    },
+    BuiltinRoutineSpec {
+        name: "substring",
+        params: &[
+            BuiltinRoutineParamSpec {
+                name: "val",
+                type_name: "string",
+            },
+            BuiltinRoutineParamSpec {
+                name: "off",
+                type_name: "i",
+            },
+            BuiltinRoutineParamSpec {
+                name: "len",
+                type_name: "i",
+            },
+        ],
+        hover_params: &["val", "off", "len"],
+        return_type: "string",
+        description: "Returns a substring of a text-like value; optional `off` selects the start position and optional `len` limits the length (if `len` is omitted, the remainder is returned).",
+        supports_named_arguments: true,
     },
     BuiltinRoutineSpec {
         name: "to_lower",
@@ -344,6 +372,7 @@ pub const BUILTIN_ROUTINES: &[BuiltinRoutineSpec] = &[
         hover_params: &["arg"],
         return_type: "string",
         description: "Returns a text value converted to lowercase.",
+        supports_named_arguments: false,
     },
     BuiltinRoutineSpec {
         name: "xstrlen",
@@ -351,6 +380,7 @@ pub const BUILTIN_ROUTINES: &[BuiltinRoutineSpec] = &[
         hover_params: &["arg"],
         return_type: "i",
         description: "Number of bytes in a byte string value.",
+        supports_named_arguments: false,
     },
     BuiltinRoutineSpec {
         name: "lines",
@@ -358,6 +388,7 @@ pub const BUILTIN_ROUTINES: &[BuiltinRoutineSpec] = &[
         hover_params: &["arg"],
         return_type: "i",
         description: "Number of rows in an internal table value.",
+        supports_named_arguments: false,
     },
 ];
 

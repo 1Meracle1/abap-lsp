@@ -776,7 +776,9 @@ pub(crate) fn validate_project_with_scope_indexes(
             else {
                 continue;
             };
-            if builtin_routine_spec(routine_name.as_ref()).is_some() {
+            if let Some(spec) = builtin_routine_spec(routine_name.as_ref())
+                && !spec.supports_named_arguments
+            {
                 unit_diagnostics.push(Diagnostic {
                     kind: DiagnosticKind::InvalidBuiltinNamedArgument,
                     range: named_argument.range.clone(),

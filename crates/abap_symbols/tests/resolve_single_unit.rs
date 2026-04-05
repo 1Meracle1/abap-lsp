@@ -3411,6 +3411,44 @@ fn resolves_to_lower_as_builtin_routine() {
 }
 
 #[test]
+fn resolves_substring_builtin_with_named_arguments() {
+    let src = "\
+DATA iv_string TYPE string.\n\
+DATA gc_0 TYPE i VALUE 0.\n\
+DATA gc_50 TYPE i VALUE 50.\n\
+DATA gc_150 TYPE i VALUE 150.\n\
+DATA ev1 TYPE string.\n\
+DATA ev2 TYPE string.\n\
+DATA ev3 TYPE string.\n\
+ev1 = substring( val = iv_string off = gc_0 len = gc_50 ).\n\
+ev2 = substring( val = iv_string off = gc_150 ).\n\
+ev3 = substring( val = iv_string len = 10 ).\n\
+";
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///builtin_substring.abap", src, &parsed);
+
+    let substring_calls: Vec<_> = unit
+        .references
+        .iter()
+        .filter(|reference| {
+            reference.kind == ReferenceKind::RoutineCall
+                && reference.namespace == Namespace::Routine
+                && reference.name.as_ref() == "substring"
+        })
+        .collect();
+    assert_eq!(substring_calls.len(), 3, "{:?}", substring_calls);
+    assert!(substring_calls.iter().all(|reference| {
+        matches!(reference.resolution, Some(Resolution::BuiltinRoutine))
+    }));
+    assert!(!unit.diagnostics.iter().any(|diag| {
+        diag.kind == DiagnosticKind::InvalidBuiltinNamedArgument && diag.message.contains("substring")
+    }));
+    assert!(!unit.diagnostics.iter().any(|diag| {
+        diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains("substring")
+    }));
+}
+
+#[test]
 fn substring_access_uses_value_namespace() {
     let src = "\
 DATA ls_time TYPE string.\n\
