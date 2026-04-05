@@ -513,7 +513,9 @@ impl<'a> Collector<'a> {
             | SyntaxKind::ModifyStmt
             | SyntaxKind::DeleteStmt
             | SyntaxKind::DeleteDbTableStmt
-            | SyntaxKind::ReadTableStmt => self.walk_children(node, scope),
+            | SyntaxKind::ReadTableStmt
+            | SyntaxKind::GetBitStmt
+            | SyntaxKind::SetBitStmt => self.walk_children(node, scope),
             SyntaxKind::TypeRefSimple => self.collect_type_ref(node, scope),
             SyntaxKind::ExprIdent
             | SyntaxKind::SelectorExpr
