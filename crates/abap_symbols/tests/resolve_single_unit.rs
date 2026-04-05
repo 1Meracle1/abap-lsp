@@ -464,6 +464,108 @@ APPEND ls_evt TO lt_evt.
 }
 
 #[test]
+fn resolves_append_lines_of_source_and_target() {
+    let src = r#"
+TYPES ty_evt_tab TYPE STANDARD TABLE OF string WITH DEFAULT KEY.
+DATA lt_src TYPE ty_evt_tab.
+DATA lt_dst TYPE ty_evt_tab.
+
+APPEND LINES OF lt_src TO lt_dst.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///append_lines_stmt.abap", src, &parsed);
+
+    for name in ["lt_src", "lt_dst"] {
+        assert!(
+            unit.references.iter().any(|reference| {
+                reference.namespace == Namespace::Value
+                    && reference.kind == ReferenceKind::Identifier
+                    && reference.name.as_ref() == name
+                    && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+            }),
+            "expected resolved APPEND LINES OF reference for `{name}`, refs={:?} diagnostics={:?}",
+            unit.references,
+            unit.diagnostics
+        );
+        assert!(
+            !unit.diagnostics.iter().any(|diag| {
+                diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains(name)
+            }),
+            "unexpected APPEND LINES OF diagnostics for `{name}`: {:?}",
+            unit.diagnostics
+        );
+    }
+}
+
+#[test]
+fn resolves_append_initial_line_target_and_assigning_field_symbol() {
+    let src = r#"
+TYPES ty_evt_tab TYPE STANDARD TABLE OF string WITH DEFAULT KEY.
+DATA lt_dst TYPE ty_evt_tab.
+FIELD-SYMBOLS <ls_evt> TYPE any.
+
+APPEND INITIAL LINE TO lt_dst ASSIGNING <ls_evt>.
+<ls_evt> = <ls_evt>.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///append_initial_line_stmt.abap", src, &parsed);
+
+    for name in ["lt_dst", "<ls_evt>"] {
+        assert!(
+            unit.references.iter().any(|reference| {
+                reference.namespace == Namespace::Value
+                    && reference.kind == ReferenceKind::Identifier
+                    && reference.name.as_ref() == name
+                    && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+            }),
+            "expected resolved APPEND INITIAL LINE reference for `{name}`, refs={:?} diagnostics={:?}",
+            unit.references,
+            unit.diagnostics
+        );
+        assert!(
+            !unit.diagnostics.iter().any(|diag| {
+                diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains(name)
+            }),
+            "unexpected APPEND INITIAL LINE diagnostics for `{name}`: {:?}",
+            unit.diagnostics
+        );
+    }
+}
+
+#[test]
+fn resolves_move_corresponding_source_and_target() {
+    let src = r#"
+DATA ls_general TYPE string.
+DATA ls_ord_head TYPE string.
+
+MOVE-CORRESPONDING ls_general TO ls_ord_head.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///move_corresponding_stmt.abap", src, &parsed);
+
+    for name in ["ls_general", "ls_ord_head"] {
+        assert!(
+            unit.references.iter().any(|reference| {
+                reference.namespace == Namespace::Value
+                    && reference.kind == ReferenceKind::Identifier
+                    && reference.name.as_ref() == name
+                    && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+            }),
+            "expected resolved MOVE-CORRESPONDING reference for `{name}`, refs={:?} diagnostics={:?}",
+            unit.references,
+            unit.diagnostics
+        );
+        assert!(
+            !unit.diagnostics.iter().any(|diag| {
+                diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains(name)
+            }),
+            "unexpected MOVE-CORRESPONDING diagnostics for `{name}`: {:?}",
+            unit.diagnostics
+        );
+    }
+}
+
+#[test]
 fn resolves_modify_source_and_target() {
     let src = r#"
 TYPES ty_trans TYPE BEGIN OF ty_trans,

@@ -2390,6 +2390,7 @@ fn is_selector_query_container(kind: &str) -> bool {
             | "UnparsedStmt"
             | "CallStmt"
             | "MethodsStmt"
+            | "MoveCorrespondingStmt"
             | "AssertStmt"
             | "CheckStmt"
             | "PerformStmt"

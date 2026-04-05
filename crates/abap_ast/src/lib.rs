@@ -212,6 +212,8 @@ pub enum SyntaxKind {
     SqlParenGroup,
     /// `APPEND ... TO ... .`
     AppendStmt,
+    /// `MOVE-CORRESPONDING ... TO ... .`
+    MoveCorrespondingStmt,
     /// `MODIFY ... FROM ... .`
     ModifyStmt,
     /// `DELETE itab ... .` and `DELETE ADJACENT DUPLICATES FROM itab ... .`
@@ -354,6 +356,7 @@ impl SyntaxKind {
             Self::SqlDynamicWhere => "SqlDynamicWhere",
             Self::SqlParenGroup => "SqlParenGroup",
             Self::AppendStmt => "AppendStmt",
+            Self::MoveCorrespondingStmt => "MoveCorrespondingStmt",
             Self::ModifyStmt => "ModifyStmt",
             Self::DeleteStmt => "DeleteInternalTableStmt",
             Self::DeleteDbTableStmt => "DeleteDbTableFromTableStmt",

@@ -2840,7 +2840,8 @@ pub fn try_parse_append_stmt(
         |b, period_i, _errors| {
             let clause_starts =
                 |tokens: &[Token], idx: usize| append_clause_starts(source, tokens, idx);
-            let Some(to_idx) = (idx + 1..period_i).find(|&i| is_keyword(source, &tokens[i], "to"))
+            let Some(to_idx) =
+                find_top_level_keyword_index(source, tokens, idx + 1, period_i, "to")
             else {
                 let children = token_children(b, tokens, idx, period_i + 1);
                 let node = b.branch(
@@ -2853,16 +2854,47 @@ pub fn try_parse_append_stmt(
             let mut children = Vec::with_capacity(period_i - idx + 1);
             children.push(token_leaf(b, append_tok));
 
-            let source_end = scan_and_push_expr_clause(
-                b,
-                &mut children,
-                source,
-                tokens,
-                idx + 1,
-                to_idx,
-                Some(append_tok),
-                &clause_starts,
-            );
+            let source_end = if tokens
+                .get(idx + 1)
+                .is_some_and(|token| is_keyword(source, token, "initial"))
+                && tokens
+                    .get(idx + 2)
+                    .is_some_and(|token| is_keyword(source, token, "line"))
+            {
+                children.push(token_leaf(b, &tokens[idx + 1]));
+                children.push(token_leaf(b, &tokens[idx + 2]));
+                idx + 3
+            } else if tokens
+                .get(idx + 1)
+                .is_some_and(|token| is_keyword(source, token, "lines"))
+                && tokens
+                    .get(idx + 2)
+                    .is_some_and(|token| is_keyword(source, token, "of"))
+            {
+                children.push(token_leaf(b, &tokens[idx + 1]));
+                children.push(token_leaf(b, &tokens[idx + 2]));
+                scan_and_push_expr_clause(
+                    b,
+                    &mut children,
+                    source,
+                    tokens,
+                    idx + 3,
+                    to_idx,
+                    tokens.get(idx + 2),
+                    &clause_starts,
+                )
+            } else {
+                scan_and_push_expr_clause(
+                    b,
+                    &mut children,
+                    source,
+                    tokens,
+                    idx + 1,
+                    to_idx,
+                    Some(append_tok),
+                    &clause_starts,
+                )
+            };
             push_token_children(b, &mut children, tokens, source_end, to_idx);
 
             children.push(token_leaf(b, &tokens[to_idx]));
@@ -2929,6 +2961,92 @@ pub fn try_parse_append_stmt(
             let node = b.branch(
                 SyntaxKind::AppendStmt,
                 append_tok.range.start..tokens[period_i].range.end,
+                &children,
+            );
+            (node, period_i + 1)
+        },
+    ))
+}
+
+fn move_corresponding_clause_starts(source: &str, tokens: &[Token], idx: usize) -> bool {
+    let Some(token) = tokens.get(idx) else {
+        return false;
+    };
+    token.kind == TokenKind::Ident
+        && (is_keyword(source, token, "to")
+            || is_keyword(source, token, "expanding")
+            || is_keyword(source, token, "keeping"))
+}
+
+pub fn try_parse_move_corresponding_stmt(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    errors: &mut Vec<crate::ParseError>,
+) -> Option<(NodeId, usize)> {
+    let move_tok = tokens.get(idx)?;
+    let keyword_end = match_hyphenated_keyword(source, tokens, idx, &["move", "corresponding"])?;
+    Some(parse_stmt_with_period_scan(
+        b,
+        source,
+        tokens,
+        idx,
+        keyword_end,
+        move_tok,
+        "syntax error: expected '.' after MOVE-CORRESPONDING statement",
+        errors,
+        |_, end_exclusive| end_exclusive,
+        |b, period_i, _errors| {
+            let clause_starts =
+                |tokens: &[Token], idx: usize| move_corresponding_clause_starts(source, tokens, idx);
+            let Some(to_idx) =
+                find_top_level_keyword_index(source, tokens, keyword_end, period_i, "to")
+            else {
+                let children = token_children(b, tokens, idx, period_i + 1);
+                let node = b.branch(
+                    SyntaxKind::Error,
+                    move_tok.range.start..tokens[period_i].range.end,
+                    &children,
+                );
+                return (node, period_i + 1);
+            };
+
+            let mut children = Vec::with_capacity(period_i - idx + 1);
+            push_token_children(b, &mut children, tokens, idx, keyword_end);
+
+            let source_end = scan_and_push_expr_clause(
+                b,
+                &mut children,
+                source,
+                tokens,
+                keyword_end,
+                to_idx,
+                tokens.get(keyword_end.saturating_sub(1)),
+                &clause_starts,
+            );
+            push_token_children(b, &mut children, tokens, source_end, to_idx);
+
+            children.push(token_leaf(b, &tokens[to_idx]));
+            let mut i = scan_and_push_expr_clause(
+                b,
+                &mut children,
+                source,
+                tokens,
+                to_idx + 1,
+                period_i,
+                Some(&tokens[to_idx]),
+                &clause_starts,
+            );
+
+            while i < period_i {
+                children.push(token_leaf(b, &tokens[i]));
+                i += 1;
+            }
+            children.push(token_leaf(b, &tokens[period_i]));
+            let node = b.branch(
+                SyntaxKind::MoveCorrespondingStmt,
+                move_tok.range.start..tokens[period_i].range.end,
                 &children,
             );
             (node, period_i + 1)
@@ -3947,6 +4065,46 @@ END-OF-PAGE.\nWRITE 'e'.",
             .find_first_kind(parsed.file.root(), SyntaxKind::AppendStmt)
             .expect("append stmt");
         assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::TemplateExpr), 2);
+    }
+
+    #[test]
+    fn parses_append_lines_of_operands_as_ast_children() {
+        let parsed = crate::parse("APPEND LINES OF lt_src TO lt_dst.");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let stmt = parsed
+            .file
+            .find_first_kind(parsed.file.root(), SyntaxKind::AppendStmt)
+            .expect("append stmt");
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::TemplateExpr), 2);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::ExprIdent), 2);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::Error), 0);
+    }
+
+    #[test]
+    fn parses_append_initial_line_assigning_operands_as_ast_children() {
+        let parsed =
+            crate::parse("APPEND INITIAL LINE TO lt_bup_reg_key ASSIGNING <ls_bup_reg_key>.");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let stmt = parsed
+            .file
+            .find_first_kind(parsed.file.root(), SyntaxKind::AppendStmt)
+            .expect("append stmt");
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::TemplateExpr), 2);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::ExprIdent), 2);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::Error), 0);
+    }
+
+    #[test]
+    fn parses_move_corresponding_operands_as_ast_children() {
+        let parsed = crate::parse("MOVE-CORRESPONDING ls_general TO ls_ord_head.");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let stmt = parsed
+            .file
+            .find_first_kind(parsed.file.root(), SyntaxKind::MoveCorrespondingStmt)
+            .expect("move-corresponding stmt");
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::TemplateExpr), 2);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::ExprIdent), 2);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::Error), 0);
     }
 
     #[test]
