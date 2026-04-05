@@ -514,13 +514,13 @@ impl<'a> Collector<'a> {
             | SyntaxKind::InsertTableStmt
             | SyntaxKind::MoveCorrespondingStmt
             | SyntaxKind::MoveStmt
-            | SyntaxKind::SortStmt
             | SyntaxKind::ModifyStmt
             | SyntaxKind::DeleteStmt
             | SyntaxKind::DeleteDbTableStmt
             | SyntaxKind::ReadTableStmt
             | SyntaxKind::GetBitStmt
             | SyntaxKind::SetBitStmt => self.walk_children(node, scope),
+            SyntaxKind::SortStmt => self.collect_sort_stmt(node, scope),
             SyntaxKind::TypeRefSimple => self.collect_type_ref(node, scope),
             SyntaxKind::ExprIdent
             | SyntaxKind::SelectorExpr
@@ -3309,6 +3309,89 @@ impl<'a> Collector<'a> {
                     }
                 }
             }
+        }
+    }
+
+    /// `BY` components are row fields of the sorted internal table, not standalone value symbols.
+    /// When the line type has no local structure (e.g. unresolved DDIC row type), field validation
+    /// is skipped — unlike an unresolved `Identifier` reference.
+    fn collect_sort_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        let children: Vec<NodeId> = self.file.children(node).collect();
+        let by_idx = children.iter().position(|&c| {
+            self.file.kind(c) == SyntaxKind::Token
+                && self
+                    .token_for_node(c)
+                    .is_some_and(|t| self.token_matches_keyword(t, "by"))
+        });
+        let Some(by_idx) = by_idx else {
+            self.walk_children(node, scope);
+            return;
+        };
+
+        let mut itab_base = None;
+        for &tmpl in children[..by_idx].iter() {
+            if self.file.kind(tmpl) == SyntaxKind::TemplateExpr {
+                itab_base = self
+                    .file
+                    .children(tmpl)
+                    .next()
+                    .and_then(|inner| self.sql_target_name_from_expr(inner));
+                break;
+            }
+        }
+
+        for &child in &children[..by_idx] {
+            self.walk_node(child, scope);
+        }
+
+        let Some(itab_base) = itab_base else {
+            for &child in &children[by_idx + 1..] {
+                self.walk_node(child, scope);
+            }
+            return;
+        };
+
+        for &child in &children[by_idx + 1..] {
+            if self.file.kind(child) == SyntaxKind::TemplateExpr {
+                let Some(inner) = self.file.children(child).next() else {
+                    self.walk_node(child, scope);
+                    continue;
+                };
+                if let Some(field_path) = self.sort_by_field_segments_from_expr(inner) {
+                    self.field_accesses.push(FieldAccess {
+                        scope,
+                        base_namespace: Namespace::Value,
+                        base_name: Arc::clone(&itab_base),
+                        field_path,
+                        in_type_position: false,
+                    });
+                    continue;
+                }
+            }
+            self.walk_node(child, scope);
+        }
+    }
+
+    fn sort_by_field_segments_from_expr(&self, inner: NodeId) -> Option<Vec<FieldAccessSegment>> {
+        match self.file.kind(inner) {
+            SyntaxKind::ExprIdent => {
+                let (name, range) = self.node_name(inner)?;
+                Some(vec![FieldAccessSegment { name, range }])
+            }
+            SyntaxKind::SelectorExpr => {
+                let (namespace, base_name, base_range, mut path) =
+                    self.selector_access_chain(inner)?;
+                if namespace != Namespace::Value {
+                    return None;
+                }
+                let mut out = vec![FieldAccessSegment {
+                    name: base_name,
+                    range: base_range,
+                }];
+                out.append(&mut path);
+                Some(out)
+            }
+            _ => None,
         }
     }
 

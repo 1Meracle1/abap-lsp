@@ -1187,6 +1187,68 @@ SELECT * FROM demo INTO CORRESPONDING FIELDS OF TABLE lt_gs1_gcp.
 }
 
 #[test]
+fn sort_by_component_does_not_report_unknown_symbol_when_row_structure_unresolved() {
+    let src = r#"
+FORM f.
+  DATA lt_tab TYPE STANDARD TABLE OF /sttp/gs1_gcp.
+  SORT lt_tab BY gs1_gcp.
+ENDFORM.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///sort_by_unresolved_row.abap", src, &parsed);
+    assert!(
+        !unit.references.iter().any(|reference| {
+            reference.namespace == Namespace::Value
+                && reference.name.as_ref() == "gs1_gcp"
+                && reference.resolution.is_none()
+        }),
+        "BY component must not be collected as an unresolved value reference: refs={:?} diagnostics={:?}",
+        unit.references,
+        unit.diagnostics
+    );
+    assert!(
+        !unit
+            .diagnostics
+            .iter()
+            .any(|diag| diag.message.contains("unknown symbol 'gs1_gcp'")),
+        "unexpected unknown-symbol diagnostic for SORT BY key: {:?}",
+        unit.diagnostics
+    );
+    assert!(
+        unit.field_accesses.iter().any(|access| {
+            access.base_namespace == Namespace::Value
+                && access.base_name.as_ref() == "lt_tab"
+                && access.field_path.len() == 1
+                && access.field_path[0].name.as_ref() == "gs1_gcp"
+        }),
+        "expected SORT BY to record field access on the internal table: {:?}",
+        unit.field_accesses
+    );
+}
+
+#[test]
+fn sort_by_unknown_component_reports_unknown_field_when_row_structure_known() {
+    let src = r#"
+TYPES: BEGIN OF ty_row,
+         gs1_gcp TYPE string,
+       END OF ty_row.
+FORM f.
+  DATA lt_tab TYPE STANDARD TABLE OF ty_row.
+  SORT lt_tab BY no_such_field.
+ENDFORM.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///sort_by_bad_field.abap", src, &parsed);
+    assert!(
+        unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnknownField && diag.message.contains("no_such_field")
+        }),
+        "expected UnknownField for invalid SORT BY key: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn resolves_concatenate_operands_and_selector_sources() {
     let src = r#"
 CLASS zcl_program DEFINITION.
