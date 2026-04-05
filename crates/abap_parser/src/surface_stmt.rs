@@ -1854,6 +1854,45 @@ fn append_clause_starts(source: &str, tokens: &[Token], idx: usize) -> bool {
                     .is_some_and(|next| is_keyword(source, next, "into"))))
 }
 
+/// Ends the row/line source expression before top-level `INTO`.
+fn insert_internal_source_clause_starts(source: &str, tokens: &[Token], idx: usize) -> bool {
+    let Some(token) = tokens.get(idx) else {
+        return false;
+    };
+    token.kind == TokenKind::Ident && is_keyword(source, token, "into")
+}
+
+/// After `INTO` without `TABLE`, ends the internal-table target before tail or DB `VALUES` / `SET`.
+fn insert_into_bare_itab_clause_starts(source: &str, tokens: &[Token], idx: usize) -> bool {
+    let Some(token) = tokens.get(idx) else {
+        return false;
+    };
+    if token.kind != TokenKind::Ident {
+        return false;
+    }
+    is_keyword(source, token, "index")
+        || is_keyword(source, token, "assigning")
+        || is_keyword(source, token, "values")
+        || is_keyword(source, token, "set")
+        || (is_keyword(source, token, "reference")
+            && tokens
+                .get(idx + 1)
+                .is_some_and(|next| is_keyword(source, next, "into")))
+}
+
+fn insert_into_table_tail_clause_starts(source: &str, tokens: &[Token], idx: usize) -> bool {
+    let Some(token) = tokens.get(idx) else {
+        return false;
+    };
+    token.kind == TokenKind::Ident
+        && (is_keyword(source, token, "index")
+            || is_keyword(source, token, "assigning")
+            || (is_keyword(source, token, "reference")
+                && tokens
+                    .get(idx + 1)
+                    .is_some_and(|next| is_keyword(source, next, "into"))))
+}
+
 fn modify_clause_starts(source: &str, tokens: &[Token], idx: usize) -> bool {
     let Some(token) = tokens.get(idx) else {
         return false;
@@ -2966,6 +3005,147 @@ pub fn try_parse_append_stmt(
             (node, period_i + 1)
         },
     ))
+}
+
+pub fn try_parse_insert_table_stmt(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    errors: &mut Vec<crate::ParseError>,
+) -> Option<(NodeId, usize)> {
+    let insert_tok = tokens.get(idx)?;
+    if !is_keyword(source, insert_tok, "insert") {
+        return None;
+    }
+    match scan_until_statement_period(tokens, source, idx + 1) {
+        StmtPeriodScan::Found(period_i) => {
+            let into_idx = find_top_level_keyword_index(
+                source,
+                tokens,
+                idx + 1,
+                period_i,
+                "into",
+            )?;
+            let has_table_kw = tokens
+                .get(into_idx + 1)
+                .is_some_and(|t| is_keyword(source, t, "table"));
+            if !has_table_kw {
+                let itab_start = into_idx + 1;
+                let bare_clause =
+                    |t: &[Token], i: usize| insert_into_bare_itab_clause_starts(source, t, i);
+                let itab_end = scan_until_clause(tokens, itab_start, period_i, &bare_clause);
+                if itab_end < period_i {
+                    let head = &tokens[itab_end];
+                    if is_keyword(source, head, "values") || is_keyword(source, head, "set") {
+                        return None;
+                    }
+                }
+            }
+            let mut children = Vec::with_capacity(period_i - idx + 1);
+            children.push(token_leaf(b, insert_tok));
+            let source_clause =
+                |tokens: &[Token], i: usize| insert_internal_source_clause_starts(source, tokens, i);
+            scan_and_push_expr_clause(
+                b,
+                &mut children,
+                source,
+                tokens,
+                idx + 1,
+                into_idx,
+                Some(insert_tok),
+                &source_clause,
+            );
+            children.push(token_leaf(b, &tokens[into_idx]));
+            let (table_expr_start, prev_before_itab): (usize, &Token) = if has_table_kw {
+                children.push(token_leaf(b, &tokens[into_idx + 1]));
+                (into_idx + 2, &tokens[into_idx + 1])
+            } else {
+                (into_idx + 1, &tokens[into_idx])
+            };
+            let tail_clause =
+                |tokens: &[Token], i: usize| insert_into_table_tail_clause_starts(source, tokens, i);
+            let mut i = scan_and_push_expr_clause(
+                b,
+                &mut children,
+                source,
+                tokens,
+                table_expr_start,
+                period_i,
+                Some(prev_before_itab),
+                &tail_clause,
+            );
+            while i < period_i {
+                let token = &tokens[i];
+                if is_keyword(source, token, "index") {
+                    children.push(token_leaf(b, token));
+                    i = scan_and_push_expr_clause(
+                        b,
+                        &mut children,
+                        source,
+                        tokens,
+                        i + 1,
+                        period_i,
+                        Some(token),
+                        &tail_clause,
+                    );
+                    continue;
+                }
+                if is_keyword(source, token, "assigning") {
+                    children.push(token_leaf(b, token));
+                    i = scan_and_push_assigning_target_clause(
+                        b,
+                        &mut children,
+                        source,
+                        tokens,
+                        i + 1,
+                        period_i,
+                        token,
+                        &tail_clause,
+                    );
+                    continue;
+                } else if is_keyword(source, token, "reference")
+                    && tokens
+                        .get(i + 1)
+                        .is_some_and(|next| is_keyword(source, next, "into"))
+                {
+                    i = scan_and_push_reference_into_clause(
+                        b,
+                        &mut children,
+                        source,
+                        tokens,
+                        i + 1,
+                        period_i,
+                        &tail_clause,
+                    );
+                    continue;
+                }
+                children.push(token_leaf(b, token));
+                i += 1;
+            }
+            children.push(token_leaf(b, &tokens[period_i]));
+            let node = b.branch(
+                SyntaxKind::InsertTableStmt,
+                insert_tok.range.start..tokens[period_i].range.end,
+                &children,
+            );
+            Some((node, period_i + 1))
+        }
+        StmtPeriodScan::Unterminated { end_exclusive } => {
+            let err_end = unterminated_err_end(tokens, end_exclusive, insert_tok.range.end);
+            errors.push(crate::ParseError {
+                message: "syntax error: expected '.' after INSERT statement".to_string(),
+                range: insert_tok.range.start..err_end,
+            });
+            let children = token_children(b, tokens, idx, end_exclusive);
+            let node = b.branch(
+                SyntaxKind::Error,
+                insert_tok.range.start..err_end,
+                &children,
+            );
+            Some((node, next_after_unterminated_scan(tokens, end_exclusive)))
+        }
+    }
 }
 
 fn move_corresponding_clause_starts(source: &str, tokens: &[Token], idx: usize) -> bool {
@@ -4092,6 +4272,81 @@ END-OF-PAGE.\nWRITE 'e'.",
         assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::TemplateExpr), 2);
         assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::ExprIdent), 2);
         assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::Error), 0);
+    }
+
+    #[test]
+    fn parses_insert_into_table_stmt() {
+        let parsed = crate::parse("INSERT is_buffer INTO TABLE st_buffer_role.");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::InsertTableStmt),
+            1
+        );
+    }
+
+    #[test]
+    fn parses_insert_into_table_operands_as_ast_children() {
+        let parsed = crate::parse("INSERT is_buffer INTO TABLE st_buffer_role.");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let stmt = parsed
+            .file
+            .find_first_kind(parsed.file.root(), SyntaxKind::InsertTableStmt)
+            .expect("insert into table stmt");
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::TemplateExpr), 2);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::ExprIdent), 2);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::Error), 0);
+    }
+
+    #[test]
+    fn parses_insert_lines_of_into_table() {
+        let parsed = crate::parse("INSERT LINES OF lt_src INTO TABLE lt_dst.");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::InsertTableStmt),
+            1
+        );
+    }
+
+    #[test]
+    fn insert_dbtab_from_wa_is_not_insert_table_stmt() {
+        let parsed = crate::parse("INSERT ztab FROM wa.");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::InsertTableStmt),
+            0
+        );
+    }
+
+    #[test]
+    fn parses_insert_into_itab_index_multiline() {
+        let parsed = crate::parse(
+            "INSERT lv_parent_bupid\n  INTO   lt_bupid\n  INDEX  1.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::InsertTableStmt),
+            1
+        );
+    }
+
+    #[test]
+    fn insert_into_dbtab_values_is_not_insert_table_stmt() {
+        let parsed = crate::parse("INSERT INTO customers VALUES wa.");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::InsertTableStmt),
+            0
+        );
     }
 
     #[test]

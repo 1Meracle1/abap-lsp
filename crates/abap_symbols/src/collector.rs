@@ -511,6 +511,7 @@ impl<'a> Collector<'a> {
             }
             SyntaxKind::SelectStmt => self.collect_select_stmt(node, scope),
             SyntaxKind::AppendStmt
+            | SyntaxKind::InsertTableStmt
             | SyntaxKind::MoveCorrespondingStmt
             | SyntaxKind::ModifyStmt
             | SyntaxKind::DeleteStmt

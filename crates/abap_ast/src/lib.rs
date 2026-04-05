@@ -210,6 +210,8 @@ pub enum SyntaxKind {
     SqlDynamicWhere,
     /// Parenthesized SQL grouping.
     SqlParenGroup,
+    /// `INSERT ... INTO [TABLE] itab ... .` (internal table insert)
+    InsertTableStmt,
     /// `APPEND ... TO ... .`
     AppendStmt,
     /// `MOVE-CORRESPONDING ... TO ... .`
@@ -355,6 +357,7 @@ impl SyntaxKind {
             Self::SqlHostExpr => "SqlHostExpr",
             Self::SqlDynamicWhere => "SqlDynamicWhere",
             Self::SqlParenGroup => "SqlParenGroup",
+            Self::InsertTableStmt => "InsertTableStmt",
             Self::AppendStmt => "AppendStmt",
             Self::MoveCorrespondingStmt => "MoveCorrespondingStmt",
             Self::ModifyStmt => "ModifyStmt",
