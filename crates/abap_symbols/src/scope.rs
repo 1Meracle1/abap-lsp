@@ -40,4 +40,9 @@ pub struct ScopeData {
     pub owner: Option<SymbolId>,
     pub declarations: Vec<SymbolId>,
     pub children: Vec<ScopeId>,
+    /// For [`ScopeKind::LoopBlock`]: `LOOP AT` source rows are scalar-like (elementary, unresolved, or
+    /// one-field structure), so `table_line` resolves in this loop. ABAP uses the same pseudo-field
+    /// in other internal-table contexts (e.g. `READ TABLE`, `FOR ALL ENTRIES`); those are not driven
+    /// by this flag.
+    pub allows_internal_table_line_selector: bool,
 }

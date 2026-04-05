@@ -233,6 +233,7 @@ impl<'a> Collector<'a> {
             owner,
             declarations: Vec::new(),
             children: Vec::new(),
+            allows_internal_table_line_selector: false,
         });
         self.scope_symbols.push(HashMap::new());
         if let Some(parent_id) = parent {
@@ -3003,12 +3004,29 @@ impl<'a> Collector<'a> {
         idx
     }
 
+    fn internal_table_line_selector_allowed_for_source(
+        &self,
+        expr: NodeId,
+        scope: ScopeId,
+    ) -> bool {
+        let (structure, _) = self.loop_source_line_metadata_from_node(expr, scope);
+        match structure {
+            None => true,
+            Some(structure_id) => self
+                .structure(structure_id)
+                .is_some_and(|structure| structure.fields.len() == 1),
+        }
+    }
+
     fn collect_loop_header_node(&mut self, node: NodeId, scope: ScopeId) {
         let mut source_metadata = (None, None);
+        let mut allows_internal_table_line_selector = false;
         for child in self.file.children(node) {
             match self.file.kind(child) {
                 SyntaxKind::LoopSourceClause => {
                     if let Some(expr) = self.first_non_token_child(child) {
+                        allows_internal_table_line_selector =
+                            self.internal_table_line_selector_allowed_for_source(expr, scope);
                         self.collect_expr(expr, scope);
                         source_metadata = self.loop_source_line_metadata_from_node(expr, scope);
                     }
@@ -3054,6 +3072,8 @@ impl<'a> Collector<'a> {
                 _ => {}
             }
         }
+        self.scopes[scope.as_usize()].allows_internal_table_line_selector =
+            allows_internal_table_line_selector;
     }
 
     fn collect_loop_target_node(

@@ -222,6 +222,7 @@ fn collect_pending(
                 .unwrap_or_else(|| reference_fallback_type(reference, ty_ix)),
             Some(Resolution::BuiltinType) => ty_ix.type_,
             Some(Resolution::BuiltinRoutine) => ty_ix.function,
+            Some(Resolution::InternalTableLine) => ty_ix.property,
             Some(Resolution::External) => reference_fallback_type(reference, ty_ix),
             None => reference_fallback_type(reference, ty_ix),
         };

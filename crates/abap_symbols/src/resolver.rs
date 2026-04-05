@@ -100,6 +100,18 @@ fn enclosing_class_owner(unit: &UnitAnalysis, scope: ScopeId) -> Option<SymbolId
     None
 }
 
+fn innermost_loop_allows_internal_table_line_selector(unit: &UnitAnalysis, scope: ScopeId) -> bool {
+    let mut current = Some(scope);
+    while let Some(scope_id) = current {
+        let scope_data = unit.scope(scope_id);
+        if scope_data.kind == ScopeKind::LoopBlock {
+            return scope_data.allows_internal_table_line_selector;
+        }
+        current = scope_data.parent;
+    }
+    false
+}
+
 fn resolve_super_reference_in_unit(
     unit: &UnitAnalysis,
     scope_index: &ScopeIndex,
@@ -147,6 +159,13 @@ pub(crate) fn resolve_unit_with_index(unit: &mut UnitAnalysis, scope_index: &Sco
                 }
                 None if namespace == Namespace::Routine && is_builtin_routine(name.as_ref()) => {
                     Some(Resolution::BuiltinRoutine)
+                }
+                None if namespace == Namespace::Value
+                    && kind == ReferenceKind::Identifier
+                    && name.as_ref().eq_ignore_ascii_case("table_line")
+                    && innermost_loop_allows_internal_table_line_selector(unit, scope) =>
+                {
+                    Some(Resolution::InternalTableLine)
                 }
                 None => None,
             };

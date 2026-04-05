@@ -1345,6 +1345,10 @@ fn markdown_lines_for_resolution(
         }
         Resolution::BuiltinType => vec![format!("`{at_name}`"), "Built-in ABAP type".to_string()],
         Resolution::BuiltinRoutine => markdown_lines_for_builtin_routine(at_name),
+        Resolution::InternalTableLine => vec![
+            format!("`{at_name}`"),
+            "ABAP pseudo-component for the current row of an internal table whose line type is scalar-like (elementary, unresolved, or a one-field structure). Typical uses include `LOOP AT ... WHERE`, `READ TABLE ... WITH KEY`, and `SELECT ... FOR ALL ENTRIES IN ...`.".to_string(),
+        ],
         Resolution::External => vec![
             format!("`{at_name}`"),
             "External reference (not resolved in this workspace)".to_string(),
@@ -1404,7 +1408,10 @@ fn definition_target_for_resolution(
             let symbol = unit.symbol(handle.symbol);
             Some(definition_target_for_symbol(unit, symbol))
         }
-        Resolution::BuiltinType | Resolution::BuiltinRoutine | Resolution::External => None,
+        Resolution::BuiltinType
+        | Resolution::BuiltinRoutine
+        | Resolution::InternalTableLine
+        | Resolution::External => None,
     }
 }
 
@@ -2809,7 +2816,11 @@ fn retain_local_analysis_state(unit: &mut UnitAnalysis) {
     for reference in &mut unit.references {
         match reference.resolution {
             Some(Resolution::Symbol(handle)) if handle.unit == unit.unit_id => {}
-            Some(Resolution::BuiltinType | Resolution::BuiltinRoutine) => {}
+            Some(
+                Resolution::BuiltinType
+                | Resolution::BuiltinRoutine
+                | Resolution::InternalTableLine,
+            ) => {}
             _ => reference.resolution = None,
         }
     }

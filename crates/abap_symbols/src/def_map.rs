@@ -111,6 +111,8 @@ pub enum Resolution {
     Symbol(SymbolHandle),
     BuiltinType,
     BuiltinRoutine,
+    /// ABAP `table_line` pseudo-field for a scalar-like internal-table row (see hover for typical statements).
+    InternalTableLine,
     External,
 }
 

@@ -442,6 +442,82 @@ ENDLOOP.
 }
 
 #[test]
+fn resolves_table_line_pseudo_field_in_loop_where_for_scalar_line_type() {
+    let src = r#"
+DATA lt TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+
+LOOP AT lt TRANSPORTING NO FIELDS WHERE table_line IS NOT INITIAL.
+ENDLOOP.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///loop_table_line.abap", src, &parsed);
+
+    let table_line_ref = unit
+        .references
+        .iter()
+        .find(|reference| {
+            reference.namespace == Namespace::Value
+                && reference.kind == ReferenceKind::Identifier
+                && reference.name.as_ref().eq_ignore_ascii_case("table_line")
+        })
+        .expect("table_line reference in LOOP WHERE");
+    assert_eq!(
+        table_line_ref.resolution,
+        Some(Resolution::InternalTableLine),
+        "refs={:?} diagnostics={:?}",
+        unit.references,
+        unit.diagnostics
+    );
+    assert!(
+        !unit
+            .diagnostics
+            .iter()
+            .any(|d| d.kind == DiagnosticKind::UnresolvedReference),
+        "unexpected diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn table_line_in_loop_where_stays_unresolved_for_multi_field_row_type() {
+    let src = r#"
+TYPES: BEGIN OF ty_row,
+  a TYPE i,
+  b TYPE i,
+END OF ty_row.
+DATA lt TYPE STANDARD TABLE OF ty_row WITH EMPTY KEY.
+
+LOOP AT lt TRANSPORTING NO FIELDS WHERE table_line IS NOT INITIAL.
+ENDLOOP.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///loop_table_line_struct.abap", src, &parsed);
+
+    let table_line_ref = unit
+        .references
+        .iter()
+        .find(|reference| {
+            reference.namespace == Namespace::Value
+                && reference.kind == ReferenceKind::Identifier
+                && reference.name.as_ref().eq_ignore_ascii_case("table_line")
+        })
+        .expect("table_line reference");
+    assert!(
+        table_line_ref.resolution.is_none(),
+        "expected unresolved table_line for multi-field row, got {:?}",
+        table_line_ref.resolution
+    );
+    assert!(
+        unit.diagnostics.iter().any(|d| {
+            d.kind == DiagnosticKind::UnresolvedReference
+                && d.message.contains("table_line")
+        }),
+        "expected unknown symbol diagnostic for table_line, got {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn resolves_loop_source_and_inline_assigning_field_symbol() {
     let src = r#"
 DATA lt_rows TYPE string.
