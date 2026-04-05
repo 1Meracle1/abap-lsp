@@ -1439,6 +1439,21 @@ mod tests {
     }
 
     #[test]
+    fn constants_grouped_multiline_matches_class_style() {
+        let src = "CONSTANTS:\n\
+      BEGIN OF gc_s_gln_partition_table,\n\
+        p0_cp_number_of_bits   TYPE i VALUE 40,\n\
+        p0_cp_number_of_digits TYPE i VALUE  12,\n\
+      END OF gc_s_gln_partition_table .";
+        let file = tree_ok(src);
+        assert_eq!(file.count_kind(file.root(), SyntaxKind::ConstantsDecl), 1);
+        assert!(
+            file.count_kind(file.root(), SyntaxKind::StructuredFieldClause) >= 2,
+            "expected structured constant components"
+        );
+    }
+
+    #[test]
     fn data_inline_not_matched() {
         let src = "DATA(ref) = 1.";
         let file = tree_ok(src);

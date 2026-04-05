@@ -1549,6 +1549,60 @@ START-OF-SELECTION.
 }
 
 #[test]
+fn resolves_grouped_class_constants_static_access() {
+    let src = r#"
+CLASS zcl_demo DEFINITION.
+  PUBLIC SECTION.
+    CONSTANTS:
+      BEGIN OF gc_s_tab,
+        p0 TYPE i VALUE 1,
+        p1 TYPE i VALUE 2,
+      END OF gc_s_tab .
+ENDCLASS.
+
+CLASS zcl_demo IMPLEMENTATION.
+ENDCLASS.
+
+START-OF-SELECTION.
+  DATA lv TYPE i.
+  lv = zcl_demo=>gc_s_tab-p0.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///grouped_class_constants.abap", src, &parsed);
+
+    let class_symbol = unit
+        .symbols
+        .iter()
+        .find(|symbol| {
+            symbol.kind == abap_symbols::SymbolKind::Class && symbol.name.as_ref() == "zcl_demo"
+        })
+        .expect("class symbol");
+    let member = unit
+        .class_member(class_symbol.id, "gc_s_tab")
+        .expect("grouped constants structure should be a class attribute member");
+    assert_eq!(member.kind, abap_symbols::ClassMemberKind::Attribute);
+    assert!(member.is_static);
+
+    assert!(
+        unit.field_accesses.iter().any(|access| {
+            access.base_namespace == Namespace::Type
+                && access.base_name.as_ref() == "zcl_demo"
+                && access.field_path.iter().any(|s| s.name.as_ref() == "gc_s_tab")
+                && access.field_path.iter().any(|s| s.name.as_ref() == "p0")
+        }),
+        "expected static grouped-constants selector metadata, accesses={:?}",
+        unit.field_accesses
+    );
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnknownField && diag.message.contains("p0")
+        }),
+        "unexpected unknown-field diagnostic for grouped constant component: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn resolves_class_definition_members_inside_implementation_methods() {
     let src = r#"
 CLASS zcl_ast_node DEFINITION ABSTRACT.

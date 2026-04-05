@@ -780,7 +780,7 @@ impl<'a> Collector<'a> {
             self.class_definition_scopes.insert(owner, child_scope);
         }
         if !is_implementation {
-            self.collect_class_definition_members(node, owner);
+            self.collect_class_definition_members(node, owner, child_scope);
         }
         for child in self.file.children(node) {
             self.walk_node(child, child_scope);
@@ -872,7 +872,12 @@ impl<'a> Collector<'a> {
         false
     }
 
-    fn collect_class_definition_members(&mut self, node: NodeId, class_symbol: SymbolId) {
+    fn collect_class_definition_members(
+        &mut self,
+        node: NodeId,
+        class_symbol: SymbolId,
+        class_scope: ScopeId,
+    ) {
         let mut visibility = Visibility::Private;
         let mut stack: Vec<_> = self.file.children(node).rev().collect();
         while let Some(child) = stack.pop() {
@@ -904,7 +909,7 @@ impl<'a> Collector<'a> {
                     }
                 }
                 SyntaxKind::DataDecl | SyntaxKind::StaticsDecl | SyntaxKind::ConstantsDecl => {
-                    self.collect_class_attribute_members(child, class_symbol, visibility);
+                    self.collect_class_attribute_members(child, class_symbol, visibility, class_scope);
                 }
                 _ => {
                     for nested in self.file.children(child).rev() {
@@ -992,6 +997,7 @@ impl<'a> Collector<'a> {
             decl_range: name_tok.range.clone(),
             signature: Arc::<str>::from(self.render_statement_signature(tokens)),
             parameters: Vec::new(),
+            structure: None,
         })
     }
 
@@ -1000,6 +1006,7 @@ impl<'a> Collector<'a> {
         node: NodeId,
         class_symbol: SymbolId,
         visibility: Visibility,
+        scope: ScopeId,
     ) {
         let is_static = self.class_attribute_decl_is_static(node);
         let signature =
@@ -1009,19 +1016,33 @@ impl<'a> Collector<'a> {
                 SyntaxKind::DataTypedClause
                 | SyntaxKind::ConstantClause
                 | SyntaxKind::StructuredDecl => {
-                    if let Some(member) = self.class_attribute_member_from_clause(
+                    if let Some(mut member) = self.class_attribute_member_from_clause(
                         child,
                         class_symbol,
                         visibility,
                         is_static,
                         Arc::clone(&signature),
                     ) {
+                        member.structure =
+                            self.class_attribute_structure_for_clause(child, scope);
                         self.class_members.push(member);
                     }
                 }
                 _ => {}
             }
         }
+    }
+
+    fn class_attribute_structure_for_clause(
+        &mut self,
+        node: NodeId,
+        scope: ScopeId,
+    ) -> Option<StructureId> {
+        let (name, _, members) = self.begin_of_clause_parts(node, scope)?;
+        Some(self.register_structure(
+            scope,
+            PendingStructure { name, members },
+        ))
     }
 
     fn class_attribute_decl_is_static(&self, node: NodeId) -> bool {
@@ -1045,6 +1066,20 @@ impl<'a> Collector<'a> {
             && self.token_matches_keyword(third, "data")
     }
 
+    fn class_attribute_structured_clause_name_parts(
+        &self,
+        node: NodeId,
+    ) -> Option<(Arc<str>, TextRange)> {
+        let name_node = self
+            .file
+            .children(node)
+            .filter(|&child| self.file.kind(child) == SyntaxKind::Token)
+            .nth(2)?;
+        let (name, _) = self.node_name(name_node)?;
+        let decl_range = self.structured_decl_name_range(node)?;
+        Some((name, decl_range))
+    }
+
     fn class_attribute_member_from_clause(
         &self,
         node: NodeId,
@@ -1054,22 +1089,16 @@ impl<'a> Collector<'a> {
         signature: Arc<str>,
     ) -> Option<ClassMemberData> {
         let (name, decl_range) = match self.file.kind(node) {
-            SyntaxKind::StructuredDecl => {
-                let name_node = self
-                    .file
-                    .children(node)
-                    .filter(|&child| self.file.kind(child) == SyntaxKind::Token)
-                    .nth(2)?;
-                let (name, _) = self.node_name(name_node)?;
-                (name, self.structured_decl_name_range(node)?)
-            }
-            SyntaxKind::DataTypedClause | SyntaxKind::ConstantClause => {
-                let name_node = self
-                    .file
-                    .children(node)
-                    .find(|&child| self.file.kind(child) == SyntaxKind::DataDeclName)?;
-                self.node_name(name_node)?
-            }
+            SyntaxKind::StructuredDecl => self.class_attribute_structured_clause_name_parts(node)?,
+            SyntaxKind::DataTypedClause | SyntaxKind::ConstantClause => self
+                .class_attribute_structured_clause_name_parts(node)
+                .or_else(|| {
+                    let name_node = self
+                        .file
+                        .children(node)
+                        .find(|&child| self.file.kind(child) == SyntaxKind::DataDeclName)?;
+                    self.node_name(name_node)
+                })?,
             _ => return None,
         };
         Some(ClassMemberData {
@@ -1081,6 +1110,7 @@ impl<'a> Collector<'a> {
             decl_range,
             signature,
             parameters: Vec::new(),
+            structure: None,
         })
     }
 

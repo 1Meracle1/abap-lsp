@@ -602,7 +602,51 @@ pub(crate) fn validate_project_with_scope_indexes(
             let base_symbol = unit.symbol(base_symbol_id);
             let (has_leading_deref, field_path) = split_leading_deref(access);
             if access.base_namespace == Namespace::Type && base_symbol.kind == SymbolKind::Class {
-                for (idx, step) in field_path.iter().enumerate() {
+                let mut idx = 0usize;
+                let mut structure_tail: Option<crate::StructureId> = None;
+                let mut static_structure_holder: Option<Arc<str>> = None;
+                while idx < field_path.len() {
+                    let step = &field_path[idx];
+                    if let Some(structure_id) = structure_tail {
+                        let holder = static_structure_holder
+                            .as_deref()
+                            .unwrap_or("?");
+                        let structure = unit.structure(structure_id);
+                        let Some(field) = structure
+                            .fields
+                            .iter()
+                            .find(|field| field.name.as_ref() == step.name.as_ref())
+                        else {
+                            unit_diagnostics.push(Diagnostic {
+                                kind: DiagnosticKind::UnknownField,
+                                range: step.range.clone(),
+                                message: format!(
+                                    "unknown field '{}' for '{}=>{}'",
+                                    step.name, access.base_name, holder
+                                ),
+                            });
+                            break;
+                        };
+                        idx += 1;
+                        if idx == field_path.len() {
+                            break;
+                        }
+                        let Some(next_structure) = field.structure else {
+                            let next_step = &field_path[idx];
+                            unit_diagnostics.push(Diagnostic {
+                                kind: DiagnosticKind::UnknownField,
+                                range: next_step.range.clone(),
+                                message: format!(
+                                    "unknown field '{}' for '{}=>{}'",
+                                    next_step.name, access.base_name, holder
+                                ),
+                            });
+                            break;
+                        };
+                        structure_tail = Some(next_structure);
+                        continue;
+                    }
+
                     let Some((member_unit, member)) = resolve_class_member_in_hierarchy(
                         project,
                         unit,
@@ -638,8 +682,12 @@ pub(crate) fn validate_project_with_scope_indexes(
                         });
                         break;
                     }
-                    if idx + 1 != field_path.len() {
-                        let next_step = &field_path[idx + 1];
+                    idx += 1;
+                    if idx == field_path.len() {
+                        break;
+                    }
+                    let Some(next_structure) = member.structure else {
+                        let next_step = &field_path[idx];
                         unit_diagnostics.push(Diagnostic {
                             kind: DiagnosticKind::UnknownField,
                             range: next_step.range.clone(),
@@ -649,7 +697,9 @@ pub(crate) fn validate_project_with_scope_indexes(
                             ),
                         });
                         break;
-                    }
+                    };
+                    static_structure_holder = Some(Arc::clone(&member.name));
+                    structure_tail = Some(next_structure);
                 }
                 continue;
             }
