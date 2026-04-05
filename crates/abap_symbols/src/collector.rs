@@ -127,6 +127,9 @@ pub struct Collector<'a> {
     class_superclasses: HashMap<SymbolId, Arc<str>>,
     class_method_signatures: HashMap<SymbolId, HashMap<Arc<str>, PendingMethodSignature>>,
     scope_symbols: Vec<HashMap<ScopeLookupKey, Vec<SymbolId>>>,
+    /// `TYPE` vs `LIKE` for the innermost typed declaration clause being walked; drives whether
+    /// simple names in `TypeRefSimple` (e.g. after `LINE OF`) resolve as types or data objects.
+    type_clause_ns_stack: Vec<Namespace>,
 }
 
 impl<'a> Collector<'a> {
@@ -170,6 +173,7 @@ impl<'a> Collector<'a> {
             class_superclasses: HashMap::new(),
             class_method_signatures: HashMap::new(),
             scope_symbols: Vec::new(),
+            type_clause_ns_stack: Vec::new(),
         }
     }
 
@@ -557,6 +561,16 @@ impl<'a> Collector<'a> {
             SyntaxKind::CallMethodStmt => self.collect_call_method_stmt_node(node, scope),
             SyntaxKind::WriteStmt => self.collect_write_stmt(node, scope),
             SyntaxKind::ConcatenateStmt => self.collect_concatenate_stmt(node, scope),
+            SyntaxKind::StructuredFieldClause => {
+                let hint = self.typed_clause_namespace_hint(node);
+                if let Some(ns) = hint {
+                    self.type_clause_ns_stack.push(ns);
+                }
+                self.walk_children(node, scope);
+                if hint.is_some() {
+                    self.type_clause_ns_stack.pop();
+                }
+            }
             _ => self.walk_children(node, scope),
         }
     }
@@ -568,8 +582,15 @@ impl<'a> Collector<'a> {
                 | SyntaxKind::TypesTypedClause
                 | SyntaxKind::ConstantClause
                 | SyntaxKind::FieldSymbolClause => {
+                    let hint = self.typed_clause_namespace_hint(child);
+                    if let Some(ns) = hint {
+                        self.type_clause_ns_stack.push(ns);
+                    }
                     self.declare_decl_clause_symbol(child, scope, kind);
                     self.walk_children(child, scope);
+                    if hint.is_some() {
+                        self.type_clause_ns_stack.pop();
+                    }
                 }
                 SyntaxKind::StructuredDecl => {
                     self.declare_structured_decl_symbol(child, scope, kind);
@@ -3223,7 +3244,13 @@ impl<'a> Collector<'a> {
     }
 
     fn collect_type_ref(&mut self, node: NodeId, scope: ScopeId) {
-        if let Some((namespace, _, base_name, range, field_path)) = self.type_ref_access_chain(node)
+        let simple_ns = self
+            .type_clause_ns_stack
+            .last()
+            .copied()
+            .unwrap_or(Namespace::Type);
+        if let Some((namespace, _, base_name, range, field_path)) =
+            self.type_ref_access_chain(node, simple_ns)
         {
             self.add_reference(
                 scope,
@@ -5251,7 +5278,7 @@ impl<'a> Collector<'a> {
         node: NodeId,
         namespace: Namespace,
     ) -> Option<FieldTypeRefData> {
-        let (_, is_ref, base_name, _, field_path) = self.type_ref_access_chain(node)?;
+        let (_, is_ref, base_name, _, field_path) = self.type_ref_access_chain(node, namespace)?;
         Some(FieldTypeRefData {
             namespace,
             is_ref,
@@ -5290,10 +5317,24 @@ impl<'a> Collector<'a> {
         None
     }
 
+    fn typed_clause_namespace_hint(&self, clause_node: NodeId) -> Option<Namespace> {
+        for child in self.file.children(clause_node) {
+            if let Some(token) = self.token_for_node(child) {
+                if self.token_matches_keyword(token, "type") {
+                    return Some(Namespace::Type);
+                }
+                if self.token_matches_keyword(token, "like") {
+                    return Some(Namespace::Value);
+                }
+            }
+        }
+        None
+    }
+
     fn type_ref_from_typed_clause(&self, node: NodeId) -> Option<FieldTypeRefData> {
         if let Some((type_ref_node, namespace)) = self.typed_clause_type_ref_node(node)
             && let Some((_, is_ref, base_name, _, field_path)) =
-                self.type_ref_access_chain(type_ref_node)
+                self.type_ref_access_chain(type_ref_node, namespace)
         {
             return Some(FieldTypeRefData {
                 namespace,
@@ -5309,7 +5350,7 @@ impl<'a> Collector<'a> {
     fn structure_from_typed_clause(&self, node: NodeId, scope: ScopeId) -> Option<StructureId> {
         if let Some((type_ref_node, namespace)) = self.typed_clause_type_ref_node(node)
             && let Some((_, _, base_name, _, field_path)) =
-                self.type_ref_access_chain(type_ref_node)
+                self.type_ref_access_chain(type_ref_node, namespace)
         {
             let field_path_names = field_path
                 .iter()
@@ -5526,7 +5567,7 @@ impl<'a> Collector<'a> {
             .file
             .children(node)
             .find(|&child| self.file.kind(child) == SyntaxKind::TypeRefSimple)?;
-        let (_, _, base_name, range, _) = self.type_ref_access_chain(type_ref)?;
+        let (_, _, base_name, range, _) = self.type_ref_access_chain(type_ref, Namespace::Type)?;
         Some((base_name, range))
     }
 
@@ -5665,6 +5706,7 @@ impl<'a> Collector<'a> {
     fn type_ref_selector_chain_access_chain(
         &self,
         node: NodeId,
+        simple_name_ns: Namespace,
     ) -> Option<(Namespace, Arc<str>, TextRange, Vec<FieldAccessSegment>)> {
         let mut children = self.file.children(node);
         let base = children.next()?;
@@ -5684,7 +5726,7 @@ impl<'a> Collector<'a> {
             field_path.push(FieldAccessSegment { name, range });
         }
         Some((
-            namespace.unwrap_or(Namespace::Type),
+            namespace.unwrap_or(simple_name_ns),
             base_name,
             base_range,
             field_path,
@@ -5694,6 +5736,7 @@ impl<'a> Collector<'a> {
     fn type_ref_access_chain(
         &self,
         node: NodeId,
+        simple_name_ns: Namespace,
     ) -> Option<(
         Namespace,
         bool,
@@ -5704,11 +5747,11 @@ impl<'a> Collector<'a> {
         match self.file.kind(node) {
             SyntaxKind::TypeRefName => {
                 let (name, range) = self.node_name(node)?;
-                Some((Namespace::Type, false, name, range, Vec::new()))
+                Some((simple_name_ns, false, name, range, Vec::new()))
             }
             SyntaxKind::TypeRefSelectorChain => {
                 let (namespace, base_name, base_range, field_path) =
-                    self.type_ref_selector_chain_access_chain(node)?;
+                    self.type_ref_selector_chain_access_chain(node, simple_name_ns)?;
                 Some((namespace, false, base_name, base_range, field_path))
             }
             SyntaxKind::TypeRefSimple => {
@@ -5727,7 +5770,7 @@ impl<'a> Collector<'a> {
                             | SyntaxKind::TypeRefSelectorChain
                     ) {
                         let (namespace, nested_ref, base_name, base_range, field_path) =
-                            self.type_ref_access_chain(child)?;
+                            self.type_ref_access_chain(child, simple_name_ns)?;
                         return Some((
                             namespace,
                             is_ref || nested_ref,

@@ -2173,6 +2173,29 @@ fn reports_wrong_namespace_for_type_references() {
 }
 
 #[test]
+fn resolves_like_line_of_internal_table_variable_for_field_symbols() {
+    let src = "\
+DATA lt_tab TYPE STANDARD TABLE OF string.\n\
+FIELD-SYMBOLS <ls> LIKE LINE OF lt_tab.";
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///like_line_of_fs.abap", src, &parsed);
+
+    let lt_ref = unit.references.iter().find(|reference| {
+        reference.kind == ReferenceKind::TypeRef
+            && reference.name.as_ref() == "lt_tab"
+            && reference.namespace == Namespace::Value
+    });
+    assert!(
+        lt_ref.is_some_and(|r| matches!(r.resolution, Some(Resolution::Symbol(_)))),
+        "expected lt_tab LIKE reference to resolve as a data object, got {:?}",
+        lt_ref.map(|r| &r.resolution)
+    );
+    assert!(!unit.diagnostics.iter().any(|diag| {
+        diag.kind == DiagnosticKind::WrongNamespace && diag.message.contains("lt_tab")
+    }));
+}
+
+#[test]
 fn recovers_after_syntax_errors_and_keeps_later_resolution() {
     let src = "DATA broken TYPE string\nDATA ok TYPE i.\nok = 1.";
     let parsed = parse(src);
