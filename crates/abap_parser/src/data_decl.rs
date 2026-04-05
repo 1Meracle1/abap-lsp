@@ -724,7 +724,10 @@ fn parse_structured_include_clause(
     children.push(type_ref);
 
     while let Some(tok) = tokens.get(i) {
-        if matches!(tok.kind, TokenKind::Comma | TokenKind::Period | TokenKind::Eof) {
+        if matches!(
+            tok.kind,
+            TokenKind::Comma | TokenKind::Period | TokenKind::Eof
+        ) {
             break;
         }
         children.push(token_leaf(b, tok));
@@ -732,7 +735,10 @@ fn parse_structured_include_clause(
     }
 
     let range = b.span(*children.first().unwrap()).start..b.span(*children.last().unwrap()).end;
-    Some((b.branch(SyntaxKind::StructuredIncludeClause, range, &children), i))
+    Some((
+        b.branch(SyntaxKind::StructuredIncludeClause, range, &children),
+        i,
+    ))
 }
 
 fn parse_structured_field_clause(
@@ -861,14 +867,17 @@ fn try_parse_chained_decl_after_keyword_span(
         match next.kind {
             TokenKind::Comma if has_colon => i += 1,
             TokenKind::Period => {
-                let mut children =
-                    Vec::with_capacity(clause_nodes.len() + (kw_end - idx) + 1);
+                let mut children = Vec::with_capacity(clause_nodes.len() + (kw_end - idx) + 1);
                 for token in &tokens[idx..kw_end] {
                     children.push(token_leaf(b, token));
                 }
                 children.extend(clause_nodes);
                 children.push(token_leaf(b, next));
-                let node = b.branch(decl_kind, tokens[idx].range.start..next.range.end, &children);
+                let node = b.branch(
+                    decl_kind,
+                    tokens[idx].range.start..next.range.end,
+                    &children,
+                );
                 return Some((node, i + 1));
             }
             _ => return None,
@@ -1015,13 +1024,7 @@ fn parse_types_structured_block(
             if tokens.get(i).map(|t| t.kind) == Some(TokenKind::Colon) {
                 i += 1;
             }
-            let next_i = parse_structured_types_component_run(
-                b,
-                source,
-                tokens,
-                i,
-                &mut children,
-            )?;
+            let next_i = parse_structured_types_component_run(b, source, tokens, i, &mut children)?;
             i = next_i;
             continue;
         }
@@ -1065,16 +1068,17 @@ fn parse_structured_types_component_run(
             false,
         )
         .or_else(|| parse_structured_include_clause(b, source, tokens, idx))
-        .or_else(|| parse_decl_clause(
-            b,
-            source,
-            tokens,
-            idx,
-            SyntaxKind::TypesTypedClause,
-            false,
-            false,
-        ))
-        ?;
+        .or_else(|| {
+            parse_decl_clause(
+                b,
+                source,
+                tokens,
+                idx,
+                SyntaxKind::TypesTypedClause,
+                false,
+                false,
+            )
+        })?;
         out.push(component);
         idx = next_i;
 

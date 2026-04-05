@@ -5,9 +5,7 @@ use abap_ast::arena::{NodeId, SyntaxTreeBuilder};
 use abap_lexer::{Token, TokenKind, have_space_between};
 
 use crate::expr::parse_arithmetic_expr;
-use crate::stmt_period::{
-    is_definite_stmt_lead_keyword, token_begins_line, unterminated_err_end,
-};
+use crate::stmt_period::{is_definite_stmt_lead_keyword, token_begins_line, unterminated_err_end};
 
 fn token_leaf(b: &mut SyntaxTreeBuilder, token: &Token) -> NodeId {
     b.leaf(SyntaxKind::Token, token.range.clone())
@@ -224,7 +222,10 @@ pub fn try_parse_assign_stmt(
     let eq_tok = &tokens[eq_i];
 
     match scan_assign_rhs(tokens, source, eq_i + 1) {
-        AssignRhsScan::Found { period_i, nested_eq } => {
+        AssignRhsScan::Found {
+            period_i,
+            nested_eq,
+        } => {
             let period_tok = &tokens[period_i];
             let rhs_tokens = &tokens[eq_i + 1..period_i];
 

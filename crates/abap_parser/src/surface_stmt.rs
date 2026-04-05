@@ -3020,13 +3020,7 @@ pub fn try_parse_insert_table_stmt(
     }
     match scan_until_statement_period(tokens, source, idx + 1) {
         StmtPeriodScan::Found(period_i) => {
-            let into_idx = find_top_level_keyword_index(
-                source,
-                tokens,
-                idx + 1,
-                period_i,
-                "into",
-            )?;
+            let into_idx = find_top_level_keyword_index(source, tokens, idx + 1, period_i, "into")?;
             let has_table_kw = tokens
                 .get(into_idx + 1)
                 .is_some_and(|t| is_keyword(source, t, "table"));
@@ -3044,8 +3038,9 @@ pub fn try_parse_insert_table_stmt(
             }
             let mut children = Vec::with_capacity(period_i - idx + 1);
             children.push(token_leaf(b, insert_tok));
-            let source_clause =
-                |tokens: &[Token], i: usize| insert_internal_source_clause_starts(source, tokens, i);
+            let source_clause = |tokens: &[Token], i: usize| {
+                insert_internal_source_clause_starts(source, tokens, i)
+            };
             scan_and_push_expr_clause(
                 b,
                 &mut children,
@@ -3063,8 +3058,9 @@ pub fn try_parse_insert_table_stmt(
             } else {
                 (into_idx + 1, &tokens[into_idx])
             };
-            let tail_clause =
-                |tokens: &[Token], i: usize| insert_into_table_tail_clause_starts(source, tokens, i);
+            let tail_clause = |tokens: &[Token], i: usize| {
+                insert_into_table_tail_clause_starts(source, tokens, i)
+            };
             let mut i = scan_and_push_expr_clause(
                 b,
                 &mut children,
@@ -3178,8 +3174,9 @@ pub fn try_parse_move_corresponding_stmt(
         errors,
         |_, end_exclusive| end_exclusive,
         |b, period_i, _errors| {
-            let clause_starts =
-                |tokens: &[Token], idx: usize| move_corresponding_clause_starts(source, tokens, idx);
+            let clause_starts = |tokens: &[Token], idx: usize| {
+                move_corresponding_clause_starts(source, tokens, idx)
+            };
             let Some(to_idx) =
                 find_top_level_keyword_index(source, tokens, keyword_end, period_i, "to")
             else {
@@ -4325,9 +4322,7 @@ END-OF-PAGE.\nWRITE 'e'.",
 
     #[test]
     fn parses_insert_into_itab_index_multiline() {
-        let parsed = crate::parse(
-            "INSERT lv_parent_bupid\n  INTO   lt_bupid\n  INDEX  1.",
-        );
+        let parsed = crate::parse("INSERT lv_parent_bupid\n  INTO   lt_bupid\n  INDEX  1.");
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
         assert_eq!(
             parsed

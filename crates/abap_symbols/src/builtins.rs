@@ -8,6 +8,7 @@ pub enum BuiltinTypeKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BuiltinFieldSpec {
     pub name: &'static str,
+    pub description: &'static str,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,21 +40,114 @@ pub struct BuiltinRoutineSpec {
 }
 
 pub const SYST_FIELDS: &[BuiltinFieldSpec] = &[
-    BuiltinFieldSpec { name: "subrc" },
-    BuiltinFieldSpec { name: "tabix" },
-    BuiltinFieldSpec { name: "index" },
-    BuiltinFieldSpec { name: "tfill" },
-    BuiltinFieldSpec { name: "tleng" },
-    BuiltinFieldSpec { name: "dbcnt" },
-    BuiltinFieldSpec { name: "datum" },
-    BuiltinFieldSpec { name: "uzeit" },
-    BuiltinFieldSpec { name: "mandt" },
-    BuiltinFieldSpec { name: "uname" },
-    BuiltinFieldSpec { name: "langu" },
-    BuiltinFieldSpec { name: "batch" },
-    BuiltinFieldSpec { name: "cprog" },
-    BuiltinFieldSpec { name: "repid" },
-    BuiltinFieldSpec { name: "tcode" },
+    BuiltinFieldSpec {
+        name: "subrc",
+        description: "Return code from the last ABAP statement; 0 usually means success.",
+    },
+    BuiltinFieldSpec {
+        name: "tabix",
+        description: "Index of the current internal table row in LOOP AT or READ TABLE over the table body.",
+    },
+    BuiltinFieldSpec {
+        name: "index",
+        description: "Loop counter in DO … ENDDO and similar loop constructs.",
+    },
+    BuiltinFieldSpec {
+        name: "tfill",
+        description: "Number of lines in the internal table after statements that set this system field.",
+    },
+    BuiltinFieldSpec {
+        name: "tleng",
+        description: "Row length (bytes) of an internal table in contexts where this field is defined.",
+    },
+    BuiltinFieldSpec {
+        name: "dbcnt",
+        description: "Number of rows processed by the last Open SQL statement.",
+    },
+    BuiltinFieldSpec {
+        name: "datum",
+        description: "Current date on the application server at runtime.",
+    },
+    BuiltinFieldSpec {
+        name: "uzeit",
+        description: "Current time on the application server at runtime.",
+    },
+    BuiltinFieldSpec {
+        name: "zonlo",
+        description: "Time zone of the current user for local date/time (used with local conversion).",
+    },
+    BuiltinFieldSpec {
+        name: "datlo",
+        description: "Current date in the user's local time zone.",
+    },
+    BuiltinFieldSpec {
+        name: "timlo",
+        description: "Current time in the user's local time zone.",
+    },
+    BuiltinFieldSpec {
+        name: "mandt",
+        description: "Client (mandant) of the current SAP session.",
+    },
+    BuiltinFieldSpec {
+        name: "uname",
+        description: "Logon name of the current user.",
+    },
+    BuiltinFieldSpec {
+        name: "langu",
+        description: "Current logon language key.",
+    },
+    BuiltinFieldSpec {
+        name: "batch",
+        description: "Background processing: space in dialog, 'X' when running in batch.",
+    },
+    BuiltinFieldSpec {
+        name: "cprog",
+        description: "Name of the calling program in the current call chain.",
+    },
+    BuiltinFieldSpec {
+        name: "repid",
+        description: "Name of the current ABAP program.",
+    },
+    BuiltinFieldSpec {
+        name: "tcode",
+        description: "Transaction code of the current transaction.",
+    },
+    BuiltinFieldSpec {
+        name: "ucomm",
+        description: "Function code from the last user action (GUI status / function code).",
+    },
+    BuiltinFieldSpec {
+        name: "srows",
+        description: "Number of lines on the current list screen.",
+    },
+    BuiltinFieldSpec {
+        name: "msgid",
+        description: "Message class of the last message raised with MESSAGE.",
+    },
+    BuiltinFieldSpec {
+        name: "msgty",
+        description: "Message type of the last message (E, W, I, S, A, X, …).",
+    },
+    BuiltinFieldSpec {
+        name: "msgno",
+        description: "Message number of the last message.",
+    },
+    BuiltinFieldSpec {
+        name: "msgv1",
+        description: "First placeholder variable for the text of the last MESSAGE.",
+    },
+    BuiltinFieldSpec {
+        name: "msgv2",
+        description: "Second placeholder variable for the text of the last MESSAGE.",
+    },
+    BuiltinFieldSpec {
+        name: "msgv3",
+        description: "Third placeholder variable for the text of the last MESSAGE.",
+    },
+    BuiltinFieldSpec {
+        name: "msgv4",
+        description: "Fourth placeholder variable for the text of the last MESSAGE.",
+    },
 ];
 
 pub const BUILTIN_STRUCTURES: &[BuiltinStructureSpec] = &[BuiltinStructureSpec {
@@ -271,4 +365,19 @@ pub fn builtin_routine_spec(name: &str) -> Option<&'static BuiltinRoutineSpec> {
     BUILTIN_ROUTINES
         .iter()
         .find(|spec| spec.name.eq_ignore_ascii_case(name))
+}
+
+/// Documentation line for a field of a built-in structure (for example `syst` / `sy-…`).
+pub fn builtin_structure_field_description(
+    structure_name: &str,
+    field_name: &str,
+) -> Option<&'static str> {
+    let structure = BUILTIN_STRUCTURES
+        .iter()
+        .find(|spec| spec.name.eq_ignore_ascii_case(structure_name))?;
+    let field = structure
+        .fields
+        .iter()
+        .find(|f| f.name.eq_ignore_ascii_case(field_name))?;
+    Some(field.description)
 }

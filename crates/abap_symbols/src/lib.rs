@@ -2,14 +2,17 @@ mod builtins;
 mod collector;
 mod def_map;
 mod ids;
+#[cfg(test)]
+mod perf_tests;
 mod project;
 mod resolver;
 mod scope;
 mod validate;
-#[cfg(test)]
-mod perf_tests;
 
-pub use builtins::{BuiltinRoutineParamSpec, BuiltinRoutineSpec, builtin_routine_spec};
+pub use builtins::{
+    BuiltinRoutineParamSpec, BuiltinRoutineSpec, builtin_routine_spec,
+    builtin_structure_field_description,
+};
 pub use def_map::{
     ClassInheritanceData, ClassMemberData, ClassMemberKind, ClassMemberParameterData, Diagnostic,
     DiagnosticKind, FieldAccess, FieldAccessSegment, FieldTypeRefData, FormParameterData,
@@ -33,6 +36,18 @@ mod tests {
     use abap_parser::parse;
 
     use super::{Namespace, ReferenceKind, SymbolKind, analyze_unit};
+
+    #[test]
+    fn builtin_syst_field_descriptions_are_registered() {
+        let subrc = super::builtin_structure_field_description("syst", "subrc").expect("subrc");
+        assert!(
+            subrc.contains("Return code") || subrc.contains("return code"),
+            "{subrc}"
+        );
+        assert!(super::builtin_structure_field_description("syst", "msgv1").is_some());
+        assert!(super::builtin_structure_field_description("syst", "zonlo").is_some());
+        assert!(super::builtin_structure_field_description("nope", "subrc").is_none());
+    }
 
     #[test]
     fn collects_definitions_and_references() {

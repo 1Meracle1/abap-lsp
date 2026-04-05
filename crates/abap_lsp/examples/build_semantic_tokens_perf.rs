@@ -81,7 +81,10 @@ fn run() -> Result<(), String> {
     }
     let measure_elapsed = measure_start.elapsed();
 
-    println!("semantic tokens build perf sample: {}", config.sample_path.display());
+    println!(
+        "semantic tokens build perf sample: {}",
+        config.sample_path.display()
+    );
     println!(
         "bytes={} lines={} parse_errors={}",
         snapshot.text.len(),

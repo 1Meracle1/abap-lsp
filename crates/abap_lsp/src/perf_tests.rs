@@ -74,7 +74,9 @@ fn large_file_build_semantic_tokens_breakdown() {
     let build_start = Instant::now();
     let mut total_tokens = 0usize;
     for _ in 0..iterations {
-        total_tokens += sem_tokens::build_semantic_tokens(snapshot.as_ref()).data.len();
+        total_tokens += sem_tokens::build_semantic_tokens(snapshot.as_ref())
+            .data
+            .len();
     }
     let build_elapsed = build_start.elapsed();
 

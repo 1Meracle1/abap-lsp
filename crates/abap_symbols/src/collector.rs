@@ -37,9 +37,7 @@ struct PendingStructureField {
 #[derive(Debug, Clone)]
 enum PendingStructureMember {
     Field(PendingStructureField),
-    Include {
-        type_ref: FieldTypeRefData,
-    },
+    Include { type_ref: FieldTypeRefData },
 }
 
 #[derive(Debug, Clone)]
@@ -331,10 +329,9 @@ impl<'a> Collector<'a> {
                             .structure
                             .map(|nested| self.register_structure(scope, nested))
                             .or_else(|| {
-                                field
-                                    .type_ref
-                                    .as_ref()
-                                    .and_then(|type_ref| self.resolve_field_type_ref(scope, type_ref))
+                                field.type_ref.as_ref().and_then(|type_ref| {
+                                    self.resolve_field_type_ref(scope, type_ref)
+                                })
                             }),
                         type_ref: field.type_ref,
                     });
@@ -516,9 +513,7 @@ impl<'a> Collector<'a> {
             | SyntaxKind::ModifyStmt
             | SyntaxKind::DeleteStmt
             | SyntaxKind::DeleteDbTableStmt
-            | SyntaxKind::ReadTableStmt => {
-                self.walk_children(node, scope)
-            }
+            | SyntaxKind::ReadTableStmt => self.walk_children(node, scope),
             SyntaxKind::TypeRefSimple => self.collect_type_ref(node, scope),
             SyntaxKind::ExprIdent
             | SyntaxKind::SelectorExpr
@@ -1006,10 +1001,13 @@ impl<'a> Collector<'a> {
         visibility: Visibility,
     ) {
         let is_static = self.class_attribute_decl_is_static(node);
-        let signature = Arc::<str>::from(self.render_statement_signature(&self.simple_stmt_tokens(node)));
+        let signature =
+            Arc::<str>::from(self.render_statement_signature(&self.simple_stmt_tokens(node)));
         for child in self.file.children(node) {
             match self.file.kind(child) {
-                SyntaxKind::DataTypedClause | SyntaxKind::ConstantClause | SyntaxKind::StructuredDecl => {
+                SyntaxKind::DataTypedClause
+                | SyntaxKind::ConstantClause
+                | SyntaxKind::StructuredDecl => {
                     if let Some(member) = self.class_attribute_member_from_clause(
                         child,
                         class_symbol,
@@ -1030,7 +1028,8 @@ impl<'a> Collector<'a> {
         let Some(first) = tokens.first().copied() else {
             return false;
         };
-        if self.token_matches_keyword(first, "constants") || self.token_matches_keyword(first, "statics")
+        if self.token_matches_keyword(first, "constants")
+            || self.token_matches_keyword(first, "statics")
         {
             return true;
         }

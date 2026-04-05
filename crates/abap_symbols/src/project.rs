@@ -94,7 +94,13 @@ pub fn analyze_project_from_units(mut units: Vec<UnitAnalysis>) -> ProjectAnalys
 
 pub fn analyze_unit(uri: impl Into<Arc<str>>, source: &str, parse: &ParseResult) -> UnitAnalysis {
     let uri = uri.into();
-    let mut unit = collect_unit(UnitId(0), Arc::clone(&uri), source, &parse.file, &parse.tokens);
+    let mut unit = collect_unit(
+        UnitId(0),
+        Arc::clone(&uri),
+        source,
+        &parse.file,
+        &parse.tokens,
+    );
     let scope_indexes = vec![build_scope_index(&unit)];
     resolve_unit_with_index(&mut unit, &scope_indexes[0]);
     let mut project = ProjectAnalysis {
@@ -112,7 +118,12 @@ pub fn analyze_project(inputs: &[ProjectInput<'_>]) -> ProjectAnalysis {
         .iter()
         .enumerate()
         .map(|(idx, input)| {
-            analyze_unit_locally(UnitId(idx as u32), Arc::from(input.uri), input.source, input.parse)
+            analyze_unit_locally(
+                UnitId(idx as u32),
+                Arc::from(input.uri),
+                input.source,
+                input.parse,
+            )
         })
         .collect();
     analyze_project_from_units(units)

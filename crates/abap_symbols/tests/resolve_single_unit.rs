@@ -165,7 +165,12 @@ ENDFORM.
     let parsed = parse(src);
     let unit = analyze_unit("file:///chained_data_value_clause.abap", src, &parsed);
 
-    for name in ["lv_curr_node", "lv_curr_node_nopref", "lv_value", "lv_counter"] {
+    for name in [
+        "lv_curr_node",
+        "lv_curr_node_nopref",
+        "lv_value",
+        "lv_counter",
+    ] {
         assert!(
             unit.symbols.iter().any(|symbol| {
                 symbol.kind == abap_symbols::SymbolKind::Variable && symbol.name.as_ref() == name
@@ -2012,6 +2017,12 @@ ENDIF.";
             .fields
             .iter()
             .any(|field| field.name.as_ref() == "subrc")
+    );
+    assert!(
+        sy_structure
+            .fields
+            .iter()
+            .any(|field| field.name.as_ref() == "msgv1")
     );
     assert!(
         !unit

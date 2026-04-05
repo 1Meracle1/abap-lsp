@@ -370,7 +370,10 @@ pub fn build_semantic_tokens(snapshot: &AnalysisSnapshot) -> SemanticTokens {
 mod tests {
     use super::encode_deltas;
 
-    fn byte_offset_to_line_character_utf16_reference(text: &str, offset: usize) -> Option<(u32, u32)> {
+    fn byte_offset_to_line_character_utf16_reference(
+        text: &str,
+        offset: usize,
+    ) -> Option<(u32, u32)> {
         if offset > text.len() {
             return None;
         }
@@ -410,7 +413,8 @@ mod tests {
         let mut prev_line = 0u32;
         let mut prev_char = 0u32;
         for (start, end, token_type, token_modifiers_bitset) in merged {
-            let Some((line, character)) = byte_offset_to_line_character_utf16_reference(text, start)
+            let Some((line, character)) =
+                byte_offset_to_line_character_utf16_reference(text, start)
             else {
                 continue;
             };
@@ -442,7 +446,8 @@ mod tests {
 
     #[test]
     fn encode_deltas_matches_reference_for_unicode_and_crlf() {
-        let text = "DATA lv.\r\nWRITE 'ab'.\r\nDATA lv_emoji TYPE string.\r\nlv_emoji = 'a😀b'.\r\n";
+        let text =
+            "DATA lv.\r\nWRITE 'ab'.\r\nDATA lv_emoji TYPE string.\r\nlv_emoji = 'a😀b'.\r\n";
         let merged = vec![
             (5, 7, 4, 1),
             (17, 19, 6, 0),

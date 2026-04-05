@@ -46,6 +46,8 @@ pub struct HoveredComponentInfo {
     pub base_namespace: Namespace,
     pub component_path: Vec<Arc<str>>,
     pub field_name: Arc<str>,
+    /// Structure that directly contains this field (for example `syst` for `sy-subrc`).
+    pub field_owner_structure_name: Option<Arc<str>>,
     pub range: Range<usize>,
     pub declared_type: Option<String>,
     pub declaration: Option<String>,
@@ -80,6 +82,7 @@ pub struct SelectorCompletionItem {
     pub declared_type: Option<String>,
     pub declaration: Option<String>,
     pub kind: HoveredComponentKind,
+    pub field_owner_structure_name: Option<Arc<str>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -215,6 +218,7 @@ impl AnalysisSnapshot {
                     .map(|segment| Arc::clone(&segment.name))
                     .collect(),
                 field_name: Arc::clone(&member.name),
+                field_owner_structure_name: None,
                 range: access.field_path[segment_index].range.clone(),
                 declared_type: None,
                 declaration: Some(member.signature.to_string()),
@@ -238,6 +242,7 @@ impl AnalysisSnapshot {
                 structure_name: Arc::clone(&unit.structure(structure).name),
             },
         };
+        let field_owner_structure_name = Some(Arc::clone(&unit.structure(field.owner).name));
         Some(HoveredComponentInfo {
             base_name: Arc::clone(&access.base_name),
             base_namespace: access.base_namespace,
@@ -248,6 +253,7 @@ impl AnalysisSnapshot {
                 .map(|segment| Arc::clone(&segment.name))
                 .collect(),
             field_name: Arc::clone(&field.name),
+            field_owner_structure_name,
             range: access.field_path[segment_index].range.clone(),
             declared_type: field.type_ref.as_ref().map(format_field_type_ref),
             declaration: None,
@@ -843,6 +849,7 @@ impl AnalysisSnapshot {
                     declared_type: None,
                     declaration: Some(member.signature.to_string()),
                     kind: HoveredComponentKind::Method,
+                    field_owner_structure_name: None,
                 })
                 .collect();
             items.sort_by(|left, right| left.name.cmp(&right.name));
@@ -889,6 +896,7 @@ impl AnalysisSnapshot {
                         }
                     }
                 },
+                field_owner_structure_name: Some(Arc::clone(&unit.structure(field.owner).name)),
             })
             .collect();
         items.sort_by(|left, right| left.name.cmp(&right.name));
@@ -1449,7 +1457,11 @@ fn resolve_field_access_base_symbol_with_scope_index<'a>(
     access: &abap_symbols::FieldAccess,
 ) -> Option<(&'a UnitAnalysis, SymbolId)> {
     if access.base_namespace == Namespace::Value && access.base_name.as_ref() == "super" {
-        return resolve_direct_superclass_from_scope_with_scope_index(snapshot, scope_index, access.scope);
+        return resolve_direct_superclass_from_scope_with_scope_index(
+            snapshot,
+            scope_index,
+            access.scope,
+        );
     }
     resolve_symbol_from_context_with_scope_index(
         snapshot,
@@ -1624,13 +1636,15 @@ fn resolve_named_argument_parameter_with_scope_index<'a>(
                 declared_type: parameter.declared_type.clone(),
             })
         }
-        NamedArgumentTarget::Routine { routine_name } => resolve_routine_named_argument_parameter_with_scope_index(
-            snapshot,
-            scope_index,
-            access.scope,
-            routine_name,
-            &access.name,
-        ),
+        NamedArgumentTarget::Routine { routine_name } => {
+            resolve_routine_named_argument_parameter_with_scope_index(
+                snapshot,
+                scope_index,
+                access.scope,
+                routine_name,
+                &access.name,
+            )
+        }
         NamedArgumentTarget::ImplicitMethod { method_name } => {
             let unit = snapshot.symbols.as_ref();
             let class_symbol_id = enclosing_class_owner(unit, access.scope)?;
@@ -1662,13 +1676,14 @@ fn resolve_named_argument_parameter_with_scope_index<'a>(
             base_name,
             method_name,
         } => {
-            let (unit, class_symbol_id, requires_static) = resolve_method_target_from_context_with_scope_index(
-                snapshot,
-                scope_index,
-                access.scope,
-                *base_namespace,
-                base_name,
-            )?;
+            let (unit, class_symbol_id, requires_static) =
+                resolve_method_target_from_context_with_scope_index(
+                    snapshot,
+                    scope_index,
+                    access.scope,
+                    *base_namespace,
+                    base_name,
+                )?;
             let (member_unit, member) =
                 resolve_class_member_in_hierarchy(snapshot, unit, class_symbol_id, method_name)?;
             if member.kind != ClassMemberKind::Method || (requires_static && !member.is_static) {
@@ -1904,8 +1919,7 @@ fn resolve_routine_named_argument_parameter_with_scope_index(
         Namespace::Routine,
         routine_name,
         false,
-    )
-    {
+    ) {
         let parameter = unit
             .routine_parameters(routine_symbol_id)
             .find(|symbol| symbol.name == *parameter_name)?;
@@ -2018,7 +2032,13 @@ fn resolve_method_target_from_context<'a>(
     name: &Arc<str>,
 ) -> Option<(&'a UnitAnalysis, SymbolId, bool)> {
     let scope_index = build_scope_index(snapshot.symbols.as_ref());
-    resolve_method_target_from_context_with_scope_index(snapshot, &scope_index, scope, namespace, name)
+    resolve_method_target_from_context_with_scope_index(
+        snapshot,
+        &scope_index,
+        scope,
+        namespace,
+        name,
+    )
 }
 
 fn resolve_method_target_from_context_with_scope_index<'a>(
@@ -2033,8 +2053,14 @@ fn resolve_method_target_from_context_with_scope_index<'a>(
             resolve_direct_superclass_from_scope_with_scope_index(snapshot, scope_index, scope)?;
         return Some((unit, symbol_id, false));
     }
-    let (unit, symbol_id) =
-        resolve_symbol_from_context_with_scope_index(snapshot, scope_index, scope, namespace, name, false)?;
+    let (unit, symbol_id) = resolve_symbol_from_context_with_scope_index(
+        snapshot,
+        scope_index,
+        scope,
+        namespace,
+        name,
+        false,
+    )?;
     let base_symbol = unit.symbol(symbol_id);
     if namespace == Namespace::Type && base_symbol.kind == SymbolKind::Class {
         return Some((unit, symbol_id, true));
@@ -2224,7 +2250,13 @@ fn resolve_class_selector_member_with_scope_index<'a>(
         return None;
     }
     let (class_unit, class_symbol_id, requires_static) =
-        resolve_class_selector_base_with_scope_index(snapshot, scope_index, access, unit, symbol_id)?;
+        resolve_class_selector_base_with_scope_index(
+            snapshot,
+            scope_index,
+            access,
+            unit,
+            symbol_id,
+        )?;
     let (member_unit, member) = resolve_class_member_in_hierarchy(
         snapshot,
         class_unit,
@@ -2289,7 +2321,8 @@ fn classify_field_access_segment_with_scope_index(
     access: &abap_symbols::FieldAccess,
     segment_index: usize,
 ) -> Option<HoveredComponentKind> {
-    let (unit, symbol_id) = resolve_field_access_base_symbol_with_scope_index(snapshot, scope_index, access)?;
+    let (unit, symbol_id) =
+        resolve_field_access_base_symbol_with_scope_index(snapshot, scope_index, access)?;
     if let Some((_, member)) = resolve_class_selector_member_with_scope_index(
         snapshot,
         scope_index,
@@ -2622,10 +2655,15 @@ fn staged_documents_for_publish(
     text: &Arc<str>,
     parse: &Arc<ParseResult>,
 ) -> Vec<StagedDocument> {
-    let mut staged = Vec::with_capacity(existing.len() + usize::from(!existing.contains_key(uri.as_ref())));
+    let mut staged =
+        Vec::with_capacity(existing.len() + usize::from(!existing.contains_key(uri.as_ref())));
     let mut seen: HashSet<Arc<str>> = HashSet::new();
 
-    if let Some(project) = existing.values().next().map(|snapshot| Arc::clone(&snapshot.project)) {
+    if let Some(project) = existing
+        .values()
+        .next()
+        .map(|snapshot| Arc::clone(&snapshot.project))
+    {
         for unit in &project.units {
             if unit.uri.as_ref() == uri.as_ref() {
                 staged.push(StagedDocument {
@@ -2721,7 +2759,8 @@ impl DocumentStore {
                     )
                 } else {
                     reused_local_unit(
-                        entry.previous
+                        entry
+                            .previous
                             .as_ref()
                             .expect("unchanged staged document should have prior snapshot"),
                         unit_id,

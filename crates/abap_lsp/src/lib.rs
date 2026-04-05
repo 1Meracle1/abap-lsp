@@ -1,6 +1,6 @@
-pub(crate) mod sem_tokens;
 #[cfg(test)]
 mod perf_tests;
+pub(crate) mod sem_tokens;
 
 use std::sync::Arc;
 
@@ -321,6 +321,17 @@ fn resolved_symbol_hover(
     })
 }
 
+fn scalar_component_summary(
+    field_owner_structure_name: Option<&Arc<str>>,
+    field_name: &str,
+) -> String {
+    field_owner_structure_name
+        .map(|s| s.as_ref())
+        .and_then(|owner| abap_symbols::builtin_structure_field_description(owner, field_name))
+        .map(str::to_string)
+        .unwrap_or_else(|| "scalar component".to_string())
+}
+
 fn structured_field_hover(
     snapshot: &AnalysisSnapshot,
     component: abap_cache::HoveredComponentInfo,
@@ -329,7 +340,10 @@ fn structured_field_hover(
     let is_method = matches!(component.kind, abap_cache::HoveredComponentKind::Method);
     let mut lines = vec![format!("`{}`", component.field_name)];
     match &component.kind {
-        abap_cache::HoveredComponentKind::Scalar => lines.push("scalar component".to_string()),
+        abap_cache::HoveredComponentKind::Scalar => lines.push(scalar_component_summary(
+            component.field_owner_structure_name.as_ref(),
+            component.field_name.as_ref(),
+        )),
         abap_cache::HoveredComponentKind::Structured { structure_name } => {
             lines.push(format!("structured component of `{}`", structure_name))
         }
@@ -529,10 +543,12 @@ fn completion_item_metadata(
     let mut lines = vec![format!("`{}`", item.name)];
     let detail = match &item.kind {
         abap_cache::HoveredComponentKind::Scalar => {
-            lines.push("scalar component".to_string());
-            item.declared_type
-                .clone()
-                .or_else(|| Some("scalar component".to_string()))
+            let summary = scalar_component_summary(
+                item.field_owner_structure_name.as_ref(),
+                item.name.as_ref(),
+            );
+            lines.push(summary.clone());
+            item.declared_type.clone().or(Some(summary))
         }
         abap_cache::HoveredComponentKind::Structured { structure_name } => {
             lines.push(format!("structured component of `{}`", structure_name));
@@ -1244,6 +1260,53 @@ ls_outer-inner-a = 1."
         assert!(markup.value.contains("scalar component"));
         assert!(markup.value.contains("`TYPE i`"));
         assert!(markup.value.contains("`ls_outer-inner-a`"));
+    }
+
+    #[test]
+    fn hover_shows_builtin_description_for_sy_field() {
+        let state = ServerState::default();
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///sy_hover.abap").expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: "IF sy-subrc = 0. ENDIF.".to_string(),
+                },
+            },
+        );
+
+        let hover = hover(
+            &state,
+            &HoverParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///sy_hover.abap").expect("uri"),
+                    },
+                    position: Position {
+                        line: 0,
+                        character: 7,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+            },
+        )
+        .expect("hover");
+
+        let HoverContents::Markup(markup) = hover.contents else {
+            panic!("expected markdown hover");
+        };
+        assert!(
+            !markup.value.contains("scalar component"),
+            "unexpected generic scalar text: {}",
+            markup.value
+        );
+        assert!(
+            markup.value.contains("Return code") || markup.value.contains("return code"),
+            "expected syst field documentation: {}",
+            markup.value
+        );
     }
 
     #[test]

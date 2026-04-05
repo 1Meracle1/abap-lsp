@@ -516,14 +516,20 @@ pub(crate) fn validate_project_with_scope_indexes(
                 let base_symbol_id = resolve_field_access_base_symbol(unit, &scope_index, access)?;
                 Some((
                     base_symbol_id,
-                    resolve_class_selector_base(project, unit, &scope_index, access, base_symbol_id)
-                        .map(|(class_unit, class_symbol_id, requires_static)| {
-                            (
-                                class_unit.unit_id.as_usize(),
-                                class_symbol_id,
-                                requires_static,
-                            )
-                        }),
+                    resolve_class_selector_base(
+                        project,
+                        unit,
+                        &scope_index,
+                        access,
+                        base_symbol_id,
+                    )
+                    .map(|(class_unit, class_symbol_id, requires_static)| {
+                        (
+                            class_unit.unit_id.as_usize(),
+                            class_symbol_id,
+                            requires_static,
+                        )
+                    }),
                 ))
             })
             .collect();
