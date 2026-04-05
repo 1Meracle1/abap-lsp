@@ -2494,6 +2494,25 @@ pub fn try_parse_raise_stmt(
     )
 }
 
+pub fn try_parse_message_stmt(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    errors: &mut Vec<crate::ParseError>,
+) -> Option<(NodeId, usize)> {
+    parse_simple_keyword_stmt(
+        b,
+        source,
+        tokens,
+        idx,
+        SyntaxKind::MessageStmt,
+        "message",
+        errors,
+        "syntax error: expected '.' after MESSAGE statement",
+    )
+}
+
 pub fn try_parse_endat_stmt(
     b: &mut SyntaxTreeBuilder,
     source: &str,
@@ -4623,6 +4642,36 @@ END-OF-PAGE.\nWRITE 'e'.",
                 .file
                 .count_kind(parsed.file.root(), SyntaxKind::AssignStmt),
             0
+        );
+    }
+
+    #[test]
+    fn parses_message_stmt_multiline_id_form() {
+        let parsed = crate::parse(
+            "METHOD m.\n\
+               MESSAGE ID sy-msgid TYPE sy-msgty NUMBER sy-msgno\n\
+                 WITH sy-msgv1 sy-msgv2 sy-msgv3 sy-msgv4\n\
+                 INTO cv_dummy_msg.\n\
+             ENDMETHOD.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::MessageStmt),
+            1
+        );
+    }
+
+    #[test]
+    fn parses_message_stmt_dynamic_type() {
+        let parsed = crate::parse("METHOD m.\n  MESSAGE lv_result TYPE 'E'.\nENDMETHOD.");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::MessageStmt),
+            1
         );
     }
 

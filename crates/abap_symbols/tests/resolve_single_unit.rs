@@ -3599,3 +3599,71 @@ ENDCLASS.
         unit.diagnostics
     );
 }
+
+#[test]
+fn message_stmt_resolves_with_into_and_dynamic_text() {
+    let src = r#"
+CLASS zcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS m.
+ENDCLASS.
+
+CLASS zcl_demo IMPLEMENTATION.
+  METHOD m.
+    DATA:
+      lv_lines TYPE i,
+      gv_dummy_msg TYPE string,
+      iv_logsys TYPE string,
+      lv_result TYPE string.
+    MESSAGE i043(/sttp/int_msg) WITH lv_lines iv_logsys INTO gv_dummy_msg.
+    MESSAGE lv_result TYPE 'E'.
+  ENDMETHOD.
+ENDCLASS.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///message_stmt.abap", src, &parsed);
+
+    for name in ["lv_lines", "iv_logsys", "gv_dummy_msg", "lv_result"] {
+        assert!(
+            !unit.diagnostics.iter().any(|diag| {
+                diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains(name)
+            }),
+            "unexpected unresolved diagnostic for {name}: {:?}",
+            unit.diagnostics
+        );
+    }
+}
+
+#[test]
+fn message_stmt_declares_into_data_inline() {
+    let src = r#"
+CLASS zcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS m.
+ENDCLASS.
+
+CLASS zcl_demo IMPLEMENTATION.
+  METHOD m.
+    MESSAGE w899(/sttp/msg) WITH sy-msgv1 INTO DATA(lv_message).
+    lv_message = |x|.
+  ENDMETHOD.
+ENDCLASS.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///message_into_data.abap", src, &parsed);
+
+    assert!(
+        unit.symbols.iter().any(|s| {
+            s.kind == abap_symbols::SymbolKind::Variable && s.name.as_ref() == "lv_message"
+        }),
+        "expected inline lv_message symbol, got {:?}",
+        unit.symbols
+    );
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains("lv_message")
+        }),
+        "unexpected unresolved lv_message: {:?}",
+        unit.diagnostics
+    );
+}

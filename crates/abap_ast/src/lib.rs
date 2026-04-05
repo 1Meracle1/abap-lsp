@@ -238,6 +238,8 @@ pub enum SyntaxKind {
     CallMethodTarget,
     /// `RAISE ... .`
     RaiseStmt,
+    /// `MESSAGE ... .`
+    MessageStmt,
     /// `ENDAT.`
     EndAtStmt,
     /// `READ TABLE ... .`
@@ -371,6 +373,7 @@ impl SyntaxKind {
             Self::CallMethodStmt => "CallMethodStmt",
             Self::CallMethodTarget => "CallMethodTarget",
             Self::RaiseStmt => "RaiseStmt",
+            Self::MessageStmt => "MessageStmt",
             Self::EndAtStmt => "EndAtStmt",
             Self::ReadTableStmt => "ReadTableStmt",
             Self::GetTimeStampStmt => "GetTimeStampStmt",

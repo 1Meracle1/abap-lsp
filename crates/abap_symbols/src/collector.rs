@@ -537,6 +537,7 @@ impl<'a> Collector<'a> {
             SyntaxKind::FieldSymbolInlineDecl => self.walk_inline_field_symbol_decl(node, scope),
             SyntaxKind::GetTimeStampStmt => self.collect_get_time_stamp_stmt(node, scope),
             SyntaxKind::CallStmt => self.collect_call_stmt(node, scope),
+            SyntaxKind::MessageStmt => self.collect_message_stmt(node, scope),
             SyntaxKind::UnparsedStmt | SyntaxKind::RaiseStmt | SyntaxKind::EndAtStmt => {
                 self.collect_generic_simple_stmt(node, scope)
             }
@@ -3242,6 +3243,177 @@ impl<'a> Collector<'a> {
                         | SyntaxKind::TypeRefSimple => self.collect_expr(child, scope),
                         _ => self.walk_node(child, scope),
                     }
+                }
+            }
+        }
+    }
+
+    /// `MESSAGE` variants used in real programs: static codes, `ID … TYPE … NUMBER …`, dynamic
+    /// `TYPE`, `DISPLAY LIKE`, `WITH` placeholders, `INTO` / `INTO DATA( )`.
+    fn collect_message_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        let sig = self.significant_stmt_tokens(node);
+        if sig.is_empty() || !self.token_matches_keyword(sig[0], "message") {
+            return;
+        }
+        let period_pos = sig
+            .iter()
+            .position(|t| t.kind == TokenKind::Period)
+            .unwrap_or(sig.len());
+
+        let with_ix = self
+            .find_top_level_keyword_index(&sig, 1, "with")
+            .filter(|&ix| ix < period_pos);
+        let into_ix = self
+            .find_top_level_keyword_index(&sig, 1, "into")
+            .filter(|&ix| ix < period_pos);
+
+        let head_end = [with_ix, into_ix, Some(period_pos)]
+            .into_iter()
+            .flatten()
+            .min()
+            .unwrap();
+
+        // --- Head: ID … TYPE … NUMBER … or MESSAGE dobj TYPE … [DISPLAY LIKE …] or static code ---
+        if sig
+            .get(1)
+            .is_some_and(|t| self.token_matches_keyword(t, "id"))
+        {
+            let mut i = 2usize;
+            let end_mid = self.consume_concatenate_operand(
+                &sig,
+                i,
+                &["type", "with", "into", "display", "raising"],
+            );
+            if end_mid > i {
+                self.collect_token_expression_refs(&sig[i..end_mid], scope, true);
+            }
+            i = end_mid;
+            if i < head_end && sig.get(i).is_some_and(|t| self.token_matches_keyword(t, "type")) {
+                i += 1;
+                let end_ty = self.consume_concatenate_operand(
+                    &sig,
+                    i,
+                    &["number", "with", "into", "display", "raising"],
+                );
+                if end_ty > i {
+                    self.collect_token_expression_refs(&sig[i..end_ty], scope, true);
+                }
+                i = end_ty;
+            }
+            if i < head_end && sig.get(i).is_some_and(|t| self.token_matches_keyword(t, "number"))
+            {
+                i += 1;
+                let end_num = self.consume_concatenate_operand(
+                    &sig,
+                    i,
+                    &["with", "into", "display", "raising"],
+                );
+                if end_num > i {
+                    self.collect_token_expression_refs(&sig[i..end_num], scope, true);
+                }
+            }
+        } else if let Some(ti) = self
+            .find_top_level_keyword_index(&sig, 1, "type")
+            .filter(|&ti| ti < head_end)
+        {
+            if ti > 1 {
+                self.collect_token_expression_refs(&sig[1..ti], scope, true);
+            }
+            let mut i = ti + 1;
+            let end_mty = self.consume_concatenate_operand(
+                &sig,
+                i,
+                &["display", "with", "into", "raising"],
+            );
+            if end_mty > i {
+                self.collect_token_expression_refs(&sig[i..end_mty], scope, true);
+            }
+            i = end_mty;
+            if i < head_end && sig.get(i).is_some_and(|t| self.token_matches_keyword(t, "display"))
+            {
+                i += 1;
+                if i < head_end && sig.get(i).is_some_and(|t| self.token_matches_keyword(t, "like"))
+                {
+                    i += 1;
+                    let end_like = self.consume_concatenate_operand(
+                        &sig,
+                        i,
+                        &["with", "into", "raising"],
+                    );
+                    if end_like > i {
+                        self.collect_token_expression_refs(&sig[i..end_like], scope, true);
+                    }
+                }
+            }
+        }
+
+        // --- WITH operands ---
+        if let Some(wi) = with_ix {
+            let end_with = [
+                self.find_top_level_keyword_index(&sig, wi + 1, "into"),
+                self.find_top_level_keyword_index(&sig, wi + 1, "display"),
+                Some(period_pos),
+            ]
+            .into_iter()
+            .flatten()
+            .min()
+            .unwrap();
+
+            let mut idx = wi + 1;
+            while idx < end_with {
+                let raw_end = self.consume_concatenate_operand(&sig, idx, &["into", "display"]);
+                let end_op = raw_end.min(end_with);
+                if end_op <= idx {
+                    idx += 1;
+                    continue;
+                }
+                self.collect_token_expression_refs(&sig[idx..end_op], scope, true);
+                idx = end_op;
+            }
+        }
+
+        // --- INTO target or INTO DATA( … ) ---
+        if let Some(ii) = into_ix {
+            let mut idx = ii + 1;
+            if idx >= period_pos {
+                return;
+            }
+            if self.token_matches_keyword(sig[idx], "data") {
+                idx += 1;
+                if sig.get(idx).map(|t| t.kind) == Some(TokenKind::LParen) {
+                    let lpar = idx;
+                    if let Some(rpar) = self.find_matching_group_end(
+                        &sig,
+                        lpar,
+                        TokenKind::LParen,
+                        TokenKind::RParen,
+                    ) {
+                        let inner_start = lpar + 1;
+                        for &t in &sig[inner_start..rpar] {
+                            if t.kind == TokenKind::Ident {
+                                let name =
+                                    Arc::from(t.lexeme(self.source).to_ascii_lowercase());
+                                self.declare_symbol(
+                                    scope,
+                                    name,
+                                    SymbolKind::Variable,
+                                    t.range.clone(),
+                                    None,
+                                    None,
+                                );
+                            }
+                        }
+                    }
+                }
+            } else {
+                let raw_end = self.consume_concatenate_operand(
+                    &sig,
+                    idx,
+                    &["raising", "display"],
+                );
+                let end_op = raw_end.min(period_pos);
+                if end_op > idx {
+                    self.collect_token_expression_refs(&sig[idx..end_op], scope, true);
                 }
             }
         }

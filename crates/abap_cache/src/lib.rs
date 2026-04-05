@@ -2430,6 +2430,7 @@ fn is_selector_query_container(kind: &str) -> bool {
             | "CreateObjectStmt"
             | "CallMethodStmt"
             | "RaiseStmt"
+            | "MessageStmt"
             | "EndAtStmt"
             | "Error"
             | "WriteStmt"
