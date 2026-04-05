@@ -4,7 +4,7 @@ use std::sync::Arc;
 use crate::builtins::builtin_routine_spec;
 use crate::def_map::{
     Diagnostic, DiagnosticKind, FormParameterData, FormParameterSection, PerformParameterSection,
-    Resolution,
+    ReferenceKind, Resolution, SqlNameRefKind,
 };
 use crate::ids::{ScopeId, SymbolHandle, SymbolId};
 use crate::project::ProjectAnalysis;
@@ -478,6 +478,173 @@ fn format_perform_signature(using_count: usize, changing_count: usize) -> String
     }
 }
 
+fn workspace_root_defines_type_name(project: &ProjectAnalysis, name: &str) -> bool {
+    project.units.iter().any(|unit| {
+        unit.symbols.iter().any(|symbol| {
+            symbol.scope == unit.root_scope
+                && matches!(
+                    symbol.kind,
+                    SymbolKind::TypeDef | SymbolKind::Class | SymbolKind::Interface
+                )
+                && symbol.name.as_ref().eq_ignore_ascii_case(name)
+        })
+    })
+}
+
+fn open_sql_source_has_workspace_type_definition(
+    project: &ProjectAnalysis,
+    unit: &crate::UnitAnalysis,
+    scope_index: &ScopeIndex,
+    query_scope: ScopeId,
+    name: &Arc<str>,
+) -> bool {
+    if resolve_symbol_in_scope_chain(unit, scope_index, query_scope, Namespace::Type, name)
+        .is_some()
+    {
+        return true;
+    }
+    workspace_root_defines_type_name(project, name.as_ref())
+}
+
+fn validate_open_sql_sources(
+    project: &ProjectAnalysis,
+    unit: &crate::UnitAnalysis,
+    scope_index: &ScopeIndex,
+) -> Vec<Diagnostic> {
+    let query_scope_by_id: HashMap<usize, ScopeId> = unit
+        .sql_queries
+        .iter()
+        .map(|query| (query.id, query.scope))
+        .collect();
+    let mut out = Vec::new();
+    for sql_ref in &unit.sql_name_refs {
+        if sql_ref.kind != SqlNameRefKind::Source {
+            continue;
+        }
+        let Some(&query_scope) = query_scope_by_id.get(&sql_ref.query_id) else {
+            continue;
+        };
+        if open_sql_source_has_workspace_type_definition(
+            project,
+            unit,
+            scope_index,
+            query_scope,
+            &sql_ref.name,
+        ) {
+            continue;
+        }
+        out.push(Diagnostic {
+            kind: DiagnosticKind::UnverifiedOpenSqlSource,
+            range: sql_ref.range.clone(),
+            message: format!(
+                "Open SQL source '{}' is not verified against a SAP system (DDIC/repository lookup is not connected)",
+                sql_ref.name
+            ),
+        });
+    }
+    out
+}
+
+fn symbol_type_clause_suggests_internal_table(symbol: &crate::SymbolData) -> bool {
+    let Some(display) = symbol.type_clause_display.as_deref() else {
+        return false;
+    };
+    let upper = display.to_ascii_uppercase();
+    upper.contains("STANDARD TABLE")
+        || upper.contains("HASHED TABLE")
+        || upper.contains("SORTED TABLE")
+        || upper.contains("ANY TABLE")
+        || upper.contains("INDEX TABLE")
+        || upper.contains("TABLE OF")
+}
+
+fn symbol_is_structure_like_for_into(symbol: &crate::SymbolData) -> bool {
+    if symbol.structure.is_some() {
+        return true;
+    }
+    symbol.type_clause_display.as_deref().is_some_and(|display| {
+        let upper = display.to_ascii_uppercase();
+        upper.contains("BEGIN OF")
+    })
+}
+
+fn into_target_identifier_range(
+    unit: &crate::UnitAnalysis,
+    target: &crate::def_map::SqlTargetData,
+    name: &Arc<str>,
+) -> std::ops::Range<usize> {
+    unit.references
+        .iter()
+        .filter(|reference| {
+            reference.namespace == Namespace::Value
+                && reference.kind == ReferenceKind::Identifier
+                && reference.name.as_ref().eq_ignore_ascii_case(name.as_ref())
+                && reference.range.start >= target.range.start
+                && reference.range.end <= target.range.end
+        })
+        .min_by_key(|reference| {
+            reference
+                .range
+                .end
+                .saturating_sub(reference.range.start)
+        })
+        .map(|reference| reference.range.clone())
+        .unwrap_or_else(|| target.range.clone())
+}
+
+fn validate_open_sql_into_targets(
+    unit: &crate::UnitAnalysis,
+    scope_index: &ScopeIndex,
+) -> Vec<Diagnostic> {
+    let mut out = Vec::new();
+    for target in &unit.sql_targets {
+        if target.is_inline || target.target_name.is_none() {
+            continue;
+        }
+        let name = target.target_name.as_ref().unwrap();
+        let Some(symbol_id) = resolve_symbol_in_scope_chain(
+            unit,
+            scope_index,
+            target.scope,
+            Namespace::Value,
+            name,
+        ) else {
+            continue;
+        };
+        let symbol = unit.symbol(symbol_id);
+        let diag_range = into_target_identifier_range(unit, target, name);
+
+        if target.is_table && !symbol_type_clause_suggests_internal_table(symbol) {
+            out.push(Diagnostic {
+                kind: DiagnosticKind::InvalidOpenSqlIntoTarget,
+                range: diag_range.clone(),
+                message: format!(
+                    "INTO TABLE / APPENDING ... TABLE target '{}' should be typed as an internal table (STANDARD/HASHED/SORTED/TABLE OF …)",
+                    name
+                ),
+            });
+        }
+        // `INTO CORRESPONDING FIELDS OF wa` needs a structure-like work area; `... OF TABLE itab`
+        // needs an internal table (checked above). Both set `is_corresponding`; only the former
+        // should be validated as structure-like — otherwise we false-positive when the line type
+        // is unresolved and `SymbolData::structure` is absent despite `STANDARD TABLE OF ...`.
+        if target.is_corresponding
+            && !target.is_table
+            && !symbol_is_structure_like_for_into(symbol)
+        {
+            out.push(Diagnostic {
+                kind: DiagnosticKind::InvalidOpenSqlIntoTarget,
+                range: diag_range,
+                message: format!(
+                    "INTO CORRESPONDING FIELDS target '{}' should be a structure (typed with BEGIN OF / structure type)",
+                    name
+                ),
+            });
+        }
+    }
+    out
+}
+
 #[allow(dead_code)]
 pub fn validate_project(project: &mut ProjectAnalysis) {
     let scope_indexes: Vec<_> = project.units.iter().map(build_scope_index).collect();
@@ -892,6 +1059,12 @@ pub(crate) fn validate_project_with_scope_indexes(
             });
         }
 
+        unit_diagnostics.extend(validate_open_sql_sources(
+            project,
+            unit,
+            scope_index,
+        ));
+        unit_diagnostics.extend(validate_open_sql_into_targets(unit, scope_index));
         unit_diagnostics.extend(constructor_diagnostics);
 
         {

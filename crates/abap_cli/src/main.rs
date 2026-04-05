@@ -356,7 +356,10 @@ fn run() -> Result<i32, String> {
                 .filter(|diag| {
                     matches!(
                         diag.kind,
-                        DiagnosticKind::UnresolvedReference | DiagnosticKind::WrongNamespace
+                        DiagnosticKind::UnresolvedReference
+                            | DiagnosticKind::WrongNamespace
+                            | DiagnosticKind::UnverifiedOpenSqlSource
+                            | DiagnosticKind::InvalidOpenSqlIntoTarget
                     )
                 })
                 .map(|diag| {

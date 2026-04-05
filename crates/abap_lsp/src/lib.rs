@@ -152,6 +152,7 @@ fn semantic_diagnostic_severity(kind: DiagnosticKind) -> DiagnosticSeverity {
         DiagnosticKind::DuplicateDeclaration | DiagnosticKind::ShadowedSymbol => {
             DiagnosticSeverity::WARNING
         }
+        DiagnosticKind::UnverifiedOpenSqlSource => DiagnosticSeverity::WARNING,
         DiagnosticKind::UnresolvedReference
         | DiagnosticKind::UnresolvedInclude
         | DiagnosticKind::IncludeCycle
@@ -159,7 +160,8 @@ fn semantic_diagnostic_severity(kind: DiagnosticKind) -> DiagnosticSeverity {
         | DiagnosticKind::UnknownField
         | DiagnosticKind::InvalidBuiltinNamedArgument
         | DiagnosticKind::InvalidPerformCall
-        | DiagnosticKind::MissingSuperConstructorCall => DiagnosticSeverity::ERROR,
+        | DiagnosticKind::MissingSuperConstructorCall
+        | DiagnosticKind::InvalidOpenSqlIntoTarget => DiagnosticSeverity::ERROR,
     }
 }
 
@@ -243,6 +245,9 @@ pub fn hover(state: &ServerState, params: &HoverParams) -> Option<Hover> {
     }
     if let Some(named_argument) = snapshot.hovered_named_argument_at(offset) {
         return resolved_symbol_hover(&snapshot, named_argument);
+    }
+    if let Some(sql_ref) = snapshot.hovered_sql_name_ref_at(offset) {
+        return resolved_symbol_hover(&snapshot, sql_ref);
     }
     let symbol = snapshot.hovered_resolved_symbol_at(offset)?;
     resolved_symbol_hover(&snapshot, symbol)
@@ -911,6 +916,43 @@ ENDCLASS.";
                 .iter()
                 .any(|t| t.token_type == var_idx && (t.token_modifiers_bitset & decl_mod) != 0),
             "expected a declared variable token"
+        );
+    }
+
+    #[test]
+    fn semantic_tokens_include_open_sql_namespace_sources() {
+        use lsp_types::SemanticTokenType;
+
+        let state = ServerState::default();
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///sem_sql.abap").expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: "SELECT * FROM /sttp/demo INTO TABLE DATA(lt).\n".to_string(),
+                },
+            },
+        );
+
+        let snapshot = state
+            .cache
+            .get("file:///sem_sql.abap")
+            .expect("snapshot");
+        let tokens = sem_tokens::build_semantic_tokens(snapshot.as_ref());
+        let legend = sem_tokens::semantic_tokens_legend();
+        let namespace_idx = legend
+            .token_types
+            .iter()
+            .position(|t| *t == SemanticTokenType::NAMESPACE)
+            .expect("legend has namespace") as u32;
+        assert!(
+            tokens
+                .data
+                .iter()
+                .any(|t| t.token_type == namespace_idx),
+            "expected Open SQL source token"
         );
     }
 

@@ -4,7 +4,8 @@ use std::sync::OnceLock;
 
 use abap_cache::AnalysisSnapshot;
 use abap_symbols::{
-    ProjectAnalysis, ReferenceData, ReferenceKind, Resolution, SymbolData, SymbolHandle, SymbolKind,
+    ProjectAnalysis, ReferenceData, ReferenceKind, Resolution, SqlNameRefKind, SymbolData,
+    SymbolHandle, SymbolKind,
 };
 use lsp_types::{SemanticToken, SemanticTokenModifier, SemanticTokenType, SemanticTokens};
 
@@ -20,6 +21,7 @@ struct SemanticTokenTypeIndices {
     function: u32,
     method: u32,
     event: u32,
+    namespace: u32,
 }
 
 const TOKEN_TYPE_INDICES: SemanticTokenTypeIndices = SemanticTokenTypeIndices {
@@ -32,6 +34,7 @@ const TOKEN_TYPE_INDICES: SemanticTokenTypeIndices = SemanticTokenTypeIndices {
     function: 6,
     method: 7,
     event: 8,
+    namespace: 9,
 };
 
 #[derive(Clone, Copy)]
@@ -58,6 +61,7 @@ fn semantic_tokens_legend_static() -> &'static lsp_types::SemanticTokensLegend {
             SemanticTokenType::FUNCTION,
             SemanticTokenType::METHOD,
             SemanticTokenType::EVENT,
+            SemanticTokenType::NAMESPACE,
         ],
         token_modifiers: vec![
             SemanticTokenModifier::DECLARATION,
@@ -158,7 +162,8 @@ fn collect_pending(
             + unit.class_members.len()
             + unit.references.len()
             + field_access_segments
-            + unit.named_arguments.len(),
+            + unit.named_arguments.len()
+            + unit.sql_name_refs.len(),
     );
 
     for symbol in &unit.symbols {
@@ -263,6 +268,24 @@ fn collect_pending(
                 0,
             );
         }
+    }
+
+    for sql_ref in &unit.sql_name_refs {
+        let token_type = match sql_ref.kind {
+            SqlNameRefKind::Source => ty_ix.namespace,
+            SqlNameRefKind::Alias => ty_ix.variable,
+            SqlNameRefKind::Column | SqlNameRefKind::QualifiedColumn => ty_ix.property,
+            SqlNameRefKind::Star | SqlNameRefKind::QualifiedStar => ty_ix.type_,
+            SqlNameRefKind::Aggregate => ty_ix.function,
+        };
+        push_pending(
+            &mut pending,
+            sql_ref.range.start,
+            sql_ref.range.end,
+            3,
+            token_type,
+            0,
+        );
     }
 
     pending

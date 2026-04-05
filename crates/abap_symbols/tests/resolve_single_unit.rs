@@ -1072,6 +1072,121 @@ WRITE lt_rows.
 }
 
 #[test]
+fn reports_unverified_open_sql_sources_without_workspace_type() {
+    let src = r#"
+SELECT * FROM /sttp/unknown_tab INTO TABLE DATA(lt).
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///opensql_unverified.abap", src, &parsed);
+    assert!(
+        unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnverifiedOpenSqlSource
+                && diag.message.contains("/sttp/unknown_tab")
+        }),
+        "expected UnverifiedOpenSqlSource, got {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn suppresses_unverified_open_sql_when_workspace_type_matches_from_name() {
+    let src = r#"
+TYPES ty_row TYPE i.
+DATA lt TYPE STANDARD TABLE OF ty_row.
+SELECT * FROM ty_row INTO TABLE lt.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///opensql_local_type.abap", src, &parsed);
+    assert!(
+        !unit
+            .diagnostics
+            .iter()
+            .any(|diag| diag.kind == DiagnosticKind::UnverifiedOpenSqlSource),
+        "unexpected UnverifiedOpenSqlSource: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn reports_invalid_into_table_when_target_is_not_internal_table() {
+    let src = r#"
+TYPES ty_row TYPE i.
+DATA wa TYPE ty_row.
+SELECT * FROM ty_row INTO TABLE wa.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///into_table_bad.abap", src, &parsed);
+    assert!(
+        unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::InvalidOpenSqlIntoTarget && diag.message.contains("wa")
+        }),
+        "expected InvalidOpenSqlIntoTarget for wa, got {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn resolves_select_into_flat_target_reference() {
+    let src = r#"
+DATA lt TYPE string.
+SELECT * FROM demo INTO lt.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///into_flat.abap", src, &parsed);
+    let into_pos = src.find("INTO").expect("INTO");
+    assert!(
+        unit.references.iter().any(|reference| {
+            reference.kind == ReferenceKind::Identifier
+                && reference.name.as_ref() == "lt"
+                && reference.range.start >= into_pos
+                && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+        }),
+        "expected INTO target lt to resolve, refs={:?} diagnostics={:?}",
+        unit.references,
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn reports_invalid_into_corresponding_when_target_is_not_structure_like() {
+    let src = r#"
+TYPES ty_scalar TYPE i.
+DATA lv TYPE ty_scalar.
+SELECT * FROM ty_scalar INTO CORRESPONDING FIELDS OF lv.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///into_corr.abap", src, &parsed);
+    assert!(
+        unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::InvalidOpenSqlIntoTarget
+                && diag.message.contains("CORRESPONDING")
+                && diag.message.contains("lv")
+        }),
+        "expected InvalidOpenSqlIntoTarget for CORRESPONDING, got {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn into_corresponding_fields_of_table_does_not_require_structure_metadata_on_symbol() {
+    let src = r#"
+TYPES ty_row TYPE i.
+DATA lt_gs1_gcp TYPE STANDARD TABLE OF ty_row.
+SELECT * FROM demo INTO CORRESPONDING FIELDS OF TABLE lt_gs1_gcp.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///into_corr_table.abap", src, &parsed);
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::InvalidOpenSqlIntoTarget
+                && diag.message.contains("lt_gs1_gcp")
+        }),
+        "unexpected InvalidOpenSqlIntoTarget for CORRESPONDING FIELDS OF TABLE: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn resolves_concatenate_operands_and_selector_sources() {
     let src = r#"
 CLASS zcl_program DEFINITION.

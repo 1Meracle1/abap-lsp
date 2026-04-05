@@ -2587,6 +2587,15 @@ impl<'a> Collector<'a> {
                     }
                     self.collect_expr(child, scope);
                 }
+                // `push_expr_child` wraps `parse_arithmetic_expr` results in `TemplateExpr`.
+                SyntaxKind::TemplateExpr => {
+                    for grandchild in self.file.children(child) {
+                        if target_name.is_none() {
+                            target_name = self.sql_target_name_from_expr(grandchild);
+                        }
+                        self.collect_expr(grandchild, scope);
+                    }
+                }
                 _ => {}
             }
         }

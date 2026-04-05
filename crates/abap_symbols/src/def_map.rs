@@ -270,6 +270,10 @@ pub enum DiagnosticKind {
     InvalidBuiltinNamedArgument,
     InvalidPerformCall,
     MissingSuperConstructorCall,
+    /// Open SQL `FROM` / join source not confirmed against SAP DDIC/repository (no backend lookup).
+    UnverifiedOpenSqlSource,
+    /// `INTO` / `APPENDING` target is incompatible with the clause (for example `INTO TABLE` on a non-table variable).
+    InvalidOpenSqlIntoTarget,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

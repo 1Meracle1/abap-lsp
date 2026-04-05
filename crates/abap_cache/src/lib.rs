@@ -7,9 +7,9 @@ use abap_symbols::{
     ClassMemberData, ClassMemberKind, FieldTypeRefData, FormParameterData,
     FormParameterPassingKind, FormParameterSection, NamedArgumentAccess, NamedArgumentTarget,
     Namespace, PerformArgumentData, PerformCallData, PerformParameterSection, ProjectAnalysis,
-    Resolution, ScopeId, StructureFieldInfo, StructureFieldShape, StructureId, SymbolData,
-    SymbolId, SymbolKind, UnitAnalysis, UnitId, Visibility, analyze_project_from_units,
-    analyze_unit_locally, builtin_routine_spec,
+    ReferenceKind, Resolution, ScopeId, SqlNameRefData, SqlNameRefKind, StructureFieldInfo,
+    StructureFieldShape, StructureId, SymbolData, SymbolId, SymbolKind, UnitAnalysis, UnitId,
+    Visibility, analyze_project_from_units, analyze_unit_locally, builtin_routine_spec,
 };
 use parking_lot::RwLock;
 
@@ -122,6 +122,41 @@ enum ReferenceSearchTarget {
         owner: StructureId,
         name: Arc<str>,
     },
+    /// DDIC-style type name shared between `TYPE ...` references and Open SQL `FROM` sources.
+    DdLikeTypeName {
+        unit: UnitId,
+        name: Arc<str>,
+    },
+}
+
+fn sql_name_ref_at_offset(unit: &UnitAnalysis, offset: usize) -> Option<&SqlNameRefData> {
+    unit.sql_name_refs
+        .iter()
+        .filter(|reference| reference.range.start <= offset && offset < reference.range.end)
+        .min_by_key(|reference| reference.range.end.saturating_sub(reference.range.start))
+}
+
+fn markdown_lines_for_sql_name_ref(sql_ref: &SqlNameRefData) -> Vec<String> {
+    let title = match sql_ref.kind {
+        SqlNameRefKind::Source => "Open SQL data source (DDIC object)",
+        SqlNameRefKind::Alias => "Open SQL alias",
+        SqlNameRefKind::Column => "Open SQL column",
+        SqlNameRefKind::QualifiedColumn => "Open SQL column",
+        SqlNameRefKind::Star => "Open SQL `*` projection",
+        SqlNameRefKind::QualifiedStar => "Open SQL qualified `*` projection",
+        SqlNameRefKind::Aggregate => "Open SQL aggregate",
+    };
+    let mut lines = vec![format!("`{}`", sql_ref.name), title.to_string()];
+    if let Some(qual) = sql_ref.qualifier.as_ref() {
+        lines.push(format!("Table alias `{}`", qual));
+    }
+    if matches!(sql_ref.kind, SqlNameRefKind::Source) {
+        lines.push(
+            "The analyzer emits a warning until the source is verified against SAP DDIC/repository (not connected in this build). Use SAP ADT or the VS Code remote dependency fetch for metadata."
+                .to_string(),
+        );
+    }
+    lines
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -312,6 +347,16 @@ impl AnalysisSnapshot {
         })
     }
 
+    /// Hover for an Open SQL name span (`FROM` source, column, alias, and similar).
+    pub fn hovered_sql_name_ref_at(&self, offset: usize) -> Option<HoveredSymbolInfo> {
+        let sql_ref = sql_name_ref_at_offset(self.symbols.as_ref(), offset)?;
+        Some(HoveredSymbolInfo {
+            range: sql_ref.range.clone(),
+            display_name: Arc::clone(&sql_ref.name),
+            markdown_lines: markdown_lines_for_sql_name_ref(sql_ref),
+        })
+    }
+
     pub fn definition_at(&self, offset: usize) -> Option<DefinitionTarget> {
         if let Some(target) = self.definition_target_for_component_at(offset) {
             return Some(target);
@@ -320,6 +365,9 @@ impl AnalysisSnapshot {
             return Some(target);
         }
         if let Some(target) = self.definition_target_for_named_argument_at(offset) {
+            return Some(target);
+        }
+        if let Some(target) = self.definition_target_for_sql_source_matching_type_ref(offset) {
             return Some(target);
         }
         self.definition_target_for_resolved_symbol_at(offset)
@@ -333,6 +381,9 @@ impl AnalysisSnapshot {
             return Some(target);
         }
         if let Some(target) = self.reference_search_target_for_named_argument_at(offset) {
+            return Some(target);
+        }
+        if let Some(target) = self.reference_search_target_for_dd_like_type_name(offset) {
             return Some(target);
         }
         self.reference_search_target_for_resolved_symbol_at(offset)
@@ -678,6 +729,85 @@ impl AnalysisSnapshot {
             })
     }
 
+    fn definition_target_for_sql_source_matching_type_ref(
+        &self,
+        offset: usize,
+    ) -> Option<DefinitionTarget> {
+        let sql_ref = sql_name_ref_at_offset(self.symbols.as_ref(), offset)?;
+        if sql_ref.kind != SqlNameRefKind::Source {
+            return None;
+        }
+        let name = sql_ref.name.as_ref();
+        let unit = self.symbols.as_ref();
+        unit.references
+            .iter()
+            .filter(|reference| {
+                reference.namespace == Namespace::Type
+                    && reference.kind == ReferenceKind::TypeRef
+                    && reference.name.as_ref().eq_ignore_ascii_case(name)
+            })
+            .filter_map(|reference| {
+                let resolution = reference.resolution.as_ref()?;
+                let target = definition_target_for_resolution(self, *resolution)?;
+                Some((
+                    reference
+                        .range
+                        .end
+                        .saturating_sub(reference.range.start),
+                    target,
+                ))
+            })
+            .min_by_key(|(width, _)| *width)
+            .map(|(_, target)| target)
+    }
+
+    fn reference_search_target_for_dd_like_type_name(
+        &self,
+        offset: usize,
+    ) -> Option<ReferenceSearchTarget> {
+        let unit = self.symbols.as_ref();
+        if let Some(sql_ref) = sql_name_ref_at_offset(unit, offset) {
+            if sql_ref.kind == SqlNameRefKind::Source {
+                return Some(ReferenceSearchTarget::DdLikeTypeName {
+                    unit: unit.unit_id,
+                    name: Arc::clone(&sql_ref.name),
+                });
+            }
+        }
+
+        let type_ref = unit
+            .references
+            .iter()
+            .filter(|reference| {
+                reference.range.start <= offset
+                    && offset < reference.range.end
+                    && reference.namespace == Namespace::Type
+                    && reference.kind == ReferenceKind::TypeRef
+            })
+            .min_by_key(|reference| {
+                reference
+                    .range
+                    .end
+                    .saturating_sub(reference.range.start)
+            })?;
+
+        let name = &type_ref.name;
+        let slash_name = name.as_ref().contains('/');
+        let used_in_sql = unit.sql_sources.iter().any(|source| {
+            source
+                .name
+                .as_ref()
+                .eq_ignore_ascii_case(name.as_ref())
+        });
+        if slash_name || used_in_sql {
+            return Some(ReferenceSearchTarget::DdLikeTypeName {
+                unit: unit.unit_id,
+                name: Arc::clone(name),
+            });
+        }
+        None
+    }
+
     fn local_references_for_target(&self, target: &ReferenceSearchTarget) -> Vec<ReferenceTarget> {
         match target {
             ReferenceSearchTarget::Symbol(handle) => self.local_symbol_references(*handle),
@@ -689,7 +819,55 @@ impl AnalysisSnapshot {
             ReferenceSearchTarget::StructField { unit, owner, name } => {
                 self.local_structure_field_references(*unit, *owner, name)
             }
+            ReferenceSearchTarget::DdLikeTypeName { unit, name } => {
+                self.local_dd_like_type_name_references(*unit, name)
+            }
         }
+    }
+
+    fn local_dd_like_type_name_references(
+        &self,
+        target_unit: UnitId,
+        name: &Arc<str>,
+    ) -> Vec<ReferenceTarget> {
+        if self.symbols.unit_id != target_unit {
+            return Vec::new();
+        }
+        let mut out: Vec<ReferenceTarget> = self
+            .symbols
+            .references
+            .iter()
+            .filter(|reference| {
+                reference.namespace == Namespace::Type
+                    && reference.kind == ReferenceKind::TypeRef
+                    && reference.name.as_ref().eq_ignore_ascii_case(name.as_ref())
+            })
+            .map(|reference| ReferenceTarget {
+                uri: Arc::clone(&self.uri),
+                range: reference.range.clone(),
+            })
+            .collect();
+        out.extend(
+            self.symbols
+                .sql_name_refs
+                .iter()
+                .filter(|sql_ref| {
+                    sql_ref.kind == SqlNameRefKind::Source
+                        && sql_ref.name.as_ref().eq_ignore_ascii_case(name.as_ref())
+                })
+                .map(|sql_ref| ReferenceTarget {
+                    uri: Arc::clone(&self.uri),
+                    range: sql_ref.range.clone(),
+                }),
+        );
+        out.sort_by(|left, right| {
+            left.range
+                .start
+                .cmp(&right.range.start)
+                .then(left.range.end.cmp(&right.range.end))
+        });
+        out.dedup_by(|left, right| left.range == right.range);
+        out
     }
 
     fn local_symbol_references(&self, handle: abap_symbols::SymbolHandle) -> Vec<ReferenceTarget> {
@@ -1263,6 +1441,7 @@ fn reference_target_for_search_target(
                 range: field.decl_range?,
             })
         }
+        ReferenceSearchTarget::DdLikeTypeName { .. } => None,
     }
 }
 
@@ -3110,6 +3289,71 @@ ENDLOOP.";
             "{:?}",
             hovered.markdown_lines
         );
+    }
+
+    #[test]
+    fn hovered_sql_name_ref_at_shows_open_sql_source() {
+        let store = DocumentStore::default();
+        let src = "SELECT * FROM /sttp/gs1_gcp INTO TABLE DATA(lt).\n";
+        let snapshot = store.publish("file:///sql.abap", 1, src);
+        let offset = src.find("/sttp/gs1_gcp").expect("table") + 4;
+
+        let hovered = snapshot
+            .hovered_sql_name_ref_at(offset)
+            .expect("sql name hover");
+        assert_eq!(hovered.display_name.as_ref(), "/sttp/gs1_gcp");
+        assert!(
+            hovered
+                .markdown_lines
+                .iter()
+                .any(|line| line.contains("Open SQL data source")),
+            "{:?}",
+            hovered.markdown_lines
+        );
+    }
+
+    #[test]
+    fn find_references_includes_type_clause_and_from_for_dd_like_name() {
+        let store = DocumentStore::default();
+        let src = "\
+DATA lt TYPE STANDARD TABLE OF /sttp/gs1_gcp.
+SELECT * FROM /sttp/gs1_gcp INTO TABLE lt.
+";
+        store.publish("file:///sql.abap", 1, src);
+        let from_offset = src.rfind("/sttp/gs1_gcp").expect("from table") + 2;
+        let refs = store
+            .references("file:///sql.abap", from_offset, false)
+            .expect("refs");
+        assert!(
+            refs.len() >= 2,
+            "expected at least type and from refs, got {:?}",
+            refs
+        );
+
+        let type_offset = src.find("/sttp/gs1_gcp").expect("type table") + 2;
+        let refs_from_type = store
+            .references("file:///sql.abap", type_offset, false)
+            .expect("refs from type");
+        assert!(
+            refs_from_type.len() >= 2,
+            "expected refs from type position too, got {:?}",
+            refs_from_type
+        );
+    }
+
+    #[test]
+    fn definition_from_select_from_matches_resolving_type_reference() {
+        let store = DocumentStore::default();
+        let src = "\
+TYPES ty_demo TYPE i.
+DATA lt TYPE STANDARD TABLE OF ty_demo.
+SELECT * FROM ty_demo INTO TABLE lt.
+";
+        let snapshot = store.publish("file:///sql.abap", 1, src);
+        let offset = src.rfind("ty_demo").expect("from ty_demo");
+        let def = snapshot.definition_at(offset).expect("definition target");
+        assert_eq!(def.uri.as_ref(), "file:///sql.abap");
+        assert_eq!(&src[def.range.clone()], "ty_demo");
     }
 
     #[test]
