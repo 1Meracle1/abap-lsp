@@ -245,6 +245,7 @@ impl<'a> Collector<'a> {
         decl_range: TextRange,
         structure: Option<StructureId>,
         declared_type: Option<FieldTypeRefData>,
+        type_clause_display: Option<Arc<str>>,
     ) -> SymbolId {
         let id = SymbolId(self.symbols.len() as u32);
         self.symbols.push(SymbolData {
@@ -255,6 +256,7 @@ impl<'a> Collector<'a> {
             decl_range: decl_range.clone(),
             structure,
             declared_type,
+            type_clause_display,
         });
         self.scopes[scope.as_usize()].declarations.push(id);
         for &namespace in kind.namespaces() {
@@ -300,7 +302,7 @@ impl<'a> Collector<'a> {
         kind: SymbolKind,
         decl_range: TextRange,
     ) -> SymbolId {
-        self.declare_symbol(scope, name, kind, decl_range, None, None)
+        self.declare_symbol(scope, name, kind, decl_range, None, None, None)
     }
 
     fn push_structure(
@@ -377,6 +379,7 @@ impl<'a> Collector<'a> {
                 symbol
                     .structure_name
                     .and_then(|name| structure_ids.get(name).copied()),
+                None,
                 None,
             );
         }
@@ -584,7 +587,7 @@ impl<'a> Collector<'a> {
                     members,
                 },
             );
-            self.declare_symbol(scope, name, kind, range, Some(structure), None);
+            self.declare_symbol(scope, name, kind, range, Some(structure), None, None);
             return;
         }
 
@@ -593,7 +596,16 @@ impl<'a> Collector<'a> {
         {
             let structure = self.structure_from_typed_clause(node, scope);
             let declared_type = self.type_ref_from_typed_clause(node);
-            self.declare_symbol(scope, name, kind, range, structure, declared_type);
+            let type_clause_display = self.type_clause_display_from_typed_clause(node);
+            self.declare_symbol(
+                scope,
+                name,
+                kind,
+                range,
+                structure,
+                declared_type,
+                type_clause_display,
+            );
         }
     }
 
@@ -606,7 +618,7 @@ impl<'a> Collector<'a> {
                     members,
                 },
             );
-            self.declare_symbol(scope, name, kind, range, Some(structure), None);
+            self.declare_symbol(scope, name, kind, range, Some(structure), None, None);
         }
     }
 
@@ -623,6 +635,7 @@ impl<'a> Collector<'a> {
                     range,
                     structure,
                     declared_type.clone(),
+                    None,
                 );
             }
         }
@@ -651,6 +664,7 @@ impl<'a> Collector<'a> {
                     range,
                     structure,
                     declared_type.clone(),
+                    None,
                 );
                 break;
             }
@@ -1163,6 +1177,7 @@ impl<'a> Collector<'a> {
                 base_name: class_name,
                 field_path: Vec::new(),
             }),
+            None,
         );
     }
 
@@ -1538,6 +1553,7 @@ impl<'a> Collector<'a> {
                 param.range,
                 None,
                 param.declared_type,
+                None,
             );
         }
     }
@@ -1561,6 +1577,7 @@ impl<'a> Collector<'a> {
                 param.range.clone(),
                 None,
                 param.declared_type.clone(),
+                None,
             );
         }
     }
@@ -1772,6 +1789,7 @@ impl<'a> Collector<'a> {
                                     range,
                                     None,
                                     declared_type,
+                                    None,
                                 );
                                 parameters.push(FormParameterData {
                                     symbol,
@@ -1792,6 +1810,7 @@ impl<'a> Collector<'a> {
                                     Arc::<str>::from(lit.to_ascii_lowercase()),
                                     SymbolKind::Parameter,
                                     t.range.clone(),
+                                    None,
                                     None,
                                     None,
                                 );
@@ -1918,6 +1937,7 @@ impl<'a> Collector<'a> {
             range,
             None,
             declared_type,
+            None,
         );
         Some(FormConsumedParameter {
             next_idx: expr_end,
@@ -3026,6 +3046,7 @@ impl<'a> Collector<'a> {
                         range,
                         inferred_metadata.0,
                         inferred_metadata.1.clone(),
+                        None,
                     );
                 }
             }
@@ -3430,6 +3451,7 @@ impl<'a> Collector<'a> {
                                     name,
                                     SymbolKind::Variable,
                                     t.range.clone(),
+                                    None,
                                     None,
                                     None,
                                 );
@@ -4361,6 +4383,7 @@ impl<'a> Collector<'a> {
                 name_tok.range.clone(),
                 structure,
                 declared_type,
+                None,
             );
             return true;
         }
@@ -4381,6 +4404,7 @@ impl<'a> Collector<'a> {
                 name_tok.range.clone(),
                 structure,
                 declared_type,
+                None,
             );
             return true;
         }
@@ -5140,6 +5164,14 @@ impl<'a> Collector<'a> {
             base_name,
             field_path: field_path.into_iter().map(|segment| segment.name).collect(),
         })
+    }
+
+    fn type_clause_display_from_typed_clause(&self, node: NodeId) -> Option<Arc<str>> {
+        let (type_ref_node, _) = self.typed_clause_type_ref_node(node)?;
+        let span = self.file.range(type_ref_node);
+        let slice = self.source.get(span.start..span.end)?;
+        let trimmed = slice.trim();
+        (!trimmed.is_empty()).then(|| Arc::from(trimmed))
     }
 
     fn typed_clause_type_ref_node(&self, node: NodeId) -> Option<(NodeId, Namespace)> {

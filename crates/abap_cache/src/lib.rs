@@ -992,6 +992,13 @@ fn symbol_kind_label(kind: SymbolKind) -> &'static str {
 }
 
 fn symbol_type_line(unit: &UnitAnalysis, symbol: &SymbolData) -> Option<String> {
+    if let Some(display) = symbol.type_clause_display.as_ref() {
+        let keyword = match symbol.declared_type.as_ref().map(|t| t.namespace) {
+            Some(Namespace::Value) => "LIKE",
+            _ => "TYPE",
+        };
+        return Some(format_hover_type_clause(&format!("{keyword} {}", display.trim())));
+    }
     if let Some(structure_id) = symbol.structure {
         let name = unit.structure(structure_id).name.as_ref();
         return Some(format_hover_type_clause(&format!("TYPE {name}")));
@@ -3075,6 +3082,29 @@ CREATE OBJECT lo_instance.";
                 .markdown_lines
                 .iter()
                 .any(|line| line == "```abap\nTYPE REF TO some_class\n```"),
+            "{:?}",
+            hovered.markdown_lines
+        );
+    }
+
+    #[test]
+    fn hovered_resolved_symbol_at_shows_internal_table_wrapper_type() {
+        let store = DocumentStore::default();
+        let src = "\
+DATA lt_gs1_gcp TYPE STANDARD TABLE OF /sttp/gs1_gcp.
+LOOP AT lt_gs1_gcp INTO DATA(ls).
+ENDLOOP.";
+        let snapshot = store.publish("file:///demo.abap", 1, src);
+        let offset = src.rfind("lt_gs1_gcp").expect("loop table") + 2;
+
+        let hovered = snapshot
+            .hovered_resolved_symbol_at(offset)
+            .expect("resolved symbol hover");
+        assert_eq!(hovered.display_name.as_ref(), "lt_gs1_gcp");
+        assert!(
+            hovered.markdown_lines.iter().any(|line| {
+                line == "```abap\nTYPE STANDARD TABLE OF /sttp/gs1_gcp\n```"
+            }),
             "{:?}",
             hovered.markdown_lines
         );

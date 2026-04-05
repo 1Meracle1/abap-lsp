@@ -242,6 +242,9 @@ pub struct SymbolData {
     pub structure: Option<StructureId>,
     /// TYPE/LIKE clause from the declaration when present (e.g. built-ins without structure metadata).
     pub declared_type: Option<FieldTypeRefData>,
+    /// Verbatim type expression after `TYPE`/`LIKE` (e.g. `STANDARD TABLE OF ty`) for hover; structure
+    /// metadata alone often describes only the line type for internal tables.
+    pub type_clause_display: Option<Arc<str>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
