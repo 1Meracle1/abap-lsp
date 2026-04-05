@@ -132,7 +132,7 @@ pub enum SyntaxKind {
     WhenClause,
     /// `WHILE cond. ... ENDWHILE.`
     WhileStmt,
-    /// `DO [times TIMES]. ... ENDDO.`
+    /// `DO [ . | <arith> TIMES . ] ... ENDDO.` — `<arith>` is a parsed expression when `TIMES` is present.
     DoStmt,
     /// `LOOP ... . ... ENDLOOP.`
     LoopStmt,

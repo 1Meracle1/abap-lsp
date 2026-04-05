@@ -7,6 +7,80 @@ use abap_symbols::{
 };
 
 #[test]
+fn resolves_do_times_count_variable_in_header() {
+    let src = r#"
+FORM f.
+  DATA lv_max_len TYPE i.
+  DO lv_max_len TIMES.
+    WRITE / 'x'.
+  ENDDO.
+ENDFORM.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///do_times_header.abap", src, &parsed);
+
+    let refs: Vec<_> = unit
+        .references
+        .iter()
+        .filter(|r| r.name.as_ref() == "lv_max_len")
+        .collect();
+    assert_eq!(
+        refs.len(),
+        1,
+        "expected one reference in DO header, got {:?}",
+        refs
+    );
+    assert!(
+        refs[0].resolution.is_some(),
+        "expected lv_max_len in DO header to resolve"
+    );
+    assert!(
+        !unit.diagnostics.iter().any(|d| {
+            d.kind == DiagnosticKind::UnresolvedReference && d.message.contains("lv_max_len")
+        }),
+        "unexpected unresolved lv_max_len: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn resolves_references_inside_do_enddo_body() {
+    let src = r#"
+FORM f.
+  DATA lv TYPE i.
+  DO 3 TIMES.
+    lv = lv + 1.
+  ENDDO.
+ENDFORM.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///do_body.abap", src, &parsed);
+
+    let lv_refs: Vec<_> = unit
+        .references
+        .iter()
+        .filter(|r| r.name.as_ref() == "lv")
+        .collect();
+    assert!(
+        !lv_refs.is_empty(),
+        "expected references to lv inside DO body, got: {:?}",
+        unit.references
+    );
+    assert!(
+        lv_refs.iter().all(|r| r.resolution.is_some()),
+        "expected lv references to resolve: {:?}",
+        lv_refs
+    );
+    assert!(
+        !unit.diagnostics.iter().any(|d| {
+            d.kind == DiagnosticKind::UnresolvedReference && d.message.contains("lv")
+        }),
+        "unexpected unresolved lv: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn resolves_form_changing_parameter_in_body() {
     let src = r#"
 FORM some_form CHANGING cv_result TYPE string.

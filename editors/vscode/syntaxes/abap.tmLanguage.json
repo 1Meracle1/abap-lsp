@@ -53,6 +53,26 @@
 					"include": "#expressions"
 				}
 			]
+		},
+		{
+			"name": "do-block",
+			"begin": "(?i:\\bDO\\b)",
+			"beginCaptures": {
+				"0": {
+					"name": "keyword.control.do.abap"
+				}
+			},
+			"end": "(?i:\\bENDDO\\b)",
+			"endCaptures": {
+				"0": {
+					"name": "keyword.control.enddo.abap"
+				}
+			},
+			"patterns": [
+				{
+					"include": "#expressions"
+				}
+			]
 		}
 	],
 	"repository": {

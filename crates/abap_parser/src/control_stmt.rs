@@ -445,6 +445,116 @@ pub fn try_parse_while_stmt(
     Some((node, next_after))
 }
 
+/// `TIMES` keyword that ends `DO <arith> TIMES .`, not an identifier inside the expression.
+fn find_do_times_delimiter(
+    source: &str,
+    tokens: &[Token],
+    mut start: usize,
+    period_i: usize,
+) -> Option<usize> {
+    while start < period_i {
+        match tokens[start].kind {
+            TokenKind::Comment => start += 1,
+            TokenKind::Ident if tokens[start].lexeme(source).eq_ignore_ascii_case("times") => {
+                let mut j = start + 1;
+                while j < period_i && tokens[j].kind == TokenKind::Comment {
+                    j += 1;
+                }
+                if j == period_i {
+                    return Some(start);
+                }
+                start += 1;
+            }
+            _ => start += 1,
+        }
+    }
+    None
+}
+
+fn trim_trailing_comments(tokens: &[Token], start: usize, end_exclusive: usize) -> usize {
+    let mut e = end_exclusive;
+    while e > start && tokens[e - 1].kind == TokenKind::Comment {
+        e -= 1;
+    }
+    e
+}
+
+/// `DO .` or `DO <arith> TIMES .` — parses the repetition count as an expression (like `WHILE` does
+/// for its condition) so identifiers participate in semantic analysis.
+fn parse_do_header_until_period(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    do_idx: usize,
+    errors: &mut Vec<crate::ParseError>,
+    missing_period_message: &str,
+) -> (Vec<NodeId>, usize) {
+    match scan_until_statement_period(tokens, source, do_idx + 1) {
+        StmtPeriodScan::Found(period_i) => {
+            let after_do = skip_trivia(tokens, do_idx + 1);
+            if let Some(times_i) = find_do_times_delimiter(source, tokens, after_do, period_i) {
+                let expr_end = trim_trailing_comments(tokens, after_do, times_i);
+                let mut children = vec![token_leaf(b, &tokens[do_idx])];
+                if after_do < expr_end {
+                    let expr = parse_arithmetic_expr(
+                        b,
+                        source,
+                        &tokens[after_do..expr_end],
+                        Some(&tokens[do_idx]),
+                    );
+                    children.push(expr);
+                } else {
+                    errors.push(crate::ParseError {
+                        message: "syntax error: expected repetition count before TIMES".to_string(),
+                        range: tokens[do_idx].range.start..tokens[times_i].range.end,
+                    });
+                    let err = error_token_children(b, tokens, times_i, times_i + 1);
+                    children.push(b.branch(
+                        SyntaxKind::Error,
+                        tokens[times_i].range.clone(),
+                        &err,
+                    ));
+                }
+                children.push(token_leaf(b, &tokens[times_i]));
+                let mut j = times_i + 1;
+                while j < period_i {
+                    if tokens[j].kind == TokenKind::Comment {
+                        children.push(token_leaf(b, &tokens[j]));
+                    }
+                    j += 1;
+                }
+                children.push(token_leaf(b, &tokens[period_i]));
+                (children, period_i + 1)
+            } else {
+                let mut children =
+                    Vec::with_capacity(period_i.saturating_sub(do_idx) + 1);
+                for t in &tokens[do_idx..=period_i] {
+                    children.push(token_leaf(b, t));
+                }
+                (children, period_i + 1)
+            }
+        }
+        StmtPeriodScan::Unterminated { end_exclusive } => {
+            let start_tok = &tokens[do_idx];
+            let err_end = unterminated_err_end(tokens, end_exclusive, start_tok.range.end);
+            errors.push(crate::ParseError {
+                message: missing_period_message.to_string(),
+                range: start_tok.range.start..err_end,
+            });
+            let err_children = error_token_children(b, tokens, do_idx, end_exclusive);
+            let header = b.branch(
+                SyntaxKind::Error,
+                start_tok.range.start..err_end,
+                &err_children,
+            );
+            (
+                vec![header],
+                next_after_unterminated_scan(tokens, end_exclusive),
+            )
+        }
+    }
+}
+
 pub fn try_parse_do_stmt(
     b: &mut SyntaxTreeBuilder,
     source: &str,
@@ -457,12 +567,11 @@ pub fn try_parse_do_stmt(
         return None;
     }
 
-    let (mut children, mut next) = parse_header_until_period(
+    let (mut children, mut next) = parse_do_header_until_period(
         b,
         source,
         tokens,
         idx,
-        idx + 1,
         errors,
         "syntax error: expected '.' after DO header",
     );
@@ -998,5 +1107,35 @@ mod tests {
                 .count_kind(parsed.file.root(), SyntaxKind::LoopStmt),
             1
         );
+    }
+
+    #[test]
+    fn parses_do_unconditional_and_times() {
+        let parsed = crate::parse("DO. EXIT. ENDDO.\nDO 7 TIMES. CONTINUE. ENDDO.");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::DoStmt), 2);
+    }
+
+    #[test]
+    fn parses_do_times_count_as_expression_for_semantics() {
+        let parsed = crate::parse("DO lv_max_len TIMES. ENDDO.");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert!(
+            parsed.file.count_kind(root, SyntaxKind::ExprIdent) >= 1,
+            "expected repetition count identifier in structured DO header"
+        );
+    }
+
+    #[test]
+    fn parses_nested_do_enddo() {
+        let parsed = crate::parse(
+            "DO lv_max TIMES.\nDO 7 TIMES.\na = 1.\nENDDO.\nb = 2.\nENDDO.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::DoStmt), 2);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::AssignStmt), 2);
     }
 }
