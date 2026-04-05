@@ -57,6 +57,8 @@ pub(crate) fn is_definite_stmt_lead_keyword(source: &str, tok: &Token) -> bool {
         || s.eq_ignore_ascii_case("METHOD")
         || s.eq_ignore_ascii_case("ENDMETHOD")
         || s.eq_ignore_ascii_case("READ")
+        || s.eq_ignore_ascii_case("MOVE")
+        || s.eq_ignore_ascii_case("SORT")
         || s.eq_ignore_ascii_case("SELECT")
         || s.eq_ignore_ascii_case("ENDSELECT")
         || s.eq_ignore_ascii_case("FORM")

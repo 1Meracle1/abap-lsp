@@ -216,6 +216,8 @@ pub enum SyntaxKind {
     AppendStmt,
     /// `MOVE-CORRESPONDING ... TO ... .`
     MoveCorrespondingStmt,
+    /// `MOVE source TO target .`
+    MoveStmt,
     /// `MODIFY ... FROM ... .`
     ModifyStmt,
     /// `DELETE itab ... .` and `DELETE ADJACENT DUPLICATES FROM itab ... .`
@@ -256,6 +258,8 @@ pub enum SyntaxKind {
     ConcatenateStmt,
     /// `CONDENSE dobj [NO-GAPS] .`
     CondenseStmt,
+    /// `SORT itab [STABLE] [AS TEXT] [BY ...] .`
+    SortStmt,
     /// `IS [NOT] INITIAL|BOUND|ASSIGNED|REQUESTED|SUPPLIED` in logical conditions.
     IsPredicate,
     /// `IS [NOT] INSTANCE OF type` (type parsed as a concat-level expression).
@@ -368,6 +372,7 @@ impl SyntaxKind {
             Self::InsertTableStmt => "InsertTableStmt",
             Self::AppendStmt => "AppendStmt",
             Self::MoveCorrespondingStmt => "MoveCorrespondingStmt",
+            Self::MoveStmt => "MoveStmt",
             Self::ModifyStmt => "ModifyStmt",
             Self::DeleteStmt => "DeleteInternalTableStmt",
             Self::DeleteDbTableStmt => "DeleteDbTableFromTableStmt",
@@ -388,6 +393,7 @@ impl SyntaxKind {
             Self::WriteStmt => "WriteStmt",
             Self::ConcatenateStmt => "ConcatenateStmt",
             Self::CondenseStmt => "CondenseStmt",
+            Self::SortStmt => "SortStmt",
             Self::IsPredicate => "IsPredicate",
             Self::InstanceOfPredicate => "InstanceOfPredicate",
             Self::BetweenExpr => "BetweenExpr",

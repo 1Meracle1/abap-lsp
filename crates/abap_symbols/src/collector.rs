@@ -513,6 +513,8 @@ impl<'a> Collector<'a> {
             SyntaxKind::AppendStmt
             | SyntaxKind::InsertTableStmt
             | SyntaxKind::MoveCorrespondingStmt
+            | SyntaxKind::MoveStmt
+            | SyntaxKind::SortStmt
             | SyntaxKind::ModifyStmt
             | SyntaxKind::DeleteStmt
             | SyntaxKind::DeleteDbTableStmt

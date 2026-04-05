@@ -3554,6 +3554,243 @@ pub fn try_parse_move_corresponding_stmt(
     ))
 }
 
+fn move_simple_source_clause_starts(source: &str, tokens: &[Token], idx: usize) -> bool {
+    let Some(token) = tokens.get(idx) else {
+        return false;
+    };
+    token.kind == TokenKind::Ident && is_keyword(source, token, "to")
+}
+
+/// `MOVE ... TO ...` and `MOVE-CORRESPONDING ...` (delegates to [`try_parse_move_corresponding_stmt`]).
+pub fn try_parse_move_stmt(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    errors: &mut Vec<crate::ParseError>,
+) -> Option<(NodeId, usize)> {
+    if let Some(parsed) = try_parse_move_corresponding_stmt(b, source, tokens, idx, errors) {
+        return Some(parsed);
+    }
+    let move_tok = tokens.get(idx)?;
+    if !is_keyword(source, move_tok, "move") {
+        return None;
+    }
+    Some(parse_stmt_with_period_scan(
+        b,
+        source,
+        tokens,
+        idx,
+        idx + 1,
+        move_tok,
+        "syntax error: expected '.' after MOVE statement",
+        errors,
+        |_, end_exclusive| end_exclusive,
+        |b, period_i, _errors| {
+            let clause_starts =
+                |tokens: &[Token], idx: usize| move_simple_source_clause_starts(source, tokens, idx);
+            let Some(to_idx) =
+                find_top_level_keyword_index(source, tokens, idx + 1, period_i, "to")
+            else {
+                let children = token_children(b, tokens, idx, period_i + 1);
+                let node = b.branch(
+                    SyntaxKind::Error,
+                    move_tok.range.start..tokens[period_i].range.end,
+                    &children,
+                );
+                return (node, period_i + 1);
+            };
+            let mut children = Vec::with_capacity(period_i - idx + 1);
+            children.push(token_leaf(b, move_tok));
+            let source_end = scan_and_push_expr_clause(
+                b,
+                &mut children,
+                source,
+                tokens,
+                idx + 1,
+                to_idx,
+                Some(move_tok),
+                &clause_starts,
+            );
+            push_token_children(b, &mut children, tokens, source_end, to_idx);
+            children.push(token_leaf(b, &tokens[to_idx]));
+            let no_clause = |_: &[Token], _: usize| false;
+            let mut i = scan_and_push_expr_clause(
+                b,
+                &mut children,
+                source,
+                tokens,
+                to_idx + 1,
+                period_i,
+                Some(&tokens[to_idx]),
+                &no_clause,
+            );
+            while i < period_i {
+                children.push(token_leaf(b, &tokens[i]));
+                i += 1;
+            }
+            children.push(token_leaf(b, &tokens[period_i]));
+            let node = b.branch(
+                SyntaxKind::MoveStmt,
+                move_tok.range.start..tokens[period_i].range.end,
+                &children,
+            );
+            (node, period_i + 1)
+        },
+    ))
+}
+
+fn sort_modifier_clause_starts(source: &str, tokens: &[Token], idx: usize) -> bool {
+    let Some(token) = tokens.get(idx) else {
+        return false;
+    };
+    if token.kind != TokenKind::Ident {
+        return false;
+    }
+    is_keyword(source, token, "stable")
+        || is_keyword(source, token, "by")
+        || (is_keyword(source, token, "as")
+            && tokens
+                .get(idx + 1)
+                .is_some_and(|next| is_keyword(source, next, "text")))
+}
+
+fn sort_modifier_before_period_starts(source: &str, tokens: &[Token], idx: usize) -> bool {
+    let Some(token) = tokens.get(idx) else {
+        return false;
+    };
+    if token.kind != TokenKind::Ident {
+        return false;
+    }
+    is_keyword(source, token, "stable")
+        || (is_keyword(source, token, "as")
+            && tokens
+                .get(idx + 1)
+                .is_some_and(|next| is_keyword(source, next, "text")))
+}
+
+pub fn try_parse_sort_stmt(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    errors: &mut Vec<crate::ParseError>,
+) -> Option<(NodeId, usize)> {
+    let sort_tok = tokens.get(idx)?;
+    if !is_keyword(source, sort_tok, "sort") {
+        return None;
+    }
+    Some(parse_stmt_with_period_scan(
+        b,
+        source,
+        tokens,
+        idx,
+        idx + 1,
+        sort_tok,
+        "syntax error: expected '.' after SORT statement",
+        errors,
+        |_, end_exclusive| end_exclusive,
+        |b, period_i, _errors| {
+            let by_idx = find_top_level_keyword_index(source, tokens, idx + 1, period_i, "by");
+            let mut children = Vec::with_capacity(period_i - idx + 1);
+            children.push(token_leaf(b, sort_tok));
+            let no_split = |_: &[Token], _: usize| false;
+
+            if let Some(by_idx) = by_idx {
+                let mut cur = idx + 1;
+                while cur < by_idx {
+                    cur = scan_and_push_expr_clause(
+                        b,
+                        &mut children,
+                        source,
+                        tokens,
+                        cur,
+                        by_idx,
+                        Some(sort_tok),
+                        &|t, i| sort_modifier_clause_starts(source, t, i),
+                    );
+                    if cur >= by_idx {
+                        break;
+                    }
+                    let token = &tokens[cur];
+                    if is_keyword(source, token, "stable") {
+                        children.push(token_leaf(b, token));
+                        cur += 1;
+                    } else if is_keyword(source, token, "as")
+                        && tokens
+                            .get(cur + 1)
+                            .is_some_and(|next| is_keyword(source, next, "text"))
+                    {
+                        children.push(token_leaf(b, token));
+                        children.push(token_leaf(b, &tokens[cur + 1]));
+                        cur += 2;
+                    } else {
+                        children.push(token_leaf(b, token));
+                        cur += 1;
+                    }
+                }
+                push_token_children(b, &mut children, tokens, cur, by_idx);
+                children.push(token_leaf(b, &tokens[by_idx]));
+                let mut tail = scan_and_push_expr_clause(
+                    b,
+                    &mut children,
+                    source,
+                    tokens,
+                    by_idx + 1,
+                    period_i,
+                    Some(&tokens[by_idx]),
+                    &no_split,
+                );
+                while tail < period_i {
+                    children.push(token_leaf(b, &tokens[tail]));
+                    tail += 1;
+                }
+            } else {
+                let mut cur = idx + 1;
+                while cur < period_i {
+                    cur = scan_and_push_expr_clause(
+                        b,
+                        &mut children,
+                        source,
+                        tokens,
+                        cur,
+                        period_i,
+                        Some(sort_tok),
+                        &|t, i| sort_modifier_before_period_starts(source, t, i),
+                    );
+                    if cur >= period_i {
+                        break;
+                    }
+                    let token = &tokens[cur];
+                    if is_keyword(source, token, "stable") {
+                        children.push(token_leaf(b, token));
+                        cur += 1;
+                    } else if is_keyword(source, token, "as")
+                        && tokens
+                            .get(cur + 1)
+                            .is_some_and(|next| is_keyword(source, next, "text"))
+                    {
+                        children.push(token_leaf(b, token));
+                        children.push(token_leaf(b, &tokens[cur + 1]));
+                        cur += 2;
+                    } else {
+                        children.push(token_leaf(b, token));
+                        cur += 1;
+                    }
+                }
+            }
+
+            children.push(token_leaf(b, &tokens[period_i]));
+            let node = b.branch(
+                SyntaxKind::SortStmt,
+                sort_tok.range.start..tokens[period_i].range.end,
+                &children,
+            );
+            (node, period_i + 1)
+        },
+    ))
+}
+
 pub fn try_parse_modify_stmt(
     b: &mut SyntaxTreeBuilder,
     source: &str,
@@ -4714,6 +4951,30 @@ END-OF-PAGE.\nWRITE 'e'.",
         assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::TemplateExpr), 2);
         assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::ExprIdent), 2);
         assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::Error), 0);
+    }
+
+    #[test]
+    fn parses_move_to_operands_as_ast_children() {
+        let parsed = crate::parse("MOVE it_gs1_check_table TO lt_gs1_gcp.");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let stmt = parsed
+            .file
+            .find_first_kind(parsed.file.root(), SyntaxKind::MoveStmt)
+            .expect("move stmt");
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::TemplateExpr), 2);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::ExprIdent), 2);
+    }
+
+    #[test]
+    fn parses_sort_by_as_sort_stmt() {
+        let parsed = crate::parse("SORT lt_gs1_gcp BY gs1_gcp.");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let stmt = parsed
+            .file
+            .find_first_kind(parsed.file.root(), SyntaxKind::SortStmt)
+            .expect("sort stmt");
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::TemplateExpr), 2);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::ExprIdent), 2);
     }
 
     #[test]
