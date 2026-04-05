@@ -367,6 +367,31 @@ pub const BUILTIN_ROUTINES: &[BuiltinRoutineSpec] = &[
         supports_named_arguments: true,
     },
     BuiltinRoutineSpec {
+        name: "condense",
+        params: &[
+            BuiltinRoutineParamSpec {
+                name: "val",
+                type_name: "string",
+            },
+            BuiltinRoutineParamSpec {
+                name: "del",
+                type_name: "string",
+            },
+            BuiltinRoutineParamSpec {
+                name: "from",
+                type_name: "string",
+            },
+            BuiltinRoutineParamSpec {
+                name: "to",
+                type_name: "string",
+            },
+        ],
+        hover_params: &["val", "del", "from", "to"],
+        return_type: "string",
+        description: "Returns a condensed character string: strips leading/trailing characters in `del`, replaces runs in `from` using `to` (all default to a single blank when omitted).",
+        supports_named_arguments: true,
+    },
+    BuiltinRoutineSpec {
         name: "to_lower",
         params: ARG_STRING_PARAMS,
         hover_params: &["arg"],

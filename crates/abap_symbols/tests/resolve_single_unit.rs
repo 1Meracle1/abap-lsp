@@ -3577,6 +3577,30 @@ ev3 = substring( val = iv_string len = 10 ).\n\
 }
 
 #[test]
+fn resolves_condense_builtin_with_named_arguments() {
+    let src = "\
+DATA ev_characters TYPE string.\n\
+DATA sv_null_char TYPE string.\n\
+ev_characters = condense( val = ev_characters del = sv_null_char ).\n\
+";
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///builtin_condense.abap", src, &parsed);
+
+    assert!(unit.references.iter().any(|reference| {
+        reference.kind == ReferenceKind::RoutineCall
+            && reference.namespace == Namespace::Routine
+            && reference.name.as_ref() == "condense"
+            && matches!(reference.resolution, Some(Resolution::BuiltinRoutine))
+    }));
+    assert!(!unit.diagnostics.iter().any(|diag| {
+        diag.kind == DiagnosticKind::InvalidBuiltinNamedArgument && diag.message.contains("condense")
+    }));
+    assert!(!unit.diagnostics.iter().any(|diag| {
+        diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains("condense")
+    }));
+}
+
+#[test]
 fn substring_access_uses_value_namespace() {
     let src = "\
 DATA ls_time TYPE string.\n\

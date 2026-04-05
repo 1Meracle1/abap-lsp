@@ -1714,6 +1714,37 @@ fn find_top_level_keyword_index(
     None
 }
 
+fn find_top_level_hyphenated_keyword_index(
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    end_exclusive: usize,
+    parts: &[&str],
+) -> Option<usize> {
+    let mut paren = 0i32;
+    let mut bracket = 0i32;
+    let mut brace = 0i32;
+    let mut idx = start;
+    while idx < end_exclusive {
+        if paren == 0 && bracket == 0 && brace == 0 {
+            if match_hyphenated_keyword(source, tokens, idx, parts).is_some() {
+                return Some(idx);
+            }
+        }
+        match tokens[idx].kind {
+            TokenKind::LParen => paren += 1,
+            TokenKind::RParen => paren -= 1,
+            TokenKind::LBracket => bracket += 1,
+            TokenKind::RBracket => bracket -= 1,
+            TokenKind::LBrace => brace += 1,
+            TokenKind::RBrace => brace -= 1,
+            _ => {}
+        }
+        idx += 1;
+    }
+    None
+}
+
 fn token_starts_concatenate_operand(source: &str, tokens: &[Token], idx: usize) -> bool {
     let Some(token) = tokens.get(idx) else {
         return false;
@@ -2468,6 +2499,75 @@ pub fn try_parse_concatenate_stmt(
             let node = b.branch(
                 SyntaxKind::ConcatenateStmt,
                 concat_tok.range.start..tokens[period_i].range.end,
+                &children,
+            );
+            (node, period_i + 1)
+        },
+    ))
+}
+
+pub fn try_parse_condense_stmt(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    errors: &mut Vec<crate::ParseError>,
+) -> Option<(NodeId, usize)> {
+    let condense_tok = tokens.get(idx)?;
+    if !is_keyword(source, condense_tok, "condense") {
+        return None;
+    }
+    Some(parse_stmt_with_period_scan(
+        b,
+        source,
+        tokens,
+        idx,
+        idx + 1,
+        condense_tok,
+        "syntax error: expected '.' after CONDENSE statement",
+        errors,
+        next_after_unterminated_scan,
+        |b, period_i, errors| {
+            let mut children = vec![token_leaf(b, condense_tok)];
+            let target_start = skip_trivia(tokens, idx + 1);
+            let no_gaps_parts: &[&str] = &["no", "gaps"];
+            let no_gaps_idx = find_top_level_hyphenated_keyword_index(
+                source,
+                tokens,
+                target_start,
+                period_i,
+                no_gaps_parts,
+            );
+            let expr_end = no_gaps_idx.unwrap_or(period_i);
+
+            if target_start >= expr_end {
+                errors.push(crate::ParseError {
+                    message: "syntax error: expected target variable or expression after CONDENSE"
+                        .to_string(),
+                    range: condense_tok.range.start..tokens[period_i].range.end,
+                });
+            } else {
+                push_expr_child(
+                    b,
+                    &mut children,
+                    source,
+                    tokens,
+                    target_start,
+                    expr_end,
+                    Some(condense_tok),
+                );
+            }
+
+            if let Some(ng) = no_gaps_idx
+                && let Some(ng_end) = match_hyphenated_keyword(source, tokens, ng, no_gaps_parts)
+            {
+                push_token_children(b, &mut children, tokens, ng, ng_end);
+            }
+
+            children.push(token_leaf(b, &tokens[period_i]));
+            let node = b.branch(
+                SyntaxKind::CondenseStmt,
+                condense_tok.range.start..tokens[period_i].range.end,
                 &children,
             );
             (node, period_i + 1)
@@ -4197,6 +4297,42 @@ END-OF-PAGE.\nWRITE 'e'.",
             parsed
                 .file
                 .count_kind(parsed.file.root(), SyntaxKind::ConcatenateStmt),
+            1
+        );
+    }
+
+    #[test]
+    fn parses_condense_stmt() {
+        let parsed = crate::parse("CONDENSE lv_datestring.");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::CondenseStmt),
+            1
+        );
+    }
+
+    #[test]
+    fn parses_condense_stmt_no_gaps() {
+        let parsed = crate::parse("CONDENSE lv_gs1_element_delimiter NO-GAPS.");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::CondenseStmt),
+            1
+        );
+    }
+
+    #[test]
+    fn condense_stmt_no_gaps_is_not_picked_up_inside_parens() {
+        let parsed = crate::parse("CONDENSE func( NO-GAPS ).");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::CondenseStmt),
             1
         );
     }

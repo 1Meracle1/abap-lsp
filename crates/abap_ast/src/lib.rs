@@ -254,6 +254,8 @@ pub enum SyntaxKind {
     WriteStmt,
     /// `CONCATENATE ... INTO ... .`
     ConcatenateStmt,
+    /// `CONDENSE dobj [NO-GAPS] .`
+    CondenseStmt,
     /// `IS [NOT] INITIAL|BOUND|ASSIGNED|REQUESTED|SUPPLIED` in logical conditions.
     IsPredicate,
     /// `IS [NOT] INSTANCE OF type` (type parsed as a concat-level expression).
@@ -385,6 +387,7 @@ impl SyntaxKind {
             Self::SetBitStmt => "SetBitStmt",
             Self::WriteStmt => "WriteStmt",
             Self::ConcatenateStmt => "ConcatenateStmt",
+            Self::CondenseStmt => "CondenseStmt",
             Self::IsPredicate => "IsPredicate",
             Self::InstanceOfPredicate => "InstanceOfPredicate",
             Self::BetweenExpr => "BetweenExpr",
