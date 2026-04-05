@@ -139,6 +139,7 @@ fn collect_pending(
     ty_ix: SemanticTokenTypeIndices,
     mod_ix: ModifierIndices,
 ) -> Vec<PendingToken> {
+    let lookup = snapshot.semantic_token_lookup_context();
     let unit = snapshot.symbols.as_ref();
     let project = snapshot.project.as_ref();
     let structure_fields = unit
@@ -231,7 +232,7 @@ fn collect_pending(
 
     for access in &unit.field_accesses {
         for (segment_index, segment) in access.field_path.iter().enumerate() {
-            let token_type = snapshot
+            let token_type = lookup
                 .classify_field_access_segment(access, segment_index)
                 .map(|kind| match kind {
                     abap_cache::HoveredComponentKind::Scalar => ty_ix.property,
@@ -252,7 +253,7 @@ fn collect_pending(
     }
 
     for named_argument in &unit.named_arguments {
-        if snapshot.has_named_argument_parameter(named_argument) {
+        if lookup.has_named_argument_parameter(named_argument) {
             push_pending(
                 &mut pending,
                 named_argument.range.start,

@@ -24,6 +24,9 @@ if /I "%MODE%"=="release" (
 
   echo semantic_tokens_full_request_throughput_smoke
   cargo test -p abap_lsp --test semantic_tokens_perf_smoke semantic_tokens_full_request_throughput_smoke -- --ignored --nocapture --release%CARGO_ARGS%
+
+  echo build_semantic_tokens_perf
+  cargo run -p abap_lsp --example build_semantic_tokens_perf --release --%CARGO_ARGS%
 ) else (
   echo [debug mode]
 
@@ -32,4 +35,7 @@ if /I "%MODE%"=="release" (
 
   echo semantic_tokens_full_request_throughput_smoke
   cargo test -p abap_lsp --test semantic_tokens_perf_smoke semantic_tokens_full_request_throughput_smoke -- --ignored --nocapture%CARGO_ARGS%
+
+  echo build_semantic_tokens_perf
+  cargo run -p abap_lsp --example build_semantic_tokens_perf --%CARGO_ARGS%
 )

@@ -1,4 +1,6 @@
 pub(crate) mod sem_tokens;
+#[cfg(test)]
+mod perf_tests;
 
 use std::sync::Arc;
 
@@ -18,6 +20,7 @@ pub use lsp_types::{
     CompletionParams, CompletionResponse, DidChangeTextDocumentParams, DidOpenTextDocumentParams,
     GotoDefinitionParams, HoverParams, ReferenceParams, SemanticTokensParams,
 };
+pub use sem_tokens::build_semantic_tokens;
 pub use serde;
 
 pub const RESOLVE_REMOTE_DEPENDENCIES: &str = "abapls/resolveRemoteDependencies";

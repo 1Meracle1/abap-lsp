@@ -139,7 +139,19 @@ struct FormParameterHoverInfo {
 
 type ScopeIndex = Vec<HashMap<(Namespace, Arc<str>), Vec<SymbolId>>>;
 
+pub struct SemanticTokenLookupContext<'a> {
+    snapshot: &'a AnalysisSnapshot,
+    scope_index: ScopeIndex,
+}
+
 impl AnalysisSnapshot {
+    pub fn semantic_token_lookup_context(&self) -> SemanticTokenLookupContext<'_> {
+        SemanticTokenLookupContext {
+            snapshot: self,
+            scope_index: build_scope_index(self.symbols.as_ref()),
+        }
+    }
+
     pub fn structure_field_infos(&self, structure_id: StructureId) -> Vec<StructureFieldInfo> {
         self.symbols.structure_field_infos(structure_id)
     }
@@ -250,28 +262,8 @@ impl AnalysisSnapshot {
         access: &abap_symbols::FieldAccess,
         segment_index: usize,
     ) -> Option<HoveredComponentKind> {
-        let (unit, symbol_id) = resolve_field_access_base_symbol(self, access)?;
-        if let Some((_, member)) =
-            resolve_class_selector_member(self, access, segment_index, unit, symbol_id)
-        {
-            return Some(hovered_component_kind_for_class_member(member));
-        }
-
-        let symbol = unit.symbol(symbol_id);
-        let structure_id = symbol.structure?;
-        let field_path: Vec<_> = access
-            .field_path
-            .iter()
-            .take(segment_index + 1)
-            .map(|segment| segment.name.as_ref())
-            .collect();
-        let field = unit.resolve_structure_field_path(structure_id, &field_path)?;
-        Some(match field.shape {
-            StructureFieldShape::Scalar => HoveredComponentKind::Scalar,
-            StructureFieldShape::Structured { structure } => HoveredComponentKind::Structured {
-                structure_name: Arc::clone(&unit.structure(structure).name),
-            },
-        })
+        let scope_index = build_scope_index(self.symbols.as_ref());
+        classify_field_access_segment_with_scope_index(self, &scope_index, access, segment_index)
     }
 
     pub fn hovered_named_argument_at(&self, offset: usize) -> Option<HoveredSymbolInfo> {
@@ -289,7 +281,8 @@ impl AnalysisSnapshot {
     }
 
     pub fn has_named_argument_parameter(&self, access: &NamedArgumentAccess) -> bool {
-        resolve_named_argument_parameter(self, access).is_some()
+        let scope_index = build_scope_index(self.symbols.as_ref());
+        resolve_named_argument_parameter_with_scope_index(self, &scope_index, access).is_some()
     }
 
     pub fn hovered_perform_argument_at(&self, offset: usize) -> Option<HoveredSymbolInfo> {
@@ -922,6 +915,26 @@ impl AnalysisSnapshot {
     }
 }
 
+impl<'a> SemanticTokenLookupContext<'a> {
+    pub fn classify_field_access_segment(
+        &self,
+        access: &abap_symbols::FieldAccess,
+        segment_index: usize,
+    ) -> Option<HoveredComponentKind> {
+        classify_field_access_segment_with_scope_index(
+            self.snapshot,
+            &self.scope_index,
+            access,
+            segment_index,
+        )
+    }
+
+    pub fn has_named_argument_parameter(&self, access: &NamedArgumentAccess) -> bool {
+        resolve_named_argument_parameter_with_scope_index(self.snapshot, &self.scope_index, access)
+            .is_some()
+    }
+}
+
 fn format_field_type_ref(type_ref: &abap_symbols::FieldTypeRefData) -> String {
     let keyword = match type_ref.namespace {
         Namespace::Type => "TYPE",
@@ -1341,22 +1354,6 @@ fn build_scope_index(unit: &UnitAnalysis) -> ScopeIndex {
     out
 }
 
-fn resolve_direct_superclass_from_scope<'a>(
-    snapshot: &'a AnalysisSnapshot,
-    scope: ScopeId,
-) -> Option<(&'a UnitAnalysis, SymbolId)> {
-    let class_symbol = enclosing_class_owner(snapshot.symbols.as_ref(), scope)?;
-    let inheritance = snapshot.symbols.class_superclass(class_symbol)?;
-    let (unit, symbol_id) = resolve_symbol_from_context(
-        snapshot,
-        scope,
-        Namespace::Type,
-        &inheritance.superclass_name,
-        false,
-    )?;
-    (unit.symbol(symbol_id).kind == SymbolKind::Class).then_some((unit, symbol_id))
-}
-
 fn resolve_project_class_symbol<'a>(
     snapshot: &'a AnalysisSnapshot,
     preferred_unit: &'a UnitAnalysis,
@@ -1442,11 +1439,21 @@ fn resolve_field_access_base_symbol<'a>(
     snapshot: &'a AnalysisSnapshot,
     access: &abap_symbols::FieldAccess,
 ) -> Option<(&'a UnitAnalysis, SymbolId)> {
+    let scope_index = build_scope_index(snapshot.symbols.as_ref());
+    resolve_field_access_base_symbol_with_scope_index(snapshot, &scope_index, access)
+}
+
+fn resolve_field_access_base_symbol_with_scope_index<'a>(
+    snapshot: &'a AnalysisSnapshot,
+    scope_index: &ScopeIndex,
+    access: &abap_symbols::FieldAccess,
+) -> Option<(&'a UnitAnalysis, SymbolId)> {
     if access.base_namespace == Namespace::Value && access.base_name.as_ref() == "super" {
-        return resolve_direct_superclass_from_scope(snapshot, access.scope);
+        return resolve_direct_superclass_from_scope_with_scope_index(snapshot, scope_index, access.scope);
     }
-    resolve_symbol_from_context(
+    resolve_symbol_from_context_with_scope_index(
         snapshot,
+        scope_index,
         access.scope,
         access.base_namespace,
         &access.base_name,
@@ -1585,10 +1592,20 @@ fn resolve_named_argument_parameter<'a>(
     snapshot: &'a AnalysisSnapshot,
     access: &NamedArgumentAccess,
 ) -> Option<NamedArgumentParameterInfo> {
+    let scope_index = build_scope_index(snapshot.symbols.as_ref());
+    resolve_named_argument_parameter_with_scope_index(snapshot, &scope_index, access)
+}
+
+fn resolve_named_argument_parameter_with_scope_index<'a>(
+    snapshot: &'a AnalysisSnapshot,
+    scope_index: &ScopeIndex,
+    access: &NamedArgumentAccess,
+) -> Option<NamedArgumentParameterInfo> {
     match &access.target {
         NamedArgumentTarget::Constructor { type_name } => {
-            let (unit, class_symbol_id) = resolve_symbol_from_context(
+            let (unit, class_symbol_id) = resolve_symbol_from_context_with_scope_index(
                 snapshot,
+                scope_index,
                 access.scope,
                 Namespace::Type,
                 type_name,
@@ -1607,8 +1624,9 @@ fn resolve_named_argument_parameter<'a>(
                 declared_type: parameter.declared_type.clone(),
             })
         }
-        NamedArgumentTarget::Routine { routine_name } => resolve_routine_named_argument_parameter(
+        NamedArgumentTarget::Routine { routine_name } => resolve_routine_named_argument_parameter_with_scope_index(
             snapshot,
+            scope_index,
             access.scope,
             routine_name,
             &access.name,
@@ -1644,8 +1662,9 @@ fn resolve_named_argument_parameter<'a>(
             base_name,
             method_name,
         } => {
-            let (unit, class_symbol_id, requires_static) = resolve_method_target_from_context(
+            let (unit, class_symbol_id, requires_static) = resolve_method_target_from_context_with_scope_index(
                 snapshot,
+                scope_index,
                 access.scope,
                 *base_namespace,
                 base_name,
@@ -1871,14 +1890,21 @@ fn resolve_named_argument_symbol(
     }
 }
 
-fn resolve_routine_named_argument_parameter(
+fn resolve_routine_named_argument_parameter_with_scope_index(
     snapshot: &AnalysisSnapshot,
+    scope_index: &ScopeIndex,
     scope: ScopeId,
     routine_name: &Arc<str>,
     parameter_name: &Arc<str>,
 ) -> Option<NamedArgumentParameterInfo> {
-    if let Some((unit, routine_symbol_id)) =
-        resolve_symbol_from_context(snapshot, scope, Namespace::Routine, routine_name, false)
+    if let Some((unit, routine_symbol_id)) = resolve_symbol_from_context_with_scope_index(
+        snapshot,
+        scope_index,
+        scope,
+        Namespace::Routine,
+        routine_name,
+        false,
+    )
     {
         let parameter = unit
             .routine_parameters(routine_symbol_id)
@@ -1900,6 +1926,25 @@ fn resolve_symbol_from_context<'a>(
 ) -> Option<(&'a UnitAnalysis, SymbolId)> {
     let current_unit = &snapshot.symbols;
     let scope_index = build_scope_index(current_unit);
+    resolve_symbol_from_context_with_scope_index(
+        snapshot,
+        &scope_index,
+        scope,
+        namespace,
+        name,
+        in_type_position,
+    )
+}
+
+fn resolve_symbol_from_context_with_scope_index<'a>(
+    snapshot: &'a AnalysisSnapshot,
+    scope_index: &ScopeIndex,
+    scope: ScopeId,
+    namespace: Namespace,
+    name: &Arc<str>,
+    in_type_position: bool,
+) -> Option<(&'a UnitAnalysis, SymbolId)> {
+    let current_unit = &snapshot.symbols;
     for namespace in [
         Some(namespace),
         fallback_namespace_for_context(namespace, in_type_position),
@@ -1972,11 +2017,24 @@ fn resolve_method_target_from_context<'a>(
     namespace: Namespace,
     name: &Arc<str>,
 ) -> Option<(&'a UnitAnalysis, SymbolId, bool)> {
+    let scope_index = build_scope_index(snapshot.symbols.as_ref());
+    resolve_method_target_from_context_with_scope_index(snapshot, &scope_index, scope, namespace, name)
+}
+
+fn resolve_method_target_from_context_with_scope_index<'a>(
+    snapshot: &'a AnalysisSnapshot,
+    scope_index: &ScopeIndex,
+    scope: ScopeId,
+    namespace: Namespace,
+    name: &Arc<str>,
+) -> Option<(&'a UnitAnalysis, SymbolId, bool)> {
     if namespace == Namespace::Value && name.as_ref() == "super" {
-        let (unit, symbol_id) = resolve_direct_superclass_from_scope(snapshot, scope)?;
+        let (unit, symbol_id) =
+            resolve_direct_superclass_from_scope_with_scope_index(snapshot, scope_index, scope)?;
         return Some((unit, symbol_id, false));
     }
-    let (unit, symbol_id) = resolve_symbol_from_context(snapshot, scope, namespace, name, false)?;
+    let (unit, symbol_id) =
+        resolve_symbol_from_context_with_scope_index(snapshot, scope_index, scope, namespace, name, false)?;
     let base_symbol = unit.symbol(symbol_id);
     if namespace == Namespace::Type && base_symbol.kind == SymbolKind::Class {
         return Some((unit, symbol_id, true));
@@ -1991,8 +2049,9 @@ fn resolve_method_target_from_context<'a>(
     if !declared_type.is_ref || !declared_type.field_path.is_empty() {
         return None;
     }
-    let (class_unit, class_symbol_id) = resolve_symbol_from_context(
+    let (class_unit, class_symbol_id) = resolve_symbol_from_context_with_scope_index(
         snapshot,
+        scope_index,
         scope,
         Namespace::Type,
         &declared_type.base_name,
@@ -2003,6 +2062,24 @@ fn resolve_method_target_from_context<'a>(
         class_symbol_id,
         false,
     ))
+}
+
+fn resolve_direct_superclass_from_scope_with_scope_index<'a>(
+    snapshot: &'a AnalysisSnapshot,
+    scope_index: &ScopeIndex,
+    scope: ScopeId,
+) -> Option<(&'a UnitAnalysis, SymbolId)> {
+    let class_symbol = enclosing_class_owner(snapshot.symbols.as_ref(), scope)?;
+    let inheritance = snapshot.symbols.class_superclass(class_symbol)?;
+    let (unit, symbol_id) = resolve_symbol_from_context_with_scope_index(
+        snapshot,
+        scope_index,
+        scope,
+        Namespace::Type,
+        &inheritance.superclass_name,
+        false,
+    )?;
+    (unit.symbol(symbol_id).kind == SymbolKind::Class).then_some((unit, symbol_id))
 }
 
 fn fallback_namespace_for_context(
@@ -2124,11 +2201,30 @@ fn resolve_class_selector_member<'a>(
     unit: &'a UnitAnalysis,
     symbol_id: SymbolId,
 ) -> Option<(&'a UnitAnalysis, &'a ClassMemberData)> {
+    let scope_index = build_scope_index(snapshot.symbols.as_ref());
+    resolve_class_selector_member_with_scope_index(
+        snapshot,
+        &scope_index,
+        access,
+        segment_index,
+        unit,
+        symbol_id,
+    )
+}
+
+fn resolve_class_selector_member_with_scope_index<'a>(
+    snapshot: &'a AnalysisSnapshot,
+    scope_index: &ScopeIndex,
+    access: &abap_symbols::FieldAccess,
+    segment_index: usize,
+    unit: &'a UnitAnalysis,
+    symbol_id: SymbolId,
+) -> Option<(&'a UnitAnalysis, &'a ClassMemberData)> {
     if segment_index != 0 {
         return None;
     }
     let (class_unit, class_symbol_id, requires_static) =
-        resolve_class_selector_base(snapshot, access, unit, symbol_id)?;
+        resolve_class_selector_base_with_scope_index(snapshot, scope_index, access, unit, symbol_id)?;
     let (member_unit, member) = resolve_class_member_in_hierarchy(
         snapshot,
         class_unit,
@@ -2148,8 +2244,9 @@ fn resolve_class_selector_member<'a>(
     .then_some((member_unit, member))
 }
 
-fn resolve_class_selector_base<'a>(
+fn resolve_class_selector_base_with_scope_index<'a>(
     snapshot: &'a AnalysisSnapshot,
+    scope_index: &ScopeIndex,
     access: &abap_symbols::FieldAccess,
     unit: &'a UnitAnalysis,
     symbol_id: SymbolId,
@@ -2171,8 +2268,9 @@ fn resolve_class_selector_base<'a>(
     if !declared_type.is_ref || !declared_type.field_path.is_empty() {
         return None;
     }
-    let (class_unit, class_symbol_id) = resolve_symbol_from_context(
+    let (class_unit, class_symbol_id) = resolve_symbol_from_context_with_scope_index(
         snapshot,
+        scope_index,
         access.scope,
         Namespace::Type,
         &declared_type.base_name,
@@ -2183,6 +2281,41 @@ fn resolve_class_selector_base<'a>(
         class_symbol_id,
         false,
     ))
+}
+
+fn classify_field_access_segment_with_scope_index(
+    snapshot: &AnalysisSnapshot,
+    scope_index: &ScopeIndex,
+    access: &abap_symbols::FieldAccess,
+    segment_index: usize,
+) -> Option<HoveredComponentKind> {
+    let (unit, symbol_id) = resolve_field_access_base_symbol_with_scope_index(snapshot, scope_index, access)?;
+    if let Some((_, member)) = resolve_class_selector_member_with_scope_index(
+        snapshot,
+        scope_index,
+        access,
+        segment_index,
+        unit,
+        symbol_id,
+    ) {
+        return Some(hovered_component_kind_for_class_member(member));
+    }
+
+    let symbol = unit.symbol(symbol_id);
+    let structure_id = symbol.structure?;
+    let field_path: Vec<_> = access
+        .field_path
+        .iter()
+        .take(segment_index + 1)
+        .map(|segment| segment.name.as_ref())
+        .collect();
+    let field = unit.resolve_structure_field_path(structure_id, &field_path)?;
+    Some(match field.shape {
+        StructureFieldShape::Scalar => HoveredComponentKind::Scalar,
+        StructureFieldShape::Structured { structure } => HoveredComponentKind::Structured {
+            structure_name: Arc::clone(&unit.structure(structure).name),
+        },
+    })
 }
 
 fn innermost_scope_at(unit: &UnitAnalysis, offset: usize) -> ScopeId {

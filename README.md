@@ -49,6 +49,10 @@ Build a single package:
 
 ```bat
 .\perf_test.bat
+
+$env:CARGO_PROFILE_RELEASE_DEBUG="true"
+$env:ABAP_PERF_ITERATIONS="50"
+cargo flamegraph -p abap_lsp --example build_semantic_tokens_perf --release
 ```
 
 ## Migration Docs
