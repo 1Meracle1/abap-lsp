@@ -113,7 +113,9 @@ fn serve(
             .and_then(Value::as_str)
             .map(str::to_owned);
         if method.as_deref() == Some(REMOTE_DEPENDENCIES_UPDATED) {
-            if let Some(params) = parse_params::<abap_lsp::RemoteDependenciesUpdatedParams>(&message)? {
+            if let Some(params) =
+                parse_params::<abap_lsp::RemoteDependenciesUpdatedParams>(&message)?
+            {
                 let token = format!("abapls-remote-refresh-{}", next_outgoing_request_id);
                 send_workspace_progress_begin(
                     writer,
@@ -136,11 +138,15 @@ fn serve(
                     if !params.source_uri.is_empty()
                         && snapshot.uri.as_ref() == abap_lsp::normalize_lsp_uri(&params.source_uri)
                     {
-                        let params_value = serde_json::to_value(publish_diagnostics_params(snapshot))?;
+                        let params_value =
+                            serde_json::to_value(publish_diagnostics_params(snapshot))?;
                         send_notification(writer, "textDocument/publishDiagnostics", params_value)?;
                     }
                 }
-                for request in build_remote_dependency_requests_for_workspace(&mut state, &params.workspace_uri) {
+                for request in build_remote_dependency_requests_for_workspace(
+                    &mut state,
+                    &params.workspace_uri,
+                ) {
                     send_notification(
                         writer,
                         RESOLVE_REMOTE_DEPENDENCIES,
@@ -319,12 +325,16 @@ fn handle_message(
                 notifications.push(("textDocument/publishDiagnostics".to_owned(), params_value));
                 if let Some(params_value) = state
                     .workspace_for_uri(snapshot.uri.as_ref())
-                    .and_then(|workspace| workspace_manifest_diagnostics_params(state, &workspace.root_uri))
+                    .and_then(|workspace| {
+                        workspace_manifest_diagnostics_params(state, &workspace.root_uri)
+                    })
                     .and_then(|params| serde_json::to_value(params).ok())
                 {
-                    notifications.push(("textDocument/publishDiagnostics".to_owned(), params_value));
+                    notifications
+                        .push(("textDocument/publishDiagnostics".to_owned(), params_value));
                 }
-                if let Some(request) = build_remote_dependency_request(state, snapshot.uri.as_ref()) {
+                if let Some(request) = build_remote_dependency_request(state, snapshot.uri.as_ref())
+                {
                     notifications.push((
                         RESOLVE_REMOTE_DEPENDENCIES.to_owned(),
                         serde_json::to_value(request)?,
@@ -345,12 +355,17 @@ fn handle_message(
                         .push(("textDocument/publishDiagnostics".to_owned(), params_value));
                     if let Some(params_value) = state
                         .workspace_for_uri(snapshot.uri.as_ref())
-                        .and_then(|workspace| workspace_manifest_diagnostics_params(state, &workspace.root_uri))
+                        .and_then(|workspace| {
+                            workspace_manifest_diagnostics_params(state, &workspace.root_uri)
+                        })
                         .and_then(|params| serde_json::to_value(params).ok())
                     {
-                        notifications.push(("textDocument/publishDiagnostics".to_owned(), params_value));
+                        notifications
+                            .push(("textDocument/publishDiagnostics".to_owned(), params_value));
                     }
-                    if let Some(request) = build_remote_dependency_request(state, snapshot.uri.as_ref()) {
+                    if let Some(request) =
+                        build_remote_dependency_request(state, snapshot.uri.as_ref())
+                    {
                         notifications.push((
                             RESOLVE_REMOTE_DEPENDENCIES.to_owned(),
                             serde_json::to_value(request)?,
@@ -367,16 +382,21 @@ fn handle_message(
             if let Some(params) = parse_params::<WorkspaceManifestUpdatedParams>(&message)? {
                 let snapshots = handle_workspace_manifest_updated(state, &params);
                 let mut notifications = Vec::new();
-                if let Some(params_value) = workspace_manifest_diagnostics_params(state, &params.workspace_uri)
-                    .and_then(|params| serde_json::to_value(params).ok())
+                if let Some(params_value) =
+                    workspace_manifest_diagnostics_params(state, &params.workspace_uri)
+                        .and_then(|params| serde_json::to_value(params).ok())
                 {
-                    notifications.push(("textDocument/publishDiagnostics".to_owned(), params_value));
+                    notifications
+                        .push(("textDocument/publishDiagnostics".to_owned(), params_value));
                 }
                 for snapshot in &snapshots {
                     let params_value = serde_json::to_value(publish_diagnostics_params(snapshot))?;
-                    notifications.push(("textDocument/publishDiagnostics".to_owned(), params_value));
+                    notifications
+                        .push(("textDocument/publishDiagnostics".to_owned(), params_value));
                 }
-                for request in build_remote_dependency_requests_for_workspace(state, &params.workspace_uri) {
+                for request in
+                    build_remote_dependency_requests_for_workspace(state, &params.workspace_uri)
+                {
                     notifications.push((
                         RESOLVE_REMOTE_DEPENDENCIES.to_string(),
                         serde_json::to_value(request)?,
@@ -396,16 +416,21 @@ fn handle_message(
             if let Some(params) = parse_params::<WorkspaceManifestUpdatedParams>(&message)? {
                 let snapshots = handle_dependency_cache_cleared(state, &params);
                 let mut notifications = Vec::new();
-                if let Some(params_value) = workspace_manifest_diagnostics_params(state, &params.workspace_uri)
-                    .and_then(|params| serde_json::to_value(params).ok())
+                if let Some(params_value) =
+                    workspace_manifest_diagnostics_params(state, &params.workspace_uri)
+                        .and_then(|params| serde_json::to_value(params).ok())
                 {
-                    notifications.push(("textDocument/publishDiagnostics".to_string(), params_value));
+                    notifications
+                        .push(("textDocument/publishDiagnostics".to_string(), params_value));
                 }
                 for snapshot in &snapshots {
                     let params_value = serde_json::to_value(publish_diagnostics_params(snapshot))?;
-                    notifications.push(("textDocument/publishDiagnostics".to_string(), params_value));
+                    notifications
+                        .push(("textDocument/publishDiagnostics".to_string(), params_value));
                 }
-                for request in build_remote_dependency_requests_for_workspace(state, &params.workspace_uri) {
+                for request in
+                    build_remote_dependency_requests_for_workspace(state, &params.workspace_uri)
+                {
                     notifications.push((
                         RESOLVE_REMOTE_DEPENDENCIES.to_string(),
                         serde_json::to_value(request)?,

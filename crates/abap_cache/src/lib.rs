@@ -21,10 +21,9 @@ pub use workspace::{
     DEPENDENCY_MODE_LOCAL_FIRST, DEPENDENCY_MODE_REMOTE_ON_DEMAND, ManifestResolution,
     ManifestUnit, ManifestUnitMember, OpenDocumentOverlay, UNKNOWN_SYMBOL_MODE_LOG,
     UNKNOWN_SYMBOL_MODE_REMOTE, WorkspaceDocument, WorkspaceLoadResult, WorkspaceManifest,
-    ddic_xml_to_abap_source, file_uri_to_path, is_remote_lookup_candidate,
-    is_remote_lookup_name, load_workspace_documents, load_manifest_from_workspace,
-    load_manifest_from_workspace_result, manifest_cache_dir,
-    manifest_supports_remote_resolution, normalize_dependency_mode,
+    ddic_xml_to_abap_source, file_uri_to_path, is_remote_lookup_candidate, is_remote_lookup_name,
+    load_manifest_from_workspace, load_manifest_from_workspace_result, load_workspace_documents,
+    manifest_cache_dir, manifest_supports_remote_resolution, normalize_dependency_mode,
     normalize_unknown_symbol_mode, path_to_file_uri, uri_starts_with_workspace,
     workspace_relative_path,
 };
@@ -37,6 +36,7 @@ pub struct AnalysisSnapshot {
     pub parse: Arc<ParseResult>,
     pub symbols: Arc<UnitAnalysis>,
     pub project: Arc<ProjectAnalysis>,
+    scope_index: Arc<ScopeIndex>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -207,10 +207,14 @@ pub struct SemanticTokenLookupContext<'a> {
 }
 
 impl AnalysisSnapshot {
+    pub fn scope_index(&self) -> &ScopeIndex {
+        self.scope_index.as_ref()
+    }
+
     pub fn semantic_token_lookup_context(&self) -> SemanticTokenLookupContext<'_> {
         SemanticTokenLookupContext {
             snapshot: self,
-            scope_index: build_scope_index(self.symbols.as_ref()),
+            scope_index: self.scope_index.as_ref().clone(),
         }
     }
 
@@ -327,8 +331,12 @@ impl AnalysisSnapshot {
         access: &abap_symbols::FieldAccess,
         segment_index: usize,
     ) -> Option<HoveredComponentKind> {
-        let scope_index = build_scope_index(self.symbols.as_ref());
-        classify_field_access_segment_with_scope_index(self, &scope_index, access, segment_index)
+        classify_field_access_segment_with_scope_index(
+            self,
+            self.scope_index(),
+            access,
+            segment_index,
+        )
     }
 
     pub fn hovered_named_argument_at(&self, offset: usize) -> Option<HoveredSymbolInfo> {
@@ -346,8 +354,8 @@ impl AnalysisSnapshot {
     }
 
     pub fn has_named_argument_parameter(&self, access: &NamedArgumentAccess) -> bool {
-        let scope_index = build_scope_index(self.symbols.as_ref());
-        resolve_named_argument_parameter_with_scope_index(self, &scope_index, access).is_some()
+        resolve_named_argument_parameter_with_scope_index(self, self.scope_index(), access)
+            .is_some()
     }
 
     pub fn hovered_perform_argument_at(&self, offset: usize) -> Option<HoveredSymbolInfo> {
@@ -774,10 +782,7 @@ impl AnalysisSnapshot {
                 let resolution = reference.resolution.as_ref()?;
                 let target = definition_target_for_resolution(self, *resolution)?;
                 Some((
-                    reference
-                        .range
-                        .end
-                        .saturating_sub(reference.range.start),
+                    reference.range.end.saturating_sub(reference.range.start),
                     target,
                 ))
             })
@@ -808,21 +813,14 @@ impl AnalysisSnapshot {
                     && reference.namespace == Namespace::Type
                     && reference.kind == ReferenceKind::TypeRef
             })
-            .min_by_key(|reference| {
-                reference
-                    .range
-                    .end
-                    .saturating_sub(reference.range.start)
-            })?;
+            .min_by_key(|reference| reference.range.end.saturating_sub(reference.range.start))?;
 
         let name = &type_ref.name;
         let slash_name = name.as_ref().contains('/');
-        let used_in_sql = unit.sql_sources.iter().any(|source| {
-            source
-                .name
-                .as_ref()
-                .eq_ignore_ascii_case(name.as_ref())
-        });
+        let used_in_sql = unit
+            .sql_sources
+            .iter()
+            .any(|source| source.name.as_ref().eq_ignore_ascii_case(name.as_ref()));
         if slash_name || used_in_sql {
             return Some(ReferenceSearchTarget::DdLikeTypeName {
                 unit: unit.unit_id,
@@ -1199,7 +1197,10 @@ fn symbol_type_line(unit: &UnitAnalysis, symbol: &SymbolData) -> Option<String> 
             Some(Namespace::Value) => "LIKE",
             _ => "TYPE",
         };
-        return Some(format_hover_type_clause(&format!("{keyword} {}", display.trim())));
+        return Some(format_hover_type_clause(&format!(
+            "{keyword} {}",
+            display.trim()
+        )));
     }
     if let Some(structure_id) = symbol.structure {
         let name = unit.structure(structure_id).name.as_ref();
@@ -1664,8 +1665,7 @@ fn resolve_field_access_base_symbol<'a>(
     snapshot: &'a AnalysisSnapshot,
     access: &abap_symbols::FieldAccess,
 ) -> Option<(&'a UnitAnalysis, SymbolId)> {
-    let scope_index = build_scope_index(snapshot.symbols.as_ref());
-    resolve_field_access_base_symbol_with_scope_index(snapshot, &scope_index, access)
+    resolve_field_access_base_symbol_with_scope_index(snapshot, snapshot.scope_index(), access)
 }
 
 fn resolve_field_access_base_symbol_with_scope_index<'a>(
@@ -1821,8 +1821,7 @@ fn resolve_named_argument_parameter<'a>(
     snapshot: &'a AnalysisSnapshot,
     access: &NamedArgumentAccess,
 ) -> Option<NamedArgumentParameterInfo> {
-    let scope_index = build_scope_index(snapshot.symbols.as_ref());
-    resolve_named_argument_parameter_with_scope_index(snapshot, &scope_index, access)
+    resolve_named_argument_parameter_with_scope_index(snapshot, snapshot.scope_index(), access)
 }
 
 fn resolve_named_argument_parameter_with_scope_index<'a>(
@@ -2155,11 +2154,9 @@ fn resolve_symbol_from_context<'a>(
     name: &Arc<str>,
     in_type_position: bool,
 ) -> Option<(&'a UnitAnalysis, SymbolId)> {
-    let current_unit = &snapshot.symbols;
-    let scope_index = build_scope_index(current_unit);
     resolve_symbol_from_context_with_scope_index(
         snapshot,
-        &scope_index,
+        snapshot.scope_index(),
         scope,
         namespace,
         name,
@@ -2248,10 +2245,9 @@ fn resolve_method_target_from_context<'a>(
     namespace: Namespace,
     name: &Arc<str>,
 ) -> Option<(&'a UnitAnalysis, SymbolId, bool)> {
-    let scope_index = build_scope_index(snapshot.symbols.as_ref());
     resolve_method_target_from_context_with_scope_index(
         snapshot,
-        &scope_index,
+        snapshot.scope_index(),
         scope,
         namespace,
         name,
@@ -2444,10 +2440,9 @@ fn resolve_class_selector_member<'a>(
     unit: &'a UnitAnalysis,
     symbol_id: SymbolId,
 ) -> Option<(&'a UnitAnalysis, &'a ClassMemberData)> {
-    let scope_index = build_scope_index(snapshot.symbols.as_ref());
     resolve_class_selector_member_with_scope_index(
         snapshot,
-        &scope_index,
+        snapshot.scope_index(),
         access,
         segment_index,
         unit,
@@ -2971,6 +2966,7 @@ fn analyze_inputs(inputs: &[DocumentInput]) -> HashMap<Arc<str>, Arc<AnalysisSna
         snapshots.insert(
             Arc::clone(&uri),
             Arc::new(AnalysisSnapshot {
+                scope_index: Arc::new(build_scope_index(&unit)),
                 uri,
                 version,
                 text,
@@ -3139,7 +3135,9 @@ fn dependency_surface_text(text: &str) -> Arc<str> {
         idx = period_idx + 1;
     }
 
-    Arc::from(String::from_utf8(projected).expect("dependency surface projection should stay utf-8"))
+    Arc::from(
+        String::from_utf8(projected).expect("dependency surface projection should stay utf-8"),
+    )
 }
 
 fn statement_keywords(
@@ -3164,7 +3162,10 @@ fn blank_range_preserving_layout(text: &mut [u8], range: Range<usize>) {
 }
 
 impl DocumentStore {
-    pub fn replace_all(&self, inputs: Vec<DocumentInput>) -> HashMap<Arc<str>, Arc<AnalysisSnapshot>> {
+    pub fn replace_all(
+        &self,
+        inputs: Vec<DocumentInput>,
+    ) -> HashMap<Arc<str>, Arc<AnalysisSnapshot>> {
         let rebuilt = analyze_inputs(&inputs);
         self.documents.write().clone_from(&rebuilt);
         rebuilt
@@ -3183,6 +3184,7 @@ impl DocumentStore {
             && current.text.as_ref() == text.as_ref()
         {
             let snapshot = Arc::new(AnalysisSnapshot {
+                scope_index: Arc::clone(&current.scope_index),
                 uri: Arc::clone(&current.uri),
                 version,
                 text: Arc::clone(&current.text),
@@ -3233,6 +3235,7 @@ impl DocumentStore {
                 .cloned()
                 .expect("project analysis should include every published document");
             let snapshot = Arc::new(AnalysisSnapshot {
+                scope_index: Arc::new(build_scope_index(&unit)),
                 uri: Arc::clone(&entry.uri),
                 version: entry.version,
                 text: Arc::clone(&entry.text),
@@ -3645,9 +3648,10 @@ ENDLOOP.";
             .expect("resolved symbol hover");
         assert_eq!(hovered.display_name.as_ref(), "lt_gs1_gcp");
         assert!(
-            hovered.markdown_lines.iter().any(|line| {
-                line == "```abap\nTYPE STANDARD TABLE OF /sttp/gs1_gcp\n```"
-            }),
+            hovered
+                .markdown_lines
+                .iter()
+                .any(|line| { line == "```abap\nTYPE STANDARD TABLE OF /sttp/gs1_gcp\n```" }),
             "{:?}",
             hovered.markdown_lines
         );

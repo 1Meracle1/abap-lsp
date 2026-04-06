@@ -3587,8 +3587,9 @@ pub fn try_parse_move_stmt(
         errors,
         |_, end_exclusive| end_exclusive,
         |b, period_i, _errors| {
-            let clause_starts =
-                |tokens: &[Token], idx: usize| move_simple_source_clause_starts(source, tokens, idx);
+            let clause_starts = |tokens: &[Token], idx: usize| {
+                move_simple_source_clause_starts(source, tokens, idx)
+            };
             let Some(to_idx) =
                 find_top_level_keyword_index(source, tokens, idx + 1, period_i, "to")
             else {
@@ -5324,11 +5325,15 @@ END-OF-PAGE.\nWRITE 'e'.",
         let parsed = crate::parse(src);
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
         assert_eq!(
-            parsed.file.count_kind(parsed.file.root(), SyntaxKind::GetBitStmt),
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::GetBitStmt),
             1
         );
         assert_eq!(
-            parsed.file.count_kind(parsed.file.root(), SyntaxKind::SetBitStmt),
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::SetBitStmt),
             1
         );
     }

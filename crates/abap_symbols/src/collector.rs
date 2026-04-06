@@ -3,6 +3,12 @@ use std::path::Path;
 use std::sync::Arc;
 
 use abap_ast::arena::NodeId;
+use abap_ast::ast::{
+    AstNode, CallArgList, CallExpr, CallNamedArg, CallPositionalArg, DataDecl, DataDeclName,
+    DataLikeDecl, DeclClause, ExprIdent, MethodsStmt, MethodsStmtKind, MethodsTypeClauseKind,
+    SelectQuery, SelectStmt, SelectorExpr, SqlDataSource, SqlProjectionItem, SyntaxNodeRef,
+    TypeClauseKind, TypeRefSimple,
+};
 use abap_ast::{File, SyntaxKind};
 use abap_lexer::{TextRange, Token, TokenKind, have_space_between};
 
@@ -67,15 +73,6 @@ struct FormConsumedParameter {
     next_idx: usize,
     symbol: SymbolId,
     passing: FormParameterPassingKind,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum MethodParamSection {
-    Importing,
-    Exporting,
-    Changing,
-    Receiving,
-    Returning,
 }
 
 #[derive(Debug, Clone)]
@@ -577,27 +574,63 @@ impl<'a> Collector<'a> {
     }
 
     fn walk_data_like_decl(&mut self, node: NodeId, scope: ScopeId, kind: SymbolKind) {
-        for child in self.file.children(node) {
-            match self.file.kind(child) {
-                SyntaxKind::DataTypedClause
-                | SyntaxKind::TypesTypedClause
-                | SyntaxKind::ConstantClause
-                | SyntaxKind::FieldSymbolClause => {
-                    let hint = self.typed_clause_namespace_hint(child);
-                    if let Some(ns) = hint {
-                        self.type_clause_ns_stack.push(ns);
-                    }
-                    self.declare_decl_clause_symbol(child, scope, kind);
-                    self.walk_children(child, scope);
-                    if hint.is_some() {
-                        self.type_clause_ns_stack.pop();
-                    }
+        if let Some(data_decl) = DataDecl::cast(self.syntax(node)) {
+            let clauses = data_decl
+                .clauses()
+                .map(|clause| {
+                    let child_id = clause.syntax().id();
+                    let hint = clause
+                        .type_clause_kind(self.source)
+                        .map(|kind| self.namespace_from_type_clause_kind(kind));
+                    (child_id, hint)
+                })
+                .collect::<Vec<_>>();
+            for (child_id, hint) in clauses {
+                if let Some(ns) = hint {
+                    self.type_clause_ns_stack.push(ns);
                 }
-                SyntaxKind::StructuredDecl => {
-                    self.declare_structured_decl_symbol(child, scope, kind);
-                    self.walk_children(child, scope);
+                self.declare_decl_clause_symbol(child_id, scope, kind);
+                self.walk_children(child_id, scope);
+                if hint.is_some() {
+                    self.type_clause_ns_stack.pop();
                 }
-                _ => self.walk_node(child, scope),
+            }
+            return;
+        }
+        let Some(decl) = DataLikeDecl::cast(self.syntax(node)) else {
+            self.walk_children(node, scope);
+            return;
+        };
+        let children: Vec<_> = decl
+            .syntax()
+            .children()
+            .map(|child| (child.id(), child.kind()))
+            .collect();
+        for (child_id, child_kind) in children {
+            if abap_ast::ast::DeclClause::can_cast(child_kind) {
+                match child_kind {
+                    SyntaxKind::DataTypedClause
+                    | SyntaxKind::TypesTypedClause
+                    | SyntaxKind::ConstantClause
+                    | SyntaxKind::FieldSymbolClause => {
+                        let hint = self.typed_clause_namespace_hint(child_id);
+                        if let Some(ns) = hint {
+                            self.type_clause_ns_stack.push(ns);
+                        }
+                        self.declare_decl_clause_symbol(child_id, scope, kind);
+                        self.walk_children(child_id, scope);
+                        if hint.is_some() {
+                            self.type_clause_ns_stack.pop();
+                        }
+                    }
+                    SyntaxKind::StructuredDecl => {
+                        self.declare_structured_decl_symbol(child_id, scope, kind);
+                        self.walk_children(child_id, scope);
+                    }
+                    _ => self.walk_node(child_id, scope),
+                }
+            } else {
+                self.walk_node(child_id, scope);
             }
         }
     }
@@ -615,9 +648,11 @@ impl<'a> Collector<'a> {
             return;
         }
 
-        if let Some(name_node) = self.file.children(node).next()
-            && let Some((name, range)) = self.node_name(name_node)
+        if let Some(clause) = DeclClause::cast(self.syntax(node))
+            && let Some(name_node) = clause.name()
+            && let Some(name) = name_node.name(self.source)
         {
+            let range = name_node.range();
             let structure = self.structure_from_typed_clause(node, scope);
             let declared_type = self.type_ref_from_typed_clause(node);
             let type_clause_display = self.type_clause_display_from_typed_clause(node);
@@ -929,12 +964,14 @@ impl<'a> Collector<'a> {
                     }
                 }
                 SyntaxKind::MethodsStmt => {
-                    let tokens = self.simple_stmt_tokens(child);
+                    let Some(methods_stmt) = MethodsStmt::cast(self.syntax(child)) else {
+                        continue;
+                    };
                     if let Some(mut member) =
-                        self.class_member_from_simple_stmt(class_symbol, visibility, &tokens)
+                        self.class_member_from_methods_stmt(class_symbol, visibility, methods_stmt)
                     {
                         if member.kind == ClassMemberKind::Method {
-                            let signature = self.parse_method_signature(child, &tokens);
+                            let signature = self.parse_method_signature(methods_stmt);
                             member.parameters = self.class_member_parameters(&signature);
                             self.declare_method_signature_parameter_symbols(
                                 self.file.range(child),
@@ -949,7 +986,12 @@ impl<'a> Collector<'a> {
                     }
                 }
                 SyntaxKind::DataDecl | SyntaxKind::StaticsDecl | SyntaxKind::ConstantsDecl => {
-                    self.collect_class_attribute_members(child, class_symbol, visibility, class_scope);
+                    self.collect_class_attribute_members(
+                        child,
+                        class_symbol,
+                        visibility,
+                        class_scope,
+                    );
                 }
                 _ => {
                     for nested in self.file.children(child).rev() {
@@ -982,11 +1024,7 @@ impl<'a> Collector<'a> {
     }
 
     fn simple_stmt_tokens(&self, node: NodeId) -> Vec<&'a Token> {
-        let mut out = Vec::new();
-        for child in self.file.children(node) {
-            self.tokens_for_node_recursive(child, &mut out);
-        }
-        out
+        self.token_refs_from_child_nodes(node)
     }
 
     fn significant_stmt_tokens(&self, node: NodeId) -> Vec<&'a Token> {
@@ -1020,22 +1058,30 @@ impl<'a> Collector<'a> {
         None
     }
 
-    fn class_member_from_simple_stmt(
+    fn class_member_from_methods_stmt(
         &self,
         class_symbol: SymbolId,
         visibility: Visibility,
-        tokens: &[&Token],
+        methods_stmt: MethodsStmt<'_>,
     ) -> Option<ClassMemberData> {
-        let (kind, is_static, start_idx) = self.class_member_statement_kind(tokens)?;
-        let name_tok = self.class_member_name_token(tokens, start_idx)?;
+        let (kind, is_static) = match methods_stmt.member_kind(self.source)? {
+            MethodsStmtKind::Instance => (ClassMemberKind::Method, false),
+            MethodsStmtKind::Class => (ClassMemberKind::Method, true),
+        };
+        let name_tok = methods_stmt.name_token(self.source)?;
         Some(ClassMemberData {
             class_symbol,
-            name: Arc::<str>::from(name_tok.lexeme(self.source).to_ascii_lowercase()),
+            name: Arc::<str>::from(
+                name_tok
+                    .text(self.source)
+                    .unwrap_or_default()
+                    .to_ascii_lowercase(),
+            ),
             kind,
             visibility,
             is_static,
-            decl_range: name_tok.range.clone(),
-            signature: Arc::<str>::from(self.render_statement_signature(tokens)),
+            decl_range: name_tok.range(),
+            signature: Arc::<str>::from(methods_stmt.signature_text(self.source)),
             parameters: Vec::new(),
             structure: None,
         })
@@ -1063,8 +1109,7 @@ impl<'a> Collector<'a> {
                         is_static,
                         Arc::clone(&signature),
                     ) {
-                        member.structure =
-                            self.class_attribute_structure_for_clause(child, scope);
+                        member.structure = self.class_attribute_structure_for_clause(child, scope);
                         self.class_members.push(member);
                     }
                 }
@@ -1079,10 +1124,7 @@ impl<'a> Collector<'a> {
         scope: ScopeId,
     ) -> Option<StructureId> {
         let (name, _, members) = self.begin_of_clause_parts(node, scope)?;
-        Some(self.register_structure(
-            scope,
-            PendingStructure { name, members },
-        ))
+        Some(self.register_structure(scope, PendingStructure { name, members }))
     }
 
     fn class_attribute_decl_is_static(&self, node: NodeId) -> bool {
@@ -1129,7 +1171,9 @@ impl<'a> Collector<'a> {
         signature: Arc<str>,
     ) -> Option<ClassMemberData> {
         let (name, decl_range) = match self.file.kind(node) {
-            SyntaxKind::StructuredDecl => self.class_attribute_structured_clause_name_parts(node)?,
+            SyntaxKind::StructuredDecl => {
+                self.class_attribute_structured_clause_name_parts(node)?
+            }
             SyntaxKind::DataTypedClause | SyntaxKind::ConstantClause => self
                 .class_attribute_structured_clause_name_parts(node)
                 .or_else(|| {
@@ -1205,57 +1249,6 @@ impl<'a> Collector<'a> {
         );
     }
 
-    fn class_member_statement_kind(
-        &self,
-        tokens: &[&Token],
-    ) -> Option<(ClassMemberKind, bool, usize)> {
-        let significant: Vec<_> = tokens
-            .iter()
-            .copied()
-            .filter(|token| token.kind != TokenKind::Comment)
-            .collect();
-        let first = *significant.first()?;
-        if self.token_matches_keyword(first, "methods") {
-            return Some((ClassMemberKind::Method, false, 1));
-        }
-        let second = *significant.get(1)?;
-        let third = *significant.get(2)?;
-        if self.token_matches_keyword(first, "class")
-            && second.kind == TokenKind::Minus
-            && self.token_matches_keyword(third, "methods")
-        {
-            return Some((ClassMemberKind::Method, true, 3));
-        }
-        None
-    }
-
-    fn class_member_name_token<'b>(
-        &self,
-        tokens: &'b [&'a Token],
-        mut significant_idx: usize,
-    ) -> Option<&'a Token> {
-        for token in tokens {
-            if token.kind == TokenKind::Comment {
-                continue;
-            }
-            if significant_idx > 0 {
-                significant_idx -= 1;
-                continue;
-            }
-            if matches!(
-                token.kind,
-                TokenKind::Colon | TokenKind::Comma | TokenKind::Period
-            ) {
-                continue;
-            }
-            if token.kind == TokenKind::Ident {
-                return Some(token);
-            }
-            break;
-        }
-        None
-    }
-
     fn render_statement_signature(&self, tokens: &[&Token]) -> String {
         let mut rendered = String::new();
         let mut prev_kind = None;
@@ -1293,255 +1286,33 @@ impl<'a> Collector<'a> {
         rendered
     }
 
-    fn parse_method_signature(&self, node: NodeId, tokens: &[&Token]) -> PendingMethodSignature {
-        let mut signature = PendingMethodSignature::default();
-        let type_ref_nodes = self.direct_type_ref_children(node);
-        let mut type_ref_idx = 0usize;
-        let significant: Vec<_> = tokens
-            .iter()
-            .copied()
-            .filter(|token| token.kind != TokenKind::Comment)
-            .collect();
-        let Some((_, _, mut idx)) = self.class_member_statement_kind(tokens) else {
-            return signature;
+    fn parse_method_signature(&self, methods_stmt: MethodsStmt<'_>) -> PendingMethodSignature {
+        let parsed = methods_stmt.signature(self.source);
+        let mut signature = PendingMethodSignature {
+            is_redefinition: parsed.is_redefinition(),
+            ..PendingMethodSignature::default()
         };
-        while idx < significant.len()
-            && matches!(
-                significant[idx].kind,
-                TokenKind::Colon | TokenKind::Comma | TokenKind::Period
-            )
-        {
-            idx += 1;
-        }
-        if significant.get(idx).map(|token| token.kind) != Some(TokenKind::Ident) {
-            return signature;
-        }
-        idx += 1;
-
-        let mut section = None;
-        let mut saw_parameter_section = false;
-        while idx < significant.len() {
-            let token = significant[idx];
-            if token.kind == TokenKind::Period {
-                break;
-            }
-            if let Some(next_idx) = self.method_signature_header_modifier_span(&significant, idx) {
-                if saw_parameter_section {
-                    break;
-                }
-                if self.token_matches_keyword(token, "redefinition") {
-                    signature.is_redefinition = true;
-                }
-                idx = next_idx;
-                continue;
-            }
-            section = match self.method_signature_section(token) {
-                Some(next_section) => {
-                    saw_parameter_section = true;
-                    idx += 1;
-                    Some(next_section)
-                }
-                None => section,
+        for param in parsed.parameters() {
+            let clause_ns = match param.type_clause() {
+                MethodsTypeClauseKind::Type => Namespace::Type,
+                MethodsTypeClauseKind::Like => Namespace::Value,
             };
-            if self.method_signature_stops_parameter_scan(token) {
-                break;
-            }
-            if let Some(param_section) = section
-                && let Some((param, next_idx)) = self.try_consume_method_signature_parameter(
-                    &significant,
-                    idx,
-                    param_section,
-                    type_ref_nodes.get(type_ref_idx).copied(),
-                )
-            {
-                if param.declared_type.is_some() {
-                    type_ref_idx += 1;
-                }
-                signature.parameters.push(param);
-                idx = next_idx;
-                continue;
-            }
-            idx += 1;
+            let name = Arc::<str>::from(
+                param
+                    .name_token()
+                    .text(self.source)
+                    .unwrap_or_default()
+                    .to_ascii_lowercase(),
+            );
+            signature.parameters.push(PendingMethodParameter {
+                name,
+                range: param.name_token().range(),
+                declared_type: param.type_ref().and_then(|type_ref| {
+                    self.field_type_ref_from_node(type_ref.syntax().id(), clause_ns)
+                }),
+            });
         }
         signature
-    }
-
-    fn method_signature_section(&self, token: &Token) -> Option<MethodParamSection> {
-        if self.token_matches_keyword(token, "importing") {
-            return Some(MethodParamSection::Importing);
-        }
-        if self.token_matches_keyword(token, "exporting") {
-            return Some(MethodParamSection::Exporting);
-        }
-        if self.token_matches_keyword(token, "changing") {
-            return Some(MethodParamSection::Changing);
-        }
-        if self.token_matches_keyword(token, "receiving") {
-            return Some(MethodParamSection::Receiving);
-        }
-        if self.token_matches_keyword(token, "returning") {
-            return Some(MethodParamSection::Returning);
-        }
-        None
-    }
-
-    fn method_signature_header_modifier_span(
-        &self,
-        tokens: &[&Token],
-        idx: usize,
-    ) -> Option<usize> {
-        let token = *tokens.get(idx)?;
-        if self.token_matches_keyword(token, "abstract")
-            || self.token_matches_keyword(token, "final")
-            || self.token_matches_keyword(token, "redefinition")
-        {
-            return Some(idx + 1);
-        }
-        if self.token_matches_keyword(token, "for")
-            && tokens
-                .get(idx + 1)
-                .is_some_and(|next| self.token_matches_keyword(next, "testing"))
-        {
-            return Some(idx + 2);
-        }
-        None
-    }
-
-    fn method_signature_stops_parameter_scan(&self, token: &Token) -> bool {
-        token.kind == TokenKind::Period
-            || self.token_matches_keyword(token, "raising")
-            || self.token_matches_keyword(token, "exceptions")
-    }
-
-    fn try_consume_method_signature_parameter(
-        &self,
-        tokens: &[&Token],
-        idx: usize,
-        section: MethodParamSection,
-        type_ref_node: Option<NodeId>,
-    ) -> Option<(PendingMethodParameter, usize)> {
-        let mut j = idx;
-        while matches!(
-            tokens.get(j).map(|token| token.kind),
-            Some(TokenKind::Colon | TokenKind::Comma)
-        ) {
-            j += 1;
-        }
-
-        let (name, range, mut j) = self.method_signature_parameter_name(tokens, j)?;
-        while matches!(
-            tokens.get(j).map(|token| token.kind),
-            Some(TokenKind::Colon | TokenKind::Comma)
-        ) {
-            j += 1;
-        }
-
-        let type_tok = tokens.get(j)?;
-        let clause_ns = if self.token_matches_keyword(type_tok, "type") {
-            Namespace::Type
-        } else if self.token_matches_keyword(type_tok, "like") {
-            Namespace::Value
-        } else if section == MethodParamSection::Returning
-            || section == MethodParamSection::Receiving
-        {
-            return None;
-        } else {
-            return None;
-        };
-        j += 1;
-        let expr_start = j;
-        let expr_end = self.skip_method_signature_type_expression(tokens, expr_start);
-        Some((
-            PendingMethodParameter {
-                name,
-                range,
-                declared_type: type_ref_node
-                    .and_then(|node| self.field_type_ref_from_node(node, clause_ns)),
-            },
-            expr_end,
-        ))
-    }
-
-    fn method_signature_parameter_name(
-        &self,
-        tokens: &[&Token],
-        idx: usize,
-    ) -> Option<(Arc<str>, TextRange, usize)> {
-        let token = *tokens.get(idx)?;
-        if self.token_matches_keyword(token, "value")
-            || self.token_matches_keyword(token, "reference")
-        {
-            let lparen = tokens.get(idx + 1)?;
-            let ident = tokens.get(idx + 2)?;
-            let rparen = tokens.get(idx + 3)?;
-            if lparen.kind != TokenKind::LParen
-                || ident.kind != TokenKind::Ident
-                || rparen.kind != TokenKind::RParen
-            {
-                return None;
-            }
-            return Some((
-                Arc::<str>::from(ident.lexeme(self.source).to_ascii_lowercase()),
-                ident.range.clone(),
-                idx + 4,
-            ));
-        }
-        if token.kind != TokenKind::Ident {
-            return None;
-        }
-        Some((
-            Arc::<str>::from(token.lexeme(self.source).to_ascii_lowercase()),
-            token.range.clone(),
-            idx + 1,
-        ))
-    }
-
-    fn skip_method_signature_type_expression(&self, tokens: &[&Token], mut idx: usize) -> usize {
-        let mut depth = 0i32;
-        while idx < tokens.len() {
-            let token = tokens[idx];
-            match token.kind {
-                TokenKind::LParen => {
-                    depth += 1;
-                    idx += 1;
-                }
-                TokenKind::RParen => {
-                    depth -= 1;
-                    idx += 1;
-                }
-                TokenKind::Period if depth == 0 => return idx,
-                _ if depth == 0 && self.method_signature_stops_parameter_scan(token) => return idx,
-                _ if depth == 0
-                    && (self.method_signature_section(token).is_some()
-                        || self
-                            .method_signature_header_modifier_span(tokens, idx)
-                            .is_some()
-                        || self.token_matches_keyword(token, "optional")
-                        || self.token_matches_keyword(token, "default")
-                        || self.token_matches_keyword(token, "preferred")
-                        || self.method_signature_starts_parameter(tokens, idx)) =>
-                {
-                    return idx;
-                }
-                _ => idx += 1,
-            }
-        }
-        idx
-    }
-
-    fn method_signature_starts_parameter(&self, tokens: &[&Token], idx: usize) -> bool {
-        self.method_signature_parameter_name(tokens, idx)
-            .and_then(|(_, _, next_idx)| {
-                let next = tokens.get(next_idx)?;
-                if self.token_matches_keyword(next, "type")
-                    || self.token_matches_keyword(next, "like")
-                {
-                    Some(())
-                } else {
-                    None
-                }
-            })
-            .is_some()
     }
 
     fn enclosing_class_owner(&self, scope: ScopeId) -> Option<SymbolId> {
@@ -1657,7 +1428,7 @@ impl<'a> Collector<'a> {
                         }
                     }
                 }
-                SyntaxKind::TypeRefSimple => self.tokens_for_node_recursive(child, &mut out),
+                SyntaxKind::TypeRefSimple => out.extend(self.token_refs(child)),
                 _ => break,
             }
         }
@@ -1970,181 +1741,6 @@ impl<'a> Collector<'a> {
         })
     }
 
-    fn try_parse_type_ref_prefix_tokens(
-        &self,
-        tokens: &[&Token],
-    ) -> Option<(
-        Namespace,
-        bool,
-        Arc<str>,
-        TextRange,
-        Vec<FieldAccessSegment>,
-        usize,
-    )> {
-        let mut i = 0usize;
-        let mut namespace = Namespace::Type;
-        let mut is_ref = false;
-        if tokens
-            .get(i)
-            .is_some_and(|tok| self.token_matches_keyword(tok, "ref"))
-        {
-            let to_tok = tokens.get(i + 1)?;
-            if !self.token_matches_keyword(to_tok, "to") {
-                return None;
-            }
-            is_ref = true;
-            i += 2;
-        }
-        let base = *tokens.get(i)?;
-        if base.kind != TokenKind::Ident {
-            return None;
-        }
-        let base_name = Arc::<str>::from(base.lexeme(self.source).to_ascii_lowercase());
-        let base_range = base.range.clone();
-        i += 1;
-        let mut field_path = Vec::new();
-        while i + 1 < tokens.len() {
-            let sel = tokens[i];
-            let id = tokens[i + 1];
-            if !matches!(
-                sel.kind,
-                TokenKind::Minus | TokenKind::Arrow | TokenKind::Tilde | TokenKind::FatArrow
-            ) || id.kind != TokenKind::Ident
-            {
-                break;
-            }
-            if field_path.is_empty() && sel.kind != TokenKind::FatArrow {
-                namespace = Namespace::Value;
-            }
-            field_path.push(FieldAccessSegment {
-                name: Arc::<str>::from(id.lexeme(self.source).to_ascii_lowercase()),
-                range: id.range.clone(),
-            });
-            i += 2;
-        }
-        Some((namespace, is_ref, base_name, base_range, field_path, i))
-    }
-
-    fn is_type_ref_wrapper_keyword(&self, token: &Token) -> bool {
-        token.kind == TokenKind::Ident
-            && [
-                "standard",
-                "sorted",
-                "hashed",
-                "table",
-                "line",
-                "range",
-                "with",
-                "default",
-                "unique",
-                "non-unique",
-                "empty",
-                "initial",
-                "key",
-            ]
-            .into_iter()
-            .any(|keyword| self.token_matches_keyword(token, keyword))
-    }
-
-    fn type_ref_candidate_starts(&self, tokens: &[&Token]) -> Vec<usize> {
-        let mut starts = Vec::new();
-        if let Some(first) = tokens.first()
-            && (self.token_matches_keyword(first, "ref")
-                || !self.is_type_ref_wrapper_keyword(first))
-        {
-            starts.push(0);
-        }
-        for idx in 1..tokens.len() {
-            if self.token_matches_keyword(tokens[idx - 1], "of") {
-                starts.push(idx);
-            }
-        }
-        starts.sort_unstable();
-        starts.dedup();
-        starts
-    }
-
-    fn type_ref_access_chain_from_filtered_tokens(
-        &self,
-        tokens: &[&Token],
-    ) -> Option<(
-        Namespace,
-        bool,
-        Arc<str>,
-        TextRange,
-        Vec<FieldAccessSegment>,
-    )> {
-        for start in self.type_ref_candidate_starts(tokens) {
-            let slice = &tokens[start..];
-            let Some((namespace, is_ref, base_name, base_range, field_path, _)) =
-                self.try_parse_type_ref_prefix_tokens(slice)
-            else {
-                continue;
-            };
-            return Some((namespace, is_ref, base_name, base_range, field_path));
-        }
-        None
-    }
-
-    fn field_type_ref_from_token_slice(
-        &self,
-        tokens: &[&Token],
-        start: usize,
-        end: usize,
-        clause_ns: Namespace,
-    ) -> Option<FieldTypeRefData> {
-        let filtered: Vec<&Token> = tokens[start..end]
-            .iter()
-            .copied()
-            .filter(|t| t.kind != TokenKind::Comment)
-            .collect();
-        if filtered.is_empty() {
-            return None;
-        }
-        if let Some((_, is_ref, base_name, _, field_path)) =
-            self.type_ref_access_chain_from_filtered_tokens(&filtered)
-        {
-            return Some(FieldTypeRefData {
-                namespace: clause_ns,
-                is_ref,
-                base_name,
-                field_path: field_path.into_iter().map(|segment| segment.name).collect(),
-            });
-        }
-        let rendered = filtered
-            .iter()
-            .map(|t| t.lexeme(self.source))
-            .collect::<Vec<_>>()
-            .join(" ")
-            .to_ascii_lowercase();
-        Some(FieldTypeRefData {
-            namespace: clause_ns,
-            is_ref: false,
-            base_name: Arc::<str>::from(rendered),
-            field_path: Vec::new(),
-        })
-    }
-
-    fn collect_method_signature_type_refs(&mut self, node: NodeId, scope: ScopeId) {
-        for type_ref in self.direct_type_ref_children(node) {
-            self.collect_type_ref(type_ref, scope);
-        }
-    }
-
-    fn type_ref_access_chain_from_tokens(
-        &self,
-        tokens: &[&Token],
-    ) -> Option<(Arc<str>, TextRange, Vec<FieldAccessSegment>)> {
-        let filtered: Vec<_> = tokens
-            .iter()
-            .copied()
-            .filter(|token| token.kind != TokenKind::Comment)
-            .collect();
-        let (_, _, base_name, base_range, field_path) =
-            self.type_ref_access_chain_from_filtered_tokens(&filtered)?;
-        Some((base_name, base_range, field_path))
-    }
-
     fn skip_form_header_type_expression(&self, tokens: &[&Token], mut i: usize) -> usize {
         let mut depth = 0i32;
         while i < tokens.len() {
@@ -2227,13 +1823,14 @@ impl<'a> Collector<'a> {
         })
     }
 
-    fn select_query_node(&self, node: NodeId) -> Option<NodeId> {
-        self.file
-            .children(node)
-            .find(|&child| self.file.kind(child) == SyntaxKind::SelectQuery)
-    }
-
     fn collect_select_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        let Some(stmt) = SelectStmt::cast(self.syntax(node)) else {
+            self.walk_children(node, scope);
+            return;
+        };
+        let query_node = stmt.query().map(|query| query.syntax().id());
+        let non_query_children: Vec<_> =
+            stmt.non_query_children().map(|child| child.id()).collect();
         let has_endselect = self.select_stmt_has_endselect(node);
         if has_endselect {
             let child_scope = self.push_scope(
@@ -2242,29 +1839,31 @@ impl<'a> Collector<'a> {
                 Some(scope),
                 None,
             );
-            if let Some(query_node) = self.select_query_node(node) {
+            if let Some(query_node) = query_node {
                 self.collect_select_query(query_node, child_scope, true);
             }
-            for child in self.file.children(node) {
-                match self.file.kind(child) {
-                    SyntaxKind::Token | SyntaxKind::SelectQuery => {}
-                    _ => self.walk_node(child, child_scope),
-                }
+            for child in non_query_children {
+                self.walk_node(child, child_scope);
             }
         } else {
-            if let Some(query_node) = self.select_query_node(node) {
+            if let Some(query_node) = query_node {
                 self.collect_select_query(query_node, scope, false);
             }
-            for child in self.file.children(node) {
-                match self.file.kind(child) {
-                    SyntaxKind::Token | SyntaxKind::SelectQuery => {}
-                    _ => self.walk_node(child, scope),
-                }
+            for child in non_query_children {
+                self.walk_node(child, scope);
             }
         }
     }
 
     fn collect_select_query(&mut self, node: NodeId, scope: ScopeId, has_endselect: bool) {
+        let Some(query) = SelectQuery::cast(self.syntax(node)) else {
+            return;
+        };
+        let children: Vec<_> = query
+            .syntax()
+            .children()
+            .map(|child| (child.id(), child.kind(), child.range()))
+            .collect();
         let query_id = self.sql_queries.len();
         let mut projection_clause = None;
         let mut from_clause = None;
@@ -2279,11 +1878,11 @@ impl<'a> Collector<'a> {
         let mut is_distinct = false;
         let mut has_dynamic_where = false;
 
-        for child in self.file.children(node) {
-            match self.file.kind(child) {
+        for (child_id, child_kind, child_range) in children {
+            match child_kind {
                 SyntaxKind::Token => {
                     if self
-                        .token_for_node(child)
+                        .token_for_node(child_id)
                         .is_some_and(|token| self.token_matches_keyword(token, "single"))
                     {
                         is_single = true;
@@ -2293,44 +1892,49 @@ impl<'a> Collector<'a> {
                     is_distinct = true;
                 }
                 SyntaxKind::SelectProjectionList => {
-                    projection_clause = Some(self.file.range(child));
-                    self.collect_select_projection_list(query_id, child, scope);
+                    projection_clause = Some(child_range);
+                    self.collect_select_projection_list(query_id, child_id, scope);
                 }
                 SyntaxKind::SelectFromClause => {
-                    from_clause = Some(self.file.range(child));
-                    self.collect_select_from_clause(query_id, child, scope);
+                    from_clause = Some(child_range);
+                    self.collect_select_from_clause(query_id, child_id, scope);
                 }
                 SyntaxKind::SelectIntoClause => {
-                    into_clause = Some(self.file.range(child));
-                    self.collect_select_into_clause(query_id, child, scope);
+                    into_clause = Some(child_range);
+                    self.collect_select_into_clause(query_id, child_id, scope);
                 }
                 SyntaxKind::SelectWhereClause => {
-                    where_clause = Some(self.file.range(child));
+                    where_clause = Some(child_range);
                     has_dynamic_where =
-                        self.file.count_kind(child, SyntaxKind::SqlDynamicWhere) > 0;
-                    self.collect_sql_clause(query_id, child, scope, SqlClauseKind::Where);
+                        self.file.count_kind(child_id, SyntaxKind::SqlDynamicWhere) > 0;
+                    self.collect_sql_clause(query_id, child_id, scope, SqlClauseKind::Where);
                 }
                 SyntaxKind::SelectGroupByClause => {
-                    group_by_clause = Some(self.file.range(child));
-                    self.collect_sql_host_refs_in_node(child, scope);
-                    self.collect_sql_name_refs_in_node(query_id, child, scope);
+                    group_by_clause = Some(child_range);
+                    self.collect_sql_host_refs_in_node(child_id, scope);
+                    self.collect_sql_name_refs_in_node(query_id, child_id, scope);
                 }
                 SyntaxKind::SelectHavingClause => {
-                    having_clause = Some(self.file.range(child));
-                    self.collect_sql_clause(query_id, child, scope, SqlClauseKind::Having);
+                    having_clause = Some(child_range);
+                    self.collect_sql_clause(query_id, child_id, scope, SqlClauseKind::Having);
                 }
                 SyntaxKind::SelectOrderByClause => {
-                    order_by_clause = Some(self.file.range(child));
-                    self.collect_sql_host_refs_in_node(child, scope);
-                    self.collect_sql_name_refs_in_node(query_id, child, scope);
+                    order_by_clause = Some(child_range);
+                    self.collect_sql_host_refs_in_node(child_id, scope);
+                    self.collect_sql_name_refs_in_node(query_id, child_id, scope);
                 }
                 SyntaxKind::SelectForAllEntriesClause => {
-                    for_all_entries_clause = Some(self.file.range(child));
-                    self.collect_sql_clause(query_id, child, scope, SqlClauseKind::ForAllEntries);
+                    for_all_entries_clause = Some(child_range);
+                    self.collect_sql_clause(
+                        query_id,
+                        child_id,
+                        scope,
+                        SqlClauseKind::ForAllEntries,
+                    );
                 }
                 SyntaxKind::SelectUpToClause => {
-                    up_to_clause = Some(self.file.range(child));
-                    self.collect_sql_host_refs_in_node(child, scope);
+                    up_to_clause = Some(child_range);
+                    self.collect_sql_host_refs_in_node(child_id, scope);
                 }
                 _ => {}
             }
@@ -2357,30 +1961,35 @@ impl<'a> Collector<'a> {
     }
 
     fn collect_select_projection_list(&mut self, query_id: usize, node: NodeId, scope: ScopeId) {
-        for child in self.file.children(node) {
-            if self.file.kind(child) == SyntaxKind::SqlProjectionItem {
-                self.collect_sql_projection_item(query_id, child, scope);
-            }
+        let children: Vec<_> = self
+            .syntax(node)
+            .children()
+            .filter_map(SqlProjectionItem::cast)
+            .map(|item| item.syntax().id())
+            .collect();
+        for child in children {
+            self.collect_sql_projection_item(query_id, child, scope);
         }
     }
 
     fn collect_sql_projection_item(&mut self, query_id: usize, node: NodeId, scope: ScopeId) {
-        let mut tokens = Vec::new();
-        self.tokens_for_node_recursive(node, &mut tokens);
+        let alias = SqlProjectionItem::cast(self.syntax(node))
+            .and_then(|item| item.alias())
+            .and_then(|alias_node| self.node_name(alias_node.syntax().id()));
+        let tokens = self.token_refs(node);
         self.collect_sql_host_refs(&tokens, scope);
-
-        let alias = self
-            .file
-            .children(node)
-            .find(|&child| self.file.kind(child) == SyntaxKind::SqlAlias)
-            .and_then(|alias_node| self.node_name(alias_node));
 
         let mut kind = SqlProjectionKind::Expression;
         let mut source_alias = None;
         let mut name = None;
 
-        for child in self.file.children(node) {
-            match self.file.kind(child) {
+        let children: Vec<_> = self
+            .syntax(node)
+            .children()
+            .map(|child| (child.id(), child.kind()))
+            .collect();
+        for (child, kind_syntax) in children {
+            match kind_syntax {
                 SyntaxKind::SqlStar => {
                     kind = SqlProjectionKind::Star;
                     self.push_sql_name_ref(
@@ -2462,8 +2071,13 @@ impl<'a> Collector<'a> {
 
     fn collect_select_from_clause(&mut self, query_id: usize, node: NodeId, scope: ScopeId) {
         let mut saw_base_source = false;
-        for child in self.file.children(node) {
-            match self.file.kind(child) {
+        let children: Vec<_> = self
+            .syntax(node)
+            .children()
+            .map(|child| (child.id(), child.kind()))
+            .collect();
+        for (child, kind_syntax) in children {
+            match kind_syntax {
                 SyntaxKind::SqlDataSource => {
                     let source_kind = if saw_base_source {
                         SqlSourceKind::Join
@@ -2516,8 +2130,13 @@ impl<'a> Collector<'a> {
         source_kind: SqlSourceKind,
         join_kind: Option<Arc<str>>,
     ) {
-        let mut tokens = Vec::new();
-        self.tokens_for_node_recursive(node, &mut tokens);
+        let alias_info = SqlDataSource::cast(self.syntax(node))
+            .and_then(|source| source.alias())
+            .and_then(|alias_node| {
+                self.node_name(alias_node.syntax().id())
+                    .map(|(name, _)| (name, alias_node.syntax().range()))
+            });
+        let tokens = self.token_refs(node);
         let alias_idx = tokens
             .iter()
             .position(|token| self.token_matches_keyword(token, "as"));
@@ -2528,12 +2147,7 @@ impl<'a> Collector<'a> {
         let name_range = self
             .token_span_range(name_tokens)
             .unwrap_or_else(|| self.file.range(node));
-        let alias = self
-            .file
-            .children(node)
-            .find(|&child| self.file.kind(child) == SyntaxKind::SqlAlias)
-            .and_then(|alias_node| self.node_name(alias_node))
-            .map(|(name, _)| name);
+        let alias = alias_info.as_ref().map(|(name, _)| Arc::clone(name));
 
         self.sql_sources.push(SqlSourceData {
             query_id,
@@ -2553,11 +2167,9 @@ impl<'a> Collector<'a> {
             SqlNameRefKind::Source,
         );
         if let Some(alias_name) = alias {
-            let alias_range = self
-                .file
-                .children(node)
-                .find(|&child| self.file.kind(child) == SyntaxKind::SqlAlias)
-                .map(|alias_node| self.file.range(alias_node))
+            let alias_range = alias_info
+                .as_ref()
+                .map(|(_, range)| range.clone())
                 .unwrap_or_else(|| self.file.range(node));
             self.push_sql_name_ref(
                 query_id,
@@ -2571,8 +2183,7 @@ impl<'a> Collector<'a> {
     }
 
     fn collect_select_into_clause(&mut self, query_id: usize, node: NodeId, scope: ScopeId) {
-        let mut tokens = Vec::new();
-        self.tokens_for_node_recursive(node, &mut tokens);
+        let tokens = self.token_refs(node);
         let is_appending = tokens
             .first()
             .is_some_and(|token| self.token_matches_keyword(token, "appending"));
@@ -2662,8 +2273,7 @@ impl<'a> Collector<'a> {
             },
         });
 
-        let mut tokens = Vec::new();
-        self.tokens_for_node_recursive(node, &mut tokens);
+        let tokens = self.token_refs(node);
         match kind {
             SqlClauseKind::ForAllEntries => {
                 if let Some(in_idx) = tokens
@@ -2684,14 +2294,12 @@ impl<'a> Collector<'a> {
     }
 
     fn collect_sql_host_refs_in_node(&mut self, node: NodeId, scope: ScopeId) {
-        let mut tokens = Vec::new();
-        self.tokens_for_node_recursive(node, &mut tokens);
+        let tokens = self.token_refs(node);
         self.collect_sql_host_refs(&tokens, scope);
     }
 
     fn collect_sql_name_refs_in_node(&mut self, query_id: usize, node: NodeId, scope: ScopeId) {
-        let mut tokens = Vec::new();
-        self.tokens_for_node_recursive(node, &mut tokens);
+        let tokens = self.token_refs(node);
         self.collect_sql_name_refs_from_tokens(query_id, scope, &tokens, false);
     }
 
@@ -2858,11 +2466,10 @@ impl<'a> Collector<'a> {
     }
 
     fn inline_decl_name(&self, node: NodeId) -> Option<Arc<str>> {
-        self.file
-            .children(node)
-            .find(|&child| self.file.kind(child) == SyntaxKind::DataDeclName)
-            .and_then(|name_node| self.node_name(name_node))
-            .map(|(name, _)| name)
+        self.syntax(node)
+            .child_by_kind(SyntaxKind::DataDeclName)
+            .and_then(DataDeclName::cast)
+            .and_then(|name| name.name(self.source))
     }
 
     fn sql_target_name_from_expr(&self, node: NodeId) -> Option<Arc<str>> {
@@ -2879,43 +2486,47 @@ impl<'a> Collector<'a> {
         &self,
         node: NodeId,
     ) -> Option<(Option<Arc<str>>, Arc<str>, TextRange)> {
-        let mut tokens = Vec::new();
-        self.tokens_for_node_recursive(node, &mut tokens);
-        if tokens.len() == 1 && tokens[0].kind == TokenKind::Ident {
+        let tokens = self.syntax(node).token_descendants();
+        if tokens.len() == 1
+            && let Some(text) = tokens[0].text(self.source)
+        {
             return Some((
                 None,
-                Arc::<str>::from(tokens[0].lexeme(self.source).to_ascii_lowercase()),
-                tokens[0].range.clone(),
+                Arc::<str>::from(text.to_ascii_lowercase()),
+                tokens[0].range(),
             ));
         }
         if tokens.len() == 3
-            && tokens[0].kind == TokenKind::Ident
-            && tokens[1].kind == TokenKind::Tilde
-            && tokens[2].kind == TokenKind::Ident
+            && let (Some(qualifier), Some(separator), Some(column)) = (
+                tokens[0].text(self.source),
+                tokens[1].text(self.source),
+                tokens[2].text(self.source),
+            )
+            && separator == "~"
         {
             return Some((
-                Some(Arc::<str>::from(
-                    tokens[0].lexeme(self.source).to_ascii_lowercase(),
-                )),
-                Arc::<str>::from(tokens[2].lexeme(self.source).to_ascii_lowercase()),
-                tokens[0].range.start..tokens[2].range.end,
+                Some(Arc::<str>::from(qualifier.to_ascii_lowercase())),
+                Arc::<str>::from(column.to_ascii_lowercase()),
+                tokens[0].range().start..tokens[2].range().end,
             ));
         }
         None
     }
 
     fn sql_qualified_name_parts(&self, node: NodeId, star: bool) -> Option<(Arc<str>, TextRange)> {
-        let mut tokens = Vec::new();
-        self.tokens_for_node_recursive(node, &mut tokens);
+        let tokens = self.syntax(node).token_descendants();
         if tokens.len() == 3
-            && tokens[0].kind == TokenKind::Ident
-            && tokens[1].kind == TokenKind::Tilde
-            && ((star && tokens[2].kind == TokenKind::Star)
-                || (!star && tokens[2].kind == TokenKind::Ident))
+            && let (Some(qualifier), Some(separator), Some(last)) = (
+                tokens[0].text(self.source),
+                tokens[1].text(self.source),
+                tokens[2].text(self.source),
+            )
+            && separator == "~"
+            && ((star && last == "*") || (!star && last != "*"))
         {
             return Some((
-                Arc::<str>::from(tokens[0].lexeme(self.source).to_ascii_lowercase()),
-                tokens[0].range.start..tokens[2].range.end,
+                Arc::<str>::from(qualifier.to_ascii_lowercase()),
+                tokens[0].range().start..tokens[2].range().end,
             ));
         }
         None
@@ -3511,7 +3122,11 @@ impl<'a> Collector<'a> {
                 self.collect_token_expression_refs(&sig[i..end_mid], scope, true);
             }
             i = end_mid;
-            if i < head_end && sig.get(i).is_some_and(|t| self.token_matches_keyword(t, "type")) {
+            if i < head_end
+                && sig
+                    .get(i)
+                    .is_some_and(|t| self.token_matches_keyword(t, "type"))
+            {
                 i += 1;
                 let end_ty = self.consume_concatenate_operand(
                     &sig,
@@ -3523,7 +3138,10 @@ impl<'a> Collector<'a> {
                 }
                 i = end_ty;
             }
-            if i < head_end && sig.get(i).is_some_and(|t| self.token_matches_keyword(t, "number"))
+            if i < head_end
+                && sig
+                    .get(i)
+                    .is_some_and(|t| self.token_matches_keyword(t, "number"))
             {
                 i += 1;
                 let end_num = self.consume_concatenate_operand(
@@ -3543,26 +3161,26 @@ impl<'a> Collector<'a> {
                 self.collect_token_expression_refs(&sig[1..ti], scope, true);
             }
             let mut i = ti + 1;
-            let end_mty = self.consume_concatenate_operand(
-                &sig,
-                i,
-                &["display", "with", "into", "raising"],
-            );
+            let end_mty =
+                self.consume_concatenate_operand(&sig, i, &["display", "with", "into", "raising"]);
             if end_mty > i {
                 self.collect_token_expression_refs(&sig[i..end_mty], scope, true);
             }
             i = end_mty;
-            if i < head_end && sig.get(i).is_some_and(|t| self.token_matches_keyword(t, "display"))
+            if i < head_end
+                && sig
+                    .get(i)
+                    .is_some_and(|t| self.token_matches_keyword(t, "display"))
             {
                 i += 1;
-                if i < head_end && sig.get(i).is_some_and(|t| self.token_matches_keyword(t, "like"))
+                if i < head_end
+                    && sig
+                        .get(i)
+                        .is_some_and(|t| self.token_matches_keyword(t, "like"))
                 {
                     i += 1;
-                    let end_like = self.consume_concatenate_operand(
-                        &sig,
-                        i,
-                        &["with", "into", "raising"],
-                    );
+                    let end_like =
+                        self.consume_concatenate_operand(&sig, i, &["with", "into", "raising"]);
                     if end_like > i {
                         self.collect_token_expression_refs(&sig[i..end_like], scope, true);
                     }
@@ -3614,8 +3232,7 @@ impl<'a> Collector<'a> {
                         let inner_start = lpar + 1;
                         for &t in &sig[inner_start..rpar] {
                             if t.kind == TokenKind::Ident {
-                                let name =
-                                    Arc::from(t.lexeme(self.source).to_ascii_lowercase());
+                                let name = Arc::from(t.lexeme(self.source).to_ascii_lowercase());
                                 self.declare_symbol(
                                     scope,
                                     name,
@@ -3630,11 +3247,7 @@ impl<'a> Collector<'a> {
                     }
                 }
             } else {
-                let raw_end = self.consume_concatenate_operand(
-                    &sig,
-                    idx,
-                    &["raising", "display"],
-                );
+                let raw_end = self.consume_concatenate_operand(&sig, idx, &["raising", "display"]);
                 let end_op = raw_end.min(period_pos);
                 if end_op > idx {
                     self.collect_token_expression_refs(&sig[idx..end_op], scope, true);
@@ -3866,7 +3479,14 @@ impl<'a> Collector<'a> {
     }
 
     fn collect_methods_stmt(&mut self, node: NodeId, scope: ScopeId) {
-        self.collect_method_signature_type_refs(node, scope);
+        let methods_stmt = MethodsStmt::cast(self.syntax(node)).expect("methods stmt");
+        let type_refs: Vec<_> = methods_stmt
+            .type_refs()
+            .map(|type_ref| type_ref.syntax().id())
+            .collect();
+        for type_ref in type_refs {
+            self.collect_type_ref(type_ref, scope);
+        }
     }
 
     fn collect_assert_or_check_stmt(&mut self, node: NodeId, scope: ScopeId) {
@@ -4377,19 +3997,23 @@ impl<'a> Collector<'a> {
     }
 
     fn named_argument_section(&self, token: &Token) -> Option<NamedArgumentSection> {
-        if self.token_matches_keyword(token, "exporting") {
+        self.named_argument_section_from_text(token.lexeme(self.source))
+    }
+
+    fn named_argument_section_from_text(&self, text: &str) -> Option<NamedArgumentSection> {
+        if text.eq_ignore_ascii_case("exporting") {
             return Some(NamedArgumentSection::Exporting);
         }
-        if self.token_matches_keyword(token, "importing") {
+        if text.eq_ignore_ascii_case("importing") {
             return Some(NamedArgumentSection::Importing);
         }
-        if self.token_matches_keyword(token, "changing") {
+        if text.eq_ignore_ascii_case("changing") {
             return Some(NamedArgumentSection::Changing);
         }
-        if self.token_matches_keyword(token, "receiving") {
+        if text.eq_ignore_ascii_case("receiving") {
             return Some(NamedArgumentSection::Receiving);
         }
-        if self.token_matches_keyword(token, "exceptions") {
+        if text.eq_ignore_ascii_case("exceptions") {
             return Some(NamedArgumentSection::Exceptions);
         }
         None
@@ -4581,6 +4205,65 @@ impl<'a> Collector<'a> {
         false
     }
 
+    fn declare_inline_named_argument_target_from_nodes(
+        &mut self,
+        scope: ScopeId,
+        target: &NamedArgumentTarget,
+        section: Option<NamedArgumentSection>,
+        argument_name: Arc<str>,
+        value_children: &[NodeId],
+    ) -> Option<bool> {
+        if !self.named_argument_section_allows_inline_target(section) {
+            return Some(false);
+        }
+        let first_value = value_children
+            .iter()
+            .copied()
+            .find(|&node| self.file.kind(node) != SyntaxKind::Token)?;
+        let declared_type =
+            self.resolve_named_argument_declared_type(scope, target, &argument_name);
+        let structure = declared_type
+            .as_ref()
+            .and_then(|type_ref| self.resolve_field_type_ref(scope, type_ref));
+        let Some(name_node) = self
+            .syntax(first_value)
+            .child_by_kind(SyntaxKind::DataDeclName)
+            .and_then(DataDeclName::cast)
+        else {
+            return Some(false);
+        };
+        let Some(name) = name_node.name(self.source) else {
+            return Some(false);
+        };
+        match self.file.kind(first_value) {
+            SyntaxKind::DataInlineDecl => {
+                self.declare_symbol(
+                    scope,
+                    name,
+                    SymbolKind::Variable,
+                    name_node.range(),
+                    structure,
+                    declared_type,
+                    None,
+                );
+                Some(true)
+            }
+            SyntaxKind::FieldSymbolInlineDecl => {
+                self.declare_symbol(
+                    scope,
+                    name,
+                    SymbolKind::FieldSymbol,
+                    name_node.range(),
+                    structure,
+                    declared_type,
+                    None,
+                );
+                Some(true)
+            }
+            _ => Some(false),
+        }
+    }
+
     fn collect_call_argument_tokens(
         &mut self,
         tokens: &[&Token],
@@ -4659,10 +4342,10 @@ impl<'a> Collector<'a> {
     }
 
     fn call_arg_section_from_node(&self, node: NodeId) -> Option<NamedArgumentSection> {
-        self.file
-            .children(node)
-            .find_map(|child| self.token_for_node(child))
-            .and_then(|token| self.named_argument_section(token))
+        abap_ast::ast::CallArgSection::cast(self.syntax(node))
+            .and_then(|section| section.first_token())
+            .and_then(|token| token.text(self.source))
+            .and_then(|text| self.named_argument_section_from_text(text))
     }
 
     fn collect_structured_argument_values(&mut self, nodes: &[NodeId], scope: ScopeId) {
@@ -4673,10 +4356,7 @@ impl<'a> Collector<'a> {
             .iter()
             .all(|&node| self.file.kind(node) == SyntaxKind::Token)
         {
-            let mut tokens = Vec::new();
-            for &node in nodes {
-                self.tokens_for_node_recursive(node, &mut tokens);
-            }
+            let tokens = self.token_refs_for_nodes(nodes);
             self.collect_token_expression_refs(&tokens, scope, true);
             return;
         }
@@ -4700,34 +4380,47 @@ impl<'a> Collector<'a> {
         target: &NamedArgumentTarget,
         section: Option<NamedArgumentSection>,
     ) {
-        let mut children = self.file.children(node);
-        let Some(name_node) = children.next() else {
+        let Some(named_arg) = CallNamedArg::cast(self.syntax(node)) else {
             return;
         };
-        let Some(name_token) = self.token_for_node(name_node) else {
+        let value_children: Vec<_> = named_arg
+            .value_children()
+            .into_iter()
+            .map(|child| child.id())
+            .collect();
+        let Some(name_token) = named_arg.name_token() else {
             return;
         };
-        let argument_name = Arc::<str>::from(name_token.lexeme(self.source).to_ascii_lowercase());
+        let Some(name_text) = name_token.text(self.source) else {
+            return;
+        };
+        let argument_name = Arc::<str>::from(name_text.to_ascii_lowercase());
         self.named_arguments.push(NamedArgumentAccess {
             scope,
             name: Arc::clone(&argument_name),
-            range: name_token.range.clone(),
+            range: name_token.range(),
             section,
             target: target.clone(),
         });
 
-        let value_children: Vec<_> = self.file.children(node).skip(2).collect();
-        let mut value_tokens = Vec::new();
-        for &child in &value_children {
-            self.tokens_for_node_recursive(child, &mut value_tokens);
-        }
-        let consumed_inline_target = self.declare_inline_named_argument_target(
-            scope,
-            target,
-            section,
-            argument_name,
-            &value_tokens,
-        );
+        let consumed_inline_target = self
+            .declare_inline_named_argument_target_from_nodes(
+                scope,
+                target,
+                section,
+                Arc::clone(&argument_name),
+                &value_children,
+            )
+            .unwrap_or_else(|| {
+                let value_tokens = self.token_refs_for_nodes(&value_children);
+                self.declare_inline_named_argument_target(
+                    scope,
+                    target,
+                    section,
+                    argument_name,
+                    &value_tokens,
+                )
+            });
         if !consumed_inline_target {
             self.collect_structured_argument_values(&value_children, scope);
         }
@@ -4739,9 +4432,16 @@ impl<'a> Collector<'a> {
         scope: ScopeId,
         target: NamedArgumentTarget,
     ) {
+        let Some(arg_list) = CallArgList::cast(self.syntax(node)) else {
+            return;
+        };
+        let items: Vec<_> = arg_list
+            .items()
+            .map(|child| (child.id(), child.kind()))
+            .collect();
         let mut current_section = None;
-        for child in self.file.children(node) {
-            match self.file.kind(child) {
+        for (child, kind_syntax) in items {
+            match kind_syntax {
                 SyntaxKind::CallArgSection => {
                     current_section = self.call_arg_section_from_node(child);
                 }
@@ -4749,7 +4449,14 @@ impl<'a> Collector<'a> {
                     self.collect_structured_named_argument(child, scope, &target, current_section);
                 }
                 SyntaxKind::CallPositionalArg => {
-                    let value_children: Vec<_> = self.file.children(child).collect();
+                    let value_children: Vec<_> = CallPositionalArg::cast(self.syntax(child))
+                        .map(|arg| {
+                            arg.value_children()
+                                .into_iter()
+                                .map(|child| child.id())
+                                .collect()
+                        })
+                        .unwrap_or_default();
                     self.collect_structured_argument_values(&value_children, scope);
                 }
                 _ => {}
@@ -5196,12 +4903,15 @@ impl<'a> Collector<'a> {
     }
 
     fn collect_call_expr(&mut self, node: NodeId, scope: ScopeId) {
-        let mut children = self.file.children(node);
-        if let Some(callee) = children.next() {
-            let arg_list = children.find(|&child| self.file.kind(child) == SyntaxKind::CallArgList);
-            match self.file.kind(callee) {
+        let Some(call) = CallExpr::cast(self.syntax(node)) else {
+            return;
+        };
+        let callee = call.callee().map(|callee| (callee.id(), callee.kind()));
+        let arg_list = call.arg_list().map(|arg_list| arg_list.syntax().id());
+        if let Some((callee_id, callee_kind)) = callee {
+            match callee_kind {
                 SyntaxKind::ExprIdent => {
-                    if let Some((name, range)) = self.node_name(callee) {
+                    if let Some((name, range)) = self.node_name(callee_id) {
                         self.add_reference(
                             scope,
                             Arc::clone(&name),
@@ -5218,9 +4928,9 @@ impl<'a> Collector<'a> {
                         }
                     }
                 }
-                _ => self.collect_expr(callee, scope),
+                _ => self.collect_expr(callee_id, scope),
             }
-            if let Some(target) = self.named_argument_target_for_callee(callee)
+            if let Some(target) = self.named_argument_target_for_callee(callee_id)
                 && let Some(arg_list) = arg_list
             {
                 self.collect_call_argument_list(arg_list, scope, target);
@@ -5298,8 +5008,10 @@ impl<'a> Collector<'a> {
         node: NodeId,
         _scope: ScopeId,
     ) -> Option<PendingStructureField> {
-        let name_node = self.first_non_token_child(node)?;
-        let (name, decl_range) = self.node_name(name_node)?;
+        let clause = DeclClause::cast(self.syntax(node))?;
+        let name_node = clause.name()?;
+        let name = name_node.name(self.source)?;
+        let decl_range = name_node.range();
         Some(PendingStructureField {
             name,
             decl_range,
@@ -5309,16 +5021,16 @@ impl<'a> Collector<'a> {
     }
 
     fn type_ref_from_structured_include_clause(&self, node: NodeId) -> Option<FieldTypeRefData> {
-        self.file
-            .children(node)
-            .find(|&child| self.file.kind(child) == SyntaxKind::TypeRefSimple)
-            .and_then(|type_ref| self.field_type_ref_from_node(type_ref, Namespace::Type))
+        self.syntax(node)
+            .child_by_kind(SyntaxKind::TypeRefSimple)
+            .and_then(|type_ref| self.field_type_ref_from_node(type_ref.id(), Namespace::Type))
     }
 
     fn direct_type_ref_children(&self, node: NodeId) -> Vec<NodeId> {
-        self.file
-            .children(node)
-            .filter(|&child| self.file.kind(child) == SyntaxKind::TypeRefSimple)
+        self.syntax(node)
+            .children()
+            .filter_map(TypeRefSimple::cast)
+            .map(|type_ref| type_ref.syntax().id())
             .collect()
     }
 
@@ -5337,85 +5049,42 @@ impl<'a> Collector<'a> {
     }
 
     fn type_clause_display_from_typed_clause(&self, node: NodeId) -> Option<Arc<str>> {
-        let (type_ref_node, _) = self.typed_clause_type_ref_node(node)?;
-        let span = self.file.range(type_ref_node);
-        let slice = self.source.get(span.start..span.end)?;
-        let trimmed = slice.trim();
-        (!trimmed.is_empty()).then(|| Arc::from(trimmed))
+        let clause = DeclClause::cast(self.syntax(node))?;
+        let (type_ref, _) = clause.type_ref_with_namespace(self.source)?;
+        Some(Arc::from(type_ref.display_text(self.source)?))
     }
 
     fn typed_clause_type_ref_node(&self, node: NodeId) -> Option<(NodeId, Namespace)> {
-        let mut namespace = None;
-        for child in self.file.children(node) {
-            if let Some(token) = self.token_for_node(child) {
-                if self.token_matches_keyword(token, "type") {
-                    namespace = Some(Namespace::Type);
-                    continue;
-                }
-                if self.token_matches_keyword(token, "like") {
-                    namespace = Some(Namespace::Value);
-                    continue;
-                }
-            }
-            if let Some(namespace) = namespace
-                && self.file.kind(child) == SyntaxKind::TypeRefSimple
-            {
-                return Some((child, namespace));
-            }
-        }
-        None
+        let clause = DeclClause::cast(self.syntax(node))?;
+        let (type_ref, namespace) = clause.type_ref_with_namespace(self.source)?;
+        Some((
+            type_ref.syntax().id(),
+            self.namespace_from_type_clause_kind(namespace),
+        ))
     }
 
     fn typed_clause_namespace_hint(&self, clause_node: NodeId) -> Option<Namespace> {
-        for child in self.file.children(clause_node) {
-            if let Some(token) = self.token_for_node(child) {
-                if self.token_matches_keyword(token, "type") {
-                    return Some(Namespace::Type);
-                }
-                if self.token_matches_keyword(token, "like") {
-                    return Some(Namespace::Value);
-                }
-            }
-        }
-        None
+        let clause = DeclClause::cast(self.syntax(clause_node))?;
+        let kind = clause.type_clause_kind(self.source)?;
+        Some(self.namespace_from_type_clause_kind(kind))
     }
 
     fn type_ref_from_typed_clause(&self, node: NodeId) -> Option<FieldTypeRefData> {
-        if let Some((type_ref_node, namespace)) = self.typed_clause_type_ref_node(node)
-            && let Some((_, is_ref, base_name, _, field_path)) =
-                self.type_ref_access_chain(type_ref_node, namespace)
-        {
-            return Some(FieldTypeRefData {
-                namespace,
-                is_ref,
-                base_name,
-                field_path: field_path.into_iter().map(|segment| segment.name).collect(),
-            });
-        }
-        let (tokens, namespace, expr_start) = self.typed_clause_expr_tokens(node)?;
-        self.field_type_ref_from_token_slice(&tokens, expr_start, tokens.len(), namespace)
+        let (type_ref_node, namespace) = self.typed_clause_type_ref_node(node)?;
+        let (_, is_ref, base_name, _, field_path) =
+            self.type_ref_access_chain(type_ref_node, namespace)?;
+        Some(FieldTypeRefData {
+            namespace,
+            is_ref,
+            base_name,
+            field_path: field_path.into_iter().map(|segment| segment.name).collect(),
+        })
     }
 
     fn structure_from_typed_clause(&self, node: NodeId, scope: ScopeId) -> Option<StructureId> {
-        if let Some((type_ref_node, namespace)) = self.typed_clause_type_ref_node(node)
-            && let Some((_, _, base_name, _, field_path)) =
-                self.type_ref_access_chain(type_ref_node, namespace)
-        {
-            let field_path_names = field_path
-                .iter()
-                .map(|segment| Arc::clone(&segment.name))
-                .collect::<Vec<_>>();
-            let symbol_id = self.lookup_structure_symbol(
-                scope,
-                namespace,
-                base_name.as_ref(),
-                !field_path_names.is_empty(),
-            )?;
-            return self.symbol(symbol_id).structure;
-        }
-        let (tokens, namespace, expr_start) = self.typed_clause_expr_tokens(node)?;
-        let (base_name, _, field_path) =
-            self.type_ref_access_chain_from_tokens(&tokens[expr_start..tokens.len()])?;
+        let (type_ref_node, namespace) = self.typed_clause_type_ref_node(node)?;
+        let (_, _, base_name, _, field_path) =
+            self.type_ref_access_chain(type_ref_node, namespace)?;
         let field_path_names = field_path
             .iter()
             .map(|segment| Arc::clone(&segment.name))
@@ -5428,6 +5097,13 @@ impl<'a> Collector<'a> {
         )?;
         let structure_id = self.symbol(symbol_id).structure?;
         self.resolve_structure_path(structure_id, &field_path_names)
+    }
+
+    fn namespace_from_type_clause_kind(&self, kind: TypeClauseKind) -> Namespace {
+        match kind {
+            TypeClauseKind::Type => Namespace::Type,
+            TypeClauseKind::Like => Namespace::Value,
+        }
     }
 
     fn lookup_structure_symbol(
@@ -5612,11 +5288,9 @@ impl<'a> Collector<'a> {
     }
 
     fn constructor_type_ref(&self, node: NodeId) -> Option<(Arc<str>, TextRange)> {
-        let type_ref = self
-            .file
-            .children(node)
-            .find(|&child| self.file.kind(child) == SyntaxKind::TypeRefSimple)?;
-        let (_, _, base_name, range, _) = self.type_ref_access_chain(type_ref, Namespace::Type)?;
+        let type_ref = self.syntax(node).child_by_kind(SyntaxKind::TypeRefSimple)?;
+        let (_, _, base_name, range, _) =
+            self.type_ref_access_chain(type_ref.id(), Namespace::Type)?;
         Some((base_name, range))
     }
 
@@ -5643,13 +5317,8 @@ impl<'a> Collector<'a> {
     }
 
     fn node_name(&self, node: NodeId) -> Option<(Arc<str>, TextRange)> {
-        let range = self.file.range(node);
-        let text = self.source.get(range.clone())?;
-        let lowered = text.trim().to_ascii_lowercase();
-        if lowered.is_empty() {
-            return None;
-        }
-        Some((Arc::<str>::from(lowered), range))
+        let syntax = self.syntax(node);
+        Some((syntax.lower_trimmed_text(self.source)?, syntax.range()))
     }
 
     fn token_for_node(&self, node: NodeId) -> Option<&'a Token> {
@@ -5662,73 +5331,61 @@ impl<'a> Collector<'a> {
     }
 
     fn first_non_token_child(&self, node: NodeId) -> Option<NodeId> {
-        self.file
-            .children(node)
-            .find(|&child| self.file.kind(child) != SyntaxKind::Token)
+        self.syntax(node)
+            .first_non_token_child()
+            .map(|child| child.id())
     }
 
     fn last_non_token_child(&self, node: NodeId) -> Option<NodeId> {
-        self.file
-            .children(node)
-            .filter(|&child| self.file.kind(child) != SyntaxKind::Token)
-            .last()
+        self.syntax(node)
+            .last_non_token_child()
+            .map(|child| child.id())
     }
 
-    fn tokens_for_node_recursive(&self, node: NodeId, out: &mut Vec<&'a Token>) {
-        if let Some(token) = self.token_for_node(node) {
-            out.push(token);
-            return;
+    fn token_refs(&self, node: NodeId) -> Vec<&'a Token> {
+        self.syntax(node)
+            .token_descendants()
+            .into_iter()
+            .filter_map(|token_node| self.token_for_node(token_node.id()))
+            .collect()
+    }
+
+    fn token_refs_for_nodes(&self, nodes: &[NodeId]) -> Vec<&'a Token> {
+        let mut out = Vec::new();
+        for &node in nodes {
+            out.extend(self.token_refs(node));
         }
-        for child in self.file.children(node) {
-            self.tokens_for_node_recursive(child, out);
-        }
+        out
+    }
+
+    fn token_refs_from_child_nodes(&self, node: NodeId) -> Vec<&'a Token> {
+        let child_nodes = self.file.children(node).collect::<Vec<_>>();
+        self.token_refs_for_nodes(&child_nodes)
     }
 
     fn token_matches_keyword(&self, token: &Token, keyword: &str) -> bool {
         token.kind == TokenKind::Ident && token.lexeme(self.source).eq_ignore_ascii_case(keyword)
     }
 
-    fn typed_clause_expr_tokens(&self, node: NodeId) -> Option<(Vec<&'a Token>, Namespace, usize)> {
-        let mut tokens = Vec::new();
-        self.tokens_for_node_recursive(node, &mut tokens);
-        let mut namespace = None;
-        for (idx, token) in tokens.iter().enumerate() {
-            if self.token_matches_keyword(token, "type") {
-                namespace = Some((Namespace::Type, idx + 1));
-                break;
-            }
-            if self.token_matches_keyword(token, "like") {
-                namespace = Some((Namespace::Value, idx + 1));
-                break;
-            }
-        }
-        let (namespace, mut expr_start) = namespace?;
-        while expr_start < tokens.len() && tokens[expr_start].kind == TokenKind::Comment {
-            expr_start += 1;
-        }
-        Some((tokens, namespace, expr_start))
-    }
-
     fn selector_access_chain(
         &self,
         node: NodeId,
     ) -> Option<(Namespace, Arc<str>, TextRange, Vec<FieldAccessSegment>)> {
-        let mut children = self.file.children(node);
-        let base = children.next()?;
-        let op = children.next()?;
-        let field = children.next()?;
-        let field_kind = self.file.kind(field);
-        if field_kind != SyntaxKind::ExprIdent {
-            return None;
-        }
-        let (field_name, field_range) = self.node_name(field)?;
-        let namespace = match self.token_for_node(op) {
+        let selector = SelectorExpr::cast(self.syntax(node))?;
+        let base = selector.base()?;
+        let op = selector.operator()?;
+        let field = selector.field()?;
+        let field_name = field.name(self.source)?;
+        let field_range = field.range();
+        let namespace = match self.token_for_node(op.id()) {
             Some(token) if token.kind == TokenKind::FatArrow => Namespace::Type,
             _ => Namespace::Value,
         };
-        match self.file.kind(base) {
+        match base.kind() {
             SyntaxKind::ExprIdent => {
-                let (base_name, base_range) = self.node_name(base)?;
+                let ident = ExprIdent::cast(base)?;
+                let base_name = ident.name(self.source)?;
+                let base_range = ident.range();
                 Some((
                     namespace,
                     base_name,
@@ -5741,7 +5398,7 @@ impl<'a> Collector<'a> {
             }
             SyntaxKind::SelectorExpr => {
                 let (base_namespace, base_name, base_range, mut field_path) =
-                    self.selector_access_chain(base)?;
+                    self.selector_access_chain(base.id())?;
                 field_path.push(FieldAccessSegment {
                     name: field_name,
                     range: field_range,
@@ -5750,6 +5407,10 @@ impl<'a> Collector<'a> {
             }
             _ => None,
         }
+    }
+
+    fn syntax(&self, node: NodeId) -> SyntaxNodeRef<'_> {
+        SyntaxNodeRef::new(self.file, node)
     }
 
     fn type_ref_selector_chain_access_chain(

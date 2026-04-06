@@ -509,11 +509,7 @@ fn parse_do_header_until_period(
                         range: tokens[do_idx].range.start..tokens[times_i].range.end,
                     });
                     let err = error_token_children(b, tokens, times_i, times_i + 1);
-                    children.push(b.branch(
-                        SyntaxKind::Error,
-                        tokens[times_i].range.clone(),
-                        &err,
-                    ));
+                    children.push(b.branch(SyntaxKind::Error, tokens[times_i].range.clone(), &err));
                 }
                 children.push(token_leaf(b, &tokens[times_i]));
                 let mut j = times_i + 1;
@@ -526,8 +522,7 @@ fn parse_do_header_until_period(
                 children.push(token_leaf(b, &tokens[period_i]));
                 (children, period_i + 1)
             } else {
-                let mut children =
-                    Vec::with_capacity(period_i.saturating_sub(do_idx) + 1);
+                let mut children = Vec::with_capacity(period_i.saturating_sub(do_idx) + 1);
                 for t in &tokens[do_idx..=period_i] {
                     children.push(token_leaf(b, t));
                 }
@@ -1130,9 +1125,7 @@ mod tests {
 
     #[test]
     fn parses_nested_do_enddo() {
-        let parsed = crate::parse(
-            "DO lv_max TIMES.\nDO 7 TIMES.\na = 1.\nENDDO.\nb = 2.\nENDDO.",
-        );
+        let parsed = crate::parse("DO lv_max TIMES.\nDO 7 TIMES.\na = 1.\nENDDO.\nb = 2.\nENDDO.");
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
         let root = parsed.file.root();
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::DoStmt), 2);

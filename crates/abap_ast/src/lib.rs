@@ -14,6 +14,7 @@
 use abap_lexer::TextRange;
 
 pub mod arena;
+pub mod ast;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SyntaxKind {

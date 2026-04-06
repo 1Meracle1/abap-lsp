@@ -562,10 +562,13 @@ fn symbol_is_structure_like_for_into(symbol: &crate::SymbolData) -> bool {
     if symbol.structure.is_some() {
         return true;
     }
-    symbol.type_clause_display.as_deref().is_some_and(|display| {
-        let upper = display.to_ascii_uppercase();
-        upper.contains("BEGIN OF")
-    })
+    symbol
+        .type_clause_display
+        .as_deref()
+        .is_some_and(|display| {
+            let upper = display.to_ascii_uppercase();
+            upper.contains("BEGIN OF")
+        })
 }
 
 fn into_target_identifier_range(
@@ -582,12 +585,7 @@ fn into_target_identifier_range(
                 && reference.range.start >= target.range.start
                 && reference.range.end <= target.range.end
         })
-        .min_by_key(|reference| {
-            reference
-                .range
-                .end
-                .saturating_sub(reference.range.start)
-        })
+        .min_by_key(|reference| reference.range.end.saturating_sub(reference.range.start))
         .map(|reference| reference.range.clone())
         .unwrap_or_else(|| target.range.clone())
 }
@@ -602,13 +600,9 @@ fn validate_open_sql_into_targets(
             continue;
         }
         let name = target.target_name.as_ref().unwrap();
-        let Some(symbol_id) = resolve_symbol_in_scope_chain(
-            unit,
-            scope_index,
-            target.scope,
-            Namespace::Value,
-            name,
-        ) else {
+        let Some(symbol_id) =
+            resolve_symbol_in_scope_chain(unit, scope_index, target.scope, Namespace::Value, name)
+        else {
             continue;
         };
         let symbol = unit.symbol(symbol_id);
@@ -628,9 +622,7 @@ fn validate_open_sql_into_targets(
         // needs an internal table (checked above). Both set `is_corresponding`; only the former
         // should be validated as structure-like — otherwise we false-positive when the line type
         // is unresolved and `SymbolData::structure` is absent despite `STANDARD TABLE OF ...`.
-        if target.is_corresponding
-            && !target.is_table
-            && !symbol_is_structure_like_for_into(symbol)
+        if target.is_corresponding && !target.is_table && !symbol_is_structure_like_for_into(symbol)
         {
             out.push(Diagnostic {
                 kind: DiagnosticKind::InvalidOpenSqlIntoTarget,
@@ -775,9 +767,7 @@ pub(crate) fn validate_project_with_scope_indexes(
                 while idx < field_path.len() {
                     let step = &field_path[idx];
                     if let Some(structure_id) = structure_tail {
-                        let holder = static_structure_holder
-                            .as_deref()
-                            .unwrap_or("?");
+                        let holder = static_structure_holder.as_deref().unwrap_or("?");
                         let structure = unit.structure(structure_id);
                         let Some(field) = structure
                             .fields
@@ -1059,11 +1049,7 @@ pub(crate) fn validate_project_with_scope_indexes(
             });
         }
 
-        unit_diagnostics.extend(validate_open_sql_sources(
-            project,
-            unit,
-            scope_index,
-        ));
+        unit_diagnostics.extend(validate_open_sql_sources(project, unit, scope_index));
         unit_diagnostics.extend(validate_open_sql_into_targets(unit, scope_index));
         unit_diagnostics.extend(constructor_diagnostics);
 

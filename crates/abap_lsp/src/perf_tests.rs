@@ -9,7 +9,7 @@ use lsp_types::{DidOpenTextDocumentParams, TextDocumentItem, Uri};
 use crate::{ServerState, publish_open_document, sem_tokens};
 
 const DEFAULT_SAMPLE_PATH: &str =
-    r"D:\dev\abap\lsp_development_examples\%2FSTTP%2FCL_MD_BPARTNER.abap";
+    r"D:\dev\abap\lsp_development_examples2\.abapls\cache\sources\%2FSTTP%2FCL_MD_BPARTNER.abap";
 const PERF_SAMPLE_URI: &str = "file:///semantic_tokens_perf_sample.abap";
 
 fn perf_sample_path() -> PathBuf {

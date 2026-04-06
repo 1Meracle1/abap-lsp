@@ -104,10 +104,14 @@ pub struct OpenDocumentOverlay {
 }
 
 pub fn load_manifest_from_workspace(root_path: &Path) -> Option<WorkspaceManifest> {
-    load_manifest_from_workspace_result(root_path).ok().flatten()
+    load_manifest_from_workspace_result(root_path)
+        .ok()
+        .flatten()
 }
 
-pub fn load_manifest_from_workspace_result(root_path: &Path) -> Result<Option<WorkspaceManifest>, String> {
+pub fn load_manifest_from_workspace_result(
+    root_path: &Path,
+) -> Result<Option<WorkspaceManifest>, String> {
     let manifest_path = root_path.join("abapls.toml");
     let text = match fs::read_to_string(&manifest_path) {
         Ok(text) => text,
@@ -116,7 +120,7 @@ pub fn load_manifest_from_workspace_result(root_path: &Path) -> Result<Option<Wo
             return Err(format!(
                 "failed to read {}: {error}",
                 manifest_path.display()
-            ))
+            ));
         }
     };
     let mut manifest: WorkspaceManifest = toml::from_str(&text)
@@ -194,7 +198,8 @@ pub fn manifest_supports_remote_resolution(manifest: Option<&WorkspaceManifest>)
     let Some(manifest) = manifest else {
         return false;
     };
-    normalize_dependency_mode(&manifest.resolution.dependency_mode) == DEPENDENCY_MODE_REMOTE_ON_DEMAND
+    normalize_dependency_mode(&manifest.resolution.dependency_mode)
+        == DEPENDENCY_MODE_REMOTE_ON_DEMAND
 }
 
 pub fn manifest_cache_dir(manifest: Option<&WorkspaceManifest>) -> &str {
@@ -281,10 +286,8 @@ pub fn is_remote_lookup_candidate(name: &str, kind: &str) -> bool {
         return true;
     }
 
-    matches!(
-        kind.trim().to_ascii_lowercase().as_str(),
-        "type" | "static"
-    ) && is_standard_remote_type_like_name(trimmed)
+    matches!(kind.trim().to_ascii_lowercase().as_str(), "type" | "static")
+        && is_standard_remote_type_like_name(trimmed)
 }
 
 fn is_standard_remote_type_like_name(name: &str) -> bool {
@@ -309,23 +312,22 @@ fn is_standard_remote_type_like_name(name: &str) -> bool {
 
 fn is_likely_local_identifier_style(lower: &str) -> bool {
     const LOCAL_PREFIXES: &[&str] = &[
-        "lv_", "ls_", "lt_", "lr_", "lo_", "li_", "lm_", "lx_", "lc_", "ld_",
-        "gv_", "gs_", "gt_", "gr_", "go_", "gi_", "gm_", "gx_", "gc_", "gd_",
-        "mv_", "ms_", "mt_", "mr_", "mo_", "mi_", "mm_", "mx_", "mc_", "md_",
-        "iv_", "is_", "it_", "ir_", "io_", "ii_", "im_", "ix_", "ic_", "id_",
-        "ev_", "es_", "et_", "er_", "eo_", "ei_", "em_", "ex_", "ec_", "ed_",
-        "rv_", "rs_", "rt_", "rr_", "ro_", "ri_", "rm_", "rx_", "rc_", "rd_",
-        "cv_", "cs_", "ct_", "cr_", "co_", "ci_", "cm_", "cc_", "cd_",
-        "sv_", "ss_", "st_", "sr_", "so_", "si_", "sm_", "sx_", "sc_", "sd_",
-        "tv_", "ts_", "tt_", "tr_", "to_", "ti_", "tm_", "tx_", "tc_", "td_",
-        "uv_", "us_", "ut_", "ur_", "uo_", "ui_", "um_", "ux_", "uc_", "ud_",
-        "wv_", "ws_", "wt_", "wr_", "wo_", "wi_", "wm_", "wx_", "wc_", "wd_",
-        "xv_", "xs_", "xt_", "xr_", "xo_", "xi_", "xm_", "xx_", "xc_", "xd_",
-        "yv_", "ys_", "yt_", "yr_", "yo_", "yi_", "ym_", "yx_", "yc_", "yd_",
-        "zv_", "zs_", "zt_", "zr_", "zo_", "zi_", "zm_", "zx_", "zc_", "zd_",
+        "lv_", "ls_", "lt_", "lr_", "lo_", "li_", "lm_", "lx_", "lc_", "ld_", "gv_", "gs_", "gt_",
+        "gr_", "go_", "gi_", "gm_", "gx_", "gc_", "gd_", "mv_", "ms_", "mt_", "mr_", "mo_", "mi_",
+        "mm_", "mx_", "mc_", "md_", "iv_", "is_", "it_", "ir_", "io_", "ii_", "im_", "ix_", "ic_",
+        "id_", "ev_", "es_", "et_", "er_", "eo_", "ei_", "em_", "ex_", "ec_", "ed_", "rv_", "rs_",
+        "rt_", "rr_", "ro_", "ri_", "rm_", "rx_", "rc_", "rd_", "cv_", "cs_", "ct_", "cr_", "co_",
+        "ci_", "cm_", "cc_", "cd_", "sv_", "ss_", "st_", "sr_", "so_", "si_", "sm_", "sx_", "sc_",
+        "sd_", "tv_", "ts_", "tt_", "tr_", "to_", "ti_", "tm_", "tx_", "tc_", "td_", "uv_", "us_",
+        "ut_", "ur_", "uo_", "ui_", "um_", "ux_", "uc_", "ud_", "wv_", "ws_", "wt_", "wr_", "wo_",
+        "wi_", "wm_", "wx_", "wc_", "wd_", "xv_", "xs_", "xt_", "xr_", "xo_", "xi_", "xm_", "xx_",
+        "xc_", "xd_", "yv_", "ys_", "yt_", "yr_", "yo_", "yi_", "ym_", "yx_", "yc_", "yd_", "zv_",
+        "zs_", "zt_", "zr_", "zo_", "zi_", "zm_", "zx_", "zc_", "zd_",
     ];
 
-    LOCAL_PREFIXES.iter().any(|prefix| lower.starts_with(prefix))
+    LOCAL_PREFIXES
+        .iter()
+        .any(|prefix| lower.starts_with(prefix))
 }
 
 fn collect_abap_sources(
@@ -418,12 +420,8 @@ fn collect_manifest_dependencies(
         };
 
         let text = if path.extension().and_then(|ext| ext.to_str()) == Some("xml") {
-            ddic_xml_to_abap_source(
-                unit.name.as_str(),
-                unit.kind.as_str(),
-                source_text.as_str(),
-            )
-            .unwrap_or(source_text)
+            ddic_xml_to_abap_source(unit.name.as_str(), unit.kind.as_str(), source_text.as_str())
+                .unwrap_or(source_text)
         } else {
             source_text
         };
@@ -445,7 +443,9 @@ fn collect_dependency_cache_files(
     seen: &mut HashSet<String>,
     documents: &mut Vec<WorkspaceDocument>,
 ) {
-    let dependencies_root = root_path.join(normalize_manifest_path(cache_dir)).join("dependencies");
+    let dependencies_root = root_path
+        .join(normalize_manifest_path(cache_dir))
+        .join("dependencies");
     if !dependencies_root.exists() {
         return;
     }
@@ -498,7 +498,8 @@ fn collect_dependency_cache_files(
                 .unwrap_or_else(String::new);
 
             let text = if extension == "xml" {
-                ddic_xml_to_abap_source(&object_name, &kind_hint, &source_text).unwrap_or(source_text)
+                ddic_xml_to_abap_source(&object_name, &kind_hint, &source_text)
+                    .unwrap_or(source_text)
             } else {
                 source_text
             };
@@ -514,11 +515,16 @@ fn collect_dependency_cache_files(
 }
 
 fn normalize_manifest_path(value: &str) -> String {
-    value.trim().replace('\\', "/").trim_start_matches("./").to_string()
+    value
+        .trim()
+        .replace('\\', "/")
+        .trim_start_matches("./")
+        .to_string()
 }
 
 fn normalize_manifest(manifest: &mut WorkspaceManifest) {
-    manifest.resolution.dependency_mode = normalize_dependency_mode(&manifest.resolution.dependency_mode).to_string();
+    manifest.resolution.dependency_mode =
+        normalize_dependency_mode(&manifest.resolution.dependency_mode).to_string();
     manifest.resolution.unknown_symbol_mode =
         normalize_unknown_symbol_mode(&manifest.resolution.unknown_symbol_mode).to_string();
     if manifest.resolution.cache_dir.trim().is_empty() {
@@ -543,7 +549,8 @@ fn percent_decode(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     let mut idx = 0;
     while idx < bytes.len() {
-        if bytes[idx] == b'%' && idx + 2 < bytes.len()
+        if bytes[idx] == b'%'
+            && idx + 2 < bytes.len()
             && let (Some(hi), Some(lo)) = (hex_value(bytes[idx + 1]), hex_value(bytes[idx + 2]))
         {
             out.push(char::from((hi << 4) | lo));
@@ -648,7 +655,13 @@ fn data_element_to_abap_source(object_name: &str, xml: &str) -> String {
 fn table_type_to_abap_source(object_name: &str, xml: &str) -> String {
     let line_type = first_tag_text(
         xml,
-        &["LINE_TYPE", "ROWTYPE", "DD40V-ROWTYPE", "ROLLNAME", "REFNAME"],
+        &[
+            "LINE_TYPE",
+            "ROWTYPE",
+            "DD40V-ROWTYPE",
+            "ROLLNAME",
+            "REFNAME",
+        ],
     )
     .unwrap_or_else(|| "string".to_string());
     format!(
@@ -661,7 +674,10 @@ fn table_type_to_abap_source(object_name: &str, xml: &str) -> String {
 fn structured_ddic_to_abap_source(object_name: &str, xml: &str) -> String {
     let fields = collect_ddic_fields(xml);
     if fields.is_empty() {
-        return format!("TYPES {name} TYPE string.\n", name = object_name.to_ascii_lowercase());
+        return format!(
+            "TYPES {name} TYPE string.\n",
+            name = object_name.to_ascii_lowercase()
+        );
     }
 
     let mut out = String::new();
@@ -750,7 +766,10 @@ fn collect_ddic_fields(xml: &str) -> Vec<DdicField> {
                 let Some(current) = current.as_mut() else {
                     continue;
                 };
-                let name = tag_stack.last().map(|tag| tag.as_slice()).unwrap_or_default();
+                let name = tag_stack
+                    .last()
+                    .map(|tag| tag.as_slice())
+                    .unwrap_or_default();
                 let value = text.decode().ok().map(Cow::into_owned).unwrap_or_default();
                 match name {
                     b"NAME" | b"FIELDNAME" | b"SCRTEXT_S" if current.name.is_empty() => {
@@ -782,7 +801,9 @@ fn collect_ddic_fields(xml: &str) -> Vec<DdicField> {
 
     let mut deduped = BTreeMap::<String, DdicField>::new();
     for field in fields {
-        deduped.entry(field.name.to_ascii_lowercase()).or_insert(field);
+        deduped
+            .entry(field.name.to_ascii_lowercase())
+            .or_insert(field);
     }
     deduped.into_values().collect()
 }
@@ -870,7 +891,10 @@ mod tests {
     #[test]
     fn parses_manifest_defaults() {
         let manifest: WorkspaceManifest = toml::from_str("version = 1\n").expect("manifest");
-        assert_eq!(manifest.resolution.unknown_symbol_mode, UNKNOWN_SYMBOL_MODE_REMOTE);
+        assert_eq!(
+            manifest.resolution.unknown_symbol_mode,
+            UNKNOWN_SYMBOL_MODE_REMOTE
+        );
         assert_eq!(manifest.resolution.remote_request_parallelism, 4);
     }
 
@@ -878,7 +902,11 @@ mod tests {
     fn converts_data_element_xml_to_type_alias() {
         let xml = "<root><DATATYPE>CHAR</DATATYPE></root>";
         let source = ddic_xml_to_abap_source("ZDEMO", "ddic-data-element", xml).expect("source");
-        assert!(source.to_ascii_lowercase().contains("types zdemo type string"));
+        assert!(
+            source
+                .to_ascii_lowercase()
+                .contains("types zdemo type string")
+        );
     }
 
     #[test]
@@ -934,8 +962,11 @@ unknown_symbol_mode = "log"
         let root = std::env::temp_dir().join("abap-lsp-invalid-manifest");
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).expect("root dir");
-        fs::write(root.join("abapls.toml"), "version = 1\n[[unit]]\nname = \"X\"[[unit]]\n")
-            .expect("manifest");
+        fs::write(
+            root.join("abapls.toml"),
+            "version = 1\n[[unit]]\nname = \"X\"[[unit]]\n",
+        )
+        .expect("manifest");
 
         let loaded = load_workspace_documents(&path_to_file_uri(&root), &HashMap::new());
         assert!(loaded.manifest.is_none());

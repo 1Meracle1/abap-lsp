@@ -72,9 +72,10 @@ ENDFORM.
         lv_refs
     );
     assert!(
-        !unit.diagnostics.iter().any(|d| {
-            d.kind == DiagnosticKind::UnresolvedReference && d.message.contains("lv")
-        }),
+        !unit
+            .diagnostics
+            .iter()
+            .any(|d| { d.kind == DiagnosticKind::UnresolvedReference && d.message.contains("lv") }),
         "unexpected unresolved lv: {:?}",
         unit.diagnostics
     );
@@ -509,8 +510,7 @@ ENDLOOP.
     );
     assert!(
         unit.diagnostics.iter().any(|d| {
-            d.kind == DiagnosticKind::UnresolvedReference
-                && d.message.contains("table_line")
+            d.kind == DiagnosticKind::UnresolvedReference && d.message.contains("table_line")
         }),
         "expected unknown symbol diagnostic for table_line, got {:?}",
         unit.diagnostics
@@ -1949,7 +1949,10 @@ START-OF-SELECTION.
         unit.field_accesses.iter().any(|access| {
             access.base_namespace == Namespace::Type
                 && access.base_name.as_ref() == "zcl_demo"
-                && access.field_path.iter().any(|s| s.name.as_ref() == "gc_s_tab")
+                && access
+                    .field_path
+                    .iter()
+                    .any(|s| s.name.as_ref() == "gc_s_tab")
                 && access.field_path.iter().any(|s| s.name.as_ref() == "p0")
         }),
         "expected static grouped-constants selector metadata, accesses={:?}",
@@ -3876,11 +3879,14 @@ ev3 = substring( val = iv_string len = 10 ).\n\
         })
         .collect();
     assert_eq!(substring_calls.len(), 3, "{:?}", substring_calls);
-    assert!(substring_calls.iter().all(|reference| {
-        matches!(reference.resolution, Some(Resolution::BuiltinRoutine))
-    }));
+    assert!(
+        substring_calls
+            .iter()
+            .all(|reference| { matches!(reference.resolution, Some(Resolution::BuiltinRoutine)) })
+    );
     assert!(!unit.diagnostics.iter().any(|diag| {
-        diag.kind == DiagnosticKind::InvalidBuiltinNamedArgument && diag.message.contains("substring")
+        diag.kind == DiagnosticKind::InvalidBuiltinNamedArgument
+            && diag.message.contains("substring")
     }));
     assert!(!unit.diagnostics.iter().any(|diag| {
         diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains("substring")
@@ -3904,7 +3910,8 @@ ev_characters = condense( val = ev_characters del = sv_null_char ).\n\
             && matches!(reference.resolution, Some(Resolution::BuiltinRoutine))
     }));
     assert!(!unit.diagnostics.iter().any(|diag| {
-        diag.kind == DiagnosticKind::InvalidBuiltinNamedArgument && diag.message.contains("condense")
+        diag.kind == DiagnosticKind::InvalidBuiltinNamedArgument
+            && diag.message.contains("condense")
     }));
     assert!(!unit.diagnostics.iter().any(|diag| {
         diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains("condense")
