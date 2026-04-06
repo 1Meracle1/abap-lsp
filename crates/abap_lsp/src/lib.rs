@@ -2,10 +2,15 @@
 mod perf_tests;
 pub(crate) mod sem_tokens;
 
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use abap_cache::{AnalysisSnapshot, DocumentStore};
-use abap_symbols::DiagnosticKind;
+use abap_cache::{
+    AnalysisSnapshot, DocumentInput, DocumentStore, OpenDocumentOverlay, UNKNOWN_SYMBOL_MODE_REMOTE,
+    WorkspaceManifest, is_remote_lookup_name, load_workspace_documents,
+    manifest_supports_remote_resolution, uri_starts_with_workspace,
+};
+use abap_symbols::{DiagnosticKind, ReferenceKind, SqlResolution};
 use lsp_types::{
     CompletionItem, CompletionItemKind, CompletionOptions, Diagnostic, DiagnosticSeverity,
     Documentation, GotoDefinitionResponse, Hover, HoverContents, HoverProviderCapability,
@@ -31,13 +36,24 @@ pub const DEPENDENCY_CACHE_CLEARED: &str = "abapls/dependencyCacheCleared";
 #[derive(Debug)]
 pub struct ServerState {
     pub cache: DocumentStore,
+    pub workspaces: HashMap<String, WorkspaceState>,
     pub shutdown_requested: bool,
+}
+
+#[derive(Debug)]
+pub struct WorkspaceState {
+    pub root_uri: String,
+    pub cache: DocumentStore,
+    pub manifest: Option<WorkspaceManifest>,
+    pub open_documents: HashMap<String, OpenDocumentOverlay>,
+    pub remote_resolution_seen: HashSet<String>,
 }
 
 impl Default for ServerState {
     fn default() -> Self {
         Self {
             cache: DocumentStore::default(),
+            workspaces: HashMap::new(),
             shutdown_requested: false,
         }
     }
@@ -55,6 +71,44 @@ impl Default for ServerConfig {
             name: "abap-lsp-rs",
             version: env!("CARGO_PKG_VERSION"),
         }
+    }
+}
+
+impl WorkspaceState {
+    pub fn new(root_uri: impl Into<String>) -> Self {
+        Self {
+            root_uri: root_uri.into(),
+            cache: DocumentStore::default(),
+            manifest: None,
+            open_documents: HashMap::new(),
+            remote_resolution_seen: HashSet::new(),
+        }
+    }
+}
+
+impl ServerState {
+    pub fn register_workspace_folder(&mut self, root_uri: impl Into<String>) {
+        let root_uri = normalize_lsp_uri(&root_uri.into());
+        self.workspaces
+            .entry(root_uri.clone())
+            .or_insert_with(|| WorkspaceState::new(root_uri));
+    }
+
+    pub fn workspace_for_uri(&self, uri: &str) -> Option<&WorkspaceState> {
+        self.workspaces
+            .values()
+            .filter(|workspace| uri_starts_with_workspace(uri, &workspace.root_uri))
+            .max_by_key(|workspace| workspace.root_uri.len())
+    }
+
+    pub fn workspace_for_uri_mut(&mut self, uri: &str) -> Option<&mut WorkspaceState> {
+        let key = self
+            .workspaces
+            .values()
+            .filter(|workspace| uri_starts_with_workspace(uri, &workspace.root_uri))
+            .max_by_key(|workspace| workspace.root_uri.len())
+            .map(|workspace| workspace.root_uri.clone())?;
+        self.workspaces.get_mut(&key)
     }
 }
 
@@ -122,16 +176,74 @@ pub fn normalize_lsp_uri(raw: &str) -> String {
     raw.to_owned()
 }
 
+fn cache_for_uri<'a>(state: &'a ServerState, uri: &str) -> &'a DocumentStore {
+    state
+        .workspace_for_uri(uri)
+        .map(|workspace| &workspace.cache)
+        .unwrap_or(&state.cache)
+}
+
+fn snapshot_for_uri(state: &ServerState, uri: &str) -> Option<Arc<AnalysisSnapshot>> {
+    cache_for_uri(state, uri).get(uri)
+}
+
+fn rebuild_workspace_cache(
+    workspace: &mut WorkspaceState,
+) -> HashMap<Arc<str>, Arc<AnalysisSnapshot>> {
+    let loaded = load_workspace_documents(&workspace.root_uri, &workspace.open_documents);
+    workspace.manifest = loaded.manifest.clone();
+    let inputs: Vec<_> = loaded
+        .documents
+        .into_iter()
+        .map(|document| DocumentInput {
+            uri: document.uri,
+            version: document.version,
+            text: Arc::from(document.text),
+        })
+        .collect();
+    workspace.cache.replace_all(inputs)
+}
+
+fn remote_candidate_key(candidate: &RemoteDependencyCandidate) -> String {
+    format!(
+        "{}:{}",
+        candidate.kind.trim().to_ascii_lowercase(),
+        candidate.name.trim().to_ascii_lowercase()
+    )
+}
+
 pub fn publish_open_document(
     state: &ServerState,
     params: &DidOpenTextDocumentParams,
 ) -> Arc<AnalysisSnapshot> {
     let uri = normalize_lsp_uri(params.text_document.uri.as_str());
-    state.cache.publish(
-        uri,
-        params.text_document.version,
-        &params.text_document.text,
-    )
+    state
+        .cache
+        .publish(uri, params.text_document.version, &params.text_document.text)
+}
+
+pub fn publish_open_document_mut(
+    state: &mut ServerState,
+    params: &DidOpenTextDocumentParams,
+) -> Arc<AnalysisSnapshot> {
+    let uri = normalize_lsp_uri(params.text_document.uri.as_str());
+    if let Some(workspace) = state.workspace_for_uri_mut(&uri) {
+        workspace.open_documents.insert(
+            uri.clone(),
+            OpenDocumentOverlay {
+                version: params.text_document.version,
+                text: Arc::from(params.text_document.text.as_str()),
+            },
+        );
+        let snapshots = rebuild_workspace_cache(workspace);
+        return snapshots
+            .get(uri.as_str())
+            .cloned()
+            .expect("opened workspace document should exist after rebuild");
+    }
+    state
+        .cache
+        .publish(uri, params.text_document.version, &params.text_document.text)
 }
 
 pub fn publish_changed_document(
@@ -140,11 +252,195 @@ pub fn publish_changed_document(
 ) -> Option<Arc<AnalysisSnapshot>> {
     let change = params.content_changes.last()?;
     let uri = normalize_lsp_uri(params.text_document.uri.as_str());
-    Some(
-        state
-            .cache
-            .publish(uri, params.text_document.version, &change.text),
-    )
+    Some(state.cache.publish(uri, params.text_document.version, &change.text))
+}
+
+pub fn publish_changed_document_mut(
+    state: &mut ServerState,
+    params: &DidChangeTextDocumentParams,
+) -> Option<Arc<AnalysisSnapshot>> {
+    let change = params.content_changes.last()?;
+    let uri = normalize_lsp_uri(params.text_document.uri.as_str());
+    if let Some(workspace) = state.workspace_for_uri_mut(&uri) {
+        workspace.open_documents.insert(
+            uri.clone(),
+            OpenDocumentOverlay {
+                version: params.text_document.version,
+                text: Arc::from(change.text.as_str()),
+            },
+        );
+        let snapshots = rebuild_workspace_cache(workspace);
+        return snapshots.get(uri.as_str()).cloned();
+    }
+    Some(state.cache.publish(uri, params.text_document.version, &change.text))
+}
+
+pub fn refresh_workspace(state: &mut ServerState, workspace_uri: &str) -> Vec<Arc<AnalysisSnapshot>> {
+    let workspace_uri = normalize_lsp_uri(workspace_uri);
+    let Some(workspace) = state.workspaces.get_mut(&workspace_uri) else {
+        return Vec::new();
+    };
+    rebuild_workspace_cache(workspace).into_values().collect()
+}
+
+pub fn handle_workspace_manifest_updated(
+    state: &mut ServerState,
+    params: &WorkspaceManifestUpdatedParams,
+) -> Vec<Arc<AnalysisSnapshot>> {
+    refresh_workspace(state, &params.workspace_uri)
+}
+
+pub fn handle_dependency_cache_cleared(
+    state: &mut ServerState,
+    params: &WorkspaceManifestUpdatedParams,
+) {
+    let workspace_uri = normalize_lsp_uri(&params.workspace_uri);
+    if let Some(workspace) = state.workspaces.get_mut(&workspace_uri) {
+        workspace.remote_resolution_seen.clear();
+    }
+}
+
+pub fn handle_remote_dependencies_updated(
+    state: &mut ServerState,
+    params: &RemoteDependenciesUpdatedParams,
+) -> Vec<Arc<AnalysisSnapshot>> {
+    refresh_workspace(state, &params.workspace_uri)
+}
+
+pub fn collect_remote_dependency_candidates(snapshot: &AnalysisSnapshot) -> Vec<RemoteDependencyCandidate> {
+    let mut deduped = HashMap::<String, RemoteDependencyCandidate>::new();
+
+    for reference in &snapshot.symbols.references {
+        if reference.resolution.is_some() || !is_remote_lookup_name(reference.name.as_ref()) {
+            continue;
+        }
+        let kind = match reference.kind {
+            ReferenceKind::Include => "include",
+            ReferenceKind::StaticTarget => "static",
+            ReferenceKind::TypeRef => "type",
+            ReferenceKind::Identifier | ReferenceKind::RoutineCall => "symbol",
+        };
+        insert_remote_candidate(
+            &mut deduped,
+            RemoteDependencyCandidate {
+                name: reference.name.to_string(),
+                kind: kind.to_string(),
+            },
+        );
+    }
+
+    for sql_ref in &snapshot.symbols.sql_name_refs {
+        if sql_ref.kind == abap_symbols::SqlNameRefKind::Source
+            && sql_ref.resolution == SqlResolution::External
+            && is_remote_lookup_name(sql_ref.name.as_ref())
+        {
+            insert_remote_candidate(
+                &mut deduped,
+                RemoteDependencyCandidate {
+                    name: sql_ref.name.to_string(),
+                    kind: "type".to_string(),
+                },
+            );
+        }
+    }
+
+    deduped.into_values().collect()
+}
+
+fn insert_remote_candidate(
+    deduped: &mut HashMap<String, RemoteDependencyCandidate>,
+    candidate: RemoteDependencyCandidate,
+) {
+    let normalized_name = candidate.name.trim().to_ascii_lowercase();
+    if normalized_name.is_empty() {
+        return;
+    }
+    let priority = remote_candidate_kind_priority(&candidate.kind);
+    match deduped.get(&normalized_name) {
+        Some(existing) if remote_candidate_kind_priority(&existing.kind) >= priority => {}
+        _ => {
+            deduped.insert(
+                normalized_name.clone(),
+                RemoteDependencyCandidate {
+                    name: normalized_name,
+                    kind: candidate.kind.trim().to_ascii_lowercase(),
+                },
+            );
+        }
+    }
+}
+
+fn remote_candidate_kind_priority(kind: &str) -> usize {
+    match kind.trim().to_ascii_lowercase().as_str() {
+        "include" => 4,
+        "static" => 3,
+        "type" => 2,
+        _ => 1,
+    }
+}
+
+pub fn build_remote_dependency_request(
+    state: &mut ServerState,
+    source_uri: &str,
+) -> Option<RemoteDependencyResolveParams> {
+    let source_uri = normalize_lsp_uri(source_uri);
+    let workspace = state.workspace_for_uri_mut(&source_uri)?;
+    if !manifest_supports_remote_resolution(workspace.manifest.as_ref()) {
+        return None;
+    }
+    let snapshot = workspace.cache.get(&source_uri)?;
+    if !snapshot.parse.errors.is_empty() {
+        return None;
+    }
+
+    let mut candidates = Vec::new();
+    for candidate in collect_remote_dependency_candidates(snapshot.as_ref()) {
+        let key = remote_candidate_key(&candidate);
+        if workspace.remote_resolution_seen.insert(key) {
+            candidates.push(candidate);
+        }
+    }
+    if candidates.is_empty() {
+        return None;
+    }
+
+    Some(RemoteDependencyResolveParams {
+        workspace_uri: workspace.root_uri.clone(),
+        source_uri,
+        unknown_symbol_mode: workspace
+            .manifest
+            .as_ref()
+            .map(|manifest| manifest.resolution.unknown_symbol_mode.clone())
+            .or(Some(UNKNOWN_SYMBOL_MODE_REMOTE.to_string())),
+        remote_request_parallelism: workspace
+            .manifest
+            .as_ref()
+            .map(|manifest| manifest.resolution.remote_request_parallelism),
+        remote_requests_per_second: workspace
+            .manifest
+            .as_ref()
+            .map(|manifest| manifest.resolution.remote_requests_per_second),
+        candidates,
+    })
+}
+
+pub fn build_remote_dependency_requests_for_workspace(
+    state: &mut ServerState,
+    workspace_uri: &str,
+) -> Vec<RemoteDependencyResolveParams> {
+    let workspace_uri = normalize_lsp_uri(workspace_uri);
+    let Some(workspace) = state.workspaces.get(&workspace_uri) else {
+        return Vec::new();
+    };
+    let mut uris = workspace.cache.uris();
+    uris.sort();
+    let mut requests = Vec::new();
+    for uri in uris {
+        if let Some(request) = build_remote_dependency_request(state, uri.as_ref()) {
+            requests.push(request);
+        }
+    }
+    requests
 }
 
 fn semantic_diagnostic_severity(kind: DiagnosticKind) -> DiagnosticSeverity {
@@ -232,7 +528,7 @@ pub fn hover(state: &ServerState, params: &HoverParams) -> Option<Hover> {
             .uri
             .as_str(),
     );
-    let snapshot = state.cache.get(&uri)?;
+    let snapshot = snapshot_for_uri(state, &uri)?;
     let offset = position_to_offset(
         snapshot.text.as_ref(),
         params.text_document_position_params.position,
@@ -264,7 +560,7 @@ pub fn definition(
             .uri
             .as_str(),
     );
-    let snapshot = state.cache.get(&uri)?;
+    let snapshot = snapshot_for_uri(state, &uri)?;
     let offset = position_to_offset(
         snapshot.text.as_ref(),
         params.text_document_position_params.position,
@@ -273,7 +569,7 @@ pub fn definition(
     let target_snapshot = if target.uri.as_ref() == snapshot.uri.as_ref() {
         Arc::clone(&snapshot)
     } else {
-        state.cache.get(target.uri.as_ref())?
+        snapshot_for_uri(state, target.uri.as_ref())?
     };
     let uri: Uri = target
         .uri
@@ -286,20 +582,18 @@ pub fn definition(
 
 pub fn references(state: &ServerState, params: &ReferenceParams) -> Option<Vec<Location>> {
     let uri = normalize_lsp_uri(params.text_document_position.text_document.uri.as_str());
-    let snapshot = state.cache.get(&uri)?;
+    let snapshot = snapshot_for_uri(state, &uri)?;
     let offset = position_to_offset(
         snapshot.text.as_ref(),
         params.text_document_position.position,
     )?;
-    let references = state
-        .cache
-        .references(&uri, offset, params.context.include_declaration)?;
+    let references = cache_for_uri(state, &uri).references(&uri, offset, params.context.include_declaration)?;
     let mut locations = Vec::with_capacity(references.len());
     for reference in references {
         let target_snapshot = if reference.uri.as_ref() == snapshot.uri.as_ref() {
             Arc::clone(&snapshot)
         } else {
-            state.cache.get(reference.uri.as_ref())?
+            snapshot_for_uri(state, reference.uri.as_ref())?
         };
         let uri: Uri = reference
             .uri
@@ -405,7 +699,7 @@ fn structured_field_hover(
 
 pub fn completion(state: &ServerState, params: &CompletionParams) -> Option<CompletionResponse> {
     let uri = normalize_lsp_uri(params.text_document_position.text_document.uri.as_str());
-    let snapshot = state.cache.get(&uri)?;
+    let snapshot = snapshot_for_uri(state, &uri)?;
     let offset = position_to_offset(
         snapshot.text.as_ref(),
         params.text_document_position.position,
@@ -445,7 +739,7 @@ pub fn semantic_tokens(
     params: &SemanticTokensParams,
 ) -> Option<SemanticTokens> {
     let uri = normalize_lsp_uri(params.text_document.uri.as_str());
-    let snapshot = state.cache.get(&uri)?;
+    let snapshot = snapshot_for_uri(state, &uri)?;
     Some(sem_tokens::build_semantic_tokens(snapshot.as_ref()))
 }
 
@@ -589,7 +883,11 @@ fn completion_item_metadata(
 
 #[cfg(test)]
 mod tests {
+    use abap_cache::path_to_file_uri;
+    use std::fs;
+    use std::path::PathBuf;
     use std::str::FromStr;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     use lsp_types::{
         DidChangeTextDocumentParams, DidOpenTextDocumentParams, Documentation,
@@ -600,13 +898,26 @@ mod tests {
 
     use crate::sem_tokens;
 
-    use super::{
-        CompletionParams, CompletionResponse, DEPENDENCY_CACHE_CLEARED, GotoDefinitionParams,
-        HoverParams, REMOTE_DEPENDENCIES_UPDATED, RESOLVE_REMOTE_DEPENDENCIES, ReferenceParams,
-        ServerState, WORKSPACE_MANIFEST_UPDATED, build_lsp_diagnostics, completion, definition,
-        hover, initialize_result, normalize_lsp_uri, publish_changed_document,
-        publish_open_document, references,
-    };
+      use super::{
+          CompletionParams, CompletionResponse, DEPENDENCY_CACHE_CLEARED, GotoDefinitionParams,
+          HoverParams, REMOTE_DEPENDENCIES_UPDATED, RESOLVE_REMOTE_DEPENDENCIES, ReferenceParams,
+          ServerState, WORKSPACE_MANIFEST_UPDATED, WorkspaceManifestUpdatedParams,
+          build_lsp_diagnostics, completion, definition, build_remote_dependency_request,
+          build_remote_dependency_requests_for_workspace, handle_dependency_cache_cleared,
+          handle_remote_dependencies_updated, handle_workspace_manifest_updated, hover,
+          initialize_result, normalize_lsp_uri, publish_changed_document, publish_open_document,
+          publish_open_document_mut, references,
+      };
+
+    fn temp_workspace_path(name: &str) -> PathBuf {
+        let mut path = std::env::temp_dir();
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time")
+            .as_nanos();
+        path.push(format!("abap_lsp_{name}_{unique}"));
+        path
+    }
 
     fn semantic_token_type_at(
         tokens: &lsp_types::SemanticTokens,
@@ -1252,6 +1563,223 @@ ENDCLASS.";
             "abapls/workspaceManifestUpdated"
         );
         assert_eq!(DEPENDENCY_CACHE_CLEARED, "abapls/dependencyCacheCleared");
+    }
+
+    #[test]
+    fn remote_dependency_request_is_suppressed_by_syntax_errors() {
+        let workspace_path = temp_workspace_path("syntax_gate");
+        fs::create_dir_all(&workspace_path).expect("workspace dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[resolution]
+dependency_mode = "remote-on-demand"
+unknown_symbol_mode = "remote"
+"#,
+        )
+        .expect("manifest");
+        let workspace_uri = path_to_file_uri(&workspace_path);
+
+        let mut state = ServerState::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        publish_open_document_mut(
+            &mut state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str(&format!("{workspace_uri}/main.abap")).expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: "DATA lv_before TYPE i\nDATA lv_after TYPE zcl_remote_demo.".to_string(),
+                },
+            },
+        );
+
+        assert!(build_remote_dependency_request(&mut state, &format!("{workspace_uri}/main.abap")).is_none());
+
+        let _ = fs::remove_dir_all(&workspace_path);
+    }
+
+    #[test]
+    fn workspace_manifest_refresh_enables_remote_dependency_requests() {
+        let workspace_path = temp_workspace_path("manifest_refresh");
+        fs::create_dir_all(&workspace_path).expect("workspace dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[resolution]
+dependency_mode = "remote-on-demand"
+unknown_symbol_mode = "remote"
+"#,
+        )
+        .expect("manifest");
+        let workspace_uri = path_to_file_uri(&workspace_path);
+
+        let mut state = ServerState::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        publish_open_document_mut(
+            &mut state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str(&format!("{workspace_uri}/main.abap")).expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: "DATA lo_demo TYPE REF TO zcl_remote_demo.\nlo_demo = zcl_remote_demo=>create( ).".to_string(),
+                },
+            },
+        );
+
+        let request = build_remote_dependency_request(&mut state, &format!("{workspace_uri}/main.abap"))
+            .expect("remote request");
+        assert!(request.candidates.iter().any(|candidate| candidate.name == "zcl_remote_demo"));
+
+        handle_dependency_cache_cleared(
+            &mut state,
+            &WorkspaceManifestUpdatedParams {
+                workspace_uri: workspace_uri.clone(),
+            },
+        );
+        handle_workspace_manifest_updated(
+            &mut state,
+            &WorkspaceManifestUpdatedParams {
+                workspace_uri: workspace_uri.clone(),
+            },
+        );
+        let request = build_remote_dependency_request(&mut state, &format!("{workspace_uri}/main.abap"))
+            .expect("remote request after cache clear");
+        assert!(request.candidates.iter().any(|candidate| candidate.kind == "static"));
+
+        let _ = fs::remove_dir_all(&workspace_path);
+    }
+
+    #[test]
+    fn refreshed_dependency_files_can_trigger_follow_up_remote_requests() {
+        let workspace_path = temp_workspace_path("dependency_of_dependency");
+        let dependency_dir = workspace_path.join(".abapls").join("cache").join("dependencies").join("global-class");
+        fs::create_dir_all(&workspace_path).expect("workspace dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[resolution]
+dependency_mode = "remote-on-demand"
+unknown_symbol_mode = "remote"
+"#,
+        )
+        .expect("manifest");
+        let workspace_uri = path_to_file_uri(&workspace_path);
+
+        let mut state = ServerState::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        publish_open_document_mut(
+            &mut state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str(&format!("{workspace_uri}/main.abap")).expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: "DATA lo_demo TYPE REF TO zcl_first.\nlo_demo = zcl_first=>create( ).".to_string(),
+                },
+            },
+        );
+
+        let initial = build_remote_dependency_request(&mut state, &format!("{workspace_uri}/main.abap"))
+            .expect("initial request");
+        assert!(initial.candidates.iter().any(|candidate| candidate.name == "zcl_first"));
+
+        fs::create_dir_all(&dependency_dir).expect("dependency dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[resolution]
+dependency_mode = "remote-on-demand"
+unknown_symbol_mode = "remote"
+
+[[unit]]
+name = "ZCL_FIRST"
+kind = "global-class"
+root_file = ".abapls/cache/dependencies/global-class/ZCL_FIRST.abap"
+adt_uri = "/sap/bc/adt/oo/classes/zcl_first"
+
+[[unit.member]]
+role = "dependency"
+file = ".abapls/cache/dependencies/global-class/ZCL_FIRST.abap"
+object_name = "ZCL_FIRST"
+adt_uri = "/sap/bc/adt/oo/classes/zcl_first"
+"#,
+        )
+        .expect("updated manifest");
+        fs::write(
+            dependency_dir.join("ZCL_FIRST.abap"),
+            "CLASS zcl_first DEFINITION.\n  PUBLIC SECTION.\n    CLASS-METHODS create RETURNING VALUE(ro_inst) TYPE REF TO zcl_second.\nENDCLASS.\nCLASS zcl_first IMPLEMENTATION.\n  METHOD create.\n  ENDMETHOD.\nENDCLASS.\n",
+        )
+        .expect("dependency file");
+
+        let _ = handle_remote_dependencies_updated(
+            &mut state,
+            &super::RemoteDependenciesUpdatedParams {
+                workspace_uri: workspace_uri.clone(),
+                source_uri: format!("{workspace_uri}/main.abap"),
+                fetched: vec!["ZCL_FIRST".to_string()],
+            },
+        );
+
+        let follow_up = build_remote_dependency_requests_for_workspace(&mut state, &workspace_uri);
+        assert!(follow_up.iter().any(|request| {
+            request.source_uri.ends_with("ZCL_FIRST.abap")
+                && request.candidates.iter().any(|candidate| candidate.name == "zcl_second")
+        }));
+
+        let _ = fs::remove_dir_all(&workspace_path);
+    }
+
+    #[test]
+    fn dependency_cache_files_are_loaded_even_without_manifest_unit_entries() {
+        let workspace_path = temp_workspace_path("dependency_cache_scan");
+        let dependency_dir = workspace_path.join(".abapls").join("cache").join("dependencies").join("ddic-structure");
+        fs::create_dir_all(&dependency_dir).expect("dependency dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[resolution]
+dependency_mode = "remote-on-demand"
+unknown_symbol_mode = "remote"
+"#,
+        )
+        .expect("manifest");
+        fs::write(
+            dependency_dir.join("ZATTP_S_EU_NOTIF_32_JSON.xml"),
+            r#"<root><elementInfo name="PAYLOAD" datatype="CHAR" /></root>"#,
+        )
+        .expect("xml");
+        let workspace_uri = path_to_file_uri(&workspace_path);
+
+        let mut state = ServerState::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        let snapshot = publish_open_document_mut(
+            &mut state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str(&format!("{workspace_uri}/main.abap")).expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: "DATA ls_payload TYPE zattp_s_eu_notif_32_json.".to_string(),
+                },
+            },
+        );
+
+        let diagnostics = build_lsp_diagnostics(&snapshot);
+        assert!(!diagnostics.iter().any(|diag| diag.message.contains("unknown type")));
+
+        let _ = fs::remove_dir_all(&workspace_path);
     }
 
     #[test]

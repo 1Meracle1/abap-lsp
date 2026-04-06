@@ -3,16 +3,46 @@ use std::net::{SocketAddr, TcpListener};
 
 use abap_jsonrpc::{JSON_RPC_VERSION, Response, read_frame, write_frame};
 use abap_lsp::{
-    CompletionParams, DidChangeTextDocumentParams, DidOpenTextDocumentParams, GotoDefinitionParams,
-    HoverParams, ReferenceParams, SemanticTokensParams, ServerConfig, ServerState, completion,
-    definition, hover, initialize_result, publish_changed_document, publish_diagnostics_params,
-    publish_open_document, references, semantic_tokens,
+    CompletionParams, DEPENDENCY_CACHE_CLEARED, DidChangeTextDocumentParams,
+    DidOpenTextDocumentParams, GotoDefinitionParams, HoverParams, REMOTE_DEPENDENCIES_UPDATED,
+    RESOLVE_REMOTE_DEPENDENCIES, ReferenceParams, SemanticTokensParams, ServerConfig, ServerState,
+    WORKSPACE_MANIFEST_UPDATED, WorkspaceManifestUpdatedParams, build_remote_dependency_request,
+    build_remote_dependency_requests_for_workspace, completion, definition,
+    handle_dependency_cache_cleared, handle_remote_dependencies_updated,
+    handle_workspace_manifest_updated, hover, initialize_result, publish_changed_document_mut,
+    publish_diagnostics_params, publish_open_document_mut, references, semantic_tokens,
 };
 use serde_json::{Value, json};
 use tracing::warn;
 
 const METHOD_NOT_FOUND: i64 = -32601;
 const INVALID_REQUEST: i64 = -32600;
+
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct InitializeParamsLite {
+    #[serde(default)]
+    workspace_folders: Vec<WorkspaceFolderLite>,
+    capabilities: InitializeCapabilitiesLite,
+}
+
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkspaceFolderLite {
+    uri: String,
+}
+
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct InitializeCapabilitiesLite {
+    window: WindowCapabilitiesLite,
+}
+
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WindowCapabilitiesLite {
+    work_done_progress: Option<bool>,
+}
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt()
@@ -73,6 +103,7 @@ fn serve(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut state = ServerState::default();
     let config = ServerConfig::default();
+    let mut next_outgoing_request_id = 1_i64;
 
     while let Some(frame) = read_frame(reader)? {
         let message: Value = serde_json::from_slice(&frame)?;
@@ -80,6 +111,45 @@ fn serve(
             .get("method")
             .and_then(Value::as_str)
             .map(str::to_owned);
+        if method.as_deref() == Some(REMOTE_DEPENDENCIES_UPDATED) {
+            if let Some(params) = parse_params::<abap_lsp::RemoteDependenciesUpdatedParams>(&message)? {
+                let token = format!("abapls-remote-refresh-{}", next_outgoing_request_id);
+                send_workspace_progress_begin(
+                    writer,
+                    next_outgoing_request_id,
+                    &token,
+                    "ABAP: refreshing after remote dependencies",
+                    "Reloading workspace and re-analyzing files",
+                )?;
+                next_outgoing_request_id += 1;
+                let snapshots = handle_remote_dependencies_updated(&mut state, &params);
+                let total = snapshots.len().max(1);
+                for (idx, snapshot) in snapshots.iter().enumerate() {
+                    let percent = (((idx + 1) * 100) / total) as u32;
+                    send_workspace_progress_report(
+                        writer,
+                        &token,
+                        &format!("Processed {}/{} files", idx + 1, total),
+                        Some(percent),
+                    )?;
+                    if !params.source_uri.is_empty()
+                        && snapshot.uri.as_ref() == abap_lsp::normalize_lsp_uri(&params.source_uri)
+                    {
+                        let params_value = serde_json::to_value(publish_diagnostics_params(snapshot))?;
+                        send_notification(writer, "textDocument/publishDiagnostics", params_value)?;
+                    }
+                }
+                for request in build_remote_dependency_requests_for_workspace(&mut state, &params.workspace_uri) {
+                    send_notification(
+                        writer,
+                        RESOLVE_REMOTE_DEPENDENCIES,
+                        serde_json::to_value(request)?,
+                    )?;
+                }
+                send_workspace_progress_end(writer, &token, "Remote dependency refresh complete")?;
+            }
+            continue;
+        }
         let handled = handle_message(&mut state, &config, message)?;
         for (method, params) in handled.notifications {
             send_notification(writer, &method, params)?;
@@ -124,6 +194,88 @@ fn send_notification(
     Ok(())
 }
 
+fn send_request(
+    writer: &mut impl Write,
+    id: i64,
+    method: &str,
+    params: Value,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let payload = serde_json::to_vec(&json!({
+        "jsonrpc": JSON_RPC_VERSION,
+        "id": id,
+        "method": method,
+        "params": params,
+    }))?;
+    write_frame(writer, &payload)?;
+    Ok(())
+}
+
+fn send_workspace_progress_begin(
+    writer: &mut impl Write,
+    request_id: i64,
+    token: &str,
+    title: &str,
+    message: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    send_request(
+        writer,
+        request_id,
+        "window/workDoneProgress/create",
+        json!({ "token": token }),
+    )?;
+    send_notification(
+        writer,
+        "$/progress",
+        json!({
+            "token": token,
+            "value": {
+                "kind": "begin",
+                "title": title,
+                "message": message,
+                "cancellable": false,
+            }
+        }),
+    )
+}
+
+fn send_workspace_progress_report(
+    writer: &mut impl Write,
+    token: &str,
+    message: &str,
+    percentage: Option<u32>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    send_notification(
+        writer,
+        "$/progress",
+        json!({
+            "token": token,
+            "value": {
+                "kind": "report",
+                "message": message,
+                "percentage": percentage,
+            }
+        }),
+    )
+}
+
+fn send_workspace_progress_end(
+    writer: &mut impl Write,
+    token: &str,
+    message: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    send_notification(
+        writer,
+        "$/progress",
+        json!({
+            "token": token,
+            "value": {
+                "kind": "end",
+                "message": message,
+            }
+        }),
+    )
+}
+
 struct HandledMessage {
     response: Option<Response>,
     notifications: Vec<(String, Value)>,
@@ -138,6 +290,13 @@ fn handle_message(
     let id = message.get("id").cloned();
     match method {
         Some("initialize") => {
+            if let Some(params) = parse_params::<InitializeParamsLite>(&message)? {
+                for workspace in params.workspace_folders {
+                    if !workspace.uri.is_empty() {
+                        state.register_workspace_folder(workspace.uri);
+                    }
+                }
+            }
             let result = serde_json::to_value(initialize_result(config))?;
             Ok(HandledMessage {
                 response: Some(Response::success(id.unwrap_or(Value::Null), result)),
@@ -154,9 +313,15 @@ fn handle_message(
         Some("textDocument/didOpen") => {
             let mut notifications = Vec::new();
             if let Some(params) = parse_params::<DidOpenTextDocumentParams>(&message)? {
-                let snapshot = publish_open_document(state, &params);
+                let snapshot = publish_open_document_mut(state, &params);
                 let params_value = serde_json::to_value(publish_diagnostics_params(&snapshot))?;
                 notifications.push(("textDocument/publishDiagnostics".to_owned(), params_value));
+                if let Some(request) = build_remote_dependency_request(state, snapshot.uri.as_ref()) {
+                    notifications.push((
+                        RESOLVE_REMOTE_DEPENDENCIES.to_owned(),
+                        serde_json::to_value(request)?,
+                    ));
+                }
             }
             Ok(HandledMessage {
                 response: None,
@@ -166,10 +331,16 @@ fn handle_message(
         Some("textDocument/didChange") => {
             let mut notifications = Vec::new();
             if let Some(params) = parse_params::<DidChangeTextDocumentParams>(&message)? {
-                if let Some(snapshot) = publish_changed_document(state, &params) {
+                if let Some(snapshot) = publish_changed_document_mut(state, &params) {
                     let params_value = serde_json::to_value(publish_diagnostics_params(&snapshot))?;
                     notifications
                         .push(("textDocument/publishDiagnostics".to_owned(), params_value));
+                    if let Some(request) = build_remote_dependency_request(state, snapshot.uri.as_ref()) {
+                        notifications.push((
+                            RESOLVE_REMOTE_DEPENDENCIES.to_owned(),
+                            serde_json::to_value(request)?,
+                        ));
+                    }
                 }
             }
             Ok(HandledMessage {
@@ -177,6 +348,28 @@ fn handle_message(
                 notifications,
             })
         }
+        Some(WORKSPACE_MANIFEST_UPDATED) => {
+            if let Some(params) = parse_params::<WorkspaceManifestUpdatedParams>(&message)? {
+                let _ = handle_workspace_manifest_updated(state, &params);
+            }
+            Ok(HandledMessage {
+                response: None,
+                notifications: Vec::new(),
+            })
+        }
+        Some(DEPENDENCY_CACHE_CLEARED) => {
+            if let Some(params) = parse_params::<WorkspaceManifestUpdatedParams>(&message)? {
+                handle_dependency_cache_cleared(state, &params);
+            }
+            Ok(HandledMessage {
+                response: None,
+                notifications: Vec::new(),
+            })
+        }
+        Some(REMOTE_DEPENDENCIES_UPDATED) => Ok(HandledMessage {
+            response: None,
+            notifications: Vec::new(),
+        }),
         Some("textDocument/hover") => {
             let Some(hover_params) = parse_params::<HoverParams>(&message)? else {
                 return Ok(HandledMessage {

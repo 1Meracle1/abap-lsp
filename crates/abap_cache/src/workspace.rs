@@ -1,0 +1,822 @@
+use std::borrow::Cow;
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use quick_xml::Reader;
+use quick_xml::events::{BytesStart, Event};
+use serde::Deserialize;
+
+pub const DEPENDENCY_MODE_REMOTE_ON_DEMAND: &str = "remote-on-demand";
+pub const DEPENDENCY_MODE_LOCAL_FIRST: &str = "local-first";
+pub const UNKNOWN_SYMBOL_MODE_REMOTE: &str = "remote";
+pub const UNKNOWN_SYMBOL_MODE_LOG: &str = "log";
+pub const DEFAULT_REMOTE_REQUEST_PARALLELISM: usize = 4;
+pub const DEFAULT_REMOTE_REQUESTS_PER_SECOND: usize = 8;
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct WorkspaceManifest {
+    #[serde(default = "default_manifest_version")]
+    pub version: i64,
+    #[serde(default)]
+    pub connection: String,
+    #[serde(default)]
+    pub resolution: ManifestResolution,
+    #[serde(default, rename = "unit")]
+    pub units: Vec<ManifestUnit>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct ManifestResolution {
+    #[serde(default = "default_dependency_mode")]
+    pub dependency_mode: String,
+    #[serde(default = "default_cache_dir")]
+    pub cache_dir: String,
+    #[serde(default = "default_unknown_symbol_mode")]
+    pub unknown_symbol_mode: String,
+    #[serde(default = "default_remote_request_parallelism")]
+    pub remote_request_parallelism: usize,
+    #[serde(default = "default_remote_requests_per_second")]
+    pub remote_requests_per_second: usize,
+}
+
+impl Default for ManifestResolution {
+    fn default() -> Self {
+        Self {
+            dependency_mode: default_dependency_mode(),
+            cache_dir: default_cache_dir(),
+            unknown_symbol_mode: default_unknown_symbol_mode(),
+            remote_request_parallelism: default_remote_request_parallelism(),
+            remote_requests_per_second: default_remote_requests_per_second(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct ManifestUnit {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub root_file: String,
+    #[serde(default)]
+    pub adt_uri: String,
+    #[serde(default, rename = "member")]
+    pub members: Vec<ManifestUnitMember>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct ManifestUnitMember {
+    #[serde(default)]
+    pub role: String,
+    #[serde(default)]
+    pub file: String,
+    #[serde(default)]
+    pub object_name: String,
+    #[serde(default)]
+    pub adt_uri: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceDocument {
+    pub uri: Arc<str>,
+    pub version: i32,
+    pub text: String,
+    pub is_dependency: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceLoadResult {
+    pub root_uri: Arc<str>,
+    pub root_path: PathBuf,
+    pub manifest: Option<WorkspaceManifest>,
+    pub documents: Vec<WorkspaceDocument>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenDocumentOverlay {
+    pub version: i32,
+    pub text: Arc<str>,
+}
+
+pub fn load_manifest_from_workspace(root_path: &Path) -> Option<WorkspaceManifest> {
+    let manifest_path = root_path.join("abapls.toml");
+    let text = fs::read_to_string(manifest_path).ok()?;
+    let mut manifest: WorkspaceManifest = toml::from_str(&text).ok()?;
+    normalize_manifest(&mut manifest);
+    Some(manifest)
+}
+
+pub fn load_workspace_documents(
+    root_uri: &str,
+    overlays: &HashMap<String, OpenDocumentOverlay>,
+) -> WorkspaceLoadResult {
+    let root_path = file_uri_to_path(root_uri).unwrap_or_default();
+    let manifest = load_manifest_from_workspace(&root_path);
+    let cache_dir = manifest_cache_dir(manifest.as_ref()).to_string();
+    let mut documents = Vec::new();
+    let mut seen = HashSet::new();
+
+    collect_abap_sources(
+        &root_path,
+        root_uri,
+        overlays,
+        &mut seen,
+        &mut documents,
+        false,
+    );
+
+    if let Some(manifest) = manifest.as_ref() {
+        collect_manifest_dependencies(
+            manifest,
+            &root_path,
+            root_uri,
+            overlays,
+            &mut seen,
+            &mut documents,
+        );
+    }
+    collect_dependency_cache_files(
+        &root_path,
+        &cache_dir,
+        root_uri,
+        overlays,
+        &mut seen,
+        &mut documents,
+    );
+
+    for (uri, overlay) in overlays {
+        if uri_starts_with_workspace(uri, root_uri) && seen.insert(uri.clone()) {
+            documents.push(WorkspaceDocument {
+                uri: Arc::from(uri.as_str()),
+                version: overlay.version,
+                text: overlay.text.to_string(),
+                is_dependency: false,
+            });
+        }
+    }
+
+    documents.sort_by(|left, right| left.uri.cmp(&right.uri));
+
+    WorkspaceLoadResult {
+        root_uri: Arc::from(root_uri),
+        root_path,
+        manifest,
+        documents,
+    }
+}
+
+pub fn manifest_supports_remote_resolution(manifest: Option<&WorkspaceManifest>) -> bool {
+    let Some(manifest) = manifest else {
+        return false;
+    };
+    normalize_dependency_mode(&manifest.resolution.dependency_mode) == DEPENDENCY_MODE_REMOTE_ON_DEMAND
+        && normalize_unknown_symbol_mode(&manifest.resolution.unknown_symbol_mode)
+            == UNKNOWN_SYMBOL_MODE_REMOTE
+}
+
+pub fn manifest_cache_dir(manifest: Option<&WorkspaceManifest>) -> &str {
+    manifest
+        .map(|manifest| manifest.resolution.cache_dir.as_str())
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(".abapls/cache")
+}
+
+pub fn normalize_dependency_mode(value: &str) -> &'static str {
+    match value.trim().to_ascii_lowercase().as_str() {
+        DEPENDENCY_MODE_LOCAL_FIRST => DEPENDENCY_MODE_LOCAL_FIRST,
+        _ => DEPENDENCY_MODE_REMOTE_ON_DEMAND,
+    }
+}
+
+pub fn normalize_unknown_symbol_mode(value: &str) -> &'static str {
+    match value.trim().to_ascii_lowercase().as_str() {
+        UNKNOWN_SYMBOL_MODE_LOG => UNKNOWN_SYMBOL_MODE_LOG,
+        _ => UNKNOWN_SYMBOL_MODE_REMOTE,
+    }
+}
+
+pub fn workspace_relative_path(root_path: &Path, path: &Path) -> String {
+    path.strip_prefix(root_path)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/")
+}
+
+pub fn file_uri_to_path(uri: &str) -> Option<PathBuf> {
+    let rest = uri.strip_prefix("file:///")?;
+    let decoded = percent_decode(rest);
+    #[cfg(windows)]
+    {
+        Some(PathBuf::from(decoded.replace('/', "\\")))
+    }
+    #[cfg(not(windows))]
+    {
+        Some(PathBuf::from(format!("/{decoded}")))
+    }
+}
+
+pub fn path_to_file_uri(path: &Path) -> String {
+    let value = path.to_string_lossy().replace('\\', "/");
+    let mut out = String::from("file:///");
+    let mut first = true;
+    for ch in value.chars() {
+        if !first && ch == '/' {
+            out.push('/');
+        } else {
+            append_uri_path_char(&mut out, ch);
+        }
+        first = false;
+    }
+    out
+}
+
+pub fn uri_starts_with_workspace(uri: &str, workspace_uri: &str) -> bool {
+    uri == workspace_uri
+        || uri
+            .strip_prefix(workspace_uri)
+            .is_some_and(|suffix| suffix.starts_with('/'))
+}
+
+pub fn is_remote_lookup_name(name: &str) -> bool {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    if trimmed.starts_with('/') {
+        return true;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    lower.starts_with('z') || lower.starts_with('y')
+}
+
+fn collect_abap_sources(
+    root_path: &Path,
+    root_uri: &str,
+    overlays: &HashMap<String, OpenDocumentOverlay>,
+    seen: &mut HashSet<String>,
+    documents: &mut Vec<WorkspaceDocument>,
+    is_dependency: bool,
+) {
+    if !root_path.exists() {
+        return;
+    }
+    let mut stack = vec![root_path.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_dir() {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                if name == ".git" || name == "target" {
+                    continue;
+                }
+                if !is_dependency && name == ".abapls" {
+                    continue;
+                }
+                stack.push(path);
+                continue;
+            }
+            if path.extension().and_then(|ext| ext.to_str()) != Some("abap") {
+                continue;
+            }
+            let uri = path_to_file_uri(&path);
+            if !uri_starts_with_workspace(&uri, root_uri) || !seen.insert(uri.clone()) {
+                continue;
+            }
+            let (version, text) = if let Some(overlay) = overlays.get(&uri) {
+                (overlay.version, overlay.text.to_string())
+            } else {
+                match fs::read_to_string(&path) {
+                    Ok(text) => (0, text),
+                    Err(_) => continue,
+                }
+            };
+            documents.push(WorkspaceDocument {
+                uri: Arc::from(uri),
+                version,
+                text,
+                is_dependency,
+            });
+        }
+    }
+}
+
+fn collect_manifest_dependencies(
+    manifest: &WorkspaceManifest,
+    root_path: &Path,
+    root_uri: &str,
+    overlays: &HashMap<String, OpenDocumentOverlay>,
+    seen: &mut HashSet<String>,
+    documents: &mut Vec<WorkspaceDocument>,
+) {
+    for unit in &manifest.units {
+        let relative = normalize_manifest_path(&unit.root_file);
+        if relative.is_empty() {
+            continue;
+        }
+        let path = root_path.join(relative);
+        if !path.exists() {
+            continue;
+        }
+        let uri = path_to_file_uri(&path);
+        if !uri_starts_with_workspace(&uri, root_uri) || !seen.insert(uri.clone()) {
+            continue;
+        }
+
+        let (version, source_text) = if let Some(overlay) = overlays.get(&uri) {
+            (overlay.version, overlay.text.to_string())
+        } else {
+            match fs::read_to_string(&path) {
+                Ok(text) => (0, text),
+                Err(_) => continue,
+            }
+        };
+
+        let text = if path.extension().and_then(|ext| ext.to_str()) == Some("xml") {
+            ddic_xml_to_abap_source(
+                unit.name.as_str(),
+                unit.kind.as_str(),
+                source_text.as_str(),
+            )
+            .unwrap_or(source_text)
+        } else {
+            source_text
+        };
+
+        documents.push(WorkspaceDocument {
+            uri: Arc::from(uri),
+            version,
+            text,
+            is_dependency: true,
+        });
+    }
+}
+
+fn collect_dependency_cache_files(
+    root_path: &Path,
+    cache_dir: &str,
+    root_uri: &str,
+    overlays: &HashMap<String, OpenDocumentOverlay>,
+    seen: &mut HashSet<String>,
+    documents: &mut Vec<WorkspaceDocument>,
+) {
+    let dependencies_root = root_path.join(normalize_manifest_path(cache_dir)).join("dependencies");
+    if !dependencies_root.exists() {
+        return;
+    }
+
+    let mut stack = vec![dependencies_root];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            let Some(extension) = path.extension().and_then(|ext| ext.to_str()) else {
+                continue;
+            };
+            if extension != "abap" && extension != "xml" {
+                continue;
+            }
+
+            let uri = path_to_file_uri(&path);
+            if !uri_starts_with_workspace(&uri, root_uri) || !seen.insert(uri.clone()) {
+                continue;
+            }
+
+            let (version, source_text) = if let Some(overlay) = overlays.get(&uri) {
+                (overlay.version, overlay.text.to_string())
+            } else {
+                match fs::read_to_string(&path) {
+                    Ok(text) => (0, text),
+                    Err(_) => continue,
+                }
+            };
+
+            let kind_hint = path
+                .parent()
+                .and_then(|parent| parent.file_name())
+                .and_then(|name| name.to_str())
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            let object_name = path
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .map(percent_decode)
+                .unwrap_or_else(String::new);
+
+            let text = if extension == "xml" {
+                ddic_xml_to_abap_source(&object_name, &kind_hint, &source_text).unwrap_or(source_text)
+            } else {
+                source_text
+            };
+
+            documents.push(WorkspaceDocument {
+                uri: Arc::from(uri),
+                version,
+                text,
+                is_dependency: true,
+            });
+        }
+    }
+}
+
+fn normalize_manifest_path(value: &str) -> String {
+    value.trim().replace('\\', "/").trim_start_matches("./").to_string()
+}
+
+fn normalize_manifest(manifest: &mut WorkspaceManifest) {
+    manifest.resolution.dependency_mode = normalize_dependency_mode(&manifest.resolution.dependency_mode).to_string();
+    manifest.resolution.unknown_symbol_mode =
+        normalize_unknown_symbol_mode(&manifest.resolution.unknown_symbol_mode).to_string();
+    if manifest.resolution.cache_dir.trim().is_empty() {
+        manifest.resolution.cache_dir = default_cache_dir();
+    }
+    manifest.resolution.remote_request_parallelism =
+        manifest.resolution.remote_request_parallelism.max(1);
+    manifest.resolution.remote_requests_per_second =
+        manifest.resolution.remote_requests_per_second.max(1);
+    for unit in &mut manifest.units {
+        unit.kind = unit.kind.trim().to_ascii_lowercase();
+        unit.root_file = normalize_manifest_path(&unit.root_file);
+        for member in &mut unit.members {
+            member.role = member.role.trim().to_ascii_lowercase();
+            member.file = normalize_manifest_path(&member.file);
+        }
+    }
+}
+
+fn percent_decode(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut out = String::with_capacity(value.len());
+    let mut idx = 0;
+    while idx < bytes.len() {
+        if bytes[idx] == b'%' && idx + 2 < bytes.len()
+            && let (Some(hi), Some(lo)) = (hex_value(bytes[idx + 1]), hex_value(bytes[idx + 2]))
+        {
+            out.push(char::from((hi << 4) | lo));
+            idx += 3;
+            continue;
+        }
+        out.push(bytes[idx] as char);
+        idx += 1;
+    }
+    out
+}
+
+fn append_uri_path_char(out: &mut String, ch: char) {
+    if ch.is_ascii_alphanumeric() || matches!(ch, '/' | '-' | '_' | '.' | '~' | ':') {
+        out.push(ch);
+        return;
+    }
+    let mut buf = [0; 4];
+    for byte in ch.encode_utf8(&mut buf).as_bytes() {
+        out.push('%');
+        out.push(hex_digit(byte >> 4));
+        out.push(hex_digit(byte & 0x0f));
+    }
+}
+
+fn hex_digit(value: u8) -> char {
+    match value {
+        0..=9 => (b'0' + value) as char,
+        10..=15 => (b'A' + (value - 10)) as char,
+        _ => '0',
+    }
+}
+
+fn hex_value(value: u8) -> Option<u8> {
+    match value {
+        b'0'..=b'9' => Some(value - b'0'),
+        b'a'..=b'f' => Some(value - b'a' + 10),
+        b'A'..=b'F' => Some(value - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn default_manifest_version() -> i64 {
+    1
+}
+
+fn default_dependency_mode() -> String {
+    DEPENDENCY_MODE_REMOTE_ON_DEMAND.to_string()
+}
+
+fn default_cache_dir() -> String {
+    ".abapls/cache".to_string()
+}
+
+fn default_unknown_symbol_mode() -> String {
+    UNKNOWN_SYMBOL_MODE_REMOTE.to_string()
+}
+
+fn default_remote_request_parallelism() -> usize {
+    DEFAULT_REMOTE_REQUEST_PARALLELISM
+}
+
+fn default_remote_requests_per_second() -> usize {
+    DEFAULT_REMOTE_REQUESTS_PER_SECOND
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DdicField {
+    name: String,
+    type_name: Option<String>,
+    builtin_type: Option<String>,
+    is_table: bool,
+}
+
+pub fn ddic_xml_to_abap_source(object_name: &str, kind_hint: &str, xml: &str) -> Option<String> {
+    let kind = kind_hint.trim().to_ascii_lowercase();
+    if kind == "ddic-data-element" {
+        return Some(data_element_to_abap_source(object_name, xml));
+    }
+    if kind == "ddic-table-type" {
+        return Some(table_type_to_abap_source(object_name, xml));
+    }
+    Some(structured_ddic_to_abap_source(object_name, xml))
+}
+
+fn data_element_to_abap_source(object_name: &str, xml: &str) -> String {
+    let referenced = first_tag_text(xml, &["ROLLNAME", "PREDEFINED_TYPE_REF", "REFNAME"])
+        .filter(|value| !value.eq_ignore_ascii_case(object_name))
+        .map(|value| normalize_ddic_type_name(&value).into_owned())
+        .or_else(|| {
+            first_tag_text(xml, &["DATATYPE"])
+                .map(|value| normalize_ddic_builtin_type(&value).into_owned())
+        })
+        .unwrap_or_else(|| "string".to_string());
+    format!(
+        "TYPES {name} TYPE {ty}.\n",
+        name = object_name.to_ascii_lowercase(),
+        ty = referenced
+    )
+}
+
+fn table_type_to_abap_source(object_name: &str, xml: &str) -> String {
+    let line_type = first_tag_text(
+        xml,
+        &["LINE_TYPE", "ROWTYPE", "DD40V-ROWTYPE", "ROLLNAME", "REFNAME"],
+    )
+    .unwrap_or_else(|| "string".to_string());
+    format!(
+        "TYPES {name} TYPE STANDARD TABLE OF {line_type} WITH EMPTY KEY.\n",
+        name = object_name.to_ascii_lowercase(),
+        line_type = normalize_ddic_type_name(&line_type)
+    )
+}
+
+fn structured_ddic_to_abap_source(object_name: &str, xml: &str) -> String {
+    let fields = collect_ddic_fields(xml);
+    if fields.is_empty() {
+        return format!("TYPES {name} TYPE string.\n", name = object_name.to_ascii_lowercase());
+    }
+
+    let mut out = String::new();
+    out.push_str(&format!(
+        "TYPES: BEGIN OF {name},\n",
+        name = object_name.to_ascii_lowercase()
+    ));
+    for (idx, field) in fields.iter().enumerate() {
+        let suffix = if idx + 1 == fields.len() { "" } else { "," };
+        let ty = if let Some(type_name) = field.type_name.as_ref() {
+            normalize_ddic_type_name(type_name)
+        } else if let Some(builtin) = field.builtin_type.as_ref() {
+            normalize_ddic_builtin_type(builtin)
+        } else {
+            Cow::Borrowed("string")
+        };
+        if field.is_table {
+            out.push_str(&format!(
+                "  {field_name} TYPE STANDARD TABLE OF {ty} WITH EMPTY KEY{suffix}\n",
+                field_name = field.name.to_ascii_lowercase(),
+            ));
+        } else {
+            out.push_str(&format!(
+                "  {field_name} TYPE {ty}{suffix}\n",
+                field_name = field.name.to_ascii_lowercase(),
+            ));
+        }
+    }
+    out.push_str(&format!(
+        "END OF {name}.\n",
+        name = object_name.to_ascii_lowercase()
+    ));
+    out
+}
+
+fn collect_ddic_fields(xml: &str) -> Vec<DdicField> {
+    let mut reader = Reader::from_str(xml);
+    reader.config_mut().trim_text(true);
+    let mut fields = Vec::new();
+    let mut current = None::<DdicField>;
+    let mut tag_stack: Vec<Vec<u8>> = Vec::new();
+
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(start)) => {
+                if is_field_start(&start) {
+                    current = Some(DdicField {
+                        name: attr_text(&start, b"name")
+                            .or_else(|| attr_text(&start, b"NAME"))
+                            .unwrap_or_default(),
+                        type_name: attr_text(&start, b"rollname")
+                            .or_else(|| attr_text(&start, b"ROLLNAME"))
+                            .or_else(|| attr_text(&start, b"refname"))
+                            .or_else(|| attr_text(&start, b"REFNAME")),
+                        builtin_type: attr_text(&start, b"datatype")
+                            .or_else(|| attr_text(&start, b"DATATYPE")),
+                        is_table: attr_text(&start, b"isTableType")
+                            .or_else(|| attr_text(&start, b"ISTABLETYPE"))
+                            .is_some_and(|value| value.eq_ignore_ascii_case("true")),
+                    });
+                }
+                tag_stack.push(start.name().as_ref().to_vec());
+            }
+            Ok(Event::Empty(start)) => {
+                if is_field_start(&start) {
+                    let field = DdicField {
+                        name: attr_text(&start, b"name")
+                            .or_else(|| attr_text(&start, b"NAME"))
+                            .unwrap_or_default(),
+                        type_name: attr_text(&start, b"rollname")
+                            .or_else(|| attr_text(&start, b"ROLLNAME"))
+                            .or_else(|| attr_text(&start, b"refname"))
+                            .or_else(|| attr_text(&start, b"REFNAME")),
+                        builtin_type: attr_text(&start, b"datatype")
+                            .or_else(|| attr_text(&start, b"DATATYPE")),
+                        is_table: attr_text(&start, b"isTableType")
+                            .or_else(|| attr_text(&start, b"ISTABLETYPE"))
+                            .is_some_and(|value| value.eq_ignore_ascii_case("true")),
+                    };
+                    if !field.name.is_empty() {
+                        fields.push(field);
+                    }
+                }
+            }
+            Ok(Event::Text(text)) => {
+                let Some(current) = current.as_mut() else {
+                    continue;
+                };
+                let name = tag_stack.last().map(|tag| tag.as_slice()).unwrap_or_default();
+                let value = text.decode().ok().map(Cow::into_owned).unwrap_or_default();
+                match name {
+                    b"NAME" | b"FIELDNAME" | b"SCRTEXT_S" if current.name.is_empty() => {
+                        current.name = value
+                    }
+                    b"ROLLNAME" | b"REFNAME" | b"COMPTYPE" if current.type_name.is_none() => {
+                        current.type_name = Some(value)
+                    }
+                    b"DATATYPE" | b"BUILTINTYPE" if current.builtin_type.is_none() => {
+                        current.builtin_type = Some(value)
+                    }
+                    _ => {}
+                }
+            }
+            Ok(Event::End(end)) => {
+                if is_field_end(end.name().as_ref())
+                    && let Some(field) = current.take()
+                    && !field.name.is_empty()
+                {
+                    fields.push(field);
+                }
+                let _ = tag_stack.pop();
+            }
+            Ok(Event::Eof) => break,
+            Err(_) => break,
+            _ => {}
+        }
+    }
+
+    let mut deduped = BTreeMap::<String, DdicField>::new();
+    for field in fields {
+        deduped.entry(field.name.to_ascii_lowercase()).or_insert(field);
+    }
+    deduped.into_values().collect()
+}
+
+fn is_field_start(start: &BytesStart<'_>) -> bool {
+    matches!(
+        start.name().as_ref(),
+        b"elementInfo" | b"ELEMENTINFO" | b"component" | b"COMPONENT" | b"field" | b"FIELD"
+    )
+}
+
+fn is_field_end(name: &[u8]) -> bool {
+    matches!(
+        name,
+        b"elementInfo" | b"ELEMENTINFO" | b"component" | b"COMPONENT" | b"field" | b"FIELD"
+    )
+}
+
+fn attr_text(start: &BytesStart<'_>, key: &[u8]) -> Option<String> {
+    start
+        .attributes()
+        .flatten()
+        .find(|attr| attr.key.as_ref() == key)
+        .and_then(|attr| String::from_utf8(attr.value.into_owned()).ok())
+}
+
+fn first_tag_text(xml: &str, tags: &[&str]) -> Option<String> {
+    let mut reader = Reader::from_str(xml);
+    reader.config_mut().trim_text(true);
+    let tags: HashSet<Vec<u8>> = tags.iter().map(|tag| tag.as_bytes().to_vec()).collect();
+    let mut current = None::<Vec<u8>>;
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(start)) => current = Some(start.name().as_ref().to_vec()),
+            Ok(Event::Text(text)) => {
+                let Some(tag) = current.as_ref() else {
+                    continue;
+                };
+                if tags.contains(tag) {
+                    return text.decode().ok().map(Cow::into_owned);
+                }
+            }
+            Ok(Event::Eof) => break,
+            Err(_) => break,
+            _ => {}
+        }
+    }
+    None
+}
+
+fn normalize_ddic_type_name(value: &str) -> Cow<'_, str> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Cow::Borrowed("string");
+    }
+    Cow::Owned(trimmed.to_ascii_lowercase())
+}
+
+fn normalize_ddic_builtin_type(value: &str) -> Cow<'_, str> {
+    match value.trim().to_ascii_uppercase().as_str() {
+        "CHAR" | "SSTRING" | "STRING" | "UNIT" | "CUKY" | "LANG" | "CLNT" | "NUMC" => {
+            Cow::Borrowed("string")
+        }
+        "INT1" | "INT2" | "INT4" | "INT8" => Cow::Borrowed("i"),
+        "DEC" | "CURR" | "QUAN" | "FLTP" | "DF16_DEC" | "DF34_DEC" => Cow::Borrowed("p"),
+        "DATS" => Cow::Borrowed("d"),
+        "TIMS" => Cow::Borrowed("t"),
+        "RAW" | "RAWSTRING" | "LRAW" | "LCHR" => Cow::Borrowed("xstring"),
+        other if !other.is_empty() => Cow::Owned(other.to_ascii_lowercase()),
+        _ => Cow::Borrowed("string"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{UNKNOWN_SYMBOL_MODE_REMOTE, WorkspaceManifest, ddic_xml_to_abap_source, is_remote_lookup_name};
+
+    #[test]
+    fn parses_manifest_defaults() {
+        let manifest: WorkspaceManifest = toml::from_str("version = 1\n").expect("manifest");
+        assert_eq!(manifest.resolution.unknown_symbol_mode, UNKNOWN_SYMBOL_MODE_REMOTE);
+        assert_eq!(manifest.resolution.remote_request_parallelism, 4);
+    }
+
+    #[test]
+    fn converts_data_element_xml_to_type_alias() {
+        let xml = "<root><DATATYPE>CHAR</DATATYPE></root>";
+        let source = ddic_xml_to_abap_source("ZDEMO", "ddic-data-element", xml).expect("source");
+        assert!(source.to_ascii_lowercase().contains("types zdemo type string"));
+    }
+
+    #[test]
+    fn converts_elementinfo_xml_to_structure() {
+        let xml = r#"
+<root>
+  <elementInfo name="FIELD_ONE" rollname="BUKRS" />
+  <elementInfo name="FIELD_TWO" datatype="CHAR" />
+</root>
+"#;
+        let source = ddic_xml_to_abap_source("ZSTR", "ddic-structure", xml).expect("source");
+        let lowered = source.to_ascii_lowercase();
+        assert!(lowered.contains("begin of zstr"));
+        assert!(lowered.contains("field_one type bukrs"));
+        assert!(lowered.contains("field_two type string"));
+    }
+
+    #[test]
+    fn detects_remote_lookup_candidate_names() {
+        assert!(is_remote_lookup_name("zcl_demo"));
+        assert!(is_remote_lookup_name("/foo/bar"));
+        assert!(!is_remote_lookup_name("cl_abap_typedescr"));
+    }
+}

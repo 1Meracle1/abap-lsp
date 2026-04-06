@@ -20,6 +20,12 @@ export interface AdtObjectRef {
 	description: string;
 }
 
+export interface AdtDependencyFetchResult {
+	body: string;
+	fileExtension: "abap" | "xml";
+	manifestKind: string;
+}
+
 interface HttpResponseData {
 	statusCode: number;
 	headers: http.IncomingHttpHeaders;
@@ -112,6 +118,12 @@ export function isSupportedDependencyObject(objectRef: AdtObjectRef, kindHint?: 
 				loweredUri.includes("/oo/interfaces/") ||
 				loweredType.startsWith("CLAS/") ||
 				loweredType.startsWith("INTF/");
+		case "type":
+			return isDdicDependencyObject(objectRef) ||
+				loweredUri.includes("/oo/classes/") ||
+				loweredUri.includes("/oo/interfaces/") ||
+				loweredType.startsWith("CLAS/") ||
+				loweredType.startsWith("INTF/");
 	}
 
 	return loweredUri.includes("/programs/includes/") ||
@@ -119,6 +131,7 @@ export function isSupportedDependencyObject(objectRef: AdtObjectRef, kindHint?: 
 		loweredUri.includes("/oo/classes/") ||
 		loweredUri.includes("/oo/interfaces/") ||
 		loweredUri.includes("/functions/groups/") ||
+		isDdicDependencyObject(objectRef) ||
 		loweredType === "PROG/I" ||
 		loweredType === "PROG/P" ||
 		loweredType.startsWith("CLAS/") ||
@@ -233,26 +246,70 @@ export class AdtClient {
 		return response.body;
 	}
 
+	async fetchDependencyObject(objectRef: AdtObjectRef): Promise<AdtDependencyFetchResult> {
+		if (isDdicDependencyObject(objectRef)) {
+			const ddicKind = inferDdicManifestKind(objectRef);
+			const body = await this.fetchDdicObject(ddicKind, objectRef.name);
+			return {
+				body,
+				fileExtension: "xml",
+				manifestKind: ddicKind,
+			};
+		}
+
+		return {
+			body: await this.fetchObjectSource(objectRef.uri),
+			fileExtension: "abap",
+			manifestKind: inferRepositoryManifestKind(objectRef),
+		};
+	}
+
+	async fetchDdicObject(
+		kind: "ddic-data-element" | "ddic-structure" | "ddic-table" | "ddic-table-type" | "ddic-view",
+		name: string,
+	): Promise<string> {
+		await this.ensureSession();
+		const encodedName = encodeURIComponent(name);
+		let path: string;
+		let accept: string;
+		if (kind === "ddic-data-element") {
+			path = `/sap/bc/adt/ddic/dataelements/${encodedName}`;
+			accept = "application/vnd.sap.adt.dataelements.v1+xml, application/vnd.sap.adt.dataelements.v2+xml";
+		} else {
+			path = `/sap/bc/adt/ddic/elementinfo?path=${encodedName}`;
+			accept = "application/vnd.sap.adt.elementinfo+xml";
+		}
+
+		const response = await this.request(path, {
+			headers: {
+				Accept: accept,
+				"Cache-Control": "no-cache",
+				"x-csrf-token": this.csrfToken,
+			},
+		});
+		return response.body;
+	}
+
 	async cacheRemoteObject(
 		workspaceFolder: vscode.WorkspaceFolder,
 		objectRef: AdtObjectRef,
 		source: string,
+		fileExtension: "abap" | "xml" = "abap",
 	): Promise<void> {
 		const cacheRoot = path.join(workspaceFolder.uri.fsPath, ".abapls", "cache");
 		const objectsDir = path.join(cacheRoot, "objects");
-		const sourcesDir = path.join(cacheRoot, "sources");
 		await fs.promises.mkdir(objectsDir, { recursive: true });
-		await fs.promises.mkdir(sourcesDir, { recursive: true });
 
 		const slug = encodeURIComponent(objectRef.name);
 		const metadataPath = path.join(objectsDir, `${slug}.json`);
-		const sourcePath = path.join(sourcesDir, `${slug}.abap`);
 
 		await fs.promises.writeFile(
 			metadataPath,
 			JSON.stringify(
 				{
 					...objectRef,
+					fileExtension,
+					size: source.length,
 					fetchedAt: new Date().toISOString(),
 				},
 				null,
@@ -260,7 +317,6 @@ export class AdtClient {
 			),
 			"utf8",
 		);
-		await fs.promises.writeFile(sourcePath, source, "utf8");
 	}
 
 	private async ensureSession(): Promise<void> {
@@ -340,6 +396,53 @@ export class AdtClient {
 			request.end();
 		});
 	}
+}
+
+export function isDdicDependencyObject(objectRef: AdtObjectRef): boolean {
+	const type = objectRef.type.toUpperCase();
+	return type === "DTEL/DE" ||
+		type === "TABL/DS" ||
+		type === "TABL/DT" ||
+		type === "TABL/DA" ||
+		type === "TTYP/DA" ||
+		type === "VIEW/DV";
+}
+
+export function inferDdicManifestKind(
+	objectRef: AdtObjectRef,
+): "ddic-data-element" | "ddic-structure" | "ddic-table" | "ddic-table-type" | "ddic-view" {
+	switch (objectRef.type.toUpperCase()) {
+		case "DTEL/DE":
+			return "ddic-data-element";
+		case "TABL/DS":
+			return "ddic-structure";
+		case "TABL/DT":
+			return "ddic-table";
+		case "TABL/DA":
+		case "TTYP/DA":
+			return "ddic-table-type";
+		case "VIEW/DV":
+			return "ddic-view";
+		default:
+			return "ddic-structure";
+	}
+}
+
+function inferRepositoryManifestKind(objectRef: AdtObjectRef): string {
+	const loweredUri = objectRef.uri.toLowerCase();
+	if (loweredUri.includes("/programs/includes/") || objectRef.type === "PROG/I") {
+		return "include";
+	}
+	if (loweredUri.includes("/oo/classes/") || objectRef.type.startsWith("CLAS/")) {
+		return "global-class";
+	}
+	if (loweredUri.includes("/oo/interfaces/") || objectRef.type.startsWith("INTF/")) {
+		return "global-interface";
+	}
+	if (loweredUri.includes("/functions/groups/")) {
+		return "function-group";
+	}
+	return "report";
 }
 
 function normalizeBaseUrl(baseUrl: string): string {

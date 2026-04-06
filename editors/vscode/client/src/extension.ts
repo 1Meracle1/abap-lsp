@@ -522,12 +522,12 @@ async function resolveRemoteDependencyCandidate(
 				return undefined;
 			}
 
-			const source = await adtClient.fetchObjectSource(objectRef.uri);
+			const fetched = await adtClient.fetchDependencyObject(objectRef);
 			const filePath = targetDependencyWorkspaceFilePath(workspaceFolder, objectRef);
 			await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
-			await fs.promises.writeFile(filePath, source, "utf8");
+			await fs.promises.writeFile(filePath, fetched.body, "utf8");
 			await ensureManifestDependencyUnit(workspaceFolder, objectRef, filePath);
-			await adtClient.cacheRemoteObject(workspaceFolder, objectRef, source);
+			await adtClient.cacheRemoteObject(workspaceFolder, objectRef, fetched.body, fetched.fileExtension);
 			return objectRef.name;
 		} catch (error) {
 			negativeRemoteDependencyCache.add(cacheKey);

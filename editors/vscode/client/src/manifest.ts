@@ -1,7 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as vscode from "vscode";
-import type { AdtObjectRef } from "./adt";
+import { inferDdicManifestKind, isDdicDependencyObject, type AdtObjectRef } from "./adt";
 
 export interface ManifestUnitSpec {
 	name: string;
@@ -32,6 +32,16 @@ export const unknownSymbolModeLog: ManifestUnknownSymbolMode = "log";
 export function inferManifestUnitSpec(objectRef: AdtObjectRef, relativeFilePath: string): ManifestUnitSpec {
 	const normalizedFile = normalizeRelativePath(relativeFilePath);
 	const loweredUri = objectRef.uri.toLowerCase();
+	if (isDdicDependencyObject(objectRef)) {
+		return {
+			name: objectRef.name,
+			kind: inferDdicManifestKind(objectRef),
+			rootFile: normalizedFile,
+			adtUri: objectRef.uri,
+			role: "dependency",
+			objectName: objectRef.name,
+		};
+	}
 	if (loweredUri.includes("/programs/includes/") || objectRef.type === "PROG/I") {
 		return {
 			name: objectRef.name,
@@ -132,8 +142,13 @@ export function targetDependencyWorkspaceFilePath(
 	workspaceFolder: vscode.WorkspaceFolder,
 	objectRef: AdtObjectRef,
 ): string {
-	const kindDir = sanitizePathSegment(inferManifestUnitSpec(objectRef, "dependency.abap").kind);
-	const fileName = `${encodeURIComponent(objectRef.name)}.abap`;
+	const manifestUnit = inferManifestUnitSpec(
+		objectRef,
+		isDdicDependencyObject(objectRef) ? "dependency.xml" : "dependency.abap",
+	);
+	const kindDir = sanitizePathSegment(manifestUnit.kind);
+	const fileExtension = isDdicDependencyObject(objectRef) ? "xml" : "abap";
+	const fileName = `${encodeURIComponent(objectRef.name)}.${fileExtension}`;
 	return path.join(workspaceFolder.uri.fsPath, ".abapls", "cache", "dependencies", kindDir, fileName);
 }
 

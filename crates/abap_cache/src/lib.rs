@@ -12,6 +12,19 @@ use abap_symbols::{
     Visibility, analyze_project_from_units, analyze_unit_locally, builtin_routine_spec,
 };
 use parking_lot::RwLock;
+use rayon::prelude::*;
+
+mod workspace;
+pub use workspace::{
+    DEFAULT_REMOTE_REQUEST_PARALLELISM, DEFAULT_REMOTE_REQUESTS_PER_SECOND,
+    DEPENDENCY_MODE_LOCAL_FIRST, DEPENDENCY_MODE_REMOTE_ON_DEMAND, ManifestResolution,
+    ManifestUnit, ManifestUnitMember, OpenDocumentOverlay, UNKNOWN_SYMBOL_MODE_LOG,
+    UNKNOWN_SYMBOL_MODE_REMOTE, WorkspaceDocument, WorkspaceLoadResult, WorkspaceManifest,
+    ddic_xml_to_abap_source, file_uri_to_path, is_remote_lookup_name, load_workspace_documents,
+    load_manifest_from_workspace, manifest_cache_dir, manifest_supports_remote_resolution,
+    normalize_dependency_mode, normalize_unknown_symbol_mode, path_to_file_uri,
+    uri_starts_with_workspace, workspace_relative_path,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AnalysisSnapshot {
@@ -21,6 +34,13 @@ pub struct AnalysisSnapshot {
     pub parse: Arc<ParseResult>,
     pub symbols: Arc<UnitAnalysis>,
     pub project: Arc<ProjectAnalysis>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DocumentInput {
+    pub uri: Arc<str>,
+    pub version: i32,
+    pub text: Arc<str>,
 }
 
 #[derive(Debug, Clone)]
@@ -2914,7 +2934,51 @@ fn staged_documents_for_publish(
     staged
 }
 
+fn analyze_inputs(inputs: &[DocumentInput]) -> HashMap<Arc<str>, Arc<AnalysisSnapshot>> {
+    let parsed: Vec<_> = inputs
+        .par_iter()
+        .map(|input| {
+            let parse = Arc::new(parse(input.text.as_ref()));
+            let source = input.text.to_string();
+            (Arc::clone(&input.uri), input.version, input.text.clone(), parse, source)
+        })
+        .collect();
+    let units: Vec<_> = parsed
+        .par_iter()
+        .enumerate()
+        .map(|(idx, (uri, _, _, parse, source))| {
+            analyze_unit_locally(UnitId(idx as u32), Arc::clone(uri), source, parse.as_ref())
+        })
+        .collect();
+    let project = Arc::new(analyze_project_from_units(units));
+    let mut snapshots = HashMap::with_capacity(parsed.len());
+    for (uri, version, text, parse, _) in parsed {
+        let unit = project
+            .unit_by_uri(uri.as_ref())
+            .cloned()
+            .expect("project analysis should include every input document");
+        snapshots.insert(
+            Arc::clone(&uri),
+            Arc::new(AnalysisSnapshot {
+                uri,
+                version,
+                text,
+                parse,
+                symbols: Arc::new(unit),
+                project: Arc::clone(&project),
+            }),
+        );
+    }
+    snapshots
+}
+
 impl DocumentStore {
+    pub fn replace_all(&self, inputs: Vec<DocumentInput>) -> HashMap<Arc<str>, Arc<AnalysisSnapshot>> {
+        let rebuilt = analyze_inputs(&inputs);
+        self.documents.write().clone_from(&rebuilt);
+        rebuilt
+    }
+
     pub fn publish(
         &self,
         uri: impl Into<Arc<str>>,
@@ -3031,6 +3095,10 @@ impl DocumentStore {
 
     pub fn len(&self) -> usize {
         self.documents.read().len()
+    }
+
+    pub fn uris(&self) -> Vec<Arc<str>> {
+        self.documents.read().keys().cloned().collect()
     }
 }
 

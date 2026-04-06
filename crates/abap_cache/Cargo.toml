@@ -9,3 +9,7 @@ rust-version.workspace = true
 abap_parser = { path = "../abap_parser" }
 abap_symbols = { path = "../abap_symbols" }
 parking_lot.workspace = true
+quick-xml.workspace = true
+rayon.workspace = true
+serde.workspace = true
+toml.workspace = true
