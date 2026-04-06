@@ -6,11 +6,12 @@ use abap_ast::arena::NodeId;
 use abap_ast::ast::{
     AstNode, CallArgList, CallExpr, CallNamedArg, CallPositionalArg, DataDecl, DataDeclName,
     DataLikeDecl, DeclClause, ExprIdent, MethodsStmt, MethodsStmtKind, MethodsTypeClauseKind,
-    SelectQuery, SelectStmt, SelectorExpr, SqlDataSource, SqlProjectionItem, SyntaxNodeRef,
+    SelectIntoClause, SelectJoinClause, SelectProjectionList, SelectQuery, SelectStmt,
+    SelectorExpr, SqlColumnRef, SqlDataSource, SqlProjectionItem, SqlQualifiedStar, SyntaxNodeRef,
     TypeClauseKind, TypeRefSimple,
 };
 use abap_ast::{File, SyntaxKind};
-use abap_lexer::{TextRange, Token, TokenKind, have_space_between};
+use abap_lexer::{TextRange, Token};
 
 use crate::builtins::{BUILTIN_STRUCTURES, BUILTIN_SYMBOLS, BuiltinTypeKind, builtin_routine_spec};
 use crate::def_map::{
@@ -88,6 +89,12 @@ struct PendingMethodSignature {
     is_redefinition: bool,
 }
 
+#[derive(Clone)]
+struct SyntaxTokenInfo {
+    range: TextRange,
+    text: Arc<str>,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SqlClauseKind {
     Where,
@@ -99,8 +106,6 @@ enum SqlClauseKind {
 pub struct Collector<'a> {
     source: &'a str,
     file: &'a File,
-    tokens: &'a [Token],
-    token_index_by_range: HashMap<(usize, usize), usize>,
     unit_id: UnitId,
     uri: Arc<str>,
     scopes: Vec<ScopeData>,
@@ -135,18 +140,11 @@ impl<'a> Collector<'a> {
         uri: Arc<str>,
         source: &'a str,
         file: &'a File,
-        tokens: &'a [Token],
+        _tokens: &'a [Token],
     ) -> Self {
-        let token_index_by_range = tokens
-            .iter()
-            .enumerate()
-            .map(|(idx, token)| ((token.range.start, token.range.end), idx))
-            .collect();
         Self {
             source,
             file,
-            tokens,
-            token_index_by_range,
             unit_id,
             uri,
             scopes: Vec::new(),
@@ -934,13 +932,13 @@ impl<'a> Collector<'a> {
 
     fn class_header_has_implementation(&self, node: NodeId) -> bool {
         for child in self.file.children(node) {
-            let Some(token) = self.token_for_node(child) else {
+            let Some(text) = self.syntax(child).text(self.source) else {
                 continue;
             };
-            if token.kind == TokenKind::Period {
+            if text == "." {
                 break;
             }
-            if self.token_matches_keyword(token, "implementation") {
+            if text.eq_ignore_ascii_case("implementation") {
                 return true;
             }
         }
@@ -958,8 +956,8 @@ impl<'a> Collector<'a> {
         while let Some(child) = stack.pop() {
             match self.file.kind(child) {
                 SyntaxKind::ClassSectionStmt => {
-                    let tokens = self.simple_stmt_tokens(child);
-                    if let Some(section_visibility) = self.class_section_visibility(&tokens) {
+                    let tokens = self.significant_stmt_token_infos(child);
+                    if let Some(section_visibility) = self.class_section_visibility_infos(&tokens) {
                         visibility = section_visibility;
                     }
                 }
@@ -1003,19 +1001,14 @@ impl<'a> Collector<'a> {
     }
 
     fn class_superclass_name(&self, node: NodeId) -> Option<(Arc<str>, TextRange)> {
-        let tokens = self.simple_stmt_tokens(node);
-        let significant: Vec<_> = tokens
-            .iter()
-            .copied()
-            .filter(|token| token.kind != TokenKind::Comment)
-            .collect();
+        let significant = self.significant_stmt_token_infos(node);
         for window in significant.windows(3) {
-            if self.token_matches_keyword(window[0], "inheriting")
-                && self.token_matches_keyword(window[1], "from")
-                && window[2].kind == TokenKind::Ident
+            if window[0].text.eq_ignore_ascii_case("inheriting")
+                && window[1].text.eq_ignore_ascii_case("from")
+                && self.syntax_token_is_ident_like(&window[2])
             {
                 return Some((
-                    Arc::<str>::from(window[2].lexeme(self.source).to_ascii_lowercase()),
+                    Arc::<str>::from(window[2].text.to_ascii_lowercase()),
                     window[2].range.clone(),
                 ));
             }
@@ -1023,36 +1016,35 @@ impl<'a> Collector<'a> {
         None
     }
 
-    fn simple_stmt_tokens(&self, node: NodeId) -> Vec<&'a Token> {
-        self.token_refs_from_child_nodes(node)
-    }
-
-    fn significant_stmt_tokens(&self, node: NodeId) -> Vec<&'a Token> {
-        self.simple_stmt_tokens(node)
+    fn simple_stmt_token_infos(&self, node: NodeId) -> Vec<SyntaxTokenInfo> {
+        let child_nodes = self.file.children(node).collect::<Vec<_>>();
+        child_nodes
             .into_iter()
-            .filter(|token| token.kind != TokenKind::Comment)
+            .flat_map(|child| self.syntax_token_nodes(child))
             .collect()
     }
 
-    fn class_section_visibility(&self, tokens: &[&Token]) -> Option<Visibility> {
-        let significant: Vec<_> = tokens
-            .iter()
-            .copied()
-            .filter(|token| token.kind != TokenKind::Comment)
-            .collect();
-        if significant.len() < 3 || significant[2].kind != TokenKind::Period {
+    fn significant_stmt_token_infos(&self, node: NodeId) -> Vec<SyntaxTokenInfo> {
+        self.simple_stmt_token_infos(node)
+            .into_iter()
+            .filter(|token| !self.syntax_token_is_comment(token))
+            .collect()
+    }
+
+    fn class_section_visibility_infos(&self, tokens: &[SyntaxTokenInfo]) -> Option<Visibility> {
+        if tokens.len() < 3 || tokens[2].text.as_ref() != "." {
             return None;
         }
-        if !self.token_matches_keyword(significant[1], "section") {
+        if !tokens[1].text.eq_ignore_ascii_case("section") {
             return None;
         }
-        if self.token_matches_keyword(significant[0], "public") {
+        if tokens[0].text.eq_ignore_ascii_case("public") {
             return Some(Visibility::Public);
         }
-        if self.token_matches_keyword(significant[0], "protected") {
+        if tokens[0].text.eq_ignore_ascii_case("protected") {
             return Some(Visibility::Protected);
         }
-        if self.token_matches_keyword(significant[0], "private") {
+        if tokens[0].text.eq_ignore_ascii_case("private") {
             return Some(Visibility::Private);
         }
         None
@@ -1095,8 +1087,9 @@ impl<'a> Collector<'a> {
         scope: ScopeId,
     ) {
         let is_static = self.class_attribute_decl_is_static(node);
-        let signature =
-            Arc::<str>::from(self.render_statement_signature(&self.simple_stmt_tokens(node)));
+        let signature = Arc::<str>::from(
+            self.render_statement_signature_infos(&self.simple_stmt_token_infos(node)),
+        );
         for child in self.file.children(node) {
             match self.file.kind(child) {
                 SyntaxKind::DataTypedClause
@@ -1128,24 +1121,24 @@ impl<'a> Collector<'a> {
     }
 
     fn class_attribute_decl_is_static(&self, node: NodeId) -> bool {
-        let tokens = self.significant_stmt_tokens(node);
-        let Some(first) = tokens.first().copied() else {
+        let tokens = self.significant_stmt_token_infos(node);
+        let Some(first) = tokens.first() else {
             return false;
         };
-        if self.token_matches_keyword(first, "constants")
-            || self.token_matches_keyword(first, "statics")
+        if first.text.eq_ignore_ascii_case("constants")
+            || first.text.eq_ignore_ascii_case("statics")
         {
             return true;
         }
-        let Some(second) = tokens.get(1).copied() else {
+        let Some(second) = tokens.get(1) else {
             return false;
         };
-        let Some(third) = tokens.get(2).copied() else {
+        let Some(third) = tokens.get(2) else {
             return false;
         };
-        self.token_matches_keyword(first, "class")
-            && second.kind == TokenKind::Minus
-            && self.token_matches_keyword(third, "data")
+        first.text.eq_ignore_ascii_case("class")
+            && second.text.as_ref() == "-"
+            && third.text.eq_ignore_ascii_case("data")
     }
 
     fn class_attribute_structured_clause_name_parts(
@@ -1249,39 +1242,25 @@ impl<'a> Collector<'a> {
         );
     }
 
-    fn render_statement_signature(&self, tokens: &[&Token]) -> String {
+    fn render_statement_signature_infos(&self, tokens: &[SyntaxTokenInfo]) -> String {
         let mut rendered = String::new();
-        let mut prev_kind = None;
+        let mut prev_text: Option<&str> = None;
         for token in tokens {
-            if token.kind == TokenKind::Comment {
+            if self.syntax_token_is_comment(token) {
                 continue;
             }
-            if token.kind == TokenKind::Period {
+            if token.text.as_ref() == "." {
                 break;
             }
+            let text = token.text.as_ref();
             let needs_space = !rendered.is_empty()
-                && !matches!(
-                    token.kind,
-                    TokenKind::Comma
-                        | TokenKind::Colon
-                        | TokenKind::Minus
-                        | TokenKind::RParen
-                        | TokenKind::RBracket
-                )
-                && !matches!(
-                    prev_kind,
-                    Some(
-                        TokenKind::LParen
-                            | TokenKind::LBracket
-                            | TokenKind::Colon
-                            | TokenKind::Minus
-                    )
-                );
+                && !matches!(text, "," | ":" | "-" | ")" | "]")
+                && !matches!(prev_text, Some("(" | "[" | ":" | "-"));
             if needs_space {
                 rendered.push(' ');
             }
-            rendered.push_str(token.lexeme(self.source));
-            prev_kind = Some(token.kind);
+            rendered.push_str(text);
+            prev_text = Some(text);
         }
         rendered
     }
@@ -1415,20 +1394,21 @@ impl<'a> Collector<'a> {
         self.class_method_signature_inner(superclass_symbol, method_name, lookup_scope, visited)
     }
 
-    fn form_header_token_refs(&self, form_node: NodeId) -> Vec<&'a Token> {
+    fn form_header_tokens(&self, form_node: NodeId) -> Vec<SyntaxTokenInfo> {
         let mut out = Vec::new();
         for child in self.file.children(form_node) {
             match self.file.kind(child) {
                 SyntaxKind::Token => {
-                    if let Some(token) = self.token_for_node(child) {
-                        let is_period = token.kind == TokenKind::Period;
+                    let tokens = self.syntax_token_nodes(child);
+                    if let Some(token) = tokens.first().cloned() {
+                        let is_period = token.text.as_ref() == ".";
                         out.push(token);
                         if is_period {
                             break;
                         }
                     }
                 }
-                SyntaxKind::TypeRefSimple => out.extend(self.token_refs(child)),
+                SyntaxKind::TypeRefSimple => out.extend(self.syntax_token_nodes(child)),
                 _ => break,
             }
         }
@@ -1440,20 +1420,23 @@ impl<'a> Collector<'a> {
         form_node: NodeId,
         form_scope: ScopeId,
     ) -> Vec<FormParameterData> {
-        let tokens = self.form_header_token_refs(form_node);
+        let tokens = self.form_header_tokens(form_node);
         let type_ref_nodes = self.direct_type_ref_children(form_node);
         let mut type_ref_idx = 0usize;
         if tokens.len() < 2 {
             return Vec::new();
         }
-        if !self.token_matches_keyword(tokens[0], "form") {
+        if !tokens[0].text.eq_ignore_ascii_case("form") {
             return Vec::new();
         }
         let mut i = 1usize;
-        while i < tokens.len() && tokens[i].kind == TokenKind::Comment {
+        while i < tokens.len() && self.syntax_token_is_comment(&tokens[i]) {
             i += 1;
         }
-        if tokens.get(i).map(|t| t.kind) != Some(TokenKind::Ident) {
+        if !tokens
+            .get(i)
+            .is_some_and(|t| self.syntax_token_is_ident_like(t))
+        {
             return Vec::new();
         }
         i += 1;
@@ -1463,23 +1446,22 @@ impl<'a> Collector<'a> {
         let mut parameters = Vec::new();
 
         while i < tokens.len() {
-            let t = tokens[i];
-            if t.kind == TokenKind::Comment {
+            let t = &tokens[i];
+            if self.syntax_token_is_comment(t) {
                 i += 1;
                 continue;
             }
-            match t.kind {
-                TokenKind::LParen => {
+            match t.text.as_ref() {
+                "(" => {
                     depth += 1;
                     i += 1;
                 }
-                TokenKind::RParen => {
+                ")" => {
                     depth -= 1;
                     i += 1;
                 }
-                TokenKind::Period if depth == 0 => break,
-                _ if depth == 0 && t.kind == TokenKind::Ident => {
-                    let lit = t.lexeme(self.source);
+                "." if depth == 0 => break,
+                lit if depth == 0 && self.syntax_token_is_ident_like(t) => {
                     if lit.eq_ignore_ascii_case("tables") {
                         section = Some(FormHeaderParamSection::Tables);
                         i += 1;
@@ -1526,14 +1508,14 @@ impl<'a> Collector<'a> {
                                 let range = t.range.clone();
                                 let name = Arc::<str>::from(lit.to_ascii_lowercase());
                                 let mut j = i + 1;
-                                while j < tokens.len() && tokens[j].kind == TokenKind::Comment {
+                                while j < tokens.len() && self.syntax_token_is_comment(&tokens[j]) {
                                     j += 1;
                                 }
                                 let declared_type = match tokens.get(j) {
-                                    Some(tok) if self.token_matches_keyword(tok, "type") => {
+                                    Some(tok) if tok.text.eq_ignore_ascii_case("type") => {
                                         j += 1;
                                         while j < tokens.len()
-                                            && tokens[j].kind == TokenKind::Comment
+                                            && self.syntax_token_is_comment(&tokens[j])
                                         {
                                             j += 1;
                                         }
@@ -1551,10 +1533,10 @@ impl<'a> Collector<'a> {
                                         j = expr_end;
                                         dt
                                     }
-                                    Some(tok) if self.token_matches_keyword(tok, "like") => {
+                                    Some(tok) if tok.text.eq_ignore_ascii_case("like") => {
                                         j += 1;
                                         while j < tokens.len()
-                                            && tokens[j].kind == TokenKind::Comment
+                                            && self.syntax_token_is_comment(&tokens[j])
                                         {
                                             j += 1;
                                         }
@@ -1599,7 +1581,7 @@ impl<'a> Collector<'a> {
                             i += 1;
                         }
                         Some(FormHeaderParamSection::Tables) => {
-                            if t.kind == TokenKind::Ident {
+                            if self.syntax_token_is_ident_like(t) {
                                 let symbol = self.declare_symbol(
                                     form_scope,
                                     Arc::<str>::from(lit.to_ascii_lowercase()),
@@ -1630,95 +1612,92 @@ impl<'a> Collector<'a> {
         parameters
     }
 
-    fn form_header_section_keyword(&self, token: &Token) -> bool {
-        token.kind == TokenKind::Ident
-            && matches!(
-                token.lexeme(self.source).to_ascii_uppercase().as_str(),
-                "TABLES" | "USING" | "CHANGING" | "RAISES"
-            )
+    fn form_header_section_keyword(&self, token: &SyntaxTokenInfo) -> bool {
+        matches!(
+            token.text.to_ascii_uppercase().as_str(),
+            "TABLES" | "USING" | "CHANGING" | "RAISES"
+        )
     }
 
-    fn form_header_starts_typed_param(&self, tokens: &[&Token], idx: usize) -> bool {
+    fn form_header_starts_typed_param(&self, tokens: &[SyntaxTokenInfo], idx: usize) -> bool {
         let name = match tokens.get(idx) {
-            Some(t) if t.kind == TokenKind::Ident => *t,
+            Some(t) if self.syntax_token_is_ident_like(t) => t,
             _ => return false,
         };
-        if self.token_matches_keyword(name, "value")
-            || self.token_matches_keyword(name, "reference")
-        {
+        if name.text.eq_ignore_ascii_case("value") || name.text.eq_ignore_ascii_case("reference") {
             return false;
         }
         let mut j = idx + 1;
-        while j < tokens.len() && tokens[j].kind == TokenKind::Comment {
+        while j < tokens.len() && self.syntax_token_is_comment(&tokens[j]) {
             j += 1;
         }
         tokens.get(j).is_some_and(|tok| {
-            self.token_matches_keyword(tok, "type") || self.token_matches_keyword(tok, "like")
+            tok.text.eq_ignore_ascii_case("type") || tok.text.eq_ignore_ascii_case("like")
         })
     }
 
     fn try_consume_form_value_or_reference_param(
         &mut self,
-        tokens: &[&Token],
+        tokens: &[SyntaxTokenInfo],
         i: usize,
         scope: ScopeId,
         type_ref_node: Option<NodeId>,
     ) -> Option<FormConsumedParameter> {
         let kw = tokens.get(i)?;
-        let passing = if self.token_matches_keyword(kw, "value") {
+        let passing = if kw.text.eq_ignore_ascii_case("value") {
             FormParameterPassingKind::Value
-        } else if self.token_matches_keyword(kw, "reference") {
+        } else if kw.text.eq_ignore_ascii_case("reference") {
             FormParameterPassingKind::Reference
         } else {
             return None;
         };
         let mut j = i + 1;
-        while j < tokens.len() && tokens[j].kind == TokenKind::Comment {
+        while j < tokens.len() && self.syntax_token_is_comment(&tokens[j]) {
             j += 1;
         }
-        let (name, range) = if tokens.get(j).map(|t| t.kind) == Some(TokenKind::LParen) {
+        let (name, range) = if tokens.get(j).map(|t| t.text.as_ref()) == Some("(") {
             j += 1;
-            while j < tokens.len() && tokens[j].kind == TokenKind::Comment {
+            while j < tokens.len() && self.syntax_token_is_comment(&tokens[j]) {
                 j += 1;
             }
             let inner = tokens.get(j)?;
-            if inner.kind != TokenKind::Ident {
+            if !self.syntax_token_is_ident_like(inner) {
                 return None;
             }
-            let name = Arc::<str>::from(inner.lexeme(self.source).to_ascii_lowercase());
+            let name = Arc::<str>::from(inner.text.to_ascii_lowercase());
             let range = inner.range.clone();
             j += 1;
-            while j < tokens.len() && tokens[j].kind == TokenKind::Comment {
+            while j < tokens.len() && self.syntax_token_is_comment(&tokens[j]) {
                 j += 1;
             }
-            if tokens.get(j).map(|t| t.kind) != Some(TokenKind::RParen) {
+            if tokens.get(j).map(|t| t.text.as_ref()) != Some(")") {
                 return None;
             }
             j += 1;
             (name, range)
         } else {
             let inner = tokens.get(j)?;
-            if inner.kind != TokenKind::Ident {
+            if !self.syntax_token_is_ident_like(inner) {
                 return None;
             }
-            let name = Arc::<str>::from(inner.lexeme(self.source).to_ascii_lowercase());
+            let name = Arc::<str>::from(inner.text.to_ascii_lowercase());
             let range = inner.range.clone();
             j += 1;
             (name, range)
         };
-        while j < tokens.len() && tokens[j].kind == TokenKind::Comment {
+        while j < tokens.len() && self.syntax_token_is_comment(&tokens[j]) {
             j += 1;
         }
         let type_tok = tokens.get(j)?;
-        let clause_ns = if self.token_matches_keyword(type_tok, "type") {
+        let clause_ns = if type_tok.text.eq_ignore_ascii_case("type") {
             Namespace::Type
-        } else if self.token_matches_keyword(type_tok, "like") {
+        } else if type_tok.text.eq_ignore_ascii_case("like") {
             Namespace::Value
         } else {
             return None;
         };
         j += 1;
-        while j < tokens.len() && tokens[j].kind == TokenKind::Comment {
+        while j < tokens.len() && self.syntax_token_is_comment(&tokens[j]) {
             j += 1;
         }
         let expr_start = j;
@@ -1741,30 +1720,49 @@ impl<'a> Collector<'a> {
         })
     }
 
-    fn skip_form_header_type_expression(&self, tokens: &[&Token], mut i: usize) -> usize {
+    fn skip_form_header_type_expression(&self, tokens: &[SyntaxTokenInfo], mut i: usize) -> usize {
         let mut depth = 0i32;
         while i < tokens.len() {
-            let t = tokens[i];
-            if t.kind == TokenKind::Comment {
+            let t = &tokens[i];
+            if self.syntax_token_is_comment(t) {
                 i += 1;
                 continue;
             }
-            match t.kind {
-                TokenKind::LParen => {
+            match t.text.as_ref() {
+                "(" => {
                     depth += 1;
                     i += 1;
                 }
-                TokenKind::RParen => {
+                ")" => {
                     depth -= 1;
                     i += 1;
                 }
-                TokenKind::Period if depth == 0 => return i,
+                "." if depth == 0 => return i,
                 _ if depth == 0 && self.form_header_section_keyword(t) => return i,
                 _ if depth == 0 && self.form_header_starts_typed_param(tokens, i) => return i,
                 _ => i += 1,
             }
         }
         i
+    }
+
+    fn syntax_token_is_comment(&self, token: &SyntaxTokenInfo) -> bool {
+        token.text.trim_start().starts_with('"')
+    }
+
+    fn syntax_token_is_ident_like(&self, token: &SyntaxTokenInfo) -> bool {
+        !matches!(
+            token.text.as_ref(),
+            ":" | "," | "." | "-" | "(" | ")" | "[" | "]" | "{" | "}" | "=" | "->" | "=>" | "~"
+        ) && !self.syntax_token_is_comment(token)
+    }
+
+    fn syntax_token_is_literal_like(&self, token: &SyntaxTokenInfo) -> bool {
+        token
+            .text
+            .chars()
+            .next()
+            .is_some_and(|ch| ch.is_ascii_digit() || matches!(ch, '\'' | '`' | '|'))
     }
 
     fn walk_if_stmt(&mut self, node: NodeId, scope: ScopeId) {
@@ -1816,10 +1814,10 @@ impl<'a> Collector<'a> {
     fn select_stmt_has_endselect(&self, node: NodeId) -> bool {
         self.file.children(node).any(|child| {
             self.file.kind(child) == SyntaxKind::Token
-                && self.token_for_node(child).is_some_and(|token| {
-                    token.kind == TokenKind::Ident
-                        && token.lexeme(self.source).eq_ignore_ascii_case("endselect")
-                })
+                && self
+                    .syntax(child)
+                    .text(self.source)
+                    .is_some_and(|text| text.eq_ignore_ascii_case("endselect"))
         })
     }
 
@@ -1882,8 +1880,9 @@ impl<'a> Collector<'a> {
             match child_kind {
                 SyntaxKind::Token => {
                     if self
-                        .token_for_node(child_id)
-                        .is_some_and(|token| self.token_matches_keyword(token, "single"))
+                        .syntax(child_id)
+                        .text(self.source)
+                        .is_some_and(|text| text.eq_ignore_ascii_case("single"))
                     {
                         is_single = true;
                     }
@@ -1961,12 +1960,9 @@ impl<'a> Collector<'a> {
     }
 
     fn collect_select_projection_list(&mut self, query_id: usize, node: NodeId, scope: ScopeId) {
-        let children: Vec<_> = self
-            .syntax(node)
-            .children()
-            .filter_map(SqlProjectionItem::cast)
-            .map(|item| item.syntax().id())
-            .collect();
+        let children: Vec<_> = SelectProjectionList::cast(self.syntax(node))
+            .map(|list| list.items().map(|item| item.syntax().id()).collect())
+            .unwrap_or_default();
         for child in children {
             self.collect_sql_projection_item(query_id, child, scope);
         }
@@ -1976,8 +1972,8 @@ impl<'a> Collector<'a> {
         let alias = SqlProjectionItem::cast(self.syntax(node))
             .and_then(|item| item.alias())
             .and_then(|alias_node| self.node_name(alias_node.syntax().id()));
-        let tokens = self.token_refs(node);
-        self.collect_sql_host_refs(&tokens, scope);
+        let syntax_tokens = self.syntax_token_nodes(node);
+        self.collect_sql_host_refs_from_syntax_tokens(&syntax_tokens, scope);
 
         let mut kind = SqlProjectionKind::Expression;
         let mut source_alias = None;
@@ -2003,7 +1999,9 @@ impl<'a> Collector<'a> {
                 }
                 SyntaxKind::SqlQualifiedStar => {
                     kind = SqlProjectionKind::QualifiedStar;
-                    if let Some((qualifier, range)) = self.sql_qualified_name_parts(child, true) {
+                    if let Some((qualifier, range)) = SqlQualifiedStar::cast(self.syntax(child))
+                        .and_then(|star| star.qualifier(self.source))
+                    {
                         source_alias = Some(Arc::clone(&qualifier));
                         self.push_sql_name_ref(
                             query_id,
@@ -2017,7 +2015,9 @@ impl<'a> Collector<'a> {
                 }
                 SyntaxKind::SqlColumnRef => {
                     kind = SqlProjectionKind::Column;
-                    if let Some((qualifier, column, range)) = self.sql_column_ref_parts(child) {
+                    if let Some((qualifier, column, range)) = SqlColumnRef::cast(self.syntax(child))
+                        .and_then(|column_ref| column_ref.parts(self.source))
+                    {
                         source_alias = qualifier.clone();
                         name = Some(Arc::clone(&column));
                         self.push_sql_name_ref(
@@ -2039,25 +2039,24 @@ impl<'a> Collector<'a> {
         }
 
         if matches!(kind, SqlProjectionKind::Expression)
-            && let Some(token) = tokens.first()
-            && token.kind == TokenKind::Ident
-            && tokens
-                .get(1)
-                .is_some_and(|next| next.kind == TokenKind::LParen)
+            && let Some(token) = syntax_tokens.first()
+            && !self.sql_token_is_keyword_text(token.text.as_ref())
+            && syntax_tokens.get(1).map(|next| next.text.as_ref()) == Some("(")
         {
             kind = SqlProjectionKind::Aggregate;
+            let text = Arc::<str>::from(token.text.to_ascii_lowercase());
             self.push_sql_name_ref(
                 query_id,
                 scope,
                 token.range.clone(),
-                Arc::<str>::from(token.lexeme(self.source).to_ascii_lowercase()),
+                text,
                 None,
                 SqlNameRefKind::Aggregate,
             );
         }
 
         if matches!(kind, SqlProjectionKind::Expression) {
-            self.collect_sql_name_refs_from_tokens(query_id, scope, &tokens, false);
+            self.collect_sql_name_refs_from_syntax_tokens(query_id, scope, &syntax_tokens, false);
         }
         self.sql_projections.push(SqlProjectionData {
             query_id,
@@ -2096,29 +2095,27 @@ impl<'a> Collector<'a> {
     }
 
     fn collect_select_join_clause(&mut self, query_id: usize, node: NodeId, scope: ScopeId) {
-        let mut join_tokens = Vec::new();
-        for child in self.file.children(node) {
-            match self.file.kind(child) {
-                SyntaxKind::Token => {
-                    if let Some(token) = self.token_for_node(child) {
-                        join_tokens.push(token);
-                    }
-                }
-                SyntaxKind::SqlDataSource => {
-                    let join_kind = self.token_span_text(&join_tokens);
-                    self.collect_sql_data_source(
-                        query_id,
-                        child,
-                        scope,
-                        SqlSourceKind::Join,
-                        join_kind,
-                    );
-                }
-                SyntaxKind::SqlPredicateExpr => {
-                    self.collect_sql_clause(query_id, child, scope, SqlClauseKind::JoinOn);
-                }
-                _ => {}
-            }
+        let Some(join_clause) = SelectJoinClause::cast(self.syntax(node)) else {
+            return;
+        };
+        let join_kind = join_clause
+            .join_kind_text(self.source)
+            .map(|text| Arc::<str>::from(text.to_ascii_lowercase()));
+        let source_id = join_clause.data_source().map(|source| source.syntax().id());
+        let predicate_id = join_clause
+            .predicate()
+            .map(|predicate| predicate.syntax().id());
+        if let Some(source_id) = source_id {
+            self.collect_sql_data_source(
+                query_id,
+                source_id,
+                scope,
+                SqlSourceKind::Join,
+                join_kind,
+            );
+        }
+        if let Some(predicate_id) = predicate_id {
+            self.collect_sql_clause(query_id, predicate_id, scope, SqlClauseKind::JoinOn);
         }
     }
 
@@ -2136,17 +2133,12 @@ impl<'a> Collector<'a> {
                 self.node_name(alias_node.syntax().id())
                     .map(|(name, _)| (name, alias_node.syntax().range()))
             });
-        let tokens = self.token_refs(node);
-        let alias_idx = tokens
-            .iter()
-            .position(|token| self.token_matches_keyword(token, "as"));
-        let name_tokens = alias_idx.map(|idx| &tokens[..idx]).unwrap_or(&tokens[..]);
-        let Some(name) = self.token_span_text(name_tokens) else {
+        let Some((name_text, name_range)) = SqlDataSource::cast(self.syntax(node))
+            .and_then(|source| source.source_name(self.source))
+        else {
             return;
         };
-        let name_range = self
-            .token_span_range(name_tokens)
-            .unwrap_or_else(|| self.file.range(node));
+        let name = Arc::<str>::from(name_text.to_ascii_lowercase());
         let alias = alias_info.as_ref().map(|(name, _)| Arc::clone(name));
 
         self.sql_sources.push(SqlSourceData {
@@ -2183,20 +2175,20 @@ impl<'a> Collector<'a> {
     }
 
     fn collect_select_into_clause(&mut self, query_id: usize, node: NodeId, scope: ScopeId) {
-        let tokens = self.token_refs(node);
-        let is_appending = tokens
-            .first()
-            .is_some_and(|token| self.token_matches_keyword(token, "appending"));
-        let is_table = tokens
-            .iter()
-            .any(|token| self.token_matches_keyword(token, "table"));
-        let is_corresponding = tokens
-            .iter()
-            .any(|token| self.token_matches_keyword(token, "corresponding"));
+        let Some(into_clause) = SelectIntoClause::cast(self.syntax(node)) else {
+            return;
+        };
+        let is_appending = into_clause.has_keyword(self.source, "appending");
+        let is_table = into_clause.has_keyword(self.source, "table");
+        let is_corresponding = into_clause.has_keyword(self.source, "corresponding");
 
         let mut target_name = None;
         let mut is_inline = false;
-        for child in self.file.children(node) {
+        let children: Vec<_> = into_clause
+            .target_children()
+            .map(|child| child.id())
+            .collect();
+        for child in children {
             match self.file.kind(child) {
                 SyntaxKind::DataInlineDecl => {
                     is_inline = true;
@@ -2273,44 +2265,61 @@ impl<'a> Collector<'a> {
             },
         });
 
-        let tokens = self.token_refs(node);
+        let syntax_tokens = self.syntax_token_nodes(node);
         match kind {
             SqlClauseKind::ForAllEntries => {
-                if let Some(in_idx) = tokens
+                if let Some(in_idx) = syntax_tokens
                     .iter()
-                    .position(|token| self.token_matches_keyword(token, "in"))
+                    .position(|token| token.text.eq_ignore_ascii_case("in"))
                 {
                     let expr_start = in_idx + 1;
-                    if expr_start < tokens.len() {
-                        self.collect_token_expression_refs(&tokens[expr_start..], scope, true);
+                    if expr_start < syntax_tokens.len() {
+                        self.collect_token_expression_refs_infos(
+                            &syntax_tokens[expr_start..],
+                            scope,
+                            true,
+                        );
                     }
                 }
             }
             _ => {
-                self.collect_sql_host_refs(&tokens, scope);
-                self.collect_sql_name_refs_from_tokens(query_id, scope, &tokens, true);
+                self.collect_sql_host_refs_from_syntax_tokens(&syntax_tokens, scope);
+                self.collect_sql_name_refs_from_syntax_tokens(
+                    query_id,
+                    scope,
+                    &syntax_tokens,
+                    true,
+                );
             }
         }
     }
 
     fn collect_sql_host_refs_in_node(&mut self, node: NodeId, scope: ScopeId) {
-        let tokens = self.token_refs(node);
-        self.collect_sql_host_refs(&tokens, scope);
+        let tokens = self.syntax_token_nodes(node);
+        self.collect_sql_host_refs_from_syntax_tokens(&tokens, scope);
     }
 
     fn collect_sql_name_refs_in_node(&mut self, query_id: usize, node: NodeId, scope: ScopeId) {
-        let tokens = self.token_refs(node);
-        self.collect_sql_name_refs_from_tokens(query_id, scope, &tokens, false);
+        let tokens = self.syntax_token_nodes(node);
+        self.collect_sql_name_refs_from_syntax_tokens(query_id, scope, &tokens, false);
     }
 
-    fn collect_sql_host_refs(&mut self, tokens: &[&'a Token], scope: ScopeId) {
+    fn collect_sql_host_refs_from_syntax_tokens(
+        &mut self,
+        tokens: &[SyntaxTokenInfo],
+        scope: ScopeId,
+    ) {
         let mut idx = 0usize;
         while idx < tokens.len() {
-            if tokens[idx].kind == TokenKind::At {
+            if tokens[idx].text.as_ref() == "@" {
                 let expr_start = idx + 1;
-                let expr_end = self.sql_host_expr_end(tokens, expr_start);
+                let expr_end = self.sql_host_expr_end_syntax_tokens(tokens, expr_start);
                 if expr_start < expr_end {
-                    self.collect_token_expression_refs(&tokens[expr_start..expr_end], scope, true);
+                    self.collect_token_expression_refs_infos(
+                        &tokens[expr_start..expr_end],
+                        scope,
+                        true,
+                    );
                 }
                 idx = expr_end.max(expr_start);
             } else {
@@ -2319,23 +2328,22 @@ impl<'a> Collector<'a> {
         }
     }
 
-    fn collect_sql_name_refs_from_tokens(
+    fn collect_sql_name_refs_from_syntax_tokens(
         &mut self,
         query_id: usize,
         scope: ScopeId,
-        tokens: &[&'a Token],
-        // When true (WHERE / HAVING / JOIN ON), bare identifiers that resolve as ABAP data objects
-        // are host variables, not unqualified SQL column names.
+        tokens: &[SyntaxTokenInfo],
         open_sql_predicate: bool,
     ) {
         let mut idx = 0usize;
         while idx < tokens.len() {
-            let token = tokens[idx];
-            match token.kind {
-                TokenKind::At => {
-                    idx = self.sql_host_expr_end(tokens, idx + 1);
+            let token = &tokens[idx];
+            let text = token.text.as_ref();
+            match text {
+                "@" => {
+                    idx = self.sql_host_expr_end_syntax_tokens(tokens, idx + 1);
                 }
-                TokenKind::Star => {
+                "*" => {
                     self.push_sql_name_ref(
                         query_id,
                         scope,
@@ -2346,78 +2354,75 @@ impl<'a> Collector<'a> {
                     );
                     idx += 1;
                 }
-                TokenKind::Ident => {
-                    if self.sql_token_is_keyword(token) {
+                ":" | "," | "." | "(" | ")" | "[" | "]" | "{" | "}" | "=" | "->" | "=>" | "-" => {
+                    idx += 1;
+                }
+                _ => {
+                    if self.sql_token_is_keyword_text(text) {
                         idx += 1;
                         continue;
                     }
-                    if tokens
-                        .get(idx + 1)
-                        .is_some_and(|next| next.kind == TokenKind::Tilde)
+                    if tokens.get(idx + 1).map(|next| next.text.as_ref()) == Some("~")
                         && let Some(third) = tokens.get(idx + 2)
                     {
-                        if third.kind == TokenKind::Star {
+                        let third_text = third.text.as_ref();
+                        if third_text == "*" {
                             self.push_sql_name_ref(
                                 query_id,
                                 scope,
                                 token.range.start..third.range.end,
                                 Arc::<str>::from("*"),
-                                Some(Arc::<str>::from(
-                                    token.lexeme(self.source).to_ascii_lowercase(),
-                                )),
+                                Some(Arc::<str>::from(text.to_ascii_lowercase())),
                                 SqlNameRefKind::QualifiedStar,
                             );
                             idx += 3;
                             continue;
                         }
-                        if third.kind == TokenKind::Ident {
+                        if !self.sql_token_is_keyword_text(third_text)
+                            && !matches!(
+                                third_text,
+                                ":" | "," | "." | "(" | ")" | "[" | "]" | "{" | "}"
+                            )
+                        {
                             self.push_sql_name_ref(
                                 query_id,
                                 scope,
                                 token.range.start..third.range.end,
-                                Arc::<str>::from(third.lexeme(self.source).to_ascii_lowercase()),
-                                Some(Arc::<str>::from(
-                                    token.lexeme(self.source).to_ascii_lowercase(),
-                                )),
+                                Arc::<str>::from(third_text.to_ascii_lowercase()),
+                                Some(Arc::<str>::from(text.to_ascii_lowercase())),
                                 SqlNameRefKind::QualifiedColumn,
                             );
                             idx += 3;
                             continue;
                         }
                     }
-                    if tokens
-                        .get(idx + 1)
-                        .is_some_and(|next| next.kind == TokenKind::LParen)
-                    {
+                    if tokens.get(idx + 1).map(|next| next.text.as_ref()) == Some("(") {
                         self.push_sql_name_ref(
                             query_id,
                             scope,
                             token.range.clone(),
-                            Arc::<str>::from(token.lexeme(self.source).to_ascii_lowercase()),
+                            Arc::<str>::from(text.to_ascii_lowercase()),
                             None,
                             SqlNameRefKind::Aggregate,
                         );
                         idx += 1;
                         continue;
                     }
-                    if idx > 0 && self.token_matches_keyword(tokens[idx - 1], "as") {
+                    if idx > 0 && tokens[idx - 1].text.eq_ignore_ascii_case("as") {
                         idx += 1;
                         continue;
                     }
-                    let name = Arc::<str>::from(token.lexeme(self.source).to_ascii_lowercase());
+                    let name = Arc::<str>::from(text.to_ascii_lowercase());
                     if open_sql_predicate {
-                        let next_kind = tokens.get(idx + 1).map(|next| next.kind);
-                        if !matches!(
-                            next_kind,
-                            Some(
-                                TokenKind::Tilde
-                                    | TokenKind::Minus
-                                    | TokenKind::Arrow
-                                    | TokenKind::FatArrow
-                            )
-                        ) && self
-                            .lookup_symbol_in_scope_chain(scope, Namespace::Value, name.as_ref())
-                            .is_some()
+                        let next_text = tokens.get(idx + 1).map(|next| next.text.as_ref());
+                        if !matches!(next_text, Some("~" | "-" | "->" | "=>"))
+                            && self
+                                .lookup_symbol_in_scope_chain(
+                                    scope,
+                                    Namespace::Value,
+                                    name.as_ref(),
+                                )
+                                .is_some()
                         {
                             self.add_reference(
                                 scope,
@@ -2440,7 +2445,6 @@ impl<'a> Collector<'a> {
                     );
                     idx += 1;
                 }
-                _ => idx += 1,
             }
         }
     }
@@ -2482,78 +2486,9 @@ impl<'a> Collector<'a> {
         }
     }
 
-    fn sql_column_ref_parts(
-        &self,
-        node: NodeId,
-    ) -> Option<(Option<Arc<str>>, Arc<str>, TextRange)> {
-        let tokens = self.syntax(node).token_descendants();
-        if tokens.len() == 1
-            && let Some(text) = tokens[0].text(self.source)
-        {
-            return Some((
-                None,
-                Arc::<str>::from(text.to_ascii_lowercase()),
-                tokens[0].range(),
-            ));
-        }
-        if tokens.len() == 3
-            && let (Some(qualifier), Some(separator), Some(column)) = (
-                tokens[0].text(self.source),
-                tokens[1].text(self.source),
-                tokens[2].text(self.source),
-            )
-            && separator == "~"
-        {
-            return Some((
-                Some(Arc::<str>::from(qualifier.to_ascii_lowercase())),
-                Arc::<str>::from(column.to_ascii_lowercase()),
-                tokens[0].range().start..tokens[2].range().end,
-            ));
-        }
-        None
-    }
-
-    fn sql_qualified_name_parts(&self, node: NodeId, star: bool) -> Option<(Arc<str>, TextRange)> {
-        let tokens = self.syntax(node).token_descendants();
-        if tokens.len() == 3
-            && let (Some(qualifier), Some(separator), Some(last)) = (
-                tokens[0].text(self.source),
-                tokens[1].text(self.source),
-                tokens[2].text(self.source),
-            )
-            && separator == "~"
-            && ((star && last == "*") || (!star && last != "*"))
-        {
-            return Some((
-                Arc::<str>::from(qualifier.to_ascii_lowercase()),
-                tokens[0].range().start..tokens[2].range().end,
-            ));
-        }
-        None
-    }
-
-    fn token_span_range(&self, tokens: &[&'a Token]) -> Option<TextRange> {
-        let first = tokens.first()?;
-        let last = tokens.last()?;
-        Some(first.range.start..last.range.end)
-    }
-
-    fn token_span_text(&self, tokens: &[&'a Token]) -> Option<Arc<str>> {
-        let range = self.token_span_range(tokens)?;
-        let text = self.source.get(range)?;
-        let lowered = text.trim().to_ascii_lowercase();
-        if lowered.is_empty() {
-            return None;
-        }
-        Some(Arc::<str>::from(lowered))
-    }
-
-    fn sql_token_is_keyword(&self, token: &Token) -> bool {
-        if token.kind != TokenKind::Ident {
-            return false;
-        }
+    fn sql_token_is_keyword_text(&self, text: &str) -> bool {
         matches!(
-            token.lexeme(self.source).to_ascii_lowercase().as_str(),
+            text.to_ascii_lowercase().as_str(),
             "select"
                 | "single"
                 | "distinct"
@@ -2595,48 +2530,27 @@ impl<'a> Collector<'a> {
         )
     }
 
-    fn sql_host_expr_end(&self, tokens: &[&'a Token], start: usize) -> usize {
+    fn sql_host_expr_end_syntax_tokens(&self, tokens: &[SyntaxTokenInfo], start: usize) -> usize {
         let mut paren = 0i32;
         let mut bracket = 0i32;
         let mut brace = 0i32;
         let mut idx = start;
         while idx < tokens.len() {
-            let token = tokens[idx];
-            if paren == 0 && bracket == 0 && brace == 0 {
-                if token.kind == TokenKind::Comma
-                    || token.kind == TokenKind::Eq
-                    || token.kind == TokenKind::Lt
-                    || token.kind == TokenKind::Gt
-                    || token.kind == TokenKind::Le
-                    || token.kind == TokenKind::Ge
-                    || token.kind == TokenKind::Ne
-                    || self.sql_token_is_keyword(token)
-                {
-                    break;
-                }
+            let text = tokens[idx].text.as_ref();
+            if paren == 0
+                && bracket == 0
+                && brace == 0
+                && (matches!(text, "," | ".") || self.sql_token_is_keyword_text(text))
+            {
+                break;
             }
-            match token.kind {
-                TokenKind::LParen => paren += 1,
-                TokenKind::RParen => {
-                    if paren == 0 {
-                        break;
-                    }
-                    paren -= 1;
-                }
-                TokenKind::LBracket => bracket += 1,
-                TokenKind::RBracket => {
-                    if bracket == 0 {
-                        break;
-                    }
-                    bracket -= 1;
-                }
-                TokenKind::LBrace => brace += 1,
-                TokenKind::RBrace => {
-                    if brace == 0 {
-                        break;
-                    }
-                    brace -= 1;
-                }
+            match text {
+                "(" => paren += 1,
+                ")" => paren -= 1,
+                "[" => bracket += 1,
+                "]" => bracket -= 1,
+                "{" => brace += 1,
+                "}" => brace -= 1,
                 _ => {}
             }
             idx += 1;
@@ -3007,8 +2921,9 @@ impl<'a> Collector<'a> {
         let by_idx = children.iter().position(|&c| {
             self.file.kind(c) == SyntaxKind::Token
                 && self
-                    .token_for_node(c)
-                    .is_some_and(|t| self.token_matches_keyword(t, "by"))
+                    .syntax(c)
+                    .text(self.source)
+                    .is_some_and(|text| text.eq_ignore_ascii_case("by"))
         });
         let Some(by_idx) = by_idx else {
             self.walk_children(node, scope);
@@ -3085,20 +3000,20 @@ impl<'a> Collector<'a> {
     /// `MESSAGE` variants used in real programs: static codes, `ID … TYPE … NUMBER …`, dynamic
     /// `TYPE`, `DISPLAY LIKE`, `WITH` placeholders, `INTO` / `INTO DATA( )`.
     fn collect_message_stmt(&mut self, node: NodeId, scope: ScopeId) {
-        let sig = self.significant_stmt_tokens(node);
-        if sig.is_empty() || !self.token_matches_keyword(sig[0], "message") {
+        let sig = self.significant_stmt_token_infos(node);
+        if sig.is_empty() || !sig[0].text.eq_ignore_ascii_case("message") {
             return;
         }
         let period_pos = sig
             .iter()
-            .position(|t| t.kind == TokenKind::Period)
+            .position(|t| t.text.as_ref() == ".")
             .unwrap_or(sig.len());
 
         let with_ix = self
-            .find_top_level_keyword_index(&sig, 1, "with")
+            .find_top_level_keyword_index_infos(&sig, 1, "with")
             .filter(|&ix| ix < period_pos);
         let into_ix = self
-            .find_top_level_keyword_index(&sig, 1, "into")
+            .find_top_level_keyword_index_infos(&sig, 1, "into")
             .filter(|&ix| ix < period_pos);
 
         let head_end = [with_ix, into_ix, Some(period_pos)]
@@ -3110,79 +3025,85 @@ impl<'a> Collector<'a> {
         // --- Head: ID … TYPE … NUMBER … or MESSAGE dobj TYPE … [DISPLAY LIKE …] or static code ---
         if sig
             .get(1)
-            .is_some_and(|t| self.token_matches_keyword(t, "id"))
+            .is_some_and(|t| t.text.eq_ignore_ascii_case("id"))
         {
             let mut i = 2usize;
-            let end_mid = self.consume_concatenate_operand(
+            let end_mid = self.consume_concatenate_operand_infos(
                 &sig,
                 i,
                 &["type", "with", "into", "display", "raising"],
             );
             if end_mid > i {
-                self.collect_token_expression_refs(&sig[i..end_mid], scope, true);
+                self.collect_token_expression_refs_infos(&sig[i..end_mid], scope, true);
             }
             i = end_mid;
             if i < head_end
                 && sig
                     .get(i)
-                    .is_some_and(|t| self.token_matches_keyword(t, "type"))
+                    .is_some_and(|t| t.text.eq_ignore_ascii_case("type"))
             {
                 i += 1;
-                let end_ty = self.consume_concatenate_operand(
+                let end_ty = self.consume_concatenate_operand_infos(
                     &sig,
                     i,
                     &["number", "with", "into", "display", "raising"],
                 );
                 if end_ty > i {
-                    self.collect_token_expression_refs(&sig[i..end_ty], scope, true);
+                    self.collect_token_expression_refs_infos(&sig[i..end_ty], scope, true);
                 }
                 i = end_ty;
             }
             if i < head_end
                 && sig
                     .get(i)
-                    .is_some_and(|t| self.token_matches_keyword(t, "number"))
+                    .is_some_and(|t| t.text.eq_ignore_ascii_case("number"))
             {
                 i += 1;
-                let end_num = self.consume_concatenate_operand(
+                let end_num = self.consume_concatenate_operand_infos(
                     &sig,
                     i,
                     &["with", "into", "display", "raising"],
                 );
                 if end_num > i {
-                    self.collect_token_expression_refs(&sig[i..end_num], scope, true);
+                    self.collect_token_expression_refs_infos(&sig[i..end_num], scope, true);
                 }
             }
         } else if let Some(ti) = self
-            .find_top_level_keyword_index(&sig, 1, "type")
+            .find_top_level_keyword_index_infos(&sig, 1, "type")
             .filter(|&ti| ti < head_end)
         {
             if ti > 1 {
-                self.collect_token_expression_refs(&sig[1..ti], scope, true);
+                self.collect_token_expression_refs_infos(&sig[1..ti], scope, true);
             }
             let mut i = ti + 1;
-            let end_mty =
-                self.consume_concatenate_operand(&sig, i, &["display", "with", "into", "raising"]);
+            let end_mty = self.consume_concatenate_operand_infos(
+                &sig,
+                i,
+                &["display", "with", "into", "raising"],
+            );
             if end_mty > i {
-                self.collect_token_expression_refs(&sig[i..end_mty], scope, true);
+                self.collect_token_expression_refs_infos(&sig[i..end_mty], scope, true);
             }
             i = end_mty;
             if i < head_end
                 && sig
                     .get(i)
-                    .is_some_and(|t| self.token_matches_keyword(t, "display"))
+                    .is_some_and(|t| t.text.eq_ignore_ascii_case("display"))
             {
                 i += 1;
                 if i < head_end
                     && sig
                         .get(i)
-                        .is_some_and(|t| self.token_matches_keyword(t, "like"))
+                        .is_some_and(|t| t.text.eq_ignore_ascii_case("like"))
                 {
                     i += 1;
-                    let end_like =
-                        self.consume_concatenate_operand(&sig, i, &["with", "into", "raising"]);
+                    let end_like = self.consume_concatenate_operand_infos(
+                        &sig,
+                        i,
+                        &["with", "into", "raising"],
+                    );
                     if end_like > i {
-                        self.collect_token_expression_refs(&sig[i..end_like], scope, true);
+                        self.collect_token_expression_refs_infos(&sig[i..end_like], scope, true);
                     }
                 }
             }
@@ -3191,8 +3112,8 @@ impl<'a> Collector<'a> {
         // --- WITH operands ---
         if let Some(wi) = with_ix {
             let end_with = [
-                self.find_top_level_keyword_index(&sig, wi + 1, "into"),
-                self.find_top_level_keyword_index(&sig, wi + 1, "display"),
+                self.find_top_level_keyword_index_infos(&sig, wi + 1, "into"),
+                self.find_top_level_keyword_index_infos(&sig, wi + 1, "display"),
                 Some(period_pos),
             ]
             .into_iter()
@@ -3202,13 +3123,14 @@ impl<'a> Collector<'a> {
 
             let mut idx = wi + 1;
             while idx < end_with {
-                let raw_end = self.consume_concatenate_operand(&sig, idx, &["into", "display"]);
+                let raw_end =
+                    self.consume_concatenate_operand_infos(&sig, idx, &["into", "display"]);
                 let end_op = raw_end.min(end_with);
                 if end_op <= idx {
                     idx += 1;
                     continue;
                 }
-                self.collect_token_expression_refs(&sig[idx..end_op], scope, true);
+                self.collect_token_expression_refs_infos(&sig[idx..end_op], scope, true);
                 idx = end_op;
             }
         }
@@ -3219,20 +3141,15 @@ impl<'a> Collector<'a> {
             if idx >= period_pos {
                 return;
             }
-            if self.token_matches_keyword(sig[idx], "data") {
+            if sig[idx].text.eq_ignore_ascii_case("data") {
                 idx += 1;
-                if sig.get(idx).map(|t| t.kind) == Some(TokenKind::LParen) {
+                if sig.get(idx).is_some_and(|t| t.text.as_ref() == "(") {
                     let lpar = idx;
-                    if let Some(rpar) = self.find_matching_group_end(
-                        &sig,
-                        lpar,
-                        TokenKind::LParen,
-                        TokenKind::RParen,
-                    ) {
+                    if let Some(rpar) = self.find_matching_group_end_infos(&sig, lpar, "(", ")") {
                         let inner_start = lpar + 1;
-                        for &t in &sig[inner_start..rpar] {
-                            if t.kind == TokenKind::Ident {
-                                let name = Arc::from(t.lexeme(self.source).to_ascii_lowercase());
+                        for t in &sig[inner_start..rpar] {
+                            if self.syntax_token_is_ident_like(t) {
+                                let name = Arc::from(t.text.to_ascii_lowercase());
                                 self.declare_symbol(
                                     scope,
                                     name,
@@ -3247,49 +3164,50 @@ impl<'a> Collector<'a> {
                     }
                 }
             } else {
-                let raw_end = self.consume_concatenate_operand(&sig, idx, &["raising", "display"]);
+                let raw_end =
+                    self.consume_concatenate_operand_infos(&sig, idx, &["raising", "display"]);
                 let end_op = raw_end.min(period_pos);
                 if end_op > idx {
-                    self.collect_token_expression_refs(&sig[idx..end_op], scope, true);
+                    self.collect_token_expression_refs_infos(&sig[idx..end_op], scope, true);
                 }
             }
         }
     }
 
     fn collect_generic_simple_stmt(&mut self, node: NodeId, scope: ScopeId) {
-        let significant = self.significant_stmt_tokens(node);
+        let significant = self.significant_stmt_token_infos(node);
         if significant
             .first()
-            .is_some_and(|token| self.token_matches_keyword(token, "clear"))
+            .is_some_and(|token| token.text.eq_ignore_ascii_case("clear"))
         {
-            self.collect_clear_stmt(&significant, scope);
+            self.collect_clear_stmt_infos(&significant, scope);
             return;
         }
         if significant
             .first()
-            .is_some_and(|token| self.token_matches_keyword(token, "convert"))
+            .is_some_and(|token| token.text.eq_ignore_ascii_case("convert"))
         {
-            self.collect_convert_stmt(&significant, scope);
+            self.collect_convert_stmt_infos(&significant, scope);
             return;
         }
         if significant
             .first()
-            .is_some_and(|token| self.token_matches_keyword(token, "replace"))
+            .is_some_and(|token| token.text.eq_ignore_ascii_case("replace"))
         {
-            self.collect_replace_stmt(&significant, scope);
+            self.collect_replace_stmt_infos(&significant, scope);
             return;
         }
-        self.collect_token_expression_refs(&significant, scope, false);
+        self.collect_token_expression_refs_infos(&significant, scope, false);
     }
 
-    fn collect_clear_stmt(&mut self, tokens: &[&Token], scope: ScopeId) {
-        if tokens.is_empty() || !self.token_matches_keyword(tokens[0], "clear") {
+    fn collect_clear_stmt_infos(&mut self, tokens: &[SyntaxTokenInfo], scope: ScopeId) {
+        if tokens.is_empty() || !tokens[0].text.eq_ignore_ascii_case("clear") {
             return;
         }
 
         let start_idx = if tokens
             .get(1)
-            .is_some_and(|token| token.kind == TokenKind::Colon)
+            .is_some_and(|token| token.text.as_ref() == ":")
         {
             2
         } else {
@@ -3299,146 +3217,155 @@ impl<'a> Collector<'a> {
             return;
         }
 
-        self.collect_token_expression_refs(&tokens[start_idx..], scope, true);
+        self.collect_token_expression_refs_infos(&tokens[start_idx..], scope, true);
     }
 
-    fn collect_convert_stmt(&mut self, tokens: &[&Token], scope: ScopeId) {
-        if tokens.is_empty() || !self.token_matches_keyword(tokens[0], "convert") {
+    fn collect_convert_stmt_infos(&mut self, tokens: &[SyntaxTokenInfo], scope: ScopeId) {
+        if tokens.is_empty() || !tokens[0].text.eq_ignore_ascii_case("convert") {
             return;
         }
 
         let mut idx = 1usize;
         if tokens
             .get(idx)
-            .is_some_and(|token| self.token_matches_keyword(token, "date"))
+            .is_some_and(|token| token.text.eq_ignore_ascii_case("date"))
         {
             idx += 1;
-            let end_idx = self.consume_concatenate_operand(tokens, idx, &["time", "into"]);
+            let end_idx = self.consume_concatenate_operand_infos(tokens, idx, &["time", "into"]);
             if end_idx > idx {
-                self.collect_token_expression_refs(&tokens[idx..end_idx], scope, true);
+                self.collect_token_expression_refs_infos(&tokens[idx..end_idx], scope, true);
             }
             idx = end_idx;
         }
 
         if tokens
             .get(idx)
-            .is_some_and(|token| self.token_matches_keyword(token, "time"))
+            .is_some_and(|token| token.text.eq_ignore_ascii_case("time"))
             && !tokens
                 .get(idx + 1)
-                .is_some_and(|token| self.token_matches_keyword(token, "zone"))
+                .is_some_and(|token| token.text.eq_ignore_ascii_case("zone"))
         {
             idx += 1;
-            let end_idx = self.consume_concatenate_operand(tokens, idx, &["into"]);
+            let end_idx = self.consume_concatenate_operand_infos(tokens, idx, &["into"]);
             if end_idx > idx {
-                self.collect_token_expression_refs(&tokens[idx..end_idx], scope, true);
+                self.collect_token_expression_refs_infos(&tokens[idx..end_idx], scope, true);
             }
             idx = end_idx;
         }
 
         if tokens
             .get(idx)
-            .is_some_and(|token| self.token_matches_keyword(token, "into"))
+            .is_some_and(|token| token.text.eq_ignore_ascii_case("into"))
         {
             idx += 1;
         }
         if tokens
             .get(idx)
-            .is_some_and(|token| self.token_matches_keyword(token, "time"))
+            .is_some_and(|token| token.text.eq_ignore_ascii_case("time"))
         {
             idx += 1;
         }
         if tokens
             .get(idx)
-            .is_some_and(|token| self.token_matches_keyword(token, "stamp"))
+            .is_some_and(|token| token.text.eq_ignore_ascii_case("stamp"))
         {
             idx += 1;
         }
 
-        let target_end = self.consume_concatenate_operand(tokens, idx, &["time"]);
+        let target_end = self.consume_concatenate_operand_infos(tokens, idx, &["time"]);
         if target_end > idx {
-            self.collect_token_expression_refs(&tokens[idx..target_end], scope, true);
+            self.collect_token_expression_refs_infos(&tokens[idx..target_end], scope, true);
         }
         idx = target_end;
 
         if tokens
             .get(idx)
-            .is_some_and(|token| self.token_matches_keyword(token, "time"))
+            .is_some_and(|token| token.text.eq_ignore_ascii_case("time"))
             && tokens
                 .get(idx + 1)
-                .is_some_and(|token| self.token_matches_keyword(token, "zone"))
+                .is_some_and(|token| token.text.eq_ignore_ascii_case("zone"))
         {
             idx += 2;
-            let end_idx = self.consume_concatenate_operand(tokens, idx, &[]);
+            let end_idx = self.consume_concatenate_operand_infos(tokens, idx, &[]);
             if end_idx > idx {
-                self.collect_token_expression_refs(&tokens[idx..end_idx], scope, true);
+                self.collect_token_expression_refs_infos(&tokens[idx..end_idx], scope, true);
             }
         }
     }
 
-    fn collect_replace_stmt(&mut self, tokens: &[&Token], scope: ScopeId) {
-        if tokens.is_empty() || !self.token_matches_keyword(tokens[0], "replace") {
+    fn collect_replace_stmt_infos(&mut self, tokens: &[SyntaxTokenInfo], scope: ScopeId) {
+        if tokens.is_empty() || !tokens[0].text.eq_ignore_ascii_case("replace") {
             return;
         }
 
         let mut idx = 1usize;
         if tokens.get(idx).is_some_and(|token| {
-            self.token_matches_keyword(token, "first") || self.token_matches_keyword(token, "all")
+            token.text.eq_ignore_ascii_case("first") || token.text.eq_ignore_ascii_case("all")
         }) {
             idx += 1;
             if tokens.get(idx).is_some_and(|token| {
-                self.token_matches_keyword(token, "occurrence")
-                    || self.token_matches_keyword(token, "occurrences")
+                token.text.eq_ignore_ascii_case("occurrence")
+                    || token.text.eq_ignore_ascii_case("occurrences")
             }) {
                 idx += 1;
             }
         }
         if tokens
             .get(idx)
-            .is_some_and(|token| self.token_matches_keyword(token, "of"))
+            .is_some_and(|token| token.text.eq_ignore_ascii_case("of"))
         {
             idx += 1;
         }
         if tokens
             .get(idx)
-            .is_some_and(|token| self.token_matches_keyword(token, "regex"))
+            .is_some_and(|token| token.text.eq_ignore_ascii_case("regex"))
         {
             idx += 1;
         }
 
-        let source_end = self.consume_concatenate_operand(tokens, idx, &["in", "with"]);
+        let source_end = self.consume_concatenate_operand_infos(tokens, idx, &["in", "with"]);
         if source_end > idx {
-            self.collect_token_expression_refs(&tokens[idx..source_end], scope, true);
+            self.collect_token_expression_refs_infos(&tokens[idx..source_end], scope, true);
         }
         idx = source_end;
 
         while idx < tokens.len() {
-            let token = tokens[idx];
-            if token.kind == TokenKind::Period {
+            let token = &tokens[idx];
+            if token.text.as_ref() == "." {
                 break;
             }
-            if self.token_matches_keyword(token, "in") {
+            if token.text.eq_ignore_ascii_case("in") {
                 if tokens.get(idx + 1).is_some_and(|next| {
-                    self.token_matches_keyword(next, "character")
-                        || self.token_matches_keyword(next, "byte")
+                    next.text.eq_ignore_ascii_case("character")
+                        || next.text.eq_ignore_ascii_case("byte")
                 }) && tokens
                     .get(idx + 2)
-                    .is_some_and(|next| self.token_matches_keyword(next, "mode"))
+                    .is_some_and(|next| next.text.eq_ignore_ascii_case("mode"))
                 {
                     idx += 3;
                     continue;
                 }
 
-                let end_idx = self.consume_concatenate_operand(tokens, idx + 1, &["with", "in"]);
+                let end_idx =
+                    self.consume_concatenate_operand_infos(tokens, idx + 1, &["with", "in"]);
                 if end_idx > idx + 1 {
-                    self.collect_token_expression_refs(&tokens[idx + 1..end_idx], scope, true);
+                    self.collect_token_expression_refs_infos(
+                        &tokens[idx + 1..end_idx],
+                        scope,
+                        true,
+                    );
                 }
                 idx = end_idx;
                 continue;
             }
-            if self.token_matches_keyword(token, "with") {
-                let end_idx = self.consume_concatenate_operand(tokens, idx + 1, &["in"]);
+            if token.text.eq_ignore_ascii_case("with") {
+                let end_idx = self.consume_concatenate_operand_infos(tokens, idx + 1, &["in"]);
                 if end_idx > idx + 1 {
-                    self.collect_token_expression_refs(&tokens[idx + 1..end_idx], scope, true);
+                    self.collect_token_expression_refs_infos(
+                        &tokens[idx + 1..end_idx],
+                        scope,
+                        true,
+                    );
                 }
                 idx = end_idx;
                 continue;
@@ -3457,8 +3384,8 @@ impl<'a> Collector<'a> {
         for child in self.file.children(node) {
             match self.file.kind(child) {
                 SyntaxKind::Token => {
-                    if let Some(token) = self.token_for_node(child)
-                        && token.kind != TokenKind::Comment
+                    if let Some(token) = self.syntax_token_nodes(child).into_iter().next()
+                        && !self.syntax_token_is_comment(&token)
                     {
                         significant.push(token);
                     }
@@ -3474,7 +3401,7 @@ impl<'a> Collector<'a> {
         }
 
         if significant.len() > 4 {
-            self.collect_token_expression_refs(&significant[4..], scope, true);
+            self.collect_token_expression_refs_infos(&significant[4..], scope, true);
         }
     }
 
@@ -3494,16 +3421,16 @@ impl<'a> Collector<'a> {
             self.walk_children(node, scope);
             return;
         }
-        let significant = self.significant_stmt_tokens(node);
+        let significant = self.significant_stmt_token_infos(node);
         let Some((_, tail)) = significant.split_first() else {
             return;
         };
-        self.collect_token_expression_refs(tail, scope, true);
+        self.collect_token_expression_refs_infos(tail, scope, true);
     }
 
     fn collect_perform_stmt_node(&mut self, node: NodeId, scope: ScopeId) {
-        let significant = self.significant_stmt_tokens(node);
-        self.collect_perform_stmt(&significant, scope);
+        let significant = self.significant_stmt_token_infos(node);
+        self.collect_perform_stmt_infos(&significant, scope);
     }
 
     fn collect_create_object_stmt_node(&mut self, node: NodeId, scope: ScopeId) {
@@ -3511,8 +3438,8 @@ impl<'a> Collector<'a> {
             self.walk_children(node, scope);
             return;
         }
-        let significant = self.significant_stmt_tokens(node);
-        self.collect_create_object_stmt(&significant, scope);
+        let significant = self.significant_stmt_token_infos(node);
+        self.collect_create_object_stmt_infos(&significant, scope);
     }
 
     fn collect_call_method_stmt_node(&mut self, node: NodeId, scope: ScopeId) {
@@ -3603,15 +3530,11 @@ impl<'a> Collector<'a> {
             self.walk_children(node, scope);
             return;
         }
-        let tokens = self.simple_stmt_tokens(node);
-        let significant: Vec<_> = tokens
-            .into_iter()
-            .filter(|token| token.kind != TokenKind::Comment)
-            .collect();
+        let significant = self.significant_stmt_token_infos(node);
         let Some((_, tail)) = significant.split_first() else {
             return;
         };
-        self.collect_token_expression_refs(tail, scope, true);
+        self.collect_token_expression_refs_infos(tail, scope, true);
     }
 
     fn collect_concatenate_stmt(&mut self, node: NodeId, scope: ScopeId) {
@@ -3619,53 +3542,57 @@ impl<'a> Collector<'a> {
             self.walk_children(node, scope);
             return;
         }
-        let significant = self.significant_stmt_tokens(node);
-        if significant.is_empty() || !self.token_matches_keyword(significant[0], "concatenate") {
+        let significant = self.significant_stmt_token_infos(node);
+        if significant.is_empty() || !significant[0].text.eq_ignore_ascii_case("concatenate") {
             return;
         }
 
-        let Some(into_idx) = self.find_top_level_keyword_index(&significant, 1, "into") else {
-            self.collect_token_expression_refs(&significant[1..], scope, true);
+        let Some(into_idx) = self.find_top_level_keyword_index_infos(&significant, 1, "into")
+        else {
+            self.collect_token_expression_refs_infos(&significant[1..], scope, true);
             return;
         };
 
         let mut idx = 1usize;
         while idx < into_idx {
-            let end_idx = self.consume_concatenate_operand(&significant, idx, &["into"]);
+            let end_idx = self.consume_concatenate_operand_infos(&significant, idx, &["into"]);
             if end_idx == idx {
                 idx += 1;
                 continue;
             }
-            self.collect_token_expression_refs(&significant[idx..end_idx], scope, true);
+            self.collect_token_expression_refs_infos(&significant[idx..end_idx], scope, true);
             idx = end_idx;
         }
 
         idx = into_idx + 1;
-        let target_end =
-            self.consume_concatenate_operand(&significant, idx, &["separated", "respecting", "in"]);
+        let target_end = self.consume_concatenate_operand_infos(
+            &significant,
+            idx,
+            &["separated", "respecting", "in"],
+        );
         if target_end > idx {
-            self.collect_token_expression_refs(&significant[idx..target_end], scope, true);
+            self.collect_token_expression_refs_infos(&significant[idx..target_end], scope, true);
         }
         idx = target_end;
 
         while idx < significant.len() {
-            let token = significant[idx];
-            if token.kind == TokenKind::Period {
+            let token = &significant[idx];
+            if token.text.as_ref() == "." {
                 break;
             }
-            if self.token_matches_keyword(token, "separated")
+            if token.text.eq_ignore_ascii_case("separated")
                 && significant
                     .get(idx + 1)
-                    .is_some_and(|next| self.token_matches_keyword(next, "by"))
+                    .is_some_and(|next| next.text.eq_ignore_ascii_case("by"))
             {
                 let sep_start = idx + 2;
-                let sep_end = self.consume_concatenate_operand(
+                let sep_end = self.consume_concatenate_operand_infos(
                     &significant,
                     sep_start,
                     &["respecting", "in"],
                 );
                 if sep_end > sep_start {
-                    self.collect_token_expression_refs(
+                    self.collect_token_expression_refs_infos(
                         &significant[sep_start..sep_end],
                         scope,
                         true,
@@ -3674,27 +3601,27 @@ impl<'a> Collector<'a> {
                 idx = sep_end;
                 continue;
             }
-            if self.token_matches_keyword(token, "respecting") {
+            if token.text.eq_ignore_ascii_case("respecting") {
                 idx += 1;
                 if significant
                     .get(idx)
-                    .is_some_and(|next| self.token_matches_keyword(next, "blanks"))
+                    .is_some_and(|next| next.text.eq_ignore_ascii_case("blanks"))
                 {
                     idx += 1;
                 }
                 continue;
             }
-            if self.token_matches_keyword(token, "in") {
+            if token.text.eq_ignore_ascii_case("in") {
                 idx += 1;
                 if significant.get(idx).is_some_and(|next| {
-                    self.token_matches_keyword(next, "character")
-                        || self.token_matches_keyword(next, "byte")
+                    next.text.eq_ignore_ascii_case("character")
+                        || next.text.eq_ignore_ascii_case("byte")
                 }) {
                     idx += 1;
                 }
                 if significant
                     .get(idx)
-                    .is_some_and(|next| self.token_matches_keyword(next, "mode"))
+                    .is_some_and(|next| next.text.eq_ignore_ascii_case("mode"))
                 {
                     idx += 1;
                 }
@@ -3704,16 +3631,16 @@ impl<'a> Collector<'a> {
         }
     }
 
-    fn collect_perform_stmt(&mut self, tokens: &[&Token], scope: ScopeId) {
-        if tokens.len() < 2 || !self.token_matches_keyword(tokens[0], "perform") {
+    fn collect_perform_stmt_infos(&mut self, tokens: &[SyntaxTokenInfo], scope: ScopeId) {
+        if tokens.len() < 2 || !tokens[0].text.eq_ignore_ascii_case("perform") {
             return;
         }
-        let routine = tokens[1];
-        if routine.kind != TokenKind::Ident {
+        let routine = &tokens[1];
+        if !self.syntax_token_is_ident_like(routine) {
             return;
         }
 
-        let routine_name = Arc::<str>::from(routine.lexeme(self.source).to_ascii_lowercase());
+        let routine_name = Arc::<str>::from(routine.text.to_ascii_lowercase());
         self.add_reference(
             scope,
             Arc::clone(&routine_name),
@@ -3733,17 +3660,17 @@ impl<'a> Collector<'a> {
         let mut idx = 2usize;
 
         while idx < tokens.len() {
-            let token = tokens[idx];
-            if token.kind == TokenKind::Period {
+            let token = &tokens[idx];
+            if token.text.as_ref() == "." {
                 break;
             }
 
-            if token.kind == TokenKind::Ident {
-                let next_section = if self.token_matches_keyword(token, "tables") {
+            if self.syntax_token_is_ident_like(token) {
+                let next_section = if token.text.eq_ignore_ascii_case("tables") {
                     Some((PerformParameterSection::Tables, 1))
-                } else if self.token_matches_keyword(token, "using") {
+                } else if token.text.eq_ignore_ascii_case("using") {
                     Some((PerformParameterSection::Using, 2))
-                } else if self.token_matches_keyword(token, "changing") {
+                } else if token.text.eq_ignore_ascii_case("changing") {
                     Some((PerformParameterSection::Changing, 3))
                 } else {
                     None
@@ -3764,7 +3691,7 @@ impl<'a> Collector<'a> {
                 idx += 1;
                 continue;
             };
-            let next_idx = self.consume_perform_argument(tokens, idx);
+            let next_idx = self.consume_perform_argument_infos(tokens, idx);
             if next_idx == idx {
                 idx += 1;
                 continue;
@@ -3812,65 +3739,65 @@ impl<'a> Collector<'a> {
         });
     }
 
-    fn collect_token_expression_refs(
+    fn collect_token_expression_refs_infos(
         &mut self,
-        tokens: &[&Token],
+        tokens: &[SyntaxTokenInfo],
         scope: ScopeId,
         allow_leading_value_ident: bool,
     ) {
         let mut idx = 0usize;
         while idx < tokens.len() {
-            let token = tokens[idx];
-            match token.kind {
-                TokenKind::Comment => {
+            let token = &tokens[idx];
+            match token.text.as_ref() {
+                text if text.trim_start().starts_with('"') => {
                     idx += 1;
                 }
-                TokenKind::LParen => {
-                    if let Some(end_idx) = self.find_matching_group_end(
-                        tokens,
-                        idx,
-                        TokenKind::LParen,
-                        TokenKind::RParen,
-                    ) {
-                        self.collect_token_expression_refs(&tokens[idx + 1..end_idx], scope, true);
+                "(" => {
+                    if let Some(end_idx) = self.find_matching_group_end_infos(tokens, idx, "(", ")")
+                    {
+                        self.collect_token_expression_refs_infos(
+                            &tokens[idx + 1..end_idx],
+                            scope,
+                            true,
+                        );
                         idx = end_idx + 1;
                     } else {
                         idx += 1;
                     }
                 }
-                TokenKind::LBracket => {
-                    if let Some(end_idx) = self.find_matching_group_end(
-                        tokens,
-                        idx,
-                        TokenKind::LBracket,
-                        TokenKind::RBracket,
-                    ) {
-                        self.collect_token_expression_refs(&tokens[idx + 1..end_idx], scope, true);
+                "[" => {
+                    if let Some(end_idx) = self.find_matching_group_end_infos(tokens, idx, "[", "]")
+                    {
+                        self.collect_token_expression_refs_infos(
+                            &tokens[idx + 1..end_idx],
+                            scope,
+                            true,
+                        );
                         idx = end_idx + 1;
                     } else {
                         idx += 1;
                     }
                 }
-                TokenKind::LBrace => {
-                    if let Some(end_idx) = self.find_matching_group_end(
-                        tokens,
-                        idx,
-                        TokenKind::LBrace,
-                        TokenKind::RBrace,
-                    ) {
-                        self.collect_token_expression_refs(&tokens[idx + 1..end_idx], scope, true);
+                "{" => {
+                    if let Some(end_idx) = self.find_matching_group_end_infos(tokens, idx, "{", "}")
+                    {
+                        self.collect_token_expression_refs_infos(
+                            &tokens[idx + 1..end_idx],
+                            scope,
+                            true,
+                        );
                         idx = end_idx + 1;
                     } else {
                         idx += 1;
                     }
                 }
-                TokenKind::Ident => {
-                    if self.token_matches_keyword(token, "new") {
-                        idx = self.collect_new_expression_tokens(tokens, idx, scope);
+                text if self.syntax_token_is_ident_like(token) => {
+                    if text.eq_ignore_ascii_case("new") {
+                        idx = self.collect_new_expression_infos(tokens, idx, scope);
                         continue;
                     }
                     if let Some((next_idx, namespace, base_name, base_range, field_path)) =
-                        self.consume_selector_access_from_tokens(tokens, idx)
+                        self.consume_selector_access_from_infos(tokens, idx)
                     {
                         let method_name =
                             field_path.last().map(|segment| Arc::clone(&segment.name));
@@ -3890,16 +3817,12 @@ impl<'a> Collector<'a> {
                             });
                         }
                         idx = next_idx;
-                        if tokens.get(idx).map(|token| token.kind) == Some(TokenKind::LParen)
-                            && let Some(end_idx) = self.find_matching_group_end(
-                                tokens,
-                                idx,
-                                TokenKind::LParen,
-                                TokenKind::RParen,
-                            )
+                        if tokens.get(idx).map(|token| token.text.as_ref()) == Some("(")
+                            && let Some(end_idx) =
+                                self.find_matching_group_end_infos(tokens, idx, "(", ")")
                         {
                             if let Some(method_name) = method_name {
-                                self.collect_named_arguments_from_tokens(
+                                self.collect_named_arguments_from_infos(
                                     &tokens[idx + 1..end_idx],
                                     scope,
                                     NamedArgumentTarget::Method {
@@ -3909,7 +3832,7 @@ impl<'a> Collector<'a> {
                                     },
                                 );
                             } else {
-                                self.collect_token_expression_refs(
+                                self.collect_token_expression_refs_infos(
                                     &tokens[idx + 1..end_idx],
                                     scope,
                                     true,
@@ -3919,11 +3842,14 @@ impl<'a> Collector<'a> {
                         }
                         continue;
                     }
-                    if self.token_is_expression_value_ident(tokens, idx, allow_leading_value_ident)
-                    {
+                    if self.token_is_expression_value_ident_info(
+                        tokens,
+                        idx,
+                        allow_leading_value_ident,
+                    ) {
                         self.add_reference(
                             scope,
-                            Arc::<str>::from(token.lexeme(self.source).to_ascii_lowercase()),
+                            Arc::<str>::from(text.to_ascii_lowercase()),
                             Namespace::Value,
                             ReferenceKind::Identifier,
                             token.range.clone(),
@@ -3938,44 +3864,42 @@ impl<'a> Collector<'a> {
         }
     }
 
-    fn collect_new_expression_tokens(
+    fn collect_new_expression_infos(
         &mut self,
-        tokens: &[&Token],
+        tokens: &[SyntaxTokenInfo],
         idx: usize,
         scope: ScopeId,
     ) -> usize {
         let mut cursor = idx + 1;
-        while matches!(
-            tokens.get(cursor).map(|token| token.kind),
-            Some(TokenKind::Comment)
-        ) {
+        while tokens
+            .get(cursor)
+            .is_some_and(|token| self.syntax_token_is_comment(token))
+        {
             cursor += 1;
         }
         let Some(lparen_idx) = tokens[cursor..]
             .iter()
-            .position(|token| token.kind == TokenKind::LParen)
+            .position(|token| token.text.as_ref() == "(")
             .map(|relative| cursor + relative)
         else {
             return idx + 1;
         };
         if let Some((name, range)) =
-            self.simple_type_ref_base_from_tokens(&tokens[cursor..lparen_idx])
+            self.simple_type_ref_base_from_infos(&tokens[cursor..lparen_idx])
         {
             self.add_reference(scope, name, Namespace::Type, ReferenceKind::TypeRef, range);
         }
-        if let Some(rparen_idx) =
-            self.find_matching_group_end(tokens, lparen_idx, TokenKind::LParen, TokenKind::RParen)
-        {
+        if let Some(rparen_idx) = self.find_matching_group_end_infos(tokens, lparen_idx, "(", ")") {
             if let Some((name, _)) =
-                self.simple_type_ref_base_from_tokens(&tokens[cursor..lparen_idx])
+                self.simple_type_ref_base_from_infos(&tokens[cursor..lparen_idx])
             {
-                self.collect_named_arguments_from_tokens(
+                self.collect_named_arguments_from_infos(
                     &tokens[lparen_idx + 1..rparen_idx],
                     scope,
                     NamedArgumentTarget::Constructor { type_name: name },
                 );
             } else {
-                self.collect_token_expression_refs(
+                self.collect_token_expression_refs_infos(
                     &tokens[lparen_idx + 1..rparen_idx],
                     scope,
                     true,
@@ -3994,10 +3918,6 @@ impl<'a> Collector<'a> {
             base_name,
             method_name,
         })
-    }
-
-    fn named_argument_section(&self, token: &Token) -> Option<NamedArgumentSection> {
-        self.named_argument_section_from_text(token.lexeme(self.source))
     }
 
     fn named_argument_section_from_text(&self, text: &str) -> Option<NamedArgumentSection> {
@@ -4033,28 +3953,32 @@ impl<'a> Collector<'a> {
         )
     }
 
-    fn call_argument_value_end(&self, tokens: &[&Token], start_idx: usize) -> usize {
+    fn call_argument_value_end_infos(&self, tokens: &[SyntaxTokenInfo], start_idx: usize) -> usize {
         let mut paren = 0i32;
         let mut bracket = 0i32;
         let mut brace = 0i32;
         let mut idx = start_idx;
         while idx < tokens.len() {
-            let token = tokens[idx];
-            match token.kind {
-                TokenKind::LParen => paren += 1,
-                TokenKind::RParen => paren -= 1,
-                TokenKind::LBracket => bracket += 1,
-                TokenKind::RBracket => bracket -= 1,
-                TokenKind::LBrace => brace += 1,
-                TokenKind::RBrace => brace -= 1,
+            let token = &tokens[idx];
+            match token.text.as_ref() {
+                "(" => paren += 1,
+                ")" => paren -= 1,
+                "[" => bracket += 1,
+                "]" => bracket -= 1,
+                "{" => brace += 1,
+                "}" => brace -= 1,
                 _ => {}
             }
             if paren == 0 && bracket == 0 && brace == 0 {
-                if token.kind == TokenKind::Ident && self.named_argument_section(token).is_some() {
+                if self.syntax_token_is_ident_like(token)
+                    && self
+                        .named_argument_section_from_text(token.text.as_ref())
+                        .is_some()
+                {
                     break;
                 }
-                if token.kind == TokenKind::Ident
-                    && tokens.get(idx + 1).map(|next| next.kind) == Some(TokenKind::Eq)
+                if self.syntax_token_is_ident_like(token)
+                    && tokens.get(idx + 1).map(|next| next.text.as_ref()) == Some("=")
                 {
                     break;
                 }
@@ -4138,22 +4062,22 @@ impl<'a> Collector<'a> {
         }
     }
 
-    fn declare_inline_named_argument_target(
+    fn declare_inline_named_argument_target_infos(
         &mut self,
         scope: ScopeId,
         target: &NamedArgumentTarget,
         section: Option<NamedArgumentSection>,
         argument_name: Arc<str>,
-        value_tokens: &[&Token],
+        value_tokens: &[SyntaxTokenInfo],
     ) -> bool {
         if !self.named_argument_section_allows_inline_target(section) {
             return false;
         }
         let mut idx = 0usize;
-        while matches!(
-            value_tokens.get(idx).map(|token| token.kind),
-            Some(TokenKind::Comment)
-        ) {
+        while value_tokens
+            .get(idx)
+            .is_some_and(|token| self.syntax_token_is_comment(token))
+        {
             idx += 1;
         }
         let Some(token) = value_tokens.get(idx) else {
@@ -4164,15 +4088,15 @@ impl<'a> Collector<'a> {
         let structure = declared_type
             .as_ref()
             .and_then(|type_ref| self.resolve_field_type_ref(scope, type_ref));
-        if self.token_matches_keyword(token, "data")
-            && value_tokens.get(idx + 1).map(|token| token.kind) == Some(TokenKind::LParen)
+        if token.text.eq_ignore_ascii_case("data")
+            && value_tokens.get(idx + 1).map(|token| token.text.as_ref()) == Some("(")
             && let Some(name_tok) = value_tokens.get(idx + 2)
-            && name_tok.kind == TokenKind::Ident
-            && value_tokens.get(idx + 3).map(|token| token.kind) == Some(TokenKind::RParen)
+            && self.syntax_token_is_ident_like(name_tok)
+            && value_tokens.get(idx + 3).map(|token| token.text.as_ref()) == Some(")")
         {
             self.declare_symbol(
                 scope,
-                Arc::<str>::from(name_tok.lexeme(self.source).to_ascii_lowercase()),
+                Arc::<str>::from(name_tok.text.to_ascii_lowercase()),
                 SymbolKind::Variable,
                 name_tok.range.clone(),
                 structure,
@@ -4181,19 +4105,19 @@ impl<'a> Collector<'a> {
             );
             return true;
         }
-        if self.token_matches_keyword(token, "field")
-            && value_tokens.get(idx + 1).map(|token| token.kind) == Some(TokenKind::Minus)
+        if token.text.eq_ignore_ascii_case("field")
+            && value_tokens.get(idx + 1).map(|token| token.text.as_ref()) == Some("-")
             && value_tokens
                 .get(idx + 2)
-                .is_some_and(|token| self.token_matches_keyword(token, "symbol"))
-            && value_tokens.get(idx + 3).map(|token| token.kind) == Some(TokenKind::LParen)
+                .is_some_and(|token| token.text.eq_ignore_ascii_case("symbol"))
+            && value_tokens.get(idx + 3).map(|token| token.text.as_ref()) == Some("(")
             && let Some(name_tok) = value_tokens.get(idx + 4)
-            && name_tok.kind == TokenKind::Ident
-            && value_tokens.get(idx + 5).map(|token| token.kind) == Some(TokenKind::RParen)
+            && self.syntax_token_is_ident_like(name_tok)
+            && value_tokens.get(idx + 5).map(|token| token.text.as_ref()) == Some(")")
         {
             self.declare_symbol(
                 scope,
-                Arc::<str>::from(name_tok.lexeme(self.source).to_ascii_lowercase()),
+                Arc::<str>::from(name_tok.text.to_ascii_lowercase()),
                 SymbolKind::FieldSymbol,
                 name_tok.range.clone(),
                 structure,
@@ -4264,9 +4188,9 @@ impl<'a> Collector<'a> {
         }
     }
 
-    fn collect_call_argument_tokens(
+    fn collect_named_arguments_from_infos(
         &mut self,
-        tokens: &[&Token],
+        tokens: &[SyntaxTokenInfo],
         scope: ScopeId,
         target: NamedArgumentTarget,
     ) {
@@ -4274,32 +4198,39 @@ impl<'a> Collector<'a> {
         let mut segment_start = 0usize;
         let mut current_section = None;
         while idx < tokens.len() {
-            let token = tokens[idx];
-            if token.kind == TokenKind::Comment {
+            let token = &tokens[idx];
+            if self.syntax_token_is_comment(token) {
                 idx += 1;
                 continue;
             }
-            if token.kind == TokenKind::Ident
-                && let Some(section) = self.named_argument_section(token)
+            if self.syntax_token_is_ident_like(token)
+                && let Some(section) = self.named_argument_section_from_text(token.text.as_ref())
             {
                 if segment_start < idx {
-                    self.collect_token_expression_refs(&tokens[segment_start..idx], scope, true);
+                    self.collect_token_expression_refs_infos(
+                        &tokens[segment_start..idx],
+                        scope,
+                        true,
+                    );
                 }
                 current_section = Some(section);
                 idx += 1;
                 segment_start = idx;
                 continue;
             }
-            if token.kind == TokenKind::Ident
-                && tokens.get(idx + 1).map(|next| next.kind) == Some(TokenKind::Eq)
+            if self.syntax_token_is_ident_like(token)
+                && tokens.get(idx + 1).map(|next| next.text.as_ref()) == Some("=")
             {
                 if segment_start < idx {
-                    self.collect_token_expression_refs(&tokens[segment_start..idx], scope, true);
+                    self.collect_token_expression_refs_infos(
+                        &tokens[segment_start..idx],
+                        scope,
+                        true,
+                    );
                 }
-                let argument_name =
-                    Arc::<str>::from(token.lexeme(self.source).to_ascii_lowercase());
+                let argument_name = Arc::<str>::from(token.text.to_ascii_lowercase());
                 let value_start = idx + 2;
-                let value_end = self.call_argument_value_end(tokens, value_start);
+                let value_end = self.call_argument_value_end_infos(tokens, value_start);
                 self.named_arguments.push(NamedArgumentAccess {
                     scope,
                     name: Arc::clone(&argument_name),
@@ -4307,7 +4238,7 @@ impl<'a> Collector<'a> {
                     section: current_section,
                     target: target.clone(),
                 });
-                let consumed_inline_target = self.declare_inline_named_argument_target(
+                let consumed_inline_target = self.declare_inline_named_argument_target_infos(
                     scope,
                     &target,
                     current_section,
@@ -4315,7 +4246,7 @@ impl<'a> Collector<'a> {
                     &tokens[value_start..value_end],
                 );
                 if !consumed_inline_target {
-                    self.collect_token_expression_refs(
+                    self.collect_token_expression_refs_infos(
                         &tokens[value_start..value_end],
                         scope,
                         true,
@@ -4328,17 +4259,8 @@ impl<'a> Collector<'a> {
             idx += 1;
         }
         if segment_start < tokens.len() {
-            self.collect_token_expression_refs(&tokens[segment_start..], scope, true);
+            self.collect_token_expression_refs_infos(&tokens[segment_start..], scope, true);
         }
-    }
-
-    fn collect_named_arguments_from_tokens(
-        &mut self,
-        tokens: &[&Token],
-        scope: ScopeId,
-        target: NamedArgumentTarget,
-    ) {
-        self.collect_call_argument_tokens(tokens, scope, target);
     }
 
     fn call_arg_section_from_node(&self, node: NodeId) -> Option<NamedArgumentSection> {
@@ -4356,8 +4278,11 @@ impl<'a> Collector<'a> {
             .iter()
             .all(|&node| self.file.kind(node) == SyntaxKind::Token)
         {
-            let tokens = self.token_refs_for_nodes(nodes);
-            self.collect_token_expression_refs(&tokens, scope, true);
+            let tokens = nodes
+                .iter()
+                .flat_map(|&node| self.syntax_token_nodes(node))
+                .collect::<Vec<_>>();
+            self.collect_token_expression_refs_infos(&tokens, scope, true);
             return;
         }
 
@@ -4412,8 +4337,11 @@ impl<'a> Collector<'a> {
                 &value_children,
             )
             .unwrap_or_else(|| {
-                let value_tokens = self.token_refs_for_nodes(&value_children);
-                self.declare_inline_named_argument_target(
+                let value_tokens = value_children
+                    .iter()
+                    .flat_map(|&child| self.syntax_token_nodes(child))
+                    .collect::<Vec<_>>();
+                self.declare_inline_named_argument_target_infos(
                     scope,
                     target,
                     section,
@@ -4464,61 +4392,51 @@ impl<'a> Collector<'a> {
         }
     }
 
-    fn token_is_expression_value_ident(
+    fn token_is_expression_value_ident_info(
         &self,
-        tokens: &[&Token],
+        tokens: &[SyntaxTokenInfo],
         idx: usize,
         allow_leading_value_ident: bool,
     ) -> bool {
-        let token = tokens[idx];
-        if token.kind != TokenKind::Ident
-            || self.token_matches_keyword(token, "new")
-            || self.token_matches_keyword(token, "ref")
-            || self.token_matches_keyword(token, "to")
+        let token = &tokens[idx];
+        if !self.syntax_token_is_ident_like(token)
+            || token.text.eq_ignore_ascii_case("new")
+            || token.text.eq_ignore_ascii_case("ref")
+            || token.text.eq_ignore_ascii_case("to")
         {
             return false;
         }
         if matches!(
-            tokens.get(idx + 1).map(|token| token.kind),
-            Some(
-                TokenKind::Eq
-                    | TokenKind::Arrow
-                    | TokenKind::FatArrow
-                    | TokenKind::Tilde
-                    | TokenKind::Minus
-            )
+            tokens.get(idx + 1).map(|token| token.text.as_ref()),
+            Some("=" | "->" | "=>" | "~" | "-")
         ) {
             return false;
         }
-        let prev_kind = idx
-            .checked_sub(1)
-            .and_then(|prev| tokens.get(prev))
-            .map(|token| token.kind);
+        let prev = idx.checked_sub(1).and_then(|prev| tokens.get(prev));
         allow_leading_value_ident && idx == 0
             || matches!(
-                prev_kind,
+                prev.map(|token| token.text.as_ref()),
                 Some(
-                    TokenKind::Eq
-                        | TokenKind::Comma
-                        | TokenKind::LParen
-                        | TokenKind::LBracket
-                        | TokenKind::LBrace
-                        | TokenKind::Slash
-                        | TokenKind::Plus
-                        | TokenKind::Minus
-                        | TokenKind::Star
-                        | TokenKind::Ampersand
-                        | TokenKind::Lt
-                        | TokenKind::Gt
-                        | TokenKind::Le
-                        | TokenKind::Ge
-                        | TokenKind::Ne
-                        | TokenKind::QuestionEq
+                    "=" | ","
+                        | "("
+                        | "["
+                        | "{"
+                        | "/"
+                        | "+"
+                        | "-"
+                        | "*"
+                        | "&"
+                        | "<"
+                        | ">"
+                        | "<="
+                        | ">="
+                        | "<>"
+                        | "?="
                 )
             )
     }
 
-    fn consume_perform_argument(&self, tokens: &[&Token], start: usize) -> usize {
+    fn consume_perform_argument_infos(&self, tokens: &[SyntaxTokenInfo], start: usize) -> usize {
         let mut idx = start;
         let mut paren = 0i32;
         let mut bracket = 0i32;
@@ -4526,31 +4444,31 @@ impl<'a> Collector<'a> {
         let mut consumed_any = false;
 
         while idx < tokens.len() {
-            let token = tokens[idx];
+            let token = &tokens[idx];
             if paren == 0 && bracket == 0 && brace == 0 {
-                if token.kind == TokenKind::Period {
+                if token.text.as_ref() == "." {
                     break;
                 }
-                if token.kind == TokenKind::Ident
-                    && (self.token_matches_keyword(token, "tables")
-                        || self.token_matches_keyword(token, "using")
-                        || self.token_matches_keyword(token, "changing"))
+                if self.syntax_token_is_ident_like(token)
+                    && (token.text.eq_ignore_ascii_case("tables")
+                        || token.text.eq_ignore_ascii_case("using")
+                        || token.text.eq_ignore_ascii_case("changing"))
                 {
                     break;
                 }
-                if consumed_any && self.token_starts_perform_argument(tokens, idx) {
+                if consumed_any && self.token_starts_perform_argument_infos(tokens, idx) {
                     break;
                 }
             }
 
             consumed_any = true;
-            match token.kind {
-                TokenKind::LParen => paren += 1,
-                TokenKind::RParen => paren -= 1,
-                TokenKind::LBracket => bracket += 1,
-                TokenKind::RBracket => bracket -= 1,
-                TokenKind::LBrace => brace += 1,
-                TokenKind::RBrace => brace -= 1,
+            match token.text.as_ref() {
+                "(" => paren += 1,
+                ")" => paren -= 1,
+                "[" => bracket += 1,
+                "]" => bracket -= 1,
+                "{" => brace += 1,
+                "}" => brace -= 1,
                 _ => {}
             }
             idx += 1;
@@ -4559,9 +4477,9 @@ impl<'a> Collector<'a> {
         idx
     }
 
-    fn find_top_level_keyword_index(
+    fn find_top_level_keyword_index_infos(
         &self,
-        tokens: &[&Token],
+        tokens: &[SyntaxTokenInfo],
         start: usize,
         keyword: &str,
     ) -> Option<usize> {
@@ -4570,21 +4488,18 @@ impl<'a> Collector<'a> {
         let mut brace = 0i32;
         let mut idx = start;
         while idx < tokens.len() {
-            let token = tokens[idx];
-            if paren == 0
-                && bracket == 0
-                && brace == 0
-                && self.token_matches_keyword(token, keyword)
+            let token = &tokens[idx];
+            if paren == 0 && bracket == 0 && brace == 0 && token.text.eq_ignore_ascii_case(keyword)
             {
                 return Some(idx);
             }
-            match token.kind {
-                TokenKind::LParen => paren += 1,
-                TokenKind::RParen => paren -= 1,
-                TokenKind::LBracket => bracket += 1,
-                TokenKind::RBracket => bracket -= 1,
-                TokenKind::LBrace => brace += 1,
-                TokenKind::RBrace => brace -= 1,
+            match token.text.as_ref() {
+                "(" => paren += 1,
+                ")" => paren -= 1,
+                "[" => bracket += 1,
+                "]" => bracket -= 1,
+                "{" => brace += 1,
+                "}" => brace -= 1,
                 _ => {}
             }
             idx += 1;
@@ -4592,9 +4507,9 @@ impl<'a> Collector<'a> {
         None
     }
 
-    fn consume_concatenate_operand(
+    fn consume_concatenate_operand_infos(
         &self,
-        tokens: &[&Token],
+        tokens: &[SyntaxTokenInfo],
         start: usize,
         clause_keywords: &[&str],
     ) -> usize {
@@ -4605,31 +4520,31 @@ impl<'a> Collector<'a> {
         let mut consumed_any = false;
 
         while idx < tokens.len() {
-            let token = tokens[idx];
+            let token = &tokens[idx];
             if paren == 0 && bracket == 0 && brace == 0 {
-                if token.kind == TokenKind::Period {
+                if token.text.as_ref() == "." {
                     break;
                 }
-                if token.kind == TokenKind::Ident
+                if self.syntax_token_is_ident_like(token)
                     && clause_keywords
                         .iter()
-                        .any(|keyword| self.token_matches_keyword(token, keyword))
+                        .any(|keyword| token.text.eq_ignore_ascii_case(keyword))
                 {
                     break;
                 }
-                if consumed_any && self.token_starts_concatenate_operand(tokens, idx) {
+                if consumed_any && self.token_starts_concatenate_operand_infos(tokens, idx) {
                     break;
                 }
             }
 
             consumed_any = true;
-            match token.kind {
-                TokenKind::LParen => paren += 1,
-                TokenKind::RParen => paren -= 1,
-                TokenKind::LBracket => bracket += 1,
-                TokenKind::RBracket => bracket -= 1,
-                TokenKind::LBrace => brace += 1,
-                TokenKind::RBrace => brace -= 1,
+            match token.text.as_ref() {
+                "(" => paren += 1,
+                ")" => paren -= 1,
+                "[" => bracket += 1,
+                "]" => bracket -= 1,
+                "{" => brace += 1,
+                "}" => brace -= 1,
                 _ => {}
             }
             idx += 1;
@@ -4638,77 +4553,72 @@ impl<'a> Collector<'a> {
         idx
     }
 
-    fn token_starts_concatenate_operand(&self, tokens: &[&Token], idx: usize) -> bool {
-        if !self.token_starts_perform_argument(tokens, idx) {
+    fn token_starts_concatenate_operand_infos(
+        &self,
+        tokens: &[SyntaxTokenInfo],
+        idx: usize,
+    ) -> bool {
+        if !self.token_starts_perform_argument_infos(tokens, idx) {
             return false;
         }
         let Some(prev) = idx.checked_sub(1).and_then(|prev_idx| tokens.get(prev_idx)) else {
             return true;
         };
-        !(prev.kind == TokenKind::Ident
-            && (self.token_matches_keyword(prev, "new")
-                || self.token_matches_keyword(prev, "ref")
-                || self.token_matches_keyword(prev, "to")))
+        !(self.syntax_token_is_ident_like(prev)
+            && (prev.text.eq_ignore_ascii_case("new")
+                || prev.text.eq_ignore_ascii_case("ref")
+                || prev.text.eq_ignore_ascii_case("to")))
     }
 
-    fn token_starts_perform_argument(&self, tokens: &[&Token], idx: usize) -> bool {
+    fn token_starts_perform_argument_infos(&self, tokens: &[SyntaxTokenInfo], idx: usize) -> bool {
         let Some(token) = tokens.get(idx) else {
             return false;
         };
-        if !matches!(
-            token.kind,
-            TokenKind::Ident
-                | TokenKind::Number
-                | TokenKind::String
-                | TokenKind::StringTemplate
-                | TokenKind::LParen
-                | TokenKind::LBracket
-                | TokenKind::LBrace
-                | TokenKind::At
-                | TokenKind::Hash
-        ) {
+        if !(self.syntax_token_is_ident_like(token)
+            || matches!(token.text.as_ref(), "(" | "[" | "{" | "@" | "#")
+            || self.syntax_token_is_literal_like(token))
+        {
             return false;
         }
-        if token.kind == TokenKind::Ident
-            && (self.token_matches_keyword(token, "tables")
-                || self.token_matches_keyword(token, "using")
-                || self.token_matches_keyword(token, "changing"))
+        if self.syntax_token_is_ident_like(token)
+            && (token.text.eq_ignore_ascii_case("tables")
+                || token.text.eq_ignore_ascii_case("using")
+                || token.text.eq_ignore_ascii_case("changing"))
         {
             return false;
         }
         let Some(prev) = idx.checked_sub(1).and_then(|prev_idx| tokens.get(prev_idx)) else {
             return true;
         };
-        have_space_between(prev, token)
+        self.syntax_tokens_have_space_between(prev, token)
             && !matches!(
-                prev.kind,
-                TokenKind::Arrow
-                    | TokenKind::FatArrow
-                    | TokenKind::Tilde
-                    | TokenKind::Eq
-                    | TokenKind::Minus
-                    | TokenKind::Plus
-                    | TokenKind::Star
-                    | TokenKind::Slash
-                    | TokenKind::Lt
-                    | TokenKind::Gt
-                    | TokenKind::Le
-                    | TokenKind::Ge
-                    | TokenKind::Ne
-                    | TokenKind::QuestionEq
-                    | TokenKind::LParen
-                    | TokenKind::LBracket
-                    | TokenKind::LBrace
-                    | TokenKind::At
-                    | TokenKind::Hash
-                    | TokenKind::Ampersand
-                    | TokenKind::Pipe
+                prev.text.as_ref(),
+                "->" | "=>"
+                    | "~"
+                    | "="
+                    | "-"
+                    | "+"
+                    | "*"
+                    | "/"
+                    | "<"
+                    | ">"
+                    | "<="
+                    | ">="
+                    | "<>"
+                    | "?="
+                    | "("
+                    | "["
+                    | "{"
+                    | "@"
+                    | "#"
+                    | "&"
+                    | "|"
             )
     }
 
-    fn consume_selector_access_from_tokens(
+    fn consume_selector_access_from_infos(
         &self,
-        tokens: &[&Token],
+        tokens: &[SyntaxTokenInfo],
         idx: usize,
     ) -> Option<(
         usize,
@@ -4717,27 +4627,26 @@ impl<'a> Collector<'a> {
         TextRange,
         Vec<FieldAccessSegment>,
     )> {
-        let base = *tokens.get(idx)?;
-        if base.kind != TokenKind::Ident {
+        let base = tokens.get(idx)?;
+        if !self.syntax_token_is_ident_like(base) {
             return None;
         }
         let mut cursor = idx;
         let mut namespace = None;
         let mut field_path = Vec::new();
         while cursor + 2 < tokens.len() {
-            let op = tokens[cursor + 1];
-            let field = tokens[cursor + 2];
-            if field.kind != TokenKind::Ident
-                && !(op.kind == TokenKind::Arrow && field.kind == TokenKind::Star)
+            let op = &tokens[cursor + 1];
+            let field = &tokens[cursor + 2];
+            if !self.syntax_token_is_ident_like(field)
+                && !(op.text.as_ref() == "->" && field.text.as_ref() == "*")
             {
                 break;
             }
-            let step_namespace = match op.kind {
-                TokenKind::FatArrow => Namespace::Type,
-                TokenKind::Arrow | TokenKind::Tilde => Namespace::Value,
-                TokenKind::Minus
-                    if !have_space_between(tokens[cursor], op)
-                        && !have_space_between(op, field) =>
+            let step_namespace = match op.text.as_ref() {
+                "=>" => Namespace::Type,
+                "->" | "~" => Namespace::Value,
+                "-" if !self.syntax_tokens_have_space_between(&tokens[cursor], op)
+                    && !self.syntax_tokens_have_space_between(op, field) =>
                 {
                     Namespace::Value
                 }
@@ -4745,7 +4654,7 @@ impl<'a> Collector<'a> {
             };
             namespace.get_or_insert(step_namespace);
             field_path.push(FieldAccessSegment {
-                name: Arc::<str>::from(field.lexeme(self.source).to_ascii_lowercase()),
+                name: Arc::<str>::from(field.text.to_ascii_lowercase()),
                 range: field.range.clone(),
             });
             cursor += 2;
@@ -4753,24 +4662,24 @@ impl<'a> Collector<'a> {
         Some((
             cursor + 1,
             namespace?,
-            Arc::<str>::from(base.lexeme(self.source).to_ascii_lowercase()),
+            Arc::<str>::from(base.text.to_ascii_lowercase()),
             base.range.clone(),
             field_path,
         ))
     }
 
-    fn find_matching_group_end(
+    fn find_matching_group_end_infos(
         &self,
-        tokens: &[&Token],
+        tokens: &[SyntaxTokenInfo],
         start_idx: usize,
-        open_kind: TokenKind,
-        close_kind: TokenKind,
+        open_text: &str,
+        close_text: &str,
     ) -> Option<usize> {
         let mut depth = 0i32;
         for (idx, token) in tokens.iter().enumerate().skip(start_idx) {
-            if token.kind == open_kind {
+            if token.text.as_ref() == open_text {
                 depth += 1;
-            } else if token.kind == close_kind {
+            } else if token.text.as_ref() == close_text {
                 depth -= 1;
                 if depth == 0 {
                     return Some(idx);
@@ -4780,17 +4689,17 @@ impl<'a> Collector<'a> {
         None
     }
 
-    fn collect_create_object_stmt(&mut self, tokens: &[&Token], scope: ScopeId) {
+    fn collect_create_object_stmt_infos(&mut self, tokens: &[SyntaxTokenInfo], scope: ScopeId) {
         if tokens.len() < 3
-            || !self.token_matches_keyword(tokens[0], "create")
-            || !self.token_matches_keyword(tokens[1], "object")
+            || !tokens[0].text.eq_ignore_ascii_case("create")
+            || !tokens[1].text.eq_ignore_ascii_case("object")
         {
             return;
         }
 
-        let target = tokens[2];
-        if target.kind == TokenKind::Ident {
-            let name = Arc::<str>::from(target.lexeme(self.source).to_ascii_lowercase());
+        let target = &tokens[2];
+        if self.syntax_token_is_ident_like(target) {
+            let name = Arc::<str>::from(target.text.to_ascii_lowercase());
             self.add_reference(
                 scope,
                 name,
@@ -4801,11 +4710,11 @@ impl<'a> Collector<'a> {
         }
 
         for idx in 3..tokens.len() {
-            let token = tokens[idx];
-            if !self.token_matches_keyword(token, "type") {
+            let token = &tokens[idx];
+            if !token.text.eq_ignore_ascii_case("type") {
                 continue;
             }
-            if let Some((name, range)) = self.simple_type_ref_base_from_tokens(&tokens[idx + 1..]) {
+            if let Some((name, range)) = self.simple_type_ref_base_from_infos(&tokens[idx + 1..]) {
                 self.add_reference(scope, name, Namespace::Type, ReferenceKind::TypeRef, range);
             }
             break;
@@ -4841,8 +4750,8 @@ impl<'a> Collector<'a> {
         let Some(base) = base else {
             return;
         };
-        let namespace = match op.and_then(|op_node| self.token_for_node(op_node)) {
-            Some(token) if token.kind == TokenKind::FatArrow => Namespace::Type,
+        let namespace = match op.and_then(|op_node| self.syntax(op_node).text(self.source)) {
+            Some("=>") => Namespace::Type,
             _ => Namespace::Value,
         };
         match self.file.kind(base) {
@@ -4952,17 +4861,21 @@ impl<'a> Collector<'a> {
         let mut tokens = self
             .file
             .children(node)
-            .filter_map(|child| self.token_for_node(child));
+            .filter(|&child| self.file.kind(child) == SyntaxKind::Token)
+            .map(|child| self.syntax(child));
         let begin_tok = tokens.next()?;
         let of_tok = tokens.next()?;
         let name_tok = tokens.next()?;
-        if !self.token_matches_keyword(begin_tok, "begin")
-            || !self.token_matches_keyword(of_tok, "of")
-            || name_tok.kind != TokenKind::Ident
+        let begin_text = begin_tok.text(self.source)?;
+        let of_text = of_tok.text(self.source)?;
+        let name_text = name_tok.text(self.source)?;
+        if !begin_text.eq_ignore_ascii_case("begin")
+            || !of_text.eq_ignore_ascii_case("of")
+            || matches!(name_text, "." | "," | ":" | "-")
         {
             return None;
         }
-        Some(name_tok.range.clone())
+        Some(name_tok.range())
     }
 
     fn pending_structure_from_node(
@@ -5202,32 +5115,28 @@ impl<'a> Collector<'a> {
     fn header_ident_after_keyword(&self, node: NodeId) -> Option<(Arc<str>, TextRange)> {
         let mut saw_keyword = false;
         for child in self.file.children(node) {
-            let Some(token) = self.token_for_node(child) else {
+            if self.file.kind(child) != SyntaxKind::Token {
+                continue;
+            }
+            let Some(text) = self.syntax(child).text(self.source) else {
                 continue;
             };
-            if token.kind == TokenKind::Period {
+            if text == "." {
                 break;
             }
             if !saw_keyword {
-                saw_keyword = token.kind == TokenKind::Ident;
+                saw_keyword = !matches!(text, ":" | "," | "." | "-" | "(" | ")");
                 continue;
             }
-            if token.kind == TokenKind::Ident {
-                let text = token.lexeme(self.source);
-                if !matches!(
-                    text.to_ascii_uppercase().as_str(),
-                    "DEFINITION"
-                        | "IMPLEMENTATION"
-                        | "PUBLIC"
-                        | "PROTECTED"
-                        | "PRIVATE"
-                        | "SECTION"
-                ) {
-                    return Some((
-                        Arc::<str>::from(text.to_ascii_lowercase()),
-                        token.range.clone(),
-                    ));
-                }
+            if !matches!(
+                text.to_ascii_uppercase().as_str(),
+                "DEFINITION" | "IMPLEMENTATION" | "PUBLIC" | "PROTECTED" | "PRIVATE" | "SECTION"
+            ) && !matches!(text, ":" | "," | "." | "-" | "(" | ")")
+            {
+                return Some((
+                    Arc::<str>::from(text.to_ascii_lowercase()),
+                    self.file.range(child),
+                ));
             }
         }
         None
@@ -5237,53 +5146,90 @@ impl<'a> Collector<'a> {
         let tokens: Vec<_> = self
             .file
             .children(node)
-            .filter_map(|child| self.token_for_node(child))
-            .take_while(|token| token.kind != TokenKind::Period)
-            .filter(|token| token.kind != TokenKind::Comment)
+            .filter(|&child| self.file.kind(child) == SyntaxKind::Token)
+            .map(|child| self.syntax(child))
+            .take_while(|token| token.text(self.source) != Some("."))
+            .filter(|token| {
+                token
+                    .text(self.source)
+                    .is_some_and(|text| !text.trim_start().starts_with('"'))
+            })
             .collect();
         let (first, last) = match tokens.as_slice() {
-            [token] if self.token_matches_keyword(token, "initialization") => (*token, *token),
+            [token]
+                if token
+                    .text(self.source)
+                    .is_some_and(|text| text.eq_ignore_ascii_case("initialization")) =>
+            {
+                (*token, *token)
+            }
             [start, minus_1, of, minus_2, end]
-                if self.token_matches_keyword(start, "start")
-                    && minus_1.kind == TokenKind::Minus
-                    && self.token_matches_keyword(of, "of")
-                    && minus_2.kind == TokenKind::Minus
-                    && self.token_matches_keyword(end, "selection") =>
+                if start
+                    .text(self.source)
+                    .is_some_and(|text| text.eq_ignore_ascii_case("start"))
+                    && minus_1.text(self.source) == Some("-")
+                    && of
+                        .text(self.source)
+                        .is_some_and(|text| text.eq_ignore_ascii_case("of"))
+                    && minus_2.text(self.source) == Some("-")
+                    && end
+                        .text(self.source)
+                        .is_some_and(|text| text.eq_ignore_ascii_case("selection")) =>
             {
                 (*start, *end)
             }
             [start, minus_1, of, minus_2, end]
-                if self.token_matches_keyword(start, "end")
-                    && minus_1.kind == TokenKind::Minus
-                    && self.token_matches_keyword(of, "of")
-                    && minus_2.kind == TokenKind::Minus
-                    && self.token_matches_keyword(end, "selection") =>
+                if start
+                    .text(self.source)
+                    .is_some_and(|text| text.eq_ignore_ascii_case("end"))
+                    && minus_1.text(self.source) == Some("-")
+                    && of
+                        .text(self.source)
+                        .is_some_and(|text| text.eq_ignore_ascii_case("of"))
+                    && minus_2.text(self.source) == Some("-")
+                    && end
+                        .text(self.source)
+                        .is_some_and(|text| text.eq_ignore_ascii_case("selection")) =>
             {
                 (*start, *end)
             }
             [start, minus_1, of, minus_2, end]
-                if self.token_matches_keyword(start, "top")
-                    && minus_1.kind == TokenKind::Minus
-                    && self.token_matches_keyword(of, "of")
-                    && minus_2.kind == TokenKind::Minus
-                    && self.token_matches_keyword(end, "page") =>
+                if start
+                    .text(self.source)
+                    .is_some_and(|text| text.eq_ignore_ascii_case("top"))
+                    && minus_1.text(self.source) == Some("-")
+                    && of
+                        .text(self.source)
+                        .is_some_and(|text| text.eq_ignore_ascii_case("of"))
+                    && minus_2.text(self.source) == Some("-")
+                    && end
+                        .text(self.source)
+                        .is_some_and(|text| text.eq_ignore_ascii_case("page")) =>
             {
                 (*start, *end)
             }
             [start, minus_1, of, minus_2, end]
-                if self.token_matches_keyword(start, "end")
-                    && minus_1.kind == TokenKind::Minus
-                    && self.token_matches_keyword(of, "of")
-                    && minus_2.kind == TokenKind::Minus
-                    && self.token_matches_keyword(end, "page") =>
+                if start
+                    .text(self.source)
+                    .is_some_and(|text| text.eq_ignore_ascii_case("end"))
+                    && minus_1.text(self.source) == Some("-")
+                    && of
+                        .text(self.source)
+                        .is_some_and(|text| text.eq_ignore_ascii_case("of"))
+                    && minus_2.text(self.source) == Some("-")
+                    && end
+                        .text(self.source)
+                        .is_some_and(|text| text.eq_ignore_ascii_case("page")) =>
             {
                 (*start, *end)
             }
             _ => return None,
         };
         Some((
-            Arc::<str>::from(self.source[first.range.start..last.range.end].to_ascii_lowercase()),
-            first.range.start..last.range.end,
+            Arc::<str>::from(
+                self.source[first.range().start..last.range().end].to_ascii_lowercase(),
+            ),
+            first.range().start..last.range().end,
         ))
     }
 
@@ -5294,24 +5240,27 @@ impl<'a> Collector<'a> {
         Some((base_name, range))
     }
 
-    fn simple_type_ref_base_from_tokens(&self, tokens: &[&Token]) -> Option<(Arc<str>, TextRange)> {
+    fn simple_type_ref_base_from_infos(
+        &self,
+        tokens: &[SyntaxTokenInfo],
+    ) -> Option<(Arc<str>, TextRange)> {
         let mut i = 0usize;
         if tokens
             .get(i)
-            .is_some_and(|tok| self.token_matches_keyword(tok, "ref"))
+            .is_some_and(|tok| tok.text.eq_ignore_ascii_case("ref"))
         {
             let to_tok = tokens.get(i + 1)?;
-            if !self.token_matches_keyword(to_tok, "to") {
+            if !to_tok.text.eq_ignore_ascii_case("to") {
                 return None;
             }
             i += 2;
         }
         let token = tokens.get(i)?;
-        if token.kind != TokenKind::Ident {
+        if !self.syntax_token_is_ident_like(token) {
             return None;
         }
         Some((
-            Arc::<str>::from(token.lexeme(self.source).to_ascii_lowercase()),
+            Arc::<str>::from(token.text.to_ascii_lowercase()),
             token.range.clone(),
         ))
     }
@@ -5319,15 +5268,6 @@ impl<'a> Collector<'a> {
     fn node_name(&self, node: NodeId) -> Option<(Arc<str>, TextRange)> {
         let syntax = self.syntax(node);
         Some((syntax.lower_trimmed_text(self.source)?, syntax.range()))
-    }
-
-    fn token_for_node(&self, node: NodeId) -> Option<&'a Token> {
-        if self.file.kind(node) != SyntaxKind::Token {
-            return None;
-        }
-        let range = self.file.range(node);
-        let idx = self.token_index_by_range.get(&(range.start, range.end))?;
-        self.tokens.get(*idx)
     }
 
     fn first_non_token_child(&self, node: NodeId) -> Option<NodeId> {
@@ -5342,29 +5282,26 @@ impl<'a> Collector<'a> {
             .map(|child| child.id())
     }
 
-    fn token_refs(&self, node: NodeId) -> Vec<&'a Token> {
+    fn syntax_token_nodes(&self, node: NodeId) -> Vec<SyntaxTokenInfo> {
         self.syntax(node)
             .token_descendants()
             .into_iter()
-            .filter_map(|token_node| self.token_for_node(token_node.id()))
+            .filter_map(|token_node| {
+                let text = token_node.text(self.source)?;
+                Some(SyntaxTokenInfo {
+                    range: token_node.range(),
+                    text: Arc::<str>::from(text),
+                })
+            })
             .collect()
     }
 
-    fn token_refs_for_nodes(&self, nodes: &[NodeId]) -> Vec<&'a Token> {
-        let mut out = Vec::new();
-        for &node in nodes {
-            out.extend(self.token_refs(node));
-        }
-        out
-    }
-
-    fn token_refs_from_child_nodes(&self, node: NodeId) -> Vec<&'a Token> {
-        let child_nodes = self.file.children(node).collect::<Vec<_>>();
-        self.token_refs_for_nodes(&child_nodes)
-    }
-
-    fn token_matches_keyword(&self, token: &Token, keyword: &str) -> bool {
-        token.kind == TokenKind::Ident && token.lexeme(self.source).eq_ignore_ascii_case(keyword)
+    fn syntax_tokens_have_space_between(
+        &self,
+        left: &SyntaxTokenInfo,
+        right: &SyntaxTokenInfo,
+    ) -> bool {
+        left.range.end < right.range.start
     }
 
     fn selector_access_chain(
@@ -5377,8 +5314,8 @@ impl<'a> Collector<'a> {
         let field = selector.field()?;
         let field_name = field.name(self.source)?;
         let field_range = field.range();
-        let namespace = match self.token_for_node(op.id()) {
-            Some(token) if token.kind == TokenKind::FatArrow => Namespace::Type,
+        let namespace = match op.text(self.source) {
+            Some("=>") => Namespace::Type,
             _ => Namespace::Value,
         };
         match base.kind() {
@@ -5425,10 +5362,9 @@ impl<'a> Collector<'a> {
         let mut field_path = Vec::new();
         while let Some(op_node) = children.next() {
             let segment_node = children.next()?;
-            let op = self.token_for_node(op_node)?;
             if namespace.is_none() {
-                namespace = Some(match op.kind {
-                    TokenKind::FatArrow => Namespace::Type,
+                namespace = Some(match self.syntax(op_node).text(self.source) {
+                    Some("=>") => Namespace::Type,
                     _ => Namespace::Value,
                 });
             }
@@ -5467,8 +5403,10 @@ impl<'a> Collector<'a> {
             SyntaxKind::TypeRefSimple => {
                 let mut is_ref = false;
                 for child in self.file.children(node) {
-                    if let Some(token) = self.token_for_node(child) {
-                        if self.token_matches_keyword(token, "ref") {
+                    if self.file.kind(child) == SyntaxKind::Token
+                        && let Some(text) = self.syntax(child).text(self.source)
+                    {
+                        if text.eq_ignore_ascii_case("ref") {
                             is_ref = true;
                         }
                         continue;

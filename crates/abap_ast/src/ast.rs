@@ -206,9 +206,17 @@ ast_node!(CallPositionalArg, SyntaxKind::CallPositionalArg);
 ast_node!(MethodsStmt, SyntaxKind::MethodsStmt);
 ast_node!(SelectStmt, SyntaxKind::SelectStmt);
 ast_node!(SelectQuery, SyntaxKind::SelectQuery);
+ast_node!(SelectProjectionList, SyntaxKind::SelectProjectionList);
+ast_node!(SelectFromClause, SyntaxKind::SelectFromClause);
+ast_node!(SelectIntoClause, SyntaxKind::SelectIntoClause);
+ast_node!(SelectJoinClause, SyntaxKind::SelectJoinClause);
+ast_node!(SqlPredicateExpr, SyntaxKind::SqlPredicateExpr);
 ast_node!(SqlProjectionItem, SyntaxKind::SqlProjectionItem);
 ast_node!(SqlDataSource, SyntaxKind::SqlDataSource);
 ast_node!(SqlAlias, SyntaxKind::SqlAlias);
+ast_node!(SqlColumnRef, SyntaxKind::SqlColumnRef);
+ast_node!(SqlStar, SyntaxKind::SqlStar);
+ast_node!(SqlQualifiedStar, SyntaxKind::SqlQualifiedStar);
 
 #[derive(Clone, Copy)]
 pub struct DeclClause<'a> {
@@ -808,6 +816,87 @@ impl<'a> SelectQuery<'a> {
     }
 }
 
+impl<'a> SelectProjectionList<'a> {
+    pub fn items(self) -> impl DoubleEndedIterator<Item = SqlProjectionItem<'a>> + Clone + 'a {
+        self.syntax.children().filter_map(SqlProjectionItem::cast)
+    }
+}
+
+impl<'a> SelectFromClause<'a> {
+    pub fn items(self) -> impl DoubleEndedIterator<Item = SyntaxNodeRef<'a>> + Clone + 'a {
+        self.syntax.non_token_children()
+    }
+}
+
+impl<'a> SelectIntoClause<'a> {
+    pub fn token_texts(self, source: &'a str) -> Vec<&'a str> {
+        self.syntax
+            .token_descendants()
+            .into_iter()
+            .filter_map(|token| token.text(source))
+            .collect()
+    }
+
+    pub fn has_keyword(self, source: &str, keyword: &str) -> bool {
+        self.syntax
+            .token_descendants()
+            .into_iter()
+            .filter_map(|token| token.text(source))
+            .any(|text| text.eq_ignore_ascii_case(keyword))
+    }
+
+    pub fn target_children(
+        self,
+    ) -> impl DoubleEndedIterator<Item = SyntaxNodeRef<'a>> + Clone + 'a {
+        self.syntax.non_token_children()
+    }
+}
+
+impl<'a> SelectJoinClause<'a> {
+    pub fn parts(self) -> impl DoubleEndedIterator<Item = SyntaxNodeRef<'a>> + Clone + 'a {
+        self.syntax.children()
+    }
+
+    pub fn join_kind_text(self, source: &'a str) -> Option<&'a str> {
+        let mut start = None;
+        let mut end = None;
+        for child in self.syntax.children() {
+            if child.kind() == SyntaxKind::SqlDataSource {
+                break;
+            }
+            if child.kind() != SyntaxKind::Token {
+                continue;
+            }
+            let range = child.range();
+            start.get_or_insert(range.start);
+            end = Some(range.end);
+        }
+        let start = start?;
+        let end = end?;
+        let range = start..end;
+        let text = source.get(range)?.trim();
+        (!text.is_empty()).then_some(text)
+    }
+
+    pub fn data_source(self) -> Option<SqlDataSource<'a>> {
+        self.syntax.children().find_map(SqlDataSource::cast)
+    }
+
+    pub fn predicate(self) -> Option<SqlPredicateExpr<'a>> {
+        self.syntax.children().find_map(SqlPredicateExpr::cast)
+    }
+}
+
+impl<'a> SqlPredicateExpr<'a> {
+    pub fn token_texts(self, source: &'a str) -> Vec<&'a str> {
+        self.syntax
+            .token_descendants()
+            .into_iter()
+            .filter_map(|token| token.text(source))
+            .collect()
+    }
+}
+
 impl<'a> SqlProjectionItem<'a> {
     pub fn alias(self) -> Option<SqlAlias<'a>> {
         self.syntax
@@ -820,6 +909,10 @@ impl<'a> SqlProjectionItem<'a> {
     ) -> impl DoubleEndedIterator<Item = SyntaxNodeRef<'a>> + Clone + 'a {
         self.syntax.non_token_children()
     }
+
+    pub fn token_nodes(self) -> Vec<SyntaxNodeRef<'a>> {
+        self.syntax.token_descendants()
+    }
 }
 
 impl<'a> SqlDataSource<'a> {
@@ -828,17 +921,92 @@ impl<'a> SqlDataSource<'a> {
             .child_by_kind(SyntaxKind::SqlAlias)
             .and_then(SqlAlias::cast)
     }
+
+    pub fn source_name(self, source: &'a str) -> Option<(&'a str, TextRange)> {
+        let alias_range = self.alias().map(|alias| alias.syntax().range());
+        let tokens = self.syntax.token_descendants();
+        let mut start = None;
+        let mut end = None;
+        for token in tokens {
+            let range = token.range();
+            if alias_range
+                .as_ref()
+                .is_some_and(|alias| range.start >= alias.start)
+            {
+                break;
+            }
+            let text = token.text(source)?;
+            if text.eq_ignore_ascii_case("as") {
+                break;
+            }
+            start.get_or_insert(range.start);
+            end = Some(range.end);
+        }
+        let start = start?;
+        let end = end?;
+        let range = start..end;
+        let text = source.get(range.clone())?.trim();
+        (!text.is_empty()).then_some((text, range))
+    }
+}
+
+impl<'a> SqlColumnRef<'a> {
+    pub fn parts(self, source: &'a str) -> Option<(Option<Arc<str>>, Arc<str>, TextRange)> {
+        let tokens = self.syntax.token_descendants();
+        if tokens.len() == 1 {
+            let text = tokens[0].text(source)?;
+            return Some((
+                None,
+                Arc::from(text.to_ascii_lowercase()),
+                tokens[0].range(),
+            ));
+        }
+        if tokens.len() == 3 {
+            let qualifier = tokens[0].text(source)?;
+            let sep = tokens[1].text(source)?;
+            let column = tokens[2].text(source)?;
+            if sep == "~" {
+                return Some((
+                    Some(Arc::from(qualifier.to_ascii_lowercase())),
+                    Arc::from(column.to_ascii_lowercase()),
+                    tokens[0].range().start..tokens[2].range().end,
+                ));
+            }
+        }
+        None
+    }
+}
+
+impl<'a> SqlQualifiedStar<'a> {
+    pub fn qualifier(self, source: &'a str) -> Option<(Arc<str>, TextRange)> {
+        let tokens = self.syntax.token_descendants();
+        if tokens.len() != 3 {
+            return None;
+        }
+        let qualifier = tokens[0].text(source)?;
+        let sep = tokens[1].text(source)?;
+        let star = tokens[2].text(source)?;
+        (sep == "~" && star == "*").then(|| {
+            (
+                Arc::from(qualifier.to_ascii_lowercase()),
+                tokens[0].range().start..tokens[2].range().end,
+            )
+        })
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use crate::SyntaxKind;
     use crate::arena::SyntaxTreeBuilder;
 
     use super::{
         AstNode, CallArgList, CallExpr, DataDecl, DataDeclName, DataLikeDecl, ExprIdent,
-        MethodsParamSectionKind, MethodsStmt, MethodsStmtKind, MethodsTypeClauseKind, SelectStmt,
-        SelectorExpr, SyntaxNodeRef,
+        MethodsParamSectionKind, MethodsStmt, MethodsStmtKind, MethodsTypeClauseKind,
+        SelectProjectionList, SelectStmt, SelectorExpr, SqlColumnRef, SqlDataSource,
+        SqlQualifiedStar, SyntaxNodeRef,
     };
 
     #[test]
@@ -926,6 +1094,57 @@ mod tests {
                 .as_deref(),
             Some("i")
         );
+    }
+
+    #[test]
+    fn sql_wrappers_expose_projection_and_source_parts() {
+        let mut b = SyntaxTreeBuilder::default();
+        let col_a = b.leaf(SyntaxKind::Token, 7..8);
+        let tilde = b.leaf(SyntaxKind::Token, 8..9);
+        let col_b = b.leaf(SyntaxKind::Token, 9..14);
+        let column = b.branch(SyntaxKind::SqlColumnRef, 7..14, &[col_a, tilde, col_b]);
+        let alias_tok = b.leaf(SyntaxKind::Token, 18..20);
+        let alias = b.branch(SyntaxKind::SqlAlias, 18..20, &[alias_tok]);
+        let item = b.branch(SyntaxKind::SqlProjectionItem, 7..20, &[column, alias]);
+        let proj = b.branch(SyntaxKind::SelectProjectionList, 7..20, &[item]);
+        let tab_tok = b.leaf(SyntaxKind::Token, 26..30);
+        let as_tok = b.leaf(SyntaxKind::Token, 31..33);
+        let ds_alias_tok = b.leaf(SyntaxKind::Token, 34..35);
+        let ds_alias = b.branch(SyntaxKind::SqlAlias, 34..35, &[ds_alias_tok]);
+        let source = b.branch(
+            SyntaxKind::SqlDataSource,
+            26..35,
+            &[tab_tok, as_tok, ds_alias],
+        );
+        let from = b.branch(SyntaxKind::SelectFromClause, 21..35, &[source]);
+        let qstar_q = b.leaf(SyntaxKind::Token, 36..37);
+        let qstar_sep = b.leaf(SyntaxKind::Token, 37..38);
+        let qstar_star = b.leaf(SyntaxKind::Token, 38..39);
+        let qstar = b.branch(
+            SyntaxKind::SqlQualifiedStar,
+            36..39,
+            &[qstar_q, qstar_sep, qstar_star],
+        );
+        let query = b.branch(SyntaxKind::SelectQuery, 0..39, &[proj, from, qstar]);
+        let tree = b.finish(query);
+        let src = "SELECT a~field AS al FROM mara AS m a~*";
+
+        let proj = SelectProjectionList::cast(SyntaxNodeRef::new(&tree, proj)).expect("proj");
+        let item = proj.items().next().expect("item");
+        let column = item
+            .non_token_children()
+            .find_map(SqlColumnRef::cast)
+            .expect("column");
+        assert_eq!(
+            column.parts(src).map(|(q, c, _)| (q, c)),
+            Some((Some(Arc::from("a")), Arc::from("field")))
+        );
+
+        let source = SqlDataSource::cast(SyntaxNodeRef::new(&tree, source)).expect("source");
+        assert_eq!(source.source_name(src).map(|(name, _)| name), Some("mara"));
+
+        let qstar = SqlQualifiedStar::cast(SyntaxNodeRef::new(&tree, qstar)).expect("qstar");
+        assert_eq!(qstar.qualifier(src).map(|(q, _)| q), Some(Arc::from("a")));
     }
 
     #[test]
