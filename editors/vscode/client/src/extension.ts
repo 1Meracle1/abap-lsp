@@ -239,27 +239,31 @@ function registerCommands(context: vscode.ExtensionContext): void {
 					title: `Pulling ${objectRef.name} from SAP`,
 				},
 				async () => {
-					const connection = await getSapConnectionConfig(context, workspaceFolder);
-					if (!connection) {
-						return;
-					}
+					await addEditableAdtObjectToWorkspace(context, workspaceFolder, objectRef);
+				},
+			);
+		}),
+	);
 
-					const adtClient = new AdtClient(connection);
-					const source = await adtClient.fetchObjectSource(objectRef.uri);
-					const filePath = targetWorkspaceFilePath(workspaceFolder, objectRef.name);
-					await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
-					await fs.promises.writeFile(filePath, source, "utf8");
+	context.subscriptions.push(
+		vscode.commands.registerCommand("abap-ls.addEditableAdtObjectToWorkspace", async () => {
+			const workspaceFolder = await pickWorkspaceFolder();
+			if (!workspaceFolder) {
+				return;
+			}
 
-					const relativeFile = path.relative(workspaceFolder.uri.fsPath, filePath);
-					const manifestSpec = inferManifestUnitSpec(objectRef, relativeFile);
-					await ensureManifestUnit(workspaceFolder, manifestSpec);
-					// Server only loads abapls.toml at workspace init or on this notification;
-					// without it, remote-on-demand resolution stays disabled until restart.
-					await notifyWorkspaceManifestUpdated(workspaceFolder);
-					await adtClient.cacheRemoteObject(workspaceFolder, objectRef, source);
+			const objectRef = await promptForRepositoryObject(context, workspaceFolder);
+			if (!objectRef) {
+				return;
+			}
 
-					const document = await vscode.workspace.openTextDocument(vscode.Uri.file(filePath));
-					await vscode.window.showTextDocument(document, { preview: false });
+			await vscode.window.withProgress(
+				{
+					location: vscode.ProgressLocation.Notification,
+					title: `Adding ${objectRef.name} to workspace`,
+				},
+				async () => {
+					await addEditableAdtObjectToWorkspace(context, workspaceFolder, objectRef);
 				},
 			);
 		}),
@@ -498,6 +502,58 @@ async function createWorkspaceManifest(
 	);
 }
 
+async function addEditableAdtObjectToWorkspace(
+	context: vscode.ExtensionContext,
+	workspaceFolder: vscode.WorkspaceFolder,
+	objectRef: AdtObjectRef,
+): Promise<void> {
+	if (!isSupportedEditableWorkspaceObject(objectRef)) {
+		throw new Error(`Unsupported editable object type for ${objectRef.name} (${objectRef.type}).`);
+	}
+	if (!isCustomEditableObjectName(objectRef.name)) {
+		throw new Error(`Only custom Z* or Y* objects can be added to src: ${objectRef.name}.`);
+	}
+
+	const filePath = targetWorkspaceFilePath(workspaceFolder, objectRef.name);
+	const cachedPath = targetDependencyWorkspaceFilePath(workspaceFolder, objectRef);
+	const relativeFile = path.relative(workspaceFolder.uri.fsPath, filePath);
+	await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
+
+	let source: string;
+	let fileExisted = false;
+	if (await fileExists(filePath)) {
+		source = await fs.promises.readFile(filePath, "utf8");
+		fileExisted = true;
+	} else if (await fileExists(cachedPath)) {
+		await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
+		await fs.promises.rename(cachedPath, filePath);
+		source = await fs.promises.readFile(filePath, "utf8");
+	} else {
+		const connection = await getSapConnectionConfig(context, workspaceFolder);
+		if (!connection) {
+			return;
+		}
+
+		const adtClient = new AdtClient(connection);
+		source = await adtClient.fetchObjectSource(objectRef.uri);
+		await fs.promises.writeFile(filePath, source, "utf8");
+		await adtClient.cacheRemoteObject(workspaceFolder, objectRef, source);
+	}
+
+	const manifestSpec = inferManifestUnitSpec(objectRef, relativeFile);
+	await ensureManifestUnit(workspaceFolder, manifestSpec);
+	// Server only loads abapls.toml at workspace init or on this notification;
+	// without it, remote-on-demand resolution stays disabled until restart.
+	await notifyWorkspaceManifestUpdated(workspaceFolder);
+
+	const document = await vscode.workspace.openTextDocument(vscode.Uri.file(filePath));
+	await vscode.window.showTextDocument(document, { preview: false });
+
+	if (!fileExisted) {
+		void vscode.window.showInformationMessage(`Added ${objectRef.name} to src/.`);
+	}
+}
+
 async function resolveRemoteDependencyCandidate(
 	workspaceFolder: vscode.WorkspaceFolder,
 	adtClient: AdtClient,
@@ -610,6 +666,25 @@ function workspaceFolderForUri(workspaceUri: string): vscode.WorkspaceFolder | u
 	const uri = vscode.Uri.parse(workspaceUri);
 	return vscode.workspace.getWorkspaceFolder(uri) ??
 		vscode.workspace.workspaceFolders?.find((folder) => folder.uri.toString() === workspaceUri);
+}
+
+function isCustomEditableObjectName(name: string): boolean {
+	const trimmed = name.trim().toUpperCase();
+	return trimmed.startsWith("Z") || trimmed.startsWith("Y");
+}
+
+function isSupportedEditableWorkspaceObject(objectRef: AdtObjectRef): boolean {
+	if (objectRef.type.startsWith("CLAS/") || objectRef.type.startsWith("INTF/")) {
+		return true;
+	}
+
+	const loweredUri = objectRef.uri.toLowerCase();
+	const normalizedType = objectRef.type.toUpperCase();
+	return loweredUri.includes("/programs/includes/") ||
+		loweredUri.includes("/programs/programs/") ||
+		loweredUri.includes("/functions/groups/") ||
+		normalizedType === "PROG/I" ||
+		normalizedType === "PROG/P";
 }
 
 function remoteDependencyCacheKey(

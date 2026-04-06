@@ -26,6 +26,10 @@
         "title": "ABAP LSP: Initialize Workspace From ADT Object"
       },
       {
+        "command": "abap-ls.addEditableAdtObjectToWorkspace",
+        "title": "ABAP LSP: Add Editable ADT Object to Workspace"
+      },
+      {
         "command": "abap-ls.createWorkspaceManifest",
         "title": "ABAP LSP: Create Local-First Workspace Manifest"
       },

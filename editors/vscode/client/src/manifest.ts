@@ -12,6 +12,11 @@ export interface ManifestUnitSpec {
 	objectName: string;
 }
 
+interface ManifestUnitMatch {
+	start: number;
+	end: number;
+}
+
 export type ManifestDependencyMode = "remote-on-demand" | "local-first";
 export type ManifestUnknownSymbolMode = "remote" | "log";
 
@@ -107,7 +112,10 @@ export async function ensureManifestUnit(
 		return vscode.Uri.file(manifestPath);
 	}
 
-	if (existing.includes(`adt_uri = "${unit.adtUri}"`) || existing.includes(`name = "${unit.name}"`)) {
+	const match = findManifestUnit(existing, unit);
+	if (match) {
+		const updated = `${existing.slice(0, match.start)}${unitBlock}${existing.slice(match.end)}`;
+		await fs.promises.writeFile(manifestPath, updated, "utf8");
 		return vscode.Uri.file(manifestPath);
 	}
 
@@ -203,6 +211,30 @@ function escapeTomlString(value: string): string {
 
 function normalizeRelativePath(value: string): string {
 	return value.replace(/\\/g, "/").replace(/^\.\//, "");
+}
+
+function findManifestUnit(text: string, unit: ManifestUnitSpec): ManifestUnitMatch | undefined {
+	const matches = [...text.matchAll(/^\[\[unit\]\]\s*$/gm)];
+	for (let index = 0; index < matches.length; index += 1) {
+		const start = matches[index].index ?? 0;
+		const end = matches[index + 1]?.index ?? text.length;
+		const block = text.slice(start, end);
+		const adtUri = readTomlString(block, "adt_uri");
+		const name = readTomlString(block, "name");
+		if (adtUri === unit.adtUri || name === unit.name) {
+			return { start, end };
+		}
+	}
+	return undefined;
+}
+
+function readTomlString(block: string, key: string): string | undefined {
+	const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+	const match = block.match(new RegExp(`^${escapedKey}\\s*=\\s*"(.*)"\\s*$`, "m"));
+	if (!match) {
+		return undefined;
+	}
+	return match[1].replace(/\\"/g, "\"").replace(/\\\\/g, "\\");
 }
 
 function sanitizePathSegment(value: string): string {
