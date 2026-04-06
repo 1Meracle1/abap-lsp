@@ -21,6 +21,7 @@ dependencies = [
 name = "abap_cache"
 version = "0.1.0"
 dependencies = [
+ "abap_lexer",
  "abap_parser",
  "abap_symbols",
  "parking_lot",

@@ -206,6 +206,7 @@ fn rebuild_workspace_cache(
             uri: document.uri,
             version: document.version,
             text: Arc::from(document.text),
+            is_dependency: document.is_dependency,
         })
         .collect();
     workspace.cache.replace_all(inputs)
@@ -1934,6 +1935,90 @@ adt_uri = "/sap/bc/adt/oo/classes/zcl_first"
 
         let follow_up = build_remote_dependency_requests_for_workspace(&mut state, &workspace_uri);
         assert!(follow_up.iter().any(|request| {
+            request.source_uri.ends_with("ZCL_FIRST.abap")
+                && request.candidates.iter().any(|candidate| candidate.name == "zcl_second")
+        }));
+
+        let _ = fs::remove_dir_all(&workspace_path);
+    }
+
+    #[test]
+    fn dependency_private_implementation_references_do_not_trigger_follow_up_remote_requests() {
+        let workspace_path = temp_workspace_path("dependency_private_impl");
+        let dependency_dir = workspace_path.join(".abapls").join("cache").join("dependencies").join("global-class");
+        fs::create_dir_all(&workspace_path).expect("workspace dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[resolution]
+dependency_mode = "remote-on-demand"
+unknown_symbol_mode = "remote"
+"#,
+        )
+        .expect("manifest");
+        let workspace_uri = path_to_file_uri(&workspace_path);
+
+        let mut state = ServerState::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        publish_open_document_mut(
+            &mut state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str(&format!("{workspace_uri}/main.abap")).expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: "DATA lo_demo TYPE REF TO zcl_first.\nlo_demo = zcl_first=>create( ).".to_string(),
+                },
+            },
+        );
+
+        let initial = build_remote_dependency_request(&mut state, &format!("{workspace_uri}/main.abap"))
+            .expect("initial request");
+        assert!(initial.candidates.iter().any(|candidate| candidate.name == "zcl_first"));
+
+        fs::create_dir_all(&dependency_dir).expect("dependency dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[resolution]
+dependency_mode = "remote-on-demand"
+unknown_symbol_mode = "remote"
+
+[[unit]]
+name = "ZCL_FIRST"
+kind = "global-class"
+root_file = ".abapls/cache/dependencies/global-class/ZCL_FIRST.abap"
+adt_uri = "/sap/bc/adt/oo/classes/zcl_first"
+
+[[unit.member]]
+role = "dependency"
+file = ".abapls/cache/dependencies/global-class/ZCL_FIRST.abap"
+object_name = "ZCL_FIRST"
+adt_uri = "/sap/bc/adt/oo/classes/zcl_first"
+"#,
+        )
+        .expect("updated manifest");
+        fs::write(
+            dependency_dir.join("ZCL_FIRST.abap"),
+            "CLASS zcl_first DEFINITION.\n  PUBLIC SECTION.\n    CLASS-METHODS create RETURNING VALUE(ro_inst) TYPE REF TO zcl_first.\n  PRIVATE SECTION.\n    CLASS-METHODS hidden.\nENDCLASS.\nCLASS zcl_first IMPLEMENTATION.\n  METHOD create.\n    hidden( ).\n  ENDMETHOD.\n  METHOD hidden.\n    DATA lo_hidden TYPE REF TO zcl_second.\n  ENDMETHOD.\nENDCLASS.\n",
+        )
+        .expect("dependency file");
+
+        let _ = handle_remote_dependencies_updated(
+            &mut state,
+            &super::RemoteDependenciesUpdatedParams {
+                workspace_uri: workspace_uri.clone(),
+                source_uri: format!("{workspace_uri}/main.abap"),
+                fetched: vec!["ZCL_FIRST".to_string()],
+            },
+        );
+
+        let follow_up = build_remote_dependency_requests_for_workspace(&mut state, &workspace_uri);
+        assert!(!follow_up.iter().any(|request| {
             request.source_uri.ends_with("ZCL_FIRST.abap")
                 && request.candidates.iter().any(|candidate| candidate.name == "zcl_second")
         }));

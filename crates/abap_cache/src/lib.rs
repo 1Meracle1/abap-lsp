@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::sync::Arc;
 
+use abap_lexer::TokenKind;
 use abap_parser::{ParseResult, parse};
 use abap_symbols::{
     ClassMemberData, ClassMemberKind, FieldTypeRefData, FormParameterData,
@@ -43,6 +44,7 @@ pub struct DocumentInput {
     pub uri: Arc<str>,
     pub version: i32,
     pub text: Arc<str>,
+    pub is_dependency: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -2940,9 +2942,16 @@ fn analyze_inputs(inputs: &[DocumentInput]) -> HashMap<Arc<str>, Arc<AnalysisSna
     let parsed: Vec<_> = inputs
         .par_iter()
         .map(|input| {
-            let parse = Arc::new(parse(input.text.as_ref()));
-            let source = input.text.to_string();
-            (Arc::clone(&input.uri), input.version, input.text.clone(), parse, source)
+            let analysis_text = analysis_text_for_input(input);
+            let parse = Arc::new(parse(analysis_text.as_ref()));
+            let source = analysis_text.to_string();
+            (
+                Arc::clone(&input.uri),
+                input.version,
+                input.text.clone(),
+                parse,
+                source,
+            )
         })
         .collect();
     let units: Vec<_> = parsed
@@ -2972,6 +2981,186 @@ fn analyze_inputs(inputs: &[DocumentInput]) -> HashMap<Arc<str>, Arc<AnalysisSna
         );
     }
     snapshots
+}
+
+fn analysis_text_for_input(input: &DocumentInput) -> Arc<str> {
+    if !input.is_dependency {
+        return Arc::clone(&input.text);
+    }
+    dependency_surface_text(input.text.as_ref())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DependencyVisibility {
+    Public,
+    Protected,
+    Private,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DependencyBlock {
+    ClassDefinition { visibility: DependencyVisibility },
+    ClassImplementation,
+    Method,
+    Form,
+    Function,
+}
+
+fn dependency_surface_text(text: &str) -> Arc<str> {
+    let parsed = parse(text);
+    let mut projected = text.as_bytes().to_vec();
+    let tokens = &parsed.tokens;
+    let mut stack = Vec::<DependencyBlock>::new();
+    let mut idx = 0usize;
+
+    while idx < tokens.len() {
+        while idx < tokens.len() && tokens[idx].kind == TokenKind::Comment {
+            idx += 1;
+        }
+        if idx >= tokens.len() {
+            break;
+        }
+
+        let Some(period_idx) = tokens[idx..]
+            .iter()
+            .position(|token| token.kind == TokenKind::Period)
+            .map(|offset| idx + offset)
+        else {
+            break;
+        };
+
+        let keywords = statement_keywords(tokens, text, idx, period_idx);
+        let first = keywords.first().map(String::as_str);
+        let second = keywords.get(1).map(String::as_str);
+        let statement_range = tokens[idx].range.start..tokens[period_idx].range.end;
+
+        match stack.last_mut() {
+            Some(DependencyBlock::Method) => {
+                if first == Some("endmethod") {
+                    stack.pop();
+                } else {
+                    blank_range_preserving_layout(&mut projected, statement_range);
+                }
+                idx = period_idx + 1;
+                continue;
+            }
+            Some(DependencyBlock::Form) => {
+                if first == Some("endform") {
+                    stack.pop();
+                } else {
+                    blank_range_preserving_layout(&mut projected, statement_range);
+                }
+                idx = period_idx + 1;
+                continue;
+            }
+            Some(DependencyBlock::Function) => {
+                if first == Some("endfunction") {
+                    stack.pop();
+                } else {
+                    blank_range_preserving_layout(&mut projected, statement_range);
+                }
+                idx = period_idx + 1;
+                continue;
+            }
+            Some(DependencyBlock::ClassImplementation) => {
+                match first {
+                    Some("method") => stack.push(DependencyBlock::Method),
+                    Some("endclass") => {
+                        stack.pop();
+                    }
+                    _ => {
+                        blank_range_preserving_layout(&mut projected, statement_range);
+                    }
+                }
+                idx = period_idx + 1;
+                continue;
+            }
+            Some(DependencyBlock::ClassDefinition { visibility }) => {
+                if first == Some("endclass") {
+                    stack.pop();
+                    idx = period_idx + 1;
+                    continue;
+                }
+
+                if matches!(first, Some("public" | "protected" | "private"))
+                    && second == Some("section")
+                {
+                    *visibility = match first.expect("section keyword") {
+                        "public" => DependencyVisibility::Public,
+                        "protected" => DependencyVisibility::Protected,
+                        _ => DependencyVisibility::Private,
+                    };
+                    if *visibility == DependencyVisibility::Private {
+                        blank_range_preserving_layout(&mut projected, statement_range);
+                    }
+                    idx = period_idx + 1;
+                    continue;
+                }
+
+                if *visibility == DependencyVisibility::Private {
+                    blank_range_preserving_layout(&mut projected, statement_range.clone());
+                }
+
+                if first == Some("class") {
+                    if keywords.iter().any(|keyword| keyword == "implementation") {
+                        stack.push(DependencyBlock::ClassImplementation);
+                    } else {
+                        stack.push(DependencyBlock::ClassDefinition {
+                            visibility: DependencyVisibility::Private,
+                        });
+                    }
+                } else if first == Some("form") {
+                    stack.push(DependencyBlock::Form);
+                } else if first == Some("function") {
+                    stack.push(DependencyBlock::Function);
+                }
+
+                idx = period_idx + 1;
+                continue;
+            }
+            None => {}
+        }
+
+        match first {
+            Some("class") => {
+                if keywords.iter().any(|keyword| keyword == "implementation") {
+                    stack.push(DependencyBlock::ClassImplementation);
+                } else {
+                    stack.push(DependencyBlock::ClassDefinition {
+                        visibility: DependencyVisibility::Private,
+                    });
+                }
+            }
+            Some("form") => stack.push(DependencyBlock::Form),
+            Some("function") => stack.push(DependencyBlock::Function),
+            _ => {}
+        }
+
+        idx = period_idx + 1;
+    }
+
+    Arc::from(String::from_utf8(projected).expect("dependency surface projection should stay utf-8"))
+}
+
+fn statement_keywords(
+    tokens: &[abap_lexer::Token],
+    text: &str,
+    start: usize,
+    period_idx: usize,
+) -> Vec<String> {
+    tokens[start..period_idx]
+        .iter()
+        .filter(|token| token.kind == TokenKind::Ident)
+        .map(|token| token.lexeme(text).to_ascii_lowercase())
+        .collect()
+}
+
+fn blank_range_preserving_layout(text: &mut [u8], range: Range<usize>) {
+    for byte in &mut text[range] {
+        if *byte != b'\n' && *byte != b'\r' {
+            *byte = b' ';
+        }
+    }
 }
 
 impl DocumentStore {
@@ -3106,7 +3295,10 @@ impl DocumentStore {
 
 #[cfg(test)]
 mod tests {
-    use super::{DefinitionTarget, DocumentStore, HoveredComponentKind, ReferenceTarget};
+    use super::{
+        DefinitionTarget, DocumentInput, DocumentStore, HoveredComponentKind, ReferenceTarget,
+        dependency_surface_text,
+    };
     use abap_symbols::StructureFieldShape;
     use std::sync::Arc;
 
@@ -3134,6 +3326,95 @@ mod tests {
             .map(|(uri, _, expected_slice)| (uri.to_string(), expected_slice.to_string()))
             .collect();
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn dependency_surface_projection_strips_private_sections_and_routine_bodies() {
+        let src = "\
+CLASS zcl_dep DEFINITION.
+  PUBLIC SECTION.
+    METHODS pub RETURNING VALUE(rv_value) TYPE string.
+  PROTECTED SECTION.
+    DATA mv_visible TYPE string.
+  PRIVATE SECTION.
+    METHODS priv.
+ENDCLASS.
+
+CLASS zcl_dep IMPLEMENTATION.
+  METHOD pub.
+    rv_value = zcl_hidden=>make( ).
+  ENDMETHOD.
+  METHOD priv.
+    DATA lv_private TYPE zcl_private.
+  ENDMETHOD.
+ENDCLASS.
+
+FORM keep USING iv_value TYPE zcl_form_type.
+  DATA lv_form TYPE zcl_form_impl.
+ENDFORM.
+
+FUNCTION z_keep.
+  DATA lv_fm TYPE zcl_fm_impl.
+ENDFUNCTION.
+";
+        let projected = dependency_surface_text(src);
+
+        assert!(projected.contains("METHODS pub RETURNING VALUE(rv_value) TYPE string."));
+        assert!(projected.contains("DATA mv_visible TYPE string."));
+        assert!(projected.contains("FORM keep USING iv_value TYPE zcl_form_type."));
+        assert!(projected.contains("FUNCTION z_keep."));
+        assert!(!projected.contains("PRIVATE SECTION."));
+        assert!(!projected.contains("METHODS priv."));
+        assert!(!projected.contains("zcl_hidden=>make"));
+        assert!(!projected.contains("zcl_private"));
+        assert!(!projected.contains("zcl_form_impl"));
+        assert!(!projected.contains("zcl_fm_impl"));
+    }
+
+    #[test]
+    fn dependency_surface_keeps_protected_super_members_visible_to_child_resolution() {
+        let store = DocumentStore::default();
+        let main_src = "\
+CLASS zcl_child DEFINITION INHERITING FROM zcl_base.
+  PUBLIC SECTION.
+    METHODS run.
+ENDCLASS.
+
+CLASS zcl_child IMPLEMENTATION.
+  METHOD run.
+    super->prot_value = 'x'.
+  ENDMETHOD.
+ENDCLASS.";
+        let snapshots = store.replace_all(vec![
+            DocumentInput {
+                uri: Arc::from("file:///dep.abap"),
+                version: 1,
+                text: Arc::from(
+                    "\
+CLASS zcl_base DEFINITION.
+  PROTECTED SECTION.
+    DATA prot_value TYPE string.
+ENDCLASS.
+CLASS zcl_base IMPLEMENTATION.
+ENDCLASS.",
+                ),
+                is_dependency: true,
+            },
+            DocumentInput {
+                uri: Arc::from("file:///main.abap"),
+                version: 1,
+                text: Arc::from(main_src),
+                is_dependency: false,
+            },
+        ]);
+        let snapshot = snapshots.get("file:///main.abap").expect("main snapshot");
+        let offset = main_src.find("prot_value").expect("field access") + 1;
+
+        let hovered = snapshot
+            .hovered_component_at(offset)
+            .expect("hovered protected component");
+
+        assert_eq!(hovered.field_name.as_ref(), "prot_value");
     }
 
     #[test]
