@@ -94,6 +94,30 @@ adt_uri = "/sap/bc/adt/oo/classes/zcl_keep"
 		assert.ok(text.includes('root_file = "src/ZCL_PROMOTE.abap"'));
 		assert.ok(text.includes('role = "main"'));
 		assert.ok(text.includes('root_file = ".abapls/cache/dependencies/global-class/ZCL_KEEP.abap"'));
+		assert.ok(text.includes('adt_uri = "/sap/bc/adt/oo/classes/zcl_promote"\n\n[[unit]]'));
+	});
+
+	test("Serializes concurrent manifest updates", async () => {
+		const workspaceFolder = await createTempWorkspaceFolder("concurrent-unit-updates");
+
+		await Promise.all(
+			Array.from({ length: 12 }, (_, index) =>
+				ensureManifestUnit(workspaceFolder, {
+					name: `ZCL_CONCURRENT_${index}`,
+					kind: "global-class",
+					rootFile: `src/ZCL_CONCURRENT_${index}.abap`,
+					adtUri: `/sap/bc/adt/oo/classes/zcl_concurrent_${index}`,
+					role: "main",
+					objectName: `ZCL_CONCURRENT_${index}`,
+				}),
+			),
+		);
+
+		const text = await fs.promises.readFile(workspaceManifestPath(workspaceFolder), "utf8");
+		assert.strictEqual((text.match(/^\[\[unit\]\]$/gm) ?? []).length, 12);
+		assert.strictEqual((text.match(/^\[\[unit\.member\]\]$/gm) ?? []).length, 12);
+		assert.ok(!text.includes('adt_uri = "/sap/bc/adt/oo/classes/zcl_concurrent_0"[[unit]]'));
+		assert.ok(!text.includes('adt_uri = "/sap/bc/adt/oo/classes/zcl_concurrent_0"[[unit.member]]'));
 	});
 });
 

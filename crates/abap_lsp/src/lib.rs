@@ -3,11 +3,12 @@ mod perf_tests;
 pub(crate) mod sem_tokens;
 
 use std::collections::{HashMap, HashSet};
+use std::str::FromStr;
 use std::sync::Arc;
 
 use abap_cache::{
     AnalysisSnapshot, DocumentInput, DocumentStore, OpenDocumentOverlay, UNKNOWN_SYMBOL_MODE_REMOTE,
-    WorkspaceManifest, is_remote_lookup_name, load_workspace_documents,
+    WorkspaceManifest, is_remote_lookup_candidate, load_workspace_documents,
     manifest_supports_remote_resolution, uri_starts_with_workspace,
 };
 use abap_symbols::{DiagnosticKind, ReferenceKind, SqlResolution};
@@ -45,6 +46,8 @@ pub struct WorkspaceState {
     pub root_uri: String,
     pub cache: DocumentStore,
     pub manifest: Option<WorkspaceManifest>,
+    pub manifest_uri: String,
+    pub manifest_error: Option<String>,
     pub open_documents: HashMap<String, OpenDocumentOverlay>,
     pub remote_resolution_seen: HashSet<String>,
 }
@@ -80,6 +83,8 @@ impl WorkspaceState {
             root_uri: root_uri.into(),
             cache: DocumentStore::default(),
             manifest: None,
+            manifest_uri: String::new(),
+            manifest_error: None,
             open_documents: HashMap::new(),
             remote_resolution_seen: HashSet::new(),
         }
@@ -192,6 +197,8 @@ fn rebuild_workspace_cache(
 ) -> HashMap<Arc<str>, Arc<AnalysisSnapshot>> {
     let loaded = load_workspace_documents(&workspace.root_uri, &workspace.open_documents);
     workspace.manifest = loaded.manifest.clone();
+    workspace.manifest_uri = loaded.manifest_uri.to_string();
+    workspace.manifest_error = loaded.manifest_error.clone();
     let inputs: Vec<_> = loaded
         .documents
         .into_iter()
@@ -202,6 +209,46 @@ fn rebuild_workspace_cache(
         })
         .collect();
     workspace.cache.replace_all(inputs)
+}
+
+pub fn workspace_manifest_diagnostics_params(
+    state: &ServerState,
+    workspace_uri: &str,
+) -> Option<PublishDiagnosticsParams> {
+    let workspace_uri = normalize_lsp_uri(workspace_uri);
+    let workspace = state.workspaces.get(&workspace_uri)?;
+    if workspace.manifest_uri.is_empty() {
+        return None;
+    }
+
+    let diagnostics = workspace
+        .manifest_error
+        .as_ref()
+        .map(|message| {
+            vec![Diagnostic {
+                range: Range {
+                    start: Position::new(0, 0),
+                    end: Position::new(0, 1),
+                },
+                severity: Some(DiagnosticSeverity::ERROR),
+                code: None,
+                code_description: None,
+                source: Some("abap-lsp".to_string()),
+                message: format!(
+                    "{message}. Manifest loading failed; workspace dependency resolution is disabled until abapls.toml is fixed."
+                ),
+                related_information: None,
+                tags: None,
+                data: None,
+            }]
+        })
+        .unwrap_or_default();
+
+    Some(PublishDiagnosticsParams {
+        uri: Uri::from_str(&workspace.manifest_uri).ok()?,
+        diagnostics,
+        version: None,
+    })
 }
 
 fn remote_candidate_key(candidate: &RemoteDependencyCandidate) -> String {
@@ -293,11 +340,12 @@ pub fn handle_workspace_manifest_updated(
 pub fn handle_dependency_cache_cleared(
     state: &mut ServerState,
     params: &WorkspaceManifestUpdatedParams,
-) {
+) -> Vec<Arc<AnalysisSnapshot>> {
     let workspace_uri = normalize_lsp_uri(&params.workspace_uri);
     if let Some(workspace) = state.workspaces.get_mut(&workspace_uri) {
         workspace.remote_resolution_seen.clear();
     }
+    refresh_workspace(state, &workspace_uri)
 }
 
 pub fn handle_remote_dependencies_updated(
@@ -311,15 +359,17 @@ pub fn collect_remote_dependency_candidates(snapshot: &AnalysisSnapshot) -> Vec<
     let mut deduped = HashMap::<String, RemoteDependencyCandidate>::new();
 
     for reference in &snapshot.symbols.references {
-        if reference.resolution.is_some() || !is_remote_lookup_name(reference.name.as_ref()) {
-            continue;
-        }
         let kind = match reference.kind {
             ReferenceKind::Include => "include",
             ReferenceKind::StaticTarget => "static",
             ReferenceKind::TypeRef => "type",
             ReferenceKind::Identifier | ReferenceKind::RoutineCall => "symbol",
         };
+        if reference.resolution.is_some()
+            || !is_remote_lookup_candidate(reference.name.as_ref(), kind)
+        {
+            continue;
+        }
         insert_remote_candidate(
             &mut deduped,
             RemoteDependencyCandidate {
@@ -332,7 +382,7 @@ pub fn collect_remote_dependency_candidates(snapshot: &AnalysisSnapshot) -> Vec<
     for sql_ref in &snapshot.symbols.sql_name_refs {
         if sql_ref.kind == abap_symbols::SqlNameRefKind::Source
             && sql_ref.resolution == SqlResolution::External
-            && is_remote_lookup_name(sql_ref.name.as_ref())
+            && is_remote_lookup_candidate(sql_ref.name.as_ref(), "type")
         {
             insert_remote_candidate(
                 &mut deduped,
@@ -904,9 +954,8 @@ mod tests {
           ServerState, WORKSPACE_MANIFEST_UPDATED, WorkspaceManifestUpdatedParams,
           build_lsp_diagnostics, completion, definition, build_remote_dependency_request,
           build_remote_dependency_requests_for_workspace, handle_dependency_cache_cleared,
-          handle_remote_dependencies_updated, handle_workspace_manifest_updated, hover,
-          initialize_result, normalize_lsp_uri, publish_changed_document, publish_open_document,
-          publish_open_document_mut, references,
+          handle_remote_dependencies_updated, hover, initialize_result, normalize_lsp_uri,
+          publish_changed_document, publish_open_document, publish_open_document_mut, references,
       };
 
     fn temp_workspace_path(name: &str) -> PathBuf {
@@ -1602,6 +1651,45 @@ unknown_symbol_mode = "remote"
     }
 
     #[test]
+    fn log_mode_still_builds_remote_dependency_requests() {
+        let workspace_path = temp_workspace_path("log_mode_candidates");
+        fs::create_dir_all(&workspace_path).expect("workspace dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[resolution]
+dependency_mode = "remote-on-demand"
+unknown_symbol_mode = "log"
+"#,
+        )
+        .expect("manifest");
+        let workspace_uri = path_to_file_uri(&workspace_path);
+
+        let mut state = ServerState::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        publish_open_document_mut(
+            &mut state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str(&format!("{workspace_uri}/main.abap")).expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: "DATA lv_flag TYPE boolean.".to_string(),
+                },
+            },
+        );
+
+        let request = build_remote_dependency_request(&mut state, &format!("{workspace_uri}/main.abap"))
+            .expect("remote request");
+        assert_eq!(request.unknown_symbol_mode.as_deref(), Some("log"));
+        assert!(request.candidates.iter().any(|candidate| candidate.name == "boolean"));
+
+        let _ = fs::remove_dir_all(&workspace_path);
+    }
+
+    #[test]
     fn workspace_manifest_refresh_enables_remote_dependency_requests() {
         let workspace_path = temp_workspace_path("manifest_refresh");
         fs::create_dir_all(&workspace_path).expect("workspace dir");
@@ -1636,13 +1724,7 @@ unknown_symbol_mode = "remote"
             .expect("remote request");
         assert!(request.candidates.iter().any(|candidate| candidate.name == "zcl_remote_demo"));
 
-        handle_dependency_cache_cleared(
-            &mut state,
-            &WorkspaceManifestUpdatedParams {
-                workspace_uri: workspace_uri.clone(),
-            },
-        );
-        handle_workspace_manifest_updated(
+        let _ = handle_dependency_cache_cleared(
             &mut state,
             &WorkspaceManifestUpdatedParams {
                 workspace_uri: workspace_uri.clone(),
@@ -1651,6 +1733,126 @@ unknown_symbol_mode = "remote"
         let request = build_remote_dependency_request(&mut state, &format!("{workspace_uri}/main.abap"))
             .expect("remote request after cache clear");
         assert!(request.candidates.iter().any(|candidate| candidate.kind == "static"));
+
+        let _ = fs::remove_dir_all(&workspace_path);
+    }
+
+    #[test]
+    fn dependency_cache_clear_refreshes_workspace_and_reissues_requests() {
+        let workspace_path = temp_workspace_path("dependency_cache_clear_refresh");
+        fs::create_dir_all(&workspace_path).expect("workspace dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[resolution]
+dependency_mode = "remote-on-demand"
+unknown_symbol_mode = "remote"
+"#,
+        )
+        .expect("manifest");
+        let workspace_uri = path_to_file_uri(&workspace_path);
+
+        let dependency_dir = workspace_path.join(".abapls").join("cache").join("dependencies").join("global-class");
+        fs::create_dir_all(&dependency_dir).expect("dependency dir");
+        fs::write(
+            dependency_dir.join("ZCL_REMOTE_DEMO.abap"),
+            "CLASS zcl_remote_demo DEFINITION.\nENDCLASS.\nCLASS zcl_remote_demo IMPLEMENTATION.\nENDCLASS.\n",
+        )
+        .expect("dependency file");
+
+        let mut state = ServerState::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        publish_open_document_mut(
+            &mut state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str(&format!("{workspace_uri}/main.abap")).expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: "DATA lo_demo TYPE REF TO zcl_remote_demo.\nlo_demo = zcl_remote_demo=>create( ).".to_string(),
+                },
+            },
+        );
+
+        assert!(build_remote_dependency_request(&mut state, &format!("{workspace_uri}/main.abap")).is_none());
+
+        fs::remove_dir_all(workspace_path.join(".abapls").join("cache")).expect("clear cache dir");
+
+        let snapshots = handle_dependency_cache_cleared(
+            &mut state,
+            &WorkspaceManifestUpdatedParams {
+                workspace_uri: workspace_uri.clone(),
+            },
+        );
+        assert!(!snapshots.is_empty(), "expected workspace refresh after cache clear");
+
+        let request = build_remote_dependency_request(&mut state, &format!("{workspace_uri}/main.abap"))
+            .expect("remote request after cache clear");
+        assert!(request.candidates.iter().any(|candidate| candidate.name == "zcl_remote_demo"));
+
+        let _ = fs::remove_dir_all(&workspace_path);
+    }
+
+    #[test]
+    fn remote_dependency_request_includes_standard_type_candidates() {
+        let workspace_path = temp_workspace_path("standard_type_remote_candidates");
+        fs::create_dir_all(&workspace_path).expect("workspace dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[resolution]
+dependency_mode = "remote-on-demand"
+unknown_symbol_mode = "remote"
+"#,
+        )
+        .expect("manifest");
+        let workspace_uri = path_to_file_uri(&workspace_path);
+
+        let mut state = ServerState::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        publish_open_document_mut(
+            &mut state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str(&format!("{workspace_uri}/main.abap")).expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: concat!(
+                        "DATA lv_boolean TYPE boolean.\n",
+                        "DATA lv_any TYPE xsdany.\n",
+                        "DATA lv_guid TYPE sxmsmguid.\n",
+                        "DATA lo_reader TYPE REF TO if_sxml_reader.\n",
+                        "DATA lo_node TYPE REF TO if_sxml_node.\n",
+                        "DATA lx_root TYPE REF TO cx_root.\n",
+                        "TRY.\n",
+                        "  WRITE 'x'.\n",
+                        "CATCH cx_sxml_parse_error INTO DATA(lx_parse).\n",
+                        "ENDTRY.\n",
+                    )
+                    .to_string(),
+                },
+            },
+        );
+
+        let request = build_remote_dependency_request(&mut state, &format!("{workspace_uri}/main.abap"))
+            .expect("remote request");
+        let names: std::collections::HashSet<_> = request
+            .candidates
+            .iter()
+            .map(|candidate| candidate.name.as_str())
+            .collect();
+
+        assert!(names.contains("boolean"));
+        assert!(names.contains("xsdany"));
+        assert!(names.contains("sxmsmguid"));
+        assert!(names.contains("if_sxml_reader"));
+        assert!(names.contains("if_sxml_node"));
+        assert!(names.contains("cx_root"));
+        assert!(names.contains("cx_sxml_parse_error"));
 
         let _ = fs::remove_dir_all(&workspace_path);
     }

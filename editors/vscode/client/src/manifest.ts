@@ -17,6 +17,8 @@ interface ManifestUnitMatch {
 	end: number;
 }
 
+const pendingManifestUpdates = new Map<string, Promise<void>>();
+
 export type ManifestDependencyMode = "remote-on-demand" | "local-first";
 export type ManifestUnknownSymbolMode = "remote" | "log";
 
@@ -27,8 +29,8 @@ export interface ManifestOptions {
 
 export const manifestFileName = "abapls.toml";
 export const unknownSymbolLogPath = ".abapls/logs/unknown-symbols.log";
-export const defaultRemoteRequestParallelism = 4;
-export const defaultRemoteRequestsPerSecond = 8;
+export const defaultRemoteRequestParallelism = 8;
+export const defaultRemoteRequestsPerSecond = 24;
 export const dependencyModeRemoteOnDemand: ManifestDependencyMode = "remote-on-demand";
 export const dependencyModeLocalFirst: ManifestDependencyMode = "local-first";
 export const unknownSymbolModeRemote: ManifestUnknownSymbolMode = "remote";
@@ -103,24 +105,26 @@ export async function ensureManifestUnit(
 	options: ManifestOptions = {},
 ): Promise<vscode.Uri> {
 	const manifestPath = workspaceManifestPath(workspaceFolder);
-	const existing = await readTextIfExists(manifestPath);
-	const unitBlock = renderUnitBlock(unit);
+	await withManifestUpdateLock(manifestPath, async () => {
+		const existing = await readTextIfExists(manifestPath);
+		const unitBlock = renderUnitBlock(unit);
 
-	if (!existing) {
-		const initialText = `${renderManifestHeader(options)}\n${unitBlock}`;
-		await fs.promises.writeFile(manifestPath, initialText, "utf8");
-		return vscode.Uri.file(manifestPath);
-	}
+		if (!existing) {
+			const initialText = `${renderManifestHeader(options)}\n${unitBlock}`;
+			await fs.promises.writeFile(manifestPath, initialText, "utf8");
+			return;
+		}
 
-	const match = findManifestUnit(existing, unit);
-	if (match) {
-		const updated = `${existing.slice(0, match.start)}${unitBlock}${existing.slice(match.end)}`;
-		await fs.promises.writeFile(manifestPath, updated, "utf8");
-		return vscode.Uri.file(manifestPath);
-	}
+		const match = findManifestUnit(existing, unit);
+		if (match) {
+			const updated = `${existing.slice(0, match.start)}${unitBlock}${existing.slice(match.end)}`;
+			await fs.promises.writeFile(manifestPath, updated, "utf8");
+			return;
+		}
 
-	const separator = existing.endsWith("\n") ? "\n" : "\n\n";
-	await fs.promises.writeFile(manifestPath, `${existing}${separator}${unitBlock}`, "utf8");
+		const separator = existing.endsWith("\n") ? "\n" : "\n\n";
+		await fs.promises.writeFile(manifestPath, `${existing}${separator}${unitBlock}`, "utf8");
+	});
 	return vscode.Uri.file(manifestPath);
 }
 
@@ -133,12 +137,14 @@ export async function ensureWorkspaceManifest(
 	options: ManifestOptions = {},
 ): Promise<vscode.Uri> {
 	const manifestPath = workspaceManifestPath(workspaceFolder);
-	const existing = await readTextIfExists(manifestPath);
-	if (existing !== undefined) {
-		return vscode.Uri.file(manifestPath);
-	}
+	await withManifestUpdateLock(manifestPath, async () => {
+		const existing = await readTextIfExists(manifestPath);
+		if (existing !== undefined) {
+			return;
+		}
 
-	await fs.promises.writeFile(manifestPath, `${renderManifestHeader(options)}\n`, "utf8");
+		await fs.promises.writeFile(manifestPath, `${renderManifestHeader(options)}\n`, "utf8");
+	});
 	return vscode.Uri.file(manifestPath);
 }
 
@@ -202,7 +208,8 @@ adt_uri = "${escapeTomlString(unit.adtUri)}"
 role = "${escapeTomlString(unit.role)}"
 file = "${escapeTomlString(normalizeRelativePath(unit.rootFile))}"
 object_name = "${escapeTomlString(unit.objectName)}"
-adt_uri = "${escapeTomlString(unit.adtUri)}"`;
+adt_uri = "${escapeTomlString(unit.adtUri)}"
+`;
 }
 
 function escapeTomlString(value: string): string {
@@ -249,5 +256,24 @@ async function readTextIfExists(filePath: string): Promise<string | undefined> {
 			return undefined;
 		}
 		throw error;
+	}
+}
+
+async function withManifestUpdateLock<T>(manifestPath: string, action: () => Promise<T>): Promise<T> {
+	const previous = pendingManifestUpdates.get(manifestPath) ?? Promise.resolve();
+	let release!: () => void;
+	const current = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	pendingManifestUpdates.set(manifestPath, previous.then(() => current));
+
+	await previous;
+	try {
+		return await action();
+	} finally {
+		release();
+		if (pendingManifestUpdates.get(manifestPath) === current) {
+			pendingManifestUpdates.delete(manifestPath);
+		}
 	}
 }

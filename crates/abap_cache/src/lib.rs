@@ -20,10 +20,12 @@ pub use workspace::{
     DEPENDENCY_MODE_LOCAL_FIRST, DEPENDENCY_MODE_REMOTE_ON_DEMAND, ManifestResolution,
     ManifestUnit, ManifestUnitMember, OpenDocumentOverlay, UNKNOWN_SYMBOL_MODE_LOG,
     UNKNOWN_SYMBOL_MODE_REMOTE, WorkspaceDocument, WorkspaceLoadResult, WorkspaceManifest,
-    ddic_xml_to_abap_source, file_uri_to_path, is_remote_lookup_name, load_workspace_documents,
-    load_manifest_from_workspace, manifest_cache_dir, manifest_supports_remote_resolution,
-    normalize_dependency_mode, normalize_unknown_symbol_mode, path_to_file_uri,
-    uri_starts_with_workspace, workspace_relative_path,
+    ddic_xml_to_abap_source, file_uri_to_path, is_remote_lookup_candidate,
+    is_remote_lookup_name, load_workspace_documents, load_manifest_from_workspace,
+    load_manifest_from_workspace_result, manifest_cache_dir,
+    manifest_supports_remote_resolution, normalize_dependency_mode,
+    normalize_unknown_symbol_mode, path_to_file_uri, uri_starts_with_workspace,
+    workspace_relative_path,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]

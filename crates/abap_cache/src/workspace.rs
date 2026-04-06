@@ -91,7 +91,9 @@ pub struct WorkspaceDocument {
 pub struct WorkspaceLoadResult {
     pub root_uri: Arc<str>,
     pub root_path: PathBuf,
+    pub manifest_uri: Arc<str>,
     pub manifest: Option<WorkspaceManifest>,
+    pub manifest_error: Option<String>,
     pub documents: Vec<WorkspaceDocument>,
 }
 
@@ -102,11 +104,25 @@ pub struct OpenDocumentOverlay {
 }
 
 pub fn load_manifest_from_workspace(root_path: &Path) -> Option<WorkspaceManifest> {
+    load_manifest_from_workspace_result(root_path).ok().flatten()
+}
+
+pub fn load_manifest_from_workspace_result(root_path: &Path) -> Result<Option<WorkspaceManifest>, String> {
     let manifest_path = root_path.join("abapls.toml");
-    let text = fs::read_to_string(manifest_path).ok()?;
-    let mut manifest: WorkspaceManifest = toml::from_str(&text).ok()?;
+    let text = match fs::read_to_string(&manifest_path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(format!(
+                "failed to read {}: {error}",
+                manifest_path.display()
+            ))
+        }
+    };
+    let mut manifest: WorkspaceManifest = toml::from_str(&text)
+        .map_err(|error| format!("failed to parse {}: {error}", manifest_path.display()))?;
     normalize_manifest(&mut manifest);
-    Some(manifest)
+    Ok(Some(manifest))
 }
 
 pub fn load_workspace_documents(
@@ -114,7 +130,11 @@ pub fn load_workspace_documents(
     overlays: &HashMap<String, OpenDocumentOverlay>,
 ) -> WorkspaceLoadResult {
     let root_path = file_uri_to_path(root_uri).unwrap_or_default();
-    let manifest = load_manifest_from_workspace(&root_path);
+    let manifest_uri = Arc::<str>::from(path_to_file_uri(&root_path.join("abapls.toml")));
+    let (manifest, manifest_error) = match load_manifest_from_workspace_result(&root_path) {
+        Ok(manifest) => (manifest, None),
+        Err(error) => (None, Some(error)),
+    };
     let cache_dir = manifest_cache_dir(manifest.as_ref()).to_string();
     let mut documents = Vec::new();
     let mut seen = HashSet::new();
@@ -163,7 +183,9 @@ pub fn load_workspace_documents(
     WorkspaceLoadResult {
         root_uri: Arc::from(root_uri),
         root_path,
+        manifest_uri,
         manifest,
+        manifest_error,
         documents,
     }
 }
@@ -173,8 +195,6 @@ pub fn manifest_supports_remote_resolution(manifest: Option<&WorkspaceManifest>)
         return false;
     };
     normalize_dependency_mode(&manifest.resolution.dependency_mode) == DEPENDENCY_MODE_REMOTE_ON_DEMAND
-        && normalize_unknown_symbol_mode(&manifest.resolution.unknown_symbol_mode)
-            == UNKNOWN_SYMBOL_MODE_REMOTE
 }
 
 pub fn manifest_cache_dir(manifest: Option<&WorkspaceManifest>) -> &str {
@@ -250,6 +270,62 @@ pub fn is_remote_lookup_name(name: &str) -> bool {
     }
     let lower = trimmed.to_ascii_lowercase();
     lower.starts_with('z') || lower.starts_with('y')
+}
+
+pub fn is_remote_lookup_candidate(name: &str, kind: &str) -> bool {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    if is_remote_lookup_name(trimmed) {
+        return true;
+    }
+
+    matches!(
+        kind.trim().to_ascii_lowercase().as_str(),
+        "type" | "static"
+    ) && is_standard_remote_type_like_name(trimmed)
+}
+
+fn is_standard_remote_type_like_name(name: &str) -> bool {
+    if name.starts_with('/') {
+        return true;
+    }
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !first.is_ascii_alphabetic() {
+        return false;
+    }
+
+    let lower = name.to_ascii_lowercase();
+    if is_likely_local_identifier_style(&lower) {
+        return false;
+    }
+
+    chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '/')
+}
+
+fn is_likely_local_identifier_style(lower: &str) -> bool {
+    const LOCAL_PREFIXES: &[&str] = &[
+        "lv_", "ls_", "lt_", "lr_", "lo_", "li_", "lm_", "lx_", "lc_", "ld_",
+        "gv_", "gs_", "gt_", "gr_", "go_", "gi_", "gm_", "gx_", "gc_", "gd_",
+        "mv_", "ms_", "mt_", "mr_", "mo_", "mi_", "mm_", "mx_", "mc_", "md_",
+        "iv_", "is_", "it_", "ir_", "io_", "ii_", "im_", "ix_", "ic_", "id_",
+        "ev_", "es_", "et_", "er_", "eo_", "ei_", "em_", "ex_", "ec_", "ed_",
+        "rv_", "rs_", "rt_", "rr_", "ro_", "ri_", "rm_", "rx_", "rc_", "rd_",
+        "cv_", "cs_", "ct_", "cr_", "co_", "ci_", "cm_", "cc_", "cd_",
+        "sv_", "ss_", "st_", "sr_", "so_", "si_", "sm_", "sx_", "sc_", "sd_",
+        "tv_", "ts_", "tt_", "tr_", "to_", "ti_", "tm_", "tx_", "tc_", "td_",
+        "uv_", "us_", "ut_", "ur_", "uo_", "ui_", "um_", "ux_", "uc_", "ud_",
+        "wv_", "ws_", "wt_", "wr_", "wo_", "wi_", "wm_", "wx_", "wc_", "wd_",
+        "xv_", "xs_", "xt_", "xr_", "xo_", "xi_", "xm_", "xx_", "xc_", "xd_",
+        "yv_", "ys_", "yt_", "yr_", "yo_", "yi_", "ym_", "yx_", "yc_", "yd_",
+        "zv_", "zs_", "zt_", "zr_", "zo_", "zi_", "zm_", "zx_", "zc_", "zd_",
+    ];
+
+    LOCAL_PREFIXES.iter().any(|prefix| lower.starts_with(prefix))
 }
 
 fn collect_abap_sources(
@@ -782,7 +858,14 @@ fn normalize_ddic_builtin_type(value: &str) -> Cow<'_, str> {
 
 #[cfg(test)]
 mod tests {
-    use super::{UNKNOWN_SYMBOL_MODE_REMOTE, WorkspaceManifest, ddic_xml_to_abap_source, is_remote_lookup_name};
+    use std::collections::HashMap;
+    use std::fs;
+
+    use super::{
+        UNKNOWN_SYMBOL_MODE_REMOTE, WorkspaceManifest, ddic_xml_to_abap_source,
+        is_remote_lookup_candidate, is_remote_lookup_name, load_workspace_documents,
+        manifest_supports_remote_resolution, path_to_file_uri,
+    };
 
     #[test]
     fn parses_manifest_defaults() {
@@ -818,5 +901,46 @@ mod tests {
         assert!(is_remote_lookup_name("zcl_demo"));
         assert!(is_remote_lookup_name("/foo/bar"));
         assert!(!is_remote_lookup_name("cl_abap_typedescr"));
+    }
+
+    #[test]
+    fn detects_remote_lookup_candidates_by_kind() {
+        assert!(is_remote_lookup_candidate("cl_abap_typedescr", "type"));
+        assert!(is_remote_lookup_candidate("if_sxml_reader", "static"));
+        assert!(is_remote_lookup_candidate("cx_root", "type"));
+        assert!(is_remote_lookup_candidate("boolean", "type"));
+        assert!(!is_remote_lookup_candidate("cl_abap_typedescr", "symbol"));
+        assert!(!is_remote_lookup_candidate("lv_type_name", "type"));
+    }
+
+    #[test]
+    fn manifest_supports_log_mode_for_candidate_reporting() {
+        let manifest: WorkspaceManifest = toml::from_str(
+            r#"
+version = 1
+
+[resolution]
+dependency_mode = "remote-on-demand"
+unknown_symbol_mode = "log"
+"#,
+        )
+        .expect("manifest");
+
+        assert!(manifest_supports_remote_resolution(Some(&manifest)));
+    }
+
+    #[test]
+    fn reports_manifest_parse_errors() {
+        let root = std::env::temp_dir().join("abap-lsp-invalid-manifest");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("root dir");
+        fs::write(root.join("abapls.toml"), "version = 1\n[[unit]]\nname = \"X\"[[unit]]\n")
+            .expect("manifest");
+
+        let loaded = load_workspace_documents(&path_to_file_uri(&root), &HashMap::new());
+        assert!(loaded.manifest.is_none());
+        assert!(loaded.manifest_error.is_some());
+
+        let _ = fs::remove_dir_all(&root);
     }
 }
