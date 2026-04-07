@@ -389,8 +389,13 @@ fn import_structure_for_type_ref(
     target_structures: &mut Vec<StructureData>,
     imported: &mut HashMap<(u32, u32), StructureId>,
 ) -> Option<StructureId> {
-    let handle =
-        resolve_root_symbol_handle(snapshot, unit_idx, type_ref, per_unit_root_index, root_index)?;
+    let handle = resolve_root_symbol_handle(
+        snapshot,
+        unit_idx,
+        type_ref,
+        per_unit_root_index,
+        root_index,
+    )?;
     let source_unit_idx = handle.unit.as_usize();
     let mut structure_id = snapshot[source_unit_idx].symbol(handle.symbol).structure?;
     for field_name in &type_ref.field_path {
@@ -475,7 +480,13 @@ fn import_structure(
             decl_range: field.decl_range.clone(),
             decl_unit: field.decl_unit,
             structure: field.structure.map(|nested| {
-                import_structure(snapshot, source_unit_idx, nested, target_structures, imported)
+                import_structure(
+                    snapshot,
+                    source_unit_idx,
+                    nested,
+                    target_structures,
+                    imported,
+                )
             }),
             type_ref: field.type_ref.clone(),
         })

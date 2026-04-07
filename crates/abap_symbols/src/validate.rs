@@ -558,6 +558,83 @@ fn symbol_type_clause_suggests_internal_table(symbol: &crate::SymbolData) -> boo
         || upper.contains("TABLE OF")
 }
 
+fn resolve_type_like_symbol_handle(
+    project: &ProjectAnalysis,
+    unit: &crate::UnitAnalysis,
+    scope_indexes: &[ScopeIndex],
+    scope: ScopeId,
+    type_ref: &crate::FieldTypeRefData,
+) -> Option<SymbolHandle> {
+    let namespaces = if type_ref.namespace == Namespace::Value {
+        [Namespace::Value, Namespace::Type]
+    } else {
+        [type_ref.namespace, type_ref.namespace]
+    };
+
+    for namespace in namespaces {
+        if let Some(symbol) = resolve_symbol_in_scope_chain(
+            unit,
+            &scope_indexes[unit.unit_id.as_usize()],
+            scope,
+            namespace,
+            &type_ref.base_name,
+        ) {
+            return Some(SymbolHandle {
+                unit: unit.unit_id,
+                symbol,
+            });
+        }
+
+        for candidate_unit in &project.units {
+            for symbol in &candidate_unit.symbols {
+                if symbol.scope == candidate_unit.root_scope
+                    && symbol.name.as_ref() == type_ref.base_name.as_ref()
+                    && symbol.kind.namespaces().contains(&namespace)
+                {
+                    return Some(SymbolHandle {
+                        unit: candidate_unit.unit_id,
+                        symbol: symbol.id,
+                    });
+                }
+            }
+        }
+    }
+
+    None
+}
+
+fn symbol_is_internal_table(
+    project: &ProjectAnalysis,
+    unit: &crate::UnitAnalysis,
+    scope_indexes: &[ScopeIndex],
+    symbol: &crate::SymbolData,
+    seen: &mut HashSet<(u32, u32)>,
+) -> bool {
+    if symbol_type_clause_suggests_internal_table(symbol) {
+        return true;
+    }
+
+    let Some(type_ref) = symbol.declared_type.as_ref() else {
+        return false;
+    };
+    if !type_ref.field_path.is_empty() {
+        return false;
+    }
+
+    let Some(handle) =
+        resolve_type_like_symbol_handle(project, unit, scope_indexes, symbol.scope, type_ref)
+    else {
+        return false;
+    };
+    if !seen.insert((handle.unit.0, handle.symbol.0)) {
+        return false;
+    }
+
+    let resolved_unit = &project.units[handle.unit.as_usize()];
+    let resolved_symbol = resolved_unit.symbol(handle.symbol);
+    symbol_is_internal_table(project, resolved_unit, scope_indexes, resolved_symbol, seen)
+}
+
 fn symbol_is_structure_like_for_into(symbol: &crate::SymbolData) -> bool {
     if symbol.structure.is_some() {
         return true;
@@ -591,10 +668,12 @@ fn into_target_identifier_range(
 }
 
 fn validate_open_sql_into_targets(
+    project: &ProjectAnalysis,
     unit: &crate::UnitAnalysis,
-    scope_index: &ScopeIndex,
+    scope_indexes: &[ScopeIndex],
 ) -> Vec<Diagnostic> {
     let mut out = Vec::new();
+    let scope_index = &scope_indexes[unit.unit_id.as_usize()];
     for target in &unit.sql_targets {
         if target.is_inline || target.target_name.is_none() {
             continue;
@@ -608,7 +687,9 @@ fn validate_open_sql_into_targets(
         let symbol = unit.symbol(symbol_id);
         let diag_range = into_target_identifier_range(unit, target, name);
 
-        if target.is_table && !symbol_type_clause_suggests_internal_table(symbol) {
+        if target.is_table
+            && !symbol_is_internal_table(project, unit, scope_indexes, symbol, &mut HashSet::new())
+        {
             out.push(Diagnostic {
                 kind: DiagnosticKind::InvalidOpenSqlIntoTarget,
                 range: diag_range.clone(),
@@ -1048,7 +1129,7 @@ pub(crate) fn validate_project_with_scope_indexes(
         }
 
         unit_diagnostics.extend(validate_open_sql_sources(project, unit, scope_index));
-        unit_diagnostics.extend(validate_open_sql_into_targets(unit, scope_index));
+        unit_diagnostics.extend(validate_open_sql_into_targets(project, unit, scope_indexes));
         unit_diagnostics.extend(constructor_diagnostics);
 
         {

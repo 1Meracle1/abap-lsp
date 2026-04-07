@@ -1,9 +1,9 @@
 use abap_parser::parse;
 
 use abap_symbols::{
-    DiagnosticKind, Namespace, ReferenceKind, Resolution, SqlNameRefKind, SqlPredicateKind,
-    SqlProjectionKind, SqlSourceKind, SqlTargetKind, StructureFieldShape, SymbolHandle,
-    analyze_unit,
+    DiagnosticKind, Namespace, ProjectInput, ReferenceKind, Resolution, SqlNameRefKind,
+    SqlPredicateKind, SqlProjectionKind, SqlSourceKind, SqlTargetKind, StructureFieldShape,
+    SymbolHandle, analyze_project, analyze_unit,
 };
 
 #[test]
@@ -1232,6 +1232,74 @@ SELECT * FROM ty_row INTO TABLE wa.
             diag.kind == DiagnosticKind::InvalidOpenSqlIntoTarget && diag.message.contains("wa")
         }),
         "expected InvalidOpenSqlIntoTarget for wa, got {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn accepts_into_table_when_target_uses_local_table_type_alias() {
+    let src = r#"
+TYPES: BEGIN OF ty_row,
+         id TYPE i,
+       END OF ty_row.
+TYPES ty_rows TYPE STANDARD TABLE OF ty_row WITH EMPTY KEY.
+DATA lt_rows TYPE ty_rows.
+SELECT * FROM ty_row INTO TABLE lt_rows.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///into_table_alias_ok.abap", src, &parsed);
+    assert!(
+        !unit
+            .diagnostics
+            .iter()
+            .any(|diag| diag.kind == DiagnosticKind::InvalidOpenSqlIntoTarget),
+        "unexpected InvalidOpenSqlIntoTarget for table alias: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn accepts_into_table_when_target_uses_external_ddic_table_type() {
+    let main_src = r#"
+DATA et_sdr TYPE /sttp/tt_evt_sdr.
+SELECT * FROM /sttp/dm_evt_sdr INTO CORRESPONDING FIELDS OF TABLE et_sdr.
+"#;
+    let row_src = r#"
+TYPES: BEGIN OF /sttp/dm_evt_sdr,
+         evtid TYPE i,
+       END OF /sttp/dm_evt_sdr.
+"#;
+    let table_src = r#"
+TYPES /sttp/tt_evt_sdr TYPE STANDARD TABLE OF /sttp/dm_evt_sdr WITH EMPTY KEY.
+"#;
+    let main_parse = parse(main_src);
+    let row_parse = parse(row_src);
+    let table_parse = parse(table_src);
+
+    let project = analyze_project(&[
+        ProjectInput {
+            uri: "file:///main.abap",
+            source: main_src,
+            parse: &main_parse,
+        },
+        ProjectInput {
+            uri: "file:///ddic_row.abap",
+            source: row_src,
+            parse: &row_parse,
+        },
+        ProjectInput {
+            uri: "file:///ddic_table.abap",
+            source: table_src,
+            parse: &table_parse,
+        },
+    ]);
+    let unit = project.unit_by_uri("file:///main.abap").expect("main unit");
+    assert!(
+        !unit
+            .diagnostics
+            .iter()
+            .any(|diag| diag.kind == DiagnosticKind::InvalidOpenSqlIntoTarget),
+        "unexpected InvalidOpenSqlIntoTarget for DDIC table type: {:?}",
         unit.diagnostics
     );
 }
