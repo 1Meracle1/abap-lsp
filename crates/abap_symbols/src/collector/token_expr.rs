@@ -80,9 +80,29 @@ impl<'a> Collector<'a> {
                         idx = self.collect_new_expression_infos(tokens, idx, scope);
                         continue;
                     }
-                    if let Some((next_idx, namespace, base_name, base_range, field_path)) =
+                    if let Some((
+                        next_idx,
+                        namespace,
+                        base_name,
+                        base_range,
+                        field_path,
+                        bracket_groups,
+                    )) =
                         self.consume_selector_access_from_infos(tokens, idx)
                     {
+                        for (group_start, group_end, is_legacy_table_body) in bracket_groups {
+                            // Distinguish legacy whole-table `itab[]` from table expressions
+                            // such as `itab[ 1 ]` / `itab[ key = ... ]`. Only the latter
+                            // contributes nested selector/key expressions to collect.
+                            if is_legacy_table_body {
+                                continue;
+                            }
+                            self.collect_token_expression_refs_infos(
+                                &tokens[group_start + 1..group_end],
+                                scope,
+                                true,
+                            );
+                        }
                         let method_name =
                             field_path.last().map(|segment| Arc::clone(&segment.name));
                         let kind = if namespace == Namespace::Type {
@@ -683,6 +703,7 @@ impl<'a> Collector<'a> {
         Arc<str>,
         TextRange,
         Vec<FieldAccessSegment>,
+        Vec<(usize, usize, bool)>,
     )> {
         let base = tokens.get(idx)?;
         if !self.syntax_token_is_ident_like(base) {
@@ -691,9 +712,22 @@ impl<'a> Collector<'a> {
         let mut cursor = idx;
         let mut namespace = None;
         let mut field_path = Vec::with_capacity((tokens.len().saturating_sub(idx + 1)) / 2);
+        let mut bracket_groups = Vec::new();
         while cursor + 2 < tokens.len() {
-            let op = &tokens[cursor + 1];
-            let field = &tokens[cursor + 2];
+            let mut op_idx = cursor + 1;
+            while tokens.get(op_idx).is_some_and(|token| token.text.as_ref() == "[") {
+                let end_idx = self.find_matching_group_end_infos(tokens, op_idx, "[", "]")?;
+                // Empty brackets are the old "table body" form (`itab[]`); non-empty brackets
+                // are table expressions that conceptually yield a row before any `-field`.
+                let is_legacy_table_body = end_idx == op_idx + 1;
+                bracket_groups.push((op_idx, end_idx, is_legacy_table_body));
+                op_idx = end_idx + 1;
+            }
+            if op_idx >= tokens.len() {
+                break;
+            }
+            let op = tokens.get(op_idx)?;
+            let field = tokens.get(op_idx + 1)?;
             if !self.syntax_token_is_ident_like(field)
                 && !(op.text.as_ref() == "->" && field.text.as_ref() == "*")
             {
@@ -702,7 +736,9 @@ impl<'a> Collector<'a> {
             let step_namespace = match op.text.as_ref() {
                 "=>" => Namespace::Type,
                 "->" | "~" => Namespace::Value,
-                "-" if !self.syntax_tokens_have_space_between(&tokens[cursor], op)
+                "-"
+                    if op_idx > 0
+                        && !self.syntax_tokens_have_space_between(&tokens[op_idx - 1], op)
                     && !self.syntax_tokens_have_space_between(op, field) =>
                 {
                     Namespace::Value
@@ -714,7 +750,7 @@ impl<'a> Collector<'a> {
                 name: Self::lower_arc(field.text.as_ref()),
                 range: field.range.clone(),
             });
-            cursor += 2;
+            cursor = op_idx + 1;
         }
         Some((
             cursor + 1,
@@ -722,6 +758,7 @@ impl<'a> Collector<'a> {
             Self::lower_arc(base.text.as_ref()),
             base.range.clone(),
             field_path,
+            bracket_groups,
         ))
     }
 

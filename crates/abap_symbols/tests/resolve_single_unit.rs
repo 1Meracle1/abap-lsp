@@ -4073,6 +4073,229 @@ rv_text = |({ mo_left->to_string( ) } { mv_op } { mo_right->to_string( ) })|.
 }
 
 #[test]
+fn resolves_table_expression_selector_accesses_with_keyword_named_fields() {
+    let src = "\
+TYPES: BEGIN OF ty_rep,
+         type TYPE string,
+       END OF ty_rep.
+TYPES ty_rep_tab TYPE STANDARD TABLE OF ty_rep WITH EMPTY KEY.
+DATA lt_rep TYPE ty_rep_tab.
+DATA lv_type TYPE string.
+
+lv_type = lt_rep[ 1 ]-type.";
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///table_expr_selector.abap", src, &parsed);
+
+    assert!(
+        unit.field_accesses.iter().any(|access| {
+            access.base_name.as_ref() == "lt_rep"
+                && access
+                    .field_path
+                    .iter()
+                    .map(|segment| segment.name.as_ref())
+                    .collect::<Vec<_>>()
+                    == vec!["type"]
+        }),
+        "expected table-expression selector access, accesses={:?}",
+        unit.field_accesses
+    );
+    assert!(
+        unit.references.iter().any(|reference| {
+            reference.name.as_ref() == "lt_rep"
+                && reference.namespace == Namespace::Value
+                && reference.kind == ReferenceKind::Identifier
+                && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+        }),
+        "expected resolved table reference, refs={:?}",
+        unit.references
+    );
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            matches!(
+                diag.kind,
+                DiagnosticKind::UnresolvedReference | DiagnosticKind::UnknownField
+            )
+        }),
+        "unexpected diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn resolves_legacy_table_body_operator_in_loop_and_predicate_contexts() {
+    let src = "\
+DATA lt_tab TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+FIELD-SYMBOLS <lv_row> TYPE string.
+
+IF lt_tab[] IS NOT INITIAL.
+  LOOP AT lt_tab[] ASSIGNING <lv_row>.
+  ENDLOOP.
+ENDIF.";
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///legacy_table_body_operator.abap", src, &parsed);
+
+    let lt_tab_refs = unit
+        .references
+        .iter()
+        .filter(|reference| {
+            reference.name.as_ref() == "lt_tab"
+                && reference.namespace == Namespace::Value
+                && reference.kind == ReferenceKind::Identifier
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(lt_tab_refs.len(), 2, "expected both lt_tab[] uses to resolve");
+    assert!(lt_tab_refs
+        .iter()
+        .all(|reference| matches!(reference.resolution, Some(Resolution::Symbol(_)))));
+    assert!(
+        unit.field_accesses.is_empty(),
+        "legacy [] should not produce selector field accesses: {:?}",
+        unit.field_accesses
+    );
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            matches!(
+                diag.kind,
+                DiagnosticKind::UnresolvedReference | DiagnosticKind::UnknownField
+            )
+        }),
+        "unexpected diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn resolves_legacy_table_body_operator_in_assignment_describe_and_for_all_entries() {
+    let src = "\
+DATA it_obj_ids TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+DATA it_src TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+DATA it_dst TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+DATA lv_dummy TYPE string.
+DATA lv_lines TYPE i.
+
+it_dst[] = it_src[].
+DESCRIBE TABLE it_dst[] LINES lv_lines.
+
+IF it_obj_ids[] IS NOT INITIAL.
+  SELECT mandt UP TO 1 ROWS
+    FROM t000
+    INTO lv_dummy
+    FOR ALL ENTRIES IN it_obj_ids[]
+    WHERE mandt = it_obj_ids.
+  ENDSELECT.
+ENDIF.";
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///legacy_table_body_misc.abap", src, &parsed);
+
+    for name in ["it_src", "it_dst", "lv_lines", "it_obj_ids", "lv_dummy"] {
+        assert!(
+            unit.references.iter().any(|reference| {
+                reference.name.as_ref() == name
+                    && reference.namespace == Namespace::Value
+                    && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+            }),
+            "expected resolved reference for `{name}`, refs={:?}",
+            unit.references
+        );
+    }
+    assert!(
+        unit.field_accesses.is_empty(),
+        "legacy [] should not produce selector field accesses: {:?}",
+        unit.field_accesses
+    );
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            matches!(
+                diag.kind,
+                DiagnosticKind::UnresolvedReference | DiagnosticKind::UnknownField
+            )
+        }),
+        "unexpected diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn resolves_selector_chain_ending_with_legacy_table_body_operator() {
+    let src = "\
+FIELD-SYMBOLS: <fs_choice> TYPE any,
+               <fs_destination> TYPE any.
+
+LOOP AT <fs_choice>-object_event-extension-destination_list-destination[] ASSIGNING <fs_destination>.
+ENDLOOP.";
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///selector_legacy_table_body.abap", src, &parsed);
+
+    assert!(
+        unit.field_accesses.iter().any(|access| {
+            access.base_name.as_ref() == "<fs_choice>"
+                && access
+                    .field_path
+                    .iter()
+                    .map(|segment| segment.name.as_ref())
+                    .collect::<Vec<_>>()
+                    == vec!["object_event", "extension", "destination_list", "destination"]
+        }),
+        "expected selector access ending in legacy [], accesses={:?}",
+        unit.field_accesses
+    );
+    assert!(
+        unit.references.iter().any(|reference| {
+            reference.name.as_ref() == "<fs_destination>"
+                && reference.namespace == Namespace::Value
+                && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+        }),
+        "expected assigning target to resolve, refs={:?}",
+        unit.references
+    );
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            matches!(
+                diag.kind,
+                DiagnosticKind::UnresolvedReference | DiagnosticKind::UnknownField
+            )
+        }),
+        "unexpected diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn suppresses_unknown_symbol_for_bare_loop_where_field_name() {
+    let src = "\
+TYPES: BEGIN OF ty_dest,
+  type TYPE string,
+  content TYPE string,
+END OF ty_dest.
+TYPES ty_dest_tab TYPE STANDARD TABLE OF ty_dest WITH EMPTY KEY.
+DATA lt_dest TYPE ty_dest_tab.
+FIELD-SYMBOLS <fs_destination> TYPE ty_dest.
+
+LOOP AT lt_dest[] ASSIGNING <fs_destination>
+WHERE type IS NOT INITIAL.
+ENDLOOP.";
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///loop_where_bare_field.abap", src, &parsed);
+
+    assert!(
+        unit.references.iter().any(|reference| {
+            reference.name.as_ref() == "type"
+                && reference.namespace == Namespace::Value
+                && reference.kind == ReferenceKind::Identifier
+        }),
+        "expected bare field reference in LOOP WHERE, refs={:?}",
+        unit.references
+    );
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains("'type'")
+        }),
+        "unexpected diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn validates_unknown_template_interpolation_members() {
     let src = r#"
 CLASS zcl_expr DEFINITION.

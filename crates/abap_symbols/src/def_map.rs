@@ -304,6 +304,13 @@ pub struct FieldAccess {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoopWhereFieldContext {
+    pub scope: ScopeId,
+    pub range: TextRange,
+    pub source_access: FieldAccess,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FieldAccessSegment {
     pub name: Arc<str>,
     pub range: TextRange,
@@ -489,6 +496,7 @@ pub struct UnitAnalysis {
     pub diagnostics: Vec<Diagnostic>,
     pub include_edges: Vec<IncludeEdge>,
     pub field_accesses: Vec<FieldAccess>,
+    pub loop_where_field_contexts: Vec<LoopWhereFieldContext>,
     pub class_members: Vec<ClassMemberData>,
     pub class_inheritance: Vec<ClassInheritanceData>,
     pub form_routines: Vec<FormRoutineData>,

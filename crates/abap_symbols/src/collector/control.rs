@@ -3,7 +3,9 @@ use std::sync::Arc;
 use abap_ast::SyntaxKind;
 use abap_ast::arena::NodeId;
 
-use crate::def_map::{FieldAccess, FieldAccessSegment, FieldTypeRefData, SymbolKind};
+use crate::def_map::{
+    FieldAccess, FieldAccessSegment, FieldTypeRefData, LoopWhereFieldContext, SymbolKind,
+};
 use crate::ids::{ScopeId, StructureId, SymbolId};
 use crate::scope::{Namespace, ScopeKind};
 
@@ -112,6 +114,7 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
 
     fn collect_loop_header_node(&mut self, node: NodeId, scope: ScopeId) {
         let mut source_metadata = (None, None);
+        let mut source_access = None;
         let mut allows_internal_table_line_selector = false;
         for child in self.collector.file.children(node) {
             match self.collector.file.kind(child) {
@@ -121,6 +124,7 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
                             self.internal_table_line_selector_allowed_for_source(expr, scope);
                         self.collector.expr_lowering().collect_expr(expr, scope);
                         source_metadata = self.loop_source_line_metadata_from_node(expr, scope);
+                        source_access = self.loop_source_access_from_node(expr, scope);
                     }
                 }
                 SyntaxKind::LoopIntoClause => {
@@ -158,6 +162,17 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
                 | SyntaxKind::LoopToClause
                 | SyntaxKind::LoopStepClause => {
                     if let Some(expr) = self.collector.first_non_token_child(child) {
+                        if self.collector.file.kind(child) == SyntaxKind::LoopWhereClause
+                            && let Some(source_access) = source_access.clone()
+                        {
+                            self.collector
+                                .loop_where_field_contexts
+                                .push(LoopWhereFieldContext {
+                                    scope,
+                                    range: self.collector.file.range(child),
+                                    source_access,
+                                });
+                        }
                         self.collector.expr_lowering().collect_expr(expr, scope);
                     }
                 }
@@ -166,6 +181,36 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
         }
         self.collector.scopes[scope.as_usize()].allows_internal_table_line_selector =
             allows_internal_table_line_selector;
+    }
+
+    fn loop_source_access_from_node(&self, node: NodeId, scope: ScopeId) -> Option<FieldAccess> {
+        match self.collector.file.kind(node) {
+            SyntaxKind::TemplateExpr => self
+                .collector
+                .first_non_token_child(node)
+                .and_then(|child| self.loop_source_access_from_node(child, scope)),
+            SyntaxKind::ExprIdent => {
+                let (name, _) = self.collector.node_name(node)?;
+                Some(FieldAccess {
+                    scope,
+                    base_namespace: Namespace::Value,
+                    base_name: name,
+                    field_path: Vec::new(),
+                    in_type_position: false,
+                })
+            }
+            SyntaxKind::SelectorExpr => {
+                let (namespace, base_name, _, field_path) = self.collector.selector_access_chain(node)?;
+                (namespace == Namespace::Value).then_some(FieldAccess {
+                    scope,
+                    base_namespace: namespace,
+                    base_name,
+                    field_path,
+                    in_type_position: false,
+                })
+            }
+            _ => None,
+        }
     }
 
     fn collect_loop_target_node(

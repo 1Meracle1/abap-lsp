@@ -290,6 +290,8 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             self.collect_clear_stmt_infos(tail, scope);
         } else if head.text.eq_ignore_ascii_case("convert") {
             self.collect_convert_stmt_infos(&significant, scope);
+        } else if head.text.eq_ignore_ascii_case("describe") {
+            self.collect_describe_stmt_infos(&significant, scope);
         } else if head.text.eq_ignore_ascii_case("find") {
             self.collect_find_stmt_infos(&significant, scope);
         } else if head.text.eq_ignore_ascii_case("replace") {
@@ -323,6 +325,45 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                 && tokens[idx].text.as_ref() != "."
             {
                 idx += 1;
+            }
+        }
+    }
+
+    pub(super) fn collect_describe_stmt_infos(
+        &mut self,
+        tokens: &[SyntaxTokenInfo],
+        scope: ScopeId,
+    ) {
+        if tokens.len() < 3 || !tokens[0].text.eq_ignore_ascii_case("describe") {
+            return;
+        }
+        if !tokens
+            .get(1)
+            .is_some_and(|token| token.text.eq_ignore_ascii_case("table"))
+        {
+            self.collector
+                .collect_token_expression_refs_infos(&tokens[1..], scope, true);
+            return;
+        }
+
+        let lines_idx = self
+            .collector
+            .find_top_level_keyword_index_infos(tokens, 2, "lines");
+        let lines_idx = lines_idx.unwrap_or(tokens.len());
+        // `DESCRIBE TABLE itab[] LINES lv_lines` uses the legacy table-body form. Treat
+        // `TABLE`/`LINES` as statement keywords and only collect the actual table/target operands.
+        if lines_idx > 2 {
+            self.collector
+                .collect_token_expression_refs_infos(&tokens[2..lines_idx], scope, true);
+        }
+        if lines_idx < tokens.len() {
+            let target_start = lines_idx + 1;
+            if target_start < tokens.len() {
+                self.collector.collect_token_expression_refs_infos(
+                    &tokens[target_start..],
+                    scope,
+                    true,
+                );
             }
         }
     }

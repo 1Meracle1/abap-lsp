@@ -21,9 +21,9 @@ use abap_lexer::{TextRange, Token};
 
 use crate::def_map::{
     ClassInheritanceData, ClassMemberData, Diagnostic, FieldAccess, FieldTypeRefData,
-    FormRoutineData, IncludeEdge, NamedArgumentAccess, PerformCallData, ReferenceData,
-    SqlNameRefData, SqlPredicateData, SqlProjectionData, SqlQueryData, SqlSourceData,
-    SqlTargetData, StructureData, SymbolData, UnitAnalysis,
+    FormRoutineData, IncludeEdge, LoopWhereFieldContext, NamedArgumentAccess, PerformCallData,
+    ReferenceData, SqlNameRefData, SqlPredicateData, SqlProjectionData, SqlQueryData,
+    SqlSourceData, SqlTargetData, StructureData, SymbolData, UnitAnalysis,
 };
 use crate::ids::{ScopeId, StructureId, SymbolId, UnitId};
 use crate::scope::{Namespace, ScopeData, ScopeKind};
@@ -94,6 +94,7 @@ pub struct Collector<'a> {
     diagnostics: Vec<Diagnostic>,
     include_edges: Vec<IncludeEdge>,
     field_accesses: Vec<FieldAccess>,
+    loop_where_field_contexts: Vec<LoopWhereFieldContext>,
     class_members: Vec<ClassMemberData>,
     form_routines: Vec<FormRoutineData>,
     named_arguments: Vec<NamedArgumentAccess>,
@@ -136,6 +137,7 @@ impl<'a> Collector<'a> {
             diagnostics: Vec::new(),
             include_edges: Vec::new(),
             field_accesses: Vec::new(),
+            loop_where_field_contexts: Vec::new(),
             class_members: Vec::new(),
             form_routines: Vec::new(),
             named_arguments: Vec::new(),
@@ -180,6 +182,7 @@ impl<'a> Collector<'a> {
             diagnostics: self.diagnostics,
             include_edges: self.include_edges,
             field_accesses: self.field_accesses,
+            loop_where_field_contexts: self.loop_where_field_contexts,
             class_members: self.class_members,
             class_inheritance,
             form_routines: self.form_routines,

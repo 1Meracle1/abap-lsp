@@ -18,7 +18,13 @@ impl<'a> Collector<'a> {
 
     pub(super) fn walk_node(&mut self, node: NodeId, scope: ScopeId) {
         match self.file.kind(node) {
-            SyntaxKind::Token | SyntaxKind::Error => {}
+            SyntaxKind::Token => {}
+            SyntaxKind::Error => {
+                let tokens = self.syntax_token_nodes(node);
+                if !tokens.is_empty() {
+                    self.collect_token_expression_refs_infos(&tokens, scope, true);
+                }
+            }
             SyntaxKind::DataDecl | SyntaxKind::StaticsDecl => self
                 .decl_lowering()
                 .walk_data_like_decl(node, scope, SymbolKind::Variable),

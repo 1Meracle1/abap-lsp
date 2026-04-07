@@ -4,7 +4,8 @@ use std::sync::Arc;
 use crate::builtins::builtin_routine_spec;
 use crate::def_map::{
     Diagnostic, DiagnosticKind, FieldTypeRefData, FormParameterData, FormParameterSection,
-    PerformParameterSection, ReferenceKind, Resolution, SqlNameRefKind,
+    LoopWhereFieldContext, PerformParameterSection, ReferenceKind, Resolution, SqlNameRefKind,
+    StructureFieldShape,
 };
 use crate::ids::{ScopeId, StructureId, SymbolHandle, SymbolId};
 use crate::project::ProjectAnalysis;
@@ -665,6 +666,123 @@ fn resolve_type_like_symbol_handle(
     None
 }
 
+fn resolve_symbol_structure_project<'a>(
+    project: &'a ProjectAnalysis,
+    unit: &'a crate::UnitAnalysis,
+    scope_indexes: &[ScopeIndex],
+    scope: ScopeId,
+    symbol_id: SymbolId,
+) -> Option<(&'a crate::UnitAnalysis, StructureId)> {
+    let mut current_unit = unit;
+    let mut current_symbol_id = symbol_id;
+    let mut seen = HashSet::new();
+    for _ in 0..8 {
+        let symbol = current_unit.symbol(current_symbol_id);
+        if let Some(structure_id) = symbol.structure {
+            return Some((current_unit, structure_id));
+        }
+        let type_ref = symbol.declared_type.as_ref()?;
+        let handle =
+            resolve_type_like_symbol_handle(project, current_unit, scope_indexes, scope, type_ref)?;
+        if !seen.insert((handle.unit.0, handle.symbol.0)) {
+            return None;
+        }
+        current_unit = &project.units[handle.unit.as_usize()];
+        current_symbol_id = handle.symbol;
+    }
+    None
+}
+
+fn resolve_loop_where_source_structure<'a>(
+    project: &'a ProjectAnalysis,
+    unit: &'a crate::UnitAnalysis,
+    scope_indexes: &[ScopeIndex],
+    context: &LoopWhereFieldContext,
+) -> Option<(&'a crate::UnitAnalysis, StructureId)> {
+    if context.source_access.base_namespace != Namespace::Value {
+        return None;
+    }
+    let scope_index = &scope_indexes[unit.unit_id.as_usize()];
+    let base_symbol_id = resolve_symbol_in_scope_chain(
+        unit,
+        scope_index,
+        context.scope,
+        Namespace::Value,
+        &context.source_access.base_name,
+    )?;
+    let (current_unit, mut current_structure) = resolve_symbol_structure_project(
+        project,
+        unit,
+        scope_indexes,
+        context.scope,
+        base_symbol_id,
+    )?;
+    if context.source_access.field_path.is_empty() {
+        return Some((current_unit, current_structure));
+    }
+
+    for (idx, segment) in context.source_access.field_path.iter().enumerate() {
+        if segment.is_deref() {
+            return None;
+        }
+        let field = current_unit
+            .semantic()
+            .decls()
+            .structure_field_info(current_structure, segment.name.as_ref())?;
+        if idx + 1 == context.source_access.field_path.len() {
+            if let Some(type_ref) = field.type_ref.as_ref() {
+                let handle = resolve_type_like_symbol_handle(
+                    project,
+                    current_unit,
+                    scope_indexes,
+                    context.scope,
+                    type_ref,
+                )?;
+                let resolved_unit = &project.units[handle.unit.as_usize()];
+                return resolve_symbol_structure_project(
+                    project,
+                    resolved_unit,
+                    scope_indexes,
+                    context.scope,
+                    handle.symbol,
+                );
+            }
+            return match field.shape {
+                StructureFieldShape::Structured { structure } => Some((current_unit, structure)),
+                StructureFieldShape::Scalar => None,
+            };
+        }
+        current_structure = match field.shape {
+            StructureFieldShape::Structured { structure } => structure,
+            StructureFieldShape::Scalar => return None,
+        };
+    }
+    Some((current_unit, current_structure))
+}
+
+fn loop_where_reference_matches_source_field(
+    project: &ProjectAnalysis,
+    unit: &crate::UnitAnalysis,
+    scope_indexes: &[ScopeIndex],
+    reference: &crate::ReferenceData,
+) -> bool {
+    if reference.namespace != Namespace::Value || reference.kind != ReferenceKind::Identifier {
+        return false;
+    }
+    unit.loop_where_field_contexts.iter().any(|context| {
+        context.range.start <= reference.range.start
+            && reference.range.end <= context.range.end
+            && resolve_loop_where_source_structure(project, unit, scope_indexes, context)
+                .is_some_and(|(structure_unit, structure_id)| {
+                    structure_unit
+                        .semantic()
+                        .decls()
+                        .structure_field_info(structure_id, reference.name.as_ref())
+                        .is_some()
+                })
+    })
+}
+
 fn symbol_is_internal_table(
     project: &ProjectAnalysis,
     unit: &crate::UnitAnalysis,
@@ -855,6 +973,14 @@ pub(crate) fn validate_project_with_scope_indexes(
 
         for reference in &unit.references {
             if reference.resolution.is_some() {
+                continue;
+            }
+            if loop_where_reference_matches_source_field(
+                project,
+                unit,
+                scope_indexes,
+                reference,
+            ) {
                 continue;
             }
             if reference.namespace == Namespace::Value

@@ -77,6 +77,27 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
             }
             SyntaxKind::TypeRefSimple => self.ctx.decl_lowering().collect_type_ref(node, scope),
             _ => {
+                let token_children = self.ctx.syntax_token_nodes(node);
+                if self.kind(node) == SyntaxKind::TemplateExpr
+                    && token_children
+                        .iter()
+                        .any(|token| matches!(token.text.as_ref(), "[" | "]"))
+                {
+                    self.ctx
+                        .collect_token_expression_refs_infos(&token_children, scope, true);
+                    return;
+                }
+                if !token_children.is_empty()
+                    && self
+                        .ctx
+                        .file()
+                        .children(node)
+                        .all(|child| self.kind(child) == SyntaxKind::Token)
+                {
+                    self.ctx
+                        .collect_token_expression_refs_infos(&token_children, scope, true);
+                    return;
+                }
                 for child in self.ctx.file().children(node) {
                     match self.kind(child) {
                         SyntaxKind::ExprIdent
