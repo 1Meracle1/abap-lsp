@@ -98,11 +98,7 @@ impl<'a> Collector<'a> {
                 self.control_lowering()
                     .walk_nested_block(node, scope, crate::ScopeKind::TryBlock)
             }
-            SyntaxKind::CatchClause => self.control_lowering().walk_nested_block(
-                node,
-                scope,
-                crate::ScopeKind::CatchClause,
-            ),
+            SyntaxKind::CatchClause => self.control_lowering().walk_catch_clause(node, scope),
             SyntaxKind::CleanupClause => self.control_lowering().walk_nested_block(
                 node,
                 scope,

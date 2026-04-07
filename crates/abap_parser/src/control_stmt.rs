@@ -112,9 +112,22 @@ fn parse_catch_header_until_period(
                     children.push(token_leaf(b, token));
                     let target_start = skip_trivia(tokens, cursor + 1);
                     if target_start < period_i {
-                        let expr =
-                            parse_arithmetic_expr(b, source, &tokens[target_start..period_i], None);
-                        children.push(expr);
+                        if let Some((inline_decl, next_idx)) =
+                            try_parse_catch_inline_data_target(b, source, tokens, target_start)
+                        {
+                            children.push(inline_decl);
+                            for trailing in &tokens[next_idx..period_i] {
+                                children.push(token_leaf(b, trailing));
+                            }
+                        } else {
+                            let expr = parse_arithmetic_expr(
+                                b,
+                                source,
+                                &tokens[target_start..period_i],
+                                None,
+                            );
+                            children.push(expr);
+                        }
                     }
                     cursor = period_i;
                     continue;
@@ -228,6 +241,15 @@ fn try_parse_loop_inline_data_target(
         ),
         next_idx + 1,
     ))
+}
+
+fn try_parse_catch_inline_data_target(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+) -> Option<(NodeId, usize)> {
+    try_parse_loop_inline_data_target(b, source, tokens, idx)
 }
 
 fn try_parse_loop_inline_field_symbol_target(
@@ -1088,6 +1110,19 @@ mod tests {
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::CatchClause), 1);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::TypeRefSimple), 1);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::ExprIdent), 1);
+    }
+
+    #[test]
+    fn parses_catch_into_inline_data_target_with_pragma() {
+        let parsed = crate::parse(
+            "TRY. WRITE 'x'. CATCH cx_root INTO DATA(lo_root) ##catch_all. WRITE lo_root->get_text( ). ENDTRY.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::TryStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::CatchClause), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::TypeRefSimple), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::DataInlineDecl), 1);
     }
 
     #[test]

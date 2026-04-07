@@ -58,6 +58,22 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
         }
     }
 
+    pub(super) fn walk_catch_clause(&mut self, node: NodeId, scope: ScopeId) {
+        let node_range = self.collector.file.range(node);
+        let child_scope =
+            self.collector
+                .push_scope(ScopeKind::CatchClause, node_range, Some(scope), None);
+        let inline_decl_metadata = self.catch_inline_decl_metadata(node, child_scope);
+        for child in self.collector.file.children(node) {
+            match self.collector.file.kind(child) {
+                SyntaxKind::DataInlineDecl => {
+                    self.declare_inline_variable_target(child, child_scope, &inline_decl_metadata);
+                }
+                _ => self.collector.walk_node(child, child_scope),
+            }
+        }
+    }
+
     pub(super) fn walk_nested_block(&mut self, node: NodeId, scope: ScopeId, kind: ScopeKind) {
         let node_range = self.collector.file.range(node);
         let child_scope = self
@@ -161,23 +177,7 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
     ) {
         match self.collector.file.kind(node) {
             SyntaxKind::DataInlineDecl if symbol_kind == SymbolKind::Variable => {
-                if let Some(name_node) = self
-                    .collector
-                    .file
-                    .children(node)
-                    .find(|&child| self.collector.file.kind(child) == SyntaxKind::DataDeclName)
-                    && let Some((name, range)) = self.collector.node_name(name_node)
-                {
-                    self.collector.declare_symbol(
-                        scope,
-                        name,
-                        SymbolKind::Variable,
-                        range,
-                        inferred_metadata.0,
-                        inferred_metadata.1.clone(),
-                        None,
-                    );
-                }
+                self.declare_inline_variable_target(node, scope, inferred_metadata);
             }
             SyntaxKind::FieldSymbolInlineDecl if symbol_kind == SymbolKind::FieldSymbol => {
                 self.collector
@@ -191,6 +191,61 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
             }
             _ => self.collector.expr_lowering().collect_expr(node, scope),
         }
+    }
+
+    fn declare_inline_variable_target(
+        &mut self,
+        node: NodeId,
+        scope: ScopeId,
+        inferred_metadata: &(Option<StructureId>, Option<FieldTypeRefData>),
+    ) {
+        if let Some(name_node) = self
+            .collector
+            .file
+            .children(node)
+            .find(|&child| self.collector.file.kind(child) == SyntaxKind::DataDeclName)
+            && let Some((name, range)) = self.collector.node_name(name_node)
+        {
+            self.collector.declare_symbol(
+                scope,
+                name,
+                SymbolKind::Variable,
+                range,
+                inferred_metadata.0,
+                inferred_metadata.1.clone(),
+                None,
+            );
+        }
+    }
+
+    fn catch_inline_decl_metadata(
+        &self,
+        node: NodeId,
+        scope: ScopeId,
+    ) -> (Option<StructureId>, Option<FieldTypeRefData>) {
+        let type_refs = self.collector.direct_type_ref_children(node);
+        if type_refs.len() != 1 {
+            return (None, None);
+        }
+        let Some(mut declared_type) = self
+            .collector
+            .field_type_ref_from_node(type_refs[0], Namespace::Type)
+        else {
+            return (None, None);
+        };
+        declared_type.is_ref = true;
+        let structure = if declared_type.field_path.is_empty() {
+            self.collector
+                .lookup_symbol_in_scope_chain(
+                    scope,
+                    Namespace::Type,
+                    declared_type.base_name.as_ref(),
+                )
+                .and_then(|symbol_id| self.collector.symbol(symbol_id).structure)
+        } else {
+            None
+        };
+        (structure, Some(declared_type))
     }
 
     pub(super) fn loop_source_line_metadata_from_node(

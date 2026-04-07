@@ -128,6 +128,46 @@ ENDFORM.
     }
 
     #[test]
+    fn catch_clause_inline_data_declares_typed_exception_target() {
+        let src = r#"
+CLASS cx_demo DEFINITION INHERITING FROM cx_root.
+ENDCLASS.
+
+FORM run.
+  TRY.
+    WRITE 'x'.
+  CATCH cx_demo INTO DATA(lo_error) ##no_handler.
+    lo_error->get_text( ).
+  ENDTRY.
+ENDFORM.
+"#;
+        let parsed = parse(src);
+        let unit = analyze_unit("file:///catch_inline.abap", src, &parsed);
+
+        let symbol = unit
+            .symbols
+            .iter()
+            .find(|symbol| {
+                symbol.kind == SymbolKind::Variable && symbol.name.as_ref() == "lo_error"
+            })
+            .expect("inline catch symbol");
+        let declared_type = symbol
+            .declared_type
+            .as_ref()
+            .expect("declared type for inline catch symbol");
+        assert_eq!(declared_type.namespace, Namespace::Type);
+        assert!(declared_type.is_ref);
+        assert_eq!(declared_type.base_name.as_ref(), "cx_demo");
+
+        assert!(unit.references.iter().any(|reference| {
+            reference.kind == ReferenceKind::Identifier
+                && reference.namespace == Namespace::Value
+                && reference.name.as_ref() == "lo_error"
+                && reference.resolution.is_some()
+        }));
+    }
+
+    #[test]
     fn sql_name_ref_query_finds_narrowest_match_at_offset() {
         let src = "SELECT carrid FROM scarr INTO TABLE @DATA(lt_scarr).";
         let parsed = parse(src);
