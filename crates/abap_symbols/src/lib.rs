@@ -168,6 +168,30 @@ ENDFORM.
     }
 
     #[test]
+    fn dereference_after_structure_component_does_not_raise_unknown_field() {
+        let src = r#"
+TYPES: BEGIN OF ty_xmlparse,
+         xi_data TYPE REF TO data,
+       END OF ty_xmlparse.
+
+DATA ls_xmlparse TYPE ty_xmlparse.
+FIELD-SYMBOLS <ls_raw_data> TYPE any.
+
+ASSIGN ls_xmlparse-xi_data->* TO <ls_raw_data>.
+"#;
+        let parsed = parse(src);
+        let unit = analyze_unit("file:///selector_deref_struct_field.abap", src, &parsed);
+
+        assert!(
+            unit.diagnostics
+                .iter()
+                .all(|diagnostic| !diagnostic.message.contains("unknown field '*'")),
+            "{:?}",
+            unit.diagnostics
+        );
+    }
+
+    #[test]
     fn sql_name_ref_query_finds_narrowest_match_at_offset() {
         let src = "SELECT carrid FROM scarr INTO TABLE @DATA(lt_scarr).";
         let parsed = parse(src);

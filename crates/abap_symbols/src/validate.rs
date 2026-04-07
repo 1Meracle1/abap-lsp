@@ -3,10 +3,10 @@ use std::sync::Arc;
 
 use crate::builtins::builtin_routine_spec;
 use crate::def_map::{
-    Diagnostic, DiagnosticKind, FormParameterData, FormParameterSection, PerformParameterSection,
-    ReferenceKind, Resolution, SqlNameRefKind,
+    Diagnostic, DiagnosticKind, FieldTypeRefData, FormParameterData, FormParameterSection,
+    PerformParameterSection, ReferenceKind, Resolution, SqlNameRefKind,
 };
-use crate::ids::{ScopeId, SymbolHandle, SymbolId};
+use crate::ids::{ScopeId, StructureId, SymbolHandle, SymbolId};
 use crate::project::ProjectAnalysis;
 use crate::resolver::{ScopeIndex, build_scope_index};
 use crate::scope::{Namespace, ScopeKind};
@@ -443,6 +443,68 @@ fn split_leading_deref<'a>(
         return (true, &access.field_path[1..]);
     }
     (false, &access.field_path)
+}
+
+fn dereference_field_metadata(
+    unit: &crate::UnitAnalysis,
+    scope_index: &ScopeIndex,
+    scope: ScopeId,
+    structure: Option<StructureId>,
+    declared_type: Option<FieldTypeRefData>,
+) -> Option<(Option<StructureId>, Option<FieldTypeRefData>)> {
+    let type_ref = declared_type?;
+    if !type_ref.is_ref {
+        return None;
+    }
+    let structure = structure.or_else(|| {
+        if type_ref.namespace != Namespace::Type || !type_ref.field_path.is_empty() {
+            return None;
+        }
+        resolve_symbol_in_scope_chain(unit, scope_index, scope, Namespace::Type, &type_ref.base_name)
+            .and_then(|symbol_id| unit.symbol(symbol_id).structure)
+    });
+    Some((
+        structure,
+        Some(FieldTypeRefData {
+            namespace: type_ref.namespace,
+            is_ref: false,
+            base_name: type_ref.base_name,
+            field_path: type_ref.field_path,
+        }),
+    ))
+}
+
+fn normalize_field_metadata(
+    unit: &crate::UnitAnalysis,
+    scope_index: &ScopeIndex,
+    scope: ScopeId,
+    mut structure: Option<StructureId>,
+    mut declared_type: Option<FieldTypeRefData>,
+) -> (Option<StructureId>, Option<FieldTypeRefData>) {
+    for _ in 0..8 {
+        if structure.is_some() {
+            break;
+        }
+        let Some(type_ref) = declared_type.as_ref() else {
+            break;
+        };
+        if type_ref.namespace != Namespace::Type || type_ref.is_ref || !type_ref.field_path.is_empty()
+        {
+            break;
+        }
+        let Some(symbol_id) =
+            resolve_symbol_in_scope_chain(unit, scope_index, scope, Namespace::Type, &type_ref.base_name)
+        else {
+            break;
+        };
+        let symbol = unit.symbol(symbol_id);
+        if symbol.structure.is_none() && symbol.declared_type.is_none() {
+            break;
+        }
+        structure = symbol.structure;
+        declared_type = symbol.declared_type.clone();
+    }
+    (structure, declared_type)
 }
 
 fn count_form_section(parameters: &[FormParameterData], section: FormParameterSection) -> usize {
@@ -1006,20 +1068,42 @@ pub(crate) fn validate_project_with_scope_indexes(
             if has_leading_deref && field_path.is_empty() {
                 continue;
             }
-            let Some(mut structure_id) = unit.symbol(base_symbol_id).structure else {
-                continue;
-            };
+            let mut structure_id = unit.symbol(base_symbol_id).structure;
+            let mut declared_type = unit.symbol(base_symbol_id).declared_type.clone();
             let subject = if access.in_type_position {
                 "type"
             } else {
                 "structure"
             };
             let mut qualifier = access.base_name.to_string();
-            if has_leading_deref {
-                qualifier.push_str("->*");
-            }
-            for (idx, step) in field_path.iter().enumerate() {
-                let structure = unit.structure(structure_id);
+            for step in &access.field_path {
+                if step.is_deref() {
+                    let Some((next_structure_id, next_declared_type)) = dereference_field_metadata(
+                        unit,
+                        scope_index,
+                        access.scope,
+                        structure_id,
+                        declared_type,
+                    ) else {
+                        break;
+                    };
+                    structure_id = next_structure_id;
+                    declared_type = next_declared_type;
+                    qualifier.push_str("->*");
+                    continue;
+                }
+
+                (structure_id, declared_type) = normalize_field_metadata(
+                    unit,
+                    scope_index,
+                    access.scope,
+                    structure_id,
+                    declared_type,
+                );
+                let Some(current_structure_id) = structure_id else {
+                    break;
+                };
+                let structure = unit.structure(current_structure_id);
                 let Some(field) = structure
                     .fields
                     .iter()
@@ -1038,24 +1122,8 @@ pub(crate) fn validate_project_with_scope_indexes(
 
                 qualifier.push('-');
                 qualifier.push_str(field.name.as_ref());
-
-                if idx + 1 == field_path.len() {
-                    break;
-                }
-
-                let Some(next_structure_id) = field.structure else {
-                    let next_step = &field_path[idx + 1];
-                    unit_diagnostics.push(Diagnostic {
-                        kind: DiagnosticKind::UnknownField,
-                        range: next_step.range.clone(),
-                        message: format!(
-                            "unknown field '{}' for {} '{}'",
-                            next_step.name, subject, qualifier
-                        ),
-                    });
-                    break;
-                };
-                structure_id = next_structure_id;
+                structure_id = field.structure;
+                declared_type = field.type_ref.clone();
             }
         }
 
