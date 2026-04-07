@@ -116,11 +116,11 @@ impl<'a> Collector<'a> {
             | SyntaxKind::MoveCorrespondingStmt
             | SyntaxKind::MoveStmt
             | SyntaxKind::ModifyStmt
-            | SyntaxKind::DeleteStmt
             | SyntaxKind::DeleteDbTableStmt
             | SyntaxKind::ReadTableStmt
             | SyntaxKind::GetBitStmt
             | SyntaxKind::SetBitStmt => self.walk_children(node, scope),
+            SyntaxKind::DeleteStmt => self.stmt_lowering().collect_delete_stmt(node, scope),
             SyntaxKind::SortStmt => self.control_lowering().collect_sort_stmt(node, scope),
             SyntaxKind::TypeRefSimple => self.decl_lowering().collect_type_ref(node, scope),
             SyntaxKind::ExprIdent

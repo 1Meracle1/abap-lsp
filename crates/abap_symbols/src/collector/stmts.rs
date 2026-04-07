@@ -21,6 +21,51 @@ impl<'a> Collector<'a> {
 }
 
 impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
+    pub(super) fn collect_delete_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        let mut where_expr = None;
+        let mut seen_where = false;
+        for child in self.collector.file.children(node) {
+            match self.collector.file.kind(child) {
+                SyntaxKind::Token => {
+                    if self
+                        .collector
+                        .syntax(child)
+                        .text(self.collector.source)
+                        .is_some_and(|text| text.eq_ignore_ascii_case("where"))
+                    {
+                        seen_where = true;
+                    }
+                }
+                _ => {
+                    if seen_where && where_expr.is_none() {
+                        where_expr = Some(child);
+                    }
+                    self.collector.walk_node(child, scope);
+                }
+            }
+        }
+
+        if !seen_where {
+            return;
+        }
+        let Some(source_expr) = self.collector.first_non_token_child(node) else {
+            return;
+        };
+        let Some(where_expr) = where_expr else {
+            return;
+        };
+        let Some(source_access) = self.collector.value_access_from_node(source_expr, scope) else {
+            return;
+        };
+        self.collector
+            .loop_where_field_contexts
+            .push(crate::def_map::LoopWhereFieldContext {
+                scope,
+                range: self.collector.file.range(where_expr),
+                source_access,
+            });
+    }
+
     fn call_function_name_from_tokens(tokens: &[SyntaxTokenInfo]) -> Option<Arc<str>> {
         let name = tokens.get(2)?.text.as_ref().trim();
         let unquoted = name

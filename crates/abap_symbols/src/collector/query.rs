@@ -6,7 +6,7 @@ use abap_ast::arena::NodeId;
 use abap_ast::ast::{AstNode, ExprIdent, SelectorExpr, SyntaxNodeRef};
 use abap_lexer::TextRange;
 
-use crate::def_map::{FieldAccessSegment, StructureData, SymbolData, SymbolKind};
+use crate::def_map::{FieldAccess, FieldAccessSegment, StructureData, SymbolData, SymbolKind};
 use crate::ids::{ScopeId, StructureId, SymbolId};
 use crate::scope::Namespace;
 
@@ -296,6 +296,39 @@ impl<'a> Collector<'a> {
                     range: field_range,
                 });
                 Some((base_namespace, base_name, base_range, field_path))
+            }
+            _ => None,
+        }
+    }
+
+    pub(super) fn value_access_from_node(
+        &self,
+        node: NodeId,
+        scope: ScopeId,
+    ) -> Option<FieldAccess> {
+        match self.file.kind(node) {
+            SyntaxKind::TemplateExpr => self
+                .first_non_token_child(node)
+                .and_then(|child| self.value_access_from_node(child, scope)),
+            SyntaxKind::ExprIdent => {
+                let (name, _) = self.node_name(node)?;
+                Some(FieldAccess {
+                    scope,
+                    base_namespace: Namespace::Value,
+                    base_name: name,
+                    field_path: Vec::new(),
+                    in_type_position: false,
+                })
+            }
+            SyntaxKind::SelectorExpr => {
+                let (namespace, base_name, _, field_path) = self.selector_access_chain(node)?;
+                (namespace == Namespace::Value).then_some(FieldAccess {
+                    scope,
+                    base_namespace: namespace,
+                    base_name,
+                    field_path,
+                    in_type_position: false,
+                })
             }
             _ => None,
         }

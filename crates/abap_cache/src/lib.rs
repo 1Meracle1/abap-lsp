@@ -135,6 +135,22 @@ struct SelectorCursorContext {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+struct BareWhereFieldQuery {
+    scope: ScopeId,
+    structure_unit_id: UnitId,
+    structure_id: StructureId,
+    replace_range: Range<usize>,
+    prefix: Arc<str>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BareWhereFieldTarget {
+    structure_unit_id: UnitId,
+    field: StructureFieldInfo,
+    range: Range<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum ReferenceSearchTarget {
     Symbol(abap_symbols::SymbolHandle),
     ClassMember {
@@ -259,7 +275,7 @@ impl AnalysisSnapshot {
     }
 
     pub fn hovered_component_at(&self, offset: usize) -> Option<HoveredComponentInfo> {
-        let (access, segment_index) = self.symbols.field_accesses.iter().find_map(|access| {
+        if let Some((access, segment_index)) = self.symbols.field_accesses.iter().find_map(|access| {
             access
                 .field_path
                 .iter()
@@ -268,11 +284,55 @@ impl AnalysisSnapshot {
                     (segment.range.start <= offset && offset < segment.range.end)
                         .then_some((access, idx))
                 })
-        })?;
-        let (unit, symbol_id) = resolve_field_access_base_symbol(self, access)?;
-        if let Some((_, member)) =
-            resolve_class_selector_member(self, access, segment_index, unit, symbol_id)
-        {
+        }) {
+            let (unit, symbol_id) = resolve_field_access_base_symbol(self, access)?;
+            if let Some((_, member)) =
+                resolve_class_selector_member(self, access, segment_index, unit, symbol_id)
+            {
+                return Some(HoveredComponentInfo {
+                    base_name: Arc::clone(&access.base_name),
+                    base_namespace: access.base_namespace,
+                    component_path: access
+                        .field_path
+                        .iter()
+                        .take(segment_index + 1)
+                        .map(|segment| Arc::clone(&segment.name))
+                        .collect(),
+                    field_name: Arc::clone(&member.name),
+                    field_owner_structure_name: None,
+                    range: access.field_path[segment_index].range.clone(),
+                    declared_type: None,
+                    declaration: Some(member.signature.to_string()),
+                    kind: hovered_component_kind_for_class_member(member),
+                    is_static_method: member.is_static,
+                    in_type_position: access.in_type_position,
+                });
+            }
+            let (structure_unit, structure_id) = resolve_symbol_structure_with_scope_index(
+                self,
+                self.scope_index(),
+                unit,
+                access.scope,
+                symbol_id,
+            )?;
+            let field_path: Vec<_> = access
+                .field_path
+                .iter()
+                .take(segment_index + 1)
+                .map(|segment| segment.name.as_ref())
+                .collect();
+            let field = structure_unit
+                .semantic()
+                .decls()
+                .resolve_structure_field_path(structure_id, &field_path)?;
+            let kind = match field.shape {
+                StructureFieldShape::Scalar => HoveredComponentKind::Scalar,
+                StructureFieldShape::Structured { structure } => HoveredComponentKind::Structured {
+                    structure_name: Arc::clone(&structure_unit.structure(structure).name),
+                },
+            };
+            let field_owner_structure_name =
+                Some(Arc::clone(&structure_unit.structure(field.owner).name));
             return Some(HoveredComponentInfo {
                 base_name: Arc::clone(&access.base_name),
                 base_namespace: access.base_namespace,
@@ -282,58 +342,37 @@ impl AnalysisSnapshot {
                     .take(segment_index + 1)
                     .map(|segment| Arc::clone(&segment.name))
                     .collect(),
-                field_name: Arc::clone(&member.name),
-                field_owner_structure_name: None,
+                field_name: Arc::clone(&field.name),
+                field_owner_structure_name,
                 range: access.field_path[segment_index].range.clone(),
-                declared_type: None,
-                declaration: Some(member.signature.to_string()),
-                kind: hovered_component_kind_for_class_member(member),
-                is_static_method: member.is_static,
+                declared_type: field.type_ref.as_ref().map(format_field_type_ref),
+                declaration: None,
+                kind,
+                is_static_method: false,
                 in_type_position: access.in_type_position,
             });
         }
-        let (structure_unit, structure_id) = resolve_symbol_structure_with_scope_index(
-            self,
-            self.scope_index(),
-            unit,
-            access.scope,
-            symbol_id,
-        )?;
-        let field_path: Vec<_> = access
-            .field_path
-            .iter()
-            .take(segment_index + 1)
-            .map(|segment| segment.name.as_ref())
-            .collect();
-        let field = structure_unit
-            .semantic()
-            .decls()
-            .resolve_structure_field_path(structure_id, &field_path)?;
+        let target = self.bare_where_field_target_at(offset)?;
+        let structure_unit = &self.project.units[target.structure_unit_id.as_usize()];
+        let field = &target.field;
         let kind = match field.shape {
             StructureFieldShape::Scalar => HoveredComponentKind::Scalar,
             StructureFieldShape::Structured { structure } => HoveredComponentKind::Structured {
                 structure_name: Arc::clone(&structure_unit.structure(structure).name),
             },
         };
-        let field_owner_structure_name =
-            Some(Arc::clone(&structure_unit.structure(field.owner).name));
         Some(HoveredComponentInfo {
-            base_name: Arc::clone(&access.base_name),
-            base_namespace: access.base_namespace,
-            component_path: access
-                .field_path
-                .iter()
-                .take(segment_index + 1)
-                .map(|segment| Arc::clone(&segment.name))
-                .collect(),
+            base_name: Arc::clone(&field.name),
+            base_namespace: Namespace::Value,
+            component_path: vec![Arc::clone(&field.name)],
             field_name: Arc::clone(&field.name),
-            field_owner_structure_name,
-            range: access.field_path[segment_index].range.clone(),
+            field_owner_structure_name: Some(Arc::clone(&structure_unit.structure(field.owner).name)),
+            range: target.range,
             declared_type: field.type_ref.as_ref().map(format_field_type_ref),
             declaration: None,
             kind,
             is_static_method: false,
-            in_type_position: access.in_type_position,
+            in_type_position: false,
         })
     }
 
@@ -470,7 +509,7 @@ impl AnalysisSnapshot {
     }
 
     fn definition_target_for_component_at(&self, offset: usize) -> Option<DefinitionTarget> {
-        let (access, segment_index) = self.symbols.field_accesses.iter().find_map(|access| {
+        if let Some((access, segment_index)) = self.symbols.field_accesses.iter().find_map(|access| {
             access
                 .field_path
                 .iter()
@@ -479,33 +518,40 @@ impl AnalysisSnapshot {
                     (segment.range.start <= offset && offset < segment.range.end)
                         .then_some((access, idx))
                 })
-        })?;
-        let (unit, symbol_id) = resolve_field_access_base_symbol(self, access)?;
-        if let Some((member_unit, member)) =
-            resolve_class_selector_member(self, access, segment_index, unit, symbol_id)
-        {
-            return Some(definition_target_for_class_member(member_unit, member));
+        }) {
+            let (unit, symbol_id) = resolve_field_access_base_symbol(self, access)?;
+            if let Some((member_unit, member)) =
+                resolve_class_selector_member(self, access, segment_index, unit, symbol_id)
+            {
+                return Some(definition_target_for_class_member(member_unit, member));
+            }
+            let (structure_unit, structure_id) = resolve_symbol_structure_with_scope_index(
+                self,
+                self.scope_index(),
+                unit,
+                access.scope,
+                symbol_id,
+            )?;
+            let field_path: Vec<_> = access
+                .field_path
+                .iter()
+                .take(segment_index + 1)
+                .map(|segment| segment.name.as_ref())
+                .collect();
+            let field = structure_unit
+                .semantic()
+                .decls()
+                .resolve_structure_field_path(structure_id, &field_path)?;
+            let decl_range = field.decl_range?;
+            return Some(definition_target_for_range(
+                &self.project.units[field.decl_unit.as_usize()],
+                decl_range,
+            ));
         }
-        let (structure_unit, structure_id) = resolve_symbol_structure_with_scope_index(
-            self,
-            self.scope_index(),
-            unit,
-            access.scope,
-            symbol_id,
-        )?;
-        let field_path: Vec<_> = access
-            .field_path
-            .iter()
-            .take(segment_index + 1)
-            .map(|segment| segment.name.as_ref())
-            .collect();
-        let field = structure_unit
-            .semantic()
-            .decls()
-            .resolve_structure_field_path(structure_id, &field_path)?;
-        let decl_range = field.decl_range?;
+        let target = self.bare_where_field_target_at(offset)?;
+        let decl_range = target.field.decl_range?;
         Some(definition_target_for_range(
-            &self.project.units[field.decl_unit.as_usize()],
+            &self.project.units[target.field.decl_unit.as_usize()],
             decl_range,
         ))
     }
@@ -514,7 +560,7 @@ impl AnalysisSnapshot {
         &self,
         offset: usize,
     ) -> Option<ReferenceSearchTarget> {
-        let (access, segment_index) = self.symbols.field_accesses.iter().find_map(|access| {
+        if let Some((access, segment_index)) = self.symbols.field_accesses.iter().find_map(|access| {
             access
                 .field_path
                 .iter()
@@ -523,38 +569,47 @@ impl AnalysisSnapshot {
                     (segment.range.start <= offset && offset < segment.range.end)
                         .then_some((access, idx))
                 })
-        })?;
-        let (unit, symbol_id) = resolve_field_access_base_symbol(self, access)?;
-        if let Some((member_unit, member)) =
-            resolve_class_selector_member(self, access, segment_index, unit, symbol_id)
-        {
-            return Some(ReferenceSearchTarget::ClassMember {
-                unit: member_unit.unit_id,
-                class_symbol: member.class_symbol,
-                name: Arc::clone(&member.name),
+        }) {
+            let (unit, symbol_id) = resolve_field_access_base_symbol(self, access)?;
+            if let Some((member_unit, member)) =
+                resolve_class_selector_member(self, access, segment_index, unit, symbol_id)
+            {
+                return Some(ReferenceSearchTarget::ClassMember {
+                    unit: member_unit.unit_id,
+                    class_symbol: member.class_symbol,
+                    name: Arc::clone(&member.name),
+                });
+            }
+            let (structure_unit, structure_id) = resolve_symbol_structure_with_scope_index(
+                self,
+                self.scope_index(),
+                unit,
+                access.scope,
+                symbol_id,
+            )?;
+            let field_path: Vec<_> = access
+                .field_path
+                .iter()
+                .take(segment_index + 1)
+                .map(|segment| segment.name.as_ref())
+                .collect();
+            let field = structure_unit
+                .semantic()
+                .decls()
+                .resolve_structure_field_path(structure_id, &field_path)?;
+            return Some(ReferenceSearchTarget::StructField {
+                unit: field.owner_unit,
+                owner: structure_unit.structure(field.owner).origin_structure,
+                name: Arc::clone(&field.name),
             });
         }
-        let (structure_unit, structure_id) = resolve_symbol_structure_with_scope_index(
-            self,
-            self.scope_index(),
-            unit,
-            access.scope,
-            symbol_id,
-        )?;
-        let field_path: Vec<_> = access
-            .field_path
-            .iter()
-            .take(segment_index + 1)
-            .map(|segment| segment.name.as_ref())
-            .collect();
-        let field = structure_unit
-            .semantic()
-            .decls()
-            .resolve_structure_field_path(structure_id, &field_path)?;
+        let target = self.bare_where_field_target_at(offset)?;
         Some(ReferenceSearchTarget::StructField {
-            unit: field.owner_unit,
-            owner: structure_unit.structure(field.owner).origin_structure,
-            name: Arc::clone(&field.name),
+            unit: target.field.owner_unit,
+            owner: self.project.units[target.structure_unit_id.as_usize()]
+                .structure(target.field.owner)
+                .origin_structure,
+            name: Arc::clone(&target.field.name),
         })
     }
 
@@ -967,7 +1022,9 @@ impl AnalysisSnapshot {
     }
 
     pub fn selector_completion_at(&self, offset: usize) -> Option<SelectorCompletionInfo> {
-        let query = self.selector_completion_query_at(offset)?;
+        let Some(query) = self.selector_completion_query_at(offset) else {
+            return self.bare_where_field_completion_at(offset);
+        };
         if query.component_path.is_empty()
             && let Some((unit, class_symbol_id, requires_static)) =
                 resolve_method_target_from_context(
@@ -1090,6 +1147,85 @@ impl AnalysisSnapshot {
             replace_range: query.replace_range,
             prefix: query.prefix,
             in_type_position: query.in_type_position,
+        })
+    }
+
+    fn bare_where_field_completion_at(&self, offset: usize) -> Option<SelectorCompletionInfo> {
+        let query = self.bare_where_field_query_at(offset)?;
+        let structure_unit = &self.project.units[query.structure_unit_id.as_usize()];
+        let mut items: Vec<_> = structure_unit
+            .semantic()
+            .decls()
+            .structure_field_infos(query.structure_id)
+            .into_iter()
+            .filter(|field| field.name.as_ref().starts_with(query.prefix.as_ref()))
+            .map(|field| SelectorCompletionItem {
+                name: Arc::clone(&field.name),
+                declared_type: field.type_ref.as_ref().map(format_field_type_ref),
+                declaration: None,
+                kind: match field.shape {
+                    StructureFieldShape::Scalar => HoveredComponentKind::Scalar,
+                    StructureFieldShape::Structured { structure } => {
+                        HoveredComponentKind::Structured {
+                            structure_name: Arc::clone(&structure_unit.structure(structure).name),
+                        }
+                    }
+                },
+                field_owner_structure_name: Some(Arc::clone(
+                    &structure_unit.structure(field.owner).name,
+                )),
+            })
+            .collect();
+        items.sort_by(|left, right| left.name.cmp(&right.name));
+        Some(SelectorCompletionInfo {
+            replace_range: query.replace_range,
+            items,
+            in_type_position: false,
+        })
+    }
+
+    fn bare_where_field_target_at(&self, offset: usize) -> Option<BareWhereFieldTarget> {
+        let query = self.bare_where_field_query_at(offset)?;
+        let (token_start, token_end) =
+            token_window_for_range(&self.parse, &statement_query_range(&self.parse, offset)?)?;
+        let token_idx = prefix_token_at_offset(&self.parse, token_start, token_end, offset)?;
+        let token = &self.parse.tokens[token_idx];
+        let field_name = Arc::<str>::from(token.lexeme(self.text.as_ref()).to_ascii_lowercase());
+        let structure_unit = &self.project.units[query.structure_unit_id.as_usize()];
+        let field = structure_unit
+            .semantic()
+            .decls()
+            .structure_field_info(query.structure_id, field_name.as_ref())?;
+        Some(BareWhereFieldTarget {
+            structure_unit_id: query.structure_unit_id,
+            field,
+            range: token.range.clone(),
+        })
+    }
+
+    fn bare_where_field_query_at(&self, offset: usize) -> Option<BareWhereFieldQuery> {
+        let statement_range = statement_query_range(&self.parse, offset)?;
+        let (token_start, token_end) = token_window_for_range(&self.parse, &statement_range)?;
+        let mut parsed =
+            parse_bare_where_field_query(self.text.as_ref(), &self.parse, token_start, token_end, offset)?;
+        parsed.scope = innermost_scope_at(&self.symbols, statement_range.start);
+        let source_access = access_from_selector_query(
+            parsed.scope,
+            &parsed.base_name,
+            parsed.base_namespace,
+            &parsed.component_path,
+        );
+        let (structure_unit, structure_id) = resolve_field_access_structure_with_scope_index(
+            self,
+            self.scope_index(),
+            &source_access,
+        )?;
+        Some(BareWhereFieldQuery {
+            scope: parsed.scope,
+            structure_unit_id: structure_unit.unit_id,
+            structure_id,
+            replace_range: parsed.replace_range,
+            prefix: parsed.prefix,
         })
     }
 }
@@ -1760,6 +1896,63 @@ fn resolve_symbol_structure_with_scope_index<'a>(
         };
     }
     None
+}
+
+fn resolve_field_access_structure_with_scope_index<'a>(
+    snapshot: &'a AnalysisSnapshot,
+    scope_index: &ScopeIndex,
+    access: &abap_symbols::FieldAccess,
+) -> Option<(&'a UnitAnalysis, StructureId)> {
+    let (current_unit, base_symbol_id) =
+        resolve_field_access_base_symbol_with_scope_index(snapshot, scope_index, access)?;
+    let (current_unit, mut current_structure) = resolve_symbol_structure_with_scope_index(
+        snapshot,
+        scope_index,
+        current_unit,
+        access.scope,
+        base_symbol_id,
+    )?;
+    if access.field_path.is_empty() {
+        return Some((current_unit, current_structure));
+    }
+
+    for (idx, segment) in access.field_path.iter().enumerate() {
+        if segment.is_deref() {
+            return None;
+        }
+        let field = current_unit
+            .semantic()
+            .decls()
+            .structure_field_info(current_structure, segment.name.as_ref())?;
+        if idx + 1 == access.field_path.len() {
+            if let Some(type_ref) = field.type_ref.as_ref() {
+                let (resolved_unit, resolved_symbol_id) = resolve_symbol_from_context_with_scope_index(
+                    snapshot,
+                    scope_index,
+                    access.scope,
+                    type_ref.namespace,
+                    &type_ref.base_name,
+                    type_ref.namespace == Namespace::Value,
+                )?;
+                return resolve_symbol_structure_with_scope_index(
+                    snapshot,
+                    scope_index,
+                    resolved_unit,
+                    access.scope,
+                    resolved_symbol_id,
+                );
+            }
+            return match field.shape {
+                StructureFieldShape::Structured { structure } => Some((current_unit, structure)),
+                StructureFieldShape::Scalar => None,
+            };
+        }
+        current_structure = match field.shape {
+            StructureFieldShape::Structured { structure } => structure,
+            StructureFieldShape::Scalar => return None,
+        };
+    }
+    Some((current_unit, current_structure))
 }
 
 fn perform_section_to_form_section(section: PerformParameterSection) -> FormParameterSection {
@@ -2761,6 +2954,15 @@ fn selector_completion_statement_context(
     })
 }
 
+fn statement_query_range(parse: &ParseResult, offset: usize) -> Option<Range<usize>> {
+    selector_completion_statement_context(parse, offset).map(|mut context| {
+        if offset > context.range.end {
+            context.range.end = offset;
+        }
+        context.range
+    })
+}
+
 fn is_selector_query_container(kind: &str) -> bool {
     matches!(
         kind,
@@ -2872,6 +3074,173 @@ fn parse_selector_completion_query(
                     || type_keyword_before_base(parse, text, token_start, cursor),
             });
         }
+    }
+}
+
+fn parse_bare_where_field_query(
+    text: &str,
+    parse: &ParseResult,
+    token_start: usize,
+    token_end: usize,
+    offset: usize,
+) -> Option<SelectorCompletionQuery> {
+    let significant: Vec<usize> = (token_start..token_end)
+        .filter(|&idx| !matches!(parse.tokens[idx].kind.as_str(), "Comment" | "Eof"))
+        .collect();
+    let first_idx = *significant.first()?;
+    let first = parse.tokens[first_idx].lexeme(text);
+    let (source_start_sig, source_end_sig, where_sig) = if first.eq_ignore_ascii_case("delete") {
+        let where_sig = significant.iter().position(|&idx| {
+            parse.tokens[idx].kind.as_str() == "Ident"
+                && parse.tokens[idx].lexeme(text).eq_ignore_ascii_case("where")
+        })?;
+        if where_sig <= 1 {
+            return None;
+        }
+        (1usize, where_sig, where_sig)
+    } else if first.eq_ignore_ascii_case("loop") {
+        if significant.get(1).is_none_or(|&idx| !parse.tokens[idx].lexeme(text).eq_ignore_ascii_case("at")) {
+            return None;
+        }
+        let where_sig = significant.iter().position(|&idx| {
+            parse.tokens[idx].kind.as_str() == "Ident"
+                && parse.tokens[idx].lexeme(text).eq_ignore_ascii_case("where")
+        })?;
+        if where_sig <= 2 {
+            return None;
+        }
+        let source_end_sig = significant
+            .iter()
+            .enumerate()
+            .skip(2)
+            .find_map(|(pos, &idx)| {
+                let lexeme = parse.tokens[idx].lexeme(text);
+                matches!(
+                    lexeme.to_ascii_lowercase().as_str(),
+                    "into" | "assigning" | "reference" | "transporting" | "where" | "from" | "to" | "step"
+                )
+                .then_some(pos)
+            })
+            .unwrap_or(where_sig);
+        (2usize, source_end_sig, where_sig)
+    } else {
+        return None;
+    };
+
+    let where_idx = *significant.get(where_sig)?;
+    let after_where = parse.tokens[where_idx].range.end;
+    let statement_end = parse.tokens[*significant.last()?].range.end.max(offset);
+    if offset < after_where || offset > statement_end {
+        return None;
+    }
+
+    let source_tokens: Vec<usize> = significant[source_start_sig..source_end_sig]
+        .iter()
+        .copied()
+        .filter(|&idx| parse.tokens[idx].range.end <= parse.tokens[where_idx].range.start)
+        .collect();
+    let source = parse_value_access_tokens(text, parse, &source_tokens)?;
+
+    let prefix_token = significant
+        .iter()
+        .copied()
+        .skip(where_sig + 1)
+        .find(|&idx| {
+            parse.tokens[idx].kind.as_str() == "Ident"
+                && parse.tokens[idx].range.start <= offset
+                && offset <= parse.tokens[idx].range.end
+        });
+    let (replace_range, prefix) = if let Some(prefix_idx) = prefix_token {
+        let token = &parse.tokens[prefix_idx];
+        let prefix_end = offset.min(token.range.end);
+        (
+            token.range.start..prefix_end,
+            Arc::<str>::from(text[token.range.start..prefix_end].to_ascii_lowercase()),
+        )
+    } else {
+        (offset..offset, Arc::<str>::from(""))
+    };
+
+    Some(SelectorCompletionQuery {
+        scope: ScopeId(0),
+        base_name: source.base_name,
+        base_namespace: source.base_namespace,
+        component_path: source.component_path,
+        replace_range,
+        prefix,
+        in_type_position: false,
+    })
+}
+
+fn parse_value_access_tokens(
+    text: &str,
+    parse: &ParseResult,
+    tokens: &[usize],
+) -> Option<SelectorCompletionQuery> {
+    let mut significant: Vec<usize> = tokens
+        .iter()
+        .copied()
+        .filter(|&idx| !matches!(parse.tokens[idx].kind.as_str(), "Comment" | "Eof"))
+        .collect();
+    while significant
+        .last()
+        .is_some_and(|&idx| matches!(parse.tokens[idx].kind.as_str(), "RBracket" | "LBracket"))
+    {
+        significant.pop();
+    }
+    let base_idx = *significant.first()?;
+    if parse.tokens[base_idx].kind.as_str() != "Ident" {
+        return None;
+    }
+    let base_name = Arc::<str>::from(parse.tokens[base_idx].lexeme(text).to_ascii_lowercase());
+    let mut component_path = Vec::new();
+    let mut base_namespace = Namespace::Value;
+    let mut idx = 1usize;
+    while idx + 1 < significant.len() {
+        let op_idx = significant[idx];
+        let name_idx = significant[idx + 1];
+        if parse.tokens[name_idx].kind.as_str() != "Ident" {
+            return None;
+        }
+        match parse.tokens[op_idx].kind.as_str() {
+            "Minus" | "Arrow" | "Tilde" => {}
+            "FatArrow" => base_namespace = Namespace::Type,
+            _ => return None,
+        }
+        component_path.push(Arc::<str>::from(
+            parse.tokens[name_idx].lexeme(text).to_ascii_lowercase(),
+        ));
+        idx += 2;
+    }
+    Some(SelectorCompletionQuery {
+        scope: ScopeId(0),
+        base_name,
+        base_namespace,
+        component_path,
+        replace_range: 0..0,
+        prefix: Arc::from(""),
+        in_type_position: false,
+    })
+}
+
+fn access_from_selector_query(
+    scope: ScopeId,
+    base_name: &Arc<str>,
+    base_namespace: Namespace,
+    component_path: &[Arc<str>],
+) -> abap_symbols::FieldAccess {
+    abap_symbols::FieldAccess {
+        scope,
+        base_namespace,
+        base_name: Arc::clone(base_name),
+        field_path: component_path
+            .iter()
+            .map(|name| abap_symbols::FieldAccessSegment {
+                name: Arc::clone(name),
+                range: 0..0,
+            })
+            .collect(),
+        in_type_position: false,
     }
 }
 
@@ -5002,6 +5371,78 @@ lv_total = ls_outer-inner- + 1";
         assert!(!completion.in_type_position);
         assert_eq!(completion.items.len(), 1);
         assert_eq!(completion.items[0].name.as_ref(), "alpha");
+    }
+
+    #[test]
+    fn lists_bare_where_field_completion_items_after_where_keyword() {
+        let store = DocumentStore::default();
+        let src = "\
+TYPES: BEGIN OF ty_row,
+         status_trn TYPE i,
+         trn_id TYPE i,
+       END OF ty_row.
+TYPES ty_tab TYPE STANDARD TABLE OF ty_row WITH EMPTY KEY.
+DATA lt_trans_del TYPE ty_tab.
+DELETE lt_trans_del WHERE ";
+        let snapshot = store.publish("file:///demo.abap", 1, src);
+
+        let completion = snapshot
+            .selector_completion_at(src.len())
+            .expect("bare where completion");
+        assert_eq!(
+            completion
+                .items
+                .iter()
+                .map(|item| item.name.as_ref())
+                .collect::<Vec<_>>(),
+            vec!["status_trn", "trn_id"]
+        );
+        assert!(completion.replace_range.is_empty());
+    }
+
+    #[test]
+    fn lists_bare_where_field_completion_items_with_prefix() {
+        let store = DocumentStore::default();
+        let src = "\
+TYPES: BEGIN OF ty_row,
+         status_trn TYPE i,
+         trn_id TYPE i,
+       END OF ty_row.
+TYPES ty_tab TYPE STANDARD TABLE OF ty_row WITH EMPTY KEY.
+DATA lt_trans_del TYPE ty_tab.
+DELETE lt_trans_del WHERE sta";
+        let snapshot = store.publish("file:///demo.abap", 1, src);
+
+        let completion = snapshot
+            .selector_completion_at(src.len())
+            .expect("bare where completion");
+        assert_eq!(completion.items.len(), 1);
+        assert_eq!(completion.items[0].name.as_ref(), "status_trn");
+        assert_eq!(&src[completion.replace_range], "sta");
+    }
+
+    #[test]
+    fn definition_at_returns_bare_delete_where_field_declaration() {
+        let store = DocumentStore::default();
+        let src = "\
+TYPES: BEGIN OF ty_row,
+         status_trn TYPE i,
+         trn_id TYPE i,
+       END OF ty_row.
+TYPES ty_tab TYPE STANDARD TABLE OF ty_row WITH EMPTY KEY.
+DATA lt_trans_del TYPE ty_tab.
+DELETE lt_trans_del WHERE status_trn IS NOT INITIAL.";
+        let snapshot = store.publish("file:///demo.abap", 1, src);
+        let offset = src.rfind("status_trn").expect("field use") + 1;
+
+        let hovered = snapshot
+            .hovered_component_at(offset)
+            .expect("hovered bare where field");
+        assert_eq!(hovered.field_name.as_ref(), "status_trn");
+
+        let definition = snapshot.definition_at(offset).expect("field definition");
+        assert_eq!(definition.uri.as_ref(), "file:///demo.abap");
+        assert_eq!(&src[definition.range], "status_trn");
     }
 
     #[test]

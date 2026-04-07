@@ -3770,6 +3770,56 @@ ls_outer-inner-a"
     }
 
     #[test]
+    fn completion_returns_bare_delete_where_fields_after_where_keyword() {
+        let state = ServerState::default();
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///completion_where.abap").expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: "\
+TYPES: BEGIN OF ty_row,
+         status_trn TYPE i,
+         trn_id TYPE i,
+       END OF ty_row.
+TYPES ty_tab TYPE STANDARD TABLE OF ty_row WITH EMPTY KEY.
+DATA lt_trans_del TYPE ty_tab.
+DELETE lt_trans_del WHERE "
+                        .to_string(),
+                },
+            },
+        );
+
+        let completion = completion(
+            &state,
+            &CompletionParams {
+                text_document_position: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///completion_where.abap").expect("uri"),
+                    },
+                    position: Position {
+                        line: 6,
+                        character: 26,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+                context: None,
+            },
+        )
+        .expect("completion");
+
+        let CompletionResponse::Array(items) = completion else {
+            panic!("expected array completion");
+        };
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].label, "status_trn");
+        assert_eq!(items[1].label, "trn_id");
+    }
+
+    #[test]
     fn completion_returns_public_static_methods_after_fat_arrow() {
         let state = ServerState::default();
         publish_open_document(

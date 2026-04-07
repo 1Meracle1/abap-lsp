@@ -4447,6 +4447,62 @@ ENDLOOP.";
 }
 
 #[test]
+fn suppresses_unknown_symbol_for_bare_delete_where_field_name_on_external_table_type() {
+    let main_src = r#"
+DATA lt_trans_del TYPE /sttp/tt_evt_sdr.
+
+DELETE lt_trans_del WHERE evtid IS NOT INITIAL.
+"#;
+    let row_src = r#"
+TYPES: BEGIN OF /sttp/dm_evt_sdr,
+         evtid TYPE i,
+       END OF /sttp/dm_evt_sdr.
+"#;
+    let table_src = r#"
+TYPES /sttp/tt_evt_sdr TYPE STANDARD TABLE OF /sttp/dm_evt_sdr WITH EMPTY KEY.
+"#;
+    let main_parse = parse(main_src);
+    let row_parse = parse(row_src);
+    let table_parse = parse(table_src);
+
+    let project = analyze_project(&[
+        ProjectInput {
+            uri: "file:///main.abap",
+            source: main_src,
+            parse: &main_parse,
+        },
+        ProjectInput {
+            uri: "file:///ddic_row.abap",
+            source: row_src,
+            parse: &row_parse,
+        },
+        ProjectInput {
+            uri: "file:///ddic_table.abap",
+            source: table_src,
+            parse: &table_parse,
+        },
+    ]);
+    let unit = project.unit_by_uri("file:///main.abap").expect("main unit");
+
+    assert!(
+        unit.references.iter().any(|reference| {
+            reference.name.as_ref() == "evtid"
+                && reference.namespace == Namespace::Value
+                && reference.kind == ReferenceKind::Identifier
+        }),
+        "expected bare field reference in DELETE WHERE, refs={:?}",
+        unit.references
+    );
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains("'evtid'")
+        }),
+        "unexpected diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn validates_unknown_template_interpolation_members() {
     let src = r#"
 CLASS zcl_expr DEFINITION.
