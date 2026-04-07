@@ -683,6 +683,18 @@ mod tests {
     }
 
     #[test]
+    fn backtick_string_can_contain_double_quotes() {
+        let src = r#"`{"key":"value"}`"#;
+        let r = tokenize(src);
+        assert_eq!(
+            r.tokens.iter().map(|t| t.kind).collect::<Vec<_>>(),
+            vec![TokenKind::String, TokenKind::Eof]
+        );
+        assert!(r.errors.is_empty(), "{:?}", r.errors);
+        assert_eq!(r.tokens[0].lexeme(src), src);
+    }
+
+    #[test]
     fn string_template_segments_and_embedded_expr() {
         let src = "|Hello, { lv_name }!|";
         let r = tokenize(src);
@@ -751,6 +763,35 @@ mod tests {
                 >= 4
         );
         assert!(kinds.contains(&TokenKind::StringTemplateLit));
+    }
+
+    #[test]
+    fn string_template_interpolation_can_contain_single_quoted_string() {
+        let src = r#"|{ '\' }x|"#;
+        let r = tokenize(src);
+        assert_eq!(r.errors.len(), 0, "{:?}", r.errors);
+        assert_eq!(
+            r.tokens
+                .iter()
+                .map(|t| t.kind)
+                .filter(|k| *k != TokenKind::Eof)
+                .collect::<Vec<_>>(),
+            vec![
+                TokenKind::StringTemplate,
+                TokenKind::LBrace,
+                TokenKind::String,
+                TokenKind::RBrace,
+                TokenKind::StringTemplateLit,
+                TokenKind::StringTemplate,
+            ]
+        );
+        assert_eq!(
+            r.tokens
+                .iter()
+                .find(|t| t.kind == TokenKind::String)
+                .map(|t| t.lexeme(src)),
+            Some(r#"'\'"#)
+        );
     }
 
     /// Formatting options inside `{ }` lex as normal tokens (identifiers, `=`, numbers).

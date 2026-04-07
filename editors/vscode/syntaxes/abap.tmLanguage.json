@@ -204,24 +204,11 @@
 			"patterns": [
 				{
 					"name": "string.quoted.single.abap",
-					"begin": "'",
-					"beginCaptures": {
-						"0": {
-							"name": "punctuation.definition.string.begin.abap"
-						}
-					},
-					"end": "'",
-					"endCaptures": {
-						"0": {
-							"name": "punctuation.definition.string.end.abap"
-						}
-					},
-					"patterns": [
-						{
-							"name": "constant.character.escape.abap",
-							"match": "\\\\."
-						}
-					]
+					"match": "'(?:''|[^'\\r\\n])*'"
+				},
+				{
+					"name": "string.quoted.backtick.abap",
+					"match": "`(?:``|[^`\\r\\n])*`"
 				},
 				{
 					"name": "string.template.abap",

@@ -1703,4 +1703,26 @@ mod tests {
         );
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
     }
+
+    #[test]
+    fn assignment_rhs_accepts_backticks_with_double_quotes_and_template_single_quotes() {
+        let parsed = crate::parse(
+            r#"lv_json = `{"key":"value"}`.
+lv_esc = |{ '\' }{ lv_delim }|."#,
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::AssignStmt), 2);
+        assert_eq!(
+            parsed.file.count_kind(root, SyntaxKind::CharStringTemplate),
+            1
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::TemplateInterpolation),
+            2
+        );
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
+    }
 }
