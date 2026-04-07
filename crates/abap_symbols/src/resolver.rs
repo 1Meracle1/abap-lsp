@@ -102,6 +102,107 @@ fn enclosing_class_owner(unit: &UnitAnalysis, scope: ScopeId) -> Option<SymbolId
     None
 }
 
+fn class_scope_symbol(
+    unit: &UnitAnalysis,
+    class_symbol: SymbolId,
+    namespace: Namespace,
+    name: &Arc<str>,
+) -> Option<SymbolId> {
+    unit.symbols.iter().find_map(|symbol| {
+        (symbol.name == *name
+            && symbol.kind.occupies(namespace)
+            && unit.scope(symbol.scope).kind == ScopeKind::Class
+            && unit.scope(symbol.scope).owner == Some(class_symbol))
+        .then_some(symbol.id)
+    })
+}
+
+fn resolve_direct_superclass_handle_in_project(
+    units: &[UnitAnalysis],
+    current: SymbolHandle,
+    per_unit_root_index: &[HashMap<(Namespace, Arc<str>), SymbolId>],
+    root_index: &HashMap<(Namespace, Arc<str>), Vec<SymbolHandle>>,
+) -> Option<SymbolHandle> {
+    let unit = &units[current.unit.as_usize()];
+    let inheritance = unit.class_superclass(current.symbol)?;
+    if let Some(symbol_id) = per_unit_root_index[current.unit.as_usize()]
+        .get(&(Namespace::Type, Arc::clone(&inheritance.superclass_name)))
+        .copied()
+    {
+        return Some(SymbolHandle {
+            unit: current.unit,
+            symbol: symbol_id,
+        });
+    }
+    root_index
+        .get(&(Namespace::Type, Arc::clone(&inheritance.superclass_name)))
+        .and_then(|handles| handles.first().copied())
+}
+
+fn resolve_inherited_symbol_in_unit(
+    unit: &UnitAnalysis,
+    scope_index: &ScopeIndex,
+    scope: ScopeId,
+    namespace: Namespace,
+    name: &Arc<str>,
+) -> Option<SymbolId> {
+    let mut current_class = enclosing_class_owner(unit, scope)?;
+    let mut visited = std::collections::HashSet::new();
+    loop {
+        if !visited.insert(current_class) {
+            return None;
+        }
+        let inheritance = unit.class_superclass(current_class)?;
+        let superclass_symbol = lookup_scope_chain(
+            unit,
+            scope_index,
+            scope,
+            Namespace::Type,
+            &inheritance.superclass_name,
+        )?;
+        if let Some(symbol_id) = class_scope_symbol(unit, superclass_symbol, namespace, name) {
+            return Some(symbol_id);
+        }
+        current_class = superclass_symbol;
+    }
+}
+
+fn resolve_inherited_symbol_in_project(
+    units: &[UnitAnalysis],
+    unit_idx: usize,
+    scope: ScopeId,
+    namespace: Namespace,
+    name: &Arc<str>,
+    per_unit_root_index: &[HashMap<(Namespace, Arc<str>), SymbolId>],
+    root_index: &HashMap<(Namespace, Arc<str>), Vec<SymbolHandle>>,
+) -> Option<SymbolHandle> {
+    let unit = &units[unit_idx];
+    let mut current = SymbolHandle {
+        unit: unit.unit_id,
+        symbol: enclosing_class_owner(unit, scope)?,
+    };
+    let mut visited = std::collections::HashSet::new();
+    loop {
+        if !visited.insert(current) {
+            return None;
+        }
+        current = resolve_direct_superclass_handle_in_project(
+            units,
+            current,
+            per_unit_root_index,
+            root_index,
+        )?;
+        let superclass_unit = &units[current.unit.as_usize()];
+        if let Some(symbol_id) = class_scope_symbol(superclass_unit, current.symbol, namespace, name)
+        {
+            return Some(SymbolHandle {
+                unit: current.unit,
+                symbol: symbol_id,
+            });
+        }
+    }
+}
+
 fn innermost_loop_allows_internal_table_line_selector(unit: &UnitAnalysis, scope: ScopeId) -> bool {
     let mut current = Some(scope);
     while let Some(scope_id) = current {
@@ -142,35 +243,40 @@ pub(crate) fn resolve_unit_with_index(unit: &mut UnitAnalysis, scope_index: &Sco
                 Arc::clone(&reference.name),
             )
         };
-        let resolution =
-            match lookup_reference_scope_chain(unit, &scope_index, scope, namespace, kind, &name) {
-                Some(symbol) => Some(Resolution::Symbol(SymbolHandle {
+        let resolution = if let Some(symbol) =
+            lookup_reference_scope_chain(unit, &scope_index, scope, namespace, kind, &name)
+        {
+            Some(Resolution::Symbol(SymbolHandle {
+                unit: unit_id,
+                symbol,
+            }))
+        } else if let Some(symbol) =
+            resolve_inherited_symbol_in_unit(unit, scope_index, scope, namespace, &name)
+        {
+            Some(Resolution::Symbol(SymbolHandle {
+                unit: unit_id,
+                symbol,
+            }))
+        } else if namespace == Namespace::Value && name.as_ref() == "super" {
+            resolve_super_reference_in_unit(unit, &scope_index, scope).map(|symbol| {
+                Resolution::Symbol(SymbolHandle {
                     unit: unit_id,
                     symbol,
-                })),
-                None if namespace == Namespace::Value && name.as_ref() == "super" => {
-                    resolve_super_reference_in_unit(unit, &scope_index, scope).map(|symbol| {
-                        Resolution::Symbol(SymbolHandle {
-                            unit: unit_id,
-                            symbol,
-                        })
-                    })
-                }
-                None if namespace == Namespace::Type && is_builtin_type(name.as_ref()) => {
-                    Some(Resolution::BuiltinType)
-                }
-                None if namespace == Namespace::Routine && is_builtin_routine(name.as_ref()) => {
-                    Some(Resolution::BuiltinRoutine)
-                }
-                None if namespace == Namespace::Value
-                    && kind == ReferenceKind::Identifier
-                    && name.as_ref().eq_ignore_ascii_case("table_line")
-                    && innermost_loop_allows_internal_table_line_selector(unit, scope) =>
-                {
-                    Some(Resolution::InternalTableLine)
-                }
-                None => None,
-            };
+                })
+            })
+        } else if namespace == Namespace::Type && is_builtin_type(name.as_ref()) {
+            Some(Resolution::BuiltinType)
+        } else if namespace == Namespace::Routine && is_builtin_routine(name.as_ref()) {
+            Some(Resolution::BuiltinRoutine)
+        } else if namespace == Namespace::Value
+            && kind == ReferenceKind::Identifier
+            && name.as_ref().eq_ignore_ascii_case("table_line")
+            && innermost_loop_allows_internal_table_line_selector(unit, scope)
+        {
+            Some(Resolution::InternalTableLine)
+        } else {
+            None
+        };
         unit.references[idx].resolution = resolution;
     }
 }
@@ -268,6 +374,22 @@ pub fn resolve_project_cross_unit(units: &mut [UnitAnalysis]) {
             } else {
                 [reference_namespace, reference_namespace]
             };
+            if resolved.is_none() {
+                for namespace in namespaces {
+                    if let Some(symbol) = resolve_inherited_symbol_in_project(
+                        units,
+                        unit_idx,
+                        reference_scope,
+                        namespace,
+                        &reference_name,
+                        &per_unit_root_index,
+                        &root_index,
+                    ) {
+                        resolved = Some(Resolution::Symbol(symbol));
+                        break;
+                    }
+                }
+            }
             if resolved.is_none() {
                 for namespace in namespaces {
                     for target in &include_targets {

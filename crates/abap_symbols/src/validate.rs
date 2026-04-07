@@ -403,6 +403,38 @@ fn resolve_class_member_in_hierarchy<'a>(
     }
 }
 
+fn resolve_class_type_symbol_in_hierarchy(
+    project: &ProjectAnalysis,
+    class_unit: &crate::UnitAnalysis,
+    class_symbol: SymbolId,
+    type_name: &str,
+) -> Option<SymbolHandle> {
+    let mut current = SymbolHandle {
+        unit: class_unit.unit_id,
+        symbol: class_symbol,
+    };
+    let mut visited = HashSet::new();
+    loop {
+        if !visited.insert(current) {
+            return None;
+        }
+        let unit = &project.units[current.unit.as_usize()];
+        if let Some(symbol_id) = unit.symbols.iter().find_map(|symbol| {
+            (symbol.name.as_ref() == type_name
+                && symbol.kind == SymbolKind::TypeDef
+                && unit.scope(symbol.scope).kind == ScopeKind::Class
+                && unit.scope(symbol.scope).owner == Some(current.symbol))
+            .then_some(symbol.id)
+        }) {
+            return Some(SymbolHandle {
+                unit: current.unit,
+                symbol: symbol_id,
+            });
+        }
+        current = direct_superclass_handle(project, unit, current.symbol)?;
+    }
+}
+
 fn resolve_class_selector_base<'a>(
     project: &'a ProjectAnalysis,
     unit: &crate::UnitAnalysis,
@@ -1079,6 +1111,34 @@ pub(crate) fn validate_project_with_scope_indexes(
                         base_symbol_id,
                         step.name.as_ref(),
                     ) else {
+                        if let Some(type_symbol) = resolve_class_type_symbol_in_hierarchy(
+                            project,
+                            unit,
+                            base_symbol_id,
+                            step.name.as_ref(),
+                        ) {
+                            let type_unit = &project.units[type_symbol.unit.as_usize()];
+                            let type_symbol = type_unit.symbol(type_symbol.symbol);
+                            idx += 1;
+                            if idx == field_path.len() {
+                                break;
+                            }
+                            let Some(next_structure) = type_symbol.structure else {
+                                let next_step = &field_path[idx];
+                                unit_diagnostics.push(Diagnostic {
+                                    kind: DiagnosticKind::UnknownField,
+                                    range: next_step.range.clone(),
+                                    message: format!(
+                                        "unknown static member '{}' for class '{}=>{}'",
+                                        next_step.name, access.base_name, step.name
+                                    ),
+                                });
+                                break;
+                            };
+                            static_structure_holder = Some(Arc::clone(&type_symbol.name));
+                            structure_tail = Some(next_structure);
+                            continue;
+                        }
                         unit_diagnostics.push(Diagnostic {
                             kind: DiagnosticKind::UnknownField,
                             range: step.range.clone(),

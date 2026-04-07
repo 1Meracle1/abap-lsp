@@ -522,7 +522,8 @@ fn validate_unparsed_stmt(
     errors: &mut Vec<crate::ParseError>,
 ) {
     validate_method_modifier_order(source, tokens, idx, period_i, errors);
-    if direct_call_statement(significant) && !direct_call_padding_is_valid(significant) {
+    let is_method_stmt = method_statement_name_idx(source, significant).is_some();
+    if !is_method_stmt && direct_call_statement(significant) && !direct_call_padding_is_valid(significant) {
         errors.push(crate::ParseError {
             message: "syntax error: method call arguments must have whitespace or a line break immediately inside parentheses"
                 .to_string(),
@@ -710,6 +711,38 @@ ENDCLASS.";
             parsed
                 .file
                 .count_kind(methods, SyntaxKind::TypeRefSelectorChain),
+            1
+        );
+    }
+
+    #[test]
+    fn class_methods_with_returning_value_and_namespaced_type_parse() {
+        let src = "\
+CLASS /STTP/CL_MESSAGES DEFINITION\n\
+  PUBLIC\n\
+  INHERITING FROM /CDBASIS/CL_MESSAGES\n\
+  CREATE PUBLIC .\n\
+\n\
+PUBLIC SECTION.\n\
+\n\
+  CLASS-METHODS CREATE_NEW_HANDLER_ATT\n\
+    IMPORTING\n\
+      !IV_OBJECT TYPE BALOBJ_D OPTIONAL\n\
+      !IV_SUBOBJECT TYPE BALSUBOBJ OPTIONAL\n\
+      !IV_EXTNUMBER TYPE BALNREXT OPTIONAL\n\
+      !IV_REPID TYPE SYREPID OPTIONAL\n\
+      !IV_TITLE TYPE BALTITLE OPTIONAL\n\
+      !IV_LOGLEVEL TYPE /STTP/CL_MESSAGES=>TE_LOGLEVEL DEFAULT 1\n\
+      !IV_TYPELEVEL TYPE /STTP/CL_MESSAGES=>TE_TYPELEVEL DEFAULT 'I'\n\
+    RETURNING\n\
+      VALUE(RO_MESSAGES) TYPE REF TO /STTP/CL_MESSAGES .\n\
+ENDCLASS.";
+        let parsed = crate::parse(src);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::MethodsStmt),
             1
         );
     }

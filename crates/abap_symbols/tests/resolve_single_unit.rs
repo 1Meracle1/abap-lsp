@@ -3425,6 +3425,127 @@ ENDCLASS.
 }
 
 #[test]
+fn resolves_inherited_class_type_refs_across_project_units() {
+    let base_src = r#"
+CLASS /cdbasis/cl_messages DEFINITION.
+  PUBLIC SECTION.
+    TYPES te_loglevel TYPE numc1.
+ENDCLASS.
+"#;
+    let sub_src = r#"
+CLASS /sttp/cl_messages DEFINITION INHERITING FROM /cdbasis/cl_messages.
+  PUBLIC SECTION.
+    CONSTANTS:
+      BEGIN OF gcs_log_level,
+        very_high TYPE te_loglevel VALUE 1,
+        high      TYPE te_loglevel VALUE 2,
+      END OF gcs_log_level.
+ENDCLASS.
+"#;
+    let base_parse = parse(base_src);
+    let sub_parse = parse(sub_src);
+    let project = analyze_project(&[
+        ProjectInput {
+            uri: "file:///base.abap",
+            source: base_src,
+            parse: &base_parse,
+        },
+        ProjectInput {
+            uri: "file:///sub.abap",
+            source: sub_src,
+            parse: &sub_parse,
+        },
+    ]);
+    let unit = project.unit_by_uri("file:///sub.abap").expect("sub unit");
+
+    let refs: Vec<_> = unit
+        .references
+        .iter()
+        .filter(|reference| {
+            reference.kind == ReferenceKind::TypeRef
+                && reference.namespace == Namespace::Type
+                && reference.name.as_ref() == "te_loglevel"
+        })
+        .collect();
+    assert_eq!(refs.len(), 2, "expected inherited type refs, refs={refs:?}");
+    assert!(
+        refs.iter()
+            .all(|reference| matches!(reference.resolution, Some(Resolution::Symbol(_)))),
+        "expected inherited type refs to resolve, refs={refs:?}"
+    );
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference
+                && diag.message.contains("te_loglevel")
+        }),
+        "unexpected unresolved inherited type diagnostic: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn accepts_inherited_class_type_static_selector_refs_across_project_units() {
+    let base_src = r#"
+CLASS /cdbasis/cl_messages DEFINITION.
+  PUBLIC SECTION.
+    TYPES te_loglevel TYPE numc1.
+    TYPES te_typelevel TYPE char1.
+ENDCLASS.
+"#;
+    let sub_src = r#"
+CLASS /sttp/cl_messages DEFINITION INHERITING FROM /cdbasis/cl_messages.
+  PUBLIC SECTION.
+    CLASS-METHODS create_new_handler_att
+      IMPORTING
+        iv_loglevel TYPE /sttp/cl_messages=>te_loglevel
+        iv_typelevel TYPE /sttp/cl_messages=>te_typelevel.
+ENDCLASS.
+"#;
+    let base_parse = parse(base_src);
+    let sub_parse = parse(sub_src);
+    let project = analyze_project(&[
+        ProjectInput {
+            uri: "file:///base_static_type.abap",
+            source: base_src,
+            parse: &base_parse,
+        },
+        ProjectInput {
+            uri: "file:///sub_static_type.abap",
+            source: sub_src,
+            parse: &sub_parse,
+        },
+    ]);
+    let unit = project
+        .unit_by_uri("file:///sub_static_type.abap")
+        .expect("sub unit");
+
+    let class_type_refs: Vec<_> = unit
+        .references
+        .iter()
+        .filter(|reference| {
+            reference.namespace == Namespace::Type
+                && reference.name.as_ref() == "/sttp/cl_messages"
+                && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+        })
+        .collect();
+    assert_eq!(
+        class_type_refs.len(),
+        2,
+        "expected resolved static type selectors, refs={:?}",
+        unit.references
+    );
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnknownField
+                && diag.message.contains("unknown static member")
+                && (diag.message.contains("te_loglevel") || diag.message.contains("te_typelevel"))
+        }),
+        "unexpected inherited static type selector diagnostic: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn resolves_constructor_arguments_and_token_only_statement_references() {
     let src = r#"
 CLASS zcl_ast_node DEFINITION ABSTRACT.
