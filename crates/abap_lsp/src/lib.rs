@@ -2567,6 +2567,73 @@ ENDCLASS.
     }
 
     #[test]
+    fn semantic_tokens_mark_class_attribute_declaration_as_property() {
+        use lsp_types::SemanticTokenType;
+
+        let state = ServerState::default();
+        let text = "\
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    DATA mv_value TYPE i.
+ENDCLASS.
+";
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///sem_class_attr.abap").expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: text.to_string(),
+                },
+            },
+        );
+
+        let snapshot = state
+            .cache
+            .get("file:///sem_class_attr.abap")
+            .expect("snapshot");
+        let tokens = sem_tokens::build_semantic_tokens(snapshot.as_ref());
+        let legend = sem_tokens::semantic_tokens_legend();
+        let property_idx = legend
+            .token_types
+            .iter()
+            .position(|t| *t == SemanticTokenType::PROPERTY)
+            .expect("legend has property") as u32;
+        let decl_mod = 1u32
+            << legend
+                .token_modifiers
+                .iter()
+                .position(|m| m.as_str() == "declaration")
+                .expect("declaration modifier");
+
+        let value_line = text
+            .lines()
+            .enumerate()
+            .find(|(_, line)| line.contains("mv_value"))
+            .expect("mv_value line");
+        let value_col = value_line.1.find("mv_value").expect("mv_value col") as u32;
+
+        assert_eq!(
+            semantic_token_type_at(&tokens, value_line.0 as u32, value_col),
+            Some(property_idx),
+            "expected class attribute declaration to highlight as property"
+        );
+        let positions = semantic_token_positions(&tokens);
+        assert!(
+            positions
+                .iter()
+                .any(|&(line, character, _, token_type, modifiers)| {
+                    line == value_line.0 as u32
+                        && character == value_col
+                        && token_type == property_idx
+                        && (modifiers & decl_mod) != 0
+                }),
+            "expected declaration modifier on class attribute, tokens={positions:?}"
+        );
+    }
+
+    #[test]
     fn hover_returns_resolved_variable_symbol() {
         let state = ServerState::default();
         publish_open_document(

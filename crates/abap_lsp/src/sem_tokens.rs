@@ -178,7 +178,7 @@ fn collect_pending(
             &mut pending,
             symbol.decl_range.start,
             symbol.decl_range.end,
-            0,
+            1,
             symbol_kind_type_index(symbol.kind, ty_ix),
             mods,
         );
@@ -186,6 +186,9 @@ fn collect_pending(
 
     for structure in &unit.structures {
         for field in &structure.fields {
+            if field.decl_unit != unit.unit_id {
+                continue;
+            }
             let Some(decl_range) = field.decl_range.as_ref() else {
                 continue;
             };
@@ -230,7 +233,7 @@ fn collect_pending(
             &mut pending,
             reference.range.start,
             reference.range.end,
-            1,
+            2,
             token_type,
             0,
         );
@@ -251,7 +254,7 @@ fn collect_pending(
                 &mut pending,
                 segment.range.start,
                 segment.range.end,
-                2,
+                3,
                 token_type,
                 0,
             );
@@ -264,7 +267,7 @@ fn collect_pending(
                 &mut pending,
                 named_argument.range.start,
                 named_argument.range.end,
-                2,
+                3,
                 ty_ix.parameter,
                 0,
             );
@@ -283,7 +286,7 @@ fn collect_pending(
             &mut pending,
             sql_ref.range.start,
             sql_ref.range.end,
-            3,
+            4,
             token_type,
             0,
         );
@@ -392,7 +395,11 @@ pub fn build_semantic_tokens(snapshot: &AnalysisSnapshot) -> SemanticTokens {
 
 #[cfg(test)]
 mod tests {
-    use super::encode_deltas;
+    use super::{encode_deltas, semantic_tokens_legend};
+    use crate::build_semantic_tokens;
+    use abap_cache::{DocumentInput, DocumentStore};
+    use lsp_types::SemanticTokenType;
+    use std::sync::Arc;
 
     fn byte_offset_to_line_character_utf16_reference(
         text: &str,
@@ -484,5 +491,55 @@ mod tests {
         let expected = encode_deltas_reference(text, merged);
 
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn semantic_tokens_ignore_imported_structure_field_decl_ranges_from_other_units() {
+        let store = DocumentStore::default();
+        let dep_src = "\
+TYPES: BEGIN OF zdep,
+         field_a TYPE i,
+         field_b TYPE i,
+       END OF zdep.
+";
+        let main_src = "\
+DATA ls_dep TYPE zdep.
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run.
+ENDCLASS.
+";
+        let snapshots = store.replace_all(vec![
+            DocumentInput {
+                uri: Arc::from("file:///dep.abap"),
+                version: 1,
+                text: Arc::from(dep_src),
+                is_dependency: true,
+            },
+            DocumentInput {
+                uri: Arc::from("file:///main.abap"),
+                version: 1,
+                text: Arc::from(main_src),
+                is_dependency: false,
+            },
+        ]);
+        let snapshot = snapshots.get("file:///main.abap").expect("main snapshot");
+        let tokens = build_semantic_tokens(snapshot.as_ref());
+        let legend = semantic_tokens_legend();
+        let property_idx = legend
+            .token_types
+            .iter()
+            .position(|t| *t == SemanticTokenType::PROPERTY)
+            .expect("legend has property") as u32;
+
+        let property_tokens: Vec<_> = tokens
+            .data
+            .iter()
+            .filter(|token| token.token_type == property_idx)
+            .collect();
+        assert!(
+            property_tokens.is_empty(),
+            "expected no property tokens in consumer doc, got {property_tokens:?}"
+        );
     }
 }
