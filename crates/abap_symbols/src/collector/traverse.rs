@@ -153,7 +153,11 @@ impl<'a> Collector<'a> {
             SyntaxKind::FindStmt => self.stmt_lowering().collect_find_stmt(node, scope),
             SyntaxKind::CallStmt => self.stmt_lowering().collect_call_stmt(node, scope),
             SyntaxKind::MessageStmt => self.stmt_lowering().collect_message_stmt(node, scope),
-            SyntaxKind::UnparsedStmt | SyntaxKind::RaiseStmt | SyntaxKind::EndAtStmt => self
+            SyntaxKind::UnparsedStmt
+            | SyntaxKind::CommitWorkStmt
+            | SyntaxKind::RollbackWorkStmt
+            | SyntaxKind::RaiseStmt
+            | SyntaxKind::EndAtStmt => self
                 .stmt_lowering()
                 .collect_generic_simple_stmt(node, scope),
             SyntaxKind::MethodsStmt => self.stmt_lowering().collect_methods_stmt(node, scope),

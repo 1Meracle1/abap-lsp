@@ -241,6 +241,10 @@ pub enum SyntaxKind {
     CallMethodStmt,
     /// Legacy `CALL METHOD` target/callee expression.
     CallMethodTarget,
+    /// `COMMIT WORK.`
+    CommitWorkStmt,
+    /// `ROLLBACK WORK.`
+    RollbackWorkStmt,
     /// `RAISE ... .`
     RaiseStmt,
     /// `MESSAGE ... .`
@@ -389,6 +393,8 @@ impl SyntaxKind {
             Self::CreateDataStmt => "CreateDataStmt",
             Self::CallMethodStmt => "CallMethodStmt",
             Self::CallMethodTarget => "CallMethodTarget",
+            Self::CommitWorkStmt => "CommitWorkStmt",
+            Self::RollbackWorkStmt => "RollbackWorkStmt",
             Self::RaiseStmt => "RaiseStmt",
             Self::MessageStmt => "MessageStmt",
             Self::EndAtStmt => "EndAtStmt",

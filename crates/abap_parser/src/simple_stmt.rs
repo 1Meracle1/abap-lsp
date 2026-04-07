@@ -509,6 +509,27 @@ fn classify_direct_call_stmt(_source: &str, significant: &[&Token]) -> Option<Sy
     })
 }
 
+fn classify_commit_or_rollback_work_stmt(
+    source: &str,
+    significant: &[&Token],
+) -> Option<SyntaxKind> {
+    if significant.len() != 3 || significant[1].kind != TokenKind::Ident || significant[2].kind != TokenKind::Period {
+        return None;
+    }
+
+    if !token_matches_keyword(source, significant[1], "work") {
+        return None;
+    }
+
+    if token_matches_keyword(source, significant[0], "commit") {
+        Some(SyntaxKind::CommitWorkStmt)
+    } else if token_matches_keyword(source, significant[0], "rollback") {
+        Some(SyntaxKind::RollbackWorkStmt)
+    } else {
+        None
+    }
+}
+
 fn simple_stmt_kind(source: &str, significant: &[&Token]) -> SyntaxKind {
     let Some(first) = significant.first() else {
         return SyntaxKind::UnparsedStmt;
@@ -527,6 +548,10 @@ fn simple_stmt_kind(source: &str, significant: &[&Token]) -> SyntaxKind {
         if lead_keyword.eq_ignore_ascii_case(keyword) {
             return *kind;
         }
+    }
+
+    if let Some(kind) = classify_commit_or_rollback_work_stmt(source, significant) {
+        return kind;
     }
 
     SyntaxKind::UnparsedStmt
@@ -859,6 +884,15 @@ ENDCLASS.";
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::AssertStmt), 1);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::CheckStmt), 1);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::PerformStmt), 1);
+    }
+
+    #[test]
+    fn classifies_commit_and_rollback_work_statements_specifically() {
+        let parsed = crate::parse("COMMIT WORK. ROLLBACK WORK.");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::CommitWorkStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::RollbackWorkStmt), 1);
     }
 
     #[test]

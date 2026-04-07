@@ -82,6 +82,27 @@ ENDFORM.
 }
 
 #[test]
+fn commit_and_rollback_work_do_not_report_work_as_unknown_symbol() {
+    let src = r#"
+FORM f.
+  COMMIT WORK.
+  ROLLBACK WORK.
+ENDFORM.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///commit_rollback_work.abap", src, &parsed);
+
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference
+                && diag.message.contains("unknown symbol 'work'")
+        }),
+        "unexpected unresolved WORK diagnostic: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn resolves_form_changing_parameter_in_body() {
     let src = r#"
 FORM some_form CHANGING cv_result TYPE string.

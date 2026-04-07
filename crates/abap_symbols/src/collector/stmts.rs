@@ -331,7 +331,11 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             return;
         };
 
-        if head.text.eq_ignore_ascii_case("clear") {
+        if (head.text.eq_ignore_ascii_case("commit") || head.text.eq_ignore_ascii_case("rollback"))
+            && matches!(tail.first(), Some(token) if token.text.eq_ignore_ascii_case("work"))
+        {
+            return;
+        } else if head.text.eq_ignore_ascii_case("clear") {
             self.collect_clear_stmt_infos(tail, scope);
         } else if head.text.eq_ignore_ascii_case("convert") {
             self.collect_convert_stmt_infos(&significant, scope);
