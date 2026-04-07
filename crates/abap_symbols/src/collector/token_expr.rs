@@ -33,6 +33,9 @@ impl<'a> Collector<'a> {
                 text if text.trim_start().starts_with('"') => {
                     idx += 1;
                 }
+                _ if self.syntax_token_is_literal_like(token) => {
+                    idx += 1;
+                }
                 "(" => {
                     if let Some(end_idx) = self.find_matching_group_end_infos(tokens, idx, "(", ")")
                     {

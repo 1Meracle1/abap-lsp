@@ -3534,6 +3534,16 @@ ENDFORM.
             unit.field_accesses
         );
     }
+
+    for literal in ["%22", "\"", "%2f", "/"] {
+        assert!(
+            !unit.diagnostics.iter().any(|diag| {
+                diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains(literal)
+            }),
+            "unexpected unresolved literal diagnostic for `{literal}`: {:?}",
+            unit.diagnostics
+        );
+    }
 }
 
 #[test]
