@@ -72,6 +72,7 @@ pub(crate) struct SemClassMember {
     pub(crate) class_symbol: SymbolId,
     pub(crate) kind: ClassMemberKind,
     pub(crate) decl_range: TextRange,
+    pub(crate) implementation_range: Option<TextRange>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -196,6 +197,7 @@ impl SemanticIndex {
                 class_symbol: member.class_symbol,
                 kind: member.kind,
                 decl_range: member.decl_range.clone(),
+                implementation_range: member.implementation_range.clone(),
             })
             .collect();
         let structure_fields = unit
@@ -301,13 +303,23 @@ impl SemanticIndex {
             .iter()
             .enumerate()
             .filter(|(_, member)| {
-                member.decl_range.start <= offset && offset < member.decl_range.end
+                (member.decl_range.start <= offset && offset < member.decl_range.end)
+                    || member
+                        .implementation_range
+                        .as_ref()
+                        .is_some_and(|range| range.start <= offset && offset < range.end)
             })
             .min_by_key(|(_, member)| {
-                member
+                let decl_width = member
                     .decl_range
                     .end
-                    .saturating_sub(member.decl_range.start)
+                    .saturating_sub(member.decl_range.start);
+                let impl_width = member
+                    .implementation_range
+                    .as_ref()
+                    .map(|range| range.end.saturating_sub(range.start))
+                    .unwrap_or(usize::MAX);
+                decl_width.min(impl_width)
             })
             .map(|(idx, _)| SemClassMemberId(idx as u32))
     }

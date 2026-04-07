@@ -116,6 +116,11 @@ impl<'ctx, 'a> DeclLowering<'ctx, 'a> {
             self.ctx
                 .push_scope(ScopeKind::Method, node_range, Some(scope), Some(owner));
         if let Some(class_symbol) = self.ctx.class_lowering().enclosing_class_owner(scope) {
+            self.ctx.class_lowering().note_method_implementation_range(
+                class_symbol,
+                name.as_ref(),
+                range.clone(),
+            );
             self.ctx
                 .class_lowering()
                 .declare_method_signature_parameters(

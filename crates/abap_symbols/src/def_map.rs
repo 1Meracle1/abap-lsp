@@ -407,6 +407,7 @@ pub struct ClassMemberData {
     pub visibility: Visibility,
     pub is_static: bool,
     pub decl_range: TextRange,
+    pub implementation_range: Option<TextRange>,
     pub signature: Arc<str>,
     pub parameters: Vec<ClassMemberParameterData>,
     /// Shape for grouped `CONSTANTS` / `CLASS-DATA` `BEGIN OF ... END OF` when the member is a structure.

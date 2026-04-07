@@ -290,6 +290,7 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
             visibility,
             is_static,
             decl_range: name_tok.range(),
+            implementation_range: None,
             signature: Arc::<str>::from(methods_stmt.signature_text(self.collector.source)),
             parameters: Vec::new(),
             structure: None,
@@ -406,6 +407,7 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
             visibility,
             is_static,
             decl_range,
+            implementation_range: None,
             signature,
             parameters: Vec::new(),
             structure: None,
@@ -431,6 +433,22 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
         self.collector.class_members.iter().find(|member| {
             member.class_symbol == class_symbol && member.name.as_ref() == member_name
         })
+    }
+
+    pub(super) fn note_method_implementation_range(
+        &mut self,
+        class_symbol: SymbolId,
+        method_name: &str,
+        range: TextRange,
+    ) {
+        let Some(member) = self.collector.class_members.iter_mut().find(|member| {
+            member.class_symbol == class_symbol
+                && member.kind == ClassMemberKind::Method
+                && member.name.as_ref() == method_name
+        }) else {
+            return;
+        };
+        member.implementation_range = Some(range);
     }
 
     pub(super) fn declare_implicit_me_symbol(

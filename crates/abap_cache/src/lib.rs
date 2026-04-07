@@ -451,7 +451,9 @@ impl AnalysisSnapshot {
             .class_member_at_offset(offset)
         {
             return Some(HoveredSymbolInfo {
-                range: member.decl_range.clone(),
+                range: class_member_name_range_at_offset(member, offset)
+                    .cloned()
+                    .unwrap_or_else(|| member.decl_range.clone()),
                 display_name: Arc::clone(&member.name),
                 markdown_lines: markdown_lines_for_class_member(self.symbols.as_ref(), member),
             });
@@ -635,9 +637,10 @@ impl AnalysisSnapshot {
             .decls()
             .class_member_at_offset(offset)
         {
-            return Some(definition_target_for_class_member(
+            return Some(definition_target_for_class_member_name_at(
                 self.symbols.as_ref(),
                 member,
+                offset,
             ));
         }
 
@@ -1359,6 +1362,35 @@ fn definition_target_for_class_member(
     }
 }
 
+fn class_member_name_range_at_offset(
+    member: &ClassMemberData,
+    offset: usize,
+) -> Option<&Range<usize>> {
+    if member.decl_range.start <= offset && offset < member.decl_range.end {
+        return Some(&member.decl_range);
+    }
+    member
+        .implementation_range
+        .as_ref()
+        .filter(|range| range.start <= offset && offset < range.end)
+}
+
+fn definition_target_for_class_member_name_at(
+    unit: &UnitAnalysis,
+    member: &ClassMemberData,
+    offset: usize,
+) -> DefinitionTarget {
+    let target_range = match class_member_name_range_at_offset(member, offset) {
+        Some(range) if *range == member.decl_range => member
+            .implementation_range
+            .clone()
+            .unwrap_or_else(|| member.decl_range.clone()),
+        Some(_) => member.decl_range.clone(),
+        None => member.decl_range.clone(),
+    };
+    definition_target_for_range(unit, target_range)
+}
+
 fn definition_target_for_range(unit: &UnitAnalysis, range: Range<usize>) -> DefinitionTarget {
     DefinitionTarget {
         uri: Arc::clone(&unit.uri),
@@ -1688,7 +1720,11 @@ fn resolve_symbol_structure_with_scope_index<'a>(
             scope,
             resolved_symbol_id,
         )?;
-        let path: Vec<_> = declared_type.field_path.iter().map(|part| part.as_ref()).collect();
+        let path: Vec<_> = declared_type
+            .field_path
+            .iter()
+            .map(|part| part.as_ref())
+            .collect();
         let field = base_unit
             .semantic()
             .decls()
@@ -2678,7 +2714,8 @@ fn selector_completion_statement_context(
         .iter()
         .position(|token| token.kind.as_str() != "Eof" && token.range.end >= offset)
         .or_else(|| {
-            parse.tokens
+            parse
+                .tokens
                 .iter()
                 .rposition(|token| !matches!(token.kind.as_str(), "Comment" | "Eof"))
         })?;
@@ -2923,7 +2960,9 @@ fn selector_operator_before_token(
     }
 
     let kind = match op.kind.as_str() {
-        "Minus" if parse.tokens[prev_raw_idx].range.end >= op.range.start => SelectorOperator::Minus,
+        "Minus" if parse.tokens[prev_raw_idx].range.end >= op.range.start => {
+            SelectorOperator::Minus
+        }
         "Arrow" => SelectorOperator::Arrow,
         "Tilde" => SelectorOperator::Tilde,
         "FatArrow" => SelectorOperator::FatArrow,
@@ -3677,16 +3716,16 @@ ls_epc-content = 'x'.";
             .expect("dependency snapshot");
         let decl_offset = dependency_text.find("content").expect("field declaration") + 1;
         let references = store
-            .references(
-                "file:///deps/%2FSTTP%2FEPC1.xml",
-                decl_offset,
-                true,
-            )
+            .references("file:///deps/%2FSTTP%2FEPC1.xml", decl_offset, true)
             .expect("field references");
         assert_reference_slices(
             &references,
             &[
-                ("file:///deps/%2FSTTP%2FEPC1.xml", dependency_text.as_str(), "content"),
+                (
+                    "file:///deps/%2FSTTP%2FEPC1.xml",
+                    dependency_text.as_str(),
+                    "content",
+                ),
                 ("file:///main.abap", main_src, "content"),
             ],
         );
@@ -3757,8 +3796,12 @@ ls_doc-epcisdocument-epcisbody-event_list-choice = VALUE #( ).";
                 uri: Arc::from("file:///deps/%2FSTTP%2FEPCISDOCUMENT.xml"),
                 version: 1,
                 text: Arc::from(
-                    ddic_xml_to_abap_source("/STTP/EPCISDOCUMENT", "ddic-structure", epcisdocument_xml)
-                        .expect("epcisdocument"),
+                    ddic_xml_to_abap_source(
+                        "/STTP/EPCISDOCUMENT",
+                        "ddic-structure",
+                        epcisdocument_xml,
+                    )
+                    .expect("epcisdocument"),
                 ),
                 is_dependency: true,
             },
@@ -3779,8 +3822,12 @@ ls_doc-epcisdocument-epcisbody-event_list-choice = VALUE #( ).";
                 uri: Arc::from("file:///deps/%2FSTTP%2FEPCISBODY_TYPE.xml"),
                 version: 1,
                 text: Arc::from(
-                    ddic_xml_to_abap_source("/STTP/EPCISBODY_TYPE", "ddic-structure", epcisbody_type_xml)
-                        .expect("epcisbody_type"),
+                    ddic_xml_to_abap_source(
+                        "/STTP/EPCISBODY_TYPE",
+                        "ddic-structure",
+                        epcisbody_type_xml,
+                    )
+                    .expect("epcisbody_type"),
                 ),
                 is_dependency: true,
             },
@@ -3788,8 +3835,12 @@ ls_doc-epcisdocument-epcisbody-event_list-choice = VALUE #( ).";
                 uri: Arc::from("file:///deps/%2FSTTP%2FEVENT_LIST_TYPE.xml"),
                 version: 1,
                 text: Arc::from(
-                    ddic_xml_to_abap_source("/STTP/EVENT_LIST_TYPE", "ddic-structure", event_list_type_xml)
-                        .expect("event_list_type"),
+                    ddic_xml_to_abap_source(
+                        "/STTP/EVENT_LIST_TYPE",
+                        "ddic-structure",
+                        event_list_type_xml,
+                    )
+                    .expect("event_list_type"),
                 ),
                 is_dependency: true,
             },
@@ -3812,7 +3863,9 @@ ls_doc-epcisdocument-epcisbody-event_list-choice = VALUE #( ).";
             Some("TYPE /sttp/event_list_type_choice")
         );
 
-        let definition = snapshot.definition_at(offset).expect("deep field definition");
+        let definition = snapshot
+            .definition_at(offset)
+            .expect("deep field definition");
         assert_eq!(
             definition.uri.as_ref(),
             "file:///deps/%2FSTTP%2FEVENT_LIST_TYPE.xml"
@@ -3861,8 +3914,12 @@ ls_encode_decode-obj_ids-owner = 'x'.";
                 uri: Arc::from("file:///deps/%2FSTTP%2FS_ENCODE_DECODE.xml"),
                 version: 1,
                 text: Arc::from(
-                    ddic_xml_to_abap_source("/STTP/S_ENCODE_DECODE", "ddic-structure", encode_decode_xml)
-                        .expect("s_encode_decode"),
+                    ddic_xml_to_abap_source(
+                        "/STTP/S_ENCODE_DECODE",
+                        "ddic-structure",
+                        encode_decode_xml,
+                    )
+                    .expect("s_encode_decode"),
                 ),
                 is_dependency: true,
             },
@@ -3890,8 +3947,13 @@ ls_encode_decode-obj_ids-owner = 'x'.";
             .expect("hovered included field");
         assert_eq!(hovered.field_name.as_ref(), "owner");
 
-        let definition = snapshot.definition_at(offset).expect("included field definition");
-        assert_eq!(definition.uri.as_ref(), "file:///deps/%2FSTTP%2FS_OBJ_IDS.xml");
+        let definition = snapshot
+            .definition_at(offset)
+            .expect("included field definition");
+        assert_eq!(
+            definition.uri.as_ref(),
+            "file:///deps/%2FSTTP%2FS_OBJ_IDS.xml"
+        );
 
         let direct_src = "\
 DATA ls_encode_decode TYPE /sttp/s_encode_decode.
@@ -3901,8 +3963,12 @@ ls_encode_decode-enc_type = 'x'.";
                 uri: Arc::from("file:///deps/%2FSTTP%2FS_ENCODE_DECODE.xml"),
                 version: 1,
                 text: Arc::from(
-                    ddic_xml_to_abap_source("/STTP/S_ENCODE_DECODE", "ddic-structure", encode_decode_xml)
-                        .expect("s_encode_decode"),
+                    ddic_xml_to_abap_source(
+                        "/STTP/S_ENCODE_DECODE",
+                        "ddic-structure",
+                        encode_decode_xml,
+                    )
+                    .expect("s_encode_decode"),
                 ),
                 is_dependency: true,
             },
@@ -4256,6 +4322,36 @@ some_class=>exec( iv_value = 1 ).";
     }
 
     #[test]
+    fn definition_at_switches_between_class_method_declaration_and_implementation() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS some_class DEFINITION.
+  PUBLIC SECTION.
+    METHODS exec.
+ENDCLASS.
+
+CLASS some_class IMPLEMENTATION.
+  METHOD exec.
+  ENDMETHOD.
+ENDCLASS.";
+        let snapshot = store.publish("file:///demo.abap", 1, src);
+        let declaration_offset = src.find("exec").expect("method declaration");
+        let implementation_offset = src.rfind("exec").expect("method implementation");
+
+        let implementation_target = snapshot
+            .definition_at(declaration_offset + 1)
+            .expect("implementation target");
+        assert_target_slice(&implementation_target, "file:///demo.abap", src, "exec");
+        assert_eq!(implementation_target.range.start, implementation_offset);
+
+        let declaration_target = snapshot
+            .definition_at(implementation_offset + 1)
+            .expect("declaration target");
+        assert_target_slice(&declaration_target, "file:///demo.abap", src, "exec");
+        assert_eq!(declaration_target.range.start, declaration_offset);
+    }
+
+    #[test]
     fn definition_at_returns_structure_field_declaration() {
         let store = DocumentStore::default();
         let src = "\
@@ -4547,7 +4643,11 @@ DATA lt_tab TYPE STANDARD TABLE OF string WITH EMPTY KEY.
 IF lt_tab[] IS NOT INITIAL.";
         let snapshot = store.publish("file:///demo.abap", 1, src);
 
-        assert!(snapshot.selector_completion_at(src.find("[]").expect("legacy []") + 2).is_none());
+        assert!(
+            snapshot
+                .selector_completion_at(src.find("[]").expect("legacy []") + 2)
+                .is_none()
+        );
     }
 
     #[test]

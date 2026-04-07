@@ -7,9 +7,9 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use abap_cache::{
-    AnalysisSnapshot, DocumentInput, DocumentStore, OpenDocumentOverlay,
-    UNKNOWN_SYMBOL_MODE_REMOTE, WorkspaceManifest, is_remote_lookup_candidate,
-    load_workspace_documents, manifest_supports_remote_resolution, uri_starts_with_workspace,
+    is_remote_lookup_candidate, load_workspace_documents, manifest_supports_remote_resolution,
+    uri_starts_with_workspace, AnalysisSnapshot, DocumentInput, DocumentStore, OpenDocumentOverlay,
+    WorkspaceManifest, UNKNOWN_SYMBOL_MODE_REMOTE,
 };
 use abap_symbols::{DiagnosticKind, ReferenceKind, SqlResolution};
 use lsp_types::{
@@ -969,14 +969,14 @@ mod tests {
     use crate::sem_tokens;
 
     use super::{
-        CompletionParams, CompletionResponse, DEPENDENCY_CACHE_CLEARED, GotoDefinitionParams,
-        HoverParams, REMOTE_DEPENDENCIES_UPDATED, RESOLVE_REMOTE_DEPENDENCIES, ReferenceParams,
-        ServerState, WORKSPACE_MANIFEST_UPDATED, WorkspaceManifestUpdatedParams,
         build_lsp_diagnostics, build_remote_dependency_request,
         build_remote_dependency_requests_for_workspace, completion, definition,
         handle_dependency_cache_cleared, handle_remote_dependencies_updated, hover,
         initialize_result, normalize_lsp_uri, publish_changed_document, publish_open_document,
-        publish_open_document_mut, references,
+        publish_open_document_mut, references, CompletionParams, CompletionResponse,
+        GotoDefinitionParams, HoverParams, ReferenceParams, ServerState,
+        WorkspaceManifestUpdatedParams, DEPENDENCY_CACHE_CLEARED, REMOTE_DEPENDENCIES_UPDATED,
+        RESOLVE_REMOTE_DEPENDENCIES, WORKSPACE_MANIFEST_UPDATED,
     };
 
     fn temp_workspace_path(name: &str) -> PathBuf {
@@ -1173,6 +1173,78 @@ START-OF-SELECTION.
         assert_eq!(location.range.start.character, 16);
         assert_eq!(location.range.end.line, 3);
         assert_eq!(location.range.end.character, 23);
+    }
+
+    #[test]
+    fn definition_switches_between_class_method_declaration_and_implementation() {
+        let state = ServerState::default();
+        let text = "\
+CLASS zcl_program DEFINITION.
+  PUBLIC SECTION.
+    METHODS add_statement.
+ENDCLASS.
+
+CLASS zcl_program IMPLEMENTATION.
+  METHOD add_statement.
+  ENDMETHOD.
+ENDCLASS.";
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///method_definition.abap").expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: text.to_string(),
+                },
+            },
+        );
+
+        let declaration_result = definition(
+            &state,
+            &GotoDefinitionParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///method_definition.abap").expect("uri"),
+                    },
+                    position: Position {
+                        line: 2,
+                        character: 12,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            },
+        )
+        .expect("declaration definition");
+        let GotoDefinitionResponse::Scalar(declaration_location) = declaration_result else {
+            panic!("expected scalar location");
+        };
+        assert_eq!(declaration_location.range.start.line, 6);
+        assert_eq!(declaration_location.range.start.character, 9);
+
+        let implementation_result = definition(
+            &state,
+            &GotoDefinitionParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///method_definition.abap").expect("uri"),
+                    },
+                    position: Position {
+                        line: 6,
+                        character: 9,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            },
+        )
+        .expect("implementation definition");
+        let GotoDefinitionResponse::Scalar(implementation_location) = implementation_result else {
+            panic!("expected scalar location");
+        };
+        assert_eq!(implementation_location.range.start.line, 2);
+        assert_eq!(implementation_location.range.start.character, 12);
     }
 
     #[test]
@@ -1703,12 +1775,10 @@ unknown_symbol_mode = "log"
             build_remote_dependency_request(&mut state, &format!("{workspace_uri}/main.abap"))
                 .expect("remote request");
         assert_eq!(request.unknown_symbol_mode.as_deref(), Some("log"));
-        assert!(
-            request
-                .candidates
-                .iter()
-                .any(|candidate| candidate.name == "boolean")
-        );
+        assert!(request
+            .candidates
+            .iter()
+            .any(|candidate| candidate.name == "boolean"));
 
         let _ = fs::remove_dir_all(&workspace_path);
     }
@@ -1747,12 +1817,10 @@ unknown_symbol_mode = "remote"
         let request =
             build_remote_dependency_request(&mut state, &format!("{workspace_uri}/main.abap"))
                 .expect("remote request");
-        assert!(
-            request
-                .candidates
-                .iter()
-                .any(|candidate| candidate.name == "zcl_remote_demo")
-        );
+        assert!(request
+            .candidates
+            .iter()
+            .any(|candidate| candidate.name == "zcl_remote_demo"));
 
         let _ = handle_dependency_cache_cleared(
             &mut state,
@@ -1763,12 +1831,10 @@ unknown_symbol_mode = "remote"
         let request =
             build_remote_dependency_request(&mut state, &format!("{workspace_uri}/main.abap"))
                 .expect("remote request after cache clear");
-        assert!(
-            request
-                .candidates
-                .iter()
-                .any(|candidate| candidate.kind == "static")
-        );
+        assert!(request
+            .candidates
+            .iter()
+            .any(|candidate| candidate.kind == "static"));
 
         let _ = fs::remove_dir_all(&workspace_path);
     }
@@ -1837,12 +1903,10 @@ unknown_symbol_mode = "remote"
         let request =
             build_remote_dependency_request(&mut state, &format!("{workspace_uri}/main.abap"))
                 .expect("remote request after cache clear");
-        assert!(
-            request
-                .candidates
-                .iter()
-                .any(|candidate| candidate.name == "zcl_remote_demo")
-        );
+        assert!(request
+            .candidates
+            .iter()
+            .any(|candidate| candidate.name == "zcl_remote_demo"));
 
         let _ = fs::remove_dir_all(&workspace_path);
     }
@@ -1950,12 +2014,10 @@ unknown_symbol_mode = "remote"
         let initial =
             build_remote_dependency_request(&mut state, &format!("{workspace_uri}/main.abap"))
                 .expect("initial request");
-        assert!(
-            initial
-                .candidates
-                .iter()
-                .any(|candidate| candidate.name == "zcl_first")
-        );
+        assert!(initial
+            .candidates
+            .iter()
+            .any(|candidate| candidate.name == "zcl_first"));
 
         fs::create_dir_all(&dependency_dir).expect("dependency dir");
         fs::write(
@@ -2048,12 +2110,10 @@ unknown_symbol_mode = "remote"
         let initial =
             build_remote_dependency_request(&mut state, &format!("{workspace_uri}/main.abap"))
                 .expect("initial request");
-        assert!(
-            initial
-                .candidates
-                .iter()
-                .any(|candidate| candidate.name == "zcl_first")
-        );
+        assert!(initial
+            .candidates
+            .iter()
+            .any(|candidate| candidate.name == "zcl_first"));
 
         fs::create_dir_all(&dependency_dir).expect("dependency dir");
         fs::write(
@@ -2148,11 +2208,9 @@ unknown_symbol_mode = "remote"
         );
 
         let diagnostics = build_lsp_diagnostics(&snapshot);
-        assert!(
-            !diagnostics
-                .iter()
-                .any(|diag| diag.message.contains("unknown type"))
-        );
+        assert!(!diagnostics
+            .iter()
+            .any(|diag| diag.message.contains("unknown type")));
 
         let _ = fs::remove_dir_all(&workspace_path);
     }
@@ -2515,11 +2573,9 @@ ENDCLASS.
         };
         assert!(io_left_markup.value.contains("`io_left`"));
         assert!(io_left_markup.value.contains("Parameter"));
-        assert!(
-            io_left_markup
-                .value
-                .contains("```abap\nTYPE REF TO zcl_expr\n```")
-        );
+        assert!(io_left_markup
+            .value
+            .contains("```abap\nTYPE REF TO zcl_expr\n```"));
 
         let zcl_expr_hover = hover(
             &state,
@@ -2830,11 +2886,9 @@ START-OF-SELECTION.
             panic!("expected markdown hover");
         };
         assert!(add_stmt_markup.value.contains("METHODS add_statement"));
-        assert!(
-            add_stmt_markup
-                .value
-                .contains("io_stmt TYPE REF TO zcl_stmt")
-        );
+        assert!(add_stmt_markup
+            .value
+            .contains("io_stmt TYPE REF TO zcl_stmt"));
 
         let write_line = text
             .lines()
@@ -2862,11 +2916,9 @@ START-OF-SELECTION.
             panic!("expected markdown hover");
         };
         assert!(to_string_markup.value.contains("METHODS to_string"));
-        assert!(
-            to_string_markup
-                .value
-                .contains("instance method of `lo_prog`")
-        );
+        assert!(to_string_markup
+            .value
+            .contains("instance method of `lo_prog`"));
     }
 
     #[test]
@@ -3638,11 +3690,9 @@ some_class=>e"
         assert_eq!(items.len(), 2);
         assert_eq!(items[0].label, "exec");
         assert_eq!(items[1].label, "expose");
-        assert!(
-            items
-                .iter()
-                .all(|item| item.kind == Some(lsp_types::CompletionItemKind::METHOD))
-        );
+        assert!(items
+            .iter()
+            .all(|item| item.kind == Some(lsp_types::CompletionItemKind::METHOD)));
         let Some(Documentation::MarkupContent(markup)) = &items[0].documentation else {
             panic!("expected markdown docs");
         };
@@ -3726,12 +3776,10 @@ ENDCLASS.";
                 .map(|item| item.label.clone())
                 .collect::<Vec<_>>()
         );
-        assert!(
-            items
-                .iter()
-                .filter(|item| item.label == "inherited_method")
-                .all(|item| item.kind == Some(lsp_types::CompletionItemKind::METHOD))
-        );
+        assert!(items
+            .iter()
+            .filter(|item| item.label == "inherited_method")
+            .all(|item| item.kind == Some(lsp_types::CompletionItemKind::METHOD)));
     }
 
     #[test]
@@ -3892,10 +3940,8 @@ rv_text = |value: { lo_expr->to_ }|.";
                 .collect::<Vec<_>>(),
             vec!["to_source", "to_string"]
         );
-        assert!(
-            items
-                .iter()
-                .all(|item| item.kind == Some(lsp_types::CompletionItemKind::METHOD))
-        );
+        assert!(items
+            .iter()
+            .all(|item| item.kind == Some(lsp_types::CompletionItemKind::METHOD)));
     }
 }
