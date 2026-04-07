@@ -48,6 +48,7 @@ enum CallLikeLeadKind {
     CallMethod,
     CallStmt,
     CreateObject,
+    CreateData,
 }
 
 const CALL_LIKE_LEADS: &[(&[&str], CallLikeLeadKind)] = &[
@@ -56,6 +57,7 @@ const CALL_LIKE_LEADS: &[(&[&str], CallLikeLeadKind)] = &[
     (&["call", "transformation"], CallLikeLeadKind::CallStmt),
     (&["call", "badi"], CallLikeLeadKind::CallStmt),
     (&["create", "object"], CallLikeLeadKind::CreateObject),
+    (&["create", "data"], CallLikeLeadKind::CreateData),
 ];
 
 fn scan_until_top_level_period(tokens: &[Token], start: usize) -> Option<usize> {
@@ -2945,6 +2947,7 @@ pub fn try_parse_call_like_stmt(
         }
         let kind = match lead_kind {
             CallLikeLeadKind::CreateObject => SyntaxKind::CreateObjectStmt,
+            CallLikeLeadKind::CreateData => SyntaxKind::CreateDataStmt,
             CallLikeLeadKind::CallMethod => SyntaxKind::CallMethodStmt,
             CallLikeLeadKind::CallStmt => SyntaxKind::CallStmt,
         };
@@ -2999,6 +3002,60 @@ pub fn try_parse_call_like_stmt(
                     build_call_argument_list_node(b, source, tokens, cursor, period_i)
                 {
                     children.push(arg_list);
+                }
+                children.push(token_leaf(b, &tokens[period_i]));
+            }
+            CallLikeLeadKind::CreateData => {
+                children.push(token_leaf(b, &tokens[idx]));
+                children.push(token_leaf(b, &tokens[idx + 1]));
+                let clause_starts = |tokens: &[Token], at: usize| {
+                    tokens.get(at).is_some_and(|token| {
+                        is_keyword(source, token, "type") || is_keyword(source, token, "like")
+                    })
+                };
+                let mut cursor = lead_end;
+                let target_end = scan_until_clause(tokens, cursor, period_i, clause_starts);
+                push_expr_child(b, &mut children, source, tokens, cursor, target_end, None);
+                cursor = target_end;
+                if cursor < period_i
+                    && tokens.get(cursor).is_some_and(|token| {
+                        is_keyword(source, token, "type") || is_keyword(source, token, "like")
+                    })
+                {
+                    children.push(token_leaf(b, &tokens[cursor]));
+                    cursor += 1;
+                    if cursor < period_i {
+                        if tokens
+                            .get(cursor - 1)
+                            .is_some_and(|token| is_keyword(source, token, "like"))
+                        {
+                            push_expr_child(
+                                b,
+                                &mut children,
+                                source,
+                                tokens,
+                                cursor,
+                                period_i,
+                                Some(&tokens[cursor - 1]),
+                            );
+                        } else if tokens.get(cursor).map(|token| token.kind) == Some(TokenKind::LParen)
+                            && scan_until_clause(tokens, cursor + 1, period_i, |tokens, at| {
+                                tokens.get(at).is_some_and(|token| token.kind == TokenKind::RParen)
+                            }) < period_i
+                        {
+                            push_expr_child(
+                                b,
+                                &mut children,
+                                source,
+                                tokens,
+                                cursor,
+                                period_i,
+                                Some(&tokens[cursor - 1]),
+                            );
+                        } else {
+                            children.push(build_type_ref_node(b, source, &tokens[cursor..period_i]));
+                        }
+                    }
                 }
                 children.push(token_leaf(b, &tokens[period_i]));
             }
@@ -4754,6 +4811,31 @@ END-OF-PAGE.\nWRITE 'e'.",
                 .count_kind(parsed.file.root(), SyntaxKind::CreateObjectStmt),
             1
         );
+    }
+
+    #[test]
+    fn parses_create_data_with_dynamic_type_as_one_statement() {
+        let parsed = crate::parse("CREATE DATA lr_sap_data TYPE (ls_finf-ddicstructure).");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let stmt = parsed
+            .file
+            .find_first_kind(parsed.file.root(), SyntaxKind::CreateDataStmt)
+            .expect("create data stmt");
+        assert!(parsed.file.count_kind(stmt, SyntaxKind::ExprIdent) >= 2);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::SelectorExpr), 1);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::Error), 0);
+    }
+
+    #[test]
+    fn parses_create_data_like_as_one_statement() {
+        let parsed = crate::parse("CREATE DATA mo_outbound LIKE iv_data.");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let stmt = parsed
+            .file
+            .find_first_kind(parsed.file.root(), SyntaxKind::CreateDataStmt)
+            .expect("create data stmt");
+        assert!(parsed.file.count_kind(stmt, SyntaxKind::ExprIdent) >= 2);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::Error), 0);
     }
 
     #[test]

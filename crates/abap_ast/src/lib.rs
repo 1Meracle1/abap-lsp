@@ -235,6 +235,8 @@ pub enum SyntaxKind {
     CallStmt,
     /// `CREATE OBJECT ... .`
     CreateObjectStmt,
+    /// `CREATE DATA ... TYPE ... .`
+    CreateDataStmt,
     /// `CALL METHOD ... .`
     CallMethodStmt,
     /// Legacy `CALL METHOD` target/callee expression.
@@ -382,6 +384,7 @@ impl SyntaxKind {
             Self::PerformStmt => "PerformStmt",
             Self::CallStmt => "CallStmt",
             Self::CreateObjectStmt => "CreateObjectStmt",
+            Self::CreateDataStmt => "CreateDataStmt",
             Self::CallMethodStmt => "CallMethodStmt",
             Self::CallMethodTarget => "CallMethodTarget",
             Self::RaiseStmt => "RaiseStmt",

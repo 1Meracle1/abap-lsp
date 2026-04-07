@@ -3172,6 +3172,132 @@ ENDCLASS.
 }
 
 #[test]
+fn create_data_stmt_resolves_target_and_dynamic_type_operand() {
+    let src = r#"
+TYPES: BEGIN OF ty_finf,
+         ddicstructure TYPE string,
+       END OF ty_finf.
+
+DATA lr_sap_data TYPE REF TO data.
+DATA ls_finf TYPE ty_finf.
+
+CREATE DATA lr_sap_data TYPE (ls_finf-ddicstructure).
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///create_data.abap", src, &parsed);
+
+    let lr_sap_data = unit
+        .symbols
+        .iter()
+        .find(|symbol| {
+            symbol.kind == abap_symbols::SymbolKind::Variable
+                && symbol.name.as_ref() == "lr_sap_data"
+        })
+        .expect("lr_sap_data variable");
+
+    let create_data_ref = unit
+        .references
+        .iter()
+        .find(|reference| {
+            reference.kind == ReferenceKind::Identifier
+                && reference.namespace == Namespace::Value
+                && reference.name.as_ref() == "lr_sap_data"
+        })
+        .expect("create data target reference");
+    assert_eq!(
+        create_data_ref.resolution,
+        Some(Resolution::Symbol(SymbolHandle {
+            unit: unit.unit_id,
+            symbol: lr_sap_data.id,
+        }))
+    );
+
+    assert!(unit.references.iter().any(|reference| {
+        reference.kind == ReferenceKind::Identifier
+            && reference.namespace == Namespace::Value
+            && reference.name.as_ref() == "ls_finf"
+    }));
+
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference
+                && (diag.message.contains("lr_sap_data") || diag.message.contains("ls_finf"))
+        }),
+        "unexpected unresolved diagnostic: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn create_data_stmt_resolves_like_operand_as_value_reference() {
+    let src = r#"
+DATA mo_outbound TYPE REF TO data.
+DATA iv_data TYPE string.
+
+CREATE DATA mo_outbound LIKE iv_data.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///create_data_like.abap", src, &parsed);
+
+    let mo_outbound = unit
+        .symbols
+        .iter()
+        .find(|symbol| {
+            symbol.kind == abap_symbols::SymbolKind::Variable
+                && symbol.name.as_ref() == "mo_outbound"
+        })
+        .expect("mo_outbound variable");
+    let iv_data = unit
+        .symbols
+        .iter()
+        .find(|symbol| {
+            symbol.kind == abap_symbols::SymbolKind::Variable
+                && symbol.name.as_ref() == "iv_data"
+        })
+        .expect("iv_data variable");
+
+    let outbound_ref = unit
+        .references
+        .iter()
+        .find(|reference| {
+            reference.kind == ReferenceKind::Identifier
+                && reference.namespace == Namespace::Value
+                && reference.name.as_ref() == "mo_outbound"
+        })
+        .expect("create data target reference");
+    assert_eq!(
+        outbound_ref.resolution,
+        Some(Resolution::Symbol(SymbolHandle {
+            unit: unit.unit_id,
+            symbol: mo_outbound.id,
+        }))
+    );
+
+    let like_ref = unit
+        .references
+        .iter()
+        .find(|reference| {
+            reference.kind == ReferenceKind::Identifier
+                && reference.namespace == Namespace::Value
+                && reference.name.as_ref() == "iv_data"
+        })
+        .expect("create data like reference");
+    assert_eq!(
+        like_ref.resolution,
+        Some(Resolution::Symbol(SymbolHandle {
+            unit: unit.unit_id,
+            symbol: iv_data.id,
+        }))
+    );
+
+    assert!(!unit.diagnostics.iter().any(|diag| {
+        (diag.kind == DiagnosticKind::UnresolvedReference
+            || diag.kind == DiagnosticKind::WrongNamespace)
+            && (diag.message.contains("mo_outbound") || diag.message.contains("iv_data"))
+    }));
+}
+
+#[test]
 fn resolves_constructor_signature_parameter_type_references() {
     let src = r#"
 CLASS zcl_expr DEFINITION ABSTRACT.

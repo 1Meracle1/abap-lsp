@@ -587,6 +587,15 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
         self.collect_create_object_stmt_infos(&significant, scope);
     }
 
+    pub(super) fn collect_create_data_stmt_node(&mut self, node: NodeId, scope: ScopeId) {
+        if self.collector.node_has_structured_children(node) {
+            self.collector.walk_children(node, scope);
+            return;
+        }
+        let significant = self.collector.significant_stmt_token_infos(node);
+        self.collect_create_data_stmt_infos(&significant, scope);
+    }
+
     pub(super) fn collect_call_method_stmt_node(&mut self, node: NodeId, scope: ScopeId) {
         let mut target = None;
         let mut arg_list = None;
@@ -837,6 +846,60 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                     scope,
                     name,
                     Namespace::Type,
+                    ReferenceKind::TypeRef,
+                    range,
+                );
+            }
+            break;
+        }
+    }
+
+    pub(super) fn collect_create_data_stmt_infos(
+        &mut self,
+        tokens: &[SyntaxTokenInfo],
+        scope: ScopeId,
+    ) {
+        if tokens.len() < 4
+            || !tokens[0].text.eq_ignore_ascii_case("create")
+            || !tokens[1].text.eq_ignore_ascii_case("data")
+        {
+            return;
+        }
+
+        let target = &tokens[2];
+        if self.collector.syntax_token_is_ident_like(target) {
+            let name = Arc::<str>::from(target.text.to_ascii_lowercase());
+            self.collector.add_reference(
+                scope,
+                name,
+                Namespace::Value,
+                ReferenceKind::Identifier,
+                target.range.clone(),
+            );
+        }
+
+        for idx in 3..tokens.len() {
+            let token = &tokens[idx];
+            if !token.text.eq_ignore_ascii_case("type") && !token.text.eq_ignore_ascii_case("like")
+            {
+                continue;
+            }
+            let tail = &tokens[idx + 1..];
+            if token.text.eq_ignore_ascii_case("type")
+                && tail.first().is_some_and(|token| token.text.as_ref() == "(")
+            {
+                self.collector
+                    .collect_token_expression_refs_infos(tail, scope, true);
+            } else if let Some((name, range)) = self.collector.simple_type_ref_base_from_infos(tail)
+            {
+                self.collector.add_reference(
+                    scope,
+                    name,
+                    if token.text.eq_ignore_ascii_case("like") {
+                        Namespace::Value
+                    } else {
+                        Namespace::Type
+                    },
                     ReferenceKind::TypeRef,
                     range,
                 );

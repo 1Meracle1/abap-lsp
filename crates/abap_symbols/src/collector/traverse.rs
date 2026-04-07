@@ -161,6 +161,9 @@ impl<'a> Collector<'a> {
             SyntaxKind::CreateObjectStmt => self
                 .stmt_lowering()
                 .collect_create_object_stmt_node(node, scope),
+            SyntaxKind::CreateDataStmt => self
+                .stmt_lowering()
+                .collect_create_data_stmt_node(node, scope),
             SyntaxKind::CallMethodStmt => self
                 .stmt_lowering()
                 .collect_call_method_stmt_node(node, scope),
