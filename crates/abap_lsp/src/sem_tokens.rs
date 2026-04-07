@@ -515,12 +515,14 @@ ENDCLASS.
                 version: 1,
                 text: Arc::from(dep_src),
                 is_dependency: true,
+                object_name: None,
             },
             DocumentInput {
                 uri: Arc::from("file:///main.abap"),
                 version: 1,
                 text: Arc::from(main_src),
                 is_dependency: false,
+                object_name: None,
             },
         ]);
         let snapshot = snapshots.get("file:///main.abap").expect("main snapshot");

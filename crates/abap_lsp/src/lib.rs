@@ -207,6 +207,7 @@ fn rebuild_workspace_cache(
             version: document.version,
             text: Arc::from(document.text),
             is_dependency: document.is_dependency,
+            object_name: document.object_name,
         })
         .collect();
     workspace.cache.replace_all(inputs)
@@ -377,9 +378,27 @@ pub fn collect_remote_dependency_candidates(
     let mut deduped = HashMap::<String, RemoteDependencyCandidate>::new();
     let semantic = snapshot.symbols.semantic();
 
+    for edge in snapshot
+        .symbols
+        .include_edges
+        .iter()
+        .filter(|edge| edge.target.is_none())
+    {
+        if !is_remote_lookup_candidate(edge.name.as_ref(), "include") {
+            continue;
+        }
+        insert_remote_candidate(
+            &mut deduped,
+            RemoteDependencyCandidate {
+                name: edge.name.to_string(),
+                kind: "include".to_string(),
+            },
+        );
+    }
+
     for reference in semantic.refs().all() {
         let kind = match reference.kind {
-            ReferenceKind::Include => "include",
+            ReferenceKind::Include => continue,
             ReferenceKind::StaticTarget => "static",
             ReferenceKind::TypeRef => "type",
             ReferenceKind::Identifier | ReferenceKind::RoutineCall => "symbol",
@@ -971,7 +990,8 @@ mod tests {
     use super::{
         build_lsp_diagnostics, build_remote_dependency_request,
         build_remote_dependency_requests_for_workspace, completion, definition,
-        handle_dependency_cache_cleared, handle_remote_dependencies_updated, hover,
+        collect_remote_dependency_candidates, handle_dependency_cache_cleared,
+        handle_remote_dependencies_updated, hover,
         initialize_result, normalize_lsp_uri, publish_changed_document, publish_open_document,
         publish_open_document_mut, references, CompletionParams, CompletionResponse,
         GotoDefinitionParams, HoverParams, ReferenceParams, ServerState,
@@ -2162,6 +2182,115 @@ adt_uri = "/sap/bc/adt/oo/classes/zcl_first"
                     .iter()
                     .any(|candidate| candidate.name == "zcl_second")
         }));
+
+        let _ = fs::remove_dir_all(&workspace_path);
+    }
+
+    #[test]
+    fn dependency_method_include_triggers_follow_up_remote_request() {
+        let workspace_path = temp_workspace_path("dependency_method_include");
+        let dependency_dir = workspace_path
+            .join(".abapls")
+            .join("cache")
+            .join("dependencies")
+            .join("global-class");
+        fs::create_dir_all(&workspace_path).expect("workspace dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[resolution]
+dependency_mode = "remote-on-demand"
+unknown_symbol_mode = "remote"
+"#,
+        )
+        .expect("manifest");
+        let workspace_uri = path_to_file_uri(&workspace_path);
+
+        let mut state = ServerState::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        publish_open_document_mut(
+            &mut state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str(&format!("{workspace_uri}/main.abap")).expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: "DATA lo_demo TYPE REF TO zcl_first.\nlo_demo->run( ).".to_string(),
+                },
+            },
+        );
+
+        let initial =
+            build_remote_dependency_request(&mut state, &format!("{workspace_uri}/main.abap"))
+                .expect("initial request");
+        assert!(initial
+            .candidates
+            .iter()
+            .any(|candidate| candidate.name == "zcl_first"));
+
+        fs::create_dir_all(&dependency_dir).expect("dependency dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[resolution]
+dependency_mode = "remote-on-demand"
+unknown_symbol_mode = "remote"
+
+[[unit]]
+name = "ZCL_FIRST"
+kind = "global-class"
+root_file = ".abapls/cache/dependencies/global-class/ZCL_FIRST.abap"
+adt_uri = "/sap/bc/adt/oo/classes/zcl_first"
+
+[[unit.member]]
+role = "dependency"
+file = ".abapls/cache/dependencies/global-class/ZCL_FIRST.abap"
+object_name = "ZCL_FIRST"
+adt_uri = "/sap/bc/adt/oo/classes/zcl_first"
+"#,
+        )
+        .expect("updated manifest");
+        fs::write(
+            dependency_dir.join("ZCL_FIRST.abap"),
+            "CLASS zcl_first DEFINITION.\n  PUBLIC SECTION.\n    METHODS run.\nENDCLASS.\nCLASS zcl_first IMPLEMENTATION.\n  METHOD run.\n    INCLUDE zinc_method.\n  ENDMETHOD.\nENDCLASS.\n",
+        )
+        .expect("dependency file");
+
+        let _ = handle_remote_dependencies_updated(
+            &mut state,
+            &super::RemoteDependenciesUpdatedParams {
+                workspace_uri: workspace_uri.clone(),
+                source_uri: format!("{workspace_uri}/main.abap"),
+                fetched: vec!["ZCL_FIRST".to_string()],
+            },
+        );
+
+        let dependency_uri =
+            normalize_lsp_uri(&path_to_file_uri(&dependency_dir.join("ZCL_FIRST.abap")));
+        let dependency_snapshot = state
+            .workspace_for_uri(&dependency_uri)
+            .and_then(|workspace| workspace.cache.get(&dependency_uri))
+            .expect("dependency snapshot");
+        let dependency_candidates = collect_remote_dependency_candidates(dependency_snapshot.as_ref());
+        assert!(
+            dependency_candidates
+                .iter()
+                .any(|candidate| candidate.kind == "include" && candidate.name == "zinc_method"),
+            "dependency_candidates={dependency_candidates:#?}"
+        );
+
+        let follow_up = build_remote_dependency_requests_for_workspace(&mut state, &workspace_uri);
+        assert!(follow_up.iter().any(|request| {
+            request.source_uri.to_ascii_lowercase().ends_with("zcl_first.abap")
+                && request
+                    .candidates
+                    .iter()
+                    .any(|candidate| candidate.kind == "include" && candidate.name == "zinc_method")
+        }), "follow_up={follow_up:#?}");
 
         let _ = fs::remove_dir_all(&workspace_path);
     }

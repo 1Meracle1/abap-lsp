@@ -8,8 +8,8 @@ use abap_symbols::{
     ClassMemberData, ClassMemberKind, FieldTypeRefData, FormParameterData,
     FormParameterPassingKind, FormParameterSection, NamedArgumentAccess, NamedArgumentTarget,
     Namespace, PerformArgumentData, PerformCallData, PerformParameterSection, ProjectAnalysis,
-    Resolution, ScopeId, SqlNameRefData, SqlNameRefKind, StructureFieldInfo, StructureFieldShape,
-    StructureId, SymbolData, SymbolId, SymbolKind, UnitAnalysis, UnitId, Visibility,
+    ReferenceKind, Resolution, ScopeId, SqlNameRefData, SqlNameRefKind, StructureFieldInfo,
+    StructureFieldShape, StructureId, SymbolData, SymbolId, SymbolKind, UnitAnalysis, UnitId, Visibility,
     analyze_project_from_units, analyze_unit_locally, builtin_routine_spec,
 };
 use parking_lot::RwLock;
@@ -45,6 +45,7 @@ pub struct DocumentInput {
     pub version: i32,
     pub text: Arc<str>,
     pub is_dependency: bool,
+    pub object_name: Option<Arc<str>>,
 }
 
 #[derive(Debug, Clone)]
@@ -618,17 +619,24 @@ impl AnalysisSnapshot {
     }
 
     fn definition_target_for_resolved_symbol_at(&self, offset: usize) -> Option<DefinitionTarget> {
-        if let Some(reference) = self.symbols.semantic().refs().reference_at_offset(offset)
-            && let Some(resolution) = reference.resolution
-        {
-            return definition_target_for_resolution(self, resolution).or_else(|| {
-                self.symbols
-                    .semantic()
-                    .decls()
-                    .symbol_at_offset(reference.range.start)
-                    .filter(|symbol| symbol.decl_range == reference.range)
-                    .map(|symbol| definition_target_for_symbol(self.symbols.as_ref(), symbol))
-            });
+        if let Some(reference) = self.symbols.semantic().refs().reference_at_offset(offset) {
+            if reference.kind == ReferenceKind::Include {
+                return self.definition_target_for_include_reference(reference).or_else(|| {
+                    reference.resolution.and_then(|resolution| {
+                        definition_target_for_resolution(self, resolution)
+                    })
+                });
+            }
+            if let Some(resolution) = reference.resolution {
+                return definition_target_for_resolution(self, resolution).or_else(|| {
+                    self.symbols
+                        .semantic()
+                        .decls()
+                        .symbol_at_offset(reference.range.start)
+                        .filter(|symbol| symbol.decl_range == reference.range)
+                        .map(|symbol| definition_target_for_symbol(self.symbols.as_ref(), symbol))
+                });
+            }
         }
 
         if let Some(member) = self
@@ -649,6 +657,23 @@ impl AnalysisSnapshot {
             .decls()
             .symbol_at_offset(offset)
             .map(|symbol| definition_target_for_symbol(self.symbols.as_ref(), symbol))
+    }
+
+    fn definition_target_for_include_reference(
+        &self,
+        reference: &abap_symbols::ReferenceData,
+    ) -> Option<DefinitionTarget> {
+        let target = self
+            .symbols
+            .include_edges
+            .iter()
+            .find(|edge| edge.range == reference.range && edge.name == reference.name)?
+            .target?;
+        let unit = &self.project.units[target.as_usize()];
+        Some(DefinitionTarget {
+            uri: Arc::clone(&unit.uri),
+            range: 0..0,
+        })
     }
 
     fn reference_search_target_for_resolved_symbol_at(
@@ -3114,6 +3139,7 @@ fn analyze_inputs(inputs: &[DocumentInput]) -> HashMap<Arc<str>, Arc<AnalysisSna
                 Arc::clone(&input.uri),
                 input.version,
                 input.text.clone(),
+                input.object_name.clone(),
                 parse,
                 source,
             )
@@ -3122,13 +3148,20 @@ fn analyze_inputs(inputs: &[DocumentInput]) -> HashMap<Arc<str>, Arc<AnalysisSna
     let units: Vec<_> = parsed
         .par_iter()
         .enumerate()
-        .map(|(idx, (uri, _, _, parse, source))| {
-            analyze_unit_locally(UnitId(idx as u32), Arc::clone(uri), source, parse.as_ref())
+        .map(|(idx, (uri, _, _, object_name, parse, source))| {
+            let mut unit =
+                analyze_unit_locally(UnitId(idx as u32), Arc::clone(uri), source, parse.as_ref());
+            if let Some(object_name) = object_name {
+                unit.provided_names.push(Arc::clone(object_name));
+                unit.provided_names.sort();
+                unit.provided_names.dedup();
+            }
+            unit
         })
         .collect();
     let project = Arc::new(analyze_project_from_units(units));
     let mut snapshots = HashMap::with_capacity(parsed.len());
-    for (uri, version, text, parse, _) in parsed {
+    for (uri, version, text, _, parse, _) in parsed {
         let unit = project
             .unit_by_uri(uri.as_ref())
             .cloned()
@@ -3204,7 +3237,7 @@ fn dependency_surface_text(text: &str) -> Arc<str> {
             Some(DependencyBlock::Method) => {
                 if first == Some("endmethod") {
                     stack.pop();
-                } else {
+                } else if !dependency_surface_keeps_statement(first) {
                     blank_range_preserving_layout(&mut projected, statement_range);
                 }
                 idx = period_idx + 1;
@@ -3213,7 +3246,7 @@ fn dependency_surface_text(text: &str) -> Arc<str> {
             Some(DependencyBlock::Form) => {
                 if first == Some("endform") {
                     stack.pop();
-                } else {
+                } else if !dependency_surface_keeps_statement(first) {
                     blank_range_preserving_layout(&mut projected, statement_range);
                 }
                 idx = period_idx + 1;
@@ -3222,7 +3255,7 @@ fn dependency_surface_text(text: &str) -> Arc<str> {
             Some(DependencyBlock::Function) => {
                 if first == Some("endfunction") {
                     stack.pop();
-                } else {
+                } else if !dependency_surface_keeps_statement(first) {
                     blank_range_preserving_layout(&mut projected, statement_range);
                 }
                 idx = period_idx + 1;
@@ -3234,6 +3267,7 @@ fn dependency_surface_text(text: &str) -> Arc<str> {
                     Some("endclass") => {
                         stack.pop();
                     }
+                    Some("include") => {}
                     _ => {
                         blank_range_preserving_layout(&mut projected, statement_range);
                     }
@@ -3308,6 +3342,10 @@ fn dependency_surface_text(text: &str) -> Arc<str> {
     Arc::from(
         String::from_utf8(projected).expect("dependency surface projection should stay utf-8"),
     )
+}
+
+fn dependency_surface_keeps_statement(first_keyword: Option<&str>) -> bool {
+    matches!(first_keyword, Some("include"))
 }
 
 fn statement_keywords(
@@ -3516,6 +3554,7 @@ ENDCLASS.
 CLASS zcl_dep IMPLEMENTATION.
   METHOD pub.
     rv_value = zcl_hidden=>make( ).
+    INCLUDE zinc_method.
   ENDMETHOD.
   METHOD priv.
     DATA lv_private TYPE zcl_private.
@@ -3524,10 +3563,12 @@ ENDCLASS.
 
 FORM keep USING iv_value TYPE zcl_form_type.
   DATA lv_form TYPE zcl_form_impl.
+  INCLUDE zinc_form.
 ENDFORM.
 
 FUNCTION z_keep.
   DATA lv_fm TYPE zcl_fm_impl.
+  INCLUDE zinc_function.
 ENDFUNCTION.
 ";
         let projected = dependency_surface_text(src);
@@ -3542,6 +3583,9 @@ ENDFUNCTION.
         assert!(!projected.contains("zcl_private"));
         assert!(!projected.contains("zcl_form_impl"));
         assert!(!projected.contains("zcl_fm_impl"));
+        assert!(projected.contains("INCLUDE zinc_method."));
+        assert!(projected.contains("INCLUDE zinc_form."));
+        assert!(projected.contains("INCLUDE zinc_function."));
     }
 
     #[test]
@@ -3572,12 +3616,14 @@ CLASS zcl_base IMPLEMENTATION.
 ENDCLASS.",
                 ),
                 is_dependency: true,
+                object_name: None,
             },
             DocumentInput {
                 uri: Arc::from("file:///main.abap"),
                 version: 1,
                 text: Arc::from(main_src),
                 is_dependency: false,
+                object_name: None,
             },
         ]);
         let snapshot = snapshots.get("file:///main.abap").expect("main snapshot");
@@ -3691,12 +3737,14 @@ ls_epc-content = 'x'.";
                 version: 1,
                 text: Arc::from(dependency_text.clone()),
                 is_dependency: true,
+                object_name: None,
             },
             DocumentInput {
                 uri: Arc::from("file:///main.abap"),
                 version: 1,
                 text: Arc::from(main_src),
                 is_dependency: false,
+                object_name: None,
             },
         ]);
         let snapshot = snapshots.get("file:///main.abap").expect("main snapshot");
@@ -3804,6 +3852,7 @@ ls_doc-epcisdocument-epcisbody-event_list-choice = VALUE #( ).";
                     .expect("epcisdocument"),
                 ),
                 is_dependency: true,
+                object_name: None,
             },
             DocumentInput {
                 uri: Arc::from("file:///deps/%2FSTTP%2FEPCISDOCUMENT_TYPE.xml"),
@@ -3817,6 +3866,7 @@ ls_doc-epcisdocument-epcisbody-event_list-choice = VALUE #( ).";
                     .expect("epcisdocument_type"),
                 ),
                 is_dependency: true,
+                object_name: None,
             },
             DocumentInput {
                 uri: Arc::from("file:///deps/%2FSTTP%2FEPCISBODY_TYPE.xml"),
@@ -3830,6 +3880,7 @@ ls_doc-epcisdocument-epcisbody-event_list-choice = VALUE #( ).";
                     .expect("epcisbody_type"),
                 ),
                 is_dependency: true,
+                object_name: None,
             },
             DocumentInput {
                 uri: Arc::from("file:///deps/%2FSTTP%2FEVENT_LIST_TYPE.xml"),
@@ -3843,12 +3894,14 @@ ls_doc-epcisdocument-epcisbody-event_list-choice = VALUE #( ).";
                     .expect("event_list_type"),
                 ),
                 is_dependency: true,
+                object_name: None,
             },
             DocumentInput {
                 uri: Arc::from("file:///main.abap"),
                 version: 1,
                 text: Arc::from(main_src),
                 is_dependency: false,
+                object_name: None,
             },
         ]);
         let snapshot = snapshots.get("file:///main.abap").expect("main snapshot");
@@ -3922,6 +3975,7 @@ ls_encode_decode-obj_ids-owner = 'x'.";
                     .expect("s_encode_decode"),
                 ),
                 is_dependency: true,
+                object_name: None,
             },
             DocumentInput {
                 uri: Arc::from("file:///deps/%2FSTTP%2FS_OBJ_IDS.xml"),
@@ -3931,12 +3985,14 @@ ls_encode_decode-obj_ids-owner = 'x'.";
                         .expect("s_obj_ids"),
                 ),
                 is_dependency: true,
+                object_name: None,
             },
             DocumentInput {
                 uri: Arc::from("file:///main.abap"),
                 version: 1,
                 text: Arc::from(main_src),
                 is_dependency: false,
+                object_name: None,
             },
         ]);
         let snapshot = snapshots.get("file:///main.abap").expect("main snapshot");
@@ -3971,6 +4027,7 @@ ls_encode_decode-enc_type = 'x'.";
                     .expect("s_encode_decode"),
                 ),
                 is_dependency: true,
+                object_name: None,
             },
             DocumentInput {
                 uri: Arc::from("file:///deps/%2FSTTP%2FS_OBJ_IDS.xml"),
@@ -3980,12 +4037,14 @@ ls_encode_decode-enc_type = 'x'.";
                         .expect("s_obj_ids"),
                 ),
                 is_dependency: true,
+                object_name: None,
             },
             DocumentInput {
                 uri: Arc::from("file:///direct.abap"),
                 version: 1,
                 text: Arc::from(direct_src),
                 is_dependency: false,
+                object_name: None,
             },
         ]);
         let direct_snapshot = direct_snapshot
@@ -4442,6 +4501,39 @@ START-OF-SELECTION.
     }
 
     #[test]
+    fn definition_at_for_include_statement_opens_fetched_include_file() {
+        let store = DocumentStore::default();
+        let main_src = "INCLUDE /sttp/int_global.\nlv_inc = 1.";
+        let snapshots = store.replace_all(vec![
+            DocumentInput {
+                uri: Arc::from("file:///main.abap"),
+                version: 1,
+                text: Arc::from(main_src),
+                is_dependency: false,
+                object_name: None,
+            },
+            DocumentInput {
+                uri: Arc::from(
+                    "file:///d:/dev/abap/lsp_development_examples/.abapls/cache/dependencies/include/%2FSTTP%2FINT_GLOBAL.abap",
+                ),
+                version: 1,
+                text: Arc::from("DATA lv_inc TYPE i."),
+                is_dependency: true,
+                object_name: Some(Arc::from("/sttp/int_global")),
+            },
+        ]);
+        let snapshot = snapshots.get("file:///main.abap").expect("main snapshot");
+        let offset = main_src.find("/sttp/int_global").expect("include name") + 1;
+
+        let target = snapshot.definition_at(offset).expect("definition target");
+        assert_eq!(
+            target.uri.as_ref(),
+            "file:///d:/dev/abap/lsp_development_examples/.abapls/cache/dependencies/include/%2FSTTP%2FINT_GLOBAL.abap"
+        );
+        assert_eq!(target.range, 0..0);
+    }
+
+    #[test]
     fn definition_at_resolves_underlying_type_in_table_type_clause() {
         let store = DocumentStore::default();
         let src = "\
@@ -4879,6 +4971,86 @@ lv_total = ls_outer-inner- + 1";
             ],
         );
         assert_eq!(main.version, 1);
+    }
+
+    #[test]
+    fn method_body_include_resolves_symbols_from_dependency_include() {
+        let store = DocumentStore::default();
+        let main_src = "\
+CLASS zcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run.
+ENDCLASS.
+
+CLASS zcl_demo IMPLEMENTATION.
+  METHOD run.
+    INCLUDE zinc_method.
+    lv_inc = 1.
+  ENDMETHOD.
+ENDCLASS.";
+        let snapshot = store.replace_all(vec![
+            DocumentInput {
+                uri: Arc::from("file:///main.abap"),
+                version: 1,
+                text: Arc::from(main_src),
+                is_dependency: false,
+                object_name: None,
+            },
+            DocumentInput {
+                uri: Arc::from("file:///zinc_method.abap"),
+                version: 1,
+                text: Arc::from("DATA lv_inc TYPE i."),
+                is_dependency: true,
+                object_name: None,
+            },
+        ]);
+        let main = snapshot.get("file:///main.abap").expect("main snapshot");
+        let offset = main_src.rfind("lv_inc").expect("method include use") + 1;
+        let hovered = main
+            .hovered_resolved_symbol_at(offset)
+            .expect("included symbol hover");
+
+        assert_eq!(hovered.display_name.as_ref(), "lv_inc");
+        assert!(hovered
+            .markdown_lines
+            .iter()
+            .any(|line| line.contains("Variable")));
+    }
+
+    #[test]
+    fn encoded_dependency_include_uri_resolves_by_object_name_hint() {
+        let store = DocumentStore::default();
+        let main_src = "INCLUDE /sttp/int_global.\nlv_inc = 1.";
+        let snapshots = store.replace_all(vec![
+            DocumentInput {
+                uri: Arc::from("file:///main.abap"),
+                version: 1,
+                text: Arc::from(main_src),
+                is_dependency: false,
+                object_name: None,
+            },
+            DocumentInput {
+                uri: Arc::from(
+                    "file:///d:/dev/abap/lsp_development_examples/.abapls/cache/dependencies/include/%2FSTTP%2FINT_GLOBAL.abap",
+                ),
+                version: 1,
+                text: Arc::from("DATA lv_inc TYPE i."),
+                is_dependency: true,
+                object_name: Some(Arc::from("/sttp/int_global")),
+            },
+        ]);
+        let main = snapshots.get("file:///main.abap").expect("main snapshot");
+
+        assert!(main
+            .symbols
+            .include_edges
+            .iter()
+            .any(|edge| edge.name.as_ref() == "/sttp/int_global" && edge.target.is_some()));
+        assert!(!main
+            .project
+            .diagnostics
+            .iter()
+            .any(|diag| diag.message.contains("/sttp/int_global")));
     }
 
     #[test]

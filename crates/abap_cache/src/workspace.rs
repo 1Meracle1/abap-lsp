@@ -85,6 +85,7 @@ pub struct WorkspaceDocument {
     pub version: i32,
     pub text: String,
     pub is_dependency: bool,
+    pub object_name: Option<Arc<str>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -178,6 +179,7 @@ pub fn load_workspace_documents(
                 version: overlay.version,
                 text: overlay.text.to_string(),
                 is_dependency: false,
+                object_name: None,
             });
         }
     }
@@ -383,6 +385,7 @@ fn collect_abap_sources(
                 version,
                 text,
                 is_dependency,
+                object_name: None,
             });
         }
     }
@@ -431,6 +434,7 @@ fn collect_manifest_dependencies(
             version,
             text,
             is_dependency: true,
+            object_name: Some(Arc::from(unit.name.as_str().to_ascii_lowercase())),
         });
     }
 }
@@ -509,6 +513,7 @@ fn collect_dependency_cache_files(
                 version,
                 text,
                 is_dependency: true,
+                object_name: Some(Arc::from(object_name.to_ascii_lowercase())),
             });
         }
     }
