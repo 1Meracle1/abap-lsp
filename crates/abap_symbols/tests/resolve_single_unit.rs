@@ -3546,6 +3546,36 @@ ENDCLASS.
 }
 
 #[test]
+fn resolves_method_raising_exception_type_refs() {
+    let src = r#"
+CLASS zcx_resume DEFINITION INHERITING FROM cx_static_check.
+ENDCLASS.
+
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run RAISING resumable(zcx_resume).
+ENDCLASS.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///method_raising.abap", src, &parsed);
+
+    let refs: Vec<_> = unit
+        .references
+        .iter()
+        .filter(|reference| {
+            reference.kind == ReferenceKind::TypeRef
+                && reference.namespace == Namespace::Type
+                && reference.name.as_ref() == "zcx_resume"
+        })
+        .collect();
+    assert_eq!(refs.len(), 1, "expected one raising type ref, refs={refs:?}");
+    assert!(
+        matches!(refs[0].resolution, Some(Resolution::Symbol(_))),
+        "expected resolved raising type ref, refs={refs:?}"
+    );
+}
+
+#[test]
 fn resolves_constructor_arguments_and_token_only_statement_references() {
     let src = r#"
 CLASS zcl_ast_node DEFINITION ABSTRACT.

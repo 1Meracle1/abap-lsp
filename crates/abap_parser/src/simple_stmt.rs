@@ -207,6 +207,7 @@ fn methods_stmt_type_ref_ranges(
     let mut ranges = Vec::new();
     let mut i = name_idx + 1;
     let mut saw_parameter_section = false;
+    let mut in_raising = false;
     while i < significant_tokens.len() {
         let token = significant_tokens[i];
         if token.kind == TokenKind::Period {
@@ -219,15 +220,90 @@ fn methods_stmt_type_ref_ranges(
             i += modifier_len;
             continue;
         }
-        if method_signature_section(source, token) {
+        if token_matches_keyword(source, token, "raising") {
             saw_parameter_section = true;
+            in_raising = true;
             i += 1;
             continue;
         }
-        if token_matches_keyword(source, token, "raising")
-            || token_matches_keyword(source, token, "exceptions")
-        {
+        if token_matches_keyword(source, token, "exceptions") {
             break;
+        }
+        if method_signature_section(source, token) {
+            saw_parameter_section = true;
+            in_raising = false;
+            i += 1;
+            continue;
+        }
+        if in_raising {
+            while matches!(
+                significant_tokens.get(i).map(|token| token.kind),
+                Some(TokenKind::Colon | TokenKind::Comma)
+            ) {
+                i += 1;
+            }
+            let Some(exception_token) = significant_tokens.get(i) else {
+                break;
+            };
+            if token_matches_keyword(source, exception_token, "resumable") {
+                if significant_tokens.get(i + 1).map(|token| token.kind) != Some(TokenKind::LParen)
+                {
+                    i += 1;
+                    continue;
+                }
+                let raw_expr_start = significant.get(i + 2).map(|(idx, _)| *idx);
+                let mut depth = 1i32;
+                let mut j = i + 2;
+                while j < significant_tokens.len() {
+                    match significant_tokens[j].kind {
+                        TokenKind::LParen => depth += 1,
+                        TokenKind::RParen => {
+                            depth -= 1;
+                            if depth == 0 {
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                    j += 1;
+                }
+                if let Some(expr_start) = raw_expr_start {
+                    let expr_end = significant.get(j).map(|(idx, _)| *idx).unwrap_or(period_i);
+                    if expr_start < expr_end {
+                        ranges.push((expr_start, expr_end));
+                    }
+                }
+                i = j.saturating_add(1);
+                continue;
+            }
+            if exception_token.kind == TokenKind::Ident {
+                let raw_expr_start = significant[i].0;
+                let mut j = i + 1;
+                while j + 1 < significant_tokens.len() {
+                    let op = significant_tokens[j];
+                    let next = significant_tokens[j + 1];
+                    if matches!(
+                        op.kind,
+                        TokenKind::Minus | TokenKind::Arrow | TokenKind::Tilde | TokenKind::FatArrow
+                    ) && next.kind == TokenKind::Ident
+                    {
+                        j += 2;
+                    } else {
+                        break;
+                    }
+                }
+                let expr_end = significant
+                    .get(j)
+                    .map(|(idx, _)| *idx)
+                    .unwrap_or(period_i + 1);
+                if raw_expr_start < expr_end {
+                    ranges.push((raw_expr_start, expr_end));
+                }
+                i = j;
+                continue;
+            }
+            i += 1;
+            continue;
         }
         let mut j = i;
         while matches!(
@@ -744,6 +820,22 @@ ENDCLASS.";
                 .file
                 .count_kind(parsed.file.root(), SyntaxKind::MethodsStmt),
             1
+        );
+    }
+
+    #[test]
+    fn methods_stmt_builds_type_refs_for_raising_and_resumable_exceptions() {
+        let parsed = crate::parse(
+            "CLASS lcl DEFINITION.\n  PUBLIC SECTION.\n    METHODS run RAISING resumable(/sttp/cx_demo) cx_other.\nENDCLASS.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let methods = parsed
+            .file
+            .find_first_kind(parsed.file.root(), SyntaxKind::MethodsStmt)
+            .expect("methods stmt");
+        assert_eq!(
+            parsed.file.count_kind(methods, SyntaxKind::TypeRefSimple),
+            2
         );
     }
 

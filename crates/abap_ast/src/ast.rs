@@ -26,6 +26,12 @@ pub enum MethodsTypeClauseKind {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MethodsRaiseKind {
+    Raising,
+    Resumable,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TypeClauseKind {
     Type,
     Like,
@@ -57,9 +63,26 @@ impl<'a> MethodsStmtParameter<'a> {
     }
 }
 
+#[derive(Clone, Copy)]
+pub struct MethodsStmtRaising<'a> {
+    kind: MethodsRaiseKind,
+    type_ref: TypeRefSimple<'a>,
+}
+
+impl<'a> MethodsStmtRaising<'a> {
+    pub fn kind(self) -> MethodsRaiseKind {
+        self.kind
+    }
+
+    pub fn type_ref(self) -> TypeRefSimple<'a> {
+        self.type_ref
+    }
+}
+
 pub struct MethodsStmtSignature<'a> {
     is_redefinition: bool,
     parameters: Vec<MethodsStmtParameter<'a>>,
+    raising: Vec<MethodsStmtRaising<'a>>,
 }
 
 impl<'a> MethodsStmtSignature<'a> {
@@ -69,6 +92,10 @@ impl<'a> MethodsStmtSignature<'a> {
 
     pub fn parameters(&self) -> &[MethodsStmtParameter<'a>] {
         &self.parameters
+    }
+
+    pub fn raising(&self) -> &[MethodsStmtRaising<'a>] {
+        &self.raising
     }
 }
 
@@ -521,6 +548,7 @@ impl<'a> MethodsStmt<'a> {
         let mut signature = MethodsStmtSignature {
             is_redefinition: false,
             parameters: Vec::new(),
+            raising: Vec::new(),
         };
         let mut idx = match self.member_kind(source) {
             Some(MethodsStmtKind::Instance) => 1,
@@ -539,6 +567,7 @@ impl<'a> MethodsStmt<'a> {
         }
 
         let mut section = None;
+        let mut in_raising = false;
         let mut saw_parameter_section = false;
         while idx < items.len() {
             let item = items[idx];
@@ -555,9 +584,20 @@ impl<'a> MethodsStmt<'a> {
                 idx = next_idx;
                 continue;
             }
+            if Self::token_text_is(item, source, "raising") {
+                saw_parameter_section = true;
+                in_raising = true;
+                section = None;
+                idx += 1;
+                continue;
+            }
+            if Self::token_text_is(item, source, "exceptions") {
+                break;
+            }
             section = match Self::parameter_section(item, source) {
                 Some(next_section) => {
                     saw_parameter_section = true;
+                    in_raising = false;
                     idx += 1;
                     Some(next_section)
                 }
@@ -565,6 +605,13 @@ impl<'a> MethodsStmt<'a> {
             };
             if self.stops_parameter_scan(item, source) {
                 break;
+            }
+            if in_raising {
+                if let Some((raising, next_idx)) = self.try_consume_raising(&items, idx, source) {
+                    signature.raising.push(raising);
+                    idx = next_idx;
+                    continue;
+                }
             }
             if let Some(param_section) = section
                 && let Some((param, next_idx)) =
@@ -710,6 +757,50 @@ impl<'a> MethodsStmt<'a> {
             },
             next_idx,
         ))
+    }
+
+    fn try_consume_raising(
+        self,
+        items: &[SyntaxNodeRef<'a>],
+        idx: usize,
+        source: &str,
+    ) -> Option<(MethodsStmtRaising<'a>, usize)> {
+        let mut j = idx;
+        while items
+            .get(j)
+            .is_some_and(|item| Self::is_punctuation(*item, source))
+        {
+            j += 1;
+        }
+
+        let item = *items.get(j)?;
+        if Self::token_text_is(item, source, "resumable") {
+            let lparen = *items.get(j + 1)?;
+            let type_ref = TypeRefSimple::cast(*items.get(j + 2)?)?;
+            let rparen = *items.get(j + 3)?;
+            if !Self::token_text_is(lparen, source, "(")
+                || !Self::token_text_is(rparen, source, ")")
+            {
+                return None;
+            }
+            return Some((
+                MethodsStmtRaising {
+                    kind: MethodsRaiseKind::Resumable,
+                    type_ref,
+                },
+                j + 4,
+            ));
+        }
+
+        TypeRefSimple::cast(item).map(|type_ref| {
+            (
+                MethodsStmtRaising {
+                    kind: MethodsRaiseKind::Raising,
+                    type_ref,
+                },
+                j + 1,
+            )
+        })
     }
 
     fn parameter_name(
@@ -1004,7 +1095,8 @@ mod tests {
 
     use super::{
         AstNode, CallArgList, CallExpr, DataDecl, DataDeclName, DataLikeDecl, ExprIdent,
-        MethodsParamSectionKind, MethodsStmt, MethodsStmtKind, MethodsTypeClauseKind,
+        MethodsParamSectionKind, MethodsRaiseKind, MethodsStmt, MethodsStmtKind,
+        MethodsTypeClauseKind,
         SelectProjectionList, SelectStmt, SelectorExpr, SqlColumnRef, SqlDataSource,
         SqlQualifiedStar, SyntaxNodeRef,
     };
@@ -1319,5 +1411,73 @@ mod tests {
         );
         assert_eq!(signature.parameters()[1].name_token().range(), rv_y_range);
         assert!(signature.parameters()[1].type_ref().is_some());
+    }
+
+    #[test]
+    fn methods_stmt_wrappers_parse_raising_and_resumable_exceptions() {
+        let source = "METHODS run RAISING resumable(/sttp/cx_demo) cx_other.";
+        let mut b = SyntaxTreeBuilder::default();
+        let mut cursor = 0usize;
+        let mut last_range = 0..0;
+        let mut take = |needle: &str, builder: &mut SyntaxTreeBuilder| {
+            let rel = source[cursor..].find(needle).expect("token text");
+            let start = cursor + rel;
+            let end = start + needle.len();
+            cursor = end;
+            last_range = start..end;
+            (
+                builder.leaf(SyntaxKind::Token, start..end),
+                last_range.clone(),
+            )
+        };
+
+        let (methods_tok, methods_range) = take("METHODS", &mut b);
+        let (name_tok, _) = take("run", &mut b);
+        let (raising_tok, _) = take("RAISING", &mut b);
+        let (resumable_tok, _) = take("resumable", &mut b);
+        let (lparen_tok, _) = take("(", &mut b);
+        let (cx_demo_tok, cx_demo_range) = take("/sttp/cx_demo", &mut b);
+        let cx_demo_type = b.branch(SyntaxKind::TypeRefSimple, cx_demo_range.clone(), &[cx_demo_tok]);
+        let (rparen_tok, _) = take(")", &mut b);
+        let (cx_other_tok, cx_other_range) = take("cx_other", &mut b);
+        let cx_other_type = b.branch(SyntaxKind::TypeRefSimple, cx_other_range.clone(), &[cx_other_tok]);
+        let (period_tok, period_range) = take(".", &mut b);
+
+        let methods_stmt = b.branch(
+            SyntaxKind::MethodsStmt,
+            methods_range.start..period_range.end,
+            &[
+                methods_tok,
+                name_tok,
+                raising_tok,
+                resumable_tok,
+                lparen_tok,
+                cx_demo_type,
+                rparen_tok,
+                cx_other_type,
+                period_tok,
+            ],
+        );
+        let tree = b.finish(methods_stmt);
+        let methods_stmt =
+            MethodsStmt::cast(SyntaxNodeRef::new(&tree, methods_stmt)).expect("methods stmt");
+
+        let signature = methods_stmt.signature(source);
+        assert!(signature.parameters().is_empty());
+        assert_eq!(signature.raising().len(), 2);
+        assert_eq!(signature.raising()[0].kind(), MethodsRaiseKind::Resumable);
+        assert_eq!(
+            signature.raising()[0]
+                .type_ref()
+                .display_text(source),
+            Some("/sttp/cx_demo")
+        );
+        assert_eq!(signature.raising()[1].kind(), MethodsRaiseKind::Raising);
+        assert_eq!(
+            signature.raising()[1]
+                .type_ref()
+                .display_text(source),
+            Some("cx_other")
+        );
     }
 }
