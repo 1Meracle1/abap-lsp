@@ -290,6 +290,8 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             self.collect_clear_stmt_infos(tail, scope);
         } else if head.text.eq_ignore_ascii_case("convert") {
             self.collect_convert_stmt_infos(&significant, scope);
+        } else if head.text.eq_ignore_ascii_case("find") {
+            self.collect_find_stmt_infos(&significant, scope);
         } else if head.text.eq_ignore_ascii_case("replace") {
             self.collect_replace_stmt_infos(&significant, scope);
         } else {
@@ -517,6 +519,135 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                 let end_idx =
                     self.collector
                         .consume_concatenate_operand_infos(tokens, idx + 1, &["in"]);
+                if end_idx > idx + 1 {
+                    self.collector.collect_token_expression_refs_infos(
+                        &tokens[idx + 1..end_idx],
+                        scope,
+                        true,
+                    );
+                }
+                idx = end_idx;
+                continue;
+            }
+            idx += 1;
+        }
+    }
+
+    pub(super) fn collect_find_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        if self.collector.node_has_structured_children(node) {
+            self.collector.walk_children(node, scope);
+            return;
+        }
+        let tokens = self.collector.significant_stmt_token_infos(node);
+        self.collect_find_stmt_infos(&tokens, scope);
+    }
+
+    pub(super) fn collect_find_stmt_infos(&mut self, tokens: &[SyntaxTokenInfo], scope: ScopeId) {
+        if tokens.is_empty() || !tokens[0].text.eq_ignore_ascii_case("find") {
+            return;
+        }
+
+        let mut idx = 1usize;
+        if tokens.get(idx).is_some_and(|token| {
+            token.text.eq_ignore_ascii_case("first") || token.text.eq_ignore_ascii_case("all")
+        }) {
+            idx += 1;
+            if tokens.get(idx).is_some_and(|token| {
+                token.text.eq_ignore_ascii_case("occurrence")
+                    || token.text.eq_ignore_ascii_case("occurrences")
+            }) {
+                idx += 1;
+            }
+        }
+        if tokens
+            .get(idx)
+            .is_some_and(|token| token.text.eq_ignore_ascii_case("of"))
+        {
+            idx += 1;
+        }
+        if tokens
+            .get(idx)
+            .is_some_and(|token| token.text.eq_ignore_ascii_case("regex"))
+        {
+            idx += 1;
+        }
+
+        let pattern_end =
+            self.collector
+                .consume_concatenate_operand_infos(tokens, idx, &["in"]);
+        if pattern_end > idx {
+            self.collector.collect_token_expression_refs_infos(
+                &tokens[idx..pattern_end],
+                scope,
+                true,
+            );
+        }
+        idx = pattern_end;
+
+        while idx < tokens.len() {
+            let token = &tokens[idx];
+            if token.text.as_ref() == "." {
+                break;
+            }
+            if token.text.eq_ignore_ascii_case("in") {
+                if tokens.get(idx + 1).is_some_and(|next| {
+                    next.text.eq_ignore_ascii_case("character")
+                        || next.text.eq_ignore_ascii_case("byte")
+                }) && tokens
+                    .get(idx + 2)
+                    .is_some_and(|next| next.text.eq_ignore_ascii_case("mode"))
+                {
+                    idx += 3;
+                    continue;
+                }
+
+                let end_idx = self.collector.consume_concatenate_operand_infos(
+                    tokens,
+                    idx + 1,
+                    &["match", "submatches", "ignoring", "respecting", "in"],
+                );
+                if end_idx > idx + 1 {
+                    self.collector.collect_token_expression_refs_infos(
+                        &tokens[idx + 1..end_idx],
+                        scope,
+                        true,
+                    );
+                }
+                idx = end_idx;
+                continue;
+            }
+            if token.text.eq_ignore_ascii_case("match") {
+                let clause_start = idx + 1;
+                let value_start = if tokens.get(clause_start).is_some_and(|next| {
+                    next.text.eq_ignore_ascii_case("offset")
+                        || next.text.eq_ignore_ascii_case("length")
+                    })
+                {
+                    clause_start + 1
+                } else {
+                    clause_start
+                };
+                let end_idx = self.collector.consume_concatenate_operand_infos(
+                    tokens,
+                    value_start,
+                    &["match", "submatches", "ignoring", "respecting", "in"],
+                );
+                if end_idx > value_start {
+                    self.collector.collect_token_expression_refs_infos(
+                        &tokens[value_start..end_idx],
+                        scope,
+                        true,
+                    );
+                }
+                idx = end_idx;
+                continue;
+            }
+            if token.text.eq_ignore_ascii_case("submatches") {
+                let end_idx = self.collector.consume_concatenate_operand_infos(
+                    tokens,
+                    idx + 1,
+                    &["match", "ignoring", "respecting", "in"],
+                );
                 if end_idx > idx + 1 {
                     self.collector.collect_token_expression_refs_infos(
                         &tokens[idx + 1..end_idx],

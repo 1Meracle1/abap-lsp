@@ -247,6 +247,8 @@ pub enum SyntaxKind {
     MessageStmt,
     /// `ENDAT.`
     EndAtStmt,
+    /// `FIND ... .`
+    FindStmt,
     /// `READ TABLE ... .`
     ReadTableStmt,
     /// `GET TIME STAMP FIELD ... .`
@@ -390,6 +392,7 @@ impl SyntaxKind {
             Self::RaiseStmt => "RaiseStmt",
             Self::MessageStmt => "MessageStmt",
             Self::EndAtStmt => "EndAtStmt",
+            Self::FindStmt => "FindStmt",
             Self::ReadTableStmt => "ReadTableStmt",
             Self::GetTimeStampStmt => "GetTimeStampStmt",
             Self::GetBitStmt => "GetBitStmt",

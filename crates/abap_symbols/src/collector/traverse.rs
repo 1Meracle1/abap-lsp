@@ -144,6 +144,7 @@ impl<'a> Collector<'a> {
             SyntaxKind::GetTimeStampStmt => self
                 .stmt_lowering()
                 .collect_get_time_stamp_stmt(node, scope),
+            SyntaxKind::FindStmt => self.stmt_lowering().collect_find_stmt(node, scope),
             SyntaxKind::CallStmt => self.stmt_lowering().collect_call_stmt(node, scope),
             SyntaxKind::MessageStmt => self.stmt_lowering().collect_message_stmt(node, scope),
             SyntaxKind::UnparsedStmt | SyntaxKind::RaiseStmt | SyntaxKind::EndAtStmt => self

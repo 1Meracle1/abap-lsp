@@ -2589,6 +2589,7 @@ fn is_selector_query_container(kind: &str) -> bool {
             | "RaiseStmt"
             | "MessageStmt"
             | "EndAtStmt"
+            | "FindStmt"
             | "Error"
             | "WriteStmt"
             | "ReadTableStmt"

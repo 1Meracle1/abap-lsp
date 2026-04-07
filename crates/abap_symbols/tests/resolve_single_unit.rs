@@ -3740,6 +3740,40 @@ ENDFORM.
 }
 
 #[test]
+fn resolves_find_first_occurrence_match_offset_statement() {
+    let src = r#"
+FORM run USING iv_tag_path TYPE string.
+  DATA lv_first_sep TYPE int4.
+
+  FIND FIRST OCCURRENCE OF | | IN iv_tag_path MATCH OFFSET lv_first_sep.
+ENDFORM.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///find_stmt.abap", src, &parsed);
+
+    for name in ["iv_tag_path", "lv_first_sep"] {
+        assert!(
+            unit.references.iter().any(|reference| {
+                reference.namespace == Namespace::Value
+                    && reference.kind == ReferenceKind::Identifier
+                    && reference.name.as_ref() == name
+                    && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+            }),
+            "expected resolved FIND reference for `{name}`, refs={:?} diagnostics={:?}",
+            unit.references,
+            unit.diagnostics
+        );
+        assert!(
+            !unit.diagnostics.iter().any(|diag| {
+                diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains(name)
+            }),
+            "unexpected FIND diagnostics for `{name}`: {:?}",
+            unit.diagnostics
+        );
+    }
+}
+
+#[test]
 fn infers_inline_new_ref_type_and_collects_named_argument_accesses() {
     let src = r#"
 CLASS zcl_program DEFINITION.

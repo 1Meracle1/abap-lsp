@@ -34,3 +34,13 @@ fn ports_program_oop_and_sql_surface_shapes() {
     assert_eq!(parsed.file.count_kind(root, SyntaxKind::ReadTableStmt), 1);
     assert_eq!(parsed.file.count_kind(root, SyntaxKind::WriteStmt), 1);
 }
+
+#[test]
+fn classifies_find_match_offset_statement() {
+    let src =
+        "FIND FIRST OCCURRENCE OF | | IN iv_tag_path MATCH OFFSET lv_first_sep.";
+    let parsed = parse(src);
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let root = parsed.file.root();
+    assert_eq!(parsed.file.count_kind(root, SyntaxKind::FindStmt), 1);
+}

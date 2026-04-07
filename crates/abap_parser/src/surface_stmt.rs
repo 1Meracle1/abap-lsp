@@ -2642,6 +2642,25 @@ pub fn try_parse_endat_stmt(
     )
 }
 
+pub fn try_parse_find_stmt(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    errors: &mut Vec<crate::ParseError>,
+) -> Option<(NodeId, usize)> {
+    parse_simple_keyword_stmt(
+        b,
+        source,
+        tokens,
+        idx,
+        SyntaxKind::FindStmt,
+        "find",
+        errors,
+        "syntax error: expected '.' after FIND",
+    )
+}
+
 pub fn try_parse_get_bit_stmt(
     b: &mut SyntaxTreeBuilder,
     source: &str,
