@@ -1,4 +1,3 @@
-use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 
 use abap_ast::arena::NodeId;
@@ -19,20 +18,6 @@ use super::{
 
 pub(super) struct ClassLowering<'ctx, 'a> {
     collector: &'ctx mut Collector<'a>,
-}
-
-impl<'ctx, 'a> Deref for ClassLowering<'ctx, 'a> {
-    type Target = Collector<'a>;
-
-    fn deref(&self) -> &Self::Target {
-        self.collector
-    }
-}
-
-impl<'ctx, 'a> DerefMut for ClassLowering<'ctx, 'a> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        self.collector
-    }
 }
 
 impl<'a> Collector<'a> {
@@ -92,22 +77,27 @@ impl<'a> Collector<'a> {
 }
 
 impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
+    pub(super) fn enclosing_class_owner(&self, scope: ScopeId) -> Option<SymbolId> {
+        self.collector.enclosing_class_owner(scope)
+    }
+
     pub(super) fn walk_class_decl(&mut self, node: NodeId, scope: ScopeId) {
         let is_implementation = self.class_header_has_implementation(node);
-        let Some((name, range)) = self.header_ident_after_keyword(node) else {
-            self.walk_children(node, scope);
+        let Some((name, range)) = self.collector.header_ident_after_keyword(node) else {
+            self.collector.walk_children(node, scope);
             return;
         };
         let mut impl_header_refs_class = false;
         let owner = if is_implementation {
             if let Some(existing) = self
+                .collector
                 .lookup_symbol_in_scope_chain(scope, Namespace::Type, name.as_ref())
-                .filter(|&id| self.symbol(id).kind == SymbolKind::Class)
+                .filter(|&id| self.collector.symbol(id).kind == SymbolKind::Class)
             {
                 impl_header_refs_class = true;
                 existing
             } else {
-                self.declare_plain_symbol(
+                self.collector.declare_plain_symbol(
                     scope,
                     Arc::clone(&name),
                     SymbolKind::Class,
@@ -115,15 +105,27 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
                 )
             }
         } else {
-            self.declare_plain_symbol(scope, Arc::clone(&name), SymbolKind::Class, range.clone())
+            self.collector.declare_plain_symbol(
+                scope,
+                Arc::clone(&name),
+                SymbolKind::Class,
+                range.clone(),
+            )
         };
         if impl_header_refs_class {
-            self.add_reference(scope, name, Namespace::Type, ReferenceKind::TypeRef, range);
+            self.collector.add_reference(
+                scope,
+                name,
+                Namespace::Type,
+                ReferenceKind::TypeRef,
+                range,
+            );
         }
         if !is_implementation && let Some((superclass, range)) = self.class_superclass_name(node) {
-            self.class_superclasses
+            self.collector
+                .class_superclasses
                 .insert(owner, Arc::clone(&superclass));
-            self.add_reference(
+            self.collector.add_reference(
                 scope,
                 superclass,
                 Namespace::Type,
@@ -132,29 +134,34 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
             );
         }
         let parent_scope = if is_implementation {
-            self.class_definition_scopes
+            self.collector
+                .class_definition_scopes
                 .get(&owner)
                 .copied()
                 .or(Some(scope))
         } else {
             Some(scope)
         };
-        let node_range = self.file.range(node);
-        let child_scope = self.push_scope(ScopeKind::Class, node_range, parent_scope, Some(owner));
+        let node_range = self.collector.file.range(node);
+        let child_scope =
+            self.collector
+                .push_scope(ScopeKind::Class, node_range, parent_scope, Some(owner));
         if !is_implementation {
-            self.class_definition_scopes.insert(owner, child_scope);
+            self.collector
+                .class_definition_scopes
+                .insert(owner, child_scope);
         }
         if !is_implementation {
             self.collect_class_definition_members(node, owner, child_scope);
         }
-        for child in self.file.children(node) {
-            self.walk_node(child, child_scope);
+        for child in self.collector.file.children(node) {
+            self.collector.walk_node(child, child_scope);
         }
     }
 
     fn class_header_has_implementation(&self, node: NodeId) -> bool {
-        for child in self.file.children(node) {
-            let Some(text) = self.syntax(child).text(self.source) else {
+        for child in self.collector.file.children(node) {
+            let Some(text) = self.collector.syntax(child).text(self.collector.source) else {
                 continue;
             };
             if text == "." {
@@ -174,17 +181,17 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
         class_scope: ScopeId,
     ) {
         let mut visibility = Visibility::Private;
-        let mut stack: Vec<_> = self.file.children(node).rev().collect();
+        let mut stack: Vec<_> = self.collector.file.children(node).rev().collect();
         while let Some(child) = stack.pop() {
-            match self.file.kind(child) {
+            match self.collector.file.kind(child) {
                 abap_ast::SyntaxKind::ClassSectionStmt => {
-                    let tokens = self.significant_stmt_token_infos(child);
+                    let tokens = self.collector.significant_stmt_token_infos(child);
                     if let Some(section_visibility) = self.class_section_visibility_infos(&tokens) {
                         visibility = section_visibility;
                     }
                 }
                 abap_ast::SyntaxKind::MethodsStmt => {
-                    let Some(methods_stmt) = MethodsStmt::cast(self.syntax(child)) else {
+                    let Some(methods_stmt) = MethodsStmt::cast(self.collector.syntax(child)) else {
                         continue;
                     };
                     if let Some(mut member) =
@@ -194,15 +201,16 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
                             let signature = self.parse_method_signature(methods_stmt);
                             member.parameters = self.class_member_parameters(&signature);
                             self.declare_method_signature_parameter_symbols(
-                                self.file.range(child),
+                                self.collector.file.range(child),
                                 &signature,
                             );
-                            self.class_method_signatures
+                            self.collector
+                                .class_method_signatures
                                 .entry(class_symbol)
                                 .or_default()
                                 .insert(Arc::clone(&member.name), signature);
                         }
-                        self.emit_class_member(member);
+                        self.collector.emit_class_member(member);
                     }
                 }
                 abap_ast::SyntaxKind::DataDecl
@@ -216,7 +224,7 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
                     );
                 }
                 _ => {
-                    for nested in self.file.children(child).rev() {
+                    for nested in self.collector.file.children(child).rev() {
                         stack.push(nested);
                     }
                 }
@@ -225,11 +233,11 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
     }
 
     fn class_superclass_name(&self, node: NodeId) -> Option<(Arc<str>, TextRange)> {
-        let significant = self.significant_stmt_token_infos(node);
+        let significant = self.collector.significant_stmt_token_infos(node);
         for window in significant.windows(3) {
             if window[0].text.eq_ignore_ascii_case("inheriting")
                 && window[1].text.eq_ignore_ascii_case("from")
-                && self.syntax_token_is_ident_like(&window[2])
+                && self.collector.syntax_token_is_ident_like(&window[2])
             {
                 return Some((
                     Arc::<str>::from(window[2].text.to_ascii_lowercase()),
@@ -265,16 +273,16 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
         visibility: Visibility,
         methods_stmt: MethodsStmt<'_>,
     ) -> Option<ClassMemberData> {
-        let (kind, is_static) = match methods_stmt.member_kind(self.source)? {
+        let (kind, is_static) = match methods_stmt.member_kind(self.collector.source)? {
             MethodsStmtKind::Instance => (ClassMemberKind::Method, false),
             MethodsStmtKind::Class => (ClassMemberKind::Method, true),
         };
-        let name_tok = methods_stmt.name_token(self.source)?;
+        let name_tok = methods_stmt.name_token(self.collector.source)?;
         Some(ClassMemberData {
             class_symbol,
             name: Arc::<str>::from(
                 name_tok
-                    .text(self.source)
+                    .text(self.collector.source)
                     .unwrap_or_default()
                     .to_ascii_lowercase(),
             ),
@@ -282,7 +290,7 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
             visibility,
             is_static,
             decl_range: name_tok.range(),
-            signature: Arc::<str>::from(methods_stmt.signature_text(self.source)),
+            signature: Arc::<str>::from(methods_stmt.signature_text(self.collector.source)),
             parameters: Vec::new(),
             structure: None,
         })
@@ -297,10 +305,11 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
     ) {
         let is_static = self.class_attribute_decl_is_static(node);
         let signature = Arc::<str>::from(
-            self.render_statement_signature_infos(&self.simple_stmt_token_infos(node)),
+            self.collector
+                .render_statement_signature_infos(&self.collector.simple_stmt_token_infos(node)),
         );
-        for child in self.file.children(node) {
-            match self.file.kind(child) {
+        for child in self.collector.file.children(node) {
+            match self.collector.file.kind(child) {
                 abap_ast::SyntaxKind::DataTypedClause
                 | abap_ast::SyntaxKind::ConstantClause
                 | abap_ast::SyntaxKind::StructuredDecl => {
@@ -312,7 +321,7 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
                         Arc::clone(&signature),
                     ) {
                         member.structure = self.class_attribute_structure_for_clause(child, scope);
-                        self.emit_class_member(member);
+                        self.collector.emit_class_member(member);
                     }
                 }
                 _ => {}
@@ -325,12 +334,15 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
         node: NodeId,
         scope: ScopeId,
     ) -> Option<StructureId> {
-        let (name, _, members) = self.begin_of_clause_parts(node, scope)?;
-        Some(self.register_structure(scope, PendingStructure { name, members }))
+        let (name, _, members) = self.collector.begin_of_clause_parts(node, scope)?;
+        Some(
+            self.collector
+                .register_structure(scope, PendingStructure { name, members }),
+        )
     }
 
     fn class_attribute_decl_is_static(&self, node: NodeId) -> bool {
-        let tokens = self.significant_stmt_token_infos(node);
+        let tokens = self.collector.significant_stmt_token_infos(node);
         let Some(first) = tokens.first() else {
             return false;
         };
@@ -355,12 +367,13 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
         node: NodeId,
     ) -> Option<(Arc<str>, TextRange)> {
         let name_node = self
+            .collector
             .file
             .children(node)
-            .filter(|&child| self.file.kind(child) == abap_ast::SyntaxKind::Token)
+            .filter(|&child| self.collector.file.kind(child) == abap_ast::SyntaxKind::Token)
             .nth(2)?;
-        let (name, _) = self.node_name(name_node)?;
-        let decl_range = self.structured_decl_name_range(node)?;
+        let (name, _) = self.collector.node_name(name_node)?;
+        let decl_range = self.collector.structured_decl_name_range(node)?;
         Some((name, decl_range))
     }
 
@@ -372,17 +385,17 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
         is_static: bool,
         signature: Arc<str>,
     ) -> Option<ClassMemberData> {
-        let (name, decl_range) = match self.file.kind(node) {
+        let (name, decl_range) = match self.collector.file.kind(node) {
             abap_ast::SyntaxKind::StructuredDecl => {
                 self.class_attribute_structured_clause_name_parts(node)?
             }
             abap_ast::SyntaxKind::DataTypedClause | abap_ast::SyntaxKind::ConstantClause => self
                 .class_attribute_structured_clause_name_parts(node)
                 .or_else(|| {
-                    let name_node = self.file.children(node).find(|&child| {
-                        self.file.kind(child) == abap_ast::SyntaxKind::DataDeclName
+                    let name_node = self.collector.file.children(node).find(|&child| {
+                        self.collector.file.kind(child) == abap_ast::SyntaxKind::DataDeclName
                     })?;
-                    self.node_name(name_node)
+                    self.collector.node_name(name_node)
                 })?,
             _ => return None,
         };
@@ -415,7 +428,7 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
     }
 
     fn class_member(&self, class_symbol: SymbolId, member_name: &str) -> Option<&ClassMemberData> {
-        self.class_members.iter().find(|member| {
+        self.collector.class_members.iter().find(|member| {
             member.class_symbol == class_symbol && member.name.as_ref() == member_name
         })
     }
@@ -433,8 +446,8 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
         if member.kind != ClassMemberKind::Method || member.is_static {
             return;
         }
-        let class_name = Arc::clone(&self.symbol(class_symbol).name);
-        self.declare_symbol(
+        let class_name = Arc::clone(&self.collector.symbol(class_symbol).name);
+        self.collector.declare_symbol(
             method_scope,
             Arc::<str>::from("me"),
             SymbolKind::Variable,
@@ -451,7 +464,7 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
     }
 
     fn parse_method_signature(&self, methods_stmt: MethodsStmt<'_>) -> PendingMethodSignature {
-        let parsed = methods_stmt.signature(self.source);
+        let parsed = methods_stmt.signature(self.collector.source);
         let mut signature = PendingMethodSignature {
             is_redefinition: parsed.is_redefinition(),
             ..PendingMethodSignature::default()
@@ -464,7 +477,7 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
             let name = Arc::<str>::from(
                 param
                     .name_token()
-                    .text(self.source)
+                    .text(self.collector.source)
                     .unwrap_or_default()
                     .to_ascii_lowercase(),
             );
@@ -472,7 +485,8 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
                 name,
                 range: param.name_token().range(),
                 declared_type: param.type_ref().and_then(|type_ref| {
-                    self.field_type_ref_from_node(type_ref.syntax().id(), clause_ns)
+                    self.collector
+                        .field_type_ref_from_node(type_ref.syntax().id(), clause_ns)
                 }),
             });
         }
@@ -487,13 +501,14 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
         lookup_scope: ScopeId,
     ) {
         let Some(parameters) = self
+            .collector
             .class_method_signature(class_symbol, method_name, lookup_scope)
             .map(|signature| signature.parameters.clone())
         else {
             return;
         };
         for param in parameters {
-            self.declare_symbol(
+            self.collector.declare_symbol(
                 method_scope,
                 param.name,
                 SymbolKind::Parameter,
@@ -513,9 +528,11 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
         if signature.parameters.is_empty() {
             return;
         }
-        let signature_scope = self.push_scope(ScopeKind::Method, signature_range, None, None);
+        let signature_scope =
+            self.collector
+                .push_scope(ScopeKind::Method, signature_range, None, None);
         for param in &signature.parameters {
-            self.declare_symbol(
+            self.collector.declare_symbol(
                 signature_scope,
                 Arc::clone(&param.name),
                 SymbolKind::Parameter,

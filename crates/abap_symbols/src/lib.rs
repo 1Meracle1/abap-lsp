@@ -4,6 +4,8 @@ mod def_map;
 mod ids;
 #[cfg(test)]
 mod perf_tests;
+#[doc(hidden)]
+pub mod perf_api;
 mod project;
 mod resolver;
 mod scope;

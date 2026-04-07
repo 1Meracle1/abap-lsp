@@ -236,18 +236,22 @@ impl<'a> Collector<'a> {
     }
 
     fn simple_stmt_token_infos(&self, node: NodeId) -> Vec<SyntaxTokenInfo> {
-        let child_nodes = self.file.children(node).collect::<Vec<_>>();
-        child_nodes
-            .into_iter()
+        self.file
+            .children(node)
             .flat_map(|child| self.syntax_token_nodes(child))
             .collect()
     }
 
     fn significant_stmt_token_infos(&self, node: NodeId) -> Vec<SyntaxTokenInfo> {
-        self.simple_stmt_token_infos(node)
-            .into_iter()
-            .filter(|token| !self.syntax_token_is_comment(token))
-            .collect()
+        let mut tokens = Vec::new();
+        for child in self.file.children(node) {
+            for token in self.syntax_token_nodes(child) {
+                if !self.syntax_token_is_comment(&token) {
+                    tokens.push(token);
+                }
+            }
+        }
+        tokens
     }
 
     fn render_statement_signature_infos(&self, tokens: &[SyntaxTokenInfo]) -> String {

@@ -22,6 +22,9 @@ if /I "%MODE%"=="release" (
   echo large_file_phase_breakdown
   cargo test -p abap_symbols large_file_phase_breakdown -- --ignored --nocapture --release%CARGO_ARGS%
 
+  echo parser_throughput_smoke
+  cargo test -p abap_parser --test perf_smoke parser_throughput_smoke -- --ignored --nocapture --release%CARGO_ARGS%
+
   echo semantic_tokens_full_request_throughput_smoke
   cargo test -p abap_lsp --test semantic_tokens_perf_smoke semantic_tokens_full_request_throughput_smoke -- --ignored --nocapture --release%CARGO_ARGS%
 
@@ -32,6 +35,9 @@ if /I "%MODE%"=="release" (
 
   echo large_file_phase_breakdown
   cargo test -p abap_symbols large_file_phase_breakdown -- --ignored --nocapture%CARGO_ARGS%
+
+  echo parser_throughput_smoke
+  cargo test -p abap_parser --test perf_smoke parser_throughput_smoke -- --ignored --nocapture%CARGO_ARGS%
 
   echo semantic_tokens_full_request_throughput_smoke
   cargo test -p abap_lsp --test semantic_tokens_perf_smoke semantic_tokens_full_request_throughput_smoke -- --ignored --nocapture%CARGO_ARGS%

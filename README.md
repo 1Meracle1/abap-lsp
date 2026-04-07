@@ -52,7 +52,10 @@ Build a single package:
 
 $env:CARGO_PROFILE_RELEASE_DEBUG="true"
 $env:ABAP_PERF_ITERATIONS="50"
-cargo flamegraph -p abap_lsp --example build_semantic_tokens_perf --release
+$env:ABAP_PERF_WARMUP="1"
+
+cargo flamegraph -p abap_symbols --example build_symbols_collect_perf --release
+cargo flamegraph -p abap_symbols --example build_symbols_validate_perf --release
 ```
 
 ## Migration Docs

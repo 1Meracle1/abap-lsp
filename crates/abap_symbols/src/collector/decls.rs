@@ -1,4 +1,3 @@
-use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 
 use crate::def_map::{
@@ -11,43 +10,37 @@ use abap_ast::{
     ast::{AstNode, DataDecl, DataLikeDecl, DeclClause},
 };
 
-use super::emit::{FormSink, RefSink};
+use super::context::DeclContext;
 use super::{Collector, PendingStructure};
 
 pub(super) struct DeclLowering<'ctx, 'a> {
-    collector: &'ctx mut Collector<'a>,
-}
-
-impl<'ctx, 'a> Deref for DeclLowering<'ctx, 'a> {
-    type Target = Collector<'a>;
-
-    fn deref(&self) -> &Self::Target {
-        self.collector
-    }
-}
-
-impl<'ctx, 'a> DerefMut for DeclLowering<'ctx, 'a> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        self.collector
-    }
+    ctx: DeclContext<'ctx, 'a>,
 }
 
 impl<'a> Collector<'a> {
     pub(super) fn decl_lowering(&mut self) -> DeclLowering<'_, 'a> {
-        DeclLowering { collector: self }
+        DeclLowering {
+            ctx: DeclContext::new(self),
+        }
     }
 }
 
 impl<'ctx, 'a> DeclLowering<'ctx, 'a> {
     pub(super) fn walk_include_stmt(&mut self, node: abap_ast::arena::NodeId, scope: ScopeId) {
-        if let Some((name, range)) = self.header_ident_after_keyword(node) {
-            self.declare_plain_symbol(scope, Arc::clone(&name), SymbolKind::Include, range.clone());
-            self.include_edges.push(IncludeEdge {
+        if let Some((name, range)) = self.ctx.header_ident_after_keyword(node) {
+            self.ctx.declare_plain_symbol(
+                scope,
+                Arc::clone(&name),
+                SymbolKind::Include,
+                range.clone(),
+            );
+            self.ctx.include_edges_mut().push(IncludeEdge {
                 name: Arc::clone(&name),
                 range: range.clone(),
                 target: None,
             });
-            self.add_reference(scope, name, Namespace::Value, ReferenceKind::Include, range);
+            self.ctx
+                .add_reference(scope, name, Namespace::Value, ReferenceKind::Include, range);
         }
     }
 
@@ -58,19 +51,20 @@ impl<'ctx, 'a> DeclLowering<'ctx, 'a> {
         kind: SymbolKind,
         fallback_scope_kind: ScopeKind,
     ) {
-        if let Some((name, range)) = self.header_ident_after_keyword(node) {
-            let owner = self.declare_plain_symbol(scope, name, kind, range);
+        if let Some((name, range)) = self.ctx.header_ident_after_keyword(node) {
+            let owner = self.ctx.declare_plain_symbol(scope, name, kind, range);
             let block_scope = if matches!(
                 kind,
                 SymbolKind::Form | SymbolKind::Module | SymbolKind::Event
             ) {
-                let node_range = self.file.range(node);
-                self.push_scope(fallback_scope_kind, node_range, Some(scope), Some(owner))
+                let node_range = self.ctx.file().range(node);
+                self.ctx
+                    .push_scope(fallback_scope_kind, node_range, Some(scope), Some(owner))
             } else {
                 scope
             };
-            for child in self.file.children(node) {
-                self.walk_node(child, block_scope);
+            for child in self.ctx.file().children(node) {
+                self.ctx.walk_node(child, block_scope);
             }
         }
     }
@@ -82,66 +76,80 @@ impl<'ctx, 'a> DeclLowering<'ctx, 'a> {
         kind: SymbolKind,
         scope_kind: ScopeKind,
     ) {
-        let Some((name, range)) = self.header_ident_after_keyword(node) else {
-            self.walk_children(node, scope);
+        let Some((name, range)) = self.ctx.header_ident_after_keyword(node) else {
+            self.ctx.walk_children(node, scope);
             return;
         };
-        let owner = self.declare_plain_symbol(scope, name, kind, range);
-        let node_range = self.file.range(node);
-        let child_scope = self.push_scope(scope_kind, node_range, Some(scope), Some(owner));
+        let owner = self.ctx.declare_plain_symbol(scope, name, kind, range);
+        let node_range = self.ctx.file().range(node);
+        let child_scope = self
+            .ctx
+            .push_scope(scope_kind, node_range, Some(scope), Some(owner));
         if scope_kind == ScopeKind::Form {
             let parameters = self
+                .ctx
                 .forms_lowering()
                 .declare_form_parameters_from_header(node, child_scope);
-            self.emit_form_routine(FormRoutineData {
+            self.ctx.emit_form_routine(FormRoutineData {
                 symbol: owner,
                 parameters,
             });
         }
-        for child in self.file.children(node) {
-            self.walk_node(child, child_scope);
+        for child in self.ctx.file().children(node) {
+            self.ctx.walk_node(child, child_scope);
         }
     }
 
     pub(super) fn walk_method_decl(&mut self, node: abap_ast::arena::NodeId, scope: ScopeId) {
-        let Some((name, range)) = self.header_ident_after_keyword(node) else {
-            self.walk_children(node, scope);
+        let Some((name, range)) = self.ctx.header_ident_after_keyword(node) else {
+            self.ctx.walk_children(node, scope);
             return;
         };
-        let owner =
-            self.declare_plain_symbol(scope, Arc::clone(&name), SymbolKind::Method, range.clone());
-        let node_range = self.file.range(node);
-        let child_scope = self.push_scope(ScopeKind::Method, node_range, Some(scope), Some(owner));
-        if let Some(class_symbol) = self.class_lowering().enclosing_class_owner(scope) {
-            self.class_lowering().declare_method_signature_parameters(
-                class_symbol,
-                name.as_ref(),
-                child_scope,
-                scope,
-            );
-            self.class_lowering().declare_implicit_me_symbol(
+        let owner = self.ctx.declare_plain_symbol(
+            scope,
+            Arc::clone(&name),
+            SymbolKind::Method,
+            range.clone(),
+        );
+        let node_range = self.ctx.file().range(node);
+        let child_scope =
+            self.ctx
+                .push_scope(ScopeKind::Method, node_range, Some(scope), Some(owner));
+        if let Some(class_symbol) = self.ctx.class_lowering().enclosing_class_owner(scope) {
+            self.ctx
+                .class_lowering()
+                .declare_method_signature_parameters(
+                    class_symbol,
+                    name.as_ref(),
+                    child_scope,
+                    scope,
+                );
+            self.ctx.class_lowering().declare_implicit_me_symbol(
                 class_symbol,
                 name.as_ref(),
                 child_scope,
                 &range,
             );
         }
-        for child in self.file.children(node) {
-            self.walk_node(child, child_scope);
+        for child in self.ctx.file().children(node) {
+            self.ctx.walk_node(child, child_scope);
         }
     }
 
     pub(super) fn walk_event_block(&mut self, node: abap_ast::arena::NodeId, scope: ScopeId) {
-        let Some((name, range)) = self.event_block_header_name(node) else {
-            self.walk_children(node, scope);
+        let Some((name, range)) = self.ctx.event_block_header_name(node) else {
+            self.ctx.walk_children(node, scope);
             return;
         };
-        let owner = self.declare_plain_symbol(scope, name, SymbolKind::Event, range);
-        let node_range = self.file.range(node);
+        let owner = self
+            .ctx
+            .declare_plain_symbol(scope, name, SymbolKind::Event, range);
+        let node_range = self.ctx.file().range(node);
         let child_scope =
-            self.push_scope(ScopeKind::EventBlock, node_range, Some(scope), Some(owner));
-        for child in self.file.children(node) {
-            self.walk_node(child, child_scope);
+            self.ctx
+                .push_scope(ScopeKind::EventBlock, node_range, Some(scope), Some(owner));
+        for child in self.ctx.file().children(node) {
+            self.ctx.walk_node(child, child_scope);
         }
     }
 
@@ -151,31 +159,31 @@ impl<'ctx, 'a> DeclLowering<'ctx, 'a> {
         scope: ScopeId,
         kind: SymbolKind,
     ) {
-        if let Some(data_decl) = DataDecl::cast(self.syntax(node)) {
+        if let Some(data_decl) = DataDecl::cast(self.ctx.syntax(node)) {
             let clauses = data_decl
                 .clauses()
                 .map(|clause| {
                     let child_id = clause.syntax().id();
                     let hint = clause
-                        .type_clause_kind(self.source)
-                        .map(|kind| self.namespace_from_type_clause_kind(kind));
+                        .type_clause_kind(self.ctx.source())
+                        .map(|kind| self.ctx.namespace_from_type_clause_kind(kind));
                     (child_id, hint)
                 })
                 .collect::<Vec<_>>();
             for (child_id, hint) in clauses {
                 if let Some(ns) = hint {
-                    self.type_clause_ns_stack.push(ns);
+                    self.ctx.type_clause_ns_stack_mut().push(ns);
                 }
                 self.declare_decl_clause_symbol(child_id, scope, kind);
-                self.walk_children(child_id, scope);
+                self.ctx.walk_children(child_id, scope);
                 if hint.is_some() {
-                    self.type_clause_ns_stack.pop();
+                    self.ctx.type_clause_ns_stack_mut().pop();
                 }
             }
             return;
         }
-        let Some(decl) = DataLikeDecl::cast(self.syntax(node)) else {
-            self.walk_children(node, scope);
+        let Some(decl) = DataLikeDecl::cast(self.ctx.syntax(node)) else {
+            self.ctx.walk_children(node, scope);
             return;
         };
         let children: Vec<_> = decl
@@ -190,24 +198,24 @@ impl<'ctx, 'a> DeclLowering<'ctx, 'a> {
                     | SyntaxKind::TypesTypedClause
                     | SyntaxKind::ConstantClause
                     | SyntaxKind::FieldSymbolClause => {
-                        let hint = self.typed_clause_namespace_hint(child_id);
+                        let hint = self.ctx.typed_clause_namespace_hint(child_id);
                         if let Some(ns) = hint {
-                            self.type_clause_ns_stack.push(ns);
+                            self.ctx.type_clause_ns_stack_mut().push(ns);
                         }
                         self.declare_decl_clause_symbol(child_id, scope, kind);
-                        self.walk_children(child_id, scope);
+                        self.ctx.walk_children(child_id, scope);
                         if hint.is_some() {
-                            self.type_clause_ns_stack.pop();
+                            self.ctx.type_clause_ns_stack_mut().pop();
                         }
                     }
                     SyntaxKind::StructuredDecl => {
                         self.declare_structured_decl_symbol(child_id, scope, kind);
-                        self.walk_children(child_id, scope);
+                        self.ctx.walk_children(child_id, scope);
                     }
-                    _ => self.walk_node(child_id, scope),
+                    _ => self.ctx.walk_node(child_id, scope),
                 }
             } else {
-                self.walk_node(child_id, scope);
+                self.ctx.walk_node(child_id, scope);
             }
         }
     }
@@ -218,27 +226,28 @@ impl<'ctx, 'a> DeclLowering<'ctx, 'a> {
         scope: ScopeId,
         kind: SymbolKind,
     ) {
-        if let Some((name, range, members)) = self.begin_of_clause_parts(node, scope) {
-            let structure = self.register_structure(
+        if let Some((name, range, members)) = self.ctx.begin_of_clause_parts(node, scope) {
+            let structure = self.ctx.register_structure(
                 scope,
                 PendingStructure {
                     name: std::sync::Arc::clone(&name),
                     members,
                 },
             );
-            self.declare_symbol(scope, name, kind, range, Some(structure), None, None);
+            self.ctx
+                .declare_symbol(scope, name, kind, range, Some(structure), None, None);
             return;
         }
 
-        if let Some(clause) = DeclClause::cast(self.syntax(node))
+        if let Some(clause) = DeclClause::cast(self.ctx.syntax(node))
             && let Some(name_node) = clause.name()
-            && let Some(name) = name_node.name(self.source)
+            && let Some(name) = name_node.name(self.ctx.source())
         {
             let range = name_node.range();
-            let structure = self.structure_from_typed_clause(node, scope);
-            let declared_type = self.type_ref_from_typed_clause(node);
-            let type_clause_display = self.type_clause_display_from_typed_clause(node);
-            self.declare_symbol(
+            let structure = self.ctx.structure_from_typed_clause(node, scope);
+            let declared_type = self.ctx.type_ref_from_typed_clause(node);
+            let type_clause_display = self.ctx.type_clause_display_from_typed_clause(node);
+            self.ctx.declare_symbol(
                 scope,
                 name,
                 kind,
@@ -256,25 +265,26 @@ impl<'ctx, 'a> DeclLowering<'ctx, 'a> {
         scope: ScopeId,
         kind: SymbolKind,
     ) {
-        if let Some((name, range, members)) = self.begin_of_clause_parts(node, scope) {
-            let structure = self.register_structure(
+        if let Some((name, range, members)) = self.ctx.begin_of_clause_parts(node, scope) {
+            let structure = self.ctx.register_structure(
                 scope,
                 PendingStructure {
                     name: std::sync::Arc::clone(&name),
                     members,
                 },
             );
-            self.declare_symbol(scope, name, kind, range, Some(structure), None, None);
+            self.ctx
+                .declare_symbol(scope, name, kind, range, Some(structure), None, None);
         }
     }
 
     pub(super) fn walk_inline_decl(&mut self, node: abap_ast::arena::NodeId, scope: ScopeId) {
-        let (structure, declared_type) = self.inline_decl_inferred_type(node, scope);
-        for child in self.file.children(node) {
-            if self.file.kind(child) == SyntaxKind::DataDeclName
-                && let Some((name, range)) = self.node_name(child)
+        let (structure, declared_type) = self.ctx.inline_decl_inferred_type(node, scope);
+        for child in self.ctx.file().children(node) {
+            if self.ctx.file().kind(child) == SyntaxKind::DataDeclName
+                && let Some((name, range)) = self.ctx.node_name(child)
             {
-                self.declare_symbol(
+                self.ctx.declare_symbol(
                     scope,
                     name,
                     SymbolKind::Variable,
@@ -285,7 +295,7 @@ impl<'ctx, 'a> DeclLowering<'ctx, 'a> {
                 );
             }
         }
-        self.walk_children(node, scope);
+        self.ctx.walk_children(node, scope);
     }
 
     pub(super) fn walk_inline_field_symbol_decl(
@@ -303,11 +313,11 @@ impl<'ctx, 'a> DeclLowering<'ctx, 'a> {
         structure: Option<StructureId>,
         declared_type: Option<FieldTypeRefData>,
     ) {
-        for child in self.file.children(node) {
-            if self.file.kind(child) == SyntaxKind::DataDeclName
-                && let Some((name, range)) = self.node_name(child)
+        for child in self.ctx.file().children(node) {
+            if self.ctx.file().kind(child) == SyntaxKind::DataDeclName
+                && let Some((name, range)) = self.ctx.node_name(child)
             {
-                self.declare_symbol(
+                self.ctx.declare_symbol(
                     scope,
                     name,
                     SymbolKind::FieldSymbol,
@@ -323,14 +333,15 @@ impl<'ctx, 'a> DeclLowering<'ctx, 'a> {
 
     pub(super) fn collect_type_ref(&mut self, node: abap_ast::arena::NodeId, scope: ScopeId) {
         let simple_ns = self
-            .type_clause_ns_stack
+            .ctx
+            .type_clause_ns_stack_mut()
             .last()
             .copied()
             .unwrap_or(Namespace::Type);
         if let Some((namespace, _, base_name, range, field_path)) =
-            self.type_ref_access_chain(node, simple_ns)
+            self.ctx.type_ref_access_chain(node, simple_ns)
         {
-            self.add_reference(
+            self.ctx.add_reference(
                 scope,
                 std::sync::Arc::clone(&base_name),
                 namespace,
@@ -338,7 +349,7 @@ impl<'ctx, 'a> DeclLowering<'ctx, 'a> {
                 range,
             );
             if !field_path.is_empty() {
-                self.emit_field_access(FieldAccess {
+                self.ctx.emit_field_access(FieldAccess {
                     scope,
                     base_namespace: namespace,
                     base_name,

@@ -502,11 +502,16 @@ impl<'a, 'b> Parser<'a, 'b> {
     fn call_padding_is_valid(&self, lparen_idx: usize, rparen_idx: usize) -> bool {
         let lparen = &self.tokens[lparen_idx];
         let rparen = &self.tokens[rparen_idx];
-        let inner: Vec<_> = self.tokens[lparen_idx + 1..rparen_idx]
-            .iter()
-            .filter(|token| token.kind != TokenKind::Comment)
-            .collect();
-        match (inner.first(), inner.last()) {
+        let mut first = None;
+        let mut last = None;
+        for token in &self.tokens[lparen_idx + 1..rparen_idx] {
+            if token.kind == TokenKind::Comment {
+                continue;
+            }
+            first.get_or_insert(token);
+            last = Some(token);
+        }
+        match (first, last) {
             (Some(first), Some(last)) => {
                 have_space_between(lparen, first) && have_space_between(last, rparen)
             }
@@ -664,7 +669,7 @@ impl<'a, 'b> Parser<'a, 'b> {
             return;
         }
 
-        let mut children = Vec::new();
+        let mut children = Vec::with_capacity(segment.len());
         if let Some(value) = self.parse_call_argument_value(segment, prev_before_first) {
             children.push(value);
         } else {
@@ -687,7 +692,9 @@ impl<'a, 'b> Parser<'a, 'b> {
         let name_tok = &tokens[idx];
         let eq_tok = &tokens[idx + 1];
         let value_tokens = &tokens[idx + 2..value_end];
-        let mut children = vec![token_leaf(self.b, name_tok), token_leaf(self.b, eq_tok)];
+        let mut children = Vec::with_capacity(value_tokens.len().saturating_add(2));
+        children.push(token_leaf(self.b, name_tok));
+        children.push(token_leaf(self.b, eq_tok));
         if let Some(value) = self.parse_call_argument_value(value_tokens, eq_tok) {
             children.push(value);
         } else {
@@ -812,11 +819,13 @@ impl<'a, 'b> Parser<'a, 'b> {
         let span = self.b.span(node);
         let mut saw_ident = false;
 
-        for token in self
-            .tokens
-            .iter()
-            .filter(|token| token.range.start >= span.start && token.range.end <= span.end)
-        {
+        for token in self.tokens.iter() {
+            if token.range.start < span.start {
+                continue;
+            }
+            if token.range.end > span.end {
+                break;
+            }
             match token.kind {
                 TokenKind::Ident => saw_ident = true,
                 TokenKind::Minus => {}
@@ -854,10 +863,8 @@ impl<'a, 'b> Parser<'a, 'b> {
         if tokens.is_empty() {
             return None;
         }
-        let children: Vec<_> = tokens
-            .iter()
-            .map(|token| token_leaf(self.b, token))
-            .collect();
+        let mut children = Vec::with_capacity(tokens.len());
+        children.extend(tokens.iter().map(|token| token_leaf(self.b, token)));
         Some(self.b.branch(
             SyntaxKind::CallPositionalArg,
             tokens.first()?.range.start..tokens.last()?.range.end,

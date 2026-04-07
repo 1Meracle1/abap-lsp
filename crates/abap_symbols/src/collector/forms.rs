@@ -1,4 +1,3 @@
-use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 
 use abap_ast::SyntaxKind;
@@ -41,20 +40,6 @@ pub(super) struct FormsLowering<'ctx, 'a> {
     collector: &'ctx mut Collector<'a>,
 }
 
-impl<'ctx, 'a> Deref for FormsLowering<'ctx, 'a> {
-    type Target = Collector<'a>;
-
-    fn deref(&self) -> &Self::Target {
-        self.collector
-    }
-}
-
-impl<'ctx, 'a> DerefMut for FormsLowering<'ctx, 'a> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        self.collector
-    }
-}
-
 impl<'a> Collector<'a> {
     pub(super) fn forms_lowering(&mut self) -> FormsLowering<'_, 'a> {
         FormsLowering { collector: self }
@@ -68,7 +53,7 @@ impl<'ctx, 'a> FormsLowering<'ctx, 'a> {
         form_scope: ScopeId,
     ) -> Vec<FormParameterData> {
         let tokens = self.form_header_tokens(form_node);
-        let type_ref_nodes = self.direct_type_ref_children(form_node);
+        let type_ref_nodes = self.collector.direct_type_ref_children(form_node);
         let mut type_ref_idx = 0usize;
         if tokens.len() < 2 {
             return Vec::new();
@@ -77,12 +62,12 @@ impl<'ctx, 'a> FormsLowering<'ctx, 'a> {
             return Vec::new();
         }
         let mut i = 1usize;
-        while i < tokens.len() && self.syntax_token_is_comment(&tokens[i]) {
+        while i < tokens.len() && self.collector.syntax_token_is_comment(&tokens[i]) {
             i += 1;
         }
         if !tokens
             .get(i)
-            .is_some_and(|t| self.syntax_token_is_ident_like(t))
+            .is_some_and(|t| self.collector.syntax_token_is_ident_like(t))
         {
             return Vec::new();
         }
@@ -94,7 +79,7 @@ impl<'ctx, 'a> FormsLowering<'ctx, 'a> {
 
         while i < tokens.len() {
             let t = &tokens[i];
-            if self.syntax_token_is_comment(t) {
+            if self.collector.syntax_token_is_comment(t) {
                 i += 1;
                 continue;
             }
@@ -108,7 +93,7 @@ impl<'ctx, 'a> FormsLowering<'ctx, 'a> {
                     i += 1;
                 }
                 "." if depth == 0 => break,
-                lit if depth == 0 && self.syntax_token_is_ident_like(t) => {
+                lit if depth == 0 && self.collector.syntax_token_is_ident_like(t) => {
                     if lit.eq_ignore_ascii_case("tables") {
                         section = Some(FormHeaderParamSection::Tables);
                         i += 1;
@@ -139,7 +124,12 @@ impl<'ctx, 'a> FormsLowering<'ctx, 'a> {
                                 form_scope,
                                 type_ref_nodes.get(type_ref_idx).copied(),
                             ) {
-                                if self.symbol(consumed.symbol).declared_type.is_some() {
+                                if self
+                                    .collector
+                                    .symbol(consumed.symbol)
+                                    .declared_type
+                                    .is_some()
+                                {
                                     type_ref_idx += 1;
                                 }
                                 let current_section = section.expect("parameter section");
@@ -155,14 +145,16 @@ impl<'ctx, 'a> FormsLowering<'ctx, 'a> {
                                 let range = t.range.clone();
                                 let name = Arc::<str>::from(lit.to_ascii_lowercase());
                                 let mut j = i + 1;
-                                while j < tokens.len() && self.syntax_token_is_comment(&tokens[j]) {
+                                while j < tokens.len()
+                                    && self.collector.syntax_token_is_comment(&tokens[j])
+                                {
                                     j += 1;
                                 }
                                 let declared_type = match tokens.get(j) {
                                     Some(tok) if tok.text.eq_ignore_ascii_case("type") => {
                                         j += 1;
                                         while j < tokens.len()
-                                            && self.syntax_token_is_comment(&tokens[j])
+                                            && self.collector.syntax_token_is_comment(&tokens[j])
                                         {
                                             j += 1;
                                         }
@@ -172,7 +164,8 @@ impl<'ctx, 'a> FormsLowering<'ctx, 'a> {
                                             .get(type_ref_idx)
                                             .copied()
                                             .and_then(|node| {
-                                                self.field_type_ref_from_node(node, Namespace::Type)
+                                                self.collector
+                                                    .field_type_ref_from_node(node, Namespace::Type)
                                             });
                                         if dt.is_some() {
                                             type_ref_idx += 1;
@@ -183,7 +176,7 @@ impl<'ctx, 'a> FormsLowering<'ctx, 'a> {
                                     Some(tok) if tok.text.eq_ignore_ascii_case("like") => {
                                         j += 1;
                                         while j < tokens.len()
-                                            && self.syntax_token_is_comment(&tokens[j])
+                                            && self.collector.syntax_token_is_comment(&tokens[j])
                                         {
                                             j += 1;
                                         }
@@ -193,7 +186,7 @@ impl<'ctx, 'a> FormsLowering<'ctx, 'a> {
                                             .get(type_ref_idx)
                                             .copied()
                                             .and_then(|node| {
-                                                self.field_type_ref_from_node(
+                                                self.collector.field_type_ref_from_node(
                                                     node,
                                                     Namespace::Value,
                                                 )
@@ -206,7 +199,7 @@ impl<'ctx, 'a> FormsLowering<'ctx, 'a> {
                                     }
                                     _ => None,
                                 };
-                                let symbol = self.declare_symbol(
+                                let symbol = self.collector.declare_symbol(
                                     form_scope,
                                     name,
                                     SymbolKind::Parameter,
@@ -228,8 +221,8 @@ impl<'ctx, 'a> FormsLowering<'ctx, 'a> {
                             i += 1;
                         }
                         Some(FormHeaderParamSection::Tables) => {
-                            if self.syntax_token_is_ident_like(t) {
-                                let symbol = self.declare_symbol(
+                            if self.collector.syntax_token_is_ident_like(t) {
+                                let symbol = self.collector.declare_symbol(
                                     form_scope,
                                     Arc::<str>::from(lit.to_ascii_lowercase()),
                                     SymbolKind::Parameter,
@@ -260,16 +253,16 @@ impl<'ctx, 'a> FormsLowering<'ctx, 'a> {
     }
 
     pub(super) fn collect_perform_stmt_node(&mut self, node: NodeId, scope: ScopeId) {
-        let significant = self.significant_stmt_token_infos(node);
+        let significant = self.collector.significant_stmt_token_infos(node);
         self.collect_perform_stmt_infos(&significant, scope);
     }
 
     fn form_header_tokens(&self, form_node: NodeId) -> Vec<SyntaxTokenInfo> {
         let mut out = Vec::new();
-        for child in self.file.children(form_node) {
-            match self.file.kind(child) {
+        for child in self.collector.file.children(form_node) {
+            match self.collector.file.kind(child) {
                 SyntaxKind::Token => {
-                    let tokens = self.syntax_token_nodes(child);
+                    let tokens = self.collector.syntax_token_nodes(child);
                     if let Some(token) = tokens.first().cloned() {
                         let is_period = token.text.as_ref() == ".";
                         out.push(token);
@@ -278,7 +271,7 @@ impl<'ctx, 'a> FormsLowering<'ctx, 'a> {
                         }
                     }
                 }
-                SyntaxKind::TypeRefSimple => out.extend(self.syntax_token_nodes(child)),
+                SyntaxKind::TypeRefSimple => out.extend(self.collector.syntax_token_nodes(child)),
                 _ => break,
             }
         }
@@ -294,14 +287,14 @@ impl<'ctx, 'a> FormsLowering<'ctx, 'a> {
 
     fn form_header_starts_typed_param(&self, tokens: &[SyntaxTokenInfo], idx: usize) -> bool {
         let name = match tokens.get(idx) {
-            Some(t) if self.syntax_token_is_ident_like(t) => t,
+            Some(t) if self.collector.syntax_token_is_ident_like(t) => t,
             _ => return false,
         };
         if name.text.eq_ignore_ascii_case("value") || name.text.eq_ignore_ascii_case("reference") {
             return false;
         }
         let mut j = idx + 1;
-        while j < tokens.len() && self.syntax_token_is_comment(&tokens[j]) {
+        while j < tokens.len() && self.collector.syntax_token_is_comment(&tokens[j]) {
             j += 1;
         }
         tokens.get(j).is_some_and(|tok| {
@@ -325,22 +318,22 @@ impl<'ctx, 'a> FormsLowering<'ctx, 'a> {
             return None;
         };
         let mut j = i + 1;
-        while j < tokens.len() && self.syntax_token_is_comment(&tokens[j]) {
+        while j < tokens.len() && self.collector.syntax_token_is_comment(&tokens[j]) {
             j += 1;
         }
         let (name, range) = if tokens.get(j).map(|t| t.text.as_ref()) == Some("(") {
             j += 1;
-            while j < tokens.len() && self.syntax_token_is_comment(&tokens[j]) {
+            while j < tokens.len() && self.collector.syntax_token_is_comment(&tokens[j]) {
                 j += 1;
             }
             let inner = tokens.get(j)?;
-            if !self.syntax_token_is_ident_like(inner) {
+            if !self.collector.syntax_token_is_ident_like(inner) {
                 return None;
             }
             let name = Arc::<str>::from(inner.text.to_ascii_lowercase());
             let range = inner.range.clone();
             j += 1;
-            while j < tokens.len() && self.syntax_token_is_comment(&tokens[j]) {
+            while j < tokens.len() && self.collector.syntax_token_is_comment(&tokens[j]) {
                 j += 1;
             }
             if tokens.get(j).map(|t| t.text.as_ref()) != Some(")") {
@@ -350,7 +343,7 @@ impl<'ctx, 'a> FormsLowering<'ctx, 'a> {
             (name, range)
         } else {
             let inner = tokens.get(j)?;
-            if !self.syntax_token_is_ident_like(inner) {
+            if !self.collector.syntax_token_is_ident_like(inner) {
                 return None;
             }
             let name = Arc::<str>::from(inner.text.to_ascii_lowercase());
@@ -358,7 +351,7 @@ impl<'ctx, 'a> FormsLowering<'ctx, 'a> {
             j += 1;
             (name, range)
         };
-        while j < tokens.len() && self.syntax_token_is_comment(&tokens[j]) {
+        while j < tokens.len() && self.collector.syntax_token_is_comment(&tokens[j]) {
             j += 1;
         }
         let type_tok = tokens.get(j)?;
@@ -370,14 +363,14 @@ impl<'ctx, 'a> FormsLowering<'ctx, 'a> {
             return None;
         };
         j += 1;
-        while j < tokens.len() && self.syntax_token_is_comment(&tokens[j]) {
+        while j < tokens.len() && self.collector.syntax_token_is_comment(&tokens[j]) {
             j += 1;
         }
         let expr_start = j;
         let expr_end = self.skip_form_header_type_expression(tokens, expr_start);
         let declared_type =
-            type_ref_node.and_then(|node| self.field_type_ref_from_node(node, clause_ns));
-        let symbol = self.declare_symbol(
+            type_ref_node.and_then(|node| self.collector.field_type_ref_from_node(node, clause_ns));
+        let symbol = self.collector.declare_symbol(
             scope,
             name,
             SymbolKind::Parameter,
@@ -397,7 +390,7 @@ impl<'ctx, 'a> FormsLowering<'ctx, 'a> {
         let mut depth = 0i32;
         while i < tokens.len() {
             let t = &tokens[i];
-            if self.syntax_token_is_comment(t) {
+            if self.collector.syntax_token_is_comment(t) {
                 i += 1;
                 continue;
             }
@@ -427,12 +420,12 @@ impl<'ctx, 'a> FormsLowering<'ctx, 'a> {
             return;
         }
         let routine = &tokens[1];
-        if !self.syntax_token_is_ident_like(routine) {
+        if !self.collector.syntax_token_is_ident_like(routine) {
             return;
         }
 
         let routine_name = Arc::<str>::from(routine.text.to_ascii_lowercase());
-        self.add_reference(
+        self.collector.add_reference(
             scope,
             Arc::clone(&routine_name),
             Namespace::Routine,
@@ -456,7 +449,7 @@ impl<'ctx, 'a> FormsLowering<'ctx, 'a> {
                 break;
             }
 
-            if self.syntax_token_is_ident_like(token) {
+            if self.collector.syntax_token_is_ident_like(token) {
                 let next_section = if token.text.eq_ignore_ascii_case("tables") {
                     Some((PerformParameterSection::Tables, 1))
                 } else if token.text.eq_ignore_ascii_case("using") {
@@ -519,7 +512,7 @@ impl<'ctx, 'a> FormsLowering<'ctx, 'a> {
             .last()
             .map(|token| token.range.end)
             .unwrap_or(routine.range.end);
-        self.emit_perform_call(PerformCallData {
+        self.collector.emit_perform_call(PerformCallData {
             scope,
             range: tokens[0].range.start..end,
             routine_name,
@@ -543,14 +536,18 @@ impl<'ctx, 'a> FormsLowering<'ctx, 'a> {
                 if token.text.as_ref() == "." {
                     break;
                 }
-                if self.syntax_token_is_ident_like(token)
+                if self.collector.syntax_token_is_ident_like(token)
                     && (token.text.eq_ignore_ascii_case("tables")
                         || token.text.eq_ignore_ascii_case("using")
                         || token.text.eq_ignore_ascii_case("changing"))
                 {
                     break;
                 }
-                if consumed_any && self.token_starts_perform_argument_infos(tokens, idx) {
+                if consumed_any
+                    && self
+                        .collector
+                        .token_starts_perform_argument_infos(tokens, idx)
+                {
                     break;
                 }
             }

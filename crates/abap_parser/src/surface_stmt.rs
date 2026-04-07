@@ -96,11 +96,18 @@ fn call_method_clause_starts(source: &str, tokens: &[Token], idx: usize) -> bool
 fn call_inner_padding_is_valid(tokens: &[Token], lparen_idx: usize, rparen_idx: usize) -> bool {
     let lparen = &tokens[lparen_idx];
     let rparen = &tokens[rparen_idx];
-    let inner: Vec<_> = tokens[lparen_idx + 1..rparen_idx]
-        .iter()
-        .filter(|token| token.kind != TokenKind::Comment)
-        .collect();
-    match (inner.first(), inner.last()) {
+    let mut first = None;
+    let mut last = None;
+    for token in &tokens[lparen_idx + 1..rparen_idx] {
+        if token.kind == TokenKind::Comment {
+            continue;
+        }
+        if first.is_none() {
+            first = Some(token);
+        }
+        last = Some(token);
+    }
+    match (first, last) {
         (Some(first), Some(last)) => {
             have_space_between(lparen, first) && have_space_between(last, rparen)
         }

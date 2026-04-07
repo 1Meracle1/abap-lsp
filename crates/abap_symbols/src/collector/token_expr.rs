@@ -16,6 +16,10 @@ use super::emit::RefSink;
 use super::{Collector, SyntaxTokenInfo};
 
 impl<'a> Collector<'a> {
+    fn lower_arc(text: &str) -> Arc<str> {
+        Arc::<str>::from(text.to_ascii_lowercase())
+    }
+
     pub(super) fn collect_token_expression_refs_infos(
         &mut self,
         tokens: &[SyntaxTokenInfo],
@@ -126,7 +130,7 @@ impl<'a> Collector<'a> {
                     ) {
                         self.add_reference(
                             scope,
-                            Arc::<str>::from(text.to_ascii_lowercase()),
+                            Self::lower_arc(text),
                             Namespace::Value,
                             ReferenceKind::Identifier,
                             token.range.clone(),
@@ -679,7 +683,7 @@ impl<'a> Collector<'a> {
         }
         let mut cursor = idx;
         let mut namespace = None;
-        let mut field_path = Vec::new();
+        let mut field_path = Vec::with_capacity((tokens.len().saturating_sub(idx + 1)) / 2);
         while cursor + 2 < tokens.len() {
             let op = &tokens[cursor + 1];
             let field = &tokens[cursor + 2];
@@ -700,7 +704,7 @@ impl<'a> Collector<'a> {
             };
             namespace.get_or_insert(step_namespace);
             field_path.push(FieldAccessSegment {
-                name: Arc::<str>::from(field.text.to_ascii_lowercase()),
+                name: Self::lower_arc(field.text.as_ref()),
                 range: field.range.clone(),
             });
             cursor += 2;
@@ -708,7 +712,7 @@ impl<'a> Collector<'a> {
         Some((
             cursor + 1,
             namespace?,
-            Arc::<str>::from(base.text.to_ascii_lowercase()),
+            Self::lower_arc(base.text.as_ref()),
             base.range.clone(),
             field_path,
         ))

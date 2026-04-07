@@ -2,6 +2,14 @@ use std::time::Instant;
 
 use abap_parser::parse;
 
+fn perf_iterations() -> usize {
+    std::env::var("ABAP_PARSER_PERF_ITERATIONS")
+        .ok()
+        .and_then(|raw| raw.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(2_000)
+}
+
 #[test]
 #[ignore = "manual throughput smoke check"]
 fn parser_throughput_smoke() {
@@ -19,10 +27,17 @@ fn parser_throughput_smoke() {
         "ENDFORM.\n"
     );
 
+    let iterations = perf_iterations();
     let start = Instant::now();
-    for _ in 0..2_000 {
+    for _ in 0..iterations {
         let parsed = parse(src);
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
     }
-    eprintln!("parsed throughput smoke in {:?}", start.elapsed());
+    let elapsed = start.elapsed();
+    eprintln!(
+        "parsed throughput smoke: bytes={} iterations={} elapsed={:?}",
+        src.len(),
+        iterations,
+        elapsed
+    );
 }
