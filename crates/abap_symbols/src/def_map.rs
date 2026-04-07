@@ -4,6 +4,8 @@ use abap_lexer::TextRange;
 
 use crate::ids::{ReferenceId, ScopeId, StructureId, SymbolHandle, SymbolId, UnitId};
 use crate::scope::{Namespace, ScopeData};
+use crate::semantic::SemanticIndex;
+use crate::semantic_queries::SemanticQueries;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SymbolKind {
@@ -490,9 +492,19 @@ pub struct UnitAnalysis {
     pub sql_predicates: Vec<SqlPredicateData>,
     pub sql_targets: Vec<SqlTargetData>,
     pub provided_names: Vec<Arc<str>>,
+    pub(crate) semantic_index: SemanticIndex,
 }
 
 impl UnitAnalysis {
+    pub(crate) fn with_semantic_index(mut self) -> Self {
+        self.semantic_index = SemanticIndex::build(&self);
+        self
+    }
+
+    pub fn rebuild_semantic_index(&mut self) {
+        self.semantic_index = SemanticIndex::build(self);
+    }
+
     pub fn symbol(&self, id: SymbolId) -> &SymbolData {
         &self.symbols[id.as_usize()]
     }
@@ -503,6 +515,110 @@ impl UnitAnalysis {
 
     pub fn scope(&self, id: ScopeId) -> &ScopeData {
         &self.scopes[id.as_usize()]
+    }
+
+    pub fn semantic(&self) -> SemanticQueries<'_> {
+        SemanticQueries::new(self)
+    }
+
+    pub(crate) fn symbol_at_offset(&self, offset: usize) -> Option<&SymbolData> {
+        let semantic_id = self.semantic_index.symbol_at_offset(offset)?;
+        let symbol = self.semantic_index.symbol(semantic_id);
+        self.symbols.get(symbol.symbol_id.as_usize())
+    }
+
+    pub(crate) fn class_member_at_offset(&self, offset: usize) -> Option<&ClassMemberData> {
+        let semantic_id = self.semantic_index.class_member_at_offset(offset)?;
+        let member = self.semantic_index.class_member(semantic_id);
+        self.class_members.get(member.raw_index)
+    }
+
+    pub(crate) fn symbol_with_kind_and_decl_range(
+        &self,
+        kind: SymbolKind,
+        range: &TextRange,
+    ) -> Option<&SymbolData> {
+        let semantic_id = self
+            .semantic_index
+            .symbol_with_kind_and_decl_range(kind, range)?;
+        let symbol = self.semantic_index.symbol(semantic_id);
+        self.symbols.get(symbol.symbol_id.as_usize())
+    }
+
+    pub(crate) fn structure_field_at_offset(&self, offset: usize) -> Option<StructureFieldInfo> {
+        let semantic_id = self.semantic_index.structure_field_at_offset(offset)?;
+        let field = self.semantic_index.structure_field(semantic_id);
+        let info = self.structure_field_info(field.structure_id, field.name.as_str())?;
+        (info.decl_range.as_ref() == Some(&field.decl_range)).then_some(info)
+    }
+
+    pub(crate) fn sql_name_ref_at_offset(&self, offset: usize) -> Option<&SqlNameRefData> {
+        let semantic_id = self.semantic_index.sql_name_ref_at_offset(offset)?;
+        let sql_ref = self.semantic_index.sql_name_ref(semantic_id);
+        self.sql_name_refs.get(sql_ref.raw_index)
+    }
+
+    pub(crate) fn reference_at_offset(&self, offset: usize) -> Option<&ReferenceData> {
+        let semantic_id = self.semantic_index.reference_at_offset(offset)?;
+        let reference = self.semantic_index.reference(semantic_id);
+        self.references.get(reference.reference_id.as_usize())
+    }
+
+    pub(crate) fn type_reference_at_offset(&self, offset: usize) -> Option<&ReferenceData> {
+        let reference = self.reference_at_offset(offset)?;
+        (reference.kind == ReferenceKind::TypeRef).then_some(reference)
+    }
+
+    pub(crate) fn references_resolving_to(
+        &self,
+        handle: SymbolHandle,
+    ) -> impl Iterator<Item = &ReferenceData> + '_ {
+        self.semantic_index
+            .references_resolving_to(handle)
+            .filter_map(|semantic_id| {
+                let reference = self.semantic_index.reference(semantic_id);
+                self.references.get(reference.reference_id.as_usize())
+            })
+    }
+
+    pub(crate) fn type_references_named(
+        &self,
+        name: &str,
+    ) -> impl Iterator<Item = &ReferenceData> + '_ {
+        self.semantic_index
+            .type_references_named(name)
+            .filter_map(|semantic_id| {
+                let reference = self.semantic_index.reference(semantic_id);
+                self.references.get(reference.reference_id.as_usize())
+            })
+    }
+
+    pub(crate) fn references_in_scope(
+        &self,
+        scope: ScopeId,
+    ) -> impl Iterator<Item = &ReferenceData> + '_ {
+        self.semantic_index
+            .references_in_scope(scope)
+            .filter_map(|semantic_id| {
+                let reference = self.semantic_index.reference(semantic_id);
+                self.references.get(reference.reference_id.as_usize())
+            })
+    }
+
+    pub(crate) fn sql_source_name_refs_named(
+        &self,
+        name: &str,
+    ) -> impl Iterator<Item = &SqlNameRefData> + '_ {
+        self.semantic_index
+            .sql_source_name_refs_named(name)
+            .filter_map(|semantic_id| {
+                let sql_ref = self.semantic_index.sql_name_ref(semantic_id);
+                self.sql_name_refs.get(sql_ref.raw_index)
+            })
+    }
+
+    pub(crate) fn has_sql_source_named(&self, name: &str) -> bool {
+        self.semantic_index.has_sql_source_named(name)
     }
 
     pub fn structure_field(

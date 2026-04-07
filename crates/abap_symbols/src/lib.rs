@@ -7,6 +7,8 @@ mod perf_tests;
 mod project;
 mod resolver;
 mod scope;
+mod semantic;
+mod semantic_queries;
 mod validate;
 
 pub use builtins::{
@@ -30,6 +32,7 @@ pub use project::{
     analyze_unit_locally,
 };
 pub use scope::{Namespace, ScopeData, ScopeKind};
+pub use semantic_queries::SemanticQueries;
 
 #[cfg(test)]
 mod tests {
@@ -120,5 +123,192 @@ ENDFORM.
                 && reference.name.as_ref() == "lo_error"
                 && reference.resolution.is_some()
         }));
+    }
+
+    #[test]
+    fn sql_name_ref_query_finds_narrowest_match_at_offset() {
+        let src = "SELECT carrid FROM scarr INTO TABLE @DATA(lt_scarr).";
+        let parsed = parse(src);
+        let unit = analyze_unit("file:///sql_query.abap", src, &parsed);
+        let semantic = unit.semantic();
+
+        let source_offset = src.find("scarr").expect("sql source");
+        let sql_ref = semantic
+            .sql()
+            .name_ref_at_offset(source_offset)
+            .expect("sql name ref at source offset");
+
+        assert_eq!(sql_ref.kind, super::SqlNameRefKind::Source);
+        assert_eq!(sql_ref.name.as_ref(), "scarr");
+    }
+
+    #[test]
+    fn reference_queries_find_resolved_symbol_uses() {
+        let src = "DATA lv_value TYPE i. lv_value = lv_value + 1.";
+        let parsed = parse(src);
+        let unit = analyze_unit("file:///refs_query.abap", src, &parsed);
+        let semantic = unit.semantic();
+
+        let symbol = unit
+            .symbols
+            .iter()
+            .find(|symbol| {
+                symbol.kind == SymbolKind::Variable && symbol.name.as_ref() == "lv_value"
+            })
+            .expect("lv_value symbol");
+
+        let use_offset = src.rfind("lv_value").expect("last lv_value");
+        let reference = semantic
+            .refs()
+            .reference_at_offset(use_offset)
+            .expect("reference at use offset");
+        assert_eq!(reference.name.as_ref(), "lv_value");
+
+        let refs: Vec<_> = semantic
+            .refs()
+            .resolving_to(super::SymbolHandle {
+                unit: unit.unit_id,
+                symbol: symbol.id,
+            })
+            .collect();
+        assert_eq!(refs.len(), 2);
+        assert!(
+            refs.iter()
+                .all(|reference| reference.name.as_ref() == "lv_value")
+        );
+    }
+
+    #[test]
+    fn dd_like_queries_find_type_refs_and_sql_sources_by_name() {
+        let src = "TYPES ty_scarr TYPE scarr. SELECT * FROM scarr INTO TABLE @DATA(lt_scarr).";
+        let parsed = parse(src);
+        let unit = analyze_unit("file:///dd_like_query.abap", src, &parsed);
+        let semantic = unit.semantic();
+
+        let type_offset = src.find("TYPE scarr").expect("type ref") + "TYPE ".len();
+        let type_ref = semantic
+            .refs()
+            .type_reference_at_offset(type_offset)
+            .expect("type reference at offset");
+        assert_eq!(type_ref.kind, ReferenceKind::TypeRef);
+        assert_eq!(type_ref.name.as_ref(), "scarr");
+
+        let type_refs: Vec<_> = semantic.refs().type_named("SCARR").collect();
+        assert_eq!(type_refs.len(), 1);
+        assert!(semantic.sql().has_source_named("scarr"));
+
+        let sql_sources: Vec<_> = semantic.sql().source_name_refs_named("SCARR").collect();
+        assert_eq!(sql_sources.len(), 1);
+        assert_eq!(sql_sources[0].kind, super::SqlNameRefKind::Source);
+    }
+
+    #[test]
+    fn symbol_queries_find_symbols_and_class_members_at_offset() {
+        let src = r#"
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run.
+ENDCLASS.
+
+DATA gv_value TYPE i.
+"#;
+        let parsed = parse(src);
+        let unit = analyze_unit("file:///symbol_query.abap", src, &parsed);
+        let semantic = unit.semantic();
+
+        let method_offset = src.find("run").expect("method name");
+        let member = semantic
+            .decls()
+            .class_member_at_offset(method_offset)
+            .expect("class member at offset");
+        assert_eq!(member.kind, super::ClassMemberKind::Method);
+        assert_eq!(member.name.as_ref(), "run");
+
+        let global_offset = src.find("gv_value").expect("global variable");
+        let global = semantic
+            .decls()
+            .symbol_at_offset(global_offset)
+            .expect("global symbol at offset");
+        assert_eq!(global.kind, SymbolKind::Variable);
+        assert_eq!(global.name.as_ref(), "gv_value");
+
+        let by_range = semantic
+            .decls()
+            .symbol_with_kind_and_decl_range(SymbolKind::Variable, &global.decl_range)
+            .expect("symbol by range");
+        assert_eq!(by_range.id, global.id);
+    }
+
+    #[test]
+    fn structure_field_query_finds_field_at_offset() {
+        let src = r#"
+TYPES: BEGIN OF ty_demo,
+         comp TYPE i,
+       END OF ty_demo.
+"#;
+        let parsed = parse(src);
+        let unit = analyze_unit("file:///struct_field_query.abap", src, &parsed);
+        let semantic = unit.semantic();
+
+        let field_offset = src.find("comp").expect("field name");
+        let field = semantic
+            .decls()
+            .structure_field_at_offset(field_offset)
+            .expect("structure field at offset");
+        assert_eq!(field.name.as_ref(), "comp");
+        assert!(field.decl_range.is_some());
+    }
+
+    #[test]
+    fn semantic_facade_exposes_query_surface() {
+        let src = "DATA lv_value TYPE i. lv_value = lv_value + 1.";
+        let parsed = parse(src);
+        let unit = analyze_unit("file:///semantic_facade.abap", src, &parsed);
+        let semantic = unit.semantic();
+
+        let decl_offset = src.find("lv_value").expect("decl");
+        let use_offset = src.rfind("lv_value").expect("use");
+
+        let symbol = semantic
+            .decls()
+            .symbol_at_offset(decl_offset)
+            .expect("symbol at decl");
+        assert_eq!(symbol.name.as_ref(), "lv_value");
+
+        let reference = semantic
+            .refs()
+            .reference_at_offset(use_offset)
+            .expect("ref at use");
+        assert_eq!(reference.name.as_ref(), "lv_value");
+
+        let refs: Vec<_> = semantic
+            .refs()
+            .resolving_to(super::SymbolHandle {
+                unit: unit.unit_id,
+                symbol: symbol.id,
+            })
+            .collect();
+        assert_eq!(refs.len(), 2);
+    }
+
+    #[test]
+    fn semantic_facade_supports_domain_slices() {
+        let src = "TYPES ty_scarr TYPE scarr. SELECT * FROM scarr INTO TABLE @DATA(lt_scarr).";
+        let parsed = parse(src);
+        let unit = analyze_unit("file:///semantic_slices.abap", src, &parsed);
+        let semantic = unit.semantic();
+
+        let type_offset = src.find("TYPE scarr").expect("type ref") + "TYPE ".len();
+        assert!(
+            semantic
+                .refs()
+                .type_reference_at_offset(type_offset)
+                .is_some()
+        );
+        assert!(semantic.sql().has_source_named("scarr"));
+
+        let source_offset = src.find("FROM scarr").expect("sql source") + "FROM ".len();
+        assert!(semantic.sql().name_ref_at_offset(source_offset).is_some());
+        assert!(semantic.decls().symbol_at_offset(type_offset).is_none());
     }
 }

@@ -76,7 +76,7 @@ pub fn semantic_tokens_legend() -> lsp_types::SemanticTokensLegend {
 
 fn lookup_symbol<'a>(project: &'a ProjectAnalysis, handle: SymbolHandle) -> Option<&'a SymbolData> {
     let unit = project.units.get(handle.unit.as_usize())?;
-    unit.symbols.get(handle.symbol.as_usize())
+    Some(unit.symbol(handle.symbol))
 }
 
 fn symbol_kind_type_index(kind: SymbolKind, ix: SemanticTokenTypeIndices) -> u32 {

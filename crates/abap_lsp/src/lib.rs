@@ -375,8 +375,9 @@ pub fn collect_remote_dependency_candidates(
     snapshot: &AnalysisSnapshot,
 ) -> Vec<RemoteDependencyCandidate> {
     let mut deduped = HashMap::<String, RemoteDependencyCandidate>::new();
+    let semantic = snapshot.symbols.semantic();
 
-    for reference in &snapshot.symbols.references {
+    for reference in semantic.refs().all() {
         let kind = match reference.kind {
             ReferenceKind::Include => "include",
             ReferenceKind::StaticTarget => "static",
@@ -397,7 +398,7 @@ pub fn collect_remote_dependency_candidates(
         );
     }
 
-    for sql_ref in &snapshot.symbols.sql_name_refs {
+    for sql_ref in semantic.sql().name_refs() {
         if sql_ref.kind == abap_symbols::SqlNameRefKind::Source
             && sql_ref.resolution == SqlResolution::External
             && is_remote_lookup_candidate(sql_ref.name.as_ref(), "type")

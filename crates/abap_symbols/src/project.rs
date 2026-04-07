@@ -42,6 +42,7 @@ pub fn analyze_unit_locally(
     let mut unit = collect_unit(unit_id, uri, source, &parse.file, &parse.tokens);
     let scope_index = build_scope_index(&unit);
     resolve_unit_with_index(&mut unit, &scope_index);
+    unit.rebuild_semantic_index();
     unit
 }
 
@@ -74,6 +75,9 @@ pub fn analyze_project_from_units(mut units: Vec<UnitAnalysis>) -> ProjectAnalys
     }
 
     resolve_project_cross_unit(&mut units);
+    for unit in &mut units {
+        unit.rebuild_semantic_index();
+    }
 
     let mut project = ProjectAnalysis {
         units,
@@ -103,6 +107,7 @@ pub fn analyze_unit(uri: impl Into<Arc<str>>, source: &str, parse: &ParseResult)
     );
     let scope_indexes = vec![build_scope_index(&unit)];
     resolve_unit_with_index(&mut unit, &scope_indexes[0]);
+    unit.rebuild_semantic_index();
     let mut project = ProjectAnalysis {
         units: vec![unit],
         uri_to_unit: HashMap::from([(uri, UnitId(0))]),

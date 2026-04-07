@@ -1,0 +1,750 @@
+use std::ops::{Deref, DerefMut};
+use std::sync::Arc;
+
+use abap_ast::SyntaxKind;
+use abap_ast::arena::NodeId;
+use abap_ast::ast::{AstNode, MethodsStmt};
+
+use crate::def_map::{NamedArgumentTarget, ReferenceKind};
+use crate::ids::ScopeId;
+use crate::scope::Namespace;
+
+use super::{Collector, SyntaxTokenInfo};
+
+pub(super) struct StmtLowering<'ctx, 'a> {
+    collector: &'ctx mut Collector<'a>,
+}
+
+impl<'ctx, 'a> Deref for StmtLowering<'ctx, 'a> {
+    type Target = Collector<'a>;
+
+    fn deref(&self) -> &Self::Target {
+        self.collector
+    }
+}
+
+impl<'ctx, 'a> DerefMut for StmtLowering<'ctx, 'a> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.collector
+    }
+}
+
+impl<'a> Collector<'a> {
+    pub(super) fn stmt_lowering(&mut self) -> StmtLowering<'_, 'a> {
+        StmtLowering { collector: self }
+    }
+}
+
+impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
+    pub(super) fn collect_message_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        if self.node_has_structured_children(node) {
+            let mut inline_target = None;
+            for child in self.file.children(node) {
+                match self.file.kind(child) {
+                    SyntaxKind::Token => {}
+                    SyntaxKind::DataInlineDecl => inline_target = Some(child),
+                    _ => self.walk_node(child, scope),
+                }
+            }
+            if let Some(inline_decl) = inline_target {
+                self.decl_lowering().walk_inline_decl(inline_decl, scope);
+            }
+        }
+
+        let sig = self.significant_stmt_token_infos(node);
+        if sig.is_empty() || !sig[0].text.eq_ignore_ascii_case("message") {
+            return;
+        }
+        let period_pos = sig
+            .iter()
+            .position(|t| t.text.as_ref() == ".")
+            .unwrap_or(sig.len());
+
+        let with_ix = self
+            .find_top_level_keyword_index_infos(&sig, 1, "with")
+            .filter(|&ix| ix < period_pos);
+        let into_ix = self
+            .find_top_level_keyword_index_infos(&sig, 1, "into")
+            .filter(|&ix| ix < period_pos);
+
+        let head_end = [with_ix, into_ix, Some(period_pos)]
+            .into_iter()
+            .flatten()
+            .min()
+            .unwrap();
+
+        if sig
+            .get(1)
+            .is_some_and(|t| t.text.eq_ignore_ascii_case("id"))
+        {
+            let mut i = 2usize;
+            let end_mid = self.consume_concatenate_operand_infos(
+                &sig,
+                i,
+                &["type", "with", "into", "display", "raising"],
+            );
+            if end_mid > i {
+                self.collect_token_expression_refs_infos(&sig[i..end_mid], scope, true);
+            }
+            i = end_mid;
+            if i < head_end
+                && sig
+                    .get(i)
+                    .is_some_and(|t| t.text.eq_ignore_ascii_case("type"))
+            {
+                i += 1;
+                let end_ty = self.consume_concatenate_operand_infos(
+                    &sig,
+                    i,
+                    &["number", "with", "into", "display", "raising"],
+                );
+                if end_ty > i {
+                    self.collect_token_expression_refs_infos(&sig[i..end_ty], scope, true);
+                }
+                i = end_ty;
+            }
+            if i < head_end
+                && sig
+                    .get(i)
+                    .is_some_and(|t| t.text.eq_ignore_ascii_case("number"))
+            {
+                i += 1;
+                let end_num = self.consume_concatenate_operand_infos(
+                    &sig,
+                    i,
+                    &["with", "into", "display", "raising"],
+                );
+                if end_num > i {
+                    self.collect_token_expression_refs_infos(&sig[i..end_num], scope, true);
+                }
+                i = end_num;
+            }
+            if i < head_end
+                && sig
+                    .get(i)
+                    .is_some_and(|t| t.text.eq_ignore_ascii_case("display"))
+                && sig
+                    .get(i + 1)
+                    .is_some_and(|t| t.text.eq_ignore_ascii_case("like"))
+            {
+                i += 2;
+                let end_disp =
+                    self.consume_concatenate_operand_infos(&sig, i, &["with", "into", "raising"]);
+                if end_disp > i {
+                    self.collect_token_expression_refs_infos(&sig[i..end_disp], scope, true);
+                }
+            }
+        } else {
+            let mut i = 1usize;
+            let code_end = self.consume_concatenate_operand_infos(
+                &sig,
+                i,
+                &["type", "with", "into", "display", "raising"],
+            );
+            if code_end > i {
+                self.collect_token_expression_refs_infos(&sig[i..code_end], scope, true);
+            }
+            i = code_end;
+            if i < head_end
+                && sig
+                    .get(i)
+                    .is_some_and(|t| t.text.eq_ignore_ascii_case("type"))
+            {
+                i += 1;
+                let ty_end = self.consume_concatenate_operand_infos(
+                    &sig,
+                    i,
+                    &["with", "into", "display", "raising"],
+                );
+                if ty_end > i {
+                    self.collect_token_expression_refs_infos(&sig[i..ty_end], scope, true);
+                }
+                i = ty_end;
+            }
+            if i < head_end
+                && sig
+                    .get(i)
+                    .is_some_and(|t| t.text.eq_ignore_ascii_case("display"))
+                && sig
+                    .get(i + 1)
+                    .is_some_and(|t| t.text.eq_ignore_ascii_case("like"))
+            {
+                i += 2;
+                let disp_end =
+                    self.consume_concatenate_operand_infos(&sig, i, &["with", "into", "raising"]);
+                if disp_end > i {
+                    self.collect_token_expression_refs_infos(&sig[i..disp_end], scope, true);
+                }
+            }
+        }
+
+        if let Some(with_ix) = with_ix {
+            let args_end = into_ix.unwrap_or(period_pos);
+            if args_end > with_ix + 1 {
+                self.collect_token_expression_refs_infos(&sig[with_ix + 1..args_end], scope, true);
+            }
+        }
+        if let Some(into_ix) = into_ix {
+            let into_end = period_pos;
+            self.declare_message_inline_into_target_infos(&sig, into_ix + 1, into_end, scope);
+            if into_end > into_ix + 1 {
+                self.collect_token_expression_refs_infos(&sig[into_ix + 1..into_end], scope, true);
+            }
+        }
+    }
+
+    fn declare_message_inline_into_target_infos(
+        &mut self,
+        tokens: &[SyntaxTokenInfo],
+        start: usize,
+        end: usize,
+        scope: ScopeId,
+    ) {
+        let mut idx = start;
+        while idx < end
+            && tokens
+                .get(idx)
+                .is_some_and(|token| self.syntax_token_is_comment(token))
+        {
+            idx += 1;
+        }
+        let Some(head) = tokens.get(idx) else {
+            return;
+        };
+        if !head.text.eq_ignore_ascii_case("data") {
+            return;
+        }
+        if tokens.get(idx + 1).map(|token| token.text.as_ref()) != Some("(") {
+            return;
+        }
+        let Some(name_tok) = tokens.get(idx + 2) else {
+            return;
+        };
+        if !self.syntax_token_is_ident_like(name_tok) {
+            return;
+        }
+        if tokens.get(idx + 3).map(|token| token.text.as_ref()) != Some(")") {
+            return;
+        }
+        self.declare_symbol(
+            scope,
+            Arc::<str>::from(name_tok.text.to_ascii_lowercase()),
+            crate::def_map::SymbolKind::Variable,
+            name_tok.range.clone(),
+            None,
+            None,
+            None,
+        );
+    }
+
+    pub(super) fn collect_generic_simple_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        if self.node_has_structured_children(node) {
+            self.walk_children(node, scope);
+            return;
+        }
+
+        let significant = self.significant_stmt_token_infos(node);
+        let Some((head, tail)) = significant.split_first() else {
+            return;
+        };
+
+        if head.text.eq_ignore_ascii_case("clear") {
+            self.collect_clear_stmt_infos(tail, scope);
+        } else if head.text.eq_ignore_ascii_case("convert") {
+            self.collect_convert_stmt_infos(&significant, scope);
+        } else if head.text.eq_ignore_ascii_case("replace") {
+            self.collect_replace_stmt_infos(&significant, scope);
+        } else {
+            self.collect_token_expression_refs_infos(tail, scope, true);
+        }
+    }
+
+    pub(super) fn collect_clear_stmt_infos(&mut self, tokens: &[SyntaxTokenInfo], scope: ScopeId) {
+        let mut idx = 0usize;
+        while idx < tokens.len() {
+            let end_idx = self.consume_concatenate_operand_infos(tokens, idx, &["with", "in"]);
+            if end_idx > idx {
+                self.collect_token_expression_refs_infos(&tokens[idx..end_idx], scope, true);
+                idx = end_idx;
+            } else {
+                idx += 1;
+            }
+            while idx < tokens.len()
+                && !self.token_starts_concatenate_operand_infos(tokens, idx)
+                && tokens[idx].text.as_ref() != "."
+            {
+                idx += 1;
+            }
+        }
+    }
+
+    pub(super) fn collect_convert_stmt_infos(
+        &mut self,
+        tokens: &[SyntaxTokenInfo],
+        scope: ScopeId,
+    ) {
+        if tokens.is_empty() || !tokens[0].text.eq_ignore_ascii_case("convert") {
+            return;
+        }
+
+        let mut idx = 1usize;
+        if tokens
+            .get(idx)
+            .is_some_and(|token| token.text.eq_ignore_ascii_case("date"))
+        {
+            idx += 1;
+        }
+        if tokens
+            .get(idx)
+            .is_some_and(|token| token.text.eq_ignore_ascii_case("time"))
+        {
+            idx += 1;
+        }
+        if tokens
+            .get(idx)
+            .is_some_and(|token| token.text.eq_ignore_ascii_case("stamp"))
+        {
+            idx += 1;
+        }
+
+        let date_end = self.consume_concatenate_operand_infos(tokens, idx, &["time", "into"]);
+        if date_end > idx {
+            self.collect_token_expression_refs_infos(&tokens[idx..date_end], scope, true);
+        }
+        idx = date_end;
+
+        if tokens
+            .get(idx)
+            .is_some_and(|token| token.text.eq_ignore_ascii_case("time"))
+            && !tokens
+                .get(idx + 1)
+                .is_some_and(|token| token.text.eq_ignore_ascii_case("zone"))
+        {
+            let time_start = idx + 1;
+            let time_end = self.consume_concatenate_operand_infos(tokens, time_start, &["into"]);
+            if time_end > time_start {
+                self.collect_token_expression_refs_infos(
+                    &tokens[time_start..time_end],
+                    scope,
+                    true,
+                );
+            }
+            idx = time_end;
+        }
+
+        if tokens
+            .get(idx)
+            .is_some_and(|token| token.text.eq_ignore_ascii_case("into"))
+        {
+            idx += 1;
+            if tokens
+                .get(idx)
+                .is_some_and(|token| token.text.eq_ignore_ascii_case("time"))
+            {
+                idx += 1;
+            }
+            if tokens
+                .get(idx)
+                .is_some_and(|token| token.text.eq_ignore_ascii_case("stamp"))
+            {
+                idx += 1;
+            }
+            let target_end = self.consume_concatenate_operand_infos(tokens, idx, &["time"]);
+            if target_end > idx {
+                self.collect_token_expression_refs_infos(&tokens[idx..target_end], scope, true);
+            }
+            idx = target_end;
+        }
+
+        if tokens
+            .get(idx)
+            .is_some_and(|token| token.text.eq_ignore_ascii_case("time"))
+            && tokens
+                .get(idx + 1)
+                .is_some_and(|token| token.text.eq_ignore_ascii_case("zone"))
+        {
+            idx += 2;
+            let end_idx = self.consume_concatenate_operand_infos(tokens, idx, &[]);
+            if end_idx > idx {
+                self.collect_token_expression_refs_infos(&tokens[idx..end_idx], scope, true);
+            }
+        }
+    }
+
+    pub(super) fn collect_replace_stmt_infos(
+        &mut self,
+        tokens: &[SyntaxTokenInfo],
+        scope: ScopeId,
+    ) {
+        if tokens.is_empty() || !tokens[0].text.eq_ignore_ascii_case("replace") {
+            return;
+        }
+
+        let mut idx = 1usize;
+        if tokens.get(idx).is_some_and(|token| {
+            token.text.eq_ignore_ascii_case("first") || token.text.eq_ignore_ascii_case("all")
+        }) {
+            idx += 1;
+            if tokens.get(idx).is_some_and(|token| {
+                token.text.eq_ignore_ascii_case("occurrence")
+                    || token.text.eq_ignore_ascii_case("occurrences")
+            }) {
+                idx += 1;
+            }
+        }
+        if tokens
+            .get(idx)
+            .is_some_and(|token| token.text.eq_ignore_ascii_case("of"))
+        {
+            idx += 1;
+        }
+        if tokens
+            .get(idx)
+            .is_some_and(|token| token.text.eq_ignore_ascii_case("regex"))
+        {
+            idx += 1;
+        }
+
+        let source_end = self.consume_concatenate_operand_infos(tokens, idx, &["in", "with"]);
+        if source_end > idx {
+            self.collect_token_expression_refs_infos(&tokens[idx..source_end], scope, true);
+        }
+        idx = source_end;
+
+        while idx < tokens.len() {
+            let token = &tokens[idx];
+            if token.text.as_ref() == "." {
+                break;
+            }
+            if token.text.eq_ignore_ascii_case("in") {
+                if tokens.get(idx + 1).is_some_and(|next| {
+                    next.text.eq_ignore_ascii_case("character")
+                        || next.text.eq_ignore_ascii_case("byte")
+                }) && tokens
+                    .get(idx + 2)
+                    .is_some_and(|next| next.text.eq_ignore_ascii_case("mode"))
+                {
+                    idx += 3;
+                    continue;
+                }
+
+                let end_idx =
+                    self.consume_concatenate_operand_infos(tokens, idx + 1, &["with", "in"]);
+                if end_idx > idx + 1 {
+                    self.collect_token_expression_refs_infos(
+                        &tokens[idx + 1..end_idx],
+                        scope,
+                        true,
+                    );
+                }
+                idx = end_idx;
+                continue;
+            }
+            if token.text.eq_ignore_ascii_case("with") {
+                let end_idx = self.consume_concatenate_operand_infos(tokens, idx + 1, &["in"]);
+                if end_idx > idx + 1 {
+                    self.collect_token_expression_refs_infos(
+                        &tokens[idx + 1..end_idx],
+                        scope,
+                        true,
+                    );
+                }
+                idx = end_idx;
+                continue;
+            }
+            idx += 1;
+        }
+    }
+
+    pub(super) fn collect_get_time_stamp_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        if self.node_has_structured_children(node) {
+            self.walk_children(node, scope);
+            return;
+        }
+        let mut significant = Vec::new();
+        let mut inline_target = None;
+        for child in self.file.children(node) {
+            match self.file.kind(child) {
+                SyntaxKind::Token => {
+                    if let Some(token) = self.syntax_token_nodes(child).into_iter().next()
+                        && !self.syntax_token_is_comment(&token)
+                    {
+                        significant.push(token);
+                    }
+                }
+                SyntaxKind::DataInlineDecl => inline_target = Some(child),
+                _ => self.walk_node(child, scope),
+            }
+        }
+
+        if let Some(inline_decl) = inline_target {
+            self.decl_lowering().walk_inline_decl(inline_decl, scope);
+            return;
+        }
+
+        if significant.len() > 4 {
+            self.collect_token_expression_refs_infos(&significant[4..], scope, true);
+        }
+    }
+
+    pub(super) fn collect_methods_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        let methods_stmt = MethodsStmt::cast(self.syntax(node)).expect("methods stmt");
+        let type_refs: Vec<_> = methods_stmt
+            .type_refs()
+            .map(|type_ref| type_ref.syntax().id())
+            .collect();
+        for type_ref in type_refs {
+            self.decl_lowering().collect_type_ref(type_ref, scope);
+        }
+    }
+
+    pub(super) fn collect_assert_or_check_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        if self.node_has_structured_children(node) {
+            self.walk_children(node, scope);
+            return;
+        }
+        let significant = self.significant_stmt_token_infos(node);
+        let Some((_, tail)) = significant.split_first() else {
+            return;
+        };
+        self.collect_token_expression_refs_infos(tail, scope, true);
+    }
+
+    pub(super) fn collect_create_object_stmt_node(&mut self, node: NodeId, scope: ScopeId) {
+        if self.node_has_structured_children(node) {
+            self.walk_children(node, scope);
+            return;
+        }
+        let significant = self.significant_stmt_token_infos(node);
+        self.collect_create_object_stmt_infos(&significant, scope);
+    }
+
+    pub(super) fn collect_call_method_stmt_node(&mut self, node: NodeId, scope: ScopeId) {
+        let mut target = None;
+        let mut arg_list = None;
+
+        for child in self.file.children(node) {
+            match self.file.kind(child) {
+                SyntaxKind::CallMethodTarget => {
+                    let Some(mut callee) = self.first_non_token_child(child) else {
+                        continue;
+                    };
+                    while self.file.kind(callee) == SyntaxKind::TemplateExpr {
+                        let Some(inner) = self.first_non_token_child(callee) else {
+                            break;
+                        };
+                        callee = inner;
+                    }
+                    match self.file.kind(callee) {
+                        SyntaxKind::ExprIdent => {
+                            let Some((method_name, _)) = self.node_name(callee) else {
+                                continue;
+                            };
+                            target = Some(NamedArgumentTarget::ImplicitMethod { method_name });
+                        }
+                        SyntaxKind::SelectorExpr => {
+                            self.expr_lowering().collect_selector_expr(callee, scope);
+                            target = self.named_argument_target_for_callee(callee);
+                        }
+                        _ => self.expr_lowering().collect_expr(callee, scope),
+                    }
+                }
+                SyntaxKind::CallArgList => arg_list = Some(child),
+                _ => {}
+            }
+        }
+
+        if let (Some(target), Some(arg_list)) = (target, arg_list) {
+            self.expr_lowering()
+                .collect_call_argument_list(arg_list, scope, target);
+        }
+    }
+
+    pub(super) fn collect_call_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        if self.node_has_structured_children(node) {
+            self.walk_children(node, scope);
+            return;
+        }
+        self.collect_generic_simple_stmt(node, scope);
+    }
+
+    pub(super) fn collect_assign_keyword_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        let mut source_expr = None;
+        let mut inline_targets = Vec::new();
+        for child in self.file.children(node) {
+            match self.file.kind(child) {
+                SyntaxKind::Token => {}
+                SyntaxKind::AssignSourceExpr => {
+                    let Some(expr) = self.first_non_token_child(child) else {
+                        continue;
+                    };
+                    source_expr = Some(expr);
+                    self.expr_lowering().collect_expr(expr, scope);
+                }
+                SyntaxKind::FieldSymbolInlineDecl => inline_targets.push(child),
+                _ => self.walk_node(child, scope),
+            }
+        }
+
+        if inline_targets.is_empty() {
+            return;
+        }
+
+        let inferred_metadata = source_expr
+            .map(|expr| {
+                self.control_lowering()
+                    .loop_source_line_metadata_from_node(expr, scope)
+            })
+            .unwrap_or((None, None));
+        for target in inline_targets {
+            self.decl_lowering().declare_inline_field_symbol_decl(
+                target,
+                scope,
+                inferred_metadata.0,
+                inferred_metadata.1.clone(),
+            );
+        }
+    }
+
+    pub(super) fn collect_write_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        if self.node_has_structured_children(node) {
+            self.walk_children(node, scope);
+            return;
+        }
+        let significant = self.significant_stmt_token_infos(node);
+        let Some((_, tail)) = significant.split_first() else {
+            return;
+        };
+        self.collect_token_expression_refs_infos(tail, scope, true);
+    }
+
+    pub(super) fn collect_concatenate_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        if self.node_has_structured_children(node) {
+            self.walk_children(node, scope);
+            return;
+        }
+        let significant = self.significant_stmt_token_infos(node);
+        if significant.is_empty() || !significant[0].text.eq_ignore_ascii_case("concatenate") {
+            return;
+        }
+
+        let Some(into_idx) = self.find_top_level_keyword_index_infos(&significant, 1, "into")
+        else {
+            self.collect_token_expression_refs_infos(&significant[1..], scope, true);
+            return;
+        };
+
+        let mut idx = 1usize;
+        while idx < into_idx {
+            let end_idx = self.consume_concatenate_operand_infos(&significant, idx, &["into"]);
+            if end_idx == idx {
+                idx += 1;
+                continue;
+            }
+            self.collect_token_expression_refs_infos(&significant[idx..end_idx], scope, true);
+            idx = end_idx;
+        }
+
+        idx = into_idx + 1;
+        let target_end = self.consume_concatenate_operand_infos(
+            &significant,
+            idx,
+            &["separated", "respecting", "in"],
+        );
+        if target_end > idx {
+            self.collect_token_expression_refs_infos(&significant[idx..target_end], scope, true);
+        }
+        idx = target_end;
+
+        while idx < significant.len() {
+            let token = &significant[idx];
+            if token.text.as_ref() == "." {
+                break;
+            }
+            if token.text.eq_ignore_ascii_case("separated")
+                && significant
+                    .get(idx + 1)
+                    .is_some_and(|next| next.text.eq_ignore_ascii_case("by"))
+            {
+                let sep_start = idx + 2;
+                let sep_end = self.consume_concatenate_operand_infos(
+                    &significant,
+                    sep_start,
+                    &["respecting", "in"],
+                );
+                if sep_end > sep_start {
+                    self.collect_token_expression_refs_infos(
+                        &significant[sep_start..sep_end],
+                        scope,
+                        true,
+                    );
+                }
+                idx = sep_end;
+                continue;
+            }
+            if token.text.eq_ignore_ascii_case("respecting") {
+                idx += 1;
+                if significant
+                    .get(idx)
+                    .is_some_and(|next| next.text.eq_ignore_ascii_case("blanks"))
+                {
+                    idx += 1;
+                }
+                continue;
+            }
+            if token.text.eq_ignore_ascii_case("in") {
+                idx += 1;
+                if significant.get(idx).is_some_and(|next| {
+                    next.text.eq_ignore_ascii_case("character")
+                        || next.text.eq_ignore_ascii_case("byte")
+                }) {
+                    idx += 1;
+                }
+                if significant
+                    .get(idx)
+                    .is_some_and(|next| next.text.eq_ignore_ascii_case("mode"))
+                {
+                    idx += 1;
+                }
+                continue;
+            }
+            idx += 1;
+        }
+    }
+
+    pub(super) fn collect_create_object_stmt_infos(
+        &mut self,
+        tokens: &[SyntaxTokenInfo],
+        scope: ScopeId,
+    ) {
+        if tokens.len() < 3
+            || !tokens[0].text.eq_ignore_ascii_case("create")
+            || !tokens[1].text.eq_ignore_ascii_case("object")
+        {
+            return;
+        }
+
+        let target = &tokens[2];
+        if self.syntax_token_is_ident_like(target) {
+            let name = Arc::<str>::from(target.text.to_ascii_lowercase());
+            self.add_reference(
+                scope,
+                name,
+                Namespace::Value,
+                ReferenceKind::Identifier,
+                target.range.clone(),
+            );
+        }
+
+        for idx in 3..tokens.len() {
+            let token = &tokens[idx];
+            if !token.text.eq_ignore_ascii_case("type") {
+                continue;
+            }
+            if let Some((name, range)) = self.simple_type_ref_base_from_infos(&tokens[idx + 1..]) {
+                self.add_reference(scope, name, Namespace::Type, ReferenceKind::TypeRef, range);
+            }
+            break;
+        }
+    }
+}

@@ -8,9 +8,9 @@ use abap_symbols::{
     ClassMemberData, ClassMemberKind, FieldTypeRefData, FormParameterData,
     FormParameterPassingKind, FormParameterSection, NamedArgumentAccess, NamedArgumentTarget,
     Namespace, PerformArgumentData, PerformCallData, PerformParameterSection, ProjectAnalysis,
-    ReferenceKind, Resolution, ScopeId, SqlNameRefData, SqlNameRefKind, StructureFieldInfo,
-    StructureFieldShape, StructureId, SymbolData, SymbolId, SymbolKind, UnitAnalysis, UnitId,
-    Visibility, analyze_project_from_units, analyze_unit_locally, builtin_routine_spec,
+    Resolution, ScopeId, SqlNameRefData, SqlNameRefKind, StructureFieldInfo, StructureFieldShape,
+    StructureId, SymbolData, SymbolId, SymbolKind, UnitAnalysis, UnitId, Visibility,
+    analyze_project_from_units, analyze_unit_locally, builtin_routine_spec,
 };
 use parking_lot::RwLock;
 use rayon::prelude::*;
@@ -153,13 +153,6 @@ enum ReferenceSearchTarget {
     },
 }
 
-fn sql_name_ref_at_offset(unit: &UnitAnalysis, offset: usize) -> Option<&SqlNameRefData> {
-    unit.sql_name_refs
-        .iter()
-        .filter(|reference| reference.range.start <= offset && offset < reference.range.end)
-        .min_by_key(|reference| reference.range.end.saturating_sub(reference.range.start))
-}
-
 fn markdown_lines_for_sql_name_ref(sql_ref: &SqlNameRefData) -> Vec<String> {
     let title = match sql_ref.kind {
         SqlNameRefKind::Source => "Open SQL data source (DDIC object)",
@@ -219,7 +212,10 @@ impl AnalysisSnapshot {
     }
 
     pub fn structure_field_infos(&self, structure_id: StructureId) -> Vec<StructureFieldInfo> {
-        self.symbols.structure_field_infos(structure_id)
+        self.symbols
+            .semantic()
+            .decls()
+            .structure_field_infos(structure_id)
     }
 
     pub fn structure_field_info(
@@ -227,7 +223,10 @@ impl AnalysisSnapshot {
         structure_id: StructureId,
         field_name: &str,
     ) -> Option<StructureFieldInfo> {
-        self.symbols.structure_field_info(structure_id, field_name)
+        self.symbols
+            .semantic()
+            .decls()
+            .structure_field_info(structure_id, field_name)
     }
 
     pub fn resolve_structure_field_path(
@@ -236,6 +235,8 @@ impl AnalysisSnapshot {
         field_path: &[&str],
     ) -> Option<StructureFieldInfo> {
         self.symbols
+            .semantic()
+            .decls()
             .resolve_structure_field_path(structure_id, field_path)
     }
 
@@ -298,7 +299,10 @@ impl AnalysisSnapshot {
             .take(segment_index + 1)
             .map(|segment| segment.name.as_ref())
             .collect();
-        let field = unit.resolve_structure_field_path(structure_id, &field_path)?;
+        let field = unit
+            .semantic()
+            .decls()
+            .resolve_structure_field_path(structure_id, &field_path)?;
         let kind = match field.shape {
             StructureFieldShape::Scalar => HoveredComponentKind::Scalar,
             StructureFieldShape::Structured { structure } => HoveredComponentKind::Structured {
@@ -381,7 +385,7 @@ impl AnalysisSnapshot {
 
     /// Hover for an Open SQL name span (`FROM` source, column, alias, and similar).
     pub fn hovered_sql_name_ref_at(&self, offset: usize) -> Option<HoveredSymbolInfo> {
-        let sql_ref = sql_name_ref_at_offset(self.symbols.as_ref(), offset)?;
+        let sql_ref = self.symbols.semantic().sql().name_ref_at_offset(offset)?;
         Some(HoveredSymbolInfo {
             range: sql_ref.range.clone(),
             display_name: Arc::clone(&sql_ref.name),
@@ -424,20 +428,8 @@ impl AnalysisSnapshot {
     /// Hover for a resolved reference (narrowest matching range) or, if none, a symbol declaration
     /// covering the offset.
     pub fn hovered_resolved_symbol_at(&self, offset: usize) -> Option<HoveredSymbolInfo> {
-        if let Some((reference, resolution)) = self
-            .symbols
-            .references
-            .iter()
-            .filter_map(|reference| {
-                if reference.range.start <= offset && offset < reference.range.end {
-                    reference
-                        .resolution
-                        .map(|resolution| (reference, resolution))
-                } else {
-                    None
-                }
-            })
-            .min_by_key(|(reference, _)| reference.range.end.saturating_sub(reference.range.start))
+        if let Some(reference) = self.symbols.semantic().refs().reference_at_offset(offset)
+            && let Some(resolution) = reference.resolution
         {
             return Some(HoveredSymbolInfo {
                 range: reference.range.clone(),
@@ -448,15 +440,9 @@ impl AnalysisSnapshot {
 
         if let Some(member) = self
             .symbols
-            .class_members
-            .iter()
-            .filter(|member| member.decl_range.start <= offset && offset < member.decl_range.end)
-            .min_by_key(|member| {
-                member
-                    .decl_range
-                    .end
-                    .saturating_sub(member.decl_range.start)
-            })
+            .semantic()
+            .decls()
+            .class_member_at_offset(offset)
         {
             return Some(HoveredSymbolInfo {
                 range: member.decl_range.clone(),
@@ -465,17 +451,7 @@ impl AnalysisSnapshot {
             });
         }
 
-        let symbol = self
-            .symbols
-            .symbols
-            .iter()
-            .filter(|symbol| symbol.decl_range.start <= offset && offset < symbol.decl_range.end)
-            .min_by_key(|symbol| {
-                symbol
-                    .decl_range
-                    .end
-                    .saturating_sub(symbol.decl_range.start)
-            })?;
+        let symbol = self.symbols.semantic().decls().symbol_at_offset(offset)?;
 
         Some(HoveredSymbolInfo {
             range: symbol.decl_range.clone(),
@@ -509,7 +485,10 @@ impl AnalysisSnapshot {
             .take(segment_index + 1)
             .map(|segment| segment.name.as_ref())
             .collect();
-        let field = unit.resolve_structure_field_path(structure_id, &field_path)?;
+        let field = unit
+            .semantic()
+            .decls()
+            .resolve_structure_field_path(structure_id, &field_path)?;
         let decl_range = field.decl_range?;
         Some(definition_target_for_range(unit, decl_range))
     }
@@ -546,7 +525,10 @@ impl AnalysisSnapshot {
             .take(segment_index + 1)
             .map(|segment| segment.name.as_ref())
             .collect();
-        let field = unit.resolve_structure_field_path(structure_id, &field_path)?;
+        let field = unit
+            .semantic()
+            .decls()
+            .resolve_structure_field_path(structure_id, &field_path)?;
         Some(ReferenceSearchTarget::StructField {
             unit: unit.unit_id,
             owner: field.owner,
@@ -615,47 +597,24 @@ impl AnalysisSnapshot {
     }
 
     fn definition_target_for_resolved_symbol_at(&self, offset: usize) -> Option<DefinitionTarget> {
-        if let Some((reference, resolution)) = self
-            .symbols
-            .references
-            .iter()
-            .filter_map(|reference| {
-                if reference.range.start <= offset && offset < reference.range.end {
-                    reference
-                        .resolution
-                        .map(|resolution| (reference, resolution))
-                } else {
-                    None
-                }
-            })
-            .min_by_key(|(reference, _)| reference.range.end.saturating_sub(reference.range.start))
+        if let Some(reference) = self.symbols.semantic().refs().reference_at_offset(offset)
+            && let Some(resolution) = reference.resolution
         {
             return definition_target_for_resolution(self, resolution).or_else(|| {
                 self.symbols
-                    .symbols
-                    .iter()
+                    .semantic()
+                    .decls()
+                    .symbol_at_offset(reference.range.start)
                     .filter(|symbol| symbol.decl_range == reference.range)
-                    .min_by_key(|symbol| {
-                        symbol
-                            .decl_range
-                            .end
-                            .saturating_sub(symbol.decl_range.start)
-                    })
                     .map(|symbol| definition_target_for_symbol(self.symbols.as_ref(), symbol))
             });
         }
 
         if let Some(member) = self
             .symbols
-            .class_members
-            .iter()
-            .filter(|member| member.decl_range.start <= offset && offset < member.decl_range.end)
-            .min_by_key(|member| {
-                member
-                    .decl_range
-                    .end
-                    .saturating_sub(member.decl_range.start)
-            })
+            .semantic()
+            .decls()
+            .class_member_at_offset(offset)
         {
             return Some(definition_target_for_class_member(
                 self.symbols.as_ref(),
@@ -664,15 +623,9 @@ impl AnalysisSnapshot {
         }
 
         self.symbols
-            .symbols
-            .iter()
-            .filter(|symbol| symbol.decl_range.start <= offset && offset < symbol.decl_range.end)
-            .min_by_key(|symbol| {
-                symbol
-                    .decl_range
-                    .end
-                    .saturating_sub(symbol.decl_range.start)
-            })
+            .semantic()
+            .decls()
+            .symbol_at_offset(offset)
             .map(|symbol| definition_target_for_symbol(self.symbols.as_ref(), symbol))
     }
 
@@ -680,35 +633,17 @@ impl AnalysisSnapshot {
         &self,
         offset: usize,
     ) -> Option<ReferenceSearchTarget> {
-        if let Some((_, Resolution::Symbol(handle))) = self
-            .symbols
-            .references
-            .iter()
-            .filter_map(|reference| {
-                if reference.range.start <= offset && offset < reference.range.end {
-                    reference
-                        .resolution
-                        .map(|resolution| (reference, resolution))
-                } else {
-                    None
-                }
-            })
-            .min_by_key(|(reference, _)| reference.range.end.saturating_sub(reference.range.start))
+        if let Some(reference) = self.symbols.semantic().refs().reference_at_offset(offset)
+            && let Some(Resolution::Symbol(handle)) = reference.resolution
         {
             return Some(ReferenceSearchTarget::Symbol(handle));
         }
 
         if let Some(member) = self
             .symbols
-            .class_members
-            .iter()
-            .filter(|member| member.decl_range.start <= offset && offset < member.decl_range.end)
-            .min_by_key(|member| {
-                member
-                    .decl_range
-                    .end
-                    .saturating_sub(member.decl_range.start)
-            })
+            .semantic()
+            .decls()
+            .class_member_at_offset(offset)
         {
             return Some(ReferenceSearchTarget::ClassMember {
                 unit: self.symbols.unit_id,
@@ -717,18 +652,7 @@ impl AnalysisSnapshot {
             });
         }
 
-        if let Some(symbol) = self
-            .symbols
-            .symbols
-            .iter()
-            .filter(|symbol| symbol.decl_range.start <= offset && offset < symbol.decl_range.end)
-            .min_by_key(|symbol| {
-                symbol
-                    .decl_range
-                    .end
-                    .saturating_sub(symbol.decl_range.start)
-            })
-        {
+        if let Some(symbol) = self.symbols.semantic().decls().symbol_at_offset(offset) {
             return Some(ReferenceSearchTarget::Symbol(abap_symbols::SymbolHandle {
                 unit: self.symbols.unit_id,
                 symbol: symbol.id,
@@ -736,28 +660,13 @@ impl AnalysisSnapshot {
         }
 
         self.symbols
-            .structures
-            .iter()
-            .flat_map(|structure| {
-                structure.fields.iter().filter_map(move |field| {
-                    let decl_range = field.decl_range.as_ref()?;
-                    (decl_range.start <= offset && offset < decl_range.end).then_some(
-                        ReferenceSearchTarget::StructField {
-                            unit: self.symbols.unit_id,
-                            owner: structure.id,
-                            name: Arc::clone(&field.name),
-                        },
-                    )
-                })
-            })
-            .min_by_key(|target| match target {
-                ReferenceSearchTarget::StructField { owner, name, .. } => self
-                    .symbols
-                    .structure_field_info(*owner, name.as_ref())
-                    .and_then(|field| field.decl_range)
-                    .map(|range| range.end.saturating_sub(range.start))
-                    .unwrap_or(usize::MAX),
-                _ => usize::MAX,
+            .semantic()
+            .decls()
+            .structure_field_at_offset(offset)
+            .map(|field| ReferenceSearchTarget::StructField {
+                unit: self.symbols.unit_id,
+                owner: field.owner,
+                name: field.name,
             })
     }
 
@@ -765,19 +674,15 @@ impl AnalysisSnapshot {
         &self,
         offset: usize,
     ) -> Option<DefinitionTarget> {
-        let sql_ref = sql_name_ref_at_offset(self.symbols.as_ref(), offset)?;
+        let sql_ref = self.symbols.semantic().sql().name_ref_at_offset(offset)?;
         if sql_ref.kind != SqlNameRefKind::Source {
             return None;
         }
         let name = sql_ref.name.as_ref();
         let unit = self.symbols.as_ref();
-        unit.references
-            .iter()
-            .filter(|reference| {
-                reference.namespace == Namespace::Type
-                    && reference.kind == ReferenceKind::TypeRef
-                    && reference.name.as_ref().eq_ignore_ascii_case(name)
-            })
+        unit.semantic()
+            .refs()
+            .type_named(name)
             .filter_map(|reference| {
                 let resolution = reference.resolution.as_ref()?;
                 let target = definition_target_for_resolution(self, *resolution)?;
@@ -795,7 +700,7 @@ impl AnalysisSnapshot {
         offset: usize,
     ) -> Option<ReferenceSearchTarget> {
         let unit = self.symbols.as_ref();
-        if let Some(sql_ref) = sql_name_ref_at_offset(unit, offset) {
+        if let Some(sql_ref) = unit.semantic().sql().name_ref_at_offset(offset) {
             if sql_ref.kind == SqlNameRefKind::Source {
                 return Some(ReferenceSearchTarget::DdLikeTypeName {
                     unit: unit.unit_id,
@@ -804,23 +709,11 @@ impl AnalysisSnapshot {
             }
         }
 
-        let type_ref = unit
-            .references
-            .iter()
-            .filter(|reference| {
-                reference.range.start <= offset
-                    && offset < reference.range.end
-                    && reference.namespace == Namespace::Type
-                    && reference.kind == ReferenceKind::TypeRef
-            })
-            .min_by_key(|reference| reference.range.end.saturating_sub(reference.range.start))?;
+        let type_ref = unit.semantic().refs().type_reference_at_offset(offset)?;
 
         let name = &type_ref.name;
         let slash_name = name.as_ref().contains('/');
-        let used_in_sql = unit
-            .sql_sources
-            .iter()
-            .any(|source| source.name.as_ref().eq_ignore_ascii_case(name.as_ref()));
+        let used_in_sql = unit.semantic().sql().has_source_named(name.as_ref());
         if slash_name || used_in_sql {
             return Some(ReferenceSearchTarget::DdLikeTypeName {
                 unit: unit.unit_id,
@@ -857,13 +750,9 @@ impl AnalysisSnapshot {
         }
         let mut out: Vec<ReferenceTarget> = self
             .symbols
-            .references
-            .iter()
-            .filter(|reference| {
-                reference.namespace == Namespace::Type
-                    && reference.kind == ReferenceKind::TypeRef
-                    && reference.name.as_ref().eq_ignore_ascii_case(name.as_ref())
-            })
+            .semantic()
+            .refs()
+            .type_named(name.as_ref())
             .map(|reference| ReferenceTarget {
                 uri: Arc::clone(&self.uri),
                 range: reference.range.clone(),
@@ -871,12 +760,9 @@ impl AnalysisSnapshot {
             .collect();
         out.extend(
             self.symbols
-                .sql_name_refs
-                .iter()
-                .filter(|sql_ref| {
-                    sql_ref.kind == SqlNameRefKind::Source
-                        && sql_ref.name.as_ref().eq_ignore_ascii_case(name.as_ref())
-                })
+                .semantic()
+                .sql()
+                .source_name_refs_named(name.as_ref())
                 .map(|sql_ref| ReferenceTarget {
                     uri: Arc::clone(&self.uri),
                     range: sql_ref.range.clone(),
@@ -895,17 +781,10 @@ impl AnalysisSnapshot {
     fn local_symbol_references(&self, handle: abap_symbols::SymbolHandle) -> Vec<ReferenceTarget> {
         let related_handles = equivalent_symbol_handles(self.project.as_ref(), handle);
         let mut out: Vec<_> = self
-            .symbols
-            .references
-            .iter()
-            .filter_map(|reference| match reference.resolution {
-                Some(Resolution::Symbol(candidate)) if related_handles.contains(&candidate) => {
-                    Some(ReferenceTarget {
-                        uri: Arc::clone(&self.uri),
-                        range: reference.range.clone(),
-                    })
-                }
-                _ => None,
+            .related_symbol_references(&related_handles)
+            .map(|reference| ReferenceTarget {
+                uri: Arc::clone(&self.uri),
+                range: reference.range.clone(),
             })
             .collect();
         let symbol = self.project.units[handle.unit.as_usize()].symbol(handle.symbol);
@@ -914,6 +793,15 @@ impl AnalysisSnapshot {
             out.extend(self.local_perform_argument_references_for_parameter(&related_handles));
         }
         out
+    }
+
+    fn related_symbol_references<'a>(
+        &'a self,
+        handles: &'a [abap_symbols::SymbolHandle],
+    ) -> impl Iterator<Item = &'a abap_symbols::ReferenceData> + 'a {
+        handles
+            .iter()
+            .flat_map(|handle| self.symbols.semantic().refs().resolving_to(*handle))
     }
 
     fn local_named_argument_references_for_parameter(
@@ -1004,7 +892,10 @@ impl AnalysisSnapshot {
                     .take(segment_index + 1)
                     .map(|segment| segment.name.as_ref())
                     .collect();
-                let Some(field) = unit.resolve_structure_field_path(structure_id, &field_path)
+                let Some(field) = unit
+                    .semantic()
+                    .decls()
+                    .resolve_structure_field_path(structure_id, &field_path)
                 else {
                     continue;
                 };
@@ -1073,7 +964,10 @@ impl AnalysisSnapshot {
                 .iter()
                 .map(|part| part.as_ref())
                 .collect();
-            let field = unit.resolve_structure_field_path(structure_id, &path)?;
+            let field = unit
+                .semantic()
+                .decls()
+                .resolve_structure_field_path(structure_id, &path)?;
             structure_id = match field.shape {
                 StructureFieldShape::Structured { structure } => structure,
                 StructureFieldShape::Scalar => return None,
@@ -1081,6 +975,8 @@ impl AnalysisSnapshot {
         }
 
         let mut items: Vec<_> = unit
+            .semantic()
+            .decls()
             .structure_field_infos(structure_id)
             .into_iter()
             .filter(|field| field.name.as_ref().starts_with(query.prefix.as_ref()))
@@ -1252,7 +1148,7 @@ fn render_form_parameter_signature_data(
 }
 
 fn render_form_signature(unit: &UnitAnalysis, symbol: &SymbolData) -> Option<String> {
-    let routine = unit.form_routine(symbol.id)?;
+    let routine = unit.semantic().decls().form_routine(symbol.id)?;
     let mut lines = vec![format!("FORM {}", symbol.name)];
     let mut current_section = None;
     for parameter in &routine.parameters {
@@ -1459,7 +1355,10 @@ fn reference_target_for_search_target(
             name,
         } => {
             let unit = &project.units[unit.as_usize()];
-            let member = unit.class_member(*class_symbol, name.as_ref())?;
+            let member = unit
+                .semantic()
+                .decls()
+                .class_member(*class_symbol, name.as_ref())?;
             Some(ReferenceTarget {
                 uri: Arc::clone(&unit.uri),
                 range: member.decl_range.clone(),
@@ -1467,7 +1366,10 @@ fn reference_target_for_search_target(
         }
         ReferenceSearchTarget::StructField { unit, owner, name } => {
             let unit = &project.units[unit.as_usize()];
-            let field = unit.structure_field_info(*owner, name.as_ref())?;
+            let field = unit
+                .semantic()
+                .decls()
+                .structure_field_info(*owner, name.as_ref())?;
             Some(ReferenceTarget {
                 uri: Arc::clone(&unit.uri),
                 range: field.decl_range?,
@@ -1482,12 +1384,13 @@ fn symbol_handle_for_decl_range(
     range: &Range<usize>,
     kind: SymbolKind,
 ) -> Option<abap_symbols::SymbolHandle> {
-    unit.symbols.iter().find_map(|symbol| {
-        (symbol.kind == kind && symbol.decl_range == *range).then_some(abap_symbols::SymbolHandle {
+    unit.semantic()
+        .decls()
+        .symbol_with_kind_and_decl_range(kind, range)
+        .map(|symbol| abap_symbols::SymbolHandle {
             unit: unit.unit_id,
             symbol: symbol.id,
         })
-    })
 }
 
 fn equivalent_symbol_handles(
@@ -1502,7 +1405,9 @@ fn equivalent_symbol_handles(
     let mut out = vec![handle];
     if let Some(owner) = unit.scope(symbol.scope).owner {
         out.extend(
-            unit.routine_parameters(owner)
+            unit.semantic()
+                .decls()
+                .routine_parameters(owner)
                 .filter(|candidate| candidate.name == symbol.name)
                 .map(|candidate| abap_symbols::SymbolHandle {
                     unit: unit.unit_id,
@@ -1532,7 +1437,11 @@ fn equivalent_symbol_handles(
     };
 
     if let Some((class_symbol, method_name)) = method_member {
-        if let Some(member) = unit.class_member(class_symbol, method_name.as_ref()) {
+        if let Some(member) = unit
+            .semantic()
+            .decls()
+            .class_member(class_symbol, method_name.as_ref())
+        {
             out.extend(
                 member
                     .parameters
@@ -1549,7 +1458,9 @@ fn equivalent_symbol_handles(
                 && enclosing_class_owner(unit, candidate.scope) == Some(class_symbol)
         }) {
             out.extend(
-                unit.routine_parameters(method_symbol.id)
+                unit.semantic()
+                    .decls()
+                    .routine_parameters(method_symbol.id)
                     .filter(|candidate| candidate.name == symbol.name)
                     .map(|candidate| abap_symbols::SymbolHandle {
                         unit: unit.unit_id,
@@ -1614,7 +1525,7 @@ fn direct_superclass_from_class<'a>(
     unit: &'a UnitAnalysis,
     class_symbol: SymbolId,
 ) -> Option<(&'a UnitAnalysis, SymbolId)> {
-    let inheritance = unit.class_superclass(class_symbol)?;
+    let inheritance = unit.semantic().decls().class_superclass(class_symbol)?;
     resolve_project_class_symbol(snapshot, unit, &inheritance.superclass_name)
 }
 
@@ -1706,7 +1617,7 @@ fn form_parameter_hover_info(
         return None;
     }
     let form_symbol = unit.scope(symbol.scope).owner?;
-    let form_routine = unit.form_routine(form_symbol)?;
+    let form_routine = unit.semantic().decls().form_routine(form_symbol)?;
     let parameter = form_routine
         .parameters
         .iter()
@@ -1755,6 +1666,8 @@ fn resolve_perform_argument_parameter(
         return None;
     }
     let parameter = unit
+        .semantic()
+        .decls()
         .form_routine(routine_symbol_id)?
         .parameters
         .iter()
@@ -1779,6 +1692,8 @@ fn resolve_perform_argument_target(
         return None;
     }
     let parameter = unit
+        .semantic()
+        .decls()
         .form_routine(routine_symbol_id)?
         .parameters
         .iter()
@@ -1806,6 +1721,8 @@ fn resolve_perform_argument_symbol(
         return None;
     }
     let parameter = unit
+        .semantic()
+        .decls()
         .form_routine(routine_symbol_id)?
         .parameters
         .iter()
@@ -1843,6 +1760,8 @@ fn resolve_named_argument_parameter_with_scope_index<'a>(
                 return None;
             }
             let parameter = unit
+                .semantic()
+                .decls()
                 .class_member(class_symbol_id, "constructor")?
                 .parameters
                 .iter()
@@ -1943,6 +1862,8 @@ fn resolve_named_argument_target(
                 return None;
             }
             let parameter = unit
+                .semantic()
+                .decls()
                 .class_member(class_symbol_id, "constructor")?
                 .parameters
                 .iter()
@@ -1958,6 +1879,8 @@ fn resolve_named_argument_target(
                 false,
             )?;
             let parameter = unit
+                .semantic()
+                .decls()
                 .routine_parameters(routine_symbol_id)
                 .find(|symbol| symbol.name == access.name)?;
             Some(definition_target_for_symbol(unit, parameter))
@@ -2042,6 +1965,8 @@ fn resolve_named_argument_symbol(
                 return None;
             }
             let parameter = unit
+                .semantic()
+                .decls()
                 .class_member(class_symbol_id, "constructor")?
                 .parameters
                 .iter()
@@ -2057,6 +1982,8 @@ fn resolve_named_argument_symbol(
                 false,
             )?;
             let parameter = unit
+                .semantic()
+                .decls()
                 .routine_parameters(routine_symbol_id)
                 .find(|symbol| symbol.name == access.name)?;
             Some(abap_symbols::SymbolHandle {
@@ -2309,7 +2236,11 @@ fn resolve_direct_superclass_from_scope_with_scope_index<'a>(
     scope: ScopeId,
 ) -> Option<(&'a UnitAnalysis, SymbolId)> {
     let class_symbol = enclosing_class_owner(snapshot.symbols.as_ref(), scope)?;
-    let inheritance = snapshot.symbols.class_superclass(class_symbol)?;
+    let inheritance = snapshot
+        .symbols
+        .semantic()
+        .decls()
+        .class_superclass(class_symbol)?;
     let (unit, symbol_id) = resolve_symbol_from_context_with_scope_index(
         snapshot,
         scope_index,
@@ -2386,7 +2317,7 @@ fn resolve_class_member_in_hierarchy<'a>(
             return None;
         }
         let unit = &snapshot.project.units[current.0.as_usize()];
-        if let Some(member) = unit.class_member(current.1, member_name) {
+        if let Some(member) = unit.semantic().decls().class_member(current.1, member_name) {
             return Some((unit, member));
         }
         let (next_unit, next_symbol) = direct_superclass_from_class(snapshot, unit, current.1)?;
@@ -2408,7 +2339,7 @@ fn collect_class_methods_in_hierarchy<'a>(
             break;
         }
         let unit = &snapshot.project.units[current.0.as_usize()];
-        for member in unit.class_members_for(current.1) {
+        for member in unit.semantic().decls().class_members_for(current.1) {
             if member.kind != ClassMemberKind::Method
                 || !seen_names.insert(Arc::clone(&member.name))
             {
@@ -2554,7 +2485,10 @@ fn classify_field_access_segment_with_scope_index(
         .take(segment_index + 1)
         .map(|segment| segment.name.as_ref())
         .collect();
-    let field = unit.resolve_structure_field_path(structure_id, &field_path)?;
+    let field = unit
+        .semantic()
+        .decls()
+        .resolve_structure_field_path(structure_id, &field_path)?;
     Some(match field.shape {
         StructureFieldShape::Scalar => HoveredComponentKind::Scalar,
         StructureFieldShape::Structured { structure } => HoveredComponentKind::Structured {
@@ -2843,6 +2777,7 @@ fn retain_local_analysis_state(unit: &mut UnitAnalysis) {
             _ => reference.resolution = None,
         }
     }
+    unit.rebuild_semantic_index();
 }
 
 fn remap_local_unit_id(unit: &mut UnitAnalysis, unit_id: UnitId) {
@@ -2858,6 +2793,7 @@ fn remap_local_unit_id(unit: &mut UnitAnalysis, unit_id: UnitId) {
             handle.unit = unit_id;
         }
     }
+    unit.rebuild_semantic_index();
 }
 
 fn reused_local_unit(snapshot: &AnalysisSnapshot, unit_id: UnitId) -> UnitAnalysis {
