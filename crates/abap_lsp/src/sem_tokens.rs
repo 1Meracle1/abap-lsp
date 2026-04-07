@@ -544,4 +544,55 @@ ENDCLASS.
             "expected no property tokens in consumer doc, got {property_tokens:?}"
         );
     }
+
+    #[test]
+    fn dependency_snapshot_keeps_semantic_tokens_for_public_methods_after_class_methods() {
+        let store = DocumentStore::default();
+        let snapshots = store.replace_all(vec![DocumentInput {
+            uri: Arc::from("file:///dep.abap"),
+            version: 1,
+            text: Arc::from(
+                "\
+CLASS /cdbasis/cl_messages DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS compose_message.
+    CLASS-METHODS compose_message_bapi
+      IMPORTING iv_loglevel TYPE i.
+    METHODS constructor.
+    CLASS-METHODS conv2string
+      RETURNING VALUE(rv_output) TYPE string.
+ENDCLASS.
+CLASS /cdbasis/cl_messages IMPLEMENTATION.
+ENDCLASS.",
+            ),
+            is_dependency: true,
+            object_name: Some(Arc::from("/cdbasis/cl_messages")),
+        }]);
+        let snapshot = snapshots.get("file:///dep.abap").expect("dependency snapshot");
+        let tokens = build_semantic_tokens(snapshot.as_ref());
+        let legend = semantic_tokens_legend();
+        let method_idx = legend
+            .token_types
+            .iter()
+            .position(|t| *t == SemanticTokenType::METHOD)
+            .expect("legend has method") as u32;
+        let decl_mod = 1u32
+            << legend
+                .token_modifiers
+                .iter()
+                .position(|m| m.as_str() == "declaration")
+                .expect("declaration modifier");
+
+        let method_tokens: Vec<_> = tokens
+            .data
+            .iter()
+            .filter(|token| {
+                token.token_type == method_idx && (token.token_modifiers_bitset & decl_mod) != 0
+            })
+            .collect();
+        assert!(
+            method_tokens.len() >= 4,
+            "expected dependency method declaration tokens, got {method_tokens:?}"
+        );
+    }
 }

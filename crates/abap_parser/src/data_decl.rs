@@ -95,7 +95,7 @@ pub fn try_parse_class_data_decl(
         SyntaxKind::DataDecl,
         SyntaxKind::DataTypedClause,
         true,
-        false,
+        true,
     )
 }
 
@@ -127,7 +127,7 @@ fn try_parse_structured_data_decl(
             i,
             SyntaxKind::DataTypedClause,
             true,
-            has_colon,
+            true,
         )
         .or_else(|| {
             parse_begin_of_decl_clause(
@@ -1548,8 +1548,17 @@ mod tests {
     }
 
     #[test]
-    fn negative_value_clause_unsupported() {
-        assert_not_classified_as_data_decl("DATA lv TYPE i VALUE 0.");
+    fn data_decl_with_value() {
+        let file = tree_ok("DATA lv TYPE i VALUE 0.");
+        assert_eq!(file.count_kind(file.root(), SyntaxKind::DataDecl), 1);
+        assert_eq!(file.count_kind(file.root(), SyntaxKind::ValueClause), 1);
+    }
+
+    #[test]
+    fn class_data_decl_with_value_and_comment() {
+        let file = tree_ok(r##"CLASS-DATA sv_loglevel TYPE i VALUE 0. "#EC NOTEXT" ."##);
+        assert_eq!(file.count_kind(file.root(), SyntaxKind::DataDecl), 1);
+        assert_eq!(file.count_kind(file.root(), SyntaxKind::ValueClause), 1);
     }
 
     #[test]

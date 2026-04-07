@@ -3301,14 +3301,8 @@ fn dependency_surface_text(text: &str) -> Arc<str> {
                     blank_range_preserving_layout(&mut projected, statement_range.clone());
                 }
 
-                if first == Some("class") {
-                    if keywords.iter().any(|keyword| keyword == "implementation") {
-                        stack.push(DependencyBlock::ClassImplementation);
-                    } else {
-                        stack.push(DependencyBlock::ClassDefinition {
-                            visibility: DependencyVisibility::Private,
-                        });
-                    }
+                if let Some(block) = dependency_class_block_for_keywords(&keywords) {
+                    stack.push(block);
                 } else if first == Some("form") {
                     stack.push(DependencyBlock::Form);
                 } else if first == Some("function") {
@@ -3323,12 +3317,8 @@ fn dependency_surface_text(text: &str) -> Arc<str> {
 
         match first {
             Some("class") => {
-                if keywords.iter().any(|keyword| keyword == "implementation") {
-                    stack.push(DependencyBlock::ClassImplementation);
-                } else {
-                    stack.push(DependencyBlock::ClassDefinition {
-                        visibility: DependencyVisibility::Private,
-                    });
+                if let Some(block) = dependency_class_block_for_keywords(&keywords) {
+                    stack.push(block);
                 }
             }
             Some("form") => stack.push(DependencyBlock::Form),
@@ -3342,6 +3332,21 @@ fn dependency_surface_text(text: &str) -> Arc<str> {
     Arc::from(
         String::from_utf8(projected).expect("dependency surface projection should stay utf-8"),
     )
+}
+
+fn dependency_class_block_for_keywords(keywords: &[String]) -> Option<DependencyBlock> {
+    if keywords.first().map(String::as_str) != Some("class") {
+        return None;
+    }
+    if keywords.iter().any(|keyword| keyword == "implementation") {
+        return Some(DependencyBlock::ClassImplementation);
+    }
+    if keywords.iter().any(|keyword| keyword == "definition") {
+        return Some(DependencyBlock::ClassDefinition {
+            visibility: DependencyVisibility::Private,
+        });
+    }
+    None
 }
 
 fn dependency_surface_keeps_statement(first_keyword: Option<&str>) -> bool {
@@ -3634,6 +3639,56 @@ ENDCLASS.",
             .expect("hovered protected component");
 
         assert_eq!(hovered.field_name.as_ref(), "prot_value");
+    }
+
+    #[test]
+    fn dependency_surface_keeps_public_methods_after_class_methods() {
+        let store = DocumentStore::default();
+        let snapshots = store.replace_all(vec![DocumentInput {
+            uri: Arc::from("file:///dep.abap"),
+            version: 1,
+            text: Arc::from(
+                "\
+CLASS /cdbasis/cl_messages DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS compose_message.
+    CLASS-METHODS compose_message_bapi
+      IMPORTING iv_loglevel TYPE i.
+    METHODS constructor.
+    CLASS-METHODS conv2string
+      RETURNING VALUE(rv_output) TYPE string.
+ENDCLASS.
+CLASS /cdbasis/cl_messages IMPLEMENTATION.
+ENDCLASS.",
+            ),
+            is_dependency: true,
+            object_name: Some(Arc::from("/cdbasis/cl_messages")),
+        }]);
+        let snapshot = snapshots.get("file:///dep.abap").expect("dependency snapshot");
+        let method_names: Vec<_> = snapshot
+            .symbols
+            .class_members
+            .iter()
+            .filter(|member| member.kind == abap_symbols::ClassMemberKind::Method)
+            .map(|member| member.name.as_ref())
+            .collect();
+
+        assert!(
+            method_names.contains(&"compose_message"),
+            "expected first class-method, got {method_names:?}"
+        );
+        assert!(
+            method_names.contains(&"compose_message_bapi"),
+            "expected later public class-method, got {method_names:?}"
+        );
+        assert!(
+            method_names.contains(&"constructor"),
+            "expected instance method after class-methods, got {method_names:?}"
+        );
+        assert!(
+            method_names.contains(&"conv2string"),
+            "expected subsequent class-method, got {method_names:?}"
+        );
     }
 
     #[test]

@@ -4573,6 +4573,28 @@ ev_characters = condense( val = ev_characters del = sv_null_char ).\n\
 }
 
 #[test]
+fn data_and_class_data_value_decls_do_not_raise_unresolved_symbols() {
+    let src = r##"
+CLASS /cdbasis/cl_messages DEFINITION.
+  PROTECTED SECTION.
+    DATA mv_loglevel TYPE i VALUE 0. "#EC NOTEXT           " .
+    CLASS-DATA sv_loglevel TYPE i VALUE 0. "#EC NOTEXT           " .
+ENDCLASS.
+"##;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///class_data_value_decl.abap", src, &parsed);
+
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference
+                && (diag.message.contains("mv_loglevel") || diag.message.contains("data"))
+        }),
+        "unexpected unresolved diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn substring_access_uses_value_namespace() {
     let src = "\
 DATA ls_time TYPE string.\n\
