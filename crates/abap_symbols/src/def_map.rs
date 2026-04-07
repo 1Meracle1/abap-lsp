@@ -327,6 +327,7 @@ pub struct FieldTypeRefData {
 pub struct StructureFieldData {
     pub name: Arc<str>,
     pub decl_range: Option<TextRange>,
+    pub decl_unit: UnitId,
     pub structure: Option<StructureId>,
     pub type_ref: Option<FieldTypeRefData>,
 }
@@ -340,8 +341,10 @@ pub enum StructureFieldShape {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StructureFieldInfo {
     pub owner: StructureId,
+    pub owner_unit: UnitId,
     pub name: Arc<str>,
     pub decl_range: Option<TextRange>,
+    pub decl_unit: UnitId,
     pub shape: StructureFieldShape,
     pub type_ref: Option<FieldTypeRefData>,
 }
@@ -349,6 +352,8 @@ pub struct StructureFieldInfo {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StructureData {
     pub id: StructureId,
+    pub origin_unit: UnitId,
+    pub origin_structure: StructureId,
     pub name: Arc<str>,
     pub fields: Vec<StructureFieldData>,
 }
@@ -644,8 +649,10 @@ impl UnitAnalysis {
         let field = self.structure_field(structure_id, field_name)?;
         Some(StructureFieldInfo {
             owner: structure_id,
+            owner_unit: self.structure(structure_id).origin_unit,
             name: Arc::clone(&field.name),
             decl_range: field.decl_range.clone(),
+            decl_unit: field.decl_unit,
             shape: match field.structure {
                 Some(structure) => StructureFieldShape::Structured { structure },
                 None => StructureFieldShape::Scalar,
@@ -660,8 +667,10 @@ impl UnitAnalysis {
             .iter()
             .map(|field| StructureFieldInfo {
                 owner: structure_id,
+                owner_unit: self.structure(structure_id).origin_unit,
                 name: Arc::clone(&field.name),
                 decl_range: field.decl_range.clone(),
+                decl_unit: field.decl_unit,
                 shape: match field.structure {
                     Some(structure) => StructureFieldShape::Structured { structure },
                     None => StructureFieldShape::Scalar,

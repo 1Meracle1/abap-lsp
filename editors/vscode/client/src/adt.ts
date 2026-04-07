@@ -287,7 +287,7 @@ export class AdtClient {
 				"x-csrf-token": this.csrfToken,
 			},
 		});
-		return response.body;
+		return formatDdicXml(response.body);
 	}
 
 	async cacheRemoteObject(
@@ -489,4 +489,45 @@ function decodeXmlEntity(value: string): string {
 		.replace(/&lt;/g, "<")
 		.replace(/&gt;/g, ">")
 		.replace(/&amp;/g, "&");
+}
+
+export function formatDdicXml(xml: string): string {
+	const trimmed = xml.trim();
+	if (!trimmed.startsWith("<")) {
+		return xml;
+	}
+
+	const tokens = trimmed
+		.replace(/>\s+</g, "><")
+		.split(/(<[^>]+>)/g)
+		.map((part) => part.trim())
+		.filter((part) => part.length > 0);
+
+	const lines: string[] = [];
+	let indent = 0;
+	for (const token of tokens) {
+		if (!token.startsWith("<")) {
+			lines.push(`${"  ".repeat(indent)}${token}`);
+			continue;
+		}
+
+		if (token.startsWith("</")) {
+			indent = Math.max(indent - 1, 0);
+			lines.push(`${"  ".repeat(indent)}${token}`);
+			continue;
+		}
+
+		if (token.startsWith("<?") || token.startsWith("<!")) {
+			lines.push(`${"  ".repeat(indent)}${token}`);
+			continue;
+		}
+
+		const selfClosing = token.endsWith("/>");
+		lines.push(`${"  ".repeat(indent)}${token}`);
+		if (!selfClosing) {
+			indent += 1;
+		}
+	}
+
+	return `${lines.join("\n")}\n`;
 }

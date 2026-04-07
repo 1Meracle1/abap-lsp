@@ -2,8 +2,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::builtins::builtin_routine_spec;
-use crate::def_map::{ReferenceKind, Resolution, UnitAnalysis};
-use crate::ids::{ScopeId, SymbolHandle, SymbolId};
+use crate::def_map::{
+    FieldTypeRefData, ReferenceKind, Resolution, StructureData, StructureFieldData, UnitAnalysis,
+};
+use crate::ids::{ScopeId, StructureId, SymbolHandle, SymbolId};
 use crate::scope::{Namespace, ScopeKind};
 
 fn is_builtin_type(name: &str) -> bool {
@@ -307,4 +309,177 @@ pub fn resolve_project_cross_unit(units: &mut [UnitAnalysis]) {
             units[unit_idx].references[reference_idx].resolution = resolved;
         }
     }
+
+    let snapshot = units.to_vec();
+    for unit_idx in 0..units.len() {
+        let mut imported = HashMap::<(u32, u32), StructureId>::new();
+
+        let symbol_inputs: Vec<_> = units[unit_idx]
+            .symbols
+            .iter()
+            .map(|symbol| (symbol.structure, symbol.declared_type.clone()))
+            .collect();
+        let mut symbol_structures = Vec::with_capacity(symbol_inputs.len());
+        for (existing_structure, declared_type) in symbol_inputs {
+            let structure = existing_structure.or_else(|| {
+                declared_type.as_ref().and_then(|type_ref| {
+                    import_structure_for_type_ref(
+                        &snapshot,
+                        unit_idx,
+                        type_ref,
+                        &per_unit_root_index,
+                        &root_index,
+                        &mut units[unit_idx].structures,
+                        &mut imported,
+                    )
+                })
+            });
+            symbol_structures.push(structure);
+        }
+        for (symbol, structure) in units[unit_idx]
+            .symbols
+            .iter_mut()
+            .zip(symbol_structures.into_iter())
+        {
+            symbol.structure = structure;
+        }
+
+        let mut structure_idx = 0usize;
+        while structure_idx < units[unit_idx].structures.len() {
+            let field_inputs: Vec<_> = units[unit_idx].structures[structure_idx]
+                .fields
+                .iter()
+                .map(|field| (field.structure, field.type_ref.clone()))
+                .collect();
+            let mut resolved_fields = Vec::with_capacity(field_inputs.len());
+            for (existing_structure, type_ref) in field_inputs {
+                let structure = existing_structure.or_else(|| {
+                    type_ref.as_ref().and_then(|type_ref| {
+                        import_structure_for_type_ref(
+                            &snapshot,
+                            unit_idx,
+                            type_ref,
+                            &per_unit_root_index,
+                            &root_index,
+                            &mut units[unit_idx].structures,
+                            &mut imported,
+                        )
+                    })
+                });
+                resolved_fields.push(structure);
+            }
+            for (field, resolved_structure) in units[unit_idx].structures[structure_idx]
+                .fields
+                .iter_mut()
+                .zip(resolved_fields.into_iter())
+            {
+                field.structure = resolved_structure;
+            }
+            structure_idx += 1;
+        }
+    }
+}
+
+fn import_structure_for_type_ref(
+    snapshot: &[UnitAnalysis],
+    unit_idx: usize,
+    type_ref: &FieldTypeRefData,
+    per_unit_root_index: &[HashMap<(Namespace, Arc<str>), SymbolId>],
+    root_index: &HashMap<(Namespace, Arc<str>), Vec<SymbolHandle>>,
+    target_structures: &mut Vec<StructureData>,
+    imported: &mut HashMap<(u32, u32), StructureId>,
+) -> Option<StructureId> {
+    let handle =
+        resolve_root_symbol_handle(snapshot, unit_idx, type_ref, per_unit_root_index, root_index)?;
+    let source_unit_idx = handle.unit.as_usize();
+    let mut structure_id = snapshot[source_unit_idx].symbol(handle.symbol).structure?;
+    for field_name in &type_ref.field_path {
+        let field = snapshot[source_unit_idx]
+            .structure(structure_id)
+            .fields
+            .iter()
+            .find(|field| field.name.as_ref() == field_name.as_ref())?;
+        structure_id = field.structure?;
+    }
+    if source_unit_idx == unit_idx {
+        return Some(structure_id);
+    }
+    Some(import_structure(
+        snapshot,
+        source_unit_idx,
+        structure_id,
+        target_structures,
+        imported,
+    ))
+}
+
+fn resolve_root_symbol_handle(
+    units: &[UnitAnalysis],
+    unit_idx: usize,
+    type_ref: &FieldTypeRefData,
+    per_unit_root_index: &[HashMap<(Namespace, Arc<str>), SymbolId>],
+    root_index: &HashMap<(Namespace, Arc<str>), Vec<SymbolHandle>>,
+) -> Option<SymbolHandle> {
+    let namespaces = if type_ref.namespace == Namespace::Value {
+        [Namespace::Value, Namespace::Type]
+    } else {
+        [type_ref.namespace, type_ref.namespace]
+    };
+    for namespace in namespaces {
+        if let Some(symbol_id) = per_unit_root_index[unit_idx]
+            .get(&(namespace, Arc::clone(&type_ref.base_name)))
+            .copied()
+        {
+            return Some(SymbolHandle {
+                unit: units[unit_idx].unit_id,
+                symbol: symbol_id,
+            });
+        }
+        if let Some(handles) = root_index.get(&(namespace, Arc::clone(&type_ref.base_name)))
+            && let Some(handle) = handles.first().copied()
+        {
+            return Some(handle);
+        }
+    }
+    None
+}
+
+fn import_structure(
+    snapshot: &[UnitAnalysis],
+    source_unit_idx: usize,
+    source_structure_id: StructureId,
+    target_structures: &mut Vec<StructureData>,
+    imported: &mut HashMap<(u32, u32), StructureId>,
+) -> StructureId {
+    let key = (source_unit_idx as u32, source_structure_id.0);
+    if let Some(existing) = imported.get(&key).copied() {
+        return existing;
+    }
+
+    let source = snapshot[source_unit_idx].structure(source_structure_id);
+    let new_id = StructureId(target_structures.len() as u32);
+    target_structures.push(StructureData {
+        id: new_id,
+        origin_unit: source.origin_unit,
+        origin_structure: source.origin_structure,
+        name: Arc::clone(&source.name),
+        fields: Vec::new(),
+    });
+    imported.insert(key, new_id);
+
+    let fields = source
+        .fields
+        .iter()
+        .map(|field| StructureFieldData {
+            name: Arc::clone(&field.name),
+            decl_range: field.decl_range.clone(),
+            decl_unit: field.decl_unit,
+            structure: field.structure.map(|nested| {
+                import_structure(snapshot, source_unit_idx, nested, target_structures, imported)
+            }),
+            type_ref: field.type_ref.clone(),
+        })
+        .collect();
+    target_structures[new_id.as_usize()].fields = fields;
+    new_id
 }

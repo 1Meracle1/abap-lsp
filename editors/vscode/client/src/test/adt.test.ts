@@ -2,6 +2,7 @@ import * as assert from "assert";
 import * as vscode from "vscode";
 
 import {
+	formatDdicXml,
 	inferDdicManifestKind,
 	isDdicDependencyObject,
 	isSupportedDependencyObject,
@@ -109,5 +110,27 @@ suite("ADT dependency helpers", () => {
 		);
 
 		assert.strictEqual(selected, undefined);
+	});
+
+	test("Formats DDIC XML bodies before saving", () => {
+		const formatted = formatDdicXml(
+			'<?xml version="1.0"?><root><node attr="x"><child>value</child></node><empty/></root>',
+		);
+
+		assert.strictEqual(
+			formatted,
+			[
+				'<?xml version="1.0"?>',
+				"<root>",
+				'  <node attr="x">',
+				"    <child>",
+				"      value",
+				"    </child>",
+				"  </node>",
+				"  <empty/>",
+				"</root>",
+				"",
+			].join("\n"),
+		);
 	});
 });

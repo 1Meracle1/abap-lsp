@@ -114,6 +114,8 @@ impl<'a> Collector<'a> {
         let id = StructureId(self.structures.len() as u32);
         self.structures.push(StructureData {
             id,
+            origin_unit: self.unit_id,
+            origin_structure: id,
             name,
             fields: fields.into_iter().collect(),
         });
@@ -132,6 +134,7 @@ impl<'a> Collector<'a> {
                     fields.push(StructureFieldData {
                         name: field.name,
                         decl_range: Some(field.decl_range),
+                        decl_unit: self.unit_id,
                         structure: field
                             .structure
                             .map(|nested| self.register_structure(scope, nested))
@@ -157,12 +160,14 @@ impl<'a> Collector<'a> {
 
     pub(super) fn install_builtin_symbols(&mut self, root_scope: ScopeId) {
         let mut structure_ids = HashMap::new();
+        let unit_id = self.unit_id;
         for structure in BUILTIN_STRUCTURES {
             let id = self.push_structure(
                 Arc::<str>::from(structure.name),
                 structure.fields.iter().map(|field| StructureFieldData {
                     name: Arc::<str>::from(field.name),
                     decl_range: None,
+                    decl_unit: unit_id,
                     structure: None,
                     type_ref: None,
                 }),

@@ -490,7 +490,10 @@ impl AnalysisSnapshot {
             .decls()
             .resolve_structure_field_path(structure_id, &field_path)?;
         let decl_range = field.decl_range?;
-        Some(definition_target_for_range(unit, decl_range))
+        Some(definition_target_for_range(
+            &self.project.units[field.decl_unit.as_usize()],
+            decl_range,
+        ))
     }
 
     fn reference_search_target_for_component_at(
@@ -530,8 +533,8 @@ impl AnalysisSnapshot {
             .decls()
             .resolve_structure_field_path(structure_id, &field_path)?;
         Some(ReferenceSearchTarget::StructField {
-            unit: unit.unit_id,
-            owner: field.owner,
+            unit: field.owner_unit,
+            owner: unit.structure(field.owner).origin_structure,
             name: Arc::clone(&field.name),
         })
     }
@@ -664,8 +667,8 @@ impl AnalysisSnapshot {
             .decls()
             .structure_field_at_offset(offset)
             .map(|field| ReferenceSearchTarget::StructField {
-                unit: self.symbols.unit_id,
-                owner: field.owner,
+                unit: field.owner_unit,
+                owner: self.symbols.structure(field.owner).origin_structure,
                 name: field.name,
             })
     }
@@ -899,7 +902,10 @@ impl AnalysisSnapshot {
                 else {
                     continue;
                 };
-                if unit.unit_id == target_unit && field.owner == owner && field.name == *name {
+                if field.owner_unit == target_unit
+                    && unit.structure(field.owner).origin_structure == owner
+                    && field.name == *name
+                {
                     out.push(ReferenceTarget {
                         uri: Arc::clone(&self.uri),
                         range: access.field_path[segment_index].range.clone(),
@@ -1371,7 +1377,7 @@ fn reference_target_for_search_target(
                 .decls()
                 .structure_field_info(*owner, name.as_ref())?;
             Some(ReferenceTarget {
-                uri: Arc::clone(&unit.uri),
+                uri: Arc::clone(&project.units[field.decl_unit.as_usize()].uri),
                 range: field.decl_range?,
             })
         }
@@ -3239,7 +3245,7 @@ impl DocumentStore {
 mod tests {
     use super::{
         DefinitionTarget, DocumentInput, DocumentStore, HoveredComponentKind, ReferenceTarget,
-        dependency_surface_text,
+        ddic_xml_to_abap_source, dependency_surface_text,
     };
     use abap_symbols::StructureFieldShape;
     use std::sync::Arc;
@@ -3425,6 +3431,319 @@ DATA ls_outer TYPE ty_outer.",
             .expect("nested field info");
         assert_eq!(nested.name.as_ref(), "a");
         assert!(matches!(nested.shape, StructureFieldShape::Scalar));
+    }
+
+    #[test]
+    fn resolves_fields_from_namespaced_ddic_structure_dependency() {
+        let store = DocumentStore::default();
+        let xml = r#"
+<abapsource:elementInfo adtcore:name="/sttp/epc1"
+    xmlns:abapsource="http://www.sap.com/adt/abapsource"
+    xmlns:adtcore="http://www.sap.com/adt/core">
+  <abapsource:elementInfo adtcore:type="TABL/DTF" adtcore:name="controller">
+    <abapsource:properties>
+      <abapsource:entry abapsource:key="ddicDataElement">prxctrltab</abapsource:entry>
+      <abapsource:entry abapsource:key="ddicDataType">ttyp</abapsource:entry>
+    </abapsource:properties>
+  </abapsource:elementInfo>
+  <abapsource:elementInfo adtcore:type="TABL/DTF" adtcore:name="content">
+    <abapsource:properties>
+      <abapsource:entry abapsource:key="ddicDataType">string</abapsource:entry>
+    </abapsource:properties>
+  </abapsource:elementInfo>
+</abapsource:elementInfo>
+"#;
+        let dependency_text =
+            ddic_xml_to_abap_source("/STTP/EPC1", "ddic-structure", xml).expect("dependency");
+        let main_src = "\
+DATA ls_epc TYPE /sttp/epc1.
+ls_epc-controller = VALUE #( ).
+ls_epc-content = 'x'.";
+
+        let snapshots = store.replace_all(vec![
+            DocumentInput {
+                uri: Arc::from("file:///deps/%2FSTTP%2FEPC1.xml"),
+                version: 1,
+                text: Arc::from(dependency_text.clone()),
+                is_dependency: true,
+            },
+            DocumentInput {
+                uri: Arc::from("file:///main.abap"),
+                version: 1,
+                text: Arc::from(main_src),
+                is_dependency: false,
+            },
+        ]);
+        let snapshot = snapshots.get("file:///main.abap").expect("main snapshot");
+        let offset = main_src.find("content").expect("field use") + 1;
+
+        let hovered = snapshot
+            .hovered_component_at(offset)
+            .expect("hovered dependency field");
+        assert_eq!(hovered.field_name.as_ref(), "content");
+        assert_eq!(hovered.declared_type.as_deref(), Some("TYPE string"));
+
+        let definition = snapshot.definition_at(offset).expect("field definition");
+        assert_eq!(definition.uri.as_ref(), "file:///deps/%2FSTTP%2FEPC1.xml");
+
+        let dependency_snapshot = snapshots
+            .get("file:///deps/%2FSTTP%2FEPC1.xml")
+            .expect("dependency snapshot");
+        let decl_offset = dependency_text.find("content").expect("field declaration") + 1;
+        let references = store
+            .references(
+                "file:///deps/%2FSTTP%2FEPC1.xml",
+                decl_offset,
+                true,
+            )
+            .expect("field references");
+        assert_reference_slices(
+            &references,
+            &[
+                ("file:///deps/%2FSTTP%2FEPC1.xml", dependency_text.as_str(), "content"),
+                ("file:///main.abap", main_src, "content"),
+            ],
+        );
+        assert!(
+            dependency_snapshot
+                .reference_search_target_at(decl_offset)
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn resolves_nested_fields_across_recursive_ddic_structure_dependencies() {
+        let store = DocumentStore::default();
+        let epcisdocument_xml = r#"
+<abapsource:elementInfo adtcore:name="/sttp/epcisdocument"
+    xmlns:abapsource="http://www.sap.com/adt/abapsource"
+    xmlns:adtcore="http://www.sap.com/adt/core">
+  <abapsource:elementInfo adtcore:type="TABL/DTF" adtcore:name="epcisdocument">
+    <abapsource:properties>
+      <abapsource:entry abapsource:key="ddicDataElement">/sttp/epcisdocument_type</abapsource:entry>
+      <abapsource:entry abapsource:key="ddicDataType">stru</abapsource:entry>
+    </abapsource:properties>
+  </abapsource:elementInfo>
+</abapsource:elementInfo>
+"#;
+        let epcisdocument_type_xml = r#"
+<abapsource:elementInfo adtcore:name="/sttp/epcisdocument_type"
+    xmlns:abapsource="http://www.sap.com/adt/abapsource"
+    xmlns:adtcore="http://www.sap.com/adt/core">
+  <abapsource:elementInfo adtcore:type="TABL/DTF" adtcore:name="epcisbody">
+    <abapsource:properties>
+      <abapsource:entry abapsource:key="ddicDataElement">/sttp/epcisbody_type</abapsource:entry>
+      <abapsource:entry abapsource:key="ddicDataType">stru</abapsource:entry>
+    </abapsource:properties>
+  </abapsource:elementInfo>
+</abapsource:elementInfo>
+"#;
+        let epcisbody_type_xml = r#"
+<abapsource:elementInfo adtcore:name="/sttp/epcisbody_type"
+    xmlns:abapsource="http://www.sap.com/adt/abapsource"
+    xmlns:adtcore="http://www.sap.com/adt/core">
+  <abapsource:elementInfo adtcore:type="TABL/DTF" adtcore:name="event_list">
+    <abapsource:properties>
+      <abapsource:entry abapsource:key="ddicDataElement">/sttp/event_list_type</abapsource:entry>
+      <abapsource:entry abapsource:key="ddicDataType">stru</abapsource:entry>
+    </abapsource:properties>
+  </abapsource:elementInfo>
+</abapsource:elementInfo>
+"#;
+        let event_list_type_xml = r#"
+<abapsource:elementInfo adtcore:name="/sttp/event_list_type"
+    xmlns:abapsource="http://www.sap.com/adt/abapsource"
+    xmlns:adtcore="http://www.sap.com/adt/core">
+  <abapsource:elementInfo adtcore:type="TABL/DTF" adtcore:name="choice">
+    <abapsource:properties>
+      <abapsource:entry abapsource:key="ddicDataElement">/sttp/event_list_type_choice</abapsource:entry>
+      <abapsource:entry abapsource:key="ddicDataType">ttyp</abapsource:entry>
+    </abapsource:properties>
+  </abapsource:elementInfo>
+</abapsource:elementInfo>
+"#;
+        let main_src = "\
+DATA ls_doc TYPE /sttp/epcisdocument.
+ls_doc-epcisdocument-epcisbody-event_list-choice = VALUE #( ).";
+
+        let snapshots = store.replace_all(vec![
+            DocumentInput {
+                uri: Arc::from("file:///deps/%2FSTTP%2FEPCISDOCUMENT.xml"),
+                version: 1,
+                text: Arc::from(
+                    ddic_xml_to_abap_source("/STTP/EPCISDOCUMENT", "ddic-structure", epcisdocument_xml)
+                        .expect("epcisdocument"),
+                ),
+                is_dependency: true,
+            },
+            DocumentInput {
+                uri: Arc::from("file:///deps/%2FSTTP%2FEPCISDOCUMENT_TYPE.xml"),
+                version: 1,
+                text: Arc::from(
+                    ddic_xml_to_abap_source(
+                        "/STTP/EPCISDOCUMENT_TYPE",
+                        "ddic-structure",
+                        epcisdocument_type_xml,
+                    )
+                    .expect("epcisdocument_type"),
+                ),
+                is_dependency: true,
+            },
+            DocumentInput {
+                uri: Arc::from("file:///deps/%2FSTTP%2FEPCISBODY_TYPE.xml"),
+                version: 1,
+                text: Arc::from(
+                    ddic_xml_to_abap_source("/STTP/EPCISBODY_TYPE", "ddic-structure", epcisbody_type_xml)
+                        .expect("epcisbody_type"),
+                ),
+                is_dependency: true,
+            },
+            DocumentInput {
+                uri: Arc::from("file:///deps/%2FSTTP%2FEVENT_LIST_TYPE.xml"),
+                version: 1,
+                text: Arc::from(
+                    ddic_xml_to_abap_source("/STTP/EVENT_LIST_TYPE", "ddic-structure", event_list_type_xml)
+                        .expect("event_list_type"),
+                ),
+                is_dependency: true,
+            },
+            DocumentInput {
+                uri: Arc::from("file:///main.abap"),
+                version: 1,
+                text: Arc::from(main_src),
+                is_dependency: false,
+            },
+        ]);
+        let snapshot = snapshots.get("file:///main.abap").expect("main snapshot");
+        let offset = main_src.find("choice").expect("choice use") + 1;
+
+        let hovered = snapshot
+            .hovered_component_at(offset)
+            .expect("hovered deep dependency field");
+        assert_eq!(hovered.field_name.as_ref(), "choice");
+        assert_eq!(
+            hovered.declared_type.as_deref(),
+            Some("TYPE /sttp/event_list_type_choice")
+        );
+
+        let definition = snapshot.definition_at(offset).expect("deep field definition");
+        assert_eq!(
+            definition.uri.as_ref(),
+            "file:///deps/%2FSTTP%2FEVENT_LIST_TYPE.xml"
+        );
+    }
+
+    #[test]
+    fn resolves_fields_inside_ddic_proxy_include_structures() {
+        let store = DocumentStore::default();
+        let encode_decode_xml = r#"
+<abapsource:elementInfo adtcore:name="/sttp/s_encode_decode"
+    xmlns:abapsource="http://www.sap.com/adt/abapsource"
+    xmlns:adtcore="http://www.sap.com/adt/core">
+  <abapsource:elementInfo adtcore:type="TABL/DS" adtcore:name=".include">
+    <abapsource:properties>
+      <abapsource:entry abapsource:key="ddicIncludeName">/sttp/s_obj_ids</abapsource:entry>
+    </abapsource:properties>
+  </abapsource:elementInfo>
+  <abapsource:elementInfo adtcore:type="TABL/DTF" adtcore:name="enc_type">
+    <abapsource:properties>
+      <abapsource:entry abapsource:key="ddicDataElement">/sttp/e_enc_type</abapsource:entry>
+      <abapsource:entry abapsource:key="ddicDataType">char</abapsource:entry>
+      <abapsource:entry abapsource:key="ddicIsPartOfInclude">/sttp/s_obj_ids</abapsource:entry>
+    </abapsource:properties>
+  </abapsource:elementInfo>
+</abapsource:elementInfo>
+"#;
+        let obj_ids_xml = r#"
+<abapsource:elementInfo adtcore:name="/sttp/s_obj_ids"
+    xmlns:abapsource="http://www.sap.com/adt/abapsource"
+    xmlns:adtcore="http://www.sap.com/adt/core">
+  <abapsource:elementInfo adtcore:type="TABL/DTF" adtcore:name="owner">
+    <abapsource:properties>
+      <abapsource:entry abapsource:key="ddicDataElement">/sttp/e_gen_owner</abapsource:entry>
+      <abapsource:entry abapsource:key="ddicDataType">char</abapsource:entry>
+    </abapsource:properties>
+  </abapsource:elementInfo>
+</abapsource:elementInfo>
+"#;
+        let main_src = "\
+DATA ls_encode_decode TYPE /sttp/s_encode_decode.
+ls_encode_decode-obj_ids-owner = 'x'.";
+
+        let snapshots = store.replace_all(vec![
+            DocumentInput {
+                uri: Arc::from("file:///deps/%2FSTTP%2FS_ENCODE_DECODE.xml"),
+                version: 1,
+                text: Arc::from(
+                    ddic_xml_to_abap_source("/STTP/S_ENCODE_DECODE", "ddic-structure", encode_decode_xml)
+                        .expect("s_encode_decode"),
+                ),
+                is_dependency: true,
+            },
+            DocumentInput {
+                uri: Arc::from("file:///deps/%2FSTTP%2FS_OBJ_IDS.xml"),
+                version: 1,
+                text: Arc::from(
+                    ddic_xml_to_abap_source("/STTP/S_OBJ_IDS", "ddic-structure", obj_ids_xml)
+                        .expect("s_obj_ids"),
+                ),
+                is_dependency: true,
+            },
+            DocumentInput {
+                uri: Arc::from("file:///main.abap"),
+                version: 1,
+                text: Arc::from(main_src),
+                is_dependency: false,
+            },
+        ]);
+        let snapshot = snapshots.get("file:///main.abap").expect("main snapshot");
+        let offset = main_src.find("owner").expect("owner use") + 1;
+
+        let hovered = snapshot
+            .hovered_component_at(offset)
+            .expect("hovered included field");
+        assert_eq!(hovered.field_name.as_ref(), "owner");
+
+        let definition = snapshot.definition_at(offset).expect("included field definition");
+        assert_eq!(definition.uri.as_ref(), "file:///deps/%2FSTTP%2FS_OBJ_IDS.xml");
+
+        let direct_src = "\
+DATA ls_encode_decode TYPE /sttp/s_encode_decode.
+ls_encode_decode-enc_type = 'x'.";
+        let direct_snapshot = store.replace_all(vec![
+            DocumentInput {
+                uri: Arc::from("file:///deps/%2FSTTP%2FS_ENCODE_DECODE.xml"),
+                version: 1,
+                text: Arc::from(
+                    ddic_xml_to_abap_source("/STTP/S_ENCODE_DECODE", "ddic-structure", encode_decode_xml)
+                        .expect("s_encode_decode"),
+                ),
+                is_dependency: true,
+            },
+            DocumentInput {
+                uri: Arc::from("file:///deps/%2FSTTP%2FS_OBJ_IDS.xml"),
+                version: 1,
+                text: Arc::from(
+                    ddic_xml_to_abap_source("/STTP/S_OBJ_IDS", "ddic-structure", obj_ids_xml)
+                        .expect("s_obj_ids"),
+                ),
+                is_dependency: true,
+            },
+            DocumentInput {
+                uri: Arc::from("file:///direct.abap"),
+                version: 1,
+                text: Arc::from(direct_src),
+                is_dependency: false,
+            },
+        ]);
+        let direct_snapshot = direct_snapshot
+            .get("file:///direct.abap")
+            .expect("direct snapshot");
+        let direct_offset = direct_src.find("enc_type").expect("enc_type use") + 1;
+        let direct_hover = direct_snapshot
+            .hovered_component_at(direct_offset)
+            .expect("hovered direct included field");
+        assert_eq!(direct_hover.field_name.as_ref(), "enc_type");
     }
 
     #[test]
