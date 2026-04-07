@@ -21,6 +21,19 @@ impl<'a> Collector<'a> {
 }
 
 impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
+    fn call_function_name_from_tokens(tokens: &[SyntaxTokenInfo]) -> Option<Arc<str>> {
+        let name = tokens.get(2)?.text.as_ref().trim();
+        let unquoted = name
+            .strip_prefix('\'')
+            .and_then(|name| name.strip_suffix('\''))
+            .or_else(|| {
+                name.strip_prefix('`')
+                    .and_then(|name| name.strip_suffix('`'))
+            })
+            .unwrap_or(name);
+        Some(Arc::<str>::from(unquoted.to_ascii_lowercase()))
+    }
+
     pub(super) fn collect_message_stmt(&mut self, node: NodeId, scope: ScopeId) {
         if self.collector.node_has_structured_children(node) {
             let mut inline_target = None;
@@ -642,7 +655,35 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
 
     pub(super) fn collect_call_stmt(&mut self, node: NodeId, scope: ScopeId) {
         if self.collector.node_has_structured_children(node) {
-            self.collector.walk_children(node, scope);
+            let significant = self.collector.significant_stmt_token_infos(node);
+            let function_name = if significant.len() >= 3
+                && significant[0].text.eq_ignore_ascii_case("call")
+                && significant[1].text.eq_ignore_ascii_case("function")
+            {
+                Self::call_function_name_from_tokens(&significant)
+            } else {
+                None
+            };
+
+            for child in self.collector.file.children(node) {
+                match self.collector.file.kind(child) {
+                    SyntaxKind::CallArgList => {
+                        if let Some(function_name) = function_name.clone() {
+                            self.collector.expr_lowering().collect_call_argument_list(
+                                child,
+                                scope,
+                                NamedArgumentTarget::Function { function_name },
+                            );
+                        } else {
+                            self.collector
+                                .expr_lowering()
+                                .collect_structured_argument_values_from_children(child, scope);
+                        }
+                    }
+                    SyntaxKind::Token => {}
+                    _ => self.collector.walk_node(child, scope),
+                }
+            }
             return;
         }
         self.collect_generic_simple_stmt(node, scope);

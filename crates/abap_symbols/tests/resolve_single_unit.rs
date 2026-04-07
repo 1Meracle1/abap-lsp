@@ -3251,8 +3251,7 @@ CREATE DATA mo_outbound LIKE iv_data.
         .symbols
         .iter()
         .find(|symbol| {
-            symbol.kind == abap_symbols::SymbolKind::Variable
-                && symbol.name.as_ref() == "iv_data"
+            symbol.kind == abap_symbols::SymbolKind::Variable && symbol.name.as_ref() == "iv_data"
         })
         .expect("iv_data variable");
 
@@ -3860,6 +3859,49 @@ START-OF-SELECTION.
         "unexpected diagnostics: {:?}",
         unit.diagnostics
     );
+}
+
+#[test]
+fn collects_call_function_sections_without_keyword_diagnostics() {
+    let src = r#"
+START-OF-SELECTION.
+  DATA iv_message TYPE string.
+  DATA lt_strings TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+  CALL FUNCTION 'SWA_STRING_SPLIT'
+    EXPORTING
+      input_string           = iv_message
+      max_component_length   = 50
+    TABLES
+      string_components      = lt_strings
+    EXCEPTIONS
+      OTHERS                 = 1.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///call_function_sections.abap", src, &parsed);
+
+    assert!(unit.named_arguments.iter().any(|access| {
+        access.name.as_ref() == "input_string"
+            && access.section == Some(abap_symbols::NamedArgumentSection::Exporting)
+            && matches!(
+                &access.target,
+                abap_symbols::NamedArgumentTarget::Function { function_name }
+                    if function_name.as_ref() == "swa_string_split"
+            )
+    }));
+    assert!(unit.named_arguments.iter().any(|access| {
+        access.name.as_ref() == "string_components"
+            && access.section == Some(abap_symbols::NamedArgumentSection::Tables)
+    }));
+
+    for keyword in ["FUNCTION", "EXPORTING", "TABLES", "EXCEPTIONS"] {
+        assert!(
+            !unit.diagnostics.iter().any(|diag| {
+                diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains(keyword)
+            }),
+            "unexpected unresolved keyword diagnostic for `{keyword}`: {:?}",
+            unit.diagnostics
+        );
+    }
 }
 
 #[test]

@@ -68,7 +68,10 @@ fn run() -> Result<(), String> {
     }
     let measure_elapsed = measure_start.elapsed();
 
-    println!("symbols validate perf sample: {}", config.sample_path.display());
+    println!(
+        "symbols validate perf sample: {}",
+        config.sample_path.display()
+    );
     println!(
         "bytes={} lines={} tokens={} parse_errors={}",
         source.len(),

@@ -65,7 +65,10 @@ fn run() -> Result<(), String> {
     }
     let measure_elapsed = measure_start.elapsed();
 
-    println!("symbols collect perf sample: {}", config.sample_path.display());
+    println!(
+        "symbols collect perf sample: {}",
+        config.sample_path.display()
+    );
     println!(
         "bytes={} lines={} tokens={} parse_errors={}",
         source.len(),
@@ -90,7 +93,10 @@ fn run() -> Result<(), String> {
         warmup_unit.references.len(),
         warmup_unit.diagnostics.len()
     );
-    println!("total_symbols={} total_references={}", total_symbols, total_references);
+    println!(
+        "total_symbols={} total_references={}",
+        total_symbols, total_references
+    );
 
     Ok(())
 }

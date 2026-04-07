@@ -979,21 +979,19 @@ pub(crate) fn validate_project_with_scope_indexes(
         }
 
         for named_argument in &unit.named_arguments {
-            let crate::NamedArgumentTarget::Routine { routine_name } = &named_argument.target
-            else {
-                continue;
-            };
-            if let Some(spec) = builtin_routine_spec(routine_name.as_ref())
-                && !spec.supports_named_arguments
-            {
-                unit_diagnostics.push(Diagnostic {
-                    kind: DiagnosticKind::InvalidBuiltinNamedArgument,
-                    range: named_argument.range.clone(),
-                    message: format!(
-                        "built-in function '{}' does not support named parameter passing",
-                        routine_name
-                    ),
-                });
+            if let crate::NamedArgumentTarget::Routine { routine_name } = &named_argument.target {
+                if let Some(spec) = builtin_routine_spec(routine_name.as_ref())
+                    && !spec.supports_named_arguments
+                {
+                    unit_diagnostics.push(Diagnostic {
+                        kind: DiagnosticKind::InvalidBuiltinNamedArgument,
+                        range: named_argument.range.clone(),
+                        message: format!(
+                            "built-in function '{}' does not support named parameter passing",
+                            routine_name
+                        ),
+                    });
+                }
             }
         }
 

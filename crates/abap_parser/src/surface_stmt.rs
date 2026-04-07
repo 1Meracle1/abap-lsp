@@ -1478,6 +1478,7 @@ fn named_argument_section_keyword(source: &str, token: &Token) -> bool {
     is_keyword(source, token, "exporting")
         || is_keyword(source, token, "importing")
         || is_keyword(source, token, "changing")
+        || is_keyword(source, token, "tables")
         || is_keyword(source, token, "receiving")
         || is_keyword(source, token, "exceptions")
 }
@@ -3038,9 +3039,12 @@ pub fn try_parse_call_like_stmt(
                                 period_i,
                                 Some(&tokens[cursor - 1]),
                             );
-                        } else if tokens.get(cursor).map(|token| token.kind) == Some(TokenKind::LParen)
+                        } else if tokens.get(cursor).map(|token| token.kind)
+                            == Some(TokenKind::LParen)
                             && scan_until_clause(tokens, cursor + 1, period_i, |tokens, at| {
-                                tokens.get(at).is_some_and(|token| token.kind == TokenKind::RParen)
+                                tokens
+                                    .get(at)
+                                    .is_some_and(|token| token.kind == TokenKind::RParen)
                             }) < period_i
                         {
                             push_expr_child(
@@ -3053,15 +3057,41 @@ pub fn try_parse_call_like_stmt(
                                 Some(&tokens[cursor - 1]),
                             );
                         } else {
-                            children.push(build_type_ref_node(b, source, &tokens[cursor..period_i]));
+                            children.push(build_type_ref_node(
+                                b,
+                                source,
+                                &tokens[cursor..period_i],
+                            ));
                         }
                     }
                 }
                 children.push(token_leaf(b, &tokens[period_i]));
             }
             CallLikeLeadKind::CallStmt => {
-                for t in &tokens[idx..=period_i] {
-                    children.push(token_leaf(b, t));
+                if tokens
+                    .get(idx + 1)
+                    .is_some_and(|token| is_keyword(source, token, "function"))
+                {
+                    children.push(token_leaf(b, &tokens[idx]));
+                    children.push(token_leaf(b, &tokens[idx + 1]));
+                    let arg_start = scan_until_clause(tokens, lead_end, period_i, |tokens, at| {
+                        tokens
+                            .get(at)
+                            .is_some_and(|token| named_argument_section_keyword(source, token))
+                    });
+                    for t in &tokens[lead_end..arg_start] {
+                        children.push(token_leaf(b, t));
+                    }
+                    if let Some(arg_list) =
+                        build_call_argument_list_node(b, source, tokens, arg_start, period_i)
+                    {
+                        children.push(arg_list);
+                    }
+                    children.push(token_leaf(b, &tokens[period_i]));
+                } else {
+                    for t in &tokens[idx..=period_i] {
+                        children.push(token_leaf(b, t));
+                    }
                 }
             }
         }
@@ -5448,6 +5478,21 @@ END-OF-PAGE.\nWRITE 'e'.",
                 .count_kind(parsed.file.root(), SyntaxKind::CallStmt),
             1
         );
+    }
+
+    #[test]
+    fn parses_call_function_with_tables_and_exceptions_as_structured_call_stmt() {
+        let parsed = crate::parse(
+            "CALL FUNCTION 'SWA_STRING_SPLIT'\n  EXPORTING\n    input_string = iv_message\n  TABLES\n    string_components = lt_strings\n  EXCEPTIONS\n    OTHERS = 1.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let stmt = parsed
+            .file
+            .find_first_kind(parsed.file.root(), SyntaxKind::CallStmt)
+            .expect("call stmt");
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::CallArgList), 1);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::CallArgSection), 3);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::CallNamedArg), 3);
     }
 
     #[test]

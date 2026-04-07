@@ -412,6 +412,7 @@ pub enum NamedArgumentSection {
     Exporting,
     Importing,
     Changing,
+    Tables,
     Receiving,
     Exceptions,
 }
@@ -420,6 +421,9 @@ pub enum NamedArgumentSection {
 pub enum NamedArgumentTarget {
     Constructor {
         type_name: Arc<str>,
+    },
+    Function {
+        function_name: Arc<str>,
     },
     Routine {
         routine_name: Arc<str>,

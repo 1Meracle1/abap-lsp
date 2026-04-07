@@ -1771,6 +1771,7 @@ fn resolve_named_argument_parameter_with_scope_index<'a>(
                 declared_type: parameter.declared_type.clone(),
             })
         }
+        NamedArgumentTarget::Function { .. } => None,
         NamedArgumentTarget::Routine { routine_name } => {
             resolve_routine_named_argument_parameter_with_scope_index(
                 snapshot,
@@ -1870,6 +1871,7 @@ fn resolve_named_argument_target(
                 .find(|parameter| parameter.name == access.name)?;
             Some(definition_target_for_range(unit, parameter.range.clone()))
         }
+        NamedArgumentTarget::Function { .. } => None,
         NamedArgumentTarget::Routine { routine_name } => {
             let (unit, routine_symbol_id) = resolve_symbol_from_context(
                 snapshot,
@@ -1973,6 +1975,7 @@ fn resolve_named_argument_symbol(
                 .find(|parameter| parameter.name == access.name)?;
             symbol_handle_for_decl_range(unit, &parameter.range, SymbolKind::Parameter)
         }
+        NamedArgumentTarget::Function { .. } => None,
         NamedArgumentTarget::Routine { routine_name } => {
             let (unit, routine_symbol_id) = resolve_symbol_from_context(
                 snapshot,

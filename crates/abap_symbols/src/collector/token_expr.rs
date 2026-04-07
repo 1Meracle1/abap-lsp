@@ -220,6 +220,9 @@ impl<'a> Collector<'a> {
         if text.eq_ignore_ascii_case("changing") {
             return Some(NamedArgumentSection::Changing);
         }
+        if text.eq_ignore_ascii_case("tables") {
+            return Some(NamedArgumentSection::Tables);
+        }
         if text.eq_ignore_ascii_case("receiving") {
             return Some(NamedArgumentSection::Receiving);
         }
@@ -327,6 +330,7 @@ impl<'a> Collector<'a> {
                     .find(|param| param.name == *argument_name)
                     .and_then(|param| param.declared_type.clone())
             }
+            NamedArgumentTarget::Function { .. } => None,
             NamedArgumentTarget::Routine { .. } => None,
             NamedArgumentTarget::ImplicitMethod { method_name } => {
                 let class_symbol = self.enclosing_class_owner(scope)?;

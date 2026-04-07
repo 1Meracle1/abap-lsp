@@ -2,10 +2,10 @@ mod builtins;
 mod collector;
 mod def_map;
 mod ids;
-#[cfg(test)]
-mod perf_tests;
 #[doc(hidden)]
 pub mod perf_api;
+#[cfg(test)]
+mod perf_tests;
 mod project;
 mod resolver;
 mod scope;
