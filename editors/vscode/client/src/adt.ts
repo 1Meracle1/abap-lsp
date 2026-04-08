@@ -111,6 +111,8 @@ export function isSupportedDependencyObject(objectRef: AdtObjectRef, kindHint?: 
 	const loweredUri = objectRef.uri.toLowerCase();
 
 	switch (kindHint) {
+		case "message-class":
+			return isMessageClassDependencyObject(objectRef);
 		case "include":
 			return loweredUri.includes("/programs/includes/") || loweredType === "PROG/I";
 		case "static":
@@ -131,6 +133,7 @@ export function isSupportedDependencyObject(objectRef: AdtObjectRef, kindHint?: 
 		loweredUri.includes("/oo/classes/") ||
 		loweredUri.includes("/oo/interfaces/") ||
 		loweredUri.includes("/functions/groups/") ||
+		isMessageClassDependencyObject(objectRef) ||
 		isDdicDependencyObject(objectRef) ||
 		loweredType === "PROG/I" ||
 		loweredType === "PROG/P" ||
@@ -247,6 +250,13 @@ export class AdtClient {
 	}
 
 	async fetchDependencyObject(objectRef: AdtObjectRef): Promise<AdtDependencyFetchResult> {
+		if (isMessageClassDependencyObject(objectRef)) {
+			return {
+				body: await this.fetchMessageClass(objectRef.name),
+				fileExtension: "xml",
+				manifestKind: "message-class",
+			};
+		}
 		if (isDdicDependencyObject(objectRef)) {
 			const ddicKind = inferDdicManifestKind(objectRef);
 			const body = await this.fetchDdicObject(ddicKind, objectRef.name);
@@ -283,6 +293,19 @@ export class AdtClient {
 		const response = await this.request(path, {
 			headers: {
 				Accept: accept,
+				"Cache-Control": "no-cache",
+				"x-csrf-token": this.csrfToken,
+			},
+		});
+		return formatDdicXml(response.body);
+	}
+
+	async fetchMessageClass(name: string): Promise<string> {
+		await this.ensureSession();
+		const encodedName = encodeURIComponent(name);
+		const response = await this.request(`/sap/bc/adt/messageclass/${encodedName}`, {
+			headers: {
+				Accept: "application/vnd.sap.adt.elementinfo+xml",
 				"Cache-Control": "no-cache",
 				"x-csrf-token": this.csrfToken,
 			},
@@ -406,6 +429,22 @@ export function isDdicDependencyObject(objectRef: AdtObjectRef): boolean {
 		type === "TABL/DA" ||
 		type === "TTYP/DA" ||
 		type === "VIEW/DV";
+}
+
+export function isMessageClassDependencyObject(objectRef: AdtObjectRef): boolean {
+	return objectRef.type.toUpperCase() === "MSAG/N" ||
+		objectRef.uri.toLowerCase().includes("/sap/bc/adt/messageclass/");
+}
+
+export function buildMessageClassObjectRef(name: string): AdtObjectRef {
+	const normalizedName = name.trim().toUpperCase();
+	return {
+		uri: `/sap/bc/adt/messageclass/${encodeURIComponent(normalizedName)}`,
+		type: "MSAG/N",
+		name: normalizedName,
+		packageName: "",
+		description: "Message class",
+	};
 }
 
 export function inferDdicManifestKind(

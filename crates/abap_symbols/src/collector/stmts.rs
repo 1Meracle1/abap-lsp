@@ -131,8 +131,20 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                 &["type", "with", "into", "display", "raising"],
             );
             if end_mid > i {
-                self.collector
-                    .collect_token_expression_refs_infos(&sig[i..end_mid], scope, true);
+                if let Some((name, range)) =
+                    self.collector.simple_type_ref_base_from_infos(&sig[i..end_mid])
+                {
+                    self.collector.add_reference(
+                        scope,
+                        name,
+                        Namespace::Type,
+                        ReferenceKind::MessageClass,
+                        range,
+                    );
+                } else {
+                    self.collector
+                        .collect_token_expression_refs_infos(&sig[i..end_mid], scope, true);
+                }
             }
             i = end_mid;
             if i < head_end
@@ -205,8 +217,12 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                 &["type", "with", "into", "display", "raising"],
             );
             if code_end > i {
-                self.collector
-                    .collect_token_expression_refs_infos(&sig[i..code_end], scope, true);
+                if self.is_compact_message_class_form(&sig[i..code_end]) {
+                    self.collect_compact_message_class_ref_infos(&sig[i..code_end], scope);
+                } else {
+                    self.collector
+                        .collect_token_expression_refs_infos(&sig[i..code_end], scope, true);
+                }
             }
             i = code_end;
             if i < head_end
@@ -266,9 +282,11 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
         if let Some(into_ix) = into_ix {
             let into_end = period_pos;
             self.declare_message_inline_into_target_infos(&sig, into_ix + 1, into_end, scope);
-            if into_end > into_ix + 1 {
+            let value_start =
+                self.message_into_expression_start(&sig, into_ix + 1, into_end);
+            if into_end > value_start {
                 self.collector.collect_token_expression_refs_infos(
-                    &sig[into_ix + 1..into_end],
+                    &sig[value_start..into_end],
                     scope,
                     true,
                 );
@@ -349,6 +367,68 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             self.collector
                 .collect_token_expression_refs_infos(tail, scope, true);
         }
+    }
+
+    fn collect_compact_message_class_ref_infos(
+        &mut self,
+        tokens: &[SyntaxTokenInfo],
+        scope: ScopeId,
+    ) {
+        let Some(lparen_idx) = tokens.iter().position(|token| token.text.as_ref() == "(") else {
+            return;
+        };
+        let Some(rparen_idx) = self
+            .collector
+            .find_matching_group_end_infos(tokens, lparen_idx, "(", ")")
+        else {
+            return;
+        };
+        if rparen_idx <= lparen_idx + 1 {
+            return;
+        }
+        if let Some((name, range)) = self
+            .collector
+            .simple_type_ref_base_from_infos(&tokens[lparen_idx + 1..rparen_idx])
+        {
+            self.collector.add_reference(
+                scope,
+                name,
+                Namespace::Type,
+                ReferenceKind::MessageClass,
+                range,
+            );
+        }
+    }
+
+    fn is_compact_message_class_form(&self, tokens: &[SyntaxTokenInfo]) -> bool {
+        let Some(head) = tokens.first() else {
+            return false;
+        };
+        let mut chars = head.text.chars();
+        let Some(msgty) = chars.next() else {
+            return false;
+        };
+        if !matches!(msgty.to_ascii_lowercase(), 'a' | 'e' | 'i' | 's' | 'w' | 'x') {
+            return false;
+        }
+        chars.all(|ch| ch.is_ascii_digit()) && tokens.iter().any(|token| token.text.as_ref() == "(")
+    }
+
+    fn message_into_expression_start(
+        &self,
+        tokens: &[SyntaxTokenInfo],
+        start: usize,
+        end: usize,
+    ) -> usize {
+        if start + 3 < end
+            && tokens[start].text.eq_ignore_ascii_case("data")
+            && tokens[start + 1].text.as_ref() == "("
+            && self.collector.syntax_token_is_ident_like(&tokens[start + 2])
+            && tokens[start + 3].text.as_ref() == ")"
+        {
+            return start + 4;
+        }
+        start
     }
 
     pub(super) fn collect_clear_stmt_infos(&mut self, tokens: &[SyntaxTokenInfo], scope: ScopeId) {

@@ -102,7 +102,9 @@ fn symbol_kind_type_index(kind: SymbolKind, ix: SemanticTokenTypeIndices) -> u32
 
 fn reference_fallback_type(reference: &ReferenceData, ix: SemanticTokenTypeIndices) -> u32 {
     match reference.kind {
-        ReferenceKind::TypeRef | ReferenceKind::StaticTarget => ix.type_,
+        ReferenceKind::TypeRef | ReferenceKind::MessageClass | ReferenceKind::StaticTarget => {
+            ix.type_
+        }
         ReferenceKind::RoutineCall => ix.function,
         ReferenceKind::Include => ix.variable,
         ReferenceKind::Identifier => ix.variable,

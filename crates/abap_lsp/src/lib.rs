@@ -401,6 +401,7 @@ pub fn collect_remote_dependency_candidates(
             ReferenceKind::Include => continue,
             ReferenceKind::StaticTarget => "static",
             ReferenceKind::TypeRef => "type",
+            ReferenceKind::MessageClass => "message-class",
             ReferenceKind::Identifier | ReferenceKind::RoutineCall => "symbol",
         };
         if reference.resolution.is_some()
@@ -460,6 +461,7 @@ fn insert_remote_candidate(
 
 fn remote_candidate_kind_priority(kind: &str) -> usize {
     match kind.trim().to_ascii_lowercase().as_str() {
+        "message-class" => 5,
         "include" => 4,
         "static" => 3,
         "type" => 2,
@@ -972,7 +974,7 @@ fn completion_item_metadata(
 
 #[cfg(test)]
 mod tests {
-    use abap_cache::path_to_file_uri;
+    use abap_cache::{DocumentStore, path_to_file_uri};
     use std::fs;
     use std::path::PathBuf;
     use std::str::FromStr;
@@ -1719,6 +1721,22 @@ ENDCLASS.";
             "abapls/workspaceManifestUpdated"
         );
         assert_eq!(DEPENDENCY_CACHE_CLEARED, "abapls/dependencyCacheCleared");
+    }
+
+    #[test]
+    fn collects_message_class_remote_dependency_candidates() {
+        let store = DocumentStore::default();
+        let snapshot = store.publish(
+            "file:///message_stmt.abap",
+            1,
+            "MESSAGE i043(/sttp/int_msg) WITH lv_lines iv_logsys iv_mode INTO DATA(lv_message).",
+        );
+
+        let candidates = collect_remote_dependency_candidates(snapshot.as_ref());
+
+        assert!(candidates.iter().any(|candidate| {
+            candidate.name == "/sttp/int_msg" && candidate.kind == "message-class"
+        }));
     }
 
     #[test]

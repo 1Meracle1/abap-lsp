@@ -19,6 +19,7 @@ export interface ResolvedRemoteDependencyFetchPolicy {
 }
 
 const candidateKindPriority = new Map<string, number>([
+	["message-class", 5],
 	["include", 4],
 	["static", 3],
 	["type", 2],

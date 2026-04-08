@@ -18,6 +18,7 @@ import {
 import {
 	AdtClient,
 	AdtObjectRef,
+	buildMessageClassObjectRef,
 	configureSapConnection,
 	getSapConnectionConfig,
 	pickBestDependencyObject,
@@ -571,8 +572,13 @@ async function resolveRemoteDependencyCandidate(
 
 	const pending = (async () => {
 		try {
-			const objects = await adtClient.searchRepositoryObjects(candidate.name, 25);
-			const objectRef = pickBestDependencyObject(candidate.name, objects, candidate.kind);
+			let objectRef;
+			if (candidate.kind === "message-class") {
+				objectRef = buildMessageClassObjectRef(candidate.name);
+			} else {
+				const objects = await adtClient.searchRepositoryObjects(candidate.name, 25);
+				objectRef = pickBestDependencyObject(candidate.name, objects, candidate.kind);
+			}
 			if (!objectRef) {
 				negativeRemoteDependencyCache.add(cacheKey);
 				return undefined;

@@ -3884,7 +3884,7 @@ mod tests {
         DefinitionTarget, DocumentInput, DocumentStore, HoveredComponentKind, ReferenceTarget,
         ddic_xml_to_abap_source, dependency_surface_text,
     };
-    use abap_symbols::StructureFieldShape;
+    use abap_symbols::{ReferenceKind, StructureFieldShape};
     use std::sync::Arc;
 
     fn assert_target_slice(target: &DefinitionTarget, uri: &str, text: &str, expected: &str) {
@@ -4205,6 +4205,67 @@ ls_epc-content = 'x'.";
             dependency_snapshot
                 .reference_search_target_at(decl_offset)
                 .is_some()
+        );
+    }
+
+    #[test]
+    fn resolves_message_class_reference_from_cached_message_class_dependency() {
+        let xml = r#"
+<mc:messageClass adtcore:name="/STTP/INT_MSG"
+    xmlns:mc="http://www.sap.com/adt/MessageClass"
+    xmlns:adtcore="http://www.sap.com/adt/core">
+  <mc:messages mc:msgno="043" mc:msgtext="Received &amp;1 documents for &amp;2 maintenance (&amp;3)"/>
+</mc:messageClass>
+"#;
+        let dependency_text =
+            ddic_xml_to_abap_source("/STTP/INT_MSG", "message-class", xml).expect("dependency");
+        let main_src = "\
+CLASS zcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run IMPORTING lv_lines TYPE i iv_logsys TYPE string iv_mode TYPE string.
+ENDCLASS.
+CLASS zcl_demo IMPLEMENTATION.
+  METHOD run.
+    MESSAGE i043(/sttp/int_msg) WITH lv_lines iv_logsys iv_mode INTO DATA(lv_message).
+  ENDMETHOD.
+ENDCLASS.";
+
+        let store = DocumentStore::default();
+        let snapshots = store.replace_all(vec![
+            DocumentInput {
+                uri: Arc::from("file:///deps/%2FSTTP%2FINT_MSG.xml"),
+                version: 1,
+                text: Arc::from(dependency_text),
+                is_dependency: true,
+                object_name: None,
+            },
+            DocumentInput {
+                uri: Arc::from("file:///main.abap"),
+                version: 1,
+                text: Arc::from(main_src),
+                is_dependency: false,
+                object_name: None,
+            },
+        ]);
+        let snapshot = snapshots.get("file:///main.abap").expect("main snapshot");
+        let reference = snapshot
+            .symbols
+            .references
+            .iter()
+            .find(|reference| {
+                reference.name.as_ref() == "/sttp/int_msg"
+                    && reference.kind == ReferenceKind::MessageClass
+            })
+            .expect("message class reference");
+        assert!(reference.resolution.is_some(), "{:?}", snapshot.symbols.references);
+        assert!(
+            snapshot
+                .symbols
+                .diagnostics
+                .iter()
+                .all(|diag| !diag.message.contains("/sttp/int_msg")),
+            "{:?}",
+            snapshot.symbols.diagnostics
         );
     }
 

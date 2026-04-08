@@ -11,11 +11,14 @@ suite("Remote dependency helpers", () => {
 			{ name: " zcl_demo ", kind: "symbol" },
 			{ name: "ZCL_DEMO", kind: "static" },
 			{ name: "zcl_other", kind: "type" },
+			{ name: "/sttp/int_msg", kind: "type" },
+			{ name: "/STTP/INT_MSG", kind: "message-class" },
 		]);
 
 		assert.deepStrictEqual(candidates, [
 			{ name: "zcl_demo", kind: "static" },
 			{ name: "zcl_other", kind: "type" },
+			{ name: "/sttp/int_msg", kind: "message-class" },
 		]);
 	});
 

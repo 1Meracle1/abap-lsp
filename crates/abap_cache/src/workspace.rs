@@ -633,6 +633,9 @@ struct DdicField {
 
 pub fn ddic_xml_to_abap_source(object_name: &str, kind_hint: &str, xml: &str) -> Option<String> {
     let kind = kind_hint.trim().to_ascii_lowercase();
+    if kind == "message-class" {
+        return Some(message_class_to_abap_source(object_name, xml));
+    }
     if kind == "ddic-data-element" {
         return Some(data_element_to_abap_source(object_name, xml));
     }
@@ -779,6 +782,52 @@ fn structured_ddic_to_abap_source(object_name: &str, xml: &str) -> String {
         name = object_name.to_ascii_lowercase()
     ));
     out
+}
+
+fn message_class_to_abap_source(object_name: &str, xml: &str) -> String {
+    let mut out = format!(
+        "TYPES {name} TYPE c LENGTH 1.\n",
+        name = object_name.to_ascii_lowercase()
+    );
+    let messages = collect_message_class_messages(xml);
+    if messages.is_empty() {
+        return out;
+    }
+
+    for (msgno, msgtext) in messages {
+        out.push_str(&format!(
+            "\" MESSAGE {msgno}: {msgtext}\n",
+            msgno = msgno,
+            msgtext = msgtext.replace('\r', " ").replace('\n', " ")
+        ));
+    }
+    out
+}
+
+fn collect_message_class_messages(xml: &str) -> Vec<(String, String)> {
+    let mut reader = Reader::from_str(xml);
+    reader.config_mut().trim_text(true);
+    let mut messages = Vec::new();
+
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(start)) | Ok(Event::Empty(start)) => {
+                if !matches_local_name(start.name().as_ref(), &[b"messages"]) {
+                    continue;
+                }
+                let Some(msgno) = attr_local_text(&start, b"msgno") else {
+                    continue;
+                };
+                let msgtext = attr_local_text(&start, b"msgtext").unwrap_or_default();
+                messages.push((msgno, msgtext));
+            }
+            Ok(Event::Eof) => break,
+            Err(_) => break,
+            _ => {}
+        }
+    }
+
+    messages
 }
 
 fn collect_ddic_fields(xml: &str) -> Vec<DdicField> {
@@ -1096,6 +1145,22 @@ mod tests {
         assert!(lowered.contains("controller type prxctrltab"));
         assert!(lowered.contains("content type string"));
         assert!(!lowered.contains("/sttp/epc1 type"));
+    }
+
+    #[test]
+    fn converts_message_class_xml_to_dependency_source() {
+        let xml = r#"
+<mc:messageClass adtcore:name="/STTP/INT_MSG"
+    xmlns:mc="http://www.sap.com/adt/MessageClass"
+    xmlns:adtcore="http://www.sap.com/adt/core">
+  <mc:messages mc:msgno="043" mc:msgtext="Received &amp;1 documents"/>
+</mc:messageClass>
+"#;
+        let source = ddic_xml_to_abap_source("/STTP/INT_MSG", "message-class", xml)
+            .expect("source");
+        let lowered = source.to_ascii_lowercase();
+        assert!(lowered.contains("types /sttp/int_msg type c length 1"));
+        assert!(lowered.contains("\" message 043:"));
     }
 
     #[test]

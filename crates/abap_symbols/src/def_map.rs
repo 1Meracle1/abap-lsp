@@ -103,6 +103,7 @@ impl SymbolKind {
 pub enum ReferenceKind {
     Identifier,
     TypeRef,
+    MessageClass,
     RoutineCall,
     StaticTarget,
     Include,

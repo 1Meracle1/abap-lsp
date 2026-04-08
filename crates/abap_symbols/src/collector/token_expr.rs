@@ -528,6 +528,7 @@ impl<'a> Collector<'a> {
         }
         let prev = idx.checked_sub(1).and_then(|prev| tokens.get(prev));
         allow_leading_value_ident && idx == 0
+            || prev.is_some_and(|token| self.syntax_token_is_literal_like(token))
             || matches!(
                 prev.map(|token| token.text.as_ref()),
                 Some(

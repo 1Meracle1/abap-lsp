@@ -2,9 +2,11 @@ import * as assert from "assert";
 import * as vscode from "vscode";
 
 import {
+	buildMessageClassObjectRef,
 	formatDdicXml,
 	inferDdicManifestKind,
 	isDdicDependencyObject,
+	isMessageClassDependencyObject,
 	isSupportedDependencyObject,
 	pickBestDependencyObject,
 	type AdtObjectRef,
@@ -45,6 +47,26 @@ suite("ADT dependency helpers", () => {
 
 		assert.ok(filePath.endsWith("ZSTRUCT.xml"));
 		assert.strictEqual(unit.kind, "ddic-structure");
+	});
+
+	test("Builds message class dependency paths with xml extension", () => {
+		const workspaceFolder = {
+			uri: vscode.Uri.file("c:\\demo"),
+			name: "demo",
+			index: 0,
+		} as vscode.WorkspaceFolder;
+		const objectRef = buildMessageClassObjectRef("/sttp/int_msg");
+
+		const filePath = targetDependencyWorkspaceFilePath(workspaceFolder, objectRef);
+		const unit = inferManifestUnitSpec(
+			objectRef,
+			".abapls/cache/dependencies/message-class/%2FSTTP%2FINT_MSG.xml",
+		);
+
+		assert.strictEqual(isMessageClassDependencyObject(objectRef), true);
+		assert.strictEqual(isSupportedDependencyObject(objectRef, "message-class"), true);
+		assert.ok(filePath.endsWith("%2FSTTP%2FINT_MSG.xml"));
+		assert.strictEqual(unit.kind, "message-class");
 	});
 
 	test("Prefers a fetchable data element over unsupported exact matches", () => {

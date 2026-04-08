@@ -4890,3 +4890,34 @@ ENDCLASS.
         unit.diagnostics
     );
 }
+
+#[test]
+fn message_stmt_resolves_with_literal_and_following_identifier() {
+    let src = r#"
+CLASS zcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS m IMPORTING iv_logsys TYPE string.
+ENDCLASS.
+
+CLASS zcl_demo IMPLEMENTATION.
+  METHOD m.
+    DATA:
+      lv_lines TYPE i,
+      gv_dummy_msg TYPE string.
+    MESSAGE i043(/sttp/int_msg) WITH lv_lines 'ORDER_HEADER' iv_logsys INTO gv_dummy_msg.
+  ENDMETHOD.
+ENDCLASS.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///message_stmt_literal_arg.abap", src, &parsed);
+
+    for name in ["lv_lines", "iv_logsys", "gv_dummy_msg"] {
+        assert!(
+            !unit.diagnostics.iter().any(|diag| {
+                diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains(name)
+            }),
+            "unexpected unresolved diagnostic for {name}: {:?}",
+            unit.diagnostics
+        );
+    }
+}

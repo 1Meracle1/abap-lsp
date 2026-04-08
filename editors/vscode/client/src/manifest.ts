@@ -1,7 +1,12 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as vscode from "vscode";
-import { inferDdicManifestKind, isDdicDependencyObject, type AdtObjectRef } from "./adt";
+import {
+	inferDdicManifestKind,
+	isDdicDependencyObject,
+	isMessageClassDependencyObject,
+	type AdtObjectRef,
+} from "./adt";
 
 export interface ManifestUnitSpec {
 	name: string;
@@ -43,6 +48,16 @@ export function inferManifestUnitSpec(objectRef: AdtObjectRef, relativeFilePath:
 		return {
 			name: objectRef.name,
 			kind: inferDdicManifestKind(objectRef),
+			rootFile: normalizedFile,
+			adtUri: objectRef.uri,
+			role: "dependency",
+			objectName: objectRef.name,
+		};
+	}
+	if (isMessageClassDependencyObject(objectRef)) {
+		return {
+			name: objectRef.name,
+			kind: "message-class",
 			rootFile: normalizedFile,
 			adtUri: objectRef.uri,
 			role: "dependency",
@@ -158,10 +173,10 @@ export function targetDependencyWorkspaceFilePath(
 ): string {
 	const manifestUnit = inferManifestUnitSpec(
 		objectRef,
-		isDdicDependencyObject(objectRef) ? "dependency.xml" : "dependency.abap",
+		isXmlDependencyObject(objectRef) ? "dependency.xml" : "dependency.abap",
 	);
 	const kindDir = sanitizePathSegment(manifestUnit.kind);
-	const fileExtension = isDdicDependencyObject(objectRef) ? "xml" : "abap";
+	const fileExtension = isXmlDependencyObject(objectRef) ? "xml" : "abap";
 	const fileName = `${encodeURIComponent(objectRef.name)}.${fileExtension}`;
 	return path.join(workspaceFolder.uri.fsPath, ".abapls", "cache", "dependencies", kindDir, fileName);
 }
@@ -246,6 +261,10 @@ function readTomlString(block: string, key: string): string | undefined {
 
 function sanitizePathSegment(value: string): string {
 	return value.replace(/[^a-zA-Z0-9._-]+/g, "-");
+}
+
+function isXmlDependencyObject(objectRef: AdtObjectRef): boolean {
+	return isDdicDependencyObject(objectRef) || isMessageClassDependencyObject(objectRef);
 }
 
 async function readTextIfExists(filePath: string): Promise<string | undefined> {
