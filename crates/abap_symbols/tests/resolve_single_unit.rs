@@ -492,6 +492,51 @@ ENDLOOP.
 }
 
 #[test]
+fn resolves_inline_data_declared_in_if_after_endif() {
+    let src = r#"
+METHOD run.
+  DATA ls_bj2_max TYPE ty_param.
+
+  IF ls_bj2_max IS NOT INITIAL.
+    DATA(lv_bj2_max) = ls_bj2_max-param_value.
+  ENDIF.
+
+  SELECT * FROM demo
+    INTO TABLE @DATA(lt_rows)
+    UP TO @lv_bj2_max ROWS.
+ENDMETHOD.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///if_inline_scope.abap", src, &parsed);
+
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference
+                && diag.message.contains("unknown symbol 'lv_bj2_max'")
+        }),
+        "unexpected unresolved symbol diagnostic, diagnostics={:?}",
+        unit.diagnostics
+    );
+
+    let lv_bj2_max_ref = unit
+        .references
+        .iter()
+        .find(|reference| {
+            reference.namespace == Namespace::Value
+                && reference.name.as_ref() == "lv_bj2_max"
+                && reference.kind == ReferenceKind::Identifier
+        })
+        .expect("lv_bj2_max reference");
+
+    assert!(
+        matches!(lv_bj2_max_ref.resolution, Some(Resolution::Symbol(_))),
+        "expected lv_bj2_max reference to resolve, refs={:?} diagnostics={:?}",
+        unit.references,
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn resolves_table_line_pseudo_field_in_loop_where_for_scalar_line_type() {
     let src = r#"
 DATA lt TYPE STANDARD TABLE OF string WITH EMPTY KEY.

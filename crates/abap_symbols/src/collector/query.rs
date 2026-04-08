@@ -8,7 +8,7 @@ use abap_lexer::TextRange;
 
 use crate::def_map::{FieldAccess, FieldAccessSegment, StructureData, SymbolData, SymbolKind};
 use crate::ids::{ScopeId, StructureId, SymbolId};
-use crate::scope::Namespace;
+use crate::scope::{Namespace, ScopeKind};
 
 use super::{Collector, ScopeLookupKey, SyntaxTokenInfo};
 
@@ -55,6 +55,27 @@ impl<'a> Collector<'a> {
             current = self.scopes[scope_id.as_usize()].parent;
         }
         None
+    }
+
+    pub(super) fn declaration_scope(&self, scope: ScopeId) -> ScopeId {
+        let mut current = scope;
+        loop {
+            match self.scopes[current.as_usize()].kind {
+                ScopeKind::File
+                | ScopeKind::Form
+                | ScopeKind::Module
+                | ScopeKind::EventBlock
+                | ScopeKind::Class
+                | ScopeKind::Interface
+                | ScopeKind::Method => return current,
+                _ => {
+                    let Some(parent) = self.scopes[current.as_usize()].parent else {
+                        return current;
+                    };
+                    current = parent;
+                }
+            }
+        }
     }
 
     pub(super) fn structure(&self, id: StructureId) -> Option<&StructureData> {

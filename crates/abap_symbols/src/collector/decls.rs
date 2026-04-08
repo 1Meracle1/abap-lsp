@@ -238,6 +238,7 @@ impl<'ctx, 'a> DeclLowering<'ctx, 'a> {
         scope: ScopeId,
         kind: SymbolKind,
     ) {
+        let decl_scope = self.ctx.declaration_scope(scope);
         if let Some(data_decl) = DataDecl::cast(self.ctx.syntax(node)) {
             let clauses = data_decl
                 .clauses()
@@ -253,7 +254,7 @@ impl<'ctx, 'a> DeclLowering<'ctx, 'a> {
                 if let Some(ns) = hint {
                     self.ctx.type_clause_ns_stack_mut().push(ns);
                 }
-                self.declare_decl_clause_symbol(child_id, scope, kind);
+                self.declare_decl_clause_symbol(child_id, decl_scope, kind);
                 self.ctx.walk_children(child_id, scope);
                 if hint.is_some() {
                     self.ctx.type_clause_ns_stack_mut().pop();
@@ -281,14 +282,14 @@ impl<'ctx, 'a> DeclLowering<'ctx, 'a> {
                         if let Some(ns) = hint {
                             self.ctx.type_clause_ns_stack_mut().push(ns);
                         }
-                        self.declare_decl_clause_symbol(child_id, scope, kind);
+                        self.declare_decl_clause_symbol(child_id, decl_scope, kind);
                         self.ctx.walk_children(child_id, scope);
                         if hint.is_some() {
                             self.ctx.type_clause_ns_stack_mut().pop();
                         }
                     }
                     SyntaxKind::StructuredDecl => {
-                        self.declare_structured_decl_symbol(child_id, scope, kind);
+                        self.declare_structured_decl_symbol(child_id, decl_scope, kind);
                         self.ctx.walk_children(child_id, scope);
                     }
                     _ => self.ctx.walk_node(child_id, scope),
@@ -358,13 +359,14 @@ impl<'ctx, 'a> DeclLowering<'ctx, 'a> {
     }
 
     pub(super) fn walk_inline_decl(&mut self, node: abap_ast::arena::NodeId, scope: ScopeId) {
+        let decl_scope = self.ctx.declaration_scope(scope);
         let (structure, declared_type) = self.ctx.inline_decl_inferred_type(node, scope);
         for child in self.ctx.file().children(node) {
             if self.ctx.file().kind(child) == SyntaxKind::DataDeclName
                 && let Some((name, range)) = self.ctx.node_name(child)
             {
                 self.ctx.declare_symbol(
-                    scope,
+                    decl_scope,
                     name,
                     SymbolKind::Variable,
                     range,
@@ -392,12 +394,13 @@ impl<'ctx, 'a> DeclLowering<'ctx, 'a> {
         structure: Option<StructureId>,
         declared_type: Option<FieldTypeRefData>,
     ) {
+        let decl_scope = self.ctx.declaration_scope(scope);
         for child in self.ctx.file().children(node) {
             if self.ctx.file().kind(child) == SyntaxKind::DataDeclName
                 && let Some((name, range)) = self.ctx.node_name(child)
             {
                 self.ctx.declare_symbol(
-                    scope,
+                    decl_scope,
                     name,
                     SymbolKind::FieldSymbol,
                     range,

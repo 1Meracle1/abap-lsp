@@ -265,6 +265,10 @@ impl<'ctx, 'a> DeclContext<'ctx, 'a> {
         )
     }
 
+    pub(super) fn declaration_scope(&self, scope: ScopeId) -> ScopeId {
+        self.collector.declaration_scope(scope)
+    }
+
     pub(super) fn include_edges_mut(&mut self) -> &mut Vec<IncludeEdge> {
         &mut self.collector.include_edges
     }
