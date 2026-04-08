@@ -27,10 +27,7 @@ impl<'a> Collector<'a> {
 }
 
 impl<'ctx, 'a> DeclLowering<'ctx, 'a> {
-    fn include_stmt_names(
-        &self,
-        node: abap_ast::arena::NodeId,
-    ) -> Vec<(Arc<str>, TextRange)> {
+    fn include_stmt_names(&self, node: abap_ast::arena::NodeId) -> Vec<(Arc<str>, TextRange)> {
         let tokens = self.ctx.significant_stmt_token_infos(node);
         let Some(first) = tokens.first() else {
             return Vec::new();
@@ -48,7 +45,10 @@ impl<'ctx, 'a> DeclLowering<'ctx, 'a> {
                     expect_name = true;
                 }
                 _ if expect_name && self.ctx.syntax_token_is_ident_like(token) => {
-                    names.push((Arc::<str>::from(token.text.to_ascii_lowercase()), token.range.clone()));
+                    names.push((
+                        Arc::<str>::from(token.text.to_ascii_lowercase()),
+                        token.range.clone(),
+                    ));
                     expect_name = false;
                 }
                 _ => {}

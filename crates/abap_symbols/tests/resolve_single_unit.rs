@@ -1361,6 +1361,282 @@ WRITE lt_rows.
 }
 
 #[test]
+fn infers_inline_select_table_shape_from_explicit_projection_even_when_source_is_unknown() {
+    let src = r#"
+DATA lv_bj2_max TYPE i.
+DATA lc_sts_rep TYPE string.
+DATA lr_sr_rule TYPE string.
+
+SELECT rep_evtid,
+       evtid,
+       rule_type,
+       status_rep_evt,
+       msguid_out,
+       ext_ref_id,
+       CASE
+         WHEN ext_ref_id = 'PRIORITY1' THEN 'X'
+         WHEN ext_ref_id = 'EXCLUDED' THEN 'X'
+         WHEN ext_ref_id = 'PRIORITY2' THEN 'Y'
+         ELSE ' '
+       END AS priority,
+       creation_time
+  FROM /sttp/rep_evt
+  INTO TABLE @DATA(lt_rep_evt)
+  UP TO @lv_bj2_max ROWS
+  WHERE status_rep_evt = @lc_sts_rep
+  AND rule_type IN @lr_sr_rule.
+
+LOOP AT lt_rep_evt INTO DATA(ls_rep_evt).
+  WRITE ls_rep_evt-priority.
+ENDLOOP.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///sql_inline_shape_unknown.abap", src, &parsed);
+
+    let lt_rep_evt = unit
+        .symbols
+        .iter()
+        .find(|symbol| symbol.name.as_ref() == "lt_rep_evt")
+        .expect("inline SQL target");
+    let structure = unit.structure(lt_rep_evt.structure.expect("inline SQL target structure"));
+    assert!(
+        structure
+            .fields
+            .iter()
+            .any(|field| field.name.as_ref() == "rep_evtid")
+    );
+    assert!(
+        structure
+            .fields
+            .iter()
+            .any(|field| field.name.as_ref() == "priority")
+    );
+    assert!(
+        structure
+            .fields
+            .iter()
+            .any(|field| field.name.as_ref() == "creation_time")
+    );
+
+    let ls_rep_evt = unit
+        .symbols
+        .iter()
+        .find(|symbol| symbol.name.as_ref() == "ls_rep_evt")
+        .expect("LOOP inline row");
+    let line_structure = unit.structure(ls_rep_evt.structure.expect("LOOP line structure"));
+    assert!(
+        line_structure
+            .fields
+            .iter()
+            .any(|field| field.name.as_ref() == "priority")
+    );
+
+    assert!(unit.field_accesses.iter().any(|access| {
+        access.base_name.as_ref() == "ls_rep_evt"
+            && access.field_path.len() == 1
+            && access.field_path[0].name.as_ref() == "priority"
+    }));
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            matches!(
+                diag.kind,
+                DiagnosticKind::UnresolvedReference | DiagnosticKind::UnknownField
+            ) && (diag.message.contains("lt_rep_evt")
+                || diag.message.contains("ls_rep_evt")
+                || diag.message.contains("priority"))
+        }),
+        "unexpected diagnostics: {:?}",
+        unit.diagnostics
+    );
+    assert!(
+        unit.diagnostics
+            .iter()
+            .any(|diag| diag.kind == DiagnosticKind::UnverifiedOpenSqlSource),
+        "expected unresolved DDIC warning for unknown source, got {:?}",
+        unit.diagnostics
+    );
+    assert!(
+        !unit.sql_name_refs.iter().any(|reference| {
+            matches!(
+                reference.name.as_ref(),
+                "case"
+                    | "when"
+                    | "then"
+                    | "else"
+                    | "end"
+                    | "'priority1'"
+                    | "'excluded'"
+                    | "'x'"
+                    | "'y'"
+                    | "' '"
+            )
+        }),
+        "unexpected SQL keyword refs: {:?}",
+        unit.sql_name_refs
+    );
+}
+
+#[test]
+fn resolves_fields_after_inline_select_case_projection_for_sort_and_delete_where() {
+    let src = r#"
+DATA lv_bj2_max TYPE i.
+DATA lc_sts_rep TYPE string.
+DATA lr_sr_rule TYPE string.
+
+SELECT rep_evtid,
+       evtid,
+       rule_type,
+       status_rep_evt,
+       msguid_out,
+       ext_ref_id,
+       CASE
+         WHEN ext_ref_id = 'PRIORITY1' THEN 'X'
+         WHEN ext_ref_id = 'EXCLUDED' THEN 'X'
+         WHEN ext_ref_id = 'PRIORITY2' THEN 'Y'
+         ELSE ' '
+       END AS priority,
+       creation_time
+  FROM /sttp/rep_evt
+  INTO TABLE @DATA(lt_rep_evt)
+  UP TO @lv_bj2_max ROWS
+  WHERE status_rep_evt = @lc_sts_rep
+  AND rule_type IN @lr_sr_rule.
+
+SORT lt_rep_evt BY creation_time ASCENDING.
+DELETE lt_rep_evt WHERE ext_ref_id IS INITIAL.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///sql_inline_sort_delete.abap", src, &parsed);
+
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            matches!(
+                diag.kind,
+                DiagnosticKind::UnknownField | DiagnosticKind::UnresolvedReference
+            ) && (diag.message.contains("creation_time") || diag.message.contains("ext_ref_id"))
+        }),
+        "unexpected diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn infers_commented_select_projection_columns_for_inline_target_shape() {
+    let src = r#"
+DATA lv_bj2_max TYPE i.
+DATA lc_sts_rep TYPE string.
+DATA lr_sr_rule TYPE string.
+
+SELECT rep_evtid,                                                   "Reporting Event id
+       evtid,                                                       "Event id
+       rule_type,                                                   "Rule type
+       status_rep_evt,                                              "Reporting Event Status
+       msguid_out,                                                  "AIF Message ID
+       ext_ref_id,                                                  "External Reference ID
+       CASE
+         WHEN ext_ref_id = 'PRIORITY1' THEN 'X'
+         WHEN ext_ref_id = 'EXCLUDED' THEN 'X'
+         WHEN ext_ref_id = 'PRIORITY2' THEN 'Y'
+         ELSE ' '
+       END AS priority,
+       creation_time                                                "Creation date time
+  FROM /sttp/rep_evt
+  INTO TABLE @DATA(lt_rep_evt)
+  UP TO @lv_bj2_max ROWS                                            "comment
+  WHERE status_rep_evt = @lc_sts_rep
+  AND rule_type IN @lr_sr_rule.
+
+SORT lt_rep_evt BY creation_time ASCENDING.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///sql_inline_commented_projection.abap", src, &parsed);
+
+    let lt_rep_evt = unit
+        .symbols
+        .iter()
+        .find(|symbol| symbol.name.as_ref() == "lt_rep_evt")
+        .expect("inline SQL target");
+    let structure = unit.structure(lt_rep_evt.structure.expect("inline SQL target structure"));
+    assert!(
+        structure
+            .fields
+            .iter()
+            .any(|field| field.name.as_ref() == "creation_time"),
+        "expected creation_time in inferred row shape, structure={structure:?}"
+    );
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            matches!(
+                diag.kind,
+                DiagnosticKind::UnknownField | DiagnosticKind::UnresolvedReference
+            ) && diag.message.contains("creation_time")
+        }),
+        "unexpected diagnostics: {:?}",
+        unit.diagnostics
+    );
+    assert!(
+        !unit.sql_name_refs.iter().any(|reference| {
+            reference.name.as_ref().contains("reporting")
+                || reference.name.as_ref().contains("creation date time")
+        }),
+        "unexpected comment refs: {:?}",
+        unit.sql_name_refs
+    );
+}
+
+#[test]
+fn infers_inline_assignment_target_table_shape_from_source_table() {
+    let src = r#"
+DATA lv_bj2_max TYPE i.
+DATA lc_sts_rep TYPE string.
+DATA lr_sr_rule TYPE string.
+DATA ls_priority1 TYPE string.
+
+SELECT rep_evtid,
+       ext_ref_id,
+       creation_time
+  FROM /sttp/rep_evt
+  INTO TABLE @DATA(lt_obj_rel)
+  UP TO @lv_bj2_max ROWS
+  WHERE status_rep_evt = @lc_sts_rep
+  AND rule_type IN @lr_sr_rule.
+
+DATA(lt_obj) = lt_obj_rel.
+DELETE lt_obj WHERE rep_evtid NE ls_priority1.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///inline_assign_table_shape.abap", src, &parsed);
+
+    let lt_obj = unit
+        .symbols
+        .iter()
+        .find(|symbol| symbol.name.as_ref() == "lt_obj")
+        .expect("inline assignment target");
+    let structure = unit.structure(
+        lt_obj
+            .structure
+            .expect("inline assignment target structure"),
+    );
+    assert!(
+        structure
+            .fields
+            .iter()
+            .any(|field| field.name.as_ref() == "rep_evtid"),
+        "expected rep_evtid in inferred assignment shape, structure={structure:?}"
+    );
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            matches!(
+                diag.kind,
+                DiagnosticKind::UnknownField | DiagnosticKind::UnresolvedReference
+            ) && diag.message.contains("rep_evtid")
+        }),
+        "unexpected diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn reports_unverified_open_sql_sources_without_workspace_type() {
     let src = r#"
 SELECT * FROM /sttp/unknown_tab INTO TABLE DATA(lt).
@@ -5767,8 +6043,7 @@ ENDCLASS.
     );
     assert!(
         unit.references.iter().any(|reference| {
-            reference.kind == ReferenceKind::MessageClass
-                && reference.name.as_ref() == "00"
+            reference.kind == ReferenceKind::MessageClass && reference.name.as_ref() == "00"
         }),
         "expected compact MESSAGE class reference: {:?}",
         unit.references

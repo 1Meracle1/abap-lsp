@@ -6,9 +6,11 @@ use abap_ast::ast::{AstNode, CallArgList, CallExpr, CallNamedArg, CallPositional
 
 use crate::builtins::builtin_routine_spec;
 use crate::def_map::{
-    FieldAccess, NamedArgumentAccess, NamedArgumentSection, NamedArgumentTarget, ReferenceKind,
+    FieldAccess, FieldTypeRefData, NamedArgumentAccess, NamedArgumentSection, NamedArgumentTarget,
+    ReferenceKind, SymbolKind,
 };
 use crate::ids::ScopeId;
+use crate::ids::StructureId;
 use crate::scope::Namespace;
 
 use super::Collector;
@@ -37,6 +39,7 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
 
     pub(super) fn collect_expr(&mut self, node: NodeId, scope: ScopeId) {
         match self.kind(node) {
+            SyntaxKind::AssignStmt => self.collect_assign_stmt(node, scope),
             SyntaxKind::ExprIdent => {
                 if let Some((name, range)) = self.ctx.node_name(node) {
                     self.ctx.add_reference(
@@ -119,6 +122,66 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                         _ => self.ctx.walk_node(child, scope),
                     }
                 }
+            }
+        }
+    }
+
+    fn collect_assign_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        let mut non_token_children = self
+            .ctx
+            .file()
+            .children(node)
+            .filter(|&child| self.kind(child) != SyntaxKind::Token);
+        let Some(lhs) = non_token_children.next() else {
+            return;
+        };
+        let Some(rhs) = non_token_children.next() else {
+            self.collect_expr(lhs, scope);
+            return;
+        };
+
+        let inferred_metadata = self
+            .ctx
+            .control_lowering()
+            .loop_source_line_metadata_from_node(rhs, scope);
+
+        let lhs_inline = if self.kind(lhs) == SyntaxKind::DataInlineDecl {
+            Some(lhs)
+        } else {
+            self.ctx
+                .file()
+                .find_first_kind(lhs, SyntaxKind::DataInlineDecl)
+        };
+
+        if let Some(lhs_inline) = lhs_inline {
+            self.declare_inline_assign_target(lhs_inline, scope, &inferred_metadata);
+        } else {
+            self.collect_expr(lhs, scope);
+        }
+        self.collect_expr(rhs, scope);
+    }
+
+    fn declare_inline_assign_target(
+        &mut self,
+        node: NodeId,
+        scope: ScopeId,
+        inferred_metadata: &(Option<StructureId>, Option<FieldTypeRefData>),
+    ) {
+        let decl_scope = self.ctx.declaration_scope(scope);
+        for child in self.ctx.file().children(node) {
+            if self.kind(child) == SyntaxKind::DataDeclName
+                && let Some((name, range)) = self.ctx.node_name(child)
+            {
+                self.ctx.declare_symbol(
+                    decl_scope,
+                    name,
+                    SymbolKind::Variable,
+                    range,
+                    inferred_metadata.0,
+                    inferred_metadata.1.clone(),
+                    None,
+                );
+                break;
             }
         }
     }

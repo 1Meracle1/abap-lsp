@@ -188,6 +188,35 @@ impl<'ctx, 'a> ExprContext<'ctx, 'a> {
     ) -> Option<NamedArgumentTarget> {
         self.collector.named_argument_target_for_callee(callee)
     }
+
+    pub(super) fn control_lowering(&mut self) -> super::control::ControlLowering<'_, 'a> {
+        self.collector.control_lowering()
+    }
+
+    pub(super) fn declaration_scope(&self, scope: ScopeId) -> ScopeId {
+        self.collector.declaration_scope(scope)
+    }
+
+    pub(super) fn declare_symbol(
+        &mut self,
+        scope: ScopeId,
+        name: std::sync::Arc<str>,
+        kind: SymbolKind,
+        decl_range: abap_lexer::TextRange,
+        structure: Option<StructureId>,
+        declared_type: Option<FieldTypeRefData>,
+        type_clause_display: Option<std::sync::Arc<str>>,
+    ) -> crate::ids::SymbolId {
+        self.collector.declare_symbol(
+            scope,
+            name,
+            kind,
+            decl_range,
+            structure,
+            declared_type,
+            type_clause_display,
+        )
+    }
 }
 
 pub(super) struct DeclContext<'ctx, 'a> {
@@ -474,6 +503,15 @@ impl<'ctx, 'a> SqlContext<'ctx, 'a> {
         self.collector.sql_queries.len()
     }
 
+    pub(super) fn sql_projections_for_query(&self, query_id: usize) -> Vec<SqlProjectionData> {
+        self.collector
+            .sql_projections
+            .iter()
+            .filter(|projection| projection.query_id == query_id)
+            .cloned()
+            .collect()
+    }
+
     pub(super) fn node_name(
         &self,
         node: NodeId,
@@ -497,6 +535,39 @@ impl<'ctx, 'a> SqlContext<'ctx, 'a> {
         self.collector.decl_lowering()
     }
 
+    pub(super) fn declare_symbol(
+        &mut self,
+        scope: ScopeId,
+        name: std::sync::Arc<str>,
+        kind: SymbolKind,
+        decl_range: abap_lexer::TextRange,
+        structure: Option<StructureId>,
+        declared_type: Option<FieldTypeRefData>,
+        type_clause_display: Option<std::sync::Arc<str>>,
+    ) -> crate::ids::SymbolId {
+        self.collector.declare_symbol(
+            scope,
+            name,
+            kind,
+            decl_range,
+            structure,
+            declared_type,
+            type_clause_display,
+        )
+    }
+
+    pub(super) fn declaration_scope(&self, scope: ScopeId) -> ScopeId {
+        self.collector.declaration_scope(scope)
+    }
+
+    pub(super) fn register_structure(
+        &mut self,
+        scope: ScopeId,
+        structure: super::PendingStructure,
+    ) -> StructureId {
+        self.collector.register_structure(scope, structure)
+    }
+
     pub(super) fn collect_token_expression_refs_infos(
         &mut self,
         tokens: &[SyntaxTokenInfo],
@@ -505,6 +576,14 @@ impl<'ctx, 'a> SqlContext<'ctx, 'a> {
     ) {
         self.collector
             .collect_token_expression_refs_infos(tokens, scope, in_parens);
+    }
+
+    pub(super) fn syntax_token_is_literal_like(&self, token: &SyntaxTokenInfo) -> bool {
+        self.collector.syntax_token_is_literal_like(token)
+    }
+
+    pub(super) fn syntax_token_is_comment(&self, token: &SyntaxTokenInfo) -> bool {
+        self.collector.syntax_token_is_comment(token)
     }
 
     pub(super) fn count_kind(&self, node: NodeId, kind: abap_ast::SyntaxKind) -> usize {

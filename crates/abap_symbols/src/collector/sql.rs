@@ -14,10 +14,14 @@ use crate::def_map::{
     SqlSourceKind, SqlTargetData, SqlTargetKind,
 };
 use crate::ids::ScopeId;
+use crate::ids::StructureId;
 use crate::scope::{Namespace, ScopeKind};
 
 use super::context::SqlContext;
-use super::{Collector, SqlClauseKind, SyntaxTokenInfo};
+use super::{
+    Collector, PendingStructure, PendingStructureField, PendingStructureMember, SqlClauseKind,
+    SyntaxTokenInfo,
+};
 
 pub(super) struct SqlLowering<'ctx, 'a> {
     ctx: SqlContext<'ctx, 'a>,
@@ -286,6 +290,51 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
         }
 
         if matches!(kind, SqlProjectionKind::Expression) {
+            let alias_start = alias.as_ref().map(|(_, range)| range.start);
+            let value_tokens: Vec<_> = syntax_tokens
+                .iter()
+                .filter(|token| !self.ctx.syntax_token_is_comment(token))
+                .filter(|token| alias_start.is_none_or(|start| token.range.end <= start))
+                .filter(|token| token.text.as_ref() != "as")
+                .collect();
+
+            if value_tokens.len() == 1
+                && !self.sql_token_is_keyword_text(value_tokens[0].text.as_ref())
+            {
+                kind = SqlProjectionKind::Column;
+                name = Some(Self::lower_arc(value_tokens[0].text.as_ref()));
+                self.push_sql_name_ref(
+                    query_id,
+                    scope,
+                    value_tokens[0].range.clone(),
+                    Arc::clone(name.as_ref().expect("projection name")),
+                    None,
+                    SqlNameRefKind::Column,
+                );
+            } else if value_tokens.len() == 3
+                && value_tokens[0]
+                    .text
+                    .chars()
+                    .next()
+                    .is_some_and(|ch| ch.is_ascii_alphanumeric() || ch == '/')
+                && value_tokens[1].text.as_ref() == "~"
+                && !self.sql_token_is_keyword_text(value_tokens[2].text.as_ref())
+            {
+                kind = SqlProjectionKind::Column;
+                source_alias = Some(Self::lower_arc(value_tokens[0].text.as_ref()));
+                name = Some(Self::lower_arc(value_tokens[2].text.as_ref()));
+                self.push_sql_name_ref(
+                    query_id,
+                    scope,
+                    value_tokens[0].range.start..value_tokens[2].range.end,
+                    Arc::clone(name.as_ref().expect("projection name")),
+                    source_alias.clone(),
+                    SqlNameRefKind::QualifiedColumn,
+                );
+            }
+        }
+
+        if matches!(kind, SqlProjectionKind::Expression) {
             self.collect_sql_name_refs_from_syntax_tokens(query_id, scope, &syntax_tokens, false);
         }
         let projection_range = self.ctx.file().range(node);
@@ -427,7 +476,18 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
                 SyntaxKind::DataInlineDecl => {
                     is_inline = true;
                     target_name = self.inline_decl_name(child);
-                    self.ctx.decl_lowering().walk_inline_decl(child, scope);
+                    if let Some(structure) = is_table
+                        .then(|| {
+                            target_name.as_ref().and_then(|target_name| {
+                                self.inline_select_target_structure(query_id, scope, target_name)
+                            })
+                        })
+                        .flatten()
+                    {
+                        self.declare_inline_select_target(child, scope, structure);
+                    } else {
+                        self.ctx.decl_lowering().walk_inline_decl(child, scope);
+                    }
                 }
                 SyntaxKind::FieldSymbolInlineDecl => {
                     is_inline = true;
@@ -603,7 +663,13 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
                     idx += 1;
                 }
                 _ => {
-                    if self.sql_token_is_keyword_text(text) {
+                    if self.ctx.syntax_token_is_comment(token) {
+                        idx += 1;
+                        continue;
+                    }
+                    if self.sql_token_is_keyword_text(text)
+                        || self.ctx.syntax_token_is_literal_like(token)
+                    {
                         idx += 1;
                         continue;
                     }
@@ -625,6 +691,7 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
                             continue;
                         }
                         if !self.sql_token_is_keyword_text(third_text)
+                            && !self.ctx.syntax_token_is_literal_like(third)
                             && !matches!(
                                 third_text,
                                 ":" | "," | "." | "(" | ")" | "[" | "]" | "{" | "}"
@@ -742,12 +809,88 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
             .and_then(DataDeclName::cast)
             .and_then(|name| name.name(self.ctx.source()))
     }
+
+    fn declare_inline_select_target(
+        &mut self,
+        node: NodeId,
+        scope: ScopeId,
+        structure: StructureId,
+    ) {
+        let decl_scope = self.ctx.declaration_scope(scope);
+        for child in self.ctx.file().children(node) {
+            if self.ctx.file().kind(child) == SyntaxKind::DataDeclName
+                && let Some((name, range)) = self.ctx.node_name(child)
+            {
+                self.ctx.declare_symbol(
+                    decl_scope,
+                    name,
+                    crate::def_map::SymbolKind::Variable,
+                    range,
+                    Some(structure),
+                    None,
+                    None,
+                );
+                break;
+            }
+        }
+    }
+
+    fn inline_select_target_structure(
+        &mut self,
+        query_id: usize,
+        scope: ScopeId,
+        target_name: &Arc<str>,
+    ) -> Option<crate::ids::StructureId> {
+        let mut members = Vec::new();
+        for projection in self.ctx.sql_projections_for_query(query_id) {
+            let field_name = match projection.kind {
+                SqlProjectionKind::Column => {
+                    projection.alias.clone().or_else(|| projection.name.clone())
+                }
+                SqlProjectionKind::Aggregate | SqlProjectionKind::Expression => {
+                    projection.alias.clone()
+                }
+                SqlProjectionKind::Star | SqlProjectionKind::QualifiedStar => None,
+            };
+            let Some(field_name) = field_name else {
+                continue;
+            };
+            let already_present = members.iter().any(|member| match member {
+                PendingStructureMember::Field(field) => field.name == field_name,
+                PendingStructureMember::Include { .. } => false,
+            });
+            if already_present {
+                continue;
+            }
+            members.push(PendingStructureMember::Field(PendingStructureField {
+                name: field_name,
+                decl_range: projection.range.clone(),
+                structure: None,
+                type_ref: None,
+            }));
+        }
+        if members.is_empty() {
+            return None;
+        }
+        Some(self.ctx.register_structure(
+            scope,
+            PendingStructure {
+                name: Arc::from(format!("<open_sql_inline:{}>", target_name.as_ref())),
+                members,
+            },
+        ))
+    }
     fn sql_token_is_keyword_text(&self, text: &str) -> bool {
         matches!(
             text.to_ascii_lowercase().as_str(),
             "select"
                 | "single"
                 | "distinct"
+                | "case"
+                | "when"
+                | "then"
+                | "else"
+                | "end"
                 | "from"
                 | "into"
                 | "appending"

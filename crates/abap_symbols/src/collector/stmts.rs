@@ -287,10 +287,12 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
         let mut idx = 0usize;
         while idx < tokens.len() {
             let is_text_pool = tokens[idx].text.eq_ignore_ascii_case("text")
-                && tokens.get(idx + 1).is_some_and(|token| token.text.as_ref() == "-")
-                && tokens.get(idx + 2).is_some_and(|token| {
-                    token.text.chars().all(|ch| ch.is_ascii_digit())
-                });
+                && tokens
+                    .get(idx + 1)
+                    .is_some_and(|token| token.text.as_ref() == "-")
+                && tokens
+                    .get(idx + 2)
+                    .is_some_and(|token| token.text.chars().all(|ch| ch.is_ascii_digit()));
             if is_text_pool {
                 if batch_start < idx {
                     self.collector.collect_token_expression_refs_infos(
@@ -306,11 +308,8 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             idx += 1;
         }
         if batch_start < tokens.len() {
-            self.collector.collect_token_expression_refs_infos(
-                &tokens[batch_start..],
-                scope,
-                true,
-            );
+            self.collector
+                .collect_token_expression_refs_infos(&tokens[batch_start..], scope, true);
         }
     }
 

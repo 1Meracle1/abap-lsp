@@ -266,6 +266,20 @@ impl<'a> Collector<'a> {
         node: NodeId,
         scope: ScopeId,
     ) -> (Option<StructureId>, Option<FieldTypeRefData>) {
+        if self.file.kind(node) == SyntaxKind::DataInlineDecl {
+            let rhs_expr = self.file.children(node).find(|&child| {
+                !matches!(
+                    self.file.kind(child),
+                    SyntaxKind::Token | SyntaxKind::DataDeclName
+                )
+            });
+            if let Some(rhs_expr) = rhs_expr {
+                let inferred = self.inline_decl_assignment_source_metadata(rhs_expr, scope);
+                if inferred.0.is_some() || inferred.1.is_some() {
+                    return inferred;
+                }
+            }
+        }
         let mut stack = vec![node];
         while let Some(current) = stack.pop() {
             if self.file.kind(current) == SyntaxKind::ConstructorExpr
@@ -287,6 +301,85 @@ impl<'a> Collector<'a> {
             }
         }
         (None, None)
+    }
+
+    fn inline_decl_assignment_source_metadata(
+        &self,
+        node: NodeId,
+        scope: ScopeId,
+    ) -> (Option<StructureId>, Option<FieldTypeRefData>) {
+        match self.file.kind(node) {
+            SyntaxKind::TemplateExpr => {
+                if let Some(child) = self.first_non_token_child(node) {
+                    return self.inline_decl_assignment_source_metadata(child, scope);
+                }
+                let tokens = self.syntax_token_nodes(node);
+                if tokens.len() == 1
+                    && self.syntax_token_is_ident_like(&tokens[0])
+                    && let Some(symbol_id) = self.lookup_symbol_in_scope_chain(
+                        scope,
+                        Namespace::Value,
+                        tokens[0].text.as_ref(),
+                    )
+                {
+                    let symbol = self.symbol(symbol_id);
+                    return (symbol.structure, symbol.declared_type.clone());
+                }
+                (None, None)
+            }
+            SyntaxKind::ExprIdent => {
+                let Some((name, _)) = self.node_name(node) else {
+                    return (None, None);
+                };
+                let Some(symbol_id) =
+                    self.lookup_symbol_in_scope_chain(scope, Namespace::Value, name.as_ref())
+                else {
+                    return (None, None);
+                };
+                let symbol = self.symbol(symbol_id);
+                (symbol.structure, symbol.declared_type.clone())
+            }
+            SyntaxKind::SelectorExpr => {
+                let Some((namespace, base_name, _, field_path)) = self.selector_access_chain(node)
+                else {
+                    return (None, None);
+                };
+                if namespace != Namespace::Value {
+                    return (None, None);
+                }
+                let Some(symbol_id) =
+                    self.lookup_symbol_in_scope_chain(scope, Namespace::Value, base_name.as_ref())
+                else {
+                    return (None, None);
+                };
+                if field_path.is_empty() {
+                    let symbol = self.symbol(symbol_id);
+                    return (symbol.structure, symbol.declared_type.clone());
+                }
+                let mut structure = self.symbol(symbol_id).structure;
+                let mut declared_type = self.symbol(symbol_id).declared_type.clone();
+                for segment in field_path {
+                    if segment.is_deref() {
+                        return (None, None);
+                    }
+                    let Some(structure_id) = structure else {
+                        return (None, None);
+                    };
+                    let Some(field) = self.structure(structure_id).and_then(|structure| {
+                        structure
+                            .fields
+                            .iter()
+                            .find(|field| field.name.as_ref() == segment.name.as_ref())
+                    }) else {
+                        return (None, None);
+                    };
+                    structure = field.structure;
+                    declared_type = field.type_ref.clone();
+                }
+                (structure, declared_type)
+            }
+            _ => (None, None),
+        }
     }
 
     fn simple_stmt_token_infos(&self, node: NodeId) -> Vec<SyntaxTokenInfo> {

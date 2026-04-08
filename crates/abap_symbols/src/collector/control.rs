@@ -273,11 +273,28 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
         scope: ScopeId,
     ) -> (Option<StructureId>, Option<FieldTypeRefData>) {
         match self.collector.file.kind(node) {
-            SyntaxKind::TemplateExpr => self
-                .collector
-                .first_non_token_child(node)
-                .map(|child| self.loop_source_line_metadata_from_node(child, scope))
-                .unwrap_or((None, None)),
+            SyntaxKind::TemplateExpr => {
+                if let Some(child) = self.collector.first_non_token_child(node) {
+                    return self.loop_source_line_metadata_from_node(child, scope);
+                }
+                let tokens = self.collector.syntax_token_nodes(node);
+                if tokens.len() == 1
+                    && self.collector.syntax_token_is_ident_like(&tokens[0])
+                    && let Some(symbol_id) = self.collector.lookup_symbol_in_scope_chain(
+                        scope,
+                        Namespace::Value,
+                        tokens[0].text.as_ref(),
+                    )
+                {
+                    let symbol = self.collector.symbol(symbol_id);
+                    return self.normalize_inferred_metadata(
+                        scope,
+                        symbol.structure,
+                        symbol.declared_type.clone(),
+                    );
+                }
+                (None, None)
+            }
             SyntaxKind::ExprIdent => {
                 let Some((name, _)) = self.collector.node_name(node) else {
                     return (None, None);

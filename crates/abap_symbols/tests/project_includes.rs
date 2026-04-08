@@ -44,7 +44,7 @@ fn reports_unresolved_include_targets() {
         project
             .diagnostics
             .iter()
-        .any(|diag| diag.kind == DiagnosticKind::UnresolvedInclude)
+            .any(|diag| diag.kind == DiagnosticKind::UnresolvedInclude)
     );
 }
 

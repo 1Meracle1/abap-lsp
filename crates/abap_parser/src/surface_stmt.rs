@@ -491,12 +491,14 @@ fn find_top_level_alias_as(
     let mut paren = 0i32;
     let mut bracket = 0i32;
     let mut brace = 0i32;
+    let mut sql_case_depth = 0i32;
     let mut idx = start;
     while idx < end_exclusive {
         let token = &tokens[idx];
         if paren == 0
             && bracket == 0
             && brace == 0
+            && sql_case_depth == 0
             && token.kind == TokenKind::Ident
             && is_keyword(source, token, "as")
         {
@@ -515,6 +517,10 @@ fn find_top_level_alias_as(
             TokenKind::RBracket => bracket -= 1,
             TokenKind::LBrace => brace += 1,
             TokenKind::RBrace => brace -= 1,
+            TokenKind::Ident if is_keyword(source, token, "case") => sql_case_depth += 1,
+            TokenKind::Ident if is_keyword(source, token, "end") && sql_case_depth > 0 => {
+                sql_case_depth -= 1
+            }
             _ => {}
         }
         idx += 1;
@@ -772,6 +778,7 @@ fn build_select_projection_list(
     let mut paren = 0i32;
     let mut bracket = 0i32;
     let mut brace = 0i32;
+    let mut sql_case_depth = 0i32;
     let mut idx = start;
     while idx < end_exclusive {
         match tokens[idx].kind {
@@ -781,7 +788,11 @@ fn build_select_projection_list(
             TokenKind::RBracket => bracket -= 1,
             TokenKind::LBrace => brace += 1,
             TokenKind::RBrace => brace -= 1,
-            TokenKind::Comma if paren == 0 && bracket == 0 && brace == 0 => {
+            TokenKind::Ident if is_keyword(source, &tokens[idx], "case") => sql_case_depth += 1,
+            TokenKind::Ident if is_keyword(source, &tokens[idx], "end") && sql_case_depth > 0 => {
+                sql_case_depth -= 1
+            }
+            TokenKind::Comma if paren == 0 && bracket == 0 && brace == 0 && sql_case_depth == 0 => {
                 if let Some(item) = build_sql_projection_item(b, source, tokens, item_start, idx) {
                     children.push(item);
                 }
@@ -3468,7 +3479,8 @@ pub fn try_parse_read_table_stmt(
                 if is_keyword(source, token, "into") {
                     children.push(token_leaf(b, token));
                     let target_start = skip_trivia(tokens, i + 1);
-                    let target_end = scan_until_clause(tokens, target_start, period_i, &clause_starts);
+                    let target_end =
+                        scan_until_clause(tokens, target_start, period_i, &clause_starts);
                     if let Some((inline_decl, next_idx)) =
                         try_parse_data_inline_decl(b, source, tokens, target_start)
                         && skip_trivia(tokens, next_idx) == target_end
@@ -4982,6 +4994,49 @@ END-OF-PAGE.\nWRITE 'e'.",
             parsed
                 .file
                 .count_kind(parsed.file.root(), SyntaxKind::SelectStmt),
+            1
+        );
+    }
+
+    #[test]
+    fn parses_multiline_select_projection_case_expression_with_following_clauses() {
+        let parsed = crate::parse(
+            "SELECT rep_evtid,\n\
+                    evtid,\n\
+                    rule_type,\n\
+                    status_rep_evt,\n\
+                    msguid_out,\n\
+                    ext_ref_id,\n\
+                    CASE\n\
+                      WHEN ext_ref_id = 'PRIORITY1' THEN 'X'\n\
+                      WHEN ext_ref_id = 'EXCLUDED' THEN 'X'\n\
+                      WHEN ext_ref_id = 'PRIORITY2' THEN 'Y'\n\
+                      ELSE ' '\n\
+                    END AS priority,\n\
+                    creation_time\n\
+               FROM /sttp/rep_evt\n\
+               INTO TABLE @DATA(lt_rep_evt)\n\
+               UP TO @lv_bj2_max ROWS\n\
+               WHERE status_rep_evt = @lc_sts_rep\n\
+               AND rule_type IN @lr_sr_rule.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::SelectStmt), 1);
+        assert_eq!(
+            parsed.file.count_kind(root, SyntaxKind::SqlProjectionItem),
+            8
+        );
+        assert_eq!(
+            parsed.file.count_kind(root, SyntaxKind::SelectIntoClause),
+            1
+        );
+        assert_eq!(
+            parsed.file.count_kind(root, SyntaxKind::SelectUpToClause),
+            1
+        );
+        assert_eq!(
+            parsed.file.count_kind(root, SyntaxKind::SelectWhereClause),
             1
         );
     }
