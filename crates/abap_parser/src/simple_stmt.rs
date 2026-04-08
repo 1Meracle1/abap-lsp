@@ -48,7 +48,7 @@ const STRUCTURAL_SIMPLE_STMT_CLASSIFIERS: &[GuardedSimpleStmtClassifier] = &[
     ),
     GuardedSimpleStmtClassifier::new(&["type"], classify_type_pools_stmt),
     GuardedSimpleStmtClassifier::new(&["methods", "class"], classify_methods_stmt),
-    GuardedSimpleStmtClassifier::new(&["interfaces"], classify_interfaces_stmt),
+    GuardedSimpleStmtClassifier::new(&["interfaces", "interface"], classify_interfaces_stmt),
     GuardedSimpleStmtClassifier::new(&[], classify_direct_call_stmt),
 ];
 
@@ -409,12 +409,23 @@ fn interfaces_stmt_type_ref_range(
     }
     let first = significant[0].1;
     let last = significant.last()?.1;
-    if !token_matches_keyword(source, first, "interfaces") || last.kind != TokenKind::Period {
+    if last.kind != TokenKind::Period {
         return None;
     }
-    let start = significant.get(1)?.0;
-    let end = significant.last()?.0;
-    (start < end).then_some((start, end))
+    if token_matches_keyword(source, first, "interfaces") {
+        let start = significant.get(1)?.0;
+        let end = significant.last()?.0;
+        return (start < end).then_some((start, end));
+    }
+    if token_matches_keyword(source, first, "interface")
+        && significant.len() >= 4
+        && token_matches_keyword(source, significant[significant.len() - 2].1, "load")
+    {
+        let start = significant.get(1)?.0;
+        let end = significant.get(significant.len() - 2)?.0;
+        return (start < end).then_some((start, end));
+    }
+    None
 }
 
 fn build_interfaces_stmt_children(
@@ -558,12 +569,29 @@ fn classify_methods_stmt(source: &str, significant: &[&Token]) -> Option<SyntaxK
 
 fn classify_interfaces_stmt(source: &str, significant: &[&Token]) -> Option<SyntaxKind> {
     let first = *significant.first()?;
-    let second = *significant.get(1)?;
     let last = *significant.last()?;
-    (token_matches_keyword(source, first, "interfaces")
-        && second.kind == TokenKind::Ident
-        && last.kind == TokenKind::Period)
-        .then_some(SyntaxKind::InterfacesStmt)
+    if last.kind != TokenKind::Period {
+        return None;
+    }
+    if token_matches_keyword(source, first, "interfaces")
+        && significant
+            .get(1)
+            .is_some_and(|token| token.kind == TokenKind::Ident)
+    {
+        return Some(SyntaxKind::InterfacesStmt);
+    }
+    if token_matches_keyword(source, first, "interface")
+        && significant.len() >= 4
+        && significant
+            .get(1)
+            .is_some_and(|token| token.kind == TokenKind::Ident)
+        && significant
+            .get(significant.len() - 2)
+            .is_some_and(|token| token_matches_keyword(source, token, "load"))
+    {
+        return Some(SyntaxKind::InterfacesStmt);
+    }
+    None
 }
 
 fn classify_type_pools_stmt(source: &str, significant: &[&Token]) -> Option<SyntaxKind> {
@@ -901,6 +929,31 @@ ENDCLASS.";
     #[test]
     fn interfaces_stmt_builds_type_ref_children() {
         let parsed = crate::parse("INTERFACE if_outer.\n  INTERFACES zif_demo.\nENDINTERFACE.");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let interfaces = parsed
+            .file
+            .find_first_kind(parsed.file.root(), SyntaxKind::InterfacesStmt)
+            .expect("interfaces stmt");
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(interfaces, SyntaxKind::TypeRefSimple),
+            1
+        );
+    }
+
+    #[test]
+    fn interface_load_stmt_is_classified_as_interfaces_stmt() {
+        let parsed = crate::parse("INTERFACE if_outer.\n  INTERFACE zif_demo LOAD.\nENDINTERFACE.");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::InterfacesStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::UnparsedStmt), 0);
+    }
+
+    #[test]
+    fn interface_load_stmt_builds_type_ref_children_without_load_keyword() {
+        let parsed = crate::parse("INTERFACE if_outer.\n  INTERFACE zif_demo LOAD.\nENDINTERFACE.");
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
         let interfaces = parsed
             .file

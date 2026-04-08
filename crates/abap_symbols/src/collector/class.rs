@@ -279,6 +279,25 @@ impl<'a> Collector<'a> {
                 return Some(found);
             }
         }
+
+        if self.symbol(owner_symbol).kind == SymbolKind::Class
+            && let Some(superclass_name) = self.class_superclasses.get(&owner_symbol)
+            && let Some(superclass_symbol) = self
+                .lookup_symbol_in_scope_chain(
+                    lookup_scope,
+                    Namespace::Type,
+                    superclass_name.as_ref(),
+                )
+                .filter(|&symbol_id| self.symbol(symbol_id).kind == SymbolKind::Class)
+        {
+            return self.resolve_exposed_interface_symbol_inner(
+                superclass_symbol,
+                lookup_scope,
+                interface_name,
+                visited,
+            );
+        }
+
         None
     }
 }

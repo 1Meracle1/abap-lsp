@@ -4642,6 +4642,9 @@ pub fn try_parse_interface_decl(
     if starts_hyphenated_keyword(tokens, idx) {
         return None;
     }
+    if statement_starts_interface_load_stmt(source, tokens, idx) {
+        return None;
+    }
     try_parse_block_stmt(
         b,
         source,
@@ -4652,6 +4655,21 @@ pub fn try_parse_interface_decl(
         SyntaxKind::InterfaceDecl,
         errors,
     )
+}
+
+fn statement_starts_interface_load_stmt(source: &str, tokens: &[Token], idx: usize) -> bool {
+    let period_idx = match scan_until_statement_period(tokens, source, idx) {
+        StmtPeriodScan::Found(period_idx) => period_idx,
+        StmtPeriodScan::Unterminated { .. } => return false,
+    };
+    let keywords = tokens[idx..period_idx]
+        .iter()
+        .filter(|token| token.kind == TokenKind::Ident)
+        .map(|token| token.lexeme(source))
+        .collect::<Vec<_>>();
+    keywords.len() >= 3
+        && keywords[0].eq_ignore_ascii_case("interface")
+        && keywords[keywords.len() - 1].eq_ignore_ascii_case("load")
 }
 
 pub fn try_parse_method_decl(
@@ -4790,6 +4808,20 @@ END-OF-PAGE.\nWRITE 'e'.",
             parsed
                 .file
                 .count_kind(parsed.file.root(), SyntaxKind::MethodDecl),
+            1
+        );
+    }
+
+    #[test]
+    fn parses_interface_load_stmt_inside_interface_body_without_nested_endinterface() {
+        let parsed = crate::parse(
+            "INTERFACE if_outer.\n  INTERFACE if_inner LOAD.\n  METHODS run.\nENDINTERFACE.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::InterfaceDecl),
             1
         );
     }

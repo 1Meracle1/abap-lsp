@@ -2996,6 +2996,21 @@ fn resolve_exposed_interface_handle_inner<'a>(
         }
     }
 
+    if owner_unit.symbol(owner_symbol).kind == SymbolKind::Class
+        && let Some((super_unit, super_symbol)) =
+            direct_superclass_from_class(snapshot, owner_unit, owner_symbol)
+    {
+        return resolve_exposed_interface_handle_inner(
+            snapshot,
+            scope_index,
+            super_unit,
+            super_symbol,
+            scope,
+            interface_name,
+            visited,
+        );
+    }
+
     None
 }
 
@@ -5218,6 +5233,90 @@ lo_obj->i1~meth( ).";
             target.range.start,
             src.find("meth").expect("interface method declaration")
         );
+    }
+
+    #[test]
+    fn definition_at_resolves_inherited_interface_method_from_dependency_class_selector() {
+        let store = DocumentStore::default();
+        let interface_src = "\
+INTERFACE i1.
+  METHODS meth.
+ENDINTERFACE.";
+        let super_src = "\
+CLASS super DEFINITION.
+  PUBLIC SECTION.
+    INTERFACES i1.
+ENDCLASS.
+
+CLASS super IMPLEMENTATION.
+  METHOD i1~meth.
+  ENDMETHOD.
+ENDCLASS.";
+        let sub_src = "\
+CLASS sub DEFINITION
+  PUBLIC
+  INHERITING FROM super.
+PUBLIC SECTION.
+  METHODS i1~meth REDEFINITION.
+ENDCLASS.
+
+CLASS sub IMPLEMENTATION.
+  METHOD i1~meth.
+  ENDMETHOD.
+ENDCLASS.";
+        let main_src = "\
+CLASS demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run.
+ENDCLASS.
+
+CLASS demo IMPLEMENTATION.
+  METHOD run.
+    DATA lo_obj TYPE REF TO sub.
+    CREATE OBJECT lo_obj.
+    lo_obj->i1~meth( ).
+  ENDMETHOD.
+ENDCLASS.";
+        let snapshots = store.replace_all(vec![
+            DocumentInput {
+                uri: Arc::from("file:///i1.abap"),
+                version: 1,
+                text: Arc::from(interface_src),
+                is_dependency: true,
+                object_name: Some(Arc::from("i1")),
+            },
+            DocumentInput {
+                uri: Arc::from("file:///super.abap"),
+                version: 1,
+                text: Arc::from(super_src),
+                is_dependency: true,
+                object_name: Some(Arc::from("super")),
+            },
+            DocumentInput {
+                uri: Arc::from("file:///sub.abap"),
+                version: 1,
+                text: Arc::from(sub_src),
+                is_dependency: true,
+                object_name: Some(Arc::from("sub")),
+            },
+            DocumentInput {
+                uri: Arc::from("file:///main.abap"),
+                version: 1,
+                text: Arc::from(main_src),
+                is_dependency: false,
+                object_name: None,
+            },
+        ]);
+        let main = snapshots
+            .get("file:///main.abap")
+            .cloned()
+            .expect("main snapshot should exist");
+        let method_use = main_src.rfind("meth").expect("method use");
+
+        let target = main
+            .definition_at(method_use + 1)
+            .expect("interface method definition target");
+        assert_target_slice(&target, "file:///i1.abap", interface_src, "meth");
     }
 
     #[test]

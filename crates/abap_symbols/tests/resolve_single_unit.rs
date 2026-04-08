@@ -5184,6 +5184,98 @@ START-OF-SELECTION.
 }
 
 #[test]
+fn resolves_interface_qualified_calls_via_inherited_interface_implementation() {
+    let src = r#"
+INTERFACE i1.
+  METHODS meth.
+ENDINTERFACE.
+
+CLASS super DEFINITION.
+  PUBLIC SECTION.
+    INTERFACES i1.
+ENDCLASS.
+
+CLASS super IMPLEMENTATION.
+  METHOD i1~meth.
+  ENDMETHOD.
+ENDCLASS.
+
+CLASS sub DEFINITION INHERITING FROM super.
+  PUBLIC SECTION.
+    METHODS i1~meth REDEFINITION.
+ENDCLASS.
+
+CLASS sub IMPLEMENTATION.
+  METHOD i1~meth.
+  ENDMETHOD.
+ENDCLASS.
+
+DATA lo_obj TYPE REF TO sub.
+
+START-OF-SELECTION.
+  CREATE OBJECT lo_obj.
+  lo_obj->i1~meth( ).
+"#;
+    let parsed = parse(src);
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let unit = analyze_unit("file:///inherited_interface_impl.abap", src, &parsed);
+
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            matches!(
+                diag.kind,
+                DiagnosticKind::UnresolvedReference | DiagnosticKind::UnknownField
+            ) && (diag.message.contains("i1") || diag.message.contains("meth"))
+        }),
+        "{:#?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn interface_load_statement_uses_type_namespace_for_referenced_interface() {
+    let src = r#"
+INTERFACE if_inner.
+  METHODS run.
+ENDINTERFACE.
+
+INTERFACE if_outer.
+  INTERFACE if_inner LOAD.
+ENDINTERFACE.
+"#;
+    let parsed = parse(src);
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let unit = analyze_unit("file:///interface_load.abap", src, &parsed);
+
+    assert!(
+        unit.implemented_interfaces.iter().any(|item| {
+            item.interface_name.as_ref() == "if_inner"
+                && unit
+                    .symbols
+                    .iter()
+                    .find(|symbol| {
+                        symbol.kind == abap_symbols::SymbolKind::Interface
+                            && symbol.name.as_ref() == "if_outer"
+                    })
+                    .is_some_and(|owner| item.owner_symbol == owner.id)
+        }),
+        "{:#?}",
+        unit.implemented_interfaces
+    );
+
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            matches!(
+                diag.kind,
+                DiagnosticKind::WrongNamespace | DiagnosticKind::UnresolvedReference
+            ) && diag.message.contains("if_inner")
+        }),
+        "{:#?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn substring_access_uses_value_namespace() {
     let src = "\
 DATA ls_time TYPE string.\n\

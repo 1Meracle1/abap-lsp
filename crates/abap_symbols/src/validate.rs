@@ -490,6 +490,18 @@ fn resolve_exposed_interface_handle_inner(
             return Some(found);
         }
     }
+
+    if owner_unit.symbol(owner.symbol).kind == SymbolKind::Class
+        && let Some(superclass) = direct_superclass_handle(project, owner_unit, owner.symbol)
+    {
+        return resolve_exposed_interface_handle_inner(
+            project,
+            superclass,
+            interface_name,
+            visited,
+        );
+    }
+
     None
 }
 
