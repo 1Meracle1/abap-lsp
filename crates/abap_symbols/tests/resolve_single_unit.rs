@@ -840,6 +840,45 @@ READ TABLE lt_trn INTO ls_trn INDEX 1.
 }
 
 #[test]
+fn resolves_read_table_inline_into_before_with_key() {
+    let src = r#"
+TYPES: BEGIN OF ty_param,
+  param_name TYPE string,
+  param_value TYPE string,
+END OF ty_param.
+TYPES ty_param_tab TYPE STANDARD TABLE OF ty_param WITH DEFAULT KEY.
+DATA lt_t_param TYPE ty_param_tab.
+CONSTANTS lc_rs_bj2_max TYPE string VALUE 'RS_BJ2_MAX'.
+
+READ TABLE lt_t_param INTO DATA(ls_bj2_max) WITH KEY param_name = lc_rs_bj2_max.
+ls_bj2_max-param_value = ls_bj2_max-param_value.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///read_table_inline_into_with_key.abap", src, &parsed);
+
+    for name in ["lt_t_param", "ls_bj2_max", "lc_rs_bj2_max"] {
+        assert!(
+            unit.references.iter().any(|reference| {
+                reference.namespace == Namespace::Value
+                    && reference.kind == ReferenceKind::Identifier
+                    && reference.name.as_ref() == name
+                    && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+            }),
+            "expected resolved READ TABLE reference for `{name}`, refs={:?} diagnostics={:?}",
+            unit.references,
+            unit.diagnostics
+        );
+        assert!(
+            !unit.diagnostics.iter().any(|diag| {
+                diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains(name)
+            }),
+            "unexpected READ TABLE diagnostics for `{name}`: {:?}",
+            unit.diagnostics
+        );
+    }
+}
+
+#[test]
 fn resolves_get_time_stamp_field_target() {
     let src = r#"
 DATA lv_current_ts TYPE string.

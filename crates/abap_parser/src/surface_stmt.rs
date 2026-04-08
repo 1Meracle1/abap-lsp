@@ -3467,16 +3467,26 @@ pub fn try_parse_read_table_stmt(
                 let token = &tokens[i];
                 if is_keyword(source, token, "into") {
                     children.push(token_leaf(b, token));
-                    i = scan_and_push_expr_clause(
-                        b,
-                        &mut children,
-                        source,
-                        tokens,
-                        i + 1,
-                        period_i,
-                        Some(token),
-                        &clause_starts,
-                    );
+                    let target_start = skip_trivia(tokens, i + 1);
+                    let target_end = scan_until_clause(tokens, target_start, period_i, &clause_starts);
+                    if let Some((inline_decl, next_idx)) =
+                        try_parse_data_inline_decl(b, source, tokens, target_start)
+                        && skip_trivia(tokens, next_idx) == target_end
+                    {
+                        children.push(inline_decl);
+                        i = target_end;
+                    } else {
+                        push_expr_child(
+                            b,
+                            &mut children,
+                            source,
+                            tokens,
+                            target_start,
+                            target_end,
+                            Some(token),
+                        );
+                        i = target_end;
+                    }
                     continue;
                 }
                 if is_keyword(source, token, "assigning") {
@@ -5299,6 +5309,20 @@ END-OF-PAGE.\nWRITE 'e'.",
                 .count_kind(parsed.file.root(), SyntaxKind::ReadTableStmt),
             1
         );
+    }
+
+    #[test]
+    fn parses_read_table_into_inline_data_before_with_key() {
+        let parsed = crate::parse(
+            "READ TABLE lt_t_param INTO DATA(ls_bj2_max) WITH KEY param_name = lc_rs_bj2_max.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let stmt = parsed
+            .file
+            .find_first_kind(parsed.file.root(), SyntaxKind::ReadTableStmt)
+            .expect("read table stmt");
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::DataInlineDecl), 1);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::TemplateExpr), 2);
     }
 
     #[test]
