@@ -537,6 +537,44 @@ ENDMETHOD.
 }
 
 #[test]
+fn if_not_condition_does_not_report_not_as_unknown_symbol() {
+    let src = r#"
+METHOD run.
+  DATA iv_flag TYPE abap_bool.
+
+  IF NOT
+     iv_flag = abap_true.
+    WRITE / iv_flag.
+  ENDIF.
+ENDMETHOD.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///if_not_condition.abap", src, &parsed);
+
+    assert!(
+        parsed.errors.is_empty(),
+        "unexpected parse errors: {:?}",
+        parsed.errors
+    );
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference
+                && diag.message.contains("unknown symbol 'not'")
+        }),
+        "unexpected unresolved NOT diagnostic: {:?}",
+        unit.diagnostics
+    );
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference
+                && diag.message.contains("unknown symbol 'iv_flag'")
+        }),
+        "unexpected unresolved iv_flag diagnostic: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn resolves_table_line_pseudo_field_in_loop_where_for_scalar_line_type() {
     let src = r#"
 DATA lt TYPE STANDARD TABLE OF string WITH EMPTY KEY.

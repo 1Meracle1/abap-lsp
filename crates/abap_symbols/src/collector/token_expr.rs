@@ -548,6 +548,7 @@ impl<'a> Collector<'a> {
             || token.text.eq_ignore_ascii_case("new")
             || token.text.eq_ignore_ascii_case("ref")
             || token.text.eq_ignore_ascii_case("to")
+            || token.text.eq_ignore_ascii_case("not")
         {
             return false;
         }

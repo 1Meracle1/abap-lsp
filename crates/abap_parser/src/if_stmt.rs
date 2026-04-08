@@ -539,4 +539,24 @@ mod tests {
             1
         );
     }
+
+    #[test]
+    fn multiline_if_condition_continues_after_not() {
+        let parsed = parse(
+            "IF NOT\n   iv_flag = abap_true.\n  WRITE 'x'.\nENDIF.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::IfStmt),
+            1
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::WriteStmt),
+            1
+        );
+    }
 }

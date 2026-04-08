@@ -104,6 +104,7 @@ pub(crate) fn is_condition_continuation_keyword(source: &str, tok: &Token) -> bo
     tok.kind == TokenKind::Ident
         && (tok.lexeme(source).eq_ignore_ascii_case("AND")
             || tok.lexeme(source).eq_ignore_ascii_case("OR")
+            || tok.lexeme(source).eq_ignore_ascii_case("NOT")
             || tok.lexeme(source).eq_ignore_ascii_case("WHERE")
             || tok.lexeme(source).eq_ignore_ascii_case("HAVING")
             || tok.lexeme(source).eq_ignore_ascii_case("ON"))
