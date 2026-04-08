@@ -33,6 +33,9 @@ impl<'a> Collector<'a> {
                 text if text.trim_start().starts_with('"') => {
                     idx += 1;
                 }
+                "|" => {
+                    idx = self.collect_string_template_infos(tokens, idx, scope);
+                }
                 _ if self.syntax_token_is_literal_like(token) => {
                     idx += 1;
                 }
@@ -166,6 +169,34 @@ impl<'a> Collector<'a> {
                 }
             }
         }
+    }
+
+    fn collect_string_template_infos(
+        &mut self,
+        tokens: &[SyntaxTokenInfo],
+        start: usize,
+        scope: ScopeId,
+    ) -> usize {
+        let mut idx = start + 1;
+        while idx < tokens.len() {
+            match tokens[idx].text.as_ref() {
+                "|" => return idx + 1,
+                "{" => {
+                    if let Some(end_idx) = self.find_matching_group_end_infos(tokens, idx, "{", "}") {
+                        self.collect_token_expression_refs_infos(
+                            &tokens[idx + 1..end_idx],
+                            scope,
+                            true,
+                        );
+                        idx = end_idx + 1;
+                    } else {
+                        return idx + 1;
+                    }
+                }
+                _ => idx += 1,
+            }
+        }
+        idx
     }
 
     fn collect_new_expression_infos(

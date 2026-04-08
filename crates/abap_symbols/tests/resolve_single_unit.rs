@@ -4976,4 +4976,34 @@ ENDCLASS.
             unit.diagnostics
         );
     }
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference
+                && diag.message.contains("unknown symbol ' '")
+        }),
+        "unexpected unresolved diagnostic for blank template literal: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn ignores_plain_template_literal_text_in_token_collected_statements() {
+    let src = r#"
+FORM run USING iv_tag_path TYPE string.
+  DATA lv_first_sep TYPE int4.
+
+  FIND FIRST OCCURRENCE OF |abc| IN iv_tag_path MATCH OFFSET lv_first_sep.
+ENDFORM.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///find_stmt_literal.abap", src, &parsed);
+
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference
+                && diag.message.contains("unknown symbol 'abc'")
+        }),
+        "unexpected unresolved diagnostic for template literal text: {:?}",
+        unit.diagnostics
+    );
 }
