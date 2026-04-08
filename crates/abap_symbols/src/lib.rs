@@ -312,6 +312,37 @@ DATA gv_value TYPE i.
     }
 
     #[test]
+    fn interfaces_statement_collects_type_references_in_class_and_interface_defs() {
+        let src = r#"
+INTERFACE zif_parent.
+ENDINTERFACE.
+
+INTERFACE zif_child.
+  INTERFACES zif_parent.
+ENDINTERFACE.
+
+CLASS zcl_demo DEFINITION.
+  PUBLIC SECTION.
+    INTERFACES zif_child.
+ENDCLASS.
+"#;
+        let parsed = parse(src);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let unit = analyze_unit("file:///interfaces_stmt.abap", src, &parsed);
+        let refs: Vec<_> = unit
+            .references
+            .iter()
+            .filter(|reference| {
+                reference.kind == ReferenceKind::TypeRef
+                    && reference.namespace == Namespace::Type
+                    && matches!(reference.name.as_ref(), "zif_parent" | "zif_child")
+            })
+            .collect();
+        assert_eq!(refs.len(), 2, "{refs:#?}");
+        assert!(refs.iter().all(|reference| reference.resolution.is_some()));
+    }
+
+    #[test]
     fn structure_field_query_finds_field_at_offset() {
         let src = r#"
 TYPES: BEGIN OF ty_demo,

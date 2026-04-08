@@ -50,12 +50,17 @@ fn resolve_symbol_in_scope_chain(
     let key = (namespace, Arc::clone(name));
     let mut current = Some(scope);
     while let Some(scope_id) = current {
-        if let Some(symbols) = scope_index.get(scope_id.as_usize()).and_then(|scope| scope.get(&key))
+        if let Some(symbols) = scope_index
+            .get(scope_id.as_usize())
+            .and_then(|scope| scope.get(&key))
             && let Some(symbol_id) = symbols.last().copied()
         {
             return Some(symbol_id);
         }
-        current = unit.scopes.get(scope_id.as_usize()).and_then(|scope| scope.parent);
+        current = unit
+            .scopes
+            .get(scope_id.as_usize())
+            .and_then(|scope| scope.parent);
     }
     None
 }
@@ -123,7 +128,10 @@ fn scope_descends_from(unit: &crate::UnitAnalysis, scope: ScopeId, ancestor: Sco
         if scope_id == ancestor {
             return true;
         }
-        current = unit.scopes.get(scope_id.as_usize()).and_then(|scope| scope.parent);
+        current = unit
+            .scopes
+            .get(scope_id.as_usize())
+            .and_then(|scope| scope.parent);
     }
     false
 }
@@ -209,10 +217,9 @@ fn validate_super_constructor_calls(
             scope_descends_from(unit, access.scope, scope.id)
                 && access.base_namespace == Namespace::Value
                 && access.base_name.as_ref().eq_ignore_ascii_case("super")
-                && access
-                    .field_path
-                    .last()
-                    .is_some_and(|segment| segment.name.as_ref().eq_ignore_ascii_case("constructor"))
+                && access.field_path.last().is_some_and(|segment| {
+                    segment.name.as_ref().eq_ignore_ascii_case("constructor")
+                })
         });
         if !has_super_call {
             diagnostics.push(Diagnostic {
@@ -493,8 +500,14 @@ fn dereference_field_metadata(
         if type_ref.namespace != Namespace::Type || !type_ref.field_path.is_empty() {
             return None;
         }
-        resolve_symbol_in_scope_chain(unit, scope_index, scope, Namespace::Type, &type_ref.base_name)
-            .and_then(|symbol_id| unit.symbol(symbol_id).structure)
+        resolve_symbol_in_scope_chain(
+            unit,
+            scope_index,
+            scope,
+            Namespace::Type,
+            &type_ref.base_name,
+        )
+        .and_then(|symbol_id| unit.symbol(symbol_id).structure)
     });
     Some((
         structure,
@@ -521,13 +534,19 @@ fn normalize_field_metadata(
         let Some(type_ref) = declared_type.as_ref() else {
             break;
         };
-        if type_ref.namespace != Namespace::Type || type_ref.is_ref || !type_ref.field_path.is_empty()
+        if type_ref.namespace != Namespace::Type
+            || type_ref.is_ref
+            || !type_ref.field_path.is_empty()
         {
             break;
         }
-        let Some(symbol_id) =
-            resolve_symbol_in_scope_chain(unit, scope_index, scope, Namespace::Type, &type_ref.base_name)
-        else {
+        let Some(symbol_id) = resolve_symbol_in_scope_chain(
+            unit,
+            scope_index,
+            scope,
+            Namespace::Type,
+            &type_ref.base_name,
+        ) else {
             break;
         };
         let symbol = unit.symbol(symbol_id);
@@ -839,28 +858,33 @@ fn loop_where_reference_matches_source_field(
         return false;
     }
     unit.loop_where_field_contexts.iter().any(|context| {
-        context.range.start <= reference.range.start && reference.range.end <= context.range.end && {
-            let source_matches = resolve_loop_where_source_structure(project, unit, scope_indexes, context)
-                .is_some_and(|(structure_unit, structure_id)| {
-                    structure_unit
-                        .semantic()
-                        .decls()
-                        .structure_field_info(structure_id, reference.name.as_ref())
-                        .is_some()
-                });
-            source_matches
-                || context
-                    .target_access
-                    .as_ref()
-                    .and_then(|access| resolve_field_access_structure(project, unit, scope_indexes, access))
-                    .is_some_and(|(structure_unit, structure_id)| {
-                        structure_unit
-                            .semantic()
-                            .decls()
-                            .structure_field_info(structure_id, reference.name.as_ref())
-                            .is_some()
-                    })
-        }
+        context.range.start <= reference.range.start
+            && reference.range.end <= context.range.end
+            && {
+                let source_matches =
+                    resolve_loop_where_source_structure(project, unit, scope_indexes, context)
+                        .is_some_and(|(structure_unit, structure_id)| {
+                            structure_unit
+                                .semantic()
+                                .decls()
+                                .structure_field_info(structure_id, reference.name.as_ref())
+                                .is_some()
+                        });
+                source_matches
+                    || context
+                        .target_access
+                        .as_ref()
+                        .and_then(|access| {
+                            resolve_field_access_structure(project, unit, scope_indexes, access)
+                        })
+                        .is_some_and(|(structure_unit, structure_id)| {
+                            structure_unit
+                                .semantic()
+                                .decls()
+                                .structure_field_info(structure_id, reference.name.as_ref())
+                                .is_some()
+                        })
+            }
     })
 }
 
@@ -1056,12 +1080,7 @@ pub(crate) fn validate_project_with_scope_indexes(
             if reference.resolution.is_some() {
                 continue;
             }
-            if loop_where_reference_matches_source_field(
-                project,
-                unit,
-                scope_indexes,
-                reference,
-            ) {
+            if loop_where_reference_matches_source_field(project, unit, scope_indexes, reference) {
                 continue;
             }
             if reference.namespace == Namespace::Value

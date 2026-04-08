@@ -113,12 +113,18 @@ ENDFORM.
     let unit = analyze_unit("file:///type_pools.abap", src, &parsed);
 
     assert!(
-        !unit.references.iter().any(|reference| reference.name.as_ref() == "abap"),
+        !unit
+            .references
+            .iter()
+            .any(|reference| reference.name.as_ref() == "abap"),
         "unexpected semantic refs from TYPE-POOLS: {:?}",
         unit.references
     );
     assert!(
-        !unit.diagnostics.iter().any(|diag| diag.message.contains("abap")),
+        !unit
+            .diagnostics
+            .iter()
+            .any(|diag| diag.message.contains("abap")),
         "unexpected TYPE-POOLS diagnostics: {:?}",
         unit.diagnostics
     );
@@ -3384,6 +3390,63 @@ ENDCLASS.
 }
 
 #[test]
+fn collects_public_method_metadata_from_interface_definition() {
+    let src = r#"
+INTERFACE zif_demo.
+  METHODS exec
+    IMPORTING iv_value TYPE i
+    RETURNING VALUE(rv_text) TYPE string.
+ENDINTERFACE.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///interface_method_metadata.abap", src, &parsed);
+
+    let interface_symbol = unit
+        .symbols
+        .iter()
+        .find(|symbol| {
+            symbol.kind == abap_symbols::SymbolKind::Interface && symbol.name.as_ref() == "zif_demo"
+        })
+        .expect("interface symbol");
+    let member = unit
+        .class_member(interface_symbol.id, "exec")
+        .expect("interface method metadata");
+    assert_eq!(member.kind, abap_symbols::ClassMemberKind::Method);
+    assert_eq!(member.visibility, abap_symbols::Visibility::Public);
+    assert!(!member.is_static);
+    assert!(member.signature.contains("METHODS exec"));
+    assert_eq!(member.parameters.len(), 2);
+    assert_eq!(member.parameters[0].name.as_ref(), "iv_value");
+    assert_eq!(member.parameters[1].name.as_ref(), "rv_text");
+}
+
+#[test]
+fn collects_public_attribute_metadata_from_interface_definition() {
+    let src = r#"
+INTERFACE zif_demo.
+  DATA gv_value TYPE i.
+ENDINTERFACE.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///interface_attr_metadata.abap", src, &parsed);
+
+    let interface_symbol = unit
+        .symbols
+        .iter()
+        .find(|symbol| {
+            symbol.kind == abap_symbols::SymbolKind::Interface && symbol.name.as_ref() == "zif_demo"
+        })
+        .expect("interface symbol");
+    let member = unit
+        .class_member(interface_symbol.id, "gv_value")
+        .expect("interface attribute metadata");
+    assert_eq!(member.kind, abap_symbols::ClassMemberKind::Attribute);
+    assert_eq!(member.visibility, abap_symbols::Visibility::Public);
+    assert!(!member.is_static);
+    assert!(member.signature.contains("DATA gv_value TYPE i"));
+}
+
+#[test]
 fn create_data_stmt_resolves_target_and_dynamic_type_operand() {
     let src = r#"
 TYPES: BEGIN OF ty_finf,
@@ -3619,8 +3682,7 @@ ENDCLASS.
     );
     assert!(
         !unit.diagnostics.iter().any(|diag| {
-            diag.kind == DiagnosticKind::UnresolvedReference
-                && diag.message.contains("te_loglevel")
+            diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains("te_loglevel")
         }),
         "unexpected unresolved inherited type diagnostic: {:?}",
         unit.diagnostics
@@ -3712,7 +3774,11 @@ ENDCLASS.
                 && reference.name.as_ref() == "zcx_resume"
         })
         .collect();
-    assert_eq!(refs.len(), 1, "expected one raising type ref, refs={refs:?}");
+    assert_eq!(
+        refs.len(),
+        1,
+        "expected one raising type ref, refs={refs:?}"
+    );
     assert!(
         matches!(refs[0].resolution, Some(Resolution::Symbol(_))),
         "expected resolved raising type ref, refs={refs:?}"
@@ -4482,10 +4548,16 @@ ENDIF.";
                 && reference.kind == ReferenceKind::Identifier
         })
         .collect::<Vec<_>>();
-    assert_eq!(lt_tab_refs.len(), 2, "expected both lt_tab[] uses to resolve");
-    assert!(lt_tab_refs
-        .iter()
-        .all(|reference| matches!(reference.resolution, Some(Resolution::Symbol(_)))));
+    assert_eq!(
+        lt_tab_refs.len(),
+        2,
+        "expected both lt_tab[] uses to resolve"
+    );
+    assert!(
+        lt_tab_refs
+            .iter()
+            .all(|reference| matches!(reference.resolution, Some(Resolution::Symbol(_))))
+    );
     assert!(
         unit.field_accesses.is_empty(),
         "legacy [] should not produce selector field accesses: {:?}",
@@ -4573,7 +4645,12 @@ ENDLOOP.";
                     .iter()
                     .map(|segment| segment.name.as_ref())
                     .collect::<Vec<_>>()
-                    == vec!["object_event", "extension", "destination_list", "destination"]
+                    == vec![
+                        "object_event",
+                        "extension",
+                        "destination_list",
+                        "destination",
+                    ]
         }),
         "expected selector access ending in legacy [], accesses={:?}",
         unit.field_accesses

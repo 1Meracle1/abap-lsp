@@ -231,6 +231,7 @@ ast_node!(CallArgSection, SyntaxKind::CallArgSection);
 ast_node!(CallNamedArg, SyntaxKind::CallNamedArg);
 ast_node!(CallPositionalArg, SyntaxKind::CallPositionalArg);
 ast_node!(MethodsStmt, SyntaxKind::MethodsStmt);
+ast_node!(InterfacesStmt, SyntaxKind::InterfacesStmt);
 ast_node!(SelectStmt, SyntaxKind::SelectStmt);
 ast_node!(SelectQuery, SyntaxKind::SelectQuery);
 ast_node!(SelectProjectionList, SyntaxKind::SelectProjectionList);
@@ -1096,9 +1097,8 @@ mod tests {
     use super::{
         AstNode, CallArgList, CallExpr, DataDecl, DataDeclName, DataLikeDecl, ExprIdent,
         MethodsParamSectionKind, MethodsRaiseKind, MethodsStmt, MethodsStmtKind,
-        MethodsTypeClauseKind,
-        SelectProjectionList, SelectStmt, SelectorExpr, SqlColumnRef, SqlDataSource,
-        SqlQualifiedStar, SyntaxNodeRef,
+        MethodsTypeClauseKind, SelectProjectionList, SelectStmt, SelectorExpr, SqlColumnRef,
+        SqlDataSource, SqlQualifiedStar, SyntaxNodeRef,
     };
 
     #[test]
@@ -1437,10 +1437,18 @@ mod tests {
         let (resumable_tok, _) = take("resumable", &mut b);
         let (lparen_tok, _) = take("(", &mut b);
         let (cx_demo_tok, cx_demo_range) = take("/sttp/cx_demo", &mut b);
-        let cx_demo_type = b.branch(SyntaxKind::TypeRefSimple, cx_demo_range.clone(), &[cx_demo_tok]);
+        let cx_demo_type = b.branch(
+            SyntaxKind::TypeRefSimple,
+            cx_demo_range.clone(),
+            &[cx_demo_tok],
+        );
         let (rparen_tok, _) = take(")", &mut b);
         let (cx_other_tok, cx_other_range) = take("cx_other", &mut b);
-        let cx_other_type = b.branch(SyntaxKind::TypeRefSimple, cx_other_range.clone(), &[cx_other_tok]);
+        let cx_other_type = b.branch(
+            SyntaxKind::TypeRefSimple,
+            cx_other_range.clone(),
+            &[cx_other_tok],
+        );
         let (period_tok, period_range) = take(".", &mut b);
 
         let methods_stmt = b.branch(
@@ -1467,16 +1475,12 @@ mod tests {
         assert_eq!(signature.raising().len(), 2);
         assert_eq!(signature.raising()[0].kind(), MethodsRaiseKind::Resumable);
         assert_eq!(
-            signature.raising()[0]
-                .type_ref()
-                .display_text(source),
+            signature.raising()[0].type_ref().display_text(source),
             Some("/sttp/cx_demo")
         );
         assert_eq!(signature.raising()[1].kind(), MethodsRaiseKind::Raising);
         assert_eq!(
-            signature.raising()[1]
-                .type_ref()
-                .display_text(source),
+            signature.raising()[1].type_ref().display_text(source),
             Some("cx_other")
         );
     }

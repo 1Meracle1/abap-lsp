@@ -132,8 +132,9 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                 &["type", "with", "into", "display", "raising"],
             );
             if end_mid > i {
-                if let Some((name, range)) =
-                    self.collector.simple_type_ref_base_from_infos(&sig[i..end_mid])
+                if let Some((name, range)) = self
+                    .collector
+                    .simple_type_ref_base_from_infos(&sig[i..end_mid])
                 {
                     self.collector.add_reference(
                         scope,
@@ -143,8 +144,11 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                         range,
                     );
                 } else {
-                    self.collector
-                        .collect_token_expression_refs_infos(&sig[i..end_mid], scope, true);
+                    self.collector.collect_token_expression_refs_infos(
+                        &sig[i..end_mid],
+                        scope,
+                        true,
+                    );
                 }
             }
             i = end_mid;
@@ -221,8 +225,11 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                 if self.is_compact_message_class_form(&sig[i..code_end]) {
                     self.collect_compact_message_class_ref_infos(&sig[i..code_end], scope);
                 } else {
-                    self.collector
-                        .collect_token_expression_refs_infos(&sig[i..code_end], scope, true);
+                    self.collector.collect_token_expression_refs_infos(
+                        &sig[i..code_end],
+                        scope,
+                        true,
+                    );
                 }
             }
             i = code_end;
@@ -283,8 +290,7 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
         if let Some(into_ix) = into_ix {
             let into_end = period_pos;
             self.declare_message_inline_into_target_infos(&sig, into_ix + 1, into_end, scope);
-            let value_start =
-                self.message_into_expression_start(&sig, into_ix + 1, into_end);
+            let value_start = self.message_into_expression_start(&sig, into_ix + 1, into_end);
             if into_end > value_start {
                 self.collector.collect_token_expression_refs_infos(
                     &sig[value_start..into_end],
@@ -409,7 +415,10 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
         let Some(msgty) = chars.next() else {
             return false;
         };
-        if !matches!(msgty.to_ascii_lowercase(), 'a' | 'e' | 'i' | 's' | 'w' | 'x') {
+        if !matches!(
+            msgty.to_ascii_lowercase(),
+            'a' | 'e' | 'i' | 's' | 'w' | 'x'
+        ) {
             return false;
         }
         chars.all(|ch| ch.is_ascii_digit()) && tokens.iter().any(|token| token.text.as_ref() == "(")
@@ -424,7 +433,9 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
         if start + 3 < end
             && tokens[start].text.eq_ignore_ascii_case("data")
             && tokens[start + 1].text.as_ref() == "("
-            && self.collector.syntax_token_is_ident_like(&tokens[start + 2])
+            && self
+                .collector
+                .syntax_token_is_ident_like(&tokens[start + 2])
             && tokens[start + 3].text.as_ref() == ")"
         {
             return start + 4;
@@ -743,9 +754,9 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             idx += 1;
         }
 
-        let pattern_end =
-            self.collector
-                .consume_concatenate_operand_infos(tokens, idx, &["in"]);
+        let pattern_end = self
+            .collector
+            .consume_concatenate_operand_infos(tokens, idx, &["in"]);
         if pattern_end > idx {
             self.collector.collect_token_expression_refs_infos(
                 &tokens[idx..pattern_end],
@@ -792,8 +803,7 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                 let value_start = if tokens.get(clause_start).is_some_and(|next| {
                     next.text.eq_ignore_ascii_case("offset")
                         || next.text.eq_ignore_ascii_case("length")
-                    })
-                {
+                }) {
                     clause_start + 1
                 } else {
                     clause_start
@@ -1063,9 +1073,9 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                 .collect_token_expression_refs_infos(&significant[1..], scope, true);
             return;
         };
-        let Some(into_idx) = self
-            .collector
-            .find_top_level_keyword_index_infos(&significant, at_idx + 1, "into")
+        let Some(into_idx) =
+            self.collector
+                .find_top_level_keyword_index_infos(&significant, at_idx + 1, "into")
         else {
             self.collector.collect_token_expression_refs_infos(
                 &significant[1..at_idx],
@@ -1083,11 +1093,9 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
         self.collector
             .collect_token_expression_refs_infos(&significant[1..at_idx], scope, true);
 
-        let separator_end = self.collector.consume_concatenate_operand_infos(
-            &significant,
-            at_idx + 1,
-            &["into"],
-        );
+        let separator_end =
+            self.collector
+                .consume_concatenate_operand_infos(&significant, at_idx + 1, &["into"]);
         if separator_end > at_idx + 1 {
             self.collector.collect_token_expression_refs_infos(
                 &significant[at_idx + 1..separator_end],
@@ -1118,9 +1126,9 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                 }
                 continue;
             }
-            let end_idx = self
-                .collector
-                .consume_concatenate_operand_infos(&significant, idx, &["in"]);
+            let end_idx =
+                self.collector
+                    .consume_concatenate_operand_infos(&significant, idx, &["in"]);
             if end_idx > idx {
                 self.collector.collect_token_expression_refs_infos(
                     &significant[idx..end_idx],

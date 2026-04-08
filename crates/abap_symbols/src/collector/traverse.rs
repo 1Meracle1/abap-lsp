@@ -62,12 +62,7 @@ impl<'a> Collector<'a> {
             ),
             SyntaxKind::EventBlock => self.decl_lowering().walk_event_block(node, scope),
             SyntaxKind::ClassDecl => self.class_lowering().walk_class_decl(node, scope),
-            SyntaxKind::InterfaceDecl => self.decl_lowering().walk_block_decl(
-                node,
-                scope,
-                SymbolKind::Interface,
-                crate::ScopeKind::Interface,
-            ),
+            SyntaxKind::InterfaceDecl => self.class_lowering().walk_interface_decl(node, scope),
             SyntaxKind::MethodDecl => self.decl_lowering().walk_method_decl(node, scope),
             SyntaxKind::IfStmt => self.control_lowering().walk_if_stmt(node, scope),
             SyntaxKind::ElseifClause => {
@@ -163,6 +158,7 @@ impl<'a> Collector<'a> {
                 .collect_generic_simple_stmt(node, scope),
             SyntaxKind::TypePoolsStmt => {}
             SyntaxKind::MethodsStmt => self.stmt_lowering().collect_methods_stmt(node, scope),
+            SyntaxKind::InterfacesStmt => self.walk_children(node, scope),
             SyntaxKind::AssertStmt | SyntaxKind::CheckStmt => self
                 .stmt_lowering()
                 .collect_assert_or_check_stmt(node, scope),

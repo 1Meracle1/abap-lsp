@@ -656,13 +656,13 @@ fn data_element_to_abap_source(object_name: &str, xml: &str) -> String {
             "referenceType",
         ],
     )
-        .filter(|value| !value.eq_ignore_ascii_case(object_name))
-        .map(|value| normalize_ddic_type_name(&value).into_owned())
-        .or_else(|| {
-            first_tag_text(xml, &["DATATYPE", "dataType"])
-                .map(|value| normalize_ddic_builtin_type(&value).into_owned())
-        })
-        .unwrap_or_else(|| "string".to_string());
+    .filter(|value| !value.eq_ignore_ascii_case(object_name))
+    .map(|value| normalize_ddic_type_name(&value).into_owned())
+    .or_else(|| {
+        first_tag_text(xml, &["DATATYPE", "dataType"])
+            .map(|value| normalize_ddic_builtin_type(&value).into_owned())
+    })
+    .unwrap_or_else(|| "string".to_string());
     format!(
         "TYPES {name} TYPE {ty}.\n",
         name = object_name.to_ascii_lowercase(),
@@ -673,15 +673,15 @@ fn data_element_to_abap_source(object_name: &str, xml: &str) -> String {
 fn table_type_to_abap_source(object_name: &str, xml: &str) -> String {
     let line_type = table_type_line_type(xml).unwrap_or_else(|| {
         first_tag_text(
-        xml,
-        &[
-            "LINE_TYPE",
-            "ROWTYPE",
-            "DD40V-ROWTYPE",
-            "ROLLNAME",
-            "REFNAME",
-        ],
-    )
+            xml,
+            &[
+                "LINE_TYPE",
+                "ROWTYPE",
+                "DD40V-ROWTYPE",
+                "ROLLNAME",
+                "REFNAME",
+            ],
+        )
         .unwrap_or_else(|| "string".to_string())
     });
     format!(
@@ -719,7 +719,8 @@ fn table_type_line_type(xml: &str) -> Option<String> {
                 }
             }
             Ok(Event::End(end)) => {
-                if is_field_end(end.name().as_ref()) && tag_stack.len() == 2
+                if is_field_end(end.name().as_ref())
+                    && tag_stack.len() == 2
                     && let Some(name) = current_name.take()
                 {
                     return Some(name);
@@ -843,8 +844,7 @@ fn collect_ddic_fields(xml: &str) -> Vec<DdicField> {
             Ok(Event::Start(start)) => {
                 if is_field_start(&start) && !tag_stack.is_empty() {
                     current = Some(DdicField {
-                        name: attr_local_text(&start, b"name")
-                            .unwrap_or_default(),
+                        name: attr_local_text(&start, b"name").unwrap_or_default(),
                         type_name: attr_local_text(&start, b"rollname")
                             .or_else(|| attr_local_text(&start, b"refname")),
                         builtin_type: attr_local_text(&start, b"datatype"),
@@ -861,8 +861,7 @@ fn collect_ddic_fields(xml: &str) -> Vec<DdicField> {
             Ok(Event::Empty(start)) => {
                 if is_field_start(&start) && !tag_stack.is_empty() {
                     let field = DdicField {
-                        name: attr_local_text(&start, b"name")
-                            .unwrap_or_default(),
+                        name: attr_local_text(&start, b"name").unwrap_or_default(),
                         type_name: attr_local_text(&start, b"rollname")
                             .or_else(|| attr_local_text(&start, b"refname")),
                         builtin_type: attr_local_text(&start, b"datatype"),
@@ -925,7 +924,12 @@ fn collect_ddic_fields(xml: &str) -> Vec<DdicField> {
                     current.type_name = Some(value);
                 } else if matches_local_name(
                     name,
-                    &[b"datatype", b"builtintype", b"ddicdatatype", b"datatypekind"],
+                    &[
+                        b"datatype",
+                        b"builtintype",
+                        b"ddicdatatype",
+                        b"datatypekind",
+                    ],
                 ) && current.builtin_type.is_none()
                 {
                     current.builtin_type = Some(value);
@@ -959,7 +963,10 @@ fn collect_ddic_fields(xml: &str) -> Vec<DdicField> {
 }
 
 fn is_field_start(start: &BytesStart<'_>) -> bool {
-    matches_local_name(start.name().as_ref(), &[b"elementinfo", b"component", b"field"])
+    matches_local_name(
+        start.name().as_ref(),
+        &[b"elementinfo", b"component", b"field"],
+    )
 }
 
 fn is_field_end(name: &[u8]) -> bool {
@@ -1012,7 +1019,9 @@ fn local_name_eq(actual: &[u8], expected: &[u8]) -> bool {
 }
 
 fn matches_local_name(actual: &[u8], expected: &[&[u8]]) -> bool {
-    expected.iter().any(|candidate| local_name_eq(actual, candidate))
+    expected
+        .iter()
+        .any(|candidate| local_name_eq(actual, candidate))
 }
 
 fn normalize_ddic_type_name(value: &str) -> Cow<'_, str> {
@@ -1094,9 +1103,8 @@ mod tests {
   </dtel:dataElement>
 </blue:wbobj>
 "#;
-        let source =
-            ddic_xml_to_abap_source("/STTP/E_ACTION_FILE", "ddic-data-element", xml)
-                .expect("source");
+        let source = ddic_xml_to_abap_source("/STTP/E_ACTION_FILE", "ddic-data-element", xml)
+            .expect("source");
         assert!(
             source
                 .to_ascii_lowercase()
@@ -1138,8 +1146,7 @@ mod tests {
   </abapsource:elementInfo>
 </abapsource:elementInfo>
 "#;
-        let source =
-            ddic_xml_to_abap_source("/STTP/EPC1", "ddic-structure", xml).expect("source");
+        let source = ddic_xml_to_abap_source("/STTP/EPC1", "ddic-structure", xml).expect("source");
         let lowered = source.to_ascii_lowercase();
         assert!(lowered.contains("begin of /sttp/epc1"));
         assert!(lowered.contains("controller type prxctrltab"));
@@ -1156,8 +1163,8 @@ mod tests {
   <mc:messages mc:msgno="043" mc:msgtext="Received &amp;1 documents"/>
 </mc:messageClass>
 "#;
-        let source = ddic_xml_to_abap_source("/STTP/INT_MSG", "message-class", xml)
-            .expect("source");
+        let source =
+            ddic_xml_to_abap_source("/STTP/INT_MSG", "message-class", xml).expect("source");
         let lowered = source.to_ascii_lowercase();
         assert!(lowered.contains("types /sttp/int_msg type c length 1"));
         assert!(lowered.contains("\" message 043:"));
@@ -1204,13 +1211,10 @@ mod tests {
 </abapsource:elementInfo>
 "#;
         let source =
-            ddic_xml_to_abap_source("/AIF/PERS_XML_TT", "ddic-table-type", xml)
-                .expect("source");
-        assert!(
-            source
-                .to_ascii_lowercase()
-                .contains("types /aif/pers_xml_tt type standard table of /aif/pers_xml with empty key")
-        );
+            ddic_xml_to_abap_source("/AIF/PERS_XML_TT", "ddic-table-type", xml).expect("source");
+        assert!(source.to_ascii_lowercase().contains(
+            "types /aif/pers_xml_tt type standard table of /aif/pers_xml with empty key"
+        ));
     }
 
     #[test]

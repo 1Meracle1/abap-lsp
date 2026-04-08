@@ -193,7 +193,8 @@ fn resolve_inherited_symbol_in_project(
             root_index,
         )?;
         let superclass_unit = &units[current.unit.as_usize()];
-        if let Some(symbol_id) = class_scope_symbol(superclass_unit, current.symbol, namespace, name)
+        if let Some(symbol_id) =
+            class_scope_symbol(superclass_unit, current.symbol, namespace, name)
         {
             return Some(SymbolHandle {
                 unit: current.unit,

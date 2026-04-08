@@ -90,8 +90,7 @@ impl<'a> Collector<'a> {
                         base_range,
                         field_path,
                         bracket_groups,
-                    )) =
-                        self.consume_selector_access_from_infos(tokens, idx)
+                    )) = self.consume_selector_access_from_infos(tokens, idx)
                     {
                         for (group_start, group_end, is_legacy_table_body) in bracket_groups {
                             // Distinguish legacy whole-table `itab[]` from table expressions
@@ -182,7 +181,8 @@ impl<'a> Collector<'a> {
             match tokens[idx].text.as_ref() {
                 "|" => return idx + 1,
                 "{" => {
-                    if let Some(end_idx) = self.find_matching_group_end_infos(tokens, idx, "{", "}") {
+                    if let Some(end_idx) = self.find_matching_group_end_infos(tokens, idx, "{", "}")
+                    {
                         self.collect_token_expression_refs_infos(
                             &tokens[idx + 1..end_idx],
                             scope,
@@ -747,7 +747,10 @@ impl<'a> Collector<'a> {
         let mut bracket_groups = Vec::new();
         while cursor + 2 < tokens.len() {
             let mut op_idx = cursor + 1;
-            while tokens.get(op_idx).is_some_and(|token| token.text.as_ref() == "[") {
+            while tokens
+                .get(op_idx)
+                .is_some_and(|token| token.text.as_ref() == "[")
+            {
                 let end_idx = self.find_matching_group_end_infos(tokens, op_idx, "[", "]")?;
                 // Empty brackets are the old "table body" form (`itab[]`); non-empty brackets
                 // are table expressions that conceptually yield a row before any `-field`.
@@ -768,9 +771,8 @@ impl<'a> Collector<'a> {
             let step_namespace = match op.text.as_ref() {
                 "=>" => Namespace::Type,
                 "->" | "~" => Namespace::Value,
-                "-"
-                    if op_idx > 0
-                        && !self.syntax_tokens_have_space_between(&tokens[op_idx - 1], op)
+                "-" if op_idx > 0
+                    && !self.syntax_tokens_have_space_between(&tokens[op_idx - 1], op)
                     && !self.syntax_tokens_have_space_between(op, field) =>
                 {
                     Namespace::Value

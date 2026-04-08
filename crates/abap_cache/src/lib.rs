@@ -9,8 +9,8 @@ use abap_symbols::{
     FormParameterPassingKind, FormParameterSection, NamedArgumentAccess, NamedArgumentTarget,
     Namespace, PerformArgumentData, PerformCallData, PerformParameterSection, ProjectAnalysis,
     ReferenceKind, Resolution, ScopeId, SqlNameRefData, SqlNameRefKind, StructureFieldInfo,
-    StructureFieldShape, StructureId, SymbolData, SymbolId, SymbolKind, UnitAnalysis, UnitId, Visibility,
-    analyze_project_from_units, analyze_unit_locally, builtin_routine_spec,
+    StructureFieldShape, StructureId, SymbolData, SymbolId, SymbolKind, UnitAnalysis, UnitId,
+    Visibility, analyze_project_from_units, analyze_unit_locally, builtin_routine_spec,
 };
 use parking_lot::RwLock;
 use rayon::prelude::*;
@@ -275,16 +275,18 @@ impl AnalysisSnapshot {
     }
 
     pub fn hovered_component_at(&self, offset: usize) -> Option<HoveredComponentInfo> {
-        if let Some((access, segment_index)) = self.symbols.field_accesses.iter().find_map(|access| {
-            access
-                .field_path
-                .iter()
-                .enumerate()
-                .find_map(|(idx, segment)| {
-                    (segment.range.start <= offset && offset < segment.range.end)
-                        .then_some((access, idx))
-                })
-        }) {
+        if let Some((access, segment_index)) =
+            self.symbols.field_accesses.iter().find_map(|access| {
+                access
+                    .field_path
+                    .iter()
+                    .enumerate()
+                    .find_map(|(idx, segment)| {
+                        (segment.range.start <= offset && offset < segment.range.end)
+                            .then_some((access, idx))
+                    })
+            })
+        {
             let (unit, symbol_id) = resolve_field_access_base_symbol(self, access)?;
             if let Some((_, member)) =
                 resolve_class_selector_member(self, access, segment_index, unit, symbol_id)
@@ -366,7 +368,9 @@ impl AnalysisSnapshot {
             base_namespace: Namespace::Value,
             component_path: vec![Arc::clone(&field.name)],
             field_name: Arc::clone(&field.name),
-            field_owner_structure_name: Some(Arc::clone(&structure_unit.structure(field.owner).name)),
+            field_owner_structure_name: Some(Arc::clone(
+                &structure_unit.structure(field.owner).name,
+            )),
             range: target.range,
             declared_type: field.type_ref.as_ref().map(format_field_type_ref),
             declaration: None,
@@ -509,16 +513,18 @@ impl AnalysisSnapshot {
     }
 
     fn definition_target_for_component_at(&self, offset: usize) -> Option<DefinitionTarget> {
-        if let Some((access, segment_index)) = self.symbols.field_accesses.iter().find_map(|access| {
-            access
-                .field_path
-                .iter()
-                .enumerate()
-                .find_map(|(idx, segment)| {
-                    (segment.range.start <= offset && offset < segment.range.end)
-                        .then_some((access, idx))
-                })
-        }) {
+        if let Some((access, segment_index)) =
+            self.symbols.field_accesses.iter().find_map(|access| {
+                access
+                    .field_path
+                    .iter()
+                    .enumerate()
+                    .find_map(|(idx, segment)| {
+                        (segment.range.start <= offset && offset < segment.range.end)
+                            .then_some((access, idx))
+                    })
+            })
+        {
             let (unit, symbol_id) = resolve_field_access_base_symbol(self, access)?;
             if let Some((member_unit, member)) =
                 resolve_class_selector_member(self, access, segment_index, unit, symbol_id)
@@ -560,16 +566,18 @@ impl AnalysisSnapshot {
         &self,
         offset: usize,
     ) -> Option<ReferenceSearchTarget> {
-        if let Some((access, segment_index)) = self.symbols.field_accesses.iter().find_map(|access| {
-            access
-                .field_path
-                .iter()
-                .enumerate()
-                .find_map(|(idx, segment)| {
-                    (segment.range.start <= offset && offset < segment.range.end)
-                        .then_some((access, idx))
-                })
-        }) {
+        if let Some((access, segment_index)) =
+            self.symbols.field_accesses.iter().find_map(|access| {
+                access
+                    .field_path
+                    .iter()
+                    .enumerate()
+                    .find_map(|(idx, segment)| {
+                        (segment.range.start <= offset && offset < segment.range.end)
+                            .then_some((access, idx))
+                    })
+            })
+        {
             let (unit, symbol_id) = resolve_field_access_base_symbol(self, access)?;
             if let Some((member_unit, member)) =
                 resolve_class_selector_member(self, access, segment_index, unit, symbol_id)
@@ -676,11 +684,13 @@ impl AnalysisSnapshot {
     fn definition_target_for_resolved_symbol_at(&self, offset: usize) -> Option<DefinitionTarget> {
         if let Some(reference) = self.symbols.semantic().refs().reference_at_offset(offset) {
             if reference.kind == ReferenceKind::Include {
-                return self.definition_target_for_include_reference(reference).or_else(|| {
-                    reference.resolution.and_then(|resolution| {
-                        definition_target_for_resolution(self, resolution)
-                    })
-                });
+                return self
+                    .definition_target_for_include_reference(reference)
+                    .or_else(|| {
+                        reference.resolution.and_then(|resolution| {
+                            definition_target_for_resolution(self, resolution)
+                        })
+                    });
             }
             if let Some(resolution) = reference.resolution {
                 return definition_target_for_resolution(self, resolution).or_else(|| {
@@ -1206,8 +1216,13 @@ impl AnalysisSnapshot {
     fn bare_where_field_query_at(&self, offset: usize) -> Option<BareWhereFieldQuery> {
         let statement_range = statement_query_range(&self.parse, offset)?;
         let (token_start, token_end) = token_window_for_range(&self.parse, &statement_range)?;
-        let mut parsed =
-            parse_bare_where_field_query(self.text.as_ref(), &self.parse, token_start, token_end, offset)?;
+        let mut parsed = parse_bare_where_field_query(
+            self.text.as_ref(),
+            &self.parse,
+            token_start,
+            token_end,
+            offset,
+        )?;
         parsed.scope = innermost_scope_at(&self.symbols, statement_range.start);
         let source_access = access_from_selector_query(
             parsed.scope,
@@ -1926,14 +1941,15 @@ fn resolve_field_access_structure_with_scope_index<'a>(
             .structure_field_info(current_structure, segment.name.as_ref())?;
         if idx + 1 == access.field_path.len() {
             if let Some(type_ref) = field.type_ref.as_ref() {
-                let (resolved_unit, resolved_symbol_id) = resolve_symbol_from_context_with_scope_index(
-                    snapshot,
-                    scope_index,
-                    access.scope,
-                    type_ref.namespace,
-                    &type_ref.base_name,
-                    type_ref.namespace == Namespace::Value,
-                )?;
+                let (resolved_unit, resolved_symbol_id) =
+                    resolve_symbol_from_context_with_scope_index(
+                        snapshot,
+                        scope_index,
+                        access.scope,
+                        type_ref.namespace,
+                        &type_ref.base_name,
+                        type_ref.namespace == Namespace::Value,
+                    )?;
                 return resolve_symbol_structure_with_scope_index(
                     snapshot,
                     scope_index,
@@ -3099,7 +3115,10 @@ fn parse_bare_where_field_query(
         }
         (1usize, where_sig, where_sig)
     } else if first.eq_ignore_ascii_case("loop") {
-        if significant.get(1).is_none_or(|&idx| !parse.tokens[idx].lexeme(text).eq_ignore_ascii_case("at")) {
+        if significant
+            .get(1)
+            .is_none_or(|&idx| !parse.tokens[idx].lexeme(text).eq_ignore_ascii_case("at"))
+        {
             return None;
         }
         let where_sig = significant.iter().position(|&idx| {
@@ -3117,7 +3136,14 @@ fn parse_bare_where_field_query(
                 let lexeme = parse.tokens[idx].lexeme(text);
                 matches!(
                     lexeme.to_ascii_lowercase().as_str(),
-                    "into" | "assigning" | "reference" | "transporting" | "where" | "from" | "to" | "step"
+                    "into"
+                        | "assigning"
+                        | "reference"
+                        | "transporting"
+                        | "where"
+                        | "from"
+                        | "to"
+                        | "step"
                 )
                 .then_some(pos)
             })
@@ -4033,7 +4059,9 @@ ENDCLASS.",
             is_dependency: true,
             object_name: Some(Arc::from("/cdbasis/cl_messages")),
         }]);
-        let snapshot = snapshots.get("file:///dep.abap").expect("dependency snapshot");
+        let snapshot = snapshots
+            .get("file:///dep.abap")
+            .expect("dependency snapshot");
         let method_names: Vec<_> = snapshot
             .symbols
             .class_members
@@ -4257,7 +4285,11 @@ ENDCLASS.";
                     && reference.kind == ReferenceKind::MessageClass
             })
             .expect("message class reference");
-        assert!(reference.resolution.is_some(), "{:?}", snapshot.symbols.references);
+        assert!(
+            reference.resolution.is_some(),
+            "{:?}",
+            snapshot.symbols.references
+        );
         assert!(
             snapshot
                 .symbols
@@ -5597,10 +5629,12 @@ ENDCLASS.";
             .expect("included symbol hover");
 
         assert_eq!(hovered.display_name.as_ref(), "lv_inc");
-        assert!(hovered
-            .markdown_lines
-            .iter()
-            .any(|line| line.contains("Variable")));
+        assert!(
+            hovered
+                .markdown_lines
+                .iter()
+                .any(|line| line.contains("Variable"))
+        );
     }
 
     #[test]
@@ -5627,16 +5661,19 @@ ENDCLASS.";
         ]);
         let main = snapshots.get("file:///main.abap").expect("main snapshot");
 
-        assert!(main
-            .symbols
-            .include_edges
-            .iter()
-            .any(|edge| edge.name.as_ref() == "/sttp/int_global" && edge.target.is_some()));
-        assert!(!main
-            .project
-            .diagnostics
-            .iter()
-            .any(|diag| diag.message.contains("/sttp/int_global")));
+        assert!(
+            main.symbols
+                .include_edges
+                .iter()
+                .any(|edge| edge.name.as_ref() == "/sttp/int_global" && edge.target.is_some())
+        );
+        assert!(
+            !main
+                .project
+                .diagnostics
+                .iter()
+                .any(|diag| diag.message.contains("/sttp/int_global"))
+        );
     }
 
     #[test]

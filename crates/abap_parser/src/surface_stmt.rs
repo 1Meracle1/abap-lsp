@@ -2549,7 +2549,8 @@ pub fn try_parse_split_stmt(
         next_after_unterminated_scan,
         |b, period_i, _errors| {
             let mut children = vec![token_leaf(b, split_tok)];
-            let Some(at_idx) = find_top_level_keyword_index(source, tokens, idx + 1, period_i, "at")
+            let Some(at_idx) =
+                find_top_level_keyword_index(source, tokens, idx + 1, period_i, "at")
             else {
                 let raw = token_children(b, tokens, idx, period_i + 1);
                 let node = b.branch(
@@ -2582,13 +2583,8 @@ pub fn try_parse_split_stmt(
             );
             children.push(token_leaf(b, &tokens[at_idx]));
 
-            let separator_end = consume_concatenate_operand(
-                source,
-                tokens,
-                at_idx + 1,
-                into_idx,
-                &["into"],
-            );
+            let separator_end =
+                consume_concatenate_operand(source, tokens, at_idx + 1, into_idx, &["into"]);
             push_expr_child(
                 b,
                 &mut children,
@@ -2607,8 +2603,7 @@ pub fn try_parse_split_stmt(
                     push_token_children(b, &mut children, tokens, i, period_i);
                     break;
                 }
-                let end_idx =
-                    consume_concatenate_operand(source, tokens, i, period_i, &["in"]);
+                let end_idx = consume_concatenate_operand(source, tokens, i, period_i, &["in"]);
                 if end_idx == i {
                     children.push(token_leaf(b, token));
                     i += 1;
@@ -5096,7 +5091,8 @@ END-OF-PAGE.\nWRITE 'e'.",
 
     #[test]
     fn parses_get_reference_of_into_as_one_statement() {
-        let parsed = crate::parse("GET REFERENCE OF es_request_aif_struct INTO ls_xmlparse-xi_data.");
+        let parsed =
+            crate::parse("GET REFERENCE OF es_request_aif_struct INTO ls_xmlparse-xi_data.");
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
         let stmt = parsed
             .file
@@ -5776,7 +5772,10 @@ END-OF-PAGE.\nWRITE 'e'.",
             .expect("call transformation stmt");
         assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::CallArgList), 1);
         assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::CallArgSection), 4);
-        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::CallPositionalArg), 2);
+        assert_eq!(
+            parsed.file.count_kind(stmt, SyntaxKind::CallPositionalArg),
+            2
+        );
         assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::Error), 0);
     }
 

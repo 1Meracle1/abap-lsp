@@ -81,6 +81,27 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
         self.collector.enclosing_class_owner(scope)
     }
 
+    pub(super) fn walk_interface_decl(&mut self, node: NodeId, scope: ScopeId) {
+        let Some((name, range)) = self.collector.header_ident_after_keyword(node) else {
+            self.collector.walk_children(node, scope);
+            return;
+        };
+        let owner = self.collector.declare_plain_symbol(
+            scope,
+            Arc::clone(&name),
+            SymbolKind::Interface,
+            range,
+        );
+        let node_range = self.collector.file.range(node);
+        let child_scope =
+            self.collector
+                .push_scope(ScopeKind::Interface, node_range, Some(scope), Some(owner));
+        self.collect_class_definition_members(node, owner, child_scope, Visibility::Public);
+        for child in self.collector.file.children(node) {
+            self.collector.walk_node(child, child_scope);
+        }
+    }
+
     pub(super) fn walk_class_decl(&mut self, node: NodeId, scope: ScopeId) {
         let is_implementation = self.class_header_has_implementation(node);
         let Some((name, range)) = self.collector.header_ident_after_keyword(node) else {
@@ -152,7 +173,7 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
                 .insert(owner, child_scope);
         }
         if !is_implementation {
-            self.collect_class_definition_members(node, owner, child_scope);
+            self.collect_class_definition_members(node, owner, child_scope, Visibility::Private);
         }
         for child in self.collector.file.children(node) {
             self.collector.walk_node(child, child_scope);
@@ -179,8 +200,9 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
         node: NodeId,
         class_symbol: SymbolId,
         class_scope: ScopeId,
+        default_visibility: Visibility,
     ) {
-        let mut visibility = Visibility::Private;
+        let mut visibility = default_visibility;
         let mut stack: Vec<_> = self.collector.file.children(node).rev().collect();
         while let Some(child) = stack.pop() {
             match self.collector.file.kind(child) {

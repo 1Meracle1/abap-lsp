@@ -570,7 +570,9 @@ ENDCLASS.",
             is_dependency: true,
             object_name: Some(Arc::from("/cdbasis/cl_messages")),
         }]);
-        let snapshot = snapshots.get("file:///dep.abap").expect("dependency snapshot");
+        let snapshot = snapshots
+            .get("file:///dep.abap")
+            .expect("dependency snapshot");
         let tokens = build_semantic_tokens(snapshot.as_ref());
         let legend = semantic_tokens_legend();
         let method_idx = legend

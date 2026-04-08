@@ -109,6 +109,8 @@ pub enum SyntaxKind {
     ClassSectionStmt,
     /// `METHODS ... .` or `CLASS-METHODS ... .`
     MethodsStmt,
+    /// `INTERFACES if_name .`
+    InterfacesStmt,
     /// `REPORT ... .`
     ReportStmt,
     /// `INCLUDE ... .`
@@ -333,6 +335,7 @@ impl SyntaxKind {
             Self::UnparsedStmt => "UnparsedStmt",
             Self::ClassSectionStmt => "ClassSectionStmt",
             Self::MethodsStmt => "MethodsStmt",
+            Self::InterfacesStmt => "InterfacesStmt",
             Self::ReportStmt => "ReportStmt",
             Self::IncludeStmt => "IncludeStmt",
             Self::TypePoolsStmt => "TypePoolsStmt",

@@ -48,6 +48,7 @@ const STRUCTURAL_SIMPLE_STMT_CLASSIFIERS: &[GuardedSimpleStmtClassifier] = &[
     ),
     GuardedSimpleStmtClassifier::new(&["type"], classify_type_pools_stmt),
     GuardedSimpleStmtClassifier::new(&["methods", "class"], classify_methods_stmt),
+    GuardedSimpleStmtClassifier::new(&["interfaces"], classify_interfaces_stmt),
     GuardedSimpleStmtClassifier::new(&[], classify_direct_call_stmt),
 ];
 
@@ -285,7 +286,10 @@ fn methods_stmt_type_ref_ranges(
                     let next = significant_tokens[j + 1];
                     if matches!(
                         op.kind,
-                        TokenKind::Minus | TokenKind::Arrow | TokenKind::Tilde | TokenKind::FatArrow
+                        TokenKind::Minus
+                            | TokenKind::Arrow
+                            | TokenKind::Tilde
+                            | TokenKind::FatArrow
                     ) && next.kind == TokenKind::Ident
                     {
                         j += 2;
@@ -380,6 +384,58 @@ fn build_methods_stmt_children(
             children.push(build_type_ref_node(b, source, &tokens[start..end]));
             i = end;
             range_idx += 1;
+            continue;
+        }
+        children.push(token_leaf(b, &tokens[i]));
+        i += 1;
+    }
+    children
+}
+
+fn interfaces_stmt_type_ref_range(
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    period_i: usize,
+) -> Option<(usize, usize)> {
+    let significant: Vec<_> = tokens[idx..=period_i]
+        .iter()
+        .enumerate()
+        .filter(|(_, token)| token.kind != TokenKind::Comment)
+        .map(|(offset, token)| (idx + offset, token))
+        .collect();
+    if significant.len() < 3 {
+        return None;
+    }
+    let first = significant[0].1;
+    let last = significant.last()?.1;
+    if !token_matches_keyword(source, first, "interfaces") || last.kind != TokenKind::Period {
+        return None;
+    }
+    let start = significant.get(1)?.0;
+    let end = significant.last()?.0;
+    (start < end).then_some((start, end))
+}
+
+fn build_interfaces_stmt_children(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    period_i: usize,
+) -> Vec<NodeId> {
+    let Some((start, end)) = interfaces_stmt_type_ref_range(source, tokens, idx, period_i) else {
+        return tokens[idx..=period_i]
+            .iter()
+            .map(|t| token_leaf(b, t))
+            .collect();
+    };
+    let mut children = Vec::with_capacity(period_i - idx + 1);
+    let mut i = idx;
+    while i <= period_i {
+        if i == start {
+            children.push(build_type_ref_node(b, source, &tokens[start..end]));
+            i = end;
             continue;
         }
         children.push(token_leaf(b, &tokens[i]));
@@ -500,6 +556,16 @@ fn classify_methods_stmt(source: &str, significant: &[&Token]) -> Option<SyntaxK
     method_statement_name_idx(source, significant).map(|_| SyntaxKind::MethodsStmt)
 }
 
+fn classify_interfaces_stmt(source: &str, significant: &[&Token]) -> Option<SyntaxKind> {
+    let first = *significant.first()?;
+    let second = *significant.get(1)?;
+    let last = *significant.last()?;
+    (token_matches_keyword(source, first, "interfaces")
+        && second.kind == TokenKind::Ident
+        && last.kind == TokenKind::Period)
+        .then_some(SyntaxKind::InterfacesStmt)
+}
+
 fn classify_type_pools_stmt(source: &str, significant: &[&Token]) -> Option<SyntaxKind> {
     if significant.len() < 5 {
         return None;
@@ -531,7 +597,10 @@ fn classify_commit_or_rollback_work_stmt(
     source: &str,
     significant: &[&Token],
 ) -> Option<SyntaxKind> {
-    if significant.len() != 3 || significant[1].kind != TokenKind::Ident || significant[2].kind != TokenKind::Period {
+    if significant.len() != 3
+        || significant[1].kind != TokenKind::Ident
+        || significant[2].kind != TokenKind::Period
+    {
         return None;
     }
 
@@ -642,7 +711,10 @@ fn validate_unparsed_stmt(
 ) {
     validate_method_modifier_order(source, tokens, idx, period_i, errors);
     let is_method_stmt = method_statement_name_idx(source, significant).is_some();
-    if !is_method_stmt && direct_call_statement(significant) && !direct_call_padding_is_valid(significant) {
+    if !is_method_stmt
+        && direct_call_statement(significant)
+        && !direct_call_padding_is_valid(significant)
+    {
         errors.push(crate::ParseError {
             message: "syntax error: method call arguments must have whitespace or a line break immediately inside parentheses"
                 .to_string(),
@@ -720,6 +792,9 @@ pub fn try_parse_simple_stmt(
             let kids = match kind {
                 SyntaxKind::MethodsStmt => {
                     build_methods_stmt_children(b, source, tokens, idx, period_i)
+                }
+                SyntaxKind::InterfacesStmt => {
+                    build_interfaces_stmt_children(b, source, tokens, idx, period_i)
                 }
                 SyntaxKind::AssertStmt | SyntaxKind::CheckStmt => {
                     build_assert_or_check_stmt_children(b, source, tokens, idx, period_i)
@@ -808,6 +883,33 @@ ENDCLASS.";
             parsed
                 .file
                 .count_kind(parsed.file.root(), SyntaxKind::MethodsStmt),
+            1
+        );
+    }
+
+    #[test]
+    fn classifies_interfaces_statement_specifically() {
+        let parsed = crate::parse(
+            "CLASS lcl DEFINITION.\n  PUBLIC SECTION.\n    INTERFACES if_demo.\nENDCLASS.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::InterfacesStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::UnparsedStmt), 0);
+    }
+
+    #[test]
+    fn interfaces_stmt_builds_type_ref_children() {
+        let parsed = crate::parse("INTERFACE if_outer.\n  INTERFACES zif_demo.\nENDINTERFACE.");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let interfaces = parsed
+            .file
+            .find_first_kind(parsed.file.root(), SyntaxKind::InterfacesStmt)
+            .expect("interfaces stmt");
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(interfaces, SyntaxKind::TypeRefSimple),
             1
         );
     }
@@ -910,7 +1012,10 @@ ENDCLASS.";
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
         let root = parsed.file.root();
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::CommitWorkStmt), 1);
-        assert_eq!(parsed.file.count_kind(root, SyntaxKind::RollbackWorkStmt), 1);
+        assert_eq!(
+            parsed.file.count_kind(root, SyntaxKind::RollbackWorkStmt),
+            1
+        );
     }
 
     #[test]
