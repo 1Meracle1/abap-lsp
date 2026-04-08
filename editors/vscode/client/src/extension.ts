@@ -50,6 +50,7 @@ const negativeRemoteDependencyCache = new Set<string>();
 const remoteDependencySchedulers = new Map<string, RemoteDependencyScheduler>();
 const pendingWorkspaceConfigPrompts = new Set<string>();
 const dismissedWorkspaceConfigPrompts = new Set<string>();
+const customerObjectNamePattern = /^(?:Z|Y)[A-Z0-9_\/]+$/;
 
 interface RemoteDependencyResolveParams {
 	workspaceUri: string;
@@ -825,6 +826,17 @@ function validateLocalWorkspaceObjectName(
 	return undefined;
 }
 
+export function validateLocalWorkspaceObjectNameForKind(
+	value: string,
+	kind: string,
+): string | undefined {
+	const template = localWorkspaceObjectTemplates().find((candidate) => candidate.kind === kind);
+	if (!template) {
+		return `Unsupported local workspace object kind: ${kind}`;
+	}
+	return validateLocalWorkspaceObjectName(value, template);
+}
+
 async function createLocalWorkspaceObject(
 	workspaceFolder: vscode.WorkspaceFolder,
 	template: LocalWorkspaceObjectTemplate,
@@ -885,7 +897,7 @@ function localWorkspaceObjectTemplates(): LocalWorkspaceObjectTemplate[] {
 			label: "Report",
 			kind: "report",
 			role: "root",
-			namePattern: /^(?:Z|Y)[A-Z0-9_\/]+$/,
+			namePattern: customerObjectNamePattern,
 			namePlaceholder: "ZMY_NEW_REPORT",
 			stub: (name) => `REPORT ${name}.\n`,
 		},
@@ -893,7 +905,7 @@ function localWorkspaceObjectTemplates(): LocalWorkspaceObjectTemplate[] {
 			label: "Include",
 			kind: "include",
 			role: "root",
-			namePattern: /^(?:Z|Y)[A-Z0-9_\/]+$/,
+			namePattern: customerObjectNamePattern,
 			namePlaceholder: "ZMY_NEW_INCLUDE",
 			stub: (name) => `* Include ${name}\n`,
 		},
@@ -901,7 +913,7 @@ function localWorkspaceObjectTemplates(): LocalWorkspaceObjectTemplate[] {
 			label: "Global Class",
 			kind: "global-class",
 			role: "main",
-			namePattern: /^(?:Z|Y)CL_[A-Z0-9_\/]+$/,
+			namePattern: customerObjectNamePattern,
 			namePlaceholder: "ZCL_MY_NEW_CLASS",
 			stub: (name) => `CLASS ${name} DEFINITION PUBLIC FINAL CREATE PUBLIC.\nENDCLASS.\n\nCLASS ${name} IMPLEMENTATION.\nENDCLASS.\n`,
 		},
@@ -909,7 +921,7 @@ function localWorkspaceObjectTemplates(): LocalWorkspaceObjectTemplate[] {
 			label: "Global Interface",
 			kind: "global-interface",
 			role: "main",
-			namePattern: /^(?:Z|Y)IF_[A-Z0-9_\/]+$/,
+			namePattern: customerObjectNamePattern,
 			namePlaceholder: "ZIF_MY_NEW_INTERFACE",
 			stub: (name) => `INTERFACE ${name} PUBLIC.\nENDINTERFACE.\n`,
 		},
