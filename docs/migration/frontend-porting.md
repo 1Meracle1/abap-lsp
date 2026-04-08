@@ -11,12 +11,12 @@
 7. `abap_lsp`
 8. `abap_lsp_server`
 
-This matches the legacy layering and keeps syntax-only code separate from semantic and protocol-facing logic.
+This preserves the intended layering and keeps syntax-only code separate from semantic and protocol-facing logic.
 
 ## Parser Migration Rules
 
 - Keep parser code syntax-only. Name resolution and validation stay out of `abap_parser`.
-- Port Odin parser tests from `legacy/tests/parser/` in focused batches rather than a giant one-shot move.
+- Add or expand parser tests in focused batches rather than a giant one-shot move.
 - Prefer golden fixtures and narrow behavior assertions over restating implementation details.
 - Keep AST shape decisions explicit and versioned. Churn here multiplies into symbols, cache, and LSP layers.
 

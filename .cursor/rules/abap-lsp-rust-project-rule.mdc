@@ -5,7 +5,7 @@ alwaysApply: true
 
 ## Rust ABAP LSP Project Rule
 
-The repository root is now a Rust workspace. The previous Odin implementation has been archived under `legacy/`.
+The repository root is a Rust workspace for the ABAP language server.
 
 ### Workspace layout
 
@@ -19,7 +19,6 @@ The repository root is now a Rust workspace. The previous Odin implementation ha
 - `crates/abap_lsp` -> LSP handlers, protocol-facing types, custom notifications.
 - `crates/abap_lsp_server` -> executable entry point and blocking server loop.
 - `editors/vscode` -> VS Code client and ADT-mediated remote dependency fetches.
-- `legacy/` -> archived Odin implementation.
 
 ### Dependency direction
 
@@ -52,7 +51,6 @@ Lower layers must not depend on higher layers:
 
 ### Migration guidance
 
-- Use `legacy/` as the behavior reference until Rust reaches parity.
 - Port tests with the crates they exercise rather than re-creating one monolithic root test suite.
 - Profile before introducing specialized allocation strategies.
 

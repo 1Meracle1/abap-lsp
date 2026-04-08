@@ -1,8 +1,7 @@
 # ABAP LSP Rust Workspace
 
 This repository is now organized as a Rust-first workspace for the ABAP language server rewrite.
-
-The previous Odin implementation has been archived under `legacy/` so it remains buildable, testable, and available for migration reference. The VS Code extension stays at `editors/vscode/` and is intended to work against either the archived Odin server or the new Rust server during the transition.
+The VS Code extension lives in `editors/vscode/` and targets the Rust server workspace.
 
 ## Repository Layout
 
@@ -16,7 +15,6 @@ The previous Odin implementation has been archived under `legacy/` so it remains
 - `crates/abap_lsp`: LSP protocol types, custom notifications, and handler scaffolding.
 - `crates/abap_lsp_server`: blocking server binary entry point.
 - `docs/`: migration, architecture, parity, benchmarking, and tool usage guidance.
-- `legacy/`: archived Odin source tree, tests, build scripts, docs, and IDE config.
 - `editors/vscode/`: editor client integration and ADT-mediated remote dependency fetches.
 
 ## Build
@@ -77,14 +75,6 @@ Use `abap-adt` when you need live SAP information that is not available in the l
 - Inspect child objects for packages, reports, and function groups.
 
 See `docs/abap-adt-cli.md` for command shapes, environment variables, `.env` loading, and examples.
-
-## Legacy Odin Implementation
-
-The Odin codebase has been moved into `legacy/`. Use the archived README and scripts there if you need to compare behavior or run the old implementation:
-
-- `legacy/README.md`
-- `legacy/build.bat`
-- `legacy/test.bat`
 
 ## Current Status
 

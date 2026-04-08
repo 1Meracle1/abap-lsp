@@ -1,7 +1,7 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-This repository is a Rust workspace rooted at `Cargo.toml`. Core crates live under `crates/`, with `abap_lsp_server` as the default binary and supporting libraries such as `abap_parser`, `abap_symbols`, and `abap_lsp` split by responsibility. Shared examples live in `examples/*.abap`, design and migration notes in `docs/`, the archived Odin reference in `legacy/`, and the editor client in `editors/vscode/`. Keep dependency flow one-way: lower layers (`abap_jsonrpc`, `abap_lexer`, `abap_ast`) must not depend on higher layers such as `abap_cache`, `abap_lsp`, or `abap_lsp_server`.
+This repository is a Rust workspace rooted at `Cargo.toml`. Core crates live under `crates/`, with `abap_lsp_server` as the default binary and supporting libraries such as `abap_parser`, `abap_symbols`, and `abap_lsp` split by responsibility. Shared examples live in `examples/*.abap`, design and migration notes in `docs/`, and the editor client in `editors/vscode/`. Keep dependency flow one-way: lower layers (`abap_jsonrpc`, `abap_lexer`, `abap_ast`) must not depend on higher layers such as `abap_cache`, `abap_lsp`, or `abap_lsp_server`.
 
 ## Build, Test, and Development Commands
 Use the wrapper scripts on Windows, or run Cargo directly.
@@ -25,4 +25,4 @@ Place unit tests alongside implementation when they are tightly scoped, and inte
 Recent commits use short, imperative, lower-case subjects focused on behavior, for example `enable semantic analysis on OpenSql SELECT statements`. Keep commits narrow and explain the user-visible or parser-visible change. Pull requests should include a concise summary, linked issue or task when applicable, and the exact validation performed, such as `cargo test --workspace`. Include screenshots only for `editors/vscode` UI changes.
 
 ## Configuration & Environment Notes
-Repository-local environment settings may be stored in `.env` for ADT tooling. Do not commit secrets, SAP credentials, or machine-specific overrides. When live SAP repository or DDIC data is needed, prefer `abap_adt_cli` and `docs/abap-adt-cli.md` over guessing from partial local files. Treat `target/` and generated profiling artifacts as disposable build output, and use `legacy/` as the behavior reference until the Rust implementation reaches parity.
+Repository-local environment settings may be stored in `.env` for ADT tooling. Do not commit secrets, SAP credentials, or machine-specific overrides. When live SAP repository or DDIC data is needed, prefer `abap_adt_cli` and `docs/abap-adt-cli.md` over guessing from partial local files. Treat `target/` and generated profiling artifacts as disposable build output.

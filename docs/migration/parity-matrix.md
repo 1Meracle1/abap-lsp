@@ -2,7 +2,7 @@
 
 ## Feature Parity
 
-Track each area against the legacy implementation in `legacy/`:
+Track each area against the expected Rust server behavior and existing regression coverage:
 
 - JSON-RPC transport and shutdown behavior
 - document open/change lifecycle
@@ -18,10 +18,10 @@ Track each area against the legacy implementation in `legacy/`:
 
 ## Test Parity
 
-- Port `legacy/tests/parser/` in batches and note coverage status.
-- Port `legacy/tests/symbols/` after parser output stabilizes.
-- Port `legacy/tests/cache/` once snapshot publication APIs exist.
-- Port `legacy/tests/lsp/` after handler plumbing and custom notifications exist.
+- Expand parser tests in batches and note coverage status.
+- Expand symbol-resolution tests after parser output stabilizes.
+- Expand cache tests once snapshot publication APIs exist.
+- Expand LSP tests after handler plumbing and custom notifications exist.
 
 ## Performance Benchmarks
 
@@ -36,7 +36,7 @@ Measure at least:
 
 ## Regression Gates
 
-- no significant correctness regressions relative to legacy test expectations,
+- no significant correctness regressions relative to current regression expectations,
 - no accidental quadratic behavior on large files,
 - no material slowdown in hot paths without a documented reason,
 - deterministic outputs across repeated parallel runs.
