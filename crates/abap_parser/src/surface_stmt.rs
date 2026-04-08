@@ -1626,15 +1626,16 @@ fn push_call_argument_value_child(
     if start >= end_exclusive {
         return;
     }
+    let inline_end = trim_trailing_comment_tokens(tokens, start, end_exclusive);
     if let Some((inline_decl, next_idx)) = try_parse_data_inline_decl(b, source, tokens, start)
-        && next_idx == end_exclusive
+        && next_idx == inline_end
     {
         children.push(inline_decl);
         return;
     }
     if let Some((inline_decl, next_idx)) =
         try_parse_field_symbol_inline_decl(b, source, tokens, start)
-        && next_idx == end_exclusive
+        && next_idx == inline_end
     {
         children.push(inline_decl);
         return;
@@ -1648,6 +1649,14 @@ fn push_call_argument_value_child(
         end_exclusive,
         prev_before_first,
     );
+}
+
+fn trim_trailing_comment_tokens(tokens: &[Token], start: usize, end_exclusive: usize) -> usize {
+    let mut end = end_exclusive;
+    while end > start && tokens[end - 1].kind == TokenKind::Comment {
+        end -= 1;
+    }
+    end
 }
 
 fn build_call_argument_list_node(
@@ -5252,6 +5261,21 @@ END-OF-PAGE.\nWRITE 'e'.",
                 .count_kind(parsed.file.root(), SyntaxKind::AssignStmt),
             0
         );
+    }
+
+    #[test]
+    fn parses_legacy_call_method_with_inline_importing_targets_and_trailing_comments() {
+        let parsed = crate::parse(
+            "CALL METHOD lo_obj->send_notification_acc\n  EXPORTING\n    it_acc_obj = lt_obj_comm\n  IMPORTING\n    ev_rep_status = DATA(lv_rep_status) \" Reporting Event Status\n    ev_http_code = DATA(lv_http_code). \" Character Field Length = 10",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let stmt = parsed
+            .file
+            .find_first_kind(parsed.file.root(), SyntaxKind::CallMethodStmt)
+            .expect("call method stmt");
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::CallNamedArg), 3);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::DataInlineDecl), 2);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::Error), 0);
     }
 
     #[test]

@@ -4723,6 +4723,101 @@ START-OF-SELECTION.
 }
 
 #[test]
+fn resolves_legacy_call_method_inline_importing_targets_with_trailing_comments() {
+    let src = r#"
+CLASS zcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS send_notification_acc
+      IMPORTING it_acc_obj TYPE string
+      EXPORTING ev_rep_status TYPE string
+                ev_http_code TYPE string.
+    METHODS exec.
+ENDCLASS.
+
+CLASS zcl_demo IMPLEMENTATION.
+  METHOD exec.
+    DATA lt_obj_comm TYPE string.
+    CALL METHOD me->send_notification_acc
+      EXPORTING
+        it_acc_obj = lt_obj_comm
+      IMPORTING
+        ev_rep_status = DATA(lv_rep_status) " Reporting Event Status
+        ev_http_code = DATA(lv_http_code). " Character Field Length = 10
+    lv_rep_status = lv_http_code.
+  ENDMETHOD.
+ENDCLASS.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///legacy_call_method_comments.abap", src, &parsed);
+
+    for name in ["lv_rep_status", "lv_http_code"] {
+        let symbol = unit
+            .symbols
+            .iter()
+            .find(|symbol| {
+                symbol.kind == abap_symbols::SymbolKind::Variable && symbol.name.as_ref() == name
+            })
+            .unwrap_or_else(|| panic!("expected inline variable symbol for `{name}`"));
+        let declared_type = symbol
+            .declared_type
+            .as_ref()
+            .unwrap_or_else(|| panic!("expected declared type for `{name}`"));
+        assert_eq!(declared_type.namespace, Namespace::Type);
+        assert_eq!(declared_type.base_name.as_ref(), "string");
+        assert!(declared_type.field_path.is_empty());
+    }
+
+    assert!(!unit.diagnostics.iter().any(|diag| {
+        matches!(
+            diag.kind,
+            DiagnosticKind::UnresolvedReference | DiagnosticKind::UnknownField
+        )
+    }));
+}
+
+#[test]
+fn legacy_call_method_inline_importing_targets_remain_visible_after_endtry() {
+    let src = r#"
+CLASS zcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS send_notification_acc
+      EXPORTING ev_rep_status TYPE string
+                ev_http_code TYPE string.
+    METHODS exec.
+ENDCLASS.
+
+CLASS zcl_demo IMPLEMENTATION.
+  METHOD exec.
+    TRY.
+        CALL METHOD me->send_notification_acc
+          IMPORTING
+            ev_rep_status = DATA(lv_rep_status)
+            ev_http_code = DATA(lv_http_code).
+      CATCH cx_root.
+    ENDTRY.
+
+    lv_rep_status = lv_http_code.
+  ENDMETHOD.
+ENDCLASS.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit(
+        "file:///legacy_call_method_try_visibility.abap",
+        src,
+        &parsed,
+    );
+
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference
+                && (diag.message.contains("lv_rep_status") || diag.message.contains("lv_http_code"))
+        }),
+        "unexpected diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn collects_call_function_sections_without_keyword_diagnostics() {
     let src = r#"
 START-OF-SELECTION.

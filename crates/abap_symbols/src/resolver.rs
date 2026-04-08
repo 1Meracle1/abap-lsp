@@ -292,7 +292,14 @@ pub fn resolve_project_cross_unit(units: &mut [UnitAnalysis]) {
     let mut root_index: HashMap<(Namespace, Arc<str>), Vec<SymbolHandle>> = HashMap::new();
     let mut per_unit_root_index: Vec<HashMap<(Namespace, Arc<str>), SymbolId>> =
         vec![HashMap::new(); units.len()];
+    let mut provided_name_to_unit: HashMap<Arc<str>, SymbolHandle> = HashMap::new();
     for unit in units.iter() {
+        for name in &unit.provided_names {
+            provided_name_to_unit.entry(Arc::clone(name)).or_insert(SymbolHandle {
+                unit: unit.unit_id,
+                symbol: SymbolId(0),
+            });
+        }
         for symbol in &unit.symbols {
             if symbol.scope != unit.root_scope {
                 continue;
@@ -419,6 +426,12 @@ pub fn resolve_project_cross_unit(units: &mut [UnitAnalysis]) {
                         break;
                     }
                 }
+            }
+            if resolved.is_none()
+                && reference_kind == ReferenceKind::MessageClass
+                && provided_name_to_unit.contains_key(&reference_name)
+            {
+                resolved = Some(Resolution::External);
             }
             if resolved.is_none()
                 && matches!(reference_namespace, Namespace::Type | Namespace::Routine)

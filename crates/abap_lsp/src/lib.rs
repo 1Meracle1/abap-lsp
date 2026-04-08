@@ -1860,9 +1860,11 @@ ENDCLASS.";
 
         let candidates = collect_remote_dependency_candidates(snapshot.as_ref());
 
-        assert!(candidates.iter().any(|candidate| {
-            candidate.name == "00" && candidate.kind == "message-class"
-        }));
+        assert!(
+            candidates
+                .iter()
+                .any(|candidate| { candidate.name == "00" && candidate.kind == "message-class" })
+        );
     }
 
     #[test]

@@ -542,9 +542,7 @@ mod tests {
 
     #[test]
     fn multiline_if_condition_continues_after_not() {
-        let parsed = parse(
-            "IF NOT\n   iv_flag = abap_true.\n  WRITE 'x'.\nENDIF.",
-        );
+        let parsed = parse("IF NOT\n   iv_flag = abap_true.\n  WRITE 'x'.\nENDIF.");
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
         assert_eq!(
             parsed

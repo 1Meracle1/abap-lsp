@@ -422,6 +422,7 @@ impl<'a> Collector<'a> {
         if !self.named_argument_section_allows_inline_target(section) {
             return false;
         }
+        let decl_scope = self.declaration_scope(scope);
         let mut idx = 0usize;
         while value_tokens
             .get(idx)
@@ -444,7 +445,7 @@ impl<'a> Collector<'a> {
             && value_tokens.get(idx + 3).map(|token| token.text.as_ref()) == Some(")")
         {
             self.declare_symbol(
-                scope,
+                decl_scope,
                 Arc::<str>::from(name_tok.text.to_ascii_lowercase()),
                 SymbolKind::Variable,
                 name_tok.range.clone(),
@@ -465,7 +466,7 @@ impl<'a> Collector<'a> {
             && value_tokens.get(idx + 5).map(|token| token.text.as_ref()) == Some(")")
         {
             self.declare_symbol(
-                scope,
+                decl_scope,
                 Arc::<str>::from(name_tok.text.to_ascii_lowercase()),
                 SymbolKind::FieldSymbol,
                 name_tok.range.clone(),
@@ -489,6 +490,7 @@ impl<'a> Collector<'a> {
         if !self.named_argument_section_allows_inline_target(section) {
             return Some(false);
         }
+        let decl_scope = self.declaration_scope(scope);
         let first_value = value_children
             .iter()
             .copied()
@@ -511,7 +513,7 @@ impl<'a> Collector<'a> {
         match self.file.kind(first_value) {
             SyntaxKind::DataInlineDecl => {
                 self.declare_symbol(
-                    scope,
+                    decl_scope,
                     name,
                     SymbolKind::Variable,
                     name_node.range(),
@@ -523,7 +525,7 @@ impl<'a> Collector<'a> {
             }
             SyntaxKind::FieldSymbolInlineDecl => {
                 self.declare_symbol(
-                    scope,
+                    decl_scope,
                     name,
                     SymbolKind::FieldSymbol,
                     name_node.range(),
