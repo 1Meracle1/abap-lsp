@@ -338,7 +338,32 @@ impl<'a> Collector<'a> {
     fn syntax_token_is_ident_like(&self, token: &SyntaxTokenInfo) -> bool {
         !matches!(
             token.text.as_ref(),
-            ":" | "," | "." | "-" | "(" | ")" | "[" | "]" | "{" | "}" | "=" | "->" | "=>" | "~"
+            ":" | ","
+                | "."
+                | "-"
+                | "+"
+                | "*"
+                | "/"
+                | "("
+                | ")"
+                | "["
+                | "]"
+                | "{"
+                | "}"
+                | "="
+                | "<"
+                | ">"
+                | "<="
+                | ">="
+                | "<>"
+                | "?="
+                | "->"
+                | "=>"
+                | "~"
+                | "#"
+                | "@"
+                | "&"
+                | "|"
         ) && !self.syntax_token_is_comment(token)
     }
 

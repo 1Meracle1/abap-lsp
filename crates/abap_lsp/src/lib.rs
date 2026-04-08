@@ -1145,6 +1145,103 @@ mod tests {
     }
 
     #[test]
+    fn hover_definition_and_references_work_for_for_all_entries_host_expr() {
+        let state = ServerState::default();
+        let text = "\
+DATA lt_rep_evt TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+DATA lt_obj_rel TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+
+SELECT rep_evtid,
+       objid
+  FROM /sttp/rep_obj_rl
+  INTO TABLE @lt_obj_rel
+  FOR ALL ENTRIES IN @lt_rep_evt
+  WHERE rep_evtid = @lt_rep_evt.
+";
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///fae_hover.abap").expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: text.to_string(),
+                },
+            },
+        );
+
+        let hover_result = hover(
+            &state,
+            &HoverParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///fae_hover.abap").expect("uri"),
+                    },
+                    position: Position {
+                        line: 7,
+                        character: 24,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+            },
+        )
+        .expect("hover");
+        let HoverContents::Markup(markup) = hover_result.contents else {
+            panic!("expected markdown hover");
+        };
+        assert!(
+            markup.value.contains("lt_rep_evt"),
+            "unexpected hover: {}",
+            markup.value
+        );
+
+        let definition_result = definition(
+            &state,
+            &GotoDefinitionParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///fae_hover.abap").expect("uri"),
+                    },
+                    position: Position {
+                        line: 7,
+                        character: 24,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            },
+        )
+        .expect("definition");
+        let GotoDefinitionResponse::Scalar(location) = definition_result else {
+            panic!("expected scalar location");
+        };
+        assert_eq!(location.range.start.line, 0);
+
+        let locations = references(
+            &state,
+            &ReferenceParams {
+                text_document_position: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///fae_hover.abap").expect("uri"),
+                    },
+                    position: Position {
+                        line: 7,
+                        character: 24,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+                context: lsp_types::ReferenceContext {
+                    include_declaration: true,
+                },
+            },
+        )
+        .expect("references");
+        assert_eq!(locations.len(), 3, "{locations:?}");
+        assert_eq!(locations[0].range.start.line, 0);
+    }
+
+    #[test]
     fn definition_returns_location_for_named_argument_parameter() {
         let state = ServerState::default();
         let text = "\

@@ -4711,6 +4711,50 @@ ENDIF.";
 }
 
 #[test]
+fn resolves_host_expression_in_for_all_entries_clause() {
+    let src = "\
+DATA lt_rep_evt TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+DATA lt_obj_rel TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+
+SELECT rep_evtid,
+       objid
+  FROM /sttp/rep_obj_rl
+  INTO TABLE @lt_obj_rel
+  FOR ALL ENTRIES IN @lt_rep_evt
+  WHERE rep_evtid = @lt_rep_evt.
+";
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///host_expr_for_all_entries.abap", src, &parsed);
+    let semantic = unit.semantic();
+    let for_all_entries_offset = src.find("@lt_rep_evt").expect("for all entries host expr") + 1;
+
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference
+                && diag.message.contains("unknown symbol '@'")
+        }),
+        "unexpected unresolved host expression diagnostic: diagnostics={:?}, refs={:?}",
+        unit.diagnostics,
+        unit.references
+    );
+    assert!(
+        unit.references.iter().any(|reference| {
+            reference.name.as_ref() == "lt_rep_evt"
+                && reference.namespace == Namespace::Value
+                && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+        }),
+        "expected resolved FOR ALL ENTRIES host reference, refs={:?}",
+        unit.references
+    );
+    let reference = semantic
+        .refs()
+        .reference_at_offset(for_all_entries_offset)
+        .expect("reference at FOR ALL ENTRIES offset");
+    assert_eq!(reference.name.as_ref(), "lt_rep_evt");
+    assert!(matches!(reference.resolution, Some(Resolution::Symbol(_))));
+}
+
+#[test]
 fn resolves_selector_chain_ending_with_legacy_table_body_operator() {
     let src = "\
 FIELD-SYMBOLS: <fs_choice> TYPE any,
