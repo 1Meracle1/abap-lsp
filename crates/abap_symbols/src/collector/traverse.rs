@@ -158,7 +158,7 @@ impl<'a> Collector<'a> {
                 .collect_generic_simple_stmt(node, scope),
             SyntaxKind::TypePoolsStmt => {}
             SyntaxKind::MethodsStmt => self.stmt_lowering().collect_methods_stmt(node, scope),
-            SyntaxKind::InterfacesStmt => self.walk_children(node, scope),
+            SyntaxKind::InterfacesStmt => self.stmt_lowering().collect_interfaces_stmt(node, scope),
             SyntaxKind::AssertStmt | SyntaxKind::CheckStmt => self
                 .stmt_lowering()
                 .collect_assert_or_check_stmt(node, scope),

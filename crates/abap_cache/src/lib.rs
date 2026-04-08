@@ -63,6 +63,7 @@ pub enum HoveredComponentKind {
     Structured { structure_name: Arc<str> },
     Attribute,
     Method,
+    Interface,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -288,6 +289,33 @@ impl AnalysisSnapshot {
             })
         {
             let (unit, symbol_id) = resolve_field_access_base_symbol(self, access)?;
+            if segment_index == 0
+                && let Some((interface_unit, interface_symbol)) =
+                    resolve_interface_selector_qualifier_with_scope_index(
+                        self,
+                        self.scope_index(),
+                        access,
+                        unit,
+                        symbol_id,
+                    )
+            {
+                return Some(HoveredComponentInfo {
+                    base_name: Arc::clone(&access.base_name),
+                    base_namespace: access.base_namespace,
+                    component_path: vec![Arc::clone(&access.field_path[0].name)],
+                    field_name: Arc::clone(&access.field_path[0].name),
+                    field_owner_structure_name: None,
+                    range: access.field_path[0].range.clone(),
+                    declared_type: None,
+                    declaration: Some(format!(
+                        "INTERFACE {}",
+                        interface_unit.symbol(interface_symbol).name
+                    )),
+                    kind: HoveredComponentKind::Interface,
+                    is_static_method: false,
+                    in_type_position: access.in_type_position,
+                });
+            }
             if let Some((_, member)) =
                 resolve_class_selector_member(self, access, segment_index, unit, symbol_id)
             {
@@ -526,6 +554,21 @@ impl AnalysisSnapshot {
             })
         {
             let (unit, symbol_id) = resolve_field_access_base_symbol(self, access)?;
+            if segment_index == 0
+                && let Some((interface_unit, interface_symbol)) =
+                    resolve_interface_selector_qualifier_with_scope_index(
+                        self,
+                        self.scope_index(),
+                        access,
+                        unit,
+                        symbol_id,
+                    )
+            {
+                return Some(definition_target_for_symbol(
+                    interface_unit,
+                    interface_unit.symbol(interface_symbol),
+                ));
+            }
             if let Some((member_unit, member)) =
                 resolve_class_selector_member(self, access, segment_index, unit, symbol_id)
             {
@@ -2762,8 +2805,27 @@ fn resolve_class_selector_member_with_scope_index<'a>(
     unit: &'a UnitAnalysis,
     symbol_id: SymbolId,
 ) -> Option<(&'a UnitAnalysis, &'a ClassMemberData)> {
+    if access.base_namespace == Namespace::Type
+        && unit.symbol(symbol_id).kind == SymbolKind::Interface
+    {
+        return resolve_interface_member_path(
+            snapshot,
+            scope_index,
+            unit,
+            symbol_id,
+            access.scope,
+            &[access.field_path[segment_index].name.as_ref()],
+        );
+    }
     if segment_index != 0 {
-        return None;
+        return resolve_interface_selector_member_with_scope_index(
+            snapshot,
+            scope_index,
+            access,
+            segment_index,
+            unit,
+            symbol_id,
+        );
     }
     let (class_unit, class_symbol_id, requires_static) =
         resolve_class_selector_base_with_scope_index(
@@ -2792,6 +2854,187 @@ fn resolve_class_selector_member_with_scope_index<'a>(
     .then_some((member_unit, member))
 }
 
+fn resolve_interface_selector_member_with_scope_index<'a>(
+    snapshot: &'a AnalysisSnapshot,
+    scope_index: &ScopeIndex,
+    access: &abap_symbols::FieldAccess,
+    segment_index: usize,
+    unit: &'a UnitAnalysis,
+    symbol_id: SymbolId,
+) -> Option<(&'a UnitAnalysis, &'a ClassMemberData)> {
+    let (class_unit, class_symbol_id, requires_static) =
+        resolve_class_selector_base_with_scope_index(
+            snapshot,
+            scope_index,
+            access,
+            unit,
+            symbol_id,
+        )?;
+    if requires_static || segment_index == 0 {
+        return None;
+    }
+    let interface_name = &access.field_path[0].name;
+    let interface_handle = resolve_exposed_interface_handle_with_scope_index(
+        snapshot,
+        scope_index,
+        class_unit,
+        class_symbol_id,
+        access.scope,
+        interface_name,
+    )?;
+    let member_path: Vec<_> = access.field_path[1..=segment_index]
+        .iter()
+        .map(|segment| segment.name.as_ref())
+        .collect();
+    let (member_unit, member) = resolve_interface_member_path(
+        snapshot,
+        scope_index,
+        interface_handle.0,
+        interface_handle.1,
+        access.scope,
+        &member_path,
+    )?;
+    class_member_visible_to(
+        snapshot,
+        snapshot.symbols.as_ref(),
+        access.scope,
+        member_unit,
+        member,
+    )
+    .then_some((member_unit, member))
+}
+
+fn resolve_interface_selector_qualifier_with_scope_index<'a>(
+    snapshot: &'a AnalysisSnapshot,
+    scope_index: &ScopeIndex,
+    access: &abap_symbols::FieldAccess,
+    unit: &'a UnitAnalysis,
+    symbol_id: SymbolId,
+) -> Option<(&'a UnitAnalysis, SymbolId)> {
+    let (class_unit, class_symbol_id, requires_static) =
+        resolve_class_selector_base_with_scope_index(
+            snapshot,
+            scope_index,
+            access,
+            unit,
+            symbol_id,
+        )?;
+    if requires_static || access.field_path.len() < 2 {
+        return None;
+    }
+    resolve_exposed_interface_handle_with_scope_index(
+        snapshot,
+        scope_index,
+        class_unit,
+        class_symbol_id,
+        access.scope,
+        &access.field_path[0].name,
+    )
+}
+
+fn resolve_exposed_interface_handle_with_scope_index<'a>(
+    snapshot: &'a AnalysisSnapshot,
+    scope_index: &ScopeIndex,
+    owner_unit: &'a UnitAnalysis,
+    owner_symbol: SymbolId,
+    scope: ScopeId,
+    interface_name: &Arc<str>,
+) -> Option<(&'a UnitAnalysis, SymbolId)> {
+    resolve_exposed_interface_handle_inner(
+        snapshot,
+        scope_index,
+        owner_unit,
+        owner_symbol,
+        scope,
+        interface_name,
+        &mut HashSet::new(),
+    )
+}
+
+fn resolve_exposed_interface_handle_inner<'a>(
+    snapshot: &'a AnalysisSnapshot,
+    scope_index: &ScopeIndex,
+    owner_unit: &'a UnitAnalysis,
+    owner_symbol: SymbolId,
+    scope: ScopeId,
+    interface_name: &Arc<str>,
+    visited: &mut HashSet<(UnitId, SymbolId)>,
+) -> Option<(&'a UnitAnalysis, SymbolId)> {
+    if !visited.insert((owner_unit.unit_id, owner_symbol)) {
+        return None;
+    }
+
+    for implemented in owner_unit
+        .implemented_interfaces
+        .iter()
+        .filter(|implemented| implemented.owner_symbol == owner_symbol)
+    {
+        let (interface_unit, interface_symbol) = resolve_symbol_from_context_with_scope_index(
+            snapshot,
+            scope_index,
+            scope,
+            Namespace::Type,
+            &implemented.interface_name,
+            false,
+        )?;
+        if interface_unit.symbol(interface_symbol).kind != SymbolKind::Interface {
+            continue;
+        }
+        if implemented.interface_name == *interface_name {
+            return Some((interface_unit, interface_symbol));
+        }
+        if let Some(found) = resolve_exposed_interface_handle_inner(
+            snapshot,
+            scope_index,
+            interface_unit,
+            interface_symbol,
+            scope,
+            interface_name,
+            visited,
+        ) {
+            return Some(found);
+        }
+    }
+
+    None
+}
+
+fn resolve_interface_member_path<'a>(
+    snapshot: &'a AnalysisSnapshot,
+    scope_index: &ScopeIndex,
+    interface_unit: &'a UnitAnalysis,
+    interface_symbol: SymbolId,
+    scope: ScopeId,
+    member_path: &[&str],
+) -> Option<(&'a UnitAnalysis, &'a ClassMemberData)> {
+    let (first, rest) = member_path.split_first()?;
+    if rest.is_empty() {
+        return interface_unit
+            .semantic()
+            .decls()
+            .class_member(interface_symbol, first)
+            .map(|member| (interface_unit, member));
+    }
+
+    let nested_name = Arc::<str>::from(first.to_ascii_lowercase());
+    let (nested_unit, nested_symbol) = resolve_exposed_interface_handle_with_scope_index(
+        snapshot,
+        scope_index,
+        interface_unit,
+        interface_symbol,
+        scope,
+        &nested_name,
+    )?;
+    resolve_interface_member_path(
+        snapshot,
+        scope_index,
+        nested_unit,
+        nested_symbol,
+        scope,
+        rest,
+    )
+}
+
 fn resolve_class_selector_base_with_scope_index<'a>(
     snapshot: &'a AnalysisSnapshot,
     scope_index: &ScopeIndex,
@@ -2800,8 +3043,10 @@ fn resolve_class_selector_base_with_scope_index<'a>(
     symbol_id: SymbolId,
 ) -> Option<(&'a UnitAnalysis, SymbolId, bool)> {
     let base_symbol = unit.symbol(symbol_id);
-    if access.base_namespace == Namespace::Type && base_symbol.kind == SymbolKind::Class {
-        return Some((unit, symbol_id, true));
+    if access.base_namespace == Namespace::Type
+        && matches!(base_symbol.kind, SymbolKind::Class | SymbolKind::Interface)
+    {
+        return Some((unit, symbol_id, base_symbol.kind == SymbolKind::Class));
     }
     if access.base_namespace == Namespace::Value
         && access.base_name.as_ref() == "super"
@@ -2839,6 +3084,18 @@ fn classify_field_access_segment_with_scope_index(
 ) -> Option<HoveredComponentKind> {
     let (unit, symbol_id) =
         resolve_field_access_base_symbol_with_scope_index(snapshot, scope_index, access)?;
+    if segment_index == 0
+        && resolve_interface_selector_qualifier_with_scope_index(
+            snapshot,
+            scope_index,
+            access,
+            unit,
+            symbol_id,
+        )
+        .is_some()
+    {
+        return Some(HoveredComponentKind::Interface);
+    }
     if let Some((_, member)) = resolve_class_selector_member_with_scope_index(
         snapshot,
         scope_index,
@@ -4894,6 +5151,96 @@ some_class=>exec( iv_value = 1 ).";
         assert_eq!(
             target.range.start,
             src.find("exec").expect("method declaration")
+        );
+    }
+
+    #[test]
+    fn definition_at_returns_interface_qualifier_declaration_for_selector() {
+        let store = DocumentStore::default();
+        let src = "\
+INTERFACE i1.
+  METHODS meth.
+ENDINTERFACE.
+
+CLASS c1 DEFINITION.
+  PUBLIC SECTION.
+    INTERFACES i1.
+ENDCLASS.
+
+CLASS c1 IMPLEMENTATION.
+  METHOD i1~meth.
+  ENDMETHOD.
+ENDCLASS.
+
+DATA lo_obj TYPE REF TO c1.
+lo_obj->i1~meth( ).";
+        let snapshot = store.publish("file:///demo.abap", 1, src);
+        let qualifier_use = src.rfind("i1~meth").expect("interface-qualified call");
+
+        let target = snapshot
+            .definition_at(qualifier_use + 1)
+            .expect("interface definition target");
+        assert_target_slice(&target, "file:///demo.abap", src, "i1");
+        assert_eq!(
+            target.range.start,
+            src.find("i1").expect("interface declaration")
+        );
+    }
+
+    #[test]
+    fn definition_at_returns_interface_method_declaration_for_selector() {
+        let store = DocumentStore::default();
+        let src = "\
+INTERFACE i1.
+  METHODS meth.
+ENDINTERFACE.
+
+CLASS c1 DEFINITION.
+  PUBLIC SECTION.
+    INTERFACES i1.
+ENDCLASS.
+
+CLASS c1 IMPLEMENTATION.
+  METHOD i1~meth.
+  ENDMETHOD.
+ENDCLASS.
+
+DATA lo_obj TYPE REF TO c1.
+lo_obj->i1~meth( ).";
+        let snapshot = store.publish("file:///demo.abap", 1, src);
+        let method_use = src.rfind("meth").expect("method use");
+
+        let target = snapshot
+            .definition_at(method_use + 1)
+            .expect("interface method definition target");
+        assert_target_slice(&target, "file:///demo.abap", src, "meth");
+        assert_eq!(
+            target.range.start,
+            src.find("meth").expect("interface method declaration")
+        );
+    }
+
+    #[test]
+    fn definition_at_returns_interface_method_declaration_for_alias_target() {
+        let store = DocumentStore::default();
+        let src = "\
+INTERFACE i1.
+  METHODS meth.
+ENDINTERFACE.
+
+INTERFACE i2.
+  ALIASES m1 FOR i1~meth.
+ENDINTERFACE.";
+        let snapshot = store.publish("file:///demo.abap", 1, src);
+        let method_use = src.rfind("meth").expect("alias target method use");
+
+        let target = snapshot
+            .definition_at(method_use + 1)
+            .expect("interface method definition target");
+        assert_target_slice(&target, "file:///demo.abap", src, "meth");
+        assert_eq!(
+            target.range.start,
+            src.find("meth").expect("interface method declaration")
         );
     }
 

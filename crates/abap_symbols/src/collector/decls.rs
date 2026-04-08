@@ -9,6 +9,7 @@ use abap_ast::{
     SyntaxKind,
     ast::{AstNode, DataDecl, DataLikeDecl, DeclClause},
 };
+use abap_lexer::TextRange;
 
 use super::context::DeclContext;
 use super::{Collector, PendingStructure};
@@ -26,6 +27,43 @@ impl<'a> Collector<'a> {
 }
 
 impl<'ctx, 'a> DeclLowering<'ctx, 'a> {
+    fn method_decl_header_name_parts(
+        &self,
+        node: abap_ast::arena::NodeId,
+    ) -> Option<(Arc<str>, Option<Arc<str>>, Arc<str>, TextRange)> {
+        let tokens = self.ctx.significant_stmt_token_infos(node);
+        let method_tok = tokens.first()?;
+        if !method_tok.text.eq_ignore_ascii_case("method") {
+            return None;
+        }
+        let first = tokens.get(1)?;
+        if !self.ctx.syntax_token_is_ident_like(first) {
+            return None;
+        }
+        let mut full_name = first.text.to_string();
+        let mut qualifier = None;
+        let mut last_name = Arc::<str>::from(first.text.to_ascii_lowercase());
+        let mut end = first.range.end;
+        if tokens
+            .get(2)
+            .is_some_and(|token| token.text.as_ref() == "~")
+            && let Some(second) = tokens.get(3)
+            && self.ctx.syntax_token_is_ident_like(second)
+        {
+            full_name.push('~');
+            full_name.push_str(second.text.as_ref());
+            qualifier = Some(Arc::<str>::from(first.text.to_ascii_lowercase()));
+            last_name = Arc::<str>::from(second.text.to_ascii_lowercase());
+            end = second.range.end;
+        }
+        Some((
+            Arc::<str>::from(full_name.to_ascii_lowercase()),
+            qualifier,
+            last_name,
+            first.range.start..end,
+        ))
+    }
+
     pub(super) fn walk_include_stmt(&mut self, node: abap_ast::arena::NodeId, scope: ScopeId) {
         if let Some((name, range)) = self.ctx.header_ident_after_keyword(node) {
             self.ctx.declare_plain_symbol(
@@ -101,7 +139,8 @@ impl<'ctx, 'a> DeclLowering<'ctx, 'a> {
     }
 
     pub(super) fn walk_method_decl(&mut self, node: abap_ast::arena::NodeId, scope: ScopeId) {
-        let Some((name, range)) = self.ctx.header_ident_after_keyword(node) else {
+        let Some((name, qualifier, member_name, range)) = self.method_decl_header_name_parts(node)
+        else {
             self.ctx.walk_children(node, scope);
             return;
         };
@@ -116,22 +155,27 @@ impl<'ctx, 'a> DeclLowering<'ctx, 'a> {
             self.ctx
                 .push_scope(ScopeKind::Method, node_range, Some(scope), Some(owner));
         if let Some(class_symbol) = self.ctx.class_lowering().enclosing_class_owner(scope) {
-            self.ctx.class_lowering().note_method_implementation_range(
-                class_symbol,
-                name.as_ref(),
-                range.clone(),
-            );
             self.ctx
                 .class_lowering()
-                .declare_method_signature_parameters(
+                .note_method_implementation_target_range(
                     class_symbol,
-                    name.as_ref(),
+                    qualifier.as_deref(),
+                    member_name.as_ref(),
+                    scope,
+                    range.clone(),
+                );
+            self.ctx
+                .class_lowering()
+                .declare_method_target_signature_parameters(
+                    class_symbol,
+                    qualifier.as_deref(),
+                    member_name.as_ref(),
                     child_scope,
                     scope,
                 );
             self.ctx.class_lowering().declare_implicit_me_symbol(
                 class_symbol,
-                name.as_ref(),
+                member_name.as_ref(),
                 child_scope,
                 &range,
             );

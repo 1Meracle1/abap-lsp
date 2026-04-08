@@ -8,6 +8,7 @@ use crate::def_map::{NamedArgumentTarget, ReferenceKind};
 use crate::ids::ScopeId;
 use crate::scope::Namespace;
 
+use super::emit::RefSink;
 use super::{Collector, SyntaxTokenInfo};
 
 pub(super) struct StmtLowering<'ctx, 'a> {
@@ -360,6 +361,8 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             && matches!(tail.first(), Some(token) if token.text.eq_ignore_ascii_case("work"))
         {
             return;
+        } else if head.text.eq_ignore_ascii_case("aliases") {
+            self.collect_aliases_stmt_infos(&significant, scope);
         } else if head.text.eq_ignore_ascii_case("clear") {
             self.collect_clear_stmt_infos(tail, scope);
         } else if head.text.eq_ignore_ascii_case("convert") {
@@ -373,6 +376,84 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
         } else {
             self.collector
                 .collect_token_expression_refs_infos(tail, scope, true);
+        }
+    }
+
+    fn collect_aliases_stmt_infos(&mut self, tokens: &[SyntaxTokenInfo], scope: ScopeId) {
+        let Some(owner_symbol) = self.collector.class_lowering().enclosing_type_owner(scope) else {
+            return;
+        };
+
+        let mut idx = 1usize;
+        while idx < tokens.len() {
+            while idx < tokens.len() && matches!(tokens[idx].text.as_ref(), ":" | "," | ".") {
+                if tokens[idx].text.as_ref() == "." {
+                    return;
+                }
+                idx += 1;
+            }
+            let Some(alias_tok) = tokens.get(idx) else {
+                return;
+            };
+            if !self.collector.syntax_token_is_ident_like(alias_tok) {
+                idx += 1;
+                continue;
+            }
+            let alias_name = Arc::<str>::from(alias_tok.text.to_ascii_lowercase());
+            idx += 1;
+            if !tokens
+                .get(idx)
+                .is_some_and(|token| token.text.eq_ignore_ascii_case("for"))
+            {
+                continue;
+            }
+            idx += 1;
+            let Some(interface_tok) = tokens.get(idx) else {
+                return;
+            };
+            if !self.collector.syntax_token_is_ident_like(interface_tok) {
+                continue;
+            }
+            let Some(tilde_tok) = tokens.get(idx + 1) else {
+                return;
+            };
+            let Some(member_tok) = tokens.get(idx + 2) else {
+                return;
+            };
+            if tilde_tok.text.as_ref() != "~"
+                || !self.collector.syntax_token_is_ident_like(member_tok)
+            {
+                idx += 1;
+                continue;
+            }
+
+            let interface_name = Arc::<str>::from(interface_tok.text.to_ascii_lowercase());
+            let target_member_name = Arc::<str>::from(member_tok.text.to_ascii_lowercase());
+            self.collector.add_reference(
+                scope,
+                Arc::clone(&interface_name),
+                Namespace::Type,
+                ReferenceKind::TypeRef,
+                interface_tok.range.clone(),
+            );
+            self.collector.emit_field_access(crate::FieldAccess {
+                scope,
+                base_namespace: Namespace::Type,
+                base_name: Arc::clone(&interface_name),
+                field_path: vec![crate::FieldAccessSegment {
+                    name: Arc::clone(&target_member_name),
+                    range: member_tok.range.clone(),
+                }],
+                in_type_position: false,
+            });
+            self.collector.member_aliases.push(crate::MemberAliasData {
+                owner_symbol,
+                alias_name,
+                target_interface_name: interface_name,
+                target_member_name,
+                range: alias_tok.range.clone(),
+            });
+            idx += 3;
         }
     }
 
@@ -887,6 +968,38 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             self.collector
                 .decl_lowering()
                 .collect_type_ref(type_ref, scope);
+        }
+    }
+
+    pub(super) fn collect_interfaces_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        let Some(owner_symbol) = self.collector.class_lowering().enclosing_type_owner(scope) else {
+            self.collector.walk_children(node, scope);
+            return;
+        };
+        let mut recorded = false;
+        for child in self.collector.file.children(node) {
+            if self.collector.file.kind(child) != SyntaxKind::TypeRefSimple {
+                continue;
+            }
+            self.collector
+                .decl_lowering()
+                .collect_type_ref(child, scope);
+            let Some((_, _, interface_name, range, _)) =
+                self.collector.type_ref_access_chain(child, Namespace::Type)
+            else {
+                continue;
+            };
+            self.collector
+                .implemented_interfaces
+                .push(crate::ImplementedInterfaceData {
+                    owner_symbol,
+                    interface_name,
+                    range,
+                });
+            recorded = true;
+        }
+        if !recorded {
+            self.collector.walk_children(node, scope);
         }
     }
 

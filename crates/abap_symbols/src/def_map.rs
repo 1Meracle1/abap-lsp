@@ -422,6 +422,22 @@ pub struct ClassInheritanceData {
     pub superclass_name: Arc<str>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImplementedInterfaceData {
+    pub owner_symbol: SymbolId,
+    pub interface_name: Arc<str>,
+    pub range: TextRange,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemberAliasData {
+    pub owner_symbol: SymbolId,
+    pub alias_name: Arc<str>,
+    pub target_interface_name: Arc<str>,
+    pub target_member_name: Arc<str>,
+    pub range: TextRange,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NamedArgumentSection {
     Exporting,
@@ -502,6 +518,8 @@ pub struct UnitAnalysis {
     pub loop_where_field_contexts: Vec<LoopWhereFieldContext>,
     pub class_members: Vec<ClassMemberData>,
     pub class_inheritance: Vec<ClassInheritanceData>,
+    pub implemented_interfaces: Vec<ImplementedInterfaceData>,
+    pub member_aliases: Vec<MemberAliasData>,
     pub form_routines: Vec<FormRoutineData>,
     pub named_arguments: Vec<NamedArgumentAccess>,
     pub perform_calls: Vec<PerformCallData>,

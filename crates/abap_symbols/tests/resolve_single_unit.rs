@@ -5077,6 +5077,113 @@ ENDCLASS.
 }
 
 #[test]
+fn resolves_interface_calls_and_aliases_transitively() {
+    let src = r#"
+INTERFACE i1.
+  METHODS meth.
+ENDINTERFACE.
+
+INTERFACE i2.
+  INTERFACES i1.
+  ALIASES m1 FOR i1~meth.
+  METHODS meth.
+ENDINTERFACE.
+
+INTERFACE i3.
+  INTERFACES i2.
+  ALIASES: m1 FOR i2~m1,
+           m2 FOR i2~meth.
+  METHODS meth.
+ENDINTERFACE.
+
+CLASS c1 DEFINITION.
+  PUBLIC SECTION.
+    INTERFACES i3.
+    ALIASES: m1 FOR i3~m1,
+             m2 FOR i3~m2,
+             m3 FOR i3~meth.
+ENDCLASS.
+
+CLASS c1 IMPLEMENTATION.
+  METHOD i1~meth.
+  ENDMETHOD.
+  METHOD i2~meth.
+  ENDMETHOD.
+  METHOD i3~meth.
+  ENDMETHOD.
+ENDCLASS.
+
+DATA lo_obj TYPE REF TO c1.
+
+START-OF-SELECTION.
+  CREATE OBJECT lo_obj.
+  lo_obj->i1~meth( ).
+  lo_obj->i2~meth( ).
+  lo_obj->i3~meth( ).
+  lo_obj->m1( ).
+  lo_obj->m2( ).
+  lo_obj->m3( ).
+"#;
+    let parsed = parse(src);
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let unit = analyze_unit("file:///interfaces_aliases.abap", src, &parsed);
+
+    assert!(
+        unit.implemented_interfaces.iter().any(|item| {
+            item.owner_symbol
+                == unit
+                    .symbols
+                    .iter()
+                    .find(|symbol| {
+                        symbol.kind == abap_symbols::SymbolKind::Class
+                            && symbol.name.as_ref() == "c1"
+                    })
+                    .expect("class c1")
+                    .id
+                && item.interface_name.as_ref() == "i3"
+        }),
+        "{:#?}",
+        unit.implemented_interfaces
+    );
+
+    for alias in ["m1", "m2", "m3"] {
+        assert!(
+            unit.class_members.iter().any(|member| {
+                member.class_symbol
+                    == unit
+                        .symbols
+                        .iter()
+                        .find(|symbol| {
+                            symbol.kind == abap_symbols::SymbolKind::Class
+                                && symbol.name.as_ref() == "c1"
+                        })
+                        .expect("class c1")
+                        .id
+                    && member.name.as_ref() == alias
+            }),
+            "missing alias member {alias}: {:#?}",
+            unit.class_members
+        );
+    }
+
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            matches!(
+                diag.kind,
+                DiagnosticKind::UnresolvedReference | DiagnosticKind::UnknownField
+            ) && (diag.message.contains("i1")
+                || diag.message.contains("i2")
+                || diag.message.contains("i3")
+                || diag.message.contains("m1")
+                || diag.message.contains("m2")
+                || diag.message.contains("m3"))
+        }),
+        "{:#?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn substring_access_uses_value_namespace() {
     let src = "\
 DATA ls_time TYPE string.\n\

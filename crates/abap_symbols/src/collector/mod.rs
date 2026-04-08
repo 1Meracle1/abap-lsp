@@ -21,9 +21,10 @@ use abap_lexer::{TextRange, Token};
 
 use crate::def_map::{
     ClassInheritanceData, ClassMemberData, Diagnostic, FieldAccess, FieldTypeRefData,
-    FormRoutineData, IncludeEdge, LoopWhereFieldContext, NamedArgumentAccess, PerformCallData,
-    ReferenceData, SqlNameRefData, SqlPredicateData, SqlProjectionData, SqlQueryData,
-    SqlSourceData, SqlTargetData, StructureData, SymbolData, UnitAnalysis,
+    FormRoutineData, ImplementedInterfaceData, IncludeEdge, LoopWhereFieldContext, MemberAliasData,
+    NamedArgumentAccess, PerformCallData, ReferenceData, SqlNameRefData, SqlPredicateData,
+    SqlProjectionData, SqlQueryData, SqlSourceData, SqlTargetData, StructureData, SymbolData,
+    UnitAnalysis,
 };
 use crate::ids::{ScopeId, StructureId, SymbolId, UnitId};
 use crate::scope::{Namespace, ScopeData, ScopeKind};
@@ -96,6 +97,8 @@ pub struct Collector<'a> {
     field_accesses: Vec<FieldAccess>,
     loop_where_field_contexts: Vec<LoopWhereFieldContext>,
     class_members: Vec<ClassMemberData>,
+    implemented_interfaces: Vec<ImplementedInterfaceData>,
+    member_aliases: Vec<MemberAliasData>,
     form_routines: Vec<FormRoutineData>,
     named_arguments: Vec<NamedArgumentAccess>,
     perform_calls: Vec<PerformCallData>,
@@ -139,6 +142,8 @@ impl<'a> Collector<'a> {
             field_accesses: Vec::new(),
             loop_where_field_contexts: Vec::new(),
             class_members: Vec::new(),
+            implemented_interfaces: Vec::new(),
+            member_aliases: Vec::new(),
             form_routines: Vec::new(),
             named_arguments: Vec::new(),
             perform_calls: Vec::new(),
@@ -162,6 +167,7 @@ impl<'a> Collector<'a> {
         self.install_builtin_symbols(root_scope);
         let mut ctx = self.context();
         traverse::walk_root(&mut ctx, root, root_scope);
+        self.materialize_alias_members();
         let provided_names = self.provided_names();
         let class_inheritance = self
             .class_superclasses
@@ -185,6 +191,8 @@ impl<'a> Collector<'a> {
             loop_where_field_contexts: self.loop_where_field_contexts,
             class_members: self.class_members,
             class_inheritance,
+            implemented_interfaces: self.implemented_interfaces,
+            member_aliases: self.member_aliases,
             form_routines: self.form_routines,
             named_arguments: self.named_arguments,
             perform_calls: self.perform_calls,
@@ -202,6 +210,49 @@ impl<'a> Collector<'a> {
 
     fn context(&mut self) -> CollectorContext<'_, 'a> {
         CollectorContext::new(self)
+    }
+
+    fn materialize_alias_members(&mut self) {
+        let aliases = self.member_aliases.clone();
+        for alias in aliases {
+            if self.class_members.iter().any(|member| {
+                member.class_symbol == alias.owner_symbol && member.name == alias.alias_name
+            }) {
+                continue;
+            }
+
+            let lookup_scope = self.symbol(alias.owner_symbol).scope;
+            let Some(mut target_member) = self.class_member_target_data(
+                alias.owner_symbol,
+                Some(alias.target_interface_name.as_ref()),
+                alias.target_member_name.as_ref(),
+                lookup_scope,
+            ) else {
+                continue;
+            };
+
+            target_member.class_symbol = alias.owner_symbol;
+            target_member.name = alias.alias_name.clone();
+            target_member.decl_range = alias.range.clone();
+            target_member.implementation_range = None;
+
+            if target_member.kind == crate::ClassMemberKind::Method
+                && let Some(signature) = self.class_method_signature_target(
+                    alias.owner_symbol,
+                    Some(alias.target_interface_name.as_ref()),
+                    alias.target_member_name.as_ref(),
+                    lookup_scope,
+                )
+            {
+                let signature = signature.clone();
+                self.class_method_signatures
+                    .entry(alias.owner_symbol)
+                    .or_default()
+                    .insert(alias.alias_name.clone(), signature);
+            }
+
+            self.class_members.push(target_member);
+        }
     }
 
     fn node_has_structured_children(&self, node: NodeId) -> bool {

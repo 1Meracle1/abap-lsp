@@ -250,6 +250,7 @@ fn collect_pending(
                     abap_cache::HoveredComponentKind::Structured { .. } => ty_ix.property,
                     abap_cache::HoveredComponentKind::Attribute => ty_ix.property,
                     abap_cache::HoveredComponentKind::Method => ty_ix.method,
+                    abap_cache::HoveredComponentKind::Interface => ty_ix.interface,
                 })
                 .unwrap_or(ty_ix.property);
             push_pending(
@@ -400,7 +401,7 @@ mod tests {
     use super::{encode_deltas, semantic_tokens_legend};
     use crate::build_semantic_tokens;
     use abap_cache::{DocumentInput, DocumentStore};
-    use lsp_types::SemanticTokenType;
+    use lsp_types::{SemanticToken, SemanticTokenType};
     use std::sync::Arc;
 
     fn byte_offset_to_line_character_utf16_reference(
@@ -475,6 +476,26 @@ mod tests {
             prev_char = character;
         }
         out
+    }
+
+    fn semantic_token_type_at(tokens: &[SemanticToken], line: u32, character: u32) -> Option<u32> {
+        let mut current_line = 0u32;
+        let mut current_char = 0u32;
+        for token in tokens {
+            current_line += token.delta_line;
+            if token.delta_line == 0 {
+                current_char += token.delta_start;
+            } else {
+                current_char = token.delta_start;
+            }
+            if current_line == line
+                && current_char <= character
+                && character < current_char + token.length
+            {
+                return Some(token.token_type);
+            }
+        }
+        None
     }
 
     #[test]
@@ -597,6 +618,58 @@ ENDCLASS.",
         assert!(
             method_tokens.len() >= 4,
             "expected dependency method declaration tokens, got {method_tokens:?}"
+        );
+    }
+
+    #[test]
+    fn semantic_tokens_mark_interface_qualifier_in_qualified_call_as_interface() {
+        let store = DocumentStore::default();
+        let src = "\
+INTERFACE i1.
+  METHODS meth.
+ENDINTERFACE.
+
+CLASS c1 DEFINITION.
+  PUBLIC SECTION.
+    INTERFACES i1.
+ENDCLASS.
+
+CLASS c1 IMPLEMENTATION.
+  METHOD i1~meth.
+  ENDMETHOD.
+ENDCLASS.
+
+DATA lo_obj TYPE REF TO c1.
+lo_obj->i1~meth( ).";
+        let snapshot = store.publish("file:///demo.abap", 1, src);
+        let tokens = build_semantic_tokens(snapshot.as_ref());
+        let legend = semantic_tokens_legend();
+        let interface_idx = legend
+            .token_types
+            .iter()
+            .position(|t| *t == SemanticTokenType::INTERFACE)
+            .expect("legend has interface") as u32;
+        let method_idx = legend
+            .token_types
+            .iter()
+            .position(|t| *t == SemanticTokenType::METHOD)
+            .expect("legend has method") as u32;
+
+        let call_line = src
+            .lines()
+            .enumerate()
+            .find(|(_, line)| line.contains("lo_obj->i1~meth"))
+            .expect("qualified call line");
+        let i1_col = call_line.1.find("i1").expect("interface qualifier column") as u32;
+        let meth_col = call_line.1.find("meth").expect("method column") as u32;
+
+        assert_eq!(
+            semantic_token_type_at(&tokens.data, call_line.0 as u32, i1_col),
+            Some(interface_idx)
+        );
+        assert_eq!(
+            semantic_token_type_at(&tokens.data, call_line.0 as u32, meth_col),
+            Some(method_idx)
         );
     }
 }

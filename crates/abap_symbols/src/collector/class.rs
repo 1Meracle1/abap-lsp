@@ -37,30 +37,86 @@ impl<'a> Collector<'a> {
         None
     }
 
+    pub(super) fn enclosing_type_owner(&self, scope: ScopeId) -> Option<SymbolId> {
+        let mut current = Some(scope);
+        while let Some(scope_id) = current {
+            let scope = &self.scopes[scope_id.as_usize()];
+            if matches!(scope.kind, ScopeKind::Class | ScopeKind::Interface) {
+                return scope.owner;
+            }
+            current = scope.parent;
+        }
+        None
+    }
+
     pub(super) fn class_method_signature(
         &self,
         class_symbol: SymbolId,
         method_name: &str,
         lookup_scope: ScopeId,
     ) -> Option<&PendingMethodSignature> {
-        self.class_method_signature_inner(class_symbol, method_name, lookup_scope, &mut Vec::new())
+        self.class_method_signature_target(class_symbol, None, method_name, lookup_scope)
     }
 
-    fn class_method_signature_inner<'b>(
-        &'b self,
-        class_symbol: SymbolId,
+    pub(super) fn class_method_signature_target(
+        &self,
+        owner_symbol: SymbolId,
+        qualifier: Option<&str>,
         method_name: &str,
         lookup_scope: ScopeId,
-        visited: &mut Vec<SymbolId>,
+    ) -> Option<&PendingMethodSignature> {
+        self.class_method_signature_target_inner(
+            owner_symbol,
+            qualifier,
+            method_name,
+            lookup_scope,
+            &mut Vec::new(),
+        )
+    }
+
+    pub(super) fn class_member_target_data(
+        &self,
+        owner_symbol: SymbolId,
+        qualifier: Option<&str>,
+        member_name: &str,
+        lookup_scope: ScopeId,
+    ) -> Option<ClassMemberData> {
+        self.class_member_target_data_inner(
+            owner_symbol,
+            qualifier,
+            member_name,
+            lookup_scope,
+            &mut Vec::new(),
+        )
+    }
+
+    fn class_method_signature_target_inner<'b>(
+        &'b self,
+        owner_symbol: SymbolId,
+        qualifier: Option<&str>,
+        method_name: &str,
+        lookup_scope: ScopeId,
+        visited: &mut Vec<(SymbolId, Option<Arc<str>>, Arc<str>)>,
     ) -> Option<&'b PendingMethodSignature> {
-        if visited.contains(&class_symbol) {
+        let key = (
+            owner_symbol,
+            qualifier.map(Arc::<str>::from),
+            Arc::<str>::from(method_name),
+        );
+        if visited.contains(&key) {
             return None;
         }
-        visited.push(class_symbol);
+        visited.push(key);
+
+        let direct_owner = if let Some(interface_name) = qualifier {
+            self.resolve_exposed_interface_symbol(owner_symbol, lookup_scope, interface_name)?
+        } else {
+            owner_symbol
+        };
 
         if let Some(signature) = self
             .class_method_signatures
-            .get(&class_symbol)
+            .get(&direct_owner)
             .and_then(|methods| methods.get(method_name))
         {
             if !signature.is_redefinition || !signature.parameters.is_empty() {
@@ -68,17 +124,172 @@ impl<'a> Collector<'a> {
             }
         }
 
-        let superclass_name = self.class_superclasses.get(&class_symbol)?;
-        let superclass_symbol = self
-            .lookup_symbol_in_scope_chain(lookup_scope, Namespace::Type, superclass_name.as_ref())
-            .filter(|&symbol_id| self.symbol(symbol_id).kind == SymbolKind::Class)?;
-        self.class_method_signature_inner(superclass_symbol, method_name, lookup_scope, visited)
+        if let Some(alias) = self.member_alias(direct_owner, method_name) {
+            return self.class_method_signature_target_inner(
+                direct_owner,
+                Some(alias.target_interface_name.as_ref()),
+                alias.target_member_name.as_ref(),
+                lookup_scope,
+                visited,
+            );
+        }
+
+        if qualifier.is_none() && self.symbol(direct_owner).kind == SymbolKind::Class {
+            let superclass_name = self.class_superclasses.get(&direct_owner)?;
+            let superclass_symbol = self
+                .lookup_symbol_in_scope_chain(
+                    lookup_scope,
+                    Namespace::Type,
+                    superclass_name.as_ref(),
+                )
+                .filter(|&symbol_id| self.symbol(symbol_id).kind == SymbolKind::Class)?;
+            return self.class_method_signature_target_inner(
+                superclass_symbol,
+                None,
+                method_name,
+                lookup_scope,
+                visited,
+            );
+        }
+
+        None
+    }
+
+    fn class_member_target_data_inner(
+        &self,
+        owner_symbol: SymbolId,
+        qualifier: Option<&str>,
+        member_name: &str,
+        lookup_scope: ScopeId,
+        visited: &mut Vec<(SymbolId, Option<Arc<str>>, Arc<str>)>,
+    ) -> Option<ClassMemberData> {
+        let key = (
+            owner_symbol,
+            qualifier.map(Arc::<str>::from),
+            Arc::<str>::from(member_name),
+        );
+        if visited.contains(&key) {
+            return None;
+        }
+        visited.push(key);
+
+        let direct_owner = if let Some(interface_name) = qualifier {
+            self.resolve_exposed_interface_symbol(owner_symbol, lookup_scope, interface_name)?
+        } else {
+            owner_symbol
+        };
+
+        if let Some(member) = self.class_members.iter().find(|member| {
+            member.class_symbol == direct_owner && member.name.as_ref() == member_name
+        }) {
+            return Some(member.clone());
+        }
+
+        if let Some(alias) = self.member_alias(direct_owner, member_name) {
+            return self.class_member_target_data_inner(
+                direct_owner,
+                Some(alias.target_interface_name.as_ref()),
+                alias.target_member_name.as_ref(),
+                lookup_scope,
+                visited,
+            );
+        }
+
+        if qualifier.is_none() && self.symbol(direct_owner).kind == SymbolKind::Class {
+            let superclass_name = self.class_superclasses.get(&direct_owner)?;
+            let superclass_symbol = self
+                .lookup_symbol_in_scope_chain(
+                    lookup_scope,
+                    Namespace::Type,
+                    superclass_name.as_ref(),
+                )
+                .filter(|&symbol_id| self.symbol(symbol_id).kind == SymbolKind::Class)?;
+            return self.class_member_target_data_inner(
+                superclass_symbol,
+                None,
+                member_name,
+                lookup_scope,
+                visited,
+            );
+        }
+
+        None
+    }
+
+    fn member_alias(
+        &self,
+        owner_symbol: SymbolId,
+        alias_name: &str,
+    ) -> Option<&crate::MemberAliasData> {
+        self.member_aliases.iter().find(|alias| {
+            alias.owner_symbol == owner_symbol && alias.alias_name.as_ref() == alias_name
+        })
+    }
+
+    fn resolve_exposed_interface_symbol(
+        &self,
+        owner_symbol: SymbolId,
+        lookup_scope: ScopeId,
+        interface_name: &str,
+    ) -> Option<SymbolId> {
+        self.resolve_exposed_interface_symbol_inner(
+            owner_symbol,
+            lookup_scope,
+            interface_name,
+            &mut Vec::new(),
+        )
+    }
+
+    fn resolve_exposed_interface_symbol_inner(
+        &self,
+        owner_symbol: SymbolId,
+        lookup_scope: ScopeId,
+        interface_name: &str,
+        visited: &mut Vec<SymbolId>,
+    ) -> Option<SymbolId> {
+        if visited.contains(&owner_symbol) {
+            return None;
+        }
+        visited.push(owner_symbol);
+        for implemented in self
+            .implemented_interfaces
+            .iter()
+            .filter(|implemented| implemented.owner_symbol == owner_symbol)
+        {
+            let interface_symbol = self
+                .lookup_symbol_in_scope_chain(
+                    lookup_scope,
+                    Namespace::Type,
+                    implemented.interface_name.as_ref(),
+                )
+                .filter(|&symbol_id| self.symbol(symbol_id).kind == SymbolKind::Interface)?;
+            if implemented
+                .interface_name
+                .as_ref()
+                .eq_ignore_ascii_case(interface_name)
+            {
+                return Some(interface_symbol);
+            }
+            if let Some(found) = self.resolve_exposed_interface_symbol_inner(
+                interface_symbol,
+                lookup_scope,
+                interface_name,
+                visited,
+            ) {
+                return Some(found);
+            }
+        }
+        None
     }
 }
 
 impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
     pub(super) fn enclosing_class_owner(&self, scope: ScopeId) -> Option<SymbolId> {
         self.collector.enclosing_class_owner(scope)
+    }
+
+    pub(super) fn enclosing_type_owner(&self, scope: ScopeId) -> Option<SymbolId> {
+        self.collector.enclosing_type_owner(scope)
     }
 
     pub(super) fn walk_interface_decl(&mut self, node: NodeId, scope: ScopeId) {
@@ -457,14 +668,25 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
         })
     }
 
-    pub(super) fn note_method_implementation_range(
+    pub(super) fn note_method_implementation_target_range(
         &mut self,
-        class_symbol: SymbolId,
+        owner_symbol: SymbolId,
+        qualifier: Option<&str>,
         method_name: &str,
+        lookup_scope: ScopeId,
         range: TextRange,
     ) {
+        let target_owner = qualifier
+            .and_then(|interface_name| {
+                self.collector.resolve_exposed_interface_symbol(
+                    owner_symbol,
+                    lookup_scope,
+                    interface_name,
+                )
+            })
+            .unwrap_or(owner_symbol);
         let Some(member) = self.collector.class_members.iter_mut().find(|member| {
-            member.class_symbol == class_symbol
+            member.class_symbol == target_owner
                 && member.kind == ClassMemberKind::Method
                 && member.name.as_ref() == method_name
         }) else {
@@ -533,16 +755,17 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
         signature
     }
 
-    pub(super) fn declare_method_signature_parameters(
+    pub(super) fn declare_method_target_signature_parameters(
         &mut self,
-        class_symbol: SymbolId,
+        owner_symbol: SymbolId,
+        qualifier: Option<&str>,
         method_name: &str,
         method_scope: ScopeId,
         lookup_scope: ScopeId,
     ) {
         let Some(parameters) = self
             .collector
-            .class_method_signature(class_symbol, method_name, lookup_scope)
+            .class_method_signature_target(owner_symbol, qualifier, method_name, lookup_scope)
             .map(|signature| signature.parameters.clone())
         else {
             return;

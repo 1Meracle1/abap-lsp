@@ -759,6 +759,12 @@ fn structured_field_hover(
             };
             lines.push(format!("{storage} method of `{}`", component.base_name));
         }
+        abap_cache::HoveredComponentKind::Interface => {
+            if let Some(declaration) = &component.declaration {
+                lines[0] = format!("```abap\n{}\n```", declaration);
+            }
+            lines.push("interface".to_string());
+        }
     }
     if let Some(declared_type) = component.declared_type {
         lines.push(format!("declared as `{}`", declared_type));
@@ -806,6 +812,7 @@ pub fn completion(state: &ServerState, params: &CompletionParams) -> Option<Comp
                 label: item.name.to_string(),
                 kind: Some(match item.kind {
                     abap_cache::HoveredComponentKind::Method => CompletionItemKind::METHOD,
+                    abap_cache::HoveredComponentKind::Interface => CompletionItemKind::INTERFACE,
                     abap_cache::HoveredComponentKind::Attribute
                     | abap_cache::HoveredComponentKind::Scalar
                     | abap_cache::HoveredComponentKind::Structured { .. } => {
@@ -959,6 +966,13 @@ fn completion_item_metadata(
                 lines[0] = format!("```abap\n{}\n```", declaration);
             }
             lines.push("static method".to_string());
+            item.declaration.clone()
+        }
+        abap_cache::HoveredComponentKind::Interface => {
+            if let Some(declaration) = &item.declaration {
+                lines[0] = format!("```abap\n{}\n```", declaration);
+            }
+            lines.push("interface".to_string());
             item.declaration.clone()
         }
     };

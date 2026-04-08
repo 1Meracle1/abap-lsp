@@ -170,6 +170,40 @@ fn resolve_class_symbol(
     None
 }
 
+fn resolve_interface_symbol(
+    project: &ProjectAnalysis,
+    unit: &crate::UnitAnalysis,
+    scope_index: &ScopeIndex,
+    scope: ScopeId,
+    name: &Arc<str>,
+) -> Option<SymbolHandle> {
+    if let Some(symbol) =
+        resolve_symbol_in_scope_chain(unit, scope_index, scope, Namespace::Type, name)
+        && unit.symbol(symbol).kind == SymbolKind::Interface
+    {
+        return Some(SymbolHandle {
+            unit: unit.unit_id,
+            symbol,
+        });
+    }
+
+    for candidate_unit in &project.units {
+        for symbol in &candidate_unit.symbols {
+            if symbol.scope == candidate_unit.root_scope
+                && symbol.kind == SymbolKind::Interface
+                && symbol.name.as_ref() == name.as_ref()
+            {
+                return Some(SymbolHandle {
+                    unit: candidate_unit.unit_id,
+                    symbol: symbol.id,
+                });
+            }
+        }
+    }
+
+    None
+}
+
 fn is_valid_super_reference(unit: &crate::UnitAnalysis, scope: ScopeId) -> bool {
     let Some(_) = enclosing_method_owner(unit, scope) else {
         return false;
@@ -408,6 +442,71 @@ fn resolve_class_member_in_hierarchy<'a>(
         }
         current = direct_superclass_handle(project, unit, current.symbol)?;
     }
+}
+
+fn resolve_exposed_interface_handle(
+    project: &ProjectAnalysis,
+    owner: SymbolHandle,
+    interface_name: &str,
+) -> Option<SymbolHandle> {
+    resolve_exposed_interface_handle_inner(project, owner, interface_name, &mut HashSet::new())
+}
+
+fn resolve_exposed_interface_handle_inner(
+    project: &ProjectAnalysis,
+    owner: SymbolHandle,
+    interface_name: &str,
+    visited: &mut HashSet<SymbolHandle>,
+) -> Option<SymbolHandle> {
+    if !visited.insert(owner) {
+        return None;
+    }
+    let owner_unit = &project.units[owner.unit.as_usize()];
+    for implemented in owner_unit
+        .implemented_interfaces
+        .iter()
+        .filter(|implemented| implemented.owner_symbol == owner.symbol)
+    {
+        let interface_handle = resolve_interface_symbol(
+            project,
+            owner_unit,
+            &build_scope_index(owner_unit),
+            owner_unit.symbol(owner.symbol).scope,
+            &implemented.interface_name,
+        )?;
+        if implemented
+            .interface_name
+            .as_ref()
+            .eq_ignore_ascii_case(interface_name)
+        {
+            return Some(interface_handle);
+        }
+        if let Some(found) = resolve_exposed_interface_handle_inner(
+            project,
+            interface_handle,
+            interface_name,
+            visited,
+        ) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+fn resolve_interface_member_path<'a>(
+    project: &'a ProjectAnalysis,
+    interface_handle: SymbolHandle,
+    path: &'a [crate::FieldAccessSegment],
+) -> Option<(&'a crate::UnitAnalysis, &'a crate::ClassMemberData)> {
+    let interface_unit = &project.units[interface_handle.unit.as_usize()];
+    let (first, rest) = path.split_first()?;
+    if rest.is_empty() {
+        return interface_unit
+            .class_member(interface_handle.symbol, first.name.as_ref())
+            .map(|member| (interface_unit, member));
+    }
+    let nested = resolve_exposed_interface_handle(project, interface_handle, first.name.as_ref())?;
+    resolve_interface_member_path(project, nested, rest)
 }
 
 fn resolve_class_type_symbol_in_hierarchy(
@@ -1263,6 +1362,27 @@ pub(crate) fn validate_project_with_scope_indexes(
             {
                 let class_unit = &project.units[class_unit_idx];
                 let class_name = Arc::clone(&class_unit.symbol(class_symbol_id).name);
+                if !requires_static && field_path.len() >= 2 {
+                    let class_handle = SymbolHandle {
+                        unit: class_unit.unit_id,
+                        symbol: class_symbol_id,
+                    };
+                    if let Some(interface_handle) = resolve_exposed_interface_handle(
+                        project,
+                        class_handle,
+                        field_path[0].name.as_ref(),
+                    ) {
+                        if resolve_interface_member_path(
+                            project,
+                            interface_handle,
+                            &field_path[1..],
+                        )
+                        .is_some()
+                        {
+                            continue;
+                        }
+                    }
+                }
                 for (idx, step) in field_path.iter().enumerate() {
                     let Some((member_unit, member)) = resolve_class_member_in_hierarchy(
                         project,

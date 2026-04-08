@@ -20,13 +20,13 @@ pub use builtins::{
 pub use def_map::{
     ClassInheritanceData, ClassMemberData, ClassMemberKind, ClassMemberParameterData, Diagnostic,
     DiagnosticKind, FieldAccess, FieldAccessSegment, FieldTypeRefData, FormParameterData,
-    FormParameterPassingKind, FormParameterSection, FormRoutineData, IncludeEdge,
-    NamedArgumentAccess, NamedArgumentSection, NamedArgumentTarget, PerformArgumentData,
-    PerformCallData, PerformParameterSection, ReferenceData, ReferenceKind, Resolution,
-    SqlNameRefData, SqlNameRefKind, SqlPredicateData, SqlPredicateKind, SqlProjectionData,
-    SqlProjectionKind, SqlQueryData, SqlResolution, SqlSourceData, SqlSourceKind, SqlTargetData,
-    SqlTargetKind, StructureData, StructureFieldData, StructureFieldInfo, StructureFieldShape,
-    SymbolData, SymbolKind, UnitAnalysis, Visibility,
+    FormParameterPassingKind, FormParameterSection, FormRoutineData, ImplementedInterfaceData,
+    IncludeEdge, MemberAliasData, NamedArgumentAccess, NamedArgumentSection, NamedArgumentTarget,
+    PerformArgumentData, PerformCallData, PerformParameterSection, ReferenceData, ReferenceKind,
+    Resolution, SqlNameRefData, SqlNameRefKind, SqlPredicateData, SqlPredicateKind,
+    SqlProjectionData, SqlProjectionKind, SqlQueryData, SqlResolution, SqlSourceData,
+    SqlSourceKind, SqlTargetData, SqlTargetKind, StructureData, StructureFieldData,
+    StructureFieldInfo, StructureFieldShape, SymbolData, SymbolKind, UnitAnalysis, Visibility,
 };
 pub use ids::{ReferenceId, ScopeId, StructureId, SymbolHandle, SymbolId, UnitId};
 pub use project::{
