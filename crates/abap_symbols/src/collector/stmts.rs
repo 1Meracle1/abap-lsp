@@ -1044,6 +1044,95 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             .collect_token_expression_refs_infos(tail, scope, true);
     }
 
+    pub(super) fn collect_split_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        if self.collector.node_has_structured_children(node) {
+            self.collector.walk_children(node, scope);
+            return;
+        }
+        let significant = self.collector.significant_stmt_token_infos(node);
+        if significant.is_empty() || !significant[0].text.eq_ignore_ascii_case("split") {
+            return;
+        }
+
+        let Some(at_idx) = self
+            .collector
+            .find_top_level_keyword_index_infos(&significant, 1, "at")
+        else {
+            self.collector
+                .collect_token_expression_refs_infos(&significant[1..], scope, true);
+            return;
+        };
+        let Some(into_idx) = self
+            .collector
+            .find_top_level_keyword_index_infos(&significant, at_idx + 1, "into")
+        else {
+            self.collector.collect_token_expression_refs_infos(
+                &significant[1..at_idx],
+                scope,
+                true,
+            );
+            self.collector.collect_token_expression_refs_infos(
+                &significant[at_idx + 1..],
+                scope,
+                true,
+            );
+            return;
+        };
+
+        self.collector
+            .collect_token_expression_refs_infos(&significant[1..at_idx], scope, true);
+
+        let separator_end = self.collector.consume_concatenate_operand_infos(
+            &significant,
+            at_idx + 1,
+            &["into"],
+        );
+        if separator_end > at_idx + 1 {
+            self.collector.collect_token_expression_refs_infos(
+                &significant[at_idx + 1..separator_end],
+                scope,
+                true,
+            );
+        }
+
+        let mut idx = separator_end.max(into_idx + 1);
+        while idx < significant.len() {
+            let token = &significant[idx];
+            if token.text.as_ref() == "." {
+                break;
+            }
+            if token.text.eq_ignore_ascii_case("in") {
+                idx += 1;
+                if significant.get(idx).is_some_and(|next| {
+                    next.text.eq_ignore_ascii_case("character")
+                        || next.text.eq_ignore_ascii_case("byte")
+                }) {
+                    idx += 1;
+                }
+                if significant
+                    .get(idx)
+                    .is_some_and(|next| next.text.eq_ignore_ascii_case("mode"))
+                {
+                    idx += 1;
+                }
+                continue;
+            }
+            let end_idx = self
+                .collector
+                .consume_concatenate_operand_infos(&significant, idx, &["in"]);
+            if end_idx > idx {
+                self.collector.collect_token_expression_refs_infos(
+                    &significant[idx..end_idx],
+                    scope,
+                    true,
+                );
+                idx = end_idx;
+            } else {
+                idx += 1;
+            }
+        }
+    }
+
     pub(super) fn collect_concatenate_stmt(&mut self, node: NodeId, scope: ScopeId) {
         if self.collector.node_has_structured_children(node) {
             self.collector.walk_children(node, scope);

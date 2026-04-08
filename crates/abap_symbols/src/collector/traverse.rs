@@ -175,6 +175,7 @@ impl<'a> Collector<'a> {
                 .stmt_lowering()
                 .collect_call_method_stmt_node(node, scope),
             SyntaxKind::WriteStmt => self.stmt_lowering().collect_write_stmt(node, scope),
+            SyntaxKind::SplitStmt => self.stmt_lowering().collect_split_stmt(node, scope),
             SyntaxKind::ConcatenateStmt => {
                 self.stmt_lowering().collect_concatenate_stmt(node, scope)
             }

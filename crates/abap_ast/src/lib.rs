@@ -263,6 +263,8 @@ pub enum SyntaxKind {
     SetBitStmt,
     /// `WRITE ... .`
     WriteStmt,
+    /// `SPLIT ... AT ... INTO ... .`
+    SplitStmt,
     /// `CONCATENATE ... INTO ... .`
     ConcatenateStmt,
     /// `CONDENSE dobj [NO-GAPS] .`
@@ -404,6 +406,7 @@ impl SyntaxKind {
             Self::GetBitStmt => "GetBitStmt",
             Self::SetBitStmt => "SetBitStmt",
             Self::WriteStmt => "WriteStmt",
+            Self::SplitStmt => "SplitStmt",
             Self::ConcatenateStmt => "ConcatenateStmt",
             Self::CondenseStmt => "CondenseStmt",
             Self::SortStmt => "SortStmt",

@@ -1510,6 +1510,62 @@ CONCATENATE lo_prog->to_string( ) mv_odlv INTO lv_delivery_msg SEPARATED BY ': '
 }
 
 #[test]
+fn resolves_split_source_separator_and_into_targets() {
+    let src = r#"
+DATA iv_sgtin TYPE string.
+DATA lv_part_1 TYPE string.
+DATA lv_part_2 TYPE string.
+DATA lv_part_3 TYPE string.
+DATA lv_part_4 TYPE string.
+DATA lv_part_5 TYPE string.
+DATA lv_part_6 TYPE string.
+
+SPLIT iv_sgtin
+AT    ':'
+INTO  lv_part_1
+      lv_part_2
+      lv_part_3
+      lv_part_4
+      lv_part_5
+      lv_part_6
+IN CHARACTER MODE.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///split_stmt.abap", src, &parsed);
+
+    for name in [
+        "iv_sgtin",
+        "lv_part_1",
+        "lv_part_2",
+        "lv_part_3",
+        "lv_part_4",
+        "lv_part_5",
+        "lv_part_6",
+    ] {
+        assert!(
+            unit.references.iter().any(|reference| {
+                reference.namespace == Namespace::Value
+                    && reference.kind == ReferenceKind::Identifier
+                    && reference.name.as_ref() == name
+                    && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+            }),
+            "expected resolved SPLIT reference for `{name}`, refs={:?} diagnostics={:?}",
+            unit.references,
+            unit.diagnostics
+        );
+    }
+
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference
+                && (diag.message.contains("iv_sgtin") || diag.message.contains("lv_part_"))
+        }),
+        "unexpected SPLIT diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn resolves_assign_to_inline_field_symbol() {
     let src = r#"
 DATA lv_value TYPE string.

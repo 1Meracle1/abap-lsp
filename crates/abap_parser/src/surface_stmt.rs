@@ -2516,6 +2516,121 @@ pub fn try_parse_concatenate_stmt(
     ))
 }
 
+pub fn try_parse_split_stmt(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    errors: &mut Vec<crate::ParseError>,
+) -> Option<(NodeId, usize)> {
+    let split_tok = tokens.get(idx)?;
+    if !is_keyword(source, split_tok, "split") {
+        return None;
+    }
+    Some(parse_stmt_with_period_scan(
+        b,
+        source,
+        tokens,
+        idx,
+        idx + 1,
+        split_tok,
+        "syntax error: expected '.' after SPLIT statement",
+        errors,
+        next_after_unterminated_scan,
+        |b, period_i, _errors| {
+            let mut children = vec![token_leaf(b, split_tok)];
+            let Some(at_idx) = find_top_level_keyword_index(source, tokens, idx + 1, period_i, "at")
+            else {
+                let raw = token_children(b, tokens, idx, period_i + 1);
+                let node = b.branch(
+                    SyntaxKind::Error,
+                    split_tok.range.start..tokens[period_i].range.end,
+                    &raw,
+                );
+                return (node, period_i + 1);
+            };
+            let Some(into_idx) =
+                find_top_level_keyword_index(source, tokens, at_idx + 1, period_i, "into")
+            else {
+                let raw = token_children(b, tokens, idx, period_i + 1);
+                let node = b.branch(
+                    SyntaxKind::Error,
+                    split_tok.range.start..tokens[period_i].range.end,
+                    &raw,
+                );
+                return (node, period_i + 1);
+            };
+
+            push_expr_child(
+                b,
+                &mut children,
+                source,
+                tokens,
+                idx + 1,
+                at_idx,
+                Some(split_tok),
+            );
+            children.push(token_leaf(b, &tokens[at_idx]));
+
+            let separator_end = consume_concatenate_operand(
+                source,
+                tokens,
+                at_idx + 1,
+                into_idx,
+                &["into"],
+            );
+            push_expr_child(
+                b,
+                &mut children,
+                source,
+                tokens,
+                at_idx + 1,
+                separator_end,
+                Some(&tokens[at_idx]),
+            );
+
+            children.push(token_leaf(b, &tokens[into_idx]));
+            let mut i = separator_end.max(into_idx + 1);
+            while i < period_i {
+                let token = &tokens[i];
+                if is_keyword(source, token, "in") {
+                    push_token_children(b, &mut children, tokens, i, period_i);
+                    break;
+                }
+                let end_idx =
+                    consume_concatenate_operand(source, tokens, i, period_i, &["in"]);
+                if end_idx == i {
+                    children.push(token_leaf(b, token));
+                    i += 1;
+                    continue;
+                }
+                push_expr_child(
+                    b,
+                    &mut children,
+                    source,
+                    tokens,
+                    i,
+                    end_idx,
+                    Some(if i == into_idx + 1 {
+                        &tokens[into_idx]
+                    } else {
+                        &tokens[i - 1]
+                    }),
+                );
+                i = end_idx;
+            }
+
+            children.push(token_leaf(b, &tokens[period_i]));
+            let node = b.branch(
+                SyntaxKind::SplitStmt,
+                split_tok.range.start..tokens[period_i].range.end,
+                &children,
+            );
+            (node, period_i + 1)
+        },
+    ))
+}
+
 pub fn try_parse_condense_stmt(
     b: &mut SyntaxTreeBuilder,
     source: &str,
@@ -4650,6 +4765,17 @@ END-OF-PAGE.\nWRITE 'e'.",
                 .count_kind(parsed.file.root(), SyntaxKind::ConcatenateStmt),
             1
         );
+    }
+
+    #[test]
+    fn parses_split_stmt_with_multiline_into_targets_and_character_mode() {
+        let parsed = crate::parse(
+            "SPLIT iv_sgtin\nAT ':'\nINTO lv_part_1 lv_part_2 lv_part_3 lv_part_4 lv_part_5 lv_part_6\nIN CHARACTER MODE.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::SplitStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::ExprIdent), 7);
     }
 
     #[test]
