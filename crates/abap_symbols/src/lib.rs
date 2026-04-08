@@ -39,8 +39,14 @@ pub use semantic_queries::SemanticQueries;
 #[cfg(test)]
 mod tests {
     use abap_parser::parse;
+    use std::collections::HashMap;
+    use std::sync::Arc;
 
     use super::{Namespace, ReferenceKind, SymbolKind, analyze_unit};
+    use crate::ids::{ScopeId, UnitId};
+    use crate::project::{ProjectAnalysis, analyze_unit_locally};
+    use crate::resolver::build_scope_index;
+    use crate::validate::validate_project_with_scope_indexes;
 
     #[test]
     fn builtin_syst_field_descriptions_are_registered() {
@@ -376,5 +382,24 @@ TYPES: BEGIN OF ty_demo,
         let source_offset = src.find("FROM scarr").expect("sql source") + "FROM ".len();
         assert!(semantic.sql().name_ref_at_offset(source_offset).is_some());
         assert!(semantic.decls().symbol_at_offset(type_offset).is_none());
+    }
+
+    #[test]
+    fn validation_ignores_out_of_range_scope_ids_in_analyzed_data() {
+        let src = "DATA lv_value TYPE i. lv_value = lv_value + 1.";
+        let parsed = parse(src);
+        let mut unit = analyze_unit_locally(UnitId(0), "file:///stale_scope.abap", src, &parsed);
+        unit.references[0].scope = ScopeId(999);
+
+        let scope_indexes = vec![build_scope_index(&unit)];
+        let uri = Arc::<str>::from("file:///stale_scope.abap");
+        let mut project = ProjectAnalysis {
+            units: vec![unit],
+            uri_to_unit: HashMap::from([(Arc::clone(&uri), UnitId(0))]),
+            provided_name_to_unit: HashMap::new(),
+            diagnostics: Vec::new(),
+        };
+
+        validate_project_with_scope_indexes(&mut project, &scope_indexes);
     }
 }

@@ -309,6 +309,7 @@ pub struct LoopWhereFieldContext {
     pub scope: ScopeId,
     pub range: TextRange,
     pub source_access: FieldAccess,
+    pub target_access: Option<FieldAccess>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

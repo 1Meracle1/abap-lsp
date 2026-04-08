@@ -50,12 +50,12 @@ fn resolve_symbol_in_scope_chain(
     let key = (namespace, Arc::clone(name));
     let mut current = Some(scope);
     while let Some(scope_id) = current {
-        if let Some(symbols) = scope_index[scope_id.as_usize()].get(&key)
+        if let Some(symbols) = scope_index.get(scope_id.as_usize()).and_then(|scope| scope.get(&key))
             && let Some(symbol_id) = symbols.last().copied()
         {
             return Some(symbol_id);
         }
-        current = unit.scope(scope_id).parent;
+        current = unit.scopes.get(scope_id.as_usize()).and_then(|scope| scope.parent);
     }
     None
 }
@@ -96,7 +96,7 @@ fn resolve_field_access_base_symbol(
 fn enclosing_class_owner(unit: &crate::UnitAnalysis, scope: ScopeId) -> Option<SymbolId> {
     let mut current = Some(scope);
     while let Some(scope_id) = current {
-        let scope = unit.scope(scope_id);
+        let scope = unit.scopes.get(scope_id.as_usize())?;
         if scope.kind == ScopeKind::Class {
             return scope.owner;
         }
@@ -108,7 +108,7 @@ fn enclosing_class_owner(unit: &crate::UnitAnalysis, scope: ScopeId) -> Option<S
 fn enclosing_method_owner(unit: &crate::UnitAnalysis, scope: ScopeId) -> Option<SymbolId> {
     let mut current = Some(scope);
     while let Some(scope_id) = current {
-        let scope = unit.scope(scope_id);
+        let scope = unit.scopes.get(scope_id.as_usize())?;
         if scope.kind == ScopeKind::Method {
             return scope.owner;
         }
@@ -123,7 +123,7 @@ fn scope_descends_from(unit: &crate::UnitAnalysis, scope: ScopeId, ancestor: Sco
         if scope_id == ancestor {
             return true;
         }
-        current = unit.scope(scope_id).parent;
+        current = unit.scopes.get(scope_id.as_usize()).and_then(|scope| scope.parent);
     }
     false
 }
@@ -208,11 +208,11 @@ fn validate_super_constructor_calls(
         let has_super_call = unit.field_accesses.iter().any(|access| {
             scope_descends_from(unit, access.scope, scope.id)
                 && access.base_namespace == Namespace::Value
-                && access.base_name.as_ref() == "super"
+                && access.base_name.as_ref().eq_ignore_ascii_case("super")
                 && access
                     .field_path
                     .last()
-                    .is_some_and(|segment| segment.name.as_ref() == "constructor")
+                    .is_some_and(|segment| segment.name.as_ref().eq_ignore_ascii_case("constructor"))
         });
         if !has_super_call {
             diagnostics.push(Diagnostic {
@@ -249,8 +249,8 @@ fn validate_super_constructor_calls(
                     base_name,
                     method_name,
                 } if *base_namespace == Namespace::Value
-                    && base_name.as_ref() == "super"
-                    && method_name.as_ref() == "constructor" =>
+                    && base_name.as_ref().eq_ignore_ascii_case("super")
+                    && method_name.as_ref().eq_ignore_ascii_case("constructor") =>
                 {
                     Some(argument.name.as_ref())
                 }
@@ -792,6 +792,43 @@ fn resolve_loop_where_source_structure<'a>(
     Some((current_unit, current_structure))
 }
 
+fn resolve_field_access_structure<'a>(
+    project: &'a ProjectAnalysis,
+    unit: &'a crate::UnitAnalysis,
+    scope_indexes: &[ScopeIndex],
+    access: &crate::FieldAccess,
+) -> Option<(&'a crate::UnitAnalysis, StructureId)> {
+    let scope_index = scope_indexes.get(unit.unit_id.as_usize())?;
+    let base_symbol_id = resolve_field_access_base_symbol(unit, scope_index, access)?;
+    let (current_unit, mut current_structure) = resolve_symbol_structure_project(
+        project,
+        unit,
+        scope_indexes,
+        access.scope,
+        base_symbol_id,
+    )?;
+
+    if access.field_path.is_empty() {
+        return Some((current_unit, current_structure));
+    }
+
+    for segment in &access.field_path {
+        if segment.is_deref() {
+            return None;
+        }
+        let field = current_unit
+            .semantic()
+            .decls()
+            .structure_field_info(current_structure, segment.name.as_ref())?;
+        current_structure = match field.shape {
+            StructureFieldShape::Structured { structure } => structure,
+            StructureFieldShape::Scalar => return None,
+        };
+    }
+
+    Some((current_unit, current_structure))
+}
+
 fn loop_where_reference_matches_source_field(
     project: &ProjectAnalysis,
     unit: &crate::UnitAnalysis,
@@ -802,16 +839,28 @@ fn loop_where_reference_matches_source_field(
         return false;
     }
     unit.loop_where_field_contexts.iter().any(|context| {
-        context.range.start <= reference.range.start
-            && reference.range.end <= context.range.end
-            && resolve_loop_where_source_structure(project, unit, scope_indexes, context)
+        context.range.start <= reference.range.start && reference.range.end <= context.range.end && {
+            let source_matches = resolve_loop_where_source_structure(project, unit, scope_indexes, context)
                 .is_some_and(|(structure_unit, structure_id)| {
                     structure_unit
                         .semantic()
                         .decls()
                         .structure_field_info(structure_id, reference.name.as_ref())
                         .is_some()
-                })
+                });
+            source_matches
+                || context
+                    .target_access
+                    .as_ref()
+                    .and_then(|access| resolve_field_access_structure(project, unit, scope_indexes, access))
+                    .is_some_and(|(structure_unit, structure_id)| {
+                        structure_unit
+                            .semantic()
+                            .decls()
+                            .structure_field_info(structure_id, reference.name.as_ref())
+                            .is_some()
+                    })
+        }
     })
 }
 

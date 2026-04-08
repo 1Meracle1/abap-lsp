@@ -4635,6 +4635,60 @@ ENDLOOP.";
 }
 
 #[test]
+fn suppresses_unknown_symbol_for_bare_loop_where_field_name_with_cs_on_nested_selector_source() {
+    let src = "\
+CLASS zcl_demo DEFINITION.
+  PUBLIC SECTION.
+    TYPES: BEGIN OF ty_dest,
+             type TYPE string,
+             content TYPE string,
+           END OF ty_dest.
+    TYPES ty_dest_tab TYPE STANDARD TABLE OF ty_dest WITH EMPTY KEY.
+    TYPES: BEGIN OF ty_destination_list,
+             destination TYPE ty_dest_tab,
+           END OF ty_destination_list.
+    TYPES: BEGIN OF ty_extension,
+             destination_list TYPE ty_destination_list,
+           END OF ty_extension.
+    TYPES: BEGIN OF ty_object_event,
+             extension TYPE ty_extension,
+           END OF ty_object_event.
+    TYPES: BEGIN OF ty_choice,
+             object_event TYPE ty_object_event,
+           END OF ty_choice.
+    METHODS run CHANGING cs_choice TYPE ty_choice.
+ENDCLASS.
+
+CLASS zcl_demo IMPLEMENTATION.
+  METHOD run.
+    FIELD-SYMBOLS <fs_destination> TYPE ty_dest.
+    LOOP AT cs_choice-object_event-extension-destination_list-destination[] ASSIGNING <fs_destination>
+    WHERE type CS 'location'.
+    ENDLOOP.
+  ENDMETHOD.
+ENDCLASS.";
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///loop_where_nested_selector_cs.abap", src, &parsed);
+
+    assert!(
+        unit.references.iter().any(|reference| {
+            reference.name.as_ref() == "type"
+                && reference.namespace == Namespace::Value
+                && reference.kind == ReferenceKind::Identifier
+        }),
+        "expected bare field reference in LOOP WHERE, refs={:?}",
+        unit.references
+    );
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains("'type'")
+        }),
+        "unexpected diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn get_reference_stmt_resolves_source_and_target_operands() {
     let src = r#"
 TYPES: BEGIN OF ty_xmlparse,
@@ -5093,6 +5147,80 @@ ENDCLASS.
             diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains("super")
         }),
         "unexpected unresolved super diagnostic: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn accepts_legacy_super_constructor_call_without_missing_call_diagnostic() {
+    let src = r#"
+CLASS zcl_parent DEFINITION.
+  PUBLIC SECTION.
+    METHODS constructor.
+ENDCLASS.
+
+CLASS zcl_parent IMPLEMENTATION.
+  METHOD constructor.
+  ENDMETHOD.
+ENDCLASS.
+
+CLASS zcl_child DEFINITION INHERITING FROM zcl_parent.
+  PUBLIC SECTION.
+    METHODS constructor.
+ENDCLASS.
+
+CLASS zcl_child IMPLEMENTATION.
+  METHOD constructor.
+    CALL METHOD SUPER->CONSTRUCTOR.
+  ENDMETHOD.
+ENDCLASS.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///legacy_super_ctor.abap", src, &parsed);
+
+    assert!(
+        !unit
+            .diagnostics
+            .iter()
+            .any(|diag| diag.kind == DiagnosticKind::MissingSuperConstructorCall),
+        "unexpected constructor diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn accepts_uppercase_legacy_super_constructor_call_with_space_before_period() {
+    let src = r#"
+CLASS zcl_parent DEFINITION.
+  PUBLIC SECTION.
+    METHODS constructor.
+ENDCLASS.
+
+CLASS zcl_parent IMPLEMENTATION.
+  METHOD constructor.
+  ENDMETHOD.
+ENDCLASS.
+
+CLASS zcl_child DEFINITION INHERITING FROM zcl_parent.
+  PUBLIC SECTION.
+    METHODS constructor.
+ENDCLASS.
+
+CLASS zcl_child IMPLEMENTATION.
+  METHOD CONSTRUCTOR.
+    CALL METHOD SUPER->CONSTRUCTOR .
+  ENDMETHOD.
+ENDCLASS.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///legacy_super_ctor_spaced.abap", src, &parsed);
+
+    assert!(
+        !unit
+            .diagnostics
+            .iter()
+            .any(|diag| diag.kind == DiagnosticKind::MissingSuperConstructorCall),
+        "unexpected constructor diagnostics: {:?}",
         unit.diagnostics
     );
 }

@@ -63,6 +63,7 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                 scope,
                 range: self.collector.file.range(where_expr),
                 source_access,
+                target_access: None,
             });
     }
 

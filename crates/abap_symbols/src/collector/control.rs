@@ -115,6 +115,7 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
     fn collect_loop_header_node(&mut self, node: NodeId, scope: ScopeId) {
         let mut source_metadata = (None, None);
         let mut source_access = None;
+        let mut target_access = None;
         let mut allows_internal_table_line_selector = false;
         for child in self.collector.file.children(node) {
             match self.collector.file.kind(child) {
@@ -129,6 +130,7 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
                 }
                 SyntaxKind::LoopIntoClause => {
                     if let Some(target) = self.collector.first_non_token_child(child) {
+                        target_access = self.collector.value_access_from_node(target, scope);
                         self.collect_loop_target_node(
                             target,
                             scope,
@@ -139,6 +141,7 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
                 }
                 SyntaxKind::LoopAssigningClause => {
                     if let Some(target) = self.collector.first_non_token_child(child) {
+                        target_access = self.collector.value_access_from_node(target, scope);
                         self.collect_loop_target_node(
                             target,
                             scope,
@@ -171,6 +174,7 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
                                     scope,
                                     range: self.collector.file.range(child),
                                     source_access,
+                                    target_access: target_access.clone(),
                                 });
                         }
                         self.collector.expr_lowering().collect_expr(expr, scope);
