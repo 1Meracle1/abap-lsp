@@ -257,6 +257,8 @@ pub enum SyntaxKind {
     ReadTableStmt,
     /// `GET TIME STAMP FIELD ... .`
     GetTimeStampStmt,
+    /// `GET REFERENCE OF ... INTO ... .`
+    GetReferenceStmt,
     /// `GET BIT ... OF ... INTO ... .`
     GetBitStmt,
     /// `SET BIT ... OF ... TO ... .`
@@ -403,6 +405,7 @@ impl SyntaxKind {
             Self::FindStmt => "FindStmt",
             Self::ReadTableStmt => "ReadTableStmt",
             Self::GetTimeStampStmt => "GetTimeStampStmt",
+            Self::GetReferenceStmt => "GetReferenceStmt",
             Self::GetBitStmt => "GetBitStmt",
             Self::SetBitStmt => "SetBitStmt",
             Self::WriteStmt => "WriteStmt",

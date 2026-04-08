@@ -42,6 +42,7 @@ const EVENT_BLOCK_BODY_BOUNDARY_KEYWORDS: &[&str] = &[
 ];
 
 const GET_TIME_STAMP_FIELD_LEAD: &[&str] = &["get", "time", "stamp", "field"];
+const GET_REFERENCE_OF_LEAD: &[&str] = &["get", "reference", "of"];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum CallLikeLeadKind {
@@ -3050,6 +3051,86 @@ pub fn try_parse_get_time_stamp_stmt(
     ))
 }
 
+pub fn try_parse_get_reference_stmt(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    errors: &mut Vec<crate::ParseError>,
+) -> Option<(NodeId, usize)> {
+    let get_tok = tokens.get(idx)?;
+    let lead_end = match_keyword_sequence(source, tokens, idx, GET_REFERENCE_OF_LEAD)?;
+
+    Some(parse_stmt_with_period_scan(
+        b,
+        source,
+        tokens,
+        idx,
+        lead_end,
+        get_tok,
+        "syntax error: expected '.' after GET REFERENCE OF statement",
+        errors,
+        |_, end_exclusive| end_exclusive,
+        |b, period_i, _errors| {
+            let clause_into =
+                |t: &[Token], i: usize| t.get(i).is_some_and(|tok| is_keyword(source, tok, "into"));
+
+            let source_start = skip_trivia(tokens, lead_end);
+            let Some(into_idx) =
+                find_top_level_keyword_index(source, tokens, source_start, period_i, "into")
+            else {
+                let children = token_children(b, tokens, idx, period_i + 1);
+                let node = b.branch(
+                    SyntaxKind::Error,
+                    get_tok.range.start..tokens[period_i].range.end,
+                    &children,
+                );
+                return (node, period_i + 1);
+            };
+
+            let mut children = Vec::with_capacity(period_i - idx + 1);
+            push_token_children(b, &mut children, tokens, idx, lead_end);
+            let _ = scan_and_push_expr_clause(
+                b,
+                &mut children,
+                source,
+                tokens,
+                source_start,
+                into_idx,
+                tokens.get(lead_end.saturating_sub(1)),
+                &clause_into,
+            );
+            children.push(token_leaf(b, &tokens[into_idx]));
+
+            let target_start = skip_trivia(tokens, into_idx + 1);
+            if let Some((inline_decl, next_idx)) =
+                try_parse_data_inline_decl(b, source, tokens, target_start)
+                && skip_trivia(tokens, next_idx) == period_i
+            {
+                children.push(inline_decl);
+            } else {
+                push_expr_child(
+                    b,
+                    &mut children,
+                    source,
+                    tokens,
+                    target_start,
+                    period_i,
+                    Some(&tokens[into_idx]),
+                );
+            }
+
+            children.push(token_leaf(b, &tokens[period_i]));
+            let node = b.branch(
+                SyntaxKind::GetReferenceStmt,
+                get_tok.range.start..tokens[period_i].range.end,
+                &children,
+            );
+            (node, period_i + 1)
+        },
+    ))
+}
+
 pub fn try_parse_call_like_stmt(
     b: &mut SyntaxTreeBuilder,
     source: &str,
@@ -5010,6 +5091,31 @@ END-OF-PAGE.\nWRITE 'e'.",
             .find_first_kind(parsed.file.root(), SyntaxKind::CreateDataStmt)
             .expect("create data stmt");
         assert!(parsed.file.count_kind(stmt, SyntaxKind::ExprIdent) >= 2);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::Error), 0);
+    }
+
+    #[test]
+    fn parses_get_reference_of_into_as_one_statement() {
+        let parsed = crate::parse("GET REFERENCE OF es_request_aif_struct INTO ls_xmlparse-xi_data.");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let stmt = parsed
+            .file
+            .find_first_kind(parsed.file.root(), SyntaxKind::GetReferenceStmt)
+            .expect("get reference stmt");
+        assert!(parsed.file.count_kind(stmt, SyntaxKind::ExprIdent) >= 2);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::SelectorExpr), 1);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::Error), 0);
+    }
+
+    #[test]
+    fn parses_get_reference_of_into_object_ref_target() {
+        let parsed = crate::parse("GET REFERENCE OF ls_xmlparse INTO lo_xmlparse.");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let stmt = parsed
+            .file
+            .find_first_kind(parsed.file.root(), SyntaxKind::GetReferenceStmt)
+            .expect("get reference stmt");
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::ExprIdent), 2);
         assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::Error), 0);
     }
 

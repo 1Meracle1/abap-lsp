@@ -118,6 +118,7 @@ impl<'a> Collector<'a> {
             | SyntaxKind::ModifyStmt
             | SyntaxKind::DeleteDbTableStmt
             | SyntaxKind::ReadTableStmt
+            | SyntaxKind::GetReferenceStmt
             | SyntaxKind::GetBitStmt
             | SyntaxKind::SetBitStmt => self.walk_children(node, scope),
             SyntaxKind::DeleteStmt => self.stmt_lowering().collect_delete_stmt(node, scope),

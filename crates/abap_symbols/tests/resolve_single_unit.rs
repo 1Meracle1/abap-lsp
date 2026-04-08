@@ -4524,6 +4524,113 @@ ENDLOOP.";
 }
 
 #[test]
+fn get_reference_stmt_resolves_source_and_target_operands() {
+    let src = r#"
+TYPES: BEGIN OF ty_xmlparse,
+         xi_data TYPE REF TO data,
+       END OF ty_xmlparse.
+
+DATA es_request_aif_struct TYPE string.
+DATA ls_xmlparse TYPE ty_xmlparse.
+
+GET REFERENCE OF es_request_aif_struct INTO ls_xmlparse-xi_data.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///get_reference_struct.abap", src, &parsed);
+
+    let source_symbol = unit
+        .symbols
+        .iter()
+        .find(|symbol| {
+            symbol.kind == abap_symbols::SymbolKind::Variable
+                && symbol.name.as_ref() == "es_request_aif_struct"
+        })
+        .expect("source variable");
+
+    let source_ref = unit
+        .references
+        .iter()
+        .find(|reference| {
+            reference.kind == ReferenceKind::Identifier
+                && reference.namespace == Namespace::Value
+                && reference.name.as_ref() == "es_request_aif_struct"
+        })
+        .expect("get reference source");
+    assert_eq!(
+        source_ref.resolution,
+        Some(Resolution::Symbol(SymbolHandle {
+            unit: unit.unit_id,
+            symbol: source_symbol.id,
+        }))
+    );
+
+    assert!(unit.references.iter().any(|reference| {
+        reference.kind == ReferenceKind::Identifier
+            && reference.namespace == Namespace::Value
+            && reference.name.as_ref() == "ls_xmlparse"
+    }));
+
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference
+                && (diag.message.contains("es_request_aif_struct")
+                    || diag.message.contains("ls_xmlparse"))
+        }),
+        "unexpected unresolved diagnostic: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn get_reference_stmt_resolves_plain_target_reference() {
+    let src = r#"
+DATA ls_xmlparse TYPE string.
+DATA lo_xmlparse TYPE REF TO data.
+
+GET REFERENCE OF ls_xmlparse INTO lo_xmlparse.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///get_reference_plain.abap", src, &parsed);
+
+    for name in ["ls_xmlparse", "lo_xmlparse"] {
+        let symbol = unit
+            .symbols
+            .iter()
+            .find(|symbol| {
+                symbol.kind == abap_symbols::SymbolKind::Variable && symbol.name.as_ref() == name
+            })
+            .expect("variable symbol");
+
+        let reference = unit
+            .references
+            .iter()
+            .find(|reference| {
+                reference.kind == ReferenceKind::Identifier
+                    && reference.namespace == Namespace::Value
+                    && reference.name.as_ref() == name
+            })
+            .expect("reference");
+
+        assert_eq!(
+            reference.resolution,
+            Some(Resolution::Symbol(SymbolHandle {
+                unit: unit.unit_id,
+                symbol: symbol.id,
+            }))
+        );
+    }
+
+    assert!(
+        !unit
+            .diagnostics
+            .iter()
+            .any(|diag| diag.kind == DiagnosticKind::UnresolvedReference),
+        "unexpected unresolved diagnostic: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn suppresses_unknown_symbol_for_bare_delete_where_field_name_on_external_table_type() {
     let main_src = r#"
 DATA lt_trans_del TYPE /sttp/tt_evt_sdr.
