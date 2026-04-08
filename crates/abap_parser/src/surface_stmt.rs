@@ -1475,13 +1475,22 @@ where
     )
 }
 
-fn named_argument_section_keyword(source: &str, token: &Token) -> bool {
+fn named_argument_section_keyword(source: &str, tokens: &[Token], idx: usize) -> bool {
+    let Some(token) = tokens.get(idx) else {
+        return false;
+    };
+    if tokens.get(idx + 1).map(|next| next.kind) == Some(TokenKind::Eq) {
+        return false;
+    }
     is_keyword(source, token, "exporting")
         || is_keyword(source, token, "importing")
         || is_keyword(source, token, "changing")
         || is_keyword(source, token, "tables")
         || is_keyword(source, token, "receiving")
         || is_keyword(source, token, "exceptions")
+        || is_keyword(source, token, "source")
+        || is_keyword(source, token, "result")
+        || is_keyword(source, token, "xml")
 }
 
 fn call_argument_value_end(
@@ -1506,7 +1515,7 @@ fn call_argument_value_end(
             _ => {}
         }
         if paren == 0 && bracket == 0 && brace == 0 {
-            if named_argument_section_keyword(source, token) {
+            if named_argument_section_keyword(source, tokens, idx) {
                 break;
             }
             if token.kind == TokenKind::Ident
@@ -1576,7 +1585,7 @@ fn build_call_argument_list_node(
             idx += 1;
             continue;
         }
-        if named_argument_section_keyword(source, token) {
+        if named_argument_section_keyword(source, tokens, idx) {
             if segment_start < idx {
                 let prev = segment_start
                     .checked_sub(1)
@@ -3194,7 +3203,7 @@ pub fn try_parse_call_like_stmt(
                 let clause_starts = |tokens: &[Token], at: usize| {
                     tokens.get(at).is_some_and(|token| {
                         is_keyword(source, token, "type")
-                            || named_argument_section_keyword(source, token)
+                            || named_argument_section_keyword(source, tokens, at)
                     })
                 };
                 let mut cursor = lead_end;
@@ -3283,31 +3292,22 @@ pub fn try_parse_call_like_stmt(
                 children.push(token_leaf(b, &tokens[period_i]));
             }
             CallLikeLeadKind::CallStmt => {
-                if tokens
-                    .get(idx + 1)
-                    .is_some_and(|token| is_keyword(source, token, "function"))
-                {
-                    children.push(token_leaf(b, &tokens[idx]));
-                    children.push(token_leaf(b, &tokens[idx + 1]));
-                    let arg_start = scan_until_clause(tokens, lead_end, period_i, |tokens, at| {
-                        tokens
-                            .get(at)
-                            .is_some_and(|token| named_argument_section_keyword(source, token))
-                    });
-                    for t in &tokens[lead_end..arg_start] {
-                        children.push(token_leaf(b, t));
-                    }
-                    if let Some(arg_list) =
-                        build_call_argument_list_node(b, source, tokens, arg_start, period_i)
-                    {
-                        children.push(arg_list);
-                    }
-                    children.push(token_leaf(b, &tokens[period_i]));
-                } else {
-                    for t in &tokens[idx..=period_i] {
-                        children.push(token_leaf(b, t));
-                    }
+                children.push(token_leaf(b, &tokens[idx]));
+                children.push(token_leaf(b, &tokens[idx + 1]));
+                let arg_start = scan_until_clause(tokens, lead_end, period_i, |tokens, at| {
+                    tokens
+                        .get(at)
+                        .is_some_and(|_| named_argument_section_keyword(source, tokens, at))
+                });
+                for t in &tokens[lead_end..arg_start] {
+                    children.push(token_leaf(b, t));
                 }
+                if let Some(arg_list) =
+                    build_call_argument_list_node(b, source, tokens, arg_start, period_i)
+                {
+                    children.push(arg_list);
+                }
+                children.push(token_leaf(b, &tokens[period_i]));
             }
         }
         let node = b.branch(
@@ -5762,6 +5762,38 @@ END-OF-PAGE.\nWRITE 'e'.",
                 "{src}"
             );
         }
+    }
+
+    #[test]
+    fn parses_call_transformation_with_xml_source_and_result_writer() {
+        let parsed = crate::parse(
+            "CALL TRANSFORMATION /sttp/json_xml_to_upper\n  SOURCE XML lv_json\n  RESULT XML lo_writer.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let stmt = parsed
+            .file
+            .find_first_kind(parsed.file.root(), SyntaxKind::CallStmt)
+            .expect("call transformation stmt");
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::CallArgList), 1);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::CallArgSection), 4);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::CallPositionalArg), 2);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::Error), 0);
+    }
+
+    #[test]
+    fn parses_call_transformation_id_with_source_xml_and_named_result() {
+        let parsed = crate::parse(
+            "CALL TRANSFORMATION id\n  SOURCE XML lv_json_hex\n  RESULT result = ev_data.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let stmt = parsed
+            .file
+            .find_first_kind(parsed.file.root(), SyntaxKind::CallStmt)
+            .expect("call transformation stmt");
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::CallArgList), 1);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::CallArgSection), 3);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::CallNamedArg), 1);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::Error), 0);
     }
 
     #[test]

@@ -264,6 +264,29 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
 
         for child in self.ctx.file().children(node) {
             match self.kind(child) {
+                SyntaxKind::CallArgSection => {}
+                SyntaxKind::CallNamedArg => {
+                    let value_children: Vec<_> = CallNamedArg::cast(self.ctx.syntax(child))
+                        .map(|arg| {
+                            arg.value_children()
+                                .into_iter()
+                                .map(|child| child.id())
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    self.collect_structured_argument_values(&value_children, scope);
+                }
+                SyntaxKind::CallPositionalArg => {
+                    let value_children: Vec<_> = CallPositionalArg::cast(self.ctx.syntax(child))
+                        .map(|arg| {
+                            arg.value_children()
+                                .into_iter()
+                                .map(|child| child.id())
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    self.collect_structured_argument_values(&value_children, scope);
+                }
                 SyntaxKind::DataInlineDecl => {
                     self.ctx.decl_lowering().walk_inline_decl(child, scope)
                 }

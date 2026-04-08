@@ -4235,6 +4235,50 @@ START-OF-SELECTION.
 }
 
 #[test]
+fn collects_call_transformation_operands_without_keyword_diagnostics() {
+    let src = r#"
+START-OF-SELECTION.
+  DATA lv_json TYPE string.
+  DATA lo_writer TYPE REF TO cl_sxml_string_writer.
+  DATA lv_json_hex TYPE xstring.
+  DATA ev_data TYPE string.
+
+  CALL TRANSFORMATION /sttp/json_xml_to_upper
+    SOURCE XML lv_json
+    RESULT XML lo_writer.
+
+  CALL TRANSFORMATION id
+    SOURCE XML lv_json_hex
+    RESULT result = ev_data.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///call_transformation.abap", src, &parsed);
+
+    for name in ["lv_json", "lo_writer", "lv_json_hex", "ev_data"] {
+        assert!(
+            unit.references.iter().any(|reference| {
+                reference.namespace == Namespace::Value
+                    && reference.name.as_ref() == name
+                    && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+            }),
+            "expected `{name}` reference to resolve, got refs={:?} diagnostics={:?}",
+            unit.references,
+            unit.diagnostics
+        );
+    }
+
+    for keyword in ["TRANSFORMATION", "SOURCE", "RESULT", "XML"] {
+        assert!(
+            !unit.diagnostics.iter().any(|diag| {
+                diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains(keyword)
+            }),
+            "unexpected unresolved keyword diagnostic for `{keyword}`: {:?}",
+            unit.diagnostics
+        );
+    }
+}
+
+#[test]
 fn resolves_template_interpolation_references_and_method_accesses() {
     let src = r#"
 CLASS zcl_expr DEFINITION.
