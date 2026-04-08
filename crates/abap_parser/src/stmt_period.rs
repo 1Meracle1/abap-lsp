@@ -90,7 +90,7 @@ pub(crate) fn is_definite_stmt_lead_keyword(source: &str, tok: &Token) -> bool {
 }
 
 #[inline]
-fn is_named_arg_clause_keyword(source: &str, tok: &Token) -> bool {
+pub(crate) fn is_named_arg_clause_keyword(source: &str, tok: &Token) -> bool {
     tok.kind == TokenKind::Ident
         && (tok.lexeme(source).eq_ignore_ascii_case("EXPORTING")
             || tok.lexeme(source).eq_ignore_ascii_case("IMPORTING")
@@ -100,7 +100,7 @@ fn is_named_arg_clause_keyword(source: &str, tok: &Token) -> bool {
 }
 
 #[inline]
-fn is_condition_continuation_keyword(source: &str, tok: &Token) -> bool {
+pub(crate) fn is_condition_continuation_keyword(source: &str, tok: &Token) -> bool {
     tok.kind == TokenKind::Ident
         && (tok.lexeme(source).eq_ignore_ascii_case("AND")
             || tok.lexeme(source).eq_ignore_ascii_case("OR")

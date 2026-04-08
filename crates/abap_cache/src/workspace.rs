@@ -288,8 +288,11 @@ pub fn is_remote_lookup_candidate(name: &str, kind: &str) -> bool {
         return true;
     }
 
-    matches!(kind.trim().to_ascii_lowercase().as_str(), "type" | "static")
-        && is_standard_remote_type_like_name(trimmed)
+    match kind.trim().to_ascii_lowercase().as_str() {
+        "type" | "static" => is_standard_remote_type_like_name(trimmed),
+        "message-class" => is_standard_message_class_name(trimmed),
+        _ => false,
+    }
 }
 
 fn is_standard_remote_type_like_name(name: &str) -> bool {
@@ -330,6 +333,24 @@ fn is_likely_local_identifier_style(lower: &str) -> bool {
     LOCAL_PREFIXES
         .iter()
         .any(|prefix| lower.starts_with(prefix))
+}
+
+fn is_standard_message_class_name(name: &str) -> bool {
+    if name.starts_with('/') {
+        return true;
+    }
+    if name.chars().all(|ch| ch.is_ascii_digit()) {
+        return true;
+    }
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !first.is_ascii_alphabetic() {
+        return false;
+    }
+    !is_likely_local_identifier_style(&name.to_ascii_lowercase())
+        && chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '/')
 }
 
 fn collect_abap_sources(
@@ -1229,9 +1250,12 @@ mod tests {
         assert!(is_remote_lookup_candidate("cl_abap_typedescr", "type"));
         assert!(is_remote_lookup_candidate("if_sxml_reader", "static"));
         assert!(is_remote_lookup_candidate("cx_root", "type"));
+        assert!(is_remote_lookup_candidate("00", "message-class"));
+        assert!(is_remote_lookup_candidate("/sttp/int_msg", "message-class"));
         assert!(is_remote_lookup_candidate("boolean", "type"));
         assert!(!is_remote_lookup_candidate("cl_abap_typedescr", "symbol"));
         assert!(!is_remote_lookup_candidate("lv_type_name", "type"));
+        assert!(!is_remote_lookup_candidate("lv_msgid", "message-class"));
     }
 
     #[test]

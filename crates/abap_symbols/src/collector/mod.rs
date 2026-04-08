@@ -332,7 +332,7 @@ impl<'a> Collector<'a> {
     }
 
     fn syntax_token_is_comment(&self, token: &SyntaxTokenInfo) -> bool {
-        token.text.trim_start().starts_with('"')
+        token.text.trim_start().starts_with('"') || token.text.trim_start().starts_with("##")
     }
 
     fn syntax_token_is_ident_like(&self, token: &SyntaxTokenInfo) -> bool {

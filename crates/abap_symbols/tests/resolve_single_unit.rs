@@ -5609,6 +5609,54 @@ ENDCLASS.
 }
 
 #[test]
+fn message_stmt_ignores_text_pool_ids_and_display_like_appendix() {
+    let src = r#"
+CLASS zcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS m.
+ENDCLASS.
+
+CLASS zcl_demo IMPLEMENTATION.
+  METHOD m.
+    DATA lv_name TYPE string.
+    MESSAGE s398(00) WITH TEXT-007 lv_name DISPLAY LIKE 'E'.
+  ENDMETHOD.
+ENDCLASS.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///message_stmt_text_pool.abap", src, &parsed);
+
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference
+                && (diag.message.contains("unknown symbol 'text'")
+                    || diag.message.contains("unknown symbol '007'")
+                    || diag.message.contains("unknown symbol 'display'")
+                    || diag.message.contains("unknown symbol 'like'"))
+        }),
+        "unexpected MESSAGE compact/text-pool diagnostics: {:?}",
+        unit.diagnostics
+    );
+    assert!(
+        unit.references.iter().any(|reference| {
+            reference.kind == ReferenceKind::MessageClass
+                && reference.name.as_ref() == "00"
+        }),
+        "expected compact MESSAGE class reference: {:?}",
+        unit.references
+    );
+    assert!(
+        unit.references.iter().any(|reference| {
+            reference.kind == ReferenceKind::Identifier
+                && reference.name.as_ref() == "lv_name"
+                && reference.resolution.is_some()
+        }),
+        "expected MESSAGE operand lv_name to resolve: {:?}",
+        unit.references
+    );
+}
+
+#[test]
 fn ignores_plain_template_literal_text_in_token_collected_statements() {
     let src = r#"
 FORM run USING iv_tag_path TYPE string.

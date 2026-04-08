@@ -115,8 +115,16 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             .collector
             .find_top_level_keyword_index_infos(&sig, 1, "into")
             .filter(|&ix| ix < period_pos);
+        let display_ix = self
+            .collector
+            .find_top_level_keyword_index_infos(&sig, 1, "display")
+            .filter(|&ix| ix < period_pos);
+        let raising_ix = self
+            .collector
+            .find_top_level_keyword_index_infos(&sig, 1, "raising")
+            .filter(|&ix| ix < period_pos);
 
-        let head_end = [with_ix, into_ix, Some(period_pos)]
+        let head_end = [with_ix, into_ix, display_ix, raising_ix, Some(period_pos)]
             .into_iter()
             .flatten()
             .min()
@@ -145,11 +153,7 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                         range,
                     );
                 } else {
-                    self.collector.collect_token_expression_refs_infos(
-                        &sig[i..end_mid],
-                        scope,
-                        true,
-                    );
+                    self.collect_message_operand_refs_infos(&sig[i..end_mid], scope);
                 }
             }
             i = end_mid;
@@ -165,11 +169,7 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                     &["number", "with", "into", "display", "raising"],
                 );
                 if end_ty > i {
-                    self.collector.collect_token_expression_refs_infos(
-                        &sig[i..end_ty],
-                        scope,
-                        true,
-                    );
+                    self.collect_message_operand_refs_infos(&sig[i..end_ty], scope);
                 }
                 i = end_ty;
             }
@@ -185,11 +185,7 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                     &["with", "into", "display", "raising"],
                 );
                 if end_num > i {
-                    self.collector.collect_token_expression_refs_infos(
-                        &sig[i..end_num],
-                        scope,
-                        true,
-                    );
+                    self.collect_message_operand_refs_infos(&sig[i..end_num], scope);
                 }
                 i = end_num;
             }
@@ -208,11 +204,7 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                     &["with", "into", "raising"],
                 );
                 if end_disp > i {
-                    self.collector.collect_token_expression_refs_infos(
-                        &sig[i..end_disp],
-                        scope,
-                        true,
-                    );
+                    self.collect_message_operand_refs_infos(&sig[i..end_disp], scope);
                 }
             }
         } else {
@@ -226,11 +218,7 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                 if self.is_compact_message_class_form(&sig[i..code_end]) {
                     self.collect_compact_message_class_ref_infos(&sig[i..code_end], scope);
                 } else {
-                    self.collector.collect_token_expression_refs_infos(
-                        &sig[i..code_end],
-                        scope,
-                        true,
-                    );
+                    self.collect_message_operand_refs_infos(&sig[i..code_end], scope);
                 }
             }
             i = code_end;
@@ -246,11 +234,7 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                     &["with", "into", "display", "raising"],
                 );
                 if ty_end > i {
-                    self.collector.collect_token_expression_refs_infos(
-                        &sig[i..ty_end],
-                        scope,
-                        true,
-                    );
+                    self.collect_message_operand_refs_infos(&sig[i..ty_end], scope);
                 }
                 i = ty_end;
             }
@@ -269,36 +253,64 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                     &["with", "into", "raising"],
                 );
                 if disp_end > i {
-                    self.collector.collect_token_expression_refs_infos(
-                        &sig[i..disp_end],
-                        scope,
-                        true,
-                    );
+                    self.collect_message_operand_refs_infos(&sig[i..disp_end], scope);
                 }
             }
         }
 
         if let Some(with_ix) = with_ix {
-            let args_end = into_ix.unwrap_or(period_pos);
+            let args_end = [into_ix, display_ix, raising_ix, Some(period_pos)]
+                .into_iter()
+                .flatten()
+                .min()
+                .unwrap();
             if args_end > with_ix + 1 {
-                self.collector.collect_token_expression_refs_infos(
-                    &sig[with_ix + 1..args_end],
-                    scope,
-                    true,
-                );
+                self.collect_message_operand_refs_infos(&sig[with_ix + 1..args_end], scope);
             }
         }
         if let Some(into_ix) = into_ix {
-            let into_end = period_pos;
+            let into_end = [display_ix, raising_ix, Some(period_pos)]
+                .into_iter()
+                .flatten()
+                .min()
+                .unwrap();
             self.declare_message_inline_into_target_infos(&sig, into_ix + 1, into_end, scope);
             let value_start = self.message_into_expression_start(&sig, into_ix + 1, into_end);
             if into_end > value_start {
-                self.collector.collect_token_expression_refs_infos(
-                    &sig[value_start..into_end],
-                    scope,
-                    true,
-                );
+                self.collect_message_operand_refs_infos(&sig[value_start..into_end], scope);
             }
+        }
+    }
+
+    fn collect_message_operand_refs_infos(&mut self, tokens: &[SyntaxTokenInfo], scope: ScopeId) {
+        let mut batch_start = 0usize;
+        let mut idx = 0usize;
+        while idx < tokens.len() {
+            let is_text_pool = tokens[idx].text.eq_ignore_ascii_case("text")
+                && tokens.get(idx + 1).is_some_and(|token| token.text.as_ref() == "-")
+                && tokens.get(idx + 2).is_some_and(|token| {
+                    token.text.chars().all(|ch| ch.is_ascii_digit())
+                });
+            if is_text_pool {
+                if batch_start < idx {
+                    self.collector.collect_token_expression_refs_infos(
+                        &tokens[batch_start..idx],
+                        scope,
+                        true,
+                    );
+                }
+                idx += 3;
+                batch_start = idx;
+                continue;
+            }
+            idx += 1;
+        }
+        if batch_start < tokens.len() {
+            self.collector.collect_token_expression_refs_infos(
+                &tokens[batch_start..],
+                scope,
+                true,
+            );
         }
     }
 

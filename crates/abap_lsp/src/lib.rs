@@ -1753,6 +1753,22 @@ ENDCLASS.";
     }
 
     #[test]
+    fn collects_standard_message_class_remote_dependency_candidates() {
+        let store = DocumentStore::default();
+        let snapshot = store.publish(
+            "file:///message_stmt_std.abap",
+            1,
+            "MESSAGE s398(00) WITH TEXT-007 DISPLAY LIKE 'E'.",
+        );
+
+        let candidates = collect_remote_dependency_candidates(snapshot.as_ref());
+
+        assert!(candidates.iter().any(|candidate| {
+            candidate.name == "00" && candidate.kind == "message-class"
+        }));
+    }
+
+    #[test]
     fn remote_dependency_request_is_suppressed_by_syntax_errors() {
         let workspace_path = temp_workspace_path("syntax_gate");
         fs::create_dir_all(&workspace_path).expect("workspace dir");

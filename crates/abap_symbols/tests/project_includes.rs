@@ -44,6 +44,46 @@ fn reports_unresolved_include_targets() {
         project
             .diagnostics
             .iter()
-            .any(|diag| diag.kind == DiagnosticKind::UnresolvedInclude)
+        .any(|diag| diag.kind == DiagnosticKind::UnresolvedInclude)
     );
+}
+
+#[test]
+fn resolves_symbols_from_second_chained_include_unit() {
+    let root_src = "INCLUDE: zinc_first, zinc_second. lv_second = 1.";
+    let first_include_src = "\" first include intentionally empty";
+    let second_include_src = "DATA lv_second TYPE i.";
+    let root_parse = parse(root_src);
+    let first_include_parse = parse(first_include_src);
+    let second_include_parse = parse(second_include_src);
+
+    let project = analyze_project(&[
+        ProjectInput {
+            uri: "zmain.abap",
+            source: root_src,
+            parse: &root_parse,
+        },
+        ProjectInput {
+            uri: "zinc_first.abap",
+            source: first_include_src,
+            parse: &first_include_parse,
+        },
+        ProjectInput {
+            uri: "zinc_second.abap",
+            source: second_include_src,
+            parse: &second_include_parse,
+        },
+    ]);
+
+    let root = project.unit_by_uri("zmain.abap").expect("root unit");
+    assert_eq!(root.include_edges.len(), 2);
+    assert!(
+        root.include_edges
+            .iter()
+            .any(|edge| edge.name.as_ref() == "zinc_second" && edge.target.is_some())
+    );
+    assert!(root.references.iter().any(|reference| {
+        reference.name.as_ref() == "lv_second"
+            && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+    }));
 }

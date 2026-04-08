@@ -253,6 +253,8 @@ pub enum SyntaxKind {
     RaiseStmt,
     /// `MESSAGE ... .`
     MessageStmt,
+    /// `LEAVE LIST-PROCESSING.`
+    LeaveStmt,
     /// `ENDAT.`
     EndAtStmt,
     /// `FIND ... .`
@@ -407,6 +409,7 @@ impl SyntaxKind {
             Self::RollbackWorkStmt => "RollbackWorkStmt",
             Self::RaiseStmt => "RaiseStmt",
             Self::MessageStmt => "MessageStmt",
+            Self::LeaveStmt => "LeaveStmt",
             Self::EndAtStmt => "EndAtStmt",
             Self::FindStmt => "FindStmt",
             Self::ReadTableStmt => "ReadTableStmt",

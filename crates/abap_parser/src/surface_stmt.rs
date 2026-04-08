@@ -8,7 +8,8 @@ use crate::block_helpers::{
 };
 use crate::expr::{parse_arithmetic_expr, parse_logical_expr};
 use crate::stmt_period::{
-    StmtPeriodScan, is_definite_stmt_lead_keyword, scan_until_statement_period, token_begins_line,
+    StmtPeriodScan, is_condition_continuation_keyword, is_definite_stmt_lead_keyword,
+    is_named_arg_clause_keyword, scan_until_statement_period, token_begins_line,
     unterminated_err_end,
 };
 use crate::syntax::token_leaf;
@@ -882,7 +883,7 @@ fn parse_select_header_until_period(
     idx: usize,
     errors: &mut Vec<crate::ParseError>,
 ) -> (Vec<NodeId>, usize) {
-    match scan_until_statement_period(tokens, source, idx + 1) {
+    match scan_select_stmt_period(tokens, source, idx + 1) {
         StmtPeriodScan::Found(period_i) => {
             let mut query_children = Vec::new();
             let mut cursor = idx + 1;
@@ -951,6 +952,79 @@ fn parse_select_header_until_period(
                 next_after_unterminated_scan(tokens, end_exclusive),
             )
         }
+    }
+}
+
+fn scan_select_stmt_period(tokens: &[Token], source: &str, start: usize) -> StmtPeriodScan {
+    let mut paren = 0i32;
+    let mut bracket = 0i32;
+    let mut brace = 0i32;
+    let mut sql_case_depth = 0i32;
+    let mut allow_line_start_named_args = false;
+    let mut allow_line_start_condition_comparison = false;
+    let mut i = start;
+
+    while i < tokens.len() {
+        let t = &tokens[i];
+        if t.kind == TokenKind::Eof {
+            return StmtPeriodScan::Unterminated { end_exclusive: i };
+        }
+
+        if paren == 0 && bracket == 0 && brace == 0 {
+            if t.kind == TokenKind::Period {
+                return StmtPeriodScan::Found(i);
+            }
+            if is_named_arg_clause_keyword(source, t) {
+                allow_line_start_named_args = true;
+            }
+            if is_condition_continuation_keyword(source, t) {
+                allow_line_start_condition_comparison = true;
+            }
+            let is_sql_case_start = t.kind == TokenKind::Ident && is_keyword(source, t, "case");
+            let is_sql_case_branch = t.kind == TokenKind::Ident
+                && (is_keyword(source, t, "when") || is_keyword(source, t, "else"));
+            let is_sql_case_end = t.kind == TokenKind::Ident && is_keyword(source, t, "end");
+            if i > start {
+                if t.kind == TokenKind::Ident
+                    && token_begins_line(source, t)
+                    && is_definite_stmt_lead_keyword(source, t)
+                    && !(is_sql_case_start
+                        || is_sql_case_branch && sql_case_depth > 0
+                        || is_sql_case_end && sql_case_depth > 0)
+                {
+                    return StmtPeriodScan::Unterminated { end_exclusive: i };
+                }
+                if t.kind == TokenKind::Ident && token_begins_line(source, t) {
+                    let next_kind = tokens.get(i + 1).map(|x| x.kind);
+                    if !allow_line_start_named_args
+                        && !allow_line_start_condition_comparison
+                        && matches!(next_kind, Some(TokenKind::Eq | TokenKind::QuestionEq))
+                    {
+                        return StmtPeriodScan::Unterminated { end_exclusive: i };
+                    }
+                }
+            }
+            if is_sql_case_start {
+                sql_case_depth += 1;
+            } else if is_sql_case_end && sql_case_depth > 0 {
+                sql_case_depth -= 1;
+            }
+        }
+
+        match t.kind {
+            TokenKind::LParen => paren += 1,
+            TokenKind::RParen => paren -= 1,
+            TokenKind::LBracket => bracket += 1,
+            TokenKind::RBracket => bracket -= 1,
+            TokenKind::LBrace => brace += 1,
+            TokenKind::RBrace => brace -= 1,
+            _ => {}
+        }
+        i += 1;
+    }
+
+    StmtPeriodScan::Unterminated {
+        end_exclusive: tokens.len(),
     }
 }
 
@@ -2740,6 +2814,25 @@ pub fn try_parse_message_stmt(
         "message",
         errors,
         "syntax error: expected '.' after MESSAGE statement",
+    )
+}
+
+pub fn try_parse_leave_stmt(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    errors: &mut Vec<crate::ParseError>,
+) -> Option<(NodeId, usize)> {
+    parse_simple_keyword_stmt(
+        b,
+        source,
+        tokens,
+        idx,
+        SyntaxKind::LeaveStmt,
+        "leave",
+        errors,
+        "syntax error: expected '.' after LEAVE statement",
     )
 }
 
@@ -4863,6 +4956,39 @@ END-OF-PAGE.\nWRITE 'e'.",
     }
 
     #[test]
+    fn parses_select_projection_case_expression() {
+        let parsed = crate::parse(
+            "SELECT col_a,\n\
+                    CASE\n\
+                      WHEN col_b = 'X' THEN '1'\n\
+                      WHEN col_b = 'Y' THEN '2'\n\
+                      ELSE '0'\n\
+                    END AS priority\n\
+               FROM ztab\n\
+               INTO TABLE @DATA(lt_rows).",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::SelectStmt),
+            1
+        );
+    }
+
+    #[test]
+    fn parses_leave_list_processing_stmt() {
+        let parsed = crate::parse("LEAVE LIST-PROCESSING.");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::LeaveStmt),
+            1
+        );
+    }
+
+    #[test]
     fn parses_concatenate_stmt() {
         let parsed =
             crate::parse("CONCATENATE 'Document' mv_odlv INTO lv_delivery_msg SEPARATED BY ': '.");
@@ -5666,6 +5792,20 @@ END-OF-PAGE.\nWRITE 'e'.",
     #[test]
     fn parses_message_stmt_dynamic_type() {
         let parsed = crate::parse("METHOD m.\n  MESSAGE lv_result TYPE 'E'.\nENDMETHOD.");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::MessageStmt),
+            1
+        );
+    }
+
+    #[test]
+    fn parses_message_stmt_compact_class_with_literal_and_display_like() {
+        let parsed = crate::parse(
+            "METHOD m.\n  MESSAGE s398(00) WITH 'Previous job is still processing' DISPLAY LIKE 'E'.\nENDMETHOD.",
+        );
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
         assert_eq!(
             parsed
