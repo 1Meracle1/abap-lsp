@@ -661,6 +661,25 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
                     let name = lowered;
                     if open_sql_predicate {
                         let next_text = tokens.get(idx + 1).map(|next| next.text.as_ref());
+                        if matches!(next_text, Some("-" | "->"))
+                            && self
+                                .ctx
+                                .lookup_symbol_in_scope_chain(
+                                    scope,
+                                    Namespace::Value,
+                                    name.as_ref(),
+                                )
+                                .is_some()
+                        {
+                            let expr_end = self.sql_host_expr_end_syntax_tokens(tokens, idx);
+                            self.ctx.collect_token_expression_refs_infos(
+                                &tokens[idx..expr_end],
+                                scope,
+                                true,
+                            );
+                            idx = expr_end.max(idx + 1);
+                            continue;
+                        }
                         if !matches!(next_text, Some("~" | "-" | "->" | "=>"))
                             && self
                                 .ctx

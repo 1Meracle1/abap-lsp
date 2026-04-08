@@ -46,6 +46,7 @@ const STRUCTURAL_SIMPLE_STMT_CLASSIFIERS: &[GuardedSimpleStmtClassifier] = &[
         &["public", "protected", "private"],
         classify_class_section_stmt,
     ),
+    GuardedSimpleStmtClassifier::new(&["type"], classify_type_pools_stmt),
     GuardedSimpleStmtClassifier::new(&["methods", "class"], classify_methods_stmt),
     GuardedSimpleStmtClassifier::new(&[], classify_direct_call_stmt),
 ];
@@ -499,6 +500,23 @@ fn classify_methods_stmt(source: &str, significant: &[&Token]) -> Option<SyntaxK
     method_statement_name_idx(source, significant).map(|_| SyntaxKind::MethodsStmt)
 }
 
+fn classify_type_pools_stmt(source: &str, significant: &[&Token]) -> Option<SyntaxKind> {
+    if significant.len() < 5 {
+        return None;
+    }
+    let first = significant[0];
+    let second = significant[1];
+    let third = significant[2];
+    let fourth = significant[3];
+    let last = *significant.last()?;
+    (token_matches_keyword(source, first, "type")
+        && second.kind == TokenKind::Minus
+        && token_matches_keyword(source, third, "pools")
+        && fourth.kind == TokenKind::Ident
+        && last.kind == TokenKind::Period)
+        .then_some(SyntaxKind::TypePoolsStmt)
+}
+
 fn classify_direct_call_stmt(_source: &str, significant: &[&Token]) -> Option<SyntaxKind> {
     direct_call_statement(significant).then(|| {
         if direct_call_padding_is_valid(significant) {
@@ -893,6 +911,15 @@ ENDCLASS.";
         let root = parsed.file.root();
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::CommitWorkStmt), 1);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::RollbackWorkStmt), 1);
+    }
+
+    #[test]
+    fn classifies_type_pools_statement_specifically() {
+        let parsed = crate::parse("TYPE-POOLS abap.");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::TypePoolsStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::UnparsedStmt), 0);
     }
 
     #[test]

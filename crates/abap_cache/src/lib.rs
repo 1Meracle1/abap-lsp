@@ -5507,6 +5507,35 @@ DELETE lt_trans_del WHERE status_trn IS NOT INITIAL.";
     }
 
     #[test]
+    fn hover_prefers_selector_component_for_open_sql_legacy_host_expr() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS zcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run.
+ENDCLASS.
+
+CLASS zcl_demo IMPLEMENTATION.
+  METHOD run.
+    TYPES: BEGIN OF ty_mat,
+             matid TYPE string,
+           END OF ty_mat.
+    DATA ls_mat TYPE ty_mat.
+    SELECT * FROM demo INTO TABLE @DATA(lt_rows) WHERE mandt = ls_mat-matid.
+  ENDMETHOD.
+ENDCLASS.";
+        let snapshot = store.publish("file:///demo.abap", 1, src);
+        let offset = src.rfind("matid").expect("selector field use") + 1;
+
+        let hovered = snapshot
+            .hovered_component_at(offset)
+            .expect("hovered selector component");
+        assert_eq!(hovered.base_name.as_ref(), "ls_mat");
+        assert_eq!(hovered.field_name.as_ref(), "matid");
+        assert!(snapshot.hovered_sql_name_ref_at(offset).is_none());
+    }
+
+    #[test]
     fn references_include_declaration_and_uses_for_variable_across_documents() {
         let store = DocumentStore::default();
         let main_src = "DATA lv TYPE i.\nlv = 1.";

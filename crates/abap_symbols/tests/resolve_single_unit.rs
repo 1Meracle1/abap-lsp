@@ -103,6 +103,28 @@ ENDFORM.
 }
 
 #[test]
+fn type_pools_statement_is_ignored_for_semantic_analysis() {
+    let src = r#"
+FORM f.
+  TYPE-POOLS abap.
+ENDFORM.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///type_pools.abap", src, &parsed);
+
+    assert!(
+        !unit.references.iter().any(|reference| reference.name.as_ref() == "abap"),
+        "unexpected semantic refs from TYPE-POOLS: {:?}",
+        unit.references
+    );
+    assert!(
+        !unit.diagnostics.iter().any(|diag| diag.message.contains("abap")),
+        "unexpected TYPE-POOLS diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn resolves_form_changing_parameter_in_body() {
     let src = r#"
 FORM some_form CHANGING cv_result TYPE string.
@@ -1120,6 +1142,51 @@ ENDCLASS.
         "expected iv_code_char reference in WHERE, got {:?}",
         unit.references
     );
+}
+
+#[test]
+fn open_sql_where_selector_host_expr_resolves_to_component_not_sql_column() {
+    let src = r#"
+CLASS zcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run.
+ENDCLASS.
+
+CLASS zcl_demo IMPLEMENTATION.
+  METHOD run.
+    TYPES: BEGIN OF ty_mat,
+             matid TYPE string,
+           END OF ty_mat.
+    DATA ls_mat TYPE ty_mat.
+    SELECT * FROM demo INTO TABLE @DATA(lt_rows) WHERE mandt = ls_mat-matid.
+  ENDMETHOD.
+ENDCLASS.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///opensql_where_selector.abap", src, &parsed);
+
+    assert!(
+        !unit.sql_name_refs.iter().any(|reference| {
+            reference.kind == SqlNameRefKind::Column && reference.name.as_ref() == "matid"
+        }),
+        "selector host expression should not be recorded as Open SQL column: {:?}",
+        unit.sql_name_refs
+    );
+    assert!(
+        unit.references.iter().any(|reference| {
+            reference.namespace == Namespace::Value
+                && reference.name.as_ref() == "ls_mat"
+                && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+        }),
+        "expected ls_mat reference in WHERE, got {:?}",
+        unit.references
+    );
+    assert!(unit.field_accesses.iter().any(|access| {
+        access.base_namespace == Namespace::Value
+            && access.base_name.as_ref() == "ls_mat"
+            && access.field_path.len() == 1
+            && access.field_path[0].name.as_ref() == "matid"
+    }));
 }
 
 #[test]

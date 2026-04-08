@@ -161,6 +161,7 @@ impl<'a> Collector<'a> {
             | SyntaxKind::EndAtStmt => self
                 .stmt_lowering()
                 .collect_generic_simple_stmt(node, scope),
+            SyntaxKind::TypePoolsStmt => {}
             SyntaxKind::MethodsStmt => self.stmt_lowering().collect_methods_stmt(node, scope),
             SyntaxKind::AssertStmt | SyntaxKind::CheckStmt => self
                 .stmt_lowering()

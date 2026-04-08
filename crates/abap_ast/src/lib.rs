@@ -113,6 +113,8 @@ pub enum SyntaxKind {
     ReportStmt,
     /// `INCLUDE ... .`
     IncludeStmt,
+    /// Deprecated `TYPE-POOLS ... .`
+    TypePoolsStmt,
     /// `FORM ... . ... ENDFORM.`
     FormDecl,
     /// `TABLES` / `USING` / `CHANGING` parameter section inside a `FORM`.
@@ -333,6 +335,7 @@ impl SyntaxKind {
             Self::MethodsStmt => "MethodsStmt",
             Self::ReportStmt => "ReportStmt",
             Self::IncludeStmt => "IncludeStmt",
+            Self::TypePoolsStmt => "TypePoolsStmt",
             Self::FormDecl => "FormDecl",
             Self::FormParamSection => "FormParamSection",
             Self::ModuleDecl => "ModuleDecl",
