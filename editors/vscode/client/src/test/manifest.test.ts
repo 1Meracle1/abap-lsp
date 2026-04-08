@@ -119,6 +119,73 @@ adt_uri = "/sap/bc/adt/oo/classes/zcl_keep"
 		assert.ok(!text.includes('adt_uri = "/sap/bc/adt/oo/classes/zcl_concurrent_0"[[unit]]'));
 		assert.ok(!text.includes('adt_uri = "/sap/bc/adt/oo/classes/zcl_concurrent_0"[[unit.member]]'));
 	});
+
+	test("Appends multiple local-only units without adt_uri collisions", async () => {
+		const workspaceFolder = await createTempWorkspaceFolder("local-only-units");
+
+		await ensureManifestUnit(workspaceFolder, {
+			name: "ZLOCAL_REPORT",
+			kind: "report",
+			rootFile: "src/ZLOCAL_REPORT.abap",
+			role: "root",
+			objectName: "ZLOCAL_REPORT",
+		});
+		await ensureManifestUnit(workspaceFolder, {
+			name: "ZLOCAL_INCLUDE",
+			kind: "include",
+			rootFile: "src/ZLOCAL_INCLUDE.abap",
+			role: "root",
+			objectName: "ZLOCAL_INCLUDE",
+		});
+
+		const text = await fs.promises.readFile(workspaceManifestPath(workspaceFolder), "utf8");
+		assert.strictEqual((text.match(/^\[\[unit\]\]$/gm) ?? []).length, 2);
+		assert.ok(text.includes('name = "ZLOCAL_REPORT"'));
+		assert.ok(text.includes('name = "ZLOCAL_INCLUDE"'));
+		assert.ok(!text.includes('adt_uri = ""'));
+	});
+
+	test("Retargets a local-only unit by root file", async () => {
+		const workspaceFolder = await createTempWorkspaceFolder("retarget-local-only-unit");
+		const manifestPath = workspaceManifestPath(workspaceFolder);
+		await fs.promises.writeFile(
+			manifestPath,
+			`version = 1
+connection = "default"
+
+[resolution]
+dependency_mode = "local-first"
+cache_dir = ".abapls/cache"
+unknown_symbol_mode = "log"
+remote_request_parallelism = 4
+remote_requests_per_second = 8
+
+[[unit]]
+name = "ZLOCAL_REPORT"
+kind = "report"
+root_file = "src/ZLOCAL_REPORT.abap"
+
+[[unit.member]]
+role = "root"
+file = "src/ZLOCAL_REPORT.abap"
+object_name = "ZLOCAL_REPORT"
+`,
+			"utf8",
+		);
+
+		await ensureManifestUnit(workspaceFolder, {
+			name: "ZLOCAL_REPORT_RENAMED",
+			kind: "report",
+			rootFile: "src/ZLOCAL_REPORT.abap",
+			role: "root",
+			objectName: "ZLOCAL_REPORT_RENAMED",
+		});
+
+		const text = await fs.promises.readFile(manifestPath, "utf8");
+		assert.strictEqual((text.match(/^\[\[unit\]\]$/gm) ?? []).length, 1);
+		assert.ok(text.includes('name = "ZLOCAL_REPORT_RENAMED"'));
+		assert.ok(text.includes('object_name = "ZLOCAL_REPORT_RENAMED"'));
+	});
 });
 
 async function createTempWorkspaceFolder(name: string): Promise<vscode.WorkspaceFolder> {

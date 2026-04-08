@@ -12,7 +12,7 @@ export interface ManifestUnitSpec {
 	name: string;
 	kind: string;
 	rootFile: string;
-	adtUri: string;
+	adtUri?: string;
 	role: string;
 	objectName: string;
 }
@@ -212,18 +212,24 @@ remote_requests_per_second = ${defaultRemoteRequestsPerSecond}`;
 }
 
 function renderUnitBlock(unit: ManifestUnitSpec): string {
+	const unitAdtUriLine = unit.adtUri?.trim()
+		? `adt_uri = "${escapeTomlString(unit.adtUri)}"\n`
+		: "";
+	const memberAdtUriLine = unit.adtUri?.trim()
+		? `adt_uri = "${escapeTomlString(unit.adtUri)}"\n`
+		: "";
 	return `
 [[unit]]
 name = "${escapeTomlString(unit.name)}"
 kind = "${escapeTomlString(unit.kind)}"
 root_file = "${escapeTomlString(normalizeRelativePath(unit.rootFile))}"
-adt_uri = "${escapeTomlString(unit.adtUri)}"
+${unitAdtUriLine}
 
 [[unit.member]]
 role = "${escapeTomlString(unit.role)}"
 file = "${escapeTomlString(normalizeRelativePath(unit.rootFile))}"
 object_name = "${escapeTomlString(unit.objectName)}"
-adt_uri = "${escapeTomlString(unit.adtUri)}"
+${memberAdtUriLine}
 `;
 }
 
@@ -243,7 +249,12 @@ function findManifestUnit(text: string, unit: ManifestUnitSpec): ManifestUnitMat
 		const block = text.slice(start, end);
 		const adtUri = readTomlString(block, "adt_uri");
 		const name = readTomlString(block, "name");
-		if (adtUri === unit.adtUri || name === unit.name) {
+		const rootFile = readTomlString(block, "root_file");
+		const normalizedUnitAdtUri = unit.adtUri?.trim();
+		if (normalizedUnitAdtUri && adtUri === normalizedUnitAdtUri) {
+			return { start, end };
+		}
+		if (name === unit.name || rootFile === normalizeRelativePath(unit.rootFile)) {
 			return { start, end };
 		}
 	}
