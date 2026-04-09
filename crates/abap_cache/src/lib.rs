@@ -486,6 +486,7 @@ impl AnalysisSnapshot {
             return Some(target);
         }
         self.definition_target_for_resolved_symbol_at(offset)
+            .or_else(|| self.definition_target_for_bare_where_field_at(offset))
     }
 
     fn reference_search_target_at(&self, offset: usize) -> Option<ReferenceSearchTarget> {
@@ -598,6 +599,10 @@ impl AnalysisSnapshot {
                 decl_range,
             ));
         }
+        None
+    }
+
+    fn definition_target_for_bare_where_field_at(&self, offset: usize) -> Option<DefinitionTarget> {
         let target = self.bare_where_field_target_at(offset)?;
         let decl_range = target.field.decl_range?;
         Some(definition_target_for_range(
@@ -1835,6 +1840,47 @@ fn synthetic_method_scope_definition_target(
     None
 }
 
+fn synthetic_loop_where_definition_target(
+    snapshot: &AnalysisSnapshot,
+    unit: &UnitAnalysis,
+    symbol: &SymbolData,
+) -> Option<DefinitionTarget> {
+    for context in &unit.loop_where_field_contexts {
+        if context.scope != symbol.scope {
+            continue;
+        }
+        let source_structure = resolve_loop_where_source_structure_with_scope_index(
+            snapshot,
+            snapshot.scope_index(),
+            context.scope,
+            &context.source_access,
+        );
+        let target_structure = context.target_access.as_ref().and_then(|access| {
+            resolve_field_access_structure_with_scope_index(
+                snapshot,
+                snapshot.scope_index(),
+                access,
+            )
+        });
+        for (fields_unit, structure_id) in source_structure.into_iter().chain(target_structure) {
+            let Some(field) = fields_unit
+                .semantic()
+                .decls()
+                .structure_field_info(structure_id, symbol.name.as_ref())
+            else {
+                continue;
+            };
+            if let Some(range) = field.decl_range {
+                return Some(definition_target_for_range(
+                    &snapshot.project.units[field.decl_unit.as_usize()],
+                    range,
+                ));
+            }
+        }
+    }
+    None
+}
+
 fn definition_target_for_resolution(
     snapshot: &AnalysisSnapshot,
     resolution: Resolution,
@@ -1844,6 +1890,9 @@ fn definition_target_for_resolution(
             let unit = &snapshot.project.units[handle.unit.as_usize()];
             let symbol = unit.symbol(handle.symbol);
             if let Some(target) = synthetic_method_scope_definition_target(snapshot, unit, symbol) {
+                return Some(target);
+            }
+            if let Some(target) = synthetic_loop_where_definition_target(snapshot, unit, symbol) {
                 return Some(target);
             }
             Some(definition_target_for_symbol(unit, symbol))
@@ -2219,6 +2268,74 @@ fn resolve_field_access_structure_with_scope_index<'a>(
                     scope_index,
                     resolved_unit,
                     access.scope,
+                    resolved_symbol_id,
+                );
+            }
+            return match field.shape {
+                StructureFieldShape::Structured { structure } => Some((current_unit, structure)),
+                StructureFieldShape::Scalar => None,
+            };
+        }
+        current_structure = match field.shape {
+            StructureFieldShape::Structured { structure } => structure,
+            StructureFieldShape::Scalar => return None,
+        };
+    }
+    Some((current_unit, current_structure))
+}
+
+fn resolve_loop_where_source_structure_with_scope_index<'a>(
+    snapshot: &'a AnalysisSnapshot,
+    scope_index: &ScopeIndex,
+    loop_scope: ScopeId,
+    source_access: &abap_symbols::FieldAccess,
+) -> Option<(&'a UnitAnalysis, StructureId)> {
+    if source_access.base_namespace != Namespace::Value {
+        return None;
+    }
+    let (current_unit, base_symbol_id) = resolve_symbol_from_context_with_scope_index(
+        snapshot,
+        scope_index,
+        source_access.scope,
+        Namespace::Value,
+        &source_access.base_name,
+        false,
+    )?;
+    let (current_unit, mut current_structure) = resolve_symbol_structure_with_scope_index(
+        snapshot,
+        scope_index,
+        current_unit,
+        loop_scope,
+        base_symbol_id,
+    )?;
+    if source_access.field_path.is_empty() {
+        return Some((current_unit, current_structure));
+    }
+
+    for (idx, segment) in source_access.field_path.iter().enumerate() {
+        if segment.is_deref() {
+            return None;
+        }
+        let field = current_unit
+            .semantic()
+            .decls()
+            .structure_field_info(current_structure, segment.name.as_ref())?;
+        if idx + 1 == source_access.field_path.len() {
+            if let Some(type_ref) = field.type_ref.as_ref() {
+                let (resolved_unit, resolved_symbol_id) =
+                    resolve_symbol_from_context_with_scope_index(
+                        snapshot,
+                        scope_index,
+                        loop_scope,
+                        type_ref.namespace,
+                        &type_ref.base_name,
+                        type_ref.namespace == Namespace::Value,
+                    )?;
+                return resolve_symbol_structure_with_scope_index(
+                    snapshot,
+                    scope_index,
+                    resolved_unit,
+                    loop_scope,
                     resolved_symbol_id,
                 );
             }
@@ -5127,6 +5244,72 @@ ls_encode_decode-enc_type = 'x'.";
             .hovered_component_at(direct_offset)
             .expect("hovered direct included field");
         assert_eq!(direct_hover.field_name.as_ref(), "enc_type");
+    }
+
+    #[test]
+    fn definition_at_returns_ddic_field_declaration_for_value_for_where_bare_field() {
+        let store = DocumentStore::default();
+        let obj_ids_xml = r#"
+<abapsource:elementInfo adtcore:name="/sttp/s_obj_ids"
+    xmlns:abapsource="http://www.sap.com/adt/abapsource"
+    xmlns:adtcore="http://www.sap.com/adt/core">
+  <abapsource:elementInfo adtcore:type="TABL/DTF" adtcore:name="objid">
+    <abapsource:properties>
+      <abapsource:entry abapsource:key="ddicDataElement">/sttp/e_objid</abapsource:entry>
+      <abapsource:entry abapsource:key="ddicDataType">char</abapsource:entry>
+    </abapsource:properties>
+  </abapsource:elementInfo>
+</abapsource:elementInfo>
+"#;
+        let main_src = "\
+DATA lv_parent TYPE string.
+DATA mt_obj_ids_native TYPE STANDARD TABLE OF /sttp/s_obj_ids WITH EMPTY KEY.
+
+DATA(lt_filtered) = VALUE #(
+  FOR ls_obj IN mt_obj_ids_native
+  WHERE ( objid <> lv_parent )
+  ( ls_obj-objid ) ).
+";
+
+        let snapshots = store.replace_all(vec![
+            DocumentInput {
+                uri: Arc::from("file:///deps/%2FSTTP%2FS_OBJ_IDS.xml"),
+                version: 1,
+                text: Arc::from(
+                    ddic_xml_to_abap_source("/STTP/S_OBJ_IDS", "ddic-structure", obj_ids_xml)
+                        .expect("s_obj_ids"),
+                ),
+                is_dependency: true,
+                object_name: None,
+            },
+            DocumentInput {
+                uri: Arc::from("file:///main.abap"),
+                version: 1,
+                text: Arc::from(main_src),
+                is_dependency: false,
+                object_name: None,
+            },
+        ]);
+        let snapshot = snapshots.get("file:///main.abap").expect("main snapshot");
+        let offset = main_src.find("objid <>").expect("bare objid use") + 1;
+
+        let definition = snapshot.definition_at(offset).expect("definition target");
+        assert_eq!(
+            definition.uri.as_ref(),
+            "file:///deps/%2FSTTP%2FS_OBJ_IDS.xml"
+        );
+
+        let dep_src = snapshots
+            .get("file:///deps/%2FSTTP%2FS_OBJ_IDS.xml")
+            .expect("dependency snapshot")
+            .text
+            .as_ref();
+        assert_target_slice(
+            &definition,
+            "file:///deps/%2FSTTP%2FS_OBJ_IDS.xml",
+            dep_src,
+            "objid",
+        );
     }
 
     #[test]

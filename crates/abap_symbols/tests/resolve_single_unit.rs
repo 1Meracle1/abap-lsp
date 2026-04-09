@@ -4590,6 +4590,104 @@ lt_sequen_buff = VALUE #( BASE lt_sequen_buff
 }
 
 #[test]
+fn resolves_value_for_where_clause_bindings() {
+    let src = r#"
+TYPES: BEGIN OF ty_row,
+         objid TYPE string,
+       END OF ty_row.
+
+DATA lv_parent TYPE string.
+DATA mt_obj_ids_native TYPE STANDARD TABLE OF ty_row WITH EMPTY KEY.
+
+DATA(lt_filtered) = VALUE #(
+  FOR ls_obj IN mt_obj_ids_native
+  WHERE ( objid <> lv_parent )
+  ( ls_obj-objid ) ).
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///value_for_where.abap", src, &parsed);
+
+    for name in ["mt_obj_ids_native", "objid", "lv_parent", "ls_obj"] {
+        assert!(
+            unit.references.iter().any(|reference| {
+                reference.namespace == Namespace::Value
+                    && reference.kind == ReferenceKind::Identifier
+                    && reference.name.as_ref() == name
+                    && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+            }),
+            "expected resolved VALUE WHERE reference for `{name}`, refs={:?} diagnostics={:?}",
+            unit.references,
+            unit.diagnostics
+        );
+    }
+
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference
+                && (diag.message.contains("objid") || diag.message.contains("lv_parent"))
+        }),
+        "unexpected VALUE WHERE diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn resolves_implicit_method_named_arguments_inside_value_for_where_body() {
+    let src = r#"
+CLASS zcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS decode_objid_gs1_rs
+      IMPORTING iv_objid TYPE string
+      RETURNING VALUE(rv_gs1) TYPE string.
+    METHODS exec.
+ENDCLASS.
+
+CLASS zcl_demo IMPLEMENTATION.
+  METHOD decode_objid_gs1_rs.
+    rv_gs1 = iv_objid.
+  ENDMETHOD.
+
+  METHOD exec.
+    TYPES: BEGIN OF ty_row,
+             objid TYPE string,
+           END OF ty_row.
+    DATA lv_parent TYPE string.
+    DATA mt_obj_ids_native TYPE STANDARD TABLE OF ty_row WITH EMPTY KEY.
+
+    DATA(lt_filtered) = VALUE #(
+      FOR ls_obj IN mt_obj_ids_native
+      WHERE ( objid <> lv_parent )
+      ( decode_objid_gs1_rs( iv_objid = ls_obj-objid ) ) ).
+  ENDMETHOD.
+ENDCLASS.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///value_for_where_implicit_method.abap", src, &parsed);
+
+    assert!(
+        unit.named_arguments.iter().any(|access| {
+            access.name.as_ref() == "iv_objid"
+                && matches!(
+                    access.target,
+                    abap_symbols::NamedArgumentTarget::ImplicitMethod { ref method_name }
+                        if method_name.as_ref() == "decode_objid_gs1_rs"
+                )
+        }),
+        "expected iv_objid named argument access, named_args={:?} diagnostics={:?}",
+        unit.named_arguments,
+        unit.diagnostics
+    );
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference
+                && (diag.message.contains("iv_objid") || diag.message.contains("objid"))
+        }),
+        "unexpected VALUE WHERE implicit-method diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn infers_inline_assignment_target_table_shape_from_value_base_constructor() {
     let src = r#"
 TYPES: BEGIN OF ty_row,
@@ -5672,7 +5770,11 @@ CLASS zcl_demo IMPLEMENTATION.
 ENDCLASS.
 "#;
     let parsed = parse(src);
-    let unit = analyze_unit("file:///implicit_method_call_inline_importing.abap", src, &parsed);
+    let unit = analyze_unit(
+        "file:///implicit_method_call_inline_importing.abap",
+        src,
+        &parsed,
+    );
 
     for (name, type_name) in [
         ("lv_seq_err", "abap_bool"),
@@ -7327,7 +7429,11 @@ DATA lt_encode_decode TYPE ty_encode_decode_tab.\n\
 DATA rv_gs1 TYPE string.\n\
 rv_gs1 = VALUE #( lt_encode_decode[ 1 ]-code_char+2 OPTIONAL ).";
     let parsed = parse(src);
-    let unit = analyze_unit("file:///value_optional_substring_table_expr.abap", src, &parsed);
+    let unit = analyze_unit(
+        "file:///value_optional_substring_table_expr.abap",
+        src,
+        &parsed,
+    );
 
     assert!(
         unit.field_accesses.iter().any(|access| {

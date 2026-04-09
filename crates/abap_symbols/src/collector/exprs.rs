@@ -968,6 +968,7 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
 
         let source_start = start + 3;
         let source_end = self.value_for_source_end(tokens, source_start);
+        let source_access = self.value_access_from_infos(&tokens[source_start..source_end], scope);
         self.ctx.collect_token_expression_refs_infos(
             &tokens[source_start..source_end],
             scope,
@@ -993,7 +994,59 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
             None,
             None,
         );
-        self.collect_value_constructor_tokens(&tokens[source_end..], child_scope);
+        let mut cursor = source_end;
+        if tokens
+            .get(cursor)
+            .is_some_and(|token| token.text.eq_ignore_ascii_case("WHERE"))
+        {
+            let condition_end = self.value_for_where_condition_end(tokens, cursor + 1);
+            if condition_end > cursor + 1
+                && let Some(source_access) = source_access
+            {
+                self.ctx
+                    .push_loop_where_field_context(crate::def_map::LoopWhereFieldContext {
+                        scope: child_scope,
+                        range: tokens[cursor].range.start..tokens[condition_end - 1].range.end,
+                        source_access,
+                        target_access: Some(FieldAccess {
+                            scope: child_scope,
+                            base_namespace: Namespace::Value,
+                            base_name: Arc::<str>::from(name_tok.text.to_ascii_lowercase()),
+                            field_path: Vec::new(),
+                            in_type_position: false,
+                        }),
+                    });
+            }
+            self.collect_reduce_where_condition_tokens(
+                &tokens[cursor + 1..condition_end],
+                child_scope,
+            );
+            cursor = condition_end;
+        }
+        self.collect_value_constructor_tokens(&tokens[cursor..], child_scope);
+    }
+
+    fn value_for_where_condition_end(
+        &self,
+        tokens: &[super::SyntaxTokenInfo],
+        start: usize,
+    ) -> usize {
+        let mut idx = start;
+        while tokens
+            .get(idx)
+            .is_some_and(|token| self.ctx.syntax_token_is_comment(token))
+        {
+            idx += 1;
+        }
+        if tokens.get(idx).map(|token| token.text.as_ref()) == Some("(")
+            && let Some(end_idx) = self
+                .ctx
+                .find_matching_group_end_infos(tokens, idx, "(", ")")
+        {
+            return end_idx + 1;
+        }
+        self.find_top_level_keyword(tokens, start, &["LET", "FOR"])
+            .unwrap_or(tokens.len())
     }
 
     fn collect_conditional_for_clause(
@@ -1996,22 +2049,17 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                             range,
                         );
                         if let Some(arg_list) = arg_list {
-                            let target = if crate::builtins::builtin_routine_spec(name.as_ref())
-                                .is_some()
-                            {
-                                NamedArgumentTarget::Routine {
-                                    routine_name: Arc::clone(&name),
-                                }
-                            } else {
-                                NamedArgumentTarget::ImplicitMethod {
-                                    method_name: Arc::clone(&name),
-                                }
-                            };
-                            self.collect_call_argument_list(
-                                arg_list,
-                                scope,
-                                target,
-                            );
+                            let target =
+                                if crate::builtins::builtin_routine_spec(name.as_ref()).is_some() {
+                                    NamedArgumentTarget::Routine {
+                                        routine_name: Arc::clone(&name),
+                                    }
+                                } else {
+                                    NamedArgumentTarget::ImplicitMethod {
+                                        method_name: Arc::clone(&name),
+                                    }
+                                };
+                            self.collect_call_argument_list(arg_list, scope, target);
                         }
                     }
                 }
