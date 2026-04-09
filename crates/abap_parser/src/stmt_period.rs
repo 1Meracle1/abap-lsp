@@ -22,15 +22,21 @@ pub(crate) fn token_begins_line(source: &str, tok: &Token) -> bool {
 
 #[inline]
 fn is_inline_data_start(tokens: &[Token], idx: usize) -> bool {
-    tokens.get(idx).is_some_and(|tok| tok.kind == TokenKind::Ident)
+    tokens
+        .get(idx)
+        .is_some_and(|tok| tok.kind == TokenKind::Ident)
         && tokens.get(idx + 1).map(|tok| tok.kind) == Some(TokenKind::LParen)
 }
 
 #[inline]
 fn is_inline_field_symbol_start(tokens: &[Token], idx: usize) -> bool {
-    tokens.get(idx).is_some_and(|tok| tok.kind == TokenKind::Ident)
+    tokens
+        .get(idx)
+        .is_some_and(|tok| tok.kind == TokenKind::Ident)
         && tokens.get(idx + 1).map(|tok| tok.kind) == Some(TokenKind::Minus)
-        && tokens.get(idx + 2).is_some_and(|tok| tok.kind == TokenKind::Ident)
+        && tokens
+            .get(idx + 2)
+            .is_some_and(|tok| tok.kind == TokenKind::Ident)
         && tokens.get(idx + 3).map(|tok| tok.kind) == Some(TokenKind::LParen)
 }
 

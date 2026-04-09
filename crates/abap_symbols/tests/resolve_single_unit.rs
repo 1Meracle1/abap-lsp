@@ -103,8 +103,7 @@ ENDFORM.
         .references
         .iter()
         .filter(|reference| {
-            reference.name.as_ref() == "lc_rs_agg_op"
-                && reference.kind == ReferenceKind::Identifier
+            reference.name.as_ref() == "lc_rs_agg_op" && reference.kind == ReferenceKind::Identifier
         })
         .collect();
     assert_eq!(
@@ -1282,6 +1281,44 @@ WRITE lt_flights.
         reference.namespace == Namespace::Value
             && reference.name.as_ref() == "lv_carrid"
             && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+    }));
+}
+
+#[test]
+fn collects_sql_semantics_for_insert_dbtab_from_table() {
+    let src = r#"
+DATA lt_sequen_buff TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+
+INSERT zattp_sequen_bf FROM TABLE lt_sequen_buff ACCEPTING DUPLICATE KEYS.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///insert_dbtab_from_table.abap", src, &parsed);
+
+    assert_eq!(unit.sql_queries.len(), 1, "{:?}", unit.sql_queries);
+    assert_eq!(unit.sql_sources.len(), 1, "{:?}", unit.sql_sources);
+    assert_eq!(unit.sql_sources[0].name.as_ref(), "zattp_sequen_bf");
+    assert!(unit.sql_name_refs.iter().any(|reference| {
+        reference.kind == SqlNameRefKind::Source && reference.name.as_ref() == "zattp_sequen_bf"
+    }));
+
+    let table_refs: Vec<_> = unit
+        .references
+        .iter()
+        .filter(|reference| {
+            reference.namespace == Namespace::Value && reference.name.as_ref() == "lt_sequen_buff"
+        })
+        .collect();
+    assert_eq!(table_refs.len(), 1, "{:?}", unit.references);
+    assert!(matches!(
+        table_refs[0].resolution,
+        Some(Resolution::Symbol(_))
+    ));
+    assert!(!unit.diagnostics.iter().any(|diag| {
+        diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains("zattp_sequen_bf")
+    }));
+    assert!(unit.diagnostics.iter().any(|diag| {
+        diag.kind == DiagnosticKind::UnverifiedOpenSqlSource
+            && diag.message.contains("zattp_sequen_bf")
     }));
 }
 
@@ -4769,8 +4806,7 @@ DATA(isodate) = COND string(
 
     assert!(
         unit.symbols.iter().any(|symbol| {
-            symbol.kind == abap_symbols::SymbolKind::FieldSymbol
-                && symbol.name.as_ref() == "<date>"
+            symbol.kind == abap_symbols::SymbolKind::FieldSymbol && symbol.name.as_ref() == "<date>"
         }),
         "expected LET field symbol declaration, symbols={:?}",
         unit.symbols
@@ -4804,7 +4840,9 @@ DATA(lv_text) = COND string(
     }
 
     assert!(
-        unit.symbols.iter().any(|symbol| symbol.name.as_ref() == "noon"),
+        unit.symbols
+            .iter()
+            .any(|symbol| symbol.name.as_ref() == "noon"),
         "expected LET symbol declaration, symbols={:?}",
         unit.symbols
     );
@@ -4945,7 +4983,10 @@ DATA(lt_codes) = VALUE #( is_response-data[ 1 ]-kodovi OPTIONAL ).
     );
 
     assert!(
-        !unit.diagnostics.iter().any(|diag| diag.message.contains("kodovi")),
+        !unit
+            .diagnostics
+            .iter()
+            .any(|diag| diag.message.contains("kodovi")),
         "unexpected dependent diagnostic for `kodovi`, diagnostics={:?}",
         unit.diagnostics
     );
@@ -5048,10 +5089,7 @@ DATA(lt_text) = VALUE stringtab(
         .iter()
         .find(|symbol| symbol.name.as_ref() == "it")
         .expect("LET variable");
-    let declared_type = it_symbol
-        .declared_type
-        .as_ref()
-        .expect("LET inferred type");
+    let declared_type = it_symbol.declared_type.as_ref().expect("LET inferred type");
     assert_eq!(declared_type.namespace, Namespace::Type);
     assert_eq!(declared_type.base_name.as_ref(), "string");
     assert!(!declared_type.is_ref);
@@ -6480,22 +6518,30 @@ lv_out = round( val = lv_value dec = lv_dec mode = lv_mode ).\n\
     let parsed = parse(src);
     let unit = analyze_unit("file:///builtin_round.abap", src, &parsed);
 
-    assert!(unit.references.iter().any(|reference| {
-        reference.kind == ReferenceKind::RoutineCall
-            && reference.namespace == Namespace::Routine
-            && reference.name.as_ref() == "round"
-            && matches!(reference.resolution, Some(Resolution::BuiltinRoutine))
-    }), "{:#?}", unit.references);
+    assert!(
+        unit.references.iter().any(|reference| {
+            reference.kind == ReferenceKind::RoutineCall
+                && reference.namespace == Namespace::Routine
+                && reference.name.as_ref() == "round"
+                && matches!(reference.resolution, Some(Resolution::BuiltinRoutine))
+        }),
+        "{:#?}",
+        unit.references
+    );
     for name in ["lv_value", "lv_dec", "lv_mode"] {
-        assert!(unit.references.iter().any(|reference| {
-            reference.namespace == Namespace::Value
-                && reference.name.as_ref() == name
-                && matches!(reference.resolution, Some(Resolution::Symbol(_)))
-        }), "missing reference for `{name}`: refs={:?} diagnostics={:?}", unit.references, unit.diagnostics);
+        assert!(
+            unit.references.iter().any(|reference| {
+                reference.namespace == Namespace::Value
+                    && reference.name.as_ref() == name
+                    && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+            }),
+            "missing reference for `{name}`: refs={:?} diagnostics={:?}",
+            unit.references,
+            unit.diagnostics
+        );
     }
     assert!(!unit.diagnostics.iter().any(|diag| {
-        diag.kind == DiagnosticKind::InvalidBuiltinNamedArgument
-            && diag.message.contains("round")
+        diag.kind == DiagnosticKind::InvalidBuiltinNamedArgument && diag.message.contains("round")
     }));
     assert!(!unit.diagnostics.iter().any(|diag| {
         diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains("round")
@@ -6512,12 +6558,16 @@ ENDIF.\n\
     let parsed = parse(src);
     let unit = analyze_unit("file:///builtin_line_exists.abap", src, &parsed);
 
-    assert!(unit.references.iter().any(|reference| {
-        reference.kind == ReferenceKind::RoutineCall
-            && reference.namespace == Namespace::Routine
-            && reference.name.as_ref() == "line_exists"
-            && matches!(reference.resolution, Some(Resolution::BuiltinRoutine))
-    }), "{:#?}", unit.references);
+    assert!(
+        unit.references.iter().any(|reference| {
+            reference.kind == ReferenceKind::RoutineCall
+                && reference.namespace == Namespace::Routine
+                && reference.name.as_ref() == "line_exists"
+                && matches!(reference.resolution, Some(Resolution::BuiltinRoutine))
+        }),
+        "{:#?}",
+        unit.references
+    );
     assert!(!unit.diagnostics.iter().any(|diag| {
         diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains("line_exists")
     }));
@@ -6545,9 +6595,11 @@ ENDIF.\n\
         })
         .collect();
     assert_eq!(line_exists_refs.len(), 1, "{:#?}", unit.references);
-    assert!(line_exists_refs
-        .iter()
-        .all(|reference| matches!(reference.resolution, Some(Resolution::BuiltinRoutine))));
+    assert!(
+        line_exists_refs
+            .iter()
+            .all(|reference| matches!(reference.resolution, Some(Resolution::BuiltinRoutine)))
+    );
 }
 
 #[test]
@@ -6576,9 +6628,11 @@ ENDIF.\n\
         })
         .collect();
     assert_eq!(line_exists_refs.len(), 2, "{:#?}", unit.references);
-    assert!(line_exists_refs
-        .iter()
-        .all(|reference| matches!(reference.resolution, Some(Resolution::BuiltinRoutine))));
+    assert!(
+        line_exists_refs
+            .iter()
+            .all(|reference| matches!(reference.resolution, Some(Resolution::BuiltinRoutine)))
+    );
 }
 
 #[test]

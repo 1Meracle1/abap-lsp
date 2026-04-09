@@ -80,6 +80,52 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
         }
     }
 
+    pub(super) fn collect_insert_db_table_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        let query_id = self.ctx.sql_queries_len();
+        let range = self.ctx.file().range(node);
+        self.ctx.emit_sql_query(SqlQueryData {
+            id: query_id,
+            scope,
+            range: range.clone(),
+            projection_clause: None,
+            from_clause: Some(range.clone()),
+            into_clause: None,
+            where_clause: None,
+            group_by_clause: None,
+            having_clause: None,
+            order_by_clause: None,
+            for_all_entries_clause: None,
+            up_to_clause: None,
+            is_single: false,
+            is_distinct: false,
+            has_endselect: false,
+            has_dynamic_where: false,
+        });
+
+        let children: Vec<_> = self
+            .ctx
+            .syntax(node)
+            .children()
+            .map(|child| (child.id(), child.kind()))
+            .collect();
+        for (child, kind_syntax) in children {
+            match kind_syntax {
+                SyntaxKind::SqlDataSource => {
+                    self.collect_sql_data_source(query_id, child, scope, SqlSourceKind::From, None);
+                }
+                SyntaxKind::ExprIdent
+                | SyntaxKind::SelectorExpr
+                | SyntaxKind::CallExpr
+                | SyntaxKind::BinaryExpr
+                | SyntaxKind::UnaryExpr
+                | SyntaxKind::ParenExpr
+                | SyntaxKind::ConstructorExpr
+                | SyntaxKind::TemplateExpr => self.ctx.expr_lowering().collect_expr(child, scope),
+                _ => {}
+            }
+        }
+    }
+
     pub(super) fn collect_select_query(
         &mut self,
         node: NodeId,

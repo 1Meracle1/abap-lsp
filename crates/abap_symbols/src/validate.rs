@@ -657,7 +657,11 @@ fn loop_where_scope_symbol_specs(
     for context in &unit.loop_where_field_contexts {
         let mut push_fields =
             |scope: ScopeId, fields_unit: &crate::UnitAnalysis, structure_id: StructureId| {
-                for field in fields_unit.semantic().decls().structure_field_infos(structure_id) {
+                for field in fields_unit
+                    .semantic()
+                    .decls()
+                    .structure_field_infos(structure_id)
+                {
                     let name = Arc::clone(&field.name);
                     if !seen.insert((scope.0, Arc::clone(&name))) {
                         continue;
@@ -1204,7 +1208,8 @@ fn reference_depends_on_unresolved_field_access_base(
     }
 
     unit.field_accesses.iter().any(|access| {
-        let Some(base_symbol_id) = resolve_field_access_base_symbol(unit, scope_index, access) else {
+        let Some(base_symbol_id) = resolve_field_access_base_symbol(unit, scope_index, access)
+        else {
             return false;
         };
         let mut structure_id = unit.symbol(base_symbol_id).structure;
@@ -1263,13 +1268,8 @@ fn reference_depends_on_unresolved_field_access_base(
             declared_type = field.type_ref.clone();
         }
 
-        let (structure_id, _) = normalize_field_metadata(
-            unit,
-            scope_index,
-            access.scope,
-            structure_id,
-            declared_type,
-        );
+        let (structure_id, _) =
+            normalize_field_metadata(unit, scope_index, access.scope, structure_id, declared_type);
         structure_id.is_none()
     })
 }

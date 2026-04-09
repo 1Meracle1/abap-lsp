@@ -981,13 +981,14 @@ impl<'a, 'b> Parser<'a, 'b> {
             } else if ident_eq(self.source, token, "ELSE") {
                 self.parse_cond_else_clause(idx, clause_end)
             } else if ident_eq(self.source, token, "LET") {
-                self.build_raw_let_expr(&self.tokens[idx..clause_end]).map(|value| {
-                    self.b.branch(
-                        SyntaxKind::CallPositionalArg,
-                        self.b.span(value).start..self.b.span(value).end,
-                        &[value],
-                    )
-                })
+                self.build_raw_let_expr(&self.tokens[idx..clause_end])
+                    .map(|value| {
+                        self.b.branch(
+                            SyntaxKind::CallPositionalArg,
+                            self.b.span(value).start..self.b.span(value).end,
+                            &[value],
+                        )
+                    })
             } else {
                 self.build_raw_call_positional_arg(&self.tokens[idx..clause_end])
             };
@@ -1755,8 +1756,7 @@ mod tests {
 
     #[test]
     fn line_exists_with_table_expression_parses_as_call_expr() {
-        let parsed =
-            crate::parse("IF line_exists( lt_rep_evt[ table_line = 'X' ] ).\nENDIF.");
+        let parsed = crate::parse("IF line_exists( lt_rep_evt[ table_line = 'X' ] ).\nENDIF.");
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
         let root = parsed.file.root();
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::CallExpr), 1);
@@ -1765,9 +1765,8 @@ mod tests {
 
     #[test]
     fn value_constructor_with_conditional_for_parses() {
-        let parsed = crate::parse(
-            "DATA(lt_text) = VALUE stringtab( FOR n = 1 UNTIL n > 3 ( |{ n }| ) ).",
-        );
+        let parsed =
+            crate::parse("DATA(lt_text) = VALUE stringtab( FOR n = 1 UNTIL n > 3 ( |{ n }| ) ).");
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
         let root = parsed.file.root();
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::ConstructorExpr), 1);
@@ -1844,9 +1843,8 @@ mod tests {
 
     #[test]
     fn reduce_constructor_with_for_in_parses() {
-        let parsed = crate::parse(
-            "DATA(lv_rep) = REDUCE i( INIT x = 0 FOR wa IN lt_rep NEXT x = x + wa ).",
-        );
+        let parsed =
+            crate::parse("DATA(lv_rep) = REDUCE i( INIT x = 0 FOR wa IN lt_rep NEXT x = x + wa ).");
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
         let root = parsed.file.root();
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::ConstructorExpr), 1);

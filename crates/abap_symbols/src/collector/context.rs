@@ -210,7 +210,8 @@ impl<'ctx, 'a> ExprContext<'ctx, 'a> {
         Vec<crate::def_map::FieldAccessSegment>,
         Vec<(usize, usize, bool)>,
     )> {
-        self.collector.consume_selector_access_from_infos(tokens, idx)
+        self.collector
+            .consume_selector_access_from_infos(tokens, idx)
     }
 
     pub(super) fn lookup_symbol_in_scope_chain(
@@ -230,10 +231,7 @@ impl<'ctx, 'a> ExprContext<'ctx, 'a> {
         self.collector.symbol(symbol_id).declared_type.clone()
     }
 
-    pub(super) fn symbol_structure(
-        &self,
-        symbol_id: crate::ids::SymbolId,
-    ) -> Option<StructureId> {
+    pub(super) fn symbol_structure(&self, symbol_id: crate::ids::SymbolId) -> Option<StructureId> {
         self.collector.symbol(symbol_id).structure
     }
 

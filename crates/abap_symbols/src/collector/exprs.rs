@@ -137,7 +137,10 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                     } else if constructor_keyword.as_deref() == Some("reduce") {
                         let tokens = self.ctx.syntax_token_nodes(arg_list);
                         if tokens.len() >= 2 {
-                            self.collect_reduce_constructor_tokens(&tokens[1..tokens.len() - 1], scope);
+                            self.collect_reduce_constructor_tokens(
+                                &tokens[1..tokens.len() - 1],
+                                scope,
+                            );
                         }
                     } else {
                         self.collect_structured_argument_values_from_children(arg_list, scope);
@@ -209,11 +212,16 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
         };
         let arg_list_tokens = self.ctx.syntax_token_nodes(node);
         if arg_list_tokens.len() >= 2
-            && arg_list_tokens[1..arg_list_tokens.len() - 1].iter().any(|token| {
-                token.text.eq_ignore_ascii_case("FOR") || token.text.eq_ignore_ascii_case("LET")
-            })
+            && arg_list_tokens[1..arg_list_tokens.len() - 1]
+                .iter()
+                .any(|token| {
+                    token.text.eq_ignore_ascii_case("FOR") || token.text.eq_ignore_ascii_case("LET")
+                })
         {
-            self.collect_value_constructor_tokens(&arg_list_tokens[1..arg_list_tokens.len() - 1], scope);
+            self.collect_value_constructor_tokens(
+                &arg_list_tokens[1..arg_list_tokens.len() - 1],
+                scope,
+            );
             return;
         }
         let items: Vec<_> = arg_list
@@ -317,7 +325,8 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
         scope: ScopeId,
     ) -> ScopeId {
         let Some(in_idx) = self.find_top_level_keyword(tokens, 1, &["IN"]) else {
-            self.ctx.collect_token_expression_refs_infos(tokens, scope, true);
+            self.ctx
+                .collect_token_expression_refs_infos(tokens, scope, true);
             return scope;
         };
         let Some(last_binding_tok) = tokens.get(in_idx) else {
@@ -386,14 +395,16 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                 continue;
             }
 
-             if token.text.as_ref() == "|" {
+            if token.text.as_ref() == "|" {
                 in_string_template = !in_string_template;
                 idx += 1;
                 continue;
             }
 
             if in_string_template && token.text.as_ref() == "{" {
-                if let Some(end_idx) = self.ctx.find_matching_group_end_infos(tokens, idx, "{", "}")
+                if let Some(end_idx) = self
+                    .ctx
+                    .find_matching_group_end_infos(tokens, idx, "{", "}")
                 {
                     idx = end_idx + 1;
                     continue;
@@ -451,14 +462,17 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                         "{" => ("{", "}"),
                         _ => unreachable!(),
                     };
-                    if let Some(end_idx) =
-                        self.ctx
-                            .find_matching_group_end_infos(tokens, idx, open_text, close_text)
+                    if let Some(end_idx) = self
+                        .ctx
+                        .find_matching_group_end_infos(tokens, idx, open_text, close_text)
                     {
                         if token.text.as_ref() == "("
                             && self.paren_belongs_to_constructor_or_call(tokens, segment_start, idx)
                         {
-                            self.collect_value_token_segment(&tokens[segment_start..=end_idx], scope);
+                            self.collect_value_token_segment(
+                                &tokens[segment_start..=end_idx],
+                                scope,
+                            );
                         } else {
                             self.collect_value_token_segment(&tokens[segment_start..idx], scope);
                             self.collect_value_constructor_tokens(&tokens[idx + 1..end_idx], scope);
@@ -489,7 +503,8 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
             return tokens.len();
         }
 
-        let source_end = self.find_value_lines_of_keyword(tokens, source_start)
+        let source_end = self
+            .find_value_lines_of_keyword(tokens, source_start)
             .unwrap_or_else(|| self.value_lines_of_clause_end(tokens, source_start));
         self.ctx.collect_token_expression_refs_infos(
             &tokens[source_start..source_end],
@@ -544,7 +559,10 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
             return false;
         }
         if tokens.get(paren_idx - 1).is_some_and(|prev| {
-            self.ctx.syntax_token_is_ident_like(prev) && !self.ctx.syntax_tokens_have_space_between(prev, &tokens[paren_idx])
+            self.ctx.syntax_token_is_ident_like(prev)
+                && !self
+                    .ctx
+                    .syntax_tokens_have_space_between(prev, &tokens[paren_idx])
         }) {
             return true;
         }
@@ -634,7 +652,10 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                     true,
                 );
                 let result_tokens = &tokens[then_idx + 1..clause_end];
-                if result_tokens.first().is_some_and(|t| t.text.eq_ignore_ascii_case("LET")) {
+                if result_tokens
+                    .first()
+                    .is_some_and(|t| t.text.eq_ignore_ascii_case("LET"))
+                {
                     self.collect_let_expression(result_tokens, 0, clause_scope);
                 } else {
                     self.ctx
@@ -642,7 +663,10 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                 }
             } else if token.text.eq_ignore_ascii_case("ELSE") {
                 let result_tokens = &tokens[idx + 1..clause_end];
-                if result_tokens.first().is_some_and(|t| t.text.eq_ignore_ascii_case("LET")) {
+                if result_tokens
+                    .first()
+                    .is_some_and(|t| t.text.eq_ignore_ascii_case("LET"))
+                {
                     self.collect_let_expression(result_tokens, 0, clause_scope);
                 } else {
                     self.ctx
@@ -812,11 +836,7 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
         self.find_top_level_keyword(tokens, start, &["FROM", "TO", "USING"])
     }
 
-    fn value_lines_of_clause_end(
-        &self,
-        tokens: &[super::SyntaxTokenInfo],
-        start: usize,
-    ) -> usize {
+    fn value_lines_of_clause_end(&self, tokens: &[super::SyntaxTokenInfo], start: usize) -> usize {
         let mut idx = start;
         while idx < tokens.len() {
             let token = &tokens[idx];
@@ -944,8 +964,11 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
 
         let source_start = start + 3;
         let source_end = self.value_for_source_end(tokens, source_start);
-        self.ctx
-            .collect_token_expression_refs_infos(&tokens[source_start..source_end], scope, true);
+        self.ctx.collect_token_expression_refs_infos(
+            &tokens[source_start..source_end],
+            scope,
+            true,
+        );
 
         let Some(last) = tokens.last() else {
             return;
@@ -1016,8 +1039,11 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
             let Some(next_term_idx) =
                 self.find_top_level_keyword(tokens, cursor + 1, &["UNTIL", "WHILE"])
             else {
-                self.ctx
-                    .collect_token_expression_refs_infos(&tokens[cursor + 1..], child_scope, true);
+                self.ctx.collect_token_expression_refs_infos(
+                    &tokens[cursor + 1..],
+                    child_scope,
+                    true,
+                );
                 return;
             };
             self.ctx.collect_token_expression_refs_infos(
@@ -1057,7 +1083,8 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
             return;
         }
         let Some(init_idx) = self.find_top_level_keyword(tokens, 0, &["INIT"]) else {
-            self.ctx.collect_token_expression_refs_infos(tokens, scope, true);
+            self.ctx
+                .collect_token_expression_refs_infos(tokens, scope, true);
             return;
         };
         let Some(for_idx) = self.find_top_level_keyword(tokens, init_idx + 1, &["FOR"]) else {
@@ -1331,11 +1358,10 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                 if condition_end > cursor + 1
                     && let Some(source_access) = source_access
                 {
-                    self.ctx.push_loop_where_field_context(
-                        crate::def_map::LoopWhereFieldContext {
+                    self.ctx
+                        .push_loop_where_field_context(crate::def_map::LoopWhereFieldContext {
                             scope: child_scope,
-                            range: tokens[cursor].range.start
-                                ..tokens[condition_end - 1].range.end,
+                            range: tokens[cursor].range.start..tokens[condition_end - 1].range.end,
                             source_access,
                             target_access: Some(FieldAccess {
                                 scope: child_scope,
@@ -1344,8 +1370,7 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                                 field_path: Vec::new(),
                                 in_type_position: false,
                             }),
-                        },
-                    );
+                        });
                 }
                 self.collect_reduce_where_condition_tokens(
                     &tokens[cursor + 1..condition_end],
@@ -1411,8 +1436,9 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
         let first_idx = tokens
             .iter()
             .position(|token| !self.ctx.syntax_token_is_comment(token))?;
-        if let Some((next_idx, namespace, base_name, _, field_path, _)) =
-            self.ctx.consume_selector_access_from_infos(tokens, first_idx)
+        if let Some((next_idx, namespace, base_name, _, field_path, _)) = self
+            .ctx
+            .consume_selector_access_from_infos(tokens, first_idx)
             && next_idx == tokens.len()
             && namespace == Namespace::Value
         {
@@ -1426,13 +1452,15 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
         }
 
         let token = &tokens[first_idx];
-        self.ctx.syntax_token_is_ident_like(token).then(|| FieldAccess {
-            scope,
-            base_namespace: Namespace::Value,
-            base_name: Arc::<str>::from(token.text.to_ascii_lowercase()),
-            field_path: Vec::new(),
-            in_type_position: false,
-        })
+        self.ctx
+            .syntax_token_is_ident_like(token)
+            .then(|| FieldAccess {
+                scope,
+                base_namespace: Namespace::Value,
+                base_name: Arc::<str>::from(token.text.to_ascii_lowercase()),
+                field_path: Vec::new(),
+                in_type_position: false,
+            })
     }
 
     fn collect_reduce_where_condition_tokens(
@@ -1461,9 +1489,14 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                         "{" => ("{", "}"),
                         _ => unreachable!(),
                     };
-                    if let Some(end_idx) = self.ctx.find_matching_group_end_infos(tokens, idx, open, close)
+                    if let Some(end_idx) = self
+                        .ctx
+                        .find_matching_group_end_infos(tokens, idx, open, close)
                     {
-                        self.collect_comparison_lhs_identifier_refs(&tokens[idx + 1..end_idx], scope);
+                        self.collect_comparison_lhs_identifier_refs(
+                            &tokens[idx + 1..end_idx],
+                            scope,
+                        );
                         idx = end_idx + 1;
                         continue;
                     }
@@ -1474,13 +1507,28 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
             if self.ctx.syntax_token_is_ident_like(token)
                 && tokens.get(idx + 1).map(|next| next.text.as_ref()) == Some("=")
                 && !matches!(
-                    idx.checked_sub(1).and_then(|prev| tokens.get(prev)).map(|prev| prev.text.as_ref()),
+                    idx.checked_sub(1)
+                        .and_then(|prev| tokens.get(prev))
+                        .map(|prev| prev.text.as_ref()),
                     Some("->" | "=>" | "~" | "-")
                 )
                 && !matches!(
                     token.text.to_ascii_uppercase().as_str(),
-                    "AND" | "OR" | "NOT" | "IS" | "IN" | "LET" | "FOR" | "WHERE" | "UNTIL"
-                        | "WHILE" | "INIT" | "NEXT" | "WHEN" | "THEN" | "ELSE"
+                    "AND"
+                        | "OR"
+                        | "NOT"
+                        | "IS"
+                        | "IN"
+                        | "LET"
+                        | "FOR"
+                        | "WHERE"
+                        | "UNTIL"
+                        | "WHILE"
+                        | "INIT"
+                        | "NEXT"
+                        | "WHEN"
+                        | "THEN"
+                        | "ELSE"
                 )
             {
                 self.ctx.add_reference(

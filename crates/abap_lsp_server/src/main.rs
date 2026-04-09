@@ -1,14 +1,14 @@
+use std::collections::HashSet;
 use std::io::{self, BufRead, BufReader, BufWriter, Write};
 use std::net::{SocketAddr, TcpListener};
-use std::collections::HashSet;
 
 use abap_jsonrpc::{JSON_RPC_VERSION, Response, read_frame, write_frame};
 use abap_lsp::{
     CompletionParams, DEPENDENCY_CACHE_CLEARED, DidChangeTextDocumentParams,
     DidOpenTextDocumentParams, GotoDefinitionParams, HoverParams, REMOTE_DEPENDENCIES_UPDATED,
     RESOLVE_REMOTE_DEPENDENCIES, ReferenceParams, SemanticTokensParams, ServerConfig, ServerState,
-    WORKSPACE_MANIFEST_UPDATED, WorkspaceManifestUpdatedParams, build_remote_dependency_batch_for_workspace,
-    completion, definition,
+    WORKSPACE_MANIFEST_UPDATED, WorkspaceManifestUpdatedParams,
+    build_remote_dependency_batch_for_workspace, completion, definition,
     handle_dependency_cache_cleared, handle_remote_dependencies_updated,
     handle_workspace_manifest_updated, hover, initialize_result, publish_changed_document_mut,
     publish_diagnostics_params, publish_open_document_mut, references, semantic_tokens,

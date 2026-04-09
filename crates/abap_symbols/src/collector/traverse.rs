@@ -110,6 +110,9 @@ impl<'a> Collector<'a> {
             | SyntaxKind::GetReferenceStmt
             | SyntaxKind::GetBitStmt
             | SyntaxKind::SetBitStmt => self.walk_children(node, scope),
+            SyntaxKind::InsertDbTableStmt => self
+                .sql_lowering()
+                .collect_insert_db_table_stmt(node, scope),
             SyntaxKind::DeleteStmt => self.stmt_lowering().collect_delete_stmt(node, scope),
             SyntaxKind::SortStmt => self.control_lowering().collect_sort_stmt(node, scope),
             SyntaxKind::TypeRefSimple => self.decl_lowering().collect_type_ref(node, scope),

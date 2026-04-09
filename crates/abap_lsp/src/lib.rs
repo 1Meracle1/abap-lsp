@@ -645,7 +645,7 @@ fn semantic_diagnostic_severity(kind: DiagnosticKind) -> DiagnosticSeverity {
         DiagnosticKind::DuplicateDeclaration | DiagnosticKind::ShadowedSymbol => {
             DiagnosticSeverity::WARNING
         }
-        DiagnosticKind::UnverifiedOpenSqlSource => DiagnosticSeverity::WARNING,
+        DiagnosticKind::UnverifiedOpenSqlSource => DiagnosticSeverity::ERROR,
         DiagnosticKind::UnresolvedReference
         | DiagnosticKind::UnresolvedInclude
         | DiagnosticKind::IncludeCycle
@@ -746,12 +746,12 @@ pub fn build_lsp_diagnostics_for_workspace(
             continue;
         }
 
-        if severity == DiagnosticSeverity::WARNING
-            && diagnostic
-                .message
-                .contains("DDIC/repository lookup is not connected")
+        if diagnostic
+            .message
+            .contains("DDIC/repository lookup is not connected")
         {
-            let Some(candidate_key) = candidate_key_for_open_sql_source(snapshot, &diagnostic.range)
+            let Some(candidate_key) =
+                candidate_key_for_open_sql_source(snapshot, &diagnostic.range)
             else {
                 continue;
             };
@@ -795,7 +795,6 @@ pub fn build_lsp_diagnostics_for_workspace(
                     name
                 );
             } else {
-                diagnostic.severity = Some(DiagnosticSeverity::WARNING);
                 diagnostic.message = format!(
                     "Type '{}' is not verified against a SAP system (DDIC/repository lookup is not connected)",
                     name
@@ -1224,10 +1223,9 @@ mod tests {
         build_lsp_diagnostics, build_lsp_diagnostics_for_workspace,
         build_remote_dependency_batch_for_workspace, build_remote_dependency_request,
         build_remote_dependency_requests_for_workspace, collect_remote_dependency_candidates,
-        completion, definition,
-        handle_dependency_cache_cleared, handle_remote_dependencies_updated, hover,
-        initialize_result, normalize_lsp_uri, publish_changed_document, publish_open_document,
-        publish_open_document_mut, references,
+        completion, definition, handle_dependency_cache_cleared,
+        handle_remote_dependencies_updated, hover, initialize_result, normalize_lsp_uri,
+        publish_changed_document, publish_open_document, publish_open_document_mut, references,
     };
 
     fn temp_workspace_path(name: &str) -> PathBuf {
@@ -2420,8 +2418,9 @@ unknown_symbol_mode = "remote"
                     uri: Uri::from_str(&format!("{workspace_uri}/second.abap")).expect("uri"),
                     language_id: "abap".to_string(),
                     version: 1,
-                    text: "DATA lo_second TYPE REF TO zcl_second.\nlo_second = zcl_second=>create( )."
-                        .to_string(),
+                    text:
+                        "DATA lo_second TYPE REF TO zcl_second.\nlo_second = zcl_second=>create( )."
+                            .to_string(),
                 },
             },
         );
@@ -2860,7 +2859,7 @@ unknown_symbol_mode = "remote"
 
         let initial = build_lsp_diagnostics(snapshot.as_ref());
         assert!(initial.iter().any(|diag| {
-            diag.severity == Some(DiagnosticSeverity::WARNING)
+            diag.severity == Some(DiagnosticSeverity::ERROR)
                 && diag
                     .message
                     .contains("DDIC/repository lookup is not connected")
@@ -2902,7 +2901,7 @@ unknown_symbol_mode = "remote"
     }
 
     #[test]
-    fn unresolved_remote_type_is_downgraded_to_warning_until_lookup_fails() {
+    fn unresolved_remote_type_stays_error_until_lookup_fails() {
         let workspace_path = temp_workspace_path("unresolved_remote_type_lookup");
         fs::create_dir_all(&workspace_path).expect("workspace dir");
         fs::write(
@@ -2938,13 +2937,16 @@ unknown_symbol_mode = "remote"
             .get(&normalize_lsp_uri(&workspace_uri))
             .expect("workspace");
         let initial = build_lsp_diagnostics_for_workspace(Some(workspace), snapshot.as_ref());
-        assert!(initial.iter().any(|diag| {
-            diag.severity == Some(DiagnosticSeverity::WARNING)
-                && diag.message.contains("/sttp/t_objid")
-                && diag
-                    .message
-                    .contains("DDIC/repository lookup is not connected")
-        }), "initial diagnostics: {initial:?}");
+        assert!(
+            initial.iter().any(|diag| {
+                diag.severity == Some(DiagnosticSeverity::ERROR)
+                    && diag.message.contains("/sttp/t_objid")
+                    && diag
+                        .message
+                        .contains("DDIC/repository lookup is not connected")
+            }),
+            "initial diagnostics: {initial:?}"
+        );
 
         let snapshots = handle_remote_dependencies_updated(
             &mut state,
@@ -3347,7 +3349,11 @@ lo_ref->send_notification_acc( ).";
         let HoverContents::Markup(markup) = hover.contents else {
             panic!("expected markdown hover");
         };
-        assert!(markup.value.contains("METHODS send_notification_acc"), "{}", markup.value);
+        assert!(
+            markup.value.contains("METHODS send_notification_acc"),
+            "{}",
+            markup.value
+        );
         assert!(markup.value.contains("\n  IMPORTING\n"), "{}", markup.value);
         assert!(
             markup.value.contains("\n    ! it_acc_obj")
@@ -4309,10 +4315,7 @@ ENDIF.\n\
             .enumerate()
             .find(|(_, line)| line.contains("line_exists"))
             .expect("routine line");
-        let routine_col = routine_line
-            .1
-            .find("line_exists")
-            .expect("routine col") as u32;
+        let routine_col = routine_line.1.find("line_exists").expect("routine col") as u32;
 
         assert_eq!(
             semantic_token_type_at(&tokens, routine_line.0 as u32, routine_col),
@@ -4361,10 +4364,7 @@ ENDIF.\n\
             .enumerate()
             .find(|(_, line)| line.contains("line_exists"))
             .expect("routine line");
-        let routine_col = routine_line
-            .1
-            .find("line_exists")
-            .expect("routine col") as u32;
+        let routine_col = routine_line.1.find("line_exists").expect("routine col") as u32;
 
         assert_eq!(
             semantic_token_type_at(&tokens, routine_line.0 as u32, routine_col),
@@ -4403,11 +4403,7 @@ ENDIF.\n\
             .enumerate()
             .find(|(_, line)| line.contains("line_exists"))
             .expect("routine line");
-        let routine_col = routine_line
-            .1
-            .find("line_exists")
-            .expect("routine col") as u32
-            + 1;
+        let routine_col = routine_line.1.find("line_exists").expect("routine col") as u32 + 1;
         let routine_hover = hover(
             &state,
             &HoverParams {
@@ -4805,7 +4801,11 @@ DATA(lt_text) = VALUE stringtab( FOR n = 1 UNTIL n > 3 ( |{ n }| ) ).";
         };
         assert!(markup.value.contains("`n`"), "{}", markup.value);
         assert!(markup.value.contains("Variable"), "{}", markup.value);
-        assert!(markup.value.contains("```abap\nTYPE i\n```"), "{}", markup.value);
+        assert!(
+            markup.value.contains("```abap\nTYPE i\n```"),
+            "{}",
+            markup.value
+        );
     }
 
     #[test]
@@ -4855,7 +4855,11 @@ DATA(lt_text) = VALUE stringtab(
         };
         assert!(markup.value.contains("`it`"), "{}", markup.value);
         assert!(markup.value.contains("Variable"), "{}", markup.value);
-        assert!(markup.value.contains("```abap\nTYPE string\n```"), "{}", markup.value);
+        assert!(
+            markup.value.contains("```abap\nTYPE string\n```"),
+            "{}",
+            markup.value
+        );
     }
 
     #[test]

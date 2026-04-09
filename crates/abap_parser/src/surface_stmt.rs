@@ -2103,6 +2103,20 @@ fn insert_into_table_tail_clause_starts(source: &str, tokens: &[Token], idx: usi
                     .is_some_and(|next| is_keyword(source, next, "into"))))
 }
 
+fn insert_db_table_source_clause_starts(source: &str, tokens: &[Token], idx: usize) -> bool {
+    let Some(token) = tokens.get(idx) else {
+        return false;
+    };
+    token.kind == TokenKind::Ident && is_keyword(source, token, "from")
+}
+
+fn insert_db_table_tail_clause_starts(source: &str, tokens: &[Token], idx: usize) -> bool {
+    let Some(token) = tokens.get(idx) else {
+        return false;
+    };
+    token.kind == TokenKind::Ident && is_keyword(source, token, "accepting")
+}
+
 fn modify_clause_starts(source: &str, tokens: &[Token], idx: usize) -> bool {
     let Some(token) = tokens.get(idx) else {
         return false;
@@ -3842,7 +3856,63 @@ pub fn try_parse_insert_table_stmt(
     }
     match scan_until_statement_period(tokens, source, idx + 1) {
         StmtPeriodScan::Found(period_i) => {
-            let into_idx = find_top_level_keyword_index(source, tokens, idx + 1, period_i, "into")?;
+            let Some(into_idx) =
+                find_top_level_keyword_index(source, tokens, idx + 1, period_i, "into")
+            else {
+                let Some(from_idx) =
+                    find_top_level_keyword_index(source, tokens, idx + 1, period_i, "from")
+                else {
+                    return None;
+                };
+                let mut children = Vec::with_capacity(period_i - idx + 1);
+                children.push(token_leaf(b, insert_tok));
+                let target_clause = |tokens: &[Token], i: usize| {
+                    insert_db_table_source_clause_starts(source, tokens, i)
+                };
+                let target_end = scan_until_clause(tokens, idx + 1, from_idx, &target_clause);
+                if let Some(source_node) =
+                    build_sql_data_source(b, source, tokens, idx + 1, target_end)
+                {
+                    children.push(source_node);
+                } else {
+                    push_token_children(b, &mut children, tokens, idx + 1, from_idx);
+                }
+                push_token_children(b, &mut children, tokens, target_end, from_idx);
+
+                children.push(token_leaf(b, &tokens[from_idx]));
+                let mut i = from_idx + 1;
+                if tokens
+                    .get(i)
+                    .is_some_and(|token| is_keyword(source, token, "table"))
+                {
+                    children.push(token_leaf(b, &tokens[i]));
+                    i += 1;
+                }
+                let tail_clause = |tokens: &[Token], i: usize| {
+                    insert_db_table_tail_clause_starts(source, tokens, i)
+                };
+                i = scan_and_push_expr_clause(
+                    b,
+                    &mut children,
+                    source,
+                    tokens,
+                    i,
+                    period_i,
+                    Some(&tokens[from_idx]),
+                    &tail_clause,
+                );
+                while i < period_i {
+                    children.push(token_leaf(b, &tokens[i]));
+                    i += 1;
+                }
+                children.push(token_leaf(b, &tokens[period_i]));
+                let node = b.branch(
+                    SyntaxKind::InsertDbTableStmt,
+                    insert_tok.range.start..tokens[period_i].range.end,
+                    &children,
+                );
+                return Some((node, period_i + 1));
+            };
             let has_table_kw = tokens
                 .get(into_idx + 1)
                 .is_some_and(|t| is_keyword(source, t, "table"));
@@ -4603,7 +4673,11 @@ pub fn try_parse_update_stmt(
                 range: update_tok.range.start..err_end,
             });
             let children = token_children(b, tokens, idx, end_exclusive);
-            let node = b.branch(SyntaxKind::Error, update_tok.range.start..err_end, &children);
+            let node = b.branch(
+                SyntaxKind::Error,
+                update_tok.range.start..err_end,
+                &children,
+            );
             (node, next_after_unterminated_scan(tokens, end_exclusive))
         }
     })
@@ -5695,6 +5769,28 @@ END-OF-PAGE.\nWRITE 'e'.",
                 .count_kind(parsed.file.root(), SyntaxKind::InsertTableStmt),
             0
         );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::InsertDbTableStmt),
+            1
+        );
+    }
+
+    #[test]
+    fn parses_insert_dbtab_from_table_operands_as_ast_children() {
+        let parsed = crate::parse(
+            "INSERT zattp_sequen_bf FROM TABLE lt_sequen_buff ACCEPTING DUPLICATE KEYS.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let stmt = parsed
+            .file
+            .find_first_kind(parsed.file.root(), SyntaxKind::InsertDbTableStmt)
+            .expect("insert db table stmt");
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::SqlDataSource), 1);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::TemplateExpr), 1);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::ExprIdent), 1);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::Error), 0);
     }
 
     #[test]
@@ -5832,7 +5928,12 @@ END-OF-PAGE.\nWRITE 'e'.",
     fn parses_delete_table_from_work_area_as_internal_table_delete() {
         let parsed = crate::parse("DELETE TABLE ct_objids FROM is_obj_ids.");
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-        assert_eq!(parsed.file.count_kind(parsed.file.root(), SyntaxKind::DeleteStmt), 1);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::DeleteStmt),
+            1
+        );
         assert_eq!(
             parsed
                 .file
