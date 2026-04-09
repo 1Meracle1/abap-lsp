@@ -679,7 +679,14 @@ fn loop_where_scope_symbol_specs(
                             name,
                             kind: crate::SymbolKind::Variable,
                             scope,
-                            decl_range: field.decl_range.unwrap_or(context.range.clone()),
+                            decl_range: if fields_unit.unit_id == unit.unit_id {
+                                field
+                                    .decl_range
+                                    .clone()
+                                    .unwrap_or(context.range.start..context.range.start)
+                            } else {
+                                context.range.start..context.range.start
+                            },
                             structure: match field.shape {
                                 StructureFieldShape::Structured { structure } => Some(structure),
                                 StructureFieldShape::Scalar => None,

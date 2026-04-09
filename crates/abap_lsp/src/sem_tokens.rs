@@ -569,6 +569,49 @@ ENDCLASS.
     }
 
     #[test]
+    fn semantic_tokens_ignore_imported_loop_where_synthetic_decl_ranges() {
+        let store = DocumentStore::default();
+        let dep_src = "\
+TYPES: BEGIN OF zdep,
+         field_a TYPE i,
+         field_b TYPE i,
+       END OF zdep.
+";
+        let main_src = "\
+DATA lt_dep TYPE STANDARD TABLE OF zdep WITH EMPTY KEY.
+DATA total TYPE i.
+LOOP AT lt_dep INTO DATA(ls_dep) WHERE field_a = 1.
+  total = total + field_b.
+ENDLOOP.
+";
+        let snapshots = store.replace_all(vec![
+            DocumentInput {
+                uri: Arc::from("file:///dep.abap"),
+                version: 1,
+                text: Arc::from(dep_src),
+                is_dependency: true,
+                object_name: None,
+            },
+            DocumentInput {
+                uri: Arc::from("file:///main.abap"),
+                version: 1,
+                text: Arc::from(main_src),
+                is_dependency: false,
+                object_name: None,
+            },
+        ]);
+        let snapshot = snapshots.get("file:///main.abap").expect("main snapshot");
+        let tokens = build_semantic_tokens(snapshot.as_ref());
+
+        assert_eq!(
+            semantic_token_type_at(&tokens.data, 0, 29),
+            None,
+            "expected no semantic token on keyword area polluted by imported loop WHERE fields: {:?}",
+            tokens.data
+        );
+    }
+
+    #[test]
     fn dependency_snapshot_keeps_semantic_tokens_for_public_methods_after_class_methods() {
         let store = DocumentStore::default();
         let snapshots = store.replace_all(vec![DocumentInput {
