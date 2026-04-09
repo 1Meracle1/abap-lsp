@@ -7145,6 +7145,92 @@ lv_long = ls_time(14).";
 }
 
 #[test]
+fn substring_access_on_table_expression_selector_resolves_field() {
+    let src = "\
+TYPES: BEGIN OF ty_encode_decode,\n\
+         code_char TYPE string,\n\
+       END OF ty_encode_decode.\n\
+TYPES ty_encode_decode_tab TYPE STANDARD TABLE OF ty_encode_decode WITH EMPTY KEY.\n\
+DATA lt_encode_decode TYPE ty_encode_decode_tab.\n\
+DATA rv_gs1 TYPE string.\n\
+rv_gs1 = lt_encode_decode[ 1 ]-code_char+2.";
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///substring_table_expr_selector.abap", src, &parsed);
+
+    assert!(
+        unit.field_accesses.iter().any(|access| {
+            access.base_name.as_ref() == "lt_encode_decode"
+                && access
+                    .field_path
+                    .iter()
+                    .map(|segment| segment.name.as_ref())
+                    .collect::<Vec<_>>()
+                    == vec!["code_char"]
+        }),
+        "expected table-expression selector field access, accesses={:?}",
+        unit.field_accesses
+    );
+    assert!(
+        unit.references.iter().any(|reference| {
+            reference.name.as_ref() == "lt_encode_decode"
+                && reference.namespace == Namespace::Value
+                && reference.kind == ReferenceKind::Identifier
+                && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+        }),
+        "expected resolved lt_encode_decode reference, refs={:?}",
+        unit.references
+    );
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            matches!(
+                diag.kind,
+                DiagnosticKind::UnresolvedReference | DiagnosticKind::UnknownField
+            ) && diag.message.contains("code_char")
+        }),
+        "unexpected diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn value_optional_with_substring_on_table_expression_selector_resolves_field() {
+    let src = "\
+TYPES: BEGIN OF ty_encode_decode,\n\
+         code_char TYPE string,\n\
+       END OF ty_encode_decode.\n\
+TYPES ty_encode_decode_tab TYPE STANDARD TABLE OF ty_encode_decode WITH EMPTY KEY.\n\
+DATA lt_encode_decode TYPE ty_encode_decode_tab.\n\
+DATA rv_gs1 TYPE string.\n\
+rv_gs1 = VALUE #( lt_encode_decode[ 1 ]-code_char+2 OPTIONAL ).";
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///value_optional_substring_table_expr.abap", src, &parsed);
+
+    assert!(
+        unit.field_accesses.iter().any(|access| {
+            access.base_name.as_ref() == "lt_encode_decode"
+                && access
+                    .field_path
+                    .iter()
+                    .map(|segment| segment.name.as_ref())
+                    .collect::<Vec<_>>()
+                    == vec!["code_char"]
+        }),
+        "expected field access, accesses={:?}",
+        unit.field_accesses
+    );
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            matches!(
+                diag.kind,
+                DiagnosticKind::UnresolvedReference | DiagnosticKind::UnknownField
+            ) && diag.message.contains("code_char")
+        }),
+        "unexpected diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn reports_missing_super_constructor_call_in_subclass_constructor() {
     let src = r#"
 CLASS zcl_parent DEFINITION.

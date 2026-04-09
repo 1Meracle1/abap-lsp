@@ -466,19 +466,23 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                         .ctx
                         .find_matching_group_end_infos(tokens, idx, open_text, close_text)
                     {
-                        if token.text.as_ref() == "("
+                        if token.text.as_ref() == "[" {
+                            // Keep table-expression brackets attached to the surrounding segment so
+                            // selectors/substrings like `itab[ 1 ]-field+2` resolve as one access.
+                        } else if token.text.as_ref() == "("
                             && self.paren_belongs_to_constructor_or_call(tokens, segment_start, idx)
                         {
                             self.collect_value_token_segment(
                                 &tokens[segment_start..=end_idx],
                                 scope,
                             );
+                            segment_start = end_idx + 1;
                         } else {
                             self.collect_value_token_segment(&tokens[segment_start..idx], scope);
                             self.collect_value_constructor_tokens(&tokens[idx + 1..end_idx], scope);
+                            segment_start = end_idx + 1;
                         }
                         idx = end_idx + 1;
-                        segment_start = idx;
                     } else {
                         idx += 1;
                     }
