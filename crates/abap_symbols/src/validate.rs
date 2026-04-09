@@ -467,13 +467,15 @@ fn resolve_exposed_interface_handle_inner(
         .iter()
         .filter(|implemented| implemented.owner_symbol == owner.symbol)
     {
-        let interface_handle = resolve_interface_symbol(
+        let Some(interface_handle) = resolve_interface_symbol(
             project,
             owner_unit,
             &build_scope_index(owner_unit),
             owner_unit.symbol(owner.symbol).scope,
             &implemented.interface_name,
-        )?;
+        ) else {
+            continue;
+        };
         if implemented
             .interface_name
             .as_ref()
@@ -519,6 +521,120 @@ fn resolve_interface_member_path<'a>(
     }
     let nested = resolve_exposed_interface_handle(project, interface_handle, first.name.as_ref())?;
     resolve_interface_member_path(project, nested, rest)
+}
+
+fn resolve_qualified_interface_method_context<'a>(
+    project: &'a ProjectAnalysis,
+    unit: &'a crate::UnitAnalysis,
+    scope: ScopeId,
+) -> Option<(&'a crate::UnitAnalysis, &'a crate::ClassMemberData)> {
+    let method_symbol = enclosing_method_owner(unit, scope)?;
+    let method_name = unit.symbol(method_symbol).name.as_ref();
+    let (interface_name, member_name) = method_name.split_once('~')?;
+    let class_symbol = enclosing_class_owner(unit, scope)?;
+    let interface_handle = resolve_exposed_interface_handle(
+        project,
+        SymbolHandle {
+            unit: unit.unit_id,
+            symbol: class_symbol,
+        },
+        interface_name,
+    )?;
+    let interface_unit = &project.units[interface_handle.unit.as_usize()];
+    let member = interface_unit.class_member(interface_handle.symbol, member_name)?;
+    Some((interface_unit, member))
+}
+
+fn inject_symbol_into_scope_index(
+    scope_index: &mut ScopeIndex,
+    scope: ScopeId,
+    symbol_id: SymbolId,
+    namespace: Namespace,
+    name: Arc<str>,
+) {
+    scope_index[scope.as_usize()]
+        .entry((namespace, name))
+        .or_default()
+        .push(symbol_id);
+}
+
+fn qualified_interface_method_scope_symbol_specs(
+    project: &ProjectAnalysis,
+    unit: &crate::UnitAnalysis,
+) -> Vec<(ScopeId, crate::SymbolData)> {
+    let method_scopes: Vec<_> = unit
+        .scopes
+        .iter()
+        .filter(|scope| scope.kind == ScopeKind::Method)
+        .map(|scope| scope.id)
+        .collect();
+    let mut out = Vec::new();
+    let mut next_symbol_id = unit.symbols.len() as u32;
+
+    for scope_id in method_scopes {
+        let Some((_, member)) = resolve_qualified_interface_method_context(project, unit, scope_id)
+        else {
+            continue;
+        };
+        let member_is_static = member.is_static;
+        let member_parameters = member.parameters.clone();
+        let Some(_method_symbol) = enclosing_method_owner(unit, scope_id) else {
+            continue;
+        };
+        let Some(class_symbol) = enclosing_class_owner(unit, scope_id) else {
+            continue;
+        };
+        let class_name = Arc::clone(&unit.symbol(class_symbol).name);
+
+        let has_me = unit.symbols.iter().any(|symbol| {
+            symbol.scope == scope_id
+                && symbol.kind == SymbolKind::Variable
+                && symbol.name.as_ref() == "me"
+        });
+        if !member_is_static && !has_me {
+            let id = SymbolId(next_symbol_id);
+            next_symbol_id += 1;
+            out.push((scope_id, crate::SymbolData {
+                id,
+                name: Arc::from("me"),
+                kind: SymbolKind::Variable,
+                scope: scope_id,
+                decl_range: 0..0,
+                structure: None,
+                declared_type: Some(FieldTypeRefData {
+                    namespace: Namespace::Type,
+                    is_ref: true,
+                    base_name: class_name,
+                    field_path: Vec::new(),
+                }),
+                type_clause_display: None,
+            }));
+        }
+
+        for param in &member_parameters {
+            let has_param = unit.symbols.iter().any(|symbol| {
+                symbol.scope == scope_id
+                    && symbol.kind == SymbolKind::Parameter
+                    && symbol.name == param.name
+            });
+            if has_param {
+                continue;
+            }
+            let id = SymbolId(next_symbol_id);
+            next_symbol_id += 1;
+            out.push((scope_id, crate::SymbolData {
+                id,
+                name: Arc::clone(&param.name),
+                kind: SymbolKind::Parameter,
+                scope: scope_id,
+                decl_range: 0..0,
+                structure: None,
+                declared_type: param.declared_type.clone(),
+                type_clause_display: None,
+            }));
+        }
+    }
+    out
 }
 
 fn resolve_class_type_symbol_in_hierarchy(
@@ -1140,8 +1256,60 @@ pub(crate) fn validate_project_with_scope_indexes(
     project.diagnostics.clear();
 
     for unit_idx in 0..project.units.len() {
+        let mut scope_index = scope_indexes[unit_idx].clone();
+        let synthetic_symbols = {
+            let unit = &project.units[unit_idx];
+            qualified_interface_method_scope_symbol_specs(project, unit)
+        };
+        {
+            let unit = &mut project.units[unit_idx];
+            for (scope_id, symbol) in synthetic_symbols {
+                let symbol_id = symbol.id;
+                let symbol_name = Arc::clone(&symbol.name);
+                let symbol_kind = symbol.kind;
+                unit.symbols.push(symbol);
+                unit.scopes[scope_id.as_usize()].declarations.push(symbol_id);
+                for &namespace in symbol_kind.namespaces() {
+                    inject_symbol_into_scope_index(
+                        &mut scope_index,
+                        scope_id,
+                        symbol_id,
+                        namespace,
+                        Arc::clone(&symbol_name),
+                    );
+                }
+            }
+        }
+        let synthetic_reference_resolutions: Vec<_> = {
+            let unit = &project.units[unit_idx];
+            unit.references
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, reference)| {
+                    if reference.resolution.is_some() {
+                        return None;
+                    }
+                    let symbol_id = resolve_symbol_in_scope_chain(
+                        unit,
+                        &scope_index,
+                        reference.scope,
+                        reference.namespace,
+                        &reference.name,
+                    )?;
+                    Some((idx, symbol_id))
+                })
+                .collect()
+        };
+        {
+            let unit = &mut project.units[unit_idx];
+            for (idx, symbol_id) in synthetic_reference_resolutions {
+                unit.references[idx].resolution = Some(Resolution::Symbol(SymbolHandle {
+                    unit: unit.unit_id,
+                    symbol: symbol_id,
+                }));
+            }
+        }
         let scope_names = build_scope_names(&project.units[unit_idx]);
-        let scope_index = &scope_indexes[unit_idx];
         let constructor_diagnostics =
             validate_super_constructor_calls(project, &project.units[unit_idx], &scope_index);
         let field_access_bases: Vec<_> = project.units[unit_idx]
@@ -1466,7 +1634,7 @@ pub(crate) fn validate_project_with_scope_indexes(
                 if step.is_deref() {
                     let Some((next_structure_id, next_declared_type)) = dereference_field_metadata(
                         unit,
-                        scope_index,
+                        &scope_index,
                         access.scope,
                         structure_id,
                         declared_type,
@@ -1481,7 +1649,7 @@ pub(crate) fn validate_project_with_scope_indexes(
 
                 (structure_id, declared_type) = normalize_field_metadata(
                     unit,
-                    scope_index,
+                    &scope_index,
                     access.scope,
                     structure_id,
                     declared_type,
@@ -1582,7 +1750,7 @@ pub(crate) fn validate_project_with_scope_indexes(
             });
         }
 
-        unit_diagnostics.extend(validate_open_sql_sources(project, unit, scope_index));
+        unit_diagnostics.extend(validate_open_sql_sources(project, unit, &scope_index));
         unit_diagnostics.extend(validate_open_sql_into_targets(project, unit, scope_indexes));
         unit_diagnostics.extend(constructor_diagnostics);
 

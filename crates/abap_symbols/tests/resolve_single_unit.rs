@@ -5770,6 +5770,263 @@ START-OF-SELECTION.
 }
 
 #[test]
+fn resolves_me_and_interface_parameters_in_qualified_method_implementation() {
+    let src = r#"
+INTERFACE i1.
+  METHODS meth
+    IMPORTING iv_value TYPE i
+    RETURNING VALUE(rv_value) TYPE i.
+ENDINTERFACE.
+
+CLASS c1 DEFINITION.
+  PUBLIC SECTION.
+    INTERFACES i1.
+  PRIVATE SECTION.
+    DATA mv_value TYPE i.
+ENDCLASS.
+
+CLASS c1 IMPLEMENTATION.
+  METHOD i1~meth.
+    me->mv_value = iv_value.
+    rv_value = me->mv_value.
+  ENDMETHOD.
+ENDCLASS.
+"#;
+    let parsed = parse(src);
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let unit = analyze_unit("file:///qualified_method_impl_scope.abap", src, &parsed);
+
+    assert!(unit.references.iter().any(|reference| {
+        reference.namespace == Namespace::Value
+            && reference.name.as_ref() == "me"
+            && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+    }));
+    assert!(unit.references.iter().any(|reference| {
+        reference.namespace == Namespace::Value
+            && reference.name.as_ref() == "iv_value"
+            && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+    }));
+    assert!(unit.references.iter().any(|reference| {
+        reference.namespace == Namespace::Value
+            && reference.name.as_ref() == "rv_value"
+            && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+    }));
+    assert!(unit.references.iter().any(|reference| {
+        reference.namespace == Namespace::Type
+            && reference.name.as_ref() == "i1"
+            && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+    }));
+    assert!(unit.field_accesses.iter().any(|access| {
+        access.base_namespace == Namespace::Type
+            && access.base_name.as_ref() == "i1"
+            && access.field_path.len() == 1
+            && access.field_path[0].name.as_ref() == "meth"
+    }));
+
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            matches!(
+                diag.kind,
+                DiagnosticKind::UnresolvedReference | DiagnosticKind::UnknownField
+            ) && (diag.message.contains("me")
+                || diag.message.contains("iv_value")
+                || diag.message.contains("rv_value")
+                || diag.message.contains("mv_value")
+                || diag.message.contains("i1")
+                || diag.message.contains("meth"))
+        }),
+        "{:#?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn resolves_me_in_method_implemented_from_second_interface_statement() {
+    let src = r#"
+INTERFACE i1.
+  METHODS meth.
+ENDINTERFACE.
+
+INTERFACE i2.
+  METHODS met2.
+ENDINTERFACE.
+
+CLASS c1 DEFINITION.
+  PUBLIC SECTION.
+    INTERFACES i1.
+    INTERFACES i2.
+  PRIVATE SECTION.
+    METHODS meth1.
+ENDCLASS.
+
+CLASS c1 IMPLEMENTATION.
+  METHOD i2~met2.
+    me->meth1( ).
+  ENDMETHOD.
+ENDCLASS.
+"#;
+    let parsed = parse(src);
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let unit = analyze_unit("file:///second_interface_impl_scope.abap", src, &parsed);
+
+    assert!(
+        unit.implemented_interfaces.iter().any(|item| item.interface_name.as_ref() == "i1"),
+        "{:#?}",
+        unit.implemented_interfaces
+    );
+    assert!(
+        unit.implemented_interfaces.iter().any(|item| item.interface_name.as_ref() == "i2"),
+        "{:#?}",
+        unit.implemented_interfaces
+    );
+    assert!(unit.references.iter().any(|reference| {
+        reference.namespace == Namespace::Value
+            && reference.name.as_ref() == "me"
+            && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+    }));
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            matches!(
+                diag.kind,
+                DiagnosticKind::UnresolvedReference | DiagnosticKind::UnknownField
+            ) && (diag.message.contains("me")
+                || diag.message.contains("meth1")
+                || diag.message.contains("i2")
+                || diag.message.contains("met2"))
+        }),
+        "{:#?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn resolves_namespaced_interface_method_implementation_scope() {
+    let src = r#"
+INTERFACE /sttp/if_badi_rule_processing.
+  METHODS execute
+    IMPORTING
+      !iv_evtid TYPE string
+      !is_rule_keys TYPE string OPTIONAL
+    CHANGING
+      !co_messages TYPE string OPTIONAL.
+ENDINTERFACE.
+
+CLASS zcl_demo DEFINITION.
+  PUBLIC SECTION.
+    INTERFACES if_badi_interface.
+    INTERFACES /sttp/if_badi_rule_processing.
+    METHODS prepare_data
+      IMPORTING
+        VALUE(is_rule_keys) TYPE string.
+ENDCLASS.
+
+CLASS zcl_demo IMPLEMENTATION.
+  METHOD /sttp/if_badi_rule_processing~execute.
+    CALL METHOD me->prepare_data
+      EXPORTING
+        is_rule_keys = is_rule_keys.
+    co_messages = iv_evtid.
+  ENDMETHOD.
+ENDCLASS.
+"#;
+    let parsed = parse(src);
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let unit = analyze_unit("file:///namespaced_interface_impl.abap", src, &parsed);
+
+    for name in ["me", "iv_evtid", "is_rule_keys", "co_messages"] {
+        assert!(
+            unit.references.iter().any(|reference| {
+                reference.namespace == Namespace::Value
+                    && reference.name.as_ref() == name
+                    && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+            }),
+            "missing resolved reference for {name}: {:#?}",
+            unit.references
+        );
+    }
+    assert!(unit.references.iter().any(|reference| {
+        reference.namespace == Namespace::Type
+            && reference.name.as_ref() == "/sttp/if_badi_rule_processing"
+            && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+    }));
+    assert!(unit.field_accesses.iter().any(|access| {
+        access.base_namespace == Namespace::Type
+            && access.base_name.as_ref() == "/sttp/if_badi_rule_processing"
+            && access.field_path.len() == 1
+            && access.field_path[0].name.as_ref() == "execute"
+    }));
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            matches!(
+                diag.kind,
+                DiagnosticKind::UnresolvedReference | DiagnosticKind::UnknownField
+            ) && (diag.message.contains("me")
+                || diag.message.contains("iv_evtid")
+                || diag.message.contains("is_rule_keys")
+                || diag.message.contains("co_messages")
+                || diag.message.contains("/sttp/if_badi_rule_processing")
+                || diag.message.contains("execute"))
+        }),
+        "{:#?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn resolves_qualified_method_scope_when_first_interface_is_unresolved() {
+    let src = r#"
+INTERFACE /sttp/if_badi_rule_processing.
+  METHODS execute
+    IMPORTING !iv_evtid TYPE string.
+ENDINTERFACE.
+
+CLASS zcl_demo DEFINITION.
+  PUBLIC SECTION.
+    INTERFACES if_badi_interface.
+    INTERFACES /sttp/if_badi_rule_processing.
+    METHODS helper.
+ENDCLASS.
+
+CLASS zcl_demo IMPLEMENTATION.
+  METHOD /sttp/if_badi_rule_processing~execute.
+    me->helper( ).
+    DATA(lv_evtid) = iv_evtid.
+  ENDMETHOD.
+
+  METHOD helper.
+  ENDMETHOD.
+ENDCLASS.
+"#;
+    let parsed = parse(src);
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let unit = analyze_unit("file:///unresolved_first_interface.abap", src, &parsed);
+
+    assert!(unit.references.iter().any(|reference| {
+        reference.namespace == Namespace::Value
+            && reference.name.as_ref() == "me"
+            && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+    }));
+    assert!(unit.references.iter().any(|reference| {
+        reference.namespace == Namespace::Value
+            && reference.name.as_ref() == "iv_evtid"
+            && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+    }));
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            matches!(
+                diag.kind,
+                DiagnosticKind::UnresolvedReference | DiagnosticKind::UnknownField
+            ) && (diag.message.contains("me")
+                || diag.message.contains("helper")
+                || diag.message.contains("iv_evtid")
+                || diag.message.contains("/sttp/if_badi_rule_processing"))
+        }),
+        "{:#?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn interface_load_statement_uses_type_namespace_for_referenced_interface() {
     let src = r#"
 INTERFACE if_inner.

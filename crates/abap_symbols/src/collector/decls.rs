@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
 use crate::def_map::{
-    FieldAccess, FieldTypeRefData, FormRoutineData, IncludeEdge, ReferenceKind, SymbolKind,
+    FieldAccess, FieldAccessSegment, FieldTypeRefData, FormRoutineData, IncludeEdge,
+    ReferenceKind, SymbolKind,
 };
 use crate::ids::{ScopeId, StructureId};
 use crate::scope::{Namespace, ScopeKind};
@@ -16,6 +17,14 @@ use super::{Collector, PendingStructure};
 
 pub(super) struct DeclLowering<'ctx, 'a> {
     ctx: DeclContext<'ctx, 'a>,
+}
+
+struct MethodDeclHeaderInfo {
+    full_name: Arc<str>,
+    qualifier: Option<(Arc<str>, TextRange)>,
+    member_name: Arc<str>,
+    member_range: TextRange,
+    full_range: TextRange,
 }
 
 impl<'a> Collector<'a> {
@@ -60,7 +69,7 @@ impl<'ctx, 'a> DeclLowering<'ctx, 'a> {
     fn method_decl_header_name_parts(
         &self,
         node: abap_ast::arena::NodeId,
-    ) -> Option<(Arc<str>, Option<Arc<str>>, Arc<str>, TextRange)> {
+    ) -> Option<MethodDeclHeaderInfo> {
         let tokens = self.ctx.significant_stmt_token_infos(node);
         let method_tok = tokens.first()?;
         if !method_tok.text.eq_ignore_ascii_case("method") {
@@ -71,9 +80,10 @@ impl<'ctx, 'a> DeclLowering<'ctx, 'a> {
             return None;
         }
         let mut full_name = first.text.to_string();
-        let mut qualifier = None;
-        let mut last_name = Arc::<str>::from(first.text.to_ascii_lowercase());
-        let mut end = first.range.end;
+        let mut qualifier = None::<(Arc<str>, TextRange)>;
+        let mut member_name = Arc::<str>::from(first.text.to_ascii_lowercase());
+        let mut member_range = first.range.clone();
+        let mut end = member_range.end;
         if tokens
             .get(2)
             .is_some_and(|token| token.text.as_ref() == "~")
@@ -82,16 +92,21 @@ impl<'ctx, 'a> DeclLowering<'ctx, 'a> {
         {
             full_name.push('~');
             full_name.push_str(second.text.as_ref());
-            qualifier = Some(Arc::<str>::from(first.text.to_ascii_lowercase()));
-            last_name = Arc::<str>::from(second.text.to_ascii_lowercase());
+            qualifier = Some((
+                Arc::<str>::from(first.text.to_ascii_lowercase()),
+                first.range.clone(),
+            ));
+            member_name = Arc::<str>::from(second.text.to_ascii_lowercase());
+            member_range = second.range.clone();
             end = second.range.end;
         }
-        Some((
-            Arc::<str>::from(full_name.to_ascii_lowercase()),
+        Some(MethodDeclHeaderInfo {
+            full_name: Arc::<str>::from(full_name.to_ascii_lowercase()),
             qualifier,
-            last_name,
-            first.range.start..end,
-        ))
+            member_name,
+            member_range,
+            full_range: first.range.start..end,
+        })
     }
 
     pub(super) fn walk_include_stmt(&mut self, node: abap_ast::arena::NodeId, scope: ScopeId) {
@@ -169,16 +184,34 @@ impl<'ctx, 'a> DeclLowering<'ctx, 'a> {
     }
 
     pub(super) fn walk_method_decl(&mut self, node: abap_ast::arena::NodeId, scope: ScopeId) {
-        let Some((name, qualifier, member_name, range)) = self.method_decl_header_name_parts(node)
-        else {
+        let Some(header) = self.method_decl_header_name_parts(node) else {
             self.ctx.walk_children(node, scope);
             return;
         };
+        if let Some((interface_name, interface_range)) = &header.qualifier {
+            self.ctx.add_reference(
+                scope,
+                Arc::clone(interface_name),
+                Namespace::Type,
+                ReferenceKind::TypeRef,
+                interface_range.clone(),
+            );
+            self.ctx.emit_field_access(FieldAccess {
+                scope,
+                base_namespace: Namespace::Type,
+                base_name: Arc::clone(interface_name),
+                field_path: vec![FieldAccessSegment {
+                    name: Arc::clone(&header.member_name),
+                    range: header.member_range.clone(),
+                }],
+                in_type_position: false,
+            });
+        }
         let owner = self.ctx.declare_plain_symbol(
             scope,
-            Arc::clone(&name),
+            Arc::clone(&header.full_name),
             SymbolKind::Method,
-            range.clone(),
+            header.full_range.clone(),
         );
         let node_range = self.ctx.file().range(node);
         let child_scope =
@@ -189,25 +222,26 @@ impl<'ctx, 'a> DeclLowering<'ctx, 'a> {
                 .class_lowering()
                 .note_method_implementation_target_range(
                     class_symbol,
-                    qualifier.as_deref(),
-                    member_name.as_ref(),
+                    header.qualifier.as_ref().map(|(name, _)| name.as_ref()),
+                    header.member_name.as_ref(),
                     scope,
-                    range.clone(),
+                    header.full_range.clone(),
                 );
             self.ctx
                 .class_lowering()
                 .declare_method_target_signature_parameters(
                     class_symbol,
-                    qualifier.as_deref(),
-                    member_name.as_ref(),
+                    header.qualifier.as_ref().map(|(name, _)| name.as_ref()),
+                    header.member_name.as_ref(),
                     child_scope,
                     scope,
                 );
             self.ctx.class_lowering().declare_implicit_me_symbol(
                 class_symbol,
-                member_name.as_ref(),
+                header.qualifier.as_ref().map(|(name, _)| name.as_ref()),
+                header.member_name.as_ref(),
                 child_scope,
-                &range,
+                &header.full_range,
             );
         }
         for child in self.ctx.file().children(node) {

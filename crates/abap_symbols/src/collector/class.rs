@@ -256,13 +256,16 @@ impl<'a> Collector<'a> {
             .iter()
             .filter(|implemented| implemented.owner_symbol == owner_symbol)
         {
-            let interface_symbol = self
+            let Some(interface_symbol) = self
                 .lookup_symbol_in_scope_chain(
                     lookup_scope,
                     Namespace::Type,
                     implemented.interface_name.as_ref(),
                 )
-                .filter(|&symbol_id| self.symbol(symbol_id).kind == SymbolKind::Interface)?;
+                .filter(|&symbol_id| self.symbol(symbol_id).kind == SymbolKind::Interface)
+            else {
+                continue;
+            };
             if implemented
                 .interface_name
                 .as_ref()
@@ -681,12 +684,6 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
             .collect()
     }
 
-    fn class_member(&self, class_symbol: SymbolId, member_name: &str) -> Option<&ClassMemberData> {
-        self.collector.class_members.iter().find(|member| {
-            member.class_symbol == class_symbol && member.name.as_ref() == member_name
-        })
-    }
-
     pub(super) fn note_method_implementation_target_range(
         &mut self,
         owner_symbol: SymbolId,
@@ -717,11 +714,17 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
     pub(super) fn declare_implicit_me_symbol(
         &mut self,
         class_symbol: SymbolId,
+        qualifier: Option<&str>,
         method_name: &str,
         method_scope: ScopeId,
         fallback_range: &TextRange,
     ) {
-        let Some(member) = self.class_member(class_symbol, method_name) else {
+        let Some(member) = self.collector.class_member_target_data(
+            class_symbol,
+            qualifier,
+            method_name,
+            method_scope,
+        ) else {
             return;
         };
         if member.kind != ClassMemberKind::Method || member.is_static {

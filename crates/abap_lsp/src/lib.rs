@@ -2531,6 +2531,161 @@ unknown_symbol_mode = "remote"
     }
 
     #[test]
+    fn qualified_interface_method_scope_resolves_with_manifest_dependency() {
+        let workspace_path = temp_workspace_path("qualified_interface_method_scope");
+        let dependency_dir = workspace_path
+            .join(".abapls")
+            .join("cache")
+            .join("dependencies")
+            .join("global-interface");
+        let source_dir = workspace_path.join("src");
+        fs::create_dir_all(&dependency_dir).expect("dependency dir");
+        fs::create_dir_all(&source_dir).expect("source dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[resolution]
+dependency_mode = "remote-on-demand"
+unknown_symbol_mode = "remote"
+
+[[unit]]
+name = "ZATTP_CL_RULE_PROC"
+kind = "global-class"
+root_file = "src/ZATTP_CL_RULE_PROC.abap"
+
+[[unit.member]]
+role = "workspace"
+file = "src/zcl_demo.abap"
+object_name = "zcl_demo"
+
+[[unit]]
+name = "/STTP/IF_BADI_RULE_PROCESSING"
+kind = "global-interface"
+root_file = ".abapls/cache/dependencies/global-interface/%2FSTTP%2FIF_BADI_RULE_PROCESSING.abap"
+adt_uri = "/sap/bc/adt/oo/interfaces/%2fsttp%2fif_badi_rule_processing"
+
+[[unit.member]]
+role = "dependency"
+file = ".abapls/cache/dependencies/global-interface/%2FSTTP%2FIF_BADI_RULE_PROCESSING.abap"
+object_name = "/STTP/IF_BADI_RULE_PROCESSING"
+adt_uri = "/sap/bc/adt/oo/interfaces/%2fsttp%2fif_badi_rule_processing"
+"#,
+        )
+        .expect("manifest");
+        fs::write(
+            dependency_dir.join("%2FSTTP%2FIF_BADI_RULE_PROCESSING.abap"),
+            r#"interface /STTP/IF_BADI_RULE_PROCESSING
+  public .
+
+  interfaces IF_BADI_INTERFACE .
+
+  methods EXECUTE
+    importing
+      !IV_EVTID type /STTP/E_EVTID
+      !IS_RULE_KEYS type /STTP/S_RULES_KEY optional
+    changing
+      !CO_MESSAGES type ref to /STTP/CL_MESSAGES optional .
+endinterface.
+"#,
+        )
+        .expect("dependency file");
+        fs::write(
+            source_dir.join("zcl_demo.abap"),
+            r#"class zcl_demo definition
+  public
+  final
+  create public .
+
+public section.
+
+  interfaces IF_BADI_INTERFACE .
+  interfaces /STTP/IF_BADI_RULE_PROCESSING .
+
+  methods PREPARE_DATA
+    importing
+      value(IS_RULE_KEYS) type /STTP/S_RULES_KEY
+    exporting
+      !EV_IFNAME type /AIF/IFNAME
+      !EO_REQUEST_AIF_STRUCT type ref to DATA
+      !EO_RESPONSE_AIF_STRUCT type ref to DATA
+      !EO_SAP_STRUCT type ref to DATA
+      !EO_SAP_TABLE type ref to DATA .
+protected section.
+private section.
+ENDCLASS.
+
+CLASS zcl_demo IMPLEMENTATION.
+  METHOD /sttp/if_badi_rule_processing~execute.
+
+      CALL METHOD me->prepare_data
+        EXPORTING
+          is_rule_keys           = is_rule_keys
+        IMPORTING
+          ev_ifname              = DATA(lv_ifname)
+          eo_request_aif_struct  = DATA(lo_req_str)
+          eo_response_aif_struct = DATA(lo_resp_str)
+          eo_sap_struct          = DATA(lo_sap_str)
+          eo_sap_table           = DATA(lo_sap_tab).
+
+      IF lv_ifname IS INITIAL.
+        RETURN.
+      ENDIF.
+
+      CALL METHOD zattp_cl_rule_rs_aif_proc=>start_processing
+        EXPORTING
+          iv_evtid     = iv_evtid
+          is_rule_keys = is_rule_keys
+          iv_if_name   = lv_ifname
+          io_req_str   = lo_req_str
+          io_resp_str  = lo_resp_str
+          io_sap_str   = lo_sap_str
+          io_sap_tab   = lo_sap_tab
+        CHANGING
+          co_messages  = co_messages.
+
+  ENDMETHOD.
+
+  METHOD prepare_data.
+  ENDMETHOD.
+ENDCLASS.
+"#,
+        )
+        .expect("source file");
+        let workspace_uri = path_to_file_uri(&workspace_path);
+        let source_uri = format!("{workspace_uri}/src/zcl_demo.abap");
+
+        let mut state = ServerState::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        let snapshot = publish_open_document_mut(
+            &mut state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str(&source_uri).expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: fs::read_to_string(source_dir.join("zcl_demo.abap"))
+                        .expect("source text"),
+                },
+            },
+        );
+
+        let diagnostics = build_lsp_diagnostics(snapshot.as_ref());
+        assert!(
+            !diagnostics.iter().any(|diag| {
+                diag.message.contains("unknown symbol 'me'")
+                    || diag.message.contains("unknown symbol 'is_rule_keys'")
+                    || diag.message.contains("unknown symbol 'iv_evtid'")
+                    || diag.message.contains("unknown symbol 'co_messages'")
+            }),
+            "{diagnostics:#?}"
+        );
+
+        let _ = fs::remove_dir_all(&workspace_path);
+    }
+
+    #[test]
     fn hover_returns_component_metadata_for_selector_field() {
         let state = ServerState::default();
         publish_open_document(

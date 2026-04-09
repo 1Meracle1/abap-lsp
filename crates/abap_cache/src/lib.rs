@@ -8,9 +8,10 @@ use abap_symbols::{
     ClassMemberData, ClassMemberKind, FieldTypeRefData, FormParameterData,
     FormParameterPassingKind, FormParameterSection, NamedArgumentAccess, NamedArgumentTarget,
     Namespace, PerformArgumentData, PerformCallData, PerformParameterSection, ProjectAnalysis,
-    ReferenceKind, Resolution, ScopeId, SqlNameRefData, SqlNameRefKind, StructureFieldInfo,
+    ReferenceKind, Resolution, ScopeId, ScopeKind, SqlNameRefData, SqlNameRefKind, StructureFieldInfo,
     StructureFieldShape, StructureId, SymbolData, SymbolId, SymbolKind, UnitAnalysis, UnitId,
     Visibility, analyze_project_from_units, analyze_unit_locally, builtin_routine_spec,
+    SymbolHandle,
 };
 use parking_lot::RwLock;
 use rayon::prelude::*;
@@ -1617,6 +1618,59 @@ fn definition_target_for_range(unit: &UnitAnalysis, range: Range<usize>) -> Defi
     }
 }
 
+fn synthetic_method_scope_definition_target(
+    snapshot: &AnalysisSnapshot,
+    unit: &UnitAnalysis,
+    symbol: &SymbolData,
+) -> Option<DefinitionTarget> {
+    if symbol.decl_range.start != symbol.decl_range.end {
+        return None;
+    }
+    let scope = unit.scope(symbol.scope);
+    if scope.kind != ScopeKind::Method {
+        return None;
+    }
+
+    if symbol.kind == SymbolKind::Variable && symbol.name.as_ref() == "me" {
+        let class_symbol = enclosing_class_owner(unit, symbol.scope)?;
+        return Some(definition_target_for_symbol(unit, unit.symbol(class_symbol)));
+    }
+
+    if symbol.kind == SymbolKind::Parameter {
+        let method_symbol = scope.owner?;
+        let method_name = unit.symbol(method_symbol).name.as_ref();
+        let (interface_name, member_name) = method_name.split_once('~')?;
+        let class_symbol = enclosing_class_owner(unit, symbol.scope)?;
+        let class_handle = SymbolHandle {
+            unit: unit.unit_id,
+            symbol: class_symbol,
+        };
+        let interface_name = Arc::<str>::from(interface_name.to_ascii_lowercase());
+        let (interface_unit, interface_symbol) = resolve_exposed_interface_handle_with_scope_index(
+            snapshot,
+            snapshot.scope_index(),
+            unit,
+            class_handle.symbol,
+            symbol.scope,
+            &interface_name,
+        )?;
+        let member = interface_unit
+            .semantic()
+            .decls()
+            .class_member(interface_symbol, member_name)?;
+        let parameter = member
+            .parameters
+            .iter()
+            .find(|parameter| parameter.name == symbol.name)?;
+        return Some(definition_target_for_range(
+            interface_unit,
+            parameter.range.clone(),
+        ));
+    }
+
+    None
+}
+
 fn definition_target_for_resolution(
     snapshot: &AnalysisSnapshot,
     resolution: Resolution,
@@ -1625,6 +1679,9 @@ fn definition_target_for_resolution(
         Resolution::Symbol(handle) => {
             let unit = &snapshot.project.units[handle.unit.as_usize()];
             let symbol = unit.symbol(handle.symbol);
+            if let Some(target) = synthetic_method_scope_definition_target(snapshot, unit, symbol) {
+                return Some(target);
+            }
             Some(definition_target_for_symbol(unit, symbol))
         }
         Resolution::BuiltinType
@@ -2969,14 +3026,16 @@ fn resolve_exposed_interface_handle_inner<'a>(
         .iter()
         .filter(|implemented| implemented.owner_symbol == owner_symbol)
     {
-        let (interface_unit, interface_symbol) = resolve_symbol_from_context_with_scope_index(
+        let Some((interface_unit, interface_symbol)) = resolve_symbol_from_context_with_scope_index(
             snapshot,
             scope_index,
             scope,
             Namespace::Type,
             &implemented.interface_name,
             false,
-        )?;
+        ) else {
+            continue;
+        };
         if interface_unit.symbol(interface_symbol).kind != SymbolKind::Interface {
             continue;
         }
@@ -5292,6 +5351,169 @@ lo_obj->i1~meth( ).";
         assert_eq!(
             target.range.start,
             src.find("meth").expect("interface method declaration")
+        );
+    }
+
+    #[test]
+    fn definition_at_returns_interface_targets_for_qualified_method_implementation_header() {
+        let store = DocumentStore::default();
+        let src = "\
+INTERFACE i1.
+  METHODS meth.
+ENDINTERFACE.
+
+CLASS c1 DEFINITION.
+  PUBLIC SECTION.
+    INTERFACES i1.
+ENDCLASS.
+
+CLASS c1 IMPLEMENTATION.
+  METHOD i1~meth.
+  ENDMETHOD.
+ENDCLASS.";
+        let snapshot = store.publish("file:///demo.abap", 1, src);
+        let implementation_offset = src.rfind("i1~meth").expect("implementation header");
+
+        let interface_target = snapshot
+            .definition_at(implementation_offset + 1)
+            .expect("interface definition target");
+        assert_target_slice(&interface_target, "file:///demo.abap", src, "i1");
+        assert_eq!(
+            interface_target.range.start,
+            src.find("i1").expect("interface declaration")
+        );
+
+        let method_offset = implementation_offset + "i1~".len();
+        let method_target = snapshot
+            .definition_at(method_offset + 1)
+            .expect("interface method definition target");
+        assert_target_slice(&method_target, "file:///demo.abap", src, "meth");
+        assert_eq!(
+            method_target.range.start,
+            src.find("meth").expect("interface method declaration")
+        );
+    }
+
+    #[test]
+    fn definition_at_returns_namespaced_interface_targets_for_implementation_header() {
+        let store = DocumentStore::default();
+        let src = "\
+INTERFACE /sttp/if_badi_rule_processing.
+  METHODS execute.
+ENDINTERFACE.
+
+CLASS zcl_demo DEFINITION.
+  PUBLIC SECTION.
+    INTERFACES /sttp/if_badi_rule_processing.
+ENDCLASS.
+
+CLASS zcl_demo IMPLEMENTATION.
+  METHOD /sttp/if_badi_rule_processing~execute.
+  ENDMETHOD.
+ENDCLASS.";
+        let snapshot = store.publish("file:///demo.abap", 1, src);
+        let implementation_offset = src
+            .rfind("/sttp/if_badi_rule_processing~execute")
+            .expect("implementation header");
+
+        let interface_target = snapshot
+            .definition_at(implementation_offset + 1)
+            .expect("interface definition target");
+        assert_target_slice(
+            &interface_target,
+            "file:///demo.abap",
+            src,
+            "/sttp/if_badi_rule_processing",
+        );
+
+        let method_offset = implementation_offset + "/sttp/if_badi_rule_processing~".len();
+        let method_target = snapshot
+            .definition_at(method_offset + 1)
+            .expect("interface method definition target");
+        assert_target_slice(&method_target, "file:///demo.abap", src, "execute");
+        assert_eq!(
+            method_target.range.start,
+            src.find("execute").expect("interface method declaration")
+        );
+    }
+
+    #[test]
+    fn definition_at_routes_qualified_interface_method_scope_symbols_to_real_targets() {
+        let store = DocumentStore::default();
+        let interface_src = "\
+INTERFACE /sttp/if_badi_rule_processing.
+  METHODS execute
+    IMPORTING
+      !iv_evtid TYPE /sttp/e_evtid
+      !is_rule_keys TYPE /sttp/s_rules_key OPTIONAL
+    CHANGING
+      !co_messages TYPE REF TO /sttp/cl_messages OPTIONAL.
+ENDINTERFACE.";
+        let main_src = "\
+CLASS zattp_cl_rs_rule_proc DEFINITION.
+  PUBLIC SECTION.
+    INTERFACES if_badi_interface.
+    INTERFACES /sttp/if_badi_rule_processing.
+    METHODS prepare_data
+      IMPORTING
+        VALUE(is_rule_keys) TYPE /sttp/s_rules_key.
+ENDCLASS.
+
+CLASS zattp_cl_rs_rule_proc IMPLEMENTATION.
+  METHOD /sttp/if_badi_rule_processing~execute.
+    CALL METHOD me->prepare_data
+      EXPORTING
+        is_rule_keys = is_rule_keys.
+  ENDMETHOD.
+ENDCLASS.";
+        let snapshots = store.replace_all(vec![
+            DocumentInput {
+                uri: Arc::from("file:///main.abap"),
+                version: 1,
+                text: Arc::from(main_src),
+                is_dependency: false,
+                object_name: None,
+            },
+            DocumentInput {
+                uri: Arc::from("file:///dep.abap"),
+                version: 1,
+                text: Arc::from(interface_src),
+                is_dependency: true,
+                object_name: Some(Arc::from("/sttp/if_badi_rule_processing")),
+            },
+        ]);
+        let snapshot = snapshots.get("file:///main.abap").expect("main snapshot");
+
+        let me_offset = main_src.find("me->prepare_data").expect("me use") + 1;
+        let me_target = snapshot
+            .definition_at(me_offset)
+            .expect("me definition target");
+        assert_target_slice(
+            &me_target,
+            "file:///main.abap",
+            main_src,
+            "zattp_cl_rs_rule_proc",
+        );
+        assert_eq!(
+            me_target.range.start,
+            main_src.find("zattp_cl_rs_rule_proc").expect("class declaration")
+        );
+
+        let parameter_use = main_src.rfind("is_rule_keys").expect("parameter use") + 1;
+        let parameter_target = snapshot
+            .definition_at(parameter_use)
+            .expect("parameter definition target");
+        assert_target_slice(
+            &parameter_target,
+            "file:///dep.abap",
+            interface_src,
+            "is_rule_keys",
+        );
+        assert_eq!(
+            parameter_target.range.start,
+            interface_src
+                .find("is_rule_keys")
+                .expect("interface parameter declaration")
         );
     }
 

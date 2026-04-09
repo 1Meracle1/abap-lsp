@@ -14,7 +14,6 @@ use lsp_types::{SemanticToken, SemanticTokenModifier, SemanticTokenType, Semanti
 struct SemanticTokenTypeIndices {
     type_: u32,
     class: u32,
-    interface: u32,
     parameter: u32,
     variable: u32,
     property: u32,
@@ -27,7 +26,6 @@ struct SemanticTokenTypeIndices {
 const TOKEN_TYPE_INDICES: SemanticTokenTypeIndices = SemanticTokenTypeIndices {
     type_: 0,
     class: 1,
-    interface: 2,
     parameter: 3,
     variable: 4,
     property: 5,
@@ -83,7 +81,9 @@ fn symbol_kind_type_index(kind: SymbolKind, ix: SemanticTokenTypeIndices) -> u32
     match kind {
         SymbolKind::BuiltinType | SymbolKind::TypeDef => ix.type_,
         SymbolKind::Class => ix.class,
-        SymbolKind::Interface => ix.interface,
+        // Many client themes do not style the dedicated `interface` token kind.
+        // Treat interfaces as general types so they render consistently.
+        SymbolKind::Interface => ix.type_,
         SymbolKind::Parameter => ix.parameter,
         SymbolKind::Method => ix.method,
         SymbolKind::Form | SymbolKind::Module | SymbolKind::BuiltinRoutine => ix.function,
@@ -250,7 +250,7 @@ fn collect_pending(
                     abap_cache::HoveredComponentKind::Structured { .. } => ty_ix.property,
                     abap_cache::HoveredComponentKind::Attribute => ty_ix.property,
                     abap_cache::HoveredComponentKind::Method => ty_ix.method,
-                    abap_cache::HoveredComponentKind::Interface => ty_ix.interface,
+                    abap_cache::HoveredComponentKind::Interface => ty_ix.type_,
                 })
                 .unwrap_or(ty_ix.property);
             push_pending(
@@ -622,7 +622,7 @@ ENDCLASS.",
     }
 
     #[test]
-    fn semantic_tokens_mark_interface_qualifier_in_qualified_call_as_interface() {
+    fn semantic_tokens_mark_interface_qualifier_in_qualified_call_as_type() {
         let store = DocumentStore::default();
         let src = "\
 INTERFACE i1.
@@ -644,11 +644,11 @@ lo_obj->i1~meth( ).";
         let snapshot = store.publish("file:///demo.abap", 1, src);
         let tokens = build_semantic_tokens(snapshot.as_ref());
         let legend = semantic_tokens_legend();
-        let interface_idx = legend
+        let type_idx = legend
             .token_types
             .iter()
-            .position(|t| *t == SemanticTokenType::INTERFACE)
-            .expect("legend has interface") as u32;
+            .position(|t| *t == SemanticTokenType::TYPE)
+            .expect("legend has type") as u32;
         let method_idx = legend
             .token_types
             .iter()
@@ -665,11 +665,62 @@ lo_obj->i1~meth( ).";
 
         assert_eq!(
             semantic_token_type_at(&tokens.data, call_line.0 as u32, i1_col),
-            Some(interface_idx)
+            Some(type_idx)
         );
         assert_eq!(
             semantic_token_type_at(&tokens.data, call_line.0 as u32, meth_col),
             Some(method_idx)
+        );
+    }
+
+    #[test]
+    fn semantic_tokens_mark_interface_names_in_declarations_and_impl_headers_as_type() {
+        let store = DocumentStore::default();
+        let src = "\
+INTERFACE /sttp/if_badi_rule_processing.
+  METHODS execute.
+ENDINTERFACE.
+
+CLASS zcl_demo DEFINITION.
+  PUBLIC SECTION.
+    INTERFACES /sttp/if_badi_rule_processing.
+ENDCLASS.
+
+CLASS zcl_demo IMPLEMENTATION.
+  METHOD /sttp/if_badi_rule_processing~execute.
+  ENDMETHOD.
+ENDCLASS.";
+        let snapshot = store.publish("file:///demo.abap", 1, src);
+        let tokens = build_semantic_tokens(snapshot.as_ref());
+        let legend = semantic_tokens_legend();
+        let type_idx = legend
+            .token_types
+            .iter()
+            .position(|t| *t == SemanticTokenType::TYPE)
+            .expect("legend has type") as u32;
+
+        let interfaces_line = src
+            .lines()
+            .enumerate()
+            .find(|(_, line)| line.contains("INTERFACES /sttp/if_badi_rule_processing"))
+            .expect("interfaces line");
+        let interfaces_col =
+            interfaces_line.1.find("/sttp/if_badi_rule_processing").expect("interfaces col") as u32;
+        assert_eq!(
+            semantic_token_type_at(&tokens.data, interfaces_line.0 as u32, interfaces_col),
+            Some(type_idx)
+        );
+
+        let impl_line = src
+            .lines()
+            .enumerate()
+            .find(|(_, line)| line.contains("METHOD /sttp/if_badi_rule_processing~execute"))
+            .expect("impl line");
+        let impl_col =
+            impl_line.1.find("/sttp/if_badi_rule_processing").expect("impl col") as u32;
+        assert_eq!(
+            semantic_token_type_at(&tokens.data, impl_line.0 as u32, impl_col),
+            Some(type_idx)
         );
     }
 }
