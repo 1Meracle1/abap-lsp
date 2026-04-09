@@ -248,6 +248,11 @@ pub const BUILTIN_SYMBOLS: &[BuiltinSymbolSpec] = &[
         kind: BuiltinTypeKind::Constant,
         structure_name: None,
     },
+    BuiltinSymbolSpec {
+        name: "text",
+        kind: BuiltinTypeKind::Variable,
+        structure_name: None,
+    },
 ];
 
 const ARG_STRING_PARAMS: &[BuiltinRoutineParamSpec] = &[

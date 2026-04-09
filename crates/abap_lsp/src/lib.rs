@@ -633,6 +633,16 @@ fn candidate_key_for_open_sql_source(snapshot: &AnalysisSnapshot, range: &Range)
     }))
 }
 
+fn candidate_key_for_unresolved_type_name(name: &str) -> Option<String> {
+    if !is_remote_lookup_candidate(name, "type") {
+        return None;
+    }
+    Some(remote_candidate_key(&RemoteDependencyCandidate {
+        name: name.to_string(),
+        kind: "type".to_string(),
+    }))
+}
+
 pub fn build_lsp_diagnostics_for_workspace(
     workspace: Option<&WorkspaceState>,
     snapshot: &AnalysisSnapshot,
@@ -646,30 +656,62 @@ pub fn build_lsp_diagnostics_for_workspace(
         let Some(severity) = diagnostic.severity else {
             continue;
         };
-        if severity != DiagnosticSeverity::WARNING
-            || diagnostic.source.as_deref() != Some("abap-symbols")
-            || !diagnostic
+        if diagnostic.source.as_deref() != Some("abap-symbols") {
+            continue;
+        }
+
+        if severity == DiagnosticSeverity::WARNING
+            && diagnostic
                 .message
                 .contains("DDIC/repository lookup is not connected")
         {
+            let Some(candidate_key) = candidate_key_for_open_sql_source(snapshot, &diagnostic.range)
+            else {
+                continue;
+            };
+            if !workspace.remote_lookup_failures.contains(&candidate_key) {
+                continue;
+            }
+
+            diagnostic.severity = Some(DiagnosticSeverity::ERROR);
+            if let Some(start) = diagnostic.message.find('\'') {
+                if let Some(end_rel) = diagnostic.message[start + 1..].find('\'') {
+                    let end = start + 1 + end_rel;
+                    let name = &diagnostic.message[start + 1..end];
+                    diagnostic.message = format!(
+                        "Open SQL source '{}' was not found in the connected SAP system during DDIC/repository lookup",
+                        name
+                    );
+                }
+            }
             continue;
         }
 
-        let Some(candidate_key) = candidate_key_for_open_sql_source(snapshot, &diagnostic.range)
-        else {
-            continue;
-        };
-        if !workspace.remote_lookup_failures.contains(&candidate_key) {
-            continue;
-        }
+        if severity == DiagnosticSeverity::ERROR
+            && diagnostic.message.starts_with("unknown type '")
+            && manifest_supports_remote_resolution(workspace.manifest.as_ref())
+        {
+            let Some(start) = diagnostic.message.find('\'') else {
+                continue;
+            };
+            let Some(end_rel) = diagnostic.message[start + 1..].find('\'') else {
+                continue;
+            };
+            let end = start + 1 + end_rel;
+            let name = &diagnostic.message[start + 1..end];
+            let Some(candidate_key) = candidate_key_for_unresolved_type_name(name) else {
+                continue;
+            };
 
-        diagnostic.severity = Some(DiagnosticSeverity::ERROR);
-        if let Some(start) = diagnostic.message.find('\'') {
-            if let Some(end_rel) = diagnostic.message[start + 1..].find('\'') {
-                let end = start + 1 + end_rel;
-                let name = &diagnostic.message[start + 1..end];
+            if workspace.remote_lookup_failures.contains(&candidate_key) {
                 diagnostic.message = format!(
-                    "Open SQL source '{}' was not found in the connected SAP system during DDIC/repository lookup",
+                    "Type '{}' was not found in the connected SAP system during DDIC/repository lookup",
+                    name
+                );
+            } else {
+                diagnostic.severity = Some(DiagnosticSeverity::WARNING);
+                diagnostic.message = format!(
+                    "Type '{}' is not verified against a SAP system (DDIC/repository lookup is not connected)",
                     name
                 );
             }
@@ -2686,6 +2728,85 @@ unknown_symbol_mode = "remote"
         assert!(diagnostics.iter().any(|diag| {
             diag.severity == Some(DiagnosticSeverity::ERROR)
                 && diag.message.contains("zattp_rs_leg_ctr")
+                && diag
+                    .message
+                    .contains("was not found in the connected SAP system")
+        }));
+
+        let _ = fs::remove_dir_all(&workspace_path);
+    }
+
+    #[test]
+    fn unresolved_remote_type_is_downgraded_to_warning_until_lookup_fails() {
+        let workspace_path = temp_workspace_path("unresolved_remote_type_lookup");
+        fs::create_dir_all(&workspace_path).expect("workspace dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[resolution]
+dependency_mode = "remote-on-demand"
+unknown_symbol_mode = "remote"
+"#,
+        )
+        .expect("manifest");
+        let workspace_uri = path_to_file_uri(&workspace_path);
+        let source_uri = format!("{workspace_uri}/main.abap");
+
+        let mut state = ServerState::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        let snapshot = publish_open_document_mut(
+            &mut state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str(&source_uri).expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: "DATA lt_objid TYPE /sttp/t_objid.".to_string(),
+                },
+            },
+        );
+
+        let workspace = state
+            .workspaces
+            .get(&normalize_lsp_uri(&workspace_uri))
+            .expect("workspace");
+        let initial = build_lsp_diagnostics_for_workspace(Some(workspace), snapshot.as_ref());
+        assert!(initial.iter().any(|diag| {
+            diag.severity == Some(DiagnosticSeverity::WARNING)
+                && diag.message.contains("/sttp/t_objid")
+                && diag
+                    .message
+                    .contains("DDIC/repository lookup is not connected")
+        }), "initial diagnostics: {initial:?}");
+
+        let snapshots = handle_remote_dependencies_updated(
+            &mut state,
+            &super::RemoteDependenciesUpdatedParams {
+                workspace_uri: workspace_uri.clone(),
+                source_uri: source_uri.clone(),
+                fetched: Vec::new(),
+                failed: vec![super::RemoteDependencyCandidate {
+                    name: "/sttp/t_objid".to_string(),
+                    kind: "type".to_string(),
+                }],
+            },
+        );
+        assert!(!snapshots.is_empty());
+
+        let workspace = state
+            .workspaces
+            .get(&normalize_lsp_uri(&workspace_uri))
+            .expect("workspace");
+        let snapshot = workspace
+            .cache
+            .get(&normalize_lsp_uri(&source_uri))
+            .expect("refreshed snapshot");
+        let diagnostics = build_lsp_diagnostics_for_workspace(Some(workspace), snapshot.as_ref());
+        assert!(diagnostics.iter().any(|diag| {
+            diag.severity == Some(DiagnosticSeverity::ERROR)
+                && diag.message.contains("/sttp/t_objid")
                 && diag
                     .message
                     .contains("was not found in the connected SAP system")

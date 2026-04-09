@@ -1121,6 +1121,86 @@ fn loop_where_reference_matches_source_field(
     })
 }
 
+fn reference_depends_on_unresolved_field_access_base(
+    unit: &crate::UnitAnalysis,
+    scope_index: &ScopeIndex,
+    reference: &crate::ReferenceData,
+) -> bool {
+    if reference.namespace != Namespace::Value || reference.kind != ReferenceKind::Identifier {
+        return false;
+    }
+
+    unit.field_accesses.iter().any(|access| {
+        let Some(base_symbol_id) = resolve_field_access_base_symbol(unit, scope_index, access) else {
+            return false;
+        };
+        let mut structure_id = unit.symbol(base_symbol_id).structure;
+        let mut declared_type = unit.symbol(base_symbol_id).declared_type.clone();
+        let matching_segment_idx = access.field_path.iter().position(|segment| {
+            segment.range == reference.range && segment.name.as_ref() == reference.name.as_ref()
+        });
+        let segment_idx = matching_segment_idx.unwrap_or(access.field_path.len());
+        if matching_segment_idx.is_none() {
+            let Some(last_segment) = access.field_path.last() else {
+                return false;
+            };
+            if access.scope != reference.scope
+                || last_segment.range.end > reference.range.start
+                || reference.range.start.saturating_sub(last_segment.range.end) > 16
+            {
+                return false;
+            }
+        }
+
+        for step in access.field_path.iter().take(segment_idx) {
+            if step.is_deref() {
+                let Some((next_structure_id, next_declared_type)) = dereference_field_metadata(
+                    unit,
+                    scope_index,
+                    access.scope,
+                    structure_id,
+                    declared_type,
+                ) else {
+                    return true;
+                };
+                structure_id = next_structure_id;
+                declared_type = next_declared_type;
+                continue;
+            }
+
+            (structure_id, declared_type) = normalize_field_metadata(
+                unit,
+                scope_index,
+                access.scope,
+                structure_id,
+                declared_type,
+            );
+            let Some(current_structure_id) = structure_id else {
+                return true;
+            };
+            let Some(field) = unit
+                .structure(current_structure_id)
+                .fields
+                .iter()
+                .find(|field| field.name.as_ref() == step.name.as_ref())
+            else {
+                return false;
+            };
+            structure_id = field.structure;
+            declared_type = field.type_ref.clone();
+        }
+
+        let (structure_id, _) = normalize_field_metadata(
+            unit,
+            scope_index,
+            access.scope,
+            structure_id,
+            declared_type,
+        );
+        structure_id.is_none()
+    })
+}
+
 fn symbol_is_internal_table(
     project: &ProjectAnalysis,
     unit: &crate::UnitAnalysis,
@@ -1368,6 +1448,9 @@ pub(crate) fn validate_project_with_scope_indexes(
                 continue;
             }
             if loop_where_reference_matches_source_field(project, unit, scope_indexes, reference) {
+                continue;
+            }
+            if reference_depends_on_unresolved_field_access_base(unit, &scope_index, reference) {
                 continue;
             }
             if reference.namespace == Namespace::Value

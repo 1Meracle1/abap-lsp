@@ -83,6 +83,39 @@ impl<'a> Collector<'a> {
                         idx = self.collect_new_expression_infos(tokens, idx, scope);
                         continue;
                     }
+                    if self.token_starts_constructor_expression(tokens, idx) {
+                        idx = self.collect_constructor_expression_infos(tokens, idx, scope);
+                        continue;
+                    }
+                    if self.token_starts_bare_routine_call(tokens, idx) {
+                        self.add_reference(
+                            scope,
+                            Self::lower_arc(text),
+                            Namespace::Routine,
+                            ReferenceKind::RoutineCall,
+                            token.range.clone(),
+                        );
+                        if let Some(end_idx) =
+                            self.find_matching_group_end_infos(tokens, idx + 1, "(", ")")
+                        {
+                            let target = if crate::builtins::builtin_routine_spec(text).is_some() {
+                                NamedArgumentTarget::Routine {
+                                    routine_name: Self::lower_arc(text),
+                                }
+                            } else {
+                                NamedArgumentTarget::ImplicitMethod {
+                                    method_name: Self::lower_arc(text),
+                                }
+                            };
+                            self.expr_lowering().collect_named_arguments_from_infos(
+                                &tokens[idx + 2..end_idx],
+                                scope,
+                                target,
+                            );
+                            idx = end_idx + 1;
+                            continue;
+                        }
+                    }
                     if let Some((
                         next_idx,
                         namespace,
@@ -168,6 +201,95 @@ impl<'a> Collector<'a> {
                 }
             }
         }
+    }
+
+    fn token_starts_bare_routine_call(&self, tokens: &[SyntaxTokenInfo], idx: usize) -> bool {
+        let Some(token) = tokens.get(idx) else {
+            return false;
+        };
+        let Some(next) = tokens.get(idx + 1) else {
+            return false;
+        };
+        if next.text.as_ref() != "(" || self.syntax_tokens_have_space_between(token, next) {
+            return false;
+        }
+        !matches!(
+            token.text.to_ascii_uppercase().as_str(),
+            "COND"
+                | "CONV"
+                | "CORRESPONDING"
+                | "EXACT"
+                | "FILTER"
+                | "NEW"
+                | "REDUCE"
+                | "REF"
+                | "SWITCH"
+                | "VALUE"
+                | "CAST"
+        )
+    }
+
+    fn token_starts_constructor_expression(&self, tokens: &[SyntaxTokenInfo], idx: usize) -> bool {
+        let Some(token) = tokens.get(idx) else {
+            return false;
+        };
+        matches!(
+            token.text.to_ascii_uppercase().as_str(),
+            "COND"
+                | "CONV"
+                | "CORRESPONDING"
+                | "EXACT"
+                | "FILTER"
+                | "REDUCE"
+                | "REF"
+                | "SWITCH"
+                | "VALUE"
+                | "CAST"
+        )
+    }
+
+    fn collect_constructor_expression_infos(
+        &mut self,
+        tokens: &[SyntaxTokenInfo],
+        idx: usize,
+        scope: ScopeId,
+    ) -> usize {
+        let mut cursor = idx + 1;
+        while tokens
+            .get(cursor)
+            .is_some_and(|token| self.syntax_token_is_comment(token))
+        {
+            cursor += 1;
+        }
+        let Some(lparen_idx) = tokens[cursor..]
+            .iter()
+            .position(|token| token.text.as_ref() == "(")
+            .map(|relative| cursor + relative)
+        else {
+            return idx + 1;
+        };
+
+        let keyword = tokens[idx].text.to_ascii_uppercase();
+        let type_tokens = &tokens[cursor..lparen_idx];
+        if let Some((name, range)) = self.simple_type_ref_base_from_infos(type_tokens) {
+            self.add_reference(scope, name, Namespace::Type, ReferenceKind::TypeRef, range);
+        }
+
+        let Some(rparen_idx) = self.find_matching_group_end_infos(tokens, lparen_idx, "(", ")")
+        else {
+            return lparen_idx + 1;
+        };
+        let inner = &tokens[lparen_idx + 1..rparen_idx];
+        match keyword.as_str() {
+            "VALUE" => self
+                .expr_lowering()
+                .collect_value_constructor_tokens_infos(inner, scope),
+            "COND" => self
+                .expr_lowering()
+                .collect_cond_constructor_tokens_infos(inner, scope),
+            _ => self.collect_token_expression_refs_infos(inner, scope, true),
+        }
+        rparen_idx + 1
     }
 
     fn collect_string_template_infos(
@@ -551,6 +673,9 @@ impl<'a> Collector<'a> {
             || token.text.eq_ignore_ascii_case("ref")
             || token.text.eq_ignore_ascii_case("to")
             || token.text.eq_ignore_ascii_case("not")
+            || token.text.eq_ignore_ascii_case("when")
+            || token.text.eq_ignore_ascii_case("then")
+            || token.text.eq_ignore_ascii_case("else")
         {
             return false;
         }

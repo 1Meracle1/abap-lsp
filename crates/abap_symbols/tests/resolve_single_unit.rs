@@ -4674,6 +4674,237 @@ DATA(isodate) = COND string(
 }
 
 #[test]
+fn resolves_cond_leading_let_bindings() {
+    let src = r#"
+DATA(lv_text) = COND string(
+  LET noon = '120000'
+  IN
+  WHEN sy-timlo < noon THEN |AM|
+  ELSE |PM| ).
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///cond_leading_let.abap", src, &parsed);
+
+    for name in ["sy", "noon"] {
+        assert!(
+            unit.references.iter().any(|reference| {
+                reference.namespace == Namespace::Value
+                    && reference.kind == ReferenceKind::Identifier
+                    && reference.name.as_ref() == name
+                    && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+            }),
+            "expected resolved COND leading LET reference for `{name}`, refs={:?} diagnostics={:?}",
+            unit.references,
+            unit.diagnostics
+        );
+    }
+
+    assert!(
+        unit.symbols.iter().any(|symbol| symbol.name.as_ref() == "noon"),
+        "expected LET symbol declaration, symbols={:?}",
+        unit.symbols
+    );
+
+    for keyword in ["let", "in", "when", "then", "else"] {
+        assert!(
+            !unit
+                .references
+                .iter()
+                .any(|reference| reference.name.as_ref() == keyword),
+            "unexpected keyword reference `{keyword}`, refs={:?}",
+            unit.references
+        );
+        assert!(
+            !unit.diagnostics.iter().any(|diag| {
+                diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains(keyword)
+            }),
+            "unexpected unresolved diagnostic for `{keyword}`: {:?}",
+            unit.diagnostics
+        );
+    }
+
+    assert!(
+        !unit
+            .diagnostics
+            .iter()
+            .any(|diag| diag.kind == DiagnosticKind::UnresolvedReference),
+        "unexpected unresolved diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn resolves_bare_method_calls_inside_cond_and_value_let_expressions() {
+    let src = r#"
+TYPES stringtab TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run.
+  PRIVATE SECTION.
+    METHODS get_objid
+      IMPORTING iv_raw TYPE string
+      RETURNING VALUE(rv_text) TYPE string.
+    METHODS get_object_hry
+      IMPORTING it_objid TYPE STANDARD TABLE OF string
+      RETURNING VALUE(rt_objid) TYPE STANDARD TABLE OF string.
+    METHODS get_unavailable_obj_pda
+      IMPORTING it_child_obj TYPE STANDARD TABLE OF string
+      RETURNING VALUE(rt_objid) TYPE STANDARD TABLE OF string.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+    DATA(iv_raw) = `A`.
+    DATA(result) = LET lt_extpda2 =
+      get_unavailable_obj_pda(
+        it_child_obj = get_object_hry(
+          it_objid = VALUE stringtab( ( get_objid( iv_raw = iv_raw ) ) ) ) )
+      IN
+      COND stringtab(
+        WHEN lt_extpda2 IS INITIAL
+        THEN VALUE #( ( get_objid( iv_raw = iv_raw ) ) )
+        ELSE VALUE #( ) ).
+  ENDMETHOD.
+
+  METHOD get_objid.
+    rv_text = iv_raw.
+  ENDMETHOD.
+
+  METHOD get_object_hry.
+    rt_objid = it_objid.
+  ENDMETHOD.
+
+  METHOD get_unavailable_obj_pda.
+    rt_objid = it_child_obj.
+  ENDMETHOD.
+ENDCLASS.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///cond_value_method_calls.abap", src, &parsed);
+
+    for name in ["get_unavailable_obj_pda", "get_object_hry", "get_objid"] {
+        assert!(
+            unit.references.iter().any(|reference| {
+                reference.namespace == Namespace::Routine
+                    && reference.kind == ReferenceKind::RoutineCall
+                    && reference.name.as_ref() == name
+                    && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+            }),
+            "expected resolved routine call for `{name}`, refs={:?} diagnostics={:?}",
+            unit.references,
+            unit.diagnostics
+        );
+    }
+
+    for name in ["iv_raw", "lt_extpda2"] {
+        assert!(
+            unit.references.iter().any(|reference| {
+                reference.namespace == Namespace::Value
+                    && reference.kind == ReferenceKind::Identifier
+                    && reference.name.as_ref() == name
+                    && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+            }),
+            "expected resolved value reference for `{name}`, refs={:?} diagnostics={:?}",
+            unit.references,
+            unit.diagnostics
+        );
+    }
+
+    for name in ["get_unavailable_obj_pda", "get_object_hry", "get_objid"] {
+        assert!(
+            !unit.diagnostics.iter().any(|diag| {
+                diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains(name)
+            }),
+            "unexpected unresolved diagnostic for `{name}`: {:?}",
+            unit.diagnostics
+        );
+    }
+}
+
+#[test]
+fn suppresses_dependent_field_reference_when_base_type_is_unknown() {
+    let src = r#"
+DATA is_response TYPE /sttp/unknown_response.
+DATA(lt_codes) = VALUE #( is_response-data[ 1 ]-kodovi OPTIONAL ).
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///unknown_base_type_field.abap", src, &parsed);
+
+    assert!(
+        unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference
+                && diag.message.contains("/sttp/unknown_response")
+        }),
+        "expected unknown type diagnostic, diagnostics={:?}",
+        unit.diagnostics
+    );
+
+    assert!(
+        !unit.diagnostics.iter().any(|diag| diag.message.contains("kodovi")),
+        "unexpected dependent diagnostic for `kodovi`, diagnostics={:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn treats_text_pool_selector_base_as_builtin_value_symbol() {
+    let src = r#"
+DATA(lv_status) = COND string(
+  WHEN abap_true = abap_true THEN TEXT-005
+  ELSE TEXT-006 ).
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///text_pool_cond.abap", src, &parsed);
+
+    assert!(
+        unit.references.iter().any(|reference| {
+            reference.namespace == Namespace::Value
+                && reference.kind == ReferenceKind::Identifier
+                && reference.name.as_ref() == "text"
+                && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+        }),
+        "expected resolved builtin TEXT base reference, refs={:?} diagnostics={:?}",
+        unit.references,
+        unit.diagnostics
+    );
+
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference
+                && diag.message.contains("unknown symbol 'text'")
+        }),
+        "unexpected TEXT base unresolved diagnostic: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn suppresses_cond_clause_keywords_inside_value_named_argument() {
+    let src = r#"
+DATA(is_response) = VALUE stringtab( ).
+DATA(ls_item) = VALUE string(
+  LET lv_text = `fallback` IN
+  COND #( WHEN abap_true = abap_true THEN lv_text ELSE TEXT-001 ) ).
+
+DATA(ls_row) = VALUE stringtab(
+  ( COND #( WHEN abap_true = abap_true THEN `ok` ELSE TEXT-001 ) ) ).
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///value_named_arg_cond_keywords.abap", src, &parsed);
+
+    for keyword in ["when", "then", "else"] {
+        assert!(
+            !unit.diagnostics.iter().any(|diag| {
+                diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains(keyword)
+            }),
+            "unexpected unresolved diagnostic for `{keyword}`: {:?}",
+            unit.diagnostics
+        );
+    }
+}
+
+#[test]
 fn resolves_value_let_with_string_templates_without_literal_diagnostics() {
     let src = r#"
 TYPES: stringtab TYPE STANDARD TABLE OF string WITH EMPTY KEY.

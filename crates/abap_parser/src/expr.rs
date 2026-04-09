@@ -980,6 +980,14 @@ impl<'a, 'b> Parser<'a, 'b> {
                 self.parse_cond_when_clause(idx, clause_end)
             } else if ident_eq(self.source, token, "ELSE") {
                 self.parse_cond_else_clause(idx, clause_end)
+            } else if ident_eq(self.source, token, "LET") {
+                self.build_raw_let_expr(&self.tokens[idx..clause_end]).map(|value| {
+                    self.b.branch(
+                        SyntaxKind::CallPositionalArg,
+                        self.b.span(value).start..self.b.span(value).end,
+                        &[value],
+                    )
+                })
             } else {
                 self.build_raw_call_positional_arg(&self.tokens[idx..clause_end])
             };
@@ -1790,6 +1798,22 @@ mod tests {
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::ConstructorExpr), 1);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::LetExpr), 1);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::CallArgList), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
+    }
+
+    #[test]
+    fn cond_constructor_with_leading_let_parses() {
+        let parsed = crate::parse(
+            "DATA(lv_text) = COND string( LET t = '120000' IN WHEN sy-timlo < t THEN |AM| ELSE |PM| ).",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::ConstructorExpr), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::CallArgList), 1);
+        assert_eq!(
+            parsed.file.count_kind(root, SyntaxKind::CallPositionalArg),
+            3
+        );
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
     }
 
