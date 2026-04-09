@@ -4575,6 +4575,153 @@ DATA(ls_obj_itm) = VALUE ty_item( objid = 'X' ).
 }
 
 #[test]
+fn resolves_value_for_let_bindings_from_project_shape() {
+    let src = r#"
+TYPES: BEGIN OF ty_obj,
+         objid TYPE string,
+       END OF ty_obj,
+       ty_obj_tab TYPE STANDARD TABLE OF ty_obj WITH EMPTY KEY,
+       BEGIN OF ty_selopt,
+         sign TYPE c LENGTH 1,
+         option TYPE c LENGTH 2,
+         low TYPE string,
+       END OF ty_selopt,
+       rseloption TYPE STANDARD TABLE OF ty_selopt WITH EMPTY KEY.
+
+DATA it_objids TYPE ty_obj_tab.
+
+DATA(lr_obj_ids) = VALUE rseloption(
+  FOR ls_ids IN it_objids
+    LET s = 'I'
+        o = 'EQ'
+    IN sign = s
+       option = o
+       ( low = ls_ids-objid ) ).
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///value_for_let.abap", src, &parsed);
+
+    for name in ["it_objids", "ls_ids", "s", "o"] {
+        assert!(
+            unit.references.iter().any(|reference| {
+                reference.namespace == Namespace::Value
+                    && reference.kind == ReferenceKind::Identifier
+                    && reference.name.as_ref() == name
+                    && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+            }),
+            "expected resolved VALUE FOR LET reference for `{name}`, refs={:?} diagnostics={:?}",
+            unit.references,
+            unit.diagnostics
+        );
+    }
+
+    for keyword in ["for", "let", "in"] {
+        assert!(
+            !unit
+                .diagnostics
+                .iter()
+                .any(|diag| diag.kind == DiagnosticKind::UnresolvedReference
+                    && diag.message.contains(keyword)),
+            "unexpected unresolved diagnostic for `{keyword}`: {:?}",
+            unit.diagnostics
+        );
+    }
+}
+
+#[test]
+fn resolves_value_conditional_for_iteration_bindings() {
+    let src = r#"
+DATA lv_limit TYPE i VALUE 3.
+DATA(text) = VALUE stringtab(
+  FOR n = 1 UNTIL n > lv_limit
+  ( |{ n }| ) ).
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///value_conditional_for.abap", src, &parsed);
+
+    for name in ["lv_limit", "n"] {
+        assert!(
+            unit.references.iter().any(|reference| {
+                reference.namespace == Namespace::Value
+                    && reference.kind == ReferenceKind::Identifier
+                    && reference.name.as_ref() == name
+                    && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+            }),
+            "expected resolved conditional FOR reference for `{name}`, refs={:?} diagnostics={:?}",
+            unit.references,
+            unit.diagnostics
+        );
+    }
+
+    for keyword in ["for", "until"] {
+        assert!(
+            !unit
+                .diagnostics
+                .iter()
+                .any(|diag| diag.kind == DiagnosticKind::UnresolvedReference
+                    && diag.message.contains(keyword)),
+            "unexpected unresolved diagnostic for `{keyword}`: {:?}",
+            unit.diagnostics
+        );
+    }
+
+    let n_symbol = unit
+        .symbols
+        .iter()
+        .find(|symbol| symbol.name.as_ref() == "n")
+        .expect("conditional FOR variable");
+    let declared_type = n_symbol
+        .declared_type
+        .as_ref()
+        .expect("conditional FOR variable type");
+    assert_eq!(declared_type.namespace, Namespace::Type);
+    assert_eq!(declared_type.base_name.as_ref(), "i");
+    assert!(!declared_type.is_ref);
+    assert!(declared_type.field_path.is_empty());
+}
+
+#[test]
+fn resolves_reduce_for_iteration_and_accumulator_bindings() {
+    let src = r#"
+TYPES ty_inttab TYPE STANDARD TABLE OF i WITH EMPTY KEY.
+
+DATA lt_rep TYPE ty_inttab.
+DATA(lv_rep) = REDUCE i(
+  INIT x = 0
+  FOR wa IN lt_rep
+  NEXT x = x + wa ).
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///reduce_for.abap", src, &parsed);
+
+    for name in ["lt_rep", "wa", "x"] {
+        assert!(
+            unit.references.iter().any(|reference| {
+                reference.namespace == Namespace::Value
+                    && reference.kind == ReferenceKind::Identifier
+                    && reference.name.as_ref() == name
+                    && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+            }),
+            "expected resolved REDUCE reference for `{name}`, refs={:?} diagnostics={:?}",
+            unit.references,
+            unit.diagnostics
+        );
+    }
+
+    for keyword in ["init", "for", "in", "next"] {
+        assert!(
+            !unit
+                .diagnostics
+                .iter()
+                .any(|diag| diag.kind == DiagnosticKind::UnresolvedReference
+                    && diag.message.contains(keyword)),
+            "unexpected unresolved diagnostic for `{keyword}`: {:?}",
+            unit.diagnostics
+        );
+    }
+}
+
+#[test]
 fn resolves_replace_statement_operands_and_targets() {
     let src = r#"
 CLASS zattp_cl_rep_constants DEFINITION.

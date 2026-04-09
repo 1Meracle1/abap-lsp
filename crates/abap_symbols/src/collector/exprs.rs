@@ -29,6 +29,15 @@ impl<'a> Collector<'a> {
 }
 
 impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
+    fn builtin_type(name: &'static str) -> FieldTypeRefData {
+        FieldTypeRefData {
+            namespace: Namespace::Type,
+            is_ref: false,
+            base_name: Arc::<str>::from(name),
+            field_path: Vec::new(),
+        }
+    }
+
     fn kind(&self, node: NodeId) -> SyntaxKind {
         self.ctx.file().kind(node)
     }
@@ -44,6 +53,41 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
             .find(|&child| self.kind(child) == SyntaxKind::Token)
             .and_then(|child| self.ctx.syntax(child).text(self.source()))
             .map(|text| Arc::<str>::from(text.to_ascii_lowercase()))
+    }
+
+    fn inferred_metadata_from_tokens(
+        &self,
+        tokens: &[super::SyntaxTokenInfo],
+        scope: ScopeId,
+    ) -> (Option<StructureId>, Option<FieldTypeRefData>) {
+        let tokens: Vec<_> = tokens
+            .iter()
+            .filter(|token| !self.ctx.syntax_token_is_comment(token))
+            .cloned()
+            .collect();
+        let Some(first) = tokens.first() else {
+            return (None, None);
+        };
+        if tokens.len() == 1 {
+            let text = first.text.as_ref();
+            if text.chars().all(|ch| ch.is_ascii_digit()) {
+                return (None, Some(Self::builtin_type("i")));
+            }
+            if text.starts_with('`') && text.ends_with('`') {
+                return (None, Some(Self::builtin_type("string")));
+            }
+            if self.ctx.syntax_token_is_ident_like(first)
+                && let Some(symbol_id) =
+                    self.ctx
+                        .lookup_symbol_in_scope_chain(scope, Namespace::Value, text)
+            {
+                return (
+                    self.ctx.symbol_structure(symbol_id),
+                    self.ctx.symbol_declared_type(symbol_id),
+                );
+            }
+        }
+        (None, None)
     }
 
     pub(super) fn collect_expr(&mut self, node: NodeId, scope: ScopeId) {
@@ -87,6 +131,11 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                         );
                     } else if constructor_keyword.as_deref() == Some("value") {
                         self.collect_value_constructor_arg_list(arg_list, scope);
+                    } else if constructor_keyword.as_deref() == Some("reduce") {
+                        let tokens = self.ctx.syntax_token_nodes(arg_list);
+                        if tokens.len() >= 2 {
+                            self.collect_reduce_constructor_tokens(&tokens[1..tokens.len() - 1], scope);
+                        }
                     } else {
                         self.collect_structured_argument_values_from_children(arg_list, scope);
                     }
@@ -154,6 +203,15 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
         let Some(arg_list) = CallArgList::cast(self.ctx.syntax(node)) else {
             return;
         };
+        let arg_list_tokens = self.ctx.syntax_token_nodes(node);
+        if arg_list_tokens.len() >= 2
+            && arg_list_tokens[1..arg_list_tokens.len() - 1].iter().any(|token| {
+                token.text.eq_ignore_ascii_case("FOR") || token.text.eq_ignore_ascii_case("LET")
+            })
+        {
+            self.collect_value_constructor_tokens(&arg_list_tokens[1..arg_list_tokens.len() - 1], scope);
+            return;
+        }
         let items: Vec<_> = arg_list
             .items()
             .map(|child| (child.id(), child.kind()))
@@ -230,9 +288,21 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                     self.collect_value_for_clause(tokens, idx, scope);
                     return;
                 }
+                text if text.eq_ignore_ascii_case("LET") => {
+                    self.collect_value_token_segment(&tokens[segment_start..idx], scope);
+                    self.collect_let_expression(tokens, idx, scope);
+                    return;
+                }
                 text if text.eq_ignore_ascii_case("OPTIONAL") => {
                     self.collect_value_token_segment(&tokens[segment_start..idx], scope);
                     idx += 1;
+                    segment_start = idx;
+                }
+                _ if self.is_named_assignment_start(tokens, idx) => {
+                    self.collect_value_token_segment(&tokens[segment_start..idx], scope);
+                    let value_end = self.constructor_assignment_value_end(tokens, idx + 2);
+                    self.collect_value_constructor_tokens(&tokens[idx + 2..value_end], scope);
+                    idx = value_end;
                     segment_start = idx;
                 }
                 "(" | "[" | "{" => {
@@ -329,6 +399,144 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
         idx
     }
 
+    fn find_top_level_keyword(
+        &self,
+        tokens: &[super::SyntaxTokenInfo],
+        start: usize,
+        keywords: &[&str],
+    ) -> Option<usize> {
+        let mut paren = 0i32;
+        let mut bracket = 0i32;
+        let mut brace = 0i32;
+        let mut idx = start;
+        while idx < tokens.len() {
+            let token = &tokens[idx];
+            match token.text.as_ref() {
+                "(" => paren += 1,
+                ")" => paren -= 1,
+                "[" => bracket += 1,
+                "]" => bracket -= 1,
+                "{" => brace += 1,
+                "}" => brace -= 1,
+                _ => {}
+            }
+            if paren == 0
+                && bracket == 0
+                && brace == 0
+                && keywords
+                    .iter()
+                    .any(|keyword| token.text.eq_ignore_ascii_case(keyword))
+            {
+                return Some(idx);
+            }
+            idx += 1;
+        }
+        None
+    }
+
+    fn constructor_assignment_value_end(
+        &self,
+        tokens: &[super::SyntaxTokenInfo],
+        start: usize,
+    ) -> usize {
+        let mut paren = 0i32;
+        let mut bracket = 0i32;
+        let mut brace = 0i32;
+        let mut idx = start;
+        while idx < tokens.len() {
+            let token = &tokens[idx];
+            match token.text.as_ref() {
+                "(" => paren += 1,
+                ")" => paren -= 1,
+                "[" => bracket += 1,
+                "]" => bracket -= 1,
+                "{" => brace += 1,
+                "}" => brace -= 1,
+                _ => {}
+            }
+            if paren == 0 && bracket == 0 && brace == 0 {
+                if token.text.eq_ignore_ascii_case("FOR")
+                    || token.text.eq_ignore_ascii_case("LET")
+                    || token.text.eq_ignore_ascii_case("IN")
+                    || token.text.eq_ignore_ascii_case("BASE")
+                    || token.text.eq_ignore_ascii_case("OPTIONAL")
+                    || token.text.eq_ignore_ascii_case("INIT")
+                    || token.text.eq_ignore_ascii_case("NEXT")
+                    || token.text.eq_ignore_ascii_case("WHERE")
+                    || token.text.eq_ignore_ascii_case("UNTIL")
+                    || token.text.eq_ignore_ascii_case("WHILE")
+                    || token.text.eq_ignore_ascii_case("THEN")
+                {
+                    break;
+                }
+                if self.is_named_assignment_start(tokens, idx) {
+                    break;
+                }
+            }
+            idx += 1;
+        }
+        idx
+    }
+
+    fn is_named_assignment_start(&self, tokens: &[super::SyntaxTokenInfo], idx: usize) -> bool {
+        self.ctx.syntax_token_is_ident_like(&tokens[idx])
+            && tokens.get(idx + 1).map(|next| next.text.as_ref()) == Some("=")
+    }
+
+    fn collect_let_expression(
+        &mut self,
+        tokens: &[super::SyntaxTokenInfo],
+        start: usize,
+        scope: ScopeId,
+    ) {
+        let Some(in_idx) = self.find_top_level_keyword(tokens, start + 1, &["IN"]) else {
+            self.ctx
+                .collect_token_expression_refs_infos(&tokens[start..], scope, true);
+            return;
+        };
+        let Some(last) = tokens.last() else {
+            return;
+        };
+        let let_scope = self.ctx.push_scope(
+            crate::scope::ScopeKind::LoopBlock,
+            tokens[start].range.start..last.range.end,
+            Some(scope),
+            None,
+        );
+
+        let mut idx = start + 1;
+        while idx < in_idx {
+            if self.ctx.syntax_token_is_comment(&tokens[idx]) {
+                idx += 1;
+                continue;
+            }
+            if !self.is_named_assignment_start(tokens, idx) {
+                self.ctx
+                    .collect_token_expression_refs_infos(&tokens[idx..in_idx], let_scope, true);
+                break;
+            }
+            let name_tok = &tokens[idx];
+            let value_end = self.constructor_assignment_value_end(&tokens[..in_idx], idx + 2);
+            self.ctx.collect_token_expression_refs_infos(
+                &tokens[idx + 2..value_end],
+                let_scope,
+                true,
+            );
+            self.ctx.declare_symbol(
+                let_scope,
+                Arc::<str>::from(name_tok.text.to_ascii_lowercase()),
+                SymbolKind::Variable,
+                name_tok.range.clone(),
+                None,
+                None,
+                None,
+            );
+            idx = value_end;
+        }
+
+        self.collect_value_constructor_tokens(&tokens[in_idx + 1..], let_scope);
+    }
+
     fn collect_value_for_clause(
         &mut self,
         tokens: &[super::SyntaxTokenInfo],
@@ -338,11 +546,22 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
         let Some(name_tok) = tokens.get(start + 1) else {
             return;
         };
-        let Some(in_tok) = tokens.get(start + 2) else {
+        let Some(third_tok) = tokens.get(start + 2) else {
             return;
         };
-        if !self.ctx.syntax_token_is_ident_like(name_tok) || !in_tok.text.eq_ignore_ascii_case("IN")
-        {
+
+        if !self.ctx.syntax_token_is_ident_like(name_tok) {
+            self.ctx
+                .collect_token_expression_refs_infos(&tokens[start + 1..], scope, true);
+            return;
+        }
+
+        if third_tok.text.as_ref() == "=" {
+            self.collect_conditional_for_clause(tokens, start, scope);
+            return;
+        }
+
+        if !third_tok.text.eq_ignore_ascii_case("IN") {
             self.ctx
                 .collect_token_expression_refs_infos(&tokens[start + 1..], scope, true);
             return;
@@ -372,6 +591,389 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
             None,
         );
         self.collect_value_constructor_tokens(&tokens[source_end..], child_scope);
+    }
+
+    fn collect_conditional_for_clause(
+        &mut self,
+        tokens: &[super::SyntaxTokenInfo],
+        start: usize,
+        scope: ScopeId,
+    ) {
+        let Some(name_tok) = tokens.get(start + 1) else {
+            return;
+        };
+        let Some(term_idx) =
+            self.find_top_level_keyword(tokens, start + 3, &["THEN", "UNTIL", "WHILE"])
+        else {
+            self.ctx
+                .collect_token_expression_refs_infos(&tokens[start + 1..], scope, true);
+            return;
+        };
+
+        self.ctx
+            .collect_token_expression_refs_infos(&tokens[start + 3..term_idx], scope, true);
+        let (structure, declared_type) =
+            self.inferred_metadata_from_tokens(&tokens[start + 3..term_idx], scope);
+
+        let Some(last) = tokens.last() else {
+            return;
+        };
+        let child_scope = self.ctx.push_scope(
+            crate::scope::ScopeKind::LoopBlock,
+            name_tok.range.start..last.range.end,
+            Some(scope),
+            None,
+        );
+        self.ctx.declare_symbol(
+            child_scope,
+            Arc::<str>::from(name_tok.text.to_ascii_lowercase()),
+            SymbolKind::Variable,
+            name_tok.range.clone(),
+            structure,
+            declared_type,
+            None,
+        );
+
+        let mut cursor = term_idx;
+        if tokens[cursor].text.eq_ignore_ascii_case("THEN") {
+            let Some(next_term_idx) =
+                self.find_top_level_keyword(tokens, cursor + 1, &["UNTIL", "WHILE"])
+            else {
+                self.ctx
+                    .collect_token_expression_refs_infos(&tokens[cursor + 1..], child_scope, true);
+                return;
+            };
+            self.ctx.collect_token_expression_refs_infos(
+                &tokens[cursor + 1..next_term_idx],
+                child_scope,
+                true,
+            );
+            cursor = next_term_idx;
+        }
+
+        let condition_end = self
+            .find_top_level_keyword(tokens, cursor + 1, &["LET", "FOR", "NEXT"])
+            .unwrap_or(tokens.len());
+        self.ctx.collect_token_expression_refs_infos(
+            &tokens[cursor + 1..condition_end],
+            child_scope,
+            true,
+        );
+
+        if condition_end < tokens.len() && tokens[condition_end].text.eq_ignore_ascii_case("LET") {
+            self.collect_let_expression(tokens, condition_end, child_scope);
+        } else {
+            self.collect_value_constructor_tokens(&tokens[condition_end..], child_scope);
+        }
+    }
+
+    fn collect_reduce_constructor_tokens(
+        &mut self,
+        tokens: &[super::SyntaxTokenInfo],
+        scope: ScopeId,
+    ) {
+        if tokens.is_empty() {
+            return;
+        }
+        if tokens[0].text.eq_ignore_ascii_case("LET") {
+            self.collect_let_expression(tokens, 0, scope);
+            return;
+        }
+        let Some(init_idx) = self.find_top_level_keyword(tokens, 0, &["INIT"]) else {
+            self.ctx.collect_token_expression_refs_infos(tokens, scope, true);
+            return;
+        };
+        let Some(for_idx) = self.find_top_level_keyword(tokens, init_idx + 1, &["FOR"]) else {
+            self.ctx
+                .collect_token_expression_refs_infos(&tokens[init_idx + 1..], scope, true);
+            return;
+        };
+        let Some(last) = tokens.last() else {
+            return;
+        };
+        let reduce_scope = self.ctx.push_scope(
+            crate::scope::ScopeKind::LoopBlock,
+            tokens[init_idx].range.start..last.range.end,
+            Some(scope),
+            None,
+        );
+        self.collect_reduce_init_decls(tokens, init_idx + 1, for_idx, scope, reduce_scope);
+        self.collect_reduce_tail(&tokens[for_idx..], reduce_scope);
+    }
+
+    fn collect_reduce_init_decls(
+        &mut self,
+        tokens: &[super::SyntaxTokenInfo],
+        start: usize,
+        end: usize,
+        value_scope: ScopeId,
+        decl_scope: ScopeId,
+    ) {
+        let mut idx = start;
+        while idx < end {
+            if self.ctx.syntax_token_is_comment(&tokens[idx]) {
+                idx += 1;
+                continue;
+            }
+            if self.is_named_assignment_start(tokens, idx) {
+                let name_tok = &tokens[idx];
+                let value_end = self.constructor_assignment_value_end(&tokens[..end], idx + 2);
+                self.ctx.collect_token_expression_refs_infos(
+                    &tokens[idx + 2..value_end],
+                    value_scope,
+                    true,
+                );
+                self.ctx.declare_symbol(
+                    decl_scope,
+                    Arc::<str>::from(name_tok.text.to_ascii_lowercase()),
+                    SymbolKind::Variable,
+                    name_tok.range.clone(),
+                    None,
+                    None,
+                    None,
+                );
+                idx = value_end;
+                continue;
+            }
+            if self.ctx.syntax_token_is_ident_like(&tokens[idx])
+                && tokens
+                    .get(idx + 1)
+                    .is_some_and(|token| token.text.eq_ignore_ascii_case("TYPE"))
+            {
+                let name_tok = &tokens[idx];
+                self.ctx.declare_symbol(
+                    decl_scope,
+                    Arc::<str>::from(name_tok.text.to_ascii_lowercase()),
+                    SymbolKind::Variable,
+                    name_tok.range.clone(),
+                    None,
+                    None,
+                    None,
+                );
+                idx += 2;
+                while idx < end
+                    && !self.ctx.syntax_token_is_comment(&tokens[idx])
+                    && !self.is_named_assignment_start(tokens, idx)
+                    && !tokens[idx].text.eq_ignore_ascii_case("FOR")
+                {
+                    idx += 1;
+                }
+                continue;
+            }
+            self.ctx
+                .collect_token_expression_refs_infos(&tokens[idx..end], value_scope, true);
+            break;
+        }
+    }
+
+    fn collect_reduce_tail(&mut self, tokens: &[super::SyntaxTokenInfo], scope: ScopeId) {
+        if tokens.is_empty() {
+            return;
+        }
+        let Some(next_idx) = self.find_top_level_keyword(tokens, 0, &["NEXT"]) else {
+            self.collect_reduce_iteration_chain(tokens, scope);
+            return;
+        };
+        let next_scope = self.collect_reduce_iteration_chain(&tokens[..next_idx], scope);
+        self.collect_reduce_next_assignments(&tokens[next_idx + 1..], next_scope);
+    }
+
+    fn collect_reduce_next_assignments(
+        &mut self,
+        tokens: &[super::SyntaxTokenInfo],
+        scope: ScopeId,
+    ) {
+        let mut idx = 0usize;
+        while idx < tokens.len() {
+            if self.ctx.syntax_token_is_comment(&tokens[idx]) {
+                idx += 1;
+                continue;
+            }
+            if !self.is_named_assignment_start(tokens, idx) {
+                self.ctx
+                    .collect_token_expression_refs_infos(&tokens[idx..], scope, true);
+                break;
+            }
+            let value_end = self.constructor_assignment_value_end(tokens, idx + 2);
+            self.ctx
+                .collect_token_expression_refs_infos(&tokens[idx + 2..value_end], scope, true);
+            idx = value_end;
+        }
+    }
+
+    fn collect_reduce_iteration_chain(
+        &mut self,
+        tokens: &[super::SyntaxTokenInfo],
+        scope: ScopeId,
+    ) -> ScopeId {
+        if tokens.is_empty() {
+            return scope;
+        }
+        let mut idx = 0usize;
+        while idx < tokens.len() && self.ctx.syntax_token_is_comment(&tokens[idx]) {
+            idx += 1;
+        }
+        let Some(token) = tokens.get(idx) else {
+            return scope;
+        };
+        if token.text.eq_ignore_ascii_case("LET") {
+            return self.collect_reduce_let_chain(tokens, idx, scope);
+        }
+        if token.text.eq_ignore_ascii_case("FOR") {
+            return self.collect_reduce_for_chain(tokens, idx, scope);
+        }
+        self.ctx
+            .collect_token_expression_refs_infos(&tokens[idx..], scope, true);
+        scope
+    }
+
+    fn collect_reduce_let_chain(
+        &mut self,
+        tokens: &[super::SyntaxTokenInfo],
+        start: usize,
+        scope: ScopeId,
+    ) -> ScopeId {
+        let Some(in_idx) = self.find_top_level_keyword(tokens, start + 1, &["IN"]) else {
+            self.ctx
+                .collect_token_expression_refs_infos(&tokens[start..], scope, true);
+            return scope;
+        };
+        let Some(last) = tokens.last() else {
+            return scope;
+        };
+        let let_scope = self.ctx.push_scope(
+            crate::scope::ScopeKind::LoopBlock,
+            tokens[start].range.start..last.range.end,
+            Some(scope),
+            None,
+        );
+
+        let mut idx = start + 1;
+        while idx < in_idx {
+            if self.ctx.syntax_token_is_comment(&tokens[idx]) {
+                idx += 1;
+                continue;
+            }
+            if !self.is_named_assignment_start(tokens, idx) {
+                self.ctx
+                    .collect_token_expression_refs_infos(&tokens[idx..in_idx], let_scope, true);
+                break;
+            }
+            let name_tok = &tokens[idx];
+            let value_end = self.constructor_assignment_value_end(&tokens[..in_idx], idx + 2);
+            self.ctx.collect_token_expression_refs_infos(
+                &tokens[idx + 2..value_end],
+                let_scope,
+                true,
+            );
+            self.ctx.declare_symbol(
+                let_scope,
+                Arc::<str>::from(name_tok.text.to_ascii_lowercase()),
+                SymbolKind::Variable,
+                name_tok.range.clone(),
+                None,
+                None,
+                None,
+            );
+            idx = value_end;
+        }
+
+        self.collect_reduce_iteration_chain(&tokens[in_idx + 1..], let_scope)
+    }
+
+    fn collect_reduce_for_chain(
+        &mut self,
+        tokens: &[super::SyntaxTokenInfo],
+        start: usize,
+        scope: ScopeId,
+    ) -> ScopeId {
+        let Some(name_tok) = tokens.get(start + 1) else {
+            return scope;
+        };
+        let Some(third_tok) = tokens.get(start + 2) else {
+            return scope;
+        };
+        if !self.ctx.syntax_token_is_ident_like(name_tok) {
+            self.ctx
+                .collect_token_expression_refs_infos(&tokens[start + 1..], scope, true);
+            return scope;
+        }
+
+        let Some(last) = tokens.last() else {
+            return scope;
+        };
+        let child_scope = self.ctx.push_scope(
+            crate::scope::ScopeKind::LoopBlock,
+            name_tok.range.start..last.range.end,
+            Some(scope),
+            None,
+        );
+        self.ctx.declare_symbol(
+            child_scope,
+            Arc::<str>::from(name_tok.text.to_ascii_lowercase()),
+            SymbolKind::Variable,
+            name_tok.range.clone(),
+            None,
+            None,
+            None,
+        );
+
+        if third_tok.text.eq_ignore_ascii_case("IN") {
+            let source_start = start + 3;
+            let source_end = self.value_for_source_end(tokens, source_start);
+            self.ctx.collect_token_expression_refs_infos(
+                &tokens[source_start..source_end],
+                scope,
+                true,
+            );
+            return self.collect_reduce_iteration_chain(&tokens[source_end..], child_scope);
+        }
+
+        if third_tok.text.as_ref() == "=" {
+            let Some(term_idx) =
+                self.find_top_level_keyword(tokens, start + 3, &["THEN", "UNTIL", "WHILE"])
+            else {
+                self.ctx
+                    .collect_token_expression_refs_infos(&tokens[start + 3..], scope, true);
+                return child_scope;
+            };
+            self.ctx
+                .collect_token_expression_refs_infos(&tokens[start + 3..term_idx], scope, true);
+
+            let mut cursor = term_idx;
+            if tokens[cursor].text.eq_ignore_ascii_case("THEN") {
+                let Some(next_term_idx) =
+                    self.find_top_level_keyword(tokens, cursor + 1, &["UNTIL", "WHILE"])
+                else {
+                    self.ctx.collect_token_expression_refs_infos(
+                        &tokens[cursor + 1..],
+                        child_scope,
+                        true,
+                    );
+                    return child_scope;
+                };
+                self.ctx.collect_token_expression_refs_infos(
+                    &tokens[cursor + 1..next_term_idx],
+                    child_scope,
+                    true,
+                );
+                cursor = next_term_idx;
+            }
+
+            let condition_end = self
+                .find_top_level_keyword(tokens, cursor + 1, &["LET", "FOR"])
+                .unwrap_or(tokens.len());
+            self.ctx.collect_token_expression_refs_infos(
+                &tokens[cursor + 1..condition_end],
+                child_scope,
+                true,
+            );
+            return self.collect_reduce_iteration_chain(&tokens[condition_end..], child_scope);
+        }
+
+        self.ctx
+            .collect_token_expression_refs_infos(&tokens[start + 1..], scope, true);
+        scope
     }
 
     fn collect_assign_stmt(&mut self, node: NodeId, scope: ScopeId) {

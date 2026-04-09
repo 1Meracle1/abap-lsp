@@ -201,6 +201,20 @@ impl<'ctx, 'a> ExprContext<'ctx, 'a> {
             .lookup_symbol_in_scope_chain(scope, namespace, name)
     }
 
+    pub(super) fn symbol_declared_type(
+        &self,
+        symbol_id: crate::ids::SymbolId,
+    ) -> Option<FieldTypeRefData> {
+        self.collector.symbol(symbol_id).declared_type.clone()
+    }
+
+    pub(super) fn symbol_structure(
+        &self,
+        symbol_id: crate::ids::SymbolId,
+    ) -> Option<StructureId> {
+        self.collector.symbol(symbol_id).structure
+    }
+
     pub(super) fn named_argument_target_for_callee(
         &self,
         callee: NodeId,
