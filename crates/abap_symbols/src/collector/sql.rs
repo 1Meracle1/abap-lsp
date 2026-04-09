@@ -829,6 +829,7 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
                     Some(structure),
                     None,
                     None,
+                    None,
                 );
                 break;
             }

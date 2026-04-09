@@ -86,6 +86,44 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
         }
     }
 
+    pub(super) fn walk_when_clause(&mut self, node: NodeId, scope: ScopeId) {
+        let node_range = self.collector.file.range(node);
+        let child_scope =
+            self.collector
+                .push_scope(ScopeKind::WhenBranch, node_range, Some(scope), None);
+        let mut header_tokens = Vec::new();
+        let mut before_period = true;
+
+        for child in self.collector.file.children(node) {
+            if before_period {
+                if self.collector.file.kind(child) == SyntaxKind::Token {
+                    let tokens = self.collector.syntax_token_nodes(child);
+                    before_period = !tokens.iter().any(|token| token.text.as_ref() == ".");
+                    header_tokens.extend(tokens);
+                    continue;
+                }
+            }
+            self.collector.walk_node(child, child_scope);
+        }
+
+        let meaningful_header: Vec<_> = header_tokens
+            .into_iter()
+            .filter(|token| !self.collector.syntax_token_is_comment(token))
+            .take_while(|token| token.text.as_ref() != ".")
+            .collect();
+        if meaningful_header.len() > 1
+            && !meaningful_header[1..]
+                .iter()
+                .all(|token| token.text.eq_ignore_ascii_case("others"))
+        {
+            self.collector.collect_token_expression_refs_infos(
+                &meaningful_header[1..],
+                child_scope,
+                true,
+            );
+        }
+    }
+
     pub(super) fn select_stmt_has_endselect(&self, node: NodeId) -> bool {
         self.collector.file.children(node).any(|child| {
             self.collector.file.kind(child) == SyntaxKind::Token
@@ -232,6 +270,7 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
                 range,
                 inferred_metadata.0,
                 inferred_metadata.1.clone(),
+                None,
                 None,
             );
         }

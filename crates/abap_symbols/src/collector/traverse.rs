@@ -79,13 +79,7 @@ impl<'a> Collector<'a> {
                     crate::ScopeKind::ElseBranch,
                 );
             }
-            SyntaxKind::WhenClause => {
-                self.control_lowering().walk_nested_block(
-                    node,
-                    scope,
-                    crate::ScopeKind::WhenBranch,
-                );
-            }
+            SyntaxKind::WhenClause => self.control_lowering().walk_when_clause(node, scope),
             SyntaxKind::WhileStmt => {
                 self.control_lowering()
                     .walk_nested_block(node, scope, crate::ScopeKind::WhileBlock)

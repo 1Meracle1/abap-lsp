@@ -3117,6 +3117,100 @@ some_class=>exec( iv_value = 1 )."
     }
 
     #[test]
+    fn hover_formats_method_signature_sections_across_multiple_lines() {
+        let state = ServerState::default();
+        let text = "\
+CLASS some_class DEFINITION.
+  PUBLIC SECTION.
+    METHODS send_notification_acc
+      IMPORTING
+        ! it_acc_obj TYPE gtt_acc_obj
+        ! iv_rule_type TYPE /sttp/e_rule_t
+        ! iv_cum_rule TYPE /sttp/e_rule_t
+      EXPORTING
+        ! ev_rep_status TYPE /sttp/e_status_rep_evt
+        ! ev_http_code TYPE char10
+      RAISING /sttp/cx_rep_exception.
+ENDCLASS.
+
+CLASS some_class IMPLEMENTATION.
+ENDCLASS.
+
+DATA lo_ref TYPE REF TO some_class.
+lo_ref->send_notification_acc( ).";
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///hover_method_pretty.abap").expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: text.to_string(),
+                },
+            },
+        );
+
+        let call_line = text
+            .lines()
+            .enumerate()
+            .find(|(_, line)| line.contains("send_notification_acc("))
+            .expect("method call line");
+        let method_col = call_line
+            .1
+            .find("send_notification_acc")
+            .expect("method name column") as u32
+            + 1;
+
+        let hover = hover(
+            &state,
+            &HoverParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///hover_method_pretty.abap").expect("uri"),
+                    },
+                    position: Position {
+                        line: call_line.0 as u32,
+                        character: method_col,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+            },
+        )
+        .expect("hover");
+
+        let HoverContents::Markup(markup) = hover.contents else {
+            panic!("expected markdown hover");
+        };
+        assert!(markup.value.contains("METHODS send_notification_acc"), "{}", markup.value);
+        assert!(markup.value.contains("\n  IMPORTING\n"), "{}", markup.value);
+        assert!(
+            markup.value.contains("\n    ! it_acc_obj")
+                && markup.value.contains("TYPE gtt_acc_obj"),
+            "{}",
+            markup.value
+        );
+        assert!(
+            markup.value.contains("\n    ! iv_rule_type")
+                && markup.value.contains("TYPE /sttp/e_rule_t"),
+            "{}",
+            markup.value
+        );
+        assert!(markup.value.contains("\n  EXPORTING\n"), "{}", markup.value);
+        assert!(
+            markup.value.contains("\n    ! ev_rep_status")
+                && markup.value.contains("TYPE /sttp/e_status_rep_evt"),
+            "{}",
+            markup.value
+        );
+        assert!(markup.value.contains("\n  RAISING\n"), "{}", markup.value);
+        assert!(
+            markup.value.contains("\n    /sttp/cx_rep_exception"),
+            "{}",
+            markup.value
+        );
+    }
+
+    #[test]
     fn hover_returns_superclass_and_signature_parameter_metadata() {
         let state = ServerState::default();
         let text = "\
@@ -3488,6 +3582,58 @@ ENDCLASS.
         assert!(markup.value.contains("Variable"));
         assert!(
             markup.value.contains("```abap\nTYPE i\n```"),
+            "{}",
+            markup.value
+        );
+    }
+
+    #[test]
+    fn hover_returns_constant_assigned_value() {
+        let state = ServerState::default();
+        let text = "CONSTANTS lc_flag TYPE c VALUE 'X'.\nDATA lv TYPE c.\nlv = lc_flag.";
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///hover_constant.abap").expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: text.to_string(),
+                },
+            },
+        );
+        let line_2_start = text.rmatch_indices('\n').next().expect("last newline").0 + 1;
+        let flag_use_col = (text.rfind("lc_flag").expect("constant use") - line_2_start) as u32;
+
+        let hover = hover(
+            &state,
+            &HoverParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///hover_constant.abap").expect("uri"),
+                    },
+                    position: Position {
+                        line: 2,
+                        character: flag_use_col + 1,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+            },
+        )
+        .expect("hover");
+
+        let HoverContents::Markup(markup) = hover.contents else {
+            panic!("expected markdown hover");
+        };
+        assert!(markup.value.contains("`lc_flag`"));
+        assert!(markup.value.contains("Constant"));
+        assert!(
+            markup.value.contains("```abap\nTYPE c\n```"),
+            "{}",
+            markup.value
+        );
+        assert!(
+            markup.value.contains("```abap\nVALUE 'X'\n```"),
             "{}",
             markup.value
         );

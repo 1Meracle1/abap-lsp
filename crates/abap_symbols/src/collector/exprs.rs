@@ -363,6 +363,7 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                 structure,
                 declared_type,
                 None,
+                None,
             );
             idx = value_end;
         }
@@ -797,6 +798,7 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                 structure,
                 declared_type,
                 None,
+                None,
             );
             idx = value_end;
         }
@@ -856,6 +858,7 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
             None,
             None,
             None,
+            None,
         );
         self.collect_value_constructor_tokens(&tokens[source_end..], child_scope);
     }
@@ -898,6 +901,7 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
             name_tok.range.clone(),
             structure,
             declared_type,
+            None,
             None,
         );
 
@@ -998,6 +1002,7 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                     None,
                     None,
                     None,
+                    None,
                 );
                 idx = value_end;
                 continue;
@@ -1013,6 +1018,7 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                     Arc::<str>::from(name_tok.text.to_ascii_lowercase()),
                     SymbolKind::Variable,
                     name_tok.range.clone(),
+                    None,
                     None,
                     None,
                     None,
@@ -1148,6 +1154,7 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                 structure,
                 declared_type,
                 None,
+                None,
             );
             idx = value_end;
         }
@@ -1191,6 +1198,7 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
             Arc::<str>::from(name_tok.text.to_ascii_lowercase()),
             SymbolKind::Variable,
             name_tok.range.clone(),
+            None,
             None,
             None,
             None,
@@ -1307,6 +1315,7 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                     range,
                     inferred_metadata.0,
                     inferred_metadata.1.clone(),
+                    None,
                     None,
                 );
                 break;

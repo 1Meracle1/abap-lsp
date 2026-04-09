@@ -333,7 +333,7 @@ impl AnalysisSnapshot {
                     field_owner_structure_name: None,
                     range: access.field_path[segment_index].range.clone(),
                     declared_type: None,
-                    declaration: Some(member.signature.to_string()),
+                    declaration: Some(format_class_member_signature(member)),
                     kind: hovered_component_kind_for_class_member(member),
                     is_static_method: member.is_static,
                     in_type_position: access.in_type_position,
@@ -1105,7 +1105,7 @@ impl AnalysisSnapshot {
                 .map(|(_, member)| SelectorCompletionItem {
                     name: Arc::clone(&member.name),
                     declared_type: None,
-                    declaration: Some(member.signature.to_string()),
+                    declaration: Some(format_class_member_signature(member)),
                     kind: HoveredComponentKind::Method,
                     field_owner_structure_name: None,
                 })
@@ -1333,6 +1333,153 @@ fn format_hover_type_clause(rendered_type: &str) -> String {
     format!("```abap\n{rendered_type}\n```")
 }
 
+fn try_format_method_signature(signature: &str) -> Option<String> {
+    let tokens: Vec<&str> = signature.split_whitespace().collect();
+    if tokens.len() < 2 {
+        return None;
+    }
+
+    let first_section_idx = tokens
+        .iter()
+        .position(|token| {
+            matches!(
+                token.to_ascii_uppercase().as_str(),
+                "IMPORTING"
+                    | "EXPORTING"
+                    | "CHANGING"
+                    | "RECEIVING"
+                    | "RETURNING"
+                    | "RAISING"
+                    | "EXCEPTIONS"
+            )
+        })
+        .unwrap_or(tokens.len());
+    if first_section_idx >= tokens.len() {
+        return None;
+    }
+
+    let header = tokens[..first_section_idx].join(" ");
+    if !matches!(
+        header.split_whitespace().next().map(|token| token.to_ascii_uppercase()),
+        Some(keyword) if keyword == "METHODS" || keyword == "CLASS-METHODS"
+    ) {
+        return None;
+    }
+
+    let mut lines = vec![header];
+    let mut idx = first_section_idx;
+    while idx < tokens.len() {
+        let section = tokens[idx].to_ascii_uppercase();
+        idx += 1;
+
+        let next_section_idx = tokens[idx..]
+            .iter()
+            .position(|token| {
+                matches!(
+                    token.to_ascii_uppercase().as_str(),
+                    "IMPORTING"
+                        | "EXPORTING"
+                        | "CHANGING"
+                        | "RECEIVING"
+                        | "RETURNING"
+                        | "RAISING"
+                        | "EXCEPTIONS"
+                )
+            })
+            .map(|offset| idx + offset)
+            .unwrap_or(tokens.len());
+        let section_tokens = &tokens[idx..next_section_idx];
+        lines.push(format!("  {section}"));
+
+        match section.as_str() {
+            "IMPORTING" | "EXPORTING" | "CHANGING" | "RECEIVING" | "RETURNING" => {
+                let mut params: Vec<Vec<&str>> = Vec::new();
+                let mut cursor = 0usize;
+                while cursor < section_tokens.len() {
+                    let start = cursor;
+                    cursor += 1;
+                    while cursor < section_tokens.len()
+                        && !matches!(
+                            section_tokens[cursor].to_ascii_uppercase().as_str(),
+                            "TYPE" | "LIKE"
+                        )
+                    {
+                        cursor += 1;
+                    }
+                    if cursor < section_tokens.len() {
+                        cursor += 1;
+                        while cursor < section_tokens.len()
+                            && !is_method_param_start_at(section_tokens, cursor)
+                        {
+                            cursor += 1;
+                        }
+                    }
+                    params.push(section_tokens[start..cursor].to_vec());
+                }
+
+                let left_width = params
+                    .iter()
+                    .map(|param| method_param_left_right(param).0.len())
+                    .max()
+                    .unwrap_or(0);
+                for param in params {
+                    let (left, right) = method_param_left_right(&param);
+                    if right.is_empty() {
+                        lines.push(format!("    {left}"));
+                    } else {
+                        lines.push(format!("    {left:<left_width$} {right}"));
+                    }
+                }
+            }
+            "RAISING" | "EXCEPTIONS" => {
+                for token in section_tokens {
+                    lines.push(format!("    {token}"));
+                }
+            }
+            _ => {
+                if !section_tokens.is_empty() {
+                    lines.push(format!("    {}", section_tokens.join(" ")));
+                }
+            }
+        }
+
+        idx = next_section_idx;
+    }
+
+    Some(lines.join("\n"))
+}
+
+fn is_method_param_start_at(tokens: &[&str], idx: usize) -> bool {
+    let Some(token) = tokens.get(idx).copied() else {
+        return false;
+    };
+    token == "!"
+        || token.starts_with("VALUE(")
+        || token.starts_with("REFERENCE(")
+        || tokens
+            .get(idx + 1)
+            .is_some_and(|next| matches!(next.to_ascii_uppercase().as_str(), "TYPE" | "LIKE"))
+}
+
+fn method_param_left_right(tokens: &[&str]) -> (String, String) {
+    let split_idx = tokens
+        .iter()
+        .position(|token| matches!(token.to_ascii_uppercase().as_str(), "TYPE" | "LIKE"));
+    match split_idx {
+        Some(idx) => (tokens[..idx].join(" "), tokens[idx..].join(" ")),
+        None => (tokens.join(" "), String::new()),
+    }
+}
+
+fn format_class_member_signature(member: &ClassMemberData) -> String {
+    if member.kind == ClassMemberKind::Method
+        && let Some(formatted) = try_format_method_signature(member.signature.as_ref())
+    {
+        return formatted;
+    }
+    member.signature.to_string()
+}
+
 fn symbol_kind_label(kind: SymbolKind) -> &'static str {
     match kind {
         SymbolKind::BuiltinType => "Built-in type",
@@ -1374,6 +1521,14 @@ fn symbol_type_line(unit: &UnitAnalysis, symbol: &SymbolData) -> Option<String> 
     }
     let type_ref = symbol.declared_type.as_ref()?;
     Some(format_hover_type_clause(&format_field_type_ref(type_ref)))
+}
+
+fn symbol_value_line(symbol: &SymbolData) -> Option<String> {
+    if symbol.kind != SymbolKind::Constant {
+        return None;
+    }
+    let value = symbol.value_clause_display.as_ref()?;
+    Some(format_hover_abap(&format!("VALUE {}", value.trim())))
 }
 
 fn format_hover_abap(rendered: &str) -> String {
@@ -1467,6 +1622,9 @@ fn markdown_lines_for_declared_symbol(unit: &UnitAnalysis, symbol: &SymbolData) 
     if let Some(type_line) = symbol_type_line(unit, symbol) {
         lines.push(type_line);
     }
+    if let Some(value_line) = symbol_value_line(symbol) {
+        lines.push(value_line);
+    }
     lines
 }
 
@@ -1498,7 +1656,7 @@ fn markdown_lines_for_class_member(unit: &UnitAnalysis, member: &ClassMemberData
         ClassMemberKind::Method => "method",
     };
     vec![
-        format!("```abap\n{}\n```", member.signature),
+        format!("```abap\n{}\n```", format_class_member_signature(member)),
         format!("{visibility} {storage} {kind} of `{class_name}`"),
     ]
 }
@@ -1531,6 +1689,9 @@ fn markdown_lines_for_resolution(
             ];
             if let Some(type_line) = symbol_type_line(unit, symbol) {
                 lines.push(type_line);
+            }
+            if let Some(value_line) = symbol_value_line(symbol) {
+                lines.push(value_line);
             }
             lines
         }

@@ -82,6 +82,54 @@ ENDFORM.
 }
 
 #[test]
+fn resolves_case_when_branch_header_symbols() {
+    let src = r#"
+FORM f.
+  CONSTANTS lc_rs_agg_op TYPE string VALUE 'SUM'.
+  DATA lv_kind TYPE string.
+
+  CASE lv_kind.
+    WHEN lc_rs_agg_op.
+      WRITE / lc_rs_agg_op.
+    WHEN OTHERS.
+      WRITE / lv_kind.
+  ENDCASE.
+ENDFORM.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///case_when_header.abap", src, &parsed);
+
+    let refs: Vec<_> = unit
+        .references
+        .iter()
+        .filter(|reference| {
+            reference.name.as_ref() == "lc_rs_agg_op"
+                && reference.kind == ReferenceKind::Identifier
+        })
+        .collect();
+    assert_eq!(
+        refs.len(),
+        2,
+        "expected header and body references for lc_rs_agg_op, got {:?}",
+        refs
+    );
+    assert!(
+        refs.iter()
+            .all(|reference| matches!(reference.resolution, Some(Resolution::Symbol(_)))),
+        "expected lc_rs_agg_op references to resolve: {:?}",
+        refs
+    );
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference
+                && diag.message.contains("lc_rs_agg_op")
+        }),
+        "unexpected unresolved lc_rs_agg_op: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn commit_and_rollback_work_do_not_report_work_as_unknown_symbol() {
     let src = r#"
 FORM f.

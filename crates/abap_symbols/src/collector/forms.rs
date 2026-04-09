@@ -207,6 +207,7 @@ impl<'ctx, 'a> FormsLowering<'ctx, 'a> {
                                     None,
                                     declared_type,
                                     None,
+                                    None,
                                 );
                                 parameters.push(FormParameterData {
                                     symbol,
@@ -227,6 +228,7 @@ impl<'ctx, 'a> FormsLowering<'ctx, 'a> {
                                     Arc::<str>::from(lit.to_ascii_lowercase()),
                                     SymbolKind::Parameter,
                                     t.range.clone(),
+                                    None,
                                     None,
                                     None,
                                     None,
@@ -377,6 +379,7 @@ impl<'ctx, 'a> FormsLowering<'ctx, 'a> {
             range,
             None,
             declared_type,
+            None,
             None,
         );
         Some(FormConsumedParameter {

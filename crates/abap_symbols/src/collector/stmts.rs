@@ -354,6 +354,7 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             None,
             None,
             None,
+            None,
         );
     }
 

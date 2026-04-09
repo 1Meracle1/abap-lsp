@@ -349,7 +349,7 @@ impl<'ctx, 'a> DeclLowering<'ctx, 'a> {
                 },
             );
             self.ctx
-                .declare_symbol(scope, name, kind, range, Some(structure), None, None);
+                .declare_symbol(scope, name, kind, range, Some(structure), None, None, None);
             return;
         }
 
@@ -361,6 +361,7 @@ impl<'ctx, 'a> DeclLowering<'ctx, 'a> {
             let structure = self.ctx.structure_from_typed_clause(node, scope);
             let declared_type = self.ctx.type_ref_from_typed_clause(node);
             let type_clause_display = self.ctx.type_clause_display_from_typed_clause(node);
+            let value_clause_display = self.ctx.value_clause_display_from_typed_clause(node);
             self.ctx.declare_symbol(
                 scope,
                 name,
@@ -369,6 +370,7 @@ impl<'ctx, 'a> DeclLowering<'ctx, 'a> {
                 structure,
                 declared_type,
                 type_clause_display,
+                value_clause_display,
             );
         }
     }
@@ -388,7 +390,7 @@ impl<'ctx, 'a> DeclLowering<'ctx, 'a> {
                 },
             );
             self.ctx
-                .declare_symbol(scope, name, kind, range, Some(structure), None, None);
+                .declare_symbol(scope, name, kind, range, Some(structure), None, None, None);
         }
     }
 
@@ -406,6 +408,7 @@ impl<'ctx, 'a> DeclLowering<'ctx, 'a> {
                     range,
                     structure,
                     declared_type.clone(),
+                    None,
                     None,
                 );
             }
@@ -440,6 +443,7 @@ impl<'ctx, 'a> DeclLowering<'ctx, 'a> {
                     range,
                     structure,
                     declared_type.clone(),
+                    None,
                     None,
                 );
                 break;

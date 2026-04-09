@@ -610,6 +610,7 @@ fn qualified_interface_method_scope_symbol_specs(
                         field_path: Vec::new(),
                     }),
                     type_clause_display: None,
+                    value_clause_display: None,
                 },
             ));
         }
@@ -636,6 +637,7 @@ fn qualified_interface_method_scope_symbol_specs(
                     structure: None,
                     declared_type: param.declared_type.clone(),
                     type_clause_display: None,
+                    value_clause_display: None,
                 },
             ));
         }

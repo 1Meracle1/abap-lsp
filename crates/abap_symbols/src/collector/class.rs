@@ -744,6 +744,7 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
                 field_path: Vec::new(),
             }),
             None,
+            None,
         );
     }
 
@@ -801,6 +802,7 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
                 None,
                 param.declared_type,
                 None,
+                None,
             );
         }
     }
@@ -824,6 +826,7 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
                 param.range.clone(),
                 None,
                 param.declared_type.clone(),
+                None,
                 None,
             );
         }

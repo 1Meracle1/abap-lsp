@@ -250,6 +250,9 @@ pub struct SymbolData {
     /// Verbatim type expression after `TYPE`/`LIKE` (e.g. `STANDARD TABLE OF ty`) for hover; structure
     /// metadata alone often describes only the line type for internal tables.
     pub type_clause_display: Option<Arc<str>>,
+    /// Verbatim expression after a declaration `VALUE` clause, used for hover on constants and other
+    /// declarations that preserve an initializer.
+    pub value_clause_display: Option<Arc<str>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -47,6 +47,7 @@ impl<'a> Collector<'a> {
         structure: Option<StructureId>,
         declared_type: Option<FieldTypeRefData>,
         type_clause_display: Option<Arc<str>>,
+        value_clause_display: Option<Arc<str>>,
     ) -> SymbolId {
         let id = SymbolId(self.symbols.len() as u32);
         self.symbols.push(SymbolData {
@@ -58,6 +59,7 @@ impl<'a> Collector<'a> {
             structure,
             declared_type,
             type_clause_display,
+            value_clause_display,
         });
         self.scopes[scope.as_usize()].declarations.push(id);
         for &namespace in kind.namespaces() {
@@ -103,7 +105,7 @@ impl<'a> Collector<'a> {
         kind: SymbolKind,
         decl_range: TextRange,
     ) -> SymbolId {
-        self.declare_symbol(scope, name, kind, decl_range, None, None, None)
+        self.declare_symbol(scope, name, kind, decl_range, None, None, None, None)
     }
 
     pub(super) fn push_structure(
@@ -189,6 +191,7 @@ impl<'a> Collector<'a> {
                 symbol
                     .structure_name
                     .and_then(|name| structure_ids.get(name).copied()),
+                None,
                 None,
                 None,
             );

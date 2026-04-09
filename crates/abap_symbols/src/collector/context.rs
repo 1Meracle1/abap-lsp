@@ -249,6 +249,7 @@ impl<'ctx, 'a> ExprContext<'ctx, 'a> {
         structure: Option<StructureId>,
         declared_type: Option<FieldTypeRefData>,
         type_clause_display: Option<std::sync::Arc<str>>,
+        value_clause_display: Option<std::sync::Arc<str>>,
     ) -> crate::ids::SymbolId {
         self.collector.declare_symbol(
             scope,
@@ -258,6 +259,7 @@ impl<'ctx, 'a> ExprContext<'ctx, 'a> {
             structure,
             declared_type,
             type_clause_display,
+            value_clause_display,
         )
     }
 }
@@ -325,6 +327,7 @@ impl<'ctx, 'a> DeclContext<'ctx, 'a> {
         structure: Option<StructureId>,
         declared_type: Option<FieldTypeRefData>,
         type_clause_display: Option<std::sync::Arc<str>>,
+        value_clause_display: Option<std::sync::Arc<str>>,
     ) -> crate::ids::SymbolId {
         self.collector.declare_symbol(
             scope,
@@ -334,6 +337,7 @@ impl<'ctx, 'a> DeclContext<'ctx, 'a> {
             structure,
             declared_type,
             type_clause_display,
+            value_clause_display,
         )
     }
 
@@ -423,6 +427,13 @@ impl<'ctx, 'a> DeclContext<'ctx, 'a> {
         node: NodeId,
     ) -> Option<std::sync::Arc<str>> {
         self.collector.type_clause_display_from_typed_clause(node)
+    }
+
+    pub(super) fn value_clause_display_from_typed_clause(
+        &self,
+        node: NodeId,
+    ) -> Option<std::sync::Arc<str>> {
+        self.collector.value_clause_display_from_typed_clause(node)
     }
 
     pub(super) fn inline_decl_inferred_type(
@@ -587,6 +598,7 @@ impl<'ctx, 'a> SqlContext<'ctx, 'a> {
         structure: Option<StructureId>,
         declared_type: Option<FieldTypeRefData>,
         type_clause_display: Option<std::sync::Arc<str>>,
+        value_clause_display: Option<std::sync::Arc<str>>,
     ) -> crate::ids::SymbolId {
         self.collector.declare_symbol(
             scope,
@@ -596,6 +608,7 @@ impl<'ctx, 'a> SqlContext<'ctx, 'a> {
             structure,
             declared_type,
             type_clause_display,
+            value_clause_display,
         )
     }
 

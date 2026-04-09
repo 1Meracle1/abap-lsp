@@ -627,6 +627,26 @@ impl<'a> Collector<'a> {
         rendered
     }
 
+    fn render_token_infos(&self, tokens: &[SyntaxTokenInfo]) -> String {
+        let mut rendered = String::new();
+        let mut prev_text: Option<&str> = None;
+        for token in tokens {
+            if self.syntax_token_is_comment(token) {
+                continue;
+            }
+            let text = token.text.as_ref();
+            let needs_space = !rendered.is_empty()
+                && !matches!(text, "," | ":" | "-" | ")" | "]")
+                && !matches!(prev_text, Some("(" | "[" | ":" | "-"));
+            if needs_space {
+                rendered.push(' ');
+            }
+            rendered.push_str(text);
+            prev_text = Some(text);
+        }
+        rendered
+    }
+
     fn syntax_token_is_comment(&self, token: &SyntaxTokenInfo) -> bool {
         token.text.trim_start().starts_with('"') || token.text.trim_start().starts_with("##")
     }
@@ -789,6 +809,23 @@ impl<'a> Collector<'a> {
         let clause = DeclClause::cast(self.syntax(node))?;
         let (type_ref, _) = clause.type_ref_with_namespace(self.source)?;
         Some(Arc::from(type_ref.display_text(self.source)?))
+    }
+
+    fn value_clause_display_from_typed_clause(&self, node: NodeId) -> Option<Arc<str>> {
+        let clause = DeclClause::cast(self.syntax(node))?;
+        let value_clause = clause.syntax().child_by_kind(SyntaxKind::ValueClause)?;
+        let tokens = self.syntax_token_nodes(value_clause.id());
+        let rendered = self.render_token_infos(
+            tokens
+                .get(1..)
+                .unwrap_or_default()
+                .iter()
+                .filter(|token| !self.syntax_token_is_comment(token))
+                .cloned()
+                .collect::<Vec<_>>()
+                .as_slice(),
+        );
+        (!rendered.is_empty()).then(|| Arc::from(rendered))
     }
 
     fn typed_clause_type_ref_node(&self, node: NodeId) -> Option<(NodeId, Namespace)> {

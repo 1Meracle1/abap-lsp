@@ -574,6 +574,7 @@ impl<'a> Collector<'a> {
                 structure,
                 declared_type,
                 None,
+                None,
             );
             return true;
         }
@@ -594,6 +595,7 @@ impl<'a> Collector<'a> {
                 name_tok.range.clone(),
                 structure,
                 declared_type,
+                None,
                 None,
             );
             return true;
@@ -642,6 +644,7 @@ impl<'a> Collector<'a> {
                     structure,
                     declared_type,
                     None,
+                    None,
                 );
                 Some(true)
             }
@@ -653,6 +656,7 @@ impl<'a> Collector<'a> {
                     name_node.range(),
                     structure,
                     declared_type,
+                    None,
                     None,
                 );
                 Some(true)
