@@ -1665,6 +1665,38 @@ mod tests {
     }
 
     #[test]
+    fn line_exists_with_table_expression_parses_as_call_expr() {
+        let parsed =
+            crate::parse("IF line_exists( lt_rep_evt[ table_line = 'X' ] ).\nENDIF.");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::CallExpr), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
+    }
+
+    #[test]
+    fn line_exists_in_not_and_condition_parses_as_call_expr() {
+        let parsed = crate::parse(
+            "IF NOT line_exists( lt_rep_evt[ rule_type = lc_rs_comm ] ) AND lt_obj_comm IS NOT INITIAL.\nENDIF.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::CallExpr), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
+    }
+
+    #[test]
+    fn line_exists_in_or_condition_parses_as_call_exprs() {
+        let parsed = crate::parse(
+            "IF line_exists( lt_resp[ trkid = ls_child-trkid ] ) OR line_exists( lt_resp[ serial = ls_child-serial ] ).\nENDIF.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::CallExpr), 2);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
+    }
+
+    #[test]
     fn assignment_rhs_template_builds_semantic_expression_nodes() {
         let parsed = crate::parse(
             "rv_text = |({ mo_left->to_string( ) } { mv_op } { mo_right->to_string( ) })|.",

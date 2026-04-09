@@ -85,6 +85,11 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                     && token_children
                         .iter()
                         .any(|token| matches!(token.text.as_ref(), "[" | "]"))
+                    && self
+                        .ctx
+                        .file()
+                        .find_first_kind(node, SyntaxKind::CallExpr)
+                        .is_none()
                 {
                     self.ctx
                         .collect_token_expression_refs_infos(&token_children, scope, true);

@@ -5592,6 +5592,85 @@ ev_characters = condense( val = ev_characters del = sv_null_char ).\n\
 }
 
 #[test]
+fn resolves_line_exists_with_table_expression_as_builtin_routine() {
+    let src = "\
+DATA lt_rep_evt TYPE STANDARD TABLE OF string WITH EMPTY KEY.\n\
+IF line_exists( lt_rep_evt[ table_line = 'X' ] ).\n\
+ENDIF.\n\
+";
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///builtin_line_exists.abap", src, &parsed);
+
+    assert!(unit.references.iter().any(|reference| {
+        reference.kind == ReferenceKind::RoutineCall
+            && reference.namespace == Namespace::Routine
+            && reference.name.as_ref() == "line_exists"
+            && matches!(reference.resolution, Some(Resolution::BuiltinRoutine))
+    }), "{:#?}", unit.references);
+    assert!(!unit.diagnostics.iter().any(|diag| {
+        diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains("line_exists")
+    }));
+}
+
+#[test]
+fn resolves_line_exists_in_not_and_condition_as_builtin_routine() {
+    let src = "\
+DATA lt_rep_evt TYPE STANDARD TABLE OF string WITH EMPTY KEY.\n\
+DATA lt_obj_comm TYPE STANDARD TABLE OF string WITH EMPTY KEY.\n\
+CONSTANTS lc_rs_comm TYPE string VALUE 'COMM'.\n\
+IF NOT line_exists( lt_rep_evt[ rule_type = lc_rs_comm ] ) AND lt_obj_comm IS NOT INITIAL.\n\
+ENDIF.\n\
+";
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///builtin_line_exists_not_and.abap", src, &parsed);
+
+    let line_exists_refs: Vec<_> = unit
+        .references
+        .iter()
+        .filter(|reference| {
+            reference.kind == ReferenceKind::RoutineCall
+                && reference.namespace == Namespace::Routine
+                && reference.name.as_ref() == "line_exists"
+        })
+        .collect();
+    assert_eq!(line_exists_refs.len(), 1, "{:#?}", unit.references);
+    assert!(line_exists_refs
+        .iter()
+        .all(|reference| matches!(reference.resolution, Some(Resolution::BuiltinRoutine))));
+}
+
+#[test]
+fn resolves_line_exists_in_or_condition_as_builtin_routine() {
+    let src = "\
+TYPES: BEGIN OF ty_child,\n\
+         trkid TYPE string,\n\
+         serial TYPE string,\n\
+       END OF ty_child.\n\
+DATA lt_resp TYPE STANDARD TABLE OF ty_child WITH EMPTY KEY.\n\
+DATA ls_child TYPE ty_child.\n\
+IF line_exists( lt_resp[ trkid = ls_child-trkid ] ) OR\n\
+   line_exists( lt_resp[ serial = ls_child-serial ] ).\n\
+ENDIF.\n\
+";
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///builtin_line_exists_or.abap", src, &parsed);
+
+    let line_exists_refs: Vec<_> = unit
+        .references
+        .iter()
+        .filter(|reference| {
+            reference.kind == ReferenceKind::RoutineCall
+                && reference.namespace == Namespace::Routine
+                && reference.name.as_ref() == "line_exists"
+        })
+        .collect();
+    assert_eq!(line_exists_refs.len(), 2, "{:#?}", unit.references);
+    assert!(line_exists_refs
+        .iter()
+        .all(|reference| matches!(reference.resolution, Some(Resolution::BuiltinRoutine))));
+}
+
+#[test]
 fn data_and_class_data_value_decls_do_not_raise_unresolved_symbols() {
     let src = r##"
 CLASS /cdbasis/cl_messages DEFINITION.

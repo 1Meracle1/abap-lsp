@@ -3838,6 +3838,167 @@ START-OF-SELECTION.
     }
 
     #[test]
+    fn semantic_tokens_mark_line_exists_with_table_expression_as_function() {
+        use lsp_types::SemanticTokenType;
+
+        let state = ServerState::default();
+        let text = "\
+DATA lt_rep_evt TYPE STANDARD TABLE OF string WITH EMPTY KEY.\n\
+IF line_exists( lt_rep_evt[ table_line = 'X' ] ).\n\
+ENDIF.\n\
+";
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///semantic_line_exists.abap").expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: text.to_string(),
+                },
+            },
+        );
+
+        let snapshot = state
+            .cache
+            .get("file:///semantic_line_exists.abap")
+            .expect("snapshot");
+        let tokens = sem_tokens::build_semantic_tokens(snapshot.as_ref());
+        let legend = sem_tokens::semantic_tokens_legend();
+        let function_idx = legend
+            .token_types
+            .iter()
+            .position(|t| *t == SemanticTokenType::FUNCTION)
+            .expect("legend has function") as u32;
+
+        let routine_line = text
+            .lines()
+            .enumerate()
+            .find(|(_, line)| line.contains("line_exists"))
+            .expect("routine line");
+        let routine_col = routine_line
+            .1
+            .find("line_exists")
+            .expect("routine col") as u32;
+
+        assert_eq!(
+            semantic_token_type_at(&tokens, routine_line.0 as u32, routine_col),
+            Some(function_idx)
+        );
+    }
+
+    #[test]
+    fn semantic_tokens_mark_line_exists_in_not_and_condition_as_function() {
+        use lsp_types::SemanticTokenType;
+
+        let state = ServerState::default();
+        let text = "\
+DATA lt_rep_evt TYPE STANDARD TABLE OF string WITH EMPTY KEY.\n\
+DATA lt_obj_comm TYPE STANDARD TABLE OF string WITH EMPTY KEY.\n\
+CONSTANTS lc_rs_comm TYPE string VALUE 'COMM'.\n\
+IF NOT line_exists( lt_rep_evt[ rule_type = lc_rs_comm ] ) AND lt_obj_comm IS NOT INITIAL.\n\
+ENDIF.\n\
+";
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///semantic_line_exists_not_and.abap").expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: text.to_string(),
+                },
+            },
+        );
+
+        let snapshot = state
+            .cache
+            .get("file:///semantic_line_exists_not_and.abap")
+            .expect("snapshot");
+        let tokens = sem_tokens::build_semantic_tokens(snapshot.as_ref());
+        let legend = sem_tokens::semantic_tokens_legend();
+        let function_idx = legend
+            .token_types
+            .iter()
+            .position(|t| *t == SemanticTokenType::FUNCTION)
+            .expect("legend has function") as u32;
+
+        let routine_line = text
+            .lines()
+            .enumerate()
+            .find(|(_, line)| line.contains("line_exists"))
+            .expect("routine line");
+        let routine_col = routine_line
+            .1
+            .find("line_exists")
+            .expect("routine col") as u32;
+
+        assert_eq!(
+            semantic_token_type_at(&tokens, routine_line.0 as u32, routine_col),
+            Some(function_idx)
+        );
+    }
+
+    #[test]
+    fn hover_shows_builtin_signature_for_line_exists_in_or_condition() {
+        let state = ServerState::default();
+        let text = "\
+TYPES: BEGIN OF ty_child,\n\
+         trkid TYPE string,\n\
+         serial TYPE string,\n\
+       END OF ty_child.\n\
+DATA lt_resp TYPE STANDARD TABLE OF ty_child WITH EMPTY KEY.\n\
+DATA ls_child TYPE ty_child.\n\
+IF line_exists( lt_resp[ trkid = ls_child-trkid ] ) OR\n\
+   line_exists( lt_resp[ serial = ls_child-serial ] ).\n\
+ENDIF.\n\
+";
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///hover_line_exists_or.abap").expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: text.to_string(),
+                },
+            },
+        );
+
+        let routine_line = text
+            .lines()
+            .enumerate()
+            .find(|(_, line)| line.contains("line_exists"))
+            .expect("routine line");
+        let routine_col = routine_line
+            .1
+            .find("line_exists")
+            .expect("routine col") as u32
+            + 1;
+        let routine_hover = hover(
+            &state,
+            &HoverParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///hover_line_exists_or.abap").expect("uri"),
+                    },
+                    position: Position {
+                        line: routine_line.0 as u32,
+                        character: routine_col,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+            },
+        )
+        .expect("routine hover");
+        let HoverContents::Markup(routine_markup) = routine_hover.contents else {
+            panic!("expected markdown hover");
+        };
+        assert!(routine_markup.value.contains("line_exists( table_line )"));
+        assert!(routine_markup.value.contains("returns `abap_bool`"));
+    }
+
+    #[test]
     fn hover_on_event_block_of_returns_full_event_header() {
         let state = ServerState::default();
         publish_open_document(
