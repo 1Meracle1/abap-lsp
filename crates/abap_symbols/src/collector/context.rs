@@ -61,6 +61,13 @@ impl<'ctx, 'a> ExprContext<'ctx, 'a> {
             .add_reference(scope, name, namespace, kind, range);
     }
 
+    pub(super) fn push_loop_where_field_context(
+        &mut self,
+        context: crate::def_map::LoopWhereFieldContext,
+    ) {
+        self.collector.loop_where_field_contexts.push(context);
+    }
+
     pub(super) fn node_name(
         &self,
         node: NodeId,
@@ -189,6 +196,21 @@ impl<'ctx, 'a> ExprContext<'ctx, 'a> {
         Vec<crate::def_map::FieldAccessSegment>,
     )> {
         self.collector.selector_access_chain(node)
+    }
+
+    pub(super) fn consume_selector_access_from_infos(
+        &self,
+        tokens: &[SyntaxTokenInfo],
+        idx: usize,
+    ) -> Option<(
+        usize,
+        Namespace,
+        std::sync::Arc<str>,
+        abap_lexer::TextRange,
+        Vec<crate::def_map::FieldAccessSegment>,
+        Vec<(usize, usize, bool)>,
+    )> {
+        self.collector.consume_selector_access_from_infos(tokens, idx)
     }
 
     pub(super) fn lookup_symbol_in_scope_chain(

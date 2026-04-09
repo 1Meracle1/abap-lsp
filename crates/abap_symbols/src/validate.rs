@@ -645,6 +645,70 @@ fn qualified_interface_method_scope_symbol_specs(
     out
 }
 
+fn loop_where_scope_symbol_specs(
+    project: &ProjectAnalysis,
+    unit: &crate::UnitAnalysis,
+    scope_indexes: &[ScopeIndex],
+) -> Vec<(ScopeId, crate::SymbolData)> {
+    let mut out = Vec::new();
+    let mut next_symbol_id = unit.symbols.len() as u32;
+    let mut seen: std::collections::HashSet<(u32, Arc<str>)> = std::collections::HashSet::new();
+
+    for context in &unit.loop_where_field_contexts {
+        let mut push_fields =
+            |scope: ScopeId, fields_unit: &crate::UnitAnalysis, structure_id: StructureId| {
+                for field in fields_unit.semantic().decls().structure_field_infos(structure_id) {
+                    let name = Arc::clone(&field.name);
+                    if !seen.insert((scope.0, Arc::clone(&name))) {
+                        continue;
+                    }
+                    if unit.symbols.iter().any(|symbol| {
+                        symbol.scope == scope
+                            && symbol.kind.occupies(Namespace::Value)
+                            && symbol.name == name
+                    }) {
+                        continue;
+                    }
+
+                    let id = SymbolId(next_symbol_id);
+                    next_symbol_id += 1;
+                    out.push((
+                        scope,
+                        crate::SymbolData {
+                            id,
+                            name,
+                            kind: crate::SymbolKind::Variable,
+                            scope,
+                            decl_range: field.decl_range.unwrap_or(context.range.clone()),
+                            structure: match field.shape {
+                                StructureFieldShape::Structured { structure } => Some(structure),
+                                StructureFieldShape::Scalar => None,
+                            },
+                            declared_type: field.type_ref.clone(),
+                            type_clause_display: None,
+                            value_clause_display: None,
+                        },
+                    ));
+                }
+            };
+
+        if let Some((fields_unit, structure_id)) =
+            resolve_loop_where_source_structure(project, unit, scope_indexes, context)
+        {
+            push_fields(context.scope, fields_unit, structure_id);
+        }
+        if let Some((fields_unit, structure_id)) = context
+            .target_access
+            .as_ref()
+            .and_then(|access| resolve_field_access_structure(project, unit, scope_indexes, access))
+        {
+            push_fields(context.scope, fields_unit, structure_id);
+        }
+    }
+
+    out
+}
+
 fn resolve_class_type_symbol_in_hierarchy(
     project: &ProjectAnalysis,
     class_unit: &crate::UnitAnalysis,
@@ -1347,7 +1411,9 @@ pub(crate) fn validate_project_with_scope_indexes(
         let mut scope_index = scope_indexes[unit_idx].clone();
         let synthetic_symbols = {
             let unit = &project.units[unit_idx];
-            qualified_interface_method_scope_symbol_specs(project, unit)
+            let mut symbols = qualified_interface_method_scope_symbol_specs(project, unit);
+            symbols.extend(loop_where_scope_symbol_specs(project, unit, scope_indexes));
+            symbols
         };
         {
             let unit = &mut project.units[unit_idx];

@@ -676,7 +676,18 @@ impl<'a> Collector<'a> {
             || token.text.eq_ignore_ascii_case("new")
             || token.text.eq_ignore_ascii_case("ref")
             || token.text.eq_ignore_ascii_case("to")
+            || token.text.eq_ignore_ascii_case("and")
+            || token.text.eq_ignore_ascii_case("or")
+            || token.text.eq_ignore_ascii_case("is")
+            || token.text.eq_ignore_ascii_case("in")
             || token.text.eq_ignore_ascii_case("not")
+            || token.text.eq_ignore_ascii_case("let")
+            || token.text.eq_ignore_ascii_case("for")
+            || token.text.eq_ignore_ascii_case("where")
+            || token.text.eq_ignore_ascii_case("until")
+            || token.text.eq_ignore_ascii_case("while")
+            || token.text.eq_ignore_ascii_case("init")
+            || token.text.eq_ignore_ascii_case("next")
             || token.text.eq_ignore_ascii_case("when")
             || token.text.eq_ignore_ascii_case("then")
             || token.text.eq_ignore_ascii_case("else")
@@ -858,7 +869,7 @@ impl<'a> Collector<'a> {
             )
     }
 
-    fn consume_selector_access_from_infos(
+    pub(super) fn consume_selector_access_from_infos(
         &self,
         tokens: &[SyntaxTokenInfo],
         idx: usize,

@@ -5096,6 +5096,123 @@ DATA(lv_rep) = REDUCE i(
 }
 
 #[test]
+fn resolves_reduce_for_where_clause_bindings() {
+    let src = r#"
+TYPES: BEGIN OF ty_rep,
+         status_rep_evt TYPE i,
+         objid TYPE i,
+       END OF ty_rep.
+TYPES ty_rep_tab TYPE STANDARD TABLE OF ty_rep WITH EMPTY KEY.
+TYPES ty_objid_tab TYPE STANDARD TABLE OF ty_rep WITH EMPTY KEY.
+
+DATA lt_rep TYPE ty_rep_tab.
+DATA ls_obj_ids TYPE ty_rep.
+DATA(lv_rep) = REDUCE i(
+  INIT x = 0
+  FOR wa IN lt_rep
+      WHERE ( status_rep_evt <> 1
+              AND objid = ls_obj_ids-objid )
+  NEXT x = x + 1 ).
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///reduce_for_where.abap", src, &parsed);
+
+    for name in ["lt_rep", "status_rep_evt", "objid", "ls_obj_ids", "x"] {
+        assert!(
+            unit.references.iter().any(|reference| {
+                reference.namespace == Namespace::Value
+                    && reference.kind == ReferenceKind::Identifier
+                    && reference.name.as_ref() == name
+                    && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+            }),
+            "expected resolved REDUCE WHERE reference for `{name}`, refs={:?} diagnostics={:?}",
+            unit.references,
+            unit.diagnostics
+        );
+    }
+
+    for keyword in ["where", "and", "next", "status_rep_evt", "objid"] {
+        assert!(
+            !unit
+                .diagnostics
+                .iter()
+                .any(|diag| diag.kind == DiagnosticKind::UnresolvedReference
+                    && diag.message.contains(keyword)),
+            "unexpected unresolved diagnostic for `{keyword}`: {:?}",
+            unit.diagnostics
+        );
+    }
+}
+
+#[test]
+fn wait_up_to_seconds_stmt_resolves_duration_operand() {
+    let src = r#"
+FORM run.
+  DATA lv_time TYPE i.
+  WAIT UP TO lv_time SECONDS.
+ENDFORM.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///wait_stmt.abap", src, &parsed);
+
+    assert!(unit.references.iter().any(|reference| {
+        reference.namespace == Namespace::Value
+            && reference.kind == ReferenceKind::Identifier
+            && reference.name.as_ref() == "lv_time"
+            && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+    }));
+    for keyword in ["up", "to", "seconds"] {
+        assert!(
+            !unit
+                .diagnostics
+                .iter()
+                .any(|diag| diag.kind == DiagnosticKind::UnresolvedReference
+                    && diag.message.contains(keyword)),
+            "unexpected unresolved diagnostic for `{keyword}`: {:?}",
+            unit.diagnostics
+        );
+    }
+}
+
+#[test]
+fn delete_table_from_stmt_resolves_table_and_source_operands() {
+    let src = r#"
+TYPES ty_objid_tab TYPE STANDARD TABLE OF i WITH EMPTY KEY.
+
+FORM run.
+  DATA ct_objids TYPE ty_objid_tab.
+  DATA is_obj_ids TYPE i.
+  DELETE TABLE ct_objids FROM is_obj_ids.
+ENDFORM.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///delete_table_from.abap", src, &parsed);
+
+    for name in ["ct_objids", "is_obj_ids"] {
+        assert!(
+            unit.references.iter().any(|reference| {
+                reference.namespace == Namespace::Value
+                    && reference.kind == ReferenceKind::Identifier
+                    && reference.name.as_ref() == name
+                    && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+            }),
+            "expected resolved DELETE TABLE reference for `{name}`, refs={:?} diagnostics={:?}",
+            unit.references,
+            unit.diagnostics
+        );
+    }
+    assert!(
+        !unit
+            .diagnostics
+            .iter()
+            .any(|diag| diag.kind == DiagnosticKind::UnresolvedReference
+                && diag.message.contains("table")),
+        "unexpected unresolved diagnostic for `table`: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn resolves_replace_statement_operands_and_targets() {
     let src = r#"
 CLASS zattp_cl_rep_constants DEFINITION.

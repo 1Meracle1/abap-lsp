@@ -1207,12 +1207,47 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
         if third_tok.text.eq_ignore_ascii_case("IN") {
             let source_start = start + 3;
             let source_end = self.value_for_source_end(tokens, source_start);
+            let source_access =
+                self.value_access_from_infos(&tokens[source_start..source_end], scope);
             self.ctx.collect_token_expression_refs_infos(
                 &tokens[source_start..source_end],
                 scope,
                 true,
             );
-            return self.collect_reduce_iteration_chain(&tokens[source_end..], child_scope);
+            let mut cursor = source_end;
+            if tokens
+                .get(cursor)
+                .is_some_and(|token| token.text.eq_ignore_ascii_case("WHERE"))
+            {
+                let condition_end = self
+                    .find_top_level_keyword(tokens, cursor + 1, &["LET", "FOR", "NEXT"])
+                    .unwrap_or(tokens.len());
+                if condition_end > cursor + 1
+                    && let Some(source_access) = source_access
+                {
+                    self.ctx.push_loop_where_field_context(
+                        crate::def_map::LoopWhereFieldContext {
+                            scope: child_scope,
+                            range: tokens[cursor].range.start
+                                ..tokens[condition_end - 1].range.end,
+                            source_access,
+                            target_access: Some(FieldAccess {
+                                scope: child_scope,
+                                base_namespace: Namespace::Value,
+                                base_name: Arc::<str>::from(name_tok.text.to_ascii_lowercase()),
+                                field_path: Vec::new(),
+                                in_type_position: false,
+                            }),
+                        },
+                    );
+                }
+                self.collect_reduce_where_condition_tokens(
+                    &tokens[cursor + 1..condition_end],
+                    child_scope,
+                );
+                cursor = condition_end;
+            }
+            return self.collect_reduce_iteration_chain(&tokens[cursor..], child_scope);
         }
 
         if third_tok.text.as_ref() == "=" {
@@ -1260,6 +1295,99 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
         self.ctx
             .collect_token_expression_refs_infos(&tokens[start + 1..], scope, true);
         scope
+    }
+
+    fn value_access_from_infos(
+        &self,
+        tokens: &[super::SyntaxTokenInfo],
+        scope: ScopeId,
+    ) -> Option<FieldAccess> {
+        let first_idx = tokens
+            .iter()
+            .position(|token| !self.ctx.syntax_token_is_comment(token))?;
+        if let Some((next_idx, namespace, base_name, _, field_path, _)) =
+            self.ctx.consume_selector_access_from_infos(tokens, first_idx)
+            && next_idx == tokens.len()
+            && namespace == Namespace::Value
+        {
+            return Some(FieldAccess {
+                scope,
+                base_namespace: namespace,
+                base_name,
+                field_path,
+                in_type_position: false,
+            });
+        }
+
+        let token = &tokens[first_idx];
+        self.ctx.syntax_token_is_ident_like(token).then(|| FieldAccess {
+            scope,
+            base_namespace: Namespace::Value,
+            base_name: Arc::<str>::from(token.text.to_ascii_lowercase()),
+            field_path: Vec::new(),
+            in_type_position: false,
+        })
+    }
+
+    fn collect_reduce_where_condition_tokens(
+        &mut self,
+        tokens: &[super::SyntaxTokenInfo],
+        scope: ScopeId,
+    ) {
+        self.ctx
+            .collect_token_expression_refs_infos(tokens, scope, true);
+        self.collect_comparison_lhs_identifier_refs(tokens, scope);
+    }
+
+    fn collect_comparison_lhs_identifier_refs(
+        &mut self,
+        tokens: &[super::SyntaxTokenInfo],
+        scope: ScopeId,
+    ) {
+        let mut idx = 0usize;
+        while idx < tokens.len() {
+            let token = &tokens[idx];
+            match token.text.as_ref() {
+                "(" | "[" | "{" => {
+                    let (open, close) = match token.text.as_ref() {
+                        "(" => ("(", ")"),
+                        "[" => ("[", "]"),
+                        "{" => ("{", "}"),
+                        _ => unreachable!(),
+                    };
+                    if let Some(end_idx) = self.ctx.find_matching_group_end_infos(tokens, idx, open, close)
+                    {
+                        self.collect_comparison_lhs_identifier_refs(&tokens[idx + 1..end_idx], scope);
+                        idx = end_idx + 1;
+                        continue;
+                    }
+                }
+                _ => {}
+            }
+
+            if self.ctx.syntax_token_is_ident_like(token)
+                && tokens.get(idx + 1).map(|next| next.text.as_ref()) == Some("=")
+                && !matches!(
+                    idx.checked_sub(1).and_then(|prev| tokens.get(prev)).map(|prev| prev.text.as_ref()),
+                    Some("->" | "=>" | "~" | "-")
+                )
+                && !matches!(
+                    token.text.to_ascii_uppercase().as_str(),
+                    "AND" | "OR" | "NOT" | "IS" | "IN" | "LET" | "FOR" | "WHERE" | "UNTIL"
+                        | "WHILE" | "INIT" | "NEXT" | "WHEN" | "THEN" | "ELSE"
+                )
+            {
+                self.ctx.add_reference(
+                    scope,
+                    Arc::<str>::from(token.text.to_ascii_lowercase()),
+                    Namespace::Value,
+                    ReferenceKind::Identifier,
+                    token.range.clone(),
+                );
+            }
+
+            idx += 1;
+        }
     }
 
     fn collect_assign_stmt(&mut self, node: NodeId, scope: ScopeId) {

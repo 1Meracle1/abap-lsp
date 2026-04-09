@@ -385,9 +385,43 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             self.collect_find_stmt_infos(&significant, scope);
         } else if head.text.eq_ignore_ascii_case("replace") {
             self.collect_replace_stmt_infos(&significant, scope);
+        } else if head.text.eq_ignore_ascii_case("wait") {
+            self.collect_wait_stmt_infos(&significant, scope);
         } else {
             self.collector
                 .collect_token_expression_refs_infos(tail, scope, true);
+        }
+    }
+
+    fn collect_wait_stmt_infos(&mut self, tokens: &[SyntaxTokenInfo], scope: ScopeId) {
+        if tokens.is_empty() || !tokens[0].text.eq_ignore_ascii_case("wait") {
+            return;
+        }
+
+        let mut expr_start = 1usize;
+        if tokens
+            .get(expr_start)
+            .is_some_and(|token| token.text.eq_ignore_ascii_case("up"))
+        {
+            expr_start += 1;
+        }
+        if tokens
+            .get(expr_start)
+            .is_some_and(|token| token.text.eq_ignore_ascii_case("to"))
+        {
+            expr_start += 1;
+        }
+
+        let expr_end = self
+            .collector
+            .find_top_level_keyword_index_infos(tokens, expr_start, "seconds")
+            .unwrap_or(tokens.len());
+        if expr_end > expr_start {
+            self.collector.collect_token_expression_refs_infos(
+                &tokens[expr_start..expr_end],
+                scope,
+                true,
+            );
         }
     }
 

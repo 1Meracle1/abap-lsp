@@ -2062,6 +2062,12 @@ fn delete_clause_starts(source: &str, tokens: &[Token], idx: usize) -> bool {
 }
 
 fn delete_stmt_kind(source: &str, tokens: &[Token], start: usize, period_i: usize) -> SyntaxKind {
+    if tokens
+        .get(start)
+        .is_some_and(|token| is_keyword(source, token, "table"))
+    {
+        return SyntaxKind::DeleteStmt;
+    }
     let Some(from_idx) = find_top_level_keyword_index(source, tokens, start, period_i, "from")
     else {
         return SyntaxKind::DeleteStmt;
@@ -4379,6 +4385,22 @@ pub fn try_parse_delete_stmt(
                 children.push(token_leaf(b, &tokens[i]));
                 children.push(token_leaf(b, &tokens[i + 1]));
                 i += 2;
+            } else if tokens
+                .get(i)
+                .is_some_and(|token| is_keyword(source, token, "table"))
+            {
+                children.push(token_leaf(b, &tokens[i]));
+                i += 1;
+                i = scan_and_push_expr_clause(
+                    b,
+                    &mut children,
+                    source,
+                    tokens,
+                    i,
+                    period_i,
+                    Some(&tokens[i - 1]),
+                    &clause_starts,
+                );
             } else {
                 i = scan_and_push_expr_clause(
                     b,
@@ -5659,6 +5681,24 @@ END-OF-PAGE.\nWRITE 'e'.",
             .find_first_kind(parsed.file.root(), SyntaxKind::DeleteStmt)
             .expect("delete stmt");
         assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::TemplateExpr), 1);
+    }
+
+    #[test]
+    fn parses_delete_table_from_work_area_as_internal_table_delete() {
+        let parsed = crate::parse("DELETE TABLE ct_objids FROM is_obj_ids.");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        assert_eq!(parsed.file.count_kind(parsed.file.root(), SyntaxKind::DeleteStmt), 1);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::DeleteDbTableStmt),
+            0
+        );
+        let stmt = parsed
+            .file
+            .find_first_kind(parsed.file.root(), SyntaxKind::DeleteStmt)
+            .expect("delete stmt");
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::TemplateExpr), 2);
     }
 
     #[test]
