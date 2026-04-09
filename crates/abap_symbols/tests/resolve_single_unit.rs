@@ -4623,6 +4623,62 @@ DATA(ls_obj_itm) = VALUE ty_item( objid = 'X' ).
 }
 
 #[test]
+fn resolves_value_lines_of_references_inside_cond_constructor() {
+    let src = r#"
+TYPES ty_tab TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+
+DATA lt_source TYPE ty_tab.
+DATA lv_from TYPE i VALUE 1.
+DATA lv_to TYPE i VALUE 2.
+DATA lv_ok TYPE abap_bool VALUE abap_true.
+DATA lv_extra TYPE string VALUE `x`.
+
+DATA(lt_result) = COND ty_tab(
+  WHEN lv_ok = abap_true THEN VALUE #(
+    ( LINES OF lt_source FROM lv_from TO lv_to USING KEY primary_key )
+    ( lv_extra )
+  )
+  ELSE VALUE #( ) ).
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///value_lines_of_cond.abap", src, &parsed);
+
+    for name in ["lt_source", "lv_from", "lv_to", "lv_ok", "lv_extra"] {
+        assert!(
+            unit.references.iter().any(|reference| {
+                reference.namespace == Namespace::Value
+                    && reference.kind == ReferenceKind::Identifier
+                    && reference.name.as_ref() == name
+                    && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+            }),
+            "expected resolved VALUE/COND reference for `{name}`, refs={:?} diagnostics={:?}",
+            unit.references,
+            unit.diagnostics
+        );
+    }
+
+    for keyword in ["lines", "of", "from", "to", "using", "key", "primary_key"] {
+        assert!(
+            !unit
+                .references
+                .iter()
+                .any(|reference| reference.name.as_ref() == keyword),
+            "unexpected LINES OF keyword reference `{keyword}`, refs={:?}",
+            unit.references
+        );
+    }
+
+    assert!(
+        !unit
+            .diagnostics
+            .iter()
+            .any(|diag| diag.kind == DiagnosticKind::UnresolvedReference),
+        "unexpected unresolved diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn resolves_value_for_let_bindings_from_project_shape() {
     let src = r#"
 TYPES: BEGIN OF ty_obj,
@@ -6409,6 +6465,40 @@ ev_characters = condense( val = ev_characters del = sv_null_char ).\n\
     }));
     assert!(!unit.diagnostics.iter().any(|diag| {
         diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains("condense")
+    }));
+}
+
+#[test]
+fn resolves_round_builtin_with_named_arguments() {
+    let src = "\
+DATA lv_value TYPE decfloat34 VALUE '1.25'.\n\
+DATA lv_dec TYPE i VALUE 1.\n\
+DATA lv_mode TYPE i VALUE 0.\n\
+DATA lv_out TYPE decfloat34.\n\
+lv_out = round( val = lv_value dec = lv_dec mode = lv_mode ).\n\
+";
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///builtin_round.abap", src, &parsed);
+
+    assert!(unit.references.iter().any(|reference| {
+        reference.kind == ReferenceKind::RoutineCall
+            && reference.namespace == Namespace::Routine
+            && reference.name.as_ref() == "round"
+            && matches!(reference.resolution, Some(Resolution::BuiltinRoutine))
+    }), "{:#?}", unit.references);
+    for name in ["lv_value", "lv_dec", "lv_mode"] {
+        assert!(unit.references.iter().any(|reference| {
+            reference.namespace == Namespace::Value
+                && reference.name.as_ref() == name
+                && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+        }), "missing reference for `{name}`: refs={:?} diagnostics={:?}", unit.references, unit.diagnostics);
+    }
+    assert!(!unit.diagnostics.iter().any(|diag| {
+        diag.kind == DiagnosticKind::InvalidBuiltinNamedArgument
+            && diag.message.contains("round")
+    }));
+    assert!(!unit.diagnostics.iter().any(|diag| {
+        diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains("round")
     }));
 }
 

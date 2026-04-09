@@ -9,8 +9,8 @@ use crate::block_helpers::{
 use crate::expr::{parse_arithmetic_expr, parse_logical_expr};
 use crate::stmt_period::{
     StmtPeriodScan, is_condition_continuation_keyword, is_definite_stmt_lead_keyword,
-    is_named_arg_clause_keyword, scan_until_statement_period, token_begins_line,
-    unterminated_err_end,
+    is_inline_decl_continuation, is_named_arg_clause_keyword, scan_until_statement_period,
+    token_begins_line, unterminated_err_end,
 };
 use crate::syntax::token_leaf;
 use crate::type_ref::build_type_ref_node;
@@ -1084,9 +1084,74 @@ fn scan_read_table_stmt_period(tokens: &[Token], source: &str, start: usize) -> 
 
             if i > start && t.kind == TokenKind::Ident && token_begins_line(source, t) {
                 if is_definite_stmt_lead_keyword(source, t) {
-                    return StmtPeriodScan::Unterminated { end_exclusive: i };
+                    if !is_inline_decl_continuation(source, tokens, i) {
+                        return StmtPeriodScan::Unterminated { end_exclusive: i };
+                    }
                 }
                 if !inside_key_components {
+                    let next_kind = tokens.get(i + 1).map(|x| x.kind);
+                    if matches!(next_kind, Some(TokenKind::Eq | TokenKind::QuestionEq)) {
+                        return StmtPeriodScan::Unterminated { end_exclusive: i };
+                    }
+                }
+            }
+        }
+
+        match t.kind {
+            TokenKind::LParen => paren += 1,
+            TokenKind::RParen => paren -= 1,
+            TokenKind::LBracket => bracket += 1,
+            TokenKind::RBracket => bracket -= 1,
+            TokenKind::LBrace => brace += 1,
+            TokenKind::RBrace => brace -= 1,
+            _ => {}
+        }
+        i += 1;
+    }
+
+    StmtPeriodScan::Unterminated {
+        end_exclusive: tokens.len(),
+    }
+}
+
+fn scan_update_stmt_period(tokens: &[Token], source: &str, start: usize) -> StmtPeriodScan {
+    let mut paren = 0i32;
+    let mut bracket = 0i32;
+    let mut brace = 0i32;
+    let mut inside_set_clause = false;
+    let mut i = start;
+
+    while i < tokens.len() {
+        let t = &tokens[i];
+        if t.kind == TokenKind::Eof {
+            return StmtPeriodScan::Unterminated { end_exclusive: i };
+        }
+
+        if paren == 0 && bracket == 0 && brace == 0 {
+            if t.kind == TokenKind::Period {
+                return StmtPeriodScan::Found(i);
+            }
+
+            if t.kind == TokenKind::Ident {
+                if is_keyword(source, t, "set") {
+                    inside_set_clause = true;
+                } else if is_keyword(source, t, "where")
+                    || is_keyword(source, t, "from")
+                    || is_keyword(source, t, "using")
+                    || is_keyword(source, t, "connection")
+                    || is_keyword(source, t, "client")
+                {
+                    inside_set_clause = false;
+                }
+            }
+
+            if i > start && t.kind == TokenKind::Ident && token_begins_line(source, t) {
+                if is_definite_stmt_lead_keyword(source, t)
+                    && !is_inline_decl_continuation(source, tokens, i)
+                {
+                    return StmtPeriodScan::Unterminated { end_exclusive: i };
+                }
+                if !inside_set_clause {
                     let next_kind = tokens.get(i + 1).map(|x| x.kind);
                     if matches!(next_kind, Some(TokenKind::Eq | TokenKind::QuestionEq)) {
                         return StmtPeriodScan::Unterminated { end_exclusive: i };
@@ -4509,6 +4574,41 @@ pub fn try_parse_delete_stmt(
     ))
 }
 
+pub fn try_parse_update_stmt(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    errors: &mut Vec<crate::ParseError>,
+) -> Option<(NodeId, usize)> {
+    let update_tok = tokens.get(idx)?;
+    if !is_keyword(source, update_tok, "update") {
+        return None;
+    }
+
+    Some(match scan_update_stmt_period(tokens, source, idx + 1) {
+        StmtPeriodScan::Found(period_i) => {
+            let children = token_children(b, tokens, idx, period_i + 1);
+            let node = b.branch(
+                SyntaxKind::UnparsedStmt,
+                update_tok.range.start..tokens[period_i].range.end,
+                &children,
+            );
+            (node, period_i + 1)
+        }
+        StmtPeriodScan::Unterminated { end_exclusive } => {
+            let err_end = unterminated_err_end(tokens, end_exclusive, update_tok.range.end);
+            errors.push(crate::ParseError {
+                message: "syntax error: expected '.' after UPDATE statement".to_string(),
+                range: update_tok.range.start..err_end,
+            });
+            let children = token_children(b, tokens, idx, end_exclusive);
+            let node = b.branch(SyntaxKind::Error, update_tok.range.start..err_end, &children);
+            (node, next_after_unterminated_scan(tokens, end_exclusive))
+        }
+    })
+}
+
 pub fn try_parse_assign_keyword_stmt(
     b: &mut SyntaxTreeBuilder,
     source: &str,
@@ -5109,6 +5209,17 @@ END-OF-PAGE.\nWRITE 'e'.",
     }
 
     #[test]
+    fn parses_split_stmt_with_multiline_inline_data_targets() {
+        let parsed = crate::parse(
+            "SPLIT lv_gln_enc AT ':' INTO DATA(lv_urn) DATA(epc) DATA(id)\n  DATA(lv_sgln) DATA(lv_gln).",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::SplitStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
+    }
+
+    #[test]
     fn parses_condense_stmt() {
         let parsed = crate::parse("CONDENSE lv_datestring.");
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
@@ -5469,6 +5580,26 @@ END-OF-PAGE.\nWRITE 'e'.",
     }
 
     #[test]
+    fn parses_multiline_read_table_assigning_inline_field_symbol() {
+        let parsed = crate::parse(
+            "READ TABLE lt_child_warning ASSIGNING\n  FIELD-SYMBOL(<fs_child_success>)\n  WITH KEY rep_evtid = ls_evt-rep_evtid.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::ReadTableStmt),
+            1
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::FieldSymbolInlineDecl),
+            1
+        );
+    }
+
+    #[test]
     fn parses_read_table_operands_as_ast_children() {
         let parsed = crate::parse("READ TABLE lt_trn INTO ls_trn INDEX 1.");
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
@@ -5653,6 +5784,20 @@ END-OF-PAGE.\nWRITE 'e'.",
     }
 
     #[test]
+    fn parses_multiline_update_set_statement_without_frontend_error() {
+        let parsed = crate::parse(
+            "UPDATE zattp_rs_represp\n  SET reprocessing_status = 'S'\n      retry_count = <fs_rs_represp>-retry_count\n  WHERE rep_evtid EQ <fs_rs_represp>-rep_evtid.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::UnparsedStmt),
+            1
+        );
+    }
+
+    #[test]
     fn parses_delete_table_where_and_index_operands_as_ast_children() {
         let parsed = crate::parse(
             "DELETE lt_trans_del WHERE status_trn <> /sttp/cl_dm_constants=>gcs_stat_trn-deleted.\nDELETE lt_pay_header INDEX lv_index_hdr.",
@@ -5756,6 +5901,26 @@ END-OF-PAGE.\nWRITE 'e'.",
         );
         assert_eq!(
             parsed.file.count_kind(stmt, SyntaxKind::AssignSourceExpr),
+            1
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::FieldSymbolInlineDecl),
+            1
+        );
+    }
+
+    #[test]
+    fn parses_assign_component_multiline_to_inline_field_symbol() {
+        let parsed = crate::parse(
+            "ASSIGN COMPONENT 'ADD_FIELDS' OF STRUCTURE <ls_outbound> TO\n  FIELD-SYMBOL(<ls_add_fields>) ##no_text.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::AssignKeywordStmt),
             1
         );
         assert_eq!(

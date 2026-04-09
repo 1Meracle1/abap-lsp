@@ -397,6 +397,31 @@ pub const BUILTIN_ROUTINES: &[BuiltinRoutineSpec] = &[
         supports_named_arguments: true,
     },
     BuiltinRoutineSpec {
+        name: "round",
+        params: &[
+            BuiltinRoutineParamSpec {
+                name: "val",
+                type_name: "decfloat34",
+            },
+            BuiltinRoutineParamSpec {
+                name: "dec",
+                type_name: "i",
+            },
+            BuiltinRoutineParamSpec {
+                name: "prec",
+                type_name: "i",
+            },
+            BuiltinRoutineParamSpec {
+                name: "mode",
+                type_name: "data",
+            },
+        ],
+        hover_params: &["val", "dec", "prec", "mode"],
+        return_type: "decfloat34",
+        description: "Rounds a decimal floating-point value to a given number of decimal places (`dec`) or significant digits (`prec`), optionally using a rounding mode from `CL_ABAP_MATH`.",
+        supports_named_arguments: true,
+    },
+    BuiltinRoutineSpec {
         name: "to_lower",
         params: ARG_STRING_PARAMS,
         hover_params: &["arg"],

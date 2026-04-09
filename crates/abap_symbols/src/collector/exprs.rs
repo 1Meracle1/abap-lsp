@@ -413,6 +413,15 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                     idx = operand_end;
                     segment_start = idx;
                 }
+                text if text.eq_ignore_ascii_case("LINES")
+                    && tokens
+                        .get(idx + 1)
+                        .is_some_and(|next| next.text.eq_ignore_ascii_case("OF")) =>
+                {
+                    self.collect_value_token_segment(&tokens[segment_start..idx], scope);
+                    idx = self.collect_value_lines_of_clause(tokens, idx, scope);
+                    segment_start = idx;
+                }
                 text if text.eq_ignore_ascii_case("FOR") => {
                     self.collect_value_token_segment(&tokens[segment_start..idx], scope);
                     self.collect_value_for_clause(tokens, idx, scope);
@@ -467,6 +476,62 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
         }
 
         self.collect_value_token_segment(&tokens[segment_start..], scope);
+    }
+
+    fn collect_value_lines_of_clause(
+        &mut self,
+        tokens: &[super::SyntaxTokenInfo],
+        start: usize,
+        scope: ScopeId,
+    ) -> usize {
+        let source_start = start + 2;
+        if source_start >= tokens.len() {
+            return tokens.len();
+        }
+
+        let source_end = self.find_value_lines_of_keyword(tokens, source_start)
+            .unwrap_or_else(|| self.value_lines_of_clause_end(tokens, source_start));
+        self.ctx.collect_token_expression_refs_infos(
+            &tokens[source_start..source_end],
+            scope,
+            true,
+        );
+
+        let mut idx = source_end;
+        while idx < tokens.len() {
+            let token = &tokens[idx];
+            if self.ctx.syntax_token_is_comment(token) {
+                idx += 1;
+                continue;
+            }
+
+            if token.text.eq_ignore_ascii_case("FROM") || token.text.eq_ignore_ascii_case("TO") {
+                let expr_start = idx + 1;
+                let expr_end = self
+                    .find_value_lines_of_keyword(tokens, expr_start)
+                    .unwrap_or_else(|| self.value_lines_of_clause_end(tokens, expr_start));
+                self.ctx.collect_token_expression_refs_infos(
+                    &tokens[expr_start..expr_end],
+                    scope,
+                    true,
+                );
+                idx = expr_end;
+                continue;
+            }
+
+            if token.text.eq_ignore_ascii_case("USING")
+                && tokens
+                    .get(idx + 1)
+                    .is_some_and(|next| next.text.eq_ignore_ascii_case("KEY"))
+            {
+                idx += 3;
+                continue;
+            }
+
+            break;
+        }
+
+        idx
     }
 
     fn paren_belongs_to_constructor_or_call(
@@ -733,6 +798,47 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                 if self.is_named_assignment_start(tokens, idx) {
                     break;
                 }
+            }
+            idx += 1;
+        }
+        idx
+    }
+
+    fn find_value_lines_of_keyword(
+        &self,
+        tokens: &[super::SyntaxTokenInfo],
+        start: usize,
+    ) -> Option<usize> {
+        self.find_top_level_keyword(tokens, start, &["FROM", "TO", "USING"])
+    }
+
+    fn value_lines_of_clause_end(
+        &self,
+        tokens: &[super::SyntaxTokenInfo],
+        start: usize,
+    ) -> usize {
+        let mut idx = start;
+        while idx < tokens.len() {
+            let token = &tokens[idx];
+            if self.ctx.syntax_token_is_comment(token) {
+                idx += 1;
+                continue;
+            }
+            if token.text.eq_ignore_ascii_case("FOR")
+                || token.text.eq_ignore_ascii_case("LET")
+                || token.text.eq_ignore_ascii_case("BASE")
+                || token.text.eq_ignore_ascii_case("OPTIONAL")
+                || token.text.eq_ignore_ascii_case("INIT")
+                || token.text.eq_ignore_ascii_case("NEXT")
+                || token.text.eq_ignore_ascii_case("WHERE")
+                || token.text.eq_ignore_ascii_case("UNTIL")
+                || token.text.eq_ignore_ascii_case("WHILE")
+                || token.text.eq_ignore_ascii_case("THEN")
+            {
+                break;
+            }
+            if self.is_named_assignment_start(tokens, idx) {
+                break;
             }
             idx += 1;
         }

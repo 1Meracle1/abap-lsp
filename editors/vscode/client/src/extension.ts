@@ -55,6 +55,7 @@ const customerObjectNamePattern = /^(?:Z|Y)[A-Z0-9_\/]+$/;
 interface RemoteDependencyResolveParams {
 	workspaceUri: string;
 	sourceUri: string;
+	sourceUris?: string[];
 	unknownSymbolMode?: string;
 	remoteRequestParallelism?: number;
 	remoteRequestsPerSecond?: number;
@@ -64,6 +65,7 @@ interface RemoteDependencyResolveParams {
 interface RemoteDependenciesUpdatedParams {
 	workspaceUri: string;
 	sourceUri: string;
+	sourceUris?: string[];
 	fetched: string[];
 	failed: RemoteDependencyCandidate[];
 }
@@ -433,6 +435,7 @@ async function resolveRemoteDependencies(
 	const logCandidates: RemoteDependencyCandidate[] = [];
 	const unknownSymbolMode = normalizeUnknownSymbolMode(params.unknownSymbolMode);
 	const candidates = dedupeRemoteDependencyCandidates(params.candidates);
+	const sourceUris = params.sourceUris?.length ? params.sourceUris : [params.sourceUri];
 
 	for (const candidate of candidates) {
 		if (shouldLogUnknownSymbolCandidate(candidate, unknownSymbolMode)) {
@@ -443,7 +446,9 @@ async function resolveRemoteDependencies(
 	}
 
 	if (logCandidates.length > 0) {
-		await appendUnknownSymbolLog(workspaceFolder, params.sourceUri, logCandidates);
+		for (const sourceUri of sourceUris) {
+			await appendUnknownSymbolLog(workspaceFolder, sourceUri, logCandidates);
+		}
 	}
 
 	if (fetchCandidates.length === 0) {
@@ -509,6 +514,7 @@ async function resolveRemoteDependencies(
 	const updateParams: RemoteDependenciesUpdatedParams = {
 		workspaceUri: params.workspaceUri,
 		sourceUri: params.sourceUri,
+		sourceUris,
 		fetched,
 		failed,
 	};

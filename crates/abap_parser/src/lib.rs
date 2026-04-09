@@ -85,6 +85,7 @@ const IDENT_LEAD_PARSERS: &[GuardedParser] = &[
     GuardedParser::new(&["sort"], surface_stmt::try_parse_sort_stmt),
     GuardedParser::new(&["modify"], surface_stmt::try_parse_modify_stmt),
     GuardedParser::new(&["delete"], surface_stmt::try_parse_delete_stmt),
+    GuardedParser::new(&["update"], surface_stmt::try_parse_update_stmt),
     GuardedParser::new(&["write"], surface_stmt::try_parse_write_stmt),
     GuardedParser::new(&["split"], surface_stmt::try_parse_split_stmt),
     GuardedParser::new(&["concatenate"], surface_stmt::try_parse_concatenate_stmt),

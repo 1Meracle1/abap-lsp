@@ -1789,6 +1789,18 @@ mod tests {
     }
 
     #[test]
+    fn value_constructor_with_lines_of_in_cond_parses() {
+        let parsed = crate::parse(
+            "DATA(lt_result) = COND stringtab( WHEN lv_ok = abap_true THEN VALUE #( ( LINES OF lt_source FROM lv_from TO lv_to USING KEY by_objid ) ( lv_extra ) ) ELSE VALUE #( ) ).",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::ConstructorExpr), 3);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::CallArgList), 3);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
+    }
+
+    #[test]
     fn cond_constructor_with_let_result_parses() {
         let parsed = crate::parse(
             "lv_text = COND string( WHEN lv_ok = abap_true THEN LET it = `be` IN |To { it }| ELSE `x` ).",

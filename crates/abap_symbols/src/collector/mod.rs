@@ -457,6 +457,17 @@ impl<'a> Collector<'a> {
                     .metadata_from_value_source_tokens(&tokens[operand_start..operand_end], scope);
             }
 
+            if token.text.eq_ignore_ascii_case("lines")
+                && tokens
+                    .get(idx + 1)
+                    .is_some_and(|next| next.text.eq_ignore_ascii_case("of"))
+            {
+                let source_start = idx + 2;
+                let source_end = self.value_lines_of_source_end(tokens, source_start);
+                return self
+                    .metadata_from_value_source_tokens(&tokens[source_start..source_end], scope);
+            }
+
             if token.text.eq_ignore_ascii_case("for") {
                 let source_start = idx + 3;
                 let source_end = self.value_for_source_end(tokens, source_start);
@@ -533,6 +544,33 @@ impl<'a> Collector<'a> {
                 || token.text.eq_ignore_ascii_case("where")
                 || token.text.eq_ignore_ascii_case("until")
                 || token.text.eq_ignore_ascii_case("while")
+            {
+                break;
+            }
+            if token.text.as_ref() == "("
+                && idx > start
+                && tokens
+                    .get(idx - 1)
+                    .is_some_and(|prev| self.syntax_tokens_have_space_between(prev, token))
+            {
+                break;
+            }
+            idx += 1;
+        }
+        idx
+    }
+
+    fn value_lines_of_source_end(&self, tokens: &[SyntaxTokenInfo], start: usize) -> usize {
+        let mut idx = start;
+        while idx < tokens.len() {
+            let token = &tokens[idx];
+            if self.syntax_token_is_comment(token) {
+                idx += 1;
+                continue;
+            }
+            if token.text.eq_ignore_ascii_case("from")
+                || token.text.eq_ignore_ascii_case("to")
+                || token.text.eq_ignore_ascii_case("using")
             {
                 break;
             }

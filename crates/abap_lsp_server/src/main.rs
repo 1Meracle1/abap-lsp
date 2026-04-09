@@ -1,13 +1,14 @@
 use std::io::{self, BufRead, BufReader, BufWriter, Write};
 use std::net::{SocketAddr, TcpListener};
+use std::collections::HashSet;
 
 use abap_jsonrpc::{JSON_RPC_VERSION, Response, read_frame, write_frame};
 use abap_lsp::{
     CompletionParams, DEPENDENCY_CACHE_CLEARED, DidChangeTextDocumentParams,
     DidOpenTextDocumentParams, GotoDefinitionParams, HoverParams, REMOTE_DEPENDENCIES_UPDATED,
     RESOLVE_REMOTE_DEPENDENCIES, ReferenceParams, SemanticTokensParams, ServerConfig, ServerState,
-    WORKSPACE_MANIFEST_UPDATED, WorkspaceManifestUpdatedParams, build_remote_dependency_request,
-    build_remote_dependency_requests_for_workspace, completion, definition,
+    WORKSPACE_MANIFEST_UPDATED, WorkspaceManifestUpdatedParams, build_remote_dependency_batch_for_workspace,
+    completion, definition,
     handle_dependency_cache_cleared, handle_remote_dependencies_updated,
     handle_workspace_manifest_updated, hover, initialize_result, publish_changed_document_mut,
     publish_diagnostics_params, publish_open_document_mut, references, semantic_tokens,
@@ -24,7 +25,8 @@ const INVALID_REQUEST: i64 = -32600;
 struct InitializeParamsLite {
     #[serde(default)]
     workspace_folders: Vec<WorkspaceFolderLite>,
-    capabilities: InitializeCapabilitiesLite,
+    #[serde(rename = "capabilities")]
+    _capabilities: InitializeCapabilitiesLite,
 }
 
 #[derive(Debug, Clone, Default, serde::Deserialize)]
@@ -36,13 +38,15 @@ struct WorkspaceFolderLite {
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct InitializeCapabilitiesLite {
-    window: WindowCapabilitiesLite,
+    #[serde(rename = "window")]
+    _window: WindowCapabilitiesLite,
 }
 
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct WindowCapabilitiesLite {
-    work_done_progress: Option<bool>,
+    #[serde(rename = "workDoneProgress")]
+    _work_done_progress: Option<bool>,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -104,7 +108,6 @@ fn serve(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut state = ServerState::default();
     let config = ServerConfig::default();
-    let mut next_outgoing_request_id = 1_i64;
 
     while let Some(frame) = read_frame(reader)? {
         let message: Value = serde_json::from_slice(&frame)?;
@@ -116,44 +119,31 @@ fn serve(
             if let Some(params) =
                 parse_params::<abap_lsp::RemoteDependenciesUpdatedParams>(&message)?
             {
-                let token = format!("abapls-remote-refresh-{}", next_outgoing_request_id);
-                send_workspace_progress_begin(
-                    writer,
-                    next_outgoing_request_id,
-                    &token,
-                    "ABAP: refreshing after remote dependencies",
-                    "Reloading workspace and re-analyzing files",
-                )?;
-                next_outgoing_request_id += 1;
+                let mut source_uris: HashSet<String> = params
+                    .source_uris
+                    .iter()
+                    .map(|uri| abap_lsp::normalize_lsp_uri(uri))
+                    .collect();
+                if !params.source_uri.is_empty() {
+                    source_uris.insert(abap_lsp::normalize_lsp_uri(&params.source_uri));
+                }
                 let snapshots = handle_remote_dependencies_updated(&mut state, &params);
-                let total = snapshots.len().max(1);
-                for (idx, snapshot) in snapshots.iter().enumerate() {
-                    let percent = (((idx + 1) * 100) / total) as u32;
-                    send_workspace_progress_report(
-                        writer,
-                        &token,
-                        &format!("Processed {}/{} files", idx + 1, total),
-                        Some(percent),
-                    )?;
-                    if !params.source_uri.is_empty()
-                        && snapshot.uri.as_ref() == abap_lsp::normalize_lsp_uri(&params.source_uri)
-                    {
+                for snapshot in snapshots.iter() {
+                    if source_uris.contains(snapshot.uri.as_ref()) {
                         let params_value =
                             serde_json::to_value(publish_diagnostics_params(&state, snapshot))?;
                         send_notification(writer, "textDocument/publishDiagnostics", params_value)?;
                     }
                 }
-                for request in build_remote_dependency_requests_for_workspace(
-                    &mut state,
-                    &params.workspace_uri,
-                ) {
+                if let Some(request) =
+                    build_remote_dependency_batch_for_workspace(&mut state, &params.workspace_uri)
+                {
                     send_notification(
                         writer,
                         RESOLVE_REMOTE_DEPENDENCIES,
                         serde_json::to_value(request)?,
                     )?;
                 }
-                send_workspace_progress_end(writer, &token, "Remote dependency refresh complete")?;
             }
             continue;
         }
@@ -199,88 +189,6 @@ fn send_notification(
     }))?;
     write_frame(writer, &payload)?;
     Ok(())
-}
-
-fn send_request(
-    writer: &mut impl Write,
-    id: i64,
-    method: &str,
-    params: Value,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let payload = serde_json::to_vec(&json!({
-        "jsonrpc": JSON_RPC_VERSION,
-        "id": id,
-        "method": method,
-        "params": params,
-    }))?;
-    write_frame(writer, &payload)?;
-    Ok(())
-}
-
-fn send_workspace_progress_begin(
-    writer: &mut impl Write,
-    request_id: i64,
-    token: &str,
-    title: &str,
-    message: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
-    send_request(
-        writer,
-        request_id,
-        "window/workDoneProgress/create",
-        json!({ "token": token }),
-    )?;
-    send_notification(
-        writer,
-        "$/progress",
-        json!({
-            "token": token,
-            "value": {
-                "kind": "begin",
-                "title": title,
-                "message": message,
-                "cancellable": false,
-            }
-        }),
-    )
-}
-
-fn send_workspace_progress_report(
-    writer: &mut impl Write,
-    token: &str,
-    message: &str,
-    percentage: Option<u32>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    send_notification(
-        writer,
-        "$/progress",
-        json!({
-            "token": token,
-            "value": {
-                "kind": "report",
-                "message": message,
-                "percentage": percentage,
-            }
-        }),
-    )
-}
-
-fn send_workspace_progress_end(
-    writer: &mut impl Write,
-    token: &str,
-    message: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
-    send_notification(
-        writer,
-        "$/progress",
-        json!({
-            "token": token,
-            "value": {
-                "kind": "end",
-                "message": message,
-            }
-        }),
-    )
 }
 
 struct HandledMessage {
@@ -334,7 +242,11 @@ fn handle_message(
                     notifications
                         .push(("textDocument/publishDiagnostics".to_owned(), params_value));
                 }
-                if let Some(request) = build_remote_dependency_request(state, snapshot.uri.as_ref())
+                if let Some(workspace_uri) = state
+                    .workspace_for_uri(snapshot.uri.as_ref())
+                    .map(|workspace| workspace.root_uri.clone())
+                    && let Some(request) =
+                        build_remote_dependency_batch_for_workspace(state, &workspace_uri)
                 {
                     notifications.push((
                         RESOLVE_REMOTE_DEPENDENCIES.to_owned(),
@@ -365,8 +277,11 @@ fn handle_message(
                         notifications
                             .push(("textDocument/publishDiagnostics".to_owned(), params_value));
                     }
-                    if let Some(request) =
-                        build_remote_dependency_request(state, snapshot.uri.as_ref())
+                    if let Some(workspace_uri) = state
+                        .workspace_for_uri(snapshot.uri.as_ref())
+                        .map(|workspace| workspace.root_uri.clone())
+                        && let Some(request) =
+                            build_remote_dependency_batch_for_workspace(state, &workspace_uri)
                     {
                         notifications.push((
                             RESOLVE_REMOTE_DEPENDENCIES.to_owned(),
@@ -397,8 +312,8 @@ fn handle_message(
                     notifications
                         .push(("textDocument/publishDiagnostics".to_owned(), params_value));
                 }
-                for request in
-                    build_remote_dependency_requests_for_workspace(state, &params.workspace_uri)
+                if let Some(request) =
+                    build_remote_dependency_batch_for_workspace(state, &params.workspace_uri)
                 {
                     notifications.push((
                         RESOLVE_REMOTE_DEPENDENCIES.to_string(),
@@ -432,8 +347,8 @@ fn handle_message(
                     notifications
                         .push(("textDocument/publishDiagnostics".to_string(), params_value));
                 }
-                for request in
-                    build_remote_dependency_requests_for_workspace(state, &params.workspace_uri)
+                if let Some(request) =
+                    build_remote_dependency_batch_for_workspace(state, &params.workspace_uri)
                 {
                     notifications.push((
                         RESOLVE_REMOTE_DEPENDENCIES.to_string(),

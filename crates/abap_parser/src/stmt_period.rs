@@ -20,6 +20,31 @@ pub(crate) fn token_begins_line(source: &str, tok: &Token) -> bool {
     bytes[p - 1] == b'\n'
 }
 
+#[inline]
+fn is_inline_data_start(tokens: &[Token], idx: usize) -> bool {
+    tokens.get(idx).is_some_and(|tok| tok.kind == TokenKind::Ident)
+        && tokens.get(idx + 1).map(|tok| tok.kind) == Some(TokenKind::LParen)
+}
+
+#[inline]
+fn is_inline_field_symbol_start(tokens: &[Token], idx: usize) -> bool {
+    tokens.get(idx).is_some_and(|tok| tok.kind == TokenKind::Ident)
+        && tokens.get(idx + 1).map(|tok| tok.kind) == Some(TokenKind::Minus)
+        && tokens.get(idx + 2).is_some_and(|tok| tok.kind == TokenKind::Ident)
+        && tokens.get(idx + 3).map(|tok| tok.kind) == Some(TokenKind::LParen)
+}
+
+#[inline]
+pub(crate) fn is_inline_decl_continuation(source: &str, tokens: &[Token], idx: usize) -> bool {
+    let Some(tok) = tokens.get(idx) else {
+        return false;
+    };
+    tok.kind == TokenKind::Ident
+        && ((tok.lexeme(source).eq_ignore_ascii_case("DATA") && is_inline_data_start(tokens, idx))
+            || (tok.lexeme(source).eq_ignore_ascii_case("FIELD")
+                && is_inline_field_symbol_start(tokens, idx)))
+}
+
 /// Keywords that almost always start a new compilation-unit statement at the beginning of a line.
 #[inline]
 pub(crate) fn is_definite_stmt_lead_keyword(source: &str, tok: &Token) -> bool {
@@ -155,6 +180,7 @@ pub(crate) fn scan_until_statement_period(
                 if t.kind == TokenKind::Ident
                     && token_begins_line(source, t)
                     && is_definite_stmt_lead_keyword(source, t)
+                    && !is_inline_decl_continuation(source, tokens, i)
                 {
                     return StmtPeriodScan::Unterminated { end_exclusive: i };
                 }

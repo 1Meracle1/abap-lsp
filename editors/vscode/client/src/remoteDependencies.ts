@@ -54,6 +54,13 @@ export function dedupeRemoteDependencyCandidates(
 	return [...deduped.values()];
 }
 
+export function mergeRemoteDependencyCandidates(
+	current: readonly RemoteDependencyCandidate[],
+	incoming: readonly RemoteDependencyCandidate[],
+): RemoteDependencyCandidate[] {
+	return dedupeRemoteDependencyCandidates([...current, ...incoming]);
+}
+
 export function resolveRemoteDependencyFetchPolicy(
 	policy: RemoteDependencyFetchPolicy | undefined,
 ): ResolvedRemoteDependencyFetchPolicy {
@@ -66,6 +73,22 @@ export function resolveRemoteDependencyFetchPolicy(
 			policy?.remoteRequestsPerSecond,
 			defaultRemoteRequestsPerSecond,
 		),
+	};
+}
+
+export function mergeRemoteDependencyFetchPolicy(
+	current: RemoteDependencyFetchPolicy | undefined,
+	incoming: RemoteDependencyFetchPolicy | undefined,
+): RemoteDependencyFetchPolicy {
+	return {
+		remoteRequestParallelism: Math.max(
+			current?.remoteRequestParallelism ?? 0,
+			incoming?.remoteRequestParallelism ?? 0,
+		) || undefined,
+		remoteRequestsPerSecond: Math.max(
+			current?.remoteRequestsPerSecond ?? 0,
+			incoming?.remoteRequestsPerSecond ?? 0,
+		) || undefined,
 	};
 }
 

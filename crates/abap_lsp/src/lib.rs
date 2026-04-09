@@ -51,6 +51,7 @@ pub struct WorkspaceState {
     pub open_documents: HashMap<String, OpenDocumentOverlay>,
     pub remote_resolution_seen: HashSet<String>,
     pub remote_lookup_failures: HashSet<String>,
+    pub remote_resolution_in_flight: bool,
 }
 
 impl Default for ServerState {
@@ -89,6 +90,7 @@ impl WorkspaceState {
             open_documents: HashMap::new(),
             remote_resolution_seen: HashSet::new(),
             remote_lookup_failures: HashSet::new(),
+            remote_resolution_in_flight: false,
         }
     }
 }
@@ -131,6 +133,8 @@ pub struct RemoteDependencyResolveParams {
     pub workspace_uri: String,
     #[serde(rename = "sourceUri")]
     pub source_uri: String,
+    #[serde(rename = "sourceUris", default)]
+    pub source_uris: Vec<String>,
     #[serde(rename = "unknownSymbolMode", default)]
     pub unknown_symbol_mode: Option<String>,
     #[serde(rename = "remoteRequestParallelism", default)]
@@ -146,6 +150,8 @@ pub struct RemoteDependenciesUpdatedParams {
     pub workspace_uri: String,
     #[serde(rename = "sourceUri")]
     pub source_uri: String,
+    #[serde(rename = "sourceUris", default)]
+    pub source_uris: Vec<String>,
     pub fetched: Vec<String>,
     #[serde(default)]
     pub failed: Vec<RemoteDependencyCandidate>,
@@ -366,6 +372,7 @@ pub fn handle_dependency_cache_cleared(
     if let Some(workspace) = state.workspaces.get_mut(&workspace_uri) {
         workspace.remote_resolution_seen.clear();
         workspace.remote_lookup_failures.clear();
+        workspace.remote_resolution_in_flight = false;
     }
     refresh_workspace(state, &workspace_uri)
 }
@@ -376,6 +383,7 @@ pub fn handle_remote_dependencies_updated(
 ) -> Vec<Arc<AnalysisSnapshot>> {
     let workspace_uri = normalize_lsp_uri(&params.workspace_uri);
     if let Some(workspace) = state.workspaces.get_mut(&workspace_uri) {
+        workspace.remote_resolution_in_flight = false;
         for name in &params.fetched {
             workspace
                 .remote_lookup_failures
@@ -518,6 +526,7 @@ pub fn build_remote_dependency_request(
     Some(RemoteDependencyResolveParams {
         workspace_uri: workspace.root_uri.clone(),
         source_uri,
+        source_uris: Vec::new(),
         unknown_symbol_mode: workspace
             .manifest
             .as_ref()
@@ -531,6 +540,83 @@ pub fn build_remote_dependency_request(
             .manifest
             .as_ref()
             .map(|manifest| manifest.resolution.remote_requests_per_second),
+        candidates,
+    })
+}
+
+pub fn build_remote_dependency_batch_for_workspace(
+    state: &mut ServerState,
+    workspace_uri: &str,
+) -> Option<RemoteDependencyResolveParams> {
+    let workspace_uri = normalize_lsp_uri(workspace_uri);
+    let workspace = state.workspaces.get(&workspace_uri)?;
+    if workspace.remote_resolution_in_flight
+        || !manifest_supports_remote_resolution(workspace.manifest.as_ref())
+    {
+        return None;
+    }
+
+    let mut uris = workspace.cache.uris();
+    uris.sort();
+
+    let mut source_uris = Vec::new();
+    let mut candidates = Vec::new();
+    let unknown_symbol_mode = workspace
+        .manifest
+        .as_ref()
+        .map(|manifest| manifest.resolution.unknown_symbol_mode.clone())
+        .or(Some(UNKNOWN_SYMBOL_MODE_REMOTE.to_string()));
+    let remote_request_parallelism = workspace
+        .manifest
+        .as_ref()
+        .map(|manifest| manifest.resolution.remote_request_parallelism);
+    let remote_requests_per_second = workspace
+        .manifest
+        .as_ref()
+        .map(|manifest| manifest.resolution.remote_requests_per_second);
+
+    for uri in uris {
+        let Some(snapshot) = workspace.cache.get(uri.as_ref()) else {
+            continue;
+        };
+        if !snapshot.parse.errors.is_empty() {
+            continue;
+        }
+
+        let mut added_for_uri = false;
+        for candidate in collect_remote_dependency_candidates(snapshot.as_ref()) {
+            let key = remote_candidate_key(&candidate);
+            if workspace.remote_resolution_seen.contains(&key) {
+                continue;
+            }
+            candidates.push(candidate);
+            added_for_uri = true;
+        }
+
+        if added_for_uri {
+            source_uris.push(uri.to_string());
+        }
+    }
+
+    if candidates.is_empty() {
+        return None;
+    }
+
+    let workspace = state.workspaces.get_mut(&workspace_uri)?;
+    for candidate in &candidates {
+        workspace
+            .remote_resolution_seen
+            .insert(remote_candidate_key(candidate));
+    }
+    workspace.remote_resolution_in_flight = true;
+
+    Some(RemoteDependencyResolveParams {
+        workspace_uri: workspace.root_uri.clone(),
+        source_uri: source_uris.first().cloned().unwrap_or_default(),
+        source_uris,
+        unknown_symbol_mode,
+        remote_request_parallelism,
+        remote_requests_per_second,
         candidates,
     })
 }
@@ -1136,8 +1222,9 @@ mod tests {
         HoverParams, REMOTE_DEPENDENCIES_UPDATED, RESOLVE_REMOTE_DEPENDENCIES, ReferenceParams,
         ServerState, WORKSPACE_MANIFEST_UPDATED, WorkspaceManifestUpdatedParams,
         build_lsp_diagnostics, build_lsp_diagnostics_for_workspace,
-        build_remote_dependency_request, build_remote_dependency_requests_for_workspace,
-        collect_remote_dependency_candidates, completion, definition,
+        build_remote_dependency_batch_for_workspace, build_remote_dependency_request,
+        build_remote_dependency_requests_for_workspace, collect_remote_dependency_candidates,
+        completion, definition,
         handle_dependency_cache_cleared, handle_remote_dependencies_updated, hover,
         initialize_result, normalize_lsp_uri, publish_changed_document, publish_open_document,
         publish_open_document_mut, references,
@@ -2296,6 +2383,80 @@ unknown_symbol_mode = "remote"
     }
 
     #[test]
+    fn workspace_remote_dependency_batch_is_single_wave_and_blocks_while_in_flight() {
+        let workspace_path = temp_workspace_path("workspace_remote_batch");
+        fs::create_dir_all(&workspace_path).expect("workspace dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[resolution]
+dependency_mode = "remote-on-demand"
+unknown_symbol_mode = "remote"
+"#,
+        )
+        .expect("manifest");
+        let workspace_uri = path_to_file_uri(&workspace_path);
+
+        let mut state = ServerState::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        publish_open_document_mut(
+            &mut state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str(&format!("{workspace_uri}/first.abap")).expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: "DATA lo_first TYPE REF TO zcl_first.\nlo_first = zcl_first=>create( )."
+                        .to_string(),
+                },
+            },
+        );
+        publish_open_document_mut(
+            &mut state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str(&format!("{workspace_uri}/second.abap")).expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: "DATA lo_second TYPE REF TO zcl_second.\nlo_second = zcl_second=>create( )."
+                        .to_string(),
+                },
+            },
+        );
+
+        let batch = build_remote_dependency_batch_for_workspace(&mut state, &workspace_uri)
+            .expect("workspace batch");
+        assert_eq!(batch.candidates.len(), 2, "{batch:#?}");
+        assert_eq!(batch.source_uris.len(), 2, "{batch:#?}");
+        assert!(
+            build_remote_dependency_batch_for_workspace(&mut state, &workspace_uri).is_none(),
+            "second batch should be suppressed while first wave is in flight"
+        );
+
+        let _ = handle_remote_dependencies_updated(
+            &mut state,
+            &super::RemoteDependenciesUpdatedParams {
+                workspace_uri: workspace_uri.clone(),
+                source_uri: batch.source_uri.clone(),
+                source_uris: batch.source_uris.clone(),
+                fetched: vec!["ZCL_FIRST".to_string()],
+                failed: vec![super::RemoteDependencyCandidate {
+                    name: "zcl_second".to_string(),
+                    kind: "static".to_string(),
+                }],
+            },
+        );
+        assert!(
+            build_remote_dependency_batch_for_workspace(&mut state, &workspace_uri).is_none(),
+            "no immediate reissue expected after fetched/failed results were recorded"
+        );
+
+        let _ = fs::remove_dir_all(&workspace_path);
+    }
+
+    #[test]
     fn refreshed_dependency_files_can_trigger_follow_up_remote_requests() {
         let workspace_path = temp_workspace_path("dependency_of_dependency");
         let dependency_dir = workspace_path
@@ -2377,6 +2538,7 @@ adt_uri = "/sap/bc/adt/oo/classes/zcl_first"
             &super::RemoteDependenciesUpdatedParams {
                 workspace_uri: workspace_uri.clone(),
                 source_uri: format!("{workspace_uri}/main.abap"),
+                source_uris: Vec::new(),
                 fetched: vec!["ZCL_FIRST".to_string()],
                 failed: Vec::new(),
             },
@@ -2476,6 +2638,7 @@ adt_uri = "/sap/bc/adt/oo/classes/zcl_first"
             &super::RemoteDependenciesUpdatedParams {
                 workspace_uri: workspace_uri.clone(),
                 source_uri: format!("{workspace_uri}/main.abap"),
+                source_uris: Vec::new(),
                 fetched: vec!["ZCL_FIRST".to_string()],
                 failed: Vec::new(),
             },
@@ -2574,6 +2737,7 @@ adt_uri = "/sap/bc/adt/oo/classes/zcl_first"
             &super::RemoteDependenciesUpdatedParams {
                 workspace_uri: workspace_uri.clone(),
                 source_uri: format!("{workspace_uri}/main.abap"),
+                source_uris: Vec::new(),
                 fetched: vec!["ZCL_FIRST".to_string()],
                 failed: Vec::new(),
             },
@@ -2707,6 +2871,7 @@ unknown_symbol_mode = "remote"
             &super::RemoteDependenciesUpdatedParams {
                 workspace_uri: workspace_uri.clone(),
                 source_uri: source_uri.clone(),
+                source_uris: Vec::new(),
                 fetched: Vec::new(),
                 failed: vec![super::RemoteDependencyCandidate {
                     name: "zattp_rs_leg_ctr".to_string(),
@@ -2786,6 +2951,7 @@ unknown_symbol_mode = "remote"
             &super::RemoteDependenciesUpdatedParams {
                 workspace_uri: workspace_uri.clone(),
                 source_uri: source_uri.clone(),
+                source_uris: Vec::new(),
                 fetched: Vec::new(),
                 failed: vec![super::RemoteDependencyCandidate {
                     name: "/sttp/t_objid".to_string(),
