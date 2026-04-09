@@ -37,6 +37,15 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
         self.ctx.source()
     }
 
+    fn constructor_keyword(&self, node: NodeId) -> Option<Arc<str>> {
+        self.ctx
+            .file()
+            .children(node)
+            .find(|&child| self.kind(child) == SyntaxKind::Token)
+            .and_then(|child| self.ctx.syntax(child).text(self.source()))
+            .map(|text| Arc::<str>::from(text.to_ascii_lowercase()))
+    }
+
     pub(super) fn collect_expr(&mut self, node: NodeId, scope: ScopeId) {
         match self.kind(node) {
             SyntaxKind::AssignStmt => self.collect_assign_stmt(node, scope),
@@ -55,6 +64,7 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
             SyntaxKind::SubstringExpr => self.collect_substring_expr(node, scope),
             SyntaxKind::CallExpr => self.collect_call_expr(node, scope),
             SyntaxKind::ConstructorExpr => {
+                let constructor_keyword = self.constructor_keyword(node);
                 let mut arg_list = None;
                 for child in self.ctx.file().children(node) {
                     match self.kind(child) {
@@ -67,12 +77,16 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                     }
                 }
                 if let Some(arg_list) = arg_list {
-                    if let Some((type_name, _)) = self.ctx.constructor_type_ref(node) {
+                    if constructor_keyword.as_deref() == Some("new")
+                        && let Some((type_name, _)) = self.ctx.constructor_type_ref(node)
+                    {
                         self.collect_call_argument_list(
                             arg_list,
                             scope,
                             NamedArgumentTarget::Constructor { type_name },
                         );
+                    } else if constructor_keyword.as_deref() == Some("value") {
+                        self.collect_value_constructor_arg_list(arg_list, scope);
                     } else {
                         self.collect_structured_argument_values_from_children(arg_list, scope);
                     }
@@ -85,6 +99,11 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                     && token_children
                         .iter()
                         .any(|token| matches!(token.text.as_ref(), "[" | "]"))
+                    && self
+                        .ctx
+                        .file()
+                        .find_first_kind(node, SyntaxKind::ConstructorExpr)
+                        .is_none()
                     && self
                         .ctx
                         .file()
@@ -129,6 +148,230 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                 }
             }
         }
+    }
+
+    fn collect_value_constructor_arg_list(&mut self, node: NodeId, scope: ScopeId) {
+        let Some(arg_list) = CallArgList::cast(self.ctx.syntax(node)) else {
+            return;
+        };
+        let items: Vec<_> = arg_list
+            .items()
+            .map(|child| (child.id(), child.kind()))
+            .collect();
+        for (child, kind_syntax) in items {
+            match kind_syntax {
+                SyntaxKind::CallNamedArg => {
+                    let value_children: Vec<_> = CallNamedArg::cast(self.ctx.syntax(child))
+                        .map(|arg| {
+                            arg.value_children()
+                                .into_iter()
+                                .map(|child| child.id())
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    self.collect_structured_argument_values(&value_children, scope);
+                }
+                SyntaxKind::CallPositionalArg => {
+                    let value_children: Vec<_> = CallPositionalArg::cast(self.ctx.syntax(child))
+                        .map(|arg| {
+                            arg.value_children()
+                                .into_iter()
+                                .map(|child| child.id())
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    if value_children
+                        .iter()
+                        .all(|&node| self.kind(node) == SyntaxKind::Token)
+                    {
+                        let tokens = value_children
+                            .iter()
+                            .flat_map(|&node| self.ctx.syntax_token_nodes(node))
+                            .collect::<Vec<_>>();
+                        self.collect_value_constructor_tokens(&tokens, scope);
+                    } else {
+                        self.collect_structured_argument_values(&value_children, scope);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn collect_value_constructor_tokens(
+        &mut self,
+        tokens: &[super::SyntaxTokenInfo],
+        scope: ScopeId,
+    ) {
+        let mut idx = 0usize;
+        let mut segment_start = 0usize;
+        while idx < tokens.len() {
+            let token = &tokens[idx];
+            if self.ctx.syntax_token_is_comment(token) {
+                idx += 1;
+                continue;
+            }
+
+            match token.text.as_ref() {
+                text if text.eq_ignore_ascii_case("BASE") => {
+                    self.collect_value_token_segment(&tokens[segment_start..idx], scope);
+                    let operand_start = idx + 1;
+                    let operand_end = self.value_base_operand_end(tokens, operand_start);
+                    self.ctx.collect_token_expression_refs_infos(
+                        &tokens[operand_start..operand_end],
+                        scope,
+                        true,
+                    );
+                    idx = operand_end;
+                    segment_start = idx;
+                }
+                text if text.eq_ignore_ascii_case("FOR") => {
+                    self.collect_value_token_segment(&tokens[segment_start..idx], scope);
+                    self.collect_value_for_clause(tokens, idx, scope);
+                    return;
+                }
+                text if text.eq_ignore_ascii_case("OPTIONAL") => {
+                    self.collect_value_token_segment(&tokens[segment_start..idx], scope);
+                    idx += 1;
+                    segment_start = idx;
+                }
+                "(" | "[" | "{" => {
+                    let (open_text, close_text) = match token.text.as_ref() {
+                        "(" => ("(", ")"),
+                        "[" => ("[", "]"),
+                        "{" => ("{", "}"),
+                        _ => unreachable!(),
+                    };
+                    if let Some(end_idx) =
+                        self.ctx
+                            .find_matching_group_end_infos(tokens, idx, open_text, close_text)
+                    {
+                        self.collect_value_token_segment(&tokens[segment_start..idx], scope);
+                        self.collect_value_constructor_tokens(&tokens[idx + 1..end_idx], scope);
+                        idx = end_idx + 1;
+                        segment_start = idx;
+                    } else {
+                        idx += 1;
+                    }
+                }
+                _ => {
+                    idx += 1;
+                }
+            }
+        }
+
+        self.collect_value_token_segment(&tokens[segment_start..], scope);
+    }
+
+    fn collect_value_token_segment(&mut self, tokens: &[super::SyntaxTokenInfo], scope: ScopeId) {
+        if tokens.is_empty() {
+            return;
+        }
+        self.ctx
+            .collect_token_expression_refs_infos(tokens, scope, true);
+    }
+
+    fn value_base_operand_end(&self, tokens: &[super::SyntaxTokenInfo], start: usize) -> usize {
+        let mut idx = start;
+        while idx < tokens.len() {
+            let token = &tokens[idx];
+            if self.ctx.syntax_token_is_comment(token) {
+                idx += 1;
+                continue;
+            }
+            if token.text.eq_ignore_ascii_case("FOR") {
+                break;
+            }
+            if token.text.as_ref() == "("
+                && idx > start
+                && tokens
+                    .get(idx - 1)
+                    .is_some_and(|prev| self.ctx.syntax_tokens_have_space_between(prev, token))
+            {
+                break;
+            }
+            if self.ctx.syntax_token_is_ident_like(token)
+                && tokens.get(idx + 1).map(|next| next.text.as_ref()) == Some("=")
+            {
+                break;
+            }
+            idx += 1;
+        }
+        idx
+    }
+
+    fn value_for_source_end(&self, tokens: &[super::SyntaxTokenInfo], start: usize) -> usize {
+        let mut idx = start;
+        while idx < tokens.len() {
+            let token = &tokens[idx];
+            if self.ctx.syntax_token_is_comment(token) {
+                idx += 1;
+                continue;
+            }
+            if token.text.eq_ignore_ascii_case("FOR")
+                || token.text.eq_ignore_ascii_case("LET")
+                || token.text.eq_ignore_ascii_case("WHERE")
+                || token.text.eq_ignore_ascii_case("UNTIL")
+                || token.text.eq_ignore_ascii_case("WHILE")
+            {
+                break;
+            }
+            if token.text.as_ref() == "("
+                && idx > start
+                && tokens
+                    .get(idx - 1)
+                    .is_some_and(|prev| self.ctx.syntax_tokens_have_space_between(prev, token))
+            {
+                break;
+            }
+            idx += 1;
+        }
+        idx
+    }
+
+    fn collect_value_for_clause(
+        &mut self,
+        tokens: &[super::SyntaxTokenInfo],
+        start: usize,
+        scope: ScopeId,
+    ) {
+        let Some(name_tok) = tokens.get(start + 1) else {
+            return;
+        };
+        let Some(in_tok) = tokens.get(start + 2) else {
+            return;
+        };
+        if !self.ctx.syntax_token_is_ident_like(name_tok) || !in_tok.text.eq_ignore_ascii_case("IN")
+        {
+            self.ctx
+                .collect_token_expression_refs_infos(&tokens[start + 1..], scope, true);
+            return;
+        }
+
+        let source_start = start + 3;
+        let source_end = self.value_for_source_end(tokens, source_start);
+        self.ctx
+            .collect_token_expression_refs_infos(&tokens[source_start..source_end], scope, true);
+
+        let Some(last) = tokens.last() else {
+            return;
+        };
+        let child_scope = self.ctx.push_scope(
+            crate::scope::ScopeKind::LoopBlock,
+            name_tok.range.start..last.range.end,
+            Some(scope),
+            None,
+        );
+        self.ctx.declare_symbol(
+            child_scope,
+            Arc::<str>::from(name_tok.text.to_ascii_lowercase()),
+            SymbolKind::Variable,
+            name_tok.range.clone(),
+            None,
+            None,
+            None,
+        );
+        self.collect_value_constructor_tokens(&tokens[source_end..], child_scope);
     }
 
     fn collect_assign_stmt(&mut self, node: NodeId, scope: ScopeId) {

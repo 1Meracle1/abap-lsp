@@ -4392,6 +4392,189 @@ START-OF-SELECTION.
 }
 
 #[test]
+fn resolves_value_table_expression_optional_without_value_keyword_reference() {
+    let src = r#"
+TYPES: BEGIN OF ty_item,
+         objid TYPE string,
+       END OF ty_item.
+
+DATA it_obj_itm TYPE STANDARD TABLE OF ty_item WITH EMPTY KEY.
+DATA is_obj_ids TYPE ty_item.
+DATA(ls_obj_itm) = VALUE #( it_obj_itm[ objid = is_obj_ids-objid ] OPTIONAL ).
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///value_optional.abap", src, &parsed);
+
+    for name in ["it_obj_itm", "is_obj_ids"] {
+        assert!(
+            unit.references.iter().any(|reference| {
+                reference.namespace == Namespace::Value
+                    && reference.kind == ReferenceKind::Identifier
+                    && reference.name.as_ref() == name
+                    && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+            }),
+            "expected resolved VALUE reference for `{name}`, refs={:?} diagnostics={:?}",
+            unit.references,
+            unit.diagnostics
+        );
+    }
+
+    assert!(
+        !unit
+            .references
+            .iter()
+            .any(|reference| reference.name.as_ref() == "value"),
+        "unexpected VALUE keyword reference, refs={:?}",
+        unit.references
+    );
+
+    assert!(
+        !unit
+            .diagnostics
+            .iter()
+            .any(|diag| diag.kind == DiagnosticKind::UnresolvedReference),
+        "unexpected unresolved diagnostics: {:?}",
+        unit.diagnostics
+    );
+
+    let ls_obj_itm = unit
+        .symbols
+        .iter()
+        .find(|symbol| symbol.name.as_ref() == "ls_obj_itm")
+        .expect("inline value target");
+    let structure = unit.structure(ls_obj_itm.structure.expect("inferred row structure"));
+    assert!(
+        structure
+            .fields
+            .iter()
+            .any(|field| field.name.as_ref() == "objid"),
+        "expected objid in inferred VALUE row shape, structure={structure:?}"
+    );
+}
+
+#[test]
+fn resolves_value_for_binding_and_base_expression_references() {
+    let src = r#"
+TYPES: BEGIN OF ty_row,
+         objid TYPE string,
+       END OF ty_row.
+
+DATA lt_sequen_buff TYPE STANDARD TABLE OF ty_row WITH EMPTY KEY.
+DATA mt_obj_ids_native TYPE STANDARD TABLE OF ty_row WITH EMPTY KEY.
+
+lt_sequen_buff = VALUE #( BASE lt_sequen_buff
+                          FOR ls_obj IN mt_obj_ids_native
+                          ( objid = ls_obj-objid ) ).
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///value_for.abap", src, &parsed);
+
+    for name in ["lt_sequen_buff", "mt_obj_ids_native", "ls_obj"] {
+        assert!(
+            unit.references.iter().any(|reference| {
+                reference.namespace == Namespace::Value
+                    && reference.kind == ReferenceKind::Identifier
+                    && reference.name.as_ref() == name
+                    && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+            }),
+            "expected resolved VALUE reference for `{name}`, refs={:?} diagnostics={:?}",
+            unit.references,
+            unit.diagnostics
+        );
+    }
+
+    for keyword in ["base", "for", "in"] {
+        assert!(
+            !unit
+                .references
+                .iter()
+                .any(|reference| reference.name.as_ref() == keyword),
+            "unexpected VALUE keyword reference `{keyword}`, refs={:?}",
+            unit.references
+        );
+    }
+
+    assert!(
+        !unit
+            .diagnostics
+            .iter()
+            .any(|diag| diag.kind == DiagnosticKind::UnresolvedReference),
+        "unexpected unresolved diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn infers_inline_assignment_target_table_shape_from_value_base_constructor() {
+    let src = r#"
+TYPES: BEGIN OF ty_row,
+         objid TYPE string,
+       END OF ty_row.
+
+DATA lt_sequen_buff TYPE STANDARD TABLE OF ty_row WITH EMPTY KEY.
+DATA mt_obj_ids_native TYPE STANDARD TABLE OF ty_row WITH EMPTY KEY.
+
+DATA(lt_new) = VALUE #( BASE lt_sequen_buff
+                        FOR ls_obj IN mt_obj_ids_native
+                        ( objid = ls_obj-objid ) ).
+DELETE lt_new WHERE objid = ''.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///value_base_infer.abap", src, &parsed);
+
+    let lt_new = unit
+        .symbols
+        .iter()
+        .find(|symbol| symbol.name.as_ref() == "lt_new")
+        .expect("inline value table target");
+    let structure = unit.structure(lt_new.structure.expect("inferred table row structure"));
+    assert!(
+        structure
+            .fields
+            .iter()
+            .any(|field| field.name.as_ref() == "objid"),
+        "expected objid in inferred VALUE BASE row shape, structure={structure:?}"
+    );
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            matches!(
+                diag.kind,
+                DiagnosticKind::UnknownField | DiagnosticKind::UnresolvedReference
+            ) && diag.message.contains("objid")
+        }),
+        "unexpected diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn infers_explicit_value_constructor_as_non_ref_type() {
+    let src = r#"
+TYPES: BEGIN OF ty_item,
+         objid TYPE string,
+       END OF ty_item.
+
+DATA(ls_obj_itm) = VALUE ty_item( objid = 'X' ).
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///value_explicit_type.abap", src, &parsed);
+
+    let ls_obj_itm = unit
+        .symbols
+        .iter()
+        .find(|symbol| symbol.name.as_ref() == "ls_obj_itm")
+        .expect("inline explicit value target");
+    let declared_type = ls_obj_itm
+        .declared_type
+        .as_ref()
+        .expect("declared type inferred from VALUE");
+    assert_eq!(declared_type.namespace, Namespace::Type);
+    assert!(!declared_type.is_ref);
+    assert_eq!(declared_type.base_name.as_ref(), "ty_item");
+    assert!(declared_type.field_path.is_empty());
+}
+
+#[test]
 fn resolves_replace_statement_operands_and_targets() {
     let src = r#"
 CLASS zattp_cl_rep_constants DEFINITION.

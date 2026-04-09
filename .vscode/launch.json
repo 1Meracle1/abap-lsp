@@ -45,8 +45,8 @@
       "args": [
         // "--disable-extensions",
         "--extensionDevelopmentPath=${workspaceFolder}/editors/vscode",
-        "--folder-uri=D:/dev/abap/prod_rep_check/"
-        // "--folder-uri=D:/dev/abap/repro/"
+        // "--folder-uri=D:/dev/abap/prod_rep_check/"
+        "--folder-uri=D:/dev/abap/lsp_development_examples2/"
       ],
       "outFiles": [
         "${workspaceFolder}/editors/vscode/out/**/*.js"

@@ -15,7 +15,7 @@ mod traverse;
 use std::sync::Arc;
 
 use abap_ast::arena::NodeId;
-use abap_ast::ast::{AstNode, DeclClause, TypeClauseKind, TypeRefSimple};
+use abap_ast::ast::{AstNode, CallArgList, DeclClause, TypeClauseKind, TypeRefSimple};
 use abap_ast::{File, SyntaxKind};
 use abap_lexer::{TextRange, Token};
 
@@ -282,24 +282,44 @@ impl<'a> Collector<'a> {
         }
         let mut stack = vec![node];
         while let Some(current) = stack.pop() {
-            if self.file.kind(current) == SyntaxKind::ConstructorExpr
-                && let Some((type_name, _)) = self.constructor_type_ref(current)
-            {
-                let declared_type = FieldTypeRefData {
-                    namespace: Namespace::Type,
-                    is_ref: true,
-                    base_name: Arc::clone(&type_name),
-                    field_path: Vec::new(),
-                };
-                let structure = self
-                    .lookup_structure_symbol(scope, Namespace::Type, type_name.as_ref(), false)
-                    .and_then(|symbol_id| self.symbol(symbol_id).structure);
-                return (structure, Some(declared_type));
+            if self.file.kind(current) == SyntaxKind::ConstructorExpr {
+                let inferred = self.constructor_expr_inferred_metadata(current, scope);
+                if inferred.0.is_some() || inferred.1.is_some() {
+                    return inferred;
+                }
             }
             for child in self.file.children(current) {
                 stack.push(child);
             }
         }
+        (None, None)
+    }
+
+    fn constructor_expr_inferred_metadata(
+        &self,
+        node: NodeId,
+        scope: ScopeId,
+    ) -> (Option<StructureId>, Option<FieldTypeRefData>) {
+        let keyword = self.constructor_keyword(node);
+        if let Some((type_name, _)) = self.constructor_type_ref(node)
+            && type_name.as_ref() != "#"
+        {
+            let declared_type = FieldTypeRefData {
+                namespace: Namespace::Type,
+                is_ref: keyword.as_deref() == Some("new"),
+                base_name: Arc::clone(&type_name),
+                field_path: Vec::new(),
+            };
+            let structure = self
+                .lookup_structure_symbol(scope, Namespace::Type, type_name.as_ref(), false)
+                .and_then(|symbol_id| self.symbol(symbol_id).structure);
+            return self.normalize_inferred_metadata(scope, structure, Some(declared_type));
+        }
+
+        if keyword.as_deref() == Some("value") {
+            return self.value_constructor_inferred_metadata(node, scope);
+        }
+
         (None, None)
     }
 
@@ -380,6 +400,189 @@ impl<'a> Collector<'a> {
             }
             _ => (None, None),
         }
+    }
+
+    fn constructor_keyword(&self, node: NodeId) -> Option<Arc<str>> {
+        self.file
+            .children(node)
+            .find(|&child| self.file.kind(child) == SyntaxKind::Token)
+            .and_then(|child| self.syntax(child).text(self.source))
+            .map(|text| Arc::<str>::from(text.to_ascii_lowercase()))
+    }
+
+    fn value_constructor_inferred_metadata(
+        &self,
+        node: NodeId,
+        scope: ScopeId,
+    ) -> (Option<StructureId>, Option<FieldTypeRefData>) {
+        let Some(arg_list) = self
+            .syntax(node)
+            .child_by_kind(SyntaxKind::CallArgList)
+            .and_then(CallArgList::cast)
+        else {
+            return (None, None);
+        };
+
+        for positional in arg_list.positional_args() {
+            let tokens = positional
+                .value_children()
+                .into_iter()
+                .flat_map(|child| self.syntax_token_nodes(child.id()))
+                .collect::<Vec<_>>();
+            if let Some(metadata) = self.value_constructor_metadata_from_tokens(&tokens, scope) {
+                return metadata;
+            }
+        }
+
+        (None, None)
+    }
+
+    fn value_constructor_metadata_from_tokens(
+        &self,
+        tokens: &[SyntaxTokenInfo],
+        scope: ScopeId,
+    ) -> Option<(Option<StructureId>, Option<FieldTypeRefData>)> {
+        let mut idx = 0usize;
+        while idx < tokens.len() {
+            let token = &tokens[idx];
+            if self.syntax_token_is_comment(token) {
+                idx += 1;
+                continue;
+            }
+
+            if token.text.eq_ignore_ascii_case("base") {
+                let operand_start = idx + 1;
+                let operand_end = self.value_base_operand_end(tokens, operand_start);
+                return self
+                    .metadata_from_value_source_tokens(&tokens[operand_start..operand_end], scope);
+            }
+
+            if token.text.eq_ignore_ascii_case("for") {
+                let source_start = idx + 3;
+                let source_end = self.value_for_source_end(tokens, source_start);
+                return self.metadata_from_value_source_tokens(&tokens[source_start..source_end], scope);
+            }
+
+            if self.syntax_token_is_ident_like(token) {
+                return self.metadata_from_value_source_tokens(&tokens[idx..], scope);
+            }
+
+            idx += 1;
+        }
+        None
+    }
+
+    fn metadata_from_value_source_tokens(
+        &self,
+        tokens: &[SyntaxTokenInfo],
+        scope: ScopeId,
+    ) -> Option<(Option<StructureId>, Option<FieldTypeRefData>)> {
+        let first = tokens.iter().find(|token| !self.syntax_token_is_comment(token))?;
+        if !self.syntax_token_is_ident_like(first) {
+            return None;
+        }
+        let symbol_id =
+            self.lookup_symbol_in_scope_chain(scope, Namespace::Value, first.text.as_ref())?;
+        let symbol = self.symbol(symbol_id);
+        Some(self.normalize_inferred_metadata(
+            scope,
+            symbol.structure,
+            symbol.declared_type.clone(),
+        ))
+    }
+
+    fn value_base_operand_end(&self, tokens: &[SyntaxTokenInfo], start: usize) -> usize {
+        let mut idx = start;
+        while idx < tokens.len() {
+            let token = &tokens[idx];
+            if self.syntax_token_is_comment(token) {
+                idx += 1;
+                continue;
+            }
+            if token.text.eq_ignore_ascii_case("for") {
+                break;
+            }
+            if token.text.as_ref() == "("
+                && idx > start
+                && tokens
+                    .get(idx - 1)
+                    .is_some_and(|prev| self.syntax_tokens_have_space_between(prev, token))
+            {
+                break;
+            }
+            if self.syntax_token_is_ident_like(token)
+                && tokens.get(idx + 1).map(|next| next.text.as_ref()) == Some("=")
+            {
+                break;
+            }
+            idx += 1;
+        }
+        idx
+    }
+
+    fn value_for_source_end(&self, tokens: &[SyntaxTokenInfo], start: usize) -> usize {
+        let mut idx = start;
+        while idx < tokens.len() {
+            let token = &tokens[idx];
+            if self.syntax_token_is_comment(token) {
+                idx += 1;
+                continue;
+            }
+            if token.text.eq_ignore_ascii_case("for")
+                || token.text.eq_ignore_ascii_case("let")
+                || token.text.eq_ignore_ascii_case("where")
+                || token.text.eq_ignore_ascii_case("until")
+                || token.text.eq_ignore_ascii_case("while")
+            {
+                break;
+            }
+            if token.text.as_ref() == "("
+                && idx > start
+                && tokens
+                    .get(idx - 1)
+                    .is_some_and(|prev| self.syntax_tokens_have_space_between(prev, token))
+            {
+                break;
+            }
+            idx += 1;
+        }
+        idx
+    }
+
+    fn normalize_inferred_metadata(
+        &self,
+        scope: ScopeId,
+        mut structure: Option<StructureId>,
+        mut declared_type: Option<FieldTypeRefData>,
+    ) -> (Option<StructureId>, Option<FieldTypeRefData>) {
+        for _ in 0..8 {
+            if structure.is_some() {
+                break;
+            }
+            let Some(type_ref) = declared_type.as_ref() else {
+                break;
+            };
+            if type_ref.namespace != Namespace::Type
+                || type_ref.is_ref
+                || !type_ref.field_path.is_empty()
+            {
+                break;
+            }
+            let Some(symbol_id) = self.lookup_symbol_in_scope_chain(
+                scope,
+                Namespace::Type,
+                type_ref.base_name.as_ref(),
+            ) else {
+                break;
+            };
+            let symbol = self.symbol(symbol_id);
+            if symbol.structure.is_none() && symbol.declared_type.is_none() {
+                break;
+            }
+            structure = symbol.structure;
+            declared_type = symbol.declared_type.clone();
+        }
+        (structure, declared_type)
     }
 
     fn simple_stmt_token_infos(&self, node: NodeId) -> Vec<SyntaxTokenInfo> {

@@ -160,6 +160,25 @@ impl<'ctx, 'a> ExprContext<'ctx, 'a> {
         self.collector.syntax_token_nodes(node)
     }
 
+    pub(super) fn syntax_tokens_have_space_between(
+        &self,
+        left: &SyntaxTokenInfo,
+        right: &SyntaxTokenInfo,
+    ) -> bool {
+        self.collector.syntax_tokens_have_space_between(left, right)
+    }
+
+    pub(super) fn find_matching_group_end_infos(
+        &self,
+        tokens: &[SyntaxTokenInfo],
+        start_idx: usize,
+        open_text: &str,
+        close_text: &str,
+    ) -> Option<usize> {
+        self.collector
+            .find_matching_group_end_infos(tokens, start_idx, open_text, close_text)
+    }
+
     pub(super) fn selector_access_chain(
         &self,
         node: NodeId,
@@ -195,6 +214,16 @@ impl<'ctx, 'a> ExprContext<'ctx, 'a> {
 
     pub(super) fn declaration_scope(&self, scope: ScopeId) -> ScopeId {
         self.collector.declaration_scope(scope)
+    }
+
+    pub(super) fn push_scope(
+        &mut self,
+        kind: crate::scope::ScopeKind,
+        range: abap_lexer::TextRange,
+        parent: Option<ScopeId>,
+        owner: Option<crate::ids::SymbolId>,
+    ) -> ScopeId {
+        self.collector.push_scope(kind, range, parent, owner)
     }
 
     pub(super) fn declare_symbol(
