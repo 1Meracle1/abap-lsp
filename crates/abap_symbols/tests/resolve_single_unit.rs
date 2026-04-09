@@ -5638,6 +5638,130 @@ START-OF-SELECTION.
 }
 
 #[test]
+fn resolves_unqualified_method_call_inline_importing_targets() {
+    let src = r#"
+CLASS zcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS check_sequencing_rs
+      IMPORTING iv_rule_type TYPE string
+      EXPORTING ev_sequencing_error TYPE abap_bool
+                ev_sequencing_error_msg TYPE string
+                et_objids TYPE stringtab.
+    METHODS exec.
+ENDCLASS.
+
+CLASS zcl_demo IMPLEMENTATION.
+  METHOD check_sequencing_rs.
+  ENDMETHOD.
+
+  METHOD exec.
+    DATA lv_rule_type TYPE string.
+    check_sequencing_rs(
+      EXPORTING
+        iv_rule_type = lv_rule_type
+      IMPORTING
+        ev_sequencing_error = DATA(lv_seq_err)
+        ev_sequencing_error_msg = DATA(lv_seq_err_msg)
+        et_objids = DATA(lt_seq_objids)
+    ).
+
+    lv_seq_err = abap_true.
+    lv_seq_err_msg = `done`.
+    APPEND `x` TO lt_seq_objids.
+  ENDMETHOD.
+ENDCLASS.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///implicit_method_call_inline_importing.abap", src, &parsed);
+
+    for (name, type_name) in [
+        ("lv_seq_err", "abap_bool"),
+        ("lv_seq_err_msg", "string"),
+        ("lt_seq_objids", "stringtab"),
+    ] {
+        let symbol = unit
+            .symbols
+            .iter()
+            .find(|symbol| {
+                symbol.kind == abap_symbols::SymbolKind::Variable && symbol.name.as_ref() == name
+            })
+            .unwrap_or_else(|| panic!("expected inline variable symbol for `{name}`"));
+        let declared_type = symbol
+            .declared_type
+            .as_ref()
+            .unwrap_or_else(|| panic!("expected declared type for `{name}`"));
+        assert_eq!(declared_type.namespace, Namespace::Type);
+        assert_eq!(declared_type.base_name.as_ref(), type_name);
+    }
+
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference
+                && (diag.message.contains("data")
+                    || diag.message.contains("lv_seq_err")
+                    || diag.message.contains("lv_seq_err_msg")
+                    || diag.message.contains("lt_seq_objids"))
+        }),
+        "unexpected diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn resolves_unqualified_method_call_inline_importing_targets_with_trailing_comments() {
+    let src = r#"
+CLASS zcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS check_sequencing_rs
+      IMPORTING iv_rule_type TYPE string
+      EXPORTING ev_sequencing_error TYPE abap_bool
+                ev_sequencing_error_msg TYPE string
+                et_objids TYPE stringtab.
+    METHODS exec.
+ENDCLASS.
+
+CLASS zcl_demo IMPLEMENTATION.
+  METHOD check_sequencing_rs.
+  ENDMETHOD.
+
+  METHOD exec.
+    DATA lv_rule_type TYPE string.
+    check_sequencing_rs(
+      EXPORTING
+        iv_rule_type            = lv_rule_type                 " Type of Rule
+      IMPORTING
+        ev_sequencing_error     = DATA(lv_seq_err)             " Sequence error
+        ev_sequencing_error_msg = DATA(lv_seq_err_msg)         " Sequence error message
+        et_objids               = DATA(lt_seq_objids)          " Object Identifiers
+    ).
+
+    lv_seq_err = abap_true.
+    lv_seq_err_msg = `done`.
+    APPEND `x` TO lt_seq_objids.
+  ENDMETHOD.
+ENDCLASS.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit(
+        "file:///implicit_method_call_inline_importing_comments.abap",
+        src,
+        &parsed,
+    );
+
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference
+                && (diag.message.contains("data")
+                    || diag.message.contains("lv_seq_err")
+                    || diag.message.contains("lv_seq_err_msg")
+                    || diag.message.contains("lt_seq_objids"))
+        }),
+        "unexpected diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn resolves_legacy_call_method_inline_importing_targets_with_trailing_comments() {
     let src = r#"
 CLASS zcl_demo DEFINITION.

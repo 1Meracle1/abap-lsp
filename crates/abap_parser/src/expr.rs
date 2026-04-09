@@ -662,6 +662,18 @@ impl<'a, 'b> Parser<'a, 'b> {
             .or_else(|| self.parse_complete_concat_expr(tokens, prev_before_first))
     }
 
+    fn split_call_argument_trailing_comments(
+        &self,
+        tokens: &'a [Token],
+    ) -> (&'a [Token], &'a [Token]) {
+        let split_at = tokens
+            .iter()
+            .rposition(|token| token.kind != TokenKind::Comment)
+            .map(|idx| idx + 1)
+            .unwrap_or(0);
+        (&tokens[..split_at], &tokens[split_at..])
+    }
+
     fn push_call_positional_arg(
         &mut self,
         items: &mut Vec<NodeId>,
@@ -676,8 +688,14 @@ impl<'a, 'b> Parser<'a, 'b> {
         }
 
         let mut children = Vec::with_capacity(segment.len());
-        if let Some(value) = self.parse_call_argument_value(segment, prev_before_first) {
+        let (value_tokens, trailing_comments) = self.split_call_argument_trailing_comments(segment);
+        if let Some(value) = self.parse_call_argument_value(value_tokens, prev_before_first) {
             children.push(value);
+            children.extend(
+                trailing_comments
+                    .iter()
+                    .map(|token| token_leaf(self.b, token)),
+            );
         } else {
             children.extend(segment.iter().map(|token| token_leaf(self.b, token)));
         }
@@ -701,8 +719,15 @@ impl<'a, 'b> Parser<'a, 'b> {
         let mut children = Vec::with_capacity(value_tokens.len().saturating_add(2));
         children.push(token_leaf(self.b, name_tok));
         children.push(token_leaf(self.b, eq_tok));
-        if let Some(value) = self.parse_call_argument_value(value_tokens, eq_tok) {
+        let (value_core, trailing_comments) =
+            self.split_call_argument_trailing_comments(value_tokens);
+        if let Some(value) = self.parse_call_argument_value(value_core, eq_tok) {
             children.push(value);
+            children.extend(
+                trailing_comments
+                    .iter()
+                    .map(|token| token_leaf(self.b, token)),
+            );
         } else {
             children.extend(value_tokens.iter().map(|token| token_leaf(self.b, token)));
         }

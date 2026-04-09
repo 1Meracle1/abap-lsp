@@ -1996,10 +1996,21 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                             range,
                         );
                         if let Some(arg_list) = arg_list {
+                            let target = if crate::builtins::builtin_routine_spec(name.as_ref())
+                                .is_some()
+                            {
+                                NamedArgumentTarget::Routine {
+                                    routine_name: Arc::clone(&name),
+                                }
+                            } else {
+                                NamedArgumentTarget::ImplicitMethod {
+                                    method_name: Arc::clone(&name),
+                                }
+                            };
                             self.collect_call_argument_list(
                                 arg_list,
                                 scope,
-                                NamedArgumentTarget::Routine { routine_name: name },
+                                target,
                             );
                         }
                     }

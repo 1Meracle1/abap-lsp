@@ -1123,6 +1123,40 @@ ENDCLASS.";
     }
 
     #[test]
+    fn parses_unqualified_method_call_with_inline_importing_targets() {
+        let parsed = crate::parse(
+            "check_sequencing_rs(\n  EXPORTING\n    iv_rule_type = lv_rule_type\n  IMPORTING\n    ev_sequencing_error = DATA(lv_seq_err)\n    ev_sequencing_error_msg = DATA(lv_seq_err_msg)\n    et_objids = DATA(lt_seq_objids)\n).",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let stmt = parsed
+            .file
+            .find_first_kind(parsed.file.root(), SyntaxKind::CallStmt)
+            .expect("call stmt");
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::CallExpr), 1);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::CallArgSection), 2);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::CallNamedArg), 4);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::DataInlineDecl), 3);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::Error), 0);
+    }
+
+    #[test]
+    fn parses_unqualified_method_call_with_inline_importing_targets_and_trailing_comments() {
+        let parsed = crate::parse(
+            "check_sequencing_rs(\n  EXPORTING\n    iv_rule_type            = lv_rule_type                 \" Type of Rule\n  IMPORTING\n    ev_sequencing_error     = DATA(lv_seq_err)             \" Sequence error\n    ev_sequencing_error_msg = DATA(lv_seq_err_msg)         \" Sequence error message\n    et_objids               = DATA(lt_seq_objids)          \" Object Identifiers\n).",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let stmt = parsed
+            .file
+            .find_first_kind(parsed.file.root(), SyntaxKind::CallStmt)
+            .expect("call stmt");
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::CallExpr), 1);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::CallArgSection), 2);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::CallNamedArg), 4);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::DataInlineDecl), 3);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::Error), 0);
+    }
+
+    #[test]
     fn assert_check_and_direct_call_build_expression_children() {
         let parsed = crate::parse(
             "ASSERT lo_ref IS BOUND. CHECK lv_ok = abap_true. lo_prog->add_statement( lo_item ).",
