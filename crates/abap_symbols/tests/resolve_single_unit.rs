@@ -4629,6 +4629,101 @@ DATA(lr_obj_ids) = VALUE rseloption(
 }
 
 #[test]
+fn resolves_cond_let_bindings_and_field_symbols() {
+    let src = r#"
+TYPES:
+  BEGIN OF date,
+    year  TYPE c LENGTH 4,
+    month TYPE c LENGTH 2,
+    day   TYPE c LENGTH 2,
+  END OF date,
+  dates TYPE TABLE OF date WITH EMPTY KEY.
+
+DATA dates TYPE dates.
+DATA(isodate) = COND string(
+  WHEN sy-index > 0 THEN LET <date> = dates[ sy-index ]
+                             sep = '-'
+                         IN <date>-year && sep && <date>-month && sep && <date>-day
+  ELSE `` ).
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///cond_let_field_symbol.abap", src, &parsed);
+
+    for name in ["dates", "sy", "<date>", "sep"] {
+        assert!(
+            unit.references.iter().any(|reference| {
+                reference.namespace == Namespace::Value
+                    && reference.kind == ReferenceKind::Identifier
+                    && reference.name.as_ref() == name
+                    && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+            }),
+            "expected resolved COND LET reference for `{name}`, refs={:?} diagnostics={:?}",
+            unit.references,
+            unit.diagnostics
+        );
+    }
+
+    assert!(
+        unit.symbols.iter().any(|symbol| {
+            symbol.kind == abap_symbols::SymbolKind::FieldSymbol
+                && symbol.name.as_ref() == "<date>"
+        }),
+        "expected LET field symbol declaration, symbols={:?}",
+        unit.symbols
+    );
+}
+
+#[test]
+fn resolves_value_let_with_string_templates_without_literal_diagnostics() {
+    let src = r#"
+TYPES: stringtab TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+DATA(lt_text) = VALUE stringtab(
+  LET it = `be`
+  IN ( |To { it } is to do| )
+     ( |To do is to { it }| ) ).
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///value_let_templates.abap", src, &parsed);
+
+    assert!(
+        unit.references.iter().any(|reference| {
+            reference.namespace == Namespace::Value
+                && reference.kind == ReferenceKind::Identifier
+                && reference.name.as_ref() == "it"
+                && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+        }),
+        "expected resolved LET template binding, refs={:?} diagnostics={:?}",
+        unit.references,
+        unit.diagnostics
+    );
+
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference
+                && (diag.message.contains("is to do")
+                    || diag.message.contains("to do is to")
+                    || diag.message.contains("unknown symbol ' '"))
+        }),
+        "unexpected template-literal unresolved diagnostics: {:?}",
+        unit.diagnostics
+    );
+
+    let it_symbol = unit
+        .symbols
+        .iter()
+        .find(|symbol| symbol.name.as_ref() == "it")
+        .expect("LET variable");
+    let declared_type = it_symbol
+        .declared_type
+        .as_ref()
+        .expect("LET inferred type");
+    assert_eq!(declared_type.namespace, Namespace::Type);
+    assert_eq!(declared_type.base_name.as_ref(), "string");
+    assert!(!declared_type.is_ref);
+    assert!(declared_type.field_path.is_empty());
+}
+
+#[test]
 fn resolves_value_conditional_for_iteration_bindings() {
     let src = r#"
 DATA lv_limit TYPE i VALUE 3.

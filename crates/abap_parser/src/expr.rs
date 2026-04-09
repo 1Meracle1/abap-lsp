@@ -651,6 +651,12 @@ impl<'a, 'b> Parser<'a, 'b> {
         if tokens.is_empty() {
             return None;
         }
+        if tokens
+            .first()
+            .is_some_and(|token| ident_eq(self.source, token, "LET"))
+        {
+            return self.build_raw_let_expr(tokens);
+        }
         self.try_parse_call_inline_data_decl(tokens)
             .or_else(|| self.try_parse_call_inline_field_symbol_decl(tokens))
             .or_else(|| self.parse_complete_concat_expr(tokens, prev_before_first))
@@ -720,6 +726,22 @@ impl<'a, 'b> Parser<'a, 'b> {
         let inner = &self.tokens[lparen_idx + 1..rparen_idx];
 
         let mut children = vec![token_leaf(self.b, lparen)];
+        if inner
+            .iter()
+            .find(|token| token.kind != TokenKind::Comment)
+            .is_some_and(|token| ident_eq(self.source, token, "LET"))
+        {
+            self.push_call_positional_arg(&mut children, inner, 0, inner.len(), lparen);
+            children.push(token_leaf(self.b, rparen));
+            self.idx = rparen_idx + 1;
+            self.prev = rparen;
+            return Some(self.b.branch(
+                SyntaxKind::CallArgList,
+                lparen.range.start..rparen.range.end,
+                &children,
+            ));
+        }
+
         let mut idx = 0usize;
         let mut segment_start = 0usize;
         let mut paren = 0i32;
@@ -867,6 +889,27 @@ impl<'a, 'b> Parser<'a, 'b> {
         children.extend(tokens.iter().map(|token| token_leaf(self.b, token)));
         Some(self.b.branch(
             SyntaxKind::CallPositionalArg,
+            tokens.first()?.range.start..tokens.last()?.range.end,
+            &children,
+        ))
+    }
+
+    fn build_raw_let_expr(&mut self, tokens: &'a [Token]) -> Option<NodeId> {
+        if tokens.is_empty()
+            || !tokens
+                .first()
+                .is_some_and(|token| ident_eq(self.source, token, "LET"))
+        {
+            return None;
+        }
+        let in_idx = self.find_top_level_keyword_in_slice(tokens, 1, "IN")?;
+        if in_idx + 1 >= tokens.len() {
+            return None;
+        }
+        let mut children = Vec::with_capacity(tokens.len());
+        children.extend(tokens.iter().map(|token| token_leaf(self.b, token)));
+        Some(self.b.branch(
+            SyntaxKind::LetExpr,
             tokens.first()?.range.start..tokens.last()?.range.end,
             &children,
         ))
@@ -1204,6 +1247,12 @@ impl<'a, 'b> Parser<'a, 'b> {
                 Some(node)
             }
             TokenKind::Ident => {
+                if ident_eq(self.source, curr, "LET") {
+                    let node = self.build_raw_let_expr(&self.tokens[self.idx..])?;
+                    self.idx = self.tokens.len();
+                    self.prev = self.tokens.last()?;
+                    return Some(node);
+                }
                 let is_constructor_keyword = matches!(
                     curr.lexeme(self.source).to_ascii_uppercase().as_str(),
                     "NEW"
@@ -1239,6 +1288,38 @@ impl<'a, 'b> Parser<'a, 'b> {
             TokenKind::LParen if have_space_between(self.prev, curr) => self.parse_paren_expr(),
             _ => None,
         }
+    }
+
+    fn find_top_level_keyword_in_slice(
+        &self,
+        tokens: &[Token],
+        start: usize,
+        keyword: &str,
+    ) -> Option<usize> {
+        let mut paren = 0i32;
+        let mut bracket = 0i32;
+        let mut brace = 0i32;
+        let mut idx = start;
+        while idx < tokens.len() {
+            match tokens[idx].kind {
+                TokenKind::LParen => paren += 1,
+                TokenKind::RParen => paren -= 1,
+                TokenKind::LBracket => bracket += 1,
+                TokenKind::RBracket => bracket -= 1,
+                TokenKind::LBrace => brace += 1,
+                TokenKind::RBrace => brace -= 1,
+                _ => {}
+            }
+            if paren == 0
+                && bracket == 0
+                && brace == 0
+                && ident_eq(self.source, &tokens[idx], keyword)
+            {
+                return Some(idx);
+            }
+            idx += 1;
+        }
+        None
     }
 }
 
@@ -1682,6 +1763,45 @@ mod tests {
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
         let root = parsed.file.root();
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::ConstructorExpr), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::CallArgList), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
+    }
+
+    #[test]
+    fn value_constructor_with_let_expression_parses() {
+        let parsed = crate::parse(
+            "DATA(lt_text) = VALUE stringtab( LET it = `be` IN ( |To { it } is to do| ) ( |To do is to { it }| ) ).",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::ConstructorExpr), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::LetExpr), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::CallArgList), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
+    }
+
+    #[test]
+    fn cond_constructor_with_let_result_parses() {
+        let parsed = crate::parse(
+            "lv_text = COND string( WHEN lv_ok = abap_true THEN LET it = `be` IN |To { it }| ELSE `x` ).",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::ConstructorExpr), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::LetExpr), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::CallArgList), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
+    }
+
+    #[test]
+    fn conv_constructor_with_let_field_symbol_parses() {
+        let parsed = crate::parse(
+            "DATA(isodate) = CONV string( LET <date> = dates[ sy-index ] sep = '-' IN <date>-year && sep && <date>-month ).",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::ConstructorExpr), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::LetExpr), 1);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::CallArgList), 1);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
     }

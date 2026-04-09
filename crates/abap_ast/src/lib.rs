@@ -57,6 +57,8 @@ pub enum SyntaxKind {
     CallPositionalArg,
     /// Constructor-style expression such as `NEW ty( ... )`.
     ConstructorExpr,
+    /// `LET ... IN ...` expression inside constructor-expression contexts.
+    LetExpr,
     /// `DATA [:`] … .` — classic typed declaration (here: explicit `TYPE` with simple type refs).
     DataDecl,
     /// One `name TYPE type_ref` member (comma-separated under `DATA:` or alone after `DATA`).
@@ -311,6 +313,7 @@ impl SyntaxKind {
             Self::CallNamedArg => "CallNamedArg",
             Self::CallPositionalArg => "CallPositionalArg",
             Self::ConstructorExpr => "ConstructorExpr",
+            Self::LetExpr => "LetExpr",
             Self::DataDecl => "DataDecl",
             Self::DataTypedClause => "DataTypedClause",
             Self::DataInlineDecl => "DataInlineDecl",

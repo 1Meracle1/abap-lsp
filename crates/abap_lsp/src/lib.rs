@@ -4376,6 +4376,56 @@ DATA(lt_text) = VALUE stringtab( FOR n = 1 UNTIL n > 3 ( |{ n }| ) ).";
     }
 
     #[test]
+    fn hover_returns_type_for_let_variable() {
+        let state = ServerState::default();
+        let text = "\
+TYPES: stringtab TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+DATA(lt_text) = VALUE stringtab(
+  LET it = `be`
+  IN ( |To { it } is to do| )
+     ( |To do is to { it }| ) ).";
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///let_hover.abap").expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: text.to_string(),
+                },
+            },
+        );
+        let it_offset = text.find("{ it }").expect("template it") + 2;
+        let line_start = text[..it_offset].rfind('\n').expect("line newline") + 1;
+        let it_col = (it_offset - line_start) as u32;
+        let it_line = text[..it_offset].bytes().filter(|&b| b == b'\n').count() as u32;
+
+        let hover = hover(
+            &state,
+            &HoverParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///let_hover.abap").expect("uri"),
+                    },
+                    position: Position {
+                        line: it_line,
+                        character: it_col,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+            },
+        )
+        .expect("hover");
+
+        let HoverContents::Markup(markup) = hover.contents else {
+            panic!("expected markdown hover");
+        };
+        assert!(markup.value.contains("`it`"), "{}", markup.value);
+        assert!(markup.value.contains("Variable"), "{}", markup.value);
+        assert!(markup.value.contains("```abap\nTYPE string\n```"), "{}", markup.value);
+    }
+
+    #[test]
     fn did_change_updates_hover_results() {
         let state = ServerState::default();
         let uri = Uri::from_str("file:///hover_change.abap").expect("uri");

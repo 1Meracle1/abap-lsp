@@ -107,6 +107,7 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
             SyntaxKind::SelectorExpr => self.collect_selector_expr(node, scope),
             SyntaxKind::SubstringExpr => self.collect_substring_expr(node, scope),
             SyntaxKind::CallExpr => self.collect_call_expr(node, scope),
+            SyntaxKind::LetExpr => self.collect_let_expr(node, scope),
             SyntaxKind::ConstructorExpr => {
                 let constructor_keyword = self.constructor_keyword(node);
                 let mut arg_list = None;
@@ -184,6 +185,7 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                         | SyntaxKind::UnaryExpr
                         | SyntaxKind::ParenExpr
                         | SyntaxKind::ConstructorExpr
+                        | SyntaxKind::LetExpr
                         | SyntaxKind::TemplateExpr
                         | SyntaxKind::TemplateInterpolation
                         | SyntaxKind::TemplateFormatSpec
@@ -256,6 +258,13 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
         }
     }
 
+    fn collect_let_expr(&mut self, node: NodeId, scope: ScopeId) {
+        let tokens = self.ctx.syntax_token_nodes(node);
+        if !tokens.is_empty() {
+            self.collect_let_expression(&tokens, 0, scope);
+        }
+    }
+
     fn collect_value_constructor_tokens(
         &mut self,
         tokens: &[super::SyntaxTokenInfo],
@@ -263,11 +272,26 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
     ) {
         let mut idx = 0usize;
         let mut segment_start = 0usize;
+        let mut in_string_template = false;
         while idx < tokens.len() {
             let token = &tokens[idx];
             if self.ctx.syntax_token_is_comment(token) {
                 idx += 1;
                 continue;
+            }
+
+             if token.text.as_ref() == "|" {
+                in_string_template = !in_string_template;
+                idx += 1;
+                continue;
+            }
+
+            if in_string_template && token.text.as_ref() == "{" {
+                if let Some(end_idx) = self.ctx.find_matching_group_end_infos(tokens, idx, "{", "}")
+                {
+                    idx = end_idx + 1;
+                    continue;
+                }
             }
 
             match token.text.as_ref() {
@@ -522,13 +546,20 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                 let_scope,
                 true,
             );
+            let (structure, declared_type) =
+                self.inferred_metadata_from_tokens(&tokens[idx + 2..value_end], let_scope);
+            let symbol_kind = if self.is_field_symbol_name(name_tok.text.as_ref()) {
+                SymbolKind::FieldSymbol
+            } else {
+                SymbolKind::Variable
+            };
             self.ctx.declare_symbol(
                 let_scope,
                 Arc::<str>::from(name_tok.text.to_ascii_lowercase()),
-                SymbolKind::Variable,
+                symbol_kind,
                 name_tok.range.clone(),
-                None,
-                None,
+                structure,
+                declared_type,
                 None,
             );
             idx = value_end;
@@ -866,19 +897,30 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                 let_scope,
                 true,
             );
+            let (structure, declared_type) =
+                self.inferred_metadata_from_tokens(&tokens[idx + 2..value_end], let_scope);
+            let symbol_kind = if self.is_field_symbol_name(name_tok.text.as_ref()) {
+                SymbolKind::FieldSymbol
+            } else {
+                SymbolKind::Variable
+            };
             self.ctx.declare_symbol(
                 let_scope,
                 Arc::<str>::from(name_tok.text.to_ascii_lowercase()),
-                SymbolKind::Variable,
+                symbol_kind,
                 name_tok.range.clone(),
-                None,
-                None,
+                structure,
+                declared_type,
                 None,
             );
             idx = value_end;
         }
 
         self.collect_reduce_iteration_chain(&tokens[in_idx + 1..], let_scope)
+    }
+
+    fn is_field_symbol_name(&self, name: &str) -> bool {
+        name.starts_with('<') && name.ends_with('>')
     }
 
     fn collect_reduce_for_chain(

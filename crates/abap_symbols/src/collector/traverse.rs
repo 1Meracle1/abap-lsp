@@ -126,6 +126,7 @@ impl<'a> Collector<'a> {
             | SyntaxKind::UnaryExpr
             | SyntaxKind::ParenExpr
             | SyntaxKind::ConstructorExpr
+            | SyntaxKind::LetExpr
             | SyntaxKind::TemplateExpr
             | SyntaxKind::TemplateInterpolation
             | SyntaxKind::TemplateFormatSpec
