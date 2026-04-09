@@ -594,21 +594,24 @@ fn qualified_interface_method_scope_symbol_specs(
         if !member_is_static && !has_me {
             let id = SymbolId(next_symbol_id);
             next_symbol_id += 1;
-            out.push((scope_id, crate::SymbolData {
-                id,
-                name: Arc::from("me"),
-                kind: SymbolKind::Variable,
-                scope: scope_id,
-                decl_range: 0..0,
-                structure: None,
-                declared_type: Some(FieldTypeRefData {
-                    namespace: Namespace::Type,
-                    is_ref: true,
-                    base_name: class_name,
-                    field_path: Vec::new(),
-                }),
-                type_clause_display: None,
-            }));
+            out.push((
+                scope_id,
+                crate::SymbolData {
+                    id,
+                    name: Arc::from("me"),
+                    kind: SymbolKind::Variable,
+                    scope: scope_id,
+                    decl_range: 0..0,
+                    structure: None,
+                    declared_type: Some(FieldTypeRefData {
+                        namespace: Namespace::Type,
+                        is_ref: true,
+                        base_name: class_name,
+                        field_path: Vec::new(),
+                    }),
+                    type_clause_display: None,
+                },
+            ));
         }
 
         for param in &member_parameters {
@@ -622,16 +625,19 @@ fn qualified_interface_method_scope_symbol_specs(
             }
             let id = SymbolId(next_symbol_id);
             next_symbol_id += 1;
-            out.push((scope_id, crate::SymbolData {
-                id,
-                name: Arc::clone(&param.name),
-                kind: SymbolKind::Parameter,
-                scope: scope_id,
-                decl_range: 0..0,
-                structure: None,
-                declared_type: param.declared_type.clone(),
-                type_clause_display: None,
-            }));
+            out.push((
+                scope_id,
+                crate::SymbolData {
+                    id,
+                    name: Arc::clone(&param.name),
+                    kind: SymbolKind::Parameter,
+                    scope: scope_id,
+                    decl_range: 0..0,
+                    structure: None,
+                    declared_type: param.declared_type.clone(),
+                    type_clause_display: None,
+                },
+            ));
         }
     }
     out
@@ -1268,7 +1274,9 @@ pub(crate) fn validate_project_with_scope_indexes(
                 let symbol_name = Arc::clone(&symbol.name);
                 let symbol_kind = symbol.kind;
                 unit.symbols.push(symbol);
-                unit.scopes[scope_id.as_usize()].declarations.push(symbol_id);
+                unit.scopes[scope_id.as_usize()]
+                    .declarations
+                    .push(symbol_id);
                 for &namespace in symbol_kind.namespaces() {
                     inject_symbol_into_scope_index(
                         &mut scope_index,

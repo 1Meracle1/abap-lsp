@@ -704,8 +704,10 @@ ENDCLASS.";
             .enumerate()
             .find(|(_, line)| line.contains("INTERFACES /sttp/if_badi_rule_processing"))
             .expect("interfaces line");
-        let interfaces_col =
-            interfaces_line.1.find("/sttp/if_badi_rule_processing").expect("interfaces col") as u32;
+        let interfaces_col = interfaces_line
+            .1
+            .find("/sttp/if_badi_rule_processing")
+            .expect("interfaces col") as u32;
         assert_eq!(
             semantic_token_type_at(&tokens.data, interfaces_line.0 as u32, interfaces_col),
             Some(type_idx)
@@ -716,8 +718,10 @@ ENDCLASS.";
             .enumerate()
             .find(|(_, line)| line.contains("METHOD /sttp/if_badi_rule_processing~execute"))
             .expect("impl line");
-        let impl_col =
-            impl_line.1.find("/sttp/if_badi_rule_processing").expect("impl col") as u32;
+        let impl_col = impl_line
+            .1
+            .find("/sttp/if_badi_rule_processing")
+            .expect("impl col") as u32;
         assert_eq!(
             semantic_token_type_at(&tokens.data, impl_line.0 as u32, impl_col),
             Some(type_idx)

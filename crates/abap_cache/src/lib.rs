@@ -8,10 +8,10 @@ use abap_symbols::{
     ClassMemberData, ClassMemberKind, FieldTypeRefData, FormParameterData,
     FormParameterPassingKind, FormParameterSection, NamedArgumentAccess, NamedArgumentTarget,
     Namespace, PerformArgumentData, PerformCallData, PerformParameterSection, ProjectAnalysis,
-    ReferenceKind, Resolution, ScopeId, ScopeKind, SqlNameRefData, SqlNameRefKind, StructureFieldInfo,
-    StructureFieldShape, StructureId, SymbolData, SymbolId, SymbolKind, UnitAnalysis, UnitId,
-    Visibility, analyze_project_from_units, analyze_unit_locally, builtin_routine_spec,
-    SymbolHandle,
+    ReferenceKind, Resolution, ScopeId, ScopeKind, SqlNameRefData, SqlNameRefKind,
+    StructureFieldInfo, StructureFieldShape, StructureId, SymbolData, SymbolHandle, SymbolId,
+    SymbolKind, UnitAnalysis, UnitId, Visibility, analyze_project_from_units, analyze_unit_locally,
+    builtin_routine_spec,
 };
 use parking_lot::RwLock;
 use rayon::prelude::*;
@@ -1633,7 +1633,10 @@ fn synthetic_method_scope_definition_target(
 
     if symbol.kind == SymbolKind::Variable && symbol.name.as_ref() == "me" {
         let class_symbol = enclosing_class_owner(unit, symbol.scope)?;
-        return Some(definition_target_for_symbol(unit, unit.symbol(class_symbol)));
+        return Some(definition_target_for_symbol(
+            unit,
+            unit.symbol(class_symbol),
+        ));
     }
 
     if symbol.kind == SymbolKind::Parameter {
@@ -4641,7 +4644,8 @@ ENDCLASS.";
   <mc:messages mc:msgno="007" mc:msgtext="&amp;1 is empty"/>
 </mc:messageClass>
 "#;
-        let dependency_text = ddic_xml_to_abap_source("00", "message-class", xml).expect("dependency");
+        let dependency_text =
+            ddic_xml_to_abap_source("00", "message-class", xml).expect("dependency");
         let main_src = "\
 CLASS zcl_demo IMPLEMENTATION.
   METHOD run.
@@ -4672,8 +4676,7 @@ ENDCLASS.";
             .references
             .iter()
             .find(|reference| {
-                reference.name.as_ref() == "00"
-                    && reference.kind == ReferenceKind::MessageClass
+                reference.name.as_ref() == "00" && reference.kind == ReferenceKind::MessageClass
             })
             .expect("message class reference");
         assert!(
@@ -5496,7 +5499,9 @@ ENDCLASS.";
         );
         assert_eq!(
             me_target.range.start,
-            main_src.find("zattp_cl_rs_rule_proc").expect("class declaration")
+            main_src
+                .find("zattp_cl_rs_rule_proc")
+                .expect("class declaration")
         );
 
         let parameter_use = main_src.rfind("is_rule_keys").expect("parameter use") + 1;

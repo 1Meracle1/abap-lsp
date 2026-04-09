@@ -139,7 +139,7 @@ fn serve(
                         && snapshot.uri.as_ref() == abap_lsp::normalize_lsp_uri(&params.source_uri)
                     {
                         let params_value =
-                            serde_json::to_value(publish_diagnostics_params(snapshot))?;
+                            serde_json::to_value(publish_diagnostics_params(&state, snapshot))?;
                         send_notification(writer, "textDocument/publishDiagnostics", params_value)?;
                     }
                 }
@@ -321,7 +321,8 @@ fn handle_message(
             let mut notifications = Vec::new();
             if let Some(params) = parse_params::<DidOpenTextDocumentParams>(&message)? {
                 let snapshot = publish_open_document_mut(state, &params);
-                let params_value = serde_json::to_value(publish_diagnostics_params(&snapshot))?;
+                let params_value =
+                    serde_json::to_value(publish_diagnostics_params(state, &snapshot))?;
                 notifications.push(("textDocument/publishDiagnostics".to_owned(), params_value));
                 if let Some(params_value) = state
                     .workspace_for_uri(snapshot.uri.as_ref())
@@ -350,7 +351,8 @@ fn handle_message(
             let mut notifications = Vec::new();
             if let Some(params) = parse_params::<DidChangeTextDocumentParams>(&message)? {
                 if let Some(snapshot) = publish_changed_document_mut(state, &params) {
-                    let params_value = serde_json::to_value(publish_diagnostics_params(&snapshot))?;
+                    let params_value =
+                        serde_json::to_value(publish_diagnostics_params(state, &snapshot))?;
                     notifications
                         .push(("textDocument/publishDiagnostics".to_owned(), params_value));
                     if let Some(params_value) = state
@@ -390,7 +392,8 @@ fn handle_message(
                         .push(("textDocument/publishDiagnostics".to_owned(), params_value));
                 }
                 for snapshot in &snapshots {
-                    let params_value = serde_json::to_value(publish_diagnostics_params(snapshot))?;
+                    let params_value =
+                        serde_json::to_value(publish_diagnostics_params(state, snapshot))?;
                     notifications
                         .push(("textDocument/publishDiagnostics".to_owned(), params_value));
                 }
@@ -424,7 +427,8 @@ fn handle_message(
                         .push(("textDocument/publishDiagnostics".to_string(), params_value));
                 }
                 for snapshot in &snapshots {
-                    let params_value = serde_json::to_value(publish_diagnostics_params(snapshot))?;
+                    let params_value =
+                        serde_json::to_value(publish_diagnostics_params(state, snapshot))?;
                     notifications
                         .push(("textDocument/publishDiagnostics".to_string(), params_value));
                 }

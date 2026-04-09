@@ -295,10 +295,12 @@ pub fn resolve_project_cross_unit(units: &mut [UnitAnalysis]) {
     let mut provided_name_to_unit: HashMap<Arc<str>, SymbolHandle> = HashMap::new();
     for unit in units.iter() {
         for name in &unit.provided_names {
-            provided_name_to_unit.entry(Arc::clone(name)).or_insert(SymbolHandle {
-                unit: unit.unit_id,
-                symbol: SymbolId(0),
-            });
+            provided_name_to_unit
+                .entry(Arc::clone(name))
+                .or_insert(SymbolHandle {
+                    unit: unit.unit_id,
+                    symbol: SymbolId(0),
+                });
         }
         for symbol in &unit.symbols {
             if symbol.scope != unit.root_scope {

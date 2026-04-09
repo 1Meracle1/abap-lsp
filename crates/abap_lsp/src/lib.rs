@@ -50,6 +50,7 @@ pub struct WorkspaceState {
     pub manifest_error: Option<String>,
     pub open_documents: HashMap<String, OpenDocumentOverlay>,
     pub remote_resolution_seen: HashSet<String>,
+    pub remote_lookup_failures: HashSet<String>,
 }
 
 impl Default for ServerState {
@@ -87,6 +88,7 @@ impl WorkspaceState {
             manifest_error: None,
             open_documents: HashMap::new(),
             remote_resolution_seen: HashSet::new(),
+            remote_lookup_failures: HashSet::new(),
         }
     }
 }
@@ -145,6 +147,8 @@ pub struct RemoteDependenciesUpdatedParams {
     #[serde(rename = "sourceUri")]
     pub source_uri: String,
     pub fetched: Vec<String>,
+    #[serde(default)]
+    pub failed: Vec<RemoteDependencyCandidate>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -361,6 +365,7 @@ pub fn handle_dependency_cache_cleared(
     let workspace_uri = normalize_lsp_uri(&params.workspace_uri);
     if let Some(workspace) = state.workspaces.get_mut(&workspace_uri) {
         workspace.remote_resolution_seen.clear();
+        workspace.remote_lookup_failures.clear();
     }
     refresh_workspace(state, &workspace_uri)
 }
@@ -369,6 +374,22 @@ pub fn handle_remote_dependencies_updated(
     state: &mut ServerState,
     params: &RemoteDependenciesUpdatedParams,
 ) -> Vec<Arc<AnalysisSnapshot>> {
+    let workspace_uri = normalize_lsp_uri(&params.workspace_uri);
+    if let Some(workspace) = state.workspaces.get_mut(&workspace_uri) {
+        for name in &params.fetched {
+            workspace
+                .remote_lookup_failures
+                .remove(&remote_candidate_key(&RemoteDependencyCandidate {
+                    name: name.clone(),
+                    kind: "type".to_string(),
+                }));
+        }
+        for candidate in &params.failed {
+            workspace
+                .remote_lookup_failures
+                .insert(remote_candidate_key(candidate));
+        }
+    }
     refresh_workspace(state, &params.workspace_uri)
 }
 
@@ -597,15 +618,80 @@ pub fn build_lsp_diagnostics(snapshot: &AnalysisSnapshot) -> Vec<Diagnostic> {
     out
 }
 
-pub fn publish_diagnostics_params(snapshot: &AnalysisSnapshot) -> PublishDiagnosticsParams {
+fn range_to_byte_range(text: &str, range: Range) -> Option<std::ops::Range<usize>> {
+    Some(position_to_offset(text, range.start)?..position_to_offset(text, range.end)?)
+}
+
+fn candidate_key_for_open_sql_source(snapshot: &AnalysisSnapshot, range: &Range) -> Option<String> {
+    let byte_range = range_to_byte_range(snapshot.text.as_ref(), range.clone())?;
+    let sql_ref = snapshot.symbols.sql_name_refs.iter().find(|sql_ref| {
+        sql_ref.kind == abap_symbols::SqlNameRefKind::Source && sql_ref.range == byte_range
+    })?;
+    Some(remote_candidate_key(&RemoteDependencyCandidate {
+        name: sql_ref.name.to_string(),
+        kind: "type".to_string(),
+    }))
+}
+
+pub fn build_lsp_diagnostics_for_workspace(
+    workspace: Option<&WorkspaceState>,
+    snapshot: &AnalysisSnapshot,
+) -> Vec<Diagnostic> {
+    let mut diagnostics = build_lsp_diagnostics(snapshot);
+    let Some(workspace) = workspace else {
+        return diagnostics;
+    };
+
+    for diagnostic in &mut diagnostics {
+        let Some(severity) = diagnostic.severity else {
+            continue;
+        };
+        if severity != DiagnosticSeverity::WARNING
+            || diagnostic.source.as_deref() != Some("abap-symbols")
+            || !diagnostic
+                .message
+                .contains("DDIC/repository lookup is not connected")
+        {
+            continue;
+        }
+
+        let Some(candidate_key) = candidate_key_for_open_sql_source(snapshot, &diagnostic.range)
+        else {
+            continue;
+        };
+        if !workspace.remote_lookup_failures.contains(&candidate_key) {
+            continue;
+        }
+
+        diagnostic.severity = Some(DiagnosticSeverity::ERROR);
+        if let Some(start) = diagnostic.message.find('\'') {
+            if let Some(end_rel) = diagnostic.message[start + 1..].find('\'') {
+                let end = start + 1 + end_rel;
+                let name = &diagnostic.message[start + 1..end];
+                diagnostic.message = format!(
+                    "Open SQL source '{}' was not found in the connected SAP system during DDIC/repository lookup",
+                    name
+                );
+            }
+        }
+    }
+
+    diagnostics
+}
+
+pub fn publish_diagnostics_params(
+    state: &ServerState,
+    snapshot: &AnalysisSnapshot,
+) -> PublishDiagnosticsParams {
     let uri: Uri = snapshot
         .uri
         .as_ref()
         .parse()
         .expect("cached document URI must be a valid URL");
+    let workspace = state.workspace_for_uri(snapshot.uri.as_ref());
     PublishDiagnosticsParams {
         uri,
-        diagnostics: build_lsp_diagnostics(snapshot),
+        diagnostics: build_lsp_diagnostics_for_workspace(workspace, snapshot),
         version: Some(snapshot.version),
     }
 }
@@ -995,7 +1081,7 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use lsp_types::{
-        DidChangeTextDocumentParams, DidOpenTextDocumentParams, Documentation,
+        DiagnosticSeverity, DidChangeTextDocumentParams, DidOpenTextDocumentParams, Documentation,
         GotoDefinitionResponse, HoverContents, Position, TextDocumentContentChangeEvent,
         TextDocumentIdentifier, TextDocumentItem, TextDocumentPositionParams, Uri,
         VersionedTextDocumentIdentifier,
@@ -1007,11 +1093,12 @@ mod tests {
         CompletionParams, CompletionResponse, DEPENDENCY_CACHE_CLEARED, GotoDefinitionParams,
         HoverParams, REMOTE_DEPENDENCIES_UPDATED, RESOLVE_REMOTE_DEPENDENCIES, ReferenceParams,
         ServerState, WORKSPACE_MANIFEST_UPDATED, WorkspaceManifestUpdatedParams,
-        build_lsp_diagnostics, build_remote_dependency_request,
-        build_remote_dependency_requests_for_workspace, collect_remote_dependency_candidates,
-        completion, definition, handle_dependency_cache_cleared,
-        handle_remote_dependencies_updated, hover, initialize_result, normalize_lsp_uri,
-        publish_changed_document, publish_open_document, publish_open_document_mut, references,
+        build_lsp_diagnostics, build_lsp_diagnostics_for_workspace,
+        build_remote_dependency_request, build_remote_dependency_requests_for_workspace,
+        collect_remote_dependency_candidates, completion, definition,
+        handle_dependency_cache_cleared, handle_remote_dependencies_updated, hover,
+        initialize_result, normalize_lsp_uri, publish_changed_document, publish_open_document,
+        publish_open_document_mut, references,
     };
 
     fn temp_workspace_path(name: &str) -> PathBuf {
@@ -2249,6 +2336,7 @@ adt_uri = "/sap/bc/adt/oo/classes/zcl_first"
                 workspace_uri: workspace_uri.clone(),
                 source_uri: format!("{workspace_uri}/main.abap"),
                 fetched: vec!["ZCL_FIRST".to_string()],
+                failed: Vec::new(),
             },
         );
 
@@ -2347,6 +2435,7 @@ adt_uri = "/sap/bc/adt/oo/classes/zcl_first"
                 workspace_uri: workspace_uri.clone(),
                 source_uri: format!("{workspace_uri}/main.abap"),
                 fetched: vec!["ZCL_FIRST".to_string()],
+                failed: Vec::new(),
             },
         );
 
@@ -2444,6 +2533,7 @@ adt_uri = "/sap/bc/adt/oo/classes/zcl_first"
                 workspace_uri: workspace_uri.clone(),
                 source_uri: format!("{workspace_uri}/main.abap"),
                 fetched: vec!["ZCL_FIRST".to_string()],
+                failed: Vec::new(),
             },
         );
 
@@ -2526,6 +2616,80 @@ unknown_symbol_mode = "remote"
                 .iter()
                 .any(|diag| diag.message.contains("unknown type"))
         );
+
+        let _ = fs::remove_dir_all(&workspace_path);
+    }
+
+    #[test]
+    fn failed_remote_open_sql_lookup_is_reported_as_error() {
+        let workspace_path = temp_workspace_path("failed_remote_open_sql_lookup");
+        fs::create_dir_all(&workspace_path).expect("workspace dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[resolution]
+dependency_mode = "remote-on-demand"
+unknown_symbol_mode = "remote"
+"#,
+        )
+        .expect("manifest");
+        let workspace_uri = path_to_file_uri(&workspace_path);
+        let source_uri = format!("{workspace_uri}/main.abap");
+
+        let mut state = ServerState::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        let snapshot = publish_open_document_mut(
+            &mut state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str(&source_uri).expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: "SELECT * FROM zattp_rs_leg_ctr INTO TABLE @DATA(lt_rows).".to_string(),
+                },
+            },
+        );
+
+        let initial = build_lsp_diagnostics(snapshot.as_ref());
+        assert!(initial.iter().any(|diag| {
+            diag.severity == Some(DiagnosticSeverity::WARNING)
+                && diag
+                    .message
+                    .contains("DDIC/repository lookup is not connected")
+        }));
+
+        let snapshots = handle_remote_dependencies_updated(
+            &mut state,
+            &super::RemoteDependenciesUpdatedParams {
+                workspace_uri: workspace_uri.clone(),
+                source_uri: source_uri.clone(),
+                fetched: Vec::new(),
+                failed: vec![super::RemoteDependencyCandidate {
+                    name: "zattp_rs_leg_ctr".to_string(),
+                    kind: "type".to_string(),
+                }],
+            },
+        );
+        assert!(!snapshots.is_empty());
+
+        let workspace = state
+            .workspaces
+            .get(&normalize_lsp_uri(&workspace_uri))
+            .expect("workspace");
+        let snapshot = workspace
+            .cache
+            .get(&normalize_lsp_uri(&source_uri))
+            .expect("refreshed snapshot");
+        let diagnostics = build_lsp_diagnostics_for_workspace(Some(workspace), snapshot.as_ref());
+        assert!(diagnostics.iter().any(|diag| {
+            diag.severity == Some(DiagnosticSeverity::ERROR)
+                && diag.message.contains("zattp_rs_leg_ctr")
+                && diag
+                    .message
+                    .contains("was not found in the connected SAP system")
+        }));
 
         let _ = fs::remove_dir_all(&workspace_path);
     }

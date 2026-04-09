@@ -5870,12 +5870,16 @@ ENDCLASS.
     let unit = analyze_unit("file:///second_interface_impl_scope.abap", src, &parsed);
 
     assert!(
-        unit.implemented_interfaces.iter().any(|item| item.interface_name.as_ref() == "i1"),
+        unit.implemented_interfaces
+            .iter()
+            .any(|item| item.interface_name.as_ref() == "i1"),
         "{:#?}",
         unit.implemented_interfaces
     );
     assert!(
-        unit.implemented_interfaces.iter().any(|item| item.interface_name.as_ref() == "i2"),
+        unit.implemented_interfaces
+            .iter()
+            .any(|item| item.interface_name.as_ref() == "i2"),
         "{:#?}",
         unit.implemented_interfaces
     );

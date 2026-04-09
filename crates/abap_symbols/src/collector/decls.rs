@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use crate::def_map::{
-    FieldAccess, FieldAccessSegment, FieldTypeRefData, FormRoutineData, IncludeEdge,
-    ReferenceKind, SymbolKind,
+    FieldAccess, FieldAccessSegment, FieldTypeRefData, FormRoutineData, IncludeEdge, ReferenceKind,
+    SymbolKind,
 };
 use crate::ids::{ScopeId, StructureId};
 use crate::scope::{Namespace, ScopeKind};

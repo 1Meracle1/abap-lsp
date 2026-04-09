@@ -65,6 +65,12 @@ interface RemoteDependenciesUpdatedParams {
 	workspaceUri: string;
 	sourceUri: string;
 	fetched: string[];
+	failed: RemoteDependencyCandidate[];
+}
+
+interface RemoteDependencyResolutionResult {
+	candidate: RemoteDependencyCandidate;
+	fetchedName?: string;
 }
 
 interface WorkspaceManifestUpdatedParams {
@@ -431,6 +437,7 @@ async function resolveRemoteDependencies(
 	});
 
 	const total = fetchCandidates.length;
+	const failed: RemoteDependencyCandidate[] = [];
 	await vscode.window.withProgress(
 		{
 			location: vscode.ProgressLocation.Notification,
@@ -439,7 +446,7 @@ async function resolveRemoteDependencies(
 		},
 		async (progress) => {
 			let completed = 0;
-			const fetchedNames = await Promise.all(
+			const results = await Promise.all(
 				fetchCandidates.map((candidate) =>
 					scheduler.schedule(async () => {
 						try {
@@ -457,15 +464,17 @@ async function resolveRemoteDependencies(
 					}),
 				),
 			);
-			for (const fetchedName of fetchedNames) {
-				if (fetchedName) {
-					fetched.push(fetchedName);
+			for (const result of results) {
+				if (result.fetchedName) {
+					fetched.push(result.fetchedName);
+				} else {
+					failed.push(result.candidate);
 				}
 			}
 		},
 	);
 
-	if (fetched.length === 0) {
+	if (fetched.length === 0 && failed.length === 0) {
 		return;
 	}
 
@@ -473,6 +482,7 @@ async function resolveRemoteDependencies(
 		workspaceUri: params.workspaceUri,
 		sourceUri: params.sourceUri,
 		fetched,
+		failed,
 	};
 	await client.sendNotification("abapls/remoteDependenciesUpdated", updateParams);
 }
@@ -646,15 +656,16 @@ async function resolveRemoteDependencyCandidate(
 	workspaceFolder: vscode.WorkspaceFolder,
 	adtClient: AdtClient,
 	candidate: RemoteDependencyCandidate,
-): Promise<string | undefined> {
+): Promise<RemoteDependencyResolutionResult> {
 	const cacheKey = remoteDependencyCacheKey(workspaceFolder, candidate);
 	if (negativeRemoteDependencyCache.has(cacheKey)) {
-		return undefined;
+		return { candidate };
 	}
 
 	const existing = pendingRemoteDependencyFetches.get(cacheKey);
 	if (existing) {
-		return existing;
+		const fetchedName = await existing;
+		return { candidate, fetchedName };
 	}
 
 	const pending = (async () => {
@@ -688,7 +699,8 @@ async function resolveRemoteDependencyCandidate(
 	})();
 
 	pendingRemoteDependencyFetches.set(cacheKey, pending);
-	return pending;
+	const fetchedName = await pending;
+	return { candidate, fetchedName };
 }
 
 async function promptForRepositoryObject(
