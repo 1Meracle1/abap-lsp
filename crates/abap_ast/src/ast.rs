@@ -311,7 +311,13 @@ ast_node!(InterfacesStmt, SyntaxKind::InterfacesStmt);
 ast_node!(RaiseStmt, SyntaxKind::RaiseStmt);
 ast_node!(MessageStmt, SyntaxKind::MessageStmt);
 ast_node!(MessageHeadClause, SyntaxKind::MessageHeadClause);
+ast_node!(MessageIdOperand, SyntaxKind::MessageIdOperand);
+ast_node!(MessageTypeOperand, SyntaxKind::MessageTypeOperand);
+ast_node!(MessageNumberOperand, SyntaxKind::MessageNumberOperand);
+ast_node!(MessageCodeOperand, SyntaxKind::MessageCodeOperand);
 ast_node!(MessageWithClause, SyntaxKind::MessageWithClause);
+ast_node!(MessageOperand, SyntaxKind::MessageOperand);
+ast_node!(MessageTextPoolId, SyntaxKind::MessageTextPoolId);
 ast_node!(MessageIntoClause, SyntaxKind::MessageIntoClause);
 ast_node!(
     MessageDisplayLikeClause,
@@ -1008,6 +1014,18 @@ impl<'a> MessageStmt<'a> {
         self.syntax
             .child_by_kind(SyntaxKind::MessageRaisingClause)
             .and_then(MessageRaisingClause::cast)
+    }
+}
+
+impl<'a> MessageHeadClause<'a> {
+    pub fn operands(self) -> impl DoubleEndedIterator<Item = SyntaxNodeRef<'a>> + Clone + 'a {
+        self.syntax.non_token_children()
+    }
+}
+
+impl<'a> MessageWithClause<'a> {
+    pub fn operands(self) -> impl DoubleEndedIterator<Item = SyntaxNodeRef<'a>> + Clone + 'a {
+        self.syntax.non_token_children()
     }
 }
 

@@ -284,16 +284,16 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
         };
 
         if let Some(head_clause_id) = head_clause_id {
-            let sig = self.collector.significant_stmt_token_infos(head_clause_id);
-            if !sig.is_empty() {
-                self.collect_message_head_clause_infos(&sig, scope);
-            }
+            self.collect_message_head_clause_infos(head_clause_id, scope);
         }
 
         if let Some(with_clause_id) = with_clause_id {
-            let sig = self.collector.significant_stmt_token_infos(with_clause_id);
-            if sig.len() > 1 {
-                self.collect_message_operand_refs_infos(&sig[1..], scope);
+            for child in self.collector.file.children(with_clause_id) {
+                match self.collector.file.kind(child) {
+                    SyntaxKind::Token | SyntaxKind::MessageTextPoolId => {}
+                    SyntaxKind::MessageOperand => self.collect_message_operand_node(child, scope),
+                    _ => self.collector.walk_node(child, scope),
+                }
             }
         }
 
@@ -320,38 +320,81 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
         }
 
         if let Some(display_clause_id) = display_clause_id {
-            let sig = self
-                .collector
-                .significant_stmt_token_infos(display_clause_id);
-            if sig.len() > 2 {
-                self.collect_message_operand_refs_infos(&sig[2..], scope);
+            let mut had_non_token = false;
+            for child in self.collector.file.children(display_clause_id) {
+                if self.collector.file.kind(child) != SyntaxKind::Token {
+                    had_non_token = true;
+                    self.collector.walk_node(child, scope);
+                }
+            }
+            if !had_non_token {
+                let sig = self
+                    .collector
+                    .significant_stmt_token_infos(display_clause_id);
+                if sig.len() > 2 {
+                    self.collect_message_operand_refs_infos(&sig[2..], scope);
+                }
             }
         }
 
         if let Some(raising_clause_id) = raising_clause_id {
-            let sig = self
-                .collector
-                .significant_stmt_token_infos(raising_clause_id);
-            if sig.len() > 1 {
-                self.collect_message_operand_refs_infos(&sig[1..], scope);
+            let mut had_non_token = false;
+            for child in self.collector.file.children(raising_clause_id) {
+                if self.collector.file.kind(child) != SyntaxKind::Token {
+                    had_non_token = true;
+                    self.collector.walk_node(child, scope);
+                }
+            }
+            if !had_non_token {
+                let sig = self
+                    .collector
+                    .significant_stmt_token_infos(raising_clause_id);
+                if sig.len() > 1 {
+                    self.collect_message_operand_refs_infos(&sig[1..], scope);
+                }
             }
         }
     }
 
-    fn collect_message_head_clause_infos(&mut self, sig: &[SyntaxTokenInfo], scope: ScopeId) {
-        if sig
-            .first()
-            .is_some_and(|t| t.text.eq_ignore_ascii_case("id"))
+    fn collect_message_head_clause_infos(&mut self, node: NodeId, scope: ScopeId) {
+        for child in self.collector.file.children(node) {
+            match self.collector.file.kind(child) {
+                SyntaxKind::MessageIdOperand
+                | SyntaxKind::MessageTypeOperand
+                | SyntaxKind::MessageNumberOperand
+                | SyntaxKind::MessageCodeOperand => self.collect_message_operand_node(child, scope),
+                _ => {}
+            }
+        }
+    }
+
+    fn collect_message_operand_node(&mut self, node: NodeId, scope: ScopeId) {
+        let non_token_children: Vec<_> = self
+            .collector
+            .file
+            .children(node)
+            .filter(|&child| self.collector.file.kind(child) != SyntaxKind::Token)
+            .collect();
+        if non_token_children
+            .iter()
+            .any(|&child| self.collector.file.kind(child) == SyntaxKind::MessageTextPoolId)
         {
-            let mut i = 1usize;
-            let end_mid =
-                self.collector
-                    .consume_concatenate_operand_infos(sig, i, &["type", "number"]);
-            if end_mid > i {
-                if let Some((name, range)) = self
-                    .collector
-                    .simple_type_ref_base_from_infos(&sig[i..end_mid])
-                {
+            return;
+        }
+        if !non_token_children.is_empty() {
+            for child in non_token_children {
+                self.collector.walk_node(child, scope);
+            }
+            return;
+        }
+
+        let sig = self.collector.significant_stmt_token_infos(node);
+        if sig.is_empty() {
+            return;
+        }
+        match self.collector.file.kind(node) {
+            SyntaxKind::MessageIdOperand => {
+                if let Some((name, range)) = self.collector.simple_type_ref_base_from_infos(&sig) {
                     self.collector.add_reference(
                         scope,
                         name,
@@ -360,58 +403,17 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                         range,
                     );
                 } else {
-                    self.collect_message_operand_refs_infos(&sig[i..end_mid], scope);
+                    self.collect_message_operand_refs_infos(&sig, scope);
                 }
             }
-            i = end_mid;
-            if i < sig.len()
-                && sig
-                    .get(i)
-                    .is_some_and(|t| t.text.eq_ignore_ascii_case("type"))
-            {
-                i += 1;
-                let end_ty = self
-                    .collector
-                    .consume_concatenate_operand_infos(sig, i, &["number"]);
-                if end_ty > i {
-                    self.collect_message_operand_refs_infos(&sig[i..end_ty], scope);
-                }
-                i = end_ty;
-            }
-            if i < sig.len()
-                && sig
-                    .get(i)
-                    .is_some_and(|t| t.text.eq_ignore_ascii_case("number"))
-            {
-                i += 1;
-                if sig.len() > i {
-                    self.collect_message_operand_refs_infos(&sig[i..], scope);
+            SyntaxKind::MessageCodeOperand => {
+                if self.is_compact_message_class_form(&sig) {
+                    self.collect_compact_message_class_ref_infos(&sig, scope);
+                } else {
+                    self.collect_message_operand_refs_infos(&sig, scope);
                 }
             }
-            return;
-        }
-
-        let mut i = 0usize;
-        let code_end = self
-            .collector
-            .consume_concatenate_operand_infos(sig, i, &["type"]);
-        if code_end > i {
-            if self.is_compact_message_class_form(&sig[i..code_end]) {
-                self.collect_compact_message_class_ref_infos(&sig[i..code_end], scope);
-            } else {
-                self.collect_message_operand_refs_infos(&sig[i..code_end], scope);
-            }
-        }
-        i = code_end;
-        if i < sig.len()
-            && sig
-                .get(i)
-                .is_some_and(|t| t.text.eq_ignore_ascii_case("type"))
-        {
-            i += 1;
-            if sig.len() > i {
-                self.collect_message_operand_refs_infos(&sig[i..], scope);
-            }
+            _ => self.collect_message_operand_refs_infos(&sig, scope),
         }
     }
 

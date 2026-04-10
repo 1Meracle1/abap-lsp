@@ -3079,6 +3079,342 @@ fn message_clause_start_kind(
     None
 }
 
+fn message_token_is_literal_like(source: &str, token: &Token) -> bool {
+    token
+        .lexeme(source)
+        .chars()
+        .next()
+        .is_some_and(|ch| ch.is_ascii_digit() || matches!(ch, '\'' | '`' | '|'))
+}
+
+fn message_token_starts_operand(source: &str, tokens: &[Token], idx: usize) -> bool {
+    let Some(token) = tokens.get(idx) else {
+        return false;
+    };
+    if !(token.kind == TokenKind::Ident
+        || matches!(
+            token.kind,
+            TokenKind::LParen
+                | TokenKind::LBracket
+                | TokenKind::LBrace
+                | TokenKind::At
+                | TokenKind::Hash
+                | TokenKind::Number
+                | TokenKind::String
+                | TokenKind::StringTemplate
+        )
+        || message_token_is_literal_like(source, token))
+    {
+        return false;
+    }
+    let Some(prev) = idx.checked_sub(1).and_then(|prev_idx| tokens.get(prev_idx)) else {
+        return true;
+    };
+    if !have_space_between(prev, token)
+        && (matches!(
+            token.kind,
+            TokenKind::LParen | TokenKind::LBracket | TokenKind::LBrace
+        ) || prev.kind == TokenKind::Minus)
+    {
+        return false;
+    }
+    !(prev.kind == TokenKind::Ident
+        && matches!(
+            prev.lexeme(source).to_ascii_lowercase().as_str(),
+            "new" | "ref" | "to"
+        ))
+}
+
+fn consume_message_operand(
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    end_exclusive: usize,
+    clause_keywords: &[&str],
+) -> usize {
+    let mut idx = start;
+    let mut paren = 0i32;
+    let mut bracket = 0i32;
+    let mut brace = 0i32;
+    let mut consumed_any = false;
+
+    while idx < end_exclusive {
+        let token = &tokens[idx];
+        if paren == 0 && bracket == 0 && brace == 0 {
+            if token.kind == TokenKind::Period {
+                break;
+            }
+            if token.kind == TokenKind::Ident
+                && clause_keywords
+                    .iter()
+                    .any(|keyword| token.lexeme(source).eq_ignore_ascii_case(keyword))
+            {
+                break;
+            }
+            if consumed_any && message_token_starts_operand(source, tokens, idx) {
+                break;
+            }
+        }
+
+        consumed_any = true;
+        match token.kind {
+            TokenKind::LParen => paren += 1,
+            TokenKind::RParen => paren -= 1,
+            TokenKind::LBracket => bracket += 1,
+            TokenKind::RBracket => bracket -= 1,
+            TokenKind::LBrace => brace += 1,
+            TokenKind::RBrace => brace -= 1,
+            _ => {}
+        }
+        idx += 1;
+    }
+
+    idx
+}
+
+fn message_text_pool_operand_end(source: &str, tokens: &[Token], start: usize) -> Option<usize> {
+    let head = tokens.get(start)?;
+    let dash = tokens.get(start + 1)?;
+    let number = tokens.get(start + 2)?;
+    (head.kind == TokenKind::Ident
+        && head.lexeme(source).eq_ignore_ascii_case("text")
+        && dash.kind == TokenKind::Minus
+        && number.lexeme(source).chars().all(|ch| ch.is_ascii_digit()))
+    .then_some(start + 3)
+}
+
+fn message_compact_code_tokens(source: &str, tokens: &[Token], start: usize, end: usize) -> bool {
+    let Some(head) = tokens.get(start) else {
+        return false;
+    };
+    let mut chars = head.lexeme(source).chars();
+    let Some(msgty) = chars.next() else {
+        return false;
+    };
+    if !matches!(
+        msgty.to_ascii_lowercase(),
+        'a' | 'e' | 'i' | 's' | 'w' | 'x'
+    ) {
+        return false;
+    }
+    chars.all(|ch| ch.is_ascii_digit())
+        && tokens.get(start + 1).map(|token| token.kind) == Some(TokenKind::LParen)
+        && tokens.get(end.saturating_sub(1)).map(|token| token.kind) == Some(TokenKind::RParen)
+}
+
+fn push_message_operand_node(
+    b: &mut SyntaxTreeBuilder,
+    children: &mut Vec<NodeId>,
+    operand_kind: SyntaxKind,
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    end_exclusive: usize,
+    prev_before_first: Option<&Token>,
+) {
+    if start >= end_exclusive {
+        return;
+    }
+    let inline_end = trim_trailing_comment_tokens(tokens, start, end_exclusive);
+    let mut operand_children = Vec::new();
+
+    if let Some(text_pool_end) = message_text_pool_operand_end(source, tokens, start)
+        && text_pool_end == inline_end
+    {
+        let text_pool_children = token_children(b, tokens, start, text_pool_end);
+        operand_children.push(b.branch(
+            SyntaxKind::MessageTextPoolId,
+            tokens[start].range.start..tokens[text_pool_end - 1].range.end,
+            &text_pool_children,
+        ));
+    } else if operand_kind == SyntaxKind::MessageCodeOperand
+        && message_compact_code_tokens(source, tokens, start, inline_end)
+    {
+        operand_children.extend(token_children(b, tokens, start, end_exclusive));
+    } else {
+        push_call_argument_value_child(
+            b,
+            &mut operand_children,
+            source,
+            tokens,
+            start,
+            inline_end,
+            prev_before_first,
+        );
+        push_token_children(b, &mut operand_children, tokens, inline_end, end_exclusive);
+    }
+
+    children.push(b.branch(
+        operand_kind,
+        tokens[start].range.start..tokens[end_exclusive - 1].range.end,
+        &operand_children,
+    ));
+}
+
+fn build_message_head_clause_node(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    end_exclusive: usize,
+) -> Option<NodeId> {
+    if start >= end_exclusive {
+        return None;
+    }
+
+    let mut children = Vec::new();
+    let mut cursor = start;
+    if tokens
+        .get(cursor)
+        .is_some_and(|token| is_keyword(source, token, "id"))
+    {
+        let id_tok = &tokens[cursor];
+        children.push(token_leaf(b, id_tok));
+        cursor += 1;
+        let id_end =
+            consume_message_operand(source, tokens, cursor, end_exclusive, &["type", "number"]);
+        push_message_operand_node(
+            b,
+            &mut children,
+            SyntaxKind::MessageIdOperand,
+            source,
+            tokens,
+            cursor,
+            id_end,
+            Some(id_tok),
+        );
+        cursor = id_end;
+        if cursor < end_exclusive
+            && tokens
+                .get(cursor)
+                .is_some_and(|token| is_keyword(source, token, "type"))
+        {
+            let type_tok = &tokens[cursor];
+            children.push(token_leaf(b, type_tok));
+            cursor += 1;
+            let type_end =
+                consume_message_operand(source, tokens, cursor, end_exclusive, &["number"]);
+            push_message_operand_node(
+                b,
+                &mut children,
+                SyntaxKind::MessageTypeOperand,
+                source,
+                tokens,
+                cursor,
+                type_end,
+                Some(type_tok),
+            );
+            cursor = type_end;
+        }
+        if cursor < end_exclusive
+            && tokens
+                .get(cursor)
+                .is_some_and(|token| is_keyword(source, token, "number"))
+        {
+            let number_tok = &tokens[cursor];
+            children.push(token_leaf(b, number_tok));
+            cursor += 1;
+            push_message_operand_node(
+                b,
+                &mut children,
+                SyntaxKind::MessageNumberOperand,
+                source,
+                tokens,
+                cursor,
+                end_exclusive,
+                Some(number_tok),
+            );
+        }
+    } else {
+        let code_end = consume_message_operand(source, tokens, cursor, end_exclusive, &["type"]);
+        push_message_operand_node(
+            b,
+            &mut children,
+            SyntaxKind::MessageCodeOperand,
+            source,
+            tokens,
+            cursor,
+            code_end,
+            None,
+        );
+        cursor = code_end;
+        if cursor < end_exclusive
+            && tokens
+                .get(cursor)
+                .is_some_and(|token| is_keyword(source, token, "type"))
+        {
+            let type_tok = &tokens[cursor];
+            children.push(token_leaf(b, type_tok));
+            cursor += 1;
+            push_message_operand_node(
+                b,
+                &mut children,
+                SyntaxKind::MessageTypeOperand,
+                source,
+                tokens,
+                cursor,
+                end_exclusive,
+                Some(type_tok),
+            );
+        }
+    }
+
+    Some(b.branch(
+        SyntaxKind::MessageHeadClause,
+        tokens[start].range.start..tokens[end_exclusive - 1].range.end,
+        &children,
+    ))
+}
+
+fn build_message_with_clause_node(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    end_exclusive: usize,
+) -> Option<NodeId> {
+    if start >= end_exclusive {
+        return None;
+    }
+    let with_tok = tokens.get(start)?;
+    let mut children = vec![token_leaf(b, with_tok)];
+    let mut cursor = start + 1;
+    while cursor < end_exclusive {
+        let operand_end = consume_message_operand(source, tokens, cursor, end_exclusive, &[]);
+        if operand_end <= cursor {
+            break;
+        }
+        if let Some(text_pool_end) = message_text_pool_operand_end(source, tokens, cursor)
+            && text_pool_end == trim_trailing_comment_tokens(tokens, cursor, operand_end)
+        {
+            let text_pool_children = token_children(b, tokens, cursor, text_pool_end);
+            children.push(b.branch(
+                SyntaxKind::MessageTextPoolId,
+                tokens[cursor].range.start..tokens[text_pool_end - 1].range.end,
+                &text_pool_children,
+            ));
+            push_token_children(b, &mut children, tokens, text_pool_end, operand_end);
+        } else {
+            push_message_operand_node(
+                b,
+                &mut children,
+                SyntaxKind::MessageOperand,
+                source,
+                tokens,
+                cursor,
+                operand_end,
+                tokens.get(cursor.saturating_sub(1)),
+            );
+        }
+        cursor = operand_end;
+    }
+    Some(b.branch(
+        SyntaxKind::MessageWithClause,
+        tokens[start].range.start..tokens[end_exclusive - 1].range.end,
+        &children,
+    ))
+}
+
 pub fn try_parse_message_stmt(
     b: &mut SyntaxTreeBuilder,
     source: &str,
@@ -3110,12 +3446,11 @@ pub fn try_parse_message_stmt(
             let mut cursor = idx + 1;
             let head_end = scan_until_clause(tokens, cursor, period_i, clause_starts);
             if cursor < head_end {
-                let head_children = token_children(b, tokens, cursor, head_end);
-                children.push(b.branch(
-                    SyntaxKind::MessageHeadClause,
-                    tokens[cursor].range.start..tokens[head_end - 1].range.end,
-                    &head_children,
-                ));
+                if let Some(head_clause) =
+                    build_message_head_clause_node(b, source, tokens, cursor, head_end)
+                {
+                    children.push(head_clause);
+                }
             }
             cursor = head_end;
 
@@ -3123,12 +3458,11 @@ pub fn try_parse_message_stmt(
                 match message_clause_start_kind(source, tokens, cursor) {
                     Some(MessageClauseKind::With) => {
                         let end = scan_until_clause(tokens, cursor + 1, period_i, clause_starts);
-                        let clause_children = token_children(b, tokens, cursor, end);
-                        children.push(b.branch(
-                            SyntaxKind::MessageWithClause,
-                            tokens[cursor].range.start..tokens[end - 1].range.end,
-                            &clause_children,
-                        ));
+                        if let Some(with_clause) =
+                            build_message_with_clause_node(b, source, tokens, cursor, end)
+                        {
+                            children.push(with_clause);
+                        }
                         cursor = end;
                     }
                     Some(MessageClauseKind::Into) => {
@@ -6643,6 +6977,30 @@ END-OF-PAGE.\nWRITE 'e'.",
                 .count_kind(parsed.file.root(), SyntaxKind::MessageIntoClause),
             1
         );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::MessageIdOperand),
+            1
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::MessageTypeOperand),
+            1
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::MessageNumberOperand),
+            1
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::MessageOperand),
+            4
+        );
     }
 
     #[test]
@@ -6687,6 +7045,18 @@ END-OF-PAGE.\nWRITE 'e'.",
                 .count_kind(parsed.file.root(), SyntaxKind::MessageDisplayLikeClause),
             1
         );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::MessageCodeOperand),
+            1
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::MessageOperand),
+            1
+        );
     }
 
     #[test]
@@ -6706,6 +7076,25 @@ END-OF-PAGE.\nWRITE 'e'.",
             1
         );
         assert_eq!(parsed.file.count_kind(into_clause, SyntaxKind::Error), 0);
+    }
+
+    #[test]
+    fn parses_message_stmt_with_text_pool_operand_node() {
+        let parsed =
+            crate::parse("METHOD m.\n  MESSAGE s398(00) WITH TEXT-007 lv_name.\nENDMETHOD.");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::MessageTextPoolId),
+            1
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::MessageOperand),
+            1
+        );
     }
 
     #[test]

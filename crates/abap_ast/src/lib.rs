@@ -271,8 +271,20 @@ pub enum SyntaxKind {
     MessageStmt,
     /// `MESSAGE` payload before `WITH` / `INTO` / `DISPLAY LIKE` / `RAISING`.
     MessageHeadClause,
+    /// Operand after `MESSAGE ID`.
+    MessageIdOperand,
+    /// Operand after `MESSAGE ... TYPE`.
+    MessageTypeOperand,
+    /// Operand after `MESSAGE ... NUMBER`.
+    MessageNumberOperand,
+    /// Operand after `MESSAGE` in compact/dynamic form.
+    MessageCodeOperand,
     /// `WITH ...` inside `MESSAGE`.
     MessageWithClause,
+    /// One operand inside `MESSAGE WITH`.
+    MessageOperand,
+    /// `TEXT-###` message/text-pool id operand.
+    MessageTextPoolId,
     /// `INTO ...` inside `MESSAGE`.
     MessageIntoClause,
     /// `DISPLAY LIKE ...` inside `MESSAGE`.
@@ -444,7 +456,13 @@ impl SyntaxKind {
             Self::RaiseStmt => "RaiseStmt",
             Self::MessageStmt => "MessageStmt",
             Self::MessageHeadClause => "MessageHeadClause",
+            Self::MessageIdOperand => "MessageIdOperand",
+            Self::MessageTypeOperand => "MessageTypeOperand",
+            Self::MessageNumberOperand => "MessageNumberOperand",
+            Self::MessageCodeOperand => "MessageCodeOperand",
             Self::MessageWithClause => "MessageWithClause",
+            Self::MessageOperand => "MessageOperand",
+            Self::MessageTextPoolId => "MessageTextPoolId",
             Self::MessageIntoClause => "MessageIntoClause",
             Self::MessageDisplayLikeClause => "MessageDisplayLikeClause",
             Self::MessageRaisingClause => "MessageRaisingClause",
