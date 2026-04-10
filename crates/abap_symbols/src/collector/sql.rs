@@ -897,6 +897,7 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
                 decl_range: projection.range.clone(),
                 structure: None,
                 type_ref: None,
+                value_clause_display: None,
             }));
         }
         if members.is_empty() {

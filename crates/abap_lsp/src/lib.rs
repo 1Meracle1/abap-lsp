@@ -1193,6 +1193,12 @@ fn structured_field_hover(
     if let Some(declared_type) = component.declared_type {
         lines.push(format!("declared as `{}`", declared_type));
     }
+    if let Some(value_clause_display) = component.value_clause_display {
+        lines.push(format!(
+            "```abap\nVALUE {}\n```",
+            value_clause_display.trim()
+        ));
+    }
     if !is_method {
         let mut path = component.base_name.to_string();
         let separator = if component.base_namespace == abap_symbols::Namespace::Type {
@@ -4782,6 +4788,103 @@ ENDCLASS.
             markup.value.contains("```abap\nVALUE 'X'\n```"),
             "{}",
             markup.value
+        );
+    }
+
+    #[test]
+    fn hover_formats_grouped_constant_and_shows_nested_value() {
+        let state = ServerState::default();
+        let text = "\
+CLASS zcl_demo DEFINITION.
+  PUBLIC SECTION.
+    CONSTANTS:
+      BEGIN OF gcs_rule_type,
+        code_pairing TYPE string VALUE 'PAIR',
+        comm_c TYPE string VALUE 'COMM',
+      END OF gcs_rule_type.
+ENDCLASS.
+
+CLASS zcl_demo IMPLEMENTATION.
+ENDCLASS.
+
+START-OF-SELECTION.
+  DATA(lv_a) = zcl_demo=>gcs_rule_type-comm_c.
+  DATA(lv_b) = zcl_demo=>gcs_rule_type-code_pairing.";
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///hover_grouped_constant.abap").expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: text.to_string(),
+                },
+            },
+        );
+
+        let parent_use = text.find("gcs_rule_type-comm_c").expect("parent use");
+        let parent_line_start = text[..parent_use].rfind('\n').map_or(0, |idx| idx + 1);
+        let parent_line = text[..parent_use]
+            .bytes()
+            .filter(|&byte| byte == b'\n')
+            .count() as u32;
+        let parent_col = (parent_use - parent_line_start) as u32;
+        let parent_hover = hover(
+            &state,
+            &HoverParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///hover_grouped_constant.abap").expect("uri"),
+                    },
+                    position: Position {
+                        line: parent_line,
+                        character: parent_col + 2,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+            },
+        )
+        .expect("parent hover");
+        let HoverContents::Markup(parent_markup) = parent_hover.contents else {
+            panic!("expected markdown hover");
+        };
+        assert!(
+            parent_markup.value.contains("BEGIN OF gcs_rule_type,\n    code_pairing TYPE string VALUE 'PAIR',\n    comm_c TYPE string VALUE 'COMM',\n  END OF gcs_rule_type."),
+            "{}",
+            parent_markup.value
+        );
+
+        let child_use = text.rfind("code_pairing").expect("child use");
+        let child_line_start = text[..child_use].rfind('\n').map_or(0, |idx| idx + 1);
+        let child_line = text[..child_use]
+            .bytes()
+            .filter(|&byte| byte == b'\n')
+            .count() as u32;
+        let child_col = (child_use - child_line_start) as u32;
+        let child_hover = hover(
+            &state,
+            &HoverParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///hover_grouped_constant.abap").expect("uri"),
+                    },
+                    position: Position {
+                        line: child_line,
+                        character: child_col + 1,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+            },
+        )
+        .expect("child hover");
+        let HoverContents::Markup(child_markup) = child_hover.contents else {
+            panic!("expected markdown hover");
+        };
+        assert!(child_markup.value.contains("`code_pairing`"));
+        assert!(
+            child_markup.value.contains("```abap\nVALUE 'PAIR'\n```"),
+            "{}",
+            child_markup.value
         );
     }
 

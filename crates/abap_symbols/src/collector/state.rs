@@ -146,6 +146,7 @@ impl<'a> Collector<'a> {
                                 })
                             }),
                         type_ref: field.type_ref,
+                        value_clause_display: field.value_clause_display,
                     });
                 }
                 PendingStructureMember::Include { type_ref } => {
@@ -172,6 +173,7 @@ impl<'a> Collector<'a> {
                     decl_unit: unit_id,
                     structure: None,
                     type_ref: None,
+                    value_clause_display: None,
                 }),
             );
             structure_ids.insert(structure.name, id);

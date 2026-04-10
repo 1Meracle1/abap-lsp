@@ -42,6 +42,7 @@ struct PendingStructureField {
     decl_range: TextRange,
     structure: Option<PendingStructure>,
     type_ref: Option<FieldTypeRefData>,
+    value_clause_display: Option<Arc<str>>,
 }
 
 #[derive(Debug, Clone)]
@@ -785,6 +786,7 @@ impl<'a> Collector<'a> {
                         decl_range,
                         structure: Some(nested),
                         type_ref: None,
+                        value_clause_display: None,
                     }));
                 }
                 SyntaxKind::StructuredFieldClause | SyntaxKind::TypesTypedClause => {
@@ -815,6 +817,7 @@ impl<'a> Collector<'a> {
             decl_range,
             structure: None,
             type_ref: self.type_ref_from_typed_clause(node),
+            value_clause_display: self.value_clause_display_from_typed_clause(node),
         })
     }
 

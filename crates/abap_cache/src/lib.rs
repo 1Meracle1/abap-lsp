@@ -10,9 +10,9 @@ use abap_symbols::{
     FormParameterPassingKind, FormParameterSection, NamedArgumentAccess, NamedArgumentTarget,
     Namespace, PerformArgumentData, PerformCallData, PerformParameterSection, ProjectAnalysis,
     ReferenceKind, Resolution, ScopeId, ScopeKind, SqlNameRefData, SqlNameRefKind,
-    StructureFieldInfo, StructureFieldShape, StructureId, SymbolData, SymbolHandle, SymbolId,
-    SymbolKind, UnitAnalysis, UnitId, Visibility, analyze_project_from_units, analyze_unit_locally,
-    builtin_routine_spec,
+    StructureFieldData, StructureFieldInfo, StructureFieldShape, StructureId, SymbolData,
+    SymbolHandle, SymbolId, SymbolKind, UnitAnalysis, UnitId, Visibility,
+    analyze_project_from_units, analyze_unit_locally, builtin_routine_spec,
 };
 use parking_lot::RwLock;
 use rayon::prelude::*;
@@ -78,6 +78,7 @@ pub struct HoveredComponentInfo {
     pub field_owner_structure_name: Option<Arc<str>>,
     pub range: Range<usize>,
     pub declared_type: Option<String>,
+    pub value_clause_display: Option<Arc<str>>,
     pub declaration: Option<String>,
     pub kind: HoveredComponentKind,
     pub is_static_method: bool,
@@ -317,6 +318,7 @@ impl AnalysisSnapshot {
                     field_owner_structure_name: None,
                     range: access.field_path[0].range.clone(),
                     declared_type: None,
+                    value_clause_display: None,
                     declaration: Some(format!(
                         "INTERFACE {}",
                         interface_unit.symbol(interface_symbol).name
@@ -342,7 +344,8 @@ impl AnalysisSnapshot {
                     field_owner_structure_name: None,
                     range: access.field_path[segment_index].range.clone(),
                     declared_type: None,
-                    declaration: Some(format_class_member_signature(member)),
+                    value_clause_display: None,
+                    declaration: Some(format_class_member_signature(unit, member)),
                     kind: hovered_component_kind_for_class_member(member),
                     is_static_method: member.is_static,
                     in_type_position: access.in_type_position,
@@ -384,6 +387,7 @@ impl AnalysisSnapshot {
                     field_owner_structure_name: inferred.field_owner_structure_name,
                     range: access.field_path[segment_index].range.clone(),
                     declared_type: Some(format!("TYPE {}", inferred.declared_type_name)),
+                    value_clause_display: None,
                     declaration: Some("DDIC field inferred from incomplete cache".to_string()),
                     kind: HoveredComponentKind::Scalar,
                     is_static_method: false,
@@ -411,6 +415,7 @@ impl AnalysisSnapshot {
                 field_owner_structure_name,
                 range: access.field_path[segment_index].range.clone(),
                 declared_type: field.type_ref.as_ref().map(format_field_type_ref),
+                value_clause_display: field.value_clause_display.clone(),
                 declaration: None,
                 kind,
                 is_static_method: false,
@@ -436,6 +441,7 @@ impl AnalysisSnapshot {
                 )),
                 range: target.range,
                 declared_type: field.type_ref.as_ref().map(format_field_type_ref),
+                value_clause_display: field.value_clause_display.clone(),
                 declaration: None,
                 kind,
                 is_static_method: false,
@@ -464,6 +470,7 @@ impl AnalysisSnapshot {
                     field_owner_structure_name: inferred.field_owner_structure_name,
                     range: token.range.clone(),
                     declared_type: Some(format!("TYPE {}", inferred.declared_type_name)),
+                    value_clause_display: None,
                     declaration: Some("DDIC field inferred from incomplete cache".to_string()),
                     kind: HoveredComponentKind::Scalar,
                     is_static_method: false,
@@ -1174,10 +1181,10 @@ impl AnalysisSnapshot {
                         )
                         && member.name.as_ref().starts_with(query.prefix.as_ref())
                 })
-                .map(|(_, member)| SelectorCompletionItem {
+                .map(|(member_unit, member)| SelectorCompletionItem {
                     name: Arc::clone(&member.name),
                     declared_type: None,
-                    declaration: Some(format_class_member_signature(member)),
+                    declaration: Some(format_class_member_signature(member_unit, member)),
                     kind: HoveredComponentKind::Method,
                     field_owner_structure_name: None,
                 })
@@ -1537,10 +1544,73 @@ fn method_param_left_right(tokens: &[&str]) -> (String, String) {
     }
 }
 
-fn format_class_member_signature(member: &ClassMemberData) -> String {
+fn structured_member_keyword(signature: &str) -> &'static str {
+    let upper = signature.to_ascii_uppercase();
+    if upper.contains("CONSTANTS") {
+        "CONSTANTS"
+    } else if upper.contains("STATICS") {
+        "STATICS"
+    } else if upper.contains("CLASS-DATA") || upper.contains("CLASS - DATA") {
+        "CLASS-DATA"
+    } else {
+        "DATA"
+    }
+}
+
+fn render_structured_member_field(
+    unit: &UnitAnalysis,
+    field: &StructureFieldData,
+    indent: usize,
+    lines: &mut Vec<String>,
+) {
+    let padding = " ".repeat(indent);
+    if let Some(structure_id) = field.structure {
+        lines.push(format!("{padding}BEGIN OF {},", field.name));
+        for nested in &unit.structure(structure_id).fields {
+            render_structured_member_field(unit, nested, indent + 2, lines);
+        }
+        lines.push(format!("{padding}END OF {},", field.name));
+        return;
+    }
+
+    let mut rendered = format!("{padding}{}", field.name);
+    if let Some(type_ref) = field.type_ref.as_ref() {
+        rendered.push(' ');
+        rendered.push_str(&format_field_type_ref(type_ref));
+    }
+    if let Some(value) = field.value_clause_display.as_ref() {
+        rendered.push_str(" VALUE ");
+        rendered.push_str(value.trim());
+    }
+    rendered.push(',');
+    lines.push(rendered);
+}
+
+fn format_structured_class_member_signature(
+    unit: &UnitAnalysis,
+    member: &ClassMemberData,
+) -> Option<String> {
+    let structure_id = member.structure?;
+    let structure = unit.structure(structure_id);
+    let keyword = structured_member_keyword(member.signature.as_ref());
+    let mut lines = vec![
+        format!("{keyword}:"),
+        format!("  BEGIN OF {},", structure.name),
+    ];
+    for field in &structure.fields {
+        render_structured_member_field(unit, field, 4, &mut lines);
+    }
+    lines.push(format!("  END OF {}.", structure.name));
+    Some(lines.join("\n"))
+}
+
+fn format_class_member_signature(unit: &UnitAnalysis, member: &ClassMemberData) -> String {
     if member.kind == ClassMemberKind::Method
         && let Some(formatted) = try_format_method_signature(member.signature.as_ref())
     {
+        return formatted;
+    }
+    if let Some(formatted) = format_structured_class_member_signature(unit, member) {
         return formatted;
     }
     member.signature.to_string()
@@ -1722,7 +1792,10 @@ fn markdown_lines_for_class_member(unit: &UnitAnalysis, member: &ClassMemberData
         ClassMemberKind::Method => "method",
     };
     vec![
-        format!("```abap\n{}\n```", format_class_member_signature(member)),
+        format!(
+            "```abap\n{}\n```",
+            format_class_member_signature(unit, member)
+        ),
         format!("{visibility} {storage} {kind} of `{class_name}`"),
     ]
 }
@@ -2014,6 +2087,7 @@ fn synthetic_loop_where_hovered_component_at(
                 )),
                 range: reference.range.clone(),
                 declared_type: field.type_ref.as_ref().map(format_field_type_ref),
+                value_clause_display: field.value_clause_display.clone(),
                 declaration: None,
                 kind,
                 is_static_method: false,

@@ -87,6 +87,7 @@ fn infer_inline_select_target_shapes(unit: &mut UnitAnalysis, scope_index: &Scop
                 decl_unit: unit.unit_id,
                 structure: None,
                 type_ref: None,
+                value_clause_display: None,
             });
         }
 

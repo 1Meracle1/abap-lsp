@@ -627,6 +627,7 @@ fn import_structure(
                 )
             }),
             type_ref: field.type_ref.clone(),
+            value_clause_display: field.value_clause_display.clone(),
         })
         .collect();
     target_structures[new_id.as_usize()].fields = fields;

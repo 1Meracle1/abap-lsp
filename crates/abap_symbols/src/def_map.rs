@@ -342,6 +342,7 @@ pub struct StructureFieldData {
     pub decl_unit: UnitId,
     pub structure: Option<StructureId>,
     pub type_ref: Option<FieldTypeRefData>,
+    pub value_clause_display: Option<Arc<str>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -359,6 +360,7 @@ pub struct StructureFieldInfo {
     pub decl_unit: UnitId,
     pub shape: StructureFieldShape,
     pub type_ref: Option<FieldTypeRefData>,
+    pub value_clause_display: Option<Arc<str>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -690,6 +692,7 @@ impl UnitAnalysis {
                 None => StructureFieldShape::Scalar,
             },
             type_ref: field.type_ref.clone(),
+            value_clause_display: field.value_clause_display.clone(),
         })
     }
 
@@ -708,6 +711,7 @@ impl UnitAnalysis {
                     None => StructureFieldShape::Scalar,
                 },
                 type_ref: field.type_ref.clone(),
+                value_clause_display: field.value_clause_display.clone(),
             })
             .collect()
     }
