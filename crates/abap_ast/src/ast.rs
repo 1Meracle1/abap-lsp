@@ -308,6 +308,16 @@ ast_node!(CallNamedArg, SyntaxKind::CallNamedArg);
 ast_node!(CallPositionalArg, SyntaxKind::CallPositionalArg);
 ast_node!(MethodsStmt, SyntaxKind::MethodsStmt);
 ast_node!(InterfacesStmt, SyntaxKind::InterfacesStmt);
+ast_node!(RaiseStmt, SyntaxKind::RaiseStmt);
+ast_node!(MessageStmt, SyntaxKind::MessageStmt);
+ast_node!(MessageHeadClause, SyntaxKind::MessageHeadClause);
+ast_node!(MessageWithClause, SyntaxKind::MessageWithClause);
+ast_node!(MessageIntoClause, SyntaxKind::MessageIntoClause);
+ast_node!(
+    MessageDisplayLikeClause,
+    SyntaxKind::MessageDisplayLikeClause
+);
+ast_node!(MessageRaisingClause, SyntaxKind::MessageRaisingClause);
 ast_node!(SelectStmt, SyntaxKind::SelectStmt);
 ast_node!(SelectQuery, SyntaxKind::SelectQuery);
 ast_node!(SelectProjectionList, SyntaxKind::SelectProjectionList);
@@ -943,6 +953,61 @@ impl<'a> MethodsStmt<'a> {
                 Self::token_text_is(next, source, "type")
                     || Self::token_text_is(next, source, "like")
             })
+    }
+}
+
+impl<'a> RaiseStmt<'a> {
+    pub fn exception_type_ref(self) -> Option<TypeRefSimple<'a>> {
+        self.syntax
+            .child_by_kind(SyntaxKind::TypeRefSimple)
+            .and_then(TypeRefSimple::cast)
+    }
+
+    pub fn trailing_children(self) -> Vec<SyntaxNodeRef<'a>> {
+        let mut seen_type_ref = false;
+        let mut trailing = Vec::new();
+        for child in self.syntax.children() {
+            if child.kind() == SyntaxKind::TypeRefSimple {
+                seen_type_ref = true;
+                continue;
+            }
+            if seen_type_ref {
+                trailing.push(child);
+            }
+        }
+        trailing
+    }
+}
+
+impl<'a> MessageStmt<'a> {
+    pub fn head_clause(self) -> Option<MessageHeadClause<'a>> {
+        self.syntax
+            .child_by_kind(SyntaxKind::MessageHeadClause)
+            .and_then(MessageHeadClause::cast)
+    }
+
+    pub fn with_clause(self) -> Option<MessageWithClause<'a>> {
+        self.syntax
+            .child_by_kind(SyntaxKind::MessageWithClause)
+            .and_then(MessageWithClause::cast)
+    }
+
+    pub fn into_clause(self) -> Option<MessageIntoClause<'a>> {
+        self.syntax
+            .child_by_kind(SyntaxKind::MessageIntoClause)
+            .and_then(MessageIntoClause::cast)
+    }
+
+    pub fn display_like_clause(self) -> Option<MessageDisplayLikeClause<'a>> {
+        self.syntax
+            .child_by_kind(SyntaxKind::MessageDisplayLikeClause)
+            .and_then(MessageDisplayLikeClause::cast)
+    }
+
+    pub fn raising_clause(self) -> Option<MessageRaisingClause<'a>> {
+        self.syntax
+            .child_by_kind(SyntaxKind::MessageRaisingClause)
+            .and_then(MessageRaisingClause::cast)
     }
 }
 

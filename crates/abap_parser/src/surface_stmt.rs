@@ -3046,6 +3046,39 @@ pub fn try_parse_raise_stmt(
     ))
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MessageClauseKind {
+    With,
+    Into,
+    DisplayLike,
+    Raising,
+}
+
+fn message_clause_start_kind(
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+) -> Option<MessageClauseKind> {
+    let token = tokens.get(idx)?;
+    if is_keyword(source, token, "with") {
+        return Some(MessageClauseKind::With);
+    }
+    if is_keyword(source, token, "into") {
+        return Some(MessageClauseKind::Into);
+    }
+    if is_keyword(source, token, "raising") {
+        return Some(MessageClauseKind::Raising);
+    }
+    if is_keyword(source, token, "display")
+        && tokens
+            .get(idx + 1)
+            .is_some_and(|next| is_keyword(source, next, "like"))
+    {
+        return Some(MessageClauseKind::DisplayLike);
+    }
+    None
+}
+
 pub fn try_parse_message_stmt(
     b: &mut SyntaxTreeBuilder,
     source: &str,
@@ -3053,16 +3086,158 @@ pub fn try_parse_message_stmt(
     idx: usize,
     errors: &mut Vec<crate::ParseError>,
 ) -> Option<(NodeId, usize)> {
-    parse_simple_keyword_stmt(
+    let message_tok = tokens.get(idx)?;
+    if !is_keyword(source, message_tok, "message") {
+        return None;
+    }
+
+    Some(parse_stmt_with_period_scan(
         b,
         source,
         tokens,
         idx,
-        SyntaxKind::MessageStmt,
-        "message",
-        errors,
+        idx + 1,
+        message_tok,
         "syntax error: expected '.' after MESSAGE statement",
-    )
+        errors,
+        next_after_unterminated_scan,
+        |b, period_i, _errors| {
+            let mut children = vec![token_leaf(b, message_tok)];
+            let clause_starts = |tokens: &[Token], at: usize| {
+                message_clause_start_kind(source, tokens, at).is_some()
+            };
+
+            let mut cursor = idx + 1;
+            let head_end = scan_until_clause(tokens, cursor, period_i, clause_starts);
+            if cursor < head_end {
+                let head_children = token_children(b, tokens, cursor, head_end);
+                children.push(b.branch(
+                    SyntaxKind::MessageHeadClause,
+                    tokens[cursor].range.start..tokens[head_end - 1].range.end,
+                    &head_children,
+                ));
+            }
+            cursor = head_end;
+
+            while cursor < period_i {
+                match message_clause_start_kind(source, tokens, cursor) {
+                    Some(MessageClauseKind::With) => {
+                        let end = scan_until_clause(tokens, cursor + 1, period_i, clause_starts);
+                        let clause_children = token_children(b, tokens, cursor, end);
+                        children.push(b.branch(
+                            SyntaxKind::MessageWithClause,
+                            tokens[cursor].range.start..tokens[end - 1].range.end,
+                            &clause_children,
+                        ));
+                        cursor = end;
+                    }
+                    Some(MessageClauseKind::Into) => {
+                        let end = scan_until_clause(tokens, cursor + 1, period_i, clause_starts);
+                        let mut clause_children = vec![token_leaf(b, &tokens[cursor])];
+                        let target_start = skip_trivia(tokens, cursor + 1);
+                        push_token_children(
+                            b,
+                            &mut clause_children,
+                            tokens,
+                            cursor + 1,
+                            target_start,
+                        );
+                        let target_end = trim_trailing_comment_tokens(tokens, target_start, end);
+                        push_call_argument_value_child(
+                            b,
+                            &mut clause_children,
+                            source,
+                            tokens,
+                            target_start,
+                            target_end,
+                            Some(&tokens[cursor]),
+                        );
+                        push_token_children(b, &mut clause_children, tokens, target_end, end);
+                        children.push(b.branch(
+                            SyntaxKind::MessageIntoClause,
+                            tokens[cursor].range.start..tokens[end - 1].range.end,
+                            &clause_children,
+                        ));
+                        cursor = end;
+                    }
+                    Some(MessageClauseKind::DisplayLike) => {
+                        let end = scan_until_clause(tokens, cursor + 2, period_i, clause_starts);
+                        let mut clause_children = vec![
+                            token_leaf(b, &tokens[cursor]),
+                            token_leaf(b, &tokens[cursor + 1]),
+                        ];
+                        let expr_start = skip_trivia(tokens, cursor + 2);
+                        push_token_children(
+                            b,
+                            &mut clause_children,
+                            tokens,
+                            cursor + 2,
+                            expr_start,
+                        );
+                        push_expr_child(
+                            b,
+                            &mut clause_children,
+                            source,
+                            tokens,
+                            expr_start,
+                            end,
+                            Some(&tokens[cursor + 1]),
+                        );
+                        children.push(b.branch(
+                            SyntaxKind::MessageDisplayLikeClause,
+                            tokens[cursor].range.start..tokens[end - 1].range.end,
+                            &clause_children,
+                        ));
+                        cursor = end;
+                    }
+                    Some(MessageClauseKind::Raising) => {
+                        let end = scan_until_clause(tokens, cursor + 1, period_i, clause_starts);
+                        let mut clause_children = vec![token_leaf(b, &tokens[cursor])];
+                        let expr_start = skip_trivia(tokens, cursor + 1);
+                        push_token_children(
+                            b,
+                            &mut clause_children,
+                            tokens,
+                            cursor + 1,
+                            expr_start,
+                        );
+                        push_expr_child(
+                            b,
+                            &mut clause_children,
+                            source,
+                            tokens,
+                            expr_start,
+                            end,
+                            Some(&tokens[cursor]),
+                        );
+                        children.push(b.branch(
+                            SyntaxKind::MessageRaisingClause,
+                            tokens[cursor].range.start..tokens[end - 1].range.end,
+                            &clause_children,
+                        ));
+                        cursor = end;
+                    }
+                    None => {
+                        let clause_children = token_children(b, tokens, cursor, period_i);
+                        children.push(b.branch(
+                            SyntaxKind::MessageHeadClause,
+                            tokens[cursor].range.start..tokens[period_i - 1].range.end,
+                            &clause_children,
+                        ));
+                        cursor = period_i;
+                    }
+                }
+            }
+
+            children.push(token_leaf(b, &tokens[period_i]));
+            let node = b.branch(
+                SyntaxKind::MessageStmt,
+                message_tok.range.start..tokens[period_i].range.end,
+                &children,
+            );
+            (node, period_i + 1)
+        },
+    ))
 }
 
 pub fn try_parse_leave_stmt(
@@ -6450,6 +6625,24 @@ END-OF-PAGE.\nWRITE 'e'.",
                 .count_kind(parsed.file.root(), SyntaxKind::MessageStmt),
             1
         );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::MessageHeadClause),
+            1
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::MessageWithClause),
+            1
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::MessageIntoClause),
+            1
+        );
     }
 
     #[test]
@@ -6476,6 +6669,43 @@ END-OF-PAGE.\nWRITE 'e'.",
                 .count_kind(parsed.file.root(), SyntaxKind::MessageStmt),
             1
         );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::MessageHeadClause),
+            1
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::MessageWithClause),
+            1
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::MessageDisplayLikeClause),
+            1
+        );
+    }
+
+    #[test]
+    fn parses_message_stmt_into_data_clause_with_inline_decl_child() {
+        let parsed = crate::parse(
+            "METHOD m.\n  MESSAGE w899(/sttp/msg) WITH sy-msgv1 INTO DATA(lv_message).\nENDMETHOD.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let into_clause = parsed
+            .file
+            .find_first_kind(parsed.file.root(), SyntaxKind::MessageIntoClause)
+            .expect("message into clause");
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(into_clause, SyntaxKind::DataInlineDecl),
+            1
+        );
+        assert_eq!(parsed.file.count_kind(into_clause, SyntaxKind::Error), 0);
     }
 
     #[test]

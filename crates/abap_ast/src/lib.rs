@@ -269,6 +269,16 @@ pub enum SyntaxKind {
     RaiseStmt,
     /// `MESSAGE ... .`
     MessageStmt,
+    /// `MESSAGE` payload before `WITH` / `INTO` / `DISPLAY LIKE` / `RAISING`.
+    MessageHeadClause,
+    /// `WITH ...` inside `MESSAGE`.
+    MessageWithClause,
+    /// `INTO ...` inside `MESSAGE`.
+    MessageIntoClause,
+    /// `DISPLAY LIKE ...` inside `MESSAGE`.
+    MessageDisplayLikeClause,
+    /// `RAISING ...` inside `MESSAGE`.
+    MessageRaisingClause,
     /// `LEAVE LIST-PROCESSING.`
     LeaveStmt,
     /// `ENDAT.`
@@ -433,6 +443,11 @@ impl SyntaxKind {
             Self::RollbackWorkStmt => "RollbackWorkStmt",
             Self::RaiseStmt => "RaiseStmt",
             Self::MessageStmt => "MessageStmt",
+            Self::MessageHeadClause => "MessageHeadClause",
+            Self::MessageWithClause => "MessageWithClause",
+            Self::MessageIntoClause => "MessageIntoClause",
+            Self::MessageDisplayLikeClause => "MessageDisplayLikeClause",
+            Self::MessageRaisingClause => "MessageRaisingClause",
             Self::LeaveStmt => "LeaveStmt",
             Self::EndAtStmt => "EndAtStmt",
             Self::FindStmt => "FindStmt",

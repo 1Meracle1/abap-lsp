@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use abap_ast::SyntaxKind;
 use abap_ast::arena::NodeId;
-use abap_ast::ast::{AstNode, MethodsStmt};
+use abap_ast::ast::{AstNode, MessageStmt, MethodsStmt, RaiseStmt};
 
 use crate::def_map::{FieldTypeRefData, NamedArgumentTarget, ReferenceKind, SymbolKind};
 use crate::ids::ScopeId;
@@ -262,64 +262,91 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
     }
 
     pub(super) fn collect_message_stmt(&mut self, node: NodeId, scope: ScopeId) {
-        if self.collector.node_has_structured_children(node) {
-            let mut inline_target = None;
-            for child in self.collector.file.children(node) {
+        let Some((
+            head_clause_id,
+            with_clause_id,
+            into_clause_id,
+            display_clause_id,
+            raising_clause_id,
+        )) = (match MessageStmt::cast(self.collector.syntax(node)) {
+            Some(stmt) => Some((
+                stmt.head_clause().map(|clause| clause.syntax().id()),
+                stmt.with_clause().map(|clause| clause.syntax().id()),
+                stmt.into_clause().map(|clause| clause.syntax().id()),
+                stmt.display_like_clause()
+                    .map(|clause| clause.syntax().id()),
+                stmt.raising_clause().map(|clause| clause.syntax().id()),
+            )),
+            None => None,
+        })
+        else {
+            return;
+        };
+
+        if let Some(head_clause_id) = head_clause_id {
+            let sig = self.collector.significant_stmt_token_infos(head_clause_id);
+            if !sig.is_empty() {
+                self.collect_message_head_clause_infos(&sig, scope);
+            }
+        }
+
+        if let Some(with_clause_id) = with_clause_id {
+            let sig = self.collector.significant_stmt_token_infos(with_clause_id);
+            if sig.len() > 1 {
+                self.collect_message_operand_refs_infos(&sig[1..], scope);
+            }
+        }
+
+        if let Some(into_clause_id) = into_clause_id {
+            let mut has_data_inline = false;
+            for child in self.collector.file.children(into_clause_id) {
                 match self.collector.file.kind(child) {
                     SyntaxKind::Token => {}
-                    SyntaxKind::DataInlineDecl => inline_target = Some(child),
+                    SyntaxKind::DataInlineDecl => {
+                        self.collector
+                            .decl_lowering()
+                            .walk_inline_decl(child, scope);
+                        has_data_inline = true;
+                    }
                     _ => self.collector.walk_node(child, scope),
                 }
             }
-            if let Some(inline_decl) = inline_target {
-                self.collector
-                    .decl_lowering()
-                    .walk_inline_decl(inline_decl, scope);
+            if !has_data_inline {
+                let sig = self.collector.significant_stmt_token_infos(into_clause_id);
+                if sig.len() > 1 {
+                    self.collect_message_operand_refs_infos(&sig[1..], scope);
+                }
             }
         }
 
-        let sig = self.collector.significant_stmt_token_infos(node);
-        if sig.is_empty() || !sig[0].text.eq_ignore_ascii_case("message") {
-            return;
+        if let Some(display_clause_id) = display_clause_id {
+            let sig = self
+                .collector
+                .significant_stmt_token_infos(display_clause_id);
+            if sig.len() > 2 {
+                self.collect_message_operand_refs_infos(&sig[2..], scope);
+            }
         }
-        let period_pos = sig
-            .iter()
-            .position(|t| t.text.as_ref() == ".")
-            .unwrap_or(sig.len());
 
-        let with_ix = self
-            .collector
-            .find_top_level_keyword_index_infos(&sig, 1, "with")
-            .filter(|&ix| ix < period_pos);
-        let into_ix = self
-            .collector
-            .find_top_level_keyword_index_infos(&sig, 1, "into")
-            .filter(|&ix| ix < period_pos);
-        let display_ix = self
-            .collector
-            .find_top_level_keyword_index_infos(&sig, 1, "display")
-            .filter(|&ix| ix < period_pos);
-        let raising_ix = self
-            .collector
-            .find_top_level_keyword_index_infos(&sig, 1, "raising")
-            .filter(|&ix| ix < period_pos);
+        if let Some(raising_clause_id) = raising_clause_id {
+            let sig = self
+                .collector
+                .significant_stmt_token_infos(raising_clause_id);
+            if sig.len() > 1 {
+                self.collect_message_operand_refs_infos(&sig[1..], scope);
+            }
+        }
+    }
 
-        let head_end = [with_ix, into_ix, display_ix, raising_ix, Some(period_pos)]
-            .into_iter()
-            .flatten()
-            .min()
-            .unwrap();
-
+    fn collect_message_head_clause_infos(&mut self, sig: &[SyntaxTokenInfo], scope: ScopeId) {
         if sig
-            .get(1)
+            .first()
             .is_some_and(|t| t.text.eq_ignore_ascii_case("id"))
         {
-            let mut i = 2usize;
-            let end_mid = self.collector.consume_concatenate_operand_infos(
-                &sig,
-                i,
-                &["type", "with", "into", "display", "raising"],
-            );
+            let mut i = 1usize;
+            let end_mid =
+                self.collector
+                    .consume_concatenate_operand_infos(sig, i, &["type", "number"]);
             if end_mid > i {
                 if let Some((name, range)) = self
                     .collector
@@ -337,127 +364,53 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                 }
             }
             i = end_mid;
-            if i < head_end
+            if i < sig.len()
                 && sig
                     .get(i)
                     .is_some_and(|t| t.text.eq_ignore_ascii_case("type"))
             {
                 i += 1;
-                let end_ty = self.collector.consume_concatenate_operand_infos(
-                    &sig,
-                    i,
-                    &["number", "with", "into", "display", "raising"],
-                );
+                let end_ty = self
+                    .collector
+                    .consume_concatenate_operand_infos(sig, i, &["number"]);
                 if end_ty > i {
                     self.collect_message_operand_refs_infos(&sig[i..end_ty], scope);
                 }
                 i = end_ty;
             }
-            if i < head_end
+            if i < sig.len()
                 && sig
                     .get(i)
                     .is_some_and(|t| t.text.eq_ignore_ascii_case("number"))
             {
                 i += 1;
-                let end_num = self.collector.consume_concatenate_operand_infos(
-                    &sig,
-                    i,
-                    &["with", "into", "display", "raising"],
-                );
-                if end_num > i {
-                    self.collect_message_operand_refs_infos(&sig[i..end_num], scope);
-                }
-                i = end_num;
-            }
-            if i < head_end
-                && sig
-                    .get(i)
-                    .is_some_and(|t| t.text.eq_ignore_ascii_case("display"))
-                && sig
-                    .get(i + 1)
-                    .is_some_and(|t| t.text.eq_ignore_ascii_case("like"))
-            {
-                i += 2;
-                let end_disp = self.collector.consume_concatenate_operand_infos(
-                    &sig,
-                    i,
-                    &["with", "into", "raising"],
-                );
-                if end_disp > i {
-                    self.collect_message_operand_refs_infos(&sig[i..end_disp], scope);
+                if sig.len() > i {
+                    self.collect_message_operand_refs_infos(&sig[i..], scope);
                 }
             }
-        } else {
-            let mut i = 1usize;
-            let code_end = self.collector.consume_concatenate_operand_infos(
-                &sig,
-                i,
-                &["type", "with", "into", "display", "raising"],
-            );
-            if code_end > i {
-                if self.is_compact_message_class_form(&sig[i..code_end]) {
-                    self.collect_compact_message_class_ref_infos(&sig[i..code_end], scope);
-                } else {
-                    self.collect_message_operand_refs_infos(&sig[i..code_end], scope);
-                }
-            }
-            i = code_end;
-            if i < head_end
-                && sig
-                    .get(i)
-                    .is_some_and(|t| t.text.eq_ignore_ascii_case("type"))
-            {
-                i += 1;
-                let ty_end = self.collector.consume_concatenate_operand_infos(
-                    &sig,
-                    i,
-                    &["with", "into", "display", "raising"],
-                );
-                if ty_end > i {
-                    self.collect_message_operand_refs_infos(&sig[i..ty_end], scope);
-                }
-                i = ty_end;
-            }
-            if i < head_end
-                && sig
-                    .get(i)
-                    .is_some_and(|t| t.text.eq_ignore_ascii_case("display"))
-                && sig
-                    .get(i + 1)
-                    .is_some_and(|t| t.text.eq_ignore_ascii_case("like"))
-            {
-                i += 2;
-                let disp_end = self.collector.consume_concatenate_operand_infos(
-                    &sig,
-                    i,
-                    &["with", "into", "raising"],
-                );
-                if disp_end > i {
-                    self.collect_message_operand_refs_infos(&sig[i..disp_end], scope);
-                }
-            }
+            return;
         }
 
-        if let Some(with_ix) = with_ix {
-            let args_end = [into_ix, display_ix, raising_ix, Some(period_pos)]
-                .into_iter()
-                .flatten()
-                .min()
-                .unwrap();
-            if args_end > with_ix + 1 {
-                self.collect_message_operand_refs_infos(&sig[with_ix + 1..args_end], scope);
+        let mut i = 0usize;
+        let code_end = self
+            .collector
+            .consume_concatenate_operand_infos(sig, i, &["type"]);
+        if code_end > i {
+            if self.is_compact_message_class_form(&sig[i..code_end]) {
+                self.collect_compact_message_class_ref_infos(&sig[i..code_end], scope);
+            } else {
+                self.collect_message_operand_refs_infos(&sig[i..code_end], scope);
             }
         }
-        if let Some(into_ix) = into_ix {
-            let into_end = [display_ix, raising_ix, Some(period_pos)]
-                .into_iter()
-                .flatten()
-                .min()
-                .unwrap();
-            self.declare_message_inline_into_target_infos(&sig, into_ix + 1, into_end, scope);
-            let value_start = self.message_into_expression_start(&sig, into_ix + 1, into_end);
-            if into_end > value_start {
-                self.collect_message_operand_refs_infos(&sig[value_start..into_end], scope);
+        i = code_end;
+        if i < sig.len()
+            && sig
+                .get(i)
+                .is_some_and(|t| t.text.eq_ignore_ascii_case("type"))
+        {
+            i += 1;
+            if sig.len() > i {
+                self.collect_message_operand_refs_infos(&sig[i..], scope);
             }
         }
     }
@@ -491,51 +444,6 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             self.collector
                 .collect_token_expression_refs_infos(&tokens[batch_start..], scope, true);
         }
-    }
-
-    fn declare_message_inline_into_target_infos(
-        &mut self,
-        tokens: &[SyntaxTokenInfo],
-        start: usize,
-        end: usize,
-        scope: ScopeId,
-    ) {
-        let mut idx = start;
-        while idx < end
-            && tokens
-                .get(idx)
-                .is_some_and(|token| self.collector.syntax_token_is_comment(token))
-        {
-            idx += 1;
-        }
-        let Some(head) = tokens.get(idx) else {
-            return;
-        };
-        if !head.text.eq_ignore_ascii_case("data") {
-            return;
-        }
-        if tokens.get(idx + 1).map(|token| token.text.as_ref()) != Some("(") {
-            return;
-        }
-        let Some(name_tok) = tokens.get(idx + 2) else {
-            return;
-        };
-        if !self.collector.syntax_token_is_ident_like(name_tok) {
-            return;
-        }
-        if tokens.get(idx + 3).map(|token| token.text.as_ref()) != Some(")") {
-            return;
-        }
-        self.collector.declare_symbol(
-            scope,
-            Arc::<str>::from(name_tok.text.to_ascii_lowercase()),
-            crate::def_map::SymbolKind::Variable,
-            name_tok.range.clone(),
-            None,
-            None,
-            None,
-            None,
-        );
     }
 
     pub(super) fn collect_generic_simple_stmt(&mut self, node: NodeId, scope: ScopeId) {
@@ -615,53 +523,35 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
     }
 
     pub(super) fn collect_raise_stmt(&mut self, node: NodeId, scope: ScopeId) {
-        let significant = self.collector.significant_stmt_token_infos(node);
-        let Some((head, _)) = significant.split_first() else {
-            return;
-        };
-        if !head.text.eq_ignore_ascii_case("raise") {
-            return;
-        }
-
-        let mut cursor = 1usize;
-        if significant
-            .get(cursor)
-            .is_some_and(|token| token.text.eq_ignore_ascii_case("resumable"))
-        {
-            cursor += 1;
-        }
-        if !significant
-            .get(cursor)
-            .is_some_and(|token| token.text.eq_ignore_ascii_case("exception"))
-            || !significant
-                .get(cursor + 1)
-                .is_some_and(|token| token.text.eq_ignore_ascii_case("type"))
-        {
+        let Some((type_ref_id, trailing_child_ids)) =
+            (match RaiseStmt::cast(self.collector.syntax(node)) {
+                Some(stmt) => stmt.exception_type_ref().map(|type_ref| {
+                    (
+                        type_ref.syntax().id(),
+                        stmt.trailing_children()
+                            .into_iter()
+                            .map(|child| child.id())
+                            .collect::<Vec<_>>(),
+                    )
+                }),
+                None => None,
+            })
+        else {
             self.collect_generic_simple_stmt(node, scope);
             return;
-        }
+        };
 
-        cursor += 2;
-        let type_end = raise_stmt_type_end(&significant, cursor);
-        if let Some((name, range)) = self
-            .collector
-            .simple_type_ref_base_from_infos(&significant[cursor..type_end])
-        {
-            self.collector.add_reference(
-                scope,
-                name,
-                Namespace::Type,
-                ReferenceKind::TypeRef,
-                range,
-            );
-        }
+        self.collector
+            .decl_lowering()
+            .collect_type_ref(type_ref_id, scope);
 
-        if type_end < significant.len() {
-            self.collector.collect_token_expression_refs_infos(
-                &significant[type_end..],
-                scope,
-                true,
-            );
+        let trailing_tokens: Vec<_> = trailing_child_ids
+            .into_iter()
+            .flat_map(|child_id| self.collector.syntax_token_nodes(child_id))
+            .collect();
+        if !trailing_tokens.is_empty() {
+            self.collector
+                .collect_token_expression_refs_infos(&trailing_tokens, scope, true);
         }
     }
 
@@ -821,25 +711,6 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             return false;
         }
         chars.all(|ch| ch.is_ascii_digit()) && tokens.iter().any(|token| token.text.as_ref() == "(")
-    }
-
-    fn message_into_expression_start(
-        &self,
-        tokens: &[SyntaxTokenInfo],
-        start: usize,
-        end: usize,
-    ) -> usize {
-        if start + 3 < end
-            && tokens[start].text.eq_ignore_ascii_case("data")
-            && tokens[start + 1].text.as_ref() == "("
-            && self
-                .collector
-                .syntax_token_is_ident_like(&tokens[start + 2])
-            && tokens[start + 3].text.as_ref() == ")"
-        {
-            return start + 4;
-        }
-        start
     }
 
     pub(super) fn collect_clear_stmt_infos(&mut self, tokens: &[SyntaxTokenInfo], scope: ScopeId) {
@@ -1938,49 +1809,4 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             break;
         }
     }
-}
-
-fn raise_stmt_type_end(tokens: &[SyntaxTokenInfo], start: usize) -> usize {
-    let mut paren = 0i32;
-    let mut bracket = 0i32;
-    let mut brace = 0i32;
-    let mut idx = start;
-    while idx < tokens.len() {
-        let token = &tokens[idx];
-        if paren == 0 && bracket == 0 && brace == 0 {
-            if token.text.as_ref() == "."
-                || is_raise_stmt_clause_keyword(token, tokens.get(idx + 1))
-            {
-                break;
-            }
-        }
-        match token.text.as_ref() {
-            "(" => paren += 1,
-            ")" => paren -= 1,
-            "[" => bracket += 1,
-            "]" => bracket -= 1,
-            "{" => brace += 1,
-            "}" => brace -= 1,
-            _ => {}
-        }
-        idx += 1;
-    }
-    idx
-}
-
-fn is_raise_stmt_clause_keyword(token: &SyntaxTokenInfo, next: Option<&SyntaxTokenInfo>) -> bool {
-    if next.is_some_and(|next| next.text.as_ref() == "=") {
-        return false;
-    }
-    token.text.eq_ignore_ascii_case("exporting")
-        || token.text.eq_ignore_ascii_case("importing")
-        || token.text.eq_ignore_ascii_case("changing")
-        || token.text.eq_ignore_ascii_case("tables")
-        || token.text.eq_ignore_ascii_case("receiving")
-        || token.text.eq_ignore_ascii_case("exceptions")
-        || token.text.eq_ignore_ascii_case("source")
-        || token.text.eq_ignore_ascii_case("result")
-        || token.text.eq_ignore_ascii_case("xml")
-        || token.text.eq_ignore_ascii_case("message")
-        || token.text.eq_ignore_ascii_case("using")
 }

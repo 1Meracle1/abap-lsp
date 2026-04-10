@@ -4574,6 +4574,46 @@ ENDCLASS.
 }
 
 #[test]
+fn resolves_raise_exception_type_refs_with_message_clause() {
+    let src = r#"
+CLASS cx_demo DEFINITION INHERITING FROM cx_static_check.
+ENDCLASS.
+
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run IMPORTING iv_text TYPE string.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+    RAISE EXCEPTION TYPE cx_demo MESSAGE iv_text.
+  ENDMETHOD.
+ENDCLASS.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///raise_exception_type_message.abap", src, &parsed);
+
+    let refs: Vec<_> = unit
+        .references
+        .iter()
+        .filter(|reference| {
+            reference.kind == ReferenceKind::TypeRef
+                && reference.namespace == Namespace::Type
+                && reference.name.as_ref() == "cx_demo"
+        })
+        .collect();
+    assert_eq!(
+        refs.len(),
+        1,
+        "expected one raise type ref with MESSAGE clause, refs={refs:?}"
+    );
+    assert!(
+        matches!(refs[0].resolution, Some(Resolution::Symbol(_))),
+        "expected resolved raise type ref with MESSAGE clause, refs={refs:?}"
+    );
+}
+
+#[test]
 fn resolves_constructor_arguments_and_token_only_statement_references() {
     let src = r#"
 CLASS zcl_ast_node DEFINITION ABSTRACT.
