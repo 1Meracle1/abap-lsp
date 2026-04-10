@@ -144,9 +144,14 @@ impl<'a> Collector<'a> {
             SyntaxKind::GetTimeStampStmt => self
                 .stmt_lowering()
                 .collect_get_time_stamp_stmt(node, scope),
+            SyntaxKind::AliasesStmt => self.stmt_lowering().collect_aliases_stmt(node, scope),
+            SyntaxKind::ClearStmt => self.stmt_lowering().collect_clear_stmt(node, scope),
+            SyntaxKind::ConvertStmt => self.stmt_lowering().collect_convert_stmt(node, scope),
+            SyntaxKind::DescribeStmt => self.stmt_lowering().collect_describe_stmt(node, scope),
             SyntaxKind::FindStmt => self.stmt_lowering().collect_find_stmt(node, scope),
             SyntaxKind::CallStmt => self.stmt_lowering().collect_call_stmt(node, scope),
             SyntaxKind::MessageStmt => self.stmt_lowering().collect_message_stmt(node, scope),
+            SyntaxKind::ReplaceStmt => self.stmt_lowering().collect_replace_stmt(node, scope),
             SyntaxKind::UnparsedStmt
             | SyntaxKind::CommitWorkStmt
             | SyntaxKind::RollbackWorkStmt
@@ -161,6 +166,7 @@ impl<'a> Collector<'a> {
                 .stmt_lowering()
                 .collect_assert_or_check_stmt(node, scope),
             SyntaxKind::PerformStmt => self.forms_lowering().collect_perform_stmt_node(node, scope),
+            SyntaxKind::WaitStmt => self.stmt_lowering().collect_wait_stmt(node, scope),
             SyntaxKind::CreateObjectStmt => self
                 .stmt_lowering()
                 .collect_create_object_stmt_node(node, scope),

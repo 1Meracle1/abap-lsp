@@ -14,9 +14,9 @@ mod type_ref;
 use crate::stmt_period::is_definite_stmt_lead_keyword;
 use abap_ast::SyntaxKind;
 use abap_ast::arena::{NodeId, SyntaxTreeBuilder};
-use std::sync::Arc;
 use abap_lexer::Token;
 use abap_lexer::TokenKind;
+use std::sync::Arc;
 
 fn prev_non_comment_is_ident(tokens: &[Token], idx: usize) -> bool {
     let mut j = idx;
@@ -334,11 +334,18 @@ mod tests {
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
         let root = parsed.file.root();
         let kids: Vec<_> = parsed.file.children(root).collect();
-        assert_eq!(kids.len(), 2, "expected DATA and assignment - got {}", kids.len());
+        assert_eq!(
+            kids.len(),
+            2,
+            "expected DATA and assignment - got {}",
+            kids.len()
+        );
         let assign_token = parsed
             .tokens
             .iter()
-            .find(|token| token.lexeme(src).eq_ignore_ascii_case("lv") && token.has_newline_before())
+            .find(|token| {
+                token.lexeme(src).eq_ignore_ascii_case("lv") && token.has_newline_before()
+            })
             .expect("assignment token");
         assert!(
             parsed

@@ -774,7 +774,9 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
 
         if first_clause_idx > 0 && tokens[0].text.eq_ignore_ascii_case("LET") {
             clause_scope = self.collect_cond_leading_let_tokens(&tokens[..first_clause_idx], scope);
-            if let Some(in_idx) = self.find_top_level_keyword(&tokens[..first_clause_idx], 1, &["IN"]) {
+            if let Some(in_idx) =
+                self.find_top_level_keyword(&tokens[..first_clause_idx], 1, &["IN"])
+            {
                 operand_start = in_idx + 1;
             }
         }

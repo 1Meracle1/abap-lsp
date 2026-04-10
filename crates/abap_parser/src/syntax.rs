@@ -26,7 +26,12 @@ fn is_template_format_name(name: &str) -> bool {
 }
 
 pub(crate) fn token_leaf(b: &mut SyntaxTreeBuilder, token: &Token) -> NodeId {
-    b.token_leaf(SyntaxKind::Token, token.range.clone(), token.index(), token.kind)
+    b.token_leaf(
+        SyntaxKind::Token,
+        token.range.clone(),
+        token.index(),
+        token.kind,
+    )
 }
 
 pub fn build_file_tree(

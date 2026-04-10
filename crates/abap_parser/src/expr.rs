@@ -15,7 +15,12 @@ use abap_ast::arena::{NodeId, SyntaxTreeBuilder};
 use abap_lexer::{Token, TokenKind, have_space_between};
 
 fn token_leaf(b: &mut SyntaxTreeBuilder, token: &Token) -> NodeId {
-    b.token_leaf(SyntaxKind::Token, token.range.clone(), token.index(), token.kind)
+    b.token_leaf(
+        SyntaxKind::Token,
+        token.range.clone(),
+        token.index(),
+        token.kind,
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1097,7 +1102,8 @@ impl<'a, 'b> Parser<'a, 'b> {
             } else {
                 first_clause_idx
             };
-            if let Some(clause) = self.build_raw_call_positional_arg(&self.tokens[idx..clause_end]) {
+            if let Some(clause) = self.build_raw_call_positional_arg(&self.tokens[idx..clause_end])
+            {
                 children.push(clause);
             }
             if clause_end == idx {
@@ -1485,7 +1491,10 @@ pub fn parse_arithmetic_expr(
         return b.branch(SyntaxKind::TemplateExpr, 0..0, &[]);
     }
 
-    let sentinel = Token::new(TokenKind::Other, tokens[0].range.start..tokens[0].range.start);
+    let sentinel = Token::new(
+        TokenKind::Other,
+        tokens[0].range.start..tokens[0].range.start,
+    );
     let initial_prev = prev_before_first.unwrap_or(&sentinel);
 
     let mut p = Parser {
@@ -1528,7 +1537,10 @@ pub fn parse_logical_expr(
         return b.branch(SyntaxKind::TemplateExpr, 0..0, &[]);
     }
 
-    let sentinel = Token::new(TokenKind::Other, tokens[0].range.start..tokens[0].range.start);
+    let sentinel = Token::new(
+        TokenKind::Other,
+        tokens[0].range.start..tokens[0].range.start,
+    );
     let initial_prev = prev_before_first.unwrap_or(&sentinel);
 
     let mut p = Parser {

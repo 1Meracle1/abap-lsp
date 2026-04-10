@@ -224,7 +224,10 @@ impl<'a> Lexer<'a> {
             let lit_start = self.pos;
             self.consume_template_literal_fragment();
             if self.pos > lit_start {
-                out.push(Token::new(TokenKind::StringTemplateLit, lit_start..self.pos));
+                out.push(Token::new(
+                    TokenKind::StringTemplateLit,
+                    lit_start..self.pos,
+                ));
             }
 
             match self.ch {
@@ -578,17 +581,15 @@ fn build_lexed_source(source: &str, raw_tokens: &[Token]) -> LexedSource {
                 .map(|rel| interstitial.start + rel)
                 .unwrap_or(interstitial.end);
             let prev_trailing = TriviaSpan::from_usize(interstitial.start, split);
-            let prev_has_inline_comment =
-                trivia[interstitial.start..split]
-                    .iter()
-                    .any(|piece| matches!(piece.kind, TriviaKind::Comment | TriviaKind::Pragma));
+            let prev_has_inline_comment = trivia[interstitial.start..split]
+                .iter()
+                .any(|piece| matches!(piece.kind, TriviaKind::Comment | TriviaKind::Pragma));
             tokens[prev_idx].set_trailing_trivia(prev_trailing, prev_has_inline_comment);
 
             let current_leading = TriviaSpan::from_usize(split, interstitial.end);
-            let current_has_newline =
-                trivia[split..interstitial.end]
-                    .iter()
-                    .any(|piece| piece.kind == TriviaKind::Newline);
+            let current_has_newline = trivia[split..interstitial.end]
+                .iter()
+                .any(|piece| piece.kind == TriviaKind::Newline);
             token.set_leading_trivia(current_leading, current_has_newline);
         } else {
             let current_leading = TriviaSpan::from_usize(interstitial.start, interstitial.end);
@@ -610,7 +611,9 @@ fn build_lexed_source(source: &str, raw_tokens: &[Token]) -> LexedSource {
 }
 
 fn first_newline_piece(trivia: &[TriviaPiece]) -> Option<usize> {
-    trivia.iter().position(|piece| piece.kind == TriviaKind::Newline)
+    trivia
+        .iter()
+        .position(|piece| piece.kind == TriviaKind::Newline)
 }
 
 fn push_gap_trivia(source: &str, start: usize, end: usize, trivia: &mut Vec<TriviaPiece>) {

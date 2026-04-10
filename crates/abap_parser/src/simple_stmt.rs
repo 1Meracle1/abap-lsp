@@ -9,7 +9,12 @@ use crate::stmt_period::{StmtPeriodScan, scan_until_statement_period, unterminat
 use crate::type_ref::build_type_ref_node;
 
 fn token_leaf(b: &mut SyntaxTreeBuilder, token: &Token) -> NodeId {
-    b.token_leaf(SyntaxKind::Token, token.range.clone(), token.index(), token.kind)
+    b.token_leaf(
+        SyntaxKind::Token,
+        token.range.clone(),
+        token.index(),
+        token.kind,
+    )
 }
 
 fn token_matches_keyword(source: &str, token: &Token, keyword: &str) -> bool {
@@ -53,9 +58,15 @@ const STRUCTURAL_SIMPLE_STMT_CLASSIFIERS: &[GuardedSimpleStmtClassifier] = &[
 ];
 
 const KEYWORD_SIMPLE_STMT_KINDS: &[(&str, SyntaxKind)] = &[
+    ("aliases", SyntaxKind::AliasesStmt),
     ("assert", SyntaxKind::AssertStmt),
     ("check", SyntaxKind::CheckStmt),
+    ("clear", SyntaxKind::ClearStmt),
+    ("convert", SyntaxKind::ConvertStmt),
+    ("describe", SyntaxKind::DescribeStmt),
     ("perform", SyntaxKind::PerformStmt),
+    ("replace", SyntaxKind::ReplaceStmt),
+    ("wait", SyntaxKind::WaitStmt),
 ];
 
 fn significant_stmt_tokens(tokens: &[Token], idx: usize, period_i: usize) -> Vec<&Token> {
@@ -455,6 +466,625 @@ fn build_interfaces_stmt_children(
     children
 }
 
+#[derive(Clone, Copy)]
+enum SimpleStmtReplacementKind {
+    Expr,
+    TypeRef,
+    DataInlineDecl,
+}
+
+#[derive(Clone, Copy)]
+struct SimpleStmtReplacement {
+    start: usize,
+    end: usize,
+    kind: SimpleStmtReplacementKind,
+}
+
+fn parse_inline_name_local(
+    b: &mut SyntaxTreeBuilder,
+    tokens: &[Token],
+    idx: usize,
+) -> Option<(NodeId, usize)> {
+    let name_tok = tokens.get(idx)?;
+    if name_tok.kind != TokenKind::Ident {
+        return None;
+    }
+    let leaf = token_leaf(b, name_tok);
+    Some((
+        b.branch(SyntaxKind::DataDeclName, name_tok.range.clone(), &[leaf]),
+        idx + 1,
+    ))
+}
+
+fn inline_name_spacing_is_valid_local(
+    tokens: &[Token],
+    lparen_idx: usize,
+    name_idx: usize,
+    rparen_idx: usize,
+) -> bool {
+    let lparen = &tokens[lparen_idx];
+    let name = &tokens[name_idx];
+    let rparen = &tokens[rparen_idx];
+    !have_space_between(lparen, name) && !have_space_between(name, rparen)
+}
+
+fn build_data_inline_decl_local(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    end: usize,
+) -> Option<NodeId> {
+    let data_tok = tokens.get(start)?;
+    if !token_matches_keyword(source, data_tok, "data") {
+        return None;
+    }
+    let lparen = tokens.get(start + 1)?;
+    if lparen.kind != TokenKind::LParen {
+        return None;
+    }
+    let (name, next_idx) = parse_inline_name_local(b, tokens, start + 2)?;
+    let rparen = tokens.get(next_idx)?;
+    if rparen.kind != TokenKind::RParen || next_idx + 1 != end {
+        return None;
+    }
+    if !inline_name_spacing_is_valid_local(tokens, start + 1, start + 2, next_idx) {
+        let children: Vec<_> = tokens[start..end]
+            .iter()
+            .map(|token| token_leaf(b, token))
+            .collect();
+        return Some(b.branch(
+            SyntaxKind::Error,
+            data_tok.range.start..rparen.range.end,
+            &children,
+        ));
+    }
+
+    let data_leaf = token_leaf(b, data_tok);
+    let lparen_leaf = token_leaf(b, lparen);
+    let rparen_leaf = token_leaf(b, rparen);
+    Some(b.branch(
+        SyntaxKind::DataInlineDecl,
+        data_tok.range.start..rparen.range.end,
+        &[data_leaf, lparen_leaf, name, rparen_leaf],
+    ))
+}
+
+fn next_non_comment(tokens: &[Token], mut idx: usize, end: usize) -> usize {
+    while idx < end && tokens[idx].kind == TokenKind::Comment {
+        idx += 1;
+    }
+    idx
+}
+
+fn find_top_level_keyword_index(
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    end: usize,
+    keyword: &str,
+) -> Option<usize> {
+    let mut paren = 0i32;
+    let mut bracket = 0i32;
+    let mut brace = 0i32;
+    let mut idx = start;
+    while idx < end {
+        let token = &tokens[idx];
+        if token.kind == TokenKind::Comment {
+            idx += 1;
+            continue;
+        }
+        if paren == 0 && bracket == 0 && brace == 0 && token_matches_keyword(source, token, keyword)
+        {
+            return Some(idx);
+        }
+        match token.kind {
+            TokenKind::LParen => paren += 1,
+            TokenKind::RParen => paren -= 1,
+            TokenKind::LBracket => bracket += 1,
+            TokenKind::RBracket => bracket -= 1,
+            TokenKind::LBrace => brace += 1,
+            TokenKind::RBrace => brace -= 1,
+            _ => {}
+        }
+        idx += 1;
+    }
+    None
+}
+
+fn scan_expr_end(
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    end: usize,
+    stop_keywords: &[&str],
+    stop_token_kinds: &[TokenKind],
+) -> usize {
+    let mut paren = 0i32;
+    let mut bracket = 0i32;
+    let mut brace = 0i32;
+    let mut idx = start;
+    while idx < end {
+        let token = &tokens[idx];
+        if token.kind == TokenKind::Comment {
+            idx += 1;
+            continue;
+        }
+        if paren == 0 && bracket == 0 && brace == 0 {
+            if stop_token_kinds.contains(&token.kind)
+                || stop_keywords
+                    .iter()
+                    .any(|keyword| token_matches_keyword(source, token, keyword))
+            {
+                break;
+            }
+        }
+        match token.kind {
+            TokenKind::LParen => paren += 1,
+            TokenKind::RParen => paren -= 1,
+            TokenKind::LBracket => bracket += 1,
+            TokenKind::RBracket => bracket -= 1,
+            TokenKind::LBrace => brace += 1,
+            TokenKind::RBrace => brace -= 1,
+            _ => {}
+        }
+        idx += 1;
+    }
+    idx
+}
+
+fn build_stmt_children_with_replacements(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    period_i: usize,
+    replacements: &[SimpleStmtReplacement],
+) -> Vec<NodeId> {
+    if replacements.is_empty() {
+        return tokens[idx..=period_i]
+            .iter()
+            .map(|token| token_leaf(b, token))
+            .collect();
+    }
+
+    let mut children = Vec::with_capacity(period_i - idx + 1);
+    let mut replacement_idx = 0usize;
+    let mut i = idx;
+    while i <= period_i {
+        if let Some(replacement) = replacements.get(replacement_idx).copied()
+            && i == replacement.start
+        {
+            let built = match replacement.kind {
+                SimpleStmtReplacementKind::Expr => Some(parse_arithmetic_expr(
+                    b,
+                    source,
+                    &tokens[replacement.start..replacement.end],
+                    None,
+                )),
+                SimpleStmtReplacementKind::TypeRef => Some(build_type_ref_node(
+                    b,
+                    source,
+                    &tokens[replacement.start..replacement.end],
+                )),
+                SimpleStmtReplacementKind::DataInlineDecl => build_data_inline_decl_local(
+                    b,
+                    source,
+                    tokens,
+                    replacement.start,
+                    replacement.end,
+                ),
+            };
+            if let Some(node) = built {
+                children.push(node);
+            } else {
+                children.extend(
+                    tokens[replacement.start..replacement.end]
+                        .iter()
+                        .map(|token| token_leaf(b, token)),
+                );
+            }
+            i = replacement.end;
+            replacement_idx += 1;
+            continue;
+        }
+        children.push(token_leaf(b, &tokens[i]));
+        i += 1;
+    }
+    children
+}
+
+fn aliases_stmt_replacements(
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    period_i: usize,
+) -> Vec<SimpleStmtReplacement> {
+    let mut replacements = Vec::new();
+    let mut cursor = idx + 1;
+    while cursor < period_i {
+        cursor = next_non_comment(tokens, cursor, period_i);
+        while cursor < period_i
+            && matches!(tokens[cursor].kind, TokenKind::Colon | TokenKind::Comma)
+        {
+            cursor += 1;
+            cursor = next_non_comment(tokens, cursor, period_i);
+        }
+        if cursor >= period_i || tokens[cursor].kind != TokenKind::Ident {
+            break;
+        }
+        let for_idx = next_non_comment(tokens, cursor + 1, period_i);
+        if for_idx >= period_i || !token_matches_keyword(source, &tokens[for_idx], "for") {
+            cursor += 1;
+            continue;
+        }
+        let type_start = next_non_comment(tokens, for_idx + 1, period_i);
+        let type_end = scan_expr_end(
+            source,
+            tokens,
+            type_start,
+            period_i,
+            &[],
+            &[TokenKind::Comma],
+        );
+        if type_start < type_end {
+            replacements.push(SimpleStmtReplacement {
+                start: type_start,
+                end: type_end,
+                kind: SimpleStmtReplacementKind::TypeRef,
+            });
+        }
+        cursor = type_end.saturating_add(1);
+    }
+    replacements
+}
+
+fn clear_stmt_replacements(
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    period_i: usize,
+) -> Vec<SimpleStmtReplacement> {
+    let mut replacements = Vec::new();
+    let mut cursor = idx + 1;
+    while cursor < period_i {
+        cursor = next_non_comment(tokens, cursor, period_i);
+        while cursor < period_i
+            && matches!(tokens[cursor].kind, TokenKind::Colon | TokenKind::Comma)
+        {
+            cursor += 1;
+            cursor = next_non_comment(tokens, cursor, period_i);
+        }
+        if cursor >= period_i {
+            break;
+        }
+        let end = scan_expr_end(
+            source,
+            tokens,
+            cursor,
+            period_i,
+            &["with", "in"],
+            &[TokenKind::Comma],
+        );
+        if cursor < end {
+            replacements.push(SimpleStmtReplacement {
+                start: cursor,
+                end,
+                kind: SimpleStmtReplacementKind::Expr,
+            });
+            cursor = end;
+        } else {
+            cursor += 1;
+        }
+    }
+    replacements
+}
+
+fn convert_stmt_replacements(
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    period_i: usize,
+) -> Vec<SimpleStmtReplacement> {
+    let mut replacements = Vec::new();
+    let mut cursor = idx + 1;
+    if cursor < period_i && token_matches_keyword(source, &tokens[cursor], "date") {
+        cursor += 1;
+    }
+    let date_start = next_non_comment(tokens, cursor, period_i);
+    let date_end = scan_expr_end(source, tokens, date_start, period_i, &["time", "into"], &[]);
+    if date_start < date_end {
+        replacements.push(SimpleStmtReplacement {
+            start: date_start,
+            end: date_end,
+            kind: SimpleStmtReplacementKind::Expr,
+        });
+    }
+    cursor = date_end;
+
+    if cursor < period_i
+        && token_matches_keyword(source, &tokens[cursor], "time")
+        && !tokens
+            .get(next_non_comment(tokens, cursor + 1, period_i))
+            .is_some_and(|token| token_matches_keyword(source, token, "zone"))
+    {
+        let time_start = next_non_comment(tokens, cursor + 1, period_i);
+        let time_end = scan_expr_end(source, tokens, time_start, period_i, &["into"], &[]);
+        if time_start < time_end {
+            replacements.push(SimpleStmtReplacement {
+                start: time_start,
+                end: time_end,
+                kind: SimpleStmtReplacementKind::Expr,
+            });
+        }
+        cursor = time_end;
+    }
+
+    if cursor < period_i && token_matches_keyword(source, &tokens[cursor], "into") {
+        cursor = next_non_comment(tokens, cursor + 1, period_i);
+        if cursor < period_i && token_matches_keyword(source, &tokens[cursor], "time") {
+            cursor = next_non_comment(tokens, cursor + 1, period_i);
+        }
+        if cursor < period_i && token_matches_keyword(source, &tokens[cursor], "stamp") {
+            cursor = next_non_comment(tokens, cursor + 1, period_i);
+        }
+        let target_start = cursor;
+        let target_end = scan_expr_end(source, tokens, target_start, period_i, &["time"], &[]);
+        if target_start < target_end {
+            replacements.push(SimpleStmtReplacement {
+                start: target_start,
+                end: target_end,
+                kind: SimpleStmtReplacementKind::Expr,
+            });
+        }
+        cursor = target_end;
+    }
+
+    if cursor < period_i
+        && token_matches_keyword(source, &tokens[cursor], "time")
+        && tokens
+            .get(next_non_comment(tokens, cursor + 1, period_i))
+            .is_some_and(|token| token_matches_keyword(source, token, "zone"))
+    {
+        let zone_start = next_non_comment(
+            tokens,
+            next_non_comment(tokens, cursor + 1, period_i) + 1,
+            period_i,
+        );
+        if zone_start < period_i {
+            replacements.push(SimpleStmtReplacement {
+                start: zone_start,
+                end: period_i,
+                kind: SimpleStmtReplacementKind::Expr,
+            });
+        }
+    }
+
+    replacements
+}
+
+fn describe_stmt_replacements(
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    period_i: usize,
+) -> Vec<SimpleStmtReplacement> {
+    let mut replacements = Vec::new();
+    if idx + 1 >= period_i || !token_matches_keyword(source, &tokens[idx + 1], "table") {
+        return replacements;
+    }
+    let source_start = next_non_comment(tokens, idx + 2, period_i);
+    let Some(lines_idx) =
+        find_top_level_keyword_index(source, tokens, source_start, period_i, "lines")
+    else {
+        return replacements;
+    };
+    if source_start < lines_idx {
+        replacements.push(SimpleStmtReplacement {
+            start: source_start,
+            end: lines_idx,
+            kind: SimpleStmtReplacementKind::Expr,
+        });
+    }
+
+    let target_start = next_non_comment(tokens, lines_idx + 1, period_i);
+    if target_start >= period_i {
+        return replacements;
+    }
+    let target_kind = if token_matches_keyword(source, &tokens[target_start], "data") {
+        SimpleStmtReplacementKind::DataInlineDecl
+    } else {
+        SimpleStmtReplacementKind::Expr
+    };
+    replacements.push(SimpleStmtReplacement {
+        start: target_start,
+        end: period_i,
+        kind: target_kind,
+    });
+    replacements
+}
+
+fn replace_stmt_replacements(
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    period_i: usize,
+) -> Vec<SimpleStmtReplacement> {
+    let mut replacements = Vec::new();
+    let mut cursor = idx + 1;
+    if cursor < period_i
+        && (token_matches_keyword(source, &tokens[cursor], "first")
+            || token_matches_keyword(source, &tokens[cursor], "all"))
+    {
+        cursor += 1;
+        if cursor < period_i
+            && (token_matches_keyword(source, &tokens[cursor], "occurrence")
+                || token_matches_keyword(source, &tokens[cursor], "occurrences"))
+        {
+            cursor += 1;
+        }
+    }
+    if cursor < period_i && token_matches_keyword(source, &tokens[cursor], "of") {
+        cursor += 1;
+    }
+    if cursor < period_i && token_matches_keyword(source, &tokens[cursor], "regex") {
+        cursor += 1;
+    }
+
+    let source_start = next_non_comment(tokens, cursor, period_i);
+    let source_end = scan_expr_end(source, tokens, source_start, period_i, &["in", "with"], &[]);
+    if source_start < source_end {
+        replacements.push(SimpleStmtReplacement {
+            start: source_start,
+            end: source_end,
+            kind: SimpleStmtReplacementKind::Expr,
+        });
+    }
+    cursor = source_end;
+
+    while cursor < period_i {
+        cursor = next_non_comment(tokens, cursor, period_i);
+        if cursor >= period_i {
+            break;
+        }
+        if token_matches_keyword(source, &tokens[cursor], "in") {
+            let mode_token = next_non_comment(tokens, cursor + 1, period_i);
+            if tokens.get(mode_token).is_some_and(|token| {
+                token_matches_keyword(source, token, "character")
+                    || token_matches_keyword(source, token, "byte")
+            }) && tokens
+                .get(next_non_comment(tokens, mode_token + 1, period_i))
+                .is_some_and(|token| token_matches_keyword(source, token, "mode"))
+            {
+                cursor = next_non_comment(tokens, mode_token + 2, period_i);
+                continue;
+            }
+            let target_start = next_non_comment(tokens, cursor + 1, period_i);
+            let target_end =
+                scan_expr_end(source, tokens, target_start, period_i, &["with", "in"], &[]);
+            if target_start < target_end {
+                replacements.push(SimpleStmtReplacement {
+                    start: target_start,
+                    end: target_end,
+                    kind: SimpleStmtReplacementKind::Expr,
+                });
+            }
+            cursor = target_end;
+            continue;
+        }
+        if token_matches_keyword(source, &tokens[cursor], "with") {
+            let replacement_start = next_non_comment(tokens, cursor + 1, period_i);
+            let replacement_end =
+                scan_expr_end(source, tokens, replacement_start, period_i, &["in"], &[]);
+            if replacement_start < replacement_end {
+                replacements.push(SimpleStmtReplacement {
+                    start: replacement_start,
+                    end: replacement_end,
+                    kind: SimpleStmtReplacementKind::Expr,
+                });
+            }
+            cursor = replacement_end;
+            continue;
+        }
+        cursor += 1;
+    }
+
+    replacements
+}
+
+fn wait_stmt_replacements(
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    period_i: usize,
+) -> Vec<SimpleStmtReplacement> {
+    let mut cursor = idx + 1;
+    if cursor < period_i && token_matches_keyword(source, &tokens[cursor], "up") {
+        cursor += 1;
+    }
+    if cursor < period_i && token_matches_keyword(source, &tokens[cursor], "to") {
+        cursor += 1;
+    }
+    let expr_start = next_non_comment(tokens, cursor, period_i);
+    let expr_end = find_top_level_keyword_index(source, tokens, expr_start, period_i, "seconds")
+        .unwrap_or(period_i);
+    if expr_start < expr_end {
+        vec![SimpleStmtReplacement {
+            start: expr_start,
+            end: expr_end,
+            kind: SimpleStmtReplacementKind::Expr,
+        }]
+    } else {
+        Vec::new()
+    }
+}
+
+fn build_aliases_stmt_children(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    period_i: usize,
+) -> Vec<NodeId> {
+    let replacements = aliases_stmt_replacements(source, tokens, idx, period_i);
+    build_stmt_children_with_replacements(b, source, tokens, idx, period_i, &replacements)
+}
+
+fn build_clear_stmt_children(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    period_i: usize,
+) -> Vec<NodeId> {
+    let replacements = clear_stmt_replacements(source, tokens, idx, period_i);
+    build_stmt_children_with_replacements(b, source, tokens, idx, period_i, &replacements)
+}
+
+fn build_convert_stmt_children(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    period_i: usize,
+) -> Vec<NodeId> {
+    let replacements = convert_stmt_replacements(source, tokens, idx, period_i);
+    build_stmt_children_with_replacements(b, source, tokens, idx, period_i, &replacements)
+}
+
+fn build_describe_stmt_children(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    period_i: usize,
+) -> Vec<NodeId> {
+    let replacements = describe_stmt_replacements(source, tokens, idx, period_i);
+    build_stmt_children_with_replacements(b, source, tokens, idx, period_i, &replacements)
+}
+
+fn build_replace_stmt_children(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    period_i: usize,
+) -> Vec<NodeId> {
+    let replacements = replace_stmt_replacements(source, tokens, idx, period_i);
+    build_stmt_children_with_replacements(b, source, tokens, idx, period_i, &replacements)
+}
+
+fn build_wait_stmt_children(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    period_i: usize,
+) -> Vec<NodeId> {
+    let replacements = wait_stmt_replacements(source, tokens, idx, period_i);
+    build_stmt_children_with_replacements(b, source, tokens, idx, period_i, &replacements)
+}
+
 fn class_section_statement(source: &str, significant: &[&Token]) -> bool {
     let Some(first) = significant.first() else {
         return false;
@@ -818,11 +1448,23 @@ pub fn try_parse_simple_stmt(
             validate_unparsed_stmt(source, &significant, tokens, idx, period_i, errors);
             let kind = simple_stmt_kind(source, &significant);
             let kids = match kind {
+                SyntaxKind::AliasesStmt => {
+                    build_aliases_stmt_children(b, source, tokens, idx, period_i)
+                }
                 SyntaxKind::MethodsStmt => {
                     build_methods_stmt_children(b, source, tokens, idx, period_i)
                 }
                 SyntaxKind::InterfacesStmt => {
                     build_interfaces_stmt_children(b, source, tokens, idx, period_i)
+                }
+                SyntaxKind::ClearStmt => {
+                    build_clear_stmt_children(b, source, tokens, idx, period_i)
+                }
+                SyntaxKind::ConvertStmt => {
+                    build_convert_stmt_children(b, source, tokens, idx, period_i)
+                }
+                SyntaxKind::DescribeStmt => {
+                    build_describe_stmt_children(b, source, tokens, idx, period_i)
                 }
                 SyntaxKind::AssertStmt | SyntaxKind::CheckStmt => {
                     build_assert_or_check_stmt_children(b, source, tokens, idx, period_i)
@@ -830,6 +1472,10 @@ pub fn try_parse_simple_stmt(
                 SyntaxKind::CallStmt => {
                     build_direct_call_stmt_children(b, source, tokens, idx, period_i)
                 }
+                SyntaxKind::ReplaceStmt => {
+                    build_replace_stmt_children(b, source, tokens, idx, period_i)
+                }
+                SyntaxKind::WaitStmt => build_wait_stmt_children(b, source, tokens, idx, period_i),
                 _ => tokens[idx..=period_i]
                     .iter()
                     .map(|t| token_leaf(b, t))
@@ -1078,6 +1724,127 @@ ENDCLASS.";
         let root = parsed.file.root();
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::TypePoolsStmt), 1);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::UnparsedStmt), 0);
+    }
+
+    #[test]
+    fn classifies_structured_simple_statement_families_specifically() {
+        let parsed = crate::parse(
+            "\
+INTERFACE if_demo.
+  METHODS meth.
+ENDINTERFACE.
+INTERFACE if_other.
+  INTERFACES if_demo.
+  ALIASES alias_meth FOR if_demo~meth.
+ENDINTERFACE.
+DATA lv_text TYPE string.
+DATA lv_date TYPE d.
+DATA lv_time TYPE t.
+DATA lv_stamp TYPE timestamp.
+DATA lt_text TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+ALIASES alias_meth FOR if_demo~meth.
+CLEAR: lv_text, lv_stamp.
+CONVERT DATE lv_date TIME lv_time INTO TIME STAMP lv_stamp.
+DESCRIBE TABLE lt_text LINES DATA(lv_lines).
+REPLACE 'a' IN lv_text WITH 'b'.
+WAIT UP TO lv_stamp SECONDS.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::AliasesStmt), 2);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::ClearStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::ConvertStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::DescribeStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::ReplaceStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::WaitStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::UnparsedStmt), 0);
+    }
+
+    #[test]
+    fn structured_simple_statements_build_high_signal_children() {
+        let parsed = crate::parse(
+            "\
+INTERFACE if_demo.
+  METHODS meth.
+ENDINTERFACE.
+ALIASES alias_meth FOR if_demo~meth.
+DATA lv_text TYPE string.
+DATA lv_date TYPE d.
+DATA lv_time TYPE t.
+DATA lv_stamp TYPE timestamp.
+DATA lt_text TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+CLEAR: lv_text, lv_stamp.
+CONVERT DATE lv_date TIME lv_time INTO TIME STAMP lv_stamp.
+DESCRIBE TABLE lt_text LINES DATA(lv_lines).
+REPLACE FIRST OCCURRENCE OF 'a' IN lv_text WITH 'b'.
+WAIT UP TO lv_stamp SECONDS.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+
+        let aliases = parsed
+            .file
+            .find_first_kind(root, SyntaxKind::AliasesStmt)
+            .expect("aliases stmt");
+        assert_eq!(
+            parsed.file.count_kind(aliases, SyntaxKind::TypeRefSimple),
+            1
+        );
+
+        let clear = parsed
+            .file
+            .find_first_kind(root, SyntaxKind::ClearStmt)
+            .expect("clear stmt");
+        assert_eq!(parsed.file.count_kind(clear, SyntaxKind::ExprIdent), 2);
+
+        let convert = parsed
+            .file
+            .find_first_kind(root, SyntaxKind::ConvertStmt)
+            .expect("convert stmt");
+        assert_eq!(parsed.file.count_kind(convert, SyntaxKind::ExprIdent), 3);
+
+        let describe = parsed
+            .file
+            .find_first_kind(root, SyntaxKind::DescribeStmt)
+            .expect("describe stmt");
+        assert_eq!(parsed.file.count_kind(describe, SyntaxKind::ExprIdent), 1);
+        assert_eq!(
+            parsed.file.count_kind(describe, SyntaxKind::DataInlineDecl),
+            1
+        );
+
+        let replace = parsed
+            .file
+            .find_first_kind(root, SyntaxKind::ReplaceStmt)
+            .expect("replace stmt");
+        assert_eq!(parsed.file.count_kind(replace, SyntaxKind::ExprIdent), 1);
+
+        let wait = parsed
+            .file
+            .find_first_kind(root, SyntaxKind::WaitStmt)
+            .expect("wait stmt");
+        assert_eq!(parsed.file.count_kind(wait, SyntaxKind::ExprIdent), 1);
+    }
+
+    #[test]
+    fn describe_table_lines_without_period_is_reported_as_error() {
+        let parsed = crate::parse(
+            "DATA lt_text TYPE STANDARD TABLE OF string WITH EMPTY KEY.\nDESCRIBE TABLE lt_text LINES DATA(lv_lines)",
+        );
+        assert!(
+            parsed
+                .errors
+                .iter()
+                .any(|err| err.message.contains("expected '.'")),
+            "{:?}",
+            parsed.errors
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::DescribeStmt),
+            0
+        );
     }
 
     #[test]

@@ -5995,6 +5995,54 @@ DATA(lt_text) = VALUE stringtab(
     }
 
     #[test]
+    fn hover_works_for_describe_table_source_inside_structured_simple_stmt() {
+        let state = ServerState::default();
+        let text = "\
+DATA lt_split TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+
+DESCRIBE TABLE lt_split LINES DATA(lv_lines).
+IF lv_lines > 0.
+  WRITE lv_lines.
+ENDIF.";
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///describe_hover.abap").expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: text.to_string(),
+                },
+            },
+        );
+
+        let offset = text.find("lt_split LINES").expect("describe source");
+        let line = text[..offset].bytes().filter(|&b| b == b'\n').count() as u32;
+        let line_start = text[..offset].rfind('\n').map(|idx| idx + 1).unwrap_or(0);
+        let character = (offset - line_start) as u32;
+
+        let hover = hover(
+            &state,
+            &HoverParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///describe_hover.abap").expect("uri"),
+                    },
+                    position: Position { line, character },
+                },
+                work_done_progress_params: Default::default(),
+            },
+        )
+        .expect("hover");
+
+        let HoverContents::Markup(markup) = hover.contents else {
+            panic!("expected markdown hover");
+        };
+        assert!(markup.value.contains("`lt_split`"), "{}", markup.value);
+        assert!(markup.value.contains("Variable"), "{}", markup.value);
+    }
+
+    #[test]
     fn completion_returns_selector_components() {
         let state = ServerState::default();
         publish_open_document(

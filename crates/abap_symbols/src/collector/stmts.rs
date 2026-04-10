@@ -553,24 +553,65 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             && matches!(tail.first(), Some(token) if token.text.eq_ignore_ascii_case("work"))
         {
             return;
-        } else if head.text.eq_ignore_ascii_case("aliases") {
-            self.collect_aliases_stmt_infos(&significant, scope);
-        } else if head.text.eq_ignore_ascii_case("clear") {
-            self.collect_clear_stmt_infos(tail, scope);
-        } else if head.text.eq_ignore_ascii_case("convert") {
-            self.collect_convert_stmt_infos(&significant, scope);
-        } else if head.text.eq_ignore_ascii_case("describe") {
-            self.collect_describe_stmt_infos(&significant, scope);
         } else if head.text.eq_ignore_ascii_case("find") {
             self.collect_find_stmt_infos(&significant, scope);
-        } else if head.text.eq_ignore_ascii_case("replace") {
-            self.collect_replace_stmt_infos(&significant, scope);
-        } else if head.text.eq_ignore_ascii_case("wait") {
-            self.collect_wait_stmt_infos(&significant, scope);
         } else {
             self.collector
                 .collect_token_expression_refs_infos(tail, scope, true);
         }
+    }
+
+    pub(super) fn collect_wait_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        if self.collector.node_has_structured_children(node) {
+            self.collector.walk_children(node, scope);
+            return;
+        }
+        let significant = self.collector.significant_stmt_token_infos(node);
+        self.collect_wait_stmt_infos(&significant, scope);
+    }
+
+    pub(super) fn collect_aliases_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        let significant = self.collector.significant_stmt_token_infos(node);
+        self.collect_aliases_stmt_infos(&significant, scope);
+    }
+
+    pub(super) fn collect_clear_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        if self.collector.node_has_structured_children(node) {
+            self.collector.walk_children(node, scope);
+            return;
+        }
+        let significant = self.collector.significant_stmt_token_infos(node);
+        let Some((_, tail)) = significant.split_first() else {
+            return;
+        };
+        self.collect_clear_stmt_infos(tail, scope);
+    }
+
+    pub(super) fn collect_describe_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        if self.collector.node_has_structured_children(node) {
+            self.collector.walk_children(node, scope);
+            return;
+        }
+        let significant = self.collector.significant_stmt_token_infos(node);
+        self.collect_describe_stmt_infos(&significant, scope);
+    }
+
+    pub(super) fn collect_convert_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        if self.collector.node_has_structured_children(node) {
+            self.collector.walk_children(node, scope);
+            return;
+        }
+        let significant = self.collector.significant_stmt_token_infos(node);
+        self.collect_convert_stmt_infos(&significant, scope);
+    }
+
+    pub(super) fn collect_replace_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        if self.collector.node_has_structured_children(node) {
+            self.collector.walk_children(node, scope);
+            return;
+        }
+        let significant = self.collector.significant_stmt_token_infos(node);
+        self.collect_replace_stmt_infos(&significant, scope);
     }
 
     pub(super) fn collect_raise_stmt(&mut self, node: NodeId, scope: ScopeId) {

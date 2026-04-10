@@ -119,6 +119,18 @@ pub enum SyntaxKind {
     IncludeStmt,
     /// Deprecated `TYPE-POOLS ... .`
     TypePoolsStmt,
+    /// `ALIASES ... .`
+    AliasesStmt,
+    /// `CLEAR ... .`
+    ClearStmt,
+    /// `CONVERT DATE ... TIME ... INTO TIME STAMP ... .`
+    ConvertStmt,
+    /// `DESCRIBE TABLE ... LINES ... .`
+    DescribeStmt,
+    /// `REPLACE ... .`
+    ReplaceStmt,
+    /// `WAIT UP TO ... SECONDS .`
+    WaitStmt,
     /// `FORM ... . ... ENDFORM.`
     FormDecl,
     /// `TABLES` / `USING` / `CHANGING` parameter section inside a `FORM`.
@@ -346,6 +358,12 @@ impl SyntaxKind {
             Self::ReportStmt => "ReportStmt",
             Self::IncludeStmt => "IncludeStmt",
             Self::TypePoolsStmt => "TypePoolsStmt",
+            Self::AliasesStmt => "AliasesStmt",
+            Self::ClearStmt => "ClearStmt",
+            Self::ConvertStmt => "ConvertStmt",
+            Self::DescribeStmt => "DescribeStmt",
+            Self::ReplaceStmt => "ReplaceStmt",
+            Self::WaitStmt => "WaitStmt",
             Self::FormDecl => "FormDecl",
             Self::FormParamSection => "FormParamSection",
             Self::ModuleDecl => "ModuleDecl",

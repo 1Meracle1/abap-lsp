@@ -240,7 +240,10 @@ impl LexedSource {
         &self.trivia[token.trailing_trivia_span()]
     }
 
-    pub fn leading_comments<'a>(&'a self, token: &'a Token) -> impl Iterator<Item = &'a TriviaPiece> + 'a {
+    pub fn leading_comments<'a>(
+        &'a self,
+        token: &'a Token,
+    ) -> impl Iterator<Item = &'a TriviaPiece> + 'a {
         self.leading_trivia(token)
             .iter()
             .filter(|piece| matches!(piece.kind, TriviaKind::Comment | TriviaKind::Pragma))
