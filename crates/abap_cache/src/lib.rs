@@ -153,6 +153,14 @@ struct BareWhereFieldTarget {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+struct InferredDdicFieldTarget {
+    field_name: Arc<str>,
+    field_owner_structure_name: Option<Arc<str>>,
+    declared_type_name: Arc<str>,
+    definition: DefinitionTarget,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum ReferenceSearchTarget {
     Symbol(abap_symbols::SymbolHandle),
     ClassMember {
@@ -352,10 +360,36 @@ impl AnalysisSnapshot {
                 .take(segment_index + 1)
                 .map(|segment| segment.name.as_ref())
                 .collect();
-            let field = structure_unit
+            let Some(field) = structure_unit
                 .semantic()
                 .decls()
-                .resolve_structure_field_path(structure_id, &field_path)?;
+                .resolve_structure_field_path(structure_id, &field_path)
+            else {
+                let inferred = inferred_ddic_data_element_target(
+                    self,
+                    structure_unit,
+                    structure_id,
+                    access.field_path[segment_index].name.as_ref(),
+                )?;
+                return Some(HoveredComponentInfo {
+                    base_name: Arc::clone(&access.base_name),
+                    base_namespace: access.base_namespace,
+                    component_path: access
+                        .field_path
+                        .iter()
+                        .take(segment_index + 1)
+                        .map(|segment| Arc::clone(&segment.name))
+                        .collect(),
+                    field_name: Arc::clone(&inferred.field_name),
+                    field_owner_structure_name: inferred.field_owner_structure_name,
+                    range: access.field_path[segment_index].range.clone(),
+                    declared_type: Some(format!("TYPE {}", inferred.declared_type_name)),
+                    declaration: Some("DDIC field inferred from incomplete cache".to_string()),
+                    kind: HoveredComponentKind::Scalar,
+                    is_static_method: false,
+                    in_type_position: access.in_type_position,
+                });
+            };
             let kind = match field.shape {
                 StructureFieldShape::Scalar => HoveredComponentKind::Scalar,
                 StructureFieldShape::Structured { structure } => HoveredComponentKind::Structured {
@@ -383,30 +417,63 @@ impl AnalysisSnapshot {
                 in_type_position: access.in_type_position,
             });
         }
-        let target = self.bare_where_field_target_at(offset)?;
-        let structure_unit = &self.project.units[target.structure_unit_id.as_usize()];
-        let field = &target.field;
-        let kind = match field.shape {
-            StructureFieldShape::Scalar => HoveredComponentKind::Scalar,
-            StructureFieldShape::Structured { structure } => HoveredComponentKind::Structured {
-                structure_name: Arc::clone(&structure_unit.structure(structure).name),
-            },
-        };
-        Some(HoveredComponentInfo {
-            base_name: Arc::clone(&field.name),
-            base_namespace: Namespace::Value,
-            component_path: vec![Arc::clone(&field.name)],
-            field_name: Arc::clone(&field.name),
-            field_owner_structure_name: Some(Arc::clone(
-                &structure_unit.structure(field.owner).name,
-            )),
-            range: target.range,
-            declared_type: field.type_ref.as_ref().map(format_field_type_ref),
-            declaration: None,
-            kind,
-            is_static_method: false,
-            in_type_position: false,
-        })
+        if let Some(target) = self.bare_where_field_target_at(offset) {
+            let structure_unit = &self.project.units[target.structure_unit_id.as_usize()];
+            let field = &target.field;
+            let kind = match field.shape {
+                StructureFieldShape::Scalar => HoveredComponentKind::Scalar,
+                StructureFieldShape::Structured { structure } => {
+                    HoveredComponentKind::Structured {
+                        structure_name: Arc::clone(&structure_unit.structure(structure).name),
+                    }
+                }
+            };
+            return Some(HoveredComponentInfo {
+                base_name: Arc::clone(&field.name),
+                base_namespace: Namespace::Value,
+                component_path: vec![Arc::clone(&field.name)],
+                field_name: Arc::clone(&field.name),
+                field_owner_structure_name: Some(Arc::clone(
+                    &structure_unit.structure(field.owner).name,
+                )),
+                range: target.range,
+                declared_type: field.type_ref.as_ref().map(format_field_type_ref),
+                declaration: None,
+                kind,
+                is_static_method: false,
+                in_type_position: false,
+            });
+        }
+        if let Some(query) = self.bare_where_field_query_at(offset) {
+            let (token_start, token_end) =
+                token_window_for_range(&self.parse, &statement_query_range(&self.parse, offset)?)?;
+            let token_idx = prefix_token_at_offset(&self.parse, token_start, token_end, offset)?;
+            let token = &self.parse.tokens[token_idx];
+            let field_name =
+                Arc::<str>::from(token.lexeme(self.text.as_ref()).to_ascii_lowercase());
+            let structure_unit = &self.project.units[query.structure_unit_id.as_usize()];
+            if let Some(inferred) = inferred_ddic_data_element_target(
+                self,
+                structure_unit,
+                query.structure_id,
+                field_name.as_ref(),
+            ) {
+                return Some(HoveredComponentInfo {
+                    base_name: Arc::clone(&field_name),
+                    base_namespace: Namespace::Value,
+                    component_path: vec![Arc::clone(&field_name)],
+                    field_name,
+                    field_owner_structure_name: inferred.field_owner_structure_name,
+                    range: token.range.clone(),
+                    declared_type: Some(format!("TYPE {}", inferred.declared_type_name)),
+                    declaration: Some("DDIC field inferred from incomplete cache".to_string()),
+                    kind: HoveredComponentKind::Scalar,
+                    is_static_method: false,
+                    in_type_position: false,
+                });
+            }
+        }
+        synthetic_loop_where_hovered_component_at(self, offset)
     }
 
     pub fn classify_field_access_segment(
@@ -589,10 +656,19 @@ impl AnalysisSnapshot {
                 .take(segment_index + 1)
                 .map(|segment| segment.name.as_ref())
                 .collect();
-            let field = structure_unit
+            let Some(field) = structure_unit
                 .semantic()
                 .decls()
-                .resolve_structure_field_path(structure_id, &field_path)?;
+                .resolve_structure_field_path(structure_id, &field_path)
+            else {
+                return inferred_ddic_data_element_target(
+                    self,
+                    structure_unit,
+                    structure_id,
+                    access.field_path[segment_index].name.as_ref(),
+                )
+                .map(|target| target.definition);
+            };
             let decl_range = field.decl_range?;
             return Some(definition_target_for_range(
                 &self.project.units[field.decl_unit.as_usize()],
@@ -603,12 +679,27 @@ impl AnalysisSnapshot {
     }
 
     fn definition_target_for_bare_where_field_at(&self, offset: usize) -> Option<DefinitionTarget> {
-        let target = self.bare_where_field_target_at(offset)?;
-        let decl_range = target.field.decl_range?;
-        Some(definition_target_for_range(
-            &self.project.units[target.field.decl_unit.as_usize()],
-            decl_range,
-        ))
+        if let Some(target) = self.bare_where_field_target_at(offset) {
+            let decl_range = target.field.decl_range?;
+            return Some(definition_target_for_range(
+                &self.project.units[target.field.decl_unit.as_usize()],
+                decl_range,
+            ));
+        }
+        let query = self.bare_where_field_query_at(offset)?;
+        let (token_start, token_end) =
+            token_window_for_range(&self.parse, &statement_query_range(&self.parse, offset)?)?;
+        let token_idx = prefix_token_at_offset(&self.parse, token_start, token_end, offset)?;
+        let token = &self.parse.tokens[token_idx];
+        let field_name = Arc::<str>::from(token.lexeme(self.text.as_ref()).to_ascii_lowercase());
+        let structure_unit = &self.project.units[query.structure_unit_id.as_usize()];
+        inferred_ddic_data_element_target(
+            self,
+            structure_unit,
+            query.structure_id,
+            field_name.as_ref(),
+        )
+        .map(|target| target.definition)
     }
 
     fn reference_search_target_for_component_at(
@@ -1251,10 +1342,14 @@ impl AnalysisSnapshot {
         let token = &self.parse.tokens[token_idx];
         let field_name = Arc::<str>::from(token.lexeme(self.text.as_ref()).to_ascii_lowercase());
         let structure_unit = &self.project.units[query.structure_unit_id.as_usize()];
-        let field = structure_unit
-            .semantic()
-            .decls()
-            .structure_field_info(query.structure_id, field_name.as_ref())?;
+        let field = resolve_structure_field_info_with_scope_index(
+            self,
+            self.scope_index(),
+            structure_unit,
+            query.scope,
+            query.structure_id,
+            field_name.as_ref(),
+        )?;
         Some(BareWhereFieldTarget {
             structure_unit_id: query.structure_unit_id,
             field,
@@ -1863,11 +1958,19 @@ fn synthetic_loop_where_definition_target(
             )
         });
         for (fields_unit, structure_id) in source_structure.into_iter().chain(target_structure) {
-            let Some(field) = fields_unit
-                .semantic()
-                .decls()
-                .structure_field_info(structure_id, symbol.name.as_ref())
-            else {
+            let lookup_scope = if fields_unit.scopes.get(context.scope.as_usize()).is_some() {
+                context.scope
+            } else {
+                fields_unit.root_scope
+            };
+            let Some(field) = resolve_structure_field_info_with_scope_index(
+                snapshot,
+                snapshot.scope_index(),
+                fields_unit,
+                lookup_scope,
+                structure_id,
+                symbol.name.as_ref(),
+            ) else {
                 continue;
             };
             if let Some(range) = field.decl_range {
@@ -1879,6 +1982,135 @@ fn synthetic_loop_where_definition_target(
         }
     }
     None
+}
+
+fn synthetic_loop_where_hovered_component_at(
+    snapshot: &AnalysisSnapshot,
+    offset: usize,
+) -> Option<HoveredComponentInfo> {
+    let reference = snapshot
+        .symbols
+        .semantic()
+        .refs()
+        .reference_at_offset(offset)?;
+    let Resolution::Symbol(handle) = reference.resolution? else {
+        return None;
+    };
+    let unit = &snapshot.project.units[handle.unit.as_usize()];
+    let symbol = unit.symbol(handle.symbol);
+
+    for context in &unit.loop_where_field_contexts {
+        if context.scope != symbol.scope {
+            continue;
+        }
+        let source_structure = resolve_loop_where_source_structure_with_scope_index(
+            snapshot,
+            snapshot.scope_index(),
+            context.scope,
+            &context.source_access,
+        );
+        let target_structure = context.target_access.as_ref().and_then(|access| {
+            resolve_field_access_structure_with_scope_index(
+                snapshot,
+                snapshot.scope_index(),
+                access,
+            )
+        });
+        for (fields_unit, structure_id) in source_structure.into_iter().chain(target_structure) {
+            let lookup_scope = if fields_unit.scopes.get(context.scope.as_usize()).is_some() {
+                context.scope
+            } else {
+                fields_unit.root_scope
+            };
+            let Some(field) = resolve_structure_field_info_with_scope_index(
+                snapshot,
+                snapshot.scope_index(),
+                fields_unit,
+                lookup_scope,
+                structure_id,
+                symbol.name.as_ref(),
+            ) else {
+                continue;
+            };
+            let kind = match field.shape {
+                StructureFieldShape::Scalar => HoveredComponentKind::Scalar,
+                StructureFieldShape::Structured { structure } => {
+                    HoveredComponentKind::Structured {
+                        structure_name: Arc::clone(&fields_unit.structure(structure).name),
+                    }
+                }
+            };
+            return Some(HoveredComponentInfo {
+                base_name: Arc::clone(&field.name),
+                base_namespace: Namespace::Value,
+                component_path: vec![Arc::clone(&field.name)],
+                field_name: Arc::clone(&field.name),
+                field_owner_structure_name: Some(Arc::clone(
+                    &fields_unit.structure(field.owner).name,
+                )),
+                range: reference.range.clone(),
+                declared_type: field.type_ref.as_ref().map(format_field_type_ref),
+                declaration: None,
+                kind,
+                is_static_method: false,
+                in_type_position: false,
+            });
+        }
+    }
+    None
+}
+
+fn namespaced_ddic_prefix(name: &str) -> Option<&str> {
+    if !name.starts_with('/') {
+        return None;
+    }
+    let rest = &name[1..];
+    let idx = rest.find('/')?;
+    Some(&name[..idx + 2])
+}
+
+fn inferred_ddic_data_element_target(
+    snapshot: &AnalysisSnapshot,
+    current_unit: &UnitAnalysis,
+    structure_id: StructureId,
+    field_name: &str,
+) -> Option<InferredDdicFieldTarget> {
+    let mut owner_structure_name = current_unit
+        .semantic()
+        .decls()
+        .structure_field_infos(structure_id)
+        .into_iter()
+        .find(|field| field_looks_like_ddic_proxy_include(current_unit, field))
+        .and_then(|field| {
+            field.type_ref.as_ref().map(|type_ref| {
+                Arc::<str>::from(type_ref.base_name.as_ref().to_ascii_lowercase())
+            })
+        });
+
+    if owner_structure_name.is_none() {
+        owner_structure_name = Some(Arc::clone(&current_unit.structure(structure_id).name));
+    }
+    let owner_name = owner_structure_name.as_ref()?;
+    let prefix = namespaced_ddic_prefix(owner_name.as_ref())?;
+    let data_element_name = Arc::<str>::from(format!("{prefix}e_{field_name}"));
+
+    let (unit, symbol) = snapshot.project.units.iter().find_map(|unit| {
+        unit.symbols
+            .iter()
+            .find(|symbol| {
+                symbol.scope == unit.root_scope
+                    && symbol.kind.occupies(Namespace::Type)
+                    && symbol.name == data_element_name
+            })
+            .map(|symbol| (unit, symbol))
+    })?;
+
+    Some(InferredDdicFieldTarget {
+        field_name: Arc::<str>::from(field_name.to_ascii_lowercase()),
+        field_owner_structure_name: owner_structure_name,
+        declared_type_name: data_element_name,
+        definition: definition_target_for_symbol(unit, symbol),
+    })
 }
 
 fn definition_target_for_resolution(
@@ -2226,6 +2458,145 @@ fn resolve_symbol_structure_with_scope_index<'a>(
     None
 }
 
+fn derive_ddic_include_field_name(type_name: &str) -> String {
+    let tail = type_name
+        .rsplit('/')
+        .next()
+        .unwrap_or(type_name)
+        .trim()
+        .to_ascii_lowercase();
+    tail.strip_prefix("s_")
+        .or_else(|| tail.strip_prefix("t_"))
+        .unwrap_or(&tail)
+        .to_string()
+}
+
+fn field_looks_like_ddic_proxy_include(unit: &UnitAnalysis, field: &StructureFieldInfo) -> bool {
+    let matches_type_ref = field.type_ref.as_ref().is_some_and(|type_ref| {
+        type_ref.namespace == Namespace::Type
+            && !type_ref.is_ref
+            && type_ref.field_path.is_empty()
+            && field
+                .name
+                .as_ref()
+                .eq_ignore_ascii_case(&derive_ddic_include_field_name(type_ref.base_name.as_ref()))
+    });
+    let matches_shape = match field.shape {
+        StructureFieldShape::Structured { structure } => field.name.as_ref().eq_ignore_ascii_case(
+            &derive_ddic_include_field_name(unit.structure(structure).name.as_ref()),
+        ),
+        StructureFieldShape::Scalar => false,
+    };
+    matches_type_ref || matches_shape
+}
+
+fn included_structure_for_proxy_field_with_scope_index<'a>(
+    snapshot: &'a AnalysisSnapshot,
+    scope_index: &ScopeIndex,
+    current_unit: &'a UnitAnalysis,
+    scope: ScopeId,
+    field: &StructureFieldInfo,
+) -> Option<(&'a UnitAnalysis, StructureId)> {
+    if let StructureFieldShape::Structured { structure } = field.shape {
+        return Some((current_unit, structure));
+    }
+    let type_ref = field.type_ref.as_ref()?;
+    let lookup_scope = if current_unit.scopes.get(scope.as_usize()).is_some() {
+        scope
+    } else {
+        current_unit.root_scope
+    };
+    let (resolved_unit, resolved_symbol_id) = resolve_symbol_from_context_with_scope_index(
+        snapshot,
+        scope_index,
+        lookup_scope,
+        type_ref.namespace,
+        &type_ref.base_name,
+        type_ref.namespace == Namespace::Value,
+    )?;
+    resolve_symbol_structure_with_scope_index(
+        snapshot,
+        scope_index,
+        resolved_unit,
+        lookup_scope,
+        resolved_symbol_id,
+    )
+}
+
+fn resolve_structure_field_info_with_scope_index<'a>(
+    snapshot: &'a AnalysisSnapshot,
+    scope_index: &ScopeIndex,
+    current_unit: &'a UnitAnalysis,
+    scope: ScopeId,
+    structure_id: StructureId,
+    field_name: &str,
+) -> Option<StructureFieldInfo> {
+    fn inner<'a>(
+        snapshot: &'a AnalysisSnapshot,
+        scope_index: &ScopeIndex,
+        current_unit: &'a UnitAnalysis,
+        scope: ScopeId,
+        structure_id: StructureId,
+        field_name: &str,
+        seen: &mut HashSet<(u32, u32)>,
+    ) -> Option<StructureFieldInfo> {
+        if !seen.insert((current_unit.unit_id.0, structure_id.0)) {
+            return None;
+        }
+        if let Some(field) = current_unit
+            .semantic()
+            .decls()
+            .structure_field_info(structure_id, field_name)
+        {
+            return Some(field);
+        }
+        for field in current_unit.semantic().decls().structure_field_infos(structure_id) {
+            if !field_looks_like_ddic_proxy_include(current_unit, &field) {
+                continue;
+            }
+            let Some((included_unit, included_structure)) =
+                included_structure_for_proxy_field_with_scope_index(
+                    snapshot,
+                    scope_index,
+                    current_unit,
+                    scope,
+                    &field,
+                )
+            else {
+                continue;
+            };
+            let nested_scope = if included_unit.scopes.get(scope.as_usize()).is_some() {
+                scope
+            } else {
+                included_unit.root_scope
+            };
+            if let Some(info) = inner(
+                snapshot,
+                scope_index,
+                included_unit,
+                nested_scope,
+                included_structure,
+                field_name,
+                seen,
+            ) {
+                return Some(info);
+            }
+        }
+        None
+    }
+
+    let mut seen = HashSet::new();
+    inner(
+        snapshot,
+        scope_index,
+        current_unit,
+        scope,
+        structure_id,
+        field_name,
+        &mut seen,
+    )
+}
+
 fn resolve_field_access_structure_with_scope_index<'a>(
     snapshot: &'a AnalysisSnapshot,
     scope_index: &ScopeIndex,
@@ -2248,10 +2619,14 @@ fn resolve_field_access_structure_with_scope_index<'a>(
         if segment.is_deref() {
             return None;
         }
-        let field = current_unit
-            .semantic()
-            .decls()
-            .structure_field_info(current_structure, segment.name.as_ref())?;
+        let field = resolve_structure_field_info_with_scope_index(
+            snapshot,
+            scope_index,
+            current_unit,
+            access.scope,
+            current_structure,
+            segment.name.as_ref(),
+        )?;
         if idx + 1 == access.field_path.len() {
             if let Some(type_ref) = field.type_ref.as_ref() {
                 let (resolved_unit, resolved_symbol_id) =
@@ -2316,10 +2691,14 @@ fn resolve_loop_where_source_structure_with_scope_index<'a>(
         if segment.is_deref() {
             return None;
         }
-        let field = current_unit
-            .semantic()
-            .decls()
-            .structure_field_info(current_structure, segment.name.as_ref())?;
+        let field = resolve_structure_field_info_with_scope_index(
+            snapshot,
+            scope_index,
+            current_unit,
+            loop_scope,
+            current_structure,
+            segment.name.as_ref(),
+        )?;
         if idx + 1 == source_access.field_path.len() {
             if let Some(type_ref) = field.type_ref.as_ref() {
                 let (resolved_unit, resolved_symbol_id) =
@@ -5309,6 +5688,154 @@ DATA(lt_filtered) = VALUE #(
             "file:///deps/%2FSTTP%2FS_OBJ_IDS.xml",
             dep_src,
             "objid",
+        );
+    }
+
+    #[test]
+    fn hover_and_definition_work_for_bare_where_field_inside_ddic_proxy_include_structure() {
+        let store = DocumentStore::default();
+        let include_src = "\
+TYPES: BEGIN OF /sttp/s_dm_obj_itm,\n\
+         uom TYPE string,\n\
+       END OF /sttp/s_dm_obj_itm.\n";
+        let row_src = "\
+TYPES: BEGIN OF /sttp/dm_obj_itm,\n\
+         dm_obj_itm TYPE /sttp/s_dm_obj_itm,\n\
+       END OF /sttp/dm_obj_itm.\n";
+        let table_src =
+            "TYPES /sttp/t_dm_obj_itm TYPE STANDARD TABLE OF /sttp/dm_obj_itm WITH EMPTY KEY.\n";
+        let main_src = "\
+DATA mt_obj_itm TYPE /sttp/t_dm_obj_itm.\n\
+DATA(lt_obj_itm) = mt_obj_itm.\n\
+DELETE lt_obj_itm WHERE uom NE 'PK'.\n";
+
+        let snapshots = store.replace_all(vec![
+            DocumentInput {
+                uri: Arc::from("file:///deps/%2FSTTP%2FS_DM_OBJ_ITM.abap"),
+                version: 1,
+                text: Arc::from(include_src),
+                is_dependency: true,
+                object_name: None,
+            },
+            DocumentInput {
+                uri: Arc::from("file:///deps/%2FSTTP%2FDM_OBJ_ITM.abap"),
+                version: 1,
+                text: Arc::from(row_src),
+                is_dependency: true,
+                object_name: None,
+            },
+            DocumentInput {
+                uri: Arc::from("file:///deps/%2FSTTP%2FT_DM_OBJ_ITM.abap"),
+                version: 1,
+                text: Arc::from(table_src),
+                is_dependency: true,
+                object_name: None,
+            },
+            DocumentInput {
+                uri: Arc::from("file:///main.abap"),
+                version: 1,
+                text: Arc::from(main_src),
+                is_dependency: false,
+                object_name: None,
+            },
+        ]);
+        let snapshot = snapshots.get("file:///main.abap").expect("main snapshot");
+        let offset = main_src.find("uom NE").expect("uom use") + 1;
+
+        let hovered = snapshot
+            .hovered_component_at(offset)
+            .expect("hovered bare where field");
+        assert_eq!(hovered.field_name.as_ref(), "uom");
+        assert_eq!(hovered.declared_type.as_deref(), Some("TYPE string"));
+
+        let definition = snapshot.definition_at(offset).expect("definition target");
+        assert_eq!(
+            definition.uri.as_ref(),
+            "file:///deps/%2FSTTP%2FS_DM_OBJ_ITM.abap"
+        );
+
+        let dep_src = snapshots
+            .get("file:///deps/%2FSTTP%2FS_DM_OBJ_ITM.abap")
+            .expect("dependency snapshot")
+            .text
+            .as_ref();
+        assert_target_slice(
+            &definition,
+            "file:///deps/%2FSTTP%2FS_DM_OBJ_ITM.abap",
+            dep_src,
+            "uom",
+        );
+    }
+
+    #[test]
+    fn hover_and_definition_work_for_bare_where_field_inside_method_inline_copy_from_attribute() {
+        let store = DocumentStore::default();
+        let include_src = "\
+TYPES: BEGIN OF /sttp/s_dm_obj_itm,\n\
+         uom TYPE string,\n\
+       END OF /sttp/s_dm_obj_itm.\n";
+        let row_src = "\
+TYPES: BEGIN OF /sttp/dm_obj_itm,\n\
+         dm_obj_itm TYPE /sttp/s_dm_obj_itm,\n\
+       END OF /sttp/dm_obj_itm.\n";
+        let table_src =
+            "TYPES /sttp/t_dm_obj_itm TYPE STANDARD TABLE OF /sttp/dm_obj_itm WITH EMPTY KEY.\n";
+        let main_src = "\
+CLASS zcl_main DEFINITION.\n\
+  PRIVATE SECTION.\n\
+    DATA mt_obj_itm TYPE /sttp/t_dm_obj_itm.\n\
+    METHODS run.\n\
+ENDCLASS.\n\
+\n\
+CLASS zcl_main IMPLEMENTATION.\n\
+  METHOD run.\n\
+    DATA(lt_obj_itm) = mt_obj_itm.\n\
+    DELETE lt_obj_itm WHERE uom NE 'PK'.\n\
+  ENDMETHOD.\n\
+ENDCLASS.\n";
+
+        let snapshots = store.replace_all(vec![
+            DocumentInput {
+                uri: Arc::from("file:///deps/%2FSTTP%2FS_DM_OBJ_ITM.abap"),
+                version: 1,
+                text: Arc::from(include_src),
+                is_dependency: true,
+                object_name: Some(Arc::from("/sttp/s_dm_obj_itm")),
+            },
+            DocumentInput {
+                uri: Arc::from("file:///deps/%2FSTTP%2FDM_OBJ_ITM.abap"),
+                version: 1,
+                text: Arc::from(row_src),
+                is_dependency: true,
+                object_name: Some(Arc::from("/sttp/dm_obj_itm")),
+            },
+            DocumentInput {
+                uri: Arc::from("file:///deps/%2FSTTP%2FT_DM_OBJ_ITM.abap"),
+                version: 1,
+                text: Arc::from(table_src),
+                is_dependency: true,
+                object_name: Some(Arc::from("/sttp/t_dm_obj_itm")),
+            },
+            DocumentInput {
+                uri: Arc::from("file:///main.abap"),
+                version: 1,
+                text: Arc::from(main_src),
+                is_dependency: false,
+                object_name: None,
+            },
+        ]);
+        let snapshot = snapshots.get("file:///main.abap").expect("main snapshot");
+        let offset = main_src.find("uom NE").expect("uom use") + 1;
+
+        let hovered = snapshot
+            .hovered_component_at(offset)
+            .expect("hovered bare where field");
+        assert_eq!(hovered.field_name.as_ref(), "uom");
+
+        let definition = snapshot.definition_at(offset).expect("definition target");
+        assert_eq!(
+            definition.uri.as_ref(),
+            "file:///deps/%2FSTTP%2FS_DM_OBJ_ITM.abap"
         );
     }
 

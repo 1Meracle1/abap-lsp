@@ -6607,6 +6607,243 @@ TYPES /sttp/tt_evt_sdr TYPE STANDARD TABLE OF /sttp/dm_evt_sdr WITH EMPTY KEY.
 }
 
 #[test]
+fn suppresses_unknown_symbol_for_bare_delete_where_field_name_on_inline_copy_of_external_table_type()
+{
+    let main_src = r#"
+DATA mt_obj_itm TYPE /sttp/t_dm_obj_itm.
+
+DATA(lt_obj_itm) = mt_obj_itm.
+DELETE lt_obj_itm WHERE uom NE 'PK'.
+"#;
+    let row_src = r#"
+TYPES: BEGIN OF /sttp/dm_obj_itm,
+         uom TYPE string,
+         objid TYPE string,
+       END OF /sttp/dm_obj_itm.
+"#;
+    let table_src = r#"
+TYPES /sttp/t_dm_obj_itm TYPE STANDARD TABLE OF /sttp/dm_obj_itm WITH EMPTY KEY.
+"#;
+    let main_parse = parse(main_src);
+    let row_parse = parse(row_src);
+    let table_parse = parse(table_src);
+
+    let project = analyze_project(&[
+        ProjectInput {
+            uri: "file:///main.abap",
+            source: main_src,
+            parse: &main_parse,
+        },
+        ProjectInput {
+            uri: "file:///ddic_row.abap",
+            source: row_src,
+            parse: &row_parse,
+        },
+        ProjectInput {
+            uri: "file:///ddic_table.abap",
+            source: table_src,
+            parse: &table_parse,
+        },
+    ]);
+    let unit = project.unit_by_uri("file:///main.abap").expect("main unit");
+
+    assert!(
+        unit.references.iter().any(|reference| {
+            reference.name.as_ref() == "uom"
+                && reference.namespace == Namespace::Value
+                && reference.kind == ReferenceKind::Identifier
+        }),
+        "expected bare field reference in DELETE WHERE, refs={:?}",
+        unit.references
+    );
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains("'uom'")
+        }),
+        "unexpected diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn suppresses_unknown_symbol_for_bare_delete_where_field_name_on_inline_copy_of_external_table_attribute_in_method()
+{
+    let main_src = r#"
+CLASS zcl_rule DEFINITION.
+  PRIVATE SECTION.
+    DATA mt_obj_itm TYPE /sttp/t_dm_obj_itm.
+    METHODS run.
+ENDCLASS.
+
+CLASS zcl_rule IMPLEMENTATION.
+  METHOD run.
+    DATA(lt_obj_itm) = mt_obj_itm.
+    DELETE lt_obj_itm WHERE uom NE 'PK'.
+  ENDMETHOD.
+ENDCLASS.
+"#;
+    let row_src = r#"
+TYPES: BEGIN OF /sttp/dm_obj_itm,
+         uom TYPE string,
+         objid TYPE string,
+       END OF /sttp/dm_obj_itm.
+"#;
+    let table_src = r#"
+TYPES /sttp/t_dm_obj_itm TYPE STANDARD TABLE OF /sttp/dm_obj_itm WITH EMPTY KEY.
+"#;
+    let main_parse = parse(main_src);
+    let row_parse = parse(row_src);
+    let table_parse = parse(table_src);
+
+    let project = analyze_project(&[
+        ProjectInput {
+            uri: "file:///main.abap",
+            source: main_src,
+            parse: &main_parse,
+        },
+        ProjectInput {
+            uri: "file:///ddic_row.abap",
+            source: row_src,
+            parse: &row_parse,
+        },
+        ProjectInput {
+            uri: "file:///ddic_table.abap",
+            source: table_src,
+            parse: &table_parse,
+        },
+    ]);
+    let unit = project.unit_by_uri("file:///main.abap").expect("main unit");
+
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains("'uom'")
+        }),
+        "unexpected diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn suppresses_unknown_symbol_for_bare_delete_where_field_name_from_ddic_proxy_include_structure()
+{
+    let main_src = r#"
+DATA mt_obj_itm TYPE /sttp/t_dm_obj_itm.
+
+DATA(lt_obj_itm) = mt_obj_itm.
+DELETE lt_obj_itm WHERE uom NE 'PK'.
+"#;
+    let include_src = r#"
+TYPES: BEGIN OF /sttp/s_dm_obj_itm,
+         uom TYPE string,
+       END OF /sttp/s_dm_obj_itm.
+"#;
+    let row_src = r#"
+TYPES: BEGIN OF /sttp/dm_obj_itm,
+         dm_obj_itm TYPE /sttp/s_dm_obj_itm,
+       END OF /sttp/dm_obj_itm.
+"#;
+    let table_src = r#"
+TYPES /sttp/t_dm_obj_itm TYPE STANDARD TABLE OF /sttp/dm_obj_itm WITH EMPTY KEY.
+"#;
+    let main_parse = parse(main_src);
+    let include_parse = parse(include_src);
+    let row_parse = parse(row_src);
+    let table_parse = parse(table_src);
+
+    let project = analyze_project(&[
+        ProjectInput {
+            uri: "file:///main.abap",
+            source: main_src,
+            parse: &main_parse,
+        },
+        ProjectInput {
+            uri: "file:///ddic_include.abap",
+            source: include_src,
+            parse: &include_parse,
+        },
+        ProjectInput {
+            uri: "file:///ddic_row.abap",
+            source: row_src,
+            parse: &row_parse,
+        },
+        ProjectInput {
+            uri: "file:///ddic_table.abap",
+            source: table_src,
+            parse: &table_parse,
+        },
+    ]);
+    let unit = project.unit_by_uri("file:///main.abap").expect("main unit");
+
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains("'uom'")
+        }),
+        "unexpected diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn suppresses_unknown_symbol_for_bare_delete_where_field_name_when_ddic_proxy_include_metadata_is_incomplete()
+{
+    let main_src = r#"
+DATA mt_obj_itm TYPE /sttp/t_dm_obj_itm.
+
+DATA(lt_obj_itm) = mt_obj_itm.
+DELETE lt_obj_itm WHERE uom NE 'PK'.
+"#;
+    let include_src = r#"
+TYPES: BEGIN OF /sttp/s_dm_obj_itm,
+         serno TYPE string,
+       END OF /sttp/s_dm_obj_itm.
+"#;
+    let row_src = r#"
+TYPES: BEGIN OF /sttp/dm_obj_itm,
+         dm_obj_itm TYPE /sttp/s_dm_obj_itm,
+       END OF /sttp/dm_obj_itm.
+"#;
+    let table_src = r#"
+TYPES /sttp/t_dm_obj_itm TYPE STANDARD TABLE OF /sttp/dm_obj_itm WITH EMPTY KEY.
+"#;
+    let main_parse = parse(main_src);
+    let include_parse = parse(include_src);
+    let row_parse = parse(row_src);
+    let table_parse = parse(table_src);
+
+    let project = analyze_project(&[
+        ProjectInput {
+            uri: "file:///main.abap",
+            source: main_src,
+            parse: &main_parse,
+        },
+        ProjectInput {
+            uri: "file:///ddic_include.abap",
+            source: include_src,
+            parse: &include_parse,
+        },
+        ProjectInput {
+            uri: "file:///ddic_row.abap",
+            source: row_src,
+            parse: &row_parse,
+        },
+        ProjectInput {
+            uri: "file:///ddic_table.abap",
+            source: table_src,
+            parse: &table_parse,
+        },
+    ]);
+    let unit = project.unit_by_uri("file:///main.abap").expect("main unit");
+
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains("'uom'")
+        }),
+        "unexpected diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn validates_unknown_template_interpolation_members() {
     let src = r#"
 CLASS zcl_expr DEFINITION.

@@ -1225,7 +1225,10 @@ mod tests {
         build_remote_dependency_requests_for_workspace, collect_remote_dependency_candidates,
         completion, definition, handle_dependency_cache_cleared,
         handle_remote_dependencies_updated, hover, initialize_result, normalize_lsp_uri,
+        offset_to_position,
         publish_changed_document, publish_open_document, publish_open_document_mut, references,
+        refresh_workspace,
+        snapshot_for_uri,
     };
 
     fn temp_workspace_path(name: &str) -> PathBuf {
@@ -1453,6 +1456,375 @@ SELECT rep_evtid,
         .expect("references");
         assert_eq!(locations.len(), 3, "{locations:?}");
         assert_eq!(locations[0].range.start.line, 0);
+    }
+
+    #[test]
+    fn hover_and_definition_work_for_bare_delete_where_field_in_workspace_cached_ddic_proxy_include()
+    {
+        let workspace_path = temp_workspace_path("workspace_bare_delete_where_ddic");
+        fs::create_dir_all(workspace_path.join("src")).expect("src dir");
+        fs::create_dir_all(
+            workspace_path.join(".abapls/cache/dependencies/ddic-structure"),
+        )
+        .expect("structure deps dir");
+        fs::create_dir_all(
+            workspace_path.join(".abapls/cache/dependencies/ddic-table"),
+        )
+        .expect("table deps dir");
+        fs::create_dir_all(
+            workspace_path.join(".abapls/cache/dependencies/ddic-table-type"),
+        )
+        .expect("table type deps dir");
+
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+connection = "default"
+
+[resolution]
+dependency_mode = "remote-on-demand"
+cache_dir = ".abapls/cache"
+unknown_symbol_mode = "remote"
+
+[[unit]]
+name = "ZCL_MAIN"
+kind = "global-class"
+root_file = "src/ZCL_MAIN.abap"
+
+[[unit.member]]
+role = "main"
+file = "src/ZCL_MAIN.abap"
+object_name = "ZCL_MAIN"
+"#,
+        )
+        .expect("manifest");
+
+        let main_src = "\
+CLASS zcl_main DEFINITION.\n\
+  PRIVATE SECTION.\n\
+    DATA mt_obj_itm TYPE /sttp/t_dm_obj_itm.\n\
+    METHODS run.\n\
+ENDCLASS.\n\
+\n\
+CLASS zcl_main IMPLEMENTATION.\n\
+  METHOD run.\n\
+    DATA(lt_obj_itm) = mt_obj_itm.\n\
+    DELETE lt_obj_itm WHERE uom NE 'PK'.\n\
+  ENDMETHOD.\n\
+ENDCLASS.\n";
+        fs::write(workspace_path.join("src/ZCL_MAIN.abap"), main_src).expect("main source");
+
+        let include_xml = r#"
+<abapsource:elementInfo adtcore:name="/sttp/s_dm_obj_itm"
+    xmlns:abapsource="http://www.sap.com/adt/abapsource"
+    xmlns:adtcore="http://www.sap.com/adt/core">
+  <abapsource:elementInfo adtcore:type="TABL/DTF" adtcore:name="uom">
+    <abapsource:properties>
+      <abapsource:entry abapsource:key="ddicDataElement">/sttp/e_uom</abapsource:entry>
+      <abapsource:entry abapsource:key="ddicDataType">char</abapsource:entry>
+    </abapsource:properties>
+  </abapsource:elementInfo>
+</abapsource:elementInfo>
+"#;
+        fs::write(
+            workspace_path.join(
+                ".abapls/cache/dependencies/ddic-structure/%2FSTTP%2FS_DM_OBJ_ITM.xml",
+            ),
+            include_xml,
+        )
+        .expect("include xml");
+
+        let row_xml = r#"
+<abapsource:elementInfo adtcore:name="/sttp/dm_obj_itm"
+    xmlns:abapsource="http://www.sap.com/adt/abapsource"
+    xmlns:adtcore="http://www.sap.com/adt/core">
+  <abapsource:elementInfo adtcore:type="TABL/DS" adtcore:name=".include">
+    <abapsource:properties>
+      <abapsource:entry abapsource:key="ddicIncludeName">/sttp/s_dm_obj_itm</abapsource:entry>
+    </abapsource:properties>
+  </abapsource:elementInfo>
+</abapsource:elementInfo>
+"#;
+        fs::write(
+            workspace_path.join(
+                ".abapls/cache/dependencies/ddic-table/%2FSTTP%2FDM_OBJ_ITM.xml",
+            ),
+            row_xml,
+        )
+        .expect("row xml");
+
+        let table_type_xml = r#"
+<abapsource:elementInfo adtcore:name="/sttp/t_dm_obj_itm"
+    xmlns:abapsource="http://www.sap.com/adt/abapsource"
+    xmlns:adtcore="http://www.sap.com/adt/core">
+  <abapsource:elementInfo adtcore:type="TABL/DT" adtcore:name="/sttp/dm_obj_itm">
+    <abapsource:properties>
+      <abapsource:entry abapsource:key="ddicRowType">X</abapsource:entry>
+    </abapsource:properties>
+  </abapsource:elementInfo>
+</abapsource:elementInfo>
+"#;
+        fs::write(
+            workspace_path.join(
+                ".abapls/cache/dependencies/ddic-table-type/%2FSTTP%2FT_DM_OBJ_ITM.xml",
+            ),
+            table_type_xml,
+        )
+        .expect("table type xml");
+
+        let workspace_uri = path_to_file_uri(&workspace_path);
+        let source_uri = format!("{workspace_uri}/src/ZCL_MAIN.abap");
+        let mut state = ServerState::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        refresh_workspace(&mut state, &workspace_uri);
+
+        let snapshot = snapshot_for_uri(&state, &normalize_lsp_uri(&source_uri))
+            .expect("workspace snapshot");
+        let hover_offset = main_src.rfind("uom").expect("uom use") + 1;
+        let hover_position =
+            offset_to_position(snapshot.text.as_ref(), hover_offset).expect("hover position");
+        let direct_hover = snapshot.hovered_component_at(hover_offset);
+        assert!(direct_hover.is_some(), "snapshot diagnostics={:?} refs={:?}", snapshot.symbols.diagnostics, snapshot.symbols.references);
+
+        let hover_result = hover(
+            &state,
+            &HoverParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str(&source_uri).expect("uri"),
+                    },
+                    position: hover_position,
+                },
+                work_done_progress_params: Default::default(),
+            },
+        )
+        .expect("hover");
+        let HoverContents::Markup(markup) = hover_result.contents else {
+            panic!("expected markdown hover");
+        };
+        assert!(
+            markup.value.contains("`uom`"),
+            "unexpected hover: {}",
+            markup.value
+        );
+
+        let definition_result = definition(
+            &state,
+            &GotoDefinitionParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str(&source_uri).expect("uri"),
+                    },
+                    position: hover_position,
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            },
+        )
+        .expect("definition");
+        let GotoDefinitionResponse::Scalar(location) = definition_result else {
+            panic!("expected scalar location");
+        };
+        assert!(
+            location
+                .uri
+                .as_str()
+                .contains("S_DM_OBJ_ITM.xml"),
+            "unexpected definition uri: {:?}",
+            location.uri
+        );
+    }
+
+    #[test]
+    fn hover_and_definition_fall_back_to_ddic_data_element_for_bare_where_field_when_proxy_cache_is_incomplete()
+    {
+        let workspace_path = temp_workspace_path("workspace_bare_where_inferred_ddic_field");
+        fs::create_dir_all(workspace_path.join("src")).expect("src dir");
+        fs::create_dir_all(
+            workspace_path.join(".abapls/cache/dependencies/ddic-data-element"),
+        )
+        .expect("data element deps dir");
+        fs::create_dir_all(
+            workspace_path.join(".abapls/cache/dependencies/ddic-structure"),
+        )
+        .expect("structure deps dir");
+        fs::create_dir_all(
+            workspace_path.join(".abapls/cache/dependencies/ddic-table"),
+        )
+        .expect("table deps dir");
+        fs::create_dir_all(
+            workspace_path.join(".abapls/cache/dependencies/ddic-table-type"),
+        )
+        .expect("table type deps dir");
+
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+connection = "default"
+
+[resolution]
+dependency_mode = "remote-on-demand"
+cache_dir = ".abapls/cache"
+unknown_symbol_mode = "remote"
+
+[[unit]]
+name = "ZCL_MAIN"
+kind = "global-class"
+root_file = "src/ZCL_MAIN.abap"
+
+[[unit.member]]
+role = "main"
+file = "src/ZCL_MAIN.abap"
+object_name = "ZCL_MAIN"
+"#,
+        )
+        .expect("manifest");
+
+        let main_src = "\
+CLASS zcl_main DEFINITION.\n\
+  PRIVATE SECTION.\n\
+    DATA mt_obj_itm TYPE /sttp/t_dm_obj_itm.\n\
+    METHODS run.\n\
+ENDCLASS.\n\
+\n\
+CLASS zcl_main IMPLEMENTATION.\n\
+  METHOD run.\n\
+    DATA(lt_obj_itm) = mt_obj_itm.\n\
+    DELETE lt_obj_itm WHERE uom NE 'PK'.\n\
+  ENDMETHOD.\n\
+ENDCLASS.\n";
+        fs::write(workspace_path.join("src/ZCL_MAIN.abap"), main_src).expect("main source");
+
+        let data_element_xml = r#"
+<abapsource:elementInfo adtcore:name="/sttp/e_uom"
+    xmlns:abapsource="http://www.sap.com/adt/abapsource"
+    xmlns:adtcore="http://www.sap.com/adt/core">
+</abapsource:elementInfo>
+"#;
+        fs::write(
+            workspace_path.join(
+                ".abapls/cache/dependencies/ddic-data-element/%2FSTTP%2FE_UOM.xml",
+            ),
+            data_element_xml,
+        )
+        .expect("data element xml");
+
+        let include_xml = r#"
+<abapsource:elementInfo adtcore:name="/sttp/s_dm_obj_itm"
+    xmlns:abapsource="http://www.sap.com/adt/abapsource"
+    xmlns:adtcore="http://www.sap.com/adt/core">
+  <abapsource:elementInfo adtcore:type="TABL/DTF" adtcore:name="serno">
+    <abapsource:properties>
+      <abapsource:entry abapsource:key="ddicDataElement">/sttp/e_serno</abapsource:entry>
+      <abapsource:entry abapsource:key="ddicDataType">char</abapsource:entry>
+    </abapsource:properties>
+  </abapsource:elementInfo>
+</abapsource:elementInfo>
+"#;
+        fs::write(
+            workspace_path.join(
+                ".abapls/cache/dependencies/ddic-structure/%2FSTTP%2FS_DM_OBJ_ITM.xml",
+            ),
+            include_xml,
+        )
+        .expect("include xml");
+
+        let row_xml = r#"
+<abapsource:elementInfo adtcore:name="/sttp/dm_obj_itm"
+    xmlns:abapsource="http://www.sap.com/adt/abapsource"
+    xmlns:adtcore="http://www.sap.com/adt/core">
+  <abapsource:elementInfo adtcore:type="TABL/DS" adtcore:name=".include">
+    <abapsource:properties>
+      <abapsource:entry abapsource:key="ddicIncludeName">/sttp/s_dm_obj_itm</abapsource:entry>
+    </abapsource:properties>
+  </abapsource:elementInfo>
+</abapsource:elementInfo>
+"#;
+        fs::write(
+            workspace_path.join(
+                ".abapls/cache/dependencies/ddic-table/%2FSTTP%2FDM_OBJ_ITM.xml",
+            ),
+            row_xml,
+        )
+        .expect("row xml");
+
+        let table_type_xml = r#"
+<abapsource:elementInfo adtcore:name="/sttp/t_dm_obj_itm"
+    xmlns:abapsource="http://www.sap.com/adt/abapsource"
+    xmlns:adtcore="http://www.sap.com/adt/core">
+  <abapsource:elementInfo adtcore:type="TABL/DT" adtcore:name="/sttp/dm_obj_itm">
+    <abapsource:properties>
+      <abapsource:entry abapsource:key="ddicRowType">X</abapsource:entry>
+    </abapsource:properties>
+  </abapsource:elementInfo>
+</abapsource:elementInfo>
+"#;
+        fs::write(
+            workspace_path.join(
+                ".abapls/cache/dependencies/ddic-table-type/%2FSTTP%2FT_DM_OBJ_ITM.xml",
+            ),
+            table_type_xml,
+        )
+        .expect("table type xml");
+
+        let workspace_uri = path_to_file_uri(&workspace_path);
+        let source_uri = format!("{workspace_uri}/src/ZCL_MAIN.abap");
+        let mut state = ServerState::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        refresh_workspace(&mut state, &workspace_uri);
+
+        let snapshot = snapshot_for_uri(&state, &normalize_lsp_uri(&source_uri))
+            .expect("workspace snapshot");
+        let hover_offset = main_src.rfind("uom").expect("uom use") + 1;
+        let hover_position =
+            offset_to_position(snapshot.text.as_ref(), hover_offset).expect("hover position");
+
+        let hover_result = hover(
+            &state,
+            &HoverParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str(&source_uri).expect("uri"),
+                    },
+                    position: hover_position,
+                },
+                work_done_progress_params: Default::default(),
+            },
+        )
+        .expect("hover");
+        let HoverContents::Markup(markup) = hover_result.contents else {
+            panic!("expected markdown hover");
+        };
+        assert!(
+            markup.value.contains("TYPE /sttp/e_uom"),
+            "unexpected hover: {}",
+            markup.value
+        );
+
+        let definition_result = definition(
+            &state,
+            &GotoDefinitionParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str(&source_uri).expect("uri"),
+                    },
+                    position: hover_position,
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            },
+        )
+        .expect("definition");
+        let GotoDefinitionResponse::Scalar(location) = definition_result else {
+            panic!("expected scalar location");
+        };
+        assert!(
+            location.uri.as_str().contains("E_UOM.xml"),
+            "unexpected definition uri: {:?}",
+            location.uri
+        );
     }
 
     #[test]

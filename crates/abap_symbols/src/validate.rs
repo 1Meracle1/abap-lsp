@@ -652,16 +652,18 @@ fn loop_where_scope_symbol_specs(
 ) -> Vec<(ScopeId, crate::SymbolData)> {
     let mut out = Vec::new();
     let mut next_symbol_id = unit.symbols.len() as u32;
-    let mut seen: std::collections::HashSet<(u32, Arc<str>)> = std::collections::HashSet::new();
+    let mut seen: HashSet<(u32, Arc<str>)> = HashSet::new();
 
     for context in &unit.loop_where_field_contexts {
         let mut push_fields =
             |scope: ScopeId, fields_unit: &crate::UnitAnalysis, structure_id: StructureId| {
-                for field in fields_unit
-                    .semantic()
-                    .decls()
-                    .structure_field_infos(structure_id)
-                {
+                for field in structure_field_infos_project(
+                    project,
+                    scope_indexes,
+                    fields_unit,
+                    scope,
+                    structure_id,
+                ) {
                     let name = Arc::clone(&field.name);
                     if !seen.insert((scope.0, Arc::clone(&name))) {
                         continue;
@@ -1027,6 +1029,216 @@ fn resolve_type_like_symbol_handle(
     None
 }
 
+fn derive_ddic_include_field_name(type_name: &str) -> String {
+    let tail = type_name
+        .rsplit('/')
+        .next()
+        .unwrap_or(type_name)
+        .trim()
+        .to_ascii_lowercase();
+    tail.strip_prefix("s_")
+        .or_else(|| tail.strip_prefix("t_"))
+        .unwrap_or(&tail)
+        .to_string()
+}
+
+fn field_looks_like_ddic_proxy_include(field: &crate::StructureFieldInfo) -> bool {
+    let Some(type_ref) = field.type_ref.as_ref() else {
+        return false;
+    };
+    type_ref.namespace == Namespace::Type
+        && !type_ref.is_ref
+        && type_ref.field_path.is_empty()
+        && field
+            .name
+            .as_ref()
+            .eq_ignore_ascii_case(&derive_ddic_include_field_name(type_ref.base_name.as_ref()))
+}
+
+fn structure_has_proxy_include_fields(
+    current_unit: &crate::UnitAnalysis,
+    structure_id: StructureId,
+) -> bool {
+    current_unit
+        .semantic()
+        .decls()
+        .structure_field_infos(structure_id)
+        .iter()
+        .any(field_looks_like_ddic_proxy_include)
+}
+
+fn included_structure_for_proxy_field<'a>(
+    project: &'a ProjectAnalysis,
+    scope_indexes: &[ScopeIndex],
+    current_unit: &'a crate::UnitAnalysis,
+    scope: ScopeId,
+    field: &crate::StructureFieldInfo,
+) -> Option<(&'a crate::UnitAnalysis, StructureId)> {
+    let type_ref = field.type_ref.as_ref()?;
+    let lookup_scope = if current_unit.scopes.get(scope.as_usize()).is_some() {
+        scope
+    } else {
+        current_unit.root_scope
+    };
+    let handle = resolve_type_like_symbol_handle(
+        project,
+        current_unit,
+        scope_indexes,
+        lookup_scope,
+        type_ref,
+    )?;
+    let resolved_unit = &project.units[handle.unit.as_usize()];
+    resolve_symbol_structure_project(
+        project,
+        resolved_unit,
+        scope_indexes,
+        lookup_scope,
+        handle.symbol,
+    )
+}
+
+fn resolve_structure_field_info_project<'a>(
+    project: &'a ProjectAnalysis,
+    scope_indexes: &[ScopeIndex],
+    current_unit: &'a crate::UnitAnalysis,
+    scope: ScopeId,
+    structure_id: StructureId,
+    field_name: &str,
+) -> Option<crate::StructureFieldInfo> {
+    fn inner<'a>(
+        project: &'a ProjectAnalysis,
+        scope_indexes: &[ScopeIndex],
+        current_unit: &'a crate::UnitAnalysis,
+        scope: ScopeId,
+        structure_id: StructureId,
+        field_name: &str,
+        seen: &mut HashSet<(u32, u32)>,
+    ) -> Option<crate::StructureFieldInfo> {
+        if !seen.insert((current_unit.unit_id.0, structure_id.0)) {
+            return None;
+        }
+        if let Some(field) = current_unit
+            .semantic()
+            .decls()
+            .structure_field_info(structure_id, field_name)
+        {
+            return Some(field);
+        }
+        for field in current_unit.semantic().decls().structure_field_infos(structure_id) {
+            if !field_looks_like_ddic_proxy_include(&field) {
+                continue;
+            }
+            let Some((included_unit, included_structure)) = included_structure_for_proxy_field(
+                project,
+                scope_indexes,
+                current_unit,
+                scope,
+                &field,
+            ) else {
+                continue;
+            };
+            let nested_scope = if included_unit.scopes.get(scope.as_usize()).is_some() {
+                scope
+            } else {
+                included_unit.root_scope
+            };
+            if let Some(info) = inner(
+                project,
+                scope_indexes,
+                included_unit,
+                nested_scope,
+                included_structure,
+                field_name,
+                seen,
+            ) {
+                return Some(info);
+            }
+        }
+        None
+    }
+
+    let mut seen = HashSet::new();
+    inner(
+        project,
+        scope_indexes,
+        current_unit,
+        scope,
+        structure_id,
+        field_name,
+        &mut seen,
+    )
+}
+
+fn structure_field_infos_project(
+    project: &ProjectAnalysis,
+    scope_indexes: &[ScopeIndex],
+    current_unit: &crate::UnitAnalysis,
+    scope: ScopeId,
+    structure_id: StructureId,
+) -> Vec<crate::StructureFieldInfo> {
+    fn collect(
+        project: &ProjectAnalysis,
+        scope_indexes: &[ScopeIndex],
+        current_unit: &crate::UnitAnalysis,
+        scope: ScopeId,
+        structure_id: StructureId,
+        seen_structures: &mut HashSet<(u32, u32)>,
+        seen_fields: &mut HashSet<Arc<str>>,
+        out: &mut Vec<crate::StructureFieldInfo>,
+    ) {
+        if !seen_structures.insert((current_unit.unit_id.0, structure_id.0)) {
+            return;
+        }
+        for field in current_unit.semantic().decls().structure_field_infos(structure_id) {
+            if seen_fields.insert(Arc::clone(&field.name)) {
+                out.push(field.clone());
+            }
+            if !field_looks_like_ddic_proxy_include(&field) {
+                continue;
+            }
+            let Some((included_unit, included_structure)) = included_structure_for_proxy_field(
+                project,
+                scope_indexes,
+                current_unit,
+                scope,
+                &field,
+            ) else {
+                continue;
+            };
+            let nested_scope = if included_unit.scopes.get(scope.as_usize()).is_some() {
+                scope
+            } else {
+                included_unit.root_scope
+            };
+            collect(
+                project,
+                scope_indexes,
+                included_unit,
+                nested_scope,
+                included_structure,
+                seen_structures,
+                seen_fields,
+                out,
+            );
+        }
+    }
+
+    let mut out = Vec::new();
+    let mut seen_structures = HashSet::new();
+    let mut seen_fields = HashSet::new();
+    collect(
+        project,
+        scope_indexes,
+        current_unit,
+        scope,
+        structure_id,
+        &mut seen_structures,
+        &mut seen_fields,
+        &mut out,
+    );
+    out
+}
+
 fn resolve_symbol_structure_project<'a>(
     project: &'a ProjectAnalysis,
     unit: &'a crate::UnitAnalysis,
@@ -1086,10 +1298,14 @@ fn resolve_loop_where_source_structure<'a>(
         if segment.is_deref() {
             return None;
         }
-        let field = current_unit
-            .semantic()
-            .decls()
-            .structure_field_info(current_structure, segment.name.as_ref())?;
+        let field = resolve_structure_field_info_project(
+            project,
+            scope_indexes,
+            current_unit,
+            context.scope,
+            current_structure,
+            segment.name.as_ref(),
+        )?;
         if idx + 1 == context.source_access.field_path.len() {
             if let Some(type_ref) = field.type_ref.as_ref() {
                 let handle = resolve_type_like_symbol_handle(
@@ -1145,10 +1361,14 @@ fn resolve_field_access_structure<'a>(
         if segment.is_deref() {
             return None;
         }
-        let field = current_unit
-            .semantic()
-            .decls()
-            .structure_field_info(current_structure, segment.name.as_ref())?;
+        let field = resolve_structure_field_info_project(
+            project,
+            scope_indexes,
+            current_unit,
+            access.scope,
+            current_structure,
+            segment.name.as_ref(),
+        )?;
         current_structure = match field.shape {
             StructureFieldShape::Structured { structure } => structure,
             StructureFieldShape::Scalar => return None,
@@ -1174,11 +1394,16 @@ fn loop_where_reference_matches_source_field(
                 let source_matches =
                     resolve_loop_where_source_structure(project, unit, scope_indexes, context)
                         .is_some_and(|(structure_unit, structure_id)| {
-                            structure_unit
-                                .semantic()
-                                .decls()
-                                .structure_field_info(structure_id, reference.name.as_ref())
-                                .is_some()
+                            resolve_structure_field_info_project(
+                                project,
+                                scope_indexes,
+                                structure_unit,
+                                context.scope,
+                                structure_id,
+                                reference.name.as_ref(),
+                            )
+                            .is_some()
+                                || structure_has_proxy_include_fields(structure_unit, structure_id)
                         });
                 source_matches
                     || context
@@ -1188,11 +1413,16 @@ fn loop_where_reference_matches_source_field(
                             resolve_field_access_structure(project, unit, scope_indexes, access)
                         })
                         .is_some_and(|(structure_unit, structure_id)| {
-                            structure_unit
-                                .semantic()
-                                .decls()
-                                .structure_field_info(structure_id, reference.name.as_ref())
-                                .is_some()
+                            resolve_structure_field_info_project(
+                                project,
+                                scope_indexes,
+                                structure_unit,
+                                context.scope,
+                                structure_id,
+                                reference.name.as_ref(),
+                            )
+                            .is_some()
+                                || structure_has_proxy_include_fields(structure_unit, structure_id)
                         })
             }
     })
@@ -1823,12 +2053,17 @@ pub(crate) fn validate_project_with_scope_indexes(
                 let Some(current_structure_id) = structure_id else {
                     break;
                 };
-                let structure = unit.structure(current_structure_id);
-                let Some(field) = structure
-                    .fields
-                    .iter()
-                    .find(|field| field.name.as_ref() == step.name.as_ref())
-                else {
+                let Some(field) = resolve_structure_field_info_project(
+                    project,
+                    scope_indexes,
+                    unit,
+                    access.scope,
+                    current_structure_id,
+                    step.name.as_ref(),
+                ) else {
+                    if structure_has_proxy_include_fields(unit, current_structure_id) {
+                        break;
+                    }
                     unit_diagnostics.push(Diagnostic {
                         kind: DiagnosticKind::UnknownField,
                         range: step.range.clone(),
@@ -1842,7 +2077,10 @@ pub(crate) fn validate_project_with_scope_indexes(
 
                 qualifier.push('-');
                 qualifier.push_str(field.name.as_ref());
-                structure_id = field.structure;
+                structure_id = match field.shape {
+                    StructureFieldShape::Structured { structure } => Some(structure),
+                    StructureFieldShape::Scalar => None,
+                };
                 declared_type = field.type_ref.clone();
             }
         }
