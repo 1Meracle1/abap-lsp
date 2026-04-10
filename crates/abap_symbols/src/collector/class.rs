@@ -1,12 +1,14 @@
 use std::sync::Arc;
 
 use abap_ast::arena::NodeId;
-use abap_ast::ast::{AstNode, MethodsStmt, MethodsStmtKind, MethodsTypeClauseKind};
+use abap_ast::ast::{
+    AstNode, MethodsParamSectionKind, MethodsStmt, MethodsStmtKind, MethodsTypeClauseKind,
+};
 use abap_lexer::TextRange;
 
 use crate::def_map::{
-    ClassMemberData, ClassMemberKind, ClassMemberParameterData, FieldTypeRefData, ReferenceKind,
-    SymbolKind, Visibility,
+    ClassMemberData, ClassMemberKind, ClassMemberParameterData, FieldTypeRefData,
+    MethodParameterSection, ReferenceKind, SymbolKind, Visibility,
 };
 use crate::ids::{ScopeId, StructureId, SymbolId};
 use crate::scope::{Namespace, ScopeKind};
@@ -15,6 +17,16 @@ use super::emit::ClassSink;
 use super::{
     Collector, PendingMethodParameter, PendingMethodSignature, PendingStructure, SyntaxTokenInfo,
 };
+
+fn method_parameter_section(section: MethodsParamSectionKind) -> MethodParameterSection {
+    match section {
+        MethodsParamSectionKind::Importing => MethodParameterSection::Importing,
+        MethodsParamSectionKind::Exporting => MethodParameterSection::Exporting,
+        MethodsParamSectionKind::Changing => MethodParameterSection::Changing,
+        MethodsParamSectionKind::Receiving => MethodParameterSection::Receiving,
+        MethodsParamSectionKind::Returning => MethodParameterSection::Returning,
+    }
+}
 
 pub(super) struct ClassLowering<'ctx, 'a> {
     collector: &'ctx mut Collector<'a>,
@@ -677,9 +689,12 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
             .parameters
             .iter()
             .map(|param| ClassMemberParameterData {
+                section: method_parameter_section(param.section),
                 name: Arc::clone(&param.name),
                 range: param.range.clone(),
                 declared_type: param.declared_type.clone(),
+                type_clause_display: param.type_clause_display.clone(),
+                is_optional: param.is_optional,
             })
             .collect()
     }
@@ -767,12 +782,18 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
                     .to_ascii_lowercase(),
             );
             signature.parameters.push(PendingMethodParameter {
+                section: param.section(),
                 name,
                 range: param.name_token().range(),
                 declared_type: param.type_ref().and_then(|type_ref| {
                     self.collector
                         .field_type_ref_from_node(type_ref.syntax().id(), clause_ns)
                 }),
+                type_clause_display: param
+                    .type_ref()
+                    .and_then(|type_ref| type_ref.display_text(self.collector.source))
+                    .map(Arc::from),
+                is_optional: param.is_optional(),
             });
         }
         signature
@@ -801,7 +822,7 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
                 param.range,
                 None,
                 param.declared_type,
-                None,
+                param.type_clause_display,
                 None,
             );
         }
@@ -826,7 +847,7 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
                 param.range.clone(),
                 None,
                 param.declared_type.clone(),
-                None,
+                param.type_clause_display.clone(),
                 None,
             );
         }

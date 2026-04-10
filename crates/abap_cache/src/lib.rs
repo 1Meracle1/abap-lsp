@@ -5133,7 +5133,7 @@ mod tests {
         DefinitionTarget, DocumentInput, DocumentStore, HoveredComponentKind, ReferenceTarget,
         ddic_xml_to_abap_source, dependency_surface_text,
     };
-    use abap_symbols::{ReferenceKind, StructureFieldShape};
+    use abap_symbols::{DiagnosticKind, ReferenceKind, StructureFieldShape};
     use std::sync::Arc;
 
     fn assert_target_slice(target: &DefinitionTarget, uri: &str, text: &str, expected: &str) {
@@ -5338,6 +5338,59 @@ ENDCLASS.",
         assert!(Arc::ptr_eq(&first.symbols, &second.symbols));
         assert!(Arc::ptr_eq(&first.project, &second.project));
         assert_eq!(store.get("file:///demo.abap").unwrap().version, 2);
+    }
+
+    #[test]
+    fn reuses_cross_document_type_validation_for_unchanged_publish() {
+        let store = DocumentStore::default();
+        let dep_src = "\
+CLASS zcl_dep DEFINITION.
+  PUBLIC SECTION.
+    METHODS take IMPORTING it_values TYPE STANDARD TABLE OF i WITH EMPTY KEY.
+ENDCLASS.
+
+CLASS zcl_dep IMPLEMENTATION.
+  METHOD take.
+  ENDMETHOD.
+ENDCLASS.";
+        let main_src = "\
+DATA lo_dep TYPE REF TO zcl_dep.
+DATA lv_value TYPE i.
+
+START-OF-SELECTION.
+  lo_dep->take( it_values = lv_value ).";
+        let snapshots = store.replace_all(vec![
+            DocumentInput {
+                uri: Arc::from("file:///dep.abap"),
+                version: 1,
+                text: Arc::from(dep_src),
+                is_dependency: false,
+                object_name: None,
+            },
+            DocumentInput {
+                uri: Arc::from("file:///main.abap"),
+                version: 1,
+                text: Arc::from(main_src),
+                is_dependency: false,
+                object_name: None,
+            },
+        ]);
+        let first = Arc::clone(snapshots.get("file:///main.abap").expect("main snapshot"));
+
+        assert!(first.symbols.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::IncompatibleArgumentType
+                && diag.message.contains("it_values")
+        }));
+
+        let second = store.publish("file:///main.abap", 2, main_src);
+        assert_eq!(second.version, 2);
+        assert!(Arc::ptr_eq(&first.parse, &second.parse));
+        assert!(Arc::ptr_eq(&first.symbols, &second.symbols));
+        assert!(Arc::ptr_eq(&first.project, &second.project));
+        assert!(second.symbols.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::IncompatibleArgumentType
+                && diag.message.contains("it_values")
+        }));
     }
 
     #[test]

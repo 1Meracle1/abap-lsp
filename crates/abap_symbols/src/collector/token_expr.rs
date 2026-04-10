@@ -88,9 +88,10 @@ impl<'a> Collector<'a> {
                         continue;
                     }
                     if self.token_starts_bare_routine_call(tokens, idx) {
+                        let routine_name = Self::lower_arc(text);
                         self.add_reference(
                             scope,
-                            Self::lower_arc(text),
+                            Arc::clone(&routine_name),
                             Namespace::Routine,
                             ReferenceKind::RoutineCall,
                             token.range.clone(),
@@ -99,18 +100,17 @@ impl<'a> Collector<'a> {
                             self.find_matching_group_end_infos(tokens, idx + 1, "(", ")")
                         {
                             let target = if crate::builtins::builtin_routine_spec(text).is_some() {
-                                NamedArgumentTarget::Routine {
-                                    routine_name: Self::lower_arc(text),
-                                }
+                                NamedArgumentTarget::Routine { routine_name }
                             } else {
                                 NamedArgumentTarget::ImplicitMethod {
-                                    method_name: Self::lower_arc(text),
+                                    method_name: routine_name,
                                 }
                             };
-                            self.expr_lowering().collect_named_arguments_from_infos(
+                            self.expr_lowering().collect_call_arguments_from_infos(
                                 &tokens[idx + 2..end_idx],
                                 scope,
                                 target,
+                                token.range.start..tokens[end_idx].range.end,
                             );
                             idx = end_idx + 1;
                             continue;
@@ -145,7 +145,13 @@ impl<'a> Collector<'a> {
                         } else {
                             ReferenceKind::Identifier
                         };
-                        self.add_reference(scope, base_name.clone(), namespace, kind, base_range);
+                        self.add_reference(
+                            scope,
+                            base_name.clone(),
+                            namespace,
+                            kind,
+                            base_range.clone(),
+                        );
                         if !field_path.is_empty() {
                             self.emit_field_access(FieldAccess {
                                 scope,
@@ -161,7 +167,7 @@ impl<'a> Collector<'a> {
                                 self.find_matching_group_end_infos(tokens, idx, "(", ")")
                         {
                             if let Some(method_name) = method_name {
-                                self.expr_lowering().collect_named_arguments_from_infos(
+                                self.expr_lowering().collect_call_arguments_from_infos(
                                     &tokens[idx + 1..end_idx],
                                     scope,
                                     NamedArgumentTarget::Method {
@@ -169,6 +175,7 @@ impl<'a> Collector<'a> {
                                         base_name: Arc::clone(&base_name),
                                         method_name,
                                     },
+                                    base_range.start..tokens[end_idx].range.end,
                                 );
                             } else {
                                 self.collect_token_expression_refs_infos(
@@ -353,10 +360,11 @@ impl<'a> Collector<'a> {
             if let Some((name, _)) =
                 self.simple_type_ref_base_from_infos(&tokens[cursor..lparen_idx])
             {
-                self.expr_lowering().collect_named_arguments_from_infos(
+                self.expr_lowering().collect_call_arguments_from_infos(
                     &tokens[lparen_idx + 1..rparen_idx],
                     scope,
                     NamedArgumentTarget::Constructor { type_name: name },
+                    tokens[idx].range.start..tokens[rparen_idx].range.end,
                 );
             } else {
                 self.collect_token_expression_refs_infos(

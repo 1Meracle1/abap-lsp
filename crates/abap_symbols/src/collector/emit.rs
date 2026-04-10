@@ -1,7 +1,7 @@
 use crate::def_map::{
-    ClassMemberData, FieldAccess, FormRoutineData, NamedArgumentAccess, PerformCallData,
-    SqlNameRefData, SqlPredicateData, SqlProjectionData, SqlQueryData, SqlSourceData,
-    SqlTargetData,
+    AssignmentSiteData, CallSiteData, ClassMemberData, FieldAccess, FormRoutineData,
+    NamedArgumentAccess, PerformCallData, SqlNameRefData, SqlPredicateData, SqlProjectionData,
+    SqlQueryData, SqlSourceData, SqlTargetData,
 };
 
 use super::Collector;
@@ -9,6 +9,8 @@ use super::Collector;
 pub(super) trait RefSink {
     fn emit_field_access(&mut self, access: FieldAccess);
     fn emit_named_argument(&mut self, access: NamedArgumentAccess);
+    fn emit_call_site(&mut self, site: CallSiteData);
+    fn emit_assignment_site(&mut self, site: AssignmentSiteData);
 }
 
 pub(super) trait ClassSink {
@@ -36,6 +38,14 @@ impl<'a> RefSink for Collector<'a> {
 
     fn emit_named_argument(&mut self, access: NamedArgumentAccess) {
         self.named_arguments.push(access);
+    }
+
+    fn emit_call_site(&mut self, site: CallSiteData) {
+        self.call_sites.push(site);
+    }
+
+    fn emit_assignment_site(&mut self, site: AssignmentSiteData) {
+        self.assignment_sites.push(site);
     }
 }
 

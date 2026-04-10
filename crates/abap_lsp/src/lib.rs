@@ -856,6 +856,9 @@ fn semantic_diagnostic_severity(kind: DiagnosticKind) -> DiagnosticSeverity {
         DiagnosticKind::DuplicateDeclaration | DiagnosticKind::ShadowedSymbol => {
             DiagnosticSeverity::WARNING
         }
+        DiagnosticKind::IncompatibleAssignmentType | DiagnosticKind::IncompatibleArgumentType => {
+            DiagnosticSeverity::WARNING
+        }
         DiagnosticKind::UnverifiedOpenSqlSource => DiagnosticSeverity::ERROR,
         DiagnosticKind::UnresolvedReference
         | DiagnosticKind::UnresolvedInclude
@@ -865,6 +868,9 @@ fn semantic_diagnostic_severity(kind: DiagnosticKind) -> DiagnosticSeverity {
         | DiagnosticKind::InvalidBuiltinNamedArgument
         | DiagnosticKind::InvalidPerformCall
         | DiagnosticKind::MissingSuperConstructorCall
+        | DiagnosticKind::UnknownNamedParameter
+        | DiagnosticKind::DuplicateNamedParameter
+        | DiagnosticKind::MissingRequiredParameter
         | DiagnosticKind::InvalidOpenSqlIntoTarget => DiagnosticSeverity::ERROR,
     }
 }
@@ -6459,5 +6465,182 @@ rv_text = |value: { lo_expr->to_ }|.";
                 .iter()
                 .all(|item| item.kind == Some(lsp_types::CompletionItemKind::METHOD))
         );
+    }
+
+    #[test]
+    fn call_validation_diagnostics_use_warning_and_error_severities() {
+        let state = ServerState::default();
+        let text = "\
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run IMPORTING iv_req TYPE i.
+    METHODS take_table IMPORTING it_values TYPE STANDARD TABLE OF i WITH EMPTY KEY.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+  ENDMETHOD.
+  METHOD take_table.
+  ENDMETHOD.
+ENDCLASS.
+
+DATA lo_demo TYPE REF TO lcl_demo.
+DATA lv_text TYPE string.
+
+START-OF-SELECTION.
+  lo_demo->run(
+    iv_req = 1
+    iv_req = 2 ).
+  lo_demo->run( iv_missing = 1 ).
+  lo_demo->run( ).
+  lo_demo->take_table( it_values = lv_text ).";
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///call_diag_severity.abap").expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: text.to_string(),
+                },
+            },
+        );
+
+        let snapshot = state
+            .cache
+            .get("file:///call_diag_severity.abap")
+            .expect("snapshot");
+        let diagnostics = build_lsp_diagnostics(snapshot.as_ref());
+
+        assert!(diagnostics.iter().any(|diag| {
+            diag.message.contains("duplicate named parameter 'iv_req'")
+                && diag.severity == Some(DiagnosticSeverity::ERROR)
+        }));
+        assert!(diagnostics.iter().any(|diag| {
+            diag.message
+                .contains("unknown named parameter 'iv_missing'")
+                && diag.severity == Some(DiagnosticSeverity::ERROR)
+        }));
+        assert!(diagnostics.iter().any(|diag| {
+            diag.message.contains("missing required parameter 'iv_req'")
+                && diag.severity == Some(DiagnosticSeverity::ERROR)
+        }));
+        assert!(diagnostics.iter().any(|diag| {
+            diag.message.contains("it_values") && diag.severity == Some(DiagnosticSeverity::WARNING)
+        }));
+    }
+
+    #[test]
+    fn method_navigation_and_completion_survive_call_validation() {
+        let state = ServerState::default();
+        let text = "\
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run IMPORTING iv_req TYPE i.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+  ENDMETHOD.
+ENDCLASS.
+
+DATA lo_demo TYPE REF TO lcl_demo.
+DATA lv_value TYPE i.
+
+START-OF-SELECTION.
+  lo_demo->run( iv_req = lv_value ).
+  lo_demo->ru";
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///call_nav_completion.abap").expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: text.to_string(),
+                },
+            },
+        );
+
+        let call_line = text
+            .lines()
+            .enumerate()
+            .find(|(_, line)| line.contains("lo_demo->run("))
+            .expect("call line");
+        let call_character = call_line.1.find("run").expect("run column") as u32 + 1;
+
+        let hover = hover(
+            &state,
+            &HoverParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///call_nav_completion.abap").expect("uri"),
+                    },
+                    position: Position {
+                        line: call_line.0 as u32,
+                        character: call_character,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+            },
+        )
+        .expect("hover");
+        let HoverContents::Markup(markup) = hover.contents else {
+            panic!("expected markdown hover");
+        };
+        assert!(markup.value.contains("METHODS run"));
+
+        let definition_result = definition(
+            &state,
+            &GotoDefinitionParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///call_nav_completion.abap").expect("uri"),
+                    },
+                    position: Position {
+                        line: call_line.0 as u32,
+                        character: call_character,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            },
+        )
+        .expect("definition");
+        let GotoDefinitionResponse::Scalar(location) = definition_result else {
+            panic!("expected scalar location");
+        };
+        assert_eq!(location.range.start.line, 2);
+        assert_eq!(location.range.start.character, 12);
+
+        let completion_line = text
+            .lines()
+            .enumerate()
+            .find(|(_, line)| line.contains("lo_demo->ru"))
+            .expect("completion line");
+        let completion_character =
+            completion_line.1.find("ru").expect("completion column") as u32 + 2;
+        let completion = completion(
+            &state,
+            &CompletionParams {
+                text_document_position: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///call_nav_completion.abap").expect("uri"),
+                    },
+                    position: Position {
+                        line: completion_line.0 as u32,
+                        character: completion_character,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+                context: None,
+            },
+        )
+        .expect("completion");
+        let CompletionResponse::Array(items) = completion else {
+            panic!("expected array completion");
+        };
+        assert!(items.iter().any(|item| item.label == "run"));
     }
 }

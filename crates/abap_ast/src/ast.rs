@@ -43,6 +43,7 @@ pub struct MethodsStmtParameter<'a> {
     name: SyntaxNodeRef<'a>,
     type_clause: MethodsTypeClauseKind,
     type_ref: Option<TypeRefSimple<'a>>,
+    is_optional: bool,
 }
 
 impl<'a> MethodsStmtParameter<'a> {
@@ -60,6 +61,10 @@ impl<'a> MethodsStmtParameter<'a> {
 
     pub fn type_ref(self) -> Option<TypeRefSimple<'a>> {
         self.type_ref
+    }
+
+    pub fn is_optional(self) -> bool {
+        self.is_optional
     }
 }
 
@@ -806,12 +811,17 @@ impl<'a> MethodsStmt<'a> {
 
         let type_ref = items.get(j).copied().and_then(TypeRefSimple::cast);
         let next_idx = self.skip_type_expression(items, j, source);
+        let is_optional = items.get(next_idx).is_some_and(|item| {
+            Self::token_text_is(*item, source, "optional")
+                || Self::token_text_is(*item, source, "default")
+        });
         Some((
             MethodsStmtParameter {
                 section,
                 name,
                 type_clause,
                 type_ref,
+                is_optional,
             },
             next_idx,
         ))

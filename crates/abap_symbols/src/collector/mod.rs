@@ -15,16 +15,18 @@ mod traverse;
 use std::sync::Arc;
 
 use abap_ast::arena::NodeId;
-use abap_ast::ast::{AstNode, CallArgList, DeclClause, TypeClauseKind, TypeRefSimple};
+use abap_ast::ast::{
+    AstNode, CallArgList, DeclClause, MethodsParamSectionKind, TypeClauseKind, TypeRefSimple,
+};
 use abap_ast::{File, SyntaxKind};
 use abap_lexer::{TextRange, Token, TokenKind};
 
 use crate::def_map::{
-    ClassInheritanceData, ClassMemberData, Diagnostic, FieldAccess, FieldTypeRefData,
-    FormRoutineData, ImplementedInterfaceData, IncludeEdge, LoopWhereFieldContext, MemberAliasData,
-    NamedArgumentAccess, PerformCallData, ReferenceData, SqlNameRefData, SqlPredicateData,
-    SqlProjectionData, SqlQueryData, SqlSourceData, SqlTargetData, StructureData, SymbolData,
-    UnitAnalysis,
+    AssignmentSiteData, CallSiteData, ClassInheritanceData, ClassMemberData, Diagnostic,
+    FieldAccess, FieldTypeRefData, FormRoutineData, ImplementedInterfaceData, IncludeEdge,
+    LoopWhereFieldContext, MemberAliasData, NamedArgumentAccess, PerformCallData, ReferenceData,
+    SqlNameRefData, SqlPredicateData, SqlProjectionData, SqlQueryData, SqlSourceData,
+    SqlTargetData, StructureData, SymbolData, UnitAnalysis,
 };
 use crate::ids::{ScopeId, StructureId, SymbolId, UnitId};
 use crate::scope::{Namespace, ScopeData, ScopeKind};
@@ -59,9 +61,12 @@ struct PendingStructure {
 
 #[derive(Debug, Clone)]
 struct PendingMethodParameter {
+    section: MethodsParamSectionKind,
     name: Arc<str>,
     range: TextRange,
     declared_type: Option<FieldTypeRefData>,
+    type_clause_display: Option<Arc<str>>,
+    is_optional: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -104,6 +109,8 @@ pub struct Collector<'a> {
     member_aliases: Vec<MemberAliasData>,
     form_routines: Vec<FormRoutineData>,
     named_arguments: Vec<NamedArgumentAccess>,
+    call_sites: Vec<CallSiteData>,
+    assignment_sites: Vec<AssignmentSiteData>,
     perform_calls: Vec<PerformCallData>,
     sql_queries: Vec<SqlQueryData>,
     sql_sources: Vec<SqlSourceData>,
@@ -149,6 +156,8 @@ impl<'a> Collector<'a> {
             member_aliases: Vec::new(),
             form_routines: Vec::new(),
             named_arguments: Vec::new(),
+            call_sites: Vec::new(),
+            assignment_sites: Vec::new(),
             perform_calls: Vec::new(),
             sql_queries: Vec::new(),
             sql_sources: Vec::new(),
@@ -198,6 +207,8 @@ impl<'a> Collector<'a> {
             member_aliases: self.member_aliases,
             form_routines: self.form_routines,
             named_arguments: self.named_arguments,
+            call_sites: self.call_sites,
+            assignment_sites: self.assignment_sites,
             perform_calls: self.perform_calls,
             sql_queries: self.sql_queries,
             sql_sources: self.sql_sources,

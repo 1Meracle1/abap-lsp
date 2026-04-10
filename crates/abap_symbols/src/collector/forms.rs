@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use abap_ast::SyntaxKind;
 use abap_ast::arena::NodeId;
+use abap_ast::ast::AstNode;
 
 use crate::def_map::{
     FormParameterData, FormParameterPassingKind, FormParameterSection, PerformArgumentData,
@@ -206,7 +207,18 @@ impl<'ctx, 'a> FormsLowering<'ctx, 'a> {
                                     range,
                                     None,
                                     declared_type,
-                                    None,
+                                    type_ref_nodes
+                                        .get(type_ref_idx.saturating_sub(1))
+                                        .copied()
+                                        .and_then(|node| {
+                                            abap_ast::ast::TypeRefSimple::cast(
+                                                self.collector.syntax(node),
+                                            )
+                                        })
+                                        .and_then(|type_ref| {
+                                            type_ref.display_text(self.collector.source)
+                                        })
+                                        .map(Arc::from),
                                     None,
                                 );
                                 parameters.push(FormParameterData {
@@ -379,7 +391,10 @@ impl<'ctx, 'a> FormsLowering<'ctx, 'a> {
             range,
             None,
             declared_type,
-            None,
+            type_ref_node
+                .and_then(|node| abap_ast::ast::TypeRefSimple::cast(self.collector.syntax(node)))
+                .and_then(|type_ref| type_ref.display_text(self.collector.source))
+                .map(Arc::from),
             None,
         );
         Some(FormConsumedParameter {

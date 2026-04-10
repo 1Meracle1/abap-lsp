@@ -278,6 +278,11 @@ pub enum DiagnosticKind {
     InvalidBuiltinNamedArgument,
     InvalidPerformCall,
     MissingSuperConstructorCall,
+    IncompatibleAssignmentType,
+    IncompatibleArgumentType,
+    UnknownNamedParameter,
+    DuplicateNamedParameter,
+    MissingRequiredParameter,
     /// Open SQL `FROM` / join source not confirmed against SAP DDIC/repository (no backend lookup).
     UnverifiedOpenSqlSource,
     /// `INTO` / `APPENDING` target is incompatible with the clause (for example `INTO TABLE` on a non-table variable).
@@ -335,6 +340,13 @@ pub struct FieldTypeRefData {
     pub field_path: Vec<Arc<str>>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct TypeFactData {
+    pub structure: Option<StructureId>,
+    pub declared_type: Option<FieldTypeRefData>,
+    pub type_clause_display: Option<Arc<str>>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StructureFieldData {
     pub name: Arc<str>,
@@ -374,9 +386,21 @@ pub struct StructureData {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClassMemberParameterData {
+    pub section: MethodParameterSection,
     pub name: Arc<str>,
     pub range: TextRange,
     pub declared_type: Option<FieldTypeRefData>,
+    pub type_clause_display: Option<Arc<str>>,
+    pub is_optional: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MethodParameterSection {
+    Importing,
+    Exporting,
+    Changing,
+    Receiving,
+    Returning,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -483,6 +507,33 @@ pub struct NamedArgumentAccess {
     pub target: NamedArgumentTarget,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallArgumentData {
+    pub range: TextRange,
+    pub name: Option<Arc<str>>,
+    pub section: Option<NamedArgumentSection>,
+    pub ordinal: usize,
+    pub type_fact: TypeFactData,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallSiteData {
+    pub scope: ScopeId,
+    pub range: TextRange,
+    pub target: NamedArgumentTarget,
+    pub arguments: Vec<CallArgumentData>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AssignmentSiteData {
+    pub scope: ScopeId,
+    pub range: TextRange,
+    pub lhs_range: TextRange,
+    pub rhs_range: TextRange,
+    pub lhs: TypeFactData,
+    pub rhs: TypeFactData,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PerformParameterSection {
     Tables,
@@ -527,6 +578,8 @@ pub struct UnitAnalysis {
     pub member_aliases: Vec<MemberAliasData>,
     pub form_routines: Vec<FormRoutineData>,
     pub named_arguments: Vec<NamedArgumentAccess>,
+    pub call_sites: Vec<CallSiteData>,
+    pub assignment_sites: Vec<AssignmentSiteData>,
     pub perform_calls: Vec<PerformCallData>,
     pub sql_queries: Vec<SqlQueryData>,
     pub sql_sources: Vec<SqlSourceData>,

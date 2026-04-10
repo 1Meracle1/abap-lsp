@@ -3,9 +3,10 @@ use abap_ast::arena::NodeId;
 use abap_ast::ast::SyntaxNodeRef;
 
 use crate::def_map::{
-    FieldAccess, FieldTypeRefData, FormRoutineData, IncludeEdge, NamedArgumentAccess,
-    NamedArgumentSection, NamedArgumentTarget, ReferenceKind, SqlNameRefData, SqlPredicateData,
-    SqlProjectionData, SqlQueryData, SqlSourceData, SqlTargetData, StructureFieldData, SymbolKind,
+    AssignmentSiteData, CallSiteData, FieldAccess, FieldTypeRefData, FormRoutineData, IncludeEdge,
+    NamedArgumentAccess, NamedArgumentSection, NamedArgumentTarget, ReferenceKind, SqlNameRefData,
+    SqlPredicateData, SqlProjectionData, SqlQueryData, SqlSourceData, SqlTargetData,
+    StructureFieldData, SymbolKind,
 };
 use crate::ids::{ScopeId, StructureId};
 use crate::scope::Namespace;
@@ -94,6 +95,10 @@ impl<'ctx, 'a> ExprContext<'ctx, 'a> {
         self.collector.syntax_token_is_ident_like(token)
     }
 
+    pub(super) fn syntax_token_is_literal_like(&self, token: &SyntaxTokenInfo) -> bool {
+        self.collector.syntax_token_is_literal_like(token)
+    }
+
     pub(super) fn named_argument_section_from_text(
         &self,
         text: &str,
@@ -117,6 +122,14 @@ impl<'ctx, 'a> ExprContext<'ctx, 'a> {
 
     pub(super) fn emit_field_access(&mut self, access: FieldAccess) {
         self.collector.emit_field_access(access);
+    }
+
+    pub(super) fn emit_call_site(&mut self, site: CallSiteData) {
+        self.collector.emit_call_site(site);
+    }
+
+    pub(super) fn emit_assignment_site(&mut self, site: AssignmentSiteData) {
+        self.collector.emit_assignment_site(site);
     }
 
     pub(super) fn declare_inline_named_argument_target_infos(
@@ -214,6 +227,13 @@ impl<'ctx, 'a> ExprContext<'ctx, 'a> {
             .consume_selector_access_from_infos(tokens, idx)
     }
 
+    pub(super) fn simple_type_ref_base_from_infos(
+        &self,
+        tokens: &[SyntaxTokenInfo],
+    ) -> Option<(std::sync::Arc<str>, abap_lexer::TextRange)> {
+        self.collector.simple_type_ref_base_from_infos(tokens)
+    }
+
     pub(super) fn lookup_symbol_in_scope_chain(
         &self,
         scope: ScopeId,
@@ -231,8 +251,31 @@ impl<'ctx, 'a> ExprContext<'ctx, 'a> {
         self.collector.symbol(symbol_id).declared_type.clone()
     }
 
+    pub(super) fn symbol_type_clause_display(
+        &self,
+        symbol_id: crate::ids::SymbolId,
+    ) -> Option<std::sync::Arc<str>> {
+        self.collector.symbol(symbol_id).type_clause_display.clone()
+    }
+
     pub(super) fn symbol_structure(&self, symbol_id: crate::ids::SymbolId) -> Option<StructureId> {
         self.collector.symbol(symbol_id).structure
+    }
+
+    pub(super) fn structure_field(
+        &self,
+        structure_id: StructureId,
+        name: &str,
+    ) -> Option<StructureFieldData> {
+        self.collector
+            .structure(structure_id)
+            .and_then(|structure| {
+                structure
+                    .fields
+                    .iter()
+                    .find(|field| field.name.as_ref() == name)
+            })
+            .cloned()
     }
 
     pub(super) fn named_argument_target_for_callee(

@@ -1407,7 +1407,11 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             self.collector
                 .expr_lowering()
                 .collect_call_argument_list(arg_list, scope, target);
+            return;
         }
+
+        let significant = self.collector.significant_stmt_token_infos(node);
+        self.collect_call_method_stmt_infos(&significant, scope);
     }
 
     pub(super) fn collect_call_stmt(&mut self, node: NodeId, scope: ScopeId) {
@@ -1443,7 +1447,113 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             }
             return;
         }
+        let significant = self.collector.significant_stmt_token_infos(node);
+        if significant.len() >= 3
+            && significant[0].text.eq_ignore_ascii_case("call")
+            && significant[1].text.eq_ignore_ascii_case("function")
+            && let Some(function_name) = Self::call_function_name_from_tokens(&significant)
+        {
+            self.collector
+                .expr_lowering()
+                .collect_call_arguments_from_infos(
+                    &significant[3..],
+                    scope,
+                    NamedArgumentTarget::Function { function_name },
+                    significant[0].range.start
+                        ..significant
+                            .last()
+                            .map(|token| token.range.end)
+                            .unwrap_or(significant[0].range.end),
+                );
+            return;
+        }
         self.collect_generic_simple_stmt(node, scope);
+    }
+
+    fn collect_call_method_stmt_infos(&mut self, tokens: &[SyntaxTokenInfo], scope: ScopeId) {
+        if tokens.len() < 3
+            || !tokens[0].text.eq_ignore_ascii_case("call")
+            || !tokens[1].text.eq_ignore_ascii_case("method")
+        {
+            return;
+        }
+
+        let mut idx = 2usize;
+        let target =
+            if let Some((next_idx, namespace, base_name, base_range, field_path, bracket_groups)) =
+                self.collector
+                    .consume_selector_access_from_infos(tokens, idx)
+            {
+                for (group_start, group_end, is_legacy_table_body) in bracket_groups {
+                    if is_legacy_table_body {
+                        continue;
+                    }
+                    self.collector.collect_token_expression_refs_infos(
+                        &tokens[group_start + 1..group_end],
+                        scope,
+                        true,
+                    );
+                }
+                let Some(method_name) = field_path.last().map(|segment| Arc::clone(&segment.name))
+                else {
+                    return;
+                };
+                let kind = if namespace == Namespace::Type {
+                    ReferenceKind::StaticTarget
+                } else {
+                    ReferenceKind::Identifier
+                };
+                self.collector.add_reference(
+                    scope,
+                    Arc::clone(&base_name),
+                    namespace,
+                    kind,
+                    base_range.clone(),
+                );
+                self.collector.emit_field_access(crate::FieldAccess {
+                    scope,
+                    base_namespace: namespace,
+                    base_name: Arc::clone(&base_name),
+                    field_path,
+                    in_type_position: false,
+                });
+                idx = next_idx;
+                NamedArgumentTarget::Method {
+                    base_namespace: namespace,
+                    base_name,
+                    method_name,
+                }
+            } else {
+                let Some(token) = tokens.get(idx) else {
+                    return;
+                };
+                if !self.collector.syntax_token_is_ident_like(token) {
+                    return;
+                }
+                let method_name = Arc::<str>::from(token.text.to_ascii_lowercase());
+                self.collector.add_reference(
+                    scope,
+                    Arc::clone(&method_name),
+                    Namespace::Routine,
+                    ReferenceKind::RoutineCall,
+                    token.range.clone(),
+                );
+                idx += 1;
+                NamedArgumentTarget::ImplicitMethod { method_name }
+            };
+
+        self.collector
+            .expr_lowering()
+            .collect_call_arguments_from_infos(
+                &tokens[idx..],
+                scope,
+                target,
+                tokens[0].range.start
+                    ..tokens
+                        .last()
+                        .map(|token| token.range.end)
+                        .unwrap_or(tokens[0].range.end),
+            );
     }
 
     pub(super) fn collect_assign_keyword_stmt(&mut self, node: NodeId, scope: ScopeId) {

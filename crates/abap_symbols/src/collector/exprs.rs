@@ -6,8 +6,9 @@ use abap_ast::ast::{AstNode, CallArgList, CallExpr, CallNamedArg, CallPositional
 
 use crate::builtins::builtin_routine_spec;
 use crate::def_map::{
-    FieldAccess, FieldTypeRefData, NamedArgumentAccess, NamedArgumentSection, NamedArgumentTarget,
-    ReferenceKind, SymbolKind,
+    AssignmentSiteData, CallArgumentData, CallSiteData, FieldAccess, FieldTypeRefData,
+    NamedArgumentAccess, NamedArgumentSection, NamedArgumentTarget, ReferenceKind, SymbolKind,
+    TypeFactData,
 };
 use crate::ids::ScopeId;
 use crate::ids::StructureId;
@@ -88,6 +89,242 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
             }
         }
         (None, None)
+    }
+
+    fn type_fact_from_symbol(&self, symbol_id: crate::ids::SymbolId) -> TypeFactData {
+        TypeFactData {
+            structure: self.ctx.symbol_structure(symbol_id),
+            declared_type: self.ctx.symbol_declared_type(symbol_id),
+            type_clause_display: self.ctx.symbol_type_clause_display(symbol_id),
+        }
+    }
+
+    fn type_fact_from_tokens(
+        &self,
+        tokens: &[super::SyntaxTokenInfo],
+        scope: ScopeId,
+    ) -> TypeFactData {
+        let tokens: Vec<_> = tokens
+            .iter()
+            .filter(|token| !self.ctx.syntax_token_is_comment(token))
+            .cloned()
+            .collect();
+        let Some(first) = tokens.first() else {
+            return TypeFactData::default();
+        };
+        if tokens.len() == 1 {
+            let text = first.text.as_ref();
+            if text.chars().all(|ch| ch.is_ascii_digit()) {
+                return TypeFactData {
+                    structure: None,
+                    declared_type: Some(Self::builtin_type("i")),
+                    type_clause_display: None,
+                };
+            }
+            if text.starts_with('`') && text.ends_with('`') {
+                return TypeFactData {
+                    structure: None,
+                    declared_type: Some(Self::builtin_type("string")),
+                    type_clause_display: None,
+                };
+            }
+            if self.ctx.syntax_token_is_ident_like(first)
+                && let Some(symbol_id) =
+                    self.ctx
+                        .lookup_symbol_in_scope_chain(scope, Namespace::Value, text)
+            {
+                return self.type_fact_from_symbol(symbol_id);
+            }
+        }
+        if let Some((next_idx, namespace, base_name, _, field_path, _)) =
+            self.ctx.consume_selector_access_from_infos(&tokens, 0)
+            && next_idx == tokens.len()
+            && namespace == Namespace::Value
+        {
+            let Some(symbol_id) =
+                self.ctx
+                    .lookup_symbol_in_scope_chain(scope, Namespace::Value, base_name.as_ref())
+            else {
+                return TypeFactData::default();
+            };
+            if field_path.is_empty() {
+                return self.type_fact_from_symbol(symbol_id);
+            }
+            let mut structure = self.ctx.symbol_structure(symbol_id);
+            let mut declared_type = self.ctx.symbol_declared_type(symbol_id);
+            for segment in field_path {
+                if segment.is_deref() {
+                    let Some(type_ref) = declared_type.clone() else {
+                        return TypeFactData::default();
+                    };
+                    if !type_ref.is_ref {
+                        return TypeFactData::default();
+                    }
+                    structure = None;
+                    declared_type = Some(FieldTypeRefData {
+                        namespace: type_ref.namespace,
+                        is_ref: false,
+                        base_name: type_ref.base_name,
+                        field_path: type_ref.field_path,
+                    });
+                    continue;
+                }
+                let Some(structure_id) = structure else {
+                    return TypeFactData::default();
+                };
+                let Some(field) = self
+                    .ctx
+                    .structure_field(structure_id, segment.name.as_ref())
+                else {
+                    return TypeFactData::default();
+                };
+                structure = field.structure;
+                declared_type = field.type_ref;
+            }
+            return TypeFactData {
+                structure,
+                declared_type,
+                type_clause_display: None,
+            };
+        }
+        if first.text.eq_ignore_ascii_case("new")
+            && let Some(lparen_idx) = tokens.iter().position(|token| token.text.as_ref() == "(")
+            && let Some((type_name, _)) = self
+                .ctx
+                .simple_type_ref_base_from_infos(&tokens[1..lparen_idx])
+        {
+            return TypeFactData {
+                structure: None,
+                declared_type: Some(FieldTypeRefData {
+                    namespace: Namespace::Type,
+                    is_ref: true,
+                    base_name: Arc::clone(&type_name),
+                    field_path: Vec::new(),
+                }),
+                type_clause_display: Some(Arc::from(format!("REF TO {}", type_name))),
+            };
+        }
+        TypeFactData::default()
+    }
+
+    fn type_fact_from_expr_node(&self, node: NodeId, scope: ScopeId) -> TypeFactData {
+        match self.kind(node) {
+            SyntaxKind::TemplateExpr => self
+                .ctx
+                .file()
+                .children(node)
+                .find(|&child| self.kind(child) != SyntaxKind::Token)
+                .map(|child| self.type_fact_from_expr_node(child, scope))
+                .unwrap_or_else(|| {
+                    self.type_fact_from_tokens(&self.ctx.syntax_token_nodes(node), scope)
+                }),
+            SyntaxKind::ExprIdent => {
+                let Some((name, _)) = self.ctx.node_name(node) else {
+                    return TypeFactData::default();
+                };
+                let Some(symbol_id) =
+                    self.ctx
+                        .lookup_symbol_in_scope_chain(scope, Namespace::Value, name.as_ref())
+                else {
+                    return TypeFactData::default();
+                };
+                self.type_fact_from_symbol(symbol_id)
+            }
+            SyntaxKind::SelectorExpr => {
+                let Some((namespace, base_name, _, field_path)) =
+                    self.ctx.selector_access_chain(node)
+                else {
+                    return TypeFactData::default();
+                };
+                if namespace != Namespace::Value {
+                    return TypeFactData::default();
+                }
+                let Some(symbol_id) = self.ctx.lookup_symbol_in_scope_chain(
+                    scope,
+                    Namespace::Value,
+                    base_name.as_ref(),
+                ) else {
+                    return TypeFactData::default();
+                };
+                if field_path.is_empty() {
+                    return self.type_fact_from_symbol(symbol_id);
+                }
+                let mut structure = self.ctx.symbol_structure(symbol_id);
+                let mut declared_type = self.ctx.symbol_declared_type(symbol_id);
+                for segment in field_path {
+                    if segment.is_deref() {
+                        let Some(type_ref) = declared_type.clone() else {
+                            return TypeFactData::default();
+                        };
+                        if !type_ref.is_ref {
+                            return TypeFactData::default();
+                        }
+                        structure = None;
+                        declared_type = Some(FieldTypeRefData {
+                            namespace: type_ref.namespace,
+                            is_ref: false,
+                            base_name: type_ref.base_name,
+                            field_path: type_ref.field_path,
+                        });
+                        continue;
+                    }
+                    let Some(structure_id) = structure else {
+                        return TypeFactData::default();
+                    };
+                    let Some(field) = self
+                        .ctx
+                        .structure_field(structure_id, segment.name.as_ref())
+                    else {
+                        return TypeFactData::default();
+                    };
+                    structure = field.structure;
+                    declared_type = field.type_ref;
+                }
+                TypeFactData {
+                    structure,
+                    declared_type,
+                    type_clause_display: None,
+                }
+            }
+            SyntaxKind::ConstructorExpr => {
+                let keyword = self.constructor_keyword(node);
+                if let Some((type_name, _)) = self.ctx.constructor_type_ref(node)
+                    && type_name.as_ref() != "#"
+                {
+                    return TypeFactData {
+                        structure: None,
+                        declared_type: Some(FieldTypeRefData {
+                            namespace: Namespace::Type,
+                            is_ref: keyword.as_deref() == Some("new"),
+                            base_name: Arc::clone(&type_name),
+                            field_path: Vec::new(),
+                        }),
+                        type_clause_display: Some(type_name),
+                    };
+                }
+                TypeFactData::default()
+            }
+            _ => self.type_fact_from_tokens(&self.ctx.syntax_token_nodes(node), scope),
+        }
+    }
+
+    fn type_fact_from_value_children(&self, nodes: &[NodeId], scope: ScopeId) -> TypeFactData {
+        let non_token: Vec<_> = nodes
+            .iter()
+            .copied()
+            .filter(|&node| self.kind(node) != SyntaxKind::Token)
+            .collect();
+        match non_token.as_slice() {
+            [single] => self.type_fact_from_expr_node(*single, scope),
+            [] => {
+                let tokens = nodes
+                    .iter()
+                    .flat_map(|&node| self.ctx.syntax_token_nodes(node))
+                    .collect::<Vec<_>>();
+                self.type_fact_from_tokens(&tokens, scope)
+            }
+            _ => TypeFactData::default(),
+        }
     }
 
     pub(super) fn collect_expr(&mut self, node: NodeId, scope: ScopeId) {
@@ -1768,6 +2005,8 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
             self.collect_expr(lhs, scope);
             return;
         };
+        let lhs_fact = self.type_fact_from_expr_node(lhs, scope);
+        let rhs_fact = self.type_fact_from_expr_node(rhs, scope);
 
         let inferred_metadata = self
             .ctx
@@ -1788,6 +2027,14 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
             self.collect_expr(lhs, scope);
         }
         self.collect_expr(rhs, scope);
+        self.ctx.emit_assignment_site(AssignmentSiteData {
+            scope,
+            range: self.ctx.file().range(node),
+            lhs_range: self.ctx.file().range(lhs),
+            rhs_range: self.ctx.file().range(rhs),
+            lhs: lhs_fact,
+            rhs: rhs_fact,
+        });
     }
 
     fn declare_inline_assign_target(
@@ -1816,18 +2063,124 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
         }
     }
 
-    pub(super) fn collect_named_arguments_from_infos(
+    fn token_starts_call_argument_infos(
+        &self,
+        tokens: &[super::SyntaxTokenInfo],
+        idx: usize,
+    ) -> bool {
+        let Some(token) = tokens.get(idx) else {
+            return false;
+        };
+        if !(self.ctx.syntax_token_is_ident_like(token)
+            || matches!(token.text.as_ref(), "(" | "[" | "{" | "@" | "#" | "|")
+            || self.ctx.syntax_token_is_literal_like(token))
+        {
+            return false;
+        }
+        if self.ctx.syntax_token_is_ident_like(token)
+            && self
+                .ctx
+                .named_argument_section_from_text(token.text.as_ref())
+                .is_some()
+        {
+            return false;
+        }
+        let Some(prev) = idx.checked_sub(1).and_then(|prev_idx| tokens.get(prev_idx)) else {
+            return true;
+        };
+        self.ctx.syntax_tokens_have_space_between(prev, token)
+            && !matches!(
+                prev.text.as_ref(),
+                "->" | "=>"
+                    | "~"
+                    | "="
+                    | "-"
+                    | "+"
+                    | "*"
+                    | "/"
+                    | "<"
+                    | ">"
+                    | "<="
+                    | ">="
+                    | "<>"
+                    | "?="
+                    | "("
+                    | "["
+                    | "{"
+                    | "@"
+                    | "#"
+                    | "&"
+                    | "|"
+                    | ","
+            )
+    }
+
+    fn consume_call_argument_infos(
+        &self,
+        tokens: &[super::SyntaxTokenInfo],
+        start: usize,
+    ) -> usize {
+        let mut idx = start;
+        let mut paren = 0i32;
+        let mut bracket = 0i32;
+        let mut brace = 0i32;
+        let mut consumed_any = false;
+
+        while idx < tokens.len() {
+            let token = &tokens[idx];
+            if paren == 0 && bracket == 0 && brace == 0 {
+                if matches!(token.text.as_ref(), "." | ",") {
+                    break;
+                }
+                if self.ctx.syntax_token_is_ident_like(token)
+                    && self
+                        .ctx
+                        .named_argument_section_from_text(token.text.as_ref())
+                        .is_some()
+                {
+                    break;
+                }
+                if self.ctx.syntax_token_is_ident_like(token)
+                    && tokens.get(idx + 1).map(|next| next.text.as_ref()) == Some("=")
+                {
+                    break;
+                }
+                if consumed_any && self.token_starts_call_argument_infos(tokens, idx) {
+                    break;
+                }
+            }
+
+            consumed_any = true;
+            match token.text.as_ref() {
+                "(" => paren += 1,
+                ")" => paren -= 1,
+                "[" => bracket += 1,
+                "]" => bracket -= 1,
+                "{" => brace += 1,
+                "}" => brace -= 1,
+                _ => {}
+            }
+            idx += 1;
+        }
+
+        idx
+    }
+
+    pub(super) fn collect_call_arguments_from_infos(
         &mut self,
         tokens: &[super::SyntaxTokenInfo],
         scope: ScopeId,
         target: NamedArgumentTarget,
+        range: abap_lexer::TextRange,
     ) {
         let mut idx = 0usize;
-        let mut segment_start = 0usize;
         let mut current_section = None;
         let mut paren_depth = 0i32;
         let mut bracket_depth = 0i32;
         let mut brace_depth = 0i32;
+        let mut ordinal = 0usize;
+        let mut arguments = Vec::new();
+
         while idx < tokens.len() {
             let token = &tokens[idx];
             if self.ctx.syntax_token_is_comment(token) {
@@ -1835,38 +2188,28 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                 continue;
             }
             let at_top_level = paren_depth == 0 && bracket_depth == 0 && brace_depth == 0;
+            if at_top_level && token.text.as_ref() == "," {
+                idx += 1;
+                continue;
+            }
             if at_top_level
                 && self.ctx.syntax_token_is_ident_like(token)
                 && let Some(section) = self
                     .ctx
                     .named_argument_section_from_text(token.text.as_ref())
             {
-                if segment_start < idx {
-                    self.ctx.collect_token_expression_refs_infos(
-                        &tokens[segment_start..idx],
-                        scope,
-                        true,
-                    );
-                }
                 current_section = Some(section);
                 idx += 1;
-                segment_start = idx;
                 continue;
             }
             if at_top_level
                 && self.ctx.syntax_token_is_ident_like(token)
                 && tokens.get(idx + 1).map(|next| next.text.as_ref()) == Some("=")
             {
-                if segment_start < idx {
-                    self.ctx.collect_token_expression_refs_infos(
-                        &tokens[segment_start..idx],
-                        scope,
-                        true,
-                    );
-                }
                 let argument_name = Arc::<str>::from(token.text.to_ascii_lowercase());
                 let value_start = idx + 2;
                 let value_end = self.ctx.call_argument_value_end_infos(tokens, value_start);
+                let value_tokens = &tokens[value_start..value_end];
                 self.ctx.emit_named_argument(NamedArgumentAccess {
                     scope,
                     name: Arc::clone(&argument_name),
@@ -1878,35 +2221,69 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                     scope,
                     &target,
                     current_section,
-                    argument_name,
-                    &tokens[value_start..value_end],
+                    Arc::clone(&argument_name),
+                    value_tokens,
                 );
                 if !consumed_inline_target {
-                    self.ctx.collect_token_expression_refs_infos(
-                        &tokens[value_start..value_end],
-                        scope,
-                        true,
-                    );
+                    self.ctx
+                        .collect_token_expression_refs_infos(value_tokens, scope, true);
                 }
+                let value_range = value_tokens
+                    .first()
+                    .zip(value_tokens.last())
+                    .map(|(first, last)| first.range.start..last.range.end)
+                    .unwrap_or_else(|| token.range.clone());
+                arguments.push(CallArgumentData {
+                    range: value_range,
+                    name: Some(argument_name),
+                    section: current_section,
+                    ordinal,
+                    type_fact: self.type_fact_from_tokens(value_tokens, scope),
+                });
+                ordinal += 1;
                 idx = value_end;
-                segment_start = idx;
                 continue;
             }
-            match token.text.as_ref() {
-                "(" => paren_depth += 1,
-                ")" => paren_depth -= 1,
-                "[" => bracket_depth += 1,
-                "]" => bracket_depth -= 1,
-                "{" => brace_depth += 1,
-                "}" => brace_depth -= 1,
-                _ => {}
+
+            let value_end = self.consume_call_argument_infos(tokens, idx);
+            if value_end == idx {
+                match token.text.as_ref() {
+                    "(" => paren_depth += 1,
+                    ")" => paren_depth -= 1,
+                    "[" => bracket_depth += 1,
+                    "]" => bracket_depth -= 1,
+                    "{" => brace_depth += 1,
+                    "}" => brace_depth -= 1,
+                    _ => {}
+                }
+                idx += 1;
+                continue;
             }
-            idx += 1;
-        }
-        if segment_start < tokens.len() {
+            let value_tokens = &tokens[idx..value_end];
             self.ctx
-                .collect_token_expression_refs_infos(&tokens[segment_start..], scope, true);
+                .collect_token_expression_refs_infos(value_tokens, scope, true);
+            let value_range = value_tokens
+                .first()
+                .zip(value_tokens.last())
+                .map(|(first, last)| first.range.start..last.range.end)
+                .unwrap_or_else(|| token.range.clone());
+            arguments.push(CallArgumentData {
+                range: value_range,
+                name: None,
+                section: current_section,
+                ordinal,
+                type_fact: self.type_fact_from_tokens(value_tokens, scope),
+            });
+            ordinal += 1;
+            idx = value_end;
         }
+
+        self.ctx.emit_call_site(CallSiteData {
+            scope,
+            range,
+            target,
+            arguments,
+        });
     }
 
     pub(super) fn call_arg_section_from_node(&self, node: NodeId) -> Option<NamedArgumentSection> {
@@ -2084,13 +2461,35 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
             .items()
             .map(|child| (child.id(), child.kind()))
             .collect();
+        let mut arguments = Vec::new();
+        let mut ordinal = 0usize;
         for (child, kind_syntax) in items {
             match kind_syntax {
                 SyntaxKind::CallArgSection => {
                     current_section = self.call_arg_section_from_node(child);
                 }
                 SyntaxKind::CallNamedArg => {
+                    let value_children: Vec<_> = CallNamedArg::cast(self.ctx.syntax(child))
+                        .map(|arg| {
+                            arg.value_children()
+                                .into_iter()
+                                .map(|child| child.id())
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let argument_name = CallNamedArg::cast(self.ctx.syntax(child))
+                        .and_then(|arg| arg.name_token())
+                        .and_then(|token| token.text(self.source()))
+                        .map(|name| Arc::<str>::from(name.to_ascii_lowercase()));
                     self.collect_structured_named_argument(child, scope, &target, current_section);
+                    arguments.push(CallArgumentData {
+                        range: self.ctx.file().range(child),
+                        name: argument_name,
+                        section: current_section,
+                        ordinal,
+                        type_fact: self.type_fact_from_value_children(&value_children, scope),
+                    });
+                    ordinal += 1;
                 }
                 SyntaxKind::CallPositionalArg => {
                     let value_children: Vec<_> = CallPositionalArg::cast(self.ctx.syntax(child))
@@ -2102,10 +2501,24 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                         })
                         .unwrap_or_default();
                     self.collect_structured_argument_values(&value_children, scope);
+                    arguments.push(CallArgumentData {
+                        range: self.ctx.file().range(child),
+                        name: None,
+                        section: current_section,
+                        ordinal,
+                        type_fact: self.type_fact_from_value_children(&value_children, scope),
+                    });
+                    ordinal += 1;
                 }
                 _ => {}
             }
         }
+        self.ctx.emit_call_site(CallSiteData {
+            scope,
+            range: self.ctx.file().range(node),
+            target,
+            arguments,
+        });
     }
 
     pub(super) fn collect_selector_expr(&mut self, node: NodeId, scope: ScopeId) {

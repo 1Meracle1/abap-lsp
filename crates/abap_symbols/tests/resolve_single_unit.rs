@@ -8621,3 +8621,205 @@ ENDCLASS.
         unit.diagnostics
     );
 }
+
+#[test]
+fn reports_missing_required_method_parameter_but_skips_optional_and_defaulted_ones() {
+    let src = r#"
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run
+      IMPORTING
+        iv_req TYPE i
+        iv_opt TYPE i OPTIONAL
+        iv_def TYPE i DEFAULT 1.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+  ENDMETHOD.
+ENDCLASS.
+
+DATA lo_demo TYPE REF TO lcl_demo.
+
+START-OF-SELECTION.
+  lo_demo->run( ).
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///missing_required_param.abap", src, &parsed);
+
+    let missing: Vec<_> = unit
+        .diagnostics
+        .iter()
+        .filter(|diag| diag.kind == DiagnosticKind::MissingRequiredParameter)
+        .collect();
+    assert_eq!(missing.len(), 1, "{missing:#?}");
+    assert!(missing[0].message.contains("iv_req"));
+    assert!(
+        unit.diagnostics
+            .iter()
+            .all(|diag| !diag.message.contains("iv_opt"))
+    );
+    assert!(
+        unit.diagnostics
+            .iter()
+            .all(|diag| !diag.message.contains("iv_def"))
+    );
+}
+
+#[test]
+fn validates_token_only_implicit_method_calls_inside_value_bodies() {
+    let src = r#"
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run
+      IMPORTING iv_req TYPE i
+      RETURNING VALUE(rv_out) TYPE i.
+    METHODS exec.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+    rv_out = iv_req.
+  ENDMETHOD.
+
+  METHOD exec.
+    DATA lt_bad TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+    DATA lt_result TYPE STANDARD TABLE OF i WITH EMPTY KEY.
+
+    lt_result = VALUE #( ( run( ) ) ).
+    lt_result = VALUE #( ( run( iv_req = lt_bad ) ) ).
+  ENDMETHOD.
+ENDCLASS.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///token_only_implicit_value_calls.abap", src, &parsed);
+
+    assert!(unit.diagnostics.iter().any(|diag| {
+        diag.kind == DiagnosticKind::MissingRequiredParameter && diag.message.contains("iv_req")
+    }));
+    assert!(unit.diagnostics.iter().any(|diag| {
+        diag.kind == DiagnosticKind::IncompatibleArgumentType && diag.message.contains("iv_req")
+    }));
+}
+
+#[test]
+fn validates_legacy_call_method_parameter_shape_and_types() {
+    let src = r#"
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run IMPORTING iv_req TYPE i.
+    METHODS exec.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+  ENDMETHOD.
+
+  METHOD exec.
+    DATA lt_bad TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+    CALL METHOD run.
+    CALL METHOD run EXPORTING iv_req = lt_bad.
+  ENDMETHOD.
+ENDCLASS.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///legacy_call_method_validation.abap", src, &parsed);
+
+    assert!(unit.diagnostics.iter().any(|diag| {
+        diag.kind == DiagnosticKind::MissingRequiredParameter && diag.message.contains("iv_req")
+    }));
+    assert!(unit.diagnostics.iter().any(|diag| {
+        diag.kind == DiagnosticKind::IncompatibleArgumentType && diag.message.contains("iv_req")
+    }));
+}
+
+#[test]
+fn reports_duplicate_and_unknown_named_method_parameters() {
+    let src = r#"
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run IMPORTING iv_req TYPE i.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+  ENDMETHOD.
+ENDCLASS.
+
+DATA lo_demo TYPE REF TO lcl_demo.
+
+START-OF-SELECTION.
+  lo_demo->run(
+    iv_req = 1
+    iv_req = 2
+    iv_missing = 3
+  ).
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///dup_unknown_named_param.abap", src, &parsed);
+
+    assert!(unit.diagnostics.iter().any(|diag| {
+        diag.kind == DiagnosticKind::DuplicateNamedParameter && diag.message.contains("iv_req")
+    }));
+    assert!(unit.diagnostics.iter().any(|diag| {
+        diag.kind == DiagnosticKind::UnknownNamedParameter && diag.message.contains("iv_missing")
+    }));
+}
+
+#[test]
+fn reports_incompatible_method_argument_types_for_scalar_and_table_parameters() {
+    let src = r#"
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS take_value IMPORTING iv_value TYPE i.
+    METHODS take_table IMPORTING it_values TYPE STANDARD TABLE OF i WITH EMPTY KEY.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD take_value.
+  ENDMETHOD.
+  METHOD take_table.
+  ENDMETHOD.
+ENDCLASS.
+
+DATA lo_demo TYPE REF TO lcl_demo.
+DATA lv_value TYPE i.
+DATA lt_values TYPE STANDARD TABLE OF i WITH EMPTY KEY.
+
+START-OF-SELECTION.
+  lo_demo->take_value( iv_value = lt_values ).
+  lo_demo->take_table( it_values = lv_value ).
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///incompatible_method_args.abap", src, &parsed);
+
+    let diags: Vec<_> = unit
+        .diagnostics
+        .iter()
+        .filter(|diag| diag.kind == DiagnosticKind::IncompatibleArgumentType)
+        .collect();
+    assert_eq!(diags.len(), 2, "{diags:#?}");
+    assert!(diags.iter().any(|diag| diag.message.contains("iv_value")));
+    assert!(diags.iter().any(|diag| diag.message.contains("it_values")));
+}
+
+#[test]
+fn reports_incompatible_assignment_types_for_scalar_and_table_values() {
+    let src = r#"
+DATA lv_value TYPE i.
+DATA lt_values TYPE STANDARD TABLE OF i WITH EMPTY KEY.
+
+START-OF-SELECTION.
+  lv_value = lt_values.
+  lt_values = lv_value.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///incompatible_assignments.abap", src, &parsed);
+
+    let diags: Vec<_> = unit
+        .diagnostics
+        .iter()
+        .filter(|diag| diag.kind == DiagnosticKind::IncompatibleAssignmentType)
+        .collect();
+    assert_eq!(diags.len(), 2, "{diags:#?}");
+}

@@ -2,10 +2,14 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::builtins::builtin_routine_spec;
+use crate::compatibility::{
+    call_section_matches_parameter, parameter_is_required, positional_parameter_section,
+    type_facts_compatible,
+};
 use crate::def_map::{
     Diagnostic, DiagnosticKind, FieldTypeRefData, FormParameterData, FormParameterSection,
-    LoopWhereFieldContext, PerformParameterSection, ReferenceKind, Resolution, SqlNameRefKind,
-    StructureFieldShape,
+    LoopWhereFieldContext, NamedArgumentTarget, PerformParameterSection, ReferenceKind, Resolution,
+    SqlNameRefKind, StructureFieldShape, TypeFactData,
 };
 use crate::ids::{ScopeId, StructureId, SymbolHandle, SymbolId};
 use crate::project::ProjectAnalysis;
@@ -902,6 +906,132 @@ fn format_perform_signature(using_count: usize, changing_count: usize) -> String
     } else {
         parts.join(", ")
     }
+}
+
+fn type_fact_label(fact: &TypeFactData) -> String {
+    if let Some(display) = fact.type_clause_display.as_ref() {
+        return display.to_string();
+    }
+    if let Some(type_ref) = fact.declared_type.as_ref() {
+        if type_ref.is_ref {
+            return format!("REF TO {}", type_ref.base_name);
+        }
+        return type_ref.base_name.to_string();
+    }
+    if fact.structure.is_some() {
+        return "structure".to_string();
+    }
+    "value".to_string()
+}
+
+fn method_parameter_type_fact(parameter: &crate::ClassMemberParameterData) -> TypeFactData {
+    TypeFactData {
+        structure: None,
+        declared_type: parameter.declared_type.clone(),
+        type_clause_display: parameter.type_clause_display.clone(),
+    }
+}
+
+fn resolve_type_owner_symbol(
+    project: &ProjectAnalysis,
+    preferred_unit: &crate::UnitAnalysis,
+    name: &str,
+) -> Option<SymbolHandle> {
+    for unit in std::iter::once(preferred_unit).chain(project.units.iter()) {
+        if let Some(symbol) = unit.symbols.iter().find(|symbol| {
+            symbol.scope == unit.root_scope
+                && symbol.name.as_ref().eq_ignore_ascii_case(name)
+                && matches!(symbol.kind, SymbolKind::Class | SymbolKind::Interface)
+        }) {
+            return Some(SymbolHandle {
+                unit: unit.unit_id,
+                symbol: symbol.id,
+            });
+        }
+    }
+    None
+}
+
+fn resolve_method_target_handle(
+    project: &ProjectAnalysis,
+    unit: &crate::UnitAnalysis,
+    scope_index: &ScopeIndex,
+    scope: ScopeId,
+    target: &NamedArgumentTarget,
+) -> Option<SymbolHandle> {
+    match target {
+        NamedArgumentTarget::Constructor { type_name } => {
+            resolve_type_owner_symbol(project, unit, type_name.as_ref())
+        }
+        NamedArgumentTarget::ImplicitMethod { .. } => {
+            enclosing_class_owner(unit, scope).map(|symbol| SymbolHandle {
+                unit: unit.unit_id,
+                symbol,
+            })
+        }
+        NamedArgumentTarget::Method {
+            base_namespace,
+            base_name,
+            ..
+        } => match base_namespace {
+            Namespace::Type => resolve_type_owner_symbol(project, unit, base_name.as_ref()),
+            Namespace::Value if base_name.as_ref().eq_ignore_ascii_case("super") => {
+                let class_symbol = enclosing_class_owner(unit, scope)?;
+                let inheritance = unit.class_superclass(class_symbol)?;
+                resolve_type_owner_symbol(project, unit, inheritance.superclass_name.as_ref())
+            }
+            Namespace::Value => {
+                let symbol_id = resolve_symbol_in_scope_chain(
+                    unit,
+                    scope_index,
+                    scope,
+                    Namespace::Value,
+                    base_name,
+                )?;
+                let declared_type = unit.symbol(symbol_id).declared_type.as_ref()?;
+                if !declared_type.is_ref || declared_type.namespace != Namespace::Type {
+                    return None;
+                }
+                resolve_type_owner_symbol(project, unit, declared_type.base_name.as_ref())
+            }
+            Namespace::Routine => None,
+        },
+        NamedArgumentTarget::Function { .. } | NamedArgumentTarget::Routine { .. } => None,
+    }
+}
+
+fn resolve_call_target_member<'a>(
+    project: &'a ProjectAnalysis,
+    unit: &'a crate::UnitAnalysis,
+    scope_index: &ScopeIndex,
+    call_site: &crate::CallSiteData,
+) -> Option<(&'a crate::UnitAnalysis, &'a crate::ClassMemberData)> {
+    let handle = resolve_method_target_handle(
+        project,
+        unit,
+        scope_index,
+        call_site.scope,
+        &call_site.target,
+    )?;
+    let target_unit = &project.units[handle.unit.as_usize()];
+    let method_name = match &call_site.target {
+        NamedArgumentTarget::Constructor { .. } => "constructor",
+        NamedArgumentTarget::ImplicitMethod { method_name } => method_name.as_ref(),
+        NamedArgumentTarget::Method { method_name, .. } => method_name.as_ref(),
+        NamedArgumentTarget::Function { .. } | NamedArgumentTarget::Routine { .. } => return None,
+    };
+    if target_unit.symbol(handle.symbol).kind == SymbolKind::Interface {
+        return target_unit
+            .class_member(handle.symbol, method_name)
+            .map(|member| (target_unit, member));
+    }
+    resolve_class_member_in_hierarchy(project, target_unit, handle.symbol, method_name).or_else(
+        || {
+            target_unit
+                .class_member(handle.symbol, method_name)
+                .map(|member| (target_unit, member))
+        },
+    )
 }
 
 fn workspace_root_defines_type_name(project: &ProjectAnalysis, name: &str) -> bool {
@@ -2136,6 +2266,135 @@ pub(crate) fn validate_project_with_scope_indexes(
                     StructureFieldShape::Scalar => None,
                 };
                 declared_type = field.type_ref.clone();
+            }
+        }
+
+        for assignment in &unit.assignment_sites {
+            if matches!(
+                type_facts_compatible(project, unit, &assignment.lhs, unit, &assignment.rhs),
+                Some(false)
+            ) {
+                unit_diagnostics.push(Diagnostic {
+                    kind: DiagnosticKind::IncompatibleAssignmentType,
+                    range: assignment.range.clone(),
+                    message: format!(
+                        "assignment target '{}' is incompatible with source '{}'",
+                        type_fact_label(&assignment.lhs),
+                        type_fact_label(&assignment.rhs)
+                    ),
+                });
+            }
+        }
+
+        for call_site in &unit.call_sites {
+            let Some((target_unit, member)) =
+                resolve_call_target_member(project, unit, &scope_index, call_site)
+            else {
+                continue;
+            };
+            let positional_parameters: Vec<_> = member
+                .parameters
+                .iter()
+                .filter(|parameter| positional_parameter_section(parameter.section))
+                .collect();
+            let mut matched_required = HashSet::<Arc<str>>::new();
+            let mut seen_named = HashSet::<Arc<str>>::new();
+            let mut positional_idx = 0usize;
+
+            for argument in &call_site.arguments {
+                if let Some(name) = argument.name.as_ref() {
+                    if !seen_named.insert(Arc::clone(name)) {
+                        unit_diagnostics.push(Diagnostic {
+                            kind: DiagnosticKind::DuplicateNamedParameter,
+                            range: argument.range.clone(),
+                            message: format!("duplicate named parameter '{}'", name),
+                        });
+                        continue;
+                    }
+                    let Some(parameter) = member.parameters.iter().find(|parameter| {
+                        parameter.name == *name
+                            && call_section_matches_parameter(argument.section, parameter.section)
+                    }) else {
+                        unit_diagnostics.push(Diagnostic {
+                            kind: DiagnosticKind::UnknownNamedParameter,
+                            range: argument.range.clone(),
+                            message: format!(
+                                "unknown named parameter '{}' for method '{}'",
+                                name, member.name
+                            ),
+                        });
+                        continue;
+                    };
+                    if parameter_is_required(parameter.section, parameter.is_optional) {
+                        matched_required.insert(Arc::clone(&parameter.name));
+                    }
+                    if matches!(
+                        type_facts_compatible(
+                            project,
+                            target_unit,
+                            &method_parameter_type_fact(parameter),
+                            unit,
+                            &argument.type_fact,
+                        ),
+                        Some(false)
+                    ) {
+                        unit_diagnostics.push(Diagnostic {
+                            kind: DiagnosticKind::IncompatibleArgumentType,
+                            range: argument.range.clone(),
+                            message: format!(
+                                "argument '{}' expects '{}', got '{}'",
+                                parameter.name,
+                                type_fact_label(&method_parameter_type_fact(parameter)),
+                                type_fact_label(&argument.type_fact)
+                            ),
+                        });
+                    }
+                    continue;
+                }
+
+                let Some(parameter) = positional_parameters.get(positional_idx).copied() else {
+                    continue;
+                };
+                positional_idx += 1;
+                if parameter_is_required(parameter.section, parameter.is_optional) {
+                    matched_required.insert(Arc::clone(&parameter.name));
+                }
+                if matches!(
+                    type_facts_compatible(
+                        project,
+                        target_unit,
+                        &method_parameter_type_fact(parameter),
+                        unit,
+                        &argument.type_fact,
+                    ),
+                    Some(false)
+                ) {
+                    unit_diagnostics.push(Diagnostic {
+                        kind: DiagnosticKind::IncompatibleArgumentType,
+                        range: argument.range.clone(),
+                        message: format!(
+                            "argument for '{}' expects '{}', got '{}'",
+                            parameter.name,
+                            type_fact_label(&method_parameter_type_fact(parameter)),
+                            type_fact_label(&argument.type_fact)
+                        ),
+                    });
+                }
+            }
+
+            for parameter in &member.parameters {
+                if parameter_is_required(parameter.section, parameter.is_optional)
+                    && !matched_required.contains(&parameter.name)
+                {
+                    unit_diagnostics.push(Diagnostic {
+                        kind: DiagnosticKind::MissingRequiredParameter,
+                        range: call_site.range.clone(),
+                        message: format!(
+                            "missing required parameter '{}' for method '{}'",
+                            parameter.name, member.name
+                        ),
+                    });
+                }
             }
         }
 
