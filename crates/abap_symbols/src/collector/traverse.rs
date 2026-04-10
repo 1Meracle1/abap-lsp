@@ -106,10 +106,10 @@ impl<'a> Collector<'a> {
             | SyntaxKind::MoveStmt
             | SyntaxKind::ModifyStmt
             | SyntaxKind::DeleteDbTableStmt
-            | SyntaxKind::ReadTableStmt
             | SyntaxKind::GetReferenceStmt
             | SyntaxKind::GetBitStmt
             | SyntaxKind::SetBitStmt => self.walk_children(node, scope),
+            SyntaxKind::ReadTableStmt => self.stmt_lowering().collect_read_table_stmt(node, scope),
             SyntaxKind::InsertDbTableStmt => self
                 .sql_lowering()
                 .collect_insert_db_table_stmt(node, scope),

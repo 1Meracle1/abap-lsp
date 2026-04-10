@@ -4,7 +4,7 @@ use abap_ast::SyntaxKind;
 use abap_ast::arena::NodeId;
 use abap_ast::ast::{AstNode, MethodsStmt};
 
-use crate::def_map::{NamedArgumentTarget, ReferenceKind};
+use crate::def_map::{FieldTypeRefData, NamedArgumentTarget, ReferenceKind, SymbolKind};
 use crate::ids::ScopeId;
 use crate::scope::Namespace;
 
@@ -22,6 +22,43 @@ impl<'a> Collector<'a> {
 }
 
 impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
+    fn declare_split_inline_data_target(
+        &mut self,
+        node: NodeId,
+        scope: ScopeId,
+        is_table_target: bool,
+        is_byte_mode: bool,
+    ) {
+        let decl_scope = self.collector.declaration_scope(scope);
+        let base_type = if is_byte_mode { "xstring" } else { "string" };
+        let declared_type = FieldTypeRefData {
+            namespace: Namespace::Type,
+            is_ref: false,
+            base_name: Arc::<str>::from(base_type),
+            field_path: Vec::new(),
+        };
+        let type_clause_display = is_table_target
+            .then(|| Arc::<str>::from(format!("STANDARD TABLE OF {base_type}")));
+        if let Some(name_node) = self
+            .collector
+            .file
+            .children(node)
+            .find(|&child| self.collector.file.kind(child) == SyntaxKind::DataDeclName)
+            && let Some((name, range)) = self.collector.node_name(name_node)
+        {
+            self.collector.declare_symbol(
+                decl_scope,
+                name,
+                SymbolKind::Variable,
+                range,
+                None,
+                Some(declared_type),
+                type_clause_display,
+                None,
+            );
+        }
+    }
+
     pub(super) fn collect_delete_stmt(&mut self, node: NodeId, scope: ScopeId) {
         let mut where_expr = None;
         let mut seen_where = false;
@@ -79,6 +116,85 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             })
             .unwrap_or(name);
         Some(Arc::<str>::from(unquoted.to_ascii_lowercase()))
+    }
+
+    pub(super) fn collect_read_table_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        if self.collector.node_has_structured_children(node) {
+            let mut source_expr = None;
+            let mut target_kind = None;
+            let mut data_inline_targets = Vec::new();
+            let mut field_symbol_targets = Vec::new();
+            for child in self.collector.file.children(node) {
+                match self.collector.file.kind(child) {
+                    SyntaxKind::Token => {
+                        if let Some(token) =
+                            self.collector.syntax_token_nodes(child).into_iter().next()
+                        {
+                            if token.text.eq_ignore_ascii_case("into") {
+                                target_kind = Some("into");
+                            } else if token.text.eq_ignore_ascii_case("assigning") {
+                                target_kind = Some("assigning");
+                            }
+                        }
+                    }
+                    SyntaxKind::DataInlineDecl => data_inline_targets.push(child),
+                    SyntaxKind::FieldSymbolInlineDecl => field_symbol_targets.push(child),
+                    _ => {
+                        if source_expr.is_none() {
+                            source_expr = Some(child);
+                        }
+                        self.collector.walk_node(child, scope);
+                    }
+                }
+            }
+
+            let inferred_metadata = source_expr
+                .map(|expr| {
+                    self.collector
+                        .control_lowering()
+                        .loop_source_line_metadata_from_node(expr, scope)
+                })
+                .unwrap_or((None, None));
+
+            if target_kind == Some("into") {
+                let decl_scope = self.collector.declaration_scope(scope);
+                for node in data_inline_targets {
+                    if let Some(name_node) = self
+                        .collector
+                        .file
+                        .children(node)
+                        .find(|&child| self.collector.file.kind(child) == SyntaxKind::DataDeclName)
+                        && let Some((name, range)) = self.collector.node_name(name_node)
+                    {
+                        self.collector.declare_symbol(
+                            decl_scope,
+                            name,
+                            SymbolKind::Variable,
+                            range,
+                            inferred_metadata.0,
+                            inferred_metadata.1.clone(),
+                            None,
+                            None,
+                        );
+                    }
+                }
+            }
+
+            if target_kind == Some("assigning") {
+                for target in field_symbol_targets {
+                    self.collector
+                        .decl_lowering()
+                        .declare_inline_field_symbol_decl(
+                            target,
+                            scope,
+                            inferred_metadata.0,
+                            inferred_metadata.1.clone(),
+                        );
+                }
+            }
+            return;
+        }
+        self.collector.walk_children(node, scope);
     }
 
     pub(super) fn collect_message_stmt(&mut self, node: NodeId, scope: ScopeId) {
@@ -1216,7 +1332,37 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
 
     pub(super) fn collect_split_stmt(&mut self, node: NodeId, scope: ScopeId) {
         if self.collector.node_has_structured_children(node) {
-            self.collector.walk_children(node, scope);
+            let byte_mode = self.collector.file.children(node).any(|child| {
+                self.collector.file.kind(child) == SyntaxKind::Token
+                    && self
+                        .collector
+                        .syntax_token_nodes(child)
+                        .into_iter()
+                        .next()
+                        .is_some_and(|token| token.text.eq_ignore_ascii_case("byte"))
+            });
+            let mut seen_into = false;
+            let mut into_table = false;
+            for child in self.collector.file.children(node) {
+                match self.collector.file.kind(child) {
+                    SyntaxKind::Token => {
+                        if let Some(token) =
+                            self.collector.syntax_token_nodes(child).into_iter().next()
+                        {
+                            if token.text.eq_ignore_ascii_case("into") {
+                            seen_into = true;
+                            into_table = false;
+                        } else if seen_into && token.text.eq_ignore_ascii_case("table") {
+                            into_table = true;
+                        }
+                    }
+                    }
+                    SyntaxKind::DataInlineDecl => {
+                        self.declare_split_inline_data_target(child, scope, into_table, byte_mode);
+                    }
+                    _ => self.collector.walk_node(child, scope),
+                }
+            }
             return;
         }
         let significant = self.collector.significant_stmt_token_infos(node);
@@ -1264,6 +1410,12 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
         }
 
         let mut idx = separator_end.max(into_idx + 1);
+        if significant
+            .get(idx)
+            .is_some_and(|token| token.text.eq_ignore_ascii_case("table"))
+        {
+            idx += 1;
+        }
         while idx < significant.len() {
             let token = &significant[idx];
             if token.text.as_ref() == "." {

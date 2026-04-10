@@ -3761,6 +3761,202 @@ ls_outer-inner-a = 1."
     }
 
     #[test]
+    fn hover_and_definition_work_for_split_into_table_inline_target_and_source_field() {
+        let state = ServerState::default();
+        let text = "\
+TYPES: BEGIN OF ty_trn,
+         trncode TYPE string,
+       END OF ty_trn.
+DATA ls_trn TYPE ty_trn.
+
+SPLIT ls_trn-trncode AT ':' INTO TABLE DATA(lt_split).
+CLEAR lt_split.";
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///split_hover.abap").expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: text.to_string(),
+                },
+            },
+        );
+
+        let lt_split_offset = text.rfind("lt_split").expect("lt_split use") + 1;
+        let lt_split_position =
+            offset_to_position(text, lt_split_offset).expect("lt_split position");
+        let lt_split_hover = hover(
+            &state,
+            &HoverParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///split_hover.abap").expect("uri"),
+                    },
+                    position: lt_split_position,
+                },
+                work_done_progress_params: Default::default(),
+            },
+        )
+        .expect("lt_split hover");
+        let HoverContents::Markup(lt_split_markup) = lt_split_hover.contents else {
+            panic!("expected markdown hover");
+        };
+        assert!(lt_split_markup.value.contains("`lt_split`"));
+        assert!(lt_split_markup.value.contains("TYPE STANDARD TABLE OF string"));
+
+        let ls_trn_offset = text.find("ls_trn-trncode").expect("ls_trn use") + 1;
+        let ls_trn_position = offset_to_position(text, ls_trn_offset).expect("ls_trn position");
+        let ls_trn_hover = hover(
+            &state,
+            &HoverParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///split_hover.abap").expect("uri"),
+                    },
+                    position: ls_trn_position,
+                },
+                work_done_progress_params: Default::default(),
+            },
+        )
+        .expect("ls_trn hover");
+        let HoverContents::Markup(ls_trn_markup) = ls_trn_hover.contents else {
+            panic!("expected markdown hover");
+        };
+        assert!(ls_trn_markup.value.contains("`ls_trn`"));
+        assert!(ls_trn_markup.value.contains("TYPE ty_trn"));
+
+        let trncode_offset = text.rfind("trncode").expect("trncode use") + 1;
+        let trncode_position =
+            offset_to_position(text, trncode_offset).expect("trncode position");
+        let trncode_hover = hover(
+            &state,
+            &HoverParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///split_hover.abap").expect("uri"),
+                    },
+                    position: trncode_position,
+                },
+                work_done_progress_params: Default::default(),
+            },
+        )
+        .expect("trncode hover");
+        let HoverContents::Markup(trncode_markup) = trncode_hover.contents else {
+            panic!("expected markdown hover");
+        };
+        assert!(trncode_markup.value.contains("`trncode`"));
+        assert!(trncode_markup.value.contains("scalar component"));
+        assert!(trncode_markup.value.contains("TYPE string"));
+        assert!(trncode_markup.value.contains("`ls_trn-trncode`"));
+
+        let definition_result = definition(
+            &state,
+            &GotoDefinitionParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///split_hover.abap").expect("uri"),
+                    },
+                    position: trncode_position,
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            },
+        )
+        .expect("trncode definition");
+        let GotoDefinitionResponse::Scalar(location) = definition_result else {
+            panic!("expected scalar location");
+        };
+        assert_eq!(
+            location.uri,
+            Uri::from_str("file:///split_hover.abap").expect("uri")
+        );
+        let decl_offset = text.find("trncode TYPE string").expect("trncode declaration");
+        let decl_position = offset_to_position(text, decl_offset).expect("decl position");
+        assert_eq!(location.range.start, decl_position);
+    }
+
+    #[test]
+    fn hover_works_for_split_after_read_table_inline_into_source() {
+        let state = ServerState::default();
+        let text = "\
+TYPES: BEGIN OF /sttp/dm_trn,
+         bizttype TYPE i,
+         trncode TYPE string,
+       END OF /sttp/dm_trn.
+TYPES /sttp/t_dm_trn TYPE STANDARD TABLE OF /sttp/dm_trn WITH EMPTY KEY.
+
+CLASS lcl DEFINITION.
+  PUBLIC SECTION.
+    DATA mt_trn TYPE /sttp/t_dm_trn.
+    METHODS run.
+ENDCLASS.
+
+CLASS lcl IMPLEMENTATION.
+  METHOD run.
+    READ TABLE mt_trn INTO DATA(ls_trn) WITH KEY bizttype = 60.
+    SPLIT ls_trn-trncode AT ':' INTO TABLE DATA(lt_split).
+    CLEAR lt_split.
+  ENDMETHOD.
+ENDCLASS.";
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///read_table_split_hover.abap").expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: text.to_string(),
+                },
+            },
+        );
+
+        let ls_trn_offset = text.find("ls_trn-trncode").expect("ls_trn use") + 1;
+        let ls_trn_position = offset_to_position(text, ls_trn_offset).expect("ls_trn position");
+        let ls_trn_hover = hover(
+            &state,
+            &HoverParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///read_table_split_hover.abap").expect("uri"),
+                    },
+                    position: ls_trn_position,
+                },
+                work_done_progress_params: Default::default(),
+            },
+        )
+        .expect("ls_trn hover");
+        let HoverContents::Markup(ls_trn_markup) = ls_trn_hover.contents else {
+            panic!("expected markdown hover");
+        };
+        assert!(ls_trn_markup.value.contains("`ls_trn`"));
+        assert!(ls_trn_markup.value.contains("TYPE /sttp/dm_trn"));
+
+        let trncode_offset = text.rfind("trncode").expect("trncode use") + 1;
+        let trncode_position =
+            offset_to_position(text, trncode_offset).expect("trncode position");
+        let trncode_hover = hover(
+            &state,
+            &HoverParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///read_table_split_hover.abap").expect("uri"),
+                    },
+                    position: trncode_position,
+                },
+                work_done_progress_params: Default::default(),
+            },
+        )
+        .expect("trncode hover");
+        let HoverContents::Markup(trncode_markup) = trncode_hover.contents else {
+            panic!("expected markdown hover");
+        };
+        assert!(trncode_markup.value.contains("`trncode`"));
+        assert!(trncode_markup.value.contains("TYPE string"));
+        assert!(trncode_markup.value.contains("`ls_trn-trncode`"));
+    }
+
+    #[test]
     fn hover_shows_builtin_description_for_sy_field() {
         let state = ServerState::default();
         publish_open_document(

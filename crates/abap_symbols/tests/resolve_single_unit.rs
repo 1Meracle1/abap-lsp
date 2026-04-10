@@ -2199,6 +2199,50 @@ IN CHARACTER MODE.
 }
 
 #[test]
+fn resolves_split_into_table_inline_data_target() {
+    let src = r#"
+TYPES: BEGIN OF ty_trn,
+         trncode TYPE string,
+       END OF ty_trn.
+DATA ls_trn TYPE ty_trn.
+
+SPLIT ls_trn-trncode AT ':' INTO TABLE DATA(lt_split).
+CLEAR lt_split.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///split_into_table_stmt.abap", src, &parsed);
+
+    assert!(unit.symbols.iter().any(|symbol| {
+        symbol.kind == abap_symbols::SymbolKind::Variable && symbol.name.as_ref() == "lt_split"
+    }));
+
+    for name in ["ls_trn", "lt_split"] {
+        assert!(
+            unit.references.iter().any(|reference| {
+                reference.namespace == Namespace::Value
+                    && reference.kind == ReferenceKind::Identifier
+                    && reference.name.as_ref() == name
+                    && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+            }),
+            "expected resolved SPLIT reference for `{name}`, refs={:?} diagnostics={:?}",
+            unit.references,
+            unit.diagnostics
+        );
+    }
+
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference
+                && (diag.message.contains("ls_trn")
+                    || diag.message.contains("lt_split")
+                    || diag.message.contains("table"))
+        }),
+        "unexpected SPLIT INTO TABLE diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn resolves_assign_to_inline_field_symbol() {
     let src = r#"
 DATA lv_value TYPE string.

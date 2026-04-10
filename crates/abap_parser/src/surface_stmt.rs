@@ -2828,11 +2828,22 @@ pub fn try_parse_split_stmt(
 
             children.push(token_leaf(b, &tokens[into_idx]));
             let mut i = separator_end.max(into_idx + 1);
+            if i < period_i && is_keyword(source, &tokens[i], "table") {
+                children.push(token_leaf(b, &tokens[i]));
+                i += 1;
+            }
             while i < period_i {
                 let token = &tokens[i];
                 if is_keyword(source, token, "in") {
                     push_token_children(b, &mut children, tokens, i, period_i);
                     break;
+                }
+                if let Some((inline_decl, next_i)) = try_parse_data_inline_decl(
+                    b, source, tokens, i,
+                ) {
+                    children.push(inline_decl);
+                    i = next_i;
+                    continue;
                 }
                 let end_idx = consume_concatenate_operand(source, tokens, i, period_i, &["in"]);
                 if end_idx == i {
@@ -5342,6 +5353,17 @@ END-OF-PAGE.\nWRITE 'e'.",
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
         let root = parsed.file.root();
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::SplitStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::DataInlineDecl), 5);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
+    }
+
+    #[test]
+    fn parses_split_stmt_into_table_inline_data_target() {
+        let parsed = crate::parse("SPLIT ls_trn-trncode AT ':' INTO TABLE DATA(lt_split).");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::SplitStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::DataInlineDecl), 1);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
     }
 

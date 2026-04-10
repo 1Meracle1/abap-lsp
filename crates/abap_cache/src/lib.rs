@@ -6157,6 +6157,113 @@ ENDLOOP.";
     }
 
     #[test]
+    fn hover_and_definition_work_for_split_into_table_inline_target_and_source_field() {
+        let store = DocumentStore::default();
+        let src = "\
+TYPES: BEGIN OF ty_trn,
+         trncode TYPE string,
+       END OF ty_trn.
+DATA ls_trn TYPE ty_trn.
+
+SPLIT ls_trn-trncode AT ':' INTO TABLE DATA(lt_split).
+CLEAR lt_split.";
+        let snapshot = store.publish("file:///demo.abap", 1, src);
+
+        let lt_split_offset = src.rfind("lt_split").expect("lt_split use") + 1;
+        let lt_split_hover = snapshot
+            .hovered_resolved_symbol_at(lt_split_offset)
+            .expect("lt_split hover");
+        assert_eq!(lt_split_hover.display_name.as_ref(), "lt_split");
+        assert!(
+            lt_split_hover
+                .markdown_lines
+                .iter()
+                .any(|line| line == "```abap\nTYPE STANDARD TABLE OF string\n```"),
+            "{:?}",
+            lt_split_hover.markdown_lines
+        );
+
+        let ls_trn_offset = src.find("ls_trn-trncode").expect("ls_trn use") + 1;
+        let ls_trn_hover = snapshot
+            .hovered_resolved_symbol_at(ls_trn_offset)
+            .expect("ls_trn hover");
+        assert_eq!(ls_trn_hover.display_name.as_ref(), "ls_trn");
+        assert!(
+            ls_trn_hover
+                .markdown_lines
+                .iter()
+                .any(|line| line == "```abap\nTYPE ty_trn\n```"),
+            "{:?}",
+            ls_trn_hover.markdown_lines
+        );
+
+        let trncode_use = src.rfind("trncode").expect("trncode use");
+        let trncode_hover = snapshot
+            .hovered_component_at(trncode_use + 1)
+            .expect("trncode hover");
+        assert_eq!(trncode_hover.base_name.as_ref(), "ls_trn");
+        assert_eq!(trncode_hover.field_name.as_ref(), "trncode");
+        assert_eq!(trncode_hover.declared_type.as_deref(), Some("TYPE string"));
+
+        let target = snapshot
+            .definition_at(trncode_use + 1)
+            .expect("trncode definition");
+        assert_target_slice(&target, "file:///demo.abap", src, "trncode");
+        assert_eq!(
+            target.range.start,
+            src.find("trncode TYPE string").expect("trncode declaration")
+        );
+    }
+
+    #[test]
+    fn hover_works_for_split_after_read_table_inline_into_source() {
+        let store = DocumentStore::default();
+        let src = "\
+TYPES: BEGIN OF /sttp/dm_trn,
+         bizttype TYPE i,
+         trncode TYPE string,
+       END OF /sttp/dm_trn.
+TYPES /sttp/t_dm_trn TYPE STANDARD TABLE OF /sttp/dm_trn WITH EMPTY KEY.
+
+CLASS lcl DEFINITION.
+  PUBLIC SECTION.
+    DATA mt_trn TYPE /sttp/t_dm_trn.
+    METHODS run.
+ENDCLASS.
+
+CLASS lcl IMPLEMENTATION.
+  METHOD run.
+    READ TABLE mt_trn INTO DATA(ls_trn) WITH KEY bizttype = 60.
+    SPLIT ls_trn-trncode AT ':' INTO TABLE DATA(lt_split).
+    CLEAR lt_split.
+  ENDMETHOD.
+ENDCLASS.";
+        let snapshot = store.publish("file:///demo.abap", 1, src);
+
+        let ls_trn_offset = src.find("ls_trn-trncode").expect("ls_trn use") + 1;
+        let ls_trn_hover = snapshot
+            .hovered_resolved_symbol_at(ls_trn_offset)
+            .expect("ls_trn hover");
+        assert_eq!(ls_trn_hover.display_name.as_ref(), "ls_trn");
+        assert!(
+            ls_trn_hover
+                .markdown_lines
+                .iter()
+                .any(|line| line == "```abap\nTYPE /sttp/dm_trn\n```"),
+            "{:?}",
+            ls_trn_hover.markdown_lines
+        );
+
+        let trncode_use = src.rfind("trncode").expect("trncode use");
+        let trncode_hover = snapshot
+            .hovered_component_at(trncode_use + 1)
+            .expect("trncode hover");
+        assert_eq!(trncode_hover.base_name.as_ref(), "ls_trn");
+        assert_eq!(trncode_hover.field_name.as_ref(), "trncode");
+        assert_eq!(trncode_hover.declared_type.as_deref(), Some("TYPE string"));
+    }
+
+    #[test]
     fn hovered_sql_name_ref_at_shows_open_sql_source() {
         let store = DocumentStore::default();
         let src = "SELECT * FROM /sttp/gs1_gcp INTO TABLE DATA(lt).\n";
