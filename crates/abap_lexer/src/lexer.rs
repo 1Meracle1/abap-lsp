@@ -1,8 +1,9 @@
 use std::collections::VecDeque;
+use std::sync::Arc;
 
 use unicode_general_category::{GeneralCategory, get_general_category};
 
-use crate::token::{TextRange, Token, TokenKind};
+use crate::token::{LexedSource, TextRange, Token, TokenKind, TriviaKind, TriviaPiece, TriviaSpan};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LexError {
@@ -12,23 +13,26 @@ pub struct LexError {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TokenizeResult {
-    pub tokens: Vec<Token>,
+    pub lexed: LexedSource,
+    pub tokens: Arc<[Token]>,
     pub errors: Vec<LexError>,
 }
 
 pub fn tokenize(source: &str) -> TokenizeResult {
     let mut lexer = Lexer::new(source);
-    let mut tokens = Vec::new();
+    let mut raw_tokens = Vec::new();
     loop {
-        let token = lexer.scan();
+        let token = lexer.scan_raw();
         let done = token.kind == TokenKind::Eof;
-        tokens.push(token);
+        raw_tokens.push(token);
         if done {
             break;
         }
     }
+    let lexed = build_lexed_source(source, &raw_tokens);
     TokenizeResult {
-        tokens,
+        tokens: Arc::clone(&lexed.tokens),
+        lexed,
         errors: lexer.errors,
     }
 }
@@ -66,7 +70,7 @@ impl<'a> Lexer<'a> {
         lexer
     }
 
-    pub fn scan(&mut self) -> Token {
+    fn scan_raw(&mut self) -> Token {
         if let Some(token) = self.pending.pop_front() {
             return token;
         }
@@ -75,10 +79,7 @@ impl<'a> Lexer<'a> {
         let start = self.pos;
 
         let Some(ch) = self.ch else {
-            return Token {
-                kind: TokenKind::Eof,
-                range: start..self.pos,
-            };
+            return Token::new(TokenKind::Eof, start..self.pos);
         };
 
         if ch == '|' {
@@ -93,67 +94,43 @@ impl<'a> Lexer<'a> {
         let start = self.pos;
 
         let Some(ch) = self.ch else {
-            return Token {
-                kind: TokenKind::Eof,
-                range: start..self.pos,
-            };
+            return Token::new(TokenKind::Eof, start..self.pos);
         };
 
         if ch == '/' {
             if self.is_namespace_start() {
                 self.scan_identifier();
-                return Token {
-                    kind: TokenKind::Ident,
-                    range: start..self.pos,
-                };
+                return Token::new(TokenKind::Ident, start..self.pos);
             }
             self.advance();
-            return Token {
-                kind: TokenKind::Slash,
-                range: start..self.pos,
-            };
+            return Token::new(TokenKind::Slash, start..self.pos);
         }
 
         if ch == '<' && self.is_field_symbol_identifier_start() {
             self.scan_field_symbol_identifier();
-            return Token {
-                kind: TokenKind::Ident,
-                range: start..self.pos,
-            };
+            return Token::new(TokenKind::Ident, start..self.pos);
         }
 
         if is_letter(ch) {
             self.scan_identifier();
-            return Token {
-                kind: TokenKind::Ident,
-                range: start..self.pos,
-            };
+            return Token::new(TokenKind::Ident, start..self.pos);
         }
 
         if ('0'..='9').contains(&ch) {
             self.scan_number();
-            return Token {
-                kind: TokenKind::Number,
-                range: start..self.pos,
-            };
+            return Token::new(TokenKind::Number, start..self.pos);
         }
 
         // Full-line `*` comments: first non-whitespace character on the line is `*`.
         // `"` starts a comment that runs to end of line (ABAP; same as SAP editor after `"`).
         if (ch == '*' && self.line_leading_trivia_is_whitespace_only()) || ch == '"' {
             self.scan_comment();
-            return Token {
-                kind: TokenKind::Comment,
-                range: start..self.pos,
-            };
+            return Token::new(TokenKind::Comment, start..self.pos);
         }
 
         if ch == '#' && self.peek_byte(0) == Some(b'#') {
             self.scan_pragma();
-            return Token {
-                kind: TokenKind::Comment,
-                range: start..self.pos,
-            };
+            return Token::new(TokenKind::Comment, start..self.pos);
         }
 
         // Punctuation / strings: consume the current code point first (Odin `advance` then `switch ch`).
@@ -230,10 +207,7 @@ impl<'a> Lexer<'a> {
             _ => TokenKind::Other,
         };
 
-        Token {
-            kind,
-            range: start..self.pos,
-        }
+        Token::new(kind, start..self.pos)
     }
 
     /// ABAP character string template (`|…|`): literal text with `\|`, `\{`, `\}`, `\\`, `\n`/`\r`/`\t`,
@@ -243,20 +217,14 @@ impl<'a> Lexer<'a> {
         let mut out = Vec::new();
         let p0 = self.pos;
         let p1 = p0 + '|'.len_utf8();
-        out.push(Token {
-            kind: TokenKind::StringTemplate,
-            range: p0..p1,
-        });
+        out.push(Token::new(TokenKind::StringTemplate, p0..p1));
         self.advance();
 
         loop {
             let lit_start = self.pos;
             self.consume_template_literal_fragment();
             if self.pos > lit_start {
-                out.push(Token {
-                    kind: TokenKind::StringTemplateLit,
-                    range: lit_start..self.pos,
-                });
+                out.push(Token::new(TokenKind::StringTemplateLit, lit_start..self.pos));
             }
 
             match self.ch {
@@ -264,20 +232,14 @@ impl<'a> Lexer<'a> {
                     let open = self.pos;
                     let close = open + '|'.len_utf8();
                     self.advance();
-                    out.push(Token {
-                        kind: TokenKind::StringTemplate,
-                        range: open..close,
-                    });
+                    out.push(Token::new(TokenKind::StringTemplate, open..close));
                     return self.defer_tokens(out);
                 }
                 Some('{') => {
                     let b0 = self.pos;
                     let b1 = b0 + '{'.len_utf8();
                     self.advance();
-                    out.push(Token {
-                        kind: TokenKind::LBrace,
-                        range: b0..b1,
-                    });
+                    out.push(Token::new(TokenKind::LBrace, b0..b1));
                     self.scan_embedded_expression(&mut out);
                 }
                 None => {
@@ -303,10 +265,9 @@ impl<'a> Lexer<'a> {
 
     fn defer_tokens(&mut self, tokens: Vec<Token>) -> Token {
         let mut iter = tokens.into_iter();
-        let first = iter.next().unwrap_or_else(|| Token {
-            kind: TokenKind::Eof,
-            range: self.pos..self.pos,
-        });
+        let first = iter
+            .next()
+            .unwrap_or_else(|| Token::new(TokenKind::Eof, self.pos..self.pos));
         self.pending.extend(iter);
         first
     }
@@ -314,7 +275,7 @@ impl<'a> Lexer<'a> {
     fn scan_embedded_expression(&mut self, out: &mut Vec<Token>) {
         let mut depth = 1usize;
         while depth > 0 {
-            let token = self.scan();
+            let token = self.scan_raw();
             if token.kind == TokenKind::Eof {
                 out.push(token);
                 return;
@@ -581,6 +542,124 @@ impl<'a> Lexer<'a> {
     }
 }
 
+fn build_lexed_source(source: &str, raw_tokens: &[Token]) -> LexedSource {
+    let mut tokens: Vec<Token> = Vec::new();
+    let mut trivia = Vec::new();
+    let mut cursor = 0usize;
+    let mut previous_significant: Option<usize> = None;
+    let mut interstitial_start = 0usize;
+
+    for raw in raw_tokens {
+        if cursor < raw.range.start {
+            push_gap_trivia(source, cursor, raw.range.start, &mut trivia);
+        }
+        cursor = raw.range.end;
+
+        if raw.kind == TokenKind::Comment {
+            let kind = if raw.lexeme(source).trim_start().starts_with("##") {
+                TriviaKind::Pragma
+            } else {
+                TriviaKind::Comment
+            };
+            trivia.push(TriviaPiece {
+                kind,
+                range: raw.range.clone(),
+            });
+            continue;
+        }
+
+        let mut token = raw.clone();
+        token.set_index(tokens.len());
+
+        let interstitial = interstitial_start..trivia.len();
+
+        if let Some(prev_idx) = previous_significant {
+            let split = first_newline_piece(&trivia[interstitial.clone()])
+                .map(|rel| interstitial.start + rel)
+                .unwrap_or(interstitial.end);
+            let prev_trailing = TriviaSpan::from_usize(interstitial.start, split);
+            let prev_has_inline_comment =
+                trivia[interstitial.start..split]
+                    .iter()
+                    .any(|piece| matches!(piece.kind, TriviaKind::Comment | TriviaKind::Pragma));
+            tokens[prev_idx].set_trailing_trivia(prev_trailing, prev_has_inline_comment);
+
+            let current_leading = TriviaSpan::from_usize(split, interstitial.end);
+            let current_has_newline =
+                trivia[split..interstitial.end]
+                    .iter()
+                    .any(|piece| piece.kind == TriviaKind::Newline);
+            token.set_leading_trivia(current_leading, current_has_newline);
+        } else {
+            let current_leading = TriviaSpan::from_usize(interstitial.start, interstitial.end);
+            let current_has_newline = trivia[interstitial.clone()]
+                .iter()
+                .any(|piece| piece.kind == TriviaKind::Newline);
+            token.set_leading_trivia(current_leading, current_has_newline);
+        }
+
+        previous_significant = Some(tokens.len());
+        tokens.push(token);
+        interstitial_start = trivia.len();
+    }
+
+    LexedSource {
+        tokens: Arc::from(tokens),
+        trivia: Arc::from(trivia),
+    }
+}
+
+fn first_newline_piece(trivia: &[TriviaPiece]) -> Option<usize> {
+    trivia.iter().position(|piece| piece.kind == TriviaKind::Newline)
+}
+
+fn push_gap_trivia(source: &str, start: usize, end: usize, trivia: &mut Vec<TriviaPiece>) {
+    if start >= end {
+        return;
+    }
+
+    let bytes = source.as_bytes();
+    let mut cursor = start;
+    while cursor < end {
+        let b = bytes[cursor];
+        if b == b'\n' {
+            trivia.push(TriviaPiece {
+                kind: TriviaKind::Newline,
+                range: cursor..cursor + 1,
+            });
+            cursor += 1;
+            continue;
+        }
+        if b == b'\r' {
+            let next = if cursor + 1 < end && bytes[cursor + 1] == b'\n' {
+                cursor + 2
+            } else {
+                cursor + 1
+            };
+            trivia.push(TriviaPiece {
+                kind: TriviaKind::Newline,
+                range: cursor..next,
+            });
+            cursor = next;
+            continue;
+        }
+
+        let piece_start = cursor;
+        while cursor < end && matches!(bytes[cursor], b' ' | b'\t') {
+            cursor += 1;
+        }
+        if cursor > piece_start {
+            trivia.push(TriviaPiece {
+                kind: TriviaKind::Whitespace,
+                range: piece_start..cursor,
+            });
+            continue;
+        }
+
+        cursor += 1;
+    }
+}
+
 #[inline]
 fn is_unicode_letter(c: char) -> bool {
     matches!(
@@ -611,7 +690,7 @@ fn is_pragma_char(c: char) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::token::TokenKind;
+    use crate::token::{TokenKind, TriviaKind};
 
     #[test]
     fn skips_whitespace_and_emits_eof() {
@@ -645,17 +724,28 @@ mod tests {
     #[test]
     fn line_comment_star_and_string_pragma() {
         let r = tokenize("* line\nDATA");
-        assert_eq!(r.tokens[0].kind, TokenKind::Comment);
-        assert_eq!(r.tokens[1].kind, TokenKind::Ident);
+        assert_eq!(r.tokens[0].kind, TokenKind::Ident);
+        let leading = r.lexed.leading_trivia(&r.tokens[0]);
+        assert_eq!(leading.len(), 2);
+        assert_eq!(leading[0].kind, TriviaKind::Comment);
+        assert_eq!(leading[0].lexeme("* line\nDATA"), "* line");
+        assert_eq!(leading[1].kind, TriviaKind::Newline);
 
         let ind = tokenize("  * indented star comment\nDATA");
-        assert_eq!(ind.tokens[0].kind, TokenKind::Comment);
-        assert_eq!(ind.tokens[1].kind, TokenKind::Ident);
+        assert_eq!(ind.tokens[0].kind, TokenKind::Ident);
+        let ind_leading = ind.lexed.leading_trivia(&ind.tokens[0]);
+        assert_eq!(ind_leading.len(), 3);
+        assert_eq!(ind_leading[0].kind, TriviaKind::Whitespace);
+        assert_eq!(ind_leading[1].kind, TriviaKind::Comment);
+        assert_eq!(ind_leading[2].kind, TriviaKind::Newline);
 
         let p = tokenize("##ENH_OK DATA");
-        assert_eq!(p.tokens[0].kind, TokenKind::Comment);
-        assert_eq!(p.tokens[0].lexeme("##ENH_OK DATA"), "##ENH_OK");
-        assert_eq!(p.tokens[1].kind, TokenKind::Ident);
+        assert_eq!(p.tokens[0].kind, TokenKind::Ident);
+        let leading_pragma = p.lexed.leading_trivia(&p.tokens[0]);
+        assert_eq!(leading_pragma.len(), 2);
+        assert_eq!(leading_pragma[0].kind, TriviaKind::Pragma);
+        assert_eq!(leading_pragma[0].lexeme("##ENH_OK DATA"), "##ENH_OK");
+        assert_eq!(leading_pragma[1].kind, TriviaKind::Whitespace);
     }
 
     #[test]

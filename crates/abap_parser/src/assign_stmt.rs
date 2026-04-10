@@ -8,7 +8,7 @@ use crate::expr::parse_arithmetic_expr;
 use crate::stmt_period::{is_definite_stmt_lead_keyword, token_begins_line, unterminated_err_end};
 
 fn token_leaf(b: &mut SyntaxTreeBuilder, token: &Token) -> NodeId {
-    b.leaf(SyntaxKind::Token, token.range.clone())
+    b.token_leaf(SyntaxKind::Token, token.range.clone(), token.index(), token.kind)
 }
 
 #[inline]

@@ -11,7 +11,7 @@
 //! [`crate::SyntaxTreeBuilder`] is what the workspace parser uses. [`crate::SyntaxNode`] remains
 //! for tests and for [`SyntaxTree::from_nested`].
 
-use abap_lexer::TextRange;
+use abap_lexer::{TextRange, TokenKind};
 
 use crate::SyntaxKind;
 
@@ -26,6 +26,8 @@ struct ArenaNode {
     end: u32,
     first_child: u32,
     child_count: u32,
+    token_index: u32,
+    token_kind: Option<TokenKind>,
 }
 
 /// Immutable syntax tree in arena layout.
@@ -57,6 +59,17 @@ impl SyntaxTree {
         let s = n.first_child as usize;
         let e = s + n.child_count as usize;
         self.child_indices[s..e].iter().copied().map(NodeId)
+    }
+
+    #[inline]
+    pub fn token_index(&self, id: NodeId) -> Option<usize> {
+        let index = self.nodes[id.0 as usize].token_index;
+        (index != u32::MAX).then_some(index as usize)
+    }
+
+    #[inline]
+    pub fn token_kind(&self, id: NodeId) -> Option<TokenKind> {
+        self.nodes[id.0 as usize].token_kind
     }
 
     /// First node in preorder under `start` (including `start`) with `kind`.
@@ -126,6 +139,30 @@ impl SyntaxTreeBuilder {
             end: range.end as u32,
             first_child: 0,
             child_count: 0,
+            token_index: u32::MAX,
+            token_kind: None,
+        });
+        NodeId(id)
+    }
+
+    pub fn token_leaf(
+        &mut self,
+        kind: SyntaxKind,
+        range: TextRange,
+        token_index: usize,
+        token_kind: TokenKind,
+    ) -> NodeId {
+        assert!(range.start <= u32::MAX as usize && range.end <= u32::MAX as usize);
+        assert!(token_index <= u32::MAX as usize);
+        let id = self.nodes.len() as u32;
+        self.nodes.push(ArenaNode {
+            kind,
+            start: range.start as u32,
+            end: range.end as u32,
+            first_child: 0,
+            child_count: 0,
+            token_index: token_index as u32,
+            token_kind: Some(token_kind),
         });
         NodeId(id)
     }
@@ -143,6 +180,8 @@ impl SyntaxTreeBuilder {
             end: range.end as u32,
             first_child,
             child_count: children.len() as u32,
+            token_index: u32::MAX,
+            token_kind: None,
         });
         NodeId(id)
     }

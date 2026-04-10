@@ -17,7 +17,7 @@ use std::sync::Arc;
 use abap_ast::arena::NodeId;
 use abap_ast::ast::{AstNode, CallArgList, DeclClause, TypeClauseKind, TypeRefSimple};
 use abap_ast::{File, SyntaxKind};
-use abap_lexer::{TextRange, Token};
+use abap_lexer::{TextRange, Token, TokenKind};
 
 use crate::def_map::{
     ClassInheritanceData, ClassMemberData, Diagnostic, FieldAccess, FieldTypeRefData,
@@ -74,6 +74,8 @@ struct PendingMethodSignature {
 pub(super) struct SyntaxTokenInfo {
     range: TextRange,
     text: Arc<str>,
+    _index: usize,
+    kind: TokenKind,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -690,7 +692,7 @@ impl<'a> Collector<'a> {
     }
 
     fn syntax_token_is_comment(&self, token: &SyntaxTokenInfo) -> bool {
-        token.text.trim_start().starts_with('"') || token.text.trim_start().starts_with("##")
+        token.kind == TokenKind::Comment
     }
 
     fn syntax_token_is_ident_like(&self, token: &SyntaxTokenInfo) -> bool {

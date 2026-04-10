@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::SyntaxKind;
 use crate::arena::{NodeId, SyntaxTree};
-use abap_lexer::TextRange;
+use abap_lexer::{LexedSource, TextRange, Token, TokenKind, TriviaPiece};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MethodsStmtKind {
@@ -130,6 +130,24 @@ impl<'a> SyntaxNodeRef<'a> {
         source.get(self.range())
     }
 
+    pub fn token_index(self) -> Option<usize> {
+        self.tree.token_index(self.id)
+    }
+
+    pub fn token_kind(self) -> Option<TokenKind> {
+        self.tree.token_kind(self.id)
+    }
+
+    pub fn as_token(self, lexed: &'a LexedSource) -> Option<SyntaxTokenRef<'a>> {
+        let index = self.token_index()?;
+        let token = lexed.token(index)?;
+        Some(SyntaxTokenRef {
+            syntax: self,
+            lexed,
+            token,
+        })
+    }
+
     pub fn lower_trimmed_text(self, source: &str) -> Option<Arc<str>> {
         let lowered = self.text(source)?.trim().to_ascii_lowercase();
         if lowered.is_empty() {
@@ -186,6 +204,59 @@ impl<'a> SyntaxNodeRef<'a> {
         for child in self.children() {
             child.push_token_descendants(out);
         }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct SyntaxTokenRef<'a> {
+    syntax: SyntaxNodeRef<'a>,
+    lexed: &'a LexedSource,
+    token: &'a Token,
+}
+
+impl<'a> SyntaxTokenRef<'a> {
+    pub fn syntax(self) -> SyntaxNodeRef<'a> {
+        self.syntax
+    }
+
+    pub fn token(self) -> &'a Token {
+        self.token
+    }
+
+    pub fn kind(self) -> TokenKind {
+        self.token.kind
+    }
+
+    pub fn text(self, source: &'a str) -> &'a str {
+        self.token.lexeme(source)
+    }
+
+    pub fn has_newline_before(self) -> bool {
+        self.lexed.has_newline_before(self.token)
+    }
+
+    pub fn has_trailing_inline_comment(self) -> bool {
+        self.token.has_trailing_inline_comment()
+    }
+
+    pub fn leading_trivia(self) -> &'a [TriviaPiece] {
+        self.lexed.leading_trivia(self.token)
+    }
+
+    pub fn trailing_trivia(self) -> &'a [TriviaPiece] {
+        self.lexed.trailing_trivia(self.token)
+    }
+
+    pub fn leading_comments(self) -> impl Iterator<Item = &'a TriviaPiece> + 'a {
+        self.lexed.leading_comments(self.token)
+    }
+
+    pub fn trailing_comments(self) -> impl Iterator<Item = &'a TriviaPiece> + 'a {
+        self.lexed.trailing_comments(self.token)
+    }
+
+    pub fn trailing_inline_comment(self) -> Option<&'a TriviaPiece> {
+        self.lexed.trailing_inline_comment(self.token)
     }
 }
 
@@ -526,9 +597,6 @@ impl<'a> MethodsStmt<'a> {
             let Some(text) = child.text(source) else {
                 continue;
             };
-            if Self::is_comment_text(text) {
-                continue;
-            }
             if text == "." {
                 break;
             }
@@ -629,19 +697,8 @@ impl<'a> MethodsStmt<'a> {
     }
 
     fn significant_children(self, source: &str) -> Vec<SyntaxNodeRef<'a>> {
-        self.syntax
-            .children()
-            .filter(|child| {
-                child
-                    .text(source)
-                    .map(|text| !Self::is_comment_text(text))
-                    .unwrap_or(true)
-            })
-            .collect()
-    }
-
-    fn is_comment_text(text: &str) -> bool {
-        text.trim_start().starts_with('"')
+        let _ = source;
+        self.syntax.children().collect()
     }
 
     fn token_text_is(node: SyntaxNodeRef<'a>, source: &str, expected: &str) -> bool {

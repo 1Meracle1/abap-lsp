@@ -15,7 +15,7 @@ use abap_ast::arena::{NodeId, SyntaxTreeBuilder};
 use abap_lexer::{Token, TokenKind, have_space_between};
 
 fn token_leaf(b: &mut SyntaxTreeBuilder, token: &Token) -> NodeId {
-    b.leaf(SyntaxKind::Token, token.range.clone())
+    b.token_leaf(SyntaxKind::Token, token.range.clone(), token.index(), token.kind)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1485,10 +1485,7 @@ pub fn parse_arithmetic_expr(
         return b.branch(SyntaxKind::TemplateExpr, 0..0, &[]);
     }
 
-    let sentinel = Token {
-        kind: TokenKind::Other,
-        range: tokens[0].range.start..tokens[0].range.start,
-    };
+    let sentinel = Token::new(TokenKind::Other, tokens[0].range.start..tokens[0].range.start);
     let initial_prev = prev_before_first.unwrap_or(&sentinel);
 
     let mut p = Parser {
@@ -1531,10 +1528,7 @@ pub fn parse_logical_expr(
         return b.branch(SyntaxKind::TemplateExpr, 0..0, &[]);
     }
 
-    let sentinel = Token {
-        kind: TokenKind::Other,
-        range: tokens[0].range.start..tokens[0].range.start,
-    };
+    let sentinel = Token::new(TokenKind::Other, tokens[0].range.start..tokens[0].range.start);
     let initial_prev = prev_before_first.unwrap_or(&sentinel);
 
     let mut p = Parser {

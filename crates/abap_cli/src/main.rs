@@ -250,7 +250,7 @@ fn run() -> Result<i32, String> {
 
     match cli.command {
         Command::Lex => {
-            let abap_lexer::TokenizeResult { tokens, errors } = tokenize(&source);
+            let abap_lexer::TokenizeResult { tokens, errors, .. } = tokenize(&source);
             if cli.json_output {
                 let err_val: Vec<Value> = errors
                     .iter()

@@ -9,7 +9,7 @@ use crate::stmt_period::{StmtPeriodScan, scan_until_statement_period, unterminat
 use crate::type_ref::build_type_ref_node;
 
 fn token_leaf(b: &mut SyntaxTreeBuilder, token: &Token) -> NodeId {
-    b.leaf(SyntaxKind::Token, token.range.clone())
+    b.token_leaf(SyntaxKind::Token, token.range.clone(), token.index(), token.kind)
 }
 
 fn token_matches_keyword(source: &str, token: &Token, keyword: &str) -> bool {

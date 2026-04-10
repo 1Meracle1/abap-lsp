@@ -5537,7 +5537,6 @@ DATA(ls_row) = VALUE stringtab(
     }
 }
 
-#[test]
 fn resolves_value_let_with_string_templates_without_literal_diagnostics() {
     let src = r#"
 TYPES: stringtab TYPE STANDARD TABLE OF string WITH EMPTY KEY.

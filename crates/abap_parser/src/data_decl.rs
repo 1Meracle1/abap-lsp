@@ -8,7 +8,7 @@ use crate::stmt_period::{StmtPeriodScan, scan_until_statement_period, unterminat
 use crate::type_ref::parse_type_ref_tokens;
 
 fn token_leaf(b: &mut SyntaxTreeBuilder, token: &Token) -> NodeId {
-    b.leaf(SyntaxKind::Token, token.range.clone())
+    b.token_leaf(SyntaxKind::Token, token.range.clone(), token.index(), token.kind)
 }
 
 #[inline]

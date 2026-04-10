@@ -4,7 +4,7 @@ use std::sync::Arc;
 use abap_ast::SyntaxKind;
 use abap_ast::arena::NodeId;
 use abap_ast::ast::{AstNode, ExprIdent, SelectorExpr, SyntaxNodeRef};
-use abap_lexer::TextRange;
+use abap_lexer::{TextRange, TokenKind};
 
 use crate::def_map::{FieldAccess, FieldAccessSegment, StructureData, SymbolData, SymbolKind};
 use crate::ids::{ScopeId, StructureId, SymbolId};
@@ -150,11 +150,6 @@ impl<'a> Collector<'a> {
             .filter(|&child| self.file.kind(child) == SyntaxKind::Token)
             .map(|child| self.syntax(child))
             .take_while(|token| token.text(self.source) != Some("."))
-            .filter(|token| {
-                token
-                    .text(self.source)
-                    .is_some_and(|text| !text.trim_start().starts_with('"'))
-            })
             .collect();
         let (first, last) = match tokens.as_slice() {
             [token]
@@ -267,6 +262,8 @@ impl<'a> Collector<'a> {
                 Some(SyntaxTokenInfo {
                     range: token_node.range(),
                     text: Arc::<str>::from(text),
+                    _index: token_node.token_index()?,
+                    kind: token_node.token_kind().unwrap_or(TokenKind::Other),
                 })
             })
             .collect()

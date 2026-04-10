@@ -5,19 +5,8 @@ use abap_lexer::{Token, TokenKind};
 
 #[inline]
 pub(crate) fn token_begins_line(source: &str, tok: &Token) -> bool {
-    let start = tok.range.start;
-    if start == 0 {
-        return true;
-    }
-    let bytes = source.as_bytes();
-    let mut p = start;
-    while p > 0 && matches!(bytes.get(p - 1), Some(b' ' | b'\t' | b'\r')) {
-        p -= 1;
-    }
-    if p == 0 {
-        return true;
-    }
-    bytes[p - 1] == b'\n'
+    let _ = source;
+    tok.range.start == 0 || tok.has_newline_before()
 }
 
 #[inline]

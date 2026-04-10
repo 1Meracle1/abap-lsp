@@ -14,6 +14,7 @@ mod type_ref;
 use crate::stmt_period::is_definite_stmt_lead_keyword;
 use abap_ast::SyntaxKind;
 use abap_ast::arena::{NodeId, SyntaxTreeBuilder};
+use std::sync::Arc;
 use abap_lexer::Token;
 use abap_lexer::TokenKind;
 
@@ -206,7 +207,7 @@ pub use expr::{parse_arithmetic_expr, parse_logical_expr};
 pub use interner::{Interner, Symbol};
 
 use abap_ast::File;
-use abap_lexer::{TextRange, TokenizeResult, tokenize};
+use abap_lexer::{LexedSource, TextRange, TokenizeResult, tokenize};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParseError {
@@ -217,7 +218,8 @@ pub struct ParseError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParseResult {
     pub file: File,
-    pub tokens: Vec<Token>,
+    pub lexed: LexedSource,
+    pub tokens: Arc<[Token]>,
     pub token_symbols: Vec<Option<Symbol>>,
     pub interner: Interner,
     pub errors: Vec<ParseError>,
@@ -225,6 +227,7 @@ pub struct ParseResult {
 
 pub fn parse(source: &str) -> ParseResult {
     let TokenizeResult {
+        lexed,
         tokens,
         errors: lex_errors,
     } = tokenize(source);
@@ -249,6 +252,7 @@ pub fn parse(source: &str) -> ParseResult {
 
     ParseResult {
         file,
+        lexed,
         tokens,
         token_symbols,
         interner,
@@ -323,12 +327,26 @@ mod tests {
     }
 
     #[test]
+    #[allow(unreachable_code)]
     fn file_level_quote_comment_does_not_merge_into_next_statement() {
         let src = "DATA lv TYPE i.\n\" trailing line comment\nlv = 1.";
         let parsed = parse(src);
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
         let root = parsed.file.root();
         let kids: Vec<_> = parsed.file.children(root).collect();
+        assert_eq!(kids.len(), 2, "expected DATA and assignment - got {}", kids.len());
+        let assign_token = parsed
+            .tokens
+            .iter()
+            .find(|token| token.lexeme(src).eq_ignore_ascii_case("lv") && token.has_newline_before())
+            .expect("assignment token");
+        assert!(
+            parsed
+                .lexed
+                .leading_comments(assign_token)
+                .any(|piece| piece.lexeme(src).trim_start().starts_with('"'))
+        );
+        return;
         assert!(
             kids.len() >= 3,
             "expected DATA, comment token, assignment — got {} children",
