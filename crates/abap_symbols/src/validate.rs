@@ -1946,6 +1946,8 @@ pub(crate) fn validate_project_with_scope_indexes(
             {
                 let class_unit = &project.units[class_unit_idx];
                 let class_name = Arc::clone(&class_unit.symbol(class_symbol_id).name);
+                let mut structure_tail: Option<(&crate::UnitAnalysis, StructureId)> = None;
+                let mut structure_holder: Option<Arc<str>> = None;
                 if !requires_static && field_path.len() >= 2 {
                     let class_handle = SymbolHandle {
                         unit: class_unit.unit_id,
@@ -1968,6 +1970,45 @@ pub(crate) fn validate_project_with_scope_indexes(
                     }
                 }
                 for (idx, step) in field_path.iter().enumerate() {
+                    if let Some((structure_unit, structure_id)) = structure_tail {
+                        let holder = structure_holder.as_deref().unwrap_or("?");
+                        let Some(field) = resolve_structure_field_info_project(
+                            project,
+                            scope_indexes,
+                            structure_unit,
+                            access.scope,
+                            structure_id,
+                            step.name.as_ref(),
+                        ) else {
+                            unit_diagnostics.push(Diagnostic {
+                                kind: DiagnosticKind::UnknownField,
+                                range: step.range.clone(),
+                                message: format!(
+                                    "unknown field '{}' for '{}->{}'",
+                                    step.name, class_name, holder
+                                ),
+                            });
+                            break;
+                        };
+                        if idx + 1 == field_path.len() {
+                            break;
+                        }
+                        let StructureFieldShape::Structured { structure } = field.shape else {
+                            let next_step = &field_path[idx + 1];
+                            unit_diagnostics.push(Diagnostic {
+                                kind: DiagnosticKind::UnknownField,
+                                range: next_step.range.clone(),
+                                message: format!(
+                                    "unknown field '{}' for '{}->{}'",
+                                    next_step.name, class_name, holder
+                                ),
+                            });
+                            break;
+                        };
+                        structure_tail = Some((structure_unit, structure));
+                        continue;
+                    }
+
                     let Some((member_unit, member)) = resolve_class_member_in_hierarchy(
                         project,
                         class_unit,
@@ -2008,7 +2049,10 @@ pub(crate) fn validate_project_with_scope_indexes(
                         });
                         break;
                     }
-                    if idx + 1 != field_path.len() {
+                    if idx + 1 == field_path.len() {
+                        break;
+                    }
+                    let Some(next_structure) = member.structure else {
                         let next_step = &field_path[idx + 1];
                         unit_diagnostics.push(Diagnostic {
                             kind: DiagnosticKind::UnknownField,
@@ -2019,7 +2063,9 @@ pub(crate) fn validate_project_with_scope_indexes(
                             ),
                         });
                         break;
-                    }
+                    };
+                    structure_tail = Some((member_unit, next_structure));
+                    structure_holder = Some(Arc::clone(&member.name));
                 }
                 continue;
             }

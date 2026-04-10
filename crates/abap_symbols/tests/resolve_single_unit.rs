@@ -2746,6 +2746,52 @@ START-OF-SELECTION.
 }
 
 #[test]
+fn resolves_grouped_class_constants_via_me_instance_selector() {
+    let src = r#"
+CLASS zcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS get_value RETURNING VALUE(rv_value) TYPE i.
+  PRIVATE SECTION.
+    CONSTANTS:
+      BEGIN OF gcs_struct_field,
+        p0 TYPE i VALUE 1,
+        p1 TYPE i VALUE 2,
+      END OF gcs_struct_field.
+ENDCLASS.
+
+CLASS zcl_demo IMPLEMENTATION.
+  METHOD get_value.
+    rv_value = me->gcs_struct_field-p0.
+  ENDMETHOD.
+ENDCLASS.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///grouped_class_constants_me.abap", src, &parsed);
+
+    assert!(
+        unit.field_accesses.iter().any(|access| {
+            access.base_namespace == Namespace::Value
+                && access.base_name.as_ref() == "me"
+                && access
+                    .field_path
+                    .iter()
+                    .any(|s| s.name.as_ref() == "gcs_struct_field")
+                && access.field_path.iter().any(|s| s.name.as_ref() == "p0")
+        }),
+        "expected instance selector metadata for grouped constants, accesses={:?}",
+        unit.field_accesses
+    );
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnknownField
+                && (diag.message.contains("gcs_struct_field") || diag.message.contains("p0"))
+        }),
+        "unexpected unknown-field diagnostic for grouped constant component via me->: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn resolves_class_definition_members_inside_implementation_methods() {
     let src = r#"
 CLASS zcl_ast_node DEFINITION ABSTRACT.

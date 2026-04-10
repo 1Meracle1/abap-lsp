@@ -348,24 +348,22 @@ impl AnalysisSnapshot {
                     in_type_position: access.in_type_position,
                 });
             }
-            let (structure_unit, structure_id) = resolve_symbol_structure_with_scope_index(
+            let Some((field_unit, field)) = resolve_field_access_component_with_scope_index(
                 self,
                 self.scope_index(),
+                access,
+                segment_index,
                 unit,
-                access.scope,
                 symbol_id,
-            )?;
-            let field_path: Vec<_> = access
-                .field_path
-                .iter()
-                .take(segment_index + 1)
-                .map(|segment| segment.name.as_ref())
-                .collect();
-            let Some(field) = structure_unit
-                .semantic()
-                .decls()
-                .resolve_structure_field_path(structure_id, &field_path)
-            else {
+            ) else {
+                let (structure_unit, structure_id) = resolve_field_access_container_structure_with_scope_index(
+                    self,
+                    self.scope_index(),
+                    access,
+                    segment_index,
+                    unit,
+                    symbol_id,
+                )?;
                 let inferred = inferred_ddic_data_element_target(
                     self,
                     structure_unit,
@@ -394,11 +392,11 @@ impl AnalysisSnapshot {
             let kind = match field.shape {
                 StructureFieldShape::Scalar => HoveredComponentKind::Scalar,
                 StructureFieldShape::Structured { structure } => HoveredComponentKind::Structured {
-                    structure_name: Arc::clone(&structure_unit.structure(structure).name),
+                    structure_name: Arc::clone(&field_unit.structure(structure).name),
                 },
             };
             let field_owner_structure_name =
-                Some(Arc::clone(&structure_unit.structure(field.owner).name));
+                Some(Arc::clone(&field_unit.structure(field.owner).name));
             return Some(HoveredComponentInfo {
                 base_name: Arc::clone(&access.base_name),
                 base_namespace: access.base_namespace,
@@ -642,24 +640,22 @@ impl AnalysisSnapshot {
             {
                 return Some(definition_target_for_class_member(member_unit, member));
             }
-            let (structure_unit, structure_id) = resolve_symbol_structure_with_scope_index(
+            let Some((_field_unit, field)) = resolve_field_access_component_with_scope_index(
                 self,
                 self.scope_index(),
+                access,
+                segment_index,
                 unit,
-                access.scope,
                 symbol_id,
-            )?;
-            let field_path: Vec<_> = access
-                .field_path
-                .iter()
-                .take(segment_index + 1)
-                .map(|segment| segment.name.as_ref())
-                .collect();
-            let Some(field) = structure_unit
-                .semantic()
-                .decls()
-                .resolve_structure_field_path(structure_id, &field_path)
-            else {
+            ) else {
+                let (structure_unit, structure_id) = resolve_field_access_container_structure_with_scope_index(
+                    self,
+                    self.scope_index(),
+                    access,
+                    segment_index,
+                    unit,
+                    symbol_id,
+                )?;
                 return inferred_ddic_data_element_target(
                     self,
                     structure_unit,
@@ -727,23 +723,14 @@ impl AnalysisSnapshot {
                     name: Arc::clone(&member.name),
                 });
             }
-            let (structure_unit, structure_id) = resolve_symbol_structure_with_scope_index(
+            let (structure_unit, field) = resolve_field_access_component_with_scope_index(
                 self,
                 self.scope_index(),
+                access,
+                segment_index,
                 unit,
-                access.scope,
                 symbol_id,
             )?;
-            let field_path: Vec<_> = access
-                .field_path
-                .iter()
-                .take(segment_index + 1)
-                .map(|segment| segment.name.as_ref())
-                .collect();
-            let field = structure_unit
-                .semantic()
-                .decls()
-                .resolve_structure_field_path(structure_id, &field_path)?;
             return Some(ReferenceSearchTarget::StructField {
                 unit: field.owner_unit,
                 owner: structure_unit.structure(field.owner).origin_structure,
@@ -1128,31 +1115,20 @@ impl AnalysisSnapshot {
             let Some((unit, symbol_id)) = resolve_field_access_base_symbol(self, access) else {
                 continue;
             };
-            let Some((structure_unit, structure_id)) = resolve_symbol_structure_with_scope_index(
-                self,
-                self.scope_index(),
-                unit,
-                access.scope,
-                symbol_id,
-            ) else {
-                continue;
-            };
             for segment_index in 0..access.field_path.len() {
                 if resolve_class_selector_member(self, access, segment_index, unit, symbol_id)
                     .is_some()
                 {
                     continue;
                 }
-                let field_path: Vec<_> = access
-                    .field_path
-                    .iter()
-                    .take(segment_index + 1)
-                    .map(|segment| segment.name.as_ref())
-                    .collect();
-                let Some(field) = structure_unit
-                    .semantic()
-                    .decls()
-                    .resolve_structure_field_path(structure_id, &field_path)
+                let Some((structure_unit, field)) = resolve_field_access_component_with_scope_index(
+                    self,
+                    self.scope_index(),
+                    access,
+                    segment_index,
+                    unit,
+                    symbol_id,
+                )
                 else {
                     continue;
                 };
@@ -1219,28 +1195,17 @@ impl AnalysisSnapshot {
             &query.base_name,
             query.in_type_position,
         )?;
-        let (structure_unit, mut structure_id) = resolve_symbol_structure_with_scope_index(
+        let (structure_unit, structure_id) = resolve_selector_component_path_structure_with_scope_index(
             self,
             self.scope_index(),
-            unit,
             query.scope,
+            query.base_namespace,
+            &query.base_name,
+            query.in_type_position,
+            unit,
             symbol_id,
+            &query.component_path,
         )?;
-        if !query.component_path.is_empty() {
-            let path: Vec<_> = query
-                .component_path
-                .iter()
-                .map(|part| part.as_ref())
-                .collect();
-            let field = structure_unit
-                .semantic()
-                .decls()
-                .resolve_structure_field_path(structure_id, &path)?;
-            structure_id = match field.shape {
-                StructureFieldShape::Structured { structure } => structure,
-                StructureFieldShape::Scalar => return None,
-            };
-        }
 
         let mut items: Vec<_> = structure_unit
             .semantic()
@@ -2665,6 +2630,175 @@ fn resolve_field_access_structure_with_scope_index<'a>(
     Some((current_unit, current_structure))
 }
 
+fn resolve_field_access_container_structure_with_scope_index<'a>(
+    snapshot: &'a AnalysisSnapshot,
+    scope_index: &ScopeIndex,
+    access: &abap_symbols::FieldAccess,
+    segment_index: usize,
+    unit: &'a UnitAnalysis,
+    symbol_id: SymbolId,
+) -> Option<(&'a UnitAnalysis, StructureId)> {
+    if access.field_path.is_empty() || segment_index >= access.field_path.len() {
+        return None;
+    }
+
+    if segment_index > 0
+        && let Some((member_unit, member)) = resolve_class_selector_member_with_scope_index(
+            snapshot,
+            scope_index,
+            access,
+            0,
+            unit,
+            symbol_id,
+        )
+    {
+        let mut structure_id = member.structure?;
+        let lookup_scope = if member_unit.scopes.get(access.scope.as_usize()).is_some() {
+            access.scope
+        } else {
+            member_unit.root_scope
+        };
+        for segment in &access.field_path[1..segment_index] {
+            let field = resolve_structure_field_info_with_scope_index(
+                snapshot,
+                scope_index,
+                member_unit,
+                lookup_scope,
+                structure_id,
+                segment.name.as_ref(),
+            )?;
+            structure_id = match field.shape {
+                StructureFieldShape::Structured { structure } => structure,
+                StructureFieldShape::Scalar => return None,
+            };
+        }
+        return Some((member_unit, structure_id));
+    }
+
+    let (structure_unit, mut structure_id) = resolve_symbol_structure_with_scope_index(
+        snapshot,
+        scope_index,
+        unit,
+        access.scope,
+        symbol_id,
+    )?;
+    for segment in &access.field_path[..segment_index] {
+        let field = resolve_structure_field_info_with_scope_index(
+            snapshot,
+            scope_index,
+            structure_unit,
+            access.scope,
+            structure_id,
+            segment.name.as_ref(),
+        )?;
+        structure_id = match field.shape {
+            StructureFieldShape::Structured { structure } => structure,
+            StructureFieldShape::Scalar => return None,
+        };
+    }
+    Some((structure_unit, structure_id))
+}
+
+fn resolve_field_access_component_with_scope_index<'a>(
+    snapshot: &'a AnalysisSnapshot,
+    scope_index: &ScopeIndex,
+    access: &abap_symbols::FieldAccess,
+    segment_index: usize,
+    unit: &'a UnitAnalysis,
+    symbol_id: SymbolId,
+) -> Option<(&'a UnitAnalysis, StructureFieldInfo)> {
+    let (structure_unit, structure_id) = resolve_field_access_container_structure_with_scope_index(
+        snapshot,
+        scope_index,
+        access,
+        segment_index,
+        unit,
+        symbol_id,
+    )?;
+    let field = resolve_structure_field_info_with_scope_index(
+        snapshot,
+        scope_index,
+        structure_unit,
+        access.scope,
+        structure_id,
+        access.field_path[segment_index].name.as_ref(),
+    )?;
+    Some((structure_unit, field))
+}
+
+fn resolve_selector_component_path_structure_with_scope_index<'a>(
+    snapshot: &'a AnalysisSnapshot,
+    scope_index: &ScopeIndex,
+    scope: ScopeId,
+    base_namespace: Namespace,
+    base_name: &Arc<str>,
+    in_type_position: bool,
+    unit: &'a UnitAnalysis,
+    symbol_id: SymbolId,
+    component_path: &[Arc<str>],
+) -> Option<(&'a UnitAnalysis, StructureId)> {
+    let mut current_unit = unit;
+    let mut current_structure = None;
+    let mut start_idx = 0usize;
+
+    if !component_path.is_empty() {
+        let synthetic_access = abap_symbols::FieldAccess {
+            scope,
+            base_namespace,
+            base_name: Arc::clone(base_name),
+            field_path: component_path
+                .iter()
+                .map(|name| abap_symbols::FieldAccessSegment {
+                    name: Arc::clone(name),
+                    range: 0..0,
+                })
+                .collect(),
+            in_type_position,
+        };
+        if let Some((member_unit, member)) = resolve_class_selector_member_with_scope_index(
+            snapshot,
+            scope_index,
+            &synthetic_access,
+            0,
+            unit,
+            symbol_id,
+        ) {
+            current_unit = member_unit;
+            current_structure = Some(member.structure?);
+            start_idx = 1;
+        }
+    }
+
+    let mut structure_id = match current_structure {
+        Some(structure_id) => structure_id,
+        None => resolve_symbol_structure_with_scope_index(
+            snapshot,
+            scope_index,
+            current_unit,
+            scope,
+            symbol_id,
+        )?
+        .1,
+    };
+
+    for segment in &component_path[start_idx..] {
+        let field = resolve_structure_field_info_with_scope_index(
+            snapshot,
+            scope_index,
+            current_unit,
+            scope,
+            structure_id,
+            segment.as_ref(),
+        )?;
+        structure_id = match field.shape {
+            StructureFieldShape::Structured { structure } => structure,
+            StructureFieldShape::Scalar => return None,
+        };
+    }
+
+    Some((current_unit, structure_id))
+}
+
 fn resolve_loop_where_source_structure_with_scope_index<'a>(
     snapshot: &'a AnalysisSnapshot,
     scope_index: &ScopeIndex,
@@ -3847,23 +3981,14 @@ fn classify_field_access_segment_with_scope_index(
         return Some(hovered_component_kind_for_class_member(member));
     }
 
-    let (structure_unit, structure_id) = resolve_symbol_structure_with_scope_index(
+    let (structure_unit, field) = resolve_field_access_component_with_scope_index(
         snapshot,
         scope_index,
+        access,
+        segment_index,
         unit,
-        access.scope,
         symbol_id,
     )?;
-    let field_path: Vec<_> = access
-        .field_path
-        .iter()
-        .take(segment_index + 1)
-        .map(|segment| segment.name.as_ref())
-        .collect();
-    let field = structure_unit
-        .semantic()
-        .decls()
-        .resolve_structure_field_path(structure_id, &field_path)?;
     Some(match field.shape {
         StructureFieldShape::Scalar => HoveredComponentKind::Scalar,
         StructureFieldShape::Structured { structure } => HoveredComponentKind::Structured {
@@ -6580,6 +6705,52 @@ ls_outer-inner-alpha = 1.";
     }
 
     #[test]
+    fn hover_and_definition_work_for_structure_field_under_class_member_selector() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS zcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS get_value RETURNING VALUE(rv_value) TYPE i.
+  PRIVATE SECTION.
+    CONSTANTS:
+      BEGIN OF gcs_struct_field,
+        p0 TYPE i VALUE 1,
+        p1 TYPE i VALUE 2,
+      END OF gcs_struct_field.
+ENDCLASS.
+
+CLASS zcl_demo IMPLEMENTATION.
+  METHOD get_value.
+    rv_value = me->gcs_struct_field-p0.
+  ENDMETHOD.
+ENDCLASS.";
+        let snapshot = store.publish("file:///demo.abap", 1, src);
+        let field_use = src.rfind("p0").expect("field use");
+
+        let hovered = snapshot
+            .hovered_component_at(field_use + 1)
+            .expect("hovered component");
+        assert_eq!(hovered.base_name.as_ref(), "me");
+        assert_eq!(
+            hovered
+                .component_path
+                .iter()
+                .map(|part| part.as_ref())
+                .collect::<Vec<_>>(),
+            vec!["gcs_struct_field", "p0"]
+        );
+        assert_eq!(hovered.field_name.as_ref(), "p0");
+        assert_eq!(hovered.declared_type.as_deref(), Some("TYPE i"));
+        assert!(matches!(hovered.kind, HoveredComponentKind::Scalar));
+
+        let target = snapshot
+            .definition_at(field_use + 1)
+            .expect("definition target");
+        assert_target_slice(&target, "file:///demo.abap", src, "p0");
+        assert_eq!(target.range.start, src.find("p0 TYPE i").expect("field declaration"));
+    }
+
+    #[test]
     fn definition_at_returns_named_argument_parameter_declaration() {
         let store = DocumentStore::default();
         let src = "\
@@ -6753,6 +6924,46 @@ ls_outer-inner-";
             .expect("selector completion");
         assert_eq!(completion.items.len(), 1);
         assert_eq!(completion.items[0].name.as_ref(), "alpha");
+        assert!(completion.replace_range.is_empty());
+    }
+
+    #[test]
+    fn lists_selector_completion_items_after_class_member_structure_dash() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS zcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS get_value RETURNING VALUE(rv_value) TYPE i.
+  PRIVATE SECTION.
+    CONSTANTS:
+      BEGIN OF gcs_struct_field,
+        p0 TYPE i VALUE 1,
+        p1 TYPE i VALUE 2,
+      END OF gcs_struct_field.
+ENDCLASS.
+
+CLASS zcl_demo IMPLEMENTATION.
+  METHOD get_value.
+    rv_value = me->gcs_struct_field-.
+  ENDMETHOD.
+ENDCLASS.";
+        let snapshot = store.publish("file:///demo.abap", 1, src);
+        let offset = src
+            .find("me->gcs_struct_field-")
+            .expect("selector")
+            + "me->gcs_struct_field-".len();
+
+        let completion = snapshot
+            .selector_completion_at(offset)
+            .expect("selector completion");
+        assert_eq!(
+            completion
+                .items
+                .iter()
+                .map(|item| item.name.as_ref())
+                .collect::<Vec<_>>(),
+            vec!["p0", "p1"]
+        );
         assert!(completion.replace_range.is_empty());
     }
 
