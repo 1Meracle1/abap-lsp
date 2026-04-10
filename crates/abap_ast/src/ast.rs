@@ -379,12 +379,18 @@ ast_node!(SelectFromClause, SyntaxKind::SelectFromClause);
 ast_node!(SelectIntoClause, SyntaxKind::SelectIntoClause);
 ast_node!(SelectJoinClause, SyntaxKind::SelectJoinClause);
 ast_node!(SqlPredicateExpr, SyntaxKind::SqlPredicateExpr);
+ast_node!(SqlPredicateOperand, SyntaxKind::SqlPredicateOperand);
 ast_node!(SqlProjectionItem, SyntaxKind::SqlProjectionItem);
 ast_node!(SqlDataSource, SyntaxKind::SqlDataSource);
+ast_node!(SqlAliasClause, SyntaxKind::SqlAliasClause);
 ast_node!(SqlAlias, SyntaxKind::SqlAlias);
 ast_node!(SqlColumnRef, SyntaxKind::SqlColumnRef);
+ast_node!(SqlQualifiedColumnRef, SyntaxKind::SqlQualifiedColumnRef);
 ast_node!(SqlStar, SyntaxKind::SqlStar);
 ast_node!(SqlQualifiedStar, SyntaxKind::SqlQualifiedStar);
+ast_node!(SqlAggregateCall, SyntaxKind::SqlAggregateCall);
+ast_node!(SqlHostExpr, SyntaxKind::SqlHostExpr);
+ast_node!(SqlParenGroup, SyntaxKind::SqlParenGroup);
 ast_node!(UpdateStmt, SyntaxKind::UpdateStmt);
 ast_node!(UpdateTarget, SyntaxKind::UpdateTarget);
 ast_node!(UpdateSetClause, SyntaxKind::UpdateSetClause);
@@ -1650,6 +1656,10 @@ impl<'a> SelectJoinClause<'a> {
 }
 
 impl<'a> SqlPredicateExpr<'a> {
+    pub fn operands(self) -> impl DoubleEndedIterator<Item = SqlPredicateOperand<'a>> + Clone + 'a {
+        self.syntax.children().filter_map(SqlPredicateOperand::cast)
+    }
+
     pub fn token_texts(self, source: &'a str) -> Vec<&'a str> {
         self.syntax
             .token_descendants()
@@ -1659,11 +1669,23 @@ impl<'a> SqlPredicateExpr<'a> {
     }
 }
 
+impl<'a> SqlPredicateOperand<'a> {
+    pub fn non_token_children(
+        self,
+    ) -> impl DoubleEndedIterator<Item = SyntaxNodeRef<'a>> + Clone + 'a {
+        self.syntax.non_token_children()
+    }
+}
+
 impl<'a> SqlProjectionItem<'a> {
-    pub fn alias(self) -> Option<SqlAlias<'a>> {
+    pub fn alias_clause(self) -> Option<SqlAliasClause<'a>> {
         self.syntax
-            .child_by_kind(SyntaxKind::SqlAlias)
-            .and_then(SqlAlias::cast)
+            .child_by_kind(SyntaxKind::SqlAliasClause)
+            .and_then(SqlAliasClause::cast)
+    }
+
+    pub fn alias(self) -> Option<SqlAlias<'a>> {
+        self.alias_clause().and_then(|clause| clause.alias())
     }
 
     pub fn non_token_children(
@@ -1678,20 +1700,24 @@ impl<'a> SqlProjectionItem<'a> {
 }
 
 impl<'a> SqlDataSource<'a> {
-    pub fn alias(self) -> Option<SqlAlias<'a>> {
+    pub fn alias_clause(self) -> Option<SqlAliasClause<'a>> {
         self.syntax
-            .child_by_kind(SyntaxKind::SqlAlias)
-            .and_then(SqlAlias::cast)
+            .child_by_kind(SyntaxKind::SqlAliasClause)
+            .and_then(SqlAliasClause::cast)
+    }
+
+    pub fn alias(self) -> Option<SqlAlias<'a>> {
+        self.alias_clause().and_then(|clause| clause.alias())
     }
 
     pub fn source_name(self, source: &'a str) -> Option<(&'a str, TextRange)> {
-        let alias_range = self.alias().map(|alias| alias.syntax().range());
+        let alias_clause_range = self.alias_clause().map(|alias| alias.syntax().range());
         let tokens = self.syntax.token_descendants();
         let mut start = None;
         let mut end = None;
         for token in tokens {
             let range = token.range();
-            if alias_range
+            if alias_clause_range
                 .as_ref()
                 .is_some_and(|alias| range.start >= alias.start)
             {
@@ -1709,6 +1735,14 @@ impl<'a> SqlDataSource<'a> {
         let range = start..end;
         let text = source.get(range.clone())?.trim();
         (!text.is_empty()).then_some((text, range))
+    }
+}
+
+impl<'a> SqlAliasClause<'a> {
+    pub fn alias(self) -> Option<SqlAlias<'a>> {
+        self.syntax
+            .child_by_kind(SyntaxKind::SqlAlias)
+            .and_then(SqlAlias::cast)
     }
 }
 
@@ -1739,6 +1773,25 @@ impl<'a> SqlColumnRef<'a> {
     }
 }
 
+impl<'a> SqlQualifiedColumnRef<'a> {
+    pub fn parts(self, source: &'a str) -> Option<(Arc<str>, Arc<str>, TextRange)> {
+        let tokens = self.syntax.token_descendants();
+        if tokens.len() != 3 {
+            return None;
+        }
+        let qualifier = tokens[0].text(source)?;
+        let sep = tokens[1].text(source)?;
+        let column = tokens[2].text(source)?;
+        (sep == "~").then(|| {
+            (
+                Arc::from(qualifier.to_ascii_lowercase()),
+                Arc::from(column.to_ascii_lowercase()),
+                tokens[0].range().start..tokens[2].range().end,
+            )
+        })
+    }
+}
+
 impl<'a> SqlQualifiedStar<'a> {
     pub fn qualifier(self, source: &'a str) -> Option<(Arc<str>, TextRange)> {
         let tokens = self.syntax.token_descendants();
@@ -1757,6 +1810,17 @@ impl<'a> SqlQualifiedStar<'a> {
     }
 }
 
+impl<'a> SqlAggregateCall<'a> {
+    pub fn name(self, source: &'a str) -> Option<(Arc<str>, TextRange)> {
+        let token = self
+            .syntax
+            .children()
+            .find(|child| child.kind() == SyntaxKind::Token)?;
+        let text = token.text(source)?;
+        Some((Arc::from(text.to_ascii_lowercase()), token.range()))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -1767,8 +1831,8 @@ mod tests {
     use super::{
         AstNode, CallArgList, CallExpr, DataDecl, DataDeclName, DataLikeDecl, ExprIdent,
         MethodsParamSectionKind, MethodsRaiseKind, MethodsStmt, MethodsStmtKind,
-        MethodsTypeClauseKind, SelectProjectionList, SelectStmt, SelectorExpr, SqlColumnRef,
-        SqlDataSource, SqlQualifiedStar, SyntaxNodeRef,
+        MethodsTypeClauseKind, SelectProjectionList, SelectStmt, SelectorExpr, SqlAliasClause,
+        SqlDataSource, SqlQualifiedColumnRef, SqlQualifiedStar, SyntaxNodeRef,
     };
 
     #[test]
@@ -1864,19 +1928,30 @@ mod tests {
         let col_a = b.leaf(SyntaxKind::Token, 7..8);
         let tilde = b.leaf(SyntaxKind::Token, 8..9);
         let col_b = b.leaf(SyntaxKind::Token, 9..14);
-        let column = b.branch(SyntaxKind::SqlColumnRef, 7..14, &[col_a, tilde, col_b]);
+        let column = b.branch(
+            SyntaxKind::SqlQualifiedColumnRef,
+            7..14,
+            &[col_a, tilde, col_b],
+        );
+        let as_proj_tok = b.leaf(SyntaxKind::Token, 15..17);
         let alias_tok = b.leaf(SyntaxKind::Token, 18..20);
         let alias = b.branch(SyntaxKind::SqlAlias, 18..20, &[alias_tok]);
-        let item = b.branch(SyntaxKind::SqlProjectionItem, 7..20, &[column, alias]);
+        let alias_clause = b.branch(SyntaxKind::SqlAliasClause, 15..20, &[as_proj_tok, alias]);
+        let item = b.branch(
+            SyntaxKind::SqlProjectionItem,
+            7..20,
+            &[column, alias_clause],
+        );
         let proj = b.branch(SyntaxKind::SelectProjectionList, 7..20, &[item]);
         let tab_tok = b.leaf(SyntaxKind::Token, 26..30);
         let as_tok = b.leaf(SyntaxKind::Token, 31..33);
         let ds_alias_tok = b.leaf(SyntaxKind::Token, 34..35);
         let ds_alias = b.branch(SyntaxKind::SqlAlias, 34..35, &[ds_alias_tok]);
+        let ds_alias_clause = b.branch(SyntaxKind::SqlAliasClause, 31..35, &[as_tok, ds_alias]);
         let source = b.branch(
             SyntaxKind::SqlDataSource,
             26..35,
-            &[tab_tok, as_tok, ds_alias],
+            &[tab_tok, ds_alias_clause],
         );
         let from = b.branch(SyntaxKind::SelectFromClause, 21..35, &[source]);
         let qstar_q = b.leaf(SyntaxKind::Token, 36..37);
@@ -1895,15 +1970,28 @@ mod tests {
         let item = proj.items().next().expect("item");
         let column = item
             .non_token_children()
-            .find_map(SqlColumnRef::cast)
+            .find_map(SqlQualifiedColumnRef::cast)
             .expect("column");
         assert_eq!(
             column.parts(src).map(|(q, c, _)| (q, c)),
-            Some((Some(Arc::from("a")), Arc::from("field")))
+            Some((Arc::from("a"), Arc::from("field")))
+        );
+        let alias_clause = item.alias_clause().expect("projection alias clause");
+        assert_eq!(
+            alias_clause
+                .alias()
+                .and_then(|alias| alias.syntax().lower_trimmed_text(src)),
+            Some(Arc::from("al"))
         );
 
         let source = SqlDataSource::cast(SyntaxNodeRef::new(&tree, source)).expect("source");
         assert_eq!(source.source_name(src).map(|(name, _)| name), Some("mara"));
+        assert!(
+            source
+                .alias_clause()
+                .and_then(SqlAliasClause::alias)
+                .is_some()
+        );
 
         let qstar = SqlQualifiedStar::cast(SyntaxNodeRef::new(&tree, qstar)).expect("qstar");
         assert_eq!(qstar.qualifier(src).map(|(q, _)| q), Some(Arc::from("a")));

@@ -579,6 +579,526 @@ fn find_top_level_alias_as(
     None
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SqlExprMode {
+    Structured,
+    Predicate,
+}
+
+fn sql_token_text_is_keyword(text: &str) -> bool {
+    matches!(
+        text.to_ascii_lowercase().as_str(),
+        "select"
+            | "single"
+            | "distinct"
+            | "case"
+            | "when"
+            | "then"
+            | "else"
+            | "end"
+            | "from"
+            | "into"
+            | "appending"
+            | "where"
+            | "group"
+            | "by"
+            | "having"
+            | "order"
+            | "for"
+            | "all"
+            | "entries"
+            | "in"
+            | "up"
+            | "to"
+            | "rows"
+            | "as"
+            | "join"
+            | "inner"
+            | "left"
+            | "right"
+            | "cross"
+            | "on"
+            | "and"
+            | "or"
+            | "not"
+            | "like"
+            | "between"
+            | "is"
+            | "null"
+            | "table"
+            | "corresponding"
+            | "fields"
+            | "of"
+            | "primary"
+            | "key"
+            | "exists"
+    )
+}
+
+fn sql_token_is_keyword(source: &str, token: &Token) -> bool {
+    token.kind == TokenKind::Ident && sql_token_text_is_keyword(token.lexeme(source))
+}
+
+fn sql_token_is_aggregate(source: &str, token: &Token) -> bool {
+    token.kind == TokenKind::Ident
+        && matches!(
+            token.lexeme(source).to_ascii_uppercase().as_str(),
+            "COUNT" | "MAX" | "MIN" | "SUM" | "AVG"
+        )
+}
+
+fn find_matching_delim_in_range(
+    tokens: &[Token],
+    start: usize,
+    end_exclusive: usize,
+    open: TokenKind,
+    close: TokenKind,
+) -> Option<usize> {
+    let end = find_matching_delim(tokens, start, open, close)?;
+    (end < end_exclusive).then_some(end)
+}
+
+fn build_sql_alias_clause(
+    b: &mut SyntaxTreeBuilder,
+    tokens: &[Token],
+    as_idx: usize,
+    end_exclusive: usize,
+) -> Option<NodeId> {
+    if as_idx >= end_exclusive {
+        return None;
+    }
+    let alias_idx = skip_trivia(tokens, as_idx + 1);
+    if alias_idx >= end_exclusive {
+        return None;
+    }
+    let mut children = vec![token_leaf(b, &tokens[as_idx])];
+    if let Some(alias_node) =
+        build_token_branch(b, SyntaxKind::SqlAlias, tokens, alias_idx, alias_idx + 1)
+    {
+        children.push(alias_node);
+    }
+    push_token_children(b, &mut children, tokens, alias_idx + 1, end_exclusive);
+    let range = tokens[as_idx].range.start..tokens[end_exclusive - 1].range.end;
+    Some(b.branch(SyntaxKind::SqlAliasClause, range, &children))
+}
+
+fn sql_host_expr_end_tokens(
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    end_exclusive: usize,
+) -> usize {
+    let mut paren = 0i32;
+    let mut bracket = 0i32;
+    let mut brace = 0i32;
+    let mut idx = start;
+    while idx < end_exclusive {
+        let token = &tokens[idx];
+        if paren == 0 && bracket == 0 && brace == 0 {
+            if matches!(
+                token.kind,
+                TokenKind::Comma
+                    | TokenKind::Period
+                    | TokenKind::Eq
+                    | TokenKind::Lt
+                    | TokenKind::Gt
+                    | TokenKind::Le
+                    | TokenKind::Ge
+                    | TokenKind::Ne
+                    | TokenKind::QuestionEq
+            ) || token.kind == TokenKind::RParen
+                || sql_token_is_keyword(source, token)
+            {
+                break;
+            }
+        }
+        match token.kind {
+            TokenKind::LParen => paren += 1,
+            TokenKind::RParen => {
+                if paren == 0 {
+                    break;
+                }
+                paren -= 1;
+            }
+            TokenKind::LBracket => bracket += 1,
+            TokenKind::RBracket => {
+                if bracket == 0 {
+                    break;
+                }
+                bracket -= 1;
+            }
+            TokenKind::LBrace => brace += 1,
+            TokenKind::RBrace => {
+                if brace == 0 {
+                    break;
+                }
+                brace -= 1;
+            }
+            _ => {}
+        }
+        idx += 1;
+    }
+    idx
+}
+
+fn build_sql_host_expr(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    end_exclusive: usize,
+) -> Option<(NodeId, usize)> {
+    if start >= end_exclusive || tokens[start].kind != TokenKind::At {
+        return None;
+    }
+    let expr_end = sql_host_expr_end_tokens(source, tokens, start + 1, end_exclusive);
+    if expr_end <= start + 1 {
+        return None;
+    }
+    let mut children = Vec::new();
+    push_token_children(b, &mut children, tokens, start, expr_end);
+    let range = tokens[start].range.start..tokens[expr_end - 1].range.end;
+    Some((
+        b.branch(SyntaxKind::SqlHostExpr, range, &children),
+        expr_end,
+    ))
+}
+
+fn build_sql_aggregate_call(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    end_exclusive: usize,
+) -> Option<(NodeId, usize)> {
+    if start + 1 >= end_exclusive || !sql_token_is_aggregate(source, &tokens[start]) {
+        return None;
+    }
+    if tokens[start + 1].kind != TokenKind::LParen {
+        return None;
+    }
+    let end_idx = find_matching_delim_in_range(
+        tokens,
+        start + 1,
+        end_exclusive,
+        TokenKind::LParen,
+        TokenKind::RParen,
+    )?;
+    let mut children = vec![
+        token_leaf(b, &tokens[start]),
+        token_leaf(b, &tokens[start + 1]),
+    ];
+    if start + 2 < end_idx {
+        push_sql_expr_children(
+            b,
+            &mut children,
+            source,
+            tokens,
+            start + 2,
+            end_idx,
+            SqlExprMode::Structured,
+        );
+    }
+    children.push(token_leaf(b, &tokens[end_idx]));
+    let range = tokens[start].range.start..tokens[end_idx].range.end;
+    Some((
+        b.branch(SyntaxKind::SqlAggregateCall, range, &children),
+        end_idx + 1,
+    ))
+}
+
+fn build_sql_paren_group(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    end_exclusive: usize,
+    mode: SqlExprMode,
+) -> Option<(NodeId, usize)> {
+    if start >= end_exclusive || tokens[start].kind != TokenKind::LParen {
+        return None;
+    }
+    let end_idx = find_matching_delim_in_range(
+        tokens,
+        start,
+        end_exclusive,
+        TokenKind::LParen,
+        TokenKind::RParen,
+    )?;
+    let mut children = vec![token_leaf(b, &tokens[start])];
+    if start + 1 < end_idx {
+        match mode {
+            SqlExprMode::Structured => push_sql_expr_children(
+                b,
+                &mut children,
+                source,
+                tokens,
+                start + 1,
+                end_idx,
+                SqlExprMode::Structured,
+            ),
+            SqlExprMode::Predicate => {
+                push_sql_predicate_children(b, &mut children, source, tokens, start + 1, end_idx)
+            }
+        }
+    }
+    children.push(token_leaf(b, &tokens[end_idx]));
+    let range = tokens[start].range.start..tokens[end_idx].range.end;
+    Some((
+        b.branch(SyntaxKind::SqlParenGroup, range, &children),
+        end_idx + 1,
+    ))
+}
+
+fn push_sql_expr_children(
+    b: &mut SyntaxTreeBuilder,
+    children: &mut Vec<NodeId>,
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    end_exclusive: usize,
+    mode: SqlExprMode,
+) {
+    let mut idx = start;
+    while idx < end_exclusive {
+        let token = &tokens[idx];
+        if token.kind == TokenKind::Comment {
+            children.push(token_leaf(b, token));
+            idx += 1;
+            continue;
+        }
+        if let Some((host_expr, next_idx)) =
+            build_sql_host_expr(b, source, tokens, idx, end_exclusive)
+        {
+            children.push(host_expr);
+            idx = next_idx;
+            continue;
+        }
+        if let Some((paren_group, next_idx)) =
+            build_sql_paren_group(b, source, tokens, idx, end_exclusive, mode)
+        {
+            children.push(paren_group);
+            idx = next_idx;
+            continue;
+        }
+        if let Some((aggregate, next_idx)) =
+            build_sql_aggregate_call(b, source, tokens, idx, end_exclusive)
+        {
+            children.push(aggregate);
+            idx = next_idx;
+            continue;
+        }
+        if token.kind == TokenKind::Star {
+            if let Some(node) = build_token_branch(b, SyntaxKind::SqlStar, tokens, idx, idx + 1) {
+                children.push(node);
+                idx += 1;
+                continue;
+            }
+        }
+        if idx + 2 < end_exclusive
+            && token.kind == TokenKind::Ident
+            && tokens[idx + 1].kind == TokenKind::Tilde
+        {
+            if tokens[idx + 2].kind == TokenKind::Star {
+                if let Some(node) =
+                    build_token_branch(b, SyntaxKind::SqlQualifiedStar, tokens, idx, idx + 3)
+                {
+                    children.push(node);
+                    idx += 3;
+                    continue;
+                }
+            }
+            if tokens[idx + 2].kind == TokenKind::Ident {
+                if let Some(node) =
+                    build_token_branch(b, SyntaxKind::SqlQualifiedColumnRef, tokens, idx, idx + 3)
+                {
+                    children.push(node);
+                    idx += 3;
+                    continue;
+                }
+            }
+        }
+        if mode == SqlExprMode::Structured
+            && token.kind == TokenKind::Ident
+            && !sql_token_is_keyword(source, token)
+        {
+            if let Some(node) =
+                build_token_branch(b, SyntaxKind::SqlColumnRef, tokens, idx, idx + 1)
+            {
+                children.push(node);
+                idx += 1;
+                continue;
+            }
+        }
+        children.push(token_leaf(b, token));
+        idx += 1;
+    }
+}
+
+fn sql_predicate_token_is_separator(source: &str, token: &Token) -> bool {
+    matches!(
+        token.kind,
+        TokenKind::Eq
+            | TokenKind::Lt
+            | TokenKind::Gt
+            | TokenKind::Le
+            | TokenKind::Ge
+            | TokenKind::Ne
+            | TokenKind::QuestionEq
+            | TokenKind::Comma
+            | TokenKind::Period
+    ) || sql_token_is_keyword(source, token)
+}
+
+fn sql_predicate_operand_end(
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    end_exclusive: usize,
+) -> usize {
+    if start >= end_exclusive {
+        return start;
+    }
+    if tokens[start].kind == TokenKind::LParen
+        && let Some(end_idx) = find_matching_delim_in_range(
+            tokens,
+            start,
+            end_exclusive,
+            TokenKind::LParen,
+            TokenKind::RParen,
+        )
+    {
+        return end_idx + 1;
+    }
+    let mut paren = 0i32;
+    let mut bracket = 0i32;
+    let mut brace = 0i32;
+    let mut idx = start;
+    while idx < end_exclusive {
+        let token = &tokens[idx];
+        if idx > start
+            && paren == 0
+            && bracket == 0
+            && brace == 0
+            && (sql_predicate_token_is_separator(source, token) || token.kind == TokenKind::RParen)
+        {
+            break;
+        }
+        match token.kind {
+            TokenKind::LParen => paren += 1,
+            TokenKind::RParen => {
+                if paren == 0 {
+                    break;
+                }
+                paren -= 1;
+            }
+            TokenKind::LBracket => bracket += 1,
+            TokenKind::RBracket => {
+                if bracket == 0 {
+                    break;
+                }
+                bracket -= 1;
+            }
+            TokenKind::LBrace => brace += 1,
+            TokenKind::RBrace => {
+                if brace == 0 {
+                    break;
+                }
+                brace -= 1;
+            }
+            _ => {}
+        }
+        idx += 1;
+    }
+    idx
+}
+
+fn build_sql_predicate_operand(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    end_exclusive: usize,
+) -> Option<NodeId> {
+    if start >= end_exclusive {
+        return None;
+    }
+    let mut children = Vec::new();
+    if let Some((paren_group, next_idx)) = build_sql_paren_group(
+        b,
+        source,
+        tokens,
+        start,
+        end_exclusive,
+        SqlExprMode::Predicate,
+    ) && next_idx == end_exclusive
+    {
+        children.push(paren_group);
+    } else {
+        push_sql_expr_children(
+            b,
+            &mut children,
+            source,
+            tokens,
+            start,
+            end_exclusive,
+            SqlExprMode::Predicate,
+        );
+    }
+    let range = tokens[start].range.start..tokens[end_exclusive - 1].range.end;
+    Some(b.branch(SyntaxKind::SqlPredicateOperand, range, &children))
+}
+
+fn push_sql_predicate_children(
+    b: &mut SyntaxTreeBuilder,
+    children: &mut Vec<NodeId>,
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    end_exclusive: usize,
+) {
+    let mut idx = start;
+    while idx < end_exclusive {
+        let token = &tokens[idx];
+        if token.kind == TokenKind::Comment {
+            children.push(token_leaf(b, token));
+            idx += 1;
+            continue;
+        }
+        if sql_predicate_token_is_separator(source, token) {
+            children.push(token_leaf(b, token));
+            idx += 1;
+            continue;
+        }
+        let operand_end = sql_predicate_operand_end(source, tokens, idx, end_exclusive);
+        if operand_end > idx
+            && let Some(operand) = build_sql_predicate_operand(b, source, tokens, idx, operand_end)
+        {
+            children.push(operand);
+            idx = operand_end;
+            continue;
+        }
+        children.push(token_leaf(b, token));
+        idx += 1;
+    }
+}
+
+fn build_sql_predicate_expr(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    end_exclusive: usize,
+) -> Option<NodeId> {
+    if start >= end_exclusive {
+        return None;
+    }
+    let mut children = Vec::new();
+    push_sql_predicate_children(b, &mut children, source, tokens, start, end_exclusive);
+    let range = tokens[start].range.start..tokens[end_exclusive - 1].range.end;
+    Some(b.branch(SyntaxKind::SqlPredicateExpr, range, &children))
+}
+
 fn build_sql_data_source(
     b: &mut SyntaxTreeBuilder,
     source: &str,
@@ -591,14 +1111,12 @@ fn build_sql_data_source(
     }
     let mut children = Vec::new();
     if let Some(as_idx) = find_top_level_alias_as(source, tokens, start, end_exclusive) {
-        push_token_children(b, &mut children, tokens, start, as_idx + 1);
-        let alias_idx = skip_trivia(tokens, as_idx + 1);
-        if let Some(alias_node) =
-            build_token_branch(b, SyntaxKind::SqlAlias, tokens, alias_idx, alias_idx + 1)
-        {
-            children.push(alias_node);
+        push_token_children(b, &mut children, tokens, start, as_idx);
+        if let Some(alias_clause) = build_sql_alias_clause(b, tokens, as_idx, end_exclusive) {
+            children.push(alias_clause);
+        } else {
+            push_token_children(b, &mut children, tokens, as_idx, end_exclusive);
         }
-        push_token_children(b, &mut children, tokens, alias_idx + 1, end_exclusive);
     } else {
         push_token_children(b, &mut children, tokens, start, end_exclusive);
     }
@@ -609,7 +1127,7 @@ fn build_sql_data_source(
 fn build_sql_predicate_branch(
     b: &mut SyntaxTreeBuilder,
     kind: SyntaxKind,
-    _source: &str,
+    source: &str,
     tokens: &[Token],
     start: usize,
     end_exclusive: usize,
@@ -639,22 +1157,14 @@ fn build_sql_predicate_branch(
             )
         {
             children.push(dynamic_node);
-        } else if let Some(predicate_node) = build_token_branch(
-            b,
-            SyntaxKind::SqlPredicateExpr,
-            tokens,
-            predicate_start,
-            end_exclusive,
-        ) {
+        } else if let Some(predicate_node) =
+            build_sql_predicate_expr(b, source, tokens, predicate_start, end_exclusive)
+        {
             children.push(predicate_node);
         }
-    } else if let Some(predicate_node) = build_token_branch(
-        b,
-        SyntaxKind::SqlPredicateExpr,
-        tokens,
-        predicate_start,
-        end_exclusive,
-    ) {
+    } else if let Some(predicate_node) =
+        build_sql_predicate_expr(b, source, tokens, predicate_start, end_exclusive)
+    {
         children.push(predicate_node);
     } else {
         push_token_children(b, &mut children, tokens, predicate_start, end_exclusive);
@@ -744,44 +1254,6 @@ fn find_projection_alias_start(
     find_top_level_alias_as(source, tokens, start, end_exclusive)
 }
 
-fn build_projection_value_node(
-    b: &mut SyntaxTreeBuilder,
-    tokens: &[Token],
-    start: usize,
-    end_exclusive: usize,
-) -> Option<NodeId> {
-    if start >= end_exclusive {
-        return None;
-    }
-    if end_exclusive == start + 1 && tokens[start].kind == TokenKind::Star {
-        return build_token_branch(b, SyntaxKind::SqlStar, tokens, start, end_exclusive);
-    }
-    if end_exclusive == start + 3
-        && tokens[start].kind == TokenKind::Ident
-        && tokens[start + 1].kind == TokenKind::Tilde
-        && tokens[start + 2].kind == TokenKind::Star
-    {
-        return build_token_branch(
-            b,
-            SyntaxKind::SqlQualifiedStar,
-            tokens,
-            start,
-            end_exclusive,
-        );
-    }
-    if end_exclusive == start + 1 && tokens[start].kind == TokenKind::Ident {
-        return build_token_branch(b, SyntaxKind::SqlColumnRef, tokens, start, end_exclusive);
-    }
-    if end_exclusive == start + 3
-        && tokens[start].kind == TokenKind::Ident
-        && tokens[start + 1].kind == TokenKind::Tilde
-        && tokens[start + 2].kind == TokenKind::Ident
-    {
-        return build_token_branch(b, SyntaxKind::SqlColumnRef, tokens, start, end_exclusive);
-    }
-    None
-}
-
 fn build_sql_projection_item(
     b: &mut SyntaxTreeBuilder,
     source: &str,
@@ -795,20 +1267,21 @@ fn build_sql_projection_item(
     let mut children = Vec::new();
     let alias_start =
         find_projection_alias_start(source, tokens, start, end_exclusive).unwrap_or(end_exclusive);
-    if let Some(value_node) = build_projection_value_node(b, tokens, start, alias_start) {
-        children.push(value_node);
-    } else {
-        push_token_children(b, &mut children, tokens, start, alias_start);
-    }
+    push_sql_expr_children(
+        b,
+        &mut children,
+        source,
+        tokens,
+        start,
+        alias_start,
+        SqlExprMode::Structured,
+    );
     if alias_start < end_exclusive {
-        let alias_idx = skip_trivia(tokens, alias_start + 1);
-        push_token_children(b, &mut children, tokens, alias_start, alias_idx);
-        if let Some(alias_node) =
-            build_token_branch(b, SyntaxKind::SqlAlias, tokens, alias_idx, alias_idx + 1)
-        {
-            children.push(alias_node);
+        if let Some(alias_clause) = build_sql_alias_clause(b, tokens, alias_start, end_exclusive) {
+            children.push(alias_clause);
+        } else {
+            push_token_children(b, &mut children, tokens, alias_start, end_exclusive);
         }
-        push_token_children(b, &mut children, tokens, alias_idx + 1, end_exclusive);
     }
     let range = tokens[start].range.start..tokens[end_exclusive - 1].range.end;
     Some(b.branch(SyntaxKind::SqlProjectionItem, range, &children))
@@ -7294,6 +7767,33 @@ END-OF-PAGE.\nWRITE 'e'.",
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::SqlDynamicWhere), 1);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::SqlAlias), 2);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::SqlDataSource), 2);
+    }
+
+    #[test]
+    fn parses_structured_sql_projection_and_predicate_operands() {
+        let parsed = crate::parse(
+            "SELECT MAX( a~bupid ) AS max_bupid\n  FROM /sttp/bup AS a\n  WHERE a~bupid = @mv_bupid\n  AND status = iv_status\n  INTO @DATA(lv_bupid).",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(
+            parsed.file.count_kind(root, SyntaxKind::SqlAggregateCall),
+            1
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::SqlQualifiedColumnRef),
+            2
+        );
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::SqlAliasClause), 2);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::SqlHostExpr), 1);
+        assert!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::SqlPredicateOperand)
+                >= 4
+        );
     }
 
     #[test]

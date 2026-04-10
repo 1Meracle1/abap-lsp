@@ -4,7 +4,8 @@ use abap_ast::SyntaxKind;
 use abap_ast::arena::NodeId;
 use abap_ast::ast::{
     AstNode, DataDeclName, SelectIntoClause, SelectJoinClause, SelectProjectionList, SelectQuery,
-    SelectStmt, SqlColumnRef, SqlDataSource, SqlProjectionItem, SqlQualifiedStar,
+    SelectStmt, SqlAggregateCall, SqlColumnRef, SqlDataSource, SqlProjectionItem,
+    SqlQualifiedColumnRef, SqlQualifiedStar,
 };
 use abap_lexer::TextRange;
 
@@ -247,11 +248,18 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
     }
 
     fn collect_sql_projection_item(&mut self, query_id: usize, node: NodeId, scope: ScopeId) {
-        let alias = SqlProjectionItem::cast(self.ctx.syntax(node))
-            .and_then(|item| item.alias())
-            .and_then(|alias_node| self.ctx.node_name(alias_node.syntax().id()));
+        let (alias, alias_clause_start) = SqlProjectionItem::cast(self.ctx.syntax(node))
+            .map(|item| {
+                let alias_clause = item.alias_clause();
+                let alias = alias_clause
+                    .and_then(|clause| clause.alias())
+                    .and_then(|alias_node| self.ctx.node_name(alias_node.syntax().id()));
+                let alias_clause_start = alias_clause.map(|clause| clause.syntax().range().start);
+                (alias, alias_clause_start)
+            })
+            .unwrap_or((None, None));
         let syntax_tokens = self.ctx.syntax_token_nodes(node);
-        self.collect_sql_host_refs_from_syntax_tokens(&syntax_tokens, scope);
+        self.collect_sql_host_refs_from_node(node, scope);
 
         let mut kind = SqlProjectionKind::Expression;
         let mut source_alias = None;
@@ -314,33 +322,48 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
                         );
                     }
                 }
+                SyntaxKind::SqlQualifiedColumnRef => {
+                    kind = SqlProjectionKind::Column;
+                    if let Some((qualifier, column, range)) =
+                        SqlQualifiedColumnRef::cast(self.ctx.syntax(child))
+                            .and_then(|column_ref| column_ref.parts(self.ctx.source()))
+                    {
+                        source_alias = Some(Arc::clone(&qualifier));
+                        name = Some(Arc::clone(&column));
+                        self.push_sql_name_ref(
+                            query_id,
+                            scope,
+                            range,
+                            column,
+                            Some(qualifier),
+                            SqlNameRefKind::QualifiedColumn,
+                        );
+                    }
+                }
+                SyntaxKind::SqlAggregateCall => {
+                    kind = SqlProjectionKind::Aggregate;
+                    if let Some((aggregate, range)) = SqlAggregateCall::cast(self.ctx.syntax(child))
+                        .and_then(|call| call.name(self.ctx.source()))
+                    {
+                        self.push_sql_name_ref(
+                            query_id,
+                            scope,
+                            range,
+                            aggregate,
+                            None,
+                            SqlNameRefKind::Aggregate,
+                        );
+                    }
+                }
                 _ => {}
             }
         }
 
-        if matches!(kind, SqlProjectionKind::Expression)
-            && let Some(token) = syntax_tokens.first()
-            && !self.sql_token_is_keyword_text(token.text.as_ref())
-            && syntax_tokens.get(1).map(|next| next.text.as_ref()) == Some("(")
-        {
-            kind = SqlProjectionKind::Aggregate;
-            let text = Arc::<str>::from(token.text.to_ascii_lowercase());
-            self.push_sql_name_ref(
-                query_id,
-                scope,
-                token.range.clone(),
-                text,
-                None,
-                SqlNameRefKind::Aggregate,
-            );
-        }
-
         if matches!(kind, SqlProjectionKind::Expression) {
-            let alias_start = alias.as_ref().map(|(_, range)| range.start);
             let value_tokens: Vec<_> = syntax_tokens
                 .iter()
                 .filter(|token| !self.ctx.syntax_token_is_comment(token))
-                .filter(|token| alias_start.is_none_or(|start| token.range.end <= start))
+                .filter(|token| alias_clause_start.is_none_or(|start| token.range.end <= start))
                 .filter(|token| token.text.as_ref() != "as")
                 .collect();
 
@@ -381,7 +404,7 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
         }
 
         if matches!(kind, SqlProjectionKind::Expression) {
-            self.collect_sql_name_refs_from_syntax_tokens(query_id, scope, &syntax_tokens, false);
+            self.collect_sql_name_refs_from_node(query_id, scope, node, false);
         }
         let projection_range = self.ctx.file().range(node);
         self.ctx.emit_sql_projection(SqlProjectionData {
@@ -636,13 +659,8 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
                 }
             }
             _ => {
-                self.collect_sql_host_refs_from_syntax_tokens(&syntax_tokens, scope);
-                self.collect_sql_name_refs_from_syntax_tokens(
-                    query_id,
-                    scope,
-                    &syntax_tokens,
-                    true,
-                );
+                self.collect_sql_host_refs_from_node(node, scope);
+                self.collect_sql_name_refs_from_node(query_id, scope, node, true);
             }
         }
     }
@@ -662,6 +680,140 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
         let tokens = self.ctx.syntax_token_nodes(node);
         self.collect_sql_host_refs_from_syntax_tokens(&tokens, scope);
         self.collect_sql_name_refs_from_syntax_tokens(query_id, scope, &tokens, open_sql_predicate);
+    }
+
+    fn collect_sql_host_refs_from_node(&mut self, node: NodeId, scope: ScopeId) {
+        match self.ctx.file().kind(node) {
+            SyntaxKind::SqlHostExpr => {
+                let tokens = self.ctx.syntax_token_nodes(node);
+                if tokens.len() > 1 {
+                    self.ctx
+                        .collect_token_expression_refs_infos(&tokens[1..], scope, true);
+                }
+            }
+            _ => {
+                let children: Vec<_> = self.ctx.file().children(node).collect();
+                for child in children {
+                    self.collect_sql_host_refs_from_node(child, scope);
+                }
+            }
+        }
+    }
+
+    fn collect_sql_name_refs_from_node(
+        &mut self,
+        query_id: usize,
+        scope: ScopeId,
+        node: NodeId,
+        open_sql_predicate: bool,
+    ) {
+        match self.ctx.file().kind(node) {
+            SyntaxKind::SqlQualifiedStar => {
+                if let Some((qualifier, range)) = SqlQualifiedStar::cast(self.ctx.syntax(node))
+                    .and_then(|star| star.qualifier(self.ctx.source()))
+                {
+                    self.push_sql_name_ref(
+                        query_id,
+                        scope,
+                        range,
+                        Arc::<str>::from("*"),
+                        Some(qualifier),
+                        SqlNameRefKind::QualifiedStar,
+                    );
+                }
+            }
+            SyntaxKind::SqlQualifiedColumnRef => {
+                if let Some((qualifier, column, range)) =
+                    SqlQualifiedColumnRef::cast(self.ctx.syntax(node))
+                        .and_then(|column_ref| column_ref.parts(self.ctx.source()))
+                {
+                    self.push_sql_name_ref(
+                        query_id,
+                        scope,
+                        range,
+                        column,
+                        Some(qualifier),
+                        SqlNameRefKind::QualifiedColumn,
+                    );
+                }
+            }
+            SyntaxKind::SqlColumnRef => {
+                if let Some((qualifier, column, range)) = SqlColumnRef::cast(self.ctx.syntax(node))
+                    .and_then(|column_ref| column_ref.parts(self.ctx.source()))
+                {
+                    let kind = if qualifier.is_some() {
+                        SqlNameRefKind::QualifiedColumn
+                    } else {
+                        SqlNameRefKind::Column
+                    };
+                    self.push_sql_name_ref(query_id, scope, range, column, qualifier, kind);
+                }
+            }
+            SyntaxKind::SqlAggregateCall => {
+                if let Some((aggregate, range)) = SqlAggregateCall::cast(self.ctx.syntax(node))
+                    .and_then(|call| call.name(self.ctx.source()))
+                {
+                    self.push_sql_name_ref(
+                        query_id,
+                        scope,
+                        range,
+                        aggregate,
+                        None,
+                        SqlNameRefKind::Aggregate,
+                    );
+                }
+                let children: Vec<_> = self.ctx.file().children(node).collect();
+                for child in children {
+                    self.collect_sql_name_refs_from_node(query_id, scope, child, false);
+                }
+            }
+            SyntaxKind::SqlPredicateOperand => {
+                let child_kinds: Vec<_> = self
+                    .ctx
+                    .file()
+                    .children(node)
+                    .map(|child| self.ctx.file().kind(child))
+                    .filter(|kind| *kind != SyntaxKind::Token)
+                    .collect();
+                let has_only_ambiguous_children = child_kinds.iter().all(|kind| {
+                    matches!(
+                        kind,
+                        SyntaxKind::SqlHostExpr | SyntaxKind::SqlParenGroup | SyntaxKind::Token
+                    )
+                });
+                if child_kinds.is_empty() || has_only_ambiguous_children {
+                    let tokens = self.ctx.syntax_token_nodes(node);
+                    self.collect_sql_name_refs_from_syntax_tokens(
+                        query_id,
+                        scope,
+                        &tokens,
+                        open_sql_predicate,
+                    );
+                } else {
+                    let children: Vec<_> = self.ctx.file().children(node).collect();
+                    for child in children {
+                        self.collect_sql_name_refs_from_node(
+                            query_id,
+                            scope,
+                            child,
+                            open_sql_predicate,
+                        );
+                    }
+                }
+            }
+            SyntaxKind::SqlAlias | SyntaxKind::SqlAliasClause | SyntaxKind::SqlHostExpr => {}
+            _ => {
+                let children: Vec<_> = self.ctx.file().children(node).collect();
+                for child in children {
+                    self.collect_sql_name_refs_from_node(
+                        query_id,
+                        scope,
+                        child,
+                        open_sql_predicate,
+                    );
+                }
+            }
+        }
     }
 
     fn collect_sql_host_refs_from_syntax_tokens(

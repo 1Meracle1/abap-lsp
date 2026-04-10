@@ -1484,6 +1484,58 @@ WRITE lt_rows.
 }
 
 #[test]
+fn collects_structured_sql_projection_nodes_without_token_rediscovery() {
+    let src = r#"
+DATA mv_bupid TYPE string.
+DATA iv_status TYPE string.
+
+SELECT MAX( a~bupid ) AS max_bupid
+  FROM /sttp/bup AS a
+  WHERE a~bupid = @mv_bupid
+  AND status = iv_status
+  INTO @DATA(lv_bupid).
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///sql_structured_projection.abap", src, &parsed);
+
+    assert_eq!(unit.sql_projections.len(), 1, "{:?}", unit.sql_projections);
+    let projection = &unit.sql_projections[0];
+    assert_eq!(projection.kind, SqlProjectionKind::Aggregate);
+    assert_eq!(projection.alias.as_deref(), Some("max_bupid"));
+
+    assert!(unit.sql_sources.iter().any(|source| {
+        source.source_kind == SqlSourceKind::From
+            && source.name.as_ref() == "/sttp/bup"
+            && source.alias.as_deref() == Some("a")
+    }));
+    assert!(unit.sql_name_refs.iter().any(|reference| {
+        reference.kind == SqlNameRefKind::Aggregate && reference.name.as_ref() == "max"
+    }));
+    assert!(unit.sql_name_refs.iter().any(|reference| {
+        reference.kind == SqlNameRefKind::QualifiedColumn
+            && reference.qualifier.as_deref() == Some("a")
+            && reference.name.as_ref() == "bupid"
+    }));
+    assert!(
+        !unit.sql_name_refs.iter().any(|reference| {
+            reference.kind == SqlNameRefKind::Column && reference.name.as_ref() == "iv_status"
+        }),
+        "classic host variable should stay a value reference: {:?}",
+        unit.sql_name_refs
+    );
+    assert!(unit.references.iter().any(|reference| {
+        reference.namespace == Namespace::Value
+            && reference.name.as_ref() == "mv_bupid"
+            && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+    }));
+    assert!(unit.references.iter().any(|reference| {
+        reference.namespace == Namespace::Value
+            && reference.name.as_ref() == "iv_status"
+            && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+    }));
+}
+
+#[test]
 fn resolves_update_set_and_where_host_operands() {
     let src = r#"
 FORM f.

@@ -237,18 +237,26 @@ pub enum SyntaxKind {
     SelectDistinctClause,
     /// Table or view source in a SQL `FROM`/`JOIN`.
     SqlDataSource,
+    /// `AS alias` wrapper in SQL projection/source positions.
+    SqlAliasClause,
     /// SQL alias introduced via `AS`.
     SqlAlias,
-    /// SQL column reference such as `field` or `alias~field`.
+    /// SQL column reference such as `field`.
     SqlColumnRef,
+    /// Qualified SQL column reference such as `alias~field`.
+    SqlQualifiedColumnRef,
     /// Plain `*`.
     SqlStar,
     /// Qualified `alias~*`.
     SqlQualifiedStar,
+    /// Aggregate call such as `COUNT( * )` or `MAX( col )`.
+    SqlAggregateCall,
     /// One projection item inside a projection list.
     SqlProjectionItem,
     /// Predicate-like SQL clause content (`WHERE`, `HAVING`, `ON`).
     SqlPredicateExpr,
+    /// One predicate operand between SQL operators/keywords.
+    SqlPredicateOperand,
     /// Host ABAP expression introduced with `@`.
     SqlHostExpr,
     /// Dynamic SQL fragment such as `WHERE (lt_cond)`.
@@ -499,12 +507,16 @@ impl SyntaxKind {
             Self::SelectUpToClause => "SelectUpToClause",
             Self::SelectDistinctClause => "SelectDistinctClause",
             Self::SqlDataSource => "SqlDataSource",
+            Self::SqlAliasClause => "SqlAliasClause",
             Self::SqlAlias => "SqlAlias",
             Self::SqlColumnRef => "SqlColumnRef",
+            Self::SqlQualifiedColumnRef => "SqlQualifiedColumnRef",
             Self::SqlStar => "SqlStar",
             Self::SqlQualifiedStar => "SqlQualifiedStar",
+            Self::SqlAggregateCall => "SqlAggregateCall",
             Self::SqlProjectionItem => "SqlProjectionItem",
             Self::SqlPredicateExpr => "SqlPredicateExpr",
+            Self::SqlPredicateOperand => "SqlPredicateOperand",
             Self::SqlHostExpr => "SqlHostExpr",
             Self::SqlDynamicWhere => "SqlDynamicWhere",
             Self::SqlParenGroup => "SqlParenGroup",
