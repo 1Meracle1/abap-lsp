@@ -311,8 +311,61 @@ fn is_standard_remote_type_like_name(name: &str) -> bool {
     if is_likely_local_identifier_style(&lower) {
         return false;
     }
+    if is_likely_builtin_type_name(&lower) {
+        return false;
+    }
 
     chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '/')
+}
+
+fn is_likely_builtin_type_name(lower: &str) -> bool {
+    matches!(
+        lower,
+        "i"
+            | "int1"
+            | "int2"
+            | "int4"
+            | "int8"
+            | "f"
+            | "p"
+            | "decfloat"
+            | "decfloat16"
+            | "decfloat34"
+            | "string"
+            | "c"
+            | "n"
+            | "d"
+            | "t"
+            | "x"
+            | "xstring"
+            | "data"
+            | "any"
+            | "abap_bool"
+            | "flag"
+            | "xfeld"
+            | "syst"
+            | "guid"
+            | "symsgv"
+            | "sydatum"
+            | "timestamp"
+            | "cursor"
+            | "tabname"
+            | "cdobjectcl"
+            | "rs38l_fnam"
+            | "memoryid"
+            | "time"
+            | "timestmp"
+            | "object"
+            | "standard"
+            | "table"
+            | "simple"
+            | "numeric"
+            | "csequence"
+            | "clike"
+            | "xsequence"
+            | "previous"
+            | "to"
+    ) || (lower.starts_with("char") && lower[4..].chars().all(|ch| ch.is_ascii_digit()))
 }
 
 fn is_likely_local_identifier_style(lower: &str) -> bool {
@@ -1255,6 +1308,14 @@ mod tests {
         assert!(is_remote_lookup_candidate("boolean", "type"));
         assert!(!is_remote_lookup_candidate("cl_abap_typedescr", "symbol"));
         assert!(!is_remote_lookup_candidate("lv_type_name", "type"));
+        assert!(!is_remote_lookup_candidate("time", "type"));
+        assert!(!is_remote_lookup_candidate("timestmp", "type"));
+        assert!(!is_remote_lookup_candidate("object", "type"));
+        assert!(!is_remote_lookup_candidate("standard", "type"));
+        assert!(!is_remote_lookup_candidate("csequence", "type"));
+        assert!(!is_remote_lookup_candidate("clike", "type"));
+        assert!(!is_remote_lookup_candidate("xsequence", "type"));
+        assert!(!is_remote_lookup_candidate("decfloat", "type"));
         assert!(!is_remote_lookup_candidate("lv_msgid", "message-class"));
     }
 

@@ -601,7 +601,7 @@ fn cached_remote_dependency_paths(
                     .join(format!("{encoded_name}.xml")),
             ]
         }
-        "static" | "type" => vec![
+        "symbol" | "static" | "type" => vec![
             dependencies_root
                 .join("global-class")
                 .join(format!("{encoded_name}.abap")),
@@ -635,6 +635,32 @@ fn has_cached_remote_dependency_candidate(
     cached_remote_dependency_paths(workspace, candidate)
         .into_iter()
         .any(|path| path.exists())
+}
+
+fn negative_remote_dependency_marker_path(
+    workspace: &WorkspaceState,
+    candidate: &RemoteDependencyCandidate,
+) -> Option<PathBuf> {
+    let root_path = file_uri_to_path(&workspace.root_uri)?;
+    let kind = candidate.kind.trim().to_ascii_lowercase();
+    Some(
+        root_path
+            .join(manifest_cache_dir(workspace.manifest.as_ref()))
+            .join("negative-dependencies")
+            .join(if kind.is_empty() { "unknown" } else { kind.as_str() })
+            .join(format!(
+                "{}.json",
+                encode_dependency_cache_name(candidate.name.as_str())
+            )),
+    )
+}
+
+fn has_negative_remote_dependency_candidate(
+    workspace: &WorkspaceState,
+    candidate: &RemoteDependencyCandidate,
+) -> bool {
+    negative_remote_dependency_marker_path(workspace, candidate)
+        .is_some_and(|path| path.exists())
 }
 
 fn encode_dependency_cache_name(name: &str) -> String {
@@ -684,6 +710,11 @@ pub fn build_remote_dependency_request(
             continue;
         }
         let key = remote_candidate_key(&candidate);
+        if workspace.remote_lookup_failures.contains(&key)
+            || has_negative_remote_dependency_candidate(workspace, &candidate)
+        {
+            continue;
+        }
         if workspace.remote_resolution_seen.insert(key) {
             candidates.push(candidate);
         }
@@ -730,6 +761,7 @@ pub fn build_remote_dependency_batch_for_workspace(
 
     let mut source_uris = Vec::new();
     let mut candidates = Vec::new();
+    let mut batch_seen = HashSet::new();
     let unknown_symbol_mode = workspace
         .manifest
         .as_ref()
@@ -758,7 +790,11 @@ pub fn build_remote_dependency_batch_for_workspace(
                 continue;
             }
             let key = remote_candidate_key(&candidate);
-            if workspace.remote_resolution_seen.contains(&key) {
+            if workspace.remote_resolution_seen.contains(&key)
+                || workspace.remote_lookup_failures.contains(&key)
+                || has_negative_remote_dependency_candidate(workspace, &candidate)
+                || !batch_seen.insert(key)
+            {
                 continue;
             }
             candidates.push(candidate);
@@ -2890,6 +2926,71 @@ unknown_symbol_mode = "remote"
     }
 
     #[test]
+    fn cached_dependency_file_suppresses_symbol_remote_request() {
+        let workspace_path = temp_workspace_path("cached_symbol_dependency_short_circuit");
+        fs::create_dir_all(&workspace_path).expect("workspace dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[resolution]
+dependency_mode = "remote-on-demand"
+unknown_symbol_mode = "remote"
+"#,
+        )
+        .expect("manifest");
+        let workspace_uri = path_to_file_uri(&workspace_path);
+
+        let dependency_dir = workspace_path
+            .join(".abapls")
+            .join("cache")
+            .join("dependencies")
+            .join("global-class");
+        fs::create_dir_all(&dependency_dir).expect("dependency dir");
+        fs::write(
+            dependency_dir.join("ZCL_REMOTE_DEMO.abap"),
+            "CLASS zcl_remote_demo DEFINITION.\n",
+        )
+        .expect("dependency file");
+
+        let mut state = ServerState::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        publish_open_document_mut(
+            &mut state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str(&format!("{workspace_uri}/main.abap")).expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: "zcl_remote_demo = 1.".to_string(),
+                },
+            },
+        );
+
+        let store = DocumentStore::default();
+        let candidates = collect_remote_dependency_candidates(
+            store
+                .publish("file:///symbol_candidate.abap", 1, "zcl_remote_demo = 1.")
+                .as_ref(),
+        );
+        assert!(
+            candidates
+                .iter()
+                .any(|candidate| candidate.name == "zcl_remote_demo" && candidate.kind == "symbol"),
+            "{candidates:#?}"
+        );
+
+        assert!(
+            build_remote_dependency_request(&mut state, &format!("{workspace_uri}/main.abap"))
+                .is_none(),
+            "existing cache file should suppress symbol-based remote request notification"
+        );
+
+        let _ = fs::remove_dir_all(&workspace_path);
+    }
+
+    #[test]
     fn remote_dependency_request_includes_standard_type_candidates() {
         let workspace_path = temp_workspace_path("standard_type_remote_candidates");
         fs::create_dir_all(&workspace_path).expect("workspace dir");
@@ -3022,6 +3123,103 @@ unknown_symbol_mode = "remote"
         assert!(
             build_remote_dependency_batch_for_workspace(&mut state, &workspace_uri).is_none(),
             "no immediate reissue expected after fetched/failed results were recorded"
+        );
+
+        let _ = fs::remove_dir_all(&workspace_path);
+    }
+
+    #[test]
+    fn workspace_remote_dependency_batch_dedupes_candidates_across_files() {
+        let workspace_path = temp_workspace_path("workspace_remote_batch_dedupe");
+        fs::create_dir_all(&workspace_path).expect("workspace dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[resolution]
+dependency_mode = "remote-on-demand"
+unknown_symbol_mode = "remote"
+"#,
+        )
+        .expect("manifest");
+        let workspace_uri = path_to_file_uri(&workspace_path);
+
+        let mut state = ServerState::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        for file_name in ["first.abap", "second.abap"] {
+            publish_open_document_mut(
+                &mut state,
+                &DidOpenTextDocumentParams {
+                    text_document: TextDocumentItem {
+                        uri: Uri::from_str(&format!("{workspace_uri}/{file_name}")).expect("uri"),
+                        language_id: "abap".to_string(),
+                        version: 1,
+                        text: "DATA lo_demo TYPE REF TO zcl_first.\nlo_demo = zcl_first=>create( )."
+                            .to_string(),
+                    },
+                },
+            );
+        }
+
+        let batch = build_remote_dependency_batch_for_workspace(&mut state, &workspace_uri)
+            .expect("workspace batch");
+        assert_eq!(batch.candidates.len(), 1, "{batch:#?}");
+        assert_eq!(batch.candidates[0].name, "zcl_first");
+        assert_eq!(batch.source_uris.len(), 1, "{batch:#?}");
+
+        let _ = fs::remove_dir_all(&workspace_path);
+    }
+
+    #[test]
+    fn remote_dependency_request_skips_persisted_negative_candidates() {
+        let workspace_path = temp_workspace_path("workspace_negative_dependency_marker");
+        fs::create_dir_all(&workspace_path).expect("workspace dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[resolution]
+dependency_mode = "remote-on-demand"
+unknown_symbol_mode = "remote"
+"#,
+        )
+        .expect("manifest");
+        let workspace_uri = path_to_file_uri(&workspace_path);
+
+        let negative_path = workspace_path
+            .join(".abapls")
+            .join("cache")
+            .join("negative-dependencies")
+            .join("type")
+            .join("BOOLEAN.json");
+        fs::create_dir_all(negative_path.parent().expect("negative marker dir"))
+            .expect("negative marker dir");
+        fs::write(
+            &negative_path,
+            r#"{"name":"boolean","kind":"type","reason":"exact-match-domain-only"}"#,
+        )
+        .expect("negative marker");
+
+        let mut state = ServerState::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        publish_open_document_mut(
+            &mut state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str(&format!("{workspace_uri}/main.abap")).expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: "DATA lv_boolean TYPE boolean.".to_string(),
+                },
+            },
+        );
+
+        assert!(
+            build_remote_dependency_request(&mut state, &format!("{workspace_uri}/main.abap"))
+                .is_none(),
+            "persisted negative markers should suppress repeat remote requests"
         );
 
         let _ = fs::remove_dir_all(&workspace_path);

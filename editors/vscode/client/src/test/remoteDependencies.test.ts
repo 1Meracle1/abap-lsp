@@ -88,6 +88,16 @@ suite("Remote dependency helpers", () => {
 		assert.ok(paths.some((candidatePath) => candidatePath.endsWith("%2FSTTP%2FIF_DEMO.xml")));
 	});
 
+	test("Maps symbol candidates to supported local cache paths", () => {
+		const paths = cachedRemoteDependencyCandidatePaths("c:\\demo", {
+			name: "zcl_demo",
+			kind: "symbol",
+		});
+
+		assert.ok(paths.some((candidatePath) => candidatePath.endsWith("ZCL_DEMO.abap")));
+		assert.ok(paths.some((candidatePath) => candidatePath.endsWith("ZCL_DEMO.xml")));
+	});
+
 	test("Skips ADT fetches when a matching cached dependency file already exists", async () => {
 		const workspacePath = await fs.promises.mkdtemp(path.join(os.tmpdir(), "abap-lsp-cache-hit-"));
 		const cachedFile = path.join(
@@ -111,6 +121,30 @@ suite("Remote dependency helpers", () => {
 			await hasCachedRemoteDependencyCandidate(workspacePath, {
 				name: "/sttp/int_msg",
 				kind: "message-class",
+			}),
+			true,
+		);
+
+		await fs.promises.rm(workspacePath, { recursive: true, force: true });
+	});
+
+	test("Treats symbol candidates as cache hits when a matching dependency file exists", async () => {
+		const workspacePath = await fs.promises.mkdtemp(path.join(os.tmpdir(), "abap-lsp-symbol-cache-hit-"));
+		const cachedFile = path.join(
+			workspacePath,
+			".abapls",
+			"cache",
+			"dependencies",
+			"global-class",
+			"ZCL_REMOTE_DEMO.abap",
+		);
+		await fs.promises.mkdir(path.dirname(cachedFile), { recursive: true });
+		await fs.promises.writeFile(cachedFile, "CLASS zcl_remote_demo DEFINITION.\n", "utf8");
+
+		assert.strictEqual(
+			await hasCachedRemoteDependencyCandidate(workspacePath, {
+				name: "zcl_remote_demo",
+				kind: "symbol",
 			}),
 			true,
 		);

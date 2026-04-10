@@ -879,6 +879,11 @@ async function resolveRemoteDependencyCandidate(
 			}
 			if (!objectRef) {
 				negativeRemoteDependencyCache.add(cacheKey);
+				await markNegativeRemoteDependencyCandidate(
+					workspaceFolder.uri.fsPath,
+					candidate,
+					"no-supported-match",
+				);
 				return undefined;
 			}
 

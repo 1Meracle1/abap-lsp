@@ -117,6 +117,7 @@ export function cachedRemoteDependencyCandidatePaths(
 			return [
 				path.join(dependenciesRoot, "message-class", `${encodedName}.xml`),
 			];
+		case "symbol":
 		case "static":
 		case "type":
 			return [
