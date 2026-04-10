@@ -317,6 +317,14 @@ pub enum SyntaxKind {
     EndAtStmt,
     /// `FIND ... .`
     FindStmt,
+    /// Pattern operand inside `FIND`.
+    FindPatternOperand,
+    /// Target operand after `IN` inside `FIND`.
+    FindInOperand,
+    /// Target operand after `MATCH OFFSET`/`MATCH LENGTH` inside `FIND`.
+    FindMatchTarget,
+    /// One operand inside `SUBMATCHES` inside `FIND`.
+    FindSubmatchTarget,
     /// `READ TABLE ... .`
     ReadTableStmt,
     /// `GET TIME STAMP FIELD ... .`
@@ -511,6 +519,10 @@ impl SyntaxKind {
             Self::LeaveStmt => "LeaveStmt",
             Self::EndAtStmt => "EndAtStmt",
             Self::FindStmt => "FindStmt",
+            Self::FindPatternOperand => "FindPatternOperand",
+            Self::FindInOperand => "FindInOperand",
+            Self::FindMatchTarget => "FindMatchTarget",
+            Self::FindSubmatchTarget => "FindSubmatchTarget",
             Self::ReadTableStmt => "ReadTableStmt",
             Self::GetTimeStampStmt => "GetTimeStampStmt",
             Self::GetReferenceStmt => "GetReferenceStmt",

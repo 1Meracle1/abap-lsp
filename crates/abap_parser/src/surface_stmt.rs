@@ -3667,16 +3667,180 @@ pub fn try_parse_find_stmt(
     idx: usize,
     errors: &mut Vec<crate::ParseError>,
 ) -> Option<(NodeId, usize)> {
-    parse_simple_keyword_stmt(
+    let find_tok = tokens.get(idx)?;
+    if !is_keyword(source, find_tok, "find") {
+        return None;
+    }
+    Some(parse_stmt_with_period_scan(
         b,
         source,
         tokens,
         idx,
-        SyntaxKind::FindStmt,
-        "find",
-        errors,
+        idx + 1,
+        find_tok,
         "syntax error: expected '.' after FIND",
-    )
+        errors,
+        next_after_unterminated_scan,
+        |b, period_i, _errors| {
+            let mut children = vec![token_leaf(b, find_tok)];
+            let mut i = idx + 1;
+            if tokens.get(i).is_some_and(|token| {
+                is_keyword(source, token, "first") || is_keyword(source, token, "all")
+            }) {
+                children.push(token_leaf(b, &tokens[i]));
+                i += 1;
+                if tokens.get(i).is_some_and(|token| {
+                    is_keyword(source, token, "occurrence")
+                        || is_keyword(source, token, "occurrences")
+                }) {
+                    children.push(token_leaf(b, &tokens[i]));
+                    i += 1;
+                }
+            }
+            if tokens
+                .get(i)
+                .is_some_and(|token| is_keyword(source, token, "of"))
+            {
+                children.push(token_leaf(b, &tokens[i]));
+                i += 1;
+            }
+            if tokens
+                .get(i)
+                .is_some_and(|token| is_keyword(source, token, "regex"))
+            {
+                children.push(token_leaf(b, &tokens[i]));
+                i += 1;
+            }
+
+            let Some(in_idx) = find_top_level_keyword_index(source, tokens, i, period_i, "in")
+            else {
+                let raw = token_children(b, tokens, idx, period_i + 1);
+                let node = b.branch(
+                    SyntaxKind::Error,
+                    find_tok.range.start..tokens[period_i].range.end,
+                    &raw,
+                );
+                return (node, period_i + 1);
+            };
+            push_wrapped_expr_child(
+                b,
+                &mut children,
+                source,
+                tokens,
+                i,
+                in_idx,
+                Some(if i == idx + 1 {
+                    find_tok
+                } else {
+                    &tokens[i - 1]
+                }),
+                SyntaxKind::FindPatternOperand,
+            );
+            children.push(token_leaf(b, &tokens[in_idx]));
+
+            let clause_starts = ["match", "submatches", "ignoring", "respecting", "in"];
+            let target_end =
+                consume_concatenate_operand(source, tokens, in_idx + 1, period_i, &clause_starts);
+            push_wrapped_expr_child(
+                b,
+                &mut children,
+                source,
+                tokens,
+                in_idx + 1,
+                target_end,
+                Some(&tokens[in_idx]),
+                SyntaxKind::FindInOperand,
+            );
+            i = target_end;
+
+            while i < period_i {
+                let token = &tokens[i];
+                if is_keyword(source, token, "match") {
+                    children.push(token_leaf(b, token));
+                    let mut value_start = i + 1;
+                    if tokens.get(value_start).is_some_and(|next| {
+                        is_keyword(source, next, "offset") || is_keyword(source, next, "length")
+                    }) {
+                        children.push(token_leaf(b, &tokens[value_start]));
+                        value_start += 1;
+                    }
+                    let end_idx = consume_concatenate_operand(
+                        source,
+                        tokens,
+                        value_start,
+                        period_i,
+                        &clause_starts,
+                    );
+                    push_wrapped_expr_child(
+                        b,
+                        &mut children,
+                        source,
+                        tokens,
+                        value_start,
+                        end_idx,
+                        Some(if value_start == i + 1 {
+                            token
+                        } else {
+                            &tokens[value_start - 1]
+                        }),
+                        SyntaxKind::FindMatchTarget,
+                    );
+                    i = end_idx;
+                    continue;
+                }
+                if is_keyword(source, token, "submatches") {
+                    children.push(token_leaf(b, token));
+                    i += 1;
+                    while i < period_i {
+                        if clause_starts
+                            .iter()
+                            .any(|keyword| is_keyword(source, &tokens[i], keyword))
+                        {
+                            break;
+                        }
+                        let end_idx = consume_concatenate_operand(
+                            source,
+                            tokens,
+                            i,
+                            period_i,
+                            &clause_starts,
+                        );
+                        if end_idx == i {
+                            children.push(token_leaf(b, &tokens[i]));
+                            i += 1;
+                            continue;
+                        }
+                        push_wrapped_expr_child(
+                            b,
+                            &mut children,
+                            source,
+                            tokens,
+                            i,
+                            end_idx,
+                            Some(if i == idx + 1 {
+                                find_tok
+                            } else {
+                                &tokens[i - 1]
+                            }),
+                            SyntaxKind::FindSubmatchTarget,
+                        );
+                        i = end_idx;
+                    }
+                    continue;
+                }
+                children.push(token_leaf(b, token));
+                i += 1;
+            }
+
+            children.push(token_leaf(b, &tokens[period_i]));
+            let node = b.branch(
+                SyntaxKind::FindStmt,
+                find_tok.range.start..tokens[period_i].range.end,
+                &children,
+            );
+            (node, period_i + 1)
+        },
+    ))
 }
 
 pub fn try_parse_get_bit_stmt(
@@ -7375,6 +7539,24 @@ END-OF-PAGE.\nWRITE 'e'.",
                 .count_kind(parsed.file.root(), SyntaxKind::CallMethodStmt),
             1
         );
+    }
+
+    #[test]
+    fn parses_find_stmt_with_structured_operands() {
+        let parsed =
+            crate::parse("FIND FIRST OCCURRENCE OF | | IN iv_tag_path MATCH OFFSET lv_first_sep.");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let stmt = parsed
+            .file
+            .find_first_kind(parsed.file.root(), SyntaxKind::FindStmt)
+            .expect("find stmt");
+        assert_eq!(
+            parsed.file.count_kind(stmt, SyntaxKind::FindPatternOperand),
+            1
+        );
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::FindInOperand), 1);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::FindMatchTarget), 1);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::ExprIdent), 2);
     }
 
     #[test]

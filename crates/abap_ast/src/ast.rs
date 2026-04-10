@@ -345,6 +345,10 @@ ast_node!(
 );
 ast_node!(MessageRaisingClause, SyntaxKind::MessageRaisingClause);
 ast_node!(FindStmt, SyntaxKind::FindStmt);
+ast_node!(FindPatternOperand, SyntaxKind::FindPatternOperand);
+ast_node!(FindInOperand, SyntaxKind::FindInOperand);
+ast_node!(FindMatchTarget, SyntaxKind::FindMatchTarget);
+ast_node!(FindSubmatchTarget, SyntaxKind::FindSubmatchTarget);
 ast_node!(ReadTableStmt, SyntaxKind::ReadTableStmt);
 ast_node!(WriteStmt, SyntaxKind::WriteStmt);
 ast_node!(SplitStmt, SyntaxKind::SplitStmt);
@@ -1295,8 +1299,52 @@ impl<'a> MessageWithClause<'a> {
 }
 
 impl<'a> FindStmt<'a> {
-    pub fn operands(self) -> impl DoubleEndedIterator<Item = SyntaxNodeRef<'a>> + Clone + 'a {
-        self.syntax.non_token_children()
+    pub fn pattern(self) -> Option<FindPatternOperand<'a>> {
+        self.syntax
+            .child_by_kind(SyntaxKind::FindPatternOperand)
+            .and_then(FindPatternOperand::cast)
+    }
+
+    pub fn target(self) -> Option<FindInOperand<'a>> {
+        self.syntax
+            .child_by_kind(SyntaxKind::FindInOperand)
+            .and_then(FindInOperand::cast)
+    }
+
+    pub fn match_targets(
+        self,
+    ) -> impl DoubleEndedIterator<Item = FindMatchTarget<'a>> + Clone + 'a {
+        self.syntax.children().filter_map(FindMatchTarget::cast)
+    }
+
+    pub fn submatch_targets(
+        self,
+    ) -> impl DoubleEndedIterator<Item = FindSubmatchTarget<'a>> + Clone + 'a {
+        self.syntax.children().filter_map(FindSubmatchTarget::cast)
+    }
+}
+
+impl<'a> FindPatternOperand<'a> {
+    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
+        self.syntax.first_non_token_child()
+    }
+}
+
+impl<'a> FindInOperand<'a> {
+    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
+        self.syntax.first_non_token_child()
+    }
+}
+
+impl<'a> FindMatchTarget<'a> {
+    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
+        self.syntax.first_non_token_child()
+    }
+}
+
+impl<'a> FindSubmatchTarget<'a> {
+    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
+        self.syntax.first_non_token_child()
     }
 }
 
