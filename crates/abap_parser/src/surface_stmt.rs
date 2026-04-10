@@ -2838,9 +2838,9 @@ pub fn try_parse_split_stmt(
                     push_token_children(b, &mut children, tokens, i, period_i);
                     break;
                 }
-                if let Some((inline_decl, next_i)) = try_parse_data_inline_decl(
-                    b, source, tokens, i,
-                ) {
+                if let Some((inline_decl, next_i)) =
+                    try_parse_data_inline_decl(b, source, tokens, i)
+                {
                     children.push(inline_decl);
                     i = next_i;
                     continue;

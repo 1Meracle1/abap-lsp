@@ -6466,6 +6466,45 @@ ENDIF.";
 }
 
 #[test]
+fn resolves_describe_table_lines_inline_data_target() {
+    let src = "\
+DATA lt_split TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+
+DESCRIBE TABLE lt_split LINES DATA(lv_lines).
+IF lv_lines > 0.
+  WRITE lv_lines.
+ENDIF.";
+    let parsed = parse(src);
+    let unit = analyze_unit(
+        "file:///describe_table_lines_inline_data.abap",
+        src,
+        &parsed,
+    );
+
+    for name in ["lt_split", "lv_lines"] {
+        assert!(
+            unit.references.iter().any(|reference| {
+                reference.name.as_ref() == name
+                    && reference.namespace == Namespace::Value
+                    && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+            }),
+            "expected resolved reference for `{name}`, refs={:?}",
+            unit.references
+        );
+    }
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            matches!(
+                diag.kind,
+                DiagnosticKind::UnresolvedReference | DiagnosticKind::UnknownField
+            )
+        }),
+        "unexpected diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn resolves_host_expression_in_for_all_entries_clause() {
     let src = "\
 DATA lt_rep_evt TYPE STANDARD TABLE OF string WITH EMPTY KEY.

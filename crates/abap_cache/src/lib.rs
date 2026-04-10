@@ -356,14 +356,15 @@ impl AnalysisSnapshot {
                 unit,
                 symbol_id,
             ) else {
-                let (structure_unit, structure_id) = resolve_field_access_container_structure_with_scope_index(
-                    self,
-                    self.scope_index(),
-                    access,
-                    segment_index,
-                    unit,
-                    symbol_id,
-                )?;
+                let (structure_unit, structure_id) =
+                    resolve_field_access_container_structure_with_scope_index(
+                        self,
+                        self.scope_index(),
+                        access,
+                        segment_index,
+                        unit,
+                        symbol_id,
+                    )?;
                 let inferred = inferred_ddic_data_element_target(
                     self,
                     structure_unit,
@@ -648,14 +649,15 @@ impl AnalysisSnapshot {
                 unit,
                 symbol_id,
             ) else {
-                let (structure_unit, structure_id) = resolve_field_access_container_structure_with_scope_index(
-                    self,
-                    self.scope_index(),
-                    access,
-                    segment_index,
-                    unit,
-                    symbol_id,
-                )?;
+                let (structure_unit, structure_id) =
+                    resolve_field_access_container_structure_with_scope_index(
+                        self,
+                        self.scope_index(),
+                        access,
+                        segment_index,
+                        unit,
+                        symbol_id,
+                    )?;
                 return inferred_ddic_data_element_target(
                     self,
                     structure_unit,
@@ -1128,8 +1130,7 @@ impl AnalysisSnapshot {
                     segment_index,
                     unit,
                     symbol_id,
-                )
-                else {
+                ) else {
                     continue;
                 };
                 if field.owner_unit == target_unit
@@ -1195,17 +1196,18 @@ impl AnalysisSnapshot {
             &query.base_name,
             query.in_type_position,
         )?;
-        let (structure_unit, structure_id) = resolve_selector_component_path_structure_with_scope_index(
-            self,
-            self.scope_index(),
-            query.scope,
-            query.base_namespace,
-            &query.base_name,
-            query.in_type_position,
-            unit,
-            symbol_id,
-            &query.component_path,
-        )?;
+        let (structure_unit, structure_id) =
+            resolve_selector_component_path_structure_with_scope_index(
+                self,
+                self.scope_index(),
+                query.scope,
+                query.base_namespace,
+                &query.base_name,
+                query.in_type_position,
+                unit,
+                symbol_id,
+                &query.component_path,
+            )?;
 
         let mut items: Vec<_> = structure_unit
             .semantic()
@@ -2771,14 +2773,16 @@ fn resolve_selector_component_path_structure_with_scope_index<'a>(
 
     let mut structure_id = match current_structure {
         Some(structure_id) => structure_id,
-        None => resolve_symbol_structure_with_scope_index(
-            snapshot,
-            scope_index,
-            current_unit,
-            scope,
-            symbol_id,
-        )?
-        .1,
+        None => {
+            resolve_symbol_structure_with_scope_index(
+                snapshot,
+                scope_index,
+                current_unit,
+                scope,
+                symbol_id,
+            )?
+            .1
+        }
     };
 
     for segment in &component_path[start_idx..] {
@@ -6211,7 +6215,8 @@ CLEAR lt_split.";
         assert_target_slice(&target, "file:///demo.abap", src, "trncode");
         assert_eq!(
             target.range.start,
-            src.find("trncode TYPE string").expect("trncode declaration")
+            src.find("trncode TYPE string")
+                .expect("trncode declaration")
         );
     }
 
@@ -6854,7 +6859,10 @@ ENDCLASS.";
             .definition_at(field_use + 1)
             .expect("definition target");
         assert_target_slice(&target, "file:///demo.abap", src, "p0");
-        assert_eq!(target.range.start, src.find("p0 TYPE i").expect("field declaration"));
+        assert_eq!(
+            target.range.start,
+            src.find("p0 TYPE i").expect("field declaration")
+        );
     }
 
     #[test]
@@ -7055,10 +7063,8 @@ CLASS zcl_demo IMPLEMENTATION.
   ENDMETHOD.
 ENDCLASS.";
         let snapshot = store.publish("file:///demo.abap", 1, src);
-        let offset = src
-            .find("me->gcs_struct_field-")
-            .expect("selector")
-            + "me->gcs_struct_field-".len();
+        let offset =
+            src.find("me->gcs_struct_field-").expect("selector") + "me->gcs_struct_field-".len();
 
         let completion = snapshot
             .selector_completion_at(offset)

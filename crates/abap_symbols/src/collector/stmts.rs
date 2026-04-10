@@ -22,6 +22,15 @@ impl<'a> Collector<'a> {
 }
 
 impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
+    fn builtin_type(name: &'static str) -> FieldTypeRefData {
+        FieldTypeRefData {
+            namespace: Namespace::Type,
+            is_ref: false,
+            base_name: Arc::<str>::from(name),
+            field_path: Vec::new(),
+        }
+    }
+
     fn declare_split_inline_data_target(
         &mut self,
         node: NodeId,
@@ -37,8 +46,8 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             base_name: Arc::<str>::from(base_type),
             field_path: Vec::new(),
         };
-        let type_clause_display = is_table_target
-            .then(|| Arc::<str>::from(format!("STANDARD TABLE OF {base_type}")));
+        let type_clause_display =
+            is_table_target.then(|| Arc::<str>::from(format!("STANDARD TABLE OF {base_type}")));
         if let Some(name_node) = self
             .collector
             .file
@@ -57,6 +66,62 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                 None,
             );
         }
+    }
+
+    fn declare_describe_lines_inline_target_infos(
+        &mut self,
+        tokens: &[SyntaxTokenInfo],
+        start: usize,
+        end: usize,
+        scope: ScopeId,
+    ) -> bool {
+        let mut idx = start;
+        while idx < end
+            && tokens
+                .get(idx)
+                .is_some_and(|token| self.collector.syntax_token_is_comment(token))
+        {
+            idx += 1;
+        }
+
+        let Some(head) = tokens.get(idx) else {
+            return false;
+        };
+        if !head.text.eq_ignore_ascii_case("data") {
+            return false;
+        }
+        if tokens.get(idx + 1).map(|token| token.text.as_ref()) != Some("(") {
+            return false;
+        }
+        let Some(name_tok) = tokens.get(idx + 2) else {
+            return false;
+        };
+        if !self.collector.syntax_token_is_ident_like(name_tok) {
+            return false;
+        }
+        if tokens.get(idx + 3).map(|token| token.text.as_ref()) != Some(")") {
+            return false;
+        }
+
+        let mut tail = idx + 4;
+        while tail < end && self.collector.syntax_token_is_comment(&tokens[tail]) {
+            tail += 1;
+        }
+        if tail != end {
+            return false;
+        }
+
+        self.collector.declare_symbol(
+            self.collector.declaration_scope(scope),
+            Arc::<str>::from(name_tok.text.to_ascii_lowercase()),
+            SymbolKind::Variable,
+            name_tok.range.clone(),
+            None,
+            Some(Self::builtin_type("i")),
+            None,
+            None,
+        );
+        true
     }
 
     pub(super) fn collect_delete_stmt(&mut self, node: NodeId, scope: ScopeId) {
@@ -159,11 +224,10 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             if target_kind == Some("into") {
                 let decl_scope = self.collector.declaration_scope(scope);
                 for node in data_inline_targets {
-                    if let Some(name_node) = self
-                        .collector
-                        .file
-                        .children(node)
-                        .find(|&child| self.collector.file.kind(child) == SyntaxKind::DataDeclName)
+                    if let Some(name_node) =
+                        self.collector.file.children(node).find(|&child| {
+                            self.collector.file.kind(child) == SyntaxKind::DataDeclName
+                        })
                         && let Some((name, range)) = self.collector.node_name(name_node)
                     {
                         self.collector.declare_symbol(
@@ -742,6 +806,20 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
         }
         if lines_idx < tokens.len() {
             let target_start = lines_idx + 1;
+            let target_end = tokens
+                .iter()
+                .position(|token| token.text.as_ref() == ".")
+                .unwrap_or(tokens.len());
+            if target_start < target_end
+                && self.declare_describe_lines_inline_target_infos(
+                    tokens,
+                    target_start,
+                    target_end,
+                    scope,
+                )
+            {
+                return;
+            }
             if target_start < tokens.len() {
                 self.collector.collect_token_expression_refs_infos(
                     &tokens[target_start..],
@@ -1350,12 +1428,12 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                             self.collector.syntax_token_nodes(child).into_iter().next()
                         {
                             if token.text.eq_ignore_ascii_case("into") {
-                            seen_into = true;
-                            into_table = false;
-                        } else if seen_into && token.text.eq_ignore_ascii_case("table") {
-                            into_table = true;
+                                seen_into = true;
+                                into_table = false;
+                            } else if seen_into && token.text.eq_ignore_ascii_case("table") {
+                                into_table = true;
+                            }
                         }
-                    }
                     }
                     SyntaxKind::DataInlineDecl => {
                         self.declare_split_inline_data_target(child, scope, into_table, byte_mode);

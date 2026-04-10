@@ -3803,7 +3803,11 @@ CLEAR lt_split.";
             panic!("expected markdown hover");
         };
         assert!(lt_split_markup.value.contains("`lt_split`"));
-        assert!(lt_split_markup.value.contains("TYPE STANDARD TABLE OF string"));
+        assert!(
+            lt_split_markup
+                .value
+                .contains("TYPE STANDARD TABLE OF string")
+        );
 
         let ls_trn_offset = text.find("ls_trn-trncode").expect("ls_trn use") + 1;
         let ls_trn_position = offset_to_position(text, ls_trn_offset).expect("ls_trn position");
@@ -3827,8 +3831,7 @@ CLEAR lt_split.";
         assert!(ls_trn_markup.value.contains("TYPE ty_trn"));
 
         let trncode_offset = text.rfind("trncode").expect("trncode use") + 1;
-        let trncode_position =
-            offset_to_position(text, trncode_offset).expect("trncode position");
+        let trncode_position = offset_to_position(text, trncode_offset).expect("trncode position");
         let trncode_hover = hover(
             &state,
             &HoverParams {
@@ -3871,7 +3874,9 @@ CLEAR lt_split.";
             location.uri,
             Uri::from_str("file:///split_hover.abap").expect("uri")
         );
-        let decl_offset = text.find("trncode TYPE string").expect("trncode declaration");
+        let decl_offset = text
+            .find("trncode TYPE string")
+            .expect("trncode declaration");
         let decl_position = offset_to_position(text, decl_offset).expect("decl position");
         assert_eq!(location.range.start, decl_position);
     }
@@ -3933,8 +3938,7 @@ ENDCLASS.";
         assert!(ls_trn_markup.value.contains("TYPE /sttp/dm_trn"));
 
         let trncode_offset = text.rfind("trncode").expect("trncode use") + 1;
-        let trncode_position =
-            offset_to_position(text, trncode_offset).expect("trncode position");
+        let trncode_position = offset_to_position(text, trncode_offset).expect("trncode position");
         let trncode_hover = hover(
             &state,
             &HoverParams {
