@@ -360,22 +360,27 @@ fn select_clause_start_kind(
         return Some(SelectClauseKind::Distinct);
     }
     if is_keyword(source, token, "fields") {
-        let prev_keyword_idx = tokens[..idx].iter().enumerate().rev().find_map(|(prev_idx, token)| {
-            (token.kind == TokenKind::Ident
-                && (is_keyword(source, token, "corresponding")
-                    || is_keyword(source, token, "from")
-                    || is_keyword(source, token, "single")
-                    || is_keyword(source, token, "distinct")
-                    || is_keyword(source, token, "to")
-                    || is_keyword(source, token, "into")
-                    || is_keyword(source, token, "appending")
-                    || is_keyword(source, token, "where")
-                    || is_keyword(source, token, "having")
-                    || is_keyword(source, token, "group")
-                    || is_keyword(source, token, "order")
-                    || is_keyword(source, token, "for")))
-            .then_some(prev_idx)
-        });
+        let prev_keyword_idx =
+            tokens[..idx]
+                .iter()
+                .enumerate()
+                .rev()
+                .find_map(|(prev_idx, token)| {
+                    (token.kind == TokenKind::Ident
+                        && (is_keyword(source, token, "corresponding")
+                            || is_keyword(source, token, "from")
+                            || is_keyword(source, token, "single")
+                            || is_keyword(source, token, "distinct")
+                            || is_keyword(source, token, "to")
+                            || is_keyword(source, token, "into")
+                            || is_keyword(source, token, "appending")
+                            || is_keyword(source, token, "where")
+                            || is_keyword(source, token, "having")
+                            || is_keyword(source, token, "group")
+                            || is_keyword(source, token, "order")
+                            || is_keyword(source, token, "for")))
+                    .then_some(prev_idx)
+                });
         let Some(prev_keyword_idx) = prev_keyword_idx else {
             return None;
         };
@@ -6195,7 +6200,10 @@ END-OF-PAGE.\nWRITE 'e'.",
             1
         );
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::SqlDataSource), 1);
-        assert_eq!(parsed.file.count_kind(root, SyntaxKind::SqlProjectionItem), 3);
+        assert_eq!(
+            parsed.file.count_kind(root, SyntaxKind::SqlProjectionItem),
+            3
+        );
     }
 
     #[test]

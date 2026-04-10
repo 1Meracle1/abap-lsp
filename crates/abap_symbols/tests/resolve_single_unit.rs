@@ -6064,7 +6064,9 @@ ENDCLASS.
     assert!(
         !unit.diagnostics.iter().any(|diag| {
             diag.kind == DiagnosticKind::UnresolvedReference
-                && diag.message.contains("unknown symbol 'lx_error_handling_general'")
+                && diag
+                    .message
+                    .contains("unknown symbol 'lx_error_handling_general'")
         }),
         "unexpected diagnostics: {:?}",
         unit.diagnostics
@@ -6721,7 +6723,7 @@ TYPES /sttp/tt_evt_sdr TYPE STANDARD TABLE OF /sttp/dm_evt_sdr WITH EMPTY KEY.
 
 #[test]
 fn suppresses_unknown_symbol_for_bare_delete_where_field_name_on_inline_copy_of_external_table_type()
-{
+ {
     let main_src = r#"
 DATA mt_obj_itm TYPE /sttp/t_dm_obj_itm.
 
@@ -6780,7 +6782,7 @@ TYPES /sttp/t_dm_obj_itm TYPE STANDARD TABLE OF /sttp/dm_obj_itm WITH EMPTY KEY.
 
 #[test]
 fn suppresses_unknown_symbol_for_bare_delete_where_field_name_on_inline_copy_of_external_table_attribute_in_method()
-{
+ {
     let main_src = r#"
 CLASS zcl_rule DEFINITION.
   PRIVATE SECTION.
@@ -6837,8 +6839,7 @@ TYPES /sttp/t_dm_obj_itm TYPE STANDARD TABLE OF /sttp/dm_obj_itm WITH EMPTY KEY.
 }
 
 #[test]
-fn suppresses_unknown_symbol_for_bare_delete_where_field_name_from_ddic_proxy_include_structure()
-{
+fn suppresses_unknown_symbol_for_bare_delete_where_field_name_from_ddic_proxy_include_structure() {
     let main_src = r#"
 DATA mt_obj_itm TYPE /sttp/t_dm_obj_itm.
 
@@ -6898,7 +6899,7 @@ TYPES /sttp/t_dm_obj_itm TYPE STANDARD TABLE OF /sttp/dm_obj_itm WITH EMPTY KEY.
 
 #[test]
 fn suppresses_unknown_symbol_for_bare_delete_where_field_name_when_ddic_proxy_include_metadata_is_incomplete()
-{
+ {
     let main_src = r#"
 DATA mt_obj_itm TYPE /sttp/t_dm_obj_itm.
 

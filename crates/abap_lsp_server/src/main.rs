@@ -1,17 +1,21 @@
 use std::collections::HashSet;
 use std::io::{self, BufRead, BufReader, BufWriter, Write};
 use std::net::{SocketAddr, TcpListener};
+use std::sync::Mutex;
 
 use abap_jsonrpc::{JSON_RPC_VERSION, Response, read_frame, write_frame};
 use abap_lsp::{
     CompletionParams, DEPENDENCY_CACHE_CLEARED, DidChangeTextDocumentParams,
     DidOpenTextDocumentParams, GotoDefinitionParams, HoverParams, REMOTE_DEPENDENCIES_UPDATED,
     RESOLVE_REMOTE_DEPENDENCIES, ReferenceParams, SemanticTokensParams, ServerConfig, ServerState,
-    WORKSPACE_MANIFEST_UPDATED, WorkspaceManifestUpdatedParams,
+    WORKSPACE_ANALYSIS_STATUS, WORKSPACE_MANIFEST_UPDATED, WorkspaceAnalysisPhase,
+    WorkspaceAnalysisStatusParams, WorkspaceManifestUpdatedParams,
     build_remote_dependency_batch_for_workspace, completion, definition,
-    handle_dependency_cache_cleared, handle_remote_dependencies_updated,
-    handle_workspace_manifest_updated, hover, initialize_result, publish_changed_document_mut,
-    publish_diagnostics_params, publish_open_document_mut, references, semantic_tokens,
+    handle_dependency_cache_cleared_with_progress,
+    handle_remote_dependencies_updated_with_progress,
+    handle_workspace_manifest_updated_with_progress, hover, initialize_result,
+    publish_changed_document_mut_with_progress, publish_diagnostics_params,
+    publish_open_document_mut_with_progress, references, semantic_tokens,
     workspace_manifest_diagnostics_params,
 };
 use serde_json::{Value, json};
@@ -115,10 +119,28 @@ fn serve(
             .get("method")
             .and_then(Value::as_str)
             .map(str::to_owned);
+        let analysis_status = workspace_analysis_status_started(&state, &message)?;
+        if let Some(params) = analysis_status.as_ref() {
+            send_notification(
+                writer,
+                WORKSPACE_ANALYSIS_STATUS,
+                serde_json::to_value(params)?,
+            )?;
+        }
         if method.as_deref() == Some(REMOTE_DEPENDENCIES_UPDATED) {
             if let Some(params) =
                 parse_params::<abap_lsp::RemoteDependenciesUpdatedParams>(&message)?
             {
+                let progress_notifications = Mutex::new(Vec::new());
+                let progress = |processed: usize, total: usize| {
+                    push_workspace_analysis_progress(
+                        &progress_notifications,
+                        &params.workspace_uri,
+                        "remote-dependencies-updated",
+                        processed,
+                        total,
+                    );
+                };
                 let mut source_uris: HashSet<String> = params
                     .source_uris
                     .iter()
@@ -127,7 +149,17 @@ fn serve(
                 if !params.source_uri.is_empty() {
                     source_uris.insert(abap_lsp::normalize_lsp_uri(&params.source_uri));
                 }
-                let snapshots = handle_remote_dependencies_updated(&mut state, &params);
+                let snapshots = handle_remote_dependencies_updated_with_progress(
+                    &mut state,
+                    &params,
+                    Some(&progress),
+                );
+                let progress_notifications = progress_notifications
+                    .into_inner()
+                    .expect("progress notification collection should not be poisoned");
+                for (method, params) in progress_notifications {
+                    send_notification(writer, &method, params)?;
+                }
                 for snapshot in snapshots.iter() {
                     if source_uris.contains(snapshot.uri.as_ref()) {
                         let params_value =
@@ -145,6 +177,16 @@ fn serve(
                     )?;
                 }
             }
+            if let Some(params) = analysis_status
+                .as_ref()
+                .and_then(|params| workspace_analysis_status_finished(&state, params))
+            {
+                send_notification(
+                    writer,
+                    WORKSPACE_ANALYSIS_STATUS,
+                    serde_json::to_value(params)?,
+                )?;
+            }
             continue;
         }
         let handled = handle_message(&mut state, &config, message)?;
@@ -153,6 +195,16 @@ fn serve(
         }
         if let Some(response) = handled.response {
             send_response(writer, &response)?;
+        }
+        if let Some(params) = analysis_status
+            .as_ref()
+            .and_then(|params| workspace_analysis_status_finished(&state, params))
+        {
+            send_notification(
+                writer,
+                WORKSPACE_ANALYSIS_STATUS,
+                serde_json::to_value(params)?,
+            )?;
         }
 
         if state.shutdown_requested && method.as_deref() == Some("exit") {
@@ -228,7 +280,30 @@ fn handle_message(
         Some("textDocument/didOpen") => {
             let mut notifications = Vec::new();
             if let Some(params) = parse_params::<DidOpenTextDocumentParams>(&message)? {
-                let snapshot = publish_open_document_mut(state, &params);
+                let progress_notifications = Mutex::new(Vec::new());
+                let workspace_uri = state
+                    .workspace_for_uri(
+                        abap_lsp::normalize_lsp_uri(params.text_document.uri.as_str()).as_str(),
+                    )
+                    .map(|workspace| workspace.root_uri.clone());
+                let progress = |processed: usize, total: usize| {
+                    if let Some(workspace_uri) = workspace_uri.as_ref() {
+                        push_workspace_analysis_progress(
+                            &progress_notifications,
+                            workspace_uri,
+                            "open",
+                            processed,
+                            total,
+                        );
+                    }
+                };
+                let snapshot =
+                    publish_open_document_mut_with_progress(state, &params, Some(&progress));
+                notifications.extend(
+                    progress_notifications
+                        .into_inner()
+                        .expect("progress notification collection should not be poisoned"),
+                );
                 let params_value =
                     serde_json::to_value(publish_diagnostics_params(state, &snapshot))?;
                 notifications.push(("textDocument/publishDiagnostics".to_owned(), params_value));
@@ -262,7 +337,31 @@ fn handle_message(
         Some("textDocument/didChange") => {
             let mut notifications = Vec::new();
             if let Some(params) = parse_params::<DidChangeTextDocumentParams>(&message)? {
-                if let Some(snapshot) = publish_changed_document_mut(state, &params) {
+                let progress_notifications = Mutex::new(Vec::new());
+                let workspace_uri = state
+                    .workspace_for_uri(
+                        abap_lsp::normalize_lsp_uri(params.text_document.uri.as_str()).as_str(),
+                    )
+                    .map(|workspace| workspace.root_uri.clone());
+                let progress = |processed: usize, total: usize| {
+                    if let Some(workspace_uri) = workspace_uri.as_ref() {
+                        push_workspace_analysis_progress(
+                            &progress_notifications,
+                            workspace_uri,
+                            "change",
+                            processed,
+                            total,
+                        );
+                    }
+                };
+                if let Some(snapshot) =
+                    publish_changed_document_mut_with_progress(state, &params, Some(&progress))
+                {
+                    notifications.extend(
+                        progress_notifications
+                            .into_inner()
+                            .expect("progress notification collection should not be poisoned"),
+                    );
                     let params_value =
                         serde_json::to_value(publish_diagnostics_params(state, &snapshot))?;
                     notifications
@@ -297,8 +396,27 @@ fn handle_message(
         }
         Some(WORKSPACE_MANIFEST_UPDATED) => {
             if let Some(params) = parse_params::<WorkspaceManifestUpdatedParams>(&message)? {
-                let snapshots = handle_workspace_manifest_updated(state, &params);
+                let progress_notifications = Mutex::new(Vec::new());
+                let progress = |processed: usize, total: usize| {
+                    push_workspace_analysis_progress(
+                        &progress_notifications,
+                        &params.workspace_uri,
+                        "manifest-updated",
+                        processed,
+                        total,
+                    );
+                };
+                let snapshots = handle_workspace_manifest_updated_with_progress(
+                    state,
+                    &params,
+                    Some(&progress),
+                );
                 let mut notifications = Vec::new();
+                notifications.extend(
+                    progress_notifications
+                        .into_inner()
+                        .expect("progress notification collection should not be poisoned"),
+                );
                 if let Some(params_value) =
                     workspace_manifest_diagnostics_params(state, &params.workspace_uri)
                         .and_then(|params| serde_json::to_value(params).ok())
@@ -332,8 +450,24 @@ fn handle_message(
         }
         Some(DEPENDENCY_CACHE_CLEARED) => {
             if let Some(params) = parse_params::<WorkspaceManifestUpdatedParams>(&message)? {
-                let snapshots = handle_dependency_cache_cleared(state, &params);
+                let progress_notifications = Mutex::new(Vec::new());
+                let progress = |processed: usize, total: usize| {
+                    push_workspace_analysis_progress(
+                        &progress_notifications,
+                        &params.workspace_uri,
+                        "dependency-cache-cleared",
+                        processed,
+                        total,
+                    );
+                };
+                let snapshots =
+                    handle_dependency_cache_cleared_with_progress(state, &params, Some(&progress));
                 let mut notifications = Vec::new();
+                notifications.extend(
+                    progress_notifications
+                        .into_inner()
+                        .expect("progress notification collection should not be poisoned"),
+                );
                 if let Some(params_value) =
                     workspace_manifest_diagnostics_params(state, &params.workspace_uri)
                         .and_then(|params| serde_json::to_value(params).ok())
@@ -509,9 +643,131 @@ fn parse_params<T: abap_lsp::serde::de::DeserializeOwned>(
     Ok(Some(serde_json::from_value(params)?))
 }
 
+fn workspace_analysis_status_started(
+    state: &ServerState,
+    message: &Value,
+) -> Result<Option<WorkspaceAnalysisStatusParams>, Box<dyn std::error::Error>> {
+    let Some(method) = message.get("method").and_then(Value::as_str) else {
+        return Ok(None);
+    };
+
+    let status = match method {
+        "textDocument/didOpen" => {
+            let Some(params) = parse_params::<DidOpenTextDocumentParams>(message)? else {
+                return Ok(None);
+            };
+            let uri = abap_lsp::normalize_lsp_uri(params.text_document.uri.as_str());
+            let Some(workspace_uri) = state
+                .workspace_for_uri(&uri)
+                .map(|workspace| workspace.root_uri.clone())
+            else {
+                return Ok(None);
+            };
+            WorkspaceAnalysisStatusParams {
+                workspace_uri,
+                phase: WorkspaceAnalysisPhase::Started,
+                trigger: "open".to_string(),
+                processed_document_count: 0,
+                total_document_count: 0,
+                analyzed_document_count: 0,
+                remote_resolution_in_flight: false,
+            }
+        }
+        WORKSPACE_MANIFEST_UPDATED => {
+            let Some(params) = parse_params::<WorkspaceManifestUpdatedParams>(message)? else {
+                return Ok(None);
+            };
+            WorkspaceAnalysisStatusParams {
+                workspace_uri: abap_lsp::normalize_lsp_uri(&params.workspace_uri),
+                phase: WorkspaceAnalysisPhase::Started,
+                trigger: "manifest-updated".to_string(),
+                processed_document_count: 0,
+                total_document_count: 0,
+                analyzed_document_count: 0,
+                remote_resolution_in_flight: false,
+            }
+        }
+        DEPENDENCY_CACHE_CLEARED => {
+            let Some(params) = parse_params::<WorkspaceManifestUpdatedParams>(message)? else {
+                return Ok(None);
+            };
+            WorkspaceAnalysisStatusParams {
+                workspace_uri: abap_lsp::normalize_lsp_uri(&params.workspace_uri),
+                phase: WorkspaceAnalysisPhase::Started,
+                trigger: "dependency-cache-cleared".to_string(),
+                processed_document_count: 0,
+                total_document_count: 0,
+                analyzed_document_count: 0,
+                remote_resolution_in_flight: false,
+            }
+        }
+        REMOTE_DEPENDENCIES_UPDATED => {
+            let Some(params) = parse_params::<abap_lsp::RemoteDependenciesUpdatedParams>(message)?
+            else {
+                return Ok(None);
+            };
+            WorkspaceAnalysisStatusParams {
+                workspace_uri: abap_lsp::normalize_lsp_uri(&params.workspace_uri),
+                phase: WorkspaceAnalysisPhase::Started,
+                trigger: "remote-dependencies-updated".to_string(),
+                processed_document_count: 0,
+                total_document_count: 0,
+                analyzed_document_count: 0,
+                remote_resolution_in_flight: false,
+            }
+        }
+        _ => return Ok(None),
+    };
+
+    Ok(Some(status))
+}
+
+fn workspace_analysis_status_finished(
+    state: &ServerState,
+    started: &WorkspaceAnalysisStatusParams,
+) -> Option<WorkspaceAnalysisStatusParams> {
+    let workspace = state.workspaces.get(&started.workspace_uri)?;
+    Some(WorkspaceAnalysisStatusParams {
+        workspace_uri: started.workspace_uri.clone(),
+        phase: WorkspaceAnalysisPhase::Finished,
+        trigger: started.trigger.clone(),
+        processed_document_count: workspace.cache.uris().len(),
+        total_document_count: workspace.cache.uris().len(),
+        analyzed_document_count: workspace.cache.uris().len(),
+        remote_resolution_in_flight: workspace.remote_resolution_in_flight,
+    })
+}
+
+fn push_workspace_analysis_progress(
+    notifications: &Mutex<Vec<(String, Value)>>,
+    workspace_uri: &str,
+    trigger: &str,
+    processed: usize,
+    total: usize,
+) {
+    let params = WorkspaceAnalysisStatusParams {
+        workspace_uri: abap_lsp::normalize_lsp_uri(workspace_uri),
+        phase: WorkspaceAnalysisPhase::Progress,
+        trigger: trigger.to_string(),
+        processed_document_count: processed,
+        total_document_count: total,
+        analyzed_document_count: 0,
+        remote_resolution_in_flight: false,
+    };
+    notifications
+        .lock()
+        .expect("progress notification collection should not be poisoned")
+        .push((
+            WORKSPACE_ANALYSIS_STATUS.to_string(),
+            serde_json::to_value(params).expect("workspace analysis progress should serialize"),
+        ));
+}
+
 #[cfg(test)]
 mod tests {
-    use super::handle_message;
+    use super::{
+        handle_message, workspace_analysis_status_finished, workspace_analysis_status_started,
+    };
     use abap_lsp::{ServerConfig, ServerState};
     use serde_json::json;
 
@@ -562,6 +818,32 @@ mod tests {
             .expect("hover result");
         assert!(result.to_string().contains("scalar component"));
         assert!(result.to_string().contains("TYPE i"));
+    }
+
+    #[test]
+    fn emits_workspace_analysis_status_for_manifest_refresh() {
+        let mut state = ServerState::default();
+        state.register_workspace_folder("file:///c:/workspace");
+
+        let message = json!({
+            "jsonrpc": "2.0",
+            "method": "abapls/workspaceManifestUpdated",
+            "params": {
+                "workspaceUri": "file:///c:/workspace"
+            }
+        });
+
+        let started = workspace_analysis_status_started(&state, &message)
+            .expect("status start")
+            .expect("progress should be emitted");
+        assert_eq!(started.trigger, "manifest-updated");
+        assert_eq!(started.phase, abap_lsp::WorkspaceAnalysisPhase::Started);
+
+        let finished = workspace_analysis_status_finished(&state, &started).expect("status finish");
+        assert_eq!(finished.workspace_uri, "file:///c:/workspace");
+        assert_eq!(finished.phase, abap_lsp::WorkspaceAnalysisPhase::Finished);
+        assert_eq!(finished.analyzed_document_count, 0);
+        assert!(!finished.remote_resolution_in_flight);
     }
 
     #[test]

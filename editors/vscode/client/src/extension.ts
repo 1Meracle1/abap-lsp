@@ -54,6 +54,7 @@ const negativeRemoteDependencyCache = new Set<string>();
 const remoteDependencySchedulers = new Map<string, RemoteDependencyScheduler>();
 const pendingWorkspaceConfigPrompts = new Set<string>();
 const dismissedWorkspaceConfigPrompts = new Set<string>();
+const workspaceAnalysisProgress = new Map<string, WorkspaceAnalysisProgressHandle>();
 const customerObjectNamePattern = /^(?:Z|Y)[A-Z0-9_\/]+$/;
 
 interface RemoteDependencyResolveParams {
@@ -81,6 +82,25 @@ interface RemoteDependencyResolutionResult {
 
 interface WorkspaceManifestUpdatedParams {
 	workspaceUri: string;
+}
+
+type WorkspaceAnalysisPhase = "started" | "progress" | "finished";
+
+interface WorkspaceAnalysisStatusParams {
+	workspaceUri: string;
+	phase: WorkspaceAnalysisPhase;
+	trigger: string;
+	processedDocumentCount: number;
+	totalDocumentCount: number;
+	analyzedDocumentCount: number;
+	remoteResolutionInFlight: boolean;
+}
+
+interface WorkspaceAnalysisProgressHandle {
+	resolve?: () => void;
+	report?: (params: WorkspaceAnalysisStatusParams) => void;
+	showTimer?: NodeJS.Timeout;
+	latest?: WorkspaceAnalysisStatusParams;
 }
 
 interface LocalWorkspaceObjectTemplate {
@@ -395,6 +415,12 @@ function registerClientNotifications(context: vscode.ExtensionContext): void {
 			void resolveRemoteDependencies(context, params);
 		},
 	);
+	client.onNotification(
+		"abapls/workspaceAnalysisStatus",
+		(params: WorkspaceAnalysisStatusParams) => {
+			handleWorkspaceAnalysisStatus(params);
+		},
+	);
 }
 
 function registerWorkspaceConfigPrompts(context: vscode.ExtensionContext): void {
@@ -419,6 +445,126 @@ function registerWorkspaceConfigPrompts(context: vscode.ExtensionContext): void 
 	for (const document of vscode.workspace.textDocuments) {
 		void maybePromptToCreateWorkspaceManifest(document);
 	}
+}
+
+function handleWorkspaceAnalysisStatus(params: WorkspaceAnalysisStatusParams): void {
+	if (!params?.workspaceUri) {
+		return;
+	}
+
+	if (params.phase === "started") {
+		beginWorkspaceAnalysisProgress(params);
+		return;
+	}
+
+	if (params.phase === "progress") {
+		reportWorkspaceAnalysisProgress(params);
+		return;
+	}
+
+	finishWorkspaceAnalysisProgress(params);
+}
+
+function beginWorkspaceAnalysisProgress(params: WorkspaceAnalysisStatusParams): void {
+	const existing = workspaceAnalysisProgress.get(params.workspaceUri);
+	if (existing) {
+		if (existing.showTimer) {
+			clearTimeout(existing.showTimer);
+		}
+		if (existing.resolve) {
+			existing.resolve();
+		}
+	}
+
+	const handle: WorkspaceAnalysisProgressHandle = {};
+	handle.latest = params;
+	handle.showTimer = setTimeout(() => {
+		handle.showTimer = undefined;
+		void vscode.window.withProgress(
+			{
+				location: vscode.ProgressLocation.Window,
+				title: workspaceAnalysisProgressTitle(params),
+				cancellable: false,
+			},
+			(progress) =>
+				new Promise<void>((resolve) => {
+					handle.resolve = resolve;
+					handle.report = (nextParams) => {
+						handle.latest = nextParams;
+						progress.report({
+							message: workspaceAnalysisProgressMessage(nextParams),
+						});
+					};
+					if (handle.latest) {
+						handle.report(handle.latest);
+					}
+				}),
+		);
+	}, 250);
+
+	workspaceAnalysisProgress.set(params.workspaceUri, handle);
+}
+
+function reportWorkspaceAnalysisProgress(params: WorkspaceAnalysisStatusParams): void {
+	const handle = workspaceAnalysisProgress.get(params.workspaceUri);
+	if (!handle) {
+		beginWorkspaceAnalysisProgress(params);
+		return;
+	}
+	handle.latest = params;
+	handle.report?.(params);
+}
+
+function finishWorkspaceAnalysisProgress(params: WorkspaceAnalysisStatusParams): void {
+	const handle = workspaceAnalysisProgress.get(params.workspaceUri);
+	if (handle?.showTimer) {
+		clearTimeout(handle.showTimer);
+	}
+	if (handle?.resolve) {
+		handle.resolve();
+	}
+	workspaceAnalysisProgress.delete(params.workspaceUri);
+
+	const workspaceFolder = workspaceFolderForUri(params.workspaceUri);
+	const workspaceLabel = workspaceFolder?.name ?? "workspace";
+	const analyzedCount = params.analyzedDocumentCount;
+	if (params.remoteResolutionInFlight) {
+		vscode.window.setStatusBarMessage(
+			`ABAP: analyzed ${analyzedCount} file${analyzedCount === 1 ? "" : "s"} in ${workspaceLabel}; fetching dependencies...`,
+			5000,
+		);
+		return;
+	}
+
+	vscode.window.setStatusBarMessage(
+		`ABAP: analyzed ${analyzedCount} file${analyzedCount === 1 ? "" : "s"} in ${workspaceLabel}; navigation and IntelliSense are ready.`,
+		5000,
+	);
+}
+
+function workspaceAnalysisProgressTitle(params: WorkspaceAnalysisStatusParams): string {
+	const workspaceFolder = workspaceFolderForUri(params.workspaceUri);
+	const workspaceLabel = workspaceFolder?.name ?? "workspace";
+	switch (params.trigger) {
+		case "manifest-updated":
+			return `ABAP: refreshing ${workspaceLabel} after manifest change`;
+		case "dependency-cache-cleared":
+			return `ABAP: rebuilding ${workspaceLabel} after cache reset`;
+		case "remote-dependencies-updated":
+			return `ABAP: refreshing ${workspaceLabel} after dependency fetch`;
+		default:
+			return `ABAP: analyzing ${workspaceLabel}`;
+	}
+}
+
+function workspaceAnalysisProgressMessage(params: WorkspaceAnalysisStatusParams): string {
+	const total = params.totalDocumentCount;
+	const processed = Math.min(params.processedDocumentCount, total);
+	if (total <= 0) {
+		return "Preparing workspace analysis...";
+	}
+	const remaining = Math.max(total - processed, 0);
+	return `${processed}/${total} files processed, ${remaining} left`;
 }
 
 async function resolveRemoteDependencies(

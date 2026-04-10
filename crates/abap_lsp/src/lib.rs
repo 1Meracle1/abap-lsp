@@ -9,9 +9,9 @@ use std::sync::Arc;
 
 use abap_cache::{
     AnalysisSnapshot, DocumentInput, DocumentStore, OpenDocumentOverlay,
-    UNKNOWN_SYMBOL_MODE_REMOTE, WorkspaceManifest, is_remote_lookup_candidate,
-    file_uri_to_path, load_workspace_documents, manifest_cache_dir,
-    manifest_supports_remote_resolution, uri_starts_with_workspace,
+    UNKNOWN_SYMBOL_MODE_REMOTE, WorkspaceManifest, file_uri_to_path, is_remote_lookup_candidate,
+    load_workspace_documents, manifest_cache_dir, manifest_supports_remote_resolution,
+    uri_starts_with_workspace,
 };
 use abap_symbols::{DiagnosticKind, ReferenceKind, SqlResolution};
 use lsp_types::{
@@ -35,6 +35,7 @@ pub const RESOLVE_REMOTE_DEPENDENCIES: &str = "abapls/resolveRemoteDependencies"
 pub const REMOTE_DEPENDENCIES_UPDATED: &str = "abapls/remoteDependenciesUpdated";
 pub const WORKSPACE_MANIFEST_UPDATED: &str = "abapls/workspaceManifestUpdated";
 pub const DEPENDENCY_CACHE_CLEARED: &str = "abapls/dependencyCacheCleared";
+pub const WORKSPACE_ANALYSIS_STATUS: &str = "abapls/workspaceAnalysisStatus";
 
 #[derive(Debug)]
 pub struct ServerState {
@@ -165,6 +166,30 @@ pub struct WorkspaceManifestUpdatedParams {
     pub workspace_uri: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum WorkspaceAnalysisPhase {
+    Started,
+    Progress,
+    Finished,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceAnalysisStatusParams {
+    #[serde(rename = "workspaceUri")]
+    pub workspace_uri: String,
+    pub phase: WorkspaceAnalysisPhase,
+    pub trigger: String,
+    #[serde(rename = "processedDocumentCount", default)]
+    pub processed_document_count: usize,
+    #[serde(rename = "totalDocumentCount", default)]
+    pub total_document_count: usize,
+    #[serde(rename = "analyzedDocumentCount", default)]
+    pub analyzed_document_count: usize,
+    #[serde(rename = "remoteResolutionInFlight", default)]
+    pub remote_resolution_in_flight: bool,
+}
+
 /// Normalizes `file:` URIs so `DocumentStore` lookups stay stable (e.g. Windows `file:///C:/` vs `file:///c:/`).
 pub fn normalize_lsp_uri(raw: &str) -> String {
     const PREFIX: &str = "file:///";
@@ -204,8 +229,9 @@ fn snapshot_for_uri(state: &ServerState, uri: &str) -> Option<Arc<AnalysisSnapsh
     cache_for_uri(state, uri).get(uri)
 }
 
-fn rebuild_workspace_cache(
+fn rebuild_workspace_cache_with_progress(
     workspace: &mut WorkspaceState,
+    progress: Option<&(dyn Fn(usize, usize) + Sync)>,
 ) -> HashMap<Arc<str>, Arc<AnalysisSnapshot>> {
     let loaded = load_workspace_documents(&workspace.root_uri, &workspace.open_documents);
     workspace.manifest = loaded.manifest.clone();
@@ -222,7 +248,7 @@ fn rebuild_workspace_cache(
             object_name: document.object_name,
         })
         .collect();
-    workspace.cache.replace_all(inputs)
+    workspace.cache.replace_all_with_progress(inputs, progress)
 }
 
 pub fn workspace_manifest_diagnostics_params(
@@ -289,6 +315,14 @@ pub fn publish_open_document_mut(
     state: &mut ServerState,
     params: &DidOpenTextDocumentParams,
 ) -> Arc<AnalysisSnapshot> {
+    publish_open_document_mut_with_progress(state, params, None)
+}
+
+pub fn publish_open_document_mut_with_progress(
+    state: &mut ServerState,
+    params: &DidOpenTextDocumentParams,
+    progress: Option<&(dyn Fn(usize, usize) + Sync)>,
+) -> Arc<AnalysisSnapshot> {
     let uri = normalize_lsp_uri(params.text_document.uri.as_str());
     if let Some(workspace) = state.workspace_for_uri_mut(&uri) {
         workspace.open_documents.insert(
@@ -298,7 +332,7 @@ pub fn publish_open_document_mut(
                 text: Arc::from(params.text_document.text.as_str()),
             },
         );
-        let snapshots = rebuild_workspace_cache(workspace);
+        let snapshots = rebuild_workspace_cache_with_progress(workspace, progress);
         return snapshots
             .get(uri.as_str())
             .cloned()
@@ -328,6 +362,14 @@ pub fn publish_changed_document_mut(
     state: &mut ServerState,
     params: &DidChangeTextDocumentParams,
 ) -> Option<Arc<AnalysisSnapshot>> {
+    publish_changed_document_mut_with_progress(state, params, None)
+}
+
+pub fn publish_changed_document_mut_with_progress(
+    state: &mut ServerState,
+    params: &DidChangeTextDocumentParams,
+    progress: Option<&(dyn Fn(usize, usize) + Sync)>,
+) -> Option<Arc<AnalysisSnapshot>> {
     let change = params.content_changes.last()?;
     let uri = normalize_lsp_uri(params.text_document.uri.as_str());
     if let Some(workspace) = state.workspace_for_uri_mut(&uri) {
@@ -338,7 +380,7 @@ pub fn publish_changed_document_mut(
                 text: Arc::from(change.text.as_str()),
             },
         );
-        let snapshots = rebuild_workspace_cache(workspace);
+        let snapshots = rebuild_workspace_cache_with_progress(workspace, progress);
         return snapshots.get(uri.as_str()).cloned();
     }
     Some(
@@ -352,23 +394,49 @@ pub fn refresh_workspace(
     state: &mut ServerState,
     workspace_uri: &str,
 ) -> Vec<Arc<AnalysisSnapshot>> {
+    refresh_workspace_with_progress(state, workspace_uri, None)
+}
+
+pub fn refresh_workspace_with_progress(
+    state: &mut ServerState,
+    workspace_uri: &str,
+    progress: Option<&(dyn Fn(usize, usize) + Sync)>,
+) -> Vec<Arc<AnalysisSnapshot>> {
     let workspace_uri = normalize_lsp_uri(workspace_uri);
     let Some(workspace) = state.workspaces.get_mut(&workspace_uri) else {
         return Vec::new();
     };
-    rebuild_workspace_cache(workspace).into_values().collect()
+    rebuild_workspace_cache_with_progress(workspace, progress)
+        .into_values()
+        .collect()
 }
 
 pub fn handle_workspace_manifest_updated(
     state: &mut ServerState,
     params: &WorkspaceManifestUpdatedParams,
 ) -> Vec<Arc<AnalysisSnapshot>> {
-    refresh_workspace(state, &params.workspace_uri)
+    handle_workspace_manifest_updated_with_progress(state, params, None)
+}
+
+pub fn handle_workspace_manifest_updated_with_progress(
+    state: &mut ServerState,
+    params: &WorkspaceManifestUpdatedParams,
+    progress: Option<&(dyn Fn(usize, usize) + Sync)>,
+) -> Vec<Arc<AnalysisSnapshot>> {
+    refresh_workspace_with_progress(state, &params.workspace_uri, progress)
 }
 
 pub fn handle_dependency_cache_cleared(
     state: &mut ServerState,
     params: &WorkspaceManifestUpdatedParams,
+) -> Vec<Arc<AnalysisSnapshot>> {
+    handle_dependency_cache_cleared_with_progress(state, params, None)
+}
+
+pub fn handle_dependency_cache_cleared_with_progress(
+    state: &mut ServerState,
+    params: &WorkspaceManifestUpdatedParams,
+    progress: Option<&(dyn Fn(usize, usize) + Sync)>,
 ) -> Vec<Arc<AnalysisSnapshot>> {
     let workspace_uri = normalize_lsp_uri(&params.workspace_uri);
     if let Some(workspace) = state.workspaces.get_mut(&workspace_uri) {
@@ -376,12 +444,20 @@ pub fn handle_dependency_cache_cleared(
         workspace.remote_lookup_failures.clear();
         workspace.remote_resolution_in_flight = false;
     }
-    refresh_workspace(state, &workspace_uri)
+    refresh_workspace_with_progress(state, &workspace_uri, progress)
 }
 
 pub fn handle_remote_dependencies_updated(
     state: &mut ServerState,
     params: &RemoteDependenciesUpdatedParams,
+) -> Vec<Arc<AnalysisSnapshot>> {
+    handle_remote_dependencies_updated_with_progress(state, params, None)
+}
+
+pub fn handle_remote_dependencies_updated_with_progress(
+    state: &mut ServerState,
+    params: &RemoteDependenciesUpdatedParams,
+    progress: Option<&(dyn Fn(usize, usize) + Sync)>,
 ) -> Vec<Arc<AnalysisSnapshot>> {
     let workspace_uri = normalize_lsp_uri(&params.workspace_uri);
     if let Some(workspace) = state.workspaces.get_mut(&workspace_uri) {
@@ -400,7 +476,7 @@ pub fn handle_remote_dependencies_updated(
                 .insert(remote_candidate_key(candidate));
         }
     }
-    refresh_workspace(state, &params.workspace_uri)
+    refresh_workspace_with_progress(state, &params.workspace_uri, progress)
 }
 
 pub fn collect_remote_dependency_candidates(
@@ -513,11 +589,17 @@ fn cached_remote_dependency_paths(
     let encoded_name = encode_dependency_cache_name(candidate.name.as_str());
 
     match candidate.kind.trim().to_ascii_lowercase().as_str() {
-        "include" => vec![dependencies_root.join("include").join(format!("{encoded_name}.abap"))],
+        "include" => vec![
+            dependencies_root
+                .join("include")
+                .join(format!("{encoded_name}.abap")),
+        ],
         "message-class" => {
-            vec![dependencies_root
-                .join("message-class")
-                .join(format!("{encoded_name}.xml"))]
+            vec![
+                dependencies_root
+                    .join("message-class")
+                    .join(format!("{encoded_name}.xml")),
+            ]
         }
         "static" | "type" => vec![
             dependencies_root
@@ -558,7 +640,12 @@ fn has_cached_remote_dependency_candidate(
 fn encode_dependency_cache_name(name: &str) -> String {
     let mut out = String::with_capacity(name.len());
     for byte in name.trim().to_ascii_uppercase().bytes() {
-        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'!' | b'~' | b'*' | b'\'' | b'(' | b')') {
+        if byte.is_ascii_alphanumeric()
+            || matches!(
+                byte,
+                b'-' | b'_' | b'.' | b'!' | b'~' | b'*' | b'\'' | b'(' | b')'
+            )
+        {
             out.push(byte as char);
         } else {
             out.push('%');
@@ -1310,10 +1397,8 @@ mod tests {
         build_remote_dependency_requests_for_workspace, collect_remote_dependency_candidates,
         completion, definition, handle_dependency_cache_cleared,
         handle_remote_dependencies_updated, hover, initialize_result, normalize_lsp_uri,
-        offset_to_position,
-        publish_changed_document, publish_open_document, publish_open_document_mut, references,
-        refresh_workspace,
-        snapshot_for_uri,
+        offset_to_position, publish_changed_document, publish_open_document,
+        publish_open_document_mut, references, refresh_workspace, snapshot_for_uri,
     };
 
     fn temp_workspace_path(name: &str) -> PathBuf {
@@ -1545,21 +1630,15 @@ SELECT rep_evtid,
 
     #[test]
     fn hover_and_definition_work_for_bare_delete_where_field_in_workspace_cached_ddic_proxy_include()
-    {
+     {
         let workspace_path = temp_workspace_path("workspace_bare_delete_where_ddic");
         fs::create_dir_all(workspace_path.join("src")).expect("src dir");
-        fs::create_dir_all(
-            workspace_path.join(".abapls/cache/dependencies/ddic-structure"),
-        )
-        .expect("structure deps dir");
-        fs::create_dir_all(
-            workspace_path.join(".abapls/cache/dependencies/ddic-table"),
-        )
-        .expect("table deps dir");
-        fs::create_dir_all(
-            workspace_path.join(".abapls/cache/dependencies/ddic-table-type"),
-        )
-        .expect("table type deps dir");
+        fs::create_dir_all(workspace_path.join(".abapls/cache/dependencies/ddic-structure"))
+            .expect("structure deps dir");
+        fs::create_dir_all(workspace_path.join(".abapls/cache/dependencies/ddic-table"))
+            .expect("table deps dir");
+        fs::create_dir_all(workspace_path.join(".abapls/cache/dependencies/ddic-table-type"))
+            .expect("table type deps dir");
 
         fs::write(
             workspace_path.join("abapls.toml"),
@@ -1613,9 +1692,8 @@ ENDCLASS.\n";
 </abapsource:elementInfo>
 "#;
         fs::write(
-            workspace_path.join(
-                ".abapls/cache/dependencies/ddic-structure/%2FSTTP%2FS_DM_OBJ_ITM.xml",
-            ),
+            workspace_path
+                .join(".abapls/cache/dependencies/ddic-structure/%2FSTTP%2FS_DM_OBJ_ITM.xml"),
             include_xml,
         )
         .expect("include xml");
@@ -1632,9 +1710,7 @@ ENDCLASS.\n";
 </abapsource:elementInfo>
 "#;
         fs::write(
-            workspace_path.join(
-                ".abapls/cache/dependencies/ddic-table/%2FSTTP%2FDM_OBJ_ITM.xml",
-            ),
+            workspace_path.join(".abapls/cache/dependencies/ddic-table/%2FSTTP%2FDM_OBJ_ITM.xml"),
             row_xml,
         )
         .expect("row xml");
@@ -1651,9 +1727,8 @@ ENDCLASS.\n";
 </abapsource:elementInfo>
 "#;
         fs::write(
-            workspace_path.join(
-                ".abapls/cache/dependencies/ddic-table-type/%2FSTTP%2FT_DM_OBJ_ITM.xml",
-            ),
+            workspace_path
+                .join(".abapls/cache/dependencies/ddic-table-type/%2FSTTP%2FT_DM_OBJ_ITM.xml"),
             table_type_xml,
         )
         .expect("table type xml");
@@ -1664,13 +1739,18 @@ ENDCLASS.\n";
         state.register_workspace_folder(workspace_uri.clone());
         refresh_workspace(&mut state, &workspace_uri);
 
-        let snapshot = snapshot_for_uri(&state, &normalize_lsp_uri(&source_uri))
-            .expect("workspace snapshot");
+        let snapshot =
+            snapshot_for_uri(&state, &normalize_lsp_uri(&source_uri)).expect("workspace snapshot");
         let hover_offset = main_src.rfind("uom").expect("uom use") + 1;
         let hover_position =
             offset_to_position(snapshot.text.as_ref(), hover_offset).expect("hover position");
         let direct_hover = snapshot.hovered_component_at(hover_offset);
-        assert!(direct_hover.is_some(), "snapshot diagnostics={:?} refs={:?}", snapshot.symbols.diagnostics, snapshot.symbols.references);
+        assert!(
+            direct_hover.is_some(),
+            "snapshot diagnostics={:?} refs={:?}",
+            snapshot.symbols.diagnostics,
+            snapshot.symbols.references
+        );
 
         let hover_result = hover(
             &state,
@@ -1712,10 +1792,7 @@ ENDCLASS.\n";
             panic!("expected scalar location");
         };
         assert!(
-            location
-                .uri
-                .as_str()
-                .contains("S_DM_OBJ_ITM.xml"),
+            location.uri.as_str().contains("S_DM_OBJ_ITM.xml"),
             "unexpected definition uri: {:?}",
             location.uri
         );
@@ -1723,25 +1800,17 @@ ENDCLASS.\n";
 
     #[test]
     fn hover_and_definition_fall_back_to_ddic_data_element_for_bare_where_field_when_proxy_cache_is_incomplete()
-    {
+     {
         let workspace_path = temp_workspace_path("workspace_bare_where_inferred_ddic_field");
         fs::create_dir_all(workspace_path.join("src")).expect("src dir");
-        fs::create_dir_all(
-            workspace_path.join(".abapls/cache/dependencies/ddic-data-element"),
-        )
-        .expect("data element deps dir");
-        fs::create_dir_all(
-            workspace_path.join(".abapls/cache/dependencies/ddic-structure"),
-        )
-        .expect("structure deps dir");
-        fs::create_dir_all(
-            workspace_path.join(".abapls/cache/dependencies/ddic-table"),
-        )
-        .expect("table deps dir");
-        fs::create_dir_all(
-            workspace_path.join(".abapls/cache/dependencies/ddic-table-type"),
-        )
-        .expect("table type deps dir");
+        fs::create_dir_all(workspace_path.join(".abapls/cache/dependencies/ddic-data-element"))
+            .expect("data element deps dir");
+        fs::create_dir_all(workspace_path.join(".abapls/cache/dependencies/ddic-structure"))
+            .expect("structure deps dir");
+        fs::create_dir_all(workspace_path.join(".abapls/cache/dependencies/ddic-table"))
+            .expect("table deps dir");
+        fs::create_dir_all(workspace_path.join(".abapls/cache/dependencies/ddic-table-type"))
+            .expect("table type deps dir");
 
         fs::write(
             workspace_path.join("abapls.toml"),
@@ -1789,9 +1858,7 @@ ENDCLASS.\n";
 </abapsource:elementInfo>
 "#;
         fs::write(
-            workspace_path.join(
-                ".abapls/cache/dependencies/ddic-data-element/%2FSTTP%2FE_UOM.xml",
-            ),
+            workspace_path.join(".abapls/cache/dependencies/ddic-data-element/%2FSTTP%2FE_UOM.xml"),
             data_element_xml,
         )
         .expect("data element xml");
@@ -1809,9 +1876,8 @@ ENDCLASS.\n";
 </abapsource:elementInfo>
 "#;
         fs::write(
-            workspace_path.join(
-                ".abapls/cache/dependencies/ddic-structure/%2FSTTP%2FS_DM_OBJ_ITM.xml",
-            ),
+            workspace_path
+                .join(".abapls/cache/dependencies/ddic-structure/%2FSTTP%2FS_DM_OBJ_ITM.xml"),
             include_xml,
         )
         .expect("include xml");
@@ -1828,9 +1894,7 @@ ENDCLASS.\n";
 </abapsource:elementInfo>
 "#;
         fs::write(
-            workspace_path.join(
-                ".abapls/cache/dependencies/ddic-table/%2FSTTP%2FDM_OBJ_ITM.xml",
-            ),
+            workspace_path.join(".abapls/cache/dependencies/ddic-table/%2FSTTP%2FDM_OBJ_ITM.xml"),
             row_xml,
         )
         .expect("row xml");
@@ -1847,9 +1911,8 @@ ENDCLASS.\n";
 </abapsource:elementInfo>
 "#;
         fs::write(
-            workspace_path.join(
-                ".abapls/cache/dependencies/ddic-table-type/%2FSTTP%2FT_DM_OBJ_ITM.xml",
-            ),
+            workspace_path
+                .join(".abapls/cache/dependencies/ddic-table-type/%2FSTTP%2FT_DM_OBJ_ITM.xml"),
             table_type_xml,
         )
         .expect("table type xml");
@@ -1860,8 +1923,8 @@ ENDCLASS.\n";
         state.register_workspace_folder(workspace_uri.clone());
         refresh_workspace(&mut state, &workspace_uri);
 
-        let snapshot = snapshot_for_uri(&state, &normalize_lsp_uri(&source_uri))
-            .expect("workspace snapshot");
+        let snapshot =
+            snapshot_for_uri(&state, &normalize_lsp_uri(&source_uri)).expect("workspace snapshot");
         let hover_offset = main_src.rfind("uom").expect("uom use") + 1;
         let hover_position =
             offset_to_position(snapshot.text.as_ref(), hover_offset).expect("hover position");

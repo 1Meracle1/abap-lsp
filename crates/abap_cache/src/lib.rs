@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use abap_lexer::TokenKind;
 use abap_parser::{ParseResult, parse};
@@ -422,11 +423,9 @@ impl AnalysisSnapshot {
             let field = &target.field;
             let kind = match field.shape {
                 StructureFieldShape::Scalar => HoveredComponentKind::Scalar,
-                StructureFieldShape::Structured { structure } => {
-                    HoveredComponentKind::Structured {
-                        structure_name: Arc::clone(&structure_unit.structure(structure).name),
-                    }
-                }
+                StructureFieldShape::Structured { structure } => HoveredComponentKind::Structured {
+                    structure_name: Arc::clone(&structure_unit.structure(structure).name),
+                },
             };
             return Some(HoveredComponentInfo {
                 base_name: Arc::clone(&field.name),
@@ -2034,11 +2033,9 @@ fn synthetic_loop_where_hovered_component_at(
             };
             let kind = match field.shape {
                 StructureFieldShape::Scalar => HoveredComponentKind::Scalar,
-                StructureFieldShape::Structured { structure } => {
-                    HoveredComponentKind::Structured {
-                        structure_name: Arc::clone(&fields_unit.structure(structure).name),
-                    }
-                }
+                StructureFieldShape::Structured { structure } => HoveredComponentKind::Structured {
+                    structure_name: Arc::clone(&fields_unit.structure(structure).name),
+                },
             };
             return Some(HoveredComponentInfo {
                 base_name: Arc::clone(&field.name),
@@ -2082,9 +2079,10 @@ fn inferred_ddic_data_element_target(
         .into_iter()
         .find(|field| field_looks_like_ddic_proxy_include(current_unit, field))
         .and_then(|field| {
-            field.type_ref.as_ref().map(|type_ref| {
-                Arc::<str>::from(type_ref.base_name.as_ref().to_ascii_lowercase())
-            })
+            field
+                .type_ref
+                .as_ref()
+                .map(|type_ref| Arc::<str>::from(type_ref.base_name.as_ref().to_ascii_lowercase()))
         });
 
     if owner_structure_name.is_none() {
@@ -2481,12 +2479,16 @@ fn field_looks_like_ddic_proxy_include(unit: &UnitAnalysis, field: &StructureFie
                 .as_ref()
                 .eq_ignore_ascii_case(&derive_ddic_include_field_name(type_ref.base_name.as_ref()))
     });
-    let matches_shape = match field.shape {
-        StructureFieldShape::Structured { structure } => field.name.as_ref().eq_ignore_ascii_case(
-            &derive_ddic_include_field_name(unit.structure(structure).name.as_ref()),
-        ),
-        StructureFieldShape::Scalar => false,
-    };
+    let matches_shape =
+        match field.shape {
+            StructureFieldShape::Structured { structure } => field
+                .name
+                .as_ref()
+                .eq_ignore_ascii_case(&derive_ddic_include_field_name(
+                    unit.structure(structure).name.as_ref(),
+                )),
+            StructureFieldShape::Scalar => false,
+        };
     matches_type_ref || matches_shape
 }
 
@@ -2550,7 +2552,11 @@ fn resolve_structure_field_info_with_scope_index<'a>(
         {
             return Some(field);
         }
-        for field in current_unit.semantic().decls().structure_field_infos(structure_id) {
+        for field in current_unit
+            .semantic()
+            .decls()
+            .structure_field_infos(structure_id)
+        {
             if !field_looks_like_ddic_proxy_include(current_unit, &field) {
                 continue;
             }
@@ -4514,7 +4520,10 @@ fn staged_documents_for_publish(
     staged
 }
 
-fn analyze_inputs(inputs: &[DocumentInput]) -> HashMap<Arc<str>, Arc<AnalysisSnapshot>> {
+fn analyze_inputs_with_progress(
+    inputs: &[DocumentInput],
+    progress: Option<&(dyn Fn(usize, usize) + Sync)>,
+) -> HashMap<Arc<str>, Arc<AnalysisSnapshot>> {
     let parsed: Vec<_> = inputs
         .par_iter()
         .map(|input| {
@@ -4531,6 +4540,8 @@ fn analyze_inputs(inputs: &[DocumentInput]) -> HashMap<Arc<str>, Arc<AnalysisSna
             )
         })
         .collect();
+    let processed = AtomicUsize::new(0);
+    let total = parsed.len();
     let units: Vec<_> = parsed
         .par_iter()
         .enumerate()
@@ -4541,6 +4552,10 @@ fn analyze_inputs(inputs: &[DocumentInput]) -> HashMap<Arc<str>, Arc<AnalysisSna
                 unit.provided_names.push(Arc::clone(object_name));
                 unit.provided_names.sort();
                 unit.provided_names.dedup();
+            }
+            if let Some(progress) = progress {
+                let done = processed.fetch_add(1, Ordering::Relaxed) + 1;
+                progress(done, total);
             }
             unit
         })
@@ -4765,7 +4780,15 @@ impl DocumentStore {
         &self,
         inputs: Vec<DocumentInput>,
     ) -> HashMap<Arc<str>, Arc<AnalysisSnapshot>> {
-        let rebuilt = analyze_inputs(&inputs);
+        self.replace_all_with_progress(inputs, None)
+    }
+
+    pub fn replace_all_with_progress(
+        &self,
+        inputs: Vec<DocumentInput>,
+        progress: Option<&(dyn Fn(usize, usize) + Sync)>,
+    ) -> HashMap<Arc<str>, Arc<AnalysisSnapshot>> {
+        let rebuilt = analyze_inputs_with_progress(&inputs, progress);
         self.documents.write().clone_from(&rebuilt);
         rebuilt
     }

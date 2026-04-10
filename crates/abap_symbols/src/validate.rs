@@ -1124,7 +1124,11 @@ fn resolve_structure_field_info_project<'a>(
         {
             return Some(field);
         }
-        for field in current_unit.semantic().decls().structure_field_infos(structure_id) {
+        for field in current_unit
+            .semantic()
+            .decls()
+            .structure_field_infos(structure_id)
+        {
             if !field_looks_like_ddic_proxy_include(&field) {
                 continue;
             }
@@ -1189,7 +1193,11 @@ fn structure_field_infos_project(
         if !seen_structures.insert((current_unit.unit_id.0, structure_id.0)) {
             return;
         }
-        for field in current_unit.semantic().decls().structure_field_infos(structure_id) {
+        for field in current_unit
+            .semantic()
+            .decls()
+            .structure_field_infos(structure_id)
+        {
             if seen_fields.insert(Arc::clone(&field.name)) {
                 out.push(field.clone());
             }
