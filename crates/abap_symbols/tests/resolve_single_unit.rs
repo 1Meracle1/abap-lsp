@@ -8447,3 +8447,49 @@ ENDFORM.
         unit.diagnostics
     );
 }
+
+#[test]
+fn multiline_template_alpha_out_does_not_report_out_as_unknown_symbol() {
+    let src = r#"
+CLASS zcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS m.
+ENDCLASS.
+
+CLASS zcl_demo IMPLEMENTATION.
+  METHOD m.
+    TYPES: BEGIN OF ty_trn,
+             bizttype TYPE i,
+             docnum   TYPE string,
+           END OF ty_trn.
+    TYPES: BEGIN OF ty_data,
+             napomena TYPE string,
+           END OF ty_data.
+    DATA mt_trn TYPE STANDARD TABLE OF ty_trn WITH DEFAULT KEY.
+    DATA ls_data TYPE ty_data.
+
+    ls_data-napomena = | { VALUE #( mt_trn[ bizttype = 60 ]-docnum
+                                    OPTIONAL ) ALPHA = OUT } |.
+  ENDMETHOD.
+ENDCLASS.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///template_alpha_out_multiline.abap", src, &parsed);
+
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference
+                && diag.message.contains("unknown symbol 'out'")
+        }),
+        "unexpected unresolved diagnostic for OUT formatting keyword: {:?}",
+        unit.diagnostics
+    );
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference
+                && diag.message.contains("unknown symbol 'docnum'")
+        }),
+        "unexpected unresolved diagnostic for docnum table expression: {:?}",
+        unit.diagnostics
+    );
+}

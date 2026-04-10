@@ -93,6 +93,7 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
     pub(super) fn collect_expr(&mut self, node: NodeId, scope: ScopeId) {
         match self.kind(node) {
             SyntaxKind::AssignStmt => self.collect_assign_stmt(node, scope),
+            SyntaxKind::TemplateFormatSpec => self.collect_template_format_spec(node, scope),
             SyntaxKind::ExprIdent => {
                 if let Some((name, range)) = self.ctx.node_name(node) {
                     self.ctx.add_reference(
@@ -203,6 +204,21 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                     }
                 }
             }
+        }
+    }
+
+    fn collect_template_format_spec(&mut self, node: NodeId, scope: ScopeId) {
+        let tokens = self.ctx.syntax_token_nodes(node);
+        if tokens.len() < 3 {
+            return;
+        }
+
+        // String-template formatting specs use enum-like keywords for most values
+        // (`ALPHA = OUT`, `DATE = USER`, `TIME = ISO`). Only numeric formatting
+        // options can legitimately reference dynamic operands.
+        if matches!(tokens[0].text.to_ascii_uppercase().as_str(), "WIDTH" | "DECIMALS") {
+            self.ctx
+                .collect_token_expression_refs_infos(&tokens[2..], scope, true);
         }
     }
 

@@ -257,6 +257,17 @@ mod tests {
     }
 
     #[test]
+    fn template_with_multiline_value_constructor_and_alpha_out() {
+        let src = "ls_data-napomena = | { VALUE #( mt_trn[ bizttype = 60 ]-docnum\n                                               OPTIONAL ) ALPHA = OUT } |.";
+        let file = tree_ok(src);
+        let interp = file
+            .find_first_kind(file.root(), SyntaxKind::TemplateInterpolation)
+            .expect("interpolation");
+        assert_eq!(file.count_kind(interp, SyntaxKind::TemplateFormatSpec), 1);
+        assert_eq!(file.count_kind(interp, SyntaxKind::ConstructorExpr), 1);
+    }
+
+    #[test]
     fn default_formatting_only_expr() {
         let src = "|{ lv_amount }|";
         let file = tree_ok(src);
