@@ -1484,6 +1484,52 @@ WRITE lt_rows.
 }
 
 #[test]
+fn resolves_update_set_and_where_host_operands() {
+    let src = r#"
+FORM f.
+  DATA ls_row TYPE string.
+  DATA lv_id TYPE i.
+
+  UPDATE zdemo_table
+    SET status = ls_row
+    WHERE id = lv_id.
+ENDFORM.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///update_hosts.abap", src, &parsed);
+
+    let ls_row_refs: Vec<_> = unit
+        .references
+        .iter()
+        .filter(|reference| {
+            reference.namespace == Namespace::Value && reference.name.as_ref() == "ls_row"
+        })
+        .collect();
+    assert!(
+        ls_row_refs
+            .iter()
+            .any(|reference| matches!(reference.resolution, Some(Resolution::Symbol(_)))),
+        "expected resolved UPDATE SET host reference, got {:?}",
+        ls_row_refs
+    );
+
+    let lv_id_refs: Vec<_> = unit
+        .references
+        .iter()
+        .filter(|reference| {
+            reference.namespace == Namespace::Value && reference.name.as_ref() == "lv_id"
+        })
+        .collect();
+    assert!(
+        lv_id_refs
+            .iter()
+            .any(|reference| matches!(reference.resolution, Some(Resolution::Symbol(_)))),
+        "expected resolved UPDATE WHERE host reference, got {:?}",
+        lv_id_refs
+    );
+}
+
+#[test]
 fn infers_inline_select_table_shape_from_explicit_projection_even_when_source_is_unknown() {
     let src = r#"
 DATA lv_bj2_max TYPE i.

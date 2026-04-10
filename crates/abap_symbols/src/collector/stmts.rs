@@ -5,7 +5,7 @@ use abap_ast::arena::NodeId;
 use abap_ast::ast::{
     AliasesStmt, AstNode, CallMethodStmt, CallStmt, ClearStmt, ConcatenateStmt, ConvertStmt,
     CreateDataStmt, CreateObjectStmt, DescribeStmt, FindStmt, MessageStmt, MethodsStmt, RaiseStmt,
-    ReadTableStmt, ReplaceStmt, SplitStmt, WaitStmt, WriteStmt,
+    ReadTableStmt, ReplaceStmt, SplitStmt, UpdateStmt, WaitStmt, WriteStmt,
 };
 
 use crate::def_map::{FieldTypeRefData, NamedArgumentTarget, ReferenceKind, SymbolKind};
@@ -1280,6 +1280,47 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                 self.collector.walk_node(operand, scope);
             }
             return;
+        }
+    }
+
+    pub(super) fn collect_update_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        let Some((from_operand, set_values, where_clause)) =
+            UpdateStmt::cast(self.collector.syntax(node)).map(|stmt| {
+                (
+                    stmt.from_operand()
+                        .and_then(|operand| operand.value())
+                        .map(|value| value.id()),
+                    stmt.set_clause()
+                        .into_iter()
+                        .flat_map(|clause| clause.assignments())
+                        .filter_map(|assignment| {
+                            assignment.value().and_then(|operand| operand.value())
+                        })
+                        .map(|value| value.id())
+                        .collect::<Vec<_>>(),
+                    stmt.where_clause().map(|clause| clause.syntax().id()),
+                )
+            })
+        else {
+            self.collect_generic_simple_stmt(node, scope);
+            return;
+        };
+
+        if let Some(from_operand) = from_operand {
+            self.collector.walk_node(from_operand, scope);
+        }
+
+        for value in set_values {
+            self.collector.walk_node(value, scope);
+        }
+
+        if let Some(where_clause) = where_clause {
+            let significant = self.collector.significant_stmt_token_infos(where_clause);
+            let Some((_, tail)) = significant.split_first() else {
+                return;
+            };
+            self.collector
+                .collect_token_expression_refs_infos(tail, scope, true);
         }
     }
 

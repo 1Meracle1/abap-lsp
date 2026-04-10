@@ -385,6 +385,13 @@ ast_node!(SqlAlias, SyntaxKind::SqlAlias);
 ast_node!(SqlColumnRef, SyntaxKind::SqlColumnRef);
 ast_node!(SqlStar, SyntaxKind::SqlStar);
 ast_node!(SqlQualifiedStar, SyntaxKind::SqlQualifiedStar);
+ast_node!(UpdateStmt, SyntaxKind::UpdateStmt);
+ast_node!(UpdateTarget, SyntaxKind::UpdateTarget);
+ast_node!(UpdateSetClause, SyntaxKind::UpdateSetClause);
+ast_node!(UpdateSetAssignment, SyntaxKind::UpdateSetAssignment);
+ast_node!(UpdateSetValueOperand, SyntaxKind::UpdateSetValueOperand);
+ast_node!(UpdateFromOperand, SyntaxKind::UpdateFromOperand);
+ast_node!(UpdateWhereClause, SyntaxKind::UpdateWhereClause);
 
 #[derive(Clone, Copy)]
 pub struct DeclClause<'a> {
@@ -1485,6 +1492,60 @@ impl<'a> ConcatenateStmt<'a> {
         self.syntax
             .child_by_kind(SyntaxKind::ConcatenateSeparatorOperand)
             .and_then(ConcatenateSeparatorOperand::cast)
+    }
+}
+
+impl<'a> UpdateSetValueOperand<'a> {
+    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
+        self.syntax.first_non_token_child()
+    }
+}
+
+impl<'a> UpdateSetAssignment<'a> {
+    pub fn value(self) -> Option<UpdateSetValueOperand<'a>> {
+        self.syntax
+            .child_by_kind(SyntaxKind::UpdateSetValueOperand)
+            .and_then(UpdateSetValueOperand::cast)
+    }
+}
+
+impl<'a> UpdateFromOperand<'a> {
+    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
+        self.syntax.first_non_token_child()
+    }
+}
+
+impl<'a> UpdateStmt<'a> {
+    pub fn target(self) -> Option<UpdateTarget<'a>> {
+        self.syntax
+            .child_by_kind(SyntaxKind::UpdateTarget)
+            .and_then(UpdateTarget::cast)
+    }
+
+    pub fn set_clause(self) -> Option<UpdateSetClause<'a>> {
+        self.syntax
+            .child_by_kind(SyntaxKind::UpdateSetClause)
+            .and_then(UpdateSetClause::cast)
+    }
+
+    pub fn from_operand(self) -> Option<UpdateFromOperand<'a>> {
+        self.syntax
+            .child_by_kind(SyntaxKind::UpdateFromOperand)
+            .and_then(UpdateFromOperand::cast)
+    }
+
+    pub fn where_clause(self) -> Option<UpdateWhereClause<'a>> {
+        self.syntax
+            .child_by_kind(SyntaxKind::UpdateWhereClause)
+            .and_then(UpdateWhereClause::cast)
+    }
+}
+
+impl<'a> UpdateSetClause<'a> {
+    pub fn assignments(
+        self,
+    ) -> impl DoubleEndedIterator<Item = UpdateSetAssignment<'a>> + Clone + 'a {
+        self.syntax.children().filter_map(UpdateSetAssignment::cast)
     }
 }
 

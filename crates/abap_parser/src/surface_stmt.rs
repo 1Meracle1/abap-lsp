@@ -1986,6 +1986,35 @@ fn find_top_level_keyword_index(
     None
 }
 
+fn find_top_level_token_kind(
+    tokens: &[Token],
+    start: usize,
+    end_exclusive: usize,
+    kind: TokenKind,
+) -> Option<usize> {
+    let mut paren = 0i32;
+    let mut bracket = 0i32;
+    let mut brace = 0i32;
+    let mut idx = start;
+    while idx < end_exclusive {
+        let token = &tokens[idx];
+        if paren == 0 && bracket == 0 && brace == 0 && token.kind == kind {
+            return Some(idx);
+        }
+        match token.kind {
+            TokenKind::LParen => paren += 1,
+            TokenKind::RParen => paren -= 1,
+            TokenKind::LBracket => bracket += 1,
+            TokenKind::RBracket => bracket -= 1,
+            TokenKind::LBrace => brace += 1,
+            TokenKind::RBrace => brace -= 1,
+            _ => {}
+        }
+        idx += 1;
+    }
+    None
+}
+
 fn find_top_level_hyphenated_keyword_index(
     source: &str,
     tokens: &[Token],
@@ -2219,6 +2248,100 @@ fn modify_clause_starts(source: &str, tokens: &[Token], idx: usize) -> bool {
             || is_keyword(source, token, "index")
             || is_keyword(source, token, "transporting")
             || is_keyword(source, token, "where"))
+}
+
+fn update_clause_starts(source: &str, tokens: &[Token], idx: usize) -> bool {
+    let Some(token) = tokens.get(idx) else {
+        return false;
+    };
+    if token.kind != TokenKind::Ident {
+        return false;
+    }
+    is_keyword(source, token, "set")
+        || is_keyword(source, token, "from")
+        || is_keyword(source, token, "where")
+        || is_keyword(source, token, "using")
+        || is_keyword(source, token, "connection")
+        || is_keyword(source, token, "client")
+}
+
+fn find_top_level_clause_index(
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    end_exclusive: usize,
+    keywords: &[&str],
+) -> Option<usize> {
+    let mut paren = 0i32;
+    let mut bracket = 0i32;
+    let mut brace = 0i32;
+    let mut idx = start;
+    while idx < end_exclusive {
+        let token = &tokens[idx];
+        if paren == 0
+            && bracket == 0
+            && brace == 0
+            && token.kind == TokenKind::Ident
+            && keywords
+                .iter()
+                .any(|keyword| is_keyword(source, token, keyword))
+        {
+            return Some(idx);
+        }
+        match token.kind {
+            TokenKind::LParen => paren += 1,
+            TokenKind::RParen => paren -= 1,
+            TokenKind::LBracket => bracket += 1,
+            TokenKind::RBracket => bracket -= 1,
+            TokenKind::LBrace => brace += 1,
+            TokenKind::RBrace => brace -= 1,
+            _ => {}
+        }
+        idx += 1;
+    }
+    None
+}
+
+fn scan_update_set_assignment_end(
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    end_exclusive: usize,
+) -> usize {
+    let mut paren = 0i32;
+    let mut bracket = 0i32;
+    let mut brace = 0i32;
+    let mut idx = start;
+    while idx < end_exclusive {
+        let token = &tokens[idx];
+        if paren == 0 && bracket == 0 && brace == 0 {
+            if token.kind == TokenKind::Comma {
+                return idx;
+            }
+            if update_clause_starts(source, tokens, idx) {
+                return idx;
+            }
+            if idx > start
+                && tokens
+                    .get(idx + 1)
+                    .is_some_and(|next| matches!(next.kind, TokenKind::Eq | TokenKind::QuestionEq))
+                && token.kind == TokenKind::Ident
+            {
+                return idx;
+            }
+        }
+        match token.kind {
+            TokenKind::LParen => paren += 1,
+            TokenKind::RParen => paren -= 1,
+            TokenKind::LBracket => bracket += 1,
+            TokenKind::RBracket => bracket -= 1,
+            TokenKind::LBrace => brace += 1,
+            TokenKind::RBrace => brace -= 1,
+            _ => {}
+        }
+        idx += 1;
+    }
+    idx
 }
 
 fn delete_clause_starts(source: &str, tokens: &[Token], idx: usize) -> bool {
@@ -5522,9 +5645,153 @@ pub fn try_parse_update_stmt(
 
     Some(match scan_update_stmt_period(tokens, source, idx + 1) {
         StmtPeriodScan::Found(period_i) => {
-            let children = token_children(b, tokens, idx, period_i + 1);
+            let mut children = Vec::with_capacity(period_i - idx + 1);
+            children.push(token_leaf(b, update_tok));
+
+            let clause_start = find_top_level_clause_index(
+                source,
+                tokens,
+                idx + 1,
+                period_i,
+                &["set", "from", "where", "using", "connection", "client"],
+            )
+            .unwrap_or(period_i);
+            if let Some(target) = build_sql_data_source(b, source, tokens, idx + 1, clause_start) {
+                let range = tokens[idx + 1].range.start..tokens[clause_start - 1].range.end;
+                children.push(b.branch(SyntaxKind::UpdateTarget, range, &[target]));
+            }
+
+            let mut i = clause_start;
+            while i < period_i {
+                let token = &tokens[i];
+                if is_keyword(source, token, "set") {
+                    let clause_end = find_top_level_clause_index(
+                        source,
+                        tokens,
+                        i + 1,
+                        period_i,
+                        &["where", "using", "connection", "client", "from"],
+                    )
+                    .unwrap_or(period_i);
+                    let mut clause_children = vec![token_leaf(b, token)];
+                    let mut assign_start = i + 1;
+                    while assign_start < clause_end {
+                        while assign_start < clause_end
+                            && tokens[assign_start].kind == TokenKind::Comma
+                        {
+                            clause_children.push(token_leaf(b, &tokens[assign_start]));
+                            assign_start += 1;
+                        }
+                        if assign_start >= clause_end {
+                            break;
+                        }
+                        let assign_end = scan_update_set_assignment_end(
+                            source,
+                            tokens,
+                            assign_start,
+                            clause_end,
+                        );
+                        let Some(eq_idx) = find_top_level_token_kind(
+                            tokens,
+                            assign_start,
+                            assign_end,
+                            TokenKind::Eq,
+                        )
+                        .or_else(|| {
+                            find_top_level_token_kind(
+                                tokens,
+                                assign_start,
+                                assign_end,
+                                TokenKind::QuestionEq,
+                            )
+                        }) else {
+                            push_token_children(
+                                b,
+                                &mut clause_children,
+                                tokens,
+                                assign_start,
+                                assign_end,
+                            );
+                            assign_start = assign_end;
+                            continue;
+                        };
+                        let mut assignment_children = Vec::new();
+                        push_token_children(
+                            b,
+                            &mut assignment_children,
+                            tokens,
+                            assign_start,
+                            eq_idx + 1,
+                        );
+                        if eq_idx + 1 < assign_end {
+                            push_wrapped_expr_child(
+                                b,
+                                &mut assignment_children,
+                                source,
+                                tokens,
+                                eq_idx + 1,
+                                assign_end,
+                                Some(&tokens[eq_idx]),
+                                SyntaxKind::UpdateSetValueOperand,
+                            );
+                        }
+                        let assignment = b.branch(
+                            SyntaxKind::UpdateSetAssignment,
+                            tokens[assign_start].range.start..tokens[assign_end - 1].range.end,
+                            &assignment_children,
+                        );
+                        clause_children.push(assignment);
+                        assign_start = assign_end;
+                    }
+                    let clause = b.branch(
+                        SyntaxKind::UpdateSetClause,
+                        token.range.start..tokens[clause_end.saturating_sub(1)].range.end,
+                        &clause_children,
+                    );
+                    children.push(clause);
+                    i = clause_end;
+                    continue;
+                }
+                if is_keyword(source, token, "from") {
+                    children.push(token_leaf(b, token));
+                    let from_end = find_top_level_clause_index(
+                        source,
+                        tokens,
+                        i + 1,
+                        period_i,
+                        &["where", "using", "connection", "client"],
+                    )
+                    .unwrap_or(period_i);
+                    if i + 1 < from_end {
+                        push_wrapped_expr_child(
+                            b,
+                            &mut children,
+                            source,
+                            tokens,
+                            i + 1,
+                            from_end,
+                            Some(token),
+                            SyntaxKind::UpdateFromOperand,
+                        );
+                    }
+                    i = from_end;
+                    continue;
+                }
+                if is_keyword(source, token, "where") {
+                    let clause =
+                        build_token_branch(b, SyntaxKind::UpdateWhereClause, tokens, i, period_i);
+                    if let Some(clause) = clause {
+                        children.push(clause);
+                    }
+                    i = period_i;
+                    continue;
+                }
+                children.push(token_leaf(b, token));
+                i += 1;
+            }
+            children.push(token_leaf(b, &tokens[period_i]));
             let node = b.branch(
-                SyntaxKind::UnparsedStmt,
+                SyntaxKind::UpdateStmt,
                 update_tok.range.start..tokens[period_i].range.end,
                 &children,
             );
@@ -6786,12 +7053,20 @@ END-OF-PAGE.\nWRITE 'e'.",
             "UPDATE zattp_rs_represp\n  SET reprocessing_status = 'S'\n      retry_count = <fs_rs_represp>-retry_count\n  WHERE rep_evtid EQ <fs_rs_represp>-rep_evtid.",
         );
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::UpdateStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::UpdateSetClause), 1);
         assert_eq!(
             parsed
                 .file
-                .count_kind(parsed.file.root(), SyntaxKind::UnparsedStmt),
+                .count_kind(root, SyntaxKind::UpdateSetAssignment),
+            2
+        );
+        assert_eq!(
+            parsed.file.count_kind(root, SyntaxKind::UpdateWhereClause),
             1
         );
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::UnparsedStmt), 0);
     }
 
     #[test]

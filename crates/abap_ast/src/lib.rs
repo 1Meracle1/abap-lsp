@@ -267,6 +267,20 @@ pub enum SyntaxKind {
     MoveStmt,
     /// `MODIFY ... FROM ... .`
     ModifyStmt,
+    /// `UPDATE dbtab ... .`
+    UpdateStmt,
+    /// Source table/view operand after `UPDATE`.
+    UpdateTarget,
+    /// `SET ...` clause inside `UPDATE`.
+    UpdateSetClause,
+    /// One `col = value` assignment inside `UPDATE ... SET`.
+    UpdateSetAssignment,
+    /// RHS operand inside an `UPDATE ... SET` assignment.
+    UpdateSetValueOperand,
+    /// Source operand after `FROM` inside `UPDATE`.
+    UpdateFromOperand,
+    /// `WHERE ...` clause inside `UPDATE`.
+    UpdateWhereClause,
     /// `DELETE itab ... .` and `DELETE ADJACENT DUPLICATES FROM itab ... .`
     DeleteStmt,
     /// `DELETE dbtab FROM TABLE itab .`
@@ -500,6 +514,13 @@ impl SyntaxKind {
             Self::MoveCorrespondingStmt => "MoveCorrespondingStmt",
             Self::MoveStmt => "MoveStmt",
             Self::ModifyStmt => "ModifyStmt",
+            Self::UpdateStmt => "UpdateStmt",
+            Self::UpdateTarget => "UpdateTarget",
+            Self::UpdateSetClause => "UpdateSetClause",
+            Self::UpdateSetAssignment => "UpdateSetAssignment",
+            Self::UpdateSetValueOperand => "UpdateSetValueOperand",
+            Self::UpdateFromOperand => "UpdateFromOperand",
+            Self::UpdateWhereClause => "UpdateWhereClause",
             Self::DeleteStmt => "DeleteInternalTableStmt",
             Self::DeleteDbTableStmt => "DeleteDbTableFromTableStmt",
             Self::AssertStmt => "AssertStmt",
