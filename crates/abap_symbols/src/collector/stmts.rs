@@ -1006,6 +1006,10 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                         );
                         target = Some(NamedArgumentTarget::ImplicitMethod { method_name });
                     }
+                    SyntaxKind::CallExpr => {
+                        self.collector.expr_lowering().collect_call_expr(callee, scope);
+                        return;
+                    }
                     SyntaxKind::SelectorExpr => {
                         self.collector
                             .expr_lowering()

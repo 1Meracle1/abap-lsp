@@ -6263,6 +6263,78 @@ START-OF-SELECTION.
 }
 
 #[test]
+fn resolves_legacy_call_method_parenthesized_named_sections() {
+    let src = r#"
+CLASS zcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS populate_codes
+      IMPORTING iv_rule_type TYPE string
+                is_req_data TYPE string
+      EXPORTING et_kodovi TYPE stringtab
+                et_kod_all TYPE stringtab.
+    METHODS exec.
+ENDCLASS.
+
+CLASS zcl_demo IMPLEMENTATION.
+  METHOD populate_codes.
+  ENDMETHOD.
+
+  METHOD exec.
+    DATA iv_rule_type TYPE string.
+    FIELD-SYMBOLS <fs_req_data> TYPE string.
+
+    ASSIGN iv_rule_type TO <fs_req_data>.
+    IF <fs_req_data> IS ASSIGNED.
+      CALL METHOD populate_codes(
+        EXPORTING
+          iv_rule_type = iv_rule_type
+          is_req_data  = <fs_req_data>
+        IMPORTING
+          et_kodovi    = DATA(lt_kodovi)
+          et_kod_all   = DATA(lt_kodovi_all) ).
+    ENDIF.
+
+    APPEND `x` TO lt_kodovi.
+    APPEND `y` TO lt_kodovi_all.
+  ENDMETHOD.
+ENDCLASS.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///legacy_call_method_parenthesized_sections.abap", src, &parsed);
+
+    for (name, type_name) in [("lt_kodovi", "stringtab"), ("lt_kodovi_all", "stringtab")] {
+        let symbol = unit
+            .symbols
+            .iter()
+            .find(|symbol| {
+                symbol.kind == abap_symbols::SymbolKind::Variable && symbol.name.as_ref() == name
+            })
+            .unwrap_or_else(|| panic!("expected inline variable symbol for `{name}`"));
+        let declared_type = symbol
+            .declared_type
+            .as_ref()
+            .unwrap_or_else(|| panic!("expected declared type for `{name}`"));
+        assert_eq!(declared_type.namespace, Namespace::Type);
+        assert_eq!(declared_type.base_name.as_ref(), type_name);
+    }
+
+    for keyword in ["EXPORTING", "IMPORTING"] {
+        assert!(
+            !unit.references.iter().any(|reference| reference.name.as_ref() == keyword.to_ascii_lowercase()),
+            "unexpected keyword reference for `{keyword}`: {:?}",
+            unit.references
+        );
+        assert!(
+            !unit.diagnostics.iter().any(|diag| {
+                diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains(keyword)
+            }),
+            "unexpected unresolved keyword diagnostic for `{keyword}`: {:?}",
+            unit.diagnostics
+        );
+    }
+}
+
+#[test]
 fn resolves_unqualified_method_call_inline_importing_targets() {
     let src = r#"
 CLASS zcl_demo DEFINITION.

@@ -7127,6 +7127,24 @@ END-OF-PAGE.\nWRITE 'e'.",
     }
 
     #[test]
+    fn parses_legacy_call_method_with_parenthesized_named_sections() {
+        let parsed = crate::parse(
+            "CALL METHOD populate_codes(\n  EXPORTING\n    iv_rule_type = iv_rule_type\n    is_req_data  = <fs_req_data>\n  IMPORTING\n    et_kodovi    = DATA(lt_kodovi)\n    et_kod_all   = DATA(lt_kodovi_all) ).",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let stmt = parsed
+            .file
+            .find_first_kind(parsed.file.root(), SyntaxKind::CallMethodStmt)
+            .expect("call method stmt");
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::CallMethodTarget), 1);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::CallExpr), 1);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::CallArgSection), 2);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::CallNamedArg), 4);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::DataInlineDecl), 2);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::Error), 0);
+    }
+
+    #[test]
     fn legacy_call_method_builds_structured_argument_list() {
         let parsed = crate::parse(
             "CALL METHOD zcl_demo=>get_hash EXPORTING iv_text = mv_text RECEIVING rv_hash = DATA(lv_hash).",

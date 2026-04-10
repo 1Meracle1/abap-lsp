@@ -770,4 +770,53 @@ ENDCLASS.";
             Some(type_idx)
         );
     }
+
+    #[test]
+    fn semantic_tokens_skip_parenthesized_legacy_call_method_section_keywords() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS zcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS populate_codes
+      IMPORTING iv_rule_type TYPE string
+                is_req_data TYPE string
+      EXPORTING et_kodovi TYPE stringtab
+                et_kod_all TYPE stringtab.
+    METHODS exec.
+ENDCLASS.
+
+CLASS zcl_demo IMPLEMENTATION.
+  METHOD populate_codes.
+  ENDMETHOD.
+
+  METHOD exec.
+    DATA iv_rule_type TYPE string.
+    FIELD-SYMBOLS <fs_req_data> TYPE string.
+    ASSIGN iv_rule_type TO <fs_req_data>.
+    IF <fs_req_data> IS ASSIGNED.
+      CALL METHOD populate_codes(
+        EXPORTING
+          iv_rule_type = iv_rule_type
+          is_req_data  = <fs_req_data>
+        IMPORTING
+          et_kodovi    = DATA(lt_kodovi)
+          et_kod_all   = DATA(lt_kodovi_all) ).
+    ENDIF.
+  ENDMETHOD.
+ENDCLASS.";
+        let snapshot = store.publish("file:///legacy_parenthesized_call_method.abap", 1, src);
+        let tokens = build_semantic_tokens(snapshot.as_ref());
+
+        for keyword in ["EXPORTING", "IMPORTING"] {
+            let offset = src.rfind(keyword).expect("keyword offset");
+            let (line, character) = byte_offset_to_line_character_utf16_reference(src, offset)
+                .expect("keyword position");
+            assert_eq!(
+                semantic_token_type_at(&tokens.data, line, character),
+                None,
+                "expected no semantic token on CALL METHOD section keyword `{keyword}`: {:?}",
+                tokens.data
+            );
+        }
+    }
 }
