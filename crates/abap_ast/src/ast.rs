@@ -308,6 +308,10 @@ ast_node!(CallNamedArg, SyntaxKind::CallNamedArg);
 ast_node!(CallPositionalArg, SyntaxKind::CallPositionalArg);
 ast_node!(MethodsStmt, SyntaxKind::MethodsStmt);
 ast_node!(InterfacesStmt, SyntaxKind::InterfacesStmt);
+ast_node!(CreateObjectStmt, SyntaxKind::CreateObjectStmt);
+ast_node!(CreateDataStmt, SyntaxKind::CreateDataStmt);
+ast_node!(CallMethodStmt, SyntaxKind::CallMethodStmt);
+ast_node!(CallMethodTarget, SyntaxKind::CallMethodTarget);
 ast_node!(RaiseStmt, SyntaxKind::RaiseStmt);
 ast_node!(MessageStmt, SyntaxKind::MessageStmt);
 ast_node!(MessageHeadClause, SyntaxKind::MessageHeadClause);
@@ -324,6 +328,9 @@ ast_node!(
     SyntaxKind::MessageDisplayLikeClause
 );
 ast_node!(MessageRaisingClause, SyntaxKind::MessageRaisingClause);
+ast_node!(FindStmt, SyntaxKind::FindStmt);
+ast_node!(ReadTableStmt, SyntaxKind::ReadTableStmt);
+ast_node!(WriteStmt, SyntaxKind::WriteStmt);
 ast_node!(SelectStmt, SyntaxKind::SelectStmt);
 ast_node!(SelectQuery, SyntaxKind::SelectQuery);
 ast_node!(SelectProjectionList, SyntaxKind::SelectProjectionList);
@@ -985,6 +992,87 @@ impl<'a> RaiseStmt<'a> {
     }
 }
 
+impl<'a> CreateObjectStmt<'a> {
+    pub fn target(self) -> Option<SyntaxNodeRef<'a>> {
+        self.syntax.non_token_children().find(|child| {
+            child.kind() != SyntaxKind::TypeRefSimple && child.kind() != SyntaxKind::CallArgList
+        })
+    }
+
+    pub fn type_ref(self) -> Option<TypeRefSimple<'a>> {
+        self.syntax
+            .child_by_kind(SyntaxKind::TypeRefSimple)
+            .and_then(TypeRefSimple::cast)
+    }
+
+    pub fn arg_list(self) -> Option<CallArgList<'a>> {
+        self.syntax
+            .child_by_kind(SyntaxKind::CallArgList)
+            .and_then(CallArgList::cast)
+    }
+}
+
+impl<'a> CreateDataStmt<'a> {
+    pub fn target(self) -> Option<SyntaxNodeRef<'a>> {
+        self.syntax.non_token_children().find(|child| {
+            child.kind() != SyntaxKind::TypeRefSimple && child.kind() != SyntaxKind::CallArgList
+        })
+    }
+
+    pub fn type_clause_kind(self, source: &str) -> Option<TypeClauseKind> {
+        self.syntax.children_by_kind(SyntaxKind::Token).find_map(|token| {
+            let text = token.text(source)?;
+            if text.eq_ignore_ascii_case("type") {
+                Some(TypeClauseKind::Type)
+            } else if text.eq_ignore_ascii_case("like") {
+                Some(TypeClauseKind::Like)
+            } else {
+                None
+            }
+        })
+    }
+
+    pub fn type_ref(self) -> Option<TypeRefSimple<'a>> {
+        self.syntax
+            .child_by_kind(SyntaxKind::TypeRefSimple)
+            .and_then(TypeRefSimple::cast)
+    }
+
+    pub fn type_value(self, source: &str) -> Option<SyntaxNodeRef<'a>> {
+        let mut saw_target = false;
+        for child in self.syntax.non_token_children() {
+            if !saw_target && Some(child.id()) == self.target().map(|target| target.id()) {
+                saw_target = true;
+                continue;
+            }
+            if self.type_clause_kind(source).is_some() {
+                return Some(child);
+            }
+        }
+        None
+    }
+}
+
+impl<'a> CallMethodStmt<'a> {
+    pub fn target(self) -> Option<CallMethodTarget<'a>> {
+        self.syntax
+            .child_by_kind(SyntaxKind::CallMethodTarget)
+            .and_then(CallMethodTarget::cast)
+    }
+
+    pub fn arg_list(self) -> Option<CallArgList<'a>> {
+        self.syntax
+            .child_by_kind(SyntaxKind::CallArgList)
+            .and_then(CallArgList::cast)
+    }
+}
+
+impl<'a> CallMethodTarget<'a> {
+    pub fn callee(self) -> Option<SyntaxNodeRef<'a>> {
+        self.syntax.first_non_token_child()
+    }
+}
+
 impl<'a> MessageStmt<'a> {
     pub fn head_clause(self) -> Option<MessageHeadClause<'a>> {
         self.syntax
@@ -1024,6 +1112,45 @@ impl<'a> MessageHeadClause<'a> {
 }
 
 impl<'a> MessageWithClause<'a> {
+    pub fn operands(self) -> impl DoubleEndedIterator<Item = SyntaxNodeRef<'a>> + Clone + 'a {
+        self.syntax.non_token_children()
+    }
+}
+
+impl<'a> FindStmt<'a> {
+    pub fn operands(self) -> impl DoubleEndedIterator<Item = SyntaxNodeRef<'a>> + Clone + 'a {
+        self.syntax.non_token_children()
+    }
+}
+
+impl<'a> ReadTableStmt<'a> {
+    pub fn operands(self) -> impl DoubleEndedIterator<Item = SyntaxNodeRef<'a>> + Clone + 'a {
+        self.syntax.non_token_children()
+    }
+
+    pub fn source(self) -> Option<SyntaxNodeRef<'a>> {
+        self.operands().find(|child| {
+            !matches!(
+                child.kind(),
+                SyntaxKind::DataInlineDecl | SyntaxKind::FieldSymbolInlineDecl
+            )
+        })
+    }
+
+    pub fn data_inline_targets(
+        self,
+    ) -> impl DoubleEndedIterator<Item = SyntaxNodeRef<'a>> + Clone + 'a {
+        self.syntax.children_by_kind(SyntaxKind::DataInlineDecl)
+    }
+
+    pub fn field_symbol_inline_targets(
+        self,
+    ) -> impl DoubleEndedIterator<Item = SyntaxNodeRef<'a>> + Clone + 'a {
+        self.syntax.children_by_kind(SyntaxKind::FieldSymbolInlineDecl)
+    }
+}
+
+impl<'a> WriteStmt<'a> {
     pub fn operands(self) -> impl DoubleEndedIterator<Item = SyntaxNodeRef<'a>> + Clone + 'a {
         self.syntax.non_token_children()
     }

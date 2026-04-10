@@ -2,7 +2,10 @@ use std::sync::Arc;
 
 use abap_ast::SyntaxKind;
 use abap_ast::arena::NodeId;
-use abap_ast::ast::{AstNode, MessageStmt, MethodsStmt, RaiseStmt};
+use abap_ast::ast::{
+    AstNode, CallMethodStmt, CreateDataStmt, CreateObjectStmt, FindStmt, MessageStmt,
+    MethodsStmt, RaiseStmt, ReadTableStmt, WriteStmt,
+};
 
 use crate::def_map::{FieldTypeRefData, NamedArgumentTarget, ReferenceKind, SymbolKind};
 use crate::ids::ScopeId;
@@ -184,11 +187,14 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
     }
 
     pub(super) fn collect_read_table_stmt(&mut self, node: NodeId, scope: ScopeId) {
-        if self.collector.node_has_structured_children(node) {
+        if let Some(stmt) = ReadTableStmt::cast(self.collector.syntax(node)) {
+            let data_inline_targets: Vec<_> = stmt.data_inline_targets().map(|target| target.id()).collect();
+            let field_symbol_targets: Vec<_> = stmt
+                .field_symbol_inline_targets()
+                .map(|target| target.id())
+                .collect();
             let mut source_expr = None;
             let mut target_kind = None;
-            let mut data_inline_targets = Vec::new();
-            let mut field_symbol_targets = Vec::new();
             for child in self.collector.file.children(node) {
                 match self.collector.file.kind(child) {
                     SyntaxKind::Token => {
@@ -202,8 +208,6 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                             }
                         }
                     }
-                    SyntaxKind::DataInlineDecl => data_inline_targets.push(child),
-                    SyntaxKind::FieldSymbolInlineDecl => field_symbol_targets.push(child),
                     _ => {
                         if source_expr.is_none() {
                             source_expr = Some(child);
@@ -1002,9 +1006,14 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
     }
 
     pub(super) fn collect_find_stmt(&mut self, node: NodeId, scope: ScopeId) {
-        if self.collector.node_has_structured_children(node) {
-            self.collector.walk_children(node, scope);
-            return;
+        if let Some(stmt) = FindStmt::cast(self.collector.syntax(node)) {
+            let operand_ids: Vec<_> = stmt.operands().map(|child| child.id()).collect();
+            if !operand_ids.is_empty() {
+                for child in operand_ids {
+                    self.collector.walk_node(child, scope);
+                }
+                return;
+            }
         }
         let tokens = self.collector.significant_stmt_token_infos(node);
         self.collect_find_stmt_infos(&tokens, scope);
@@ -1222,8 +1231,53 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
     }
 
     pub(super) fn collect_create_object_stmt_node(&mut self, node: NodeId, scope: ScopeId) {
-        if self.collector.node_has_structured_children(node) {
-            self.collector.walk_children(node, scope);
+        if let Some(stmt) = CreateObjectStmt::cast(self.collector.syntax(node)) {
+            let target_id = stmt.target().map(|target| target.id());
+            let type_ref_id = stmt.type_ref().map(|type_ref| type_ref.syntax().id());
+            let arg_list_id = stmt.arg_list().map(|arg_list| arg_list.syntax().id());
+            let mut constructor_target = None;
+            if let Some(target_id) = target_id {
+                self.collector.expr_lowering().collect_expr(target_id, scope);
+                if let Some(access) = self.collector.value_access_from_node(target_id, scope)
+                    && let Some(symbol_id) = self.collector.lookup_symbol_in_scope_chain(
+                        scope,
+                        access.base_namespace,
+                        access.base_name.as_ref(),
+                    )
+                    && let Some(declared_type) = self.collector.symbol(symbol_id).declared_type.as_ref()
+                    && declared_type.is_ref
+                    && declared_type.namespace == Namespace::Type
+                    && declared_type.field_path.is_empty()
+                {
+                    constructor_target = Some(NamedArgumentTarget::Constructor {
+                        type_name: Arc::clone(&declared_type.base_name),
+                    });
+                }
+            }
+            if let Some(type_ref_id) = type_ref_id {
+                self.collector
+                    .decl_lowering()
+                    .collect_type_ref(type_ref_id, scope);
+                if let Some((namespace, _, base_name, _, field_path)) = self
+                    .collector
+                    .type_ref_access_chain(type_ref_id, Namespace::Type)
+                    && namespace == Namespace::Type
+                    && field_path.is_empty()
+                {
+                    constructor_target = Some(NamedArgumentTarget::Constructor { type_name: base_name });
+                }
+            }
+            if let Some(arg_list_id) = arg_list_id {
+                if let Some(target) = constructor_target {
+                    self.collector
+                        .expr_lowering()
+                        .collect_call_argument_list(arg_list_id, scope, target);
+                } else {
+                    self.collector
+                        .expr_lowering()
+                        .collect_structured_argument_values_from_children(arg_list_id, scope);
+                }
+            }
             return;
         }
         let significant = self.collector.significant_stmt_token_infos(node);
@@ -1231,8 +1285,40 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
     }
 
     pub(super) fn collect_create_data_stmt_node(&mut self, node: NodeId, scope: ScopeId) {
-        if self.collector.node_has_structured_children(node) {
-            self.collector.walk_children(node, scope);
+        if let Some(stmt) = CreateDataStmt::cast(self.collector.syntax(node)) {
+            let target_id = stmt.target().map(|target| target.id());
+            let clause_kind = stmt.type_clause_kind(self.collector.source);
+            let type_ref_id = stmt.type_ref().map(|type_ref| type_ref.syntax().id());
+            let type_value_id = stmt.type_value(self.collector.source).map(|value| value.id());
+            if let Some(target_id) = target_id {
+                self.collector.expr_lowering().collect_expr(target_id, scope);
+            }
+            match clause_kind {
+                Some(abap_ast::ast::TypeClauseKind::Type) => {
+                    if let Some(type_ref_id) = type_ref_id {
+                        self.collector
+                            .decl_lowering()
+                            .collect_type_ref(type_ref_id, scope);
+                    } else if let Some(value_id) = type_value_id {
+                        self.collector.walk_node(value_id, scope);
+                    }
+                }
+                Some(abap_ast::ast::TypeClauseKind::Like) => {
+                    if let Some(value_id) = type_value_id {
+                        self.collector.walk_node(value_id, scope);
+                        if let Some(access) = self.collector.value_access_from_node(value_id, scope) {
+                            self.collector.add_reference(
+                                scope,
+                                access.base_name,
+                                access.base_namespace,
+                                ReferenceKind::TypeRef,
+                                self.collector.file.range(value_id),
+                            );
+                        }
+                    }
+                }
+                None => {}
+            }
             return;
         }
         let significant = self.collector.significant_stmt_token_infos(node);
@@ -1240,47 +1326,48 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
     }
 
     pub(super) fn collect_call_method_stmt_node(&mut self, node: NodeId, scope: ScopeId) {
-        let mut target = None;
-        let mut arg_list = None;
-
-        for child in self.collector.file.children(node) {
-            match self.collector.file.kind(child) {
-                SyntaxKind::CallMethodTarget => {
-                    let Some(mut callee) = self.collector.first_non_token_child(child) else {
-                        continue;
+        if let Some(stmt) = CallMethodStmt::cast(self.collector.syntax(node)) {
+            let target_node_id = stmt.target().and_then(|target_node| target_node.callee().map(|callee| callee.id()));
+            let arg_list_id = stmt.arg_list().map(|arg_list| arg_list.syntax().id());
+            let mut target = None;
+            if let Some(mut callee) = target_node_id {
+                while self.collector.file.kind(callee) == SyntaxKind::TemplateExpr {
+                    let Some(inner) = self.collector.first_non_token_child(callee) else {
+                        break;
                     };
-                    while self.collector.file.kind(callee) == SyntaxKind::TemplateExpr {
-                        let Some(inner) = self.collector.first_non_token_child(callee) else {
-                            break;
-                        };
-                        callee = inner;
-                    }
-                    match self.collector.file.kind(callee) {
-                        SyntaxKind::ExprIdent => {
-                            let Some((method_name, _)) = self.collector.node_name(callee) else {
-                                continue;
-                            };
-                            target = Some(NamedArgumentTarget::ImplicitMethod { method_name });
-                        }
-                        SyntaxKind::SelectorExpr => {
-                            self.collector
-                                .expr_lowering()
-                                .collect_selector_expr(callee, scope);
-                            target = self.collector.named_argument_target_for_callee(callee);
-                        }
-                        _ => self.collector.expr_lowering().collect_expr(callee, scope),
-                    }
+                    callee = inner;
                 }
-                SyntaxKind::CallArgList => arg_list = Some(child),
-                _ => {}
+                match self.collector.file.kind(callee) {
+                    SyntaxKind::ExprIdent => {
+                        let Some((method_name, range)) = self.collector.node_name(callee) else {
+                            return;
+                        };
+                        self.collector.add_reference(
+                            scope,
+                            Arc::clone(&method_name),
+                            Namespace::Routine,
+                            ReferenceKind::RoutineCall,
+                            range,
+                        );
+                        target = Some(NamedArgumentTarget::ImplicitMethod { method_name });
+                    }
+                    SyntaxKind::SelectorExpr => {
+                        self.collector
+                            .expr_lowering()
+                            .collect_selector_expr(callee, scope);
+                        target = self.collector.named_argument_target_for_callee(callee);
+                    }
+                    _ => self.collector.expr_lowering().collect_expr(callee, scope),
+                }
             }
-        }
-
-        if let (Some(target), Some(arg_list)) = (target, arg_list) {
-            self.collector
-                .expr_lowering()
-                .collect_call_argument_list(arg_list, scope, target);
-            return;
+            if let (Some(target), Some(arg_list_id)) = (target, arg_list_id) {
+                self.collector.expr_lowering().collect_call_argument_list(
+                    arg_list_id,
+                    scope,
+                    target,
+                );
+                return;
+            }
         }
 
         let significant = self.collector.significant_stmt_token_infos(node);
@@ -1471,9 +1558,14 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
     }
 
     pub(super) fn collect_write_stmt(&mut self, node: NodeId, scope: ScopeId) {
-        if self.collector.node_has_structured_children(node) {
-            self.collector.walk_children(node, scope);
-            return;
+        if let Some(stmt) = WriteStmt::cast(self.collector.syntax(node)) {
+            let operand_ids: Vec<_> = stmt.operands().map(|child| child.id()).collect();
+            if !operand_ids.is_empty() {
+                for child in operand_ids {
+                    self.collector.walk_node(child, scope);
+                }
+                return;
+            }
         }
         let significant = self.collector.significant_stmt_token_infos(node);
         let Some((_, tail)) = significant.split_first() else {
