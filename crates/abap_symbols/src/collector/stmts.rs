@@ -3,8 +3,9 @@ use std::sync::Arc;
 use abap_ast::SyntaxKind;
 use abap_ast::arena::NodeId;
 use abap_ast::ast::{
-    AstNode, CallMethodStmt, CreateDataStmt, CreateObjectStmt, FindStmt, MessageStmt,
-    MethodsStmt, RaiseStmt, ReadTableStmt, WriteStmt,
+    AstNode, CallMethodStmt, CallStmt, ClearStmt, ConcatenateStmt, ConvertStmt, CreateDataStmt,
+    CreateObjectStmt, DescribeStmt, FindStmt, MessageStmt, MethodsStmt, RaiseStmt, ReadTableStmt,
+    ReplaceStmt, SplitStmt, WaitStmt, WriteStmt,
 };
 
 use crate::def_map::{FieldTypeRefData, NamedArgumentTarget, ReferenceKind, SymbolKind};
@@ -127,6 +128,31 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
         true
     }
 
+    fn declare_describe_lines_inline_target(&mut self, node: NodeId, scope: ScopeId) -> bool {
+        let Some(name_node) = self
+            .collector
+            .file
+            .children(node)
+            .find(|&child| self.collector.file.kind(child) == SyntaxKind::DataDeclName)
+        else {
+            return false;
+        };
+        let Some((name, range)) = self.collector.node_name(name_node) else {
+            return false;
+        };
+        self.collector.declare_symbol(
+            self.collector.declaration_scope(scope),
+            name,
+            SymbolKind::Variable,
+            range,
+            None,
+            Some(Self::builtin_type("i")),
+            None,
+            None,
+        );
+        true
+    }
+
     pub(super) fn collect_delete_stmt(&mut self, node: NodeId, scope: ScopeId) {
         let mut where_expr = None;
         let mut seen_where = false;
@@ -188,7 +214,10 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
 
     pub(super) fn collect_read_table_stmt(&mut self, node: NodeId, scope: ScopeId) {
         if let Some(stmt) = ReadTableStmt::cast(self.collector.syntax(node)) {
-            let data_inline_targets: Vec<_> = stmt.data_inline_targets().map(|target| target.id()).collect();
+            let data_inline_targets: Vec<_> = stmt
+                .data_inline_targets()
+                .map(|target| target.id())
+                .collect();
             let field_symbol_targets: Vec<_> = stmt
                 .field_symbol_inline_targets()
                 .map(|target| target.id())
@@ -476,8 +505,10 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
     }
 
     pub(super) fn collect_wait_stmt(&mut self, node: NodeId, scope: ScopeId) {
-        if self.collector.node_has_structured_children(node) {
-            self.collector.walk_children(node, scope);
+        if let Some(stmt) = WaitStmt::cast(self.collector.syntax(node))
+            && let Some(duration) = stmt.duration().and_then(|operand| operand.value())
+        {
+            self.collector.walk_node(duration.id(), scope);
             return;
         }
         let significant = self.collector.significant_stmt_token_infos(node);
@@ -490,9 +521,18 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
     }
 
     pub(super) fn collect_clear_stmt(&mut self, node: NodeId, scope: ScopeId) {
-        if self.collector.node_has_structured_children(node) {
-            self.collector.walk_children(node, scope);
-            return;
+        if let Some(stmt) = ClearStmt::cast(self.collector.syntax(node)) {
+            let operands: Vec<_> = stmt
+                .operands()
+                .filter_map(|operand| operand.value())
+                .map(|value| value.id())
+                .collect();
+            if !operands.is_empty() {
+                for operand in operands {
+                    self.collector.walk_node(operand, scope);
+                }
+                return;
+            }
         }
         let significant = self.collector.significant_stmt_token_infos(node);
         let Some((_, tail)) = significant.split_first() else {
@@ -502,27 +542,71 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
     }
 
     pub(super) fn collect_describe_stmt(&mut self, node: NodeId, scope: ScopeId) {
-        if self.collector.node_has_structured_children(node) {
-            self.collector.walk_children(node, scope);
-            return;
+        if let Some(stmt) = DescribeStmt::cast(self.collector.syntax(node)) {
+            let table_operand = stmt
+                .table_operand()
+                .and_then(|operand| operand.value())
+                .map(|value| value.id());
+            let lines_target = stmt
+                .lines_target()
+                .and_then(|target| target.value())
+                .map(|value| value.id());
+            if table_operand.is_some() || lines_target.is_some() {
+                if let Some(table_operand) = table_operand {
+                    self.collector.walk_node(table_operand, scope);
+                }
+                if let Some(lines_target) = lines_target
+                    && (!self.declare_describe_lines_inline_target(lines_target, scope)
+                        || self.collector.file.kind(lines_target) != SyntaxKind::DataInlineDecl)
+                {
+                    self.collector.walk_node(lines_target, scope);
+                }
+                return;
+            }
         }
         let significant = self.collector.significant_stmt_token_infos(node);
         self.collect_describe_stmt_infos(&significant, scope);
     }
 
     pub(super) fn collect_convert_stmt(&mut self, node: NodeId, scope: ScopeId) {
-        if self.collector.node_has_structured_children(node) {
-            self.collector.walk_children(node, scope);
-            return;
+        if let Some(stmt) = ConvertStmt::cast(self.collector.syntax(node)) {
+            let mut operands: Vec<_> = stmt
+                .operands()
+                .filter_map(|operand| operand.value())
+                .map(|value| value.id())
+                .collect();
+            if let Some(target) = stmt.target().and_then(|target| target.value()) {
+                operands.push(target.id());
+            }
+            if let Some(time_zone) = stmt.time_zone().and_then(|target| target.value()) {
+                operands.push(time_zone.id());
+            }
+            if !operands.is_empty() {
+                for operand in operands {
+                    self.collector.walk_node(operand, scope);
+                }
+                return;
+            }
         }
         let significant = self.collector.significant_stmt_token_infos(node);
         self.collect_convert_stmt_infos(&significant, scope);
     }
 
     pub(super) fn collect_replace_stmt(&mut self, node: NodeId, scope: ScopeId) {
-        if self.collector.node_has_structured_children(node) {
-            self.collector.walk_children(node, scope);
-            return;
+        if let Some(stmt) = ReplaceStmt::cast(self.collector.syntax(node)) {
+            let operands: Vec<_> = stmt
+                .patterns()
+                .filter_map(|operand| operand.value())
+                .chain(stmt.targets().filter_map(|operand| operand.value()))
+                .chain(stmt.replacements().filter_map(|operand| operand.value()))
+                .map(|value| value.id())
+                .collect();
+            if !operands.is_empty() {
+                for operand in operands {
+                    self.collector.walk_node(operand, scope);
+                }
+                return;
+            }
         }
         let significant = self.collector.significant_stmt_token_infos(node);
         self.collect_replace_stmt_infos(&significant, scope);
@@ -1237,14 +1321,17 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             let arg_list_id = stmt.arg_list().map(|arg_list| arg_list.syntax().id());
             let mut constructor_target = None;
             if let Some(target_id) = target_id {
-                self.collector.expr_lowering().collect_expr(target_id, scope);
+                self.collector
+                    .expr_lowering()
+                    .collect_expr(target_id, scope);
                 if let Some(access) = self.collector.value_access_from_node(target_id, scope)
                     && let Some(symbol_id) = self.collector.lookup_symbol_in_scope_chain(
                         scope,
                         access.base_namespace,
                         access.base_name.as_ref(),
                     )
-                    && let Some(declared_type) = self.collector.symbol(symbol_id).declared_type.as_ref()
+                    && let Some(declared_type) =
+                        self.collector.symbol(symbol_id).declared_type.as_ref()
                     && declared_type.is_ref
                     && declared_type.namespace == Namespace::Type
                     && declared_type.field_path.is_empty()
@@ -1264,14 +1351,18 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                     && namespace == Namespace::Type
                     && field_path.is_empty()
                 {
-                    constructor_target = Some(NamedArgumentTarget::Constructor { type_name: base_name });
+                    constructor_target = Some(NamedArgumentTarget::Constructor {
+                        type_name: base_name,
+                    });
                 }
             }
             if let Some(arg_list_id) = arg_list_id {
                 if let Some(target) = constructor_target {
-                    self.collector
-                        .expr_lowering()
-                        .collect_call_argument_list(arg_list_id, scope, target);
+                    self.collector.expr_lowering().collect_call_argument_list(
+                        arg_list_id,
+                        scope,
+                        target,
+                    );
                 } else {
                     self.collector
                         .expr_lowering()
@@ -1289,9 +1380,13 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             let target_id = stmt.target().map(|target| target.id());
             let clause_kind = stmt.type_clause_kind(self.collector.source);
             let type_ref_id = stmt.type_ref().map(|type_ref| type_ref.syntax().id());
-            let type_value_id = stmt.type_value(self.collector.source).map(|value| value.id());
+            let type_value_id = stmt
+                .type_value(self.collector.source)
+                .map(|value| value.id());
             if let Some(target_id) = target_id {
-                self.collector.expr_lowering().collect_expr(target_id, scope);
+                self.collector
+                    .expr_lowering()
+                    .collect_expr(target_id, scope);
             }
             match clause_kind {
                 Some(abap_ast::ast::TypeClauseKind::Type) => {
@@ -1306,7 +1401,8 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                 Some(abap_ast::ast::TypeClauseKind::Like) => {
                     if let Some(value_id) = type_value_id {
                         self.collector.walk_node(value_id, scope);
-                        if let Some(access) = self.collector.value_access_from_node(value_id, scope) {
+                        if let Some(access) = self.collector.value_access_from_node(value_id, scope)
+                        {
                             self.collector.add_reference(
                                 scope,
                                 access.base_name,
@@ -1327,7 +1423,9 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
 
     pub(super) fn collect_call_method_stmt_node(&mut self, node: NodeId, scope: ScopeId) {
         if let Some(stmt) = CallMethodStmt::cast(self.collector.syntax(node)) {
-            let target_node_id = stmt.target().and_then(|target_node| target_node.callee().map(|callee| callee.id()));
+            let target_node_id = stmt
+                .target()
+                .and_then(|target_node| target_node.callee().map(|callee| callee.id()));
             let arg_list_id = stmt.arg_list().map(|arg_list| arg_list.syntax().id());
             let mut target = None;
             if let Some(mut callee) = target_node_id {
@@ -1375,7 +1473,7 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
     }
 
     pub(super) fn collect_call_stmt(&mut self, node: NodeId, scope: ScopeId) {
-        if self.collector.node_has_structured_children(node) {
+        if CallStmt::cast(self.collector.syntax(node)).is_some() {
             let significant = self.collector.significant_stmt_token_infos(node);
             let function_name = if significant.len() >= 3
                 && significant[0].text.eq_ignore_ascii_case("call")
@@ -1386,9 +1484,11 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                 None
             };
 
+            let mut structured = false;
             for child in self.collector.file.children(node) {
                 match self.collector.file.kind(child) {
                     SyntaxKind::CallArgList => {
+                        structured = true;
                         if let Some(function_name) = function_name.clone() {
                             self.collector.expr_lowering().collect_call_argument_list(
                                 child,
@@ -1401,11 +1501,20 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                                 .collect_structured_argument_values_from_children(child, scope);
                         }
                     }
+                    SyntaxKind::CallExpr => {
+                        structured = true;
+                        self.collector.walk_node(child, scope);
+                    }
                     SyntaxKind::Token => {}
-                    _ => self.collector.walk_node(child, scope),
+                    _ => {
+                        structured = true;
+                        self.collector.walk_node(child, scope)
+                    }
                 }
             }
-            return;
+            if structured {
+                return;
+            }
         }
         let significant = self.collector.significant_stmt_token_infos(node);
         if significant.len() >= 3
@@ -1576,7 +1685,7 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
     }
 
     pub(super) fn collect_split_stmt(&mut self, node: NodeId, scope: ScopeId) {
-        if self.collector.node_has_structured_children(node) {
+        if SplitStmt::cast(self.collector.syntax(node)).is_some() {
             let byte_mode = self.collector.file.children(node).any(|child| {
                 self.collector.file.kind(child) == SyntaxKind::Token
                     && self
@@ -1588,6 +1697,7 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             });
             let mut seen_into = false;
             let mut into_table = false;
+            let mut structured = false;
             for child in self.collector.file.children(node) {
                 match self.collector.file.kind(child) {
                     SyntaxKind::Token => {
@@ -1602,13 +1712,34 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                             }
                         }
                     }
-                    SyntaxKind::DataInlineDecl => {
-                        self.declare_split_inline_data_target(child, scope, into_table, byte_mode);
+                    SyntaxKind::SplitSourceOperand | SyntaxKind::SplitSeparatorOperand => {
+                        structured = true;
+                        if let Some(value) = self.collector.first_non_token_child(child) {
+                            self.collector.walk_node(value, scope);
+                        }
                     }
-                    _ => self.collector.walk_node(child, scope),
+                    SyntaxKind::SplitTargetOperand => {
+                        structured = true;
+                        let Some(value) = self.collector.first_non_token_child(child) else {
+                            continue;
+                        };
+                        if self.collector.file.kind(value) == SyntaxKind::DataInlineDecl {
+                            self.declare_split_inline_data_target(
+                                value, scope, into_table, byte_mode,
+                            );
+                        } else {
+                            self.collector.walk_node(value, scope);
+                        }
+                    }
+                    _ => {
+                        structured = true;
+                        self.collector.walk_node(child, scope)
+                    }
                 }
             }
-            return;
+            if structured {
+                return;
+            }
         }
         let significant = self.collector.significant_stmt_token_infos(node);
         if significant.is_empty() || !significant[0].text.eq_ignore_ascii_case("split") {
@@ -1699,9 +1830,24 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
     }
 
     pub(super) fn collect_concatenate_stmt(&mut self, node: NodeId, scope: ScopeId) {
-        if self.collector.node_has_structured_children(node) {
-            self.collector.walk_children(node, scope);
-            return;
+        if let Some(stmt) = ConcatenateStmt::cast(self.collector.syntax(node)) {
+            let mut operands: Vec<_> = stmt
+                .sources()
+                .filter_map(|operand| operand.value())
+                .map(|value| value.id())
+                .collect();
+            if let Some(target) = stmt.target().and_then(|operand| operand.value()) {
+                operands.push(target.id());
+            }
+            if let Some(separator) = stmt.separator().and_then(|operand| operand.value()) {
+                operands.push(separator.id());
+            }
+            if !operands.is_empty() {
+                for operand in operands {
+                    self.collector.walk_node(operand, scope);
+                }
+                return;
+            }
         }
         let significant = self.collector.significant_stmt_token_infos(node);
         if significant.is_empty() || !significant[0].text.eq_ignore_ascii_case("concatenate") {

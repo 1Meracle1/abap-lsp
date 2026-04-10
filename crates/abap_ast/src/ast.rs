@@ -308,8 +308,24 @@ ast_node!(CallNamedArg, SyntaxKind::CallNamedArg);
 ast_node!(CallPositionalArg, SyntaxKind::CallPositionalArg);
 ast_node!(MethodsStmt, SyntaxKind::MethodsStmt);
 ast_node!(InterfacesStmt, SyntaxKind::InterfacesStmt);
+ast_node!(ClearStmt, SyntaxKind::ClearStmt);
+ast_node!(ClearOperand, SyntaxKind::ClearOperand);
+ast_node!(ConvertStmt, SyntaxKind::ConvertStmt);
+ast_node!(ConvertOperand, SyntaxKind::ConvertOperand);
+ast_node!(ConvertTargetOperand, SyntaxKind::ConvertTargetOperand);
+ast_node!(ConvertTimeZoneOperand, SyntaxKind::ConvertTimeZoneOperand);
+ast_node!(DescribeStmt, SyntaxKind::DescribeStmt);
+ast_node!(DescribeTableOperand, SyntaxKind::DescribeTableOperand);
+ast_node!(DescribeLinesTarget, SyntaxKind::DescribeLinesTarget);
+ast_node!(ReplaceStmt, SyntaxKind::ReplaceStmt);
+ast_node!(ReplacePatternOperand, SyntaxKind::ReplacePatternOperand);
+ast_node!(ReplaceTargetOperand, SyntaxKind::ReplaceTargetOperand);
+ast_node!(ReplaceWithOperand, SyntaxKind::ReplaceWithOperand);
+ast_node!(WaitStmt, SyntaxKind::WaitStmt);
+ast_node!(WaitOperand, SyntaxKind::WaitOperand);
 ast_node!(CreateObjectStmt, SyntaxKind::CreateObjectStmt);
 ast_node!(CreateDataStmt, SyntaxKind::CreateDataStmt);
+ast_node!(CallStmt, SyntaxKind::CallStmt);
 ast_node!(CallMethodStmt, SyntaxKind::CallMethodStmt);
 ast_node!(CallMethodTarget, SyntaxKind::CallMethodTarget);
 ast_node!(RaiseStmt, SyntaxKind::RaiseStmt);
@@ -331,6 +347,23 @@ ast_node!(MessageRaisingClause, SyntaxKind::MessageRaisingClause);
 ast_node!(FindStmt, SyntaxKind::FindStmt);
 ast_node!(ReadTableStmt, SyntaxKind::ReadTableStmt);
 ast_node!(WriteStmt, SyntaxKind::WriteStmt);
+ast_node!(SplitStmt, SyntaxKind::SplitStmt);
+ast_node!(SplitSourceOperand, SyntaxKind::SplitSourceOperand);
+ast_node!(SplitSeparatorOperand, SyntaxKind::SplitSeparatorOperand);
+ast_node!(SplitTargetOperand, SyntaxKind::SplitTargetOperand);
+ast_node!(ConcatenateStmt, SyntaxKind::ConcatenateStmt);
+ast_node!(
+    ConcatenateSourceOperand,
+    SyntaxKind::ConcatenateSourceOperand
+);
+ast_node!(
+    ConcatenateTargetOperand,
+    SyntaxKind::ConcatenateTargetOperand
+);
+ast_node!(
+    ConcatenateSeparatorOperand,
+    SyntaxKind::ConcatenateSeparatorOperand
+);
 ast_node!(SelectStmt, SyntaxKind::SelectStmt);
 ast_node!(SelectQuery, SyntaxKind::SelectQuery);
 ast_node!(SelectProjectionList, SyntaxKind::SelectProjectionList);
@@ -969,6 +1002,134 @@ impl<'a> MethodsStmt<'a> {
     }
 }
 
+impl<'a> ClearOperand<'a> {
+    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
+        self.syntax.first_non_token_child()
+    }
+}
+
+impl<'a> ClearStmt<'a> {
+    pub fn operands(self) -> impl DoubleEndedIterator<Item = ClearOperand<'a>> + Clone + 'a {
+        self.syntax.children().filter_map(ClearOperand::cast)
+    }
+}
+
+impl<'a> ConvertOperand<'a> {
+    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
+        self.syntax.first_non_token_child()
+    }
+}
+
+impl<'a> ConvertTargetOperand<'a> {
+    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
+        self.syntax.first_non_token_child()
+    }
+}
+
+impl<'a> ConvertTimeZoneOperand<'a> {
+    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
+        self.syntax.first_non_token_child()
+    }
+}
+
+impl<'a> ConvertStmt<'a> {
+    pub fn operands(self) -> impl DoubleEndedIterator<Item = ConvertOperand<'a>> + Clone + 'a {
+        self.syntax.children().filter_map(ConvertOperand::cast)
+    }
+
+    pub fn target(self) -> Option<ConvertTargetOperand<'a>> {
+        self.syntax
+            .child_by_kind(SyntaxKind::ConvertTargetOperand)
+            .and_then(ConvertTargetOperand::cast)
+    }
+
+    pub fn time_zone(self) -> Option<ConvertTimeZoneOperand<'a>> {
+        self.syntax
+            .child_by_kind(SyntaxKind::ConvertTimeZoneOperand)
+            .and_then(ConvertTimeZoneOperand::cast)
+    }
+}
+
+impl<'a> DescribeTableOperand<'a> {
+    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
+        self.syntax.first_non_token_child()
+    }
+}
+
+impl<'a> DescribeLinesTarget<'a> {
+    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
+        self.syntax.first_non_token_child()
+    }
+}
+
+impl<'a> DescribeStmt<'a> {
+    pub fn table_operand(self) -> Option<DescribeTableOperand<'a>> {
+        self.syntax
+            .child_by_kind(SyntaxKind::DescribeTableOperand)
+            .and_then(DescribeTableOperand::cast)
+    }
+
+    pub fn lines_target(self) -> Option<DescribeLinesTarget<'a>> {
+        self.syntax
+            .child_by_kind(SyntaxKind::DescribeLinesTarget)
+            .and_then(DescribeLinesTarget::cast)
+    }
+}
+
+impl<'a> ReplacePatternOperand<'a> {
+    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
+        self.syntax.first_non_token_child()
+    }
+}
+
+impl<'a> ReplaceTargetOperand<'a> {
+    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
+        self.syntax.first_non_token_child()
+    }
+}
+
+impl<'a> ReplaceWithOperand<'a> {
+    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
+        self.syntax.first_non_token_child()
+    }
+}
+
+impl<'a> ReplaceStmt<'a> {
+    pub fn patterns(
+        self,
+    ) -> impl DoubleEndedIterator<Item = ReplacePatternOperand<'a>> + Clone + 'a {
+        self.syntax
+            .children()
+            .filter_map(ReplacePatternOperand::cast)
+    }
+
+    pub fn targets(self) -> impl DoubleEndedIterator<Item = ReplaceTargetOperand<'a>> + Clone + 'a {
+        self.syntax
+            .children()
+            .filter_map(ReplaceTargetOperand::cast)
+    }
+
+    pub fn replacements(
+        self,
+    ) -> impl DoubleEndedIterator<Item = ReplaceWithOperand<'a>> + Clone + 'a {
+        self.syntax.children().filter_map(ReplaceWithOperand::cast)
+    }
+}
+
+impl<'a> WaitOperand<'a> {
+    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
+        self.syntax.first_non_token_child()
+    }
+}
+
+impl<'a> WaitStmt<'a> {
+    pub fn duration(self) -> Option<WaitOperand<'a>> {
+        self.syntax
+            .child_by_kind(SyntaxKind::WaitOperand)
+            .and_then(WaitOperand::cast)
+    }
+}
+
 impl<'a> RaiseStmt<'a> {
     pub fn exception_type_ref(self) -> Option<TypeRefSimple<'a>> {
         self.syntax
@@ -1020,16 +1181,18 @@ impl<'a> CreateDataStmt<'a> {
     }
 
     pub fn type_clause_kind(self, source: &str) -> Option<TypeClauseKind> {
-        self.syntax.children_by_kind(SyntaxKind::Token).find_map(|token| {
-            let text = token.text(source)?;
-            if text.eq_ignore_ascii_case("type") {
-                Some(TypeClauseKind::Type)
-            } else if text.eq_ignore_ascii_case("like") {
-                Some(TypeClauseKind::Like)
-            } else {
-                None
-            }
-        })
+        self.syntax
+            .children_by_kind(SyntaxKind::Token)
+            .find_map(|token| {
+                let text = token.text(source)?;
+                if text.eq_ignore_ascii_case("type") {
+                    Some(TypeClauseKind::Type)
+                } else if text.eq_ignore_ascii_case("like") {
+                    Some(TypeClauseKind::Like)
+                } else {
+                    None
+                }
+            })
     }
 
     pub fn type_ref(self) -> Option<TypeRefSimple<'a>> {
@@ -1070,6 +1233,20 @@ impl<'a> CallMethodStmt<'a> {
 impl<'a> CallMethodTarget<'a> {
     pub fn callee(self) -> Option<SyntaxNodeRef<'a>> {
         self.syntax.first_non_token_child()
+    }
+}
+
+impl<'a> CallStmt<'a> {
+    pub fn direct_call(self) -> Option<CallExpr<'a>> {
+        self.syntax
+            .child_by_kind(SyntaxKind::CallExpr)
+            .and_then(CallExpr::cast)
+    }
+
+    pub fn arg_list(self) -> Option<CallArgList<'a>> {
+        self.syntax
+            .child_by_kind(SyntaxKind::CallArgList)
+            .and_then(CallArgList::cast)
     }
 }
 
@@ -1146,13 +1323,90 @@ impl<'a> ReadTableStmt<'a> {
     pub fn field_symbol_inline_targets(
         self,
     ) -> impl DoubleEndedIterator<Item = SyntaxNodeRef<'a>> + Clone + 'a {
-        self.syntax.children_by_kind(SyntaxKind::FieldSymbolInlineDecl)
+        self.syntax
+            .children_by_kind(SyntaxKind::FieldSymbolInlineDecl)
     }
 }
 
 impl<'a> WriteStmt<'a> {
     pub fn operands(self) -> impl DoubleEndedIterator<Item = SyntaxNodeRef<'a>> + Clone + 'a {
         self.syntax.non_token_children()
+    }
+}
+
+impl<'a> SplitSourceOperand<'a> {
+    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
+        self.syntax.first_non_token_child()
+    }
+}
+
+impl<'a> SplitSeparatorOperand<'a> {
+    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
+        self.syntax.first_non_token_child()
+    }
+}
+
+impl<'a> SplitTargetOperand<'a> {
+    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
+        self.syntax.first_non_token_child()
+    }
+}
+
+impl<'a> SplitStmt<'a> {
+    pub fn source(self) -> Option<SplitSourceOperand<'a>> {
+        self.syntax
+            .child_by_kind(SyntaxKind::SplitSourceOperand)
+            .and_then(SplitSourceOperand::cast)
+    }
+
+    pub fn separator(self) -> Option<SplitSeparatorOperand<'a>> {
+        self.syntax
+            .child_by_kind(SyntaxKind::SplitSeparatorOperand)
+            .and_then(SplitSeparatorOperand::cast)
+    }
+
+    pub fn targets(self) -> impl DoubleEndedIterator<Item = SplitTargetOperand<'a>> + Clone + 'a {
+        self.syntax.children().filter_map(SplitTargetOperand::cast)
+    }
+}
+
+impl<'a> ConcatenateSourceOperand<'a> {
+    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
+        self.syntax.first_non_token_child()
+    }
+}
+
+impl<'a> ConcatenateTargetOperand<'a> {
+    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
+        self.syntax.first_non_token_child()
+    }
+}
+
+impl<'a> ConcatenateSeparatorOperand<'a> {
+    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
+        self.syntax.first_non_token_child()
+    }
+}
+
+impl<'a> ConcatenateStmt<'a> {
+    pub fn sources(
+        self,
+    ) -> impl DoubleEndedIterator<Item = ConcatenateSourceOperand<'a>> + Clone + 'a {
+        self.syntax
+            .children()
+            .filter_map(ConcatenateSourceOperand::cast)
+    }
+
+    pub fn target(self) -> Option<ConcatenateTargetOperand<'a>> {
+        self.syntax
+            .child_by_kind(SyntaxKind::ConcatenateTargetOperand)
+            .and_then(ConcatenateTargetOperand::cast)
+    }
+
+    pub fn separator(self) -> Option<ConcatenateSeparatorOperand<'a>> {
+        self.syntax
+            .child_by_kind(SyntaxKind::ConcatenateSeparatorOperand)
+            .and_then(ConcatenateSeparatorOperand::cast)
     }
 }
 

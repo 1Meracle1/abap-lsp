@@ -468,9 +468,9 @@ fn build_interfaces_stmt_children(
 
 #[derive(Clone, Copy)]
 enum SimpleStmtReplacementKind {
-    Expr,
     TypeRef,
-    DataInlineDecl,
+    WrappedExpr(SyntaxKind),
+    WrappedDataInlineDecl(SyntaxKind),
 }
 
 #[derive(Clone, Copy)]
@@ -656,24 +656,29 @@ fn build_stmt_children_with_replacements(
             && i == replacement.start
         {
             let built = match replacement.kind {
-                SimpleStmtReplacementKind::Expr => Some(parse_arithmetic_expr(
-                    b,
-                    source,
-                    &tokens[replacement.start..replacement.end],
-                    None,
-                )),
                 SimpleStmtReplacementKind::TypeRef => Some(build_type_ref_node(
                     b,
                     source,
                     &tokens[replacement.start..replacement.end],
                 )),
-                SimpleStmtReplacementKind::DataInlineDecl => build_data_inline_decl_local(
+                SimpleStmtReplacementKind::WrappedExpr(kind) => Some(build_wrapped_expr_child(
                     b,
                     source,
                     tokens,
                     replacement.start,
                     replacement.end,
-                ),
+                    kind,
+                )),
+                SimpleStmtReplacementKind::WrappedDataInlineDecl(kind) => {
+                    build_wrapped_data_inline_decl_child(
+                        b,
+                        source,
+                        tokens,
+                        replacement.start,
+                        replacement.end,
+                        kind,
+                    )
+                }
             };
             if let Some(node) = built {
                 children.push(node);
@@ -692,6 +697,38 @@ fn build_stmt_children_with_replacements(
         i += 1;
     }
     children
+}
+
+fn build_wrapped_expr_child(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    end: usize,
+    kind: SyntaxKind,
+) -> NodeId {
+    let expr = parse_arithmetic_expr(b, source, &tokens[start..end], None);
+    b.branch(
+        kind,
+        tokens[start].range.start..tokens[end - 1].range.end,
+        &[expr],
+    )
+}
+
+fn build_wrapped_data_inline_decl_child(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    end: usize,
+    kind: SyntaxKind,
+) -> Option<NodeId> {
+    let inner = build_data_inline_decl_local(b, source, tokens, start, end)?;
+    Some(b.branch(
+        kind,
+        tokens[start].range.start..tokens[end - 1].range.end,
+        &[inner],
+    ))
 }
 
 fn aliases_stmt_replacements(
@@ -770,7 +807,7 @@ fn clear_stmt_replacements(
             replacements.push(SimpleStmtReplacement {
                 start: cursor,
                 end,
-                kind: SimpleStmtReplacementKind::Expr,
+                kind: SimpleStmtReplacementKind::WrappedExpr(SyntaxKind::ClearOperand),
             });
             cursor = end;
         } else {
@@ -797,7 +834,7 @@ fn convert_stmt_replacements(
         replacements.push(SimpleStmtReplacement {
             start: date_start,
             end: date_end,
-            kind: SimpleStmtReplacementKind::Expr,
+            kind: SimpleStmtReplacementKind::WrappedExpr(SyntaxKind::ConvertOperand),
         });
     }
     cursor = date_end;
@@ -814,7 +851,7 @@ fn convert_stmt_replacements(
             replacements.push(SimpleStmtReplacement {
                 start: time_start,
                 end: time_end,
-                kind: SimpleStmtReplacementKind::Expr,
+                kind: SimpleStmtReplacementKind::WrappedExpr(SyntaxKind::ConvertOperand),
             });
         }
         cursor = time_end;
@@ -834,7 +871,7 @@ fn convert_stmt_replacements(
             replacements.push(SimpleStmtReplacement {
                 start: target_start,
                 end: target_end,
-                kind: SimpleStmtReplacementKind::Expr,
+                kind: SimpleStmtReplacementKind::WrappedExpr(SyntaxKind::ConvertTargetOperand),
             });
         }
         cursor = target_end;
@@ -855,7 +892,7 @@ fn convert_stmt_replacements(
             replacements.push(SimpleStmtReplacement {
                 start: zone_start,
                 end: period_i,
-                kind: SimpleStmtReplacementKind::Expr,
+                kind: SimpleStmtReplacementKind::WrappedExpr(SyntaxKind::ConvertTimeZoneOperand),
             });
         }
     }
@@ -883,7 +920,7 @@ fn describe_stmt_replacements(
         replacements.push(SimpleStmtReplacement {
             start: source_start,
             end: lines_idx,
-            kind: SimpleStmtReplacementKind::Expr,
+            kind: SimpleStmtReplacementKind::WrappedExpr(SyntaxKind::DescribeTableOperand),
         });
     }
 
@@ -892,9 +929,9 @@ fn describe_stmt_replacements(
         return replacements;
     }
     let target_kind = if token_matches_keyword(source, &tokens[target_start], "data") {
-        SimpleStmtReplacementKind::DataInlineDecl
+        SimpleStmtReplacementKind::WrappedDataInlineDecl(SyntaxKind::DescribeLinesTarget)
     } else {
-        SimpleStmtReplacementKind::Expr
+        SimpleStmtReplacementKind::WrappedExpr(SyntaxKind::DescribeLinesTarget)
     };
     replacements.push(SimpleStmtReplacement {
         start: target_start,
@@ -937,7 +974,7 @@ fn replace_stmt_replacements(
         replacements.push(SimpleStmtReplacement {
             start: source_start,
             end: source_end,
-            kind: SimpleStmtReplacementKind::Expr,
+            kind: SimpleStmtReplacementKind::WrappedExpr(SyntaxKind::ReplacePatternOperand),
         });
     }
     cursor = source_end;
@@ -966,7 +1003,7 @@ fn replace_stmt_replacements(
                 replacements.push(SimpleStmtReplacement {
                     start: target_start,
                     end: target_end,
-                    kind: SimpleStmtReplacementKind::Expr,
+                    kind: SimpleStmtReplacementKind::WrappedExpr(SyntaxKind::ReplaceTargetOperand),
                 });
             }
             cursor = target_end;
@@ -980,7 +1017,7 @@ fn replace_stmt_replacements(
                 replacements.push(SimpleStmtReplacement {
                     start: replacement_start,
                     end: replacement_end,
-                    kind: SimpleStmtReplacementKind::Expr,
+                    kind: SimpleStmtReplacementKind::WrappedExpr(SyntaxKind::ReplaceWithOperand),
                 });
             }
             cursor = replacement_end;
@@ -1012,7 +1049,7 @@ fn wait_stmt_replacements(
         vec![SimpleStmtReplacement {
             start: expr_start,
             end: expr_end,
-            kind: SimpleStmtReplacementKind::Expr,
+            kind: SimpleStmtReplacementKind::WrappedExpr(SyntaxKind::WaitOperand),
         }]
     } else {
         Vec::new()
@@ -1795,18 +1832,41 @@ WAIT UP TO lv_stamp SECONDS.",
             .file
             .find_first_kind(root, SyntaxKind::ClearStmt)
             .expect("clear stmt");
+        assert_eq!(parsed.file.count_kind(clear, SyntaxKind::ClearOperand), 2);
         assert_eq!(parsed.file.count_kind(clear, SyntaxKind::ExprIdent), 2);
 
         let convert = parsed
             .file
             .find_first_kind(root, SyntaxKind::ConvertStmt)
             .expect("convert stmt");
+        assert_eq!(
+            parsed.file.count_kind(convert, SyntaxKind::ConvertOperand),
+            2
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(convert, SyntaxKind::ConvertTargetOperand),
+            1
+        );
         assert_eq!(parsed.file.count_kind(convert, SyntaxKind::ExprIdent), 3);
 
         let describe = parsed
             .file
             .find_first_kind(root, SyntaxKind::DescribeStmt)
             .expect("describe stmt");
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(describe, SyntaxKind::DescribeTableOperand),
+            1
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(describe, SyntaxKind::DescribeLinesTarget),
+            1
+        );
         assert_eq!(parsed.file.count_kind(describe, SyntaxKind::ExprIdent), 1);
         assert_eq!(
             parsed.file.count_kind(describe, SyntaxKind::DataInlineDecl),
@@ -1817,12 +1877,31 @@ WAIT UP TO lv_stamp SECONDS.",
             .file
             .find_first_kind(root, SyntaxKind::ReplaceStmt)
             .expect("replace stmt");
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(replace, SyntaxKind::ReplacePatternOperand),
+            1
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(replace, SyntaxKind::ReplaceTargetOperand),
+            1
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(replace, SyntaxKind::ReplaceWithOperand),
+            1
+        );
         assert_eq!(parsed.file.count_kind(replace, SyntaxKind::ExprIdent), 1);
 
         let wait = parsed
             .file
             .find_first_kind(root, SyntaxKind::WaitStmt)
             .expect("wait stmt");
+        assert_eq!(parsed.file.count_kind(wait, SyntaxKind::WaitOperand), 1);
         assert_eq!(parsed.file.count_kind(wait, SyntaxKind::ExprIdent), 1);
     }
 

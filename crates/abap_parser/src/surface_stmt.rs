@@ -1498,6 +1498,44 @@ fn push_expr_child(
     ));
 }
 
+fn push_wrapped_expr_child(
+    b: &mut SyntaxTreeBuilder,
+    children: &mut Vec<NodeId>,
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    end_exclusive: usize,
+    prev_before_first: Option<&Token>,
+    wrapper_kind: SyntaxKind,
+) {
+    if start >= end_exclusive {
+        return;
+    }
+    let expr = parse_arithmetic_expr(b, source, &tokens[start..end_exclusive], prev_before_first);
+    children.push(b.branch(
+        wrapper_kind,
+        tokens[start].range.start..tokens[end_exclusive - 1].range.end,
+        &[expr],
+    ));
+}
+
+fn push_wrapped_data_inline_decl_child(
+    b: &mut SyntaxTreeBuilder,
+    children: &mut Vec<NodeId>,
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    wrapper_kind: SyntaxKind,
+) -> Option<usize> {
+    let (decl, next_i) = try_parse_data_inline_decl(b, source, tokens, start)?;
+    children.push(b.branch(
+        wrapper_kind,
+        tokens[start].range.start..tokens[next_i - 1].range.end,
+        &[decl],
+    ));
+    Some(next_i)
+}
+
 fn push_logical_expr_child(
     b: &mut SyntaxTreeBuilder,
     children: &mut Vec<NodeId>,
@@ -2685,7 +2723,7 @@ pub fn try_parse_concatenate_stmt(
                     i += 1;
                     continue;
                 }
-                push_expr_child(
+                push_wrapped_expr_child(
                     b,
                     &mut children,
                     source,
@@ -2693,6 +2731,7 @@ pub fn try_parse_concatenate_stmt(
                     i,
                     end_idx,
                     Some(concat_tok),
+                    SyntaxKind::ConcatenateSourceOperand,
                 );
                 i = end_idx;
             }
@@ -2705,7 +2744,7 @@ pub fn try_parse_concatenate_stmt(
                 period_i,
                 &["separated", "respecting", "in"],
             );
-            push_expr_child(
+            push_wrapped_expr_child(
                 b,
                 &mut children,
                 source,
@@ -2713,6 +2752,7 @@ pub fn try_parse_concatenate_stmt(
                 into_idx + 1,
                 target_end,
                 Some(&tokens[into_idx]),
+                SyntaxKind::ConcatenateTargetOperand,
             );
             i = target_end;
 
@@ -2733,7 +2773,7 @@ pub fn try_parse_concatenate_stmt(
                         period_i,
                         &["respecting", "in"],
                     );
-                    push_expr_child(
+                    push_wrapped_expr_child(
                         b,
                         &mut children,
                         source,
@@ -2741,6 +2781,7 @@ pub fn try_parse_concatenate_stmt(
                         sep_start,
                         sep_end,
                         Some(&tokens[i + 1]),
+                        SyntaxKind::ConcatenateSeparatorOperand,
                     );
                     i = sep_end;
                     continue;
@@ -2806,7 +2847,7 @@ pub fn try_parse_split_stmt(
                 return (node, period_i + 1);
             };
 
-            push_expr_child(
+            push_wrapped_expr_child(
                 b,
                 &mut children,
                 source,
@@ -2814,12 +2855,13 @@ pub fn try_parse_split_stmt(
                 idx + 1,
                 at_idx,
                 Some(split_tok),
+                SyntaxKind::SplitSourceOperand,
             );
             children.push(token_leaf(b, &tokens[at_idx]));
 
             let separator_end =
                 consume_concatenate_operand(source, tokens, at_idx + 1, into_idx, &["into"]);
-            push_expr_child(
+            push_wrapped_expr_child(
                 b,
                 &mut children,
                 source,
@@ -2827,6 +2869,7 @@ pub fn try_parse_split_stmt(
                 at_idx + 1,
                 separator_end,
                 Some(&tokens[at_idx]),
+                SyntaxKind::SplitSeparatorOperand,
             );
 
             children.push(token_leaf(b, &tokens[into_idx]));
@@ -2841,10 +2884,14 @@ pub fn try_parse_split_stmt(
                     push_token_children(b, &mut children, tokens, i, period_i);
                     break;
                 }
-                if let Some((inline_decl, next_i)) =
-                    try_parse_data_inline_decl(b, source, tokens, i)
-                {
-                    children.push(inline_decl);
+                if let Some(next_i) = push_wrapped_data_inline_decl_child(
+                    b,
+                    &mut children,
+                    source,
+                    tokens,
+                    i,
+                    SyntaxKind::SplitTargetOperand,
+                ) {
                     i = next_i;
                     continue;
                 }
@@ -2854,7 +2901,7 @@ pub fn try_parse_split_stmt(
                     i += 1;
                     continue;
                 }
-                push_expr_child(
+                push_wrapped_expr_child(
                     b,
                     &mut children,
                     source,
@@ -2866,6 +2913,7 @@ pub fn try_parse_split_stmt(
                     } else {
                         &tokens[i - 1]
                     }),
+                    SyntaxKind::SplitTargetOperand,
                 );
                 i = end_idx;
             }
@@ -5952,6 +6000,20 @@ END-OF-PAGE.\nWRITE 'e'.",
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
         let root = parsed.file.root();
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::SplitStmt), 1);
+        assert_eq!(
+            parsed.file.count_kind(root, SyntaxKind::SplitSourceOperand),
+            1
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::SplitSeparatorOperand),
+            1
+        );
+        assert_eq!(
+            parsed.file.count_kind(root, SyntaxKind::SplitTargetOperand),
+            1
+        );
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::DataInlineDecl), 1);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
     }
@@ -5998,6 +6060,18 @@ END-OF-PAGE.\nWRITE 'e'.",
             crate::parse("WRITE / lo_prog->to_string( ). CONCATENATE lv_a lv_b INTO lv_text.");
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
         let root = parsed.file.root();
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::ConcatenateSourceOperand),
+            2
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::ConcatenateTargetOperand),
+            1
+        );
         assert!(parsed.file.count_kind(root, SyntaxKind::CallExpr) >= 1);
         assert!(parsed.file.count_kind(root, SyntaxKind::SelectorExpr) >= 1);
         assert!(parsed.file.count_kind(root, SyntaxKind::ExprIdent) >= 3);

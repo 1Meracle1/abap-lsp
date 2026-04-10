@@ -123,14 +123,34 @@ pub enum SyntaxKind {
     AliasesStmt,
     /// `CLEAR ... .`
     ClearStmt,
+    /// One cleared operand inside `CLEAR`.
+    ClearOperand,
     /// `CONVERT DATE ... TIME ... INTO TIME STAMP ... .`
     ConvertStmt,
+    /// Source date/time operand inside `CONVERT`.
+    ConvertOperand,
+    /// Target timestamp operand inside `CONVERT`.
+    ConvertTargetOperand,
+    /// `TIME ZONE ...` operand inside `CONVERT`.
+    ConvertTimeZoneOperand,
     /// `DESCRIBE TABLE ... LINES ... .`
     DescribeStmt,
+    /// Table operand inside `DESCRIBE TABLE`.
+    DescribeTableOperand,
+    /// `LINES ...` target inside `DESCRIBE TABLE`.
+    DescribeLinesTarget,
     /// `REPLACE ... .`
     ReplaceStmt,
+    /// Pattern/source operand inside `REPLACE`.
+    ReplacePatternOperand,
+    /// Target operand after `IN` inside `REPLACE`.
+    ReplaceTargetOperand,
+    /// Replacement operand after `WITH` inside `REPLACE`.
+    ReplaceWithOperand,
     /// `WAIT UP TO ... SECONDS .`
     WaitStmt,
+    /// Duration operand inside `WAIT UP TO ... SECONDS`.
+    WaitOperand,
     /// `FORM ... . ... ENDFORM.`
     FormDecl,
     /// `TABLES` / `USING` / `CHANGING` parameter section inside a `FORM`.
@@ -311,8 +331,20 @@ pub enum SyntaxKind {
     WriteStmt,
     /// `SPLIT ... AT ... INTO ... .`
     SplitStmt,
+    /// Source operand before `AT` inside `SPLIT`.
+    SplitSourceOperand,
+    /// Separator operand after `AT` inside `SPLIT`.
+    SplitSeparatorOperand,
+    /// One target after `INTO` inside `SPLIT`.
+    SplitTargetOperand,
     /// `CONCATENATE ... INTO ... .`
     ConcatenateStmt,
+    /// One source operand before `INTO` inside `CONCATENATE`.
+    ConcatenateSourceOperand,
+    /// Target operand after `INTO` inside `CONCATENATE`.
+    ConcatenateTargetOperand,
+    /// Separator operand after `SEPARATED BY` inside `CONCATENATE`.
+    ConcatenateSeparatorOperand,
     /// `CONDENSE dobj [NO-GAPS] .`
     CondenseStmt,
     /// `SORT itab [STABLE] [AS TEXT] [BY ...] .`
@@ -382,10 +414,20 @@ impl SyntaxKind {
             Self::TypePoolsStmt => "TypePoolsStmt",
             Self::AliasesStmt => "AliasesStmt",
             Self::ClearStmt => "ClearStmt",
+            Self::ClearOperand => "ClearOperand",
             Self::ConvertStmt => "ConvertStmt",
+            Self::ConvertOperand => "ConvertOperand",
+            Self::ConvertTargetOperand => "ConvertTargetOperand",
+            Self::ConvertTimeZoneOperand => "ConvertTimeZoneOperand",
             Self::DescribeStmt => "DescribeStmt",
+            Self::DescribeTableOperand => "DescribeTableOperand",
+            Self::DescribeLinesTarget => "DescribeLinesTarget",
             Self::ReplaceStmt => "ReplaceStmt",
+            Self::ReplacePatternOperand => "ReplacePatternOperand",
+            Self::ReplaceTargetOperand => "ReplaceTargetOperand",
+            Self::ReplaceWithOperand => "ReplaceWithOperand",
             Self::WaitStmt => "WaitStmt",
+            Self::WaitOperand => "WaitOperand",
             Self::FormDecl => "FormDecl",
             Self::FormParamSection => "FormParamSection",
             Self::ModuleDecl => "ModuleDecl",
@@ -476,7 +518,13 @@ impl SyntaxKind {
             Self::SetBitStmt => "SetBitStmt",
             Self::WriteStmt => "WriteStmt",
             Self::SplitStmt => "SplitStmt",
+            Self::SplitSourceOperand => "SplitSourceOperand",
+            Self::SplitSeparatorOperand => "SplitSeparatorOperand",
+            Self::SplitTargetOperand => "SplitTargetOperand",
             Self::ConcatenateStmt => "ConcatenateStmt",
+            Self::ConcatenateSourceOperand => "ConcatenateSourceOperand",
+            Self::ConcatenateTargetOperand => "ConcatenateTargetOperand",
+            Self::ConcatenateSeparatorOperand => "ConcatenateSeparatorOperand",
             Self::CondenseStmt => "CondenseStmt",
             Self::SortStmt => "SortStmt",
             Self::IsPredicate => "IsPredicate",
