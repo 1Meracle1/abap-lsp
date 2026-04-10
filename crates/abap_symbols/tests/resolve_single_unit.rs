@@ -7375,6 +7375,10 @@ ENDIF.\n\
     assert!(!unit.diagnostics.iter().any(|diag| {
         diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains("line_exists")
     }));
+    assert!(!unit.diagnostics.iter().any(|diag| {
+        diag.kind == DiagnosticKind::InvalidBuiltinNamedArgument
+            && diag.message.contains("line_exists")
+    }));
 }
 
 #[test]
@@ -7436,6 +7440,37 @@ ENDIF.\n\
         line_exists_refs
             .iter()
             .all(|reference| matches!(reference.resolution, Some(Resolution::BuiltinRoutine)))
+    );
+}
+
+#[test]
+fn allows_table_line_selector_in_line_exists_for_scalar_sorted_table_key() {
+    let src = "\
+TYPES zattp_param_value TYPE char255.\n\
+DATA gt_sloc_gln TYPE SORTED TABLE OF zattp_param_value WITH UNIQUE KEY table_line.\n\
+DATA iv_gln TYPE zattp_param_value.\n\
+IF line_exists( gt_sloc_gln[ table_line = iv_gln ] ).\n\
+ENDIF.\n\
+";
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///builtin_line_exists_scalar_table_line.abap", src, &parsed);
+
+    assert!(!unit.diagnostics.iter().any(|diag| {
+        diag.kind == DiagnosticKind::InvalidBuiltinNamedArgument
+            && diag.message.contains("line_exists")
+    }));
+    assert!(!unit.diagnostics.iter().any(|diag| {
+        diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains("line_exists")
+    }));
+    assert!(
+        unit.references.iter().any(|reference| {
+            reference.namespace == Namespace::Value
+                && reference.name.as_ref() == "iv_gln"
+                && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+        }),
+        "missing iv_gln reference: refs={:?} diagnostics={:?}",
+        unit.references,
+        unit.diagnostics
     );
 }
 

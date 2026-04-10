@@ -1671,13 +1671,18 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
         let mut idx = 0usize;
         let mut segment_start = 0usize;
         let mut current_section = None;
+        let mut paren_depth = 0i32;
+        let mut bracket_depth = 0i32;
+        let mut brace_depth = 0i32;
         while idx < tokens.len() {
             let token = &tokens[idx];
             if self.ctx.syntax_token_is_comment(token) {
                 idx += 1;
                 continue;
             }
-            if self.ctx.syntax_token_is_ident_like(token)
+            let at_top_level = paren_depth == 0 && bracket_depth == 0 && brace_depth == 0;
+            if at_top_level
+                && self.ctx.syntax_token_is_ident_like(token)
                 && let Some(section) = self
                     .ctx
                     .named_argument_section_from_text(token.text.as_ref())
@@ -1694,7 +1699,8 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                 segment_start = idx;
                 continue;
             }
-            if self.ctx.syntax_token_is_ident_like(token)
+            if at_top_level
+                && self.ctx.syntax_token_is_ident_like(token)
                 && tokens.get(idx + 1).map(|next| next.text.as_ref()) == Some("=")
             {
                 if segment_start < idx {
@@ -1731,6 +1737,15 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                 idx = value_end;
                 segment_start = idx;
                 continue;
+            }
+            match token.text.as_ref() {
+                "(" => paren_depth += 1,
+                ")" => paren_depth -= 1,
+                "[" => bracket_depth += 1,
+                "]" => bracket_depth -= 1,
+                "{" => brace_depth += 1,
+                "}" => brace_depth -= 1,
+                _ => {}
             }
             idx += 1;
         }
