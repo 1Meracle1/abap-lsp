@@ -3,9 +3,9 @@ use std::sync::Arc;
 use abap_ast::SyntaxKind;
 use abap_ast::arena::NodeId;
 use abap_ast::ast::{
-    AstNode, CallMethodStmt, CallStmt, ClearStmt, ConcatenateStmt, ConvertStmt, CreateDataStmt,
-    CreateObjectStmt, DescribeStmt, FindStmt, MessageStmt, MethodsStmt, RaiseStmt, ReadTableStmt,
-    ReplaceStmt, SplitStmt, WaitStmt, WriteStmt,
+    AliasesStmt, AstNode, CallMethodStmt, CallStmt, ClearStmt, ConcatenateStmt, ConvertStmt,
+    CreateDataStmt, CreateObjectStmt, DescribeStmt, FindStmt, MessageStmt, MethodsStmt, RaiseStmt,
+    ReadTableStmt, ReplaceStmt, SplitStmt, WaitStmt, WriteStmt,
 };
 
 use crate::def_map::{FieldTypeRefData, NamedArgumentTarget, ReferenceKind, SymbolKind};
@@ -455,6 +455,73 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
     }
 
     pub(super) fn collect_aliases_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        if let Some(entry_ids) = AliasesStmt::cast(self.collector.syntax(node)).map(|stmt| {
+            stmt.entries()
+                .map(|entry| {
+                    (
+                        entry.alias_name().map(|node| node.syntax().id()),
+                        entry.target_interface().map(|node| node.syntax().id()),
+                        entry.target_member().map(|node| node.syntax().id()),
+                    )
+                })
+                .collect::<Vec<_>>()
+        }) {
+            let Some(owner_symbol) = self.collector.class_lowering().enclosing_type_owner(scope)
+            else {
+                return;
+            };
+            let mut recorded = false;
+            for (alias_name_id, type_ref_id, target_member_id) in entry_ids {
+                let Some(alias_name_id) = alias_name_id else {
+                    continue;
+                };
+                let Some((alias_name, alias_range)) = self.collector.node_name(alias_name_id)
+                else {
+                    continue;
+                };
+                let Some(type_ref_id) = type_ref_id else {
+                    continue;
+                };
+                self.collector
+                    .decl_lowering()
+                    .collect_type_ref(type_ref_id, scope);
+                let Some((_, _, interface_name, _, _)) = self
+                    .collector
+                    .type_ref_access_chain(type_ref_id, Namespace::Type)
+                else {
+                    continue;
+                };
+                let Some(target_member_id) = target_member_id else {
+                    continue;
+                };
+                let Some((target_member_name, target_member_range)) =
+                    self.collector.node_name(target_member_id)
+                else {
+                    continue;
+                };
+                self.collector.emit_field_access(crate::FieldAccess {
+                    scope,
+                    base_namespace: Namespace::Type,
+                    base_name: Arc::clone(&interface_name),
+                    field_path: vec![crate::FieldAccessSegment {
+                        name: Arc::clone(&target_member_name),
+                        range: target_member_range.clone(),
+                    }],
+                    in_type_position: false,
+                });
+                self.collector.member_aliases.push(crate::MemberAliasData {
+                    owner_symbol,
+                    alias_name,
+                    target_interface_name: interface_name,
+                    target_member_name,
+                    range: alias_range,
+                });
+                recorded = true;
+            }
+            if recorded {
+                return;
+            }
+        }
         let significant = self.collector.significant_stmt_token_infos(node);
         self.collect_aliases_stmt_infos(&significant, scope);
     }

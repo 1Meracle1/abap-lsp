@@ -306,6 +306,10 @@ ast_node!(CallArgList, SyntaxKind::CallArgList);
 ast_node!(CallArgSection, SyntaxKind::CallArgSection);
 ast_node!(CallNamedArg, SyntaxKind::CallNamedArg);
 ast_node!(CallPositionalArg, SyntaxKind::CallPositionalArg);
+ast_node!(AliasesStmt, SyntaxKind::AliasesStmt);
+ast_node!(AliasEntry, SyntaxKind::AliasEntry);
+ast_node!(AliasName, SyntaxKind::AliasName);
+ast_node!(AliasMember, SyntaxKind::AliasMember);
 ast_node!(MethodsStmt, SyntaxKind::MethodsStmt);
 ast_node!(InterfacesStmt, SyntaxKind::InterfacesStmt);
 ast_node!(ClearStmt, SyntaxKind::ClearStmt);
@@ -1251,6 +1255,32 @@ impl<'a> CallStmt<'a> {
         self.syntax
             .child_by_kind(SyntaxKind::CallArgList)
             .and_then(CallArgList::cast)
+    }
+}
+
+impl<'a> AliasesStmt<'a> {
+    pub fn entries(self) -> impl DoubleEndedIterator<Item = AliasEntry<'a>> + Clone + 'a {
+        self.syntax.children().filter_map(AliasEntry::cast)
+    }
+}
+
+impl<'a> AliasEntry<'a> {
+    pub fn alias_name(self) -> Option<AliasName<'a>> {
+        self.syntax
+            .child_by_kind(SyntaxKind::AliasName)
+            .and_then(AliasName::cast)
+    }
+
+    pub fn target_interface(self) -> Option<TypeRefSimple<'a>> {
+        self.syntax
+            .child_by_kind(SyntaxKind::TypeRefSimple)
+            .and_then(TypeRefSimple::cast)
+    }
+
+    pub fn target_member(self) -> Option<AliasMember<'a>> {
+        self.syntax
+            .child_by_kind(SyntaxKind::AliasMember)
+            .and_then(AliasMember::cast)
     }
 }
 

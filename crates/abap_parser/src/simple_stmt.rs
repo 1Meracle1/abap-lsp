@@ -466,20 +466,6 @@ fn build_interfaces_stmt_children(
     children
 }
 
-#[derive(Clone, Copy)]
-enum SimpleStmtReplacementKind {
-    TypeRef,
-    WrappedExpr(SyntaxKind),
-    WrappedDataInlineDecl(SyntaxKind),
-}
-
-#[derive(Clone, Copy)]
-struct SimpleStmtReplacement {
-    start: usize,
-    end: usize,
-    kind: SimpleStmtReplacementKind,
-}
-
 fn parse_inline_name_local(
     b: &mut SyntaxTreeBuilder,
     tokens: &[Token],
@@ -633,70 +619,14 @@ fn scan_expr_end(
     idx
 }
 
-fn build_stmt_children_with_replacements(
+fn push_token_range(
     b: &mut SyntaxTreeBuilder,
-    source: &str,
+    children: &mut Vec<NodeId>,
     tokens: &[Token],
-    idx: usize,
-    period_i: usize,
-    replacements: &[SimpleStmtReplacement],
-) -> Vec<NodeId> {
-    if replacements.is_empty() {
-        return tokens[idx..=period_i]
-            .iter()
-            .map(|token| token_leaf(b, token))
-            .collect();
-    }
-
-    let mut children = Vec::with_capacity(period_i - idx + 1);
-    let mut replacement_idx = 0usize;
-    let mut i = idx;
-    while i <= period_i {
-        if let Some(replacement) = replacements.get(replacement_idx).copied()
-            && i == replacement.start
-        {
-            let built = match replacement.kind {
-                SimpleStmtReplacementKind::TypeRef => Some(build_type_ref_node(
-                    b,
-                    source,
-                    &tokens[replacement.start..replacement.end],
-                )),
-                SimpleStmtReplacementKind::WrappedExpr(kind) => Some(build_wrapped_expr_child(
-                    b,
-                    source,
-                    tokens,
-                    replacement.start,
-                    replacement.end,
-                    kind,
-                )),
-                SimpleStmtReplacementKind::WrappedDataInlineDecl(kind) => {
-                    build_wrapped_data_inline_decl_child(
-                        b,
-                        source,
-                        tokens,
-                        replacement.start,
-                        replacement.end,
-                        kind,
-                    )
-                }
-            };
-            if let Some(node) = built {
-                children.push(node);
-            } else {
-                children.extend(
-                    tokens[replacement.start..replacement.end]
-                        .iter()
-                        .map(|token| token_leaf(b, token)),
-                );
-            }
-            i = replacement.end;
-            replacement_idx += 1;
-            continue;
-        }
-        children.push(token_leaf(b, &tokens[i]));
-        i += 1;
-    }
-    children
+    start: usize,
+    end: usize,
+) {
+    children.extend(tokens[start..end].iter().map(|token| token_leaf(b, token)));
 }
 
 fn build_wrapped_expr_child(
@@ -731,69 +661,134 @@ fn build_wrapped_data_inline_decl_child(
     ))
 }
 
-fn aliases_stmt_replacements(
+fn build_alias_entry_node(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    end: usize,
+) -> Option<NodeId> {
+    let alias_idx = next_non_comment(tokens, start, end);
+    let alias_tok = tokens.get(alias_idx)?;
+    if alias_tok.kind != TokenKind::Ident {
+        return None;
+    }
+    let for_idx = next_non_comment(tokens, alias_idx + 1, end);
+    if for_idx >= end || !token_matches_keyword(source, &tokens[for_idx], "for") {
+        return None;
+    }
+    let interface_start = next_non_comment(tokens, for_idx + 1, end);
+    if interface_start >= end {
+        return None;
+    }
+    let tilde_idx = (interface_start..end).find(|&idx| {
+        tokens[idx].kind == TokenKind::Tilde
+            && tokens[interface_start..idx]
+                .iter()
+                .any(|token| token.kind != TokenKind::Comment)
+    })?;
+    let member_idx = next_non_comment(tokens, tilde_idx + 1, end);
+    let member_tok = tokens.get(member_idx)?;
+    if member_tok.kind != TokenKind::Ident || member_idx + 1 != end {
+        return None;
+    }
+
+    let mut children = Vec::new();
+    push_token_range(b, &mut children, tokens, start, alias_idx);
+    let alias_leaf = token_leaf(b, alias_tok);
+    children.push(b.branch(
+        SyntaxKind::AliasName,
+        alias_tok.range.clone(),
+        &[alias_leaf],
+    ));
+    push_token_range(b, &mut children, tokens, alias_idx + 1, interface_start);
+    children.push(build_type_ref_node(
+        b,
+        source,
+        &tokens[interface_start..tilde_idx],
+    ));
+    push_token_range(b, &mut children, tokens, tilde_idx, member_idx);
+    let member_leaf = token_leaf(b, member_tok);
+    children.push(b.branch(
+        SyntaxKind::AliasMember,
+        member_tok.range.clone(),
+        &[member_leaf],
+    ));
+
+    Some(b.branch(
+        SyntaxKind::AliasEntry,
+        tokens[start].range.start..tokens[end - 1].range.end,
+        &children,
+    ))
+}
+
+fn build_aliases_stmt_children(
+    b: &mut SyntaxTreeBuilder,
     source: &str,
     tokens: &[Token],
     idx: usize,
     period_i: usize,
-) -> Vec<SimpleStmtReplacement> {
-    let mut replacements = Vec::new();
-    let mut cursor = idx + 1;
-    while cursor < period_i {
-        cursor = next_non_comment(tokens, cursor, period_i);
-        while cursor < period_i
-            && matches!(tokens[cursor].kind, TokenKind::Colon | TokenKind::Comma)
-        {
-            cursor += 1;
-            cursor = next_non_comment(tokens, cursor, period_i);
-        }
-        if cursor >= period_i || tokens[cursor].kind != TokenKind::Ident {
-            break;
-        }
-        let for_idx = next_non_comment(tokens, cursor + 1, period_i);
-        if for_idx >= period_i || !token_matches_keyword(source, &tokens[for_idx], "for") {
+) -> Vec<NodeId> {
+    let mut children = Vec::with_capacity(period_i - idx + 1);
+    let mut cursor = idx;
+    while cursor <= period_i {
+        let token = &tokens[cursor];
+        if matches!(
+            token.kind,
+            TokenKind::Comment | TokenKind::Colon | TokenKind::Comma
+        ) {
+            children.push(token_leaf(b, token));
             cursor += 1;
             continue;
         }
-        let type_start = next_non_comment(tokens, for_idx + 1, period_i);
-        let type_end = scan_expr_end(
-            source,
-            tokens,
-            type_start,
-            period_i,
-            &[],
-            &[TokenKind::Comma],
-        );
-        if type_start < type_end {
-            replacements.push(SimpleStmtReplacement {
-                start: type_start,
-                end: type_end,
-                kind: SimpleStmtReplacementKind::TypeRef,
-            });
+        if token.kind == TokenKind::Period {
+            children.push(token_leaf(b, token));
+            break;
         }
-        cursor = type_end.saturating_add(1);
+        if cursor == idx {
+            children.push(token_leaf(b, token));
+            cursor += 1;
+            continue;
+        }
+        let entry_end = scan_expr_end(source, tokens, cursor, period_i, &[], &[TokenKind::Comma]);
+        if let Some(entry) = build_alias_entry_node(b, source, tokens, cursor, entry_end) {
+            children.push(entry);
+            cursor = entry_end;
+            continue;
+        }
+        children.push(token_leaf(b, token));
+        cursor += 1;
     }
-    replacements
+    children
 }
 
-fn clear_stmt_replacements(
+fn build_clear_stmt_children(
+    b: &mut SyntaxTreeBuilder,
     source: &str,
     tokens: &[Token],
     idx: usize,
     period_i: usize,
-) -> Vec<SimpleStmtReplacement> {
-    let mut replacements = Vec::new();
-    let mut cursor = idx + 1;
-    while cursor < period_i {
-        cursor = next_non_comment(tokens, cursor, period_i);
-        while cursor < period_i
-            && matches!(tokens[cursor].kind, TokenKind::Colon | TokenKind::Comma)
-        {
+) -> Vec<NodeId> {
+    let mut children = Vec::with_capacity(period_i - idx + 1);
+    let mut cursor = idx;
+    while cursor <= period_i {
+        let token = &tokens[cursor];
+        if matches!(
+            token.kind,
+            TokenKind::Comment | TokenKind::Colon | TokenKind::Comma
+        ) {
+            children.push(token_leaf(b, token));
             cursor += 1;
-            cursor = next_non_comment(tokens, cursor, period_i);
+            continue;
         }
-        if cursor >= period_i {
+        if token.kind == TokenKind::Period {
+            children.push(token_leaf(b, token));
             break;
+        }
+        if cursor == idx {
+            children.push(token_leaf(b, token));
+            cursor += 1;
+            continue;
         }
         let end = scan_expr_end(
             source,
@@ -804,38 +799,50 @@ fn clear_stmt_replacements(
             &[TokenKind::Comma],
         );
         if cursor < end {
-            replacements.push(SimpleStmtReplacement {
-                start: cursor,
+            children.push(build_wrapped_expr_child(
+                b,
+                source,
+                tokens,
+                cursor,
                 end,
-                kind: SimpleStmtReplacementKind::WrappedExpr(SyntaxKind::ClearOperand),
-            });
+                SyntaxKind::ClearOperand,
+            ));
             cursor = end;
-        } else {
-            cursor += 1;
+            continue;
         }
+        children.push(token_leaf(b, token));
+        cursor += 1;
     }
-    replacements
+    children
 }
 
-fn convert_stmt_replacements(
+fn build_convert_stmt_children(
+    b: &mut SyntaxTreeBuilder,
     source: &str,
     tokens: &[Token],
     idx: usize,
     period_i: usize,
-) -> Vec<SimpleStmtReplacement> {
-    let mut replacements = Vec::new();
+) -> Vec<NodeId> {
+    let mut children = Vec::with_capacity(period_i - idx + 1);
+    children.push(token_leaf(b, &tokens[idx]));
     let mut cursor = idx + 1;
+    let mut trailing_start = cursor;
     if cursor < period_i && token_matches_keyword(source, &tokens[cursor], "date") {
+        children.push(token_leaf(b, &tokens[cursor]));
         cursor += 1;
     }
     let date_start = next_non_comment(tokens, cursor, period_i);
     let date_end = scan_expr_end(source, tokens, date_start, period_i, &["time", "into"], &[]);
     if date_start < date_end {
-        replacements.push(SimpleStmtReplacement {
-            start: date_start,
-            end: date_end,
-            kind: SimpleStmtReplacementKind::WrappedExpr(SyntaxKind::ConvertOperand),
-        });
+        push_token_range(b, &mut children, tokens, cursor, date_start);
+        children.push(build_wrapped_expr_child(
+            b,
+            source,
+            tokens,
+            date_start,
+            date_end,
+            SyntaxKind::ConvertOperand,
+        ));
     }
     cursor = date_end;
 
@@ -845,36 +852,48 @@ fn convert_stmt_replacements(
             .get(next_non_comment(tokens, cursor + 1, period_i))
             .is_some_and(|token| token_matches_keyword(source, token, "zone"))
     {
+        children.push(token_leaf(b, &tokens[cursor]));
         let time_start = next_non_comment(tokens, cursor + 1, period_i);
         let time_end = scan_expr_end(source, tokens, time_start, period_i, &["into"], &[]);
         if time_start < time_end {
-            replacements.push(SimpleStmtReplacement {
-                start: time_start,
-                end: time_end,
-                kind: SimpleStmtReplacementKind::WrappedExpr(SyntaxKind::ConvertOperand),
-            });
+            push_token_range(b, &mut children, tokens, cursor + 1, time_start);
+            children.push(build_wrapped_expr_child(
+                b,
+                source,
+                tokens,
+                time_start,
+                time_end,
+                SyntaxKind::ConvertOperand,
+            ));
         }
         cursor = time_end;
     }
 
     if cursor < period_i && token_matches_keyword(source, &tokens[cursor], "into") {
+        children.push(token_leaf(b, &tokens[cursor]));
         cursor = next_non_comment(tokens, cursor + 1, period_i);
         if cursor < period_i && token_matches_keyword(source, &tokens[cursor], "time") {
+            children.push(token_leaf(b, &tokens[cursor]));
             cursor = next_non_comment(tokens, cursor + 1, period_i);
         }
         if cursor < period_i && token_matches_keyword(source, &tokens[cursor], "stamp") {
+            children.push(token_leaf(b, &tokens[cursor]));
             cursor = next_non_comment(tokens, cursor + 1, period_i);
         }
         let target_start = cursor;
         let target_end = scan_expr_end(source, tokens, target_start, period_i, &["time"], &[]);
         if target_start < target_end {
-            replacements.push(SimpleStmtReplacement {
-                start: target_start,
-                end: target_end,
-                kind: SimpleStmtReplacementKind::WrappedExpr(SyntaxKind::ConvertTargetOperand),
-            });
+            children.push(build_wrapped_expr_child(
+                b,
+                source,
+                tokens,
+                target_start,
+                target_end,
+                SyntaxKind::ConvertTargetOperand,
+            ));
         }
         cursor = target_end;
+        trailing_start = cursor;
     }
 
     if cursor < period_i
@@ -883,99 +902,154 @@ fn convert_stmt_replacements(
             .get(next_non_comment(tokens, cursor + 1, period_i))
             .is_some_and(|token| token_matches_keyword(source, token, "zone"))
     {
+        children.push(token_leaf(b, &tokens[cursor]));
+        let zone_keyword_idx = next_non_comment(tokens, cursor + 1, period_i);
+        push_token_range(
+            b,
+            &mut children,
+            tokens,
+            cursor + 1,
+            zone_keyword_idx.saturating_add(1),
+        );
         let zone_start = next_non_comment(
             tokens,
             next_non_comment(tokens, cursor + 1, period_i) + 1,
             period_i,
         );
         if zone_start < period_i {
-            replacements.push(SimpleStmtReplacement {
-                start: zone_start,
-                end: period_i,
-                kind: SimpleStmtReplacementKind::WrappedExpr(SyntaxKind::ConvertTimeZoneOperand),
-            });
+            push_token_range(b, &mut children, tokens, zone_keyword_idx + 1, zone_start);
+            children.push(build_wrapped_expr_child(
+                b,
+                source,
+                tokens,
+                zone_start,
+                period_i,
+                SyntaxKind::ConvertTimeZoneOperand,
+            ));
         }
+        trailing_start = period_i;
     }
 
-    replacements
+    push_token_range(b, &mut children, tokens, trailing_start, period_i + 1);
+    children
 }
 
-fn describe_stmt_replacements(
+fn build_describe_stmt_children(
+    b: &mut SyntaxTreeBuilder,
     source: &str,
     tokens: &[Token],
     idx: usize,
     period_i: usize,
-) -> Vec<SimpleStmtReplacement> {
-    let mut replacements = Vec::new();
+) -> Vec<NodeId> {
+    let mut children = vec![token_leaf(b, &tokens[idx])];
     if idx + 1 >= period_i || !token_matches_keyword(source, &tokens[idx + 1], "table") {
-        return replacements;
+        return tokens[idx..=period_i]
+            .iter()
+            .map(|token| token_leaf(b, token))
+            .collect();
     }
+    children.push(token_leaf(b, &tokens[idx + 1]));
     let source_start = next_non_comment(tokens, idx + 2, period_i);
     let Some(lines_idx) =
         find_top_level_keyword_index(source, tokens, source_start, period_i, "lines")
     else {
-        return replacements;
+        return tokens[idx..=period_i]
+            .iter()
+            .map(|token| token_leaf(b, token))
+            .collect();
     };
     if source_start < lines_idx {
-        replacements.push(SimpleStmtReplacement {
-            start: source_start,
-            end: lines_idx,
-            kind: SimpleStmtReplacementKind::WrappedExpr(SyntaxKind::DescribeTableOperand),
-        });
+        push_token_range(b, &mut children, tokens, idx + 2, source_start);
+        children.push(build_wrapped_expr_child(
+            b,
+            source,
+            tokens,
+            source_start,
+            lines_idx,
+            SyntaxKind::DescribeTableOperand,
+        ));
     }
+    push_token_range(b, &mut children, tokens, lines_idx, lines_idx + 1);
 
     let target_start = next_non_comment(tokens, lines_idx + 1, period_i);
     if target_start >= period_i {
-        return replacements;
+        children.push(token_leaf(b, &tokens[period_i]));
+        return children;
     }
-    let target_kind = if token_matches_keyword(source, &tokens[target_start], "data") {
-        SimpleStmtReplacementKind::WrappedDataInlineDecl(SyntaxKind::DescribeLinesTarget)
+    push_token_range(b, &mut children, tokens, lines_idx + 1, target_start);
+    let target = if token_matches_keyword(source, &tokens[target_start], "data") {
+        build_wrapped_data_inline_decl_child(
+            b,
+            source,
+            tokens,
+            target_start,
+            period_i,
+            SyntaxKind::DescribeLinesTarget,
+        )
     } else {
-        SimpleStmtReplacementKind::WrappedExpr(SyntaxKind::DescribeLinesTarget)
+        Some(build_wrapped_expr_child(
+            b,
+            source,
+            tokens,
+            target_start,
+            period_i,
+            SyntaxKind::DescribeLinesTarget,
+        ))
     };
-    replacements.push(SimpleStmtReplacement {
-        start: target_start,
-        end: period_i,
-        kind: target_kind,
-    });
-    replacements
+    if let Some(target) = target {
+        children.push(target);
+    } else {
+        push_token_range(b, &mut children, tokens, target_start, period_i);
+    }
+    children.push(token_leaf(b, &tokens[period_i]));
+    children
 }
 
-fn replace_stmt_replacements(
+fn build_replace_stmt_children(
+    b: &mut SyntaxTreeBuilder,
     source: &str,
     tokens: &[Token],
     idx: usize,
     period_i: usize,
-) -> Vec<SimpleStmtReplacement> {
-    let mut replacements = Vec::new();
+) -> Vec<NodeId> {
+    let mut children = Vec::with_capacity(period_i - idx + 1);
+    children.push(token_leaf(b, &tokens[idx]));
     let mut cursor = idx + 1;
     if cursor < period_i
         && (token_matches_keyword(source, &tokens[cursor], "first")
             || token_matches_keyword(source, &tokens[cursor], "all"))
     {
+        children.push(token_leaf(b, &tokens[cursor]));
         cursor += 1;
         if cursor < period_i
             && (token_matches_keyword(source, &tokens[cursor], "occurrence")
                 || token_matches_keyword(source, &tokens[cursor], "occurrences"))
         {
+            children.push(token_leaf(b, &tokens[cursor]));
             cursor += 1;
         }
     }
     if cursor < period_i && token_matches_keyword(source, &tokens[cursor], "of") {
+        children.push(token_leaf(b, &tokens[cursor]));
         cursor += 1;
     }
     if cursor < period_i && token_matches_keyword(source, &tokens[cursor], "regex") {
+        children.push(token_leaf(b, &tokens[cursor]));
         cursor += 1;
     }
 
     let source_start = next_non_comment(tokens, cursor, period_i);
     let source_end = scan_expr_end(source, tokens, source_start, period_i, &["in", "with"], &[]);
     if source_start < source_end {
-        replacements.push(SimpleStmtReplacement {
-            start: source_start,
-            end: source_end,
-            kind: SimpleStmtReplacementKind::WrappedExpr(SyntaxKind::ReplacePatternOperand),
-        });
+        push_token_range(b, &mut children, tokens, cursor, source_start);
+        children.push(build_wrapped_expr_child(
+            b,
+            source,
+            tokens,
+            source_start,
+            source_end,
+            SyntaxKind::ReplacePatternOperand,
+        ));
     }
     cursor = source_end;
 
@@ -996,119 +1070,49 @@ fn replace_stmt_replacements(
                 cursor = next_non_comment(tokens, mode_token + 2, period_i);
                 continue;
             }
+            children.push(token_leaf(b, &tokens[cursor]));
             let target_start = next_non_comment(tokens, cursor + 1, period_i);
             let target_end =
                 scan_expr_end(source, tokens, target_start, period_i, &["with", "in"], &[]);
             if target_start < target_end {
-                replacements.push(SimpleStmtReplacement {
-                    start: target_start,
-                    end: target_end,
-                    kind: SimpleStmtReplacementKind::WrappedExpr(SyntaxKind::ReplaceTargetOperand),
-                });
+                push_token_range(b, &mut children, tokens, cursor + 1, target_start);
+                children.push(build_wrapped_expr_child(
+                    b,
+                    source,
+                    tokens,
+                    target_start,
+                    target_end,
+                    SyntaxKind::ReplaceTargetOperand,
+                ));
             }
             cursor = target_end;
             continue;
         }
         if token_matches_keyword(source, &tokens[cursor], "with") {
+            children.push(token_leaf(b, &tokens[cursor]));
             let replacement_start = next_non_comment(tokens, cursor + 1, period_i);
             let replacement_end =
                 scan_expr_end(source, tokens, replacement_start, period_i, &["in"], &[]);
             if replacement_start < replacement_end {
-                replacements.push(SimpleStmtReplacement {
-                    start: replacement_start,
-                    end: replacement_end,
-                    kind: SimpleStmtReplacementKind::WrappedExpr(SyntaxKind::ReplaceWithOperand),
-                });
+                push_token_range(b, &mut children, tokens, cursor + 1, replacement_start);
+                children.push(build_wrapped_expr_child(
+                    b,
+                    source,
+                    tokens,
+                    replacement_start,
+                    replacement_end,
+                    SyntaxKind::ReplaceWithOperand,
+                ));
             }
             cursor = replacement_end;
             continue;
         }
+        children.push(token_leaf(b, &tokens[cursor]));
         cursor += 1;
     }
 
-    replacements
-}
-
-fn wait_stmt_replacements(
-    source: &str,
-    tokens: &[Token],
-    idx: usize,
-    period_i: usize,
-) -> Vec<SimpleStmtReplacement> {
-    let mut cursor = idx + 1;
-    if cursor < period_i && token_matches_keyword(source, &tokens[cursor], "up") {
-        cursor += 1;
-    }
-    if cursor < period_i && token_matches_keyword(source, &tokens[cursor], "to") {
-        cursor += 1;
-    }
-    let expr_start = next_non_comment(tokens, cursor, period_i);
-    let expr_end = find_top_level_keyword_index(source, tokens, expr_start, period_i, "seconds")
-        .unwrap_or(period_i);
-    if expr_start < expr_end {
-        vec![SimpleStmtReplacement {
-            start: expr_start,
-            end: expr_end,
-            kind: SimpleStmtReplacementKind::WrappedExpr(SyntaxKind::WaitOperand),
-        }]
-    } else {
-        Vec::new()
-    }
-}
-
-fn build_aliases_stmt_children(
-    b: &mut SyntaxTreeBuilder,
-    source: &str,
-    tokens: &[Token],
-    idx: usize,
-    period_i: usize,
-) -> Vec<NodeId> {
-    let replacements = aliases_stmt_replacements(source, tokens, idx, period_i);
-    build_stmt_children_with_replacements(b, source, tokens, idx, period_i, &replacements)
-}
-
-fn build_clear_stmt_children(
-    b: &mut SyntaxTreeBuilder,
-    source: &str,
-    tokens: &[Token],
-    idx: usize,
-    period_i: usize,
-) -> Vec<NodeId> {
-    let replacements = clear_stmt_replacements(source, tokens, idx, period_i);
-    build_stmt_children_with_replacements(b, source, tokens, idx, period_i, &replacements)
-}
-
-fn build_convert_stmt_children(
-    b: &mut SyntaxTreeBuilder,
-    source: &str,
-    tokens: &[Token],
-    idx: usize,
-    period_i: usize,
-) -> Vec<NodeId> {
-    let replacements = convert_stmt_replacements(source, tokens, idx, period_i);
-    build_stmt_children_with_replacements(b, source, tokens, idx, period_i, &replacements)
-}
-
-fn build_describe_stmt_children(
-    b: &mut SyntaxTreeBuilder,
-    source: &str,
-    tokens: &[Token],
-    idx: usize,
-    period_i: usize,
-) -> Vec<NodeId> {
-    let replacements = describe_stmt_replacements(source, tokens, idx, period_i);
-    build_stmt_children_with_replacements(b, source, tokens, idx, period_i, &replacements)
-}
-
-fn build_replace_stmt_children(
-    b: &mut SyntaxTreeBuilder,
-    source: &str,
-    tokens: &[Token],
-    idx: usize,
-    period_i: usize,
-) -> Vec<NodeId> {
-    let replacements = replace_stmt_replacements(source, tokens, idx, period_i);
-    build_stmt_children_with_replacements(b, source, tokens, idx, period_i, &replacements)
+    children.push(token_leaf(b, &tokens[period_i]));
+    children
 }
 
 fn build_wait_stmt_children(
@@ -1118,8 +1122,34 @@ fn build_wait_stmt_children(
     idx: usize,
     period_i: usize,
 ) -> Vec<NodeId> {
-    let replacements = wait_stmt_replacements(source, tokens, idx, period_i);
-    build_stmt_children_with_replacements(b, source, tokens, idx, period_i, &replacements)
+    let mut children = vec![token_leaf(b, &tokens[idx])];
+    let mut cursor = idx + 1;
+    if cursor < period_i && token_matches_keyword(source, &tokens[cursor], "up") {
+        children.push(token_leaf(b, &tokens[cursor]));
+        cursor += 1;
+    }
+    if cursor < period_i && token_matches_keyword(source, &tokens[cursor], "to") {
+        children.push(token_leaf(b, &tokens[cursor]));
+        cursor += 1;
+    }
+    let expr_start = next_non_comment(tokens, cursor, period_i);
+    let expr_end = find_top_level_keyword_index(source, tokens, expr_start, period_i, "seconds")
+        .unwrap_or(period_i);
+    if expr_start < expr_end {
+        push_token_range(b, &mut children, tokens, cursor, expr_start);
+        children.push(build_wrapped_expr_child(
+            b,
+            source,
+            tokens,
+            expr_start,
+            expr_end,
+            SyntaxKind::WaitOperand,
+        ));
+    } else {
+        push_token_range(b, &mut children, tokens, cursor, expr_end);
+    }
+    push_token_range(b, &mut children, tokens, expr_end, period_i + 1);
+    children
 }
 
 fn class_section_statement(source: &str, significant: &[&Token]) -> bool {
@@ -1823,6 +1853,9 @@ WAIT UP TO lv_stamp SECONDS.",
             .file
             .find_first_kind(root, SyntaxKind::AliasesStmt)
             .expect("aliases stmt");
+        assert_eq!(parsed.file.count_kind(aliases, SyntaxKind::AliasEntry), 1);
+        assert_eq!(parsed.file.count_kind(aliases, SyntaxKind::AliasName), 1);
+        assert_eq!(parsed.file.count_kind(aliases, SyntaxKind::AliasMember), 1);
         assert_eq!(
             parsed.file.count_kind(aliases, SyntaxKind::TypeRefSimple),
             1

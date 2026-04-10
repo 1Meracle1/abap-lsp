@@ -121,6 +121,12 @@ pub enum SyntaxKind {
     TypePoolsStmt,
     /// `ALIASES ... .`
     AliasesStmt,
+    /// One alias definition inside `ALIASES`.
+    AliasEntry,
+    /// Alias name in `ALIASES alias FOR if_intf~member`.
+    AliasName,
+    /// Target member name in `ALIASES alias FOR if_intf~member`.
+    AliasMember,
     /// `CLEAR ... .`
     ClearStmt,
     /// One cleared operand inside `CLEAR`.
@@ -421,6 +427,9 @@ impl SyntaxKind {
             Self::IncludeStmt => "IncludeStmt",
             Self::TypePoolsStmt => "TypePoolsStmt",
             Self::AliasesStmt => "AliasesStmt",
+            Self::AliasEntry => "AliasEntry",
+            Self::AliasName => "AliasName",
+            Self::AliasMember => "AliasMember",
             Self::ClearStmt => "ClearStmt",
             Self::ClearOperand => "ClearOperand",
             Self::ConvertStmt => "ConvertStmt",
