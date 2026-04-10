@@ -321,8 +321,7 @@ fn is_standard_remote_type_like_name(name: &str) -> bool {
 fn is_likely_builtin_type_name(lower: &str) -> bool {
     matches!(
         lower,
-        "i"
-            | "int1"
+        "i" | "int1"
             | "int2"
             | "int4"
             | "int8"

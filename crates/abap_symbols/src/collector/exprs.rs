@@ -216,7 +216,10 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
         // String-template formatting specs use enum-like keywords for most values
         // (`ALPHA = OUT`, `DATE = USER`, `TIME = ISO`). Only numeric formatting
         // options can legitimately reference dynamic operands.
-        if matches!(tokens[0].text.to_ascii_uppercase().as_str(), "WIDTH" | "DECIMALS") {
+        if matches!(
+            tokens[0].text.to_ascii_uppercase().as_str(),
+            "WIDTH" | "DECIMALS"
+        ) {
             self.ctx
                 .collect_token_expression_refs_infos(&tokens[2..], scope, true);
         }

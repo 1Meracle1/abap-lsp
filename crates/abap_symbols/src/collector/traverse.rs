@@ -150,10 +150,10 @@ impl<'a> Collector<'a> {
             SyntaxKind::UnparsedStmt
             | SyntaxKind::CommitWorkStmt
             | SyntaxKind::RollbackWorkStmt
-            | SyntaxKind::RaiseStmt
             | SyntaxKind::EndAtStmt => self
                 .stmt_lowering()
                 .collect_generic_simple_stmt(node, scope),
+            SyntaxKind::RaiseStmt => self.stmt_lowering().collect_raise_stmt(node, scope),
             SyntaxKind::TypePoolsStmt => {}
             SyntaxKind::MethodsStmt => self.stmt_lowering().collect_methods_stmt(node, scope),
             SyntaxKind::InterfacesStmt => self.stmt_lowering().collect_interfaces_stmt(node, scope),

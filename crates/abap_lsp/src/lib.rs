@@ -647,7 +647,11 @@ fn negative_remote_dependency_marker_path(
         root_path
             .join(manifest_cache_dir(workspace.manifest.as_ref()))
             .join("negative-dependencies")
-            .join(if kind.is_empty() { "unknown" } else { kind.as_str() })
+            .join(if kind.is_empty() {
+                "unknown"
+            } else {
+                kind.as_str()
+            })
             .join(format!(
                 "{}.json",
                 encode_dependency_cache_name(candidate.name.as_str())
@@ -659,8 +663,7 @@ fn has_negative_remote_dependency_candidate(
     workspace: &WorkspaceState,
     candidate: &RemoteDependencyCandidate,
 ) -> bool {
-    negative_remote_dependency_marker_path(workspace, candidate)
-        .is_some_and(|path| path.exists())
+    negative_remote_dependency_marker_path(workspace, candidate).is_some_and(|path| path.exists())
 }
 
 fn encode_dependency_cache_name(name: &str) -> String {
@@ -3155,8 +3158,9 @@ unknown_symbol_mode = "remote"
                         uri: Uri::from_str(&format!("{workspace_uri}/{file_name}")).expect("uri"),
                         language_id: "abap".to_string(),
                         version: 1,
-                        text: "DATA lo_demo TYPE REF TO zcl_first.\nlo_demo = zcl_first=>create( )."
-                            .to_string(),
+                        text:
+                            "DATA lo_demo TYPE REF TO zcl_first.\nlo_demo = zcl_first=>create( )."
+                                .to_string(),
                     },
                 },
             );

@@ -573,6 +573,57 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
         }
     }
 
+    pub(super) fn collect_raise_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        let significant = self.collector.significant_stmt_token_infos(node);
+        let Some((head, _)) = significant.split_first() else {
+            return;
+        };
+        if !head.text.eq_ignore_ascii_case("raise") {
+            return;
+        }
+
+        let mut cursor = 1usize;
+        if significant
+            .get(cursor)
+            .is_some_and(|token| token.text.eq_ignore_ascii_case("resumable"))
+        {
+            cursor += 1;
+        }
+        if !significant
+            .get(cursor)
+            .is_some_and(|token| token.text.eq_ignore_ascii_case("exception"))
+            || !significant
+                .get(cursor + 1)
+                .is_some_and(|token| token.text.eq_ignore_ascii_case("type"))
+        {
+            self.collect_generic_simple_stmt(node, scope);
+            return;
+        }
+
+        cursor += 2;
+        let type_end = raise_stmt_type_end(&significant, cursor);
+        if let Some((name, range)) = self
+            .collector
+            .simple_type_ref_base_from_infos(&significant[cursor..type_end])
+        {
+            self.collector.add_reference(
+                scope,
+                name,
+                Namespace::Type,
+                ReferenceKind::TypeRef,
+                range,
+            );
+        }
+
+        if type_end < significant.len() {
+            self.collector.collect_token_expression_refs_infos(
+                &significant[type_end..],
+                scope,
+                true,
+            );
+        }
+    }
+
     fn collect_wait_stmt_infos(&mut self, tokens: &[SyntaxTokenInfo], scope: ScopeId) {
         if tokens.is_empty() || !tokens[0].text.eq_ignore_ascii_case("wait") {
             return;
@@ -1736,4 +1787,49 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             break;
         }
     }
+}
+
+fn raise_stmt_type_end(tokens: &[SyntaxTokenInfo], start: usize) -> usize {
+    let mut paren = 0i32;
+    let mut bracket = 0i32;
+    let mut brace = 0i32;
+    let mut idx = start;
+    while idx < tokens.len() {
+        let token = &tokens[idx];
+        if paren == 0 && bracket == 0 && brace == 0 {
+            if token.text.as_ref() == "."
+                || is_raise_stmt_clause_keyword(token, tokens.get(idx + 1))
+            {
+                break;
+            }
+        }
+        match token.text.as_ref() {
+            "(" => paren += 1,
+            ")" => paren -= 1,
+            "[" => bracket += 1,
+            "]" => bracket -= 1,
+            "{" => brace += 1,
+            "}" => brace -= 1,
+            _ => {}
+        }
+        idx += 1;
+    }
+    idx
+}
+
+fn is_raise_stmt_clause_keyword(token: &SyntaxTokenInfo, next: Option<&SyntaxTokenInfo>) -> bool {
+    if next.is_some_and(|next| next.text.as_ref() == "=") {
+        return false;
+    }
+    token.text.eq_ignore_ascii_case("exporting")
+        || token.text.eq_ignore_ascii_case("importing")
+        || token.text.eq_ignore_ascii_case("changing")
+        || token.text.eq_ignore_ascii_case("tables")
+        || token.text.eq_ignore_ascii_case("receiving")
+        || token.text.eq_ignore_ascii_case("exceptions")
+        || token.text.eq_ignore_ascii_case("source")
+        || token.text.eq_ignore_ascii_case("result")
+        || token.text.eq_ignore_ascii_case("xml")
+        || token.text.eq_ignore_ascii_case("message")
+        || token.text.eq_ignore_ascii_case("using")
 }

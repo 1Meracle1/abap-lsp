@@ -915,7 +915,10 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
         &mut self,
         query_id: usize,
         scope: ScopeId,
-    ) -> (Option<StructureId>, Option<crate::def_map::FieldTypeRefData>) {
+    ) -> (
+        Option<StructureId>,
+        Option<crate::def_map::FieldTypeRefData>,
+    ) {
         let projections = self.ctx.sql_projections_for_query(query_id);
         if projections.len() == 1
             && let Some(metadata) =
@@ -932,7 +935,10 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
         query_id: usize,
         scope: ScopeId,
         projection: &SqlProjectionData,
-    ) -> Option<(Option<StructureId>, Option<crate::def_map::FieldTypeRefData>)> {
+    ) -> Option<(
+        Option<StructureId>,
+        Option<crate::def_map::FieldTypeRefData>,
+    )> {
         if projection.kind != SqlProjectionKind::Column {
             return None;
         }
@@ -947,7 +953,9 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
                     .lookup_symbol_in_scope_chain(scope, Namespace::Value, source_name.as_ref())
             })?;
         let structure_id = self.ctx.symbol_structure(symbol_id)?;
-        let field = self.ctx.structure_field(structure_id, field_name.as_ref())?;
+        let field = self
+            .ctx
+            .structure_field(structure_id, field_name.as_ref())?;
         Some((field.structure, field.type_ref))
     }
 

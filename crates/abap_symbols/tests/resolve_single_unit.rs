@@ -2027,7 +2027,11 @@ SELECT SINGLE vhcnum
 WRITE lv_vozilooznaka.
 "#;
     let parsed = parse(src);
-    let unit = analyze_unit("file:///select_single_inline_scalar_commented.abap", src, &parsed);
+    let unit = analyze_unit(
+        "file:///select_single_inline_scalar_commented.abap",
+        src,
+        &parsed,
+    );
 
     let symbol = unit
         .symbols
@@ -4530,6 +4534,42 @@ ENDCLASS.
     assert!(
         matches!(refs[0].resolution, Some(Resolution::Symbol(_))),
         "expected resolved raising type ref, refs={refs:?}"
+    );
+}
+
+#[test]
+fn resolves_raise_exception_type_refs() {
+    let src = r#"
+CLASS /sttp/cx_rep_exception DEFINITION INHERITING FROM cx_static_check.
+ENDCLASS.
+
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+    RAISE EXCEPTION TYPE /sttp/cx_rep_exception.
+  ENDMETHOD.
+ENDCLASS.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///raise_exception_type.abap", src, &parsed);
+
+    let refs: Vec<_> = unit
+        .references
+        .iter()
+        .filter(|reference| {
+            reference.kind == ReferenceKind::TypeRef
+                && reference.namespace == Namespace::Type
+                && reference.name.as_ref() == "/sttp/cx_rep_exception"
+        })
+        .collect();
+    assert_eq!(refs.len(), 1, "expected one raise type ref, refs={refs:?}");
+    assert!(
+        matches!(refs[0].resolution, Some(Resolution::Symbol(_))),
+        "expected resolved raise type ref, refs={refs:?}"
     );
 }
 
@@ -7453,7 +7493,11 @@ IF line_exists( gt_sloc_gln[ table_line = iv_gln ] ).\n\
 ENDIF.\n\
 ";
     let parsed = parse(src);
-    let unit = analyze_unit("file:///builtin_line_exists_scalar_table_line.abap", src, &parsed);
+    let unit = analyze_unit(
+        "file:///builtin_line_exists_scalar_table_line.abap",
+        src,
+        &parsed,
+    );
 
     assert!(!unit.diagnostics.iter().any(|diag| {
         diag.kind == DiagnosticKind::InvalidBuiltinNamedArgument

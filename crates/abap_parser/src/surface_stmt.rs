@@ -2957,16 +2957,93 @@ pub fn try_parse_raise_stmt(
     idx: usize,
     errors: &mut Vec<crate::ParseError>,
 ) -> Option<(NodeId, usize)> {
-    parse_simple_keyword_stmt(
+    let first = tokens.get(idx)?;
+    if !is_keyword(source, first, "raise") {
+        return None;
+    }
+
+    fn raise_exception_type_prefix_end(
+        source: &str,
+        tokens: &[Token],
+        idx: usize,
+    ) -> Option<usize> {
+        let mut cursor = idx + 1;
+        if tokens
+            .get(cursor)
+            .is_some_and(|token| is_keyword(source, token, "resumable"))
+        {
+            cursor += 1;
+        }
+        if !tokens
+            .get(cursor)
+            .is_some_and(|token| is_keyword(source, token, "exception"))
+            || !tokens
+                .get(cursor + 1)
+                .is_some_and(|token| is_keyword(source, token, "type"))
+        {
+            return None;
+        }
+        Some(cursor + 2)
+    }
+
+    Some(parse_stmt_with_period_scan(
         b,
         source,
         tokens,
         idx,
-        SyntaxKind::RaiseStmt,
-        "raise",
-        errors,
+        idx + 1,
+        first,
         "syntax error: expected '.' after RAISE statement",
-    )
+        errors,
+        next_after_unterminated_scan,
+        |b, period_i, _errors| {
+            let Some(type_start) = raise_exception_type_prefix_end(source, tokens, idx) else {
+                let children = token_children(b, tokens, idx, period_i + 1);
+                let node = b.branch(
+                    SyntaxKind::RaiseStmt,
+                    first.range.start..tokens[period_i].range.end,
+                    &children,
+                );
+                return (node, period_i + 1);
+            };
+
+            let clause_starts = |tokens: &[Token], at: usize| {
+                named_argument_section_keyword(source, tokens, at)
+                    || tokens.get(at).is_some_and(|token| {
+                        is_keyword(source, token, "message") || is_keyword(source, token, "using")
+                    })
+            };
+            let type_end = scan_until_clause(tokens, type_start, period_i, clause_starts);
+            if type_start >= type_end {
+                let children = token_children(b, tokens, idx, period_i + 1);
+                let node = b.branch(
+                    SyntaxKind::RaiseStmt,
+                    first.range.start..tokens[period_i].range.end,
+                    &children,
+                );
+                return (node, period_i + 1);
+            }
+
+            let mut children = Vec::with_capacity(period_i - idx + 1);
+            for token in &tokens[idx..type_start] {
+                children.push(token_leaf(b, token));
+            }
+            children.push(build_type_ref_node(
+                b,
+                source,
+                &tokens[type_start..type_end],
+            ));
+            for token in &tokens[type_end..=period_i] {
+                children.push(token_leaf(b, token));
+            }
+            let node = b.branch(
+                SyntaxKind::RaiseStmt,
+                first.range.start..tokens[period_i].range.end,
+                &children,
+            );
+            (node, period_i + 1)
+        },
+    ))
 }
 
 pub fn try_parse_message_stmt(
@@ -6240,10 +6317,24 @@ END-OF-PAGE.\nWRITE 'e'.",
         let root = parsed.file.root();
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::SelectStmt), 1);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::SelectQuery), 1);
-        assert_eq!(parsed.file.count_kind(root, SyntaxKind::SelectProjectionList), 1);
-        assert_eq!(parsed.file.count_kind(root, SyntaxKind::SelectFromClause), 1);
-        assert_eq!(parsed.file.count_kind(root, SyntaxKind::SelectIntoClause), 1);
-        assert_eq!(parsed.file.count_kind(root, SyntaxKind::SelectWhereClause), 1);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::SelectProjectionList),
+            1
+        );
+        assert_eq!(
+            parsed.file.count_kind(root, SyntaxKind::SelectFromClause),
+            1
+        );
+        assert_eq!(
+            parsed.file.count_kind(root, SyntaxKind::SelectIntoClause),
+            1
+        );
+        assert_eq!(
+            parsed.file.count_kind(root, SyntaxKind::SelectWhereClause),
+            1
+        );
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::DataInlineDecl), 1);
     }
 
@@ -6255,8 +6346,14 @@ END-OF-PAGE.\nWRITE 'e'.",
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
         let root = parsed.file.root();
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::SelectStmt), 1);
-        assert_eq!(parsed.file.count_kind(root, SyntaxKind::SelectIntoClause), 1);
-        assert_eq!(parsed.file.count_kind(root, SyntaxKind::SelectWhereClause), 1);
+        assert_eq!(
+            parsed.file.count_kind(root, SyntaxKind::SelectIntoClause),
+            1
+        );
+        assert_eq!(
+            parsed.file.count_kind(root, SyntaxKind::SelectWhereClause),
+            1
+        );
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::DataInlineDecl), 1);
     }
 
@@ -6306,18 +6403,35 @@ END-OF-PAGE.\nWRITE 'e'.",
             "RAISE EXCEPTION TYPE /sttp/cx_base_exception\n  EXPORTING\n    message_text = gv_dummy_msg\n    returncode   = /sttp/cl_constants=>gcs_rc-fail.",
         );
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let stmt = parsed
+            .file
+            .find_first_kind(parsed.file.root(), SyntaxKind::RaiseStmt)
+            .expect("raise stmt");
         assert_eq!(
             parsed
                 .file
                 .count_kind(parsed.file.root(), SyntaxKind::RaiseStmt),
             1
         );
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::TypeRefSimple), 1);
         assert_eq!(
             parsed
                 .file
                 .count_kind(parsed.file.root(), SyntaxKind::AssignStmt),
             0
         );
+    }
+
+    #[test]
+    fn parses_raise_exception_type_period_form_with_namespaced_class() {
+        let parsed = crate::parse("RAISE EXCEPTION TYPE /sttp/cx_rep_exception.");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let stmt = parsed
+            .file
+            .find_first_kind(parsed.file.root(), SyntaxKind::RaiseStmt)
+            .expect("raise stmt");
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::TypeRefSimple), 1);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::Error), 0);
     }
 
     #[test]
