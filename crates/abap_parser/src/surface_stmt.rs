@@ -335,6 +335,7 @@ fn push_select_target_clause_children(
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SelectClauseKind {
     Distinct,
+    Fields,
     UpTo,
     From,
     Into,
@@ -357,6 +358,48 @@ fn select_clause_start_kind(
     }
     if is_keyword(source, token, "distinct") {
         return Some(SelectClauseKind::Distinct);
+    }
+    if is_keyword(source, token, "fields") {
+        let prev_keyword_idx = tokens[..idx].iter().enumerate().rev().find_map(|(prev_idx, token)| {
+            (token.kind == TokenKind::Ident
+                && (is_keyword(source, token, "corresponding")
+                    || is_keyword(source, token, "from")
+                    || is_keyword(source, token, "single")
+                    || is_keyword(source, token, "distinct")
+                    || is_keyword(source, token, "to")
+                    || is_keyword(source, token, "into")
+                    || is_keyword(source, token, "appending")
+                    || is_keyword(source, token, "where")
+                    || is_keyword(source, token, "having")
+                    || is_keyword(source, token, "group")
+                    || is_keyword(source, token, "order")
+                    || is_keyword(source, token, "for")))
+            .then_some(prev_idx)
+        });
+        let Some(prev_keyword_idx) = prev_keyword_idx else {
+            return None;
+        };
+        let prev = &tokens[prev_keyword_idx];
+        if is_keyword(source, prev, "corresponding") {
+            return None;
+        }
+        if is_keyword(source, prev, "from")
+            || is_keyword(source, prev, "single")
+            || is_keyword(source, prev, "distinct")
+            || (is_keyword(source, prev, "to")
+                && tokens[..prev_keyword_idx]
+                    .iter()
+                    .enumerate()
+                    .rev()
+                    .find_map(|(candidate_idx, token)| {
+                        (token.kind == TokenKind::Ident).then_some(candidate_idx)
+                    })
+                    .and_then(|candidate_idx| tokens.get(candidate_idx))
+                    .is_some_and(|candidate| is_keyword(source, candidate, "up")))
+        {
+            return Some(SelectClauseKind::Fields);
+        }
+        return None;
     }
     if is_keyword(source, token, "from") {
         return Some(SelectClauseKind::From);
@@ -825,6 +868,10 @@ fn build_select_clause(
             start,
             end_exclusive,
         ),
+        SelectClauseKind::Fields => {
+            let fields_start = skip_trivia(tokens, start + 1);
+            build_select_projection_list(b, source, tokens, fields_start, end_exclusive)
+        }
         SelectClauseKind::UpTo => build_token_branch(
             b,
             SyntaxKind::SelectUpToClause,
@@ -6118,6 +6165,37 @@ END-OF-PAGE.\nWRITE 'e'.",
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::SqlDynamicWhere), 1);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::SqlAlias), 2);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::SqlDataSource), 2);
+    }
+
+    #[test]
+    fn parses_select_single_from_fields_structurally() {
+        let parsed = crate::parse(
+            "SELECT SINGLE\n  FROM /sttp/rep_evt\n  FIELDS rep_evtid,\n         rule_type,\n         msguid_out\n  WHERE evtid = @mv_evtid\n  AND rule_type IN (\n    @zattp_cl_rs_rule_proc=>gcs_rule_type-shipping,\n    @zattp_cl_rs_rule_proc=>gcs_rule_type-transloading )\n  AND status_rep_evt = 1\n  AND recall_status = 3\n  INTO @DATA(ls_rep_evt).",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::SelectStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::SelectQuery), 1);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::SelectProjectionList),
+            1
+        );
+        assert_eq!(
+            parsed.file.count_kind(root, SyntaxKind::SelectFromClause),
+            1
+        );
+        assert_eq!(
+            parsed.file.count_kind(root, SyntaxKind::SelectIntoClause),
+            1
+        );
+        assert_eq!(
+            parsed.file.count_kind(root, SyntaxKind::SelectWhereClause),
+            1
+        );
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::SqlDataSource), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::SqlProjectionItem), 3);
     }
 
     #[test]

@@ -1882,6 +1882,83 @@ TYPES /sttp/tt_evt_sdr TYPE STANDARD TABLE OF /sttp/dm_evt_sdr WITH EMPTY KEY.
 }
 
 #[test]
+fn modern_select_from_fields_recognizes_namespaced_source_name() {
+    let main_src = r#"
+DATA mv_evtid TYPE i.
+SELECT SINGLE
+  FROM /sttp/rep_evt
+  FIELDS rep_evtid,
+         rule_type,
+         msguid_out
+  WHERE evtid = @mv_evtid
+  AND rule_type IN (
+    @zattp_cl_rs_rule_proc=>gcs_rule_type-shipping,
+    @zattp_cl_rs_rule_proc=>gcs_rule_type-transloading )
+  AND status_rep_evt = 1
+  AND recall_status = 3
+  INTO @DATA(ls_rep_evt).
+"#;
+    let ddic_src = r#"
+TYPES: BEGIN OF /sttp/rep_evt,
+         evtid TYPE i,
+         rep_evtid TYPE i,
+         rule_type TYPE i,
+         msguid_out TYPE string,
+         status_rep_evt TYPE i,
+         recall_status TYPE i,
+       END OF /sttp/rep_evt.
+"#;
+    let class_src = r#"
+CLASS zattp_cl_rs_rule_proc DEFINITION.
+  PUBLIC SECTION.
+    CONSTANTS:
+      BEGIN OF gcs_rule_type,
+        shipping TYPE i VALUE 1,
+        transloading TYPE i VALUE 2,
+      END OF gcs_rule_type.
+ENDCLASS.
+"#;
+    let main_parse = parse(main_src);
+    let ddic_parse = parse(ddic_src);
+    let class_parse = parse(class_src);
+
+    let project = analyze_project(&[
+        ProjectInput {
+            uri: "file:///main.abap",
+            source: main_src,
+            parse: &main_parse,
+        },
+        ProjectInput {
+            uri: "file:///ddic_row.abap",
+            source: ddic_src,
+            parse: &ddic_parse,
+        },
+        ProjectInput {
+            uri: "file:///class.abap",
+            source: class_src,
+            parse: &class_parse,
+        },
+    ]);
+    let unit = project.unit_by_uri("file:///main.abap").expect("main unit");
+
+    assert!(
+        !unit
+            .diagnostics
+            .iter()
+            .any(|diag| diag.kind == DiagnosticKind::UnverifiedOpenSqlSource),
+        "unexpected UnverifiedOpenSqlSource: {:?}",
+        unit.diagnostics
+    );
+    assert!(
+        unit.sql_name_refs.iter().any(|sql_ref| {
+            sql_ref.kind == SqlNameRefKind::Source && sql_ref.name.as_ref() == "/sttp/rep_evt"
+        }),
+        "expected /sttp/rep_evt source ref, refs={:?}",
+        unit.sql_name_refs
+    );
+}
+
+#[test]
 fn resolves_select_into_flat_target_reference() {
     let src = r#"
 DATA lt TYPE string.
