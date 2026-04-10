@@ -965,6 +965,35 @@ impl<'a, 'b> Parser<'a, 'b> {
         ))
     }
 
+    fn parse_switch_when_clause(
+        &mut self,
+        clause_start: usize,
+        clause_end: usize,
+    ) -> Option<NodeId> {
+        let when_tok = self.tokens.get(clause_start)?;
+        if !ident_eq(self.source, when_tok, "WHEN") {
+            return None;
+        }
+        let then_idx =
+            self.find_top_level_keyword_in_range(clause_start + 1, clause_end, "THEN")?;
+        let then_tok = self.tokens.get(then_idx)?;
+        let value_key =
+            self.parse_complete_concat_expr(&self.tokens[clause_start + 1..then_idx], when_tok)?;
+        let value =
+            self.parse_complete_concat_expr(&self.tokens[then_idx + 1..clause_end], then_tok)?;
+        let children = [
+            token_leaf(self.b, when_tok),
+            value_key,
+            token_leaf(self.b, then_tok),
+            value,
+        ];
+        Some(self.b.branch(
+            SyntaxKind::CallPositionalArg,
+            when_tok.range.start..self.b.span(value).end,
+            &children,
+        ))
+    }
+
     fn parse_cond_else_clause(&mut self, clause_start: usize, clause_end: usize) -> Option<NodeId> {
         let else_tok = self.tokens.get(clause_start)?;
         if !ident_eq(self.source, else_tok, "ELSE") {
@@ -1041,9 +1070,89 @@ impl<'a, 'b> Parser<'a, 'b> {
         ))
     }
 
+    fn parse_switch_constructor_arg_list(&mut self) -> Option<NodeId> {
+        let lparen_idx = self.idx;
+        let lparen = self.tokens.get(lparen_idx)?;
+        if lparen.kind != TokenKind::LParen {
+            return None;
+        }
+        let rparen_idx = self.find_matching_paren_from(lparen_idx)?;
+        let rparen = self.tokens.get(rparen_idx)?;
+        let mut children = vec![token_leaf(self.b, lparen)];
+        let first_clause_idx = self
+            .find_next_top_level_cond_clause_start(lparen_idx + 1, rparen_idx)
+            .unwrap_or(rparen_idx);
+
+        let mut idx = lparen_idx + 1;
+        while idx < first_clause_idx {
+            let token = &self.tokens[idx];
+            if token.kind == TokenKind::Comment {
+                idx += 1;
+                continue;
+            }
+            let clause_end = if ident_eq(self.source, token, "LET") {
+                self.find_top_level_keyword_in_range(idx + 1, first_clause_idx, "IN")
+                    .map(|in_idx| in_idx + 1)
+                    .unwrap_or(first_clause_idx)
+            } else {
+                first_clause_idx
+            };
+            if let Some(clause) = self.build_raw_call_positional_arg(&self.tokens[idx..clause_end]) {
+                children.push(clause);
+            }
+            if clause_end == idx {
+                idx += 1;
+            } else {
+                idx = clause_end;
+            }
+        }
+
+        idx = first_clause_idx;
+        while idx < rparen_idx {
+            let token = &self.tokens[idx];
+            if token.kind == TokenKind::Comment {
+                idx += 1;
+                continue;
+            }
+
+            let clause_end = self
+                .find_next_top_level_cond_clause_start(idx + 1, rparen_idx)
+                .unwrap_or(rparen_idx);
+            let clause = if ident_eq(self.source, token, "WHEN") {
+                self.parse_switch_when_clause(idx, clause_end)
+            } else if ident_eq(self.source, token, "ELSE") {
+                self.parse_cond_else_clause(idx, clause_end)
+            } else {
+                self.build_raw_call_positional_arg(&self.tokens[idx..clause_end])
+            };
+
+            if let Some(clause) =
+                clause.or_else(|| self.build_raw_call_positional_arg(&self.tokens[idx..clause_end]))
+            {
+                children.push(clause);
+            }
+
+            if clause_end == idx {
+                idx += 1;
+            } else {
+                idx = clause_end;
+            }
+        }
+
+        children.push(token_leaf(self.b, rparen));
+        self.idx = rparen_idx + 1;
+        self.prev = rparen;
+        Some(self.b.branch(
+            SyntaxKind::CallArgList,
+            lparen.range.start..rparen.range.end,
+            &children,
+        ))
+    }
+
     fn parse_constructor_expr(&mut self) -> Option<NodeId> {
         let kw_tok = self.bump()?;
         let is_cond = ident_eq(self.source, kw_tok, "COND");
+        let is_switch = ident_eq(self.source, kw_tok, "SWITCH");
         let mut children = vec![token_leaf(self.b, kw_tok)];
         self.skip_trivia();
         let type_start = self.idx;
@@ -1082,6 +1191,8 @@ impl<'a, 'b> Parser<'a, 'b> {
         {
             let args = if is_cond {
                 self.parse_cond_constructor_arg_list()?
+            } else if is_switch {
+                self.parse_switch_constructor_arg_list()?
             } else {
                 self.parse_call_arg_list()?
             };
@@ -1849,6 +1960,35 @@ mod tests {
         assert_eq!(
             parsed.file.count_kind(root, SyntaxKind::CallPositionalArg),
             3
+        );
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
+    }
+
+    #[test]
+    fn switch_constructor_with_operand_and_let_result_parses() {
+        let parsed = crate::parse(
+            "DATA(lv_text) = SWITCH string( iv_kind WHEN 'A' THEN LET lv_suffix = '1' IN |A{ lv_suffix }| WHEN 'B' THEN 'B' ELSE THROW cx_demo( ) ).",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::ConstructorExpr), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::CallArgList), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::LetExpr), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
+    }
+
+    #[test]
+    fn switch_constructor_with_leading_let_parses() {
+        let parsed = crate::parse(
+            "DATA(lv_text) = SWITCH string( LET lv_mode = sy-index IN lv_mode WHEN 1 THEN |one| ELSE |other| ).",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::ConstructorExpr), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::CallArgList), 1);
+        assert_eq!(
+            parsed.file.count_kind(root, SyntaxKind::CallPositionalArg),
+            4
         );
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
     }

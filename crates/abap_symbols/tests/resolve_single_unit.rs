@@ -5279,6 +5279,91 @@ DATA(lv_text) = COND string(
 }
 
 #[test]
+fn resolves_switch_constructor_operand_and_result_references() {
+    let src = r#"
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS render
+      IMPORTING iv_kind TYPE c LENGTH 1
+      RETURNING VALUE(rv_text) TYPE string.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD render.
+    DATA lv_suffix TYPE string VALUE `!`.
+    rv_text = SWITCH string(
+      iv_kind
+      WHEN 'A' THEN |alpha{ lv_suffix }|
+      WHEN 'B' THEN `beta`
+      ELSE `other` ).
+  ENDMETHOD.
+ENDCLASS.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///switch_constructor.abap", src, &parsed);
+
+    for name in ["iv_kind", "lv_suffix"] {
+        assert!(
+            unit.references.iter().any(|reference| {
+                reference.namespace == Namespace::Value
+                    && reference.kind == ReferenceKind::Identifier
+                    && reference.name.as_ref() == name
+                    && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+            }),
+            "expected resolved SWITCH reference for `{name}`, refs={:?} diagnostics={:?}",
+            unit.references,
+            unit.diagnostics
+        );
+    }
+
+    for keyword in ["when", "then", "else"] {
+        assert!(
+            !unit
+                .references
+                .iter()
+                .any(|reference| reference.name.as_ref() == keyword),
+            "unexpected keyword reference `{keyword}`, refs={:?}",
+            unit.references
+        );
+    }
+}
+
+#[test]
+fn resolves_switch_leading_let_bindings() {
+    let src = r#"
+DATA(lv_text) = SWITCH string(
+  LET noon = '120000'
+  IN sy-timlo
+  WHEN noon THEN |noon|
+  ELSE |other| ).
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///switch_leading_let.abap", src, &parsed);
+
+    for name in ["sy", "noon"] {
+        assert!(
+            unit.references.iter().any(|reference| {
+                reference.namespace == Namespace::Value
+                    && reference.kind == ReferenceKind::Identifier
+                    && reference.name.as_ref() == name
+                    && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+            }),
+            "expected resolved SWITCH LET reference for `{name}`, refs={:?} diagnostics={:?}",
+            unit.references,
+            unit.diagnostics
+        );
+    }
+
+    assert!(
+        unit.symbols
+            .iter()
+            .any(|symbol| symbol.name.as_ref() == "noon"),
+        "expected SWITCH LET symbol declaration, symbols={:?}",
+        unit.symbols
+    );
+}
+
+#[test]
 fn resolves_bare_method_calls_inside_cond_and_value_let_expressions() {
     let src = r#"
 TYPES stringtab TYPE STANDARD TABLE OF string WITH EMPTY KEY.

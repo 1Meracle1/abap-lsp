@@ -135,6 +135,8 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                         self.collect_value_constructor_arg_list(arg_list, scope);
                     } else if constructor_keyword.as_deref() == Some("cond") {
                         self.collect_cond_constructor_arg_list(arg_list, scope);
+                    } else if constructor_keyword.as_deref() == Some("switch") {
+                        self.collect_switch_constructor_arg_list(arg_list, scope);
                     } else if constructor_keyword.as_deref() == Some("reduce") {
                         let tokens = self.ctx.syntax_token_nodes(arg_list);
                         if tokens.len() >= 2 {
@@ -326,6 +328,56 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                     clause_scope = self.collect_cond_leading_let_tokens(&tokens, clause_scope);
                     continue;
                 }
+            }
+            self.collect_structured_argument_values(&value_children, clause_scope);
+        }
+    }
+
+    fn collect_switch_constructor_arg_list(&mut self, node: NodeId, scope: ScopeId) {
+        let Some(arg_list) = CallArgList::cast(self.ctx.syntax(node)) else {
+            return;
+        };
+        let mut clause_scope = scope;
+        let mut consumed_operand = false;
+        let items: Vec<_> = arg_list
+            .items()
+            .map(|child| (child.id(), child.kind()))
+            .collect();
+        for (child, kind_syntax) in items {
+            if kind_syntax != SyntaxKind::CallPositionalArg {
+                continue;
+            }
+            let value_children: Vec<_> = CallPositionalArg::cast(self.ctx.syntax(child))
+                .map(|arg| {
+                    arg.value_children()
+                        .into_iter()
+                        .map(|child| child.id())
+                        .collect()
+                })
+                .unwrap_or_default();
+            if value_children.is_empty() {
+                continue;
+            }
+            if value_children
+                .iter()
+                .all(|&node| self.kind(node) == SyntaxKind::Token)
+            {
+                let tokens = value_children
+                    .iter()
+                    .flat_map(|&node| self.ctx.syntax_token_nodes(node))
+                    .collect::<Vec<_>>();
+                if tokens
+                    .first()
+                    .is_some_and(|token| token.text.eq_ignore_ascii_case("LET"))
+                {
+                    clause_scope = self.collect_cond_leading_let_tokens(&tokens, clause_scope);
+                    continue;
+                }
+            }
+            if !consumed_operand {
+                self.collect_structured_argument_values(&value_children, clause_scope);
+                consumed_operand = true;
+                continue;
             }
             self.collect_structured_argument_values(&value_children, clause_scope);
         }
@@ -652,6 +704,87 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                     true,
                 );
             }
+        }
+
+        let mut idx = first_clause_idx;
+        while idx < tokens.len() {
+            let clause_end = self
+                .find_top_level_keyword(tokens, idx + 1, &["WHEN", "ELSE"])
+                .unwrap_or(tokens.len());
+            let token = &tokens[idx];
+            if token.text.eq_ignore_ascii_case("WHEN") {
+                let Some(then_idx) = self.find_top_level_keyword(tokens, idx + 1, &["THEN"]) else {
+                    self.ctx.collect_token_expression_refs_infos(
+                        &tokens[idx + 1..clause_end],
+                        clause_scope,
+                        true,
+                    );
+                    break;
+                };
+                self.ctx.collect_token_expression_refs_infos(
+                    &tokens[idx + 1..then_idx],
+                    clause_scope,
+                    true,
+                );
+                let result_tokens = &tokens[then_idx + 1..clause_end];
+                if result_tokens
+                    .first()
+                    .is_some_and(|t| t.text.eq_ignore_ascii_case("LET"))
+                {
+                    self.collect_let_expression(result_tokens, 0, clause_scope);
+                } else {
+                    self.ctx
+                        .collect_token_expression_refs_infos(result_tokens, clause_scope, true);
+                }
+            } else if token.text.eq_ignore_ascii_case("ELSE") {
+                let result_tokens = &tokens[idx + 1..clause_end];
+                if result_tokens
+                    .first()
+                    .is_some_and(|t| t.text.eq_ignore_ascii_case("LET"))
+                {
+                    self.collect_let_expression(result_tokens, 0, clause_scope);
+                } else {
+                    self.ctx
+                        .collect_token_expression_refs_infos(result_tokens, clause_scope, true);
+                }
+            } else {
+                self.ctx.collect_token_expression_refs_infos(
+                    &tokens[idx..clause_end],
+                    clause_scope,
+                    true,
+                );
+            }
+            idx = clause_end;
+        }
+    }
+
+    pub(super) fn collect_switch_constructor_tokens_infos(
+        &mut self,
+        tokens: &[super::SyntaxTokenInfo],
+        scope: ScopeId,
+    ) {
+        if tokens.is_empty() {
+            return;
+        }
+        let first_clause_idx = self
+            .find_top_level_keyword(tokens, 0, &["WHEN", "ELSE"])
+            .unwrap_or(tokens.len());
+        let mut clause_scope = scope;
+        let mut operand_start = 0usize;
+
+        if first_clause_idx > 0 && tokens[0].text.eq_ignore_ascii_case("LET") {
+            clause_scope = self.collect_cond_leading_let_tokens(&tokens[..first_clause_idx], scope);
+            if let Some(in_idx) = self.find_top_level_keyword(&tokens[..first_clause_idx], 1, &["IN"]) {
+                operand_start = in_idx + 1;
+            }
+        }
+
+        if operand_start < first_clause_idx {
+            self.ctx.collect_token_expression_refs_infos(
+                &tokens[operand_start..first_clause_idx],
+                clause_scope,
+                true,
+            );
         }
 
         let mut idx = first_clause_idx;

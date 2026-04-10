@@ -287,6 +287,9 @@ impl<'a> Collector<'a> {
             "COND" => self
                 .expr_lowering()
                 .collect_cond_constructor_tokens_infos(inner, scope),
+            "SWITCH" => self
+                .expr_lowering()
+                .collect_switch_constructor_tokens_infos(inner, scope),
             _ => self.collect_token_expression_refs_infos(inner, scope, true),
         }
         rparen_idx + 1
