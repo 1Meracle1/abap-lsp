@@ -6036,6 +6036,42 @@ ENDCLASS.
 }
 
 #[test]
+fn catch_inline_target_remains_visible_after_endtry() {
+    let src = r#"
+CLASS cx_demo DEFINITION INHERITING FROM cx_root.
+ENDCLASS.
+
+CLASS zcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS exec.
+ENDCLASS.
+
+CLASS zcl_demo IMPLEMENTATION.
+  METHOD exec.
+    TRY.
+        WRITE 'x'.
+      CATCH cx_demo INTO DATA(lx_error_handling_general).
+        lx_error_handling_general->get_text( ).
+    ENDTRY.
+
+    lx_error_handling_general->get_text( ).
+  ENDMETHOD.
+ENDCLASS.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///catch_inline_visibility.abap", src, &parsed);
+
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference
+                && diag.message.contains("unknown symbol 'lx_error_handling_general'")
+        }),
+        "unexpected diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn collects_call_function_sections_without_keyword_diagnostics() {
     let src = r#"
 START-OF-SELECTION.

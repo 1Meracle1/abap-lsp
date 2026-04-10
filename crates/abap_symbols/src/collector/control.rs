@@ -256,6 +256,7 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
         scope: ScopeId,
         inferred_metadata: &(Option<StructureId>, Option<FieldTypeRefData>),
     ) {
+        let decl_scope = self.collector.declaration_scope(scope);
         if let Some(name_node) = self
             .collector
             .file
@@ -264,7 +265,7 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
             && let Some((name, range)) = self.collector.node_name(name_node)
         {
             self.collector.declare_symbol(
-                scope,
+                decl_scope,
                 name,
                 SymbolKind::Variable,
                 range,
