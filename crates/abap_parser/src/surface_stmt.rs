@@ -307,16 +307,19 @@ fn push_select_target_clause_children(
         select_target_clause_starts(source, tokens, idx)
     });
     if expr_start < target_end {
+        let inline_end = trim_trailing_comment_tokens(tokens, expr_start, target_end);
         if let Some((inline_decl, next_idx)) =
             try_parse_data_inline_decl(b, source, tokens, expr_start)
-            && next_idx == target_end
+            && next_idx == inline_end
         {
             children.push(inline_decl);
+            push_token_children(b, children, tokens, inline_end, target_end);
         } else if let Some((inline_decl, next_idx)) =
             try_parse_field_symbol_inline_decl(b, source, tokens, expr_start)
-            && next_idx == target_end
+            && next_idx == inline_end
         {
             children.push(inline_decl);
+            push_token_children(b, children, tokens, inline_end, target_end);
         } else {
             push_expr_child(
                 b,
@@ -6226,6 +6229,35 @@ END-OF-PAGE.\nWRITE 'e'.",
             parsed.file.count_kind(root, SyntaxKind::SqlProjectionItem),
             3
         );
+    }
+
+    #[test]
+    fn parses_classic_select_single_into_inline_data_before_where() {
+        let parsed = crate::parse(
+            "SELECT SINGLE vhcnum\n  FROM zattp_tnc_portal\n  INTO @DATA(lv_vozilooznaka)\n  WHERE docnum = @mv_odlv\n  AND legisl_del = 'RS'.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::SelectStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::SelectQuery), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::SelectProjectionList), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::SelectFromClause), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::SelectIntoClause), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::SelectWhereClause), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::DataInlineDecl), 1);
+    }
+
+    #[test]
+    fn parses_classic_select_single_into_inline_data_with_commented_where_line() {
+        let parsed = crate::parse(
+            "SELECT SINGLE vhcnum\n  FROM zattp_tnc_portal\n  INTO @DATA(lv_vozilooznaka)\n* WHERE docnum = @lv_odlv\n  WHERE docnum = @mv_odlv\n  AND legisl_del = 'RS'.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::SelectStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::SelectIntoClause), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::SelectWhereClause), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::DataInlineDecl), 1);
     }
 
     #[test]

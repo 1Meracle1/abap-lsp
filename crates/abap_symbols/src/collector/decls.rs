@@ -395,8 +395,19 @@ impl<'ctx, 'a> DeclLowering<'ctx, 'a> {
     }
 
     pub(super) fn walk_inline_decl(&mut self, node: abap_ast::arena::NodeId, scope: ScopeId) {
-        let decl_scope = self.ctx.declaration_scope(scope);
         let (structure, declared_type) = self.ctx.inline_decl_inferred_type(node, scope);
+        self.declare_inline_variable_decl(node, scope, structure, declared_type);
+        self.ctx.walk_children(node, scope);
+    }
+
+    pub(super) fn declare_inline_variable_decl(
+        &mut self,
+        node: abap_ast::arena::NodeId,
+        scope: ScopeId,
+        structure: Option<StructureId>,
+        declared_type: Option<FieldTypeRefData>,
+    ) {
+        let decl_scope = self.ctx.declaration_scope(scope);
         for child in self.ctx.file().children(node) {
             if self.ctx.file().kind(child) == SyntaxKind::DataDeclName
                 && let Some((name, range)) = self.ctx.node_name(child)
@@ -413,7 +424,6 @@ impl<'ctx, 'a> DeclLowering<'ctx, 'a> {
                 );
             }
         }
-        self.ctx.walk_children(node, scope);
     }
 
     pub(super) fn walk_inline_field_symbol_decl(

@@ -522,15 +522,24 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
                 SyntaxKind::DataInlineDecl => {
                     is_inline = true;
                     target_name = self.inline_decl_name(child);
-                    if let Some(structure) = is_table
-                        .then(|| {
-                            target_name.as_ref().and_then(|target_name| {
+                    let inferred_metadata = if is_table {
+                        target_name
+                            .as_ref()
+                            .and_then(|target_name| {
                                 self.inline_select_target_structure(query_id, scope, target_name)
                             })
-                        })
-                        .flatten()
-                    {
-                        self.declare_inline_select_target(child, scope, structure);
+                            .map(|structure| (Some(structure), None))
+                            .unwrap_or((None, None))
+                    } else {
+                        self.inline_select_target_metadata(query_id, scope)
+                    };
+                    if inferred_metadata.0.is_some() || inferred_metadata.1.is_some() {
+                        self.ctx.decl_lowering().declare_inline_variable_decl(
+                            child,
+                            scope,
+                            inferred_metadata.0,
+                            inferred_metadata.1,
+                        );
                     } else {
                         self.ctx.decl_lowering().walk_inline_decl(child, scope);
                     }
@@ -856,32 +865,6 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
             .and_then(|name| name.name(self.ctx.source()))
     }
 
-    fn declare_inline_select_target(
-        &mut self,
-        node: NodeId,
-        scope: ScopeId,
-        structure: StructureId,
-    ) {
-        let decl_scope = self.ctx.declaration_scope(scope);
-        for child in self.ctx.file().children(node) {
-            if self.ctx.file().kind(child) == SyntaxKind::DataDeclName
-                && let Some((name, range)) = self.ctx.node_name(child)
-            {
-                self.ctx.declare_symbol(
-                    decl_scope,
-                    name,
-                    crate::def_map::SymbolKind::Variable,
-                    range,
-                    Some(structure),
-                    None,
-                    None,
-                    None,
-                );
-                break;
-            }
-        }
-    }
-
     fn inline_select_target_structure(
         &mut self,
         query_id: usize,
@@ -927,6 +910,67 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
             },
         ))
     }
+
+    fn inline_select_target_metadata(
+        &mut self,
+        query_id: usize,
+        scope: ScopeId,
+    ) -> (Option<StructureId>, Option<crate::def_map::FieldTypeRefData>) {
+        let projections = self.ctx.sql_projections_for_query(query_id);
+        if projections.len() == 1
+            && let Some(metadata) =
+                self.inline_select_projection_metadata(query_id, scope, &projections[0])
+        {
+            return metadata;
+        }
+
+        (None, None)
+    }
+
+    fn inline_select_projection_metadata(
+        &mut self,
+        query_id: usize,
+        scope: ScopeId,
+        projection: &SqlProjectionData,
+    ) -> Option<(Option<StructureId>, Option<crate::def_map::FieldTypeRefData>)> {
+        if projection.kind != SqlProjectionKind::Column {
+            return None;
+        }
+        let field_name = projection.name.as_ref()?;
+        let source_name =
+            self.projection_source_name(query_id, projection.source_alias.as_ref())?;
+        let symbol_id = self
+            .ctx
+            .lookup_symbol_in_scope_chain(scope, Namespace::Type, source_name.as_ref())
+            .or_else(|| {
+                self.ctx
+                    .lookup_symbol_in_scope_chain(scope, Namespace::Value, source_name.as_ref())
+            })?;
+        let structure_id = self.ctx.symbol_structure(symbol_id)?;
+        let field = self.ctx.structure_field(structure_id, field_name.as_ref())?;
+        Some((field.structure, field.type_ref))
+    }
+
+    fn projection_source_name(
+        &self,
+        query_id: usize,
+        source_alias: Option<&Arc<str>>,
+    ) -> Option<Arc<str>> {
+        let sources = self.ctx.sql_sources_for_query(query_id);
+        if let Some(source_alias) = source_alias {
+            return sources
+                .iter()
+                .find(|source| {
+                    source.alias.as_ref() == Some(source_alias) || &source.name == source_alias
+                })
+                .map(|source| Arc::clone(&source.name));
+        }
+        if sources.len() == 1 {
+            return sources.first().map(|source| Arc::clone(&source.name));
+        }
+        None
+    }
+
     fn sql_token_is_keyword_text(&self, text: &str) -> bool {
         matches!(
             text.to_ascii_lowercase().as_str(),

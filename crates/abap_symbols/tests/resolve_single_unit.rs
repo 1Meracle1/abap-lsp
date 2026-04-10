@@ -1959,6 +1959,104 @@ ENDCLASS.
 }
 
 #[test]
+fn resolves_classic_select_single_inline_data_target_type() {
+    let src = r#"
+TYPES: BEGIN OF zattp_tnc_portal,
+         vhcnum TYPE string,
+         docnum TYPE string,
+         legisl_del TYPE string,
+       END OF zattp_tnc_portal.
+
+DATA mv_odlv TYPE string.
+
+SELECT SINGLE vhcnum
+  FROM zattp_tnc_portal
+  INTO @DATA(lv_vozilooznaka)
+  WHERE docnum = @mv_odlv
+  AND legisl_del = 'RS'.
+
+WRITE lv_vozilooznaka.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///select_single_inline_scalar.abap", src, &parsed);
+
+    let symbol = unit
+        .symbols
+        .iter()
+        .find(|symbol| {
+            symbol.kind == abap_symbols::SymbolKind::Variable
+                && symbol.name.as_ref() == "lv_vozilooznaka"
+        })
+        .expect("inline SQL target symbol");
+    let declared_type = symbol
+        .declared_type
+        .as_ref()
+        .expect("declared type for inline SQL target");
+
+    assert_eq!(declared_type.namespace, Namespace::Type);
+    assert_eq!(declared_type.base_name.as_ref(), "string");
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference
+                && diag.message.contains("lv_vozilooznaka")
+        }),
+        "unexpected unresolved reference diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn resolves_classic_select_single_inline_data_target_type_with_commented_where_line() {
+    let src = r#"
+TYPES: BEGIN OF zattp_tnc_portal,
+         vhcnum TYPE string,
+         docnum TYPE string,
+         legisl_del TYPE string,
+       END OF zattp_tnc_portal.
+
+DATA lv_odlv TYPE string.
+DATA mv_odlv TYPE string.
+
+SELECT SINGLE vhcnum
+  FROM zattp_tnc_portal
+  INTO @DATA(lv_vozilooznaka)
+* WHERE docnum = @lv_odlv
+  WHERE docnum = @mv_odlv
+  AND legisl_del = 'RS'.
+
+WRITE lv_vozilooznaka.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///select_single_inline_scalar_commented.abap", src, &parsed);
+
+    let symbol = unit
+        .symbols
+        .iter()
+        .find(|symbol| {
+            symbol.kind == abap_symbols::SymbolKind::Variable
+                && symbol.name.as_ref() == "lv_vozilooznaka"
+        })
+        .expect("inline SQL target symbol");
+    let declared_type = symbol
+        .declared_type
+        .as_ref()
+        .expect("declared type for inline SQL target");
+
+    assert_eq!(declared_type.namespace, Namespace::Type);
+    assert_eq!(declared_type.base_name.as_ref(), "string");
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            matches!(
+                diag.kind,
+                DiagnosticKind::UnresolvedReference | DiagnosticKind::InvalidOpenSqlIntoTarget
+            ) && diag.message.contains("lv_vozilooznaka")
+        }),
+        "unexpected diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn resolves_select_into_flat_target_reference() {
     let src = r#"
 DATA lt TYPE string.

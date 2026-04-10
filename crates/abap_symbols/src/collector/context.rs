@@ -5,7 +5,7 @@ use abap_ast::ast::SyntaxNodeRef;
 use crate::def_map::{
     FieldAccess, FieldTypeRefData, FormRoutineData, IncludeEdge, NamedArgumentAccess,
     NamedArgumentSection, NamedArgumentTarget, ReferenceKind, SqlNameRefData, SqlPredicateData,
-    SqlProjectionData, SqlQueryData, SqlSourceData, SqlTargetData, SymbolKind,
+    SqlProjectionData, SqlQueryData, SqlSourceData, SqlTargetData, StructureFieldData, SymbolKind,
 };
 use crate::ids::{ScopeId, StructureId};
 use crate::scope::Namespace;
@@ -586,6 +586,31 @@ impl<'ctx, 'a> SqlContext<'ctx, 'a> {
             .collect()
     }
 
+    pub(super) fn sql_sources_for_query(&self, query_id: usize) -> Vec<SqlSourceData> {
+        self.collector
+            .sql_sources
+            .iter()
+            .filter(|source| source.query_id == query_id)
+            .cloned()
+            .collect()
+    }
+
+    pub(super) fn structure_field(
+        &self,
+        structure_id: StructureId,
+        field_name: &str,
+    ) -> Option<StructureFieldData> {
+        self.collector
+            .structure(structure_id)
+            .and_then(|structure| {
+                structure
+                    .fields
+                    .iter()
+                    .find(|field| field.name.as_ref() == field_name)
+            })
+            .cloned()
+    }
+
     pub(super) fn node_name(
         &self,
         node: NodeId,
@@ -607,33 +632,6 @@ impl<'ctx, 'a> SqlContext<'ctx, 'a> {
 
     pub(super) fn decl_lowering(&mut self) -> DeclLowering<'_, 'a> {
         self.collector.decl_lowering()
-    }
-
-    pub(super) fn declare_symbol(
-        &mut self,
-        scope: ScopeId,
-        name: std::sync::Arc<str>,
-        kind: SymbolKind,
-        decl_range: abap_lexer::TextRange,
-        structure: Option<StructureId>,
-        declared_type: Option<FieldTypeRefData>,
-        type_clause_display: Option<std::sync::Arc<str>>,
-        value_clause_display: Option<std::sync::Arc<str>>,
-    ) -> crate::ids::SymbolId {
-        self.collector.declare_symbol(
-            scope,
-            name,
-            kind,
-            decl_range,
-            structure,
-            declared_type,
-            type_clause_display,
-            value_clause_display,
-        )
-    }
-
-    pub(super) fn declaration_scope(&self, scope: ScopeId) -> ScopeId {
-        self.collector.declaration_scope(scope)
     }
 
     pub(super) fn register_structure(
@@ -674,6 +672,10 @@ impl<'ctx, 'a> SqlContext<'ctx, 'a> {
     ) -> Option<crate::ids::SymbolId> {
         self.collector
             .lookup_symbol_in_scope_chain(scope, namespace, name)
+    }
+
+    pub(super) fn symbol_structure(&self, symbol_id: crate::ids::SymbolId) -> Option<StructureId> {
+        self.collector.symbol(symbol_id).structure
     }
 
     pub(super) fn add_reference(
