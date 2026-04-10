@@ -4,10 +4,12 @@ import * as vscode from "vscode";
 import {
 	buildMessageClassObjectRef,
 	formatDdicXml,
+	hasOnlyUnsupportedExactDomainMatches,
 	inferDdicManifestKind,
 	isDdicDependencyObject,
 	isMessageClassDependencyObject,
 	isSupportedDependencyObject,
+	isUnsupportedDomainDependencyObject,
 	pickBestDependencyObject,
 	type AdtObjectRef,
 } from "../adt";
@@ -132,6 +134,32 @@ suite("ADT dependency helpers", () => {
 		);
 
 		assert.strictEqual(selected, undefined);
+	});
+
+	test("Recognizes domain-only exact matches as permanently unsupported", () => {
+		const domainRef: AdtObjectRef = {
+			uri: "/sap/bc/adt/ddic/domains/boolean",
+			type: "DOMA/DT",
+			name: "BOOLEAN",
+			packageName: "SABAPDEMOS",
+			description: "Boolean domain",
+		};
+
+		assert.strictEqual(isUnsupportedDomainDependencyObject(domainRef), true);
+		assert.strictEqual(hasOnlyUnsupportedExactDomainMatches("BOOLEAN", [domainRef]), true);
+		assert.strictEqual(
+			hasOnlyUnsupportedExactDomainMatches("BOOLEAN", [
+				domainRef,
+				{
+					uri: "/sap/bc/adt/ddic/dataelements/boolean",
+					type: "DTEL/DE",
+					name: "BOOLEAN",
+					packageName: "SABAPDEMOS",
+					description: "Boolean data element",
+				},
+			]),
+			false,
+		);
 	});
 
 	test("Formats DDIC XML bodies before saving", () => {

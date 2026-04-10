@@ -1,3 +1,6 @@
+import * as fs from "fs";
+import * as path from "path";
+
 import {
 	defaultRemoteRequestParallelism,
 	defaultRemoteRequestsPerSecond,
@@ -90,6 +93,112 @@ export function mergeRemoteDependencyFetchPolicy(
 			incoming?.remoteRequestsPerSecond ?? 0,
 		) || undefined,
 	};
+}
+
+export function cachedRemoteDependencyCandidatePaths(
+	workspacePath: string,
+	candidate: RemoteDependencyCandidate,
+): string[] {
+	const normalizedName = candidate.name.trim().toUpperCase();
+	if (!normalizedName) {
+		return [];
+	}
+
+	const encodedName = encodeURIComponent(normalizedName);
+	const dependenciesRoot = path.join(workspacePath, ".abapls", "cache", "dependencies");
+	const kind = candidate.kind.trim().toLowerCase();
+
+	switch (kind) {
+		case "include":
+			return [
+				path.join(dependenciesRoot, "include", `${encodedName}.abap`),
+			];
+		case "message-class":
+			return [
+				path.join(dependenciesRoot, "message-class", `${encodedName}.xml`),
+			];
+		case "static":
+		case "type":
+			return [
+				path.join(dependenciesRoot, "global-class", `${encodedName}.abap`),
+				path.join(dependenciesRoot, "global-interface", `${encodedName}.abap`),
+				path.join(dependenciesRoot, "ddic-data-element", `${encodedName}.xml`),
+				path.join(dependenciesRoot, "ddic-structure", `${encodedName}.xml`),
+				path.join(dependenciesRoot, "ddic-table", `${encodedName}.xml`),
+				path.join(dependenciesRoot, "ddic-table-type", `${encodedName}.xml`),
+				path.join(dependenciesRoot, "ddic-view", `${encodedName}.xml`),
+			];
+		default:
+			return [];
+	}
+}
+
+export async function hasCachedRemoteDependencyCandidate(
+	workspacePath: string,
+	candidate: RemoteDependencyCandidate,
+): Promise<boolean> {
+	for (const candidatePath of cachedRemoteDependencyCandidatePaths(workspacePath, candidate)) {
+		try {
+			await fs.promises.access(candidatePath, fs.constants.F_OK);
+			return true;
+		} catch {
+			// Keep scanning the candidate paths for a matching local cache file.
+		}
+	}
+
+	return false;
+}
+
+export function negativeRemoteDependencyMarkerPath(
+	workspacePath: string,
+	candidate: RemoteDependencyCandidate,
+): string {
+	const normalizedName = candidate.name.trim().toUpperCase();
+	const encodedName = encodeURIComponent(normalizedName);
+	const kind = candidate.kind.trim().toLowerCase() || "unknown";
+	return path.join(
+		workspacePath,
+		".abapls",
+		"cache",
+		"negative-dependencies",
+		kind,
+		`${encodedName}.json`,
+	);
+}
+
+export async function hasNegativeRemoteDependencyCandidate(
+	workspacePath: string,
+	candidate: RemoteDependencyCandidate,
+): Promise<boolean> {
+	try {
+		await fs.promises.access(negativeRemoteDependencyMarkerPath(workspacePath, candidate), fs.constants.F_OK);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+export async function markNegativeRemoteDependencyCandidate(
+	workspacePath: string,
+	candidate: RemoteDependencyCandidate,
+	reason: string,
+): Promise<void> {
+	const markerPath = negativeRemoteDependencyMarkerPath(workspacePath, candidate);
+	await fs.promises.mkdir(path.dirname(markerPath), { recursive: true });
+	await fs.promises.writeFile(
+		markerPath,
+		JSON.stringify(
+			{
+				name: candidate.name.trim(),
+				kind: candidate.kind.trim().toLowerCase(),
+				reason,
+				recordedAt: new Date().toISOString(),
+			},
+			null,
+			2,
+		),
+		"utf8",
+	);
 }
 
 export class RemoteDependencyScheduler {

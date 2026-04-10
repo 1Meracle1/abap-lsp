@@ -21,6 +21,7 @@ import {
 	buildMessageClassObjectRef,
 	configureSapConnection,
 	getSapConnectionConfig,
+	hasOnlyUnsupportedExactDomainMatches,
 	pickBestDependencyObject,
 } from "./adt";
 import {
@@ -38,7 +39,10 @@ import {
 	workspaceManifestPath,
 } from "./manifest";
 import {
+	hasCachedRemoteDependencyCandidate,
 	dedupeRemoteDependencyCandidates,
+	hasNegativeRemoteDependencyCandidate,
+	markNegativeRemoteDependencyCandidate,
 	RemoteDependencyCandidate,
 	RemoteDependencyFetchPolicy,
 	RemoteDependencyScheduler,
@@ -695,6 +699,13 @@ async function resolveRemoteDependencyCandidate(
 	if (negativeRemoteDependencyCache.has(cacheKey)) {
 		return { candidate };
 	}
+	if (await hasNegativeRemoteDependencyCandidate(workspaceFolder.uri.fsPath, candidate)) {
+		negativeRemoteDependencyCache.add(cacheKey);
+		return { candidate };
+	}
+	if (await hasCachedRemoteDependencyCandidate(workspaceFolder.uri.fsPath, candidate)) {
+		return { candidate, fetchedName: candidate.name };
+	}
 
 	const existing = pendingRemoteDependencyFetches.get(cacheKey);
 	if (existing) {
@@ -709,6 +720,15 @@ async function resolveRemoteDependencyCandidate(
 				objectRef = buildMessageClassObjectRef(candidate.name);
 			} else {
 				const objects = await adtClient.searchRepositoryObjects(candidate.name, 25);
+				if (hasOnlyUnsupportedExactDomainMatches(candidate.name, objects)) {
+					negativeRemoteDependencyCache.add(cacheKey);
+					await markNegativeRemoteDependencyCandidate(
+						workspaceFolder.uri.fsPath,
+						candidate,
+						"exact-match-domain-only",
+					);
+					return undefined;
+				}
 				objectRef = pickBestDependencyObject(candidate.name, objects, candidate.kind);
 			}
 			if (!objectRef) {

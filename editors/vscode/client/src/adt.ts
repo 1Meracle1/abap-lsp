@@ -141,6 +141,26 @@ export function isSupportedDependencyObject(objectRef: AdtObjectRef, kindHint?: 
 		loweredType.startsWith("INTF/");
 }
 
+export function isUnsupportedDomainDependencyObject(objectRef: AdtObjectRef): boolean {
+	return objectRef.type.toUpperCase().startsWith("DOMA/");
+}
+
+export function hasOnlyUnsupportedExactDomainMatches(
+	query: string,
+	objects: AdtObjectRef[],
+): boolean {
+	const normalizedQuery = query.trim().toLowerCase();
+	if (!normalizedQuery) {
+		return false;
+	}
+
+	const exactMatches = objects.filter(
+		(objectRef) => objectRef.name.trim().toLowerCase() === normalizedQuery,
+	);
+	return exactMatches.length > 0 &&
+		exactMatches.every((objectRef) => isUnsupportedDomainDependencyObject(objectRef));
+}
+
 export function pickBestDependencyObject(
 	query: string,
 	objects: AdtObjectRef[],

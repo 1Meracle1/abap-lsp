@@ -3,13 +3,15 @@ mod perf_tests;
 pub(crate) mod sem_tokens;
 
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 
 use abap_cache::{
     AnalysisSnapshot, DocumentInput, DocumentStore, OpenDocumentOverlay,
     UNKNOWN_SYMBOL_MODE_REMOTE, WorkspaceManifest, is_remote_lookup_candidate,
-    load_workspace_documents, manifest_supports_remote_resolution, uri_starts_with_workspace,
+    file_uri_to_path, load_workspace_documents, manifest_cache_dir,
+    manifest_supports_remote_resolution, uri_starts_with_workspace,
 };
 use abap_symbols::{DiagnosticKind, ReferenceKind, SqlResolution};
 use lsp_types::{
@@ -498,6 +500,83 @@ fn remote_candidate_kind_priority(kind: &str) -> usize {
     }
 }
 
+fn cached_remote_dependency_paths(
+    workspace: &WorkspaceState,
+    candidate: &RemoteDependencyCandidate,
+) -> Vec<PathBuf> {
+    let Some(root_path) = file_uri_to_path(&workspace.root_uri) else {
+        return Vec::new();
+    };
+    let dependencies_root = root_path
+        .join(manifest_cache_dir(workspace.manifest.as_ref()))
+        .join("dependencies");
+    let encoded_name = encode_dependency_cache_name(candidate.name.as_str());
+
+    match candidate.kind.trim().to_ascii_lowercase().as_str() {
+        "include" => vec![dependencies_root.join("include").join(format!("{encoded_name}.abap"))],
+        "message-class" => {
+            vec![dependencies_root
+                .join("message-class")
+                .join(format!("{encoded_name}.xml"))]
+        }
+        "static" | "type" => vec![
+            dependencies_root
+                .join("global-class")
+                .join(format!("{encoded_name}.abap")),
+            dependencies_root
+                .join("global-interface")
+                .join(format!("{encoded_name}.abap")),
+            dependencies_root
+                .join("ddic-data-element")
+                .join(format!("{encoded_name}.xml")),
+            dependencies_root
+                .join("ddic-structure")
+                .join(format!("{encoded_name}.xml")),
+            dependencies_root
+                .join("ddic-table")
+                .join(format!("{encoded_name}.xml")),
+            dependencies_root
+                .join("ddic-table-type")
+                .join(format!("{encoded_name}.xml")),
+            dependencies_root
+                .join("ddic-view")
+                .join(format!("{encoded_name}.xml")),
+        ],
+        _ => Vec::new(),
+    }
+}
+
+fn has_cached_remote_dependency_candidate(
+    workspace: &WorkspaceState,
+    candidate: &RemoteDependencyCandidate,
+) -> bool {
+    cached_remote_dependency_paths(workspace, candidate)
+        .into_iter()
+        .any(|path| path.exists())
+}
+
+fn encode_dependency_cache_name(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    for byte in name.trim().to_ascii_uppercase().bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'!' | b'~' | b'*' | b'\'' | b'(' | b')') {
+            out.push(byte as char);
+        } else {
+            out.push('%');
+            out.push(hex_digit(byte >> 4));
+            out.push(hex_digit(byte & 0x0f));
+        }
+    }
+    out
+}
+
+fn hex_digit(value: u8) -> char {
+    match value {
+        0..=9 => (b'0' + value) as char,
+        10..=15 => (b'A' + (value - 10)) as char,
+        _ => '0',
+    }
+}
+
 pub fn build_remote_dependency_request(
     state: &mut ServerState,
     source_uri: &str,
@@ -514,6 +593,9 @@ pub fn build_remote_dependency_request(
 
     let mut candidates = Vec::new();
     for candidate in collect_remote_dependency_candidates(snapshot.as_ref()) {
+        if has_cached_remote_dependency_candidate(workspace, &candidate) {
+            continue;
+        }
         let key = remote_candidate_key(&candidate);
         if workspace.remote_resolution_seen.insert(key) {
             candidates.push(candidate);
@@ -585,6 +667,9 @@ pub fn build_remote_dependency_batch_for_workspace(
 
         let mut added_for_uri = false;
         for candidate in collect_remote_dependency_candidates(snapshot.as_ref()) {
+            if has_cached_remote_dependency_candidate(workspace, &candidate) {
+                continue;
+            }
             let key = remote_candidate_key(&candidate);
             if workspace.remote_resolution_seen.contains(&key) {
                 continue;
@@ -2684,6 +2769,58 @@ unknown_symbol_mode = "remote"
                 .candidates
                 .iter()
                 .any(|candidate| candidate.name == "zcl_remote_demo")
+        );
+
+        let _ = fs::remove_dir_all(&workspace_path);
+    }
+
+    #[test]
+    fn cached_dependency_file_suppresses_remote_request_even_if_still_unresolved() {
+        let workspace_path = temp_workspace_path("cached_dependency_short_circuit");
+        fs::create_dir_all(&workspace_path).expect("workspace dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[resolution]
+dependency_mode = "remote-on-demand"
+unknown_symbol_mode = "remote"
+"#,
+        )
+        .expect("manifest");
+        let workspace_uri = path_to_file_uri(&workspace_path);
+
+        let dependency_dir = workspace_path
+            .join(".abapls")
+            .join("cache")
+            .join("dependencies")
+            .join("global-class");
+        fs::create_dir_all(&dependency_dir).expect("dependency dir");
+        fs::write(
+            dependency_dir.join("ZCL_REMOTE_DEMO.abap"),
+            "CLASS zcl_remote_demo DEFINITION.\n",
+        )
+        .expect("dependency file");
+
+        let mut state = ServerState::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        publish_open_document_mut(
+            &mut state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str(&format!("{workspace_uri}/main.abap")).expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: "DATA lo_demo TYPE REF TO zcl_remote_demo.\nlo_demo = zcl_remote_demo=>create( ).".to_string(),
+                },
+            },
+        );
+
+        assert!(
+            build_remote_dependency_request(&mut state, &format!("{workspace_uri}/main.abap"))
+                .is_none(),
+            "existing cache file should suppress remote request notification"
         );
 
         let _ = fs::remove_dir_all(&workspace_path);

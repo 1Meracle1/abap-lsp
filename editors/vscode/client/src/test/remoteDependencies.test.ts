@@ -1,9 +1,17 @@
 import * as assert from "assert";
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
 
 import {
+	cachedRemoteDependencyCandidatePaths,
 	dedupeRemoteDependencyCandidates,
+	hasCachedRemoteDependencyCandidate,
+	hasNegativeRemoteDependencyCandidate,
 	mergeRemoteDependencyCandidates,
 	mergeRemoteDependencyFetchPolicy,
+	markNegativeRemoteDependencyCandidate,
+	negativeRemoteDependencyMarkerPath,
 	resolveRemoteDependencyFetchPolicy,
 } from "../remoteDependencies";
 
@@ -68,5 +76,68 @@ suite("Remote dependency helpers", () => {
 			),
 			{ remoteRequestParallelism: 6, remoteRequestsPerSecond: 4 },
 		);
+	});
+
+	test("Maps type candidates to supported local cache paths", () => {
+		const paths = cachedRemoteDependencyCandidatePaths("c:\\demo", {
+			name: "/sttp/if_demo",
+			kind: "type",
+		});
+
+		assert.ok(paths.some((candidatePath) => candidatePath.endsWith("%2FSTTP%2FIF_DEMO.abap")));
+		assert.ok(paths.some((candidatePath) => candidatePath.endsWith("%2FSTTP%2FIF_DEMO.xml")));
+	});
+
+	test("Skips ADT fetches when a matching cached dependency file already exists", async () => {
+		const workspacePath = await fs.promises.mkdtemp(path.join(os.tmpdir(), "abap-lsp-cache-hit-"));
+		const cachedFile = path.join(
+			workspacePath,
+			".abapls",
+			"cache",
+			"dependencies",
+			"message-class",
+			"%2FSTTP%2FINT_MSG.xml",
+		);
+		await fs.promises.mkdir(path.dirname(cachedFile), { recursive: true });
+		await fs.promises.writeFile(cachedFile, "<message-class/>", "utf8");
+
+		await assert.doesNotReject(() =>
+			hasCachedRemoteDependencyCandidate(workspacePath, {
+				name: "/sttp/int_msg",
+				kind: "message-class",
+			}),
+		);
+		assert.strictEqual(
+			await hasCachedRemoteDependencyCandidate(workspacePath, {
+				name: "/sttp/int_msg",
+				kind: "message-class",
+			}),
+			true,
+		);
+
+		await fs.promises.rm(workspacePath, { recursive: true, force: true });
+	});
+
+	test("Persists negative remote dependency markers across sessions", async () => {
+		const workspacePath = await fs.promises.mkdtemp(path.join(os.tmpdir(), "abap-lsp-negative-hit-"));
+		const candidate = {
+			name: "boolean",
+			kind: "type",
+		};
+
+		await markNegativeRemoteDependencyCandidate(
+			workspacePath,
+			candidate,
+			"exact-match-domain-only",
+		);
+
+		assert.strictEqual(await hasNegativeRemoteDependencyCandidate(workspacePath, candidate), true);
+		assert.ok(
+			negativeRemoteDependencyMarkerPath(workspacePath, candidate).endsWith(
+				path.join("negative-dependencies", "type", "BOOLEAN.json"),
+			),
+		);
+
+		await fs.promises.rm(workspacePath, { recursive: true, force: true });
 	});
 });
