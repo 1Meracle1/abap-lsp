@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::builtins::{BUILTIN_STRUCTURES, BUILTIN_SYMBOLS, BuiltinTypeKind};
+use crate::builtins::{
+    BUILTIN_STRUCTURES, BUILTIN_SYMBOLS, BuiltinTypeKind, builtin_structure_field_type,
+};
 use crate::def_map::{
     Diagnostic, DiagnosticKind, FieldTypeRefData, ReferenceData, ReferenceKind, StructureData,
     StructureFieldData, SymbolData, SymbolKind,
@@ -167,13 +169,29 @@ impl<'a> Collector<'a> {
         for structure in BUILTIN_STRUCTURES {
             let id = self.push_structure(
                 Arc::<str>::from(structure.name),
-                structure.fields.iter().map(|field| StructureFieldData {
-                    name: Arc::<str>::from(field.name),
-                    decl_range: None,
-                    decl_unit: unit_id,
-                    structure: None,
-                    type_ref: None,
-                    value_clause_display: None,
+                structure.fields.iter().map(|field| {
+                    let (type_ref, field_structure) =
+                        match builtin_structure_field_type(structure.name, field.name) {
+                            Some((type_name, nested_structure_name)) => (
+                                Some(FieldTypeRefData {
+                                    namespace: crate::scope::Namespace::Type,
+                                    is_ref: false,
+                                    base_name: Arc::<str>::from(type_name),
+                                    field_path: Vec::new(),
+                                }),
+                                nested_structure_name
+                                    .and_then(|name| structure_ids.get(name).copied()),
+                            ),
+                            None => (None, None),
+                        };
+                    StructureFieldData {
+                        name: Arc::<str>::from(field.name),
+                        decl_range: None,
+                        decl_unit: unit_id,
+                        structure: field_structure,
+                        type_ref,
+                        value_clause_display: None,
+                    }
                 }),
             );
             structure_ids.insert(structure.name, id);

@@ -6406,6 +6406,161 @@ ENDFORM.
 }
 
 #[test]
+fn resolves_find_all_occurrences_regex_results_inline_data_statement() {
+    let src = r#"
+FORM run USING lv_response_string TYPE string.
+  FIND ALL OCCURRENCES OF REGEX '\b[A-Z0-9]+\b'
+    IN lv_response_string
+    RESULTS DATA(lt_match).
+  READ TABLE lt_match INDEX 1 INTO DATA(ls_match).
+  DATA(lv_offset) = ls_match-offset.
+  DESCRIBE TABLE lt_match LINES DATA(lv_count).
+ENDFORM.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///find_results_stmt.abap", src, &parsed);
+
+    for name in ["lv_response_string", "lt_match", "ls_match"] {
+        assert!(
+            unit.references.iter().any(|reference| {
+                reference.namespace == Namespace::Value
+                    && reference.kind == ReferenceKind::Identifier
+                    && reference.name.as_ref() == name
+                    && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+            }),
+            "expected resolved FIND RESULTS reference for `{name}`, refs={:?} diagnostics={:?}",
+            unit.references,
+            unit.diagnostics
+        );
+        assert!(
+            !unit.diagnostics.iter().any(|diag| {
+                diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains(name)
+            }),
+            "unexpected FIND RESULTS diagnostics for `{name}`: {:?}",
+            unit.diagnostics
+        );
+    }
+
+    let lt_match = unit
+        .symbols
+        .iter()
+        .find(|symbol| symbol.name.as_ref() == "lt_match")
+        .expect("lt_match symbol");
+    let declared_type = lt_match
+        .declared_type
+        .as_ref()
+        .expect("lt_match declared type");
+    assert_eq!(declared_type.namespace, Namespace::Type);
+    assert_eq!(declared_type.base_name.as_ref(), "match_result_tab");
+
+    assert!(
+        unit.field_accesses.iter().any(|access| {
+            access
+                .field_path
+                .iter()
+                .any(|segment| segment.name.as_ref() == "offset")
+        }),
+        "expected offset field access to be recorded, accesses={:?}",
+        unit.field_accesses
+    );
+}
+
+#[test]
+fn resolves_find_first_occurrence_results_inline_data_statement() {
+    let src = r#"
+FORM run USING lv_response_string TYPE string.
+  FIND FIRST OCCURRENCE OF REGEX '\b[A-Z0-9]+\b'
+    IN lv_response_string
+    RESULTS DATA(ls_match).
+  DATA(lv_offset) = ls_match-offset.
+  DATA(lt_submatches) = ls_match-submatches.
+ENDFORM.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///find_first_results_stmt.abap", src, &parsed);
+
+    for name in ["lv_response_string", "ls_match"] {
+        assert!(
+            unit.references.iter().any(|reference| {
+                reference.namespace == Namespace::Value
+                    && reference.kind == ReferenceKind::Identifier
+                    && reference.name.as_ref() == name
+                    && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+            }),
+            "expected resolved FIND FIRST RESULTS reference for `{name}`, refs={:?} diagnostics={:?}",
+            unit.references,
+            unit.diagnostics
+        );
+    }
+
+    let ls_match = unit
+        .symbols
+        .iter()
+        .find(|symbol| symbol.name.as_ref() == "ls_match")
+        .expect("ls_match symbol");
+    let declared_type = ls_match
+        .declared_type
+        .as_ref()
+        .expect("ls_match declared type");
+    assert_eq!(declared_type.namespace, Namespace::Type);
+    assert_eq!(declared_type.base_name.as_ref(), "match_result");
+
+    let lv_offset = unit
+        .symbols
+        .iter()
+        .find(|symbol| symbol.name.as_ref() == "lv_offset")
+        .expect("lv_offset symbol");
+    let offset_type = lv_offset
+        .declared_type
+        .as_ref()
+        .expect("lv_offset declared type");
+    assert_eq!(offset_type.base_name.as_ref(), "i");
+
+    let lt_submatches = unit
+        .symbols
+        .iter()
+        .find(|symbol| symbol.name.as_ref() == "lt_submatches")
+        .expect("lt_submatches symbol");
+    let submatches_type = lt_submatches
+        .declared_type
+        .as_ref()
+        .expect("lt_submatches declared type");
+    assert_eq!(submatches_type.base_name.as_ref(), "match_result_tab");
+}
+
+#[test]
+fn infers_inline_data_type_from_substring_using_find_results_offsets() {
+    let src = r#"
+FORM run.
+  DATA(im_response_string) = 'some data'.
+  DATA(lv_response_string) = 'some other data'.
+
+  FIND ALL OCCURRENCES OF REGEX '\b[A-Z0-9]+\b'
+    IN lv_response_string
+    RESULTS DATA(lt_match).
+
+  LOOP AT lt_match INTO DATA(ls_match).
+    DATA(lv_code) = im_response_string+ls_match-offset(ls_match-length).
+  ENDLOOP.
+ENDFORM.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///find_results_substring_inline.abap", src, &parsed);
+
+    let lv_code = unit
+        .symbols
+        .iter()
+        .find(|symbol| symbol.name.as_ref() == "lv_code")
+        .expect("lv_code symbol");
+    let declared_type = lv_code
+        .declared_type
+        .as_ref()
+        .expect("lv_code declared type");
+    assert_eq!(declared_type.namespace, Namespace::Type);
+    assert_eq!(declared_type.base_name.as_ref(), "string");
+}
+
+#[test]
 fn infers_inline_new_ref_type_and_collects_named_argument_accesses() {
     let src = r#"
 CLASS zcl_program DEFINITION.

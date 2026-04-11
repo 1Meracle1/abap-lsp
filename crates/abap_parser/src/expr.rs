@@ -2763,6 +2763,15 @@ mod tests {
     }
 
     #[test]
+    fn substring_offset_and_length_with_selector_operands_on_assignment_rhs() {
+        let parsed = crate::parse("lv_text = im_response_string+ls_match-offset(ls_match-length).");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::SubstringExpr), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::CallExpr), 0);
+    }
+
+    #[test]
     fn constructor_expr_inside_inline_data() {
         let parsed = crate::parse("DATA(lo_obj) = NEW zcl_demo( ).");
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);

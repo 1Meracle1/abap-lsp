@@ -303,6 +303,12 @@ impl<'a> Collector<'a> {
                     return inferred;
                 }
             }
+            if self.file.kind(current) == SyntaxKind::SubstringExpr {
+                let inferred = self.inline_decl_assignment_source_metadata(current, scope);
+                if inferred.0.is_some() || inferred.1.is_some() {
+                    return inferred;
+                }
+            }
             for child in self.file.children(current) {
                 stack.push(child);
             }
@@ -412,6 +418,55 @@ impl<'a> Collector<'a> {
                     declared_type = field.type_ref.clone();
                 }
                 (structure, declared_type)
+            }
+            SyntaxKind::ExprLiteral => {
+                let Some(token) = self.syntax_token_nodes(node).into_iter().next() else {
+                    return (None, None);
+                };
+                let type_name = match token.kind {
+                    TokenKind::String | TokenKind::StringTemplate => "string",
+                    TokenKind::Number => "i",
+                    _ => return (None, None),
+                };
+                (
+                    None,
+                    Some(FieldTypeRefData {
+                        namespace: Namespace::Type,
+                        is_ref: false,
+                        base_name: Arc::<str>::from(type_name),
+                        field_path: Vec::new(),
+                    }),
+                )
+            }
+            SyntaxKind::SubstringExpr => {
+                let Some(base) = self.first_non_token_child(node) else {
+                    return (None, None);
+                };
+                let (structure, declared_type) =
+                    self.inline_decl_assignment_source_metadata(base, scope);
+                let Some(base_type) = declared_type.as_ref() else {
+                    return (structure, declared_type);
+                };
+                if base_type.namespace != Namespace::Type
+                    || base_type.is_ref
+                    || !base_type.field_path.is_empty()
+                {
+                    return (structure, declared_type);
+                }
+                let result_type = if base_type.base_name.as_ref().eq_ignore_ascii_case("xstring") {
+                    "xstring"
+                } else {
+                    "string"
+                };
+                (
+                    None,
+                    Some(FieldTypeRefData {
+                        namespace: Namespace::Type,
+                        is_ref: false,
+                        base_name: Arc::<str>::from(result_type),
+                        field_path: Vec::new(),
+                    }),
+                )
             }
             _ => (None, None),
         }

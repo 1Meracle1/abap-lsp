@@ -385,6 +385,8 @@ pub enum SyntaxKind {
     FindMatchTarget,
     /// One operand inside `SUBMATCHES` inside `FIND`.
     FindSubmatchTarget,
+    /// Target operand after `RESULTS` inside `FIND`.
+    FindResultsTarget,
     /// `READ TABLE ... .`
     ReadTableStmt,
     /// `GET TIME STAMP FIELD ... .`
@@ -613,6 +615,7 @@ impl SyntaxKind {
             Self::FindInOperand => "FindInOperand",
             Self::FindMatchTarget => "FindMatchTarget",
             Self::FindSubmatchTarget => "FindSubmatchTarget",
+            Self::FindResultsTarget => "FindResultsTarget",
             Self::ReadTableStmt => "ReadTableStmt",
             Self::GetTimeStampStmt => "GetTimeStampStmt",
             Self::GetReferenceStmt => "GetReferenceStmt",

@@ -4633,7 +4633,14 @@ pub fn try_parse_find_stmt(
             );
             children.push(token_leaf(b, &tokens[in_idx]));
 
-            let clause_starts = ["match", "submatches", "ignoring", "respecting", "in"];
+            let clause_starts = [
+                "match",
+                "submatches",
+                "results",
+                "ignoring",
+                "respecting",
+                "in",
+            ];
             let target_end =
                 consume_concatenate_operand(source, tokens, in_idx + 1, period_i, &clause_starts);
             push_wrapped_expr_child(
@@ -4721,6 +4728,40 @@ pub fn try_parse_find_stmt(
                         );
                         i = end_idx;
                     }
+                    continue;
+                }
+                if is_keyword(source, token, "results") {
+                    children.push(token_leaf(b, token));
+                    let target_start = skip_trivia(tokens, i + 1);
+                    if let Some(next_idx) = push_wrapped_data_inline_decl_child(
+                        b,
+                        &mut children,
+                        source,
+                        tokens,
+                        target_start,
+                        SyntaxKind::FindResultsTarget,
+                    ) {
+                        i = next_idx;
+                        continue;
+                    }
+                    let end_idx = consume_concatenate_operand(
+                        source,
+                        tokens,
+                        target_start,
+                        period_i,
+                        &clause_starts,
+                    );
+                    push_wrapped_expr_child(
+                        b,
+                        &mut children,
+                        source,
+                        tokens,
+                        target_start,
+                        end_idx,
+                        Some(token),
+                        SyntaxKind::FindResultsTarget,
+                    );
+                    i = end_idx;
                     continue;
                 }
                 children.push(token_leaf(b, token));
@@ -9001,6 +9042,29 @@ END-OF-PAGE.\nWRITE 'e'.",
         assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::FindInOperand), 1);
         assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::FindMatchTarget), 1);
         assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::ExprIdent), 2);
+    }
+
+    #[test]
+    fn parses_find_stmt_with_results_inline_data_target() {
+        let parsed = crate::parse(
+            "FIND ALL OCCURRENCES OF REGEX '\\b[A-Z0-9]+\\b' IN lv_response_string RESULTS DATA(lt_match).",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let stmt = parsed
+            .file
+            .find_first_kind(parsed.file.root(), SyntaxKind::FindStmt)
+            .expect("find stmt");
+        assert_eq!(
+            parsed.file.count_kind(stmt, SyntaxKind::FindPatternOperand),
+            1
+        );
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::FindInOperand), 1);
+        assert_eq!(
+            parsed.file.count_kind(stmt, SyntaxKind::FindResultsTarget),
+            1
+        );
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::DataInlineDecl), 1);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::ExprIdent), 1);
     }
 
     #[test]

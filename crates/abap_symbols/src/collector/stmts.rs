@@ -154,6 +154,53 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
         true
     }
 
+    fn find_results_type_name(&self, stmt_node: NodeId) -> &'static str {
+        let significant = self.collector.significant_stmt_token_infos(stmt_node);
+        match significant
+            .get(1)
+            .map(|token| token.text.to_ascii_lowercase())
+        {
+            Some(keyword) if keyword == "all" => "match_result_tab",
+            _ => "match_result",
+        }
+    }
+
+    fn declare_find_results_inline_target(
+        &mut self,
+        stmt_node: NodeId,
+        node: NodeId,
+        scope: ScopeId,
+    ) -> bool {
+        let Some(name_node) = self
+            .collector
+            .file
+            .children(node)
+            .find(|&child| self.collector.file.kind(child) == SyntaxKind::DataDeclName)
+        else {
+            return false;
+        };
+        let Some((name, range)) = self.collector.node_name(name_node) else {
+            return false;
+        };
+        let type_name = self.find_results_type_name(stmt_node);
+        let declared_type = Self::builtin_type(type_name);
+        let structure = self
+            .collector
+            .lookup_symbol_in_scope_chain(scope, Namespace::Type, type_name)
+            .and_then(|symbol_id| self.collector.symbol(symbol_id).structure);
+        self.collector.declare_symbol(
+            self.collector.declaration_scope(scope),
+            name,
+            SymbolKind::Variable,
+            range,
+            structure,
+            Some(declared_type),
+            None,
+            None,
+        );
+        true
+    }
+
     pub(super) fn collect_delete_stmt(&mut self, node: NodeId, scope: ScopeId) {
         let Some((stmt_source_expr, stmt_where_expr)) =
             DeleteStmt::cast(self.collector.syntax(node)).map(|stmt| {
@@ -824,8 +871,26 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                     .filter_map(|operand| operand.value())
                     .map(|operand| operand.id()),
             );
+            let result_targets: Vec<_> = stmt.results_targets().collect();
+            let mut inline_result_targets = Vec::new();
+            for target in &result_targets {
+                if let Some(value) = target.value() {
+                    if value.kind() == SyntaxKind::DataInlineDecl {
+                        inline_result_targets.push(value.id());
+                    } else {
+                        operand_ids.push(value.id());
+                    }
+                }
+            }
             for operand_id in operand_ids {
                 self.collector.walk_node(operand_id, scope);
+            }
+            for value_id in inline_result_targets {
+                if !self.declare_find_results_inline_target(node, value_id, scope) {
+                    self.collector
+                        .decl_lowering()
+                        .walk_inline_decl(value_id, scope);
+                }
             }
         }
     }

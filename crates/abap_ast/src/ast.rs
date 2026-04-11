@@ -426,6 +426,7 @@ ast_node!(FindPatternOperand, SyntaxKind::FindPatternOperand);
 ast_node!(FindInOperand, SyntaxKind::FindInOperand);
 ast_node!(FindMatchTarget, SyntaxKind::FindMatchTarget);
 ast_node!(FindSubmatchTarget, SyntaxKind::FindSubmatchTarget);
+ast_node!(FindResultsTarget, SyntaxKind::FindResultsTarget);
 ast_node!(ReadTableStmt, SyntaxKind::ReadTableStmt);
 ast_node!(WriteStmt, SyntaxKind::WriteStmt);
 ast_node!(SplitStmt, SyntaxKind::SplitStmt);
@@ -2060,6 +2061,12 @@ impl<'a> FindStmt<'a> {
     ) -> impl DoubleEndedIterator<Item = FindSubmatchTarget<'a>> + Clone + 'a {
         self.syntax.children().filter_map(FindSubmatchTarget::cast)
     }
+
+    pub fn results_targets(
+        self,
+    ) -> impl DoubleEndedIterator<Item = FindResultsTarget<'a>> + Clone + 'a {
+        self.syntax.children().filter_map(FindResultsTarget::cast)
+    }
 }
 
 impl<'a> FindPatternOperand<'a> {
@@ -2081,6 +2088,12 @@ impl<'a> FindMatchTarget<'a> {
 }
 
 impl<'a> FindSubmatchTarget<'a> {
+    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
+        self.syntax.first_non_token_child()
+    }
+}
+
+impl<'a> FindResultsTarget<'a> {
     pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
         self.syntax.first_non_token_child()
     }

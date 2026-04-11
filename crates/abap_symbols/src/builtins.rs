@@ -152,10 +152,35 @@ pub const SYST_FIELDS: &[BuiltinFieldSpec] = &[
     },
 ];
 
-pub const BUILTIN_STRUCTURES: &[BuiltinStructureSpec] = &[BuiltinStructureSpec {
-    name: "syst",
-    fields: SYST_FIELDS,
-}];
+pub const MATCH_RESULT_FIELDS: &[BuiltinFieldSpec] = &[
+    BuiltinFieldSpec {
+        name: "offset",
+        description: "Zero-based offset of the match in the searched data object.",
+    },
+    BuiltinFieldSpec {
+        name: "length",
+        description: "Length of the matched segment.",
+    },
+    BuiltinFieldSpec {
+        name: "submatches",
+        description: "Nested table containing captured submatches for a regex result.",
+    },
+    BuiltinFieldSpec {
+        name: "line",
+        description: "Line number of the match for searches in internal tables.",
+    },
+];
+
+pub const BUILTIN_STRUCTURES: &[BuiltinStructureSpec] = &[
+    BuiltinStructureSpec {
+        name: "syst",
+        fields: SYST_FIELDS,
+    },
+    BuiltinStructureSpec {
+        name: "match_result",
+        fields: MATCH_RESULT_FIELDS,
+    },
+];
 
 pub const BUILTIN_SYMBOLS: &[BuiltinSymbolSpec] = &[
     BuiltinSymbolSpec {
@@ -207,6 +232,16 @@ pub const BUILTIN_SYMBOLS: &[BuiltinSymbolSpec] = &[
         name: "cursor",
         kind: BuiltinTypeKind::Type,
         structure_name: None,
+    },
+    BuiltinSymbolSpec {
+        name: "match_result",
+        kind: BuiltinTypeKind::Type,
+        structure_name: Some("match_result"),
+    },
+    BuiltinSymbolSpec {
+        name: "match_result_tab",
+        kind: BuiltinTypeKind::Type,
+        structure_name: Some("match_result"),
     },
     BuiltinSymbolSpec {
         name: "tabname",
@@ -466,4 +501,22 @@ pub fn builtin_structure_field_description(
         .iter()
         .find(|f| f.name.eq_ignore_ascii_case(field_name))?;
     Some(field.description)
+}
+
+pub fn builtin_structure_field_type(
+    structure_name: &str,
+    field_name: &str,
+) -> Option<(&'static str, Option<&'static str>)> {
+    if structure_name.eq_ignore_ascii_case("match_result") {
+        if field_name.eq_ignore_ascii_case("offset")
+            || field_name.eq_ignore_ascii_case("length")
+            || field_name.eq_ignore_ascii_case("line")
+        {
+            return Some(("i", None));
+        }
+        if field_name.eq_ignore_ascii_case("submatches") {
+            return Some(("match_result_tab", Some("match_result")));
+        }
+    }
+    None
 }
