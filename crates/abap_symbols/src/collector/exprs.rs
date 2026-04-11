@@ -642,9 +642,7 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                             Some("cond") => self.collect_structured_cond_constructor_nodes(
                                 &CallArgList::cast(self.ctx.syntax(arg_list))
                                     .map(|list| {
-                                        list.items()
-                                            .map(|child| child.id())
-                                            .collect::<Vec<_>>()
+                                        list.items().map(|child| child.id()).collect::<Vec<_>>()
                                     })
                                     .unwrap_or_default(),
                                 scope,
@@ -652,9 +650,7 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                             Some("switch") => self.collect_structured_switch_constructor_nodes(
                                 &CallArgList::cast(self.ctx.syntax(arg_list))
                                     .map(|list| {
-                                        list.items()
-                                            .map(|child| child.id())
-                                            .collect::<Vec<_>>()
+                                        list.items().map(|child| child.id()).collect::<Vec<_>>()
                                     })
                                     .unwrap_or_default(),
                                 scope,
@@ -662,9 +658,7 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                             Some("reduce") => self.collect_structured_reduce_constructor_nodes(
                                 &CallArgList::cast(self.ctx.syntax(arg_list))
                                     .map(|list| {
-                                        list.items()
-                                            .map(|child| child.id())
-                                            .collect::<Vec<_>>()
+                                        list.items().map(|child| child.id()).collect::<Vec<_>>()
                                     })
                                     .unwrap_or_default(),
                                 scope,
@@ -672,9 +666,7 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                             _ => self.collect_structured_value_constructor_nodes(
                                 &CallArgList::cast(self.ctx.syntax(arg_list))
                                     .map(|list| {
-                                        list.items()
-                                            .map(|child| child.id())
-                                            .collect::<Vec<_>>()
+                                        list.items().map(|child| child.id()).collect::<Vec<_>>()
                                     })
                                     .unwrap_or_default(),
                                 scope,
@@ -2421,9 +2413,11 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
             .and_then(|clause| clause.value())
             && let Some(access) = self.value_access_from_node(base_value.id(), scope)
             && access.field_path.is_empty()
-            && let Some(symbol_id) = self
-                .ctx
-                .lookup_symbol_in_scope_chain(scope, Namespace::Value, access.base_name.as_ref())
+            && let Some(symbol_id) = self.ctx.lookup_symbol_in_scope_chain(
+                scope,
+                Namespace::Value,
+                access.base_name.as_ref(),
+            )
             && let Some(structure) = self.ctx.symbol_structure(symbol_id)
         {
             return Some(structure);
@@ -2747,12 +2741,9 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
             return;
         };
 
-        let let_scope = self.ctx.push_scope(
-            crate::scope::ScopeKind::LoopBlock,
-            range,
-            Some(scope),
-            None,
-        );
+        let let_scope =
+            self.ctx
+                .push_scope(crate::scope::ScopeKind::LoopBlock, range, Some(scope), None);
 
         for (name, value_children) in bindings {
             self.collect_structured_argument_values(&value_children, let_scope);
@@ -2817,41 +2808,51 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
         scope: ScopeId,
         mode: StructuredConstructorMode,
     ) {
-        let Some((range, iterator_name, is_in_form, source_id, where_id, where_range, init_id, then_id, condition_id, body_nodes)) =
-            (|| {
-                let clause = ConstructorForClause::cast(self.ctx.syntax(node))?;
-                let iterator_name = clause.iterator_name_token(self.source()).and_then(|token| {
-                    token
-                        .text(self.source())
-                        .map(|text| (token.range(), text.to_string()))
-                });
-                let body_nodes = clause
-                    .body_children(self.source())
-                    .into_iter()
-                    .map(|child| child.id())
-                    .collect::<Vec<_>>();
-                Some((
-                    clause.syntax().range(),
-                    iterator_name,
-                    clause.is_in_form(self.source()),
-                    clause.source_expr(self.source()).map(|node| node.id()),
-                    clause.where_clause().and_then(|clause| clause.condition()).map(|node| node.id()),
-                    clause.where_clause().map(|clause| clause.syntax().range()),
-                    clause.init_expr(self.source()).map(|node| node.id()),
-                    clause.then_expr(self.source()).map(|node| node.id()),
-                    clause.condition_expr(self.source()).map(|node| node.id()),
-                    body_nodes,
-                ))
-            })()
+        let Some((
+            range,
+            iterator_name,
+            is_in_form,
+            source_id,
+            where_id,
+            where_range,
+            init_id,
+            then_id,
+            condition_id,
+            body_nodes,
+        )) = (|| {
+            let clause = ConstructorForClause::cast(self.ctx.syntax(node))?;
+            let iterator_name = clause.iterator_name_token(self.source()).and_then(|token| {
+                token
+                    .text(self.source())
+                    .map(|text| (token.range(), text.to_string()))
+            });
+            let body_nodes = clause
+                .body_children(self.source())
+                .into_iter()
+                .map(|child| child.id())
+                .collect::<Vec<_>>();
+            Some((
+                clause.syntax().range(),
+                iterator_name,
+                clause.is_in_form(self.source()),
+                clause.source_expr(self.source()).map(|node| node.id()),
+                clause
+                    .where_clause()
+                    .and_then(|clause| clause.condition())
+                    .map(|node| node.id()),
+                clause.where_clause().map(|clause| clause.syntax().range()),
+                clause.init_expr(self.source()).map(|node| node.id()),
+                clause.then_expr(self.source()).map(|node| node.id()),
+                clause.condition_expr(self.source()).map(|node| node.id()),
+                body_nodes,
+            ))
+        })()
         else {
             return;
         };
-        let child_scope = self.ctx.push_scope(
-            crate::scope::ScopeKind::LoopBlock,
-            range,
-            Some(scope),
-            None,
-        );
+        let child_scope =
+            self.ctx
+                .push_scope(crate::scope::ScopeKind::LoopBlock, range, Some(scope), None);
 
         if is_in_form {
             let mut declared_type = None;
@@ -2881,10 +2882,11 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                 );
                 if let Some(where_id) = where_id {
                     if let Some(source_access) = source_access {
-                        self.ctx
-                            .push_loop_where_field_context(crate::def_map::LoopWhereFieldContext {
+                        self.ctx.push_loop_where_field_context(
+                            crate::def_map::LoopWhereFieldContext {
                                 scope: child_scope,
-                                range: where_range.unwrap_or_else(|| self.ctx.file().range(where_id)),
+                                range: where_range
+                                    .unwrap_or_else(|| self.ctx.file().range(where_id)),
                                 source_access,
                                 target_access: Some(FieldAccess {
                                     scope: child_scope,
@@ -2893,7 +2895,8 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                                     field_path: Vec::new(),
                                     in_type_position: false,
                                 }),
-                            });
+                            },
+                        );
                     }
                     self.collect_expr(where_id, child_scope);
                     let tokens = self.ctx.syntax_token_nodes(where_id);
@@ -2945,7 +2948,12 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
             match self.kind(node) {
                 SyntaxKind::CallPositionalArg => {
                     let value_children: Vec<_> = CallPositionalArg::cast(self.ctx.syntax(node))
-                        .map(|arg| arg.value_children().into_iter().map(|child| child.id()).collect())
+                        .map(|arg| {
+                            arg.value_children()
+                                .into_iter()
+                                .map(|child| child.id())
+                                .collect()
+                        })
                         .unwrap_or_default();
                     self.collect_structured_argument_values(&value_children, scope);
                 }
@@ -2961,15 +2969,16 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                     }
                 }
                 SyntaxKind::ConstructorLinesOfClause => {
-                    let (source_id, from_id, to_id) = ConstructorLinesOfClause::cast(self.ctx.syntax(node))
-                        .map(|clause| {
-                            (
-                                clause.source().map(|node| node.id()),
-                                clause.from_value().map(|node| node.id()),
-                                clause.to_value().map(|node| node.id()),
-                            )
-                        })
-                        .unwrap_or((None, None, None));
+                    let (source_id, from_id, to_id) =
+                        ConstructorLinesOfClause::cast(self.ctx.syntax(node))
+                            .map(|clause| {
+                                (
+                                    clause.source().map(|node| node.id()),
+                                    clause.from_value().map(|node| node.id()),
+                                    clause.to_value().map(|node| node.id()),
+                                )
+                            })
+                            .unwrap_or((None, None, None));
                     if let Some(source_id) = source_id {
                         self.collect_expr(source_id, scope);
                     }
@@ -3017,7 +3026,9 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                                 (
                                     clause.condition().map(|node| node.id()),
                                     result.map(|node| node.id()),
-                                    result.and_then(LetExpr::cast).map(|expr| expr.syntax().id()),
+                                    result
+                                        .and_then(LetExpr::cast)
+                                        .map(|expr| expr.syntax().id()),
                                 )
                             })
                             .unwrap_or((None, None, None));
@@ -3035,15 +3046,16 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                     }
                 }
                 SyntaxKind::ConstructorElseClause => {
-                    let (result_id, result_let_id) = ConstructorElseClause::cast(self.ctx.syntax(node))
-                        .and_then(|clause| clause.result())
-                        .map(|result| {
-                            (
-                                Some(result.id()),
-                                LetExpr::cast(result).map(|expr| expr.syntax().id()),
-                            )
-                        })
-                        .unwrap_or((None, None));
+                    let (result_id, result_let_id) =
+                        ConstructorElseClause::cast(self.ctx.syntax(node))
+                            .and_then(|clause| clause.result())
+                            .map(|result| {
+                                (
+                                    Some(result.id()),
+                                    LetExpr::cast(result).map(|expr| expr.syntax().id()),
+                                )
+                            })
+                            .unwrap_or((None, None));
                     if let Some(let_id) = result_let_id {
                         self.collect_structured_let_expr_node(
                             let_id,
@@ -3071,7 +3083,12 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                 }
                 SyntaxKind::CallPositionalArg => {
                     let value_children: Vec<_> = CallPositionalArg::cast(self.ctx.syntax(node))
-                        .map(|arg| arg.value_children().into_iter().map(|child| child.id()).collect())
+                        .map(|arg| {
+                            arg.value_children()
+                                .into_iter()
+                                .map(|child| child.id())
+                                .collect()
+                        })
                         .unwrap_or_default();
                     self.collect_structured_argument_values(&value_children, scope);
                 }
@@ -3083,7 +3100,9 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                                 (
                                     clause.condition().map(|node| node.id()),
                                     result.map(|node| node.id()),
-                                    result.and_then(LetExpr::cast).map(|expr| expr.syntax().id()),
+                                    result
+                                        .and_then(LetExpr::cast)
+                                        .map(|expr| expr.syntax().id()),
                                 )
                             })
                             .unwrap_or((None, None, None));
@@ -3149,8 +3168,7 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                         let Some((decl_range, name_text)) = name else {
                             continue;
                         };
-                        let type_fact =
-                            self.type_fact_from_value_children(&value_children, scope);
+                        let type_fact = self.type_fact_from_value_children(&value_children, scope);
                         self.ctx.declare_symbol(
                             scope,
                             Arc::<str>::from(name_text.to_ascii_lowercase()),
@@ -3226,24 +3244,20 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
         }
     }
 
-    fn collect_argument_token_refs(
-        &mut self,
-        tokens: &[super::SyntaxTokenInfo],
-        scope: ScopeId,
-    ) {
+    fn collect_argument_token_refs(&mut self, tokens: &[super::SyntaxTokenInfo], scope: ScopeId) {
         let mut batch_start = 0usize;
         let mut idx = 0usize;
         while idx + 2 < tokens.len() {
             let is_text_pool = tokens[idx].text.eq_ignore_ascii_case("text")
                 && tokens[idx + 1].text.as_ref() == "-"
-                && tokens[idx + 2]
-                    .text
-                    .chars()
-                    .all(|ch| ch.is_ascii_digit());
+                && tokens[idx + 2].text.chars().all(|ch| ch.is_ascii_digit());
             if is_text_pool {
                 if batch_start < idx {
-                    self.ctx
-                        .collect_token_expression_refs_infos(&tokens[batch_start..idx], scope, true);
+                    self.ctx.collect_token_expression_refs_infos(
+                        &tokens[batch_start..idx],
+                        scope,
+                        true,
+                    );
                 }
                 self.ctx.add_reference(
                     scope,

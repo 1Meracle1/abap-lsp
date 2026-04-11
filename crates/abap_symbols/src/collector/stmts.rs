@@ -4,9 +4,9 @@ use abap_ast::SyntaxKind;
 use abap_ast::arena::NodeId;
 use abap_ast::ast::{
     AliasesStmt, AstNode, CallMethodStmt, CallStmt, CallStmtKind, ClearStmt, ConcatenateStmt,
-    ConvertStmt, CreateDataStmt, CreateObjectStmt, DeleteStmt, DescribeStmt, FindStmt,
-    MessageStmt, MethodsStmt, RaiseStmt, ReadTableStmt, ReplaceStmt, SplitStmt, UpdateStmt,
-    UpdateWhereClause, WaitStmt, WriteStmt,
+    ConvertStmt, CreateDataStmt, CreateObjectStmt, DeleteStmt, DescribeStmt, FindStmt, MessageStmt,
+    MethodsStmt, RaiseStmt, ReadTableStmt, ReplaceStmt, SplitStmt, UpdateStmt, UpdateWhereClause,
+    WaitStmt, WriteStmt,
 };
 
 use crate::def_map::{FieldTypeRefData, NamedArgumentTarget, ReferenceKind, SymbolKind};
@@ -99,14 +99,14 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
     }
 
     pub(super) fn collect_delete_stmt(&mut self, node: NodeId, scope: ScopeId) {
-        let Some((source_expr, where_expr)) = DeleteStmt::cast(self.collector.syntax(node)).map(
-            |stmt| {
+        let Some((source_expr, where_expr)) =
+            DeleteStmt::cast(self.collector.syntax(node)).map(|stmt| {
                 (
                     stmt.source().map(|expr| expr.id()),
                     stmt.where_expr(self.collector.source).map(|expr| expr.id()),
                 )
-            },
-        ) else {
+            })
+        else {
             self.collector.walk_children(node, scope);
             return;
         };

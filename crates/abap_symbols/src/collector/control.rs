@@ -338,8 +338,13 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
                     .and_then(|arg_list| {
                         self.collector
                             .file
-                            .find_first_kind(arg_list.syntax().id(), SyntaxKind::ConstructorBaseClause)
-                            .and_then(|node| ConstructorBaseClause::cast(self.collector.syntax(node)))
+                            .find_first_kind(
+                                arg_list.syntax().id(),
+                                SyntaxKind::ConstructorBaseClause,
+                            )
+                            .and_then(|node| {
+                                ConstructorBaseClause::cast(self.collector.syntax(node))
+                            })
                     })
                     .and_then(|clause| clause.value())
                 {
@@ -349,17 +354,18 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
                     let tokens = self.collector.syntax_token_nodes(arg_list.syntax().id());
                     if tokens.len() >= 3 && tokens[1].text.eq_ignore_ascii_case("BASE") {
                         let inner = &tokens[1..tokens.len() - 1];
-                        if let Some((_, namespace, base_name, _, field_path, _)) = self
-                            .collector
-                            .consume_selector_access_from_infos(inner, 1)
+                        if let Some((_, namespace, base_name, _, field_path, _)) =
+                            self.collector.consume_selector_access_from_infos(inner, 1)
                             && namespace == Namespace::Value
                         {
                             if field_path.is_empty() {
-                                if let Some(symbol_id) = self.collector.lookup_symbol_in_scope_chain(
-                                    scope,
-                                    Namespace::Value,
-                                    base_name.as_ref(),
-                                ) {
+                                if let Some(symbol_id) =
+                                    self.collector.lookup_symbol_in_scope_chain(
+                                        scope,
+                                        Namespace::Value,
+                                        base_name.as_ref(),
+                                    )
+                                {
                                     let symbol = self.collector.symbol(symbol_id);
                                     return self.normalize_inferred_metadata(
                                         scope,
@@ -367,13 +373,15 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
                                         symbol.declared_type.clone(),
                                     );
                                 }
-                            } else if let Some(symbol_id) = self.collector.lookup_symbol_in_scope_chain(
-                                scope,
-                                Namespace::Value,
-                                base_name.as_ref(),
-                            ) {
-                                if let Some((structure, declared_type)) = self
-                                    .loop_source_field_metadata(scope, symbol_id, &field_path)
+                            } else if let Some(symbol_id) =
+                                self.collector.lookup_symbol_in_scope_chain(
+                                    scope,
+                                    Namespace::Value,
+                                    base_name.as_ref(),
+                                )
+                            {
+                                if let Some((structure, declared_type)) =
+                                    self.loop_source_field_metadata(scope, symbol_id, &field_path)
                                 {
                                     return self.normalize_inferred_metadata(
                                         scope,
@@ -571,8 +579,7 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
         let source_expr = source
             .map(|source| self.sort_operand_expr_node(source))
             .unwrap_or(node);
-        let itab_base = source
-            .and_then(|_| self.collector.sql_target_name_from_expr(source_expr));
+        let itab_base = source.and_then(|_| self.collector.sql_target_name_from_expr(source_expr));
 
         if let Some(source) = source {
             self.collector.walk_node(source, scope);

@@ -360,6 +360,13 @@ pub fn publish_open_document_mut_with_progress(
                 text: Arc::from(params.text_document.text.as_str()),
             },
         );
+        if workspace.cache.get(&uri).is_some() {
+            return workspace.cache.publish(
+                uri,
+                params.text_document.version,
+                &params.text_document.text,
+            );
+        }
         let snapshots = rebuild_workspace_cache_with_progress(workspace, progress);
         return snapshots
             .get(uri.as_str())
@@ -422,6 +429,13 @@ pub fn publish_changed_document_mut_with_progress(
                 text: Arc::from(change.text.as_str()),
             },
         );
+        if workspace.cache.get(&uri).is_some() {
+            return Some(
+                workspace
+                    .cache
+                    .publish(uri, params.text_document.version, &change.text),
+            );
+        }
         let snapshots = rebuild_workspace_cache_with_progress(workspace, progress);
         return snapshots.get(uri.as_str()).cloned();
     }

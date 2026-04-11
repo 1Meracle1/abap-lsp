@@ -3,8 +3,7 @@ use std::sync::Arc;
 use abap_ast::arena::NodeId;
 use abap_ast::ast::{
     AstNode, FormDecl, FormParamPassingKind as AstFormParamPassingKind,
-    FormParamSectionKind as AstFormParamSectionKind, TypeClauseKind,
-    PerformStmt,
+    FormParamSectionKind as AstFormParamSectionKind, PerformStmt, TypeClauseKind,
 };
 
 use crate::def_map::{

@@ -17,6 +17,81 @@ use crate::resolver::{ScopeIndex, build_scope_index};
 use crate::scope::{Namespace, ScopeKind};
 use crate::{SymbolKind, Visibility};
 
+struct ValidationLookup<'a> {
+    scope_indexes: &'a [ScopeIndex],
+    per_unit_root_index: Vec<HashMap<(Namespace, Arc<str>), Vec<SymbolId>>>,
+    root_index: HashMap<(Namespace, Arc<str>), Vec<SymbolHandle>>,
+}
+
+fn build_validation_lookup<'a>(
+    project: &ProjectAnalysis,
+    scope_indexes: &'a [ScopeIndex],
+) -> ValidationLookup<'a> {
+    let mut per_unit_root_index = vec![HashMap::new(); project.units.len()];
+    let mut root_index = HashMap::new();
+
+    for unit in &project.units {
+        for symbol in &unit.symbols {
+            if symbol.scope != unit.root_scope {
+                continue;
+            }
+            for &namespace in symbol.kind.namespaces() {
+                per_unit_root_index[unit.unit_id.as_usize()]
+                    .entry((namespace, Arc::clone(&symbol.name)))
+                    .or_insert_with(Vec::new)
+                    .push(symbol.id);
+                root_index
+                    .entry((namespace, Arc::clone(&symbol.name)))
+                    .or_insert_with(Vec::new)
+                    .push(SymbolHandle {
+                        unit: unit.unit_id,
+                        symbol: symbol.id,
+                    });
+            }
+        }
+    }
+
+    ValidationLookup {
+        scope_indexes,
+        per_unit_root_index,
+        root_index,
+    }
+}
+
+fn root_symbol_handle_matching<F>(
+    project: &ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
+    preferred_unit: &crate::UnitAnalysis,
+    namespace: Namespace,
+    name: &Arc<str>,
+    predicate: F,
+) -> Option<SymbolHandle>
+where
+    F: Fn(&crate::SymbolData) -> bool,
+{
+    let key = (namespace, Arc::clone(name));
+    if let Some(symbol_ids) =
+        lookup.per_unit_root_index[preferred_unit.unit_id.as_usize()].get(&key)
+    {
+        for &symbol_id in symbol_ids {
+            let handle = SymbolHandle {
+                unit: preferred_unit.unit_id,
+                symbol: symbol_id,
+            };
+            if predicate(project.units[handle.unit.as_usize()].symbol(handle.symbol)) {
+                return Some(handle);
+            }
+        }
+    }
+
+    lookup.root_index.get(&key).and_then(|handles| {
+        handles.iter().copied().find(|handle| {
+            (*handle).unit != preferred_unit.unit_id
+                && predicate(project.units[handle.unit.as_usize()].symbol(handle.symbol))
+        })
+    })
+}
+
 fn collect_global_names(project: &ProjectAnalysis) -> HashMap<Arc<str>, HashSet<Namespace>> {
     let mut out: HashMap<Arc<str>, HashSet<Namespace>> = HashMap::new();
     for unit in &project.units {
@@ -142,6 +217,7 @@ fn scope_descends_from(unit: &crate::UnitAnalysis, scope: ScopeId, ancestor: Sco
 
 fn resolve_class_symbol(
     project: &ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
     unit: &crate::UnitAnalysis,
     scope_index: &ScopeIndex,
     scope: ScopeId,
@@ -157,25 +233,14 @@ fn resolve_class_symbol(
         });
     }
 
-    for candidate_unit in &project.units {
-        for symbol in &candidate_unit.symbols {
-            if symbol.scope == candidate_unit.root_scope
-                && symbol.kind == SymbolKind::Class
-                && symbol.name.as_ref() == name.as_ref()
-            {
-                return Some(SymbolHandle {
-                    unit: candidate_unit.unit_id,
-                    symbol: symbol.id,
-                });
-            }
-        }
-    }
-
-    None
+    root_symbol_handle_matching(project, lookup, unit, Namespace::Type, name, |symbol| {
+        symbol.kind == SymbolKind::Class
+    })
 }
 
 fn resolve_interface_symbol(
     project: &ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
     unit: &crate::UnitAnalysis,
     scope_index: &ScopeIndex,
     scope: ScopeId,
@@ -191,21 +256,9 @@ fn resolve_interface_symbol(
         });
     }
 
-    for candidate_unit in &project.units {
-        for symbol in &candidate_unit.symbols {
-            if symbol.scope == candidate_unit.root_scope
-                && symbol.kind == SymbolKind::Interface
-                && symbol.name.as_ref() == name.as_ref()
-            {
-                return Some(SymbolHandle {
-                    unit: candidate_unit.unit_id,
-                    symbol: symbol.id,
-                });
-            }
-        }
-    }
-
-    None
+    root_symbol_handle_matching(project, lookup, unit, Namespace::Type, name, |symbol| {
+        symbol.kind == SymbolKind::Interface
+    })
 }
 
 fn is_valid_super_reference(unit: &crate::UnitAnalysis, scope: ScopeId) -> bool {
@@ -220,6 +273,7 @@ fn is_valid_super_reference(unit: &crate::UnitAnalysis, scope: ScopeId) -> bool 
 
 fn validate_super_constructor_calls(
     project: &ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
     unit: &crate::UnitAnalysis,
     scope_index: &ScopeIndex,
 ) -> Vec<Diagnostic> {
@@ -245,6 +299,7 @@ fn validate_super_constructor_calls(
 
         let superclass = resolve_class_symbol(
             project,
+            lookup,
             unit,
             scope_index,
             scope.id,
@@ -329,50 +384,33 @@ fn validate_super_constructor_calls(
 
 fn resolve_project_class_symbol<'a>(
     project: &'a ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
     preferred_unit: &'a crate::UnitAnalysis,
     name: &Arc<str>,
 ) -> Option<SymbolHandle> {
-    preferred_unit
-        .symbols
-        .iter()
-        .find(|symbol| {
-            symbol.scope == preferred_unit.root_scope
-                && symbol.kind == SymbolKind::Class
-                && symbol.name == *name
-        })
-        .map(|symbol| SymbolHandle {
-            unit: preferred_unit.unit_id,
-            symbol: symbol.id,
-        })
-        .or_else(|| {
-            project.units.iter().find_map(|candidate_unit| {
-                candidate_unit
-                    .symbols
-                    .iter()
-                    .find(|symbol| {
-                        symbol.scope == candidate_unit.root_scope
-                            && symbol.kind == SymbolKind::Class
-                            && symbol.name == *name
-                    })
-                    .map(|symbol| SymbolHandle {
-                        unit: candidate_unit.unit_id,
-                        symbol: symbol.id,
-                    })
-            })
-        })
+    root_symbol_handle_matching(
+        project,
+        lookup,
+        preferred_unit,
+        Namespace::Type,
+        name,
+        |symbol| symbol.kind == SymbolKind::Class,
+    )
 }
 
 fn direct_superclass_handle(
     project: &ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
     unit: &crate::UnitAnalysis,
     class_symbol: SymbolId,
 ) -> Option<SymbolHandle> {
     let inheritance = unit.class_superclass(class_symbol)?;
-    resolve_project_class_symbol(project, unit, &inheritance.superclass_name)
+    resolve_project_class_symbol(project, lookup, unit, &inheritance.superclass_name)
 }
 
 fn class_is_or_inherits_from(
     project: &ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
     descendant: SymbolHandle,
     ancestor: SymbolHandle,
 ) -> bool {
@@ -386,7 +424,7 @@ fn class_is_or_inherits_from(
             return true;
         }
         let unit = &project.units[current.unit.as_usize()];
-        let Some(next) = direct_superclass_handle(project, unit, current.symbol) else {
+        let Some(next) = direct_superclass_handle(project, lookup, unit, current.symbol) else {
             return false;
         };
         current = next;
@@ -395,6 +433,7 @@ fn class_is_or_inherits_from(
 
 fn class_member_visible_to(
     project: &ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
     caller_unit: &crate::UnitAnalysis,
     caller_scope: ScopeId,
     target_unit: &crate::UnitAnalysis,
@@ -412,6 +451,7 @@ fn class_member_visible_to(
             };
             class_is_or_inherits_from(
                 project,
+                lookup,
                 SymbolHandle {
                     unit: caller_unit.unit_id,
                     symbol: caller_class_symbol,
@@ -427,6 +467,7 @@ fn class_member_visible_to(
 
 fn resolve_class_member_in_hierarchy<'a>(
     project: &'a ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
     class_unit: &'a crate::UnitAnalysis,
     class_symbol: SymbolId,
     member_name: &str,
@@ -444,20 +485,28 @@ fn resolve_class_member_in_hierarchy<'a>(
         if let Some(member) = unit.class_member(current.symbol, member_name) {
             return Some((unit, member));
         }
-        current = direct_superclass_handle(project, unit, current.symbol)?;
+        current = direct_superclass_handle(project, lookup, unit, current.symbol)?;
     }
 }
 
 fn resolve_exposed_interface_handle(
     project: &ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
     owner: SymbolHandle,
     interface_name: &str,
 ) -> Option<SymbolHandle> {
-    resolve_exposed_interface_handle_inner(project, owner, interface_name, &mut HashSet::new())
+    resolve_exposed_interface_handle_inner(
+        project,
+        lookup,
+        owner,
+        interface_name,
+        &mut HashSet::new(),
+    )
 }
 
 fn resolve_exposed_interface_handle_inner(
     project: &ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
     owner: SymbolHandle,
     interface_name: &str,
     visited: &mut HashSet<SymbolHandle>,
@@ -473,8 +522,9 @@ fn resolve_exposed_interface_handle_inner(
     {
         let Some(interface_handle) = resolve_interface_symbol(
             project,
+            lookup,
             owner_unit,
-            &build_scope_index(owner_unit),
+            &lookup.scope_indexes[owner_unit.unit_id.as_usize()],
             owner_unit.symbol(owner.symbol).scope,
             &implemented.interface_name,
         ) else {
@@ -489,6 +539,7 @@ fn resolve_exposed_interface_handle_inner(
         }
         if let Some(found) = resolve_exposed_interface_handle_inner(
             project,
+            lookup,
             interface_handle,
             interface_name,
             visited,
@@ -498,10 +549,12 @@ fn resolve_exposed_interface_handle_inner(
     }
 
     if owner_unit.symbol(owner.symbol).kind == SymbolKind::Class
-        && let Some(superclass) = direct_superclass_handle(project, owner_unit, owner.symbol)
+        && let Some(superclass) =
+            direct_superclass_handle(project, lookup, owner_unit, owner.symbol)
     {
         return resolve_exposed_interface_handle_inner(
             project,
+            lookup,
             superclass,
             interface_name,
             visited,
@@ -513,6 +566,7 @@ fn resolve_exposed_interface_handle_inner(
 
 fn resolve_interface_member_path<'a>(
     project: &'a ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
     interface_handle: SymbolHandle,
     path: &'a [crate::FieldAccessSegment],
 ) -> Option<(&'a crate::UnitAnalysis, &'a crate::ClassMemberData)> {
@@ -523,12 +577,14 @@ fn resolve_interface_member_path<'a>(
             .class_member(interface_handle.symbol, first.name.as_ref())
             .map(|member| (interface_unit, member));
     }
-    let nested = resolve_exposed_interface_handle(project, interface_handle, first.name.as_ref())?;
-    resolve_interface_member_path(project, nested, rest)
+    let nested =
+        resolve_exposed_interface_handle(project, lookup, interface_handle, first.name.as_ref())?;
+    resolve_interface_member_path(project, lookup, nested, rest)
 }
 
 fn resolve_qualified_interface_method_context<'a>(
     project: &'a ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
     unit: &'a crate::UnitAnalysis,
     scope: ScopeId,
 ) -> Option<(&'a crate::UnitAnalysis, &'a crate::ClassMemberData)> {
@@ -538,6 +594,7 @@ fn resolve_qualified_interface_method_context<'a>(
     let class_symbol = enclosing_class_owner(unit, scope)?;
     let interface_handle = resolve_exposed_interface_handle(
         project,
+        lookup,
         SymbolHandle {
             unit: unit.unit_id,
             symbol: class_symbol,
@@ -564,6 +621,7 @@ fn inject_symbol_into_scope_index(
 
 fn qualified_interface_method_scope_symbol_specs(
     project: &ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
     unit: &crate::UnitAnalysis,
 ) -> Vec<(ScopeId, crate::SymbolData)> {
     let method_scopes: Vec<_> = unit
@@ -576,7 +634,8 @@ fn qualified_interface_method_scope_symbol_specs(
     let mut next_symbol_id = unit.symbols.len() as u32;
 
     for scope_id in method_scopes {
-        let Some((_, member)) = resolve_qualified_interface_method_context(project, unit, scope_id)
+        let Some((_, member)) =
+            resolve_qualified_interface_method_context(project, lookup, unit, scope_id)
         else {
             continue;
         };
@@ -651,6 +710,7 @@ fn qualified_interface_method_scope_symbol_specs(
 
 fn loop_where_scope_symbol_specs(
     project: &ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
     unit: &crate::UnitAnalysis,
     scope_indexes: &[ScopeIndex],
 ) -> Vec<(ScopeId, crate::SymbolData)> {
@@ -663,6 +723,7 @@ fn loop_where_scope_symbol_specs(
             |scope: ScopeId, fields_unit: &crate::UnitAnalysis, structure_id: StructureId| {
                 for field in structure_field_infos_project(
                     project,
+                    lookup,
                     scope_indexes,
                     fields_unit,
                     scope,
@@ -710,14 +771,14 @@ fn loop_where_scope_symbol_specs(
             };
 
         if let Some((fields_unit, structure_id)) =
-            resolve_loop_where_source_structure(project, unit, scope_indexes, context)
+            resolve_loop_where_source_structure(project, lookup, unit, scope_indexes, context)
         {
             push_fields(context.scope, fields_unit, structure_id);
         }
-        if let Some((fields_unit, structure_id)) = context
-            .target_access
-            .as_ref()
-            .and_then(|access| resolve_field_access_structure(project, unit, scope_indexes, access))
+        if let Some((fields_unit, structure_id)) =
+            context.target_access.as_ref().and_then(|access| {
+                resolve_field_access_structure(project, lookup, unit, scope_indexes, access)
+            })
         {
             push_fields(context.scope, fields_unit, structure_id);
         }
@@ -728,6 +789,7 @@ fn loop_where_scope_symbol_specs(
 
 fn resolve_class_type_symbol_in_hierarchy(
     project: &ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
     class_unit: &crate::UnitAnalysis,
     class_symbol: SymbolId,
     type_name: &str,
@@ -754,12 +816,13 @@ fn resolve_class_type_symbol_in_hierarchy(
                 symbol: symbol_id,
             });
         }
-        current = direct_superclass_handle(project, unit, current.symbol)?;
+        current = direct_superclass_handle(project, lookup, unit, current.symbol)?;
     }
 }
 
 fn resolve_class_selector_base<'a>(
     project: &'a ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
     unit: &crate::UnitAnalysis,
     scope_index: &ScopeIndex,
     access: &crate::FieldAccess,
@@ -779,6 +842,7 @@ fn resolve_class_selector_base<'a>(
     }
     let class_handle = resolve_class_symbol(
         project,
+        lookup,
         unit,
         scope_index,
         access.scope,
@@ -934,26 +998,23 @@ fn method_parameter_type_fact(parameter: &crate::ClassMemberParameterData) -> Ty
 
 fn resolve_type_owner_symbol(
     project: &ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
     preferred_unit: &crate::UnitAnalysis,
-    name: &str,
+    name: &Arc<str>,
 ) -> Option<SymbolHandle> {
-    for unit in std::iter::once(preferred_unit).chain(project.units.iter()) {
-        if let Some(symbol) = unit.symbols.iter().find(|symbol| {
-            symbol.scope == unit.root_scope
-                && symbol.name.as_ref().eq_ignore_ascii_case(name)
-                && matches!(symbol.kind, SymbolKind::Class | SymbolKind::Interface)
-        }) {
-            return Some(SymbolHandle {
-                unit: unit.unit_id,
-                symbol: symbol.id,
-            });
-        }
-    }
-    None
+    root_symbol_handle_matching(
+        project,
+        lookup,
+        preferred_unit,
+        Namespace::Type,
+        name,
+        |symbol| matches!(symbol.kind, SymbolKind::Class | SymbolKind::Interface),
+    )
 }
 
 fn resolve_method_target_handle(
     project: &ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
     unit: &crate::UnitAnalysis,
     scope_index: &ScopeIndex,
     scope: ScopeId,
@@ -961,7 +1022,7 @@ fn resolve_method_target_handle(
 ) -> Option<SymbolHandle> {
     match target {
         NamedArgumentTarget::Constructor { type_name } => {
-            resolve_type_owner_symbol(project, unit, type_name.as_ref())
+            resolve_type_owner_symbol(project, lookup, unit, type_name)
         }
         NamedArgumentTarget::ImplicitMethod { .. } => {
             enclosing_class_owner(unit, scope).map(|symbol| SymbolHandle {
@@ -974,11 +1035,11 @@ fn resolve_method_target_handle(
             base_name,
             ..
         } => match base_namespace {
-            Namespace::Type => resolve_type_owner_symbol(project, unit, base_name.as_ref()),
+            Namespace::Type => resolve_type_owner_symbol(project, lookup, unit, base_name),
             Namespace::Value if base_name.as_ref().eq_ignore_ascii_case("super") => {
                 let class_symbol = enclosing_class_owner(unit, scope)?;
                 let inheritance = unit.class_superclass(class_symbol)?;
-                resolve_type_owner_symbol(project, unit, inheritance.superclass_name.as_ref())
+                resolve_type_owner_symbol(project, lookup, unit, &inheritance.superclass_name)
             }
             Namespace::Value => {
                 let symbol_id = resolve_symbol_in_scope_chain(
@@ -992,7 +1053,7 @@ fn resolve_method_target_handle(
                 if !declared_type.is_ref || declared_type.namespace != Namespace::Type {
                     return None;
                 }
-                resolve_type_owner_symbol(project, unit, declared_type.base_name.as_ref())
+                resolve_type_owner_symbol(project, lookup, unit, &declared_type.base_name)
             }
             Namespace::Routine => None,
         },
@@ -1002,12 +1063,14 @@ fn resolve_method_target_handle(
 
 fn resolve_call_target_member<'a>(
     project: &'a ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
     unit: &'a crate::UnitAnalysis,
     scope_index: &ScopeIndex,
     call_site: &crate::CallSiteData,
 ) -> Option<(&'a crate::UnitAnalysis, &'a crate::ClassMemberData)> {
     let handle = resolve_method_target_handle(
         project,
+        lookup,
         unit,
         scope_index,
         call_site.scope,
@@ -1025,30 +1088,22 @@ fn resolve_call_target_member<'a>(
             .class_member(handle.symbol, method_name)
             .map(|member| (target_unit, member));
     }
-    resolve_class_member_in_hierarchy(project, target_unit, handle.symbol, method_name).or_else(
-        || {
+    resolve_class_member_in_hierarchy(project, lookup, target_unit, handle.symbol, method_name)
+        .or_else(|| {
             target_unit
                 .class_member(handle.symbol, method_name)
                 .map(|member| (target_unit, member))
-        },
-    )
+        })
 }
 
-fn workspace_root_defines_type_name(project: &ProjectAnalysis, name: &str) -> bool {
-    project.units.iter().any(|unit| {
-        unit.symbols.iter().any(|symbol| {
-            symbol.scope == unit.root_scope
-                && matches!(
-                    symbol.kind,
-                    SymbolKind::TypeDef | SymbolKind::Class | SymbolKind::Interface
-                )
-                && symbol.name.as_ref().eq_ignore_ascii_case(name)
-        })
-    })
+fn workspace_root_defines_type_name(lookup: &ValidationLookup<'_>, name: &Arc<str>) -> bool {
+    lookup
+        .root_index
+        .contains_key(&(Namespace::Type, Arc::clone(name)))
 }
 
 fn open_sql_source_has_workspace_type_definition(
-    project: &ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
     unit: &crate::UnitAnalysis,
     scope_index: &ScopeIndex,
     query_scope: ScopeId,
@@ -1059,11 +1114,11 @@ fn open_sql_source_has_workspace_type_definition(
     {
         return true;
     }
-    workspace_root_defines_type_name(project, name.as_ref())
+    workspace_root_defines_type_name(lookup, name)
 }
 
 fn validate_open_sql_sources(
-    project: &ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
     unit: &crate::UnitAnalysis,
     scope_index: &ScopeIndex,
 ) -> Vec<Diagnostic> {
@@ -1081,7 +1136,7 @@ fn validate_open_sql_sources(
             continue;
         };
         if open_sql_source_has_workspace_type_definition(
-            project,
+            lookup,
             unit,
             scope_index,
             query_scope,
@@ -1116,6 +1171,7 @@ fn symbol_type_clause_suggests_internal_table(symbol: &crate::SymbolData) -> boo
 
 fn resolve_type_like_symbol_handle(
     project: &ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
     unit: &crate::UnitAnalysis,
     scope_indexes: &[ScopeIndex],
     scope: ScopeId,
@@ -1141,18 +1197,15 @@ fn resolve_type_like_symbol_handle(
             });
         }
 
-        for candidate_unit in &project.units {
-            for symbol in &candidate_unit.symbols {
-                if symbol.scope == candidate_unit.root_scope
-                    && symbol.name.as_ref() == type_ref.base_name.as_ref()
-                    && symbol.kind.namespaces().contains(&namespace)
-                {
-                    return Some(SymbolHandle {
-                        unit: candidate_unit.unit_id,
-                        symbol: symbol.id,
-                    });
-                }
-            }
+        if let Some(handle) = root_symbol_handle_matching(
+            project,
+            lookup,
+            unit,
+            namespace,
+            &type_ref.base_name,
+            |symbol| symbol.kind.namespaces().contains(&namespace),
+        ) {
+            return Some(handle);
         }
     }
 
@@ -1199,6 +1252,7 @@ fn structure_has_proxy_include_fields(
 
 fn included_structure_for_proxy_field<'a>(
     project: &'a ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
     scope_indexes: &[ScopeIndex],
     current_unit: &'a crate::UnitAnalysis,
     scope: ScopeId,
@@ -1212,6 +1266,7 @@ fn included_structure_for_proxy_field<'a>(
     };
     let handle = resolve_type_like_symbol_handle(
         project,
+        lookup,
         current_unit,
         scope_indexes,
         lookup_scope,
@@ -1220,6 +1275,7 @@ fn included_structure_for_proxy_field<'a>(
     let resolved_unit = &project.units[handle.unit.as_usize()];
     resolve_symbol_structure_project(
         project,
+        lookup,
         resolved_unit,
         scope_indexes,
         lookup_scope,
@@ -1229,6 +1285,7 @@ fn included_structure_for_proxy_field<'a>(
 
 fn resolve_structure_field_info_project<'a>(
     project: &'a ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
     scope_indexes: &[ScopeIndex],
     current_unit: &'a crate::UnitAnalysis,
     scope: ScopeId,
@@ -1237,6 +1294,7 @@ fn resolve_structure_field_info_project<'a>(
 ) -> Option<crate::StructureFieldInfo> {
     fn inner<'a>(
         project: &'a ProjectAnalysis,
+        lookup: &ValidationLookup<'_>,
         scope_indexes: &[ScopeIndex],
         current_unit: &'a crate::UnitAnalysis,
         scope: ScopeId,
@@ -1264,6 +1322,7 @@ fn resolve_structure_field_info_project<'a>(
             }
             let Some((included_unit, included_structure)) = included_structure_for_proxy_field(
                 project,
+                lookup,
                 scope_indexes,
                 current_unit,
                 scope,
@@ -1278,6 +1337,7 @@ fn resolve_structure_field_info_project<'a>(
             };
             if let Some(info) = inner(
                 project,
+                lookup,
                 scope_indexes,
                 included_unit,
                 nested_scope,
@@ -1294,6 +1354,7 @@ fn resolve_structure_field_info_project<'a>(
     let mut seen = HashSet::new();
     inner(
         project,
+        lookup,
         scope_indexes,
         current_unit,
         scope,
@@ -1305,6 +1366,7 @@ fn resolve_structure_field_info_project<'a>(
 
 fn structure_field_infos_project(
     project: &ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
     scope_indexes: &[ScopeIndex],
     current_unit: &crate::UnitAnalysis,
     scope: ScopeId,
@@ -1312,6 +1374,7 @@ fn structure_field_infos_project(
 ) -> Vec<crate::StructureFieldInfo> {
     fn collect(
         project: &ProjectAnalysis,
+        lookup: &ValidationLookup<'_>,
         scope_indexes: &[ScopeIndex],
         current_unit: &crate::UnitAnalysis,
         scope: ScopeId,
@@ -1336,6 +1399,7 @@ fn structure_field_infos_project(
             }
             let Some((included_unit, included_structure)) = included_structure_for_proxy_field(
                 project,
+                lookup,
                 scope_indexes,
                 current_unit,
                 scope,
@@ -1350,6 +1414,7 @@ fn structure_field_infos_project(
             };
             collect(
                 project,
+                lookup,
                 scope_indexes,
                 included_unit,
                 nested_scope,
@@ -1366,6 +1431,7 @@ fn structure_field_infos_project(
     let mut seen_fields = HashSet::new();
     collect(
         project,
+        lookup,
         scope_indexes,
         current_unit,
         scope,
@@ -1379,6 +1445,7 @@ fn structure_field_infos_project(
 
 fn resolve_symbol_structure_project<'a>(
     project: &'a ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
     unit: &'a crate::UnitAnalysis,
     scope_indexes: &[ScopeIndex],
     scope: ScopeId,
@@ -1393,8 +1460,14 @@ fn resolve_symbol_structure_project<'a>(
             return Some((current_unit, structure_id));
         }
         let type_ref = symbol.declared_type.as_ref()?;
-        let handle =
-            resolve_type_like_symbol_handle(project, current_unit, scope_indexes, scope, type_ref)?;
+        let handle = resolve_type_like_symbol_handle(
+            project,
+            lookup,
+            current_unit,
+            scope_indexes,
+            scope,
+            type_ref,
+        )?;
         if !seen.insert((handle.unit.0, handle.symbol.0)) {
             return None;
         }
@@ -1406,6 +1479,7 @@ fn resolve_symbol_structure_project<'a>(
 
 fn resolve_loop_where_source_structure<'a>(
     project: &'a ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
     unit: &'a crate::UnitAnalysis,
     scope_indexes: &[ScopeIndex],
     context: &LoopWhereFieldContext,
@@ -1423,6 +1497,7 @@ fn resolve_loop_where_source_structure<'a>(
     )?;
     let (current_unit, mut current_structure) = resolve_symbol_structure_project(
         project,
+        lookup,
         unit,
         scope_indexes,
         context.scope,
@@ -1438,6 +1513,7 @@ fn resolve_loop_where_source_structure<'a>(
         }
         let field = resolve_structure_field_info_project(
             project,
+            lookup,
             scope_indexes,
             current_unit,
             context.scope,
@@ -1448,6 +1524,7 @@ fn resolve_loop_where_source_structure<'a>(
             if let Some(type_ref) = field.type_ref.as_ref() {
                 let handle = resolve_type_like_symbol_handle(
                     project,
+                    lookup,
                     current_unit,
                     scope_indexes,
                     context.scope,
@@ -1456,6 +1533,7 @@ fn resolve_loop_where_source_structure<'a>(
                 let resolved_unit = &project.units[handle.unit.as_usize()];
                 return resolve_symbol_structure_project(
                     project,
+                    lookup,
                     resolved_unit,
                     scope_indexes,
                     context.scope,
@@ -1477,6 +1555,7 @@ fn resolve_loop_where_source_structure<'a>(
 
 fn resolve_field_access_structure<'a>(
     project: &'a ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
     unit: &'a crate::UnitAnalysis,
     scope_indexes: &[ScopeIndex],
     access: &crate::FieldAccess,
@@ -1485,6 +1564,7 @@ fn resolve_field_access_structure<'a>(
     let base_symbol_id = resolve_field_access_base_symbol(unit, scope_index, access)?;
     let (current_unit, mut current_structure) = resolve_symbol_structure_project(
         project,
+        lookup,
         unit,
         scope_indexes,
         access.scope,
@@ -1501,6 +1581,7 @@ fn resolve_field_access_structure<'a>(
         }
         let field = resolve_structure_field_info_project(
             project,
+            lookup,
             scope_indexes,
             current_unit,
             access.scope,
@@ -1518,6 +1599,7 @@ fn resolve_field_access_structure<'a>(
 
 fn loop_where_reference_matches_source_field(
     project: &ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
     unit: &crate::UnitAnalysis,
     scope_indexes: &[ScopeIndex],
     reference: &crate::ReferenceData,
@@ -1529,30 +1611,43 @@ fn loop_where_reference_matches_source_field(
         context.range.start <= reference.range.start
             && reference.range.end <= context.range.end
             && {
-                let source_matches =
-                    resolve_loop_where_source_structure(project, unit, scope_indexes, context)
-                        .is_some_and(|(structure_unit, structure_id)| {
-                            resolve_structure_field_info_project(
-                                project,
-                                scope_indexes,
-                                structure_unit,
-                                context.scope,
-                                structure_id,
-                                reference.name.as_ref(),
-                            )
-                            .is_some()
-                                || structure_has_proxy_include_fields(structure_unit, structure_id)
-                        });
+                let source_matches = resolve_loop_where_source_structure(
+                    project,
+                    lookup,
+                    unit,
+                    scope_indexes,
+                    context,
+                )
+                .is_some_and(|(structure_unit, structure_id)| {
+                    resolve_structure_field_info_project(
+                        project,
+                        lookup,
+                        scope_indexes,
+                        structure_unit,
+                        context.scope,
+                        structure_id,
+                        reference.name.as_ref(),
+                    )
+                    .is_some()
+                        || structure_has_proxy_include_fields(structure_unit, structure_id)
+                });
                 source_matches
                     || context
                         .target_access
                         .as_ref()
                         .and_then(|access| {
-                            resolve_field_access_structure(project, unit, scope_indexes, access)
+                            resolve_field_access_structure(
+                                project,
+                                lookup,
+                                unit,
+                                scope_indexes,
+                                access,
+                            )
                         })
                         .is_some_and(|(structure_unit, structure_id)| {
                             resolve_structure_field_info_project(
                                 project,
+                                lookup,
                                 scope_indexes,
                                 structure_unit,
                                 context.scope,
@@ -1644,6 +1739,7 @@ fn reference_depends_on_unresolved_field_access_base(
 
 fn symbol_is_internal_table(
     project: &ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
     unit: &crate::UnitAnalysis,
     scope_indexes: &[ScopeIndex],
     symbol: &crate::SymbolData,
@@ -1660,9 +1756,14 @@ fn symbol_is_internal_table(
         return false;
     }
 
-    let Some(handle) =
-        resolve_type_like_symbol_handle(project, unit, scope_indexes, symbol.scope, type_ref)
-    else {
+    let Some(handle) = resolve_type_like_symbol_handle(
+        project,
+        lookup,
+        unit,
+        scope_indexes,
+        symbol.scope,
+        type_ref,
+    ) else {
         return false;
     };
     if !seen.insert((handle.unit.0, handle.symbol.0)) {
@@ -1671,7 +1772,14 @@ fn symbol_is_internal_table(
 
     let resolved_unit = &project.units[handle.unit.as_usize()];
     let resolved_symbol = resolved_unit.symbol(handle.symbol);
-    symbol_is_internal_table(project, resolved_unit, scope_indexes, resolved_symbol, seen)
+    symbol_is_internal_table(
+        project,
+        lookup,
+        resolved_unit,
+        scope_indexes,
+        resolved_symbol,
+        seen,
+    )
 }
 
 fn symbol_is_structure_like_for_into(symbol: &crate::SymbolData) -> bool {
@@ -1708,6 +1816,7 @@ fn into_target_identifier_range(
 
 fn validate_open_sql_into_targets(
     project: &ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
     unit: &crate::UnitAnalysis,
     scope_indexes: &[ScopeIndex],
 ) -> Vec<Diagnostic> {
@@ -1727,7 +1836,14 @@ fn validate_open_sql_into_targets(
         let diag_range = into_target_identifier_range(unit, target, name);
 
         if target.is_table
-            && !symbol_is_internal_table(project, unit, scope_indexes, symbol, &mut HashSet::new())
+            && !symbol_is_internal_table(
+                project,
+                lookup,
+                unit,
+                scope_indexes,
+                symbol,
+                &mut HashSet::new(),
+            )
         {
             out.push(Diagnostic {
                 kind: DiagnosticKind::InvalidOpenSqlIntoTarget,
@@ -1767,6 +1883,7 @@ pub(crate) fn validate_project_with_scope_indexes(
     project: &mut ProjectAnalysis,
     scope_indexes: &[ScopeIndex],
 ) {
+    let lookup = build_validation_lookup(project, scope_indexes);
     let global_names = collect_global_names(project);
     let form_signatures: HashMap<(u32, u32), Vec<FormParameterData>> = project
         .units
@@ -1786,8 +1903,13 @@ pub(crate) fn validate_project_with_scope_indexes(
         let mut scope_index = scope_indexes[unit_idx].clone();
         let synthetic_symbols = {
             let unit = &project.units[unit_idx];
-            let mut symbols = qualified_interface_method_scope_symbol_specs(project, unit);
-            symbols.extend(loop_where_scope_symbol_specs(project, unit, scope_indexes));
+            let mut symbols = qualified_interface_method_scope_symbol_specs(project, &lookup, unit);
+            symbols.extend(loop_where_scope_symbol_specs(
+                project,
+                &lookup,
+                unit,
+                scope_indexes,
+            ));
             symbols
         };
         {
@@ -1841,8 +1963,12 @@ pub(crate) fn validate_project_with_scope_indexes(
             }
         }
         let scope_names = build_scope_names(&project.units[unit_idx]);
-        let constructor_diagnostics =
-            validate_super_constructor_calls(project, &project.units[unit_idx], &scope_index);
+        let constructor_diagnostics = validate_super_constructor_calls(
+            project,
+            &lookup,
+            &project.units[unit_idx],
+            &scope_index,
+        );
         let field_access_bases: Vec<_> = project.units[unit_idx]
             .field_accesses
             .iter()
@@ -1853,6 +1979,7 @@ pub(crate) fn validate_project_with_scope_indexes(
                     base_symbol_id,
                     resolve_class_selector_base(
                         project,
+                        &lookup,
                         unit,
                         &scope_index,
                         access,
@@ -1890,7 +2017,13 @@ pub(crate) fn validate_project_with_scope_indexes(
             if reference.resolution.is_some() {
                 continue;
             }
-            if loop_where_reference_matches_source_field(project, unit, scope_indexes, reference) {
+            if loop_where_reference_matches_source_field(
+                project,
+                &lookup,
+                unit,
+                scope_indexes,
+                reference,
+            ) {
                 continue;
             }
             if reference_depends_on_unresolved_field_access_base(unit, &scope_index, reference) {
@@ -1988,12 +2121,14 @@ pub(crate) fn validate_project_with_scope_indexes(
 
                     let Some((member_unit, member)) = resolve_class_member_in_hierarchy(
                         project,
+                        &lookup,
                         unit,
                         base_symbol_id,
                         step.name.as_ref(),
                     ) else {
                         if let Some(type_symbol) = resolve_class_type_symbol_in_hierarchy(
                             project,
+                            &lookup,
                             unit,
                             base_symbol_id,
                             step.name.as_ref(),
@@ -2033,6 +2168,7 @@ pub(crate) fn validate_project_with_scope_indexes(
                     if !member.is_static
                         || !class_member_visible_to(
                             project,
+                            &lookup,
                             unit,
                             access.scope,
                             member_unit,
@@ -2085,11 +2221,13 @@ pub(crate) fn validate_project_with_scope_indexes(
                     };
                     if let Some(interface_handle) = resolve_exposed_interface_handle(
                         project,
+                        &lookup,
                         class_handle,
                         field_path[0].name.as_ref(),
                     ) {
                         if resolve_interface_member_path(
                             project,
+                            &lookup,
                             interface_handle,
                             &field_path[1..],
                         )
@@ -2104,6 +2242,7 @@ pub(crate) fn validate_project_with_scope_indexes(
                         let holder = structure_holder.as_deref().unwrap_or("?");
                         let Some(field) = resolve_structure_field_info_project(
                             project,
+                            &lookup,
                             scope_indexes,
                             structure_unit,
                             access.scope,
@@ -2141,6 +2280,7 @@ pub(crate) fn validate_project_with_scope_indexes(
 
                     let Some((member_unit, member)) = resolve_class_member_in_hierarchy(
                         project,
+                        &lookup,
                         class_unit,
                         class_symbol_id,
                         step.name.as_ref(),
@@ -2158,6 +2298,7 @@ pub(crate) fn validate_project_with_scope_indexes(
                     if (requires_static && !member.is_static)
                         || !class_member_visible_to(
                             project,
+                            &lookup,
                             unit,
                             access.scope,
                             member_unit,
@@ -2239,6 +2380,7 @@ pub(crate) fn validate_project_with_scope_indexes(
                 };
                 let Some(field) = resolve_structure_field_info_project(
                     project,
+                    &lookup,
                     scope_indexes,
                     unit,
                     access.scope,
@@ -2288,7 +2430,7 @@ pub(crate) fn validate_project_with_scope_indexes(
 
         for call_site in &unit.call_sites {
             let Some((target_unit, member)) =
-                resolve_call_target_member(project, unit, &scope_index, call_site)
+                resolve_call_target_member(project, &lookup, unit, &scope_index, call_site)
             else {
                 continue;
             };
@@ -2467,8 +2609,13 @@ pub(crate) fn validate_project_with_scope_indexes(
             });
         }
 
-        unit_diagnostics.extend(validate_open_sql_sources(project, unit, &scope_index));
-        unit_diagnostics.extend(validate_open_sql_into_targets(project, unit, scope_indexes));
+        unit_diagnostics.extend(validate_open_sql_sources(&lookup, unit, &scope_index));
+        unit_diagnostics.extend(validate_open_sql_into_targets(
+            project,
+            &lookup,
+            unit,
+            scope_indexes,
+        ));
         unit_diagnostics.extend(constructor_diagnostics);
 
         {

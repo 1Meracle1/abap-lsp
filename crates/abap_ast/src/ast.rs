@@ -358,7 +358,10 @@ ast_node!(
     SyntaxKind::ConstructorNamedAssignment
 );
 ast_node!(ConstructorBaseClause, SyntaxKind::ConstructorBaseClause);
-ast_node!(ConstructorLinesOfClause, SyntaxKind::ConstructorLinesOfClause);
+ast_node!(
+    ConstructorLinesOfClause,
+    SyntaxKind::ConstructorLinesOfClause
+);
 ast_node!(AliasesStmt, SyntaxKind::AliasesStmt);
 ast_node!(AliasEntry, SyntaxKind::AliasEntry);
 ast_node!(AliasName, SyntaxKind::AliasName);
@@ -1008,7 +1011,9 @@ impl<'a> LetExpr<'a> {
     pub fn bindings(
         self,
     ) -> impl DoubleEndedIterator<Item = ConstructorLetBinding<'a>> + Clone + 'a {
-        self.syntax.children().filter_map(ConstructorLetBinding::cast)
+        self.syntax
+            .children()
+            .filter_map(ConstructorLetBinding::cast)
     }
 
     pub fn result_children(self, source: &str) -> Vec<SyntaxNodeRef<'a>> {
@@ -1063,37 +1068,49 @@ impl<'a> CallArgList<'a> {
     pub fn constructor_when_clauses(
         self,
     ) -> impl DoubleEndedIterator<Item = ConstructorWhenClause<'a>> + Clone + 'a {
-        self.syntax.children().filter_map(ConstructorWhenClause::cast)
+        self.syntax
+            .children()
+            .filter_map(ConstructorWhenClause::cast)
     }
 
     pub fn constructor_else_clauses(
         self,
     ) -> impl DoubleEndedIterator<Item = ConstructorElseClause<'a>> + Clone + 'a {
-        self.syntax.children().filter_map(ConstructorElseClause::cast)
+        self.syntax
+            .children()
+            .filter_map(ConstructorElseClause::cast)
     }
 
     pub fn constructor_for_clauses(
         self,
     ) -> impl DoubleEndedIterator<Item = ConstructorForClause<'a>> + Clone + 'a {
-        self.syntax.children().filter_map(ConstructorForClause::cast)
+        self.syntax
+            .children()
+            .filter_map(ConstructorForClause::cast)
     }
 
     pub fn constructor_init_clauses(
         self,
     ) -> impl DoubleEndedIterator<Item = ConstructorInitClause<'a>> + Clone + 'a {
-        self.syntax.children().filter_map(ConstructorInitClause::cast)
+        self.syntax
+            .children()
+            .filter_map(ConstructorInitClause::cast)
     }
 
     pub fn constructor_next_clauses(
         self,
     ) -> impl DoubleEndedIterator<Item = ConstructorNextClause<'a>> + Clone + 'a {
-        self.syntax.children().filter_map(ConstructorNextClause::cast)
+        self.syntax
+            .children()
+            .filter_map(ConstructorNextClause::cast)
     }
 
     pub fn constructor_named_assignments(
         self,
     ) -> impl DoubleEndedIterator<Item = ConstructorNamedAssignment<'a>> + Clone + 'a {
-        self.syntax.children().filter_map(ConstructorNamedAssignment::cast)
+        self.syntax
+            .children()
+            .filter_map(ConstructorNamedAssignment::cast)
     }
 
     pub fn let_exprs(self) -> impl DoubleEndedIterator<Item = LetExpr<'a>> + Clone + 'a {
@@ -1141,21 +1158,26 @@ impl<'a> ConstructorElseClause<'a> {
 
 impl<'a> ConstructorForClause<'a> {
     pub fn iterator_name_token(self, source: &str) -> Option<SyntaxNodeRef<'a>> {
-        self.syntax.children_by_kind(SyntaxKind::Token).find(|token| {
-            token.text(source).is_some_and(|text| {
-                !matches!(
-                    text.to_ascii_uppercase().as_str(),
-                    "FOR" | "IN" | "WHERE" | "THEN" | "UNTIL" | "WHILE" | "="
-                )
+        self.syntax
+            .children_by_kind(SyntaxKind::Token)
+            .find(|token| {
+                token.text(source).is_some_and(|text| {
+                    !matches!(
+                        text.to_ascii_uppercase().as_str(),
+                        "FOR" | "IN" | "WHERE" | "THEN" | "UNTIL" | "WHILE" | "="
+                    )
+                })
             })
-        })
     }
 
     pub fn is_in_form(self, source: &str) -> bool {
-        self.syntax.children_by_kind(SyntaxKind::Token).any(|token| {
-            token.text(source)
-                .is_some_and(|text| text.eq_ignore_ascii_case("in"))
-        })
+        self.syntax
+            .children_by_kind(SyntaxKind::Token)
+            .any(|token| {
+                token
+                    .text(source)
+                    .is_some_and(|text| text.eq_ignore_ascii_case("in"))
+            })
     }
 
     pub fn source_expr(self, source: &str) -> Option<SyntaxNodeRef<'a>> {
@@ -1174,28 +1196,40 @@ impl<'a> ConstructorForClause<'a> {
         if self.is_in_form(source) {
             return None;
         }
-        let has_then = self.syntax.children_by_kind(SyntaxKind::Token).any(|token| {
-            token.text(source)
-                .is_some_and(|text| text.eq_ignore_ascii_case("then"))
-        });
-        has_then.then(|| self.syntax.non_token_children().nth(1)).flatten()
+        let has_then = self
+            .syntax
+            .children_by_kind(SyntaxKind::Token)
+            .any(|token| {
+                token
+                    .text(source)
+                    .is_some_and(|text| text.eq_ignore_ascii_case("then"))
+            });
+        has_then
+            .then(|| self.syntax.non_token_children().nth(1))
+            .flatten()
     }
 
     pub fn condition_expr(self, source: &str) -> Option<SyntaxNodeRef<'a>> {
         if self.is_in_form(source) {
             return None;
         }
-        let has_then = self.syntax.children_by_kind(SyntaxKind::Token).any(|token| {
-            token.text(source)
-                .is_some_and(|text| text.eq_ignore_ascii_case("then"))
-        });
+        let has_then = self
+            .syntax
+            .children_by_kind(SyntaxKind::Token)
+            .any(|token| {
+                token
+                    .text(source)
+                    .is_some_and(|text| text.eq_ignore_ascii_case("then"))
+            });
         self.syntax
             .non_token_children()
             .nth(if has_then { 2 } else { 1 })
     }
 
     pub fn where_clause(self) -> Option<ConstructorWhereClause<'a>> {
-        self.syntax.children().find_map(ConstructorWhereClause::cast)
+        self.syntax
+            .children()
+            .find_map(ConstructorWhereClause::cast)
     }
 
     pub fn body_children(self, source: &str) -> Vec<SyntaxNodeRef<'a>> {
@@ -1219,7 +1253,9 @@ impl<'a> ConstructorInitClause<'a> {
     pub fn assignments(
         self,
     ) -> impl DoubleEndedIterator<Item = ConstructorNamedAssignment<'a>> + Clone + 'a {
-        self.syntax.children().filter_map(ConstructorNamedAssignment::cast)
+        self.syntax
+            .children()
+            .filter_map(ConstructorNamedAssignment::cast)
     }
 }
 
@@ -1227,7 +1263,9 @@ impl<'a> ConstructorNextClause<'a> {
     pub fn assignments(
         self,
     ) -> impl DoubleEndedIterator<Item = ConstructorNamedAssignment<'a>> + Clone + 'a {
-        self.syntax.children().filter_map(ConstructorNamedAssignment::cast)
+        self.syntax
+            .children()
+            .filter_map(ConstructorNamedAssignment::cast)
     }
 }
 
@@ -2193,7 +2231,9 @@ impl<'a> DeleteStmt<'a> {
         let mut saw_where = false;
         for child in self.syntax.children() {
             if child.kind() == SyntaxKind::Token
-                && child.text(source).is_some_and(|text| text.eq_ignore_ascii_case("where"))
+                && child
+                    .text(source)
+                    .is_some_and(|text| text.eq_ignore_ascii_case("where"))
             {
                 saw_where = true;
                 continue;
@@ -2210,7 +2250,9 @@ impl<'a> SortStmt<'a> {
     pub fn source(self, source: &str) -> Option<SyntaxNodeRef<'a>> {
         for child in self.syntax.children() {
             if child.kind() == SyntaxKind::Token
-                && child.text(source).is_some_and(|text| text.eq_ignore_ascii_case("by"))
+                && child
+                    .text(source)
+                    .is_some_and(|text| text.eq_ignore_ascii_case("by"))
             {
                 break;
             }
@@ -2226,7 +2268,9 @@ impl<'a> SortStmt<'a> {
         let mut operands = Vec::new();
         for child in self.syntax.children() {
             if child.kind() == SyntaxKind::Token
-                && child.text(source).is_some_and(|text| text.eq_ignore_ascii_case("by"))
+                && child
+                    .text(source)
+                    .is_some_and(|text| text.eq_ignore_ascii_case("by"))
             {
                 saw_by = true;
                 continue;

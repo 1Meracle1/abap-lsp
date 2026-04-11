@@ -229,7 +229,7 @@ type ScopeIndex = Vec<HashMap<(Namespace, Arc<str>), Vec<SymbolId>>>;
 
 pub struct SemanticTokenLookupContext<'a> {
     snapshot: &'a AnalysisSnapshot,
-    scope_index: ScopeIndex,
+    scope_index: &'a ScopeIndex,
 }
 
 impl AnalysisSnapshot {
@@ -240,7 +240,7 @@ impl AnalysisSnapshot {
     pub fn semantic_token_lookup_context(&self) -> SemanticTokenLookupContext<'_> {
         SemanticTokenLookupContext {
             snapshot: self,
-            scope_index: self.scope_index.as_ref().clone(),
+            scope_index: self.scope_index.as_ref(),
         }
     }
 
@@ -1374,14 +1374,14 @@ impl<'a> SemanticTokenLookupContext<'a> {
     ) -> Option<HoveredComponentKind> {
         classify_field_access_segment_with_scope_index(
             self.snapshot,
-            &self.scope_index,
+            self.scope_index,
             access,
             segment_index,
         )
     }
 
     pub fn has_named_argument_parameter(&self, access: &NamedArgumentAccess) -> bool {
-        resolve_named_argument_parameter_with_scope_index(self.snapshot, &self.scope_index, access)
+        resolve_named_argument_parameter_with_scope_index(self.snapshot, self.scope_index, access)
             .is_some()
     }
 }
