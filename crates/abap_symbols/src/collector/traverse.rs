@@ -104,11 +104,11 @@ impl<'a> Collector<'a> {
             | SyntaxKind::InsertTableStmt
             | SyntaxKind::MoveCorrespondingStmt
             | SyntaxKind::MoveStmt
-            | SyntaxKind::ModifyStmt
             | SyntaxKind::UpdateTarget
             | SyntaxKind::GetReferenceStmt
             | SyntaxKind::GetBitStmt
             | SyntaxKind::SetBitStmt => self.walk_children(node, scope),
+            SyntaxKind::ModifyStmt => self.stmt_lowering().collect_modify_stmt(node, scope),
             SyntaxKind::UpdateStmt => self.stmt_lowering().collect_update_stmt(node, scope),
             SyntaxKind::ReadTableStmt => self.stmt_lowering().collect_read_table_stmt(node, scope),
             SyntaxKind::InsertDbTableStmt => self

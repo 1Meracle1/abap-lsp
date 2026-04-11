@@ -229,6 +229,95 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
         }
     }
 
+    pub(super) fn collect_modify_db_table_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        let mut head_expr = None;
+        let mut from_expr = None;
+        let mut saw_from = false;
+        let mut expect_from_expr = false;
+
+        let children: Vec<_> = self
+            .ctx
+            .syntax(node)
+            .children()
+            .map(|child| (child.id(), child.kind()))
+            .collect();
+        for (child, kind_syntax) in children {
+            if kind_syntax == SyntaxKind::Token {
+                if let Some(text) = self.ctx.syntax(child).text(self.ctx.source()) {
+                    if text.eq_ignore_ascii_case("from") {
+                        saw_from = true;
+                        expect_from_expr = true;
+                    } else if expect_from_expr && text.eq_ignore_ascii_case("table") {
+                        continue;
+                    }
+                }
+                continue;
+            }
+
+            if head_expr.is_none() {
+                head_expr = Some(child);
+                continue;
+            }
+            if expect_from_expr {
+                from_expr = Some(child);
+                expect_from_expr = false;
+            }
+        }
+
+        let Some((name, name_range)) =
+            head_expr.and_then(|expr| self.simple_sql_source_name_from_expr(expr))
+        else {
+            self.ctx.walk_children(node, scope);
+            return;
+        };
+
+        let query_id = self.ctx.sql_queries_len();
+        let range = self.ctx.file().range(node);
+        self.ctx.emit_sql_query(SqlQueryData {
+            id: query_id,
+            scope,
+            range: range.clone(),
+            projection_clause: None,
+            from_clause: saw_from.then_some(range.clone()),
+            into_clause: None,
+            where_clause: None,
+            group_by_clause: None,
+            having_clause: None,
+            order_by_clause: None,
+            for_all_entries_clause: None,
+            up_to_clause: None,
+            is_single: false,
+            is_distinct: false,
+            has_endselect: false,
+            has_dynamic_where: false,
+        });
+
+        let source_range = head_expr
+            .map(|expr| self.ctx.file().range(expr))
+            .unwrap_or_else(|| range.clone());
+        self.ctx.emit_sql_source(SqlSourceData {
+            query_id,
+            range: source_range,
+            source_kind: SqlSourceKind::From,
+            name: Arc::clone(&name),
+            alias: None,
+            join_kind: None,
+            resolution: SqlResolution::External,
+        });
+        self.push_sql_name_ref(
+            query_id,
+            scope,
+            name_range,
+            name,
+            None,
+            SqlNameRefKind::Source,
+        );
+
+        if let Some(from_expr) = from_expr {
+            self.ctx.walk_node(from_expr, scope);
+        }
+    }
+
     pub(super) fn collect_select_query(
         &mut self,
         node: NodeId,

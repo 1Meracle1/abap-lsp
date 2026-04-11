@@ -981,6 +981,40 @@ MODIFY zatt_trans_cust FROM ls_trans.
 }
 
 #[test]
+fn collects_sql_semantics_for_modify_dbtab_from_work_area() {
+    let src = r#"
+TYPES ty_trans TYPE BEGIN OF ty_trans,
+        id TYPE i,
+      END OF ty_trans.
+DATA ls_trans TYPE ty_trans.
+
+MODIFY zattp_tnc_ptrans FROM ls_trans.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///modify_dbtab.abap", src, &parsed);
+
+    assert_eq!(unit.sql_queries.len(), 1, "{:?}", unit.sql_queries);
+    assert_eq!(unit.sql_sources.len(), 1, "{:?}", unit.sql_sources);
+    assert_eq!(unit.sql_sources[0].name.as_ref(), "zattp_tnc_ptrans");
+    assert!(unit.sql_name_refs.iter().any(|reference| {
+        reference.kind == SqlNameRefKind::Source && reference.name.as_ref() == "zattp_tnc_ptrans"
+    }));
+    assert!(unit.references.iter().any(|reference| {
+        reference.namespace == Namespace::Value
+            && reference.name.as_ref() == "ls_trans"
+            && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+    }));
+    assert!(!unit.diagnostics.iter().any(|diag| {
+        diag.kind == DiagnosticKind::UnresolvedReference
+            && diag.message.contains("zattp_tnc_ptrans")
+    }));
+    assert!(unit.diagnostics.iter().any(|diag| {
+        diag.kind == DiagnosticKind::UnverifiedOpenSqlSource
+            && diag.message.contains("zattp_tnc_ptrans")
+    }));
+}
+
+#[test]
 fn resolves_read_table_source_and_target() {
     let src = r#"
 TYPES ty_trn_tab TYPE STANDARD TABLE OF string WITH DEFAULT KEY.

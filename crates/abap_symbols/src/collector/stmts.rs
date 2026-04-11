@@ -70,6 +70,39 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
         (head_expr, from_expr, where_expr)
     }
 
+    fn modify_stmt_operands(&self, node: NodeId) -> (bool, Option<NodeId>, Option<NodeId>) {
+        let mut saw_table_keyword = false;
+        let mut head_expr = None;
+        let mut from_expr = None;
+        let mut expect_from_expr = false;
+
+        for child in self.collector.file.children(node) {
+            if self.collector.file.kind(child) == SyntaxKind::Token {
+                if let Some(text) = self.collector.syntax(child).text(self.collector.source) {
+                    if head_expr.is_none() && text.eq_ignore_ascii_case("table") {
+                        saw_table_keyword = true;
+                    } else if text.eq_ignore_ascii_case("from") {
+                        expect_from_expr = true;
+                    } else if expect_from_expr && text.eq_ignore_ascii_case("table") {
+                        continue;
+                    }
+                }
+                continue;
+            }
+
+            if head_expr.is_none() {
+                head_expr = Some(child);
+                continue;
+            }
+            if expect_from_expr {
+                from_expr = Some(child);
+                expect_from_expr = false;
+            }
+        }
+
+        (saw_table_keyword, head_expr, from_expr)
+    }
+
     fn simple_delete_source_name(&self, node: NodeId) -> Option<Arc<str>> {
         let tokens: Vec<_> = self
             .collector
@@ -251,6 +284,26 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                 source_access,
                 target_access: None,
             });
+    }
+
+    pub(super) fn collect_modify_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        let (saw_table_keyword, head_expr, from_expr) = self.modify_stmt_operands(node);
+        if !saw_table_keyword
+            && from_expr.is_some()
+            && let Some(source_expr) = head_expr
+            && let Some(source_name) = self.simple_delete_source_name(source_expr)
+            && self
+                .collector
+                .lookup_symbol_in_scope_chain(scope, Namespace::Value, source_name.as_ref())
+                .is_none()
+        {
+            self.collector
+                .sql_lowering()
+                .collect_modify_db_table_stmt(node, scope);
+            return;
+        }
+
+        self.collector.walk_children(node, scope);
     }
 
     pub(super) fn collect_read_table_stmt(&mut self, node: NodeId, scope: ScopeId) {
