@@ -2020,6 +2020,34 @@ SELECT * FROM ty_row INTO TABLE lt_rows.
 }
 
 #[test]
+fn accepts_into_table_when_target_was_declared_inline_by_previous_select() {
+    let src = r#"
+SELECT objid
+  FROM /sttp/dm_obj_itm
+  INTO TABLE @DATA(lt_dm_objid)
+  FOR ALL ENTRIES IN @lt_obj_itm
+  WHERE gtin  EQ @lt_obj_itm-gtin
+    AND serno EQ @lt_obj_itm-serno.
+
+SELECT objid
+  FROM /sttp/dm_obj_itm
+  INTO TABLE @lt_dm_objid
+  FOR ALL ENTRIES IN @lt_epc_list
+  WHERE serno EQ @lt_epc_list-epc.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///into_table_inline_previous_select_ok.abap", src, &parsed);
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::InvalidOpenSqlIntoTarget
+                && diag.message.contains("lt_dm_objid")
+        }),
+        "unexpected InvalidOpenSqlIntoTarget for inline SELECT table target: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn accepts_into_table_when_target_uses_external_ddic_table_type() {
     let main_src = r#"
 DATA et_sdr TYPE /sttp/tt_evt_sdr.

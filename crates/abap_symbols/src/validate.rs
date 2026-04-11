@@ -1813,6 +1813,21 @@ fn symbol_is_internal_table(
     symbol: &crate::SymbolData,
     seen: &mut HashSet<(u32, u32)>,
 ) -> bool {
+    if unit.sql_targets.iter().any(|target| {
+        target.is_inline
+            && target.is_table
+            && target.target_name.as_deref() == Some(symbol.name.as_ref())
+            && resolve_symbol_in_scope_chain(
+                unit,
+                &scope_indexes[unit.unit_id.as_usize()],
+                target.scope,
+                Namespace::Value,
+                &symbol.name,
+            ) == Some(symbol.id)
+    }) {
+        return true;
+    }
+
     if symbol_type_clause_suggests_internal_table(symbol) {
         return true;
     }
