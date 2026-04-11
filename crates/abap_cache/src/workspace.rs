@@ -144,23 +144,23 @@ pub fn load_workspace_documents(
     let mut documents = Vec::new();
     let mut seen = HashSet::new();
 
-    collect_abap_sources(
-        &root_path,
-        root_uri,
-        overlays,
-        &mut seen,
-        &mut documents,
-        false,
-    );
-
     if let Some(manifest) = manifest.as_ref() {
-        collect_manifest_dependencies(
+        collect_manifest_documents(
             manifest,
             &root_path,
             root_uri,
             overlays,
             &mut seen,
             &mut documents,
+        );
+    } else {
+        collect_abap_sources(
+            &root_path,
+            root_uri,
+            overlays,
+            &mut seen,
+            &mut documents,
+            false,
         );
     }
     collect_dependency_cache_files(
@@ -464,7 +464,7 @@ fn collect_abap_sources(
     }
 }
 
-fn collect_manifest_dependencies(
+fn collect_manifest_documents(
     manifest: &WorkspaceManifest,
     root_path: &Path,
     root_uri: &str,
@@ -473,43 +473,132 @@ fn collect_manifest_dependencies(
     documents: &mut Vec<WorkspaceDocument>,
 ) {
     for unit in &manifest.units {
-        let relative = normalize_manifest_path(&unit.root_file);
-        if relative.is_empty() {
-            continue;
-        }
-        let path = root_path.join(relative);
-        if !path.exists() {
-            continue;
-        }
-        let uri = path_to_file_uri(&path);
-        if !uri_starts_with_workspace(&uri, root_uri) || !seen.insert(uri.clone()) {
-            continue;
-        }
+        let mut unit_files = HashSet::new();
 
-        let (version, source_text) = if let Some(overlay) = overlays.get(&uri) {
-            (overlay.version, overlay.text.to_string())
-        } else {
-            match fs::read_to_string(&path) {
-                Ok(text) => (0, text),
-                Err(_) => continue,
+        for member in &unit.members {
+            let relative = normalize_manifest_path(&member.file);
+            if relative.is_empty() || !unit_files.insert(relative.clone()) {
+                continue;
             }
-        };
+            collect_manifest_document(
+                unit,
+                manifest_member_object_name(unit, Some(member)),
+                member.role == "dependency",
+                &relative,
+                root_path,
+                root_uri,
+                overlays,
+                seen,
+                documents,
+            );
+        }
 
-        let text = if path.extension().and_then(|ext| ext.to_str()) == Some("xml") {
-            ddic_xml_to_abap_source(unit.name.as_str(), unit.kind.as_str(), source_text.as_str())
-                .unwrap_or(source_text)
-        } else {
-            source_text
-        };
-
-        documents.push(WorkspaceDocument {
-            uri: Arc::from(uri),
-            version,
-            text,
-            is_dependency: true,
-            object_name: Some(Arc::from(unit.name.as_str().to_ascii_lowercase())),
-        });
+        let relative = normalize_manifest_path(&unit.root_file);
+        if relative.is_empty() || !unit_files.insert(relative.clone()) {
+            continue;
+        }
+        collect_manifest_document(
+            unit,
+            manifest_member_object_name(unit, None),
+            manifest_unit_root_is_dependency(unit),
+            &relative,
+            root_path,
+            root_uri,
+            overlays,
+            seen,
+            documents,
+        );
     }
+}
+
+fn collect_manifest_document(
+    unit: &ManifestUnit,
+    object_name: Option<Arc<str>>,
+    is_dependency: bool,
+    relative: &str,
+    root_path: &Path,
+    root_uri: &str,
+    overlays: &HashMap<String, OpenDocumentOverlay>,
+    seen: &mut HashSet<String>,
+    documents: &mut Vec<WorkspaceDocument>,
+) {
+    let path = root_path.join(relative);
+    let uri = path_to_file_uri(&path);
+    if !uri_starts_with_workspace(&uri, root_uri) || !seen.insert(uri.clone()) {
+        return;
+    }
+
+    let (version, source_text) = if let Some(overlay) = overlays.get(&uri) {
+        (overlay.version, overlay.text.to_string())
+    } else {
+        match fs::read_to_string(&path) {
+            Ok(text) => (0, text),
+            Err(_) => return,
+        }
+    };
+
+    let text = if path.extension().and_then(|ext| ext.to_str()) == Some("xml") {
+        ddic_xml_to_abap_source(unit.name.as_str(), unit.kind.as_str(), source_text.as_str())
+            .unwrap_or(source_text)
+    } else {
+        source_text
+    };
+
+    documents.push(WorkspaceDocument {
+        uri: Arc::from(uri),
+        version,
+        text,
+        is_dependency,
+        object_name,
+    });
+}
+
+fn manifest_unit_root_is_dependency(unit: &ManifestUnit) -> bool {
+    if unit.members.is_empty() {
+        return false;
+    }
+    let root_file = normalize_manifest_path(&unit.root_file);
+    if let Some(member) = unit
+        .members
+        .iter()
+        .find(|member| normalize_manifest_path(&member.file) == root_file)
+    {
+        return member.role == "dependency";
+    }
+    unit.members
+        .iter()
+        .all(|member| member.role == "dependency")
+}
+
+fn manifest_member_object_name(
+    unit: &ManifestUnit,
+    member: Option<&ManifestUnitMember>,
+) -> Option<Arc<str>> {
+    let explicit = member
+        .map(|member| member.object_name.trim())
+        .filter(|name| !name.is_empty())
+        .or_else(|| (!unit.name.trim().is_empty()).then(|| unit.name.trim()))?;
+    Some(Arc::from(explicit.to_ascii_lowercase()))
+}
+
+pub fn manifest_declares_uri(
+    root_path: &Path,
+    root_uri: &str,
+    manifest: &WorkspaceManifest,
+    uri: &str,
+) -> bool {
+    if !uri_starts_with_workspace(uri, root_uri) {
+        return false;
+    }
+
+    manifest.units.iter().any(|unit| {
+        let root_file = normalize_manifest_path(&unit.root_file);
+        (!root_file.is_empty() && path_to_file_uri(&root_path.join(&root_file)) == uri)
+            || unit.members.iter().any(|member| {
+                let member_file = normalize_manifest_path(&member.file);
+                !member_file.is_empty() && path_to_file_uri(&root_path.join(member_file)) == uri
+            })
+    })
 }
 
 fn collect_dependency_cache_files(
@@ -1141,7 +1230,7 @@ mod tests {
     use super::{
         UNKNOWN_SYMBOL_MODE_REMOTE, WorkspaceManifest, ddic_xml_to_abap_source,
         is_remote_lookup_candidate, is_remote_lookup_name, load_workspace_documents,
-        manifest_supports_remote_resolution, path_to_file_uri,
+        manifest_declares_uri, manifest_supports_remote_resolution, path_to_file_uri,
     };
 
     #[test]
@@ -1348,6 +1437,106 @@ unknown_symbol_mode = "log"
         let loaded = load_workspace_documents(&path_to_file_uri(&root), &HashMap::new());
         assert!(loaded.manifest.is_none());
         assert!(loaded.manifest_error.is_some());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn manifest_limits_workspace_local_sources_to_declared_files() {
+        let root = std::env::temp_dir().join("abap-lsp-manifest-local-sources");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("src")).expect("src dir");
+        fs::write(
+            root.join("abapls.toml"),
+            r#"
+version = 1
+
+[[unit]]
+name = "ZCL_MANAGED"
+kind = "global-class"
+root_file = "src/ZCL_MANAGED.abap"
+
+[[unit.member]]
+role = "main"
+file = "src/ZCL_MANAGED.abap"
+object_name = "ZCL_MANAGED"
+"#,
+        )
+        .expect("manifest");
+        fs::write(
+            root.join("src/ZCL_MANAGED.abap"),
+            "CLASS zcl_managed DEFINITION. ENDCLASS.",
+        )
+        .expect("managed");
+        fs::write(root.join("src/ZCL_LOOSE.abap"), "REPORT zcl_loose.").expect("loose");
+
+        let loaded = load_workspace_documents(&path_to_file_uri(&root), &HashMap::new());
+        let uris: Vec<_> = loaded
+            .documents
+            .iter()
+            .map(|doc| doc.uri.as_ref())
+            .collect();
+
+        assert!(
+            uris.iter()
+                .any(|uri| uri.ends_with("/src/ZCL_MANAGED.abap"))
+        );
+        assert!(!uris.iter().any(|uri| uri.ends_with("/src/ZCL_LOOSE.abap")));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn manifest_declares_root_and_member_uris() {
+        let root = std::env::temp_dir().join("abap-lsp-manifest-declared-uris");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("src")).expect("src dir");
+        fs::write(
+            root.join("abapls.toml"),
+            r#"
+version = 1
+
+[[unit]]
+name = "ZCL_MAIN"
+kind = "global-class"
+root_file = "src/ZCL_MAIN.abap"
+
+[[unit.member]]
+role = "main"
+file = "src/ZCL_MAIN.abap"
+object_name = "ZCL_MAIN"
+
+[[unit.member]]
+role = "root"
+file = "src/ZTOP.abap"
+object_name = "ZTOP"
+"#,
+        )
+        .expect("manifest");
+
+        let manifest: WorkspaceManifest =
+            toml::from_str(&fs::read_to_string(root.join("abapls.toml")).expect("manifest text"))
+                .expect("manifest");
+        let root_uri = path_to_file_uri(&root);
+
+        assert!(manifest_declares_uri(
+            &root,
+            &root_uri,
+            &manifest,
+            &format!("{root_uri}/src/ZCL_MAIN.abap")
+        ));
+        assert!(manifest_declares_uri(
+            &root,
+            &root_uri,
+            &manifest,
+            &format!("{root_uri}/src/ZTOP.abap")
+        ));
+        assert!(!manifest_declares_uri(
+            &root,
+            &root_uri,
+            &manifest,
+            &format!("{root_uri}/src/ZOTHER.abap")
+        ));
 
         let _ = fs::remove_dir_all(&root);
     }

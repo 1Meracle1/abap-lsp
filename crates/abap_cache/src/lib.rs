@@ -25,9 +25,9 @@ pub use workspace::{
     UNKNOWN_SYMBOL_MODE_REMOTE, WorkspaceDocument, WorkspaceLoadResult, WorkspaceManifest,
     ddic_xml_to_abap_source, file_uri_to_path, is_remote_lookup_candidate, is_remote_lookup_name,
     load_manifest_from_workspace, load_manifest_from_workspace_result, load_workspace_documents,
-    manifest_cache_dir, manifest_supports_remote_resolution, normalize_dependency_mode,
-    normalize_unknown_symbol_mode, path_to_file_uri, uri_starts_with_workspace,
-    workspace_relative_path,
+    manifest_cache_dir, manifest_declares_uri, manifest_supports_remote_resolution,
+    normalize_dependency_mode, normalize_unknown_symbol_mode, path_to_file_uri,
+    uri_starts_with_workspace, workspace_relative_path,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,10 +35,12 @@ pub struct AnalysisSnapshot {
     pub uri: Arc<str>,
     pub version: i32,
     pub text: Arc<str>,
+    pub is_dependency: bool,
+    pub object_name: Option<Arc<str>>,
     pub parse: Arc<ParseResult>,
     pub symbols: Arc<UnitAnalysis>,
     pub project: Arc<ProjectAnalysis>,
-    scope_index: Arc<ScopeIndex>,
+    pub scope_index: Arc<ScopeIndex>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,6 +57,8 @@ struct StagedDocument {
     uri: Arc<str>,
     version: i32,
     text: Arc<str>,
+    is_dependency: bool,
+    object_name: Option<Arc<str>>,
     parse: Arc<ParseResult>,
     previous: Option<Arc<AnalysisSnapshot>>,
 }
@@ -4681,12 +4685,19 @@ fn staged_documents_for_publish(
     {
         for unit in &project.units {
             if unit.uri.as_ref() == uri.as_ref() {
+                let previous = existing.get(uri.as_ref()).cloned();
                 staged.push(StagedDocument {
                     uri: Arc::clone(uri),
                     version,
                     text: Arc::clone(text),
+                    is_dependency: previous
+                        .as_ref()
+                        .is_some_and(|snapshot| snapshot.is_dependency),
+                    object_name: previous
+                        .as_ref()
+                        .and_then(|snapshot| snapshot.object_name.clone()),
                     parse: Arc::clone(parse),
-                    previous: existing.get(uri.as_ref()).cloned(),
+                    previous,
                 });
                 seen.insert(Arc::clone(uri));
                 continue;
@@ -4696,6 +4707,8 @@ fn staged_documents_for_publish(
                     uri: Arc::clone(&snapshot.uri),
                     version: snapshot.version,
                     text: Arc::clone(&snapshot.text),
+                    is_dependency: snapshot.is_dependency,
+                    object_name: snapshot.object_name.clone(),
                     parse: Arc::clone(&snapshot.parse),
                     previous: Some(Arc::clone(snapshot)),
                 });
@@ -4710,6 +4723,8 @@ fn staged_documents_for_publish(
                 uri: Arc::clone(&snapshot.uri),
                 version: snapshot.version,
                 text: Arc::clone(&snapshot.text),
+                is_dependency: snapshot.is_dependency,
+                object_name: snapshot.object_name.clone(),
                 parse: Arc::clone(&snapshot.parse),
                 previous: Some(Arc::clone(snapshot)),
             });
@@ -4721,6 +4736,8 @@ fn staged_documents_for_publish(
             uri: Arc::clone(uri),
             version,
             text: Arc::clone(text),
+            is_dependency: false,
+            object_name: None,
             parse: Arc::clone(parse),
             previous: existing.get(uri.as_ref()).cloned(),
         });
@@ -4729,22 +4746,62 @@ fn staged_documents_for_publish(
     staged
 }
 
+fn snapshot_matches_input(snapshot: &AnalysisSnapshot, input: &DocumentInput) -> bool {
+    snapshot.text.as_ref() == input.text.as_ref()
+        && snapshot.is_dependency == input.is_dependency
+        && snapshot.object_name == input.object_name
+}
+
 fn analyze_inputs_with_progress(
     inputs: &[DocumentInput],
+    existing: Option<&HashMap<Arc<str>, Arc<AnalysisSnapshot>>>,
     progress: Option<&(dyn Fn(usize, usize) + Sync)>,
 ) -> HashMap<Arc<str>, Arc<AnalysisSnapshot>> {
     let parsed: Vec<_> = inputs
-        .par_iter()
+        .iter()
         .map(|input| {
-            let analysis_text = analysis_text_for_input(input);
-            let parse = Arc::new(parse(analysis_text.as_ref()));
-            let source = analysis_text.to_string();
+            let previous = existing
+                .and_then(|existing| existing.get(input.uri.as_ref()))
+                .cloned();
+            let reuse_previous = previous
+                .as_ref()
+                .is_some_and(|snapshot| snapshot_matches_input(snapshot, input));
+            let (parse, source) = if reuse_previous {
+                (
+                    Arc::clone(&previous.as_ref().expect("reused snapshot").parse),
+                    None,
+                )
+            } else {
+                let analysis_text = analysis_text_for_input(input);
+                (
+                    Arc::new(parse(analysis_text.as_ref())),
+                    Some(analysis_text.to_string()),
+                )
+            };
             (
-                Arc::clone(&input.uri),
-                input.version,
-                input.text.clone(),
-                input.object_name.clone(),
-                parse,
+                StagedDocument {
+                    uri: Arc::clone(&input.uri),
+                    version: input.version,
+                    text: Arc::clone(&input.text),
+                    is_dependency: input.is_dependency,
+                    object_name: input.object_name.clone(),
+                    parse,
+                    previous: previous.filter(|_| reuse_previous),
+                },
+                source,
+            )
+        })
+        .collect::<Vec<_>>()
+        .into_iter()
+        .map(|(staged, source)| {
+            (
+                staged.uri,
+                staged.version,
+                staged.text,
+                staged.is_dependency,
+                staged.object_name,
+                staged.parse,
+                staged.previous,
                 source,
             )
         })
@@ -4754,24 +4811,36 @@ fn analyze_inputs_with_progress(
     let units: Vec<_> = parsed
         .par_iter()
         .enumerate()
-        .map(|(idx, (uri, _, _, object_name, parse, source))| {
-            let mut unit =
-                analyze_unit_locally(UnitId(idx as u32), Arc::clone(uri), source, parse.as_ref());
-            if let Some(object_name) = object_name {
-                unit.provided_names.push(Arc::clone(object_name));
-                unit.provided_names.sort();
-                unit.provided_names.dedup();
-            }
-            if let Some(progress) = progress {
-                let done = processed.fetch_add(1, Ordering::Relaxed) + 1;
-                progress(done, total);
-            }
-            unit
-        })
+        .map(
+            |(idx, (uri, _, _, _, object_name, parse, previous, source))| {
+                let mut unit = if let Some(previous) = previous {
+                    reused_local_unit(previous.as_ref(), UnitId(idx as u32))
+                } else {
+                    analyze_unit_locally(
+                        UnitId(idx as u32),
+                        Arc::clone(uri),
+                        source
+                            .as_ref()
+                            .expect("changed input should carry analysis text"),
+                        parse.as_ref(),
+                    )
+                };
+                if let Some(object_name) = object_name {
+                    unit.provided_names.push(Arc::clone(object_name));
+                    unit.provided_names.sort();
+                    unit.provided_names.dedup();
+                }
+                if let Some(progress) = progress {
+                    let done = processed.fetch_add(1, Ordering::Relaxed) + 1;
+                    progress(done, total);
+                }
+                unit
+            },
+        )
         .collect();
     let project = Arc::new(analyze_project_from_units(units));
     let mut snapshots = HashMap::with_capacity(parsed.len());
-    for (uri, version, text, _, parse, _) in parsed {
+    for (uri, version, text, is_dependency, object_name, parse, _, _) in parsed {
         let unit = project
             .unit_by_uri(uri.as_ref())
             .cloned()
@@ -4783,6 +4852,8 @@ fn analyze_inputs_with_progress(
                 uri,
                 version,
                 text,
+                is_dependency,
+                object_name,
                 parse,
                 symbols: Arc::new(unit),
                 project: Arc::clone(&project),
@@ -4944,6 +5015,16 @@ fn dependency_surface_text(text: &str) -> Arc<str> {
     )
 }
 
+fn has_matching_input_set(
+    existing: &HashMap<Arc<str>, Arc<AnalysisSnapshot>>,
+    inputs: &[DocumentInput],
+) -> bool {
+    existing.len() == inputs.len()
+        && inputs
+            .iter()
+            .all(|input| existing.contains_key(input.uri.as_ref()))
+}
+
 fn dependency_class_block_for_keywords(keywords: &[String]) -> Option<DependencyBlock> {
     if keywords.first().map(String::as_str) != Some("class") {
         return None;
@@ -4997,7 +5078,13 @@ impl DocumentStore {
         inputs: Vec<DocumentInput>,
         progress: Option<&(dyn Fn(usize, usize) + Sync)>,
     ) -> HashMap<Arc<str>, Arc<AnalysisSnapshot>> {
-        let rebuilt = analyze_inputs_with_progress(&inputs, progress);
+        let existing = self.documents.read();
+        let rebuilt = analyze_inputs_with_progress(
+            &inputs,
+            has_matching_input_set(&existing, &inputs).then_some(&existing),
+            progress,
+        );
+        drop(existing);
         self.documents.write().clone_from(&rebuilt);
         rebuilt
     }
@@ -5019,6 +5106,8 @@ impl DocumentStore {
                 uri: Arc::clone(&current.uri),
                 version,
                 text: Arc::clone(&current.text),
+                is_dependency: current.is_dependency,
+                object_name: current.object_name.clone(),
                 parse: Arc::clone(&current.parse),
                 symbols: Arc::clone(&current.symbols),
                 project: Arc::clone(&current.project),
@@ -5070,6 +5159,8 @@ impl DocumentStore {
                 uri: Arc::clone(&entry.uri),
                 version: entry.version,
                 text: Arc::clone(&entry.text),
+                is_dependency: entry.is_dependency,
+                object_name: entry.object_name.clone(),
                 parse: Arc::clone(&entry.parse),
                 symbols: Arc::new(unit),
                 project: Arc::clone(&project),
@@ -5086,6 +5177,12 @@ impl DocumentStore {
 
     pub fn get(&self, uri: &str) -> Option<Arc<AnalysisSnapshot>> {
         self.documents.read().get(uri).cloned()
+    }
+
+    pub fn insert_snapshot(&self, snapshot: Arc<AnalysisSnapshot>) {
+        self.documents
+            .write()
+            .insert(Arc::clone(&snapshot.uri), snapshot);
     }
 
     pub fn references(

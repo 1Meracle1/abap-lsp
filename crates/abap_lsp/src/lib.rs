@@ -229,6 +229,20 @@ fn snapshot_for_uri(state: &ServerState, uri: &str) -> Option<Arc<AnalysisSnapsh
     cache_for_uri(state, uri).get(uri)
 }
 
+fn snapshot_with_version(snapshot: &Arc<AnalysisSnapshot>, version: i32) -> Arc<AnalysisSnapshot> {
+    Arc::new(AnalysisSnapshot {
+        scope_index: Arc::clone(&snapshot.scope_index),
+        uri: Arc::clone(&snapshot.uri),
+        version,
+        text: Arc::clone(&snapshot.text),
+        is_dependency: snapshot.is_dependency,
+        object_name: snapshot.object_name.clone(),
+        parse: Arc::clone(&snapshot.parse),
+        symbols: Arc::clone(&snapshot.symbols),
+        project: Arc::clone(&snapshot.project),
+    })
+}
+
 fn rebuild_workspace_cache_with_progress(
     workspace: &mut WorkspaceState,
     progress: Option<&(dyn Fn(usize, usize) + Sync)>,
@@ -325,6 +339,20 @@ pub fn publish_open_document_mut_with_progress(
 ) -> Arc<AnalysisSnapshot> {
     let uri = normalize_lsp_uri(params.text_document.uri.as_str());
     if let Some(workspace) = state.workspace_for_uri_mut(&uri) {
+        if let Some(current) = workspace.cache.get(&uri)
+            && current.text.as_ref() == params.text_document.text.as_str()
+        {
+            workspace.open_documents.insert(
+                uri.clone(),
+                OpenDocumentOverlay {
+                    version: params.text_document.version,
+                    text: Arc::from(params.text_document.text.as_str()),
+                },
+            );
+            let snapshot = snapshot_with_version(&current, params.text_document.version);
+            workspace.cache.insert_snapshot(Arc::clone(&snapshot));
+            return snapshot;
+        }
         workspace.open_documents.insert(
             uri.clone(),
             OpenDocumentOverlay {
@@ -373,6 +401,20 @@ pub fn publish_changed_document_mut_with_progress(
     let change = params.content_changes.last()?;
     let uri = normalize_lsp_uri(params.text_document.uri.as_str());
     if let Some(workspace) = state.workspace_for_uri_mut(&uri) {
+        if let Some(current) = workspace.cache.get(&uri)
+            && current.text.as_ref() == change.text.as_str()
+        {
+            workspace.open_documents.insert(
+                uri.clone(),
+                OpenDocumentOverlay {
+                    version: params.text_document.version,
+                    text: Arc::from(change.text.as_str()),
+                },
+            );
+            let snapshot = snapshot_with_version(&current, params.text_document.version);
+            workspace.cache.insert_snapshot(Arc::clone(&snapshot));
+            return Some(snapshot);
+        }
         workspace.open_documents.insert(
             uri.clone(),
             OpenDocumentOverlay {
@@ -1428,6 +1470,7 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
     use std::str::FromStr;
+    use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use lsp_types::{
@@ -2810,6 +2853,56 @@ unknown_symbol_mode = "remote"
                 .iter()
                 .any(|candidate| candidate.kind == "static")
         );
+
+        let _ = fs::remove_dir_all(&workspace_path);
+    }
+
+    #[test]
+    fn opening_unchanged_workspace_file_reuses_existing_project_snapshot() {
+        let workspace_path = temp_workspace_path("workspace_open_unchanged");
+        fs::create_dir_all(workspace_path.join("src")).expect("src dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[[unit]]
+name = "ZCL_MAIN"
+kind = "global-class"
+root_file = "src/ZCL_MAIN.abap"
+
+[[unit.member]]
+role = "main"
+file = "src/ZCL_MAIN.abap"
+object_name = "ZCL_MAIN"
+"#,
+        )
+        .expect("manifest");
+        let text = "CLASS zcl_main DEFINITION. ENDCLASS.";
+        fs::write(workspace_path.join("src/ZCL_MAIN.abap"), text).expect("source");
+
+        let workspace_uri = path_to_file_uri(&workspace_path);
+        let source_uri = format!("{workspace_uri}/src/ZCL_MAIN.abap");
+        let mut state = ServerState::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        refresh_workspace(&mut state, &workspace_uri);
+        let before = snapshot_for_uri(&state, &normalize_lsp_uri(&source_uri)).expect("snapshot");
+
+        let opened = publish_open_document_mut(
+            &mut state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str(&source_uri).expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 7,
+                    text: text.to_string(),
+                },
+            },
+        );
+
+        assert!(Arc::ptr_eq(&before.project, &opened.project));
+        assert!(Arc::ptr_eq(&before.symbols, &opened.symbols));
+        assert_eq!(opened.version, 7);
 
         let _ = fs::remove_dir_all(&workspace_path);
     }

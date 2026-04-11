@@ -2795,6 +2795,25 @@ fn reports_duplicate_declarations() {
 }
 
 #[test]
+fn read_table_inline_data_is_not_reported_as_duplicate_declaration() {
+    let src = r#"
+DATA lt_values TYPE STANDARD TABLE OF i WITH EMPTY KEY.
+READ TABLE lt_values INTO DATA(ls_value) INDEX 1.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///read_table_inline.abap", src, &parsed);
+
+    assert!(
+        !unit
+            .diagnostics
+            .iter()
+            .any(|diag| diag.kind == DiagnosticKind::DuplicateDeclaration),
+        "unexpected diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn class_definition_and_implementation_are_not_duplicate_class_declarations() {
     let src = r#"
 CLASS some_class DEFINITION.
@@ -6300,7 +6319,11 @@ CLASS zcl_demo IMPLEMENTATION.
 ENDCLASS.
 "#;
     let parsed = parse(src);
-    let unit = analyze_unit("file:///legacy_call_method_parenthesized_sections.abap", src, &parsed);
+    let unit = analyze_unit(
+        "file:///legacy_call_method_parenthesized_sections.abap",
+        src,
+        &parsed,
+    );
 
     for (name, type_name) in [("lt_kodovi", "stringtab"), ("lt_kodovi_all", "stringtab")] {
         let symbol = unit
@@ -6320,7 +6343,10 @@ ENDCLASS.
 
     for keyword in ["EXPORTING", "IMPORTING"] {
         assert!(
-            !unit.references.iter().any(|reference| reference.name.as_ref() == keyword.to_ascii_lowercase()),
+            !unit
+                .references
+                .iter()
+                .any(|reference| reference.name.as_ref() == keyword.to_ascii_lowercase()),
             "unexpected keyword reference for `{keyword}`: {:?}",
             unit.references
         );
