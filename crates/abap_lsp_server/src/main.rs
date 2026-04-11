@@ -321,9 +321,7 @@ fn handle_message(
                     });
                 let progress_notifications = Mutex::new(Vec::new());
                 let workspace_uri = state
-                    .workspace_for_uri(
-                        normalized_uri.as_str(),
-                    )
+                    .workspace_for_uri(normalized_uri.as_str())
                     .map(|workspace| workspace.root_uri.clone());
                 let progress = |processed: usize, total: usize| {
                     if let Some(workspace_uri) = workspace_uri.as_ref() {
@@ -346,7 +344,8 @@ fn handle_message(
                 if unchanged_workspace_open {
                     let params_value =
                         serde_json::to_value(publish_diagnostics_params(state, &snapshot))?;
-                    notifications.push(("textDocument/publishDiagnostics".to_owned(), params_value));
+                    notifications
+                        .push(("textDocument/publishDiagnostics".to_owned(), params_value));
                 } else if let Some(workspace_uri) = state
                     .workspace_for_uri(snapshot.uri.as_ref())
                     .filter(|workspace| workspace.cache.get(snapshot.uri.as_ref()).is_some())
@@ -430,7 +429,8 @@ fn handle_message(
                     if unchanged_workspace_change {
                         let params_value =
                             serde_json::to_value(publish_diagnostics_params(state, &snapshot))?;
-                        notifications.push(("textDocument/publishDiagnostics".to_owned(), params_value));
+                        notifications
+                            .push(("textDocument/publishDiagnostics".to_owned(), params_value));
                     } else if let Some(workspace_uri) = state
                         .workspace_for_uri(snapshot.uri.as_ref())
                         .filter(|workspace| workspace.cache.get(snapshot.uri.as_ref()).is_some())
@@ -460,7 +460,9 @@ fn handle_message(
                     if !unchanged_workspace_change {
                         if let Some(workspace_uri) = state
                             .workspace_for_uri(snapshot.uri.as_ref())
-                            .filter(|workspace| workspace.cache.get(snapshot.uri.as_ref()).is_some())
+                            .filter(|workspace| {
+                                workspace.cache.get(snapshot.uri.as_ref()).is_some()
+                            })
                             .map(|workspace| workspace.root_uri.clone())
                             && let Some(request) =
                                 build_remote_dependency_batch_for_workspace(state, &workspace_uri)

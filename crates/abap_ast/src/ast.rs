@@ -37,6 +37,27 @@ pub enum TypeClauseKind {
     Like,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FormParamSectionKind {
+    Tables,
+    Using,
+    Changing,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FormParamPassingKind {
+    Direct,
+    Value,
+    Reference,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClassSectionVisibilityKind {
+    Public,
+    Protected,
+    Private,
+}
+
 #[derive(Clone, Copy)]
 pub struct MethodsStmtParameter<'a> {
     section: MethodsParamSectionKind,
@@ -310,6 +331,20 @@ ast_node!(AliasesStmt, SyntaxKind::AliasesStmt);
 ast_node!(AliasEntry, SyntaxKind::AliasEntry);
 ast_node!(AliasName, SyntaxKind::AliasName);
 ast_node!(AliasMember, SyntaxKind::AliasMember);
+ast_node!(FormDecl, SyntaxKind::FormDecl);
+ast_node!(FormParamSection, SyntaxKind::FormParamSection);
+ast_node!(FormParam, SyntaxKind::FormParam);
+ast_node!(ClassDecl, SyntaxKind::ClassDecl);
+ast_node!(ClassInheritanceClause, SyntaxKind::ClassInheritanceClause);
+ast_node!(
+    ClassImplementationMarker,
+    SyntaxKind::ClassImplementationMarker
+);
+ast_node!(InterfaceDecl, SyntaxKind::InterfaceDecl);
+ast_node!(MethodDecl, SyntaxKind::MethodDecl);
+ast_node!(MethodDeclTarget, SyntaxKind::MethodDeclTarget);
+ast_node!(ClassSectionStmt, SyntaxKind::ClassSectionStmt);
+ast_node!(ClassSectionVisibility, SyntaxKind::ClassSectionVisibility);
 ast_node!(MethodsStmt, SyntaxKind::MethodsStmt);
 ast_node!(InterfacesStmt, SyntaxKind::InterfacesStmt);
 ast_node!(ClearStmt, SyntaxKind::ClearStmt);
@@ -484,6 +519,173 @@ impl<'a> TypeRefSimple<'a> {
         let text = source.get(range.start..range.end)?;
         let trimmed = text.trim();
         (!trimmed.is_empty()).then_some(trimmed)
+    }
+}
+
+impl<'a> FormDecl<'a> {
+    pub fn name_token(self) -> Option<DataDeclName<'a>> {
+        self.syntax
+            .child_by_kind(SyntaxKind::DataDeclName)
+            .and_then(DataDeclName::cast)
+    }
+
+    pub fn param_sections(
+        self,
+    ) -> impl DoubleEndedIterator<Item = FormParamSection<'a>> + Clone + 'a {
+        self.syntax.children().filter_map(FormParamSection::cast)
+    }
+}
+
+impl<'a> FormParamSection<'a> {
+    pub fn kind(self, source: &str) -> Option<FormParamSectionKind> {
+        let token = self.syntax.children_by_kind(SyntaxKind::Token).next()?;
+        let text = token.text(source)?;
+        if text.eq_ignore_ascii_case("tables") {
+            Some(FormParamSectionKind::Tables)
+        } else if text.eq_ignore_ascii_case("using") {
+            Some(FormParamSectionKind::Using)
+        } else if text.eq_ignore_ascii_case("changing") {
+            Some(FormParamSectionKind::Changing)
+        } else {
+            None
+        }
+    }
+
+    pub fn params(self) -> impl DoubleEndedIterator<Item = FormParam<'a>> + Clone + 'a {
+        self.syntax.children().filter_map(FormParam::cast)
+    }
+}
+
+impl<'a> FormParam<'a> {
+    pub fn name_token(self) -> Option<DataDeclName<'a>> {
+        self.syntax
+            .child_by_kind(SyntaxKind::DataDeclName)
+            .and_then(DataDeclName::cast)
+    }
+
+    pub fn passing_kind(self, source: &str) -> FormParamPassingKind {
+        let mut tokens = self.syntax.children_by_kind(SyntaxKind::Token);
+        let Some(first) = tokens.next() else {
+            return FormParamPassingKind::Direct;
+        };
+        let Some(text) = first.text(source) else {
+            return FormParamPassingKind::Direct;
+        };
+        if text.eq_ignore_ascii_case("value") {
+            FormParamPassingKind::Value
+        } else if text.eq_ignore_ascii_case("reference") {
+            FormParamPassingKind::Reference
+        } else {
+            FormParamPassingKind::Direct
+        }
+    }
+
+    pub fn type_clause_kind(self, source: &str) -> Option<TypeClauseKind> {
+        self.syntax
+            .children_by_kind(SyntaxKind::Token)
+            .find_map(|token| {
+                let text = token.text(source)?;
+                if text.eq_ignore_ascii_case("type") {
+                    Some(TypeClauseKind::Type)
+                } else if text.eq_ignore_ascii_case("like") {
+                    Some(TypeClauseKind::Like)
+                } else {
+                    None
+                }
+            })
+    }
+
+    pub fn type_ref(self) -> Option<TypeRefSimple<'a>> {
+        self.syntax
+            .child_by_kind(SyntaxKind::TypeRefSimple)
+            .and_then(TypeRefSimple::cast)
+    }
+}
+
+impl<'a> ClassSectionVisibility<'a> {
+    pub fn kind(self, source: &str) -> Option<ClassSectionVisibilityKind> {
+        let token = self.syntax.children_by_kind(SyntaxKind::Token).next()?;
+        let text = token.text(source)?;
+        if text.eq_ignore_ascii_case("public") {
+            Some(ClassSectionVisibilityKind::Public)
+        } else if text.eq_ignore_ascii_case("protected") {
+            Some(ClassSectionVisibilityKind::Protected)
+        } else if text.eq_ignore_ascii_case("private") {
+            Some(ClassSectionVisibilityKind::Private)
+        } else {
+            None
+        }
+    }
+}
+
+impl<'a> ClassSectionStmt<'a> {
+    pub fn visibility(self) -> Option<ClassSectionVisibility<'a>> {
+        self.syntax
+            .child_by_kind(SyntaxKind::ClassSectionVisibility)
+            .and_then(ClassSectionVisibility::cast)
+    }
+}
+
+impl<'a> ClassInheritanceClause<'a> {
+    pub fn type_ref(self) -> Option<TypeRefSimple<'a>> {
+        self.syntax
+            .child_by_kind(SyntaxKind::TypeRefSimple)
+            .and_then(TypeRefSimple::cast)
+    }
+}
+
+impl<'a> ClassDecl<'a> {
+    pub fn name_token(self) -> Option<DataDeclName<'a>> {
+        self.syntax
+            .child_by_kind(SyntaxKind::DataDeclName)
+            .and_then(DataDeclName::cast)
+    }
+
+    pub fn is_implementation(self) -> bool {
+        self.syntax
+            .child_by_kind(SyntaxKind::ClassImplementationMarker)
+            .is_some()
+    }
+
+    pub fn inheritance_clause(self) -> Option<ClassInheritanceClause<'a>> {
+        self.syntax
+            .child_by_kind(SyntaxKind::ClassInheritanceClause)
+            .and_then(ClassInheritanceClause::cast)
+    }
+
+    pub fn superclass(self) -> Option<TypeRefSimple<'a>> {
+        self.inheritance_clause()
+            .and_then(|clause| clause.type_ref())
+    }
+}
+
+impl<'a> InterfaceDecl<'a> {
+    pub fn name_token(self) -> Option<DataDeclName<'a>> {
+        self.syntax
+            .child_by_kind(SyntaxKind::DataDeclName)
+            .and_then(DataDeclName::cast)
+    }
+}
+
+impl<'a> MethodDeclTarget<'a> {
+    pub fn qualifier(self) -> Option<TypeRefSimple<'a>> {
+        self.syntax
+            .child_by_kind(SyntaxKind::TypeRefSimple)
+            .and_then(TypeRefSimple::cast)
+    }
+
+    pub fn member_name(self) -> Option<DataDeclName<'a>> {
+        self.syntax
+            .child_by_kind(SyntaxKind::DataDeclName)
+            .and_then(DataDeclName::cast)
+    }
+}
+
+impl<'a> MethodDecl<'a> {
+    pub fn target(self) -> Option<MethodDeclTarget<'a>> {
+        self.syntax
+            .child_by_kind(SyntaxKind::MethodDeclTarget)
+            .and_then(MethodDeclTarget::cast)
     }
 }
 

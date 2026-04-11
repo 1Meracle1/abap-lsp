@@ -13,7 +13,7 @@ use crate::stmt_period::{
     token_begins_line, unterminated_err_end,
 };
 use crate::syntax::token_leaf;
-use crate::type_ref::build_type_ref_node;
+use crate::type_ref::{build_type_ref_node, parse_type_ref_tokens};
 
 #[derive(Clone, Copy)]
 enum EventBlockLead {
@@ -3046,65 +3046,6 @@ fn skip_form_header_type_expression(
     idx
 }
 
-fn form_header_type_ref_ranges(
-    source: &str,
-    tokens: &[Token],
-    idx: usize,
-    period_i: usize,
-) -> Vec<(usize, usize)> {
-    let mut ranges = Vec::new();
-    let mut i = idx + 1;
-    while i <= period_i && tokens[i].kind == TokenKind::Comment {
-        i += 1;
-    }
-    if i > period_i || tokens[i].kind != TokenKind::Ident {
-        return ranges;
-    }
-    i += 1;
-
-    while i <= period_i {
-        let token = &tokens[i];
-        if token.kind == TokenKind::Comment {
-            i += 1;
-            continue;
-        }
-        if token.kind == TokenKind::Period {
-            break;
-        }
-        if form_header_section_keyword(source, token) {
-            i += 1;
-            continue;
-        }
-        if !form_header_starts_typed_param(source, tokens, i, period_i + 1) {
-            i += 1;
-            continue;
-        }
-        let mut j = i;
-        if is_keyword(source, &tokens[j], "value") || is_keyword(source, &tokens[j], "reference") {
-            j += 4;
-        } else {
-            j += 1;
-        }
-        while j <= period_i && tokens[j].kind == TokenKind::Comment {
-            j += 1;
-        }
-        if j > period_i {
-            break;
-        }
-        j += 1;
-        while j <= period_i && tokens[j].kind == TokenKind::Comment {
-            j += 1;
-        }
-        let expr_start = j;
-        let expr_end = skip_form_header_type_expression(source, tokens, expr_start, period_i + 1);
-        if expr_start < expr_end {
-            ranges.push((expr_start, expr_end));
-        }
-        i = expr_end;
-    }
-    ranges
-}
-
 fn build_form_header_children(
     b: &mut SyntaxTreeBuilder,
     source: &str,
@@ -3112,29 +3053,338 @@ fn build_form_header_children(
     idx: usize,
     period_i: usize,
 ) -> Vec<NodeId> {
-    let ranges = form_header_type_ref_ranges(source, tokens, idx, period_i);
-    if ranges.is_empty() {
-        return tokens[idx..=period_i]
-            .iter()
-            .map(|t| token_leaf(b, t))
-            .collect();
-    }
-    let mut children = Vec::with_capacity(period_i - idx + 1);
-    let mut i = idx;
-    let mut range_idx = 0usize;
+    let mut children = vec![token_leaf(b, &tokens[idx])];
+    let mut saw_form_name = false;
+    let mut i = idx + 1;
     while i <= period_i {
-        if let Some((start, end)) = ranges.get(range_idx).copied()
-            && i == start
-        {
-            children.push(build_type_ref_node(b, source, &tokens[start..end]));
-            i = end;
-            range_idx += 1;
+        let token = &tokens[i];
+        if token.kind == TokenKind::Comment {
+            children.push(token_leaf(b, token));
+            i += 1;
             continue;
         }
+
+        if !saw_form_name && let Some((name, next_i)) = parse_inline_name(b, tokens, i) {
+            children.push(name);
+            saw_form_name = true;
+            i = next_i;
+            continue;
+        }
+
+        if is_keyword(source, token, "tables")
+            || is_keyword(source, token, "using")
+            || is_keyword(source, token, "changing")
+        {
+            let (section, next_i) = build_form_param_section_node(b, source, tokens, i, period_i);
+            children.push(section);
+            i = next_i;
+            continue;
+        }
+
+        children.push(token_leaf(b, token));
+        i += 1;
+    }
+    children
+}
+
+fn build_form_param_section_node(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    period_i: usize,
+) -> (NodeId, usize) {
+    let mut children = vec![token_leaf(b, &tokens[idx])];
+    let mut i = idx + 1;
+    while i <= period_i {
+        let token = &tokens[i];
+        if token.kind == TokenKind::Period || form_header_section_keyword(source, token) {
+            break;
+        }
+        if token.kind == TokenKind::Comment {
+            children.push(token_leaf(b, token));
+            i += 1;
+            continue;
+        }
+        if let Some((param, next_i)) = build_form_param_node(b, source, tokens, i, period_i + 1) {
+            children.push(param);
+            i = next_i;
+            continue;
+        }
+        children.push(token_leaf(b, token));
+        i += 1;
+    }
+
+    let end = children
+        .last()
+        .copied()
+        .map(|id| b.span(id).end)
+        .unwrap_or(tokens[idx].range.end);
+    (
+        b.branch(
+            SyntaxKind::FormParamSection,
+            tokens[idx].range.start..end,
+            &children,
+        ),
+        i,
+    )
+}
+
+fn build_form_param_node(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    end: usize,
+) -> Option<(NodeId, usize)> {
+    let mut children = Vec::new();
+    let start = tokens.get(idx)?.range.start;
+    let mut i = idx;
+
+    if is_keyword(source, tokens.get(i)?, "value")
+        || is_keyword(source, tokens.get(i)?, "reference")
+    {
+        let lparen_idx = i + 1;
+        let (name, next_i) = parse_inline_name(b, tokens, i + 2)?;
+        let rparen_idx = next_i;
+        if tokens.get(lparen_idx).map(|token| token.kind) != Some(TokenKind::LParen)
+            || tokens.get(rparen_idx).map(|token| token.kind) != Some(TokenKind::RParen)
+        {
+            return None;
+        }
+        children.push(token_leaf(b, &tokens[i]));
+        children.push(token_leaf(b, &tokens[lparen_idx]));
+        children.push(name);
+        children.push(token_leaf(b, &tokens[rparen_idx]));
+        i = rparen_idx + 1;
+    } else {
+        let (name, next_i) = parse_inline_name(b, tokens, i)?;
+        children.push(name);
+        i = next_i;
+    }
+
+    let mut j = i;
+    while j < end && tokens[j].kind == TokenKind::Comment {
+        children.push(token_leaf(b, &tokens[j]));
+        j += 1;
+    }
+
+    if j < end && (is_keyword(source, &tokens[j], "type") || is_keyword(source, &tokens[j], "like"))
+    {
+        children.push(token_leaf(b, &tokens[j]));
+        j += 1;
+        while j < end && tokens[j].kind == TokenKind::Comment {
+            children.push(token_leaf(b, &tokens[j]));
+            j += 1;
+        }
+        let expr_end = skip_form_header_type_expression(source, tokens, j, end);
+        if j < expr_end {
+            children.push(build_type_ref_node(b, source, &tokens[j..expr_end]));
+            i = expr_end;
+        } else {
+            i = j;
+        }
+    } else {
+        i = j;
+    }
+
+    let end_range = children
+        .last()
+        .copied()
+        .map(|id| b.span(id).end)
+        .unwrap_or(start);
+    Some((
+        b.branch(SyntaxKind::FormParam, start..end_range, &children),
+        i,
+    ))
+}
+
+const CLASS_HEADER_TYPE_REF_STOP_KEYWORDS: &[&str] = &[
+    "abstract",
+    "create",
+    "final",
+    "for",
+    "friends",
+    "global",
+    "local",
+    "private",
+    "protected",
+    "public",
+    "shared",
+    "testing",
+];
+
+fn build_class_header_children(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    period_i: usize,
+) -> Vec<NodeId> {
+    let mut children = Vec::with_capacity(period_i - idx + 1);
+    let mut saw_name = false;
+    let mut i = idx;
+    while i <= period_i {
+        let token = &tokens[i];
+        if token.kind == TokenKind::Comment {
+            children.push(token_leaf(b, token));
+            i += 1;
+            continue;
+        }
+        if !saw_name
+            && i > idx
+            && let Some((name, next_i)) = parse_inline_name(b, tokens, i)
+        {
+            children.push(name);
+            saw_name = true;
+            i = next_i;
+            continue;
+        }
+        if is_keyword(source, token, "implementation") {
+            let leaf = token_leaf(b, token);
+            children.push(b.branch(
+                SyntaxKind::ClassImplementationMarker,
+                token.range.clone(),
+                &[leaf],
+            ));
+            i += 1;
+            continue;
+        }
+        if is_keyword(source, token, "inheriting") {
+            let from_idx = skip_trivia(tokens, i + 1);
+            let expr_start = skip_trivia(tokens, from_idx + 1);
+            if from_idx <= period_i
+                && tokens
+                    .get(from_idx)
+                    .is_some_and(|from| is_keyword(source, from, "from"))
+                && let Some((type_ref, next_i)) = parse_type_ref_tokens(
+                    b,
+                    source,
+                    tokens,
+                    expr_start,
+                    CLASS_HEADER_TYPE_REF_STOP_KEYWORDS,
+                )
+            {
+                let mut clause_children = Vec::new();
+                for token in &tokens[i..expr_start] {
+                    clause_children.push(token_leaf(b, token));
+                }
+                clause_children.push(type_ref);
+                let end = clause_children
+                    .last()
+                    .copied()
+                    .map(|id| b.span(id).end)
+                    .unwrap_or(token.range.end);
+                children.push(b.branch(
+                    SyntaxKind::ClassInheritanceClause,
+                    token.range.start..end,
+                    &clause_children,
+                ));
+                i = next_i;
+                continue;
+            }
+        }
+        children.push(token_leaf(b, token));
+        i += 1;
+    }
+    children
+}
+
+fn build_interface_header_children(
+    b: &mut SyntaxTreeBuilder,
+    tokens: &[Token],
+    idx: usize,
+    period_i: usize,
+) -> Vec<NodeId> {
+    let mut children = Vec::with_capacity(period_i - idx + 1);
+    let mut saw_name = false;
+    let mut i = idx;
+    while i <= period_i {
+        let token = &tokens[i];
+        if token.kind == TokenKind::Comment {
+            children.push(token_leaf(b, token));
+            i += 1;
+            continue;
+        }
+        if !saw_name
+            && i > idx
+            && let Some((name, next_i)) = parse_inline_name(b, tokens, i)
+        {
+            children.push(name);
+            saw_name = true;
+            i = next_i;
+            continue;
+        }
+        children.push(token_leaf(b, token));
+        i += 1;
+    }
+    children
+}
+
+fn build_method_header_children(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    period_i: usize,
+) -> Vec<NodeId> {
+    let mut children = vec![token_leaf(b, &tokens[idx])];
+    let mut i = idx + 1;
+    while i < period_i && tokens[i].kind == TokenKind::Comment {
+        children.push(token_leaf(b, &tokens[i]));
+        i += 1;
+    }
+    if i < period_i
+        && let Some((target, next_i)) =
+            build_method_decl_target_node(b, source, tokens, i, period_i)
+    {
+        children.push(target);
+        i = next_i;
+    }
+    while i <= period_i {
         children.push(token_leaf(b, &tokens[i]));
         i += 1;
     }
     children
+}
+
+fn build_method_decl_target_node(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    period_i: usize,
+) -> Option<(NodeId, usize)> {
+    let token = tokens.get(idx)?;
+    if token.kind != TokenKind::Ident {
+        return None;
+    }
+
+    let mut children = Vec::new();
+    let start = token.range.start;
+    let mut i = idx;
+    if tokens.get(i + 1).map(|token| token.kind) == Some(TokenKind::Tilde)
+        && tokens.get(i + 2).map(|token| token.kind) == Some(TokenKind::Ident)
+    {
+        children.push(build_type_ref_node(b, source, &tokens[i..i + 1]));
+        children.push(token_leaf(b, &tokens[i + 1]));
+        let (member, next_i) = parse_inline_name(b, tokens, i + 2)?;
+        children.push(member);
+        i = next_i;
+    } else {
+        let (member, next_i) = parse_inline_name(b, tokens, i)?;
+        children.push(member);
+        i = next_i;
+    }
+    let end = children
+        .last()
+        .copied()
+        .map(|id| b.span(id).end)
+        .unwrap_or(start);
+    Some((
+        b.branch(SyntaxKind::MethodDeclTarget, start..end, &children),
+        i.min(period_i),
+    ))
 }
 
 fn match_hyphenated_keyword(
@@ -6544,16 +6794,54 @@ pub fn try_parse_class_decl(
     if !class_header_is_block(tokens, source, idx) {
         return None;
     }
-    try_parse_block_stmt(
+    let start_tok = tokens.get(idx)?;
+    if !is_keyword(source, start_tok, "class") {
+        return None;
+    }
+    let (mut children, mut next) = match scan_until_statement_period(tokens, source, idx + 1) {
+        StmtPeriodScan::Found(period_i) => (
+            build_class_header_children(b, source, tokens, idx, period_i),
+            period_i + 1,
+        ),
+        StmtPeriodScan::Unterminated { end_exclusive } => {
+            let err_end = unterminated_err_end(tokens, end_exclusive, start_tok.range.end);
+            errors.push(crate::ParseError {
+                message: "syntax error: expected '.' after class header".to_string(),
+                range: start_tok.range.start..err_end,
+            });
+            let err_children = error_token_children(b, tokens, idx, end_exclusive);
+            let header = b.branch(
+                SyntaxKind::Error,
+                start_tok.range.start..err_end,
+                &err_children,
+            );
+            (
+                vec![header],
+                next_after_unterminated_scan(tokens, end_exclusive),
+            )
+        }
+    };
+    let (body, after_body) =
+        parse_body_until_keywords(b, source, tokens, next, errors, &["ENDCLASS"]);
+    children.extend(body);
+    next = after_body;
+    let (end_children, next_after, end_pos) = parse_end_keyword(
         b,
         source,
         tokens,
-        idx,
-        "class",
+        next,
+        start_tok,
         "ENDCLASS",
-        SyntaxKind::ClassDecl,
+        "syntax error: expected ENDCLASS",
         errors,
-    )
+    );
+    children.extend(end_children);
+    let node = b.branch(
+        SyntaxKind::ClassDecl,
+        start_tok.range.start..end_pos,
+        &children,
+    );
+    Some((node, next_after))
 }
 
 pub fn try_parse_interface_decl(
@@ -6569,16 +6857,54 @@ pub fn try_parse_interface_decl(
     if statement_starts_interface_load_stmt(source, tokens, idx) {
         return None;
     }
-    try_parse_block_stmt(
+    let start_tok = tokens.get(idx)?;
+    if !is_keyword(source, start_tok, "interface") {
+        return None;
+    }
+    let (mut children, mut next) = match scan_until_statement_period(tokens, source, idx + 1) {
+        StmtPeriodScan::Found(period_i) => (
+            build_interface_header_children(b, tokens, idx, period_i),
+            period_i + 1,
+        ),
+        StmtPeriodScan::Unterminated { end_exclusive } => {
+            let err_end = unterminated_err_end(tokens, end_exclusive, start_tok.range.end);
+            errors.push(crate::ParseError {
+                message: "syntax error: expected '.' after interface header".to_string(),
+                range: start_tok.range.start..err_end,
+            });
+            let err_children = error_token_children(b, tokens, idx, end_exclusive);
+            let header = b.branch(
+                SyntaxKind::Error,
+                start_tok.range.start..err_end,
+                &err_children,
+            );
+            (
+                vec![header],
+                next_after_unterminated_scan(tokens, end_exclusive),
+            )
+        }
+    };
+    let (body, after_body) =
+        parse_body_until_keywords(b, source, tokens, next, errors, &["ENDINTERFACE"]);
+    children.extend(body);
+    next = after_body;
+    let (end_children, next_after, end_pos) = parse_end_keyword(
         b,
         source,
         tokens,
-        idx,
-        "interface",
+        next,
+        start_tok,
         "ENDINTERFACE",
-        SyntaxKind::InterfaceDecl,
+        "syntax error: expected ENDINTERFACE",
         errors,
-    )
+    );
+    children.extend(end_children);
+    let node = b.branch(
+        SyntaxKind::InterfaceDecl,
+        start_tok.range.start..end_pos,
+        &children,
+    );
+    Some((node, next_after))
 }
 
 fn statement_starts_interface_load_stmt(source: &str, tokens: &[Token], idx: usize) -> bool {
@@ -6603,16 +6929,54 @@ pub fn try_parse_method_decl(
     idx: usize,
     errors: &mut Vec<crate::ParseError>,
 ) -> Option<(NodeId, usize)> {
-    try_parse_block_stmt(
+    let start_tok = tokens.get(idx)?;
+    if !is_keyword(source, start_tok, "method") {
+        return None;
+    }
+    let (mut children, mut next) = match scan_until_statement_period(tokens, source, idx + 1) {
+        StmtPeriodScan::Found(period_i) => (
+            build_method_header_children(b, source, tokens, idx, period_i),
+            period_i + 1,
+        ),
+        StmtPeriodScan::Unterminated { end_exclusive } => {
+            let err_end = unterminated_err_end(tokens, end_exclusive, start_tok.range.end);
+            errors.push(crate::ParseError {
+                message: "syntax error: expected '.' after method header".to_string(),
+                range: start_tok.range.start..err_end,
+            });
+            let err_children = error_token_children(b, tokens, idx, end_exclusive);
+            let header = b.branch(
+                SyntaxKind::Error,
+                start_tok.range.start..err_end,
+                &err_children,
+            );
+            (
+                vec![header],
+                next_after_unterminated_scan(tokens, end_exclusive),
+            )
+        }
+    };
+    let (body, after_body) =
+        parse_body_until_keywords(b, source, tokens, next, errors, &["ENDMETHOD"]);
+    children.extend(body);
+    next = after_body;
+    let (end_children, next_after, end_pos) = parse_end_keyword(
         b,
         source,
         tokens,
-        idx,
-        "method",
+        next,
+        start_tok,
         "ENDMETHOD",
-        SyntaxKind::MethodDecl,
+        "syntax error: expected ENDMETHOD",
         errors,
-    )
+    );
+    children.extend(end_children);
+    let node = b.branch(
+        SyntaxKind::MethodDecl,
+        start_tok.range.start..end_pos,
+        &children,
+    );
+    Some((node, next_after))
 }
 
 pub fn try_parse_select_stmt(
@@ -6671,6 +7035,10 @@ pub fn try_parse_select_stmt(
 #[cfg(test)]
 mod tests {
     use abap_ast::SyntaxKind;
+    use abap_ast::ast::{
+        AstNode, ClassDecl, FormDecl, FormParamPassingKind, FormParamSectionKind, MethodDecl,
+        SyntaxNodeRef,
+    };
 
     #[test]
     fn parses_form_body() {
@@ -6718,6 +7086,51 @@ END-OF-PAGE.\nWRITE 'e'.",
     }
 
     #[test]
+    fn form_header_exposes_structured_sections_and_params() {
+        let src = "FORM run TABLES it_tab USING VALUE(iv_row) TYPE REF TO zif_demo=>ty_row CHANGING cv_text LIKE lv_text. ENDFORM.";
+        let parsed = crate::parse(src);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let form = FormDecl::cast(SyntaxNodeRef::new(
+            &parsed.file,
+            parsed
+                .file
+                .find_first_kind(parsed.file.root(), SyntaxKind::FormDecl)
+                .expect("form decl"),
+        ))
+        .expect("form decl");
+        assert_eq!(
+            form.name_token().and_then(|name| name.name(src)).as_deref(),
+            Some("run")
+        );
+        let sections = form.param_sections().collect::<Vec<_>>();
+        assert_eq!(sections.len(), 3);
+        assert_eq!(sections[0].kind(src), Some(FormParamSectionKind::Tables));
+        assert_eq!(sections[1].kind(src), Some(FormParamSectionKind::Using));
+        assert_eq!(sections[2].kind(src), Some(FormParamSectionKind::Changing));
+        let using_param = sections[1].params().next().expect("using param");
+        assert_eq!(
+            using_param
+                .name_token()
+                .and_then(|name| name.name(src))
+                .as_deref(),
+            Some("iv_row")
+        );
+        assert_eq!(using_param.passing_kind(src), FormParamPassingKind::Value);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(form.syntax().id(), SyntaxKind::FormParam),
+            3
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(form.syntax().id(), SyntaxKind::FormParamSection),
+            3
+        );
+    }
+
+    #[test]
     fn parses_class_method_impl() {
         let parsed =
             crate::parse("CLASS lcl IMPLEMENTATION. METHOD run. WRITE 'x'. ENDMETHOD. ENDCLASS.");
@@ -6733,6 +7146,64 @@ END-OF-PAGE.\nWRITE 'e'.",
                 .file
                 .count_kind(parsed.file.root(), SyntaxKind::MethodDecl),
             1
+        );
+    }
+
+    #[test]
+    fn class_decl_exposes_name_superclass_and_implementation_marker() {
+        let src = "CLASS lcl_demo DEFINITION INHERITING FROM zcl_base. ENDCLASS. CLASS lcl_demo IMPLEMENTATION. ENDCLASS.";
+        let parsed = crate::parse(src);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let class_nodes = parsed
+            .file
+            .children(parsed.file.root())
+            .filter(|&node| parsed.file.kind(node) == SyntaxKind::ClassDecl)
+            .collect::<Vec<_>>();
+        let def = ClassDecl::cast(SyntaxNodeRef::new(&parsed.file, class_nodes[0])).expect("def");
+        let imp = ClassDecl::cast(SyntaxNodeRef::new(&parsed.file, class_nodes[1])).expect("impl");
+        assert_eq!(
+            def.name_token().and_then(|name| name.name(src)).as_deref(),
+            Some("lcl_demo")
+        );
+        assert_eq!(
+            def.superclass()
+                .and_then(|type_ref| type_ref.display_text(src))
+                .map(str::to_ascii_lowercase)
+                .as_deref(),
+            Some("zcl_base")
+        );
+        assert!(!def.is_implementation());
+        assert!(imp.is_implementation());
+    }
+
+    #[test]
+    fn method_decl_target_exposes_interface_qualifier() {
+        let src = "CLASS lcl IMPLEMENTATION. METHOD if_demo~run. ENDMETHOD. ENDCLASS.";
+        let parsed = crate::parse(src);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let method = MethodDecl::cast(SyntaxNodeRef::new(
+            &parsed.file,
+            parsed
+                .file
+                .find_first_kind(parsed.file.root(), SyntaxKind::MethodDecl)
+                .expect("method"),
+        ))
+        .expect("method");
+        let target = method.target().expect("target");
+        assert_eq!(
+            target
+                .qualifier()
+                .and_then(|type_ref| type_ref.display_text(src))
+                .map(str::to_ascii_lowercase)
+                .as_deref(),
+            Some("if_demo")
+        );
+        assert_eq!(
+            target
+                .member_name()
+                .and_then(|name| name.name(src))
+                .as_deref(),
+            Some("run")
         );
     }
 
@@ -7136,7 +7607,10 @@ END-OF-PAGE.\nWRITE 'e'.",
             .file
             .find_first_kind(parsed.file.root(), SyntaxKind::CallMethodStmt)
             .expect("call method stmt");
-        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::CallMethodTarget), 1);
+        assert_eq!(
+            parsed.file.count_kind(stmt, SyntaxKind::CallMethodTarget),
+            1
+        );
         assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::CallExpr), 1);
         assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::CallArgSection), 2);
         assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::CallNamedArg), 4);

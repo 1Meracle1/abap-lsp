@@ -466,6 +466,36 @@ fn build_interfaces_stmt_children(
     children
 }
 
+fn build_class_section_stmt_children(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    period_i: usize,
+) -> Vec<NodeId> {
+    let mut children = Vec::with_capacity(period_i - idx + 1);
+    let mut wrapped_visibility = false;
+    for token in &tokens[idx..=period_i] {
+        if !wrapped_visibility
+            && token.kind == TokenKind::Ident
+            && (token_matches_keyword(source, token, "public")
+                || token_matches_keyword(source, token, "protected")
+                || token_matches_keyword(source, token, "private"))
+        {
+            let leaf = token_leaf(b, token);
+            children.push(b.branch(
+                SyntaxKind::ClassSectionVisibility,
+                token.range.clone(),
+                &[leaf],
+            ));
+            wrapped_visibility = true;
+            continue;
+        }
+        children.push(token_leaf(b, token));
+    }
+    children
+}
+
 fn parse_inline_name_local(
     b: &mut SyntaxTreeBuilder,
     tokens: &[Token],
@@ -1515,6 +1545,9 @@ pub fn try_parse_simple_stmt(
             validate_unparsed_stmt(source, &significant, tokens, idx, period_i, errors);
             let kind = simple_stmt_kind(source, &significant);
             let kids = match kind {
+                SyntaxKind::ClassSectionStmt => {
+                    build_class_section_stmt_children(b, source, tokens, idx, period_i)
+                }
                 SyntaxKind::AliasesStmt => {
                     build_aliases_stmt_children(b, source, tokens, idx, period_i)
                 }
@@ -1575,6 +1608,7 @@ pub fn try_parse_simple_stmt(
 #[cfg(test)]
 mod tests {
     use abap_ast::SyntaxKind;
+    use abap_ast::ast::{AstNode, ClassSectionStmt, ClassSectionVisibilityKind, SyntaxNodeRef};
 
     #[test]
     fn reports_method_modifier_after_parameter_declarations() {
@@ -1625,6 +1659,27 @@ ENDCLASS.";
                 .file
                 .count_kind(parsed.file.root(), SyntaxKind::MethodsStmt),
             1
+        );
+    }
+
+    #[test]
+    fn class_section_exposes_visibility_node() {
+        let src = "CLASS lcl DEFINITION. PUBLIC SECTION. ENDCLASS.";
+        let parsed = crate::parse(src);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let section = ClassSectionStmt::cast(SyntaxNodeRef::new(
+            &parsed.file,
+            parsed
+                .file
+                .find_first_kind(parsed.file.root(), SyntaxKind::ClassSectionStmt)
+                .expect("section"),
+        ))
+        .expect("section");
+        assert_eq!(
+            section
+                .visibility()
+                .and_then(|visibility| visibility.kind(src)),
+            Some(ClassSectionVisibilityKind::Public)
         );
     }
 

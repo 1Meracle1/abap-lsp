@@ -2,7 +2,8 @@ use std::sync::Arc;
 
 use abap_ast::arena::NodeId;
 use abap_ast::ast::{
-    AstNode, MethodsParamSectionKind, MethodsStmt, MethodsStmtKind, MethodsTypeClauseKind,
+    AstNode, ClassDecl, ClassSectionStmt, ClassSectionVisibilityKind, InterfaceDecl,
+    MethodsParamSectionKind, MethodsStmt, MethodsStmtKind, MethodsTypeClauseKind,
 };
 use abap_lexer::TextRange;
 
@@ -14,9 +15,7 @@ use crate::ids::{ScopeId, StructureId, SymbolId};
 use crate::scope::{Namespace, ScopeKind};
 
 use super::emit::ClassSink;
-use super::{
-    Collector, PendingMethodParameter, PendingMethodSignature, PendingStructure, SyntaxTokenInfo,
-};
+use super::{Collector, PendingMethodParameter, PendingMethodSignature, PendingStructure};
 
 fn method_parameter_section(section: MethodsParamSectionKind) -> MethodParameterSection {
     match section {
@@ -327,7 +326,15 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
     }
 
     pub(super) fn walk_interface_decl(&mut self, node: NodeId, scope: ScopeId) {
-        let Some((name, range)) = self.collector.header_ident_after_keyword(node) else {
+        let Some(interface_decl) = InterfaceDecl::cast(self.collector.syntax(node)) else {
+            self.collector.walk_children(node, scope);
+            return;
+        };
+        let Some(name_tok) = interface_decl.name_token() else {
+            self.collector.walk_children(node, scope);
+            return;
+        };
+        let Some(name) = name_tok.name(self.collector.source) else {
             self.collector.walk_children(node, scope);
             return;
         };
@@ -335,7 +342,7 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
             scope,
             Arc::clone(&name),
             SymbolKind::Interface,
-            range,
+            name_tok.range(),
         );
         let node_range = self.collector.file.range(node);
         let child_scope =
@@ -348,8 +355,25 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
     }
 
     pub(super) fn walk_class_decl(&mut self, node: NodeId, scope: ScopeId) {
-        let is_implementation = self.class_header_has_implementation(node);
-        let Some((name, range)) = self.collector.header_ident_after_keyword(node) else {
+        let Some((is_implementation, name, range, superclass_info)) = (|| {
+            let class_decl = ClassDecl::cast(self.collector.syntax(node))?;
+            let name_tok = class_decl.name_token()?;
+            let name = name_tok.name(self.collector.source)?;
+            let range = name_tok.range();
+            let superclass_info = if class_decl.is_implementation() {
+                None
+            } else {
+                class_decl.superclass().and_then(|type_ref| {
+                    type_ref.display_text(self.collector.source).map(|text| {
+                        (
+                            Arc::<str>::from(text.to_ascii_lowercase()),
+                            type_ref.syntax().range(),
+                        )
+                    })
+                })
+            };
+            Some((class_decl.is_implementation(), name, range, superclass_info))
+        })() else {
             self.collector.walk_children(node, scope);
             return;
         };
@@ -381,13 +405,13 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
         if impl_header_refs_class {
             self.collector.add_reference(
                 scope,
-                name,
+                Arc::clone(&name),
                 Namespace::Type,
                 ReferenceKind::TypeRef,
-                range,
+                range.clone(),
             );
         }
-        if !is_implementation && let Some((superclass, range)) = self.class_superclass_name(node) {
+        if !is_implementation && let Some((superclass, superclass_range)) = superclass_info {
             self.collector
                 .class_superclasses
                 .insert(owner, Arc::clone(&superclass));
@@ -396,7 +420,7 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
                 superclass,
                 Namespace::Type,
                 ReferenceKind::TypeRef,
-                range,
+                superclass_range,
             );
         }
         let parent_scope = if is_implementation {
@@ -425,21 +449,6 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
         }
     }
 
-    fn class_header_has_implementation(&self, node: NodeId) -> bool {
-        for child in self.collector.file.children(node) {
-            let Some(text) = self.collector.syntax(child).text(self.collector.source) else {
-                continue;
-            };
-            if text == "." {
-                break;
-            }
-            if text.eq_ignore_ascii_case("implementation") {
-                return true;
-            }
-        }
-        false
-    }
-
     fn collect_class_definition_members(
         &mut self,
         node: NodeId,
@@ -452,8 +461,16 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
         while let Some(child) = stack.pop() {
             match self.collector.file.kind(child) {
                 abap_ast::SyntaxKind::ClassSectionStmt => {
-                    let tokens = self.collector.significant_stmt_token_infos(child);
-                    if let Some(section_visibility) = self.class_section_visibility_infos(&tokens) {
+                    if let Some(section_visibility) =
+                        ClassSectionStmt::cast(self.collector.syntax(child))
+                            .and_then(|stmt| stmt.visibility())
+                            .and_then(|visibility| visibility.kind(self.collector.source))
+                            .map(|visibility| match visibility {
+                                ClassSectionVisibilityKind::Public => Visibility::Public,
+                                ClassSectionVisibilityKind::Protected => Visibility::Protected,
+                                ClassSectionVisibilityKind::Private => Visibility::Private,
+                            })
+                    {
                         visibility = section_visibility;
                     }
                 }
@@ -497,41 +514,6 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
                 }
             }
         }
-    }
-
-    fn class_superclass_name(&self, node: NodeId) -> Option<(Arc<str>, TextRange)> {
-        let significant = self.collector.significant_stmt_token_infos(node);
-        for window in significant.windows(3) {
-            if window[0].text.eq_ignore_ascii_case("inheriting")
-                && window[1].text.eq_ignore_ascii_case("from")
-                && self.collector.syntax_token_is_ident_like(&window[2])
-            {
-                return Some((
-                    Arc::<str>::from(window[2].text.to_ascii_lowercase()),
-                    window[2].range.clone(),
-                ));
-            }
-        }
-        None
-    }
-
-    fn class_section_visibility_infos(&self, tokens: &[SyntaxTokenInfo]) -> Option<Visibility> {
-        if tokens.len() < 3 || tokens[2].text.as_ref() != "." {
-            return None;
-        }
-        if !tokens[1].text.eq_ignore_ascii_case("section") {
-            return None;
-        }
-        if tokens[0].text.eq_ignore_ascii_case("public") {
-            return Some(Visibility::Public);
-        }
-        if tokens[0].text.eq_ignore_ascii_case("protected") {
-            return Some(Visibility::Protected);
-        }
-        if tokens[0].text.eq_ignore_ascii_case("private") {
-            return Some(Visibility::Private);
-        }
-        None
     }
 
     fn class_member_from_methods_stmt(

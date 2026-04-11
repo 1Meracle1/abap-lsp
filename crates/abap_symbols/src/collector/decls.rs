@@ -8,7 +8,7 @@ use crate::ids::{ScopeId, StructureId};
 use crate::scope::{Namespace, ScopeKind};
 use abap_ast::{
     SyntaxKind,
-    ast::{AstNode, DataDecl, DataLikeDecl, DeclClause},
+    ast::{AstNode, DataDecl, DataLikeDecl, DeclClause, MethodDecl},
 };
 use abap_lexer::TextRange;
 
@@ -70,42 +70,36 @@ impl<'ctx, 'a> DeclLowering<'ctx, 'a> {
         &self,
         node: abap_ast::arena::NodeId,
     ) -> Option<MethodDeclHeaderInfo> {
-        let tokens = self.ctx.significant_stmt_token_infos(node);
-        let method_tok = tokens.first()?;
-        if !method_tok.text.eq_ignore_ascii_case("method") {
-            return None;
-        }
-        let first = tokens.get(1)?;
-        if !self.ctx.syntax_token_is_ident_like(first) {
-            return None;
-        }
-        let mut full_name = first.text.to_string();
-        let mut qualifier = None::<(Arc<str>, TextRange)>;
-        let mut member_name = Arc::<str>::from(first.text.to_ascii_lowercase());
-        let mut member_range = first.range.clone();
-        let mut end = member_range.end;
-        if tokens
-            .get(2)
-            .is_some_and(|token| token.text.as_ref() == "~")
-            && let Some(second) = tokens.get(3)
-            && self.ctx.syntax_token_is_ident_like(second)
-        {
-            full_name.push('~');
-            full_name.push_str(second.text.as_ref());
-            qualifier = Some((
-                Arc::<str>::from(first.text.to_ascii_lowercase()),
-                first.range.clone(),
-            ));
-            member_name = Arc::<str>::from(second.text.to_ascii_lowercase());
-            member_range = second.range.clone();
-            end = second.range.end;
-        }
+        let decl = MethodDecl::cast(self.ctx.syntax(node))?;
+        let target = decl.target()?;
+        let member = target.member_name()?;
+        let member_name = member.name(self.ctx.source())?;
+        let member_range = member.range();
+        let qualifier = target.qualifier().map(|type_ref| {
+            (
+                Arc::<str>::from(
+                    type_ref
+                        .display_text(self.ctx.source())
+                        .unwrap_or_default()
+                        .to_ascii_lowercase(),
+                ),
+                type_ref.syntax().range(),
+            )
+        });
+        let (full_name, full_range) = if let Some((qualifier_name, qualifier_range)) = &qualifier {
+            (
+                Arc::<str>::from(format!("{qualifier_name}~{member_name}")),
+                qualifier_range.start..member_range.end,
+            )
+        } else {
+            (Arc::clone(&member_name), member_range.clone())
+        };
         Some(MethodDeclHeaderInfo {
-            full_name: Arc::<str>::from(full_name.to_ascii_lowercase()),
+            full_name,
             qualifier,
             member_name,
             member_range,
-            full_range: first.range.start..end,
+            full_range,
         })
     }
 

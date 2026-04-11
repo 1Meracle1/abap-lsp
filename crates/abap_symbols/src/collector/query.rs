@@ -114,6 +114,13 @@ impl<'a> Collector<'a> {
     }
 
     pub(super) fn header_ident_after_keyword(&self, node: NodeId) -> Option<(Arc<str>, TextRange)> {
+        if let Some(name_node) = self
+            .syntax(node)
+            .child_by_kind(SyntaxKind::DataDeclName)
+            .and_then(abap_ast::ast::DataDeclName::cast)
+        {
+            return Some((name_node.name(self.source)?, name_node.range()));
+        }
         let mut saw_keyword = false;
         for child in self.file.children(node) {
             if self.file.kind(child) != SyntaxKind::Token {

@@ -109,6 +109,8 @@ pub enum SyntaxKind {
     UnparsedStmt,
     /// `PUBLIC SECTION.` / `PROTECTED SECTION.` / `PRIVATE SECTION.`
     ClassSectionStmt,
+    /// Visibility keyword inside `PUBLIC SECTION.` / `PROTECTED SECTION.` / `PRIVATE SECTION.`
+    ClassSectionVisibility,
     /// `METHODS ... .` or `CLASS-METHODS ... .`
     MethodsStmt,
     /// `INTERFACES if_name .`
@@ -161,6 +163,8 @@ pub enum SyntaxKind {
     FormDecl,
     /// `TABLES` / `USING` / `CHANGING` parameter section inside a `FORM`.
     FormParamSection,
+    /// One parameter entry inside a `FORM` header section.
+    FormParam,
     /// `MODULE ... . ... ENDMODULE.`
     ModuleDecl,
     /// Event block such as `START-OF-SELECTION.`.
@@ -205,10 +209,16 @@ pub enum SyntaxKind {
     CleanupClause,
     /// `CLASS ... . ... ENDCLASS.`
     ClassDecl,
+    /// `INHERITING FROM ...` clause inside a class header.
+    ClassInheritanceClause,
+    /// `IMPLEMENTATION` marker inside a class header.
+    ClassImplementationMarker,
     /// `INTERFACE ... . ... ENDINTERFACE.`
     InterfaceDecl,
     /// `METHOD ... . ... ENDMETHOD.`
     MethodDecl,
+    /// Qualified or unqualified implementation target in a `METHOD ... .` header.
+    MethodDeclTarget,
     /// `SELECT ... .` or `SELECT ... . ... ENDSELECT.`
     SelectStmt,
     /// Structured SQL query payload inside `SELECT`.
@@ -443,6 +453,7 @@ impl SyntaxKind {
             Self::FieldSymbolInlineDecl => "FieldSymbolInlineDecl",
             Self::UnparsedStmt => "UnparsedStmt",
             Self::ClassSectionStmt => "ClassSectionStmt",
+            Self::ClassSectionVisibility => "ClassSectionVisibility",
             Self::MethodsStmt => "MethodsStmt",
             Self::InterfacesStmt => "InterfacesStmt",
             Self::ReportStmt => "ReportStmt",
@@ -469,6 +480,7 @@ impl SyntaxKind {
             Self::WaitOperand => "WaitOperand",
             Self::FormDecl => "FormDecl",
             Self::FormParamSection => "FormParamSection",
+            Self::FormParam => "FormParam",
             Self::ModuleDecl => "ModuleDecl",
             Self::EventBlock => "EventBlock",
             Self::IfStmt => "IfStmt",
@@ -491,8 +503,11 @@ impl SyntaxKind {
             Self::CatchClause => "CatchClause",
             Self::CleanupClause => "CleanupClause",
             Self::ClassDecl => "ClassDecl",
+            Self::ClassInheritanceClause => "ClassInheritanceClause",
+            Self::ClassImplementationMarker => "ClassImplementationMarker",
             Self::InterfaceDecl => "InterfaceDecl",
             Self::MethodDecl => "MethodDecl",
+            Self::MethodDeclTarget => "MethodDeclTarget",
             Self::SelectStmt => "SelectStmt",
             Self::SelectQuery => "SelectQuery",
             Self::SelectProjectionList => "SelectProjectionList",
