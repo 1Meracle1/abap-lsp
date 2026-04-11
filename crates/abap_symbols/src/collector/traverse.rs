@@ -54,6 +54,12 @@ impl<'a> Collector<'a> {
                 SymbolKind::Form,
                 crate::ScopeKind::Form,
             ),
+            SyntaxKind::FunctionDecl => self.decl_lowering().walk_block_decl(
+                node,
+                scope,
+                SymbolKind::Module,
+                crate::ScopeKind::Module,
+            ),
             SyntaxKind::ModuleDecl => self.decl_lowering().walk_block_decl(
                 node,
                 scope,

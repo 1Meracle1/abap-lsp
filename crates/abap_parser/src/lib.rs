@@ -74,6 +74,7 @@ const IDENT_LEAD_PARSERS: &[GuardedParser] = &[
         surface_stmt::try_parse_event_block,
     ),
     GuardedParser::new(&["form"], surface_stmt::try_parse_form_decl),
+    GuardedParser::new(&["function"], surface_stmt::try_parse_function_decl),
     GuardedParser::new(&["module"], surface_stmt::try_parse_module_decl),
     GuardedParser::new(&["class"], surface_stmt::try_parse_class_decl),
     GuardedParser::new(&["interface"], surface_stmt::try_parse_interface_decl),

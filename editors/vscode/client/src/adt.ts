@@ -115,6 +115,10 @@ export function isSupportedDependencyObject(objectRef: AdtObjectRef, kindHint?: 
 			return isMessageClassDependencyObject(objectRef);
 		case "include":
 			return loweredUri.includes("/programs/includes/") || loweredType === "PROG/I";
+		case "function":
+			return loweredUri.includes("/functions/groups/") ||
+				loweredType === "FUGR/F" ||
+				loweredType === "FUGR/FF";
 		case "static":
 			return loweredUri.includes("/oo/classes/") ||
 				loweredUri.includes("/oo/interfaces/") ||
@@ -178,10 +182,34 @@ export function pickBestDependencyObject(
 
 	const exactMatches = supported.filter((objectRef) => objectRef.name.trim().toLowerCase() === normalizedQuery);
 	if (exactMatches.length > 0) {
-		return exactMatches[0];
+		return pickPreferredDependencyObject(exactMatches, kindHint) ?? exactMatches[0];
 	}
 
-	return supported[0];
+	return pickPreferredDependencyObject(supported, kindHint) ?? supported[0];
+}
+
+function pickPreferredDependencyObject(
+	objects: AdtObjectRef[],
+	kindHint?: string,
+): AdtObjectRef | undefined {
+	if (objects.length === 0) {
+		return undefined;
+	}
+
+	switch (kindHint?.trim().toLowerCase()) {
+		case "function":
+			return objects.find((objectRef) => objectRef.type.toUpperCase() === "FUGR/FF") ??
+				objects.find((objectRef) => objectRef.type.toUpperCase() === "FUGR/F");
+		case "static":
+			return objects.find((objectRef) => objectRef.type.toUpperCase().startsWith("CLAS/")) ??
+				objects.find((objectRef) => objectRef.type.toUpperCase().startsWith("INTF/"));
+		case "type":
+			return objects.find((objectRef) => isDdicDependencyObject(objectRef)) ??
+				objects.find((objectRef) => objectRef.type.toUpperCase().startsWith("CLAS/")) ??
+				objects.find((objectRef) => objectRef.type.toUpperCase().startsWith("INTF/"));
+		default:
+			return undefined;
+	}
 }
 
 export async function configureSapConnection(

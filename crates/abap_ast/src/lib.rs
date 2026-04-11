@@ -187,6 +187,8 @@ pub enum SyntaxKind {
     FormParamSection,
     /// One parameter entry inside a `FORM` header section.
     FormParam,
+    /// `FUNCTION ... . ... ENDFUNCTION.`
+    FunctionDecl,
     /// `MODULE ... . ... ENDMODULE.`
     ModuleDecl,
     /// Event block such as `START-OF-SELECTION.`.
@@ -516,6 +518,7 @@ impl SyntaxKind {
             Self::FormDecl => "FormDecl",
             Self::FormParamSection => "FormParamSection",
             Self::FormParam => "FormParam",
+            Self::FunctionDecl => "FunctionDecl",
             Self::ModuleDecl => "ModuleDecl",
             Self::EventBlock => "EventBlock",
             Self::IfStmt => "IfStmt",

@@ -6884,6 +6884,76 @@ pub fn try_parse_module_decl(
     )
 }
 
+pub fn try_parse_function_decl(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    errors: &mut Vec<crate::ParseError>,
+) -> Option<(NodeId, usize)> {
+    if starts_hyphenated_keyword(tokens, idx) {
+        return None;
+    }
+    let start_tok = tokens.get(idx)?;
+    if !is_keyword(source, start_tok, "function") {
+        return None;
+    }
+
+    let mut children = vec![token_leaf(b, start_tok)];
+    let mut next = idx + 1;
+    while let Some(token) = tokens.get(next) {
+        if token.kind == TokenKind::Comment {
+            children.push(token_leaf(b, token));
+            next += 1;
+            continue;
+        }
+        break;
+    }
+
+    let header_end = match tokens.get(next) {
+        Some(token) if token.kind == TokenKind::Ident => {
+            children.push(token_leaf(b, token));
+            next += 1;
+            if tokens.get(next).map(|token| token.kind) == Some(TokenKind::Period) {
+                children.push(token_leaf(b, &tokens[next]));
+                next += 1;
+                tokens[next - 1].range.end
+            } else {
+                token.range.end
+            }
+        }
+        Some(token) => {
+            errors.push(crate::ParseError {
+                message: "syntax error: expected function module name after FUNCTION".to_string(),
+                range: start_tok.range.start..token.range.end,
+            });
+            token.range.end
+        }
+        None => start_tok.range.end,
+    };
+
+    let (body, after_body) =
+        parse_body_until_keywords(b, source, tokens, next, errors, &["ENDFUNCTION"]);
+    children.extend(body);
+    let (end_children, next_after, end_pos) = parse_end_keyword(
+        b,
+        source,
+        tokens,
+        after_body,
+        start_tok,
+        "ENDFUNCTION",
+        "syntax error: expected ENDFUNCTION",
+        errors,
+    );
+    children.extend(end_children);
+    let node = b.branch(
+        SyntaxKind::FunctionDecl,
+        start_tok.range.start..end_pos.max(header_end),
+        &children,
+    );
+    Some((node, next_after))
+}
+
 pub fn try_parse_class_decl(
     b: &mut SyntaxTreeBuilder,
     source: &str,
@@ -8902,6 +8972,15 @@ END-OF-PAGE.\nWRITE 'e'.",
                 .count_kind(parsed.file.root(), SyntaxKind::CallStmt),
             1
         );
+    }
+
+    #[test]
+    fn parses_function_decl_as_block_stmt() {
+        let parsed = crate::parse("FUNCTION /aif/file_process_data\n  WRITE 'x'.\nENDFUNCTION.");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::FunctionDecl), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::WriteStmt), 1);
     }
 
     #[test]

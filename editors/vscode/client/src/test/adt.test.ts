@@ -118,6 +118,48 @@ suite("ADT dependency helpers", () => {
 		assert.strictEqual(pickBestDependencyObject("cx_root", [classRef], "type")?.name, "CX_ROOT");
 	});
 
+	test("Treats function modules as supported function dependencies", () => {
+		const functionRef: AdtObjectRef = {
+			uri: "/sap/bc/adt/functions/groups/svim/fmodules/view_get_data",
+			type: "FUGR/FF",
+			name: "VIEW_GET_DATA",
+			packageName: "SVIM",
+			description: "Function module",
+		};
+
+		assert.strictEqual(isSupportedDependencyObject(functionRef, "function"), true);
+		assert.strictEqual(
+			pickBestDependencyObject("view_get_data", [functionRef], "function")?.name,
+			"VIEW_GET_DATA",
+		);
+	});
+
+	test("Prefers function module hits over function group hits for function dependencies", () => {
+		const functionGroupRef: AdtObjectRef = {
+			uri: "/sap/bc/adt/functions/groups/svim",
+			type: "FUGR/F",
+			name: "SVIM",
+			packageName: "SVIM",
+			description: "Function group",
+		};
+		const functionModuleRef: AdtObjectRef = {
+			uri: "/sap/bc/adt/functions/groups/svim/fmodules/view_get_data",
+			type: "FUGR/FF",
+			name: "VIEW_GET_DATA",
+			packageName: "SVIM",
+			description: "Function module",
+		};
+
+		assert.strictEqual(
+			pickBestDependencyObject(
+				"view_get_data",
+				[functionGroupRef, functionModuleRef],
+				"function",
+			)?.type,
+			"FUGR/FF",
+		);
+	});
+
 	test("Returns no dependency object when ADT search only finds unsupported exact matches", () => {
 		const selected = pickBestDependencyObject(
 			"BOOLEAN",

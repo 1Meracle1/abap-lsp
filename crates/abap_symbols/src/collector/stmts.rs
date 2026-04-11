@@ -1212,20 +1212,30 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
 
         let function_name = if stmt.call_kind(self.collector.source) == Some(CallStmtKind::Function)
         {
-            stmt.callee_token()
-                .and_then(|token| token.text(self.collector.source))
-                .map(|name| {
-                    let name = name.trim();
-                    let unquoted = name
-                        .strip_prefix('\'')
-                        .and_then(|name| name.strip_suffix('\''))
-                        .or_else(|| {
-                            name.strip_prefix('`')
-                                .and_then(|name| name.strip_suffix('`'))
-                        })
-                        .unwrap_or(name);
-                    Arc::<str>::from(unquoted.to_ascii_lowercase())
-                })
+            let function_info = stmt.callee_token().and_then(|token| {
+                let range = token.range();
+                let name = token.text(self.collector.source)?;
+                let name = name.trim();
+                let unquoted = name
+                    .strip_prefix('\'')
+                    .and_then(|name| name.strip_suffix('\''))
+                    .or_else(|| {
+                        name.strip_prefix('`')
+                            .and_then(|name| name.strip_suffix('`'))
+                    })
+                    .unwrap_or(name);
+                Some((range, Arc::<str>::from(unquoted.to_ascii_lowercase())))
+            });
+            function_info.map(|(range, function_name)| {
+                self.collector.add_reference(
+                    scope,
+                    Arc::clone(&function_name),
+                    Namespace::Routine,
+                    ReferenceKind::RoutineCall,
+                    range,
+                );
+                function_name
+            })
         } else {
             None
         };

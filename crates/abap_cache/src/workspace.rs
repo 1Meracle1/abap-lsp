@@ -365,7 +365,7 @@ pub fn is_remote_lookup_candidate(name: &str, kind: &str) -> bool {
     }
 
     match kind.trim().to_ascii_lowercase().as_str() {
-        "type" | "static" => is_standard_remote_type_like_name(trimmed),
+        "type" | "static" | "function" => is_standard_remote_type_like_name(trimmed),
         "message-class" => is_standard_message_class_name(trimmed),
         _ => false,
     }
@@ -1579,11 +1579,17 @@ mode = "full-workspace"
     fn detects_remote_lookup_candidates_by_kind() {
         assert!(is_remote_lookup_candidate("cl_abap_typedescr", "type"));
         assert!(is_remote_lookup_candidate("if_sxml_reader", "static"));
+        assert!(is_remote_lookup_candidate("rfc_ping", "function"));
         assert!(is_remote_lookup_candidate("cx_root", "type"));
         assert!(is_remote_lookup_candidate("00", "message-class"));
         assert!(is_remote_lookup_candidate("/sttp/int_msg", "message-class"));
+        assert!(is_remote_lookup_candidate(
+            "/aif/file_process_data",
+            "function"
+        ));
         assert!(is_remote_lookup_candidate("boolean", "type"));
         assert!(!is_remote_lookup_candidate("cl_abap_typedescr", "symbol"));
+        assert!(!is_remote_lookup_candidate("lv_function_name", "function"));
         assert!(!is_remote_lookup_candidate("lv_type_name", "type"));
         assert!(!is_remote_lookup_candidate("time", "type"));
         assert!(!is_remote_lookup_candidate("timestmp", "type"));

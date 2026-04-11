@@ -7285,6 +7285,43 @@ rv_text = |({ mo_left->to_string( ) } { mv_op } { mo_right->to_string( ) })|.
 }
 
 #[test]
+fn resolves_call_function_name_to_function_declared_in_dependency_unit() {
+    let dep_src = r#"
+FUNCTION /aif/file_process_data
+  WRITE 'x'.
+ENDFUNCTION.
+"#;
+    let main_src = r#"
+START-OF-SELECTION.
+  CALL FUNCTION '/AIF/FILE_PROCESS_DATA'.
+"#;
+
+    let dep_parsed = parse(dep_src);
+    let main_parsed = parse(main_src);
+    let project = analyze_project(&[
+        ProjectInput {
+            uri: "file:///fm_main.abap",
+            source: main_src,
+            parse: &main_parsed,
+        },
+        ProjectInput {
+            uri: "file:///fm_dep.abap",
+            source: dep_src,
+            parse: &dep_parsed,
+        },
+    ]);
+    let main_unit = project
+        .unit_by_uri("file:///fm_main.abap")
+        .expect("main unit");
+
+    assert!(main_unit.references.iter().any(|reference| {
+        reference.kind == ReferenceKind::RoutineCall
+            && reference.name.as_ref() == "/aif/file_process_data"
+            && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+    }));
+}
+
+#[test]
 fn resolves_table_expression_selector_accesses_with_keyword_named_fields() {
     let src = "\
 TYPES: BEGIN OF ty_rep,

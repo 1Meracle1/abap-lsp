@@ -98,6 +98,24 @@ suite("Remote dependency helpers", () => {
 		assert.ok(paths.some((candidatePath) => candidatePath.endsWith("ZCL_DEMO.xml")));
 	});
 
+	test("Maps function candidates to function-group cache paths", () => {
+		const paths = cachedRemoteDependencyCandidatePaths("c:\\demo", {
+			name: "/aif/file_process_data",
+			kind: "function",
+		});
+
+		assert.deepStrictEqual(paths, [
+			path.join(
+				"c:\\demo",
+				".abapls",
+				"cache",
+				"dependencies",
+				"function-group",
+				"%2FAIF%2FFILE_PROCESS_DATA.abap",
+			),
+		]);
+	});
+
 	test("Skips ADT fetches when a matching cached dependency file already exists", async () => {
 		const workspacePath = await fs.promises.mkdtemp(path.join(os.tmpdir(), "abap-lsp-cache-hit-"));
 		const cachedFile = path.join(

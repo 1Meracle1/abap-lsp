@@ -661,6 +661,11 @@ pub fn collect_remote_dependency_candidates(
             ReferenceKind::StaticTarget => "static",
             ReferenceKind::TypeRef => "type",
             ReferenceKind::MessageClass => "message-class",
+            ReferenceKind::RoutineCall
+                if reference.namespace == abap_symbols::Namespace::Routine =>
+            {
+                "function"
+            }
             ReferenceKind::Identifier | ReferenceKind::RoutineCall => "symbol",
         };
         if reference.resolution.is_some()
@@ -690,6 +695,23 @@ pub fn collect_remote_dependency_candidates(
                 },
             );
         }
+    }
+
+    for call_site in &snapshot.symbols.call_sites {
+        let abap_symbols::NamedArgumentTarget::Function { function_name } = &call_site.target
+        else {
+            continue;
+        };
+        if !is_remote_lookup_candidate(function_name.as_ref(), "function") {
+            continue;
+        }
+        insert_remote_candidate(
+            &mut deduped,
+            RemoteDependencyCandidate {
+                name: function_name.to_string(),
+                kind: "function".to_string(),
+            },
+        );
     }
 
     deduped.into_values().collect()
@@ -722,6 +744,7 @@ fn remote_candidate_kind_priority(kind: &str) -> usize {
     match kind.trim().to_ascii_lowercase().as_str() {
         "message-class" => 5,
         "include" => 4,
+        "function" => 4,
         "static" => 3,
         "type" => 2,
         _ => 1,
@@ -753,6 +776,11 @@ fn cached_remote_dependency_paths(
                     .join(format!("{encoded_name}.xml")),
             ]
         }
+        "function" => vec![
+            dependencies_root
+                .join("function-group")
+                .join(format!("{encoded_name}.abap")),
+        ],
         "symbol" | "static" | "type" => vec![
             dependencies_root
                 .join("global-class")
@@ -3004,6 +3032,76 @@ unknown_symbol_mode = "remote"
             }),
             "{candidates:#?}"
         );
+    }
+
+    #[test]
+    fn collects_function_module_remote_dependency_candidates() {
+        let store = DocumentStore::default();
+        let snapshot = store.publish(
+            "file:///function_remote.abap",
+            1,
+            "CALL FUNCTION '/AIF/FILE_PROCESS_DATA'.",
+        );
+
+        let candidates = collect_remote_dependency_candidates(snapshot.as_ref());
+        assert!(candidates.iter().any(|candidate| {
+            candidate.kind == "function" && candidate.name == "/aif/file_process_data"
+        }));
+    }
+
+    #[test]
+    fn definition_returns_location_for_function_module_call() {
+        let state = ServerState::default();
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///main.abap").expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: "CALL FUNCTION '/AIF/FILE_PROCESS_DATA'.".to_string(),
+                },
+            },
+        );
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///fm_dep.abap").expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: "FUNCTION /aif/file_process_data\nENDFUNCTION.".to_string(),
+                },
+            },
+        );
+
+        let result = definition(
+            &state,
+            &GotoDefinitionParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///main.abap").expect("uri"),
+                    },
+                    position: Position {
+                        line: 0,
+                        character: 17,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            },
+        )
+        .expect("definition");
+
+        let GotoDefinitionResponse::Scalar(location) = result else {
+            panic!("expected scalar location");
+        };
+        assert_eq!(
+            location.uri,
+            Uri::from_str("file:///fm_dep.abap").expect("uri")
+        );
+        assert_eq!(location.range.start.line, 0);
+        assert_eq!(location.range.start.character, 9);
     }
 
     #[test]

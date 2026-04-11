@@ -24,6 +24,7 @@ export interface ResolvedRemoteDependencyFetchPolicy {
 const candidateKindPriority = new Map<string, number>([
 	["message-class", 5],
 	["include", 4],
+	["function", 4],
 	["static", 3],
 	["type", 2],
 	["symbol", 1],
@@ -116,6 +117,10 @@ export function cachedRemoteDependencyCandidatePaths(
 		case "message-class":
 			return [
 				path.join(dependenciesRoot, "message-class", `${encodedName}.xml`),
+			];
+		case "function":
+			return [
+				path.join(dependenciesRoot, "function-group", `${encodedName}.abap`),
 			];
 		case "symbol":
 		case "static":
