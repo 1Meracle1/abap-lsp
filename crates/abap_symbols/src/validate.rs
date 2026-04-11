@@ -620,7 +620,13 @@ fn resolve_inherited_redefinition_method_context<'a>(
     let class_symbol = enclosing_class_owner(unit, scope)?;
     let superclass = direct_superclass_handle(project, lookup, unit, class_symbol)?;
     let superclass_unit = &project.units[superclass.unit.as_usize()];
-    resolve_class_member_in_hierarchy(project, lookup, superclass_unit, superclass.symbol, method_name)
+    resolve_class_member_in_hierarchy(
+        project,
+        lookup,
+        superclass_unit,
+        superclass.symbol,
+        method_name,
+    )
 }
 
 fn inject_symbol_into_scope_index(
@@ -2719,7 +2725,6 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
             let unit = &mut project.units[unit_idx];
             unit.diagnostics = unit_diagnostics;
         }
-
     }
 
     for unit in &mut project.units {

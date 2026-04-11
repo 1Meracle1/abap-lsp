@@ -15,8 +15,8 @@ use abap_symbols::{
     UnitId, Visibility, builtin_routine_spec, call_section_matches_parameter,
     parameter_is_required,
     perf_api::{
-        IncrementalProjectUpdate, LocalAnalysis, PreviewProjectUpdate,
-        analyze_unit_local_state, incremental_project_update, preview_project_update,
+        IncrementalProjectUpdate, LocalAnalysis, PreviewProjectUpdate, analyze_unit_local_state,
+        incremental_project_update, preview_project_update,
     },
 };
 use parking_lot::RwLock;
@@ -2145,14 +2145,15 @@ fn synthetic_method_scope_definition_target(
                 symbol: class_symbol,
             };
             let interface_name = Arc::<str>::from(interface_name.to_ascii_lowercase());
-            let (interface_unit, interface_symbol) = resolve_exposed_interface_handle_with_scope_index(
-                snapshot,
-                snapshot.scope_index(),
-                unit,
-                class_handle.symbol,
-                symbol.scope,
-                &interface_name,
-            )?;
+            let (interface_unit, interface_symbol) =
+                resolve_exposed_interface_handle_with_scope_index(
+                    snapshot,
+                    snapshot.scope_index(),
+                    unit,
+                    class_handle.symbol,
+                    symbol.scope,
+                    &interface_name,
+                )?;
             let member = interface_unit
                 .semantic()
                 .decls()
@@ -5555,7 +5556,10 @@ fn has_matching_input_set(
             .all(|input| existing.contains_key(input.uri.as_ref()))
 }
 
-fn local_analysis_with_object_name(mut local: LocalAnalysis, object_name: Option<&Arc<str>>) -> LocalAnalysis {
+fn local_analysis_with_object_name(
+    mut local: LocalAnalysis,
+    object_name: Option<&Arc<str>>,
+) -> LocalAnalysis {
     if let Some(object_name) = object_name {
         local.unit.provided_names.push(Arc::clone(object_name));
         local.unit.provided_names.sort();
@@ -5604,7 +5608,8 @@ fn build_preview_parse_and_local(
     };
     let parse_count = 1;
 
-    let reused_local = previous_snapshot.is_some_and(|snapshot| snapshot_matches_input(snapshot, input))
+    let reused_local = previous_snapshot
+        .is_some_and(|snapshot| snapshot_matches_input(snapshot, input))
         && previous_local.is_some();
     let local = if let Some(previous) = previous_local.filter(|_| reused_local) {
         previous.clone()
@@ -8022,12 +8027,7 @@ ENDCLASS.";
         let target = snapshot
             .definition_at(parameter_use)
             .expect("parameter definition target");
-        assert_target_slice(
-            &target,
-            "file:///super.abap",
-            super_src,
-            "ev_resnd_err",
-        );
+        assert_target_slice(&target, "file:///super.abap", super_src, "ev_resnd_err");
     }
 
     #[test]

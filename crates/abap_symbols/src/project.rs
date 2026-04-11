@@ -10,8 +10,8 @@ use crate::def_map::{
 };
 use crate::ids::{SymbolHandle, SymbolId, UnitId};
 use crate::resolver::{
-    ScopeIndex, build_scope_index, resolve_project_cross_unit, resolve_project_cross_unit_for_units,
-    resolve_unit_with_index,
+    ScopeIndex, build_scope_index, resolve_project_cross_unit,
+    resolve_project_cross_unit_for_units, resolve_unit_with_index,
 };
 use crate::scope::Namespace;
 use crate::validate::{
@@ -301,9 +301,8 @@ pub(crate) fn resolve_include_edges_for_units(
         if !dirty_unit_ids.contains(&unit.unit_id) {
             continue;
         }
-        unit.diagnostics.retain(|diagnostic| {
-            !matches!(diagnostic.kind, DiagnosticKind::UnresolvedInclude)
-        });
+        unit.diagnostics
+            .retain(|diagnostic| !matches!(diagnostic.kind, DiagnosticKind::UnresolvedInclude));
         for edge in &mut unit.include_edges {
             edge.target = provided_name_to_unit.get(&edge.name).copied();
             if edge.target.is_none() {
@@ -457,9 +456,10 @@ fn compute_dirty_set(
                             if changed_unit_ids.contains(&unit)
                     )
                 })
-                || unit.references
-                .iter()
-                .any(|reference| changed_export_names.contains(&reference.name))
+                || unit
+                    .references
+                    .iter()
+                    .any(|reference| changed_export_names.contains(&reference.name))
                 || unit
                     .sql_name_refs
                     .iter()
@@ -499,13 +499,13 @@ pub(crate) fn analyze_project_incremental_from_locals(
         force_full,
     );
 
-    if force_full || previous_project.is_none() || previous_project.is_some_and(|previous| previous.units.len() != local_units.len()) {
+    if force_full
+        || previous_project.is_none()
+        || previous_project.is_some_and(|previous| previous.units.len() != local_units.len())
+    {
         let dirty_set = dirty_set_for_all_units(&local_units);
         let project = analyze_project_from_local_units(local_units);
-        return IncrementalProjectAnalysisResult {
-            project,
-            dirty_set,
-        };
+        return IncrementalProjectAnalysisResult { project, dirty_set };
     }
 
     let previous_project = previous_project.expect("checked above");
@@ -592,9 +592,7 @@ pub fn analyze_unit(uri: impl Into<Arc<str>>, source: &str, parse: &ParseResult)
     let uri = uri.into();
     let local = analyze_unit_locally_phased(UnitId(0), Arc::clone(&uri), source, parse);
     let LocallyResolvedUnit {
-        unit,
-        scope_index,
-        ..
+        unit, scope_index, ..
     } = local;
     let mut project = ProjectAnalysis {
         units: vec![unit],

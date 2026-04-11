@@ -738,6 +738,10 @@ impl<'ctx, 'a> SqlContext<'ctx, 'a> {
         self.collector.syntax_token_is_comment(token)
     }
 
+    pub(super) fn syntax_token_is_ident_like(&self, token: &SyntaxTokenInfo) -> bool {
+        self.collector.syntax_token_is_ident_like(token)
+    }
+
     pub(super) fn count_kind(&self, node: NodeId, kind: abap_ast::SyntaxKind) -> usize {
         self.collector.file.count_kind(node, kind)
     }

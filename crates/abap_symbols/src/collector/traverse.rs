@@ -106,7 +106,6 @@ impl<'a> Collector<'a> {
             | SyntaxKind::MoveStmt
             | SyntaxKind::ModifyStmt
             | SyntaxKind::UpdateTarget
-            | SyntaxKind::DeleteDbTableStmt
             | SyntaxKind::GetReferenceStmt
             | SyntaxKind::GetBitStmt
             | SyntaxKind::SetBitStmt => self.walk_children(node, scope),
@@ -115,6 +114,9 @@ impl<'a> Collector<'a> {
             SyntaxKind::InsertDbTableStmt => self
                 .sql_lowering()
                 .collect_insert_db_table_stmt(node, scope),
+            SyntaxKind::DeleteDbTableStmt => self
+                .sql_lowering()
+                .collect_delete_db_table_stmt(node, scope),
             SyntaxKind::DeleteStmt => self.stmt_lowering().collect_delete_stmt(node, scope),
             SyntaxKind::SortStmt => self.control_lowering().collect_sort_stmt(node, scope),
             SyntaxKind::TypeRefSimple => self.decl_lowering().collect_type_ref(node, scope),

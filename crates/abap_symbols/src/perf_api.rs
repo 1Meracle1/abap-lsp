@@ -12,7 +12,9 @@ use crate::project::{
     collect_project_diagnostics, exported_signature_for_unit, resolve_include_edges_for_units,
 };
 use crate::resolver::{build_scope_index, resolve_unit_with_index};
-use crate::validate::{validate_project_with_scope_indexes, validate_project_with_scope_indexes_for_units};
+use crate::validate::{
+    validate_project_with_scope_indexes, validate_project_with_scope_indexes_for_units,
+};
 
 #[doc(hidden)]
 pub fn collect_unit_only(
@@ -105,7 +107,9 @@ pub fn incremental_project_update(
                     LocallyResolvedUnit {
                         unit: local.unit.clone(),
                         scope_index: local.scope_index.clone(),
-                        exported_signature: super::project::exported_signature_for_unit(&local.unit),
+                        exported_signature: super::project::exported_signature_for_unit(
+                            &local.unit,
+                        ),
                     },
                 )
             })
@@ -139,10 +143,7 @@ pub fn incremental_project_update(
 
 fn rebuild_project_maps(
     units: &[UnitAnalysis],
-) -> (
-    HashMap<Arc<str>, UnitId>,
-    HashMap<Arc<str>, UnitId>,
-) {
+) -> (HashMap<Arc<str>, UnitId>, HashMap<Arc<str>, UnitId>) {
     let mut uri_to_unit = HashMap::with_capacity(units.len());
     let mut provided_name_to_unit = HashMap::new();
     for unit in units {

@@ -27,6 +27,62 @@ impl<'a> Collector<'a> {
 }
 
 impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
+    fn delete_stmt_operands(
+        &self,
+        node: NodeId,
+    ) -> (Option<NodeId>, Option<NodeId>, Option<NodeId>) {
+        let mut head_expr = None;
+        let mut from_expr = None;
+        let mut where_expr = None;
+        let mut saw_where = false;
+        let mut expect_from_expr = false;
+
+        for child in self.collector.file.children(node) {
+            if self.collector.file.kind(child) == SyntaxKind::Token {
+                if let Some(text) = self.collector.syntax(child).text(self.collector.source) {
+                    if text.eq_ignore_ascii_case("from") {
+                        saw_where = false;
+                        expect_from_expr = true;
+                    } else if text.eq_ignore_ascii_case("where") {
+                        saw_where = true;
+                        expect_from_expr = false;
+                    } else if expect_from_expr && text.eq_ignore_ascii_case("table") {
+                        continue;
+                    }
+                }
+                continue;
+            }
+
+            if head_expr.is_none() {
+                head_expr = Some(child);
+                continue;
+            }
+            if expect_from_expr {
+                from_expr = Some(child);
+                expect_from_expr = false;
+                continue;
+            }
+            if saw_where && where_expr.is_none() {
+                where_expr = Some(child);
+            }
+        }
+
+        (head_expr, from_expr, where_expr)
+    }
+
+    fn simple_delete_source_name(&self, node: NodeId) -> Option<Arc<str>> {
+        let tokens: Vec<_> = self
+            .collector
+            .syntax_token_nodes(node)
+            .into_iter()
+            .filter(|token| !self.collector.syntax_token_is_comment(token))
+            .collect();
+        if tokens.len() != 1 || !self.collector.syntax_token_is_ident_like(&tokens[0]) {
+            return None;
+        }
+        Some(Arc::<str>::from(tokens[0].text.to_ascii_lowercase()))
+    }
+
     fn builtin_type(name: &'static str) -> FieldTypeRefData {
         FieldTypeRefData {
             namespace: Namespace::Type,
@@ -99,7 +155,7 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
     }
 
     pub(super) fn collect_delete_stmt(&mut self, node: NodeId, scope: ScopeId) {
-        let Some((source_expr, where_expr)) =
+        let Some((stmt_source_expr, stmt_where_expr)) =
             DeleteStmt::cast(self.collector.syntax(node)).map(|stmt| {
                 (
                     stmt.source().map(|expr| expr.id()),
@@ -110,7 +166,26 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             self.collector.walk_children(node, scope);
             return;
         };
+
+        let (source_expr, from_expr, where_expr) = self.delete_stmt_operands(node);
+        if let Some(source_expr) = source_expr
+            && from_expr.is_some()
+            && let Some(source_name) = self.simple_delete_source_name(source_expr)
+            && self
+                .collector
+                .lookup_symbol_in_scope_chain(scope, Namespace::Value, source_name.as_ref())
+                .is_none()
+        {
+            self.collector
+                .sql_lowering()
+                .collect_delete_db_table_stmt(node, scope);
+            return;
+        }
+
         self.collector.walk_children(node, scope);
+
+        let source_expr = source_expr.or(stmt_source_expr);
+        let where_expr = where_expr.or(stmt_where_expr);
 
         let Some(source_expr) = source_expr else {
             return;

@@ -1835,8 +1835,7 @@ mod tests {
         AnalysisTaskKind, CHANGE_ANALYSIS_DEBOUNCE, EDITOR_FIRST_DIAGNOSTIC_LIMIT,
         RESOLVE_REMOTE_DEPENDENCIES, flush_due_debounced_tasks, handle_did_change_notifications,
         handle_message, run_analysis_task, try_schedule_background_analysis,
-        workspace_analysis_status_finished,
-        workspace_analysis_status_started,
+        workspace_analysis_status_finished, workspace_analysis_status_started,
     };
     use abap_lsp::{
         DidChangeTextDocumentParams, ServerConfig, ServerState, WorkspacePerformanceMode,
@@ -2749,7 +2748,12 @@ lo_provider->value( ).",
             Some("editor-first"),
             None,
             &[
-                ("ZCL_PROVIDER", "global-class", "main", "src/ZCL_PROVIDER.abap"),
+                (
+                    "ZCL_PROVIDER",
+                    "global-class",
+                    "main",
+                    "src/ZCL_PROVIDER.abap",
+                ),
                 ("ZREPORT_MAIN", "report", "root", "src/ZREPORT_MAIN.abap"),
             ],
             0,

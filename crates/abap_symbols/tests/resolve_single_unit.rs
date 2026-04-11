@@ -2036,7 +2036,11 @@ SELECT objid
   WHERE serno EQ @lt_epc_list-epc.
 "#;
     let parsed = parse(src);
-    let unit = analyze_unit("file:///into_table_inline_previous_select_ok.abap", src, &parsed);
+    let unit = analyze_unit(
+        "file:///into_table_inline_previous_select_ok.abap",
+        src,
+        &parsed,
+    );
     assert!(
         !unit.diagnostics.iter().any(|diag| {
             diag.kind == DiagnosticKind::InvalidOpenSqlIntoTarget
@@ -7565,6 +7569,46 @@ GET REFERENCE OF ls_xmlparse INTO lo_xmlparse.
             .iter()
             .any(|diag| diag.kind == DiagnosticKind::UnresolvedReference),
         "unexpected unresolved diagnostic: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn delete_dbtab_from_work_area_collects_open_sql_source_instead_of_value_ref() {
+    let src = r#"
+TYPES zattp_rs_represp TYPE STANDARD TABLE OF i WITH EMPTY KEY.
+
+FORM run.
+  FIELD-SYMBOLS <fs_rs_represp> TYPE i.
+  DELETE zattp_rs_represp FROM <fs_rs_represp>.
+ENDFORM.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///delete_dbtab_from_work_area.abap", src, &parsed);
+
+    assert!(
+        unit.sql_name_refs.iter().any(|sql_ref| {
+            sql_ref.kind == SqlNameRefKind::Source && sql_ref.name.as_ref() == "zattp_rs_represp"
+        }),
+        "expected Open SQL source ref for DELETE dbtab, sql refs={:?} diagnostics={:?}",
+        unit.sql_name_refs,
+        unit.diagnostics
+    );
+    assert!(
+        !unit.references.iter().any(|reference| {
+            reference.namespace == Namespace::Value
+                && reference.kind == ReferenceKind::Identifier
+                && reference.name.as_ref() == "zattp_rs_represp"
+        }),
+        "unexpected value reference for DELETE dbtab source, refs={:?}",
+        unit.references
+    );
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference
+                && diag.message.contains("zattp_rs_represp")
+        }),
+        "unexpected unresolved diagnostic for DELETE dbtab source: {:?}",
         unit.diagnostics
     );
 }
