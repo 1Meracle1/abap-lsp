@@ -328,8 +328,12 @@ ast_node!(ExprIdent, SyntaxKind::ExprIdent);
 ast_node!(DataDecl, SyntaxKind::DataDecl);
 ast_node!(DataDeclName, SyntaxKind::DataDeclName);
 ast_node!(TypeRefSimple, SyntaxKind::TypeRefSimple);
+ast_node!(TemplateExpr, SyntaxKind::TemplateExpr);
+ast_node!(TemplateInterpolation, SyntaxKind::TemplateInterpolation);
 ast_node!(SelectorExpr, SyntaxKind::SelectorExpr);
+ast_node!(ParenExpr, SyntaxKind::ParenExpr);
 ast_node!(CallExpr, SyntaxKind::CallExpr);
+ast_node!(ConstructorExpr, SyntaxKind::ConstructorExpr);
 ast_node!(CallArgList, SyntaxKind::CallArgList);
 ast_node!(CallArgSection, SyntaxKind::CallArgSection);
 ast_node!(CallNamedArg, SyntaxKind::CallNamedArg);
@@ -917,12 +921,59 @@ impl<'a> SelectorExpr<'a> {
     }
 }
 
+impl<'a> TemplateExpr<'a> {
+    pub fn wrapped_expr(self) -> Option<SyntaxNodeRef<'a>> {
+        let mut children = self.syntax.children();
+        let child = children.next()?;
+        if children.next().is_some() || child.kind() == SyntaxKind::TemplateInterpolation {
+            return None;
+        }
+        Some(child)
+    }
+}
+
+impl<'a> TemplateInterpolation<'a> {
+    pub fn expr(self) -> Option<SyntaxNodeRef<'a>> {
+        self.syntax
+            .non_token_children()
+            .find(|child| child.kind() != SyntaxKind::TemplateFormatSpec)
+    }
+}
+
+impl<'a> ParenExpr<'a> {
+    pub fn inner_expr(self) -> Option<SyntaxNodeRef<'a>> {
+        self.syntax.first_non_token_child()
+    }
+}
+
 impl<'a> CallExpr<'a> {
     pub fn callee(&self) -> Option<SyntaxNodeRef<'a>> {
         self.syntax.children().next()
     }
 
     pub fn arg_list(&self) -> Option<CallArgList<'a>> {
+        self.syntax
+            .child_by_kind(SyntaxKind::CallArgList)
+            .and_then(CallArgList::cast)
+    }
+}
+
+impl<'a> ConstructorExpr<'a> {
+    pub fn keyword_token(self) -> Option<SyntaxNodeRef<'a>> {
+        self.syntax.children_by_kind(SyntaxKind::Token).next()
+    }
+
+    pub fn keyword(self, source: &str) -> Option<Arc<str>> {
+        self.keyword_token()?.lower_trimmed_text(source)
+    }
+
+    pub fn type_ref(self) -> Option<TypeRefSimple<'a>> {
+        self.syntax
+            .child_by_kind(SyntaxKind::TypeRefSimple)
+            .and_then(TypeRefSimple::cast)
+    }
+
+    pub fn arg_list(self) -> Option<CallArgList<'a>> {
         self.syntax
             .child_by_kind(SyntaxKind::CallArgList)
             .and_then(CallArgList::cast)

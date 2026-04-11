@@ -2,7 +2,11 @@ use std::sync::Arc;
 
 use abap_ast::SyntaxKind;
 use abap_ast::arena::NodeId;
-use abap_ast::ast::{AstNode, CallArgList, CallExpr, CallNamedArg, CallPositionalArg};
+use abap_ast::ast::{
+    AstNode, CallArgList, CallExpr, CallNamedArg, CallPositionalArg, ConstructorExpr,
+    MethodsParamSectionKind, ParenExpr, TemplateExpr, TemplateInterpolation,
+};
+use abap_lexer::TextRange;
 
 use crate::builtins::builtin_routine_spec;
 use crate::def_map::{
@@ -47,13 +51,336 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
         self.ctx.source()
     }
 
-    fn constructor_keyword(&self, node: NodeId) -> Option<Arc<str>> {
-        self.ctx
+    fn simple_wrapped_expr_node(&self, node: NodeId) -> Option<NodeId> {
+        match self.kind(node) {
+            SyntaxKind::TemplateExpr => TemplateExpr::cast(self.ctx.syntax(node))
+                .and_then(|expr| expr.wrapped_expr())
+                .map(|child| child.id()),
+            SyntaxKind::ParenExpr => ParenExpr::cast(self.ctx.syntax(node))
+                .and_then(|expr| expr.inner_expr())
+                .map(|child| child.id()),
+            SyntaxKind::TemplateInterpolation => TemplateInterpolation::cast(self.ctx.syntax(node))
+                .and_then(|interp| interp.expr())
+                .map(|child| child.id()),
+            _ => None,
+        }
+    }
+
+    fn type_fact_from_declared_type(
+        &self,
+        scope: ScopeId,
+        declared_type: FieldTypeRefData,
+        type_clause_display: Option<Arc<str>>,
+    ) -> TypeFactData {
+        let structure = if declared_type.field_path.is_empty() {
+            self.ctx
+                .lookup_symbol_in_scope_chain(
+                    scope,
+                    declared_type.namespace,
+                    declared_type.base_name.as_ref(),
+                )
+                .and_then(|symbol_id| self.ctx.symbol_structure(symbol_id))
+        } else {
+            None
+        };
+        TypeFactData {
+            structure,
+            declared_type: Some(declared_type),
+            type_clause_display,
+        }
+    }
+
+    fn substring_builtin_call_target(
+        &self,
+        node: NodeId,
+        scope: ScopeId,
+    ) -> Option<(Arc<str>, TextRange, NodeId)> {
+        let mut non_token_children = self
+            .ctx
             .file()
             .children(node)
-            .find(|&child| self.kind(child) == SyntaxKind::Token)
-            .and_then(|child| self.ctx.syntax(child).text(self.source()))
-            .map(|text| Arc::<str>::from(text.to_ascii_lowercase()))
+            .filter(|&child| self.kind(child) != SyntaxKind::Token);
+        let base = non_token_children.next()?;
+        let argument = non_token_children.next()?;
+        if non_token_children.next().is_some() || self.kind(base) != SyntaxKind::ExprIdent {
+            return None;
+        }
+        let (name, range) = self.ctx.node_name(base)?;
+        if self
+            .ctx
+            .lookup_symbol_in_scope_chain(scope, Namespace::Value, name.as_ref())
+            .is_some()
+            || builtin_routine_spec(name.as_ref()).is_none()
+        {
+            return None;
+        }
+        Some((name, range, argument))
+    }
+
+    fn type_fact_from_selector_chain(
+        &self,
+        scope: ScopeId,
+        namespace: Namespace,
+        base_name: &str,
+        field_path: &[crate::def_map::FieldAccessSegment],
+    ) -> TypeFactData {
+        if namespace != Namespace::Value {
+            return TypeFactData::default();
+        }
+        let Some(symbol_id) =
+            self.ctx
+                .lookup_symbol_in_scope_chain(scope, Namespace::Value, base_name)
+        else {
+            return TypeFactData::default();
+        };
+        if field_path.is_empty() {
+            return self.type_fact_from_symbol(symbol_id);
+        }
+        let mut structure = self.ctx.symbol_structure(symbol_id);
+        let mut declared_type = self.ctx.symbol_declared_type(symbol_id);
+        for segment in field_path {
+            if segment.is_deref() {
+                let Some(type_ref) = declared_type.clone() else {
+                    return TypeFactData::default();
+                };
+                if !type_ref.is_ref {
+                    return TypeFactData::default();
+                }
+                structure = None;
+                declared_type = Some(FieldTypeRefData {
+                    namespace: type_ref.namespace,
+                    is_ref: false,
+                    base_name: type_ref.base_name,
+                    field_path: type_ref.field_path,
+                });
+                continue;
+            }
+            let Some(structure_id) = structure else {
+                return TypeFactData::default();
+            };
+            let Some(field) = self
+                .ctx
+                .structure_field(structure_id, segment.name.as_ref())
+            else {
+                return TypeFactData::default();
+            };
+            structure = field.structure;
+            declared_type = field.type_ref;
+        }
+        TypeFactData {
+            structure,
+            declared_type,
+            type_clause_display: None,
+        }
+    }
+
+    fn resolve_method_target_class_symbol(
+        &self,
+        scope: ScopeId,
+        base_namespace: Namespace,
+        base_name: &Arc<str>,
+    ) -> Option<crate::ids::SymbolId> {
+        match base_namespace {
+            Namespace::Type => self
+                .ctx
+                .lookup_symbol_in_scope_chain(scope, Namespace::Type, base_name.as_ref())
+                .filter(|&symbol_id| self.ctx.symbol_kind(symbol_id) == SymbolKind::Class),
+            Namespace::Value => {
+                let symbol_id = self.ctx.lookup_symbol_in_scope_chain(
+                    scope,
+                    Namespace::Value,
+                    base_name.as_ref(),
+                )?;
+                let declared_type = self.ctx.symbol_declared_type(symbol_id)?;
+                if !declared_type.is_ref || !declared_type.field_path.is_empty() {
+                    return None;
+                }
+                self.ctx
+                    .lookup_symbol_in_scope_chain(
+                        scope,
+                        declared_type.namespace,
+                        declared_type.base_name.as_ref(),
+                    )
+                    .filter(|&symbol_id| self.ctx.symbol_kind(symbol_id) == SymbolKind::Class)
+            }
+            Namespace::Routine => None,
+        }
+    }
+
+    fn type_fact_from_method_signature(
+        &self,
+        scope: ScopeId,
+        signature: &super::PendingMethodSignature,
+    ) -> TypeFactData {
+        let Some(param) = signature.parameters.iter().find(|param| {
+            matches!(
+                param.section,
+                MethodsParamSectionKind::Returning | MethodsParamSectionKind::Receiving
+            )
+        }) else {
+            return TypeFactData::default();
+        };
+        let Some(declared_type) = param.declared_type.clone() else {
+            return TypeFactData::default();
+        };
+        self.type_fact_from_declared_type(scope, declared_type, param.type_clause_display.clone())
+    }
+
+    fn type_fact_from_named_argument_target(
+        &self,
+        scope: ScopeId,
+        target: &NamedArgumentTarget,
+    ) -> TypeFactData {
+        match target {
+            NamedArgumentTarget::Routine { routine_name } => {
+                let Some(spec) = builtin_routine_spec(routine_name.as_ref()) else {
+                    return TypeFactData::default();
+                };
+                self.type_fact_from_declared_type(
+                    scope,
+                    FieldTypeRefData {
+                        namespace: Namespace::Type,
+                        is_ref: false,
+                        base_name: Arc::from(spec.return_type),
+                        field_path: Vec::new(),
+                    },
+                    Some(Arc::from(spec.return_type)),
+                )
+            }
+            NamedArgumentTarget::ImplicitMethod { method_name } => {
+                let Some(owner_symbol) = self.ctx.enclosing_class_owner(scope) else {
+                    return TypeFactData::default();
+                };
+                let Some(signature) = self.ctx.class_method_signature_target(
+                    owner_symbol,
+                    None,
+                    method_name.as_ref(),
+                    scope,
+                ) else {
+                    return TypeFactData::default();
+                };
+                self.type_fact_from_method_signature(scope, signature)
+            }
+            NamedArgumentTarget::Method {
+                base_namespace,
+                base_name,
+                method_name,
+            } => {
+                let Some(owner_symbol) =
+                    self.resolve_method_target_class_symbol(scope, *base_namespace, base_name)
+                else {
+                    return TypeFactData::default();
+                };
+                let Some(signature) = self.ctx.class_method_signature_target(
+                    owner_symbol,
+                    None,
+                    method_name.as_ref(),
+                    scope,
+                ) else {
+                    return TypeFactData::default();
+                };
+                self.type_fact_from_method_signature(scope, signature)
+            }
+            NamedArgumentTarget::Constructor { .. } | NamedArgumentTarget::Function { .. } => {
+                TypeFactData::default()
+            }
+        }
+    }
+
+    fn type_fact_from_call_expr(&self, node: NodeId, scope: ScopeId) -> TypeFactData {
+        let Some(call) = CallExpr::cast(self.ctx.syntax(node)) else {
+            return TypeFactData::default();
+        };
+        let Some(callee) = call.callee() else {
+            return TypeFactData::default();
+        };
+        match callee.kind() {
+            SyntaxKind::ExprIdent => {
+                let Some((name, _)) = self.ctx.node_name(callee.id()) else {
+                    return TypeFactData::default();
+                };
+                if let Some(spec) = builtin_routine_spec(name.as_ref()) {
+                    return self.type_fact_from_declared_type(
+                        scope,
+                        FieldTypeRefData {
+                            namespace: Namespace::Type,
+                            is_ref: false,
+                            base_name: Arc::from(spec.return_type),
+                            field_path: Vec::new(),
+                        },
+                        Some(Arc::from(spec.return_type)),
+                    );
+                }
+                let Some(owner_symbol) = self.ctx.enclosing_class_owner(scope) else {
+                    return TypeFactData::default();
+                };
+                let Some(signature) = self.ctx.class_method_signature_target(
+                    owner_symbol,
+                    None,
+                    name.as_ref(),
+                    scope,
+                ) else {
+                    return TypeFactData::default();
+                };
+                self.type_fact_from_method_signature(scope, signature)
+            }
+            _ => self
+                .ctx
+                .named_argument_target_for_callee(callee.id())
+                .map(|target| self.type_fact_from_named_argument_target(scope, &target))
+                .unwrap_or_default(),
+        }
+    }
+
+    fn type_fact_from_substring_expr(&self, node: NodeId, scope: ScopeId) -> TypeFactData {
+        let Some((routine_name, _, _)) = self.substring_builtin_call_target(node, scope) else {
+            return self.type_fact_from_tokens(&self.ctx.syntax_token_nodes(node), scope);
+        };
+        let Some(spec) = builtin_routine_spec(routine_name.as_ref()) else {
+            return TypeFactData::default();
+        };
+        self.type_fact_from_declared_type(
+            scope,
+            FieldTypeRefData {
+                namespace: Namespace::Type,
+                is_ref: false,
+                base_name: Arc::from(spec.return_type),
+                field_path: Vec::new(),
+            },
+            Some(Arc::from(spec.return_type)),
+        )
+    }
+
+    fn type_fact_from_constructor_expr(&self, node: NodeId, _scope: ScopeId) -> TypeFactData {
+        let Some(constructor) = ConstructorExpr::cast(self.ctx.syntax(node)) else {
+            return TypeFactData::default();
+        };
+        let Some(type_ref) = constructor.type_ref() else {
+            return TypeFactData::default();
+        };
+        let Some(display_text) = type_ref.display_text(self.source()) else {
+            return TypeFactData::default();
+        };
+        if display_text == "#" {
+            return TypeFactData::default();
+        }
+        let Some(mut declared_type) = self
+            .ctx
+            .field_type_ref_from_node(type_ref.syntax().id(), Namespace::Type)
+        else {
+            return TypeFactData::default();
+        };
+        if matches!(
+            constructor.keyword(self.source()).as_deref(),
+            Some("new" | "ref")
+        ) {
+            declared_type.is_ref = true;
+        }
+        TypeFactData {
+            structure: None,
+            declared_type: Some(declared_type),
+            type_clause_display: Some(Arc::from(display_text)),
+        }
     }
 
     fn inferred_metadata_from_tokens(
@@ -141,51 +468,12 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
             && next_idx == tokens.len()
             && namespace == Namespace::Value
         {
-            let Some(symbol_id) =
-                self.ctx
-                    .lookup_symbol_in_scope_chain(scope, Namespace::Value, base_name.as_ref())
-            else {
-                return TypeFactData::default();
-            };
-            if field_path.is_empty() {
-                return self.type_fact_from_symbol(symbol_id);
-            }
-            let mut structure = self.ctx.symbol_structure(symbol_id);
-            let mut declared_type = self.ctx.symbol_declared_type(symbol_id);
-            for segment in field_path {
-                if segment.is_deref() {
-                    let Some(type_ref) = declared_type.clone() else {
-                        return TypeFactData::default();
-                    };
-                    if !type_ref.is_ref {
-                        return TypeFactData::default();
-                    }
-                    structure = None;
-                    declared_type = Some(FieldTypeRefData {
-                        namespace: type_ref.namespace,
-                        is_ref: false,
-                        base_name: type_ref.base_name,
-                        field_path: type_ref.field_path,
-                    });
-                    continue;
-                }
-                let Some(structure_id) = structure else {
-                    return TypeFactData::default();
-                };
-                let Some(field) = self
-                    .ctx
-                    .structure_field(structure_id, segment.name.as_ref())
-                else {
-                    return TypeFactData::default();
-                };
-                structure = field.structure;
-                declared_type = field.type_ref;
-            }
-            return TypeFactData {
-                structure,
-                declared_type,
-                type_clause_display: None,
-            };
+            return self.type_fact_from_selector_chain(
+                scope,
+                namespace,
+                base_name.as_ref(),
+                &field_path,
+            );
         }
         if first.text.eq_ignore_ascii_case("new")
             && let Some(lparen_idx) = tokens.iter().position(|token| token.text.as_ref() == "(")
@@ -208,16 +496,10 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
     }
 
     fn type_fact_from_expr_node(&self, node: NodeId, scope: ScopeId) -> TypeFactData {
+        if let Some(inner) = self.simple_wrapped_expr_node(node) {
+            return self.type_fact_from_expr_node(inner, scope);
+        }
         match self.kind(node) {
-            SyntaxKind::TemplateExpr => self
-                .ctx
-                .file()
-                .children(node)
-                .find(|&child| self.kind(child) != SyntaxKind::Token)
-                .map(|child| self.type_fact_from_expr_node(child, scope))
-                .unwrap_or_else(|| {
-                    self.type_fact_from_tokens(&self.ctx.syntax_token_nodes(node), scope)
-                }),
             SyntaxKind::ExprIdent => {
                 let Some((name, _)) = self.ctx.node_name(node) else {
                     return TypeFactData::default();
@@ -234,76 +516,18 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                 let Some((namespace, base_name, _, field_path)) =
                     self.ctx.selector_access_chain(node)
                 else {
-                    return TypeFactData::default();
+                    return self.type_fact_from_tokens(&self.ctx.syntax_token_nodes(node), scope);
                 };
-                if namespace != Namespace::Value {
-                    return TypeFactData::default();
-                }
-                let Some(symbol_id) = self.ctx.lookup_symbol_in_scope_chain(
+                self.type_fact_from_selector_chain(
                     scope,
-                    Namespace::Value,
+                    namespace,
                     base_name.as_ref(),
-                ) else {
-                    return TypeFactData::default();
-                };
-                if field_path.is_empty() {
-                    return self.type_fact_from_symbol(symbol_id);
-                }
-                let mut structure = self.ctx.symbol_structure(symbol_id);
-                let mut declared_type = self.ctx.symbol_declared_type(symbol_id);
-                for segment in field_path {
-                    if segment.is_deref() {
-                        let Some(type_ref) = declared_type.clone() else {
-                            return TypeFactData::default();
-                        };
-                        if !type_ref.is_ref {
-                            return TypeFactData::default();
-                        }
-                        structure = None;
-                        declared_type = Some(FieldTypeRefData {
-                            namespace: type_ref.namespace,
-                            is_ref: false,
-                            base_name: type_ref.base_name,
-                            field_path: type_ref.field_path,
-                        });
-                        continue;
-                    }
-                    let Some(structure_id) = structure else {
-                        return TypeFactData::default();
-                    };
-                    let Some(field) = self
-                        .ctx
-                        .structure_field(structure_id, segment.name.as_ref())
-                    else {
-                        return TypeFactData::default();
-                    };
-                    structure = field.structure;
-                    declared_type = field.type_ref;
-                }
-                TypeFactData {
-                    structure,
-                    declared_type,
-                    type_clause_display: None,
-                }
+                    &field_path,
+                )
             }
-            SyntaxKind::ConstructorExpr => {
-                let keyword = self.constructor_keyword(node);
-                if let Some((type_name, _)) = self.ctx.constructor_type_ref(node)
-                    && type_name.as_ref() != "#"
-                {
-                    return TypeFactData {
-                        structure: None,
-                        declared_type: Some(FieldTypeRefData {
-                            namespace: Namespace::Type,
-                            is_ref: keyword.as_deref() == Some("new"),
-                            base_name: Arc::clone(&type_name),
-                            field_path: Vec::new(),
-                        }),
-                        type_clause_display: Some(type_name),
-                    };
-                }
-                TypeFactData::default()
-            }
+            SyntaxKind::CallExpr => self.type_fact_from_call_expr(node, scope),
+            SyntaxKind::SubstringExpr => self.type_fact_from_substring_expr(node, scope),
+            SyntaxKind::ConstructorExpr => self.type_fact_from_constructor_expr(node, scope),
             _ => self.type_fact_from_tokens(&self.ctx.syntax_token_nodes(node), scope),
         }
     }
@@ -328,6 +552,10 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
     }
 
     pub(super) fn collect_expr(&mut self, node: NodeId, scope: ScopeId) {
+        if let Some(inner) = self.simple_wrapped_expr_node(node) {
+            self.collect_expr(inner, scope);
+            return;
+        }
         match self.kind(node) {
             SyntaxKind::AssignStmt => self.collect_assign_stmt(node, scope),
             SyntaxKind::TemplateFormatSpec => self.collect_template_format_spec(node, scope),
@@ -346,15 +574,52 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
             SyntaxKind::SubstringExpr => self.collect_substring_expr(node, scope),
             SyntaxKind::CallExpr => self.collect_call_expr(node, scope),
             SyntaxKind::LetExpr => self.collect_let_expr(node, scope),
-            SyntaxKind::ConstructorExpr => {
-                let constructor_keyword = self.constructor_keyword(node);
-                let mut arg_list = None;
+            SyntaxKind::TemplateExpr => {
+                let token_children = self.ctx.syntax_token_nodes(node);
+                if token_children
+                    .iter()
+                    .any(|token| matches!(token.text.as_ref(), "[" | "]"))
+                    && self
+                        .ctx
+                        .file()
+                        .find_first_kind(node, SyntaxKind::ConstructorExpr)
+                        .is_none()
+                    && self
+                        .ctx
+                        .file()
+                        .find_first_kind(node, SyntaxKind::CallExpr)
+                        .is_none()
+                {
+                    self.ctx
+                        .collect_token_expression_refs_infos(&token_children, scope, true);
+                    return;
+                }
                 for child in self.ctx.file().children(node) {
                     match self.kind(child) {
+                        SyntaxKind::Token => {}
+                        _ => self.collect_expr(child, scope),
+                    }
+                }
+            }
+            SyntaxKind::ConstructorExpr => {
+                let Some(constructor) = ConstructorExpr::cast(self.ctx.syntax(node)) else {
+                    return;
+                };
+                let constructor_keyword = constructor.keyword(self.source());
+                let arg_list = constructor
+                    .arg_list()
+                    .map(|arg_list| arg_list.syntax().id());
+                let child_nodes = constructor
+                    .syntax()
+                    .children()
+                    .map(|child| (child.id(), child.kind()))
+                    .collect::<Vec<_>>();
+                for (child, kind) in child_nodes {
+                    match kind {
                         SyntaxKind::TypeRefSimple => {
                             self.ctx.decl_lowering().collect_type_ref(child, scope)
                         }
-                        SyntaxKind::CallArgList => arg_list = Some(child),
+                        SyntaxKind::CallArgList => {}
                         SyntaxKind::Token => {}
                         _ => self.collect_expr(child, scope),
                     }
@@ -2544,6 +2809,16 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
             return;
         }
 
+        let token_children = self.ctx.syntax_token_nodes(node);
+        if token_children
+            .iter()
+            .any(|token| matches!(token.text.as_ref(), "[" | "]"))
+        {
+            self.ctx
+                .collect_token_expression_refs_infos(&token_children, scope, true);
+            return;
+        }
+
         let mut children = self.ctx.file().children(node);
         let base = children.next();
         let op = children.next();
@@ -2576,6 +2851,32 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
     }
 
     pub(super) fn collect_substring_expr(&mut self, node: NodeId, scope: ScopeId) {
+        if let Some((routine_name, routine_range, argument)) =
+            self.substring_builtin_call_target(node, scope)
+        {
+            self.ctx.add_reference(
+                scope,
+                Arc::clone(&routine_name),
+                Namespace::Routine,
+                ReferenceKind::RoutineCall,
+                routine_range,
+            );
+            self.collect_expr(argument, scope);
+            self.ctx.emit_call_site(CallSiteData {
+                scope,
+                range: self.ctx.file().range(node),
+                target: NamedArgumentTarget::Routine { routine_name },
+                arguments: vec![CallArgumentData {
+                    range: self.ctx.file().range(argument),
+                    name: None,
+                    section: None,
+                    ordinal: 0,
+                    type_fact: self.type_fact_from_expr_node(argument, scope),
+                }],
+            });
+            return;
+        }
+
         let mut children = self.ctx.file().children(node);
         let Some(base) = children.next() else {
             return;

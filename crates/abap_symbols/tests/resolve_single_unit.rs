@@ -2633,6 +2633,131 @@ lv_name = lr_row->*-name.
 }
 
 #[test]
+fn resolves_parenthesized_selector_field_access() {
+    let src = r#"
+TYPES: BEGIN OF ty_row,
+         name TYPE string,
+       END OF ty_row.
+DATA ls_row TYPE ty_row.
+DATA lv_name TYPE string.
+
+lv_name = ( ls_row-name ).
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///paren_selector.abap", src, &parsed);
+
+    assert!(
+        unit.field_accesses.iter().any(|access| {
+            access.base_name.as_ref() == "ls_row"
+                && access.field_path.len() == 1
+                && access.field_path[0].name.as_ref() == "name"
+        }),
+        "expected parenthesized selector field access, accesses={:?}",
+        unit.field_accesses
+    );
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            matches!(
+                diag.kind,
+                DiagnosticKind::UnresolvedReference | DiagnosticKind::UnknownField
+            ) && (diag.message.contains("ls_row") || diag.message.contains("name"))
+        }),
+        "unexpected parenthesized selector diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn resolves_parenthesized_builtin_call_expression() {
+    let src = r#"
+DATA lv_text TYPE string.
+DATA lv_len TYPE i.
+
+lv_len = ( strlen( lv_text ) ).
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///paren_builtin_call.abap", src, &parsed);
+
+    assert!(unit.references.iter().any(|reference| {
+        reference.namespace == Namespace::Value
+            && reference.name.as_ref() == "lv_text"
+            && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+    }));
+    assert!(
+        unit.call_sites.iter().any(|site| {
+            matches!(
+                site.target,
+                abap_symbols::NamedArgumentTarget::Routine { ref routine_name }
+                    if routine_name.as_ref() == "strlen"
+            ) && site.arguments.len() == 1
+        }),
+        "missing parenthesized builtin call site: {:?}",
+        unit.call_sites
+    );
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference
+                && (diag.message.contains("strlen") || diag.message.contains("lv_text"))
+        }),
+        "unexpected parenthesized call diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn infers_assignment_rhs_type_facts_from_structured_constructors() {
+    let src = r#"
+CLASS zcl_demo DEFINITION.
+ENDCLASS.
+
+CLASS zcl_demo IMPLEMENTATION.
+ENDCLASS.
+
+TYPES: BEGIN OF ty_row,
+         comp TYPE i,
+       END OF ty_row.
+
+DATA lo_demo TYPE REF TO zcl_demo.
+DATA ls_row TYPE ty_row.
+
+lo_demo = NEW zcl_demo( ).
+ls_row = VALUE ty_row( comp = 1 ).
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///constructor_type_facts.abap", src, &parsed);
+
+    let new_assignment = unit
+        .assignment_sites
+        .iter()
+        .find(|site| src[site.range.clone()].contains("NEW zcl_demo"))
+        .expect("NEW assignment");
+    let new_type = new_assignment
+        .rhs
+        .declared_type
+        .as_ref()
+        .expect("NEW rhs declared type");
+    assert_eq!(new_type.namespace, Namespace::Type);
+    assert!(new_type.is_ref);
+    assert_eq!(new_type.base_name.as_ref(), "zcl_demo");
+    assert!(new_type.field_path.is_empty());
+
+    let value_assignment = unit
+        .assignment_sites
+        .iter()
+        .find(|site| src[site.range.clone()].contains("VALUE ty_row"))
+        .expect("VALUE assignment");
+    let value_type = value_assignment
+        .rhs
+        .declared_type
+        .as_ref()
+        .expect("VALUE rhs declared type");
+    assert_eq!(value_type.namespace, Namespace::Type);
+    assert!(!value_type.is_ref);
+    assert_eq!(value_type.base_name.as_ref(), "ty_row");
+    assert!(value_type.field_path.is_empty());
+}
+
+#[test]
 fn infers_assign_inline_field_symbol_from_dereferenced_ref() {
     let src = r#"
 TYPES: BEGIN OF ty_row,

@@ -8,7 +8,7 @@ use crate::def_map::{
     SqlPredicateData, SqlProjectionData, SqlQueryData, SqlSourceData, SqlTargetData,
     StructureFieldData, SymbolKind,
 };
-use crate::ids::{ScopeId, StructureId};
+use crate::ids::{ScopeId, StructureId, SymbolId};
 use crate::scope::Namespace;
 
 use super::decls::DeclLowering;
@@ -262,6 +262,18 @@ impl<'ctx, 'a> ExprContext<'ctx, 'a> {
         self.collector.symbol(symbol_id).structure
     }
 
+    pub(super) fn symbol_kind(&self, symbol_id: SymbolId) -> SymbolKind {
+        self.collector.symbol(symbol_id).kind
+    }
+
+    pub(super) fn field_type_ref_from_node(
+        &self,
+        node: NodeId,
+        namespace: Namespace,
+    ) -> Option<FieldTypeRefData> {
+        self.collector.field_type_ref_from_node(node, namespace)
+    }
+
     pub(super) fn structure_field(
         &self,
         structure_id: StructureId,
@@ -283,6 +295,25 @@ impl<'ctx, 'a> ExprContext<'ctx, 'a> {
         callee: NodeId,
     ) -> Option<NamedArgumentTarget> {
         self.collector.named_argument_target_for_callee(callee)
+    }
+
+    pub(super) fn enclosing_class_owner(&self, scope: ScopeId) -> Option<SymbolId> {
+        self.collector.enclosing_class_owner(scope)
+    }
+
+    pub(super) fn class_method_signature_target(
+        &self,
+        owner_symbol: SymbolId,
+        qualifier: Option<&str>,
+        method_name: &str,
+        lookup_scope: ScopeId,
+    ) -> Option<&super::PendingMethodSignature> {
+        self.collector.class_method_signature_target(
+            owner_symbol,
+            qualifier,
+            method_name,
+            lookup_scope,
+        )
     }
 
     pub(super) fn control_lowering(&mut self) -> super::control::ControlLowering<'_, 'a> {

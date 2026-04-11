@@ -1576,6 +1576,9 @@ pub fn parse_logical_expr(
 mod tests {
     use super::*;
     use abap_ast::arena::SyntaxTree;
+    use abap_ast::ast::{
+        AstNode, ConstructorExpr, ParenExpr, SyntaxNodeRef, TemplateExpr, TemplateInterpolation,
+    };
     use abap_lexer::tokenize;
 
     /// Tokens after first `=`, stopping before statement-ending `.`.
@@ -1635,6 +1638,97 @@ mod tests {
                 .expect("inner expr"),
             _ => wrap,
         }
+    }
+
+    #[test]
+    fn constructor_expr_ast_helpers_expose_keyword_type_and_arg_list() {
+        let (src, tokens, prev) = expr_tokens_after_eq("DATA(result) = NEW zcl_demo( ).");
+        let mut b = SyntaxTreeBuilder::default();
+        let root = parse_arithmetic_expr(&mut b, &src, &tokens, Some(&prev));
+        let tree = b.finish(root);
+        let template = TemplateExpr::cast(SyntaxNodeRef::new(&tree, root)).expect("template");
+        let constructor =
+            ConstructorExpr::cast(template.wrapped_expr().expect("wrapped expr")).expect("ctor");
+        assert_eq!(constructor.keyword(&src).as_deref(), Some("new"));
+        assert_eq!(
+            constructor
+                .type_ref()
+                .and_then(|type_ref| type_ref.display_text(&src))
+                .map(str::to_ascii_lowercase)
+                .as_deref(),
+            Some("zcl_demo")
+        );
+        assert!(constructor.arg_list().is_some());
+    }
+
+    #[test]
+    fn value_constructor_ast_helpers_expose_type_and_named_arg_list() {
+        let (src, tokens, prev) =
+            expr_tokens_after_eq("DATA(result) = VALUE ty_demo( comp = lv_x ).");
+        let mut b = SyntaxTreeBuilder::default();
+        let root = parse_arithmetic_expr(&mut b, &src, &tokens, Some(&prev));
+        let tree = b.finish(root);
+        let template = TemplateExpr::cast(SyntaxNodeRef::new(&tree, root)).expect("template");
+        let constructor =
+            ConstructorExpr::cast(template.wrapped_expr().expect("wrapped expr")).expect("ctor");
+        assert_eq!(constructor.keyword(&src).as_deref(), Some("value"));
+        assert_eq!(
+            constructor
+                .type_ref()
+                .and_then(|type_ref| type_ref.display_text(&src))
+                .map(str::to_ascii_lowercase)
+                .as_deref(),
+            Some("ty_demo")
+        );
+        let arg_list = constructor.arg_list().expect("arg list");
+        assert_eq!(arg_list.named_args().count(), 1);
+    }
+
+    #[test]
+    fn paren_expr_ast_helper_exposes_inner_call() {
+        let (src, tokens, prev) = expr_tokens_after_eq("DATA(result) = ( lo_obj->run( ) ).");
+        let mut b = SyntaxTreeBuilder::default();
+        let root = parse_arithmetic_expr(&mut b, &src, &tokens, Some(&prev));
+        let tree = b.finish(root);
+        let template = TemplateExpr::cast(SyntaxNodeRef::new(&tree, root)).expect("template");
+        let paren = ParenExpr::cast(template.wrapped_expr().expect("wrapped expr")).expect("paren");
+        assert_eq!(
+            paren.inner_expr().map(|child| child.kind()),
+            Some(SyntaxKind::CallExpr)
+        );
+    }
+
+    #[test]
+    fn template_expr_ast_helper_exposes_wrapped_expr_only_for_plain_expression() {
+        let (src, tokens, prev) = expr_tokens_after_eq("DATA(result) = lo_obj->field.");
+        let mut b = SyntaxTreeBuilder::default();
+        let root = parse_arithmetic_expr(&mut b, &src, &tokens, Some(&prev));
+        let tree = b.finish(root);
+        let template = TemplateExpr::cast(SyntaxNodeRef::new(&tree, root)).expect("template");
+        assert_eq!(
+            template.wrapped_expr().map(|child| child.kind()),
+            Some(SyntaxKind::SelectorExpr)
+        );
+
+        let template_tokens = tokenize("|value: { lv_x }|");
+        let mut b = SyntaxTreeBuilder::default();
+        let root = crate::syntax::parse_char_string_template(
+            "|value: { lv_x }|",
+            &template_tokens.tokens,
+            0,
+            &mut b,
+        )
+        .0;
+        let tree = b.finish(root);
+        let interpolation = tree
+            .find_first_kind(root, SyntaxKind::TemplateInterpolation)
+            .expect("interpolation");
+        let interpolation =
+            TemplateInterpolation::cast(SyntaxNodeRef::new(&tree, interpolation)).expect("interp");
+        assert_eq!(
+            interpolation.expr().map(|child| child.kind()),
+            Some(SyntaxKind::TemplateExpr)
+        );
     }
 
     #[test]

@@ -3,7 +3,9 @@ use std::sync::Arc;
 
 use abap_ast::SyntaxKind;
 use abap_ast::arena::NodeId;
-use abap_ast::ast::{AstNode, ExprIdent, SelectorExpr, SyntaxNodeRef};
+use abap_ast::ast::{
+    AstNode, ConstructorExpr, ExprIdent, ParenExpr, SelectorExpr, SyntaxNodeRef, TemplateExpr,
+};
 use abap_lexer::{TextRange, TokenKind};
 
 use crate::def_map::{FieldAccess, FieldAccessSegment, StructureData, SymbolData, SymbolKind};
@@ -13,6 +15,79 @@ use crate::scope::{Namespace, ScopeKind};
 use super::{Collector, ScopeLookupKey, SyntaxTokenInfo};
 
 impl<'a> Collector<'a> {
+    fn unwrap_simple_expr_wrapper(&self, node: NodeId) -> NodeId {
+        let mut current = node;
+        loop {
+            let next = match self.file.kind(current) {
+                SyntaxKind::TemplateExpr => TemplateExpr::cast(self.syntax(current))
+                    .and_then(|expr| expr.wrapped_expr())
+                    .map(|child| child.id()),
+                SyntaxKind::ParenExpr => ParenExpr::cast(self.syntax(current))
+                    .and_then(|expr| expr.inner_expr())
+                    .map(|child| child.id()),
+                _ => None,
+            };
+            if let Some(next) = next {
+                current = next;
+            } else {
+                return current;
+            }
+        }
+    }
+
+    fn legacy_table_body_value_access_from_tokens(
+        &self,
+        tokens: &[SyntaxTokenInfo],
+        scope: ScopeId,
+    ) -> Option<FieldAccess> {
+        if let Some((next_idx, namespace, base_name, _, field_path, bracket_groups)) =
+            self.consume_selector_access_from_infos(tokens, 0)
+        {
+            let covered_end = bracket_groups
+                .last()
+                .map(|(_, group_end, _)| group_end + 1)
+                .unwrap_or(next_idx);
+            if namespace == Namespace::Value
+                && covered_end == tokens.len()
+                && !bracket_groups.is_empty()
+                && bracket_groups
+                    .iter()
+                    .all(|(_, _, is_legacy_table_body)| *is_legacy_table_body)
+            {
+                return Some(FieldAccess {
+                    scope,
+                    base_namespace: namespace,
+                    base_name,
+                    field_path,
+                    in_type_position: false,
+                });
+            }
+        }
+
+        let first = tokens.first()?;
+        if !self.syntax_token_is_ident_like(first) {
+            return None;
+        }
+        let mut idx = 1usize;
+        while idx < tokens.len() {
+            if tokens.get(idx)?.text.as_ref() != "[" {
+                return None;
+            }
+            let end_idx = self.find_matching_group_end_infos(tokens, idx, "[", "]")?;
+            if end_idx != idx + 1 {
+                return None;
+            }
+            idx = end_idx + 1;
+        }
+        (idx == tokens.len()).then(|| FieldAccess {
+            scope,
+            base_namespace: Namespace::Value,
+            base_name: Arc::<str>::from(first.text.to_ascii_lowercase()),
+            field_path: Vec::new(),
+            in_type_position: false,
+        })
+    }
+
     pub(super) fn find_ancestor_symbol(
         &self,
         scope: ScopeId,
@@ -237,7 +312,9 @@ impl<'a> Collector<'a> {
     }
 
     pub(super) fn constructor_type_ref(&self, node: NodeId) -> Option<(Arc<str>, TextRange)> {
-        let type_ref = self.syntax(node).child_by_kind(SyntaxKind::TypeRefSimple)?;
+        let type_ref = ConstructorExpr::cast(self.syntax(node))?
+            .type_ref()?
+            .syntax();
         let (_, _, base_name, range, _) =
             self.type_ref_access_chain(type_ref.id(), Namespace::Type)?;
         Some((base_name, range))
@@ -288,6 +365,7 @@ impl<'a> Collector<'a> {
         &self,
         node: NodeId,
     ) -> Option<(Namespace, Arc<str>, TextRange, Vec<FieldAccessSegment>)> {
+        let node = self.unwrap_simple_expr_wrapper(node);
         let selector = SelectorExpr::cast(self.syntax(node))?;
         let base = selector.base()?;
         let op = selector.operator()?;
@@ -298,9 +376,10 @@ impl<'a> Collector<'a> {
             Some("=>") => Namespace::Type,
             _ => Namespace::Value,
         };
-        match base.kind() {
+        let base_id = self.unwrap_simple_expr_wrapper(base.id());
+        match self.file.kind(base_id) {
             SyntaxKind::ExprIdent => {
-                let ident = ExprIdent::cast(base)?;
+                let ident = ExprIdent::cast(self.syntax(base_id))?;
                 let base_name = ident.name(self.source)?;
                 let base_range = ident.range();
                 Some((
@@ -315,7 +394,7 @@ impl<'a> Collector<'a> {
             }
             SyntaxKind::SelectorExpr => {
                 let (base_namespace, base_name, base_range, mut field_path) =
-                    self.selector_access_chain(base.id())?;
+                    self.selector_access_chain(base_id)?;
                 field_path.push(FieldAccessSegment {
                     name: field_name,
                     range: field_range,
@@ -331,10 +410,8 @@ impl<'a> Collector<'a> {
         node: NodeId,
         scope: ScopeId,
     ) -> Option<FieldAccess> {
+        let node = self.unwrap_simple_expr_wrapper(node);
         match self.file.kind(node) {
-            SyntaxKind::TemplateExpr => self
-                .first_non_token_child(node)
-                .and_then(|child| self.value_access_from_node(child, scope)),
             SyntaxKind::ExprIdent => {
                 let (name, _) = self.node_name(node)?;
                 Some(FieldAccess {
@@ -355,7 +432,8 @@ impl<'a> Collector<'a> {
                     in_type_position: false,
                 })
             }
-            _ => None,
+            _ => self
+                .legacy_table_body_value_access_from_tokens(&self.syntax_token_nodes(node), scope),
         }
     }
 
