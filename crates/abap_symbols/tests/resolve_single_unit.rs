@@ -9553,6 +9553,56 @@ START-OF-SELECTION.
 }
 
 #[test]
+fn inherited_redefinition_method_call_accepts_parent_named_parameters() {
+    let src = r#"
+CLASS super DEFINITION.
+  PUBLIC SECTION.
+    METHODS set_processing_data
+      IMPORTING
+        iv_evtid TYPE i
+        is_rule_key TYPE i.
+ENDCLASS.
+
+CLASS super IMPLEMENTATION.
+  METHOD set_processing_data.
+  ENDMETHOD.
+ENDCLASS.
+
+CLASS sub DEFINITION INHERITING FROM super.
+  PUBLIC SECTION.
+    METHODS set_processing_data REDEFINITION.
+    METHODS run.
+ENDCLASS.
+
+CLASS sub IMPLEMENTATION.
+  METHOD set_processing_data.
+  ENDMETHOD.
+
+  METHOD run.
+    me->set_processing_data(
+      iv_evtid = 1
+      is_rule_key = 2 ).
+  ENDMETHOD.
+ENDCLASS.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit(
+        "file:///inherited_redefinition_named_args.abap",
+        src,
+        &parsed,
+    );
+
+    assert!(
+        unit.diagnostics.iter().all(|diag| {
+            diag.kind != DiagnosticKind::UnknownNamedParameter
+                && diag.kind != DiagnosticKind::MissingRequiredParameter
+        }),
+        "{:#?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn reports_incompatible_method_argument_types_for_scalar_and_table_parameters() {
     let src = r#"
 CLASS lcl_demo DEFINITION.

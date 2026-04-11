@@ -15,7 +15,7 @@ use crate::ids::{ScopeId, StructureId, SymbolHandle, SymbolId};
 use crate::project::ProjectAnalysis;
 use crate::resolver::{ScopeIndex, build_scope_index};
 use crate::scope::{Namespace, ScopeKind};
-use crate::{SymbolKind, Visibility};
+use crate::{ClassMemberKind, SymbolKind, Visibility};
 
 struct ValidationLookup<'a> {
     scope_indexes: &'a [ScopeIndex],
@@ -483,10 +483,21 @@ fn resolve_class_member_in_hierarchy<'a>(
         }
         let unit = &project.units[current.unit.as_usize()];
         if let Some(member) = unit.class_member(current.symbol, member_name) {
-            return Some((unit, member));
+            if !class_member_uses_inherited_signature(member) {
+                return Some((unit, member));
+            }
         }
         current = direct_superclass_handle(project, lookup, unit, current.symbol)?;
     }
+}
+
+fn class_member_uses_inherited_signature(member: &crate::ClassMemberData) -> bool {
+    member.kind == ClassMemberKind::Method
+        && member.parameters.is_empty()
+        && member.signature.split_ascii_whitespace().any(|part| {
+            let keyword = part.trim_end_matches('.');
+            keyword.eq_ignore_ascii_case("redefinition")
+        })
 }
 
 fn resolve_exposed_interface_handle(

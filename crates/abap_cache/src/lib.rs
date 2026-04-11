@@ -4045,11 +4045,22 @@ fn resolve_class_member_in_hierarchy<'a>(
         }
         let unit = &snapshot.project.units[current.0.as_usize()];
         if let Some(member) = unit.semantic().decls().class_member(current.1, member_name) {
-            return Some((unit, member));
+            if !class_member_uses_inherited_signature(member) {
+                return Some((unit, member));
+            }
         }
         let (next_unit, next_symbol) = direct_superclass_from_class(snapshot, unit, current.1)?;
         current = (next_unit.unit_id, next_symbol);
     }
+}
+
+fn class_member_uses_inherited_signature(member: &ClassMemberData) -> bool {
+    member.kind == ClassMemberKind::Method
+        && member.parameters.is_empty()
+        && member.signature.split_ascii_whitespace().any(|part| {
+            let keyword = part.trim_end_matches('.');
+            keyword.eq_ignore_ascii_case("redefinition")
+        })
 }
 
 fn collect_class_methods_in_hierarchy<'a>(
@@ -8028,6 +8039,63 @@ ENDCLASS.";
             .definition_at(parameter_use)
             .expect("parameter definition target");
         assert_target_slice(&target, "file:///super.abap", super_src, "ev_resnd_err");
+    }
+
+    #[test]
+    fn definition_at_resolves_named_argument_of_inherited_redefinition_to_parent_signature() {
+        let store = DocumentStore::default();
+        let super_src = "\
+CLASS super DEFINITION.
+  PUBLIC SECTION.
+    METHODS set_processing_data
+      IMPORTING
+        iv_evtid TYPE i
+        is_rule_key TYPE i.
+ENDCLASS.
+
+CLASS super IMPLEMENTATION.
+  METHOD set_processing_data.
+  ENDMETHOD.
+ENDCLASS.";
+        let sub_src = "\
+CLASS sub DEFINITION INHERITING FROM super.
+  PUBLIC SECTION.
+    METHODS set_processing_data REDEFINITION.
+    METHODS run.
+ENDCLASS.
+
+CLASS sub IMPLEMENTATION.
+  METHOD set_processing_data.
+  ENDMETHOD.
+
+  METHOD run.
+    me->set_processing_data(
+      iv_evtid = 1
+      is_rule_key = 2 ).
+  ENDMETHOD.
+ENDCLASS.";
+        let snapshots = store.replace_all(vec![
+            DocumentInput {
+                uri: Arc::from("file:///super.abap"),
+                version: 1,
+                text: Arc::from(super_src),
+                is_dependency: true,
+                object_name: Some(Arc::from("super")),
+            },
+            DocumentInput {
+                uri: Arc::from("file:///sub.abap"),
+                version: 1,
+                text: Arc::from(sub_src),
+                is_dependency: false,
+                object_name: Some(Arc::from("sub")),
+            },
+        ]);
+        let snapshot = snapshots.get("file:///sub.abap").expect("sub snapshot");
+        let parameter_use = sub_src.find("iv_evtid = 1").expect("named argument use") + 1;
+        let target = snapshot
+            .definition_at(parameter_use)
+            .expect("parameter definition target");
+        assert_target_slice(&target, "file:///super.abap", super_src, "iv_evtid");
     }
 
     #[test]
