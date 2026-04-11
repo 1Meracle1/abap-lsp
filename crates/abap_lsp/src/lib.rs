@@ -8,10 +8,9 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use abap_cache::{
-    AnalysisSnapshot, DocumentInput, DocumentStore, OpenDocumentOverlay,
-    UNKNOWN_SYMBOL_MODE_REMOTE, WorkspaceManifest, file_uri_to_path, is_remote_lookup_candidate,
-    load_workspace_documents, manifest_cache_dir, manifest_supports_remote_resolution,
-    uri_starts_with_workspace,
+    AnalysisSnapshot, DocumentInput, DocumentStore, UNKNOWN_SYMBOL_MODE_REMOTE, WorkspaceManifest,
+    file_uri_to_path, is_remote_lookup_candidate, load_workspace_documents, manifest_cache_dir,
+    manifest_document_metadata, manifest_supports_remote_resolution, uri_starts_with_workspace,
 };
 use abap_symbols::{DiagnosticKind, ReferenceKind, SqlResolution};
 use lsp_types::{
@@ -24,6 +23,7 @@ use lsp_types::{
 };
 use serde::{Deserialize, Serialize};
 
+pub use abap_cache::OpenDocumentOverlay;
 pub use lsp_types::{
     CompletionParams, CompletionResponse, DidChangeTextDocumentParams, DidOpenTextDocumentParams,
     GotoDefinitionParams, HoverParams, ReferenceParams, SemanticTokensParams,
@@ -37,17 +37,18 @@ pub const WORKSPACE_MANIFEST_UPDATED: &str = "abapls/workspaceManifestUpdated";
 pub const DEPENDENCY_CACHE_CLEARED: &str = "abapls/dependencyCacheCleared";
 pub const WORKSPACE_ANALYSIS_STATUS: &str = "abapls/workspaceAnalysisStatus";
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ServerState {
     pub cache: DocumentStore,
     pub workspaces: HashMap<String, WorkspaceState>,
     pub shutdown_requested: bool,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct WorkspaceState {
     pub root_uri: String,
     pub cache: DocumentStore,
+    pub preview_snapshots: HashMap<String, Arc<AnalysisSnapshot>>,
     pub manifest: Option<WorkspaceManifest>,
     pub manifest_uri: String,
     pub manifest_error: Option<String>,
@@ -87,6 +88,7 @@ impl WorkspaceState {
         Self {
             root_uri: root_uri.into(),
             cache: DocumentStore::default(),
+            preview_snapshots: HashMap::new(),
             manifest: None,
             manifest_uri: String::new(),
             manifest_error: None,
@@ -226,6 +228,12 @@ fn cache_for_uri<'a>(state: &'a ServerState, uri: &str) -> &'a DocumentStore {
 }
 
 fn snapshot_for_uri(state: &ServerState, uri: &str) -> Option<Arc<AnalysisSnapshot>> {
+    if let Some(snapshot) = state
+        .workspace_for_uri(uri)
+        .and_then(|workspace| workspace.preview_snapshots.get(uri))
+    {
+        return Some(Arc::clone(snapshot));
+    }
     cache_for_uri(state, uri).get(uri)
 }
 
@@ -263,6 +271,78 @@ fn rebuild_workspace_cache_with_progress(
         })
         .collect();
     workspace.cache.replace_all_with_progress(inputs, progress)
+}
+
+pub fn stage_workspace_preview_snapshot(
+    state: &mut ServerState,
+    uri: &str,
+    version: i32,
+    text: &str,
+) -> bool {
+    let normalized_uri = normalize_lsp_uri(uri);
+    let Some(workspace) = state.workspace_for_uri_mut(&normalized_uri) else {
+        return false;
+    };
+    let preview = DocumentStore::default().publish(normalized_uri.clone(), version, text);
+    workspace.preview_snapshots.insert(normalized_uri, preview);
+    true
+}
+
+pub fn prune_workspace_preview_snapshots(workspace: &mut WorkspaceState) {
+    workspace.preview_snapshots.retain(|uri, preview| {
+        workspace
+            .cache
+            .get(uri)
+            .is_none_or(|committed| committed.version < preview.version)
+    });
+}
+
+fn incremental_workspace_document_input(
+    workspace: &WorkspaceState,
+    uri: &str,
+    version: i32,
+    text: &str,
+) -> Option<DocumentInput> {
+    if !uri.ends_with(".abap") {
+        return None;
+    }
+
+    if let Some(current) = workspace.cache.get(uri) {
+        return Some(DocumentInput {
+            uri: Arc::clone(&current.uri),
+            version,
+            text: Arc::from(text),
+            is_dependency: current.is_dependency,
+            object_name: current.object_name.clone(),
+        });
+    }
+
+    if workspace.cache.len() == 0 {
+        return None;
+    }
+
+    if !uri_starts_with_workspace(uri, &workspace.root_uri) {
+        return None;
+    }
+
+    let root_path = file_uri_to_path(&workspace.root_uri)?;
+    let manifest_metadata = workspace.manifest.as_ref().and_then(|manifest| {
+        manifest_document_metadata(&root_path, &workspace.root_uri, manifest, uri)
+    });
+
+    if workspace.manifest.is_some() && manifest_metadata.is_none() {
+        return None;
+    }
+
+    let (is_dependency, object_name) = manifest_metadata.unwrap_or((false, None));
+
+    Some(DocumentInput {
+        uri: Arc::from(uri),
+        version,
+        text: Arc::from(text),
+        is_dependency,
+        object_name,
+    })
 }
 
 pub fn workspace_manifest_diagnostics_params(
@@ -360,12 +440,13 @@ pub fn publish_open_document_mut_with_progress(
                 text: Arc::from(params.text_document.text.as_str()),
             },
         );
-        if workspace.cache.get(&uri).is_some() {
-            return workspace.cache.publish(
-                uri,
-                params.text_document.version,
-                &params.text_document.text,
-            );
+        if let Some(input) = incremental_workspace_document_input(
+            workspace,
+            &uri,
+            params.text_document.version,
+            &params.text_document.text,
+        ) {
+            return workspace.cache.publish_input(input);
         }
         let snapshots = rebuild_workspace_cache_with_progress(workspace, progress);
         return snapshots
@@ -429,12 +510,13 @@ pub fn publish_changed_document_mut_with_progress(
                 text: Arc::from(change.text.as_str()),
             },
         );
-        if workspace.cache.get(&uri).is_some() {
-            return Some(
-                workspace
-                    .cache
-                    .publish(uri, params.text_document.version, &change.text),
-            );
+        if let Some(input) = incremental_workspace_document_input(
+            workspace,
+            &uri,
+            params.text_document.version,
+            &change.text,
+        ) {
+            return Some(workspace.cache.publish_input(input));
         }
         let snapshots = rebuild_workspace_cache_with_progress(workspace, progress);
         return snapshots.get(uri.as_str()).cloned();
@@ -1505,8 +1587,9 @@ mod tests {
         build_remote_dependency_requests_for_workspace, collect_remote_dependency_candidates,
         completion, definition, handle_dependency_cache_cleared,
         handle_remote_dependencies_updated, hover, initialize_result, normalize_lsp_uri,
-        offset_to_position, publish_changed_document, publish_open_document,
-        publish_open_document_mut, references, refresh_workspace, snapshot_for_uri,
+        offset_to_position, publish_changed_document, publish_changed_document_mut,
+        publish_open_document, publish_open_document_mut, references, refresh_workspace,
+        snapshot_for_uri,
     };
 
     fn temp_workspace_path(name: &str) -> PathBuf {
@@ -2917,6 +3000,261 @@ object_name = "ZCL_MAIN"
         assert!(Arc::ptr_eq(&before.project, &opened.project));
         assert!(Arc::ptr_eq(&before.symbols, &opened.symbols));
         assert_eq!(opened.version, 7);
+
+        let _ = fs::remove_dir_all(&workspace_path);
+    }
+
+    #[test]
+    fn opening_changed_cached_workspace_file_does_not_reload_other_workspace_files_from_disk() {
+        let workspace_path = temp_workspace_path("workspace_open_incremental");
+        fs::create_dir_all(workspace_path.join("src")).expect("src dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[[unit]]
+name = "ZCL_MAIN"
+kind = "global-class"
+root_file = "src/ZCL_MAIN.abap"
+
+[[unit.member]]
+role = "main"
+file = "src/ZCL_MAIN.abap"
+object_name = "ZCL_MAIN"
+
+[[unit]]
+name = "ZCL_HELPER"
+kind = "global-class"
+root_file = "src/ZCL_HELPER.abap"
+
+[[unit.member]]
+role = "main"
+file = "src/ZCL_HELPER.abap"
+object_name = "ZCL_HELPER"
+"#,
+        )
+        .expect("manifest");
+        let main_text = "CLASS zcl_main DEFINITION. ENDCLASS.";
+        let helper_text = "CLASS zcl_helper DEFINITION. ENDCLASS.";
+        fs::write(workspace_path.join("src/ZCL_MAIN.abap"), main_text).expect("main source");
+        fs::write(workspace_path.join("src/ZCL_HELPER.abap"), helper_text).expect("helper source");
+
+        let workspace_uri = path_to_file_uri(&workspace_path);
+        let main_uri = format!("{workspace_uri}/src/ZCL_MAIN.abap");
+        let helper_uri = format!("{workspace_uri}/src/ZCL_HELPER.abap");
+        let mut state = ServerState::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        refresh_workspace(&mut state, &workspace_uri);
+
+        fs::write(
+            workspace_path.join("src/ZCL_HELPER.abap"),
+            "CLASS zcl_helper DEFINITION PUBLIC. ENDCLASS.",
+        )
+        .expect("mutated helper source");
+
+        let opened_text = "CLASS zcl_main DEFINITION PUBLIC. ENDCLASS.";
+        let opened = publish_open_document_mut(
+            &mut state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str(&main_uri).expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 3,
+                    text: opened_text.to_string(),
+                },
+            },
+        );
+
+        assert_eq!(opened.text.as_ref(), opened_text);
+        let helper = snapshot_for_uri(&state, &normalize_lsp_uri(&helper_uri)).expect("helper");
+        assert_eq!(helper.text.as_ref(), helper_text);
+
+        let _ = fs::remove_dir_all(&workspace_path);
+    }
+
+    #[test]
+    fn opening_manifest_declared_workspace_file_missing_at_refresh_stays_incremental() {
+        let workspace_path = temp_workspace_path("workspace_open_declared_incremental");
+        fs::create_dir_all(workspace_path.join("src")).expect("src dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[[unit]]
+name = "ZCL_MAIN"
+kind = "global-class"
+root_file = "src/ZCL_MAIN.abap"
+
+[[unit.member]]
+role = "main"
+file = "src/ZCL_MAIN.abap"
+object_name = "ZCL_MAIN"
+
+[[unit]]
+name = "ZCL_HELPER"
+kind = "global-class"
+root_file = "src/ZCL_HELPER.abap"
+
+[[unit.member]]
+role = "main"
+file = "src/ZCL_HELPER.abap"
+object_name = "ZCL_HELPER"
+"#,
+        )
+        .expect("manifest");
+        let main_text = "CLASS zcl_main DEFINITION. ENDCLASS.";
+        fs::write(workspace_path.join("src/ZCL_MAIN.abap"), main_text).expect("main source");
+
+        let workspace_uri = path_to_file_uri(&workspace_path);
+        let main_uri = format!("{workspace_uri}/src/ZCL_MAIN.abap");
+        let helper_uri = format!("{workspace_uri}/src/ZCL_HELPER.abap");
+        let mut state = ServerState::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        refresh_workspace(&mut state, &workspace_uri);
+
+        assert!(
+            snapshot_for_uri(&state, &normalize_lsp_uri(&helper_uri)).is_none(),
+            "helper should be uncached before it is opened"
+        );
+
+        fs::write(
+            workspace_path.join("src/ZCL_MAIN.abap"),
+            "CLASS zcl_main DEFINITION PUBLIC. ENDCLASS.",
+        )
+        .expect("mutated main source");
+
+        let helper_text = "CLASS zcl_helper DEFINITION. ENDCLASS.";
+        let opened = publish_open_document_mut(
+            &mut state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str(&helper_uri).expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: helper_text.to_string(),
+                },
+            },
+        );
+
+        assert_eq!(opened.text.as_ref(), helper_text);
+        assert_eq!(opened.object_name.as_deref(), Some("zcl_helper"));
+        let main = snapshot_for_uri(&state, &normalize_lsp_uri(&main_uri)).expect("main");
+        assert_eq!(main.text.as_ref(), main_text);
+
+        let _ = fs::remove_dir_all(&workspace_path);
+    }
+
+    #[test]
+    fn opening_new_workspace_file_without_manifest_stays_incremental() {
+        let workspace_path = temp_workspace_path("workspace_open_no_manifest_incremental");
+        fs::create_dir_all(&workspace_path).expect("workspace dir");
+        let main_text = "CLASS zcl_main DEFINITION. ENDCLASS.";
+        fs::write(workspace_path.join("main.abap"), main_text).expect("main source");
+
+        let workspace_uri = path_to_file_uri(&workspace_path);
+        let main_uri = format!("{workspace_uri}/main.abap");
+        let new_uri = format!("{workspace_uri}/new_file.abap");
+        let mut state = ServerState::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        refresh_workspace(&mut state, &workspace_uri);
+
+        fs::write(
+            workspace_path.join("main.abap"),
+            "CLASS zcl_main DEFINITION PUBLIC. ENDCLASS.",
+        )
+        .expect("mutated main source");
+
+        let new_text = "CLASS zcl_new_file DEFINITION. ENDCLASS.";
+        let opened = publish_open_document_mut(
+            &mut state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str(&new_uri).expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: new_text.to_string(),
+                },
+            },
+        );
+
+        assert_eq!(opened.text.as_ref(), new_text);
+        let main = snapshot_for_uri(&state, &normalize_lsp_uri(&main_uri)).expect("main");
+        assert_eq!(main.text.as_ref(), main_text);
+
+        let _ = fs::remove_dir_all(&workspace_path);
+    }
+
+    #[test]
+    fn changing_cached_workspace_file_does_not_reload_other_workspace_files_from_disk() {
+        let workspace_path = temp_workspace_path("workspace_change_incremental");
+        fs::create_dir_all(workspace_path.join("src")).expect("src dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[[unit]]
+name = "ZCL_MAIN"
+kind = "global-class"
+root_file = "src/ZCL_MAIN.abap"
+
+[[unit.member]]
+role = "main"
+file = "src/ZCL_MAIN.abap"
+object_name = "ZCL_MAIN"
+
+[[unit]]
+name = "ZCL_HELPER"
+kind = "global-class"
+root_file = "src/ZCL_HELPER.abap"
+
+[[unit.member]]
+role = "main"
+file = "src/ZCL_HELPER.abap"
+object_name = "ZCL_HELPER"
+"#,
+        )
+        .expect("manifest");
+        let main_text = "CLASS zcl_main DEFINITION. ENDCLASS.";
+        let helper_text = "CLASS zcl_helper DEFINITION. ENDCLASS.";
+        fs::write(workspace_path.join("src/ZCL_MAIN.abap"), main_text).expect("main source");
+        fs::write(workspace_path.join("src/ZCL_HELPER.abap"), helper_text).expect("helper source");
+
+        let workspace_uri = path_to_file_uri(&workspace_path);
+        let main_uri = format!("{workspace_uri}/src/ZCL_MAIN.abap");
+        let helper_uri = format!("{workspace_uri}/src/ZCL_HELPER.abap");
+        let mut state = ServerState::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        refresh_workspace(&mut state, &workspace_uri);
+
+        fs::write(
+            workspace_path.join("src/ZCL_HELPER.abap"),
+            "CLASS zcl_helper DEFINITION PUBLIC. ENDCLASS.",
+        )
+        .expect("mutated helper source");
+
+        let changed_text = "CLASS zcl_main DEFINITION PUBLIC. ENDCLASS.";
+        let changed = publish_changed_document_mut(
+            &mut state,
+            &DidChangeTextDocumentParams {
+                text_document: VersionedTextDocumentIdentifier {
+                    uri: Uri::from_str(&main_uri).expect("uri"),
+                    version: 2,
+                },
+                content_changes: vec![TextDocumentContentChangeEvent {
+                    range: None,
+                    range_length: None,
+                    text: changed_text.to_string(),
+                }],
+            },
+        )
+        .expect("changed snapshot");
+
+        assert_eq!(changed.text.as_ref(), changed_text);
+        let helper = snapshot_for_uri(&state, &normalize_lsp_uri(&helper_uri)).expect("helper");
+        assert_eq!(helper.text.as_ref(), helper_text);
 
         let _ = fs::remove_dir_all(&workspace_path);
     }

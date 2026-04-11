@@ -601,6 +601,39 @@ pub fn manifest_declares_uri(
     })
 }
 
+pub fn manifest_document_metadata(
+    root_path: &Path,
+    root_uri: &str,
+    manifest: &WorkspaceManifest,
+    uri: &str,
+) -> Option<(bool, Option<Arc<str>>)> {
+    if !uri_starts_with_workspace(uri, root_uri) {
+        return None;
+    }
+
+    manifest.units.iter().find_map(|unit| {
+        for member in &unit.members {
+            let member_file = normalize_manifest_path(&member.file);
+            if !member_file.is_empty() && path_to_file_uri(&root_path.join(&member_file)) == uri {
+                return Some((
+                    member.role == "dependency",
+                    manifest_member_object_name(unit, Some(member)),
+                ));
+            }
+        }
+
+        let root_file = normalize_manifest_path(&unit.root_file);
+        if !root_file.is_empty() && path_to_file_uri(&root_path.join(root_file)) == uri {
+            return Some((
+                manifest_unit_root_is_dependency(unit),
+                manifest_member_object_name(unit, None),
+            ));
+        }
+
+        None
+    })
+}
+
 fn collect_dependency_cache_files(
     root_path: &Path,
     cache_dir: &str,

@@ -1,7 +1,10 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::{self, BufRead, BufReader, BufWriter, Write};
 use std::net::{SocketAddr, TcpListener};
-use std::sync::Mutex;
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::Duration;
 
 use abap_jsonrpc::{JSON_RPC_VERSION, Response, read_frame, write_frame};
 use abap_lsp::{
@@ -9,14 +12,15 @@ use abap_lsp::{
     DidOpenTextDocumentParams, GotoDefinitionParams, HoverParams, REMOTE_DEPENDENCIES_UPDATED,
     RESOLVE_REMOTE_DEPENDENCIES, ReferenceParams, SemanticTokensParams, ServerConfig, ServerState,
     WORKSPACE_ANALYSIS_STATUS, WORKSPACE_MANIFEST_UPDATED, WorkspaceAnalysisPhase,
-    WorkspaceAnalysisStatusParams, WorkspaceManifestUpdatedParams,
+    WorkspaceAnalysisStatusParams, WorkspaceManifestUpdatedParams, WorkspaceState,
     build_remote_dependency_batch_for_workspace, completion, definition,
     handle_dependency_cache_cleared_with_progress,
     handle_remote_dependencies_updated_with_progress,
     handle_workspace_manifest_updated_with_progress, hover, initialize_result,
-    publish_changed_document_mut_with_progress, publish_diagnostics_params,
-    publish_open_document_mut_with_progress, references, refresh_workspace_with_progress,
-    semantic_tokens, workspace_manifest_diagnostics_params,
+    prune_workspace_preview_snapshots, publish_changed_document_mut_with_progress,
+    publish_diagnostics_params, publish_open_document_mut_with_progress, references,
+    refresh_workspace_with_progress, semantic_tokens, stage_workspace_preview_snapshot,
+    workspace_manifest_diagnostics_params,
 };
 use serde_json::{Value, json};
 use tracing::warn;
@@ -75,7 +79,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         let stdin = io::stdin();
         let stdout = io::stdout();
-        let mut reader = BufReader::new(stdin.lock());
+        let mut reader = BufReader::new(stdin);
         let mut writer = BufWriter::new(stdout.lock());
         serve(&mut reader, &mut writer)?;
     }
@@ -108,99 +112,290 @@ fn listen_address_from_cli_or_env() -> Result<Option<SocketAddr>, Box<dyn std::e
     Ok(None)
 }
 
-fn serve(
-    reader: &mut impl BufRead,
-    writer: &mut impl Write,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let mut state = ServerState::default();
-    let config = ServerConfig::default();
+enum InboundMessage {
+    Message(Value),
+    Closed,
+    Error(String),
+}
 
-    while let Some(frame) = read_frame(reader)? {
-        let message: Value = serde_json::from_slice(&frame)?;
-        let method = message
-            .get("method")
-            .and_then(Value::as_str)
-            .map(str::to_owned);
-        let analysis_status = workspace_analysis_status_started(&state, &message)?;
-        if let Some(params) = analysis_status.as_ref() {
-            send_notification(
-                writer,
-                WORKSPACE_ANALYSIS_STATUS,
-                serde_json::to_value(params)?,
-            )?;
+enum AnalysisTaskKind {
+    DidOpen(DidOpenTextDocumentParams),
+    DidChange(DidChangeTextDocumentParams),
+    ManifestUpdated(WorkspaceManifestUpdatedParams),
+    DependencyCacheCleared(WorkspaceManifestUpdatedParams),
+    RemoteDependenciesUpdated(abap_lsp::RemoteDependenciesUpdatedParams),
+    Initialized,
+}
+
+struct AnalysisTask {
+    workspace_uri: String,
+    generation: u64,
+    started: Option<WorkspaceAnalysisStatusParams>,
+    workspace: WorkspaceState,
+    kind: AnalysisTaskKind,
+}
+
+struct AnalysisCompletion {
+    workspace_uri: String,
+    generation: u64,
+    started: Option<WorkspaceAnalysisStatusParams>,
+    workspace: WorkspaceState,
+    notifications: Vec<(String, Value)>,
+}
+
+fn next_workspace_generation(
+    generations: &Arc<Mutex<HashMap<String, u64>>>,
+    workspace_uri: &str,
+) -> u64 {
+    let mut generations = generations
+        .lock()
+        .expect("workspace generation tracking should not be poisoned");
+    let entry = generations.entry(workspace_uri.to_owned()).or_insert(0);
+    *entry += 1;
+    *entry
+}
+
+fn current_workspace_generation(
+    generations: &Arc<Mutex<HashMap<String, u64>>>,
+    workspace_uri: &str,
+) -> u64 {
+    generations
+        .lock()
+        .expect("workspace generation tracking should not be poisoned")
+        .get(workspace_uri)
+        .copied()
+        .unwrap_or(0)
+}
+
+fn try_schedule_background_analysis(
+    state: &mut ServerState,
+    message: &Value,
+    task_tx: &SyncSender<AnalysisTask>,
+    generations: &Arc<Mutex<HashMap<String, u64>>>,
+) -> Result<Option<Vec<WorkspaceAnalysisStatusParams>>, Box<dyn std::error::Error>> {
+    let Some(method) = message.get("method").and_then(Value::as_str) else {
+        return Ok(None);
+    };
+
+    let mut started_statuses = Vec::new();
+
+    match method {
+        "textDocument/didOpen" => {
+            let Some(params) = parse_params::<DidOpenTextDocumentParams>(message)? else {
+                return Ok(Some(started_statuses));
+            };
+            let Some(workspace_uri) = stage_workspace_open_overlay(state, &params) else {
+                return Ok(None);
+            };
+            let Some(workspace) = state.workspaces.get(&workspace_uri).cloned() else {
+                return Ok(None);
+            };
+            let started = workspace_analysis_status_started(state, message)?;
+            if let Some(params) = started.clone() {
+                started_statuses.push(params);
+            }
+            task_tx
+                .send(AnalysisTask {
+                    workspace_uri: workspace_uri.clone(),
+                    generation: next_workspace_generation(generations, &workspace_uri),
+                    started,
+                    workspace,
+                    kind: AnalysisTaskKind::DidOpen(params),
+                })
+                .map_err(|error| format!("failed to enqueue analysis task: {error}"))?;
+            Ok(Some(started_statuses))
         }
-        if method.as_deref() == Some(REMOTE_DEPENDENCIES_UPDATED) {
-            if let Some(params) =
-                parse_params::<abap_lsp::RemoteDependenciesUpdatedParams>(&message)?
-            {
-                let progress_notifications = Mutex::new(Vec::new());
-                let progress = |processed: usize, total: usize| {
-                    push_workspace_analysis_progress(
-                        &progress_notifications,
-                        &params.workspace_uri,
-                        "remote-dependencies-updated",
-                        processed,
-                        total,
-                    );
+        "textDocument/didChange" => {
+            let Some(params) = parse_params::<DidChangeTextDocumentParams>(message)? else {
+                return Ok(Some(started_statuses));
+            };
+            let Some(workspace_uri) = stage_workspace_change_overlay(state, &params) else {
+                return Ok(None);
+            };
+            let Some(workspace) = state.workspaces.get(&workspace_uri).cloned() else {
+                return Ok(None);
+            };
+            let started = workspace_analysis_status_started(state, message)?;
+            if let Some(params) = started.clone() {
+                started_statuses.push(params);
+            }
+            task_tx
+                .send(AnalysisTask {
+                    workspace_uri: workspace_uri.clone(),
+                    generation: next_workspace_generation(generations, &workspace_uri),
+                    started,
+                    workspace,
+                    kind: AnalysisTaskKind::DidChange(params),
+                })
+                .map_err(|error| format!("failed to enqueue analysis task: {error}"))?;
+            Ok(Some(started_statuses))
+        }
+        WORKSPACE_MANIFEST_UPDATED => {
+            let Some(params) = parse_params::<WorkspaceManifestUpdatedParams>(message)? else {
+                return Ok(Some(started_statuses));
+            };
+            let workspace_uri = abap_lsp::normalize_lsp_uri(&params.workspace_uri);
+            let Some(workspace) = state.workspaces.get(&workspace_uri).cloned() else {
+                return Ok(Some(started_statuses));
+            };
+            let started = workspace_analysis_status_started(state, message)?;
+            if let Some(params) = started.clone() {
+                started_statuses.push(params);
+            }
+            task_tx
+                .send(AnalysisTask {
+                    workspace_uri: workspace_uri.clone(),
+                    generation: next_workspace_generation(generations, &workspace_uri),
+                    started,
+                    workspace,
+                    kind: AnalysisTaskKind::ManifestUpdated(WorkspaceManifestUpdatedParams {
+                        workspace_uri,
+                    }),
+                })
+                .map_err(|error| format!("failed to enqueue analysis task: {error}"))?;
+            Ok(Some(started_statuses))
+        }
+        DEPENDENCY_CACHE_CLEARED => {
+            let Some(params) = parse_params::<WorkspaceManifestUpdatedParams>(message)? else {
+                return Ok(Some(started_statuses));
+            };
+            let workspace_uri = abap_lsp::normalize_lsp_uri(&params.workspace_uri);
+            let Some(workspace) = state.workspaces.get(&workspace_uri).cloned() else {
+                return Ok(Some(started_statuses));
+            };
+            let started = workspace_analysis_status_started(state, message)?;
+            if let Some(params) = started.clone() {
+                started_statuses.push(params);
+            }
+            task_tx
+                .send(AnalysisTask {
+                    workspace_uri: workspace_uri.clone(),
+                    generation: next_workspace_generation(generations, &workspace_uri),
+                    started,
+                    workspace,
+                    kind: AnalysisTaskKind::DependencyCacheCleared(
+                        WorkspaceManifestUpdatedParams { workspace_uri },
+                    ),
+                })
+                .map_err(|error| format!("failed to enqueue analysis task: {error}"))?;
+            Ok(Some(started_statuses))
+        }
+        REMOTE_DEPENDENCIES_UPDATED => {
+            let Some(params) = parse_params::<abap_lsp::RemoteDependenciesUpdatedParams>(message)?
+            else {
+                return Ok(Some(started_statuses));
+            };
+            let workspace_uri = abap_lsp::normalize_lsp_uri(&params.workspace_uri);
+            let Some(workspace) = state.workspaces.get(&workspace_uri).cloned() else {
+                return Ok(Some(started_statuses));
+            };
+            let started = workspace_analysis_status_started(state, message)?;
+            if let Some(params) = started.clone() {
+                started_statuses.push(params);
+            }
+            task_tx
+                .send(AnalysisTask {
+                    workspace_uri: workspace_uri.clone(),
+                    generation: next_workspace_generation(generations, &workspace_uri),
+                    started,
+                    workspace,
+                    kind: AnalysisTaskKind::RemoteDependenciesUpdated(
+                        abap_lsp::RemoteDependenciesUpdatedParams {
+                            workspace_uri,
+                            ..params
+                        },
+                    ),
+                })
+                .map_err(|error| format!("failed to enqueue analysis task: {error}"))?;
+            Ok(Some(started_statuses))
+        }
+        "initialized" => {
+            let workspace_uris: Vec<_> = state.workspaces.keys().cloned().collect();
+            for workspace_uri in workspace_uris {
+                let Some(workspace) = state.workspaces.get(&workspace_uri).cloned() else {
+                    continue;
                 };
-                let mut source_uris: HashSet<String> = params
-                    .source_uris
-                    .iter()
-                    .map(|uri| abap_lsp::normalize_lsp_uri(uri))
-                    .collect();
-                if !params.source_uri.is_empty() {
-                    source_uris.insert(abap_lsp::normalize_lsp_uri(&params.source_uri));
-                }
-                let snapshots = handle_remote_dependencies_updated_with_progress(
-                    &mut state,
-                    &params,
-                    Some(&progress),
-                );
-                let progress_notifications = progress_notifications
-                    .into_inner()
-                    .expect("progress notification collection should not be poisoned");
-                for (method, params) in progress_notifications {
-                    send_notification(writer, &method, params)?;
-                }
-                for snapshot in snapshots.iter() {
-                    if source_uris.contains(snapshot.uri.as_ref()) {
-                        let params_value =
-                            serde_json::to_value(publish_diagnostics_params(&state, snapshot))?;
-                        send_notification(writer, "textDocument/publishDiagnostics", params_value)?;
-                    }
-                }
-                if let Some(request) =
-                    build_remote_dependency_batch_for_workspace(&mut state, &params.workspace_uri)
-                {
-                    send_notification(
-                        writer,
-                        RESOLVE_REMOTE_DEPENDENCIES,
-                        serde_json::to_value(request)?,
-                    )?;
-                }
+                task_tx
+                    .send(AnalysisTask {
+                        workspace_uri: workspace_uri.clone(),
+                        generation: next_workspace_generation(generations, &workspace_uri),
+                        started: workspace_analysis_status_started(state, message)?,
+                        workspace,
+                        kind: AnalysisTaskKind::Initialized,
+                    })
+                    .map_err(|error| format!("failed to enqueue analysis task: {error}"))?;
             }
-            if let Some(params) = analysis_status
-                .as_ref()
-                .and_then(|params| workspace_analysis_status_finished(&state, params))
-            {
-                send_notification(
-                    writer,
-                    WORKSPACE_ANALYSIS_STATUS,
-                    serde_json::to_value(params)?,
-                )?;
-            }
+            Ok(Some(started_statuses))
+        }
+        _ => Ok(None),
+    }
+}
+
+fn run_analysis_task(task: AnalysisTask) -> Result<AnalysisCompletion, Box<dyn std::error::Error>> {
+    let mut state = ServerState {
+        cache: Default::default(),
+        workspaces: HashMap::from([(task.workspace_uri.clone(), task.workspace)]),
+        shutdown_requested: false,
+    };
+
+    let notifications = match &task.kind {
+        AnalysisTaskKind::DidOpen(params) => handle_did_open_notifications(&mut state, params)?,
+        AnalysisTaskKind::DidChange(params) => handle_did_change_notifications(&mut state, params)?,
+        AnalysisTaskKind::ManifestUpdated(params) => {
+            handle_workspace_manifest_updated_notifications(&mut state, params)?
+        }
+        AnalysisTaskKind::DependencyCacheCleared(params) => {
+            handle_dependency_cache_cleared_notifications(&mut state, params)?
+        }
+        AnalysisTaskKind::RemoteDependenciesUpdated(params) => {
+            handle_remote_dependencies_updated_notifications(&mut state, params)?
+        }
+        AnalysisTaskKind::Initialized => {
+            handle_initialized_workspace_notifications(&mut state, &task.workspace_uri)?
+        }
+    };
+
+    let workspace = state
+        .workspaces
+        .remove(&task.workspace_uri)
+        .expect("analysis task should keep its workspace");
+
+    Ok(AnalysisCompletion {
+        workspace_uri: task.workspace_uri,
+        generation: task.generation,
+        started: task.started,
+        workspace,
+        notifications,
+    })
+}
+
+fn flush_analysis_completions(
+    state: &mut ServerState,
+    writer: &mut impl Write,
+    completion_rx: &Receiver<AnalysisCompletion>,
+    generations: &Arc<Mutex<HashMap<String, u64>>>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    while let Ok(completion) = completion_rx.try_recv() {
+        if completion.generation
+            != current_workspace_generation(generations, &completion.workspace_uri)
+        {
             continue;
         }
-        let handled = handle_message(&mut state, &config, message)?;
-        for (method, params) in handled.notifications {
+
+        state
+            .workspaces
+            .insert(completion.workspace_uri.clone(), completion.workspace);
+        if let Some(workspace) = state.workspaces.get_mut(&completion.workspace_uri) {
+            prune_workspace_preview_snapshots(workspace);
+        }
+
+        for (method, params) in completion.notifications {
             send_notification(writer, &method, params)?;
         }
-        if let Some(response) = handled.response {
-            send_response(writer, &response)?;
-        }
-        if let Some(params) = analysis_status
+        if let Some(params) = completion
+            .started
             .as_ref()
-            .and_then(|params| workspace_analysis_status_finished(&state, params))
+            .and_then(|started| workspace_analysis_status_finished(state, started))
         {
             send_notification(
                 writer,
@@ -208,13 +403,152 @@ fn serve(
                 serde_json::to_value(params)?,
             )?;
         }
-
-        if state.shutdown_requested && method.as_deref() == Some("exit") {
-            break;
-        }
     }
-
     Ok(())
+}
+
+fn serve(
+    reader: &mut (impl BufRead + Send),
+    writer: &mut impl Write,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut state = ServerState::default();
+    let config = ServerConfig::default();
+    let generations = Arc::new(Mutex::new(HashMap::<String, u64>::new()));
+    let (message_tx, message_rx) = mpsc::channel();
+    let (task_tx, task_rx): (SyncSender<AnalysisTask>, Receiver<AnalysisTask>) =
+        mpsc::sync_channel(8);
+    let (completion_tx, completion_rx) = mpsc::channel();
+
+    thread::scope(|scope| -> Result<(), Box<dyn std::error::Error>> {
+        scope.spawn(|| {
+            loop {
+                match read_frame(reader) {
+                    Ok(Some(frame)) => match serde_json::from_slice(&frame) {
+                        Ok(message) => {
+                            if message_tx.send(InboundMessage::Message(message)).is_err() {
+                                break;
+                            }
+                        }
+                        Err(error) => {
+                            let _ = message_tx.send(InboundMessage::Error(error.to_string()));
+                            break;
+                        }
+                    },
+                    Ok(None) => {
+                        let _ = message_tx.send(InboundMessage::Closed);
+                        break;
+                    }
+                    Err(error) => {
+                        let _ = message_tx.send(InboundMessage::Error(error.to_string()));
+                        break;
+                    }
+                }
+            }
+        });
+
+        let worker_generations = Arc::clone(&generations);
+        let worker_completion_tx = completion_tx.clone();
+        scope.spawn(move || {
+            while let Ok(task) = task_rx.recv() {
+                if task.generation
+                    != current_workspace_generation(&worker_generations, &task.workspace_uri)
+                {
+                    continue;
+                }
+                match run_analysis_task(task) {
+                    Ok(completion) => {
+                        if completion.generation
+                            == current_workspace_generation(
+                                &worker_generations,
+                                &completion.workspace_uri,
+                            )
+                        {
+                            if worker_completion_tx.send(completion).is_err() {
+                                break;
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        warn!(error = %error, "background analysis task failed");
+                    }
+                }
+            }
+        });
+
+        let mut reader_closed = false;
+        loop {
+            flush_analysis_completions(&mut state, writer, &completion_rx, &generations)?;
+
+            match message_rx.recv_timeout(Duration::from_millis(10)) {
+                Ok(InboundMessage::Message(message)) => {
+                    let method = message
+                        .get("method")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned);
+                    if let Some(started_statuses) = try_schedule_background_analysis(
+                        &mut state,
+                        &message,
+                        &task_tx,
+                        &generations,
+                    )? {
+                        for params in started_statuses {
+                            send_notification(
+                                writer,
+                                WORKSPACE_ANALYSIS_STATUS,
+                                serde_json::to_value(params)?,
+                            )?;
+                        }
+                    } else {
+                        let analysis_status = workspace_analysis_status_started(&state, &message)?;
+                        if let Some(params) = analysis_status.as_ref() {
+                            send_notification(
+                                writer,
+                                WORKSPACE_ANALYSIS_STATUS,
+                                serde_json::to_value(params)?,
+                            )?;
+                        }
+                        let handled = handle_message(&mut state, &config, message)?;
+                        for (method, params) in handled.notifications {
+                            send_notification(writer, &method, params)?;
+                        }
+                        if let Some(response) = handled.response {
+                            send_response(writer, &response)?;
+                        }
+                        if let Some(params) = analysis_status
+                            .as_ref()
+                            .and_then(|params| workspace_analysis_status_finished(&state, params))
+                        {
+                            send_notification(
+                                writer,
+                                WORKSPACE_ANALYSIS_STATUS,
+                                serde_json::to_value(params)?,
+                            )?;
+                        }
+                    }
+
+                    flush_analysis_completions(&mut state, writer, &completion_rx, &generations)?;
+
+                    if state.shutdown_requested && method.as_deref() == Some("exit") {
+                        break;
+                    }
+                }
+                Ok(InboundMessage::Closed) => {
+                    reader_closed = true;
+                }
+                Ok(InboundMessage::Error(error)) => return Err(error.into()),
+                Err(RecvTimeoutError::Timeout) => {
+                    if reader_closed {
+                        break;
+                    }
+                }
+                Err(RecvTimeoutError::Disconnected) => break,
+            }
+        }
+
+        drop(task_tx);
+        flush_analysis_completions(&mut state, writer, &completion_rx, &generations)?;
+        Ok(())
+    })
 }
 
 fn send_response(
@@ -272,6 +606,350 @@ struct HandledMessage {
     notifications: Vec<(String, Value)>,
 }
 
+fn handle_did_open_notifications(
+    state: &mut ServerState,
+    params: &DidOpenTextDocumentParams,
+) -> Result<Vec<(String, Value)>, Box<dyn std::error::Error>> {
+    let mut notifications = Vec::new();
+    let normalized_uri = abap_lsp::normalize_lsp_uri(params.text_document.uri.as_str());
+    let unchanged_workspace_open = state
+        .workspace_for_uri(&normalized_uri)
+        .and_then(|workspace| workspace.cache.get(&normalized_uri))
+        .is_some_and(|snapshot| snapshot.text.as_ref() == params.text_document.text.as_str());
+    let progress_notifications = Mutex::new(Vec::new());
+    let workspace_uri = state
+        .workspace_for_uri(normalized_uri.as_str())
+        .map(|workspace| workspace.root_uri.clone());
+    let progress = |processed: usize, total: usize| {
+        if let Some(workspace_uri) = workspace_uri.as_ref() {
+            push_workspace_analysis_progress(
+                &progress_notifications,
+                workspace_uri,
+                "open",
+                processed,
+                total,
+            );
+        }
+    };
+    let snapshot = publish_open_document_mut_with_progress(state, params, Some(&progress));
+    notifications.extend(
+        progress_notifications
+            .into_inner()
+            .expect("progress notification collection should not be poisoned"),
+    );
+    if unchanged_workspace_open {
+        let params_value = serde_json::to_value(publish_diagnostics_params(state, &snapshot))?;
+        notifications.push(("textDocument/publishDiagnostics".to_owned(), params_value));
+    } else if let Some(workspace_uri) = state
+        .workspace_for_uri(snapshot.uri.as_ref())
+        .filter(|workspace| workspace.cache.get(snapshot.uri.as_ref()).is_some())
+        .map(|workspace| workspace.root_uri.clone())
+    {
+        push_workspace_diagnostics_notifications(state, &workspace_uri, &mut notifications)?;
+    } else {
+        let params_value = serde_json::to_value(publish_diagnostics_params(state, &snapshot))?;
+        notifications.push(("textDocument/publishDiagnostics".to_owned(), params_value));
+    }
+    if let Some(params_value) = state
+        .workspace_for_uri(snapshot.uri.as_ref())
+        .and_then(|workspace| workspace_manifest_diagnostics_params(state, &workspace.root_uri))
+        .and_then(|params| serde_json::to_value(params).ok())
+    {
+        notifications.push(("textDocument/publishDiagnostics".to_owned(), params_value));
+    }
+    if !unchanged_workspace_open
+        && let Some(workspace_uri) = state
+            .workspace_for_uri(snapshot.uri.as_ref())
+            .filter(|workspace| workspace.cache.get(snapshot.uri.as_ref()).is_some())
+            .map(|workspace| workspace.root_uri.clone())
+        && let Some(request) = build_remote_dependency_batch_for_workspace(state, &workspace_uri)
+    {
+        notifications.push((
+            RESOLVE_REMOTE_DEPENDENCIES.to_owned(),
+            serde_json::to_value(request)?,
+        ));
+    }
+    Ok(notifications)
+}
+
+fn handle_did_change_notifications(
+    state: &mut ServerState,
+    params: &DidChangeTextDocumentParams,
+) -> Result<Vec<(String, Value)>, Box<dyn std::error::Error>> {
+    let mut notifications = Vec::new();
+    let normalized_uri = abap_lsp::normalize_lsp_uri(params.text_document.uri.as_str());
+    let progress_notifications = Mutex::new(Vec::new());
+    let workspace_uri = state
+        .workspace_for_uri(normalized_uri.as_str())
+        .map(|workspace| workspace.root_uri.clone());
+    let change = params.content_changes.last();
+    let unchanged_workspace_change = change.and_then(|change| {
+        state
+            .workspace_for_uri(&normalized_uri)
+            .and_then(|workspace| workspace.cache.get(&normalized_uri))
+            .map(|snapshot| snapshot.text.as_ref() == change.text.as_str())
+    }) == Some(true);
+    let progress = |processed: usize, total: usize| {
+        if let Some(workspace_uri) = workspace_uri.as_ref() {
+            push_workspace_analysis_progress(
+                &progress_notifications,
+                workspace_uri,
+                "change",
+                processed,
+                total,
+            );
+        }
+    };
+    if let Some(snapshot) =
+        publish_changed_document_mut_with_progress(state, params, Some(&progress))
+    {
+        notifications.extend(
+            progress_notifications
+                .into_inner()
+                .expect("progress notification collection should not be poisoned"),
+        );
+        if unchanged_workspace_change {
+            let params_value = serde_json::to_value(publish_diagnostics_params(state, &snapshot))?;
+            notifications.push(("textDocument/publishDiagnostics".to_owned(), params_value));
+        } else if let Some(workspace_uri) = state
+            .workspace_for_uri(snapshot.uri.as_ref())
+            .filter(|workspace| workspace.cache.get(snapshot.uri.as_ref()).is_some())
+            .map(|workspace| workspace.root_uri.clone())
+        {
+            push_workspace_diagnostics_notifications(state, &workspace_uri, &mut notifications)?;
+        } else {
+            let params_value = serde_json::to_value(publish_diagnostics_params(state, &snapshot))?;
+            notifications.push(("textDocument/publishDiagnostics".to_owned(), params_value));
+        }
+        if let Some(params_value) = state
+            .workspace_for_uri(snapshot.uri.as_ref())
+            .and_then(|workspace| workspace_manifest_diagnostics_params(state, &workspace.root_uri))
+            .and_then(|params| serde_json::to_value(params).ok())
+        {
+            notifications.push(("textDocument/publishDiagnostics".to_owned(), params_value));
+        }
+        if !unchanged_workspace_change
+            && let Some(workspace_uri) = state
+                .workspace_for_uri(snapshot.uri.as_ref())
+                .filter(|workspace| workspace.cache.get(snapshot.uri.as_ref()).is_some())
+                .map(|workspace| workspace.root_uri.clone())
+            && let Some(request) =
+                build_remote_dependency_batch_for_workspace(state, &workspace_uri)
+        {
+            notifications.push((
+                RESOLVE_REMOTE_DEPENDENCIES.to_owned(),
+                serde_json::to_value(request)?,
+            ));
+        }
+    }
+    Ok(notifications)
+}
+
+fn handle_workspace_manifest_updated_notifications(
+    state: &mut ServerState,
+    params: &WorkspaceManifestUpdatedParams,
+) -> Result<Vec<(String, Value)>, Box<dyn std::error::Error>> {
+    let progress_notifications = Mutex::new(Vec::new());
+    let progress = |processed: usize, total: usize| {
+        push_workspace_analysis_progress(
+            &progress_notifications,
+            &params.workspace_uri,
+            "manifest-updated",
+            processed,
+            total,
+        );
+    };
+    let snapshots = handle_workspace_manifest_updated_with_progress(state, params, Some(&progress));
+    let mut notifications = Vec::new();
+    notifications.extend(
+        progress_notifications
+            .into_inner()
+            .expect("progress notification collection should not be poisoned"),
+    );
+    if let Some(params_value) = workspace_manifest_diagnostics_params(state, &params.workspace_uri)
+        .and_then(|params| serde_json::to_value(params).ok())
+    {
+        notifications.push(("textDocument/publishDiagnostics".to_owned(), params_value));
+    }
+    for snapshot in &snapshots {
+        let params_value = serde_json::to_value(publish_diagnostics_params(state, snapshot))?;
+        notifications.push(("textDocument/publishDiagnostics".to_owned(), params_value));
+    }
+    if let Some(request) = build_remote_dependency_batch_for_workspace(state, &params.workspace_uri)
+    {
+        notifications.push((
+            RESOLVE_REMOTE_DEPENDENCIES.to_string(),
+            serde_json::to_value(request)?,
+        ));
+    }
+    Ok(notifications)
+}
+
+fn handle_dependency_cache_cleared_notifications(
+    state: &mut ServerState,
+    params: &WorkspaceManifestUpdatedParams,
+) -> Result<Vec<(String, Value)>, Box<dyn std::error::Error>> {
+    let progress_notifications = Mutex::new(Vec::new());
+    let progress = |processed: usize, total: usize| {
+        push_workspace_analysis_progress(
+            &progress_notifications,
+            &params.workspace_uri,
+            "dependency-cache-cleared",
+            processed,
+            total,
+        );
+    };
+    let snapshots = handle_dependency_cache_cleared_with_progress(state, params, Some(&progress));
+    let mut notifications = Vec::new();
+    notifications.extend(
+        progress_notifications
+            .into_inner()
+            .expect("progress notification collection should not be poisoned"),
+    );
+    if let Some(params_value) = workspace_manifest_diagnostics_params(state, &params.workspace_uri)
+        .and_then(|params| serde_json::to_value(params).ok())
+    {
+        notifications.push(("textDocument/publishDiagnostics".to_string(), params_value));
+    }
+    for snapshot in &snapshots {
+        let params_value = serde_json::to_value(publish_diagnostics_params(state, snapshot))?;
+        notifications.push(("textDocument/publishDiagnostics".to_string(), params_value));
+    }
+    if let Some(request) = build_remote_dependency_batch_for_workspace(state, &params.workspace_uri)
+    {
+        notifications.push((
+            RESOLVE_REMOTE_DEPENDENCIES.to_string(),
+            serde_json::to_value(request)?,
+        ));
+    }
+    Ok(notifications)
+}
+
+fn handle_remote_dependencies_updated_notifications(
+    state: &mut ServerState,
+    params: &abap_lsp::RemoteDependenciesUpdatedParams,
+) -> Result<Vec<(String, Value)>, Box<dyn std::error::Error>> {
+    let progress_notifications = Mutex::new(Vec::new());
+    let progress = |processed: usize, total: usize| {
+        push_workspace_analysis_progress(
+            &progress_notifications,
+            &params.workspace_uri,
+            "remote-dependencies-updated",
+            processed,
+            total,
+        );
+    };
+    let mut source_uris: HashSet<String> = params
+        .source_uris
+        .iter()
+        .map(|uri| abap_lsp::normalize_lsp_uri(uri))
+        .collect();
+    if !params.source_uri.is_empty() {
+        source_uris.insert(abap_lsp::normalize_lsp_uri(&params.source_uri));
+    }
+    let snapshots =
+        handle_remote_dependencies_updated_with_progress(state, params, Some(&progress));
+    let mut notifications = progress_notifications
+        .into_inner()
+        .expect("progress notification collection should not be poisoned");
+    for snapshot in snapshots.iter() {
+        if source_uris.contains(snapshot.uri.as_ref()) {
+            let params_value = serde_json::to_value(publish_diagnostics_params(state, snapshot))?;
+            notifications.push(("textDocument/publishDiagnostics".to_owned(), params_value));
+        }
+    }
+    if let Some(request) = build_remote_dependency_batch_for_workspace(state, &params.workspace_uri)
+    {
+        notifications.push((
+            RESOLVE_REMOTE_DEPENDENCIES.to_owned(),
+            serde_json::to_value(request)?,
+        ));
+    }
+    Ok(notifications)
+}
+
+fn handle_initialized_workspace_notifications(
+    state: &mut ServerState,
+    workspace_uri: &str,
+) -> Result<Vec<(String, Value)>, Box<dyn std::error::Error>> {
+    let progress_notifications = Mutex::new(Vec::new());
+    let progress = |processed: usize, total: usize| {
+        push_workspace_analysis_progress(
+            &progress_notifications,
+            workspace_uri,
+            "initialized",
+            processed,
+            total,
+        );
+    };
+    let _ = refresh_workspace_with_progress(state, workspace_uri, Some(&progress));
+    let mut notifications = progress_notifications
+        .into_inner()
+        .expect("progress notification collection should not be poisoned");
+    if let Some(params_value) = workspace_manifest_diagnostics_params(state, workspace_uri)
+        .and_then(|params| serde_json::to_value(params).ok())
+    {
+        notifications.push(("textDocument/publishDiagnostics".to_owned(), params_value));
+    }
+    push_workspace_diagnostics_notifications(state, workspace_uri, &mut notifications)?;
+    if let Some(request) = build_remote_dependency_batch_for_workspace(state, workspace_uri) {
+        notifications.push((
+            RESOLVE_REMOTE_DEPENDENCIES.to_owned(),
+            serde_json::to_value(request)?,
+        ));
+    }
+    Ok(notifications)
+}
+
+fn stage_workspace_open_overlay(
+    state: &mut ServerState,
+    params: &DidOpenTextDocumentParams,
+) -> Option<String> {
+    let uri = abap_lsp::normalize_lsp_uri(params.text_document.uri.as_str());
+    let workspace = state.workspace_for_uri_mut(&uri)?;
+    workspace.open_documents.insert(
+        uri,
+        abap_lsp::OpenDocumentOverlay {
+            version: params.text_document.version,
+            text: Arc::from(params.text_document.text.as_str()),
+        },
+    );
+    let root_uri = workspace.root_uri.clone();
+    let _ = workspace;
+    let _ = stage_workspace_preview_snapshot(
+        state,
+        params.text_document.uri.as_str(),
+        params.text_document.version,
+        &params.text_document.text,
+    );
+    Some(root_uri)
+}
+
+fn stage_workspace_change_overlay(
+    state: &mut ServerState,
+    params: &DidChangeTextDocumentParams,
+) -> Option<String> {
+    let change = params.content_changes.last()?;
+    let uri = abap_lsp::normalize_lsp_uri(params.text_document.uri.as_str());
+    let workspace = state.workspace_for_uri_mut(&uri)?;
+    workspace.open_documents.insert(
+        uri,
+        abap_lsp::OpenDocumentOverlay {
+            version: params.text_document.version,
+            text: Arc::from(change.text.as_str()),
+        },
+    );
+    let root_uri = workspace.root_uri.clone();
+    let _ = workspace;
+    let _ = stage_workspace_preview_snapshot(
+        state,
+        params.text_document.uri.as_str(),
+        params.text_document.version,
+        &change.text,
+    );
+    Some(root_uri)
+}
+
 fn handle_message(
     state: &mut ServerState,
     config: &ServerConfig,
@@ -310,325 +988,54 @@ fn handle_message(
             })
         }
         Some("textDocument/didOpen") => {
-            let mut notifications = Vec::new();
-            if let Some(params) = parse_params::<DidOpenTextDocumentParams>(&message)? {
-                let normalized_uri = abap_lsp::normalize_lsp_uri(params.text_document.uri.as_str());
-                let unchanged_workspace_open = state
-                    .workspace_for_uri(&normalized_uri)
-                    .and_then(|workspace| workspace.cache.get(&normalized_uri))
-                    .is_some_and(|snapshot| {
-                        snapshot.text.as_ref() == params.text_document.text.as_str()
-                    });
-                let progress_notifications = Mutex::new(Vec::new());
-                let workspace_uri = state
-                    .workspace_for_uri(normalized_uri.as_str())
-                    .map(|workspace| workspace.root_uri.clone());
-                let progress = |processed: usize, total: usize| {
-                    if let Some(workspace_uri) = workspace_uri.as_ref() {
-                        push_workspace_analysis_progress(
-                            &progress_notifications,
-                            workspace_uri,
-                            "open",
-                            processed,
-                            total,
-                        );
-                    }
-                };
-                let snapshot =
-                    publish_open_document_mut_with_progress(state, &params, Some(&progress));
-                notifications.extend(
-                    progress_notifications
-                        .into_inner()
-                        .expect("progress notification collection should not be poisoned"),
-                );
-                if unchanged_workspace_open {
-                    let params_value =
-                        serde_json::to_value(publish_diagnostics_params(state, &snapshot))?;
-                    notifications
-                        .push(("textDocument/publishDiagnostics".to_owned(), params_value));
-                } else if let Some(workspace_uri) = state
-                    .workspace_for_uri(snapshot.uri.as_ref())
-                    .filter(|workspace| workspace.cache.get(snapshot.uri.as_ref()).is_some())
-                    .map(|workspace| workspace.root_uri.clone())
-                {
-                    push_workspace_diagnostics_notifications(
-                        state,
-                        &workspace_uri,
-                        &mut notifications,
-                    )?;
-                } else {
-                    let params_value =
-                        serde_json::to_value(publish_diagnostics_params(state, &snapshot))?;
-                    notifications
-                        .push(("textDocument/publishDiagnostics".to_owned(), params_value));
-                }
-                if let Some(params_value) = state
-                    .workspace_for_uri(snapshot.uri.as_ref())
-                    .and_then(|workspace| {
-                        workspace_manifest_diagnostics_params(state, &workspace.root_uri)
-                    })
-                    .and_then(|params| serde_json::to_value(params).ok())
-                {
-                    notifications
-                        .push(("textDocument/publishDiagnostics".to_owned(), params_value));
-                }
-                if !unchanged_workspace_open {
-                    if let Some(workspace_uri) = state
-                        .workspace_for_uri(snapshot.uri.as_ref())
-                        .filter(|workspace| workspace.cache.get(snapshot.uri.as_ref()).is_some())
-                        .map(|workspace| workspace.root_uri.clone())
-                        && let Some(request) =
-                            build_remote_dependency_batch_for_workspace(state, &workspace_uri)
-                    {
-                        notifications.push((
-                            RESOLVE_REMOTE_DEPENDENCIES.to_owned(),
-                            serde_json::to_value(request)?,
-                        ));
-                    }
-                }
-            }
+            let notifications = parse_params::<DidOpenTextDocumentParams>(&message)?
+                .map(|params| handle_did_open_notifications(state, &params))
+                .transpose()?
+                .unwrap_or_default();
             Ok(HandledMessage {
                 response: None,
                 notifications,
             })
         }
         Some("textDocument/didChange") => {
-            let mut notifications = Vec::new();
-            if let Some(params) = parse_params::<DidChangeTextDocumentParams>(&message)? {
-                let normalized_uri = abap_lsp::normalize_lsp_uri(params.text_document.uri.as_str());
-                let progress_notifications = Mutex::new(Vec::new());
-                let workspace_uri = state
-                    .workspace_for_uri(normalized_uri.as_str())
-                    .map(|workspace| workspace.root_uri.clone());
-                let change = params.content_changes.last();
-                let unchanged_workspace_change = change.and_then(|change| {
-                    state
-                        .workspace_for_uri(&normalized_uri)
-                        .and_then(|workspace| workspace.cache.get(&normalized_uri))
-                        .map(|snapshot| snapshot.text.as_ref() == change.text.as_str())
-                }) == Some(true);
-                let progress = |processed: usize, total: usize| {
-                    if let Some(workspace_uri) = workspace_uri.as_ref() {
-                        push_workspace_analysis_progress(
-                            &progress_notifications,
-                            workspace_uri,
-                            "change",
-                            processed,
-                            total,
-                        );
-                    }
-                };
-                if let Some(snapshot) =
-                    publish_changed_document_mut_with_progress(state, &params, Some(&progress))
-                {
-                    notifications.extend(
-                        progress_notifications
-                            .into_inner()
-                            .expect("progress notification collection should not be poisoned"),
-                    );
-                    if unchanged_workspace_change {
-                        let params_value =
-                            serde_json::to_value(publish_diagnostics_params(state, &snapshot))?;
-                        notifications
-                            .push(("textDocument/publishDiagnostics".to_owned(), params_value));
-                    } else if let Some(workspace_uri) = state
-                        .workspace_for_uri(snapshot.uri.as_ref())
-                        .filter(|workspace| workspace.cache.get(snapshot.uri.as_ref()).is_some())
-                        .map(|workspace| workspace.root_uri.clone())
-                    {
-                        push_workspace_diagnostics_notifications(
-                            state,
-                            &workspace_uri,
-                            &mut notifications,
-                        )?;
-                    } else {
-                        let params_value =
-                            serde_json::to_value(publish_diagnostics_params(state, &snapshot))?;
-                        notifications
-                            .push(("textDocument/publishDiagnostics".to_owned(), params_value));
-                    }
-                    if let Some(params_value) = state
-                        .workspace_for_uri(snapshot.uri.as_ref())
-                        .and_then(|workspace| {
-                            workspace_manifest_diagnostics_params(state, &workspace.root_uri)
-                        })
-                        .and_then(|params| serde_json::to_value(params).ok())
-                    {
-                        notifications
-                            .push(("textDocument/publishDiagnostics".to_owned(), params_value));
-                    }
-                    if !unchanged_workspace_change {
-                        if let Some(workspace_uri) = state
-                            .workspace_for_uri(snapshot.uri.as_ref())
-                            .filter(|workspace| {
-                                workspace.cache.get(snapshot.uri.as_ref()).is_some()
-                            })
-                            .map(|workspace| workspace.root_uri.clone())
-                            && let Some(request) =
-                                build_remote_dependency_batch_for_workspace(state, &workspace_uri)
-                        {
-                            notifications.push((
-                                RESOLVE_REMOTE_DEPENDENCIES.to_owned(),
-                                serde_json::to_value(request)?,
-                            ));
-                        }
-                    }
-                }
-            }
+            let notifications = parse_params::<DidChangeTextDocumentParams>(&message)?
+                .map(|params| handle_did_change_notifications(state, &params))
+                .transpose()?
+                .unwrap_or_default();
             Ok(HandledMessage {
                 response: None,
                 notifications,
             })
         }
-        Some(WORKSPACE_MANIFEST_UPDATED) => {
-            if let Some(params) = parse_params::<WorkspaceManifestUpdatedParams>(&message)? {
-                let progress_notifications = Mutex::new(Vec::new());
-                let progress = |processed: usize, total: usize| {
-                    push_workspace_analysis_progress(
-                        &progress_notifications,
-                        &params.workspace_uri,
-                        "manifest-updated",
-                        processed,
-                        total,
-                    );
-                };
-                let snapshots = handle_workspace_manifest_updated_with_progress(
-                    state,
-                    &params,
-                    Some(&progress),
-                );
-                let mut notifications = Vec::new();
-                notifications.extend(
-                    progress_notifications
-                        .into_inner()
-                        .expect("progress notification collection should not be poisoned"),
-                );
-                if let Some(params_value) =
-                    workspace_manifest_diagnostics_params(state, &params.workspace_uri)
-                        .and_then(|params| serde_json::to_value(params).ok())
-                {
-                    notifications
-                        .push(("textDocument/publishDiagnostics".to_owned(), params_value));
-                }
-                for snapshot in &snapshots {
-                    let params_value =
-                        serde_json::to_value(publish_diagnostics_params(state, snapshot))?;
-                    notifications
-                        .push(("textDocument/publishDiagnostics".to_owned(), params_value));
-                }
-                if let Some(request) =
-                    build_remote_dependency_batch_for_workspace(state, &params.workspace_uri)
-                {
-                    notifications.push((
-                        RESOLVE_REMOTE_DEPENDENCIES.to_string(),
-                        serde_json::to_value(request)?,
-                    ));
-                }
-                return Ok(HandledMessage {
-                    response: None,
-                    notifications,
-                });
-            }
-            Ok(HandledMessage {
-                response: None,
-                notifications: Vec::new(),
-            })
-        }
-        Some(DEPENDENCY_CACHE_CLEARED) => {
-            if let Some(params) = parse_params::<WorkspaceManifestUpdatedParams>(&message)? {
-                let progress_notifications = Mutex::new(Vec::new());
-                let progress = |processed: usize, total: usize| {
-                    push_workspace_analysis_progress(
-                        &progress_notifications,
-                        &params.workspace_uri,
-                        "dependency-cache-cleared",
-                        processed,
-                        total,
-                    );
-                };
-                let snapshots =
-                    handle_dependency_cache_cleared_with_progress(state, &params, Some(&progress));
-                let mut notifications = Vec::new();
-                notifications.extend(
-                    progress_notifications
-                        .into_inner()
-                        .expect("progress notification collection should not be poisoned"),
-                );
-                if let Some(params_value) =
-                    workspace_manifest_diagnostics_params(state, &params.workspace_uri)
-                        .and_then(|params| serde_json::to_value(params).ok())
-                {
-                    notifications
-                        .push(("textDocument/publishDiagnostics".to_string(), params_value));
-                }
-                for snapshot in &snapshots {
-                    let params_value =
-                        serde_json::to_value(publish_diagnostics_params(state, snapshot))?;
-                    notifications
-                        .push(("textDocument/publishDiagnostics".to_string(), params_value));
-                }
-                if let Some(request) =
-                    build_remote_dependency_batch_for_workspace(state, &params.workspace_uri)
-                {
-                    notifications.push((
-                        RESOLVE_REMOTE_DEPENDENCIES.to_string(),
-                        serde_json::to_value(request)?,
-                    ));
-                }
-                return Ok(HandledMessage {
-                    response: None,
-                    notifications,
-                });
-            }
-            Ok(HandledMessage {
-                response: None,
-                notifications: Vec::new(),
-            })
-        }
+        Some(WORKSPACE_MANIFEST_UPDATED) => Ok(HandledMessage {
+            response: None,
+            notifications: parse_params::<WorkspaceManifestUpdatedParams>(&message)?
+                .map(|params| handle_workspace_manifest_updated_notifications(state, &params))
+                .transpose()?
+                .unwrap_or_default(),
+        }),
+        Some(DEPENDENCY_CACHE_CLEARED) => Ok(HandledMessage {
+            response: None,
+            notifications: parse_params::<WorkspaceManifestUpdatedParams>(&message)?
+                .map(|params| handle_dependency_cache_cleared_notifications(state, &params))
+                .transpose()?
+                .unwrap_or_default(),
+        }),
         Some(REMOTE_DEPENDENCIES_UPDATED) => Ok(HandledMessage {
             response: None,
-            notifications: Vec::new(),
+            notifications: parse_params::<abap_lsp::RemoteDependenciesUpdatedParams>(&message)?
+                .map(|params| handle_remote_dependencies_updated_notifications(state, &params))
+                .transpose()?
+                .unwrap_or_default(),
         }),
         Some("initialized") => {
             let mut notifications = Vec::new();
             let workspace_uris: Vec<_> = state.workspaces.keys().cloned().collect();
             for workspace_uri in workspace_uris {
-                let progress_notifications = Mutex::new(Vec::new());
-                let progress = |processed: usize, total: usize| {
-                    push_workspace_analysis_progress(
-                        &progress_notifications,
-                        &workspace_uri,
-                        "initialized",
-                        processed,
-                        total,
-                    );
-                };
-                let _ = refresh_workspace_with_progress(state, &workspace_uri, Some(&progress));
-                notifications.extend(
-                    progress_notifications
-                        .into_inner()
-                        .expect("progress notification collection should not be poisoned"),
-                );
-                if let Some(params_value) =
-                    workspace_manifest_diagnostics_params(state, &workspace_uri)
-                        .and_then(|params| serde_json::to_value(params).ok())
-                {
-                    notifications
-                        .push(("textDocument/publishDiagnostics".to_owned(), params_value));
-                }
-                push_workspace_diagnostics_notifications(
+                notifications.extend(handle_initialized_workspace_notifications(
                     state,
                     &workspace_uri,
-                    &mut notifications,
-                )?;
-                if let Some(request) =
-                    build_remote_dependency_batch_for_workspace(state, &workspace_uri)
-                {
-                    notifications.push((
-                        RESOLVE_REMOTE_DEPENDENCIES.to_owned(),
-                        serde_json::to_value(request)?,
-                    ));
-                }
+                )?);
             }
             Ok(HandledMessage {
                 response: None,
@@ -897,15 +1304,19 @@ fn push_workspace_analysis_progress(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::fs;
     use std::path::PathBuf;
+    use std::sync::mpsc;
+    use std::sync::{Arc, Mutex};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{
-        handle_message, workspace_analysis_status_finished, workspace_analysis_status_started,
+        handle_message, try_schedule_background_analysis, workspace_analysis_status_finished,
+        workspace_analysis_status_started,
     };
-    use abap_lsp::{ServerConfig, ServerState};
-    use serde_json::json;
+    use abap_lsp::{ServerConfig, ServerState, refresh_workspace};
+    use serde_json::{Value, json};
 
     fn temp_workspace_path(name: &str) -> PathBuf {
         let mut path = std::env::temp_dir();
@@ -919,6 +1330,50 @@ mod tests {
 
     fn file_uri(path: &std::path::Path) -> String {
         format!("file:///{}", path.to_string_lossy().replace('\\', "/"))
+    }
+
+    fn semantic_token_positions(result: &Value) -> Vec<(u64, u64)> {
+        let data = result
+            .get("data")
+            .and_then(Value::as_array)
+            .expect("semantic token data");
+        let mut current_line = 0u64;
+        let mut current_char = 0u64;
+        let mut out = Vec::new();
+
+        if data.first().is_some_and(Value::is_number) {
+            for chunk in data.chunks(5) {
+                let delta_line = chunk[0].as_u64().expect("delta line");
+                let delta_start = chunk[1].as_u64().expect("delta start");
+                current_line += delta_line;
+                current_char = if delta_line == 0 {
+                    current_char + delta_start
+                } else {
+                    delta_start
+                };
+                out.push((current_line, current_char));
+            }
+            return out;
+        }
+
+        for token in data {
+            let delta_line = token
+                .get("deltaLine")
+                .and_then(Value::as_u64)
+                .expect("delta line");
+            let delta_start = token
+                .get("deltaStart")
+                .and_then(Value::as_u64)
+                .expect("delta start");
+            current_line += delta_line;
+            current_char = if delta_line == 0 {
+                current_char + delta_start
+            } else {
+                delta_start
+            };
+            out.push((current_line, current_char));
+        }
+        out
     }
 
     #[test]
@@ -1019,6 +1474,117 @@ mod tests {
 
         assert!(initialized.response.is_some());
         assert!(state.workspaces.contains_key(workspace_uri));
+    }
+
+    #[test]
+    fn background_scheduler_stages_workspace_open_and_enqueues_job() {
+        let workspace_path = temp_workspace_path("background_open_schedule");
+        fs::create_dir_all(&workspace_path).expect("workspace dir");
+        let workspace_uri = file_uri(&workspace_path);
+        let normalized_workspace_uri = abap_lsp::normalize_lsp_uri(&workspace_uri);
+        let source_uri = format!("{workspace_uri}/main.abap");
+        let normalized_uri = abap_lsp::normalize_lsp_uri(&source_uri);
+
+        let mut state = ServerState::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        let generations = Arc::new(Mutex::new(HashMap::new()));
+        let (task_tx, task_rx) = mpsc::sync_channel(1);
+        let message = json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": source_uri,
+                    "languageId": "abap",
+                    "version": 3,
+                    "text": "DATA lv_value TYPE i."
+                }
+            }
+        });
+
+        let started =
+            try_schedule_background_analysis(&mut state, &message, &task_tx, &generations)
+                .expect("schedule")
+                .expect("background job");
+        assert_eq!(started.len(), 1);
+        assert_eq!(started[0].trigger, "open");
+
+        let workspace = state
+            .workspaces
+            .get(&normalized_workspace_uri)
+            .expect("workspace");
+        let overlay = workspace
+            .open_documents
+            .get(&normalized_uri)
+            .expect("staged overlay");
+        assert_eq!(overlay.version, 3);
+        assert_eq!(overlay.text.as_ref(), "DATA lv_value TYPE i.");
+
+        let task = task_rx.recv().expect("scheduled task");
+        assert_eq!(task.workspace_uri, normalized_workspace_uri);
+        assert_eq!(task.generation, 1);
+
+        let _ = fs::remove_dir_all(&workspace_path);
+    }
+
+    #[test]
+    fn background_scheduler_exposes_preview_semantic_tokens_for_commented_out_statement() {
+        let workspace_path = temp_workspace_path("background_preview_semantic_tokens");
+        fs::create_dir_all(&workspace_path).expect("workspace dir");
+        let workspace_uri = file_uri(&workspace_path);
+        let source_path = workspace_path.join("main.abap");
+        let source_uri = format!("{workspace_uri}/main.abap");
+        fs::write(&source_path, "DATA lv_value TYPE i.\nlv_value = 1.\n").expect("source");
+
+        let mut state = ServerState::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        refresh_workspace(&mut state, &workspace_uri);
+
+        let generations = Arc::new(Mutex::new(HashMap::new()));
+        let (task_tx, _task_rx) = mpsc::sync_channel(1);
+        let changed_text = "DATA lv_value TYPE i.\n* lv_value = 1.\n";
+        let message = json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didChange",
+            "params": {
+                "textDocument": {
+                    "uri": source_uri,
+                    "version": 2
+                },
+                "contentChanges": [{
+                    "text": changed_text
+                }]
+            }
+        });
+
+        try_schedule_background_analysis(&mut state, &message, &task_tx, &generations)
+            .expect("schedule")
+            .expect("background job");
+
+        let semantic_tokens_msg = handle_message(
+            &mut state,
+            &ServerConfig::default(),
+            json!({
+                "jsonrpc": "2.0",
+                "id": 7,
+                "method": "textDocument/semanticTokens/full",
+                "params": { "textDocument": { "uri": source_uri } }
+            }),
+        )
+        .expect("semantic tokens");
+        let result = semantic_tokens_msg
+            .response
+            .expect("semantic tokens response")
+            .result
+            .expect("semantic tokens result");
+        let positions = semantic_token_positions(&result);
+
+        assert!(
+            positions.iter().all(|(line, _)| *line == 0),
+            "preview semantic tokens should align with commented statement text: {positions:?}"
+        );
+
+        let _ = fs::remove_dir_all(&workspace_path);
     }
 
     #[test]
