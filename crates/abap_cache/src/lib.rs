@@ -25,14 +25,19 @@ use rayon::prelude::*;
 mod workspace;
 pub use workspace::{
     DEFAULT_REMOTE_REQUEST_PARALLELISM, DEFAULT_REMOTE_REQUESTS_PER_SECOND,
-    DEPENDENCY_MODE_LOCAL_FIRST, DEPENDENCY_MODE_REMOTE_ON_DEMAND, ManifestResolution,
-    ManifestUnit, ManifestUnitMember, OpenDocumentOverlay, UNKNOWN_SYMBOL_MODE_LOG,
-    UNKNOWN_SYMBOL_MODE_REMOTE, WorkspaceDocument, WorkspaceLoadResult, WorkspaceManifest,
-    ddic_xml_to_abap_source, file_uri_to_path, is_remote_lookup_candidate, is_remote_lookup_name,
-    load_manifest_from_workspace, load_manifest_from_workspace_result, load_workspace_documents,
-    manifest_cache_dir, manifest_declares_uri, manifest_document_metadata,
-    manifest_supports_remote_resolution, normalize_dependency_mode, normalize_unknown_symbol_mode,
-    path_to_file_uri, uri_starts_with_workspace, workspace_relative_path,
+    DEPENDENCY_MODE_LOCAL_FIRST, DEPENDENCY_MODE_REMOTE_ON_DEMAND,
+    EDITOR_FIRST_DEPENDENCY_MEMBER_THRESHOLD, EDITOR_FIRST_MANIFEST_BYTES_THRESHOLD,
+    EDITOR_FIRST_UNIT_COUNT_THRESHOLD, ManifestPerformance, ManifestResolution, ManifestUnit,
+    ManifestUnitMember, OpenDocumentOverlay, UNKNOWN_SYMBOL_MODE_LOG, UNKNOWN_SYMBOL_MODE_REMOTE,
+    WORKSPACE_PERFORMANCE_MODE_AUTO, WORKSPACE_PERFORMANCE_MODE_EDITOR_FIRST,
+    WORKSPACE_PERFORMANCE_MODE_FULL_WORKSPACE, WorkspaceDocument, WorkspaceLoadResult,
+    WorkspaceManifest, WorkspacePerformanceMode, ddic_xml_to_abap_source, file_uri_to_path,
+    is_remote_lookup_candidate, is_remote_lookup_name, load_manifest_from_workspace,
+    load_manifest_from_workspace_result, load_workspace_documents, manifest_cache_dir,
+    manifest_declares_uri, manifest_document_metadata, manifest_supports_remote_resolution,
+    normalize_dependency_mode, normalize_unknown_symbol_mode, normalize_workspace_performance_mode,
+    path_to_file_uri, resolve_workspace_performance_mode, uri_starts_with_workspace,
+    workspace_relative_path,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,7 +69,6 @@ struct StagedDocument {
     text: Arc<str>,
     is_dependency: bool,
     object_name: Option<Arc<str>>,
-    parse: Arc<ParseResult>,
     previous: Option<Arc<AnalysisSnapshot>>,
 }
 
@@ -4996,6 +5000,17 @@ struct AnalysisMetrics {
     snapshot_build_micros: u128,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceAnalysisMetricsSnapshot {
+    pub parse_count: usize,
+    pub local_phase_count: usize,
+    pub dirty_uri_count: usize,
+    pub parse_micros: u128,
+    pub local_phase_micros: u128,
+    pub project_update_micros: u128,
+    pub snapshot_build_micros: u128,
+}
+
 #[derive(Debug, Clone)]
 struct CachedWorkspaceAnalysis {
     uri_order: Vec<Arc<str>>,
@@ -5050,7 +5065,6 @@ fn staged_documents_for_inputs(
             text: Arc::clone(&input.text),
             is_dependency: input.is_dependency,
             object_name: input.object_name.clone(),
-            parse: Arc::new(parse(analysis_text_for_input(input).as_ref())),
             previous: snapshot.cloned(),
         });
         seen.insert(Arc::clone(&uri));
@@ -5068,7 +5082,6 @@ fn staged_documents_for_inputs(
             text: Arc::clone(&input.text),
             is_dependency: input.is_dependency,
             object_name: input.object_name.clone(),
-            parse: Arc::new(parse(analysis_text_for_input(input).as_ref())),
             previous: existing.get(input.uri.as_ref()).cloned(),
         });
     }
@@ -5090,6 +5103,8 @@ fn prepare_documents(
         previous_analysis,
     );
     let processed = AtomicUsize::new(0);
+    let parse_count = AtomicUsize::new(0);
+    let local_phase_count = AtomicUsize::new(0);
     let total = staged.len();
     let metrics = AnalysisMetrics::default();
     let prepared: Vec<_> = staged
@@ -5116,20 +5131,25 @@ fn prepare_documents(
                         .expect("reused snapshot should exist")
                         .parse,
                 )
-            } else if let Some(snapshot) = previous_snapshot {
-                if snapshot.parse.as_ref().tokens == entry.parse.as_ref().tokens
-                    && snapshot.parse.as_ref().errors == entry.parse.as_ref().errors
-                {
-                    Arc::clone(&snapshot.parse)
-                } else {
-                    Arc::new(parse(analysis_text.as_ref()))
-                }
             } else {
-                Arc::new(parse(analysis_text.as_ref()))
+                parse_count.fetch_add(1, Ordering::Relaxed);
+                let parsed = Arc::new(parse(analysis_text.as_ref()));
+                if let Some(snapshot) = previous_snapshot {
+                    if snapshot.parse.as_ref().tokens == parsed.as_ref().tokens
+                        && snapshot.parse.as_ref().errors == parsed.as_ref().errors
+                    {
+                        Arc::clone(&snapshot.parse)
+                    } else {
+                        parsed
+                    }
+                } else {
+                    parsed
+                }
             };
             let local = if let Some(previous) = previous_local.filter(|_| reuse_previous) {
                 previous.clone()
             } else {
+                local_phase_count.fetch_add(1, Ordering::Relaxed);
                 analyze_unit_local_state(
                     UnitId(idx as u32),
                     Arc::clone(&entry.uri),
@@ -5160,8 +5180,8 @@ fn prepare_documents(
         .collect();
 
     let mut metrics = metrics;
-    metrics.parse_count = prepared.len();
-    metrics.local_phase_count = prepared.len();
+    metrics.parse_count = parse_count.load(Ordering::Relaxed);
+    metrics.local_phase_count = local_phase_count.load(Ordering::Relaxed);
     metrics.parse_micros = parse_timer.elapsed().as_micros();
     metrics.local_phase_micros = metrics.parse_micros;
     (prepared, metrics)
@@ -5640,18 +5660,43 @@ impl DocumentStore {
         let inputs = document_inputs_for_publish(&existing, analysis.as_ref(), &input);
         let force_full = force_full_rebuild(analysis.as_ref(), &inputs);
         let changed_uris = HashSet::from([Arc::clone(&input.uri)]);
-        let (rebuilt, _) = analyze_inputs_with_progress(
-            &inputs,
-            Some(&existing),
-            analysis.as_ref(),
-            None,
+        let (prepared, _) = prepare_documents(&inputs, Some(&existing), analysis.as_ref(), None);
+        let locals: Vec<_> = prepared
+            .iter()
+            .map(|prepared| prepared.local.clone())
+            .collect();
+        let previous_project = existing
+            .values()
+            .next()
+            .map(|snapshot| snapshot.project.as_ref());
+        let previous_locals = analysis.as_ref().map(|analysis| &analysis.locals);
+        let update = incremental_project_update(
+            previous_project,
+            previous_locals,
+            locals,
             &changed_uris,
             force_full,
         );
-        rebuilt
-            .get(input.uri.as_ref())
+        let project = Arc::new(update.project);
+        let prepared = prepared
+            .into_iter()
+            .find(|prepared| prepared.uri.as_ref() == input.uri.as_ref())
+            .expect("preview snapshot input should exist");
+        let unit = project
+            .unit_by_uri(prepared.uri.as_ref())
             .cloned()
-            .expect("preview snapshot should exist")
+            .expect("preview project should contain changed unit");
+        Arc::new(AnalysisSnapshot {
+            scope_index: Arc::new(build_scope_index(&unit)),
+            uri: Arc::clone(&prepared.uri),
+            version: prepared.version,
+            text: Arc::clone(&prepared.text),
+            is_dependency: prepared.is_dependency,
+            object_name: prepared.object_name.clone(),
+            parse: Arc::clone(&prepared.parse),
+            symbols: Arc::new(unit),
+            project,
+        })
     }
 
     pub fn get(&self, uri: &str) -> Option<Arc<AnalysisSnapshot>> {
@@ -5682,6 +5727,22 @@ impl DocumentStore {
                 analysis.metrics.dirty_uri_count,
             )
         })
+    }
+
+    #[doc(hidden)]
+    pub fn last_analysis_metrics_snapshot(&self) -> Option<WorkspaceAnalysisMetricsSnapshot> {
+        self.analysis
+            .read()
+            .as_ref()
+            .map(|analysis| WorkspaceAnalysisMetricsSnapshot {
+                parse_count: analysis.metrics.parse_count,
+                local_phase_count: analysis.metrics.local_phase_count,
+                dirty_uri_count: analysis.metrics.dirty_uri_count,
+                parse_micros: analysis.metrics.parse_micros,
+                local_phase_micros: analysis.metrics.local_phase_micros,
+                project_update_micros: analysis.metrics.project_update_micros,
+                snapshot_build_micros: analysis.metrics.snapshot_build_micros,
+            })
     }
 
     pub fn references(

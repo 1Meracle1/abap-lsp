@@ -8,9 +8,10 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use abap_cache::{
-    AnalysisSnapshot, DocumentInput, DocumentStore, UNKNOWN_SYMBOL_MODE_REMOTE, WorkspaceManifest,
-    file_uri_to_path, is_remote_lookup_candidate, load_workspace_documents, manifest_cache_dir,
-    manifest_document_metadata, manifest_supports_remote_resolution, uri_starts_with_workspace,
+    DocumentInput, DocumentStore, UNKNOWN_SYMBOL_MODE_REMOTE, WorkspaceManifest, file_uri_to_path,
+    is_remote_lookup_candidate, load_workspace_documents, manifest_cache_dir,
+    manifest_document_metadata, manifest_supports_remote_resolution,
+    resolve_workspace_performance_mode, uri_starts_with_workspace,
 };
 use abap_symbols::{DiagnosticKind, ReferenceKind, SqlResolution};
 use lsp_types::{
@@ -23,7 +24,7 @@ use lsp_types::{
 };
 use serde::{Deserialize, Serialize};
 
-pub use abap_cache::OpenDocumentOverlay;
+pub use abap_cache::{AnalysisSnapshot, OpenDocumentOverlay, WorkspacePerformanceMode};
 pub use lsp_types::{
     CompletionParams, CompletionResponse, DidChangeTextDocumentParams, DidOpenTextDocumentParams,
     GotoDefinitionParams, HoverParams, ReferenceParams, SemanticTokensParams,
@@ -62,6 +63,7 @@ pub struct WorkspaceState {
     pub remote_resolution_seen: HashSet<String>,
     pub remote_lookup_failures: HashSet<String>,
     pub remote_resolution_in_flight: bool,
+    pub performance_mode: WorkspacePerformanceMode,
 }
 
 impl Default for ServerState {
@@ -103,6 +105,7 @@ impl WorkspaceState {
             remote_resolution_seen: HashSet::new(),
             remote_lookup_failures: HashSet::new(),
             remote_resolution_in_flight: false,
+            performance_mode: WorkspacePerformanceMode::FullWorkspace,
         }
     }
 }
@@ -263,6 +266,8 @@ fn rebuild_workspace_cache_with_progress(
     progress: Option<&(dyn Fn(usize, usize) + Sync)>,
 ) -> HashMap<Arc<str>, Arc<AnalysisSnapshot>> {
     let loaded = load_workspace_documents(&workspace.root_uri, &workspace.open_documents);
+    workspace.performance_mode =
+        resolve_workspace_performance_mode(loaded.manifest.as_ref(), loaded.manifest_len_bytes);
     workspace.manifest = loaded.manifest.clone();
     workspace.manifest_uri = loaded.manifest_uri.to_string();
     workspace.manifest_error = loaded.manifest_error.clone();
@@ -914,7 +919,11 @@ pub fn build_remote_dependency_batch_for_workspace_filtered(
         return None;
     }
 
-    let mut uris = workspace.cache.uris();
+    let mut uris: Vec<_> = if let Some(source_uri_filter) = source_uri_filter {
+        source_uri_filter.iter().cloned().collect()
+    } else {
+        workspace.cache.uris()
+    };
     uris.sort();
 
     let mut source_uris = Vec::new();
@@ -935,9 +944,6 @@ pub fn build_remote_dependency_batch_for_workspace_filtered(
         .map(|manifest| manifest.resolution.remote_requests_per_second);
 
     for uri in uris {
-        if source_uri_filter.is_some_and(|filter| !filter.contains(uri.as_ref())) {
-            continue;
-        }
         let Some(snapshot) = workspace.cache.get(uri.as_ref()) else {
             continue;
         };

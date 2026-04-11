@@ -12,8 +12,21 @@ pub const DEPENDENCY_MODE_REMOTE_ON_DEMAND: &str = "remote-on-demand";
 pub const DEPENDENCY_MODE_LOCAL_FIRST: &str = "local-first";
 pub const UNKNOWN_SYMBOL_MODE_REMOTE: &str = "remote";
 pub const UNKNOWN_SYMBOL_MODE_LOG: &str = "log";
+pub const WORKSPACE_PERFORMANCE_MODE_AUTO: &str = "auto";
+pub const WORKSPACE_PERFORMANCE_MODE_EDITOR_FIRST: &str = "editor-first";
+pub const WORKSPACE_PERFORMANCE_MODE_FULL_WORKSPACE: &str = "full-workspace";
 pub const DEFAULT_REMOTE_REQUEST_PARALLELISM: usize = 4;
 pub const DEFAULT_REMOTE_REQUESTS_PER_SECOND: usize = 8;
+pub const EDITOR_FIRST_UNIT_COUNT_THRESHOLD: usize = 1_000;
+pub const EDITOR_FIRST_DEPENDENCY_MEMBER_THRESHOLD: usize = 1_000;
+pub const EDITOR_FIRST_MANIFEST_BYTES_THRESHOLD: usize = 1_000_000;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkspacePerformanceMode {
+    Auto,
+    EditorFirst,
+    FullWorkspace,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct WorkspaceManifest {
@@ -23,6 +36,8 @@ pub struct WorkspaceManifest {
     pub connection: String,
     #[serde(default)]
     pub resolution: ManifestResolution,
+    #[serde(default)]
+    pub performance: ManifestPerformance,
     #[serde(default, rename = "unit")]
     pub units: Vec<ManifestUnit>,
 }
@@ -49,6 +64,20 @@ impl Default for ManifestResolution {
             unknown_symbol_mode: default_unknown_symbol_mode(),
             remote_request_parallelism: default_remote_request_parallelism(),
             remote_requests_per_second: default_remote_requests_per_second(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct ManifestPerformance {
+    #[serde(default = "default_workspace_performance_mode")]
+    pub mode: String,
+}
+
+impl Default for ManifestPerformance {
+    fn default() -> Self {
+        Self {
+            mode: default_workspace_performance_mode(),
         }
     }
 }
@@ -93,6 +122,7 @@ pub struct WorkspaceLoadResult {
     pub root_uri: Arc<str>,
     pub root_path: PathBuf,
     pub manifest_uri: Arc<str>,
+    pub manifest_len_bytes: usize,
     pub manifest: Option<WorkspaceManifest>,
     pub manifest_error: Option<String>,
     pub documents: Vec<WorkspaceDocument>,
@@ -136,6 +166,10 @@ pub fn load_workspace_documents(
 ) -> WorkspaceLoadResult {
     let root_path = file_uri_to_path(root_uri).unwrap_or_default();
     let manifest_uri = Arc::<str>::from(path_to_file_uri(&root_path.join("abapls.toml")));
+    let manifest_len_bytes = fs::metadata(root_path.join("abapls.toml"))
+        .ok()
+        .map(|metadata| metadata.len() as usize)
+        .unwrap_or(0);
     let (manifest, manifest_error) = match load_manifest_from_workspace_result(&root_path) {
         Ok(manifest) => (manifest, None),
         Err(error) => (None, Some(error)),
@@ -190,6 +224,7 @@ pub fn load_workspace_documents(
         root_uri: Arc::from(root_uri),
         root_path,
         manifest_uri,
+        manifest_len_bytes,
         manifest,
         manifest_error,
         documents,
@@ -222,6 +257,47 @@ pub fn normalize_unknown_symbol_mode(value: &str) -> &'static str {
     match value.trim().to_ascii_lowercase().as_str() {
         UNKNOWN_SYMBOL_MODE_LOG => UNKNOWN_SYMBOL_MODE_LOG,
         _ => UNKNOWN_SYMBOL_MODE_REMOTE,
+    }
+}
+
+pub fn normalize_workspace_performance_mode(value: &str) -> &'static str {
+    match value.trim().to_ascii_lowercase().as_str() {
+        WORKSPACE_PERFORMANCE_MODE_EDITOR_FIRST => WORKSPACE_PERFORMANCE_MODE_EDITOR_FIRST,
+        WORKSPACE_PERFORMANCE_MODE_FULL_WORKSPACE => WORKSPACE_PERFORMANCE_MODE_FULL_WORKSPACE,
+        _ => WORKSPACE_PERFORMANCE_MODE_AUTO,
+    }
+}
+
+pub fn resolve_workspace_performance_mode(
+    manifest: Option<&WorkspaceManifest>,
+    manifest_len_bytes: usize,
+) -> WorkspacePerformanceMode {
+    let configured = manifest
+        .map(|manifest| normalize_workspace_performance_mode(&manifest.performance.mode))
+        .unwrap_or(WORKSPACE_PERFORMANCE_MODE_AUTO);
+    match configured {
+        WORKSPACE_PERFORMANCE_MODE_EDITOR_FIRST => WorkspacePerformanceMode::EditorFirst,
+        WORKSPACE_PERFORMANCE_MODE_FULL_WORKSPACE => WorkspacePerformanceMode::FullWorkspace,
+        _ => {
+            let Some(manifest) = manifest else {
+                return WorkspacePerformanceMode::FullWorkspace;
+            };
+            let unit_count = manifest.units.len();
+            let dependency_member_count = manifest
+                .units
+                .iter()
+                .flat_map(|unit| unit.members.iter())
+                .filter(|member| member.role == "dependency")
+                .count();
+            if unit_count >= EDITOR_FIRST_UNIT_COUNT_THRESHOLD
+                || dependency_member_count >= EDITOR_FIRST_DEPENDENCY_MEMBER_THRESHOLD
+                || manifest_len_bytes >= EDITOR_FIRST_MANIFEST_BYTES_THRESHOLD
+            {
+                WorkspacePerformanceMode::EditorFirst
+            } else {
+                WorkspacePerformanceMode::FullWorkspace
+            }
+        }
     }
 }
 
@@ -727,6 +803,8 @@ fn normalize_manifest(manifest: &mut WorkspaceManifest) {
         normalize_dependency_mode(&manifest.resolution.dependency_mode).to_string();
     manifest.resolution.unknown_symbol_mode =
         normalize_unknown_symbol_mode(&manifest.resolution.unknown_symbol_mode).to_string();
+    manifest.performance.mode =
+        normalize_workspace_performance_mode(&manifest.performance.mode).to_string();
     if manifest.resolution.cache_dir.trim().is_empty() {
         manifest.resolution.cache_dir = default_cache_dir();
     }
@@ -807,6 +885,10 @@ fn default_cache_dir() -> String {
 
 fn default_unknown_symbol_mode() -> String {
     UNKNOWN_SYMBOL_MODE_REMOTE.to_string()
+}
+
+fn default_workspace_performance_mode() -> String {
+    WORKSPACE_PERFORMANCE_MODE_AUTO.to_string()
 }
 
 fn default_remote_request_parallelism() -> usize {
@@ -1261,9 +1343,11 @@ mod tests {
     use std::fs;
 
     use super::{
-        UNKNOWN_SYMBOL_MODE_REMOTE, WorkspaceManifest, ddic_xml_to_abap_source,
-        is_remote_lookup_candidate, is_remote_lookup_name, load_workspace_documents,
-        manifest_declares_uri, manifest_supports_remote_resolution, path_to_file_uri,
+        UNKNOWN_SYMBOL_MODE_REMOTE, WORKSPACE_PERFORMANCE_MODE_AUTO,
+        WORKSPACE_PERFORMANCE_MODE_EDITOR_FIRST, WorkspaceManifest, WorkspacePerformanceMode,
+        ddic_xml_to_abap_source, is_remote_lookup_candidate, is_remote_lookup_name,
+        load_workspace_documents, manifest_declares_uri, manifest_supports_remote_resolution,
+        path_to_file_uri, resolve_workspace_performance_mode,
     };
 
     #[test]
@@ -1274,6 +1358,78 @@ mod tests {
             UNKNOWN_SYMBOL_MODE_REMOTE
         );
         assert_eq!(manifest.resolution.remote_request_parallelism, 4);
+        assert_eq!(manifest.performance.mode, WORKSPACE_PERFORMANCE_MODE_AUTO);
+    }
+
+    #[test]
+    fn parses_manifest_performance_mode() {
+        let manifest: WorkspaceManifest = toml::from_str(
+            r#"
+version = 1
+
+[performance]
+mode = "editor-first"
+"#,
+        )
+        .expect("manifest");
+
+        assert_eq!(
+            manifest.performance.mode,
+            WORKSPACE_PERFORMANCE_MODE_EDITOR_FIRST
+        );
+    }
+
+    #[test]
+    fn resolves_auto_performance_mode_to_editor_first_for_large_manifest() {
+        let manifest: WorkspaceManifest = toml::from_str(
+            r#"
+version = 1
+
+[[unit]]
+name = "ZCL_MAIN"
+kind = "global-class"
+root_file = "src/ZCL_MAIN.abap"
+
+[[unit.member]]
+role = "main"
+file = "src/ZCL_MAIN.abap"
+object_name = "ZCL_MAIN"
+
+[[unit]]
+name = "ZCL_DEP"
+kind = "global-class"
+root_file = ".abapls/cache/dependencies/global-class/ZCL_DEP.abap"
+
+[[unit.member]]
+role = "dependency"
+file = ".abapls/cache/dependencies/global-class/ZCL_DEP.abap"
+object_name = "ZCL_DEP"
+"#,
+        )
+        .expect("manifest");
+
+        assert_eq!(
+            resolve_workspace_performance_mode(Some(&manifest), 1_000_000),
+            WorkspacePerformanceMode::EditorFirst
+        );
+    }
+
+    #[test]
+    fn resolves_explicit_full_workspace_mode() {
+        let manifest: WorkspaceManifest = toml::from_str(
+            r#"
+version = 1
+
+[performance]
+mode = "full-workspace"
+"#,
+        )
+        .expect("manifest");
+
+        assert_eq!(
+            resolve_workspace_performance_mode(Some(&manifest), 10_000_000),
+            WorkspacePerformanceMode::FullWorkspace
+        );
     }
 
     #[test]
