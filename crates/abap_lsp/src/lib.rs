@@ -889,6 +889,14 @@ pub fn build_remote_dependency_batch_for_workspace(
     state: &mut ServerState,
     workspace_uri: &str,
 ) -> Option<RemoteDependencyResolveParams> {
+    build_remote_dependency_batch_for_workspace_filtered(state, workspace_uri, None)
+}
+
+pub fn build_remote_dependency_batch_for_workspace_filtered(
+    state: &mut ServerState,
+    workspace_uri: &str,
+    source_uri_filter: Option<&HashSet<Arc<str>>>,
+) -> Option<RemoteDependencyResolveParams> {
     let workspace_uri = normalize_lsp_uri(workspace_uri);
     let workspace = state.workspaces.get(&workspace_uri)?;
     if workspace.remote_resolution_in_flight
@@ -918,6 +926,9 @@ pub fn build_remote_dependency_batch_for_workspace(
         .map(|manifest| manifest.resolution.remote_requests_per_second);
 
     for uri in uris {
+        if source_uri_filter.is_some_and(|filter| !filter.contains(uri.as_ref())) {
+            continue;
+        }
         let Some(snapshot) = workspace.cache.get(uri.as_ref()) else {
             continue;
         };

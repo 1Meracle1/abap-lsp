@@ -1883,6 +1883,15 @@ pub(crate) fn validate_project_with_scope_indexes(
     project: &mut ProjectAnalysis,
     scope_indexes: &[ScopeIndex],
 ) {
+    let dirty_unit_ids: HashSet<_> = project.units.iter().map(|unit| unit.unit_id).collect();
+    validate_project_with_scope_indexes_for_units(project, scope_indexes, &dirty_unit_ids);
+}
+
+pub(crate) fn validate_project_with_scope_indexes_for_units(
+    project: &mut ProjectAnalysis,
+    scope_indexes: &[ScopeIndex],
+    dirty_unit_ids: &HashSet<crate::ids::UnitId>,
+) {
     let lookup = build_validation_lookup(project, scope_indexes);
     let global_names = collect_global_names(project);
     let form_signatures: HashMap<(u32, u32), Vec<FormParameterData>> = project
@@ -1900,6 +1909,9 @@ pub(crate) fn validate_project_with_scope_indexes(
     project.diagnostics.clear();
 
     for unit_idx in 0..project.units.len() {
+        if !dirty_unit_ids.contains(&project.units[unit_idx].unit_id) {
+            continue;
+        }
         let mut scope_index = scope_indexes[unit_idx].clone();
         let synthetic_symbols = {
             let unit = &project.units[unit_idx];
@@ -2006,7 +2018,6 @@ pub(crate) fn validate_project_with_scope_indexes(
                     DiagnosticKind::DuplicateDeclaration
                         | DiagnosticKind::ShadowedSymbol
                         | DiagnosticKind::UnresolvedInclude
-                        | DiagnosticKind::IncludeCycle
                 )
             })
             .cloned()
@@ -2623,15 +2634,19 @@ pub(crate) fn validate_project_with_scope_indexes(
             unit.diagnostics = unit_diagnostics;
         }
 
-        for diagnostic in &project.units[unit_idx].diagnostics {
-            project.diagnostics.push(diagnostic.clone());
+    }
+
+    for unit in &mut project.units {
+        if dirty_unit_ids.contains(&unit.unit_id) {
+            unit.diagnostics
+                .retain(|diagnostic| diagnostic.kind != DiagnosticKind::IncludeCycle);
         }
     }
 
     let mut visiting = HashSet::new();
     let mut visited = HashSet::new();
-    for idx in 0..project.units.len() {
-        detect_include_cycles(project, idx as u32, &mut visiting, &mut visited);
+    for unit_id in dirty_unit_ids {
+        detect_include_cycles(project, unit_id.0, &mut visiting, &mut visited);
     }
     project.diagnostics.clear();
     for unit in &project.units {

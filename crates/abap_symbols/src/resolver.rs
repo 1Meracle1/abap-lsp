@@ -1,11 +1,11 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::builtins::builtin_routine_spec;
 use crate::def_map::{
     FieldTypeRefData, ReferenceKind, Resolution, StructureData, StructureFieldData, UnitAnalysis,
 };
-use crate::ids::{ScopeId, StructureId, SymbolHandle, SymbolId};
+use crate::ids::{ScopeId, StructureId, SymbolHandle, SymbolId, UnitId};
 use crate::scope::{Namespace, ScopeKind};
 
 fn is_builtin_type(name: &str) -> bool {
@@ -288,7 +288,10 @@ pub fn resolve_unit(unit: &mut UnitAnalysis) {
     resolve_unit_with_index(unit, &scope_index);
 }
 
-pub fn resolve_project_cross_unit(units: &mut [UnitAnalysis]) {
+fn resolve_project_cross_unit_with_filter(
+    units: &mut [UnitAnalysis],
+    dirty_units: Option<&HashSet<UnitId>>,
+) {
     let mut root_index: HashMap<(Namespace, Arc<str>), Vec<SymbolHandle>> = HashMap::new();
     let mut per_unit_root_index: Vec<HashMap<(Namespace, Arc<str>), SymbolId>> =
         vec![HashMap::new(); units.len()];
@@ -333,6 +336,9 @@ pub fn resolve_project_cross_unit(units: &mut [UnitAnalysis]) {
         .collect();
 
     for unit_idx in 0..units.len() {
+        if dirty_units.is_some_and(|dirty| !dirty.contains(&units[unit_idx].unit_id)) {
+            continue;
+        }
         let include_targets: Vec<_> = units[unit_idx]
             .include_edges
             .iter()
@@ -516,6 +522,17 @@ pub fn resolve_project_cross_unit(units: &mut [UnitAnalysis]) {
             structure_idx += 1;
         }
     }
+}
+
+pub fn resolve_project_cross_unit(units: &mut [UnitAnalysis]) {
+    resolve_project_cross_unit_with_filter(units, None);
+}
+
+pub(crate) fn resolve_project_cross_unit_for_units(
+    units: &mut [UnitAnalysis],
+    dirty_units: &HashSet<UnitId>,
+) {
+    resolve_project_cross_unit_with_filter(units, Some(dirty_units));
 }
 
 fn import_structure_for_type_ref(

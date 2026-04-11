@@ -12,7 +12,8 @@ use abap_symbols::{
     ReferenceKind, Resolution, ScopeId, ScopeKind, SqlNameRefData, SqlNameRefKind,
     StructureFieldData, StructureFieldInfo, StructureFieldShape, StructureId, SymbolData,
     SymbolHandle, SymbolId, SymbolKind, UnitAnalysis, UnitId, Visibility,
-    analyze_project_from_units, analyze_unit_locally, builtin_routine_spec,
+    builtin_routine_spec,
+    perf_api::{IncrementalProjectUpdate, LocalAnalysis, analyze_unit_local_state, incremental_project_update},
 };
 use parking_lot::RwLock;
 use rayon::prelude::*;
@@ -4617,136 +4618,16 @@ fn type_keyword_before_base(
 #[derive(Debug, Default)]
 pub struct DocumentStore {
     documents: RwLock<HashMap<Arc<str>, Arc<AnalysisSnapshot>>>,
+    analysis: RwLock<Option<CachedWorkspaceAnalysis>>,
 }
 
 impl Clone for DocumentStore {
     fn clone(&self) -> Self {
         Self {
             documents: RwLock::new(self.documents.read().clone()),
+            analysis: RwLock::new(self.analysis.read().clone()),
         }
     }
-}
-
-fn retain_local_analysis_state(unit: &mut UnitAnalysis) {
-    unit.diagnostics.retain(|diagnostic| {
-        matches!(
-            diagnostic.kind,
-            abap_symbols::DiagnosticKind::DuplicateDeclaration
-                | abap_symbols::DiagnosticKind::ShadowedSymbol
-        )
-    });
-    for edge in &mut unit.include_edges {
-        edge.target = None;
-    }
-    for reference in &mut unit.references {
-        match reference.resolution {
-            Some(Resolution::Symbol(handle)) if handle.unit == unit.unit_id => {}
-            Some(
-                Resolution::BuiltinType
-                | Resolution::BuiltinRoutine
-                | Resolution::InternalTableLine,
-            ) => {}
-            _ => reference.resolution = None,
-        }
-    }
-    unit.rebuild_semantic_index();
-}
-
-fn remap_local_unit_id(unit: &mut UnitAnalysis, unit_id: UnitId) {
-    let previous_unit_id = unit.unit_id;
-    if previous_unit_id == unit_id {
-        return;
-    }
-    unit.unit_id = unit_id;
-    for reference in &mut unit.references {
-        if let Some(Resolution::Symbol(handle)) = &mut reference.resolution
-            && handle.unit == previous_unit_id
-        {
-            handle.unit = unit_id;
-        }
-    }
-    unit.rebuild_semantic_index();
-}
-
-fn reused_local_unit(snapshot: &AnalysisSnapshot, unit_id: UnitId) -> UnitAnalysis {
-    let mut unit = snapshot.symbols.as_ref().clone();
-    remap_local_unit_id(&mut unit, unit_id);
-    retain_local_analysis_state(&mut unit);
-    unit
-}
-
-fn staged_documents_for_publish(
-    existing: &HashMap<Arc<str>, Arc<AnalysisSnapshot>>,
-    input: &DocumentInput,
-    parse: &Arc<ParseResult>,
-) -> Vec<StagedDocument> {
-    let uri = &input.uri;
-    let mut staged =
-        Vec::with_capacity(existing.len() + usize::from(!existing.contains_key(uri.as_ref())));
-    let mut seen: HashSet<Arc<str>> = HashSet::new();
-
-    if let Some(project) = existing
-        .values()
-        .next()
-        .map(|snapshot| Arc::clone(&snapshot.project))
-    {
-        for unit in &project.units {
-            if unit.uri.as_ref() == uri.as_ref() {
-                let previous = existing.get(uri.as_ref()).cloned();
-                staged.push(StagedDocument {
-                    uri: Arc::clone(uri),
-                    version: input.version,
-                    text: Arc::clone(&input.text),
-                    is_dependency: input.is_dependency,
-                    object_name: input.object_name.clone(),
-                    parse: Arc::clone(parse),
-                    previous,
-                });
-                seen.insert(Arc::clone(uri));
-                continue;
-            }
-            if let Some(snapshot) = existing.get(unit.uri.as_ref()) {
-                staged.push(StagedDocument {
-                    uri: Arc::clone(&snapshot.uri),
-                    version: snapshot.version,
-                    text: Arc::clone(&snapshot.text),
-                    is_dependency: snapshot.is_dependency,
-                    object_name: snapshot.object_name.clone(),
-                    parse: Arc::clone(&snapshot.parse),
-                    previous: Some(Arc::clone(snapshot)),
-                });
-                seen.insert(Arc::clone(&snapshot.uri));
-            }
-        }
-    }
-
-    for snapshot in existing.values() {
-        if seen.insert(Arc::clone(&snapshot.uri)) {
-            staged.push(StagedDocument {
-                uri: Arc::clone(&snapshot.uri),
-                version: snapshot.version,
-                text: Arc::clone(&snapshot.text),
-                is_dependency: snapshot.is_dependency,
-                object_name: snapshot.object_name.clone(),
-                parse: Arc::clone(&snapshot.parse),
-                previous: Some(Arc::clone(snapshot)),
-            });
-        }
-    }
-
-    if seen.insert(Arc::clone(uri)) {
-        staged.push(StagedDocument {
-            uri: Arc::clone(uri),
-            version: input.version,
-            text: Arc::clone(&input.text),
-            is_dependency: input.is_dependency,
-            object_name: input.object_name.clone(),
-            parse: Arc::clone(parse),
-            previous: existing.get(uri.as_ref()).cloned(),
-        });
-    }
-
-    staged
 }
 
 fn snapshot_matches_input(snapshot: &AnalysisSnapshot, input: &DocumentInput) -> bool {
@@ -4755,115 +4636,333 @@ fn snapshot_matches_input(snapshot: &AnalysisSnapshot, input: &DocumentInput) ->
         && snapshot.object_name == input.object_name
 }
 
-fn analyze_inputs_with_progress(
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct AnalysisMetrics {
+    parse_count: usize,
+    local_phase_count: usize,
+    dirty_uri_count: usize,
+    parse_micros: u128,
+    local_phase_micros: u128,
+    project_update_micros: u128,
+    snapshot_build_micros: u128,
+}
+
+#[derive(Debug, Clone)]
+struct CachedWorkspaceAnalysis {
+    uri_order: Vec<Arc<str>>,
+    locals: HashMap<Arc<str>, LocalAnalysis>,
+    dirty_uris: HashSet<Arc<str>>,
+    metrics: AnalysisMetrics,
+}
+
+#[derive(Debug, Clone)]
+struct PreparedDocument {
+    uri: Arc<str>,
+    version: i32,
+    text: Arc<str>,
+    is_dependency: bool,
+    object_name: Option<Arc<str>>,
+    parse: Arc<ParseResult>,
+    local: LocalAnalysis,
+}
+
+fn current_uri_order(
+    existing: &HashMap<Arc<str>, Arc<AnalysisSnapshot>>,
+    analysis: Option<&CachedWorkspaceAnalysis>,
+) -> Vec<Arc<str>> {
+    if let Some(analysis) = analysis {
+        return analysis.uri_order.clone();
+    }
+    let mut uris: Vec<_> = existing.keys().cloned().collect();
+    uris.sort();
+    uris
+}
+
+fn staged_documents_for_inputs(
+    inputs: &[DocumentInput],
+    existing: &HashMap<Arc<str>, Arc<AnalysisSnapshot>>,
+    analysis: Option<&CachedWorkspaceAnalysis>,
+) -> Vec<StagedDocument> {
+    let input_by_uri: HashMap<_, _> = inputs
+        .iter()
+        .map(|input| (Arc::clone(&input.uri), input))
+        .collect();
+    let mut staged = Vec::with_capacity(inputs.len());
+    let mut seen = HashSet::new();
+
+    for uri in current_uri_order(existing, analysis) {
+        let Some(input) = input_by_uri.get(&uri) else {
+            continue;
+        };
+        let snapshot = existing.get(uri.as_ref());
+        staged.push(StagedDocument {
+            uri: Arc::clone(&input.uri),
+            version: input.version,
+            text: Arc::clone(&input.text),
+            is_dependency: input.is_dependency,
+            object_name: input.object_name.clone(),
+            parse: Arc::new(parse(analysis_text_for_input(input).as_ref())),
+            previous: snapshot.cloned(),
+        });
+        seen.insert(Arc::clone(&uri));
+    }
+
+    let mut remaining: Vec<_> = inputs
+        .iter()
+        .filter(|input| !seen.contains(input.uri.as_ref()))
+        .collect();
+    remaining.sort_by(|left, right| left.uri.cmp(&right.uri));
+    for input in remaining {
+        staged.push(StagedDocument {
+            uri: Arc::clone(&input.uri),
+            version: input.version,
+            text: Arc::clone(&input.text),
+            is_dependency: input.is_dependency,
+            object_name: input.object_name.clone(),
+            parse: Arc::new(parse(analysis_text_for_input(input).as_ref())),
+            previous: existing.get(input.uri.as_ref()).cloned(),
+        });
+    }
+
+    staged
+}
+
+fn prepare_documents(
     inputs: &[DocumentInput],
     existing: Option<&HashMap<Arc<str>, Arc<AnalysisSnapshot>>>,
+    previous_analysis: Option<&CachedWorkspaceAnalysis>,
     progress: Option<&(dyn Fn(usize, usize) + Sync)>,
-) -> HashMap<Arc<str>, Arc<AnalysisSnapshot>> {
-    let parsed: Vec<_> = inputs
-        .iter()
-        .map(|input| {
-            let previous = existing
-                .and_then(|existing| existing.get(input.uri.as_ref()))
-                .cloned();
-            let reuse_previous = previous
-                .as_ref()
-                .is_some_and(|snapshot| snapshot_matches_input(snapshot, input));
-            let (parse, source) = if reuse_previous {
-                (
-                    Arc::clone(&previous.as_ref().expect("reused snapshot").parse),
-                    None,
-                )
-            } else {
-                let analysis_text = analysis_text_for_input(input);
-                (
-                    Arc::new(parse(analysis_text.as_ref())),
-                    Some(analysis_text.to_string()),
-                )
-            };
-            (
-                StagedDocument {
-                    uri: Arc::clone(&input.uri),
-                    version: input.version,
-                    text: Arc::clone(&input.text),
-                    is_dependency: input.is_dependency,
-                    object_name: input.object_name.clone(),
-                    parse,
-                    previous: previous.filter(|_| reuse_previous),
-                },
-                source,
-            )
-        })
-        .collect::<Vec<_>>()
-        .into_iter()
-        .map(|(staged, source)| {
-            (
-                staged.uri,
-                staged.version,
-                staged.text,
-                staged.is_dependency,
-                staged.object_name,
-                staged.parse,
-                staged.previous,
-                source,
-            )
-        })
-        .collect();
+) -> (Vec<PreparedDocument>, AnalysisMetrics) {
+    let parse_timer = std::time::Instant::now();
+    let empty_existing = HashMap::new();
+    let staged = staged_documents_for_inputs(
+        inputs,
+        existing.unwrap_or(&empty_existing),
+        previous_analysis,
+    );
     let processed = AtomicUsize::new(0);
-    let total = parsed.len();
-    let units: Vec<_> = parsed
+    let total = staged.len();
+    let metrics = AnalysisMetrics::default();
+    let prepared: Vec<_> = staged
         .par_iter()
         .enumerate()
-        .map(
-            |(idx, (uri, _, _, _, object_name, parse, previous, source))| {
-                let mut unit = if let Some(previous) = previous {
-                    reused_local_unit(previous.as_ref(), UnitId(idx as u32))
+        .map(|(idx, entry)| {
+            let input = DocumentInput {
+                uri: Arc::clone(&entry.uri),
+                version: entry.version,
+                text: Arc::clone(&entry.text),
+                is_dependency: entry.is_dependency,
+                object_name: entry.object_name.clone(),
+            };
+            let analysis_text = analysis_text_for_input(&input);
+            let previous_local = previous_analysis
+                .and_then(|analysis| analysis.locals.get(entry.uri.as_ref()));
+            let previous_snapshot = entry.previous.as_ref();
+            let reuse_previous =
+                previous_snapshot.is_some_and(|snapshot| snapshot_matches_input(snapshot, &input))
+                    && previous_local.is_some();
+            let parse = if reuse_previous {
+                Arc::clone(
+                    &previous_snapshot
+                        .expect("reused snapshot should exist")
+                        .parse,
+                )
+            } else if let Some(snapshot) = previous_snapshot {
+                if snapshot.parse.as_ref().tokens == entry.parse.as_ref().tokens
+                    && snapshot.parse.as_ref().errors == entry.parse.as_ref().errors
+                {
+                    Arc::clone(&snapshot.parse)
                 } else {
-                    analyze_unit_locally(
-                        UnitId(idx as u32),
-                        Arc::clone(uri),
-                        source
-                            .as_ref()
-                            .expect("changed input should carry analysis text"),
-                        parse.as_ref(),
-                    )
-                };
-                if let Some(object_name) = object_name {
-                    unit.provided_names.push(Arc::clone(object_name));
-                    unit.provided_names.sort();
-                    unit.provided_names.dedup();
+                    Arc::new(parse(analysis_text.as_ref()))
                 }
-                if let Some(progress) = progress {
-                    let done = processed.fetch_add(1, Ordering::Relaxed) + 1;
-                    progress(done, total);
-                }
-                unit
-            },
-        )
+            } else {
+                Arc::new(parse(analysis_text.as_ref()))
+            };
+            let local = if let Some(previous) = previous_local.filter(|_| reuse_previous) {
+                previous.clone()
+            } else {
+                analyze_unit_local_state(
+                    UnitId(idx as u32),
+                    Arc::clone(&entry.uri),
+                    analysis_text.as_ref(),
+                    parse.as_ref(),
+                )
+            };
+            let mut local = local;
+            if let Some(object_name) = &entry.object_name {
+                local.unit.provided_names.push(Arc::clone(object_name));
+                local.unit.provided_names.sort();
+                local.unit.provided_names.dedup();
+            }
+            if let Some(progress) = progress {
+                let done = processed.fetch_add(1, Ordering::Relaxed) + 1;
+                progress(done, total);
+            }
+            PreparedDocument {
+                uri: Arc::clone(&entry.uri),
+                version: entry.version,
+                text: Arc::clone(&entry.text),
+                is_dependency: entry.is_dependency,
+                object_name: entry.object_name.clone(),
+                parse,
+                local,
+            }
+        })
         .collect();
-    let project = Arc::new(analyze_project_from_units(units));
-    let mut snapshots = HashMap::with_capacity(parsed.len());
-    for (uri, version, text, is_dependency, object_name, parse, _, _) in parsed {
+
+    let mut metrics = metrics;
+    metrics.parse_count = prepared.len();
+    metrics.local_phase_count = prepared.len();
+    metrics.parse_micros = parse_timer.elapsed().as_micros();
+    metrics.local_phase_micros = metrics.parse_micros;
+    (prepared, metrics)
+}
+
+fn materialize_snapshots(
+    prepared: Vec<PreparedDocument>,
+    update: IncrementalProjectUpdate,
+) -> (HashMap<Arc<str>, Arc<AnalysisSnapshot>>, CachedWorkspaceAnalysis) {
+    let snapshot_timer = std::time::Instant::now();
+    let project = Arc::new(update.project);
+    let mut snapshots = HashMap::with_capacity(prepared.len());
+    let mut locals = HashMap::with_capacity(prepared.len());
+    let mut uri_order = Vec::with_capacity(prepared.len());
+
+    for prepared in prepared {
         let unit = project
-            .unit_by_uri(uri.as_ref())
+            .unit_by_uri(prepared.uri.as_ref())
             .cloned()
-            .expect("project analysis should include every input document");
+            .expect("project analysis should include every prepared document");
+        locals.insert(Arc::clone(&prepared.uri), prepared.local);
+        uri_order.push(Arc::clone(&prepared.uri));
         snapshots.insert(
-            Arc::clone(&uri),
+            Arc::clone(&prepared.uri),
             Arc::new(AnalysisSnapshot {
                 scope_index: Arc::new(build_scope_index(&unit)),
-                uri,
-                version,
-                text,
-                is_dependency,
-                object_name,
-                parse,
+                uri: Arc::clone(&prepared.uri),
+                version: prepared.version,
+                text: Arc::clone(&prepared.text),
+                is_dependency: prepared.is_dependency,
+                object_name: prepared.object_name.clone(),
+                parse: Arc::clone(&prepared.parse),
                 symbols: Arc::new(unit),
                 project: Arc::clone(&project),
             }),
         );
     }
-    snapshots
+
+    let metrics = AnalysisMetrics {
+        dirty_uri_count: update.dirty_uris.len(),
+        snapshot_build_micros: snapshot_timer.elapsed().as_micros(),
+        ..AnalysisMetrics::default()
+    };
+    (
+        snapshots,
+        CachedWorkspaceAnalysis {
+            uri_order,
+            locals,
+            dirty_uris: update.dirty_uris,
+            metrics,
+        },
+    )
+}
+
+fn analyze_inputs_with_progress(
+    inputs: &[DocumentInput],
+    existing: Option<&HashMap<Arc<str>, Arc<AnalysisSnapshot>>>,
+    previous_analysis: Option<&CachedWorkspaceAnalysis>,
+    progress: Option<&(dyn Fn(usize, usize) + Sync)>,
+    changed_uris: &HashSet<Arc<str>>,
+    force_full: bool,
+) -> (
+    HashMap<Arc<str>, Arc<AnalysisSnapshot>>,
+    CachedWorkspaceAnalysis,
+) {
+    let (prepared, mut metrics) = prepare_documents(inputs, existing, previous_analysis, progress);
+    let locals: Vec<_> = prepared.iter().map(|prepared| prepared.local.clone()).collect();
+    let previous_project = existing
+        .and_then(|existing| existing.values().next())
+        .map(|snapshot| snapshot.project.as_ref());
+    let previous_locals = previous_analysis.map(|analysis| &analysis.locals);
+    let update_timer = std::time::Instant::now();
+    let update = incremental_project_update(
+        previous_project,
+        previous_locals,
+        locals,
+        changed_uris,
+        force_full,
+    );
+    metrics.project_update_micros = update_timer.elapsed().as_micros();
+    let (snapshots, mut analysis) = materialize_snapshots(prepared, update);
+    analysis.metrics.parse_count = metrics.parse_count;
+    analysis.metrics.local_phase_count = metrics.local_phase_count;
+    analysis.metrics.parse_micros = metrics.parse_micros;
+    analysis.metrics.local_phase_micros = metrics.local_phase_micros;
+    analysis.metrics.project_update_micros = metrics.project_update_micros;
+    (snapshots, analysis)
+}
+
+fn force_full_rebuild(
+    previous_analysis: Option<&CachedWorkspaceAnalysis>,
+    inputs: &[DocumentInput],
+) -> bool {
+    let Some(previous_analysis) = previous_analysis else {
+        return true;
+    };
+    if previous_analysis.uri_order.len() != inputs.len() {
+        return true;
+    }
+    let input_uris: HashSet<_> = inputs.iter().map(|input| input.uri.as_ref()).collect();
+    previous_analysis
+        .uri_order
+        .iter()
+        .any(|uri| !input_uris.contains(uri.as_ref()))
+}
+
+fn changed_uris_for_inputs(
+    inputs: &[DocumentInput],
+    existing: Option<&HashMap<Arc<str>, Arc<AnalysisSnapshot>>>,
+) -> HashSet<Arc<str>> {
+    inputs
+        .iter()
+        .filter(|input| {
+            existing
+                .and_then(|existing| existing.get(input.uri.as_ref()))
+                .is_none_or(|snapshot| !snapshot_matches_input(snapshot, input))
+        })
+        .map(|input| Arc::clone(&input.uri))
+        .collect()
+}
+
+fn document_inputs_for_publish(
+    existing: &HashMap<Arc<str>, Arc<AnalysisSnapshot>>,
+    analysis: Option<&CachedWorkspaceAnalysis>,
+    input: &DocumentInput,
+) -> Vec<DocumentInput> {
+    let mut out = Vec::with_capacity(existing.len() + usize::from(!existing.contains_key(input.uri.as_ref())));
+    let mut seen = HashSet::new();
+    for uri in current_uri_order(existing, analysis) {
+        if uri.as_ref() == input.uri.as_ref() {
+            out.push(input.clone());
+            seen.insert(Arc::clone(&uri));
+            continue;
+        }
+        let Some(snapshot) = existing.get(uri.as_ref()) else {
+            continue;
+        };
+        out.push(DocumentInput {
+            uri: Arc::clone(&snapshot.uri),
+            version: snapshot.version,
+            text: Arc::clone(&snapshot.text),
+            is_dependency: snapshot.is_dependency,
+            object_name: snapshot.object_name.clone(),
+        });
+        seen.insert(Arc::clone(&snapshot.uri));
+    }
+    if !seen.contains(input.uri.as_ref()) {
+        out.push(input.clone());
+    }
+    out
 }
 
 fn analysis_text_for_input(input: &DocumentInput) -> Arc<str> {
@@ -5082,13 +5181,20 @@ impl DocumentStore {
         progress: Option<&(dyn Fn(usize, usize) + Sync)>,
     ) -> HashMap<Arc<str>, Arc<AnalysisSnapshot>> {
         let existing = self.documents.read();
-        let rebuilt = analyze_inputs_with_progress(
+        let analysis = self.analysis.read();
+        let changed_uris = changed_uris_for_inputs(&inputs, Some(&existing));
+        let (rebuilt, rebuilt_analysis) = analyze_inputs_with_progress(
             &inputs,
             has_matching_input_set(&existing, &inputs).then_some(&existing),
+            analysis.as_ref(),
             progress,
+            &changed_uris,
+            true,
         );
+        drop(analysis);
         drop(existing);
         self.documents.write().clone_from(&rebuilt);
+        *self.analysis.write() = Some(rebuilt_analysis);
         rebuilt
     }
 
@@ -5109,6 +5215,7 @@ impl DocumentStore {
 
     pub fn publish_input(&self, input: DocumentInput) -> Arc<AnalysisSnapshot> {
         let existing = self.documents.read();
+        let analysis = self.analysis.read();
         if let Some(current) = existing.get(input.uri.as_ref())
             && current.text.as_ref() == input.text.as_ref()
             && current.is_dependency == input.is_dependency
@@ -5126,66 +5233,31 @@ impl DocumentStore {
                 project: Arc::clone(&current.project),
             });
             drop(existing);
+            drop(analysis);
             self.documents
                 .write()
                 .insert(Arc::clone(&input.uri), Arc::clone(&snapshot));
             return snapshot;
         }
-        let parse = Arc::new(parse(input.text.as_ref()));
-        let staged = staged_documents_for_publish(&existing, &input, &parse);
+        let inputs = document_inputs_for_publish(&existing, analysis.as_ref(), &input);
+        let force_full = force_full_rebuild(analysis.as_ref(), &inputs);
+        let changed_uris = HashSet::from([Arc::clone(&input.uri)]);
+        let (rebuilt, rebuilt_analysis) = analyze_inputs_with_progress(
+            &inputs,
+            Some(&existing),
+            analysis.as_ref(),
+            None,
+            &changed_uris,
+            force_full,
+        );
+        drop(analysis);
         drop(existing);
-
-        let units: Vec<_> = staged
-            .iter()
-            .enumerate()
-            .map(|(idx, entry)| {
-                let unit_id = UnitId(idx as u32);
-                if entry.uri.as_ref() == input.uri.as_ref() {
-                    analyze_unit_locally(
-                        unit_id,
-                        Arc::clone(&entry.uri),
-                        entry.text.as_ref(),
-                        entry.parse.as_ref(),
-                    )
-                } else {
-                    reused_local_unit(
-                        entry
-                            .previous
-                            .as_ref()
-                            .expect("unchanged staged document should have prior snapshot"),
-                        unit_id,
-                    )
-                }
-            })
-            .collect();
-        let project = Arc::new(analyze_project_from_units(units));
-
-        let mut rebuilt = HashMap::new();
-        let mut published = None;
-        for entry in staged {
-            let unit = project
-                .unit_by_uri(entry.uri.as_ref())
-                .cloned()
-                .expect("project analysis should include every published document");
-            let snapshot = Arc::new(AnalysisSnapshot {
-                scope_index: Arc::new(build_scope_index(&unit)),
-                uri: Arc::clone(&entry.uri),
-                version: entry.version,
-                text: Arc::clone(&entry.text),
-                is_dependency: entry.is_dependency,
-                object_name: entry.object_name.clone(),
-                parse: Arc::clone(&entry.parse),
-                symbols: Arc::new(unit),
-                project: Arc::clone(&project),
-            });
-            if entry.uri.as_ref() == input.uri.as_ref() {
-                published = Some(Arc::clone(&snapshot));
-            }
-            rebuilt.insert(entry.uri, snapshot);
-        }
-
         self.documents.write().clone_from(&rebuilt);
-        published.expect("published snapshot should exist")
+        *self.analysis.write() = Some(rebuilt_analysis);
+        rebuilt
+            .get(input.uri.as_ref())
+            .cloned()
+            .expect("published snapshot should exist")
     }
 
     pub fn get(&self, uri: &str) -> Option<Arc<AnalysisSnapshot>> {
@@ -5196,6 +5268,26 @@ impl DocumentStore {
         self.documents
             .write()
             .insert(Arc::clone(&snapshot.uri), snapshot);
+    }
+
+    #[doc(hidden)]
+    pub fn last_dirty_uris(&self) -> HashSet<Arc<str>> {
+        self.analysis
+            .read()
+            .as_ref()
+            .map(|analysis| analysis.dirty_uris.clone())
+            .unwrap_or_default()
+    }
+
+    #[doc(hidden)]
+    pub fn last_analysis_metrics(&self) -> Option<(usize, usize, usize)> {
+        self.analysis.read().as_ref().map(|analysis| {
+            (
+                analysis.metrics.parse_count,
+                analysis.metrics.local_phase_count,
+                analysis.metrics.dirty_uri_count,
+            )
+        })
     }
 
     pub fn references(
@@ -5501,6 +5593,126 @@ START-OF-SELECTION.
             diag.kind == DiagnosticKind::IncompatibleArgumentType
                 && diag.message.contains("it_values")
         }));
+    }
+
+    #[test]
+    fn body_only_publish_marks_only_edited_uri_dirty() {
+        let store = DocumentStore::default();
+        let provider_v1 = "\
+CLASS zcl_dep DEFINITION.
+  PUBLIC SECTION.
+    METHODS value RETURNING VALUE(rv_value) TYPE i.
+ENDCLASS.
+CLASS zcl_dep IMPLEMENTATION.
+  METHOD value.
+    rv_value = 1.
+  ENDMETHOD.
+ENDCLASS.";
+        let provider_v2 = provider_v1.replace("rv_value = 1.", "rv_value = 2.");
+        let consumer = "\
+DATA lo_dep TYPE REF TO zcl_dep.
+START-OF-SELECTION.
+  lo_dep->value( ).";
+        let unrelated = "REPORT zother.";
+
+        store.replace_all(vec![
+            DocumentInput {
+                uri: Arc::from("file:///dep.abap"),
+                version: 1,
+                text: Arc::from(provider_v1),
+                is_dependency: false,
+                object_name: None,
+            },
+            DocumentInput {
+                uri: Arc::from("file:///consumer.abap"),
+                version: 1,
+                text: Arc::from(consumer),
+                is_dependency: false,
+                object_name: None,
+            },
+            DocumentInput {
+                uri: Arc::from("file:///other.abap"),
+                version: 1,
+                text: Arc::from(unrelated),
+                is_dependency: false,
+                object_name: None,
+            },
+        ]);
+
+        store.publish_input(DocumentInput {
+            uri: Arc::from("file:///dep.abap"),
+            version: 2,
+            text: Arc::from(provider_v2),
+            is_dependency: false,
+            object_name: None,
+        });
+
+        let dirty = store.last_dirty_uris();
+        assert_eq!(dirty.len(), 1);
+        assert!(dirty.contains("file:///dep.abap"));
+        let metrics = store.last_analysis_metrics().expect("analysis metrics");
+        assert_eq!(metrics.2, 1);
+    }
+
+    #[test]
+    fn exported_signature_publish_marks_dependents_dirty() {
+        let store = DocumentStore::default();
+        let provider_v1 = "\
+CLASS zcl_dep DEFINITION.
+  PUBLIC SECTION.
+    METHODS value RETURNING VALUE(rv_value) TYPE i.
+ENDCLASS.
+CLASS zcl_dep IMPLEMENTATION.
+  METHOD value.
+    rv_value = 1.
+  ENDMETHOD.
+ENDCLASS.";
+        let provider_v2 = "\
+CLASS zcl_dep DEFINITION.
+  PUBLIC SECTION.
+    METHODS value RETURNING VALUE(rv_value) TYPE i.
+    METHODS extra.
+ENDCLASS.
+CLASS zcl_dep IMPLEMENTATION.
+  METHOD value.
+    rv_value = 1.
+  ENDMETHOD.
+  METHOD extra.
+  ENDMETHOD.
+ENDCLASS.";
+        let consumer = "\
+DATA lo_dep TYPE REF TO zcl_dep.
+START-OF-SELECTION.
+  lo_dep->value( ).";
+
+        store.replace_all(vec![
+            DocumentInput {
+                uri: Arc::from("file:///dep.abap"),
+                version: 1,
+                text: Arc::from(provider_v1),
+                is_dependency: false,
+                object_name: None,
+            },
+            DocumentInput {
+                uri: Arc::from("file:///consumer.abap"),
+                version: 1,
+                text: Arc::from(consumer),
+                is_dependency: false,
+                object_name: None,
+            },
+        ]);
+
+        store.publish_input(DocumentInput {
+            uri: Arc::from("file:///dep.abap"),
+            version: 2,
+            text: Arc::from(provider_v2),
+            is_dependency: false,
+            object_name: None,
+        });
+
+        let dirty = store.last_dirty_uris();
+        assert!(dirty.contains("file:///dep.abap"));
+        assert!(dirty.contains("file:///consumer.abap"));
     }
 
     #[test]

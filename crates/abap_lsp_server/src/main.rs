@@ -13,7 +13,7 @@ use abap_lsp::{
     RESOLVE_REMOTE_DEPENDENCIES, ReferenceParams, SemanticTokensParams, ServerConfig, ServerState,
     WORKSPACE_ANALYSIS_STATUS, WORKSPACE_MANIFEST_UPDATED, WorkspaceAnalysisPhase,
     WorkspaceAnalysisStatusParams, WorkspaceManifestUpdatedParams, WorkspaceState,
-    build_remote_dependency_batch_for_workspace, completion, definition,
+    build_remote_dependency_batch_for_workspace, build_remote_dependency_batch_for_workspace_filtered, completion, definition,
     handle_dependency_cache_cleared_with_progress,
     handle_remote_dependencies_updated_with_progress,
     handle_workspace_manifest_updated_with_progress, hover, initialize_result,
@@ -143,6 +143,11 @@ struct AnalysisCompletion {
     notifications: Vec<(String, Value)>,
 }
 
+struct ScheduledBackgroundWork {
+    started_statuses: Vec<WorkspaceAnalysisStatusParams>,
+    notifications: Vec<(String, Value)>,
+}
+
 fn next_workspace_generation(
     generations: &Arc<Mutex<HashMap<String, u64>>>,
     workspace_uri: &str,
@@ -170,23 +175,41 @@ fn current_workspace_generation(
 fn try_schedule_background_analysis(
     state: &mut ServerState,
     message: &Value,
-    task_tx: &SyncSender<AnalysisTask>,
+    task_tx: &SyncSender<String>,
+    pending_tasks: &Arc<Mutex<HashMap<String, AnalysisTask>>>,
     generations: &Arc<Mutex<HashMap<String, u64>>>,
-) -> Result<Option<Vec<WorkspaceAnalysisStatusParams>>, Box<dyn std::error::Error>> {
+) -> Result<Option<ScheduledBackgroundWork>, Box<dyn std::error::Error>> {
     let Some(method) = message.get("method").and_then(Value::as_str) else {
         return Ok(None);
     };
 
     let mut started_statuses = Vec::new();
+    let mut notifications = Vec::new();
 
     match method {
         "textDocument/didOpen" => {
             let Some(params) = parse_params::<DidOpenTextDocumentParams>(message)? else {
-                return Ok(Some(started_statuses));
+                return Ok(Some(ScheduledBackgroundWork {
+                    started_statuses,
+                    notifications,
+                }));
             };
             let Some(workspace_uri) = stage_workspace_open_overlay(state, &params) else {
                 return Ok(None);
             };
+            if let Some(snapshot) = state
+                .workspace_for_uri(&workspace_uri)
+                .and_then(|workspace| {
+                    workspace
+                        .preview_snapshots
+                        .get(&abap_lsp::normalize_lsp_uri(params.text_document.uri.as_str()))
+                })
+            {
+                notifications.push((
+                    "textDocument/publishDiagnostics".to_owned(),
+                    serde_json::to_value(publish_diagnostics_params(state, snapshot))?,
+                ));
+            }
             let Some(workspace) = state.workspaces.get(&workspace_uri).cloned() else {
                 return Ok(None);
             };
@@ -194,24 +217,45 @@ fn try_schedule_background_analysis(
             if let Some(params) = started.clone() {
                 started_statuses.push(params);
             }
+            let task = AnalysisTask {
+                workspace_uri: workspace_uri.clone(),
+                generation: next_workspace_generation(generations, &workspace_uri),
+                started,
+                workspace,
+                kind: AnalysisTaskKind::DidOpen(params),
+            };
+            pending_tasks
+                .lock()
+                .expect("pending analysis tasks should not be poisoned")
+                .insert(workspace_uri.clone(), task);
             task_tx
-                .send(AnalysisTask {
-                    workspace_uri: workspace_uri.clone(),
-                    generation: next_workspace_generation(generations, &workspace_uri),
-                    started,
-                    workspace,
-                    kind: AnalysisTaskKind::DidOpen(params),
-                })
+                .send(workspace_uri)
                 .map_err(|error| format!("failed to enqueue analysis task: {error}"))?;
-            Ok(Some(started_statuses))
+            Ok(Some(ScheduledBackgroundWork {
+                started_statuses,
+                notifications,
+            }))
         }
         "textDocument/didChange" => {
             let Some(params) = parse_params::<DidChangeTextDocumentParams>(message)? else {
-                return Ok(Some(started_statuses));
+                return Ok(Some(ScheduledBackgroundWork {
+                    started_statuses,
+                    notifications,
+                }));
             };
             let Some(workspace_uri) = stage_workspace_change_overlay(state, &params) else {
                 return Ok(None);
             };
+            let normalized_uri = abap_lsp::normalize_lsp_uri(params.text_document.uri.as_str());
+            if let Some(snapshot) = state
+                .workspace_for_uri(&workspace_uri)
+                .and_then(|workspace| workspace.preview_snapshots.get(&normalized_uri))
+            {
+                notifications.push((
+                    "textDocument/publishDiagnostics".to_owned(),
+                    serde_json::to_value(publish_diagnostics_params(state, snapshot))?,
+                ));
+            }
             let Some(workspace) = state.workspaces.get(&workspace_uri).cloned() else {
                 return Ok(None);
             };
@@ -219,95 +263,153 @@ fn try_schedule_background_analysis(
             if let Some(params) = started.clone() {
                 started_statuses.push(params);
             }
+            let task = AnalysisTask {
+                workspace_uri: workspace_uri.clone(),
+                generation: next_workspace_generation(generations, &workspace_uri),
+                started,
+                workspace,
+                kind: AnalysisTaskKind::DidChange(params),
+            };
+            pending_tasks
+                .lock()
+                .expect("pending analysis tasks should not be poisoned")
+                .insert(workspace_uri.clone(), task);
             task_tx
-                .send(AnalysisTask {
-                    workspace_uri: workspace_uri.clone(),
-                    generation: next_workspace_generation(generations, &workspace_uri),
-                    started,
-                    workspace,
-                    kind: AnalysisTaskKind::DidChange(params),
-                })
+                .send(workspace_uri)
                 .map_err(|error| format!("failed to enqueue analysis task: {error}"))?;
-            Ok(Some(started_statuses))
+            Ok(Some(ScheduledBackgroundWork {
+                started_statuses,
+                notifications,
+            }))
         }
         WORKSPACE_MANIFEST_UPDATED => {
             let Some(params) = parse_params::<WorkspaceManifestUpdatedParams>(message)? else {
-                return Ok(Some(started_statuses));
+                return Ok(Some(ScheduledBackgroundWork {
+                    started_statuses,
+                    notifications,
+                }));
             };
             let workspace_uri = abap_lsp::normalize_lsp_uri(&params.workspace_uri);
             let Some(workspace) = state.workspaces.get(&workspace_uri).cloned() else {
-                return Ok(Some(started_statuses));
+                return Ok(Some(ScheduledBackgroundWork {
+                    started_statuses,
+                    notifications,
+                }));
             };
             let started = workspace_analysis_status_started(state, message)?;
             if let Some(params) = started.clone() {
                 started_statuses.push(params);
             }
+            pending_tasks
+                .lock()
+                .expect("pending analysis tasks should not be poisoned")
+                .insert(
+                    workspace_uri.clone(),
+                    AnalysisTask {
+                        workspace_uri: workspace_uri.clone(),
+                        generation: next_workspace_generation(generations, &workspace_uri),
+                        started,
+                        workspace,
+                        kind: AnalysisTaskKind::ManifestUpdated(WorkspaceManifestUpdatedParams {
+                            workspace_uri: workspace_uri.clone(),
+                        }),
+                    },
+                );
             task_tx
-                .send(AnalysisTask {
-                    workspace_uri: workspace_uri.clone(),
-                    generation: next_workspace_generation(generations, &workspace_uri),
-                    started,
-                    workspace,
-                    kind: AnalysisTaskKind::ManifestUpdated(WorkspaceManifestUpdatedParams {
-                        workspace_uri,
-                    }),
-                })
+                .send(workspace_uri)
                 .map_err(|error| format!("failed to enqueue analysis task: {error}"))?;
-            Ok(Some(started_statuses))
+            Ok(Some(ScheduledBackgroundWork {
+                started_statuses,
+                notifications,
+            }))
         }
         DEPENDENCY_CACHE_CLEARED => {
             let Some(params) = parse_params::<WorkspaceManifestUpdatedParams>(message)? else {
-                return Ok(Some(started_statuses));
+                return Ok(Some(ScheduledBackgroundWork {
+                    started_statuses,
+                    notifications,
+                }));
             };
             let workspace_uri = abap_lsp::normalize_lsp_uri(&params.workspace_uri);
             let Some(workspace) = state.workspaces.get(&workspace_uri).cloned() else {
-                return Ok(Some(started_statuses));
+                return Ok(Some(ScheduledBackgroundWork {
+                    started_statuses,
+                    notifications,
+                }));
             };
             let started = workspace_analysis_status_started(state, message)?;
             if let Some(params) = started.clone() {
                 started_statuses.push(params);
             }
+            pending_tasks
+                .lock()
+                .expect("pending analysis tasks should not be poisoned")
+                .insert(
+                    workspace_uri.clone(),
+                    AnalysisTask {
+                        workspace_uri: workspace_uri.clone(),
+                        generation: next_workspace_generation(generations, &workspace_uri),
+                        started,
+                        workspace,
+                        kind: AnalysisTaskKind::DependencyCacheCleared(
+                            WorkspaceManifestUpdatedParams {
+                                workspace_uri: workspace_uri.clone(),
+                            },
+                        ),
+                    },
+                );
             task_tx
-                .send(AnalysisTask {
-                    workspace_uri: workspace_uri.clone(),
-                    generation: next_workspace_generation(generations, &workspace_uri),
-                    started,
-                    workspace,
-                    kind: AnalysisTaskKind::DependencyCacheCleared(
-                        WorkspaceManifestUpdatedParams { workspace_uri },
-                    ),
-                })
+                .send(workspace_uri)
                 .map_err(|error| format!("failed to enqueue analysis task: {error}"))?;
-            Ok(Some(started_statuses))
+            Ok(Some(ScheduledBackgroundWork {
+                started_statuses,
+                notifications,
+            }))
         }
         REMOTE_DEPENDENCIES_UPDATED => {
             let Some(params) = parse_params::<abap_lsp::RemoteDependenciesUpdatedParams>(message)?
             else {
-                return Ok(Some(started_statuses));
+                return Ok(Some(ScheduledBackgroundWork {
+                    started_statuses,
+                    notifications,
+                }));
             };
             let workspace_uri = abap_lsp::normalize_lsp_uri(&params.workspace_uri);
             let Some(workspace) = state.workspaces.get(&workspace_uri).cloned() else {
-                return Ok(Some(started_statuses));
+                return Ok(Some(ScheduledBackgroundWork {
+                    started_statuses,
+                    notifications,
+                }));
             };
             let started = workspace_analysis_status_started(state, message)?;
             if let Some(params) = started.clone() {
                 started_statuses.push(params);
             }
+            pending_tasks
+                .lock()
+                .expect("pending analysis tasks should not be poisoned")
+                .insert(
+                    workspace_uri.clone(),
+                    AnalysisTask {
+                        workspace_uri: workspace_uri.clone(),
+                        generation: next_workspace_generation(generations, &workspace_uri),
+                        started,
+                        workspace,
+                        kind: AnalysisTaskKind::RemoteDependenciesUpdated(
+                            abap_lsp::RemoteDependenciesUpdatedParams {
+                                workspace_uri: workspace_uri.clone(),
+                                ..params
+                            },
+                        ),
+                    },
+                );
             task_tx
-                .send(AnalysisTask {
-                    workspace_uri: workspace_uri.clone(),
-                    generation: next_workspace_generation(generations, &workspace_uri),
-                    started,
-                    workspace,
-                    kind: AnalysisTaskKind::RemoteDependenciesUpdated(
-                        abap_lsp::RemoteDependenciesUpdatedParams {
-                            workspace_uri,
-                            ..params
-                        },
-                    ),
-                })
+                .send(workspace_uri)
                 .map_err(|error| format!("failed to enqueue analysis task: {error}"))?;
-            Ok(Some(started_statuses))
+            Ok(Some(ScheduledBackgroundWork {
+                started_statuses,
+                notifications,
+            }))
         }
         "initialized" => {
             let workspace_uris: Vec<_> = state.workspaces.keys().cloned().collect();
@@ -315,17 +417,27 @@ fn try_schedule_background_analysis(
                 let Some(workspace) = state.workspaces.get(&workspace_uri).cloned() else {
                     continue;
                 };
+                pending_tasks
+                    .lock()
+                    .expect("pending analysis tasks should not be poisoned")
+                    .insert(
+                        workspace_uri.clone(),
+                        AnalysisTask {
+                            workspace_uri: workspace_uri.clone(),
+                            generation: next_workspace_generation(generations, &workspace_uri),
+                            started: workspace_analysis_status_started(state, message)?,
+                            workspace,
+                            kind: AnalysisTaskKind::Initialized,
+                        },
+                    );
                 task_tx
-                    .send(AnalysisTask {
-                        workspace_uri: workspace_uri.clone(),
-                        generation: next_workspace_generation(generations, &workspace_uri),
-                        started: workspace_analysis_status_started(state, message)?,
-                        workspace,
-                        kind: AnalysisTaskKind::Initialized,
-                    })
+                    .send(workspace_uri)
                     .map_err(|error| format!("failed to enqueue analysis task: {error}"))?;
             }
-            Ok(Some(started_statuses))
+            Ok(Some(ScheduledBackgroundWork {
+                started_statuses,
+                notifications,
+            }))
         }
         _ => Ok(None),
     }
@@ -415,7 +527,8 @@ fn serve(
     let config = ServerConfig::default();
     let generations = Arc::new(Mutex::new(HashMap::<String, u64>::new()));
     let (message_tx, message_rx) = mpsc::channel();
-    let (task_tx, task_rx): (SyncSender<AnalysisTask>, Receiver<AnalysisTask>) =
+    let pending_tasks = Arc::new(Mutex::new(HashMap::<String, AnalysisTask>::new()));
+    let (task_tx, task_rx): (SyncSender<String>, Receiver<String>) =
         mpsc::sync_channel(8);
     let (completion_tx, completion_rx) = mpsc::channel();
 
@@ -448,8 +561,16 @@ fn serve(
 
         let worker_generations = Arc::clone(&generations);
         let worker_completion_tx = completion_tx.clone();
+        let worker_pending_tasks = Arc::clone(&pending_tasks);
         scope.spawn(move || {
-            while let Ok(task) = task_rx.recv() {
+            while let Ok(workspace_uri) = task_rx.recv() {
+                let Some(task) = worker_pending_tasks
+                    .lock()
+                    .expect("pending analysis tasks should not be poisoned")
+                    .remove(&workspace_uri)
+                else {
+                    continue;
+                };
                 if task.generation
                     != current_workspace_generation(&worker_generations, &task.workspace_uri)
                 {
@@ -489,9 +610,13 @@ fn serve(
                         &mut state,
                         &message,
                         &task_tx,
+                        &pending_tasks,
                         &generations,
                     )? {
-                        for params in started_statuses {
+                        for (method, params) in started_statuses.notifications {
+                            send_notification(writer, &method, params)?;
+                        }
+                        for params in started_statuses.started_statuses {
                             send_notification(
                                 writer,
                                 WORKSPACE_ANALYSIS_STATUS,
@@ -584,12 +709,24 @@ fn push_workspace_diagnostics_notifications(
     workspace_uri: &str,
     notifications: &mut Vec<(String, Value)>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    push_workspace_diagnostics_notifications_for_uris(state, workspace_uri, None, notifications)
+}
+
+fn push_workspace_diagnostics_notifications_for_uris(
+    state: &ServerState,
+    workspace_uri: &str,
+    dirty_uris: Option<&HashSet<Arc<str>>>,
+    notifications: &mut Vec<(String, Value)>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let Some(workspace) = state.workspaces.get(workspace_uri) else {
         return Ok(());
     };
     let mut uris = workspace.cache.uris();
     uris.sort();
     for uri in uris {
+        if dirty_uris.is_some_and(|dirty_uris| !dirty_uris.contains(uri.as_ref())) {
+            continue;
+        }
         let Some(snapshot) = workspace.cache.get(uri.as_ref()) else {
             continue;
         };
@@ -645,7 +782,17 @@ fn handle_did_open_notifications(
         .filter(|workspace| workspace.cache.get(snapshot.uri.as_ref()).is_some())
         .map(|workspace| workspace.root_uri.clone())
     {
-        push_workspace_diagnostics_notifications(state, &workspace_uri, &mut notifications)?;
+        let dirty_uris = state
+            .workspaces
+            .get(&workspace_uri)
+            .map(|workspace| workspace.cache.last_dirty_uris())
+            .unwrap_or_default();
+        push_workspace_diagnostics_notifications_for_uris(
+            state,
+            &workspace_uri,
+            Some(&dirty_uris),
+            &mut notifications,
+        )?;
     } else {
         let params_value = serde_json::to_value(publish_diagnostics_params(state, &snapshot))?;
         notifications.push(("textDocument/publishDiagnostics".to_owned(), params_value));
@@ -662,7 +809,15 @@ fn handle_did_open_notifications(
             .workspace_for_uri(snapshot.uri.as_ref())
             .filter(|workspace| workspace.cache.get(snapshot.uri.as_ref()).is_some())
             .map(|workspace| workspace.root_uri.clone())
-        && let Some(request) = build_remote_dependency_batch_for_workspace(state, &workspace_uri)
+        && let Some(dirty_uris) = state
+            .workspaces
+            .get(&workspace_uri)
+            .map(|workspace| workspace.cache.last_dirty_uris())
+        && let Some(request) = build_remote_dependency_batch_for_workspace_filtered(
+            state,
+            &workspace_uri,
+            Some(&dirty_uris),
+        )
     {
         notifications.push((
             RESOLVE_REMOTE_DEPENDENCIES.to_owned(),
@@ -716,7 +871,17 @@ fn handle_did_change_notifications(
             .filter(|workspace| workspace.cache.get(snapshot.uri.as_ref()).is_some())
             .map(|workspace| workspace.root_uri.clone())
         {
-            push_workspace_diagnostics_notifications(state, &workspace_uri, &mut notifications)?;
+            let dirty_uris = state
+                .workspaces
+                .get(&workspace_uri)
+                .map(|workspace| workspace.cache.last_dirty_uris())
+                .unwrap_or_default();
+            push_workspace_diagnostics_notifications_for_uris(
+                state,
+                &workspace_uri,
+                Some(&dirty_uris),
+                &mut notifications,
+            )?;
         } else {
             let params_value = serde_json::to_value(publish_diagnostics_params(state, &snapshot))?;
             notifications.push(("textDocument/publishDiagnostics".to_owned(), params_value));
@@ -733,8 +898,15 @@ fn handle_did_change_notifications(
                 .workspace_for_uri(snapshot.uri.as_ref())
                 .filter(|workspace| workspace.cache.get(snapshot.uri.as_ref()).is_some())
                 .map(|workspace| workspace.root_uri.clone())
-            && let Some(request) =
-                build_remote_dependency_batch_for_workspace(state, &workspace_uri)
+            && let Some(dirty_uris) = state
+                .workspaces
+                .get(&workspace_uri)
+                .map(|workspace| workspace.cache.last_dirty_uris())
+            && let Some(request) = build_remote_dependency_batch_for_workspace_filtered(
+                state,
+                &workspace_uri,
+                Some(&dirty_uris),
+            )
         {
             notifications.push((
                 RESOLVE_REMOTE_DEPENDENCIES.to_owned(),
@@ -1312,8 +1484,8 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{
-        handle_message, try_schedule_background_analysis, workspace_analysis_status_finished,
-        workspace_analysis_status_started,
+        AnalysisTaskKind, handle_message, try_schedule_background_analysis,
+        workspace_analysis_status_finished, workspace_analysis_status_started,
     };
     use abap_lsp::{ServerConfig, ServerState, refresh_workspace};
     use serde_json::{Value, json};
@@ -1488,6 +1660,7 @@ mod tests {
         let mut state = ServerState::default();
         state.register_workspace_folder(workspace_uri.clone());
         let generations = Arc::new(Mutex::new(HashMap::new()));
+        let pending_tasks = Arc::new(Mutex::new(HashMap::new()));
         let (task_tx, task_rx) = mpsc::sync_channel(1);
         let message = json!({
             "jsonrpc": "2.0",
@@ -1503,11 +1676,18 @@ mod tests {
         });
 
         let started =
-            try_schedule_background_analysis(&mut state, &message, &task_tx, &generations)
+            try_schedule_background_analysis(
+                &mut state,
+                &message,
+                &task_tx,
+                &pending_tasks,
+                &generations,
+            )
                 .expect("schedule")
                 .expect("background job");
-        assert_eq!(started.len(), 1);
-        assert_eq!(started[0].trigger, "open");
+        assert_eq!(started.started_statuses.len(), 1);
+        assert_eq!(started.started_statuses[0].trigger, "open");
+        assert_eq!(started.notifications.len(), 1);
 
         let workspace = state
             .workspaces
@@ -1520,9 +1700,16 @@ mod tests {
         assert_eq!(overlay.version, 3);
         assert_eq!(overlay.text.as_ref(), "DATA lv_value TYPE i.");
 
-        let task = task_rx.recv().expect("scheduled task");
-        assert_eq!(task.workspace_uri, normalized_workspace_uri);
-        assert_eq!(task.generation, 1);
+        let queued_workspace_uri = task_rx.recv().expect("scheduled task");
+        assert_eq!(queued_workspace_uri, normalized_workspace_uri);
+        let task = pending_tasks
+            .lock()
+            .expect("pending task map")
+            .get(&queued_workspace_uri)
+            .expect("pending analysis task")
+            .workspace_uri
+            .clone();
+        assert_eq!(task, normalized_workspace_uri);
 
         let _ = fs::remove_dir_all(&workspace_path);
     }
@@ -1541,6 +1728,7 @@ mod tests {
         refresh_workspace(&mut state, &workspace_uri);
 
         let generations = Arc::new(Mutex::new(HashMap::new()));
+        let pending_tasks = Arc::new(Mutex::new(HashMap::new()));
         let (task_tx, _task_rx) = mpsc::sync_channel(1);
         let changed_text = "DATA lv_value TYPE i.\n* lv_value = 1.\n";
         let message = json!({
@@ -1557,9 +1745,16 @@ mod tests {
             }
         });
 
-        try_schedule_background_analysis(&mut state, &message, &task_tx, &generations)
+        let scheduled = try_schedule_background_analysis(
+            &mut state,
+            &message,
+            &task_tx,
+            &pending_tasks,
+            &generations,
+        )
             .expect("schedule")
             .expect("background job");
+        assert_eq!(scheduled.notifications.len(), 1);
 
         let semantic_tokens_msg = handle_message(
             &mut state,
@@ -1583,6 +1778,62 @@ mod tests {
             positions.iter().all(|(line, _)| *line == 0),
             "preview semantic tokens should align with commented statement text: {positions:?}"
         );
+
+        let _ = fs::remove_dir_all(&workspace_path);
+    }
+
+    #[test]
+    fn background_scheduler_keeps_only_latest_pending_task_per_workspace() {
+        let workspace_path = temp_workspace_path("background_latest_only");
+        fs::create_dir_all(&workspace_path).expect("workspace dir");
+        let workspace_uri = file_uri(&workspace_path);
+        let source_uri = format!("{workspace_uri}/main.abap");
+
+        let mut state = ServerState::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        let generations = Arc::new(Mutex::new(HashMap::new()));
+        let pending_tasks = Arc::new(Mutex::new(HashMap::new()));
+        let (task_tx, task_rx) = mpsc::sync_channel(4);
+
+        for version in [2, 3] {
+            let message = json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didChange",
+                "params": {
+                    "textDocument": {
+                        "uri": source_uri,
+                        "version": version
+                    },
+                    "contentChanges": [{
+                        "text": format!("DATA lv_value TYPE i.\nlv_value = {version}.\n")
+                    }]
+                }
+            });
+            try_schedule_background_analysis(
+                &mut state,
+                &message,
+                &task_tx,
+                &pending_tasks,
+                &generations,
+            )
+            .expect("schedule")
+            .expect("background job");
+        }
+
+        let first_workspace = task_rx.recv().expect("first queued workspace");
+        assert_eq!(first_workspace, abap_lsp::normalize_lsp_uri(&workspace_uri));
+        let pending_guard = pending_tasks
+            .lock()
+            .expect("pending tasks");
+        let latest_task = pending_guard
+            .get(&first_workspace)
+            .expect("latest pending task");
+        match &latest_task.kind {
+            AnalysisTaskKind::DidChange(params) => {
+                assert_eq!(params.text_document.version, 3);
+            }
+            _ => panic!("expected didChange task"),
+        }
 
         let _ = fs::remove_dir_all(&workspace_path);
     }
