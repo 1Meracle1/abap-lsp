@@ -326,7 +326,7 @@ fn incremental_workspace_document_input(
             uri: Arc::clone(&current.uri),
             version,
             text: Arc::from(text),
-            is_dependency: current.is_dependency,
+            is_dependency: current.is_dependency && !workspace.open_documents.contains_key(uri),
             object_name: current.object_name.clone(),
         });
     }
@@ -354,7 +354,7 @@ fn incremental_workspace_document_input(
         uri: Arc::from(uri),
         version,
         text: Arc::from(text),
-        is_dependency,
+        is_dependency: is_dependency && !workspace.open_documents.contains_key(uri),
         object_name,
     })
 }
@@ -433,8 +433,10 @@ pub fn publish_open_document_mut_with_progress(
 ) -> Arc<AnalysisSnapshot> {
     let uri = normalize_lsp_uri(params.text_document.uri.as_str());
     if let Some(workspace) = state.workspace_for_uri_mut(&uri) {
-        if let Some(current) = workspace.cache.get(&uri)
-            && current.text.as_ref() == params.text_document.text.as_str()
+        if let Some(current) = workspace
+            .cache
+            .get(&uri)
+            .filter(|snapshot| snapshot.text.as_ref() == params.text_document.text.as_str())
         {
             workspace.open_documents.insert(
                 uri.clone(),
@@ -443,6 +445,16 @@ pub fn publish_open_document_mut_with_progress(
                     text: Arc::from(params.text_document.text.as_str()),
                 },
             );
+            if let Some(input) = incremental_workspace_document_input(
+                workspace,
+                &uri,
+                params.text_document.version,
+                &params.text_document.text,
+            ) && (current.is_dependency != input.is_dependency
+                || current.object_name != input.object_name)
+            {
+                return workspace.cache.publish_input(input);
+            }
             let snapshot = snapshot_with_version(&current, params.text_document.version);
             workspace.cache.insert_snapshot(Arc::clone(&snapshot));
             return snapshot;
@@ -503,8 +515,10 @@ pub fn publish_changed_document_mut_with_progress(
     let change = params.content_changes.last()?;
     let uri = normalize_lsp_uri(params.text_document.uri.as_str());
     if let Some(workspace) = state.workspace_for_uri_mut(&uri) {
-        if let Some(current) = workspace.cache.get(&uri)
-            && current.text.as_ref() == change.text.as_str()
+        if let Some(current) = workspace
+            .cache
+            .get(&uri)
+            .filter(|snapshot| snapshot.text.as_ref() == change.text.as_str())
         {
             workspace.open_documents.insert(
                 uri.clone(),
@@ -513,6 +527,16 @@ pub fn publish_changed_document_mut_with_progress(
                     text: Arc::from(change.text.as_str()),
                 },
             );
+            if let Some(input) = incremental_workspace_document_input(
+                workspace,
+                &uri,
+                params.text_document.version,
+                &change.text,
+            ) && (current.is_dependency != input.is_dependency
+                || current.object_name != input.object_name)
+            {
+                return Some(workspace.cache.publish_input(input));
+            }
             let snapshot = snapshot_with_version(&current, params.text_document.version);
             workspace.cache.insert_snapshot(Arc::clone(&snapshot));
             return Some(snapshot);
@@ -3255,6 +3279,92 @@ object_name = "ZCL_MAIN"
         assert!(Arc::ptr_eq(&before.project, &opened.project));
         assert!(Arc::ptr_eq(&before.symbols, &opened.symbols));
         assert_eq!(opened.version, 7);
+
+        let _ = fs::remove_dir_all(&workspace_path);
+    }
+
+    #[test]
+    fn opening_cached_dependency_file_promotes_it_to_full_analysis_and_keeps_it_open() {
+        let workspace_path = temp_workspace_path("workspace_open_dependency_full_analysis");
+        let dependency_dir = workspace_path
+            .join(".abapls")
+            .join("cache")
+            .join("dependencies")
+            .join("global-class");
+        fs::create_dir_all(&dependency_dir).expect("dependency dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[[unit]]
+name = "ZCL_DEP"
+kind = "global-class"
+root_file = ".abapls/cache/dependencies/global-class/ZCL_DEP.abap"
+
+[[unit.member]]
+role = "dependency"
+file = ".abapls/cache/dependencies/global-class/ZCL_DEP.abap"
+object_name = "ZCL_DEP"
+"#,
+        )
+        .expect("manifest");
+        let dependency_text = "\
+CLASS zcl_dep DEFINITION PUBLIC.
+  PUBLIC SECTION.
+    METHODS run.
+ENDCLASS.
+CLASS zcl_dep IMPLEMENTATION.
+  METHOD run.
+    DATA lv_value TYPE i.
+    lv_value = 1.
+    lv_value = lv_value + 1.
+  ENDMETHOD.
+ENDCLASS.";
+        fs::write(dependency_dir.join("ZCL_DEP.abap"), dependency_text).expect("dependency file");
+
+        let workspace_uri = path_to_file_uri(&workspace_path);
+        let dependency_uri =
+            format!("{workspace_uri}/.abapls/cache/dependencies/global-class/ZCL_DEP.abap");
+        let mut state = ServerState::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        refresh_workspace(&mut state, &workspace_uri);
+
+        let use_offset = dependency_text
+            .match_indices("lv_value")
+            .nth(2)
+            .map(|(offset, _)| offset + 1)
+            .expect("usage offset");
+        let normalized_dependency_uri = normalize_lsp_uri(&dependency_uri);
+
+        let before =
+            snapshot_for_uri(&state, &normalized_dependency_uri).expect("dependency snapshot");
+        assert!(before.is_dependency);
+        assert!(before.definition_at(use_offset).is_none());
+
+        let opened = publish_open_document_mut(
+            &mut state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str(&dependency_uri).expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: dependency_text.to_string(),
+                },
+            },
+        );
+
+        assert!(!opened.is_dependency);
+        let target = opened
+            .definition_at(use_offset)
+            .expect("definition after opening dependency");
+        assert_eq!(target.uri.as_ref(), normalized_dependency_uri.as_str());
+
+        refresh_workspace(&mut state, &workspace_uri);
+        let refreshed = snapshot_for_uri(&state, &normalized_dependency_uri)
+            .expect("dependency snapshot after refresh");
+        assert!(!refreshed.is_dependency);
+        assert!(refreshed.definition_at(use_offset).is_some());
 
         let _ = fs::remove_dir_all(&workspace_path);
     }
