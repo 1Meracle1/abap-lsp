@@ -150,6 +150,10 @@ impl<'ctx, 'a> DeclLowering<'ctx, 'a> {
                 symbol: owner,
                 parameters,
             });
+        } else if scope_kind == ScopeKind::Module && kind == SymbolKind::Module {
+            self.ctx
+                .forms_lowering()
+                .declare_function_parameters_from_header(node, child_scope);
         }
         for child in self.ctx.file().children(node) {
             self.ctx.walk_node(child, child_scope);

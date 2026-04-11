@@ -7175,6 +7175,52 @@ START-OF-SELECTION.
 }
 
 #[test]
+fn unsupported_simple_statements_from_aif_function_group_do_not_emit_keyword_diagnostics() {
+    let src = r#"
+START-OF-SELECTION.
+  DATA lv_log_handle TYPE i.
+  DATA lr_runtime TYPE REF TO object.
+
+  SET UPDATE TASK LOCAL.
+  GET TIME.
+  LOG-POINT ID /aif/err_cp_01 SUBKEY 'FILE_PRO_DATA'
+    FIELDS lv_log_handle.
+  GET BADI lr_runtime.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit(
+        "file:///aif_unsupported_simple_statements.abap",
+        src,
+        &parsed,
+    );
+
+    for keyword in [
+        "UPDATE", "TASK", "LOCAL", "TIME", "BADI", "ID", "SUBKEY", "FIELDS",
+    ] {
+        assert!(
+            !unit.diagnostics.iter().any(|diag| {
+                diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains(keyword)
+            }),
+            "unexpected unresolved keyword diagnostic for `{keyword}`: {:?}",
+            unit.diagnostics
+        );
+    }
+
+    for name in ["lv_log_handle", "lr_runtime"] {
+        assert!(
+            unit.references.iter().any(|reference| {
+                reference.namespace == Namespace::Value
+                    && reference.name.as_ref() == name
+                    && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+            }),
+            "expected `{name}` reference to resolve, got refs={:?} diagnostics={:?}",
+            unit.references,
+            unit.diagnostics
+        );
+    }
+}
+
+#[test]
 fn collects_call_transformation_operands_without_keyword_diagnostics() {
     let src = r#"
 START-OF-SELECTION.
@@ -7319,6 +7365,75 @@ START-OF-SELECTION.
             && reference.name.as_ref() == "/aif/file_process_data"
             && matches!(reference.resolution, Some(Resolution::Symbol(_)))
     }));
+}
+
+#[test]
+fn declares_function_module_interface_parameters_in_module_scope() {
+    let src = r#"
+FUNCTION /AIF/FILE_PROCESS_DATA
+  IMPORTING
+    iv_count TYPE i OPTIONAL
+    iv_name TYPE string
+    iv_flag TYPE c OPTIONAL
+  EXPORTING
+    VALUE(ev_ok) TYPE c
+  CHANGING
+    cv_text TYPE string
+    cs_any TYPE any
+  TABLES
+    return_tab LIKE sy-uname OPTIONAL
+  EXCEPTIONS
+    not_found
+    failed.
+
+  cv_text = iv_name.
+  DATA lv_count TYPE i.
+  lv_count = iv_count.
+  IF iv_flag = 'X'.
+    ev_ok = 'X'.
+  ENDIF.
+  CLEAR return_tab.
+ENDFUNCTION.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///function_params.abap", src, &parsed);
+
+    for name in [
+        "iv_count",
+        "iv_name",
+        "iv_flag",
+        "ev_ok",
+        "cv_text",
+        "return_tab",
+    ] {
+        let refs: Vec<_> = unit
+            .references
+            .iter()
+            .filter(|reference| reference.name.as_ref() == name)
+            .collect();
+        assert!(
+            !refs.is_empty(),
+            "expected references for {name}, got {:?}",
+            unit.references
+        );
+        assert!(
+            refs.iter()
+                .all(|reference| matches!(reference.resolution, Some(Resolution::Symbol(_)))),
+            "expected resolved references for {name}, got {:?}",
+            refs
+        );
+    }
+
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            matches!(
+                diag.kind,
+                DiagnosticKind::UnresolvedReference | DiagnosticKind::UnknownField
+            )
+        }),
+        "unexpected diagnostics: {:?}",
+        unit.diagnostics
+    );
 }
 
 #[test]

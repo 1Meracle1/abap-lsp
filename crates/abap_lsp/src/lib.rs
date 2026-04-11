@@ -658,11 +658,16 @@ pub fn handle_remote_dependencies_updated_with_progress(
 pub fn collect_remote_dependency_candidates(
     snapshot: &AnalysisSnapshot,
 ) -> Vec<RemoteDependencyCandidate> {
-    let mut deduped = HashMap::<String, RemoteDependencyCandidate>::new();
-    let semantic = snapshot.symbols.semantic();
+    collect_remote_dependency_candidates_for_unit(&snapshot.symbols)
+}
 
-    for edge in snapshot
-        .symbols
+fn collect_remote_dependency_candidates_for_unit(
+    unit: &abap_symbols::UnitAnalysis,
+) -> Vec<RemoteDependencyCandidate> {
+    let mut deduped = HashMap::<String, RemoteDependencyCandidate>::new();
+    let semantic = unit.semantic();
+
+    for edge in unit
         .include_edges
         .iter()
         .filter(|edge| edge.target.is_none())
@@ -721,7 +726,7 @@ pub fn collect_remote_dependency_candidates(
         }
     }
 
-    for call_site in &snapshot.symbols.call_sites {
+    for call_site in &unit.call_sites {
         let abap_symbols::NamedArgumentTarget::Function { function_name } = &call_site.target
         else {
             continue;
@@ -739,6 +744,23 @@ pub fn collect_remote_dependency_candidates(
     }
 
     deduped.into_values().collect()
+}
+
+fn collect_remote_dependency_candidates_for_workspace_batch(
+    snapshot: &AnalysisSnapshot,
+) -> Vec<RemoteDependencyCandidate> {
+    if !snapshot.is_dependency {
+        return collect_remote_dependency_candidates(snapshot);
+    }
+
+    let full_snapshot = DocumentStore::default().publish_input(DocumentInput {
+        uri: Arc::clone(&snapshot.uri),
+        version: snapshot.version,
+        text: Arc::clone(&snapshot.text),
+        is_dependency: false,
+        object_name: snapshot.object_name.clone(),
+    });
+    collect_remote_dependency_candidates(full_snapshot.as_ref())
 }
 
 fn insert_remote_candidate(
@@ -1004,7 +1026,8 @@ pub fn build_remote_dependency_batch_for_workspace_filtered(
         }
 
         let mut added_for_uri = false;
-        for candidate in collect_remote_dependency_candidates(snapshot.as_ref()) {
+        for candidate in collect_remote_dependency_candidates_for_workspace_batch(snapshot.as_ref())
+        {
             if has_cached_remote_dependency_candidate(workspace, &candidate) {
                 continue;
             }
@@ -4152,6 +4175,114 @@ adt_uri = "/sap/bc/adt/oo/classes/zcl_first"
     }
 
     #[test]
+    fn workspace_dependency_refresh_scans_dependency_implementation_bodies() {
+        let workspace_path = temp_workspace_path("dependency_impl_batch_refresh");
+        let dependency_dir = workspace_path
+            .join(".abapls")
+            .join("cache")
+            .join("dependencies")
+            .join("global-class");
+        fs::create_dir_all(&workspace_path).expect("workspace dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[resolution]
+dependency_mode = "remote-on-demand"
+unknown_symbol_mode = "remote"
+"#,
+        )
+        .expect("manifest");
+        let workspace_uri = path_to_file_uri(&workspace_path);
+
+        let mut state = ServerState::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        publish_open_document_mut(
+            &mut state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str(&format!("{workspace_uri}/main.abap")).expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: "DATA lo_demo TYPE REF TO zcl_first.\nlo_demo = zcl_first=>create( )."
+                        .to_string(),
+                },
+            },
+        );
+
+        let initial =
+            build_remote_dependency_request(&mut state, &format!("{workspace_uri}/main.abap"))
+                .expect("initial request");
+        assert!(
+            initial
+                .candidates
+                .iter()
+                .any(|candidate| candidate.name == "zcl_first")
+        );
+
+        fs::create_dir_all(&dependency_dir).expect("dependency dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[resolution]
+dependency_mode = "remote-on-demand"
+unknown_symbol_mode = "remote"
+
+[[unit]]
+name = "ZCL_FIRST"
+kind = "global-class"
+root_file = ".abapls/cache/dependencies/global-class/ZCL_FIRST.abap"
+adt_uri = "/sap/bc/adt/oo/classes/zcl_first"
+
+[[unit.member]]
+role = "dependency"
+file = ".abapls/cache/dependencies/global-class/ZCL_FIRST.abap"
+object_name = "ZCL_FIRST"
+adt_uri = "/sap/bc/adt/oo/classes/zcl_first"
+"#,
+        )
+        .expect("updated manifest");
+        fs::write(
+            dependency_dir.join("ZCL_FIRST.abap"),
+            "CLASS zcl_first DEFINITION.\n  PUBLIC SECTION.\n    CLASS-METHODS create RETURNING VALUE(ro_inst) TYPE REF TO zcl_first.\nENDCLASS.\nCLASS zcl_first IMPLEMENTATION.\n  METHOD create.\n    SELECT SINGLE * FROM /aif/t_finf INTO @DATA(ls_finf).\n  ENDMETHOD.\nENDCLASS.\n",
+        )
+        .expect("dependency file");
+
+        let _ = handle_remote_dependencies_updated(
+            &mut state,
+            &super::RemoteDependenciesUpdatedParams {
+                workspace_uri: workspace_uri.clone(),
+                source_uri: format!("{workspace_uri}/main.abap"),
+                source_uris: Vec::new(),
+                fetched: vec!["ZCL_FIRST".to_string()],
+                failed: Vec::new(),
+            },
+        );
+
+        let follow_up = build_remote_dependency_batch_for_workspace(&mut state, &workspace_uri)
+            .expect("follow-up batch");
+        assert!(
+            follow_up
+                .source_uris
+                .iter()
+                .any(|uri| uri.ends_with("ZCL_FIRST.abap")),
+            "follow_up={follow_up:#?}"
+        );
+        assert!(
+            follow_up
+                .candidates
+                .iter()
+                .any(|candidate| candidate.kind == "type" && candidate.name == "/aif/t_finf"),
+            "follow_up={follow_up:#?}"
+        );
+
+        let _ = fs::remove_dir_all(&workspace_path);
+    }
+
+    #[test]
     fn dependency_private_implementation_references_do_not_trigger_follow_up_remote_requests() {
         let workspace_path = temp_workspace_path("dependency_private_impl");
         let dependency_dir = workspace_path
@@ -4366,6 +4497,120 @@ adt_uri = "/sap/bc/adt/oo/classes/zcl_first"
             }),
             "follow_up={follow_up:#?}"
         );
+
+        let _ = fs::remove_dir_all(&workspace_path);
+    }
+
+    #[test]
+    fn opening_dependency_function_group_with_unsupported_simple_statements_requests_new_symbols() {
+        let workspace_path = temp_workspace_path("dependency_function_group_open_remote");
+        let dependency_dir = workspace_path
+            .join(".abapls")
+            .join("cache")
+            .join("dependencies")
+            .join("function-group");
+        fs::create_dir_all(&dependency_dir).expect("dependency dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[resolution]
+dependency_mode = "remote-on-demand"
+unknown_symbol_mode = "remote"
+
+[[unit]]
+name = "/AIF/FILE_PROCESS_DATA"
+kind = "function-group"
+root_file = ".abapls/cache/dependencies/function-group/%2FAIF%2FFILE_PROCESS_DATA.abap"
+
+[[unit.member]]
+role = "dependency"
+file = ".abapls/cache/dependencies/function-group/%2FAIF%2FFILE_PROCESS_DATA.abap"
+object_name = "/AIF/FILE_PROCESS_DATA"
+"#,
+        )
+        .expect("manifest");
+        let stored_dependency_text = "\
+FUNCTION /AIF/FILE_PROCESS_DATA.
+  DATA lv_log_handle TYPE i.
+  DATA lr_runtime TYPE REF TO object.
+  SET UPDATE TASK LOCAL.
+  GET TIME.
+  LOG-POINT ID /aif/err_cp_01 SUBKEY 'FILE_PRO_DATA'
+    FIELDS lv_log_handle.
+  GET BADI lr_runtime.
+  zcl_second=>run( ).
+ENDFUNCTION.";
+        fs::write(
+            dependency_dir.join("%2FAIF%2FFILE_PROCESS_DATA.abap"),
+            stored_dependency_text,
+        )
+        .expect("dependency file");
+        let opened_dependency_text = "\
+FUNCTION /AIF/FILE_PROCESS_DATA
+  IMPORTING
+    FILENR TYPE /AIF/FILENR OPTIONAL
+    XIMSGGUID TYPE SXMSMGUID OPTIONAL
+    CLASS_NAME_STD_IMPL TYPE SEOCLSNAME OPTIONAL
+  CHANGING
+    DATA TYPE ANY
+  TABLES
+    RETURN_TAB LIKE BAPIRET2 OPTIONAL
+  EXCEPTIONS
+    NOT_FOUND.
+  zcl_second=>run( ).
+ENDFUNCTION.";
+
+        let workspace_uri = path_to_file_uri(&workspace_path);
+        let dependency_uri = format!(
+            "{workspace_uri}/.abapls/cache/dependencies/function-group/%2FAIF%2FFILE_PROCESS_DATA.abap"
+        );
+        let normalized_dependency_uri = normalize_lsp_uri(&dependency_uri);
+        let mut state = ServerState::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        refresh_workspace(&mut state, &workspace_uri);
+
+        assert!(
+            build_remote_dependency_request(&mut state, &dependency_uri).is_none(),
+            "dependency surface projection should not expose implementation-only candidates"
+        );
+
+        let opened = publish_open_document_mut(
+            &mut state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str(&dependency_uri).expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: opened_dependency_text.to_string(),
+                },
+            },
+        );
+
+        assert_eq!(opened.uri.as_ref(), normalized_dependency_uri.as_str());
+        assert!(!opened.is_dependency);
+
+        let request =
+            build_remote_dependency_request(&mut state, normalized_dependency_uri.as_str())
+                .expect("remote request after opening dependency");
+        assert_eq!(request.source_uri, normalized_dependency_uri);
+        assert!(
+            request
+                .candidates
+                .iter()
+                .any(|candidate| candidate.name == "zcl_second"),
+            "request={request:#?}"
+        );
+        for expected in ["/aif/filenr", "sxmsmguid", "seoclsname", "bapiret2"] {
+            assert!(
+                request
+                    .candidates
+                    .iter()
+                    .any(|candidate| candidate.kind == "type" && candidate.name == expected),
+                "missing {expected} in request={request:#?}"
+            );
+        }
 
         let _ = fs::remove_dir_all(&workspace_path);
     }

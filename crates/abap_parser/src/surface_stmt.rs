@@ -3024,6 +3024,14 @@ fn form_header_section_keyword(source: &str, token: &Token) -> bool {
         || is_keyword(source, token, "raises")
 }
 
+fn function_header_section_keyword(source: &str, token: &Token) -> bool {
+    is_keyword(source, token, "importing")
+        || is_keyword(source, token, "exporting")
+        || is_keyword(source, token, "changing")
+        || is_keyword(source, token, "tables")
+        || is_keyword(source, token, "exceptions")
+}
+
 fn form_header_starts_typed_param(source: &str, tokens: &[Token], idx: usize, end: usize) -> bool {
     let Some(token) = tokens.get(idx) else {
         return false;
@@ -3051,6 +3059,24 @@ fn form_header_starts_typed_param(source: &str, tokens: &[Token], idx: usize, en
         .is_some_and(|t| is_keyword(source, t, "type") || is_keyword(source, t, "like"))
 }
 
+fn function_header_starts_param(source: &str, tokens: &[Token], idx: usize, end: usize) -> bool {
+    let Some(token) = tokens.get(idx) else {
+        return false;
+    };
+    if token.kind != TokenKind::Ident || function_header_section_keyword(source, token) {
+        return false;
+    }
+    if is_keyword(source, token, "value") || is_keyword(source, token, "reference") {
+        if idx + 3 >= end {
+            return false;
+        }
+        return tokens.get(idx + 1).map(|t| t.kind) == Some(TokenKind::LParen)
+            && tokens.get(idx + 2).map(|t| t.kind) == Some(TokenKind::Ident)
+            && tokens.get(idx + 3).map(|t| t.kind) == Some(TokenKind::RParen);
+    }
+    true
+}
+
 fn skip_form_header_type_expression(
     source: &str,
     tokens: &[Token],
@@ -3073,6 +3099,45 @@ fn skip_form_header_type_expression(
             TokenKind::Period if depth == 0 => return idx,
             _ if depth == 0 && form_header_section_keyword(source, token) => return idx,
             _ if depth == 0 && form_header_starts_typed_param(source, tokens, idx, end) => {
+                return idx;
+            }
+            _ => idx += 1,
+        }
+    }
+    idx
+}
+
+fn skip_function_header_type_expression(
+    source: &str,
+    tokens: &[Token],
+    mut idx: usize,
+    end: usize,
+) -> usize {
+    let mut depth = 0i32;
+    while idx < end {
+        let token = &tokens[idx];
+        match token.kind {
+            TokenKind::Comment => idx += 1,
+            TokenKind::LParen | TokenKind::LBracket | TokenKind::LBrace => {
+                depth += 1;
+                idx += 1;
+            }
+            TokenKind::RParen | TokenKind::RBracket | TokenKind::RBrace => {
+                depth -= 1;
+                idx += 1;
+            }
+            TokenKind::Period if depth == 0 => return idx,
+            _ if depth == 0 && function_header_section_keyword(source, token) => return idx,
+            _ if depth == 0
+                && (is_keyword(source, token, "optional")
+                    || is_keyword(source, token, "default")) =>
+            {
+                return idx;
+            }
+            _ if depth == 0
+                && token.has_newline_before()
+                && function_header_starts_param(source, tokens, idx, end) =>
+            {
                 return idx;
             }
             _ => idx += 1,
@@ -3230,6 +3295,180 @@ fn build_form_param_node(
         .unwrap_or(start);
     Some((
         b.branch(SyntaxKind::FormParam, start..end_range, &children),
+        i,
+    ))
+}
+
+fn build_function_header_children(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    period_i: usize,
+) -> Vec<NodeId> {
+    let mut children = vec![token_leaf(b, &tokens[idx])];
+    let mut saw_name = false;
+    let mut i = idx + 1;
+    while i <= period_i {
+        let token = &tokens[i];
+        if token.kind == TokenKind::Comment {
+            children.push(token_leaf(b, token));
+            i += 1;
+            continue;
+        }
+
+        if !saw_name && let Some((name, next_i)) = parse_inline_name(b, tokens, i) {
+            children.push(name);
+            saw_name = true;
+            i = next_i;
+            continue;
+        }
+
+        if function_header_section_keyword(source, token) {
+            let (section, next_i) =
+                build_function_param_section_node(b, source, tokens, i, period_i);
+            children.push(section);
+            i = next_i;
+            continue;
+        }
+
+        children.push(token_leaf(b, token));
+        i += 1;
+    }
+    children
+}
+
+fn build_function_param_section_node(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    period_i: usize,
+) -> (NodeId, usize) {
+    let mut children = vec![token_leaf(b, &tokens[idx])];
+    let mut i = idx + 1;
+    while i <= period_i {
+        let token = &tokens[i];
+        if token.kind == TokenKind::Period || function_header_section_keyword(source, token) {
+            break;
+        }
+        if token.kind == TokenKind::Comment {
+            children.push(token_leaf(b, token));
+            i += 1;
+            continue;
+        }
+        let can_start_param = i == idx + 1 || token.has_newline_before();
+        if can_start_param
+            && let Some((param, next_i)) =
+                build_function_param_node(b, source, tokens, i, period_i + 1)
+        {
+            children.push(param);
+            i = next_i;
+            continue;
+        }
+        children.push(token_leaf(b, token));
+        i += 1;
+    }
+
+    let end = children
+        .last()
+        .copied()
+        .map(|id| b.span(id).end)
+        .unwrap_or(tokens[idx].range.end);
+    (
+        b.branch(
+            SyntaxKind::FunctionParamSection,
+            tokens[idx].range.start..end,
+            &children,
+        ),
+        i,
+    )
+}
+
+fn build_function_param_node(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    end: usize,
+) -> Option<(NodeId, usize)> {
+    if !function_header_starts_param(source, tokens, idx, end) {
+        return None;
+    }
+
+    let mut children = Vec::new();
+    let start = tokens.get(idx)?.range.start;
+    let mut i = idx;
+
+    if is_keyword(source, tokens.get(i)?, "value")
+        || is_keyword(source, tokens.get(i)?, "reference")
+    {
+        let lparen_idx = i + 1;
+        let (name, next_i) = parse_inline_name(b, tokens, i + 2)?;
+        let rparen_idx = next_i;
+        if tokens.get(lparen_idx).map(|token| token.kind) != Some(TokenKind::LParen)
+            || tokens.get(rparen_idx).map(|token| token.kind) != Some(TokenKind::RParen)
+        {
+            return None;
+        }
+        children.push(token_leaf(b, &tokens[i]));
+        children.push(token_leaf(b, &tokens[lparen_idx]));
+        children.push(name);
+        children.push(token_leaf(b, &tokens[rparen_idx]));
+        i = rparen_idx + 1;
+    } else {
+        let (name, next_i) = parse_inline_name(b, tokens, i)?;
+        children.push(name);
+        i = next_i;
+    }
+
+    while i < end && tokens[i].kind == TokenKind::Comment {
+        children.push(token_leaf(b, &tokens[i]));
+        i += 1;
+    }
+
+    if i < end && (is_keyword(source, &tokens[i], "type") || is_keyword(source, &tokens[i], "like"))
+    {
+        children.push(token_leaf(b, &tokens[i]));
+        i += 1;
+        while i < end && tokens[i].kind == TokenKind::Comment {
+            children.push(token_leaf(b, &tokens[i]));
+            i += 1;
+        }
+        let expr_end = skip_function_header_type_expression(source, tokens, i, end);
+        if i < expr_end {
+            children.push(build_type_ref_node(b, source, &tokens[i..expr_end]));
+            i = expr_end;
+        }
+    }
+
+    let mut depth = 0i32;
+    while i < end {
+        let token = &tokens[i];
+        match token.kind {
+            TokenKind::LParen | TokenKind::LBracket | TokenKind::LBrace => depth += 1,
+            TokenKind::RParen | TokenKind::RBracket | TokenKind::RBrace => depth -= 1,
+            _ => {}
+        }
+        if depth == 0 {
+            if token.kind == TokenKind::Period || function_header_section_keyword(source, token) {
+                break;
+            }
+            if token.has_newline_before() && function_header_starts_param(source, tokens, i, end) {
+                break;
+            }
+        }
+        children.push(token_leaf(b, token));
+        i += 1;
+    }
+
+    let end_range = children
+        .last()
+        .copied()
+        .map(|id| b.span(id).end)
+        .unwrap_or(start);
+    Some((
+        b.branch(SyntaxKind::FunctionParam, start..end_range, &children),
         i,
     ))
 }
@@ -6899,41 +7138,94 @@ pub fn try_parse_function_decl(
         return None;
     }
 
-    let mut children = vec![token_leaf(b, start_tok)];
     let mut next = idx + 1;
-    while let Some(token) = tokens.get(next) {
-        if token.kind == TokenKind::Comment {
-            children.push(token_leaf(b, token));
-            next += 1;
-            continue;
-        }
-        break;
+    while matches!(tokens.get(next), Some(token) if token.kind == TokenKind::Comment) {
+        next += 1;
+    }
+    let Some(name_tok) = tokens.get(next) else {
+        let start_leaf = token_leaf(b, start_tok);
+        let node = b.branch(
+            SyntaxKind::FunctionDecl,
+            start_tok.range.clone(),
+            &[start_leaf],
+        );
+        return Some((node, next));
+    };
+    if name_tok.kind != TokenKind::Ident {
+        let start_leaf = token_leaf(b, start_tok);
+        let name_leaf = token_leaf(b, name_tok);
+        errors.push(crate::ParseError {
+            message: "syntax error: expected function module name after FUNCTION".to_string(),
+            range: start_tok.range.start..name_tok.range.end,
+        });
+        return Some((
+            b.branch(
+                SyntaxKind::FunctionDecl,
+                start_tok.range.start..name_tok.range.end,
+                &[start_leaf, name_leaf],
+            ),
+            next + 1,
+        ));
     }
 
-    let header_end = match tokens.get(next) {
-        Some(token) if token.kind == TokenKind::Ident => {
-            children.push(token_leaf(b, token));
-            next += 1;
-            if tokens.get(next).map(|token| token.kind) == Some(TokenKind::Period) {
-                children.push(token_leaf(b, &tokens[next]));
-                next += 1;
-                tokens[next - 1].range.end
-            } else {
-                token.range.end
+    next += 1;
+    while matches!(tokens.get(next), Some(token) if token.kind == TokenKind::Comment) {
+        next += 1;
+    }
+
+    let (children, next, header_end) = if tokens.get(next).map(|token| token.kind)
+        == Some(TokenKind::Period)
+    {
+        (
+            build_function_header_children(b, source, tokens, idx, next),
+            next + 1,
+            tokens[next].range.end,
+        )
+    } else if tokens
+        .get(next)
+        .is_some_and(|token| function_header_section_keyword(source, token))
+    {
+        match scan_until_top_level_period(tokens, next) {
+            Some(period_i) => (
+                build_function_header_children(b, source, tokens, idx, period_i),
+                period_i + 1,
+                tokens[period_i].range.end,
+            ),
+            None => {
+                let end_exclusive = tokens
+                    .iter()
+                    .position(|token| token.kind == TokenKind::Eof)
+                    .unwrap_or(tokens.len());
+                let err_end = unterminated_err_end(tokens, end_exclusive, name_tok.range.end);
+                errors.push(crate::ParseError {
+                    message: "syntax error: expected '.' after function header".to_string(),
+                    range: start_tok.range.start..err_end,
+                });
+                let mut children = build_function_header_children(b, source, tokens, idx, next - 1);
+                let err_children = error_token_children(b, tokens, next, end_exclusive);
+                children.push(b.branch(
+                    SyntaxKind::Error,
+                    tokens[next].range.start..err_end,
+                    &err_children,
+                ));
+                (
+                    children,
+                    next_after_unterminated_scan(tokens, end_exclusive),
+                    err_end,
+                )
             }
         }
-        Some(token) => {
-            errors.push(crate::ParseError {
-                message: "syntax error: expected function module name after FUNCTION".to_string(),
-                range: start_tok.range.start..token.range.end,
-            });
-            token.range.end
-        }
-        None => start_tok.range.end,
+    } else {
+        (
+            build_function_header_children(b, source, tokens, idx, next - 1),
+            next,
+            name_tok.range.end,
+        )
     };
 
     let (body, after_body) =
         parse_body_until_keywords(b, source, tokens, next, errors, &["ENDFUNCTION"]);
+    let mut children = children;
     children.extend(body);
     let (end_children, next_after, end_pos) = parse_end_keyword(
         b,
@@ -7210,7 +7502,8 @@ mod tests {
     use abap_ast::SyntaxKind;
     use abap_ast::ast::{
         AstNode, ClassDecl, DataLikeDecl, DataLikeStorageKind, FormDecl, FormParamPassingKind,
-        FormParamSectionKind, IncludeStmt, MethodDecl, SyntaxNodeRef,
+        FormParamSectionKind, FunctionDecl, FunctionParamSectionKind, IncludeStmt, MethodDecl,
+        SyntaxNodeRef,
     };
 
     #[test]
@@ -8981,6 +9274,74 @@ END-OF-PAGE.\nWRITE 'e'.",
         let root = parsed.file.root();
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::FunctionDecl), 1);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::WriteStmt), 1);
+    }
+
+    #[test]
+    fn function_header_exposes_structured_sections_and_params() {
+        let src = "FUNCTION /AIF/FILE_PROCESS_DATA\n  IMPORTING\n    iv_count TYPE i OPTIONAL\n    iv_ref TYPE REF TO object OPTIONAL\n  EXPORTING\n    VALUE(ev_ok) TYPE c\n  CHANGING\n    cv_text TYPE string\n  TABLES\n    it_rows LIKE sy-uname OPTIONAL\n  EXCEPTIONS\n    not_found\n    failed.\nENDFUNCTION.";
+        let parsed = crate::parse(src);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let function = FunctionDecl::cast(SyntaxNodeRef::new(
+            &parsed.file,
+            parsed
+                .file
+                .find_first_kind(parsed.file.root(), SyntaxKind::FunctionDecl)
+                .expect("function decl"),
+        ))
+        .expect("function decl");
+        assert_eq!(
+            function
+                .name_token()
+                .and_then(|name| name.name(src))
+                .as_deref(),
+            Some("/aif/file_process_data")
+        );
+        let sections = function.param_sections().collect::<Vec<_>>();
+        assert_eq!(sections.len(), 5);
+        assert_eq!(
+            sections[0].kind(src),
+            Some(FunctionParamSectionKind::Importing)
+        );
+        assert_eq!(
+            sections[1].kind(src),
+            Some(FunctionParamSectionKind::Exporting)
+        );
+        assert_eq!(
+            sections[2].kind(src),
+            Some(FunctionParamSectionKind::Changing)
+        );
+        assert_eq!(
+            sections[3].kind(src),
+            Some(FunctionParamSectionKind::Tables)
+        );
+        assert_eq!(
+            sections[4].kind(src),
+            Some(FunctionParamSectionKind::Exceptions)
+        );
+        let exporting_param = sections[1].params().next().expect("exporting param");
+        assert_eq!(
+            exporting_param
+                .name_token()
+                .and_then(|name| name.name(src))
+                .as_deref(),
+            Some("ev_ok")
+        );
+        assert_eq!(
+            exporting_param.passing_kind(src),
+            FormParamPassingKind::Value
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(function.syntax().id(), SyntaxKind::FunctionParamSection),
+            5
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(function.syntax().id(), SyntaxKind::FunctionParam),
+            7
+        );
     }
 
     #[test]

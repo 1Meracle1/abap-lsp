@@ -883,7 +883,7 @@ fn push_workspace_diagnostics_notifications_for_uris(
     Ok(())
 }
 
-fn workspace_open_non_dependency_dirty_uris(
+fn workspace_open_dirty_uris(
     state: &ServerState,
     workspace_uri: &str,
     dirty_uris: &HashSet<Arc<str>>,
@@ -899,7 +899,6 @@ fn workspace_open_non_dependency_dirty_uris(
             workspace
                 .cache
                 .get(uri)
-                .filter(|snapshot| !snapshot.is_dependency)
                 .map(|_| Arc::<str>::from(uri.as_str()))
         })
         .collect()
@@ -1052,8 +1051,7 @@ fn handle_did_open_notifications(
             .get(&workspace_uri)
             .map(|workspace| workspace.cache.last_dirty_uris())
         && let Some(request) = if workspace_uses_editor_first_mode(state, &workspace_uri) {
-            let open_dirty =
-                workspace_open_non_dependency_dirty_uris(state, &workspace_uri, &dirty_uris);
+            let open_dirty = workspace_open_dirty_uris(state, &workspace_uri, &dirty_uris);
             debug!(
                 workspace_uri = %workspace_uri,
                 dirty_uri_count = dirty_uris.len(),
@@ -1186,8 +1184,7 @@ fn handle_did_change_notifications(
                 .get(&workspace_uri)
                 .map(|workspace| workspace.cache.last_dirty_uris())
             && let Some(request) = if workspace_uses_editor_first_mode(state, &workspace_uri) {
-                let open_dirty =
-                    workspace_open_non_dependency_dirty_uris(state, &workspace_uri, &dirty_uris);
+                let open_dirty = workspace_open_dirty_uris(state, &workspace_uri, &dirty_uris);
                 debug!(
                     workspace_uri = %workspace_uri,
                     dirty_uri_count = dirty_uris.len(),
@@ -3122,6 +3119,107 @@ ENDCLASS.",
                 .iter()
                 .all(|uri| !uri.ends_with("/src/ZREPORT_CLOSED.abap"))
         );
+    }
+
+    #[test]
+    fn editor_first_open_dependency_file_can_request_remote_function_modules() {
+        let workspace_path = temp_workspace_path("editor_first_open_dependency_remote");
+        let dependency_dir = workspace_path
+            .join(".abapls")
+            .join("cache")
+            .join("dependencies")
+            .join("function-group");
+        fs::create_dir_all(&dependency_dir).expect("dependency dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[performance]
+mode = "editor-first"
+
+[resolution]
+dependency_mode = "remote-on-demand"
+unknown_symbol_mode = "remote"
+
+[[unit]]
+name = "/AIF/FILE_PROCESS_DATA"
+kind = "function-group"
+root_file = ".abapls/cache/dependencies/function-group/%2FAIF%2FFILE_PROCESS_DATA.abap"
+
+[[unit.member]]
+role = "dependency"
+file = ".abapls/cache/dependencies/function-group/%2FAIF%2FFILE_PROCESS_DATA.abap"
+object_name = "/AIF/FILE_PROCESS_DATA"
+"#,
+        )
+        .expect("manifest");
+        let dependency_text = "\
+FUNCTION /AIF/FILE_PROCESS_DATA.
+  DATA lv_msg_guid TYPE string.
+  DATA ls_ifkeys TYPE string.
+  DATA gv_trace_level TYPE string.
+  CALL FUNCTION '/AIF/DETERMINE_TRACE_LEVEL'
+    EXPORTING
+      iv_msgguid     = lv_msg_guid
+      is_ifkeys      = ls_ifkeys
+    IMPORTING
+      ev_trace_level = gv_trace_level.
+ENDFUNCTION.";
+        let dependency_path = dependency_dir.join("%2FAIF%2FFILE_PROCESS_DATA.abap");
+        fs::write(&dependency_path, dependency_text).expect("dependency file");
+
+        let workspace_uri = file_uri(&workspace_path);
+        let dependency_uri = format!(
+            "{workspace_uri}/.abapls/cache/dependencies/function-group/%2FAIF%2FFILE_PROCESS_DATA.abap"
+        );
+        let mut state = ServerState::default();
+        let config = ServerConfig::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        refresh_workspace(&mut state, &workspace_uri);
+
+        let handled = handle_message(
+            &mut state,
+            &config,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": {
+                    "textDocument": {
+                        "uri": dependency_uri,
+                        "languageId": "abap",
+                        "version": 1,
+                        "text": dependency_text
+                    }
+                }
+            }),
+        )
+        .expect("didOpen");
+
+        let request = handled
+            .notifications
+            .iter()
+            .find(|(method, _)| method == RESOLVE_REMOTE_DEPENDENCIES)
+            .map(|(_, payload)| payload)
+            .expect("remote dependency request");
+        let source_uris = request
+            .get("sourceUris")
+            .and_then(Value::as_array)
+            .expect("source uris");
+        assert!(source_uris.iter().filter_map(Value::as_str).any(|uri| {
+            uri.ends_with(
+                "/.abapls/cache/dependencies/function-group/%2FAIF%2FFILE_PROCESS_DATA.abap",
+            )
+        }));
+        let candidates = request
+            .get("candidates")
+            .and_then(Value::as_array)
+            .expect("candidates");
+        assert!(candidates.iter().any(|candidate| {
+            candidate.get("kind").and_then(Value::as_str) == Some("function")
+                && candidate.get("name").and_then(Value::as_str)
+                    == Some("/aif/determine_trace_level")
+        }));
     }
 
     #[test]

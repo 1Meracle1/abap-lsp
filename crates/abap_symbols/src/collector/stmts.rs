@@ -27,6 +27,80 @@ impl<'a> Collector<'a> {
 }
 
 impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
+    fn tokens_match_keyword_sequence(tokens: &[SyntaxTokenInfo], keywords: &[&str]) -> bool {
+        tokens.len() >= keywords.len()
+            && tokens
+                .iter()
+                .zip(keywords.iter())
+                .all(|(token, keyword)| token.text.eq_ignore_ascii_case(keyword))
+    }
+
+    fn collect_log_point_stmt_infos(&mut self, tokens: &[SyntaxTokenInfo], scope: ScopeId) -> bool {
+        if tokens.len() < 4
+            || !tokens[0].text.eq_ignore_ascii_case("log")
+            || tokens[1].text.as_ref() != "-"
+            || !tokens[2].text.eq_ignore_ascii_case("point")
+        {
+            return false;
+        }
+
+        let mut idx = 3usize;
+        while idx < tokens.len() {
+            let token = &tokens[idx];
+            if token.text.as_ref() == "." {
+                break;
+            }
+
+            if token.text.eq_ignore_ascii_case("id") {
+                idx += 1;
+                if idx < tokens.len() && tokens[idx].text.as_ref() != "." {
+                    idx += 1;
+                }
+                continue;
+            }
+
+            if token.text.eq_ignore_ascii_case("subkey") {
+                let start = idx + 1;
+                let mut end = start;
+                while end < tokens.len()
+                    && tokens[end].text.as_ref() != "."
+                    && !tokens[end].text.eq_ignore_ascii_case("fields")
+                {
+                    end += 1;
+                }
+                if start < end {
+                    self.collector.collect_token_expression_refs_infos(
+                        &tokens[start..end],
+                        scope,
+                        true,
+                    );
+                }
+                idx = end;
+                continue;
+            }
+
+            if token.text.eq_ignore_ascii_case("fields") {
+                let start = idx + 1;
+                let mut end = start;
+                while end < tokens.len() && tokens[end].text.as_ref() != "." {
+                    end += 1;
+                }
+                if start < end {
+                    self.collector.collect_token_expression_refs_infos(
+                        &tokens[start..end],
+                        scope,
+                        true,
+                    );
+                }
+                return true;
+            }
+
+            idx += 1;
+        }
+
+        true
+    }
+
     fn delete_stmt_operands(
         &self,
         node: NodeId,
@@ -591,10 +665,46 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             && matches!(tail.first(), Some(token) if token.text.eq_ignore_ascii_case("work"))
         {
             return;
-        } else {
-            self.collector
-                .collect_token_expression_refs_infos(tail, scope, true);
         }
+
+        if head.text.eq_ignore_ascii_case("set")
+            && Self::tokens_match_keyword_sequence(tail, &["update", "task", "local"])
+        {
+            return;
+        }
+
+        if head.text.eq_ignore_ascii_case("get")
+            && matches!(tail.first(), Some(token) if token.text.eq_ignore_ascii_case("time"))
+        {
+            return;
+        }
+
+        if head.text.eq_ignore_ascii_case("get")
+            && matches!(tail.first(), Some(token) if token.text.eq_ignore_ascii_case("badi"))
+        {
+            let target_start = 1usize;
+            let target_end = tail
+                .iter()
+                .position(|token| token.text.as_ref() == ".")
+                .unwrap_or(tail.len());
+            if target_start < target_end {
+                self.collector.collect_token_expression_refs_infos(
+                    &tail[target_start..target_end],
+                    scope,
+                    true,
+                );
+            }
+            return;
+        }
+
+        if head.text.eq_ignore_ascii_case("log")
+            && self.collect_log_point_stmt_infos(&significant, scope)
+        {
+            return;
+        }
+
+        self.collector
+            .collect_token_expression_refs_infos(tail, scope, true);
     }
 
     pub(super) fn collect_wait_stmt(&mut self, node: NodeId, scope: ScopeId) {

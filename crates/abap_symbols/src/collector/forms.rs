@@ -3,7 +3,8 @@ use std::sync::Arc;
 use abap_ast::arena::NodeId;
 use abap_ast::ast::{
     AstNode, FormDecl, FormParamPassingKind as AstFormParamPassingKind,
-    FormParamSectionKind as AstFormParamSectionKind, PerformStmt, TypeClauseKind,
+    FormParamSectionKind as AstFormParamSectionKind, FunctionDecl,
+    FunctionParamSectionKind as AstFunctionParamSectionKind, PerformStmt, TypeClauseKind,
 };
 
 use crate::def_map::{
@@ -232,6 +233,73 @@ impl<'ctx, 'a> FormsLowering<'ctx, 'a> {
             arguments,
             section_order_invalid,
         });
+    }
+
+    pub(super) fn declare_function_parameters_from_header(
+        &mut self,
+        function_node: NodeId,
+        function_scope: ScopeId,
+    ) {
+        let Some(function_decl) = FunctionDecl::cast(self.collector.syntax(function_node)) else {
+            return;
+        };
+        if function_decl.name_token().is_none() {
+            return;
+        }
+
+        let mut param_infos = Vec::new();
+        for section in function_decl.param_sections() {
+            let declare_parameters = matches!(
+                section.kind(self.collector.source),
+                Some(
+                    AstFunctionParamSectionKind::Importing
+                        | AstFunctionParamSectionKind::Exporting
+                        | AstFunctionParamSectionKind::Changing
+                        | AstFunctionParamSectionKind::Tables
+                )
+            );
+            if !declare_parameters {
+                continue;
+            }
+
+            for param in section.params() {
+                let Some(name_node) = param.name_token() else {
+                    continue;
+                };
+                let Some(name) = name_node.name(self.collector.source) else {
+                    continue;
+                };
+                let declared_type = match param.type_clause_kind(self.collector.source) {
+                    Some(TypeClauseKind::Type) => param.type_ref().and_then(|type_ref| {
+                        self.collector
+                            .field_type_ref_from_node(type_ref.syntax().id(), Namespace::Type)
+                    }),
+                    Some(TypeClauseKind::Like) => param.type_ref().and_then(|type_ref| {
+                        self.collector
+                            .field_type_ref_from_node(type_ref.syntax().id(), Namespace::Value)
+                    }),
+                    None => None,
+                };
+                let type_clause_display = param
+                    .type_ref()
+                    .and_then(|type_ref| type_ref.display_text(self.collector.source))
+                    .map(Arc::from);
+                param_infos.push((name, name_node.range(), declared_type, type_clause_display));
+            }
+        }
+
+        for (name, range, declared_type, type_clause_display) in param_infos {
+            self.collector.declare_symbol(
+                function_scope,
+                name,
+                SymbolKind::Parameter,
+                range,
+                None,
+                declared_type,
+                type_clause_display,
+                None,
+            );
+        }
     }
 
     fn consume_perform_argument_infos(&self, tokens: &[SyntaxTokenInfo], start: usize) -> usize {

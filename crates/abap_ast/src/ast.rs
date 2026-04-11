@@ -52,6 +52,15 @@ pub enum FormParamPassingKind {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FunctionParamSectionKind {
+    Importing,
+    Exporting,
+    Changing,
+    Tables,
+    Exceptions,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CallStmtKind {
     Function,
     Transformation,
@@ -371,6 +380,9 @@ ast_node!(IncludeName, SyntaxKind::IncludeName);
 ast_node!(FormDecl, SyntaxKind::FormDecl);
 ast_node!(FormParamSection, SyntaxKind::FormParamSection);
 ast_node!(FormParam, SyntaxKind::FormParam);
+ast_node!(FunctionDecl, SyntaxKind::FunctionDecl);
+ast_node!(FunctionParamSection, SyntaxKind::FunctionParamSection);
+ast_node!(FunctionParam, SyntaxKind::FunctionParam);
 ast_node!(ClassDecl, SyntaxKind::ClassDecl);
 ast_node!(ClassInheritanceClause, SyntaxKind::ClassInheritanceClause);
 ast_node!(
@@ -650,6 +662,102 @@ impl<'a> FormParam<'a> {
         self.syntax
             .child_by_kind(SyntaxKind::TypeRefSimple)
             .and_then(TypeRefSimple::cast)
+    }
+}
+
+impl<'a> FunctionDecl<'a> {
+    pub fn name_token(self) -> Option<DataDeclName<'a>> {
+        self.syntax
+            .child_by_kind(SyntaxKind::DataDeclName)
+            .and_then(DataDeclName::cast)
+    }
+
+    pub fn param_sections(
+        self,
+    ) -> impl DoubleEndedIterator<Item = FunctionParamSection<'a>> + Clone + 'a {
+        self.syntax
+            .children()
+            .filter_map(FunctionParamSection::cast)
+    }
+}
+
+impl<'a> FunctionParamSection<'a> {
+    pub fn kind(self, source: &str) -> Option<FunctionParamSectionKind> {
+        let token = self.syntax.children_by_kind(SyntaxKind::Token).next()?;
+        let text = token.text(source)?;
+        if text.eq_ignore_ascii_case("importing") {
+            Some(FunctionParamSectionKind::Importing)
+        } else if text.eq_ignore_ascii_case("exporting") {
+            Some(FunctionParamSectionKind::Exporting)
+        } else if text.eq_ignore_ascii_case("changing") {
+            Some(FunctionParamSectionKind::Changing)
+        } else if text.eq_ignore_ascii_case("tables") {
+            Some(FunctionParamSectionKind::Tables)
+        } else if text.eq_ignore_ascii_case("exceptions") {
+            Some(FunctionParamSectionKind::Exceptions)
+        } else {
+            None
+        }
+    }
+
+    pub fn params(self) -> impl DoubleEndedIterator<Item = FunctionParam<'a>> + Clone + 'a {
+        self.syntax.children().filter_map(FunctionParam::cast)
+    }
+}
+
+impl<'a> FunctionParam<'a> {
+    pub fn name_token(self) -> Option<DataDeclName<'a>> {
+        self.syntax
+            .child_by_kind(SyntaxKind::DataDeclName)
+            .and_then(DataDeclName::cast)
+    }
+
+    pub fn passing_kind(self, source: &str) -> FormParamPassingKind {
+        let mut tokens = self.syntax.children_by_kind(SyntaxKind::Token);
+        let Some(first) = tokens.next() else {
+            return FormParamPassingKind::Direct;
+        };
+        let Some(text) = first.text(source) else {
+            return FormParamPassingKind::Direct;
+        };
+        if text.eq_ignore_ascii_case("value") {
+            FormParamPassingKind::Value
+        } else if text.eq_ignore_ascii_case("reference") {
+            FormParamPassingKind::Reference
+        } else {
+            FormParamPassingKind::Direct
+        }
+    }
+
+    pub fn type_clause_kind(self, source: &str) -> Option<TypeClauseKind> {
+        self.syntax
+            .children_by_kind(SyntaxKind::Token)
+            .find_map(|token| {
+                let text = token.text(source)?;
+                if text.eq_ignore_ascii_case("type") {
+                    Some(TypeClauseKind::Type)
+                } else if text.eq_ignore_ascii_case("like") {
+                    Some(TypeClauseKind::Like)
+                } else {
+                    None
+                }
+            })
+    }
+
+    pub fn type_ref(self) -> Option<TypeRefSimple<'a>> {
+        self.syntax
+            .child_by_kind(SyntaxKind::TypeRefSimple)
+            .and_then(TypeRefSimple::cast)
+    }
+
+    pub fn is_optional(self, source: &str) -> bool {
+        self.syntax
+            .children_by_kind(SyntaxKind::Token)
+            .any(|token| {
+                token
+                    .text(source)
+                    .is_some_and(|text| text.eq_ignore_ascii_case("optional"))
+            })
     }
 }
 
