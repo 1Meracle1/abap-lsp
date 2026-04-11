@@ -640,13 +640,6 @@ impl<'a> Collector<'a> {
         (structure, declared_type)
     }
 
-    fn simple_stmt_token_infos(&self, node: NodeId) -> Vec<SyntaxTokenInfo> {
-        self.file
-            .children(node)
-            .flat_map(|child| self.syntax_token_nodes(child))
-            .collect()
-    }
-
     fn significant_stmt_token_infos(&self, node: NodeId) -> Vec<SyntaxTokenInfo> {
         let mut tokens = Vec::new();
         for child in self.file.children(node) {
@@ -657,29 +650,6 @@ impl<'a> Collector<'a> {
             }
         }
         tokens
-    }
-
-    fn render_statement_signature_infos(&self, tokens: &[SyntaxTokenInfo]) -> String {
-        let mut rendered = String::new();
-        let mut prev_text: Option<&str> = None;
-        for token in tokens {
-            if self.syntax_token_is_comment(token) {
-                continue;
-            }
-            if token.text.as_ref() == "." {
-                break;
-            }
-            let text = token.text.as_ref();
-            let needs_space = !rendered.is_empty()
-                && !matches!(text, "," | ":" | "-" | ")" | "]")
-                && !matches!(prev_text, Some("(" | "[" | ":" | "-"));
-            if needs_space {
-                rendered.push(' ');
-            }
-            rendered.push_str(text);
-            prev_text = Some(text);
-        }
-        rendered
     }
 
     fn render_token_infos(&self, tokens: &[SyntaxTokenInfo]) -> String {

@@ -2,8 +2,9 @@ use std::sync::Arc;
 
 use abap_ast::arena::NodeId;
 use abap_ast::ast::{
-    AstNode, ClassDecl, ClassSectionStmt, ClassSectionVisibilityKind, InterfaceDecl,
-    MethodsParamSectionKind, MethodsStmt, MethodsStmtKind, MethodsTypeClauseKind,
+    AstNode, ClassDecl, ClassSectionStmt, ClassSectionVisibilityKind, DataLikeDecl,
+    DataLikeStorageKind, InterfaceDecl, MethodsParamSectionKind, MethodsStmt, MethodsStmtKind,
+    MethodsTypeClauseKind,
 };
 use abap_lexer::TextRange;
 
@@ -553,29 +554,32 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
         visibility: Visibility,
         scope: ScopeId,
     ) {
-        let is_static = self.class_attribute_decl_is_static(node);
-        let signature = Arc::<str>::from(
-            self.collector
-                .render_statement_signature_infos(&self.collector.simple_stmt_token_infos(node)),
-        );
-        for child in self.collector.file.children(node) {
-            match self.collector.file.kind(child) {
-                abap_ast::SyntaxKind::DataTypedClause
-                | abap_ast::SyntaxKind::ConstantClause
-                | abap_ast::SyntaxKind::StructuredDecl => {
-                    if let Some(mut member) = self.class_attribute_member_from_clause(
-                        child,
-                        class_symbol,
-                        visibility,
-                        is_static,
-                        Arc::clone(&signature),
-                    ) {
-                        member.structure = self.class_attribute_structure_for_clause(child, scope);
-                        self.collector.emit_class_member(member);
-                    }
-                }
-                _ => {}
-            }
+        let Some(decl) = DataLikeDecl::cast(self.collector.syntax(node)) else {
+            return;
+        };
+        let Some(storage_kind) = decl.storage_kind(self.collector.source) else {
+            return;
+        };
+        let is_static = !matches!(storage_kind, DataLikeStorageKind::Instance);
+        let signature = Arc::<str>::from(decl.signature_text(self.collector.source));
+        let clause_infos = decl
+            .clauses()
+            .filter_map(|clause| {
+                let (name, decl_range) = clause.declared_name(self.collector.source)?;
+                Some((clause.syntax().id(), name, decl_range))
+            })
+            .collect::<Vec<_>>();
+        for (clause_id, name, decl_range) in clause_infos {
+            let mut member = self.class_attribute_member_from_name(
+                class_symbol,
+                visibility,
+                is_static,
+                Arc::clone(&signature),
+                name,
+                decl_range,
+            );
+            member.structure = self.class_attribute_structure_for_clause(clause_id, scope);
+            self.collector.emit_class_member(member);
         }
     }
 
@@ -591,65 +595,16 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
         )
     }
 
-    fn class_attribute_decl_is_static(&self, node: NodeId) -> bool {
-        let tokens = self.collector.significant_stmt_token_infos(node);
-        let Some(first) = tokens.first() else {
-            return false;
-        };
-        if first.text.eq_ignore_ascii_case("constants")
-            || first.text.eq_ignore_ascii_case("statics")
-        {
-            return true;
-        }
-        let Some(second) = tokens.get(1) else {
-            return false;
-        };
-        let Some(third) = tokens.get(2) else {
-            return false;
-        };
-        first.text.eq_ignore_ascii_case("class")
-            && second.text.as_ref() == "-"
-            && third.text.eq_ignore_ascii_case("data")
-    }
-
-    fn class_attribute_structured_clause_name_parts(
+    fn class_attribute_member_from_name(
         &self,
-        node: NodeId,
-    ) -> Option<(Arc<str>, TextRange)> {
-        let name_node = self
-            .collector
-            .file
-            .children(node)
-            .filter(|&child| self.collector.file.kind(child) == abap_ast::SyntaxKind::Token)
-            .nth(2)?;
-        let (name, _) = self.collector.node_name(name_node)?;
-        let decl_range = self.collector.structured_decl_name_range(node)?;
-        Some((name, decl_range))
-    }
-
-    fn class_attribute_member_from_clause(
-        &self,
-        node: NodeId,
         class_symbol: SymbolId,
         visibility: Visibility,
         is_static: bool,
         signature: Arc<str>,
-    ) -> Option<ClassMemberData> {
-        let (name, decl_range) = match self.collector.file.kind(node) {
-            abap_ast::SyntaxKind::StructuredDecl => {
-                self.class_attribute_structured_clause_name_parts(node)?
-            }
-            abap_ast::SyntaxKind::DataTypedClause | abap_ast::SyntaxKind::ConstantClause => self
-                .class_attribute_structured_clause_name_parts(node)
-                .or_else(|| {
-                    let name_node = self.collector.file.children(node).find(|&child| {
-                        self.collector.file.kind(child) == abap_ast::SyntaxKind::DataDeclName
-                    })?;
-                    self.collector.node_name(name_node)
-                })?,
-            _ => return None,
-        };
-        Some(ClassMemberData {
+        name: Arc<str>,
+        decl_range: TextRange,
+    ) -> ClassMemberData {
+        ClassMemberData {
             class_symbol,
             name,
             kind: ClassMemberKind::Attribute,
@@ -660,7 +615,7 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
             signature,
             parameters: Vec::new(),
             structure: None,
-        })
+        }
     }
 
     fn class_member_parameters(

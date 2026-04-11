@@ -8,7 +8,7 @@ use crate::ids::{ScopeId, StructureId};
 use crate::scope::{Namespace, ScopeKind};
 use abap_ast::{
     SyntaxKind,
-    ast::{AstNode, DataDecl, DataLikeDecl, DeclClause, MethodDecl},
+    ast::{AstNode, DataDecl, DataLikeDecl, DeclClause, IncludeStmt, MethodDecl},
 };
 use abap_lexer::TextRange;
 
@@ -36,36 +36,6 @@ impl<'a> Collector<'a> {
 }
 
 impl<'ctx, 'a> DeclLowering<'ctx, 'a> {
-    fn include_stmt_names(&self, node: abap_ast::arena::NodeId) -> Vec<(Arc<str>, TextRange)> {
-        let tokens = self.ctx.significant_stmt_token_infos(node);
-        let Some(first) = tokens.first() else {
-            return Vec::new();
-        };
-        if !first.text.eq_ignore_ascii_case("include") {
-            return Vec::new();
-        }
-
-        let mut names = Vec::new();
-        let mut expect_name = true;
-        for token in tokens.iter().skip(1) {
-            match token.text.as_ref() {
-                "." => break,
-                ":" | "," => {
-                    expect_name = true;
-                }
-                _ if expect_name && self.ctx.syntax_token_is_ident_like(token) => {
-                    names.push((
-                        Arc::<str>::from(token.text.to_ascii_lowercase()),
-                        token.range.clone(),
-                    ));
-                    expect_name = false;
-                }
-                _ => {}
-            }
-        }
-        names
-    }
-
     fn method_decl_header_name_parts(
         &self,
         node: abap_ast::arena::NodeId,
@@ -104,7 +74,16 @@ impl<'ctx, 'a> DeclLowering<'ctx, 'a> {
     }
 
     pub(super) fn walk_include_stmt(&mut self, node: abap_ast::arena::NodeId, scope: ScopeId) {
-        for (name, range) in self.include_stmt_names(node) {
+        let Some(include_stmt) = IncludeStmt::cast(self.ctx.syntax(node)) else {
+            return;
+        };
+        let names = include_stmt
+            .names()
+            .filter_map(|include_name| {
+                Some((include_name.name(self.ctx.source())?, include_name.range()))
+            })
+            .collect::<Vec<_>>();
+        for (name, range) in names {
             self.ctx.declare_plain_symbol(
                 scope,
                 Arc::clone(&name),

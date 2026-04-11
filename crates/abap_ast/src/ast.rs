@@ -58,6 +58,13 @@ pub enum ClassSectionVisibilityKind {
     Private,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DataLikeStorageKind {
+    Instance,
+    Static,
+    Constant,
+}
+
 #[derive(Clone, Copy)]
 pub struct MethodsStmtParameter<'a> {
     section: MethodsParamSectionKind,
@@ -331,6 +338,8 @@ ast_node!(AliasesStmt, SyntaxKind::AliasesStmt);
 ast_node!(AliasEntry, SyntaxKind::AliasEntry);
 ast_node!(AliasName, SyntaxKind::AliasName);
 ast_node!(AliasMember, SyntaxKind::AliasMember);
+ast_node!(IncludeStmt, SyntaxKind::IncludeStmt);
+ast_node!(IncludeName, SyntaxKind::IncludeName);
 ast_node!(FormDecl, SyntaxKind::FormDecl);
 ast_node!(FormParamSection, SyntaxKind::FormParamSection);
 ast_node!(FormParam, SyntaxKind::FormParam);
@@ -498,6 +507,16 @@ impl<'a> ExprIdent<'a> {
 }
 
 impl<'a> DataDeclName<'a> {
+    pub fn name(&self, source: &str) -> Option<Arc<str>> {
+        self.syntax.lower_trimmed_text(source)
+    }
+
+    pub fn range(&self) -> TextRange {
+        self.syntax.range()
+    }
+}
+
+impl<'a> IncludeName<'a> {
     pub fn name(&self, source: &str) -> Option<Arc<str>> {
         self.syntax.lower_trimmed_text(source)
     }
@@ -689,6 +708,12 @@ impl<'a> MethodDecl<'a> {
     }
 }
 
+impl<'a> IncludeStmt<'a> {
+    pub fn names(self) -> impl DoubleEndedIterator<Item = IncludeName<'a>> + Clone + 'a {
+        self.syntax.children().filter_map(IncludeName::cast)
+    }
+}
+
 impl<'a> DataDecl<'a> {
     pub fn clauses(&self) -> impl DoubleEndedIterator<Item = DeclClause<'a>> + Clone + 'a {
         self.syntax.children().filter_map(DeclClause::cast)
@@ -698,6 +723,39 @@ impl<'a> DataDecl<'a> {
 impl<'a> DataLikeDecl<'a> {
     pub fn clauses(&self) -> impl DoubleEndedIterator<Item = DeclClause<'a>> + Clone + 'a {
         self.syntax.children().filter_map(DeclClause::cast)
+    }
+
+    pub fn storage_kind(self, source: &str) -> Option<DataLikeStorageKind> {
+        match self.syntax.kind() {
+            SyntaxKind::ConstantsDecl => Some(DataLikeStorageKind::Constant),
+            SyntaxKind::StaticsDecl => Some(DataLikeStorageKind::Static),
+            SyntaxKind::DataDecl => {
+                let mut texts = self
+                    .syntax
+                    .children_by_kind(SyntaxKind::Token)
+                    .filter(|token| token.token_kind() != Some(TokenKind::Comment))
+                    .filter_map(|token| token.text(source));
+                let first = texts.next()?;
+                if first.eq_ignore_ascii_case("data") {
+                    return Some(DataLikeStorageKind::Instance);
+                }
+                let second = texts.next()?;
+                let third = texts.next()?;
+                if first.eq_ignore_ascii_case("class")
+                    && second == "-"
+                    && third.eq_ignore_ascii_case("data")
+                {
+                    Some(DataLikeStorageKind::Static)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
+    pub fn signature_text(self, source: &str) -> String {
+        render_syntax_text(self.syntax, source, true)
     }
 }
 
@@ -764,6 +822,85 @@ impl<'a> DeclClause<'a> {
         }
         None
     }
+
+    pub fn declared_name(self, source: &str) -> Option<(Arc<str>, TextRange)> {
+        if let Some(name) = self.name() {
+            return Some((name.name(source)?, name.range()));
+        }
+
+        let mut tokens = self
+            .syntax
+            .children_by_kind(SyntaxKind::Token)
+            .filter(|token| token.token_kind() != Some(TokenKind::Comment));
+        let begin = tokens.next()?;
+        let of = tokens.next()?;
+        let name = tokens.next()?;
+        if !begin
+            .text(source)
+            .is_some_and(|text| text.eq_ignore_ascii_case("begin"))
+            || !of
+                .text(source)
+                .is_some_and(|text| text.eq_ignore_ascii_case("of"))
+        {
+            return None;
+        }
+        Some((name.lower_trimmed_text(source)?, name.range()))
+    }
+}
+
+fn render_syntax_text(node: SyntaxNodeRef<'_>, source: &str, stop_at_period: bool) -> String {
+    fn visit(
+        node: SyntaxNodeRef<'_>,
+        source: &str,
+        stop_at_period: bool,
+        rendered: &mut String,
+        prev_text: &mut Option<String>,
+        done: &mut bool,
+    ) {
+        if *done {
+            return;
+        }
+        if node.kind() == SyntaxKind::Token {
+            if node.token_kind() == Some(TokenKind::Comment) {
+                return;
+            }
+            let Some(text) = node.text(source) else {
+                return;
+            };
+            if stop_at_period && text == "." {
+                *done = true;
+                return;
+            }
+            let needs_space = !rendered.is_empty()
+                && !matches!(text, "," | ":" | "-" | ")" | "]")
+                && !matches!(prev_text.as_deref(), Some("(" | "[" | ":" | "-"));
+            if needs_space {
+                rendered.push(' ');
+            }
+            rendered.push_str(text);
+            *prev_text = Some(text.to_string());
+            return;
+        }
+        for child in node.children() {
+            visit(child, source, stop_at_period, rendered, prev_text, done);
+            if *done {
+                break;
+            }
+        }
+    }
+
+    let mut rendered = String::new();
+    let mut prev_text = None;
+    let mut done = false;
+    visit(
+        node,
+        source,
+        stop_at_period,
+        &mut rendered,
+        &mut prev_text,
+        &mut done,
+    );
+    rendered
 }
 
 impl<'a> SelectorExpr<'a> {

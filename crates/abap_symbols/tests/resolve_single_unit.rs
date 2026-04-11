@@ -2985,6 +2985,8 @@ START-OF-SELECTION.
         .expect("grouped constants structure should be a class attribute member");
     assert_eq!(member.kind, abap_symbols::ClassMemberKind::Attribute);
     assert!(member.is_static);
+    assert!(member.signature.contains("CONSTANTS BEGIN OF gc_s_tab"));
+    assert_eq!(&src[member.decl_range.clone()], "gc_s_tab");
 
     assert!(
         unit.field_accesses.iter().any(|access| {
@@ -4313,6 +4315,37 @@ ENDINTERFACE.
     assert_eq!(member.visibility, abap_symbols::Visibility::Public);
     assert!(!member.is_static);
     assert!(member.signature.contains("DATA gv_value TYPE i"));
+}
+
+#[test]
+fn collects_private_class_attribute_metadata_from_definition() {
+    let src = r#"
+CLASS zcl_demo DEFINITION.
+  PRIVATE SECTION.
+    DATA mv_value TYPE i.
+ENDCLASS.
+
+CLASS zcl_demo IMPLEMENTATION.
+ENDCLASS.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///class_private_attr_metadata.abap", src, &parsed);
+
+    let class_symbol = unit
+        .symbols
+        .iter()
+        .find(|symbol| {
+            symbol.kind == abap_symbols::SymbolKind::Class && symbol.name.as_ref() == "zcl_demo"
+        })
+        .expect("class symbol");
+    let member = unit
+        .class_member(class_symbol.id, "mv_value")
+        .expect("class attribute metadata");
+    assert_eq!(member.kind, abap_symbols::ClassMemberKind::Attribute);
+    assert_eq!(member.visibility, abap_symbols::Visibility::Private);
+    assert!(!member.is_static);
+    assert!(member.signature.contains("DATA mv_value TYPE i"));
+    assert_eq!(&src[member.decl_range.clone()], "mv_value");
 }
 
 #[test]

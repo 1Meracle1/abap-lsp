@@ -1806,6 +1806,41 @@ fn parse_simple_keyword_stmt(
     ))
 }
 
+fn build_include_stmt_children(
+    b: &mut SyntaxTreeBuilder,
+    tokens: &[Token],
+    idx: usize,
+    period_i: usize,
+) -> Vec<NodeId> {
+    let mut children = Vec::with_capacity(period_i + 1 - idx);
+    let mut expect_name = false;
+    for i in idx..=period_i {
+        let token = &tokens[i];
+        if i == idx {
+            children.push(token_leaf(b, token));
+            expect_name = true;
+            continue;
+        }
+        if token.kind == TokenKind::Comment {
+            children.push(token_leaf(b, token));
+            continue;
+        }
+        if expect_name && token.kind == TokenKind::Ident {
+            let leaf = token_leaf(b, token);
+            children.push(b.branch(SyntaxKind::IncludeName, token.range.clone(), &[leaf]));
+            expect_name = false;
+            continue;
+        }
+        if matches!(token.kind, TokenKind::Colon | TokenKind::Comma) {
+            expect_name = true;
+        } else if token.kind != TokenKind::Period {
+            expect_name = false;
+        }
+        children.push(token_leaf(b, token));
+    }
+    children
+}
+
 fn parse_inline_name(
     b: &mut SyntaxTreeBuilder,
     tokens: &[Token],
@@ -3460,16 +3495,30 @@ pub fn try_parse_include_stmt(
     idx: usize,
     errors: &mut Vec<crate::ParseError>,
 ) -> Option<(NodeId, usize)> {
-    parse_simple_keyword_stmt(
+    let tok = tokens.get(idx)?;
+    if !is_keyword(source, tok, "include") {
+        return None;
+    }
+    Some(parse_stmt_with_period_scan(
         b,
         source,
         tokens,
         idx,
-        SyntaxKind::IncludeStmt,
-        "include",
-        errors,
+        idx + 1,
+        tok,
         "syntax error: expected '.' after INCLUDE",
-    )
+        errors,
+        next_after_unterminated_scan,
+        |b, period_i, _errors| {
+            let children = build_include_stmt_children(b, tokens, idx, period_i);
+            let node = b.branch(
+                SyntaxKind::IncludeStmt,
+                tok.range.start..tokens[period_i].range.end,
+                &children,
+            );
+            (node, period_i + 1)
+        },
+    ))
 }
 
 pub fn try_parse_write_stmt(
@@ -7036,8 +7085,8 @@ pub fn try_parse_select_stmt(
 mod tests {
     use abap_ast::SyntaxKind;
     use abap_ast::ast::{
-        AstNode, ClassDecl, FormDecl, FormParamPassingKind, FormParamSectionKind, MethodDecl,
-        SyntaxNodeRef,
+        AstNode, ClassDecl, DataLikeDecl, DataLikeStorageKind, FormDecl, FormParamPassingKind,
+        FormParamSectionKind, IncludeStmt, MethodDecl, SyntaxNodeRef,
     };
 
     #[test]
@@ -7131,6 +7180,35 @@ END-OF-PAGE.\nWRITE 'e'.",
     }
 
     #[test]
+    fn include_stmt_exposes_structured_names() {
+        let src = "INCLUDE: lfoo, lbar.";
+        let parsed = crate::parse(src);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let include = IncludeStmt::cast(SyntaxNodeRef::new(
+            &parsed.file,
+            parsed
+                .file
+                .find_first_kind(parsed.file.root(), SyntaxKind::IncludeStmt)
+                .expect("include stmt"),
+        ))
+        .expect("include stmt");
+        let names = include
+            .names()
+            .filter_map(|name| name.name(src))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names.iter().map(|name| name.as_ref()).collect::<Vec<_>>(),
+            vec!["lfoo", "lbar"]
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(include.syntax().id(), SyntaxKind::IncludeName),
+            2
+        );
+    }
+
+    #[test]
     fn parses_class_method_impl() {
         let parsed =
             crate::parse("CLASS lcl IMPLEMENTATION. METHOD run. WRITE 'x'. ENDMETHOD. ENDCLASS.");
@@ -7204,6 +7282,92 @@ END-OF-PAGE.\nWRITE 'e'.",
                 .and_then(|name| name.name(src))
                 .as_deref(),
             Some("run")
+        );
+    }
+
+    #[test]
+    fn data_like_decl_helpers_expose_storage_signature_and_clause_names() {
+        let src = "STATICS sv_count TYPE i.\nCLASS lcl DEFINITION.\n  PUBLIC SECTION.\n    CLASS-DATA gv_value TYPE i.\n    CONSTANTS:\n      BEGIN OF gc_struct,\n        p0 TYPE i VALUE 1,\n      END OF gc_struct.\n  PRIVATE SECTION.\n    DATA mv_value TYPE i.\nENDCLASS.";
+        let parsed = crate::parse(src);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+
+        let statics = DataLikeDecl::cast(SyntaxNodeRef::new(
+            &parsed.file,
+            parsed
+                .file
+                .find_first_kind(parsed.file.root(), SyntaxKind::StaticsDecl)
+                .expect("statics decl"),
+        ))
+        .expect("statics decl");
+        assert_eq!(statics.storage_kind(src), Some(DataLikeStorageKind::Static));
+        assert_eq!(statics.signature_text(src), "STATICS sv_count TYPE i");
+        assert_eq!(
+            statics
+                .clauses()
+                .next()
+                .and_then(|clause| clause.declared_name(src))
+                .map(|(name, _)| name)
+                .as_deref(),
+            Some("sv_count")
+        );
+
+        let mut class_data_and_instance = parsed
+            .file
+            .children(parsed.file.root())
+            .filter(|&child| parsed.file.kind(child) == SyntaxKind::ClassDecl)
+            .flat_map(|class_decl| parsed.file.children(class_decl))
+            .filter(|&child| parsed.file.kind(child) == SyntaxKind::DataDecl)
+            .map(|node| {
+                DataLikeDecl::cast(SyntaxNodeRef::new(&parsed.file, node)).expect("data decl")
+            })
+            .collect::<Vec<_>>();
+        let class_data = class_data_and_instance.remove(0);
+        let instance_data = class_data_and_instance.remove(0);
+        assert_eq!(
+            class_data.storage_kind(src),
+            Some(DataLikeStorageKind::Static)
+        );
+        assert_eq!(class_data.signature_text(src), "CLASS-DATA gv_value TYPE i");
+        assert_eq!(
+            class_data
+                .clauses()
+                .next()
+                .and_then(|clause| clause.declared_name(src))
+                .map(|(name, _)| name)
+                .as_deref(),
+            Some("gv_value")
+        );
+        assert_eq!(
+            instance_data.storage_kind(src),
+            Some(DataLikeStorageKind::Instance)
+        );
+        assert_eq!(instance_data.signature_text(src), "DATA mv_value TYPE i");
+
+        let constants = DataLikeDecl::cast(SyntaxNodeRef::new(
+            &parsed.file,
+            parsed
+                .file
+                .find_first_kind(parsed.file.root(), SyntaxKind::ConstantsDecl)
+                .expect("constants decl"),
+        ))
+        .expect("constants decl");
+        assert_eq!(
+            constants.storage_kind(src),
+            Some(DataLikeStorageKind::Constant)
+        );
+        assert!(
+            constants
+                .signature_text(src)
+                .starts_with("CONSTANTS BEGIN OF gc_struct")
+        );
+        assert_eq!(
+            constants
+                .clauses()
+                .next()
+                .and_then(|clause| clause.declared_name(src))
+                .map(|(name, _)| name)
+                .as_deref(),
+            Some("gc_struct")
         );
     }
 

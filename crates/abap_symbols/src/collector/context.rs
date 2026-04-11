@@ -539,14 +539,6 @@ impl<'ctx, 'a> DeclContext<'ctx, 'a> {
     pub(super) fn emit_field_access(&mut self, access: FieldAccess) {
         self.collector.emit_field_access(access);
     }
-
-    pub(super) fn significant_stmt_token_infos(&self, node: NodeId) -> Vec<SyntaxTokenInfo> {
-        self.collector.significant_stmt_token_infos(node)
-    }
-
-    pub(super) fn syntax_token_is_ident_like(&self, token: &SyntaxTokenInfo) -> bool {
-        self.collector.syntax_token_is_ident_like(token)
-    }
 }
 
 pub(super) struct SqlContext<'ctx, 'a> {

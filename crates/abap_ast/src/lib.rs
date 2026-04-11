@@ -119,6 +119,8 @@ pub enum SyntaxKind {
     ReportStmt,
     /// `INCLUDE ... .`
     IncludeStmt,
+    /// One include program name inside `INCLUDE ... .`
+    IncludeName,
     /// Deprecated `TYPE-POOLS ... .`
     TypePoolsStmt,
     /// `ALIASES ... .`
@@ -458,6 +460,7 @@ impl SyntaxKind {
             Self::InterfacesStmt => "InterfacesStmt",
             Self::ReportStmt => "ReportStmt",
             Self::IncludeStmt => "IncludeStmt",
+            Self::IncludeName => "IncludeName",
             Self::TypePoolsStmt => "TypePoolsStmt",
             Self::AliasesStmt => "AliasesStmt",
             Self::AliasEntry => "AliasEntry",
