@@ -6,14 +6,18 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use abap_lexer::TokenKind;
 use abap_parser::{ParseResult, parse};
 use abap_symbols::{
-    ClassMemberData, ClassMemberKind, FieldTypeRefData, FormParameterData,
-    FormParameterPassingKind, FormParameterSection, NamedArgumentAccess, NamedArgumentTarget,
-    Namespace, PerformArgumentData, PerformCallData, PerformParameterSection, ProjectAnalysis,
-    ReferenceKind, Resolution, ScopeId, ScopeKind, SqlNameRefData, SqlNameRefKind,
-    StructureFieldData, StructureFieldInfo, StructureFieldShape, StructureId, SymbolData,
-    SymbolHandle, SymbolId, SymbolKind, UnitAnalysis, UnitId, Visibility,
-    builtin_routine_spec,
-    perf_api::{IncrementalProjectUpdate, LocalAnalysis, analyze_unit_local_state, incremental_project_update},
+    ClassMemberData, ClassMemberKind, ClassMemberParameterData, FieldTypeRefData,
+    FormParameterData, FormParameterPassingKind, FormParameterSection, MethodParameterSection,
+    NamedArgumentAccess, NamedArgumentSection, NamedArgumentTarget, Namespace, PerformArgumentData,
+    PerformCallData, PerformParameterSection, ProjectAnalysis, ReferenceKind, Resolution, ScopeId,
+    ScopeKind, SqlNameRefData, SqlNameRefKind, StructureFieldData, StructureFieldInfo,
+    StructureFieldShape, StructureId, SymbolData, SymbolHandle, SymbolId, SymbolKind, UnitAnalysis,
+    UnitId, Visibility, builtin_routine_spec, call_section_matches_parameter,
+    parameter_is_required,
+    perf_api::{
+        IncrementalProjectUpdate, LocalAnalysis, analyze_unit_local_state,
+        incremental_project_update,
+    },
 };
 use parking_lot::RwLock;
 use rayon::prelude::*;
@@ -117,12 +121,40 @@ pub struct SelectorCompletionItem {
     pub declaration: Option<String>,
     pub kind: HoveredComponentKind,
     pub field_owner_structure_name: Option<Arc<str>>,
+    pub insertion: CompletionInsertion,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SelectorCompletionInfo {
     pub replace_range: Range<usize>,
     pub items: Vec<SelectorCompletionItem>,
+    pub in_type_position: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompletionInsertion {
+    pub plain_text: String,
+    pub snippet_text: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NamedArgumentCompletionItem {
+    pub name: Arc<str>,
+    pub declared_type: Option<String>,
+    pub declaration: Option<String>,
+    pub insertion: CompletionInsertion,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CompletionItem {
+    Selector(SelectorCompletionItem),
+    NamedArgument(NamedArgumentCompletionItem),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompletionInfo {
+    pub replace_range: Range<usize>,
+    pub items: Vec<CompletionItem>,
     pub in_type_position: bool,
 }
 
@@ -497,6 +529,21 @@ impl AnalysisSnapshot {
             access,
             segment_index,
         )
+    }
+
+    pub fn completion_at(&self, offset: usize) -> Option<CompletionInfo> {
+        if let Some(completion) = self.selector_completion_at(offset) {
+            return Some(CompletionInfo {
+                replace_range: completion.replace_range,
+                items: completion
+                    .items
+                    .into_iter()
+                    .map(CompletionItem::Selector)
+                    .collect(),
+                in_type_position: completion.in_type_position,
+            });
+        }
+        self.named_argument_completion_at(offset)
     }
 
     pub fn hovered_named_argument_at(&self, offset: usize) -> Option<HoveredSymbolInfo> {
@@ -1192,6 +1239,7 @@ impl AnalysisSnapshot {
                     declaration: Some(format_class_member_signature(member_unit, member)),
                     kind: HoveredComponentKind::Method,
                     field_owner_structure_name: None,
+                    insertion: callable_completion_insertion(member),
                 })
                 .collect();
             items.sort_by(|left, right| left.name.cmp(&right.name));
@@ -1242,6 +1290,7 @@ impl AnalysisSnapshot {
                 field_owner_structure_name: Some(Arc::clone(
                     &structure_unit.structure(field.owner).name,
                 )),
+                insertion: identifier_completion_insertion(field.name.as_ref()),
             })
             .collect();
         items.sort_by(|left, right| left.name.cmp(&right.name));
@@ -1302,11 +1351,57 @@ impl AnalysisSnapshot {
                 field_owner_structure_name: Some(Arc::clone(
                     &structure_unit.structure(field.owner).name,
                 )),
+                insertion: identifier_completion_insertion(field.name.as_ref()),
             })
             .collect();
         items.sort_by(|left, right| left.name.cmp(&right.name));
         Some(SelectorCompletionInfo {
             replace_range: query.replace_range,
+            items,
+            in_type_position: false,
+        })
+    }
+
+    fn named_argument_completion_at(&self, offset: usize) -> Option<CompletionInfo> {
+        let call_site = self
+            .symbols
+            .call_sites
+            .iter()
+            .filter(|call_site| call_site.range.start <= offset && offset <= call_site.range.end)
+            .min_by_key(|call_site| call_site.range.end - call_site.range.start)?;
+        let (replace_range, prefix, section) =
+            named_argument_completion_context(self, call_site, offset)?;
+        let callable = resolve_callable_completion_target(self, call_site)?;
+        let present_named_parameters: HashSet<_> = call_site
+            .arguments
+            .iter()
+            .filter_map(|argument| argument.name.as_ref())
+            .map(|name| name.to_ascii_lowercase())
+            .collect();
+        let mut items: Vec<_> = callable
+            .member
+            .parameters
+            .iter()
+            .filter(|parameter| {
+                call_section_matches_parameter(section, parameter.section)
+                    && !present_named_parameters.contains(parameter.name.as_ref())
+                    && parameter.name.as_ref().starts_with(prefix.as_ref())
+            })
+            .map(|parameter| {
+                CompletionItem::NamedArgument(NamedArgumentCompletionItem {
+                    name: Arc::clone(&parameter.name),
+                    declared_type: parameter_completion_declared_type(parameter),
+                    declaration: Some(format_parameter_completion_declaration(parameter)),
+                    insertion: named_argument_completion_insertion(parameter.name.as_ref()),
+                })
+            })
+            .collect();
+        if items.is_empty() {
+            return None;
+        }
+        items.sort_by(|left, right| completion_item_name(left).cmp(completion_item_name(right)));
+        Some(CompletionInfo {
+            replace_range,
             items,
             in_type_position: false,
         })
@@ -1619,6 +1714,98 @@ fn format_class_member_signature(unit: &UnitAnalysis, member: &ClassMemberData) 
         return formatted;
     }
     member.signature.to_string()
+}
+
+fn identifier_completion_insertion(name: &str) -> CompletionInsertion {
+    CompletionInsertion {
+        plain_text: name.to_string(),
+        snippet_text: None,
+    }
+}
+
+fn callable_completion_insertion(member: &ClassMemberData) -> CompletionInsertion {
+    let required_importing: Vec<_> = member
+        .parameters
+        .iter()
+        .filter(|parameter| {
+            parameter_is_required(parameter.section, parameter.is_optional)
+                && parameter.section == MethodParameterSection::Importing
+        })
+        .collect();
+    let required_changing: Vec<_> = member
+        .parameters
+        .iter()
+        .filter(|parameter| {
+            parameter_is_required(parameter.section, parameter.is_optional)
+                && parameter.section == MethodParameterSection::Changing
+        })
+        .collect();
+    if required_importing.is_empty() && required_changing.is_empty() {
+        return CompletionInsertion {
+            plain_text: format!("{}( )", member.name),
+            snippet_text: Some(format!("{}( )$0", member.name)),
+        };
+    }
+
+    let mut plain_lines = vec![format!("{}(", member.name)];
+    let mut snippet_lines = vec![format!("{}(", member.name)];
+    let mut tabstop = 1usize;
+
+    for parameter in required_importing {
+        plain_lines.push(format!("  {} = ", parameter.name));
+        snippet_lines.push(format!("  {} = ${{{tabstop}}}", parameter.name));
+        tabstop += 1;
+    }
+    if !required_changing.is_empty() {
+        plain_lines.push("  CHANGING".to_string());
+        snippet_lines.push("  CHANGING".to_string());
+        for parameter in required_changing {
+            plain_lines.push(format!("  {} = ", parameter.name));
+            snippet_lines.push(format!("  {} = ${{{tabstop}}}", parameter.name));
+            tabstop += 1;
+        }
+    }
+    plain_lines.push(")".to_string());
+    snippet_lines.push(")$0".to_string());
+
+    CompletionInsertion {
+        plain_text: plain_lines.join("\n"),
+        snippet_text: Some(snippet_lines.join("\n")),
+    }
+}
+
+fn named_argument_completion_insertion(name: &str) -> CompletionInsertion {
+    CompletionInsertion {
+        plain_text: format!("{name} = "),
+        snippet_text: Some(format!("{name} = ${{1}}")),
+    }
+}
+
+fn parameter_completion_declared_type(parameter: &ClassMemberParameterData) -> Option<String> {
+    parameter
+        .type_clause_display
+        .as_ref()
+        .map(|display| display.trim().to_string())
+        .or_else(|| parameter.declared_type.as_ref().map(format_field_type_ref))
+}
+
+fn format_parameter_completion_declaration(parameter: &ClassMemberParameterData) -> String {
+    match parameter_completion_declared_type(parameter) {
+        Some(declared_type) => format!("{} {}", parameter.name, declared_type),
+        None => parameter.name.to_string(),
+    }
+}
+
+fn completion_item_name(item: &CompletionItem) -> &str {
+    match item {
+        CompletionItem::Selector(item) => item.name.as_ref(),
+        CompletionItem::NamedArgument(item) => item.name.as_ref(),
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CallableCompletionTarget<'a> {
+    member: &'a ClassMemberData,
 }
 
 fn symbol_kind_label(kind: SymbolKind) -> &'static str {
@@ -3085,6 +3272,168 @@ fn resolve_perform_argument_symbol(
         unit: unit.unit_id,
         symbol: parameter.symbol,
     })
+}
+
+fn named_argument_section_keyword(text: &str) -> Option<NamedArgumentSection> {
+    match text {
+        "exporting" => Some(NamedArgumentSection::Exporting),
+        "importing" => Some(NamedArgumentSection::Importing),
+        "changing" => Some(NamedArgumentSection::Changing),
+        "tables" => Some(NamedArgumentSection::Tables),
+        "receiving" => Some(NamedArgumentSection::Receiving),
+        "exceptions" => Some(NamedArgumentSection::Exceptions),
+        _ => None,
+    }
+}
+
+fn named_argument_section_before_offset(
+    parse: &ParseResult,
+    text: &str,
+    start: usize,
+    end: usize,
+    offset: usize,
+) -> Option<NamedArgumentSection> {
+    let mut section = None;
+    for idx in start..end {
+        let token = &parse.tokens[idx];
+        if token.range.start >= offset {
+            break;
+        }
+        if token.kind != TokenKind::Ident {
+            continue;
+        }
+        let lexeme = token.lexeme(text).to_ascii_lowercase();
+        if let Some(next) = named_argument_section_keyword(lexeme.as_ref()) {
+            section = Some(next);
+        }
+    }
+    section
+}
+
+fn resolve_callable_completion_target<'a>(
+    snapshot: &'a AnalysisSnapshot,
+    call_site: &abap_symbols::CallSiteData,
+) -> Option<CallableCompletionTarget<'a>> {
+    match &call_site.target {
+        NamedArgumentTarget::Constructor { type_name } => {
+            let (unit, class_symbol_id) = resolve_symbol_from_context(
+                snapshot,
+                call_site.scope,
+                Namespace::Type,
+                type_name,
+                false,
+            )?;
+            if unit.symbol(class_symbol_id).kind != SymbolKind::Class {
+                return None;
+            }
+            Some(CallableCompletionTarget {
+                member: unit
+                    .semantic()
+                    .decls()
+                    .class_member(class_symbol_id, "constructor")?,
+            })
+        }
+        NamedArgumentTarget::ImplicitMethod { method_name } => {
+            let unit = snapshot.symbols.as_ref();
+            let class_symbol_id = enclosing_class_owner(unit, call_site.scope)?;
+            let (member_unit, member) =
+                resolve_class_member_in_hierarchy(snapshot, unit, class_symbol_id, method_name)?;
+            if member.kind != ClassMemberKind::Method
+                || !class_member_visible_to(
+                    snapshot,
+                    snapshot.symbols.as_ref(),
+                    call_site.scope,
+                    member_unit,
+                    member,
+                )
+            {
+                return None;
+            }
+            Some(CallableCompletionTarget { member })
+        }
+        NamedArgumentTarget::Method {
+            base_namespace,
+            base_name,
+            method_name,
+        } => {
+            let (unit, class_symbol_id, requires_static) = resolve_method_target_from_context(
+                snapshot,
+                call_site.scope,
+                *base_namespace,
+                base_name,
+            )?;
+            let (member_unit, member) =
+                resolve_class_member_in_hierarchy(snapshot, unit, class_symbol_id, method_name)?;
+            if member.kind != ClassMemberKind::Method
+                || (requires_static && !member.is_static)
+                || !class_member_visible_to(
+                    snapshot,
+                    snapshot.symbols.as_ref(),
+                    call_site.scope,
+                    member_unit,
+                    member,
+                )
+            {
+                return None;
+            }
+            Some(CallableCompletionTarget { member })
+        }
+        NamedArgumentTarget::Function { .. } | NamedArgumentTarget::Routine { .. } => None,
+    }
+}
+
+fn named_argument_completion_context(
+    snapshot: &AnalysisSnapshot,
+    call_site: &abap_symbols::CallSiteData,
+    offset: usize,
+) -> Option<(Range<usize>, Arc<str>, Option<NamedArgumentSection>)> {
+    let (token_start, token_end) = token_window_for_range(&snapshot.parse, &call_site.range)?;
+    let section = named_argument_section_before_offset(
+        &snapshot.parse,
+        snapshot.text.as_ref(),
+        token_start,
+        token_end,
+        offset,
+    );
+    if let Some(prefix_idx) =
+        prefix_token_at_offset(&snapshot.parse, token_start, token_end, offset)
+    {
+        let token = &snapshot.parse.tokens[prefix_idx];
+        let prefix = token.lexeme(snapshot.text.as_ref()).to_ascii_lowercase();
+        if named_argument_section_keyword(prefix.as_ref()).is_some() {
+            return None;
+        }
+        if previous_significant_token(&snapshot.parse, token_start, prefix_idx)
+            .is_some_and(|prev_idx| snapshot.parse.tokens[prev_idx].kind == TokenKind::Eq)
+        {
+            return None;
+        }
+        let prefix_end = offset.min(token.range.end);
+        return Some((
+            token.range.start..prefix_end,
+            Arc::from(snapshot.text[token.range.start..prefix_end].to_ascii_lowercase()),
+            section,
+        ));
+    }
+
+    let next_idx =
+        first_token_starting_at_or_after(&snapshot.parse, token_start, token_end, offset);
+    let prev_idx = previous_significant_token(&snapshot.parse, token_start, next_idx)?;
+    let prev = &snapshot.parse.tokens[prev_idx];
+    if prev.kind == TokenKind::Eq {
+        return None;
+    }
+    if prev.kind != TokenKind::LParen
+        && named_argument_section_keyword(
+            prev.lexeme(snapshot.text.as_ref())
+                .to_ascii_lowercase()
+                .as_ref(),
+        )
+        .is_none()
+    {
+        return None;
+    }
+    Some((offset..offset, Arc::from(""), section))
 }
 
 fn resolve_named_argument_parameter<'a>(
@@ -4755,12 +5104,12 @@ fn prepare_documents(
                 object_name: entry.object_name.clone(),
             };
             let analysis_text = analysis_text_for_input(&input);
-            let previous_local = previous_analysis
-                .and_then(|analysis| analysis.locals.get(entry.uri.as_ref()));
+            let previous_local =
+                previous_analysis.and_then(|analysis| analysis.locals.get(entry.uri.as_ref()));
             let previous_snapshot = entry.previous.as_ref();
-            let reuse_previous =
-                previous_snapshot.is_some_and(|snapshot| snapshot_matches_input(snapshot, &input))
-                    && previous_local.is_some();
+            let reuse_previous = previous_snapshot
+                .is_some_and(|snapshot| snapshot_matches_input(snapshot, &input))
+                && previous_local.is_some();
             let parse = if reuse_previous {
                 Arc::clone(
                     &previous_snapshot
@@ -4821,7 +5170,10 @@ fn prepare_documents(
 fn materialize_snapshots(
     prepared: Vec<PreparedDocument>,
     update: IncrementalProjectUpdate,
-) -> (HashMap<Arc<str>, Arc<AnalysisSnapshot>>, CachedWorkspaceAnalysis) {
+) -> (
+    HashMap<Arc<str>, Arc<AnalysisSnapshot>>,
+    CachedWorkspaceAnalysis,
+) {
     let snapshot_timer = std::time::Instant::now();
     let project = Arc::new(update.project);
     let mut snapshots = HashMap::with_capacity(prepared.len());
@@ -4879,7 +5231,10 @@ fn analyze_inputs_with_progress(
     CachedWorkspaceAnalysis,
 ) {
     let (prepared, mut metrics) = prepare_documents(inputs, existing, previous_analysis, progress);
-    let locals: Vec<_> = prepared.iter().map(|prepared| prepared.local.clone()).collect();
+    let locals: Vec<_> = prepared
+        .iter()
+        .map(|prepared| prepared.local.clone())
+        .collect();
     let previous_project = existing
         .and_then(|existing| existing.values().next())
         .map(|snapshot| snapshot.project.as_ref());
@@ -4939,7 +5294,9 @@ fn document_inputs_for_publish(
     analysis: Option<&CachedWorkspaceAnalysis>,
     input: &DocumentInput,
 ) -> Vec<DocumentInput> {
-    let mut out = Vec::with_capacity(existing.len() + usize::from(!existing.contains_key(input.uri.as_ref())));
+    let mut out = Vec::with_capacity(
+        existing.len() + usize::from(!existing.contains_key(input.uri.as_ref())),
+    );
     let mut seen = HashSet::new();
     for uri in current_uri_order(existing, analysis) {
         if uri.as_ref() == input.uri.as_ref() {
@@ -5258,6 +5615,43 @@ impl DocumentStore {
             .get(input.uri.as_ref())
             .cloned()
             .expect("published snapshot should exist")
+    }
+
+    pub fn preview_publish_input(&self, input: DocumentInput) -> Arc<AnalysisSnapshot> {
+        let existing = self.documents.read();
+        let analysis = self.analysis.read();
+        if let Some(current) = existing.get(input.uri.as_ref())
+            && current.text.as_ref() == input.text.as_ref()
+            && current.is_dependency == input.is_dependency
+            && current.object_name == input.object_name
+        {
+            return Arc::new(AnalysisSnapshot {
+                scope_index: Arc::clone(&current.scope_index),
+                uri: Arc::clone(&current.uri),
+                version: input.version,
+                text: Arc::clone(&current.text),
+                is_dependency: current.is_dependency,
+                object_name: current.object_name.clone(),
+                parse: Arc::clone(&current.parse),
+                symbols: Arc::clone(&current.symbols),
+                project: Arc::clone(&current.project),
+            });
+        }
+        let inputs = document_inputs_for_publish(&existing, analysis.as_ref(), &input);
+        let force_full = force_full_rebuild(analysis.as_ref(), &inputs);
+        let changed_uris = HashSet::from([Arc::clone(&input.uri)]);
+        let (rebuilt, _) = analyze_inputs_with_progress(
+            &inputs,
+            Some(&existing),
+            analysis.as_ref(),
+            None,
+            &changed_uris,
+            force_full,
+        );
+        rebuilt
+            .get(input.uri.as_ref())
+            .cloned()
+            .expect("preview snapshot should exist")
     }
 
     pub fn get(&self, uri: &str) -> Option<Arc<AnalysisSnapshot>> {

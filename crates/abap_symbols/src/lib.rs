@@ -18,6 +18,7 @@ pub use builtins::{
     BuiltinRoutineParamSpec, BuiltinRoutineSpec, builtin_routine_spec,
     builtin_structure_field_description,
 };
+pub use compatibility::{call_section_matches_parameter, parameter_is_required};
 pub use def_map::{
     AssignmentSiteData, CallArgumentData, CallSiteData, ClassInheritanceData, ClassMemberData,
     ClassMemberKind, ClassMemberParameterData, Diagnostic, DiagnosticKind, FieldAccess,

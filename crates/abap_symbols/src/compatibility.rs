@@ -16,7 +16,7 @@ enum ClassifiedType {
     },
 }
 
-pub(crate) fn parameter_is_required(section: MethodParameterSection, is_optional: bool) -> bool {
+pub fn parameter_is_required(section: MethodParameterSection, is_optional: bool) -> bool {
     !is_optional
         && matches!(
             section,
@@ -24,7 +24,7 @@ pub(crate) fn parameter_is_required(section: MethodParameterSection, is_optional
         )
 }
 
-pub(crate) fn call_section_matches_parameter(
+pub fn call_section_matches_parameter(
     call_section: Option<NamedArgumentSection>,
     parameter_section: MethodParameterSection,
 ) -> bool {

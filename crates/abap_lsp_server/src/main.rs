@@ -13,7 +13,8 @@ use abap_lsp::{
     RESOLVE_REMOTE_DEPENDENCIES, ReferenceParams, SemanticTokensParams, ServerConfig, ServerState,
     WORKSPACE_ANALYSIS_STATUS, WORKSPACE_MANIFEST_UPDATED, WorkspaceAnalysisPhase,
     WorkspaceAnalysisStatusParams, WorkspaceManifestUpdatedParams, WorkspaceState,
-    build_remote_dependency_batch_for_workspace, build_remote_dependency_batch_for_workspace_filtered, completion, definition,
+    build_remote_dependency_batch_for_workspace,
+    build_remote_dependency_batch_for_workspace_filtered, completion, definition,
     handle_dependency_cache_cleared_with_progress,
     handle_remote_dependencies_updated_with_progress,
     handle_workspace_manifest_updated_with_progress, hover, initialize_result,
@@ -36,7 +37,7 @@ struct InitializeParamsLite {
     #[serde(default)]
     root_uri: Option<String>,
     #[serde(default, rename = "capabilities")]
-    _capabilities: InitializeCapabilitiesLite,
+    capabilities: InitializeCapabilitiesLite,
 }
 
 #[derive(Debug, Clone, Default, serde::Deserialize)]
@@ -48,8 +49,10 @@ struct WorkspaceFolderLite {
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct InitializeCapabilitiesLite {
-    #[serde(rename = "window")]
+    #[serde(default, rename = "window")]
     _window: WindowCapabilitiesLite,
+    #[serde(default, rename = "textDocument")]
+    text_document: TextDocumentCapabilitiesLite,
 }
 
 #[derive(Debug, Clone, Default, serde::Deserialize)]
@@ -57,6 +60,27 @@ struct InitializeCapabilitiesLite {
 struct WindowCapabilitiesLite {
     #[serde(rename = "workDoneProgress")]
     _work_done_progress: Option<bool>,
+}
+
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TextDocumentCapabilitiesLite {
+    #[serde(default)]
+    completion: CompletionCapabilitiesLite,
+}
+
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CompletionCapabilitiesLite {
+    #[serde(default, rename = "completionItem")]
+    completion_item: CompletionItemCapabilitiesLite,
+}
+
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CompletionItemCapabilitiesLite {
+    #[serde(default)]
+    snippet_support: bool,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -202,7 +226,9 @@ fn try_schedule_background_analysis(
                 .and_then(|workspace| {
                     workspace
                         .preview_snapshots
-                        .get(&abap_lsp::normalize_lsp_uri(params.text_document.uri.as_str()))
+                        .get(&abap_lsp::normalize_lsp_uri(
+                            params.text_document.uri.as_str(),
+                        ))
                 })
             {
                 notifications.push((
@@ -447,6 +473,7 @@ fn run_analysis_task(task: AnalysisTask) -> Result<AnalysisCompletion, Box<dyn s
     let mut state = ServerState {
         cache: Default::default(),
         workspaces: HashMap::from([(task.workspace_uri.clone(), task.workspace)]),
+        client_capabilities: Default::default(),
         shutdown_requested: false,
     };
 
@@ -528,8 +555,7 @@ fn serve(
     let generations = Arc::new(Mutex::new(HashMap::<String, u64>::new()));
     let (message_tx, message_rx) = mpsc::channel();
     let pending_tasks = Arc::new(Mutex::new(HashMap::<String, AnalysisTask>::new()));
-    let (task_tx, task_rx): (SyncSender<String>, Receiver<String>) =
-        mpsc::sync_channel(8);
+    let (task_tx, task_rx): (SyncSender<String>, Receiver<String>) = mpsc::sync_channel(8);
     let (completion_tx, completion_rx) = mpsc::channel();
 
     thread::scope(|scope| -> Result<(), Box<dyn std::error::Error>> {
@@ -1132,6 +1158,12 @@ fn handle_message(
     match method {
         Some("initialize") => {
             if let Some(params) = parse_params::<InitializeParamsLite>(&message)? {
+                state.client_capabilities.completion_snippet_support = params
+                    .capabilities
+                    .text_document
+                    .completion
+                    .completion_item
+                    .snippet_support;
                 let mut registered_workspace = false;
                 for workspace in params.workspace_folders {
                     if !workspace.uri.is_empty() {
@@ -1649,6 +1681,35 @@ mod tests {
     }
 
     #[test]
+    fn initialize_records_completion_snippet_support() {
+        let mut state = ServerState::default();
+        let initialized = handle_message(
+            &mut state,
+            &ServerConfig::default(),
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "capabilities": {
+                        "textDocument": {
+                            "completion": {
+                                "completionItem": {
+                                    "snippetSupport": true
+                                }
+                            }
+                        }
+                    }
+                }
+            }),
+        )
+        .expect("initialize");
+
+        assert!(initialized.response.is_some());
+        assert!(state.client_capabilities.completion_snippet_support);
+    }
+
+    #[test]
     fn background_scheduler_stages_workspace_open_and_enqueues_job() {
         let workspace_path = temp_workspace_path("background_open_schedule");
         fs::create_dir_all(&workspace_path).expect("workspace dir");
@@ -1675,16 +1736,15 @@ mod tests {
             }
         });
 
-        let started =
-            try_schedule_background_analysis(
-                &mut state,
-                &message,
-                &task_tx,
-                &pending_tasks,
-                &generations,
-            )
-                .expect("schedule")
-                .expect("background job");
+        let started = try_schedule_background_analysis(
+            &mut state,
+            &message,
+            &task_tx,
+            &pending_tasks,
+            &generations,
+        )
+        .expect("schedule")
+        .expect("background job");
         assert_eq!(started.started_statuses.len(), 1);
         assert_eq!(started.started_statuses[0].trigger, "open");
         assert_eq!(started.notifications.len(), 1);
@@ -1752,8 +1812,8 @@ mod tests {
             &pending_tasks,
             &generations,
         )
-            .expect("schedule")
-            .expect("background job");
+        .expect("schedule")
+        .expect("background job");
         assert_eq!(scheduled.notifications.len(), 1);
 
         let semantic_tokens_msg = handle_message(
@@ -1777,6 +1837,133 @@ mod tests {
         assert!(
             positions.iter().all(|(line, _)| *line == 0),
             "preview semantic tokens should align with commented statement text: {positions:?}"
+        );
+
+        let _ = fs::remove_dir_all(&workspace_path);
+    }
+
+    #[test]
+    fn background_scheduler_keeps_workspace_completion_visible_before_commit() {
+        let workspace_path = temp_workspace_path("background_preview_completion");
+        let source_dir = workspace_path.join("src");
+        fs::create_dir_all(&source_dir).expect("source dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[[unit]]
+name = "ZCL_HELPER"
+kind = "global-class"
+root_file = "src/ZCL_HELPER.abap"
+
+[[unit.member]]
+role = "main"
+file = "src/ZCL_HELPER.abap"
+object_name = "ZCL_HELPER"
+
+[[unit]]
+name = "ZREPORT_MAIN"
+kind = "report"
+root_file = "src/ZREPORT_MAIN.abap"
+
+[[unit.member]]
+role = "root"
+file = "src/ZREPORT_MAIN.abap"
+object_name = "ZREPORT_MAIN"
+"#,
+        )
+        .expect("manifest");
+        fs::write(
+            source_dir.join("ZCL_HELPER.abap"),
+            "\
+CLASS zcl_helper DEFINITION.
+  PUBLIC SECTION.
+    METHODS run.
+ENDCLASS.
+
+CLASS zcl_helper IMPLEMENTATION.
+  METHOD run.
+  ENDMETHOD.
+ENDCLASS.",
+        )
+        .expect("helper");
+        fs::write(
+            source_dir.join("ZREPORT_MAIN.abap"),
+            "\
+REPORT zreport_main.
+DATA lo_helper TYPE REF TO zcl_helper.
+lo_helper->",
+        )
+        .expect("main");
+
+        let workspace_uri = file_uri(&workspace_path);
+        let source_uri = format!("{workspace_uri}/src/ZREPORT_MAIN.abap");
+        let mut state = ServerState::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        refresh_workspace(&mut state, &workspace_uri);
+
+        let generations = Arc::new(Mutex::new(HashMap::new()));
+        let pending_tasks = Arc::new(Mutex::new(HashMap::new()));
+        let (task_tx, _task_rx) = mpsc::sync_channel(1);
+        let changed_text = "\
+REPORT zreport_main.
+DATA lo_helper TYPE REF TO zcl_helper.
+lo_helper->r";
+        let message = json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didChange",
+            "params": {
+                "textDocument": {
+                    "uri": source_uri,
+                    "version": 2
+                },
+                "contentChanges": [{
+                    "text": changed_text
+                }]
+            }
+        });
+
+        let scheduled = try_schedule_background_analysis(
+            &mut state,
+            &message,
+            &task_tx,
+            &pending_tasks,
+            &generations,
+        )
+        .expect("schedule")
+        .expect("background job");
+        assert_eq!(scheduled.notifications.len(), 1);
+
+        let completion = handle_message(
+            &mut state,
+            &ServerConfig::default(),
+            json!({
+                "jsonrpc": "2.0",
+                "id": 7,
+                "method": "textDocument/completion",
+                "params": {
+                    "textDocument": { "uri": source_uri },
+                    "position": { "line": 2, "character": 11 }
+                }
+            }),
+        )
+        .expect("completion");
+        let result = completion
+            .response
+            .expect("completion response")
+            .result
+            .expect("completion result");
+        let labels: Vec<_> = result
+            .as_array()
+            .expect("completion array")
+            .iter()
+            .filter_map(|item| item.get("label").and_then(Value::as_str))
+            .collect();
+
+        assert!(
+            labels.iter().any(|label| *label == "run"),
+            "expected helper method completion before workspace commit: {labels:?}"
         );
 
         let _ = fs::remove_dir_all(&workspace_path);
@@ -1822,9 +2009,7 @@ mod tests {
 
         let first_workspace = task_rx.recv().expect("first queued workspace");
         assert_eq!(first_workspace, abap_lsp::normalize_lsp_uri(&workspace_uri));
-        let pending_guard = pending_tasks
-            .lock()
-            .expect("pending tasks");
+        let pending_guard = pending_tasks.lock().expect("pending tasks");
         let latest_task = pending_guard
             .get(&first_workspace)
             .expect("latest pending task");

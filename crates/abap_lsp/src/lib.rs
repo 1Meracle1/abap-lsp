@@ -16,7 +16,7 @@ use abap_symbols::{DiagnosticKind, ReferenceKind, SqlResolution};
 use lsp_types::{
     CompletionItem, CompletionItemKind, CompletionOptions, Diagnostic, DiagnosticSeverity,
     Documentation, GotoDefinitionResponse, Hover, HoverContents, HoverProviderCapability,
-    InitializeResult, Location, MarkupContent, MarkupKind, OneOf, Position,
+    InitializeResult, InsertTextFormat, Location, MarkupContent, MarkupKind, OneOf, Position,
     PublishDiagnosticsParams, Range, SemanticTokens, SemanticTokensFullOptions,
     SemanticTokensOptions, SemanticTokensServerCapabilities, ServerCapabilities,
     TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri,
@@ -41,7 +41,13 @@ pub const WORKSPACE_ANALYSIS_STATUS: &str = "abapls/workspaceAnalysisStatus";
 pub struct ServerState {
     pub cache: DocumentStore,
     pub workspaces: HashMap<String, WorkspaceState>,
+    pub client_capabilities: ClientCapabilitiesState,
     pub shutdown_requested: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ClientCapabilitiesState {
+    pub completion_snippet_support: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -63,6 +69,7 @@ impl Default for ServerState {
         Self {
             cache: DocumentStore::default(),
             workspaces: HashMap::new(),
+            client_capabilities: ClientCapabilitiesState::default(),
             shutdown_requested: false,
         }
     }
@@ -283,7 +290,9 @@ pub fn stage_workspace_preview_snapshot(
     let Some(workspace) = state.workspace_for_uri_mut(&normalized_uri) else {
         return false;
     };
-    let preview = DocumentStore::default().publish(normalized_uri.clone(), version, text);
+    let preview = incremental_workspace_document_input(workspace, &normalized_uri, version, text)
+        .map(|input| workspace.cache.preview_publish_input(input))
+        .unwrap_or_else(|| DocumentStore::default().publish(normalized_uri.clone(), version, text));
     workspace.preview_snapshots.insert(normalized_uri, preview);
     true
 }
@@ -1386,32 +1395,17 @@ pub fn completion(state: &ServerState, params: &CompletionParams) -> Option<Comp
         snapshot.text.as_ref(),
         params.text_document_position.position,
     )?;
-    let completion = snapshot.selector_completion_at(offset)?;
+    let completion = snapshot.completion_at(offset)?;
     let range = byte_range_to_lsp_range(snapshot.text.as_ref(), completion.replace_range)?;
     let items = completion
         .items
         .into_iter()
         .map(|item| {
-            let (detail, documentation) = completion_item_metadata(&item);
-            CompletionItem {
-                label: item.name.to_string(),
-                kind: Some(match item.kind {
-                    abap_cache::HoveredComponentKind::Method => CompletionItemKind::METHOD,
-                    abap_cache::HoveredComponentKind::Interface => CompletionItemKind::INTERFACE,
-                    abap_cache::HoveredComponentKind::Attribute
-                    | abap_cache::HoveredComponentKind::Scalar
-                    | abap_cache::HoveredComponentKind::Structured { .. } => {
-                        CompletionItemKind::FIELD
-                    }
-                }),
-                detail,
-                documentation,
-                text_edit: Some(lsp_types::CompletionTextEdit::Edit(TextEdit {
-                    range,
-                    new_text: item.name.to_string(),
-                })),
-                ..CompletionItem::default()
-            }
+            completion_item_to_lsp(
+                &item,
+                range,
+                state.client_capabilities.completion_snippet_support,
+            )
         })
         .collect();
     Some(CompletionResponse::Array(items))
@@ -1436,7 +1430,12 @@ pub fn initialize_result(config: &ServerConfig) -> InitializeResult {
             text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
             hover_provider: Some(HoverProviderCapability::Simple(true)),
             completion_provider: Some(CompletionOptions {
-                trigger_characters: Some(vec!["-".to_string(), ">".to_string(), "~".to_string()]),
+                trigger_characters: Some(vec![
+                    "-".to_string(),
+                    ">".to_string(),
+                    "~".to_string(),
+                    "(".to_string(),
+                ]),
                 ..CompletionOptions::default()
             }),
             definition_provider: Some(OneOf::Left(true)),
@@ -1519,6 +1518,66 @@ fn position_to_offset(text: &str, position: Position) -> Option<usize> {
     (utf16_units == position.character).then_some(line_start + line_text.len())
 }
 
+fn completion_item_to_lsp(
+    item: &abap_cache::CompletionItem,
+    range: Range,
+    snippet_support: bool,
+) -> CompletionItem {
+    let (label, kind, detail, documentation, plain_text, snippet_text) = match item {
+        abap_cache::CompletionItem::Selector(item) => {
+            let (detail, documentation) = completion_item_metadata(item);
+            (
+                item.name.to_string(),
+                Some(match item.kind {
+                    abap_cache::HoveredComponentKind::Method => CompletionItemKind::METHOD,
+                    abap_cache::HoveredComponentKind::Interface => CompletionItemKind::INTERFACE,
+                    abap_cache::HoveredComponentKind::Attribute
+                    | abap_cache::HoveredComponentKind::Scalar
+                    | abap_cache::HoveredComponentKind::Structured { .. } => {
+                        CompletionItemKind::FIELD
+                    }
+                }),
+                detail,
+                documentation,
+                item.insertion.plain_text.clone(),
+                item.insertion.snippet_text.clone(),
+            )
+        }
+        abap_cache::CompletionItem::NamedArgument(item) => {
+            let (detail, documentation) = named_argument_completion_item_metadata(item);
+            (
+                item.name.to_string(),
+                Some(CompletionItemKind::VARIABLE),
+                detail,
+                documentation,
+                item.insertion.plain_text.clone(),
+                item.insertion.snippet_text.clone(),
+            )
+        }
+    };
+    let (new_text, insert_text_format) = if snippet_support {
+        if let Some(snippet_text) = snippet_text {
+            (snippet_text, Some(InsertTextFormat::SNIPPET))
+        } else {
+            (plain_text, None)
+        }
+    } else {
+        (plain_text, None)
+    };
+    CompletionItem {
+        label,
+        kind,
+        detail,
+        documentation,
+        insert_text_format,
+        text_edit: Some(lsp_types::CompletionTextEdit::Edit(TextEdit {
+            range,
+            new_text,
+        })),
+        ..CompletionItem::default()
+    }
+}
+
 fn completion_item_metadata(
     item: &abap_cache::SelectorCompletionItem,
 ) -> (Option<String>, Option<Documentation>) {
@@ -1571,6 +1630,23 @@ fn completion_item_metadata(
     (detail, documentation)
 }
 
+fn named_argument_completion_item_metadata(
+    item: &abap_cache::NamedArgumentCompletionItem,
+) -> (Option<String>, Option<Documentation>) {
+    let mut lines = vec![format!("`{}`", item.name), "Parameter".to_string()];
+    if let Some(declared_type) = &item.declared_type {
+        lines.push(format!("declared as `{declared_type}`"));
+    }
+    let documentation = Some(Documentation::MarkupContent(MarkupContent {
+        kind: MarkupKind::Markdown,
+        value: lines.join("\n\n"),
+    }));
+    (
+        item.declaration.clone().or(item.declared_type.clone()),
+        documentation,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use abap_cache::{DocumentStore, path_to_file_uri};
@@ -1582,9 +1658,9 @@ mod tests {
 
     use lsp_types::{
         DiagnosticSeverity, DidChangeTextDocumentParams, DidOpenTextDocumentParams, Documentation,
-        GotoDefinitionResponse, HoverContents, Position, TextDocumentContentChangeEvent,
-        TextDocumentIdentifier, TextDocumentItem, TextDocumentPositionParams, Uri,
-        VersionedTextDocumentIdentifier,
+        GotoDefinitionResponse, HoverContents, InsertTextFormat, Position,
+        TextDocumentContentChangeEvent, TextDocumentIdentifier, TextDocumentItem,
+        TextDocumentPositionParams, Uri, VersionedTextDocumentIdentifier,
     };
 
     use crate::sem_tokens;
@@ -1600,7 +1676,7 @@ mod tests {
         handle_remote_dependencies_updated, hover, initialize_result, normalize_lsp_uri,
         offset_to_position, publish_changed_document, publish_changed_document_mut,
         publish_open_document, publish_open_document_mut, references, refresh_workspace,
-        snapshot_for_uri,
+        snapshot_for_uri, stage_workspace_preview_snapshot,
     };
 
     fn temp_workspace_path(name: &str) -> PathBuf {
@@ -1680,6 +1756,14 @@ mod tests {
 
         assert!(result.capabilities.text_document_sync.is_some());
         assert!(result.capabilities.semantic_tokens_provider.is_some());
+        assert!(
+            result
+                .capabilities
+                .completion_provider
+                .as_ref()
+                .and_then(|completion| completion.trigger_characters.as_ref())
+                .is_some_and(|triggers| triggers.iter().any(|trigger| trigger == "("))
+        );
         assert!(matches!(
             result.capabilities.definition_provider,
             Some(lsp_types::OneOf::Left(true))
@@ -6672,6 +6756,412 @@ some_class=>e"
         };
         assert!(markup.value.contains("CLASS-METHODS exec"));
         assert!(markup.value.contains("static method"));
+    }
+
+    #[test]
+    fn completion_emits_method_call_snippet_with_required_parameters() {
+        let mut state = ServerState::default();
+        state.client_capabilities.completion_snippet_support = true;
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///completion_method_snippet.abap").expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: "\
+CLASS some_class DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS run
+      IMPORTING iv_value TYPE i
+      CHANGING cv_total TYPE i.
+ENDCLASS.
+
+some_class=>r"
+                        .to_string(),
+                },
+            },
+        );
+
+        let completion = completion(
+            &state,
+            &CompletionParams {
+                text_document_position: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///completion_method_snippet.abap").expect("uri"),
+                    },
+                    position: Position {
+                        line: 7,
+                        character: 13,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+                context: None,
+            },
+        )
+        .expect("completion");
+
+        let CompletionResponse::Array(items) = completion else {
+            panic!("expected array completion");
+        };
+        let item = items
+            .into_iter()
+            .find(|item| item.label == "run")
+            .expect("run completion item");
+        assert_eq!(item.insert_text_format, Some(InsertTextFormat::SNIPPET));
+        let Some(lsp_types::CompletionTextEdit::Edit(edit)) = item.text_edit else {
+            panic!("expected text edit");
+        };
+        assert_eq!(
+            edit.new_text,
+            "run(\n  iv_value = ${1}\n  CHANGING\n  cv_total = ${2}\n)$0"
+        );
+    }
+
+    #[test]
+    fn completion_falls_back_to_plain_text_call_templates_without_snippet_support() {
+        let state = ServerState::default();
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///completion_method_plain.abap").expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: "\
+CLASS some_class DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS run
+      IMPORTING iv_value TYPE i.
+ENDCLASS.
+
+some_class=>r"
+                        .to_string(),
+                },
+            },
+        );
+
+        let completion = completion(
+            &state,
+            &CompletionParams {
+                text_document_position: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///completion_method_plain.abap").expect("uri"),
+                    },
+                    position: Position {
+                        line: 6,
+                        character: 13,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+                context: None,
+            },
+        )
+        .expect("completion");
+
+        let CompletionResponse::Array(items) = completion else {
+            panic!("expected array completion");
+        };
+        let item = items
+            .into_iter()
+            .find(|item| item.label == "run")
+            .expect("run completion item");
+        assert_eq!(item.insert_text_format, None);
+        let Some(lsp_types::CompletionTextEdit::Edit(edit)) = item.text_edit else {
+            panic!("expected text edit");
+        };
+        assert_eq!(edit.new_text, "run(\n  iv_value = \n)");
+    }
+
+    #[test]
+    fn completion_emits_constructor_call_snippet() {
+        let mut state = ServerState::default();
+        state.client_capabilities.completion_snippet_support = true;
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///completion_constructor_snippet.abap").expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: "\
+CLASS some_class DEFINITION.
+  PUBLIC SECTION.
+    METHODS constructor
+      IMPORTING iv_value TYPE i.
+    METHODS run.
+ENDCLASS.
+
+CLASS some_class IMPLEMENTATION.
+  METHOD run.
+    me->con
+  ENDMETHOD.
+ENDCLASS."
+                        .to_string(),
+                },
+            },
+        );
+
+        let completion = completion(
+            &state,
+            &CompletionParams {
+                text_document_position: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///completion_constructor_snippet.abap")
+                            .expect("uri"),
+                    },
+                    position: Position {
+                        line: 9,
+                        character: 11,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+                context: None,
+            },
+        )
+        .expect("completion");
+
+        let CompletionResponse::Array(items) = completion else {
+            panic!("expected array completion");
+        };
+        let item = items
+            .into_iter()
+            .find(|item| item.label == "constructor")
+            .expect("constructor completion item");
+        let Some(lsp_types::CompletionTextEdit::Edit(edit)) = item.text_edit else {
+            panic!("expected text edit");
+        };
+        assert_eq!(edit.new_text, "constructor(\n  iv_value = ${1}\n)$0");
+    }
+
+    #[test]
+    fn completion_returns_named_argument_labels_inside_method_calls() {
+        let mut state = ServerState::default();
+        state.client_capabilities.completion_snippet_support = true;
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///completion_named_args.abap").expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: "\
+CLASS some_class DEFINITION.
+  PUBLIC SECTION.
+    METHODS run
+      IMPORTING iv_value TYPE i
+                iv_other TYPE i OPTIONAL.
+ENDCLASS.
+
+CLASS some_class IMPLEMENTATION.
+ENDCLASS.
+
+DATA lo_demo TYPE REF TO some_class.
+lo_demo->run( iv_v )"
+                        .to_string(),
+                },
+            },
+        );
+
+        let completion = completion(
+            &state,
+            &CompletionParams {
+                text_document_position: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///completion_named_args.abap").expect("uri"),
+                    },
+                    position: Position {
+                        line: 11,
+                        character: 18,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+                context: None,
+            },
+        )
+        .expect("completion");
+
+        let CompletionResponse::Array(items) = completion else {
+            panic!("expected array completion");
+        };
+        let item = items
+            .into_iter()
+            .find(|item| item.label == "iv_value")
+            .expect("iv_value completion item");
+        assert_eq!(item.kind, Some(lsp_types::CompletionItemKind::VARIABLE));
+        assert_eq!(item.insert_text_format, Some(InsertTextFormat::SNIPPET));
+        let Some(lsp_types::CompletionTextEdit::Edit(edit)) = item.text_edit else {
+            panic!("expected text edit");
+        };
+        assert_eq!(edit.new_text, "iv_value = ${1}");
+    }
+
+    #[test]
+    fn completion_filters_already_specified_named_arguments() {
+        let state = ServerState::default();
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///completion_named_args_filter.abap").expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: "\
+CLASS some_class DEFINITION.
+  PUBLIC SECTION.
+    METHODS run
+      IMPORTING iv_value TYPE i
+                iv_other TYPE i OPTIONAL.
+ENDCLASS.
+
+CLASS some_class IMPLEMENTATION.
+ENDCLASS.
+
+DATA lo_demo TYPE REF TO some_class.
+lo_demo->run( iv_value = 1 iv_ )"
+                        .to_string(),
+                },
+            },
+        );
+
+        let completion = completion(
+            &state,
+            &CompletionParams {
+                text_document_position: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///completion_named_args_filter.abap")
+                            .expect("uri"),
+                    },
+                    position: Position {
+                        line: 11,
+                        character: 17,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+                context: None,
+            },
+        )
+        .expect("completion");
+
+        let CompletionResponse::Array(items) = completion else {
+            panic!("expected array completion");
+        };
+        let labels: Vec<_> = items.into_iter().map(|item| item.label).collect();
+        assert_eq!(labels, vec!["iv_other"]);
+    }
+
+    #[test]
+    fn workspace_preview_completion_keeps_dependency_backed_context() {
+        let workspace_path = temp_workspace_path("preview_dependency_completion");
+        let dependency_dir = workspace_path
+            .join(".abapls")
+            .join("cache")
+            .join("dependencies")
+            .join("global-class");
+        fs::create_dir_all(&dependency_dir).expect("dependency dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[[unit]]
+name = "ZCL_HELPER"
+kind = "global-class"
+root_file = ".abapls/cache/dependencies/global-class/ZCL_HELPER.abap"
+
+[[unit.member]]
+role = "dependency"
+file = ".abapls/cache/dependencies/global-class/ZCL_HELPER.abap"
+object_name = "ZCL_HELPER"
+
+[[unit]]
+name = "ZREPORT_MAIN"
+kind = "report"
+root_file = "main.abap"
+
+[[unit.member]]
+role = "root"
+file = "main.abap"
+object_name = "ZREPORT_MAIN"
+"#,
+        )
+        .expect("manifest");
+        fs::write(
+            dependency_dir.join("ZCL_HELPER.abap"),
+            "\
+CLASS zcl_helper DEFINITION.
+  PUBLIC SECTION.
+    METHODS run.
+ENDCLASS.
+
+CLASS zcl_helper IMPLEMENTATION.
+  METHOD run.
+  ENDMETHOD.
+ENDCLASS.",
+        )
+        .expect("dependency file");
+        fs::write(
+            workspace_path.join("main.abap"),
+            "\
+REPORT zreport_main.
+DATA lo_helper TYPE REF TO zcl_helper.
+lo_helper->",
+        )
+        .expect("main");
+
+        let workspace_uri = path_to_file_uri(&workspace_path);
+        let source_uri = format!("{workspace_uri}/main.abap");
+        let mut state = ServerState::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        refresh_workspace(&mut state, &workspace_uri);
+
+        assert!(stage_workspace_preview_snapshot(
+            &mut state,
+            &source_uri,
+            2,
+            "\
+REPORT zreport_main.
+DATA lo_helper TYPE REF TO zcl_helper.
+lo_helper->r"
+        ));
+
+        let completion = completion(
+            &state,
+            &CompletionParams {
+                text_document_position: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str(&source_uri).expect("uri"),
+                    },
+                    position: Position {
+                        line: 2,
+                        character: 12,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+                context: None,
+            },
+        )
+        .expect("completion");
+
+        let CompletionResponse::Array(items) = completion else {
+            panic!("expected array completion");
+        };
+        assert!(
+            items.iter().any(|item| item.label == "run"),
+            "expected dependency-backed preview completion: {:?}",
+            items
+                .iter()
+                .map(|item| item.label.clone())
+                .collect::<Vec<_>>()
+        );
+
+        let _ = fs::remove_dir_all(&workspace_path);
     }
 
     #[test]
