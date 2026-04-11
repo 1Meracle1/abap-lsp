@@ -52,6 +52,13 @@ pub enum FormParamPassingKind {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CallStmtKind {
+    Function,
+    Transformation,
+    Badi,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ClassSectionVisibilityKind {
     Public,
     Protected,
@@ -375,6 +382,7 @@ ast_node!(ReplaceTargetOperand, SyntaxKind::ReplaceTargetOperand);
 ast_node!(ReplaceWithOperand, SyntaxKind::ReplaceWithOperand);
 ast_node!(WaitStmt, SyntaxKind::WaitStmt);
 ast_node!(WaitOperand, SyntaxKind::WaitOperand);
+ast_node!(PerformStmt, SyntaxKind::PerformStmt);
 ast_node!(CreateObjectStmt, SyntaxKind::CreateObjectStmt);
 ast_node!(CreateDataStmt, SyntaxKind::CreateDataStmt);
 ast_node!(CallStmt, SyntaxKind::CallStmt);
@@ -439,6 +447,8 @@ ast_node!(SqlQualifiedStar, SyntaxKind::SqlQualifiedStar);
 ast_node!(SqlAggregateCall, SyntaxKind::SqlAggregateCall);
 ast_node!(SqlHostExpr, SyntaxKind::SqlHostExpr);
 ast_node!(SqlParenGroup, SyntaxKind::SqlParenGroup);
+ast_node!(DeleteStmt, SyntaxKind::DeleteStmt);
+ast_node!(SortStmt, SyntaxKind::SortStmt);
 ast_node!(UpdateStmt, SyntaxKind::UpdateStmt);
 ast_node!(UpdateTarget, SyntaxKind::UpdateTarget);
 ast_node!(UpdateSetClause, SyntaxKind::UpdateSetClause);
@@ -1541,6 +1551,16 @@ impl<'a> WaitStmt<'a> {
     }
 }
 
+impl<'a> PerformStmt<'a> {
+    pub fn tokens(self) -> impl DoubleEndedIterator<Item = SyntaxNodeRef<'a>> + Clone + 'a {
+        self.syntax.children_by_kind(SyntaxKind::Token)
+    }
+
+    pub fn routine_token(self) -> Option<SyntaxNodeRef<'a>> {
+        self.tokens().nth(1)
+    }
+}
+
 impl<'a> RaiseStmt<'a> {
     pub fn exception_type_ref(self) -> Option<TypeRefSimple<'a>> {
         self.syntax
@@ -1648,6 +1668,24 @@ impl<'a> CallMethodTarget<'a> {
 }
 
 impl<'a> CallStmt<'a> {
+    pub fn call_kind(self, source: &str) -> Option<CallStmtKind> {
+        let token = self.syntax.children_by_kind(SyntaxKind::Token).nth(1)?;
+        let text = token.text(source)?;
+        if text.eq_ignore_ascii_case("function") {
+            Some(CallStmtKind::Function)
+        } else if text.eq_ignore_ascii_case("transformation") {
+            Some(CallStmtKind::Transformation)
+        } else if text.eq_ignore_ascii_case("badi") {
+            Some(CallStmtKind::Badi)
+        } else {
+            None
+        }
+    }
+
+    pub fn callee_token(self) -> Option<SyntaxNodeRef<'a>> {
+        self.syntax.children_by_kind(SyntaxKind::Token).nth(2)
+    }
+
     pub fn direct_call(self) -> Option<CallExpr<'a>> {
         self.syntax
             .child_by_kind(SyntaxKind::CallExpr)
@@ -1908,6 +1946,67 @@ impl<'a> UpdateSetAssignment<'a> {
 impl<'a> UpdateFromOperand<'a> {
     pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
         self.syntax.first_non_token_child()
+    }
+}
+
+impl<'a> UpdateWhereClause<'a> {
+    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
+        self.syntax.first_non_token_child()
+    }
+}
+
+impl<'a> DeleteStmt<'a> {
+    pub fn source(self) -> Option<SyntaxNodeRef<'a>> {
+        self.syntax.first_non_token_child()
+    }
+
+    pub fn where_expr(self, source: &str) -> Option<SyntaxNodeRef<'a>> {
+        let mut saw_where = false;
+        for child in self.syntax.children() {
+            if child.kind() == SyntaxKind::Token
+                && child.text(source).is_some_and(|text| text.eq_ignore_ascii_case("where"))
+            {
+                saw_where = true;
+                continue;
+            }
+            if saw_where && child.kind() != SyntaxKind::Token {
+                return Some(child);
+            }
+        }
+        None
+    }
+}
+
+impl<'a> SortStmt<'a> {
+    pub fn source(self, source: &str) -> Option<SyntaxNodeRef<'a>> {
+        for child in self.syntax.children() {
+            if child.kind() == SyntaxKind::Token
+                && child.text(source).is_some_and(|text| text.eq_ignore_ascii_case("by"))
+            {
+                break;
+            }
+            if child.kind() != SyntaxKind::Token {
+                return Some(child);
+            }
+        }
+        None
+    }
+
+    pub fn by_operands(self, source: &str) -> Vec<SyntaxNodeRef<'a>> {
+        let mut saw_by = false;
+        let mut operands = Vec::new();
+        for child in self.syntax.children() {
+            if child.kind() == SyntaxKind::Token
+                && child.text(source).is_some_and(|text| text.eq_ignore_ascii_case("by"))
+            {
+                saw_by = true;
+                continue;
+            }
+            if saw_by && child.kind() != SyntaxKind::Token {
+                operands.push(child);
+            }
+        }
+        operands
     }
 }
 

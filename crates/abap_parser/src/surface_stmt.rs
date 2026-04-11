@@ -6550,11 +6550,24 @@ pub fn try_parse_update_stmt(
                     continue;
                 }
                 if is_keyword(source, token, "where") {
-                    let clause =
-                        build_token_branch(b, SyntaxKind::UpdateWhereClause, tokens, i, period_i);
-                    if let Some(clause) = clause {
-                        children.push(clause);
+                    let mut clause_children = vec![token_leaf(b, token)];
+                    if i + 1 < period_i {
+                        push_logical_expr_child(
+                            b,
+                            &mut clause_children,
+                            source,
+                            tokens,
+                            i + 1,
+                            period_i,
+                            Some(token),
+                        );
                     }
+                    let clause = b.branch(
+                        SyntaxKind::UpdateWhereClause,
+                        token.range.start..tokens[period_i - 1].range.end,
+                        &clause_children,
+                    );
+                    children.push(clause);
                     i = period_i;
                     continue;
                 }

@@ -416,6 +416,51 @@ PERFORM process_data USING 'demo' CHANGING lv_count.
 }
 
 #[test]
+fn collects_perform_call_sections_and_argument_ordinals() {
+    let src = r#"
+FORM process_data
+    TABLES pt_rows STRUCTURE i
+    USING pv_mode TYPE string
+    CHANGING cv_count TYPE i.
+ENDFORM.
+
+DATA lt_rows TYPE STANDARD TABLE OF i WITH EMPTY KEY.
+DATA lv_count TYPE i.
+PERFORM process_data TABLES lt_rows USING 'demo' CHANGING lv_count.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///perform_call_sections.abap", src, &parsed);
+
+    let call = unit.perform_calls.first().expect("perform call");
+    assert_eq!(call.routine_name.as_ref(), "process_data");
+    assert!(!call.section_order_invalid);
+    assert_eq!(
+        call.parameters,
+        vec![
+            abap_symbols::PerformParameterSection::Tables,
+            abap_symbols::PerformParameterSection::Using,
+            abap_symbols::PerformParameterSection::Changing,
+        ]
+    );
+    assert_eq!(call.arguments.len(), 3);
+    assert_eq!(
+        call.arguments[0].section,
+        abap_symbols::PerformParameterSection::Tables
+    );
+    assert_eq!(call.arguments[0].ordinal_in_section, 0);
+    assert_eq!(
+        call.arguments[1].section,
+        abap_symbols::PerformParameterSection::Using
+    );
+    assert_eq!(call.arguments[1].ordinal_in_section, 0);
+    assert_eq!(
+        call.arguments[2].section,
+        abap_symbols::PerformParameterSection::Changing
+    );
+    assert_eq!(call.arguments[2].ordinal_in_section, 0);
+}
+
+#[test]
 fn rejects_invalid_perform_argument_shapes() {
     let cases = [
         "PERFORM process_data USING CHANGING lv_count.",
@@ -1739,6 +1784,47 @@ DELETE lt_rep_evt WHERE ext_ref_id IS INITIAL.
         "unexpected diagnostics: {:?}",
         unit.diagnostics
     );
+}
+
+#[test]
+fn collects_sort_and_delete_semantics_from_structured_clauses() {
+    let src = r#"
+TYPES: BEGIN OF ty_row,
+         comp TYPE i,
+       END OF ty_row.
+
+DATA lt_rows TYPE STANDARD TABLE OF ty_row WITH EMPTY KEY.
+DATA lv_filter TYPE i.
+
+SORT lt_rows BY comp ASCENDING.
+DELETE lt_rows WHERE comp = lv_filter.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///sort_delete_structured_clauses.abap", src, &parsed);
+
+    assert!(unit.field_accesses.iter().any(|access| {
+        access.base_namespace == Namespace::Value
+            && access.base_name.as_ref() == "lt_rows"
+            && access.field_path.len() == 1
+            && access.field_path[0].name.as_ref() == "comp"
+    }));
+    assert!(unit.loop_where_field_contexts.iter().any(|ctx| {
+        ctx.source_access.base_name.as_ref() == "lt_rows" && ctx.target_access.is_none()
+    }));
+    assert!(unit.references.iter().any(|reference| {
+        reference.namespace == Namespace::Value
+            && reference.name.as_ref() == "lv_filter"
+            && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+    }));
+    for keyword in ["sort", "by", "delete", "where"] {
+        assert!(
+            !unit.diagnostics.iter().any(|diag| {
+                diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains(keyword)
+            }),
+            "unexpected unresolved diagnostic for `{keyword}`: {:?}",
+            unit.diagnostics
+        );
+    }
 }
 
 #[test]
@@ -4324,6 +4410,43 @@ CREATE OBJECT lo_instance.
 }
 
 #[test]
+fn create_object_stmt_emits_constructor_call_site_for_explicit_type() {
+    let src = r#"
+CLASS some_class DEFINITION.
+  PUBLIC SECTION.
+    METHODS constructor IMPORTING iv_text TYPE string.
+ENDCLASS.
+
+CLASS some_class IMPLEMENTATION.
+  METHOD constructor.
+  ENDMETHOD.
+ENDCLASS.
+
+DATA lo_instance TYPE REF TO some_class.
+DATA lv_text TYPE string.
+CREATE OBJECT lo_instance TYPE some_class
+  EXPORTING
+    iv_text = lv_text.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///create_object_call_site.abap", src, &parsed);
+
+    assert!(unit.call_sites.iter().any(|site| {
+        matches!(
+            &site.target,
+            abap_symbols::NamedArgumentTarget::Constructor { type_name }
+                if type_name.as_ref() == "some_class"
+        ) && site.arguments.len() == 1
+            && site.arguments[0].name.as_deref().map(|name| name.as_ref()) == Some("iv_text")
+            && site.arguments[0].section == Some(abap_symbols::NamedArgumentSection::Exporting)
+    }));
+    assert!(unit.named_arguments.iter().any(|access| {
+        access.name.as_ref() == "iv_text"
+            && access.section == Some(abap_symbols::NamedArgumentSection::Exporting)
+    }));
+}
+
+#[test]
 fn resolves_superclass_reference_and_signature_parameters_in_class_definition() {
     let src = r#"
 CLASS some_base DEFINITION.
@@ -6809,6 +6932,13 @@ START-OF-SELECTION.
     assert!(unit.named_arguments.iter().any(|access| {
         access.name.as_ref() == "string_components"
             && access.section == Some(abap_symbols::NamedArgumentSection::Tables)
+    }));
+    assert!(unit.call_sites.iter().any(|site| {
+        matches!(
+            &site.target,
+            abap_symbols::NamedArgumentTarget::Function { function_name }
+                if function_name.as_ref() == "swa_string_split"
+        ) && site.arguments.len() == 4
     }));
 
     for keyword in ["FUNCTION", "EXPORTING", "TABLES", "EXCEPTIONS"] {

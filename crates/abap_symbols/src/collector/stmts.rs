@@ -3,9 +3,10 @@ use std::sync::Arc;
 use abap_ast::SyntaxKind;
 use abap_ast::arena::NodeId;
 use abap_ast::ast::{
-    AliasesStmt, AstNode, CallMethodStmt, CallStmt, ClearStmt, ConcatenateStmt, ConvertStmt,
-    CreateDataStmt, CreateObjectStmt, DescribeStmt, FindStmt, MessageStmt, MethodsStmt, RaiseStmt,
-    ReadTableStmt, ReplaceStmt, SplitStmt, UpdateStmt, WaitStmt, WriteStmt,
+    AliasesStmt, AstNode, CallMethodStmt, CallStmt, CallStmtKind, ClearStmt, ConcatenateStmt,
+    ConvertStmt, CreateDataStmt, CreateObjectStmt, DeleteStmt, DescribeStmt, FindStmt,
+    MessageStmt, MethodsStmt, RaiseStmt, ReadTableStmt, ReplaceStmt, SplitStmt, UpdateStmt,
+    UpdateWhereClause, WaitStmt, WriteStmt,
 };
 
 use crate::def_map::{FieldTypeRefData, NamedArgumentTarget, ReferenceKind, SymbolKind};
@@ -98,33 +99,20 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
     }
 
     pub(super) fn collect_delete_stmt(&mut self, node: NodeId, scope: ScopeId) {
-        let mut where_expr = None;
-        let mut seen_where = false;
-        for child in self.collector.file.children(node) {
-            match self.collector.file.kind(child) {
-                SyntaxKind::Token => {
-                    if self
-                        .collector
-                        .syntax(child)
-                        .text(self.collector.source)
-                        .is_some_and(|text| text.eq_ignore_ascii_case("where"))
-                    {
-                        seen_where = true;
-                    }
-                }
-                _ => {
-                    if seen_where && where_expr.is_none() {
-                        where_expr = Some(child);
-                    }
-                    self.collector.walk_node(child, scope);
-                }
-            }
-        }
-
-        if !seen_where {
+        let Some((source_expr, where_expr)) = DeleteStmt::cast(self.collector.syntax(node)).map(
+            |stmt| {
+                (
+                    stmt.source().map(|expr| expr.id()),
+                    stmt.where_expr(self.collector.source).map(|expr| expr.id()),
+                )
+            },
+        ) else {
+            self.collector.walk_children(node, scope);
             return;
-        }
-        let Some(source_expr) = self.collector.first_non_token_child(node) else {
+        };
+        self.collector.walk_children(node, scope);
+
+        let Some(source_expr) = source_expr else {
             return;
         };
         let Some(where_expr) = where_expr else {
@@ -141,19 +129,6 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                 source_access,
                 target_access: None,
             });
-    }
-
-    fn call_function_name_from_tokens(tokens: &[SyntaxTokenInfo]) -> Option<Arc<str>> {
-        let name = tokens.get(2)?.text.as_ref().trim();
-        let unquoted = name
-            .strip_prefix('\'')
-            .and_then(|name| name.strip_suffix('\''))
-            .or_else(|| {
-                name.strip_prefix('`')
-                    .and_then(|name| name.strip_suffix('`'))
-            })
-            .unwrap_or(name);
-        Some(Arc::<str>::from(unquoted.to_ascii_lowercase()))
     }
 
     pub(super) fn collect_read_table_stmt(&mut self, node: NodeId, scope: ScopeId) {
@@ -1037,40 +1012,52 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
     }
 
     pub(super) fn collect_call_stmt(&mut self, node: NodeId, scope: ScopeId) {
-        if CallStmt::cast(self.collector.syntax(node)).is_some() {
-            let significant = self.collector.significant_stmt_token_infos(node);
-            let function_name = if significant.len() >= 3
-                && significant[0].text.eq_ignore_ascii_case("call")
-                && significant[1].text.eq_ignore_ascii_case("function")
-            {
-                Self::call_function_name_from_tokens(&significant)
-            } else {
-                None
-            };
-
-            for child in self.collector.file.children(node) {
-                match self.collector.file.kind(child) {
-                    SyntaxKind::CallArgList => {
-                        if let Some(function_name) = function_name.clone() {
-                            self.collector.expr_lowering().collect_call_argument_list(
-                                child,
-                                scope,
-                                NamedArgumentTarget::Function { function_name },
-                            );
-                        } else {
-                            self.collector
-                                .expr_lowering()
-                                .collect_structured_argument_values_from_children(child, scope);
-                        }
-                    }
-                    SyntaxKind::CallExpr => {
-                        self.collector.walk_node(child, scope);
-                    }
-                    SyntaxKind::Token => {}
-                    _ => self.collector.walk_node(child, scope),
-                }
-            }
+        let Some(stmt) = CallStmt::cast(self.collector.syntax(node)) else {
+            self.collector.walk_children(node, scope);
             return;
+        };
+
+        let function_name = if stmt.call_kind(self.collector.source) == Some(CallStmtKind::Function)
+        {
+            stmt.callee_token()
+                .and_then(|token| token.text(self.collector.source))
+                .map(|name| {
+                    let name = name.trim();
+                    let unquoted = name
+                        .strip_prefix('\'')
+                        .and_then(|name| name.strip_suffix('\''))
+                        .or_else(|| {
+                            name.strip_prefix('`')
+                                .and_then(|name| name.strip_suffix('`'))
+                        })
+                        .unwrap_or(name);
+                    Arc::<str>::from(unquoted.to_ascii_lowercase())
+                })
+        } else {
+            None
+        };
+
+        for child in self.collector.file.children(node) {
+            match self.collector.file.kind(child) {
+                SyntaxKind::CallArgList => {
+                    if let Some(function_name) = function_name.clone() {
+                        self.collector.expr_lowering().collect_call_argument_list(
+                            child,
+                            scope,
+                            NamedArgumentTarget::Function { function_name },
+                        );
+                    } else {
+                        self.collector
+                            .expr_lowering()
+                            .collect_structured_argument_values_from_children(child, scope);
+                    }
+                }
+                SyntaxKind::CallExpr => {
+                    self.collector.walk_node(child, scope);
+                }
+                SyntaxKind::Token => {}
+                _ => self.collector.walk_node(child, scope),
+            }
         }
     }
 
@@ -1321,13 +1308,11 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             self.collector.walk_node(value, scope);
         }
 
-        if let Some(where_clause) = where_clause {
-            let significant = self.collector.significant_stmt_token_infos(where_clause);
-            let Some((_, tail)) = significant.split_first() else {
-                return;
-            };
-            self.collector
-                .collect_token_expression_refs_infos(tail, scope, true);
+        if let Some(where_expr) = where_clause
+            .and_then(|clause| UpdateWhereClause::cast(self.collector.syntax(clause)))
+            .and_then(|clause| clause.value())
+        {
+            self.collector.walk_node(where_expr.id(), scope);
         }
     }
 

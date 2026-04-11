@@ -4,6 +4,7 @@ use abap_ast::arena::NodeId;
 use abap_ast::ast::{
     AstNode, FormDecl, FormParamPassingKind as AstFormParamPassingKind,
     FormParamSectionKind as AstFormParamSectionKind, TypeClauseKind,
+    PerformStmt,
 };
 
 use crate::def_map::{
@@ -106,26 +107,46 @@ impl<'ctx, 'a> FormsLowering<'ctx, 'a> {
     }
 
     pub(super) fn collect_perform_stmt_node(&mut self, node: NodeId, scope: ScopeId) {
-        let significant = self.collector.significant_stmt_token_infos(node);
-        self.collect_perform_stmt_infos(&significant, scope);
+        let Some(stmt) = PerformStmt::cast(self.collector.syntax(node)) else {
+            return;
+        };
+        let Some(routine) = stmt
+            .routine_token()
+            .and_then(|token| token.lower_trimmed_text(self.collector.source))
+        else {
+            return;
+        };
+        let routine_range = stmt.routine_token().map(|token| token.range());
+        let tokens = stmt
+            .tokens()
+            .flat_map(|token| self.collector.syntax_token_nodes(token.id()))
+            .collect::<Vec<_>>();
+        self.collect_perform_stmt_infos(
+            &tokens,
+            scope,
+            routine,
+            routine_range.unwrap_or_else(|| self.collector.file.range(node)),
+            self.collector.file.range(node),
+        );
     }
 
-    fn collect_perform_stmt_infos(&mut self, tokens: &[SyntaxTokenInfo], scope: ScopeId) {
-        if tokens.len() < 2 || !tokens[0].text.eq_ignore_ascii_case("perform") {
+    fn collect_perform_stmt_infos(
+        &mut self,
+        tokens: &[SyntaxTokenInfo],
+        scope: ScopeId,
+        routine_name: Arc<str>,
+        routine_range: abap_lexer::TextRange,
+        stmt_range: abap_lexer::TextRange,
+    ) {
+        if tokens.is_empty() || !tokens[0].text.eq_ignore_ascii_case("perform") {
             return;
         }
-        let routine = &tokens[1];
-        if !self.collector.syntax_token_is_ident_like(routine) {
-            return;
-        }
-
-        let routine_name = Arc::<str>::from(routine.text.to_ascii_lowercase());
         self.collector.add_reference(
             scope,
             Arc::clone(&routine_name),
             Namespace::Routine,
             ReferenceKind::RoutineCall,
-            routine.range.clone(),
+            routine_range.clone(),
         );
 
         let mut parameters = Vec::new();
@@ -203,15 +224,11 @@ impl<'ctx, 'a> FormsLowering<'ctx, 'a> {
             idx = next_idx;
         }
 
-        let end = tokens
-            .last()
-            .map(|token| token.range.end)
-            .unwrap_or(routine.range.end);
         self.collector.emit_perform_call(PerformCallData {
             scope,
-            range: tokens[0].range.start..end,
+            range: stmt_range,
             routine_name,
-            routine_range: routine.range.clone(),
+            routine_range,
             parameters,
             arguments,
             section_order_invalid,

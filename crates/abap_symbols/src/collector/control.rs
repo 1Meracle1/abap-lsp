@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use abap_ast::SyntaxKind;
 use abap_ast::arena::NodeId;
+use abap_ast::ast::{AstNode, SortStmt};
 
 use crate::def_map::{
     FieldAccess, FieldAccessSegment, FieldTypeRefData, LoopWhereFieldContext, SymbolKind,
@@ -482,62 +483,55 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
     }
 
     pub(super) fn collect_sort_stmt(&mut self, node: NodeId, scope: ScopeId) {
-        let children: Vec<NodeId> = self.collector.file.children(node).collect();
-        let by_idx = children.iter().position(|&c| {
-            self.collector.file.kind(c) == SyntaxKind::Token
-                && self
-                    .collector
-                    .syntax(c)
-                    .text(self.collector.source)
-                    .is_some_and(|text| text.eq_ignore_ascii_case("by"))
-        });
-        let Some(by_idx) = by_idx else {
+        let Some((source, by_operands)) = SortStmt::cast(self.collector.syntax(node)).map(|stmt| {
+            (
+                stmt.source(self.collector.source).map(|source| source.id()),
+                stmt.by_operands(self.collector.source)
+                    .into_iter()
+                    .map(|child| child.id())
+                    .collect::<Vec<_>>(),
+            )
+        }) else {
             self.collector.walk_children(node, scope);
             return;
         };
+        let source_expr = source
+            .map(|source| self.sort_operand_expr_node(source))
+            .unwrap_or(node);
+        let itab_base = source
+            .and_then(|_| self.collector.sql_target_name_from_expr(source_expr));
 
-        let mut itab_base = None;
-        for &tmpl in children[..by_idx].iter() {
-            if self.collector.file.kind(tmpl) == SyntaxKind::TemplateExpr {
-                itab_base = self
-                    .collector
-                    .file
-                    .children(tmpl)
-                    .next()
-                    .and_then(|inner| self.collector.sql_target_name_from_expr(inner));
-                break;
-            }
+        if let Some(source) = source {
+            self.collector.walk_node(source, scope);
         }
-
-        for &child in &children[..by_idx] {
-            self.collector.walk_node(child, scope);
-        }
-
         let Some(itab_base) = itab_base else {
-            for &child in &children[by_idx + 1..] {
+            for child in by_operands {
                 self.collector.walk_node(child, scope);
             }
             return;
         };
 
-        for &child in &children[by_idx + 1..] {
-            if self.collector.file.kind(child) == SyntaxKind::TemplateExpr {
-                let Some(inner) = self.collector.file.children(child).next() else {
-                    self.collector.walk_node(child, scope);
-                    continue;
-                };
-                if let Some(field_path) = self.sort_by_field_segments_from_expr(inner) {
-                    self.collector.emit_field_access(FieldAccess {
-                        scope,
-                        base_namespace: Namespace::Value,
-                        base_name: Arc::clone(&itab_base),
-                        field_path,
-                        in_type_position: false,
-                    });
-                    continue;
-                }
+        for child in by_operands {
+            let expr = self.sort_operand_expr_node(child);
+            if let Some(field_path) = self.sort_by_field_segments_from_expr(expr) {
+                self.collector.emit_field_access(FieldAccess {
+                    scope,
+                    base_namespace: Namespace::Value,
+                    base_name: Arc::clone(&itab_base),
+                    field_path,
+                    in_type_position: false,
+                });
+                continue;
             }
             self.collector.walk_node(child, scope);
+        }
+    }
+
+    fn sort_operand_expr_node(&self, node: NodeId) -> NodeId {
+        if self.collector.file.kind(node) == SyntaxKind::TemplateExpr {
+            self.collector.first_non_token_child(node).unwrap_or(node)
+        } else {
+            node
         }
     }
 
