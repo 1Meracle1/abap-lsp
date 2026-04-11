@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use abap_ast::SyntaxKind;
 use abap_ast::arena::NodeId;
-use abap_ast::ast::{AstNode, SortStmt};
+use abap_ast::ast::{AstNode, ConstructorBaseClause, ConstructorExpr, SortStmt};
 
 use crate::def_map::{
     FieldAccess, FieldAccessSegment, FieldTypeRefData, LoopWhereFieldContext, SymbolKind,
@@ -314,6 +314,79 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
         scope: ScopeId,
     ) -> (Option<StructureId>, Option<FieldTypeRefData>) {
         match self.collector.file.kind(node) {
+            SyntaxKind::ConstructorExpr => {
+                let Some(constructor) = ConstructorExpr::cast(self.collector.syntax(node)) else {
+                    return (None, None);
+                };
+                if let Some(type_ref) = constructor.type_ref()
+                    && let Some(display_text) = type_ref.display_text(self.collector.source)
+                    && display_text != "#"
+                    && let Some(mut declared_type) = self
+                        .collector
+                        .field_type_ref_from_node(type_ref.syntax().id(), Namespace::Type)
+                {
+                    if matches!(
+                        constructor.keyword(self.collector.source).as_deref(),
+                        Some("new" | "ref")
+                    ) {
+                        declared_type.is_ref = true;
+                    }
+                    return self.normalize_inferred_metadata(scope, None, Some(declared_type));
+                }
+                if let Some(base_value) = constructor
+                    .arg_list()
+                    .and_then(|arg_list| {
+                        self.collector
+                            .file
+                            .find_first_kind(arg_list.syntax().id(), SyntaxKind::ConstructorBaseClause)
+                            .and_then(|node| ConstructorBaseClause::cast(self.collector.syntax(node)))
+                    })
+                    .and_then(|clause| clause.value())
+                {
+                    return self.loop_source_line_metadata_from_node(base_value.id(), scope);
+                }
+                if let Some(arg_list) = constructor.arg_list() {
+                    let tokens = self.collector.syntax_token_nodes(arg_list.syntax().id());
+                    if tokens.len() >= 3 && tokens[1].text.eq_ignore_ascii_case("BASE") {
+                        let inner = &tokens[1..tokens.len() - 1];
+                        if let Some((_, namespace, base_name, _, field_path, _)) = self
+                            .collector
+                            .consume_selector_access_from_infos(inner, 1)
+                            && namespace == Namespace::Value
+                        {
+                            if field_path.is_empty() {
+                                if let Some(symbol_id) = self.collector.lookup_symbol_in_scope_chain(
+                                    scope,
+                                    Namespace::Value,
+                                    base_name.as_ref(),
+                                ) {
+                                    let symbol = self.collector.symbol(symbol_id);
+                                    return self.normalize_inferred_metadata(
+                                        scope,
+                                        symbol.structure,
+                                        symbol.declared_type.clone(),
+                                    );
+                                }
+                            } else if let Some(symbol_id) = self.collector.lookup_symbol_in_scope_chain(
+                                scope,
+                                Namespace::Value,
+                                base_name.as_ref(),
+                            ) {
+                                if let Some((structure, declared_type)) = self
+                                    .loop_source_field_metadata(scope, symbol_id, &field_path)
+                                {
+                                    return self.normalize_inferred_metadata(
+                                        scope,
+                                        structure,
+                                        declared_type,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+                (None, None)
+            }
             SyntaxKind::TemplateExpr => {
                 if let Some(child) = self.collector.first_non_token_child(node) {
                     return self.loop_source_line_metadata_from_node(child, scope);

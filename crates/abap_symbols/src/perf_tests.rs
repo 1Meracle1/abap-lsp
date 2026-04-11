@@ -14,7 +14,7 @@ use crate::resolver::{build_scope_index, resolve_unit_with_index};
 use crate::validate::validate_project_with_scope_indexes;
 
 const DEFAULT_SAMPLE_PATH: &str =
-    r"D:\dev\abap\lsp_development_examples2\.abapls\cache\sources\%2FSTTP%2FCL_MD_BPARTNER.abap";
+    r"D:\dev\abap\prod_rep_check\.abapls\cache\dependencies\global-class\CL_GUI_ALV_GRID.abap";
 const PERF_SAMPLE_URI: &str = "file:///perf_sample.abap";
 
 fn perf_sample_path() -> PathBuf {

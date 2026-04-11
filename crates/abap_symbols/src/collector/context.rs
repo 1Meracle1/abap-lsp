@@ -8,7 +8,7 @@ use crate::def_map::{
     SqlPredicateData, SqlProjectionData, SqlQueryData, SqlSourceData, SqlTargetData,
     StructureFieldData, SymbolKind,
 };
-use crate::ids::{ScopeId, StructureId, SymbolId};
+use crate::ids::{ScopeId, StructureId, SymbolId, UnitId};
 use crate::scope::Namespace;
 
 use super::decls::DeclLowering;
@@ -260,6 +260,18 @@ impl<'ctx, 'a> ExprContext<'ctx, 'a> {
 
     pub(super) fn symbol_structure(&self, symbol_id: crate::ids::SymbolId) -> Option<StructureId> {
         self.collector.symbol(symbol_id).structure
+    }
+
+    pub(super) fn push_structure(
+        &mut self,
+        name: std::sync::Arc<str>,
+        fields: impl IntoIterator<Item = StructureFieldData>,
+    ) -> StructureId {
+        self.collector.push_structure(name, fields)
+    }
+
+    pub(super) fn unit_id(&self) -> UnitId {
+        self.collector.unit_id
     }
 
     pub(super) fn symbol_kind(&self, symbol_id: SymbolId) -> SymbolKind {

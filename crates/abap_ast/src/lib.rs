@@ -59,6 +59,26 @@ pub enum SyntaxKind {
     ConstructorExpr,
     /// `LET ... IN ...` expression inside constructor-expression contexts.
     LetExpr,
+    /// One `name = expr` binding inside a constructor `LET`.
+    ConstructorLetBinding,
+    /// `WHEN ... THEN ...` clause inside `COND` / `SWITCH`.
+    ConstructorWhenClause,
+    /// `ELSE ...` clause inside `COND` / `SWITCH`.
+    ConstructorElseClause,
+    /// `FOR ...` iterator/conditional clause inside a constructor expression.
+    ConstructorForClause,
+    /// `WHERE ( ... )` inside a constructor `FOR`.
+    ConstructorWhereClause,
+    /// `INIT ...` clause inside `REDUCE`.
+    ConstructorInitClause,
+    /// `NEXT ...` clause inside `REDUCE`.
+    ConstructorNextClause,
+    /// One `name = expr` assignment inside constructor bodies / `INIT` / `NEXT`.
+    ConstructorNamedAssignment,
+    /// `BASE expr` inside a value constructor.
+    ConstructorBaseClause,
+    /// `LINES OF ...` inside a value constructor.
+    ConstructorLinesOfClause,
     /// `DATA [:`] … .` — classic typed declaration (here: explicit `TYPE` with simple type refs).
     DataDecl,
     /// One `name TYPE type_ref` member (comma-separated under `DATA:` or alone after `DATA`).
@@ -430,6 +450,16 @@ impl SyntaxKind {
             Self::CallPositionalArg => "CallPositionalArg",
             Self::ConstructorExpr => "ConstructorExpr",
             Self::LetExpr => "LetExpr",
+            Self::ConstructorLetBinding => "ConstructorLetBinding",
+            Self::ConstructorWhenClause => "ConstructorWhenClause",
+            Self::ConstructorElseClause => "ConstructorElseClause",
+            Self::ConstructorForClause => "ConstructorForClause",
+            Self::ConstructorWhereClause => "ConstructorWhereClause",
+            Self::ConstructorInitClause => "ConstructorInitClause",
+            Self::ConstructorNextClause => "ConstructorNextClause",
+            Self::ConstructorNamedAssignment => "ConstructorNamedAssignment",
+            Self::ConstructorBaseClause => "ConstructorBaseClause",
+            Self::ConstructorLinesOfClause => "ConstructorLinesOfClause",
             Self::DataDecl => "DataDecl",
             Self::DataTypedClause => "DataTypedClause",
             Self::DataInlineDecl => "DataInlineDecl",

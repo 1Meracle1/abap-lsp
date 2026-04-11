@@ -341,10 +341,24 @@ ast_node!(SelectorExpr, SyntaxKind::SelectorExpr);
 ast_node!(ParenExpr, SyntaxKind::ParenExpr);
 ast_node!(CallExpr, SyntaxKind::CallExpr);
 ast_node!(ConstructorExpr, SyntaxKind::ConstructorExpr);
+ast_node!(LetExpr, SyntaxKind::LetExpr);
+ast_node!(ConstructorLetBinding, SyntaxKind::ConstructorLetBinding);
 ast_node!(CallArgList, SyntaxKind::CallArgList);
 ast_node!(CallArgSection, SyntaxKind::CallArgSection);
 ast_node!(CallNamedArg, SyntaxKind::CallNamedArg);
 ast_node!(CallPositionalArg, SyntaxKind::CallPositionalArg);
+ast_node!(ConstructorWhenClause, SyntaxKind::ConstructorWhenClause);
+ast_node!(ConstructorElseClause, SyntaxKind::ConstructorElseClause);
+ast_node!(ConstructorForClause, SyntaxKind::ConstructorForClause);
+ast_node!(ConstructorWhereClause, SyntaxKind::ConstructorWhereClause);
+ast_node!(ConstructorInitClause, SyntaxKind::ConstructorInitClause);
+ast_node!(ConstructorNextClause, SyntaxKind::ConstructorNextClause);
+ast_node!(
+    ConstructorNamedAssignment,
+    SyntaxKind::ConstructorNamedAssignment
+);
+ast_node!(ConstructorBaseClause, SyntaxKind::ConstructorBaseClause);
+ast_node!(ConstructorLinesOfClause, SyntaxKind::ConstructorLinesOfClause);
 ast_node!(AliasesStmt, SyntaxKind::AliasesStmt);
 ast_node!(AliasEntry, SyntaxKind::AliasEntry);
 ast_node!(AliasName, SyntaxKind::AliasName);
@@ -990,6 +1004,43 @@ impl<'a> ConstructorExpr<'a> {
     }
 }
 
+impl<'a> LetExpr<'a> {
+    pub fn bindings(
+        self,
+    ) -> impl DoubleEndedIterator<Item = ConstructorLetBinding<'a>> + Clone + 'a {
+        self.syntax.children().filter_map(ConstructorLetBinding::cast)
+    }
+
+    pub fn result_children(self, source: &str) -> Vec<SyntaxNodeRef<'a>> {
+        let mut saw_in = false;
+        let mut out = Vec::new();
+        for child in self.syntax.children() {
+            if child.kind() == SyntaxKind::Token
+                && child
+                    .text(source)
+                    .is_some_and(|text| text.eq_ignore_ascii_case("in"))
+            {
+                saw_in = true;
+                continue;
+            }
+            if saw_in && child.kind() != SyntaxKind::Token {
+                out.push(child);
+            }
+        }
+        out
+    }
+}
+
+impl<'a> ConstructorLetBinding<'a> {
+    pub fn name_token(self) -> Option<SyntaxNodeRef<'a>> {
+        self.syntax.children_by_kind(SyntaxKind::Token).next()
+    }
+
+    pub fn value_children(self) -> Vec<SyntaxNodeRef<'a>> {
+        self.syntax.children().skip(2).collect()
+    }
+}
+
 impl<'a> CallArgList<'a> {
     pub fn items(self) -> impl DoubleEndedIterator<Item = SyntaxNodeRef<'a>> + Clone + 'a {
         self.syntax.non_token_children()
@@ -1007,6 +1058,46 @@ impl<'a> CallArgList<'a> {
         self,
     ) -> impl DoubleEndedIterator<Item = CallPositionalArg<'a>> + Clone + 'a {
         self.syntax.children().filter_map(CallPositionalArg::cast)
+    }
+
+    pub fn constructor_when_clauses(
+        self,
+    ) -> impl DoubleEndedIterator<Item = ConstructorWhenClause<'a>> + Clone + 'a {
+        self.syntax.children().filter_map(ConstructorWhenClause::cast)
+    }
+
+    pub fn constructor_else_clauses(
+        self,
+    ) -> impl DoubleEndedIterator<Item = ConstructorElseClause<'a>> + Clone + 'a {
+        self.syntax.children().filter_map(ConstructorElseClause::cast)
+    }
+
+    pub fn constructor_for_clauses(
+        self,
+    ) -> impl DoubleEndedIterator<Item = ConstructorForClause<'a>> + Clone + 'a {
+        self.syntax.children().filter_map(ConstructorForClause::cast)
+    }
+
+    pub fn constructor_init_clauses(
+        self,
+    ) -> impl DoubleEndedIterator<Item = ConstructorInitClause<'a>> + Clone + 'a {
+        self.syntax.children().filter_map(ConstructorInitClause::cast)
+    }
+
+    pub fn constructor_next_clauses(
+        self,
+    ) -> impl DoubleEndedIterator<Item = ConstructorNextClause<'a>> + Clone + 'a {
+        self.syntax.children().filter_map(ConstructorNextClause::cast)
+    }
+
+    pub fn constructor_named_assignments(
+        self,
+    ) -> impl DoubleEndedIterator<Item = ConstructorNamedAssignment<'a>> + Clone + 'a {
+        self.syntax.children().filter_map(ConstructorNamedAssignment::cast)
+    }
+
+    pub fn let_exprs(self) -> impl DoubleEndedIterator<Item = LetExpr<'a>> + Clone + 'a {
+        self.syntax.children().filter_map(LetExpr::cast)
     }
 }
 
@@ -1029,6 +1120,144 @@ impl<'a> CallNamedArg<'a> {
 impl<'a> CallPositionalArg<'a> {
     pub fn value_children(self) -> Vec<SyntaxNodeRef<'a>> {
         self.syntax.children().collect()
+    }
+}
+
+impl<'a> ConstructorWhenClause<'a> {
+    pub fn condition(self) -> Option<SyntaxNodeRef<'a>> {
+        self.syntax.non_token_children().next()
+    }
+
+    pub fn result(self) -> Option<SyntaxNodeRef<'a>> {
+        self.syntax.non_token_children().nth(1)
+    }
+}
+
+impl<'a> ConstructorElseClause<'a> {
+    pub fn result(self) -> Option<SyntaxNodeRef<'a>> {
+        self.syntax.first_non_token_child()
+    }
+}
+
+impl<'a> ConstructorForClause<'a> {
+    pub fn iterator_name_token(self, source: &str) -> Option<SyntaxNodeRef<'a>> {
+        self.syntax.children_by_kind(SyntaxKind::Token).find(|token| {
+            token.text(source).is_some_and(|text| {
+                !matches!(
+                    text.to_ascii_uppercase().as_str(),
+                    "FOR" | "IN" | "WHERE" | "THEN" | "UNTIL" | "WHILE" | "="
+                )
+            })
+        })
+    }
+
+    pub fn is_in_form(self, source: &str) -> bool {
+        self.syntax.children_by_kind(SyntaxKind::Token).any(|token| {
+            token.text(source)
+                .is_some_and(|text| text.eq_ignore_ascii_case("in"))
+        })
+    }
+
+    pub fn source_expr(self, source: &str) -> Option<SyntaxNodeRef<'a>> {
+        self.is_in_form(source)
+            .then(|| self.syntax.non_token_children().next())
+            .flatten()
+    }
+
+    pub fn init_expr(self, source: &str) -> Option<SyntaxNodeRef<'a>> {
+        (!self.is_in_form(source))
+            .then(|| self.syntax.non_token_children().next())
+            .flatten()
+    }
+
+    pub fn then_expr(self, source: &str) -> Option<SyntaxNodeRef<'a>> {
+        if self.is_in_form(source) {
+            return None;
+        }
+        let has_then = self.syntax.children_by_kind(SyntaxKind::Token).any(|token| {
+            token.text(source)
+                .is_some_and(|text| text.eq_ignore_ascii_case("then"))
+        });
+        has_then.then(|| self.syntax.non_token_children().nth(1)).flatten()
+    }
+
+    pub fn condition_expr(self, source: &str) -> Option<SyntaxNodeRef<'a>> {
+        if self.is_in_form(source) {
+            return None;
+        }
+        let has_then = self.syntax.children_by_kind(SyntaxKind::Token).any(|token| {
+            token.text(source)
+                .is_some_and(|text| text.eq_ignore_ascii_case("then"))
+        });
+        self.syntax
+            .non_token_children()
+            .nth(if has_then { 2 } else { 1 })
+    }
+
+    pub fn where_clause(self) -> Option<ConstructorWhereClause<'a>> {
+        self.syntax.children().find_map(ConstructorWhereClause::cast)
+    }
+
+    pub fn body_children(self, source: &str) -> Vec<SyntaxNodeRef<'a>> {
+        let non_tokens: Vec<_> = self.syntax.non_token_children().collect();
+        let skip = if self.is_in_form(source) {
+            1 + usize::from(self.where_clause().is_some())
+        } else {
+            2 + usize::from(self.then_expr(source).is_some())
+        };
+        non_tokens.into_iter().skip(skip).collect()
+    }
+}
+
+impl<'a> ConstructorWhereClause<'a> {
+    pub fn condition(self) -> Option<SyntaxNodeRef<'a>> {
+        self.syntax.first_non_token_child()
+    }
+}
+
+impl<'a> ConstructorInitClause<'a> {
+    pub fn assignments(
+        self,
+    ) -> impl DoubleEndedIterator<Item = ConstructorNamedAssignment<'a>> + Clone + 'a {
+        self.syntax.children().filter_map(ConstructorNamedAssignment::cast)
+    }
+}
+
+impl<'a> ConstructorNextClause<'a> {
+    pub fn assignments(
+        self,
+    ) -> impl DoubleEndedIterator<Item = ConstructorNamedAssignment<'a>> + Clone + 'a {
+        self.syntax.children().filter_map(ConstructorNamedAssignment::cast)
+    }
+}
+
+impl<'a> ConstructorNamedAssignment<'a> {
+    pub fn name_token(self) -> Option<SyntaxNodeRef<'a>> {
+        self.syntax.children_by_kind(SyntaxKind::Token).next()
+    }
+
+    pub fn value_children(self) -> Vec<SyntaxNodeRef<'a>> {
+        self.syntax.children().skip(2).collect()
+    }
+}
+
+impl<'a> ConstructorBaseClause<'a> {
+    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
+        self.syntax.first_non_token_child()
+    }
+}
+
+impl<'a> ConstructorLinesOfClause<'a> {
+    pub fn source(self) -> Option<SyntaxNodeRef<'a>> {
+        self.syntax.non_token_children().next()
+    }
+
+    pub fn from_value(self) -> Option<SyntaxNodeRef<'a>> {
+        self.syntax.non_token_children().nth(1)
+    }
+
+    pub fn to_value(self) -> Option<SyntaxNodeRef<'a>> {
+        self.syntax.non_token_children().nth(2)
     }
 }
 

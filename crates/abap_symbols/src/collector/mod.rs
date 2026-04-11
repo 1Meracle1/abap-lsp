@@ -16,7 +16,8 @@ use std::sync::Arc;
 
 use abap_ast::arena::NodeId;
 use abap_ast::ast::{
-    AstNode, CallArgList, DeclClause, MethodsParamSectionKind, TypeClauseKind, TypeRefSimple,
+    AstNode, CallArgList, ConstructorBaseClause, ConstructorForClause, ConstructorLinesOfClause,
+    DeclClause, MethodsParamSectionKind, TypeClauseKind, TypeRefSimple,
 };
 use abap_ast::{File, SyntaxKind};
 use abap_lexer::{TextRange, Token, TokenKind};
@@ -436,6 +437,42 @@ impl<'a> Collector<'a> {
         else {
             return (None, None);
         };
+
+        if let Some(base_value) = self
+            .file
+            .find_first_kind(arg_list.syntax().id(), SyntaxKind::ConstructorBaseClause)
+            .and_then(|node| ConstructorBaseClause::cast(self.syntax(node)))
+            .and_then(|clause| clause.value())
+        {
+            let inferred = self.inline_decl_assignment_source_metadata(base_value.id(), scope);
+            if inferred.0.is_some() || inferred.1.is_some() {
+                return inferred;
+            }
+        }
+
+        if let Some(source) = self
+            .file
+            .find_first_kind(arg_list.syntax().id(), SyntaxKind::ConstructorLinesOfClause)
+            .and_then(|node| ConstructorLinesOfClause::cast(self.syntax(node)))
+            .and_then(|clause| clause.source())
+        {
+            let inferred = self.inline_decl_assignment_source_metadata(source.id(), scope);
+            if inferred.0.is_some() || inferred.1.is_some() {
+                return inferred;
+            }
+        }
+
+        if let Some(source) = self
+            .file
+            .find_first_kind(arg_list.syntax().id(), SyntaxKind::ConstructorForClause)
+            .and_then(|node| ConstructorForClause::cast(self.syntax(node)))
+            .and_then(|clause| clause.source_expr(self.source))
+        {
+            let inferred = self.inline_decl_assignment_source_metadata(source.id(), scope);
+            if inferred.0.is_some() || inferred.1.is_some() {
+                return inferred;
+            }
+        }
 
         for positional in arg_list.positional_args() {
             let tokens = positional

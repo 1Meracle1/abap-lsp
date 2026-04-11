@@ -31,6 +31,15 @@ enum ParenInner {
     Logical,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConstructorSequenceKind {
+    Value,
+    Cond,
+    Switch,
+    Reduce,
+    SingleExpr,
+}
+
 struct Parser<'a, 'b> {
     source: &'a str,
     tokens: &'a [Token],
@@ -443,67 +452,6 @@ impl<'a, 'b> Parser<'a, 'b> {
         None
     }
 
-    fn find_top_level_keyword_in_range(
-        &self,
-        start_idx: usize,
-        end_idx: usize,
-        keyword: &str,
-    ) -> Option<usize> {
-        let mut paren = 0i32;
-        let mut bracket = 0i32;
-        let mut brace = 0i32;
-        let mut idx = start_idx;
-        while idx < end_idx {
-            let token = &self.tokens[idx];
-            if paren == 0 && bracket == 0 && brace == 0 && ident_eq(self.source, token, keyword) {
-                return Some(idx);
-            }
-            match token.kind {
-                TokenKind::LParen => paren += 1,
-                TokenKind::RParen => paren -= 1,
-                TokenKind::LBracket => bracket += 1,
-                TokenKind::RBracket => bracket -= 1,
-                TokenKind::LBrace => brace += 1,
-                TokenKind::RBrace => brace -= 1,
-                _ => {}
-            }
-            idx += 1;
-        }
-        None
-    }
-
-    fn find_next_top_level_cond_clause_start(
-        &self,
-        start_idx: usize,
-        end_idx: usize,
-    ) -> Option<usize> {
-        let mut paren = 0i32;
-        let mut bracket = 0i32;
-        let mut brace = 0i32;
-        let mut idx = start_idx;
-        while idx < end_idx {
-            let token = &self.tokens[idx];
-            if paren == 0
-                && bracket == 0
-                && brace == 0
-                && (ident_eq(self.source, token, "WHEN") || ident_eq(self.source, token, "ELSE"))
-            {
-                return Some(idx);
-            }
-            match token.kind {
-                TokenKind::LParen => paren += 1,
-                TokenKind::RParen => paren -= 1,
-                TokenKind::LBracket => bracket += 1,
-                TokenKind::RBracket => bracket -= 1,
-                TokenKind::LBrace => brace += 1,
-                TokenKind::RBrace => brace -= 1,
-                _ => {}
-            }
-            idx += 1;
-        }
-        None
-    }
-
     fn call_padding_is_valid(&self, lparen_idx: usize, rparen_idx: usize) -> bool {
         let lparen = &self.tokens[lparen_idx];
         let rparen = &self.tokens[rparen_idx];
@@ -911,12 +859,132 @@ impl<'a, 'b> Parser<'a, 'b> {
         Some(self.b.branch(kind, range, &[callee, args]))
     }
 
-    fn build_raw_call_positional_arg(&mut self, tokens: &'a [Token]) -> Option<NodeId> {
+    fn find_top_level_keyword_any_in_slice(
+        &self,
+        tokens: &[Token],
+        start: usize,
+        keywords: &[&str],
+    ) -> Option<usize> {
+        let mut paren = 0i32;
+        let mut bracket = 0i32;
+        let mut brace = 0i32;
+        let mut idx = start;
+        while idx < tokens.len() {
+            match tokens[idx].kind {
+                TokenKind::LParen => paren += 1,
+                TokenKind::RParen => paren -= 1,
+                TokenKind::LBracket => bracket += 1,
+                TokenKind::RBracket => bracket -= 1,
+                TokenKind::LBrace => brace += 1,
+                TokenKind::RBrace => brace -= 1,
+                _ => {}
+            }
+            if paren == 0
+                && bracket == 0
+                && brace == 0
+                && keywords
+                    .iter()
+                    .any(|keyword| ident_eq(self.source, &tokens[idx], keyword))
+            {
+                return Some(idx);
+            }
+            idx += 1;
+        }
+        None
+    }
+
+    fn find_matching_group_in_slice(
+        &self,
+        tokens: &[Token],
+        start_idx: usize,
+        open: TokenKind,
+        close: TokenKind,
+    ) -> Option<usize> {
+        let mut depth = 0i32;
+        for (idx, token) in tokens.iter().enumerate().skip(start_idx) {
+            match token.kind {
+                kind if kind == open => depth += 1,
+                kind if kind == close => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(idx);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    fn previous_non_comment_token<'t>(
+        &self,
+        tokens: &'t [Token],
+        idx: usize,
+    ) -> Option<&'t Token> {
+        tokens[..idx]
+            .iter()
+            .rev()
+            .find(|token| token.kind != TokenKind::Comment)
+    }
+
+    fn parse_single_constructor_expr(
+        &mut self,
+        tokens: &'a [Token],
+        prev_before_first: &'a Token,
+    ) -> Option<NodeId> {
         if tokens.is_empty() {
             return None;
         }
+        if tokens
+            .first()
+            .is_some_and(|token| ident_eq(self.source, token, "LET"))
+        {
+            return self.parse_structured_let_expr_slice(
+                tokens,
+                prev_before_first,
+                ConstructorSequenceKind::SingleExpr,
+            );
+        }
+        self.parse_complete_concat_expr(tokens, prev_before_first)
+    }
+
+    fn build_constructor_positional_arg(
+        &mut self,
+        tokens: &'a [Token],
+        prev_before_first: &'a Token,
+    ) -> Option<NodeId> {
+        if tokens.is_empty() {
+            return None;
+        }
+        if tokens.first().map(|token| token.kind) == Some(TokenKind::LParen)
+            && self.find_matching_group_in_slice(tokens, 0, TokenKind::LParen, TokenKind::RParen)
+                == Some(tokens.len() - 1)
+            && self.constructor_row_needs_structured_value_items(&tokens[1..tokens.len() - 1])
+        {
+            let mut children = vec![token_leaf(self.b, &tokens[0])];
+            children.extend(self.parse_value_sequence(
+                &tokens[1..tokens.len() - 1],
+                &tokens[0],
+            ));
+            children.push(token_leaf(self.b, tokens.last()?));
+            return Some(self.b.branch(
+                SyntaxKind::CallPositionalArg,
+                tokens.first()?.range.start..tokens.last()?.range.end,
+                &children,
+            ));
+        }
         let mut children = Vec::with_capacity(tokens.len());
-        children.extend(tokens.iter().map(|token| token_leaf(self.b, token)));
+        let (value_core, trailing_comments) = self.split_call_argument_trailing_comments(tokens);
+        if let Some(value) = self.parse_call_argument_value(value_core, prev_before_first) {
+            children.push(value);
+            children.extend(
+                trailing_comments
+                    .iter()
+                    .map(|token| token_leaf(self.b, token)),
+            );
+        } else {
+            children.extend(tokens.iter().map(|token| token_leaf(self.b, token)));
+        }
         Some(self.b.branch(
             SyntaxKind::CallPositionalArg,
             tokens.first()?.range.start..tokens.last()?.range.end,
@@ -924,7 +992,115 @@ impl<'a, 'b> Parser<'a, 'b> {
         ))
     }
 
-    fn build_raw_let_expr(&mut self, tokens: &'a [Token]) -> Option<NodeId> {
+    fn constructor_row_needs_structured_value_items(&self, tokens: &[Token]) -> bool {
+        let mut paren = 0i32;
+        let mut bracket = 0i32;
+        let mut brace = 0i32;
+        for idx in 0..tokens.len() {
+            let token = &tokens[idx];
+            if paren == 0 && bracket == 0 && brace == 0 {
+                if ident_eq(self.source, token, "BASE")
+                    || ident_eq(self.source, token, "FOR")
+                    || ident_eq(self.source, token, "LET")
+                    || (ident_eq(self.source, token, "LINES")
+                        && tokens
+                            .get(idx + 1)
+                            .is_some_and(|next| ident_eq(self.source, next, "OF")))
+                    || (token.kind == TokenKind::Ident
+                        && tokens.get(idx + 1).map(|next| next.kind) == Some(TokenKind::Eq))
+                {
+                    return true;
+                }
+            }
+            match token.kind {
+                TokenKind::LParen => paren += 1,
+                TokenKind::RParen => paren -= 1,
+                TokenKind::LBracket => bracket += 1,
+                TokenKind::RBracket => bracket -= 1,
+                TokenKind::LBrace => brace += 1,
+                TokenKind::RBrace => brace -= 1,
+                _ => {}
+            }
+        }
+        false
+    }
+
+    fn build_constructor_assignment_node(
+        &mut self,
+        kind: SyntaxKind,
+        tokens: &'a [Token],
+        _prev_before_first: &'a Token,
+    ) -> Option<NodeId> {
+        if tokens.len() < 3
+            || tokens.first()?.kind != TokenKind::Ident
+            || tokens.get(1)?.kind != TokenKind::Eq
+        {
+            return None;
+        }
+
+        let mut children = vec![
+            token_leaf(self.b, &tokens[0]),
+            token_leaf(self.b, &tokens[1]),
+        ];
+        let value_tokens = &tokens[2..];
+        let (value_core, trailing_comments) = self.split_call_argument_trailing_comments(value_tokens);
+        if let Some(value) = self.parse_single_constructor_expr(value_core, &tokens[1]) {
+            children.push(value);
+            children.extend(
+                trailing_comments
+                    .iter()
+                    .map(|token| token_leaf(self.b, token)),
+            );
+        } else {
+            children.extend(value_tokens.iter().map(|token| token_leaf(self.b, token)));
+        }
+
+        Some(self.b.branch(
+            kind,
+            tokens.first()?.range.start..tokens.last()?.range.end,
+            &children,
+        ))
+    }
+
+    fn parse_constructor_assignment_list(
+        &mut self,
+        tokens: &'a [Token],
+        kind: SyntaxKind,
+    ) -> Vec<NodeId> {
+        let mut out = Vec::new();
+        let mut idx = 0usize;
+        while idx < tokens.len() {
+            if tokens[idx].kind == TokenKind::Comment {
+                idx += 1;
+                continue;
+            }
+            if tokens.get(idx).map(|token| token.kind) != Some(TokenKind::Ident)
+                || tokens.get(idx + 1).map(|token| token.kind) != Some(TokenKind::Eq)
+            {
+                idx += 1;
+                continue;
+            }
+            let value_end = self.constructor_assignment_value_end(tokens, idx + 2);
+            let prev_before_first =
+                self.previous_non_comment_token(tokens, idx).unwrap_or(&tokens[idx]);
+            if let Some(node) = self.build_constructor_assignment_node(
+                kind,
+                &tokens[idx..value_end],
+                prev_before_first,
+            ) {
+                out.push(node);
+            }
+            idx = value_end;
+        }
+        out
+    }
+
+    fn parse_structured_let_expr_slice(
+        &mut self,
+        tokens: &'a [Token],
+        _prev_before_first: &'a Token,
+        result_kind: ConstructorSequenceKind,
+    ) -> Option<NodeId> {
         if tokens.is_empty()
             || !tokens
                 .first()
@@ -936,8 +1112,21 @@ impl<'a, 'b> Parser<'a, 'b> {
         if in_idx + 1 >= tokens.len() {
             return None;
         }
-        let mut children = Vec::with_capacity(tokens.len());
-        children.extend(tokens.iter().map(|token| token_leaf(self.b, token)));
+
+        let mut children = vec![token_leaf(self.b, &tokens[0])];
+        children.extend(
+            self.parse_constructor_assignment_list(
+                &tokens[1..in_idx],
+                SyntaxKind::ConstructorLetBinding,
+            ),
+        );
+        children.push(token_leaf(self.b, &tokens[in_idx]));
+        children.extend(self.parse_constructor_sequence(
+            &tokens[in_idx + 1..],
+            &tokens[in_idx],
+            result_kind,
+        ));
+
         Some(self.b.branch(
             SyntaxKind::LetExpr,
             tokens.first()?.range.start..tokens.last()?.range.end,
@@ -945,207 +1134,827 @@ impl<'a, 'b> Parser<'a, 'b> {
         ))
     }
 
-    fn parse_cond_when_clause(&mut self, clause_start: usize, clause_end: usize) -> Option<NodeId> {
-        let when_tok = self.tokens.get(clause_start)?;
+    fn parse_constructor_when_clause_slice(
+        &mut self,
+        tokens: &'a [Token],
+        is_switch: bool,
+    ) -> Option<NodeId> {
+        let when_tok = tokens.first()?;
         if !ident_eq(self.source, when_tok, "WHEN") {
             return None;
         }
-        let then_idx =
-            self.find_top_level_keyword_in_range(clause_start + 1, clause_end, "THEN")?;
-        let then_tok = self.tokens.get(then_idx)?;
-        let condition =
-            self.parse_complete_logical_expr(&self.tokens[clause_start + 1..then_idx], when_tok)?;
-        let value =
-            self.parse_complete_concat_expr(&self.tokens[then_idx + 1..clause_end], then_tok)?;
+        let then_idx = self.find_top_level_keyword_in_slice(tokens, 1, "THEN")?;
+        let then_tok = tokens.get(then_idx)?;
+        let condition = if is_switch {
+            self.parse_complete_concat_expr(&tokens[1..then_idx], when_tok)?
+        } else {
+            self.parse_complete_logical_expr(&tokens[1..then_idx], when_tok)?
+        };
+        let result = self
+            .parse_single_constructor_expr(&tokens[then_idx + 1..], then_tok)
+            .or_else(|| {
+                self.build_constructor_positional_arg(&tokens[then_idx + 1..], then_tok)
+            })?;
         let children = [
             token_leaf(self.b, when_tok),
             condition,
             token_leaf(self.b, then_tok),
-            value,
+            result,
         ];
         Some(self.b.branch(
-            SyntaxKind::CallPositionalArg,
-            when_tok.range.start..self.b.span(value).end,
+            SyntaxKind::ConstructorWhenClause,
+            when_tok.range.start..tokens.last()?.range.end,
             &children,
         ))
     }
 
-    fn parse_switch_when_clause(
-        &mut self,
-        clause_start: usize,
-        clause_end: usize,
-    ) -> Option<NodeId> {
-        let when_tok = self.tokens.get(clause_start)?;
-        if !ident_eq(self.source, when_tok, "WHEN") {
-            return None;
-        }
-        let then_idx =
-            self.find_top_level_keyword_in_range(clause_start + 1, clause_end, "THEN")?;
-        let then_tok = self.tokens.get(then_idx)?;
-        let value_key =
-            self.parse_complete_concat_expr(&self.tokens[clause_start + 1..then_idx], when_tok)?;
-        let value =
-            self.parse_complete_concat_expr(&self.tokens[then_idx + 1..clause_end], then_tok)?;
-        let children = [
-            token_leaf(self.b, when_tok),
-            value_key,
-            token_leaf(self.b, then_tok),
-            value,
-        ];
-        Some(self.b.branch(
-            SyntaxKind::CallPositionalArg,
-            when_tok.range.start..self.b.span(value).end,
-            &children,
-        ))
-    }
-
-    fn parse_cond_else_clause(&mut self, clause_start: usize, clause_end: usize) -> Option<NodeId> {
-        let else_tok = self.tokens.get(clause_start)?;
+    fn parse_constructor_else_clause_slice(&mut self, tokens: &'a [Token]) -> Option<NodeId> {
+        let else_tok = tokens.first()?;
         if !ident_eq(self.source, else_tok, "ELSE") {
             return None;
         }
-        let value =
-            self.parse_complete_concat_expr(&self.tokens[clause_start + 1..clause_end], else_tok)?;
-        let children = [token_leaf(self.b, else_tok), value];
+        let result = self
+            .parse_single_constructor_expr(&tokens[1..], else_tok)
+            .or_else(|| self.build_constructor_positional_arg(&tokens[1..], else_tok))?;
+        let children = [token_leaf(self.b, else_tok), result];
         Some(self.b.branch(
-            SyntaxKind::CallPositionalArg,
-            else_tok.range.start..self.b.span(value).end,
+            SyntaxKind::ConstructorElseClause,
+            else_tok.range.start..tokens.last()?.range.end,
             &children,
         ))
     }
 
-    fn parse_cond_constructor_arg_list(&mut self) -> Option<NodeId> {
-        let lparen_idx = self.idx;
-        let lparen = self.tokens.get(lparen_idx)?;
-        if lparen.kind != TokenKind::LParen {
+    fn parse_constructor_where_clause_slice(&mut self, tokens: &'a [Token]) -> Option<NodeId> {
+        let where_tok = tokens.first()?;
+        if !ident_eq(self.source, where_tok, "WHERE") {
             return None;
         }
-        let rparen_idx = self.find_matching_paren_from(lparen_idx)?;
-        let rparen = self.tokens.get(rparen_idx)?;
-        let mut children = vec![token_leaf(self.b, lparen)];
-        let mut idx = lparen_idx + 1;
 
-        while idx < rparen_idx {
-            let token = &self.tokens[idx];
+        let condition_tokens = if tokens.get(1)?.kind == TokenKind::LParen
+            && self.find_matching_group_in_slice(tokens, 1, TokenKind::LParen, TokenKind::RParen)
+                == Some(tokens.len() - 1)
+        {
+            &tokens[2..tokens.len() - 1]
+        } else {
+            &tokens[1..]
+        };
+        let condition = self.parse_complete_logical_expr(condition_tokens, where_tok)?;
+        let children = [token_leaf(self.b, where_tok), condition];
+        Some(self.b.branch(
+            SyntaxKind::ConstructorWhereClause,
+            where_tok.range.start..tokens.last()?.range.end,
+            &children,
+        ))
+    }
+
+    fn parse_constructor_base_clause_slice(&mut self, tokens: &'a [Token]) -> Option<NodeId> {
+        let base_tok = tokens.first()?;
+        if !ident_eq(self.source, base_tok, "BASE") || tokens.len() < 2 {
+            return None;
+        }
+        let value = self.parse_single_constructor_expr(&tokens[1..], base_tok)?;
+        let children = [token_leaf(self.b, base_tok), value];
+        Some(self.b.branch(
+            SyntaxKind::ConstructorBaseClause,
+            base_tok.range.start..tokens.last()?.range.end,
+            &children,
+        ))
+    }
+
+    fn parse_constructor_lines_of_clause_slice(&mut self, tokens: &'a [Token]) -> Option<NodeId> {
+        let lines_tok = tokens.first()?;
+        if !ident_eq(self.source, lines_tok, "LINES")
+            || !tokens
+                .get(1)
+                .is_some_and(|token| ident_eq(self.source, token, "OF"))
+        {
+            return None;
+        }
+
+        let mut children = vec![
+            token_leaf(self.b, lines_tok),
+            token_leaf(self.b, &tokens[1]),
+        ];
+        let source_start = 2usize;
+        let source_end = self
+            .find_top_level_keyword_any_in_slice(tokens, source_start, &["FROM", "TO", "USING"])
+            .unwrap_or(tokens.len());
+        if source_end > source_start {
+            children.push(self.parse_complete_concat_expr(&tokens[source_start..source_end], &tokens[1])?);
+        }
+
+        let mut idx = source_end;
+        while idx < tokens.len() {
+            if ident_eq(self.source, &tokens[idx], "FROM")
+                || ident_eq(self.source, &tokens[idx], "TO")
+            {
+                let clause_tok = &tokens[idx];
+                children.push(token_leaf(self.b, clause_tok));
+                let value_start = idx + 1;
+                let value_end = self
+                    .find_top_level_keyword_any_in_slice(tokens, value_start, &["FROM", "TO", "USING"])
+                    .unwrap_or(tokens.len());
+                if value_end > value_start {
+                    children.push(
+                        self.parse_complete_concat_expr(&tokens[value_start..value_end], clause_tok)?,
+                    );
+                }
+                idx = value_end;
+                continue;
+            }
+            children.push(token_leaf(self.b, &tokens[idx]));
+            idx += 1;
+        }
+
+        Some(self.b.branch(
+            SyntaxKind::ConstructorLinesOfClause,
+            lines_tok.range.start..tokens.last()?.range.end,
+            &children,
+        ))
+    }
+
+    fn parse_reduce_init_or_next_clause_slice(
+        &mut self,
+        tokens: &'a [Token],
+        kind: SyntaxKind,
+    ) -> Option<NodeId> {
+        let head = tokens.first()?;
+        let mut children = vec![token_leaf(self.b, head)];
+        children.extend(
+            self.parse_constructor_assignment_list(
+                &tokens[1..],
+                SyntaxKind::ConstructorNamedAssignment,
+            ),
+        );
+        Some(self.b.branch(
+            kind,
+            head.range.start..tokens.last()?.range.end,
+            &children,
+        ))
+    }
+
+    fn constructor_assignment_value_end(&self, tokens: &[Token], start: usize) -> usize {
+        let mut paren = 0i32;
+        let mut bracket = 0i32;
+        let mut brace = 0i32;
+        let mut idx = start;
+        while idx < tokens.len() {
+            let token = &tokens[idx];
+            match token.kind {
+                TokenKind::LParen => paren += 1,
+                TokenKind::RParen => paren -= 1,
+                TokenKind::LBracket => bracket += 1,
+                TokenKind::RBracket => bracket -= 1,
+                TokenKind::LBrace => brace += 1,
+                TokenKind::RBrace => brace -= 1,
+                _ => {}
+            }
+            if paren == 0 && bracket == 0 && brace == 0 {
+                if ident_eq(self.source, token, "FOR")
+                    || ident_eq(self.source, token, "LET")
+                    || ident_eq(self.source, token, "IN")
+                    || ident_eq(self.source, token, "BASE")
+                    || ident_eq(self.source, token, "OPTIONAL")
+                    || ident_eq(self.source, token, "INIT")
+                    || ident_eq(self.source, token, "NEXT")
+                    || ident_eq(self.source, token, "WHERE")
+                    || ident_eq(self.source, token, "UNTIL")
+                    || ident_eq(self.source, token, "WHILE")
+                    || ident_eq(self.source, token, "THEN")
+                {
+                    break;
+                }
+                if token.kind == TokenKind::Ident
+                    && tokens.get(idx + 1).map(|next| next.kind) == Some(TokenKind::Eq)
+                {
+                    break;
+                }
+            }
+            idx += 1;
+        }
+        idx
+    }
+
+    fn value_base_operand_end(&self, tokens: &[Token], start: usize) -> usize {
+        let mut idx = start;
+        while idx < tokens.len() {
+            let token = &tokens[idx];
+            if token.kind == TokenKind::Comment {
+                idx += 1;
+                continue;
+            }
+            if ident_eq(self.source, token, "FOR") {
+                break;
+            }
+            if token.kind == TokenKind::LParen
+                && idx > start
+                && self
+                    .previous_non_comment_token(tokens, idx)
+                    .is_some_and(|prev| have_space_between(prev, token))
+            {
+                break;
+            }
+            if token.kind == TokenKind::Ident
+                && tokens.get(idx + 1).map(|next| next.kind) == Some(TokenKind::Eq)
+            {
+                break;
+            }
+            idx += 1;
+        }
+        idx
+    }
+
+    fn value_for_source_end(&self, tokens: &[Token], start: usize) -> usize {
+        let mut idx = start;
+        while idx < tokens.len() {
+            let token = &tokens[idx];
+            if token.kind == TokenKind::Comment {
+                idx += 1;
+                continue;
+            }
+            if ident_eq(self.source, token, "FOR")
+                || ident_eq(self.source, token, "LET")
+                || ident_eq(self.source, token, "WHERE")
+                || ident_eq(self.source, token, "NEXT")
+                || ident_eq(self.source, token, "UNTIL")
+                || ident_eq(self.source, token, "WHILE")
+            {
+                break;
+            }
+            if token.kind == TokenKind::LParen
+                && idx > start
+                && self
+                    .previous_non_comment_token(tokens, idx)
+                    .is_some_and(|prev| have_space_between(prev, token))
+            {
+                break;
+            }
+            idx += 1;
+        }
+        idx
+    }
+
+    fn value_for_condition_end(&self, tokens: &[Token], start: usize) -> usize {
+        let mut paren = 0i32;
+        let mut bracket = 0i32;
+        let mut brace = 0i32;
+        let mut idx = start;
+        while idx < tokens.len() {
+            let token = &tokens[idx];
+            if token.kind == TokenKind::Comment {
+                idx += 1;
+                continue;
+            }
+            if paren == 0 && bracket == 0 && brace == 0 {
+                if ident_eq(self.source, token, "LET")
+                    || ident_eq(self.source, token, "FOR")
+                    || ident_eq(self.source, token, "NEXT")
+                {
+                    break;
+                }
+                if token.kind == TokenKind::Ident
+                    && tokens.get(idx + 1).map(|next| next.kind) == Some(TokenKind::Eq)
+                {
+                    break;
+                }
+                if token.kind == TokenKind::LParen
+                    && self
+                        .previous_non_comment_token(tokens, idx)
+                        .is_some_and(|prev| have_space_between(prev, token))
+                {
+                    break;
+                }
+            }
+            match token.kind {
+                TokenKind::LParen => paren += 1,
+                TokenKind::RParen => paren -= 1,
+                TokenKind::LBracket => bracket += 1,
+                TokenKind::RBracket => bracket -= 1,
+                TokenKind::LBrace => brace += 1,
+                TokenKind::RBrace => brace -= 1,
+                _ => {}
+            }
+            idx += 1;
+        }
+        idx
+    }
+
+    fn value_for_where_condition_end(&self, tokens: &[Token], start: usize) -> usize {
+        let mut idx = start;
+        while tokens
+            .get(idx)
+            .is_some_and(|token| token.kind == TokenKind::Comment)
+        {
+            idx += 1;
+        }
+        if tokens.get(idx).map(|token| token.kind) == Some(TokenKind::LParen)
+            && let Some(end_idx) =
+                self.find_matching_group_in_slice(tokens, idx, TokenKind::LParen, TokenKind::RParen)
+        {
+            return end_idx + 1;
+        }
+        self.find_top_level_keyword_any_in_slice(tokens, start, &["LET", "FOR", "NEXT"])
+            .unwrap_or(tokens.len())
+    }
+
+    fn value_lines_of_clause_end(&self, tokens: &[Token], start: usize) -> usize {
+        let mut idx = start;
+        while idx < tokens.len() {
+            let token = &tokens[idx];
+            if token.kind == TokenKind::Comment {
+                idx += 1;
+                continue;
+            }
+            if ident_eq(self.source, token, "FOR")
+                || ident_eq(self.source, token, "LET")
+                || ident_eq(self.source, token, "BASE")
+                || ident_eq(self.source, token, "OPTIONAL")
+                || ident_eq(self.source, token, "INIT")
+                || ident_eq(self.source, token, "NEXT")
+                || ident_eq(self.source, token, "WHERE")
+                || ident_eq(self.source, token, "UNTIL")
+                || ident_eq(self.source, token, "WHILE")
+                || ident_eq(self.source, token, "THEN")
+            {
+                break;
+            }
+            if token.kind == TokenKind::Ident
+                && tokens.get(idx + 1).map(|next| next.kind) == Some(TokenKind::Eq)
+            {
+                break;
+            }
+            idx += 1;
+        }
+        idx
+    }
+
+    fn next_value_sequence_break(&self, tokens: &[Token], start_idx: usize) -> usize {
+        let mut paren = 0i32;
+        let mut bracket = 0i32;
+        let mut brace = 0i32;
+        let mut idx = start_idx;
+        while idx < tokens.len() {
+            let token = &tokens[idx];
+            if paren == 0 && bracket == 0 && brace == 0 {
+                if ident_eq(self.source, token, "BASE")
+                    || (ident_eq(self.source, token, "LINES")
+                        && tokens
+                            .get(idx + 1)
+                            .is_some_and(|next| ident_eq(self.source, next, "OF")))
+                    || ident_eq(self.source, token, "FOR")
+                    || ident_eq(self.source, token, "LET")
+                    || (token.kind == TokenKind::Ident
+                        && tokens.get(idx + 1).map(|next| next.kind) == Some(TokenKind::Eq))
+                {
+                    break;
+                }
+                if token.kind == TokenKind::LParen
+                    && self
+                        .previous_non_comment_token(tokens, idx)
+                        .is_none_or(|prev| have_space_between(prev, token))
+                {
+                    break;
+                }
+            }
+            match token.kind {
+                TokenKind::LParen => paren += 1,
+                TokenKind::RParen => paren -= 1,
+                TokenKind::LBracket => bracket += 1,
+                TokenKind::RBracket => bracket -= 1,
+                TokenKind::LBrace => brace += 1,
+                TokenKind::RBrace => brace -= 1,
+                _ => {}
+            }
+            idx += 1;
+        }
+        idx
+    }
+
+    fn find_next_top_level_cond_clause_start_in_slice(
+        &self,
+        tokens: &[Token],
+        start_idx: usize,
+    ) -> Option<usize> {
+        let mut paren = 0i32;
+        let mut bracket = 0i32;
+        let mut brace = 0i32;
+        let mut idx = start_idx;
+        while idx < tokens.len() {
+            let token = &tokens[idx];
+            if paren == 0
+                && bracket == 0
+                && brace == 0
+                && (ident_eq(self.source, token, "WHEN") || ident_eq(self.source, token, "ELSE"))
+            {
+                return Some(idx);
+            }
+            match token.kind {
+                TokenKind::LParen => paren += 1,
+                TokenKind::RParen => paren -= 1,
+                TokenKind::LBracket => bracket += 1,
+                TokenKind::RBracket => bracket -= 1,
+                TokenKind::LBrace => brace += 1,
+                TokenKind::RBrace => brace -= 1,
+                _ => {}
+            }
+            idx += 1;
+        }
+        None
+    }
+
+    fn parse_value_for_clause_slice(
+        &mut self,
+        tokens: &'a [Token],
+        body_kind: ConstructorSequenceKind,
+    ) -> Option<NodeId> {
+        let for_tok = tokens.first()?;
+        if !ident_eq(self.source, for_tok, "FOR") || tokens.len() < 4 {
+            return None;
+        }
+        let mut children = vec![token_leaf(self.b, for_tok)];
+        let name_tok = tokens.get(1)?;
+        if name_tok.kind != TokenKind::Ident {
+            return None;
+        }
+        children.push(token_leaf(self.b, name_tok));
+
+        if tokens.get(2).map(|token| token.kind) == Some(TokenKind::Eq) {
+            children.push(token_leaf(self.b, &tokens[2]));
+            let term_idx =
+                self.find_top_level_keyword_any_in_slice(tokens, 3, &["THEN", "UNTIL", "WHILE"])?;
+            children.push(self.parse_complete_concat_expr(&tokens[3..term_idx], &tokens[2])?);
+            let mut idx = term_idx;
+            if ident_eq(self.source, &tokens[idx], "THEN") {
+                children.push(token_leaf(self.b, &tokens[idx]));
+                let then_end =
+                    self.find_top_level_keyword_any_in_slice(tokens, idx + 1, &["UNTIL", "WHILE"])?;
+                children.push(self.parse_complete_concat_expr(
+                    &tokens[idx + 1..then_end],
+                    &tokens[idx],
+                )?);
+                idx = then_end;
+            }
+            let cond_tok = &tokens[idx];
+            children.push(token_leaf(self.b, cond_tok));
+            let condition_end = self.value_for_condition_end(tokens, idx + 1);
+            children.push(self.parse_complete_logical_expr(
+                &tokens[idx + 1..condition_end],
+                cond_tok,
+            )?);
+            children.extend(self.parse_constructor_sequence(
+                &tokens[condition_end..],
+                cond_tok,
+                body_kind,
+            ));
+        } else if tokens.get(2).is_some_and(|token| ident_eq(self.source, token, "IN")) {
+            children.push(token_leaf(self.b, &tokens[2]));
+            let source_end = self.value_for_source_end(tokens, 3);
+            children.push(self.parse_complete_concat_expr(&tokens[3..source_end], &tokens[2])?);
+            let mut idx = source_end;
+            if tokens
+                .get(idx)
+                .is_some_and(|token| ident_eq(self.source, token, "WHERE"))
+            {
+                let condition_end = self.value_for_where_condition_end(tokens, idx + 1);
+                if let Some(where_clause) =
+                    self.parse_constructor_where_clause_slice(&tokens[idx..condition_end])
+                {
+                    children.push(where_clause);
+                }
+                idx = condition_end;
+            }
+            children.extend(self.parse_constructor_sequence(
+                &tokens[idx..],
+                &tokens[2],
+                body_kind,
+            ));
+        } else {
+            return None;
+        }
+
+        Some(self.b.branch(
+            SyntaxKind::ConstructorForClause,
+            for_tok.range.start..tokens.last()?.range.end,
+            &children,
+        ))
+    }
+
+    fn parse_value_sequence(
+        &mut self,
+        tokens: &'a [Token],
+        prev_before_first: &'a Token,
+    ) -> Vec<NodeId> {
+        let mut children = Vec::new();
+        let mut idx = 0usize;
+        while idx < tokens.len() {
+            let token = &tokens[idx];
             if token.kind == TokenKind::Comment {
                 idx += 1;
                 continue;
             }
 
-            let clause_end = self
-                .find_next_top_level_cond_clause_start(idx + 1, rparen_idx)
-                .unwrap_or(rparen_idx);
-            let clause = if ident_eq(self.source, token, "WHEN") {
-                self.parse_cond_when_clause(idx, clause_end)
-            } else if ident_eq(self.source, token, "ELSE") {
-                self.parse_cond_else_clause(idx, clause_end)
-            } else if ident_eq(self.source, token, "LET") {
-                self.build_raw_let_expr(&self.tokens[idx..clause_end])
-                    .map(|value| {
-                        self.b.branch(
-                            SyntaxKind::CallPositionalArg,
-                            self.b.span(value).start..self.b.span(value).end,
-                            &[value],
-                        )
-                    })
-            } else {
-                self.build_raw_call_positional_arg(&self.tokens[idx..clause_end])
-            };
-
-            if let Some(clause) =
-                clause.or_else(|| self.build_raw_call_positional_arg(&self.tokens[idx..clause_end]))
+            if ident_eq(self.source, token, "LET") {
+                if let Some(node) = self.parse_structured_let_expr_slice(
+                    &tokens[idx..],
+                    self.previous_non_comment_token(tokens, idx).unwrap_or(prev_before_first),
+                    ConstructorSequenceKind::Value,
+                ) {
+                    children.push(node);
+                }
+                break;
+            }
+            if ident_eq(self.source, token, "FOR") {
+                if let Some(node) =
+                    self.parse_value_for_clause_slice(&tokens[idx..], ConstructorSequenceKind::Value)
+                {
+                    children.push(node);
+                }
+                break;
+            }
+            if ident_eq(self.source, token, "BASE") {
+                let end = self.value_base_operand_end(tokens, idx + 1);
+                if let Some(node) = self.parse_constructor_base_clause_slice(&tokens[idx..end]) {
+                    children.push(node);
+                }
+                idx = end;
+                continue;
+            }
+            if ident_eq(self.source, token, "LINES")
+                && tokens
+                    .get(idx + 1)
+                    .is_some_and(|next| ident_eq(self.source, next, "OF"))
             {
-                children.push(clause);
+                let end = self.value_lines_of_clause_end(tokens, idx + 2);
+                if let Some(node) =
+                    self.parse_constructor_lines_of_clause_slice(&tokens[idx..end])
+                {
+                    children.push(node);
+                }
+                idx = end;
+                continue;
+            }
+            if token.kind == TokenKind::Ident
+                && tokens.get(idx + 1).map(|next| next.kind) == Some(TokenKind::Eq)
+            {
+                let value_end = self.constructor_assignment_value_end(tokens, idx + 2);
+                let prev_token =
+                    self.previous_non_comment_token(tokens, idx).unwrap_or(prev_before_first);
+                if let Some(node) = self.build_constructor_assignment_node(
+                    SyntaxKind::ConstructorNamedAssignment,
+                    &tokens[idx..value_end],
+                    prev_token,
+                ) {
+                    children.push(node);
+                }
+                idx = value_end;
+                continue;
+            }
+            if token.kind == TokenKind::LParen
+                && let Some(end_idx) = self.find_matching_group_in_slice(
+                    tokens,
+                    idx,
+                    TokenKind::LParen,
+                    TokenKind::RParen,
+                )
+            {
+                let prev_token =
+                    self.previous_non_comment_token(tokens, idx).unwrap_or(prev_before_first);
+                if let Some(node) =
+                    self.build_constructor_positional_arg(&tokens[idx..=end_idx], prev_token)
+                {
+                    children.push(node);
+                }
+                idx = end_idx + 1;
+                continue;
             }
 
-            if clause_end == idx {
-                idx += 1;
-            } else {
-                idx = clause_end;
+            let next = self.next_value_sequence_break(tokens, idx + 1);
+            let prev_token =
+                self.previous_non_comment_token(tokens, idx).unwrap_or(prev_before_first);
+            if let Some(node) = self.build_constructor_positional_arg(&tokens[idx..next], prev_token)
+            {
+                children.push(node);
             }
+            idx = next.max(idx + 1);
         }
-
-        children.push(token_leaf(self.b, rparen));
-        self.idx = rparen_idx + 1;
-        self.prev = rparen;
-        Some(self.b.branch(
-            SyntaxKind::CallArgList,
-            lparen.range.start..rparen.range.end,
-            &children,
-        ))
+        children
     }
 
-    fn parse_switch_constructor_arg_list(&mut self) -> Option<NodeId> {
-        let lparen_idx = self.idx;
-        let lparen = self.tokens.get(lparen_idx)?;
-        if lparen.kind != TokenKind::LParen {
-            return None;
+    fn parse_cond_sequence(
+        &mut self,
+        tokens: &'a [Token],
+        prev_before_first: &'a Token,
+    ) -> Vec<NodeId> {
+        let mut children = Vec::new();
+        let mut idx = 0usize;
+        while idx < tokens.len() && tokens[idx].kind == TokenKind::Comment {
+            idx += 1;
         }
-        let rparen_idx = self.find_matching_paren_from(lparen_idx)?;
-        let rparen = self.tokens.get(rparen_idx)?;
-        let mut children = vec![token_leaf(self.b, lparen)];
+        if idx < tokens.len() && ident_eq(self.source, &tokens[idx], "LET") {
+            if let Some(node) = self.parse_structured_let_expr_slice(
+                &tokens[idx..],
+                self.previous_non_comment_token(tokens, idx).unwrap_or(prev_before_first),
+                ConstructorSequenceKind::Cond,
+            ) {
+                children.push(node);
+            }
+            return children;
+        }
+
+        while idx < tokens.len() {
+            if tokens[idx].kind == TokenKind::Comment {
+                idx += 1;
+                continue;
+            }
+            let clause_end = self
+                .find_next_top_level_cond_clause_start_in_slice(tokens, idx + 1)
+                .unwrap_or(tokens.len());
+            let slice = &tokens[idx..clause_end];
+            let node = if ident_eq(self.source, &tokens[idx], "WHEN") {
+                self.parse_constructor_when_clause_slice(slice, false)
+            } else if ident_eq(self.source, &tokens[idx], "ELSE") {
+                self.parse_constructor_else_clause_slice(slice)
+            } else {
+                self.build_constructor_positional_arg(
+                    slice,
+                    self.previous_non_comment_token(tokens, idx).unwrap_or(prev_before_first),
+                )
+            };
+            if let Some(node) = node {
+                children.push(node);
+            }
+            idx = clause_end.max(idx + 1);
+        }
+        children
+    }
+
+    fn parse_switch_sequence(
+        &mut self,
+        tokens: &'a [Token],
+        prev_before_first: &'a Token,
+    ) -> Vec<NodeId> {
+        let mut children = Vec::new();
+        let mut idx = 0usize;
+        while idx < tokens.len() && tokens[idx].kind == TokenKind::Comment {
+            idx += 1;
+        }
+        if idx < tokens.len() && ident_eq(self.source, &tokens[idx], "LET") {
+            if let Some(node) = self.parse_structured_let_expr_slice(
+                &tokens[idx..],
+                self.previous_non_comment_token(tokens, idx).unwrap_or(prev_before_first),
+                ConstructorSequenceKind::Switch,
+            ) {
+                children.push(node);
+            }
+            return children;
+        }
+
         let first_clause_idx = self
-            .find_next_top_level_cond_clause_start(lparen_idx + 1, rparen_idx)
-            .unwrap_or(rparen_idx);
-
-        let mut idx = lparen_idx + 1;
-        while idx < first_clause_idx {
-            let token = &self.tokens[idx];
-            if token.kind == TokenKind::Comment {
-                idx += 1;
-                continue;
-            }
-            let clause_end = if ident_eq(self.source, token, "LET") {
-                self.find_top_level_keyword_in_range(idx + 1, first_clause_idx, "IN")
-                    .map(|in_idx| in_idx + 1)
-                    .unwrap_or(first_clause_idx)
-            } else {
-                first_clause_idx
-            };
-            if let Some(clause) = self.build_raw_call_positional_arg(&self.tokens[idx..clause_end])
-            {
-                children.push(clause);
-            }
-            if clause_end == idx {
-                idx += 1;
-            } else {
-                idx = clause_end;
-            }
+            .find_next_top_level_cond_clause_start_in_slice(tokens, idx)
+            .unwrap_or(tokens.len());
+        if first_clause_idx > idx
+            && let Some(node) = self.build_constructor_positional_arg(
+                &tokens[idx..first_clause_idx],
+                self.previous_non_comment_token(tokens, idx).unwrap_or(prev_before_first),
+            )
+        {
+            children.push(node);
         }
-
         idx = first_clause_idx;
-        while idx < rparen_idx {
-            let token = &self.tokens[idx];
+
+        while idx < tokens.len() {
+            if tokens[idx].kind == TokenKind::Comment {
+                idx += 1;
+                continue;
+            }
+            let clause_end = self
+                .find_next_top_level_cond_clause_start_in_slice(tokens, idx + 1)
+                .unwrap_or(tokens.len());
+            let slice = &tokens[idx..clause_end];
+            let node = if ident_eq(self.source, &tokens[idx], "WHEN") {
+                self.parse_constructor_when_clause_slice(slice, true)
+            } else if ident_eq(self.source, &tokens[idx], "ELSE") {
+                self.parse_constructor_else_clause_slice(slice)
+            } else {
+                self.build_constructor_positional_arg(
+                    slice,
+                    self.previous_non_comment_token(tokens, idx).unwrap_or(prev_before_first),
+                )
+            };
+            if let Some(node) = node {
+                children.push(node);
+            }
+            idx = clause_end.max(idx + 1);
+        }
+        children
+    }
+
+    fn parse_reduce_sequence(
+        &mut self,
+        tokens: &'a [Token],
+        prev_before_first: &'a Token,
+    ) -> Vec<NodeId> {
+        let mut children = Vec::new();
+        let mut idx = 0usize;
+        while idx < tokens.len() {
+            let token = &tokens[idx];
             if token.kind == TokenKind::Comment {
                 idx += 1;
                 continue;
             }
-
-            let clause_end = self
-                .find_next_top_level_cond_clause_start(idx + 1, rparen_idx)
-                .unwrap_or(rparen_idx);
-            let clause = if ident_eq(self.source, token, "WHEN") {
-                self.parse_switch_when_clause(idx, clause_end)
-            } else if ident_eq(self.source, token, "ELSE") {
-                self.parse_cond_else_clause(idx, clause_end)
-            } else {
-                self.build_raw_call_positional_arg(&self.tokens[idx..clause_end])
-            };
-
-            if let Some(clause) =
-                clause.or_else(|| self.build_raw_call_positional_arg(&self.tokens[idx..clause_end]))
-            {
-                children.push(clause);
+            if ident_eq(self.source, token, "LET") {
+                if let Some(node) = self.parse_structured_let_expr_slice(
+                    &tokens[idx..],
+                    self.previous_non_comment_token(tokens, idx).unwrap_or(prev_before_first),
+                    ConstructorSequenceKind::Reduce,
+                ) {
+                    children.push(node);
+                }
+                break;
             }
-
-            if clause_end == idx {
-                idx += 1;
-            } else {
-                idx = clause_end;
+            if ident_eq(self.source, token, "INIT") {
+                let end = self
+                    .find_top_level_keyword_any_in_slice(tokens, idx + 1, &["FOR", "LET", "NEXT"])
+                    .unwrap_or(tokens.len());
+                if let Some(node) = self.parse_reduce_init_or_next_clause_slice(
+                    &tokens[idx..end],
+                    SyntaxKind::ConstructorInitClause,
+                ) {
+                    children.push(node);
+                }
+                idx = end;
+                continue;
             }
+            if ident_eq(self.source, token, "FOR") {
+                if let Some(node) =
+                    self.parse_value_for_clause_slice(&tokens[idx..], ConstructorSequenceKind::Reduce)
+                {
+                    children.push(node);
+                }
+                break;
+            }
+            if ident_eq(self.source, token, "NEXT") {
+                if let Some(node) = self.parse_reduce_init_or_next_clause_slice(
+                    &tokens[idx..],
+                    SyntaxKind::ConstructorNextClause,
+                ) {
+                    children.push(node);
+                }
+                break;
+            }
+            let next = self
+                .find_top_level_keyword_any_in_slice(tokens, idx + 1, &["INIT", "FOR", "LET", "NEXT"])
+                .unwrap_or(tokens.len());
+            if let Some(node) = self.build_constructor_positional_arg(
+                &tokens[idx..next],
+                self.previous_non_comment_token(tokens, idx).unwrap_or(prev_before_first),
+            ) {
+                children.push(node);
+            }
+            idx = next.max(idx + 1);
         }
+        children
+    }
 
+    fn parse_constructor_sequence(
+        &mut self,
+        tokens: &'a [Token],
+        prev_before_first: &'a Token,
+        kind: ConstructorSequenceKind,
+    ) -> Vec<NodeId> {
+        match kind {
+            ConstructorSequenceKind::Value => self.parse_value_sequence(tokens, prev_before_first),
+            ConstructorSequenceKind::Cond => self.parse_cond_sequence(tokens, prev_before_first),
+            ConstructorSequenceKind::Switch => {
+                self.parse_switch_sequence(tokens, prev_before_first)
+            }
+            ConstructorSequenceKind::Reduce => {
+                self.parse_reduce_sequence(tokens, prev_before_first)
+            }
+            ConstructorSequenceKind::SingleExpr => self
+                .parse_single_constructor_expr(tokens, prev_before_first)
+                .into_iter()
+                .collect(),
+        }
+    }
+
+    fn parse_structured_constructor_arg_list(
+        &mut self,
+        kind: ConstructorSequenceKind,
+    ) -> Option<NodeId> {
+        let lparen_idx = self.idx;
+        let lparen = self.tokens.get(lparen_idx)?;
+        if lparen.kind != TokenKind::LParen {
+            return None;
+        }
+        let rparen_idx = self.find_matching_paren_from(lparen_idx)?;
+        let rparen = self.tokens.get(rparen_idx)?;
+        let inner = &self.tokens[lparen_idx + 1..rparen_idx];
+
+        let mut children = vec![token_leaf(self.b, lparen)];
+        children.extend(self.parse_constructor_sequence(inner, lparen, kind));
         children.push(token_leaf(self.b, rparen));
+
         self.idx = rparen_idx + 1;
         self.prev = rparen;
         Some(self.b.branch(
@@ -1153,12 +1962,20 @@ impl<'a, 'b> Parser<'a, 'b> {
             lparen.range.start..rparen.range.end,
             &children,
         ))
+    }
+
+    fn build_raw_let_expr(&mut self, tokens: &'a [Token]) -> Option<NodeId> {
+        self.parse_structured_let_expr_slice(tokens, self.prev, ConstructorSequenceKind::SingleExpr)
     }
 
     fn parse_constructor_expr(&mut self) -> Option<NodeId> {
         let kw_tok = self.bump()?;
-        let is_cond = ident_eq(self.source, kw_tok, "COND");
-        let is_switch = ident_eq(self.source, kw_tok, "SWITCH");
+        let constructor_kind = match kw_tok.lexeme(self.source).to_ascii_uppercase().as_str() {
+            "COND" => ConstructorSequenceKind::Cond,
+            "SWITCH" => ConstructorSequenceKind::Switch,
+            "REDUCE" => ConstructorSequenceKind::Reduce,
+            _ => ConstructorSequenceKind::Value,
+        };
         let mut children = vec![token_leaf(self.b, kw_tok)];
         self.skip_trivia();
         let type_start = self.idx;
@@ -1195,13 +2012,7 @@ impl<'a, 'b> Parser<'a, 'b> {
             .curr()
             .is_some_and(|token| token.kind == TokenKind::LParen)
         {
-            let args = if is_cond {
-                self.parse_cond_constructor_arg_list()?
-            } else if is_switch {
-                self.parse_switch_constructor_arg_list()?
-            } else {
-                self.parse_call_arg_list()?
-            };
+            let args = self.parse_structured_constructor_arg_list(constructor_kind)?;
             children.push(args);
         }
 
@@ -1681,7 +2492,7 @@ mod tests {
             Some("ty_demo")
         );
         let arg_list = constructor.arg_list().expect("arg list");
-        assert_eq!(arg_list.named_args().count(), 1);
+        assert_eq!(arg_list.constructor_named_assignments().count(), 1);
     }
 
     #[test]
@@ -1963,10 +2774,8 @@ mod tests {
         let root = parsed.file.root();
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::ConstructorExpr), 1);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::CallArgList), 1);
-        assert_eq!(
-            parsed.file.count_kind(root, SyntaxKind::CallPositionalArg),
-            2
-        );
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::ConstructorWhenClause), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::ConstructorElseClause), 1);
         assert!(parsed.file.count_kind(root, SyntaxKind::BinaryExpr) >= 3);
         assert!(parsed.file.count_kind(root, SyntaxKind::SelectorExpr) >= 4);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
@@ -2007,6 +2816,7 @@ mod tests {
         let root = parsed.file.root();
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::ConstructorExpr), 1);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::CallArgList), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::ConstructorForClause), 1);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
     }
 
@@ -2057,10 +2867,9 @@ mod tests {
         let root = parsed.file.root();
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::ConstructorExpr), 1);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::CallArgList), 1);
-        assert_eq!(
-            parsed.file.count_kind(root, SyntaxKind::CallPositionalArg),
-            3
-        );
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::LetExpr), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::ConstructorWhenClause), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::ConstructorElseClause), 1);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
     }
 
@@ -2074,6 +2883,8 @@ mod tests {
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::ConstructorExpr), 1);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::CallArgList), 1);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::LetExpr), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::ConstructorWhenClause), 2);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::ConstructorElseClause), 1);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
     }
 
@@ -2086,10 +2897,9 @@ mod tests {
         let root = parsed.file.root();
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::ConstructorExpr), 1);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::CallArgList), 1);
-        assert_eq!(
-            parsed.file.count_kind(root, SyntaxKind::CallPositionalArg),
-            4
-        );
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::LetExpr), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::ConstructorWhenClause), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::ConstructorElseClause), 1);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
     }
 
@@ -2114,6 +2924,40 @@ mod tests {
         let root = parsed.file.root();
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::ConstructorExpr), 1);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::CallArgList), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::ConstructorInitClause), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::ConstructorForClause), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::ConstructorNextClause), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::ConstructorNamedAssignment), 2);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
+    }
+
+    #[test]
+    fn value_constructor_with_base_and_for_parses_structured_clauses() {
+        let parsed = crate::parse(
+            "DATA(lt_new) = VALUE #( BASE lt_sequen_buff FOR ls_obj IN mt_obj_ids_native ( objid = ls_obj-objid ) ).",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::ConstructorExpr), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::CallArgList), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::ConstructorBaseClause), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::ConstructorForClause), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::ConstructorNamedAssignment), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
+    }
+
+    #[test]
+    fn cond_constructor_with_text_pool_results_parses_structured_clauses() {
+        let parsed = crate::parse(
+            "DATA(lv_status) = COND string( WHEN abap_true = abap_true THEN TEXT-005 ELSE TEXT-006 ).",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::ConstructorExpr), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::CallArgList), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::ConstructorWhenClause), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::ConstructorElseClause), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::CallPositionalArg), 2);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
     }
 
