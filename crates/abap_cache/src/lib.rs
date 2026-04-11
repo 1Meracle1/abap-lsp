@@ -2138,31 +2138,48 @@ fn synthetic_method_scope_definition_target(
     if symbol.kind == SymbolKind::Parameter {
         let method_symbol = scope.owner?;
         let method_name = unit.symbol(method_symbol).name.as_ref();
-        let (interface_name, member_name) = method_name.split_once('~')?;
-        let class_symbol = enclosing_class_owner(unit, symbol.scope)?;
-        let class_handle = SymbolHandle {
-            unit: unit.unit_id,
-            symbol: class_symbol,
-        };
-        let interface_name = Arc::<str>::from(interface_name.to_ascii_lowercase());
-        let (interface_unit, interface_symbol) = resolve_exposed_interface_handle_with_scope_index(
+        if let Some((interface_name, member_name)) = method_name.split_once('~') {
+            let class_symbol = enclosing_class_owner(unit, symbol.scope)?;
+            let class_handle = SymbolHandle {
+                unit: unit.unit_id,
+                symbol: class_symbol,
+            };
+            let interface_name = Arc::<str>::from(interface_name.to_ascii_lowercase());
+            let (interface_unit, interface_symbol) = resolve_exposed_interface_handle_with_scope_index(
+                snapshot,
+                snapshot.scope_index(),
+                unit,
+                class_handle.symbol,
+                symbol.scope,
+                &interface_name,
+            )?;
+            let member = interface_unit
+                .semantic()
+                .decls()
+                .class_member(interface_symbol, member_name)?;
+            let parameter = member
+                .parameters
+                .iter()
+                .find(|parameter| parameter.name == symbol.name)?;
+            return Some(definition_target_for_range(
+                interface_unit,
+                parameter.range.clone(),
+            ));
+        }
+
+        let (super_unit, super_symbol) = resolve_direct_superclass_from_scope_with_scope_index(
             snapshot,
             snapshot.scope_index(),
-            unit,
-            class_handle.symbol,
             symbol.scope,
-            &interface_name,
         )?;
-        let member = interface_unit
-            .semantic()
-            .decls()
-            .class_member(interface_symbol, member_name)?;
+        let (member_unit, member) =
+            resolve_class_member_in_hierarchy(snapshot, super_unit, super_symbol, method_name)?;
         let parameter = member
             .parameters
             .iter()
             .find(|parameter| parameter.name == symbol.name)?;
         return Some(definition_target_for_range(
-            interface_unit,
+            member_unit,
             parameter.range.clone(),
         ));
     }
@@ -7904,6 +7921,113 @@ ENDCLASS.";
             .definition_at(method_use + 1)
             .expect("interface method definition target");
         assert_target_slice(&target, "file:///i1.abap", interface_src, "meth");
+    }
+
+    #[test]
+    fn inherited_redefinition_method_body_uses_parent_parameters_without_unknown_symbol() {
+        let store = DocumentStore::default();
+        let super_src = "\
+CLASS super DEFINITION.
+  PUBLIC SECTION.
+    METHODS resend_notification_generic
+      EXPORTING ev_resnd_err TYPE abap_bool.
+ENDCLASS.
+
+CLASS super IMPLEMENTATION.
+  METHOD resend_notification_generic.
+  ENDMETHOD.
+ENDCLASS.";
+        let sub_src = "\
+CLASS sub DEFINITION INHERITING FROM super.
+  PUBLIC SECTION.
+    METHODS resend_notification_generic REDEFINITION.
+ENDCLASS.
+
+CLASS sub IMPLEMENTATION.
+  METHOD resend_notification_generic.
+    ev_resnd_err = abap_true.
+  ENDMETHOD.
+ENDCLASS.";
+        let snapshots = store.replace_all(vec![
+            DocumentInput {
+                uri: Arc::from("file:///super.abap"),
+                version: 1,
+                text: Arc::from(super_src),
+                is_dependency: true,
+                object_name: Some(Arc::from("super")),
+            },
+            DocumentInput {
+                uri: Arc::from("file:///sub.abap"),
+                version: 1,
+                text: Arc::from(sub_src),
+                is_dependency: false,
+                object_name: Some(Arc::from("sub")),
+            },
+        ]);
+        let snapshot = snapshots.get("file:///sub.abap").expect("sub snapshot");
+        assert!(
+            snapshot
+                .symbols
+                .diagnostics
+                .iter()
+                .all(|diag| !diag.message.contains("unknown symbol 'ev_resnd_err'")),
+            "{:?}",
+            snapshot.symbols.diagnostics
+        );
+    }
+
+    #[test]
+    fn definition_at_resolves_inherited_redefinition_parameter_to_parent_signature() {
+        let store = DocumentStore::default();
+        let super_src = "\
+CLASS super DEFINITION.
+  PUBLIC SECTION.
+    METHODS resend_notification_generic
+      EXPORTING ev_resnd_err TYPE abap_bool.
+ENDCLASS.
+
+CLASS super IMPLEMENTATION.
+  METHOD resend_notification_generic.
+  ENDMETHOD.
+ENDCLASS.";
+        let sub_src = "\
+CLASS sub DEFINITION INHERITING FROM super.
+  PUBLIC SECTION.
+    METHODS resend_notification_generic REDEFINITION.
+ENDCLASS.
+
+CLASS sub IMPLEMENTATION.
+  METHOD resend_notification_generic.
+    ev_resnd_err = abap_true.
+  ENDMETHOD.
+ENDCLASS.";
+        let snapshots = store.replace_all(vec![
+            DocumentInput {
+                uri: Arc::from("file:///super.abap"),
+                version: 1,
+                text: Arc::from(super_src),
+                is_dependency: true,
+                object_name: Some(Arc::from("super")),
+            },
+            DocumentInput {
+                uri: Arc::from("file:///sub.abap"),
+                version: 1,
+                text: Arc::from(sub_src),
+                is_dependency: false,
+                object_name: Some(Arc::from("sub")),
+            },
+        ]);
+        let snapshot = snapshots.get("file:///sub.abap").expect("sub snapshot");
+        let parameter_use = sub_src.rfind("ev_resnd_err").expect("parameter use") + 1;
+        let target = snapshot
+            .definition_at(parameter_use)
+            .expect("parameter definition target");
+        assert_target_slice(
+            &target,
+            "file:///super.abap",
+            super_src,
+            "ev_resnd_err",
+        );
     }
 
     #[test]

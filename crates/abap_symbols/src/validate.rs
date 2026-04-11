@@ -606,6 +606,23 @@ fn resolve_qualified_interface_method_context<'a>(
     Some((interface_unit, member))
 }
 
+fn resolve_inherited_redefinition_method_context<'a>(
+    project: &'a ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
+    unit: &'a crate::UnitAnalysis,
+    scope: ScopeId,
+) -> Option<(&'a crate::UnitAnalysis, &'a crate::ClassMemberData)> {
+    let method_symbol = enclosing_method_owner(unit, scope)?;
+    let method_name = unit.symbol(method_symbol).name.as_ref();
+    if method_name.contains('~') {
+        return None;
+    }
+    let class_symbol = enclosing_class_owner(unit, scope)?;
+    let superclass = direct_superclass_handle(project, lookup, unit, class_symbol)?;
+    let superclass_unit = &project.units[superclass.unit.as_usize()];
+    resolve_class_member_in_hierarchy(project, lookup, superclass_unit, superclass.symbol, method_name)
+}
+
 fn inject_symbol_into_scope_index(
     scope_index: &mut ScopeIndex,
     scope: ScopeId,
@@ -705,6 +722,57 @@ fn qualified_interface_method_scope_symbol_specs(
             ));
         }
     }
+    out
+}
+
+fn inherited_redefinition_method_scope_symbol_specs(
+    project: &ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
+    unit: &crate::UnitAnalysis,
+) -> Vec<(ScopeId, crate::SymbolData)> {
+    let method_scopes: Vec<_> = unit
+        .scopes
+        .iter()
+        .filter(|scope| scope.kind == ScopeKind::Method)
+        .map(|scope| scope.id)
+        .collect();
+    let mut out = Vec::new();
+    let mut next_symbol_id = unit.symbols.len() as u32;
+
+    for scope_id in method_scopes {
+        let Some((_, member)) =
+            resolve_inherited_redefinition_method_context(project, lookup, unit, scope_id)
+        else {
+            continue;
+        };
+        for param in &member.parameters {
+            let has_param = unit.symbols.iter().any(|symbol| {
+                symbol.scope == scope_id
+                    && symbol.kind == SymbolKind::Parameter
+                    && symbol.name == param.name
+            });
+            if has_param {
+                continue;
+            }
+            let id = SymbolId(next_symbol_id);
+            next_symbol_id += 1;
+            out.push((
+                scope_id,
+                crate::SymbolData {
+                    id,
+                    name: Arc::clone(&param.name),
+                    kind: SymbolKind::Parameter,
+                    scope: scope_id,
+                    decl_range: 0..0,
+                    structure: None,
+                    declared_type: param.declared_type.clone(),
+                    type_clause_display: None,
+                    value_clause_display: None,
+                },
+            ));
+        }
+    }
+
     out
 }
 
@@ -1916,6 +1984,9 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
         let synthetic_symbols = {
             let unit = &project.units[unit_idx];
             let mut symbols = qualified_interface_method_scope_symbol_specs(project, &lookup, unit);
+            symbols.extend(inherited_redefinition_method_scope_symbol_specs(
+                project, &lookup, unit,
+            ));
             symbols.extend(loop_where_scope_symbol_specs(
                 project,
                 &lookup,
