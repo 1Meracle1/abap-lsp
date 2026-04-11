@@ -15,8 +15,8 @@ use abap_symbols::{
     UnitId, Visibility, builtin_routine_spec, call_section_matches_parameter,
     parameter_is_required,
     perf_api::{
-        IncrementalProjectUpdate, LocalAnalysis, analyze_unit_local_state,
-        incremental_project_update,
+        IncrementalProjectUpdate, LocalAnalysis, PreviewProjectUpdate,
+        analyze_unit_local_state, incremental_project_update, preview_project_update,
     },
 };
 use parking_lot::RwLock;
@@ -4972,6 +4972,7 @@ fn type_keyword_before_base(
 pub struct DocumentStore {
     documents: RwLock<HashMap<Arc<str>, Arc<AnalysisSnapshot>>>,
     analysis: RwLock<Option<CachedWorkspaceAnalysis>>,
+    preview_metrics: RwLock<Option<PreviewMetrics>>,
 }
 
 impl Clone for DocumentStore {
@@ -4979,6 +4980,7 @@ impl Clone for DocumentStore {
         Self {
             documents: RwLock::new(self.documents.read().clone()),
             analysis: RwLock::new(self.analysis.read().clone()),
+            preview_metrics: RwLock::new(self.preview_metrics.read().clone()),
         }
     }
 }
@@ -4987,6 +4989,20 @@ fn snapshot_matches_input(snapshot: &AnalysisSnapshot, input: &DocumentInput) ->
     snapshot.text.as_ref() == input.text.as_ref()
         && snapshot.is_dependency == input.is_dependency
         && snapshot.object_name == input.object_name
+}
+
+fn clone_snapshot_with_version(snapshot: &AnalysisSnapshot, version: i32) -> Arc<AnalysisSnapshot> {
+    Arc::new(AnalysisSnapshot {
+        scope_index: Arc::clone(&snapshot.scope_index),
+        uri: Arc::clone(&snapshot.uri),
+        version,
+        text: Arc::clone(&snapshot.text),
+        is_dependency: snapshot.is_dependency,
+        object_name: snapshot.object_name.clone(),
+        parse: Arc::clone(&snapshot.parse),
+        symbols: Arc::clone(&snapshot.symbols),
+        project: Arc::clone(&snapshot.project),
+    })
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -5000,6 +5016,15 @@ struct AnalysisMetrics {
     snapshot_build_micros: u128,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct PreviewMetrics {
+    parse_count: usize,
+    local_phase_count: usize,
+    build_micros: u128,
+    committed_context_only: bool,
+    fell_back_to_single_document: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkspaceAnalysisMetricsSnapshot {
     pub parse_count: usize,
@@ -5009,6 +5034,15 @@ pub struct WorkspaceAnalysisMetricsSnapshot {
     pub local_phase_micros: u128,
     pub project_update_micros: u128,
     pub snapshot_build_micros: u128,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspacePreviewMetricsSnapshot {
+    pub parse_count: usize,
+    pub local_phase_count: usize,
+    pub build_micros: u128,
+    pub committed_context_only: bool,
+    pub fell_back_to_single_document: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -5504,6 +5538,90 @@ fn has_matching_input_set(
             .all(|input| existing.contains_key(input.uri.as_ref()))
 }
 
+fn local_analysis_with_object_name(mut local: LocalAnalysis, object_name: Option<&Arc<str>>) -> LocalAnalysis {
+    if let Some(object_name) = object_name {
+        local.unit.provided_names.push(Arc::clone(object_name));
+        local.unit.provided_names.sort();
+        local.unit.provided_names.dedup();
+    }
+    local
+}
+
+fn preview_unit_id_for_input(
+    input: &DocumentInput,
+    existing: &HashMap<Arc<str>, Arc<AnalysisSnapshot>>,
+    analysis: Option<&CachedWorkspaceAnalysis>,
+) -> UnitId {
+    if let Some(snapshot) = existing.get(input.uri.as_ref()) {
+        return snapshot.symbols.unit_id;
+    }
+    if let Some(unit_id) = analysis
+        .and_then(|analysis| analysis.locals.get(input.uri.as_ref()))
+        .map(|local| local.unit.unit_id)
+    {
+        return unit_id;
+    }
+    UnitId(existing.len() as u32)
+}
+
+fn build_preview_parse_and_local(
+    input: &DocumentInput,
+    existing: &HashMap<Arc<str>, Arc<AnalysisSnapshot>>,
+    analysis: Option<&CachedWorkspaceAnalysis>,
+) -> (Arc<ParseResult>, LocalAnalysis, usize, usize) {
+    let analysis_text = analysis_text_for_input(input);
+    let previous_snapshot = existing.get(input.uri.as_ref());
+    let previous_local = analysis.and_then(|analysis| analysis.locals.get(input.uri.as_ref()));
+
+    let parsed = Arc::new(parse(analysis_text.as_ref()));
+    let parse = if let Some(snapshot) = previous_snapshot {
+        if snapshot.parse.as_ref().tokens == parsed.as_ref().tokens
+            && snapshot.parse.as_ref().errors == parsed.as_ref().errors
+        {
+            Arc::clone(&snapshot.parse)
+        } else {
+            parsed
+        }
+    } else {
+        parsed
+    };
+    let parse_count = 1;
+
+    let reused_local = previous_snapshot.is_some_and(|snapshot| snapshot_matches_input(snapshot, input))
+        && previous_local.is_some();
+    let local = if let Some(previous) = previous_local.filter(|_| reused_local) {
+        previous.clone()
+    } else {
+        analyze_unit_local_state(
+            preview_unit_id_for_input(input, existing, analysis),
+            Arc::clone(&input.uri),
+            analysis_text.as_ref(),
+            parse.as_ref(),
+        )
+    };
+    let local_phase_count = usize::from(!reused_local);
+    let local = local_analysis_with_object_name(local, input.object_name.as_ref());
+    (parse, local, parse_count, local_phase_count)
+}
+
+fn preview_snapshot_from_update(
+    input: &DocumentInput,
+    parse: Arc<ParseResult>,
+    update: PreviewProjectUpdate,
+) -> Arc<AnalysisSnapshot> {
+    Arc::new(AnalysisSnapshot {
+        scope_index: Arc::new(build_scope_index(&update.changed_unit)),
+        uri: Arc::clone(&input.uri),
+        version: input.version,
+        text: Arc::clone(&input.text),
+        is_dependency: input.is_dependency,
+        object_name: input.object_name.clone(),
+        parse,
+        symbols: Arc::new(update.changed_unit),
+        project: Arc::new(update.project),
+    })
+}
+
 fn dependency_class_block_for_keywords(keywords: &[String]) -> Option<DependencyBlock> {
     if keywords.first().map(String::as_str) != Some("class") {
         return None;
@@ -5598,17 +5716,7 @@ impl DocumentStore {
             && current.is_dependency == input.is_dependency
             && current.object_name == input.object_name
         {
-            let snapshot = Arc::new(AnalysisSnapshot {
-                scope_index: Arc::clone(&current.scope_index),
-                uri: Arc::clone(&current.uri),
-                version: input.version,
-                text: Arc::clone(&current.text),
-                is_dependency: current.is_dependency,
-                object_name: current.object_name.clone(),
-                parse: Arc::clone(&current.parse),
-                symbols: Arc::clone(&current.symbols),
-                project: Arc::clone(&current.project),
-            });
+            let snapshot = clone_snapshot_with_version(current, input.version);
             drop(existing);
             drop(analysis);
             self.documents
@@ -5638,6 +5746,7 @@ impl DocumentStore {
     }
 
     pub fn preview_publish_input(&self, input: DocumentInput) -> Arc<AnalysisSnapshot> {
+        let started = std::time::Instant::now();
         let existing = self.documents.read();
         let analysis = self.analysis.read();
         if let Some(current) = existing.get(input.uri.as_ref())
@@ -5645,58 +5754,35 @@ impl DocumentStore {
             && current.is_dependency == input.is_dependency
             && current.object_name == input.object_name
         {
-            return Arc::new(AnalysisSnapshot {
-                scope_index: Arc::clone(&current.scope_index),
-                uri: Arc::clone(&current.uri),
-                version: input.version,
-                text: Arc::clone(&current.text),
-                is_dependency: current.is_dependency,
-                object_name: current.object_name.clone(),
-                parse: Arc::clone(&current.parse),
-                symbols: Arc::clone(&current.symbols),
-                project: Arc::clone(&current.project),
+            let snapshot = clone_snapshot_with_version(current, input.version);
+            *self.preview_metrics.write() = Some(PreviewMetrics {
+                parse_count: 0,
+                local_phase_count: 0,
+                build_micros: started.elapsed().as_micros(),
+                committed_context_only: false,
+                fell_back_to_single_document: false,
             });
+            return snapshot;
         }
-        let inputs = document_inputs_for_publish(&existing, analysis.as_ref(), &input);
-        let force_full = force_full_rebuild(analysis.as_ref(), &inputs);
-        let changed_uris = HashSet::from([Arc::clone(&input.uri)]);
-        let (prepared, _) = prepare_documents(&inputs, Some(&existing), analysis.as_ref(), None);
-        let locals: Vec<_> = prepared
-            .iter()
-            .map(|prepared| prepared.local.clone())
-            .collect();
+        let (parse, local, parse_count, local_phase_count) =
+            build_preview_parse_and_local(&input, &existing, analysis.as_ref());
         let previous_project = existing
             .values()
             .next()
             .map(|snapshot| snapshot.project.as_ref());
         let previous_locals = analysis.as_ref().map(|analysis| &analysis.locals);
-        let update = incremental_project_update(
-            previous_project,
-            previous_locals,
-            locals,
-            &changed_uris,
-            force_full,
-        );
-        let project = Arc::new(update.project);
-        let prepared = prepared
-            .into_iter()
-            .find(|prepared| prepared.uri.as_ref() == input.uri.as_ref())
-            .expect("preview snapshot input should exist");
-        let unit = project
-            .unit_by_uri(prepared.uri.as_ref())
-            .cloned()
-            .expect("preview project should contain changed unit");
-        Arc::new(AnalysisSnapshot {
-            scope_index: Arc::new(build_scope_index(&unit)),
-            uri: Arc::clone(&prepared.uri),
-            version: prepared.version,
-            text: Arc::clone(&prepared.text),
-            is_dependency: prepared.is_dependency,
-            object_name: prepared.object_name.clone(),
-            parse: Arc::clone(&prepared.parse),
-            symbols: Arc::new(unit),
-            project,
-        })
+        let update = preview_project_update(previous_project, previous_locals, local);
+        let committed_context_only = update.committed_context_only;
+        let fell_back_to_single_document = update.fell_back_to_single_document;
+        let snapshot = preview_snapshot_from_update(&input, parse, update);
+        *self.preview_metrics.write() = Some(PreviewMetrics {
+            parse_count,
+            local_phase_count,
+            build_micros: started.elapsed().as_micros(),
+            committed_context_only,
+            fell_back_to_single_document,
+        });
+        snapshot
     }
 
     pub fn get(&self, uri: &str) -> Option<Arc<AnalysisSnapshot>> {
@@ -5745,6 +5831,20 @@ impl DocumentStore {
             })
     }
 
+    #[doc(hidden)]
+    pub fn last_preview_metrics_snapshot(&self) -> Option<WorkspacePreviewMetricsSnapshot> {
+        self.preview_metrics
+            .read()
+            .as_ref()
+            .map(|metrics| WorkspacePreviewMetricsSnapshot {
+                parse_count: metrics.parse_count,
+                local_phase_count: metrics.local_phase_count,
+                build_micros: metrics.build_micros,
+                committed_context_only: metrics.committed_context_only,
+                fell_back_to_single_document: metrics.fell_back_to_single_document,
+            })
+    }
+
     pub fn references(
         &self,
         uri: &str,
@@ -5752,13 +5852,24 @@ impl DocumentStore {
         include_declaration: bool,
     ) -> Option<Vec<ReferenceTarget>> {
         let snapshot = self.get(uri)?;
+        self.references_for_snapshot(snapshot.as_ref(), offset, include_declaration)
+    }
+
+    pub fn references_for_snapshot(
+        &self,
+        snapshot: &AnalysisSnapshot,
+        offset: usize,
+        include_declaration: bool,
+    ) -> Option<Vec<ReferenceTarget>> {
         let target = snapshot.reference_search_target_at(offset)?;
-        let mut references: Vec<_> = self
-            .documents
-            .read()
-            .values()
-            .flat_map(|candidate| candidate.local_references_for_target(&target))
-            .collect();
+        let mut references = snapshot.local_references_for_target(&target);
+        references.extend(
+            self.documents
+                .read()
+                .values()
+                .filter(|candidate| candidate.uri.as_ref() != snapshot.uri.as_ref())
+                .flat_map(|candidate| candidate.local_references_for_target(&target)),
+        );
         if include_declaration
             && let Some(declaration) =
                 reference_target_for_search_target(snapshot.project.as_ref(), &target)
@@ -6168,6 +6279,154 @@ START-OF-SELECTION.
         let dirty = store.last_dirty_uris();
         assert!(dirty.contains("file:///dep.abap"));
         assert!(dirty.contains("file:///consumer.abap"));
+    }
+
+    #[test]
+    fn preview_body_only_edit_reanalyzes_only_changed_unit() {
+        let store = DocumentStore::default();
+        let provider_v1 = "\
+CLASS zcl_dep DEFINITION.
+  PUBLIC SECTION.
+    METHODS value RETURNING VALUE(rv_value) TYPE i.
+ENDCLASS.
+CLASS zcl_dep IMPLEMENTATION.
+  METHOD value.
+    rv_value = 1.
+  ENDMETHOD.
+ENDCLASS.";
+        let provider_v2 = provider_v1.replace("rv_value = 1.", "rv_value = 2.");
+        let consumer = "\
+DATA lo_dep TYPE REF TO zcl_dep.
+START-OF-SELECTION.
+  lo_dep->value( ).";
+
+        store.replace_all(vec![
+            DocumentInput {
+                uri: Arc::from("file:///dep.abap"),
+                version: 1,
+                text: Arc::from(provider_v1),
+                is_dependency: false,
+                object_name: None,
+            },
+            DocumentInput {
+                uri: Arc::from("file:///consumer.abap"),
+                version: 1,
+                text: Arc::from(consumer),
+                is_dependency: false,
+                object_name: None,
+            },
+        ]);
+
+        let committed_provider = store.get("file:///dep.abap").expect("committed provider");
+        let committed_consumer = store
+            .get("file:///consumer.abap")
+            .expect("committed consumer");
+        let preview = store.preview_publish_input(DocumentInput {
+            uri: Arc::from("file:///dep.abap"),
+            version: 2,
+            text: Arc::from(provider_v2.as_str()),
+            is_dependency: false,
+            object_name: None,
+        });
+
+        let preview_metrics = store
+            .last_preview_metrics_snapshot()
+            .expect("preview metrics");
+        assert_eq!(preview_metrics.parse_count, 1);
+        assert_eq!(preview_metrics.local_phase_count, 1);
+        assert!(preview_metrics.committed_context_only);
+        assert!(!preview_metrics.fell_back_to_single_document);
+        assert_eq!(preview.version, 2);
+        assert!(preview.text.contains("rv_value = 2."));
+        assert_eq!(store.get("file:///dep.abap").unwrap().version, 1);
+        assert!(Arc::ptr_eq(
+            &committed_provider,
+            &store.get("file:///dep.abap").expect("stored provider"),
+        ));
+        assert!(Arc::ptr_eq(
+            &committed_consumer,
+            &store.get("file:///consumer.abap").expect("stored consumer"),
+        ));
+    }
+
+    #[test]
+    fn preview_signature_change_keeps_dependents_on_committed_state() {
+        let store = DocumentStore::default();
+        let provider_v1 = "\
+CLASS zcl_dep DEFINITION.
+  PUBLIC SECTION.
+    METHODS value RETURNING VALUE(rv_value) TYPE i.
+ENDCLASS.
+CLASS zcl_dep IMPLEMENTATION.
+  METHOD value.
+    rv_value = 1.
+  ENDMETHOD.
+ENDCLASS.";
+        let provider_v2 = "\
+CLASS zcl_dep DEFINITION.
+  PUBLIC SECTION.
+    METHODS value RETURNING VALUE(rv_value) TYPE i.
+    METHODS extra.
+ENDCLASS.
+CLASS zcl_dep IMPLEMENTATION.
+  METHOD value.
+    rv_value = 1.
+  ENDMETHOD.
+  METHOD extra.
+  ENDMETHOD.
+ENDCLASS.";
+        let consumer = "\
+DATA lo_dep TYPE REF TO zcl_dep.
+START-OF-SELECTION.
+  lo_dep->value( ).";
+
+        store.replace_all(vec![
+            DocumentInput {
+                uri: Arc::from("file:///dep.abap"),
+                version: 1,
+                text: Arc::from(provider_v1),
+                is_dependency: false,
+                object_name: None,
+            },
+            DocumentInput {
+                uri: Arc::from("file:///consumer.abap"),
+                version: 1,
+                text: Arc::from(consumer),
+                is_dependency: false,
+                object_name: None,
+            },
+        ]);
+
+        let committed_consumer = store
+            .get("file:///consumer.abap")
+            .expect("committed consumer");
+        let preview = store.preview_publish_input(DocumentInput {
+            uri: Arc::from("file:///dep.abap"),
+            version: 2,
+            text: Arc::from(provider_v2),
+            is_dependency: false,
+            object_name: None,
+        });
+
+        let preview_metrics = store
+            .last_preview_metrics_snapshot()
+            .expect("preview metrics");
+        assert_eq!(preview_metrics.parse_count, 1);
+        assert_eq!(preview_metrics.local_phase_count, 1);
+        assert!(preview_metrics.committed_context_only);
+        assert!(!preview_metrics.fell_back_to_single_document);
+        assert!(
+            preview
+                .symbols
+                .class_members
+                .iter()
+                .any(|member| member.name.as_ref() == "extra")
+        );
+        assert_eq!(store.get("file:///dep.abap").unwrap().version, 1);
+        assert!(Arc::ptr_eq(
+            &committed_consumer,
+            &store.get("file:///consumer.abap").expect("stored consumer"),
+        ));
     }
 
     #[test]

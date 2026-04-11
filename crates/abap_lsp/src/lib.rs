@@ -1271,8 +1271,11 @@ pub fn references(state: &ServerState, params: &ReferenceParams) -> Option<Vec<L
         snapshot.text.as_ref(),
         params.text_document_position.position,
     )?;
-    let references =
-        cache_for_uri(state, &uri).references(&uri, offset, params.context.include_declaration)?;
+    let references = cache_for_uri(state, &uri).references_for_snapshot(
+        snapshot.as_ref(),
+        offset,
+        params.context.include_declaration,
+    )?;
     let mut locations = Vec::with_capacity(references.len());
     for reference in references {
         let target_snapshot = if reference.uri.as_ref() == snapshot.uri.as_ref() {
@@ -1821,6 +1824,59 @@ mod tests {
         assert_eq!(locations.len(), 2);
         assert_eq!(locations[0].range.start.line, 0);
         assert_eq!(locations[1].range.start.line, 1);
+    }
+
+    #[test]
+    fn references_use_preview_snapshot_before_workspace_commit() {
+        let workspace_path = temp_workspace_path("preview_references");
+        fs::create_dir_all(&workspace_path).expect("workspace dir");
+        fs::write(
+            workspace_path.join("main.abap"),
+            "DATA lv TYPE i.\nlv = 1.\n",
+        )
+        .expect("main");
+
+        let workspace_uri = path_to_file_uri(&workspace_path);
+        let source_uri = format!("{workspace_uri}/main.abap");
+        let mut state = ServerState::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        refresh_workspace(&mut state, &workspace_uri);
+
+        assert!(stage_workspace_preview_snapshot(
+            &mut state,
+            &source_uri,
+            2,
+            "DATA lv TYPE i.\nlv = 1.\nlv = lv + 1.\n"
+        ));
+
+        let locations = references(
+            &state,
+            &ReferenceParams {
+                text_document_position: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str(&source_uri).expect("uri"),
+                    },
+                    position: Position {
+                        line: 2,
+                        character: 6,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+                context: lsp_types::ReferenceContext {
+                    include_declaration: true,
+                },
+            },
+        )
+        .expect("references");
+
+        assert_eq!(locations.len(), 4, "{locations:?}");
+        assert_eq!(locations[0].range.start.line, 0);
+        assert_eq!(locations[1].range.start.line, 1);
+        assert_eq!(locations[2].range.start.line, 2);
+        assert_eq!(locations[3].range.start.line, 2);
+
+        let _ = fs::remove_dir_all(&workspace_path);
     }
 
     #[test]

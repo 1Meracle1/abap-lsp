@@ -9,9 +9,10 @@ use crate::ids::UnitId;
 use crate::project::{
     IncrementalProjectAnalysisResult, LocallyResolvedUnit, ProjectAnalysis,
     analyze_project_incremental_from_locals, analyze_unit_locally_phased,
+    collect_project_diagnostics, exported_signature_for_unit, resolve_include_edges_for_units,
 };
 use crate::resolver::{build_scope_index, resolve_unit_with_index};
-use crate::validate::validate_project_with_scope_indexes;
+use crate::validate::{validate_project_with_scope_indexes, validate_project_with_scope_indexes_for_units};
 
 #[doc(hidden)]
 pub fn collect_unit_only(
@@ -61,6 +62,15 @@ pub struct LocalAnalysis {
 pub struct IncrementalProjectUpdate {
     pub project: ProjectAnalysis,
     pub dirty_uris: HashSet<Arc<str>>,
+}
+
+#[doc(hidden)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreviewProjectUpdate {
+    pub project: ProjectAnalysis,
+    pub changed_unit: UnitAnalysis,
+    pub committed_context_only: bool,
+    pub fell_back_to_single_document: bool,
 }
 
 #[doc(hidden)]
@@ -124,5 +134,114 @@ pub fn incremental_project_update(
     IncrementalProjectUpdate {
         project,
         dirty_uris: dirty_set.uris,
+    }
+}
+
+fn rebuild_project_maps(
+    units: &[UnitAnalysis],
+) -> (
+    HashMap<Arc<str>, UnitId>,
+    HashMap<Arc<str>, UnitId>,
+) {
+    let mut uri_to_unit = HashMap::with_capacity(units.len());
+    let mut provided_name_to_unit = HashMap::new();
+    for unit in units {
+        uri_to_unit.insert(Arc::clone(&unit.uri), unit.unit_id);
+        for name in &unit.provided_names {
+            provided_name_to_unit
+                .entry(Arc::clone(name))
+                .or_insert(unit.unit_id);
+        }
+    }
+    (uri_to_unit, provided_name_to_unit)
+}
+
+#[doc(hidden)]
+pub fn preview_project_update(
+    previous_project: Option<&ProjectAnalysis>,
+    previous_locals: Option<&HashMap<Arc<str>, LocalAnalysis>>,
+    local: LocalAnalysis,
+) -> PreviewProjectUpdate {
+    let exported_signature = exported_signature_for_unit(&local.unit);
+    let current = LocallyResolvedUnit {
+        unit: local.unit,
+        scope_index: local.scope_index,
+        exported_signature,
+    };
+
+    let Some(previous_project) = previous_project else {
+        let project = validate_single_unit(current.unit.clone());
+        return PreviewProjectUpdate {
+            changed_unit: project.units[0].clone(),
+            project,
+            committed_context_only: false,
+            fell_back_to_single_document: true,
+        };
+    };
+    let Some(previous_locals) = previous_locals else {
+        let project = validate_single_unit(current.unit.clone());
+        return PreviewProjectUpdate {
+            changed_unit: project.units[0].clone(),
+            project,
+            committed_context_only: false,
+            fell_back_to_single_document: true,
+        };
+    };
+
+    let mut units = previous_project.units.clone();
+    let changed_unit_id = current.unit.unit_id;
+    match changed_unit_id.as_usize().cmp(&units.len()) {
+        std::cmp::Ordering::Less => {
+            units[changed_unit_id.as_usize()] = current.unit.clone();
+        }
+        std::cmp::Ordering::Equal => {
+            units.push(current.unit.clone());
+        }
+        std::cmp::Ordering::Greater => {
+            let project = validate_single_unit(current.unit.clone());
+            return PreviewProjectUpdate {
+                changed_unit: project.units[0].clone(),
+                project,
+                committed_context_only: false,
+                fell_back_to_single_document: true,
+            };
+        }
+    }
+
+    let (uri_to_unit, provided_name_to_unit) = rebuild_project_maps(&units);
+    let dirty_unit_ids = HashSet::from([changed_unit_id]);
+    let mut fell_back_to_single_document = false;
+    let mut scope_indexes = Vec::with_capacity(units.len());
+    for unit in &units {
+        if unit.unit_id == changed_unit_id {
+            scope_indexes.push(current.scope_index.clone());
+        } else if let Some(previous) = previous_locals.get(unit.uri.as_ref()) {
+            scope_indexes.push(previous.scope_index.clone());
+        } else {
+            fell_back_to_single_document = true;
+            scope_indexes.push(build_scope_index(unit));
+        }
+    }
+
+    resolve_include_edges_for_units(&mut units, &provided_name_to_unit, &dirty_unit_ids);
+    crate::resolver::resolve_project_cross_unit_for_units(&mut units, &dirty_unit_ids);
+    for unit_id in &dirty_unit_ids {
+        units[unit_id.as_usize()].rebuild_semantic_index();
+    }
+
+    let mut project = ProjectAnalysis {
+        units,
+        uri_to_unit,
+        provided_name_to_unit,
+        diagnostics: Vec::new(),
+    };
+    validate_project_with_scope_indexes_for_units(&mut project, &scope_indexes, &dirty_unit_ids);
+    collect_project_diagnostics(&mut project);
+
+    PreviewProjectUpdate {
+        changed_unit: project.units[changed_unit_id.as_usize()].clone(),
+        project,
+        committed_context_only: true,
+        fell_back_to_single_document,
     }
 }

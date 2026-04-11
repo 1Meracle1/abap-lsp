@@ -1834,7 +1834,8 @@ mod tests {
     use super::{
         AnalysisTaskKind, CHANGE_ANALYSIS_DEBOUNCE, EDITOR_FIRST_DIAGNOSTIC_LIMIT,
         RESOLVE_REMOTE_DEPENDENCIES, flush_due_debounced_tasks, handle_did_change_notifications,
-        handle_message, try_schedule_background_analysis, workspace_analysis_status_finished,
+        handle_message, run_analysis_task, try_schedule_background_analysis,
+        workspace_analysis_status_finished,
         workspace_analysis_status_started,
     };
     use abap_lsp::{
@@ -2711,6 +2712,152 @@ lo_helper->r"
         assert!(
             labels.iter().any(|label| *label == "run"),
             "expected helper method completion during debounce: {labels:?}"
+        );
+
+        let _ = fs::remove_dir_all(&workspace_path);
+    }
+
+    #[test]
+    fn editor_first_preview_updates_changed_file_diagnostics_before_dependents() {
+        let workspace_path = temp_workspace_path("editor_first_preview_diagnostics");
+        let source_dir = workspace_path.join("src");
+        fs::create_dir_all(&source_dir).expect("source dir");
+        fs::write(
+            source_dir.join("ZCL_PROVIDER.abap"),
+            "\
+CLASS zcl_provider DEFINITION.
+  PUBLIC SECTION.
+    METHODS value RETURNING VALUE(rv_value) TYPE i.
+ENDCLASS.
+CLASS zcl_provider IMPLEMENTATION.
+  METHOD value.
+    rv_value = 1.
+  ENDMETHOD.
+ENDCLASS.",
+        )
+        .expect("provider");
+        fs::write(
+            source_dir.join("ZREPORT_MAIN.abap"),
+            "\
+REPORT zreport_main.
+DATA lo_provider TYPE REF TO zcl_provider.
+lo_provider->value( ).",
+        )
+        .expect("consumer");
+        write_manifest_workspace(
+            &workspace_path,
+            Some("editor-first"),
+            None,
+            &[
+                ("ZCL_PROVIDER", "global-class", "main", "src/ZCL_PROVIDER.abap"),
+                ("ZREPORT_MAIN", "report", "root", "src/ZREPORT_MAIN.abap"),
+            ],
+            0,
+        );
+
+        let workspace_uri = file_uri(&workspace_path);
+        let provider_uri = format!("{workspace_uri}/src/ZCL_PROVIDER.abap");
+        let consumer_uri = format!("{workspace_uri}/src/ZREPORT_MAIN.abap");
+        let mut state = ServerState::default();
+        let config = ServerConfig::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        refresh_workspace(&mut state, &workspace_uri);
+
+        handle_message(
+            &mut state,
+            &config,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": {
+                    "textDocument": {
+                        "uri": consumer_uri,
+                        "languageId": "abap",
+                        "version": 1,
+                        "text": "\
+REPORT zreport_main.
+DATA lo_provider TYPE REF TO zcl_provider.
+lo_provider->value( )."
+                    }
+                }
+            }),
+        )
+        .expect("didOpen");
+
+        let generations = Arc::new(Mutex::new(HashMap::new()));
+        let pending_tasks = Arc::new(Mutex::new(HashMap::new()));
+        let mut debounced_tasks = HashMap::new();
+        let (task_tx, task_rx) = mpsc::sync_channel(1);
+        let message = json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didChange",
+            "params": {
+                "textDocument": {
+                    "uri": provider_uri,
+                    "version": 2
+                },
+                "contentChanges": [{
+                    "text": "\
+CLASS zcl_provider DEFINITION.
+  PUBLIC SECTION.
+ENDCLASS.
+CLASS zcl_provider IMPLEMENTATION.
+ENDCLASS."
+                }]
+            }
+        });
+
+        let scheduled = try_schedule_background_analysis(
+            &mut state,
+            &message,
+            &task_tx,
+            &pending_tasks,
+            &generations,
+            &mut debounced_tasks,
+        )
+        .expect("schedule")
+        .expect("background job");
+        let immediate_diagnostic_uris: Vec<_> = scheduled
+            .notifications
+            .iter()
+            .filter(|(method, _)| method == "textDocument/publishDiagnostics")
+            .filter_map(|(_, payload)| payload.get("uri").and_then(Value::as_str))
+            .collect();
+        assert!(
+            immediate_diagnostic_uris
+                .iter()
+                .any(|uri| uri.ends_with("/src/ZCL_PROVIDER.abap"))
+        );
+        assert!(
+            immediate_diagnostic_uris
+                .iter()
+                .all(|uri| !uri.ends_with("/src/ZREPORT_MAIN.abap"))
+        );
+
+        let _started = flush_due_debounced_tasks(
+            Instant::now() + CHANGE_ANALYSIS_DEBOUNCE,
+            &mut debounced_tasks,
+            &task_tx,
+            &pending_tasks,
+        )
+        .expect("flush");
+        let queued_workspace = task_rx.recv().expect("queued workspace");
+        let task = pending_tasks
+            .lock()
+            .expect("pending tasks")
+            .remove(&queued_workspace)
+            .expect("pending task");
+        let completion = run_analysis_task(task).expect("analysis completion");
+        let background_diagnostic_uris: Vec<_> = completion
+            .notifications
+            .iter()
+            .filter(|(method, _)| method == "textDocument/publishDiagnostics")
+            .filter_map(|(_, payload)| payload.get("uri").and_then(Value::as_str))
+            .collect();
+        assert!(
+            background_diagnostic_uris
+                .iter()
+                .any(|uri| uri.ends_with("/src/ZREPORT_MAIN.abap"))
         );
 
         let _ = fs::remove_dir_all(&workspace_path);

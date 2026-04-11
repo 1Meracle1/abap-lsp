@@ -292,7 +292,7 @@ pub(crate) fn build_workspace_index(local_units: &[LocallyResolvedUnit]) -> Work
     }
 }
 
-fn resolve_include_edges_for_units(
+pub(crate) fn resolve_include_edges_for_units(
     units: &mut [UnitAnalysis],
     provided_name_to_unit: &HashMap<Arc<str>, UnitId>,
     dirty_unit_ids: &HashSet<UnitId>,
@@ -317,7 +317,7 @@ fn resolve_include_edges_for_units(
     }
 }
 
-fn collect_project_diagnostics(project: &mut ProjectAnalysis) {
+pub(crate) fn collect_project_diagnostics(project: &mut ProjectAnalysis) {
     project.diagnostics.clear();
     for unit in &project.units {
         for diagnostic in &unit.diagnostics {
