@@ -6,30 +6,29 @@
 //! abap-cli symbols [--json] [--unknown-only] [FILE]
 //! abap-cli check [--json] [FILE]
 //! abap-cli analyze --json [--with-project] [--pretty] [FILE]
+//! abap-cli call-graph --json [--symbol NAME] [--pretty] [FILE]
 //! ```
 //!
 //! `FILE` is UTF-8 ABAP source; omit or use `-` for stdin.
 
 mod human;
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::io::Read;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use abap_cache::{
-    DocumentInput, DocumentStore, load_workspace_documents, manifest_document_metadata,
-    path_to_file_uri,
-};
-use abap_ast::SyntaxKind;
 use abap_ast::arena::NodeId;
+use abap_ast::SyntaxKind;
+use abap_cache::{
+    load_workspace_documents, manifest_document_metadata, path_to_file_uri, CallGraphEdge,
+    CallGraphNode, DocumentInput, DocumentStore,
+};
 use abap_lexer::tokenize;
 use abap_parser::parse;
-use abap_symbols::{
-    DiagnosticKind, SemanticDossierContext, analyze_unit, build_semantic_dossier,
-};
-use serde_json::{Value, json};
+use abap_symbols::{analyze_unit, build_semantic_dossier, DiagnosticKind, SemanticDossierContext};
+use serde_json::{json, Value};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Command {
@@ -38,6 +37,7 @@ enum Command {
     Symbols,
     Check,
     Analyze,
+    CallGraph,
 }
 
 struct Cli {
@@ -52,8 +52,10 @@ struct Cli {
     unknown_only: bool,
     /// Analyze: load workspace peers for cross-unit resolution.
     analyze_with_project: bool,
-    /// Analyze: pretty-print dossier JSON instead of compact output.
+    /// Analyze/call-graph: pretty-print JSON instead of compact output.
     pretty: bool,
+    /// Call graph: focus queries on a matching callable name/id.
+    call_graph_symbol: Option<String>,
     /// Source path, or None / `-` for stdin.
     path: Option<String>,
 }
@@ -67,6 +69,7 @@ Usage:
   abap-cli [--json] symbols [--unknown-only] [FILE]
   abap-cli [--json] check [FILE]
   abap-cli analyze --json [--with-project] [--pretty] [FILE]
+  abap-cli call-graph --json [--symbol NAME] [--pretty] [FILE]
 
 If FILE is omitted or `-`, read source from stdin.
 
@@ -76,6 +79,7 @@ Commands:
   symbols   `--json` for identifier index; human is silent when clean, otherwise diagnostics and a symbol table
   check     Front-end diagnostics only (human silent when clean)
   analyze   Semantic dossier export for AI/tooling consumption (`--json` required for structured output)
+  call-graph  Project-scale call graph export and caller/callee queries (`--json` required)
 
 Options:
   --json          Print JSON to stdout (no rustc-style rendering)
@@ -83,7 +87,8 @@ Options:
   --errors-only   Lex: only errors. Parse (JSON): same as default without --ast
   --unknown-only  Symbols: only unknown / unresolved identifiers (empty until wired)
   --with-project  Analyze: load workspace peers around FILE for cross-unit resolution
-  --pretty        Analyze: pretty-print dossier JSON (default analyze JSON is compact)
+  --symbol NAME   Call graph: focus on callable nodes matching NAME / qualified name / node id
+  --pretty        Analyze/call-graph: pretty-print JSON
 
   -h, --help      Show this help
 "#
@@ -114,6 +119,7 @@ fn parse_cli_args(it: impl Iterator<Item = String>) -> Result<Cli, String> {
         "symbols" => Command::Symbols,
         "check" => Command::Check,
         "analyze" => Command::Analyze,
+        "call-graph" => Command::CallGraph,
         _ => return Err(format!("unknown command {:?}\n{}", cmd, usage())),
     };
 
@@ -122,9 +128,12 @@ fn parse_cli_args(it: impl Iterator<Item = String>) -> Result<Cli, String> {
     let mut unknown_only = false;
     let mut analyze_with_project = false;
     let mut pretty = false;
+    let mut call_graph_symbol = None;
     let mut path: Option<String> = None;
 
-    for arg in it {
+    let remaining: Vec<String> = it.collect();
+    let mut idx = 0usize;
+    while let Some(arg) = remaining.get(idx) {
         match arg.as_str() {
             "-h" | "--help" => return Err(usage()),
             "--ast" => parse_show_ast = true,
@@ -133,7 +142,14 @@ fn parse_cli_args(it: impl Iterator<Item = String>) -> Result<Cli, String> {
             "--with-project" => analyze_with_project = true,
             "--pretty" => pretty = true,
             "--json" => json_output = true,
-            "-" => path = Some(arg),
+            "--symbol" => {
+                idx += 1;
+                let Some(symbol) = remaining.get(idx) else {
+                    return Err(format!("missing value for --symbol\n{}", usage()));
+                };
+                call_graph_symbol = Some(symbol.clone());
+            }
+            "-" => path = Some(arg.clone()),
             s if !s.starts_with('-') => {
                 if path.is_some() {
                     return Err(format!("unexpected extra argument {:?}\n{}", s, usage()));
@@ -142,6 +158,7 @@ fn parse_cli_args(it: impl Iterator<Item = String>) -> Result<Cli, String> {
             }
             other => return Err(format!("unknown option {other:?}\n{}", usage())),
         }
+        idx += 1;
     }
 
     if errors_only && !matches!(command, Command::Lex | Command::Parse) {
@@ -162,8 +179,14 @@ fn parse_cli_args(it: impl Iterator<Item = String>) -> Result<Cli, String> {
             usage()
         ));
     }
-    if pretty && command != Command::Analyze {
-        return Err(format!("--pretty only applies to analyze\n{}", usage()));
+    if pretty && !matches!(command, Command::Analyze | Command::CallGraph) {
+        return Err(format!(
+            "--pretty only applies to analyze and call-graph\n{}",
+            usage()
+        ));
+    }
+    if call_graph_symbol.is_some() && command != Command::CallGraph {
+        return Err(format!("--symbol only applies to call-graph\n{}", usage()));
     }
     if parse_show_ast && !matches!(command, Command::Parse) {
         return Err(format!("--ast only applies to parse\n{}", usage()));
@@ -183,6 +206,7 @@ fn parse_cli_args(it: impl Iterator<Item = String>) -> Result<Cli, String> {
         unknown_only,
         analyze_with_project,
         pretty,
+        call_graph_symbol,
         path,
     })
 }
@@ -281,6 +305,9 @@ fn run() -> Result<i32, String> {
 
     if cli.command == Command::Analyze {
         return run_analyze(&cli);
+    }
+    if cli.command == Command::CallGraph {
+        return run_call_graph(&cli);
     }
 
     let source = read_source(cli.path.as_deref())?;
@@ -543,7 +570,7 @@ fn run() -> Result<i32, String> {
 
             Ok(human_exit(cli.json_output, !parsed.errors.is_empty()))
         }
-        Command::Analyze => unreachable!("handled above"),
+        Command::Analyze | Command::CallGraph => unreachable!("handled above"),
     }
 }
 
@@ -596,6 +623,134 @@ fn run_analyze(cli: &Cli) -> Result<i32, String> {
     Ok(0)
 }
 
+fn run_call_graph(cli: &Cli) -> Result<i32, String> {
+    if !cli.json_output {
+        return Err("call-graph currently requires --json".to_string());
+    }
+
+    let snapshot = load_call_graph_snapshot(cli.path.as_deref())?;
+    let graph = snapshot.call_graph();
+
+    let output = if let Some(symbol_query) = cli.call_graph_symbol.as_deref() {
+        let matched_nodes: Vec<_> = graph
+            .find_nodes(symbol_query)
+            .into_iter()
+            .cloned()
+            .collect();
+        let outbound = dedup_edges(
+            matched_nodes
+                .iter()
+                .flat_map(|node| graph.outbound_calls(node.id.as_ref()).into_iter().cloned()),
+        );
+        let inbound = dedup_edges(
+            matched_nodes
+                .iter()
+                .flat_map(|node| graph.inbound_callers(node.id.as_ref()).into_iter().cloned()),
+        );
+        let unresolved = dedup_edges(matched_nodes.iter().flat_map(|node| {
+            graph
+                .unresolved_outbound_calls(node.id.as_ref())
+                .into_iter()
+                .cloned()
+        }));
+        let related_edges = dedup_edges(
+            outbound
+                .iter()
+                .cloned()
+                .chain(inbound.iter().cloned())
+                .chain(unresolved.iter().cloned()),
+        );
+
+        let mut node_ids = BTreeSet::new();
+        for node in &matched_nodes {
+            node_ids.insert(node.id.to_string());
+        }
+        for edge in &related_edges {
+            node_ids.insert(edge.source.to_string());
+            if let Some(target) = edge.target.as_ref() {
+                node_ids.insert(target.to_string());
+            }
+        }
+
+        let nodes: Vec<_> = graph
+            .nodes
+            .iter()
+            .filter(|node| node_ids.contains(node.id.as_ref()))
+            .map(call_graph_node_json)
+            .collect();
+
+        json!({
+            "phase": "call_graph",
+            "target_uri": snapshot.uri.as_ref(),
+            "symbol_query": symbol_query,
+            "project_node_count": graph.nodes.len(),
+            "project_edge_count": graph.edges.len(),
+            "matched_nodes": matched_nodes.iter().map(call_graph_node_json).collect::<Vec<_>>(),
+            "nodes": nodes,
+            "edges": related_edges.iter().map(call_graph_edge_json).collect::<Vec<_>>(),
+            "outbound": outbound.iter().map(call_graph_edge_json).collect::<Vec<_>>(),
+            "inbound": inbound.iter().map(call_graph_edge_json).collect::<Vec<_>>(),
+            "unresolved": unresolved.iter().map(call_graph_edge_json).collect::<Vec<_>>(),
+        })
+    } else {
+        json!({
+            "phase": "call_graph",
+            "target_uri": snapshot.uri.as_ref(),
+            "project_node_count": graph.nodes.len(),
+            "project_edge_count": graph.edges.len(),
+            "nodes": graph.nodes.iter().map(call_graph_node_json).collect::<Vec<_>>(),
+            "edges": graph.edges.iter().map(call_graph_edge_json).collect::<Vec<_>>(),
+        })
+    };
+
+    let json = if cli.pretty {
+        serde_json::to_string_pretty(&output)
+    } else {
+        serde_json::to_string(&output)
+    }
+    .map_err(|e| e.to_string())?;
+    println!("{json}");
+    Ok(0)
+}
+
+fn dedup_edges(edges: impl IntoIterator<Item = CallGraphEdge>) -> Vec<CallGraphEdge> {
+    let mut edges: Vec<_> = edges.into_iter().collect();
+    edges.sort_by(|left, right| {
+        left.source
+            .cmp(&right.source)
+            .then(left.edge_kind.cmp(&right.edge_kind))
+            .then(left.resolution_status.cmp(&right.resolution_status))
+            .then(left.target.cmp(&right.target))
+            .then(left.target_name.cmp(&right.target_name))
+            .then(left.source_range.start.cmp(&right.source_range.start))
+            .then(left.source_range.end.cmp(&right.source_range.end))
+    });
+    edges.dedup();
+    edges
+}
+
+fn call_graph_node_json(node: &CallGraphNode) -> Value {
+    json!({
+        "id": node.id.as_ref(),
+        "kind": node.kind,
+        "name": node.name.as_ref(),
+        "qualified_name": node.qualified_name.as_ref(),
+        "unit_uri": node.unit_uri.as_ref(),
+        "decl_range": [node.decl_range.start, node.decl_range.end],
+    })
+}
+
+fn call_graph_edge_json(edge: &CallGraphEdge) -> Value {
+    json!({
+        "source": edge.source.as_ref(),
+        "target": edge.target.as_ref().map(|target| target.as_ref()),
+        "edge_kind": edge.edge_kind,
+        "resolution_status": edge.resolution_status,
+        "target_name": edge.target_name.as_ref(),
+        "source_range": [edge.source_range.start, edge.source_range.end],
+    })
+}
+
 fn load_single_file_analyze_snapshot(path: Option<&str>) -> Result<AnalyzeSnapshot, String> {
     let source = read_source(path)?;
     let target_path = resolve_target_path(path)?;
@@ -617,6 +772,66 @@ fn load_single_file_analyze_snapshot(path: Option<&str>) -> Result<AnalyzeSnapsh
         manifest_present: false,
         project_unit_count: None,
         dependency_unit_count: None,
+    })
+}
+
+fn load_call_graph_snapshot(
+    path: Option<&str>,
+) -> Result<Arc<abap_cache::AnalysisSnapshot>, String> {
+    let Some(target_path) = resolve_target_path(path)? else {
+        let source = read_source(path)?;
+        let store = DocumentStore::default();
+        return Ok(store.publish("file:///stdin.abap", 1, &source));
+    };
+
+    let target_uri = path_to_file_uri(&target_path);
+    let workspace_root = find_workspace_root(&target_path)?;
+    let workspace_root_uri = path_to_file_uri(&workspace_root);
+    let workspace = load_workspace_documents(&workspace_root_uri, &HashMap::new());
+
+    let mut inputs: Vec<DocumentInput> = workspace
+        .documents
+        .iter()
+        .map(|document| DocumentInput {
+            uri: Arc::clone(&document.uri),
+            version: document.version,
+            text: Arc::from(document.text.as_str()),
+            is_dependency: document.is_dependency,
+            object_name: document.object_name.clone(),
+        })
+        .collect();
+
+    if !inputs.iter().any(|input| input.uri.as_ref() == target_uri) {
+        let source = std::fs::read_to_string(&target_path)
+            .map_err(|e| format!("{}: {e}", target_path.display()))?;
+        let (is_dependency, object_name) = workspace
+            .manifest
+            .as_ref()
+            .and_then(|manifest| {
+                manifest_document_metadata(
+                    &workspace.root_path,
+                    &workspace.root_uri,
+                    manifest,
+                    &target_uri,
+                )
+            })
+            .unwrap_or((false, None));
+        inputs.push(DocumentInput {
+            uri: Arc::from(target_uri.as_str()),
+            version: 1,
+            text: Arc::from(source),
+            is_dependency,
+            object_name,
+        });
+    }
+
+    let store = DocumentStore::default();
+    let snapshots = store.replace_all(inputs);
+    snapshots.get(target_uri.as_str()).cloned().ok_or_else(|| {
+        format!(
+            "workspace call graph did not include {}",
+            target_path.display()
+        )
     })
 }
 
@@ -672,10 +887,12 @@ fn load_project_analyze_snapshot(path: Option<&str>) -> Result<AnalyzeSnapshot, 
 
     let store = DocumentStore::default();
     let snapshots = store.replace_all(inputs);
-    let snapshot = snapshots
-        .get(target_uri.as_str())
-        .cloned()
-        .ok_or_else(|| format!("workspace analysis did not include {}", target_path.display()))?;
+    let snapshot = snapshots.get(target_uri.as_str()).cloned().ok_or_else(|| {
+        format!(
+            "workspace analysis did not include {}",
+            target_path.display()
+        )
+    })?;
 
     Ok(AnalyzeSnapshot {
         unit: Arc::clone(&snapshot.symbols),

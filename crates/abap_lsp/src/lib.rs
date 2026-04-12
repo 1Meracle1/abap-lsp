@@ -290,6 +290,7 @@ fn snapshot_with_version(snapshot: &Arc<AnalysisSnapshot>, version: i32) -> Arc<
         parse: Arc::clone(&snapshot.parse),
         symbols: Arc::clone(&snapshot.symbols),
         project: Arc::clone(&snapshot.project),
+        call_graph: Arc::clone(&snapshot.call_graph),
     })
 }
 

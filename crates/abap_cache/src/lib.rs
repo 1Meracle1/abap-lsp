@@ -23,7 +23,12 @@ use abap_symbols::{
 use parking_lot::RwLock;
 use rayon::prelude::*;
 
+mod call_graph;
 mod workspace;
+pub use call_graph::{
+    CallGraphEdge, CallGraphEdgeKind, CallGraphNode, CallGraphNodeKind, CallGraphResolutionStatus,
+    ProjectCallGraph,
+};
 pub use workspace::{
     DEFAULT_REMOTE_REQUEST_PARALLELISM, DEFAULT_REMOTE_REQUESTS_PER_SECOND,
     DEPENDENCY_MODE_LOCAL_FIRST, DEPENDENCY_MODE_REMOTE_ON_DEMAND,
@@ -51,6 +56,7 @@ pub struct AnalysisSnapshot {
     pub parse: Arc<ParseResult>,
     pub symbols: Arc<UnitAnalysis>,
     pub project: Arc<ProjectAnalysis>,
+    pub call_graph: Arc<ProjectCallGraph>,
     pub scope_index: Arc<ScopeIndex>,
 }
 
@@ -273,6 +279,10 @@ pub struct SemanticTokenLookupContext<'a> {
 impl AnalysisSnapshot {
     pub fn scope_index(&self) -> &ScopeIndex {
         self.scope_index.as_ref()
+    }
+
+    pub fn call_graph(&self) -> &ProjectCallGraph {
+        self.call_graph.as_ref()
     }
 
     pub fn semantic_token_lookup_context(&self) -> SemanticTokenLookupContext<'_> {
@@ -5235,6 +5245,7 @@ fn clone_snapshot_with_version(snapshot: &AnalysisSnapshot, version: i32) -> Arc
         parse: Arc::clone(&snapshot.parse),
         symbols: Arc::clone(&snapshot.symbols),
         project: Arc::clone(&snapshot.project),
+        call_graph: Arc::clone(&snapshot.call_graph),
     })
 }
 
@@ -5463,6 +5474,14 @@ fn materialize_snapshots(
 ) {
     let snapshot_timer = std::time::Instant::now();
     let project = Arc::new(update.project);
+    let mut scope_indexes = vec![ScopeIndex::default(); project.units.len()];
+    for prepared in &prepared {
+        scope_indexes[prepared.local.unit.unit_id.as_usize()] = prepared.local.scope_index.clone();
+    }
+    let call_graph = Arc::new(call_graph::build_project_call_graph(
+        project.as_ref(),
+        &scope_indexes,
+    ));
     let mut snapshots = HashMap::with_capacity(prepared.len());
     let mut locals = HashMap::with_capacity(prepared.len());
     let mut uri_order = Vec::with_capacity(prepared.len());
@@ -5486,6 +5505,7 @@ fn materialize_snapshots(
                 parse: Arc::clone(&prepared.parse),
                 symbols: Arc::new(unit),
                 project: Arc::clone(&project),
+                call_graph: Arc::clone(&call_graph),
             }),
         );
     }
@@ -5846,6 +5866,7 @@ fn preview_snapshot_from_local(
     parse: Arc<ParseResult>,
     local: LocalAnalysis,
     project: Arc<ProjectAnalysis>,
+    call_graph: Arc<ProjectCallGraph>,
 ) -> Arc<AnalysisSnapshot> {
     Arc::new(AnalysisSnapshot {
         scope_index: Arc::new(local.scope_index),
@@ -5857,6 +5878,7 @@ fn preview_snapshot_from_local(
         parse,
         symbols: Arc::new(local.unit),
         project,
+        call_graph,
     })
 }
 
@@ -6004,21 +6026,24 @@ impl DocumentStore {
         }
         let (parse, local, parse_count, local_phase_count) =
             build_preview_parse_and_local(&input, &existing, analysis.as_ref());
-        let committed_project = existing
-            .values()
-            .next()
-            .map(|snapshot| Arc::clone(&snapshot.project));
-        let (project, committed_context_only, fell_back_to_single_document) =
-            if let Some(project) = committed_project {
-                (project, true, false)
-            } else {
+        let committed_snapshot = existing.values().next().cloned();
+        let (project, call_graph, committed_context_only, fell_back_to_single_document) =
+            if let Some(snapshot) = committed_snapshot {
                 (
-                    Arc::new(validate_single_unit(local.unit.clone())),
-                    false,
+                    Arc::clone(&snapshot.project),
+                    Arc::clone(&snapshot.call_graph),
                     true,
+                    false,
                 )
+            } else {
+                let project = Arc::new(validate_single_unit(local.unit.clone()));
+                let call_graph = Arc::new(call_graph::build_project_call_graph(
+                    project.as_ref(),
+                    std::slice::from_ref(&local.scope_index),
+                ));
+                (project, call_graph, false, true)
             };
-        let snapshot = preview_snapshot_from_local(&input, parse, local, project);
+        let snapshot = preview_snapshot_from_local(&input, parse, local, project, call_graph);
         *self.preview_metrics.write() = Some(PreviewMetrics {
             parse_count,
             local_phase_count,
