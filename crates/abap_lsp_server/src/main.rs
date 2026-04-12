@@ -2294,6 +2294,140 @@ mod tests {
     }
 
     #[test]
+    fn editor_first_cold_open_skips_incomplete_preview_diagnostics_for_dependency_files() {
+        let workspace_path = temp_workspace_path("editor_first_cold_dependency_preview");
+        let dependency_class_dir = workspace_path
+            .join(".abapls")
+            .join("cache")
+            .join("dependencies")
+            .join("global-class");
+        let dependency_ddic_dir = workspace_path
+            .join(".abapls")
+            .join("cache")
+            .join("dependencies")
+            .join("ddic-data-element");
+        fs::create_dir_all(&dependency_class_dir).expect("dependency class dir");
+        fs::create_dir_all(&dependency_ddic_dir).expect("dependency ddic dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[performance]
+mode = "editor-first"
+
+[resolution]
+dependency_mode = "remote-on-demand"
+unknown_symbol_mode = "remote"
+
+[[unit]]
+name = "/STTP/CL_DEP"
+kind = "global-class"
+root_file = ".abapls/cache/dependencies/global-class/%2FSTTP%2FCL_DEP.abap"
+
+[[unit.member]]
+role = "dependency"
+file = ".abapls/cache/dependencies/global-class/%2FSTTP%2FCL_DEP.abap"
+object_name = "/STTP/CL_DEP"
+"#,
+        )
+        .expect("manifest");
+        let dependency_text = "\
+CLASS /sttp/cl_dep DEFINITION INHERITING FROM /sttp/cl_base.
+  PUBLIC SECTION.
+    METHODS run
+      IMPORTING
+        !iv_evtid TYPE /sttp/e_evtid.
+ENDCLASS.
+CLASS /sttp/cl_dep IMPLEMENTATION.
+  METHOD run.
+  ENDMETHOD.
+ENDCLASS.";
+        fs::write(
+            dependency_class_dir.join("%2FSTTP%2FCL_DEP.abap"),
+            dependency_text,
+        )
+        .expect("dependency file");
+        fs::write(
+            dependency_class_dir.join("%2FSTTP%2FCL_BASE.abap"),
+            "\
+CLASS /sttp/cl_base DEFINITION.
+ENDCLASS.
+CLASS /sttp/cl_base IMPLEMENTATION.
+ENDCLASS.",
+        )
+        .expect("base dependency");
+        fs::write(
+            dependency_ddic_dir.join("%2FSTTP%2FE_EVTID.xml"),
+            "<root><DATATYPE>CHAR</DATATYPE></root>",
+        )
+        .expect("type dependency");
+
+        let workspace_uri = file_uri(&workspace_path);
+        let dependency_uri = format!(
+            "{workspace_uri}/.abapls/cache/dependencies/global-class/%2FSTTP%2FCL_DEP.abap"
+        );
+        let normalized_workspace_uri = abap_lsp::normalize_lsp_uri(&workspace_uri);
+        let normalized_dependency_uri = abap_lsp::normalize_lsp_uri(&dependency_uri);
+
+        let mut state = ServerState::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        assert!(super::workspace_uses_editor_first_mode(
+            &state,
+            &workspace_uri
+        ));
+
+        let generations = Arc::new(Mutex::new(HashMap::new()));
+        let pending_tasks = Arc::new(Mutex::new(HashMap::new()));
+        let mut debounced_tasks = HashMap::new();
+        let (task_tx, _task_rx) = mpsc::sync_channel(1);
+        let message = json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": dependency_uri,
+                    "languageId": "abap",
+                    "version": 1,
+                    "text": dependency_text
+                }
+            }
+        });
+
+        let scheduled = try_schedule_background_analysis(
+            &mut state,
+            &message,
+            &task_tx,
+            &pending_tasks,
+            &generations,
+            &mut debounced_tasks,
+        )
+        .expect("schedule")
+        .expect("background job");
+        assert!(
+            scheduled.notifications.iter().all(|(method, payload)| {
+                method != "textDocument/publishDiagnostics"
+                    || payload.get("uri").and_then(Value::as_str)
+                        != Some(normalized_dependency_uri.as_str())
+            }),
+            "unexpected preview diagnostics: {:?}",
+            scheduled.notifications
+        );
+        let workspace = state
+            .workspaces
+            .get(&normalized_workspace_uri)
+            .expect("workspace");
+        assert!(
+            !workspace
+                .preview_snapshots
+                .contains_key(&normalized_dependency_uri),
+            "cold editor-first open should not stage a standalone preview snapshot"
+        );
+
+        let _ = fs::remove_dir_all(&workspace_path);
+    }
+
+    #[test]
     fn background_scheduler_exposes_preview_semantic_tokens_for_commented_out_statement() {
         let workspace_path = temp_workspace_path("background_preview_semantic_tokens");
         fs::create_dir_all(&workspace_path).expect("workspace dir");
@@ -3585,6 +3719,149 @@ ENDCLASS.";
                     "sourceUri": dependency_uri,
                     "sourceUris": [dependency_uri],
                     "fetched": ["zmissing"],
+                    "failed": []
+                }
+            }),
+        )
+        .expect("remote dependencies updated");
+
+        let refreshed_diags = refreshed
+            .notifications
+            .iter()
+            .find(|(method, payload)| {
+                method == "textDocument/publishDiagnostics"
+                    && payload.get("uri").and_then(Value::as_str)
+                        == Some(normalized_dependency_uri.as_str())
+            })
+            .and_then(|(_, payload)| payload.get("diagnostics"))
+            .and_then(Value::as_array)
+            .expect("refreshed dependency diagnostics");
+        assert!(
+            refreshed_diags.is_empty(),
+            "unexpected refreshed diagnostics: {refreshed_diags:?}"
+        );
+    }
+
+    #[test]
+    fn editor_first_remote_dependency_updates_refresh_open_encoded_dependency_diagnostics() {
+        let workspace_path = temp_workspace_path("editor_first_open_encoded_dependency_diag");
+        let dependency_class_dir = workspace_path
+            .join(".abapls")
+            .join("cache")
+            .join("dependencies")
+            .join("global-class");
+        let dependency_ddic_dir = workspace_path
+            .join(".abapls")
+            .join("cache")
+            .join("dependencies")
+            .join("ddic-data-element");
+        fs::create_dir_all(&dependency_class_dir).expect("dependency class dir");
+        fs::create_dir_all(&dependency_ddic_dir).expect("dependency ddic dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[performance]
+mode = "editor-first"
+
+[resolution]
+dependency_mode = "remote-on-demand"
+unknown_symbol_mode = "remote"
+
+[[unit]]
+name = "/STTP/CL_DEP"
+kind = "global-class"
+root_file = ".abapls/cache/dependencies/global-class/%2FSTTP%2FCL_DEP.abap"
+
+[[unit.member]]
+role = "dependency"
+file = ".abapls/cache/dependencies/global-class/%2FSTTP%2FCL_DEP.abap"
+object_name = "/STTP/CL_DEP"
+"#,
+        )
+        .expect("manifest");
+        let dependency_text = "\
+CLASS /sttp/cl_dep DEFINITION.
+  PUBLIC SECTION.
+    METHODS run
+      IMPORTING
+        !iv_evtid TYPE /sttp/zmissing.
+ENDCLASS.
+CLASS /sttp/cl_dep IMPLEMENTATION.
+  METHOD run.
+  ENDMETHOD.
+ENDCLASS.";
+        fs::write(
+            dependency_class_dir.join("%2FSTTP%2FCL_DEP.abap"),
+            dependency_text,
+        )
+        .expect("dependency file");
+
+        let workspace_uri = file_uri(&workspace_path);
+        let dependency_uri = format!(
+            "{workspace_uri}/.abapls/cache/dependencies/global-class/%2FSTTP%2FCL_DEP.abap"
+        );
+        let normalized_dependency_uri = abap_lsp::normalize_lsp_uri(&dependency_uri);
+        let mut state = ServerState::default();
+        let config = ServerConfig::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        refresh_workspace(&mut state, &workspace_uri);
+
+        let opened = handle_message(
+            &mut state,
+            &config,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": {
+                    "textDocument": {
+                        "uri": dependency_uri,
+                        "languageId": "abap",
+                        "version": 1,
+                        "text": dependency_text
+                    }
+                }
+            }),
+        )
+        .expect("didOpen");
+
+        let initial_diags = opened
+            .notifications
+            .iter()
+            .find(|(method, payload)| {
+                method == "textDocument/publishDiagnostics"
+                    && payload.get("uri").and_then(Value::as_str)
+                        == Some(normalized_dependency_uri.as_str())
+            })
+            .and_then(|(_, payload)| payload.get("diagnostics"))
+            .and_then(Value::as_array)
+            .expect("initial dependency diagnostics");
+        assert!(initial_diags.iter().any(|diag| {
+            diag.get("message")
+                .and_then(Value::as_str)
+                .is_some_and(|message| {
+                    message.contains("Type '/sttp/zmissing' is not verified against a SAP system")
+                })
+        }));
+
+        fs::write(
+            dependency_ddic_dir.join("%2FSTTP%2FZMISSING.xml"),
+            "<root><DATATYPE>CHAR</DATATYPE></root>",
+        )
+        .expect("ddic dependency");
+
+        let refreshed = handle_message(
+            &mut state,
+            &config,
+            json!({
+                "jsonrpc": "2.0",
+                "method": REMOTE_DEPENDENCIES_UPDATED,
+                "params": {
+                    "workspaceUri": workspace_uri,
+                    "sourceUri": dependency_uri,
+                    "sourceUris": [dependency_uri],
+                    "fetched": ["/sttp/zmissing"],
                     "failed": []
                 }
             }),

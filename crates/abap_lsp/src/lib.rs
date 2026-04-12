@@ -345,6 +345,11 @@ pub fn stage_workspace_preview_snapshot(
     let Some(workspace) = state.workspace_for_uri_mut(&normalized_uri) else {
         return false;
     };
+    if workspace.performance_mode == WorkspacePerformanceMode::EditorFirst
+        && workspace.cache.len() == 0
+    {
+        return false;
+    }
     let preview = incremental_workspace_document_input(workspace, &normalized_uri, version, text)
         .map(|input| workspace.cache.preview_publish_input(input))
         .unwrap_or_else(|| DocumentStore::default().publish(normalized_uri.clone(), version, text));
