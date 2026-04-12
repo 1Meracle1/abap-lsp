@@ -8,6 +8,7 @@ use crate::compatibility::{
 };
 use crate::def_map::{
     Diagnostic, DiagnosticKind, FieldTypeRefData, FormParameterData, FormParameterSection,
+    FunctionModuleData, FunctionModuleParameterData, FunctionModuleParameterSection,
     LoopWhereFieldContext, NamedArgumentTarget, PerformParameterSection, ReferenceKind, Resolution,
     SqlNameRefKind, StructureFieldShape, TypeFactData,
 };
@@ -1136,6 +1137,40 @@ fn method_parameter_type_fact(parameter: &crate::ClassMemberParameterData) -> Ty
     }
 }
 
+fn function_module_parameter_type_fact(parameter: &FunctionModuleParameterData) -> TypeFactData {
+    TypeFactData {
+        structure: None,
+        declared_type: parameter.declared_type.clone(),
+        type_clause_display: parameter.type_clause_display.clone(),
+    }
+}
+
+fn call_section_matches_function_parameter(
+    section: Option<crate::NamedArgumentSection>,
+    parameter: &FunctionModuleParameterData,
+) -> bool {
+    matches!(
+        (section, parameter.section),
+        (
+            Some(crate::NamedArgumentSection::Exporting),
+            FunctionModuleParameterSection::Importing
+        ) | (
+            Some(crate::NamedArgumentSection::Importing),
+            FunctionModuleParameterSection::Exporting
+        ) | (
+            Some(crate::NamedArgumentSection::Changing),
+            FunctionModuleParameterSection::Changing
+        ) | (
+            Some(crate::NamedArgumentSection::Tables),
+            FunctionModuleParameterSection::Tables
+        )
+    )
+}
+
+fn function_module_parameter_is_required(parameter: &FunctionModuleParameterData) -> bool {
+    !parameter.is_optional && !parameter.has_default_value
+}
+
 fn resolve_type_owner_symbol(
     project: &ProjectAnalysis,
     lookup: &ValidationLookup<'_>,
@@ -1237,6 +1272,36 @@ fn resolve_call_target_member<'a>(
                 .class_member(handle.symbol, method_name)
                 .map(|member| (target_unit, member))
         })
+}
+
+fn resolve_call_target_function_module<'a>(
+    project: &'a ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
+    unit: &'a crate::UnitAnalysis,
+    scope_index: &ScopeIndex,
+    call_site: &crate::CallSiteData,
+) -> Option<(&'a crate::UnitAnalysis, &'a FunctionModuleData)> {
+    let NamedArgumentTarget::Function { function_name } = &call_site.target else {
+        return None;
+    };
+    let handle = resolve_symbol_handle_in_scope_or_includes(
+        project,
+        lookup,
+        unit,
+        scope_index,
+        call_site.scope,
+        Namespace::Routine,
+        function_name,
+    )
+    .or_else(|| {
+        root_symbol_handle_matching(project, lookup, unit, Namespace::Routine, function_name, |symbol| {
+            symbol.kind == SymbolKind::Module
+        })
+    })?;
+    let target_unit = &project.units[handle.unit.as_usize()];
+    target_unit
+        .function_module(handle.symbol)
+        .map(|function_module| (target_unit, function_module))
 }
 
 fn workspace_root_defines_type_name(lookup: &ValidationLookup<'_>, name: &Arc<str>) -> bool {
@@ -2612,6 +2677,111 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
         }
 
         for call_site in &unit.call_sites {
+            if let Some((target_unit, function_module)) =
+                resolve_call_target_function_module(project, &lookup, unit, &scope_index, call_site)
+            {
+                let mut matched_required = HashSet::<Arc<str>>::new();
+                let mut seen_named = HashSet::<Arc<str>>::new();
+                let mut seen_exceptions = HashSet::<Arc<str>>::new();
+
+                for argument in &call_site.arguments {
+                    let Some(name) = argument.name.as_ref() else {
+                        continue;
+                    };
+                    if argument.section == Some(crate::NamedArgumentSection::Exceptions) {
+                        if !seen_exceptions.insert(Arc::clone(name)) {
+                            unit_diagnostics.push(Diagnostic {
+                                kind: DiagnosticKind::DuplicateNamedParameter,
+                                range: argument.range.clone(),
+                                message: format!("duplicate function module exception '{}'", name),
+                            });
+                            continue;
+                        }
+                        if !function_module
+                            .exceptions
+                            .iter()
+                            .any(|exception| exception.name == *name)
+                        {
+                            unit_diagnostics.push(Diagnostic {
+                                kind: DiagnosticKind::UnknownNamedParameter,
+                                range: argument.range.clone(),
+                                message: format!(
+                                    "unknown exception '{}' for function module '{}'",
+                                    name,
+                                    target_unit.symbol(function_module.symbol).name
+                                ),
+                            });
+                        }
+                        continue;
+                    }
+                    if !seen_named.insert(Arc::clone(name)) {
+                        unit_diagnostics.push(Diagnostic {
+                            kind: DiagnosticKind::DuplicateNamedParameter,
+                            range: argument.range.clone(),
+                            message: format!("duplicate named parameter '{}'", name),
+                        });
+                        continue;
+                    }
+                    let Some(parameter) = function_module.parameters.iter().find(|parameter| {
+                        parameter.name == *name
+                            && call_section_matches_function_parameter(argument.section, parameter)
+                    }) else {
+                        unit_diagnostics.push(Diagnostic {
+                            kind: DiagnosticKind::UnknownNamedParameter,
+                            range: argument.range.clone(),
+                            message: format!(
+                                "unknown named parameter '{}' for function module '{}'",
+                                name,
+                                target_unit.symbol(function_module.symbol).name
+                            ),
+                        });
+                        continue;
+                    };
+                    if function_module_parameter_is_required(parameter) {
+                        matched_required.insert(Arc::clone(&parameter.name));
+                    }
+                    if matches!(
+                        type_facts_compatible(
+                            project,
+                            target_unit,
+                            &function_module_parameter_type_fact(parameter),
+                            unit,
+                            &argument.type_fact,
+                        ),
+                        Some(false)
+                    ) {
+                        unit_diagnostics.push(Diagnostic {
+                            kind: DiagnosticKind::IncompatibleArgumentType,
+                            range: argument.range.clone(),
+                            message: format!(
+                                "argument '{}' expects '{}', got '{}'",
+                                parameter.name,
+                                type_fact_label(&function_module_parameter_type_fact(parameter)),
+                                type_fact_label(&argument.type_fact)
+                            ),
+                        });
+                    }
+                }
+
+                for parameter in &function_module.parameters {
+                    if function_module_parameter_is_required(parameter)
+                        && !matched_required.contains(&parameter.name)
+                    {
+                        unit_diagnostics.push(Diagnostic {
+                            kind: DiagnosticKind::MissingRequiredParameter,
+                            range: call_site.range.clone(),
+                            message: format!(
+                                "missing required parameter '{}' for function module '{}'",
+                                parameter.name,
+                                target_unit.symbol(function_module.symbol).name
+                            ),
+                        });
+                    }
+                }
+
+                continue;
+            }
+
             let Some((target_unit, member)) =
                 resolve_call_target_member(project, &lookup, unit, &scope_index, call_site)
             else {

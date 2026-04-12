@@ -9330,6 +9330,11 @@ END-OF-PAGE.\nWRITE 'e'.",
             exporting_param.passing_kind(src),
             FormParamPassingKind::Value
         );
+        let importing_params: Vec<_> = sections[0].params().collect();
+        assert!(importing_params[0].is_optional(src));
+        assert!(!importing_params[0].has_default_value(src));
+        assert!(importing_params[1].is_optional(src));
+        assert!(!importing_params[1].has_default_value(src));
         assert_eq!(
             parsed
                 .file
@@ -9342,6 +9347,31 @@ END-OF-PAGE.\nWRITE 'e'.",
                 .count_kind(function.syntax().id(), SyntaxKind::FunctionParam),
             7
         );
+    }
+
+    #[test]
+    fn function_header_param_exposes_default_value_flag() {
+        let src = "FUNCTION z_demo\n  IMPORTING\n    iv_count TYPE i DEFAULT 1\n    iv_mode TYPE i OPTIONAL DEFAULT 2.\nENDFUNCTION.";
+        let parsed = crate::parse(src);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let function = FunctionDecl::cast(SyntaxNodeRef::new(
+            &parsed.file,
+            parsed
+                .file
+                .find_first_kind(parsed.file.root(), SyntaxKind::FunctionDecl)
+                .expect("function decl"),
+        ))
+        .expect("function decl");
+        let importing_params: Vec<_> = function
+            .param_sections()
+            .next()
+            .expect("importing section")
+            .params()
+            .collect();
+        assert!(!importing_params[0].is_optional(src));
+        assert!(importing_params[0].has_default_value(src));
+        assert!(importing_params[1].is_optional(src));
+        assert!(importing_params[1].has_default_value(src));
     }
 
     #[test]

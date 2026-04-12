@@ -151,9 +151,11 @@ impl<'ctx, 'a> DeclLowering<'ctx, 'a> {
                 parameters,
             });
         } else if scope_kind == ScopeKind::Module && kind == SymbolKind::Module {
-            self.ctx
+            let function_module = self
+                .ctx
                 .forms_lowering()
-                .declare_function_parameters_from_header(node, child_scope);
+                .declare_function_parameters_from_header(node, child_scope, owner);
+            self.ctx.emit_function_module(function_module);
         }
         for child in self.ctx.file().children(node) {
             self.ctx.walk_node(child, child_scope);

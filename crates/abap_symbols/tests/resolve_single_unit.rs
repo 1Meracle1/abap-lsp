@@ -3,7 +3,7 @@ use abap_parser::parse;
 use abap_symbols::{
     DiagnosticKind, Namespace, ProjectInput, ReferenceKind, Resolution, SqlNameRefKind,
     SqlPredicateKind, SqlProjectionKind, SqlSourceKind, SqlTargetKind, StructureFieldShape,
-    SymbolHandle, analyze_project, analyze_unit,
+    SymbolHandle, SymbolKind, analyze_project, analyze_unit,
 };
 
 #[test]
@@ -7494,6 +7494,197 @@ ENDFUNCTION.
         "unexpected diagnostics: {:?}",
         unit.diagnostics
     );
+}
+
+#[test]
+fn collects_function_module_interface_metadata() {
+    let src = r#"
+FUNCTION /AIF/FILE_PROCESS_DATA
+  IMPORTING
+    iv_name TYPE string
+    iv_optional TYPE i OPTIONAL
+  EXPORTING
+    ev_ok TYPE c
+  CHANGING
+    cv_text TYPE string
+  TABLES
+    return_tab LIKE sy-uname OPTIONAL
+  EXCEPTIONS
+    not_found
+    failed.
+ENDFUNCTION.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///function_metadata.abap", src, &parsed);
+
+    let function_symbol = unit
+        .symbols
+        .iter()
+        .find(|symbol| {
+            symbol.kind == SymbolKind::Module && symbol.name.as_ref() == "/aif/file_process_data"
+        })
+        .expect("function symbol");
+    let function_module = unit
+        .function_module(function_symbol.id)
+        .expect("function module metadata");
+
+    assert_eq!(function_module.parameters.len(), 5);
+    assert!(function_module.parameters.iter().any(|parameter| {
+        parameter.name.as_ref() == "iv_name"
+            && parameter.section == abap_symbols::FunctionModuleParameterSection::Importing
+            && !parameter.is_optional
+    }));
+    assert!(function_module.parameters.iter().any(|parameter| {
+        parameter.name.as_ref() == "iv_optional"
+            && parameter.section == abap_symbols::FunctionModuleParameterSection::Importing
+            && parameter.is_optional
+    }));
+    assert!(function_module.parameters.iter().any(|parameter| {
+        parameter.name.as_ref() == "return_tab"
+            && parameter.section == abap_symbols::FunctionModuleParameterSection::Tables
+            && parameter.is_optional
+    }));
+    assert_eq!(
+        function_module
+            .exceptions
+            .iter()
+            .map(|exception| exception.name.as_ref())
+            .collect::<Vec<_>>(),
+        vec!["not_found", "failed"]
+    );
+}
+
+#[test]
+fn validates_call_function_against_dependency_interface() {
+    let dep_src = r#"
+FUNCTION /AIF/FILE_PROCESS_DATA
+  IMPORTING
+    iv_name TYPE string
+  CHANGING
+    cv_text TYPE string
+  EXCEPTIONS
+    failed.
+ENDFUNCTION.
+"#;
+    let main_src = r#"
+START-OF-SELECTION.
+  DATA lv_num TYPE i.
+  DATA lv_text TYPE string.
+  CALL FUNCTION '/AIF/FILE_PROCESS_DATA'
+    EXPORTING
+      iv_name = lv_num
+      iv_name = lv_text
+      iv_missing = lv_text
+    CHANGING
+      cv_text = lv_text
+    EXCEPTIONS
+      unknown_exc = 1.
+"#;
+
+    let dep_parsed = parse(dep_src);
+    let main_parsed = parse(main_src);
+    let project = analyze_project(&[
+        ProjectInput {
+            uri: "file:///fm_main_validate.abap",
+            source: main_src,
+            parse: &main_parsed,
+        },
+        ProjectInput {
+            uri: "file:///fm_dep_validate.abap",
+            source: dep_src,
+            parse: &dep_parsed,
+        },
+    ]);
+    let main_unit = project
+        .unit_by_uri("file:///fm_main_validate.abap")
+        .expect("main unit");
+
+    assert!(main_unit.diagnostics.iter().any(|diag| {
+        diag.kind == DiagnosticKind::DuplicateNamedParameter
+            && diag.message.contains("duplicate named parameter 'iv_name'")
+    }), "{:?}", main_unit.diagnostics);
+    assert!(main_unit.diagnostics.iter().any(|diag| {
+        diag.kind == DiagnosticKind::UnknownNamedParameter
+            && diag
+                .message
+                .contains("unknown named parameter 'iv_missing' for function module")
+    }), "{:?}", main_unit.diagnostics);
+    assert!(main_unit.diagnostics.iter().any(|diag| {
+        diag.kind == DiagnosticKind::UnknownNamedParameter
+            && diag.message.contains("unknown exception 'unknown_exc' for function module")
+    }), "{:?}", main_unit.diagnostics);
+}
+
+#[test]
+fn skips_missing_required_diagnostic_for_function_module_defaulted_parameters() {
+    let dep_src = r#"
+FUNCTION /AIF/FILE_PROCESS_DATA
+  IMPORTING
+    iv_required TYPE string
+    iv_defaulted TYPE i DEFAULT 1
+    iv_optional_default TYPE i OPTIONAL DEFAULT 2
+  CHANGING
+    cv_text TYPE string.
+ENDFUNCTION.
+"#;
+    let main_src = r#"
+START-OF-SELECTION.
+  DATA lv_required TYPE string.
+  DATA lv_text TYPE string.
+  CALL FUNCTION '/AIF/FILE_PROCESS_DATA'
+    EXPORTING
+      iv_required = lv_required
+    CHANGING
+      cv_text = lv_text.
+"#;
+
+    let dep_parsed = parse(dep_src);
+    let main_parsed = parse(main_src);
+    let project = analyze_project(&[
+        ProjectInput {
+            uri: "file:///fm_main_default.abap",
+            source: main_src,
+            parse: &main_parsed,
+        },
+        ProjectInput {
+            uri: "file:///fm_dep_default.abap",
+            source: dep_src,
+            parse: &dep_parsed,
+        },
+    ]);
+    let dep_unit = project
+        .unit_by_uri("file:///fm_dep_default.abap")
+        .expect("dep unit");
+    let function_symbol = dep_unit
+        .symbols
+        .iter()
+        .find(|symbol| {
+            symbol.kind == SymbolKind::Module && symbol.name.as_ref() == "/aif/file_process_data"
+        })
+        .expect("function symbol");
+    let function_module = dep_unit
+        .function_module(function_symbol.id)
+        .expect("function metadata");
+    assert!(function_module.parameters.iter().any(|parameter| {
+        parameter.name.as_ref() == "iv_defaulted"
+            && parameter.has_default_value
+            && !parameter.is_optional
+    }));
+    assert!(function_module.parameters.iter().any(|parameter| {
+        parameter.name.as_ref() == "iv_optional_default"
+            && parameter.has_default_value
+            && parameter.is_optional
+    }));
+
+    let main_unit = project
+        .unit_by_uri("file:///fm_main_default.abap")
+        .expect("main unit");
+    let missing: Vec<_> = main_unit
+        .diagnostics
+        .iter()
+        .filter(|diag| diag.kind == DiagnosticKind::MissingRequiredParameter)
+        .collect();
+    assert!(missing.is_empty(), "{missing:#?}");
 }
 
 #[test]

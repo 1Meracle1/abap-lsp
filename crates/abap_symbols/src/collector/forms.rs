@@ -8,8 +8,9 @@ use abap_ast::ast::{
 };
 
 use crate::def_map::{
-    FormParameterData, FormParameterPassingKind, FormParameterSection, PerformArgumentData,
-    PerformCallData, PerformParameterSection, ReferenceKind, SymbolKind,
+    FormParameterData, FormParameterPassingKind, FormParameterSection, FunctionModuleData,
+    FunctionModuleExceptionData, FunctionModuleParameterData, FunctionModuleParameterSection,
+    PerformArgumentData, PerformCallData, PerformParameterSection, ReferenceKind, SymbolKind,
 };
 use crate::ids::ScopeId;
 use crate::scope::Namespace;
@@ -239,66 +240,114 @@ impl<'ctx, 'a> FormsLowering<'ctx, 'a> {
         &mut self,
         function_node: NodeId,
         function_scope: ScopeId,
-    ) {
+        function_symbol: crate::ids::SymbolId,
+    ) -> FunctionModuleData {
         let Some(function_decl) = FunctionDecl::cast(self.collector.syntax(function_node)) else {
-            return;
+            return FunctionModuleData {
+                symbol: function_symbol,
+                parameters: Vec::new(),
+                exceptions: Vec::new(),
+            };
         };
         if function_decl.name_token().is_none() {
-            return;
+            return FunctionModuleData {
+                symbol: function_symbol,
+                parameters: Vec::new(),
+                exceptions: Vec::new(),
+            };
         }
 
-        let mut param_infos = Vec::new();
+        let mut parameter_infos = Vec::new();
+        let mut exceptions = Vec::new();
         for section in function_decl.param_sections() {
-            let declare_parameters = matches!(
-                section.kind(self.collector.source),
-                Some(
-                    AstFunctionParamSectionKind::Importing
-                        | AstFunctionParamSectionKind::Exporting
-                        | AstFunctionParamSectionKind::Changing
-                        | AstFunctionParamSectionKind::Tables
-                )
-            );
-            if !declare_parameters {
-                continue;
-            }
-
-            for param in section.params() {
-                let Some(name_node) = param.name_token() else {
-                    continue;
-                };
-                let Some(name) = name_node.name(self.collector.source) else {
-                    continue;
-                };
-                let declared_type = match param.type_clause_kind(self.collector.source) {
-                    Some(TypeClauseKind::Type) => param.type_ref().and_then(|type_ref| {
-                        self.collector
-                            .field_type_ref_from_node(type_ref.syntax().id(), Namespace::Type)
-                    }),
-                    Some(TypeClauseKind::Like) => param.type_ref().and_then(|type_ref| {
-                        self.collector
-                            .field_type_ref_from_node(type_ref.syntax().id(), Namespace::Value)
-                    }),
-                    None => None,
-                };
-                let type_clause_display = param
-                    .type_ref()
-                    .and_then(|type_ref| type_ref.display_text(self.collector.source))
-                    .map(Arc::from);
-                param_infos.push((name, name_node.range(), declared_type, type_clause_display));
+            match section.kind(self.collector.source) {
+                Some(AstFunctionParamSectionKind::Importing)
+                | Some(AstFunctionParamSectionKind::Exporting)
+                | Some(AstFunctionParamSectionKind::Changing)
+                | Some(AstFunctionParamSectionKind::Tables) => {
+                    let section_kind = match section.kind(self.collector.source) {
+                        Some(AstFunctionParamSectionKind::Importing) => {
+                            FunctionModuleParameterSection::Importing
+                        }
+                        Some(AstFunctionParamSectionKind::Exporting) => {
+                            FunctionModuleParameterSection::Exporting
+                        }
+                        Some(AstFunctionParamSectionKind::Changing) => {
+                            FunctionModuleParameterSection::Changing
+                        }
+                        Some(AstFunctionParamSectionKind::Tables) => {
+                            FunctionModuleParameterSection::Tables
+                        }
+                        _ => continue,
+                    };
+                    for param in section.params() {
+                        let Some(name_node) = param.name_token() else {
+                            continue;
+                        };
+                        let Some(name) = name_node.name(self.collector.source) else {
+                            continue;
+                        };
+                        let declared_type = match param.type_clause_kind(self.collector.source) {
+                            Some(TypeClauseKind::Type) => param.type_ref().and_then(|type_ref| {
+                                self.collector
+                                    .field_type_ref_from_node(type_ref.syntax().id(), Namespace::Type)
+                            }),
+                            Some(TypeClauseKind::Like) => param.type_ref().and_then(|type_ref| {
+                                self.collector
+                                    .field_type_ref_from_node(type_ref.syntax().id(), Namespace::Value)
+                            }),
+                            None => None,
+                        };
+                        let type_clause_display = param
+                            .type_ref()
+                            .and_then(|type_ref| type_ref.display_text(self.collector.source))
+                            .map(Arc::from);
+                        parameter_infos.push(FunctionModuleParameterData {
+                            section: section_kind,
+                            name,
+                            range: name_node.range(),
+                            declared_type,
+                            type_clause_display,
+                            is_optional: param.is_optional(self.collector.source),
+                            has_default_value: param.has_default_value(self.collector.source),
+                        });
+                    }
+                }
+                Some(AstFunctionParamSectionKind::Exceptions) => {
+                    for param in section.params() {
+                        let Some(name_node) = param.name_token() else {
+                            continue;
+                        };
+                        let Some(name) = name_node.name(self.collector.source) else {
+                            continue;
+                        };
+                        exceptions.push(FunctionModuleExceptionData {
+                            name,
+                            range: name_node.range(),
+                        });
+                    }
+                }
+                None => {}
             }
         }
 
-        for (name, range, declared_type, type_clause_display) in param_infos {
+        for parameter in &parameter_infos {
             self.collector.declare_symbol(
                 function_scope,
-                name,
+                Arc::clone(&parameter.name),
                 SymbolKind::Parameter,
-                range,
+                parameter.range.clone(),
                 None,
-                declared_type,
-                type_clause_display,
+                parameter.declared_type.clone(),
+                parameter.type_clause_display.clone(),
                 None,
             );
+        }
+
+        FunctionModuleData {
+            symbol: function_symbol,
+            parameters: parameter_infos,
+            exceptions,
         }
     }
 

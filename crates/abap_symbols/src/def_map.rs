@@ -430,6 +430,38 @@ pub struct FormRoutineData {
     pub parameters: Vec<FormParameterData>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FunctionModuleParameterSection {
+    Importing,
+    Exporting,
+    Changing,
+    Tables,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FunctionModuleParameterData {
+    pub section: FunctionModuleParameterSection,
+    pub name: Arc<str>,
+    pub range: TextRange,
+    pub declared_type: Option<FieldTypeRefData>,
+    pub type_clause_display: Option<Arc<str>>,
+    pub is_optional: bool,
+    pub has_default_value: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FunctionModuleExceptionData {
+    pub name: Arc<str>,
+    pub range: TextRange,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FunctionModuleData {
+    pub symbol: SymbolId,
+    pub parameters: Vec<FunctionModuleParameterData>,
+    pub exceptions: Vec<FunctionModuleExceptionData>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClassMemberData {
     pub class_symbol: SymbolId,
@@ -577,6 +609,7 @@ pub struct UnitAnalysis {
     pub implemented_interfaces: Vec<ImplementedInterfaceData>,
     pub member_aliases: Vec<MemberAliasData>,
     pub form_routines: Vec<FormRoutineData>,
+    pub function_modules: Vec<FunctionModuleData>,
     pub named_arguments: Vec<NamedArgumentAccess>,
     pub call_sites: Vec<CallSiteData>,
     pub assignment_sites: Vec<AssignmentSiteData>,
@@ -822,6 +855,12 @@ impl UnitAnalysis {
             .iter()
             .flat_map(|routine| routine.parameters.iter())
             .find(|parameter| parameter.symbol == symbol)
+    }
+
+    pub fn function_module(&self, symbol: SymbolId) -> Option<&FunctionModuleData> {
+        self.function_modules
+            .iter()
+            .find(|function_module| function_module.symbol == symbol)
     }
 
     pub fn routine_parameters(

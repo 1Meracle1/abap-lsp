@@ -24,10 +24,11 @@ use abap_lexer::{TextRange, Token, TokenKind};
 
 use crate::def_map::{
     AssignmentSiteData, CallSiteData, ClassInheritanceData, ClassMemberData, Diagnostic,
-    FieldAccess, FieldTypeRefData, FormRoutineData, ImplementedInterfaceData, IncludeEdge,
-    LoopWhereFieldContext, MemberAliasData, NamedArgumentAccess, PerformCallData, ReferenceData,
-    SqlNameRefData, SqlPredicateData, SqlProjectionData, SqlQueryData, SqlSourceData,
-    SqlTargetData, StructureData, SymbolData, UnitAnalysis,
+    FieldAccess, FieldTypeRefData, FormRoutineData, FunctionModuleData,
+    ImplementedInterfaceData, IncludeEdge, LoopWhereFieldContext, MemberAliasData,
+    NamedArgumentAccess, PerformCallData, ReferenceData, SqlNameRefData, SqlPredicateData,
+    SqlProjectionData, SqlQueryData, SqlSourceData, SqlTargetData, StructureData, SymbolData,
+    UnitAnalysis,
 };
 use crate::ids::{ScopeId, StructureId, SymbolId, UnitId};
 use crate::scope::{Namespace, ScopeData, ScopeKind};
@@ -109,6 +110,7 @@ pub struct Collector<'a> {
     implemented_interfaces: Vec<ImplementedInterfaceData>,
     member_aliases: Vec<MemberAliasData>,
     form_routines: Vec<FormRoutineData>,
+    function_modules: Vec<FunctionModuleData>,
     named_arguments: Vec<NamedArgumentAccess>,
     call_sites: Vec<CallSiteData>,
     assignment_sites: Vec<AssignmentSiteData>,
@@ -156,6 +158,7 @@ impl<'a> Collector<'a> {
             implemented_interfaces: Vec::new(),
             member_aliases: Vec::new(),
             form_routines: Vec::new(),
+            function_modules: Vec::new(),
             named_arguments: Vec::new(),
             call_sites: Vec::new(),
             assignment_sites: Vec::new(),
@@ -207,6 +210,7 @@ impl<'a> Collector<'a> {
             implemented_interfaces: self.implemented_interfaces,
             member_aliases: self.member_aliases,
             form_routines: self.form_routines,
+            function_modules: self.function_modules,
             named_arguments: self.named_arguments,
             call_sites: self.call_sites,
             assignment_sites: self.assignment_sites,

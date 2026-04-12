@@ -379,6 +379,10 @@ impl<'ctx, 'a> DeclContext<'ctx, 'a> {
         Self { collector }
     }
 
+    pub(super) fn emit_function_module(&mut self, function_module: crate::FunctionModuleData) {
+        self.collector.emit_function_module(function_module);
+    }
+
     pub(super) fn source(&self) -> &'a str {
         self.collector.source
     }

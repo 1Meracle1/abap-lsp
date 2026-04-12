@@ -1,7 +1,7 @@
 use crate::def_map::{
     AssignmentSiteData, CallSiteData, ClassMemberData, FieldAccess, FormRoutineData,
-    NamedArgumentAccess, PerformCallData, SqlNameRefData, SqlPredicateData, SqlProjectionData,
-    SqlQueryData, SqlSourceData, SqlTargetData,
+    FunctionModuleData, NamedArgumentAccess, PerformCallData, SqlNameRefData, SqlPredicateData,
+    SqlProjectionData, SqlQueryData, SqlSourceData, SqlTargetData,
 };
 
 use super::Collector;
@@ -19,6 +19,7 @@ pub(super) trait ClassSink {
 
 pub(super) trait FormSink {
     fn emit_form_routine(&mut self, routine: FormRoutineData);
+    fn emit_function_module(&mut self, function_module: FunctionModuleData);
     fn emit_perform_call(&mut self, call: PerformCallData);
 }
 
@@ -58,6 +59,10 @@ impl<'a> ClassSink for Collector<'a> {
 impl<'a> FormSink for Collector<'a> {
     fn emit_form_routine(&mut self, routine: FormRoutineData) {
         self.form_routines.push(routine);
+    }
+
+    fn emit_function_module(&mut self, function_module: FunctionModuleData) {
+        self.function_modules.push(function_module);
     }
 
     fn emit_perform_call(&mut self, call: PerformCallData) {

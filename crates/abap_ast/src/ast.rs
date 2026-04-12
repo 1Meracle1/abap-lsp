@@ -804,6 +804,16 @@ impl<'a> FunctionParam<'a> {
                     .is_some_and(|text| text.eq_ignore_ascii_case("optional"))
             })
     }
+
+    pub fn has_default_value(self, source: &str) -> bool {
+        self.syntax
+            .children_by_kind(SyntaxKind::Token)
+            .any(|token| {
+                token
+                    .text(source)
+                    .is_some_and(|text| text.eq_ignore_ascii_case("default"))
+            })
+    }
 }
 
 impl<'a> ClassSectionVisibility<'a> {

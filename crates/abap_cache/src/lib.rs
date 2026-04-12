@@ -7,13 +7,13 @@ use abap_lexer::TokenKind;
 use abap_parser::{ParseResult, parse};
 use abap_symbols::{
     ClassMemberData, ClassMemberKind, ClassMemberParameterData, FieldTypeRefData,
-    FormParameterData, FormParameterPassingKind, FormParameterSection, MethodParameterSection,
+    FormParameterData, FormParameterPassingKind, FormParameterSection, FunctionModuleData,
+    FunctionModuleParameterData, FunctionModuleParameterSection, MethodParameterSection,
     NamedArgumentAccess, NamedArgumentSection, NamedArgumentTarget, Namespace, PerformArgumentData,
     PerformCallData, PerformParameterSection, ProjectAnalysis, ReferenceKind, Resolution, ScopeId,
     ScopeKind, SqlNameRefData, SqlNameRefKind, StructureFieldData, StructureFieldInfo,
     StructureFieldShape, StructureId, SymbolData, SymbolHandle, SymbolId, SymbolKind, UnitAnalysis,
-    UnitId, Visibility, builtin_routine_spec, call_section_matches_parameter,
-    parameter_is_required,
+    UnitId, Visibility, builtin_routine_spec, call_section_matches_parameter, parameter_is_required,
     perf_api::{
         IncrementalProjectUpdate, LocalAnalysis, PreviewProjectUpdate, analyze_unit_local_state,
         incremental_project_update, preview_project_update,
@@ -1382,24 +1382,44 @@ impl AnalysisSnapshot {
             .filter_map(|argument| argument.name.as_ref())
             .map(|name| name.to_ascii_lowercase())
             .collect();
-        let mut items: Vec<_> = callable
-            .member
-            .parameters
-            .iter()
-            .filter(|parameter| {
-                call_section_matches_parameter(section, parameter.section)
-                    && !present_named_parameters.contains(parameter.name.as_ref())
-                    && parameter.name.as_ref().starts_with(prefix.as_ref())
-            })
-            .map(|parameter| {
-                CompletionItem::NamedArgument(NamedArgumentCompletionItem {
-                    name: Arc::clone(&parameter.name),
-                    declared_type: parameter_completion_declared_type(parameter),
-                    declaration: Some(format_parameter_completion_declaration(parameter)),
-                    insertion: named_argument_completion_insertion(parameter.name.as_ref()),
+        let mut items: Vec<_> = match callable {
+            CallableCompletionTarget::Method(member) => member
+                .parameters
+                .iter()
+                .filter(|parameter| {
+                    call_section_matches_parameter(section, parameter.section)
+                        && !present_named_parameters.contains(parameter.name.as_ref())
+                        && parameter.name.as_ref().starts_with(prefix.as_ref())
                 })
-            })
-            .collect();
+                .map(|parameter| {
+                    CompletionItem::NamedArgument(NamedArgumentCompletionItem {
+                        name: Arc::clone(&parameter.name),
+                        declared_type: parameter_completion_declared_type(parameter),
+                        declaration: Some(format_parameter_completion_declaration(parameter)),
+                        insertion: named_argument_completion_insertion(parameter.name.as_ref()),
+                    })
+                })
+                .collect(),
+            CallableCompletionTarget::Function(function_module) => function_module
+                .parameters
+                .iter()
+                .filter(|parameter| {
+                    call_section_matches_function_parameter(section, parameter)
+                        && !present_named_parameters.contains(parameter.name.as_ref())
+                        && parameter.name.as_ref().starts_with(prefix.as_ref())
+                })
+                .map(|parameter| {
+                    CompletionItem::NamedArgument(NamedArgumentCompletionItem {
+                        name: Arc::clone(&parameter.name),
+                        declared_type: function_module_parameter_completion_declared_type(parameter),
+                        declaration: Some(
+                            format_function_module_parameter_completion_declaration(parameter),
+                        ),
+                        insertion: named_argument_completion_insertion(parameter.name.as_ref()),
+                    })
+                })
+                .collect(),
+        };
         if items.is_empty() {
             return None;
         }
@@ -1778,6 +1798,28 @@ fn callable_completion_insertion(member: &ClassMemberData) -> CompletionInsertio
     }
 }
 
+fn call_section_matches_function_parameter(
+    section: Option<NamedArgumentSection>,
+    parameter: &FunctionModuleParameterData,
+) -> bool {
+    matches!(
+        (section, parameter.section),
+        (
+            Some(NamedArgumentSection::Exporting),
+            FunctionModuleParameterSection::Importing
+        ) | (
+            Some(NamedArgumentSection::Importing),
+            FunctionModuleParameterSection::Exporting
+        ) | (
+            Some(NamedArgumentSection::Changing),
+            FunctionModuleParameterSection::Changing
+        ) | (
+            Some(NamedArgumentSection::Tables),
+            FunctionModuleParameterSection::Tables
+        )
+    )
+}
+
 fn named_argument_completion_insertion(name: &str) -> CompletionInsertion {
     CompletionInsertion {
         plain_text: format!("{name} = "),
@@ -1791,6 +1833,25 @@ fn parameter_completion_declared_type(parameter: &ClassMemberParameterData) -> O
         .as_ref()
         .map(|display| display.trim().to_string())
         .or_else(|| parameter.declared_type.as_ref().map(format_field_type_ref))
+}
+
+fn function_module_parameter_completion_declared_type(
+    parameter: &FunctionModuleParameterData,
+) -> Option<String> {
+    parameter
+        .type_clause_display
+        .as_ref()
+        .map(|display| display.trim().to_string())
+        .or_else(|| parameter.declared_type.as_ref().map(format_field_type_ref))
+}
+
+fn format_function_module_parameter_completion_declaration(
+    parameter: &FunctionModuleParameterData,
+) -> String {
+    match function_module_parameter_completion_declared_type(parameter) {
+        Some(declared_type) => format!("{} {}", parameter.name, declared_type),
+        None => parameter.name.to_string(),
+    }
 }
 
 fn format_parameter_completion_declaration(parameter: &ClassMemberParameterData) -> String {
@@ -1808,8 +1869,9 @@ fn completion_item_name(item: &CompletionItem) -> &str {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct CallableCompletionTarget<'a> {
-    member: &'a ClassMemberData,
+enum CallableCompletionTarget<'a> {
+    Method(&'a ClassMemberData),
+    Function(&'a FunctionModuleData),
 }
 
 fn symbol_kind_label(kind: SymbolKind) -> &'static str {
@@ -1924,6 +1986,56 @@ fn render_form_signature(unit: &UnitAnalysis, symbol: &SymbolData) -> Option<Str
     Some(lines.join("\n"))
 }
 
+fn function_module_parameter_section_keyword(section: FunctionModuleParameterSection) -> &'static str {
+    match section {
+        FunctionModuleParameterSection::Importing => "IMPORTING",
+        FunctionModuleParameterSection::Exporting => "EXPORTING",
+        FunctionModuleParameterSection::Changing => "CHANGING",
+        FunctionModuleParameterSection::Tables => "TABLES",
+    }
+}
+
+fn render_function_module_parameter_signature(parameter: &FunctionModuleParameterData) -> String {
+    let mut rendered = parameter.name.to_string();
+    if let Some(type_clause) = parameter.declared_type.as_ref().map(format_field_type_ref) {
+        rendered.push(' ');
+        rendered.push_str(&type_clause);
+    }
+    if parameter.is_optional {
+        rendered.push_str(" OPTIONAL");
+    }
+    if parameter.has_default_value {
+        rendered.push_str(" DEFAULT ...");
+    }
+    rendered
+}
+
+fn render_function_module_signature(unit: &UnitAnalysis, symbol: &SymbolData) -> Option<String> {
+    let function_module = unit.function_module(symbol.id)?;
+    let mut lines = vec![format!("FUNCTION {}", symbol.name)];
+    let mut current_section = None;
+    for parameter in &function_module.parameters {
+        if current_section != Some(parameter.section) {
+            current_section = Some(parameter.section);
+            lines.push(format!(
+                "  {}",
+                function_module_parameter_section_keyword(parameter.section)
+            ));
+        }
+        lines.push(format!(
+            "    {}",
+            render_function_module_parameter_signature(parameter)
+        ));
+    }
+    if !function_module.exceptions.is_empty() {
+        lines.push("  EXCEPTIONS".to_string());
+        for exception in &function_module.exceptions {
+            lines.push(format!("    {}", exception.name));
+        }
+    }
+    Some(lines.join("\n"))
+}
+
 fn markdown_lines_for_form_parameter(info: &FormParameterHoverInfo) -> Vec<String> {
     vec![
         format!("`{}`", info.name),
@@ -1946,6 +2058,11 @@ fn markdown_lines_for_declared_symbol(unit: &UnitAnalysis, symbol: &SymbolData) 
     }
     if symbol.kind == SymbolKind::Form {
         return markdown_lines_for_form(unit, symbol);
+    }
+    if symbol.kind == SymbolKind::Module
+        && let Some(signature) = render_function_module_signature(unit, symbol)
+    {
+        return vec![format_hover_abap(&signature)];
     }
     let mut lines = vec![
         format!("`{}`", symbol.name),
@@ -2017,6 +2134,11 @@ fn markdown_lines_for_resolution(
             }
             if symbol.kind == SymbolKind::Form {
                 return markdown_lines_for_form(unit, symbol);
+            }
+            if symbol.kind == SymbolKind::Module
+                && let Some(signature) = render_function_module_signature(unit, symbol)
+            {
+                return vec![format_hover_abap(&signature)];
             }
             let mut lines = vec![
                 format!("`{at_name}`"),
@@ -3348,12 +3470,11 @@ fn resolve_callable_completion_target<'a>(
             if unit.symbol(class_symbol_id).kind != SymbolKind::Class {
                 return None;
             }
-            Some(CallableCompletionTarget {
-                member: unit
-                    .semantic()
+            Some(CallableCompletionTarget::Method(
+                unit.semantic()
                     .decls()
                     .class_member(class_symbol_id, "constructor")?,
-            })
+            ))
         }
         NamedArgumentTarget::ImplicitMethod { method_name } => {
             let unit = snapshot.symbols.as_ref();
@@ -3371,7 +3492,7 @@ fn resolve_callable_completion_target<'a>(
             {
                 return None;
             }
-            Some(CallableCompletionTarget { member })
+            Some(CallableCompletionTarget::Method(member))
         }
         NamedArgumentTarget::Method {
             base_namespace,
@@ -3398,9 +3519,21 @@ fn resolve_callable_completion_target<'a>(
             {
                 return None;
             }
-            Some(CallableCompletionTarget { member })
+            Some(CallableCompletionTarget::Method(member))
         }
-        NamedArgumentTarget::Function { .. } | NamedArgumentTarget::Routine { .. } => None,
+        NamedArgumentTarget::Function { function_name } => {
+            let (unit, function_symbol_id) = resolve_symbol_from_context(
+                snapshot,
+                call_site.scope,
+                Namespace::Routine,
+                function_name,
+                false,
+            )?;
+            Some(CallableCompletionTarget::Function(
+                unit.function_module(function_symbol_id)?,
+            ))
+        }
+        NamedArgumentTarget::Routine { .. } => None,
     }
 }
 
@@ -3495,7 +3628,35 @@ fn resolve_named_argument_parameter_with_scope_index<'a>(
                 declared_type: parameter.declared_type.clone(),
             })
         }
-        NamedArgumentTarget::Function { .. } => None,
+        NamedArgumentTarget::Function { function_name } => {
+            let (unit, function_symbol_id) = resolve_symbol_from_context_with_scope_index(
+                snapshot,
+                scope_index,
+                access.scope,
+                Namespace::Routine,
+                function_name,
+                false,
+            )?;
+            let function_module = unit.function_module(function_symbol_id)?;
+            if let Some(parameter) = function_module
+                .parameters
+                .iter()
+                .find(|parameter| parameter.name == access.name)
+            {
+                return Some(NamedArgumentParameterInfo {
+                    name: Arc::clone(&parameter.name),
+                    declared_type: parameter.declared_type.clone(),
+                });
+            }
+            let exception = function_module
+                .exceptions
+                .iter()
+                .find(|exception| exception.name == access.name)?;
+            Some(NamedArgumentParameterInfo {
+                name: Arc::clone(&exception.name),
+                declared_type: None,
+            })
+        }
         NamedArgumentTarget::Routine { routine_name } => {
             resolve_routine_named_argument_parameter_with_scope_index(
                 snapshot,
@@ -3595,7 +3756,28 @@ fn resolve_named_argument_target(
                 .find(|parameter| parameter.name == access.name)?;
             Some(definition_target_for_range(unit, parameter.range.clone()))
         }
-        NamedArgumentTarget::Function { .. } => None,
+        NamedArgumentTarget::Function { function_name } => {
+            let (unit, function_symbol_id) = resolve_symbol_from_context(
+                snapshot,
+                access.scope,
+                Namespace::Routine,
+                function_name,
+                false,
+            )?;
+            let function_module = unit.function_module(function_symbol_id)?;
+            if let Some(parameter) = function_module
+                .parameters
+                .iter()
+                .find(|parameter| parameter.name == access.name)
+            {
+                return Some(definition_target_for_range(unit, parameter.range.clone()));
+            }
+            let exception = function_module
+                .exceptions
+                .iter()
+                .find(|exception| exception.name == access.name)?;
+            Some(definition_target_for_range(unit, exception.range.clone()))
+        }
         NamedArgumentTarget::Routine { routine_name } => {
             let (unit, routine_symbol_id) = resolve_symbol_from_context(
                 snapshot,
@@ -3699,7 +3881,24 @@ fn resolve_named_argument_symbol(
                 .find(|parameter| parameter.name == access.name)?;
             symbol_handle_for_decl_range(unit, &parameter.range, SymbolKind::Parameter)
         }
-        NamedArgumentTarget::Function { .. } => None,
+        NamedArgumentTarget::Function { function_name } => {
+            let (unit, function_symbol_id) = resolve_symbol_from_context(
+                snapshot,
+                access.scope,
+                Namespace::Routine,
+                function_name,
+                false,
+            )?;
+            let function_module = unit.function_module(function_symbol_id)?;
+            if let Some(parameter) = function_module
+                .parameters
+                .iter()
+                .find(|parameter| parameter.name == access.name)
+            {
+                return symbol_handle_for_decl_range(unit, &parameter.range, SymbolKind::Parameter);
+            }
+            None
+        }
         NamedArgumentTarget::Routine { routine_name } => {
             let (unit, routine_symbol_id) = resolve_symbol_from_context(
                 snapshot,
@@ -7727,6 +7926,149 @@ ENDCLASS.";
         assert_eq!(
             method_target.range.start,
             src.find("meth").expect("interface method declaration")
+        );
+    }
+
+    #[test]
+    fn hovered_resolved_symbol_at_formats_function_module_signature() {
+        let store = DocumentStore::default();
+        let dep_src = "\
+FUNCTION /AIF/FILE_PROCESS_DATA
+  IMPORTING
+    iv_name TYPE string
+  CHANGING
+    cv_text TYPE string
+  EXCEPTIONS
+    failed.
+ENDFUNCTION.";
+        let main_src = "\
+START-OF-SELECTION.
+  CALL FUNCTION '/AIF/FILE_PROCESS_DATA'.";
+        store.replace_all(vec![
+            DocumentInput {
+                uri: Arc::from("file:///fm_hover_main.abap"),
+                version: 1,
+                text: Arc::from(main_src),
+                is_dependency: false,
+                object_name: None,
+            },
+            DocumentInput {
+                uri: Arc::from("file:///fm_hover_dep.abap"),
+                version: 1,
+                text: Arc::from(dep_src),
+                is_dependency: true,
+                object_name: None,
+            },
+        ]);
+        let snapshot = store
+            .documents
+            .read()
+            .get("file:///fm_hover_main.abap")
+            .cloned()
+            .expect("main snapshot");
+        let offset = main_src.find("/AIF/FILE_PROCESS_DATA").expect("fm name") + 2;
+
+        let hovered = snapshot
+            .hovered_resolved_symbol_at(offset)
+            .expect("function module hover");
+        assert!(
+            hovered
+                .markdown_lines
+                .iter()
+                .any(|line| line.contains("FUNCTION /aif/file_process_data")),
+            "{:?}",
+            hovered.markdown_lines
+        );
+        assert!(
+            hovered
+                .markdown_lines
+                .iter()
+                .any(|line| line.contains("EXCEPTIONS")),
+            "{:?}",
+            hovered.markdown_lines
+        );
+    }
+
+    #[test]
+    fn completion_and_definition_work_for_call_function_named_arguments() {
+        let store = DocumentStore::default();
+        let dep_src = "\
+FUNCTION /AIF/FILE_PROCESS_DATA
+  IMPORTING
+    iv_name TYPE string
+    iv_mode TYPE i OPTIONAL
+  CHANGING
+    cv_text TYPE string
+  EXCEPTIONS
+    failed.
+ENDFUNCTION.";
+        let main_src = "\
+START-OF-SELECTION.
+  DATA lv_text TYPE string.
+  CALL FUNCTION '/AIF/FILE_PROCESS_DATA'
+    EXPORTING
+      iv
+    CHANGING
+      cv_text = lv_text
+    EXCEPTIONS
+      failed = 1.";
+        store.replace_all(vec![
+            DocumentInput {
+                uri: Arc::from("file:///fm_completion_main.abap"),
+                version: 1,
+                text: Arc::from(main_src),
+                is_dependency: false,
+                object_name: None,
+            },
+            DocumentInput {
+                uri: Arc::from("file:///fm_completion_dep.abap"),
+                version: 1,
+                text: Arc::from(dep_src),
+                is_dependency: true,
+                object_name: None,
+            },
+        ]);
+        let snapshot = store
+            .documents
+            .read()
+            .get("file:///fm_completion_main.abap")
+            .cloned()
+            .expect("main snapshot");
+
+        let completion_offset = main_src.find("iv\n").expect("iv prefix") + 2;
+        let completion = snapshot
+            .completion_at(completion_offset)
+            .expect("named argument completion");
+        let names: Vec<_> = completion
+            .items
+            .iter()
+            .map(|item| match item {
+                crate::CompletionItem::Selector(item) => item.name.as_ref(),
+                crate::CompletionItem::NamedArgument(item) => item.name.as_ref(),
+            })
+            .collect();
+        assert_eq!(names, vec!["iv_mode", "iv_name"]);
+
+        let parameter_offset = main_src.find("cv_text").expect("cv_text use") + 2;
+        let hovered = snapshot
+            .hovered_named_argument_at(parameter_offset)
+            .expect("parameter hover");
+        assert!(
+            hovered
+                .markdown_lines
+                .iter()
+                .any(|line| line == "```abap\nTYPE string\n```"),
+            "{:?}",
+            hovered.markdown_lines
+        );
+
+        let target = snapshot
+            .definition_at(parameter_offset)
+            .expect("parameter definition");
+        assert_eq!(target.uri.as_ref(), "file:///fm_completion_dep.abap");
+        assert_eq!(
+            &dep_src[target.range.clone()],
+            "cv_text"
         );
     }
 
