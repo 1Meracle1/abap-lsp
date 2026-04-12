@@ -59,6 +59,7 @@ cargo flamegraph -p abap_symbols --example build_symbols_validate_perf --release
 ## Migration Docs
 
 - `docs/abap-adt-cli.md`
+- `docs/call-graph.md`
 - `docs/semantic-dossier.md`
 - `docs/migration/repo-layout.md`
 - `docs/migration/frontend-porting.md`
@@ -90,6 +91,25 @@ The dossier is designed for downstream tools and AI workflows. It includes:
 
 See `docs/semantic-dossier.md` for the JSON schema and usage notes.
 
+## Call Graph CLI
+
+Use `abap_cli call-graph` when you need a project-scale caller/callee graph across files and
+objects.
+
+```bat
+cargo run -p abap_cli -- call-graph --json path\to\zcl_demo.abap
+cargo run -p abap_cli -- call-graph --json --symbol zcl_demo~run path\to\zcl_demo.abap
+cargo run -p abap_cli -- call-graph --json --pretty --symbol zcl_demo~run path\to\zcl_demo.abap
+```
+
+The graph is built from the surrounding workspace when a file path is provided. It includes:
+
+- callable nodes for methods, forms, function modules, and event blocks,
+- direct call edges with explicit `resolved` or `unresolved` status,
+- focused inbound, outbound, and unresolved slices when `--symbol` is used.
+
+See `docs/call-graph.md` for command shapes, output fields, and current limits.
+
 ## Remote SAP Lookup
 
 Use `abap-adt` when you need live SAP information that is not available in the local workspace yet.
@@ -107,6 +127,7 @@ The Rust workspace currently provides:
 
 - a blocking ADT query CLI for remote SAP discovery and source lookups,
 - a semantic dossier CLI export for AI-oriented ABAP object analysis,
+- a project-scale call graph CLI export for caller/callee flow analysis,
 - the crate layout and dependency boundaries for the rewrite,
 - a minimal blocking JSON-RPC transport,
 - a smoke-test LSP server binary over stdio,

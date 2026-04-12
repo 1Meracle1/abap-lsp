@@ -15,6 +15,8 @@ Use the wrapper scripts on Windows, or run Cargo directly.
 - `cargo run -p abap_adt_cli -- --help`: inspect the ADT CLI used for live SAP lookups.
 - `cargo run -p abap_cli -- analyze --json <FILE>`: emit a semantic dossier JSON export for one ABAP file.
 - `cargo run -p abap_cli -- analyze --json --with-project <FILE>`: analyze a file with workspace/project context for cross-unit resolution.
+- `cargo run -p abap_cli -- call-graph --json <FILE>`: emit a project-scale call graph JSON export rooted in the workspace around one file.
+- `cargo run -p abap_cli -- call-graph --json --symbol <NAME> <FILE>`: query inbound/outbound/unresolved call edges for one callable symbol within the project graph.
 - `cargo flamegraph -p abap_lsp --example build_semantic_tokens_perf --release`: profile semantic token generation.
 
 ## Coding Style & Naming Conventions
