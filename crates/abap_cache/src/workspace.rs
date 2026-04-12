@@ -1529,8 +1529,8 @@ mod tests {
         UNKNOWN_SYMBOL_MODE_REMOTE, WORKSPACE_PERFORMANCE_MODE_AUTO,
         WORKSPACE_PERFORMANCE_MODE_EDITOR_FIRST, WorkspaceManifest, WorkspacePerformanceMode,
         ddic_xml_to_abap_source, is_remote_lookup_candidate, is_remote_lookup_name,
-        load_workspace_documents, manifest_declares_uri,
-        manifest_supports_remote_resolution, path_to_file_uri, resolve_workspace_performance_mode,
+        load_workspace_documents, manifest_declares_uri, manifest_supports_remote_resolution,
+        path_to_file_uri, resolve_workspace_performance_mode,
     };
 
     #[test]

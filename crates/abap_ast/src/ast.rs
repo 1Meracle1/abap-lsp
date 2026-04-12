@@ -148,6 +148,51 @@ impl<'a> MethodsStmtSignature<'a> {
     }
 }
 
+#[derive(Clone)]
+pub struct MethodsStmtEntry<'a> {
+    kind: MethodsStmtKind,
+    items: Vec<SyntaxNodeRef<'a>>,
+}
+
+impl<'a> MethodsStmtEntry<'a> {
+    pub fn member_kind(&self) -> MethodsStmtKind {
+        self.kind
+    }
+
+    pub fn name_token(&self, source: &str) -> Option<SyntaxNodeRef<'a>> {
+        self.items
+            .iter()
+            .copied()
+            .find(|item| MethodsStmt::is_ident_token(*item, source))
+    }
+
+    pub fn signature_text(&self, source: &str) -> String {
+        let mut rendered = match self.kind {
+            MethodsStmtKind::Instance => "METHODS".to_string(),
+            MethodsStmtKind::Class => "CLASS-METHODS".to_string(),
+        };
+        let mut prev_text: Option<&str> = None;
+        for item in &self.items {
+            let Some(text) = item.text(source) else {
+                continue;
+            };
+            let needs_space = !rendered.is_empty()
+                && !matches!(text, "," | ":" | "-" | "(" | "[" | ")" | "]")
+                && !matches!(prev_text, Some("(" | "[" | ":" | "-"));
+            if needs_space {
+                rendered.push(' ');
+            }
+            rendered.push_str(text);
+            prev_text = Some(text);
+        }
+        rendered
+    }
+
+    pub fn signature(&self, source: &str) -> MethodsStmtSignature<'a> {
+        MethodsStmt::parse_signature_items(&self.items, source)
+    }
+}
+
 #[derive(Clone, Copy)]
 pub struct SyntaxNodeRef<'a> {
     tree: &'a SyntaxTree,
@@ -1430,58 +1475,96 @@ impl<'a> MethodsStmt<'a> {
     }
 
     pub fn name_token(self, source: &str) -> Option<SyntaxNodeRef<'a>> {
-        let items = self.significant_children(source);
-        let mut idx = match self.member_kind(source)? {
-            MethodsStmtKind::Instance => 1,
-            MethodsStmtKind::Class => 3,
-        };
-        while let Some(item) = items.get(idx).copied() {
-            if Self::is_punctuation(item, source) {
-                idx += 1;
-                continue;
-            }
-            if Self::is_ident_token(item, source) {
-                return Some(item);
-            }
-            break;
-        }
-        None
+        self.entries(source)
+            .into_iter()
+            .next()
+            .and_then(|entry| entry.name_token(source))
     }
 
     pub fn signature_text(self, source: &str) -> String {
-        let mut rendered = String::new();
-        let mut prev_text: Option<&str> = None;
-        for child in self.syntax.children() {
-            let Some(text) = child.text(source) else {
-                continue;
-            };
-            if text == "." {
-                break;
-            }
-            let needs_space = !rendered.is_empty()
-                && !matches!(text, "," | ":" | "-" | "(" | "[" | ")" | "]")
-                && !matches!(prev_text, Some("(" | "[" | ":" | "-"));
-            if needs_space {
-                rendered.push(' ');
-            }
-            rendered.push_str(text);
-            prev_text = Some(text);
-        }
-        rendered
+        self.entries(source)
+            .into_iter()
+            .next()
+            .map(|entry| entry.signature_text(source))
+            .unwrap_or_default()
     }
 
     pub fn signature(self, source: &str) -> MethodsStmtSignature<'a> {
+        self.entries(source)
+            .into_iter()
+            .next()
+            .map(|entry| entry.signature(source))
+            .unwrap_or(MethodsStmtSignature {
+                is_redefinition: false,
+                parameters: Vec::new(),
+                raising: Vec::new(),
+            })
+    }
+
+    pub fn entries(self, source: &str) -> Vec<MethodsStmtEntry<'a>> {
         let items = self.significant_children(source);
+        let (kind, mut idx) = match self.member_kind(source) {
+            Some(MethodsStmtKind::Instance) => (MethodsStmtKind::Instance, 1),
+            Some(MethodsStmtKind::Class) => (MethodsStmtKind::Class, 3),
+            None => return Vec::new(),
+        };
+        let mut entries = Vec::new();
+        while idx < items.len() {
+            while items
+                .get(idx)
+                .is_some_and(|item| Self::is_punctuation(*item, source))
+            {
+                idx += 1;
+            }
+            if items
+                .get(idx)
+                .is_some_and(|item| Self::token_text_is(*item, source, "."))
+            {
+                break;
+            }
+            if idx >= items.len() {
+                break;
+            }
+            let start = idx;
+            let mut depth = 0i32;
+            while idx < items.len() {
+                let item = items[idx];
+                match item.text(source) {
+                    Some("(" | "[" | "{") => depth += 1,
+                    Some(")" | "]" | "}") => depth -= 1,
+                    Some(",") | Some(".") if depth == 0 => break,
+                    _ => {}
+                }
+                idx += 1;
+            }
+            let entry_items = items[start..idx].to_vec();
+            if !entry_items.is_empty() {
+                entries.push(MethodsStmtEntry {
+                    kind,
+                    items: entry_items,
+                });
+            }
+            if items
+                .get(idx)
+                .is_some_and(|item| Self::token_text_is(*item, source, "."))
+            {
+                break;
+            }
+            idx += 1;
+        }
+        entries
+    }
+
+    fn parse_signature_items(
+        items: &[SyntaxNodeRef<'a>],
+        source: &str,
+    ) -> MethodsStmtSignature<'a> {
         let mut signature = MethodsStmtSignature {
             is_redefinition: false,
             parameters: Vec::new(),
             raising: Vec::new(),
         };
-        let mut idx = match self.member_kind(source) {
-            Some(MethodsStmtKind::Instance) => 1,
-            Some(MethodsStmtKind::Class) => 3,
-            None => return signature,
-        };
+        let mut idx = 0usize;
         while let Some(item) = items.get(idx).copied() {
             if Self::is_punctuation(item, source) {
                 idx += 1;
@@ -1492,7 +1575,6 @@ impl<'a> MethodsStmt<'a> {
             }
             break;
         }
-
         let mut section = None;
         let mut in_raising = false;
         let mut saw_parameter_section = false;
@@ -1501,7 +1583,7 @@ impl<'a> MethodsStmt<'a> {
             if Self::token_text_is(item, source, ".") {
                 break;
             }
-            if let Some(next_idx) = self.header_modifier_span(&items, idx, source) {
+            if let Some(next_idx) = Self::header_modifier_span(items, idx, source) {
                 if saw_parameter_section {
                     break;
                 }
@@ -1530,11 +1612,11 @@ impl<'a> MethodsStmt<'a> {
                 }
                 None => section,
             };
-            if self.stops_parameter_scan(item, source) {
+            if Self::stops_parameter_scan(item, source) {
                 break;
             }
             if in_raising {
-                if let Some((raising, next_idx)) = self.try_consume_raising(&items, idx, source) {
+                if let Some((raising, next_idx)) = Self::try_consume_raising(items, idx, source) {
                     signature.raising.push(raising);
                     idx = next_idx;
                     continue;
@@ -1542,7 +1624,7 @@ impl<'a> MethodsStmt<'a> {
             }
             if let Some(param_section) = section
                 && let Some((param, next_idx)) =
-                    self.try_consume_parameter(&items, idx, param_section, source)
+                    Self::try_consume_parameter(items, idx, param_section, source)
             {
                 signature.parameters.push(param);
                 idx = next_idx;
@@ -1599,7 +1681,6 @@ impl<'a> MethodsStmt<'a> {
     }
 
     fn header_modifier_span(
-        self,
         items: &[SyntaxNodeRef<'a>],
         idx: usize,
         source: &str,
@@ -1621,14 +1702,13 @@ impl<'a> MethodsStmt<'a> {
         None
     }
 
-    fn stops_parameter_scan(self, item: SyntaxNodeRef<'a>, source: &str) -> bool {
+    fn stops_parameter_scan(item: SyntaxNodeRef<'a>, source: &str) -> bool {
         Self::token_text_is(item, source, ".")
             || Self::token_text_is(item, source, "raising")
             || Self::token_text_is(item, source, "exceptions")
     }
 
     fn try_consume_parameter(
-        self,
         items: &[SyntaxNodeRef<'a>],
         idx: usize,
         section: MethodsParamSectionKind,
@@ -1663,7 +1743,7 @@ impl<'a> MethodsStmt<'a> {
         j += 1;
 
         let type_ref = items.get(j).copied().and_then(TypeRefSimple::cast);
-        let next_idx = self.skip_type_expression(items, j, source);
+        let next_idx = Self::skip_type_expression(items, j, source);
         let is_optional = items.get(next_idx).is_some_and(|item| {
             Self::token_text_is(*item, source, "optional")
                 || Self::token_text_is(*item, source, "default")
@@ -1681,7 +1761,6 @@ impl<'a> MethodsStmt<'a> {
     }
 
     fn try_consume_raising(
-        self,
         items: &[SyntaxNodeRef<'a>],
         idx: usize,
         source: &str,
@@ -1750,12 +1829,7 @@ impl<'a> MethodsStmt<'a> {
         Some((item, idx + 1))
     }
 
-    fn skip_type_expression(
-        self,
-        items: &[SyntaxNodeRef<'a>],
-        mut idx: usize,
-        source: &str,
-    ) -> usize {
+    fn skip_type_expression(items: &[SyntaxNodeRef<'a>], mut idx: usize, source: &str) -> usize {
         let mut depth = 0i32;
         while idx < items.len() {
             let item = items[idx];
@@ -1774,13 +1848,13 @@ impl<'a> MethodsStmt<'a> {
                 continue;
             }
             if depth == 0
-                && (self.stops_parameter_scan(item, source)
+                && (Self::stops_parameter_scan(item, source)
                     || Self::parameter_section(item, source).is_some()
-                    || self.header_modifier_span(items, idx, source).is_some()
+                    || Self::header_modifier_span(items, idx, source).is_some()
                     || Self::token_text_is(item, source, "optional")
                     || Self::token_text_is(item, source, "default")
                     || Self::token_text_is(item, source, "preferred")
-                    || self.starts_parameter(items, idx, source))
+                    || Self::starts_parameter(items, idx, source))
             {
                 return idx;
             }
@@ -1789,7 +1863,7 @@ impl<'a> MethodsStmt<'a> {
         idx
     }
 
-    fn starts_parameter(self, items: &[SyntaxNodeRef<'a>], idx: usize, source: &str) -> bool {
+    fn starts_parameter(items: &[SyntaxNodeRef<'a>], idx: usize, source: &str) -> bool {
         Self::parameter_name(items, idx, source)
             .and_then(|(_, next_idx)| items.get(next_idx).copied())
             .is_some_and(|next| {
@@ -3124,5 +3198,80 @@ mod tests {
             signature.raising()[1].type_ref().display_text(source),
             Some("cx_other")
         );
+    }
+
+    #[test]
+    fn methods_stmt_wrappers_split_chained_entries() {
+        let source = "METHODS: get_response IMPORTING iv_x TYPE i, get_data.";
+        let mut b = SyntaxTreeBuilder::default();
+        let mut cursor = 0usize;
+        let mut last_range = 0..0;
+        let mut take = |needle: &str, builder: &mut SyntaxTreeBuilder| {
+            let rel = source[cursor..].find(needle).expect("token text");
+            let start = cursor + rel;
+            let end = start + needle.len();
+            cursor = end;
+            last_range = start..end;
+            (
+                builder.leaf(SyntaxKind::Token, start..end),
+                last_range.clone(),
+            )
+        };
+
+        let (methods_tok, methods_range) = take("METHODS", &mut b);
+        let (colon_tok, _) = take(":", &mut b);
+        let (get_response_tok, _) = take("get_response", &mut b);
+        let (importing_tok, _) = take("IMPORTING", &mut b);
+        let (iv_x_tok, _) = take("iv_x", &mut b);
+        let (type_tok, _) = take("TYPE", &mut b);
+        let (i_tok, i_range) = take("i", &mut b);
+        let i_type = b.branch(SyntaxKind::TypeRefSimple, i_range.clone(), &[i_tok]);
+        let (comma_tok, _) = take(",", &mut b);
+        let (get_data_tok, _) = take("get_data", &mut b);
+        let (period_tok, period_range) = take(".", &mut b);
+
+        let methods_stmt = b.branch(
+            SyntaxKind::MethodsStmt,
+            methods_range.start..period_range.end,
+            &[
+                methods_tok,
+                colon_tok,
+                get_response_tok,
+                importing_tok,
+                iv_x_tok,
+                type_tok,
+                i_type,
+                comma_tok,
+                get_data_tok,
+                period_tok,
+            ],
+        );
+        let tree = b.finish(methods_stmt);
+        let methods_stmt =
+            MethodsStmt::cast(SyntaxNodeRef::new(&tree, methods_stmt)).expect("methods stmt");
+
+        let entries = methods_stmt.entries(source);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(
+            entries[0]
+                .name_token(source)
+                .and_then(|token| token.text(source))
+                .as_deref(),
+            Some("get_response")
+        );
+        assert_eq!(
+            entries[0].signature_text(source),
+            "METHODS get_response IMPORTING iv_x TYPE i"
+        );
+        assert_eq!(entries[0].signature(source).parameters().len(), 1);
+        assert_eq!(
+            entries[1]
+                .name_token(source)
+                .and_then(|token| token.text(source))
+                .as_deref(),
+            Some("get_data")
+        );
+        assert_eq!(entries[1].signature_text(source), "METHODS get_data");
+        assert!(entries[1].signature(source).parameters().is_empty());
     }
 }

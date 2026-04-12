@@ -87,3 +87,118 @@ fn resolves_symbols_from_second_chained_include_unit() {
             && matches!(reference.resolution, Some(Resolution::Symbol(_)))
     }));
 }
+
+#[test]
+fn reports_missing_method_calls_across_include_units() {
+    let root_src = r#"
+REPORT zmain.
+INCLUDE: ztop,
+         zf01.
+START-OF-SELECTION.
+  CREATE OBJECT gr_demo.
+  CALL METHOD gr_demo->get_data1.
+"#;
+    let top_src = "DATA gr_demo TYPE REF TO lcl_demo.";
+    let f01_src = r#"
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS: get_response IMPORTING iv_x TYPE i,
+      get_data.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD get_response.
+  ENDMETHOD.
+
+  METHOD get_data.
+  ENDMETHOD.
+ENDCLASS.
+"#;
+    let root_parse = parse(root_src);
+    let top_parse = parse(top_src);
+    let f01_parse = parse(f01_src);
+
+    let project = analyze_project(&[
+        ProjectInput {
+            uri: "zmain.abap",
+            source: root_src,
+            parse: &root_parse,
+        },
+        ProjectInput {
+            uri: "ztop.abap",
+            source: top_src,
+            parse: &top_parse,
+        },
+        ProjectInput {
+            uri: "zf01.abap",
+            source: f01_src,
+            parse: &f01_parse,
+        },
+    ]);
+
+    let root = project.unit_by_uri("zmain.abap").expect("root unit");
+    assert!(
+        root.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnknownField && diag.message.contains("get_data1")
+        }),
+        "expected UnknownField for missing method across include units, got {:?}",
+        root.diagnostics
+    );
+}
+
+#[test]
+fn reports_call_method_on_attribute_across_include_units() {
+    let root_src = r#"
+REPORT zmain.
+INCLUDE: ztop,
+         zf01.
+START-OF-SELECTION.
+  CREATE OBJECT gr_demo.
+  CALL METHOD gr_demo->gv_rule_proc_count.
+"#;
+    let top_src = "DATA gr_demo TYPE REF TO lcl_demo.";
+    let f01_src = r#"
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    DATA gv_rule_proc_count TYPE i.
+    METHODS get_data.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD get_data.
+  ENDMETHOD.
+ENDCLASS.
+"#;
+    let root_parse = parse(root_src);
+    let top_parse = parse(top_src);
+    let f01_parse = parse(f01_src);
+
+    let project = analyze_project(&[
+        ProjectInput {
+            uri: "zmain.abap",
+            source: root_src,
+            parse: &root_parse,
+        },
+        ProjectInput {
+            uri: "ztop.abap",
+            source: top_src,
+            parse: &top_parse,
+        },
+        ProjectInput {
+            uri: "zf01.abap",
+            source: f01_src,
+            parse: &f01_parse,
+        },
+    ]);
+
+    let root = project.unit_by_uri("zmain.abap").expect("root unit");
+    assert!(
+        root.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnknownField
+                && diag.message.contains("gv_rule_proc_count")
+                && diag.message.contains("not a method")
+        }),
+        "expected UnknownField for CALL METHOD on attribute across include units, got {:?}",
+        root.diagnostics
+    );
+}

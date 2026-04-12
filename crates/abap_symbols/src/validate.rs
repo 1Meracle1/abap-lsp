@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
 use crate::builtins::builtin_routine_spec;
@@ -144,19 +144,79 @@ fn resolve_symbol_in_scope_chain(
     None
 }
 
+fn resolve_symbol_handle_in_scope_or_includes(
+    project: &ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
+    unit: &crate::UnitAnalysis,
+    scope_index: &ScopeIndex,
+    scope: ScopeId,
+    namespace: Namespace,
+    name: &Arc<str>,
+) -> Option<SymbolHandle> {
+    if let Some(symbol_id) =
+        resolve_symbol_in_scope_chain(unit, scope_index, scope, namespace, name)
+    {
+        return Some(SymbolHandle {
+            unit: unit.unit_id,
+            symbol: symbol_id,
+        });
+    }
+
+    let key = (namespace, Arc::clone(name));
+    let mut visited = HashSet::new();
+    let mut queue: VecDeque<_> = unit
+        .include_edges
+        .iter()
+        .filter_map(|edge| edge.target)
+        .collect();
+    while let Some(target_unit_id) = queue.pop_front() {
+        if !visited.insert(target_unit_id) {
+            continue;
+        }
+        if let Some(symbol_ids) = lookup.per_unit_root_index[target_unit_id.as_usize()].get(&key)
+            && let Some(symbol_id) = symbol_ids.last().copied()
+        {
+            return Some(SymbolHandle {
+                unit: target_unit_id,
+                symbol: symbol_id,
+            });
+        }
+        queue.extend(
+            project.units[target_unit_id.as_usize()]
+                .include_edges
+                .iter()
+                .filter_map(|edge| edge.target),
+        );
+    }
+
+    None
+}
+
+fn scope_for_unit(unit: &crate::UnitAnalysis, scope: ScopeId) -> ScopeId {
+    if unit.scopes.get(scope.as_usize()).is_some() {
+        scope
+    } else {
+        unit.root_scope
+    }
+}
+
 fn resolve_field_access_base_symbol(
+    project: &ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
     unit: &crate::UnitAnalysis,
     scope_index: &ScopeIndex,
     access: &crate::FieldAccess,
-) -> Option<SymbolId> {
-    if let Some(symbol_id) = resolve_symbol_in_scope_chain(
+) -> Option<SymbolHandle> {
+    if let Some(handle) = resolve_symbol_handle_in_scope_or_includes(
+        project,
+        lookup,
         unit,
         scope_index,
         access.scope,
         access.base_namespace,
         &access.base_name,
     ) {
-        return Some(symbol_id);
+        return Some(handle);
     }
 
     if access.in_type_position {
@@ -165,7 +225,9 @@ fn resolve_field_access_base_symbol(
             Namespace::Value => Namespace::Type,
             Namespace::Routine => return None,
         };
-        return resolve_symbol_in_scope_chain(
+        return resolve_symbol_handle_in_scope_or_includes(
+            project,
+            lookup,
             unit,
             scope_index,
             access.scope,
@@ -908,15 +970,14 @@ fn resolve_class_type_symbol_in_hierarchy(
 fn resolve_class_selector_base<'a>(
     project: &'a ProjectAnalysis,
     lookup: &ValidationLookup<'_>,
-    unit: &crate::UnitAnalysis,
-    scope_index: &ScopeIndex,
+    _unit: &crate::UnitAnalysis,
     access: &crate::FieldAccess,
-    base_symbol_id: SymbolId,
+    base_handle: SymbolHandle,
 ) -> Option<(&'a crate::UnitAnalysis, SymbolId, bool)> {
-    let base_symbol = unit.symbol(base_symbol_id);
+    let base_unit = &project.units[base_handle.unit.as_usize()];
+    let base_symbol = base_unit.symbol(base_handle.symbol);
     if access.base_namespace == Namespace::Type && base_symbol.kind == SymbolKind::Class {
-        let class_unit = &project.units[unit.unit_id.as_usize()];
-        return Some((class_unit, base_symbol_id, true));
+        return Some((base_unit, base_handle.symbol, true));
     }
     if access.base_namespace != Namespace::Value {
         return None;
@@ -925,14 +986,8 @@ fn resolve_class_selector_base<'a>(
     if !declared_type.is_ref || !declared_type.field_path.is_empty() {
         return None;
     }
-    let class_handle = resolve_class_symbol(
-        project,
-        lookup,
-        unit,
-        scope_index,
-        access.scope,
-        &declared_type.base_name,
-    )?;
+    let class_handle =
+        resolve_type_owner_symbol(project, lookup, base_unit, &declared_type.base_name)?;
     let class_unit = &project.units[class_handle.unit.as_usize()];
     Some((class_unit, class_handle.symbol, false))
 }
@@ -1127,18 +1182,21 @@ fn resolve_method_target_handle(
                 resolve_type_owner_symbol(project, lookup, unit, &inheritance.superclass_name)
             }
             Namespace::Value => {
-                let symbol_id = resolve_symbol_in_scope_chain(
+                let handle = resolve_symbol_handle_in_scope_or_includes(
+                    project,
+                    lookup,
                     unit,
                     scope_index,
                     scope,
                     Namespace::Value,
                     base_name,
                 )?;
-                let declared_type = unit.symbol(symbol_id).declared_type.as_ref()?;
+                let target_unit = &project.units[handle.unit.as_usize()];
+                let declared_type = target_unit.symbol(handle.symbol).declared_type.as_ref()?;
                 if !declared_type.is_ref || declared_type.namespace != Namespace::Type {
                     return None;
                 }
-                resolve_type_owner_symbol(project, lookup, unit, &declared_type.base_name)
+                resolve_type_owner_symbol(project, lookup, target_unit, &declared_type.base_name)
             }
             Namespace::Routine => None,
         },
@@ -1646,14 +1704,15 @@ fn resolve_field_access_structure<'a>(
     access: &crate::FieldAccess,
 ) -> Option<(&'a crate::UnitAnalysis, StructureId)> {
     let scope_index = scope_indexes.get(unit.unit_id.as_usize())?;
-    let base_symbol_id = resolve_field_access_base_symbol(unit, scope_index, access)?;
+    let base_handle = resolve_field_access_base_symbol(project, lookup, unit, scope_index, access)?;
+    let base_unit = &project.units[base_handle.unit.as_usize()];
     let (current_unit, mut current_structure) = resolve_symbol_structure_project(
         project,
         lookup,
-        unit,
+        base_unit,
         scope_indexes,
-        access.scope,
-        base_symbol_id,
+        scope_for_unit(base_unit, access.scope),
+        base_handle.symbol,
     )?;
 
     if access.field_path.is_empty() {
@@ -1747,6 +1806,8 @@ fn loop_where_reference_matches_source_field(
 }
 
 fn reference_depends_on_unresolved_field_access_base(
+    project: &ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
     unit: &crate::UnitAnalysis,
     scope_index: &ScopeIndex,
     reference: &crate::ReferenceData,
@@ -1756,12 +1817,16 @@ fn reference_depends_on_unresolved_field_access_base(
     }
 
     unit.field_accesses.iter().any(|access| {
-        let Some(base_symbol_id) = resolve_field_access_base_symbol(unit, scope_index, access)
+        let Some(base_handle) =
+            resolve_field_access_base_symbol(project, lookup, unit, scope_index, access)
         else {
             return false;
         };
-        let mut structure_id = unit.symbol(base_symbol_id).structure;
-        let mut declared_type = unit.symbol(base_symbol_id).declared_type.clone();
+        let base_unit = &project.units[base_handle.unit.as_usize()];
+        let base_scope_index = &lookup.scope_indexes[base_unit.unit_id.as_usize()];
+        let access_scope = scope_for_unit(base_unit, access.scope);
+        let mut structure_id = base_unit.symbol(base_handle.symbol).structure;
+        let mut declared_type = base_unit.symbol(base_handle.symbol).declared_type.clone();
         let matching_segment_idx = access.field_path.iter().position(|segment| {
             segment.range == reference.range && segment.name.as_ref() == reference.name.as_ref()
         });
@@ -1781,9 +1846,9 @@ fn reference_depends_on_unresolved_field_access_base(
         for step in access.field_path.iter().take(segment_idx) {
             if step.is_deref() {
                 let Some((next_structure_id, next_declared_type)) = dereference_field_metadata(
-                    unit,
-                    scope_index,
-                    access.scope,
+                    base_unit,
+                    base_scope_index,
+                    access_scope,
                     structure_id,
                     declared_type,
                 ) else {
@@ -1795,16 +1860,16 @@ fn reference_depends_on_unresolved_field_access_base(
             }
 
             (structure_id, declared_type) = normalize_field_metadata(
-                unit,
-                scope_index,
-                access.scope,
+                base_unit,
+                base_scope_index,
+                access_scope,
                 structure_id,
                 declared_type,
             );
             let Some(current_structure_id) = structure_id else {
                 return true;
             };
-            let Some(field) = unit
+            let Some(field) = base_unit
                 .structure(current_structure_id)
                 .fields
                 .iter()
@@ -2089,24 +2154,19 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
             .iter()
             .map(|access| {
                 let unit = &project.units[unit_idx];
-                let base_symbol_id = resolve_field_access_base_symbol(unit, &scope_index, access)?;
+                let base_handle =
+                    resolve_field_access_base_symbol(project, &lookup, unit, &scope_index, access)?;
                 Some((
-                    base_symbol_id,
-                    resolve_class_selector_base(
-                        project,
-                        &lookup,
-                        unit,
-                        &scope_index,
-                        access,
-                        base_symbol_id,
-                    )
-                    .map(|(class_unit, class_symbol_id, requires_static)| {
-                        (
-                            class_unit.unit_id.as_usize(),
-                            class_symbol_id,
-                            requires_static,
-                        )
-                    }),
+                    (base_handle.unit.as_usize(), base_handle.symbol),
+                    resolve_class_selector_base(project, &lookup, unit, access, base_handle).map(
+                        |(class_unit, class_symbol_id, requires_static)| {
+                            (
+                                class_unit.unit_id.as_usize(),
+                                class_symbol_id,
+                                requires_static,
+                            )
+                        },
+                    ),
                 ))
             })
             .collect();
@@ -2140,7 +2200,13 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
             ) {
                 continue;
             }
-            if reference_depends_on_unresolved_field_access_base(unit, &scope_index, reference) {
+            if reference_depends_on_unresolved_field_access_base(
+                project,
+                &lookup,
+                unit,
+                &scope_index,
+                reference,
+            ) {
                 continue;
             }
             if reference.namespace == Namespace::Value
@@ -2184,10 +2250,13 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
         }
 
         for (access, base_info) in unit.field_accesses.iter().zip(&field_access_bases) {
-            let Some((base_symbol_id, class_selector_base)) = *base_info else {
+            let Some(((base_unit_idx, base_symbol_id), class_selector_base)) = *base_info else {
                 continue;
             };
-            let base_symbol = unit.symbol(base_symbol_id);
+            let base_unit = &project.units[base_unit_idx];
+            let base_scope_index = &scope_indexes[base_unit_idx];
+            let access_scope = scope_for_unit(base_unit, access.scope);
+            let base_symbol = base_unit.symbol(base_symbol_id);
             let (has_leading_deref, field_path) = split_leading_deref(access);
             if access.base_namespace == Namespace::Type && base_symbol.kind == SymbolKind::Class {
                 let mut idx = 0usize;
@@ -2236,14 +2305,14 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
                     let Some((member_unit, member)) = resolve_class_member_in_hierarchy(
                         project,
                         &lookup,
-                        unit,
+                        base_unit,
                         base_symbol_id,
                         step.name.as_ref(),
                     ) else {
                         if let Some(type_symbol) = resolve_class_type_symbol_in_hierarchy(
                             project,
                             &lookup,
-                            unit,
+                            base_unit,
                             base_symbol_id,
                             step.name.as_ref(),
                         ) {
@@ -2457,8 +2526,8 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
             if has_leading_deref && field_path.is_empty() {
                 continue;
             }
-            let mut structure_id = unit.symbol(base_symbol_id).structure;
-            let mut declared_type = unit.symbol(base_symbol_id).declared_type.clone();
+            let mut structure_id = base_unit.symbol(base_symbol_id).structure;
+            let mut declared_type = base_unit.symbol(base_symbol_id).declared_type.clone();
             let subject = if access.in_type_position {
                 "type"
             } else {
@@ -2468,9 +2537,9 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
             for step in &access.field_path {
                 if step.is_deref() {
                     let Some((next_structure_id, next_declared_type)) = dereference_field_metadata(
-                        unit,
-                        &scope_index,
-                        access.scope,
+                        base_unit,
+                        base_scope_index,
+                        access_scope,
                         structure_id,
                         declared_type,
                     ) else {
@@ -2483,9 +2552,9 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
                 }
 
                 (structure_id, declared_type) = normalize_field_metadata(
-                    unit,
-                    &scope_index,
-                    access.scope,
+                    base_unit,
+                    base_scope_index,
+                    access_scope,
                     structure_id,
                     declared_type,
                 );
@@ -2496,12 +2565,12 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
                     project,
                     &lookup,
                     scope_indexes,
-                    unit,
-                    access.scope,
+                    base_unit,
+                    access_scope,
                     current_structure_id,
                     step.name.as_ref(),
                 ) else {
-                    if structure_has_proxy_include_fields(unit, current_structure_id) {
+                    if structure_has_proxy_include_fields(base_unit, current_structure_id) {
                         break;
                     }
                     unit_diagnostics.push(Diagnostic {
@@ -2548,6 +2617,17 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
             else {
                 continue;
             };
+            if member.kind != ClassMemberKind::Method {
+                unit_diagnostics.push(Diagnostic {
+                    kind: DiagnosticKind::UnknownField,
+                    range: call_site.range.clone(),
+                    message: format!(
+                        "'{}' is not a method and cannot be used with CALL METHOD",
+                        member.name
+                    ),
+                });
+                continue;
+            }
             let positional_parameters: Vec<_> = member
                 .parameters
                 .iter()

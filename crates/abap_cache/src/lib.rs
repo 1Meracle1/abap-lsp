@@ -35,10 +35,9 @@ pub use workspace::{
     is_remote_lookup_candidate, is_remote_lookup_name, load_manifest_from_workspace,
     load_manifest_from_workspace_result, load_workspace_documents,
     load_workspace_documents_with_progress, manifest_cache_dir, manifest_declares_uri,
-    manifest_document_metadata, manifest_supports_remote_resolution,
-    normalize_dependency_mode, normalize_unknown_symbol_mode, normalize_workspace_performance_mode,
-    path_to_file_uri, resolve_workspace_performance_mode, uri_starts_with_workspace,
-    workspace_relative_path,
+    manifest_document_metadata, manifest_supports_remote_resolution, normalize_dependency_mode,
+    normalize_unknown_symbol_mode, normalize_workspace_performance_mode, path_to_file_uri,
+    resolve_workspace_performance_mode, uri_starts_with_workspace, workspace_relative_path,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]

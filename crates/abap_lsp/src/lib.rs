@@ -11,8 +11,8 @@ use abap_cache::{
     DocumentInput, DocumentStore, UNKNOWN_SYMBOL_MODE_REMOTE, WorkspaceManifest, file_uri_to_path,
     is_remote_lookup_candidate, load_manifest_from_workspace_result,
     load_workspace_documents_with_progress, manifest_cache_dir, manifest_document_metadata,
-    manifest_supports_remote_resolution, path_to_file_uri,
-    resolve_workspace_performance_mode, uri_starts_with_workspace,
+    manifest_supports_remote_resolution, path_to_file_uri, resolve_workspace_performance_mode,
+    uri_starts_with_workspace,
 };
 use abap_symbols::{DiagnosticKind, ReferenceKind, SqlResolution};
 use lsp_types::{

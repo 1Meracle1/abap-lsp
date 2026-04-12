@@ -6785,6 +6785,66 @@ START-OF-SELECTION.
 }
 
 #[test]
+fn resolves_chained_methods_stmt_members_and_reports_missing_calls() {
+    let src = r#"
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS: get_response IMPORTING iv_x TYPE i,
+      get_data.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD get_response.
+  ENDMETHOD.
+
+  METHOD get_data.
+  ENDMETHOD.
+ENDCLASS.
+
+START-OF-SELECTION.
+  DATA lo_demo TYPE REF TO lcl_demo.
+  CREATE OBJECT lo_demo.
+  CALL METHOD lo_demo->get_data.
+  CALL METHOD lo_demo->missing_method.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///chained_methods_stmt.abap", src, &parsed);
+
+    let method_names: Vec<_> = unit
+        .class_members
+        .iter()
+        .filter(|member| member.kind == abap_symbols::ClassMemberKind::Method)
+        .map(|member| member.name.as_ref())
+        .collect();
+    assert!(
+        method_names.contains(&"get_response"),
+        "expected get_response method member, got {method_names:?}"
+    );
+    assert!(
+        method_names.contains(&"get_data"),
+        "expected get_data method member, got {method_names:?}"
+    );
+
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            (diag.kind == DiagnosticKind::UnresolvedReference
+                || diag.kind == DiagnosticKind::UnknownField)
+                && diag.message.contains("get_data")
+        }),
+        "unexpected diagnostic on valid chained method call: {:?}",
+        unit.diagnostics
+    );
+
+    assert!(
+        unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnknownField && diag.message.contains("missing_method")
+        }),
+        "expected UnknownField for missing chained method call, got {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn resolves_legacy_call_method_parenthesized_named_sections() {
     let src = r#"
 CLASS zcl_demo DEFINITION.

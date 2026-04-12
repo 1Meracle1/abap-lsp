@@ -14,9 +14,8 @@ use abap_lsp::{
     WORKSPACE_ANALYSIS_STATUS, WORKSPACE_MANIFEST_UPDATED, WorkspaceAnalysisPhase,
     WorkspaceAnalysisStatusParams, WorkspaceManifestUpdatedParams, WorkspacePerformanceMode,
     WorkspaceState, build_remote_dependency_batch_for_workspace,
-    build_remote_dependency_request,
-    build_remote_dependency_batch_for_workspace_filtered, completion, definition,
-    handle_dependency_cache_cleared_with_progress,
+    build_remote_dependency_batch_for_workspace_filtered, build_remote_dependency_request,
+    completion, definition, handle_dependency_cache_cleared_with_progress,
     handle_remote_dependencies_updated_with_progress,
     handle_workspace_manifest_updated_with_progress, hover, initialize_result,
     prune_workspace_preview_snapshots, publish_changed_document_mut_with_progress,
@@ -569,9 +568,11 @@ fn run_analysis_task(
         AnalysisTaskKind::RemoteDependenciesUpdated(params) => {
             handle_remote_dependencies_updated_notifications(&mut state, params, progress_sink)?
         }
-        AnalysisTaskKind::Initialized => {
-            handle_initialized_workspace_notifications(&mut state, &task.workspace_uri, progress_sink)?
-        }
+        AnalysisTaskKind::Initialized => handle_initialized_workspace_notifications(
+            &mut state,
+            &task.workspace_uri,
+            progress_sink,
+        )?,
     };
 
     let workspace = state
@@ -1599,18 +1600,14 @@ fn handle_message(
         Some(WORKSPACE_MANIFEST_UPDATED) => Ok(HandledMessage {
             response: None,
             notifications: parse_params::<WorkspaceManifestUpdatedParams>(&message)?
-                .map(|params| {
-                    handle_workspace_manifest_updated_notifications(state, &params, None)
-                })
+                .map(|params| handle_workspace_manifest_updated_notifications(state, &params, None))
                 .transpose()?
                 .unwrap_or_default(),
         }),
         Some(DEPENDENCY_CACHE_CLEARED) => Ok(HandledMessage {
             response: None,
             notifications: parse_params::<WorkspaceManifestUpdatedParams>(&message)?
-                .map(|params| {
-                    handle_dependency_cache_cleared_notifications(state, &params, None)
-                })
+                .map(|params| handle_dependency_cache_cleared_notifications(state, &params, None))
                 .transpose()?
                 .unwrap_or_default(),
         }),
@@ -1900,8 +1897,7 @@ fn emit_workspace_analysis_progress(
             .expect("progress notification collection should not be poisoned")
             .push((
                 WORKSPACE_ANALYSIS_STATUS.to_string(),
-                serde_json::to_value(params)
-                    .expect("workspace analysis progress should serialize"),
+                serde_json::to_value(params).expect("workspace analysis progress should serialize"),
             ));
     }
 }

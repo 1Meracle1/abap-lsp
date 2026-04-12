@@ -3,8 +3,8 @@ use std::sync::Arc;
 use abap_ast::arena::NodeId;
 use abap_ast::ast::{
     AstNode, ClassDecl, ClassSectionStmt, ClassSectionVisibilityKind, DataLikeDecl,
-    DataLikeStorageKind, InterfaceDecl, MethodsParamSectionKind, MethodsStmt, MethodsStmtKind,
-    MethodsTypeClauseKind,
+    DataLikeStorageKind, InterfaceDecl, MethodsParamSectionKind, MethodsStmt, MethodsStmtEntry,
+    MethodsStmtKind, MethodsTypeClauseKind,
 };
 use abap_lexer::TextRange;
 
@@ -479,12 +479,23 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
                     let Some(methods_stmt) = MethodsStmt::cast(self.collector.syntax(child)) else {
                         continue;
                     };
-                    if let Some(mut member) =
-                        self.class_member_from_methods_stmt(class_symbol, visibility, methods_stmt)
-                    {
+                    let mut pending_methods = Vec::new();
+                    for entry in methods_stmt.entries(self.collector.source) {
+                        let Some(mut member) =
+                            self.class_member_from_methods_stmt(class_symbol, visibility, &entry)
+                        else {
+                            continue;
+                        };
                         if member.kind == ClassMemberKind::Method {
-                            let signature = self.parse_method_signature(methods_stmt);
+                            let signature = self.parse_method_signature(&entry);
                             member.parameters = self.class_member_parameters(&signature);
+                            pending_methods.push((member, Some(signature)));
+                        } else {
+                            pending_methods.push((member, None));
+                        }
+                    }
+                    for (member, signature) in pending_methods {
+                        if let Some(signature) = signature {
                             self.declare_method_signature_parameter_symbols(
                                 self.collector.file.range(child),
                                 &signature,
@@ -521,13 +532,13 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
         &self,
         class_symbol: SymbolId,
         visibility: Visibility,
-        methods_stmt: MethodsStmt<'_>,
+        entry: &MethodsStmtEntry<'_>,
     ) -> Option<ClassMemberData> {
-        let (kind, is_static) = match methods_stmt.member_kind(self.collector.source)? {
+        let (kind, is_static) = match entry.member_kind() {
             MethodsStmtKind::Instance => (ClassMemberKind::Method, false),
             MethodsStmtKind::Class => (ClassMemberKind::Method, true),
         };
-        let name_tok = methods_stmt.name_token(self.collector.source)?;
+        let name_tok = entry.name_token(self.collector.source)?;
         Some(ClassMemberData {
             class_symbol,
             name: Arc::<str>::from(
@@ -541,7 +552,7 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
             is_static,
             decl_range: name_tok.range(),
             implementation_range: None,
-            signature: Arc::<str>::from(methods_stmt.signature_text(self.collector.source)),
+            signature: Arc::<str>::from(entry.signature_text(self.collector.source)),
             parameters: Vec::new(),
             structure: None,
         })
@@ -700,8 +711,8 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
         );
     }
 
-    fn parse_method_signature(&self, methods_stmt: MethodsStmt<'_>) -> PendingMethodSignature {
-        let parsed = methods_stmt.signature(self.collector.source);
+    fn parse_method_signature(&self, entry: &MethodsStmtEntry<'_>) -> PendingMethodSignature {
+        let parsed = entry.signature(self.collector.source);
         let mut signature = PendingMethodSignature {
             is_redefinition: parsed.is_redefinition(),
             ..PendingMethodSignature::default()
