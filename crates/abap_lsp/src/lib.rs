@@ -664,6 +664,17 @@ pub fn collect_remote_dependency_candidates(
     collect_remote_dependency_candidates_for_unit(&snapshot.symbols)
 }
 
+fn collect_remote_dependency_candidates_for_request(
+    workspace: &WorkspaceState,
+    snapshot: &AnalysisSnapshot,
+    source_uri: &str,
+) -> Vec<RemoteDependencyCandidate> {
+    if snapshot.is_dependency && workspace.open_documents.contains_key(source_uri) {
+        return collect_remote_dependency_candidates_for_workspace_batch(snapshot);
+    }
+    collect_remote_dependency_candidates(snapshot)
+}
+
 fn collect_remote_dependency_candidates_for_unit(
     unit: &abap_symbols::UnitAnalysis,
 ) -> Vec<RemoteDependencyCandidate> {
@@ -937,7 +948,9 @@ pub fn build_remote_dependency_request(
     }
 
     let mut candidates = Vec::new();
-    for candidate in collect_remote_dependency_candidates(snapshot.as_ref()) {
+    for candidate in
+        collect_remote_dependency_candidates_for_request(workspace, snapshot.as_ref(), &source_uri)
+    {
         if has_cached_remote_dependency_candidate(workspace, &candidate) {
             continue;
         }
@@ -5027,6 +5040,89 @@ ls_outer-inner-a = 1."
         assert!(markup.value.contains("scalar component"));
         assert!(markup.value.contains("`TYPE i`"));
         assert!(markup.value.contains("`ls_outer-inner-a`"));
+    }
+
+    #[test]
+    fn opened_dependency_file_can_request_full_remote_candidates_without_promoting_snapshot() {
+        let workspace_path = temp_workspace_path("opened_dependency_remote_candidates");
+        let dependency_dir = workspace_path
+            .join(".abapls")
+            .join("cache")
+            .join("dependencies")
+            .join("global-class");
+        fs::create_dir_all(&dependency_dir).expect("dependency dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[resolution]
+dependency_mode = "remote-on-demand"
+unknown_symbol_mode = "remote"
+
+[[unit]]
+name = "ZCL_DEP"
+kind = "global-class"
+root_file = ".abapls/cache/dependencies/global-class/ZCL_DEP.abap"
+
+[[unit.member]]
+role = "dependency"
+file = ".abapls/cache/dependencies/global-class/ZCL_DEP.abap"
+object_name = "ZCL_DEP"
+"#,
+        )
+        .expect("manifest");
+        let dependency_text = "\
+CLASS zcl_dep DEFINITION.
+  PUBLIC SECTION.
+    METHODS run.
+ENDCLASS.
+CLASS zcl_dep IMPLEMENTATION.
+  METHOD run.
+    DATA lo_helper TYPE REF TO zcl_missing.
+    zcl_missing=>run( ).
+  ENDMETHOD.
+ENDCLASS.";
+        fs::write(dependency_dir.join("ZCL_DEP.abap"), dependency_text).expect("dependency file");
+
+        let workspace_uri = path_to_file_uri(&workspace_path);
+        let dependency_uri =
+            format!("{workspace_uri}/.abapls/cache/dependencies/global-class/ZCL_DEP.abap");
+        let normalized_dependency_uri = normalize_lsp_uri(&dependency_uri);
+        let mut state = ServerState::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        refresh_workspace(&mut state, &workspace_uri);
+
+        assert!(
+            build_remote_dependency_request(&mut state, &normalized_dependency_uri).is_none(),
+            "closed dependency should stay on public-surface candidates only"
+        );
+
+        let opened = publish_open_document_mut(
+            &mut state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str(&dependency_uri).expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: dependency_text.to_string(),
+                },
+            },
+        );
+
+        assert!(opened.is_dependency);
+        let request = build_remote_dependency_request(&mut state, &normalized_dependency_uri)
+            .expect("opened dependency request");
+        assert_eq!(request.source_uri, normalized_dependency_uri);
+        assert!(
+            request
+                .candidates
+                .iter()
+                .any(|candidate| candidate.name == "zcl_missing"),
+            "request={request:#?}"
+        );
+
+        let _ = fs::remove_dir_all(&workspace_path);
     }
 
     #[test]
