@@ -9,8 +9,9 @@ use std::sync::Arc;
 
 use abap_cache::{
     DocumentInput, DocumentStore, UNKNOWN_SYMBOL_MODE_REMOTE, WorkspaceManifest, file_uri_to_path,
-    is_remote_lookup_candidate, load_workspace_documents, manifest_cache_dir,
-    manifest_document_metadata, manifest_supports_remote_resolution,
+    is_remote_lookup_candidate, load_manifest_from_workspace_result,
+    load_workspace_documents_with_progress, manifest_cache_dir, manifest_document_metadata,
+    manifest_supports_remote_resolution, path_to_file_uri,
     resolve_workspace_performance_mode, uri_starts_with_workspace,
 };
 use abap_symbols::{DiagnosticKind, ReferenceKind, SqlResolution};
@@ -110,12 +111,43 @@ impl WorkspaceState {
     }
 }
 
+fn prime_workspace_manifest_state(workspace: &mut WorkspaceState) {
+    let Some(root_path) = file_uri_to_path(&workspace.root_uri) else {
+        return;
+    };
+    let manifest_uri = path_to_file_uri(&root_path.join("abapls.toml"));
+    let manifest_len_bytes = std::fs::metadata(root_path.join("abapls.toml"))
+        .ok()
+        .map(|metadata| metadata.len() as usize)
+        .unwrap_or(0);
+    match load_manifest_from_workspace_result(&root_path) {
+        Ok(manifest) => {
+            workspace.performance_mode =
+                resolve_workspace_performance_mode(manifest.as_ref(), manifest_len_bytes);
+            workspace.manifest_uri = manifest
+                .as_ref()
+                .map(|_| manifest_uri.clone())
+                .unwrap_or_default();
+            workspace.manifest = manifest;
+            workspace.manifest_error = None;
+        }
+        Err(error) => {
+            workspace.performance_mode = WorkspacePerformanceMode::FullWorkspace;
+            workspace.manifest_uri = manifest_uri;
+            workspace.manifest = None;
+            workspace.manifest_error = Some(error);
+        }
+    }
+}
+
 impl ServerState {
     pub fn register_workspace_folder(&mut self, root_uri: impl Into<String>) {
         let root_uri = normalize_lsp_uri(&root_uri.into());
-        self.workspaces
-            .entry(root_uri.clone())
-            .or_insert_with(|| WorkspaceState::new(root_uri));
+        self.workspaces.entry(root_uri.clone()).or_insert_with(|| {
+            let mut workspace = WorkspaceState::new(root_uri);
+            prime_workspace_manifest_state(&mut workspace);
+            workspace
+        });
     }
 
     pub fn workspace_for_uri(&self, uri: &str) -> Option<&WorkspaceState> {
@@ -265,7 +297,11 @@ fn rebuild_workspace_cache_with_progress(
     workspace: &mut WorkspaceState,
     progress: Option<&(dyn Fn(usize, usize) + Sync)>,
 ) -> HashMap<Arc<str>, Arc<AnalysisSnapshot>> {
-    let loaded = load_workspace_documents(&workspace.root_uri, &workspace.open_documents);
+    let loaded = load_workspace_documents_with_progress(
+        &workspace.root_uri,
+        &workspace.open_documents,
+        progress,
+    );
     workspace.performance_mode =
         resolve_workspace_performance_mode(loaded.manifest.as_ref(), loaded.manifest_len_bytes);
     workspace.manifest = loaded.manifest.clone();
@@ -282,7 +318,20 @@ fn rebuild_workspace_cache_with_progress(
             object_name: document.object_name,
         })
         .collect();
-    workspace.cache.replace_all_with_progress(inputs, progress)
+    if let Some(progress) = progress {
+        let stage_count = inputs.len();
+        let analysis_progress = |processed: usize, _total: usize| {
+            progress(
+                stage_count.saturating_add(processed),
+                stage_count.saturating_mul(2),
+            );
+        };
+        workspace
+            .cache
+            .replace_all_with_progress(inputs, Some(&analysis_progress))
+    } else {
+        workspace.cache.replace_all_with_progress(inputs, None)
+    }
 }
 
 pub fn stage_workspace_preview_snapshot(

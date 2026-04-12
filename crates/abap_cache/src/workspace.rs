@@ -164,6 +164,32 @@ pub fn load_workspace_documents(
     root_uri: &str,
     overlays: &HashMap<String, OpenDocumentOverlay>,
 ) -> WorkspaceLoadResult {
+    load_workspace_documents_with_progress(root_uri, overlays, None)
+}
+
+struct WorkspaceLoadProgress<'a> {
+    callback: Option<&'a (dyn Fn(usize, usize) + Sync)>,
+    loaded_document_count: usize,
+    total_document_count: usize,
+}
+
+impl WorkspaceLoadProgress<'_> {
+    fn loaded_document(&mut self) {
+        self.loaded_document_count += 1;
+        if let Some(callback) = self.callback {
+            callback(
+                self.loaded_document_count,
+                self.total_document_count.saturating_mul(2),
+            );
+        }
+    }
+}
+
+pub fn load_workspace_documents_with_progress(
+    root_uri: &str,
+    overlays: &HashMap<String, OpenDocumentOverlay>,
+    progress: Option<&(dyn Fn(usize, usize) + Sync)>,
+) -> WorkspaceLoadResult {
     let root_path = file_uri_to_path(root_uri).unwrap_or_default();
     let manifest_uri = Arc::<str>::from(path_to_file_uri(&root_path.join("abapls.toml")));
     let manifest_len_bytes = fs::metadata(root_path.join("abapls.toml"))
@@ -175,6 +201,18 @@ pub fn load_workspace_documents(
         Err(error) => (None, Some(error)),
     };
     let cache_dir = manifest_cache_dir(manifest.as_ref()).to_string();
+    let total_document_count = planned_workspace_document_count(
+        &root_path,
+        root_uri,
+        manifest.as_ref(),
+        &cache_dir,
+        overlays,
+    );
+    let mut load_progress = WorkspaceLoadProgress {
+        callback: progress,
+        loaded_document_count: 0,
+        total_document_count,
+    };
     let mut documents = Vec::new();
     let mut seen = HashSet::new();
 
@@ -186,6 +224,7 @@ pub fn load_workspace_documents(
             overlays,
             &mut seen,
             &mut documents,
+            &mut load_progress,
         );
     } else {
         collect_abap_sources(
@@ -195,6 +234,7 @@ pub fn load_workspace_documents(
             &mut seen,
             &mut documents,
             false,
+            &mut load_progress,
         );
     }
     collect_dependency_cache_files(
@@ -204,6 +244,7 @@ pub fn load_workspace_documents(
         overlays,
         &mut seen,
         &mut documents,
+        &mut load_progress,
     );
 
     for (uri, overlay) in overlays {
@@ -215,6 +256,7 @@ pub fn load_workspace_documents(
                 is_dependency: false,
                 object_name: None,
             });
+            load_progress.loaded_document();
         }
     }
 
@@ -488,6 +530,7 @@ fn collect_abap_sources(
     seen: &mut HashSet<String>,
     documents: &mut Vec<WorkspaceDocument>,
     is_dependency: bool,
+    progress: &mut WorkspaceLoadProgress<'_>,
 ) {
     if !root_path.exists() {
         return;
@@ -536,6 +579,7 @@ fn collect_abap_sources(
                 is_dependency,
                 object_name: None,
             });
+            progress.loaded_document();
         }
     }
 }
@@ -547,6 +591,7 @@ fn collect_manifest_documents(
     overlays: &HashMap<String, OpenDocumentOverlay>,
     seen: &mut HashSet<String>,
     documents: &mut Vec<WorkspaceDocument>,
+    progress: &mut WorkspaceLoadProgress<'_>,
 ) {
     for unit in &manifest.units {
         let mut unit_files = HashSet::new();
@@ -566,6 +611,7 @@ fn collect_manifest_documents(
                 overlays,
                 seen,
                 documents,
+                progress,
             );
         }
 
@@ -583,6 +629,7 @@ fn collect_manifest_documents(
             overlays,
             seen,
             documents,
+            progress,
         );
     }
 }
@@ -597,6 +644,7 @@ fn collect_manifest_document(
     overlays: &HashMap<String, OpenDocumentOverlay>,
     seen: &mut HashSet<String>,
     documents: &mut Vec<WorkspaceDocument>,
+    progress: &mut WorkspaceLoadProgress<'_>,
 ) {
     let path = root_path.join(relative);
     let uri = path_to_file_uri(&path);
@@ -626,6 +674,7 @@ fn collect_manifest_document(
         is_dependency,
         object_name,
     });
+    progress.loaded_document();
 }
 
 fn manifest_unit_root_is_dependency(unit: &ManifestUnit) -> bool {
@@ -716,6 +765,7 @@ fn collect_dependency_cache_files(
     overlays: &HashMap<String, OpenDocumentOverlay>,
     seen: &mut HashSet<String>,
     documents: &mut Vec<WorkspaceDocument>,
+    progress: &mut WorkspaceLoadProgress<'_>,
 ) {
     let dependencies_root = root_path
         .join(normalize_manifest_path(cache_dir))
@@ -784,6 +834,141 @@ fn collect_dependency_cache_files(
                 is_dependency: true,
                 object_name: Some(Arc::from(object_name.to_ascii_lowercase())),
             });
+            progress.loaded_document();
+        }
+    }
+}
+
+fn planned_workspace_document_count(
+    root_path: &Path,
+    root_uri: &str,
+    manifest: Option<&WorkspaceManifest>,
+    cache_dir: &str,
+    overlays: &HashMap<String, OpenDocumentOverlay>,
+) -> usize {
+    let mut seen = HashSet::new();
+    if let Some(manifest) = manifest {
+        collect_manifest_document_uris(manifest, root_path, root_uri, &mut seen);
+    } else {
+        collect_abap_source_uris(root_path, root_uri, &mut seen, false);
+    }
+    collect_dependency_cache_file_uris(root_path, cache_dir, root_uri, &mut seen);
+    for uri in overlays.keys() {
+        if uri_starts_with_workspace(uri, root_uri) {
+            seen.insert(uri.clone());
+        }
+    }
+    seen.len()
+}
+
+fn collect_abap_source_uris(
+    root_path: &Path,
+    root_uri: &str,
+    seen: &mut HashSet<String>,
+    is_dependency: bool,
+) {
+    if !root_path.exists() {
+        return;
+    }
+    let mut stack = vec![root_path.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_dir() {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                if name == ".git" || name == "target" {
+                    continue;
+                }
+                if !is_dependency && name == ".abapls" {
+                    continue;
+                }
+                stack.push(path);
+                continue;
+            }
+            if path.extension().and_then(|ext| ext.to_str()) != Some("abap") {
+                continue;
+            }
+            let uri = path_to_file_uri(&path);
+            if uri_starts_with_workspace(&uri, root_uri) {
+                seen.insert(uri);
+            }
+        }
+    }
+}
+
+fn collect_manifest_document_uris(
+    manifest: &WorkspaceManifest,
+    root_path: &Path,
+    root_uri: &str,
+    seen: &mut HashSet<String>,
+) {
+    for unit in &manifest.units {
+        let mut unit_files = HashSet::new();
+        for member in &unit.members {
+            let relative = normalize_manifest_path(&member.file);
+            if relative.is_empty() || !unit_files.insert(relative.clone()) {
+                continue;
+            }
+            let uri = path_to_file_uri(&root_path.join(&relative));
+            if uri_starts_with_workspace(&uri, root_uri) {
+                seen.insert(uri);
+            }
+        }
+        let relative = normalize_manifest_path(&unit.root_file);
+        if relative.is_empty() || !unit_files.insert(relative.clone()) {
+            continue;
+        }
+        let uri = path_to_file_uri(&root_path.join(relative));
+        if uri_starts_with_workspace(&uri, root_uri) {
+            seen.insert(uri);
+        }
+    }
+}
+
+fn collect_dependency_cache_file_uris(
+    root_path: &Path,
+    cache_dir: &str,
+    root_uri: &str,
+    seen: &mut HashSet<String>,
+) {
+    let dependencies_root = root_path
+        .join(normalize_manifest_path(cache_dir))
+        .join("dependencies");
+    if !dependencies_root.exists() {
+        return;
+    }
+
+    let mut stack = vec![dependencies_root];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            let Some(extension) = path.extension().and_then(|ext| ext.to_str()) else {
+                continue;
+            };
+            if extension != "abap" && extension != "xml" {
+                continue;
+            }
+            let uri = path_to_file_uri(&path);
+            if uri_starts_with_workspace(&uri, root_uri) {
+                seen.insert(uri);
+            }
         }
     }
 }
@@ -1344,8 +1529,8 @@ mod tests {
         UNKNOWN_SYMBOL_MODE_REMOTE, WORKSPACE_PERFORMANCE_MODE_AUTO,
         WORKSPACE_PERFORMANCE_MODE_EDITOR_FIRST, WorkspaceManifest, WorkspacePerformanceMode,
         ddic_xml_to_abap_source, is_remote_lookup_candidate, is_remote_lookup_name,
-        load_workspace_documents, manifest_declares_uri, manifest_supports_remote_resolution,
-        path_to_file_uri, resolve_workspace_performance_mode,
+        load_workspace_documents, manifest_declares_uri,
+        manifest_supports_remote_resolution, path_to_file_uri, resolve_workspace_performance_mode,
     };
 
     #[test]

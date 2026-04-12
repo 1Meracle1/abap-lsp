@@ -170,6 +170,12 @@ struct AnalysisCompletion {
     notifications: Vec<(String, Value)>,
 }
 
+struct AnalysisProgress {
+    workspace_uri: String,
+    generation: u64,
+    params: WorkspaceAnalysisStatusParams,
+}
+
 struct ScheduledBackgroundWork {
     started_statuses: Vec<WorkspaceAnalysisStatusParams>,
     notifications: Vec<(String, Value)>,
@@ -507,6 +513,13 @@ fn try_schedule_background_analysis(
                 let Some(workspace) = state.workspaces.get(&workspace_uri).cloned() else {
                     continue;
                 };
+                if workspace.performance_mode == WorkspacePerformanceMode::EditorFirst {
+                    debug!(
+                        workspace_uri = %workspace_uri,
+                        "skipping eager initialized analysis for editor-first workspace"
+                    );
+                    continue;
+                }
                 debounced_tasks.remove(&workspace_uri);
                 enqueue_background_task(
                     AnalysisTask {
@@ -529,7 +542,10 @@ fn try_schedule_background_analysis(
     }
 }
 
-fn run_analysis_task(task: AnalysisTask) -> Result<AnalysisCompletion, Box<dyn std::error::Error>> {
+fn run_analysis_task(
+    task: AnalysisTask,
+    progress_sink: Option<&(dyn Fn(WorkspaceAnalysisStatusParams) + Sync)>,
+) -> Result<AnalysisCompletion, Box<dyn std::error::Error>> {
     let mut state = ServerState {
         cache: Default::default(),
         workspaces: HashMap::from([(task.workspace_uri.clone(), task.workspace)]),
@@ -538,19 +554,23 @@ fn run_analysis_task(task: AnalysisTask) -> Result<AnalysisCompletion, Box<dyn s
     };
 
     let notifications = match &task.kind {
-        AnalysisTaskKind::DidOpen(params) => handle_did_open_notifications(&mut state, params)?,
-        AnalysisTaskKind::DidChange(params) => handle_did_change_notifications(&mut state, params)?,
+        AnalysisTaskKind::DidOpen(params) => {
+            handle_did_open_notifications(&mut state, params, progress_sink)?
+        }
+        AnalysisTaskKind::DidChange(params) => {
+            handle_did_change_notifications(&mut state, params, progress_sink)?
+        }
         AnalysisTaskKind::ManifestUpdated(params) => {
-            handle_workspace_manifest_updated_notifications(&mut state, params)?
+            handle_workspace_manifest_updated_notifications(&mut state, params, progress_sink)?
         }
         AnalysisTaskKind::DependencyCacheCleared(params) => {
-            handle_dependency_cache_cleared_notifications(&mut state, params)?
+            handle_dependency_cache_cleared_notifications(&mut state, params, progress_sink)?
         }
         AnalysisTaskKind::RemoteDependenciesUpdated(params) => {
-            handle_remote_dependencies_updated_notifications(&mut state, params)?
+            handle_remote_dependencies_updated_notifications(&mut state, params, progress_sink)?
         }
         AnalysisTaskKind::Initialized => {
-            handle_initialized_workspace_notifications(&mut state, &task.workspace_uri)?
+            handle_initialized_workspace_notifications(&mut state, &task.workspace_uri, progress_sink)?
         }
     };
 
@@ -606,6 +626,25 @@ fn flush_analysis_completions(
     Ok(())
 }
 
+fn flush_analysis_progress(
+    writer: &mut impl Write,
+    progress_rx: &Receiver<AnalysisProgress>,
+    generations: &Arc<Mutex<HashMap<String, u64>>>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    while let Ok(progress) = progress_rx.try_recv() {
+        if progress.generation != current_workspace_generation(generations, &progress.workspace_uri)
+        {
+            continue;
+        }
+        send_notification(
+            writer,
+            WORKSPACE_ANALYSIS_STATUS,
+            serde_json::to_value(progress.params)?,
+        )?;
+    }
+    Ok(())
+}
+
 fn serve(
     reader: &mut (impl BufRead + Send),
     writer: &mut impl Write,
@@ -617,6 +656,7 @@ fn serve(
     let pending_tasks = Arc::new(Mutex::new(HashMap::<String, AnalysisTask>::new()));
     let (task_tx, task_rx): (SyncSender<String>, Receiver<String>) = mpsc::sync_channel(8);
     let (completion_tx, completion_rx) = mpsc::channel();
+    let (progress_tx, progress_rx) = mpsc::channel();
     let mut debounced_tasks = HashMap::<String, DebouncedAnalysisTask>::new();
 
     thread::scope(|scope| -> Result<(), Box<dyn std::error::Error>> {
@@ -648,6 +688,7 @@ fn serve(
 
         let worker_generations = Arc::clone(&generations);
         let worker_completion_tx = completion_tx.clone();
+        let worker_progress_tx = progress_tx.clone();
         let worker_pending_tasks = Arc::clone(&pending_tasks);
         scope.spawn(move || {
             while let Ok(workspace_uri) = task_rx.recv() {
@@ -663,7 +704,16 @@ fn serve(
                 {
                     continue;
                 }
-                match run_analysis_task(task) {
+                let progress_workspace_uri = task.workspace_uri.clone();
+                let progress_generation = task.generation;
+                let progress = |params: WorkspaceAnalysisStatusParams| {
+                    let _ = worker_progress_tx.send(AnalysisProgress {
+                        workspace_uri: progress_workspace_uri.clone(),
+                        generation: progress_generation,
+                        params,
+                    });
+                };
+                match run_analysis_task(task, Some(&progress)) {
                     Ok(completion) => {
                         if completion.generation
                             == current_workspace_generation(
@@ -697,6 +747,7 @@ fn serve(
                     serde_json::to_value(params)?,
                 )?;
             }
+            flush_analysis_progress(writer, &progress_rx, &generations)?;
             flush_analysis_completions(&mut state, writer, &completion_rx, &generations)?;
 
             match message_rx.recv_timeout(Duration::from_millis(10)) {
@@ -763,6 +814,7 @@ fn serve(
                             serde_json::to_value(params)?,
                         )?;
                     }
+                    flush_analysis_progress(writer, &progress_rx, &generations)?;
                     flush_analysis_completions(&mut state, writer, &completion_rx, &generations)?;
 
                     if state.shutdown_requested && method.as_deref() == Some("exit") {
@@ -795,6 +847,7 @@ fn serve(
             )?;
         }
         drop(task_tx);
+        flush_analysis_progress(writer, &progress_rx, &generations)?;
         flush_analysis_completions(&mut state, writer, &completion_rx, &generations)?;
         Ok(())
     })
@@ -959,6 +1012,7 @@ struct HandledMessage {
 fn handle_did_open_notifications(
     state: &mut ServerState,
     params: &DidOpenTextDocumentParams,
+    progress_sink: Option<&(dyn Fn(WorkspaceAnalysisStatusParams) + Sync)>,
 ) -> Result<Vec<(String, Value)>, Box<dyn std::error::Error>> {
     let mut notifications = Vec::new();
     let normalized_uri = abap_lsp::normalize_lsp_uri(params.text_document.uri.as_str());
@@ -972,8 +1026,9 @@ fn handle_did_open_notifications(
         .map(|workspace| workspace.root_uri.clone());
     let progress = |processed: usize, total: usize| {
         if let Some(workspace_uri) = workspace_uri.as_ref() {
-            push_workspace_analysis_progress(
-                &progress_notifications,
+            emit_workspace_analysis_progress(
+                Some(&progress_notifications),
+                progress_sink,
                 workspace_uri,
                 "open",
                 processed,
@@ -1087,6 +1142,7 @@ fn handle_did_open_notifications(
 fn handle_did_change_notifications(
     state: &mut ServerState,
     params: &DidChangeTextDocumentParams,
+    progress_sink: Option<&(dyn Fn(WorkspaceAnalysisStatusParams) + Sync)>,
 ) -> Result<Vec<(String, Value)>, Box<dyn std::error::Error>> {
     let mut notifications = Vec::new();
     let normalized_uri = abap_lsp::normalize_lsp_uri(params.text_document.uri.as_str());
@@ -1103,8 +1159,9 @@ fn handle_did_change_notifications(
     }) == Some(true);
     let progress = |processed: usize, total: usize| {
         if let Some(workspace_uri) = workspace_uri.as_ref() {
-            push_workspace_analysis_progress(
-                &progress_notifications,
+            emit_workspace_analysis_progress(
+                Some(&progress_notifications),
+                progress_sink,
                 workspace_uri,
                 "change",
                 processed,
@@ -1221,11 +1278,13 @@ fn handle_did_change_notifications(
 fn handle_workspace_manifest_updated_notifications(
     state: &mut ServerState,
     params: &WorkspaceManifestUpdatedParams,
+    progress_sink: Option<&(dyn Fn(WorkspaceAnalysisStatusParams) + Sync)>,
 ) -> Result<Vec<(String, Value)>, Box<dyn std::error::Error>> {
     let progress_notifications = Mutex::new(Vec::new());
     let progress = |processed: usize, total: usize| {
-        push_workspace_analysis_progress(
-            &progress_notifications,
+        emit_workspace_analysis_progress(
+            Some(&progress_notifications),
+            progress_sink,
             &params.workspace_uri,
             "manifest-updated",
             processed,
@@ -1261,11 +1320,13 @@ fn handle_workspace_manifest_updated_notifications(
 fn handle_dependency_cache_cleared_notifications(
     state: &mut ServerState,
     params: &WorkspaceManifestUpdatedParams,
+    progress_sink: Option<&(dyn Fn(WorkspaceAnalysisStatusParams) + Sync)>,
 ) -> Result<Vec<(String, Value)>, Box<dyn std::error::Error>> {
     let progress_notifications = Mutex::new(Vec::new());
     let progress = |processed: usize, total: usize| {
-        push_workspace_analysis_progress(
-            &progress_notifications,
+        emit_workspace_analysis_progress(
+            Some(&progress_notifications),
+            progress_sink,
             &params.workspace_uri,
             "dependency-cache-cleared",
             processed,
@@ -1301,11 +1362,13 @@ fn handle_dependency_cache_cleared_notifications(
 fn handle_remote_dependencies_updated_notifications(
     state: &mut ServerState,
     params: &abap_lsp::RemoteDependenciesUpdatedParams,
+    progress_sink: Option<&(dyn Fn(WorkspaceAnalysisStatusParams) + Sync)>,
 ) -> Result<Vec<(String, Value)>, Box<dyn std::error::Error>> {
     let progress_notifications = Mutex::new(Vec::new());
     let progress = |processed: usize, total: usize| {
-        push_workspace_analysis_progress(
-            &progress_notifications,
+        emit_workspace_analysis_progress(
+            Some(&progress_notifications),
+            progress_sink,
             &params.workspace_uri,
             "remote-dependencies-updated",
             processed,
@@ -1389,11 +1452,13 @@ fn handle_remote_dependencies_updated_notifications(
 fn handle_initialized_workspace_notifications(
     state: &mut ServerState,
     workspace_uri: &str,
+    progress_sink: Option<&(dyn Fn(WorkspaceAnalysisStatusParams) + Sync)>,
 ) -> Result<Vec<(String, Value)>, Box<dyn std::error::Error>> {
     let progress_notifications = Mutex::new(Vec::new());
     let progress = |processed: usize, total: usize| {
-        push_workspace_analysis_progress(
-            &progress_notifications,
+        emit_workspace_analysis_progress(
+            Some(&progress_notifications),
+            progress_sink,
             workspace_uri,
             "initialized",
             processed,
@@ -1513,7 +1578,7 @@ fn handle_message(
         }
         Some("textDocument/didOpen") => {
             let notifications = parse_params::<DidOpenTextDocumentParams>(&message)?
-                .map(|params| handle_did_open_notifications(state, &params))
+                .map(|params| handle_did_open_notifications(state, &params, None))
                 .transpose()?
                 .unwrap_or_default();
             Ok(HandledMessage {
@@ -1523,7 +1588,7 @@ fn handle_message(
         }
         Some("textDocument/didChange") => {
             let notifications = parse_params::<DidChangeTextDocumentParams>(&message)?
-                .map(|params| handle_did_change_notifications(state, &params))
+                .map(|params| handle_did_change_notifications(state, &params, None))
                 .transpose()?
                 .unwrap_or_default();
             Ok(HandledMessage {
@@ -1534,21 +1599,27 @@ fn handle_message(
         Some(WORKSPACE_MANIFEST_UPDATED) => Ok(HandledMessage {
             response: None,
             notifications: parse_params::<WorkspaceManifestUpdatedParams>(&message)?
-                .map(|params| handle_workspace_manifest_updated_notifications(state, &params))
+                .map(|params| {
+                    handle_workspace_manifest_updated_notifications(state, &params, None)
+                })
                 .transpose()?
                 .unwrap_or_default(),
         }),
         Some(DEPENDENCY_CACHE_CLEARED) => Ok(HandledMessage {
             response: None,
             notifications: parse_params::<WorkspaceManifestUpdatedParams>(&message)?
-                .map(|params| handle_dependency_cache_cleared_notifications(state, &params))
+                .map(|params| {
+                    handle_dependency_cache_cleared_notifications(state, &params, None)
+                })
                 .transpose()?
                 .unwrap_or_default(),
         }),
         Some(REMOTE_DEPENDENCIES_UPDATED) => Ok(HandledMessage {
             response: None,
             notifications: parse_params::<abap_lsp::RemoteDependenciesUpdatedParams>(&message)?
-                .map(|params| handle_remote_dependencies_updated_notifications(state, &params))
+                .map(|params| {
+                    handle_remote_dependencies_updated_notifications(state, &params, None)
+                })
                 .transpose()?
                 .unwrap_or_default(),
         }),
@@ -1559,6 +1630,7 @@ fn handle_message(
                 notifications.extend(handle_initialized_workspace_notifications(
                     state,
                     &workspace_uri,
+                    None,
                 )?);
             }
             Ok(HandledMessage {
@@ -1801,8 +1873,9 @@ fn workspace_analysis_status_finished(
     })
 }
 
-fn push_workspace_analysis_progress(
-    notifications: &Mutex<Vec<(String, Value)>>,
+fn emit_workspace_analysis_progress(
+    notifications: Option<&Mutex<Vec<(String, Value)>>>,
+    sink: Option<&(dyn Fn(WorkspaceAnalysisStatusParams) + Sync)>,
     workspace_uri: &str,
     trigger: &str,
     processed: usize,
@@ -1817,13 +1890,20 @@ fn push_workspace_analysis_progress(
         analyzed_document_count: 0,
         remote_resolution_in_flight: false,
     };
-    notifications
-        .lock()
-        .expect("progress notification collection should not be poisoned")
-        .push((
-            WORKSPACE_ANALYSIS_STATUS.to_string(),
-            serde_json::to_value(params).expect("workspace analysis progress should serialize"),
-        ));
+    if let Some(sink) = sink {
+        sink(params);
+        return;
+    }
+    if let Some(notifications) = notifications {
+        notifications
+            .lock()
+            .expect("progress notification collection should not be poisoned")
+            .push((
+                WORKSPACE_ANALYSIS_STATUS.to_string(),
+                serde_json::to_value(params)
+                    .expect("workspace analysis progress should serialize"),
+            ));
+    }
 }
 
 #[cfg(test)]
@@ -2856,7 +2936,7 @@ ENDCLASS."
             .expect("pending tasks")
             .remove(&queued_workspace)
             .expect("pending task");
-        let completion = run_analysis_task(task).expect("analysis completion");
+        let completion = run_analysis_task(task, None).expect("analysis completion");
         let background_diagnostic_uris: Vec<_> = completion
             .notifications
             .iter()
@@ -2975,6 +3055,7 @@ CLASS zcl_provider IMPLEMENTATION.
   ENDMETHOD.
 ENDCLASS.",
             ),
+            None,
         )
         .expect("didChange");
 
@@ -3107,6 +3188,7 @@ CLASS zcl_provider IMPLEMENTATION.
   ENDMETHOD.
 ENDCLASS.",
             ),
+            None,
         )
         .expect("didChange");
         let all_notifications: Vec<_> = opened
@@ -3647,6 +3729,7 @@ CLASS zcl_provider IMPLEMENTATION.
   ENDMETHOD.
 ENDCLASS.",
             ),
+            None,
         )
         .expect("didChange");
 
@@ -3820,6 +3903,60 @@ object_name = "ZREPORT_INIT"
                 .iter()
                 .any(|uri| uri.ends_with("/src/ZREPORT_INIT.abap"))
         );
+
+        let _ = fs::remove_dir_all(&workspace_path);
+    }
+
+    #[test]
+    fn initialized_skips_eager_background_analysis_for_editor_first_workspace() {
+        let workspace_path = temp_workspace_path("workspace_initialized_editor_first_skip");
+        let source_dir = workspace_path.join("src");
+        fs::create_dir_all(&source_dir).expect("source dir");
+        write_manifest_workspace(
+            &workspace_path,
+            Some("editor-first"),
+            None,
+            &[("ZREPORT_INIT", "report", "root", "src/ZREPORT_INIT.abap")],
+            0,
+        );
+        fs::write(source_dir.join("ZREPORT_INIT.abap"), "REPORT zreport_init.").expect("report");
+
+        let workspace_uri = file_uri(&workspace_path);
+        let mut state = ServerState::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        let normalized_workspace_uri = abap_lsp::normalize_lsp_uri(&workspace_uri);
+        assert_eq!(
+            state
+                .workspaces
+                .get(&normalized_workspace_uri)
+                .expect("workspace")
+                .performance_mode,
+            WorkspacePerformanceMode::EditorFirst
+        );
+
+        let generations = Arc::new(Mutex::new(HashMap::new()));
+        let pending_tasks = Arc::new(Mutex::new(HashMap::new()));
+        let mut debounced_tasks = HashMap::new();
+        let (task_tx, task_rx) = mpsc::sync_channel(1);
+        let scheduled = try_schedule_background_analysis(
+            &mut state,
+            &json!({
+                "jsonrpc": "2.0",
+                "method": "initialized",
+                "params": {}
+            }),
+            &task_tx,
+            &pending_tasks,
+            &generations,
+            &mut debounced_tasks,
+        )
+        .expect("schedule initialized")
+        .expect("scheduled work");
+
+        assert!(scheduled.started_statuses.is_empty());
+        assert!(scheduled.notifications.is_empty());
+        assert!(pending_tasks.lock().expect("pending tasks").is_empty());
+        assert!(task_rx.try_recv().is_err());
 
         let _ = fs::remove_dir_all(&workspace_path);
     }

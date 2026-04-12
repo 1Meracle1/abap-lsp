@@ -557,14 +557,39 @@ function workspaceAnalysisProgressTitle(params: WorkspaceAnalysisStatusParams): 
 	}
 }
 
+function formatWorkspaceDocumentCount(value: number): string {
+	return Math.max(0, Math.trunc(value)).toLocaleString();
+}
+
 function workspaceAnalysisProgressMessage(params: WorkspaceAnalysisStatusParams): string {
-	const total = params.totalDocumentCount;
-	const processed = Math.min(params.processedDocumentCount, total);
-	if (total <= 0) {
-		return "Preparing workspace analysis...";
+	const total = Math.max(0, Math.trunc(params.totalDocumentCount));
+	const processedRaw = Math.max(0, Math.trunc(params.processedDocumentCount));
+	if (total > 0) {
+		const stageTotal = Math.max(1, Math.floor(total / 2));
+		if (processedRaw <= stageTotal) {
+			const loaded = Math.min(processedRaw, stageTotal);
+			const remaining = Math.max(stageTotal - loaded, 0);
+			const percent = Math.min(100, Math.floor((loaded / stageTotal) * 100));
+			return `Loading ${formatWorkspaceDocumentCount(loaded)}/${formatWorkspaceDocumentCount(stageTotal)} files (${percent}%), ${formatWorkspaceDocumentCount(remaining)} left before analysis`;
+		}
+		const analyzed = Math.min(processedRaw - stageTotal, stageTotal);
+		const remaining = Math.max(stageTotal - analyzed, 0);
+		const percent = Math.min(100, Math.floor((analyzed / stageTotal) * 100));
+		return `Analyzing ${formatWorkspaceDocumentCount(analyzed)}/${formatWorkspaceDocumentCount(stageTotal)} files (${percent}%), ${formatWorkspaceDocumentCount(remaining)} left`;
 	}
-	const remaining = Math.max(total - processed, 0);
-	return `${processed}/${total} files processed, ${remaining} left`;
+	if (processedRaw > 0) {
+		return `${formatWorkspaceDocumentCount(processedRaw)} files processed`;
+	}
+	switch (params.trigger) {
+		case "manifest-updated":
+			return "Loading updated manifest and preparing document analysis...";
+		case "dependency-cache-cleared":
+			return "Reloading dependency cache and preparing document analysis...";
+		case "remote-dependencies-updated":
+			return "Applying fetched dependencies and preparing follow-up analysis...";
+		default:
+			return "Loading workspace manifest and preparing document analysis...";
+	}
 }
 
 async function resolveRemoteDependencies(
