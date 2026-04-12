@@ -36,6 +36,7 @@ name = "abap_cli"
 version = "0.1.0"
 dependencies = [
  "abap_ast",
+ "abap_cache",
  "abap_lexer",
  "abap_parser",
  "abap_symbols",
@@ -98,6 +99,7 @@ dependencies = [
  "abap_ast",
  "abap_lexer",
  "abap_parser",
+ "serde",
 ]
 
 [[package]]

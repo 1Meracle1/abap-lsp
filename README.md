@@ -59,11 +59,36 @@ cargo flamegraph -p abap_symbols --example build_symbols_validate_perf --release
 ## Migration Docs
 
 - `docs/abap-adt-cli.md`
+- `docs/semantic-dossier.md`
 - `docs/migration/repo-layout.md`
 - `docs/migration/frontend-porting.md`
 - `docs/architecture/concurrency.md`
 - `docs/architecture/remote-dependencies.md`
 - `docs/migration/parity-matrix.md`
+
+## Semantic Dossier CLI
+
+Use `abap_cli analyze` when you need one compact machine-readable export for an ABAP file or
+workspace object.
+
+```bat
+cargo run -p abap_cli -- analyze --json path\to\zcl_demo.abap
+cargo run -p abap_cli -- analyze --json --with-project path\to\zcl_demo.abap
+cargo run -p abap_cli -- analyze --json --with-project --pretty path\to\zcl_demo.abap
+```
+
+The dossier is designed for downstream tools and AI workflows. It includes:
+
+- target metadata and project context,
+- parse and semantic diagnostics,
+- declared symbols, scopes, and class facts,
+- references with resolutions when available,
+- call sites and perform calls,
+- Open SQL queries, touched objects, and targets,
+- include edges and unresolved-name buckets,
+- a summary section with stable counts.
+
+See `docs/semantic-dossier.md` for the JSON schema and usage notes.
 
 ## Remote SAP Lookup
 
@@ -81,6 +106,7 @@ See `docs/abap-adt-cli.md` for command shapes, environment variables, `.env` loa
 The Rust workspace currently provides:
 
 - a blocking ADT query CLI for remote SAP discovery and source lookups,
+- a semantic dossier CLI export for AI-oriented ABAP object analysis,
 - the crate layout and dependency boundaries for the rewrite,
 - a minimal blocking JSON-RPC transport,
 - a smoke-test LSP server binary over stdio,

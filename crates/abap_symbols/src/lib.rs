@@ -2,6 +2,7 @@ mod builtins;
 mod collector;
 mod compatibility;
 mod def_map;
+mod dossier;
 mod ids;
 #[doc(hidden)]
 pub mod perf_api;
@@ -33,6 +34,7 @@ pub use def_map::{
     StructureData, StructureFieldData, StructureFieldInfo, StructureFieldShape, SymbolData,
     SymbolKind, TypeFactData, UnitAnalysis, Visibility,
 };
+pub use dossier::*;
 pub use ids::{ReferenceId, ScopeId, StructureId, SymbolHandle, SymbolId, UnitId};
 pub use project::{
     ProjectAnalysis, ProjectInput, analyze_project, analyze_project_from_units, analyze_unit,

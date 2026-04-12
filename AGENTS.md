@@ -13,6 +13,8 @@ Use the wrapper scripts on Windows, or run Cargo directly.
 - `cargo test -p abap_parser`: run tests for one crate while iterating.
 - `.\perf_test.bat`: run the repository’s performance checks.
 - `cargo run -p abap_adt_cli -- --help`: inspect the ADT CLI used for live SAP lookups.
+- `cargo run -p abap_cli -- analyze --json <FILE>`: emit a semantic dossier JSON export for one ABAP file.
+- `cargo run -p abap_cli -- analyze --json --with-project <FILE>`: analyze a file with workspace/project context for cross-unit resolution.
 - `cargo flamegraph -p abap_lsp --example build_semantic_tokens_perf --release`: profile semantic token generation.
 
 ## Coding Style & Naming Conventions

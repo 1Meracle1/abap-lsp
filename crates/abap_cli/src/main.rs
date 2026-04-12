@@ -5,21 +5,30 @@
 //! abap-cli parse [--json] [--ast] [--errors-only] [FILE]
 //! abap-cli symbols [--json] [--unknown-only] [FILE]
 //! abap-cli check [--json] [FILE]
+//! abap-cli analyze --json [--with-project] [--pretty] [FILE]
 //! ```
 //!
 //! `FILE` is UTF-8 ABAP source; omit or use `-` for stdin.
 
 mod human;
 
+use std::collections::HashMap;
 use std::io::Read;
 use std::ops::Range;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
+use abap_cache::{
+    DocumentInput, DocumentStore, load_workspace_documents, manifest_document_metadata,
+    path_to_file_uri,
+};
 use abap_ast::SyntaxKind;
 use abap_ast::arena::NodeId;
 use abap_lexer::tokenize;
 use abap_parser::parse;
-use abap_symbols::{DiagnosticKind, analyze_unit};
+use abap_symbols::{
+    DiagnosticKind, SemanticDossierContext, analyze_unit, build_semantic_dossier,
+};
 use serde_json::{Value, json};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,6 +37,7 @@ enum Command {
     Parse,
     Symbols,
     Check,
+    Analyze,
 }
 
 struct Cli {
@@ -40,6 +50,10 @@ struct Cli {
     parse_show_ast: bool,
     /// Only emit unresolved names (placeholder until resolution exists).
     unknown_only: bool,
+    /// Analyze: load workspace peers for cross-unit resolution.
+    analyze_with_project: bool,
+    /// Analyze: pretty-print dossier JSON instead of compact output.
+    pretty: bool,
     /// Source path, or None / `-` for stdin.
     path: Option<String>,
 }
@@ -52,6 +66,7 @@ Usage:
   abap-cli [--json] parse [--ast] [--errors-only] [FILE]
   abap-cli [--json] symbols [--unknown-only] [FILE]
   abap-cli [--json] check [FILE]
+  abap-cli analyze --json [--with-project] [--pretty] [FILE]
 
 If FILE is omitted or `-`, read source from stdin.
 
@@ -60,12 +75,15 @@ Commands:
   parse     Parser diagnostics (silent human run when clean); `--json --ast` for a syntax tree
   symbols   `--json` for identifier index; human is silent when clean, otherwise diagnostics and a symbol table
   check     Front-end diagnostics only (human silent when clean)
+  analyze   Semantic dossier export for AI/tooling consumption (`--json` required for structured output)
 
 Options:
   --json          Print JSON to stdout (no rustc-style rendering)
   --ast           Parse: include `ast` in JSON output (ignored in human mode; use `--json --ast`)
   --errors-only   Lex: only errors. Parse (JSON): same as default without --ast
   --unknown-only  Symbols: only unknown / unresolved identifiers (empty until wired)
+  --with-project  Analyze: load workspace peers around FILE for cross-unit resolution
+  --pretty        Analyze: pretty-print dossier JSON (default analyze JSON is compact)
 
   -h, --help      Show this help
 "#
@@ -95,12 +113,15 @@ fn parse_cli_args(it: impl Iterator<Item = String>) -> Result<Cli, String> {
         "parse" => Command::Parse,
         "symbols" => Command::Symbols,
         "check" => Command::Check,
+        "analyze" => Command::Analyze,
         _ => return Err(format!("unknown command {:?}\n{}", cmd, usage())),
     };
 
     let mut errors_only = false;
     let mut parse_show_ast = false;
     let mut unknown_only = false;
+    let mut analyze_with_project = false;
+    let mut pretty = false;
     let mut path: Option<String> = None;
 
     for arg in it {
@@ -109,6 +130,8 @@ fn parse_cli_args(it: impl Iterator<Item = String>) -> Result<Cli, String> {
             "--ast" => parse_show_ast = true,
             "--errors-only" => errors_only = true,
             "--unknown-only" => unknown_only = true,
+            "--with-project" => analyze_with_project = true,
+            "--pretty" => pretty = true,
             "--json" => json_output = true,
             "-" => path = Some(arg),
             s if !s.starts_with('-') => {
@@ -133,6 +156,15 @@ fn parse_cli_args(it: impl Iterator<Item = String>) -> Result<Cli, String> {
             usage()
         ));
     }
+    if analyze_with_project && command != Command::Analyze {
+        return Err(format!(
+            "--with-project only applies to analyze\n{}",
+            usage()
+        ));
+    }
+    if pretty && command != Command::Analyze {
+        return Err(format!("--pretty only applies to analyze\n{}", usage()));
+    }
     if parse_show_ast && !matches!(command, Command::Parse) {
         return Err(format!("--ast only applies to parse\n{}", usage()));
     }
@@ -149,6 +181,8 @@ fn parse_cli_args(it: impl Iterator<Item = String>) -> Result<Cli, String> {
         errors_only,
         parse_show_ast,
         unknown_only,
+        analyze_with_project,
+        pretty,
         path,
     })
 }
@@ -244,6 +278,10 @@ fn main() {
 
 fn run() -> Result<i32, String> {
     let cli = parse_cli_args(std::env::args().skip(1)).map_err(|e| e)?;
+
+    if cli.command == Command::Analyze {
+        return run_analyze(&cli);
+    }
 
     let source = read_source(cli.path.as_deref())?;
     let file_label = display_path(cli.path.as_deref());
@@ -505,5 +543,197 @@ fn run() -> Result<i32, String> {
 
             Ok(human_exit(cli.json_output, !parsed.errors.is_empty()))
         }
+        Command::Analyze => unreachable!("handled above"),
     }
+}
+
+struct AnalyzeSnapshot {
+    unit: Arc<abap_symbols::UnitAnalysis>,
+    parse: Arc<abap_parser::ParseResult>,
+    project: Option<Arc<abap_symbols::ProjectAnalysis>>,
+    target_path: Option<String>,
+    object_name: Option<String>,
+    is_dependency: bool,
+    workspace_root_uri: Option<String>,
+    manifest_present: bool,
+    project_unit_count: Option<usize>,
+    dependency_unit_count: Option<usize>,
+}
+
+fn run_analyze(cli: &Cli) -> Result<i32, String> {
+    if !cli.json_output {
+        return Err("analyze currently requires --json".to_string());
+    }
+
+    let snapshot = if cli.analyze_with_project {
+        load_project_analyze_snapshot(cli.path.as_deref())?
+    } else {
+        load_single_file_analyze_snapshot(cli.path.as_deref())?
+    };
+
+    let dossier = build_semantic_dossier(
+        snapshot.unit.as_ref(),
+        SemanticDossierContext {
+            parse_errors: &snapshot.parse.errors,
+            project: snapshot.project.as_deref(),
+            target_path: snapshot.target_path.as_deref(),
+            object_name: snapshot.object_name.as_deref(),
+            is_dependency: snapshot.is_dependency,
+            workspace_root_uri: snapshot.workspace_root_uri.as_deref(),
+            manifest_present: snapshot.manifest_present,
+            project_unit_count: snapshot.project_unit_count,
+            dependency_unit_count: snapshot.dependency_unit_count,
+        },
+    );
+
+    let json = if cli.pretty {
+        serde_json::to_string_pretty(&dossier)
+    } else {
+        serde_json::to_string(&dossier)
+    }
+    .map_err(|e| e.to_string())?;
+    println!("{json}");
+    Ok(0)
+}
+
+fn load_single_file_analyze_snapshot(path: Option<&str>) -> Result<AnalyzeSnapshot, String> {
+    let source = read_source(path)?;
+    let target_path = resolve_target_path(path)?;
+    let target_uri = target_path
+        .as_ref()
+        .map(|path| path_to_file_uri(path))
+        .unwrap_or_else(|| display_path(path));
+    let parsed = Arc::new(parse(&source));
+    let unit = Arc::new(analyze_unit(target_uri.as_str(), &source, parsed.as_ref()));
+
+    Ok(AnalyzeSnapshot {
+        unit,
+        parse: parsed,
+        project: None,
+        target_path: target_path.map(|path| path.display().to_string()),
+        object_name: None,
+        is_dependency: false,
+        workspace_root_uri: None,
+        manifest_present: false,
+        project_unit_count: None,
+        dependency_unit_count: None,
+    })
+}
+
+fn load_project_analyze_snapshot(path: Option<&str>) -> Result<AnalyzeSnapshot, String> {
+    let target_path = resolve_target_path(path)?
+        .ok_or_else(|| "--with-project requires a file path".to_string())?;
+    let target_uri = path_to_file_uri(&target_path);
+    let workspace_root = find_workspace_root(&target_path)?;
+    let workspace_root_uri = path_to_file_uri(&workspace_root);
+    let workspace = load_workspace_documents(&workspace_root_uri, &HashMap::new());
+    let dependency_unit_count = workspace
+        .documents
+        .iter()
+        .filter(|document| document.is_dependency)
+        .count();
+    let manifest_present = workspace.manifest.is_some();
+
+    let mut inputs: Vec<DocumentInput> = workspace
+        .documents
+        .iter()
+        .map(|document| DocumentInput {
+            uri: Arc::clone(&document.uri),
+            version: document.version,
+            text: Arc::from(document.text.as_str()),
+            is_dependency: document.is_dependency,
+            object_name: document.object_name.clone(),
+        })
+        .collect();
+
+    if !inputs.iter().any(|input| input.uri.as_ref() == target_uri) {
+        let source = std::fs::read_to_string(&target_path)
+            .map_err(|e| format!("{}: {e}", target_path.display()))?;
+        let (is_dependency, object_name) = workspace
+            .manifest
+            .as_ref()
+            .and_then(|manifest| {
+                manifest_document_metadata(
+                    &workspace.root_path,
+                    &workspace.root_uri,
+                    manifest,
+                    &target_uri,
+                )
+            })
+            .unwrap_or((false, None));
+        inputs.push(DocumentInput {
+            uri: Arc::from(target_uri.as_str()),
+            version: 1,
+            text: Arc::from(source),
+            is_dependency,
+            object_name,
+        });
+    }
+
+    let store = DocumentStore::default();
+    let snapshots = store.replace_all(inputs);
+    let snapshot = snapshots
+        .get(target_uri.as_str())
+        .cloned()
+        .ok_or_else(|| format!("workspace analysis did not include {}", target_path.display()))?;
+
+    Ok(AnalyzeSnapshot {
+        unit: Arc::clone(&snapshot.symbols),
+        parse: Arc::clone(&snapshot.parse),
+        project: Some(Arc::clone(&snapshot.project)),
+        target_path: Some(target_path.display().to_string()),
+        object_name: snapshot.object_name.as_ref().map(|name| name.to_string()),
+        is_dependency: snapshot.is_dependency,
+        workspace_root_uri: Some(workspace_root_uri),
+        manifest_present,
+        project_unit_count: Some(snapshot.project.units.len()),
+        dependency_unit_count: Some(dependency_unit_count),
+    })
+}
+
+fn resolve_target_path(path: Option<&str>) -> Result<Option<PathBuf>, String> {
+    match path {
+        None | Some("-") => Ok(None),
+        Some(path) => {
+            let path = PathBuf::from(path);
+            let absolute = if path.is_absolute() {
+                path
+            } else {
+                std::env::current_dir()
+                    .map_err(|e| format!("current dir: {e}"))?
+                    .join(path)
+            };
+            absolute
+                .canonicalize()
+                .map(normalize_windows_path)
+                .map(Some)
+                .map_err(|e| format!("{}: {e}", absolute.display()))
+        }
+    }
+}
+
+fn find_workspace_root(target_path: &Path) -> Result<PathBuf, String> {
+    let start = target_path
+        .parent()
+        .ok_or_else(|| format!("{} has no parent directory", target_path.display()))?;
+    for ancestor in start.ancestors() {
+        if ancestor.join("abapls.toml").is_file() {
+            return Ok(ancestor.to_path_buf());
+        }
+    }
+
+    let cwd = std::env::current_dir().map_err(|e| format!("current dir: {e}"))?;
+    if target_path.starts_with(&cwd) {
+        return Ok(cwd);
+    }
+
+    Ok(start.to_path_buf())
+}
+
+fn normalize_windows_path(path: PathBuf) -> PathBuf {
+    let text = path.to_string_lossy();
+    if let Some(stripped) = text.strip_prefix(r"\\?\") {
+        return PathBuf::from(stripped);
+    }
+    path
 }
