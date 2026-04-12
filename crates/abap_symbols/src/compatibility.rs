@@ -110,6 +110,7 @@ fn classify_type_fact(
     fact: &TypeFactData,
     depth: usize,
 ) -> Option<ClassifiedType> {
+    let (unit, fact) = normalize_type_fact(project, unit, fact, depth)?;
     if depth >= 8 {
         return None;
     }
@@ -151,6 +152,64 @@ fn classify_type_fact(
         }
     }
     Some(ClassifiedType::Scalar)
+}
+
+fn normalize_type_fact<'a>(
+    project: &'a ProjectAnalysis,
+    unit: &'a UnitAnalysis,
+    fact: &TypeFactData,
+    depth: usize,
+) -> Option<(&'a UnitAnalysis, TypeFactData)> {
+    if depth >= 8 {
+        return None;
+    }
+
+    let Some(type_ref) = fact.declared_type.as_ref() else {
+        return Some((unit, fact.clone()));
+    };
+    if type_ref.field_path.is_empty() || type_ref.namespace != Namespace::Type || type_ref.is_ref {
+        return Some((unit, fact.clone()));
+    }
+
+    let (mut current_unit, base_fact) =
+        resolve_named_type_fact(project, unit, type_ref.base_name.as_ref())?;
+    let mut current_structure = base_fact.structure;
+    let mut current_declared_type = base_fact.declared_type;
+
+    for field_name in &type_ref.field_path {
+        while current_structure.is_none() {
+            let next_type_ref = current_declared_type.as_ref()?;
+            if next_type_ref.namespace != Namespace::Type
+                || next_type_ref.is_ref
+                || !next_type_ref.field_path.is_empty()
+            {
+                return None;
+            }
+            let (next_unit, next_fact) =
+                resolve_named_type_fact(project, current_unit, next_type_ref.base_name.as_ref())?;
+            current_unit = next_unit;
+            current_structure = next_fact.structure;
+            current_declared_type = next_fact.declared_type;
+        }
+
+        let field = current_unit
+            .structure(current_structure?)
+            .fields
+            .iter()
+            .find(|field| field.name.as_ref() == field_name.as_ref())?;
+        current_structure = field.structure;
+        current_declared_type = field.type_ref.clone();
+    }
+
+    Some((
+        current_unit,
+        TypeFactData {
+            structure: current_structure,
+            declared_type: current_declared_type,
+            type_clause_display: None,
+            table_line: None,
+        },
+    ))
 }
 
 fn resolve_named_type_fact<'a>(

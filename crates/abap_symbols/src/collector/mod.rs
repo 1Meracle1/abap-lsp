@@ -17,7 +17,7 @@ use std::sync::Arc;
 use abap_ast::arena::NodeId;
 use abap_ast::ast::{
     AstNode, CallArgList, ConstructorBaseClause, ConstructorForClause, ConstructorLinesOfClause,
-    DeclClause, MethodsParamSectionKind, StructuredIncludeClause, StructuredIncludeKind,
+    DeclClause, MethodsParamSectionKind, StructuredIncludeClause, StructuredIncludeKind, TableExpr,
     TypeClauseKind, TypeRefSimple,
 };
 use abap_ast::{File, SyntaxKind};
@@ -367,6 +367,7 @@ impl<'a> Collector<'a> {
         node: NodeId,
         scope: ScopeId,
     ) -> (Option<StructureId>, Option<FieldTypeRefData>) {
+        let node = self.unwrap_simple_expr_wrapper(node);
         match self.file.kind(node) {
             SyntaxKind::TemplateExpr => {
                 if let Some(child) = self.first_non_token_child(node) {
@@ -417,25 +418,47 @@ impl<'a> Collector<'a> {
                 }
                 let mut structure = self.symbol(symbol_id).structure;
                 let mut declared_type = self.symbol(symbol_id).declared_type.clone();
-                for segment in field_path {
+                for (idx, segment) in field_path.iter().enumerate() {
                     if segment.is_deref() {
                         return (None, None);
                     }
-                    let Some(structure_id) = structure else {
+                    if let Some(structure_id) = structure {
+                        let Some(field) = self.structure(structure_id).and_then(|structure| {
+                            structure
+                                .fields
+                                .iter()
+                                .find(|field| field.name.as_ref() == segment.name.as_ref())
+                        }) else {
+                            return (None, None);
+                        };
+                        structure = field.structure;
+                        declared_type = field.type_ref.clone();
+                        continue;
+                    }
+
+                    let Some(type_ref) = declared_type.as_mut() else {
                         return (None, None);
                     };
-                    let Some(field) = self.structure(structure_id).and_then(|structure| {
-                        structure
-                            .fields
-                            .iter()
-                            .find(|field| field.name.as_ref() == segment.name.as_ref())
-                    }) else {
+                    if type_ref.namespace != Namespace::Type || type_ref.is_ref {
                         return (None, None);
-                    };
-                    structure = field.structure;
-                    declared_type = field.type_ref.clone();
+                    }
+                    type_ref.field_path.push(Arc::clone(&segment.name));
+                    for trailing in field_path.iter().skip(idx + 1) {
+                        if trailing.is_deref() {
+                            return (None, None);
+                        }
+                        type_ref.field_path.push(Arc::clone(&trailing.name));
+                    }
+                    return (None, declared_type);
                 }
                 (structure, declared_type)
+            }
+            SyntaxKind::TableExpr => {
+                let Some(base) = TableExpr::cast(self.syntax(node)).and_then(|expr| expr.base())
+                else {
+                    return (None, None);
+                };
+                self.inline_decl_assignment_source_metadata(base.id(), scope)
             }
             SyntaxKind::ExprLiteral => {
                 let Some(token) = self.syntax_token_nodes(node).into_iter().next() else {
@@ -548,6 +571,17 @@ impl<'a> Collector<'a> {
         }
 
         for positional in arg_list.positional_args() {
+            let non_token_children: Vec<_> = positional
+                .value_children()
+                .into_iter()
+                .filter(|child| child.kind() != SyntaxKind::Token)
+                .collect();
+            if let [single] = non_token_children.as_slice() {
+                let inferred = self.inline_decl_assignment_source_metadata(single.id(), scope);
+                if inferred.0.is_some() || inferred.1.is_some() {
+                    return inferred;
+                }
+            }
             let tokens = positional
                 .value_children()
                 .into_iter()

@@ -6,8 +6,8 @@ use abap_ast::ast::{
     AstNode, CallArgList, CallExpr, CallNamedArg, CallPositionalArg, ConstructorBaseClause,
     ConstructorElseClause, ConstructorExpr, ConstructorForClause, ConstructorInitClause,
     ConstructorLinesOfClause, ConstructorNamedAssignment, ConstructorNextClause,
-    ConstructorWhenClause, LetExpr, MethodsParamSectionKind, ParenExpr, TemplateExpr,
-    TemplateInterpolation,
+    ConstructorOptionalExpr, ConstructorWhenClause, LetExpr, MethodsParamSectionKind, ParenExpr,
+    TableExpr, TemplateExpr, TemplateInterpolation,
 };
 use abap_lexer::TextRange;
 
@@ -71,6 +71,11 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
             SyntaxKind::ParenExpr => ParenExpr::cast(self.ctx.syntax(node))
                 .and_then(|expr| expr.inner_expr())
                 .map(|child| child.id()),
+            SyntaxKind::ConstructorOptionalExpr => {
+                ConstructorOptionalExpr::cast(self.ctx.syntax(node))
+                    .and_then(|expr| expr.value())
+                    .map(|child| child.id())
+            }
             SyntaxKind::TemplateInterpolation => TemplateInterpolation::cast(self.ctx.syntax(node))
                 .and_then(|interp| interp.expr())
                 .map(|child| child.id()),
@@ -547,6 +552,10 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
             SyntaxKind::CallExpr => self.type_fact_from_call_expr(node, scope),
             SyntaxKind::SubstringExpr => self.type_fact_from_substring_expr(node, scope),
             SyntaxKind::ConstructorExpr => self.type_fact_from_constructor_expr(node, scope),
+            SyntaxKind::TableExpr => TableExpr::cast(self.ctx.syntax(node))
+                .and_then(|expr| expr.base())
+                .map(|base| self.type_fact_from_expr_node(base.id(), scope))
+                .unwrap_or_default(),
             _ => self.type_fact_from_tokens(&self.ctx.syntax_token_nodes(node), scope),
         }
     }
@@ -590,6 +599,11 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                 }
             }
             SyntaxKind::SelectorExpr => self.collect_selector_expr(node, scope),
+            SyntaxKind::TableExpr => {
+                let tokens = self.ctx.syntax_token_nodes(node);
+                self.ctx
+                    .collect_token_expression_refs_infos(&tokens, scope, true);
+            }
             SyntaxKind::SubstringExpr => self.collect_substring_expr(node, scope),
             SyntaxKind::CallExpr => self.collect_call_expr(node, scope),
             SyntaxKind::LetExpr => self.collect_let_expr(node, scope),
@@ -3520,13 +3534,20 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
         if let Some((namespace, base_name, base_range, field_path)) =
             self.ctx.selector_access_chain(node)
         {
+            let base_node = self.ctx.file().children(node).next();
             let kind = if namespace == Namespace::Type {
                 ReferenceKind::StaticTarget
             } else {
                 ReferenceKind::Identifier
             };
-            self.ctx
-                .add_reference(scope, Arc::clone(&base_name), namespace, kind, base_range);
+            if base_node.is_some_and(|base| self.kind(base) == SyntaxKind::TableExpr) {
+                if let Some(base) = base_node {
+                    self.collect_expr(base, scope);
+                }
+            } else {
+                self.ctx
+                    .add_reference(scope, Arc::clone(&base_name), namespace, kind, base_range);
+            }
             if !field_path.is_empty() {
                 self.ctx.emit_field_access(FieldAccess {
                     scope,

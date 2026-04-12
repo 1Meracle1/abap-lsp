@@ -230,6 +230,25 @@ impl<'a, 'b> Parser<'a, 'b> {
                 break;
             };
 
+            if curr.kind == TokenKind::LBracket {
+                let end_idx = self.find_matching_group_from(
+                    self.idx,
+                    TokenKind::LBracket,
+                    TokenKind::RBracket,
+                )?;
+                let mut children = vec![value];
+                children.extend(
+                    self.tokens[self.idx..=end_idx]
+                        .iter()
+                        .map(|token| token_leaf(self.b, token)),
+                );
+                let range = self.b.span(value).start..self.tokens[end_idx].range.end;
+                value = self.b.branch(SyntaxKind::TableExpr, range, &children);
+                self.idx = end_idx + 1;
+                self.prev = &self.tokens[end_idx];
+                continue;
+            }
+
             let is_selector = matches!(
                 curr.kind,
                 TokenKind::Arrow | TokenKind::FatArrow | TokenKind::Tilde
@@ -255,6 +274,16 @@ impl<'a, 'b> Parser<'a, 'b> {
                 value = self
                     .b
                     .branch(SyntaxKind::SelectorExpr, range, &[value, op, field]);
+                continue;
+            }
+
+            if curr.kind == TokenKind::LParen
+                && !have_space_between(self.prev, curr)
+                && self
+                    .find_matching_paren_from(self.idx)
+                    .is_some_and(|rparen_idx| self.call_padding_is_valid(self.idx, rparen_idx))
+            {
+                value = self.parse_call_expr(value)?;
                 continue;
             }
 
@@ -436,11 +465,20 @@ impl<'a, 'b> Parser<'a, 'b> {
     }
 
     fn find_matching_paren_from(&self, start_idx: usize) -> Option<usize> {
+        self.find_matching_group_from(start_idx, TokenKind::LParen, TokenKind::RParen)
+    }
+
+    fn find_matching_group_from(
+        &self,
+        start_idx: usize,
+        open: TokenKind,
+        close: TokenKind,
+    ) -> Option<usize> {
         let mut depth = 0i32;
         for (idx, tok) in self.tokens.iter().enumerate().skip(start_idx) {
             match tok.kind {
-                TokenKind::LParen => depth += 1,
-                TokenKind::RParen => {
+                kind if kind == open => depth += 1,
+                kind if kind == close => {
                     depth -= 1;
                     if depth == 0 {
                         return Some(idx);
@@ -923,6 +961,12 @@ impl<'a, 'b> Parser<'a, 'b> {
             .find(|token| token.kind != TokenKind::Comment)
     }
 
+    fn last_non_comment_index(&self, tokens: &[Token]) -> Option<usize> {
+        tokens
+            .iter()
+            .rposition(|token| token.kind != TokenKind::Comment)
+    }
+
     fn parse_single_constructor_expr(
         &mut self,
         tokens: &'a [Token],
@@ -930,6 +974,24 @@ impl<'a, 'b> Parser<'a, 'b> {
     ) -> Option<NodeId> {
         if tokens.is_empty() {
             return None;
+        }
+        if let Some(optional_idx) = self.last_non_comment_index(tokens)
+            && ident_eq(self.source, &tokens[optional_idx], "OPTIONAL")
+            && optional_idx > 0
+        {
+            let value =
+                self.parse_single_constructor_expr(&tokens[..optional_idx], prev_before_first)?;
+            let mut children = vec![value, token_leaf(self.b, &tokens[optional_idx])];
+            children.extend(
+                tokens[optional_idx + 1..]
+                    .iter()
+                    .map(|token| token_leaf(self.b, token)),
+            );
+            return Some(self.b.branch(
+                SyntaxKind::ConstructorOptionalExpr,
+                tokens.first()?.range.start..tokens.last()?.range.end,
+                &children,
+            ));
         }
         if tokens
             .first()
@@ -968,7 +1030,7 @@ impl<'a, 'b> Parser<'a, 'b> {
         }
         let mut children = Vec::with_capacity(tokens.len());
         let (value_core, trailing_comments) = self.split_call_argument_trailing_comments(tokens);
-        if let Some(value) = self.parse_call_argument_value(value_core, prev_before_first) {
+        if let Some(value) = self.parse_single_constructor_expr(value_core, prev_before_first) {
             children.push(value);
             children.extend(
                 trailing_comments
@@ -1311,7 +1373,6 @@ impl<'a, 'b> Parser<'a, 'b> {
                     || ident_eq(self.source, token, "LET")
                     || ident_eq(self.source, token, "IN")
                     || ident_eq(self.source, token, "BASE")
-                    || ident_eq(self.source, token, "OPTIONAL")
                     || ident_eq(self.source, token, "INIT")
                     || ident_eq(self.source, token, "NEXT")
                     || ident_eq(self.source, token, "WHERE")
@@ -1319,6 +1380,10 @@ impl<'a, 'b> Parser<'a, 'b> {
                     || ident_eq(self.source, token, "WHILE")
                     || ident_eq(self.source, token, "THEN")
                 {
+                    break;
+                }
+                if ident_eq(self.source, token, "OPTIONAL") {
+                    idx += 1;
                     break;
                 }
                 if token.kind == TokenKind::Ident
@@ -2790,7 +2855,8 @@ mod tests {
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
         let root = parsed.file.root();
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::ConstructorExpr), 1);
-        assert_eq!(parsed.file.count_kind(root, SyntaxKind::CallArgList), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::CallArgList), 3);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::CallExpr), 2);
         assert_eq!(
             parsed
                 .file
@@ -3040,6 +3106,23 @@ mod tests {
                 .count_kind(root, SyntaxKind::ConstructorNamedAssignment),
             1
         );
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
+    }
+
+    #[test]
+    fn value_constructor_with_optional_table_expression_parses_structured_expr() {
+        let parsed =
+            crate::parse("DATA(lv_parent) = VALUE #( mt_evt_rel[ parent = 'X' ]-objid OPTIONAL ).");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::ConstructorExpr), 1);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::ConstructorOptionalExpr),
+            1
+        );
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::SelectorExpr), 1);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
     }
 

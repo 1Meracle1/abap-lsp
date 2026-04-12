@@ -41,6 +41,8 @@ pub enum SyntaxKind {
     ExprIdent,
     /// Numeric or character literal operand in an expression.
     ExprLiteral,
+    /// Table expression such as `itab[ key = value ]`.
+    TableExpr,
     /// Selector chain such as `obj->field` or `cls=>member`.
     SelectorExpr,
     /// ABAP offset/length access such as `text+2(8)` or `text(14)`.
@@ -79,6 +81,8 @@ pub enum SyntaxKind {
     ConstructorBaseClause,
     /// `LINES OF ...` inside a value constructor.
     ConstructorLinesOfClause,
+    /// `expr OPTIONAL` inside a constructor-expression context.
+    ConstructorOptionalExpr,
     /// `DATA [:`] … .` — classic typed declaration (here: explicit `TYPE` with simple type refs).
     DataDecl,
     /// One `name TYPE type_ref` member (comma-separated under `DATA:` or alone after `DATA`).
@@ -449,6 +453,7 @@ impl SyntaxKind {
             Self::ParenExpr => "ParenExpr",
             Self::ExprIdent => "ExprIdent",
             Self::ExprLiteral => "ExprLiteral",
+            Self::TableExpr => "TableExpr",
             Self::SelectorExpr => "SelectorExpr",
             Self::SubstringExpr => "SubstringExpr",
             Self::CallExpr => "CallExpr",
@@ -468,6 +473,7 @@ impl SyntaxKind {
             Self::ConstructorNamedAssignment => "ConstructorNamedAssignment",
             Self::ConstructorBaseClause => "ConstructorBaseClause",
             Self::ConstructorLinesOfClause => "ConstructorLinesOfClause",
+            Self::ConstructorOptionalExpr => "ConstructorOptionalExpr",
             Self::DataDecl => "DataDecl",
             Self::DataTypedClause => "DataTypedClause",
             Self::DataInlineDecl => "DataInlineDecl",

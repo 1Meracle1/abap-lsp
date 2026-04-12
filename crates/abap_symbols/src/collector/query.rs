@@ -4,7 +4,8 @@ use std::sync::Arc;
 use abap_ast::SyntaxKind;
 use abap_ast::arena::NodeId;
 use abap_ast::ast::{
-    AstNode, ConstructorExpr, ExprIdent, ParenExpr, SelectorExpr, SyntaxNodeRef, TemplateExpr,
+    AstNode, ConstructorExpr, ConstructorOptionalExpr, ExprIdent, ParenExpr, SelectorExpr,
+    SyntaxNodeRef, TableExpr, TemplateExpr,
 };
 use abap_lexer::{TextRange, TokenKind};
 
@@ -15,7 +16,7 @@ use crate::scope::{Namespace, ScopeKind};
 use super::{Collector, ScopeLookupKey, SyntaxTokenInfo};
 
 impl<'a> Collector<'a> {
-    fn unwrap_simple_expr_wrapper(&self, node: NodeId) -> NodeId {
+    pub(super) fn unwrap_simple_expr_wrapper(&self, node: NodeId) -> NodeId {
         let mut current = node;
         loop {
             let next = match self.file.kind(current) {
@@ -25,6 +26,11 @@ impl<'a> Collector<'a> {
                 SyntaxKind::ParenExpr => ParenExpr::cast(self.syntax(current))
                     .and_then(|expr| expr.inner_expr())
                     .map(|child| child.id()),
+                SyntaxKind::ConstructorOptionalExpr => {
+                    ConstructorOptionalExpr::cast(self.syntax(current))
+                        .and_then(|expr| expr.value())
+                        .map(|child| child.id())
+                }
                 _ => None,
             };
             if let Some(next) = next {
@@ -401,6 +407,36 @@ impl<'a> Collector<'a> {
                 });
                 Some((base_namespace, base_name, base_range, field_path))
             }
+            SyntaxKind::TableExpr => {
+                let table = TableExpr::cast(self.syntax(base_id))?;
+                let table_base_id = self.unwrap_simple_expr_wrapper(table.base()?.id());
+                match self.file.kind(table_base_id) {
+                    SyntaxKind::ExprIdent => {
+                        let ident = ExprIdent::cast(self.syntax(table_base_id))?;
+                        let base_name = ident.name(self.source)?;
+                        let base_range = ident.range();
+                        Some((
+                            namespace,
+                            base_name,
+                            base_range,
+                            vec![FieldAccessSegment {
+                                name: field_name,
+                                range: field_range,
+                            }],
+                        ))
+                    }
+                    SyntaxKind::SelectorExpr => {
+                        let (base_namespace, base_name, base_range, mut field_path) =
+                            self.selector_access_chain(table_base_id)?;
+                        field_path.push(FieldAccessSegment {
+                            name: field_name,
+                            range: field_range,
+                        });
+                        Some((base_namespace, base_name, base_range, field_path))
+                    }
+                    _ => None,
+                }
+            }
             _ => None,
         }
     }
@@ -432,6 +468,9 @@ impl<'a> Collector<'a> {
                     in_type_position: false,
                 })
             }
+            SyntaxKind::TableExpr => TableExpr::cast(self.syntax(node))
+                .and_then(|expr| expr.base())
+                .and_then(|base| self.value_access_from_node(base.id(), scope)),
             _ => self
                 .legacy_table_body_value_access_from_tokens(&self.syntax_token_nodes(node), scope),
         }

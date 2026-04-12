@@ -398,6 +398,7 @@ ast_node!(StructuredIncludeClause, SyntaxKind::StructuredIncludeClause);
 ast_node!(TypeRefSimple, SyntaxKind::TypeRefSimple);
 ast_node!(TemplateExpr, SyntaxKind::TemplateExpr);
 ast_node!(TemplateInterpolation, SyntaxKind::TemplateInterpolation);
+ast_node!(TableExpr, SyntaxKind::TableExpr);
 ast_node!(SelectorExpr, SyntaxKind::SelectorExpr);
 ast_node!(ParenExpr, SyntaxKind::ParenExpr);
 ast_node!(CallExpr, SyntaxKind::CallExpr);
@@ -423,6 +424,7 @@ ast_node!(
     ConstructorLinesOfClause,
     SyntaxKind::ConstructorLinesOfClause
 );
+ast_node!(ConstructorOptionalExpr, SyntaxKind::ConstructorOptionalExpr);
 ast_node!(AliasesStmt, SyntaxKind::AliasesStmt);
 ast_node!(AliasEntry, SyntaxKind::AliasEntry);
 ast_node!(AliasName, SyntaxKind::AliasName);
@@ -1220,6 +1222,12 @@ impl<'a> CallExpr<'a> {
     }
 }
 
+impl<'a> TableExpr<'a> {
+    pub fn base(self) -> Option<SyntaxNodeRef<'a>> {
+        self.syntax.first_non_token_child()
+    }
+}
+
 impl<'a> ConstructorExpr<'a> {
     pub fn keyword_token(self) -> Option<SyntaxNodeRef<'a>> {
         self.syntax.children_by_kind(SyntaxKind::Token).next()
@@ -1531,6 +1539,12 @@ impl<'a> ConstructorLinesOfClause<'a> {
 
     pub fn to_value(self) -> Option<SyntaxNodeRef<'a>> {
         self.syntax.non_token_children().nth(2)
+    }
+}
+
+impl<'a> ConstructorOptionalExpr<'a> {
+    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
+        self.syntax.first_non_token_child()
     }
 }
 

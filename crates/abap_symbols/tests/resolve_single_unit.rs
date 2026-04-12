@@ -6179,6 +6179,168 @@ DATA(ls_obj_itm) = VALUE ty_item( objid = 'X' ).
 }
 
 #[test]
+fn infers_inline_value_optional_table_expression_selector_field_type() {
+    let src = r#"
+TYPES /sttp/e_objid TYPE string.
+TYPES: BEGIN OF /sttp/dm_evt_rel,
+         parent TYPE c LENGTH 1,
+         objid TYPE /sttp/e_objid,
+       END OF /sttp/dm_evt_rel.
+TYPES /sttp/t_dm_evt_rel TYPE STANDARD TABLE OF /sttp/dm_evt_rel WITH EMPTY KEY.
+
+DATA mt_evt_rel TYPE /sttp/t_dm_evt_rel.
+DATA(lv_parent) = VALUE #( mt_evt_rel[ parent = 'X' ]-objid OPTIONAL ).
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///value_optional_table_field_type.abap", src, &parsed);
+
+    let lv_parent = unit
+        .symbols
+        .iter()
+        .find(|symbol| symbol.name.as_ref() == "lv_parent")
+        .expect("inline value target");
+    let declared_type = lv_parent
+        .declared_type
+        .as_ref()
+        .expect("declared type inferred from VALUE table expression selector");
+    assert_eq!(declared_type.namespace, Namespace::Type);
+    assert!(!declared_type.is_ref);
+    assert_eq!(declared_type.base_name.as_ref(), "/sttp/e_objid");
+    assert!(declared_type.field_path.is_empty());
+}
+
+#[test]
+fn infers_inline_value_optional_table_expression_selector_field_type_across_project_units() {
+    let elem_src = "TYPES /sttp/e_objid TYPE string.\n";
+    let row_src = r#"
+TYPES: BEGIN OF /sttp/dm_evt_rel,
+         parent TYPE c LENGTH 1,
+         objid TYPE /sttp/e_objid,
+       END OF /sttp/dm_evt_rel.
+"#;
+    let table_type_src =
+        "TYPES /sttp/t_dm_evt_rel TYPE STANDARD TABLE OF /sttp/dm_evt_rel WITH EMPTY KEY.\n";
+    let main_src = r#"
+DATA mt_evt_rel TYPE /sttp/t_dm_evt_rel.
+DATA(lv_parent) = VALUE #( mt_evt_rel[ parent = 'X' ]-objid OPTIONAL ).
+"#;
+
+    let elem_parse = parse(elem_src);
+    let row_parse = parse(row_src);
+    let table_type_parse = parse(table_type_src);
+    let main_parse = parse(main_src);
+    let project = analyze_project(&[
+        ProjectInput {
+            uri: "file:///ddic_e_objid.abap",
+            source: elem_src,
+            parse: &elem_parse,
+        },
+        ProjectInput {
+            uri: "file:///ddic_dm_evt_rel.abap",
+            source: row_src,
+            parse: &row_parse,
+        },
+        ProjectInput {
+            uri: "file:///ddic_t_dm_evt_rel.abap",
+            source: table_type_src,
+            parse: &table_type_parse,
+        },
+        ProjectInput {
+            uri: "file:///main_value_optional_table_field_type.abap",
+            source: main_src,
+            parse: &main_parse,
+        },
+    ]);
+
+    let unit = project
+        .unit_by_uri("file:///main_value_optional_table_field_type.abap")
+        .expect("main unit");
+    let lv_parent = unit
+        .symbols
+        .iter()
+        .find(|symbol| symbol.name.as_ref() == "lv_parent")
+        .expect("inline value target");
+    let declared_type = lv_parent
+        .declared_type
+        .as_ref()
+        .expect("declared type inferred from project VALUE table expression selector");
+    assert_eq!(declared_type.namespace, Namespace::Type);
+    assert!(!declared_type.is_ref);
+    assert_eq!(declared_type.base_name.as_ref(), "/sttp/e_objid");
+    assert!(declared_type.field_path.is_empty());
+}
+
+#[test]
+fn accepts_method_argument_from_value_optional_table_expression_selector_across_project_units() {
+    let elem_src = "TYPES /sttp/e_objid TYPE string.\n";
+    let row_src = r#"
+TYPES: BEGIN OF /sttp/dm_evt_rel,
+         parent TYPE c LENGTH 1,
+         objid TYPE /sttp/e_objid,
+       END OF /sttp/dm_evt_rel.
+"#;
+    let table_type_src =
+        "TYPES /sttp/t_dm_evt_rel TYPE STANDARD TABLE OF /sttp/dm_evt_rel WITH EMPTY KEY.\n";
+    let main_src = r#"
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS check IMPORTING iv_parent TYPE /sttp/e_objid.
+    METHODS run.
+  PRIVATE SECTION.
+    DATA mt_evt_rel TYPE /sttp/t_dm_evt_rel.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD check.
+  ENDMETHOD.
+
+  METHOD run.
+    DATA(lv_parent) = VALUE #( mt_evt_rel[ parent = 'X' ]-objid OPTIONAL ).
+    check( iv_parent = lv_parent ).
+  ENDMETHOD.
+ENDCLASS.
+"#;
+
+    let elem_parse = parse(elem_src);
+    let row_parse = parse(row_src);
+    let table_type_parse = parse(table_type_src);
+    let main_parse = parse(main_src);
+    let project = analyze_project(&[
+        ProjectInput {
+            uri: "file:///ddic_e_objid.abap",
+            source: elem_src,
+            parse: &elem_parse,
+        },
+        ProjectInput {
+            uri: "file:///ddic_dm_evt_rel.abap",
+            source: row_src,
+            parse: &row_parse,
+        },
+        ProjectInput {
+            uri: "file:///ddic_t_dm_evt_rel.abap",
+            source: table_type_src,
+            parse: &table_type_parse,
+        },
+        ProjectInput {
+            uri: "file:///main_value_optional_call_arg.abap",
+            source: main_src,
+            parse: &main_parse,
+        },
+    ]);
+
+    let unit = project
+        .unit_by_uri("file:///main_value_optional_call_arg.abap")
+        .expect("main unit");
+    assert!(
+        unit.diagnostics
+            .iter()
+            .all(|diag| diag.kind != DiagnosticKind::IncompatibleArgumentType),
+        "{:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn resolves_value_lines_of_references_inside_cond_constructor() {
     let src = r#"
 TYPES ty_tab TYPE STANDARD TABLE OF string WITH EMPTY KEY.

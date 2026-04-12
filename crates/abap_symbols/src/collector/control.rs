@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use abap_ast::SyntaxKind;
 use abap_ast::arena::NodeId;
-use abap_ast::ast::{AstNode, ConstructorBaseClause, ConstructorExpr, SortStmt};
+use abap_ast::ast::{AstNode, ConstructorBaseClause, ConstructorExpr, SortStmt, TableExpr};
 
 use crate::def_map::{
     FieldAccess, FieldAccessSegment, FieldTypeRefData, LoopWhereFieldContext, SymbolKind,
@@ -313,6 +313,7 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
         node: NodeId,
         scope: ScopeId,
     ) -> (Option<StructureId>, Option<FieldTypeRefData>) {
+        let node = self.collector.unwrap_simple_expr_wrapper(node);
         match self.collector.file.kind(node) {
             SyntaxKind::ConstructorExpr => {
                 let Some(constructor) = ConstructorExpr::cast(self.collector.syntax(node)) else {
@@ -464,6 +465,14 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
                         self.normalize_inferred_metadata(scope, structure, declared_type)
                     })
                     .unwrap_or((None, None))
+            }
+            SyntaxKind::TableExpr => {
+                let Some(base) =
+                    TableExpr::cast(self.collector.syntax(node)).and_then(|expr| expr.base())
+                else {
+                    return (None, None);
+                };
+                self.loop_source_line_metadata_from_node(base.id(), scope)
             }
             _ => (None, None),
         }
