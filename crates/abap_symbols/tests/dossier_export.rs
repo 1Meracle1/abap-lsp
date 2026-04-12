@@ -1,7 +1,5 @@
 use abap_parser::parse;
-use abap_symbols::{
-    SemanticDossierContext, analyze_unit, build_semantic_dossier,
-};
+use abap_symbols::{SemanticDossierContext, analyze_unit, build_semantic_dossier};
 
 #[test]
 fn dossier_exports_simple_local_resolution() {
@@ -86,19 +84,19 @@ ENDCLASS.
         },
     );
 
-    assert!(dossier
-        .classes
-        .members
-        .iter()
-        .any(|member| member.class_name.as_deref() == Some("zcl_child")
-            && member.name == "mv_flag"
-            && member.kind == "attribute"));
-    assert!(dossier
-        .classes
-        .inheritance
-        .iter()
-        .any(|inheritance| inheritance.class_name.as_deref() == Some("zcl_child")
-            && inheritance.superclass_name == "zcl_base"));
+    assert!(
+        dossier
+            .classes
+            .members
+            .iter()
+            .any(|member| member.class_name.as_deref() == Some("zcl_child")
+                && member.name == "mv_flag"
+                && member.kind == "attribute")
+    );
+    assert!(dossier.classes.inheritance.iter().any(
+        |inheritance| inheritance.class_name.as_deref() == Some("zcl_child")
+            && inheritance.superclass_name == "zcl_base"
+    ));
     assert!(dossier.call_sites.iter().any(|call_site| {
         matches!(
             &call_site.target,
@@ -140,18 +138,24 @@ SELECT carrid, carrname
     let query = dossier.sql.queries.first().expect("sql query");
     assert_eq!(dossier.sql.touched_objects, vec!["scarr".to_string()]);
     assert!(query.sources.iter().any(|source| source.name == "scarr"));
-    assert!(query
-        .projections
-        .iter()
-        .any(|projection| projection.name.as_deref() == Some("carrid")));
-    assert!(query
-        .predicates
-        .iter()
-        .any(|predicate| predicate.kind == "where"));
-    assert!(query
-        .targets
-        .iter()
-        .any(|target| target.target_name.as_deref() == Some("lt_scarr")));
+    assert!(
+        query
+            .projections
+            .iter()
+            .any(|projection| projection.name.as_deref() == Some("carrid"))
+    );
+    assert!(
+        query
+            .predicates
+            .iter()
+            .any(|predicate| predicate.kind == "where")
+    );
+    assert!(
+        query
+            .targets
+            .iter()
+            .any(|target| target.target_name.as_deref() == Some("lt_scarr"))
+    );
 }
 
 #[test]
@@ -174,14 +178,18 @@ fn dossier_buckets_unresolved_references() {
         },
     );
 
-    assert!(dossier
-        .unresolved_names
-        .references
-        .iter()
-        .any(|reference| reference.name == "lv_missing"));
-    assert!(dossier
-        .semantic_diagnostics
-        .iter()
-        .any(|diagnostic| diagnostic.kind == "unresolved_reference"));
+    assert!(
+        dossier
+            .unresolved_names
+            .references
+            .iter()
+            .any(|reference| reference.name == "lv_missing")
+    );
+    assert!(
+        dossier
+            .semantic_diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.kind == "unresolved_reference")
+    );
     assert_eq!(dossier.summary.unresolved_reference_count, 1);
 }

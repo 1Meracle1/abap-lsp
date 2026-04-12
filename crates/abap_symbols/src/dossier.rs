@@ -17,7 +17,7 @@ use crate::def_map::{
     SqlTargetKind, StructureData, StructureFieldData, SymbolData, SymbolKind, TypeFactData,
     UnitAnalysis, Visibility,
 };
-use crate::ids::{UnitId, SymbolHandle};
+use crate::ids::{SymbolHandle, UnitId};
 use crate::project::ProjectAnalysis;
 use crate::scope::{Namespace, ScopeData, ScopeKind};
 
@@ -304,10 +304,18 @@ pub struct CallArgumentDossier {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum CallTargetDossier {
-    Constructor { type_name: String },
-    Function { function_name: String },
-    Routine { routine_name: String },
-    ImplicitMethod { method_name: String },
+    Constructor {
+        type_name: String,
+    },
+    Function {
+        function_name: String,
+    },
+    Routine {
+        routine_name: String,
+    },
+    ImplicitMethod {
+        method_name: String,
+    },
     Method {
         base_namespace: &'static str,
         base_name: String,
@@ -683,7 +691,11 @@ fn structure_dossier(structure: &StructureData) -> StructureDossier {
         origin_unit_id: structure.origin_unit.0,
         origin_structure_id: structure.origin_structure.0,
         name: structure.name.to_string(),
-        fields: structure.fields.iter().map(structure_field_dossier).collect(),
+        fields: structure
+            .fields
+            .iter()
+            .map(structure_field_dossier)
+            .collect(),
     }
 }
 
@@ -860,7 +872,10 @@ fn type_fact_dossier(type_fact: &TypeFactData) -> TypeFactDossier {
     TypeFactDossier {
         structure_id: type_fact.structure.map(|id| id.0),
         declared_type: type_fact.declared_type.as_ref().map(type_ref_dossier),
-        type_clause_display: type_fact.type_clause_display.as_ref().map(arc_str_to_string),
+        type_clause_display: type_fact
+            .type_clause_display
+            .as_ref()
+            .map(arc_str_to_string),
     }
 }
 
@@ -885,11 +900,9 @@ fn call_target_dossier(target: &NamedArgumentTarget) -> CallTargetDossier {
         NamedArgumentTarget::Routine { routine_name } => CallTargetDossier::Routine {
             routine_name: routine_name.to_string(),
         },
-        NamedArgumentTarget::ImplicitMethod { method_name } => {
-            CallTargetDossier::ImplicitMethod {
-                method_name: method_name.to_string(),
-            }
-        }
+        NamedArgumentTarget::ImplicitMethod { method_name } => CallTargetDossier::ImplicitMethod {
+            method_name: method_name.to_string(),
+        },
         NamedArgumentTarget::Method {
             base_namespace,
             base_name,
@@ -907,7 +920,11 @@ fn call_site_dossier(call_site: &CallSiteData) -> CallSiteDossier {
         scope_id: call_site.scope.0,
         range: byte_range(&call_site.range),
         target: call_target_dossier(&call_site.target),
-        arguments: call_site.arguments.iter().map(call_argument_dossier).collect(),
+        arguments: call_site
+            .arguments
+            .iter()
+            .map(call_argument_dossier)
+            .collect(),
     }
 }
 
@@ -1054,7 +1071,10 @@ fn sql_target_dossier(target: &SqlTargetData) -> SqlTargetDossier {
     }
 }
 
-fn include_edge_dossier(project: Option<&ProjectAnalysis>, edge: &IncludeEdge) -> IncludeEdgeDossier {
+fn include_edge_dossier(
+    project: Option<&ProjectAnalysis>,
+    edge: &IncludeEdge,
+) -> IncludeEdgeDossier {
     IncludeEdgeDossier {
         name: edge.name.to_string(),
         range: byte_range(&edge.range),
@@ -1121,9 +1141,11 @@ fn resolved_symbol_dossier(
 
     ResolvedSymbolDossier {
         unit_id: handle.unit.0,
-        uri: project_unit_uri(project, handle.unit).map(str::to_string).or_else(|| {
-            (handle.unit == current_unit.unit_id).then(|| current_unit.uri.to_string())
-        }),
+        uri: project_unit_uri(project, handle.unit)
+            .map(str::to_string)
+            .or_else(|| {
+                (handle.unit == current_unit.unit_id).then(|| current_unit.uri.to_string())
+            }),
         symbol_id: handle.symbol.0,
         name: resolved_symbol.map(|symbol| symbol.name.to_string()),
         kind: resolved_symbol.map(|symbol| symbol_kind_name(symbol.kind)),
@@ -1132,7 +1154,9 @@ fn resolved_symbol_dossier(
 }
 
 fn unit_symbol_name(unit: &UnitAnalysis, symbol_id: crate::ids::SymbolId) -> Option<String> {
-    unit.symbols.get(symbol_id.as_usize()).map(|symbol| symbol.name.to_string())
+    unit.symbols
+        .get(symbol_id.as_usize())
+        .map(|symbol| symbol.name.to_string())
 }
 
 fn project_unit_uri(project: Option<&ProjectAnalysis>, unit_id: UnitId) -> Option<&str> {
@@ -1258,9 +1282,7 @@ fn method_parameter_section_name(section: MethodParameterSection) -> &'static st
     }
 }
 
-fn function_module_parameter_section_name(
-    section: FunctionModuleParameterSection,
-) -> &'static str {
+fn function_module_parameter_section_name(section: FunctionModuleParameterSection) -> &'static str {
     match section {
         FunctionModuleParameterSection::Importing => "importing",
         FunctionModuleParameterSection::Exporting => "exporting",

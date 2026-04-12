@@ -450,7 +450,8 @@ fn collect_reference_fallback_edges(
     callable_scopes: &HashMap<(UnitId, ScopeId), Arc<str>>,
 ) {
     for reference in &unit.references {
-        if reference.kind != ReferenceKind::RoutineCall || reference.namespace != Namespace::Routine {
+        if reference.kind != ReferenceKind::RoutineCall || reference.namespace != Namespace::Routine
+        {
             continue;
         }
         if perform_call_covers_reference(unit, reference.range.clone())
@@ -614,7 +615,10 @@ fn perform_call_covers_reference(unit: &UnitAnalysis, range: TextRange) -> bool 
         .any(|perform_call| perform_call.routine_range == range)
 }
 
-fn call_site_covers_reference(unit: &UnitAnalysis, reference: &abap_symbols::ReferenceData) -> bool {
+fn call_site_covers_reference(
+    unit: &UnitAnalysis,
+    reference: &abap_symbols::ReferenceData,
+) -> bool {
     unit.call_sites.iter().any(|call_site| {
         if call_site.scope != reference.scope {
             return false;
@@ -625,7 +629,8 @@ fn call_site_covers_reference(unit: &UnitAnalysis, reference: &abap_symbols::Ref
         if target_name.as_ref() != reference.name.as_ref() {
             return false;
         }
-        (call_site.range.start <= reference.range.start && reference.range.end <= call_site.range.end)
+        (call_site.range.start <= reference.range.start
+            && reference.range.end <= call_site.range.end)
             || (reference.range.end <= call_site.range.start
                 && call_site.range.start.saturating_sub(reference.range.end) <= 1)
     })
@@ -815,11 +820,13 @@ fn resolve_method_reference_target<'a>(
         .rsplit('~')
         .next()
         .unwrap_or(target_symbol.name.as_ref());
-    resolve_class_member_in_hierarchy(project, target_unit, class_symbol, member_name).or_else(|| {
-        target_unit
-            .class_member(class_symbol, member_name)
-            .map(|member| (target_unit, member))
-    })
+    resolve_class_member_in_hierarchy(project, target_unit, class_symbol, member_name).or_else(
+        || {
+            target_unit
+                .class_member(class_symbol, member_name)
+                .map(|member| (target_unit, member))
+        },
+    )
 }
 
 fn resolve_symbol_in_scope_or_project<F>(

@@ -6,6 +6,7 @@
 //! abap-cli symbols [--json] [--unknown-only] [FILE]
 //! abap-cli check [--json] [FILE]
 //! abap-cli analyze --json [--with-project] [--pretty] [FILE]
+//! abap-cli expand [--json] [--pretty] [FILE]
 //! abap-cli call-graph --json [--symbol NAME] [--pretty] [FILE]
 //! ```
 //!
@@ -19,16 +20,16 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use abap_ast::arena::NodeId;
 use abap_ast::SyntaxKind;
+use abap_ast::arena::NodeId;
 use abap_cache::{
-    load_workspace_documents, manifest_document_metadata, path_to_file_uri, CallGraphEdge,
-    CallGraphNode, DocumentInput, DocumentStore,
+    AnalysisSnapshot, CallGraphEdge, CallGraphNode, DocumentInput, DocumentStore, EffectiveSource,
+    build_effective_source, load_workspace_documents, manifest_document_metadata, path_to_file_uri,
 };
 use abap_lexer::tokenize;
 use abap_parser::parse;
-use abap_symbols::{analyze_unit, build_semantic_dossier, DiagnosticKind, SemanticDossierContext};
-use serde_json::{json, Value};
+use abap_symbols::{DiagnosticKind, SemanticDossierContext, analyze_unit, build_semantic_dossier};
+use serde_json::{Value, json};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Command {
@@ -37,6 +38,7 @@ enum Command {
     Symbols,
     Check,
     Analyze,
+    Expand,
     CallGraph,
 }
 
@@ -52,7 +54,7 @@ struct Cli {
     unknown_only: bool,
     /// Analyze: load workspace peers for cross-unit resolution.
     analyze_with_project: bool,
-    /// Analyze/call-graph: pretty-print JSON instead of compact output.
+    /// Analyze/expand/call-graph: pretty-print JSON instead of compact output.
     pretty: bool,
     /// Call graph: focus queries on a matching callable name/id.
     call_graph_symbol: Option<String>,
@@ -69,6 +71,7 @@ Usage:
   abap-cli [--json] symbols [--unknown-only] [FILE]
   abap-cli [--json] check [FILE]
   abap-cli analyze --json [--with-project] [--pretty] [FILE]
+  abap-cli expand [--json] [--pretty] [FILE]
   abap-cli call-graph --json [--symbol NAME] [--pretty] [FILE]
 
 If FILE is omitted or `-`, read source from stdin.
@@ -79,6 +82,7 @@ Commands:
   symbols   `--json` for identifier index; human is silent when clean, otherwise diagnostics and a symbol table
   check     Front-end diagnostics only (human silent when clean)
   analyze   Semantic dossier export for AI/tooling consumption (`--json` required for structured output)
+  expand    Effective source expansion with include source maps
   call-graph  Project-scale call graph export and caller/callee queries (`--json` required)
 
 Options:
@@ -88,7 +92,7 @@ Options:
   --unknown-only  Symbols: only unknown / unresolved identifiers (empty until wired)
   --with-project  Analyze: load workspace peers around FILE for cross-unit resolution
   --symbol NAME   Call graph: focus on callable nodes matching NAME / qualified name / node id
-  --pretty        Analyze/call-graph: pretty-print JSON
+  --pretty        Analyze/expand/call-graph: pretty-print JSON
 
   -h, --help      Show this help
 "#
@@ -119,6 +123,7 @@ fn parse_cli_args(it: impl Iterator<Item = String>) -> Result<Cli, String> {
         "symbols" => Command::Symbols,
         "check" => Command::Check,
         "analyze" => Command::Analyze,
+        "expand" => Command::Expand,
         "call-graph" => Command::CallGraph,
         _ => return Err(format!("unknown command {:?}\n{}", cmd, usage())),
     };
@@ -179,9 +184,14 @@ fn parse_cli_args(it: impl Iterator<Item = String>) -> Result<Cli, String> {
             usage()
         ));
     }
-    if pretty && !matches!(command, Command::Analyze | Command::CallGraph) {
+    if pretty
+        && !matches!(
+            command,
+            Command::Analyze | Command::Expand | Command::CallGraph
+        )
+    {
         return Err(format!(
-            "--pretty only applies to analyze and call-graph\n{}",
+            "--pretty only applies to analyze, expand, and call-graph\n{}",
             usage()
         ));
     }
@@ -305,6 +315,9 @@ fn run() -> Result<i32, String> {
 
     if cli.command == Command::Analyze {
         return run_analyze(&cli);
+    }
+    if cli.command == Command::Expand {
+        return run_expand(&cli);
     }
     if cli.command == Command::CallGraph {
         return run_call_graph(&cli);
@@ -570,7 +583,7 @@ fn run() -> Result<i32, String> {
 
             Ok(human_exit(cli.json_output, !parsed.errors.is_empty()))
         }
-        Command::Analyze | Command::CallGraph => unreachable!("handled above"),
+        Command::Analyze | Command::Expand | Command::CallGraph => unreachable!("handled above"),
     }
 }
 
@@ -585,6 +598,11 @@ struct AnalyzeSnapshot {
     manifest_present: bool,
     project_unit_count: Option<usize>,
     dependency_unit_count: Option<usize>,
+}
+
+struct ExpandSnapshotSet {
+    root: Arc<AnalysisSnapshot>,
+    snapshots: HashMap<Arc<str>, Arc<AnalysisSnapshot>>,
 }
 
 fn run_analyze(cli: &Cli) -> Result<i32, String> {
@@ -620,6 +638,25 @@ fn run_analyze(cli: &Cli) -> Result<i32, String> {
     }
     .map_err(|e| e.to_string())?;
     println!("{json}");
+    Ok(0)
+}
+
+fn run_expand(cli: &Cli) -> Result<i32, String> {
+    let snapshots = load_expand_snapshot_set(cli.path.as_deref())?;
+    let effective = build_effective_source(snapshots.root.as_ref(), &snapshots.snapshots);
+
+    if cli.json_output {
+        let json = if cli.pretty {
+            serde_json::to_string_pretty(&effective)
+        } else {
+            serde_json::to_string(&effective)
+        }
+        .map_err(|e| e.to_string())?;
+        println!("{json}");
+        return Ok(0);
+    }
+
+    print!("{}", render_effective_source_human(&effective));
     Ok(0)
 }
 
@@ -906,6 +943,148 @@ fn load_project_analyze_snapshot(path: Option<&str>) -> Result<AnalyzeSnapshot, 
         project_unit_count: Some(snapshot.project.units.len()),
         dependency_unit_count: Some(dependency_unit_count),
     })
+}
+
+fn load_expand_snapshot_set(path: Option<&str>) -> Result<ExpandSnapshotSet, String> {
+    let Some(target_path) = resolve_target_path(path)? else {
+        let source = read_source(path)?;
+        let store = DocumentStore::default();
+        let root = store.publish_input(DocumentInput {
+            uri: Arc::from("file:///stdin.abap"),
+            version: 1,
+            text: Arc::from(source),
+            is_dependency: false,
+            object_name: None,
+        });
+        return Ok(ExpandSnapshotSet {
+            root: Arc::clone(&root),
+            snapshots: HashMap::from([(Arc::clone(&root.uri), root)]),
+        });
+    };
+
+    let target_uri = path_to_file_uri(&target_path);
+    let workspace_root = find_workspace_root(&target_path)?;
+    let workspace_root_uri = path_to_file_uri(&workspace_root);
+    let workspace = load_workspace_documents(&workspace_root_uri, &HashMap::new());
+
+    let mut inputs: Vec<DocumentInput> = workspace
+        .documents
+        .iter()
+        .map(|document| DocumentInput {
+            uri: Arc::clone(&document.uri),
+            version: document.version,
+            text: Arc::from(document.text.as_str()),
+            is_dependency: document.is_dependency,
+            object_name: document.object_name.clone(),
+        })
+        .collect();
+
+    if !inputs.iter().any(|input| input.uri.as_ref() == target_uri) {
+        let source = std::fs::read_to_string(&target_path)
+            .map_err(|e| format!("{}: {e}", target_path.display()))?;
+        let (is_dependency, object_name) = workspace
+            .manifest
+            .as_ref()
+            .and_then(|manifest| {
+                manifest_document_metadata(
+                    &workspace.root_path,
+                    &workspace.root_uri,
+                    manifest,
+                    &target_uri,
+                )
+            })
+            .unwrap_or((false, None));
+        inputs.push(DocumentInput {
+            uri: Arc::from(target_uri.as_str()),
+            version: 1,
+            text: Arc::from(source),
+            is_dependency,
+            object_name,
+        });
+    }
+
+    let store = DocumentStore::default();
+    let snapshots = store.replace_all(inputs);
+    let root = snapshots.get(target_uri.as_str()).cloned().ok_or_else(|| {
+        format!(
+            "workspace expansion did not include {}",
+            target_path.display()
+        )
+    })?;
+
+    Ok(ExpandSnapshotSet { root, snapshots })
+}
+
+fn render_effective_source_human(effective: &EffectiveSource) -> String {
+    let mut out = String::new();
+    let mut current_marker: Option<(&str, usize, usize)> = None;
+
+    for segment in &effective.segments {
+        let next_marker = (
+            segment.source_unit.uri.as_str(),
+            segment.source_range.start,
+            segment.source_range.end,
+        );
+        if current_marker != Some(next_marker) {
+            if !out.is_empty() && !out.ends_with('\n') {
+                out.push('\n');
+            }
+            if current_marker.is_some() {
+                out.push_str("* <<< END SOURCE\n");
+            }
+            out.push_str("* >>> SOURCE ");
+            if let Some(object_name) = segment.source_unit.object_name.as_deref() {
+                out.push_str(object_name);
+                out.push(' ');
+            }
+            out.push('(');
+            out.push_str(segment.source_unit.uri.as_str());
+            out.push(')');
+            out.push(' ');
+            out.push('[');
+            out.push_str(&segment.source_range.start.to_string());
+            out.push_str("..");
+            out.push_str(&segment.source_range.end.to_string());
+            out.push_str("]\n");
+            current_marker = Some(next_marker);
+        }
+        out.push_str(
+            &effective.expanded_text[segment.expanded_range.start..segment.expanded_range.end],
+        );
+    }
+
+    if current_marker.is_some() {
+        if !out.is_empty() && !out.ends_with('\n') {
+            out.push('\n');
+        }
+        out.push_str("* <<< END SOURCE\n");
+    }
+
+    if !effective.diagnostics.is_empty() {
+        if !out.is_empty() && !out.ends_with('\n') {
+            out.push('\n');
+        }
+        out.push_str("\nDiagnostics:\n");
+        for diagnostic in &effective.diagnostics {
+            out.push_str("- ");
+            out.push_str(diagnostic.kind);
+            out.push_str(": ");
+            out.push_str(&diagnostic.message);
+            out.push_str(" @ ");
+            out.push_str(&diagnostic.source_uri);
+            if let Some(range) = diagnostic.source_range.as_ref() {
+                out.push(' ');
+                out.push('[');
+                out.push_str(&range.start.to_string());
+                out.push_str("..");
+                out.push_str(&range.end.to_string());
+                out.push(']');
+            }
+            out.push('\n');
+        }
+    }
+
+    out
 }
 
 fn resolve_target_path(path: Option<&str>) -> Result<Option<PathBuf>, String> {

@@ -24,10 +24,15 @@ use parking_lot::RwLock;
 use rayon::prelude::*;
 
 mod call_graph;
+mod effective_source;
 mod workspace;
 pub use call_graph::{
     CallGraphEdge, CallGraphEdgeKind, CallGraphNode, CallGraphNodeKind, CallGraphResolutionStatus,
     ProjectCallGraph,
+};
+pub use effective_source::{
+    EffectiveSource, EffectiveSourceDiagnostic, EffectiveSourceLimits, EffectiveSourceSegment,
+    EffectiveSourceUnit, build_effective_source, build_effective_source_with_limits,
 };
 pub use workspace::{
     DEFAULT_REMOTE_REQUEST_PARALLELISM, DEFAULT_REMOTE_REQUESTS_PER_SECOND,
