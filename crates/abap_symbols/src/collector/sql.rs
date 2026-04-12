@@ -319,6 +319,163 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
         }
     }
 
+    pub(super) fn collect_update_db_table_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        let mut target_node = None;
+        let mut from_node = None;
+        let mut set_assignments = Vec::new();
+        let mut set_value_nodes = Vec::new();
+
+        let children: Vec<_> = self
+            .ctx
+            .syntax(node)
+            .children()
+            .map(|child| (child.id(), child.kind()))
+            .collect();
+        for (child, kind_syntax) in children {
+            match kind_syntax {
+                SyntaxKind::UpdateTarget => {
+                    target_node = self
+                        .ctx
+                        .syntax(child)
+                        .first_non_token_child()
+                        .map(|target| target.id());
+                }
+                SyntaxKind::UpdateSetClause => {
+                    for assignment in self.ctx.syntax(child).children() {
+                        if assignment.kind() != SyntaxKind::UpdateSetAssignment {
+                            continue;
+                        }
+                        set_assignments.push(assignment.id());
+                        if let Some(value_node) = self
+                            .ctx
+                            .syntax(assignment.id())
+                            .child_by_kind(SyntaxKind::UpdateSetValueOperand)
+                            .and_then(|value| value.first_non_token_child())
+                        {
+                            set_value_nodes.push(value_node.id());
+                        }
+                    }
+                }
+                SyntaxKind::UpdateFromOperand => {
+                    from_node = self
+                        .ctx
+                        .syntax(child)
+                        .first_non_token_child()
+                        .map(|value| value.id());
+                }
+                _ => {}
+            }
+        }
+
+        let stmt_tokens: Vec<_> = self
+            .ctx
+            .syntax_token_nodes(node)
+            .into_iter()
+            .filter(|token| !self.ctx.syntax_token_is_comment(token))
+            .collect();
+        let where_idx = stmt_tokens
+            .iter()
+            .position(|token| token.text.eq_ignore_ascii_case("where"));
+        let where_end = stmt_tokens
+            .last()
+            .filter(|token| token.text.as_ref() == ".")
+            .map(|_| stmt_tokens.len().saturating_sub(1))
+            .unwrap_or(stmt_tokens.len());
+        let where_range = where_idx.and_then(|where_idx| {
+            (where_idx + 1 < where_end)
+                .then(|| stmt_tokens[where_idx].range.start..stmt_tokens[where_end - 1].range.end)
+        });
+        let has_dynamic_where = where_idx
+            .and_then(|where_idx| stmt_tokens.get(where_idx + 1..where_end))
+            .is_some_and(Self::sql_tokens_are_dynamic_where);
+
+        let query_id = self.ctx.sql_queries_len();
+        let range = self.ctx.file().range(node);
+        let target_range = target_node.map(|target| self.ctx.file().range(target));
+        self.ctx.emit_sql_query(SqlQueryData {
+            id: query_id,
+            scope,
+            range: range.clone(),
+            projection_clause: None,
+            from_clause: target_range.clone(),
+            into_clause: None,
+            where_clause: where_range,
+            group_by_clause: None,
+            having_clause: None,
+            order_by_clause: None,
+            for_all_entries_clause: None,
+            up_to_clause: None,
+            is_single: false,
+            is_distinct: false,
+            has_endselect: false,
+            has_dynamic_where,
+        });
+
+        if let Some(target_node) = target_node {
+            self.collect_insert_db_table_target(query_id, target_node, scope);
+        }
+
+        for assignment in set_assignments {
+            let tokens = self.ctx.syntax_token_nodes(assignment);
+            let eq_idx = tokens
+                .iter()
+                .position(|token| matches!(token.text.as_ref(), "=" | "?="));
+            if let Some(eq_idx) = eq_idx {
+                self.collect_sql_name_refs_from_syntax_tokens(
+                    query_id,
+                    scope,
+                    &tokens[..eq_idx],
+                    false,
+                );
+            }
+        }
+
+        for value_node in set_value_nodes {
+            self.collect_sql_host_refs_from_node(value_node, scope);
+            self.ctx.walk_node(value_node, scope);
+        }
+
+        if let Some(from_node) = from_node {
+            self.collect_sql_host_refs_from_node(from_node, scope);
+            self.ctx.walk_node(from_node, scope);
+        }
+
+        if let Some(where_idx) = where_idx
+            && where_idx + 1 < where_end
+        {
+            let predicate_tokens = &stmt_tokens[where_idx + 1..where_end];
+            let predicate_range =
+                stmt_tokens[where_idx].range.start..stmt_tokens[where_end - 1].range.end;
+            let predicate_kind = if Self::sql_tokens_are_dynamic_where(predicate_tokens) {
+                SqlPredicateKind::DynamicWhere
+            } else {
+                SqlPredicateKind::Where
+            };
+            self.ctx.emit_sql_predicate(SqlPredicateData {
+                query_id,
+                range: predicate_range,
+                kind: predicate_kind,
+            });
+            if predicate_kind == SqlPredicateKind::DynamicWhere {
+                if predicate_tokens.len() > 2 {
+                    self.ctx.collect_token_expression_refs_infos(
+                        &predicate_tokens[1..predicate_tokens.len() - 1],
+                        scope,
+                        true,
+                    );
+                }
+            } else {
+                self.collect_sql_host_refs_from_syntax_tokens(predicate_tokens, scope);
+                self.collect_sql_name_refs_from_syntax_tokens(
+                    query_id,
+                    scope,
+                    predicate_tokens,
+                    true,
+                );
+            }
+        }
+    }
+
     pub(super) fn collect_select_query(
         &mut self,
         node: NodeId,
@@ -1058,6 +1215,32 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
                 idx += 1;
             }
         }
+    }
+
+    fn sql_tokens_are_dynamic_where(tokens: &[SyntaxTokenInfo]) -> bool {
+        if tokens.len() < 2
+            || tokens.first().map(|token| token.text.as_ref()) != Some("(")
+            || tokens.last().map(|token| token.text.as_ref()) != Some(")")
+        {
+            return false;
+        }
+        let mut paren = 0i32;
+        for (idx, token) in tokens.iter().enumerate() {
+            match token.text.as_ref() {
+                "(" => paren += 1,
+                ")" => {
+                    paren -= 1;
+                    if paren == 0 && idx + 1 != tokens.len() {
+                        return false;
+                    }
+                }
+                _ => {}
+            }
+            if paren < 0 {
+                return false;
+            }
+        }
+        paren == 0
     }
 
     fn collect_sql_name_refs_from_syntax_tokens(

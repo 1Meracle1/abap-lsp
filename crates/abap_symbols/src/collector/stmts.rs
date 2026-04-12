@@ -5,8 +5,7 @@ use abap_ast::arena::NodeId;
 use abap_ast::ast::{
     AliasesStmt, AstNode, CallMethodStmt, CallStmt, CallStmtKind, ClearStmt, ConcatenateStmt,
     ConvertStmt, CreateDataStmt, CreateObjectStmt, DeleteStmt, DescribeStmt, FindStmt, MessageStmt,
-    MethodsStmt, RaiseStmt, ReadTableStmt, ReplaceStmt, SplitStmt, UpdateStmt, UpdateWhereClause,
-    WaitStmt, WriteStmt,
+    MethodsStmt, RaiseStmt, ReadTableStmt, ReplaceStmt, SplitStmt, WaitStmt, WriteStmt,
 };
 
 use crate::def_map::{FieldTypeRefData, NamedArgumentTarget, ReferenceKind, SymbolKind};
@@ -1591,42 +1590,9 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
     }
 
     pub(super) fn collect_update_stmt(&mut self, node: NodeId, scope: ScopeId) {
-        let Some((from_operand, set_values, where_clause)) =
-            UpdateStmt::cast(self.collector.syntax(node)).map(|stmt| {
-                (
-                    stmt.from_operand()
-                        .and_then(|operand| operand.value())
-                        .map(|value| value.id()),
-                    stmt.set_clause()
-                        .into_iter()
-                        .flat_map(|clause| clause.assignments())
-                        .filter_map(|assignment| {
-                            assignment.value().and_then(|operand| operand.value())
-                        })
-                        .map(|value| value.id())
-                        .collect::<Vec<_>>(),
-                    stmt.where_clause().map(|clause| clause.syntax().id()),
-                )
-            })
-        else {
-            self.collect_generic_simple_stmt(node, scope);
-            return;
-        };
-
-        if let Some(from_operand) = from_operand {
-            self.collector.walk_node(from_operand, scope);
-        }
-
-        for value in set_values {
-            self.collector.walk_node(value, scope);
-        }
-
-        if let Some(where_expr) = where_clause
-            .and_then(|clause| UpdateWhereClause::cast(self.collector.syntax(clause)))
-            .and_then(|clause| clause.value())
-        {
-            self.collector.walk_node(where_expr.id(), scope);
-        }
+        self.collector
+            .sql_lowering()
+            .collect_update_db_table_stmt(node, scope);
     }
 
     pub(super) fn collect_create_object_stmt_infos(

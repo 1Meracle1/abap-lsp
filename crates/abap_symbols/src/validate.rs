@@ -1294,9 +1294,14 @@ fn resolve_call_target_function_module<'a>(
         function_name,
     )
     .or_else(|| {
-        root_symbol_handle_matching(project, lookup, unit, Namespace::Routine, function_name, |symbol| {
-            symbol.kind == SymbolKind::Module
-        })
+        root_symbol_handle_matching(
+            project,
+            lookup,
+            unit,
+            Namespace::Routine,
+            function_name,
+            |symbol| symbol.kind == SymbolKind::Module,
+        )
     })?;
     let target_unit = &project.units[handle.unit.as_usize()];
     target_unit

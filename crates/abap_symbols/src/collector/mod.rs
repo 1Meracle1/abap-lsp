@@ -24,11 +24,10 @@ use abap_lexer::{TextRange, Token, TokenKind};
 
 use crate::def_map::{
     AssignmentSiteData, CallSiteData, ClassInheritanceData, ClassMemberData, Diagnostic,
-    FieldAccess, FieldTypeRefData, FormRoutineData, FunctionModuleData,
-    ImplementedInterfaceData, IncludeEdge, LoopWhereFieldContext, MemberAliasData,
-    NamedArgumentAccess, PerformCallData, ReferenceData, SqlNameRefData, SqlPredicateData,
-    SqlProjectionData, SqlQueryData, SqlSourceData, SqlTargetData, StructureData, SymbolData,
-    UnitAnalysis,
+    FieldAccess, FieldTypeRefData, FormRoutineData, FunctionModuleData, ImplementedInterfaceData,
+    IncludeEdge, LoopWhereFieldContext, MemberAliasData, NamedArgumentAccess, PerformCallData,
+    ReferenceData, SqlNameRefData, SqlPredicateData, SqlProjectionData, SqlQueryData,
+    SqlSourceData, SqlTargetData, StructureData, SymbolData, UnitAnalysis,
 };
 use crate::ids::{ScopeId, StructureId, SymbolId, UnitId};
 use crate::scope::{Namespace, ScopeData, ScopeKind};

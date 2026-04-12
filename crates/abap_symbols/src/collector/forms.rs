@@ -289,12 +289,16 @@ impl<'ctx, 'a> FormsLowering<'ctx, 'a> {
                         };
                         let declared_type = match param.type_clause_kind(self.collector.source) {
                             Some(TypeClauseKind::Type) => param.type_ref().and_then(|type_ref| {
-                                self.collector
-                                    .field_type_ref_from_node(type_ref.syntax().id(), Namespace::Type)
+                                self.collector.field_type_ref_from_node(
+                                    type_ref.syntax().id(),
+                                    Namespace::Type,
+                                )
                             }),
                             Some(TypeClauseKind::Like) => param.type_ref().and_then(|type_ref| {
-                                self.collector
-                                    .field_type_ref_from_node(type_ref.syntax().id(), Namespace::Value)
+                                self.collector.field_type_ref_from_node(
+                                    type_ref.syntax().id(),
+                                    Namespace::Value,
+                                )
                             }),
                             None => None,
                         };

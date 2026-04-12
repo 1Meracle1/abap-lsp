@@ -13,7 +13,8 @@ use abap_symbols::{
     PerformCallData, PerformParameterSection, ProjectAnalysis, ReferenceKind, Resolution, ScopeId,
     ScopeKind, SqlNameRefData, SqlNameRefKind, StructureFieldData, StructureFieldInfo,
     StructureFieldShape, StructureId, SymbolData, SymbolHandle, SymbolId, SymbolKind, UnitAnalysis,
-    UnitId, Visibility, builtin_routine_spec, call_section_matches_parameter, parameter_is_required,
+    UnitId, Visibility, builtin_routine_spec, call_section_matches_parameter,
+    parameter_is_required,
     perf_api::{
         IncrementalProjectUpdate, LocalAnalysis, PreviewProjectUpdate, analyze_unit_local_state,
         incremental_project_update, preview_project_update,
@@ -1411,10 +1412,12 @@ impl AnalysisSnapshot {
                 .map(|parameter| {
                     CompletionItem::NamedArgument(NamedArgumentCompletionItem {
                         name: Arc::clone(&parameter.name),
-                        declared_type: function_module_parameter_completion_declared_type(parameter),
-                        declaration: Some(
-                            format_function_module_parameter_completion_declaration(parameter),
+                        declared_type: function_module_parameter_completion_declared_type(
+                            parameter,
                         ),
+                        declaration: Some(format_function_module_parameter_completion_declaration(
+                            parameter,
+                        )),
                         insertion: named_argument_completion_insertion(parameter.name.as_ref()),
                     })
                 })
@@ -1986,7 +1989,9 @@ fn render_form_signature(unit: &UnitAnalysis, symbol: &SymbolData) -> Option<Str
     Some(lines.join("\n"))
 }
 
-fn function_module_parameter_section_keyword(section: FunctionModuleParameterSection) -> &'static str {
+fn function_module_parameter_section_keyword(
+    section: FunctionModuleParameterSection,
+) -> &'static str {
     match section {
         FunctionModuleParameterSection::Importing => "IMPORTING",
         FunctionModuleParameterSection::Exporting => "EXPORTING",
@@ -8066,10 +8071,7 @@ START-OF-SELECTION.
             .definition_at(parameter_offset)
             .expect("parameter definition");
         assert_eq!(target.uri.as_ref(), "file:///fm_completion_dep.abap");
-        assert_eq!(
-            &dep_src[target.range.clone()],
-            "cv_text"
-        );
+        assert_eq!(&dep_src[target.range.clone()], "cv_text");
     }
 
     #[test]

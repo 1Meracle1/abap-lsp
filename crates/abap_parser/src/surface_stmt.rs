@@ -7022,7 +7022,27 @@ pub fn try_parse_update_stmt(
                 }
                 if is_keyword(source, token, "where") {
                     let mut clause_children = vec![token_leaf(b, token)];
-                    if i + 1 < period_i {
+                    let predicate_start = skip_trivia(tokens, i + 1);
+                    if predicate_start < period_i
+                        && tokens.get(predicate_start).map(|token| token.kind)
+                            == Some(TokenKind::LParen)
+                        && let Some(dynamic_end) = find_matching_delim(
+                            tokens,
+                            predicate_start,
+                            TokenKind::LParen,
+                            TokenKind::RParen,
+                        )
+                        && dynamic_end + 1 == period_i
+                        && let Some(dynamic_node) = build_token_branch(
+                            b,
+                            SyntaxKind::SqlDynamicWhere,
+                            tokens,
+                            predicate_start,
+                            dynamic_end + 1,
+                        )
+                    {
+                        clause_children.push(dynamic_node);
+                    } else if i + 1 < period_i {
                         push_logical_expr_child(
                             b,
                             &mut clause_children,
@@ -8844,6 +8864,29 @@ END-OF-PAGE.\nWRITE 'e'.",
             1
         );
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::UnparsedStmt), 0);
+    }
+
+    #[test]
+    fn parses_update_from_operand_as_ast_child() {
+        let parsed = crate::parse("UPDATE /aif/fhead FROM ls_fhead.");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::UpdateStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::SqlDataSource), 1);
+        assert_eq!(
+            parsed.file.count_kind(root, SyntaxKind::UpdateFromOperand),
+            1
+        );
+    }
+
+    #[test]
+    fn parses_update_dynamic_where_as_sql_dynamic_where() {
+        let parsed =
+            crate::parse("UPDATE idxrcvpor SET msg_deleted = lc_msg_deleted WHERE (where_clause).");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::UpdateStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::SqlDynamicWhere), 1);
     }
 
     #[test]

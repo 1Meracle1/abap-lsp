@@ -1735,6 +1735,145 @@ ENDFORM.
 }
 
 #[test]
+fn update_dbtab_set_where_collects_open_sql_semantics_and_host_refs() {
+    let src = r#"
+FORM f.
+  TYPES: BEGIN OF ty_row,
+           retry_count TYPE i,
+           rep_evtid TYPE i,
+         END OF ty_row.
+  FIELD-SYMBOLS <fs_rs_represp> TYPE ty_row.
+
+  UPDATE zattp_rs_represp
+    SET reprocessing_status = 'S'
+        retry_count = <fs_rs_represp>-retry_count
+    WHERE rep_evtid EQ <fs_rs_represp>-rep_evtid.
+ENDFORM.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///update_semantics.abap", src, &parsed);
+
+    assert!(unit.sql_queries.len() == 1, "{:?}", unit.sql_queries);
+    assert!(unit.sql_name_refs.iter().any(|sql_ref| {
+        sql_ref.kind == SqlNameRefKind::Source && sql_ref.name.as_ref() == "zattp_rs_represp"
+    }));
+    assert!(unit.sql_name_refs.iter().any(|sql_ref| {
+        sql_ref.kind == SqlNameRefKind::Column && sql_ref.name.as_ref() == "reprocessing_status"
+    }));
+    assert!(unit.sql_name_refs.iter().any(|sql_ref| {
+        sql_ref.kind == SqlNameRefKind::Column && sql_ref.name.as_ref() == "retry_count"
+    }));
+    assert!(
+        unit.sql_name_refs.iter().any(|sql_ref| {
+            sql_ref.kind == SqlNameRefKind::Column && sql_ref.name.as_ref() == "rep_evtid"
+        }),
+        "sql refs={:?} refs={:?} diagnostics={:?}",
+        unit.sql_name_refs,
+        unit.references,
+        unit.diagnostics
+    );
+    assert!(
+        unit.sql_predicates
+            .iter()
+            .any(|predicate| { predicate.kind == SqlPredicateKind::Where })
+    );
+    assert!(unit.references.iter().any(|reference| {
+        reference.namespace == Namespace::Value
+            && reference.name.as_ref() == "<fs_rs_represp>"
+            && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+    }));
+}
+
+#[test]
+fn update_dbtab_from_work_area_collects_open_sql_source_instead_of_value_ref() {
+    let src = r#"
+FORM run.
+  DATA ls_fhead TYPE string.
+  UPDATE /aif/fhead FROM ls_fhead.
+ENDFORM.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///update_from_work_area.abap", src, &parsed);
+
+    assert!(unit.sql_name_refs.iter().any(|sql_ref| {
+        sql_ref.kind == SqlNameRefKind::Source && sql_ref.name.as_ref() == "/aif/fhead"
+    }));
+    assert!(!unit.references.iter().any(|reference| {
+        reference.namespace == Namespace::Value
+            && reference.kind == ReferenceKind::Identifier
+            && reference.name.as_ref() == "/aif/fhead"
+    }));
+    assert!(unit.references.iter().any(|reference| {
+        reference.namespace == Namespace::Value
+            && reference.name.as_ref() == "ls_fhead"
+            && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+    }));
+}
+
+#[test]
+fn update_dbtab_dynamic_where_and_dynamic_target_collect_host_refs() {
+    let src = r#"
+TYPES: BEGIN OF ty_idx,
+         tabname TYPE string,
+       END OF ty_idx.
+
+FORM run.
+  DATA lc_msg_deleted TYPE string.
+  DATA where_clause TYPE string.
+  DATA ls_idxtbl TYPE ty_idx.
+  DATA lv_guid32 TYPE string.
+
+  UPDATE idxrcvpor
+    SET msg_deleted = lc_msg_deleted
+        log = ' '
+    WHERE (where_clause).
+
+  UPDATE (ls_idxtbl-tabname)
+    SET status = 'C'
+        last_date = sy-datum
+    WHERE msgguid = lv_guid32.
+ENDFORM.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///update_dynamic.abap", src, &parsed);
+
+    assert_eq!(unit.sql_queries.len(), 2, "{:?}", unit.sql_queries);
+    assert!(unit.sql_queries.iter().any(|query| query.has_dynamic_where));
+    assert!(unit.sql_name_refs.iter().any(|sql_ref| {
+        sql_ref.kind == SqlNameRefKind::Source && sql_ref.name.as_ref() == "idxrcvpor"
+    }));
+    assert!(!unit.sql_name_refs.iter().any(|sql_ref| {
+        sql_ref.kind == SqlNameRefKind::Source && sql_ref.name.as_ref() == "(ls_idxtbl-tabname)"
+    }));
+    assert!(
+        unit.sql_predicates
+            .iter()
+            .any(|predicate| { predicate.kind == SqlPredicateKind::DynamicWhere })
+    );
+    assert!(
+        unit.references.iter().any(|reference| {
+            reference.namespace == Namespace::Value
+                && reference.name.as_ref() == "where_clause"
+                && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+        }),
+        "sql refs={:?} refs={:?} diagnostics={:?}",
+        unit.sql_name_refs,
+        unit.references,
+        unit.diagnostics
+    );
+    assert!(unit.references.iter().any(|reference| {
+        reference.namespace == Namespace::Value
+            && reference.name.as_ref() == "ls_idxtbl"
+            && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+    }));
+    assert!(unit.references.iter().any(|reference| {
+        reference.namespace == Namespace::Value
+            && reference.name.as_ref() == "lv_guid32"
+            && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+    }));
+}
+
+#[test]
 fn infers_inline_select_table_shape_from_explicit_projection_even_when_source_is_unknown() {
     let src = r#"
 DATA lv_bj2_max TYPE i.
