@@ -61,12 +61,17 @@ fn lookup_scope_chain(
     let key = (namespace, Arc::clone(name));
     let mut current = Some(scope);
     while let Some(scope_id) = current {
-        if let Some(symbols) = scope_index[scope_id.as_usize()].get(&key)
+        if let Some(symbols) = scope_index
+            .get(scope_id.as_usize())
+            .and_then(|scope_map| scope_map.get(&key))
             && let Some(symbol) = symbols.last().copied()
         {
             return Some(symbol);
         }
-        current = unit.scope(scope_id).parent;
+        current = unit
+            .scopes
+            .get(scope_id.as_usize())
+            .and_then(|scope| scope.parent);
     }
     None
 }
@@ -93,7 +98,7 @@ fn lookup_reference_scope_chain(
 fn enclosing_class_owner(unit: &UnitAnalysis, scope: ScopeId) -> Option<SymbolId> {
     let mut current = Some(scope);
     while let Some(scope_id) = current {
-        let scope = unit.scope(scope_id);
+        let scope = unit.scopes.get(scope_id.as_usize())?;
         if scope.kind == ScopeKind::Class {
             return scope.owner;
         }
@@ -207,7 +212,9 @@ fn resolve_inherited_symbol_in_project(
 fn innermost_loop_allows_internal_table_line_selector(unit: &UnitAnalysis, scope: ScopeId) -> bool {
     let mut current = Some(scope);
     while let Some(scope_id) = current {
-        let scope_data = unit.scope(scope_id);
+        let Some(scope_data) = unit.scopes.get(scope_id.as_usize()) else {
+            return false;
+        };
         if scope_data.kind == ScopeKind::LoopBlock {
             return scope_data.allows_internal_table_line_selector;
         }

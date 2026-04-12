@@ -345,6 +345,20 @@ pub struct TypeFactData {
     pub structure: Option<StructureId>,
     pub declared_type: Option<FieldTypeRefData>,
     pub type_clause_display: Option<Arc<str>>,
+    pub table_line: Option<Box<TypeFactData>>,
+}
+
+impl TypeFactData {
+    pub fn is_known(&self) -> bool {
+        self.structure.is_some()
+            || self.declared_type.is_some()
+            || self.type_clause_display.is_some()
+            || self.table_line.is_some()
+    }
+
+    pub fn line_fact(&self) -> Option<&TypeFactData> {
+        self.table_line.as_deref()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -567,6 +581,56 @@ pub struct AssignmentSiteData {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExpressionFactKind {
+    Reference,
+    Selector,
+    CallResult,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExpressionFactData {
+    pub scope: ScopeId,
+    pub range: TextRange,
+    pub kind: ExpressionFactKind,
+    pub type_fact: TypeFactData,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ValueFlowKind {
+    Assignment,
+    CallArgument,
+    FieldSymbolAssignment,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ValueFlowTargetData {
+    Assignment {
+        range: TextRange,
+    },
+    CallParameter {
+        call_range: TextRange,
+        target: NamedArgumentTarget,
+        parameter_name: Option<Arc<str>>,
+        parameter_decl_unit: Option<UnitId>,
+        parameter_decl_range: Option<TextRange>,
+    },
+    FieldSymbol {
+        range: TextRange,
+        name: Option<Arc<str>>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValueFlowEdgeData {
+    pub scope: ScopeId,
+    pub kind: ValueFlowKind,
+    pub source_range: TextRange,
+    pub source_type: TypeFactData,
+    pub target: ValueFlowTargetData,
+    pub target_type: TypeFactData,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PerformParameterSection {
     Tables,
     Using,
@@ -613,6 +677,8 @@ pub struct UnitAnalysis {
     pub named_arguments: Vec<NamedArgumentAccess>,
     pub call_sites: Vec<CallSiteData>,
     pub assignment_sites: Vec<AssignmentSiteData>,
+    pub expression_facts: Vec<ExpressionFactData>,
+    pub value_flow_edges: Vec<ValueFlowEdgeData>,
     pub perform_calls: Vec<PerformCallData>,
     pub sql_queries: Vec<SqlQueryData>,
     pub sql_sources: Vec<SqlSourceData>,
@@ -643,7 +709,10 @@ impl UnitAnalysis {
     }
 
     pub fn scope(&self, id: ScopeId) -> &ScopeData {
-        &self.scopes[id.as_usize()]
+        self.scopes
+            .get(id.as_usize())
+            .or_else(|| self.scopes.get(self.root_scope.as_usize()))
+            .expect("unit analysis should always contain its root scope")
     }
 
     pub fn semantic(&self) -> SemanticQueries<'_> {
@@ -732,6 +801,39 @@ impl UnitAnalysis {
                 let reference = self.semantic_index.reference(semantic_id);
                 self.references.get(reference.reference_id.as_usize())
             })
+    }
+
+    pub(crate) fn expression_fact_at_offset(&self, offset: usize) -> Option<&ExpressionFactData> {
+        self.expression_facts
+            .iter()
+            .filter(|fact| fact.range.start <= offset && offset < fact.range.end)
+            .min_by_key(|fact| {
+                (
+                    expression_fact_priority(fact.kind),
+                    fact.range.end.saturating_sub(fact.range.start),
+                )
+            })
+    }
+
+    pub(crate) fn value_flow_edges_touching_offset(
+        &self,
+        offset: usize,
+    ) -> impl Iterator<Item = &ValueFlowEdgeData> + '_ {
+        self.value_flow_edges.iter().filter(move |edge| {
+            edge.source_range.start <= offset && offset < edge.source_range.end
+                || match &edge.target {
+                    ValueFlowTargetData::Assignment { range }
+                    | ValueFlowTargetData::FieldSymbol { range, .. } => {
+                        range.start <= offset && offset < range.end
+                    }
+                    ValueFlowTargetData::CallParameter {
+                        parameter_decl_range,
+                        ..
+                    } => parameter_decl_range
+                        .as_ref()
+                        .is_some_and(|range| range.start <= offset && offset < range.end),
+                }
+        })
     }
 
     pub(crate) fn sql_source_name_refs_named(
@@ -873,5 +975,13 @@ impl UnitAnalysis {
             .flat_map(|scope| scope.declarations.iter().copied())
             .map(|symbol_id| self.symbol(symbol_id))
             .filter(|symbol| symbol.kind == SymbolKind::Parameter)
+    }
+}
+
+fn expression_fact_priority(kind: ExpressionFactKind) -> u8 {
+    match kind {
+        ExpressionFactKind::CallResult => 0,
+        ExpressionFactKind::Selector => 1,
+        ExpressionFactKind::Reference => 2,
     }
 }

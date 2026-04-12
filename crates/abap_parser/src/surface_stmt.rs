@@ -3948,6 +3948,11 @@ pub fn try_parse_include_stmt(
     if !is_keyword(source, tok, "include") {
         return None;
     }
+    if tokens.get(idx + 1).is_some_and(|next| {
+        is_keyword(source, next, "type") || is_keyword(source, next, "structure")
+    }) {
+        return None;
+    }
     Some(parse_stmt_with_period_scan(
         b,
         source,

@@ -1458,16 +1458,19 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
             };
             let already_present = members.iter().any(|member| match member {
                 PendingStructureMember::Field(field) => field.name == field_name,
-                PendingStructureMember::Include { .. } => false,
+                PendingStructureMember::Include(_) => false,
             });
             if already_present {
                 continue;
             }
+            let (_structure, type_ref) = self
+                .inline_select_projection_metadata(query_id, scope, &projection)
+                .unwrap_or((None, None));
             members.push(PendingStructureMember::Field(PendingStructureField {
                 name: field_name,
                 decl_range: projection.range.clone(),
                 structure: None,
-                type_ref: None,
+                type_ref,
                 value_clause_display: None,
             }));
         }

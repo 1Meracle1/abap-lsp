@@ -193,3 +193,71 @@ fn dossier_buckets_unresolved_references() {
     );
     assert_eq!(dossier.summary.unresolved_reference_count, 1);
 }
+
+#[test]
+fn dossier_exports_expression_facts_and_value_flow_edges() {
+    let src = r#"
+TYPES: BEGIN OF scarr,
+         carrid TYPE string,
+       END OF scarr.
+
+CLASS zcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS make_row RETURNING VALUE(rs_row) TYPE scarr.
+ENDCLASS.
+
+CLASS zcl_demo IMPLEMENTATION.
+  METHOD make_row.
+  ENDMETHOD.
+ENDCLASS.
+
+DATA lo_demo TYPE REF TO zcl_demo.
+DATA ls_row TYPE scarr.
+
+SELECT carrid FROM scarr INTO TABLE @DATA(lt_scarr).
+ls_row = lo_demo->make_row( ).
+WRITE lt_scarr.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///facts_dossier.abap", src, &parsed);
+    let dossier = build_semantic_dossier(
+        &unit,
+        SemanticDossierContext {
+            parse_errors: &parsed.errors,
+            project: None,
+            target_path: Some("D:\\facts_dossier.abap"),
+            object_name: None,
+            is_dependency: false,
+            workspace_root_uri: None,
+            manifest_present: false,
+            project_unit_count: None,
+            dependency_unit_count: None,
+        },
+    );
+
+    assert_eq!(dossier.schema_version, 2);
+    assert!(dossier.summary.expression_fact_count > 0);
+    assert!(dossier.summary.value_flow_edge_count > 0);
+    assert!(dossier.expression_facts.iter().any(|fact| {
+        fact.kind == "call_result"
+            && fact
+                .type_fact
+                .declared_type
+                .as_ref()
+                .is_some_and(|type_ref| type_ref.base_name == "scarr")
+    }));
+    assert!(dossier.expression_facts.iter().any(|fact| {
+        fact.kind == "reference"
+            && fact
+                .type_fact
+                .table_line
+                .as_ref()
+                .is_some_and(|line| line.known)
+    }));
+    assert!(
+        dossier
+            .value_flow_edges
+            .iter()
+            .any(|edge| edge.kind == "assignment")
+    );
+}

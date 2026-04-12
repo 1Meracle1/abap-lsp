@@ -3,6 +3,7 @@ mod collector;
 mod compatibility;
 mod def_map;
 mod dossier;
+mod facts;
 mod ids;
 #[doc(hidden)]
 pub mod perf_api;
@@ -22,17 +23,18 @@ pub use builtins::{
 pub use compatibility::{call_section_matches_parameter, parameter_is_required};
 pub use def_map::{
     AssignmentSiteData, CallArgumentData, CallSiteData, ClassInheritanceData, ClassMemberData,
-    ClassMemberKind, ClassMemberParameterData, Diagnostic, DiagnosticKind, FieldAccess,
-    FieldAccessSegment, FieldTypeRefData, FormParameterData, FormParameterPassingKind,
-    FormParameterSection, FormRoutineData, FunctionModuleData, FunctionModuleExceptionData,
-    FunctionModuleParameterData, FunctionModuleParameterSection, ImplementedInterfaceData,
-    IncludeEdge, MemberAliasData, MethodParameterSection, NamedArgumentAccess,
-    NamedArgumentSection, NamedArgumentTarget, PerformArgumentData, PerformCallData,
-    PerformParameterSection, ReferenceData, ReferenceKind, Resolution, SqlNameRefData,
-    SqlNameRefKind, SqlPredicateData, SqlPredicateKind, SqlProjectionData, SqlProjectionKind,
-    SqlQueryData, SqlResolution, SqlSourceData, SqlSourceKind, SqlTargetData, SqlTargetKind,
-    StructureData, StructureFieldData, StructureFieldInfo, StructureFieldShape, SymbolData,
-    SymbolKind, TypeFactData, UnitAnalysis, Visibility,
+    ClassMemberKind, ClassMemberParameterData, Diagnostic, DiagnosticKind, ExpressionFactData,
+    ExpressionFactKind, FieldAccess, FieldAccessSegment, FieldTypeRefData, FormParameterData,
+    FormParameterPassingKind, FormParameterSection, FormRoutineData, FunctionModuleData,
+    FunctionModuleExceptionData, FunctionModuleParameterData, FunctionModuleParameterSection,
+    ImplementedInterfaceData, IncludeEdge, MemberAliasData, MethodParameterSection,
+    NamedArgumentAccess, NamedArgumentSection, NamedArgumentTarget, PerformArgumentData,
+    PerformCallData, PerformParameterSection, ReferenceData, ReferenceKind, Resolution,
+    SqlNameRefData, SqlNameRefKind, SqlPredicateData, SqlPredicateKind, SqlProjectionData,
+    SqlProjectionKind, SqlQueryData, SqlResolution, SqlSourceData, SqlSourceKind, SqlTargetData,
+    SqlTargetKind, StructureData, StructureFieldData, StructureFieldInfo, StructureFieldShape,
+    SymbolData, SymbolKind, TypeFactData, UnitAnalysis, ValueFlowEdgeData, ValueFlowKind,
+    ValueFlowTargetData, Visibility,
 };
 pub use dossier::*;
 pub use ids::{ReferenceId, ScopeId, StructureId, SymbolHandle, SymbolId, UnitId};

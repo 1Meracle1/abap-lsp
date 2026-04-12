@@ -1,9 +1,9 @@
 use abap_parser::parse;
 
 use abap_symbols::{
-    DiagnosticKind, Namespace, ProjectInput, ReferenceKind, Resolution, SqlNameRefKind,
+    DiagnosticKind, Namespace, ProjectInput, ReferenceKind, Resolution, ScopeId, SqlNameRefKind,
     SqlPredicateKind, SqlProjectionKind, SqlSourceKind, SqlTargetKind, StructureFieldShape,
-    SymbolHandle, SymbolKind, analyze_project, analyze_unit,
+    SymbolHandle, SymbolKind, analyze_project, analyze_project_from_units, analyze_unit,
 };
 
 #[test]
@@ -3169,6 +3169,324 @@ ASSIGN lr_row->* TO FIELD-SYMBOL(<ls_row>).
 }
 
 #[test]
+fn semantic_facts_capture_inline_sql_table_line_shape() {
+    let src = r#"
+TYPES: BEGIN OF scarr,
+         carrid TYPE string,
+         carrname TYPE string,
+       END OF scarr.
+
+SELECT carrid, carrname
+  FROM scarr
+  INTO TABLE @DATA(lt_scarr).
+
+WRITE lt_scarr.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///fact_sql_inline_table.abap", src, &parsed);
+    let semantic = unit.semantic();
+    let offset = src.rfind("lt_scarr").expect("lt_scarr use");
+    let fact = semantic
+        .facts()
+        .expression_fact_at_offset(offset)
+        .expect("expression fact for lt_scarr");
+
+    let table_line = fact
+        .type_fact
+        .table_line
+        .as_deref()
+        .expect("table line fact");
+    assert!(
+        table_line.structure.is_some(),
+        "expected structured line fact: {fact:?}"
+    );
+    let carrid = unit
+        .structure_field_info(table_line.structure.expect("line structure"), "carrid")
+        .expect("carrid field");
+    assert_eq!(
+        carrid
+            .type_ref
+            .as_ref()
+            .map(|type_ref| type_ref.base_name.as_ref()),
+        Some("string")
+    );
+}
+
+#[test]
+fn semantic_facts_propagate_method_return_types() {
+    let src = r#"
+TYPES: BEGIN OF ty_row,
+         value TYPE i,
+       END OF ty_row.
+
+CLASS zcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS make_row RETURNING VALUE(rs_row) TYPE ty_row.
+ENDCLASS.
+
+CLASS zcl_demo IMPLEMENTATION.
+  METHOD make_row.
+  ENDMETHOD.
+ENDCLASS.
+
+DATA lo_demo TYPE REF TO zcl_demo.
+DATA ls_row TYPE ty_row.
+
+ls_row = lo_demo->make_row( ).
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///fact_method_return.abap", src, &parsed);
+    let semantic = unit.semantic();
+    let offset = src
+        .rfind("make_row( )")
+        .map(|idx| idx + "make_row".len() + 1)
+        .expect("make_row call");
+    let fact = semantic
+        .facts()
+        .expression_fact_at_offset(offset)
+        .expect("call result fact");
+
+    assert_eq!(fact.kind, abap_symbols::ExpressionFactKind::CallResult);
+    assert_eq!(
+        fact.type_fact
+            .declared_type
+            .as_ref()
+            .map(|type_ref| type_ref.base_name.as_ref()),
+        Some("ty_row")
+    );
+    assert!(
+        fact.type_fact.structure.is_some(),
+        "expected structured method return: {fact:?}"
+    );
+}
+
+#[test]
+fn semantic_facts_follow_structure_component_chains() {
+    let src = r#"
+TYPES: BEGIN OF ty_inner,
+         value TYPE i,
+       END OF ty_inner.
+TYPES: BEGIN OF ty_outer,
+         inner TYPE ty_inner,
+       END OF ty_outer.
+
+DATA ls_outer TYPE ty_outer.
+DATA lv_value TYPE i.
+
+lv_value = ls_outer-inner-value.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///fact_structure_chain.abap", src, &parsed);
+    let semantic = unit.semantic();
+    let offset = src
+        .rfind("inner-value")
+        .map(|idx| idx + "inner-".len())
+        .expect("value component");
+    let fact = semantic
+        .facts()
+        .expression_fact_at_offset(offset)
+        .expect("value selector fact");
+
+    assert_eq!(
+        fact.type_fact
+            .declared_type
+            .as_ref()
+            .map(|type_ref| type_ref.base_name.as_ref()),
+        Some("i")
+    );
+}
+
+#[test]
+fn semantic_facts_follow_object_member_access() {
+    let src = r#"
+TYPES: BEGIN OF ty_payload,
+         name TYPE string,
+       END OF ty_payload.
+
+CLASS zcl_box DEFINITION.
+  PUBLIC SECTION.
+    DATA payload TYPE ty_payload.
+ENDCLASS.
+
+CLASS zcl_box IMPLEMENTATION.
+ENDCLASS.
+
+DATA lo_box TYPE REF TO zcl_box.
+DATA lv_name TYPE string.
+
+lv_name = lo_box->payload-name.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///fact_object_member.abap", src, &parsed);
+    let semantic = unit.semantic();
+    let payload_offset = src.rfind("payload").expect("payload selector");
+    let payload_fact = semantic
+        .facts()
+        .expression_fact_at_offset(payload_offset)
+        .expect("payload selector fact");
+    assert_eq!(
+        payload_fact
+            .type_fact
+            .declared_type
+            .as_ref()
+            .map(|type_ref| type_ref.base_name.as_ref()),
+        Some("ty_payload")
+    );
+
+    let name_offset = src.rfind("name").expect("name selector");
+    let name_fact = semantic
+        .facts()
+        .expression_fact_at_offset(name_offset)
+        .expect("name selector fact");
+    assert_eq!(
+        name_fact
+            .type_fact
+            .declared_type
+            .as_ref()
+            .map(|type_ref| type_ref.base_name.as_ref()),
+        Some("string")
+    );
+}
+
+#[test]
+fn semantic_facts_emit_field_symbol_assignment_flow_edges() {
+    let src = r#"
+TYPES: BEGIN OF ty_row,
+         name TYPE string,
+       END OF ty_row.
+DATA lr_row TYPE REF TO ty_row.
+
+ASSIGN lr_row->* TO FIELD-SYMBOL(<ls_row>).
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///fact_assign_field_symbol.abap", src, &parsed);
+
+    let edge = unit
+        .semantic()
+        .facts()
+        .value_flow_edges()
+        .find(|edge| edge.kind == abap_symbols::ValueFlowKind::FieldSymbolAssignment)
+        .expect("field-symbol assignment flow edge");
+    assert_eq!(&src[edge.source_range.clone()], "lr_row->*");
+    assert!(
+        edge.target_type.structure.is_some(),
+        "expected inferred target type: {edge:?}"
+    );
+    match &edge.target {
+        abap_symbols::ValueFlowTargetData::FieldSymbol { name, .. } => {
+            assert_eq!(name.as_deref(), Some("<ls_row>"));
+        }
+        other => panic!("expected field-symbol target, got {other:?}"),
+    }
+}
+
+#[test]
+fn semantic_facts_fall_back_to_unknown_when_return_type_is_not_inferable() {
+    let src = r#"
+CLASS zcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run.
+ENDCLASS.
+
+CLASS zcl_demo IMPLEMENTATION.
+  METHOD run.
+  ENDMETHOD.
+ENDCLASS.
+
+DATA lo_demo TYPE REF TO zcl_demo.
+IF lo_demo->run( ) IS INITIAL.
+ENDIF.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///fact_unknown_call_result.abap", src, &parsed);
+    let semantic = unit.semantic();
+    let offset = src
+        .rfind("run( )")
+        .map(|idx| idx + "run".len() + 1)
+        .expect("run call");
+    let fact = semantic
+        .facts()
+        .expression_fact_at_offset(offset)
+        .expect("call result fact");
+
+    assert_eq!(fact.kind, abap_symbols::ExpressionFactKind::CallResult);
+    assert!(
+        !fact.type_fact.is_known(),
+        "expected conservative unknown call result, got {fact:?}"
+    );
+}
+
+#[test]
+fn semantic_fact_rebuild_is_idempotent_for_value_flow_edges() {
+    let src = r#"
+TYPES: BEGIN OF ty_row,
+         name TYPE string,
+       END OF ty_row.
+
+CLASS zcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS make_row RETURNING VALUE(rs_row) TYPE ty_row.
+ENDCLASS.
+
+CLASS zcl_demo IMPLEMENTATION.
+  METHOD make_row.
+  ENDMETHOD.
+ENDCLASS.
+
+DATA lr_row TYPE REF TO ty_row.
+DATA lo_demo TYPE REF TO zcl_demo.
+DATA ls_row TYPE ty_row.
+
+ASSIGN lr_row->* TO FIELD-SYMBOL(<ls_row>).
+ls_row = lo_demo->make_row( ).
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///fact_idempotent.abap", src, &parsed);
+    let edge_count = unit.value_flow_edges.len();
+    let fact_count = unit.expression_facts.len();
+
+    let project = analyze_project_from_units(vec![unit]);
+    let rebuilt = project
+        .unit_by_uri("file:///fact_idempotent.abap")
+        .expect("rebuilt unit");
+
+    assert_eq!(rebuilt.value_flow_edges.len(), edge_count);
+    assert_eq!(rebuilt.expression_facts.len(), fact_count);
+}
+
+#[test]
+fn project_rebuild_tolerates_foreign_scope_ids_in_facts_inputs() {
+    let src = r#"
+TYPES: BEGIN OF ty_inner,
+         value TYPE i,
+       END OF ty_inner.
+TYPES: BEGIN OF ty_outer,
+         inner TYPE ty_inner,
+       END OF ty_outer.
+
+DATA ls_outer TYPE ty_outer.
+DATA lv_value TYPE i.
+
+lv_value = ls_outer-inner-value.
+"#;
+    let parsed = parse(src);
+    let mut unit = analyze_unit("file:///fact_foreign_scope.abap", src, &parsed);
+    assert!(
+        !unit.field_accesses.is_empty(),
+        "expected collected field access"
+    );
+    unit.field_accesses[0].scope = ScopeId(999);
+
+    let project = analyze_project_from_units(vec![unit]);
+    let rebuilt = project
+        .unit_by_uri("file:///fact_foreign_scope.abap")
+        .expect("rebuilt unit");
+
+    let fallback_scope = rebuilt.scope(ScopeId(999));
+    assert_eq!(fallback_scope.id, rebuilt.root_scope);
+}
+
+#[test]
 fn infers_loop_inline_target_ref_type_from_source_table() {
     let src = r#"
 CLASS zcl_stmt DEFINITION.
@@ -4431,6 +4749,87 @@ DATA lv_value TYPE ty_outer-a.";
             .iter()
             .any(|diag| diag.kind == DiagnosticKind::UnknownField
                 || diag.kind == DiagnosticKind::UnresolvedReference),
+        "unexpected diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn include_type_alias_and_suffix_support_direct_and_alias_component_access() {
+    let src = "\
+TYPES: BEGIN OF ty_inner,\n\
+         work TYPE i,\n\
+       END OF ty_inner.\n\
+TYPES: BEGIN OF ty_outer.\n\
+INCLUDE TYPE ty_inner AS monday RENAMING WITH SUFFIX _mon.\n\
+TYPES: END OF ty_outer.\n\
+DATA ls_outer TYPE ty_outer.\n\
+ls_outer-work_mon = 1.\n\
+ls_outer-monday-work = 2.\n\
+DATA lv_direct TYPE ty_outer-work_mon.\n\
+DATA lv_alias TYPE ty_outer-monday-work.";
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///include_type_suffix_alias.abap", src, &parsed);
+
+    let ty_outer = unit
+        .symbols
+        .iter()
+        .find(|symbol| {
+            symbol.kind == abap_symbols::SymbolKind::TypeDef && symbol.name.as_ref() == "ty_outer"
+        })
+        .expect("outer type");
+    let outer_structure = unit.structure(ty_outer.structure.expect("outer structure"));
+    assert!(
+        outer_structure
+            .fields
+            .iter()
+            .any(|field| field.name.as_ref() == "work_mon"),
+        "expected suffixed field, fields={:?}",
+        outer_structure.fields
+    );
+    assert!(
+        outer_structure
+            .fields
+            .iter()
+            .any(|field| field.name.as_ref() == "monday"),
+        "expected alias field, fields={:?}",
+        outer_structure.fields
+    );
+    assert!(
+        !unit
+            .diagnostics
+            .iter()
+            .any(|diag| diag.kind == DiagnosticKind::UnknownField
+                || diag.kind == DiagnosticKind::UnresolvedReference),
+        "unexpected diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn include_type_in_hybrid_local_types_block_does_not_leak_unknown_type_token() {
+    let src = "\
+METHOD run.\n\
+  TYPES:\n\
+    BEGIN OF ts_revt_obj_rel,\n\
+      objid TYPE i.\n\
+  INCLUDE TYPE ty_inner AS rep_evt.\n\
+  TYPES: END OF ts_revt_obj_rel,\n\
+         tt_revt_obj_rel TYPE STANDARD TABLE OF ts_revt_obj_rel WITH DEFAULT KEY.\n\
+ENDMETHOD.\n\
+TYPES: BEGIN OF ty_inner,\n\
+         field TYPE string,\n\
+       END OF ty_inner.";
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///include_type_hybrid_local.abap", src, &parsed);
+
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference
+                && src
+                    .get(diag.range.clone())
+                    .is_some_and(|text| text.eq_ignore_ascii_case("type"))
+        }),
         "unexpected diagnostics: {:?}",
         unit.diagnostics
     );

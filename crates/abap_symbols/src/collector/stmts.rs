@@ -8,7 +8,10 @@ use abap_ast::ast::{
     MethodsStmt, RaiseStmt, ReadTableStmt, ReplaceStmt, SplitStmt, WaitStmt, WriteStmt,
 };
 
-use crate::def_map::{FieldTypeRefData, NamedArgumentTarget, ReferenceKind, SymbolKind};
+use crate::def_map::{
+    FieldTypeRefData, NamedArgumentTarget, ReferenceKind, SymbolKind, TypeFactData,
+    ValueFlowEdgeData, ValueFlowKind, ValueFlowTargetData,
+};
 use crate::ids::ScopeId;
 use crate::scope::Namespace;
 
@@ -1192,11 +1195,13 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                 }
             }
             if let Some(arg_list_id) = arg_list_id {
+                let call_range = self.collector.file.range(node);
                 if let Some(target) = constructor_target {
                     self.collector.expr_lowering().collect_call_argument_list(
                         arg_list_id,
                         scope,
                         target,
+                        call_range,
                     );
                 } else {
                     self.collector
@@ -1300,10 +1305,12 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                 }
             }
             if let (Some(target), Some(arg_list_id)) = (target, arg_list_id) {
+                let call_range = self.collector.file.range(node);
                 self.collector.expr_lowering().collect_call_argument_list(
                     arg_list_id,
                     scope,
                     target,
+                    call_range,
                 );
                 return;
             }
@@ -1353,10 +1360,12 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             match self.collector.file.kind(child) {
                 SyntaxKind::CallArgList => {
                     if let Some(function_name) = function_name.clone() {
+                        let call_range = self.collector.file.range(node);
                         self.collector.expr_lowering().collect_call_argument_list(
                             child,
                             scope,
                             NamedArgumentTarget::Function { function_name },
+                            call_range,
                         );
                     } else {
                         self.collector
@@ -1489,6 +1498,12 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             })
             .unwrap_or((None, None));
         for target in inline_targets {
+            let target_name = self
+                .collector
+                .file
+                .children(target)
+                .find(|&child| self.collector.file.kind(child) == SyntaxKind::DataDeclName)
+                .and_then(|child| self.collector.node_name(child));
             self.collector
                 .decl_lowering()
                 .declare_inline_field_symbol_decl(
@@ -1497,6 +1512,27 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                     inferred_metadata.0,
                     inferred_metadata.1.clone(),
                 );
+            if let Some(source_expr) = source_expr
+                && let Some((target_name, target_range)) = target_name.clone()
+            {
+                let source_type = TypeFactData {
+                    structure: inferred_metadata.0,
+                    declared_type: inferred_metadata.1.clone(),
+                    type_clause_display: None,
+                    table_line: None,
+                };
+                self.collector.emit_value_flow_edge(ValueFlowEdgeData {
+                    scope,
+                    kind: ValueFlowKind::FieldSymbolAssignment,
+                    source_range: self.collector.file.range(source_expr),
+                    source_type: source_type.clone(),
+                    target: ValueFlowTargetData::FieldSymbol {
+                        range: target_range,
+                        name: Some(target_name),
+                    },
+                    target_type: source_type,
+                });
+            }
         }
     }
 

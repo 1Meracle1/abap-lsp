@@ -38,6 +38,12 @@ pub enum TypeClauseKind {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StructuredIncludeKind {
+    Type,
+    Structure,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FormParamSectionKind {
     Tables,
     Using,
@@ -388,6 +394,7 @@ macro_rules! ast_node {
 ast_node!(ExprIdent, SyntaxKind::ExprIdent);
 ast_node!(DataDecl, SyntaxKind::DataDecl);
 ast_node!(DataDeclName, SyntaxKind::DataDeclName);
+ast_node!(StructuredIncludeClause, SyntaxKind::StructuredIncludeClause);
 ast_node!(TypeRefSimple, SyntaxKind::TypeRefSimple);
 ast_node!(TemplateExpr, SyntaxKind::TemplateExpr);
 ast_node!(TemplateInterpolation, SyntaxKind::TemplateInterpolation);
@@ -1040,6 +1047,70 @@ impl<'a> DeclClause<'a> {
             return None;
         }
         Some((name.lower_trimmed_text(source)?, name.range()))
+    }
+}
+
+impl<'a> StructuredIncludeClause<'a> {
+    pub fn kind(self, source: &str) -> Option<StructuredIncludeKind> {
+        let mut tokens = self.syntax.children_by_kind(SyntaxKind::Token);
+        let include = tokens.next()?;
+        if !include
+            .text(source)
+            .is_some_and(|text| text.eq_ignore_ascii_case("include"))
+        {
+            return None;
+        }
+        let kind = tokens.next()?;
+        let text = kind.text(source)?;
+        if text.eq_ignore_ascii_case("type") {
+            Some(StructuredIncludeKind::Type)
+        } else if text.eq_ignore_ascii_case("structure") {
+            Some(StructuredIncludeKind::Structure)
+        } else {
+            None
+        }
+    }
+
+    pub fn type_ref(self) -> Option<TypeRefSimple<'a>> {
+        self.syntax
+            .child_by_kind(SyntaxKind::TypeRefSimple)
+            .and_then(TypeRefSimple::cast)
+    }
+
+    pub fn alias_name_token(self, source: &str) -> Option<SyntaxNodeRef<'a>> {
+        let mut saw_as = false;
+        for token in self.syntax.children_by_kind(SyntaxKind::Token) {
+            let text = token.text(source)?;
+            if saw_as {
+                return matches!(token.token_kind(), Some(TokenKind::Ident)).then_some(token);
+            }
+            if text.eq_ignore_ascii_case("as") {
+                saw_as = true;
+            }
+        }
+        None
+    }
+
+    pub fn alias_name(self, source: &str) -> Option<Arc<str>> {
+        self.alias_name_token(source)?.lower_trimmed_text(source)
+    }
+
+    pub fn suffix_token(self, source: &str) -> Option<SyntaxNodeRef<'a>> {
+        let mut saw_suffix = false;
+        for token in self.syntax.children_by_kind(SyntaxKind::Token) {
+            let text = token.text(source)?;
+            if saw_suffix {
+                return matches!(token.token_kind(), Some(TokenKind::Ident)).then_some(token);
+            }
+            if text.eq_ignore_ascii_case("suffix") {
+                saw_suffix = true;
+            }
+        }
+        None
+    }
+
+    pub fn suffix(self, source: &str) -> Option<Arc<str>> {
+        self.suffix_token(source)?.lower_trimmed_text(source)
     }
 }
 

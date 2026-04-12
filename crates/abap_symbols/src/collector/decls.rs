@@ -36,6 +36,24 @@ impl<'a> Collector<'a> {
 }
 
 impl<'ctx, 'a> DeclLowering<'ctx, 'a> {
+    fn include_stmt_is_structured_include(&self, include_stmt: IncludeStmt<'_>) -> bool {
+        let mut tokens = include_stmt.syntax().children_by_kind(SyntaxKind::Token);
+        let Some(include_kw) = tokens.next() else {
+            return false;
+        };
+        if !include_kw
+            .text(self.ctx.source())
+            .is_some_and(|text| text.eq_ignore_ascii_case("include"))
+        {
+            return false;
+        }
+        tokens.next().is_some_and(|token| {
+            token.text(self.ctx.source()).is_some_and(|text| {
+                text.eq_ignore_ascii_case("type") || text.eq_ignore_ascii_case("structure")
+            })
+        })
+    }
+
     fn method_decl_header_name_parts(
         &self,
         node: abap_ast::arena::NodeId,
@@ -77,6 +95,9 @@ impl<'ctx, 'a> DeclLowering<'ctx, 'a> {
         let Some(include_stmt) = IncludeStmt::cast(self.ctx.syntax(node)) else {
             return;
         };
+        if self.include_stmt_is_structured_include(include_stmt) {
+            return;
+        }
         let names = include_stmt
             .names()
             .filter_map(|include_name| {

@@ -32,7 +32,7 @@ Notes:
 
 ## Top-level schema
 
-The current schema id is `abap.semantic_dossier` with `schema_version = 1`.
+The current schema id is `abap.semantic_dossier` with `schema_version = 2`.
 
 Top-level fields:
 
@@ -51,6 +51,8 @@ Top-level fields:
 - `function_modules`
 - `call_sites`
 - `assignment_sites`
+- `expression_facts`
+- `value_flow_edges`
 - `perform_calls`
 - `sql`
 - `includes`
@@ -83,6 +85,18 @@ Top-level fields:
 
 - Bundles class members, inheritance facts, implemented interfaces, and aliases.
 
+`expression_facts`
+
+- Records site-local effective type facts for references, selector segments, and call results.
+- `type_fact.known = false` means the analyzer saw the site but intentionally stayed conservative.
+- Internal-table facts can expose `table_line` recursively when the row shape is already derivable.
+
+`value_flow_edges`
+
+- Records practical first-pass flow edges for assignments, call arguments, and inferable
+  `ASSIGN ... TO FIELD-SYMBOL(...)` targets.
+- Call edges preserve the call target plus parameter metadata when it can be resolved.
+
 `sql`
 
 - Includes `touched_objects`.
@@ -101,10 +115,13 @@ The dossier is meant to be sufficient for questions such as:
 - which SQL objects and columns are touched?
 - which names failed to resolve?
 - what class members, inheritance facts, and scopes matter for this file?
+- what type or value shape does this reference / selector / call expression have?
 
 ## Stability guidance
 
 - Prefer consuming field names and explicit enums instead of positional assumptions.
 - Treat absent optional sections as meaning "not available in this analysis mode".
+- The new fact layer is intentionally conservative: it does not attempt full SSA, path-sensitive
+  refinement, or full interprocedural propagation.
 - Do not infer raw syntax structure from the dossier; use `abap_cli parse --json --ast` for syntax
   tree inspection when needed.

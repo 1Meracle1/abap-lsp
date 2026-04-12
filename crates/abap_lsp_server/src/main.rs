@@ -210,9 +210,10 @@ fn current_workspace_generation(
 }
 
 fn workspace_uses_editor_first_mode(state: &ServerState, workspace_uri: &str) -> bool {
+    let workspace_uri = abap_lsp::normalize_lsp_uri(workspace_uri);
     state
         .workspaces
-        .get(workspace_uri)
+        .get(&workspace_uri)
         .is_some_and(|workspace| {
             workspace.performance_mode == WorkspacePerformanceMode::EditorFirst
         })
@@ -920,7 +921,8 @@ fn push_workspace_diagnostics_notifications_for_uris(
     dirty_uris: Option<&HashSet<Arc<str>>>,
     notifications: &mut Vec<(String, Value)>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let Some(workspace) = state.workspaces.get(workspace_uri) else {
+    let workspace_uri = abap_lsp::normalize_lsp_uri(workspace_uri);
+    let Some(workspace) = state.workspaces.get(&workspace_uri) else {
         return Ok(());
     };
     let mut uris: Vec<_> = if let Some(dirty_uris) = dirty_uris {
@@ -943,7 +945,8 @@ fn workspace_open_dirty_uris(
     workspace_uri: &str,
     dirty_uris: &HashSet<Arc<str>>,
 ) -> HashSet<Arc<str>> {
-    let Some(workspace) = state.workspaces.get(workspace_uri) else {
+    let workspace_uri = abap_lsp::normalize_lsp_uri(workspace_uri);
+    let Some(workspace) = state.workspaces.get(&workspace_uri) else {
         return HashSet::new();
     };
     workspace
@@ -959,13 +962,66 @@ fn workspace_open_dirty_uris(
         .collect()
 }
 
+fn workspace_local_source_uris(state: &ServerState, workspace_uri: &str) -> HashSet<Arc<str>> {
+    let workspace_uri = abap_lsp::normalize_lsp_uri(workspace_uri);
+    let Some(workspace) = state.workspaces.get(&workspace_uri) else {
+        return HashSet::new();
+    };
+    workspace
+        .cache
+        .uris()
+        .into_iter()
+        .filter(|uri| {
+            workspace
+                .cache
+                .get(uri.as_ref())
+                .is_some_and(|snapshot| !snapshot.is_dependency)
+        })
+        .collect()
+}
+
+fn workspace_remote_dependency_follow_up_source_uris(
+    state: &ServerState,
+    workspace_uri: &str,
+    fetched: &[String],
+) -> HashSet<Arc<str>> {
+    let workspace_uri = abap_lsp::normalize_lsp_uri(workspace_uri);
+    let Some(workspace) = state.workspaces.get(&workspace_uri) else {
+        return HashSet::new();
+    };
+    let fetched_names: HashSet<_> = fetched
+        .iter()
+        .map(|name| name.trim().to_ascii_lowercase())
+        .filter(|name| !name.is_empty())
+        .collect();
+    if fetched_names.is_empty() {
+        return HashSet::new();
+    }
+    let mut selected = HashSet::new();
+    for uri in workspace.cache.uris() {
+        let Some(snapshot) = workspace.cache.get(uri.as_ref()) else {
+            continue;
+        };
+        if !snapshot.is_dependency {
+            continue;
+        }
+        if snapshot.object_name.as_ref().is_some_and(|object_name| {
+            fetched_names.contains(&object_name.trim().to_ascii_lowercase())
+        }) {
+            selected.insert(uri);
+        }
+    }
+    selected
+}
+
 fn editor_first_diagnostic_uris(
     state: &ServerState,
     workspace_uri: &str,
     changed_uri: Option<&str>,
     dirty_uris: &HashSet<Arc<str>>,
 ) -> Vec<Arc<str>> {
-    let Some(workspace) = state.workspaces.get(workspace_uri) else {
+    let workspace_uri = abap_lsp::normalize_lsp_uri(workspace_uri);
+    let Some(workspace) = state.workspaces.get(&workspace_uri) else {
         return Vec::new();
     };
     let mut selected = Vec::new();
@@ -1366,6 +1422,7 @@ fn handle_remote_dependencies_updated_notifications(
     progress_sink: Option<&(dyn Fn(WorkspaceAnalysisStatusParams) + Sync)>,
 ) -> Result<Vec<(String, Value)>, Box<dyn std::error::Error>> {
     let progress_notifications = Mutex::new(Vec::new());
+    let normalized_workspace_uri = abap_lsp::normalize_lsp_uri(&params.workspace_uri);
     let progress = |processed: usize, total: usize| {
         emit_workspace_analysis_progress(
             Some(&progress_notifications),
@@ -1394,36 +1451,23 @@ fn handle_remote_dependencies_updated_notifications(
             && (!workspace_uses_editor_first_mode(state, &params.workspace_uri)
                 || state
                     .workspaces
-                    .get(&params.workspace_uri)
+                    .get(&normalized_workspace_uri)
                     .is_some_and(|workspace| {
                         workspace.open_documents.contains_key(snapshot.uri.as_ref())
-                    })
-                    && !snapshot.is_dependency)
+                    }))
         {
             push_publish_diagnostics_notification(state, snapshot, &mut notifications)?;
         }
     }
     let request = if workspace_uses_editor_first_mode(state, &params.workspace_uri) {
-        let source_filter: HashSet<_> = state
-            .workspaces
-            .get(&params.workspace_uri)
-            .map(|workspace| {
-                workspace
-                    .cache
-                    .last_dirty_uris()
-                    .into_iter()
-                    .filter(|uri| {
-                        workspace.cache.get(uri.as_ref()).is_some_and(|snapshot| {
-                            snapshot.is_dependency
-                                || workspace.open_documents.contains_key(uri.as_ref())
-                        })
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
+        let source_filter = workspace_remote_dependency_follow_up_source_uris(
+            state,
+            &params.workspace_uri,
+            &params.fetched,
+        );
         let dirty_uri_count = state
             .workspaces
-            .get(&params.workspace_uri)
+            .get(&normalized_workspace_uri)
             .map(|workspace| workspace.cache.last_dirty_uris().len())
             .unwrap_or(0);
         debug!(
@@ -1476,7 +1520,17 @@ fn handle_initialized_workspace_notifications(
         notifications.push(("textDocument/publishDiagnostics".to_owned(), params_value));
     }
     push_workspace_diagnostics_notifications(state, workspace_uri, &mut notifications)?;
-    if let Some(request) = build_remote_dependency_batch_for_workspace(state, workspace_uri) {
+    let request = if workspace_uses_editor_first_mode(state, workspace_uri) {
+        let source_filter = workspace_local_source_uris(state, workspace_uri);
+        build_remote_dependency_batch_for_workspace_filtered(
+            state,
+            workspace_uri,
+            Some(&source_filter),
+        )
+    } else {
+        build_remote_dependency_batch_for_workspace(state, workspace_uri)
+    };
+    if let Some(request) = request {
         notifications.push((
             RESOLVE_REMOTE_DEPENDENCIES.to_owned(),
             serde_json::to_value(request)?,
@@ -3402,6 +3456,280 @@ ENDCLASS.";
     }
 
     #[test]
+    fn editor_first_remote_dependency_updates_refresh_open_dependency_diagnostics() {
+        let workspace_path = temp_workspace_path("editor_first_open_dependency_diag_refresh");
+        let dependency_class_dir = workspace_path
+            .join(".abapls")
+            .join("cache")
+            .join("dependencies")
+            .join("global-class");
+        let dependency_ddic_dir = workspace_path
+            .join(".abapls")
+            .join("cache")
+            .join("dependencies")
+            .join("ddic-data-element");
+        fs::create_dir_all(&dependency_class_dir).expect("dependency class dir");
+        fs::create_dir_all(&dependency_ddic_dir).expect("dependency ddic dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[performance]
+mode = "editor-first"
+
+[resolution]
+dependency_mode = "remote-on-demand"
+unknown_symbol_mode = "remote"
+
+[[unit]]
+name = "ZCL_DEP"
+kind = "global-class"
+root_file = ".abapls/cache/dependencies/global-class/ZCL_DEP.abap"
+
+[[unit.member]]
+role = "dependency"
+file = ".abapls/cache/dependencies/global-class/ZCL_DEP.abap"
+object_name = "ZCL_DEP"
+"#,
+        )
+        .expect("manifest");
+        let dependency_text = "\
+CLASS zcl_dep DEFINITION.
+  PUBLIC SECTION.
+    METHODS run
+      IMPORTING
+        !iv_evtid TYPE zmissing.
+ENDCLASS.
+CLASS zcl_dep IMPLEMENTATION.
+  METHOD run.
+  ENDMETHOD.
+ENDCLASS.";
+        fs::write(dependency_class_dir.join("ZCL_DEP.abap"), dependency_text)
+            .expect("dependency file");
+
+        let workspace_uri = file_uri(&workspace_path);
+        let dependency_uri =
+            format!("{workspace_uri}/.abapls/cache/dependencies/global-class/ZCL_DEP.abap");
+        let normalized_dependency_uri = abap_lsp::normalize_lsp_uri(&dependency_uri);
+        let mut state = ServerState::default();
+        let config = ServerConfig::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        refresh_workspace(&mut state, &workspace_uri);
+
+        let opened = handle_message(
+            &mut state,
+            &config,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": {
+                    "textDocument": {
+                        "uri": dependency_uri,
+                        "languageId": "abap",
+                        "version": 1,
+                        "text": dependency_text
+                    }
+                }
+            }),
+        )
+        .expect("didOpen");
+
+        let initial_diags = opened
+            .notifications
+            .iter()
+            .find(|(method, payload)| {
+                method == "textDocument/publishDiagnostics"
+                    && payload.get("uri").and_then(Value::as_str)
+                        == Some(normalized_dependency_uri.as_str())
+            })
+            .and_then(|(_, payload)| payload.get("diagnostics"))
+            .and_then(Value::as_array)
+            .expect("initial dependency diagnostics");
+        assert!(initial_diags.iter().any(|diag| {
+            diag.get("message")
+                .and_then(Value::as_str)
+                .is_some_and(|message| {
+                    message.contains("Type 'zmissing' is not verified against a SAP system")
+                })
+        }));
+        let request = opened
+            .notifications
+            .iter()
+            .find(|(method, _)| method == RESOLVE_REMOTE_DEPENDENCIES)
+            .map(|(_, payload)| payload)
+            .expect("remote dependency request");
+        let candidates = request
+            .get("candidates")
+            .and_then(Value::as_array)
+            .expect("candidates");
+        assert!(candidates.iter().any(|candidate| {
+            candidate.get("kind").and_then(Value::as_str) == Some("type")
+                && candidate.get("name").and_then(Value::as_str) == Some("zmissing")
+        }));
+
+        fs::write(
+            dependency_ddic_dir.join("ZMISSING.xml"),
+            "<root><DATATYPE>CHAR</DATATYPE></root>",
+        )
+        .expect("ddic dependency");
+
+        let refreshed = handle_message(
+            &mut state,
+            &config,
+            json!({
+                "jsonrpc": "2.0",
+                "method": REMOTE_DEPENDENCIES_UPDATED,
+                "params": {
+                    "workspaceUri": workspace_uri,
+                    "sourceUri": dependency_uri,
+                    "sourceUris": [dependency_uri],
+                    "fetched": ["zmissing"],
+                    "failed": []
+                }
+            }),
+        )
+        .expect("remote dependencies updated");
+
+        let refreshed_diags = refreshed
+            .notifications
+            .iter()
+            .find(|(method, payload)| {
+                method == "textDocument/publishDiagnostics"
+                    && payload.get("uri").and_then(Value::as_str)
+                        == Some(normalized_dependency_uri.as_str())
+            })
+            .and_then(|(_, payload)| payload.get("diagnostics"))
+            .and_then(Value::as_array)
+            .expect("refreshed dependency diagnostics");
+        assert!(
+            refreshed_diags.is_empty(),
+            "unexpected refreshed diagnostics: {refreshed_diags:?}"
+        );
+    }
+
+    #[test]
+    fn editor_first_initialized_remote_batch_starts_from_local_sources_only() {
+        let workspace_path = temp_workspace_path("editor_first_initialized_local_only_remote");
+        let dependency_dir = workspace_path
+            .join(".abapls")
+            .join("cache")
+            .join("dependencies")
+            .join("global-class");
+        let source_dir = workspace_path.join("src");
+        fs::create_dir_all(&dependency_dir).expect("dependency dir");
+        fs::create_dir_all(&source_dir).expect("source dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[performance]
+mode = "editor-first"
+
+[resolution]
+dependency_mode = "remote-on-demand"
+unknown_symbol_mode = "remote"
+
+[[unit]]
+name = "ZREPORT_MAIN"
+kind = "report"
+root_file = "src/ZREPORT_MAIN.abap"
+
+[[unit.member]]
+role = "root"
+file = "src/ZREPORT_MAIN.abap"
+object_name = "ZREPORT_MAIN"
+
+[[unit]]
+name = "ZCL_DEP"
+kind = "global-class"
+root_file = ".abapls/cache/dependencies/global-class/ZCL_DEP.abap"
+
+[[unit.member]]
+role = "dependency"
+file = ".abapls/cache/dependencies/global-class/ZCL_DEP.abap"
+object_name = "ZCL_DEP"
+"#,
+        )
+        .expect("manifest");
+        fs::write(
+            source_dir.join("ZREPORT_MAIN.abap"),
+            "\
+REPORT zreport_main.
+DATA lo_first TYPE REF TO zcl_first.
+",
+        )
+        .expect("main source");
+        fs::write(
+            dependency_dir.join("ZCL_DEP.abap"),
+            "\
+CLASS zcl_dep DEFINITION.
+  PUBLIC SECTION.
+    METHODS run.
+ENDCLASS.
+CLASS zcl_dep IMPLEMENTATION.
+  METHOD run.
+    DATA lo_second TYPE REF TO zcl_second.
+  ENDMETHOD.
+ENDCLASS.
+",
+        )
+        .expect("dependency source");
+
+        let workspace_uri = file_uri(&workspace_path);
+        let mut state = ServerState::default();
+        let config = ServerConfig::default();
+        state.register_workspace_folder(workspace_uri.clone());
+
+        let handled = handle_message(
+            &mut state,
+            &config,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "initialized",
+                "params": {}
+            }),
+        )
+        .expect("initialized");
+
+        let request = handled
+            .notifications
+            .iter()
+            .find(|(method, _)| method == RESOLVE_REMOTE_DEPENDENCIES)
+            .map(|(_, payload)| payload)
+            .expect("startup remote dependency request");
+        let source_uris = request
+            .get("sourceUris")
+            .and_then(Value::as_array)
+            .expect("source uris");
+        assert!(
+            source_uris
+                .iter()
+                .filter_map(Value::as_str)
+                .any(|uri| uri.ends_with("/src/ZREPORT_MAIN.abap")),
+            "unexpected source uris: {source_uris:?}"
+        );
+        assert!(
+            source_uris
+                .iter()
+                .filter_map(Value::as_str)
+                .all(|uri| !uri.contains("/.abapls/cache/dependencies/")),
+            "unexpected source uris: {source_uris:?}"
+        );
+        let candidates = request
+            .get("candidates")
+            .and_then(Value::as_array)
+            .expect("candidates");
+        assert!(candidates.iter().any(|candidate| {
+            candidate.get("name").and_then(Value::as_str) == Some("zcl_first")
+        }));
+        assert!(!candidates.iter().any(|candidate| {
+            candidate.get("name").and_then(Value::as_str) == Some("zcl_second")
+        }));
+    }
+
+    #[test]
     fn editor_first_remote_dependency_updates_trigger_follow_up_dependency_fetches() {
         let workspace_path = temp_workspace_path("editor_first_dependency_follow_up");
         let dependency_dir = workspace_path
@@ -3498,6 +3826,13 @@ ENDCLASS.";
             }),
             "unexpected source uris: {source_uris:?}"
         );
+        assert!(
+            source_uris
+                .iter()
+                .filter_map(Value::as_str)
+                .all(|uri| !uri.ends_with("/src/ZREPORT_MAIN.abap")),
+            "unexpected source uris: {source_uris:?}"
+        );
         let candidates = request
             .get("candidates")
             .and_then(Value::as_array)
@@ -3513,6 +3848,154 @@ ENDCLASS.";
         assert!(candidates.iter().any(|candidate| {
             candidate.get("kind").and_then(Value::as_str) == Some("type")
                 && candidate.get("name").and_then(Value::as_str) == Some("te_loglevel")
+        }));
+    }
+
+    #[test]
+    fn editor_first_remote_dependency_updates_do_not_rescan_unrelated_dirty_dependencies() {
+        let workspace_path = temp_workspace_path("editor_first_dependency_follow_up_scope_limited");
+        let dependency_dir = workspace_path
+            .join(".abapls")
+            .join("cache")
+            .join("dependencies")
+            .join("global-class");
+        let source_dir = workspace_path.join("src");
+        fs::create_dir_all(&dependency_dir).expect("dependency dir");
+        fs::create_dir_all(&source_dir).expect("source dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[performance]
+mode = "editor-first"
+
+[resolution]
+dependency_mode = "remote-on-demand"
+unknown_symbol_mode = "remote"
+
+[[unit]]
+name = "ZREPORT_MAIN"
+kind = "report"
+root_file = "src/ZREPORT_MAIN.abap"
+
+[[unit.member]]
+role = "root"
+file = "src/ZREPORT_MAIN.abap"
+object_name = "ZREPORT_MAIN"
+
+[[unit]]
+name = "/STTP/CL_MESSAGES"
+kind = "global-class"
+root_file = ".abapls/cache/dependencies/global-class/%2FSTTP%2FCL_MESSAGES.abap"
+
+[[unit.member]]
+role = "dependency"
+file = ".abapls/cache/dependencies/global-class/%2FSTTP%2FCL_MESSAGES.abap"
+object_name = "/STTP/CL_MESSAGES"
+
+[[unit]]
+name = "ZCL_UNRELATED"
+kind = "global-class"
+root_file = ".abapls/cache/dependencies/global-class/ZCL_UNRELATED.abap"
+
+[[unit.member]]
+role = "dependency"
+file = ".abapls/cache/dependencies/global-class/ZCL_UNRELATED.abap"
+object_name = "ZCL_UNRELATED"
+"#,
+        )
+        .expect("manifest");
+        fs::write(
+            source_dir.join("ZREPORT_MAIN.abap"),
+            "REPORT zreport_main.\nDATA lo_msg TYPE REF TO /sttp/cl_messages.\n",
+        )
+        .expect("main");
+        fs::write(
+            dependency_dir.join("%2FSTTP%2FCL_MESSAGES.abap"),
+            "\
+CLASS /STTP/CL_MESSAGES DEFINITION.
+  PUBLIC SECTION.
+    DATA ms_bal TYPE bal_s_msg.
+ENDCLASS.
+CLASS /STTP/CL_MESSAGES IMPLEMENTATION.
+ENDCLASS.",
+        )
+        .expect("fetched dependency file");
+        fs::write(
+            dependency_dir.join("ZCL_UNRELATED.abap"),
+            "\
+CLASS zcl_unrelated DEFINITION.
+  PUBLIC SECTION.
+    DATA mo_missing TYPE REF TO zcl_noise.
+ENDCLASS.
+CLASS zcl_unrelated IMPLEMENTATION.
+ENDCLASS.",
+        )
+        .expect("unrelated dependency file");
+
+        let workspace_uri = file_uri(&workspace_path);
+        let source_uri = format!("{workspace_uri}/src/ZREPORT_MAIN.abap");
+        let mut state = ServerState::default();
+        let config = ServerConfig::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        refresh_workspace(&mut state, &workspace_uri);
+        assert!(super::workspace_uses_editor_first_mode(
+            &state,
+            &workspace_uri
+        ));
+
+        let handled = handle_message(
+            &mut state,
+            &config,
+            json!({
+                "jsonrpc": "2.0",
+                "method": REMOTE_DEPENDENCIES_UPDATED,
+                "params": {
+                    "workspaceUri": workspace_uri,
+                    "sourceUri": source_uri,
+                    "sourceUris": [source_uri],
+                    "fetched": ["/sttp/cl_messages"],
+                    "failed": []
+                }
+            }),
+        )
+        .expect("remote dependencies updated");
+
+        let request = handled
+            .notifications
+            .iter()
+            .find(|(method, _)| method == RESOLVE_REMOTE_DEPENDENCIES)
+            .map(|(_, payload)| payload)
+            .expect("follow-up remote dependency request");
+        let source_uris = request
+            .get("sourceUris")
+            .and_then(Value::as_array)
+            .expect("source uris");
+        assert!(
+            source_uris.iter().filter_map(Value::as_str).any(|uri| {
+                uri.contains(".abapls/cache/dependencies/global-class/")
+                    && uri.contains("CL_MESSAGES.abap")
+            }),
+            "unexpected source uris: {source_uris:?}"
+        );
+        assert!(
+            source_uris
+                .iter()
+                .filter_map(Value::as_str)
+                .all(|uri| !uri.contains("ZCL_UNRELATED.abap")),
+            "unexpected source uris: {source_uris:?}"
+        );
+        let candidates = request
+            .get("candidates")
+            .and_then(Value::as_array)
+            .expect("candidates");
+        assert!(candidates.iter().any(|candidate| {
+            candidate.get("kind").and_then(Value::as_str) == Some("type")
+                && candidate.get("name").and_then(Value::as_str) == Some("bal_s_msg")
+        }));
+        assert!(!candidates.iter().any(|candidate| {
+            candidate.get("name").and_then(Value::as_str) == Some("zcl_noise")
         }));
     }
 

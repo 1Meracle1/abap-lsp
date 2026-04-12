@@ -7,15 +7,16 @@ use serde::Serialize;
 
 use crate::def_map::{
     AssignmentSiteData, CallArgumentData, CallSiteData, ClassInheritanceData, ClassMemberData,
-    ClassMemberKind, ClassMemberParameterData, Diagnostic, DiagnosticKind, FieldTypeRefData,
-    FunctionModuleData, FunctionModuleExceptionData, FunctionModuleParameterData,
-    FunctionModuleParameterSection, ImplementedInterfaceData, IncludeEdge, MemberAliasData,
-    MethodParameterSection, NamedArgumentSection, NamedArgumentTarget, PerformArgumentData,
-    PerformCallData, PerformParameterSection, ReferenceData, ReferenceKind, Resolution,
-    SqlNameRefData, SqlNameRefKind, SqlPredicateData, SqlPredicateKind, SqlProjectionData,
-    SqlProjectionKind, SqlQueryData, SqlResolution, SqlSourceData, SqlSourceKind, SqlTargetData,
-    SqlTargetKind, StructureData, StructureFieldData, SymbolData, SymbolKind, TypeFactData,
-    UnitAnalysis, Visibility,
+    ClassMemberKind, ClassMemberParameterData, Diagnostic, DiagnosticKind, ExpressionFactData,
+    ExpressionFactKind, FieldTypeRefData, FunctionModuleData, FunctionModuleExceptionData,
+    FunctionModuleParameterData, FunctionModuleParameterSection, ImplementedInterfaceData,
+    IncludeEdge, MemberAliasData, MethodParameterSection, NamedArgumentSection,
+    NamedArgumentTarget, PerformArgumentData, PerformCallData, PerformParameterSection,
+    ReferenceData, ReferenceKind, Resolution, SqlNameRefData, SqlNameRefKind, SqlPredicateData,
+    SqlPredicateKind, SqlProjectionData, SqlProjectionKind, SqlQueryData, SqlResolution,
+    SqlSourceData, SqlSourceKind, SqlTargetData, SqlTargetKind, StructureData, StructureFieldData,
+    SymbolData, SymbolKind, TypeFactData, UnitAnalysis, ValueFlowEdgeData, ValueFlowKind,
+    ValueFlowTargetData, Visibility,
 };
 use crate::ids::{SymbolHandle, UnitId};
 use crate::project::ProjectAnalysis;
@@ -51,6 +52,8 @@ pub struct SemanticDossier {
     pub function_modules: Vec<FunctionModuleDossier>,
     pub call_sites: Vec<CallSiteDossier>,
     pub assignment_sites: Vec<AssignmentSiteDossier>,
+    pub expression_facts: Vec<ExpressionFactDossier>,
+    pub value_flow_edges: Vec<ValueFlowEdgeDossier>,
     pub perform_calls: Vec<PerformCallDossier>,
     pub sql: SqlSectionDossier,
     pub includes: Vec<IncludeEdgeDossier>,
@@ -89,6 +92,8 @@ pub struct DossierSummary {
     pub inheritance_fact_count: usize,
     pub call_site_count: usize,
     pub assignment_site_count: usize,
+    pub expression_fact_count: usize,
+    pub value_flow_edge_count: usize,
     pub perform_call_count: usize,
     pub function_module_count: usize,
     pub sql_query_count: usize,
@@ -287,9 +292,11 @@ pub struct FunctionModuleDossier {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct TypeFactDossier {
+    pub known: bool,
     pub structure_id: Option<u32>,
     pub declared_type: Option<TypeRefDossier>,
     pub type_clause_display: Option<String>,
+    pub table_line: Option<Box<TypeFactDossier>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -339,6 +346,43 @@ pub struct AssignmentSiteDossier {
     pub rhs_range: ByteRange,
     pub lhs: TypeFactDossier,
     pub rhs: TypeFactDossier,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ExpressionFactDossier {
+    pub scope_id: u32,
+    pub range: ByteRange,
+    pub kind: &'static str,
+    pub type_fact: TypeFactDossier,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ValueFlowTargetDossier {
+    Assignment {
+        range: ByteRange,
+    },
+    CallParameter {
+        call_range: ByteRange,
+        target: CallTargetDossier,
+        parameter_name: Option<String>,
+        parameter_decl_unit_id: Option<u32>,
+        parameter_decl_range: Option<ByteRange>,
+    },
+    FieldSymbol {
+        range: ByteRange,
+        name: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ValueFlowEdgeDossier {
+    pub scope_id: u32,
+    pub kind: &'static str,
+    pub source_range: ByteRange,
+    pub source_type: TypeFactDossier,
+    pub target: ValueFlowTargetDossier,
+    pub target_type: TypeFactDossier,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -538,6 +582,16 @@ pub fn build_semantic_dossier(
         .iter()
         .map(assignment_site_dossier)
         .collect();
+    let expression_facts: Vec<_> = unit
+        .expression_facts
+        .iter()
+        .map(expression_fact_dossier)
+        .collect();
+    let value_flow_edges: Vec<_> = unit
+        .value_flow_edges
+        .iter()
+        .map(value_flow_edge_dossier)
+        .collect();
     let perform_calls: Vec<_> = unit
         .perform_calls
         .iter()
@@ -583,7 +637,7 @@ pub fn build_semantic_dossier(
 
     SemanticDossier {
         schema: "abap.semantic_dossier",
-        schema_version: 1,
+        schema_version: 2,
         target: DossierTarget {
             unit_id: unit.unit_id.0,
             uri: unit.uri.to_string(),
@@ -618,6 +672,8 @@ pub fn build_semantic_dossier(
             inheritance_fact_count: class_facts.inheritance.len(),
             call_site_count: call_sites.len(),
             assignment_site_count: assignment_sites.len(),
+            expression_fact_count: expression_facts.len(),
+            value_flow_edge_count: value_flow_edges.len(),
             perform_call_count: perform_calls.len(),
             function_module_count: function_modules.len(),
             sql_query_count: queries.len(),
@@ -636,6 +692,8 @@ pub fn build_semantic_dossier(
         function_modules,
         call_sites,
         assignment_sites,
+        expression_facts,
+        value_flow_edges,
         perform_calls,
         sql: SqlSectionDossier {
             touched_objects,
@@ -870,12 +928,17 @@ fn function_module_dossier(
 
 fn type_fact_dossier(type_fact: &TypeFactData) -> TypeFactDossier {
     TypeFactDossier {
+        known: type_fact.is_known(),
         structure_id: type_fact.structure.map(|id| id.0),
         declared_type: type_fact.declared_type.as_ref().map(type_ref_dossier),
         type_clause_display: type_fact
             .type_clause_display
             .as_ref()
             .map(arc_str_to_string),
+        table_line: type_fact
+            .table_line
+            .as_ref()
+            .map(|line| Box::new(type_fact_dossier(line))),
     }
 }
 
@@ -936,6 +999,51 @@ fn assignment_site_dossier(assignment: &AssignmentSiteData) -> AssignmentSiteDos
         rhs_range: byte_range(&assignment.rhs_range),
         lhs: type_fact_dossier(&assignment.lhs),
         rhs: type_fact_dossier(&assignment.rhs),
+    }
+}
+
+fn expression_fact_dossier(fact: &ExpressionFactData) -> ExpressionFactDossier {
+    ExpressionFactDossier {
+        scope_id: fact.scope.0,
+        range: byte_range(&fact.range),
+        kind: expression_fact_kind_name(fact.kind),
+        type_fact: type_fact_dossier(&fact.type_fact),
+    }
+}
+
+fn value_flow_edge_dossier(edge: &ValueFlowEdgeData) -> ValueFlowEdgeDossier {
+    ValueFlowEdgeDossier {
+        scope_id: edge.scope.0,
+        kind: value_flow_kind_name(edge.kind),
+        source_range: byte_range(&edge.source_range),
+        source_type: type_fact_dossier(&edge.source_type),
+        target: value_flow_target_dossier(&edge.target),
+        target_type: type_fact_dossier(&edge.target_type),
+    }
+}
+
+fn value_flow_target_dossier(target: &ValueFlowTargetData) -> ValueFlowTargetDossier {
+    match target {
+        ValueFlowTargetData::Assignment { range } => ValueFlowTargetDossier::Assignment {
+            range: byte_range(range),
+        },
+        ValueFlowTargetData::CallParameter {
+            call_range,
+            target,
+            parameter_name,
+            parameter_decl_unit,
+            parameter_decl_range,
+        } => ValueFlowTargetDossier::CallParameter {
+            call_range: byte_range(call_range),
+            target: call_target_dossier(target),
+            parameter_name: parameter_name.as_ref().map(arc_str_to_string),
+            parameter_decl_unit_id: parameter_decl_unit.map(|unit_id| unit_id.0),
+            parameter_decl_range: parameter_decl_range.as_ref().map(byte_range),
+        },
+        ValueFlowTargetData::FieldSymbol { range, name } => ValueFlowTargetDossier::FieldSymbol {
+            range: byte_range(range),
+            name: name.as_ref().map(arc_str_to_string),
+        },
     }
 }
 
@@ -1232,6 +1340,22 @@ fn reference_kind_name(kind: ReferenceKind) -> &'static str {
         ReferenceKind::RoutineCall => "routine_call",
         ReferenceKind::StaticTarget => "static_target",
         ReferenceKind::Include => "include",
+    }
+}
+
+fn expression_fact_kind_name(kind: ExpressionFactKind) -> &'static str {
+    match kind {
+        ExpressionFactKind::Reference => "reference",
+        ExpressionFactKind::Selector => "selector",
+        ExpressionFactKind::CallResult => "call_result",
+    }
+}
+
+fn value_flow_kind_name(kind: ValueFlowKind) -> &'static str {
+    match kind {
+        ValueFlowKind::Assignment => "assignment",
+        ValueFlowKind::CallArgument => "call_argument",
+        ValueFlowKind::FieldSymbolAssignment => "field_symbol_assignment",
     }
 }
 

@@ -1,7 +1,7 @@
 use crate::def_map::{
     AssignmentSiteData, CallSiteData, ClassMemberData, FieldAccess, FormRoutineData,
     FunctionModuleData, NamedArgumentAccess, PerformCallData, SqlNameRefData, SqlPredicateData,
-    SqlProjectionData, SqlQueryData, SqlSourceData, SqlTargetData,
+    SqlProjectionData, SqlQueryData, SqlSourceData, SqlTargetData, ValueFlowEdgeData,
 };
 
 use super::Collector;
@@ -11,6 +11,7 @@ pub(super) trait RefSink {
     fn emit_named_argument(&mut self, access: NamedArgumentAccess);
     fn emit_call_site(&mut self, site: CallSiteData);
     fn emit_assignment_site(&mut self, site: AssignmentSiteData);
+    fn emit_value_flow_edge(&mut self, edge: ValueFlowEdgeData);
 }
 
 pub(super) trait ClassSink {
@@ -47,6 +48,10 @@ impl<'a> RefSink for Collector<'a> {
 
     fn emit_assignment_site(&mut self, site: AssignmentSiteData) {
         self.assignment_sites.push(site);
+    }
+
+    fn emit_value_flow_edge(&mut self, edge: ValueFlowEdgeData) {
+        self.value_flow_edges.push(edge);
     }
 }
 

@@ -201,6 +201,16 @@ impl<'a> Collector<'a> {
                     self.type_clause_ns_stack.pop();
                 }
             }
+            SyntaxKind::StructuredIncludeClause => {
+                let hint = self.structured_include_namespace_hint(node);
+                if let Some(ns) = hint {
+                    self.type_clause_ns_stack.push(ns);
+                }
+                self.walk_children(node, scope);
+                if hint.is_some() {
+                    self.type_clause_ns_stack.pop();
+                }
+            }
             _ => self.walk_children(node, scope),
         }
     }

@@ -122,6 +122,7 @@ fn classify_type_fact(
             structure: fact.structure,
             declared_type: fact.declared_type.clone(),
             type_clause_display: None,
+            table_line: None,
         };
         let line = classify_type_fact(project, unit, &line_fact, depth + 1).map(Box::new);
         return Some(ClassifiedType::Table(line));
@@ -177,6 +178,7 @@ fn resolve_named_type_fact<'a>(
                 structure: symbol.structure,
                 declared_type: symbol.declared_type.clone(),
                 type_clause_display: symbol.type_clause_display.clone(),
+                table_line: None,
             },
         ));
     }

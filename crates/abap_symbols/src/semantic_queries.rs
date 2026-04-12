@@ -1,8 +1,9 @@
 use abap_lexer::TextRange;
 
 use crate::def_map::{
-    ClassInheritanceData, ClassMemberData, FormParameterData, FormRoutineData, ReferenceData,
-    SqlNameRefData, StructureFieldData, StructureFieldInfo, SymbolData, SymbolKind, UnitAnalysis,
+    ClassInheritanceData, ClassMemberData, ExpressionFactData, FormParameterData, FormRoutineData,
+    ReferenceData, SqlNameRefData, StructureFieldData, StructureFieldInfo, SymbolData, SymbolKind,
+    UnitAnalysis, ValueFlowEdgeData,
 };
 use crate::ids::{ScopeId, StructureId, SymbolHandle, SymbolId};
 
@@ -26,6 +27,11 @@ pub struct SqlQueries<'a> {
     unit: &'a UnitAnalysis,
 }
 
+#[derive(Clone, Copy)]
+pub struct FactQueries<'a> {
+    unit: &'a UnitAnalysis,
+}
+
 impl<'a> SemanticQueries<'a> {
     pub(crate) fn new(unit: &'a UnitAnalysis) -> Self {
         Self { unit }
@@ -41,6 +47,10 @@ impl<'a> SemanticQueries<'a> {
 
     pub fn sql(self) -> SqlQueries<'a> {
         SqlQueries { unit: self.unit }
+    }
+
+    pub fn facts(self) -> FactQueries<'a> {
+        FactQueries { unit: self.unit }
     }
 }
 
@@ -172,5 +182,26 @@ impl<'a> SqlQueries<'a> {
 
     pub fn has_source_named(self, name: &str) -> bool {
         self.unit.has_sql_source_named(name)
+    }
+}
+
+impl<'a> FactQueries<'a> {
+    pub fn expression_fact_at_offset(self, offset: usize) -> Option<&'a ExpressionFactData> {
+        self.unit.expression_fact_at_offset(offset)
+    }
+
+    pub fn expression_facts(self) -> impl Iterator<Item = &'a ExpressionFactData> + 'a {
+        self.unit.expression_facts.iter()
+    }
+
+    pub fn value_flow_edges(self) -> impl Iterator<Item = &'a ValueFlowEdgeData> + 'a {
+        self.unit.value_flow_edges.iter()
+    }
+
+    pub fn value_flow_edges_touching_offset(
+        self,
+        offset: usize,
+    ) -> impl Iterator<Item = &'a ValueFlowEdgeData> + 'a {
+        self.unit.value_flow_edges_touching_offset(offset)
     }
 }

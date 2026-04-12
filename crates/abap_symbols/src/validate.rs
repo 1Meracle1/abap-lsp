@@ -1134,6 +1134,7 @@ fn method_parameter_type_fact(parameter: &crate::ClassMemberParameterData) -> Ty
         structure: None,
         declared_type: parameter.declared_type.clone(),
         type_clause_display: parameter.type_clause_display.clone(),
+        table_line: None,
     }
 }
 
@@ -1142,6 +1143,7 @@ fn function_module_parameter_type_fact(parameter: &FunctionModuleParameterData) 
         structure: None,
         declared_type: parameter.declared_type.clone(),
         type_clause_display: parameter.type_clause_display.clone(),
+        table_line: None,
     }
 }
 

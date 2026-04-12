@@ -5689,7 +5689,7 @@ fn dependency_surface_text(text: &str) -> Arc<str> {
             Some(DependencyBlock::Method) => {
                 if first == Some("endmethod") {
                     stack.pop();
-                } else if !dependency_surface_keeps_statement(first) {
+                } else if !dependency_surface_keeps_statement(&keywords) {
                     blank_range_preserving_layout(&mut projected, statement_range);
                 }
                 idx = period_idx + 1;
@@ -5698,7 +5698,7 @@ fn dependency_surface_text(text: &str) -> Arc<str> {
             Some(DependencyBlock::Form) => {
                 if first == Some("endform") {
                     stack.pop();
-                } else if !dependency_surface_keeps_statement(first) {
+                } else if !dependency_surface_keeps_statement(&keywords) {
                     blank_range_preserving_layout(&mut projected, statement_range);
                 }
                 idx = period_idx + 1;
@@ -5707,7 +5707,7 @@ fn dependency_surface_text(text: &str) -> Arc<str> {
             Some(DependencyBlock::Function) => {
                 if first == Some("endfunction") {
                     stack.pop();
-                } else if !dependency_surface_keeps_statement(first) {
+                } else if !dependency_surface_keeps_statement(&keywords) {
                     blank_range_preserving_layout(&mut projected, statement_range);
                 }
                 idx = period_idx + 1;
@@ -5719,7 +5719,7 @@ fn dependency_surface_text(text: &str) -> Arc<str> {
                     Some("endclass") => {
                         stack.pop();
                     }
-                    Some("include") => {}
+                    Some("include") if dependency_surface_keeps_statement(&keywords) => {}
                     _ => {
                         blank_range_preserving_layout(&mut projected, statement_range);
                     }
@@ -5902,8 +5902,12 @@ fn dependency_class_block_for_keywords(keywords: &[String]) -> Option<Dependency
     None
 }
 
-fn dependency_surface_keeps_statement(first_keyword: Option<&str>) -> bool {
-    matches!(first_keyword, Some("include"))
+fn dependency_surface_keeps_statement(keywords: &[String]) -> bool {
+    matches!(keywords.first().map(String::as_str), Some("include"))
+        && !matches!(
+            keywords.get(1).map(String::as_str),
+            Some("type" | "structure")
+        )
 }
 
 fn statement_keywords(
@@ -6251,6 +6255,33 @@ ENDFUNCTION.
         assert!(projected.contains("INCLUDE zinc_method."));
         assert!(projected.contains("INCLUDE zinc_form."));
         assert!(projected.contains("INCLUDE zinc_function."));
+    }
+
+    #[test]
+    fn dependency_surface_projection_drops_structured_include_type_from_blankened_local_types() {
+        let src = "\
+CLASS zcl_dep DEFINITION.
+  PUBLIC SECTION.
+    TYPES:
+      BEGIN OF ty_pub.
+      INCLUDE TYPE ty_inner AS inner.
+      TYPES field TYPE i,
+      END OF ty_pub.
+ENDCLASS.
+
+CLASS zcl_dep IMPLEMENTATION.
+  METHOD run.
+    TYPES:
+      BEGIN OF ty_local,
+        field TYPE i.
+    INCLUDE TYPE ty_other AS other.
+    TYPES: END OF ty_local.
+  ENDMETHOD.
+ENDCLASS.";
+        let projected = dependency_surface_text(src);
+
+        assert!(projected.contains("INCLUDE TYPE ty_inner AS inner."));
+        assert!(!projected.contains("INCLUDE TYPE ty_other AS other."));
     }
 
     #[test]

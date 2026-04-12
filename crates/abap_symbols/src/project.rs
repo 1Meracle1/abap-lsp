@@ -8,6 +8,7 @@ use crate::def_map::{
     Diagnostic, DiagnosticKind, Resolution, SqlProjectionKind, StructureData, StructureFieldData,
     UnitAnalysis,
 };
+use crate::facts::infer_semantic_facts;
 use crate::ids::{SymbolHandle, SymbolId, UnitId};
 use crate::resolver::{
     ScopeIndex, build_scope_index, resolve_project_cross_unit,
@@ -100,13 +101,17 @@ fn resolve_value_symbol_in_scope_chain(
 ) -> Option<SymbolId> {
     let mut current = Some(scope);
     while let Some(scope_id) = current {
-        if let Some(symbols) =
-            scope_index[scope_id.as_usize()].get(&(Namespace::Value, Arc::clone(name)))
+        if let Some(symbols) = scope_index
+            .get(scope_id.as_usize())
+            .and_then(|scope_map| scope_map.get(&(Namespace::Value, Arc::clone(name))))
             && let Some(symbol) = symbols.last().copied()
         {
             return Some(symbol);
         }
-        current = unit.scope(scope_id).parent;
+        current = unit
+            .scopes
+            .get(scope_id.as_usize())
+            .and_then(|scope| scope.parent);
     }
     None
 }
@@ -244,6 +249,7 @@ pub(crate) fn resolve_local_phase(mut collected: CollectedUnit) -> LocallyResolv
     let scope_index = build_scope_index(&collected.unit);
     resolve_unit_with_index(&mut collected.unit, &scope_index);
     infer_inline_select_target_shapes(&mut collected.unit, &scope_index);
+    infer_semantic_facts(std::slice::from_mut(&mut collected.unit));
     collected.unit.rebuild_semantic_index();
     let exported_signature = exported_signature_for_unit(&collected.unit);
     LocallyResolvedUnit {
@@ -522,6 +528,7 @@ pub(crate) fn analyze_project_incremental_from_locals(
         &dirty_set.unit_ids,
     );
     resolve_project_cross_unit_for_units(&mut units, &dirty_set.unit_ids);
+    infer_semantic_facts(&mut units);
     for unit_id in &dirty_set.unit_ids {
         units[unit_id.as_usize()].rebuild_semantic_index();
     }
@@ -557,6 +564,7 @@ fn analyze_project_from_local_units(local_units: Vec<LocallyResolvedUnit>) -> Pr
         &dirty_unit_ids,
     );
     resolve_project_cross_unit(&mut units);
+    infer_semantic_facts(&mut units);
     for unit in &mut units {
         unit.rebuild_semantic_index();
     }

@@ -17,17 +17,19 @@ use std::sync::Arc;
 use abap_ast::arena::NodeId;
 use abap_ast::ast::{
     AstNode, CallArgList, ConstructorBaseClause, ConstructorForClause, ConstructorLinesOfClause,
-    DeclClause, MethodsParamSectionKind, TypeClauseKind, TypeRefSimple,
+    DeclClause, MethodsParamSectionKind, StructuredIncludeClause, StructuredIncludeKind,
+    TypeClauseKind, TypeRefSimple,
 };
 use abap_ast::{File, SyntaxKind};
 use abap_lexer::{TextRange, Token, TokenKind};
 
 use crate::def_map::{
     AssignmentSiteData, CallSiteData, ClassInheritanceData, ClassMemberData, Diagnostic,
-    FieldAccess, FieldTypeRefData, FormRoutineData, FunctionModuleData, ImplementedInterfaceData,
-    IncludeEdge, LoopWhereFieldContext, MemberAliasData, NamedArgumentAccess, PerformCallData,
-    ReferenceData, SqlNameRefData, SqlPredicateData, SqlProjectionData, SqlQueryData,
-    SqlSourceData, SqlTargetData, StructureData, SymbolData, UnitAnalysis,
+    ExpressionFactData, FieldAccess, FieldTypeRefData, FormRoutineData, FunctionModuleData,
+    ImplementedInterfaceData, IncludeEdge, LoopWhereFieldContext, MemberAliasData,
+    NamedArgumentAccess, PerformCallData, ReferenceData, SqlNameRefData, SqlPredicateData,
+    SqlProjectionData, SqlQueryData, SqlSourceData, SqlTargetData, StructureData, SymbolData,
+    UnitAnalysis, ValueFlowEdgeData,
 };
 use crate::ids::{ScopeId, StructureId, SymbolId, UnitId};
 use crate::scope::{Namespace, ScopeData, ScopeKind};
@@ -49,9 +51,16 @@ struct PendingStructureField {
 }
 
 #[derive(Debug, Clone)]
+pub(super) struct PendingStructureInclude {
+    type_ref: FieldTypeRefData,
+    alias: Option<Arc<str>>,
+    suffix: Option<Arc<str>>,
+}
+
+#[derive(Debug, Clone)]
 enum PendingStructureMember {
     Field(PendingStructureField),
-    Include { type_ref: FieldTypeRefData },
+    Include(PendingStructureInclude),
 }
 
 #[derive(Debug, Clone)]
@@ -113,6 +122,8 @@ pub struct Collector<'a> {
     named_arguments: Vec<NamedArgumentAccess>,
     call_sites: Vec<CallSiteData>,
     assignment_sites: Vec<AssignmentSiteData>,
+    expression_facts: Vec<ExpressionFactData>,
+    value_flow_edges: Vec<ValueFlowEdgeData>,
     perform_calls: Vec<PerformCallData>,
     sql_queries: Vec<SqlQueryData>,
     sql_sources: Vec<SqlSourceData>,
@@ -161,6 +172,8 @@ impl<'a> Collector<'a> {
             named_arguments: Vec::new(),
             call_sites: Vec::new(),
             assignment_sites: Vec::new(),
+            expression_facts: Vec::new(),
+            value_flow_edges: Vec::new(),
             perform_calls: Vec::new(),
             sql_queries: Vec::new(),
             sql_sources: Vec::new(),
@@ -213,6 +226,8 @@ impl<'a> Collector<'a> {
             named_arguments: self.named_arguments,
             call_sites: self.call_sites,
             assignment_sites: self.assignment_sites,
+            expression_facts: self.expression_facts,
+            value_flow_edges: self.value_flow_edges,
             perform_calls: self.perform_calls,
             sql_queries: self.sql_queries,
             sql_sources: self.sql_sources,
@@ -872,8 +887,8 @@ impl<'a> Collector<'a> {
                     members.push(PendingStructureMember::Field(field));
                 }
                 SyntaxKind::StructuredIncludeClause => {
-                    let type_ref = self.type_ref_from_structured_include_clause(child)?;
-                    members.push(PendingStructureMember::Include { type_ref });
+                    let include = self.pending_structure_include_from_clause(child)?;
+                    members.push(PendingStructureMember::Include(include));
                 }
                 _ => {}
             }
@@ -899,10 +914,23 @@ impl<'a> Collector<'a> {
         })
     }
 
-    fn type_ref_from_structured_include_clause(&self, node: NodeId) -> Option<FieldTypeRefData> {
-        self.syntax(node)
-            .child_by_kind(SyntaxKind::TypeRefSimple)
-            .and_then(|type_ref| self.field_type_ref_from_node(type_ref.id(), Namespace::Type))
+    fn pending_structure_include_from_clause(
+        &self,
+        node: NodeId,
+    ) -> Option<PendingStructureInclude> {
+        let clause = StructuredIncludeClause::cast(self.syntax(node))?;
+        let namespace = match clause.kind(self.source)? {
+            StructuredIncludeKind::Type => Namespace::Type,
+            StructuredIncludeKind::Structure => Namespace::Value,
+        };
+        let type_ref = clause.type_ref().and_then(|type_ref| {
+            self.field_type_ref_from_node(type_ref.syntax().id(), namespace)
+        })?;
+        Some(PendingStructureInclude {
+            type_ref,
+            alias: clause.alias_name(self.source),
+            suffix: clause.suffix(self.source),
+        })
     }
 
     fn direct_type_ref_children(&self, node: NodeId) -> Vec<NodeId> {
@@ -963,6 +991,15 @@ impl<'a> Collector<'a> {
         let clause = DeclClause::cast(self.syntax(clause_node))?;
         let kind = clause.type_clause_kind(self.source)?;
         Some(self.namespace_from_type_clause_kind(kind))
+    }
+
+    fn structured_include_namespace_hint(&self, clause_node: NodeId) -> Option<Namespace> {
+        let clause = StructuredIncludeClause::cast(self.syntax(clause_node))?;
+        let kind = clause.kind(self.source)?;
+        Some(match kind {
+            StructuredIncludeKind::Type => Namespace::Type,
+            StructuredIncludeKind::Structure => Namespace::Value,
+        })
     }
 
     fn type_ref_from_typed_clause(&self, node: NodeId) -> Option<FieldTypeRefData> {

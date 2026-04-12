@@ -21,6 +21,14 @@ fn is_keyword(source: &str, token: &Token, kw: &str) -> bool {
     token.kind == TokenKind::Ident && token.lexeme(source).eq_ignore_ascii_case(kw)
 }
 
+fn is_structured_decl_continuation_keyword(source: &str, token: &Token) -> bool {
+    is_keyword(source, token, "types")
+        || is_keyword(source, token, "data")
+        || is_keyword(source, token, "statics")
+        || is_keyword(source, token, "constants")
+        || is_keyword(source, token, "field-symbols")
+}
+
 /// If `tokens[idx]` begins `DATA … TYPE … .` (optionally `DATA:` and comma-separated clauses),
 /// returns the structured node and the index after the closing `.`. Otherwise `None`.
 pub fn try_parse_data_decl(
@@ -704,6 +712,26 @@ fn parse_structured_decl(
         if tokens.get(i).map(|t| t.kind) == Some(TokenKind::Comma) {
             children.push(token_leaf(b, tokens.get(i)?));
             i += 1;
+            continue;
+        }
+        if tokens.get(i).map(|t| t.kind) == Some(TokenKind::Period) {
+            children.push(token_leaf(b, tokens.get(i)?));
+            i += 1;
+            while tokens.get(i).map(|t| t.kind) == Some(TokenKind::Comment) {
+                children.push(token_leaf(b, tokens.get(i)?));
+                i += 1;
+            }
+            if tokens
+                .get(i)
+                .is_some_and(|token| is_structured_decl_continuation_keyword(source, token))
+            {
+                children.push(token_leaf(b, tokens.get(i)?));
+                i += 1;
+                if tokens.get(i).map(|t| t.kind) == Some(TokenKind::Colon) {
+                    children.push(token_leaf(b, tokens.get(i)?));
+                    i += 1;
+                }
+            }
         }
     }
     None
@@ -1418,6 +1446,109 @@ mod tests {
         assert_eq!(
             file.count_kind(file.root(), SyntaxKind::TypesTypedClause),
             2
+        );
+    }
+
+    #[test]
+    fn block_structured_types_clause_keeps_namespaced_include_type_as_structured_include() {
+        let src = "\
+TYPES:\n\
+  BEGIN OF ts_notif_attr_split.\n\
+  INCLUDE TYPE /sttp/s_ru_notif_attr_split AS attr_split.\n\
+  TYPES: split_by_size_end TYPE abap_bool,\n\
+         split_by_size_seq TYPE i,\n\
+  END OF ts_notif_attr_split.";
+        let parsed = crate::parse(src);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::StructuredIncludeClause),
+            1
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::IncludeStmt),
+            0
+        );
+    }
+
+    #[test]
+    fn structured_include_clause_exposes_alias_and_suffix() {
+        use abap_ast::ast::{
+            AstNode, StructuredIncludeClause, StructuredIncludeKind, SyntaxNodeRef,
+        };
+
+        let src = "TYPES: BEGIN OF ty_outer, INCLUDE TYPE ty_inner AS inner RENAMING WITH SUFFIX _x, END OF ty_outer.";
+        let parsed = crate::parse(src);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let clause = StructuredIncludeClause::cast(SyntaxNodeRef::new(
+            &parsed.file,
+            parsed
+                .file
+                .find_first_kind(parsed.file.root(), SyntaxKind::StructuredIncludeClause)
+                .expect("structured include"),
+        ))
+        .expect("structured include");
+        assert_eq!(clause.kind(src), Some(StructuredIncludeKind::Type));
+        assert_eq!(clause.alias_name(src).as_deref(), Some("inner"));
+        assert_eq!(clause.suffix(src).as_deref(), Some("_x"));
+        assert!(clause.type_ref().is_some());
+    }
+
+    #[test]
+    fn block_structured_types_clause_accepts_following_types_prefix_without_space() {
+        let src = "\
+CLASS /STTP/CL_REP_RU DEFINITION.\n\
+  PUBLIC SECTION.\n\
+    TYPES:\n\
+      BEGIN OF ts_notif_attr_split.\n\
+      INCLUDE TYPE /sttp/s_ru_notif_attr_split AS attr_split.\n\
+      TYPES:split_by_size_end TYPE abap_bool,\n\
+            split_by_size_seq TYPE i,\n\
+            END OF ts_notif_attr_split .\n\
+ENDCLASS.";
+        let parsed = crate::parse(src);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::StructuredIncludeClause),
+            1
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::IncludeStmt),
+            0
+        );
+    }
+
+    #[test]
+    fn structured_types_clause_accepts_hybrid_comma_and_period_include_form() {
+        let src = "\
+METHOD run.\n\
+  TYPES:\n\
+    BEGIN OF ts_revt_obj_rel,\n\
+      objid TYPE /sttp/e_objid.\n\
+  INCLUDE TYPE /sttp/rep_evt AS rep_evt.\n\
+  TYPES: END OF ts_revt_obj_rel,\n\
+         tt_revt_obj_rel TYPE STANDARD TABLE OF ts_revt_obj_rel WITH DEFAULT KEY.\n\
+ENDMETHOD.";
+        let parsed = crate::parse(src);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::StructuredIncludeClause),
+            1
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::IncludeStmt),
+            0
         );
     }
 

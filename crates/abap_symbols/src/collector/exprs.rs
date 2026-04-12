@@ -99,6 +99,7 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
             structure,
             declared_type: Some(declared_type),
             type_clause_display,
+            table_line: None,
         }
     }
 
@@ -183,6 +184,7 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
             structure,
             declared_type,
             type_clause_display: None,
+            table_line: None,
         }
     }
 
@@ -392,6 +394,7 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
             structure: None,
             declared_type: Some(declared_type),
             type_clause_display: Some(Arc::from(display_text)),
+            table_line: None,
         }
     }
 
@@ -435,6 +438,7 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
             structure: self.ctx.symbol_structure(symbol_id),
             declared_type: self.ctx.symbol_declared_type(symbol_id),
             type_clause_display: self.ctx.symbol_type_clause_display(symbol_id),
+            table_line: None,
         }
     }
 
@@ -458,6 +462,7 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                     structure: None,
                     declared_type: Some(Self::builtin_type("i")),
                     type_clause_display: None,
+                    table_line: None,
                 };
             }
             if text.starts_with('`') && text.ends_with('`') {
@@ -465,6 +470,7 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                     structure: None,
                     declared_type: Some(Self::builtin_type("string")),
                     type_clause_display: None,
+                    table_line: None,
                 };
             }
             if self.ctx.syntax_token_is_ident_like(first)
@@ -502,6 +508,7 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                     field_path: Vec::new(),
                 }),
                 type_clause_display: Some(Arc::from(format!("REF TO {}", type_name))),
+                table_line: None,
             };
         }
         TypeFactData::default()
@@ -679,6 +686,7 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                             arg_list,
                             scope,
                             NamedArgumentTarget::Constructor { type_name },
+                            self.ctx.file().range(node),
                         );
                     } else if constructor_keyword.as_deref() == Some("value") {
                         self.collect_value_constructor_arg_list(arg_list, scope);
@@ -3438,6 +3446,7 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
         node: NodeId,
         scope: ScopeId,
         target: NamedArgumentTarget,
+        call_range: TextRange,
     ) {
         let Some(arg_list) = CallArgList::cast(self.ctx.syntax(node)) else {
             return;
@@ -3501,7 +3510,7 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
         }
         self.ctx.emit_call_site(CallSiteData {
             scope,
-            range: self.ctx.file().range(node),
+            range: call_range,
             target,
             arguments,
         });
@@ -3663,7 +3672,12 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                                         method_name: Arc::clone(&name),
                                     }
                                 };
-                            self.collect_call_argument_list(arg_list, scope, target);
+                            self.collect_call_argument_list(
+                                arg_list,
+                                scope,
+                                target,
+                                self.ctx.file().range(node),
+                            );
                         }
                     }
                 }
@@ -3672,7 +3686,12 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
             if let Some(target) = self.ctx.named_argument_target_for_callee(callee_id)
                 && let Some(arg_list) = arg_list
             {
-                self.collect_call_argument_list(arg_list, scope, target);
+                self.collect_call_argument_list(
+                    arg_list,
+                    scope,
+                    target,
+                    self.ctx.file().range(node),
+                );
             }
         }
     }
