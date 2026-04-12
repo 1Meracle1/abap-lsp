@@ -112,7 +112,7 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
         for (child, kind_syntax) in children {
             match kind_syntax {
                 SyntaxKind::SqlDataSource => {
-                    self.collect_sql_data_source(query_id, child, scope, SqlSourceKind::From, None);
+                    self.collect_insert_db_table_target(query_id, child, scope);
                 }
                 SyntaxKind::ExprIdent
                 | SyntaxKind::SelectorExpr
@@ -122,6 +122,7 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
                 | SyntaxKind::ParenExpr
                 | SyntaxKind::ConstructorExpr
                 | SyntaxKind::TemplateExpr => self.ctx.expr_lowering().collect_expr(child, scope),
+                SyntaxKind::SqlHostExpr => self.collect_sql_host_refs_from_node(child, scope),
                 _ => {}
             }
         }
@@ -633,6 +634,34 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
                 _ => {}
             }
         }
+    }
+
+    fn collect_insert_db_table_target(&mut self, query_id: usize, node: NodeId, scope: ScopeId) {
+        let tokens: Vec<_> = self
+            .ctx
+            .syntax_token_nodes(node)
+            .into_iter()
+            .filter(|token| !self.ctx.syntax_token_is_comment(token))
+            .collect();
+        if tokens.len() >= 2
+            && tokens
+                .first()
+                .is_some_and(|token| token.text.as_ref() == "(")
+            && tokens
+                .last()
+                .is_some_and(|token| token.text.as_ref() == ")")
+        {
+            if tokens.len() > 2 {
+                self.ctx.collect_token_expression_refs_infos(
+                    &tokens[1..tokens.len() - 1],
+                    scope,
+                    true,
+                );
+            }
+            return;
+        }
+
+        self.collect_sql_data_source(query_id, node, scope, SqlSourceKind::From, None);
     }
 
     fn collect_select_join_clause(&mut self, query_id: usize, node: NodeId, scope: ScopeId) {

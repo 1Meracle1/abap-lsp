@@ -1402,6 +1402,80 @@ INSERT zattp_sequen_bf FROM TABLE lt_sequen_buff ACCEPTING DUPLICATE KEYS.
 }
 
 #[test]
+fn collects_sql_semantics_for_insert_into_dbtab_values_constructor_expr() {
+    let src = r#"
+TYPES: BEGIN OF zattp_rs_ruleacc,
+         parent_rule_rep TYPE string,
+         child_rule_rep TYPE string,
+       END OF zattp_rs_ruleacc.
+
+DATA ls_rep_evt TYPE zattp_rs_ruleacc.
+FIELD-SYMBOLS <fs_repevtid> TYPE zattp_rs_ruleacc.
+
+INSERT INTO zattp_rs_ruleacc
+  VALUES @( VALUE #( parent_rule_rep = ls_rep_evt-parent_rule_rep
+                     child_rule_rep = <fs_repevtid>-child_rule_rep ) ).
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///insert_dbtab_values.abap", src, &parsed);
+
+    assert_eq!(unit.sql_queries.len(), 1, "{:?}", unit.sql_queries);
+    assert_eq!(unit.sql_sources.len(), 1, "{:?}", unit.sql_sources);
+    assert_eq!(unit.sql_sources[0].name.as_ref(), "zattp_rs_ruleacc");
+    assert!(unit.sql_name_refs.iter().any(|reference| {
+        reference.kind == SqlNameRefKind::Source && reference.name.as_ref() == "zattp_rs_ruleacc"
+    }));
+    assert!(unit.references.iter().any(|reference| {
+        reference.namespace == Namespace::Value
+            && reference.name.as_ref() == "ls_rep_evt"
+            && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+    }));
+    assert!(unit.references.iter().any(|reference| {
+        reference.namespace == Namespace::Value
+            && reference.name.as_ref() == "<fs_repevtid>"
+            && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+    }));
+    assert!(!unit.diagnostics.iter().any(|diag| {
+        diag.kind == DiagnosticKind::UnresolvedReference
+            && diag.message.contains("zattp_rs_ruleacc")
+    }));
+}
+
+#[test]
+fn insert_into_dynamic_dbtab_values_resolves_dynamic_target_without_sql_source_diag() {
+    let src = r#"
+DATA lv_master TYPE string.
+DATA im_pmast TYPE string.
+
+INSERT INTO (lv_master) VALUES im_pmast.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///insert_dbtab_dynamic.abap", src, &parsed);
+
+    assert_eq!(unit.sql_queries.len(), 1, "{:?}", unit.sql_queries);
+    assert!(unit.sql_sources.is_empty(), "{:?}", unit.sql_sources);
+    assert!(!unit.sql_name_refs.iter().any(|reference| {
+        reference.kind == SqlNameRefKind::Source && reference.name.as_ref() == "(lv_master)"
+    }));
+    assert!(unit.references.iter().any(|reference| {
+        reference.namespace == Namespace::Value
+            && reference.name.as_ref() == "lv_master"
+            && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+    }));
+    assert!(unit.references.iter().any(|reference| {
+        reference.namespace == Namespace::Value
+            && reference.name.as_ref() == "im_pmast"
+            && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+    }));
+    assert!(
+        !unit
+            .diagnostics
+            .iter()
+            .any(|diag| { diag.kind == DiagnosticKind::UnverifiedOpenSqlSource })
+    );
+}
+
+#[test]
 fn open_sql_where_bare_ident_resolves_to_method_parameter_not_sql_column() {
     let src = r#"
 CLASS zcl_demo DEFINITION.
@@ -7599,20 +7673,34 @@ START-OF-SELECTION.
         .unit_by_uri("file:///fm_main_validate.abap")
         .expect("main unit");
 
-    assert!(main_unit.diagnostics.iter().any(|diag| {
-        diag.kind == DiagnosticKind::DuplicateNamedParameter
-            && diag.message.contains("duplicate named parameter 'iv_name'")
-    }), "{:?}", main_unit.diagnostics);
-    assert!(main_unit.diagnostics.iter().any(|diag| {
-        diag.kind == DiagnosticKind::UnknownNamedParameter
-            && diag
-                .message
-                .contains("unknown named parameter 'iv_missing' for function module")
-    }), "{:?}", main_unit.diagnostics);
-    assert!(main_unit.diagnostics.iter().any(|diag| {
-        diag.kind == DiagnosticKind::UnknownNamedParameter
-            && diag.message.contains("unknown exception 'unknown_exc' for function module")
-    }), "{:?}", main_unit.diagnostics);
+    assert!(
+        main_unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::DuplicateNamedParameter
+                && diag.message.contains("duplicate named parameter 'iv_name'")
+        }),
+        "{:?}",
+        main_unit.diagnostics
+    );
+    assert!(
+        main_unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnknownNamedParameter
+                && diag
+                    .message
+                    .contains("unknown named parameter 'iv_missing' for function module")
+        }),
+        "{:?}",
+        main_unit.diagnostics
+    );
+    assert!(
+        main_unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnknownNamedParameter
+                && diag
+                    .message
+                    .contains("unknown exception 'unknown_exc' for function module")
+        }),
+        "{:?}",
+        main_unit.diagnostics
+    );
 }
 
 #[test]

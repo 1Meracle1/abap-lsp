@@ -2142,6 +2142,39 @@ where
     expr_end
 }
 
+fn scan_and_push_sql_host_or_expr_clause<F>(
+    b: &mut SyntaxTreeBuilder,
+    children: &mut Vec<NodeId>,
+    source: &str,
+    tokens: &[Token],
+    expr_start: usize,
+    end_exclusive: usize,
+    prev_before_first: Option<&Token>,
+    clause_starts: &F,
+) -> usize
+where
+    F: Fn(&[Token], usize) -> bool,
+{
+    let expr_end = scan_until_clause(tokens, expr_start, end_exclusive, clause_starts);
+    if let Some((host_expr, next_idx)) =
+        build_sql_host_expr(b, source, tokens, expr_start, expr_end)
+        && next_idx == expr_end
+    {
+        children.push(host_expr);
+    } else {
+        push_expr_child(
+            b,
+            children,
+            source,
+            tokens,
+            expr_start,
+            expr_end,
+            prev_before_first,
+        );
+    }
+    expr_end
+}
+
 fn scan_and_push_logical_expr_clause<F>(
     b: &mut SyntaxTreeBuilder,
     children: &mut Vec<NodeId>,
@@ -2733,11 +2766,17 @@ fn insert_into_table_tail_clause_starts(source: &str, tokens: &[Token], idx: usi
                     .is_some_and(|next| is_keyword(source, next, "into"))))
 }
 
-fn insert_db_table_source_clause_starts(source: &str, tokens: &[Token], idx: usize) -> bool {
+fn insert_db_table_clause_starts(source: &str, tokens: &[Token], idx: usize) -> bool {
     let Some(token) = tokens.get(idx) else {
         return false;
     };
-    token.kind == TokenKind::Ident && is_keyword(source, token, "from")
+    token.kind == TokenKind::Ident
+        && (is_keyword(source, token, "from")
+            || is_keyword(source, token, "values")
+            || is_keyword(source, token, "using")
+            || is_keyword(source, token, "client")
+            || is_keyword(source, token, "connection")
+            || is_keyword(source, token, "accepting"))
 }
 
 fn insert_db_table_tail_clause_starts(source: &str, tokens: &[Token], idx: usize) -> bool {
@@ -2745,6 +2784,177 @@ fn insert_db_table_tail_clause_starts(source: &str, tokens: &[Token], idx: usize
         return false;
     };
     token.kind == TokenKind::Ident && is_keyword(source, token, "accepting")
+}
+
+fn find_insert_into_db_table_target_end(
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    end_exclusive: usize,
+) -> Option<usize> {
+    let mut paren = 0i32;
+    let mut bracket = 0i32;
+    let mut brace = 0i32;
+    let mut first_db_clause = None;
+    let mut idx = start;
+
+    while idx < end_exclusive {
+        let token = &tokens[idx];
+        if paren == 0 && bracket == 0 && brace == 0 && token.kind == TokenKind::Ident {
+            if is_keyword(source, token, "values") {
+                return Some(first_db_clause.unwrap_or(idx));
+            }
+            if is_keyword(source, token, "using")
+                || is_keyword(source, token, "client")
+                || is_keyword(source, token, "connection")
+            {
+                first_db_clause.get_or_insert(idx);
+            } else if is_keyword(source, token, "index")
+                || is_keyword(source, token, "assigning")
+                || is_keyword(source, token, "set")
+                || (is_keyword(source, token, "reference")
+                    && tokens
+                        .get(idx + 1)
+                        .is_some_and(|next| is_keyword(source, next, "into")))
+            {
+                return None;
+            }
+        }
+
+        match token.kind {
+            TokenKind::LParen => paren += 1,
+            TokenKind::RParen => paren -= 1,
+            TokenKind::LBracket => bracket += 1,
+            TokenKind::RBracket => bracket -= 1,
+            TokenKind::LBrace => brace += 1,
+            TokenKind::RBrace => brace -= 1,
+            _ => {}
+        }
+        idx += 1;
+    }
+
+    None
+}
+
+fn build_insert_db_table_stmt(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    insert_idx: usize,
+    period_i: usize,
+    into_idx: Option<usize>,
+    target_start: usize,
+    target_end: usize,
+) -> NodeId {
+    let insert_tok = &tokens[insert_idx];
+    let mut children = Vec::with_capacity(period_i - insert_idx + 1);
+    children.push(token_leaf(b, insert_tok));
+    if let Some(into_idx) = into_idx {
+        children.push(token_leaf(b, &tokens[into_idx]));
+    }
+
+    if let Some(source_node) = build_sql_data_source(b, source, tokens, target_start, target_end) {
+        children.push(source_node);
+    } else {
+        push_token_children(b, &mut children, tokens, target_start, target_end);
+    }
+
+    let clause_starts =
+        |tokens: &[Token], i: usize| insert_db_table_clause_starts(source, tokens, i);
+    let tail_clause =
+        |tokens: &[Token], i: usize| insert_db_table_tail_clause_starts(source, tokens, i);
+
+    let mut i = target_end;
+    while i < period_i {
+        let token = &tokens[i];
+        if is_keyword(source, token, "using")
+            && tokens
+                .get(i + 1)
+                .is_some_and(|next| is_keyword(source, next, "client"))
+        {
+            children.push(token_leaf(b, token));
+            children.push(token_leaf(b, &tokens[i + 1]));
+            i = scan_and_push_sql_host_or_expr_clause(
+                b,
+                &mut children,
+                source,
+                tokens,
+                i + 2,
+                period_i,
+                Some(&tokens[i + 1]),
+                &clause_starts,
+            );
+            continue;
+        }
+        if is_keyword(source, token, "connection") {
+            children.push(token_leaf(b, token));
+            i = scan_and_push_sql_host_or_expr_clause(
+                b,
+                &mut children,
+                source,
+                tokens,
+                i + 1,
+                period_i,
+                Some(token),
+                &clause_starts,
+            );
+            continue;
+        }
+        if is_keyword(source, token, "client") {
+            children.push(token_leaf(b, token));
+            i += 1;
+            if i < period_i && is_keyword(source, &tokens[i], "specified") {
+                children.push(token_leaf(b, &tokens[i]));
+                i += 1;
+            }
+            continue;
+        }
+        if is_keyword(source, token, "values") {
+            children.push(token_leaf(b, token));
+            i = scan_and_push_sql_host_or_expr_clause(
+                b,
+                &mut children,
+                source,
+                tokens,
+                i + 1,
+                period_i,
+                Some(token),
+                &tail_clause,
+            );
+            continue;
+        }
+        if is_keyword(source, token, "from") {
+            children.push(token_leaf(b, token));
+            i += 1;
+            if tokens
+                .get(i)
+                .is_some_and(|token| is_keyword(source, token, "table"))
+            {
+                children.push(token_leaf(b, &tokens[i]));
+                i += 1;
+            }
+            i = scan_and_push_sql_host_or_expr_clause(
+                b,
+                &mut children,
+                source,
+                tokens,
+                i,
+                period_i,
+                Some(token),
+                &tail_clause,
+            );
+            continue;
+        }
+        children.push(token_leaf(b, token));
+        i += 1;
+    }
+
+    children.push(token_leaf(b, &tokens[period_i]));
+    b.branch(
+        SyntaxKind::InsertDbTableStmt,
+        insert_tok.range.start..tokens[period_i].range.end,
+        &children,
+    )
 }
 
 fn modify_clause_starts(source: &str, tokens: &[Token], idx: usize) -> bool {
@@ -5898,60 +6108,41 @@ pub fn try_parse_insert_table_stmt(
             let Some(into_idx) =
                 find_top_level_keyword_index(source, tokens, idx + 1, period_i, "into")
             else {
-                let Some(from_idx) =
+                let Some(_from_idx) =
                     find_top_level_keyword_index(source, tokens, idx + 1, period_i, "from")
                 else {
                     return None;
                 };
-                let mut children = Vec::with_capacity(period_i - idx + 1);
-                children.push(token_leaf(b, insert_tok));
-                let target_clause = |tokens: &[Token], i: usize| {
-                    insert_db_table_source_clause_starts(source, tokens, i)
-                };
-                let target_end = scan_until_clause(tokens, idx + 1, from_idx, &target_clause);
-                if let Some(source_node) =
-                    build_sql_data_source(b, source, tokens, idx + 1, target_end)
-                {
-                    children.push(source_node);
-                } else {
-                    push_token_children(b, &mut children, tokens, idx + 1, from_idx);
-                }
-                push_token_children(b, &mut children, tokens, target_end, from_idx);
-
-                children.push(token_leaf(b, &tokens[from_idx]));
-                let mut i = from_idx + 1;
-                if tokens
-                    .get(i)
-                    .is_some_and(|token| is_keyword(source, token, "table"))
-                {
-                    children.push(token_leaf(b, &tokens[i]));
-                    i += 1;
-                }
-                let tail_clause = |tokens: &[Token], i: usize| {
-                    insert_db_table_tail_clause_starts(source, tokens, i)
-                };
-                i = scan_and_push_expr_clause(
+                let target_clause =
+                    |tokens: &[Token], i: usize| insert_db_table_clause_starts(source, tokens, i);
+                let target_end = scan_until_clause(tokens, idx + 1, period_i, &target_clause);
+                let node = build_insert_db_table_stmt(
                     b,
-                    &mut children,
                     source,
                     tokens,
-                    i,
+                    idx,
                     period_i,
-                    Some(&tokens[from_idx]),
-                    &tail_clause,
-                );
-                while i < period_i {
-                    children.push(token_leaf(b, &tokens[i]));
-                    i += 1;
-                }
-                children.push(token_leaf(b, &tokens[period_i]));
-                let node = b.branch(
-                    SyntaxKind::InsertDbTableStmt,
-                    insert_tok.range.start..tokens[period_i].range.end,
-                    &children,
+                    None,
+                    idx + 1,
+                    target_end,
                 );
                 return Some((node, period_i + 1));
             };
+            if let Some(target_end) =
+                find_insert_into_db_table_target_end(source, tokens, into_idx + 1, period_i)
+            {
+                let node = build_insert_db_table_stmt(
+                    b,
+                    source,
+                    tokens,
+                    idx,
+                    period_i,
+                    Some(into_idx),
+                    into_idx + 1,
+                    target_end,
+                );
+                return Some((node, period_i + 1));
+            }
             let has_table_kw = tokens
                 .get(into_idx + 1)
                 .is_some_and(|t| is_keyword(source, t, "table"));
@@ -8529,6 +8720,46 @@ END-OF-PAGE.\nWRITE 'e'.",
                 .count_kind(parsed.file.root(), SyntaxKind::InsertTableStmt),
             0
         );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::InsertDbTableStmt),
+            1
+        );
+    }
+
+    #[test]
+    fn parses_insert_into_dbtab_values_constructor_operands_as_ast_children() {
+        let parsed = crate::parse(
+            "INSERT INTO zattp_rs_ruleacc\n  VALUES @( VALUE #( parent_rule_rep = ls_rep_evt-rep_evtid\n                     child_rule_rep = <fs_repevtid>-rep_evtid ) ).",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let stmt = parsed
+            .file
+            .find_first_kind(parsed.file.root(), SyntaxKind::InsertDbTableStmt)
+            .expect("insert db table stmt");
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::SqlDataSource), 1);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::SqlHostExpr), 1);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::Error), 0);
+    }
+
+    #[test]
+    fn parses_insert_into_dynamic_dbtab_values_stmt() {
+        let parsed = crate::parse("INSERT INTO (lv_master) VALUES im_pmast.");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::InsertTableStmt),
+            0
+        );
+        let stmt = parsed
+            .file
+            .find_first_kind(parsed.file.root(), SyntaxKind::InsertDbTableStmt)
+            .expect("insert db table stmt");
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::SqlDataSource), 1);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::ExprIdent), 1);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::Error), 0);
     }
 
     #[test]
