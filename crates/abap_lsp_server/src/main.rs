@@ -1342,17 +1342,10 @@ fn handle_remote_dependencies_updated_notifications(
                     .workspaces
                     .get(&params.workspace_uri)
                     .and_then(|workspace| {
-                        workspace
-                            .open_documents
-                            .contains_key(uri)
-                            .then_some(uri.as_str())
-                            .and_then(|uri| {
-                                workspace
-                                    .cache
-                                    .get(uri)
-                                    .filter(|snapshot| !snapshot.is_dependency)
-                                    .map(|_| Arc::<str>::from(uri))
-                            })
+                        workspace.cache.get(uri).and_then(|snapshot| {
+                            (snapshot.is_dependency || workspace.open_documents.contains_key(uri))
+                                .then_some(Arc::<str>::from(uri.as_str()))
+                        })
                     })
             })
             .collect();
@@ -1830,9 +1823,10 @@ mod tests {
 
     use super::{
         AnalysisTaskKind, CHANGE_ANALYSIS_DEBOUNCE, EDITOR_FIRST_DIAGNOSTIC_LIMIT,
-        RESOLVE_REMOTE_DEPENDENCIES, flush_due_debounced_tasks, handle_did_change_notifications,
-        handle_message, run_analysis_task, try_schedule_background_analysis,
-        workspace_analysis_status_finished, workspace_analysis_status_started,
+        REMOTE_DEPENDENCIES_UPDATED, RESOLVE_REMOTE_DEPENDENCIES, flush_due_debounced_tasks,
+        handle_did_change_notifications, handle_message, run_analysis_task,
+        try_schedule_background_analysis, workspace_analysis_status_finished,
+        workspace_analysis_status_started,
     };
     use abap_lsp::{
         DidChangeTextDocumentParams, ServerConfig, ServerState, WorkspacePerformanceMode,
@@ -3219,6 +3213,121 @@ ENDFUNCTION.";
             candidate.get("kind").and_then(Value::as_str) == Some("function")
                 && candidate.get("name").and_then(Value::as_str)
                     == Some("/aif/determine_trace_level")
+        }));
+    }
+
+    #[test]
+    fn editor_first_remote_dependency_updates_trigger_follow_up_dependency_fetches() {
+        let workspace_path = temp_workspace_path("editor_first_dependency_follow_up");
+        let dependency_dir = workspace_path
+            .join(".abapls")
+            .join("cache")
+            .join("dependencies")
+            .join("global-class");
+        fs::create_dir_all(&dependency_dir).expect("dependency dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[performance]
+mode = "editor-first"
+
+[resolution]
+dependency_mode = "remote-on-demand"
+unknown_symbol_mode = "remote"
+
+[[unit]]
+name = "/STTP/CL_MESSAGES"
+kind = "global-class"
+root_file = ".abapls/cache/dependencies/global-class/%2FSTTP%2FCL_MESSAGES.abap"
+
+[[unit.member]]
+role = "dependency"
+file = ".abapls/cache/dependencies/global-class/%2FSTTP%2FCL_MESSAGES.abap"
+object_name = "/STTP/CL_MESSAGES"
+"#,
+        )
+        .expect("manifest");
+        let dependency_text = "\
+CLASS /STTP/CL_MESSAGES DEFINITION
+  PUBLIC
+  INHERITING FROM /CDBASIS/CL_MESSAGES
+  CREATE PUBLIC.
+  PUBLIC SECTION.
+    TYPES ts_bal_msg TYPE BAL_S_MSG.
+    CONSTANTS:
+      BEGIN OF gcs_log_level,
+        very_high TYPE te_loglevel VALUE 1,
+      END OF gcs_log_level.
+ENDCLASS.
+CLASS /STTP/CL_MESSAGES IMPLEMENTATION.
+ENDCLASS.";
+        let dependency_uri = format!(
+            "{}/.abapls/cache/dependencies/global-class/%2FSTTP%2FCL_MESSAGES.abap",
+            file_uri(&workspace_path)
+        );
+        fs::write(
+            dependency_dir.join("%2FSTTP%2FCL_MESSAGES.abap"),
+            dependency_text,
+        )
+        .expect("dependency file");
+
+        let workspace_uri = file_uri(&workspace_path);
+        let mut state = ServerState::default();
+        let config = ServerConfig::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        refresh_workspace(&mut state, &workspace_uri);
+
+        let handled = handle_message(
+            &mut state,
+            &config,
+            json!({
+                "jsonrpc": "2.0",
+                "method": REMOTE_DEPENDENCIES_UPDATED,
+                "params": {
+                    "workspaceUri": workspace_uri,
+                    "sourceUri": dependency_uri,
+                    "sourceUris": [dependency_uri],
+                    "fetched": ["/sttp/cl_messages"],
+                    "failed": []
+                }
+            }),
+        )
+        .expect("remote dependencies updated");
+
+        let request = handled
+            .notifications
+            .iter()
+            .find(|(method, _)| method == RESOLVE_REMOTE_DEPENDENCIES)
+            .map(|(_, payload)| payload)
+            .expect("follow-up remote dependency request");
+        let source_uris = request
+            .get("sourceUris")
+            .and_then(Value::as_array)
+            .expect("source uris");
+        assert!(
+            source_uris.iter().filter_map(Value::as_str).any(|uri| {
+                uri.contains(".abapls/cache/dependencies/global-class/")
+                    && uri.contains("CL_MESSAGES.abap")
+            }),
+            "unexpected source uris: {source_uris:?}"
+        );
+        let candidates = request
+            .get("candidates")
+            .and_then(Value::as_array)
+            .expect("candidates");
+        assert!(candidates.iter().any(|candidate| {
+            candidate.get("kind").and_then(Value::as_str) == Some("type")
+                && candidate.get("name").and_then(Value::as_str) == Some("/cdbasis/cl_messages")
+        }));
+        assert!(candidates.iter().any(|candidate| {
+            candidate.get("kind").and_then(Value::as_str) == Some("type")
+                && candidate.get("name").and_then(Value::as_str) == Some("bal_s_msg")
+        }));
+        assert!(candidates.iter().any(|candidate| {
+            candidate.get("kind").and_then(Value::as_str) == Some("type")
+                && candidate.get("name").and_then(Value::as_str) == Some("te_loglevel")
         }));
     }
 

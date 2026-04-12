@@ -326,7 +326,10 @@ fn incremental_workspace_document_input(
             uri: Arc::clone(&current.uri),
             version,
             text: Arc::from(text),
-            is_dependency: current.is_dependency && !workspace.open_documents.contains_key(uri),
+            // Keep manifest-backed dependency files in dependency mode even while open.
+            // Promoting them to full analysis on didOpen/didChange lets unsupported private or
+            // implementation syntax corrupt semantic tokens in the public surface.
+            is_dependency: current.is_dependency,
             object_name: current.object_name.clone(),
         });
     }
@@ -354,7 +357,7 @@ fn incremental_workspace_document_input(
         uri: Arc::from(uri),
         version,
         text: Arc::from(text),
-        is_dependency: is_dependency && !workspace.open_documents.contains_key(uri),
+        is_dependency,
         object_name,
     })
 }
@@ -3307,8 +3310,8 @@ object_name = "ZCL_MAIN"
     }
 
     #[test]
-    fn opening_cached_dependency_file_promotes_it_to_full_analysis_and_keeps_it_open() {
-        let workspace_path = temp_workspace_path("workspace_open_dependency_full_analysis");
+    fn opening_cached_dependency_file_keeps_dependency_surface_analysis() {
+        let workspace_path = temp_workspace_path("workspace_open_dependency_surface_analysis");
         let dependency_dir = workspace_path
             .join(".abapls")
             .join("cache")
@@ -3377,17 +3380,14 @@ ENDCLASS.";
             },
         );
 
-        assert!(!opened.is_dependency);
-        let target = opened
-            .definition_at(use_offset)
-            .expect("definition after opening dependency");
-        assert_eq!(target.uri.as_ref(), normalized_dependency_uri.as_str());
+        assert!(opened.is_dependency);
+        assert!(opened.definition_at(use_offset).is_none());
 
         refresh_workspace(&mut state, &workspace_uri);
         let refreshed = snapshot_for_uri(&state, &normalized_dependency_uri)
             .expect("dependency snapshot after refresh");
-        assert!(!refreshed.is_dependency);
-        assert!(refreshed.definition_at(use_offset).is_some());
+        assert!(refreshed.is_dependency);
+        assert!(refreshed.definition_at(use_offset).is_none());
 
         let _ = fs::remove_dir_all(&workspace_path);
     }

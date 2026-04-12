@@ -619,8 +619,6 @@ fn collect_manifest_document(
     } else {
         source_text
     };
-    let is_dependency = is_dependency && !overlays.contains_key(&uri);
-
     documents.push(WorkspaceDocument {
         uri: Arc::from(uri),
         version,
@@ -779,13 +777,11 @@ fn collect_dependency_cache_files(
             } else {
                 source_text
             };
-            let is_dependency = !overlays.contains_key(&uri);
-
             documents.push(WorkspaceDocument {
                 uri: Arc::from(uri),
                 version,
                 text,
-                is_dependency,
+                is_dependency: true,
                 object_name: Some(Arc::from(object_name.to_ascii_lowercase())),
             });
         }
