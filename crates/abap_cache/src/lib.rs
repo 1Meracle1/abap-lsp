@@ -16,8 +16,8 @@ use abap_symbols::{
     UnitId, Visibility, builtin_routine_spec, call_section_matches_parameter,
     parameter_is_required,
     perf_api::{
-        IncrementalProjectUpdate, LocalAnalysis, PreviewProjectUpdate, analyze_unit_local_state,
-        incremental_project_update, preview_project_update,
+        IncrementalProjectUpdate, LocalAnalysis, analyze_unit_local_state,
+        incremental_project_update, validate_single_unit,
     },
 };
 use parking_lot::RwLock;
@@ -5841,21 +5841,22 @@ fn build_preview_parse_and_local(
     (parse, local, parse_count, local_phase_count)
 }
 
-fn preview_snapshot_from_update(
+fn preview_snapshot_from_local(
     input: &DocumentInput,
     parse: Arc<ParseResult>,
-    update: PreviewProjectUpdate,
+    local: LocalAnalysis,
+    project: Arc<ProjectAnalysis>,
 ) -> Arc<AnalysisSnapshot> {
     Arc::new(AnalysisSnapshot {
-        scope_index: Arc::new(build_scope_index(&update.changed_unit)),
+        scope_index: Arc::new(local.scope_index),
         uri: Arc::clone(&input.uri),
         version: input.version,
         text: Arc::clone(&input.text),
         is_dependency: input.is_dependency,
         object_name: input.object_name.clone(),
         parse,
-        symbols: Arc::new(update.changed_unit),
-        project: Arc::new(update.project),
+        symbols: Arc::new(local.unit),
+        project,
     })
 }
 
@@ -6003,15 +6004,21 @@ impl DocumentStore {
         }
         let (parse, local, parse_count, local_phase_count) =
             build_preview_parse_and_local(&input, &existing, analysis.as_ref());
-        let previous_project = existing
+        let committed_project = existing
             .values()
             .next()
-            .map(|snapshot| snapshot.project.as_ref());
-        let previous_locals = analysis.as_ref().map(|analysis| &analysis.locals);
-        let update = preview_project_update(previous_project, previous_locals, local);
-        let committed_context_only = update.committed_context_only;
-        let fell_back_to_single_document = update.fell_back_to_single_document;
-        let snapshot = preview_snapshot_from_update(&input, parse, update);
+            .map(|snapshot| Arc::clone(&snapshot.project));
+        let (project, committed_context_only, fell_back_to_single_document) =
+            if let Some(project) = committed_project {
+                (project, true, false)
+            } else {
+                (
+                    Arc::new(validate_single_unit(local.unit.clone())),
+                    false,
+                    true,
+                )
+            };
+        let snapshot = preview_snapshot_from_local(&input, parse, local, project);
         *self.preview_metrics.write() = Some(PreviewMetrics {
             parse_count,
             local_phase_count,
