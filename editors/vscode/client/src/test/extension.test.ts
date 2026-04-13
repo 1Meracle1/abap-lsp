@@ -20,10 +20,17 @@ suite("Extension local object validation", () => {
 		);
 	});
 
+	test("Accepts customer namespace object names", () => {
+		assert.strictEqual(
+			validateLocalWorkspaceObjectNameForKind("/sttp/cl_demo", "global-class"),
+			undefined,
+		);
+	});
+
 	test("Rejects non-customer local object names", () => {
 		assert.strictEqual(
 			validateLocalWorkspaceObjectNameForKind("cl_demo", "global-class"),
-			"Only customer objects starting with Z or Y are supported.",
+			"Only customer objects with Z/Y prefixes or customer namespaces are supported.",
 		);
 	});
 

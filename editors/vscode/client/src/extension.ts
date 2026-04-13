@@ -17,9 +17,12 @@ import {
 } from "vscode-languageclient/node";
 import {
 	AdtClient,
+	AdtRepositoryChild,
 	AdtObjectRef,
 	buildMessageClassObjectRef,
 	configureSapConnection,
+	inferFunctionGroupUri,
+	isFunctionModuleObject,
 	getSapConnectionConfig,
 	hasOnlyUnsupportedExactDomainMatches,
 	pickBestDependencyObject,
@@ -31,6 +34,8 @@ import {
 	ensureManifestUnit,
 	inferManifestUnitSpec,
 	manifestFileName,
+	type ManifestUnitMemberSpec,
+	type ManifestUnitSpec,
 	targetDependencyWorkspaceFilePath,
 	targetWorkspaceFilePath,
 	unknownSymbolModeLog,
@@ -55,7 +60,7 @@ const remoteDependencySchedulers = new Map<string, RemoteDependencyScheduler>();
 const pendingWorkspaceConfigPrompts = new Set<string>();
 const dismissedWorkspaceConfigPrompts = new Set<string>();
 const workspaceAnalysisProgress = new Map<string, WorkspaceAnalysisProgressHandle>();
-const customerObjectNamePattern = /^(?:Z|Y)[A-Z0-9_\/]+$/;
+const customerObjectNamePattern = /^(?:[ZY][A-Z0-9_\/]*|\/[A-Z0-9_]+\/[A-Z0-9_\/]+)$/;
 
 interface RemoteDependencyResolveParams {
 	workspaceUri: string;
@@ -817,8 +822,12 @@ async function addEditableAdtObjectToWorkspace(
 	if (!isSupportedEditableWorkspaceObject(objectRef)) {
 		throw new Error(`Unsupported editable object type for ${objectRef.name} (${objectRef.type}).`);
 	}
+	if (objectRef.type.toUpperCase() === "FUGR/F" || isFunctionModuleObject(objectRef)) {
+		await addEditableFunctionGroupToWorkspace(context, workspaceFolder, objectRef);
+		return;
+	}
 	if (!isCustomEditableObjectName(objectRef.name)) {
-		throw new Error(`Only custom Z* or Y* objects can be added to src: ${objectRef.name}.`);
+		throw new Error(`Only customer objects with Z/Y prefixes or customer namespaces can be added to src: ${objectRef.name}.`);
 	}
 
 	const filePath = targetWorkspaceFilePath(workspaceFolder, objectRef.name);
@@ -859,6 +868,172 @@ async function addEditableAdtObjectToWorkspace(
 	if (!fileExisted) {
 		void vscode.window.showInformationMessage(`Added ${objectRef.name} to src/.`);
 	}
+}
+
+async function addEditableFunctionGroupToWorkspace(
+	context: vscode.ExtensionContext,
+	workspaceFolder: vscode.WorkspaceFolder,
+	objectRef: AdtObjectRef,
+): Promise<void> {
+	const functionGroupRef = editableFunctionGroupObjectRef(objectRef);
+	if (!isCustomEditableObjectName(functionGroupRef.name)) {
+		throw new Error(
+			`Only customer objects with Z/Y prefixes or customer namespaces can be added to src: ${functionGroupRef.name}.`,
+		);
+	}
+
+	const connection = await getSapConnectionConfig(context, workspaceFolder);
+	if (!connection) {
+		return;
+	}
+
+	const adtClient = new AdtClient(connection);
+	const groupChildren = await adtClient.listFunctionGroupChildren(functionGroupRef.name);
+	const layout = editableFunctionGroupLayout(workspaceFolder, functionGroupRef, groupChildren, objectRef);
+	await fs.promises.mkdir(layout.baseDir, { recursive: true });
+
+	const createdFiles: string[] = [];
+	for (const member of layout.members) {
+		if (await fileExists(member.filePath)) {
+			continue;
+		}
+
+		await fs.promises.mkdir(path.dirname(member.filePath), { recursive: true });
+		const source = await adtClient.fetchObjectSource(member.objectRef.uri);
+		await fs.promises.writeFile(member.filePath, source, "utf8");
+		await adtClient.cacheRemoteObject(workspaceFolder, member.objectRef, source);
+		createdFiles.push(member.filePath);
+	}
+
+	await ensureManifestUnit(workspaceFolder, layout.manifestUnit);
+	await notifyWorkspaceManifestUpdated(workspaceFolder);
+
+	const openPath = layout.openMember?.filePath ?? layout.rootFilePath;
+	const document = await vscode.workspace.openTextDocument(vscode.Uri.file(openPath));
+	await vscode.window.showTextDocument(document, { preview: false });
+
+	if (createdFiles.length > 0) {
+		void vscode.window.showInformationMessage(
+			`Added function group ${functionGroupRef.name} to src/function-groups/.`,
+		);
+	}
+}
+
+function editableFunctionGroupObjectRef(objectRef: AdtObjectRef): AdtObjectRef {
+	if (objectRef.type.toUpperCase() === "FUGR/F") {
+		return {
+			...objectRef,
+			name: normalizedAdtObjectName(objectRef.name),
+		};
+	}
+
+	const functionGroupUri = inferFunctionGroupUri(objectRef);
+	if (!functionGroupUri) {
+		throw new Error(`Cannot derive function group for ${objectRef.name}.`);
+	}
+
+	return {
+		uri: functionGroupUri,
+		type: "FUGR/F",
+		name: normalizedAdtObjectName(lastAdtUriSegment(functionGroupUri)),
+		packageName: objectRef.packageName,
+		description: "Function group",
+	};
+}
+
+function editableFunctionGroupLayout(
+	workspaceFolder: vscode.WorkspaceFolder,
+	functionGroupRef: AdtObjectRef,
+	groupChildren: readonly AdtRepositoryChild[],
+	selectedObjectRef: AdtObjectRef,
+): {
+	baseDir: string;
+	rootFilePath: string;
+	openMember?: EditableFunctionGroupMember;
+	members: EditableFunctionGroupMember[];
+	manifestUnit: ManifestUnitSpec;
+} {
+	const encodedGroupName = encodeURIComponent(functionGroupRef.name.trim().toUpperCase());
+	const baseDir = path.join(workspaceFolder.uri.fsPath, "src", "function-groups", encodedGroupName);
+	const rootFilePath = path.join(baseDir, `${encodedGroupName}.abap`);
+
+	const includeChildren = groupChildren
+		.filter((child) => child.objectRef.type.toUpperCase() === "FUGR/I")
+		.sort((left, right) => left.objectRef.name.localeCompare(right.objectRef.name));
+	const functionModuleChildren = groupChildren
+		.filter((child) => child.objectRef.type.toUpperCase() === "FUGR/FF")
+		.sort((left, right) => left.objectRef.name.localeCompare(right.objectRef.name));
+
+	const members: EditableFunctionGroupMember[] = [
+		{
+			objectRef: functionGroupRef,
+			role: "main",
+			filePath: rootFilePath,
+		},
+		...includeChildren.map((child) => ({
+			objectRef: child.objectRef,
+			role: "root",
+			filePath: path.join(
+				baseDir,
+				"includes",
+				`${encodeURIComponent(normalizedAdtObjectName(child.objectRef.name))}.abap`,
+			),
+		})),
+		...functionModuleChildren.map((child) => ({
+			objectRef: child.objectRef,
+			role: "root",
+			filePath: path.join(
+				baseDir,
+				"function-modules",
+				`${encodeURIComponent(normalizedAdtObjectName(child.objectRef.name))}.abap`,
+			),
+		})),
+	];
+
+	return {
+		baseDir,
+		rootFilePath,
+		members,
+		manifestUnit: {
+			name: functionGroupRef.name,
+			kind: "function-group",
+			rootFile: path.relative(workspaceFolder.uri.fsPath, rootFilePath),
+			adtUri: functionGroupRef.uri,
+			role: "main",
+			objectName: functionGroupRef.name,
+			matchAdtUris: [
+				functionGroupRef.uri,
+				...includeChildren.map((child) => child.objectRef.uri),
+				...functionModuleChildren.map((child) => child.objectRef.uri),
+			],
+			members: members.map((member) => ({
+				role: member.role,
+				file: path.relative(workspaceFolder.uri.fsPath, member.filePath),
+				objectName: member.objectRef.name,
+				adtUri: member.objectRef.uri,
+			} satisfies ManifestUnitMemberSpec)),
+		},
+		openMember: members.find((member) =>
+			member.objectRef.uri === selectedObjectRef.uri ||
+			normalizedAdtObjectName(member.objectRef.name) === normalizedAdtObjectName(selectedObjectRef.name),
+		),
+	};
+}
+
+interface EditableFunctionGroupMember {
+	objectRef: AdtObjectRef;
+	role: string;
+	filePath: string;
+}
+
+function normalizedAdtObjectName(name: string): string {
+	return decodeURIComponent(name.trim()).toUpperCase();
+}
+
+function lastAdtUriSegment(uri: string): string {
+	const trimmed = uri.replace(/\/+$/, "");
+	const slashIndex = trimmed.lastIndexOf("/");
+	return slashIndex >= 0 ? trimmed.slice(slashIndex + 1) : trimmed;
 }
 
 async function resolveRemoteDependencyCandidate(
@@ -1060,7 +1235,7 @@ function validateLocalWorkspaceObjectName(
 		return "Enter an ABAP object name.";
 	}
 	if (!isCustomEditableObjectName(normalized)) {
-		return "Only customer objects starting with Z or Y are supported.";
+		return "Only customer objects with Z/Y prefixes or customer namespaces are supported.";
 	}
 	if (!template.namePattern.test(normalized)) {
 		return `Use a name like ${template.namePlaceholder}.`;

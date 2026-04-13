@@ -26,10 +26,37 @@ export interface AdtDependencyFetchResult {
 	manifestKind: string;
 }
 
+export interface AdtRepositoryChild {
+	objectRef: AdtObjectRef;
+	categoryTag: string;
+	objectTypeLabel: string;
+	expandable: boolean;
+}
+
 interface HttpResponseData {
 	statusCode: number;
 	headers: http.IncomingHttpHeaders;
 	body: string;
+}
+
+interface RepositoryNodeStructure {
+	treeContent: RepositoryNodeEntry[];
+	objectTypes: RepositoryObjectTypeInfo[];
+}
+
+interface RepositoryNodeEntry {
+	objectType: string;
+	objectName: string;
+	objectUri: string;
+	objectVitUri: string;
+	expandable: boolean;
+}
+
+interface RepositoryObjectTypeInfo {
+	objectType: string;
+	categoryTag: string;
+	label: string;
+	nodeId: string;
 }
 
 interface GetSapConnectionOptions {
@@ -279,6 +306,42 @@ export class AdtClient {
 		return parseObjectReferences(response.body);
 	}
 
+	async listFunctionGroupChildren(functionGroupName: string): Promise<AdtRepositoryChild[]> {
+		const root = await this.fetchRepositoryNodeStructure(functionGroupName, "FUGR/F", []);
+		const children: AdtRepositoryChild[] = [];
+
+		if (root.objectTypes.length === 0) {
+			return root.treeContent.map((node) => ({
+				objectRef: repositoryNodeToObjectRef(node),
+				categoryTag: "",
+				objectTypeLabel: "",
+				expandable: node.expandable,
+			}));
+		}
+
+		for (const objectType of root.objectTypes) {
+			if (!objectType.nodeId) {
+				continue;
+			}
+
+			const branch = await this.fetchRepositoryNodeStructure(
+				functionGroupName,
+				"FUGR/F",
+				[objectType.nodeId],
+			);
+			for (const node of branch.treeContent) {
+				children.push({
+					objectRef: repositoryNodeToObjectRef(node),
+					categoryTag: objectType.categoryTag,
+					objectTypeLabel: objectType.label,
+					expandable: node.expandable,
+				});
+			}
+		}
+
+		return children;
+	}
+
 	async fetchObjectSource(objectUri: string): Promise<string> {
 		await this.ensureSession();
 
@@ -312,6 +375,13 @@ export class AdtClient {
 				body,
 				fileExtension: "xml",
 				manifestKind: ddicKind,
+			};
+		}
+		if (isFunctionModuleObject(objectRef)) {
+			return {
+				body: await this.fetchFunctionModuleDependencySource(objectRef),
+				fileExtension: "abap",
+				manifestKind: "function-group",
 			};
 		}
 
@@ -359,6 +429,70 @@ export class AdtClient {
 			},
 		});
 		return formatDdicXml(response.body);
+	}
+
+	private async fetchFunctionModuleDependencySource(objectRef: AdtObjectRef): Promise<string> {
+		const functionModuleSource = await this.fetchObjectSource(objectRef.uri);
+		const functionGroupUri = inferFunctionGroupUri(objectRef);
+		if (!functionGroupUri) {
+			return functionModuleSource;
+		}
+
+		let functionGroupSource: string;
+		try {
+			functionGroupSource = await this.fetchObjectSource(functionGroupUri);
+		} catch {
+			return functionModuleSource;
+		}
+
+		// Function module ADT source lacks the surrounding function-pool context, so
+		// inline the group's top-level includes into a synthetic dependency source.
+		const includeSources = new Map<string, string>();
+		await Promise.all(
+			extractActiveTopLevelIncludeNames(functionGroupSource)
+				.filter((includeName) => !isFunctionGroupDispatcherInclude(includeName))
+				.map(async (includeName) => {
+					try {
+						const includeSource = await this.fetchObjectSource(
+							`/sap/bc/adt/programs/includes/${encodeURIComponent(includeName)}`,
+						);
+						includeSources.set(includeName, includeSource);
+					} catch {
+						// Keep the composite dependency usable even when one include is unavailable.
+					}
+				}),
+		);
+
+		return buildFunctionModuleDependencySource(
+			objectRef.name,
+			functionGroupSource,
+			includeSources,
+			functionModuleSource,
+		);
+	}
+
+	private async fetchRepositoryNodeStructure(
+		parentName: string,
+		parentType: string,
+		nodeKeys: readonly string[],
+	): Promise<RepositoryNodeStructure> {
+		await this.ensureSession();
+
+		const response = await this.request(
+			`/sap/bc/adt/repository/nodestructure?parent_name=${encodeURIComponent(parentName)}&parent_tech_name=${encodeURIComponent(parentName)}&parent_type=${encodeURIComponent(parentType)}&withShortDescriptions=true`,
+			{
+				method: "POST",
+				headers: {
+					Accept: "application/vnd.sap.as+xml;charset=UTF-8;dataname=com.sap.adt.RepositoryObjectTreeContent",
+					"Cache-Control": "no-cache",
+					"Content-Type": "application/vnd.sap.as+xml; charset=UTF-8; dataname=null",
+					"x-csrf-token": this.csrfToken,
+				},
+				body: buildNodeStructureRequestBody(nodeKeys),
+			},
+		);
+
+		return parseRepositoryNodeStructure(response.body);
 	}
 
 	async cacheRemoteObject(
@@ -419,6 +553,7 @@ export class AdtClient {
 		options: {
 			method?: string;
 			headers?: Record<string, string>;
+			body?: string;
 		} = {},
 	): Promise<HttpResponseData> {
 		await this.options.beforeRequest?.();
@@ -464,6 +599,9 @@ export class AdtClient {
 			);
 
 			request.on("error", reject);
+			if (options.body !== undefined) {
+				request.write(options.body, "utf8");
+			}
 			request.end();
 		});
 	}
@@ -493,6 +631,71 @@ export function buildMessageClassObjectRef(name: string): AdtObjectRef {
 		packageName: "",
 		description: "Message class",
 	};
+}
+
+export function isFunctionModuleObject(objectRef: AdtObjectRef): boolean {
+	return objectRef.type.toUpperCase() === "FUGR/FF" ||
+		objectRef.uri.toLowerCase().includes("/functions/groups/") &&
+		objectRef.uri.toLowerCase().includes("/fmodules/");
+}
+
+export function inferFunctionGroupUri(objectRef: AdtObjectRef): string | undefined {
+	const match = objectRef.uri.match(/^(.*\/functions\/groups\/[^/]+)(?:\/fmodules\/[^/]+)?$/i);
+	return match?.[1];
+}
+
+export function extractActiveTopLevelIncludeNames(source: string): string[] {
+	const includeNames: string[] = [];
+	const seen = new Set<string>();
+	for (const rawLine of normalizeAbapSource(source).split("\n")) {
+		const includeName = activeIncludeNameFromLine(rawLine);
+		if (!includeName || seen.has(includeName)) {
+			continue;
+		}
+		seen.add(includeName);
+		includeNames.push(includeName);
+	}
+	return includeNames;
+}
+
+export function buildFunctionModuleDependencySource(
+	functionModuleName: string,
+	functionGroupSource: string,
+	includeSources: ReadonlyMap<string, string>,
+	functionModuleSource: string,
+): string {
+	const renderedGroup = normalizeAbapSource(functionGroupSource)
+		.split("\n")
+		.map((rawLine) => {
+			const includeName = activeIncludeNameFromLine(rawLine);
+			if (!includeName) {
+				return rawLine;
+			}
+
+			if (isFunctionGroupDispatcherInclude(includeName)) {
+				return `* INCLUDE ${includeName}. Omitted in dependency cache; function module source is appended below.`;
+			}
+
+			const includeBody = includeSources.get(includeName);
+			if (!includeBody) {
+				return rawLine;
+			}
+
+			return [
+				`* >>> BEGIN INCLUDE ${includeName}`,
+				trimTrailingWhitespace(normalizeAbapSource(includeBody)),
+				`* <<< END INCLUDE ${includeName}`,
+			].join("\n");
+		})
+		.join("\n");
+
+	const normalizedFunctionModuleName = functionModuleName.trim().toUpperCase();
+	return `${trimTrailingWhitespace(renderedGroup)}
+
+* >>> BEGIN FUNCTION MODULE ${normalizedFunctionModuleName}
+${trimTrailingWhitespace(normalizeAbapSource(functionModuleSource))}
+* <<< END FUNCTION MODULE ${normalizedFunctionModuleName}
+`;
 }
 
 export function inferDdicManifestKind(
@@ -576,6 +779,87 @@ function decodeXmlEntity(value: string): string {
 		.replace(/&lt;/g, "<")
 		.replace(/&gt;/g, ">")
 		.replace(/&amp;/g, "&");
+}
+
+function buildNodeStructureRequestBody(nodeKeys: readonly string[]): string {
+	const values = nodeKeys.length > 0 ? nodeKeys : ["000000"];
+	return `<?xml version="1.0" encoding="UTF-8" ?>
+<asx:abap version="1.0" xmlns:asx="http://www.sap.com/abapxml">
+<asx:values>
+<DATA>
+${values.map((value) => `<TV_NODEKEY>${escapeXmlText(value)}</TV_NODEKEY>`).join("\n")}
+</DATA>
+</asx:values>
+</asx:abap>`;
+}
+
+function parseRepositoryNodeStructure(xml: string): RepositoryNodeStructure {
+	const valuesBodyMatch = xml.match(/<asx:values\b[^>]*>([\s\S]*?)<\/asx:values>/i);
+	const body = valuesBodyMatch?.[1] ?? xml;
+	return {
+		treeContent: collectBlocks(body, "SEU_ADT_REPOSITORY_OBJ_NODE").map((block) => ({
+			objectType: readTagValue(block, "OBJECT_TYPE"),
+			objectName: readTagValue(block, "OBJECT_NAME"),
+			objectUri: readTagValue(block, "OBJECT_URI"),
+			objectVitUri: readTagValue(block, "OBJECT_VIT_URI"),
+			expandable: readTagValue(block, "EXPANDABLE").trim().toUpperCase() === "X",
+		})).filter((entry) => entry.objectType && entry.objectName && entry.objectUri),
+		objectTypes: collectBlocks(body, "SEU_ADT_OBJECT_TYPE_INFO").map((block) => ({
+			objectType: readTagValue(block, "OBJECT_TYPE"),
+			categoryTag: readTagValue(block, "CATEGORY_TAG"),
+			label: readTagValue(block, "OBJECT_TYPE_LABEL"),
+			nodeId: readTagValue(block, "NODE_ID"),
+		})).filter((entry) => entry.objectType),
+	};
+}
+
+function collectBlocks(xml: string, tagName: string): string[] {
+	const matches = xml.match(new RegExp(`<${tagName}>([\\s\\S]*?)<\\/${tagName}>`, "gi")) ?? [];
+	return matches;
+}
+
+function readTagValue(block: string, tagName: string): string {
+	const match = block.match(new RegExp(`<${tagName}>([\\s\\S]*?)<\\/${tagName}>`, "i"));
+	return decodeXmlEntity(match?.[1]?.trim() ?? "");
+}
+
+function repositoryNodeToObjectRef(node: RepositoryNodeEntry): AdtObjectRef {
+	return {
+		uri: node.objectUri,
+		type: node.objectType,
+		name: node.objectName,
+		packageName: "",
+		description: "",
+	};
+}
+
+function escapeXmlText(value: string): string {
+	return value
+		.replace(/&/g, "&amp;")
+		.replace(/</g, "&lt;")
+		.replace(/>/g, "&gt;");
+}
+
+function activeIncludeNameFromLine(line: string): string | undefined {
+	if (/^\s*\*/.test(line)) {
+		return undefined;
+	}
+
+	const withoutTrailingComment = line.replace(/".*$/, "");
+	const match = withoutTrailingComment.match(/^\s*include\s+([^\s.]+)\s*\.\s*$/i);
+	return match?.[1]?.trim().toUpperCase();
+}
+
+function isFunctionGroupDispatcherInclude(includeName: string): boolean {
+	return includeName.trim().toUpperCase().endsWith("UXX");
+}
+
+function normalizeAbapSource(source: string): string {
+	return source.replace(/\r\n/g, "\n");
+}
+
+function trimTrailingWhitespace(source: string): string {
+	return source.replace(/\s+$/u, "");
 }
 
 export function formatDdicXml(xml: string): string {

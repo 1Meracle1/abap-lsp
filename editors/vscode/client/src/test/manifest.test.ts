@@ -37,6 +37,46 @@ suite("Manifest helpers", () => {
 		assert.ok(text.includes('root_file = "src/ZCL_SECOND.abap"'));
 	});
 
+	test("Serializes multi-file function group units", async () => {
+		const workspaceFolder = await createTempWorkspaceFolder("function-group-unit");
+
+		await ensureManifestUnit(workspaceFolder, {
+			name: "/STTP/SHF_MD",
+			kind: "function-group",
+			rootFile: "src/function-groups/%2FSTTP%2FSHF_MD/%2FSTTP%2FSHF_MD.abap",
+			adtUri: "/sap/bc/adt/functions/groups/%2Fsttp%2Fshf_md",
+			role: "main",
+			objectName: "/STTP/SHF_MD",
+			members: [
+				{
+					role: "main",
+					file: "src/function-groups/%2FSTTP%2FSHF_MD/%2FSTTP%2FSHF_MD.abap",
+					objectName: "/STTP/SHF_MD",
+					adtUri: "/sap/bc/adt/functions/groups/%2Fsttp%2Fshf_md",
+				},
+				{
+					role: "root",
+					file: "src/function-groups/%2FSTTP%2FSHF_MD/includes/%2FSTTP%2FLSHF_MDTOP.abap",
+					objectName: "/STTP/LSHF_MDTOP",
+					adtUri: "/sap/bc/adt/programs/includes/%2Fsttp%2Flshf_mdtop",
+				},
+				{
+					role: "root",
+					file: "src/function-groups/%2FSTTP%2FSHF_MD/function-modules/%2FSTTP%2FMD_BPNO_STS_SHF.abap",
+					objectName: "/STTP/MD_BPNO_STS_SHF",
+					adtUri: "/sap/bc/adt/functions/groups/%2Fsttp%2Fshf_md/fmodules/%2Fsttp%2Fmd_bpno_sts_shf",
+				},
+			],
+		});
+
+		const text = await fs.promises.readFile(workspaceManifestPath(workspaceFolder), "utf8");
+		assert.strictEqual((text.match(/^\[\[unit\]\]$/gm) ?? []).length, 1);
+		assert.strictEqual((text.match(/^\[\[unit\.member\]\]$/gm) ?? []).length, 3);
+		assert.ok(text.includes('name = "/STTP/SHF_MD"'));
+		assert.ok(text.includes('file = "src/function-groups/%2FSTTP%2FSHF_MD/includes/%2FSTTP%2FLSHF_MDTOP.abap"'));
+		assert.ok(text.includes('file = "src/function-groups/%2FSTTP%2FSHF_MD/function-modules/%2FSTTP%2FMD_BPNO_STS_SHF.abap"'));
+	});
+
 	test("Retargets an existing dependency unit into src", async () => {
 		const workspaceFolder = await createTempWorkspaceFolder("retarget-dependency");
 		const manifestPath = workspaceManifestPath(workspaceFolder);
@@ -95,6 +135,69 @@ adt_uri = "/sap/bc/adt/oo/classes/zcl_keep"
 		assert.ok(text.includes('role = "main"'));
 		assert.ok(text.includes('root_file = ".abapls/cache/dependencies/global-class/ZCL_KEEP.abap"'));
 		assert.ok(text.includes('adt_uri = "/sap/bc/adt/oo/classes/zcl_promote"\n\n[[unit]]'));
+	});
+
+	test("Retargets a function module dependency unit into a function group workspace unit", async () => {
+		const workspaceFolder = await createTempWorkspaceFolder("retarget-function-group");
+		const manifestPath = workspaceManifestPath(workspaceFolder);
+		await fs.promises.writeFile(
+			manifestPath,
+			`version = 1
+connection = "default"
+
+[resolution]
+dependency_mode = "remote-on-demand"
+cache_dir = ".abapls/cache"
+unknown_symbol_mode = "remote"
+remote_request_parallelism = 4
+remote_requests_per_second = 8
+
+[[unit]]
+name = "/STTP/MD_BPNO_STS_SHF"
+kind = "function-group"
+root_file = ".abapls/cache/dependencies/function-group/%2FSTTP%2FMD_BPNO_STS_SHF.abap"
+adt_uri = "/sap/bc/adt/functions/groups/%2Fsttp%2Fshf_md/fmodules/%2Fsttp%2Fmd_bpno_sts_shf"
+
+[[unit.member]]
+role = "dependency"
+file = ".abapls/cache/dependencies/function-group/%2FSTTP%2FMD_BPNO_STS_SHF.abap"
+object_name = "/STTP/MD_BPNO_STS_SHF"
+adt_uri = "/sap/bc/adt/functions/groups/%2Fsttp%2Fshf_md/fmodules/%2Fsttp%2Fmd_bpno_sts_shf"
+`,
+			"utf8",
+		);
+
+		await ensureManifestUnit(workspaceFolder, {
+			name: "/STTP/SHF_MD",
+			kind: "function-group",
+			rootFile: "src/function-groups/%2FSTTP%2FSHF_MD/%2FSTTP%2FSHF_MD.abap",
+			adtUri: "/sap/bc/adt/functions/groups/%2Fsttp%2Fshf_md",
+			role: "main",
+			objectName: "/STTP/SHF_MD",
+			matchAdtUris: [
+				"/sap/bc/adt/functions/groups/%2Fsttp%2Fshf_md/fmodules/%2Fsttp%2Fmd_bpno_sts_shf",
+			],
+			members: [
+				{
+					role: "main",
+					file: "src/function-groups/%2FSTTP%2FSHF_MD/%2FSTTP%2FSHF_MD.abap",
+					objectName: "/STTP/SHF_MD",
+					adtUri: "/sap/bc/adt/functions/groups/%2Fsttp%2Fshf_md",
+				},
+				{
+					role: "root",
+					file: "src/function-groups/%2FSTTP%2FSHF_MD/function-modules/%2FSTTP%2FMD_BPNO_STS_SHF.abap",
+					objectName: "/STTP/MD_BPNO_STS_SHF",
+					adtUri: "/sap/bc/adt/functions/groups/%2Fsttp%2Fshf_md/fmodules/%2Fsttp%2Fmd_bpno_sts_shf",
+				},
+			],
+		});
+
+		const text = await fs.promises.readFile(manifestPath, "utf8");
+		assert.strictEqual((text.match(/^\[\[unit\]\]$/gm) ?? []).length, 1);
+		assert.ok(text.includes('name = "/STTP/SHF_MD"'));
+		assert.ok(text.includes('root_file = "src/function-groups/%2FSTTP%2FSHF_MD/%2FSTTP%2FSHF_MD.abap"'));
+		assert.ok(!text.includes('.abapls/cache/dependencies/function-group/%2FSTTP%2FMD_BPNO_STS_SHF.abap'));
 	});
 
 	test("Serializes concurrent manifest updates", async () => {

@@ -15,6 +15,15 @@ export interface ManifestUnitSpec {
 	adtUri?: string;
 	role: string;
 	objectName: string;
+	matchAdtUris?: string[];
+	members?: ManifestUnitMemberSpec[];
+}
+
+export interface ManifestUnitMemberSpec {
+	role: string;
+	file: string;
+	objectName: string;
+	adtUri?: string;
 }
 
 interface ManifestUnitMatch {
@@ -164,7 +173,11 @@ export async function ensureWorkspaceManifest(
 }
 
 export function targetWorkspaceFilePath(workspaceFolder: vscode.WorkspaceFolder, objectName: string): string {
-	return path.join(workspaceFolder.uri.fsPath, "src", `${objectName}.abap`);
+	return path.join(
+		workspaceFolder.uri.fsPath,
+		"src",
+		`${encodeWorkspaceObjectFileName(objectName)}.abap`,
+	);
 }
 
 export function targetDependencyWorkspaceFilePath(
@@ -215,9 +228,18 @@ function renderUnitBlock(unit: ManifestUnitSpec): string {
 	const unitAdtUriLine = unit.adtUri?.trim()
 		? `adt_uri = "${escapeTomlString(unit.adtUri)}"\n`
 		: "";
-	const memberAdtUriLine = unit.adtUri?.trim()
-		? `adt_uri = "${escapeTomlString(unit.adtUri)}"\n`
-		: "";
+	const members = normalizedManifestMembers(unit);
+	const memberBlocks = members.map((member) => {
+		const memberAdtUriLine = member.adtUri?.trim()
+			? `adt_uri = "${escapeTomlString(member.adtUri)}"\n`
+			: "";
+		return `[[unit.member]]
+role = "${escapeTomlString(member.role)}"
+file = "${escapeTomlString(normalizeRelativePath(member.file))}"
+object_name = "${escapeTomlString(member.objectName)}"
+${memberAdtUriLine}
+`;
+	}).join("\n");
 	return `
 [[unit]]
 name = "${escapeTomlString(unit.name)}"
@@ -225,11 +247,7 @@ kind = "${escapeTomlString(unit.kind)}"
 root_file = "${escapeTomlString(normalizeRelativePath(unit.rootFile))}"
 ${unitAdtUriLine}
 
-[[unit.member]]
-role = "${escapeTomlString(unit.role)}"
-file = "${escapeTomlString(normalizeRelativePath(unit.rootFile))}"
-object_name = "${escapeTomlString(unit.objectName)}"
-${memberAdtUriLine}
+${memberBlocks}
 `;
 }
 
@@ -242,6 +260,11 @@ function normalizeRelativePath(value: string): string {
 }
 
 function findManifestUnit(text: string, unit: ManifestUnitSpec): ManifestUnitMatch | undefined {
+	const matchAdtUris = new Set(
+		[unit.adtUri, ...(unit.matchAdtUris ?? [])]
+			.map((value) => value?.trim())
+			.filter((value): value is string => Boolean(value)),
+	);
 	const matches = [...text.matchAll(/^\[\[unit\]\]\s*$/gm)];
 	for (let index = 0; index < matches.length; index += 1) {
 		const start = matches[index].index ?? 0;
@@ -250,8 +273,7 @@ function findManifestUnit(text: string, unit: ManifestUnitSpec): ManifestUnitMat
 		const adtUri = readTomlString(block, "adt_uri");
 		const name = readTomlString(block, "name");
 		const rootFile = readTomlString(block, "root_file");
-		const normalizedUnitAdtUri = unit.adtUri?.trim();
-		if (normalizedUnitAdtUri && adtUri === normalizedUnitAdtUri) {
+		if (adtUri && matchAdtUris.has(adtUri)) {
 			return { start, end };
 		}
 		if (name === unit.name || rootFile === normalizeRelativePath(unit.rootFile)) {
@@ -272,6 +294,28 @@ function readTomlString(block: string, key: string): string | undefined {
 
 function sanitizePathSegment(value: string): string {
 	return value.replace(/[^a-zA-Z0-9._-]+/g, "-");
+}
+
+function encodeWorkspaceObjectFileName(objectName: string): string {
+	return encodeURIComponent(objectName.trim().toUpperCase());
+}
+
+function normalizedManifestMembers(unit: ManifestUnitSpec): ManifestUnitMemberSpec[] {
+	if (unit.members?.length) {
+		return unit.members.map((member) => ({
+			role: member.role,
+			file: normalizeRelativePath(member.file),
+			objectName: member.objectName,
+			adtUri: member.adtUri,
+		}));
+	}
+
+	return [{
+		role: unit.role,
+		file: normalizeRelativePath(unit.rootFile),
+		objectName: unit.objectName,
+		adtUri: unit.adtUri,
+	}];
 }
 
 function isXmlDependencyObject(objectRef: AdtObjectRef): boolean {

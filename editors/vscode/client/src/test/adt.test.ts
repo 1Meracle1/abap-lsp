@@ -2,9 +2,12 @@ import * as assert from "assert";
 import * as vscode from "vscode";
 
 import {
+	buildFunctionModuleDependencySource,
 	buildMessageClassObjectRef,
+	extractActiveTopLevelIncludeNames,
 	formatDdicXml,
 	hasOnlyUnsupportedExactDomainMatches,
+	inferFunctionGroupUri,
 	inferDdicManifestKind,
 	isDdicDependencyObject,
 	isMessageClassDependencyObject,
@@ -158,6 +161,76 @@ suite("ADT dependency helpers", () => {
 			)?.type,
 			"FUGR/FF",
 		);
+	});
+
+	test("Derives function group uri from a function module object", () => {
+		const functionModuleRef: AdtObjectRef = {
+			uri: "/sap/bc/adt/functions/groups/%2Fsttp%2Fshf_md/fmodules/%2Fsttp%2Fmd_bpno_sts_shf",
+			type: "FUGR/FF",
+			name: "/STTP/MD_BPNO_STS_SHF",
+			packageName: "/STTP/MD",
+			description: "Function module",
+		};
+
+		assert.strictEqual(
+			inferFunctionGroupUri(functionModuleRef),
+			"/sap/bc/adt/functions/groups/%2Fsttp%2Fshf_md",
+		);
+	});
+
+	test("Extracts active top-level includes from function group source", () => {
+		const groupSource = [
+			"FUNCTION-POOL /STTP/SHF_MD.",
+			"  INCLUDE /STTP/LSHF_MDTOP.                  \" Global Data",
+			"  INCLUDE /STTP/LSHF_MDUXX.                  \" Function Modules",
+			"* INCLUDE /STTP/LSHF_MDF...                  \" Subroutines",
+			"  INCLUDE /STTP/LSHF_MDPROG.",
+			"",
+		].join("\n");
+
+		assert.deepStrictEqual(extractActiveTopLevelIncludeNames(groupSource), [
+			"/STTP/LSHF_MDTOP",
+			"/STTP/LSHF_MDUXX",
+			"/STTP/LSHF_MDPROG",
+		]);
+	});
+
+	test("Builds a composite dependency source for function modules", () => {
+		const groupSource = [
+			"FUNCTION-POOL /STTP/SHF_MD.",
+			"  INCLUDE /STTP/LSHF_MDTOP.                  \" Global Data",
+			"  INCLUDE /STTP/LSHF_MDUXX.                  \" Function Modules",
+			"",
+		].join("\n");
+		const includeSources = new Map<string, string>([
+			[
+				"/STTP/LSHF_MDTOP",
+				"DATA gv_counter TYPE i.\n",
+			],
+		]);
+		const functionModuleSource = [
+			"FUNCTION /STTP/MD_BPNO_STS_SHF.",
+			"  gv_counter = gv_counter + 1.",
+			"ENDFUNCTION.",
+			"",
+		].join("\n");
+
+		const composite = buildFunctionModuleDependencySource(
+			"/STTP/MD_BPNO_STS_SHF",
+			groupSource,
+			includeSources,
+			functionModuleSource,
+		);
+
+		assert.ok(composite.includes("FUNCTION-POOL /STTP/SHF_MD."));
+		assert.ok(composite.includes("DATA gv_counter TYPE i."));
+		assert.ok(
+			composite.includes(
+				"* INCLUDE /STTP/LSHF_MDUXX. Omitted in dependency cache; function module source is appended below.",
+			),
+		);
+		assert.ok(composite.includes("FUNCTION /STTP/MD_BPNO_STS_SHF."));
+		assert.ok(!composite.includes('INCLUDE /STTP/LSHF_MDTOP.                  " Global Data'));
 	});
 
 	test("Returns no dependency object when ADT search only finds unsupported exact matches", () => {
