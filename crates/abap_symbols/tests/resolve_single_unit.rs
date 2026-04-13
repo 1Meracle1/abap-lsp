@@ -2708,6 +2708,46 @@ CONCATENATE lo_prog->to_string( ) mv_odlv INTO lv_delivery_msg SEPARATED BY ': '
 }
 
 #[test]
+fn concatenate_stmt_declares_inline_data_target_from_substring_operands() {
+    let src = r#"
+FORM build_timestamp.
+  DATA(lv_evttime) = '20260401000000'.
+  CONCATENATE lv_evttime+6(4) '-'
+              lv_evttime+3(2) '-'
+              lv_evttime+0(2) 'T'
+              lv_evttime+11(8) '.000Z' INTO DATA(lv_timestp).
+  WRITE lv_timestp.
+ENDFORM.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///concatenate_inline_data.abap", src, &parsed);
+
+    let symbol = unit
+        .symbols
+        .iter()
+        .find(|symbol| {
+            symbol.kind == abap_symbols::SymbolKind::Variable
+                && symbol.name.as_ref() == "lv_timestp"
+        })
+        .expect("inline CONCATENATE target symbol");
+    let declared_type = symbol
+        .declared_type
+        .as_ref()
+        .expect("declared type for inline CONCATENATE target");
+
+    assert_eq!(declared_type.namespace, Namespace::Type);
+    assert_eq!(declared_type.base_name.as_ref(), "string");
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference
+                && (diag.message.contains("lv_evttime") || diag.message.contains("lv_timestp"))
+        }),
+        "unexpected unresolved CONCATENATE diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn resolves_split_source_separator_and_into_targets() {
     let src = r#"
 DATA iv_sgtin TYPE string.

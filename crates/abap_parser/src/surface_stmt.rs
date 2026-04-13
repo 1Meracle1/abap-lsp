@@ -4086,24 +4086,35 @@ pub fn try_parse_concatenate_stmt(
             }
 
             children.push(token_leaf(b, &tokens[into_idx]));
-            let target_end = consume_concatenate_operand(
-                source,
-                tokens,
-                into_idx + 1,
-                period_i,
-                &["separated", "respecting", "in"],
-            );
-            push_wrapped_expr_child(
+            if let Some(next_i) = push_wrapped_data_inline_decl_child(
                 b,
                 &mut children,
                 source,
                 tokens,
                 into_idx + 1,
-                target_end,
-                Some(&tokens[into_idx]),
                 SyntaxKind::ConcatenateTargetOperand,
-            );
-            i = target_end;
+            ) {
+                i = next_i;
+            } else {
+                let target_end = consume_concatenate_operand(
+                    source,
+                    tokens,
+                    into_idx + 1,
+                    period_i,
+                    &["separated", "respecting", "in"],
+                );
+                push_wrapped_expr_child(
+                    b,
+                    &mut children,
+                    source,
+                    tokens,
+                    into_idx + 1,
+                    target_end,
+                    Some(&tokens[into_idx]),
+                    SyntaxKind::ConcatenateTargetOperand,
+                );
+                i = target_end;
+            }
 
             while i < period_i {
                 let token = &tokens[i];
@@ -8141,6 +8152,28 @@ END-OF-PAGE.\nWRITE 'e'.",
                 .count_kind(parsed.file.root(), SyntaxKind::ConcatenateStmt),
             1
         );
+    }
+
+    #[test]
+    fn parses_concatenate_stmt_with_inline_data_target_and_substrings() {
+        let parsed = crate::parse(
+            "DATA(lv_evttime) = '20260401000000'.\n\
+CONCATENATE lv_evttime+6(4) '-'\n\
+            lv_evttime+3(2) '-'\n\
+            lv_evttime+0(2) 'T'\n\
+            lv_evttime+11(8) '.000Z' INTO DATA(lv_timestp).",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::ConcatenateStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::DataInlineDecl), 2);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::ConcatenateTargetOperand),
+            1
+        );
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
     }
 
     #[test]

@@ -238,6 +238,34 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
         }
     }
 
+    fn declare_concatenate_inline_data_target(
+        &mut self,
+        node: NodeId,
+        scope: ScopeId,
+        is_byte_mode: bool,
+    ) {
+        let decl_scope = self.collector.declaration_scope(scope);
+        let declared_type = Self::builtin_type(if is_byte_mode { "xstring" } else { "string" });
+        if let Some(name_node) = self
+            .collector
+            .file
+            .children(node)
+            .find(|&child| self.collector.file.kind(child) == SyntaxKind::DataDeclName)
+            && let Some((name, range)) = self.collector.node_name(name_node)
+        {
+            self.collector.declare_symbol(
+                decl_scope,
+                name,
+                SymbolKind::Variable,
+                range,
+                None,
+                Some(declared_type),
+                None,
+                None,
+            );
+        }
+    }
+
     fn declare_describe_lines_inline_target(&mut self, node: NodeId, scope: ScopeId) -> bool {
         let Some(name_node) = self
             .collector
@@ -1607,19 +1635,46 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
 
     pub(super) fn collect_concatenate_stmt(&mut self, node: NodeId, scope: ScopeId) {
         if let Some(stmt) = ConcatenateStmt::cast(self.collector.syntax(node)) {
-            let mut operands: Vec<_> = stmt
-                .sources()
-                .filter_map(|operand| operand.value())
-                .map(|value| value.id())
-                .collect();
-            if let Some(target) = stmt.target().and_then(|operand| operand.value()) {
-                operands.push(target.id());
-            }
-            if let Some(separator) = stmt.separator().and_then(|operand| operand.value()) {
-                operands.push(separator.id());
-            }
-            for operand in operands {
+            let byte_mode = self.collector.file.children(node).any(|child| {
+                self.collector.file.kind(child) == SyntaxKind::Token
+                    && self
+                        .collector
+                        .syntax_token_nodes(child)
+                        .into_iter()
+                        .next()
+                        .is_some_and(|token| token.text.eq_ignore_ascii_case("byte"))
+            });
+            let (operand_ids, target_id, separator_id) = {
+                let operand_ids: Vec<_> = stmt
+                    .sources()
+                    .filter_map(|operand| operand.value())
+                    .map(|value| value.id())
+                    .collect();
+                let target_id = stmt
+                    .target()
+                    .and_then(|operand| operand.value())
+                    .map(|value| value.id());
+                let separator_id = stmt
+                    .separator()
+                    .and_then(|operand| operand.value())
+                    .map(|value| value.id());
+                (operand_ids, target_id, separator_id)
+            };
+            let target_is_inline = target_id.is_some_and(|target| {
+                self.collector.file.kind(target) == SyntaxKind::DataInlineDecl
+            });
+            for operand in operand_ids {
                 self.collector.walk_node(operand, scope);
+            }
+            if let Some(target) = target_id {
+                if target_is_inline {
+                    self.declare_concatenate_inline_data_target(target, scope, byte_mode);
+                } else {
+                    self.collector.walk_node(target, scope);
+                }
+            }
+            if let Some(separator) = separator_id {
+                self.collector.walk_node(separator, scope);
             }
             return;
         }
