@@ -8444,6 +8444,52 @@ START-OF-SELECTION.
 }
 
 #[test]
+fn allows_others_exception_in_call_function_validation() {
+    let dep_src = r#"
+FUNCTION BP_JOB_SELECT
+  EXCEPTIONS
+    invalid_dialog_type
+    jobname_missing
+    no_jobs_found.
+ENDFUNCTION.
+"#;
+    let main_src = r#"
+START-OF-SELECTION.
+  CALL FUNCTION 'BP_JOB_SELECT'
+    EXCEPTIONS
+      invalid_dialog_type = 1
+      OTHERS = 6.
+"#;
+
+    let dep_parsed = parse(dep_src);
+    let main_parsed = parse(main_src);
+    let project = analyze_project(&[
+        ProjectInput {
+            uri: "file:///fm_main_others_exception.abap",
+            source: main_src,
+            parse: &main_parsed,
+        },
+        ProjectInput {
+            uri: "file:///fm_dep_others_exception.abap",
+            source: dep_src,
+            parse: &dep_parsed,
+        },
+    ]);
+    let main_unit = project
+        .unit_by_uri("file:///fm_main_others_exception.abap")
+        .expect("main unit");
+
+    assert!(
+        !main_unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnknownNamedParameter
+                && diag.message.contains("unknown exception 'others'")
+        }),
+        "{:?}",
+        main_unit.diagnostics
+    );
+}
+
+#[test]
 fn skips_missing_required_diagnostic_for_function_module_defaulted_parameters() {
     let dep_src = r#"
 FUNCTION /AIF/FILE_PROCESS_DATA
@@ -8513,6 +8559,51 @@ START-OF-SELECTION.
         .filter(|diag| diag.kind == DiagnosticKind::MissingRequiredParameter)
         .collect();
     assert!(missing.is_empty(), "{missing:#?}");
+}
+
+#[test]
+fn makes_function_module_exporting_parameters_optional_for_callers() {
+    let dep_src = r#"
+FUNCTION /AIF/FILE_PROCESS_DATA
+  IMPORTING
+    iv_required TYPE string
+  EXPORTING
+    ev_ok TYPE c.
+ENDFUNCTION.
+"#;
+    let main_src = r#"
+START-OF-SELECTION.
+  DATA lv_required TYPE string.
+  CALL FUNCTION '/AIF/FILE_PROCESS_DATA'
+    EXPORTING
+      iv_required = lv_required.
+"#;
+
+    let dep_parsed = parse(dep_src);
+    let main_parsed = parse(main_src);
+    let project = analyze_project(&[
+        ProjectInput {
+            uri: "file:///fm_main_exporting_optional.abap",
+            source: main_src,
+            parse: &main_parsed,
+        },
+        ProjectInput {
+            uri: "file:///fm_dep_exporting_optional.abap",
+            source: dep_src,
+            parse: &dep_parsed,
+        },
+    ]);
+    let main_unit = project
+        .unit_by_uri("file:///fm_main_exporting_optional.abap")
+        .expect("main unit");
+
+    assert!(
+        !main_unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::MissingRequiredParameter && diag.message.contains("ev_ok")
+        }),
+        "{:?}",
+        main_unit.diagnostics
+    );
 }
 
 #[test]

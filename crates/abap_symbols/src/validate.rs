@@ -1170,7 +1170,14 @@ fn call_section_matches_function_parameter(
 }
 
 fn function_module_parameter_is_required(parameter: &FunctionModuleParameterData) -> bool {
-    !parameter.is_optional && !parameter.has_default_value
+    !parameter.is_optional
+        && !parameter.has_default_value
+        && matches!(
+            parameter.section,
+            FunctionModuleParameterSection::Importing
+                | FunctionModuleParameterSection::Changing
+                | FunctionModuleParameterSection::Tables
+        )
 }
 
 fn resolve_type_owner_symbol(
@@ -2702,6 +2709,9 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
                                 range: argument.range.clone(),
                                 message: format!("duplicate function module exception '{}'", name),
                             });
+                            continue;
+                        }
+                        if name.eq_ignore_ascii_case("others") {
                             continue;
                         }
                         if !function_module
