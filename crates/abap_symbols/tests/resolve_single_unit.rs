@@ -2227,6 +2227,34 @@ SELECT * FROM ty_row INTO TABLE lt.
 }
 
 #[test]
+fn select_from_dynamic_dbtab_resolves_operand_without_sql_source_diag() {
+    let src = r#"
+DATA lv_idx_tbl TYPE string.
+SELECT * FROM (lv_idx_tbl) INTO TABLE @DATA(lt_rows).
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///opensql_dynamic_source.abap", src, &parsed);
+
+    assert_eq!(unit.sql_queries.len(), 1, "{:?}", unit.sql_queries);
+    assert!(!unit.sql_name_refs.iter().any(|reference| {
+        reference.kind == SqlNameRefKind::Source && reference.name.as_ref() == "(lv_idx_tbl)"
+    }));
+    assert!(unit.references.iter().any(|reference| {
+        reference.namespace == Namespace::Value
+            && reference.name.as_ref() == "lv_idx_tbl"
+            && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+    }));
+    assert!(
+        !unit
+            .diagnostics
+            .iter()
+            .any(|diag| diag.kind == DiagnosticKind::UnverifiedOpenSqlSource),
+        "unexpected UnverifiedOpenSqlSource: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn reports_invalid_into_table_when_target_is_not_internal_table() {
     let src = r#"
 TYPES ty_row TYPE i.

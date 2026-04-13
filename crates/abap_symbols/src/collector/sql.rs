@@ -861,6 +861,21 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
                     .node_name(alias_node.syntax().id())
                     .map(|(name, _)| (name, alias_node.syntax().range()))
             });
+        if let Some(dynamic_source_tokens) = self.dynamic_sql_source_operand_tokens(node) {
+            self.ctx
+                .collect_token_expression_refs_infos(&dynamic_source_tokens, scope, true);
+            if let Some((alias_name, alias_range)) = alias_info {
+                self.push_sql_name_ref(
+                    query_id,
+                    scope,
+                    alias_range,
+                    alias_name,
+                    None,
+                    SqlNameRefKind::Alias,
+                );
+            }
+            return;
+        }
         let Some((name_text, name_range)) = SqlDataSource::cast(self.ctx.syntax(node))
             .and_then(|source| source.source_name(self.ctx.source()))
         else {
@@ -1426,6 +1441,51 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
             Arc::<str>::from(tokens[0].text.to_ascii_lowercase()),
             tokens[0].range.clone(),
         ))
+    }
+
+    fn dynamic_sql_source_operand_tokens(&self, node: NodeId) -> Option<Vec<SyntaxTokenInfo>> {
+        let alias_clause_range = SqlDataSource::cast(self.ctx.syntax(node))
+            .and_then(|source| source.alias_clause())
+            .map(|alias| alias.syntax().range());
+        let tokens = self.ctx.syntax_token_nodes(node);
+        let source_end = tokens
+            .iter()
+            .position(|token| {
+                alias_clause_range
+                    .as_ref()
+                    .is_some_and(|alias| token.range.start >= alias.start)
+            })
+            .unwrap_or(tokens.len());
+        let source_tokens = &tokens[..source_end];
+        Self::dynamic_parenthesized_operand_tokens(source_tokens).map(|tokens| tokens.to_vec())
+    }
+
+    fn dynamic_parenthesized_operand_tokens(
+        tokens: &[SyntaxTokenInfo],
+    ) -> Option<&[SyntaxTokenInfo]> {
+        if tokens.len() < 3
+            || tokens.first().map(|token| token.text.as_ref()) != Some("(")
+            || tokens.last().map(|token| token.text.as_ref()) != Some(")")
+        {
+            return None;
+        }
+        let mut paren = 0i32;
+        for (idx, token) in tokens.iter().enumerate() {
+            match token.text.as_ref() {
+                "(" => paren += 1,
+                ")" => {
+                    paren -= 1;
+                    if paren == 0 && idx + 1 != tokens.len() {
+                        return None;
+                    }
+                }
+                _ => {}
+            }
+            if paren < 0 {
+                return None;
+            }
+        }
+        (paren == 0).then_some(&tokens[1..tokens.len() - 1])
     }
 
     fn inline_decl_name(&self, node: NodeId) -> Option<Arc<str>> {

@@ -8127,7 +8127,9 @@ ENDCLASS.";
         assert_target_slice(&target, "file:///i1.abap", interface_src, "meth");
         assert_eq!(
             target.range.start,
-            interface_src.find("meth").expect("interface method declaration")
+            interface_src
+                .find("meth")
+                .expect("interface method declaration")
         );
     }
 
