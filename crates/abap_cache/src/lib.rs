@@ -4170,11 +4170,11 @@ fn resolve_method_target_from_context_with_scope_index<'a>(
         &declared_type.base_name,
         false,
     )?;
-    (class_unit.symbol(class_symbol_id).kind == SymbolKind::Class).then_some((
-        class_unit,
-        class_symbol_id,
-        false,
-    ))
+    matches!(
+        class_unit.symbol(class_symbol_id).kind,
+        SymbolKind::Class | SymbolKind::Interface
+    )
+    .then_some((class_unit, class_symbol_id, false))
 }
 
 fn resolve_direct_superclass_from_scope_with_scope_index<'a>(
@@ -4377,6 +4377,16 @@ fn resolve_class_selector_member_with_scope_index<'a>(
             unit,
             symbol_id,
         )?;
+    if class_unit.symbol(class_symbol_id).kind == SymbolKind::Interface {
+        return resolve_interface_member_path(
+            snapshot,
+            scope_index,
+            class_unit,
+            class_symbol_id,
+            access.scope,
+            &[access.field_path[segment_index].name.as_ref()],
+        );
+    }
     let (member_unit, member) = resolve_class_member_in_hierarchy(
         snapshot,
         class_unit,
@@ -4628,11 +4638,11 @@ fn resolve_class_selector_base_with_scope_index<'a>(
         &declared_type.base_name,
         false,
     )?;
-    (class_unit.symbol(class_symbol_id).kind == SymbolKind::Class).then_some((
-        class_unit,
-        class_symbol_id,
-        false,
-    ))
+    matches!(
+        class_unit.symbol(class_symbol_id).kind,
+        SymbolKind::Class | SymbolKind::Interface
+    )
+    .then_some((class_unit, class_symbol_id, false))
 }
 
 fn classify_field_access_segment_with_scope_index(
@@ -8072,6 +8082,56 @@ lo_obj->i1~meth( ).";
     }
 
     #[test]
+    fn definition_at_returns_interface_method_declaration_for_interface_typed_value_selector() {
+        let store = DocumentStore::default();
+        let interface_src = "\
+INTERFACE i1.
+  METHODS meth.
+ENDINTERFACE.";
+        let main_src = "\
+CLASS demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run.
+ENDCLASS.
+
+CLASS demo IMPLEMENTATION.
+  METHOD run.
+    DATA lo_obj TYPE REF TO i1.
+    lo_obj->meth( ).
+  ENDMETHOD.
+ENDCLASS.";
+        let snapshots = store.replace_all(vec![
+            DocumentInput {
+                uri: Arc::from("file:///i1.abap"),
+                version: 1,
+                text: Arc::from(interface_src),
+                is_dependency: true,
+                object_name: Some(Arc::from("i1")),
+            },
+            DocumentInput {
+                uri: Arc::from("file:///main.abap"),
+                version: 1,
+                text: Arc::from(main_src),
+                is_dependency: false,
+                object_name: None,
+            },
+        ]);
+        let snapshot = snapshots
+            .get("file:///main.abap")
+            .expect("main snapshot should exist");
+        let method_use = main_src.rfind("meth").expect("method use");
+
+        let target = snapshot
+            .definition_at(method_use + 1)
+            .expect("interface method definition target");
+        assert_target_slice(&target, "file:///i1.abap", interface_src, "meth");
+        assert_eq!(
+            target.range.start,
+            interface_src.find("meth").expect("interface method declaration")
+        );
+    }
+
+    #[test]
     fn definition_at_returns_interface_targets_for_qualified_method_implementation_header() {
         let store = DocumentStore::default();
         let src = "\
@@ -9196,6 +9256,69 @@ rv_text = |value: { lo_expr->to_string( ) }|.";
                 .declaration
                 .as_deref()
                 .is_some_and(|declaration| declaration.contains("METHODS to_string"))
+        );
+    }
+
+    #[test]
+    fn finds_hovered_interface_method_for_interface_typed_value_selector() {
+        let store = DocumentStore::default();
+        let interface_src = "\
+INTERFACE i1.
+  METHODS meth
+    IMPORTING
+      iv_value TYPE i.
+ENDINTERFACE.";
+        let main_src = "\
+CLASS demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run.
+ENDCLASS.
+
+CLASS demo IMPLEMENTATION.
+  METHOD run.
+    DATA lo_obj TYPE REF TO i1.
+    lo_obj->meth(
+      iv_value = 1 ).
+  ENDMETHOD.
+ENDCLASS.";
+        let snapshots = store.replace_all(vec![
+            DocumentInput {
+                uri: Arc::from("file:///i1.abap"),
+                version: 1,
+                text: Arc::from(interface_src),
+                is_dependency: true,
+                object_name: Some(Arc::from("i1")),
+            },
+            DocumentInput {
+                uri: Arc::from("file:///main.abap"),
+                version: 1,
+                text: Arc::from(main_src),
+                is_dependency: false,
+                object_name: None,
+            },
+        ]);
+        let snapshot = snapshots
+            .get("file:///main.abap")
+            .expect("main snapshot should exist");
+        let offset = main_src.rfind("meth").expect("method use") + 1;
+
+        let hovered = snapshot
+            .hovered_component_at(offset)
+            .expect("hovered method info");
+        assert_eq!(hovered.base_name.as_ref(), "lo_obj");
+        assert_eq!(hovered.field_name.as_ref(), "meth");
+        assert!(matches!(hovered.kind, HoveredComponentKind::Method));
+        assert!(
+            hovered
+                .declaration
+                .as_deref()
+                .is_some_and(|declaration| declaration.contains("METHODS meth"))
+        );
+        assert!(
+            hovered
+                .declaration
+                .as_deref()
+                .is_some_and(|declaration| declaration.contains("iv_value TYPE i"))
         );
     }
 
