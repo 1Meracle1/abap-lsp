@@ -54,6 +54,8 @@ $env:ABAP_PERF_WARMUP="1"
 
 cargo flamegraph -p abap_symbols --example build_symbols_collect_perf --release
 cargo flamegraph -p abap_symbols --example build_symbols_validate_perf --release
+
+$ErrorActionPreference='Stop'; $path='D:\dev\abap\prod_rep_check\src\zdemo.abap'; $exe='D:\dev\rust\abap-lsp\target\release\abap-cli.exe'; $project = Measure-Command { & $exe analyze --json --with-project $path > $null }; "project_seconds=$([math]::Round($project.TotalSeconds,3))
 ```
 
 ## Migration Docs

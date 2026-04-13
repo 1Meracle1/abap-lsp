@@ -201,13 +201,18 @@ pub fn load_workspace_documents_with_progress(
         Err(error) => (None, Some(error)),
     };
     let cache_dir = manifest_cache_dir(manifest.as_ref()).to_string();
-    let total_document_count = planned_workspace_document_count(
-        &root_path,
-        root_uri,
-        manifest.as_ref(),
-        &cache_dir,
-        overlays,
-    );
+    let total_document_count = progress
+        .is_some()
+        .then(|| {
+            planned_workspace_document_count(
+                &root_path,
+                root_uri,
+                manifest.as_ref(),
+                &cache_dir,
+                overlays,
+            )
+        })
+        .unwrap_or(0);
     let mut load_progress = WorkspaceLoadProgress {
         callback: progress,
         loaded_document_count: 0,

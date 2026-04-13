@@ -331,14 +331,13 @@ fn resolve_project_cross_unit_with_filter(
         }
     }
 
-    let symbol_by_unit: Vec<HashMap<Arc<str>, SymbolId>> = units
+    let root_symbol_names: HashSet<_> = units
         .iter()
-        .map(|unit| {
+        .flat_map(|unit| {
             unit.symbols
                 .iter()
                 .filter(|symbol| symbol.scope == unit.root_scope)
-                .map(|symbol| (Arc::clone(&symbol.name), symbol.id))
-                .collect()
+                .map(|symbol| Arc::clone(&symbol.name))
         })
         .collect();
 
@@ -450,9 +449,7 @@ fn resolve_project_cross_unit_with_filter(
             }
             if resolved.is_none()
                 && matches!(reference_namespace, Namespace::Type | Namespace::Routine)
-                && symbol_by_unit
-                    .iter()
-                    .any(|names| names.contains_key(&reference_name))
+                && root_symbol_names.contains(&reference_name)
             {
                 resolved = Some(Resolution::External);
             }
