@@ -3503,6 +3503,75 @@ ENDFUNCTION.";
     }
 
     #[test]
+    fn editor_first_open_report_requests_remote_candidates_from_local_includes() {
+        let workspace_path = temp_workspace_path("editor_first_open_report_include_remote");
+        let report_dir = workspace_path.join("src").join("reports").join("ZREP");
+        fs::create_dir_all(&report_dir).expect("report dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[performance]
+mode = "editor-first"
+
+[resolution]
+dependency_mode = "remote-on-demand"
+unknown_symbol_mode = "remote"
+"#,
+        )
+        .expect("manifest");
+        let report_text =
+            "REPORT zrep.\nINCLUDE zrep_top.\nSTART-OF-SELECTION.\n  lo_app->run( ).\n";
+        fs::write(report_dir.join("ZREP.abap"), report_text).expect("report");
+        fs::write(
+            report_dir.join("ZREP_TOP.abap"),
+            "DATA lo_app TYPE REF TO zcl_remote.\n",
+        )
+        .expect("include");
+
+        let workspace_uri = file_uri(&workspace_path);
+        let source_uri = format!("{workspace_uri}/src/reports/ZREP/ZREP.abap");
+        let mut state = ServerState::default();
+        let config = ServerConfig::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        refresh_workspace(&mut state, &workspace_uri);
+
+        let handled = handle_message(
+            &mut state,
+            &config,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": {
+                    "textDocument": {
+                        "uri": source_uri,
+                        "languageId": "abap",
+                        "version": 1,
+                        "text": report_text
+                    }
+                }
+            }),
+        )
+        .expect("didOpen");
+
+        let request = handled
+            .notifications
+            .iter()
+            .find(|(method, _)| method == RESOLVE_REMOTE_DEPENDENCIES)
+            .map(|(_, payload)| payload)
+            .expect("remote dependency request");
+        let candidates = request
+            .get("candidates")
+            .and_then(Value::as_array)
+            .expect("candidates");
+        assert!(candidates.iter().any(|candidate| {
+            candidate.get("kind").and_then(Value::as_str) == Some("type")
+                && candidate.get("name").and_then(Value::as_str) == Some("zcl_remote")
+        }));
+    }
+
+    #[test]
     fn editor_first_open_dependency_class_can_request_full_follow_up_candidates() {
         let workspace_path = temp_workspace_path("editor_first_open_dependency_class_remote");
         let dependency_dir = workspace_path
@@ -3737,7 +3806,11 @@ ENDCLASS.";
             .and_then(Value::as_array)
             .expect("refreshed dependency diagnostics");
         assert!(
-            refreshed_diags.is_empty(),
+            refreshed_diags.iter().any(|diag| {
+                diag.get("message").and_then(Value::as_str).is_some_and(|message| {
+                    message.contains("Type 'zmissing' is not verified against a SAP system")
+                })
+            }),
             "unexpected refreshed diagnostics: {refreshed_diags:?}"
         );
     }
@@ -3880,7 +3953,11 @@ ENDCLASS.";
             .and_then(Value::as_array)
             .expect("refreshed dependency diagnostics");
         assert!(
-            refreshed_diags.is_empty(),
+            refreshed_diags.iter().any(|diag| {
+                diag.get("message").and_then(Value::as_str).is_some_and(|message| {
+                    message.contains("Type '/sttp/zmissing' is not verified against a SAP system")
+                })
+            }),
             "unexpected refreshed diagnostics: {refreshed_diags:?}"
         );
     }

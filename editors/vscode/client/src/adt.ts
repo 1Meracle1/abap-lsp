@@ -67,6 +67,136 @@ interface AdtClientOptions {
 	beforeRequest?: () => Promise<void>;
 }
 
+const SAP_BASE_URL_ENV_KEYS = ["ABAP_ADT_URL", "ABAP_ADT_BASE_URL", "SAPBASE_URL"] as const;
+const SAP_USERNAME_ENV_KEYS = ["ABAP_ADT_USER", "ABAP_ADT_USERNAME", "SAPUSER"] as const;
+const SAP_PASSWORD_ENV_KEYS = ["ABAP_ADT_PASSWORD", "SAPPASS"] as const;
+
+export function parseDotenvContents(content: string): Map<string, string> {
+	const values = new Map<string, string>();
+	for (const rawLine of content.split(/\r?\n/u)) {
+		const line = rawLine.trim();
+		if (!line || line.startsWith("#")) {
+			continue;
+		}
+		const separator = line.indexOf("=");
+		if (separator <= 0) {
+			continue;
+		}
+		const key = line.slice(0, separator).trim();
+		if (!key) {
+			continue;
+		}
+		let value = line.slice(separator + 1).trim();
+		if (!value) {
+			values.set(key, "");
+			continue;
+		}
+		if ((value.startsWith("\"") && value.endsWith("\"")) || (value.startsWith("'") && value.endsWith("'"))) {
+			value = value.slice(1, -1);
+		} else {
+			const commentIndex = value.indexOf("#");
+			if (commentIndex >= 0) {
+				value = value.slice(0, commentIndex).trimEnd();
+			}
+		}
+		values.set(key, value);
+	}
+	return values;
+}
+
+export function resolveSapConnectionDefaults(
+	env: NodeJS.ProcessEnv,
+	dotenv: ReadonlyMap<string, string>,
+): Partial<SapConnectionConfig> {
+	return {
+		baseUrl: firstConnectionValue(SAP_BASE_URL_ENV_KEYS, env, dotenv),
+		username: firstConnectionValue(SAP_USERNAME_ENV_KEYS, env, dotenv),
+		password: firstConnectionValue(SAP_PASSWORD_ENV_KEYS, env, dotenv),
+	};
+}
+
+function firstConnectionValue(
+	keys: readonly string[],
+	env: NodeJS.ProcessEnv,
+	dotenv: ReadonlyMap<string, string>,
+): string | undefined {
+	for (const key of keys) {
+		const fromEnv = normalizedNonEmpty(env[key]);
+		if (fromEnv) {
+			return fromEnv;
+		}
+	}
+	for (const key of keys) {
+		const fromDotenv = normalizedNonEmpty(dotenv.get(key));
+		if (fromDotenv) {
+			return fromDotenv;
+		}
+	}
+	return undefined;
+}
+
+async function loadSapConnectionDefaults(
+	context: vscode.ExtensionContext,
+	workspaceFolder: vscode.WorkspaceFolder,
+): Promise<Partial<SapConnectionConfig>> {
+	const dotenv = await loadDotenvDefaults(context, workspaceFolder);
+	return resolveSapConnectionDefaults(process.env, dotenv);
+}
+
+async function loadDotenvDefaults(
+	context: vscode.ExtensionContext,
+	workspaceFolder: vscode.WorkspaceFolder,
+): Promise<Map<string, string>> {
+	for (const candidatePath of dotenvCandidatePaths(context, workspaceFolder)) {
+		try {
+			const content = await fs.promises.readFile(candidatePath, "utf8");
+			return parseDotenvContents(content);
+		} catch {
+			continue;
+		}
+	}
+	return new Map<string, string>();
+}
+
+function dotenvCandidatePaths(
+	context: vscode.ExtensionContext,
+	workspaceFolder: vscode.WorkspaceFolder,
+): string[] {
+	const paths: string[] = [];
+	const seen = new Set<string>();
+	for (const basePath of [workspaceFolder.uri.fsPath, context.extensionPath, process.cwd()]) {
+		for (const dir of ancestorDirectories(basePath)) {
+			const candidate = path.join(dir, ".env");
+			const normalized = path.normalize(candidate);
+			if (seen.has(normalized)) {
+				continue;
+			}
+			seen.add(normalized);
+			paths.push(normalized);
+		}
+	}
+	return paths;
+}
+
+function ancestorDirectories(startPath: string): string[] {
+	const directories: string[] = [];
+	let current = path.resolve(startPath);
+	while (true) {
+		directories.push(current);
+		const parent = path.dirname(current);
+		if (parent === current) {
+			break;
+		}
+		current = parent;
+	}
+	return directories;
+}
+
+function normalizedNonEmpty(value: string | undefined): string | undefined {
+	const trimmed = value?.trim();
+	return trimmed ? trimmed : undefined;
+}
+
 export async function getSapConnectionConfig(
 	context: vscode.ExtensionContext,
 	workspaceFolder: vscode.WorkspaceFolder,
@@ -74,12 +204,13 @@ export async function getSapConnectionConfig(
 ): Promise<SapConnectionConfig | undefined> {
 	const promptIfMissing = options.promptIfMissing ?? true;
 	const config = vscode.workspace.getConfiguration("abap-ls", workspaceFolder.uri);
+	const defaults = await loadSapConnectionDefaults(context, workspaceFolder);
 	const storedBaseUrl = (config.get<string>("sap.baseUrl") ?? "").trim();
 	const storedUsername = (config.get<string>("sap.username") ?? "").trim();
 	const secretKey = secretKeyForWorkspace(workspaceFolder);
 	const storedPassword = (await context.secrets.get(secretKey)) ?? "";
 
-	let baseUrl = storedBaseUrl;
+	let baseUrl = storedBaseUrl || defaults.baseUrl || "";
 	if (!baseUrl) {
 		if (!promptIfMissing) {
 			return undefined;
@@ -95,7 +226,7 @@ export async function getSapConnectionConfig(
 		await config.update("sap.baseUrl", baseUrl, vscode.ConfigurationTarget.WorkspaceFolder);
 	}
 
-	let username = storedUsername;
+	let username = storedUsername || defaults.username || "";
 	if (!username) {
 		if (!promptIfMissing) {
 			return undefined;
@@ -110,7 +241,7 @@ export async function getSapConnectionConfig(
 		await config.update("sap.username", username, vscode.ConfigurationTarget.WorkspaceFolder);
 	}
 
-	let password = storedPassword;
+	let password = storedPassword || defaults.password || "";
 	if (!password) {
 		if (!promptIfMissing) {
 			return undefined;

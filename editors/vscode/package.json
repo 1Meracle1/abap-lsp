@@ -100,6 +100,15 @@
           "type": "string",
           "default": "",
           "description": "SAP username used for ADT requests. Password is stored securely in VS Code secret storage."
+        },
+        "abap-ls.sap.localDependencyRoots": {
+          "scope": "resource",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Local exported ABAP package roots to search before live ADT fetches when resolving remote dependencies."
         }
       }
     },

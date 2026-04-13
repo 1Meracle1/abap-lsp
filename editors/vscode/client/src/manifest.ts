@@ -12,18 +12,18 @@ export interface ManifestUnitSpec {
 	name: string;
 	kind: string;
 	rootFile: string;
-	adtUri?: string;
-	role: string;
-	objectName: string;
-	matchAdtUris?: string[];
+	packageName?: string;
+	dependencyOf?: ManifestUnitDependencyOfSpec[];
 	members?: ManifestUnitMemberSpec[];
 }
 
-export interface ManifestUnitMemberSpec {
-	role: string;
+export interface ManifestUnitDependencyOfSpec {
 	file: string;
-	objectName: string;
-	adtUri?: string;
+}
+
+export interface ManifestUnitMemberSpec {
+	file: string;
+	objectName?: string;
 }
 
 interface ManifestUnitMatch {
@@ -42,6 +42,7 @@ export interface ManifestOptions {
 }
 
 export const manifestFileName = "abapls.toml";
+export const dependencyCacheManifestDirName = "dependency-manifests";
 export const unknownSymbolLogPath = ".abapls/logs/unknown-symbols.log";
 export const defaultRemoteRequestParallelism = 8;
 export const defaultRemoteRequestsPerSecond = 24;
@@ -58,9 +59,7 @@ export function inferManifestUnitSpec(objectRef: AdtObjectRef, relativeFilePath:
 			name: objectRef.name,
 			kind: inferDdicManifestKind(objectRef),
 			rootFile: normalizedFile,
-			adtUri: objectRef.uri,
-			role: "dependency",
-			objectName: objectRef.name,
+			packageName: objectRef.packageName,
 		};
 	}
 	if (isMessageClassDependencyObject(objectRef)) {
@@ -68,9 +67,7 @@ export function inferManifestUnitSpec(objectRef: AdtObjectRef, relativeFilePath:
 			name: objectRef.name,
 			kind: "message-class",
 			rootFile: normalizedFile,
-			adtUri: objectRef.uri,
-			role: "dependency",
-			objectName: objectRef.name,
+			packageName: objectRef.packageName,
 		};
 	}
 	if (loweredUri.includes("/programs/includes/") || objectRef.type === "PROG/I") {
@@ -78,9 +75,7 @@ export function inferManifestUnitSpec(objectRef: AdtObjectRef, relativeFilePath:
 			name: objectRef.name,
 			kind: "include",
 			rootFile: normalizedFile,
-			adtUri: objectRef.uri,
-			role: "root",
-			objectName: objectRef.name,
+			packageName: objectRef.packageName,
 		};
 	}
 	if (loweredUri.includes("/oo/classes/") || objectRef.type.startsWith("CLAS/")) {
@@ -88,9 +83,7 @@ export function inferManifestUnitSpec(objectRef: AdtObjectRef, relativeFilePath:
 			name: objectRef.name,
 			kind: "global-class",
 			rootFile: normalizedFile,
-			adtUri: objectRef.uri,
-			role: "main",
-			objectName: objectRef.name,
+			packageName: objectRef.packageName,
 		};
 	}
 	if (loweredUri.includes("/oo/interfaces/") || objectRef.type.startsWith("INTF/")) {
@@ -98,9 +91,7 @@ export function inferManifestUnitSpec(objectRef: AdtObjectRef, relativeFilePath:
 			name: objectRef.name,
 			kind: "global-interface",
 			rootFile: normalizedFile,
-			adtUri: objectRef.uri,
-			role: "main",
-			objectName: objectRef.name,
+			packageName: objectRef.packageName,
 		};
 	}
 	if (loweredUri.includes("/functions/groups/")) {
@@ -108,52 +99,33 @@ export function inferManifestUnitSpec(objectRef: AdtObjectRef, relativeFilePath:
 			name: objectRef.name,
 			kind: "function-group",
 			rootFile: normalizedFile,
-			adtUri: objectRef.uri,
-			role: "main",
-			objectName: objectRef.name,
+			packageName: objectRef.packageName,
 		};
 	}
 	return {
 		name: objectRef.name,
 		kind: "report",
 		rootFile: normalizedFile,
-		adtUri: objectRef.uri,
-		role: "root",
-		objectName: objectRef.name,
+		packageName: objectRef.packageName,
 	};
-}
-
-export async function ensureManifestUnit(
-	workspaceFolder: vscode.WorkspaceFolder,
-	unit: ManifestUnitSpec,
-	options: ManifestOptions = {},
-): Promise<vscode.Uri> {
-	const manifestPath = workspaceManifestPath(workspaceFolder);
-	await withManifestUpdateLock(manifestPath, async () => {
-		const existing = await readTextIfExists(manifestPath);
-		const unitBlock = renderUnitBlock(unit);
-
-		if (!existing) {
-			const initialText = `${renderManifestHeader(options)}\n${unitBlock}`;
-			await fs.promises.writeFile(manifestPath, initialText, "utf8");
-			return;
-		}
-
-		const match = findManifestUnit(existing, unit);
-		if (match) {
-			const updated = `${existing.slice(0, match.start)}${unitBlock}${existing.slice(match.end)}`;
-			await fs.promises.writeFile(manifestPath, updated, "utf8");
-			return;
-		}
-
-		const separator = existing.endsWith("\n") ? "\n" : "\n\n";
-		await fs.promises.writeFile(manifestPath, `${existing}${separator}${unitBlock}`, "utf8");
-	});
-	return vscode.Uri.file(manifestPath);
 }
 
 export function workspaceManifestPath(workspaceFolder: vscode.WorkspaceFolder): string {
 	return path.join(workspaceFolder.uri.fsPath, manifestFileName);
+}
+
+export function dependencyCacheManifestPath(
+	workspaceFolder: vscode.WorkspaceFolder,
+	sourceFile: string,
+): string {
+	const normalizedSourceFile = normalizeRelativePath(sourceFile);
+	return path.join(
+		workspaceFolder.uri.fsPath,
+		".abapls",
+		"cache",
+		dependencyCacheManifestDirName,
+		`${encodeURIComponent(normalizedSourceFile)}.toml`,
+	);
 }
 
 export async function ensureWorkspaceManifest(
@@ -172,12 +144,28 @@ export async function ensureWorkspaceManifest(
 	return vscode.Uri.file(manifestPath);
 }
 
-export function targetWorkspaceFilePath(workspaceFolder: vscode.WorkspaceFolder, objectName: string): string {
+export function targetLocalWorkspaceFilePath(
+	workspaceFolder: vscode.WorkspaceFolder,
+	kind: string,
+	objectName: string,
+): string {
+	const encodedName = `${encodeWorkspaceObjectFileName(objectName)}.abap`;
+	const normalizedKind = kind.trim().toLowerCase();
+	const kindDirs = localWorkspaceKindDirectories(normalizedKind, objectName);
 	return path.join(
 		workspaceFolder.uri.fsPath,
 		"src",
-		`${encodeWorkspaceObjectFileName(objectName)}.abap`,
+		...kindDirs,
+		encodedName,
 	);
+}
+
+export function targetEditableWorkspaceFilePath(
+	workspaceFolder: vscode.WorkspaceFolder,
+	objectRef: AdtObjectRef,
+): string {
+	const inferred = inferManifestUnitSpec(objectRef, "placeholder.abap");
+	return targetLocalWorkspaceFilePath(workspaceFolder, inferred.kind, objectRef.name);
 }
 
 export function targetDependencyWorkspaceFilePath(
@@ -189,20 +177,52 @@ export function targetDependencyWorkspaceFilePath(
 		isXmlDependencyObject(objectRef) ? "dependency.xml" : "dependency.abap",
 	);
 	const kindDir = sanitizePathSegment(manifestUnit.kind);
+	const packageDir = objectRef.packageName?.trim()
+		? encodeWorkspaceObjectFileName(objectRef.packageName)
+		: "_unknown";
 	const fileExtension = isXmlDependencyObject(objectRef) ? "xml" : "abap";
 	const fileName = `${encodeURIComponent(objectRef.name)}.${fileExtension}`;
-	return path.join(workspaceFolder.uri.fsPath, ".abapls", "cache", "dependencies", kindDir, fileName);
+	return path.join(
+		workspaceFolder.uri.fsPath,
+		".abapls",
+		"cache",
+		"packages",
+		packageDir,
+		kindDir,
+		fileName,
+	);
 }
 
-export async function ensureManifestDependencyUnit(
+export async function ensureDependencyCacheUnit(
 	workspaceFolder: vscode.WorkspaceFolder,
 	objectRef: AdtObjectRef,
 	filePath: string,
+	sourceFiles: readonly string[],
 ): Promise<vscode.Uri> {
 	const relativeFile = path.relative(workspaceFolder.uri.fsPath, filePath);
 	const unit = inferManifestUnitSpec(objectRef, relativeFile);
-	unit.role = "dependency";
-	return ensureManifestUnit(workspaceFolder, unit);
+	unit.dependencyOf = [];
+
+	const normalizedSourceFiles = [...new Set(
+		sourceFiles
+			.map((file) => normalizeRelativePath(file))
+			.filter((file) => file.length > 0),
+	)];
+	if (normalizedSourceFiles.length === 0) {
+		throw new Error("ensureDependencyCacheUnit requires at least one source file");
+	}
+
+	let lastUri = vscode.Uri.file(dependencyCacheManifestPath(workspaceFolder, normalizedSourceFiles[0]));
+	for (const sourceFile of normalizedSourceFiles) {
+		const manifestPath = dependencyCacheManifestPath(workspaceFolder, sourceFile);
+		await ensureTomlUnitFile(
+			manifestPath,
+			() => `${renderDependencyCacheManifestHeader(sourceFile)}\n`,
+			unit,
+		);
+		lastUri = vscode.Uri.file(manifestPath);
+	}
+	return lastUri;
 }
 
 function renderManifestHeader(options: ManifestOptions = {}): string {
@@ -224,30 +244,28 @@ remote_request_parallelism = ${defaultRemoteRequestParallelism}
 remote_requests_per_second = ${defaultRemoteRequestsPerSecond}`;
 }
 
+function renderDependencyCacheManifestHeader(sourceFile: string): string {
+	return `source_file = "${escapeTomlString(normalizeRelativePath(sourceFile))}"`;
+}
+
 function renderUnitBlock(unit: ManifestUnitSpec): string {
-	const unitAdtUriLine = unit.adtUri?.trim()
-		? `adt_uri = "${escapeTomlString(unit.adtUri)}"\n`
+	const unitPackageNameLine = unit.packageName?.trim()
+		? `package_name = "${escapeTomlString(unit.packageName)}"\n`
 		: "";
 	const members = normalizedManifestMembers(unit);
-	const memberBlocks = members.map((member) => {
-		const memberAdtUriLine = member.adtUri?.trim()
-			? `adt_uri = "${escapeTomlString(member.adtUri)}"\n`
-			: "";
-		return `[[unit.member]]
-role = "${escapeTomlString(member.role)}"
-file = "${escapeTomlString(normalizeRelativePath(member.file))}"
-object_name = "${escapeTomlString(member.objectName)}"
-${memberAdtUriLine}
-`;
-	}).join("\n");
+	const membersLine = renderMembersLine(members);
+	const dependencyOf = normalizedManifestDependencyOf(unit);
+	const dependencyOfLine = renderDependencyOfLine(dependencyOf);
+	const trailingBlocks = [membersLine, dependencyOfLine]
+		.filter((block) => block.length > 0)
+		.join("\n\n");
 	return `
 [[unit]]
 name = "${escapeTomlString(unit.name)}"
 kind = "${escapeTomlString(unit.kind)}"
 root_file = "${escapeTomlString(normalizeRelativePath(unit.rootFile))}"
-${unitAdtUriLine}
-
-${memberBlocks}
+${unitPackageNameLine}
+${trailingBlocks ? `\n${trailingBlocks}` : ""}
 `;
 }
 
@@ -260,27 +278,41 @@ function normalizeRelativePath(value: string): string {
 }
 
 function findManifestUnit(text: string, unit: ManifestUnitSpec): ManifestUnitMatch | undefined {
-	const matchAdtUris = new Set(
-		[unit.adtUri, ...(unit.matchAdtUris ?? [])]
-			.map((value) => value?.trim())
-			.filter((value): value is string => Boolean(value)),
-	);
+	const candidateName = normalizeCandidateName(unit.name);
+	const candidateRootFile = normalizeCandidateFile(unit.rootFile);
 	const matches = [...text.matchAll(/^\[\[unit\]\]\s*$/gm)];
 	for (let index = 0; index < matches.length; index += 1) {
 		const start = matches[index].index ?? 0;
 		const end = matches[index + 1]?.index ?? text.length;
 		const block = text.slice(start, end);
-		const adtUri = readTomlString(block, "adt_uri");
-		const name = readTomlString(block, "name");
-		const rootFile = readTomlString(block, "root_file");
-		if (adtUri && matchAdtUris.has(adtUri)) {
-			return { start, end };
-		}
-		if (name === unit.name || rootFile === normalizeRelativePath(unit.rootFile)) {
+		const blockName = normalizeCandidateName(readTomlString(block, "name"));
+		const blockRootFile = normalizeCandidateFile(readTomlString(block, "root_file"));
+		if (
+			(candidateRootFile && blockRootFile === candidateRootFile) ||
+			(candidateName && blockName === candidateName)
+		) {
 			return { start, end };
 		}
 	}
 	return undefined;
+}
+
+function mergeManifestUnit(block: string, unit: ManifestUnitSpec): ManifestUnitSpec {
+	if (!unit.dependencyOf?.length) {
+		return unit;
+	}
+
+	return {
+		...unit,
+		dependencyOf: [
+			...readManifestDependencyOf(block),
+			...unit.dependencyOf,
+		],
+	};
+}
+
+function readManifestDependencyOf(block: string): ManifestUnitDependencyOfSpec[] {
+	return inlineDependencyOf(block).map((file) => ({ file }));
 }
 
 function readTomlString(block: string, key: string): string | undefined {
@@ -300,22 +332,134 @@ function encodeWorkspaceObjectFileName(objectName: string): string {
 	return encodeURIComponent(objectName.trim().toUpperCase());
 }
 
+function localWorkspaceKindDirectories(kind: string, objectName: string): string[] {
+	const encodedObjectName = encodeWorkspaceObjectFileName(objectName);
+	switch (kind) {
+		case "global-class":
+			return ["classes"];
+		case "global-interface":
+			return ["interfaces"];
+		case "include":
+			return ["includes"];
+		case "report":
+			return ["reports", encodedObjectName];
+		default:
+			return ["misc"];
+	}
+}
+
 function normalizedManifestMembers(unit: ManifestUnitSpec): ManifestUnitMemberSpec[] {
 	if (unit.members?.length) {
 		return unit.members.map((member) => ({
-			role: member.role,
 			file: normalizeRelativePath(member.file),
 			objectName: member.objectName,
-			adtUri: member.adtUri,
-		}));
+		})).filter((member) => member.file !== normalizeRelativePath(unit.rootFile));
 	}
 
-	return [{
-		role: unit.role,
-		file: normalizeRelativePath(unit.rootFile),
-		objectName: unit.objectName,
-		adtUri: unit.adtUri,
-	}];
+	return [];
+}
+
+function manifestMemberObjectNameIsDefault(member: ManifestUnitMemberSpec): boolean {
+	const explicit = member.objectName?.trim();
+	if (!explicit) {
+		return true;
+	}
+	const inferred = inferManifestMemberObjectName(member.file);
+	return inferred !== undefined && explicit.toUpperCase() === inferred.toUpperCase();
+}
+
+function renderMembersLine(members: ManifestUnitMemberSpec[]): string {
+	if (members.length === 0) {
+		return "";
+	}
+	const renderedMembers = members.map((member) => renderInlineManifestMember(member)).join(",\n");
+	return `members = [\n${indentTomlBlock(renderedMembers, 1)}\n]`;
+}
+
+function renderDependencyOfLine(dependencies: ManifestUnitDependencyOfSpec[]): string {
+	if (dependencies.length === 0) {
+		return "";
+	}
+	const rendered = dependencies
+		.map((dependency) => `"${escapeTomlString(normalizeRelativePath(dependency.file))}"`)
+		.join(",\n");
+	return `dependency_of = [\n${indentTomlBlock(rendered, 1)}\n]`;
+}
+
+function renderInlineManifestMember(member: ManifestUnitMemberSpec): string {
+	const normalizedFile = normalizeRelativePath(member.file);
+	if (manifestMemberObjectNameIsDefault(member)) {
+		return `"${escapeTomlString(normalizedFile)}"`;
+	}
+
+	const properties = [
+		`file = "${escapeTomlString(normalizedFile)}"`,
+		!manifestMemberObjectNameIsDefault(member)
+			? `object_name = "${escapeTomlString(member.objectName ?? "")}"`
+			: undefined,
+	].filter((value): value is string => Boolean(value));
+	return `{ ${properties.join(", ")} }`;
+}
+
+function indentTomlBlock(value: string, level: number): string {
+	const indent = "\t".repeat(level);
+	return value
+		.split("\n")
+		.map((line) => `${indent}${line}`)
+		.join("\n");
+}
+
+function inlineDependencyOf(block: string): string[] {
+	const match = block.match(/^dependency_of\s*=\s*\[([\s\S]*?)^\]\s*$/m);
+	if (!match) {
+		return [];
+	}
+	const body = match[1];
+	const dependencies: string[] = [];
+	for (const stringMatch of body.matchAll(/"((?:[^"\\]|\\.)*)"/g)) {
+		dependencies.push(stringMatch[1].replace(/\\"/g, "\"").replace(/\\\\/g, "\\"));
+	}
+	return dependencies.map((value) => normalizeRelativePath(value));
+}
+
+function normalizeCandidateName(value: string | undefined): string | undefined {
+	const trimmed = value?.trim();
+	return trimmed ? trimmed.toUpperCase() : undefined;
+}
+
+function normalizeCandidateFile(value: string | undefined): string | undefined {
+	const trimmed = value?.trim();
+	return trimmed ? normalizeRelativePath(trimmed) : undefined;
+}
+
+function inferManifestMemberObjectName(file: string): string | undefined {
+	const normalizedFile = normalizeRelativePath(file);
+	const baseName = path.posix.basename(normalizedFile);
+	if (!baseName) {
+		return undefined;
+	}
+	const suffixIndex = baseName.lastIndexOf(".");
+	const stem = suffixIndex >= 0 ? baseName.slice(0, suffixIndex) : baseName;
+	if (!stem) {
+		return undefined;
+	}
+	return decodeURIComponent(stem).trim().toUpperCase();
+}
+
+function normalizedManifestDependencyOf(unit: ManifestUnitSpec): ManifestUnitDependencyOfSpec[] {
+	const deduped = new Set<string>();
+	const dependencies = unit.dependencyOf ?? [];
+	return dependencies
+		.map((dependency) => ({
+			file: normalizeRelativePath(dependency.file),
+		}))
+		.filter((dependency) => {
+			if (!dependency.file || deduped.has(dependency.file)) {
+				return false;
+			}
+			deduped.add(dependency.file);
+			return true;
+		});
 }
 
 function isXmlDependencyObject(objectRef: AdtObjectRef): boolean {
@@ -331,6 +475,36 @@ async function readTextIfExists(filePath: string): Promise<string | undefined> {
 		}
 		throw error;
 	}
+}
+
+async function ensureTomlUnitFile(
+	filePath: string,
+	initialText: () => string,
+	unit: ManifestUnitSpec,
+): Promise<void> {
+	await withManifestUpdateLock(filePath, async () => {
+		await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
+		const existing = await readTextIfExists(filePath);
+
+		if (!existing) {
+			const unitBlock = renderUnitBlock(unit);
+			await fs.promises.writeFile(filePath, `${initialText()}${unitBlock}`, "utf8");
+			return;
+		}
+
+		const match = findManifestUnit(existing, unit);
+		if (match) {
+			const mergedUnit = mergeManifestUnit(existing.slice(match.start, match.end), unit);
+			const unitBlock = renderUnitBlock(mergedUnit);
+			const updated = `${existing.slice(0, match.start)}${unitBlock}${existing.slice(match.end)}`;
+			await fs.promises.writeFile(filePath, updated, "utf8");
+			return;
+		}
+
+		const unitBlock = renderUnitBlock(unit);
+		const separator = existing.endsWith("\n") ? "\n" : "\n\n";
+		await fs.promises.writeFile(filePath, `${existing}${separator}${unitBlock}`, "utf8");
+	});
 }
 
 async function withManifestUpdateLock<T>(manifestPath: string, action: () => Promise<T>): Promise<T> {

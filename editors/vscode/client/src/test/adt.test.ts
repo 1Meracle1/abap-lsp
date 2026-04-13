@@ -13,7 +13,9 @@ import {
 	isMessageClassDependencyObject,
 	isSupportedDependencyObject,
 	isUnsupportedDomainDependencyObject,
+	parseDotenvContents,
 	pickBestDependencyObject,
+	resolveSapConnectionDefaults,
 	type AdtObjectRef,
 } from "../adt";
 import { inferManifestUnitSpec, targetDependencyWorkspaceFilePath } from "../manifest";
@@ -52,6 +54,41 @@ suite("ADT dependency helpers", () => {
 
 		assert.ok(filePath.endsWith("ZSTRUCT.xml"));
 		assert.strictEqual(unit.kind, "ddic-structure");
+	});
+
+	test("Parses dotenv connection values", () => {
+		const dotenv = parseDotenvContents([
+			"# comment",
+			"ABAP_ADT_URL=https://sap.example.com/sap/bc/adt",
+			"ABAP_ADT_USER=\"DEMO_USER\"",
+			"ABAP_ADT_PASSWORD='secret value'",
+			"SAPBASE_URL=https://ignored.example.com # inline comment",
+		].join("\n"));
+
+		assert.strictEqual(dotenv.get("ABAP_ADT_URL"), "https://sap.example.com/sap/bc/adt");
+		assert.strictEqual(dotenv.get("ABAP_ADT_USER"), "DEMO_USER");
+		assert.strictEqual(dotenv.get("ABAP_ADT_PASSWORD"), "secret value");
+		assert.strictEqual(dotenv.get("SAPBASE_URL"), "https://ignored.example.com");
+	});
+
+	test("Resolves SAP connection defaults from env before dotenv", () => {
+		const dotenv = new Map<string, string>([
+			["ABAP_ADT_URL", "https://dotenv.example.com/sap/bc/adt"],
+			["ABAP_ADT_USER", "DOTENV_USER"],
+			["ABAP_ADT_PASSWORD", "dotenv-secret"],
+		]);
+
+		const defaults = resolveSapConnectionDefaults(
+			{
+				ABAP_ADT_BASE_URL: "https://env.example.com/sap/bc/adt",
+				SAPUSER: "ENV_USER",
+			},
+			dotenv,
+		);
+
+		assert.strictEqual(defaults.baseUrl, "https://env.example.com/sap/bc/adt");
+		assert.strictEqual(defaults.username, "ENV_USER");
+		assert.strictEqual(defaults.password, "dotenv-secret");
 	});
 
 	test("Builds message class dependency paths with xml extension", () => {

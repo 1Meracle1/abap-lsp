@@ -29,15 +29,12 @@ import {
 } from "./adt";
 import {
 	dependencyModeLocalFirst,
-	ensureManifestDependencyUnit,
+	ensureDependencyCacheUnit,
 	ensureWorkspaceManifest,
-	ensureManifestUnit,
-	inferManifestUnitSpec,
 	manifestFileName,
-	type ManifestUnitMemberSpec,
-	type ManifestUnitSpec,
+	targetEditableWorkspaceFilePath,
+	targetLocalWorkspaceFilePath,
 	targetDependencyWorkspaceFilePath,
-	targetWorkspaceFilePath,
 	unknownSymbolModeLog,
 	unknownSymbolLogPath,
 	unknownSymbolModeRemote,
@@ -61,11 +58,13 @@ const pendingWorkspaceConfigPrompts = new Set<string>();
 const dismissedWorkspaceConfigPrompts = new Set<string>();
 const workspaceAnalysisProgress = new Map<string, WorkspaceAnalysisProgressHandle>();
 const customerObjectNamePattern = /^(?:[ZY][A-Z0-9_\/]*|\/[A-Z0-9_]+\/[A-Z0-9_\/]+)$/;
+type UnitDependencySourceMode = "local-first" | "local-only" | "adt-first";
 
 interface RemoteDependencyResolveParams {
 	workspaceUri: string;
 	sourceUri: string;
 	sourceUris?: string[];
+	sourceCandidates?: Record<string, RemoteDependencyCandidate[]>;
 	unknownSymbolMode?: string;
 	remoteRequestParallelism?: number;
 	remoteRequestsPerSecond?: number;
@@ -83,6 +82,10 @@ interface RemoteDependenciesUpdatedParams {
 interface RemoteDependencyResolutionResult {
 	candidate: RemoteDependencyCandidate;
 	fetchedName?: string;
+}
+
+interface CachedRemoteObjectMetadata extends AdtObjectRef {
+	fileExtension?: "abap" | "xml";
 }
 
 interface WorkspaceManifestUpdatedParams {
@@ -111,7 +114,6 @@ interface WorkspaceAnalysisProgressHandle {
 interface LocalWorkspaceObjectTemplate {
 	label: string;
 	kind: string;
-	role: string;
 	namePattern: RegExp;
 	namePlaceholder: string;
 	stub: (name: string) => string;
@@ -664,6 +666,7 @@ async function resolveRemoteDependencies(
 	const unknownSymbolMode = normalizeUnknownSymbolMode(params.unknownSymbolMode);
 	const candidates = dedupeRemoteDependencyCandidates(params.candidates);
 	const sourceUris = params.sourceUris?.length ? params.sourceUris : [params.sourceUri];
+	const candidateSourceUris = candidateSourceUriMap(params, sourceUris);
 
 	for (const candidate of candidates) {
 		if (shouldLogUnknownSymbolCandidate(candidate, unknownSymbolMode)) {
@@ -685,6 +688,9 @@ async function resolveRemoteDependencies(
 
 	const connection = await getSapConnectionConfig(context, workspaceFolder, { promptIfMissing: false });
 	if (!connection) {
+		console.warn(
+			`ABAP LSP remote dependency fetch skipped for ${workspaceFolder.name}: no SAP connection found in settings, environment, or .env.`,
+		);
 		return;
 	}
 
@@ -715,6 +721,7 @@ async function resolveRemoteDependencies(
 								workspaceFolder,
 								adtClient,
 								candidate,
+								candidateSourceUris.get(remoteDependencyCandidateKey(candidate)) ?? sourceUris,
 							);
 						} finally {
 							completed += 1;
@@ -878,9 +885,8 @@ async function addEditableAdtObjectToWorkspace(
 		throw new Error(`Only customer objects with Z/Y prefixes or customer namespaces can be added to src: ${objectRef.name}.`);
 	}
 
-	const filePath = targetWorkspaceFilePath(workspaceFolder, objectRef.name);
+	const filePath = targetEditableWorkspaceFilePath(workspaceFolder, objectRef);
 	const cachedPath = targetDependencyWorkspaceFilePath(workspaceFolder, objectRef);
-	const relativeFile = path.relative(workspaceFolder.uri.fsPath, filePath);
 	await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
 
 	let source: string;
@@ -904,8 +910,10 @@ async function addEditableAdtObjectToWorkspace(
 		await adtClient.cacheRemoteObject(workspaceFolder, objectRef, source);
 	}
 
-	const manifestSpec = inferManifestUnitSpec(objectRef, relativeFile);
-	await ensureManifestUnit(workspaceFolder, manifestSpec);
+	await ensureWorkspaceManifest(workspaceFolder, {
+		dependencyMode: dependencyModeLocalFirst,
+		unknownSymbolMode: unknownSymbolModeLog,
+	});
 	// Server only loads abapls.toml at workspace init or on this notification;
 	// without it, remote-on-demand resolution stays disabled until restart.
 	await notifyWorkspaceManifestUpdated(workspaceFolder);
@@ -953,7 +961,10 @@ async function addEditableFunctionGroupToWorkspace(
 		createdFiles.push(member.filePath);
 	}
 
-	await ensureManifestUnit(workspaceFolder, layout.manifestUnit);
+	await ensureWorkspaceManifest(workspaceFolder, {
+		dependencyMode: dependencyModeLocalFirst,
+		unknownSymbolMode: unknownSymbolModeLog,
+	});
 	await notifyWorkspaceManifestUpdated(workspaceFolder);
 
 	const openPath = layout.openMember?.filePath ?? layout.rootFilePath;
@@ -999,7 +1010,6 @@ function editableFunctionGroupLayout(
 	rootFilePath: string;
 	openMember?: EditableFunctionGroupMember;
 	members: EditableFunctionGroupMember[];
-	manifestUnit: ManifestUnitSpec;
 } {
 	const encodedGroupName = encodeURIComponent(functionGroupRef.name.trim().toUpperCase());
 	const baseDir = path.join(workspaceFolder.uri.fsPath, "src", "function-groups", encodedGroupName);
@@ -1013,14 +1023,8 @@ function editableFunctionGroupLayout(
 		.sort((left, right) => left.objectRef.name.localeCompare(right.objectRef.name));
 
 	const members: EditableFunctionGroupMember[] = [
-		{
-			objectRef: functionGroupRef,
-			role: "main",
-			filePath: rootFilePath,
-		},
 		...includeChildren.map((child) => ({
 			objectRef: child.objectRef,
-			role: "root",
 			filePath: path.join(
 				baseDir,
 				"includes",
@@ -1029,7 +1033,6 @@ function editableFunctionGroupLayout(
 		})),
 		...functionModuleChildren.map((child) => ({
 			objectRef: child.objectRef,
-			role: "root",
 			filePath: path.join(
 				baseDir,
 				"function-modules",
@@ -1042,25 +1045,6 @@ function editableFunctionGroupLayout(
 		baseDir,
 		rootFilePath,
 		members,
-		manifestUnit: {
-			name: functionGroupRef.name,
-			kind: "function-group",
-			rootFile: path.relative(workspaceFolder.uri.fsPath, rootFilePath),
-			adtUri: functionGroupRef.uri,
-			role: "main",
-			objectName: functionGroupRef.name,
-			matchAdtUris: [
-				functionGroupRef.uri,
-				...includeChildren.map((child) => child.objectRef.uri),
-				...functionModuleChildren.map((child) => child.objectRef.uri),
-			],
-			members: members.map((member) => ({
-				role: member.role,
-				file: path.relative(workspaceFolder.uri.fsPath, member.filePath),
-				objectName: member.objectRef.name,
-				adtUri: member.objectRef.uri,
-			} satisfies ManifestUnitMemberSpec)),
-		},
 		openMember: members.find((member) =>
 			member.objectRef.uri === selectedObjectRef.uri ||
 			normalizedAdtObjectName(member.objectRef.name) === normalizedAdtObjectName(selectedObjectRef.name),
@@ -1070,7 +1054,6 @@ function editableFunctionGroupLayout(
 
 interface EditableFunctionGroupMember {
 	objectRef: AdtObjectRef;
-	role: string;
 	filePath: string;
 }
 
@@ -1088,6 +1071,7 @@ async function resolveRemoteDependencyCandidate(
 	workspaceFolder: vscode.WorkspaceFolder,
 	adtClient: AdtClient,
 	candidate: RemoteDependencyCandidate,
+	sourceUris: readonly string[],
 ): Promise<RemoteDependencyResolutionResult> {
 	const cacheKey = remoteDependencyCacheKey(workspaceFolder, candidate);
 	if (negativeRemoteDependencyCache.has(cacheKey)) {
@@ -1098,12 +1082,34 @@ async function resolveRemoteDependencyCandidate(
 		return { candidate };
 	}
 	if (await hasCachedRemoteDependencyCandidate(workspaceFolder.uri.fsPath, candidate)) {
+		const cachedMetadata = await readCachedRemoteObjectMetadata(workspaceFolder, candidate.name);
+		if (cachedMetadata) {
+			const filePath = targetDependencyWorkspaceFilePath(workspaceFolder, cachedMetadata);
+			await ensureDependencyCacheUnit(
+				workspaceFolder,
+				cachedMetadata,
+				filePath,
+				manifestDependencySourceFiles(workspaceFolder, sourceUris),
+			);
+		}
 		return { candidate, fetchedName: candidate.name };
 	}
 
 	const existing = pendingRemoteDependencyFetches.get(cacheKey);
 	if (existing) {
 		const fetchedName = await existing;
+		if (fetchedName) {
+			const cachedMetadata = await readCachedRemoteObjectMetadata(workspaceFolder, fetchedName);
+			if (cachedMetadata) {
+				const filePath = targetDependencyWorkspaceFilePath(workspaceFolder, cachedMetadata);
+				await ensureDependencyCacheUnit(
+					workspaceFolder,
+					cachedMetadata,
+					filePath,
+					manifestDependencySourceFiles(workspaceFolder, sourceUris),
+				);
+			}
+		}
 		return { candidate, fetchedName };
 	}
 
@@ -1135,11 +1141,37 @@ async function resolveRemoteDependencyCandidate(
 				return undefined;
 			}
 
-			const fetched = await adtClient.fetchDependencyObject(objectRef);
+			const dependencySourceMode = await dependencySourceModeFromUnitSidecars(workspaceFolder, sourceUris);
+			let fetched;
+			if (dependencySourceMode === "adt-first") {
+				try {
+					fetched = await adtClient.fetchDependencyObject(objectRef);
+				} catch (error) {
+					const localExport = await findLocalDependencyExport(workspaceFolder, objectRef, sourceUris);
+					if (!localExport) {
+						throw error;
+					}
+					fetched = localExport;
+				}
+			} else {
+				const localExport = await findLocalDependencyExport(workspaceFolder, objectRef, sourceUris);
+				if (localExport) {
+					fetched = localExport;
+				} else if (dependencySourceMode === "local-only") {
+					return undefined;
+				} else {
+					fetched = await adtClient.fetchDependencyObject(objectRef);
+				}
+			}
 			const filePath = targetDependencyWorkspaceFilePath(workspaceFolder, objectRef);
 			await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
 			await fs.promises.writeFile(filePath, fetched.body, "utf8");
-			await ensureManifestDependencyUnit(workspaceFolder, objectRef, filePath);
+			await ensureDependencyCacheUnit(
+				workspaceFolder,
+				objectRef,
+				filePath,
+				manifestDependencySourceFiles(workspaceFolder, sourceUris),
+			);
 			await adtClient.cacheRemoteObject(workspaceFolder, objectRef, fetched.body, fetched.fileExtension);
 			return objectRef.name;
 		} catch (error) {
@@ -1495,7 +1527,7 @@ async function createLocalWorkspaceObject(
 		unknownSymbolMode: unknownSymbolModeLog,
 	});
 
-	const filePath = targetWorkspaceFilePath(workspaceFolder, objectName);
+	const filePath = targetLocalWorkspaceFilePath(workspaceFolder, template.kind, objectName);
 	if (await fileExists(filePath)) {
 		const document = await vscode.workspace.openTextDocument(vscode.Uri.file(filePath));
 		await vscode.window.showTextDocument(document, { preview: false });
@@ -1509,13 +1541,6 @@ async function createLocalWorkspaceObject(
 	await fs.promises.writeFile(filePath, template.stub(objectName), "utf8");
 	dismissedWorkspaceConfigPrompts.add(workspaceFolder.uri.toString());
 
-	await ensureManifestUnit(workspaceFolder, {
-		name: objectName,
-		kind: template.kind,
-		rootFile: path.relative(workspaceFolder.uri.fsPath, filePath),
-		role: template.role,
-		objectName,
-	});
 	await notifyWorkspaceManifestUpdated(workspaceFolder);
 
 	const document = await vscode.workspace.openTextDocument(vscode.Uri.file(filePath));
@@ -1544,7 +1569,6 @@ function localWorkspaceObjectTemplates(): LocalWorkspaceObjectTemplate[] {
 		{
 			label: "Report",
 			kind: "report",
-			role: "root",
 			namePattern: customerObjectNamePattern,
 			namePlaceholder: "ZMY_NEW_REPORT",
 			stub: (name) => `REPORT ${name}.\n`,
@@ -1552,7 +1576,6 @@ function localWorkspaceObjectTemplates(): LocalWorkspaceObjectTemplate[] {
 		{
 			label: "Include",
 			kind: "include",
-			role: "root",
 			namePattern: customerObjectNamePattern,
 			namePlaceholder: "ZMY_NEW_INCLUDE",
 			stub: (name) => `* Include ${name}\n`,
@@ -1560,7 +1583,6 @@ function localWorkspaceObjectTemplates(): LocalWorkspaceObjectTemplate[] {
 		{
 			label: "Global Class",
 			kind: "global-class",
-			role: "main",
 			namePattern: customerObjectNamePattern,
 			namePlaceholder: "ZCL_MY_NEW_CLASS",
 			stub: (name) => `CLASS ${name} DEFINITION PUBLIC FINAL CREATE PUBLIC.\nENDCLASS.\n\nCLASS ${name} IMPLEMENTATION.\nENDCLASS.\n`,
@@ -1568,7 +1590,6 @@ function localWorkspaceObjectTemplates(): LocalWorkspaceObjectTemplate[] {
 		{
 			label: "Global Interface",
 			kind: "global-interface",
-			role: "main",
 			namePattern: customerObjectNamePattern,
 			namePlaceholder: "ZIF_MY_NEW_INTERFACE",
 			stub: (name) => `INTERFACE ${name} PUBLIC.\nENDINTERFACE.\n`,
@@ -1581,6 +1602,306 @@ function remoteDependencyCacheKey(
 	candidate: RemoteDependencyCandidate,
 ): string {
 	return `${workspaceFolder.uri.toString()}:${candidate.name.toLowerCase()}`;
+}
+
+function remoteDependencyCandidateKey(candidate: RemoteDependencyCandidate): string {
+	return `${candidate.kind.toLowerCase()}:${candidate.name.toLowerCase()}`;
+}
+
+function candidateSourceUriMap(
+	params: RemoteDependencyResolveParams,
+	fallbackSourceUris: readonly string[],
+): Map<string, string[]> {
+	const byCandidate = new Map<string, Set<string>>();
+	const sourceCandidates = params.sourceCandidates ?? {};
+
+	for (const [sourceUri, candidates] of Object.entries(sourceCandidates)) {
+		for (const candidate of dedupeRemoteDependencyCandidates(candidates)) {
+			const key = remoteDependencyCandidateKey(candidate);
+			let sourceUris = byCandidate.get(key);
+			if (!sourceUris) {
+				sourceUris = new Set<string>();
+				byCandidate.set(key, sourceUris);
+			}
+			sourceUris.add(sourceUri);
+		}
+	}
+
+	for (const candidate of dedupeRemoteDependencyCandidates(params.candidates)) {
+		const key = remoteDependencyCandidateKey(candidate);
+		if (!byCandidate.has(key)) {
+			byCandidate.set(key, new Set(fallbackSourceUris));
+		}
+	}
+
+	return new Map(
+		[...byCandidate.entries()].map(([key, sourceUris]) => [key, [...sourceUris]]),
+	);
+}
+
+function manifestDependencySourceFiles(
+	workspaceFolder: vscode.WorkspaceFolder,
+	sourceUris: readonly string[],
+): string[] {
+	const deduped = new Set<string>();
+	const sourceFiles: string[] = [];
+
+	for (const sourceUri of sourceUris) {
+		try {
+			const uri = vscode.Uri.parse(sourceUri);
+			if (uri.scheme !== "file") {
+				continue;
+			}
+			const relativePath = path.relative(workspaceFolder.uri.fsPath, uri.fsPath);
+			if (!relativePath || relativePath.startsWith("..")) {
+				continue;
+			}
+			const normalized = relativePath.replace(/\\/g, "/");
+			if (deduped.has(normalized)) {
+				continue;
+			}
+			deduped.add(normalized);
+			sourceFiles.push(normalized);
+		} catch {
+			// Ignore malformed source URIs; the dependency can still be cached locally.
+		}
+	}
+
+	return sourceFiles;
+}
+
+async function readCachedRemoteObjectMetadata(
+	workspaceFolder: vscode.WorkspaceFolder,
+	objectName: string,
+): Promise<CachedRemoteObjectMetadata | undefined> {
+	const metadataPath = path.join(
+		workspaceFolder.uri.fsPath,
+		".abapls",
+		"cache",
+		"objects",
+		`${encodeURIComponent(objectName)}.json`,
+	);
+	try {
+		return JSON.parse(await fs.promises.readFile(metadataPath, "utf8")) as CachedRemoteObjectMetadata;
+	} catch {
+		return undefined;
+	}
+}
+
+async function findLocalDependencyExport(
+	workspaceFolder: vscode.WorkspaceFolder,
+	objectRef: AdtObjectRef,
+	sourceUris: readonly string[],
+): Promise<{ body: string; fileExtension: "abap" | "xml"; manifestKind: string } | undefined> {
+	const configuredRoots = vscode.workspace
+		.getConfiguration("abap-ls", workspaceFolder.uri)
+		.get<string[]>("sap.localDependencyRoots", [])
+		.map((value) => value.trim())
+		.filter((value) => Boolean(value));
+	const sidecarRoots = await localDependencyRootsFromUnitSidecars(workspaceFolder, sourceUris);
+	const roots = [...new Set([...sidecarRoots, ...configuredRoots])];
+	if (roots.length === 0) {
+		return undefined;
+	}
+
+	const encodedName = encodeURIComponent(objectRef.name.trim().toUpperCase());
+	const encodedPackageName = encodeURIComponent(objectRef.packageName.trim().toUpperCase());
+	const extensions: Array<"abap" | "xml"> = objectRef.type.startsWith("DDIC/")
+		|| objectRef.type.toUpperCase() === "MSAG/MC"
+		? ["xml"]
+		: ["abap"];
+	let bestMatch: { filePath: string; fileExtension: "abap" | "xml"; score: number } | undefined;
+
+	for (const root of roots) {
+		const match = await findLocalDependencyExportInRoot(root, encodedName, encodedPackageName, extensions);
+		if (!match) {
+			continue;
+		}
+		if (!bestMatch || match.score > bestMatch.score) {
+			bestMatch = match;
+		}
+	}
+
+	if (!bestMatch) {
+		return undefined;
+	}
+
+	return {
+		body: await fs.promises.readFile(bestMatch.filePath, "utf8"),
+		fileExtension: bestMatch.fileExtension,
+		manifestKind: "",
+	};
+}
+
+async function localDependencyRootsFromUnitSidecars(
+	workspaceFolder: vscode.WorkspaceFolder,
+	sourceUris: readonly string[],
+): Promise<string[]> {
+	const roots: string[] = [];
+	const seenRoots = new Set<string>();
+	for (const sidecarPath of await sourceUnitSidecarPaths(workspaceFolder, sourceUris)) {
+		for (const root of await readUnitSidecarLocalRoots(sidecarPath)) {
+			if (seenRoots.has(root)) {
+				continue;
+			}
+			seenRoots.add(root);
+			roots.push(root);
+		}
+	}
+	return roots;
+}
+
+async function dependencySourceModeFromUnitSidecars(
+	workspaceFolder: vscode.WorkspaceFolder,
+	sourceUris: readonly string[],
+): Promise<UnitDependencySourceMode> {
+	let sawLocalFirst = false;
+	let sawAdtFirst = false;
+	for (const sidecarPath of await sourceUnitSidecarPaths(workspaceFolder, sourceUris)) {
+		const mode = await readUnitSidecarDependencySourceMode(sidecarPath);
+		if (mode === "local-only") {
+			return "local-only";
+		}
+		if (mode === "local-first") {
+			sawLocalFirst = true;
+			continue;
+		}
+		if (mode === "adt-first") {
+			sawAdtFirst = true;
+		}
+	}
+	if (sawLocalFirst) {
+		return "local-first";
+	}
+	return sawAdtFirst ? "adt-first" : "local-first";
+}
+
+async function sourceUnitSidecarPaths(
+	workspaceFolder: vscode.WorkspaceFolder,
+	sourceUris: readonly string[],
+): Promise<string[]> {
+	const sidecarPaths: string[] = [];
+	const seenPaths = new Set<string>();
+	for (const sourceUri of sourceUris) {
+		let uri: vscode.Uri;
+		try {
+			uri = vscode.Uri.parse(sourceUri);
+		} catch {
+			continue;
+		}
+		if (uri.scheme !== "file" || !uri.fsPath.startsWith(workspaceFolder.uri.fsPath)) {
+			continue;
+		}
+		const siblingSidecarPath = `${uri.fsPath}.abapls-unit.toml`;
+		if (!seenPaths.has(siblingSidecarPath) && await fileExists(siblingSidecarPath)) {
+			seenPaths.add(siblingSidecarPath);
+			sidecarPaths.push(siblingSidecarPath);
+		}
+		let currentDir = path.dirname(uri.fsPath);
+		while (currentDir.startsWith(workspaceFolder.uri.fsPath)) {
+			const sidecarPath = path.join(currentDir, "abapls-unit.toml");
+			if (!seenPaths.has(sidecarPath) && await fileExists(sidecarPath)) {
+				seenPaths.add(sidecarPath);
+				sidecarPaths.push(sidecarPath);
+			}
+			if (currentDir === workspaceFolder.uri.fsPath) {
+				break;
+			}
+			const parentDir = path.dirname(currentDir);
+			if (parentDir === currentDir) {
+				break;
+			}
+			currentDir = parentDir;
+		}
+	}
+	return sidecarPaths;
+}
+
+async function readUnitSidecarLocalRoots(sidecarPath: string): Promise<string[]> {
+	let text: string;
+	try {
+		text = await fs.promises.readFile(sidecarPath, "utf8");
+	} catch {
+		return [];
+	}
+	const match = text.match(/^\[local_export\][\s\S]*?^roots\s*=\s*\[([\s\S]*?)^\]/m);
+	if (!match) {
+		return [];
+	}
+	const roots: string[] = [];
+	for (const stringMatch of match[1].matchAll(/"((?:[^"\\]|\\.)*)"/g)) {
+		const raw = stringMatch[1].replace(/\\"/g, "\"").replace(/\\\\/g, "\\").trim();
+		if (!raw) {
+			continue;
+		}
+		roots.push(path.isAbsolute(raw) ? raw : path.resolve(path.dirname(sidecarPath), raw));
+	}
+	return roots;
+}
+
+async function readUnitSidecarDependencySourceMode(
+	sidecarPath: string,
+): Promise<UnitDependencySourceMode | undefined> {
+	let text: string;
+	try {
+		text = await fs.promises.readFile(sidecarPath, "utf8");
+	} catch {
+		return undefined;
+	}
+	const match = text.match(/^\[dependencies\][\s\S]*?^source\s*=\s*"([^"]+)"\s*$/m);
+	if (!match) {
+		return undefined;
+	}
+	const normalized = match[1].trim().toLowerCase();
+	if (normalized === "local-only" || normalized === "adt-first") {
+		return normalized;
+	}
+	if (normalized === "local-first") {
+		return normalized;
+	}
+	return undefined;
+}
+
+async function findLocalDependencyExportInRoot(
+	root: string,
+	encodedName: string,
+	encodedPackageName: string,
+	extensions: Array<"abap" | "xml">,
+): Promise<{ filePath: string; fileExtension: "abap" | "xml"; score: number } | undefined> {
+	const stack = [root];
+	let bestMatch: { filePath: string; fileExtension: "abap" | "xml"; score: number } | undefined;
+
+	while (stack.length > 0) {
+		const current = stack.pop();
+		if (!current) {
+			continue;
+		}
+		let entries: fs.Dirent[];
+		try {
+			entries = await fs.promises.readdir(current, { withFileTypes: true });
+		} catch {
+			continue;
+		}
+
+		for (const entry of entries) {
+			const fullPath = path.join(current, entry.name);
+			if (entry.isDirectory()) {
+				stack.push(fullPath);
+				continue;
+			}
+			const fileExtension = extensions.find((extension) => entry.name === `${encodedName}.${extension}`);
+			if (!fileExtension) {
+				continue;
+			}
+			const normalizedPath = fullPath.replace(/\\/g, "/");
+			const score = normalizedPath.includes(`/${encodedPackageName}/`) ? 2 : 1;
+			if (!bestMatch || score > bestMatch.score) {
+				bestMatch = { filePath: fullPath, fileExtension, score };
+			}
+		}
+	}
+
+	return bestMatch;
 }
 
 function clearRemoteDependencyCaches(workspaceFolder: vscode.WorkspaceFolder): void {

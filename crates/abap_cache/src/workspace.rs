@@ -82,18 +82,50 @@ impl Default for ManifestPerformance {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ManifestUnit {
+    pub name: String,
+    pub kind: String,
+    pub package_name: String,
+    pub root_file: String,
+    pub dependency_of: Vec<ManifestUnitDependencyOf>,
+    pub members: Vec<ManifestUnitMember>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+struct ManifestUnitSerde {
     #[serde(default)]
     pub name: String,
     #[serde(default)]
     pub kind: String,
     #[serde(default)]
-    pub root_file: String,
+    pub package_name: String,
     #[serde(default)]
-    pub adt_uri: String,
-    #[serde(default, rename = "member")]
-    pub members: Vec<ManifestUnitMember>,
+    pub root_file: String,
+    #[serde(default, rename = "dependency_of")]
+    pub dependency_of: Vec<ManifestUnitDependencyOfInline>,
+    #[serde(default)]
+    pub members: Vec<ManifestUnitMemberInline>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(untagged)]
+enum ManifestUnitMemberInline {
+    File(String),
+    Entry(ManifestUnitMember),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct ManifestUnitDependencyOf {
+    #[serde(default)]
+    pub file: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(untagged)]
+enum ManifestUnitDependencyOfInline {
+    File(String),
+    Entry(ManifestUnitDependencyOf),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -104,8 +136,65 @@ pub struct ManifestUnitMember {
     pub file: String,
     #[serde(default)]
     pub object_name: String,
+}
+
+impl<'de> Deserialize<'de> for ManifestUnit {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = ManifestUnitSerde::deserialize(deserializer)?;
+        Ok(Self {
+            name: raw.name,
+            kind: raw.kind,
+            package_name: raw.package_name,
+            root_file: raw.root_file,
+            dependency_of: raw
+                .dependency_of
+                .into_iter()
+                .map(ManifestUnitDependencyOf::from)
+                .collect(),
+            members: raw.members.into_iter().map(ManifestUnitMember::from).collect(),
+        })
+    }
+}
+
+impl From<ManifestUnitDependencyOfInline> for ManifestUnitDependencyOf {
+    fn from(value: ManifestUnitDependencyOfInline) -> Self {
+        match value {
+            ManifestUnitDependencyOfInline::File(file) => Self { file },
+            ManifestUnitDependencyOfInline::Entry(entry) => entry,
+        }
+    }
+}
+
+impl From<ManifestUnitMemberInline> for ManifestUnitMember {
+    fn from(value: ManifestUnitMemberInline) -> Self {
+        match value {
+            ManifestUnitMemberInline::File(file) => Self {
+                role: String::new(),
+                file,
+                object_name: String::new(),
+            },
+            ManifestUnitMemberInline::Entry(member) => member,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+struct DependencyCacheManifest {
     #[serde(default)]
-    pub adt_uri: String,
+    pub source_file: String,
+    #[serde(default, rename = "unit")]
+    pub units: Vec<ManifestUnit>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+struct UnitSidecarManifest {
+    #[serde(default)]
+    pub includes: BTreeMap<String, String>,
+    #[serde(default)]
+    pub members: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -201,13 +290,16 @@ pub fn load_workspace_documents_with_progress(
         Err(error) => (None, Some(error)),
     };
     let cache_dir = manifest_cache_dir(manifest.as_ref()).to_string();
+    let manifest_for_loading = manifest
+        .as_ref()
+        .map(|manifest| manifest_with_discovered_units(manifest, &root_path));
     let total_document_count = progress
         .is_some()
         .then(|| {
             planned_workspace_document_count(
                 &root_path,
                 root_uri,
-                manifest.as_ref(),
+                manifest_for_loading.as_ref(),
                 &cache_dir,
                 overlays,
             )
@@ -220,17 +312,24 @@ pub fn load_workspace_documents_with_progress(
     };
     let mut documents = Vec::new();
     let mut seen = HashSet::new();
+    let mut effective_manifest = manifest_for_loading.clone();
 
-    if let Some(manifest) = manifest.as_ref() {
+    if let Some(manifest) = manifest_for_loading.as_ref() {
+        let mut loaded_units = manifest.units.clone();
         collect_manifest_documents(
             manifest,
             &root_path,
             root_uri,
+            &cache_dir,
             overlays,
             &mut seen,
             &mut documents,
             &mut load_progress,
+            &mut loaded_units,
         );
+        if let Some(effective_manifest) = effective_manifest.as_mut() {
+            effective_manifest.units = loaded_units;
+        }
     } else {
         collect_abap_sources(
             &root_path,
@@ -242,16 +341,6 @@ pub fn load_workspace_documents_with_progress(
             &mut load_progress,
         );
     }
-    collect_dependency_cache_files(
-        &root_path,
-        &cache_dir,
-        root_uri,
-        overlays,
-        &mut seen,
-        &mut documents,
-        &mut load_progress,
-    );
-
     for (uri, overlay) in overlays {
         if uri_starts_with_workspace(uri, root_uri) && seen.insert(uri.clone()) {
             documents.push(WorkspaceDocument {
@@ -272,10 +361,23 @@ pub fn load_workspace_documents_with_progress(
         root_path,
         manifest_uri,
         manifest_len_bytes,
-        manifest,
+        manifest: effective_manifest,
         manifest_error,
         documents,
     }
+}
+
+fn manifest_with_discovered_units(
+    manifest: &WorkspaceManifest,
+    root_path: &Path,
+) -> WorkspaceManifest {
+    if !manifest.units.is_empty() {
+        return manifest.clone();
+    }
+
+    let mut discovered = manifest.clone();
+    discovered.units = discover_conventional_src_units(root_path);
+    discovered
 }
 
 pub fn manifest_supports_remote_resolution(manifest: Option<&WorkspaceManifest>) -> bool {
@@ -330,11 +432,12 @@ pub fn resolve_workspace_performance_mode(
                 return WorkspacePerformanceMode::FullWorkspace;
             };
             let unit_count = manifest.units.len();
+            let cache_dir = manifest_cache_dir(Some(manifest));
             let dependency_member_count = manifest
                 .units
                 .iter()
                 .flat_map(|unit| unit.members.iter())
-                .filter(|member| member.role == "dependency")
+                .filter(|member| manifest_member_role(member, cache_dir) == "dependency")
                 .count();
             if unit_count >= EDITOR_FIRST_UNIT_COUNT_THRESHOLD
                 || dependency_member_count >= EDITOR_FIRST_DEPENDENCY_MEMBER_THRESHOLD
@@ -589,16 +692,240 @@ fn collect_abap_sources(
     }
 }
 
+fn discover_conventional_src_units(root_path: &Path) -> Vec<ManifestUnit> {
+    let src_path = root_path.join("src");
+    if !src_path.is_dir() {
+        return Vec::new();
+    }
+
+    let mut units = Vec::new();
+    units.extend(discover_single_file_units(root_path, "src/classes", "global-class"));
+    units.extend(discover_single_file_units(
+        root_path,
+        "src/interfaces",
+        "global-interface",
+    ));
+    units.extend(discover_single_file_units(root_path, "src/includes", "include"));
+    units.extend(discover_folder_units(root_path, "src/reports", "report"));
+    units.extend(discover_folder_units(
+        root_path,
+        "src/function-groups",
+        "function-group",
+    ));
+    units.sort_by(|left, right| left.root_file.cmp(&right.root_file));
+    units
+}
+
+fn discover_single_file_units(root_path: &Path, relative_dir: &str, kind: &str) -> Vec<ManifestUnit> {
+    let dir = root_path.join(relative_dir);
+    let Ok(entries) = fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            if !entry.file_type().ok()?.is_file() {
+                return None;
+            }
+            if path.extension().and_then(|ext| ext.to_str()) != Some("abap") {
+                return None;
+            }
+            Some(single_file_unit(root_path, &path, kind))
+        })
+        .collect()
+}
+
+fn discover_folder_units(root_path: &Path, relative_dir: &str, kind: &str) -> Vec<ManifestUnit> {
+    let dir = root_path.join(relative_dir);
+    let Ok(entries) = fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    let mut units = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_file() && kind == "report" && path.extension().and_then(|ext| ext.to_str()) == Some("abap")
+        {
+            units.push(single_file_unit(root_path, &path, kind));
+            continue;
+        }
+        if !file_type.is_dir() {
+            continue;
+        }
+        if let Some(unit) = folder_unit(root_path, &path, kind) {
+            units.push(unit);
+        }
+    }
+    units
+}
+
+fn single_file_unit(root_path: &Path, path: &Path, kind: &str) -> ManifestUnit {
+    let relative = workspace_relative_path(root_path, path);
+    let name = infer_object_name_from_manifest_path(&relative).unwrap_or_default();
+    let mut unit = ManifestUnit {
+        name,
+        kind: kind.to_string(),
+        package_name: String::new(),
+        root_file: relative,
+        dependency_of: Vec::new(),
+        members: Vec::new(),
+    };
+    apply_single_file_unit_sidecar(root_path, path, &mut unit);
+    unit
+}
+
+fn folder_unit(root_path: &Path, dir_path: &Path, kind: &str) -> Option<ManifestUnit> {
+    let encoded_dir_name = dir_path.file_name()?.to_str()?;
+    let root_file_path = dir_path.join(format!("{encoded_dir_name}.abap"));
+    if !root_file_path.is_file() {
+        return None;
+    }
+
+    let root_file = workspace_relative_path(root_path, &root_file_path);
+    let mut member_paths = Vec::new();
+    collect_abap_file_paths(dir_path, &mut member_paths);
+    member_paths.sort();
+    let members = member_paths
+        .into_iter()
+        .filter(|path| path != &root_file_path)
+        .map(|path| ManifestUnitMember {
+            role: String::new(),
+            file: workspace_relative_path(root_path, &path),
+            object_name: String::new(),
+        })
+        .collect::<Vec<_>>();
+    let mut unit = ManifestUnit {
+        name: percent_decode(encoded_dir_name),
+        kind: kind.to_string(),
+        package_name: String::new(),
+        root_file,
+        dependency_of: Vec::new(),
+        members,
+    };
+    apply_unit_sidecar_manifest(root_path, dir_path, &mut unit);
+    Some(unit)
+}
+
+fn collect_abap_file_paths(dir_path: &Path, output: &mut Vec<PathBuf>) {
+    let Ok(entries) = fs::read_dir(dir_path) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_dir() {
+            collect_abap_file_paths(&path, output);
+            continue;
+        }
+        if path.extension().and_then(|ext| ext.to_str()) == Some("abap") {
+            output.push(path);
+        }
+    }
+}
+
+fn apply_unit_sidecar_manifest(root_path: &Path, dir_path: &Path, unit: &mut ManifestUnit) {
+    let Some(sidecar) = load_folder_unit_sidecar_manifest(dir_path) else {
+        return;
+    };
+    apply_sidecar_manifest_entries(root_path, dir_path, unit, sidecar);
+}
+
+fn apply_single_file_unit_sidecar(root_path: &Path, file_path: &Path, unit: &mut ManifestUnit) {
+    let Some(sidecar) = load_single_file_unit_sidecar_manifest(file_path) else {
+        return;
+    };
+    let Some(base_dir) = file_path.parent() else {
+        return;
+    };
+    apply_sidecar_manifest_entries(root_path, base_dir, unit, sidecar);
+}
+
+fn apply_sidecar_manifest_entries(
+    root_path: &Path,
+    base_dir: &Path,
+    unit: &mut ManifestUnit,
+    sidecar: UnitSidecarManifest,
+) {
+    for member_path in sidecar.members {
+        append_sidecar_member(root_path, base_dir, unit, String::new(), member_path);
+    }
+    for (object_name, relative_path) in sidecar.includes {
+        append_sidecar_member(root_path, base_dir, unit, object_name, relative_path);
+    }
+    unit.members
+        .sort_by(|left, right| normalize_manifest_path(&left.file).cmp(&normalize_manifest_path(&right.file)));
+}
+
+fn append_sidecar_member(
+    root_path: &Path,
+    base_dir: &Path,
+    unit: &mut ManifestUnit,
+    object_name: String,
+    relative_path: String,
+) {
+    let mapped_path = if Path::new(&relative_path).is_absolute() {
+        PathBuf::from(&relative_path)
+    } else {
+        base_dir.join(&relative_path)
+    };
+    if !mapped_path.starts_with(root_path) {
+        return;
+    }
+    let mapped_file = workspace_relative_path(root_path, &mapped_path);
+    if normalize_manifest_path(&mapped_file) == normalize_manifest_path(&unit.root_file) {
+        return;
+    }
+    if let Some(existing) = unit
+        .members
+        .iter_mut()
+        .find(|member| normalize_manifest_path(&member.file) == normalize_manifest_path(&mapped_file))
+    {
+        if !object_name.trim().is_empty() {
+            existing.object_name = object_name.trim().to_string();
+        }
+        return;
+    }
+    unit.members.push(ManifestUnitMember {
+        role: String::new(),
+        file: mapped_file,
+        object_name: object_name.trim().to_string(),
+    });
+}
+
+fn load_folder_unit_sidecar_manifest(dir_path: &Path) -> Option<UnitSidecarManifest> {
+    let text = fs::read_to_string(dir_path.join("abapls-unit.toml")).ok()?;
+    toml::from_str(&text).ok()
+}
+
+fn load_single_file_unit_sidecar_manifest(file_path: &Path) -> Option<UnitSidecarManifest> {
+    let file_name = file_path.file_name()?.to_str()?;
+    let sidecar_name = format!("{file_name}.abapls-unit.toml");
+    let text = fs::read_to_string(file_path.with_file_name(sidecar_name)).ok()?;
+    toml::from_str(&text).ok()
+}
+
 fn collect_manifest_documents(
     manifest: &WorkspaceManifest,
     root_path: &Path,
     root_uri: &str,
+    cache_dir: &str,
     overlays: &HashMap<String, OpenDocumentOverlay>,
     seen: &mut HashSet<String>,
     documents: &mut Vec<WorkspaceDocument>,
     progress: &mut WorkspaceLoadProgress<'_>,
+    loaded_units: &mut Vec<ManifestUnit>,
 ) {
+    let selected_dependency_sources =
+        collect_selected_dependency_sources(manifest, root_path, root_uri, cache_dir, overlays);
     for unit in &manifest.units {
+        if !should_load_manifest_unit(unit, cache_dir, &selected_dependency_sources) {
+            continue;
+        }
         let mut unit_files = HashSet::new();
 
         for member in &unit.members {
@@ -609,7 +936,7 @@ fn collect_manifest_documents(
             collect_manifest_document(
                 unit,
                 manifest_member_object_name(unit, Some(member)),
-                member.role == "dependency",
+                manifest_member_role(member, cache_dir) == "dependency",
                 &relative,
                 root_path,
                 root_uri,
@@ -627,7 +954,7 @@ fn collect_manifest_documents(
         collect_manifest_document(
             unit,
             manifest_member_object_name(unit, None),
-            manifest_unit_root_is_dependency(unit),
+            manifest_unit_root_is_dependency(unit, cache_dir),
             &relative,
             root_path,
             root_uri,
@@ -637,6 +964,17 @@ fn collect_manifest_documents(
             progress,
         );
     }
+    collect_dependency_cache_documents(
+        manifest,
+        root_path,
+        root_uri,
+        cache_dir,
+        overlays,
+        seen,
+        documents,
+        progress,
+        loaded_units,
+    );
 }
 
 fn collect_manifest_document(
@@ -672,6 +1010,7 @@ fn collect_manifest_document(
     } else {
         source_text
     };
+    let is_dependency = is_dependency && !overlays.contains_key(&uri);
     documents.push(WorkspaceDocument {
         uri: Arc::from(uri),
         version,
@@ -682,32 +1021,371 @@ fn collect_manifest_document(
     progress.loaded_document();
 }
 
-fn manifest_unit_root_is_dependency(unit: &ManifestUnit) -> bool {
-    if unit.members.is_empty() {
-        return false;
-    }
+fn manifest_unit_root_is_dependency(unit: &ManifestUnit, cache_dir: &str) -> bool {
     let root_file = normalize_manifest_path(&unit.root_file);
     if let Some(member) = unit
         .members
         .iter()
         .find(|member| normalize_manifest_path(&member.file) == root_file)
     {
-        return member.role == "dependency";
+        return manifest_member_role(member, cache_dir) == "dependency";
+    }
+    if unit.members.is_empty() {
+        return manifest_path_is_dependency_cache(&root_file, cache_dir);
     }
     unit.members
         .iter()
-        .all(|member| member.role == "dependency")
+        .all(|member| manifest_member_role(member, cache_dir) == "dependency")
+        || manifest_path_is_dependency_cache(&root_file, cache_dir)
 }
 
 fn manifest_member_object_name(
     unit: &ManifestUnit,
     member: Option<&ManifestUnitMember>,
 ) -> Option<Arc<str>> {
-    let explicit = member
-        .map(|member| member.object_name.trim())
-        .filter(|name| !name.is_empty())
-        .or_else(|| (!unit.name.trim().is_empty()).then(|| unit.name.trim()))?;
+    if let Some(member) = member {
+        if let Some(name) = manifest_member_explicit_object_name(member)
+            .map(str::to_string)
+            .or_else(|| infer_object_name_from_manifest_path(&member.file))
+        {
+            return Some(Arc::from(name.to_ascii_lowercase()));
+        }
+    }
+    let explicit = (!unit.name.trim().is_empty())
+        .then(|| unit.name.trim().to_string())
+        .or_else(|| infer_object_name_from_manifest_path(&unit.root_file))?;
     Some(Arc::from(explicit.to_ascii_lowercase()))
+}
+
+fn manifest_unit_is_dependency(unit: &ManifestUnit, cache_dir: &str) -> bool {
+    manifest_unit_root_is_dependency(unit, cache_dir)
+        || unit.members.iter().any(|member| {
+            manifest_member_role(member, cache_dir) == "dependency"
+                || manifest_path_is_dependency_cache(&member.file, cache_dir)
+        })
+}
+
+fn manifest_member_role<'a>(member: &'a ManifestUnitMember, cache_dir: &'a str) -> &'a str {
+    let role = member.role.trim();
+    if !role.is_empty() {
+        return role;
+    }
+    if manifest_path_is_dependency_cache(&member.file, cache_dir) {
+        "dependency"
+    } else {
+        "root"
+    }
+}
+
+fn manifest_member_explicit_object_name<'a>(member: &'a ManifestUnitMember) -> Option<&'a str> {
+    let name = member.object_name.trim();
+    (!name.is_empty()).then_some(name)
+}
+
+fn infer_object_name_from_manifest_path(file: &str) -> Option<String> {
+    let normalized = normalize_manifest_path(file);
+    let base_name = Path::new(&normalized).file_stem()?.to_str()?.trim();
+    if base_name.is_empty() {
+        return None;
+    }
+    Some(percent_decode(base_name).trim().to_string())
+}
+
+fn manifest_unit_files(unit: &ManifestUnit) -> Vec<String> {
+    let mut files = Vec::new();
+    let mut seen = HashSet::new();
+    for member in &unit.members {
+        let file = normalize_manifest_path(&member.file);
+        if !file.is_empty() && seen.insert(file.clone()) {
+            files.push(file);
+        }
+    }
+    let root_file = normalize_manifest_path(&unit.root_file);
+    if !root_file.is_empty() && seen.insert(root_file.clone()) {
+        files.push(root_file);
+    }
+    files
+}
+
+fn dependency_cache_root_prefix(cache_dir: &str) -> String {
+    let cache_dir = normalize_manifest_path(cache_dir);
+    if cache_dir.is_empty() {
+        "dependencies/".to_string()
+    } else {
+        format!("{cache_dir}/dependencies/")
+    }
+}
+
+fn dependency_cache_manifest_root_prefix(cache_dir: &str) -> String {
+    let cache_dir = normalize_manifest_path(cache_dir);
+    if cache_dir.is_empty() {
+        "dependency-manifests/".to_string()
+    } else {
+        format!("{cache_dir}/dependency-manifests/")
+    }
+}
+
+fn package_cache_root_prefix(cache_dir: &str) -> String {
+    let cache_dir = normalize_manifest_path(cache_dir);
+    if cache_dir.is_empty() {
+        "packages/".to_string()
+    } else {
+        format!("{cache_dir}/packages/")
+    }
+}
+
+fn manifest_path_is_dependency_cache(file: &str, cache_dir: &str) -> bool {
+    let normalized = normalize_manifest_path(file);
+    normalized.starts_with(&dependency_cache_root_prefix(cache_dir))
+        || normalized.starts_with(&package_cache_root_prefix(cache_dir))
+}
+
+fn is_dependency_cache_uri(root_path: &Path, root_uri: &str, cache_dir: &str, uri: &str) -> bool {
+    if !uri_starts_with_workspace(uri, root_uri) {
+        return false;
+    }
+    let Some(path) = file_uri_to_path(uri) else {
+        return false;
+    };
+    let relative = workspace_relative_path(root_path, &path);
+    manifest_path_is_dependency_cache(&relative, cache_dir)
+}
+
+fn collect_dependency_cache_documents(
+    manifest: &WorkspaceManifest,
+    root_path: &Path,
+    root_uri: &str,
+    cache_dir: &str,
+    overlays: &HashMap<String, OpenDocumentOverlay>,
+    seen: &mut HashSet<String>,
+    documents: &mut Vec<WorkspaceDocument>,
+    progress: &mut WorkspaceLoadProgress<'_>,
+    loaded_units: &mut Vec<ManifestUnit>,
+) {
+    let mut pending_sources: Vec<_> =
+        initial_dependency_cache_sources(manifest, root_path, root_uri, cache_dir, overlays)
+            .into_iter()
+            .collect();
+    let mut visited_sources = HashSet::new();
+    let mut loaded_unit_keys = loaded_units
+        .iter()
+        .map(manifest_unit_identity_key)
+        .collect::<HashSet<_>>();
+
+    while let Some(source_file) = pending_sources.pop() {
+        let source_file = normalize_manifest_path(&source_file);
+        if source_file.is_empty() || !visited_sources.insert(source_file.clone()) {
+            continue;
+        }
+        let units = load_dependency_cache_manifest_units(root_path, cache_dir, &source_file);
+        for unit in units {
+            let unit_files = manifest_unit_files(&unit);
+            let unit_open = unit_files.iter().any(|file| {
+                overlays.contains_key(&path_to_file_uri(&root_path.join(file)))
+            });
+            let unit_key = manifest_unit_identity_key(&unit);
+            if loaded_unit_keys.insert(unit_key) {
+                loaded_units.push(unit.clone());
+            }
+
+            let mut seen_files = HashSet::new();
+            for member in &unit.members {
+                let relative = normalize_manifest_path(&member.file);
+                if relative.is_empty() || !seen_files.insert(relative.clone()) {
+                    continue;
+                }
+                collect_manifest_document(
+                    &unit,
+                    manifest_member_object_name(&unit, Some(member)),
+                    true,
+                    &relative,
+                    root_path,
+                    root_uri,
+                    overlays,
+                    seen,
+                    documents,
+                    progress,
+                );
+            }
+
+            let relative = normalize_manifest_path(&unit.root_file);
+            if !relative.is_empty() && seen_files.insert(relative.clone()) {
+                collect_manifest_document(
+                    &unit,
+                    manifest_member_object_name(&unit, None),
+                    true,
+                    &relative,
+                    root_path,
+                    root_uri,
+                    overlays,
+                    seen,
+                    documents,
+                    progress,
+                );
+            }
+
+            if unit_open {
+                pending_sources.extend(unit_files);
+            }
+        }
+    }
+}
+
+fn initial_dependency_cache_sources(
+    manifest: &WorkspaceManifest,
+    root_path: &Path,
+    root_uri: &str,
+    cache_dir: &str,
+    overlays: &HashMap<String, OpenDocumentOverlay>,
+) -> HashSet<String> {
+    let mut sources = HashSet::new();
+    for unit in manifest
+        .units
+        .iter()
+        .filter(|unit| !manifest_unit_is_dependency(unit, cache_dir))
+    {
+        sources.extend(manifest_unit_files(unit));
+    }
+    for uri in overlays.keys() {
+        if is_dependency_cache_uri(root_path, root_uri, cache_dir, uri) {
+            let Some(path) = file_uri_to_path(uri) else {
+                continue;
+            };
+            sources.insert(workspace_relative_path(root_path, &path));
+        }
+    }
+    sources
+}
+
+fn load_dependency_cache_manifest_units(
+    root_path: &Path,
+    cache_dir: &str,
+    source_file: &str,
+) -> Vec<ManifestUnit> {
+    let manifest_path = dependency_cache_manifest_path(root_path, cache_dir, source_file);
+    let text = match fs::read_to_string(&manifest_path) {
+        Ok(text) => text,
+        Err(_) => return Vec::new(),
+    };
+    let mut manifest: DependencyCacheManifest = match toml::from_str(&text) {
+        Ok(manifest) => manifest,
+        Err(_) => return Vec::new(),
+    };
+    normalize_manifest_units(&mut manifest.units);
+    manifest.units
+}
+
+fn dependency_cache_manifest_path(root_path: &Path, cache_dir: &str, source_file: &str) -> PathBuf {
+    root_path.join(dependency_cache_manifest_relative_path(cache_dir, source_file))
+}
+
+fn dependency_cache_manifest_relative_path(cache_dir: &str, source_file: &str) -> String {
+    let prefix = dependency_cache_manifest_root_prefix(cache_dir);
+    format!("{prefix}{}.toml", encode_manifest_cache_file_component(source_file))
+}
+
+fn encode_manifest_cache_file_component(value: &str) -> String {
+    let mut out = String::new();
+    for ch in normalize_manifest_path(value).chars() {
+        append_manifest_cache_component_char(&mut out, ch);
+    }
+    out
+}
+
+fn append_manifest_cache_component_char(out: &mut String, ch: char) {
+    if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | '!' | '~' | '*' | '\'' | '(' | ')')
+    {
+        out.push(ch);
+        return;
+    }
+    let mut buf = [0; 4];
+    for byte in ch.encode_utf8(&mut buf).as_bytes() {
+        out.push('%');
+        out.push(hex_digit(byte >> 4));
+        out.push(hex_digit(byte & 0x0f));
+    }
+}
+
+fn manifest_unit_identity_key(unit: &ManifestUnit) -> String {
+    let root_file = normalize_manifest_path(&unit.root_file);
+    if !root_file.is_empty() {
+        return root_file;
+    }
+    let name = unit.name.trim();
+    if !name.is_empty() {
+        return name.to_ascii_lowercase();
+    }
+    format!("{:?}", unit.members)
+}
+
+fn collect_selected_dependency_sources(
+    manifest: &WorkspaceManifest,
+    root_path: &Path,
+    root_uri: &str,
+    cache_dir: &str,
+    overlays: &HashMap<String, OpenDocumentOverlay>,
+) -> HashSet<String> {
+    let mut active = HashSet::new();
+    for unit in manifest
+        .units
+        .iter()
+        .filter(|unit| manifest_unit_is_dependency(unit, cache_dir))
+    {
+        let unit_files = manifest_unit_files(unit);
+        let is_open = unit_files.iter().any(|file| {
+            overlays.contains_key(&path_to_file_uri(&root_path.join(file)))
+                && uri_starts_with_workspace(&path_to_file_uri(&root_path.join(file)), root_uri)
+        });
+        if is_open {
+            active.extend(unit_files);
+        }
+    }
+
+    loop {
+        let mut changed = false;
+        for unit in manifest
+            .units
+            .iter()
+            .filter(|unit| manifest_unit_is_dependency(unit, cache_dir))
+        {
+            if !unit
+                .dependency_of
+                .iter()
+                .map(|dependency| normalize_manifest_path(&dependency.file))
+                .any(|file| active.contains(&file))
+            {
+                continue;
+            }
+            for file in manifest_unit_files(unit) {
+                changed |= active.insert(file);
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    active
+}
+
+fn should_load_manifest_unit(
+    unit: &ManifestUnit,
+    cache_dir: &str,
+    selected_dependency_sources: &HashSet<String>,
+) -> bool {
+    if !manifest_unit_is_dependency(unit, cache_dir) {
+        return true;
+    }
+    if unit.dependency_of.is_empty() {
+        return true;
+    }
+    unit.dependency_of
+        .iter()
+        .map(|dependency| normalize_manifest_path(&dependency.file))
+        .any(|file| {
+            !manifest_path_is_dependency_cache(&file, cache_dir)
+                || selected_dependency_sources.contains(&file)
+        })
 }
 
 pub fn manifest_declares_uri(
@@ -739,13 +1417,14 @@ pub fn manifest_document_metadata(
     if !uri_starts_with_workspace(uri, root_uri) {
         return None;
     }
+    let cache_dir = manifest_cache_dir(Some(manifest));
 
     manifest.units.iter().find_map(|unit| {
         for member in &unit.members {
             let member_file = normalize_manifest_path(&member.file);
             if !member_file.is_empty() && path_to_file_uri(&root_path.join(&member_file)) == uri {
                 return Some((
-                    member.role == "dependency",
+                    manifest_member_role(member, cache_dir) == "dependency",
                     manifest_member_object_name(unit, Some(member)),
                 ));
             }
@@ -754,94 +1433,13 @@ pub fn manifest_document_metadata(
         let root_file = normalize_manifest_path(&unit.root_file);
         if !root_file.is_empty() && path_to_file_uri(&root_path.join(root_file)) == uri {
             return Some((
-                manifest_unit_root_is_dependency(unit),
+                manifest_unit_root_is_dependency(unit, cache_dir),
                 manifest_member_object_name(unit, None),
             ));
         }
 
         None
     })
-}
-
-fn collect_dependency_cache_files(
-    root_path: &Path,
-    cache_dir: &str,
-    root_uri: &str,
-    overlays: &HashMap<String, OpenDocumentOverlay>,
-    seen: &mut HashSet<String>,
-    documents: &mut Vec<WorkspaceDocument>,
-    progress: &mut WorkspaceLoadProgress<'_>,
-) {
-    let dependencies_root = root_path
-        .join(normalize_manifest_path(cache_dir))
-        .join("dependencies");
-    if !dependencies_root.exists() {
-        return;
-    }
-
-    let mut stack = vec![dependencies_root];
-    while let Some(dir) = stack.pop() {
-        let Ok(entries) = fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let Ok(file_type) = entry.file_type() else {
-                continue;
-            };
-            if file_type.is_dir() {
-                stack.push(path);
-                continue;
-            }
-            let Some(extension) = path.extension().and_then(|ext| ext.to_str()) else {
-                continue;
-            };
-            if extension != "abap" && extension != "xml" {
-                continue;
-            }
-
-            let uri = path_to_file_uri(&path);
-            if !uri_starts_with_workspace(&uri, root_uri) || !seen.insert(uri.clone()) {
-                continue;
-            }
-
-            let (version, source_text) = if let Some(overlay) = overlays.get(&uri) {
-                (overlay.version, overlay.text.to_string())
-            } else {
-                match fs::read_to_string(&path) {
-                    Ok(text) => (0, text),
-                    Err(_) => continue,
-                }
-            };
-
-            let kind_hint = path
-                .parent()
-                .and_then(|parent| parent.file_name())
-                .and_then(|name| name.to_str())
-                .unwrap_or_default()
-                .to_ascii_lowercase();
-            let object_name = path
-                .file_stem()
-                .and_then(|stem| stem.to_str())
-                .map(percent_decode)
-                .unwrap_or_else(String::new);
-
-            let text = if extension == "xml" {
-                ddic_xml_to_abap_source(&object_name, &kind_hint, &source_text)
-                    .unwrap_or(source_text)
-            } else {
-                source_text
-            };
-            documents.push(WorkspaceDocument {
-                uri: Arc::from(uri),
-                version,
-                text,
-                is_dependency: true,
-                object_name: Some(Arc::from(object_name.to_ascii_lowercase())),
-            });
-            progress.loaded_document();
-        }
-    }
 }
 
 fn planned_workspace_document_count(
@@ -853,11 +1451,10 @@ fn planned_workspace_document_count(
 ) -> usize {
     let mut seen = HashSet::new();
     if let Some(manifest) = manifest {
-        collect_manifest_document_uris(manifest, root_path, root_uri, &mut seen);
+        collect_manifest_document_uris(manifest, root_path, root_uri, cache_dir, overlays, &mut seen);
     } else {
         collect_abap_source_uris(root_path, root_uri, &mut seen, false);
     }
-    collect_dependency_cache_file_uris(root_path, cache_dir, root_uri, &mut seen);
     for uri in overlays.keys() {
         if uri_starts_with_workspace(uri, root_uri) {
             seen.insert(uri.clone());
@@ -912,9 +1509,16 @@ fn collect_manifest_document_uris(
     manifest: &WorkspaceManifest,
     root_path: &Path,
     root_uri: &str,
+    cache_dir: &str,
+    overlays: &HashMap<String, OpenDocumentOverlay>,
     seen: &mut HashSet<String>,
 ) {
+    let selected_dependency_sources =
+        collect_selected_dependency_sources(manifest, root_path, root_uri, cache_dir, overlays);
     for unit in &manifest.units {
+        if !should_load_manifest_unit(unit, cache_dir, &selected_dependency_sources) {
+            continue;
+        }
         let mut unit_files = HashSet::new();
         for member in &unit.members {
             let relative = normalize_manifest_path(&member.file);
@@ -935,44 +1539,47 @@ fn collect_manifest_document_uris(
             seen.insert(uri);
         }
     }
+    collect_dependency_cache_document_uris(
+        manifest,
+        root_path,
+        root_uri,
+        cache_dir,
+        overlays,
+        seen,
+    );
 }
 
-fn collect_dependency_cache_file_uris(
+fn collect_dependency_cache_document_uris(
+    manifest: &WorkspaceManifest,
     root_path: &Path,
-    cache_dir: &str,
     root_uri: &str,
+    cache_dir: &str,
+    overlays: &HashMap<String, OpenDocumentOverlay>,
     seen: &mut HashSet<String>,
 ) {
-    let dependencies_root = root_path
-        .join(normalize_manifest_path(cache_dir))
-        .join("dependencies");
-    if !dependencies_root.exists() {
-        return;
-    }
-
-    let mut stack = vec![dependencies_root];
-    while let Some(dir) = stack.pop() {
-        let Ok(entries) = fs::read_dir(&dir) else {
+    let mut pending_sources: Vec<_> =
+        initial_dependency_cache_sources(manifest, root_path, root_uri, cache_dir, overlays)
+            .into_iter()
+            .collect();
+    let mut visited_sources = HashSet::new();
+    while let Some(source_file) = pending_sources.pop() {
+        let source_file = normalize_manifest_path(&source_file);
+        if source_file.is_empty() || !visited_sources.insert(source_file.clone()) {
             continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let Ok(file_type) = entry.file_type() else {
-                continue;
-            };
-            if file_type.is_dir() {
-                stack.push(path);
-                continue;
+        }
+        for unit in load_dependency_cache_manifest_units(root_path, cache_dir, &source_file) {
+            let unit_files = manifest_unit_files(&unit);
+            let unit_open = unit_files.iter().any(|file| {
+                overlays.contains_key(&path_to_file_uri(&root_path.join(file)))
+            });
+            for file in &unit_files {
+                let uri = path_to_file_uri(&root_path.join(file));
+                if uri_starts_with_workspace(&uri, root_uri) {
+                    seen.insert(uri);
+                }
             }
-            let Some(extension) = path.extension().and_then(|ext| ext.to_str()) else {
-                continue;
-            };
-            if extension != "abap" && extension != "xml" {
-                continue;
-            }
-            let uri = path_to_file_uri(&path);
-            if uri_starts_with_workspace(&uri, root_uri) {
-                seen.insert(uri);
+            if unit_open {
+                pending_sources.extend(unit_files);
             }
         }
     }
@@ -1000,9 +1607,17 @@ fn normalize_manifest(manifest: &mut WorkspaceManifest) {
         manifest.resolution.remote_request_parallelism.max(1);
     manifest.resolution.remote_requests_per_second =
         manifest.resolution.remote_requests_per_second.max(1);
-    for unit in &mut manifest.units {
+    normalize_manifest_units(&mut manifest.units);
+}
+
+fn normalize_manifest_units(units: &mut [ManifestUnit]) {
+    for unit in units {
         unit.kind = unit.kind.trim().to_ascii_lowercase();
+        unit.package_name = unit.package_name.trim().to_string();
         unit.root_file = normalize_manifest_path(&unit.root_file);
+        for dependency in &mut unit.dependency_of {
+            dependency.file = normalize_manifest_path(&dependency.file);
+        }
         for member in &mut unit.members {
             member.role = member.role.trim().to_ascii_lowercase();
             member.file = normalize_manifest_path(&member.file);
@@ -1529,13 +2144,15 @@ fn normalize_ddic_builtin_type(value: &str) -> Cow<'_, str> {
 mod tests {
     use std::collections::HashMap;
     use std::fs;
+    use std::sync::Arc;
 
     use super::{
-        UNKNOWN_SYMBOL_MODE_REMOTE, WORKSPACE_PERFORMANCE_MODE_AUTO,
+        OpenDocumentOverlay, UNKNOWN_SYMBOL_MODE_REMOTE, WORKSPACE_PERFORMANCE_MODE_AUTO,
         WORKSPACE_PERFORMANCE_MODE_EDITOR_FIRST, WorkspaceManifest, WorkspacePerformanceMode,
         ddic_xml_to_abap_source, is_remote_lookup_candidate, is_remote_lookup_name,
-        load_workspace_documents, manifest_declares_uri, manifest_supports_remote_resolution,
-        path_to_file_uri, resolve_workspace_performance_mode,
+        load_manifest_from_workspace, load_workspace_documents, manifest_declares_uri,
+        manifest_document_metadata, manifest_supports_remote_resolution, path_to_file_uri,
+        resolve_workspace_performance_mode,
     };
 
     #[test]
@@ -1578,20 +2195,10 @@ name = "ZCL_MAIN"
 kind = "global-class"
 root_file = "src/ZCL_MAIN.abap"
 
-[[unit.member]]
-role = "main"
-file = "src/ZCL_MAIN.abap"
-object_name = "ZCL_MAIN"
-
 [[unit]]
 name = "ZCL_DEP"
 kind = "global-class"
 root_file = ".abapls/cache/dependencies/global-class/ZCL_DEP.abap"
-
-[[unit.member]]
-role = "dependency"
-file = ".abapls/cache/dependencies/global-class/ZCL_DEP.abap"
-object_name = "ZCL_DEP"
 "#,
         )
         .expect("manifest");
@@ -1838,11 +2445,6 @@ version = 1
 name = "ZCL_MANAGED"
 kind = "global-class"
 root_file = "src/ZCL_MANAGED.abap"
-
-[[unit.member]]
-role = "main"
-file = "src/ZCL_MANAGED.abap"
-object_name = "ZCL_MANAGED"
 "#,
         )
         .expect("manifest");
@@ -1883,16 +2485,9 @@ version = 1
 name = "ZCL_MAIN"
 kind = "global-class"
 root_file = "src/ZCL_MAIN.abap"
-
-[[unit.member]]
-role = "main"
-file = "src/ZCL_MAIN.abap"
-object_name = "ZCL_MAIN"
-
-[[unit.member]]
-role = "root"
-file = "src/ZTOP.abap"
-object_name = "ZTOP"
+members = [
+  { file = "src/ZTOP.abap", object_name = "ZTOP" }
+]
 "#,
         )
         .expect("manifest");
@@ -1920,6 +2515,379 @@ object_name = "ZTOP"
             &manifest,
             &format!("{root_uri}/src/ZOTHER.abap")
         ));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn manifest_loads_only_direct_dependency_layer_until_dependency_is_opened() {
+        let root = std::env::temp_dir().join("abap-lsp-manifest-dependency-layers");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("src")).expect("src dir");
+        fs::create_dir_all(root.join(".abapls/cache/packages/ZPKG/global-class"))
+            .expect("dependency dir");
+        fs::write(
+            root.join("abapls.toml"),
+            r#"
+version = 1
+
+[resolution]
+cache_dir = ".abapls/cache"
+
+[[unit]]
+name = "ZMAIN"
+kind = "report"
+root_file = "src/ZMAIN.abap"
+
+[[unit]]
+name = "ZCL_FIRST"
+kind = "global-class"
+root_file = ".abapls/cache/packages/ZPKG/global-class/ZCL_FIRST.abap"
+dependency_of = [
+  "src/ZMAIN.abap"
+]
+
+[[unit]]
+name = "ZCL_SECOND"
+kind = "global-class"
+root_file = ".abapls/cache/packages/ZPKG/global-class/ZCL_SECOND.abap"
+dependency_of = [
+  ".abapls/cache/packages/ZPKG/global-class/ZCL_FIRST.abap"
+]
+"#,
+        )
+        .expect("manifest");
+        fs::write(root.join("src/ZMAIN.abap"), "REPORT zmain.").expect("main");
+        fs::write(
+            root.join(".abapls/cache/packages/ZPKG/global-class/ZCL_FIRST.abap"),
+            "CLASS zcl_first DEFINITION. ENDCLASS.",
+        )
+        .expect("first");
+        fs::write(
+            root.join(".abapls/cache/packages/ZPKG/global-class/ZCL_SECOND.abap"),
+            "CLASS zcl_second DEFINITION. ENDCLASS.",
+        )
+        .expect("second");
+
+        let root_uri = path_to_file_uri(&root);
+        let loaded = load_workspace_documents(&root_uri, &HashMap::new());
+        let loaded_uris: Vec<_> = loaded.documents.iter().map(|document| document.uri.as_ref()).collect();
+        assert!(loaded_uris.iter().any(|uri| uri.ends_with("/src/ZMAIN.abap")));
+        assert!(loaded_uris
+            .iter()
+            .any(|uri| uri.ends_with("/.abapls/cache/packages/ZPKG/global-class/ZCL_FIRST.abap")));
+        assert!(!loaded_uris
+            .iter()
+            .any(|uri| uri.ends_with("/.abapls/cache/packages/ZPKG/global-class/ZCL_SECOND.abap")));
+
+        let dependency_uri = format!(
+            "{root_uri}/.abapls/cache/packages/ZPKG/global-class/ZCL_FIRST.abap"
+        );
+        let mut overlays = HashMap::new();
+        overlays.insert(
+            dependency_uri,
+            OpenDocumentOverlay {
+                version: 1,
+                text: Arc::from("CLASS zcl_first DEFINITION. ENDCLASS."),
+            },
+        );
+        let opened = load_workspace_documents(&root_uri, &overlays);
+        let opened_uris: Vec<_> = opened.documents.iter().map(|document| document.uri.as_ref()).collect();
+        assert!(opened_uris
+            .iter()
+            .any(|uri| uri.ends_with("/.abapls/cache/packages/ZPKG/global-class/ZCL_SECOND.abap")));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn cache_side_dependency_manifests_extend_workspace_without_polluting_project_manifest() {
+        let root = std::env::temp_dir().join("abap-lsp-cache-side-dependency-manifests");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("src")).expect("src dir");
+        fs::create_dir_all(root.join(".abapls/cache/dependency-manifests"))
+            .expect("dependency manifest dir");
+        fs::create_dir_all(root.join(".abapls/cache/packages/ZPKG/global-class"))
+            .expect("package dir");
+        fs::write(
+            root.join("abapls.toml"),
+            r#"
+version = 1
+
+[resolution]
+cache_dir = ".abapls/cache"
+
+[[unit]]
+name = "ZMAIN"
+kind = "report"
+root_file = "src/ZMAIN.abap"
+"#,
+        )
+        .expect("manifest");
+        fs::write(root.join("src/ZMAIN.abap"), "REPORT zmain.").expect("main");
+        fs::write(
+            root.join(".abapls/cache/packages/ZPKG/global-class/ZCL_FIRST.abap"),
+            "CLASS zcl_first DEFINITION. ENDCLASS.",
+        )
+        .expect("first");
+        fs::write(
+            root.join(".abapls/cache/packages/ZPKG/global-class/ZCL_SECOND.abap"),
+            "CLASS zcl_second DEFINITION. ENDCLASS.",
+        )
+        .expect("second");
+        fs::write(
+            root.join(".abapls/cache/dependency-manifests/src%2FZMAIN.abap.toml"),
+            r#"
+source_file = "src/ZMAIN.abap"
+
+[[unit]]
+name = "ZCL_FIRST"
+kind = "global-class"
+package_name = "ZPKG"
+root_file = ".abapls/cache/packages/ZPKG/global-class/ZCL_FIRST.abap"
+"#,
+        )
+        .expect("root dependency manifest");
+        fs::write(
+            root.join(
+                ".abapls/cache/dependency-manifests/.abapls%2Fcache%2Fpackages%2FZPKG%2Fglobal-class%2FZCL_FIRST.abap.toml",
+            ),
+            r#"
+source_file = ".abapls/cache/packages/ZPKG/global-class/ZCL_FIRST.abap"
+
+[[unit]]
+name = "ZCL_SECOND"
+kind = "global-class"
+package_name = "ZPKG"
+root_file = ".abapls/cache/packages/ZPKG/global-class/ZCL_SECOND.abap"
+"#,
+        )
+        .expect("nested dependency manifest");
+
+        let root_uri = path_to_file_uri(&root);
+        let loaded = load_workspace_documents(&root_uri, &HashMap::new());
+        let loaded_uris: Vec<_> = loaded.documents.iter().map(|document| document.uri.as_ref()).collect();
+        assert_eq!(loaded.manifest.as_ref().map(|manifest| manifest.units.len()), Some(2));
+        assert!(loaded_uris.iter().any(|uri| uri.ends_with("/src/ZMAIN.abap")));
+        assert!(loaded_uris
+            .iter()
+            .any(|uri| uri.ends_with("/.abapls/cache/packages/ZPKG/global-class/ZCL_FIRST.abap")));
+        assert!(!loaded_uris
+            .iter()
+            .any(|uri| uri.ends_with("/.abapls/cache/packages/ZPKG/global-class/ZCL_SECOND.abap")));
+
+        let dependency_uri = format!(
+            "{root_uri}/.abapls/cache/packages/ZPKG/global-class/ZCL_FIRST.abap"
+        );
+        let mut overlays = HashMap::new();
+        overlays.insert(
+            dependency_uri,
+            OpenDocumentOverlay {
+                version: 1,
+                text: Arc::from("CLASS zcl_first DEFINITION. ENDCLASS."),
+            },
+        );
+        let opened = load_workspace_documents(&root_uri, &overlays);
+        let opened_uris: Vec<_> = opened.documents.iter().map(|document| document.uri.as_ref()).collect();
+        assert_eq!(opened.manifest.as_ref().map(|manifest| manifest.units.len()), Some(3));
+        assert!(opened_uris
+            .iter()
+            .any(|uri| uri.ends_with("/.abapls/cache/packages/ZPKG/global-class/ZCL_SECOND.abap")));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn manifest_metadata_infers_object_names_for_concise_multi_file_units() {
+        let root = std::env::temp_dir().join("abap-lsp-concise-multi-file-manifest");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("src/function-groups/%2FSTTP%2FSHF_MD/includes"))
+            .expect("includes dir");
+        fs::write(
+            root.join("abapls.toml"),
+            r#"
+version = 1
+
+[resolution]
+cache_dir = ".abapls/cache"
+
+[[unit]]
+name = "/STTP/SHF_MD"
+kind = "function-group"
+root_file = "src/function-groups/%2FSTTP%2FSHF_MD/%2FSTTP%2FSHF_MD.abap"
+members = [
+  "src/function-groups/%2FSTTP%2FSHF_MD/includes/%2FSTTP%2FLSHF_MDTOP.abap"
+]
+"#,
+        )
+        .expect("manifest");
+        let manifest = load_manifest_from_workspace(&root).expect("manifest");
+        let root_uri = path_to_file_uri(&root);
+        let include_uri = path_to_file_uri(
+            &root.join("src/function-groups/%2FSTTP%2FSHF_MD/includes/%2FSTTP%2FLSHF_MDTOP.abap"),
+        );
+
+        let metadata =
+            manifest_document_metadata(&root, &root_uri, &manifest, &include_uri).expect("metadata");
+        assert!(!metadata.0);
+        assert_eq!(metadata.1.as_deref(), Some("/sttp/lshf_mdtop"));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn settings_only_manifest_discovers_src_units_by_convention() {
+        let root = std::env::temp_dir().join("abap-lsp-settings-only-discovery");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("src/classes")).expect("classes dir");
+        fs::create_dir_all(root.join("src/reports/ZREP/forms")).expect("report dir");
+        fs::create_dir_all(root.join("src/function-groups/ZFG/includes")).expect("function group dir");
+        fs::write(
+            root.join("abapls.toml"),
+            r#"
+version = 1
+
+[resolution]
+dependency_mode = "local-first"
+cache_dir = ".abapls/cache"
+unknown_symbol_mode = "log"
+"#,
+        )
+        .expect("manifest");
+        fs::write(
+            root.join("src/classes/ZCL_GLOBAL.abap"),
+            "CLASS zcl_global DEFINITION. ENDCLASS.",
+        )
+        .expect("class");
+        fs::write(root.join("src/reports/ZREP/ZREP.abap"), "REPORT zrep.").expect("report");
+        fs::write(root.join("src/reports/ZREP/forms/ZREP_F01.abap"), "FORM demo. ENDFORM.")
+            .expect("report member");
+        fs::write(
+            root.join("src/function-groups/ZFG/ZFG.abap"),
+            "FUNCTION-POOL zfg.",
+        )
+        .expect("function group");
+        fs::write(
+            root.join("src/function-groups/ZFG/includes/LZFGTOP.abap"),
+            "* include",
+        )
+        .expect("function group member");
+
+        let root_uri = path_to_file_uri(&root);
+        let loaded = load_workspace_documents(&root_uri, &HashMap::new());
+        let manifest = loaded.manifest.as_ref().expect("effective manifest");
+        let loaded_uris: Vec<_> = loaded.documents.iter().map(|document| document.uri.as_ref()).collect();
+
+        assert!(manifest
+            .units
+            .iter()
+            .any(|unit| unit.kind == "global-class" && unit.root_file == "src/classes/ZCL_GLOBAL.abap"));
+        assert!(manifest
+            .units
+            .iter()
+            .any(|unit| unit.kind == "report" && unit.root_file == "src/reports/ZREP/ZREP.abap"));
+        assert!(manifest.units.iter().any(|unit| {
+            unit.kind == "function-group"
+                && unit.root_file == "src/function-groups/ZFG/ZFG.abap"
+                && unit
+                    .members
+                    .iter()
+                    .any(|member| member.file == "src/function-groups/ZFG/includes/LZFGTOP.abap")
+        }));
+        assert!(loaded_uris.iter().any(|uri| uri.ends_with("/src/classes/ZCL_GLOBAL.abap")));
+        assert!(loaded_uris.iter().any(|uri| uri.ends_with("/src/reports/ZREP/ZREP.abap")));
+        assert!(loaded_uris
+            .iter()
+            .any(|uri| uri.ends_with("/src/reports/ZREP/forms/ZREP_F01.abap")));
+        assert!(loaded_uris
+            .iter()
+            .any(|uri| uri.ends_with("/src/function-groups/ZFG/includes/LZFGTOP.abap")));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn unit_sidecar_includes_add_explicit_include_members() {
+        let root = std::env::temp_dir().join("abap-lsp-unit-sidecar-include-map");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("src/reports/ZREP/forms")).expect("report dir");
+        fs::write(
+            root.join("abapls.toml"),
+            r#"
+version = 1
+
+[resolution]
+dependency_mode = "local-first"
+cache_dir = ".abapls/cache"
+unknown_symbol_mode = "log"
+"#,
+        )
+        .expect("manifest");
+        fs::write(root.join("src/reports/ZREP/ZREP.abap"), "REPORT zrep.").expect("report");
+        fs::write(root.join("src/reports/ZREP/forms/WHATEVER.abap"), "* include").expect("include");
+        fs::write(
+            root.join("src/reports/ZREP/abapls-unit.toml"),
+            r#"
+includes = { "ZREP_TOP" = "forms/WHATEVER.abap" }
+"#,
+        )
+        .expect("unit sidecar");
+
+        let root_uri = path_to_file_uri(&root);
+        let loaded = load_workspace_documents(&root_uri, &HashMap::new());
+        let manifest = loaded.manifest.as_ref().expect("effective manifest");
+        let report_unit = manifest
+            .units
+            .iter()
+            .find(|unit| unit.root_file == "src/reports/ZREP/ZREP.abap")
+            .expect("report unit");
+        assert!(report_unit.members.iter().any(|member| {
+            member.file == "src/reports/ZREP/forms/WHATEVER.abap"
+                && member.object_name == "ZREP_TOP"
+        }));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn single_file_unit_sidecar_adds_members_and_include_names() {
+        let root = std::env::temp_dir().join("abap-lsp-single-file-unit-sidecar");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("src/reports/forms")).expect("report helpers dir");
+        fs::write(
+            root.join("abapls.toml"),
+            r#"
+version = 1
+
+[resolution]
+dependency_mode = "local-first"
+cache_dir = ".abapls/cache"
+unknown_symbol_mode = "log"
+"#,
+        )
+        .expect("manifest");
+        fs::write(root.join("src/reports/ZREP.abap"), "REPORT zrep.").expect("report");
+        fs::write(root.join("src/reports/forms/WHATEVER.abap"), "* include").expect("include");
+        fs::write(
+            root.join("src/reports/ZREP.abap.abapls-unit.toml"),
+            r#"
+members = ["forms/WHATEVER.abap"]
+includes = { "ZREP_TOP" = "forms/WHATEVER.abap" }
+"#,
+        )
+        .expect("unit sidecar");
+
+        let root_uri = path_to_file_uri(&root);
+        let loaded = load_workspace_documents(&root_uri, &HashMap::new());
+        let manifest = loaded.manifest.as_ref().expect("effective manifest");
+        let report_unit = manifest
+            .units
+            .iter()
+            .find(|unit| unit.root_file == "src/reports/ZREP.abap")
+            .expect("report unit");
+        assert!(report_unit.members.iter().any(|member| {
+            member.file == "src/reports/forms/WHATEVER.abap" && member.object_name == "ZREP_TOP"
+        }));
 
         let _ = fs::remove_dir_all(&root);
     }

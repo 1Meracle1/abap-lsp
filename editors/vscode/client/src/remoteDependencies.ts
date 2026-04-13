@@ -143,6 +143,20 @@ export async function hasCachedRemoteDependencyCandidate(
 	workspacePath: string,
 	candidate: RemoteDependencyCandidate,
 ): Promise<boolean> {
+	const metadataPath = path.join(
+		workspacePath,
+		".abapls",
+		"cache",
+		"objects",
+		`${encodeURIComponent(candidate.name.trim())}.json`,
+	);
+	try {
+		await fs.promises.access(metadataPath, fs.constants.F_OK);
+		return true;
+	} catch {
+		// Fall back to legacy path probing below.
+	}
+
 	for (const candidatePath of cachedRemoteDependencyCandidatePaths(workspacePath, candidate)) {
 		try {
 			await fs.promises.access(candidatePath, fs.constants.F_OK);
