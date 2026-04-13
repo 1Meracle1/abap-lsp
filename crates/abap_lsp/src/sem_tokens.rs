@@ -612,6 +612,103 @@ ENDLOOP.
     }
 
     #[test]
+    fn semantic_tokens_mark_bapiret2_selector_fields_as_property() {
+        let store = DocumentStore::default();
+        let src = "\
+FIELD-SYMBOLS <ls_return> TYPE bapiret2.
+DATA(lv_msgty) = <ls_return>-type.
+DATA(lv_msgid) = <ls_return>-id.
+DATA(lv_msgno) = <ls_return>-number.
+DATA(lv_msgv1) = <ls_return>-message_v1.
+";
+        let snapshot = store.publish("file:///bapiret2_selector_tokens.abap", 1, src);
+        let tokens = build_semantic_tokens(snapshot.as_ref());
+        let legend = semantic_tokens_legend();
+        let property_idx = legend
+            .token_types
+            .iter()
+            .position(|t| *t == SemanticTokenType::PROPERTY)
+            .expect("legend has property") as u32;
+
+        for field_name in ["type", "id", "number", "message_v1"] {
+            let field_offset = src
+                .find(&format!("-{field_name}"))
+                .map(|offset| offset + 1)
+                .expect("field use");
+            let (line, character) =
+                byte_offset_to_line_character_utf16_reference(src, field_offset)
+                    .expect("field position");
+            assert_eq!(
+                semantic_token_type_at(&tokens.data, line, character),
+                Some(property_idx),
+                "expected `{field_name}` to highlight as property"
+            );
+        }
+    }
+
+    #[test]
+    fn semantic_tokens_cover_function_module_type_refs_and_selectors() {
+        let store = DocumentStore::default();
+        let src = "\
+FUNCTION z_demo.
+  DATA:
+    lr_data      TYPE REF TO data,
+    lr_data_row  TYPE REF TO data,
+    lt_return    TYPE bapiret2_t.
+
+  FIELD-SYMBOLS:
+    <ls_return> TYPE bapiret2.
+
+  LOOP AT lt_return ASSIGNING <ls_return>.
+    DATA(lv_msgty) = <ls_return>-type.
+    DATA(lv_msgid) = <ls_return>-id.
+    DATA(lv_msgno) = <ls_return>-number.
+  ENDLOOP.
+ENDFUNCTION.
+";
+        let snapshot = store.publish("file:///function_module_sem_tokens.abap", 1, src);
+        let tokens = build_semantic_tokens(snapshot.as_ref());
+        let legend = semantic_tokens_legend();
+        let type_idx = legend
+            .token_types
+            .iter()
+            .position(|t| *t == SemanticTokenType::TYPE)
+            .expect("legend has type") as u32;
+        let property_idx = legend
+            .token_types
+            .iter()
+            .position(|t| *t == SemanticTokenType::PROPERTY)
+            .expect("legend has property") as u32;
+
+        for (needle, expected) in [
+            ("TYPE REF TO data", type_idx),
+            ("TYPE bapiret2_t", type_idx),
+            ("TYPE bapiret2", type_idx),
+            ("-type", property_idx),
+            ("-id", property_idx),
+            ("-number", property_idx),
+        ] {
+            let offset = src
+                .find(needle)
+                .map(|base| {
+                    if needle.starts_with('-') {
+                        base + 1
+                    } else {
+                        base + needle.rfind(' ').unwrap_or(0) + 1
+                    }
+                })
+                .expect("needle offset");
+            let (line, character) =
+                byte_offset_to_line_character_utf16_reference(src, offset).expect("position");
+            assert_eq!(
+                semantic_token_type_at(&tokens.data, line, character),
+                Some(expected),
+                "expected semantic token for `{needle}`"
+            );
+        }
+    }
+
+    #[test]
     fn dependency_snapshot_keeps_semantic_tokens_for_public_methods_after_class_methods() {
         let store = DocumentStore::default();
         let snapshots = store.replace_all(vec![DocumentInput {

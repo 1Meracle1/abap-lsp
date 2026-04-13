@@ -18,7 +18,8 @@ mod validate;
 
 pub use builtins::{
     BuiltinRoutineParamSpec, BuiltinRoutineSpec, builtin_routine_spec,
-    builtin_structure_field_description,
+    builtin_structure_field_description, well_known_external_structure_field_description,
+    well_known_external_structure_field_type,
 };
 pub use compatibility::{call_section_matches_parameter, parameter_is_required};
 pub use def_map::{
@@ -66,6 +67,13 @@ mod tests {
         );
         assert!(super::builtin_structure_field_description("syst", "msgv1").is_some());
         assert!(super::builtin_structure_field_description("syst", "zonlo").is_some());
+        assert!(
+            super::well_known_external_structure_field_description("bapiret2", "type").is_some()
+        );
+        assert!(
+            super::well_known_external_structure_field_description("bapiret2", "message_v1")
+                .is_some()
+        );
         assert!(super::builtin_structure_field_description("nope", "subrc").is_none());
     }
 

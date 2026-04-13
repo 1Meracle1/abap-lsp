@@ -171,6 +171,65 @@ pub const MATCH_RESULT_FIELDS: &[BuiltinFieldSpec] = &[
     },
 ];
 
+pub const BAPIRET2_FIELDS: &[BuiltinFieldSpec] = &[
+    BuiltinFieldSpec {
+        name: "type",
+        description: "Message type of the BAPI return entry (for example S, E, W, I, or A).",
+    },
+    BuiltinFieldSpec {
+        name: "id",
+        description: "Message class of the BAPI return entry.",
+    },
+    BuiltinFieldSpec {
+        name: "number",
+        description: "Message number of the BAPI return entry.",
+    },
+    BuiltinFieldSpec {
+        name: "message",
+        description: "Resolved long text/message text carried by the BAPI return entry.",
+    },
+    BuiltinFieldSpec {
+        name: "log_no",
+        description: "Application log number associated with the BAPI return entry.",
+    },
+    BuiltinFieldSpec {
+        name: "log_msg_no",
+        description: "Application log message number associated with the BAPI return entry.",
+    },
+    BuiltinFieldSpec {
+        name: "message_v1",
+        description: "First placeholder variable of the BAPI return message.",
+    },
+    BuiltinFieldSpec {
+        name: "message_v2",
+        description: "Second placeholder variable of the BAPI return message.",
+    },
+    BuiltinFieldSpec {
+        name: "message_v3",
+        description: "Third placeholder variable of the BAPI return message.",
+    },
+    BuiltinFieldSpec {
+        name: "message_v4",
+        description: "Fourth placeholder variable of the BAPI return message.",
+    },
+    BuiltinFieldSpec {
+        name: "parameter",
+        description: "Name of the BAPI parameter related to the return entry, when present.",
+    },
+    BuiltinFieldSpec {
+        name: "row",
+        description: "Row number related to the BAPI return entry, when present.",
+    },
+    BuiltinFieldSpec {
+        name: "field",
+        description: "Field name related to the BAPI return entry, when present.",
+    },
+    BuiltinFieldSpec {
+        name: "system",
+        description: "Logical system related to the BAPI return entry, when present.",
+    },
+];
+
 pub const BUILTIN_STRUCTURES: &[BuiltinStructureSpec] = &[
     BuiltinStructureSpec {
         name: "syst",
@@ -501,6 +560,69 @@ pub fn builtin_structure_field_description(
         .iter()
         .find(|f| f.name.eq_ignore_ascii_case(field_name))?;
     Some(field.description)
+}
+
+fn well_known_bapiret2_field_type(
+    field_name: &str,
+) -> Option<(&'static str, Option<&'static str>)> {
+    if field_name.eq_ignore_ascii_case("type") {
+        return Some(("char1", None));
+    }
+    if field_name.eq_ignore_ascii_case("id") {
+        return Some(("symsgid", None));
+    }
+    if field_name.eq_ignore_ascii_case("number") {
+        return Some(("symsgno", None));
+    }
+    if field_name.eq_ignore_ascii_case("message") {
+        return Some(("string", None));
+    }
+    if field_name.eq_ignore_ascii_case("log_no") {
+        return Some(("string", None));
+    }
+    if field_name.eq_ignore_ascii_case("log_msg_no") {
+        return Some(("symsgno", None));
+    }
+    if field_name.eq_ignore_ascii_case("message_v1")
+        || field_name.eq_ignore_ascii_case("message_v2")
+        || field_name.eq_ignore_ascii_case("message_v3")
+        || field_name.eq_ignore_ascii_case("message_v4")
+    {
+        return Some(("symsgv", None));
+    }
+    if field_name.eq_ignore_ascii_case("parameter")
+        || field_name.eq_ignore_ascii_case("field")
+        || field_name.eq_ignore_ascii_case("system")
+    {
+        return Some(("string", None));
+    }
+    if field_name.eq_ignore_ascii_case("row") {
+        return Some(("i", None));
+    }
+    None
+}
+
+pub fn well_known_external_structure_field_description(
+    structure_name: &str,
+    field_name: &str,
+) -> Option<&'static str> {
+    if structure_name.eq_ignore_ascii_case("bapiret2") {
+        return BAPIRET2_FIELDS
+            .iter()
+            .find(|field| field.name.eq_ignore_ascii_case(field_name))
+            .map(|field| field.description);
+    }
+    None
+}
+
+pub fn well_known_external_structure_field_type(
+    structure_name: &str,
+    field_name: &str,
+) -> Option<(&'static str, Option<&'static str>)> {
+    if structure_name.eq_ignore_ascii_case("bapiret2") {
+        return well_known_bapiret2_field_type(field_name);
+    }
+    None
 }
 
 pub fn builtin_structure_field_type(

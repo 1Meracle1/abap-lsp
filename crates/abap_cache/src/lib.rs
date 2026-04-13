@@ -409,6 +409,34 @@ impl AnalysisSnapshot {
                     in_type_position: access.in_type_position,
                 });
             }
+            if let Some((owner_structure_name, kind, declared_type)) =
+                resolve_well_known_external_field_access_segment(
+                    unit,
+                    access,
+                    segment_index,
+                    symbol_id,
+                )
+            {
+                return Some(HoveredComponentInfo {
+                    base_name: Arc::clone(&access.base_name),
+                    base_namespace: access.base_namespace,
+                    component_path: access
+                        .field_path
+                        .iter()
+                        .take(segment_index + 1)
+                        .map(|segment| Arc::clone(&segment.name))
+                        .collect(),
+                    field_name: Arc::clone(&access.field_path[segment_index].name),
+                    field_owner_structure_name: Some(owner_structure_name),
+                    range: access.field_path[segment_index].range.clone(),
+                    declared_type: Some(format_field_type_ref(&declared_type)),
+                    value_clause_display: None,
+                    declaration: Some("well-known external DDIC structure field".to_string()),
+                    kind,
+                    is_static_method: false,
+                    in_type_position: access.in_type_position,
+                });
+            }
             let Some((field_unit, field)) = resolve_field_access_component_with_scope_index(
                 self,
                 self.scope_index(),
@@ -2854,6 +2882,58 @@ fn resolve_symbol_structure_with_scope_index<'a>(
     None
 }
 
+fn resolve_well_known_external_field_path(
+    declared_type: &FieldTypeRefData,
+    field_path: &[abap_symbols::FieldAccessSegment],
+    segment_index: usize,
+) -> Option<(Arc<str>, HoveredComponentKind, FieldTypeRefData)> {
+    if declared_type.namespace != Namespace::Type
+        || declared_type.is_ref
+        || !declared_type.field_path.is_empty()
+        || segment_index >= field_path.len()
+    {
+        return None;
+    }
+
+    let mut current_structure_name =
+        Arc::<str>::from(declared_type.base_name.as_ref().to_ascii_lowercase());
+    for (idx, segment) in field_path.iter().take(segment_index + 1).enumerate() {
+        let (type_name, nested_structure_name) =
+            abap_symbols::well_known_external_structure_field_type(
+                current_structure_name.as_ref(),
+                segment.name.as_ref(),
+            )?;
+        let field_type = FieldTypeRefData {
+            namespace: Namespace::Type,
+            is_ref: false,
+            base_name: Arc::<str>::from(type_name),
+            field_path: Vec::new(),
+        };
+        if idx == segment_index {
+            let kind =
+                nested_structure_name.map_or(HoveredComponentKind::Scalar, |structure_name| {
+                    HoveredComponentKind::Structured {
+                        structure_name: Arc::<str>::from(structure_name.to_ascii_lowercase()),
+                    }
+                });
+            return Some((current_structure_name, kind, field_type));
+        }
+        current_structure_name = Arc::<str>::from(nested_structure_name?.to_ascii_lowercase());
+    }
+    None
+}
+
+fn resolve_well_known_external_field_access_segment(
+    unit: &UnitAnalysis,
+    access: &abap_symbols::FieldAccess,
+    segment_index: usize,
+    symbol_id: SymbolId,
+) -> Option<(Arc<str>, HoveredComponentKind, FieldTypeRefData)> {
+    let symbol = unit.symbol(symbol_id);
+    let declared_type = symbol.declared_type.as_ref()?;
+    resolve_well_known_external_field_path(declared_type, &access.field_path, segment_index)
+}
+
 fn derive_ddic_include_field_name(type_name: &str) -> String {
     let tail = type_name
         .rsplit('/')
@@ -4674,6 +4754,11 @@ fn classify_field_access_segment_with_scope_index(
         symbol_id,
     ) {
         return Some(hovered_component_kind_for_class_member(member));
+    }
+    if let Some((_, kind, _)) =
+        resolve_well_known_external_field_access_segment(unit, access, segment_index, symbol_id)
+    {
+        return Some(kind);
     }
 
     let (structure_unit, field) = resolve_field_access_component_with_scope_index(

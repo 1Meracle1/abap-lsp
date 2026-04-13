@@ -176,7 +176,17 @@ export function activate(context: vscode.ExtensionContext) {
 	registerClientNotifications(context);
 
 	// Start the client. This will also launch the server
-	client.start();
+	void client.start().then(() => {
+		client.outputChannel.appendLine(
+			`[startup] server connection: ${describeServerConnection()}`,
+		);
+		client.outputChannel.appendLine(
+			`[startup] semanticTokensProvider: ${JSON.stringify(
+				client.initializeResult?.capabilities?.semanticTokensProvider ?? null,
+			)}`,
+		);
+		logSemanticTokenEditorContext(vscode.window.activeTextEditor);
+	});
 	registerWorkspaceConfigPrompts(context);
 }
 
@@ -239,6 +249,44 @@ function buildServerOptions(): ServerOptions {
 		options: { cwd: path.dirname(serverPath) },
 		transport: TransportKind.stdio,
 	};
+}
+
+function describeServerConnection(): string {
+	const config = vscode.workspace.getConfiguration("abap-ls");
+	const connectOverride = process.env.__ABAP_LSP_CONNECT?.trim();
+	const useTcp =
+		Boolean(connectOverride) || config.get<string>("serverTransport") === "tcp";
+	if (useTcp) {
+		return `tcp:${connectOverride || config.get<string>("serverTcpAddress")?.trim() || "127.0.0.1:9472"}`;
+	}
+
+	const pathFromEnv =
+		process.env.__ABAP_LSP_SERVER_PATH?.trim() ||
+		process.env.__ABAP_LSP_SERVER_DEBUG?.trim();
+	const configured =
+		pathFromEnv || config.get<string>("serverExecutable")?.trim() || "<unset>";
+	const serverPath =
+		process.platform === "win32" && path.extname(configured).length === 0
+			? `${configured}.exe`
+			: configured;
+	return `stdio:${serverPath}`;
+}
+
+function logSemanticTokenEditorContext(
+	editor: vscode.TextEditor | undefined,
+): void {
+	if (!editor) {
+		client.outputChannel.appendLine("[startup] active editor: <none>");
+		return;
+	}
+	const semanticHighlighting = vscode.workspace
+		.getConfiguration("editor", editor.document.uri)
+		.get("semanticHighlighting.enabled");
+	client.outputChannel.appendLine(
+		`[startup] active editor: language=${editor.document.languageId} uri=${editor.document.uri.toString()} semanticHighlighting.enabled=${String(
+			semanticHighlighting,
+		)}`,
+	);
 }
 
 /** IPv4 / hostname and port only (e.g. 127.0.0.1:9472, localhost:9472). */
