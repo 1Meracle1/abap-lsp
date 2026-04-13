@@ -5263,6 +5263,20 @@ struct AnalysisMetrics {
     local_phase_micros: u128,
     project_update_micros: u128,
     snapshot_build_micros: u128,
+    full_rebuild: bool,
+    unit_count: usize,
+    dirty_unit_count: usize,
+    scope_index_clone_micros: u128,
+    build_workspace_index_micros: u128,
+    compute_dirty_set_micros: u128,
+    clone_previous_units_micros: u128,
+    apply_local_updates_micros: u128,
+    resolve_include_edges_micros: u128,
+    resolve_cross_unit_micros: u128,
+    infer_semantic_facts_micros: u128,
+    rebuild_semantic_index_micros: u128,
+    validate_micros: u128,
+    collect_project_diagnostics_micros: u128,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -5283,6 +5297,20 @@ pub struct WorkspaceAnalysisMetricsSnapshot {
     pub local_phase_micros: u128,
     pub project_update_micros: u128,
     pub snapshot_build_micros: u128,
+    pub full_rebuild: bool,
+    pub unit_count: usize,
+    pub dirty_unit_count: usize,
+    pub scope_index_clone_micros: u128,
+    pub build_workspace_index_micros: u128,
+    pub compute_dirty_set_micros: u128,
+    pub clone_previous_units_micros: u128,
+    pub apply_local_updates_micros: u128,
+    pub resolve_include_edges_micros: u128,
+    pub resolve_cross_unit_micros: u128,
+    pub infer_semantic_facts_micros: u128,
+    pub rebuild_semantic_index_micros: u128,
+    pub validate_micros: u128,
+    pub collect_project_diagnostics_micros: u128,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -5560,12 +5588,41 @@ fn analyze_inputs_with_progress(
         force_full,
     );
     metrics.project_update_micros = update_timer.elapsed().as_micros();
+    metrics.full_rebuild = update.full_rebuild;
+    metrics.unit_count = update.unit_count;
+    metrics.dirty_unit_count = update.dirty_unit_count;
+    metrics.scope_index_clone_micros = update.scope_index_clone_micros;
+    metrics.build_workspace_index_micros = update.build_workspace_index_micros;
+    metrics.compute_dirty_set_micros = update.compute_dirty_set_micros;
+    metrics.clone_previous_units_micros = update.clone_previous_units_micros;
+    metrics.apply_local_updates_micros = update.apply_local_updates_micros;
+    metrics.resolve_include_edges_micros = update.resolve_include_edges_micros;
+    metrics.resolve_cross_unit_micros = update.resolve_cross_unit_micros;
+    metrics.infer_semantic_facts_micros = update.infer_semantic_facts_micros;
+    metrics.rebuild_semantic_index_micros = update.rebuild_semantic_index_micros;
+    metrics.validate_micros = update.validate_micros;
+    metrics.collect_project_diagnostics_micros = update.collect_project_diagnostics_micros;
     let (snapshots, mut analysis) = materialize_snapshots(prepared, update);
     analysis.metrics.parse_count = metrics.parse_count;
     analysis.metrics.local_phase_count = metrics.local_phase_count;
     analysis.metrics.parse_micros = metrics.parse_micros;
     analysis.metrics.local_phase_micros = metrics.local_phase_micros;
     analysis.metrics.project_update_micros = metrics.project_update_micros;
+    analysis.metrics.full_rebuild = metrics.full_rebuild;
+    analysis.metrics.unit_count = metrics.unit_count;
+    analysis.metrics.dirty_unit_count = metrics.dirty_unit_count;
+    analysis.metrics.scope_index_clone_micros = metrics.scope_index_clone_micros;
+    analysis.metrics.build_workspace_index_micros = metrics.build_workspace_index_micros;
+    analysis.metrics.compute_dirty_set_micros = metrics.compute_dirty_set_micros;
+    analysis.metrics.clone_previous_units_micros = metrics.clone_previous_units_micros;
+    analysis.metrics.apply_local_updates_micros = metrics.apply_local_updates_micros;
+    analysis.metrics.resolve_include_edges_micros = metrics.resolve_include_edges_micros;
+    analysis.metrics.resolve_cross_unit_micros = metrics.resolve_cross_unit_micros;
+    analysis.metrics.infer_semantic_facts_micros = metrics.infer_semantic_facts_micros;
+    analysis.metrics.rebuild_semantic_index_micros = metrics.rebuild_semantic_index_micros;
+    analysis.metrics.validate_micros = metrics.validate_micros;
+    analysis.metrics.collect_project_diagnostics_micros =
+        metrics.collect_project_diagnostics_micros;
     (snapshots, analysis)
 }
 
@@ -6106,6 +6163,22 @@ impl DocumentStore {
                 local_phase_micros: analysis.metrics.local_phase_micros,
                 project_update_micros: analysis.metrics.project_update_micros,
                 snapshot_build_micros: analysis.metrics.snapshot_build_micros,
+                full_rebuild: analysis.metrics.full_rebuild,
+                unit_count: analysis.metrics.unit_count,
+                dirty_unit_count: analysis.metrics.dirty_unit_count,
+                scope_index_clone_micros: analysis.metrics.scope_index_clone_micros,
+                build_workspace_index_micros: analysis.metrics.build_workspace_index_micros,
+                compute_dirty_set_micros: analysis.metrics.compute_dirty_set_micros,
+                clone_previous_units_micros: analysis.metrics.clone_previous_units_micros,
+                apply_local_updates_micros: analysis.metrics.apply_local_updates_micros,
+                resolve_include_edges_micros: analysis.metrics.resolve_include_edges_micros,
+                resolve_cross_unit_micros: analysis.metrics.resolve_cross_unit_micros,
+                infer_semantic_facts_micros: analysis.metrics.infer_semantic_facts_micros,
+                rebuild_semantic_index_micros: analysis.metrics.rebuild_semantic_index_micros,
+                validate_micros: analysis.metrics.validate_micros,
+                collect_project_diagnostics_micros: analysis
+                    .metrics
+                    .collect_project_diagnostics_micros,
             })
     }
 

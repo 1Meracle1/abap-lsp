@@ -75,6 +75,25 @@ pub(crate) struct ValidatedUnitResult {
 pub(crate) struct IncrementalProjectAnalysisResult {
     pub(crate) project: ProjectAnalysis,
     pub(crate) dirty_set: DirtySet,
+    pub(crate) metrics: ProjectUpdateMetrics,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct ProjectUpdateMetrics {
+    pub(crate) full_rebuild: bool,
+    pub(crate) unit_count: usize,
+    pub(crate) dirty_unit_count: usize,
+    pub(crate) scope_index_clone_micros: u128,
+    pub(crate) build_workspace_index_micros: u128,
+    pub(crate) compute_dirty_set_micros: u128,
+    pub(crate) clone_previous_units_micros: u128,
+    pub(crate) apply_local_updates_micros: u128,
+    pub(crate) resolve_include_edges_micros: u128,
+    pub(crate) resolve_cross_unit_micros: u128,
+    pub(crate) infer_semantic_facts_micros: u128,
+    pub(crate) rebuild_semantic_index_micros: u128,
+    pub(crate) validate_micros: u128,
+    pub(crate) collect_project_diagnostics_micros: u128,
 }
 
 impl ProjectAnalysis {
@@ -491,11 +510,22 @@ pub(crate) fn analyze_project_incremental_from_locals(
     changed_uris: &HashSet<Arc<str>>,
     force_full: bool,
 ) -> IncrementalProjectAnalysisResult {
+    let mut metrics = ProjectUpdateMetrics {
+        unit_count: local_units.len(),
+        ..ProjectUpdateMetrics::default()
+    };
+    let build_workspace_index_timer = std::time::Instant::now();
     let workspace_index = build_workspace_index(&local_units);
+    metrics.build_workspace_index_micros = build_workspace_index_timer.elapsed().as_micros();
+
+    let scope_index_clone_timer = std::time::Instant::now();
     let scope_indexes: Vec<_> = local_units
         .iter()
         .map(|local| local.scope_index.clone())
         .collect();
+    metrics.scope_index_clone_micros = scope_index_clone_timer.elapsed().as_micros();
+
+    let compute_dirty_set_timer = std::time::Instant::now();
     let dirty_set = compute_dirty_set(
         previous_project,
         previous_locals,
@@ -504,34 +534,61 @@ pub(crate) fn analyze_project_incremental_from_locals(
         changed_uris,
         force_full,
     );
+    metrics.compute_dirty_set_micros = compute_dirty_set_timer.elapsed().as_micros();
+    metrics.dirty_unit_count = dirty_set.unit_ids.len();
 
     if force_full
         || previous_project.is_none()
         || previous_project.is_some_and(|previous| previous.units.len() != local_units.len())
     {
+        metrics.full_rebuild = true;
         let dirty_set = dirty_set_for_all_units(&local_units);
-        let project = analyze_project_from_local_units(local_units);
-        return IncrementalProjectAnalysisResult { project, dirty_set };
+        metrics.dirty_unit_count = dirty_set.unit_ids.len();
+        let (project, full_metrics) = analyze_project_from_local_units_profiled(local_units);
+        metrics.resolve_include_edges_micros = full_metrics.resolve_include_edges_micros;
+        metrics.resolve_cross_unit_micros = full_metrics.resolve_cross_unit_micros;
+        metrics.infer_semantic_facts_micros = full_metrics.infer_semantic_facts_micros;
+        metrics.rebuild_semantic_index_micros = full_metrics.rebuild_semantic_index_micros;
+        metrics.validate_micros = full_metrics.validate_micros;
+        metrics.collect_project_diagnostics_micros =
+            full_metrics.collect_project_diagnostics_micros;
+        return IncrementalProjectAnalysisResult {
+            project,
+            dirty_set,
+            metrics,
+        };
     }
 
     let previous_project = previous_project.expect("checked above");
+    let clone_previous_units_timer = std::time::Instant::now();
     let mut units = previous_project.units.clone();
+    metrics.clone_previous_units_micros = clone_previous_units_timer.elapsed().as_micros();
+    let apply_local_updates_timer = std::time::Instant::now();
     for local in &local_units {
         if dirty_set.unit_ids.contains(&local.unit.unit_id) {
             units[local.unit.unit_id.as_usize()] = local.unit.clone();
         }
     }
+    metrics.apply_local_updates_micros = apply_local_updates_timer.elapsed().as_micros();
 
+    let resolve_include_edges_timer = std::time::Instant::now();
     resolve_include_edges_for_units(
         &mut units,
         &workspace_index.provided_name_to_unit,
         &dirty_set.unit_ids,
     );
+    metrics.resolve_include_edges_micros = resolve_include_edges_timer.elapsed().as_micros();
+    let resolve_cross_unit_timer = std::time::Instant::now();
     resolve_project_cross_unit_for_units(&mut units, &dirty_set.unit_ids);
+    metrics.resolve_cross_unit_micros = resolve_cross_unit_timer.elapsed().as_micros();
+    let infer_semantic_facts_timer = std::time::Instant::now();
     infer_semantic_facts(&mut units);
+    metrics.infer_semantic_facts_micros = infer_semantic_facts_timer.elapsed().as_micros();
+    let rebuild_semantic_index_timer = std::time::Instant::now();
     for unit_id in &dirty_set.unit_ids {
         units[unit_id.as_usize()].rebuild_semantic_index();
     }
+    metrics.rebuild_semantic_index_micros = rebuild_semantic_index_timer.elapsed().as_micros();
 
     let mut project = ProjectAnalysis {
         units,
@@ -539,17 +596,32 @@ pub(crate) fn analyze_project_incremental_from_locals(
         provided_name_to_unit: workspace_index.provided_name_to_unit.clone(),
         diagnostics: Vec::new(),
     };
+    let validate_timer = std::time::Instant::now();
     validate_project_with_scope_indexes_for_units(
         &mut project,
         &scope_indexes,
         &dirty_set.unit_ids,
     );
+    metrics.validate_micros = validate_timer.elapsed().as_micros();
+    let collect_project_diagnostics_timer = std::time::Instant::now();
     collect_project_diagnostics(&mut project);
+    metrics.collect_project_diagnostics_micros =
+        collect_project_diagnostics_timer.elapsed().as_micros();
 
-    IncrementalProjectAnalysisResult { project, dirty_set }
+    IncrementalProjectAnalysisResult {
+        project,
+        dirty_set,
+        metrics,
+    }
 }
 
 fn analyze_project_from_local_units(local_units: Vec<LocallyResolvedUnit>) -> ProjectAnalysis {
+    analyze_project_from_local_units_profiled(local_units).0
+}
+
+fn analyze_project_from_local_units_profiled(
+    local_units: Vec<LocallyResolvedUnit>,
+) -> (ProjectAnalysis, ProjectUpdateMetrics) {
     let workspace_index = build_workspace_index(&local_units);
     let scope_indexes: Vec<_> = local_units
         .iter()
@@ -557,17 +629,31 @@ fn analyze_project_from_local_units(local_units: Vec<LocallyResolvedUnit>) -> Pr
         .collect();
     let mut units: Vec<_> = local_units.into_iter().map(|local| local.unit).collect();
     let dirty_unit_ids: HashSet<_> = units.iter().map(|unit| unit.unit_id).collect();
+    let mut metrics = ProjectUpdateMetrics {
+        full_rebuild: true,
+        unit_count: units.len(),
+        dirty_unit_count: dirty_unit_ids.len(),
+        ..ProjectUpdateMetrics::default()
+    };
 
+    let resolve_include_edges_timer = std::time::Instant::now();
     resolve_include_edges_for_units(
         &mut units,
         &workspace_index.provided_name_to_unit,
         &dirty_unit_ids,
     );
+    metrics.resolve_include_edges_micros = resolve_include_edges_timer.elapsed().as_micros();
+    let resolve_cross_unit_timer = std::time::Instant::now();
     resolve_project_cross_unit(&mut units);
+    metrics.resolve_cross_unit_micros = resolve_cross_unit_timer.elapsed().as_micros();
+    let infer_semantic_facts_timer = std::time::Instant::now();
     infer_semantic_facts(&mut units);
+    metrics.infer_semantic_facts_micros = infer_semantic_facts_timer.elapsed().as_micros();
+    let rebuild_semantic_index_timer = std::time::Instant::now();
     for unit in &mut units {
         unit.rebuild_semantic_index();
     }
+    metrics.rebuild_semantic_index_micros = rebuild_semantic_index_timer.elapsed().as_micros();
 
     let mut project = ProjectAnalysis {
         units,
@@ -575,9 +661,14 @@ fn analyze_project_from_local_units(local_units: Vec<LocallyResolvedUnit>) -> Pr
         provided_name_to_unit: workspace_index.provided_name_to_unit,
         diagnostics: Vec::new(),
     };
+    let validate_timer = std::time::Instant::now();
     validate_project_with_scope_indexes(&mut project, &scope_indexes);
+    metrics.validate_micros = validate_timer.elapsed().as_micros();
+    let collect_project_diagnostics_timer = std::time::Instant::now();
     collect_project_diagnostics(&mut project);
-    project
+    metrics.collect_project_diagnostics_micros =
+        collect_project_diagnostics_timer.elapsed().as_micros();
+    (project, metrics)
 }
 
 pub fn analyze_project_from_units(units: Vec<UnitAnalysis>) -> ProjectAnalysis {

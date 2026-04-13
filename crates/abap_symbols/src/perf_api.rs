@@ -7,7 +7,7 @@ use crate::collector::collect_unit;
 use crate::def_map::UnitAnalysis;
 use crate::ids::UnitId;
 use crate::project::{
-    IncrementalProjectAnalysisResult, LocallyResolvedUnit, ProjectAnalysis,
+    IncrementalProjectAnalysisResult, LocallyResolvedUnit, ProjectAnalysis, ProjectUpdateMetrics,
     analyze_project_incremental_from_locals, analyze_unit_locally_phased,
     collect_project_diagnostics, exported_signature_for_unit, resolve_include_edges_for_units,
 };
@@ -64,6 +64,20 @@ pub struct LocalAnalysis {
 pub struct IncrementalProjectUpdate {
     pub project: ProjectAnalysis,
     pub dirty_uris: HashSet<Arc<str>>,
+    pub full_rebuild: bool,
+    pub unit_count: usize,
+    pub dirty_unit_count: usize,
+    pub scope_index_clone_micros: u128,
+    pub build_workspace_index_micros: u128,
+    pub compute_dirty_set_micros: u128,
+    pub clone_previous_units_micros: u128,
+    pub apply_local_updates_micros: u128,
+    pub resolve_include_edges_micros: u128,
+    pub resolve_cross_unit_micros: u128,
+    pub infer_semantic_facts_micros: u128,
+    pub rebuild_semantic_index_micros: u128,
+    pub validate_micros: u128,
+    pub collect_project_diagnostics_micros: u128,
 }
 
 #[doc(hidden)]
@@ -127,17 +141,50 @@ pub fn incremental_project_update(
         })
         .collect();
 
-    let IncrementalProjectAnalysisResult { project, dirty_set } =
-        analyze_project_incremental_from_locals(
-            previous_project,
-            previous_locals.as_ref(),
-            locals,
-            changed_uris,
-            force_full,
-        );
+    let IncrementalProjectAnalysisResult {
+        project,
+        dirty_set,
+        metrics,
+    } = analyze_project_incremental_from_locals(
+        previous_project,
+        previous_locals.as_ref(),
+        locals,
+        changed_uris,
+        force_full,
+    );
+    let ProjectUpdateMetrics {
+        full_rebuild,
+        unit_count,
+        dirty_unit_count,
+        scope_index_clone_micros,
+        build_workspace_index_micros,
+        compute_dirty_set_micros,
+        clone_previous_units_micros,
+        apply_local_updates_micros,
+        resolve_include_edges_micros,
+        resolve_cross_unit_micros,
+        infer_semantic_facts_micros,
+        rebuild_semantic_index_micros,
+        validate_micros,
+        collect_project_diagnostics_micros,
+    } = metrics;
     IncrementalProjectUpdate {
         project,
         dirty_uris: dirty_set.uris,
+        full_rebuild,
+        unit_count,
+        dirty_unit_count,
+        scope_index_clone_micros,
+        build_workspace_index_micros,
+        compute_dirty_set_micros,
+        clone_previous_units_micros,
+        apply_local_updates_micros,
+        resolve_include_edges_micros,
+        resolve_cross_unit_micros,
+        infer_semantic_facts_micros,
+        rebuild_semantic_index_micros,
+        validate_micros,
+        collect_project_diagnostics_micros,
     }
 }
 

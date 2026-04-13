@@ -51,6 +51,8 @@ struct FactBuilder<'a> {
     scope_indexes: Vec<ScopeIndex>,
     inline_sql_table_symbols: Vec<HashSet<SymbolId>>,
     unit_indexes: HashMap<crate::ids::UnitId, usize>,
+    root_type_symbols: HashMap<Arc<str>, SymbolHandle>,
+    function_modules_by_name: HashMap<Arc<str>, (usize, usize)>,
 }
 
 impl<'a> FactBuilder<'a> {
@@ -86,12 +88,38 @@ impl<'a> FactBuilder<'a> {
             .enumerate()
             .map(|(idx, unit)| (unit.unit_id, idx))
             .collect();
+        let mut root_type_symbols = HashMap::new();
+        let mut function_modules_by_name = HashMap::new();
+        for (unit_idx, unit) in units.iter().enumerate() {
+            for symbol in unit
+                .symbols
+                .iter()
+                .filter(|symbol| symbol.scope == unit.root_scope)
+            {
+                if symbol.kind.occupies(Namespace::Type) {
+                    root_type_symbols
+                        .entry(Arc::clone(&symbol.name))
+                        .or_insert(SymbolHandle {
+                            unit: unit.unit_id,
+                            symbol: symbol.id,
+                        });
+                }
+            }
+            for (function_idx, function_module) in unit.function_modules.iter().enumerate() {
+                let symbol = unit.symbol(function_module.symbol);
+                function_modules_by_name
+                    .entry(Arc::clone(&symbol.name))
+                    .or_insert((unit_idx, function_idx));
+            }
+        }
 
         Self {
             units,
             scope_indexes,
             inline_sql_table_symbols,
             unit_indexes,
+            root_type_symbols,
+            function_modules_by_name,
         }
     }
 
@@ -833,12 +861,11 @@ impl<'a> FactBuilder<'a> {
         &self,
         function_name: &str,
     ) -> Option<(usize, &'a crate::FunctionModuleData)> {
-        self.units.iter().enumerate().find_map(|(unit_idx, unit)| {
-            unit.function_modules.iter().find_map(|function_module| {
-                let symbol = unit.symbol(function_module.symbol);
-                (symbol.name.as_ref() == function_name).then_some((unit_idx, function_module))
-            })
-        })
+        let &(unit_idx, function_idx) = self.function_modules_by_name.get(function_name)?;
+        Some((
+            unit_idx,
+            &self.units[unit_idx].function_modules[function_idx],
+        ))
     }
 
     fn resolve_type_symbol_handle(
@@ -860,17 +887,7 @@ impl<'a> FactBuilder<'a> {
                 symbol,
             });
         }
-        self.units.iter().find_map(|unit| {
-            unit.symbols.iter().find_map(|symbol| {
-                (symbol.scope == unit.root_scope
-                    && symbol.kind.occupies(Namespace::Type)
-                    && symbol.name.as_ref() == name)
-                    .then_some(SymbolHandle {
-                        unit: unit.unit_id,
-                        symbol: symbol.id,
-                    })
-            })
-        })
+        self.root_type_symbols.get(name).copied()
     }
 
     fn symbol_is_table(&self, handle: SymbolHandle, symbol: &crate::SymbolData) -> bool {

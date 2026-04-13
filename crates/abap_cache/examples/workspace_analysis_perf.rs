@@ -87,6 +87,53 @@ fn run() -> Result<(), String> {
         "snapshot_build={:?}",
         std::time::Duration::from_micros(metrics.snapshot_build_micros as u64)
     );
+    println!("full_rebuild={}", metrics.full_rebuild);
+    println!("unit_count={}", metrics.unit_count);
+    println!("dirty_unit_count={}", metrics.dirty_unit_count);
+    println!(
+        "scope_index_clone={:?}",
+        std::time::Duration::from_micros(metrics.scope_index_clone_micros as u64)
+    );
+    println!(
+        "build_workspace_index={:?}",
+        std::time::Duration::from_micros(metrics.build_workspace_index_micros as u64)
+    );
+    println!(
+        "compute_dirty_set={:?}",
+        std::time::Duration::from_micros(metrics.compute_dirty_set_micros as u64)
+    );
+    println!(
+        "clone_previous_units={:?}",
+        std::time::Duration::from_micros(metrics.clone_previous_units_micros as u64)
+    );
+    println!(
+        "apply_local_updates={:?}",
+        std::time::Duration::from_micros(metrics.apply_local_updates_micros as u64)
+    );
+    println!(
+        "resolve_include_edges={:?}",
+        std::time::Duration::from_micros(metrics.resolve_include_edges_micros as u64)
+    );
+    println!(
+        "resolve_cross_unit={:?}",
+        std::time::Duration::from_micros(metrics.resolve_cross_unit_micros as u64)
+    );
+    println!(
+        "infer_semantic_facts={:?}",
+        std::time::Duration::from_micros(metrics.infer_semantic_facts_micros as u64)
+    );
+    println!(
+        "rebuild_semantic_index={:?}",
+        std::time::Duration::from_micros(metrics.rebuild_semantic_index_micros as u64)
+    );
+    println!(
+        "validate={:?}",
+        std::time::Duration::from_micros(metrics.validate_micros as u64)
+    );
+    println!(
+        "collect_project_diagnostics={:?}",
+        std::time::Duration::from_micros(metrics.collect_project_diagnostics_micros as u64)
+    );
 
     Ok(())
 }
