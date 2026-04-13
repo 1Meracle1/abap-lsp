@@ -1,9 +1,9 @@
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
-use abap_lexer::TokenKind;
+use abap_lexer::{TokenKind, tokenize};
 use abap_parser::{ParseResult, parse};
 use abap_symbols::{
     ClassMemberData, ClassMemberKind, ClassMemberParameterData, FieldTypeRefData,
@@ -17,7 +17,8 @@ use abap_symbols::{
     parameter_is_required,
     perf_api::{
         IncrementalProjectUpdate, LocalAnalysis, analyze_unit_local_state,
-        incremental_project_update, validate_single_unit,
+        analyze_unit_local_state_for_project_build, incremental_project_update,
+        validate_single_unit,
     },
 };
 use parking_lot::RwLock;
@@ -5261,6 +5262,9 @@ struct AnalysisMetrics {
     dirty_uri_count: usize,
     parse_micros: u128,
     local_phase_micros: u128,
+    dependency_projection_micros: u128,
+    parse_work_micros: u128,
+    local_phase_work_micros: u128,
     project_update_micros: u128,
     snapshot_build_micros: u128,
     full_rebuild: bool,
@@ -5295,6 +5299,9 @@ pub struct WorkspaceAnalysisMetricsSnapshot {
     pub dirty_uri_count: usize,
     pub parse_micros: u128,
     pub local_phase_micros: u128,
+    pub dependency_projection_micros: u128,
+    pub parse_work_micros: u128,
+    pub local_phase_work_micros: u128,
     pub project_update_micros: u128,
     pub snapshot_build_micros: u128,
     pub full_rebuild: bool,
@@ -5416,6 +5423,9 @@ fn prepare_documents(
     let processed = AtomicUsize::new(0);
     let parse_count = AtomicUsize::new(0);
     let local_phase_count = AtomicUsize::new(0);
+    let dependency_projection_micros = AtomicU64::new(0);
+    let parse_work_micros = AtomicU64::new(0);
+    let local_phase_work_micros = AtomicU64::new(0);
     let total = staged.len();
     let metrics = AnalysisMetrics::default();
     let prepared: Vec<_> = staged
@@ -5429,7 +5439,12 @@ fn prepare_documents(
                 is_dependency: entry.is_dependency,
                 object_name: entry.object_name.clone(),
             };
+            let projection_timer = std::time::Instant::now();
             let analysis_text = analysis_text_for_input(&input);
+            dependency_projection_micros.fetch_add(
+                projection_timer.elapsed().as_micros() as u64,
+                Ordering::Relaxed,
+            );
             let previous_local =
                 previous_analysis.and_then(|analysis| analysis.locals.get(entry.uri.as_ref()));
             let previous_snapshot = entry.previous.as_ref();
@@ -5444,7 +5459,12 @@ fn prepare_documents(
                 )
             } else {
                 parse_count.fetch_add(1, Ordering::Relaxed);
+                let parse_work_timer = std::time::Instant::now();
                 let parsed = Arc::new(parse(analysis_text.as_ref()));
+                parse_work_micros.fetch_add(
+                    parse_work_timer.elapsed().as_micros() as u64,
+                    Ordering::Relaxed,
+                );
                 if let Some(snapshot) = previous_snapshot {
                     if snapshot.parse.as_ref().tokens == parsed.as_ref().tokens
                         && snapshot.parse.as_ref().errors == parsed.as_ref().errors
@@ -5461,12 +5481,18 @@ fn prepare_documents(
                 previous.clone()
             } else {
                 local_phase_count.fetch_add(1, Ordering::Relaxed);
-                analyze_unit_local_state(
+                let local_phase_work_timer = std::time::Instant::now();
+                let local = analyze_unit_local_state_for_project_build(
                     UnitId(idx as u32),
                     Arc::clone(&entry.uri),
                     analysis_text.as_ref(),
                     parse.as_ref(),
-                )
+                );
+                local_phase_work_micros.fetch_add(
+                    local_phase_work_timer.elapsed().as_micros() as u64,
+                    Ordering::Relaxed,
+                );
+                local
             };
             let mut local = local;
             if let Some(object_name) = &entry.object_name {
@@ -5493,6 +5519,10 @@ fn prepare_documents(
     let mut metrics = metrics;
     metrics.parse_count = parse_count.load(Ordering::Relaxed);
     metrics.local_phase_count = local_phase_count.load(Ordering::Relaxed);
+    metrics.dependency_projection_micros =
+        dependency_projection_micros.load(Ordering::Relaxed) as u128;
+    metrics.parse_work_micros = parse_work_micros.load(Ordering::Relaxed) as u128;
+    metrics.local_phase_work_micros = local_phase_work_micros.load(Ordering::Relaxed) as u128;
     metrics.parse_micros = parse_timer.elapsed().as_micros();
     metrics.local_phase_micros = metrics.parse_micros;
     (prepared, metrics)
@@ -5607,6 +5637,9 @@ fn analyze_inputs_with_progress(
     analysis.metrics.local_phase_count = metrics.local_phase_count;
     analysis.metrics.parse_micros = metrics.parse_micros;
     analysis.metrics.local_phase_micros = metrics.local_phase_micros;
+    analysis.metrics.dependency_projection_micros = metrics.dependency_projection_micros;
+    analysis.metrics.parse_work_micros = metrics.parse_work_micros;
+    analysis.metrics.local_phase_work_micros = metrics.local_phase_work_micros;
     analysis.metrics.project_update_micros = metrics.project_update_micros;
     analysis.metrics.full_rebuild = metrics.full_rebuild;
     analysis.metrics.unit_count = metrics.unit_count;
@@ -5715,9 +5748,9 @@ enum DependencyBlock {
 }
 
 fn dependency_surface_text(text: &str) -> Arc<str> {
-    let parsed = parse(text);
+    let tokenized = tokenize(text);
     let mut projected = text.as_bytes().to_vec();
-    let tokens = &parsed.tokens;
+    let tokens = tokenized.tokens.as_ref();
     let mut stack = Vec::<DependencyBlock>::new();
     let mut idx = 0usize;
 
@@ -6161,6 +6194,9 @@ impl DocumentStore {
                 dirty_uri_count: analysis.metrics.dirty_uri_count,
                 parse_micros: analysis.metrics.parse_micros,
                 local_phase_micros: analysis.metrics.local_phase_micros,
+                dependency_projection_micros: analysis.metrics.dependency_projection_micros,
+                parse_work_micros: analysis.metrics.parse_work_micros,
+                local_phase_work_micros: analysis.metrics.local_phase_work_micros,
                 project_update_micros: analysis.metrics.project_update_micros,
                 snapshot_build_micros: analysis.metrics.snapshot_build_micros,
                 full_rebuild: analysis.metrics.full_rebuild,

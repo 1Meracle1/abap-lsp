@@ -278,6 +278,18 @@ pub(crate) fn resolve_local_phase(mut collected: CollectedUnit) -> LocallyResolv
     }
 }
 
+pub(crate) fn resolve_local_phase_for_project(mut collected: CollectedUnit) -> LocallyResolvedUnit {
+    let scope_index = build_scope_index(&collected.unit);
+    resolve_unit_with_index(&mut collected.unit, &scope_index);
+    infer_inline_select_target_shapes(&mut collected.unit, &scope_index);
+    let exported_signature = exported_signature_for_unit(&collected.unit);
+    LocallyResolvedUnit {
+        unit: collected.unit,
+        scope_index,
+        exported_signature,
+    }
+}
+
 pub(crate) fn analyze_unit_locally_phased(
     unit_id: UnitId,
     uri: impl Into<Arc<str>>,
@@ -285,6 +297,15 @@ pub(crate) fn analyze_unit_locally_phased(
     parse: &ParseResult,
 ) -> LocallyResolvedUnit {
     resolve_local_phase(collect_unit_phase(unit_id, uri, source, parse))
+}
+
+pub(crate) fn analyze_unit_locally_for_project(
+    unit_id: UnitId,
+    uri: impl Into<Arc<str>>,
+    source: &str,
+    parse: &ParseResult,
+) -> LocallyResolvedUnit {
+    resolve_local_phase_for_project(collect_unit_phase(unit_id, uri, source, parse))
 }
 
 pub fn analyze_unit_locally(

@@ -80,6 +80,18 @@ fn run() -> Result<(), String> {
         std::time::Duration::from_micros(metrics.local_phase_micros as u64)
     );
     println!(
+        "dependency_projection={:?}",
+        std::time::Duration::from_micros(metrics.dependency_projection_micros as u64)
+    );
+    println!(
+        "parse_work={:?}",
+        std::time::Duration::from_micros(metrics.parse_work_micros as u64)
+    );
+    println!(
+        "local_phase_work={:?}",
+        std::time::Duration::from_micros(metrics.local_phase_work_micros as u64)
+    );
+    println!(
         "project_update={:?}",
         std::time::Duration::from_micros(metrics.project_update_micros as u64)
     );

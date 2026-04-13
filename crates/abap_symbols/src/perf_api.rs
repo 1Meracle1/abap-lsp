@@ -8,8 +8,9 @@ use crate::def_map::UnitAnalysis;
 use crate::ids::UnitId;
 use crate::project::{
     IncrementalProjectAnalysisResult, LocallyResolvedUnit, ProjectAnalysis, ProjectUpdateMetrics,
-    analyze_project_incremental_from_locals, analyze_unit_locally_phased,
-    collect_project_diagnostics, exported_signature_for_unit, resolve_include_edges_for_units,
+    analyze_project_incremental_from_locals, analyze_unit_locally_for_project,
+    analyze_unit_locally_phased, collect_project_diagnostics, exported_signature_for_unit,
+    resolve_include_edges_for_units,
 };
 use crate::resolver::{build_scope_index, resolve_unit_with_index};
 use crate::validate::{
@@ -97,6 +98,21 @@ pub fn analyze_unit_local_state(
     parse: &ParseResult,
 ) -> LocalAnalysis {
     let local = analyze_unit_locally_phased(unit_id, uri.into(), source, parse);
+    LocalAnalysis {
+        uri: Arc::clone(&local.unit.uri),
+        unit: local.unit,
+        scope_index: local.scope_index,
+    }
+}
+
+#[doc(hidden)]
+pub fn analyze_unit_local_state_for_project_build(
+    unit_id: UnitId,
+    uri: impl Into<Arc<str>>,
+    source: &str,
+    parse: &ParseResult,
+) -> LocalAnalysis {
+    let local = analyze_unit_locally_for_project(unit_id, uri.into(), source, parse);
     LocalAnalysis {
         uri: Arc::clone(&local.unit.uri),
         unit: local.unit,
