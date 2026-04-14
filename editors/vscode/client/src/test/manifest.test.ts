@@ -8,6 +8,8 @@ import {
 	dependencyCacheManifestPath,
 	ensureDependencyCacheUnit,
 	ensureWorkspaceManifest,
+	inferManifestUnitSpec,
+	targetDependencyWorkspaceFilePath,
 	targetEditableWorkspaceFilePath,
 	targetLocalWorkspaceFilePath,
 	workspaceManifestPath,
@@ -55,6 +57,58 @@ suite("Manifest helpers", () => {
 			targetEditableWorkspaceFilePath(workspaceFolder, reportRef)
 				.endsWith(path.join("src", "reports", "ZDEMO_REPORT", "ZDEMO_REPORT.abap")),
 		);
+	});
+
+	test("Places remote function modules into their own cache units", async () => {
+		const workspaceFolder = await createTempWorkspaceFolder("function-module-cache-layout");
+		const functionModuleRef: AdtObjectRef = {
+			uri: "/sap/bc/adt/functions/groups/svim/fmodules/view_get_data",
+			type: "FUGR/FF",
+			name: "VIEW_GET_DATA",
+			packageName: "SVIM",
+			description: "Function module",
+		};
+		const includeRef: AdtObjectRef = {
+			uri: "/sap/bc/adt/programs/includes/lsvimtop",
+			type: "PROG/I",
+			name: "LSVIMTOP",
+			packageName: "SVIM",
+			description: "Include",
+		};
+
+		const functionModulePath = targetDependencyWorkspaceFilePath(workspaceFolder, functionModuleRef);
+		const includePath = targetDependencyWorkspaceFilePath(workspaceFolder, includeRef);
+		assert.ok(functionModulePath.endsWith(path.join("packages", "SVIM", "function-module", "VIEW_GET_DATA.abap")));
+		assert.ok(includePath.endsWith(path.join("packages", "SVIM", "include", "LSVIMTOP.abap")));
+		assert.strictEqual(
+			inferManifestUnitSpec(
+				functionModuleRef,
+				".abapls/cache/packages/SVIM/function-module/VIEW_GET_DATA.abap",
+			).kind,
+			"function-module",
+		);
+
+		await ensureDependencyCacheUnit(
+			workspaceFolder,
+			functionModuleRef,
+			functionModulePath,
+			["src/reports/ZMAIN/ZMAIN.abap"],
+		);
+		await ensureDependencyCacheUnit(
+			workspaceFolder,
+			includeRef,
+			includePath,
+			["src/reports/ZMAIN/ZMAIN.abap"],
+		);
+
+		const text = await fs.promises.readFile(
+			dependencyCacheManifestPath(workspaceFolder, "src/reports/ZMAIN/ZMAIN.abap"),
+			"utf8",
+		);
+		assert.ok(text.includes('kind = "function-module"'));
+		assert.ok(text.includes('root_file = ".abapls/cache/packages/SVIM/function-module/VIEW_GET_DATA.abap"'));
+		assert.ok(text.includes('kind = "include"'));
+		assert.ok(text.includes('root_file = ".abapls/cache/packages/SVIM/include/LSVIMTOP.abap"'));
 	});
 
 	test("Keeps remote dependency units in cache-side manifests per source file", async () => {

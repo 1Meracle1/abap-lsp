@@ -24,6 +24,14 @@ export interface AdtDependencyFetchResult {
 	body: string;
 	fileExtension: "abap" | "xml";
 	manifestKind: string;
+	sharedDependencies?: AdtDependencyArtifact[];
+}
+
+export interface AdtDependencyArtifact {
+	objectRef: AdtObjectRef;
+	body: string;
+	fileExtension: "abap" | "xml";
+	manifestKind: string;
 }
 
 export interface AdtRepositoryChild {
@@ -509,11 +517,7 @@ export class AdtClient {
 			};
 		}
 		if (isFunctionModuleObject(objectRef)) {
-			return {
-				body: await this.fetchFunctionModuleDependencySource(objectRef),
-				fileExtension: "abap",
-				manifestKind: "function-group",
-			};
+			return this.fetchFunctionModuleDependencySource(objectRef);
 		}
 
 		return {
@@ -562,23 +566,33 @@ export class AdtClient {
 		return formatDdicXml(response.body);
 	}
 
-	private async fetchFunctionModuleDependencySource(objectRef: AdtObjectRef): Promise<string> {
+	private async fetchFunctionModuleDependencySource(
+		objectRef: AdtObjectRef,
+	): Promise<AdtDependencyFetchResult> {
 		const functionModuleSource = await this.fetchObjectSource(objectRef.uri);
 		const functionGroupUri = inferFunctionGroupUri(objectRef);
 		if (!functionGroupUri) {
-			return functionModuleSource;
+			return {
+				body: functionModuleSource,
+				fileExtension: "abap",
+				manifestKind: "function-module",
+			};
 		}
 
 		let functionGroupSource: string;
 		try {
 			functionGroupSource = await this.fetchObjectSource(functionGroupUri);
 		} catch {
-			return functionModuleSource;
+			return {
+				body: functionModuleSource,
+				fileExtension: "abap",
+				manifestKind: "function-module",
+			};
 		}
 
-		// Function module ADT source lacks the surrounding function-pool context, so
-		// inline the group's top-level includes into a synthetic dependency source.
-		const includeSources = new Map<string, string>();
+		// Function module ADT source lacks the surrounding function-pool context.
+		// Keep the module in its own unit and fetch shared top-level includes separately.
+		const sharedDependencies: AdtDependencyArtifact[] = [];
 		await Promise.all(
 			extractActiveTopLevelIncludeNames(functionGroupSource)
 				.filter((includeName) => !isFunctionGroupDispatcherInclude(includeName))
@@ -587,19 +601,25 @@ export class AdtClient {
 						const includeSource = await this.fetchObjectSource(
 							`/sap/bc/adt/programs/includes/${encodeURIComponent(includeName)}`,
 						);
-						includeSources.set(includeName, includeSource);
+						sharedDependencies.push({
+							objectRef: buildIncludeObjectRef(includeName, objectRef.packageName),
+							body: includeSource,
+							fileExtension: "abap",
+							manifestKind: "include",
+						});
 					} catch {
-						// Keep the composite dependency usable even when one include is unavailable.
+						// Keep the function module usable even when one shared include is unavailable.
 					}
 				}),
 		);
 
-		return buildFunctionModuleDependencySource(
-			objectRef.name,
-			functionGroupSource,
-			includeSources,
-			functionModuleSource,
-		);
+		sharedDependencies.sort((left, right) => left.objectRef.name.localeCompare(right.objectRef.name));
+		return {
+			body: buildFunctionModuleDependencySource(functionGroupSource, functionModuleSource),
+			fileExtension: "abap",
+			manifestKind: "function-module",
+			sharedDependencies,
+		};
 	}
 
 	private async fetchRepositoryNodeStructure(
@@ -764,6 +784,17 @@ export function buildMessageClassObjectRef(name: string): AdtObjectRef {
 	};
 }
 
+function buildIncludeObjectRef(name: string, packageName: string): AdtObjectRef {
+	const normalizedName = name.trim().toUpperCase();
+	return {
+		uri: `/sap/bc/adt/programs/includes/${encodeURIComponent(normalizedName)}`,
+		type: "PROG/I",
+		name: normalizedName,
+		packageName,
+		description: "Include",
+	};
+}
+
 export function isFunctionModuleObject(objectRef: AdtObjectRef): boolean {
 	return objectRef.type.toUpperCase() === "FUGR/FF" ||
 		objectRef.uri.toLowerCase().includes("/functions/groups/") &&
@@ -790,9 +821,7 @@ export function extractActiveTopLevelIncludeNames(source: string): string[] {
 }
 
 export function buildFunctionModuleDependencySource(
-	functionModuleName: string,
 	functionGroupSource: string,
-	includeSources: ReadonlyMap<string, string>,
 	functionModuleSource: string,
 ): string {
 	const renderedGroup = normalizeAbapSource(functionGroupSource)
@@ -804,28 +833,15 @@ export function buildFunctionModuleDependencySource(
 			}
 
 			if (isFunctionGroupDispatcherInclude(includeName)) {
-				return `* INCLUDE ${includeName}. Omitted in dependency cache; function module source is appended below.`;
+				return `* INCLUDE ${includeName}. Omitted in dependency cache; function module stays in its own unit.`;
 			}
-
-			const includeBody = includeSources.get(includeName);
-			if (!includeBody) {
-				return rawLine;
-			}
-
-			return [
-				`* >>> BEGIN INCLUDE ${includeName}`,
-				trimTrailingWhitespace(normalizeAbapSource(includeBody)),
-				`* <<< END INCLUDE ${includeName}`,
-			].join("\n");
+			return rawLine;
 		})
 		.join("\n");
 
-	const normalizedFunctionModuleName = functionModuleName.trim().toUpperCase();
 	return `${trimTrailingWhitespace(renderedGroup)}
 
-* >>> BEGIN FUNCTION MODULE ${normalizedFunctionModuleName}
 ${trimTrailingWhitespace(normalizeAbapSource(functionModuleSource))}
-* <<< END FUNCTION MODULE ${normalizedFunctionModuleName}
 `;
 }
 

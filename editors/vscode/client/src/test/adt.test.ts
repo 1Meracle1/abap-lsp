@@ -232,19 +232,13 @@ suite("ADT dependency helpers", () => {
 		]);
 	});
 
-	test("Builds a composite dependency source for function modules", () => {
+	test("Builds a function module dependency source that keeps shared includes separate", () => {
 		const groupSource = [
 			"FUNCTION-POOL /STTP/SHF_MD.",
 			"  INCLUDE /STTP/LSHF_MDTOP.                  \" Global Data",
 			"  INCLUDE /STTP/LSHF_MDUXX.                  \" Function Modules",
 			"",
 		].join("\n");
-		const includeSources = new Map<string, string>([
-			[
-				"/STTP/LSHF_MDTOP",
-				"DATA gv_counter TYPE i.\n",
-			],
-		]);
 		const functionModuleSource = [
 			"FUNCTION /STTP/MD_BPNO_STS_SHF.",
 			"  gv_counter = gv_counter + 1.",
@@ -253,21 +247,19 @@ suite("ADT dependency helpers", () => {
 		].join("\n");
 
 		const composite = buildFunctionModuleDependencySource(
-			"/STTP/MD_BPNO_STS_SHF",
 			groupSource,
-			includeSources,
 			functionModuleSource,
 		);
 
 		assert.ok(composite.includes("FUNCTION-POOL /STTP/SHF_MD."));
-		assert.ok(composite.includes("DATA gv_counter TYPE i."));
 		assert.ok(
 			composite.includes(
-				"* INCLUDE /STTP/LSHF_MDUXX. Omitted in dependency cache; function module source is appended below.",
+				"* INCLUDE /STTP/LSHF_MDUXX. Omitted in dependency cache; function module stays in its own unit.",
 			),
 		);
 		assert.ok(composite.includes("FUNCTION /STTP/MD_BPNO_STS_SHF."));
-		assert.ok(!composite.includes('INCLUDE /STTP/LSHF_MDTOP.                  " Global Data'));
+		assert.ok(composite.includes('INCLUDE /STTP/LSHF_MDTOP.                  " Global Data'));
+		assert.ok(!composite.includes("DATA gv_counter TYPE i."));
 	});
 
 	test("Returns no dependency object when ADT search only finds unsupported exact matches", () => {

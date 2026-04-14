@@ -17,6 +17,7 @@ import {
 } from "vscode-languageclient/node";
 import {
 	AdtClient,
+	AdtDependencyFetchResult,
 	AdtRepositoryChild,
 	AdtObjectRef,
 	buildMessageClassObjectRef,
@@ -1067,6 +1068,25 @@ function lastAdtUriSegment(uri: string): string {
 	return slashIndex >= 0 ? trimmed.slice(slashIndex + 1) : trimmed;
 }
 
+async function persistFetchedDependencyArtifact(
+	workspaceFolder: vscode.WorkspaceFolder,
+	adtClient: AdtClient,
+	objectRef: AdtObjectRef,
+	artifact: { body: string; fileExtension: "abap" | "xml" },
+	sourceUris: readonly string[],
+): Promise<void> {
+	const filePath = targetDependencyWorkspaceFilePath(workspaceFolder, objectRef);
+	await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
+	await fs.promises.writeFile(filePath, artifact.body, "utf8");
+	await ensureDependencyCacheUnit(
+		workspaceFolder,
+		objectRef,
+		filePath,
+		manifestDependencySourceFiles(workspaceFolder, sourceUris),
+	);
+	await adtClient.cacheRemoteObject(workspaceFolder, objectRef, artifact.body, artifact.fileExtension);
+}
+
 async function resolveRemoteDependencyCandidate(
 	workspaceFolder: vscode.WorkspaceFolder,
 	adtClient: AdtClient,
@@ -1142,7 +1162,7 @@ async function resolveRemoteDependencyCandidate(
 			}
 
 			const dependencySourceMode = await dependencySourceModeFromUnitSidecars(workspaceFolder, sourceUris);
-			let fetched;
+			let fetched: AdtDependencyFetchResult;
 			if (dependencySourceMode === "adt-first") {
 				try {
 					fetched = await adtClient.fetchDependencyObject(objectRef);
@@ -1163,16 +1183,22 @@ async function resolveRemoteDependencyCandidate(
 					fetched = await adtClient.fetchDependencyObject(objectRef);
 				}
 			}
-			const filePath = targetDependencyWorkspaceFilePath(workspaceFolder, objectRef);
-			await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
-			await fs.promises.writeFile(filePath, fetched.body, "utf8");
-			await ensureDependencyCacheUnit(
+			await persistFetchedDependencyArtifact(
 				workspaceFolder,
+				adtClient,
 				objectRef,
-				filePath,
-				manifestDependencySourceFiles(workspaceFolder, sourceUris),
+				fetched,
+				sourceUris,
 			);
-			await adtClient.cacheRemoteObject(workspaceFolder, objectRef, fetched.body, fetched.fileExtension);
+			for (const sharedDependency of fetched.sharedDependencies ?? []) {
+				await persistFetchedDependencyArtifact(
+					workspaceFolder,
+					adtClient,
+					sharedDependency.objectRef,
+					sharedDependency,
+					sourceUris,
+				);
+			}
 			return objectRef.name;
 		} catch (error) {
 			negativeRemoteDependencyCache.add(cacheKey);
@@ -1692,7 +1718,7 @@ async function findLocalDependencyExport(
 	workspaceFolder: vscode.WorkspaceFolder,
 	objectRef: AdtObjectRef,
 	sourceUris: readonly string[],
-): Promise<{ body: string; fileExtension: "abap" | "xml"; manifestKind: string } | undefined> {
+): Promise<AdtDependencyFetchResult | undefined> {
 	const configuredRoots = vscode.workspace
 		.getConfiguration("abap-ls", workspaceFolder.uri)
 		.get<string[]>("sap.localDependencyRoots", [])

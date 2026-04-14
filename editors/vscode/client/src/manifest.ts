@@ -4,6 +4,7 @@ import * as vscode from "vscode";
 import {
 	inferDdicManifestKind,
 	isDdicDependencyObject,
+	isFunctionModuleObject,
 	isMessageClassDependencyObject,
 	type AdtObjectRef,
 } from "./adt";
@@ -74,6 +75,14 @@ export function inferManifestUnitSpec(objectRef: AdtObjectRef, relativeFilePath:
 		return {
 			name: objectRef.name,
 			kind: "include",
+			rootFile: normalizedFile,
+			packageName: objectRef.packageName,
+		};
+	}
+	if (isFunctionModuleObject(objectRef)) {
+		return {
+			name: objectRef.name,
+			kind: "function-module",
 			rootFile: normalizedFile,
 			packageName: objectRef.packageName,
 		};
