@@ -5820,10 +5820,11 @@ fn document_inputs_for_publish(
 }
 
 fn analysis_text_for_input(input: &DocumentInput) -> Arc<str> {
-    if !input.is_dependency {
-        return Arc::clone(&input.text);
+    if input.is_dependency {
+        return dependency_surface_text(input.text.as_ref());
     }
-    dependency_surface_text(input.text.as_ref())
+    opened_function_module_dependency_analysis_text(input.text.as_ref())
+        .unwrap_or_else(|| Arc::clone(&input.text))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -5840,6 +5841,20 @@ enum DependencyBlock {
     Method,
     Form,
     Function,
+}
+
+const BEGIN_FUNCTION_MODULE_MARKER: &str = "* >>> BEGIN FUNCTION MODULE ";
+const END_FUNCTION_MODULE_MARKER: &str = "* <<< END FUNCTION MODULE ";
+
+fn dependency_block_for_keywords(keywords: &[String]) -> Option<DependencyBlock> {
+    let first = keywords.first().map(String::as_str);
+    let second = keywords.get(1).map(String::as_str);
+    match (first, second) {
+        (Some("form"), _) => Some(DependencyBlock::Form),
+        (Some("function"), Some("pool")) => None,
+        (Some("function"), _) => Some(DependencyBlock::Function),
+        _ => None,
+    }
 }
 
 fn dependency_surface_text(text: &str) -> Arc<str> {
@@ -5940,10 +5955,8 @@ fn dependency_surface_text(text: &str) -> Arc<str> {
 
                 if let Some(block) = dependency_class_block_for_keywords(&keywords) {
                     stack.push(block);
-                } else if first == Some("form") {
-                    stack.push(DependencyBlock::Form);
-                } else if first == Some("function") {
-                    stack.push(DependencyBlock::Function);
+                } else if let Some(block) = dependency_block_for_keywords(&keywords) {
+                    stack.push(block);
                 }
 
                 idx = period_idx + 1;
@@ -5958,9 +5971,11 @@ fn dependency_surface_text(text: &str) -> Arc<str> {
                     stack.push(block);
                 }
             }
-            Some("form") => stack.push(DependencyBlock::Form),
-            Some("function") => stack.push(DependencyBlock::Function),
-            _ => {}
+            _ => {
+                if let Some(block) = dependency_block_for_keywords(&keywords) {
+                    stack.push(block);
+                }
+            }
         }
 
         idx = period_idx + 1;
@@ -5969,6 +5984,44 @@ fn dependency_surface_text(text: &str) -> Arc<str> {
     Arc::from(
         String::from_utf8(projected).expect("dependency surface projection should stay utf-8"),
     )
+}
+
+fn opened_function_module_dependency_analysis_text(text: &str) -> Option<Arc<str>> {
+    if !text.contains(BEGIN_FUNCTION_MODULE_MARKER) || !text.contains(END_FUNCTION_MODULE_MARKER) {
+        return None;
+    }
+
+    let projected_text = dependency_surface_text(text);
+    let mut projected = projected_text.as_bytes().to_vec();
+    restore_function_module_blocks(text.as_bytes(), &mut projected);
+    Some(Arc::from(
+        String::from_utf8(projected).expect("function module dependency projection should stay utf-8"),
+    ))
+}
+
+fn restore_function_module_blocks(original: &[u8], projected: &mut [u8]) {
+    let Ok(text) = std::str::from_utf8(original) else {
+        return;
+    };
+    let mut search_from = 0usize;
+    while let Some(marker_offset) = text[search_from..].find(BEGIN_FUNCTION_MODULE_MARKER) {
+        let marker_start = search_from + marker_offset;
+        let line_start = text[..marker_start]
+            .rfind('\n')
+            .map(|idx| idx + 1)
+            .unwrap_or(0);
+        let after_marker = marker_start + BEGIN_FUNCTION_MODULE_MARKER.len();
+        let Some(end_marker_rel) = text[after_marker..].find(END_FUNCTION_MODULE_MARKER) else {
+            break;
+        };
+        let end_marker_start = after_marker + end_marker_rel;
+        let line_end = text[end_marker_start..]
+            .find('\n')
+            .map(|idx| end_marker_start + idx + 1)
+            .unwrap_or(text.len());
+        projected[line_start..line_end].copy_from_slice(&original[line_start..line_end]);
+        search_from = line_end;
+    }
 }
 
 fn has_matching_input_set(
@@ -6382,6 +6435,7 @@ mod tests {
     use super::{
         DefinitionTarget, DocumentInput, DocumentStore, HoveredComponentKind, ReferenceTarget,
         ddic_xml_to_abap_source, dependency_surface_text,
+        opened_function_module_dependency_analysis_text,
     };
     use abap_symbols::{DiagnosticKind, ReferenceKind, StructureFieldShape};
     use std::sync::Arc;
@@ -6486,6 +6540,47 @@ ENDCLASS.";
 
         assert!(projected.contains("INCLUDE TYPE ty_inner AS inner."));
         assert!(!projected.contains("INCLUDE TYPE ty_other AS other."));
+    }
+
+    #[test]
+    fn dependency_surface_projection_keeps_function_pool_and_function_modules_distinct() {
+        let src = "\
+FUNCTION-POOL zfg.
+INCLUDE lzfgtop.
+
+FUNCTION z_keep.
+  DATA lv_fm TYPE zcl_fm_impl.
+ENDFUNCTION.
+";
+        let projected = dependency_surface_text(src);
+
+        assert!(projected.contains("FUNCTION-POOL zfg."));
+        assert!(projected.contains("FUNCTION z_keep."));
+        assert!(!projected.contains("zcl_fm_impl"));
+    }
+
+    #[test]
+    fn opened_function_module_dependency_projection_restores_function_block_body() {
+        let src = "\
+* >>> BEGIN INCLUDE ltop
+FORM helper.
+  DATA lv_top TYPE i.
+  lv_top = 1.
+ENDFORM.
+* <<< END INCLUDE ltop
+
+* >>> BEGIN FUNCTION MODULE z_keep
+FUNCTION z_keep.
+  DATA lv_body TYPE i.
+  lv_body = 1.
+ENDFUNCTION.
+* <<< END FUNCTION MODULE z_keep
+";
+        let projected = opened_function_module_dependency_analysis_text(src)
+            .expect("projected dependency text");
+
+        assert!(!projected.contains("lv_top = 1."));
+        assert!(projected.contains("lv_body = 1."));
     }
 
     #[test]
@@ -8316,6 +8411,100 @@ START-OF-SELECTION.
             "{:?}",
             hovered.markdown_lines
         );
+    }
+
+    #[test]
+    fn call_function_resolves_from_composite_function_group_dependency_source() {
+        let store = DocumentStore::default();
+        let dep_src = "\
+FUNCTION-POOL btch.
+INCLUDE lbtchtop.
+
+FUNCTION BP_JOB_SELECT
+  IMPORTING
+    jobselect_dialog TYPE c
+  EXCEPTIONS
+    invalid_dialog_type.
+ENDFUNCTION.";
+        let main_src = "\
+START-OF-SELECTION.
+  CALL FUNCTION 'BP_JOB_SELECT'
+    EXCEPTIONS
+      invalid_dialog_type = 1.";
+        store.replace_all(vec![
+            DocumentInput {
+                uri: Arc::from("file:///fm_group_main.abap"),
+                version: 1,
+                text: Arc::from(main_src),
+                is_dependency: false,
+                object_name: None,
+            },
+            DocumentInput {
+                uri: Arc::from("file:///fm_group_dep.abap"),
+                version: 1,
+                text: Arc::from(dep_src),
+                is_dependency: true,
+                object_name: Some(Arc::from("bp_job_select")),
+            },
+        ]);
+        let snapshot = store
+            .documents
+            .read()
+            .get("file:///fm_group_main.abap")
+            .cloned()
+            .expect("main snapshot");
+
+        assert!(
+            snapshot
+                .symbols
+                .diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic.message != "unknown routine 'bp_job_select'"),
+            "{:?}",
+            snapshot.symbols.diagnostics
+        );
+    }
+
+    #[test]
+    fn opened_composite_function_module_dependency_keeps_function_body_analysis() {
+        let store = DocumentStore::default();
+        let dep_src = "\
+* >>> BEGIN INCLUDE ltop
+FORM helper.
+  DATA lv_top TYPE i.
+  lv_top = 1.
+ENDFORM.
+* <<< END INCLUDE ltop
+
+* >>> BEGIN FUNCTION MODULE z_keep
+FUNCTION z_keep.
+  DATA lv_body TYPE i.
+  lv_body = 1.
+ENDFUNCTION.
+* <<< END FUNCTION MODULE z_keep
+";
+
+        let top_use_offset = dep_src
+            .match_indices("lv_top")
+            .nth(1)
+            .map(|(offset, _)| offset + 1)
+            .expect("top include use");
+        let body_use_offset = dep_src
+            .match_indices("lv_body")
+            .nth(1)
+            .map(|(offset, _)| offset + 1)
+            .expect("function body use");
+
+        let snapshot = store.publish_input(DocumentInput {
+            uri: Arc::from("file:///fm_open_dep.abap"),
+            version: 1,
+            text: Arc::from(dep_src),
+            is_dependency: false,
+            object_name: Some(Arc::from("z_keep")),
+        });
+
+        assert!(snapshot.definition_at(top_use_offset).is_none());
+        assert!(snapshot.definition_at(body_use_offset).is_some());
     }
 
     #[test]
