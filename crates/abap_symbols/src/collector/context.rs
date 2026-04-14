@@ -132,6 +132,10 @@ impl<'ctx, 'a> ExprContext<'ctx, 'a> {
         self.collector.emit_assignment_site(site);
     }
 
+    pub(super) fn rhs_is_top_level_sum(&self, node: NodeId) -> bool {
+        self.collector.rhs_is_top_level_sum(node)
+    }
+
     pub(super) fn declare_inline_named_argument_target_infos(
         &mut self,
         scope: ScopeId,
@@ -393,6 +397,14 @@ impl<'ctx, 'a> DeclContext<'ctx, 'a> {
 
     pub(super) fn syntax(&self, node: NodeId) -> SyntaxNodeRef<'_> {
         self.collector.syntax(node)
+    }
+
+    pub(super) fn emit_assignment_site(&mut self, site: AssignmentSiteData) {
+        self.collector.emit_assignment_site(site);
+    }
+
+    pub(super) fn rhs_is_top_level_sum(&self, node: NodeId) -> bool {
+        self.collector.rhs_is_top_level_sum(node)
     }
 
     pub(super) fn walk_children(&mut self, node: NodeId, scope: ScopeId) {

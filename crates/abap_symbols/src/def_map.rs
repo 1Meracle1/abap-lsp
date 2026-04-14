@@ -578,6 +578,7 @@ pub struct AssignmentSiteData {
     pub rhs_range: TextRange,
     pub lhs: TypeFactData,
     pub rhs: TypeFactData,
+    pub rhs_is_top_level_sum: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -8823,6 +8823,84 @@ ENDIF.";
 }
 
 #[test]
+fn infers_inline_data_type_from_builtin_lines_call() {
+    let src = "\
+DATA lt_obj TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+DATA(lv_obj_count) = lines( lt_obj ).
+
+IF lv_obj_count > 0.
+  WRITE lv_obj_count.
+ENDIF.";
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///inline_lines_type.abap", src, &parsed);
+
+    let symbol = unit
+        .symbols
+        .iter()
+        .find(|symbol| {
+            symbol.kind == SymbolKind::Variable && symbol.name.as_ref() == "lv_obj_count"
+        })
+        .expect("inline lv_obj_count symbol");
+    let declared_type = symbol
+        .declared_type
+        .as_ref()
+        .expect("declared type for lv_obj_count");
+    assert_eq!(declared_type.namespace, Namespace::Type);
+    assert!(!declared_type.is_ref);
+    assert_eq!(declared_type.base_name.as_ref(), "i");
+
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            matches!(
+                diag.kind,
+                DiagnosticKind::UnresolvedReference | DiagnosticKind::UnknownField
+            ) && diag.message.contains("lv_obj_count")
+        }),
+        "unexpected diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn infers_inline_data_type_from_integer_sum_expression() {
+    let src = "\
+DATA lt_obj TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+DATA lv_count_com TYPE i.
+DATA(lv_obj_count) = lines( lt_obj ).
+DATA(lv_total) = lv_obj_count + lv_count_com.
+
+IF lv_total > 0.
+  WRITE lv_total.
+ENDIF.";
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///inline_sum_type.abap", src, &parsed);
+
+    let symbol = unit
+        .symbols
+        .iter()
+        .find(|symbol| symbol.kind == SymbolKind::Variable && symbol.name.as_ref() == "lv_total")
+        .expect("inline lv_total symbol");
+    let declared_type = symbol
+        .declared_type
+        .as_ref()
+        .expect("declared type for lv_total");
+    assert_eq!(declared_type.namespace, Namespace::Type);
+    assert!(!declared_type.is_ref);
+    assert_eq!(declared_type.base_name.as_ref(), "i");
+
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            matches!(
+                diag.kind,
+                DiagnosticKind::UnresolvedReference | DiagnosticKind::UnknownField
+            ) && diag.message.contains("lv_total")
+        }),
+        "unexpected diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn resolves_host_expression_in_for_all_entries_clause() {
     let src = "\
 DATA lt_rep_evt TYPE STANDARD TABLE OF string WITH EMPTY KEY.

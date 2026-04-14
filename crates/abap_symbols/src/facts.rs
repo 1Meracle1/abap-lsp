@@ -15,6 +15,7 @@ use crate::scope::{Namespace, ScopeKind};
 struct InferredUnitFacts {
     expression_facts: Vec<ExpressionFactData>,
     value_flow_edges: Vec<ValueFlowEdgeData>,
+    symbol_type_facts: Vec<(SymbolId, TypeFactData)>,
 }
 
 #[derive(Debug, Clone)]
@@ -43,6 +44,13 @@ pub(crate) fn infer_semantic_facts(units: &mut [UnitAnalysis]) {
                 .cloned(),
         );
         unit.value_flow_edges = value_flow_edges;
+        for (symbol_id, type_fact) in facts.symbol_type_facts {
+            let symbol = &mut unit.symbols[symbol_id.as_usize()];
+            if symbol.declared_type.is_none() {
+                symbol.structure = symbol.structure.or(type_fact.structure);
+                symbol.declared_type = type_fact.declared_type;
+            }
+        }
     }
 }
 
@@ -188,11 +196,69 @@ impl<'a> FactBuilder<'a> {
                     &assignment.lhs,
                 ),
             });
+            if let Some((symbol_id, type_fact)) =
+                self.infer_inline_assignment_symbol_type(unit_idx, assignment)
+            {
+                out.symbol_type_facts.push((symbol_id, type_fact));
+            }
         }
 
         dedup_expression_facts(&mut out.expression_facts);
         dedup_value_flow_edges(&mut out.value_flow_edges);
         out
+    }
+
+    fn infer_inline_assignment_symbol_type(
+        &self,
+        unit_idx: usize,
+        assignment: &crate::AssignmentSiteData,
+    ) -> Option<(SymbolId, TypeFactData)> {
+        if !assignment.rhs_is_top_level_sum {
+            return None;
+        }
+        let unit = &self.units[unit_idx];
+        let symbol = unit.symbols.iter().find(|symbol| {
+            symbol.decl_range == assignment.lhs_range
+                && symbol.kind == crate::SymbolKind::Variable
+                && symbol.declared_type.is_none()
+        })?;
+
+        let refs: Vec<_> = unit
+            .references
+            .iter()
+            .filter(|reference| {
+                reference.namespace == Namespace::Value
+                    && reference.range.start >= assignment.rhs_range.start
+                    && reference.range.end <= assignment.rhs_range.end
+            })
+            .collect();
+        if refs.is_empty() {
+            return None;
+        }
+
+        let mut inferred_fact: Option<TypeFactData> = None;
+        for reference in refs {
+            let Some(Resolution::Symbol(handle)) = reference.resolution else {
+                return None;
+            };
+            let fact = self.symbol_type_fact_for_site(unit_idx, assignment.scope, handle);
+            let declared_type = fact.declared_type.as_ref()?;
+            if declared_type.namespace != Namespace::Type
+                || declared_type.is_ref
+                || !declared_type.field_path.is_empty()
+            {
+                return None;
+            }
+            if let Some(existing_fact) = inferred_fact.as_ref() {
+                if existing_fact.declared_type.as_ref()? != declared_type {
+                    return None;
+                }
+            } else {
+                inferred_fact = Some(fact);
+            }
+        }
+
+        inferred_fact.map(|fact| (symbol.id, fact))
     }
 
     fn selector_expression_facts(

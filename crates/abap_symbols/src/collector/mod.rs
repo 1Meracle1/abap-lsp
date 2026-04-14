@@ -16,13 +16,14 @@ use std::sync::Arc;
 
 use abap_ast::arena::NodeId;
 use abap_ast::ast::{
-    AstNode, CallArgList, ConstructorBaseClause, ConstructorForClause, ConstructorLinesOfClause,
-    DeclClause, MethodsParamSectionKind, StructuredIncludeClause, StructuredIncludeKind, TableExpr,
-    TypeClauseKind, TypeRefSimple,
+    AstNode, CallArgList, CallExpr, ConstructorBaseClause, ConstructorForClause,
+    ConstructorLinesOfClause, DeclClause, MethodsParamSectionKind, StructuredIncludeClause,
+    StructuredIncludeKind, TableExpr, TypeClauseKind, TypeRefSimple,
 };
 use abap_ast::{File, SyntaxKind};
 use abap_lexer::{TextRange, Token, TokenKind};
 
+use crate::builtins::builtin_routine_spec;
 use crate::def_map::{
     AssignmentSiteData, CallSiteData, ClassInheritanceData, ClassMemberData, Diagnostic,
     ExpressionFactData, FieldAccess, FieldTypeRefData, FormRoutineData, FunctionModuleData,
@@ -460,6 +461,7 @@ impl<'a> Collector<'a> {
                 };
                 self.inline_decl_assignment_source_metadata(base.id(), scope)
             }
+            SyntaxKind::CallExpr => self.call_expr_inferred_metadata(node, scope),
             SyntaxKind::ExprLiteral => {
                 let Some(token) = self.syntax_token_nodes(node).into_iter().next() else {
                     return (None, None);
@@ -509,7 +511,231 @@ impl<'a> Collector<'a> {
                     }),
                 )
             }
-            _ => (None, None),
+            _ => self.token_expr_inferred_metadata(&self.syntax_token_nodes(node), scope),
+        }
+    }
+
+    fn token_expr_inferred_metadata(
+        &self,
+        tokens: &[SyntaxTokenInfo],
+        scope: ScopeId,
+    ) -> (Option<StructureId>, Option<FieldTypeRefData>) {
+        let tokens: Vec<_> = tokens
+            .iter()
+            .filter(|token| !self.syntax_token_is_comment(token))
+            .cloned()
+            .collect();
+        let Some(first) = tokens.first() else {
+            return (None, None);
+        };
+
+        if tokens.len() == 1 {
+            let text = first.text.as_ref();
+            if text.chars().all(|ch| ch.is_ascii_digit()) {
+                return (
+                    None,
+                    Some(FieldTypeRefData {
+                        namespace: Namespace::Type,
+                        is_ref: false,
+                        base_name: Arc::<str>::from("i"),
+                        field_path: Vec::new(),
+                    }),
+                );
+            }
+            if self.syntax_token_is_ident_like(first)
+                && let Some(symbol_id) =
+                    self.lookup_symbol_in_scope_chain(scope, Namespace::Value, text)
+            {
+                let symbol = self.symbol(symbol_id);
+                return self.normalize_inferred_metadata(
+                    scope,
+                    symbol.structure,
+                    symbol.declared_type.clone(),
+                );
+            }
+        }
+
+        let plus_indices = self.top_level_sum_indices(&tokens);
+        if plus_indices.is_empty() {
+            return (None, None);
+        }
+
+        let mut operand_start = 0usize;
+        let mut declared_type: Option<FieldTypeRefData> = None;
+        for plus_idx in plus_indices
+            .into_iter()
+            .chain(std::iter::once(tokens.len()))
+        {
+            let operand =
+                self.token_expr_inferred_metadata(&tokens[operand_start..plus_idx], scope);
+            let Some(operand_type) = operand.1 else {
+                return (None, None);
+            };
+            if operand_type.namespace != Namespace::Type
+                || operand_type.is_ref
+                || !operand_type.field_path.is_empty()
+            {
+                return (None, None);
+            }
+            if let Some(existing_type) = declared_type.as_ref() {
+                if existing_type != &operand_type {
+                    return (None, None);
+                }
+            } else {
+                declared_type = Some(operand_type);
+            }
+            operand_start = plus_idx + 1;
+        }
+
+        self.normalize_inferred_metadata(scope, None, declared_type)
+    }
+
+    fn rhs_is_top_level_sum(&self, node: NodeId) -> bool {
+        !self
+            .top_level_sum_indices(&self.syntax_token_nodes(node))
+            .is_empty()
+    }
+
+    fn top_level_sum_indices(&self, tokens: &[SyntaxTokenInfo]) -> Vec<usize> {
+        let mut plus_indices = Vec::new();
+        let mut paren_depth = 0i32;
+        let mut bracket_depth = 0i32;
+        let mut brace_depth = 0i32;
+        for (idx, token) in tokens.iter().enumerate() {
+            if self.syntax_token_is_comment(token) {
+                continue;
+            }
+            match token.text.as_ref() {
+                "(" => paren_depth += 1,
+                ")" => paren_depth -= 1,
+                "[" => bracket_depth += 1,
+                "]" => bracket_depth -= 1,
+                "{" => brace_depth += 1,
+                "}" => brace_depth -= 1,
+                "+" if paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 => {
+                    plus_indices.push(idx);
+                }
+                _ => {}
+            }
+        }
+        plus_indices
+    }
+
+    fn call_expr_inferred_metadata(
+        &self,
+        node: NodeId,
+        scope: ScopeId,
+    ) -> (Option<StructureId>, Option<FieldTypeRefData>) {
+        let Some(call) = CallExpr::cast(self.syntax(node)) else {
+            return (None, None);
+        };
+        let Some(callee) = call.callee() else {
+            return (None, None);
+        };
+
+        match callee.kind() {
+            SyntaxKind::ExprIdent => {
+                let Some((name, _)) = self.node_name(callee.id()) else {
+                    return (None, None);
+                };
+                if let Some(spec) = builtin_routine_spec(name.as_ref()) {
+                    return self.normalize_inferred_metadata(
+                        scope,
+                        None,
+                        Some(FieldTypeRefData {
+                            namespace: Namespace::Type,
+                            is_ref: false,
+                            base_name: Arc::from(spec.return_type),
+                            field_path: Vec::new(),
+                        }),
+                    );
+                }
+
+                let Some(owner_symbol) = self.enclosing_class_owner(scope) else {
+                    return (None, None);
+                };
+                let Some(signature) =
+                    self.class_method_signature_target(owner_symbol, None, name.as_ref(), scope)
+                else {
+                    return (None, None);
+                };
+                self.method_return_inferred_metadata(scope, signature)
+            }
+            _ => {
+                let Some(target) = self.named_argument_target_for_callee(callee.id()) else {
+                    return (None, None);
+                };
+                let crate::def_map::NamedArgumentTarget::Method {
+                    base_namespace,
+                    base_name,
+                    method_name,
+                } = target
+                else {
+                    return (None, None);
+                };
+                let Some(class_symbol) =
+                    self.inline_call_target_class_symbol(scope, base_namespace, &base_name)
+                else {
+                    return (None, None);
+                };
+                let Some(signature) = self.class_method_signature_target(
+                    class_symbol,
+                    None,
+                    method_name.as_ref(),
+                    scope,
+                ) else {
+                    return (None, None);
+                };
+                self.method_return_inferred_metadata(scope, signature)
+            }
+        }
+    }
+
+    fn method_return_inferred_metadata(
+        &self,
+        scope: ScopeId,
+        signature: &PendingMethodSignature,
+    ) -> (Option<StructureId>, Option<FieldTypeRefData>) {
+        let declared_type = signature
+            .parameters
+            .iter()
+            .find(|param| {
+                matches!(
+                    param.section,
+                    MethodsParamSectionKind::Returning | MethodsParamSectionKind::Receiving
+                )
+            })
+            .and_then(|param| param.declared_type.clone());
+        self.normalize_inferred_metadata(scope, None, declared_type)
+    }
+
+    fn inline_call_target_class_symbol(
+        &self,
+        scope: ScopeId,
+        base_namespace: Namespace,
+        base_name: &Arc<str>,
+    ) -> Option<SymbolId> {
+        match base_namespace {
+            Namespace::Type => self
+                .lookup_symbol_in_scope_chain(scope, Namespace::Type, base_name.as_ref())
+                .filter(|&symbol_id| self.symbol(symbol_id).kind == crate::SymbolKind::Class),
+            Namespace::Value => {
+                let symbol_id =
+                    self.lookup_symbol_in_scope_chain(scope, Namespace::Value, base_name.as_ref())?;
+                let declared_type = self.symbol(symbol_id).declared_type.as_ref()?;
+                if !declared_type.is_ref || !declared_type.field_path.is_empty() {
+                    return None;
+                }
+                self.lookup_symbol_in_scope_chain(
+                    scope,
+                    declared_type.namespace,
+                    declared_type.base_name.as_ref(),
+                )
+                .filter(|&class_symbol_id| {
+                    self.symbol(class_symbol_id).kind == crate::SymbolKind::Class
+                })
+            }
+            Namespace::Routine => None,
         }
     }
 

@@ -486,6 +486,9 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                 return self.type_fact_from_symbol(symbol_id);
             }
         }
+        if let Some(type_fact) = self.type_fact_from_top_level_sum_tokens(&tokens, scope) {
+            return type_fact;
+        }
         if let Some((next_idx, namespace, base_name, _, field_path, _)) =
             self.ctx.consume_selector_access_from_infos(&tokens, 0)
             && next_idx == tokens.len()
@@ -517,6 +520,69 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
             };
         }
         TypeFactData::default()
+    }
+
+    fn type_fact_from_top_level_sum_tokens(
+        &self,
+        tokens: &[super::SyntaxTokenInfo],
+        scope: ScopeId,
+    ) -> Option<TypeFactData> {
+        let mut plus_indices = Vec::new();
+        let mut paren_depth = 0i32;
+        let mut bracket_depth = 0i32;
+        let mut brace_depth = 0i32;
+
+        for (idx, token) in tokens.iter().enumerate() {
+            match token.text.as_ref() {
+                "(" => paren_depth += 1,
+                ")" => paren_depth -= 1,
+                "[" => bracket_depth += 1,
+                "]" => bracket_depth -= 1,
+                "{" => brace_depth += 1,
+                "}" => brace_depth -= 1,
+                "+" if paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 => {
+                    plus_indices.push(idx);
+                }
+                _ => {}
+            }
+        }
+
+        if plus_indices.is_empty() {
+            return None;
+        }
+
+        let mut operand_start = 0usize;
+        let mut result_fact: Option<TypeFactData> = None;
+        for plus_idx in plus_indices
+            .into_iter()
+            .chain(std::iter::once(tokens.len()))
+        {
+            let operand_tokens = &tokens[operand_start..plus_idx];
+            if operand_tokens.is_empty() {
+                return None;
+            }
+            let operand_fact = self.type_fact_from_tokens(operand_tokens, scope);
+            let declared_type = operand_fact.declared_type.as_ref()?;
+            if declared_type.namespace != Namespace::Type
+                || declared_type.is_ref
+                || !declared_type.field_path.is_empty()
+            {
+                return None;
+            }
+
+            if let Some(existing_fact) = result_fact.as_ref() {
+                let existing_type = existing_fact.declared_type.as_ref()?;
+                if existing_type != declared_type {
+                    return None;
+                }
+            } else {
+                result_fact = Some(operand_fact);
+            }
+
+            operand_start = plus_idx + 1;
+        }
+
+        result_fact
     }
 
     fn type_fact_from_expr_node(&self, node: NodeId, scope: ScopeId) -> TypeFactData {
@@ -2388,6 +2454,7 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
             rhs_range: self.ctx.file().range(rhs),
             lhs: lhs_fact,
             rhs: rhs_fact,
+            rhs_is_top_level_sum: self.ctx.rhs_is_top_level_sum(rhs),
         });
     }
 

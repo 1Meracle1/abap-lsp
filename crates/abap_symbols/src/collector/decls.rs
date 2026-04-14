@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use crate::def_map::{
-    FieldAccess, FieldAccessSegment, FieldTypeRefData, FormRoutineData, IncludeEdge, ReferenceKind,
-    SymbolKind,
+    AssignmentSiteData, FieldAccess, FieldAccessSegment, FieldTypeRefData, FormRoutineData,
+    IncludeEdge, ReferenceKind, SymbolKind, TypeFactData,
 };
 use crate::ids::{ScopeId, StructureId};
 use crate::scope::{Namespace, ScopeKind};
@@ -396,8 +396,56 @@ impl<'ctx, 'a> DeclLowering<'ctx, 'a> {
 
     pub(super) fn walk_inline_decl(&mut self, node: abap_ast::arena::NodeId, scope: ScopeId) {
         let (structure, declared_type) = self.ctx.inline_decl_inferred_type(node, scope);
-        self.declare_inline_variable_decl(node, scope, structure, declared_type);
+        self.declare_inline_variable_decl(node, scope, structure, declared_type.clone());
+        self.emit_inline_decl_assignment_site(node, scope, structure, declared_type);
         self.ctx.walk_children(node, scope);
+    }
+
+    fn emit_inline_decl_assignment_site(
+        &mut self,
+        node: abap_ast::arena::NodeId,
+        scope: ScopeId,
+        structure: Option<StructureId>,
+        declared_type: Option<FieldTypeRefData>,
+    ) {
+        if self.ctx.file().kind(node) != SyntaxKind::DataInlineDecl {
+            return;
+        }
+        let lhs_range = self
+            .ctx
+            .file()
+            .children(node)
+            .find(|&child| self.ctx.file().kind(child) == SyntaxKind::DataDeclName)
+            .map(|child| self.ctx.file().range(child));
+        let rhs_expr = self.ctx.file().children(node).find(|&child| {
+            !matches!(
+                self.ctx.file().kind(child),
+                SyntaxKind::Token | SyntaxKind::DataDeclName
+            )
+        });
+        let (Some(lhs_range), Some(rhs_expr)) = (lhs_range, rhs_expr) else {
+            return;
+        };
+        let (rhs_structure, rhs_declared_type) = self.ctx.inline_decl_inferred_type(node, scope);
+        self.ctx.emit_assignment_site(AssignmentSiteData {
+            scope,
+            range: self.ctx.file().range(node),
+            lhs_range,
+            rhs_range: self.ctx.file().range(rhs_expr),
+            lhs: TypeFactData {
+                structure,
+                declared_type,
+                type_clause_display: None,
+                table_line: None,
+            },
+            rhs: TypeFactData {
+                structure: rhs_structure,
+                declared_type: rhs_declared_type,
+                type_clause_display: None,
+                table_line: None,
+            },
+            rhs_is_top_level_sum: self.ctx.rhs_is_top_level_sum(rhs_expr),
+        });
     }
 
     pub(super) fn declare_inline_variable_decl(
