@@ -612,6 +612,56 @@ ENDLOOP.
     }
 
     #[test]
+    fn semantic_tokens_ignore_imported_loop_where_proxy_include_synthetic_decl_ranges() {
+        let store = DocumentStore::default();
+        let dep_src = "\
+TYPES: BEGIN OF s_dep_inc,
+         field_a TYPE i,
+         field_b TYPE i,
+       END OF s_dep_inc.
+TYPES: BEGIN OF s_dep_root,
+         dep_inc TYPE s_dep_inc,
+       END OF s_dep_root.
+";
+        let main_src = "\
+TYPES: BEGIN OF ty_local_root,
+         dep_root TYPE s_dep_root,
+       END OF ty_local_root.
+TYPES ty_local_tab TYPE STANDARD TABLE OF ty_local_root WITH EMPTY KEY.
+DATA lt_dep TYPE ty_local_tab.
+DATA total TYPE i.
+LOOP AT lt_dep INTO DATA(ls_dep) WHERE field_a = 1.
+  total = total + field_b.
+ENDLOOP.
+";
+        let snapshots = store.replace_all(vec![
+            DocumentInput {
+                uri: Arc::from("file:///dep.abap"),
+                version: 1,
+                text: Arc::from(dep_src),
+                is_dependency: true,
+                object_name: None,
+            },
+            DocumentInput {
+                uri: Arc::from("file:///main.abap"),
+                version: 1,
+                text: Arc::from(main_src),
+                is_dependency: false,
+                object_name: None,
+            },
+        ]);
+        let snapshot = snapshots.get("file:///main.abap").expect("main snapshot");
+        let tokens = build_semantic_tokens(snapshot.as_ref());
+
+        assert_eq!(
+            semantic_token_type_at(&tokens.data, 0, 29),
+            None,
+            "expected no semantic token on top-level keyword area polluted by proxy-include loop WHERE fields: {:?}",
+            tokens.data
+        );
+    }
+
+    #[test]
     fn semantic_tokens_mark_bapiret2_selector_fields_as_property() {
         let store = DocumentStore::default();
         let src = "\

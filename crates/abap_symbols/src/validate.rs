@@ -1,6 +1,8 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
+use abap_lexer::TextRange;
+
 use crate::builtins::builtin_routine_spec;
 use crate::compatibility::{
     call_section_matches_parameter, parameter_is_required, positional_parameter_section,
@@ -12,7 +14,7 @@ use crate::def_map::{
     LoopWhereFieldContext, NamedArgumentTarget, PerformParameterSection, ReferenceKind, Resolution,
     SqlNameRefKind, StructureFieldShape, TypeFactData,
 };
-use crate::ids::{ScopeId, StructureId, SymbolHandle, SymbolId};
+use crate::ids::{ScopeId, StructureId, SymbolHandle, SymbolId, UnitId};
 use crate::project::ProjectAnalysis;
 use crate::resolver::{ScopeIndex, build_scope_index};
 use crate::scope::{Namespace, ScopeKind};
@@ -898,14 +900,11 @@ fn loop_where_scope_symbol_specs(
                             name,
                             kind: crate::SymbolKind::Variable,
                             scope,
-                            decl_range: if fields_unit.unit_id == unit.unit_id {
-                                field
-                                    .decl_range
-                                    .clone()
-                                    .unwrap_or(context.range.start..context.range.start)
-                            } else {
-                                context.range.start..context.range.start
-                            },
+                            decl_range: loop_where_synthetic_decl_range(
+                                unit.unit_id,
+                                &field,
+                                &context.range,
+                            ),
                             structure: match field.shape {
                                 StructureFieldShape::Structured { structure } => Some(structure),
                                 StructureFieldShape::Scalar => None,
@@ -933,6 +932,21 @@ fn loop_where_scope_symbol_specs(
     }
 
     out
+}
+
+fn loop_where_synthetic_decl_range(
+    unit_id: UnitId,
+    field: &crate::StructureFieldInfo,
+    context_range: &TextRange,
+) -> TextRange {
+    if field.decl_unit == unit_id {
+        field
+            .decl_range
+            .clone()
+            .unwrap_or(context_range.start..context_range.start)
+    } else {
+        context_range.start..context_range.start
+    }
 }
 
 fn resolve_class_type_symbol_in_hierarchy(
@@ -3057,4 +3071,53 @@ fn detect_include_cycles(
 
     visiting.remove(&unit_idx);
     visited.insert(unit_idx);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::loop_where_synthetic_decl_range;
+    use crate::def_map::{StructureFieldInfo, StructureFieldShape};
+    use crate::ids::{StructureId, UnitId};
+
+    fn field_info(
+        decl_unit: UnitId,
+        decl_range: Option<std::ops::Range<usize>>,
+    ) -> StructureFieldInfo {
+        StructureFieldInfo {
+            owner: StructureId(0),
+            owner_unit: decl_unit,
+            name: "field_a".into(),
+            decl_range,
+            decl_unit,
+            shape: StructureFieldShape::Scalar,
+            type_ref: None,
+            value_clause_display: None,
+        }
+    }
+
+    #[test]
+    fn loop_where_synthetic_decl_range_keeps_local_field_decl_span() {
+        let context_range = 120..128;
+        assert_eq!(
+            loop_where_synthetic_decl_range(
+                UnitId(7),
+                &field_info(UnitId(7), Some(36..44)),
+                &context_range
+            ),
+            36..44
+        );
+    }
+
+    #[test]
+    fn loop_where_synthetic_decl_range_zeros_foreign_field_decl_span() {
+        let context_range = 120..128;
+        assert_eq!(
+            loop_where_synthetic_decl_range(
+                UnitId(7),
+                &field_info(UnitId(3), Some(36..44)),
+                &context_range
+            ),
+            120..120
+        );
+    }
 }
