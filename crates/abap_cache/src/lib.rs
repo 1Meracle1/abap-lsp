@@ -36,16 +36,16 @@ pub use effective_source::{
     EffectiveSourceUnit, build_effective_source, build_effective_source_with_limits,
 };
 pub use workspace::{
-    DEFAULT_REMOTE_REQUEST_PARALLELISM, DEFAULT_REMOTE_REQUESTS_PER_SECOND,
-    DEPENDENCY_MODE_LOCAL_FIRST, DEPENDENCY_MODE_REMOTE_ON_DEMAND,
-    EDITOR_FIRST_DEPENDENCY_MEMBER_THRESHOLD, EDITOR_FIRST_MANIFEST_BYTES_THRESHOLD,
-    EDITOR_FIRST_UNIT_COUNT_THRESHOLD, ManifestPerformance, ManifestResolution, ManifestUnit,
-    ManifestUnitDependencyOf, ManifestUnitMember, OpenDocumentOverlay, UNKNOWN_SYMBOL_MODE_LOG,
-    UNKNOWN_SYMBOL_MODE_REMOTE, WORKSPACE_PERFORMANCE_MODE_AUTO,
-    WORKSPACE_PERFORMANCE_MODE_EDITOR_FIRST, WORKSPACE_PERFORMANCE_MODE_FULL_WORKSPACE,
-    WorkspaceDocument, WorkspaceLoadResult, WorkspaceManifest, WorkspacePerformanceMode,
-    ddic_xml_to_abap_source, file_uri_to_path, is_remote_lookup_candidate, is_remote_lookup_name,
-    load_manifest_from_workspace, load_manifest_from_workspace_result, load_workspace_documents,
+    DEFAULT_REMOTE_REQUESTS_PER_SECOND, DEPENDENCY_MODE_LOCAL_FIRST,
+    DEPENDENCY_MODE_REMOTE_ON_DEMAND, EDITOR_FIRST_DEPENDENCY_MEMBER_THRESHOLD,
+    EDITOR_FIRST_MANIFEST_BYTES_THRESHOLD, EDITOR_FIRST_UNIT_COUNT_THRESHOLD, ManifestPerformance,
+    ManifestResolution, ManifestUnit, ManifestUnitDependencyOf, ManifestUnitMember,
+    OpenDocumentOverlay, UNKNOWN_SYMBOL_MODE_LOG, UNKNOWN_SYMBOL_MODE_REMOTE,
+    WORKSPACE_PERFORMANCE_MODE_AUTO, WORKSPACE_PERFORMANCE_MODE_EDITOR_FIRST,
+    WORKSPACE_PERFORMANCE_MODE_FULL_WORKSPACE, WorkspaceDocument, WorkspaceLoadResult,
+    WorkspaceManifest, WorkspacePerformanceMode, ddic_xml_to_abap_source, file_uri_to_path,
+    is_remote_lookup_candidate, is_remote_lookup_name, load_manifest_from_workspace,
+    load_manifest_from_workspace_result, load_workspace_documents,
     load_workspace_documents_with_progress, manifest_cache_dir, manifest_declares_uri,
     manifest_document_metadata, manifest_supports_remote_resolution, normalize_dependency_mode,
     normalize_unknown_symbol_mode, normalize_workspace_performance_mode, path_to_file_uri,
@@ -5994,9 +5994,9 @@ fn opened_function_module_dependency_analysis_text(text: &str) -> Option<Arc<str
     let projected_text = dependency_surface_text(text);
     let mut projected = projected_text.as_bytes().to_vec();
     restore_function_module_blocks(text.as_bytes(), &mut projected);
-    Some(Arc::from(
-        String::from_utf8(projected).expect("function module dependency projection should stay utf-8"),
-    ))
+    Some(Arc::from(String::from_utf8(projected).expect(
+        "function module dependency projection should stay utf-8",
+    )))
 }
 
 fn restore_function_module_blocks(original: &[u8], projected: &mut [u8]) {

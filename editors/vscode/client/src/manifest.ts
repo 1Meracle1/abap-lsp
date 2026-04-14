@@ -247,9 +247,7 @@ dependency_mode = "${dependencyMode}"
 cache_dir = ".abapls/cache"
 # "remote" performs ADT fetches when remote dependency resolution is enabled; "log" writes unknown symbol candidates to ${unknownSymbolLogPath}
 unknown_symbol_mode = "${unknownSymbolMode}"
-# Maximum number of remote dependency fetches in flight at once when dependency_mode = "remote-on-demand".
-remote_request_parallelism = ${defaultRemoteRequestParallelism}
-# Total ADT requests per second across all remote dependency fetches.
+# Total ADT requests per second across all remote dependency fetches. Internal concurrency is derived from this rate.
 remote_requests_per_second = ${defaultRemoteRequestsPerSecond}`;
 }
 

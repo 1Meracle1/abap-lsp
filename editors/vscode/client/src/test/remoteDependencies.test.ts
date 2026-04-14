@@ -34,8 +34,8 @@ suite("Remote dependency helpers", () => {
 
 	test("Clamps fetch policy values", () => {
 		assert.deepStrictEqual(resolveRemoteDependencyFetchPolicy(undefined), {
-			remoteRequestParallelism: 4,
-			remoteRequestsPerSecond: 8,
+			remoteRequestParallelism: 8,
+			remoteRequestsPerSecond: 24,
 		});
 		assert.deepStrictEqual(
 			resolveRemoteDependencyFetchPolicy({
@@ -45,6 +45,18 @@ suite("Remote dependency helpers", () => {
 			{
 				remoteRequestParallelism: 1,
 				remoteRequestsPerSecond: 1,
+			},
+		);
+	});
+
+	test("Derives fetch parallelism from request rate when omitted", () => {
+		assert.deepStrictEqual(
+			resolveRemoteDependencyFetchPolicy({
+				remoteRequestsPerSecond: 6,
+			}),
+			{
+				remoteRequestParallelism: 2,
+				remoteRequestsPerSecond: 6,
 			},
 		);
 	});

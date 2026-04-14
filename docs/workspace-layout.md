@@ -23,7 +23,6 @@ connection = "default"
 dependency_mode = "remote-on-demand"
 cache_dir = ".abapls/cache"
 unknown_symbol_mode = "remote"
-remote_request_parallelism = 8
 remote_requests_per_second = 24
 ```
 

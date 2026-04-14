@@ -9,10 +9,10 @@ use std::sync::Arc;
 
 use abap_cache::{
     DocumentInput, DocumentStore, UNKNOWN_SYMBOL_MODE_REMOTE, WorkspaceManifest, file_uri_to_path,
-    is_remote_lookup_candidate, load_manifest_from_workspace_result, manifest_declares_uri,
-    load_workspace_documents_with_progress, manifest_cache_dir, manifest_document_metadata,
-    manifest_supports_remote_resolution, path_to_file_uri, resolve_workspace_performance_mode,
-    uri_starts_with_workspace,
+    is_remote_lookup_candidate, load_manifest_from_workspace_result,
+    load_workspace_documents_with_progress, manifest_cache_dir, manifest_declares_uri,
+    manifest_document_metadata, manifest_supports_remote_resolution, path_to_file_uri,
+    resolve_workspace_performance_mode, uri_starts_with_workspace,
 };
 use abap_symbols::{DiagnosticKind, ReferenceKind, SqlResolution, UnitId};
 use lsp_types::{
@@ -1033,11 +1033,14 @@ fn manifest_cached_remote_dependency_paths(
     let mut paths = Vec::new();
 
     for unit in &manifest.units {
-        let unit_name_matches = !unit.name.trim().is_empty()
-            && unit.name.trim().eq_ignore_ascii_case(&normalized_name);
+        let unit_name_matches =
+            !unit.name.trim().is_empty() && unit.name.trim().eq_ignore_ascii_case(&normalized_name);
         let member_matches = unit.members.iter().any(|member| {
             !member.object_name.trim().is_empty()
-                && member.object_name.trim().eq_ignore_ascii_case(&normalized_name)
+                && member
+                    .object_name
+                    .trim()
+                    .eq_ignore_ascii_case(&normalized_name)
         });
         if !unit_name_matches && !member_matches {
             continue;
@@ -1185,7 +1188,7 @@ pub fn build_remote_dependency_request(
         remote_request_parallelism: workspace
             .manifest
             .as_ref()
-            .map(|manifest| manifest.resolution.remote_request_parallelism),
+            .and_then(|manifest| manifest.resolution.remote_request_parallelism()),
         remote_requests_per_second: workspace
             .manifest
             .as_ref()
@@ -1234,7 +1237,7 @@ pub fn build_remote_dependency_batch_for_workspace_filtered(
     let remote_request_parallelism = workspace
         .manifest
         .as_ref()
-        .map(|manifest| manifest.resolution.remote_request_parallelism);
+        .and_then(|manifest| manifest.resolution.remote_request_parallelism());
     let remote_requests_per_second = workspace
         .manifest
         .as_ref()
@@ -1251,9 +1254,11 @@ pub fn build_remote_dependency_batch_for_workspace_filtered(
         let mut added_for_uri = false;
         let mut uri_candidates = Vec::new();
         let mut uri_seen = HashSet::new();
-        for candidate in
-            collect_remote_dependency_candidates_for_request(workspace, snapshot.as_ref(), uri.as_ref())
-        {
+        for candidate in collect_remote_dependency_candidates_for_request(
+            workspace,
+            snapshot.as_ref(),
+            uri.as_ref(),
+        ) {
             if has_cached_remote_dependency_candidate(workspace, &candidate) {
                 continue;
             }
@@ -3473,6 +3478,48 @@ unknown_symbol_mode = "log"
     }
 
     #[test]
+    fn remote_dependency_request_preserves_legacy_parallelism_override() {
+        let workspace_path = temp_workspace_path("manifest_legacy_parallelism");
+        fs::create_dir_all(&workspace_path).expect("workspace dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[resolution]
+dependency_mode = "remote-on-demand"
+unknown_symbol_mode = "remote"
+remote_request_parallelism = 6
+remote_requests_per_second = 12
+"#,
+        )
+        .expect("manifest");
+        let workspace_uri = path_to_file_uri(&workspace_path);
+
+        let mut state = ServerState::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        publish_open_document_mut(
+            &mut state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str(&format!("{workspace_uri}/main.abap")).expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: "DATA lo_demo TYPE REF TO zcl_remote_demo.".to_string(),
+                },
+            },
+        );
+
+        let request =
+            build_remote_dependency_request(&mut state, &format!("{workspace_uri}/main.abap"))
+                .expect("remote request");
+        assert_eq!(request.remote_request_parallelism, Some(6));
+        assert_eq!(request.remote_requests_per_second, Some(12));
+
+        let _ = fs::remove_dir_all(&workspace_path);
+    }
+
+    #[test]
     fn workspace_manifest_refresh_enables_remote_dependency_requests() {
         let workspace_path = temp_workspace_path("manifest_refresh");
         fs::create_dir_all(&workspace_path).expect("workspace dir");
@@ -4072,7 +4119,11 @@ root_file = "src/ZMAIN.abap"
             "CLASS zcl_remote_demo DEFINITION.\n",
         )
         .expect("dependency file");
-        fs::write(workspace_path.join("src/ZMAIN.abap"), "zcl_remote_demo = 1.").expect("source");
+        fs::write(
+            workspace_path.join("src/ZMAIN.abap"),
+            "zcl_remote_demo = 1.",
+        )
+        .expect("source");
         fs::write(
             workspace_path.join(".abapls/cache/dependency-manifests/src%2FZMAIN.abap.toml"),
             r#"
@@ -4773,8 +4824,9 @@ unknown_symbol_mode = "remote"
                     uri: Uri::from_str(&source_uri).expect("uri"),
                     language_id: "abap".to_string(),
                     version: 1,
-                    text: "REPORT zrep.\nINCLUDE zrep_top.\nSTART-OF-SELECTION.\n  lo_app->run( ).\n"
-                        .to_string(),
+                    text:
+                        "REPORT zrep.\nINCLUDE zrep_top.\nSTART-OF-SELECTION.\n  lo_app->run( ).\n"
+                            .to_string(),
                 },
             },
         );
@@ -4941,12 +4993,16 @@ unknown_symbol_mode = "remote"
                 },
             },
         );
-        let request = build_remote_dependency_request(&mut state, &format!("{workspace_uri}/main.abap"))
-            .expect("remote request");
-        assert!(request
-            .candidates
-            .iter()
-            .any(|candidate| candidate.kind == "type" && candidate.name == "zattp_s_eu_notif_32_json"));
+        let request =
+            build_remote_dependency_request(&mut state, &format!("{workspace_uri}/main.abap"))
+                .expect("remote request");
+        assert!(
+            request
+                .candidates
+                .iter()
+                .any(|candidate| candidate.kind == "type"
+                    && candidate.name == "zattp_s_eu_notif_32_json")
+        );
 
         let _ = fs::remove_dir_all(&workspace_path);
     }

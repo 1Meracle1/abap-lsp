@@ -68,15 +68,16 @@ export function mergeRemoteDependencyCandidates(
 export function resolveRemoteDependencyFetchPolicy(
 	policy: RemoteDependencyFetchPolicy | undefined,
 ): ResolvedRemoteDependencyFetchPolicy {
+	const remoteRequestsPerSecond = clampPositiveInteger(
+		policy?.remoteRequestsPerSecond,
+		defaultRemoteRequestsPerSecond,
+	);
 	return {
 		remoteRequestParallelism: clampPositiveInteger(
 			policy?.remoteRequestParallelism,
-			defaultRemoteRequestParallelism,
+			deriveRemoteRequestParallelism(remoteRequestsPerSecond),
 		),
-		remoteRequestsPerSecond: clampPositiveInteger(
-			policy?.remoteRequestsPerSecond,
-			defaultRemoteRequestsPerSecond,
-		),
+		remoteRequestsPerSecond,
 	};
 }
 
@@ -289,6 +290,20 @@ function clampPositiveInteger(value: number | undefined, fallback: number): numb
 	}
 
 	return Math.max(Math.floor(value ?? fallback), 1);
+}
+
+function deriveRemoteRequestParallelism(remoteRequestsPerSecond: number): number {
+	const requestsPerWorker = Math.max(
+		1,
+		Math.ceil(defaultRemoteRequestsPerSecond / defaultRemoteRequestParallelism),
+	);
+	return Math.max(
+		1,
+		Math.min(
+			defaultRemoteRequestParallelism,
+			Math.ceil(remoteRequestsPerSecond / requestsPerWorker),
+		),
+	);
 }
 
 function delay(ms: number): Promise<void> {
