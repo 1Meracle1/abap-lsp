@@ -386,6 +386,24 @@ impl AnalysisSnapshot {
                     in_type_position: access.in_type_position,
                 });
             }
+            if segment_index == 0
+                && resolve_interface_selector_method_symbol(self, access, unit, symbol_id).is_some()
+            {
+                return Some(HoveredComponentInfo {
+                    base_name: Arc::clone(&access.base_name),
+                    base_namespace: access.base_namespace,
+                    component_path: vec![Arc::clone(&access.field_path[0].name)],
+                    field_name: Arc::clone(&access.field_path[0].name),
+                    field_owner_structure_name: None,
+                    range: access.field_path[0].range.clone(),
+                    declared_type: None,
+                    value_clause_display: None,
+                    declaration: Some(format!("INTERFACE {}", access.field_path[0].name)),
+                    kind: HoveredComponentKind::Interface,
+                    is_static_method: false,
+                    in_type_position: access.in_type_position,
+                });
+            }
             if let Some((_, member)) =
                 resolve_class_selector_member(self, access, segment_index, unit, symbol_id)
             {
@@ -406,6 +424,30 @@ impl AnalysisSnapshot {
                     declaration: Some(format_class_member_signature(unit, member)),
                     kind: hovered_component_kind_for_class_member(member),
                     is_static_method: member.is_static,
+                    in_type_position: access.in_type_position,
+                });
+            }
+            if segment_index == 1
+                && let Some((_, method_symbol)) =
+                    resolve_interface_selector_method_symbol(self, access, unit, symbol_id)
+            {
+                return Some(HoveredComponentInfo {
+                    base_name: Arc::clone(&access.base_name),
+                    base_namespace: access.base_namespace,
+                    component_path: access
+                        .field_path
+                        .iter()
+                        .take(segment_index + 1)
+                        .map(|segment| Arc::clone(&segment.name))
+                        .collect(),
+                    field_name: Arc::clone(&access.field_path[1].name),
+                    field_owner_structure_name: None,
+                    range: access.field_path[segment_index].range.clone(),
+                    declared_type: None,
+                    value_clause_display: None,
+                    declaration: Some(format!("METHOD {}", method_symbol.name)),
+                    kind: HoveredComponentKind::Method,
+                    is_static_method: false,
                     in_type_position: access.in_type_position,
                 });
             }
@@ -744,10 +786,34 @@ impl AnalysisSnapshot {
                     interface_unit.symbol(interface_symbol),
                 ));
             }
+            if segment_index == 0
+                && let Some((method_unit, method_symbol)) =
+                    resolve_interface_selector_method_symbol(self, access, unit, symbol_id)
+            {
+                return Some(definition_target_for_range(
+                    method_unit,
+                    qualified_method_symbol_qualifier_range(
+                        method_symbol,
+                        access.field_path[0].name.as_ref(),
+                    ),
+                ));
+            }
             if let Some((member_unit, member)) =
                 resolve_class_selector_member(self, access, segment_index, unit, symbol_id)
             {
                 return Some(definition_target_for_class_member(member_unit, member));
+            }
+            if segment_index == 1
+                && let Some((method_unit, method_symbol)) =
+                    resolve_interface_selector_method_symbol(self, access, unit, symbol_id)
+            {
+                return Some(definition_target_for_range(
+                    method_unit,
+                    qualified_method_symbol_member_range(
+                        method_symbol,
+                        access.field_path[1].name.as_ref(),
+                    ),
+                ));
             }
             let Some((_field_unit, field)) = resolve_field_access_component_with_scope_index(
                 self,
@@ -2283,6 +2349,20 @@ fn definition_target_for_range(unit: &UnitAnalysis, range: Range<usize>) -> Defi
         uri: Arc::clone(&unit.uri),
         range,
     }
+}
+
+fn qualified_method_symbol_qualifier_range(
+    method_symbol: &SymbolData,
+    interface_name: &str,
+) -> Range<usize> {
+    method_symbol.decl_range.start..(method_symbol.decl_range.start + interface_name.len())
+}
+
+fn qualified_method_symbol_member_range(
+    method_symbol: &SymbolData,
+    member_name: &str,
+) -> Range<usize> {
+    (method_symbol.decl_range.end - member_name.len())..method_symbol.decl_range.end
 }
 
 fn synthetic_method_scope_definition_target(
@@ -4419,6 +4499,49 @@ fn resolve_class_selector_member<'a>(
     )
 }
 
+fn resolve_interface_selector_method_symbol<'a>(
+    snapshot: &'a AnalysisSnapshot,
+    access: &abap_symbols::FieldAccess,
+    unit: &'a UnitAnalysis,
+    symbol_id: SymbolId,
+) -> Option<(&'a UnitAnalysis, &'a SymbolData)> {
+    resolve_interface_selector_method_symbol_with_scope_index(
+        snapshot,
+        snapshot.scope_index(),
+        access,
+        unit,
+        symbol_id,
+    )
+}
+
+fn resolve_interface_selector_method_symbol_with_scope_index<'a>(
+    snapshot: &'a AnalysisSnapshot,
+    scope_index: &ScopeIndex,
+    access: &abap_symbols::FieldAccess,
+    unit: &'a UnitAnalysis,
+    symbol_id: SymbolId,
+) -> Option<(&'a UnitAnalysis, &'a SymbolData)> {
+    let (class_unit, class_symbol_id, requires_static) =
+        resolve_class_selector_base_with_scope_index(
+            snapshot,
+            scope_index,
+            access,
+            unit,
+            symbol_id,
+        )?;
+    if requires_static || access.field_path.len() < 2 {
+        return None;
+    }
+    let (method_unit, method_symbol_id) = resolve_fallback_qualified_method_symbol_in_hierarchy(
+        snapshot,
+        class_unit,
+        class_symbol_id,
+        &access.field_path[0].name,
+        access.field_path[1].name.as_ref(),
+    )?;
+    Some((method_unit, method_unit.symbol(method_symbol_id)))
+}
+
 fn resolve_class_selector_member_with_scope_index<'a>(
     snapshot: &'a AnalysisSnapshot,
     scope_index: &ScopeIndex,
@@ -4506,26 +4629,42 @@ fn resolve_interface_selector_member_with_scope_index<'a>(
         return None;
     }
     let interface_name = &access.field_path[0].name;
-    let interface_handle = resolve_exposed_interface_handle_with_scope_index(
+    let member_path: Vec<_> = access.field_path[1..=segment_index]
+        .iter()
+        .map(|segment| segment.name.as_ref())
+        .collect();
+    let (member_unit, member) = resolve_exposed_interface_handle_with_scope_index(
         snapshot,
         scope_index,
         class_unit,
         class_symbol_id,
         access.scope,
         interface_name,
-    )?;
-    let member_path: Vec<_> = access.field_path[1..=segment_index]
-        .iter()
-        .map(|segment| segment.name.as_ref())
-        .collect();
-    let (member_unit, member) = resolve_interface_member_path(
-        snapshot,
-        scope_index,
-        interface_handle.0,
-        interface_handle.1,
-        access.scope,
-        &member_path,
-    )?;
+    )
+    .and_then(|interface_handle| {
+        resolve_interface_member_path(
+            snapshot,
+            scope_index,
+            interface_handle.0,
+            interface_handle.1,
+            access.scope,
+            &member_path,
+        )
+    })
+    .or_else(|| {
+        if segment_index != 1 {
+            return None;
+        }
+        resolve_interface_member_via_qualified_class_member_with_scope_index(
+            snapshot,
+            scope_index,
+            class_unit,
+            class_symbol_id,
+            access.scope,
+            interface_name,
+            access.field_path[1].name.as_ref(),
+        )
+    })?;
     class_member_visible_to(
         snapshot,
         snapshot.symbols.as_ref(),
@@ -4562,6 +4701,194 @@ fn resolve_interface_selector_qualifier_with_scope_index<'a>(
         access.scope,
         &access.field_path[0].name,
     )
+    .or_else(|| {
+        resolve_named_interface_from_qualified_class_member_with_scope_index(
+            snapshot,
+            scope_index,
+            class_unit,
+            class_symbol_id,
+            access.scope,
+            &access.field_path[0].name,
+            access.field_path[1].name.as_ref(),
+        )
+    })
+}
+
+fn resolve_fallback_qualified_class_member_in_hierarchy<'a>(
+    snapshot: &'a AnalysisSnapshot,
+    class_unit: &'a UnitAnalysis,
+    class_symbol_id: SymbolId,
+    interface_name: &Arc<str>,
+    member_name: &str,
+) -> Option<(&'a UnitAnalysis, &'a ClassMemberData)> {
+    let qualified_name = format!(
+        "{}~{}",
+        interface_name.as_ref().to_ascii_lowercase(),
+        member_name.to_ascii_lowercase()
+    );
+    resolve_class_member_in_hierarchy(snapshot, class_unit, class_symbol_id, &qualified_name)
+}
+
+fn resolve_fallback_qualified_method_symbol_in_hierarchy<'a>(
+    snapshot: &'a AnalysisSnapshot,
+    class_unit: &'a UnitAnalysis,
+    class_symbol_id: SymbolId,
+    interface_name: &Arc<str>,
+    member_name: &str,
+) -> Option<(&'a UnitAnalysis, SymbolId)> {
+    let qualified_name = format!(
+        "{}~{}",
+        interface_name.as_ref().to_ascii_lowercase(),
+        member_name.to_ascii_lowercase()
+    );
+    let mut current = (class_unit, class_symbol_id);
+    let mut visited = HashSet::new();
+    loop {
+        if !visited.insert((current.0.unit_id, current.1)) {
+            return None;
+        }
+        if let Some(symbol) = current.0.symbols.iter().find(|symbol| {
+            symbol.kind == SymbolKind::Method
+                && symbol.name.as_ref() == qualified_name
+                && enclosing_class_owner(current.0, symbol.scope) == Some(current.1)
+        }) {
+            return Some((current.0, symbol.id));
+        }
+        current = direct_superclass_from_class(snapshot, current.0, current.1)?;
+    }
+}
+
+fn resolve_fallback_qualified_redefinition_member_in_hierarchy<'a>(
+    snapshot: &'a AnalysisSnapshot,
+    class_unit: &'a UnitAnalysis,
+    class_symbol_id: SymbolId,
+    interface_name: &Arc<str>,
+    member_name: &str,
+) -> Option<(&'a UnitAnalysis, &'a ClassMemberData)> {
+    let pattern_spaced = format!(
+        "{} ~ {}",
+        interface_name.as_ref().to_ascii_lowercase(),
+        member_name.to_ascii_lowercase()
+    );
+    let pattern_compact = pattern_spaced.replace(" ~ ", "~");
+    let mut current = (class_unit, class_symbol_id);
+    let mut visited = HashSet::new();
+    loop {
+        if !visited.insert((current.0.unit_id, current.1)) {
+            return None;
+        }
+        if let Some(member) = current.0.class_members.iter().find(|member| {
+            member.class_symbol == current.1
+                && member.kind == ClassMemberKind::Method
+                && member.name == *interface_name
+                && {
+                    let signature = member.signature.to_ascii_lowercase();
+                    signature.contains(&pattern_spaced) || signature.contains(&pattern_compact)
+                }
+        }) {
+            return Some((current.0, member));
+        }
+        current = direct_superclass_from_class(snapshot, current.0, current.1)?;
+    }
+}
+
+fn class_hierarchy_supports_named_interface_member(
+    snapshot: &AnalysisSnapshot,
+    class_unit: &UnitAnalysis,
+    class_symbol_id: SymbolId,
+    interface_name: &Arc<str>,
+    member_name: &str,
+) -> bool {
+    resolve_fallback_qualified_class_member_in_hierarchy(
+        snapshot,
+        class_unit,
+        class_symbol_id,
+        interface_name,
+        member_name,
+    )
+    .is_some()
+        || resolve_fallback_qualified_method_symbol_in_hierarchy(
+            snapshot,
+            class_unit,
+            class_symbol_id,
+            interface_name,
+            member_name,
+        )
+        .is_some()
+        || resolve_fallback_qualified_redefinition_member_in_hierarchy(
+            snapshot,
+            class_unit,
+            class_symbol_id,
+            interface_name,
+            member_name,
+        )
+        .is_some()
+}
+
+fn resolve_named_interface_from_qualified_class_member_with_scope_index<'a>(
+    snapshot: &'a AnalysisSnapshot,
+    scope_index: &ScopeIndex,
+    class_unit: &'a UnitAnalysis,
+    class_symbol_id: SymbolId,
+    scope: ScopeId,
+    interface_name: &Arc<str>,
+    member_name: &str,
+) -> Option<(&'a UnitAnalysis, SymbolId)> {
+    if !class_hierarchy_supports_named_interface_member(
+        snapshot,
+        class_unit,
+        class_symbol_id,
+        interface_name,
+        member_name,
+    ) {
+        return None;
+    }
+    let (interface_unit, interface_symbol) = resolve_symbol_from_context_with_scope_index(
+        snapshot,
+        scope_index,
+        scope,
+        Namespace::Type,
+        interface_name,
+        false,
+    )?;
+    (interface_unit.symbol(interface_symbol).kind == SymbolKind::Interface)
+        .then_some((interface_unit, interface_symbol))
+}
+
+fn resolve_interface_member_via_qualified_class_member_with_scope_index<'a>(
+    snapshot: &'a AnalysisSnapshot,
+    scope_index: &ScopeIndex,
+    class_unit: &'a UnitAnalysis,
+    class_symbol_id: SymbolId,
+    scope: ScopeId,
+    interface_name: &Arc<str>,
+    member_name: &str,
+) -> Option<(&'a UnitAnalysis, &'a ClassMemberData)> {
+    let class_member = resolve_fallback_qualified_class_member_in_hierarchy(
+        snapshot,
+        class_unit,
+        class_symbol_id,
+        interface_name,
+        member_name,
+    )?;
+    if let Some((interface_unit, interface_symbol)) =
+        resolve_named_interface_from_qualified_class_member_with_scope_index(
+            snapshot,
+            scope_index,
+            class_unit,
+            class_symbol_id,
+            scope,
+            interface_name,
+            member_name,
+        )
+        && let Some(interface_member) = interface_unit
+            .semantic()
+            .decls()
+            .class_member(interface_symbol, member_name)
+    {
+        return Some((interface_unit, interface_member));
+    }
+    Some(class_member)
 }
 
 fn resolve_exposed_interface_handle_with_scope_index<'a>(
@@ -4745,6 +5072,18 @@ fn classify_field_access_segment_with_scope_index(
     {
         return Some(HoveredComponentKind::Interface);
     }
+    if segment_index == 0
+        && resolve_interface_selector_method_symbol_with_scope_index(
+            snapshot,
+            scope_index,
+            access,
+            unit,
+            symbol_id,
+        )
+        .is_some()
+    {
+        return Some(HoveredComponentKind::Interface);
+    }
     if let Some((_, member)) = resolve_class_selector_member_with_scope_index(
         snapshot,
         scope_index,
@@ -4754,6 +5093,18 @@ fn classify_field_access_segment_with_scope_index(
         symbol_id,
     ) {
         return Some(hovered_component_kind_for_class_member(member));
+    }
+    if segment_index == 1
+        && resolve_interface_selector_method_symbol_with_scope_index(
+            snapshot,
+            scope_index,
+            access,
+            unit,
+            symbol_id,
+        )
+        .is_some()
+    {
+        return Some(HoveredComponentKind::Method);
     }
     if let Some((_, kind, _)) =
         resolve_well_known_external_field_access_segment(unit, access, segment_index, symbol_id)
@@ -8258,6 +8609,60 @@ lo_obj->i1~meth( ).";
         assert_eq!(
             target.range.start,
             src.find("meth").expect("interface method declaration")
+        );
+    }
+
+    #[test]
+    fn definition_and_hover_fallback_to_qualified_method_symbol_when_interface_is_unresolved() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS c1 DEFINITION.
+  PUBLIC SECTION.
+    METHODS i1~meth.
+ENDCLASS.
+
+CLASS c1 IMPLEMENTATION.
+  METHOD i1~meth.
+  ENDMETHOD.
+ENDCLASS.
+
+DATA lo_obj TYPE REF TO c1.
+lo_obj->i1~meth( ).";
+        let snapshot = store.publish("file:///demo.abap", 1, src);
+
+        let qualifier_use = src.rfind("i1~meth").expect("qualified call");
+        let qualifier_hover = snapshot
+            .hovered_component_at(qualifier_use + 1)
+            .expect("qualifier hover");
+        assert!(matches!(
+            qualifier_hover.kind,
+            HoveredComponentKind::Interface
+        ));
+        assert_eq!(qualifier_hover.declaration.as_deref(), Some("INTERFACE i1"));
+
+        let qualifier_target = snapshot
+            .definition_at(qualifier_use + 1)
+            .expect("qualifier definition");
+        assert_target_slice(&qualifier_target, "file:///demo.abap", src, "i1");
+        assert_eq!(
+            qualifier_target.range.start,
+            src.find("METHOD i1~meth").expect("implementation header") + "METHOD ".len()
+        );
+
+        let member_use = qualifier_use + "i1~".len();
+        let member_hover = snapshot
+            .hovered_component_at(member_use + 1)
+            .expect("member hover");
+        assert!(matches!(member_hover.kind, HoveredComponentKind::Method));
+        assert_eq!(member_hover.declaration.as_deref(), Some("METHOD i1~meth"));
+
+        let member_target = snapshot
+            .definition_at(member_use + 1)
+            .expect("member definition");
+        assert_target_slice(&member_target, "file:///demo.abap", src, "meth");
+        assert_eq!(
+            member_target.range.start,
+            src.find("METHOD i1~meth").expect("implementation header") + "METHOD i1~".len()
         );
     }
 

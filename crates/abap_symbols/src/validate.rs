@@ -658,6 +658,135 @@ fn resolve_interface_member_path<'a>(
     resolve_interface_member_path(project, lookup, nested, rest)
 }
 
+fn resolve_fallback_qualified_class_member_in_hierarchy<'a>(
+    project: &'a ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
+    class_unit: &'a crate::UnitAnalysis,
+    class_symbol: SymbolId,
+    interface_name: &str,
+    member_name: &str,
+) -> Option<(&'a crate::UnitAnalysis, &'a crate::ClassMemberData)> {
+    let qualified_name = format!(
+        "{}~{}",
+        interface_name.to_ascii_lowercase(),
+        member_name.to_ascii_lowercase()
+    );
+    resolve_class_member_in_hierarchy(project, lookup, class_unit, class_symbol, &qualified_name)
+}
+
+fn resolve_fallback_qualified_method_symbol_in_hierarchy(
+    project: &ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
+    class_unit: &crate::UnitAnalysis,
+    class_symbol: SymbolId,
+    interface_name: &str,
+    member_name: &str,
+) -> Option<SymbolHandle> {
+    let qualified_name = format!(
+        "{}~{}",
+        interface_name.to_ascii_lowercase(),
+        member_name.to_ascii_lowercase()
+    );
+    let mut current = SymbolHandle {
+        unit: class_unit.unit_id,
+        symbol: class_symbol,
+    };
+    let mut visited = HashSet::new();
+    loop {
+        if !visited.insert(current) {
+            return None;
+        }
+        let unit = &project.units[current.unit.as_usize()];
+        if let Some(symbol) = unit.symbols.iter().find(|symbol| {
+            symbol.kind == SymbolKind::Method
+                && symbol.name.as_ref() == qualified_name
+                && enclosing_class_owner(unit, symbol.scope) == Some(current.symbol)
+        }) {
+            return Some(SymbolHandle {
+                unit: unit.unit_id,
+                symbol: symbol.id,
+            });
+        }
+        current = direct_superclass_handle(project, lookup, unit, current.symbol)?;
+    }
+}
+
+fn resolve_fallback_qualified_redefinition_member_in_hierarchy<'a>(
+    project: &'a ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
+    class_unit: &'a crate::UnitAnalysis,
+    class_symbol: SymbolId,
+    interface_name: &str,
+    member_name: &str,
+) -> Option<(&'a crate::UnitAnalysis, &'a crate::ClassMemberData)> {
+    let pattern_spaced = format!(
+        "{} ~ {}",
+        interface_name.to_ascii_lowercase(),
+        member_name.to_ascii_lowercase()
+    );
+    let pattern_compact = pattern_spaced.replace(" ~ ", "~");
+    let mut current = SymbolHandle {
+        unit: class_unit.unit_id,
+        symbol: class_symbol,
+    };
+    let mut visited = HashSet::new();
+    loop {
+        if !visited.insert(current) {
+            return None;
+        }
+        let unit = &project.units[current.unit.as_usize()];
+        if let Some(member) = unit.class_members.iter().find(|member| {
+            member.class_symbol == current.symbol
+                && member.kind == ClassMemberKind::Method
+                && member.name.as_ref() == interface_name
+                && {
+                    let signature = member.signature.to_ascii_lowercase();
+                    signature.contains(&pattern_spaced) || signature.contains(&pattern_compact)
+                }
+        }) {
+            return Some((unit, member));
+        }
+        current = direct_superclass_handle(project, lookup, unit, current.symbol)?;
+    }
+}
+
+fn class_hierarchy_supports_named_interface_member(
+    project: &ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
+    class_unit: &crate::UnitAnalysis,
+    class_symbol: SymbolId,
+    interface_name: &str,
+    member_name: &str,
+) -> bool {
+    resolve_fallback_qualified_class_member_in_hierarchy(
+        project,
+        lookup,
+        class_unit,
+        class_symbol,
+        interface_name,
+        member_name,
+    )
+    .is_some()
+        || resolve_fallback_qualified_method_symbol_in_hierarchy(
+            project,
+            lookup,
+            class_unit,
+            class_symbol,
+            interface_name,
+            member_name,
+        )
+        .is_some()
+        || resolve_fallback_qualified_redefinition_member_in_hierarchy(
+            project,
+            lookup,
+            class_unit,
+            class_symbol,
+            interface_name,
+            member_name,
+        )
+        .is_some()
+}
+
 fn resolve_qualified_interface_method_context<'a>(
     project: &'a ProjectAnalysis,
     lookup: &ValidationLookup<'_>,
@@ -2490,6 +2619,7 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
                 let class_name = Arc::clone(&class_unit.symbol(class_symbol_id).name);
                 let mut structure_tail: Option<(&crate::UnitAnalysis, StructureId)> = None;
                 let mut structure_holder: Option<Arc<str>> = None;
+                let mut field_start_idx = 0usize;
                 if !requires_static && field_path.len() >= 2 {
                     let class_handle = SymbolHandle {
                         unit: class_unit.unit_id,
@@ -2512,8 +2642,61 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
                             continue;
                         }
                     }
+
+                    if field_path.len() == 2
+                        && class_hierarchy_supports_named_interface_member(
+                            project,
+                            &lookup,
+                            class_unit,
+                            class_symbol_id,
+                            field_path[0].name.as_ref(),
+                            field_path[1].name.as_ref(),
+                        )
+                    {
+                        continue;
+                    }
+
+                    if let Some((member_unit, member)) =
+                        resolve_fallback_qualified_class_member_in_hierarchy(
+                            project,
+                            &lookup,
+                            class_unit,
+                            class_symbol_id,
+                            field_path[0].name.as_ref(),
+                            field_path[1].name.as_ref(),
+                        )
+                        .filter(|(member_unit, member)| {
+                            class_member_visible_to(
+                                project,
+                                &lookup,
+                                unit,
+                                access.scope,
+                                member_unit,
+                                member,
+                            )
+                        })
+                    {
+                        field_start_idx = 2;
+                        if field_start_idx == field_path.len() {
+                            continue;
+                        }
+                        let Some(next_structure) = member.structure else {
+                            let next_step = &field_path[field_start_idx];
+                            unit_diagnostics.push(Diagnostic {
+                                kind: DiagnosticKind::UnknownField,
+                                range: next_step.range.clone(),
+                                message: format!(
+                                    "unknown member '{}' for class '{}->{}'",
+                                    next_step.name, class_name, member.name
+                                ),
+                            });
+                            continue;
+                        };
+                        structure_tail = Some((member_unit, next_structure));
+                        structure_holder = Some(Arc::clone(&member.name));
+                    }
                 }
-                for (idx, step) in field_path.iter().enumerate() {
+                for (idx, step) in field_path.iter().enumerate().skip(field_start_idx) {
                     if let Some((structure_unit, structure_id)) = structure_tail {
                         let holder = structure_holder.as_deref().unwrap_or("?");
                         let Some(field) = resolve_structure_field_info_project(

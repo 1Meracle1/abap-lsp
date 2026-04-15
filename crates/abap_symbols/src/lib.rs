@@ -450,4 +450,65 @@ TYPES: BEGIN OF ty_demo,
 
         validate_project_with_scope_indexes(&mut project, &scope_indexes);
     }
+
+    #[test]
+    fn validation_accepts_interface_selector_when_only_qualified_member_is_available() {
+        let src = r#"
+INTERFACE i1.
+  METHODS meth.
+ENDINTERFACE.
+
+CLASS super DEFINITION.
+  PUBLIC SECTION.
+    INTERFACES i1.
+ENDCLASS.
+
+CLASS super IMPLEMENTATION.
+  METHOD i1~meth.
+  ENDMETHOD.
+ENDCLASS.
+
+CLASS sub DEFINITION INHERITING FROM super.
+  PUBLIC SECTION.
+    METHODS i1~meth REDEFINITION.
+ENDCLASS.
+
+CLASS sub IMPLEMENTATION.
+  METHOD i1~meth.
+  ENDMETHOD.
+ENDCLASS.
+
+DATA lo_obj TYPE REF TO sub.
+lo_obj->i1~meth( ).
+"#;
+        let parsed = parse(src);
+        let mut unit = analyze_unit_locally(
+            UnitId(0),
+            "file:///qualified_member_only.abap",
+            src,
+            &parsed,
+        );
+        unit.implemented_interfaces.clear();
+
+        let scope_indexes = vec![build_scope_index(&unit)];
+        let uri = Arc::<str>::from("file:///qualified_member_only.abap");
+        let mut project = ProjectAnalysis {
+            units: vec![unit],
+            uri_to_unit: HashMap::from([(Arc::clone(&uri), UnitId(0))]),
+            provided_name_to_unit: HashMap::new(),
+            diagnostics: Vec::new(),
+        };
+
+        validate_project_with_scope_indexes(&mut project, &scope_indexes);
+
+        assert!(
+            !project.units[0].diagnostics.iter().any(|diag| {
+                diag.kind == super::DiagnosticKind::UnknownField
+                    && (diag.message.contains("unknown member 'i1' for class 'sub'")
+                        || diag.message.contains("unknown member 'meth'"))
+            }),
+            "{:#?}",
+            project.units[0].diagnostics
+        );
+    }
 }
