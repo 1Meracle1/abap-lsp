@@ -12,6 +12,7 @@ import {
 	mergeRemoteDependencyFetchPolicy,
 	markNegativeRemoteDependencyCandidate,
 	negativeRemoteDependencyMarkerPath,
+	RemoteDependencyScheduler,
 	resolveRemoteDependencyFetchPolicy,
 } from "../remoteDependencies";
 
@@ -203,5 +204,32 @@ suite("Remote dependency helpers", () => {
 		);
 
 		await fs.promises.rm(workspacePath, { recursive: true, force: true });
+	});
+
+	test("Cancels queued scheduler tasks", async () => {
+		const scheduler = new RemoteDependencyScheduler();
+		scheduler.updatePolicy({
+			remoteRequestParallelism: 1,
+			remoteRequestsPerSecond: 1,
+		});
+
+		let releaseFirstTask: (() => void) | undefined;
+		const firstTask = scheduler.schedule(
+			() =>
+				new Promise<string>((resolve) => {
+					releaseFirstTask = () => resolve("done");
+				}),
+		);
+		const secondTask = scheduler.schedule(async () => "queued");
+
+		scheduler.cancelAll("cancelled in test");
+		releaseFirstTask?.();
+
+		await assert.doesNotReject(() => firstTask);
+		await assert.rejects(
+			() => secondTask,
+			(error: unknown) =>
+				error instanceof Error && error.name === "AdtRequestCancelledError",
+		);
 	});
 });

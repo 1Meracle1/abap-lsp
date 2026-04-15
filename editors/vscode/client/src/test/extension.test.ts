@@ -1,7 +1,10 @@
 import * as assert from "assert";
+import * as path from "path";
 
 import {
 	computeAbapFoldingRanges,
+	parseUnitSidecarDependencySourceMode,
+	parseUnitSidecarLocalRoots,
 	validateLocalWorkspaceObjectNameForKind,
 } from "../extension";
 
@@ -32,6 +35,49 @@ suite("Extension local object validation", () => {
 			validateLocalWorkspaceObjectNameForKind("cl_demo", "global-class"),
 			"Only customer objects with Z/Y prefixes or customer namespaces are supported.",
 		);
+	});
+
+	test("Parses local export roots from unit sidecar single-line arrays", () => {
+		const sidecarPath =
+			"D:/dev/abap/prod_rep_check/src/reports/ZATTP_RS_BATCH_JOB2/abapls-unit.toml";
+		const text = [
+			'includes = { "ZATTP_RS_BATCH_JOB_TOP" = "ZATTP_SR_BATCH_JOB_TOP.abap" }',
+			"",
+			"[local_export]",
+			'roots = ["D:/dev/abap/prod_rep_check/export"]',
+			"",
+			"[dependencies]",
+			'source = "local-first"',
+		].join("\n");
+
+		assert.deepStrictEqual(parseUnitSidecarLocalRoots(text, sidecarPath), [
+			"D:/dev/abap/prod_rep_check/export",
+		]);
+	});
+
+	test("Resolves relative local export roots from unit sidecars", () => {
+		const sidecarPath =
+			"D:/dev/abap/prod_rep_check/src/reports/ZATTP_RS_BATCH_JOB2/abapls-unit.toml";
+		const text = [
+			"[local_export]",
+			'roots = ["../../../export"]',
+		].join("\n");
+
+		assert.deepStrictEqual(parseUnitSidecarLocalRoots(text, sidecarPath), [
+			path.resolve(path.dirname(sidecarPath), "../../../export"),
+		]);
+	});
+
+	test("Parses dependency source mode from unit sidecars", () => {
+		const text = [
+			"[local_export]",
+			'roots = ["D:/dev/abap/prod_rep_check/export"]',
+			"",
+			"[dependencies]",
+			'source = "local-first"',
+		].join("\n");
+
+		assert.strictEqual(parseUnitSidecarDependencySourceMode(text), "local-first");
 	});
 
 	test("Folds IF branch only until ELSE", () => {

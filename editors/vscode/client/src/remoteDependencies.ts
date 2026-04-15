@@ -1,6 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 
+import { AdtRequestCancelledError } from "./adt";
 import {
 	defaultRemoteRequestParallelism,
 	defaultRemoteRequestsPerSecond,
@@ -225,7 +226,7 @@ export async function markNegativeRemoteDependencyCandidate(
 export class RemoteDependencyScheduler {
 	private activeCount = 0;
 	private nextRequestTimestamp = 0;
-	private pending: Array<() => void> = [];
+	private pending: Array<{ run: () => void; reject: (reason?: unknown) => void }> = [];
 	private policy = resolveRemoteDependencyFetchPolicy(undefined);
 
 	updatePolicy(policy: RemoteDependencyFetchPolicy | undefined): void {
@@ -235,11 +236,23 @@ export class RemoteDependencyScheduler {
 
 	schedule<T>(task: () => Promise<T>): Promise<T> {
 		return new Promise<T>((resolve, reject) => {
-			this.pending.push(() => {
-				void this.runTask(task, resolve, reject);
+			this.pending.push({
+				run: () => {
+					void this.runTask(task, resolve, reject);
+				},
+				reject,
 			});
 			this.pump();
 		});
+	}
+
+	cancelAll(reason = "ADT fetch cancelled."): void {
+		const pending = this.pending;
+		this.pending = [];
+		this.nextRequestTimestamp = 0;
+		for (const queued of pending) {
+			queued.reject(new AdtRequestCancelledError(reason));
+		}
 	}
 
 	async beforeRequest(): Promise<void> {
@@ -260,7 +273,7 @@ export class RemoteDependencyScheduler {
 				return;
 			}
 			this.activeCount += 1;
-			next();
+			next.run();
 		}
 	}
 

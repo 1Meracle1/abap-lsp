@@ -8,11 +8,13 @@ import {
 	formatDdicXml,
 	hasOnlyUnsupportedExactDomainMatches,
 	inferFunctionGroupUri,
+	inferLocalExportObjectRef,
 	inferDdicManifestKind,
 	isDdicDependencyObject,
 	isMessageClassDependencyObject,
 	isSupportedDependencyObject,
 	isUnsupportedDomainDependencyObject,
+	parseLocalDdicExportObjectRef,
 	parseDotenvContents,
 	pickBestDependencyObject,
 	resolveSapConnectionDefaults,
@@ -54,6 +56,57 @@ suite("ADT dependency helpers", () => {
 
 		assert.ok(filePath.endsWith("ZSTRUCT.xml"));
 		assert.strictEqual(unit.kind, "ddic-structure");
+	});
+
+	test("Parses object metadata from local DDIC exports", () => {
+		const objectRef = parseLocalDdicExportObjectRef(
+			[
+				'<?xml version="1.0" encoding="utf-8"?>',
+				'<abapsource:elementInfo adtcore:uri="/sap/bc/adt/vit/wb/object_type/tabldt/object_name/ZATTP_RS_LEG_CTR" adtcore:type="TABL/DT" adtcore:name="zattp_rs_leg_ctr" xmlns:abapsource="http://www.sap.com/adt/abapsource" xmlns:adtcore="http://www.sap.com/adt/core">',
+				"</abapsource:elementInfo>",
+			].join(""),
+			"zattp_rs_leg_ctr",
+		);
+
+		assert.ok(objectRef);
+		assert.strictEqual(objectRef?.type, "TABL/DT");
+		assert.strictEqual(objectRef?.name, "ZATTP_RS_LEG_CTR");
+		assert.strictEqual(
+			objectRef?.uri,
+			"/sap/bc/adt/vit/wb/object_type/tabldt/object_name/ZATTP_RS_LEG_CTR",
+		);
+	});
+
+	test("Infers global classes from local ABAP exports", () => {
+		const objectRef = inferLocalExportObjectRef(
+			[
+				"class zattp_cl_rs_rule_proc definition public final create public.",
+				"public section.",
+				"endclass.",
+			].join("\n"),
+			"zattp_cl_rs_rule_proc",
+			"static",
+		);
+
+		assert.ok(objectRef);
+		assert.strictEqual(objectRef?.type, "CLAS/OC");
+		assert.strictEqual(objectRef?.name, "ZATTP_CL_RS_RULE_PROC");
+		assert.strictEqual(
+			inferManifestUnitSpec(objectRef!, ".abapls/cache/packages/_unknown/global-class/ZATTP_CL_RS_RULE_PROC.abap").kind,
+			"global-class",
+		);
+	});
+
+	test("Infers interfaces from local type exports when source structure is unavailable", () => {
+		const objectRef = inferLocalExportObjectRef(
+			"* generated export header",
+			"zattp_if_reporting",
+			"type",
+		);
+
+		assert.ok(objectRef);
+		assert.strictEqual(objectRef?.type, "INTF/OI");
+		assert.strictEqual(objectRef?.name, "ZATTP_IF_REPORTING");
 	});
 
 	test("Parses dotenv connection values", () => {

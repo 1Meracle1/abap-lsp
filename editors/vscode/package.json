@@ -44,6 +44,14 @@
       {
         "command": "abap-ls.refreshDependencyCache",
         "title": "ABAP LSP: Refresh Dependency Cache"
+      },
+      {
+        "command": "abap-ls.stopLanguageServer",
+        "title": "ABAP LSP: Stop Language Server"
+      },
+      {
+        "command": "abap-ls.restartLanguageServer",
+        "title": "ABAP LSP: Restart Language Server"
       }
     ],
     "configuration": {

@@ -73,11 +73,19 @@ interface GetSapConnectionOptions {
 
 interface AdtClientOptions {
 	beforeRequest?: () => Promise<void>;
+	isCancelled?: () => boolean;
 }
 
 const SAP_BASE_URL_ENV_KEYS = ["ABAP_ADT_URL", "ABAP_ADT_BASE_URL", "SAPBASE_URL"] as const;
 const SAP_USERNAME_ENV_KEYS = ["ABAP_ADT_USER", "ABAP_ADT_USERNAME", "SAPUSER"] as const;
 const SAP_PASSWORD_ENV_KEYS = ["ABAP_ADT_PASSWORD", "SAPPASS"] as const;
+
+export class AdtRequestCancelledError extends Error {
+	constructor(message = "ADT request cancelled.") {
+		super(message);
+		this.name = "AdtRequestCancelledError";
+	}
+}
 
 export function parseDotenvContents(content: string): Map<string, string> {
 	const values = new Map<string, string>();
@@ -420,6 +428,7 @@ export async function configureSapConnection(
 }
 
 export class AdtClient {
+	private static activeRequests = new Set<http.ClientRequest>();
 	private csrfToken = "";
 	private cookies: string[] = [];
 
@@ -427,6 +436,13 @@ export class AdtClient {
 		private readonly connection: SapConnectionConfig,
 		private readonly options: AdtClientOptions = {},
 	) {}
+
+	static cancelAllActiveRequests(message = "ADT request cancelled."): void {
+		const error = new AdtRequestCancelledError(message);
+		for (const request of AdtClient.activeRequests) {
+			request.destroy(error);
+		}
+	}
 
 	async searchRepositoryObjects(query: string, maxResults: number = 51): Promise<AdtObjectRef[]> {
 		await this.ensureSession();
@@ -676,6 +692,7 @@ export class AdtClient {
 	}
 
 	private async ensureSession(): Promise<void> {
+		this.throwIfCancelled();
 		if (this.csrfToken) {
 			return;
 		}
@@ -699,6 +716,12 @@ export class AdtClient {
 		}
 	}
 
+	private throwIfCancelled(): void {
+		if (this.options.isCancelled?.()) {
+			throw new AdtRequestCancelledError();
+		}
+	}
+
 	private async request(
 		pathOrUrl: string,
 		options: {
@@ -707,7 +730,9 @@ export class AdtClient {
 			body?: string;
 		} = {},
 	): Promise<HttpResponseData> {
+		this.throwIfCancelled();
 		await this.options.beforeRequest?.();
+		this.throwIfCancelled();
 
 		const url = toAbsoluteUrl(this.connection.baseUrl, pathOrUrl);
 		const parsed = new URL(url);
@@ -749,9 +774,17 @@ export class AdtClient {
 				},
 			);
 
+			AdtClient.activeRequests.add(request);
+			request.on("close", () => {
+				AdtClient.activeRequests.delete(request);
+			});
 			request.on("error", reject);
 			if (options.body !== undefined) {
 				request.write(options.body, "utf8");
+			}
+			if (this.options.isCancelled?.()) {
+				request.destroy(new AdtRequestCancelledError());
+				return;
 			}
 			request.end();
 		});
@@ -1048,4 +1081,135 @@ export function formatDdicXml(xml: string): string {
 	}
 
 	return `${lines.join("\n")}\n`;
+}
+
+export function parseLocalDdicExportObjectRef(xml: string, fallbackName: string): AdtObjectRef | undefined {
+	const trimmed = xml.trim();
+	if (!trimmed.startsWith("<")) {
+		return undefined;
+	}
+
+	const rootMatch = trimmed.match(/<abapsource:elementInfo\b([^>]*)>/i);
+	if (!rootMatch) {
+		return undefined;
+	}
+
+	const attributes = rootMatch[1] ?? "";
+	const type = decodeXmlEntity(readAttribute(attributes, "adtcore:type")).trim().toUpperCase();
+	if (!type) {
+		return undefined;
+	}
+
+	const uri = decodeXmlEntity(readAttribute(attributes, "adtcore:uri")).trim();
+	const rawName = decodeXmlEntity(readAttribute(attributes, "adtcore:name")).trim();
+	const normalizedFallbackName = fallbackName.trim().toUpperCase();
+	const name = (rawName || normalizedFallbackName).toUpperCase();
+	if (!name) {
+		return undefined;
+	}
+
+	const objectRef: AdtObjectRef = {
+		uri,
+		type,
+		name,
+		packageName: "",
+		description: "",
+	};
+	return isDdicDependencyObject(objectRef) ? objectRef : undefined;
+}
+
+export function inferLocalExportObjectRef(
+	source: string,
+	fallbackName: string,
+	kindHint = "",
+): AdtObjectRef | undefined {
+	const normalizedFallbackName = fallbackName.trim().toUpperCase();
+	if (!normalizedFallbackName) {
+		return undefined;
+	}
+
+	const trimmed = source.trim();
+	if (trimmed.startsWith("<")) {
+		const ddicObjectRef = parseLocalDdicExportObjectRef(trimmed, normalizedFallbackName);
+		if (ddicObjectRef) {
+			return ddicObjectRef;
+		}
+		return kindHint.trim().toLowerCase() === "message-class"
+			? buildMessageClassObjectRef(normalizedFallbackName)
+			: undefined;
+	}
+
+	for (const rawLine of normalizeAbapSource(source).split("\n")) {
+		const line = rawLine.replace(/".*$/, "").trim();
+		if (!line || line.startsWith("*")) {
+			continue;
+		}
+
+		const classMatch = line.match(/^class\s+([^\s.]+)\b/i);
+		if (classMatch?.[1]) {
+			return buildLocalClassObjectRef(classMatch[1]);
+		}
+
+		const interfaceMatch = line.match(/^interface\s+([^\s.]+)\b/i);
+		if (interfaceMatch?.[1]) {
+			return buildLocalInterfaceObjectRef(interfaceMatch[1]);
+		}
+
+		const functionMatch = line.match(/^function\s+([^\s.]+)\b/i);
+		if (functionMatch?.[1]) {
+			return buildLocalFunctionModuleObjectRef(functionMatch[1]);
+		}
+	}
+
+	switch (kindHint.trim().toLowerCase()) {
+		case "include":
+			return buildIncludeObjectRef(normalizedFallbackName, "");
+		case "function":
+			return buildLocalFunctionModuleObjectRef(normalizedFallbackName);
+		case "static":
+		case "symbol":
+		case "type":
+			return isLikelyInterfaceName(normalizedFallbackName)
+				? buildLocalInterfaceObjectRef(normalizedFallbackName)
+				: buildLocalClassObjectRef(normalizedFallbackName);
+		default:
+			return undefined;
+	}
+}
+
+function buildLocalClassObjectRef(name: string): AdtObjectRef {
+	const normalizedName = name.trim().toUpperCase();
+	return {
+		uri: `/sap/bc/adt/oo/classes/${encodeURIComponent(normalizedName)}`,
+		type: "CLAS/OC",
+		name: normalizedName,
+		packageName: "",
+		description: "Global class",
+	};
+}
+
+function buildLocalInterfaceObjectRef(name: string): AdtObjectRef {
+	const normalizedName = name.trim().toUpperCase();
+	return {
+		uri: `/sap/bc/adt/oo/interfaces/${encodeURIComponent(normalizedName)}`,
+		type: "INTF/OI",
+		name: normalizedName,
+		packageName: "",
+		description: "Global interface",
+	};
+}
+
+function buildLocalFunctionModuleObjectRef(name: string): AdtObjectRef {
+	const normalizedName = name.trim().toUpperCase();
+	return {
+		uri: `/sap/bc/adt/functions/groups/_local/fmodules/${encodeURIComponent(normalizedName)}`,
+		type: "FUGR/FF",
+		name: normalizedName,
+		packageName: "",
+		description: "Function module",
+	};
+}
+
+function isLikelyInterfaceName(name: string): boolean {
+	return /(?:^|\/)(?:[ZY][A-Z0-9]*_)?IF_/.test(name.trim().toUpperCase());
 }
