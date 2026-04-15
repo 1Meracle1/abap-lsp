@@ -12,6 +12,17 @@ pub enum RoutineBlockKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RoutineEdgeKind {
     SyntheticFlow,
+    Fallthrough,
+    Branch,
+    LoopEnter,
+    LoopExit,
+    LoopBack,
+    Exceptional,
+    Return,
+    Raise,
+    Leave,
+    Exit,
+    Continue,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -20,6 +31,9 @@ pub struct RoutineBlock {
     pub kind: RoutineBlockKind,
     pub range: TextRange,
     pub instructions: Vec<RoutineInstrId>,
+    pub predecessors: Vec<RoutineBlockId>,
+    pub successors: Vec<RoutineBlockId>,
+    pub reachable: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

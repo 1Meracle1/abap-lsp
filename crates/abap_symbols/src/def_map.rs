@@ -287,6 +287,7 @@ pub enum DiagnosticKind {
     UnverifiedOpenSqlSource,
     /// `INTO` / `APPENDING` target is incompatible with the clause (for example `INTO TABLE` on a non-table variable).
     InvalidOpenSqlIntoTarget,
+    UnreachableCode,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -656,6 +657,93 @@ pub struct PerformCallData {
     pub section_order_invalid: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RoutineLoopKind {
+    While,
+    Do,
+    Loop,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RoutineSiteKind {
+    UnknownEffect,
+    Return,
+    Raise,
+    Leave,
+    LeaveListProcessing,
+    Exit,
+    Continue,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RoutineSiteData {
+    pub scope: ScopeId,
+    pub range: TextRange,
+    pub kind: RoutineSiteKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IfRegionData {
+    pub scope: ScopeId,
+    pub range: TextRange,
+    pub then_scope: ScopeId,
+    pub elseif_scopes: Vec<ScopeId>,
+    pub else_scope: Option<ScopeId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CaseRegionData {
+    pub scope: ScopeId,
+    pub range: TextRange,
+    pub when_scopes: Vec<ScopeId>,
+    pub has_when_others: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoopRegionData {
+    pub scope: ScopeId,
+    pub range: TextRange,
+    pub kind: RoutineLoopKind,
+    pub body_scope: ScopeId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TryRegionData {
+    pub scope: ScopeId,
+    pub range: TextRange,
+    pub body_scope: ScopeId,
+    pub catch_scopes: Vec<ScopeId>,
+    pub cleanup_scope: Option<ScopeId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RoutineControlRegionData {
+    If(IfRegionData),
+    Case(CaseRegionData),
+    Loop(LoopRegionData),
+    Try(TryRegionData),
+}
+
+impl RoutineControlRegionData {
+    pub fn scope(&self) -> ScopeId {
+        match self {
+            Self::If(data) => data.scope,
+            Self::Case(data) => data.scope,
+            Self::Loop(data) => data.scope,
+            Self::Try(data) => data.scope,
+        }
+    }
+
+    pub fn range(&self) -> &TextRange {
+        match self {
+            Self::If(data) => &data.range,
+            Self::Case(data) => &data.range,
+            Self::Loop(data) => &data.range,
+            Self::Try(data) => &data.range,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnitAnalysis {
     pub unit_id: UnitId,
@@ -681,6 +769,8 @@ pub struct UnitAnalysis {
     pub expression_facts: Vec<ExpressionFactData>,
     pub value_flow_edges: Vec<ValueFlowEdgeData>,
     pub perform_calls: Vec<PerformCallData>,
+    pub routine_sites: Vec<RoutineSiteData>,
+    pub routine_control_regions: Vec<RoutineControlRegionData>,
     pub sql_queries: Vec<SqlQueryData>,
     pub sql_sources: Vec<SqlSourceData>,
     pub sql_projections: Vec<SqlProjectionData>,

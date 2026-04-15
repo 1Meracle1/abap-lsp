@@ -1378,6 +1378,7 @@ fn diagnostic_kind_name(kind: DiagnosticKind) -> &'static str {
         DiagnosticKind::MissingRequiredParameter => "missing_required_parameter",
         DiagnosticKind::UnverifiedOpenSqlSource => "unverified_open_sql_source",
         DiagnosticKind::InvalidOpenSqlIntoTarget => "invalid_open_sql_into_target",
+        DiagnosticKind::UnreachableCode => "unreachable_code",
     }
 }
 

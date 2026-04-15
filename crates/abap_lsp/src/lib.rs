@@ -938,7 +938,10 @@ fn collect_remote_dependency_candidates_for_workspace_batch(
     collect_remote_dependency_candidates(full_snapshot.as_ref())
 }
 
-fn remote_dependency_batch_phase(workspace: &WorkspaceState, uri: &str) -> RemoteDependencyBatchPhase {
+fn remote_dependency_batch_phase(
+    workspace: &WorkspaceState,
+    uri: &str,
+) -> RemoteDependencyBatchPhase {
     if uri_is_manifest_dependency(workspace, uri) {
         return RemoteDependencyBatchPhase::Dependency;
     }
@@ -1354,9 +1357,9 @@ fn semantic_diagnostic_severity(kind: DiagnosticKind) -> DiagnosticSeverity {
         DiagnosticKind::DuplicateDeclaration | DiagnosticKind::ShadowedSymbol => {
             DiagnosticSeverity::WARNING
         }
-        DiagnosticKind::IncompatibleAssignmentType | DiagnosticKind::IncompatibleArgumentType => {
-            DiagnosticSeverity::WARNING
-        }
+        DiagnosticKind::IncompatibleAssignmentType
+        | DiagnosticKind::IncompatibleArgumentType
+        | DiagnosticKind::UnreachableCode => DiagnosticSeverity::WARNING,
         DiagnosticKind::UnverifiedOpenSqlSource => DiagnosticSeverity::ERROR,
         DiagnosticKind::UnresolvedReference
         | DiagnosticKind::UnresolvedInclude
@@ -4435,11 +4438,17 @@ object_name = "ZCL_DEP"
             "{batch:#?}"
         );
         assert!(
-            batch.candidates.iter().any(|candidate| candidate.name == "zcl_first"),
+            batch
+                .candidates
+                .iter()
+                .any(|candidate| candidate.name == "zcl_first"),
             "{batch:#?}"
         );
         assert!(
-            batch.candidates.iter().all(|candidate| candidate.name != "bal_s_msg"),
+            batch
+                .candidates
+                .iter()
+                .all(|candidate| candidate.name != "bal_s_msg"),
             "{batch:#?}"
         );
 

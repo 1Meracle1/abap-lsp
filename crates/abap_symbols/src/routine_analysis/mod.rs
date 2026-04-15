@@ -4,7 +4,7 @@ mod ids;
 mod ir;
 mod metrics;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
 use abap_lexer::TextRange;
@@ -16,15 +16,18 @@ pub use dataflow::{
 };
 pub use ids::{DataflowValueId, RoutineBlockId, RoutineId, RoutineInstrId};
 pub use ir::{
-    RoutineDescriptor, RoutineInstruction, RoutineInstructionKind, RoutineInstructionSite,
-    RoutineIr, RoutineKind,
+    RoutineBranchKind, RoutineDescriptor, RoutineInstruction, RoutineInstructionKind,
+    RoutineInstructionSite, RoutineIr, RoutineKind, RoutineTerminatorKind,
 };
 pub use metrics::ProjectRoutineAnalysisMetrics;
 
-use crate::def_map::{Resolution, SymbolData, SymbolKind, UnitAnalysis};
+use crate::def_map::{
+    CaseRegionData, Diagnostic, DiagnosticKind, IfRegionData, LoopRegionData, Resolution,
+    RoutineControlRegionData, RoutineSiteKind, SymbolData, SymbolKind, TryRegionData, UnitAnalysis,
+};
 use crate::ids::{ScopeId, SymbolHandle, UnitId};
 use crate::project::ProjectAnalysis;
-use crate::scope::ScopeKind;
+use crate::scope::{Namespace, ScopeKind};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ProjectRoutineAnalysis {
@@ -33,6 +36,7 @@ pub struct ProjectRoutineAnalysis {
     owner_to_routine: HashMap<SymbolHandle, RoutineId>,
     unit_routines: Vec<Vec<RoutineId>>,
     scope_to_routine: Vec<Vec<Option<RoutineId>>>,
+    unit_diagnostics: Vec<Vec<Diagnostic>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,6 +44,7 @@ pub struct RoutineAnalysis {
     pub descriptor: RoutineDescriptor,
     pub ir: RoutineIr,
     pub cfg: RoutineCfg,
+    pub diagnostics: Vec<Diagnostic>,
     pub dataflow_inputs: RoutineDataflowInputs,
     pub dataflow_result: RoutineDataflowResult,
 }
@@ -71,6 +76,13 @@ impl ProjectRoutineAnalysis {
             .flat_map(|routine_ids| routine_ids.iter().copied())
             .filter_map(|routine_id| self.routine(routine_id))
     }
+
+    pub fn diagnostics_for_unit(&self, unit: UnitId) -> &[Diagnostic] {
+        self.unit_diagnostics
+            .get(unit.as_usize())
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
 }
 
 pub fn build_project_routine_analysis(project: &ProjectAnalysis) -> ProjectRoutineAnalysis {
@@ -82,6 +94,7 @@ pub fn build_project_routine_analysis(project: &ProjectAnalysis) -> ProjectRouti
             .iter()
             .map(|unit| vec![None; unit.scopes.len()])
             .collect(),
+        unit_diagnostics: vec![Vec::new(); project.units.len()],
         ..ProjectRoutineAnalysis::default()
     };
 
@@ -120,9 +133,11 @@ pub fn build_project_routine_analysis(project: &ProjectAnalysis) -> ProjectRouti
                     name,
                     decl_range,
                     scope_range: scope.range.clone(),
+                    executable_range: None,
                 },
                 ir: RoutineIr::default(),
                 cfg: RoutineCfg::default(),
+                diagnostics: Vec::new(),
                 dataflow_inputs: RoutineDataflowInputs::default(),
                 dataflow_result: RoutineDataflowResult::default(),
             });
@@ -157,7 +172,7 @@ pub fn build_project_routine_analysis(project: &ProjectAnalysis) -> ProjectRouti
         let scope_map = &out.scope_to_routine[unit.unit_id.as_usize()];
 
         for reference in unit.references.iter().filter(|reference| {
-            reference.namespace == crate::scope::Namespace::Value
+            reference.namespace == Namespace::Value
                 && !matches!(reference.kind, crate::ReferenceKind::TypeRef)
         }) {
             let Some(routine_id) = scope_map.get(reference.scope.as_usize()).copied().flatten()
@@ -240,6 +255,70 @@ pub fn build_project_routine_analysis(project: &ProjectAnalysis) -> ProjectRouti
                 });
             }
         }
+
+        for site in &unit.routine_sites {
+            let Some(routine_id) = scope_map.get(site.scope.as_usize()).copied().flatten() else {
+                continue;
+            };
+            let instruction_site = match site.kind {
+                RoutineSiteKind::UnknownEffect => RoutineInstructionSite::UnknownEffect,
+                RoutineSiteKind::Return => RoutineInstructionSite::Terminator {
+                    kind: RoutineTerminatorKind::Return,
+                },
+                RoutineSiteKind::Raise => RoutineInstructionSite::Terminator {
+                    kind: RoutineTerminatorKind::Raise,
+                },
+                RoutineSiteKind::Leave => RoutineInstructionSite::Terminator {
+                    kind: RoutineTerminatorKind::Leave,
+                },
+                RoutineSiteKind::LeaveListProcessing => RoutineInstructionSite::Terminator {
+                    kind: RoutineTerminatorKind::LeaveListProcessing,
+                },
+                RoutineSiteKind::Exit => RoutineInstructionSite::Terminator {
+                    kind: RoutineTerminatorKind::Exit,
+                },
+                RoutineSiteKind::Continue => RoutineInstructionSite::Terminator {
+                    kind: RoutineTerminatorKind::Continue,
+                },
+            };
+            if let Some(routine) = out.routines.get_mut(routine_id.as_usize()) {
+                routine.ir.instructions.push(RoutineInstruction {
+                    id: RoutineInstrId(0),
+                    scope: site.scope,
+                    range: site.range.clone(),
+                    site: instruction_site,
+                });
+            }
+        }
+
+        for region in &unit.routine_control_regions {
+            let Some(routine_id) = scope_map.get(region.scope().as_usize()).copied().flatten()
+            else {
+                continue;
+            };
+            let instruction_site = match region {
+                RoutineControlRegionData::If(_) => RoutineInstructionSite::Branch {
+                    kind: RoutineBranchKind::If,
+                },
+                RoutineControlRegionData::Case(_) => RoutineInstructionSite::Branch {
+                    kind: RoutineBranchKind::Case,
+                },
+                RoutineControlRegionData::Try(_) => RoutineInstructionSite::Branch {
+                    kind: RoutineBranchKind::Try,
+                },
+                RoutineControlRegionData::Loop(data) => {
+                    RoutineInstructionSite::LoopHeader { kind: data.kind }
+                }
+            };
+            if let Some(routine) = out.routines.get_mut(routine_id.as_usize()) {
+                routine.ir.instructions.push(RoutineInstruction {
+                    id: RoutineInstrId(0),
+                    scope: region.scope(),
+                    range: region.range().clone(),
+                    site: instruction_site,
+                });
+            }
+        }
     }
 
     for routine in &mut out.routines {
@@ -260,57 +339,39 @@ pub fn build_project_routine_analysis(project: &ProjectAnalysis) -> ProjectRouti
         for (idx, instruction) in routine.ir.instructions.iter_mut().enumerate() {
             instruction.id = RoutineInstrId(idx as u32);
         }
-    }
-    out.metrics.ir_micros = ir_timer.elapsed().as_micros();
-
-    let cfg_timer = std::time::Instant::now();
-    for routine in &mut out.routines {
-        let body_range = routine
+        routine.descriptor.executable_range = routine
             .ir
             .instructions
             .first()
             .zip(routine.ir.instructions.last())
-            .map(|(first, last)| first.range.start..last.range.end)
-            .unwrap_or_else(|| routine.descriptor.scope_range.clone());
-        let entry = RoutineBlockId(0);
-        let body = RoutineBlockId(1);
-        let exit = RoutineBlockId(2);
-        routine.cfg = RoutineCfg {
-            entry: Some(entry),
-            exit: Some(exit),
-            blocks: vec![
-                RoutineBlock {
-                    id: entry,
-                    kind: RoutineBlockKind::Entry,
-                    range: routine.descriptor.decl_range.start..routine.descriptor.decl_range.start,
-                    instructions: Vec::new(),
-                },
-                RoutineBlock {
-                    id: body,
-                    kind: RoutineBlockKind::Body,
-                    range: body_range,
-                    instructions: routine.ir.instructions.iter().map(|inst| inst.id).collect(),
-                },
-                RoutineBlock {
-                    id: exit,
-                    kind: RoutineBlockKind::Exit,
-                    range: routine.descriptor.scope_range.end..routine.descriptor.scope_range.end,
-                    instructions: Vec::new(),
-                },
-            ],
-            edges: vec![
-                RoutineEdge {
-                    from: entry,
-                    to: body,
-                    kind: RoutineEdgeKind::SyntheticFlow,
-                },
-                RoutineEdge {
-                    from: body,
-                    to: exit,
-                    kind: RoutineEdgeKind::SyntheticFlow,
-                },
-            ],
+            .map(|(first, last)| first.range.start..last.range.end);
+    }
+    out.metrics.ir_micros = ir_timer.elapsed().as_micros();
+
+    let cfg_timer = std::time::Instant::now();
+    for routine_idx in 0..out.routines.len() {
+        let descriptor = out.routines[routine_idx].descriptor.clone();
+        let Some(unit) = project.units.get(descriptor.unit.as_usize()) else {
+            continue;
         };
+        let Some(scope_map) = out.scope_to_routine.get(descriptor.unit.as_usize()) else {
+            continue;
+        };
+        let (cfg, diagnostics) =
+            build_routine_cfg_and_diagnostics(unit, scope_map, &out.routines[routine_idx]);
+        out.unit_diagnostics[descriptor.unit.as_usize()].extend(diagnostics.iter().cloned());
+        out.routines[routine_idx].cfg = cfg;
+        out.routines[routine_idx].diagnostics = diagnostics;
+    }
+    for diagnostics in &mut out.unit_diagnostics {
+        diagnostics.sort_by(|left, right| {
+            left.range
+                .start
+                .cmp(&right.range.start)
+                .then(left.range.end.cmp(&right.range.end))
+                .then(left.message.cmp(&right.message))
+        });
+        diagnostics.dedup();
     }
     out.metrics.cfg_micros = cfg_timer.elapsed().as_micros();
 
@@ -353,6 +414,688 @@ pub fn build_project_routine_analysis(project: &ProjectAnalysis) -> ProjectRouti
 struct ReferenceUse {
     range: TextRange,
     value: DataflowValueId,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct ControlKey {
+    scope: ScopeId,
+    start: usize,
+    end: usize,
+    tag: u8,
+}
+
+#[derive(Debug)]
+struct RoutineBuildIndex<'a> {
+    instructions_by_scope: Vec<Vec<RoutineInstrId>>,
+    if_regions: HashMap<ControlKey, &'a IfRegionData>,
+    case_regions: HashMap<ControlKey, &'a CaseRegionData>,
+    try_regions: HashMap<ControlKey, &'a TryRegionData>,
+    loop_regions: HashMap<ControlKey, &'a LoopRegionData>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ScopeExit {
+    block: RoutineBlockId,
+    reachable: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct LoopFrame {
+    header: RoutineBlockId,
+    after_loop: RoutineBlockId,
+}
+
+#[derive(Debug, Clone)]
+struct TryFrame {
+    catch_entries: Vec<RoutineBlockId>,
+    cleanup_entry: Option<RoutineBlockId>,
+}
+
+struct CfgBuilder<'a> {
+    routine: &'a RoutineAnalysis,
+    index: RoutineBuildIndex<'a>,
+    blocks: Vec<RoutineBlock>,
+    edges: Vec<RoutineEdge>,
+    entry: RoutineBlockId,
+    exit: RoutineBlockId,
+    loop_stack: Vec<LoopFrame>,
+    try_stack: Vec<TryFrame>,
+}
+
+impl<'a> RoutineBuildIndex<'a> {
+    fn new(
+        unit: &'a UnitAnalysis,
+        scope_to_routine: &[Option<RoutineId>],
+        routine: &RoutineAnalysis,
+    ) -> Self {
+        let mut instructions_by_scope = vec![Vec::new(); unit.scopes.len()];
+        for instruction in &routine.ir.instructions {
+            if let Some(entries) = instructions_by_scope.get_mut(instruction.scope.as_usize()) {
+                entries.push(instruction.id);
+            }
+        }
+
+        let mut if_regions = HashMap::new();
+        let mut case_regions = HashMap::new();
+        let mut try_regions = HashMap::new();
+        let mut loop_regions = HashMap::new();
+        for region in &unit.routine_control_regions {
+            if scope_to_routine
+                .get(region.scope().as_usize())
+                .copied()
+                .flatten()
+                != Some(routine.descriptor.id)
+            {
+                continue;
+            }
+            match region {
+                RoutineControlRegionData::If(data) => {
+                    if_regions.insert(control_key(data.scope, &data.range, 0), data);
+                }
+                RoutineControlRegionData::Case(data) => {
+                    case_regions.insert(control_key(data.scope, &data.range, 1), data);
+                }
+                RoutineControlRegionData::Try(data) => {
+                    try_regions.insert(control_key(data.scope, &data.range, 2), data);
+                }
+                RoutineControlRegionData::Loop(data) => {
+                    loop_regions.insert(control_key(data.scope, &data.range, loop_tag(data)), data);
+                }
+            }
+        }
+
+        Self {
+            instructions_by_scope,
+            if_regions,
+            case_regions,
+            try_regions,
+            loop_regions,
+        }
+    }
+
+    fn if_region(&self, instruction: &RoutineInstruction) -> Option<&'a IfRegionData> {
+        self.if_regions
+            .get(&control_key(instruction.scope, &instruction.range, 0))
+            .copied()
+    }
+
+    fn case_region(&self, instruction: &RoutineInstruction) -> Option<&'a CaseRegionData> {
+        self.case_regions
+            .get(&control_key(instruction.scope, &instruction.range, 1))
+            .copied()
+    }
+
+    fn try_region(&self, instruction: &RoutineInstruction) -> Option<&'a TryRegionData> {
+        self.try_regions
+            .get(&control_key(instruction.scope, &instruction.range, 2))
+            .copied()
+    }
+
+    fn loop_region(
+        &self,
+        instruction: &RoutineInstruction,
+        kind: crate::RoutineLoopKind,
+    ) -> Option<&'a LoopRegionData> {
+        self.loop_regions
+            .get(&control_key(
+                instruction.scope,
+                &instruction.range,
+                loop_tag_kind(kind),
+            ))
+            .copied()
+    }
+}
+
+impl<'a> CfgBuilder<'a> {
+    fn new(
+        _unit: &'a UnitAnalysis,
+        routine: &'a RoutineAnalysis,
+        index: RoutineBuildIndex<'a>,
+    ) -> Self {
+        let entry = RoutineBlockId(0);
+        let exit = RoutineBlockId(1);
+        let blocks = vec![
+            RoutineBlock {
+                id: entry,
+                kind: RoutineBlockKind::Entry,
+                range: zero_range(routine.descriptor.decl_range.start),
+                instructions: Vec::new(),
+                predecessors: Vec::new(),
+                successors: Vec::new(),
+                reachable: false,
+            },
+            RoutineBlock {
+                id: exit,
+                kind: RoutineBlockKind::Exit,
+                range: zero_range(routine.descriptor.scope_range.end),
+                instructions: Vec::new(),
+                predecessors: Vec::new(),
+                successors: Vec::new(),
+                reachable: false,
+            },
+        ];
+        Self {
+            routine,
+            index,
+            blocks,
+            edges: Vec::new(),
+            entry,
+            exit,
+            loop_stack: Vec::new(),
+            try_stack: Vec::new(),
+        }
+    }
+
+    fn build(mut self) -> RoutineCfg {
+        if self.routine.ir.instructions.is_empty() {
+            self.add_edge(self.entry, self.exit, RoutineEdgeKind::SyntheticFlow);
+            self.finalize();
+            return RoutineCfg {
+                entry: Some(self.entry),
+                exit: Some(self.exit),
+                blocks: self.blocks,
+                edges: self.edges,
+            };
+        }
+
+        let start = self.new_block(
+            RoutineBlockKind::Body,
+            zero_range(
+                self.routine
+                    .descriptor
+                    .executable_range
+                    .as_ref()
+                    .map(|range| range.start)
+                    .unwrap_or(self.routine.descriptor.decl_range.end),
+            ),
+        );
+        self.add_edge(self.entry, start, RoutineEdgeKind::SyntheticFlow);
+        let exit_state = self.build_scope(
+            self.routine.descriptor.scope,
+            ScopeExit {
+                block: start,
+                reachable: true,
+            },
+        );
+        if exit_state.reachable {
+            self.add_edge(exit_state.block, self.exit, RoutineEdgeKind::Fallthrough);
+        }
+        self.finalize();
+        RoutineCfg {
+            entry: Some(self.entry),
+            exit: Some(self.exit),
+            blocks: self.blocks,
+            edges: self.edges,
+        }
+    }
+
+    fn build_scope(&mut self, scope: ScopeId, mut state: ScopeExit) -> ScopeExit {
+        let instructions = self
+            .index
+            .instructions_by_scope
+            .get(scope.as_usize())
+            .cloned()
+            .unwrap_or_default();
+        for instruction_id in instructions {
+            let instruction = self.routine.ir.instructions[instruction_id.as_usize()].clone();
+            match instruction.site {
+                RoutineInstructionSite::Assignment { .. }
+                | RoutineInstructionSite::Call { .. }
+                | RoutineInstructionSite::Perform { .. }
+                | RoutineInstructionSite::SqlQuery { .. }
+                | RoutineInstructionSite::ValueRead { .. }
+                | RoutineInstructionSite::UnknownEffect => {
+                    self.append_instruction(state.block, instruction_id);
+                }
+                RoutineInstructionSite::Branch { kind } => {
+                    state = self.handle_branch(state, &instruction, kind);
+                }
+                RoutineInstructionSite::LoopHeader { kind } => {
+                    state = self.handle_loop(state, &instruction, kind);
+                }
+                RoutineInstructionSite::Terminator { kind } => {
+                    state = self.handle_terminator(state, &instruction, kind);
+                }
+            }
+        }
+        state
+    }
+
+    fn handle_branch(
+        &mut self,
+        state: ScopeExit,
+        instruction: &RoutineInstruction,
+        kind: RoutineBranchKind,
+    ) -> ScopeExit {
+        match kind {
+            RoutineBranchKind::If => self.handle_if(state, instruction),
+            RoutineBranchKind::Case => self.handle_case(state, instruction),
+            RoutineBranchKind::Try => self.handle_try(state, instruction),
+        }
+    }
+
+    fn handle_if(&mut self, state: ScopeExit, instruction: &RoutineInstruction) -> ScopeExit {
+        let Some(region) = self.index.if_region(instruction).cloned() else {
+            self.append_instruction(state.block, instruction.id);
+            return state;
+        };
+        self.append_instruction(state.block, instruction.id);
+        let join = self.new_block(RoutineBlockKind::Body, zero_range(instruction.range.end));
+        let mut join_reachable = false;
+
+        let then_entry = self.new_block(RoutineBlockKind::Body, zero_range(region.range.start));
+        self.add_edge(state.block, then_entry, RoutineEdgeKind::Branch);
+        let then_exit = self.build_scope(
+            region.then_scope,
+            ScopeExit {
+                block: then_entry,
+                reachable: state.reachable,
+            },
+        );
+        if then_exit.reachable {
+            self.add_edge(then_exit.block, join, RoutineEdgeKind::Fallthrough);
+            join_reachable = true;
+        }
+
+        for elseif_scope in region.elseif_scopes {
+            let elseif_entry =
+                self.new_block(RoutineBlockKind::Body, zero_range(region.range.start));
+            self.add_edge(state.block, elseif_entry, RoutineEdgeKind::Branch);
+            let elseif_exit = self.build_scope(
+                elseif_scope,
+                ScopeExit {
+                    block: elseif_entry,
+                    reachable: state.reachable,
+                },
+            );
+            if elseif_exit.reachable {
+                self.add_edge(elseif_exit.block, join, RoutineEdgeKind::Fallthrough);
+                join_reachable = true;
+            }
+        }
+
+        if let Some(else_scope) = region.else_scope {
+            let else_entry = self.new_block(RoutineBlockKind::Body, zero_range(region.range.start));
+            self.add_edge(state.block, else_entry, RoutineEdgeKind::Branch);
+            let else_exit = self.build_scope(
+                else_scope,
+                ScopeExit {
+                    block: else_entry,
+                    reachable: state.reachable,
+                },
+            );
+            if else_exit.reachable {
+                self.add_edge(else_exit.block, join, RoutineEdgeKind::Fallthrough);
+                join_reachable = true;
+            }
+        } else {
+            self.add_edge(state.block, join, RoutineEdgeKind::Fallthrough);
+            join_reachable |= state.reachable;
+        }
+
+        ScopeExit {
+            block: join,
+            reachable: join_reachable,
+        }
+    }
+
+    fn handle_case(&mut self, state: ScopeExit, instruction: &RoutineInstruction) -> ScopeExit {
+        let Some(region) = self.index.case_region(instruction).cloned() else {
+            self.append_instruction(state.block, instruction.id);
+            return state;
+        };
+        self.append_instruction(state.block, instruction.id);
+        let join = self.new_block(RoutineBlockKind::Body, zero_range(instruction.range.end));
+        let mut join_reachable = false;
+
+        for when_scope in region.when_scopes {
+            let when_entry = self.new_block(RoutineBlockKind::Body, zero_range(region.range.start));
+            self.add_edge(state.block, when_entry, RoutineEdgeKind::Branch);
+            let when_exit = self.build_scope(
+                when_scope,
+                ScopeExit {
+                    block: when_entry,
+                    reachable: state.reachable,
+                },
+            );
+            if when_exit.reachable {
+                self.add_edge(when_exit.block, join, RoutineEdgeKind::Fallthrough);
+                join_reachable = true;
+            }
+        }
+
+        if !region.has_when_others {
+            self.add_edge(state.block, join, RoutineEdgeKind::Fallthrough);
+            join_reachable |= state.reachable;
+        }
+
+        ScopeExit {
+            block: join,
+            reachable: join_reachable,
+        }
+    }
+
+    fn handle_try(&mut self, state: ScopeExit, instruction: &RoutineInstruction) -> ScopeExit {
+        let Some(region) = self.index.try_region(instruction).cloned() else {
+            self.append_instruction(state.block, instruction.id);
+            return state;
+        };
+        self.append_instruction(state.block, instruction.id);
+        let join = self.new_block(RoutineBlockKind::Body, zero_range(instruction.range.end));
+        let body_entry = self.new_block(RoutineBlockKind::Body, zero_range(region.range.start));
+        let catch_entries: Vec<_> = region
+            .catch_scopes
+            .iter()
+            .map(|_| self.new_block(RoutineBlockKind::Body, zero_range(region.range.start)))
+            .collect();
+        let cleanup_entry = region
+            .cleanup_scope
+            .map(|_| self.new_block(RoutineBlockKind::Body, zero_range(region.range.start)));
+
+        self.add_edge(state.block, body_entry, RoutineEdgeKind::SyntheticFlow);
+        for &catch_entry in &catch_entries {
+            self.add_edge(state.block, catch_entry, RoutineEdgeKind::Exceptional);
+        }
+        if let Some(cleanup_entry) = cleanup_entry {
+            self.add_edge(state.block, cleanup_entry, RoutineEdgeKind::Exceptional);
+        }
+
+        self.try_stack.push(TryFrame {
+            catch_entries: catch_entries.clone(),
+            cleanup_entry,
+        });
+        let body_exit = self.build_scope(
+            region.body_scope,
+            ScopeExit {
+                block: body_entry,
+                reachable: state.reachable,
+            },
+        );
+        self.try_stack.pop();
+
+        let mut join_reachable = false;
+        if body_exit.reachable {
+            self.add_edge(body_exit.block, join, RoutineEdgeKind::Fallthrough);
+            join_reachable = true;
+        }
+
+        for (catch_scope, catch_entry) in region.catch_scopes.into_iter().zip(catch_entries) {
+            let catch_exit = self.build_scope(
+                catch_scope,
+                ScopeExit {
+                    block: catch_entry,
+                    reachable: state.reachable,
+                },
+            );
+            if catch_exit.reachable {
+                self.add_edge(catch_exit.block, join, RoutineEdgeKind::Fallthrough);
+                join_reachable = true;
+            }
+        }
+
+        if let Some(cleanup_scope) = region.cleanup_scope
+            && let Some(cleanup_entry) = cleanup_entry
+        {
+            let cleanup_exit = self.build_scope(
+                cleanup_scope,
+                ScopeExit {
+                    block: cleanup_entry,
+                    reachable: state.reachable,
+                },
+            );
+            if cleanup_exit.reachable {
+                self.add_edge(cleanup_exit.block, join, RoutineEdgeKind::Fallthrough);
+                join_reachable = true;
+            }
+        }
+
+        ScopeExit {
+            block: join,
+            reachable: join_reachable,
+        }
+    }
+
+    fn handle_loop(
+        &mut self,
+        state: ScopeExit,
+        instruction: &RoutineInstruction,
+        kind: crate::RoutineLoopKind,
+    ) -> ScopeExit {
+        let Some(region) = self.index.loop_region(instruction, kind).cloned() else {
+            self.append_instruction(state.block, instruction.id);
+            return state;
+        };
+        let header = if self.block_has_instructions(state.block) {
+            let header =
+                self.new_block(RoutineBlockKind::Body, zero_range(instruction.range.start));
+            self.add_edge(state.block, header, RoutineEdgeKind::Fallthrough);
+            header
+        } else {
+            state.block
+        };
+        self.append_instruction(header, instruction.id);
+
+        let body_entry = self.new_block(RoutineBlockKind::Body, zero_range(region.range.start));
+        let after_loop = self.new_block(RoutineBlockKind::Body, zero_range(instruction.range.end));
+        self.add_edge(header, body_entry, RoutineEdgeKind::LoopEnter);
+        self.add_edge(header, after_loop, RoutineEdgeKind::LoopExit);
+
+        self.loop_stack.push(LoopFrame { header, after_loop });
+        let body_exit = self.build_scope(
+            region.body_scope,
+            ScopeExit {
+                block: body_entry,
+                reachable: state.reachable,
+            },
+        );
+        self.loop_stack.pop();
+        if body_exit.reachable {
+            self.add_edge(body_exit.block, header, RoutineEdgeKind::LoopBack);
+        }
+
+        ScopeExit {
+            block: after_loop,
+            reachable: state.reachable,
+        }
+    }
+
+    fn handle_terminator(
+        &mut self,
+        state: ScopeExit,
+        instruction: &RoutineInstruction,
+        kind: RoutineTerminatorKind,
+    ) -> ScopeExit {
+        self.append_instruction(state.block, instruction.id);
+        match kind {
+            RoutineTerminatorKind::Return => {
+                self.add_edge(state.block, self.exit, RoutineEdgeKind::Return);
+                self.new_disconnected_successor(instruction.range.end)
+            }
+            RoutineTerminatorKind::Raise => {
+                let mut targeted = false;
+                if let Some(frame) = self.try_stack.last().cloned() {
+                    if let Some(cleanup_entry) = frame.cleanup_entry {
+                        self.add_edge(state.block, cleanup_entry, RoutineEdgeKind::Exceptional);
+                        targeted = true;
+                    }
+                    for catch_entry in frame.catch_entries {
+                        self.add_edge(state.block, catch_entry, RoutineEdgeKind::Raise);
+                        targeted = true;
+                    }
+                }
+                if !targeted {
+                    self.add_edge(state.block, self.exit, RoutineEdgeKind::Raise);
+                }
+                self.new_disconnected_successor(instruction.range.end)
+            }
+            RoutineTerminatorKind::Leave => {
+                let next =
+                    self.new_block(RoutineBlockKind::Body, zero_range(instruction.range.end));
+                self.add_edge(state.block, self.exit, RoutineEdgeKind::Leave);
+                self.add_edge(state.block, next, RoutineEdgeKind::Fallthrough);
+                ScopeExit {
+                    block: next,
+                    reachable: state.reachable,
+                }
+            }
+            RoutineTerminatorKind::LeaveListProcessing => {
+                if leave_list_processing_is_guaranteed_exit(&self.routine.descriptor) {
+                    self.add_edge(state.block, self.exit, RoutineEdgeKind::Leave);
+                    self.new_disconnected_successor(instruction.range.end)
+                } else {
+                    let next =
+                        self.new_block(RoutineBlockKind::Body, zero_range(instruction.range.end));
+                    self.add_edge(state.block, self.exit, RoutineEdgeKind::Leave);
+                    self.add_edge(state.block, next, RoutineEdgeKind::Fallthrough);
+                    ScopeExit {
+                        block: next,
+                        reachable: state.reachable,
+                    }
+                }
+            }
+            RoutineTerminatorKind::Exit => {
+                if let Some(frame) = self.loop_stack.last().copied() {
+                    self.add_edge(state.block, frame.after_loop, RoutineEdgeKind::Exit);
+                    self.new_disconnected_successor(instruction.range.end)
+                } else {
+                    let next =
+                        self.new_block(RoutineBlockKind::Body, zero_range(instruction.range.end));
+                    self.add_edge(state.block, self.exit, RoutineEdgeKind::Exit);
+                    self.add_edge(state.block, next, RoutineEdgeKind::Fallthrough);
+                    ScopeExit {
+                        block: next,
+                        reachable: state.reachable,
+                    }
+                }
+            }
+            RoutineTerminatorKind::Continue => {
+                if let Some(frame) = self.loop_stack.last().copied() {
+                    self.add_edge(state.block, frame.header, RoutineEdgeKind::Continue);
+                    self.new_disconnected_successor(instruction.range.end)
+                } else {
+                    let next =
+                        self.new_block(RoutineBlockKind::Body, zero_range(instruction.range.end));
+                    self.add_edge(state.block, next, RoutineEdgeKind::Fallthrough);
+                    ScopeExit {
+                        block: next,
+                        reachable: state.reachable,
+                    }
+                }
+            }
+        }
+    }
+
+    fn finalize(&mut self) {
+        for edge in &self.edges {
+            push_unique(&mut self.blocks[edge.from.as_usize()].successors, edge.to);
+            push_unique(&mut self.blocks[edge.to.as_usize()].predecessors, edge.from);
+        }
+
+        let mut queue = VecDeque::new();
+        self.blocks[self.entry.as_usize()].reachable = true;
+        queue.push_back(self.entry);
+        while let Some(block_id) = queue.pop_front() {
+            let successors = self.blocks[block_id.as_usize()].successors.clone();
+            for successor in successors {
+                let block = &mut self.blocks[successor.as_usize()];
+                if !block.reachable {
+                    block.reachable = true;
+                    queue.push_back(successor);
+                }
+            }
+        }
+    }
+
+    fn new_block(&mut self, kind: RoutineBlockKind, range: TextRange) -> RoutineBlockId {
+        let id = RoutineBlockId(self.blocks.len() as u32);
+        self.blocks.push(RoutineBlock {
+            id,
+            kind,
+            range,
+            instructions: Vec::new(),
+            predecessors: Vec::new(),
+            successors: Vec::new(),
+            reachable: false,
+        });
+        id
+    }
+
+    fn block_has_instructions(&self, block: RoutineBlockId) -> bool {
+        !self.blocks[block.as_usize()].instructions.is_empty()
+    }
+
+    fn append_instruction(&mut self, block: RoutineBlockId, instruction: RoutineInstrId) {
+        let instruction = &self.routine.ir.instructions[instruction.as_usize()];
+        let block_data = &mut self.blocks[block.as_usize()];
+        if block_data.instructions.is_empty() {
+            block_data.range = instruction.range.clone();
+        } else {
+            block_data.range.start = block_data.range.start.min(instruction.range.start);
+            block_data.range.end = block_data.range.end.max(instruction.range.end);
+        }
+        block_data.instructions.push(instruction.id);
+    }
+
+    fn add_edge(&mut self, from: RoutineBlockId, to: RoutineBlockId, kind: RoutineEdgeKind) {
+        self.edges.push(RoutineEdge { from, to, kind });
+    }
+
+    fn new_disconnected_successor(&mut self, offset: usize) -> ScopeExit {
+        ScopeExit {
+            block: self.new_block(RoutineBlockKind::Body, zero_range(offset)),
+            reachable: false,
+        }
+    }
+}
+
+fn build_routine_cfg_and_diagnostics(
+    unit: &UnitAnalysis,
+    scope_to_routine: &[Option<RoutineId>],
+    routine: &RoutineAnalysis,
+) -> (RoutineCfg, Vec<Diagnostic>) {
+    let index = RoutineBuildIndex::new(unit, scope_to_routine, routine);
+    let cfg = CfgBuilder::new(unit, routine, index).build();
+    let diagnostics = unreachable_diagnostics_for_cfg(routine, &cfg);
+    (cfg, diagnostics)
+}
+
+fn unreachable_diagnostics_for_cfg(routine: &RoutineAnalysis, cfg: &RoutineCfg) -> Vec<Diagnostic> {
+    let mut ranges: Vec<_> = cfg
+        .blocks
+        .iter()
+        .filter(|block| {
+            block.kind == RoutineBlockKind::Body
+                && !block.reachable
+                && !block.instructions.is_empty()
+        })
+        .map(|block| block.range.clone())
+        .collect();
+    ranges.sort_by(|left, right| left.start.cmp(&right.start).then(right.end.cmp(&left.end)));
+
+    let mut diagnostics = Vec::new();
+    let mut kept_ranges = Vec::new();
+    for range in ranges {
+        if kept_ranges
+            .iter()
+            .any(|kept: &TextRange| kept.start <= range.start && range.end <= kept.end)
+        {
+            continue;
+        }
+        kept_ranges.push(range.clone());
+        diagnostics.push(Diagnostic {
+            kind: DiagnosticKind::UnreachableCode,
+            range,
+            message: format!("unreachable code in routine '{}'", routine.descriptor.name),
+        });
+    }
+    diagnostics.sort_by(|left, right| {
+        left.range
+            .start
+            .cmp(&right.range.start)
+            .then(left.range.end.cmp(&right.range.end))
+            .then(left.message.cmp(&right.message))
+    });
+    diagnostics
 }
 
 fn build_routine_dataflow(
@@ -438,7 +1181,11 @@ fn build_routine_dataflow(
             }
             RoutineInstructionSite::Call { .. }
             | RoutineInstructionSite::Perform { .. }
-            | RoutineInstructionSite::SqlQuery { .. } => {}
+            | RoutineInstructionSite::SqlQuery { .. }
+            | RoutineInstructionSite::UnknownEffect
+            | RoutineInstructionSite::Branch { .. }
+            | RoutineInstructionSite::LoopHeader { .. }
+            | RoutineInstructionSite::Terminator { .. } => {}
         }
         instruction_summaries.push(InstructionDataflowSummary {
             instruction: instruction.id,
@@ -447,47 +1194,80 @@ fn build_routine_dataflow(
         });
     }
 
-    let body_written = sorted_unique_value_ids(
-        instruction_summaries
-            .iter()
-            .flat_map(|summary| summary.writes.iter().copied()),
-    );
-    let mut block_entry = Vec::with_capacity(routine.cfg.blocks.len());
-    let mut block_exit = Vec::with_capacity(routine.cfg.blocks.len());
-    for block in &routine.cfg.blocks {
-        match block.kind {
-            RoutineBlockKind::Entry => {
-                block_entry.push(BlockDataflowSummary {
-                    block: block.id,
-                    maybe_written_values: Vec::new(),
-                });
-                block_exit.push(BlockDataflowSummary {
-                    block: block.id,
-                    maybe_written_values: Vec::new(),
-                });
+    let local_writes: Vec<Vec<DataflowValueId>> = routine
+        .cfg
+        .blocks
+        .iter()
+        .map(|block| {
+            sorted_unique_value_ids(
+                block
+                    .instructions
+                    .iter()
+                    .filter_map(|instruction| instruction_summaries.get(instruction.as_usize()))
+                    .flat_map(|summary| summary.writes.iter().copied()),
+            )
+        })
+        .collect();
+
+    let mut block_entry_values = vec![Vec::new(); routine.cfg.blocks.len()];
+    let mut block_exit_values = vec![Vec::new(); routine.cfg.blocks.len()];
+    let mut changed = true;
+    let mut iterations = 0u32;
+    while changed {
+        changed = false;
+        iterations += 1;
+        for block in &routine.cfg.blocks {
+            let block_idx = block.id.as_usize();
+            let next_entry = if block.kind == RoutineBlockKind::Entry || !block.reachable {
+                Vec::new()
+            } else {
+                sorted_unique_value_ids(
+                    block
+                        .predecessors
+                        .iter()
+                        .filter_map(|predecessor| block_exit_values.get(predecessor.as_usize()))
+                        .flat_map(|values| values.iter().copied()),
+                )
+            };
+            let next_exit = if !block.reachable {
+                Vec::new()
+            } else {
+                sorted_unique_value_ids(
+                    next_entry
+                        .iter()
+                        .copied()
+                        .chain(local_writes[block_idx].iter().copied()),
+                )
+            };
+            if block_entry_values[block_idx] != next_entry {
+                block_entry_values[block_idx] = next_entry;
+                changed = true;
             }
-            RoutineBlockKind::Body => {
-                block_entry.push(BlockDataflowSummary {
-                    block: block.id,
-                    maybe_written_values: Vec::new(),
-                });
-                block_exit.push(BlockDataflowSummary {
-                    block: block.id,
-                    maybe_written_values: body_written.clone(),
-                });
-            }
-            RoutineBlockKind::Exit => {
-                block_entry.push(BlockDataflowSummary {
-                    block: block.id,
-                    maybe_written_values: body_written.clone(),
-                });
-                block_exit.push(BlockDataflowSummary {
-                    block: block.id,
-                    maybe_written_values: body_written.clone(),
-                });
+            if block_exit_values[block_idx] != next_exit {
+                block_exit_values[block_idx] = next_exit;
+                changed = true;
             }
         }
     }
+
+    let block_entry = routine
+        .cfg
+        .blocks
+        .iter()
+        .map(|block| BlockDataflowSummary {
+            block: block.id,
+            maybe_written_values: block_entry_values[block.id.as_usize()].clone(),
+        })
+        .collect();
+    let block_exit = routine
+        .cfg
+        .blocks
+        .iter()
+        .map(|block| BlockDataflowSummary {
+            block: block.id,
+            maybe_written_values: block_exit_values[block.id.as_usize()].clone(),
+        })
+        .collect();
 
     (
         RoutineDataflowInputs {
@@ -496,7 +1276,7 @@ fn build_routine_dataflow(
         },
         RoutineDataflowResult {
             converged: true,
-            iterations: 1,
+            iterations: iterations.max(1),
             block_entry,
             block_exit,
         },
@@ -570,6 +1350,10 @@ fn instruction_kind_sort_key(kind: RoutineInstructionKind) -> u8 {
         RoutineInstructionKind::Perform => 2,
         RoutineInstructionKind::SqlQuery => 3,
         RoutineInstructionKind::ValueRead => 4,
+        RoutineInstructionKind::UnknownEffect => 5,
+        RoutineInstructionKind::Branch => 6,
+        RoutineInstructionKind::LoopHeader => 7,
+        RoutineInstructionKind::Terminator => 8,
     }
 }
 
@@ -580,6 +1364,25 @@ fn instruction_site_sort_key(site: RoutineInstructionSite) -> u32 {
         | RoutineInstructionSite::Perform { index }
         | RoutineInstructionSite::SqlQuery { index } => index,
         RoutineInstructionSite::ValueRead { reference } => reference.0,
+        RoutineInstructionSite::UnknownEffect => 0,
+        RoutineInstructionSite::Branch { kind } => match kind {
+            RoutineBranchKind::If => 0,
+            RoutineBranchKind::Case => 1,
+            RoutineBranchKind::Try => 2,
+        },
+        RoutineInstructionSite::LoopHeader { kind } => match kind {
+            crate::RoutineLoopKind::While => 0,
+            crate::RoutineLoopKind::Do => 1,
+            crate::RoutineLoopKind::Loop => 2,
+        },
+        RoutineInstructionSite::Terminator { kind } => match kind {
+            RoutineTerminatorKind::Return => 0,
+            RoutineTerminatorKind::Raise => 1,
+            RoutineTerminatorKind::Leave => 2,
+            RoutineTerminatorKind::LeaveListProcessing => 3,
+            RoutineTerminatorKind::Exit => 4,
+            RoutineTerminatorKind::Continue => 5,
+        },
     }
 }
 
@@ -651,4 +1454,47 @@ fn dataflow_value_kind(kind: SymbolKind) -> DataflowValueKind {
         | SymbolKind::Control
         | SymbolKind::Report => DataflowValueKind::Other,
     }
+}
+
+fn leave_list_processing_is_guaranteed_exit(descriptor: &RoutineDescriptor) -> bool {
+    descriptor.kind == RoutineKind::EventBlock
+        && matches!(
+            descriptor.name.as_ref(),
+            "initialization"
+                | "start-of-selection"
+                | "end-of-selection"
+                | "top-of-page"
+                | "end-of-page"
+        )
+}
+
+fn control_key(scope: ScopeId, range: &TextRange, tag: u8) -> ControlKey {
+    ControlKey {
+        scope,
+        start: range.start,
+        end: range.end,
+        tag,
+    }
+}
+
+fn loop_tag(data: &LoopRegionData) -> u8 {
+    loop_tag_kind(data.kind)
+}
+
+fn loop_tag_kind(kind: crate::RoutineLoopKind) -> u8 {
+    match kind {
+        crate::RoutineLoopKind::While => 3,
+        crate::RoutineLoopKind::Do => 4,
+        crate::RoutineLoopKind::Loop => 5,
+    }
+}
+
+fn push_unique(values: &mut Vec<RoutineBlockId>, value: RoutineBlockId) {
+    if !values.contains(&value) {
+        values.push(value);
+    }
+}
+
+fn zero_range(offset: usize) -> TextRange {
+    offset..offset
 }

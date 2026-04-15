@@ -71,40 +71,38 @@ impl<'a> Collector<'a> {
             SyntaxKind::InterfaceDecl => self.class_lowering().walk_interface_decl(node, scope),
             SyntaxKind::MethodDecl => self.decl_lowering().walk_method_decl(node, scope),
             SyntaxKind::IfStmt => self.control_lowering().walk_if_stmt(node, scope),
+            SyntaxKind::CaseStmt => self.control_lowering().walk_case_stmt(node, scope),
             SyntaxKind::ElseifClause => {
-                self.control_lowering().walk_nested_block(
+                let _ = self.control_lowering().walk_nested_block(
                     node,
                     scope,
                     crate::ScopeKind::ElseifBranch,
                 );
             }
             SyntaxKind::ElseClause => {
-                self.control_lowering().walk_nested_block(
+                let _ = self.control_lowering().walk_nested_block(
                     node,
                     scope,
                     crate::ScopeKind::ElseBranch,
                 );
             }
-            SyntaxKind::WhenClause => self.control_lowering().walk_when_clause(node, scope),
-            SyntaxKind::WhileStmt => {
-                self.control_lowering()
-                    .walk_nested_block(node, scope, crate::ScopeKind::WhileBlock)
+            SyntaxKind::WhenClause => {
+                let _ = self.control_lowering().walk_when_clause(node, scope);
             }
-            SyntaxKind::DoStmt => {
-                self.control_lowering()
-                    .walk_nested_block(node, scope, crate::ScopeKind::DoBlock)
-            }
+            SyntaxKind::WhileStmt => self.control_lowering().walk_while_stmt(node, scope),
+            SyntaxKind::DoStmt => self.control_lowering().walk_do_stmt(node, scope),
             SyntaxKind::LoopStmt => self.control_lowering().walk_loop_stmt(node, scope),
-            SyntaxKind::TryStmt => {
-                self.control_lowering()
-                    .walk_nested_block(node, scope, crate::ScopeKind::TryBlock)
+            SyntaxKind::TryStmt => self.control_lowering().walk_try_stmt(node, scope),
+            SyntaxKind::CatchClause => {
+                let _ = self.control_lowering().walk_catch_clause(node, scope);
             }
-            SyntaxKind::CatchClause => self.control_lowering().walk_catch_clause(node, scope),
-            SyntaxKind::CleanupClause => self.control_lowering().walk_nested_block(
-                node,
-                scope,
-                crate::ScopeKind::CleanupClause,
-            ),
+            SyntaxKind::CleanupClause => {
+                let _ = self.control_lowering().walk_nested_block(
+                    node,
+                    scope,
+                    crate::ScopeKind::CleanupClause,
+                );
+            }
             SyntaxKind::SelectStmt => self.sql_lowering().collect_select_stmt(node, scope),
             SyntaxKind::AppendStmt
             | SyntaxKind::InsertTableStmt
@@ -169,6 +167,7 @@ impl<'a> Collector<'a> {
                 .stmt_lowering()
                 .collect_generic_simple_stmt(node, scope),
             SyntaxKind::RaiseStmt => self.stmt_lowering().collect_raise_stmt(node, scope),
+            SyntaxKind::LeaveStmt => self.stmt_lowering().collect_leave_stmt(node, scope),
             SyntaxKind::TypePoolsStmt => {}
             SyntaxKind::MethodsStmt => self.stmt_lowering().collect_methods_stmt(node, scope),
             SyntaxKind::InterfacesStmt => self.stmt_lowering().collect_interfaces_stmt(node, scope),

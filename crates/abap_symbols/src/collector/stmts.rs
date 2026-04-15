@@ -9,8 +9,8 @@ use abap_ast::ast::{
 };
 
 use crate::def_map::{
-    FieldTypeRefData, NamedArgumentTarget, ReferenceKind, SymbolKind, TypeFactData,
-    ValueFlowEdgeData, ValueFlowKind, ValueFlowTargetData,
+    FieldTypeRefData, NamedArgumentTarget, ReferenceKind, RoutineSiteData, RoutineSiteKind,
+    SymbolKind, TypeFactData, ValueFlowEdgeData, ValueFlowKind, ValueFlowTargetData,
 };
 use crate::ids::ScopeId;
 use crate::scope::Namespace;
@@ -29,6 +29,68 @@ impl<'a> Collector<'a> {
 }
 
 impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
+    fn collect_leave_operand_tokens(&mut self, tail: &[SyntaxTokenInfo], scope: ScopeId) {
+        if tail.is_empty() {
+            return;
+        }
+
+        if Self::tokens_match_keyword_sequence(tail, &["list", "-", "processing"])
+            || Self::tokens_match_keyword_sequence(tail, &["program"])
+            || Self::tokens_match_keyword_sequence(tail, &["screen"])
+        {
+            return;
+        }
+
+        if Self::tokens_match_keyword_sequence(tail, &["to", "screen"]) {
+            self.collector
+                .collect_token_expression_refs_infos(&tail[2..], scope, true);
+            return;
+        }
+
+        if Self::tokens_match_keyword_sequence(tail, &["to", "transaction"]) {
+            self.collector
+                .collect_token_expression_refs_infos(&tail[2..], scope, true);
+            return;
+        }
+
+        if Self::tokens_match_keyword_sequence(tail, &["to", "list", "-", "processing"]) {
+            if let Some(screen_idx) = tail.windows(4).position(|window| {
+                Self::tokens_match_keyword_sequence(window, &["and", "return", "to", "screen"])
+            }) {
+                let expr_start = screen_idx + 4;
+                if expr_start < tail.len() {
+                    self.collector.collect_token_expression_refs_infos(
+                        &tail[expr_start..],
+                        scope,
+                        true,
+                    );
+                }
+            }
+            return;
+        }
+
+        self.collector
+            .collect_token_expression_refs_infos(tail, scope, true);
+    }
+
+    fn record_routine_site(
+        &mut self,
+        scope: ScopeId,
+        range: abap_lexer::TextRange,
+        kind: RoutineSiteKind,
+    ) {
+        self.collector
+            .add_routine_site(RoutineSiteData { scope, range, kind });
+    }
+
+    fn record_unknown_effect(&mut self, node: NodeId, scope: ScopeId) {
+        self.record_routine_site(
+            scope,
+            self.collector.file.range(node),
+            RoutineSiteKind::UnknownEffect,
+        );
+    }
+
     fn tokens_match_keyword_sequence(tokens: &[SyntaxTokenInfo], keywords: &[&str]) -> bool {
         tokens.len() >= keywords.len()
             && tokens
@@ -339,6 +401,7 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
     }
 
     pub(super) fn collect_delete_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        self.record_unknown_effect(node, scope);
         let Some((stmt_source_expr, stmt_where_expr)) =
             DeleteStmt::cast(self.collector.syntax(node)).map(|stmt| {
                 (
@@ -391,6 +454,7 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
     }
 
     pub(super) fn collect_modify_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        self.record_unknown_effect(node, scope);
         let (saw_table_keyword, head_expr, from_expr) = self.modify_stmt_operands(node);
         if !saw_table_keyword
             && from_expr.is_some()
@@ -411,6 +475,7 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
     }
 
     pub(super) fn collect_read_table_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        self.record_unknown_effect(node, scope);
         if let Some(stmt) = ReadTableStmt::cast(self.collector.syntax(node)) {
             let data_inline_targets: Vec<_> = stmt
                 .data_inline_targets()
@@ -494,6 +559,7 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
     }
 
     pub(super) fn collect_message_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        self.record_unknown_effect(node, scope);
         let Some((
             head_clause_id,
             with_clause_id,
@@ -691,6 +757,38 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             return;
         };
 
+        if head.text.eq_ignore_ascii_case("return") {
+            self.record_routine_site(
+                scope,
+                self.collector.file.range(node),
+                RoutineSiteKind::Return,
+            );
+        } else if head.text.eq_ignore_ascii_case("raise") {
+            self.record_routine_site(
+                scope,
+                self.collector.file.range(node),
+                RoutineSiteKind::Raise,
+            );
+        } else if head.text.eq_ignore_ascii_case("leave") {
+            self.record_routine_site(
+                scope,
+                self.collector.file.range(node),
+                RoutineSiteKind::Leave,
+            );
+        } else if head.text.eq_ignore_ascii_case("exit") {
+            self.record_routine_site(
+                scope,
+                self.collector.file.range(node),
+                RoutineSiteKind::Exit,
+            );
+        } else if head.text.eq_ignore_ascii_case("continue") {
+            self.record_routine_site(
+                scope,
+                self.collector.file.range(node),
+                RoutineSiteKind::Continue,
+            );
+        }
+
         if (head.text.eq_ignore_ascii_case("commit") || head.text.eq_ignore_ascii_case("rollback"))
             && matches!(tail.first(), Some(token) if token.text.eq_ignore_ascii_case("work"))
         {
@@ -733,11 +831,13 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             return;
         }
 
+        self.record_unknown_effect(node, scope);
         self.collector
             .collect_token_expression_refs_infos(tail, scope, true);
     }
 
     pub(super) fn collect_wait_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        self.record_unknown_effect(node, scope);
         if let Some(stmt) = WaitStmt::cast(self.collector.syntax(node))
             && let Some(duration) = stmt.duration().and_then(|operand| operand.value())
         {
@@ -818,6 +918,7 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
     }
 
     pub(super) fn collect_clear_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        self.record_unknown_effect(node, scope);
         if let Some(stmt) = ClearStmt::cast(self.collector.syntax(node)) {
             let operands: Vec<_> = stmt
                 .operands()
@@ -831,6 +932,7 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
     }
 
     pub(super) fn collect_describe_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        self.record_unknown_effect(node, scope);
         if let Some(stmt) = DescribeStmt::cast(self.collector.syntax(node)) {
             let table_operand = stmt
                 .table_operand()
@@ -853,6 +955,7 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
     }
 
     pub(super) fn collect_convert_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        self.record_unknown_effect(node, scope);
         if let Some(stmt) = ConvertStmt::cast(self.collector.syntax(node)) {
             let mut operands: Vec<_> = stmt
                 .operands()
@@ -872,6 +975,7 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
     }
 
     pub(super) fn collect_replace_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        self.record_unknown_effect(node, scope);
         if let Some(stmt) = ReplaceStmt::cast(self.collector.syntax(node)) {
             let operands: Vec<_> = stmt
                 .patterns()
@@ -905,6 +1009,11 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             return;
         };
 
+        self.record_routine_site(
+            scope,
+            self.collector.file.range(node),
+            RoutineSiteKind::Raise,
+        );
         self.collector
             .decl_lowering()
             .collect_type_ref(type_ref_id, scope);
@@ -917,6 +1026,27 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             self.collector
                 .collect_token_expression_refs_infos(&trailing_tokens, scope, true);
         }
+    }
+
+    pub(super) fn collect_leave_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        let significant = self.collector.significant_stmt_token_infos(node);
+        let Some((head, tail)) = significant.split_first() else {
+            return;
+        };
+
+        if !head.text.eq_ignore_ascii_case("leave") {
+            self.collect_generic_simple_stmt(node, scope);
+            return;
+        }
+
+        let kind = if Self::tokens_match_keyword_sequence(tail, &["list", "-", "processing"]) {
+            RoutineSiteKind::LeaveListProcessing
+        } else {
+            RoutineSiteKind::Leave
+        };
+        self.record_routine_site(scope, self.collector.file.range(node), kind);
+        self.record_unknown_effect(node, scope);
+        self.collect_leave_operand_tokens(tail, scope);
     }
 
     fn collect_aliases_stmt_infos(&mut self, tokens: &[SyntaxTokenInfo], scope: ScopeId) {
@@ -1046,6 +1176,7 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
     }
 
     pub(super) fn collect_find_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        self.record_unknown_effect(node, scope);
         if let Some(stmt) = FindStmt::cast(self.collector.syntax(node)) {
             let mut operand_ids = Vec::new();
             if let Some(pattern) = stmt.pattern().and_then(|operand| operand.value()) {
@@ -1089,6 +1220,7 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
     }
 
     pub(super) fn collect_get_time_stamp_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        self.record_unknown_effect(node, scope);
         if self.collector.node_has_structured_children(node) {
             self.collector.walk_children(node, scope);
             return;
@@ -1168,6 +1300,7 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
     }
 
     pub(super) fn collect_assert_or_check_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        self.record_unknown_effect(node, scope);
         if self.collector.node_has_structured_children(node) {
             self.collector.walk_children(node, scope);
             return;
@@ -1181,6 +1314,7 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
     }
 
     pub(super) fn collect_create_object_stmt_node(&mut self, node: NodeId, scope: ScopeId) {
+        self.record_unknown_effect(node, scope);
         if let Some(stmt) = CreateObjectStmt::cast(self.collector.syntax(node)) {
             let target_id = stmt.target().map(|target| target.id());
             let type_ref_id = stmt.type_ref().map(|type_ref| type_ref.syntax().id());
@@ -1244,6 +1378,7 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
     }
 
     pub(super) fn collect_create_data_stmt_node(&mut self, node: NodeId, scope: ScopeId) {
+        self.record_unknown_effect(node, scope);
         if let Some(stmt) = CreateDataStmt::cast(self.collector.syntax(node)) {
             let target_id = stmt.target().map(|target| target.id());
             let clause_kind = stmt.type_clause_kind(self.collector.source);
@@ -1565,6 +1700,7 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
     }
 
     pub(super) fn collect_write_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        self.record_unknown_effect(node, scope);
         if let Some(stmt) = WriteStmt::cast(self.collector.syntax(node)) {
             let operand_ids: Vec<_> = stmt.operands().map(|child| child.id()).collect();
             if !operand_ids.is_empty() {
@@ -1583,6 +1719,7 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
     }
 
     pub(super) fn collect_split_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        self.record_unknown_effect(node, scope);
         if SplitStmt::cast(self.collector.syntax(node)).is_some() {
             let byte_mode = self.collector.file.children(node).any(|child| {
                 self.collector.file.kind(child) == SyntaxKind::Token
@@ -1634,6 +1771,7 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
     }
 
     pub(super) fn collect_concatenate_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        self.record_unknown_effect(node, scope);
         if let Some(stmt) = ConcatenateStmt::cast(self.collector.syntax(node)) {
             let byte_mode = self.collector.file.children(node).any(|child| {
                 self.collector.file.kind(child) == SyntaxKind::Token
@@ -1681,6 +1819,7 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
     }
 
     pub(super) fn collect_update_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        self.record_unknown_effect(node, scope);
         self.collector
             .sql_lowering()
             .collect_update_db_table_stmt(node, scope);

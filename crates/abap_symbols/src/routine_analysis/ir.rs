@@ -3,6 +3,7 @@ use std::sync::Arc;
 use abap_lexer::TextRange;
 
 use crate::ReferenceId;
+use crate::def_map::RoutineLoopKind;
 use crate::ids::{ScopeId, SymbolHandle, UnitId};
 
 use super::ids::{RoutineId, RoutineInstrId};
@@ -15,6 +16,23 @@ pub enum RoutineKind {
     EventBlock,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RoutineBranchKind {
+    If,
+    Case,
+    Try,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RoutineTerminatorKind {
+    Return,
+    Raise,
+    Leave,
+    LeaveListProcessing,
+    Exit,
+    Continue,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RoutineDescriptor {
     pub id: RoutineId,
@@ -25,6 +43,7 @@ pub struct RoutineDescriptor {
     pub name: Arc<str>,
     pub decl_range: TextRange,
     pub scope_range: TextRange,
+    pub executable_range: Option<TextRange>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -34,6 +53,10 @@ pub enum RoutineInstructionKind {
     Perform,
     SqlQuery,
     ValueRead,
+    UnknownEffect,
+    Branch,
+    LoopHeader,
+    Terminator,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -43,6 +66,10 @@ pub enum RoutineInstructionSite {
     Perform { index: u32 },
     SqlQuery { index: u32 },
     ValueRead { reference: ReferenceId },
+    UnknownEffect,
+    Branch { kind: RoutineBranchKind },
+    LoopHeader { kind: RoutineLoopKind },
+    Terminator { kind: RoutineTerminatorKind },
 }
 
 impl RoutineInstructionSite {
@@ -53,6 +80,10 @@ impl RoutineInstructionSite {
             Self::Perform { .. } => RoutineInstructionKind::Perform,
             Self::SqlQuery { .. } => RoutineInstructionKind::SqlQuery,
             Self::ValueRead { .. } => RoutineInstructionKind::ValueRead,
+            Self::UnknownEffect => RoutineInstructionKind::UnknownEffect,
+            Self::Branch { .. } => RoutineInstructionKind::Branch,
+            Self::LoopHeader { .. } => RoutineInstructionKind::LoopHeader,
+            Self::Terminator { .. } => RoutineInstructionKind::Terminator,
         }
     }
 }

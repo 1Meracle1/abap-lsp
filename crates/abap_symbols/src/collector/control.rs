@@ -5,7 +5,9 @@ use abap_ast::arena::NodeId;
 use abap_ast::ast::{AstNode, ConstructorBaseClause, ConstructorExpr, SortStmt, TableExpr};
 
 use crate::def_map::{
-    FieldAccess, FieldAccessSegment, FieldTypeRefData, LoopWhereFieldContext, SymbolKind,
+    CaseRegionData, FieldAccess, FieldAccessSegment, FieldTypeRefData, IfRegionData,
+    LoopRegionData, LoopWhereFieldContext, RoutineControlRegionData, RoutineLoopKind, SymbolKind,
+    TryRegionData,
 };
 use crate::ids::{ScopeId, StructureId, SymbolId};
 use crate::scope::{Namespace, ScopeKind};
@@ -26,24 +28,72 @@ impl<'a> Collector<'a> {
 impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
     pub(super) fn walk_if_stmt(&mut self, node: NodeId, scope: ScopeId) {
         let node_range = self.collector.file.range(node);
-        let branch_scope =
+        let then_scope =
             self.collector
-                .push_scope(ScopeKind::IfBranch, node_range, Some(scope), None);
+                .push_scope(ScopeKind::IfBranch, node_range.clone(), Some(scope), None);
+        let mut elseif_scopes = Vec::new();
+        let mut else_scope = None;
         for child in self.collector.file.children(node) {
             match self.collector.file.kind(child) {
-                SyntaxKind::ElseifClause | SyntaxKind::ElseClause => {
-                    self.collector.walk_node(child, scope)
+                SyntaxKind::ElseifClause => {
+                    elseif_scopes.push(self.walk_nested_block(
+                        child,
+                        scope,
+                        ScopeKind::ElseifBranch,
+                    ));
                 }
-                _ => self.collector.walk_node(child, branch_scope),
+                SyntaxKind::ElseClause => {
+                    else_scope = Some(self.walk_nested_block(child, scope, ScopeKind::ElseBranch));
+                }
+                _ => self.collector.walk_node(child, then_scope),
             }
         }
+        self.collector
+            .add_routine_control_region(RoutineControlRegionData::If(IfRegionData {
+                scope,
+                range: node_range,
+                then_scope,
+                elseif_scopes,
+                else_scope,
+            }));
+    }
+
+    pub(super) fn walk_case_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        let node_range = self.collector.file.range(node);
+        let mut when_scopes = Vec::new();
+        let mut has_when_others = false;
+        for child in self.collector.file.children(node) {
+            match self.collector.file.kind(child) {
+                SyntaxKind::WhenClause => {
+                    let (when_scope, is_when_others) = self.walk_when_clause(child, scope);
+                    when_scopes.push(when_scope);
+                    has_when_others |= is_when_others;
+                }
+                _ => self.collector.walk_node(child, scope),
+            }
+        }
+        self.collector
+            .add_routine_control_region(RoutineControlRegionData::Case(CaseRegionData {
+                scope,
+                range: node_range,
+                when_scopes,
+                has_when_others,
+            }));
+    }
+
+    pub(super) fn walk_while_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        self.walk_loop_like_stmt(node, scope, ScopeKind::WhileBlock, RoutineLoopKind::While);
+    }
+
+    pub(super) fn walk_do_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        self.walk_loop_like_stmt(node, scope, ScopeKind::DoBlock, RoutineLoopKind::Do);
     }
 
     pub(super) fn walk_loop_stmt(&mut self, node: NodeId, scope: ScopeId) {
         let node_range = self.collector.file.range(node);
         let child_scope =
             self.collector
-                .push_scope(ScopeKind::LoopBlock, node_range, Some(scope), None);
+                .push_scope(ScopeKind::LoopBlock, node_range.clone(), Some(scope), None);
         self.collect_loop_header_node(node, child_scope);
         for child in self.collector.file.children(node) {
             match self.collector.file.kind(child) {
@@ -59,9 +109,45 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
                 _ => self.collector.walk_node(child, child_scope),
             }
         }
+        self.collector
+            .add_routine_control_region(RoutineControlRegionData::Loop(LoopRegionData {
+                scope,
+                range: node_range,
+                kind: RoutineLoopKind::Loop,
+                body_scope: child_scope,
+            }));
     }
 
-    pub(super) fn walk_catch_clause(&mut self, node: NodeId, scope: ScopeId) {
+    pub(super) fn walk_try_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        let node_range = self.collector.file.range(node);
+        let body_scope =
+            self.collector
+                .push_scope(ScopeKind::TryBlock, node_range.clone(), Some(scope), None);
+        let mut catch_scopes = Vec::new();
+        let mut cleanup_scope = None;
+        for child in self.collector.file.children(node) {
+            match self.collector.file.kind(child) {
+                SyntaxKind::CatchClause => {
+                    catch_scopes.push(self.walk_catch_clause(child, body_scope));
+                }
+                SyntaxKind::CleanupClause => {
+                    cleanup_scope =
+                        Some(self.walk_nested_block(child, body_scope, ScopeKind::CleanupClause));
+                }
+                _ => self.collector.walk_node(child, body_scope),
+            }
+        }
+        self.collector
+            .add_routine_control_region(RoutineControlRegionData::Try(TryRegionData {
+                scope,
+                range: node_range,
+                body_scope,
+                catch_scopes,
+                cleanup_scope,
+            }));
+    }
+
+    pub(super) fn walk_catch_clause(&mut self, node: NodeId, scope: ScopeId) -> ScopeId {
         let node_range = self.collector.file.range(node);
         let child_scope =
             self.collector
@@ -75,9 +161,15 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
                 _ => self.collector.walk_node(child, child_scope),
             }
         }
+        child_scope
     }
 
-    pub(super) fn walk_nested_block(&mut self, node: NodeId, scope: ScopeId, kind: ScopeKind) {
+    pub(super) fn walk_nested_block(
+        &mut self,
+        node: NodeId,
+        scope: ScopeId,
+        kind: ScopeKind,
+    ) -> ScopeId {
         let node_range = self.collector.file.range(node);
         let child_scope = self
             .collector
@@ -85,9 +177,10 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
         for child in self.collector.file.children(node) {
             self.collector.walk_node(child, child_scope);
         }
+        child_scope
     }
 
-    pub(super) fn walk_when_clause(&mut self, node: NodeId, scope: ScopeId) {
+    pub(super) fn walk_when_clause(&mut self, node: NodeId, scope: ScopeId) -> (ScopeId, bool) {
         let node_range = self.collector.file.range(node);
         let child_scope =
             self.collector
@@ -112,17 +205,18 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
             .filter(|token| !self.collector.syntax_token_is_comment(token))
             .take_while(|token| token.text.as_ref() != ".")
             .collect();
-        if meaningful_header.len() > 1
-            && !meaningful_header[1..]
+        let is_when_others = meaningful_header.len() > 1
+            && meaningful_header[1..]
                 .iter()
-                .all(|token| token.text.eq_ignore_ascii_case("others"))
-        {
+                .all(|token| token.text.eq_ignore_ascii_case("others"));
+        if meaningful_header.len() > 1 && !is_when_others {
             self.collector.collect_token_expression_refs_infos(
                 &meaningful_header[1..],
                 child_scope,
                 true,
             );
         }
+        (child_scope, is_when_others)
     }
 
     pub(super) fn select_stmt_has_endselect(&self, node: NodeId) -> bool {
@@ -224,6 +318,29 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
         }
         self.collector.scopes[scope.as_usize()].allows_internal_table_line_selector =
             allows_internal_table_line_selector;
+    }
+
+    fn walk_loop_like_stmt(
+        &mut self,
+        node: NodeId,
+        scope: ScopeId,
+        scope_kind: ScopeKind,
+        loop_kind: RoutineLoopKind,
+    ) {
+        let node_range = self.collector.file.range(node);
+        let body_scope =
+            self.collector
+                .push_scope(scope_kind, node_range.clone(), Some(scope), None);
+        for child in self.collector.file.children(node) {
+            self.collector.walk_node(child, body_scope);
+        }
+        self.collector
+            .add_routine_control_region(RoutineControlRegionData::Loop(LoopRegionData {
+                scope,
+                range: node_range,
+                kind: loop_kind,
+                body_scope,
+            }));
     }
 
     fn collect_loop_target_node(

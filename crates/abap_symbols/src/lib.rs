@@ -24,18 +24,20 @@ pub use builtins::{
 };
 pub use compatibility::{call_section_matches_parameter, parameter_is_required};
 pub use def_map::{
-    AssignmentSiteData, CallArgumentData, CallSiteData, ClassInheritanceData, ClassMemberData,
-    ClassMemberKind, ClassMemberParameterData, Diagnostic, DiagnosticKind, ExpressionFactData,
-    ExpressionFactKind, FieldAccess, FieldAccessSegment, FieldTypeRefData, FormParameterData,
-    FormParameterPassingKind, FormParameterSection, FormRoutineData, FunctionModuleData,
-    FunctionModuleExceptionData, FunctionModuleParameterData, FunctionModuleParameterSection,
-    ImplementedInterfaceData, IncludeEdge, MemberAliasData, MethodParameterSection,
-    NamedArgumentAccess, NamedArgumentSection, NamedArgumentTarget, PerformArgumentData,
-    PerformCallData, PerformParameterSection, ReferenceData, ReferenceKind, Resolution,
-    SqlNameRefData, SqlNameRefKind, SqlPredicateData, SqlPredicateKind, SqlProjectionData,
-    SqlProjectionKind, SqlQueryData, SqlResolution, SqlSourceData, SqlSourceKind, SqlTargetData,
-    SqlTargetKind, StructureData, StructureFieldData, StructureFieldInfo, StructureFieldShape,
-    SymbolData, SymbolKind, TypeFactData, UnitAnalysis, ValueFlowEdgeData, ValueFlowKind,
+    AssignmentSiteData, CallArgumentData, CallSiteData, CaseRegionData, ClassInheritanceData,
+    ClassMemberData, ClassMemberKind, ClassMemberParameterData, Diagnostic, DiagnosticKind,
+    ExpressionFactData, ExpressionFactKind, FieldAccess, FieldAccessSegment, FieldTypeRefData,
+    FormParameterData, FormParameterPassingKind, FormParameterSection, FormRoutineData,
+    FunctionModuleData, FunctionModuleExceptionData, FunctionModuleParameterData,
+    FunctionModuleParameterSection, IfRegionData, ImplementedInterfaceData, IncludeEdge,
+    LoopRegionData, MemberAliasData, MethodParameterSection, NamedArgumentAccess,
+    NamedArgumentSection, NamedArgumentTarget, PerformArgumentData, PerformCallData,
+    PerformParameterSection, ReferenceData, ReferenceKind, Resolution, RoutineControlRegionData,
+    RoutineLoopKind, RoutineSiteData, RoutineSiteKind, SqlNameRefData, SqlNameRefKind,
+    SqlPredicateData, SqlPredicateKind, SqlProjectionData, SqlProjectionKind, SqlQueryData,
+    SqlResolution, SqlSourceData, SqlSourceKind, SqlTargetData, SqlTargetKind, StructureData,
+    StructureFieldData, StructureFieldInfo, StructureFieldShape, SymbolData, SymbolKind,
+    TryRegionData, TypeFactData, UnitAnalysis, ValueFlowEdgeData, ValueFlowKind,
     ValueFlowTargetData, Visibility,
 };
 pub use dossier::*;
@@ -47,10 +49,10 @@ pub use project::{
 pub use routine_analysis::{
     BlockDataflowSummary, DataflowValueId, DataflowValueKind, InstructionDataflowSummary,
     ProjectRoutineAnalysis, ProjectRoutineAnalysisMetrics, RoutineAnalysis, RoutineBlock,
-    RoutineBlockId, RoutineBlockKind, RoutineCfg, RoutineDataflowInputs, RoutineDataflowResult,
-    RoutineDataflowValue, RoutineDescriptor, RoutineEdge, RoutineEdgeKind, RoutineId,
-    RoutineInstrId, RoutineInstruction, RoutineInstructionKind, RoutineInstructionSite, RoutineIr,
-    RoutineKind, build_project_routine_analysis,
+    RoutineBlockId, RoutineBlockKind, RoutineBranchKind, RoutineCfg, RoutineDataflowInputs,
+    RoutineDataflowResult, RoutineDataflowValue, RoutineDescriptor, RoutineEdge, RoutineEdgeKind,
+    RoutineId, RoutineInstrId, RoutineInstruction, RoutineInstructionKind, RoutineInstructionSite,
+    RoutineIr, RoutineKind, RoutineTerminatorKind, build_project_routine_analysis,
 };
 pub use scope::{Namespace, ScopeData, ScopeKind};
 pub use semantic_queries::SemanticQueries;
@@ -115,6 +117,32 @@ mod tests {
             .expect("event symbol");
         assert_eq!(event.name.as_ref(), "start-of-selection");
         assert_eq!(&src[event.decl_range.clone()], "START-OF-SELECTION");
+    }
+
+    #[test]
+    fn leave_list_processing_does_not_collect_list_as_identifier() {
+        let src = r#"
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+    LEAVE LIST-PROCESSING.
+  ENDMETHOD.
+ENDCLASS.
+"#;
+        let parsed = parse(src);
+        let unit = analyze_unit("file:///leave_list_processing.abap", src, &parsed);
+
+        assert!(
+            unit.references
+                .iter()
+                .all(|reference| reference.name.as_ref() != "list"),
+            "{:?}",
+            unit.references
+        );
     }
 
     #[test]

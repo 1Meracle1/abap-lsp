@@ -6234,6 +6234,7 @@ fn materialize_snapshots(
             .unit_by_uri(prepared.uri.as_ref())
             .cloned()
             .expect("project analysis should include every prepared document");
+        let unit = augment_unit_with_routine_diagnostics(unit, routine_analysis.as_ref());
         locals.insert(Arc::clone(&prepared.uri), prepared.local);
         uri_order.push(Arc::clone(&prepared.uri));
         snapshots.insert(
@@ -6273,6 +6274,26 @@ fn materialize_snapshots(
             metrics,
         },
     )
+}
+
+fn augment_unit_with_routine_diagnostics(
+    mut unit: UnitAnalysis,
+    routine_analysis: &ProjectRoutineAnalysis,
+) -> UnitAnalysis {
+    let diagnostics = routine_analysis.diagnostics_for_unit(unit.unit_id);
+    if diagnostics.is_empty() {
+        return unit;
+    }
+    unit.diagnostics.extend_from_slice(diagnostics);
+    unit.diagnostics.sort_by(|left, right| {
+        left.range
+            .start
+            .cmp(&right.range.start)
+            .then(left.range.end.cmp(&right.range.end))
+            .then(left.message.cmp(&right.message))
+    });
+    unit.diagnostics.dedup();
+    unit
 }
 
 fn analyze_inputs_with_progress(
@@ -7050,8 +7071,9 @@ mod tests {
         opened_function_module_dependency_analysis_text,
     };
     use abap_symbols::{
-        DiagnosticKind, ReferenceKind, RoutineBlockKind, RoutineKind, ScopeKind,
-        StructureFieldShape, SymbolHandle, SymbolKind,
+        DiagnosticKind, ReferenceKind, RoutineBlockKind, RoutineBranchKind, RoutineEdgeKind,
+        RoutineInstructionSite, RoutineKind, ScopeKind, StructureFieldShape, SymbolHandle,
+        SymbolKind,
     };
     use std::sync::Arc;
 
@@ -7502,6 +7524,397 @@ ENDCLASS.";
             &first.routine_analysis,
             &second.routine_analysis
         ));
+    }
+
+    #[test]
+    fn routine_analysis_discovers_supported_executable_regions() {
+        let store = DocumentStore::default();
+        let src = "\
+REPORT zroutine_regions.
+
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+    DATA lv_method TYPE i.
+    lv_method = 1.
+  ENDMETHOD.
+ENDCLASS.
+
+FORM local_form.
+  DATA lv_form TYPE i.
+  lv_form = 2.
+ENDFORM.
+
+FUNCTION z_demo_function.
+  DATA lv_func TYPE i.
+  lv_func = 3.
+ENDFUNCTION.
+
+START-OF-SELECTION.
+  DATA lv_event TYPE i.
+  lv_event = 4.";
+
+        let snapshot = store.publish("file:///routine_regions.abap", 1, src);
+        let routines: Vec<_> = snapshot
+            .routine_analysis()
+            .routines_for_unit(snapshot.symbols.unit_id)
+            .collect();
+
+        assert!(routines.iter().any(|routine| {
+            routine.descriptor.kind == RoutineKind::Method
+                && routine.descriptor.executable_range.is_some()
+        }));
+        assert!(routines.iter().any(|routine| {
+            routine.descriptor.kind == RoutineKind::Form
+                && routine.descriptor.executable_range.is_some()
+        }));
+        assert!(routines.iter().any(|routine| {
+            routine.descriptor.kind == RoutineKind::Module
+                && routine.descriptor.executable_range.is_some()
+        }));
+        assert!(routines.iter().any(|routine| {
+            routine.descriptor.kind == RoutineKind::EventBlock
+                && routine.descriptor.executable_range.is_some()
+        }));
+    }
+
+    #[test]
+    fn routine_analysis_marks_code_after_exhaustive_if_elseif_return_unreachable() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run IMPORTING iv_value TYPE i.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+    DATA lv_after_if TYPE i.
+    IF iv_value = 1.
+      RETURN.
+    ELSEIF iv_value = 2.
+      RETURN.
+    ELSE.
+      RETURN.
+    ENDIF.
+    lv_after_if = 1.
+  ENDMETHOD.
+ENDCLASS.";
+
+        let snapshot = store.publish("file:///routine_if_return.abap", 1, src);
+        let unreachable: Vec<_> = snapshot
+            .symbols
+            .diagnostics
+            .iter()
+            .filter(|diag| diag.kind == DiagnosticKind::UnreachableCode)
+            .collect();
+
+        assert!(
+            unreachable
+                .iter()
+                .any(|diag| { src[diag.range.clone()].contains("lv_after_if") })
+        );
+    }
+
+    #[test]
+    fn routine_analysis_coalesces_nested_unreachable_blocks_after_early_return() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS get_response IMPORTING iv_restart TYPE char1
+                                   iv_http_code TYPE char10.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD get_response.
+    RETURN.
+    IF iv_restart IS NOT INITIAL.
+      IF iv_http_code = '429'.
+        MESSAGE 'x' TYPE 'S'.
+      ELSE.
+        MESSAGE 'y' TYPE 'S'.
+      ENDIF.
+    ELSE.
+      MESSAGE 'z' TYPE 'S'.
+    ENDIF.
+  ENDMETHOD.
+ENDCLASS.";
+
+        let snapshot = store.publish("file:///routine_early_return.abap", 1, src);
+        let unreachable: Vec<_> = snapshot
+            .symbols
+            .diagnostics
+            .iter()
+            .filter(|diag| {
+                diag.kind == DiagnosticKind::UnreachableCode
+                    && diag.message.contains("get_response")
+            })
+            .collect();
+
+        assert_eq!(unreachable.len(), 1);
+        assert!(src[unreachable[0].range.clone()].contains("IF iv_restart"));
+    }
+
+    #[test]
+    fn routine_analysis_treats_leave_list_processing_in_method_as_conservative() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS get_response.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD get_response.
+    DATA lv_after_leave TYPE i.
+    LEAVE LIST-PROCESSING.
+    lv_after_leave = 1.
+  ENDMETHOD.
+ENDCLASS.";
+
+        let snapshot = store.publish("file:///leave_list_processing_method.abap", 1, src);
+        assert!(
+            snapshot.symbols.diagnostics.iter().all(|diag| {
+                diag.kind != DiagnosticKind::UnreachableCode
+                    && !diag.message.contains("unknown symbol 'list'")
+            }),
+            "{:?}",
+            snapshot.symbols.diagnostics
+        );
+    }
+
+    #[test]
+    fn routine_analysis_treats_leave_list_processing_in_event_block_as_exit() {
+        let store = DocumentStore::default();
+        let src = "\
+REPORT zleave_list_processing.
+
+START-OF-SELECTION.
+  WRITE 'before'.
+  LEAVE LIST-PROCESSING.
+  WRITE 'after'.";
+
+        let snapshot = store.publish("file:///leave_list_processing_event.abap", 1, src);
+        let unreachable: Vec<_> = snapshot
+            .symbols
+            .diagnostics
+            .iter()
+            .filter(|diag| diag.kind == DiagnosticKind::UnreachableCode)
+            .collect();
+
+        assert_eq!(unreachable.len(), 1);
+        assert!(src[unreachable[0].range.clone()].contains("WRITE 'after'"));
+        assert!(
+            snapshot
+                .symbols
+                .diagnostics
+                .iter()
+                .all(|diag| !diag.message.contains("unknown symbol 'list'")),
+            "{:?}",
+            snapshot.symbols.diagnostics
+        );
+    }
+
+    #[test]
+    fn routine_analysis_marks_code_after_exhaustive_case_return_unreachable() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run IMPORTING iv_value TYPE i.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+    DATA lv_after_case TYPE i.
+    CASE iv_value.
+      WHEN 1.
+        RETURN.
+      WHEN OTHERS.
+        RETURN.
+    ENDCASE.
+    lv_after_case = 1.
+  ENDMETHOD.
+ENDCLASS.";
+
+        let snapshot = store.publish("file:///routine_case_return.abap", 1, src);
+        let unreachable: Vec<_> = snapshot
+            .symbols
+            .diagnostics
+            .iter()
+            .filter(|diag| diag.kind == DiagnosticKind::UnreachableCode)
+            .collect();
+
+        assert!(
+            unreachable
+                .iter()
+                .any(|diag| { src[diag.range.clone()].contains("lv_after_case") })
+        );
+        let method = snapshot
+            .routine_analysis()
+            .routines_for_unit(snapshot.symbols.unit_id)
+            .find(|routine| routine.descriptor.name.as_ref() == "run")
+            .expect("method routine");
+        assert!(method.ir.instructions.iter().any(|instruction| {
+            matches!(
+                instruction.site,
+                RoutineInstructionSite::Branch {
+                    kind: RoutineBranchKind::Case
+                }
+            )
+        }));
+    }
+
+    #[test]
+    fn routine_analysis_builds_loop_cfg_and_flags_loop_local_unreachable_code() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+    DATA lv_total TYPE i.
+    DATA lt_values TYPE STANDARD TABLE OF i WITH EMPTY KEY.
+    WHILE lv_total < 1.
+      lv_total = lv_total + 1.
+    ENDWHILE.
+    WHILE lv_total < 10.
+      CONTINUE.
+      lv_total = lv_total + 1.
+    ENDWHILE.
+    DO 1 TIMES.
+      EXIT.
+      lv_total = 1.
+    ENDDO.
+    LOOP AT lt_values INTO DATA(lv_item).
+      EXIT.
+      lv_total = lv_item.
+    ENDLOOP.
+  ENDMETHOD.
+ENDCLASS.";
+
+        let snapshot = store.publish("file:///routine_loops.abap", 1, src);
+        let routine = snapshot
+            .routine_analysis()
+            .routines_for_unit(snapshot.symbols.unit_id)
+            .find(|routine| routine.descriptor.name.as_ref() == "run")
+            .expect("method routine");
+
+        assert!(
+            routine
+                .cfg
+                .edges
+                .iter()
+                .any(|edge| edge.kind == RoutineEdgeKind::LoopEnter)
+        );
+        assert!(
+            routine
+                .cfg
+                .edges
+                .iter()
+                .any(|edge| edge.kind == RoutineEdgeKind::LoopBack)
+        );
+
+        let unreachable: Vec<_> = snapshot
+            .symbols
+            .diagnostics
+            .iter()
+            .filter(|diag| diag.kind == DiagnosticKind::UnreachableCode)
+            .map(|diag| src[diag.range.clone()].to_string())
+            .collect();
+        assert!(
+            unreachable
+                .iter()
+                .any(|slice| slice.contains("lv_total = lv_total + 1"))
+        );
+        assert!(
+            unreachable
+                .iter()
+                .any(|slice| slice.contains("lv_total = 1"))
+        );
+        assert!(
+            unreachable
+                .iter()
+                .any(|slice| slice.contains("lv_total = lv_item"))
+        );
+    }
+
+    #[test]
+    fn routine_analysis_tracks_try_catch_and_early_raise_unreachable_code() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+    DATA lv_total TYPE i.
+    TRY.
+      RAISE EXCEPTION TYPE cx_root.
+      lv_total = 1.
+    CATCH cx_root INTO DATA(lo_err).
+      lv_total = 2.
+    ENDTRY.
+    RAISE EXCEPTION TYPE cx_root.
+    lv_total = 3.
+  ENDMETHOD.
+ENDCLASS.";
+
+        let snapshot = store.publish("file:///routine_try_raise.abap", 1, src);
+        let routine = snapshot
+            .routine_analysis()
+            .routines_for_unit(snapshot.symbols.unit_id)
+            .find(|routine| routine.descriptor.name.as_ref() == "run")
+            .expect("method routine");
+
+        assert!(routine.ir.instructions.iter().any(|instruction| {
+            matches!(
+                instruction.site,
+                RoutineInstructionSite::Branch {
+                    kind: RoutineBranchKind::Try
+                }
+            )
+        }));
+        assert!(
+            routine
+                .cfg
+                .edges
+                .iter()
+                .any(|edge| edge.kind == RoutineEdgeKind::Exceptional)
+        );
+
+        let unreachable: Vec<_> = snapshot
+            .symbols
+            .diagnostics
+            .iter()
+            .filter(|diag| diag.kind == DiagnosticKind::UnreachableCode)
+            .map(|diag| src[diag.range.clone()].to_string())
+            .collect();
+        assert!(
+            unreachable
+                .iter()
+                .any(|slice| slice.contains("lv_total = 1"))
+        );
+        assert!(
+            unreachable
+                .iter()
+                .any(|slice| slice.contains("lv_total = 3"))
+        );
+        assert!(
+            !unreachable
+                .iter()
+                .any(|slice| slice.contains("lv_total = 2"))
+        );
     }
 
     #[test]
