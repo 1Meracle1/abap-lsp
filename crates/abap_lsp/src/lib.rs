@@ -7919,7 +7919,75 @@ some_class=>r"
         };
         assert_eq!(
             edit.new_text,
-            "run(\n  iv_value = ${1}\n  CHANGING\n  cv_total = ${2}\n)$0"
+            "run(\n  EXPORTING\n    iv_value = ${1}\n  CHANGING\n    cv_total = ${2}\n)$0"
+        );
+    }
+
+    #[test]
+    fn completion_emits_importing_section_for_methods_with_output_parameters() {
+        let mut state = ServerState::default();
+        state.client_capabilities.completion_snippet_support = true;
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///completion_instance_method_sections.abap")
+                        .expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: "\
+CLASS some_class DEFINITION.
+  PUBLIC SECTION.
+    METHODS run
+      IMPORTING iv_value TYPE i
+      EXPORTING ev_total TYPE i
+      CHANGING cv_text TYPE string.
+ENDCLASS.
+
+CLASS some_class IMPLEMENTATION.
+ENDCLASS.
+
+DATA lo_demo TYPE REF TO some_class.
+lo_demo->r"
+                        .to_string(),
+                },
+            },
+        );
+
+        let completion = completion(
+            &state,
+            &CompletionParams {
+                text_document_position: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///completion_instance_method_sections.abap")
+                            .expect("uri"),
+                    },
+                    position: Position {
+                        line: 12,
+                        character: 10,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+                context: None,
+            },
+        )
+        .expect("completion");
+
+        let CompletionResponse::Array(items) = completion else {
+            panic!("expected array completion");
+        };
+        let item = items
+            .into_iter()
+            .find(|item| item.label == "run")
+            .expect("run completion item");
+        assert_eq!(item.insert_text_format, Some(InsertTextFormat::SNIPPET));
+        let Some(lsp_types::CompletionTextEdit::Edit(edit)) = item.text_edit else {
+            panic!("expected text edit");
+        };
+        assert_eq!(
+            edit.new_text,
+            "run(\n  EXPORTING\n    iv_value = ${1}\n  IMPORTING\n    ev_total = ${2}\n  CHANGING\n    cv_text = ${3}\n)$0"
         );
     }
 

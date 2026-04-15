@@ -1907,7 +1907,26 @@ fn identifier_completion_insertion(name: &str) -> CompletionInsertion {
 }
 
 fn callable_completion_insertion(member: &ClassMemberData) -> CompletionInsertion {
-    let required_importing: Vec<_> = member
+    fn push_call_section(
+        plain_lines: &mut Vec<String>,
+        snippet_lines: &mut Vec<String>,
+        keyword: &str,
+        parameters: &[&ClassMemberParameterData],
+        tabstop: &mut usize,
+    ) {
+        if parameters.is_empty() {
+            return;
+        }
+        plain_lines.push(format!("  {keyword}"));
+        snippet_lines.push(format!("  {keyword}"));
+        for parameter in parameters {
+            plain_lines.push(format!("    {} = ", parameter.name));
+            snippet_lines.push(format!("    {} = ${{{tabstop}}}", parameter.name));
+            *tabstop += 1;
+        }
+    }
+
+    let call_exporting: Vec<_> = member
         .parameters
         .iter()
         .filter(|parameter| {
@@ -1915,7 +1934,12 @@ fn callable_completion_insertion(member: &ClassMemberData) -> CompletionInsertio
                 && parameter.section == MethodParameterSection::Importing
         })
         .collect();
-    let required_changing: Vec<_> = member
+    let call_importing: Vec<_> = member
+        .parameters
+        .iter()
+        .filter(|parameter| parameter.section == MethodParameterSection::Exporting)
+        .collect();
+    let call_changing: Vec<_> = member
         .parameters
         .iter()
         .filter(|parameter| {
@@ -1923,7 +1947,7 @@ fn callable_completion_insertion(member: &ClassMemberData) -> CompletionInsertio
                 && parameter.section == MethodParameterSection::Changing
         })
         .collect();
-    if required_importing.is_empty() && required_changing.is_empty() {
+    if call_exporting.is_empty() && call_importing.is_empty() && call_changing.is_empty() {
         return CompletionInsertion {
             plain_text: format!("{}( )", member.name),
             snippet_text: Some(format!("{}( )$0", member.name)),
@@ -1934,19 +1958,34 @@ fn callable_completion_insertion(member: &ClassMemberData) -> CompletionInsertio
     let mut snippet_lines = vec![format!("{}(", member.name)];
     let mut tabstop = 1usize;
 
-    for parameter in required_importing {
-        plain_lines.push(format!("  {} = ", parameter.name));
-        snippet_lines.push(format!("  {} = ${{{tabstop}}}", parameter.name));
-        tabstop += 1;
-    }
-    if !required_changing.is_empty() {
-        plain_lines.push("  CHANGING".to_string());
-        snippet_lines.push("  CHANGING".to_string());
-        for parameter in required_changing {
+    if call_importing.is_empty() && call_changing.is_empty() {
+        for parameter in call_exporting {
             plain_lines.push(format!("  {} = ", parameter.name));
             snippet_lines.push(format!("  {} = ${{{tabstop}}}", parameter.name));
             tabstop += 1;
         }
+    } else {
+        push_call_section(
+            &mut plain_lines,
+            &mut snippet_lines,
+            "EXPORTING",
+            &call_exporting,
+            &mut tabstop,
+        );
+        push_call_section(
+            &mut plain_lines,
+            &mut snippet_lines,
+            "IMPORTING",
+            &call_importing,
+            &mut tabstop,
+        );
+        push_call_section(
+            &mut plain_lines,
+            &mut snippet_lines,
+            "CHANGING",
+            &call_changing,
+            &mut tabstop,
+        );
     }
     plain_lines.push(")".to_string());
     snippet_lines.push(")$0".to_string());
