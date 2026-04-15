@@ -1,0 +1,77 @@
+use std::sync::Arc;
+
+use abap_lexer::TextRange;
+
+use crate::ReferenceId;
+use crate::ids::{ScopeId, SymbolHandle, UnitId};
+
+use super::ids::{RoutineId, RoutineInstrId};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RoutineKind {
+    Method,
+    Form,
+    Module,
+    EventBlock,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RoutineDescriptor {
+    pub id: RoutineId,
+    pub unit: UnitId,
+    pub scope: ScopeId,
+    pub kind: RoutineKind,
+    pub owner: Option<SymbolHandle>,
+    pub name: Arc<str>,
+    pub decl_range: TextRange,
+    pub scope_range: TextRange,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RoutineInstructionKind {
+    Assignment,
+    Call,
+    Perform,
+    SqlQuery,
+    ValueRead,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RoutineInstructionSite {
+    Assignment { index: u32 },
+    Call { index: u32 },
+    Perform { index: u32 },
+    SqlQuery { index: u32 },
+    ValueRead { reference: ReferenceId },
+}
+
+impl RoutineInstructionSite {
+    pub const fn kind(self) -> RoutineInstructionKind {
+        match self {
+            Self::Assignment { .. } => RoutineInstructionKind::Assignment,
+            Self::Call { .. } => RoutineInstructionKind::Call,
+            Self::Perform { .. } => RoutineInstructionKind::Perform,
+            Self::SqlQuery { .. } => RoutineInstructionKind::SqlQuery,
+            Self::ValueRead { .. } => RoutineInstructionKind::ValueRead,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RoutineInstruction {
+    pub id: RoutineInstrId,
+    pub scope: ScopeId,
+    pub range: TextRange,
+    pub site: RoutineInstructionSite,
+}
+
+impl RoutineInstruction {
+    pub const fn kind(&self) -> RoutineInstructionKind {
+        self.site.kind()
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RoutineIr {
+    pub instructions: Vec<RoutineInstruction>,
+}

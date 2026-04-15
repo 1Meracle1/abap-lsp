@@ -99,6 +99,26 @@ fn run() -> Result<(), String> {
         "snapshot_build={:?}",
         std::time::Duration::from_micros(metrics.snapshot_build_micros as u64)
     );
+    println!(
+        "routine_analysis={:?}",
+        std::time::Duration::from_micros(metrics.routine_analysis_micros as u64)
+    );
+    println!(
+        "routine_analysis_index={:?}",
+        std::time::Duration::from_micros(metrics.routine_analysis_index_micros as u64)
+    );
+    println!(
+        "routine_analysis_ir={:?}",
+        std::time::Duration::from_micros(metrics.routine_analysis_ir_micros as u64)
+    );
+    println!(
+        "routine_analysis_cfg={:?}",
+        std::time::Duration::from_micros(metrics.routine_analysis_cfg_micros as u64)
+    );
+    println!(
+        "routine_analysis_dataflow={:?}",
+        std::time::Duration::from_micros(metrics.routine_analysis_dataflow_micros as u64)
+    );
     println!("full_rebuild={}", metrics.full_rebuild);
     println!("unit_count={}", metrics.unit_count);
     println!("dirty_unit_count={}", metrics.dirty_unit_count);

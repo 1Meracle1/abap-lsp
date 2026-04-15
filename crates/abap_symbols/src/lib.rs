@@ -11,6 +11,7 @@ pub mod perf_api;
 mod perf_tests;
 mod project;
 mod resolver;
+mod routine_analysis;
 mod scope;
 mod semantic;
 mod semantic_queries;
@@ -42,6 +43,14 @@ pub use ids::{ReferenceId, ScopeId, StructureId, SymbolHandle, SymbolId, UnitId}
 pub use project::{
     ProjectAnalysis, ProjectInput, analyze_project, analyze_project_from_units, analyze_unit,
     analyze_unit_locally,
+};
+pub use routine_analysis::{
+    BlockDataflowSummary, DataflowValueId, DataflowValueKind, InstructionDataflowSummary,
+    ProjectRoutineAnalysis, ProjectRoutineAnalysisMetrics, RoutineAnalysis, RoutineBlock,
+    RoutineBlockId, RoutineBlockKind, RoutineCfg, RoutineDataflowInputs, RoutineDataflowResult,
+    RoutineDataflowValue, RoutineDescriptor, RoutineEdge, RoutineEdgeKind, RoutineId,
+    RoutineInstrId, RoutineInstruction, RoutineInstructionKind, RoutineInstructionSite, RoutineIr,
+    RoutineKind, build_project_routine_analysis,
 };
 pub use scope::{Namespace, ScopeData, ScopeKind};
 pub use semantic_queries::SemanticQueries;

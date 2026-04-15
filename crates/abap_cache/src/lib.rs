@@ -10,10 +10,11 @@ use abap_symbols::{
     FormParameterData, FormParameterPassingKind, FormParameterSection, FunctionModuleData,
     FunctionModuleParameterData, FunctionModuleParameterSection, MethodParameterSection,
     NamedArgumentAccess, NamedArgumentSection, NamedArgumentTarget, Namespace, PerformArgumentData,
-    PerformCallData, PerformParameterSection, ProjectAnalysis, ReferenceKind, Resolution, ScopeId,
-    ScopeKind, SqlNameRefData, SqlNameRefKind, StructureFieldData, StructureFieldInfo,
-    StructureFieldShape, StructureId, SymbolData, SymbolHandle, SymbolId, SymbolKind, UnitAnalysis,
-    UnitId, Visibility, builtin_routine_spec, call_section_matches_parameter,
+    PerformCallData, PerformParameterSection, ProjectAnalysis, ProjectRoutineAnalysis,
+    ReferenceKind, Resolution, ScopeId, ScopeKind, SqlNameRefData, SqlNameRefKind,
+    StructureFieldData, StructureFieldInfo, StructureFieldShape, StructureId, SymbolData,
+    SymbolHandle, SymbolId, SymbolKind, UnitAnalysis, UnitId, Visibility,
+    build_project_routine_analysis, builtin_routine_spec, call_section_matches_parameter,
     parameter_is_required,
     perf_api::{
         IncrementalProjectUpdate, LocalAnalysis, analyze_unit_local_state,
@@ -62,6 +63,7 @@ pub struct AnalysisSnapshot {
     pub parse: Arc<ParseResult>,
     pub symbols: Arc<UnitAnalysis>,
     pub project: Arc<ProjectAnalysis>,
+    pub routine_analysis: Arc<ProjectRoutineAnalysis>,
     pub call_graph: Arc<ProjectCallGraph>,
     pub scope_index: Arc<ScopeIndex>,
 }
@@ -289,6 +291,10 @@ impl AnalysisSnapshot {
 
     pub fn call_graph(&self) -> &ProjectCallGraph {
         self.call_graph.as_ref()
+    }
+
+    pub fn routine_analysis(&self) -> &ProjectRoutineAnalysis {
+        self.routine_analysis.as_ref()
     }
 
     pub fn semantic_token_lookup_context(&self) -> SemanticTokenLookupContext<'_> {
@@ -5911,6 +5917,7 @@ fn clone_snapshot_with_version(snapshot: &AnalysisSnapshot, version: i32) -> Arc
         parse: Arc::clone(&snapshot.parse),
         symbols: Arc::clone(&snapshot.symbols),
         project: Arc::clone(&snapshot.project),
+        routine_analysis: Arc::clone(&snapshot.routine_analysis),
         call_graph: Arc::clone(&snapshot.call_graph),
     })
 }
@@ -5927,6 +5934,11 @@ struct AnalysisMetrics {
     local_phase_work_micros: u128,
     project_update_micros: u128,
     snapshot_build_micros: u128,
+    routine_analysis_micros: u128,
+    routine_analysis_index_micros: u128,
+    routine_analysis_ir_micros: u128,
+    routine_analysis_cfg_micros: u128,
+    routine_analysis_dataflow_micros: u128,
     full_rebuild: bool,
     unit_count: usize,
     dirty_unit_count: usize,
@@ -5964,6 +5976,11 @@ pub struct WorkspaceAnalysisMetricsSnapshot {
     pub local_phase_work_micros: u128,
     pub project_update_micros: u128,
     pub snapshot_build_micros: u128,
+    pub routine_analysis_micros: u128,
+    pub routine_analysis_index_micros: u128,
+    pub routine_analysis_ir_micros: u128,
+    pub routine_analysis_cfg_micros: u128,
+    pub routine_analysis_dataflow_micros: u128,
     pub full_rebuild: bool,
     pub unit_count: usize,
     pub dirty_unit_count: usize,
@@ -6201,6 +6218,9 @@ fn materialize_snapshots(
     for prepared in &prepared {
         scope_indexes[prepared.local.unit.unit_id.as_usize()] = prepared.local.scope_index.clone();
     }
+    let routine_analysis_timer = std::time::Instant::now();
+    let routine_analysis = Arc::new(build_project_routine_analysis(project.as_ref()));
+    let routine_analysis_micros = routine_analysis_timer.elapsed().as_micros();
     let call_graph = Arc::new(call_graph::build_project_call_graph(
         project.as_ref(),
         &scope_indexes,
@@ -6228,6 +6248,7 @@ fn materialize_snapshots(
                 parse: Arc::clone(&prepared.parse),
                 symbols: Arc::new(unit),
                 project: Arc::clone(&project),
+                routine_analysis: Arc::clone(&routine_analysis),
                 call_graph: Arc::clone(&call_graph),
             }),
         );
@@ -6236,6 +6257,11 @@ fn materialize_snapshots(
     let metrics = AnalysisMetrics {
         dirty_uri_count: update.dirty_uris.len(),
         snapshot_build_micros: snapshot_timer.elapsed().as_micros(),
+        routine_analysis_micros,
+        routine_analysis_index_micros: routine_analysis.metrics.index_micros,
+        routine_analysis_ir_micros: routine_analysis.metrics.ir_micros,
+        routine_analysis_cfg_micros: routine_analysis.metrics.cfg_micros,
+        routine_analysis_dataflow_micros: routine_analysis.metrics.dataflow_micros,
         ..AnalysisMetrics::default()
     };
     (
@@ -6674,6 +6700,7 @@ fn preview_snapshot_from_local(
     parse: Arc<ParseResult>,
     local: LocalAnalysis,
     project: Arc<ProjectAnalysis>,
+    routine_analysis: Arc<ProjectRoutineAnalysis>,
     call_graph: Arc<ProjectCallGraph>,
 ) -> Arc<AnalysisSnapshot> {
     Arc::new(AnalysisSnapshot {
@@ -6686,6 +6713,7 @@ fn preview_snapshot_from_local(
         parse,
         symbols: Arc::new(local.unit),
         project,
+        routine_analysis,
         call_graph,
     })
 }
@@ -6839,23 +6867,37 @@ impl DocumentStore {
         let (parse, local, parse_count, local_phase_count) =
             build_preview_parse_and_local(&input, &existing, analysis.as_ref());
         let committed_snapshot = existing.values().next().cloned();
-        let (project, call_graph, committed_context_only, fell_back_to_single_document) =
-            if let Some(snapshot) = committed_snapshot {
-                (
-                    Arc::clone(&snapshot.project),
-                    Arc::clone(&snapshot.call_graph),
-                    true,
-                    false,
-                )
-            } else {
-                let project = Arc::new(validate_single_unit(local.unit.clone()));
-                let call_graph = Arc::new(call_graph::build_project_call_graph(
-                    project.as_ref(),
-                    std::slice::from_ref(&local.scope_index),
-                ));
-                (project, call_graph, false, true)
-            };
-        let snapshot = preview_snapshot_from_local(&input, parse, local, project, call_graph);
+        let (
+            project,
+            routine_analysis,
+            call_graph,
+            committed_context_only,
+            fell_back_to_single_document,
+        ) = if let Some(snapshot) = committed_snapshot {
+            (
+                Arc::clone(&snapshot.project),
+                Arc::clone(&snapshot.routine_analysis),
+                Arc::clone(&snapshot.call_graph),
+                true,
+                false,
+            )
+        } else {
+            let project = Arc::new(validate_single_unit(local.unit.clone()));
+            let routine_analysis = Arc::new(build_project_routine_analysis(project.as_ref()));
+            let call_graph = Arc::new(call_graph::build_project_call_graph(
+                project.as_ref(),
+                std::slice::from_ref(&local.scope_index),
+            ));
+            (project, routine_analysis, call_graph, false, true)
+        };
+        let snapshot = preview_snapshot_from_local(
+            &input,
+            parse,
+            local,
+            project,
+            routine_analysis,
+            call_graph,
+        );
         *self.preview_metrics.write() = Some(PreviewMetrics {
             parse_count,
             local_phase_count,
@@ -6912,6 +6954,11 @@ impl DocumentStore {
                 local_phase_work_micros: analysis.metrics.local_phase_work_micros,
                 project_update_micros: analysis.metrics.project_update_micros,
                 snapshot_build_micros: analysis.metrics.snapshot_build_micros,
+                routine_analysis_micros: analysis.metrics.routine_analysis_micros,
+                routine_analysis_index_micros: analysis.metrics.routine_analysis_index_micros,
+                routine_analysis_ir_micros: analysis.metrics.routine_analysis_ir_micros,
+                routine_analysis_cfg_micros: analysis.metrics.routine_analysis_cfg_micros,
+                routine_analysis_dataflow_micros: analysis.metrics.routine_analysis_dataflow_micros,
                 full_rebuild: analysis.metrics.full_rebuild,
                 unit_count: analysis.metrics.unit_count,
                 dirty_unit_count: analysis.metrics.dirty_unit_count,
@@ -7002,7 +7049,10 @@ mod tests {
         ddic_xml_to_abap_source, dependency_surface_text,
         opened_function_module_dependency_analysis_text,
     };
-    use abap_symbols::{DiagnosticKind, ReferenceKind, StructureFieldShape};
+    use abap_symbols::{
+        DiagnosticKind, ReferenceKind, RoutineBlockKind, RoutineKind, ScopeKind,
+        StructureFieldShape, SymbolHandle, SymbolKind,
+    };
     use std::sync::Arc;
 
     fn assert_target_slice(target: &DefinitionTarget, uri: &str, text: &str, expected: &str) {
@@ -7357,7 +7407,101 @@ ENDCLASS.",
         assert!(Arc::ptr_eq(&first.parse, &second.parse));
         assert!(Arc::ptr_eq(&first.symbols, &second.symbols));
         assert!(Arc::ptr_eq(&first.project, &second.project));
+        assert!(Arc::ptr_eq(
+            &first.routine_analysis,
+            &second.routine_analysis
+        ));
         assert_eq!(store.get("file:///demo.abap").unwrap().version, 2);
+    }
+
+    #[test]
+    fn snapshot_exposes_built_routine_analysis_foundation() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS zcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run.
+ENDCLASS.
+
+CLASS zcl_demo IMPLEMENTATION.
+  METHOD run.
+    DATA lv_total TYPE i.
+    lv_total = lv_total + 1.
+  ENDMETHOD.
+ENDCLASS.";
+
+        let first = store.publish("file:///routine_foundation.abap", 1, src);
+        let method = first
+            .symbols
+            .symbols
+            .iter()
+            .find(|symbol| symbol.kind == SymbolKind::Method && symbol.name.as_ref() == "run")
+            .expect("method symbol");
+        let method_scope = first
+            .symbols
+            .scopes
+            .iter()
+            .find(|scope| scope.kind == ScopeKind::Method && scope.owner == Some(method.id))
+            .expect("method scope");
+        let routine = first
+            .routine_analysis()
+            .routine_for_owner(SymbolHandle {
+                unit: first.symbols.unit_id,
+                symbol: method.id,
+            })
+            .expect("routine analysis for method owner");
+
+        assert_eq!(routine.descriptor.kind, RoutineKind::Method);
+        assert_eq!(routine.descriptor.scope, method_scope.id);
+        assert_eq!(
+            first
+                .routine_analysis()
+                .routine_for_scope(first.symbols.unit_id, method_scope.id)
+                .expect("routine analysis for scope")
+                .descriptor
+                .id,
+            routine.descriptor.id
+        );
+        assert!(!routine.ir.instructions.is_empty());
+        assert_eq!(routine.cfg.blocks.len(), 3);
+        assert!(
+            routine
+                .cfg
+                .blocks
+                .iter()
+                .any(|block| block.kind == RoutineBlockKind::Body)
+        );
+        assert!(
+            routine
+                .dataflow_inputs
+                .values
+                .iter()
+                .any(|value| value.name.as_ref() == "lv_total")
+        );
+        assert!(
+            routine
+                .dataflow_inputs
+                .instructions
+                .iter()
+                .any(|summary| !summary.writes.is_empty())
+        );
+        assert!(
+            routine
+                .dataflow_result
+                .block_exit
+                .iter()
+                .any(|summary| !summary.maybe_written_values.is_empty())
+        );
+        assert!(first.routine_analysis().metrics.routine_count >= 1);
+        assert!(
+            first.routine_analysis().metrics.instruction_count >= routine.ir.instructions.len()
+        );
+
+        let second = store.publish("file:///routine_foundation.abap", 2, src);
+        assert!(Arc::ptr_eq(
+            &first.routine_analysis,
+            &second.routine_analysis
+        ));
     }
 
     #[test]
