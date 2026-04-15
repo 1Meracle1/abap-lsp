@@ -1533,6 +1533,9 @@ pub fn hover(state: &ServerState, params: &HoverParams) -> Option<Hover> {
     if let Some(component) = snapshot.hovered_component_at(offset) {
         return structured_field_hover(&snapshot, component);
     }
+    if let Some(call_target) = snapshot.hovered_call_target_at(offset) {
+        return resolved_symbol_hover(&snapshot, call_target);
+    }
     if let Some(argument) = snapshot.hovered_perform_argument_at(offset) {
         return resolved_symbol_hover(&snapshot, argument);
     }

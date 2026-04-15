@@ -202,3 +202,67 @@ ENDCLASS.
         root.diagnostics
     );
 }
+
+#[test]
+fn resolves_inherited_protected_attribute_across_project_units() {
+    let parent_src = r#"
+CLASS zcl_parent DEFINITION.
+  PROTECTED SECTION.
+    DATA gv_dummy_msg TYPE string.
+ENDCLASS.
+
+CLASS zcl_parent IMPLEMENTATION.
+ENDCLASS.
+"#;
+    let child_src = r#"
+CLASS zcl_child DEFINITION INHERITING FROM zcl_parent.
+  PUBLIC SECTION.
+    METHODS m.
+ENDCLASS.
+
+CLASS zcl_child IMPLEMENTATION.
+  METHOD m.
+    gv_dummy_msg = 'x'.
+  ENDMETHOD.
+ENDCLASS.
+"#;
+    let parent_parse = parse(parent_src);
+    let child_parse = parse(child_src);
+
+    let project = analyze_project(&[
+        ProjectInput {
+            uri: "zcl_parent.abap",
+            source: parent_src,
+            parse: &parent_parse,
+        },
+        ProjectInput {
+            uri: "zcl_child.abap",
+            source: child_src,
+            parse: &child_parse,
+        },
+    ]);
+
+    let parent = project.unit_by_uri("zcl_parent.abap").expect("parent unit");
+    let child = project.unit_by_uri("zcl_child.abap").expect("child unit");
+
+    assert!(
+        !child.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference
+                && diag.message.contains("gv_dummy_msg")
+        }),
+        "unexpected unresolved inherited attribute diagnostic: {:?}",
+        child.diagnostics
+    );
+
+    let reference = child
+        .references
+        .iter()
+        .find(|reference| reference.name.as_ref() == "gv_dummy_msg")
+        .expect("gv_dummy_msg reference");
+    let Resolution::Symbol(handle) = reference.resolution.expect("resolved reference") else {
+        panic!("expected symbol resolution, got {:?}", reference.resolution);
+    };
+    assert_eq!(handle.unit, parent.unit_id);
+    let symbol = &parent.symbols[handle.symbol.as_usize()];
+    assert_eq!(symbol.name.as_ref(), "gv_dummy_msg");
+}

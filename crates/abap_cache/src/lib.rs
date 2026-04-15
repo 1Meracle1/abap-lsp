@@ -651,6 +651,15 @@ impl AnalysisSnapshot {
         })
     }
 
+    pub fn hovered_call_target_at(&self, offset: usize) -> Option<HoveredSymbolInfo> {
+        let (range, member_unit, member) = self.call_target_method_at(offset)?;
+        Some(HoveredSymbolInfo {
+            range,
+            display_name: Arc::clone(&member.name),
+            markdown_lines: markdown_lines_for_class_member(member_unit, member),
+        })
+    }
+
     pub fn has_named_argument_parameter(&self, access: &NamedArgumentAccess) -> bool {
         resolve_named_argument_parameter_with_scope_index(self, self.scope_index(), access)
             .is_some()
@@ -689,6 +698,9 @@ impl AnalysisSnapshot {
 
     pub fn definition_at(&self, offset: usize) -> Option<DefinitionTarget> {
         if let Some(target) = self.definition_target_for_component_at(offset) {
+            return Some(target);
+        }
+        if let Some(target) = self.definition_target_for_call_target_at(offset) {
             return Some(target);
         }
         if let Some(target) = self.definition_target_for_perform_argument_at(offset) {
@@ -871,6 +883,11 @@ impl AnalysisSnapshot {
             field_name.as_ref(),
         )
         .map(|target| target.definition)
+    }
+
+    fn definition_target_for_call_target_at(&self, offset: usize) -> Option<DefinitionTarget> {
+        let (_, member_unit, member) = self.call_target_method_at(offset)?;
+        Some(definition_target_for_class_member(member_unit, member))
     }
 
     fn reference_search_target_for_component_at(
@@ -1475,6 +1492,35 @@ impl AnalysisSnapshot {
             items,
             in_type_position: false,
         })
+    }
+
+    fn call_target_method_at(
+        &self,
+        offset: usize,
+    ) -> Option<(Range<usize>, &UnitAnalysis, &ClassMemberData)> {
+        self.symbols
+            .call_sites
+            .iter()
+            .filter_map(|call_site| {
+                let method_name = match &call_site.target {
+                    NamedArgumentTarget::ImplicitMethod { method_name } => method_name,
+                    NamedArgumentTarget::Method { method_name, .. } => method_name,
+                    _ => return None,
+                };
+                let range =
+                    call_site_target_name_range(self.text.as_ref(), call_site, method_name)?;
+                (range.start <= offset && offset < range.end).then_some((
+                    call_site,
+                    method_name,
+                    range,
+                ))
+            })
+            .filter_map(|(call_site, method_name, range)| {
+                let (member_unit, member) =
+                    resolve_call_target_method(self, call_site, method_name)?;
+                Some((range, member_unit, member))
+            })
+            .min_by_key(|(range, _, _)| range.end.saturating_sub(range.start))
     }
 
     fn named_argument_completion_at(&self, offset: usize) -> Option<CompletionInfo> {
@@ -3611,6 +3657,117 @@ fn named_argument_section_keyword(text: &str) -> Option<NamedArgumentSection> {
     }
 }
 
+fn call_site_target_name_range(
+    text: &str,
+    call_site: &abap_symbols::CallSiteData,
+    method_name: &Arc<str>,
+) -> Option<Range<usize>> {
+    let call_text = text.get(call_site.range.clone())?;
+    let args_start = call_text.find('(')?;
+    let target_text = &call_text[..args_start];
+    let method_name = method_name.as_ref().to_ascii_lowercase();
+    let target_text_lower = target_text.to_ascii_lowercase();
+    let rel_start = target_text_lower.rfind(&method_name)?;
+    Some(call_site.range.start + rel_start..call_site.range.start + rel_start + method_name.len())
+}
+
+fn resolve_call_target_method<'a>(
+    snapshot: &'a AnalysisSnapshot,
+    call_site: &abap_symbols::CallSiteData,
+    method_name: &Arc<str>,
+) -> Option<(&'a UnitAnalysis, &'a ClassMemberData)> {
+    match &call_site.target {
+        NamedArgumentTarget::ImplicitMethod { .. } => {
+            let unit = snapshot.symbols.as_ref();
+            let class_symbol_id = enclosing_class_owner(unit, call_site.scope)?;
+            let (member_unit, member) =
+                resolve_class_member_in_hierarchy(snapshot, unit, class_symbol_id, method_name)?;
+            if member.kind != ClassMemberKind::Method {
+                return None;
+            }
+            class_member_visible_to(
+                snapshot,
+                snapshot.symbols.as_ref(),
+                call_site.scope,
+                member_unit,
+                member,
+            )
+            .then_some((member_unit, member))
+        }
+        NamedArgumentTarget::Method {
+            base_namespace,
+            base_name,
+            ..
+        } => {
+            let (unit, class_symbol_id, requires_static) = resolve_method_target_from_context(
+                snapshot,
+                call_site.scope,
+                *base_namespace,
+                base_name,
+            )
+            .or_else(|| {
+                let (base_unit, base_symbol_id) = resolved_call_site_base_symbol(
+                    snapshot,
+                    call_site,
+                    *base_namespace,
+                    base_name,
+                )?;
+                resolve_method_target_from_base_symbol_with_scope_index(
+                    snapshot,
+                    snapshot.scope_index(),
+                    call_site.scope,
+                    *base_namespace,
+                    base_unit,
+                    base_symbol_id,
+                )
+            })?;
+            let (member_unit, member) =
+                resolve_class_member_in_hierarchy(snapshot, unit, class_symbol_id, method_name)?;
+            if member.kind != ClassMemberKind::Method || (requires_static && !member.is_static) {
+                return None;
+            }
+            class_member_visible_to(
+                snapshot,
+                snapshot.symbols.as_ref(),
+                call_site.scope,
+                member_unit,
+                member,
+            )
+            .then_some((member_unit, member))
+        }
+        _ => None,
+    }
+}
+
+fn resolved_call_site_base_symbol<'a>(
+    snapshot: &'a AnalysisSnapshot,
+    call_site: &abap_symbols::CallSiteData,
+    namespace: Namespace,
+    base_name: &Arc<str>,
+) -> Option<(&'a UnitAnalysis, SymbolId)> {
+    snapshot
+        .symbols
+        .references
+        .iter()
+        .filter(|reference| {
+            reference.scope == call_site.scope
+                && reference.namespace == namespace
+                && reference.name == *base_name
+                && call_site.range.start <= reference.range.start
+                && reference.range.end <= call_site.range.end
+        })
+        .filter_map(|reference| match reference.resolution {
+            Some(Resolution::Symbol(handle)) => Some((
+                &snapshot.project.units[handle.unit.as_usize()],
+                handle.symbol,
+                reference.range.end.saturating_sub(reference.range.start),
+            )),
+            _ => None,
+        })
+        .min_by_key(|(_, _, width)| *width)
+        .map(|(unit, symbol_id, _)| (unit, symbol_id))
+}
+
 fn named_argument_section_before_offset(
     parse: &ParseResult,
     text: &str,
@@ -4273,6 +4430,43 @@ fn resolve_symbol_from_context_with_scope_index<'a>(
     None
 }
 
+fn resolve_method_target_from_base_symbol_with_scope_index<'a>(
+    snapshot: &'a AnalysisSnapshot,
+    scope_index: &ScopeIndex,
+    scope: ScopeId,
+    namespace: Namespace,
+    unit: &'a UnitAnalysis,
+    symbol_id: SymbolId,
+) -> Option<(&'a UnitAnalysis, SymbolId, bool)> {
+    let base_symbol = unit.symbol(symbol_id);
+    if namespace == Namespace::Type && base_symbol.kind == SymbolKind::Class {
+        return Some((unit, symbol_id, true));
+    }
+    if namespace == Namespace::Value && base_symbol.kind == SymbolKind::Class {
+        return Some((unit, symbol_id, false));
+    }
+    if namespace != Namespace::Value {
+        return None;
+    }
+    let declared_type = base_symbol.declared_type.as_ref()?;
+    if !declared_type.is_ref || !declared_type.field_path.is_empty() {
+        return None;
+    }
+    let (class_unit, class_symbol_id) = resolve_symbol_from_context_with_scope_index(
+        snapshot,
+        scope_index,
+        scope,
+        Namespace::Type,
+        &declared_type.base_name,
+        false,
+    )?;
+    matches!(
+        class_unit.symbol(class_symbol_id).kind,
+        SymbolKind::Class | SymbolKind::Interface
+    )
+    .then_some((class_unit, class_symbol_id, false))
+}
+
 fn resolve_method_target_from_context<'a>(
     snapshot: &'a AnalysisSnapshot,
     scope: ScopeId,
@@ -4308,33 +4502,14 @@ fn resolve_method_target_from_context_with_scope_index<'a>(
         name,
         false,
     )?;
-    let base_symbol = unit.symbol(symbol_id);
-    if namespace == Namespace::Type && base_symbol.kind == SymbolKind::Class {
-        return Some((unit, symbol_id, true));
-    }
-    if namespace == Namespace::Value && base_symbol.kind == SymbolKind::Class {
-        return Some((unit, symbol_id, false));
-    }
-    if namespace != Namespace::Value {
-        return None;
-    }
-    let declared_type = base_symbol.declared_type.as_ref()?;
-    if !declared_type.is_ref || !declared_type.field_path.is_empty() {
-        return None;
-    }
-    let (class_unit, class_symbol_id) = resolve_symbol_from_context_with_scope_index(
+    resolve_method_target_from_base_symbol_with_scope_index(
         snapshot,
         scope_index,
         scope,
-        Namespace::Type,
-        &declared_type.base_name,
-        false,
-    )?;
-    matches!(
-        class_unit.symbol(class_symbol_id).kind,
-        SymbolKind::Class | SymbolKind::Interface
+        namespace,
+        unit,
+        symbol_id,
     )
-    .then_some((class_unit, class_symbol_id, false))
 }
 
 fn resolve_direct_superclass_from_scope_with_scope_index<'a>(
@@ -6980,6 +7155,89 @@ ENDCLASS.",
             .expect("hovered protected component");
 
         assert_eq!(hovered.field_name.as_ref(), "prot_value");
+    }
+
+    #[test]
+    fn dependency_chain_resolves_bare_inherited_attributes_across_multiple_superclasses() {
+        let store = DocumentStore::default();
+        let base_src = "\
+CLASS /pkg/cl_base_inst DEFINITION.
+  PUBLIC SECTION.
+    DATA mo_messages TYPE REF TO object.
+    CLASS-DATA gv_dummy_msg TYPE string.
+ENDCLASS.
+CLASS /pkg/cl_base_inst IMPLEMENTATION.
+ENDCLASS.";
+        let mid_src = "\
+CLASS /pkg/cl_rep_base DEFINITION INHERITING FROM /pkg/cl_base_inst.
+ENDCLASS.
+CLASS /pkg/cl_rep_base IMPLEMENTATION.
+ENDCLASS.";
+        let parent_src = "\
+CLASS /pkg/cl_rep_ru DEFINITION INHERITING FROM /pkg/cl_rep_base.
+  PUBLIC SECTION.
+    METHODS noop.
+ENDCLASS.
+CLASS /pkg/cl_rep_ru IMPLEMENTATION.
+  METHOD noop.
+  ENDMETHOD.
+ENDCLASS.";
+        let main_src = "\
+CLASS zcl_child DEFINITION INHERITING FROM /pkg/cl_rep_ru.
+  PUBLIC SECTION.
+    METHODS run.
+ENDCLASS.
+
+CLASS zcl_child IMPLEMENTATION.
+  METHOD run.
+    CLEAR gv_dummy_msg.
+    IF mo_messages IS BOUND.
+    ENDIF.
+  ENDMETHOD.
+ENDCLASS.";
+
+        let snapshots = store.replace_all(vec![
+            DocumentInput {
+                uri: Arc::from("file:///deps/%2FPKG%2FCL_BASE_INST.abap"),
+                version: 1,
+                text: Arc::from(base_src),
+                is_dependency: true,
+                object_name: Some(Arc::from("/pkg/cl_base_inst")),
+            },
+            DocumentInput {
+                uri: Arc::from("file:///deps/%2FPKG%2FCL_REP_BASE.abap"),
+                version: 1,
+                text: Arc::from(mid_src),
+                is_dependency: true,
+                object_name: Some(Arc::from("/pkg/cl_rep_base")),
+            },
+            DocumentInput {
+                uri: Arc::from("file:///deps/%2FPKG%2FCL_REP_RU.abap"),
+                version: 1,
+                text: Arc::from(parent_src),
+                is_dependency: true,
+                object_name: Some(Arc::from("/pkg/cl_rep_ru")),
+            },
+            DocumentInput {
+                uri: Arc::from("file:///main.abap"),
+                version: 1,
+                text: Arc::from(main_src),
+                is_dependency: false,
+                object_name: None,
+            },
+        ]);
+        let snapshot = snapshots.get("file:///main.abap").expect("main snapshot");
+
+        assert!(
+            snapshot
+                .symbols
+                .diagnostics
+                .iter()
+                .all(|diag| !diag.message.contains("gv_dummy_msg")
+                    && !diag.message.contains("mo_messages")),
+            "{:?}",
+            snapshot.symbols.diagnostics
+        );
     }
 
     #[test]
@@ -9938,6 +10196,117 @@ rv_text = |value: { lo_expr->to_string( ) }|.";
                 .as_deref()
                 .is_some_and(|declaration| declaration.contains("METHODS to_string"))
         );
+    }
+
+    #[test]
+    fn hover_and_definition_work_for_zero_arg_selector_method_inherited_via_dependency_chain() {
+        let store = DocumentStore::default();
+        let base_messages_src = "\
+CLASS /cdbasis/cl_messages DEFINITION.
+  PUBLIC SECTION.
+    METHODS set_message.
+ENDCLASS.
+CLASS /cdbasis/cl_messages IMPLEMENTATION.
+ENDCLASS.";
+        let sub_messages_src = "\
+CLASS /sttp/cl_messages DEFINITION INHERITING FROM /cdbasis/cl_messages.
+ENDCLASS.
+CLASS /sttp/cl_messages IMPLEMENTATION.
+ENDCLASS.";
+        let base_inst_src = "\
+CLASS /sttp/cl_base_inst DEFINITION.
+  PUBLIC SECTION.
+    DATA mo_messages TYPE REF TO /sttp/cl_messages.
+ENDCLASS.
+CLASS /sttp/cl_base_inst IMPLEMENTATION.
+ENDCLASS.";
+        let rep_base_src = "\
+CLASS /sttp/cl_rep_base DEFINITION INHERITING FROM /sttp/cl_base_inst.
+ENDCLASS.
+CLASS /sttp/cl_rep_base IMPLEMENTATION.
+ENDCLASS.";
+        let rep_ru_src = "\
+CLASS /sttp/cl_rep_ru DEFINITION INHERITING FROM /sttp/cl_rep_base.
+ENDCLASS.
+CLASS /sttp/cl_rep_ru IMPLEMENTATION.
+ENDCLASS.";
+        let main_src = "\
+CLASS zcl_child DEFINITION INHERITING FROM /sttp/cl_rep_ru.
+  PUBLIC SECTION.
+    METHODS run.
+ENDCLASS.
+
+CLASS zcl_child IMPLEMENTATION.
+  METHOD run.
+    mo_messages->set_message( ).
+  ENDMETHOD.
+ENDCLASS.";
+        let snapshots = store.replace_all(vec![
+            DocumentInput {
+                uri: Arc::from("file:///deps/%2FCDBASIS%2FCL_MESSAGES.abap"),
+                version: 1,
+                text: Arc::from(base_messages_src),
+                is_dependency: true,
+                object_name: Some(Arc::from("/cdbasis/cl_messages")),
+            },
+            DocumentInput {
+                uri: Arc::from("file:///deps/%2FSTTP%2FCL_MESSAGES.abap"),
+                version: 1,
+                text: Arc::from(sub_messages_src),
+                is_dependency: true,
+                object_name: Some(Arc::from("/sttp/cl_messages")),
+            },
+            DocumentInput {
+                uri: Arc::from("file:///deps/%2FSTTP%2FCL_BASE_INST.abap"),
+                version: 1,
+                text: Arc::from(base_inst_src),
+                is_dependency: true,
+                object_name: Some(Arc::from("/sttp/cl_base_inst")),
+            },
+            DocumentInput {
+                uri: Arc::from("file:///deps/%2FSTTP%2FCL_REP_BASE.abap"),
+                version: 1,
+                text: Arc::from(rep_base_src),
+                is_dependency: true,
+                object_name: Some(Arc::from("/sttp/cl_rep_base")),
+            },
+            DocumentInput {
+                uri: Arc::from("file:///deps/%2FSTTP%2FCL_REP_RU.abap"),
+                version: 1,
+                text: Arc::from(rep_ru_src),
+                is_dependency: true,
+                object_name: Some(Arc::from("/sttp/cl_rep_ru")),
+            },
+            DocumentInput {
+                uri: Arc::from("file:///main.abap"),
+                version: 1,
+                text: Arc::from(main_src),
+                is_dependency: false,
+                object_name: None,
+            },
+        ]);
+        let snapshot = snapshots.get("file:///main.abap").expect("main snapshot");
+        let offset = main_src.rfind("set_message").expect("method use") + 1;
+
+        let hovered = snapshot
+            .hovered_call_target_at(offset)
+            .expect("hovered method target");
+        assert_eq!(hovered.display_name.as_ref(), "set_message");
+        assert!(
+            hovered
+                .markdown_lines
+                .iter()
+                .any(|line| line.contains("METHODS set_message")),
+            "{:?}",
+            hovered.markdown_lines
+        );
+
+        let definition = snapshot.definition_at(offset).expect("definition target");
+        assert_eq!(
+            definition.uri.as_ref(),
+            "file:///deps/%2FCDBASIS%2FCL_MESSAGES.abap"
+        );
+        assert_eq!(&base_messages_src[definition.range], "set_message");
     }
 
     #[test]

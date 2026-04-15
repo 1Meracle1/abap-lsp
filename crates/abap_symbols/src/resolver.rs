@@ -3,7 +3,8 @@ use std::sync::Arc;
 
 use crate::builtins::builtin_routine_spec;
 use crate::def_map::{
-    FieldTypeRefData, ReferenceKind, Resolution, StructureData, StructureFieldData, UnitAnalysis,
+    ClassMemberKind, FieldTypeRefData, ReferenceKind, Resolution, StructureData,
+    StructureFieldData, UnitAnalysis, Visibility,
 };
 use crate::ids::{ScopeId, StructureId, SymbolHandle, SymbolId, UnitId};
 use crate::scope::{Namespace, ScopeKind};
@@ -122,6 +123,28 @@ fn class_scope_symbol(
     })
 }
 
+fn inherited_class_scope_symbol(
+    unit: &UnitAnalysis,
+    class_symbol: SymbolId,
+    namespace: Namespace,
+    name: &Arc<str>,
+) -> Option<SymbolId> {
+    let symbol_id = class_scope_symbol(unit, class_symbol, namespace, name)?;
+    if namespace != Namespace::Value {
+        return Some(symbol_id);
+    }
+    let symbol = unit.symbol(symbol_id);
+    if !matches!(
+        symbol.kind,
+        crate::SymbolKind::Variable | crate::SymbolKind::Constant
+    ) {
+        return Some(symbol_id);
+    }
+    let member = unit.class_member(class_symbol, name.as_ref())?;
+    (member.kind == ClassMemberKind::Attribute && member.visibility != Visibility::Private)
+        .then_some(symbol_id)
+}
+
 fn resolve_direct_superclass_handle_in_project(
     units: &[UnitAnalysis],
     current: SymbolHandle,
@@ -165,7 +188,9 @@ fn resolve_inherited_symbol_in_unit(
             Namespace::Type,
             &inheritance.superclass_name,
         )?;
-        if let Some(symbol_id) = class_scope_symbol(unit, superclass_symbol, namespace, name) {
+        if let Some(symbol_id) =
+            inherited_class_scope_symbol(unit, superclass_symbol, namespace, name)
+        {
             return Some(symbol_id);
         }
         current_class = superclass_symbol;
@@ -199,7 +224,7 @@ fn resolve_inherited_symbol_in_project(
         )?;
         let superclass_unit = &units[current.unit.as_usize()];
         if let Some(symbol_id) =
-            class_scope_symbol(superclass_unit, current.symbol, namespace, name)
+            inherited_class_scope_symbol(superclass_unit, current.symbol, namespace, name)
         {
             return Some(SymbolHandle {
                 unit: current.unit,

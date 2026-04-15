@@ -3807,9 +3807,11 @@ ENDCLASS.";
             .expect("refreshed dependency diagnostics");
         assert!(
             refreshed_diags.iter().any(|diag| {
-                diag.get("message").and_then(Value::as_str).is_some_and(|message| {
-                    message.contains("Type 'zmissing' is not verified against a SAP system")
-                })
+                diag.get("message")
+                    .and_then(Value::as_str)
+                    .is_some_and(|message| {
+                        message.contains("Type 'zmissing' is not verified against a SAP system")
+                    })
             }),
             "unexpected refreshed diagnostics: {refreshed_diags:?}"
         );
@@ -3954,9 +3956,12 @@ ENDCLASS.";
             .expect("refreshed dependency diagnostics");
         assert!(
             refreshed_diags.iter().any(|diag| {
-                diag.get("message").and_then(Value::as_str).is_some_and(|message| {
-                    message.contains("Type '/sttp/zmissing' is not verified against a SAP system")
-                })
+                diag.get("message")
+                    .and_then(Value::as_str)
+                    .is_some_and(|message| {
+                        message
+                            .contains("Type '/sttp/zmissing' is not verified against a SAP system")
+                    })
             }),
             "unexpected refreshed diagnostics: {refreshed_diags:?}"
         );

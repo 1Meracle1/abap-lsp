@@ -556,6 +556,51 @@ fn resolve_class_member_in_hierarchy<'a>(
     }
 }
 
+fn resolve_inherited_attribute_symbol<'a>(
+    project: &'a ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
+    caller_unit: &'a crate::UnitAnalysis,
+    caller_scope: ScopeId,
+    name: &str,
+) -> Option<SymbolHandle> {
+    let class_symbol = enclosing_class_owner(caller_unit, caller_scope)?;
+    let mut current = SymbolHandle {
+        unit: caller_unit.unit_id,
+        symbol: class_symbol,
+    };
+    let mut visited = HashSet::new();
+    loop {
+        current = direct_superclass_handle(
+            project,
+            lookup,
+            &project.units[current.unit.as_usize()],
+            current.symbol,
+        )?;
+        if !visited.insert(current) {
+            return None;
+        }
+        let unit = &project.units[current.unit.as_usize()];
+        let Some(member) = unit.class_member(current.symbol, name) else {
+            continue;
+        };
+        if member.kind != ClassMemberKind::Attribute
+            || !class_member_visible_to(project, lookup, caller_unit, caller_scope, unit, member)
+        {
+            continue;
+        }
+        let symbol = unit.symbols.iter().find(|symbol| {
+            matches!(symbol.kind, SymbolKind::Variable | SymbolKind::Constant)
+                && symbol.name.as_ref() == name
+                && unit.scope(symbol.scope).kind == ScopeKind::Class
+                && unit.scope(symbol.scope).owner == Some(current.symbol)
+        })?;
+        return Some(SymbolHandle {
+            unit: current.unit,
+            symbol: symbol.id,
+        });
+    }
+}
+
 fn class_member_uses_inherited_signature(member: &crate::ClassMemberData) -> bool {
     member.kind == ClassMemberKind::Method
         && member.parameters.is_empty()
@@ -2344,24 +2389,41 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
                     if reference.resolution.is_some() {
                         return None;
                     }
-                    let symbol_id = resolve_symbol_in_scope_chain(
+                    if let Some(symbol_id) = resolve_symbol_in_scope_chain(
                         unit,
                         &scope_index,
                         reference.scope,
                         reference.namespace,
                         &reference.name,
-                    )?;
-                    Some((idx, symbol_id))
+                    ) {
+                        return Some((
+                            idx,
+                            SymbolHandle {
+                                unit: unit.unit_id,
+                                symbol: symbol_id,
+                            },
+                        ));
+                    }
+                    if reference.namespace == Namespace::Value
+                        && reference.kind == ReferenceKind::Identifier
+                    {
+                        let handle = resolve_inherited_attribute_symbol(
+                            project,
+                            &lookup,
+                            unit,
+                            reference.scope,
+                            reference.name.as_ref(),
+                        )?;
+                        return Some((idx, handle));
+                    }
+                    None
                 })
                 .collect()
         };
         {
             let unit = &mut project.units[unit_idx];
-            for (idx, symbol_id) in synthetic_reference_resolutions {
-                unit.references[idx].resolution = Some(Resolution::Symbol(SymbolHandle {
-                    unit: unit.unit_id,
-                    symbol: symbol_id,
-                }));
+            for (idx, handle) in synthetic_reference_resolutions {
+                unit.references[idx].resolution = Some(Resolution::Symbol(handle));
             }
         }
         let scope_names = build_scope_names(&project.units[unit_idx]);

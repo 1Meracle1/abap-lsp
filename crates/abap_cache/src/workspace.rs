@@ -1202,9 +1202,6 @@ fn collect_dependency_cache_documents(
         let units = load_dependency_cache_manifest_units(root_path, cache_dir, &source_file);
         for unit in units {
             let unit_files = manifest_unit_files(&unit);
-            let unit_open = unit_files
-                .iter()
-                .any(|file| overlays.contains_key(&path_to_file_uri(&root_path.join(file))));
             let unit_key = manifest_unit_identity_key(&unit);
             if loaded_unit_keys.insert(unit_key) {
                 loaded_units.push(unit.clone());
@@ -1246,9 +1243,7 @@ fn collect_dependency_cache_documents(
                 );
             }
 
-            if unit_open {
-                pending_sources.extend(unit_files);
-            }
+            pending_sources.extend(unit_files);
         }
     }
 }
@@ -2740,7 +2735,7 @@ root_file = ".abapls/cache/packages/ZPKG/global-class/ZCL_SECOND.abap"
                 .manifest
                 .as_ref()
                 .map(|manifest| manifest.units.len()),
-            Some(2)
+            Some(3)
         );
         assert!(
             loaded_uris
@@ -2753,7 +2748,7 @@ root_file = ".abapls/cache/packages/ZPKG/global-class/ZCL_SECOND.abap"
             )
         );
         assert!(
-            !loaded_uris
+            loaded_uris
                 .iter()
                 .any(|uri| uri
                     .ends_with("/.abapls/cache/packages/ZPKG/global-class/ZCL_SECOND.abap"))
