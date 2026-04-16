@@ -598,6 +598,74 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
         self.collector.walk_children(node, scope);
     }
 
+    pub(super) fn collect_append_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        self.record_unknown_effect(node, scope);
+
+        #[derive(Clone, Copy, PartialEq, Eq)]
+        enum AppendClause {
+            Source,
+            Target,
+            Assigning,
+            ReferenceInto,
+            SortedBy,
+        }
+
+        let stmt_range = self.collector.file.range(node);
+        let mut clause = AppendClause::Source;
+        let mut saw_reference = false;
+        let mut source_expr = None;
+        let mut target_expr = None;
+
+        for child in self.collector.file.children(node) {
+            if self.collector.file.kind(child) == SyntaxKind::Token {
+                if let Some(token) = self.collector.syntax_token_nodes(child).into_iter().next() {
+                    if token.text.eq_ignore_ascii_case("to") {
+                        clause = AppendClause::Target;
+                        saw_reference = false;
+                    } else if token.text.eq_ignore_ascii_case("assigning") {
+                        clause = AppendClause::Assigning;
+                        saw_reference = false;
+                    } else if token.text.eq_ignore_ascii_case("reference") {
+                        saw_reference = true;
+                    } else if saw_reference && token.text.eq_ignore_ascii_case("into") {
+                        clause = AppendClause::ReferenceInto;
+                        saw_reference = false;
+                    } else if token.text.eq_ignore_ascii_case("sorted") {
+                        clause = AppendClause::SortedBy;
+                        saw_reference = false;
+                    } else if !token.text.eq_ignore_ascii_case("line")
+                        && !token.text.eq_ignore_ascii_case("lines")
+                        && !token.text.eq_ignore_ascii_case("of")
+                    {
+                        saw_reference = false;
+                    }
+                }
+                continue;
+            }
+
+            match clause {
+                AppendClause::Source => {
+                    if source_expr.is_none() {
+                        source_expr = Some(child);
+                    }
+                }
+                AppendClause::Target => {
+                    if target_expr.is_none() {
+                        target_expr = Some(child);
+                    }
+                }
+                AppendClause::Assigning | AppendClause::ReferenceInto | AppendClause::SortedBy => {}
+            }
+
+            self.collector.walk_node(child, scope);
+        }
+
+        if let Some(target_expr) = target_expr {
+            let rhs_nodes = source_expr.into_iter().collect::<Vec<_>>();
+            self.emit_assignment_site_from_ranges(scope, stmt_range, target_expr, &rhs_nodes);
+        }
+    }
+
     pub(super) fn collect_read_table_stmt(&mut self, node: NodeId, scope: ScopeId) {
         self.record_unknown_effect(node, scope);
         if let Some(stmt) = ReadTableStmt::cast(self.collector.syntax(node)) {

@@ -3741,6 +3741,32 @@ ENDFORM.
 }
 
 #[test]
+fn append_target_counts_as_assignment_for_definite_assignment() {
+    let src = r#"
+FORM save_text_file.
+  TYPES ty_line_tab TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+  DATA lt_lines TYPE ty_line_tab.
+  DATA ls_line TYPE string.
+  DATA lv_count TYPE i.
+
+  APPEND ls_line TO lt_lines.
+  lv_count = lines( lt_lines ).
+ENDFORM.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///append_target_assignment.abap", src, &parsed);
+
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UseBeforeDefiniteAssignment
+                && diag.message.contains("lt_lines")
+        }),
+        "{:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn class_definition_and_implementation_are_not_duplicate_class_declarations() {
     let src = r#"
 CLASS some_class DEFINITION.
