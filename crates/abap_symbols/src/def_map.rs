@@ -690,6 +690,7 @@ pub struct RoutineSiteData {
     pub scope: ScopeId,
     pub range: TextRange,
     pub kind: RoutineSiteKind,
+    pub target_range: Option<TextRange>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -80,8 +80,12 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
         range: abap_lexer::TextRange,
         kind: RoutineSiteKind,
     ) {
-        self.collector
-            .add_routine_site(RoutineSiteData { scope, range, kind });
+        self.collector.add_routine_site(RoutineSiteData {
+            scope,
+            range,
+            kind,
+            target_range: None,
+        });
     }
 
     fn record_unknown_effect(&mut self, node: NodeId, scope: ScopeId) {
@@ -607,6 +611,7 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                 .collect();
             let mut source_expr = None;
             let mut target_kind = None;
+            let mut named_into_target = None;
             let mut named_field_symbol_target = None;
             for child in self.collector.file.children(node) {
                 match self.collector.file.kind(child) {
@@ -625,6 +630,14 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                     _ => {
                         if source_expr.is_none() {
                             source_expr = Some(child);
+                        } else if target_kind == Some("into")
+                            && named_into_target.is_none()
+                            && self
+                                .collector
+                                .value_access_from_node(child, scope)
+                                .is_some()
+                        {
+                            named_into_target = Some(child);
                         } else if target_kind == Some("assigning")
                             && named_field_symbol_target.is_none()
                             && let Some(target) = self.direct_field_symbol_target(child, scope)
@@ -646,7 +659,7 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
 
             if target_kind == Some("into") {
                 let decl_scope = self.collector.declaration_scope(scope);
-                for node in data_inline_targets {
+                for &node in &data_inline_targets {
                     if let Some(name_node) =
                         self.collector.file.children(node).find(|&child| {
                             self.collector.file.kind(child) == SyntaxKind::DataDeclName
@@ -668,11 +681,12 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             }
 
             if let Some(source_expr) = source_expr {
-                self.record_routine_site(
+                self.collector.add_routine_site(RoutineSiteData {
                     scope,
-                    self.collector.file.range(source_expr),
-                    RoutineSiteKind::ReadTable,
-                );
+                    range: self.collector.file.range(source_expr),
+                    kind: RoutineSiteKind::ReadTable,
+                    target_range: named_into_target.map(|target| self.collector.file.range(target)),
+                });
             }
 
             if target_kind == Some("assigning") {

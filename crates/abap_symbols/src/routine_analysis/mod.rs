@@ -1691,7 +1691,18 @@ fn build_routine_dataflow(
                     transfer.non_initial_kills.push(write_value);
                 }
             }
-            RoutineInstructionSite::Delete { .. } | RoutineInstructionSite::ReadTable { .. } => {}
+            RoutineInstructionSite::Delete { .. } => {}
+            RoutineInstructionSite::ReadTable { index } => {
+                if let Some(site) = unit.routine_sites.get(index as usize)
+                    && let Some(target_range) = site.target_range.as_ref()
+                    && let Some(write_value) =
+                        direct_write_value_id_for_clear(&reference_uses, target_range, &values)
+                {
+                    transfer.writes.push(write_value);
+                    transfer.assigned_writes.push(write_value);
+                    transfer.non_initial_kills.push(write_value);
+                }
+            }
             RoutineInstructionSite::Perform { index } => {
                 if let Some(perform_call) = unit.perform_calls.get(index as usize) {
                     transfer.reads.extend(read_occurrences_in_range(
@@ -2657,6 +2668,19 @@ fn build_dead_store_instruction_summaries(
                     });
                 }
             }
+            RoutineInstructionSite::ReadTable { index } => {
+                if let Some(site) = unit.routine_sites.get(index as usize)
+                    && let Some(target_range) = site.target_range.as_ref()
+                    && let Some(value) =
+                        direct_write_value_id_for_clear(reference_uses, target_range, values)
+                    && tracked_values.contains(value)
+                {
+                    writes.push(DeadStoreWrite {
+                        value,
+                        range: target_range.clone(),
+                    });
+                }
+            }
             RoutineInstructionSite::Call { index } => {
                 if let Some(call_site) = unit.call_sites.get(index as usize) {
                     for argument in &call_site.arguments {
@@ -2683,7 +2707,6 @@ fn build_dead_store_instruction_summaries(
             RoutineInstructionSite::Perform { .. }
             | RoutineInstructionSite::SqlQuery { .. }
             | RoutineInstructionSite::Delete { .. }
-            | RoutineInstructionSite::ReadTable { .. }
             | RoutineInstructionSite::FieldSymbolBind { .. }
             | RoutineInstructionSite::ValueRead { .. }
             | RoutineInstructionSite::UnknownEffect

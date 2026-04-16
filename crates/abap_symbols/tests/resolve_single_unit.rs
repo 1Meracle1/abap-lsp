@@ -3715,6 +3715,32 @@ READ TABLE lt_values INTO DATA(ls_value) INDEX 1.
 }
 
 #[test]
+fn read_table_into_target_counts_as_assignment_for_definite_assignment() {
+    let src = r#"
+FORM pick_public_key_file.
+  TYPES ty_file_tab TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+  DATA lt_files TYPE ty_file_tab.
+  DATA ls_file TYPE string.
+  DATA lv_copy TYPE string.
+
+  READ TABLE lt_files INTO ls_file INDEX 1.
+  lv_copy = ls_file.
+ENDFORM.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///read_table_into_assignment.abap", src, &parsed);
+
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UseBeforeDefiniteAssignment
+                && diag.message.contains("ls_file")
+        }),
+        "{:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn class_definition_and_implementation_are_not_duplicate_class_declarations() {
     let src = r#"
 CLASS some_class DEFINITION.
