@@ -129,6 +129,13 @@ pub struct HoveredSymbolInfo {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParameterInlayHintInfo {
+    pub position: usize,
+    pub label: Arc<str>,
+    pub tooltip_markdown: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DefinitionTarget {
     pub uri: Arc<str>,
     pub range: Range<usize>,
@@ -696,25 +703,31 @@ impl AnalysisSnapshot {
             .is_some()
     }
 
-    pub fn hovered_perform_argument_at(&self, offset: usize) -> Option<HoveredSymbolInfo> {
-        let (perform_call, argument) = self
+    pub fn perform_parameter_inlay_hints_in_range(
+        &self,
+        range: Range<usize>,
+    ) -> Vec<ParameterInlayHintInfo> {
+        let mut hints: Vec<_> = self
             .symbols
             .perform_calls
             .iter()
-            .filter_map(|perform_call| {
-                perform_call
-                    .arguments
-                    .iter()
-                    .find(|argument| argument.range.start <= offset && offset < argument.range.end)
-                    .map(|argument| (perform_call, argument))
+            .flat_map(|perform_call| {
+                perform_call.arguments.iter().filter_map(|argument| {
+                    if argument.range.start < range.start || argument.range.start >= range.end {
+                        return None;
+                    }
+                    let parameter =
+                        resolve_perform_argument_parameter(self, perform_call, argument)?;
+                    Some(ParameterInlayHintInfo {
+                        position: argument.range.start,
+                        label: Arc::clone(&parameter.name),
+                        tooltip_markdown: perform_parameter_inlay_hint_markdown(&parameter),
+                    })
+                })
             })
-            .min_by_key(|(_, argument)| argument.range.end.saturating_sub(argument.range.start))?;
-        let parameter = resolve_perform_argument_parameter(self, perform_call, argument)?;
-        Some(HoveredSymbolInfo {
-            range: argument.range.clone(),
-            display_name: Arc::clone(&parameter.name),
-            markdown_lines: markdown_lines_for_form_parameter(&parameter),
-        })
+            .collect();
+        hints.sort_by_key(|hint| hint.position);
+        hints
     }
 
     /// Hover for an Open SQL name span (`FROM` source, column, alias, and similar).
@@ -734,9 +747,6 @@ impl AnalysisSnapshot {
         if let Some(target) = self.definition_target_for_call_target_at(offset) {
             return Some(target);
         }
-        if let Some(target) = self.definition_target_for_perform_argument_at(offset) {
-            return Some(target);
-        }
         if let Some(target) = self.definition_target_for_named_argument_at(offset) {
             return Some(target);
         }
@@ -749,9 +759,6 @@ impl AnalysisSnapshot {
 
     fn reference_search_target_at(&self, offset: usize) -> Option<ReferenceSearchTarget> {
         if let Some(target) = self.reference_search_target_for_component_at(offset) {
-            return Some(target);
-        }
-        if let Some(target) = self.reference_search_target_for_perform_argument_at(offset) {
             return Some(target);
         }
         if let Some(target) = self.reference_search_target_for_named_argument_at(offset) {
@@ -991,43 +998,6 @@ impl AnalysisSnapshot {
             .find(|access| access.range.start <= offset && offset < access.range.end)?;
         Some(ReferenceSearchTarget::Symbol(
             resolve_named_argument_symbol(self, access)?,
-        ))
-    }
-
-    fn definition_target_for_perform_argument_at(&self, offset: usize) -> Option<DefinitionTarget> {
-        let (perform_call, argument) = self
-            .symbols
-            .perform_calls
-            .iter()
-            .filter_map(|perform_call| {
-                perform_call
-                    .arguments
-                    .iter()
-                    .find(|argument| argument.range.start <= offset && offset < argument.range.end)
-                    .map(|argument| (perform_call, argument))
-            })
-            .min_by_key(|(_, argument)| argument.range.end.saturating_sub(argument.range.start))?;
-        resolve_perform_argument_target(self, perform_call, argument)
-    }
-
-    fn reference_search_target_for_perform_argument_at(
-        &self,
-        offset: usize,
-    ) -> Option<ReferenceSearchTarget> {
-        let (perform_call, argument) = self
-            .symbols
-            .perform_calls
-            .iter()
-            .filter_map(|perform_call| {
-                perform_call
-                    .arguments
-                    .iter()
-                    .find(|argument| argument.range.start <= offset && offset < argument.range.end)
-                    .map(|argument| (perform_call, argument))
-            })
-            .min_by_key(|(_, argument)| argument.range.end.saturating_sub(argument.range.start))?;
-        Some(ReferenceSearchTarget::Symbol(
-            resolve_perform_argument_symbol(self, perform_call, argument)?,
         ))
     }
 
@@ -2281,6 +2251,14 @@ fn markdown_lines_for_form(unit: &UnitAnalysis, symbol: &SymbolData) -> Vec<Stri
         return vec![format_hover_abap(&signature)];
     }
     vec![format!("`{}`", symbol.name), "Form".to_string()]
+}
+
+fn perform_parameter_inlay_hint_markdown(info: &FormParameterHoverInfo) -> String {
+    format!(
+        "parameter of FORM `{}`\n\n{}",
+        info.form_name,
+        format_hover_abap(&render_form_parameter_signature(info))
+    )
 }
 
 fn markdown_lines_for_declared_symbol(unit: &UnitAnalysis, symbol: &SymbolData) -> Vec<String> {
@@ -3656,35 +3634,6 @@ fn resolve_perform_argument_parameter(
         .filter(|parameter| parameter.section == perform_section_to_form_section(argument.section))
         .nth(argument.ordinal_in_section)?;
     form_parameter_hover_info_from_metadata(unit, routine_symbol_id, parameter)
-}
-
-fn resolve_perform_argument_target(
-    snapshot: &AnalysisSnapshot,
-    perform_call: &PerformCallData,
-    argument: &PerformArgumentData,
-) -> Option<DefinitionTarget> {
-    let (unit, routine_symbol_id) = resolve_symbol_from_context(
-        snapshot,
-        perform_call.scope,
-        Namespace::Routine,
-        &perform_call.routine_name,
-        false,
-    )?;
-    if unit.symbol(routine_symbol_id).kind != SymbolKind::Form {
-        return None;
-    }
-    let parameter = unit
-        .semantic()
-        .decls()
-        .form_routine(routine_symbol_id)?
-        .parameters
-        .iter()
-        .filter(|parameter| parameter.section == perform_section_to_form_section(argument.section))
-        .nth(argument.ordinal_in_section)?;
-    Some(definition_target_for_symbol(
-        unit,
-        unit.symbol(parameter.symbol),
-    ))
 }
 
 fn resolve_perform_argument_symbol(
@@ -11615,7 +11564,7 @@ START-OF-SELECTION.
     }
 
     #[test]
-    fn definition_at_returns_form_parameter_declaration_for_perform_argument() {
+    fn definition_at_returns_variable_declaration_for_perform_argument() {
         let store = DocumentStore::default();
         let src = "\
 FORM f USING VALUE(iv_input) TYPE i CHANGING cv_text TYPE string.
@@ -11633,10 +11582,10 @@ START-OF-SELECTION.
         let target = snapshot
             .definition_at(argument_use + 1)
             .expect("definition target");
-        assert_target_slice(&target, "file:///demo.abap", src, "iv_input");
+        assert_target_slice(&target, "file:///demo.abap", src, "lv_input");
         assert_eq!(
             target.range.start,
-            src.find("iv_input").expect("parameter declaration")
+            src.find("lv_input").expect("variable declaration")
         );
     }
 
@@ -12606,6 +12555,34 @@ START-OF-SELECTION.
         assert_reference_slices(
             &references,
             &[("file:///refs_param.abap", src, "io_stmt"); 3],
+        );
+        assert_eq!(snapshot.version, 1);
+    }
+
+    #[test]
+    fn references_on_perform_argument_follow_actual_variable_symbol() {
+        let store = DocumentStore::default();
+        let src = "\
+FORM f USING VALUE(iv_input) TYPE i.
+  DATA lv_copy TYPE i.
+  lv_copy = iv_input.
+ENDFORM.
+
+START-OF-SELECTION.
+  DATA lv_input TYPE i VALUE 1.
+  WRITE lv_input.
+  PERFORM f USING lv_input.
+";
+        let snapshot = store.publish("file:///refs_perform.abap", 1, src);
+
+        let offset = src.rfind("lv_input").expect("perform argument use") + 1;
+        let references = store
+            .references("file:///refs_perform.abap", offset, true)
+            .expect("references");
+
+        assert_reference_slices(
+            &references,
+            &[("file:///refs_perform.abap", src, "lv_input"); 3],
         );
         assert_eq!(snapshot.version, 1);
     }

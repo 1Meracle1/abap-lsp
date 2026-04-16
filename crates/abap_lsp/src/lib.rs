@@ -18,7 +18,8 @@ use abap_symbols::{DiagnosticKind, ReferenceKind, SqlResolution, UnitId};
 use lsp_types::{
     CompletionItem, CompletionItemKind, CompletionOptions, Diagnostic, DiagnosticSeverity,
     Documentation, GotoDefinitionResponse, Hover, HoverContents, HoverProviderCapability,
-    InitializeResult, InsertTextFormat, Location, MarkupContent, MarkupKind, OneOf, Position,
+    InitializeResult, InlayHint, InlayHintKind, InlayHintOptions, InlayHintServerCapabilities,
+    InsertTextFormat, Location, MarkupContent, MarkupKind, OneOf, Position,
     PublishDiagnosticsParams, Range, SemanticTokens, SemanticTokensFullOptions,
     SemanticTokensOptions, SemanticTokensServerCapabilities, ServerCapabilities,
     TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri,
@@ -28,7 +29,7 @@ use serde::{Deserialize, Serialize};
 pub use abap_cache::{AnalysisSnapshot, OpenDocumentOverlay, WorkspacePerformanceMode};
 pub use lsp_types::{
     CompletionParams, CompletionResponse, DidChangeTextDocumentParams, DidOpenTextDocumentParams,
-    GotoDefinitionParams, HoverParams, ReferenceParams, SemanticTokensParams,
+    GotoDefinitionParams, HoverParams, InlayHintParams, ReferenceParams, SemanticTokensParams,
 };
 pub use sem_tokens::build_semantic_tokens;
 pub use serde;
@@ -1565,9 +1566,6 @@ pub fn hover(state: &ServerState, params: &HoverParams) -> Option<Hover> {
     if let Some(call_target) = snapshot.hovered_call_target_at(offset) {
         return resolved_symbol_hover(&snapshot, call_target);
     }
-    if let Some(argument) = snapshot.hovered_perform_argument_at(offset) {
-        return resolved_symbol_hover(&snapshot, argument);
-    }
     if let Some(named_argument) = snapshot.hovered_named_argument_at(offset) {
         return resolved_symbol_hover(&snapshot, named_argument);
     }
@@ -1774,6 +1772,35 @@ pub fn semantic_tokens(
     Some(sem_tokens::build_semantic_tokens(snapshot.as_ref()))
 }
 
+pub fn inlay_hints(state: &ServerState, params: &InlayHintParams) -> Option<Vec<InlayHint>> {
+    let uri = normalize_lsp_uri(params.text_document.uri.as_str());
+    let snapshot = snapshot_for_uri(state, &uri)?;
+    let byte_range = range_to_byte_range(snapshot.text.as_ref(), params.range.clone())?;
+    let hints = snapshot
+        .perform_parameter_inlay_hints_in_range(byte_range)
+        .into_iter()
+        .filter_map(|hint| {
+            Some(InlayHint {
+                position: offset_to_position(snapshot.text.as_ref(), hint.position)?,
+                label: format!("{}:", hint.label).into(),
+                kind: Some(InlayHintKind::PARAMETER),
+                text_edits: None,
+                tooltip: Some(
+                    MarkupContent {
+                        kind: MarkupKind::Markdown,
+                        value: hint.tooltip_markdown,
+                    }
+                    .into(),
+                ),
+                padding_left: None,
+                padding_right: Some(true),
+                data: None,
+            })
+        })
+        .collect();
+    Some(hints)
+}
+
 pub fn initialize_result(config: &ServerConfig) -> InitializeResult {
     InitializeResult {
         server_info: Some(lsp_types::ServerInfo {
@@ -1794,6 +1821,12 @@ pub fn initialize_result(config: &ServerConfig) -> InitializeResult {
             }),
             definition_provider: Some(OneOf::Left(true)),
             references_provider: Some(OneOf::Left(true)),
+            inlay_hint_provider: Some(OneOf::Right(InlayHintServerCapabilities::Options(
+                InlayHintOptions {
+                    resolve_provider: None,
+                    work_done_progress_options: Default::default(),
+                },
+            ))),
             semantic_tokens_provider: Some(
                 SemanticTokensServerCapabilities::SemanticTokensOptions(SemanticTokensOptions {
                     legend: sem_tokens::semantic_tokens_legend(),
@@ -2012,25 +2045,25 @@ mod tests {
 
     use lsp_types::{
         DiagnosticSeverity, DidChangeTextDocumentParams, DidOpenTextDocumentParams, Documentation,
-        GotoDefinitionResponse, HoverContents, InsertTextFormat, Position,
-        TextDocumentContentChangeEvent, TextDocumentIdentifier, TextDocumentItem,
-        TextDocumentPositionParams, Uri, VersionedTextDocumentIdentifier,
+        GotoDefinitionResponse, HoverContents, InlayHintKind, InlayHintLabel, InlayHintTooltip,
+        InsertTextFormat, Position, Range, TextDocumentContentChangeEvent, TextDocumentIdentifier,
+        TextDocumentItem, TextDocumentPositionParams, Uri, VersionedTextDocumentIdentifier,
     };
 
     use crate::sem_tokens;
 
     use super::{
         CompletionParams, CompletionResponse, DEPENDENCY_CACHE_CLEARED, GotoDefinitionParams,
-        HoverParams, REMOTE_DEPENDENCIES_UPDATED, RESOLVE_REMOTE_DEPENDENCIES, ReferenceParams,
-        ServerState, WORKSPACE_MANIFEST_UPDATED, WorkspaceManifestUpdatedParams,
+        HoverParams, InlayHintParams, REMOTE_DEPENDENCIES_UPDATED, RESOLVE_REMOTE_DEPENDENCIES,
+        ReferenceParams, ServerState, WORKSPACE_MANIFEST_UPDATED, WorkspaceManifestUpdatedParams,
         build_lsp_diagnostics, build_lsp_diagnostics_for_workspace,
         build_remote_dependency_batch_for_workspace, build_remote_dependency_request,
         build_remote_dependency_requests_for_workspace, collect_remote_dependency_candidates,
         completion, definition, handle_dependency_cache_cleared,
-        handle_remote_dependencies_updated, hover, initialize_result, normalize_lsp_uri,
-        offset_to_position, publish_changed_document, publish_changed_document_mut,
-        publish_open_document, publish_open_document_mut, references, refresh_workspace,
-        snapshot_for_uri, stage_workspace_preview_snapshot,
+        handle_remote_dependencies_updated, hover, initialize_result, inlay_hints,
+        normalize_lsp_uri, offset_to_position, publish_changed_document,
+        publish_changed_document_mut, publish_open_document, publish_open_document_mut, references,
+        refresh_workspace, snapshot_for_uri, stage_workspace_preview_snapshot,
     };
 
     fn temp_workspace_path(name: &str) -> PathBuf {
@@ -2125,6 +2158,12 @@ mod tests {
         assert!(matches!(
             result.capabilities.references_provider,
             Some(lsp_types::OneOf::Left(true))
+        ));
+        assert!(matches!(
+            result.capabilities.inlay_hint_provider,
+            Some(lsp_types::OneOf::Right(
+                lsp_types::InlayHintServerCapabilities::Options(_)
+            ))
         ));
         assert!(result.server_info.is_some());
     }
@@ -7327,7 +7366,7 @@ AT SELECTION-SCREEN ON VALUE-REQUEST FOR p_pub.\n\
     }
 
     #[test]
-    fn hover_returns_form_parameter_metadata_at_perform_statement_and_declaration() {
+    fn hover_on_perform_argument_returns_actual_variable_symbol() {
         let state = ServerState::default();
         let text = "\
 FORM f USING VALUE(iv_input) TYPE i CHANGING cv_text TYPE string.
@@ -7351,66 +7390,146 @@ START-OF-SELECTION.
             },
         );
 
-        let decl_hover = hover(
+        let using_offset = text
+            .rfind("lv_input")
+            .expect("using argument at perform call");
+        let using_position = offset_to_position(text, using_offset).expect("using position");
+        let using_hover = hover(
             &state,
             &HoverParams {
                 text_document_position_params: TextDocumentPositionParams {
                     text_document: TextDocumentIdentifier {
                         uri: Uri::from_str("file:///perform_hover.abap").expect("uri"),
                     },
-                    position: Position {
-                        line: 0,
-                        character: 20,
-                    },
+                    position: using_position,
                 },
                 work_done_progress_params: Default::default(),
             },
         )
-        .expect("declaration hover");
-        let HoverContents::Markup(decl_markup) = decl_hover.contents else {
+        .expect("perform using hover");
+        let HoverContents::Markup(using_markup) = using_hover.contents else {
             panic!("expected markdown hover");
         };
         assert!(
-            decl_markup.value.contains(
-                "```abap\nFORM f\n  USING\n    VALUE(iv_input) TYPE i\n  CHANGING\n    cv_text TYPE string\n```"
-            ),
+            using_markup.value.contains("`lv_input`"),
             "{}",
-            decl_markup.value
+            using_markup.value
         );
-        assert!(decl_markup.value.contains("parameter of FORM `f`"));
+        assert!(using_markup.value.contains("Variable"));
+        assert!(
+            using_markup.value.contains("```abap\nTYPE i\n```"),
+            "{}",
+            using_markup.value
+        );
 
-        let call_hover = hover(
+        let changing_offset = text
+            .rfind("lv_text.")
+            .expect("changing argument at perform call");
+        let changing_position =
+            offset_to_position(text, changing_offset).expect("changing position");
+        let changing_hover = hover(
             &state,
             &HoverParams {
                 text_document_position_params: TextDocumentPositionParams {
                     text_document: TextDocumentIdentifier {
                         uri: Uri::from_str("file:///perform_hover.abap").expect("uri"),
                     },
-                    position: Position {
-                        line: 7,
-                        character: 18,
-                    },
+                    position: changing_position,
                 },
                 work_done_progress_params: Default::default(),
             },
         )
-        .expect("perform hover");
-        let HoverContents::Markup(call_markup) = call_hover.contents else {
+        .expect("perform changing hover");
+        let HoverContents::Markup(changing_markup) = changing_hover.contents else {
             panic!("expected markdown hover");
         };
         assert!(
-            call_markup.value.contains("`iv_input`"),
+            changing_markup.value.contains("`lv_text`"),
             "{}",
-            call_markup.value
+            changing_markup.value
         );
+        assert!(changing_markup.value.contains("Variable"));
         assert!(
-            call_markup.value.contains(
-                "```abap\nFORM f\n  USING\n    VALUE(iv_input) TYPE i\n  CHANGING\n    cv_text TYPE string\n```"
-            ),
+            changing_markup.value.contains("```abap\nTYPE string\n```"),
             "{}",
-            call_markup.value
+            changing_markup.value
         );
-        assert!(call_markup.value.contains("parameter of FORM `f`"));
+    }
+
+    #[test]
+    fn inlay_hints_show_form_parameter_names_for_perform_arguments() {
+        let state = ServerState::default();
+        let text = "\
+FORM f USING VALUE(iv_input) TYPE i CHANGING cv_text TYPE string.
+  cv_text = |{ iv_input }|.
+ENDFORM.
+
+START-OF-SELECTION.
+  DATA lv_input TYPE i VALUE 1.
+  DATA lv_text TYPE string.
+  PERFORM f USING lv_input CHANGING lv_text.
+";
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///perform_hover.abap").expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: text.to_string(),
+                },
+            },
+        );
+
+        let range = Range {
+            start: offset_to_position(text, 0).expect("start position"),
+            end: offset_to_position(text, text.len()).expect("end position"),
+        };
+        let hints = inlay_hints(
+            &state,
+            &InlayHintParams {
+                text_document: TextDocumentIdentifier {
+                    uri: Uri::from_str("file:///perform_hover.abap").expect("uri"),
+                },
+                range,
+                work_done_progress_params: Default::default(),
+            },
+        )
+        .expect("inlay hints");
+
+        assert_eq!(hints.len(), 2, "{hints:?}");
+        assert_eq!(
+            hints[0].position,
+            offset_to_position(text, text.rfind("lv_input").expect("using argument"))
+                .expect("using position")
+        );
+        assert!(matches!(hints[0].kind, Some(InlayHintKind::PARAMETER)));
+        let InlayHintLabel::String(using_label) = &hints[0].label else {
+            panic!("expected string label");
+        };
+        assert_eq!(using_label, "iv_input:");
+        let Some(InlayHintTooltip::MarkupContent(using_tooltip)) = hints[0].tooltip.as_ref() else {
+            panic!("expected markdown tooltip");
+        };
+        assert!(using_tooltip.value.contains("parameter of FORM `f`"));
+        assert!(using_tooltip.value.contains("VALUE(iv_input) TYPE i"));
+
+        assert_eq!(
+            hints[1].position,
+            offset_to_position(text, text.rfind("lv_text.").expect("changing argument"))
+                .expect("changing position")
+        );
+        assert!(matches!(hints[1].kind, Some(InlayHintKind::PARAMETER)));
+        let InlayHintLabel::String(changing_label) = &hints[1].label else {
+            panic!("expected string label");
+        };
+        assert_eq!(changing_label, "cv_text:");
+        let Some(InlayHintTooltip::MarkupContent(changing_tooltip)) = hints[1].tooltip.as_ref()
+        else {
+            panic!("expected markdown tooltip");
+        };
+        assert!(changing_tooltip.value.contains("parameter of FORM `f`"));
+        assert!(changing_tooltip.value.contains("cv_text TYPE string"));
     }
 
     #[test]

@@ -9,15 +9,16 @@ use std::time::{Duration, Instant};
 use abap_jsonrpc::{JSON_RPC_VERSION, Response, read_frame, write_frame};
 use abap_lsp::{
     CompletionParams, DEPENDENCY_CACHE_CLEARED, DidChangeTextDocumentParams,
-    DidOpenTextDocumentParams, GotoDefinitionParams, HoverParams, REMOTE_DEPENDENCIES_UPDATED,
-    RESOLVE_REMOTE_DEPENDENCIES, ReferenceParams, SemanticTokensParams, ServerConfig, ServerState,
-    WORKSPACE_ANALYSIS_STATUS, WORKSPACE_MANIFEST_UPDATED, WorkspaceAnalysisPhase,
-    WorkspaceAnalysisStatusParams, WorkspaceManifestUpdatedParams, WorkspacePerformanceMode,
-    WorkspaceState, build_remote_dependency_batch_for_workspace,
+    DidOpenTextDocumentParams, GotoDefinitionParams, HoverParams, InlayHintParams,
+    REMOTE_DEPENDENCIES_UPDATED, RESOLVE_REMOTE_DEPENDENCIES, ReferenceParams,
+    SemanticTokensParams, ServerConfig, ServerState, WORKSPACE_ANALYSIS_STATUS,
+    WORKSPACE_MANIFEST_UPDATED, WorkspaceAnalysisPhase, WorkspaceAnalysisStatusParams,
+    WorkspaceManifestUpdatedParams, WorkspacePerformanceMode, WorkspaceState,
+    build_remote_dependency_batch_for_workspace,
     build_remote_dependency_batch_for_workspace_filtered, build_remote_dependency_request,
     completion, definition, handle_dependency_cache_cleared_with_progress,
     handle_remote_dependencies_updated_with_progress,
-    handle_workspace_manifest_updated_with_progress, hover, initialize_result,
+    handle_workspace_manifest_updated_with_progress, hover, initialize_result, inlay_hints,
     prune_workspace_preview_snapshots, publish_changed_document_mut_with_progress,
     publish_diagnostics_params, publish_open_document_mut_with_progress, references,
     refresh_workspace_with_progress, semantic_tokens, stage_workspace_preview_snapshot,
@@ -1723,6 +1724,23 @@ fn handle_message(
                 notifications: Vec::new(),
             })
         }
+        Some("textDocument/inlayHint") => {
+            let Some(inlay_hint_params) = parse_params::<InlayHintParams>(&message)? else {
+                return Ok(HandledMessage {
+                    response: Some(Response::failure(
+                        id.unwrap_or(Value::Null),
+                        INVALID_REQUEST,
+                        "textDocument/inlayHint requires params",
+                    )),
+                    notifications: Vec::new(),
+                });
+            };
+            let result = serde_json::to_value(inlay_hints(state, &inlay_hint_params))?;
+            Ok(HandledMessage {
+                response: Some(Response::success(id.unwrap_or(Value::Null), result)),
+                notifications: Vec::new(),
+            })
+        }
         Some("textDocument/references") => {
             let Some(reference_params) = parse_params::<ReferenceParams>(&message)? else {
                 return Ok(HandledMessage {
@@ -2144,6 +2162,68 @@ mod tests {
             .expect("hover result");
         assert!(result.to_string().contains("scalar component"));
         assert!(result.to_string().contains("TYPE i"));
+    }
+
+    #[test]
+    fn handles_inlay_hints_after_open_document() {
+        let mut state = ServerState::default();
+        let config = ServerConfig::default();
+        let text = "\
+FORM f USING VALUE(iv_input) TYPE i CHANGING cv_text TYPE string.
+  cv_text = |{ iv_input }|.
+ENDFORM.
+
+START-OF-SELECTION.
+  DATA lv_input TYPE i VALUE 1.
+  DATA lv_text TYPE string.
+  PERFORM f USING lv_input CHANGING lv_text.
+";
+
+        let opened = handle_message(
+            &mut state,
+            &config,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": {
+                    "textDocument": {
+                        "uri": "file:///perform_inlay.abap",
+                        "languageId": "abap",
+                        "version": 1,
+                        "text": text
+                    }
+                }
+            }),
+        )
+        .expect("didOpen");
+        assert!(opened.response.is_none());
+        assert_eq!(opened.notifications.len(), 1);
+
+        let inlay_hint_msg = handle_message(
+            &mut state,
+            &config,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "textDocument/inlayHint",
+                "params": {
+                    "textDocument": { "uri": "file:///perform_inlay.abap" },
+                    "range": {
+                        "start": { "line": 0, "character": 0 },
+                        "end": { "line": 8, "character": 0 }
+                    }
+                }
+            }),
+        )
+        .expect("inlay hints");
+
+        let result = inlay_hint_msg
+            .response
+            .expect("inlay hint response")
+            .result
+            .expect("inlay hint result");
+        assert!(result.to_string().contains("iv_input:"));
+        assert!(result.to_string().contains("cv_text:"));
     }
 
     #[test]

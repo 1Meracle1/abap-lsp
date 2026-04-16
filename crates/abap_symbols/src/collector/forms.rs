@@ -197,6 +197,8 @@ impl<'ctx, 'a> FormsLowering<'ctx, 'a> {
                 idx += 1;
                 continue;
             }
+            self.collector
+                .collect_token_expression_refs_infos(&tokens[idx..next_idx], scope, true);
             parameters.push(current_section);
             let ordinal_in_section = match current_section {
                 PerformParameterSection::Tables => {

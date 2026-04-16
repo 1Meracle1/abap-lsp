@@ -111,6 +111,43 @@ mod tests {
     }
 
     #[test]
+    fn perform_arguments_collect_resolved_variable_references() {
+        let src = "\
+FORM f USING VALUE(iv_input) TYPE i CHANGING cv_text TYPE string.
+  cv_text = |{ iv_input }|.
+ENDFORM.
+
+START-OF-SELECTION.
+  DATA lv_input TYPE i VALUE 1.
+  DATA lv_text TYPE string.
+  PERFORM f USING lv_input CHANGING lv_text.
+";
+        let parsed = parse(src);
+        let unit = analyze_unit("file:///perform_refs.abap", src, &parsed);
+
+        let using_offset = src.rfind("lv_input").expect("perform using arg") + 1;
+        let using_ref = unit
+            .semantic()
+            .refs()
+            .reference_at_offset(using_offset)
+            .expect("using reference");
+        assert_eq!(using_ref.name.as_ref(), "lv_input");
+        assert!(matches!(using_ref.resolution, Some(Resolution::Symbol(_))));
+
+        let changing_offset = src.rfind("lv_text").expect("perform changing arg") + 1;
+        let changing_ref = unit
+            .semantic()
+            .refs()
+            .reference_at_offset(changing_offset)
+            .expect("changing reference");
+        assert_eq!(changing_ref.name.as_ref(), "lv_text");
+        assert!(matches!(
+            changing_ref.resolution,
+            Some(Resolution::Symbol(_))
+        ));
+    }
+
+    #[test]
     fn event_block_uses_full_hyphenated_keyword_as_symbol_name() {
         let src = "START-OF-SELECTION.\n  DATA lv TYPE i.\n";
         let parsed = parse(src);
