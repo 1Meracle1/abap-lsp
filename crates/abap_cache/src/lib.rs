@@ -26,11 +26,16 @@ use parking_lot::RwLock;
 use rayon::prelude::*;
 
 mod call_graph;
+mod callable_summary;
 mod effective_source;
 mod workspace;
 pub use call_graph::{
     CallGraphEdge, CallGraphEdgeKind, CallGraphNode, CallGraphNodeKind, CallGraphResolutionStatus,
     ProjectCallGraph,
+};
+pub use callable_summary::{
+    CallableParameterDirection, CallableParameterSummary, CallableSummary,
+    ProjectCallableSummaryAnalysis, ProjectCallableSummaryMetrics,
 };
 pub use effective_source::{
     EffectiveSource, EffectiveSourceDiagnostic, EffectiveSourceLimits, EffectiveSourceSegment,
@@ -64,6 +69,7 @@ pub struct AnalysisSnapshot {
     pub symbols: Arc<UnitAnalysis>,
     pub project: Arc<ProjectAnalysis>,
     pub routine_analysis: Arc<ProjectRoutineAnalysis>,
+    pub callable_summaries: Arc<ProjectCallableSummaryAnalysis>,
     pub call_graph: Arc<ProjectCallGraph>,
     pub scope_index: Arc<ScopeIndex>,
 }
@@ -295,6 +301,10 @@ impl AnalysisSnapshot {
 
     pub fn routine_analysis(&self) -> &ProjectRoutineAnalysis {
         self.routine_analysis.as_ref()
+    }
+
+    pub fn callable_summaries(&self) -> &ProjectCallableSummaryAnalysis {
+        self.callable_summaries.as_ref()
     }
 
     pub fn semantic_token_lookup_context(&self) -> SemanticTokenLookupContext<'_> {
@@ -5920,6 +5930,7 @@ fn clone_snapshot_with_version(snapshot: &AnalysisSnapshot, version: i32) -> Arc
         symbols: Arc::clone(&snapshot.symbols),
         project: Arc::clone(&snapshot.project),
         routine_analysis: Arc::clone(&snapshot.routine_analysis),
+        callable_summaries: Arc::clone(&snapshot.callable_summaries),
         call_graph: Arc::clone(&snapshot.call_graph),
     })
 }
@@ -5942,6 +5953,7 @@ struct AnalysisMetrics {
     routine_analysis_cfg_micros: u128,
     routine_analysis_dataflow_micros: u128,
     routine_analysis_dead_store_micros: u128,
+    callable_summary_micros: u128,
     full_rebuild: bool,
     unit_count: usize,
     dirty_unit_count: usize,
@@ -5985,6 +5997,7 @@ pub struct WorkspaceAnalysisMetricsSnapshot {
     pub routine_analysis_cfg_micros: u128,
     pub routine_analysis_dataflow_micros: u128,
     pub routine_analysis_dead_store_micros: u128,
+    pub callable_summary_micros: u128,
     pub full_rebuild: bool,
     pub unit_count: usize,
     pub dirty_unit_count: usize,
@@ -6229,6 +6242,13 @@ fn materialize_snapshots(
         project.as_ref(),
         &scope_indexes,
     ));
+    let callable_summary_timer = std::time::Instant::now();
+    let callable_summaries = Arc::new(callable_summary::build_project_callable_summary_analysis(
+        project.as_ref(),
+        routine_analysis.as_ref(),
+        call_graph.as_ref(),
+    ));
+    let callable_summary_micros = callable_summary_timer.elapsed().as_micros();
     let mut snapshots = HashMap::with_capacity(prepared.len());
     let mut locals = HashMap::with_capacity(prepared.len());
     let mut uri_order = Vec::with_capacity(prepared.len());
@@ -6254,6 +6274,7 @@ fn materialize_snapshots(
                 symbols: Arc::new(unit),
                 project: Arc::clone(&project),
                 routine_analysis: Arc::clone(&routine_analysis),
+                callable_summaries: Arc::clone(&callable_summaries),
                 call_graph: Arc::clone(&call_graph),
             }),
         );
@@ -6268,6 +6289,7 @@ fn materialize_snapshots(
         routine_analysis_cfg_micros: routine_analysis.metrics.cfg_micros,
         routine_analysis_dataflow_micros: routine_analysis.metrics.dataflow_micros,
         routine_analysis_dead_store_micros: routine_analysis.metrics.dead_store_micros,
+        callable_summary_micros,
         ..AnalysisMetrics::default()
     };
     (
@@ -6727,6 +6749,7 @@ fn preview_snapshot_from_local(
     local: LocalAnalysis,
     project: Arc<ProjectAnalysis>,
     routine_analysis: Arc<ProjectRoutineAnalysis>,
+    callable_summaries: Arc<ProjectCallableSummaryAnalysis>,
     call_graph: Arc<ProjectCallGraph>,
 ) -> Arc<AnalysisSnapshot> {
     Arc::new(AnalysisSnapshot {
@@ -6740,6 +6763,7 @@ fn preview_snapshot_from_local(
         symbols: Arc::new(local.unit),
         project,
         routine_analysis,
+        callable_summaries,
         call_graph,
     })
 }
@@ -6896,6 +6920,7 @@ impl DocumentStore {
         let (
             project,
             routine_analysis,
+            callable_summaries,
             call_graph,
             committed_context_only,
             fell_back_to_single_document,
@@ -6903,6 +6928,7 @@ impl DocumentStore {
             (
                 Arc::clone(&snapshot.project),
                 Arc::clone(&snapshot.routine_analysis),
+                Arc::clone(&snapshot.callable_summaries),
                 Arc::clone(&snapshot.call_graph),
                 true,
                 false,
@@ -6914,7 +6940,20 @@ impl DocumentStore {
                 project.as_ref(),
                 std::slice::from_ref(&local.scope_index),
             ));
-            (project, routine_analysis, call_graph, false, true)
+            let callable_summaries =
+                Arc::new(callable_summary::build_project_callable_summary_analysis(
+                    project.as_ref(),
+                    routine_analysis.as_ref(),
+                    call_graph.as_ref(),
+                ));
+            (
+                project,
+                routine_analysis,
+                callable_summaries,
+                call_graph,
+                false,
+                true,
+            )
         };
         let snapshot = preview_snapshot_from_local(
             &input,
@@ -6922,6 +6961,7 @@ impl DocumentStore {
             local,
             project,
             routine_analysis,
+            callable_summaries,
             call_graph,
         );
         *self.preview_metrics.write() = Some(PreviewMetrics {
@@ -6988,6 +7028,7 @@ impl DocumentStore {
                 routine_analysis_dead_store_micros: analysis
                     .metrics
                     .routine_analysis_dead_store_micros,
+                callable_summary_micros: analysis.metrics.callable_summary_micros,
                 full_rebuild: analysis.metrics.full_rebuild,
                 unit_count: analysis.metrics.unit_count,
                 dirty_unit_count: analysis.metrics.dirty_unit_count,
@@ -7074,14 +7115,14 @@ impl DocumentStore {
 #[cfg(test)]
 mod tests {
     use super::{
-        DefinitionTarget, DocumentInput, DocumentStore, HoveredComponentKind, ReferenceTarget,
-        ddic_xml_to_abap_source, dependency_surface_text,
+        AnalysisSnapshot, CallableSummary, DefinitionTarget, DocumentInput, DocumentStore,
+        HoveredComponentKind, ReferenceTarget, ddic_xml_to_abap_source, dependency_surface_text,
         opened_function_module_dependency_analysis_text,
     };
     use abap_symbols::{
         Diagnostic, DiagnosticKind, ReferenceKind, RoutineBlockKind, RoutineBranchKind,
-        RoutineEdgeKind, RoutineInstructionSite, RoutineKind, ScopeKind, StructureFieldShape,
-        SymbolHandle, SymbolKind,
+        RoutineEdgeKind, RoutineInstructionSite, RoutineKind, ScopeId, ScopeKind,
+        StructureFieldShape, SymbolHandle, SymbolId, SymbolKind,
     };
     use std::sync::Arc;
 
@@ -7109,6 +7150,52 @@ mod tests {
             .map(|(uri, _, expected_slice)| (uri.to_string(), expected_slice.to_string()))
             .collect();
         assert_eq!(actual, expected);
+    }
+
+    fn enclosing_class_symbol(snapshot: &AnalysisSnapshot, scope: ScopeId) -> Option<SymbolId> {
+        let mut current = Some(scope);
+        while let Some(scope_id) = current {
+            let scope = snapshot.symbols.scopes.get(scope_id.as_usize())?;
+            if scope.kind == ScopeKind::Class {
+                return scope.owner;
+            }
+            current = scope.parent;
+        }
+        None
+    }
+
+    fn callable_method_summary<'a>(
+        snapshot: &'a AnalysisSnapshot,
+        class_name: &str,
+        method_name: &str,
+    ) -> &'a CallableSummary {
+        let member = snapshot
+            .symbols
+            .class_members
+            .iter()
+            .find(|member| {
+                snapshot.symbols.symbol(member.class_symbol).name.as_ref() == class_name
+                    && member.name.as_ref() == method_name
+            })
+            .expect("class member");
+        let method = snapshot
+            .symbols
+            .symbols
+            .iter()
+            .find(|symbol| {
+                symbol.kind == SymbolKind::Method
+                    && enclosing_class_symbol(snapshot, symbol.scope) == Some(member.class_symbol)
+                    && (symbol.name.as_ref() == method_name
+                        || symbol.name.rsplit('~').next() == Some(method_name))
+            })
+            .expect("method symbol");
+        snapshot
+            .callable_summaries()
+            .summary_for_owner(SymbolHandle {
+                unit: snapshot.symbols.unit_id,
+                symbol: method.id,
+            })
+            .expect("callable summary for method owner")
     }
 
     fn diagnostic_slices(
@@ -7543,6 +7630,137 @@ ENDCLASS.";
         assert!(Arc::ptr_eq(
             &first.routine_analysis,
             &second.routine_analysis
+        ));
+    }
+
+    #[test]
+    fn callable_summaries_track_direct_effects_and_propagate_barriers() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS zcl_demo DEFINITION.
+  PUBLIC SECTION.
+    DATA mv_text TYPE string.
+    METHODS leaf
+      IMPORTING iv_value TYPE i
+      CHANGING cv_value TYPE i.
+    METHODS wrapper
+      CHANGING cv_value TYPE i.
+    METHODS bind_fs.
+    METHODS abort.
+    METHODS run.
+    METHODS unresolved.
+ENDCLASS.
+
+CLASS zcl_demo IMPLEMENTATION.
+  METHOD leaf.
+    DATA lv_tmp TYPE i.
+    lv_tmp = iv_value.
+    cv_value = lv_tmp.
+  ENDMETHOD.
+
+  METHOD wrapper.
+    me->leaf(
+      EXPORTING iv_value = cv_value
+      CHANGING cv_value = cv_value ).
+  ENDMETHOD.
+
+  METHOD bind_fs.
+    FIELD-SYMBOLS <lv_text> TYPE string.
+    ASSIGN mv_text TO <lv_text>.
+  ENDMETHOD.
+
+  METHOD abort.
+    LEAVE PROGRAM.
+  ENDMETHOD.
+
+  METHOD run.
+    me->abort( ).
+  ENDMETHOD.
+
+  METHOD unresolved.
+    me->missing( ).
+  ENDMETHOD.
+ENDCLASS.";
+
+        let snapshot = store.publish("file:///callable_summary.abap", 1, src);
+        let leaf = callable_method_summary(&snapshot, "zcl_demo", "leaf");
+        let wrapper = callable_method_summary(&snapshot, "zcl_demo", "wrapper");
+        let bind_fs = callable_method_summary(&snapshot, "zcl_demo", "bind_fs");
+        let abort = callable_method_summary(&snapshot, "zcl_demo", "abort");
+        let run = callable_method_summary(&snapshot, "zcl_demo", "run");
+        let unresolved = callable_method_summary(&snapshot, "zcl_demo", "unresolved");
+
+        let leaf_iv_value = leaf
+            .parameters
+            .iter()
+            .find(|parameter| parameter.name.as_ref() == "iv_value")
+            .expect("leaf importing parameter");
+        let leaf_cv_value = leaf
+            .parameters
+            .iter()
+            .find(|parameter| parameter.name.as_ref() == "cv_value")
+            .expect("leaf changing parameter");
+        assert!(leaf_iv_value.may_read);
+        assert!(!leaf_iv_value.may_write);
+        assert!(!leaf_cv_value.may_read);
+        assert!(leaf_cv_value.may_write);
+        assert!(leaf.may_read_through_reference_inputs);
+        assert!(leaf.may_write_through_reference_inputs);
+        assert!(leaf.dataflow_barrier);
+
+        assert!(wrapper.dataflow_barrier);
+        assert!(bind_fs.may_bind_field_symbols);
+        assert!(bind_fs.dataflow_barrier);
+        assert!(abort.may_terminate_non_locally);
+        assert!(abort.may_not_return_normally);
+        assert!(run.may_terminate_non_locally);
+        assert!(run.may_not_return_normally);
+        assert!(run.dataflow_barrier);
+        assert!(unresolved.dataflow_barrier);
+        assert!(!unresolved.may_terminate_non_locally);
+    }
+
+    #[test]
+    fn callable_summary_artifact_is_shared_and_reports_metrics() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS zcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run.
+ENDCLASS.
+
+CLASS zcl_demo IMPLEMENTATION.
+  METHOD run.
+    DATA lv_value TYPE i.
+    lv_value = 1.
+  ENDMETHOD.
+ENDCLASS.";
+
+        let first = store.publish("file:///callable_summary_metrics.abap", 1, src);
+        let metrics = store
+            .last_analysis_metrics_snapshot()
+            .expect("analysis metrics snapshot");
+        println!(
+            "callable_summary_micros={} snapshot_build_micros={} summary_count={}",
+            metrics.callable_summary_micros,
+            metrics.snapshot_build_micros,
+            first.callable_summaries().metrics.summary_count
+        );
+
+        assert!(metrics.snapshot_build_micros >= metrics.callable_summary_micros);
+        assert!(
+            first.callable_summaries().metrics.summary_count >= 1,
+            "expected at least one callable summary"
+        );
+        assert!(
+            first.callable_summaries().metrics.total_micros
+                >= first.callable_summaries().metrics.direct_micros
+        );
+
+        let second = store.publish("file:///callable_summary_metrics.abap", 2, src);
+        assert!(Arc::ptr_eq(
+            &first.callable_summaries,
+            &second.callable_summaries
         ));
     }
 
