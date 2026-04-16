@@ -1329,7 +1329,9 @@ fn method_parameter_type_fact(parameter: &crate::ClassMemberParameterData) -> Ty
 fn function_module_parameter_type_fact(parameter: &FunctionModuleParameterData) -> TypeFactData {
     TypeFactData {
         structure: None,
-        declared_type: parameter.declared_type.clone(),
+        declared_type: (!parameter.is_untyped)
+            .then(|| parameter.declared_type.clone())
+            .flatten(),
         type_clause_display: parameter.type_clause_display.clone(),
         table_line: None,
     }
@@ -3016,16 +3018,18 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
                     if function_module_parameter_is_required(parameter) {
                         matched_required.insert(Arc::clone(&parameter.name));
                     }
-                    if matches!(
-                        type_facts_compatible(
-                            project,
-                            target_unit,
-                            &function_module_parameter_type_fact(parameter),
-                            unit,
-                            &argument.type_fact,
-                        ),
-                        Some(false)
-                    ) {
+                    if !parameter.is_untyped
+                        && matches!(
+                            type_facts_compatible(
+                                project,
+                                target_unit,
+                                &function_module_parameter_type_fact(parameter),
+                                unit,
+                                &argument.type_fact,
+                            ),
+                            Some(false)
+                        )
+                    {
                         unit_diagnostics.push(Diagnostic {
                             kind: DiagnosticKind::IncompatibleArgumentType,
                             range: argument.range.clone(),

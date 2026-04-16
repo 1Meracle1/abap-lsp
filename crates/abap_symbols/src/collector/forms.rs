@@ -29,6 +29,18 @@ impl<'a> Collector<'a> {
 }
 
 impl<'ctx, 'a> FormsLowering<'ctx, 'a> {
+    fn function_param_has_adt_untyped_pragma(
+        &self,
+        param: abap_ast::ast::FunctionParam<'_>,
+    ) -> bool {
+        let end = param.syntax().range().end;
+        self.collector
+            .source
+            .get(end..)
+            .and_then(|tail| tail.lines().next())
+            .is_some_and(|line| line.contains("##ADT_PARAMETER_UNTYPED"))
+    }
+
     pub(super) fn declare_form_parameters_from_header(
         &mut self,
         form_node: NodeId,
@@ -314,6 +326,7 @@ impl<'ctx, 'a> FormsLowering<'ctx, 'a> {
                             range: name_node.range(),
                             declared_type,
                             type_clause_display,
+                            is_untyped: self.function_param_has_adt_untyped_pragma(param),
                             is_optional: param.is_optional(self.collector.source),
                             has_default_value: param.has_default_value(self.collector.source),
                         });

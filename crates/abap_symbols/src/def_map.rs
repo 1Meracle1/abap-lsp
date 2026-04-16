@@ -464,6 +464,7 @@ pub struct FunctionModuleParameterData {
     pub range: TextRange,
     pub declared_type: Option<FieldTypeRefData>,
     pub type_clause_display: Option<Arc<str>>,
+    pub is_untyped: bool,
     pub is_optional: bool,
     pub has_default_value: bool,
 }

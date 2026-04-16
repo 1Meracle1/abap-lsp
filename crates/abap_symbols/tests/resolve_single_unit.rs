@@ -8660,6 +8660,125 @@ START-OF-SELECTION.
 }
 
 #[test]
+fn allows_untyped_function_module_table_parameters_without_type_or_assignment_warnings() {
+    let dep_src = r#"
+FUNCTION z_untyped_table
+  TABLES
+    recipient_list TYPE STANDARD TABLE ##ADT_PARAMETER_UNTYPED.
+ENDFUNCTION.
+"#;
+    let main_src = r#"
+TYPES: BEGIN OF ty_recipient,
+         name TYPE string,
+       END OF ty_recipient.
+
+START-OF-SELECTION.
+  DATA lt_recipients TYPE STANDARD TABLE OF ty_recipient WITH EMPTY KEY.
+  CALL FUNCTION 'Z_UNTYPED_TABLE'
+    TABLES
+      recipient_list = lt_recipients.
+"#;
+
+    let dep_parsed = parse(dep_src);
+    let main_parsed = parse(main_src);
+    let project = analyze_project(&[
+        ProjectInput {
+            uri: "file:///fm_main_untyped_table.abap",
+            source: main_src,
+            parse: &main_parsed,
+        },
+        ProjectInput {
+            uri: "file:///fm_dep_untyped_table.abap",
+            source: dep_src,
+            parse: &dep_parsed,
+        },
+    ]);
+    let dep_unit = project
+        .unit_by_uri("file:///fm_dep_untyped_table.abap")
+        .expect("dep unit");
+    let function_symbol = dep_unit
+        .symbols
+        .iter()
+        .find(|symbol| {
+            symbol.kind == SymbolKind::Module && symbol.name.as_ref() == "z_untyped_table"
+        })
+        .expect("function symbol");
+    let function_module = dep_unit
+        .function_module(function_symbol.id)
+        .expect("function module metadata");
+    let parameter = function_module
+        .parameters
+        .iter()
+        .find(|parameter| parameter.name.as_ref() == "recipient_list")
+        .expect("recipient_list parameter");
+    assert!(parameter.is_untyped);
+
+    let main_unit = project
+        .unit_by_uri("file:///fm_main_untyped_table.abap")
+        .expect("main unit");
+    assert!(
+        !main_unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::IncompatibleArgumentType
+                && diag.message.contains("recipient_list")
+        }),
+        "{:?}",
+        main_unit.diagnostics
+    );
+    assert!(
+        !main_unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UseBeforeDefiniteAssignment
+                && diag.message.contains("lt_recipients")
+        }),
+        "{:?}",
+        main_unit.diagnostics
+    );
+}
+
+#[test]
+fn treats_call_function_changing_arguments_as_written_for_definite_assignment() {
+    let dep_src = r#"
+FUNCTION z_touch_text
+  CHANGING
+    cv_text TYPE string.
+ENDFUNCTION.
+"#;
+    let main_src = r#"
+START-OF-SELECTION.
+  DATA lv_text TYPE string.
+  CALL FUNCTION 'Z_TOUCH_TEXT'
+    CHANGING
+      cv_text = lv_text.
+"#;
+
+    let dep_parsed = parse(dep_src);
+    let main_parsed = parse(main_src);
+    let project = analyze_project(&[
+        ProjectInput {
+            uri: "file:///fm_main_changing_write.abap",
+            source: main_src,
+            parse: &main_parsed,
+        },
+        ProjectInput {
+            uri: "file:///fm_dep_changing_write.abap",
+            source: dep_src,
+            parse: &dep_parsed,
+        },
+    ]);
+    let main_unit = project
+        .unit_by_uri("file:///fm_main_changing_write.abap")
+        .expect("main unit");
+
+    assert!(
+        !main_unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UseBeforeDefiniteAssignment
+                && diag.message.contains("lv_text")
+        }),
+        "{:?}",
+        main_unit.diagnostics
+    );
+}
+
+#[test]
 fn resolves_table_expression_selector_accesses_with_keyword_named_fields() {
     let src = "\
 TYPES: BEGIN OF ty_rep,

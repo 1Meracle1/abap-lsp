@@ -585,6 +585,7 @@ enum CallArgumentEffect {
     InputOnly,
     OutputOnly,
     InOut,
+    AssignsOnly,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -1618,7 +1619,10 @@ fn build_routine_dataflow(
                             ))
                             .copied()
                             .unwrap_or(CallArgumentEffect::Unknown);
-                        if effect == CallArgumentEffect::OutputOnly {
+                        if matches!(
+                            effect,
+                            CallArgumentEffect::OutputOnly | CallArgumentEffect::AssignsOnly
+                        ) {
                             transfer.reads.retain(|read| {
                                 read.range.start < argument.range.start
                                     || read.range.end > argument.range.end
@@ -1631,17 +1635,23 @@ fn build_routine_dataflow(
                         );
                         if matches!(
                             effect,
-                            CallArgumentEffect::OutputOnly | CallArgumentEffect::InOut
+                            CallArgumentEffect::OutputOnly
+                                | CallArgumentEffect::InOut
+                                | CallArgumentEffect::AssignsOnly
                         ) {
                             transfer.writes.extend(direct_values.iter().copied());
                         }
-                        if effect == CallArgumentEffect::OutputOnly {
+                        if matches!(
+                            effect,
+                            CallArgumentEffect::OutputOnly | CallArgumentEffect::AssignsOnly
+                        ) {
                             transfer.assigned_writes.extend(direct_values);
                         }
                         if matches!(
                             effect,
                             CallArgumentEffect::OutputOnly
                                 | CallArgumentEffect::InOut
+                                | CallArgumentEffect::AssignsOnly
                                 | CallArgumentEffect::Unknown
                         ) {
                             transfer.non_initial_kills.extend(
@@ -1654,7 +1664,9 @@ fn build_routine_dataflow(
                         }
                         if matches!(
                             effect,
-                            CallArgumentEffect::InOut | CallArgumentEffect::Unknown
+                            CallArgumentEffect::InOut
+                                | CallArgumentEffect::AssignsOnly
+                                | CallArgumentEffect::Unknown
                         ) {
                             for value in direct_field_symbol_values_in_range(
                                 &reference_uses,
@@ -2252,6 +2264,7 @@ fn build_dead_store_diagnostics(
         value_ids_by_symbol,
         instruction_summaries,
         &tracked_values,
+        call_argument_effects,
     );
     let block_summaries =
         build_dead_store_block_summaries(routine, &instruction_summaries, values.len());
@@ -2597,10 +2610,11 @@ fn build_dead_store_instruction_summaries(
     value_ids_by_symbol: &HashMap<SymbolHandle, DataflowValueId>,
     instruction_summaries: &[InstructionDataflowSummary],
     tracked_values: &DenseBitSet,
+    call_argument_effects: &HashMap<(usize, usize, usize, usize), CallArgumentEffect>,
 ) -> Vec<DeadStoreInstructionSummary> {
     let mut out = Vec::with_capacity(routine.ir.instructions.len());
     for instruction in &routine.ir.instructions {
-        let reads = instruction_summaries
+        let mut reads: Vec<DataflowValueId> = instruction_summaries
             .get(instruction.id.as_usize())
             .map(|summary| {
                 summary
@@ -2643,8 +2657,30 @@ fn build_dead_store_instruction_summaries(
                     });
                 }
             }
-            RoutineInstructionSite::Call { .. }
-            | RoutineInstructionSite::Perform { .. }
+            RoutineInstructionSite::Call { index } => {
+                if let Some(call_site) = unit.call_sites.get(index as usize) {
+                    for argument in &call_site.arguments {
+                        if call_argument_effect_for_call_argument(
+                            call_argument_effects,
+                            call_site,
+                            argument,
+                        ) != CallArgumentEffect::AssignsOnly
+                        {
+                            continue;
+                        }
+                        reads.extend(
+                            direct_non_field_symbol_values_in_range(
+                                reference_uses,
+                                &argument.range,
+                                values,
+                            )
+                            .into_iter()
+                            .filter(|value| tracked_values.contains(*value)),
+                        );
+                    }
+                }
+            }
+            RoutineInstructionSite::Perform { .. }
             | RoutineInstructionSite::SqlQuery { .. }
             | RoutineInstructionSite::Delete { .. }
             | RoutineInstructionSite::ReadTable { .. }
@@ -2814,7 +2850,7 @@ fn call_argument_effect_for_parameter(
                 FunctionModuleParameterSection::Importing => CallArgumentEffect::InputOnly,
                 FunctionModuleParameterSection::Exporting => CallArgumentEffect::OutputOnly,
                 FunctionModuleParameterSection::Changing
-                | FunctionModuleParameterSection::Tables => CallArgumentEffect::InOut,
+                | FunctionModuleParameterSection::Tables => CallArgumentEffect::AssignsOnly,
             };
         }
     }
