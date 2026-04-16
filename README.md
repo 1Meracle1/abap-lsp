@@ -56,6 +56,8 @@ cargo flamegraph -p abap_symbols --example build_symbols_collect_perf --release
 cargo flamegraph -p abap_symbols --example build_symbols_validate_perf --release
 
 $ErrorActionPreference='Stop'; $path='D:\dev\abap\prod_rep_check\src\zdemo.abap'; $exe='D:\dev\rust\abap-lsp\target\release\abap-cli.exe'; $project = Measure-Command { & $exe analyze --json --with-project $path > $null }; "project_seconds=$([math]::Round($project.TotalSeconds,3))
+
+cargo run -p abap_cache --example workspace_analysis_perf -- --workspace D:\dev\rust\abap-lsp
 ```
 
 ## Migration Docs

@@ -5941,6 +5941,7 @@ struct AnalysisMetrics {
     routine_analysis_ir_micros: u128,
     routine_analysis_cfg_micros: u128,
     routine_analysis_dataflow_micros: u128,
+    routine_analysis_dead_store_micros: u128,
     full_rebuild: bool,
     unit_count: usize,
     dirty_unit_count: usize,
@@ -5983,6 +5984,7 @@ pub struct WorkspaceAnalysisMetricsSnapshot {
     pub routine_analysis_ir_micros: u128,
     pub routine_analysis_cfg_micros: u128,
     pub routine_analysis_dataflow_micros: u128,
+    pub routine_analysis_dead_store_micros: u128,
     pub full_rebuild: bool,
     pub unit_count: usize,
     pub dirty_unit_count: usize,
@@ -6265,6 +6267,7 @@ fn materialize_snapshots(
         routine_analysis_ir_micros: routine_analysis.metrics.ir_micros,
         routine_analysis_cfg_micros: routine_analysis.metrics.cfg_micros,
         routine_analysis_dataflow_micros: routine_analysis.metrics.dataflow_micros,
+        routine_analysis_dead_store_micros: routine_analysis.metrics.dead_store_micros,
         ..AnalysisMetrics::default()
     };
     (
@@ -6982,6 +6985,9 @@ impl DocumentStore {
                 routine_analysis_ir_micros: analysis.metrics.routine_analysis_ir_micros,
                 routine_analysis_cfg_micros: analysis.metrics.routine_analysis_cfg_micros,
                 routine_analysis_dataflow_micros: analysis.metrics.routine_analysis_dataflow_micros,
+                routine_analysis_dead_store_micros: analysis
+                    .metrics
+                    .routine_analysis_dead_store_micros,
                 full_rebuild: analysis.metrics.full_rebuild,
                 unit_count: analysis.metrics.unit_count,
                 dirty_unit_count: analysis.metrics.dirty_unit_count,
@@ -8563,6 +8569,215 @@ ENDCLASS.";
             "{:?}",
             call_entry.definitely_assigned_values
         );
+    }
+
+    #[test]
+    fn routine_analysis_flags_dead_store_on_overwrite_before_read() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+    DATA lv_value TYPE i.
+    IF 1 = 1.
+      lv_value = 1.
+    ENDIF.
+    lv_value = 2.
+    IF lv_value > 0.
+    ENDIF.
+  ENDMETHOD.
+ENDCLASS.";
+
+        let snapshot = store.publish("file:///routine_dead_store_overwrite.abap", 1, src);
+        let dead_store = diagnostic_slices(
+            src,
+            &snapshot.symbols.diagnostics,
+            DiagnosticKind::DeadStore,
+        );
+
+        assert_eq!(
+            dead_store
+                .iter()
+                .filter(|slice| slice.as_str() == "lv_value")
+                .count(),
+            1,
+            "{dead_store:?}"
+        );
+    }
+
+    #[test]
+    fn routine_analysis_flags_dead_store_on_last_write_before_return() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+    DATA lv_unused TYPE i.
+    lv_unused = 1.
+    RETURN.
+  ENDMETHOD.
+ENDCLASS.";
+
+        let snapshot = store.publish("file:///routine_dead_store_return.abap", 1, src);
+        let dead_store = diagnostic_slices(
+            src,
+            &snapshot.symbols.diagnostics,
+            DiagnosticKind::DeadStore,
+        );
+
+        assert!(
+            dead_store.iter().any(|slice| slice == "lv_unused"),
+            "{dead_store:?}"
+        );
+    }
+
+    #[test]
+    fn routine_analysis_keeps_loop_carried_variable_writes_live() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run IMPORTING iv_limit TYPE i.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+    DATA lv_total TYPE i.
+    DATA lv_remaining TYPE i.
+    lv_total = 0.
+    lv_remaining = iv_limit.
+    WHILE lv_remaining > 0.
+      lv_total = lv_total + 1.
+      lv_remaining = lv_remaining - 1.
+    ENDWHILE.
+    IF lv_total > 0.
+    ENDIF.
+  ENDMETHOD.
+ENDCLASS.";
+
+        let snapshot = store.publish("file:///routine_dead_store_loop.abap", 1, src);
+        let dead_store = diagnostic_slices(
+            src,
+            &snapshot.symbols.diagnostics,
+            DiagnosticKind::DeadStore,
+        );
+
+        assert!(
+            dead_store.iter().all(|slice| slice != "lv_total"),
+            "{dead_store:?}"
+        );
+    }
+
+    #[test]
+    fn routine_analysis_keeps_branch_merge_writes_live() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run IMPORTING iv_flag TYPE i.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+    DATA lv_value TYPE i.
+    IF iv_flag = 1.
+      lv_value = 1.
+    ELSE.
+      lv_value = 2.
+    ENDIF.
+    IF lv_value > 0.
+    ENDIF.
+  ENDMETHOD.
+ENDCLASS.";
+
+        let snapshot = store.publish("file:///routine_dead_store_branch.abap", 1, src);
+        let dead_store = diagnostic_slices(
+            src,
+            &snapshot.symbols.diagnostics,
+            DiagnosticKind::DeadStore,
+        );
+
+        assert!(
+            dead_store.iter().all(|slice| slice != "lv_value"),
+            "{dead_store:?}"
+        );
+    }
+
+    #[test]
+    fn routine_analysis_suppresses_dead_store_for_changing_and_outward_visible_state() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run CHANGING cv_value TYPE i.
+  PRIVATE SECTION.
+    DATA mv_state TYPE i.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+    cv_value = 1.
+    mv_state = 1.
+  ENDMETHOD.
+ENDCLASS.";
+
+        let snapshot = store.publish("file:///routine_dead_store_outward.abap", 1, src);
+        let dead_store = diagnostic_slices(
+            src,
+            &snapshot.symbols.diagnostics,
+            DiagnosticKind::DeadStore,
+        );
+
+        assert!(dead_store.is_empty(), "{dead_store:?}");
+    }
+
+    #[test]
+    fn routine_analysis_suppresses_dead_store_around_changing_calls() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS lcl_dep DEFINITION.
+  PUBLIC SECTION.
+    METHODS touch CHANGING cv_value TYPE i.
+ENDCLASS.
+
+CLASS lcl_dep IMPLEMENTATION.
+  METHOD touch.
+    cv_value = cv_value + 1.
+  ENDMETHOD.
+ENDCLASS.
+
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+    DATA lo_dep TYPE REF TO lcl_dep.
+    DATA lv_value TYPE i.
+    lo_dep = NEW lcl_dep( ).
+    lv_value = 1.
+    lo_dep->touch( CHANGING cv_value = lv_value ).
+    lv_value = 2.
+  ENDMETHOD.
+ENDCLASS.";
+
+        let snapshot = store.publish("file:///routine_dead_store_changing_call.abap", 1, src);
+        let dead_store = diagnostic_slices(
+            src,
+            &snapshot.symbols.diagnostics,
+            DiagnosticKind::DeadStore,
+        );
+
+        assert!(dead_store.is_empty(), "{dead_store:?}");
     }
 
     #[test]

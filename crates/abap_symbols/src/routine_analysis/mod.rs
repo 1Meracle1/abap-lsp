@@ -419,8 +419,9 @@ pub fn build_project_routine_analysis(project: &ProjectAnalysis) -> ProjectRouti
         let Some(scope_map) = out.scope_to_routine.get(descriptor.unit.as_usize()) else {
             continue;
         };
-        let (inputs, result, diagnostics) =
+        let (inputs, result, diagnostics, dead_store_micros) =
             build_routine_dataflow(project, unit, scope_map, &out.routines[routine_id]);
+        out.metrics.dead_store_micros += dead_store_micros;
         out.routines[routine_id].dataflow_inputs = inputs;
         out.routines[routine_id].dataflow_result = result;
         out.routines[routine_id]
@@ -490,6 +491,24 @@ struct InstructionTransfer {
     structure_field_writes: Vec<StructureFieldWriteTransfer>,
     non_initial_kills: Vec<DataflowValueId>,
     field_symbol_binding: Vec<FieldSymbolBindingTransfer>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DeadStoreWrite {
+    value: DataflowValueId,
+    range: TextRange,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DeadStoreInstructionSummary {
+    reads: Vec<DataflowValueId>,
+    writes: Vec<DeadStoreWrite>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DeadStoreBlockSummary {
+    live_gen: DenseBitSet,
+    kill: DenseBitSet,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -592,6 +611,12 @@ impl DenseBitSet {
     fn union_from(&mut self, other: &Self) {
         for (slot, other_slot) in self.words.iter_mut().zip(&other.words) {
             *slot |= *other_slot;
+        }
+    }
+
+    fn subtract_from(&mut self, other: &Self) {
+        for (slot, other_slot) in self.words.iter_mut().zip(&other.words) {
+            *slot &= !*other_slot;
         }
     }
 }
@@ -1291,6 +1316,7 @@ fn build_routine_dataflow(
     RoutineDataflowInputs,
     RoutineDataflowResult,
     Vec<Diagnostic>,
+    u128,
 ) {
     let routine_index = RoutineBuildIndex::new(unit, scope_to_routine, routine);
     let mut tracked_symbols: Vec<&SymbolData> = unit
@@ -2036,6 +2062,16 @@ fn build_routine_dataflow(
             );
         }
     }
+    let dead_store_timer = std::time::Instant::now();
+    diagnostics.extend(build_dead_store_diagnostics(
+        unit,
+        routine,
+        &values,
+        &reference_uses,
+        &value_ids_by_symbol,
+        &instruction_summaries,
+        &call_argument_effects,
+    ));
     diagnostics.sort_by(|left, right| {
         left.range
             .start
@@ -2100,7 +2136,335 @@ fn build_routine_dataflow(
             block_exit,
         },
         diagnostics,
+        dead_store_timer.elapsed().as_micros(),
     )
+}
+
+fn build_dead_store_diagnostics(
+    unit: &UnitAnalysis,
+    routine: &RoutineAnalysis,
+    values: &[RoutineDataflowValue],
+    reference_uses: &[ReferenceUse],
+    value_ids_by_symbol: &HashMap<SymbolHandle, DataflowValueId>,
+    instruction_summaries: &[InstructionDataflowSummary],
+    call_argument_effects: &HashMap<(usize, usize, usize, usize), CallArgumentEffect>,
+) -> Vec<Diagnostic> {
+    if values.is_empty() || routine.cfg.blocks.is_empty() {
+        return Vec::new();
+    }
+
+    let tracked_values = build_dead_store_tracked_values(
+        unit,
+        routine,
+        values,
+        reference_uses,
+        call_argument_effects,
+    );
+    if !tracked_values.words.iter().any(|word| *word != 0) {
+        return Vec::new();
+    }
+
+    let instruction_summaries = build_dead_store_instruction_summaries(
+        unit,
+        routine,
+        values,
+        reference_uses,
+        value_ids_by_symbol,
+        instruction_summaries,
+        &tracked_values,
+    );
+    let block_summaries =
+        build_dead_store_block_summaries(routine, &instruction_summaries, values.len());
+    let (_, block_live_out) = compute_dead_store_liveness(routine, &block_summaries, values.len());
+
+    let mut diagnostics = Vec::new();
+    for block in &routine.cfg.blocks {
+        if !block.reachable {
+            continue;
+        }
+        let mut live = block_live_out[block.id.as_usize()].clone();
+        for instruction_id in block.instructions.iter().rev() {
+            let summary = &instruction_summaries[instruction_id.as_usize()];
+            for write in &summary.writes {
+                if live.contains(write.value) {
+                    continue;
+                }
+                let value = &values[write.value.as_usize()];
+                diagnostics.push(Diagnostic {
+                    kind: DiagnosticKind::DeadStore,
+                    range: write.range.clone(),
+                    message: format!(
+                        "write to local variable '{}' is never read in routine '{}'",
+                        value.name, routine.descriptor.name
+                    ),
+                });
+            }
+            for write in &summary.writes {
+                live.remove(write.value);
+            }
+            for read in &summary.reads {
+                live.insert(*read);
+            }
+        }
+    }
+
+    diagnostics.sort_by(|left, right| {
+        left.range
+            .start
+            .cmp(&right.range.start)
+            .then(left.range.end.cmp(&right.range.end))
+            .then(left.message.cmp(&right.message))
+    });
+    diagnostics.dedup();
+    diagnostics
+}
+
+fn build_dead_store_tracked_values(
+    unit: &UnitAnalysis,
+    routine: &RoutineAnalysis,
+    values: &[RoutineDataflowValue],
+    reference_uses: &[ReferenceUse],
+    call_argument_effects: &HashMap<(usize, usize, usize, usize), CallArgumentEffect>,
+) -> DenseBitSet {
+    let mut tracked = DenseBitSet::new(values.len());
+    for value in values {
+        if value.kind == DataflowValueKind::Variable {
+            tracked.insert(value.id);
+        }
+    }
+
+    for instruction in &routine.ir.instructions {
+        match instruction.site {
+            RoutineInstructionSite::Call { index } => {
+                let Some(call_site) = unit.call_sites.get(index as usize) else {
+                    continue;
+                };
+                if is_safe_builtin_call(call_site) {
+                    continue;
+                }
+                for argument in &call_site.arguments {
+                    let effect = call_argument_effect_for_call_argument(
+                        call_argument_effects,
+                        call_site,
+                        argument,
+                    );
+                    if effect == CallArgumentEffect::InputOnly {
+                        continue;
+                    }
+                    for value in direct_non_field_symbol_values_in_range(
+                        reference_uses,
+                        &argument.range,
+                        values,
+                    ) {
+                        tracked.remove(value);
+                    }
+                }
+            }
+            RoutineInstructionSite::Perform { index } => {
+                let Some(perform_call) = unit.perform_calls.get(index as usize) else {
+                    continue;
+                };
+                for argument in &perform_call.arguments {
+                    for value in direct_non_field_symbol_values_in_range(
+                        reference_uses,
+                        &argument.range,
+                        values,
+                    ) {
+                        tracked.remove(value);
+                    }
+                }
+            }
+            RoutineInstructionSite::FieldSymbolBind { index } => {
+                let Some(edge) = unit.value_flow_edges.get(index as usize) else {
+                    continue;
+                };
+                for value in direct_non_field_symbol_values_in_range(
+                    reference_uses,
+                    &edge.source_range,
+                    values,
+                ) {
+                    tracked.remove(value);
+                }
+            }
+            RoutineInstructionSite::UnknownEffect => {
+                for value in direct_non_field_symbol_values_in_range(
+                    reference_uses,
+                    &instruction.range,
+                    values,
+                ) {
+                    tracked.remove(value);
+                }
+            }
+            RoutineInstructionSite::Assignment { .. }
+            | RoutineInstructionSite::SqlQuery { .. }
+            | RoutineInstructionSite::Clear { .. }
+            | RoutineInstructionSite::Delete { .. }
+            | RoutineInstructionSite::ReadTable { .. }
+            | RoutineInstructionSite::ValueRead { .. }
+            | RoutineInstructionSite::Branch { .. }
+            | RoutineInstructionSite::LoopHeader { .. }
+            | RoutineInstructionSite::Terminator { .. } => {}
+        }
+    }
+
+    tracked
+}
+
+fn call_argument_effect_for_call_argument(
+    call_argument_effects: &HashMap<(usize, usize, usize, usize), CallArgumentEffect>,
+    call_site: &crate::CallSiteData,
+    argument: &crate::CallArgumentData,
+) -> CallArgumentEffect {
+    call_argument_effects
+        .get(&(
+            call_site.range.start,
+            call_site.range.end,
+            argument.range.start,
+            argument.range.end,
+        ))
+        .copied()
+        .unwrap_or(CallArgumentEffect::Unknown)
+}
+
+fn build_dead_store_instruction_summaries(
+    unit: &UnitAnalysis,
+    routine: &RoutineAnalysis,
+    values: &[RoutineDataflowValue],
+    reference_uses: &[ReferenceUse],
+    value_ids_by_symbol: &HashMap<SymbolHandle, DataflowValueId>,
+    instruction_summaries: &[InstructionDataflowSummary],
+    tracked_values: &DenseBitSet,
+) -> Vec<DeadStoreInstructionSummary> {
+    let mut out = Vec::with_capacity(routine.ir.instructions.len());
+    for instruction in &routine.ir.instructions {
+        let reads = instruction_summaries
+            .get(instruction.id.as_usize())
+            .map(|summary| {
+                summary
+                    .reads
+                    .iter()
+                    .copied()
+                    .filter(|value| tracked_values.contains(*value))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut writes = Vec::new();
+
+        match instruction.site {
+            RoutineInstructionSite::Assignment { index } => {
+                if let Some(assignment) = unit.assignment_sites.get(index as usize)
+                    && let Some(value) = direct_write_value_id_for_assignment(
+                        unit,
+                        assignment,
+                        reference_uses,
+                        value_ids_by_symbol,
+                        values,
+                    )
+                    && tracked_values.contains(value)
+                {
+                    writes.push(DeadStoreWrite {
+                        value,
+                        range: assignment.lhs_range.clone(),
+                    });
+                }
+            }
+            RoutineInstructionSite::Clear { index } => {
+                if let Some(site) = unit.routine_sites.get(index as usize)
+                    && let Some(value) =
+                        direct_write_value_id_for_clear(reference_uses, &site.range, values)
+                    && tracked_values.contains(value)
+                {
+                    writes.push(DeadStoreWrite {
+                        value,
+                        range: site.range.clone(),
+                    });
+                }
+            }
+            RoutineInstructionSite::Call { .. }
+            | RoutineInstructionSite::Perform { .. }
+            | RoutineInstructionSite::SqlQuery { .. }
+            | RoutineInstructionSite::Delete { .. }
+            | RoutineInstructionSite::ReadTable { .. }
+            | RoutineInstructionSite::FieldSymbolBind { .. }
+            | RoutineInstructionSite::ValueRead { .. }
+            | RoutineInstructionSite::UnknownEffect
+            | RoutineInstructionSite::Branch { .. }
+            | RoutineInstructionSite::LoopHeader { .. }
+            | RoutineInstructionSite::Terminator { .. } => {}
+        }
+
+        out.push(DeadStoreInstructionSummary { reads, writes });
+    }
+    out
+}
+
+fn build_dead_store_block_summaries(
+    routine: &RoutineAnalysis,
+    instruction_summaries: &[DeadStoreInstructionSummary],
+    bit_count: usize,
+) -> Vec<DeadStoreBlockSummary> {
+    routine
+        .cfg
+        .blocks
+        .iter()
+        .map(|block| {
+            let mut live_gen = DenseBitSet::new(bit_count);
+            let mut kill = DenseBitSet::new(bit_count);
+            for instruction_id in &block.instructions {
+                let summary = &instruction_summaries[instruction_id.as_usize()];
+                for read in &summary.reads {
+                    if !kill.contains(*read) {
+                        live_gen.insert(*read);
+                    }
+                }
+                for write in &summary.writes {
+                    kill.insert(write.value);
+                }
+            }
+            DeadStoreBlockSummary { live_gen, kill }
+        })
+        .collect()
+}
+
+fn compute_dead_store_liveness(
+    routine: &RoutineAnalysis,
+    block_summaries: &[DeadStoreBlockSummary],
+    bit_count: usize,
+) -> (Vec<DenseBitSet>, Vec<DenseBitSet>) {
+    let empty = DenseBitSet::new(bit_count);
+    let mut live_in = vec![empty.clone(); routine.cfg.blocks.len()];
+    let mut live_out = vec![empty; routine.cfg.blocks.len()];
+    let mut changed = true;
+
+    while changed {
+        changed = false;
+        for block in routine.cfg.blocks.iter().rev() {
+            let block_idx = block.id.as_usize();
+            if !block.reachable {
+                continue;
+            }
+
+            let mut next_live_out = DenseBitSet::new(bit_count);
+            for successor in &block.successors {
+                next_live_out.union_from(&live_in[successor.as_usize()]);
+            }
+
+            let mut next_live_in = next_live_out.clone();
+            next_live_in.subtract_from(&block_summaries[block_idx].kill);
+            next_live_in.union_from(&block_summaries[block_idx].live_gen);
+
+            if live_out[block_idx] != next_live_out {
+                live_out[block_idx] = next_live_out;
+                changed = true;
+            }
+            if live_in[block_idx] != next_live_in {
+                live_in[block_idx] = next_live_in;
+                changed = true;
+            }
+        }
+    }
+
+    (live_in, live_out)
 }
 
 fn resolved_value_id_for_reference(

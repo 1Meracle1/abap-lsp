@@ -1382,6 +1382,7 @@ fn diagnostic_kind_name(kind: DiagnosticKind) -> &'static str {
         DiagnosticKind::UnreachableCode => "unreachable_code",
         DiagnosticKind::UseBeforeDefiniteAssignment => "use_before_definite_assignment",
         DiagnosticKind::PossiblyUnboundFieldSymbol => "possibly_unbound_field_symbol",
+        DiagnosticKind::DeadStore => "dead_store",
     }
 }
 

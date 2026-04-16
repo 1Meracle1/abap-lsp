@@ -290,6 +290,7 @@ pub enum DiagnosticKind {
     UnreachableCode,
     UseBeforeDefiniteAssignment,
     PossiblyUnboundFieldSymbol,
+    DeadStore,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

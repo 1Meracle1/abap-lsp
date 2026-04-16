@@ -8,5 +8,6 @@ pub struct ProjectRoutineAnalysisMetrics {
     pub ir_micros: u128,
     pub cfg_micros: u128,
     pub dataflow_micros: u128,
+    pub dead_store_micros: u128,
     pub total_micros: u128,
 }
