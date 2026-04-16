@@ -11,11 +11,11 @@ use abap_symbols::{
     FunctionModuleParameterData, FunctionModuleParameterSection, MethodParameterSection,
     NamedArgumentAccess, NamedArgumentSection, NamedArgumentTarget, Namespace, PerformArgumentData,
     PerformCallData, PerformParameterSection, ProjectAnalysis, ProjectRoutineAnalysis,
-    ReferenceKind, Resolution, ScopeId, ScopeKind, SqlNameRefData, SqlNameRefKind,
-    StructureFieldData, StructureFieldInfo, StructureFieldShape, StructureId, SymbolData,
-    SymbolHandle, SymbolId, SymbolKind, UnitAnalysis, UnitId, Visibility,
-    build_project_routine_analysis, builtin_routine_spec, call_section_matches_parameter,
-    parameter_is_required,
+    ProjectStaticAnalysisSummary, ReferenceKind, Resolution, ScopeId, ScopeKind, SqlNameRefData,
+    SqlNameRefKind, StructureFieldData, StructureFieldInfo, StructureFieldShape, StructureId,
+    SymbolData, SymbolHandle, SymbolId, SymbolKind, UnitAnalysis, UnitId, Visibility,
+    build_project_routine_analysis, build_project_static_analysis_summary, builtin_routine_spec,
+    call_section_matches_parameter, parameter_is_required,
     perf_api::{
         IncrementalProjectUpdate, LocalAnalysis, analyze_unit_local_state,
         analyze_unit_local_state_for_project_build, incremental_project_update,
@@ -69,6 +69,7 @@ pub struct AnalysisSnapshot {
     pub symbols: Arc<UnitAnalysis>,
     pub project: Arc<ProjectAnalysis>,
     pub routine_analysis: Arc<ProjectRoutineAnalysis>,
+    pub static_analysis: Option<Arc<ProjectStaticAnalysisSummary>>,
     pub callable_summaries: Arc<ProjectCallableSummaryAnalysis>,
     pub call_graph: Arc<ProjectCallGraph>,
     pub scope_index: Arc<ScopeIndex>,
@@ -301,6 +302,20 @@ impl AnalysisSnapshot {
 
     pub fn routine_analysis(&self) -> &ProjectRoutineAnalysis {
         self.routine_analysis.as_ref()
+    }
+
+    pub fn static_analysis(&self) -> Option<&ProjectStaticAnalysisSummary> {
+        self.static_analysis.as_deref()
+    }
+
+    pub fn static_analysis_findings_touching_offset(
+        &self,
+        offset: usize,
+    ) -> Vec<&abap_symbols::StaticAnalysisFinding> {
+        self.static_analysis()
+            .into_iter()
+            .flat_map(|summary| summary.findings_touching_offset(self.symbols.unit_id, offset))
+            .collect()
     }
 
     pub fn callable_summaries(&self) -> &ProjectCallableSummaryAnalysis {
@@ -5930,6 +5945,7 @@ fn clone_snapshot_with_version(snapshot: &AnalysisSnapshot, version: i32) -> Arc
         symbols: Arc::clone(&snapshot.symbols),
         project: Arc::clone(&snapshot.project),
         routine_analysis: Arc::clone(&snapshot.routine_analysis),
+        static_analysis: snapshot.static_analysis.as_ref().map(Arc::clone),
         callable_summaries: Arc::clone(&snapshot.callable_summaries),
         call_graph: Arc::clone(&snapshot.call_graph),
     })
@@ -5953,6 +5969,7 @@ struct AnalysisMetrics {
     routine_analysis_cfg_micros: u128,
     routine_analysis_dataflow_micros: u128,
     routine_analysis_dead_store_micros: u128,
+    static_analysis_summary_micros: u128,
     callable_summary_micros: u128,
     full_rebuild: bool,
     unit_count: usize,
@@ -5997,6 +6014,7 @@ pub struct WorkspaceAnalysisMetricsSnapshot {
     pub routine_analysis_cfg_micros: u128,
     pub routine_analysis_dataflow_micros: u128,
     pub routine_analysis_dead_store_micros: u128,
+    pub static_analysis_summary_micros: u128,
     pub callable_summary_micros: u128,
     pub full_rebuild: bool,
     pub unit_count: usize,
@@ -6238,6 +6256,12 @@ fn materialize_snapshots(
     let routine_analysis_timer = std::time::Instant::now();
     let routine_analysis = Arc::new(build_project_routine_analysis(project.as_ref()));
     let routine_analysis_micros = routine_analysis_timer.elapsed().as_micros();
+    let static_analysis_timer = std::time::Instant::now();
+    let static_analysis = Arc::new(build_project_static_analysis_summary(
+        project.as_ref(),
+        routine_analysis.as_ref(),
+    ));
+    let static_analysis_summary_micros = static_analysis_timer.elapsed().as_micros();
     let call_graph = Arc::new(call_graph::build_project_call_graph(
         project.as_ref(),
         &scope_indexes,
@@ -6274,6 +6298,7 @@ fn materialize_snapshots(
                 symbols: Arc::new(unit),
                 project: Arc::clone(&project),
                 routine_analysis: Arc::clone(&routine_analysis),
+                static_analysis: Some(Arc::clone(&static_analysis)),
                 callable_summaries: Arc::clone(&callable_summaries),
                 call_graph: Arc::clone(&call_graph),
             }),
@@ -6289,6 +6314,7 @@ fn materialize_snapshots(
         routine_analysis_cfg_micros: routine_analysis.metrics.cfg_micros,
         routine_analysis_dataflow_micros: routine_analysis.metrics.dataflow_micros,
         routine_analysis_dead_store_micros: routine_analysis.metrics.dead_store_micros,
+        static_analysis_summary_micros,
         callable_summary_micros,
         ..AnalysisMetrics::default()
     };
@@ -6749,6 +6775,7 @@ fn preview_snapshot_from_local(
     local: LocalAnalysis,
     project: Arc<ProjectAnalysis>,
     routine_analysis: Arc<ProjectRoutineAnalysis>,
+    static_analysis: Option<Arc<ProjectStaticAnalysisSummary>>,
     callable_summaries: Arc<ProjectCallableSummaryAnalysis>,
     call_graph: Arc<ProjectCallGraph>,
 ) -> Arc<AnalysisSnapshot> {
@@ -6763,6 +6790,7 @@ fn preview_snapshot_from_local(
         symbols: Arc::new(local.unit),
         project,
         routine_analysis,
+        static_analysis,
         callable_summaries,
         call_graph,
     })
@@ -6920,6 +6948,7 @@ impl DocumentStore {
         let (
             project,
             routine_analysis,
+            static_analysis,
             callable_summaries,
             call_graph,
             committed_context_only,
@@ -6928,6 +6957,9 @@ impl DocumentStore {
             (
                 Arc::clone(&snapshot.project),
                 Arc::clone(&snapshot.routine_analysis),
+                // Reusing committed project context keeps previews cheap, but the compact
+                // summary would be stale for the edited unit, so omit it fail-soft.
+                None,
                 Arc::clone(&snapshot.callable_summaries),
                 Arc::clone(&snapshot.call_graph),
                 true,
@@ -6936,6 +6968,10 @@ impl DocumentStore {
         } else {
             let project = Arc::new(validate_single_unit(local.unit.clone()));
             let routine_analysis = Arc::new(build_project_routine_analysis(project.as_ref()));
+            let static_analysis = Arc::new(build_project_static_analysis_summary(
+                project.as_ref(),
+                routine_analysis.as_ref(),
+            ));
             let call_graph = Arc::new(call_graph::build_project_call_graph(
                 project.as_ref(),
                 std::slice::from_ref(&local.scope_index),
@@ -6949,6 +6985,7 @@ impl DocumentStore {
             (
                 project,
                 routine_analysis,
+                Some(static_analysis),
                 callable_summaries,
                 call_graph,
                 false,
@@ -6961,6 +6998,7 @@ impl DocumentStore {
             local,
             project,
             routine_analysis,
+            static_analysis,
             callable_summaries,
             call_graph,
         );
@@ -7028,6 +7066,7 @@ impl DocumentStore {
                 routine_analysis_dead_store_micros: analysis
                     .metrics
                     .routine_analysis_dead_store_micros,
+                static_analysis_summary_micros: analysis.metrics.static_analysis_summary_micros,
                 callable_summary_micros: analysis.metrics.callable_summary_micros,
                 full_rebuild: analysis.metrics.full_rebuild,
                 unit_count: analysis.metrics.unit_count,
@@ -7196,6 +7235,41 @@ mod tests {
                 symbol: method.id,
             })
             .expect("callable summary for method owner")
+    }
+
+    fn static_analysis_method_summary<'a>(
+        snapshot: &'a AnalysisSnapshot,
+        class_name: &str,
+        method_name: &str,
+    ) -> &'a abap_symbols::RoutineStaticAnalysisSummary {
+        let member = snapshot
+            .symbols
+            .class_members
+            .iter()
+            .find(|member| {
+                snapshot.symbols.symbol(member.class_symbol).name.as_ref() == class_name
+                    && member.name.as_ref() == method_name
+            })
+            .expect("class member");
+        let method = snapshot
+            .symbols
+            .symbols
+            .iter()
+            .find(|symbol| {
+                symbol.kind == SymbolKind::Method
+                    && enclosing_class_symbol(snapshot, symbol.scope) == Some(member.class_symbol)
+                    && (symbol.name.as_ref() == method_name
+                        || symbol.name.rsplit('~').next() == Some(method_name))
+            })
+            .expect("method symbol");
+        snapshot
+            .static_analysis()
+            .expect("static analysis summary")
+            .routine_for_owner(SymbolHandle {
+                unit: snapshot.symbols.unit_id,
+                symbol: method.id,
+            })
+            .expect("static analysis summary for method owner")
     }
 
     fn diagnostic_slices(
@@ -7761,6 +7835,47 @@ ENDCLASS.";
         assert!(Arc::ptr_eq(
             &first.callable_summaries,
             &second.callable_summaries
+        ));
+    }
+
+    #[test]
+    fn static_analysis_summary_artifact_is_shared_and_reports_metrics() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS zcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run.
+ENDCLASS.
+
+CLASS zcl_demo IMPLEMENTATION.
+  METHOD run.
+    DATA lv_value TYPE i.
+    RETURN.
+    lv_value = 1.
+  ENDMETHOD.
+ENDCLASS.";
+
+        let first = store.publish("file:///static_summary_metrics.abap", 1, src);
+        let metrics = store
+            .last_analysis_metrics_snapshot()
+            .expect("analysis metrics snapshot");
+        let summary = static_analysis_method_summary(&first, "zcl_demo", "run");
+
+        assert!(metrics.snapshot_build_micros >= metrics.static_analysis_summary_micros);
+        assert_eq!(summary.finding_counts.unreachable_code, 1);
+        assert_eq!(summary.findings.len(), 1);
+        assert!(summary.instruction_count >= summary.reachable_instruction_count);
+
+        let second = store.publish("file:///static_summary_metrics.abap", 2, src);
+        assert!(Arc::ptr_eq(
+            first
+                .static_analysis
+                .as_ref()
+                .expect("first static analysis"),
+            second
+                .static_analysis
+                .as_ref()
+                .expect("second static analysis")
         ));
     }
 
@@ -9317,6 +9432,53 @@ START-OF-SELECTION.
             &committed_consumer,
             &store.get("file:///consumer.abap").expect("stored consumer"),
         ));
+    }
+
+    #[test]
+    fn preview_committed_context_omits_static_analysis_summary() {
+        let store = DocumentStore::default();
+        let committed = "\
+CLASS zcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run.
+ENDCLASS.
+
+CLASS zcl_demo IMPLEMENTATION.
+  METHOD run.
+    DATA lv_value TYPE i.
+    lv_value = 1.
+  ENDMETHOD.
+ENDCLASS.";
+
+        store.publish("file:///preview_static_analysis.abap", 1, committed);
+
+        let preview = store.preview_publish_input(DocumentInput {
+            uri: Arc::from("file:///preview_static_analysis.abap"),
+            version: 2,
+            text: Arc::from(
+                "\
+CLASS zcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run.
+ENDCLASS.
+
+CLASS zcl_demo IMPLEMENTATION.
+  METHOD run.
+    DATA lv_value TYPE i.
+    RETURN.
+    lv_value = 1.
+  ENDMETHOD.
+ENDCLASS.",
+            ),
+            is_dependency: false,
+            object_name: None,
+        });
+        let preview_metrics = store
+            .last_preview_metrics_snapshot()
+            .expect("preview metrics");
+
+        assert!(preview_metrics.committed_context_only);
+        assert!(preview.static_analysis().is_none());
     }
 
     #[test]

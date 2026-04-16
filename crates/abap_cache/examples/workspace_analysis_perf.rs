@@ -123,6 +123,10 @@ fn run() -> Result<(), String> {
         "routine_analysis_dead_store={:?}",
         std::time::Duration::from_micros(metrics.routine_analysis_dead_store_micros as u64)
     );
+    println!(
+        "static_analysis_summary={:?}",
+        std::time::Duration::from_micros(metrics.static_analysis_summary_micros as u64)
+    );
     println!("full_rebuild={}", metrics.full_rebuild);
     println!("unit_count={}", metrics.unit_count);
     println!("dirty_unit_count={}", metrics.dirty_unit_count);

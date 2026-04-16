@@ -1,5 +1,11 @@
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use abap_parser::parse;
-use abap_symbols::{SemanticDossierContext, analyze_unit, build_semantic_dossier};
+use abap_symbols::{
+    ProjectAnalysis, SemanticDossierContext, analyze_unit, build_project_routine_analysis,
+    build_project_static_analysis_summary, build_semantic_dossier,
+};
 
 #[test]
 fn dossier_exports_simple_local_resolution() {
@@ -11,6 +17,7 @@ fn dossier_exports_simple_local_resolution() {
         SemanticDossierContext {
             parse_errors: &parsed.errors,
             project: None,
+            static_analysis: None,
             target_path: Some("D:\\local.abap"),
             object_name: None,
             is_dependency: false,
@@ -74,6 +81,7 @@ ENDCLASS.
         SemanticDossierContext {
             parse_errors: &parsed.errors,
             project: None,
+            static_analysis: None,
             target_path: Some("D:\\class.abap"),
             object_name: None,
             is_dependency: false,
@@ -125,6 +133,7 @@ SELECT carrid, carrname
         SemanticDossierContext {
             parse_errors: &parsed.errors,
             project: None,
+            static_analysis: None,
             target_path: Some("D:\\sql.abap"),
             object_name: None,
             is_dependency: false,
@@ -168,6 +177,7 @@ fn dossier_buckets_unresolved_references() {
         SemanticDossierContext {
             parse_errors: &parsed.errors,
             project: None,
+            static_analysis: None,
             target_path: Some("D:\\unknown.abap"),
             object_name: None,
             is_dependency: false,
@@ -225,6 +235,7 @@ WRITE lt_scarr.
         SemanticDossierContext {
             parse_errors: &parsed.errors,
             project: None,
+            static_analysis: None,
             target_path: Some("D:\\facts_dossier.abap"),
             object_name: None,
             is_dependency: false,
@@ -235,7 +246,7 @@ WRITE lt_scarr.
         },
     );
 
-    assert_eq!(dossier.schema_version, 2);
+    assert_eq!(dossier.schema_version, 3);
     assert!(dossier.summary.expression_fact_count > 0);
     assert!(dossier.summary.value_flow_edge_count > 0);
     assert!(dossier.expression_facts.iter().any(|fact| {
@@ -260,4 +271,71 @@ WRITE lt_scarr.
             .iter()
             .any(|edge| edge.kind == "assignment")
     );
+}
+
+#[test]
+fn dossier_exports_compact_static_analysis_summary() {
+    let src = r#"
+CLASS zcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run.
+ENDCLASS.
+
+CLASS zcl_demo IMPLEMENTATION.
+  METHOD run.
+    DATA lv_value TYPE i.
+    RETURN.
+    lv_value = 1.
+  ENDMETHOD.
+ENDCLASS.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///static_analysis.abap", src, &parsed);
+    let unit_id = unit.unit_id;
+    let uri = Arc::clone(&unit.uri);
+    let project = ProjectAnalysis {
+        units: vec![unit.clone()],
+        uri_to_unit: HashMap::from([(uri, unit_id)]),
+        provided_name_to_unit: HashMap::new(),
+        diagnostics: Vec::new(),
+    };
+    let routine_analysis = build_project_routine_analysis(&project);
+    let static_analysis = build_project_static_analysis_summary(&project, &routine_analysis);
+    let mut unit = unit;
+    for diagnostic in routine_analysis.diagnostics_for_unit(unit_id) {
+        if !unit.diagnostics.contains(diagnostic) {
+            unit.diagnostics.push(diagnostic.clone());
+        }
+    }
+    let dossier = build_semantic_dossier(
+        &unit,
+        SemanticDossierContext {
+            parse_errors: &parsed.errors,
+            project: None,
+            static_analysis: Some(&static_analysis),
+            target_path: Some("D:\\static_analysis.abap"),
+            object_name: None,
+            is_dependency: false,
+            workspace_root_uri: None,
+            manifest_present: false,
+            project_unit_count: None,
+            dependency_unit_count: None,
+        },
+    );
+
+    let static_analysis = dossier
+        .static_analysis
+        .as_ref()
+        .expect("static analysis section");
+    assert_eq!(dossier.schema_version, 3);
+    assert_eq!(dossier.summary.static_analysis_routine_count, 1);
+    assert_eq!(static_analysis.routine_count, 1);
+    assert_eq!(dossier.summary.static_analysis_finding_count, 1);
+    assert!(static_analysis.routines.iter().any(|routine| {
+        routine.kind == "method"
+            && routine
+                .findings
+                .iter()
+                .any(|finding| finding.kind == "unreachable_code")
+    }));
 }

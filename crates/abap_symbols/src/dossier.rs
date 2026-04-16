@@ -20,12 +20,18 @@ use crate::def_map::{
 };
 use crate::ids::{SymbolHandle, UnitId};
 use crate::project::ProjectAnalysis;
+use crate::routine_analysis::RoutineKind;
 use crate::scope::{Namespace, ScopeData, ScopeKind};
+use crate::static_analysis::{
+    ProjectStaticAnalysisSummary, RoutineStaticAnalysisFindingCounts, RoutineStaticAnalysisSummary,
+    StaticAnalysisFinding, StaticAnalysisFindingKind,
+};
 
 #[derive(Debug, Clone, Copy)]
 pub struct SemanticDossierContext<'a> {
     pub parse_errors: &'a [ParseError],
     pub project: Option<&'a ProjectAnalysis>,
+    pub static_analysis: Option<&'a ProjectStaticAnalysisSummary>,
     pub target_path: Option<&'a str>,
     pub object_name: Option<&'a str>,
     pub is_dependency: bool,
@@ -44,6 +50,7 @@ pub struct SemanticDossier {
     pub summary: DossierSummary,
     pub parse_diagnostics: Vec<ParseDiagnosticDossier>,
     pub semantic_diagnostics: Vec<SemanticDiagnosticDossier>,
+    pub static_analysis: Option<StaticAnalysisSectionDossier>,
     pub structures: Vec<StructureDossier>,
     pub symbols: Vec<SymbolDossier>,
     pub references: Vec<ReferenceDossier>,
@@ -82,6 +89,8 @@ pub struct DossierProject {
 pub struct DossierSummary {
     pub parse_diagnostic_count: usize,
     pub semantic_diagnostic_count: usize,
+    pub static_analysis_routine_count: usize,
+    pub static_analysis_finding_count: usize,
     pub structure_count: usize,
     pub symbol_count: usize,
     pub reference_count: usize,
@@ -120,6 +129,48 @@ pub struct SemanticDiagnosticDossier {
     pub kind: &'static str,
     pub range: ByteRange,
     pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct StaticAnalysisFindingDossier {
+    pub kind: &'static str,
+    pub range: ByteRange,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RoutineStaticAnalysisFindingCountsDossier {
+    pub unreachable_code: usize,
+    pub use_before_definite_assignment: usize,
+    pub possibly_unbound_field_symbol: usize,
+    pub dead_store: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RoutineStaticAnalysisDossier {
+    pub routine_id: u32,
+    pub scope_id: u32,
+    pub owner: Option<ResolvedSymbolDossier>,
+    pub kind: &'static str,
+    pub name: String,
+    pub decl_range: ByteRange,
+    pub executable_range: Option<ByteRange>,
+    pub instruction_count: usize,
+    pub reachable_instruction_count: usize,
+    pub block_count: usize,
+    pub reachable_block_count: usize,
+    pub unreachable_block_count: usize,
+    pub dataflow_converged: bool,
+    pub dataflow_iterations: u32,
+    pub finding_counts: RoutineStaticAnalysisFindingCountsDossier,
+    pub findings: Vec<StaticAnalysisFindingDossier>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct StaticAnalysisSectionDossier {
+    pub routine_count: usize,
+    pub finding_count: usize,
+    pub routines: Vec<RoutineStaticAnalysisDossier>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -541,6 +592,9 @@ pub fn build_semantic_dossier(
         .iter()
         .map(semantic_diagnostic_dossier)
         .collect();
+    let static_analysis = context
+        .static_analysis
+        .map(|summary| static_analysis_section_dossier(unit, context.project, summary));
     let structures: Vec<_> = unit.structures.iter().map(structure_dossier).collect();
     let symbols: Vec<_> = unit.symbols.iter().map(symbol_dossier).collect();
     let references: Vec<_> = unit
@@ -637,7 +691,7 @@ pub fn build_semantic_dossier(
 
     SemanticDossier {
         schema: "abap.semantic_dossier",
-        schema_version: 2,
+        schema_version: 3,
         target: DossierTarget {
             unit_id: unit.unit_id.0,
             uri: unit.uri.to_string(),
@@ -659,6 +713,12 @@ pub fn build_semantic_dossier(
         summary: DossierSummary {
             parse_diagnostic_count: parse_diagnostics.len(),
             semantic_diagnostic_count: semantic_diagnostics.len(),
+            static_analysis_routine_count: static_analysis
+                .as_ref()
+                .map_or(0, |summary| summary.routine_count),
+            static_analysis_finding_count: static_analysis
+                .as_ref()
+                .map_or(0, |summary| summary.finding_count),
             structure_count: structures.len(),
             symbol_count: symbols.len(),
             reference_count: references.len(),
@@ -684,6 +744,7 @@ pub fn build_semantic_dossier(
         },
         parse_diagnostics,
         semantic_diagnostics,
+        static_analysis,
         structures,
         symbols,
         references,
@@ -716,6 +777,75 @@ fn semantic_diagnostic_dossier(diagnostic: &Diagnostic) -> SemanticDiagnosticDos
         kind: diagnostic_kind_name(diagnostic.kind),
         range: byte_range(&diagnostic.range),
         message: diagnostic.message.clone(),
+    }
+}
+
+fn static_analysis_section_dossier(
+    current_unit: &UnitAnalysis,
+    project: Option<&ProjectAnalysis>,
+    static_analysis: &ProjectStaticAnalysisSummary,
+) -> StaticAnalysisSectionDossier {
+    let routines: Vec<_> = static_analysis
+        .routines_for_unit(current_unit.unit_id)
+        .map(|routine| routine_static_analysis_dossier(current_unit, project, routine))
+        .collect();
+    let finding_count = routines.iter().map(|routine| routine.findings.len()).sum();
+    StaticAnalysisSectionDossier {
+        routine_count: routines.len(),
+        finding_count,
+        routines,
+    }
+}
+
+fn routine_static_analysis_dossier(
+    current_unit: &UnitAnalysis,
+    project: Option<&ProjectAnalysis>,
+    routine: &RoutineStaticAnalysisSummary,
+) -> RoutineStaticAnalysisDossier {
+    RoutineStaticAnalysisDossier {
+        routine_id: routine.routine.0,
+        scope_id: routine.scope.0,
+        owner: routine
+            .owner
+            .map(|owner| resolved_symbol_dossier(current_unit, project, owner)),
+        kind: routine_kind_name(routine.kind),
+        name: routine.name.to_string(),
+        decl_range: byte_range(&routine.decl_range),
+        executable_range: routine.executable_range.as_ref().map(byte_range),
+        instruction_count: routine.instruction_count,
+        reachable_instruction_count: routine.reachable_instruction_count,
+        block_count: routine.block_count,
+        reachable_block_count: routine.reachable_block_count,
+        unreachable_block_count: routine.unreachable_block_count,
+        dataflow_converged: routine.dataflow_converged,
+        dataflow_iterations: routine.dataflow_iterations,
+        finding_counts: routine_static_analysis_finding_counts_dossier(&routine.finding_counts),
+        findings: routine
+            .findings
+            .iter()
+            .map(static_analysis_finding_dossier)
+            .collect(),
+    }
+}
+
+fn routine_static_analysis_finding_counts_dossier(
+    counts: &RoutineStaticAnalysisFindingCounts,
+) -> RoutineStaticAnalysisFindingCountsDossier {
+    RoutineStaticAnalysisFindingCountsDossier {
+        unreachable_code: counts.unreachable_code,
+        use_before_definite_assignment: counts.use_before_definite_assignment,
+        possibly_unbound_field_symbol: counts.possibly_unbound_field_symbol,
+        dead_store: counts.dead_store,
+    }
+}
+
+fn static_analysis_finding_dossier(
+    finding: &StaticAnalysisFinding,
+) -> StaticAnalysisFindingDossier {
+    StaticAnalysisFindingDossier {
+        kind: static_analysis_finding_kind_name(finding.kind),
+        range: byte_range(&finding.range),
+        message: finding.message.clone(),
     }
 }
 
@@ -1285,6 +1415,15 @@ fn namespace_name(namespace: Namespace) -> &'static str {
     }
 }
 
+fn routine_kind_name(kind: RoutineKind) -> &'static str {
+    match kind {
+        RoutineKind::Method => "method",
+        RoutineKind::Form => "form",
+        RoutineKind::Module => "module",
+        RoutineKind::EventBlock => "event_block",
+    }
+}
+
 fn scope_kind_name(kind: ScopeKind) -> &'static str {
     match kind {
         ScopeKind::File => "file",
@@ -1383,6 +1522,15 @@ fn diagnostic_kind_name(kind: DiagnosticKind) -> &'static str {
         DiagnosticKind::UseBeforeDefiniteAssignment => "use_before_definite_assignment",
         DiagnosticKind::PossiblyUnboundFieldSymbol => "possibly_unbound_field_symbol",
         DiagnosticKind::DeadStore => "dead_store",
+    }
+}
+
+fn static_analysis_finding_kind_name(kind: StaticAnalysisFindingKind) -> &'static str {
+    match kind {
+        StaticAnalysisFindingKind::UnreachableCode => "unreachable_code",
+        StaticAnalysisFindingKind::UseBeforeDefiniteAssignment => "use_before_definite_assignment",
+        StaticAnalysisFindingKind::PossiblyUnboundFieldSymbol => "possibly_unbound_field_symbol",
+        StaticAnalysisFindingKind::DeadStore => "dead_store",
     }
 }
 

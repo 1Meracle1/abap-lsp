@@ -26,7 +26,12 @@ flowchart LR
 - Worker threads run parse, resolve, validate, and workspace refresh jobs.
 - Worker results are committed through a single cache publication boundary so visible state changes stay coherent.
 - Published snapshots are immutable and reference-counted with `Arc`.
+- Heavy routine-analysis artifacts and compact static-analysis summaries are both snapshot-scoped
+  `Arc` artifacts; neither should be copied onto every `UnitAnalysis`.
 - Locks protect maps and publication points, not every node in the syntax tree.
+
+See also: [Static Analysis Artifacts](./static-analysis.md)
+for the storage split, invariants, and preview fallback behavior.
 
 ## Preferred Primitives
 

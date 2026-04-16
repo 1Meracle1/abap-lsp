@@ -15,6 +15,7 @@ mod routine_analysis;
 mod scope;
 mod semantic;
 mod semantic_queries;
+mod static_analysis;
 mod validate;
 
 pub use builtins::{
@@ -56,6 +57,11 @@ pub use routine_analysis::{
 };
 pub use scope::{Namespace, ScopeData, ScopeKind};
 pub use semantic_queries::SemanticQueries;
+pub use static_analysis::{
+    ProjectStaticAnalysisSummary, ProjectStaticAnalysisSummaryMetrics,
+    RoutineStaticAnalysisFindingCounts, RoutineStaticAnalysisSummary, StaticAnalysisFinding,
+    StaticAnalysisFindingKind, build_project_static_analysis_summary,
+};
 
 #[cfg(test)]
 mod tests {

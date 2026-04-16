@@ -32,7 +32,7 @@ Notes:
 
 ## Top-level schema
 
-The current schema id is `abap.semantic_dossier` with `schema_version = 2`.
+The current schema id is `abap.semantic_dossier` with `schema_version = 3`.
 
 Top-level fields:
 
@@ -43,6 +43,7 @@ Top-level fields:
 - `summary`
 - `parse_diagnostics`
 - `semantic_diagnostics`
+- `static_analysis`
 - `structures`
 - `symbols`
 - `references`
@@ -74,6 +75,17 @@ Top-level fields:
 
 - Stable counts for diagnostics, symbols, references, scopes, class facts, calls, SQL, and include
   edges.
+- Also reports routine-summary and routine-finding counts when compact static analysis is
+  available.
+
+`static_analysis`
+
+- Compact per-routine summaries derived from the internal routine-analysis engine.
+- Exposes routine metadata, executable ranges, instruction/block counts, dataflow convergence, and
+  grouped findings.
+- Keeps heavyweight IR / CFG / dataflow internals out of the dossier.
+- Findings here are grouped by routine for convenience; the same diagnostics still appear in
+  `semantic_diagnostics`.
 
 `references`
 
@@ -123,5 +135,8 @@ The dossier is meant to be sufficient for questions such as:
 - Treat absent optional sections as meaning "not available in this analysis mode".
 - The new fact layer is intentionally conservative: it does not attempt full SSA, path-sensitive
   refinement, or full interprocedural propagation.
+- Compact static-analysis summaries are fail-soft: consumers should treat an absent
+  `static_analysis` section as "not available in this analysis mode" rather than as proof that no
+  routine findings exist.
 - Do not infer raw syntax structure from the dossier; use `abap_cli parse --json --ast` for syntax
   tree inspection when needed.

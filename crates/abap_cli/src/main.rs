@@ -28,7 +28,11 @@ use abap_cache::{
 };
 use abap_lexer::tokenize;
 use abap_parser::parse;
-use abap_symbols::{DiagnosticKind, SemanticDossierContext, analyze_unit, build_semantic_dossier};
+use abap_symbols::{
+    DiagnosticKind, ProjectAnalysis, ProjectStaticAnalysisSummary, SemanticDossierContext,
+    analyze_unit, build_project_routine_analysis, build_project_static_analysis_summary,
+    build_semantic_dossier,
+};
 use serde_json::{Value, json};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -591,6 +595,7 @@ struct AnalyzeSnapshot {
     unit: Arc<abap_symbols::UnitAnalysis>,
     parse: Arc<abap_parser::ParseResult>,
     project: Option<Arc<abap_symbols::ProjectAnalysis>>,
+    static_analysis: Option<Arc<ProjectStaticAnalysisSummary>>,
     target_path: Option<String>,
     object_name: Option<String>,
     is_dependency: bool,
@@ -621,6 +626,7 @@ fn run_analyze(cli: &Cli) -> Result<i32, String> {
         SemanticDossierContext {
             parse_errors: &snapshot.parse.errors,
             project: snapshot.project.as_deref(),
+            static_analysis: snapshot.static_analysis.as_deref(),
             target_path: snapshot.target_path.as_deref(),
             object_name: snapshot.object_name.as_deref(),
             is_dependency: snapshot.is_dependency,
@@ -796,12 +802,17 @@ fn load_single_file_analyze_snapshot(path: Option<&str>) -> Result<AnalyzeSnapsh
         .map(|path| path_to_file_uri(path))
         .unwrap_or_else(|| display_path(path));
     let parsed = Arc::new(parse(&source));
-    let unit = Arc::new(analyze_unit(target_uri.as_str(), &source, parsed.as_ref()));
+    let (unit, static_analysis) = build_single_file_static_analysis(analyze_unit(
+        target_uri.as_str(),
+        &source,
+        parsed.as_ref(),
+    ));
 
     Ok(AnalyzeSnapshot {
-        unit,
+        unit: Arc::new(unit),
         parse: parsed,
         project: None,
+        static_analysis: Some(Arc::new(static_analysis)),
         target_path: target_path.map(|path| path.display().to_string()),
         object_name: None,
         is_dependency: false,
@@ -935,6 +946,7 @@ fn load_project_analyze_snapshot(path: Option<&str>) -> Result<AnalyzeSnapshot, 
         unit: Arc::clone(&snapshot.symbols),
         parse: Arc::clone(&snapshot.parse),
         project: Some(Arc::clone(&snapshot.project)),
+        static_analysis: snapshot.static_analysis.as_ref().map(Arc::clone),
         target_path: Some(target_path.display().to_string()),
         object_name: snapshot.object_name.as_ref().map(|name| name.to_string()),
         is_dependency: snapshot.is_dependency,
@@ -943,6 +955,37 @@ fn load_project_analyze_snapshot(path: Option<&str>) -> Result<AnalyzeSnapshot, 
         project_unit_count: Some(snapshot.project.units.len()),
         dependency_unit_count: Some(dependency_unit_count),
     })
+}
+
+fn build_single_file_static_analysis(
+    unit: abap_symbols::UnitAnalysis,
+) -> (
+    abap_symbols::UnitAnalysis,
+    abap_symbols::ProjectStaticAnalysisSummary,
+) {
+    let unit_id = unit.unit_id;
+    let unit_uri = Arc::clone(&unit.uri);
+    let provided_name_to_unit = unit
+        .provided_names
+        .iter()
+        .cloned()
+        .map(|name| (name, unit_id))
+        .collect();
+    let project = ProjectAnalysis {
+        units: vec![unit.clone()],
+        uri_to_unit: HashMap::from([(unit_uri, unit_id)]),
+        provided_name_to_unit,
+        diagnostics: Vec::new(),
+    };
+    let routine_analysis = build_project_routine_analysis(&project);
+    let static_analysis = build_project_static_analysis_summary(&project, &routine_analysis);
+    let mut unit = unit;
+    for diagnostic in routine_analysis.diagnostics_for_unit(unit_id) {
+        if !unit.diagnostics.contains(diagnostic) {
+            unit.diagnostics.push(diagnostic.clone());
+        }
+    }
+    (unit, static_analysis)
 }
 
 fn load_expand_snapshot_set(path: Option<&str>) -> Result<ExpandSnapshotSet, String> {
