@@ -9,8 +9,9 @@ use abap_ast::ast::{
 };
 
 use crate::def_map::{
-    FieldTypeRefData, NamedArgumentTarget, ReferenceKind, RoutineSiteData, RoutineSiteKind,
-    SymbolKind, TypeFactData, ValueFlowEdgeData, ValueFlowKind, ValueFlowTargetData,
+    AssignmentSiteData, FieldTypeRefData, NamedArgumentTarget, ReferenceKind, RoutineSiteData,
+    RoutineSiteKind, SymbolKind, TypeFactData, ValueFlowEdgeData, ValueFlowKind,
+    ValueFlowTargetData,
 };
 use crate::ids::ScopeId;
 use crate::scope::Namespace;
@@ -150,6 +151,32 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                 name: Some(target_name),
             },
             target_type: source_type,
+        });
+    }
+
+    fn emit_assignment_site_from_ranges(
+        &mut self,
+        scope: ScopeId,
+        range: abap_lexer::TextRange,
+        lhs: NodeId,
+        rhs_nodes: &[NodeId],
+    ) {
+        let lhs_range = self.collector.file.range(lhs);
+        let rhs_range = rhs_nodes
+            .iter()
+            .map(|&node| self.collector.file.range(node))
+            .reduce(|acc, next| acc.start.min(next.start)..acc.end.max(next.end))
+            .unwrap_or_else(|| range.start..range.start);
+
+        self.collector.emit_assignment_site(AssignmentSiteData {
+            scope,
+            range,
+            lhs_range,
+            rhs_range,
+            lhs_target_access: self.collector.value_access_from_node(lhs, scope),
+            lhs: TypeFactData::default(),
+            rhs: TypeFactData::default(),
+            rhs_is_top_level_sum: false,
         });
     }
 
@@ -1921,6 +1948,7 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
     pub(super) fn collect_concatenate_stmt(&mut self, node: NodeId, scope: ScopeId) {
         self.record_unknown_effect(node, scope);
         if let Some(stmt) = ConcatenateStmt::cast(self.collector.syntax(node)) {
+            let stmt_range = self.collector.file.range(node);
             let byte_mode = self.collector.file.children(node).any(|child| {
                 self.collector.file.kind(child) == SyntaxKind::Token
                     && self
@@ -1949,7 +1977,7 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             let target_is_inline = target_id.is_some_and(|target| {
                 self.collector.file.kind(target) == SyntaxKind::DataInlineDecl
             });
-            for operand in operand_ids {
+            for &operand in &operand_ids {
                 self.collector.walk_node(operand, scope);
             }
             if let Some(target) = target_id {
@@ -1961,6 +1989,13 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             }
             if let Some(separator) = separator_id {
                 self.collector.walk_node(separator, scope);
+            }
+            if let Some(target) = target_id {
+                let mut rhs_nodes = operand_ids;
+                if let Some(separator) = separator_id {
+                    rhs_nodes.push(separator);
+                }
+                self.emit_assignment_site_from_ranges(scope, stmt_range, target, &rhs_nodes);
             }
             return;
         }

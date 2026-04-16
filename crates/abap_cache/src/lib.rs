@@ -8445,6 +8445,34 @@ ENDCLASS.";
     }
 
     #[test]
+    fn routine_analysis_treats_concatenate_into_target_as_definite_assignment() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+    DATA lv_keyvalue TYPE string.
+    CONCATENATE 'a' 'b' INTO lv_keyvalue.
+    DATA lv_copy TYPE string.
+    lv_copy = lv_keyvalue.
+  ENDMETHOD.
+ENDCLASS.";
+
+        let snapshot = store.publish("file:///routine_concatenate_into.abap", 1, src);
+        let use_before = diagnostic_slices(
+            src,
+            &snapshot.symbols.diagnostics,
+            DiagnosticKind::UseBeforeDefiniteAssignment,
+        );
+
+        assert!(use_before.is_empty(), "{use_before:?}");
+    }
+
+    #[test]
     fn routine_analysis_allows_partial_structure_selector_initialization_for_whole_value_reads() {
         let store = DocumentStore::default();
         let src = "\
