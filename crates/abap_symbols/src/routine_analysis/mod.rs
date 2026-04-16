@@ -23,10 +23,11 @@ pub use metrics::ProjectRoutineAnalysisMetrics;
 
 use crate::builtin_routine_spec;
 use crate::def_map::{
-    CaseRegionData, Diagnostic, DiagnosticKind, FieldSymbolStateCheckKind,
+    CaseRegionData, Diagnostic, DiagnosticKind, FieldSymbolStateCheckKind, FormParameterSection,
     FunctionModuleParameterSection, IfRegionData, LoopRegionData, MethodParameterSection,
-    Resolution, RoutineControlRegionData, RoutineSiteKind, SymbolData, SymbolKind, TryRegionData,
-    UnitAnalysis, ValueFlowKind, ValueFlowTargetData, ValueStateCheckKind,
+    PerformParameterSection, Resolution, RoutineControlRegionData, RoutineSiteKind, SymbolData,
+    SymbolKind, TryRegionData, UnitAnalysis, ValueFlowKind, ValueFlowTargetData,
+    ValueStateCheckKind,
 };
 use crate::ids::{ScopeId, StructureId, SymbolHandle, UnitId};
 use crate::project::ProjectAnalysis;
@@ -411,19 +412,51 @@ pub fn build_project_routine_analysis(project: &ProjectAnalysis) -> ProjectRouti
     out.metrics.cfg_micros = cfg_timer.elapsed().as_micros();
 
     let dataflow_timer = std::time::Instant::now();
-    for routine_id in 0..out.routines.len() {
+    let has_perform_calls = project
+        .units
+        .iter()
+        .any(|unit| !unit.perform_calls.is_empty());
+    let max_dataflow_passes = if has_perform_calls { 6 } else { 1 };
+    let mut form_parameter_effects = HashMap::new();
+    let mut final_dataflow_diagnostics = vec![Vec::new(); out.routines.len()];
+
+    for _ in 0..max_dataflow_passes {
+        let mut pass_diagnostics = vec![Vec::new(); out.routines.len()];
+        for routine_id in 0..out.routines.len() {
+            let descriptor = out.routines[routine_id].descriptor.clone();
+            let Some(unit) = project.units.get(descriptor.unit.as_usize()) else {
+                continue;
+            };
+            let Some(scope_map) = out.scope_to_routine.get(descriptor.unit.as_usize()) else {
+                continue;
+            };
+            let (inputs, result, diagnostics, dead_store_micros) = build_routine_dataflow(
+                project,
+                unit,
+                scope_map,
+                &out.routines[routine_id],
+                &form_parameter_effects,
+            );
+            out.metrics.dead_store_micros += dead_store_micros;
+            out.routines[routine_id].dataflow_inputs = inputs;
+            out.routines[routine_id].dataflow_result = result;
+            pass_diagnostics[routine_id] = diagnostics;
+        }
+
+        final_dataflow_diagnostics = pass_diagnostics;
+        if !has_perform_calls {
+            break;
+        }
+
+        let next_effects = build_form_parameter_effect_summaries(project, &out.routines);
+        if next_effects == form_parameter_effects {
+            break;
+        }
+        form_parameter_effects = next_effects;
+    }
+
+    for (routine_id, diagnostics) in final_dataflow_diagnostics.into_iter().enumerate() {
         let descriptor = out.routines[routine_id].descriptor.clone();
-        let Some(unit) = project.units.get(descriptor.unit.as_usize()) else {
-            continue;
-        };
-        let Some(scope_map) = out.scope_to_routine.get(descriptor.unit.as_usize()) else {
-            continue;
-        };
-        let (inputs, result, diagnostics, dead_store_micros) =
-            build_routine_dataflow(project, unit, scope_map, &out.routines[routine_id]);
-        out.metrics.dead_store_micros += dead_store_micros;
-        out.routines[routine_id].dataflow_inputs = inputs;
-        out.routines[routine_id].dataflow_result = result;
         out.routines[routine_id]
             .diagnostics
             .extend(diagnostics.iter().cloned());
@@ -552,6 +585,12 @@ enum CallArgumentEffect {
     InputOnly,
     OutputOnly,
     InOut,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct FormParameterEffectSummary {
+    reads_before_write: bool,
+    may_write: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1312,6 +1351,7 @@ fn build_routine_dataflow(
     unit: &UnitAnalysis,
     scope_to_routine: &[Option<RoutineId>],
     routine: &RoutineAnalysis,
+    form_parameter_effects: &HashMap<SymbolHandle, FormParameterEffectSummary>,
 ) -> (
     RoutineDataflowInputs,
     RoutineDataflowResult,
@@ -1584,6 +1624,20 @@ fn build_routine_dataflow(
                                     || read.range.end > argument.range.end
                             });
                         }
+                        let direct_values = direct_non_field_symbol_values_in_range(
+                            &reference_uses,
+                            &argument.range,
+                            &values,
+                        );
+                        if matches!(
+                            effect,
+                            CallArgumentEffect::OutputOnly | CallArgumentEffect::InOut
+                        ) {
+                            transfer.writes.extend(direct_values.iter().copied());
+                        }
+                        if effect == CallArgumentEffect::OutputOnly {
+                            transfer.assigned_writes.extend(direct_values);
+                        }
                         if matches!(
                             effect,
                             CallArgumentEffect::OutputOnly
@@ -1634,6 +1688,32 @@ fn build_routine_dataflow(
                         &safe_read_refs,
                     ));
                     for argument in &perform_call.arguments {
+                        let effect = perform_argument_effect_for_argument(
+                            project,
+                            unit,
+                            perform_call,
+                            argument,
+                            form_parameter_effects,
+                        );
+                        if argument.section != PerformParameterSection::Using
+                            && effect.is_some_and(|summary| !summary.reads_before_write)
+                        {
+                            transfer.reads.retain(|read| {
+                                read.range.start < argument.range.start
+                                    || read.range.end > argument.range.end
+                            });
+                        }
+                        if argument.section != PerformParameterSection::Using
+                            && effect.is_some_and(|summary| summary.may_write)
+                        {
+                            let direct_values = direct_non_field_symbol_values_in_range(
+                                &reference_uses,
+                                &argument.range,
+                                &values,
+                            );
+                            transfer.writes.extend(direct_values.iter().copied());
+                            transfer.assigned_writes.extend(direct_values);
+                        }
                         transfer
                             .non_initial_kills
                             .extend(direct_non_field_symbol_values_in_range(
@@ -2324,6 +2404,189 @@ fn call_argument_effect_for_call_argument(
         ))
         .copied()
         .unwrap_or(CallArgumentEffect::Unknown)
+}
+
+fn build_form_parameter_effect_summaries(
+    project: &ProjectAnalysis,
+    routines: &[RoutineAnalysis],
+) -> HashMap<SymbolHandle, FormParameterEffectSummary> {
+    let mut out = HashMap::new();
+
+    for routine in routines {
+        let Some(owner) = routine.descriptor.owner else {
+            continue;
+        };
+        let Some(unit) = project.units.get(owner.unit.as_usize()) else {
+            continue;
+        };
+        if unit.symbol(owner.symbol).kind != SymbolKind::Form {
+            continue;
+        }
+        let Some(form) = unit.form_routine(owner.symbol) else {
+            continue;
+        };
+        if routine.cfg.blocks.is_empty() || routine.dataflow_inputs.values.is_empty() {
+            continue;
+        }
+
+        let value_by_symbol: HashMap<_, _> = routine
+            .dataflow_inputs
+            .values
+            .iter()
+            .map(|value| (value.symbol, value.id))
+            .collect();
+        let mut parameter_values = HashMap::new();
+        for parameter in &form.parameters {
+            let symbol = SymbolHandle {
+                unit: owner.unit,
+                symbol: parameter.symbol,
+            };
+            let Some(value) = value_by_symbol.get(&symbol).copied() else {
+                continue;
+            };
+            parameter_values.insert(value, symbol);
+        }
+        if parameter_values.is_empty() {
+            continue;
+        }
+
+        let bit_count = routine.dataflow_inputs.values.len();
+        let empty = DenseBitSet::new(bit_count);
+        let top = DenseBitSet::filled(bit_count);
+        let mut block_entry_written = vec![empty.clone(); routine.cfg.blocks.len()];
+        let mut block_exit_written = routine
+            .cfg
+            .blocks
+            .iter()
+            .map(|block| {
+                if block.reachable && block.kind != RoutineBlockKind::Entry {
+                    top.clone()
+                } else {
+                    empty.clone()
+                }
+            })
+            .collect::<Vec<_>>();
+
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for block in &routine.cfg.blocks {
+                let block_idx = block.id.as_usize();
+                let next_entry_written = if !block.reachable
+                    || block.kind == RoutineBlockKind::Entry
+                {
+                    DenseBitSet::new(bit_count)
+                } else {
+                    intersect_predecessor_bits(&block.predecessors, &block_exit_written, bit_count)
+                };
+                let mut next_exit_written = next_entry_written.clone();
+                for instruction_id in &block.instructions {
+                    if let Some(summary) = routine
+                        .dataflow_inputs
+                        .instructions
+                        .get(instruction_id.as_usize())
+                    {
+                        for value in &summary.writes {
+                            next_exit_written.insert(*value);
+                        }
+                    }
+                }
+                if block_entry_written[block_idx] != next_entry_written {
+                    block_entry_written[block_idx] = next_entry_written;
+                    changed = true;
+                }
+                if block_exit_written[block_idx] != next_exit_written {
+                    block_exit_written[block_idx] = next_exit_written;
+                    changed = true;
+                }
+            }
+        }
+
+        let mut effects: HashMap<_, _> = parameter_values
+            .iter()
+            .map(|(value, symbol)| (*value, (*symbol, FormParameterEffectSummary::default())))
+            .collect();
+
+        for block in routine.cfg.blocks.iter().filter(|block| block.reachable) {
+            let mut written = block_entry_written[block.id.as_usize()].clone();
+            for instruction_id in &block.instructions {
+                let Some(summary) = routine
+                    .dataflow_inputs
+                    .instructions
+                    .get(instruction_id.as_usize())
+                else {
+                    continue;
+                };
+                for value in &summary.reads {
+                    if let Some((_, effect)) = effects.get_mut(value)
+                        && !written.contains(*value)
+                    {
+                        effect.reads_before_write = true;
+                    }
+                }
+                for value in &summary.writes {
+                    if let Some((_, effect)) = effects.get_mut(value) {
+                        effect.may_write = true;
+                    }
+                    written.insert(*value);
+                }
+            }
+        }
+
+        for (_, (symbol, effect)) in effects {
+            out.insert(symbol, effect);
+        }
+    }
+
+    out
+}
+
+fn perform_argument_effect_for_argument(
+    project: &ProjectAnalysis,
+    unit: &UnitAnalysis,
+    perform_call: &crate::PerformCallData,
+    argument: &crate::PerformArgumentData,
+    form_parameter_effects: &HashMap<SymbolHandle, FormParameterEffectSummary>,
+) -> Option<FormParameterEffectSummary> {
+    let parameter =
+        resolve_perform_argument_parameter_symbol(project, unit, perform_call, argument)?;
+    form_parameter_effects.get(&parameter).copied()
+}
+
+fn resolve_perform_argument_parameter_symbol(
+    project: &ProjectAnalysis,
+    unit: &UnitAnalysis,
+    perform_call: &crate::PerformCallData,
+    argument: &crate::PerformArgumentData,
+) -> Option<SymbolHandle> {
+    let reference = unit.references.iter().find(|reference| {
+        reference.kind == crate::ReferenceKind::RoutineCall
+            && reference.namespace == Namespace::Routine
+            && reference.range == perform_call.routine_range
+            && reference.name.as_ref() == perform_call.routine_name.as_ref()
+    })?;
+    let Resolution::Symbol(handle) = reference.resolution? else {
+        return None;
+    };
+    let target_unit = project.units.get(handle.unit.as_usize())?;
+    let form = target_unit.form_routine(handle.symbol)?;
+    let parameter = form
+        .parameters
+        .iter()
+        .filter(|parameter| parameter.section == perform_section_to_form_section(argument.section))
+        .nth(argument.ordinal_in_section)?;
+    Some(SymbolHandle {
+        unit: handle.unit,
+        symbol: parameter.symbol,
+    })
+}
+
+fn perform_section_to_form_section(section: PerformParameterSection) -> FormParameterSection {
+    match section {
+        PerformParameterSection::Tables => FormParameterSection::Tables,
+        PerformParameterSection::Using => FormParameterSection::Using,
+        PerformParameterSection::Changing => FormParameterSection::Changing,
+    }
 }
 
 fn build_dead_store_instruction_summaries(

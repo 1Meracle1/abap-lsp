@@ -8854,6 +8854,56 @@ ENDCLASS.";
     }
 
     #[test]
+    fn routine_analysis_propagates_nested_perform_changing_writes() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS lcl_dep DEFINITION.
+  PUBLIC SECTION.
+    METHODS fill EXPORTING ev_value TYPE string.
+ENDCLASS.
+
+CLASS lcl_dep IMPLEMENTATION.
+  METHOD fill.
+    ev_value = 'ok'.
+  ENDMETHOD.
+ENDCLASS.
+
+FORM inner CHANGING cv_value TYPE string.
+  DATA lo_dep TYPE REF TO lcl_dep.
+  lo_dep = NEW lcl_dep( ).
+  lo_dep->fill( IMPORTING ev_value = cv_value ).
+ENDFORM.
+
+FORM outer CHANGING cv_value TYPE string.
+  PERFORM inner CHANGING cv_value.
+ENDFORM.
+
+FORM run.
+  DATA lv_value TYPE string.
+  PERFORM outer CHANGING lv_value.
+  DATA lv_copy TYPE string.
+  lv_copy = lv_value.
+ENDFORM.
+
+START-OF-SELECTION.
+  PERFORM run.";
+
+        let snapshot = store.publish("file:///routine_perform_changing_write.abap", 1, src);
+        let use_before = diagnostic_slices(
+            src,
+            &snapshot.symbols.diagnostics,
+            DiagnosticKind::UseBeforeDefiniteAssignment,
+        );
+        let relevant: Vec<_> = use_before
+            .iter()
+            .filter(|slice| **slice == "lv_value")
+            .cloned()
+            .collect();
+
+        assert!(relevant.is_empty(), "{use_before:?}");
+    }
+
+    #[test]
     fn routine_analysis_flags_dead_store_on_overwrite_before_read() {
         let store = DocumentStore::default();
         let src = "\
