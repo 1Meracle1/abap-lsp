@@ -200,6 +200,7 @@ impl<'ctx, 'a> DeclLowering<'ctx, 'a> {
                 scope,
                 base_namespace: Namespace::Type,
                 base_name: Arc::clone(interface_name),
+                base_range: interface_range.clone(),
                 field_path: vec![FieldAccessSegment {
                     name: Arc::clone(&header.member_name),
                     range: header.member_range.clone(),
@@ -432,6 +433,7 @@ impl<'ctx, 'a> DeclLowering<'ctx, 'a> {
             range: self.ctx.file().range(node),
             lhs_range,
             rhs_range: self.ctx.file().range(rhs_expr),
+            lhs_target_access: None,
             lhs: TypeFactData {
                 structure,
                 declared_type,
@@ -524,13 +526,14 @@ impl<'ctx, 'a> DeclLowering<'ctx, 'a> {
                 std::sync::Arc::clone(&base_name),
                 namespace,
                 ReferenceKind::TypeRef,
-                range,
+                range.clone(),
             );
             if !field_path.is_empty() {
                 self.ctx.emit_field_access(FieldAccess {
                     scope,
                     base_namespace: namespace,
                     base_name,
+                    base_range: range.clone(),
                     field_path,
                     in_type_position: true,
                 });

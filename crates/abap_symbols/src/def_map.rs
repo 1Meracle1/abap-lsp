@@ -288,6 +288,8 @@ pub enum DiagnosticKind {
     /// `INTO` / `APPENDING` target is incompatible with the clause (for example `INTO TABLE` on a non-table variable).
     InvalidOpenSqlIntoTarget,
     UnreachableCode,
+    UseBeforeDefiniteAssignment,
+    PossiblyUnboundFieldSymbol,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -309,6 +311,7 @@ pub struct FieldAccess {
     pub scope: ScopeId,
     pub base_namespace: Namespace,
     pub base_name: Arc<str>,
+    pub base_range: TextRange,
     pub field_path: Vec<FieldAccessSegment>,
     pub in_type_position: bool,
 }
@@ -577,6 +580,7 @@ pub struct AssignmentSiteData {
     pub range: TextRange,
     pub lhs_range: TextRange,
     pub rhs_range: TextRange,
+    pub lhs_target_access: Option<FieldAccess>,
     pub lhs: TypeFactData,
     pub rhs: TypeFactData,
     pub rhs_is_top_level_sum: bool,
@@ -602,6 +606,7 @@ pub enum ValueFlowKind {
     Assignment,
     CallArgument,
     FieldSymbolAssignment,
+    ConditionalFieldSymbolAssignment,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -667,6 +672,9 @@ pub enum RoutineLoopKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RoutineSiteKind {
     UnknownEffect,
+    Clear,
+    Delete,
+    ReadTable,
     Return,
     Raise,
     Leave,
@@ -680,6 +688,37 @@ pub struct RoutineSiteData {
     pub scope: ScopeId,
     pub range: TextRange,
     pub kind: RoutineSiteKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FieldSymbolStateCheckKind {
+    IsAssigned,
+    IsNotAssigned,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ValueStateCheckKind {
+    IsInitial,
+    IsNotInitial,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FieldSymbolStateCheckData {
+    pub scope: ScopeId,
+    pub range: TextRange,
+    pub symbol_name: Arc<str>,
+    pub symbol_range: TextRange,
+    pub kind: FieldSymbolStateCheckKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValueStateCheckData {
+    pub scope: ScopeId,
+    pub range: TextRange,
+    pub symbol_name: Arc<str>,
+    pub symbol_range: TextRange,
+    pub field_name: Option<Arc<str>>,
+    pub kind: ValueStateCheckKind,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -705,6 +744,7 @@ pub struct LoopRegionData {
     pub range: TextRange,
     pub kind: RoutineLoopKind,
     pub body_scope: ScopeId,
+    pub target_access: Option<FieldAccess>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -770,6 +810,8 @@ pub struct UnitAnalysis {
     pub value_flow_edges: Vec<ValueFlowEdgeData>,
     pub perform_calls: Vec<PerformCallData>,
     pub routine_sites: Vec<RoutineSiteData>,
+    pub field_symbol_state_checks: Vec<FieldSymbolStateCheckData>,
+    pub value_state_checks: Vec<ValueStateCheckData>,
     pub routine_control_regions: Vec<RoutineControlRegionData>,
     pub sql_queries: Vec<SqlQueryData>,
     pub sql_sources: Vec<SqlSourceData>,

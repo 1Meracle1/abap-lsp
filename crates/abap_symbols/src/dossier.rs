@@ -1356,6 +1356,7 @@ fn value_flow_kind_name(kind: ValueFlowKind) -> &'static str {
         ValueFlowKind::Assignment => "assignment",
         ValueFlowKind::CallArgument => "call_argument",
         ValueFlowKind::FieldSymbolAssignment => "field_symbol_assignment",
+        ValueFlowKind::ConditionalFieldSymbolAssignment => "conditional_field_symbol_assignment",
     }
 }
 
@@ -1379,6 +1380,8 @@ fn diagnostic_kind_name(kind: DiagnosticKind) -> &'static str {
         DiagnosticKind::UnverifiedOpenSqlSource => "unverified_open_sql_source",
         DiagnosticKind::InvalidOpenSqlIntoTarget => "invalid_open_sql_into_target",
         DiagnosticKind::UnreachableCode => "unreachable_code",
+        DiagnosticKind::UseBeforeDefiniteAssignment => "use_before_definite_assignment",
+        DiagnosticKind::PossiblyUnboundFieldSymbol => "possibly_unbound_field_symbol",
     }
 }
 

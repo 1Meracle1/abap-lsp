@@ -94,7 +94,7 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
         let child_scope =
             self.collector
                 .push_scope(ScopeKind::LoopBlock, node_range.clone(), Some(scope), None);
-        self.collect_loop_header_node(node, child_scope);
+        let target_access = self.collect_loop_header_node(node, child_scope);
         for child in self.collector.file.children(node) {
             match self.collector.file.kind(child) {
                 SyntaxKind::LoopSourceClause
@@ -115,6 +115,7 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
                 range: node_range,
                 kind: RoutineLoopKind::Loop,
                 body_scope: child_scope,
+                target_access,
             }));
     }
 
@@ -245,7 +246,7 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
         }
     }
 
-    fn collect_loop_header_node(&mut self, node: NodeId, scope: ScopeId) {
+    fn collect_loop_header_node(&mut self, node: NodeId, scope: ScopeId) -> Option<FieldAccess> {
         let mut source_metadata = (None, None);
         let mut source_access = None;
         let mut target_access = None;
@@ -263,7 +264,7 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
                 }
                 SyntaxKind::LoopIntoClause => {
                     if let Some(target) = self.collector.first_non_token_child(child) {
-                        target_access = self.collector.value_access_from_node(target, scope);
+                        target_access = self.loop_target_access_from_node(target, scope);
                         self.collect_loop_target_node(
                             target,
                             scope,
@@ -274,7 +275,7 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
                 }
                 SyntaxKind::LoopAssigningClause => {
                     if let Some(target) = self.collector.first_non_token_child(child) {
-                        target_access = self.collector.value_access_from_node(target, scope);
+                        target_access = self.loop_target_access_from_node(target, scope);
                         self.collect_loop_target_node(
                             target,
                             scope,
@@ -285,6 +286,7 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
                 }
                 SyntaxKind::LoopReferenceIntoClause => {
                     if let Some(target) = self.collector.last_non_token_child(child) {
+                        target_access = self.loop_target_access_from_node(target, scope);
                         self.collect_loop_target_node(
                             target,
                             scope,
@@ -318,6 +320,7 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
         }
         self.collector.scopes[scope.as_usize()].allows_internal_table_line_selector =
             allows_internal_table_line_selector;
+        target_access
     }
 
     fn walk_loop_like_stmt(
@@ -340,7 +343,28 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
                 range: node_range,
                 kind: loop_kind,
                 body_scope,
+                target_access: None,
             }));
+    }
+
+    fn loop_target_access_from_node(&self, node: NodeId, scope: ScopeId) -> Option<FieldAccess> {
+        match self.collector.file.kind(node) {
+            SyntaxKind::DataInlineDecl | SyntaxKind::FieldSymbolInlineDecl => self
+                .collector
+                .file
+                .children(node)
+                .find(|&child| self.collector.file.kind(child) == SyntaxKind::DataDeclName)
+                .and_then(|name_node| self.collector.node_name(name_node))
+                .map(|(name, range)| FieldAccess {
+                    scope,
+                    base_namespace: Namespace::Value,
+                    base_name: name,
+                    base_range: range,
+                    field_path: Vec::new(),
+                    in_type_position: false,
+                }),
+            _ => self.collector.value_access_from_node(node, scope),
+        }
     }
 
     fn collect_loop_target_node(
@@ -724,6 +748,7 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
                     scope,
                     base_namespace: Namespace::Value,
                     base_name: Arc::clone(&itab_base),
+                    base_range: self.collector.file.range(expr),
                     field_path,
                     in_type_position: false,
                 });

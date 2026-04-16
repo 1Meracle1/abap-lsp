@@ -6,8 +6,9 @@ use abap_ast::ast::{AstNode, DataDeclName};
 use abap_lexer::TextRange;
 
 use crate::def_map::{
-    FieldAccess, FieldAccessSegment, FieldTypeRefData, NamedArgumentSection, NamedArgumentTarget,
-    ReferenceKind, SymbolKind,
+    FieldAccess, FieldAccessSegment, FieldSymbolStateCheckData, FieldSymbolStateCheckKind,
+    FieldTypeRefData, NamedArgumentSection, NamedArgumentTarget, ReferenceKind, SymbolKind,
+    ValueStateCheckData, ValueStateCheckKind,
 };
 use crate::ids::{ScopeId, SymbolId};
 use crate::scope::Namespace;
@@ -125,6 +126,25 @@ impl<'a> Collector<'a> {
                         bracket_groups,
                     )) = self.consume_selector_access_from_infos(tokens, idx)
                     {
+                        let selector_end = field_path
+                            .last()
+                            .map(|segment| segment.range.end)
+                            .unwrap_or(base_range.end);
+                        if namespace == Namespace::Value
+                            && field_path.len() == 1
+                            && !field_path[0].is_deref()
+                            && let Some(kind) =
+                                self.selector_value_state_check_kind(tokens, next_idx)
+                        {
+                            self.add_value_state_check(ValueStateCheckData {
+                                scope,
+                                range: base_range.start..selector_end,
+                                symbol_name: Arc::clone(&base_name),
+                                symbol_range: base_range.clone(),
+                                field_name: Some(Arc::clone(&field_path[0].name)),
+                                kind,
+                            });
+                        }
                         for (group_start, group_end, is_legacy_table_body) in bracket_groups {
                             // Distinguish legacy whole-table `itab[]` from table expressions
                             // such as `itab[ 1 ]` / `itab[ key = ... ]`. Only the latter
@@ -157,6 +177,7 @@ impl<'a> Collector<'a> {
                                 scope,
                                 base_namespace: namespace,
                                 base_name: Arc::clone(&base_name),
+                                base_range: base_range.clone(),
                                 field_path,
                                 in_type_position: false,
                             });
@@ -193,6 +214,25 @@ impl<'a> Collector<'a> {
                         idx,
                         allow_leading_value_ident,
                     ) {
+                        if let Some(kind) = self.field_symbol_state_check_kind(tokens, idx) {
+                            self.add_field_symbol_state_check(FieldSymbolStateCheckData {
+                                scope,
+                                range: token.range.clone(),
+                                symbol_name: Self::lower_arc(text),
+                                symbol_range: token.range.clone(),
+                                kind,
+                            });
+                        }
+                        if let Some(kind) = self.value_state_check_kind(tokens, idx) {
+                            self.add_value_state_check(ValueStateCheckData {
+                                scope,
+                                range: token.range.clone(),
+                                symbol_name: Self::lower_arc(text),
+                                symbol_range: token.range.clone(),
+                                field_name: None,
+                                kind,
+                            });
+                        }
                         self.add_reference(
                             scope,
                             Self::lower_arc(text),
@@ -253,6 +293,89 @@ impl<'a> Collector<'a> {
                 | "VALUE"
                 | "CAST"
         )
+    }
+
+    fn field_symbol_state_check_kind(
+        &self,
+        tokens: &[SyntaxTokenInfo],
+        idx: usize,
+    ) -> Option<FieldSymbolStateCheckKind> {
+        let token = tokens.get(idx)?;
+        if !Self::is_field_symbol_name(token.text.as_ref()) {
+            return None;
+        }
+        let next = tokens.get(idx + 1)?;
+        if !next.text.eq_ignore_ascii_case("is") {
+            return None;
+        }
+        let third = tokens.get(idx + 2)?;
+        if third.text.eq_ignore_ascii_case("assigned") {
+            return Some(FieldSymbolStateCheckKind::IsAssigned);
+        }
+        if third.text.eq_ignore_ascii_case("not")
+            && tokens
+                .get(idx + 3)
+                .is_some_and(|token| token.text.eq_ignore_ascii_case("assigned"))
+        {
+            return Some(FieldSymbolStateCheckKind::IsNotAssigned);
+        }
+        None
+    }
+
+    fn value_state_check_kind(
+        &self,
+        tokens: &[SyntaxTokenInfo],
+        idx: usize,
+    ) -> Option<ValueStateCheckKind> {
+        let token = tokens.get(idx)?;
+        if Self::is_field_symbol_name(token.text.as_ref())
+            || !self.syntax_token_is_ident_like(token)
+        {
+            return None;
+        }
+        let next = tokens.get(idx + 1)?;
+        if !next.text.eq_ignore_ascii_case("is") {
+            return None;
+        }
+        let third = tokens.get(idx + 2)?;
+        if third.text.eq_ignore_ascii_case("initial") {
+            return Some(ValueStateCheckKind::IsInitial);
+        }
+        if third.text.eq_ignore_ascii_case("not")
+            && tokens
+                .get(idx + 3)
+                .is_some_and(|token| token.text.eq_ignore_ascii_case("initial"))
+        {
+            return Some(ValueStateCheckKind::IsNotInitial);
+        }
+        None
+    }
+
+    fn selector_value_state_check_kind(
+        &self,
+        tokens: &[SyntaxTokenInfo],
+        idx: usize,
+    ) -> Option<ValueStateCheckKind> {
+        let next = tokens.get(idx)?;
+        if !next.text.eq_ignore_ascii_case("is") {
+            return None;
+        }
+        let third = tokens.get(idx + 1)?;
+        if third.text.eq_ignore_ascii_case("initial") {
+            return Some(ValueStateCheckKind::IsInitial);
+        }
+        if third.text.eq_ignore_ascii_case("not")
+            && tokens
+                .get(idx + 2)
+                .is_some_and(|token| token.text.eq_ignore_ascii_case("initial"))
+        {
+            return Some(ValueStateCheckKind::IsNotInitial);
+        }
+        None
+    }
+
+    fn is_field_symbol_name(name: &str) -> bool {
+        name.starts_with('<') && name.ends_with('>')
     }
 
     fn collect_constructor_expression_infos(

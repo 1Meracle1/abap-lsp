@@ -40,7 +40,13 @@ pub(crate) fn infer_semantic_facts(units: &mut [UnitAnalysis]) {
         value_flow_edges.extend(
             unit.value_flow_edges
                 .iter()
-                .filter(|edge| edge.kind == ValueFlowKind::FieldSymbolAssignment)
+                .filter(|edge| {
+                    matches!(
+                        edge.kind,
+                        ValueFlowKind::FieldSymbolAssignment
+                            | ValueFlowKind::ConditionalFieldSymbolAssignment
+                    )
+                })
                 .cloned(),
         );
         unit.value_flow_edges = value_flow_edges;

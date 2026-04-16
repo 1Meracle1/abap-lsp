@@ -1359,6 +1359,8 @@ fn semantic_diagnostic_severity(kind: DiagnosticKind) -> DiagnosticSeverity {
         }
         DiagnosticKind::IncompatibleAssignmentType
         | DiagnosticKind::IncompatibleArgumentType
+        | DiagnosticKind::UseBeforeDefiniteAssignment
+        | DiagnosticKind::PossiblyUnboundFieldSymbol
         | DiagnosticKind::UnreachableCode => DiagnosticSeverity::WARNING,
         DiagnosticKind::UnverifiedOpenSqlSource => DiagnosticSeverity::ERROR,
         DiagnosticKind::UnresolvedReference

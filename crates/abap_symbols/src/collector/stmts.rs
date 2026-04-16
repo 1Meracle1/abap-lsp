@@ -99,6 +99,91 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                 .all(|(token, keyword)| token.text.eq_ignore_ascii_case(keyword))
     }
 
+    fn is_field_symbol_name(name: &str) -> bool {
+        name.starts_with('<') && name.ends_with('>')
+    }
+
+    fn direct_field_symbol_target(
+        &self,
+        node: NodeId,
+        scope: ScopeId,
+    ) -> Option<(Arc<str>, abap_lexer::TextRange)> {
+        let access = self.collector.value_access_from_node(node, scope)?;
+        if access.base_namespace != Namespace::Value
+            || !access.field_path.is_empty()
+            || !Self::is_field_symbol_name(access.base_name.as_ref())
+        {
+            return None;
+        }
+        Some((
+            Arc::clone(&access.base_name),
+            self.collector.file.range(node),
+        ))
+    }
+
+    fn emit_field_symbol_binding_edge(
+        &mut self,
+        scope: ScopeId,
+        kind: ValueFlowKind,
+        source_expr: Option<NodeId>,
+        structure: Option<crate::ids::StructureId>,
+        declared_type: Option<FieldTypeRefData>,
+        target_name: Arc<str>,
+        target_range: abap_lexer::TextRange,
+    ) {
+        let source_range = source_expr
+            .map(|expr| self.collector.file.range(expr))
+            .unwrap_or_else(|| target_range.clone());
+        let source_type = TypeFactData {
+            structure,
+            declared_type: declared_type.clone(),
+            type_clause_display: None,
+            table_line: None,
+        };
+        self.collector.emit_value_flow_edge(ValueFlowEdgeData {
+            scope,
+            kind,
+            source_range,
+            source_type: source_type.clone(),
+            target: ValueFlowTargetData::FieldSymbol {
+                range: target_range,
+                name: Some(target_name),
+            },
+            target_type: source_type,
+        });
+    }
+
+    fn assign_keyword_binding_kind(
+        &self,
+        node: NodeId,
+        scope: ScopeId,
+        source_expr: Option<NodeId>,
+    ) -> ValueFlowKind {
+        let is_component_assign = self.collector.file.children(node).any(|child| {
+            self.collector.file.kind(child) == SyntaxKind::Token
+                && self
+                    .collector
+                    .syntax_token_nodes(child)
+                    .into_iter()
+                    .next()
+                    .is_some_and(|token| token.text.eq_ignore_ascii_case("component"))
+        });
+        if is_component_assign {
+            return ValueFlowKind::ConditionalFieldSymbolAssignment;
+        }
+        let Some(source_expr) = source_expr else {
+            return ValueFlowKind::ConditionalFieldSymbolAssignment;
+        };
+        let Some(access) = self.collector.value_access_from_node(source_expr, scope) else {
+            return ValueFlowKind::ConditionalFieldSymbolAssignment;
+        };
+        if access.base_namespace == Namespace::Value && access.field_path.is_empty() {
+            ValueFlowKind::FieldSymbolAssignment
+        } else {
+            ValueFlowKind::ConditionalFieldSymbolAssignment
+        }
+    }
+
     fn collect_log_point_stmt_infos(&mut self, tokens: &[SyntaxTokenInfo], scope: ScopeId) -> bool {
         if tokens.len() < 4
             || !tokens[0].text.eq_ignore_ascii_case("log")
@@ -429,9 +514,17 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             return;
         }
 
+        let source_expr = source_expr.or(stmt_source_expr);
+        if let Some(source_expr) = source_expr {
+            self.record_routine_site(
+                scope,
+                self.collector.file.range(source_expr),
+                RoutineSiteKind::Delete,
+            );
+        }
+
         self.collector.walk_children(node, scope);
 
-        let source_expr = source_expr.or(stmt_source_expr);
         let where_expr = where_expr.or(stmt_where_expr);
 
         let Some(source_expr) = source_expr else {
@@ -487,6 +580,7 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                 .collect();
             let mut source_expr = None;
             let mut target_kind = None;
+            let mut named_field_symbol_target = None;
             for child in self.collector.file.children(node) {
                 match self.collector.file.kind(child) {
                     SyntaxKind::Token => {
@@ -504,6 +598,11 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                     _ => {
                         if source_expr.is_none() {
                             source_expr = Some(child);
+                        } else if target_kind == Some("assigning")
+                            && named_field_symbol_target.is_none()
+                            && let Some(target) = self.direct_field_symbol_target(child, scope)
+                        {
+                            named_field_symbol_target = Some(target);
                         }
                         self.collector.walk_node(child, scope);
                     }
@@ -541,8 +640,22 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                 }
             }
 
+            if let Some(source_expr) = source_expr {
+                self.record_routine_site(
+                    scope,
+                    self.collector.file.range(source_expr),
+                    RoutineSiteKind::ReadTable,
+                );
+            }
+
             if target_kind == Some("assigning") {
                 for target in field_symbol_targets {
+                    let target_name = self
+                        .collector
+                        .file
+                        .children(target)
+                        .find(|&child| self.collector.file.kind(child) == SyntaxKind::DataDeclName)
+                        .and_then(|child| self.collector.node_name(child));
                     self.collector
                         .decl_lowering()
                         .declare_inline_field_symbol_decl(
@@ -551,6 +664,28 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                             inferred_metadata.0,
                             inferred_metadata.1.clone(),
                         );
+                    if let Some((target_name, target_range)) = target_name {
+                        self.emit_field_symbol_binding_edge(
+                            scope,
+                            ValueFlowKind::ConditionalFieldSymbolAssignment,
+                            source_expr,
+                            inferred_metadata.0,
+                            inferred_metadata.1.clone(),
+                            target_name,
+                            target_range,
+                        );
+                    }
+                }
+                if let Some((target_name, target_range)) = named_field_symbol_target {
+                    self.emit_field_symbol_binding_edge(
+                        scope,
+                        ValueFlowKind::ConditionalFieldSymbolAssignment,
+                        source_expr,
+                        inferred_metadata.0,
+                        inferred_metadata.1.clone(),
+                        target_name,
+                        target_range,
+                    );
                 }
             }
             return;
@@ -894,6 +1029,7 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                     scope,
                     base_namespace: Namespace::Type,
                     base_name: Arc::clone(&interface_name),
+                    base_range: self.collector.file.range(type_ref_id),
                     field_path: vec![crate::FieldAccessSegment {
                         name: Arc::clone(&target_member_name),
                         range: target_member_range.clone(),
@@ -918,7 +1054,6 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
     }
 
     pub(super) fn collect_clear_stmt(&mut self, node: NodeId, scope: ScopeId) {
-        self.record_unknown_effect(node, scope);
         if let Some(stmt) = ClearStmt::cast(self.collector.syntax(node)) {
             let operands: Vec<_> = stmt
                 .operands()
@@ -926,6 +1061,11 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                 .map(|operand| operand.id())
                 .collect();
             for operand in operands {
+                self.record_routine_site(
+                    scope,
+                    self.collector.file.range(operand),
+                    RoutineSiteKind::Clear,
+                );
                 self.collector.walk_node(operand, scope);
             }
         }
@@ -1110,6 +1250,7 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                 scope,
                 base_namespace: Namespace::Type,
                 base_name: Arc::clone(&interface_name),
+                base_range: interface_tok.range.clone(),
                 field_path: vec![crate::FieldAccessSegment {
                     name: Arc::clone(&target_member_name),
                     range: member_tok.range.clone(),
@@ -1589,6 +1730,7 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                     scope,
                     base_namespace: namespace,
                     base_name: Arc::clone(&base_name),
+                    base_range: base_range.clone(),
                     field_path,
                     in_type_position: false,
                 });
@@ -1634,6 +1776,7 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
     pub(super) fn collect_assign_keyword_stmt(&mut self, node: NodeId, scope: ScopeId) {
         let mut source_expr = None;
         let mut inline_targets = Vec::new();
+        let mut named_target = None;
         for child in self.collector.file.children(node) {
             match self.collector.file.kind(child) {
                 SyntaxKind::Token => {}
@@ -1645,12 +1788,13 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                     self.collector.expr_lowering().collect_expr(expr, scope);
                 }
                 SyntaxKind::FieldSymbolInlineDecl => inline_targets.push(child),
-                _ => self.collector.walk_node(child, scope),
+                _ => {
+                    if named_target.is_none() {
+                        named_target = self.direct_field_symbol_target(child, scope);
+                    }
+                    self.collector.walk_node(child, scope);
+                }
             }
-        }
-
-        if inline_targets.is_empty() {
-            return;
         }
 
         let inferred_metadata = source_expr
@@ -1660,6 +1804,7 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                     .loop_source_line_metadata_from_node(expr, scope)
             })
             .unwrap_or((None, None));
+        let flow_kind = self.assign_keyword_binding_kind(node, scope, source_expr);
         for target in inline_targets {
             let target_name = self
                 .collector
@@ -1678,24 +1823,27 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             if let Some(source_expr) = source_expr
                 && let Some((target_name, target_range)) = target_name.clone()
             {
-                let source_type = TypeFactData {
-                    structure: inferred_metadata.0,
-                    declared_type: inferred_metadata.1.clone(),
-                    type_clause_display: None,
-                    table_line: None,
-                };
-                self.collector.emit_value_flow_edge(ValueFlowEdgeData {
+                self.emit_field_symbol_binding_edge(
                     scope,
-                    kind: ValueFlowKind::FieldSymbolAssignment,
-                    source_range: self.collector.file.range(source_expr),
-                    source_type: source_type.clone(),
-                    target: ValueFlowTargetData::FieldSymbol {
-                        range: target_range,
-                        name: Some(target_name),
-                    },
-                    target_type: source_type,
-                });
+                    flow_kind,
+                    Some(source_expr),
+                    inferred_metadata.0,
+                    inferred_metadata.1.clone(),
+                    target_name,
+                    target_range,
+                );
             }
+        }
+        if let Some((target_name, target_range)) = named_target {
+            self.emit_field_symbol_binding_edge(
+                scope,
+                flow_kind,
+                source_expr,
+                inferred_metadata.0,
+                inferred_metadata.1,
+                target_name,
+                target_range,
+            );
         }
     }
 

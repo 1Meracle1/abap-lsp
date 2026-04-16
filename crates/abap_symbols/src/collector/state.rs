@@ -5,9 +5,9 @@ use crate::builtins::{
     BUILTIN_STRUCTURES, BUILTIN_SYMBOLS, BuiltinTypeKind, builtin_structure_field_type,
 };
 use crate::def_map::{
-    Diagnostic, DiagnosticKind, FieldTypeRefData, ReferenceData, ReferenceKind,
-    RoutineControlRegionData, RoutineSiteData, StructureData, StructureFieldData, SymbolData,
-    SymbolKind,
+    Diagnostic, DiagnosticKind, FieldSymbolStateCheckData, FieldTypeRefData, ReferenceData,
+    ReferenceKind, RoutineControlRegionData, RoutineSiteData, StructureData, StructureFieldData,
+    SymbolData, SymbolKind, ValueStateCheckData,
 };
 use crate::ids::{ReferenceId, ScopeId, StructureId, SymbolId};
 use crate::scope::{Namespace, ScopeData, ScopeKind};
@@ -272,6 +272,14 @@ impl<'a> Collector<'a> {
 
     pub(super) fn add_routine_site(&mut self, site: RoutineSiteData) {
         self.routine_sites.push(site);
+    }
+
+    pub(super) fn add_field_symbol_state_check(&mut self, check: FieldSymbolStateCheckData) {
+        self.field_symbol_state_checks.push(check);
+    }
+
+    pub(super) fn add_value_state_check(&mut self, check: ValueStateCheckData) {
+        self.value_state_checks.push(check);
     }
 
     pub(super) fn add_routine_control_region(&mut self, region: RoutineControlRegionData) {

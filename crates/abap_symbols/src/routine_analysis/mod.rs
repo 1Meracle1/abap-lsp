@@ -21,11 +21,14 @@ pub use ir::{
 };
 pub use metrics::ProjectRoutineAnalysisMetrics;
 
+use crate::builtin_routine_spec;
 use crate::def_map::{
-    CaseRegionData, Diagnostic, DiagnosticKind, IfRegionData, LoopRegionData, Resolution,
-    RoutineControlRegionData, RoutineSiteKind, SymbolData, SymbolKind, TryRegionData, UnitAnalysis,
+    CaseRegionData, Diagnostic, DiagnosticKind, FieldSymbolStateCheckKind,
+    FunctionModuleParameterSection, IfRegionData, LoopRegionData, MethodParameterSection,
+    Resolution, RoutineControlRegionData, RoutineSiteKind, SymbolData, SymbolKind, TryRegionData,
+    UnitAnalysis, ValueFlowKind, ValueFlowTargetData, ValueStateCheckKind,
 };
-use crate::ids::{ScopeId, SymbolHandle, UnitId};
+use crate::ids::{ScopeId, StructureId, SymbolHandle, UnitId};
 use crate::project::ProjectAnalysis;
 use crate::scope::{Namespace, ScopeKind};
 
@@ -256,12 +259,44 @@ pub fn build_project_routine_analysis(project: &ProjectAnalysis) -> ProjectRouti
             }
         }
 
-        for site in &unit.routine_sites {
+        for (idx, edge) in unit.value_flow_edges.iter().enumerate() {
+            if !matches!(
+                edge.kind,
+                crate::ValueFlowKind::FieldSymbolAssignment
+                    | crate::ValueFlowKind::ConditionalFieldSymbolAssignment
+            ) {
+                continue;
+            }
+            let Some(routine_id) = scope_map.get(edge.scope.as_usize()).copied().flatten() else {
+                continue;
+            };
+            let target_range = match &edge.target {
+                crate::ValueFlowTargetData::FieldSymbol { range, .. } => range,
+                _ => continue,
+            };
+            let range = edge.source_range.start.min(target_range.start)
+                ..edge.source_range.end.max(target_range.end);
+            if let Some(routine) = out.routines.get_mut(routine_id.as_usize()) {
+                routine.ir.instructions.push(RoutineInstruction {
+                    id: RoutineInstrId(0),
+                    scope: edge.scope,
+                    range,
+                    site: RoutineInstructionSite::FieldSymbolBind { index: idx as u32 },
+                });
+            }
+        }
+
+        for (idx, site) in unit.routine_sites.iter().enumerate() {
             let Some(routine_id) = scope_map.get(site.scope.as_usize()).copied().flatten() else {
                 continue;
             };
             let instruction_site = match site.kind {
                 RoutineSiteKind::UnknownEffect => RoutineInstructionSite::UnknownEffect,
+                RoutineSiteKind::Clear => RoutineInstructionSite::Clear { index: idx as u32 },
+                RoutineSiteKind::Delete => RoutineInstructionSite::Delete { index: idx as u32 },
+                RoutineSiteKind::ReadTable => {
+                    RoutineInstructionSite::ReadTable { index: idx as u32 }
+                }
                 RoutineSiteKind::Return => RoutineInstructionSite::Terminator {
                     kind: RoutineTerminatorKind::Return,
                 },
@@ -384,9 +419,32 @@ pub fn build_project_routine_analysis(project: &ProjectAnalysis) -> ProjectRouti
         let Some(scope_map) = out.scope_to_routine.get(descriptor.unit.as_usize()) else {
             continue;
         };
-        let (inputs, result) = build_routine_dataflow(unit, scope_map, &out.routines[routine_id]);
+        let (inputs, result, diagnostics) =
+            build_routine_dataflow(project, unit, scope_map, &out.routines[routine_id]);
         out.routines[routine_id].dataflow_inputs = inputs;
         out.routines[routine_id].dataflow_result = result;
+        out.routines[routine_id]
+            .diagnostics
+            .extend(diagnostics.iter().cloned());
+        out.routines[routine_id].diagnostics.sort_by(|left, right| {
+            left.range
+                .start
+                .cmp(&right.range.start)
+                .then(left.range.end.cmp(&right.range.end))
+                .then(left.message.cmp(&right.message))
+        });
+        out.routines[routine_id].diagnostics.dedup();
+        out.unit_diagnostics[descriptor.unit.as_usize()].extend(diagnostics);
+    }
+    for diagnostics in &mut out.unit_diagnostics {
+        diagnostics.sort_by(|left, right| {
+            left.range
+                .start
+                .cmp(&right.range.start)
+                .then(left.range.end.cmp(&right.range.end))
+                .then(left.message.cmp(&right.message))
+        });
+        diagnostics.dedup();
     }
     out.metrics.dataflow_micros = dataflow_timer.elapsed().as_micros();
 
@@ -412,8 +470,130 @@ pub fn build_project_routine_analysis(project: &ProjectAnalysis) -> ProjectRouti
 
 #[derive(Debug, Clone)]
 struct ReferenceUse {
+    reference: crate::ReferenceId,
     range: TextRange,
     value: DataflowValueId,
+}
+
+#[derive(Debug, Clone)]
+struct ReadOccurrence {
+    reference: crate::ReferenceId,
+    range: TextRange,
+    value: DataflowValueId,
+}
+
+#[derive(Debug, Clone)]
+struct InstructionTransfer {
+    reads: Vec<ReadOccurrence>,
+    writes: Vec<DataflowValueId>,
+    assigned_writes: Vec<DataflowValueId>,
+    structure_field_writes: Vec<StructureFieldWriteTransfer>,
+    non_initial_kills: Vec<DataflowValueId>,
+    field_symbol_binding: Vec<FieldSymbolBindingTransfer>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct StructureFieldWriteTransfer {
+    value: DataflowValueId,
+    mask: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StructureFieldRead {
+    value: DataflowValueId,
+    mask: u64,
+    range: TextRange,
+}
+
+#[derive(Debug, Clone)]
+struct StructureAssignmentTracker {
+    fields_by_name: HashMap<Arc<str>, u64>,
+    full_mask: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SelectorStructureWrite {
+    base_value: DataflowValueId,
+    field_mask: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FieldSymbolBindingTransfer {
+    Set(DataflowValueId),
+    Copy {
+        target: DataflowValueId,
+        source: DataflowValueId,
+    },
+    Clear(DataflowValueId),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CallArgumentEffect {
+    Unknown,
+    InputOnly,
+    OutputOnly,
+    InOut,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DenseBitSet {
+    words: Vec<u64>,
+}
+
+impl DenseBitSet {
+    fn new(bit_count: usize) -> Self {
+        Self {
+            words: vec![0; bit_count.div_ceil(64)],
+        }
+    }
+
+    fn filled(bit_count: usize) -> Self {
+        if bit_count == 0 {
+            return Self { words: Vec::new() };
+        }
+        let word_count = bit_count.div_ceil(64);
+        let mut words = vec![u64::MAX; word_count];
+        let trailing_bits = bit_count % 64;
+        if trailing_bits != 0
+            && let Some(last) = words.last_mut()
+        {
+            *last = (1u64 << trailing_bits) - 1;
+        }
+        Self { words }
+    }
+
+    fn insert(&mut self, value: DataflowValueId) {
+        let idx = value.as_usize();
+        let word = idx / 64;
+        let bit = idx % 64;
+        if let Some(slot) = self.words.get_mut(word) {
+            *slot |= 1u64 << bit;
+        }
+    }
+
+    fn remove(&mut self, value: DataflowValueId) {
+        let idx = value.as_usize();
+        let word = idx / 64;
+        let bit = idx % 64;
+        if let Some(slot) = self.words.get_mut(word) {
+            *slot &= !(1u64 << bit);
+        }
+    }
+
+    fn contains(&self, value: DataflowValueId) -> bool {
+        let idx = value.as_usize();
+        let word = idx / 64;
+        let bit = idx % 64;
+        self.words
+            .get(word)
+            .is_some_and(|slot| (*slot & (1u64 << bit)) != 0)
+    }
+
+    fn union_from(&mut self, other: &Self) {
+        for (slot, other_slot) in self.words.iter_mut().zip(&other.words) {
+            *slot |= *other_slot;
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -643,6 +823,10 @@ impl<'a> CfgBuilder<'a> {
                 | RoutineInstructionSite::Call { .. }
                 | RoutineInstructionSite::Perform { .. }
                 | RoutineInstructionSite::SqlQuery { .. }
+                | RoutineInstructionSite::Clear { .. }
+                | RoutineInstructionSite::Delete { .. }
+                | RoutineInstructionSite::ReadTable { .. }
+                | RoutineInstructionSite::FieldSymbolBind { .. }
                 | RoutineInstructionSite::ValueRead { .. }
                 | RoutineInstructionSite::UnknownEffect => {
                     self.append_instruction(state.block, instruction_id);
@@ -1099,10 +1283,16 @@ fn unreachable_diagnostics_for_cfg(routine: &RoutineAnalysis, cfg: &RoutineCfg) 
 }
 
 fn build_routine_dataflow(
+    project: &ProjectAnalysis,
     unit: &UnitAnalysis,
     scope_to_routine: &[Option<RoutineId>],
     routine: &RoutineAnalysis,
-) -> (RoutineDataflowInputs, RoutineDataflowResult) {
+) -> (
+    RoutineDataflowInputs,
+    RoutineDataflowResult,
+    Vec<Diagnostic>,
+) {
+    let routine_index = RoutineBuildIndex::new(unit, scope_to_routine, routine);
     let mut tracked_symbols: Vec<&SymbolData> = unit
         .symbols
         .iter()
@@ -1126,6 +1316,7 @@ fn build_routine_dataflow(
 
     let mut values = Vec::with_capacity(tracked_symbols.len());
     let mut value_ids_by_symbol = HashMap::with_capacity(tracked_symbols.len());
+    let mut structure_assignment_trackers = Vec::with_capacity(tracked_symbols.len());
     for symbol in tracked_symbols {
         let handle = SymbolHandle {
             unit: unit.unit_id,
@@ -1133,6 +1324,8 @@ fn build_routine_dataflow(
         };
         let value_id = DataflowValueId(values.len() as u32);
         value_ids_by_symbol.insert(handle, value_id);
+        structure_assignment_trackers
+            .push(build_structure_assignment_tracker(unit, symbol.structure));
         values.push(RoutineDataflowValue {
             id: value_id,
             symbol: handle,
@@ -1148,6 +1341,7 @@ fn build_routine_dataflow(
                 resolved_value_id_for_reference(unit, reference, &value_ids_by_symbol)
         {
             reference_uses.push(ReferenceUse {
+                reference,
                 range: instruction.range.clone(),
                 value,
             });
@@ -1158,59 +1352,477 @@ fn build_routine_dataflow(
             .start
             .cmp(&right.range.start)
             .then(left.range.end.cmp(&right.range.end))
+            .then(left.reference.0.cmp(&right.reference.0))
             .then(left.value.as_usize().cmp(&right.value.as_usize()))
     });
 
-    let mut instruction_summaries = Vec::with_capacity(routine.ir.instructions.len());
+    let call_argument_effects = build_call_argument_effects(project, unit);
+    let safe_field_symbol_checks =
+        resolve_safe_field_symbol_checks(unit, &reference_uses, &value_ids_by_symbol);
+    let safe_value_state_checks =
+        resolve_safe_value_state_checks(unit, &reference_uses, &value_ids_by_symbol);
+    let safe_loop_where_field_refs =
+        resolve_safe_loop_where_field_refs(unit, &reference_uses, &values);
+    let is_not_initial_scope_refinements = resolve_is_not_initial_scope_refinements(
+        unit,
+        &reference_uses,
+        &value_ids_by_symbol,
+        values.len(),
+    );
+    let is_not_initial_field_scope_refinements = resolve_is_not_initial_field_scope_refinements(
+        unit,
+        &reference_uses,
+        &value_ids_by_symbol,
+        &structure_assignment_trackers,
+        &values,
+    );
+    let structure_field_reads = resolve_structure_field_reads(
+        unit,
+        &reference_uses,
+        &structure_assignment_trackers,
+        &values,
+    );
+    let block_non_initial_entry_refinements = block_non_initial_entry_refinements(
+        unit,
+        routine,
+        &is_not_initial_scope_refinements,
+        values.len(),
+    );
+    let block_non_initial_field_entry_refinements = block_non_initial_field_entry_refinements(
+        unit,
+        routine,
+        &is_not_initial_field_scope_refinements,
+        values.len(),
+    );
+    let mut safe_read_refs = safe_field_symbol_checks.clone();
+    safe_read_refs.extend(safe_value_state_checks);
+    safe_read_refs.extend(safe_loop_where_field_refs);
+    let mut suppressed_refs = std::collections::HashSet::new();
     for instruction in &routine.ir.instructions {
-        let mut reads = Vec::new();
-        let mut writes = Vec::new();
         match instruction.site {
-            RoutineInstructionSite::ValueRead { reference } => {
-                if let Some(value) =
-                    resolved_value_id_for_reference(unit, reference, &value_ids_by_symbol)
-                {
-                    reads.push(value);
-                }
-            }
             RoutineInstructionSite::Assignment { index } => {
                 if let Some(assignment) = unit.assignment_sites.get(index as usize) {
-                    writes = value_ids_in_range(&reference_uses, &assignment.lhs_range);
-                    reads = value_ids_in_range(&reference_uses, &assignment.rhs_range);
+                    suppressed_refs.extend(reference_ids_in_range(
+                        &reference_uses,
+                        &assignment.lhs_range,
+                    ));
+                    suppressed_refs.extend(reference_ids_in_range(
+                        &reference_uses,
+                        &assignment.rhs_range,
+                    ));
                 }
             }
-            RoutineInstructionSite::Call { .. }
-            | RoutineInstructionSite::Perform { .. }
-            | RoutineInstructionSite::SqlQuery { .. }
+            RoutineInstructionSite::Call { index } => {
+                if let Some(call_site) = unit.call_sites.get(index as usize) {
+                    suppressed_refs
+                        .extend(reference_ids_in_range(&reference_uses, &call_site.range));
+                }
+            }
+            RoutineInstructionSite::Clear { index } => {
+                if let Some(site) = unit.routine_sites.get(index as usize) {
+                    suppressed_refs.extend(reference_ids_in_range(&reference_uses, &site.range));
+                }
+            }
+            RoutineInstructionSite::Delete { index } => {
+                if let Some(site) = unit.routine_sites.get(index as usize) {
+                    suppressed_refs.extend(reference_ids_in_range(&reference_uses, &site.range));
+                }
+            }
+            RoutineInstructionSite::ReadTable { index } => {
+                if let Some(site) = unit.routine_sites.get(index as usize) {
+                    suppressed_refs.extend(reference_ids_in_range(&reference_uses, &site.range));
+                }
+            }
+            RoutineInstructionSite::Perform { index } => {
+                if let Some(perform_call) = unit.perform_calls.get(index as usize) {
+                    suppressed_refs
+                        .extend(reference_ids_in_range(&reference_uses, &perform_call.range));
+                }
+            }
+            RoutineInstructionSite::FieldSymbolBind { index } => {
+                if let Some(edge) = unit.value_flow_edges.get(index as usize) {
+                    suppressed_refs
+                        .extend(reference_ids_in_range(&reference_uses, &edge.source_range));
+                    if let ValueFlowTargetData::FieldSymbol { range, .. } = &edge.target {
+                        suppressed_refs.extend(reference_ids_in_range(&reference_uses, range));
+                    }
+                }
+            }
+            RoutineInstructionSite::SqlQuery { .. }
+            | RoutineInstructionSite::ValueRead { .. }
             | RoutineInstructionSite::UnknownEffect
             | RoutineInstructionSite::Branch { .. }
             | RoutineInstructionSite::LoopHeader { .. }
             | RoutineInstructionSite::Terminator { .. } => {}
         }
-        instruction_summaries.push(InstructionDataflowSummary {
-            instruction: instruction.id,
-            reads,
-            writes,
-        });
     }
 
-    let local_writes: Vec<Vec<DataflowValueId>> = routine
+    let mut instruction_summaries = Vec::with_capacity(routine.ir.instructions.len());
+    let mut instruction_transfers = Vec::with_capacity(routine.ir.instructions.len());
+    let mut candidate_field_symbols = DenseBitSet::new(values.len());
+    for instruction in &routine.ir.instructions {
+        let mut transfer = InstructionTransfer {
+            reads: Vec::new(),
+            writes: Vec::new(),
+            assigned_writes: Vec::new(),
+            structure_field_writes: Vec::new(),
+            non_initial_kills: Vec::new(),
+            field_symbol_binding: Vec::new(),
+        };
+        match instruction.site {
+            RoutineInstructionSite::ValueRead { reference } => {
+                if !suppressed_refs.contains(&reference)
+                    && !safe_read_refs.contains(&reference)
+                    && let Some(value) =
+                        resolved_value_id_for_reference(unit, reference, &value_ids_by_symbol)
+                {
+                    transfer.reads.push(ReadOccurrence {
+                        reference,
+                        range: instruction.range.clone(),
+                        value,
+                    });
+                }
+            }
+            RoutineInstructionSite::Assignment { index } => {
+                if let Some(assignment) = unit.assignment_sites.get(index as usize) {
+                    transfer.reads.extend(read_occurrences_in_range(
+                        &reference_uses,
+                        &assignment.lhs_range,
+                        &safe_read_refs,
+                    ));
+                    transfer.reads.extend(read_occurrences_in_range(
+                        &reference_uses,
+                        &assignment.rhs_range,
+                        &safe_read_refs,
+                    ));
+                    if let Some(selector_write) = selector_structure_write_for_assignment(
+                        unit,
+                        assignment,
+                        &reference_uses,
+                        &structure_assignment_trackers,
+                    ) {
+                        transfer.reads.retain(|read| {
+                            !(read.value == selector_write.base_value
+                                && read.range.start >= assignment.lhs_range.start
+                                && read.range.end <= assignment.lhs_range.end)
+                        });
+                        transfer.writes.push(selector_write.base_value);
+                        transfer.non_initial_kills.push(selector_write.base_value);
+                        if let Some(mask) = selector_write.field_mask {
+                            transfer
+                                .structure_field_writes
+                                .push(StructureFieldWriteTransfer {
+                                    value: selector_write.base_value,
+                                    mask,
+                                });
+                        }
+                    }
+                    if let Some(write_value) = direct_write_value_id_for_assignment(
+                        unit,
+                        assignment,
+                        &reference_uses,
+                        &value_ids_by_symbol,
+                        &values,
+                    ) {
+                        transfer.reads.retain(|read| {
+                            !(read.range == assignment.lhs_range && read.value == write_value)
+                        });
+                        transfer.writes.push(write_value);
+                        transfer.assigned_writes.push(write_value);
+                        transfer.non_initial_kills.push(write_value);
+                    }
+                }
+            }
+            RoutineInstructionSite::Call { index } => {
+                if let Some(call_site) = unit.call_sites.get(index as usize) {
+                    if !is_safe_builtin_call(call_site) {
+                        transfer.reads.extend(read_occurrences_in_range(
+                            &reference_uses,
+                            &call_site.range,
+                            &safe_read_refs,
+                        ));
+                    }
+                    for argument in &call_site.arguments {
+                        let effect = call_argument_effects
+                            .get(&(
+                                call_site.range.start,
+                                call_site.range.end,
+                                argument.range.start,
+                                argument.range.end,
+                            ))
+                            .copied()
+                            .unwrap_or(CallArgumentEffect::Unknown);
+                        if effect == CallArgumentEffect::OutputOnly {
+                            transfer.reads.retain(|read| {
+                                read.range.start < argument.range.start
+                                    || read.range.end > argument.range.end
+                            });
+                        }
+                        if matches!(
+                            effect,
+                            CallArgumentEffect::OutputOnly
+                                | CallArgumentEffect::InOut
+                                | CallArgumentEffect::Unknown
+                        ) {
+                            transfer.non_initial_kills.extend(
+                                direct_non_field_symbol_values_in_range(
+                                    &reference_uses,
+                                    &argument.range,
+                                    &values,
+                                ),
+                            );
+                        }
+                        if matches!(
+                            effect,
+                            CallArgumentEffect::InOut | CallArgumentEffect::Unknown
+                        ) {
+                            for value in direct_field_symbol_values_in_range(
+                                &reference_uses,
+                                &argument.range,
+                                &values,
+                            ) {
+                                transfer
+                                    .field_symbol_binding
+                                    .push(FieldSymbolBindingTransfer::Clear(value));
+                            }
+                        }
+                    }
+                }
+            }
+            RoutineInstructionSite::Clear { index } => {
+                if let Some(site) = unit.routine_sites.get(index as usize)
+                    && let Some(write_value) =
+                        direct_write_value_id_for_clear(&reference_uses, &site.range, &values)
+                {
+                    transfer.writes.push(write_value);
+                    transfer.assigned_writes.push(write_value);
+                    transfer.non_initial_kills.push(write_value);
+                }
+            }
+            RoutineInstructionSite::Delete { .. } | RoutineInstructionSite::ReadTable { .. } => {}
+            RoutineInstructionSite::Perform { index } => {
+                if let Some(perform_call) = unit.perform_calls.get(index as usize) {
+                    transfer.reads.extend(read_occurrences_in_range(
+                        &reference_uses,
+                        &perform_call.range,
+                        &safe_read_refs,
+                    ));
+                    for argument in &perform_call.arguments {
+                        transfer
+                            .non_initial_kills
+                            .extend(direct_non_field_symbol_values_in_range(
+                                &reference_uses,
+                                &argument.range,
+                                &values,
+                            ));
+                        for value in direct_field_symbol_values_in_range(
+                            &reference_uses,
+                            &argument.range,
+                            &values,
+                        ) {
+                            transfer
+                                .field_symbol_binding
+                                .push(FieldSymbolBindingTransfer::Clear(value));
+                        }
+                    }
+                }
+            }
+            RoutineInstructionSite::FieldSymbolBind { index } => {
+                if let Some(edge) = unit.value_flow_edges.get(index as usize)
+                    && let Some(target_value) = resolve_field_symbol_target_value_id(
+                        unit,
+                        edge,
+                        &reference_uses,
+                        &value_ids_by_symbol,
+                        &values,
+                    )
+                {
+                    candidate_field_symbols.insert(target_value);
+                    transfer.writes.push(target_value);
+                    let direct_source =
+                        exact_reference_use_in_range(&reference_uses, &edge.source_range);
+                    match edge.kind {
+                        ValueFlowKind::FieldSymbolAssignment => {
+                            if let Some(source_use) = direct_source {
+                                if values[source_use.value.as_usize()].kind
+                                    == DataflowValueKind::FieldSymbol
+                                {
+                                    candidate_field_symbols.insert(source_use.value);
+                                    if !safe_read_refs.contains(&source_use.reference) {
+                                        transfer.reads.push(ReadOccurrence {
+                                            reference: source_use.reference,
+                                            range: source_use.range.clone(),
+                                            value: source_use.value,
+                                        });
+                                    }
+                                    transfer.field_symbol_binding.push(
+                                        FieldSymbolBindingTransfer::Copy {
+                                            target: target_value,
+                                            source: source_use.value,
+                                        },
+                                    );
+                                } else {
+                                    transfer
+                                        .field_symbol_binding
+                                        .push(FieldSymbolBindingTransfer::Set(target_value));
+                                }
+                            } else {
+                                transfer.reads.extend(read_occurrences_in_range(
+                                    &reference_uses,
+                                    &edge.source_range,
+                                    &safe_read_refs,
+                                ));
+                                transfer
+                                    .field_symbol_binding
+                                    .push(FieldSymbolBindingTransfer::Set(target_value));
+                            }
+                        }
+                        ValueFlowKind::ConditionalFieldSymbolAssignment => {
+                            transfer.reads.extend(read_occurrences_in_range(
+                                &reference_uses,
+                                &edge.source_range,
+                                &safe_read_refs,
+                            ));
+                            transfer
+                                .field_symbol_binding
+                                .push(FieldSymbolBindingTransfer::Clear(target_value));
+                        }
+                        ValueFlowKind::Assignment | ValueFlowKind::CallArgument => {}
+                    }
+                }
+            }
+            RoutineInstructionSite::UnknownEffect => {
+                transfer
+                    .non_initial_kills
+                    .extend(direct_non_field_symbol_values_in_range(
+                        &reference_uses,
+                        &instruction.range,
+                        &values,
+                    ));
+            }
+            RoutineInstructionSite::LoopHeader { kind } => {
+                if let Some(region) = routine_index.loop_region(instruction, kind)
+                    && let Some(target_access) = region.target_access.as_ref()
+                    && let Some(target_value) = resolve_loop_target_value_id(
+                        unit,
+                        target_access,
+                        &reference_uses,
+                        &value_ids_by_symbol,
+                    )
+                {
+                    transfer.writes.push(target_value);
+                    transfer.non_initial_kills.push(target_value);
+                    match values[target_value.as_usize()].kind {
+                        DataflowValueKind::FieldSymbol => {
+                            candidate_field_symbols.insert(target_value);
+                            transfer
+                                .field_symbol_binding
+                                .push(FieldSymbolBindingTransfer::Set(target_value));
+                        }
+                        DataflowValueKind::Variable | DataflowValueKind::Parameter => {
+                            transfer.assigned_writes.push(target_value);
+                        }
+                        DataflowValueKind::Constant | DataflowValueKind::Other => {}
+                    }
+                }
+            }
+            RoutineInstructionSite::SqlQuery { .. }
+            | RoutineInstructionSite::Branch { .. }
+            | RoutineInstructionSite::Terminator { .. } => {}
+        }
+        instruction_summaries.push(InstructionDataflowSummary {
+            instruction: instruction.id,
+            reads: sorted_unique_value_ids(transfer.reads.iter().map(|read| read.value)),
+            writes: sorted_unique_value_ids(transfer.writes.iter().copied()),
+        });
+        instruction_transfers.push(transfer);
+    }
+
+    let mut entry_assigned = DenseBitSet::new(values.len());
+    let mut entry_structure_fields = vec![0u64; values.len()];
+    for value in &values {
+        if matches!(
+            value.kind,
+            DataflowValueKind::Parameter | DataflowValueKind::Constant
+        ) {
+            entry_assigned.insert(value.id);
+            if let Some(tracker) = structure_assignment_trackers[value.id.as_usize()].as_ref() {
+                entry_structure_fields[value.id.as_usize()] = tracker.full_mask;
+            }
+        }
+    }
+
+    let empty = DenseBitSet::new(values.len());
+    let top = DenseBitSet::filled(values.len());
+    let top_structure_fields = top_structure_field_masks(&structure_assignment_trackers);
+    let mut block_entry_assigned = vec![empty.clone(); routine.cfg.blocks.len()];
+    let mut block_exit_assigned = routine
         .cfg
         .blocks
         .iter()
         .map(|block| {
-            sorted_unique_value_ids(
-                block
-                    .instructions
-                    .iter()
-                    .filter_map(|instruction| instruction_summaries.get(instruction.as_usize()))
-                    .flat_map(|summary| summary.writes.iter().copied()),
-            )
+            if block.reachable && block.kind != RoutineBlockKind::Entry {
+                top.clone()
+            } else {
+                empty.clone()
+            }
         })
-        .collect();
-
-    let mut block_entry_values = vec![Vec::new(); routine.cfg.blocks.len()];
-    let mut block_exit_values = vec![Vec::new(); routine.cfg.blocks.len()];
+        .collect::<Vec<_>>();
+    let mut block_entry_structure_fields = vec![vec![0u64; values.len()]; routine.cfg.blocks.len()];
+    let mut block_exit_structure_fields = routine
+        .cfg
+        .blocks
+        .iter()
+        .map(|block| {
+            if block.reachable && block.kind != RoutineBlockKind::Entry {
+                top_structure_fields.clone()
+            } else {
+                vec![0u64; values.len()]
+            }
+        })
+        .collect::<Vec<_>>();
+    let mut block_entry_bound = vec![empty.clone(); routine.cfg.blocks.len()];
+    let mut block_exit_bound = routine
+        .cfg
+        .blocks
+        .iter()
+        .map(|block| {
+            if block.reachable && block.kind != RoutineBlockKind::Entry {
+                top.clone()
+            } else {
+                empty.clone()
+            }
+        })
+        .collect::<Vec<_>>();
+    let mut block_entry_maybe_written = vec![empty.clone(); routine.cfg.blocks.len()];
+    let mut block_exit_maybe_written = vec![empty.clone(); routine.cfg.blocks.len()];
+    let mut block_entry_non_initial = vec![empty.clone(); routine.cfg.blocks.len()];
+    let mut block_exit_non_initial = routine
+        .cfg
+        .blocks
+        .iter()
+        .map(|block| {
+            if block.reachable && block.kind != RoutineBlockKind::Entry {
+                top.clone()
+            } else {
+                empty.clone()
+            }
+        })
+        .collect::<Vec<_>>();
+    let mut block_entry_non_initial_fields =
+        vec![vec![0u64; values.len()]; routine.cfg.blocks.len()];
+    let mut block_exit_non_initial_fields = routine
+        .cfg
+        .blocks
+        .iter()
+        .map(|block| {
+            if block.reachable && block.kind != RoutineBlockKind::Entry {
+                top_structure_fields.clone()
+            } else {
+                vec![0u64; values.len()]
+            }
+        })
+        .collect::<Vec<_>>();
     let mut changed = true;
     let mut iterations = 0u32;
     while changed {
@@ -1218,37 +1830,220 @@ fn build_routine_dataflow(
         iterations += 1;
         for block in &routine.cfg.blocks {
             let block_idx = block.id.as_usize();
-            let next_entry = if block.kind == RoutineBlockKind::Entry || !block.reachable {
-                Vec::new()
+            let next_entry_assigned = if !block.reachable {
+                DenseBitSet::new(values.len())
+            } else if block.kind == RoutineBlockKind::Entry {
+                entry_assigned.clone()
             } else {
-                sorted_unique_value_ids(
-                    block
-                        .predecessors
-                        .iter()
-                        .filter_map(|predecessor| block_exit_values.get(predecessor.as_usize()))
-                        .flat_map(|values| values.iter().copied()),
+                intersect_predecessor_bits(&block.predecessors, &block_exit_assigned, values.len())
+            };
+            let next_entry_structure_fields = if !block.reachable {
+                vec![0u64; values.len()]
+            } else if block.kind == RoutineBlockKind::Entry {
+                entry_structure_fields.clone()
+            } else {
+                intersect_predecessor_structure_fields(
+                    &block.predecessors,
+                    &block_exit_structure_fields,
+                    values.len(),
                 )
             };
-            let next_exit = if !block.reachable {
-                Vec::new()
+            let next_entry_bound = if !block.reachable {
+                DenseBitSet::new(values.len())
+            } else if block.kind == RoutineBlockKind::Entry {
+                DenseBitSet::new(values.len())
             } else {
-                sorted_unique_value_ids(
-                    next_entry
-                        .iter()
-                        .copied()
-                        .chain(local_writes[block_idx].iter().copied()),
+                intersect_predecessor_bits(&block.predecessors, &block_exit_bound, values.len())
+            };
+            let next_entry_maybe_written = if !block.reachable {
+                DenseBitSet::new(values.len())
+            } else {
+                union_predecessor_bits(&block.predecessors, &block_exit_maybe_written, values.len())
+            };
+            let mut next_entry_non_initial = if !block.reachable {
+                DenseBitSet::new(values.len())
+            } else {
+                intersect_predecessor_bits(
+                    &block.predecessors,
+                    &block_exit_non_initial,
+                    values.len(),
                 )
             };
-            if block_entry_values[block_idx] != next_entry {
-                block_entry_values[block_idx] = next_entry;
+            next_entry_non_initial.union_from(&block_non_initial_entry_refinements[block_idx]);
+            let mut next_entry_non_initial_fields = if !block.reachable {
+                vec![0u64; values.len()]
+            } else {
+                intersect_predecessor_structure_fields(
+                    &block.predecessors,
+                    &block_exit_non_initial_fields,
+                    values.len(),
+                )
+            };
+            union_structure_field_masks(
+                &mut next_entry_non_initial_fields,
+                &block_non_initial_field_entry_refinements[block_idx],
+            );
+            let (
+                next_exit_assigned,
+                next_exit_structure_fields,
+                next_exit_bound,
+                next_exit_maybe_written,
+                next_exit_non_initial,
+                next_exit_non_initial_fields,
+            ) = apply_block_transfer(
+                block,
+                &instruction_transfers,
+                next_entry_assigned.clone(),
+                next_entry_structure_fields.clone(),
+                next_entry_bound.clone(),
+                next_entry_maybe_written.clone(),
+                next_entry_non_initial.clone(),
+                next_entry_non_initial_fields.clone(),
+                &structure_assignment_trackers,
+            );
+            if block_entry_assigned[block_idx] != next_entry_assigned {
+                block_entry_assigned[block_idx] = next_entry_assigned;
                 changed = true;
             }
-            if block_exit_values[block_idx] != next_exit {
-                block_exit_values[block_idx] = next_exit;
+            if block_entry_structure_fields[block_idx] != next_entry_structure_fields {
+                block_entry_structure_fields[block_idx] = next_entry_structure_fields;
+                changed = true;
+            }
+            if block_entry_bound[block_idx] != next_entry_bound {
+                block_entry_bound[block_idx] = next_entry_bound;
+                changed = true;
+            }
+            if block_entry_maybe_written[block_idx] != next_entry_maybe_written {
+                block_entry_maybe_written[block_idx] = next_entry_maybe_written;
+                changed = true;
+            }
+            if block_entry_non_initial[block_idx] != next_entry_non_initial {
+                block_entry_non_initial[block_idx] = next_entry_non_initial;
+                changed = true;
+            }
+            if block_entry_non_initial_fields[block_idx] != next_entry_non_initial_fields {
+                block_entry_non_initial_fields[block_idx] = next_entry_non_initial_fields;
+                changed = true;
+            }
+            if block_exit_assigned[block_idx] != next_exit_assigned {
+                block_exit_assigned[block_idx] = next_exit_assigned;
+                changed = true;
+            }
+            if block_exit_structure_fields[block_idx] != next_exit_structure_fields {
+                block_exit_structure_fields[block_idx] = next_exit_structure_fields;
+                changed = true;
+            }
+            if block_exit_bound[block_idx] != next_exit_bound {
+                block_exit_bound[block_idx] = next_exit_bound;
+                changed = true;
+            }
+            if block_exit_maybe_written[block_idx] != next_exit_maybe_written {
+                block_exit_maybe_written[block_idx] = next_exit_maybe_written;
+                changed = true;
+            }
+            if block_exit_non_initial[block_idx] != next_exit_non_initial {
+                block_exit_non_initial[block_idx] = next_exit_non_initial;
+                changed = true;
+            }
+            if block_exit_non_initial_fields[block_idx] != next_exit_non_initial_fields {
+                block_exit_non_initial_fields[block_idx] = next_exit_non_initial_fields;
                 changed = true;
             }
         }
     }
+
+    let mut diagnostics = Vec::new();
+    for block in &routine.cfg.blocks {
+        if !block.reachable {
+            continue;
+        }
+        let mut assigned = block_entry_assigned[block.id.as_usize()].clone();
+        let mut structure_fields = block_entry_structure_fields[block.id.as_usize()].clone();
+        let mut bound = block_entry_bound[block.id.as_usize()].clone();
+        let mut maybe_written = block_entry_maybe_written[block.id.as_usize()].clone();
+        let mut known_non_initial = block_entry_non_initial[block.id.as_usize()].clone();
+        let mut known_non_initial_fields =
+            block_entry_non_initial_fields[block.id.as_usize()].clone();
+        for instruction_id in &block.instructions {
+            let transfer = &instruction_transfers[instruction_id.as_usize()];
+            for read in &transfer.reads {
+                let value = &values[read.value.as_usize()];
+                match value.kind {
+                    DataflowValueKind::FieldSymbol => {
+                        if candidate_field_symbols.contains(read.value)
+                            && !bound.contains(read.value)
+                        {
+                            diagnostics.push(Diagnostic {
+                                kind: DiagnosticKind::PossiblyUnboundFieldSymbol,
+                                range: read.range.clone(),
+                                message: format!(
+                                    "field symbol '{}' may be unbound in routine '{}'",
+                                    value.name, routine.descriptor.name
+                                ),
+                            });
+                        }
+                    }
+                    DataflowValueKind::Variable | DataflowValueKind::Parameter => {
+                        let (is_assigned, diagnostic_range) = if let Some(field_read) =
+                            structure_field_reads.get(&read.reference).cloned()
+                        {
+                            let diagnostic_range = field_read.range.clone();
+                            (
+                                is_structure_field_definitely_assigned(
+                                    &field_read,
+                                    &assigned,
+                                    &structure_fields,
+                                ) || known_non_initial.contains(field_read.value)
+                                    || (known_non_initial_fields[field_read.value.as_usize()]
+                                        & field_read.mask)
+                                        == field_read.mask,
+                                diagnostic_range,
+                            )
+                        } else {
+                            (
+                                is_value_read_definitely_assigned(
+                                    read.value,
+                                    &assigned,
+                                    &structure_fields,
+                                    &structure_assignment_trackers,
+                                ) || known_non_initial.contains(read.value),
+                                read.range.clone(),
+                            )
+                        };
+                        if !is_assigned {
+                            diagnostics.push(Diagnostic {
+                                kind: DiagnosticKind::UseBeforeDefiniteAssignment,
+                                range: diagnostic_range,
+                                message: format!(
+                                    "'{}' may be used before definite assignment in routine '{}'",
+                                    value.name, routine.descriptor.name
+                                ),
+                            });
+                        }
+                    }
+                    DataflowValueKind::Constant | DataflowValueKind::Other => {}
+                }
+            }
+            apply_instruction_transfer(
+                transfer,
+                &mut assigned,
+                &mut structure_fields,
+                &mut bound,
+                &mut maybe_written,
+                &mut known_non_initial,
+                &mut known_non_initial_fields,
+                &structure_assignment_trackers,
+            );
+        }
+    }
+    diagnostics.sort_by(|left, right| {
+        left.range
+            .start
+            .cmp(&right.range.start)
+            .then(left.range.end.cmp(&right.range.end))
+            .then(left.message.cmp(&right.message))
+    });
+    diagnostics.dedup();
 
     let block_entry = routine
         .cfg
@@ -1256,7 +2051,19 @@ fn build_routine_dataflow(
         .iter()
         .map(|block| BlockDataflowSummary {
             block: block.id,
-            maybe_written_values: block_entry_values[block.id.as_usize()].clone(),
+            maybe_written_values: bitset_to_value_ids(
+                &block_entry_maybe_written[block.id.as_usize()],
+            ),
+            definitely_assigned_values: definitely_assigned_value_ids(
+                &block_entry_assigned[block.id.as_usize()],
+                &block_entry_structure_fields[block.id.as_usize()],
+                &structure_assignment_trackers,
+            ),
+            definitely_bound_field_symbols: bitset_to_value_ids_matching(
+                &block_entry_bound[block.id.as_usize()],
+                &values,
+                DataflowValueKind::FieldSymbol,
+            ),
         })
         .collect();
     let block_exit = routine
@@ -1265,7 +2072,19 @@ fn build_routine_dataflow(
         .iter()
         .map(|block| BlockDataflowSummary {
             block: block.id,
-            maybe_written_values: block_exit_values[block.id.as_usize()].clone(),
+            maybe_written_values: bitset_to_value_ids(
+                &block_exit_maybe_written[block.id.as_usize()],
+            ),
+            definitely_assigned_values: definitely_assigned_value_ids(
+                &block_exit_assigned[block.id.as_usize()],
+                &block_exit_structure_fields[block.id.as_usize()],
+                &structure_assignment_trackers,
+            ),
+            definitely_bound_field_symbols: bitset_to_value_ids_matching(
+                &block_exit_bound[block.id.as_usize()],
+                &values,
+                DataflowValueKind::FieldSymbol,
+            ),
         })
         .collect();
 
@@ -1280,6 +2099,7 @@ fn build_routine_dataflow(
             block_entry,
             block_exit,
         },
+        diagnostics,
     )
 }
 
@@ -1298,18 +2118,1027 @@ fn resolved_value_id_for_reference(
     value_ids_by_symbol.get(&handle).copied()
 }
 
-fn value_ids_in_range(reference_uses: &[ReferenceUse], range: &TextRange) -> Vec<DataflowValueId> {
+fn build_call_argument_effects(
+    project: &ProjectAnalysis,
+    unit: &UnitAnalysis,
+) -> HashMap<(usize, usize, usize, usize), CallArgumentEffect> {
+    let mut effects = HashMap::new();
+    for edge in &unit.value_flow_edges {
+        if edge.kind != ValueFlowKind::CallArgument {
+            continue;
+        }
+        let ValueFlowTargetData::CallParameter {
+            call_range,
+            parameter_decl_unit,
+            parameter_decl_range,
+            ..
+        } = &edge.target
+        else {
+            continue;
+        };
+        let effect = parameter_decl_unit
+            .and_then(|unit_id| {
+                parameter_decl_range
+                    .as_ref()
+                    .map(|range| call_argument_effect_for_parameter(project, unit_id, range))
+            })
+            .unwrap_or(CallArgumentEffect::Unknown);
+        effects.insert(
+            (
+                call_range.start,
+                call_range.end,
+                edge.source_range.start,
+                edge.source_range.end,
+            ),
+            effect,
+        );
+    }
+    effects
+}
+
+fn call_argument_effect_for_parameter(
+    project: &ProjectAnalysis,
+    unit_id: UnitId,
+    range: &TextRange,
+) -> CallArgumentEffect {
+    let Some(unit) = project.units.get(unit_id.as_usize()) else {
+        return CallArgumentEffect::Unknown;
+    };
+    for member in &unit.class_members {
+        for parameter in &member.parameters {
+            if &parameter.range != range {
+                continue;
+            }
+            return match parameter.section {
+                MethodParameterSection::Importing => CallArgumentEffect::InputOnly,
+                MethodParameterSection::Changing => CallArgumentEffect::InOut,
+                MethodParameterSection::Exporting
+                | MethodParameterSection::Receiving
+                | MethodParameterSection::Returning => CallArgumentEffect::OutputOnly,
+            };
+        }
+    }
+    for function_module in &unit.function_modules {
+        for parameter in &function_module.parameters {
+            if &parameter.range != range {
+                continue;
+            }
+            return match parameter.section {
+                FunctionModuleParameterSection::Importing => CallArgumentEffect::InputOnly,
+                FunctionModuleParameterSection::Exporting => CallArgumentEffect::OutputOnly,
+                FunctionModuleParameterSection::Changing
+                | FunctionModuleParameterSection::Tables => CallArgumentEffect::InOut,
+            };
+        }
+    }
+    CallArgumentEffect::Unknown
+}
+
+fn resolve_safe_field_symbol_checks(
+    unit: &UnitAnalysis,
+    reference_uses: &[ReferenceUse],
+    value_ids_by_symbol: &HashMap<SymbolHandle, DataflowValueId>,
+) -> std::collections::HashSet<crate::ReferenceId> {
+    let mut out = std::collections::HashSet::new();
+    for check in &unit.field_symbol_state_checks {
+        if !matches!(
+            check.kind,
+            FieldSymbolStateCheckKind::IsAssigned | FieldSymbolStateCheckKind::IsNotAssigned
+        ) {
+            continue;
+        }
+        for use_site in reference_uses_in_range(reference_uses, &check.symbol_range) {
+            if use_site.range != check.symbol_range {
+                continue;
+            }
+            let Some(reference) = unit.references.get(use_site.reference.as_usize()) else {
+                continue;
+            };
+            let Some(Resolution::Symbol(handle)) = reference.resolution else {
+                continue;
+            };
+            if handle.unit != unit.unit_id
+                || !value_ids_by_symbol.contains_key(&handle)
+                || reference.scope != check.scope
+                || reference.name != check.symbol_name
+            {
+                continue;
+            }
+            out.insert(use_site.reference);
+        }
+    }
+    out
+}
+
+fn resolve_safe_value_state_checks(
+    unit: &UnitAnalysis,
+    reference_uses: &[ReferenceUse],
+    value_ids_by_symbol: &HashMap<SymbolHandle, DataflowValueId>,
+) -> std::collections::HashSet<crate::ReferenceId> {
+    let mut out = std::collections::HashSet::new();
+    for check in &unit.value_state_checks {
+        if !matches!(
+            check.kind,
+            ValueStateCheckKind::IsInitial | ValueStateCheckKind::IsNotInitial
+        ) {
+            continue;
+        }
+        for use_site in reference_uses_in_range(reference_uses, &check.symbol_range) {
+            if use_site.range != check.symbol_range {
+                continue;
+            }
+            let Some(reference) = unit.references.get(use_site.reference.as_usize()) else {
+                continue;
+            };
+            let Some(Resolution::Symbol(handle)) = reference.resolution else {
+                continue;
+            };
+            if handle.unit != unit.unit_id
+                || !value_ids_by_symbol.contains_key(&handle)
+                || reference.scope != check.scope
+                || reference.name != check.symbol_name
+            {
+                continue;
+            }
+            out.insert(use_site.reference);
+        }
+    }
+    out
+}
+
+fn resolve_safe_loop_where_field_refs(
+    unit: &UnitAnalysis,
+    reference_uses: &[ReferenceUse],
+    values: &[RoutineDataflowValue],
+) -> std::collections::HashSet<crate::ReferenceId> {
+    let mut out = std::collections::HashSet::new();
+    for context in &unit.loop_where_field_contexts {
+        let Some(structure_id) =
+            resolve_value_access_structure(unit, reference_uses, values, &context.source_access)
+        else {
+            continue;
+        };
+        let Some(structure) = unit.structures.get(structure_id.as_usize()) else {
+            continue;
+        };
+        let field_names: std::collections::HashSet<_> = structure
+            .fields
+            .iter()
+            .map(|field| field.name.as_ref())
+            .collect();
+        for use_site in reference_uses_in_range(reference_uses, &context.range) {
+            let Some(reference) = unit.references.get(use_site.reference.as_usize()) else {
+                continue;
+            };
+            if field_names.contains(reference.name.as_ref()) {
+                out.insert(use_site.reference);
+            }
+        }
+    }
+    out
+}
+
+fn resolve_is_not_initial_scope_refinements(
+    unit: &UnitAnalysis,
+    reference_uses: &[ReferenceUse],
+    value_ids_by_symbol: &HashMap<SymbolHandle, DataflowValueId>,
+    value_count: usize,
+) -> Vec<DenseBitSet> {
+    let mut out = vec![DenseBitSet::new(value_count); unit.scopes.len()];
+    for check in &unit.value_state_checks {
+        if check.kind != ValueStateCheckKind::IsNotInitial {
+            continue;
+        }
+        let Some(scope_bits) = out.get_mut(check.scope.as_usize()) else {
+            continue;
+        };
+        for use_site in reference_uses_in_range(reference_uses, &check.symbol_range) {
+            if use_site.range != check.symbol_range {
+                continue;
+            }
+            let Some(reference) = unit.references.get(use_site.reference.as_usize()) else {
+                continue;
+            };
+            let Some(Resolution::Symbol(handle)) = reference.resolution else {
+                continue;
+            };
+            if handle.unit != unit.unit_id
+                || !value_ids_by_symbol.contains_key(&handle)
+                || reference.scope != check.scope
+                || reference.name != check.symbol_name
+            {
+                continue;
+            }
+            scope_bits.insert(use_site.value);
+        }
+    }
+    out
+}
+
+fn resolve_is_not_initial_field_scope_refinements(
+    unit: &UnitAnalysis,
+    reference_uses: &[ReferenceUse],
+    value_ids_by_symbol: &HashMap<SymbolHandle, DataflowValueId>,
+    structure_assignment_trackers: &[Option<StructureAssignmentTracker>],
+    values: &[RoutineDataflowValue],
+) -> Vec<Vec<u64>> {
+    let mut out = vec![vec![0u64; values.len()]; unit.scopes.len()];
+    for check in &unit.value_state_checks {
+        if check.kind != ValueStateCheckKind::IsNotInitial {
+            continue;
+        }
+        let Some(field_name) = check.field_name.as_ref() else {
+            continue;
+        };
+        let Some(scope_masks) = out.get_mut(check.scope.as_usize()) else {
+            continue;
+        };
+        for use_site in reference_uses_in_range(reference_uses, &check.symbol_range) {
+            if use_site.range != check.symbol_range {
+                continue;
+            }
+            let Some(reference) = unit.references.get(use_site.reference.as_usize()) else {
+                continue;
+            };
+            let Some(Resolution::Symbol(handle)) = reference.resolution else {
+                continue;
+            };
+            if handle.unit != unit.unit_id
+                || !value_ids_by_symbol.contains_key(&handle)
+                || reference.scope != check.scope
+                || reference.name != check.symbol_name
+                || value_symbol_is_internal_table(unit, use_site.value, values)
+            {
+                continue;
+            }
+            let Some(mask) = structure_assignment_trackers[use_site.value.as_usize()]
+                .as_ref()
+                .and_then(|tracker| tracker.fields_by_name.get(field_name).copied())
+            else {
+                continue;
+            };
+            scope_masks[use_site.value.as_usize()] |= mask;
+        }
+    }
+    out
+}
+
+fn block_non_initial_entry_refinements(
+    unit: &UnitAnalysis,
+    routine: &RoutineAnalysis,
+    scope_refinements: &[DenseBitSet],
+    value_count: usize,
+) -> Vec<DenseBitSet> {
+    routine
+        .cfg
+        .blocks
+        .iter()
+        .map(|block| {
+            let Some(first_instruction) = block.instructions.first() else {
+                return DenseBitSet::new(value_count);
+            };
+            inherited_non_initial_scope_refinements(
+                unit,
+                scope_refinements,
+                routine.ir.instructions[first_instruction.as_usize()].scope,
+                value_count,
+            )
+        })
+        .collect()
+}
+
+fn block_non_initial_field_entry_refinements(
+    unit: &UnitAnalysis,
+    routine: &RoutineAnalysis,
+    scope_refinements: &[Vec<u64>],
+    value_count: usize,
+) -> Vec<Vec<u64>> {
+    routine
+        .cfg
+        .blocks
+        .iter()
+        .map(|block| {
+            let Some(first_instruction) = block.instructions.first() else {
+                return vec![0u64; value_count];
+            };
+            inherited_non_initial_field_scope_refinements(
+                unit,
+                scope_refinements,
+                routine.ir.instructions[first_instruction.as_usize()].scope,
+                value_count,
+            )
+        })
+        .collect()
+}
+
+fn inherited_non_initial_scope_refinements(
+    unit: &UnitAnalysis,
+    scope_refinements: &[DenseBitSet],
+    scope: ScopeId,
+    value_count: usize,
+) -> DenseBitSet {
+    let mut out = DenseBitSet::new(value_count);
+    let mut current = Some(scope);
+    let mut child_kind = None;
+    while let Some(scope_id) = current {
+        let Some(scope_data) = unit.scopes.get(scope_id.as_usize()) else {
+            break;
+        };
+        let skip_current = scope_data.kind == ScopeKind::TryBlock
+            && matches!(
+                child_kind,
+                Some(ScopeKind::CatchClause | ScopeKind::CleanupClause)
+            );
+        if !skip_current && let Some(bits) = scope_refinements.get(scope_id.as_usize()) {
+            out.union_from(bits);
+        }
+        child_kind = Some(scope_data.kind);
+        current = scope_data.parent;
+    }
+    out
+}
+
+fn inherited_non_initial_field_scope_refinements(
+    unit: &UnitAnalysis,
+    scope_refinements: &[Vec<u64>],
+    scope: ScopeId,
+    value_count: usize,
+) -> Vec<u64> {
+    let mut out = vec![0u64; value_count];
+    let mut current = Some(scope);
+    let mut child_kind = None;
+    while let Some(scope_id) = current {
+        let Some(scope_data) = unit.scopes.get(scope_id.as_usize()) else {
+            break;
+        };
+        let skip_current = scope_data.kind == ScopeKind::TryBlock
+            && matches!(
+                child_kind,
+                Some(ScopeKind::CatchClause | ScopeKind::CleanupClause)
+            );
+        if !skip_current && let Some(masks) = scope_refinements.get(scope_id.as_usize()) {
+            union_structure_field_masks(&mut out, masks);
+        }
+        child_kind = Some(scope_data.kind);
+        current = scope_data.parent;
+    }
+    out
+}
+
+fn reference_uses_in_range(
+    reference_uses: &[ReferenceUse],
+    range: &TextRange,
+) -> Vec<ReferenceUse> {
     let start_idx = reference_uses.partition_point(|use_site| use_site.range.start < range.start);
-    let mut values = Vec::new();
+    let mut uses = Vec::new();
     for use_site in &reference_uses[start_idx..] {
         if use_site.range.start >= range.end {
             break;
         }
         if use_site.range.end <= range.end {
-            values.push(use_site.value);
+            uses.push(use_site.clone());
         }
     }
-    sorted_unique_value_ids(values)
+    uses
+}
+
+fn reference_ids_in_range(
+    reference_uses: &[ReferenceUse],
+    range: &TextRange,
+) -> Vec<crate::ReferenceId> {
+    reference_uses_in_range(reference_uses, range)
+        .into_iter()
+        .map(|use_site| use_site.reference)
+        .collect()
+}
+
+fn exact_reference_use_in_range(
+    reference_uses: &[ReferenceUse],
+    range: &TextRange,
+) -> Option<ReferenceUse> {
+    let mut matches = reference_uses_in_range(reference_uses, range)
+        .into_iter()
+        .filter(|use_site| use_site.range == *range);
+    let first = matches.next()?;
+    matches.next().is_none().then_some(first)
+}
+
+fn read_occurrences_in_range(
+    reference_uses: &[ReferenceUse],
+    range: &TextRange,
+    safe_field_symbol_checks: &std::collections::HashSet<crate::ReferenceId>,
+) -> Vec<ReadOccurrence> {
+    reference_uses_in_range(reference_uses, range)
+        .into_iter()
+        .filter(|use_site| !safe_field_symbol_checks.contains(&use_site.reference))
+        .map(|use_site| ReadOccurrence {
+            reference: use_site.reference,
+            range: use_site.range,
+            value: use_site.value,
+        })
+        .collect()
+}
+
+fn resolve_structure_field_reads(
+    unit: &UnitAnalysis,
+    reference_uses: &[ReferenceUse],
+    structure_assignment_trackers: &[Option<StructureAssignmentTracker>],
+    values: &[RoutineDataflowValue],
+) -> HashMap<crate::ReferenceId, StructureFieldRead> {
+    let mut out = HashMap::new();
+    for access in &unit.field_accesses {
+        if access.base_namespace != Namespace::Value
+            || access.field_path.len() != 1
+            || access.field_path[0].is_deref()
+        {
+            continue;
+        }
+        let Some(base_use) = reference_uses_in_range(reference_uses, &access.base_range)
+            .into_iter()
+            .find(|use_site| use_site.range == access.base_range)
+        else {
+            continue;
+        };
+        let Some(tracker) = structure_assignment_trackers
+            .get(base_use.value.as_usize())
+            .and_then(|tracker| tracker.as_ref())
+        else {
+            continue;
+        };
+        if value_symbol_is_internal_table(unit, base_use.value, values) {
+            continue;
+        }
+        let Some(mask) = tracker
+            .fields_by_name
+            .get(&access.field_path[0].name)
+            .copied()
+        else {
+            continue;
+        };
+        out.insert(
+            base_use.reference,
+            StructureFieldRead {
+                value: base_use.value,
+                mask,
+                range: access.base_range.start..access.field_path[0].range.end,
+            },
+        );
+    }
+    out
+}
+
+fn build_structure_assignment_tracker(
+    unit: &UnitAnalysis,
+    structure_id: Option<StructureId>,
+) -> Option<StructureAssignmentTracker> {
+    let structure_id = structure_id?;
+    let structure = unit.structures.get(structure_id.as_usize())?;
+    let field_count = structure.fields.len();
+    if field_count == 0 || field_count > 64 {
+        return None;
+    }
+    let mut fields_by_name = HashMap::with_capacity(field_count);
+    let mut full_mask = 0u64;
+    for (idx, field) in structure.fields.iter().enumerate() {
+        let mask = 1u64 << idx;
+        full_mask |= mask;
+        fields_by_name.insert(Arc::clone(&field.name), mask);
+    }
+    Some(StructureAssignmentTracker {
+        fields_by_name,
+        full_mask,
+    })
+}
+
+fn value_symbol_is_internal_table(
+    unit: &UnitAnalysis,
+    value: DataflowValueId,
+    values: &[RoutineDataflowValue],
+) -> bool {
+    let Some(symbol) = values
+        .get(value.as_usize())
+        .and_then(|value| unit.symbols.get(value.symbol.symbol.as_usize()))
+    else {
+        return false;
+    };
+    symbol_type_clause_suggests_internal_table(symbol)
+        || unit.sql_targets.iter().any(|target| {
+            target.is_inline
+                && target.is_table
+                && target.scope == symbol.scope
+                && target.target_name.as_deref() == Some(symbol.name.as_ref())
+        })
+}
+
+fn resolve_value_access_structure(
+    unit: &UnitAnalysis,
+    reference_uses: &[ReferenceUse],
+    values: &[RoutineDataflowValue],
+    access: &crate::FieldAccess,
+) -> Option<StructureId> {
+    if access.base_namespace != Namespace::Value {
+        return None;
+    }
+    let base_value = exact_reference_use_in_range(reference_uses, &access.base_range)
+        .map(|use_site| use_site.value)
+        .or_else(|| resolve_declared_value_id_for_access(unit, access, values))?;
+    let symbol_id = values.get(base_value.as_usize())?.symbol.symbol;
+    let mut structure = unit.symbols.get(symbol_id.as_usize())?.structure;
+    if access.field_path.is_empty() {
+        return structure;
+    }
+    for segment in &access.field_path {
+        if segment.is_deref() {
+            return None;
+        }
+        let structure_id = structure?;
+        let field = unit
+            .structures
+            .get(structure_id.as_usize())?
+            .fields
+            .iter()
+            .find(|field| field.name == segment.name)?;
+        structure = field.structure.or_else(|| {
+            field
+                .type_ref
+                .as_ref()
+                .and_then(|type_ref| resolve_type_ref_structure(unit, access.scope, type_ref))
+        });
+    }
+    structure
+}
+
+fn resolve_declared_value_id_for_access(
+    unit: &UnitAnalysis,
+    access: &crate::FieldAccess,
+    values: &[RoutineDataflowValue],
+) -> Option<DataflowValueId> {
+    unit.symbols
+        .iter()
+        .find(|symbol| {
+            symbol.name == access.base_name
+                && symbol.decl_range == access.base_range
+                && trackable_symbol_kind(symbol.kind)
+        })
+        .and_then(|symbol| {
+            values
+                .iter()
+                .find(|value| value.symbol.symbol == symbol.id)
+                .map(|value| value.id)
+        })
+}
+
+fn symbol_type_clause_suggests_internal_table(symbol: &crate::SymbolData) -> bool {
+    let Some(display) = symbol.type_clause_display.as_deref() else {
+        return false;
+    };
+    let upper = display.to_ascii_uppercase();
+    upper.contains("STANDARD TABLE")
+        || upper.contains("HASHED TABLE")
+        || upper.contains("SORTED TABLE")
+        || upper.contains("ANY TABLE")
+        || upper.contains("INDEX TABLE")
+        || upper.contains("TABLE OF")
+}
+
+fn resolve_type_ref_structure(
+    unit: &UnitAnalysis,
+    scope: ScopeId,
+    type_ref: &crate::FieldTypeRefData,
+) -> Option<StructureId> {
+    let symbol_id =
+        resolve_symbol_in_scope_chain(unit, scope, type_ref.namespace, &type_ref.base_name)?;
+    let mut structure = unit.symbols.get(symbol_id.as_usize())?.structure;
+    for segment in &type_ref.field_path {
+        let structure_id = structure?;
+        let field = unit
+            .structures
+            .get(structure_id.as_usize())?
+            .fields
+            .iter()
+            .find(|field| field.name.as_ref() == segment.as_ref())?;
+        structure = field.structure.or_else(|| {
+            field
+                .type_ref
+                .as_ref()
+                .and_then(|nested| resolve_type_ref_structure(unit, scope, nested))
+        });
+    }
+    structure
+}
+
+fn resolve_symbol_in_scope_chain(
+    unit: &UnitAnalysis,
+    scope: ScopeId,
+    namespace: Namespace,
+    name: &str,
+) -> Option<crate::ids::SymbolId> {
+    let mut current = Some(scope);
+    while let Some(scope_id) = current {
+        if let Some(symbol) = unit.symbols.iter().find(|symbol| {
+            symbol.scope == scope_id
+                && symbol.name.as_ref() == name
+                && symbol.kind.namespaces().contains(&namespace)
+        }) {
+            return Some(symbol.id);
+        }
+        current = unit
+            .scopes
+            .get(scope_id.as_usize())
+            .and_then(|scope| scope.parent);
+    }
+    None
+}
+
+fn direct_write_value_id_for_assignment(
+    unit: &UnitAnalysis,
+    assignment: &crate::AssignmentSiteData,
+    reference_uses: &[ReferenceUse],
+    value_ids_by_symbol: &HashMap<SymbolHandle, DataflowValueId>,
+    values: &[RoutineDataflowValue],
+) -> Option<DataflowValueId> {
+    for symbol in &unit.symbols {
+        if symbol.decl_range.start < assignment.lhs_range.start
+            || symbol.decl_range.end > assignment.lhs_range.end
+        {
+            continue;
+        }
+        let handle = SymbolHandle {
+            unit: unit.unit_id,
+            symbol: symbol.id,
+        };
+        let Some(value_id) = value_ids_by_symbol.get(&handle).copied() else {
+            continue;
+        };
+        if values[value_id.as_usize()].kind != DataflowValueKind::FieldSymbol {
+            return Some(value_id);
+        }
+    }
+    let direct = exact_reference_use_in_range(reference_uses, &assignment.lhs_range)?;
+    (values[direct.value.as_usize()].kind != DataflowValueKind::FieldSymbol).then_some(direct.value)
+}
+
+fn direct_write_value_id_for_clear(
+    reference_uses: &[ReferenceUse],
+    range: &TextRange,
+    values: &[RoutineDataflowValue],
+) -> Option<DataflowValueId> {
+    let direct = exact_reference_use_in_range(reference_uses, range)?;
+    (values[direct.value.as_usize()].kind != DataflowValueKind::FieldSymbol).then_some(direct.value)
+}
+
+fn selector_structure_write_for_assignment(
+    unit: &UnitAnalysis,
+    assignment: &crate::AssignmentSiteData,
+    reference_uses: &[ReferenceUse],
+    structure_assignment_trackers: &[Option<StructureAssignmentTracker>],
+) -> Option<SelectorStructureWrite> {
+    let access = assignment.lhs_target_access.as_ref()?;
+    if access.base_namespace != Namespace::Value
+        || access.field_path.is_empty()
+        || access.field_path.iter().any(|segment| segment.is_deref())
+    {
+        return None;
+    }
+    let base_use = reference_uses_in_range(reference_uses, &assignment.lhs_range)
+        .into_iter()
+        .filter(|use_site| {
+            unit.references
+                .get(use_site.reference.as_usize())
+                .is_some_and(|reference| reference.name == access.base_name)
+        })
+        .collect::<Vec<_>>();
+    let [base_use] = base_use.as_slice() else {
+        return None;
+    };
+    let tracker = structure_assignment_trackers
+        .get(base_use.value.as_usize())?
+        .as_ref()?;
+    let field_mask = (access.field_path.len() == 1)
+        .then(|| {
+            tracker
+                .fields_by_name
+                .get(&access.field_path[0].name)
+                .copied()
+        })
+        .flatten();
+    Some(SelectorStructureWrite {
+        base_value: base_use.value,
+        field_mask,
+    })
+}
+
+fn resolve_loop_target_value_id(
+    unit: &UnitAnalysis,
+    access: &crate::FieldAccess,
+    reference_uses: &[ReferenceUse],
+    value_ids_by_symbol: &HashMap<SymbolHandle, DataflowValueId>,
+) -> Option<DataflowValueId> {
+    if access.base_namespace != Namespace::Value || !access.field_path.is_empty() {
+        return None;
+    }
+    exact_reference_use_in_range(reference_uses, &access.base_range)
+        .map(|use_site| use_site.value)
+        .or_else(|| {
+            unit.symbols.iter().find_map(|symbol| {
+                (symbol.name == access.base_name && symbol.decl_range == access.base_range)
+                    .then(|| {
+                        value_ids_by_symbol.get(&SymbolHandle {
+                            unit: unit.unit_id,
+                            symbol: symbol.id,
+                        })
+                    })?
+                    .copied()
+            })
+        })
+}
+
+fn is_safe_builtin_call(call_site: &crate::CallSiteData) -> bool {
+    matches!(
+        &call_site.target,
+        crate::NamedArgumentTarget::Routine { routine_name }
+            if builtin_routine_spec(routine_name.as_ref())
+                .is_some_and(|spec| spec.name.eq_ignore_ascii_case("lines"))
+    )
+}
+
+fn resolve_field_symbol_target_value_id(
+    unit: &UnitAnalysis,
+    edge: &crate::ValueFlowEdgeData,
+    reference_uses: &[ReferenceUse],
+    value_ids_by_symbol: &HashMap<SymbolHandle, DataflowValueId>,
+    values: &[RoutineDataflowValue],
+) -> Option<DataflowValueId> {
+    let ValueFlowTargetData::FieldSymbol { range, name } = &edge.target else {
+        return None;
+    };
+    if let Some(name) = name.as_ref() {
+        for symbol in &unit.symbols {
+            if symbol.kind != SymbolKind::FieldSymbol || symbol.name != *name {
+                continue;
+            }
+            let handle = SymbolHandle {
+                unit: unit.unit_id,
+                symbol: symbol.id,
+            };
+            if let Some(value_id) = value_ids_by_symbol.get(&handle).copied()
+                && symbol.decl_range == *range
+            {
+                return Some(value_id);
+            }
+        }
+    }
+    let direct = exact_reference_use_in_range(reference_uses, range)?;
+    (values[direct.value.as_usize()].kind == DataflowValueKind::FieldSymbol).then_some(direct.value)
+}
+
+fn direct_field_symbol_values_in_range(
+    reference_uses: &[ReferenceUse],
+    range: &TextRange,
+    values: &[RoutineDataflowValue],
+) -> Vec<DataflowValueId> {
+    reference_uses_in_range(reference_uses, range)
+        .into_iter()
+        .filter(|use_site| use_site.range == *range)
+        .map(|use_site| use_site.value)
+        .filter(|value| values[value.as_usize()].kind == DataflowValueKind::FieldSymbol)
+        .collect()
+}
+
+fn direct_non_field_symbol_values_in_range(
+    reference_uses: &[ReferenceUse],
+    range: &TextRange,
+    values: &[RoutineDataflowValue],
+) -> Vec<DataflowValueId> {
+    sorted_unique_value_ids(
+        reference_uses_in_range(reference_uses, range)
+            .into_iter()
+            .map(|use_site| use_site.value)
+            .filter(|value| values[value.as_usize()].kind != DataflowValueKind::FieldSymbol),
+    )
+}
+
+fn intersect_predecessor_bits(
+    predecessors: &[RoutineBlockId],
+    block_exit_bits: &[DenseBitSet],
+    bit_count: usize,
+) -> DenseBitSet {
+    let Some((first, rest)) = predecessors.split_first() else {
+        return DenseBitSet::new(bit_count);
+    };
+    let mut out = block_exit_bits[first.as_usize()].clone();
+    for predecessor in rest {
+        for (slot, other) in out
+            .words
+            .iter_mut()
+            .zip(&block_exit_bits[predecessor.as_usize()].words)
+        {
+            *slot &= *other;
+        }
+    }
+    out
+}
+
+fn union_predecessor_bits(
+    predecessors: &[RoutineBlockId],
+    block_exit_bits: &[DenseBitSet],
+    bit_count: usize,
+) -> DenseBitSet {
+    let mut out = DenseBitSet::new(bit_count);
+    for predecessor in predecessors {
+        out.union_from(&block_exit_bits[predecessor.as_usize()]);
+    }
+    out
+}
+
+fn union_structure_field_masks(target: &mut [u64], source: &[u64]) {
+    for (slot, other) in target.iter_mut().zip(source) {
+        *slot |= *other;
+    }
+}
+
+fn intersect_predecessor_structure_fields(
+    predecessors: &[RoutineBlockId],
+    block_exit_fields: &[Vec<u64>],
+    value_count: usize,
+) -> Vec<u64> {
+    let Some((first, rest)) = predecessors.split_first() else {
+        return vec![0u64; value_count];
+    };
+    let mut out = block_exit_fields[first.as_usize()].clone();
+    for predecessor in rest {
+        for (slot, other) in out
+            .iter_mut()
+            .zip(&block_exit_fields[predecessor.as_usize()])
+        {
+            *slot &= *other;
+        }
+    }
+    out
+}
+
+fn apply_block_transfer(
+    block: &RoutineBlock,
+    instruction_transfers: &[InstructionTransfer],
+    mut assigned: DenseBitSet,
+    mut structure_fields: Vec<u64>,
+    mut bound: DenseBitSet,
+    mut maybe_written: DenseBitSet,
+    mut known_non_initial: DenseBitSet,
+    mut known_non_initial_fields: Vec<u64>,
+    structure_assignment_trackers: &[Option<StructureAssignmentTracker>],
+) -> (
+    DenseBitSet,
+    Vec<u64>,
+    DenseBitSet,
+    DenseBitSet,
+    DenseBitSet,
+    Vec<u64>,
+) {
+    for instruction_id in &block.instructions {
+        let transfer = &instruction_transfers[instruction_id.as_usize()];
+        apply_instruction_transfer(
+            transfer,
+            &mut assigned,
+            &mut structure_fields,
+            &mut bound,
+            &mut maybe_written,
+            &mut known_non_initial,
+            &mut known_non_initial_fields,
+            structure_assignment_trackers,
+        );
+    }
+    (
+        assigned,
+        structure_fields,
+        bound,
+        maybe_written,
+        known_non_initial,
+        known_non_initial_fields,
+    )
+}
+
+fn apply_instruction_transfer(
+    transfer: &InstructionTransfer,
+    assigned: &mut DenseBitSet,
+    structure_fields: &mut [u64],
+    bound: &mut DenseBitSet,
+    maybe_written: &mut DenseBitSet,
+    known_non_initial: &mut DenseBitSet,
+    known_non_initial_fields: &mut [u64],
+    structure_assignment_trackers: &[Option<StructureAssignmentTracker>],
+) {
+    for value in &transfer.writes {
+        maybe_written.insert(*value);
+    }
+    for value in &transfer.assigned_writes {
+        assigned.insert(*value);
+        if let Some(tracker) = structure_assignment_trackers[value.as_usize()].as_ref() {
+            structure_fields[value.as_usize()] = tracker.full_mask;
+        }
+    }
+    for field_write in &transfer.structure_field_writes {
+        let slot = &mut structure_fields[field_write.value.as_usize()];
+        *slot |= field_write.mask;
+        if structure_assignment_trackers[field_write.value.as_usize()]
+            .as_ref()
+            .is_some_and(|tracker| *slot == tracker.full_mask)
+        {
+            assigned.insert(field_write.value);
+        }
+    }
+    for value in &transfer.non_initial_kills {
+        known_non_initial.remove(*value);
+        known_non_initial_fields[value.as_usize()] = 0;
+    }
+    for binding in &transfer.field_symbol_binding {
+        match *binding {
+            FieldSymbolBindingTransfer::Set(target) => bound.insert(target),
+            FieldSymbolBindingTransfer::Copy { target, source } => {
+                if bound.contains(source) {
+                    bound.insert(target);
+                } else {
+                    bound.remove(target);
+                }
+            }
+            FieldSymbolBindingTransfer::Clear(target) => bound.remove(target),
+        }
+    }
+}
+
+fn is_value_read_definitely_assigned(
+    value: DataflowValueId,
+    assigned: &DenseBitSet,
+    structure_fields: &[u64],
+    structure_assignment_trackers: &[Option<StructureAssignmentTracker>],
+) -> bool {
+    if assigned.contains(value) {
+        return true;
+    }
+    structure_assignment_trackers[value.as_usize()]
+        .as_ref()
+        .is_some_and(|_| structure_fields[value.as_usize()] != 0)
+}
+
+fn is_structure_field_definitely_assigned(
+    field_read: &StructureFieldRead,
+    assigned: &DenseBitSet,
+    structure_fields: &[u64],
+) -> bool {
+    assigned.contains(field_read.value)
+        || (structure_fields[field_read.value.as_usize()] & field_read.mask) == field_read.mask
+}
+
+fn bitset_to_value_ids(bits: &DenseBitSet) -> Vec<DataflowValueId> {
+    let mut out = Vec::new();
+    for (word_idx, word) in bits.words.iter().copied().enumerate() {
+        let mut remaining = word;
+        while remaining != 0 {
+            let bit = remaining.trailing_zeros() as usize;
+            out.push(DataflowValueId((word_idx * 64 + bit) as u32));
+            remaining &= remaining - 1;
+        }
+    }
+    out
+}
+
+fn bitset_to_value_ids_matching(
+    bits: &DenseBitSet,
+    values: &[RoutineDataflowValue],
+    kind: DataflowValueKind,
+) -> Vec<DataflowValueId> {
+    bitset_to_value_ids(bits)
+        .into_iter()
+        .filter(|value| values[value.as_usize()].kind == kind)
+        .collect()
+}
+
+fn top_structure_field_masks(
+    structure_assignment_trackers: &[Option<StructureAssignmentTracker>],
+) -> Vec<u64> {
+    structure_assignment_trackers
+        .iter()
+        .map(|tracker| tracker.as_ref().map_or(0, |tracker| tracker.full_mask))
+        .collect()
+}
+
+fn definitely_assigned_value_ids(
+    bits: &DenseBitSet,
+    structure_fields: &[u64],
+    structure_assignment_trackers: &[Option<StructureAssignmentTracker>],
+) -> Vec<DataflowValueId> {
+    let mut out = bitset_to_value_ids(bits);
+    for (idx, tracker) in structure_assignment_trackers.iter().enumerate() {
+        if tracker
+            .as_ref()
+            .is_some_and(|tracker| structure_fields[idx] == tracker.full_mask)
+        {
+            out.push(DataflowValueId(idx as u32));
+        }
+    }
+    out.sort_by_key(|value| value.as_usize());
+    out.dedup();
+    out
 }
 
 fn sorted_unique_value_ids(
@@ -1349,11 +3178,15 @@ fn instruction_kind_sort_key(kind: RoutineInstructionKind) -> u8 {
         RoutineInstructionKind::Call => 1,
         RoutineInstructionKind::Perform => 2,
         RoutineInstructionKind::SqlQuery => 3,
-        RoutineInstructionKind::ValueRead => 4,
-        RoutineInstructionKind::UnknownEffect => 5,
-        RoutineInstructionKind::Branch => 6,
-        RoutineInstructionKind::LoopHeader => 7,
-        RoutineInstructionKind::Terminator => 8,
+        RoutineInstructionKind::Clear => 4,
+        RoutineInstructionKind::Delete => 5,
+        RoutineInstructionKind::ReadTable => 6,
+        RoutineInstructionKind::FieldSymbolBind => 7,
+        RoutineInstructionKind::ValueRead => 8,
+        RoutineInstructionKind::UnknownEffect => 9,
+        RoutineInstructionKind::Branch => 10,
+        RoutineInstructionKind::LoopHeader => 11,
+        RoutineInstructionKind::Terminator => 12,
     }
 }
 
@@ -1362,7 +3195,11 @@ fn instruction_site_sort_key(site: RoutineInstructionSite) -> u32 {
         RoutineInstructionSite::Assignment { index }
         | RoutineInstructionSite::Call { index }
         | RoutineInstructionSite::Perform { index }
-        | RoutineInstructionSite::SqlQuery { index } => index,
+        | RoutineInstructionSite::SqlQuery { index }
+        | RoutineInstructionSite::Clear { index }
+        | RoutineInstructionSite::Delete { index }
+        | RoutineInstructionSite::ReadTable { index }
+        | RoutineInstructionSite::FieldSymbolBind { index } => index,
         RoutineInstructionSite::ValueRead { reference } => reference.0,
         RoutineInstructionSite::UnknownEffect => 0,
         RoutineInstructionSite::Branch { kind } => match kind {

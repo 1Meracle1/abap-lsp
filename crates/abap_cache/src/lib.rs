@@ -3430,6 +3430,7 @@ fn resolve_selector_component_path_structure_with_scope_index<'a>(
             scope,
             base_namespace,
             base_name: Arc::clone(base_name),
+            base_range: 0..0,
             field_path: component_path
                 .iter()
                 .map(|name| abap_symbols::FieldAccessSegment {
@@ -5738,6 +5739,7 @@ fn access_from_selector_query(
         scope,
         base_namespace,
         base_name: Arc::clone(base_name),
+        base_range: 0..0,
         field_path: component_path
             .iter()
             .map(|name| abap_symbols::FieldAccessSegment {
@@ -7071,9 +7073,9 @@ mod tests {
         opened_function_module_dependency_analysis_text,
     };
     use abap_symbols::{
-        DiagnosticKind, ReferenceKind, RoutineBlockKind, RoutineBranchKind, RoutineEdgeKind,
-        RoutineInstructionSite, RoutineKind, ScopeKind, StructureFieldShape, SymbolHandle,
-        SymbolKind,
+        Diagnostic, DiagnosticKind, ReferenceKind, RoutineBlockKind, RoutineBranchKind,
+        RoutineEdgeKind, RoutineInstructionSite, RoutineKind, ScopeKind, StructureFieldShape,
+        SymbolHandle, SymbolKind,
     };
     use std::sync::Arc;
 
@@ -7101,6 +7103,18 @@ mod tests {
             .map(|(uri, _, expected_slice)| (uri.to_string(), expected_slice.to_string()))
             .collect();
         assert_eq!(actual, expected);
+    }
+
+    fn diagnostic_slices(
+        src: &str,
+        diagnostics: &[Diagnostic],
+        kind: DiagnosticKind,
+    ) -> Vec<String> {
+        diagnostics
+            .iter()
+            .filter(|diag| diag.kind == kind)
+            .map(|diag| src[diag.range.clone()].to_string())
+            .collect()
     }
 
     #[test]
@@ -7914,6 +7928,640 @@ ENDCLASS.";
             !unreachable
                 .iter()
                 .any(|slice| slice.contains("lv_total = 2"))
+        );
+    }
+
+    #[test]
+    fn routine_analysis_flags_use_before_assignment_after_branch_join() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run IMPORTING iv_flag TYPE i.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+    DATA lv_value TYPE i.
+    IF iv_flag = 1.
+      lv_value = 1.
+    ENDIF.
+    DATA lv_copy TYPE i.
+    lv_copy = lv_value.
+  ENDMETHOD.
+ENDCLASS.";
+
+        let snapshot = store.publish("file:///routine_def_assign_if.abap", 1, src);
+        let use_before = diagnostic_slices(
+            src,
+            &snapshot.symbols.diagnostics,
+            DiagnosticKind::UseBeforeDefiniteAssignment,
+        );
+
+        assert!(use_before.iter().any(|slice| slice.contains("lv_value")));
+    }
+
+    #[test]
+    fn routine_analysis_flags_use_before_assignment_after_loop_join() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run IMPORTING iv_limit TYPE i.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+    DATA lv_value TYPE i.
+    WHILE iv_limit > 0.
+      lv_value = iv_limit.
+      EXIT.
+    ENDWHILE.
+    DATA lv_copy TYPE i.
+    lv_copy = lv_value.
+  ENDMETHOD.
+ENDCLASS.";
+
+        let snapshot = store.publish("file:///routine_def_assign_loop.abap", 1, src);
+        let use_before = diagnostic_slices(
+            src,
+            &snapshot.symbols.diagnostics,
+            DiagnosticKind::UseBeforeDefiniteAssignment,
+        );
+
+        assert!(use_before.iter().any(|slice| slice.contains("lv_value")));
+    }
+
+    #[test]
+    fn routine_analysis_flags_use_before_assignment_after_try_catch_join() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run IMPORTING iv_flag TYPE i.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+    DATA lv_value TYPE i.
+    TRY.
+      IF iv_flag = 1.
+        RAISE EXCEPTION TYPE cx_root.
+      ENDIF.
+      lv_value = 1.
+    CATCH cx_root.
+    ENDTRY.
+    DATA lv_copy TYPE i.
+    lv_copy = lv_value.
+  ENDMETHOD.
+ENDCLASS.";
+
+        let snapshot = store.publish("file:///routine_def_assign_try.abap", 1, src);
+        let use_before = diagnostic_slices(
+            src,
+            &snapshot.symbols.diagnostics,
+            DiagnosticKind::UseBeforeDefiniteAssignment,
+        );
+
+        assert!(use_before.iter().any(|slice| slice.contains("lv_value")));
+    }
+
+    #[test]
+    fn routine_analysis_flags_read_table_inline_data_as_possibly_unassigned() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+    DATA lt_values TYPE STANDARD TABLE OF i WITH EMPTY KEY.
+    READ TABLE lt_values INTO DATA(lv_value) INDEX 1.
+    DATA lv_copy TYPE i.
+    lv_copy = lv_value.
+  ENDMETHOD.
+ENDCLASS.";
+
+        let snapshot = store.publish("file:///routine_read_table_inline_data.abap", 1, src);
+        let use_before = diagnostic_slices(
+            src,
+            &snapshot.symbols.diagnostics,
+            DiagnosticKind::UseBeforeDefiniteAssignment,
+        );
+
+        assert!(use_before.iter().any(|slice| slice.contains("lv_value")));
+    }
+
+    #[test]
+    fn routine_analysis_flags_read_table_assigning_field_symbol_as_possibly_unbound() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+    DATA lt_values TYPE STANDARD TABLE OF i WITH EMPTY KEY.
+    READ TABLE lt_values ASSIGNING FIELD-SYMBOL(<lv_value>) INDEX 1.
+    DATA lv_copy TYPE i.
+    lv_copy = <lv_value>.
+  ENDMETHOD.
+ENDCLASS.";
+
+        let snapshot = store.publish("file:///routine_read_table_assigning.abap", 1, src);
+        let unbound = diagnostic_slices(
+            src,
+            &snapshot.symbols.diagnostics,
+            DiagnosticKind::PossiblyUnboundFieldSymbol,
+        );
+
+        assert!(unbound.iter().any(|slice| slice.contains("<lv_value>")));
+    }
+
+    #[test]
+    fn routine_analysis_distinguishes_direct_and_dynamic_field_symbol_assign() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+    TYPES: BEGIN OF ty_row,
+             text TYPE string,
+           END OF ty_row.
+    DATA lv_value TYPE string.
+    DATA ls_row TYPE ty_row.
+    DATA lv_name TYPE string.
+    FIELD-SYMBOLS <lv_text> TYPE string.
+    FIELD-SYMBOLS <lv_dyn> TYPE string.
+    lv_value = 'ok'.
+    ls_row-text = lv_value.
+    ASSIGN lv_value TO <lv_text>.
+    DATA lv_copy TYPE string.
+    lv_copy = <lv_text>.
+    lv_name = 'TEXT'.
+    ASSIGN COMPONENT lv_name OF STRUCTURE ls_row TO <lv_dyn>.
+    lv_copy = <lv_dyn>.
+  ENDMETHOD.
+ENDCLASS.";
+
+        let snapshot = store.publish("file:///routine_assign_field_symbol.abap", 1, src);
+        let unbound = diagnostic_slices(
+            src,
+            &snapshot.symbols.diagnostics,
+            DiagnosticKind::PossiblyUnboundFieldSymbol,
+        );
+
+        assert!(unbound.iter().any(|slice| slice.contains("<lv_dyn>")));
+        assert!(!unbound.iter().any(|slice| slice.contains("<lv_text>")));
+    }
+
+    #[test]
+    fn routine_analysis_treats_full_structure_selector_initialization_as_definite_assignment() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    TYPES: BEGIN OF ty_job,
+             jobname TYPE string,
+             username TYPE string,
+           END OF ty_job.
+    METHODS run.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+    DATA ls_job TYPE ty_job.
+    ls_job-jobname = 'BATCH'.
+    ls_job-username = 'USER'.
+    DATA ls_copy TYPE ty_job.
+    ls_copy = ls_job.
+  ENDMETHOD.
+ENDCLASS.";
+
+        let snapshot = store.publish("file:///routine_struct_selector_full.abap", 1, src);
+        let use_before = diagnostic_slices(
+            src,
+            &snapshot.symbols.diagnostics,
+            DiagnosticKind::UseBeforeDefiniteAssignment,
+        );
+
+        assert!(use_before.is_empty(), "{use_before:?}");
+    }
+
+    #[test]
+    fn routine_analysis_allows_partial_structure_selector_initialization_for_whole_value_reads() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    TYPES: BEGIN OF ty_job,
+             jobname TYPE string,
+             username TYPE string,
+           END OF ty_job.
+    METHODS run.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+    DATA ls_job TYPE ty_job.
+    ls_job-jobname = 'BATCH'.
+    DATA ls_copy TYPE ty_job.
+    ls_copy = ls_job.
+  ENDMETHOD.
+ENDCLASS.";
+
+        let snapshot = store.publish("file:///routine_struct_selector_partial.abap", 1, src);
+        let use_before = diagnostic_slices(
+            src,
+            &snapshot.symbols.diagnostics,
+            DiagnosticKind::UseBeforeDefiniteAssignment,
+        );
+
+        assert!(use_before.is_empty(), "{use_before:?}");
+    }
+
+    #[test]
+    fn routine_analysis_allows_reads_of_written_structure_selectors() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    TYPES: BEGIN OF ty_job,
+             jobname TYPE string,
+             username TYPE string,
+           END OF ty_job.
+    METHODS run.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+    DATA ls_job TYPE ty_job.
+    ls_job-jobname = 'BATCH'.
+    DATA lv_jobname TYPE string.
+    lv_jobname = ls_job-jobname.
+  ENDMETHOD.
+ENDCLASS.";
+
+        let snapshot = store.publish("file:///routine_struct_selector_read_written.abap", 1, src);
+        let use_before = diagnostic_slices(
+            src,
+            &snapshot.symbols.diagnostics,
+            DiagnosticKind::UseBeforeDefiniteAssignment,
+        );
+
+        assert!(use_before.is_empty(), "{use_before:?}");
+    }
+
+    #[test]
+    fn routine_analysis_keeps_unwritten_structure_selector_reads_conservative() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    TYPES: BEGIN OF ty_job,
+             jobname TYPE string,
+             username TYPE string,
+           END OF ty_job.
+    METHODS run.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+    DATA ls_job TYPE ty_job.
+    ls_job-jobname = 'BATCH'.
+    DATA lv_username TYPE string.
+    lv_username = ls_job-username.
+  ENDMETHOD.
+ENDCLASS.";
+
+        let snapshot = store.publish(
+            "file:///routine_struct_selector_read_unwritten.abap",
+            1,
+            src,
+        );
+        let use_before = diagnostic_slices(
+            src,
+            &snapshot.symbols.diagnostics,
+            DiagnosticKind::UseBeforeDefiniteAssignment,
+        );
+
+        assert!(use_before.iter().any(|slice| *slice == "ls_job-username"));
+    }
+
+    #[test]
+    fn routine_analysis_allows_selector_initial_checks_and_reuses_field_guards() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    TYPES: BEGIN OF ty_job,
+             jobname TYPE string,
+             username TYPE string,
+           END OF ty_job.
+    METHODS run.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+    DATA lt_jobs TYPE STANDARD TABLE OF ty_job WITH EMPTY KEY.
+    READ TABLE lt_jobs INTO DATA(ls_job) INDEX 1.
+    IF ls_job-jobname IS NOT INITIAL.
+      DATA lv_copy TYPE string.
+      lv_copy = ls_job-jobname.
+    ENDIF.
+  ENDMETHOD.
+ENDCLASS.";
+
+        let snapshot = store.publish("file:///routine_selector_field_guard.abap", 1, src);
+        let use_before = diagnostic_slices(
+            src,
+            &snapshot.symbols.diagnostics,
+            DiagnosticKind::UseBeforeDefiniteAssignment,
+        );
+
+        assert!(use_before.is_empty(), "{use_before:?}");
+    }
+
+    #[test]
+    fn routine_analysis_allows_selector_read_after_structure_non_initial_guard() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    TYPES: BEGIN OF ty_job,
+             jobname TYPE string,
+             username TYPE string,
+           END OF ty_job.
+    METHODS run.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+    DATA lt_jobs TYPE STANDARD TABLE OF ty_job WITH EMPTY KEY.
+    READ TABLE lt_jobs INTO DATA(ls_job) INDEX 1.
+    IF ls_job IS NOT INITIAL.
+      DATA lv_copy TYPE string.
+      lv_copy = ls_job-jobname.
+    ENDIF.
+  ENDMETHOD.
+ENDCLASS.";
+
+        let snapshot = store.publish("file:///routine_selector_after_struct_guard.abap", 1, src);
+        let use_before = diagnostic_slices(
+            src,
+            &snapshot.symbols.diagnostics,
+            DiagnosticKind::UseBeforeDefiniteAssignment,
+        );
+
+        assert!(use_before.is_empty(), "{use_before:?}");
+    }
+
+    #[test]
+    fn routine_analysis_skips_clear_initial_checks_and_lines_builtin_for_tables() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+    DATA lt_jobs TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+    CLEAR lt_jobs.
+    IF lt_jobs IS NOT INITIAL.
+      IF lines( lt_jobs ) > 1.
+        DATA lv_text TYPE string.
+        lv_text = 'many'.
+      ENDIF.
+    ENDIF.
+  ENDMETHOD.
+ENDCLASS.";
+
+        let snapshot = store.publish("file:///routine_safe_table_probes.abap", 1, src);
+        let use_before = diagnostic_slices(
+            src,
+            &snapshot.symbols.diagnostics,
+            DiagnosticKind::UseBeforeDefiniteAssignment,
+        );
+
+        assert!(use_before.is_empty(), "{use_before:?}");
+    }
+
+    #[test]
+    fn routine_analysis_reestablishes_is_not_initial_guards_after_table_mutation() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+    DATA lt_jobs TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+    DATA lt_copy TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+    IF lt_jobs IS NOT INITIAL.
+      lt_copy = lt_jobs.
+      DELETE lt_jobs WHERE table_line IS INITIAL.
+      lt_copy = lt_jobs.
+      IF lt_jobs IS NOT INITIAL.
+        lt_copy = lt_jobs.
+      ENDIF.
+    ENDIF.
+  ENDMETHOD.
+ENDCLASS.";
+
+        let snapshot = store.publish("file:///routine_table_guard_recheck.abap", 1, src);
+        let use_before = diagnostic_slices(
+            src,
+            &snapshot.symbols.diagnostics,
+            DiagnosticKind::UseBeforeDefiniteAssignment,
+        );
+
+        let lt_jobs_count = use_before
+            .iter()
+            .filter(|slice| **slice == "lt_jobs")
+            .count();
+        assert_eq!(lt_jobs_count, 1, "{use_before:?}");
+    }
+
+    #[test]
+    fn routine_analysis_inherits_is_not_initial_guards_into_nested_loop_scopes() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+    DATA lt_jobs TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+    DATA lv_limit TYPE i.
+    IF lt_jobs IS NOT INITIAL.
+      IF lv_limit IS NOT INITIAL.
+        DO lv_limit TIMES.
+          READ TABLE lt_jobs INTO DATA(lv_job) INDEX 1.
+          IF lv_limit > 0.
+            LOOP AT lt_jobs INTO DATA(lv_loop_job).
+            ENDLOOP.
+          ENDIF.
+        ENDDO.
+      ENDIF.
+    ENDIF.
+  ENDMETHOD.
+ENDCLASS.";
+
+        let snapshot = store.publish("file:///routine_nested_guarded_loops.abap", 1, src);
+        let use_before = diagnostic_slices(
+            src,
+            &snapshot.symbols.diagnostics,
+            DiagnosticKind::UseBeforeDefiniteAssignment,
+        );
+        let relevant: Vec<_> = use_before
+            .iter()
+            .filter(|slice| matches!(slice.as_str(), "lt_jobs" | "lv_limit"))
+            .cloned()
+            .collect();
+
+        assert!(relevant.is_empty(), "{use_before:?}");
+    }
+
+    #[test]
+    fn routine_analysis_assigns_loop_inline_targets_and_skips_row_field_where_probes() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    TYPES: BEGIN OF ty_evt,
+             rep_evtid TYPE string,
+             priority TYPE string,
+             msguid_out TYPE string,
+           END OF ty_evt.
+    METHODS run.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+    DATA lt_evt TYPE STANDARD TABLE OF ty_evt WITH EMPTY KEY.
+    LOOP AT lt_evt INTO DATA(ls_evt) WHERE priority = 'X'.
+      DATA lv_guid TYPE string.
+      lv_guid = ls_evt-msguid_out.
+      DELETE lt_evt WHERE rep_evtid = ls_evt-rep_evtid.
+    ENDLOOP.
+  ENDMETHOD.
+ENDCLASS.";
+
+        let snapshot = store.publish("file:///routine_loop_where_inline_target.abap", 1, src);
+        let use_before = diagnostic_slices(
+            src,
+            &snapshot.symbols.diagnostics,
+            DiagnosticKind::UseBeforeDefiniteAssignment,
+        );
+        let relevant: Vec<_> = use_before
+            .iter()
+            .filter(|slice| matches!(slice.as_str(), "priority" | "rep_evtid" | "ls_evt"))
+            .cloned()
+            .collect();
+
+        assert!(relevant.is_empty(), "{use_before:?}");
+    }
+
+    #[test]
+    fn routine_analysis_preserves_pre_loop_assignments_at_nested_call_sites() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS cx_demo DEFINITION.
+ENDCLASS.
+CLASS cx_demo IMPLEMENTATION.
+ENDCLASS.
+
+CLASS lcl_obj DEFINITION.
+  PUBLIC SECTION.
+    METHODS ping RAISING cx_demo.
+ENDCLASS.
+CLASS lcl_obj IMPLEMENTATION.
+  METHOD ping.
+  ENDMETHOD.
+ENDCLASS.
+
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run.
+ENDCLASS.
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+    DATA(lo_obj) = NEW lcl_obj( ).
+    DATA lv_limit TYPE i.
+    DATA lt_values TYPE STANDARD TABLE OF i WITH EMPTY KEY.
+    lv_limit = 1.
+    DO lv_limit TIMES.
+      READ TABLE lt_values INTO DATA(lv_value) INDEX 1.
+      IF lv_value IS INITIAL.
+        CLEAR lv_value.
+        EXIT.
+      ENDIF.
+      IF lv_limit > 0.
+        IF lt_values IS INITIAL.
+          EXIT.
+        ENDIF.
+        LOOP AT lt_values INTO DATA(lv_loop).
+          IF lv_limit > 0.
+            TRY.
+                lo_obj->ping( ).
+              CATCH cx_demo.
+            ENDTRY.
+          ENDIF.
+          CLEAR lv_loop.
+        ENDLOOP.
+      ENDIF.
+    ENDDO.
+  ENDMETHOD.
+ENDCLASS.";
+
+        let snapshot = store.publish("file:///routine_pre_loop_assignment.abap", 1, src);
+        let routine = snapshot
+            .routine_analysis()
+            .routines_for_unit(snapshot.symbols.unit_id)
+            .find(|routine| routine.descriptor.name.as_ref() == "run")
+            .expect("method routine");
+        let lo_obj = routine
+            .dataflow_inputs
+            .values
+            .iter()
+            .find(|value| value.name.as_ref() == "lo_obj")
+            .expect("lo_obj dataflow value")
+            .id;
+        let call_block_idx = routine
+            .cfg
+            .blocks
+            .iter()
+            .position(|block| {
+                block.instructions.iter().any(|instr_id| {
+                    let instr = &routine.ir.instructions[instr_id.as_usize()];
+                    matches!(instr.site, RoutineInstructionSite::Call { .. })
+                        && src[instr.range.clone()].contains("lo_obj->ping")
+                })
+            })
+            .expect("block containing lo_obj call");
+        let call_entry = &routine.dataflow_result.block_entry[call_block_idx];
+
+        assert!(
+            call_entry
+                .definitely_assigned_values
+                .iter()
+                .any(|value| *value == lo_obj),
+            "{:?}",
+            call_entry.definitely_assigned_values
         );
     }
 

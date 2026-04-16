@@ -38,6 +38,8 @@ pub struct RoutineDataflowInputs {
 pub struct BlockDataflowSummary {
     pub block: RoutineBlockId,
     pub maybe_written_values: Vec<DataflowValueId>,
+    pub definitely_assigned_values: Vec<DataflowValueId>,
+    pub definitely_bound_field_symbols: Vec<DataflowValueId>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

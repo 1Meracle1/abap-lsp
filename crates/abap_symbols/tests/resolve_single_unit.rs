@@ -3417,7 +3417,7 @@ lv_name = lo_box->payload-name.
 }
 
 #[test]
-fn semantic_facts_emit_field_symbol_assignment_flow_edges() {
+fn semantic_facts_emit_conditional_field_symbol_assignment_flow_edges_for_dereference_assign() {
     let src = r#"
 TYPES: BEGIN OF ty_row,
          name TYPE string,
@@ -3433,7 +3433,7 @@ ASSIGN lr_row->* TO FIELD-SYMBOL(<ls_row>).
         .semantic()
         .facts()
         .value_flow_edges()
-        .find(|edge| edge.kind == abap_symbols::ValueFlowKind::FieldSymbolAssignment)
+        .find(|edge| edge.kind == abap_symbols::ValueFlowKind::ConditionalFieldSymbolAssignment)
         .expect("field-symbol assignment flow edge");
     assert_eq!(&src[edge.source_range.clone()], "lr_row->*");
     assert!(
@@ -3443,6 +3443,31 @@ ASSIGN lr_row->* TO FIELD-SYMBOL(<ls_row>).
     match &edge.target {
         abap_symbols::ValueFlowTargetData::FieldSymbol { name, .. } => {
             assert_eq!(name.as_deref(), Some("<ls_row>"));
+        }
+        other => panic!("expected field-symbol target, got {other:?}"),
+    }
+}
+
+#[test]
+fn semantic_facts_emit_field_symbol_assignment_flow_edges_for_direct_local_assign() {
+    let src = r#"
+DATA lv_text TYPE string.
+
+ASSIGN lv_text TO FIELD-SYMBOL(<lv_text>).
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///fact_assign_local_field_symbol.abap", src, &parsed);
+
+    let edge = unit
+        .semantic()
+        .facts()
+        .value_flow_edges()
+        .find(|edge| edge.kind == abap_symbols::ValueFlowKind::FieldSymbolAssignment)
+        .expect("field-symbol assignment flow edge");
+    assert_eq!(&src[edge.source_range.clone()], "lv_text");
+    match &edge.target {
+        abap_symbols::ValueFlowTargetData::FieldSymbol { name, .. } => {
+            assert_eq!(name.as_deref(), Some("<lv_text>"));
         }
         other => panic!("expected field-symbol target, got {other:?}"),
     }

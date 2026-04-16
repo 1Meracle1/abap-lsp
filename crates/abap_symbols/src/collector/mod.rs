@@ -26,11 +26,12 @@ use abap_lexer::{TextRange, Token, TokenKind};
 use crate::builtins::builtin_routine_spec;
 use crate::def_map::{
     AssignmentSiteData, CallSiteData, ClassInheritanceData, ClassMemberData, Diagnostic,
-    ExpressionFactData, FieldAccess, FieldTypeRefData, FormRoutineData, FunctionModuleData,
-    ImplementedInterfaceData, IncludeEdge, LoopWhereFieldContext, MemberAliasData,
-    NamedArgumentAccess, PerformCallData, ReferenceData, RoutineControlRegionData, RoutineSiteData,
-    SqlNameRefData, SqlPredicateData, SqlProjectionData, SqlQueryData, SqlSourceData,
-    SqlTargetData, StructureData, SymbolData, UnitAnalysis, ValueFlowEdgeData,
+    ExpressionFactData, FieldAccess, FieldSymbolStateCheckData, FieldTypeRefData, FormRoutineData,
+    FunctionModuleData, ImplementedInterfaceData, IncludeEdge, LoopWhereFieldContext,
+    MemberAliasData, NamedArgumentAccess, PerformCallData, ReferenceData, RoutineControlRegionData,
+    RoutineSiteData, SqlNameRefData, SqlPredicateData, SqlProjectionData, SqlQueryData,
+    SqlSourceData, SqlTargetData, StructureData, SymbolData, UnitAnalysis, ValueFlowEdgeData,
+    ValueStateCheckData,
 };
 use crate::ids::{ScopeId, StructureId, SymbolId, UnitId};
 use crate::scope::{Namespace, ScopeData, ScopeKind};
@@ -127,6 +128,8 @@ pub struct Collector<'a> {
     value_flow_edges: Vec<ValueFlowEdgeData>,
     perform_calls: Vec<PerformCallData>,
     routine_sites: Vec<RoutineSiteData>,
+    field_symbol_state_checks: Vec<FieldSymbolStateCheckData>,
+    value_state_checks: Vec<ValueStateCheckData>,
     routine_control_regions: Vec<RoutineControlRegionData>,
     sql_queries: Vec<SqlQueryData>,
     sql_sources: Vec<SqlSourceData>,
@@ -179,6 +182,8 @@ impl<'a> Collector<'a> {
             value_flow_edges: Vec::new(),
             perform_calls: Vec::new(),
             routine_sites: Vec::new(),
+            field_symbol_state_checks: Vec::new(),
+            value_state_checks: Vec::new(),
             routine_control_regions: Vec::new(),
             sql_queries: Vec::new(),
             sql_sources: Vec::new(),
@@ -235,6 +240,8 @@ impl<'a> Collector<'a> {
             value_flow_edges: self.value_flow_edges,
             perform_calls: self.perform_calls,
             routine_sites: self.routine_sites,
+            field_symbol_state_checks: self.field_symbol_state_checks,
+            value_state_checks: self.value_state_checks,
             routine_control_regions: self.routine_control_regions,
             sql_queries: self.sql_queries,
             sql_sources: self.sql_sources,

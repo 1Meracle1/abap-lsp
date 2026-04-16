@@ -64,6 +64,7 @@ impl<'a> Collector<'a> {
                     scope,
                     base_namespace: namespace,
                     base_name,
+                    base_range: tokens[0].range.start..tokens[covered_end - 1].range.end,
                     field_path,
                     in_type_position: false,
                 });
@@ -89,6 +90,7 @@ impl<'a> Collector<'a> {
             scope,
             base_namespace: Namespace::Value,
             base_name: Arc::<str>::from(first.text.to_ascii_lowercase()),
+            base_range: first.range.clone(),
             field_path: Vec::new(),
             in_type_position: false,
         })
@@ -454,16 +456,19 @@ impl<'a> Collector<'a> {
                     scope,
                     base_namespace: Namespace::Value,
                     base_name: name,
+                    base_range: self.file.range(node),
                     field_path: Vec::new(),
                     in_type_position: false,
                 })
             }
             SyntaxKind::SelectorExpr => {
-                let (namespace, base_name, _, field_path) = self.selector_access_chain(node)?;
+                let (namespace, base_name, base_range, field_path) =
+                    self.selector_access_chain(node)?;
                 (namespace == Namespace::Value).then_some(FieldAccess {
                     scope,
                     base_namespace: namespace,
                     base_name,
+                    base_range,
                     field_path,
                     in_type_position: false,
                 })

@@ -670,6 +670,11 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                 self.ctx
                     .collect_token_expression_refs_infos(&tokens, scope, true);
             }
+            SyntaxKind::IsPredicate => {
+                let tokens = self.ctx.syntax_token_nodes(node);
+                self.ctx
+                    .collect_token_expression_refs_infos(&tokens, scope, true);
+            }
             SyntaxKind::SubstringExpr => self.collect_substring_expr(node, scope),
             SyntaxKind::CallExpr => self.collect_call_expr(node, scope),
             SyntaxKind::LetExpr => self.collect_let_expr(node, scope),
@@ -1818,6 +1823,7 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                             scope: child_scope,
                             base_namespace: Namespace::Value,
                             base_name: Arc::<str>::from(name_tok.text.to_ascii_lowercase()),
+                            base_range: name_tok.range.clone(),
                             field_path: Vec::new(),
                             in_type_position: false,
                         }),
@@ -2230,6 +2236,7 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                                 scope: child_scope,
                                 base_namespace: Namespace::Value,
                                 base_name: Arc::<str>::from(name_tok.text.to_ascii_lowercase()),
+                                base_range: name_tok.range.clone(),
                                 field_path: Vec::new(),
                                 in_type_position: false,
                             }),
@@ -2309,6 +2316,7 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                 scope,
                 base_namespace: namespace,
                 base_name,
+                base_range: tokens[first_idx].range.start..tokens[next_idx - 1].range.end,
                 field_path,
                 in_type_position: false,
             });
@@ -2321,6 +2329,7 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                 scope,
                 base_namespace: Namespace::Value,
                 base_name: Arc::<str>::from(token.text.to_ascii_lowercase()),
+                base_range: token.range.clone(),
                 field_path: Vec::new(),
                 in_type_position: false,
             })
@@ -2452,6 +2461,7 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
             range: self.ctx.file().range(node),
             lhs_range: self.ctx.file().range(lhs),
             rhs_range: self.ctx.file().range(rhs),
+            lhs_target_access: self.value_access_from_node(lhs, scope),
             lhs: lhs_fact,
             rhs: rhs_fact,
             rhs_is_top_level_sum: self.ctx.rhs_is_top_level_sum(rhs),
@@ -2963,7 +2973,7 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                     child_scope,
                     Arc::clone(&iter_name),
                     SymbolKind::Variable,
-                    decl_range,
+                    decl_range.clone(),
                     structure,
                     declared_type,
                     None,
@@ -2981,6 +2991,7 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                                     scope: child_scope,
                                     base_namespace: Namespace::Value,
                                     base_name: iter_name,
+                                    base_range: decl_range.clone(),
                                     field_path: Vec::new(),
                                     in_type_position: false,
                                 }),
@@ -3302,15 +3313,18 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                 scope,
                 base_namespace: Namespace::Value,
                 base_name: name,
+                base_range: self.ctx.file().range(node),
                 field_path: Vec::new(),
                 in_type_position: false,
             }),
             SyntaxKind::SelectorExpr => {
-                let (namespace, base_name, _, field_path) = self.ctx.selector_access_chain(node)?;
+                let (namespace, base_name, base_range, field_path) =
+                    self.ctx.selector_access_chain(node)?;
                 (namespace == Namespace::Value).then_some(FieldAccess {
                     scope,
                     base_namespace: namespace,
                     base_name,
+                    base_range,
                     field_path,
                     in_type_position: false,
                 })
@@ -3322,6 +3336,7 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                         scope,
                         base_namespace: Namespace::Value,
                         base_name: Arc::<str>::from(tokens[0].text.to_ascii_lowercase()),
+                        base_range: tokens[0].range.clone(),
                         field_path: Vec::new(),
                         in_type_position: false,
                     })
@@ -3612,14 +3627,20 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                     self.collect_expr(base, scope);
                 }
             } else {
-                self.ctx
-                    .add_reference(scope, Arc::clone(&base_name), namespace, kind, base_range);
+                self.ctx.add_reference(
+                    scope,
+                    Arc::clone(&base_name),
+                    namespace,
+                    kind,
+                    base_range.clone(),
+                );
             }
             if !field_path.is_empty() {
                 self.ctx.emit_field_access(FieldAccess {
                     scope,
                     base_namespace: namespace,
                     base_name,
+                    base_range: base_range.clone(),
                     field_path,
                     in_type_position: false,
                 });
