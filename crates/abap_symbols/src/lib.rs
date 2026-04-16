@@ -69,7 +69,7 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
 
-    use super::{Namespace, ReferenceKind, SymbolKind, analyze_unit};
+    use super::{Namespace, ReferenceKind, Resolution, SymbolKind, analyze_unit};
     use crate::ids::{ScopeId, UnitId};
     use crate::project::{ProjectAnalysis, analyze_unit_locally};
     use crate::resolver::build_scope_index;
@@ -123,6 +123,71 @@ mod tests {
             .expect("event symbol");
         assert_eq!(event.name.as_ref(), "start-of-selection");
         assert_eq!(&src[event.decl_range.clone()], "START-OF-SELECTION");
+    }
+
+    #[test]
+    fn parameters_declare_symbols_and_at_selection_screen_becomes_event_block() {
+        let src = "\
+REPORT z_demo.\n\
+\n\
+PARAMETERS:\n\
+  p_text TYPE string LOWER CASE OBLIGATORY,\n\
+  p_pub  TYPE localfile LOWER CASE OBLIGATORY,\n\
+  p_app  TYPE ssfappl   DEFAULT 'DFAULT',\n\
+  p_sym  TYPE ssfencr   DEFAULT 'AES128-CBC'.\n\
+\n\
+AT SELECTION-SCREEN ON VALUE-REQUEST FOR p_pub.\n\
+  PERFORM pick_public_key_file CHANGING p_pub.\n\
+\n\
+START-OF-SELECTION.\n\
+  WRITE p_text.\n";
+        let parsed = parse(src);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let unit = analyze_unit("file:///params_event.abap", src, &parsed);
+
+        for name in ["p_text", "p_pub", "p_app", "p_sym"] {
+            assert!(
+                unit.symbols.iter().any(|symbol| {
+                    symbol.kind == SymbolKind::Variable && symbol.name.as_ref() == name
+                }),
+                "missing parameter symbol {name}: {:?}",
+                unit.symbols
+            );
+        }
+
+        let event = unit
+            .symbols
+            .iter()
+            .find(|symbol| {
+                symbol.kind == SymbolKind::Event
+                    && symbol.name.as_ref() == "at selection-screen on value-request for p_pub"
+            })
+            .expect("selection-screen event symbol");
+        assert_eq!(
+            &src[event.decl_range.clone()],
+            "AT SELECTION-SCREEN ON VALUE-REQUEST FOR p_pub"
+        );
+
+        let header_ref_offset = src.find("FOR p_pub").expect("header ref") + "FOR ".len() + 1;
+        let header_ref = unit
+            .semantic()
+            .refs()
+            .reference_at_offset(header_ref_offset)
+            .expect("header reference");
+        assert_eq!(header_ref.name.as_ref(), "p_pub");
+        assert!(matches!(header_ref.resolution, Some(Resolution::Symbol(_))));
+
+        assert!(
+            unit.diagnostics.iter().all(|diagnostic| {
+                !diagnostic.message.contains("unknown symbol 'p_pub'")
+                    && !diagnostic.message.contains("unknown symbol 'p_app'")
+                    && !diagnostic.message.contains("unknown symbol 'p_sym'")
+                    && !diagnostic.message.contains("unknown symbol 'selection'")
+                    && !diagnostic.message.contains("unknown symbol 'request'")
+            }),
+            "{:#?}",
+            unit.diagnostics
+        );
     }
 
     #[test]

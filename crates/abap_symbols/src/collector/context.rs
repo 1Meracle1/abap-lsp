@@ -429,6 +429,13 @@ impl<'ctx, 'a> DeclContext<'ctx, 'a> {
         self.collector.event_block_header_name(node)
     }
 
+    pub(super) fn event_block_header_value_references(
+        &self,
+        node: NodeId,
+    ) -> Vec<(std::sync::Arc<str>, abap_lexer::TextRange)> {
+        self.collector.event_block_header_value_references(node)
+    }
+
     pub(super) fn declare_plain_symbol(
         &mut self,
         scope: ScopeId,

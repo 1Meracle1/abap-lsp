@@ -578,6 +578,7 @@ impl<'a> AstNode<'a> for DataLikeDecl<'a> {
         matches!(
             kind,
             SyntaxKind::DataDecl
+                | SyntaxKind::ParametersDecl
                 | SyntaxKind::TypesDecl
                 | SyntaxKind::ConstantsDecl
                 | SyntaxKind::FieldSymbolsDecl
@@ -933,6 +934,7 @@ impl<'a> DataLikeDecl<'a> {
         match self.syntax.kind() {
             SyntaxKind::ConstantsDecl => Some(DataLikeStorageKind::Constant),
             SyntaxKind::StaticsDecl => Some(DataLikeStorageKind::Static),
+            SyntaxKind::ParametersDecl => Some(DataLikeStorageKind::Instance),
             SyntaxKind::DataDecl => {
                 let mut texts = self
                     .syntax

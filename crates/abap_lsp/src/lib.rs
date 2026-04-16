@@ -7215,6 +7215,70 @@ ENDIF.\n\
     }
 
     #[test]
+    fn hover_and_definition_work_for_selection_screen_value_request_parameter() {
+        let state = ServerState::default();
+        let text = "\
+PARAMETERS p_pub TYPE string.\n\
+AT SELECTION-SCREEN ON VALUE-REQUEST FOR p_pub.\n\
+  WRITE p_pub.\n";
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///selection_screen_hover.abap").expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: text.to_string(),
+                },
+            },
+        );
+
+        let header_offset = text.find("FOR p_pub").expect("header ref") + "FOR ".len() + 1;
+        let header_position = offset_to_position(text, header_offset).expect("header position");
+
+        let hover = hover(
+            &state,
+            &HoverParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///selection_screen_hover.abap").expect("uri"),
+                    },
+                    position: header_position,
+                },
+                work_done_progress_params: Default::default(),
+            },
+        )
+        .expect("header hover");
+
+        let HoverContents::Markup(markup) = hover.contents else {
+            panic!("expected markdown hover");
+        };
+        assert!(markup.value.contains("`p_pub`"));
+        assert!(markup.value.contains("TYPE string"));
+
+        let definition_result = definition(
+            &state,
+            &GotoDefinitionParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///selection_screen_hover.abap").expect("uri"),
+                    },
+                    position: header_position,
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            },
+        )
+        .expect("header definition");
+        let GotoDefinitionResponse::Scalar(location) = definition_result else {
+            panic!("expected scalar location");
+        };
+        let decl_offset = text.find("p_pub TYPE string").expect("declaration");
+        let decl_position = offset_to_position(text, decl_offset).expect("decl position");
+        assert_eq!(location.range.start, decl_position);
+    }
+
+    #[test]
     fn hover_returns_form_parameter_with_declared_type() {
         let state = ServerState::default();
         let text = "FORM f CHANGING cv TYPE string.\n  cv = 'x'.\nENDFORM.\n";

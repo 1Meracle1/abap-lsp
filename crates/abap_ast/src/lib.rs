@@ -141,6 +141,8 @@ pub enum SyntaxKind {
     InterfacesStmt,
     /// `REPORT ... .`
     ReportStmt,
+    /// `PARAMETERS ... .`
+    ParametersDecl,
     /// `INCLUDE ... .`
     IncludeStmt,
     /// One include program name inside `INCLUDE ... .`
@@ -503,6 +505,7 @@ impl SyntaxKind {
             Self::MethodsStmt => "MethodsStmt",
             Self::InterfacesStmt => "InterfacesStmt",
             Self::ReportStmt => "ReportStmt",
+            Self::ParametersDecl => "ParametersDecl",
             Self::IncludeStmt => "IncludeStmt",
             Self::IncludeName => "IncludeName",
             Self::TypePoolsStmt => "TypePoolsStmt",

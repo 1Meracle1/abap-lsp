@@ -262,6 +262,15 @@ impl<'ctx, 'a> DeclLowering<'ctx, 'a> {
         let child_scope =
             self.ctx
                 .push_scope(ScopeKind::EventBlock, node_range, Some(scope), Some(owner));
+        for (name, range) in self.ctx.event_block_header_value_references(node) {
+            self.ctx.add_reference(
+                child_scope,
+                name,
+                Namespace::Value,
+                ReferenceKind::Identifier,
+                range,
+            );
+        }
         for child in self.ctx.file().children(node) {
             self.ctx.walk_node(child, child_scope);
         }

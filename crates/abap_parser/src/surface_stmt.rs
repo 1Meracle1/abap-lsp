@@ -19,6 +19,7 @@ use crate::type_ref::{build_type_ref_node, parse_type_ref_tokens};
 enum EventBlockLead {
     Single(&'static str),
     Hyphenated(&'static [&'static str]),
+    AtSelectionScreen,
 }
 
 const EVENT_BLOCK_LEADS: &[EventBlockLead] = &[
@@ -27,11 +28,13 @@ const EVENT_BLOCK_LEADS: &[EventBlockLead] = &[
     EventBlockLead::Hyphenated(&["end", "of", "selection"]),
     EventBlockLead::Hyphenated(&["top", "of", "page"]),
     EventBlockLead::Hyphenated(&["end", "of", "page"]),
+    EventBlockLead::AtSelectionScreen,
 ];
 
 const EVENT_BLOCK_BODY_BOUNDARY_KEYWORDS: &[&str] = &[
     "START",
     "END",
+    "AT",
     "INITIALIZATION",
     "TOP",
     "REPORT",
@@ -3912,6 +3915,14 @@ fn event_block_header_end(source: &str, tokens: &[Token], idx: usize) -> Option<
                     return Some(next);
                 }
             }
+            EventBlockLead::AtSelectionScreen => {
+                if is_keyword(source, start_tok, "at")
+                    && let Some(next) =
+                        match_hyphenated_keyword(source, tokens, idx + 1, &["selection", "screen"])
+                {
+                    return Some(next);
+                }
+            }
         }
     }
 
@@ -7758,6 +7769,20 @@ END-OF-PAGE.\nWRITE 'e'.",
         let root = parsed.file.root();
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::EventBlock), 5);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::WriteStmt), 5);
+    }
+
+    #[test]
+    fn parses_at_selection_screen_event_block_variants() {
+        let parsed = crate::parse(
+            "AT SELECTION-SCREEN OUTPUT.\nWRITE 'a'.\n\
+AT SELECTION-SCREEN.\nWRITE 'b'.\n\
+AT SELECTION-SCREEN ON VALUE-REQUEST FOR p_pub.\nWRITE 'c'.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::EventBlock), 3);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::WriteStmt), 3);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::UnparsedStmt), 0);
     }
 
     #[test]

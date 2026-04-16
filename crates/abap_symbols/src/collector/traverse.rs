@@ -25,7 +25,7 @@ impl<'a> Collector<'a> {
                     self.collect_token_expression_refs_infos(&tokens, scope, true);
                 }
             }
-            SyntaxKind::DataDecl | SyntaxKind::StaticsDecl => self
+            SyntaxKind::DataDecl | SyntaxKind::ParametersDecl | SyntaxKind::StaticsDecl => self
                 .decl_lowering()
                 .walk_data_like_decl(node, scope, SymbolKind::Variable),
             SyntaxKind::TypesDecl => {

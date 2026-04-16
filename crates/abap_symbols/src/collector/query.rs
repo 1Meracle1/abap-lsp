@@ -233,90 +233,175 @@ impl<'a> Collector<'a> {
         None
     }
 
-    pub(super) fn event_block_header_name(&self, node: NodeId) -> Option<(Arc<str>, TextRange)> {
-        let tokens: Vec<_> = self
-            .file
+    fn event_header_tokens(&self, node: NodeId) -> Vec<SyntaxNodeRef<'_>> {
+        self.file
             .children(node)
             .filter(|&child| self.file.kind(child) == SyntaxKind::Token)
             .map(|child| self.syntax(child))
             .take_while(|token| token.text(self.source) != Some("."))
-            .collect();
+            .filter(|token| token.token_kind() != Some(TokenKind::Comment))
+            .collect()
+    }
+
+    fn event_header_token_is(
+        &self,
+        tokens: &[SyntaxNodeRef<'_>],
+        idx: usize,
+        expected: &str,
+    ) -> bool {
+        tokens
+            .get(idx)
+            .and_then(|token| token.text(self.source))
+            .is_some_and(|text| text.eq_ignore_ascii_case(expected))
+    }
+
+    fn event_header_matches_hyphenated(
+        &self,
+        tokens: &[SyntaxNodeRef<'_>],
+        idx: usize,
+        parts: &[&str],
+    ) -> Option<usize> {
+        let mut i = idx;
+        for (part_idx, part) in parts.iter().enumerate() {
+            if !self.event_header_token_is(tokens, i, part) {
+                return None;
+            }
+            i += 1;
+            if part_idx + 1 < parts.len() {
+                if tokens.get(i).and_then(|token| token.text(self.source)) != Some("-") {
+                    return None;
+                }
+                i += 1;
+            }
+        }
+        Some(i)
+    }
+
+    fn render_event_header_name(&self, tokens: &[SyntaxNodeRef<'_>]) -> Option<Arc<str>> {
+        let mut rendered = String::new();
+        for token in tokens {
+            let text = token.text(self.source)?;
+            if text == "-" {
+                rendered.push('-');
+                continue;
+            }
+            if !rendered.is_empty() && !rendered.ends_with('-') {
+                rendered.push(' ');
+            }
+            rendered.push_str(&text.to_ascii_lowercase());
+        }
+        (!rendered.is_empty()).then(|| Arc::<str>::from(rendered))
+    }
+
+    fn event_header_ident_reference(
+        &self,
+        tokens: &[SyntaxNodeRef<'_>],
+        idx: usize,
+    ) -> Option<(Arc<str>, TextRange)> {
+        let token = *tokens.get(idx)?;
+        (token.token_kind() == Some(TokenKind::Ident))
+            .then(|| Some((token.lower_trimmed_text(self.source)?, token.range())))
+            .flatten()
+    }
+
+    pub(super) fn event_block_header_name(&self, node: NodeId) -> Option<(Arc<str>, TextRange)> {
+        let tokens = self.event_header_tokens(node);
         let (first, last) = match tokens.as_slice() {
-            [token]
-                if token
-                    .text(self.source)
-                    .is_some_and(|text| text.eq_ignore_ascii_case("initialization")) =>
+            [token] if self.event_header_token_is(&tokens, 0, "initialization") => (*token, *token),
+            _ if self
+                .event_header_matches_hyphenated(&tokens, 0, &["start", "of", "selection"])
+                .is_some_and(|next| next == tokens.len()) =>
             {
-                (*token, *token)
+                (*tokens.first()?, *tokens.last()?)
             }
-            [start, minus_1, of, minus_2, end]
-                if start
-                    .text(self.source)
-                    .is_some_and(|text| text.eq_ignore_ascii_case("start"))
-                    && minus_1.text(self.source) == Some("-")
-                    && of
-                        .text(self.source)
-                        .is_some_and(|text| text.eq_ignore_ascii_case("of"))
-                    && minus_2.text(self.source) == Some("-")
-                    && end
-                        .text(self.source)
-                        .is_some_and(|text| text.eq_ignore_ascii_case("selection")) =>
+            _ if self
+                .event_header_matches_hyphenated(&tokens, 0, &["end", "of", "selection"])
+                .is_some_and(|next| next == tokens.len()) =>
             {
-                (*start, *end)
+                (*tokens.first()?, *tokens.last()?)
             }
-            [start, minus_1, of, minus_2, end]
-                if start
-                    .text(self.source)
-                    .is_some_and(|text| text.eq_ignore_ascii_case("end"))
-                    && minus_1.text(self.source) == Some("-")
-                    && of
-                        .text(self.source)
-                        .is_some_and(|text| text.eq_ignore_ascii_case("of"))
-                    && minus_2.text(self.source) == Some("-")
-                    && end
-                        .text(self.source)
-                        .is_some_and(|text| text.eq_ignore_ascii_case("selection")) =>
+            _ if self
+                .event_header_matches_hyphenated(&tokens, 0, &["top", "of", "page"])
+                .is_some_and(|next| next == tokens.len()) =>
             {
-                (*start, *end)
+                (*tokens.first()?, *tokens.last()?)
             }
-            [start, minus_1, of, minus_2, end]
-                if start
-                    .text(self.source)
-                    .is_some_and(|text| text.eq_ignore_ascii_case("top"))
-                    && minus_1.text(self.source) == Some("-")
-                    && of
-                        .text(self.source)
-                        .is_some_and(|text| text.eq_ignore_ascii_case("of"))
-                    && minus_2.text(self.source) == Some("-")
-                    && end
-                        .text(self.source)
-                        .is_some_and(|text| text.eq_ignore_ascii_case("page")) =>
+            _ if self
+                .event_header_matches_hyphenated(&tokens, 0, &["end", "of", "page"])
+                .is_some_and(|next| next == tokens.len()) =>
             {
-                (*start, *end)
+                (*tokens.first()?, *tokens.last()?)
             }
-            [start, minus_1, of, minus_2, end]
-                if start
-                    .text(self.source)
-                    .is_some_and(|text| text.eq_ignore_ascii_case("end"))
-                    && minus_1.text(self.source) == Some("-")
-                    && of
-                        .text(self.source)
-                        .is_some_and(|text| text.eq_ignore_ascii_case("of"))
-                    && minus_2.text(self.source) == Some("-")
-                    && end
-                        .text(self.source)
-                        .is_some_and(|text| text.eq_ignore_ascii_case("page")) =>
+            _ if self.event_header_token_is(&tokens, 0, "at")
+                && self
+                    .event_header_matches_hyphenated(&tokens, 1, &["selection", "screen"])
+                    .is_some() =>
             {
-                (*start, *end)
+                (*tokens.first()?, *tokens.last()?)
             }
             _ => return None,
         };
         Some((
-            Arc::<str>::from(
-                self.source[first.range().start..last.range().end].to_ascii_lowercase(),
-            ),
+            self.render_event_header_name(&tokens)?,
             first.range().start..last.range().end,
         ))
+    }
+
+    pub(super) fn event_block_header_value_references(
+        &self,
+        node: NodeId,
+    ) -> Vec<(Arc<str>, TextRange)> {
+        let tokens = self.event_header_tokens(node);
+        let Some(after_selection_screen) =
+            self.event_header_matches_hyphenated(&tokens, 1, &["selection", "screen"])
+        else {
+            return Vec::new();
+        };
+        if !self.event_header_token_is(&tokens, 0, "at")
+            || !self.event_header_token_is(&tokens, after_selection_screen, "on")
+        {
+            return Vec::new();
+        }
+
+        let target_idx = after_selection_screen + 1;
+        if self.event_header_token_is(&tokens, target_idx, "end")
+            && self.event_header_token_is(&tokens, target_idx + 1, "of")
+        {
+            return self
+                .event_header_ident_reference(&tokens, target_idx + 2)
+                .into_iter()
+                .collect();
+        }
+
+        if let Some(after_request) =
+            self.event_header_matches_hyphenated(&tokens, target_idx, &["help", "request"])
+            && self.event_header_token_is(&tokens, after_request, "for")
+        {
+            return self
+                .event_header_ident_reference(&tokens, after_request + 1)
+                .into_iter()
+                .collect();
+        }
+
+        if let Some(after_request) =
+            self.event_header_matches_hyphenated(&tokens, target_idx, &["value", "request"])
+            && self.event_header_token_is(&tokens, after_request, "for")
+        {
+            return self
+                .event_header_ident_reference(&tokens, after_request + 1)
+                .into_iter()
+                .collect();
+        }
+
+        self.event_header_ident_reference(&tokens, target_idx)
+            .into_iter()
+            .filter(|(name, _)| {
+                !matches!(
+                    name.as_ref(),
+                    "output" | "block" | "radiobutton" | "exit" | "help" | "value"
+                )
+            })
+            .collect()
     }
 
     pub(super) fn constructor_type_ref(&self, node: NodeId) -> Option<(Arc<str>, TextRange)> {

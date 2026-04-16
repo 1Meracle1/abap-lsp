@@ -24,10 +24,45 @@ fn is_keyword(source: &str, token: &Token, kw: &str) -> bool {
 fn is_structured_decl_continuation_keyword(source: &str, token: &Token) -> bool {
     is_keyword(source, token, "types")
         || is_keyword(source, token, "data")
+        || is_keyword(source, token, "parameters")
         || is_keyword(source, token, "statics")
         || is_keyword(source, token, "constants")
         || is_keyword(source, token, "field-symbols")
 }
+
+const PARAMETERS_LENGTH_STOP_KEYWORDS: &[&str] = &[
+    "TYPE",
+    "LIKE",
+    "AS",
+    "DEFAULT",
+    "HELP",
+    "LOWER",
+    "MATCHCODE",
+    "MEMORY",
+    "MODIF",
+    "NO",
+    "OBLIGATORY",
+    "RADIOBUTTON",
+    "USER",
+    "VALUE",
+    "VISIBLE",
+];
+
+const PARAMETERS_TYPE_STOP_KEYWORDS: &[&str] = &[
+    "AS",
+    "DEFAULT",
+    "HELP",
+    "LOWER",
+    "MATCHCODE",
+    "MEMORY",
+    "MODIF",
+    "NO",
+    "OBLIGATORY",
+    "RADIOBUTTON",
+    "USER",
+    "VALUE",
+    "VISIBLE",
+];
 
 /// If `tokens[idx]` begins `DATA … TYPE … .` (optionally `DATA:` and comma-separated clauses),
 /// returns the structured node and the index after the closing `.`. Otherwise `None`.
@@ -89,6 +124,55 @@ pub fn try_parse_data_decl(
         end_exclusive
     };
     Some((node, next))
+}
+
+pub fn try_parse_parameters_decl(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    _errors: &mut Vec<crate::ParseError>,
+) -> Option<(NodeId, usize)> {
+    let kw_tok = tokens.get(idx)?;
+    if !is_keyword(source, kw_tok, "parameters") {
+        return None;
+    }
+
+    let mut i = idx + 1;
+    let has_colon = match tokens.get(i).map(|t| t.kind) {
+        Some(TokenKind::Colon) => {
+            i += 1;
+            true
+        }
+        _ => false,
+    };
+
+    let mut clause_nodes = Vec::new();
+    loop {
+        while tokens.get(i).map(|t| t.kind) == Some(TokenKind::Comment) {
+            i += 1;
+        }
+        let (clause, next_i) = parse_parameters_clause(b, source, tokens, i)?;
+        clause_nodes.push(clause);
+        i = next_i;
+        let next = tokens.get(i)?;
+        match next.kind {
+            TokenKind::Comma if has_colon => i += 1,
+            TokenKind::Period => {
+                let mut children = Vec::with_capacity(clause_nodes.len() + 2);
+                children.push(token_leaf(b, kw_tok));
+                children.extend(clause_nodes);
+                children.push(token_leaf(b, next));
+                let node = b.branch(
+                    SyntaxKind::ParametersDecl,
+                    kw_tok.range.start..next.range.end,
+                    &children,
+                );
+                return Some((node, i + 1));
+            }
+            _ => return None,
+        }
+    }
 }
 
 pub fn try_parse_class_data_decl(
@@ -340,14 +424,18 @@ fn parse_optional_length_spec(
     ))
 }
 
-fn parse_value_clause(
+fn parse_value_clause_keywords(
     b: &mut SyntaxTreeBuilder,
     source: &str,
     tokens: &[Token],
     idx: usize,
+    keywords: &[&str],
 ) -> Option<(NodeId, usize)> {
     let value_tok = tokens.get(idx)?;
-    if !is_keyword(source, value_tok, "value") {
+    if !keywords
+        .iter()
+        .any(|keyword| is_keyword(source, value_tok, keyword))
+    {
         return None;
     }
     let value_kw = token_leaf(b, value_tok);
@@ -357,6 +445,15 @@ fn parse_value_clause(
         b.branch(SyntaxKind::ValueClause, range, &[value_kw, expr]),
         next,
     ))
+}
+
+fn parse_value_clause(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+) -> Option<(NodeId, usize)> {
+    parse_value_clause_keywords(b, source, tokens, idx, &["value"])
 }
 
 fn parse_inline_name(
@@ -614,6 +711,71 @@ fn parse_decl_clause(
 
     let range = b.span(*children.first().unwrap()).start..b.span(*children.last().unwrap()).end;
     Some((b.branch(node_kind, range, &children), i))
+}
+
+fn parse_parameters_clause(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+) -> Option<(NodeId, usize)> {
+    let (name, mut i) = parse_data_decl_name(b, source, tokens, idx)?;
+    let mut children = vec![name];
+
+    if let Some((legacy_len, j)) = parse_optional_paren_length(b, tokens, i) {
+        children.push(legacy_len);
+        i = j;
+    }
+
+    while let Some((length, j)) =
+        parse_optional_length_spec(b, source, tokens, i, PARAMETERS_LENGTH_STOP_KEYWORDS)
+    {
+        children.push(length);
+        i = j;
+    }
+
+    if let Some(type_kw) = tokens.get(i)
+        && (is_keyword(source, type_kw, "type") || is_keyword(source, type_kw, "like"))
+    {
+        children.push(token_leaf(b, type_kw));
+        i += 1;
+
+        let (typed, j) =
+            parse_type_ref_tokens(b, source, tokens, i, PARAMETERS_TYPE_STOP_KEYWORDS)?;
+        children.push(typed);
+        i = j;
+
+        while let Some((length, j)) =
+            parse_optional_length_spec(b, source, tokens, i, PARAMETERS_TYPE_STOP_KEYWORDS)
+        {
+            children.push(length);
+            i = j;
+        }
+    }
+
+    while let Some(tok) = tokens.get(i) {
+        match tok.kind {
+            TokenKind::Comment => {
+                children.push(token_leaf(b, tok));
+                i += 1;
+            }
+            TokenKind::Comma | TokenKind::Period | TokenKind::Eof => break,
+            _ => {
+                if let Some((value, j)) =
+                    parse_value_clause_keywords(b, source, tokens, i, &["default"])
+                {
+                    children.push(value);
+                    i = j;
+                } else {
+                    children.push(token_leaf(b, tok));
+                    i += 1;
+                }
+            }
+        }
+    }
+
+    let range = b.span(*children.first().unwrap()).start..b.span(*children.last().unwrap()).end;
+    Some((b.branch(SyntaxKind::DataTypedClause, range, &children), i))
 }
 
 fn parse_begin_of_decl_clause(
@@ -1258,6 +1420,24 @@ mod tests {
         assert_eq!(file.count_kind(file.root(), SyntaxKind::DataDecl), 1);
         assert_eq!(file.count_kind(file.root(), SyntaxKind::DataTypedClause), 2);
         assert_eq!(file.count_kind(file.root(), SyntaxKind::ValueClause), 1);
+    }
+
+    #[test]
+    fn parameters_chain_parses_typed_clauses_and_defaults() {
+        let src = "PARAMETERS:\n  p_text TYPE string LOWER CASE OBLIGATORY,\n  p_pub TYPE localfile LOWER CASE OBLIGATORY,\n  p_app TYPE ssfappl DEFAULT 'DFAULT',\n  p_sym TYPE ssfencr DEFAULT 'AES128-CBC'.";
+        let file = tree_ok(src);
+        assert_eq!(file.count_kind(file.root(), SyntaxKind::ParametersDecl), 1);
+        assert_eq!(file.count_kind(file.root(), SyntaxKind::DataTypedClause), 4);
+        assert!(file.count_kind(file.root(), SyntaxKind::TypeRefSimple) >= 4);
+        assert_eq!(file.count_kind(file.root(), SyntaxKind::ValueClause), 2);
+    }
+
+    #[test]
+    fn parameters_clause_accepts_implicit_char_length_form() {
+        let file = tree_ok("PARAMETERS p_pass(30) LOWER CASE.");
+        assert_eq!(file.count_kind(file.root(), SyntaxKind::ParametersDecl), 1);
+        assert_eq!(file.count_kind(file.root(), SyntaxKind::DataTypedClause), 1);
+        assert!(file.count_kind(file.root(), SyntaxKind::LengthSpec) >= 1);
     }
 
     #[test]
