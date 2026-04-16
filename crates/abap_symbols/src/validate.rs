@@ -3081,10 +3081,23 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
                 .collect();
             let mut matched_required = HashSet::<Arc<str>>::new();
             let mut seen_named = HashSet::<Arc<str>>::new();
+            let mut seen_exceptions = HashSet::<Arc<str>>::new();
             let mut positional_idx = 0usize;
 
             for argument in &call_site.arguments {
                 if let Some(name) = argument.name.as_ref() {
+                    if argument.section == Some(crate::NamedArgumentSection::Exceptions) {
+                        if !seen_exceptions.insert(Arc::clone(name)) {
+                            unit_diagnostics.push(Diagnostic {
+                                kind: DiagnosticKind::DuplicateNamedParameter,
+                                range: argument.range.clone(),
+                                message: format!("duplicate method exception '{}'", name),
+                            });
+                        }
+                        // Legacy CALL METHOD exceptions are not normal method parameters, and we do
+                        // not currently model declared non-class-based method exceptions.
+                        continue;
+                    }
                     if !seen_named.insert(Arc::clone(name)) {
                         unit_diagnostics.push(Diagnostic {
                             kind: DiagnosticKind::DuplicateNamedParameter,

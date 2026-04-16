@@ -8495,6 +8495,25 @@ CONCATENATE lv_evttime+6(4) '-'\n\
     }
 
     #[test]
+    fn parses_legacy_call_method_with_exceptions_section() {
+        let parsed = crate::parse(
+            "CALL METHOD cl_gui_frontend_services=>file_open_dialog\n  CHANGING\n    file_table = lt_files\n    rc = lv_rc\n    user_action = lv_action\n  EXCEPTIONS\n    OTHERS = 1.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let stmt = parsed
+            .file
+            .find_first_kind(parsed.file.root(), SyntaxKind::CallMethodStmt)
+            .expect("call method stmt");
+        assert_eq!(
+            parsed.file.count_kind(stmt, SyntaxKind::CallMethodTarget),
+            1
+        );
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::CallArgSection), 2);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::CallNamedArg), 4);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::Error), 0);
+    }
+
+    #[test]
     fn parses_create_object_with_exporting_clause_as_one_statement() {
         let parsed = crate::parse("CREATE OBJECT lo_client\n  EXPORTING\n    iv_dest = lv_dest.");
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);

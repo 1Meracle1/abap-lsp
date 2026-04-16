@@ -10973,6 +10973,37 @@ ENDCLASS.
 }
 
 #[test]
+fn allows_others_exception_in_legacy_call_method_validation() {
+    let src = r#"
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS run.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+  ENDMETHOD.
+ENDCLASS.
+
+START-OF-SELECTION.
+  CALL METHOD lcl_demo=>run
+    EXCEPTIONS
+      OTHERS = 1.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///legacy_call_method_others.abap", src, &parsed);
+
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnknownNamedParameter
+                && diag.message.contains("unknown named parameter 'others'")
+        }),
+        "{:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn reports_duplicate_and_unknown_named_method_parameters() {
     let src = r#"
 CLASS lcl_demo DEFINITION.
