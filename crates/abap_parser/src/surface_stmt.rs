@@ -5997,6 +5997,182 @@ pub fn try_parse_read_table_stmt(
     })
 }
 
+fn authority_check_stmt_clause_starts(source: &str, tokens: &[Token], idx: usize) -> bool {
+    tokens.get(idx).is_some_and(|token| {
+        is_keyword(source, token, "id")
+            || (is_keyword(source, token, "for")
+                && tokens
+                    .get(idx + 1)
+                    .is_some_and(|next| is_keyword(source, next, "user")))
+    })
+}
+
+fn authority_check_id_clause_part_starts(source: &str, tokens: &[Token], idx: usize) -> bool {
+    tokens.get(idx).is_some_and(|token| {
+        is_keyword(source, token, "field")
+            || is_keyword(source, token, "dummy")
+            || is_keyword(source, token, "id")
+    })
+}
+
+fn authority_check_field_clause_starts(source: &str, tokens: &[Token], idx: usize) -> bool {
+    tokens
+        .get(idx)
+        .is_some_and(|token| is_keyword(source, token, "id"))
+}
+
+pub fn try_parse_authority_check_stmt(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    errors: &mut Vec<crate::ParseError>,
+) -> Option<(NodeId, usize)> {
+    let keyword_end = match_hyphenated_keyword(source, tokens, idx, &["authority", "check"])?;
+    let authority_tok = tokens.get(idx)?;
+
+    Some(parse_stmt_with_period_scan(
+        b,
+        source,
+        tokens,
+        idx,
+        keyword_end,
+        authority_tok,
+        "syntax error: expected '.' after AUTHORITY-CHECK statement",
+        errors,
+        next_after_unterminated_scan,
+        |b, period_i, _errors| {
+            let stmt_clause_starts =
+                |tokens: &[Token], idx: usize| authority_check_stmt_clause_starts(source, tokens, idx);
+            let id_clause_part_starts =
+                |tokens: &[Token], idx: usize| authority_check_id_clause_part_starts(source, tokens, idx);
+            let field_clause_starts =
+                |tokens: &[Token], idx: usize| authority_check_field_clause_starts(source, tokens, idx);
+
+            let mut children = Vec::with_capacity(period_i - idx + 1);
+            push_token_children(b, &mut children, tokens, idx, keyword_end);
+
+            let mut i = keyword_end;
+            if tokens
+                .get(i)
+                .is_some_and(|token| is_keyword(source, token, "object"))
+            {
+                let object_tok = &tokens[i];
+                children.push(token_leaf(b, object_tok));
+                let object_start = i + 1;
+                i = scan_until_clause(tokens, object_start, period_i, &stmt_clause_starts);
+                push_wrapped_expr_child(
+                    b,
+                    &mut children,
+                    source,
+                    tokens,
+                    object_start,
+                    i,
+                    Some(object_tok),
+                    SyntaxKind::AuthorityCheckObjectOperand,
+                );
+            }
+
+            if tokens
+                .get(i)
+                .is_some_and(|token| is_keyword(source, token, "for"))
+                && tokens
+                    .get(i + 1)
+                    .is_some_and(|token| is_keyword(source, token, "user"))
+            {
+                let user_tok = &tokens[i + 1];
+                children.push(token_leaf(b, &tokens[i]));
+                children.push(token_leaf(b, user_tok));
+                let user_start = i + 2;
+                i = scan_until_clause(tokens, user_start, period_i, &stmt_clause_starts);
+                push_wrapped_expr_child(
+                    b,
+                    &mut children,
+                    source,
+                    tokens,
+                    user_start,
+                    i,
+                    Some(user_tok),
+                    SyntaxKind::AuthorityCheckUserOperand,
+                );
+            }
+
+            while i < period_i {
+                let token = &tokens[i];
+                if is_keyword(source, token, "id") {
+                    let mut clause_children = vec![token_leaf(b, token)];
+                    let clause_start = token.range.start;
+                    let id_start = i + 1;
+                    let id_end =
+                        scan_until_clause(tokens, id_start, period_i, &id_clause_part_starts);
+                    push_wrapped_expr_child(
+                        b,
+                        &mut clause_children,
+                        source,
+                        tokens,
+                        id_start,
+                        id_end,
+                        Some(token),
+                        SyntaxKind::AuthorityCheckIdOperand,
+                    );
+                    i = id_end;
+
+                    if tokens
+                        .get(i)
+                        .is_some_and(|field_tok| is_keyword(source, field_tok, "field"))
+                    {
+                        let field_tok = &tokens[i];
+                        clause_children.push(token_leaf(b, field_tok));
+                        let field_start = i + 1;
+                        let field_end =
+                            scan_until_clause(tokens, field_start, period_i, &field_clause_starts);
+                        push_wrapped_expr_child(
+                            b,
+                            &mut clause_children,
+                            source,
+                            tokens,
+                            field_start,
+                            field_end,
+                            Some(field_tok),
+                            SyntaxKind::AuthorityCheckFieldOperand,
+                        );
+                        i = field_end;
+                    } else if tokens
+                        .get(i)
+                        .is_some_and(|dummy_tok| is_keyword(source, dummy_tok, "dummy"))
+                    {
+                        clause_children.push(token_leaf(b, &tokens[i]));
+                        i += 1;
+                    }
+
+                    let clause_end = clause_children
+                        .last()
+                        .copied()
+                        .map(|child| b.span(child).end)
+                        .unwrap_or(token.range.end);
+                    children.push(b.branch(
+                        SyntaxKind::AuthorityCheckIdClause,
+                        clause_start..clause_end,
+                        &clause_children,
+                    ));
+                    continue;
+                }
+
+                children.push(token_leaf(b, token));
+                i += 1;
+            }
+
+            children.push(token_leaf(b, &tokens[period_i]));
+            let node = b.branch(
+                SyntaxKind::AuthorityCheckStmt,
+                authority_tok.range.start..tokens[period_i].range.end,
+                &children,
+            );
+            (node, period_i + 1)
+        },
+    ))
+}
+
 pub fn try_parse_append_stmt(
     b: &mut SyntaxTreeBuilder,
     source: &str,
@@ -8732,6 +8908,37 @@ CONCATENATE lv_evttime+6(4) '-'\n\
             .find_first_kind(parsed.file.root(), SyntaxKind::ReadTableStmt)
             .expect("read table stmt");
         assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::TemplateExpr), 3);
+    }
+
+    #[test]
+    fn parses_authority_check_with_for_user_and_dummy() {
+        let parsed = crate::parse(
+            "AUTHORITY-CHECK OBJECT lv_auth FOR USER lv_user\n  ID lv_field FIELD lv_value\n  ID lv_actvt DUMMY.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let stmt = parsed
+            .file
+            .find_first_kind(parsed.file.root(), SyntaxKind::AuthorityCheckStmt)
+            .expect("authority-check stmt");
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::AuthorityCheckObjectOperand), 1);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::AuthorityCheckUserOperand), 1);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::AuthorityCheckIdClause), 2);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::AuthorityCheckIdOperand), 2);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::AuthorityCheckFieldOperand), 1);
+    }
+
+    #[test]
+    fn parses_authority_check_literal_operands_as_ast_children() {
+        let parsed = crate::parse(
+            "AUTHORITY-CHECK OBJECT 'S_CARRID' ID 'CARRID' FIELD carr ID 'ACTVT' FIELD '03'.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let stmt = parsed
+            .file
+            .find_first_kind(parsed.file.root(), SyntaxKind::AuthorityCheckStmt)
+            .expect("authority-check stmt");
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::AuthorityCheckIdClause), 2);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::TemplateExpr), 5);
     }
 
     #[test]

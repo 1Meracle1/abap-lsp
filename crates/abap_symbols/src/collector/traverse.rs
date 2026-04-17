@@ -116,6 +116,9 @@ impl<'a> Collector<'a> {
             SyntaxKind::ModifyStmt => self.stmt_lowering().collect_modify_stmt(node, scope),
             SyntaxKind::UpdateStmt => self.stmt_lowering().collect_update_stmt(node, scope),
             SyntaxKind::ReadTableStmt => self.stmt_lowering().collect_read_table_stmt(node, scope),
+            SyntaxKind::AuthorityCheckStmt => self
+                .stmt_lowering()
+                .collect_authority_check_stmt(node, scope),
             SyntaxKind::InsertDbTableStmt => self
                 .sql_lowering()
                 .collect_insert_db_table_stmt(node, scope),

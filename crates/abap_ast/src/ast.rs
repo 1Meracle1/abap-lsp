@@ -495,6 +495,18 @@ ast_node!(FindMatchTarget, SyntaxKind::FindMatchTarget);
 ast_node!(FindSubmatchTarget, SyntaxKind::FindSubmatchTarget);
 ast_node!(FindResultsTarget, SyntaxKind::FindResultsTarget);
 ast_node!(ReadTableStmt, SyntaxKind::ReadTableStmt);
+ast_node!(AuthorityCheckStmt, SyntaxKind::AuthorityCheckStmt);
+ast_node!(
+    AuthorityCheckObjectOperand,
+    SyntaxKind::AuthorityCheckObjectOperand
+);
+ast_node!(AuthorityCheckUserOperand, SyntaxKind::AuthorityCheckUserOperand);
+ast_node!(AuthorityCheckIdClause, SyntaxKind::AuthorityCheckIdClause);
+ast_node!(AuthorityCheckIdOperand, SyntaxKind::AuthorityCheckIdOperand);
+ast_node!(
+    AuthorityCheckFieldOperand,
+    SyntaxKind::AuthorityCheckFieldOperand
+);
 ast_node!(SetPfStatusStmt, SyntaxKind::SetPfStatusStmt);
 ast_node!(SetTitlebarStmt, SyntaxKind::SetTitlebarStmt);
 ast_node!(WriteStmt, SyntaxKind::WriteStmt);
@@ -2408,6 +2420,64 @@ impl<'a> ReadTableStmt<'a> {
     ) -> impl DoubleEndedIterator<Item = SyntaxNodeRef<'a>> + Clone + 'a {
         self.syntax
             .children_by_kind(SyntaxKind::FieldSymbolInlineDecl)
+    }
+}
+
+impl<'a> AuthorityCheckStmt<'a> {
+    pub fn object(self) -> Option<AuthorityCheckObjectOperand<'a>> {
+        self.syntax
+            .child_by_kind(SyntaxKind::AuthorityCheckObjectOperand)
+            .and_then(AuthorityCheckObjectOperand::cast)
+    }
+
+    pub fn user(self) -> Option<AuthorityCheckUserOperand<'a>> {
+        self.syntax
+            .child_by_kind(SyntaxKind::AuthorityCheckUserOperand)
+            .and_then(AuthorityCheckUserOperand::cast)
+    }
+
+    pub fn id_clauses(
+        self,
+    ) -> impl DoubleEndedIterator<Item = AuthorityCheckIdClause<'a>> + Clone + 'a {
+        self.syntax.children().filter_map(AuthorityCheckIdClause::cast)
+    }
+}
+
+impl<'a> AuthorityCheckObjectOperand<'a> {
+    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
+        self.syntax.first_non_token_child()
+    }
+}
+
+impl<'a> AuthorityCheckUserOperand<'a> {
+    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
+        self.syntax.first_non_token_child()
+    }
+}
+
+impl<'a> AuthorityCheckIdClause<'a> {
+    pub fn id(self) -> Option<AuthorityCheckIdOperand<'a>> {
+        self.syntax
+            .child_by_kind(SyntaxKind::AuthorityCheckIdOperand)
+            .and_then(AuthorityCheckIdOperand::cast)
+    }
+
+    pub fn field(self) -> Option<AuthorityCheckFieldOperand<'a>> {
+        self.syntax
+            .child_by_kind(SyntaxKind::AuthorityCheckFieldOperand)
+            .and_then(AuthorityCheckFieldOperand::cast)
+    }
+}
+
+impl<'a> AuthorityCheckIdOperand<'a> {
+    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
+        self.syntax.first_non_token_child()
+    }
+}
+
+impl<'a> AuthorityCheckFieldOperand<'a> {
+    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
+        self.syntax.first_non_token_child()
     }
 }
 

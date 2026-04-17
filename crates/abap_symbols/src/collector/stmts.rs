@@ -3,9 +3,10 @@ use std::sync::Arc;
 use abap_ast::SyntaxKind;
 use abap_ast::arena::NodeId;
 use abap_ast::ast::{
-    AliasesStmt, AstNode, CallMethodStmt, CallStmt, CallStmtKind, ClearStmt, ConcatenateStmt,
-    ConvertStmt, CreateDataStmt, CreateObjectStmt, DeleteStmt, DescribeStmt, FindStmt, MessageStmt,
-    MethodsStmt, RaiseStmt, ReadTableStmt, ReplaceStmt, SplitStmt, WaitStmt, WriteStmt,
+    AliasesStmt, AstNode, AuthorityCheckStmt, CallMethodStmt, CallStmt, CallStmtKind, ClearStmt,
+    ConcatenateStmt, ConvertStmt, CreateDataStmt, CreateObjectStmt, DeleteStmt, DescribeStmt,
+    FindStmt, MessageStmt, MethodsStmt, RaiseStmt, ReadTableStmt, ReplaceStmt, SplitStmt,
+    WaitStmt, WriteStmt,
 };
 
 use crate::def_map::{
@@ -1109,6 +1110,32 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                         target_range,
                     );
                 }
+            }
+            return;
+        }
+        self.collector.walk_children(node, scope);
+    }
+
+    pub(super) fn collect_authority_check_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        self.record_unknown_effect(node, scope);
+        if let Some(stmt) = AuthorityCheckStmt::cast(self.collector.syntax(node)) {
+            let mut operand_ids = Vec::new();
+            if let Some(object) = stmt.object().and_then(|operand| operand.value()) {
+                operand_ids.push(object.id());
+            }
+            if let Some(user) = stmt.user().and_then(|operand| operand.value()) {
+                operand_ids.push(user.id());
+            }
+            for clause in stmt.id_clauses() {
+                if let Some(id) = clause.id().and_then(|operand| operand.value()) {
+                    operand_ids.push(id.id());
+                }
+                if let Some(field) = clause.field().and_then(|operand| operand.value()) {
+                    operand_ids.push(field.id());
+                }
+            }
+            for operand_id in operand_ids {
+                self.collector.walk_node(operand_id, scope);
             }
             return;
         }

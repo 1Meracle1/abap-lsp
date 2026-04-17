@@ -403,6 +403,18 @@ pub enum SyntaxKind {
     FindResultsTarget,
     /// `READ TABLE ... .`
     ReadTableStmt,
+    /// `AUTHORITY-CHECK ... .`
+    AuthorityCheckStmt,
+    /// Operand after `OBJECT` inside `AUTHORITY-CHECK`.
+    AuthorityCheckObjectOperand,
+    /// Operand after `FOR USER` inside `AUTHORITY-CHECK`.
+    AuthorityCheckUserOperand,
+    /// One `ID ... FIELD ...|DUMMY` clause inside `AUTHORITY-CHECK`.
+    AuthorityCheckIdClause,
+    /// Operand after `ID` inside `AUTHORITY-CHECK`.
+    AuthorityCheckIdOperand,
+    /// Operand after `FIELD` inside `AUTHORITY-CHECK`.
+    AuthorityCheckFieldOperand,
     /// `GET TIME STAMP FIELD ... .`
     GetTimeStampStmt,
     /// `GET REFERENCE OF ... INTO ... .`
@@ -642,6 +654,12 @@ impl SyntaxKind {
             Self::FindSubmatchTarget => "FindSubmatchTarget",
             Self::FindResultsTarget => "FindResultsTarget",
             Self::ReadTableStmt => "ReadTableStmt",
+            Self::AuthorityCheckStmt => "AuthorityCheckStmt",
+            Self::AuthorityCheckObjectOperand => "AuthorityCheckObjectOperand",
+            Self::AuthorityCheckUserOperand => "AuthorityCheckUserOperand",
+            Self::AuthorityCheckIdClause => "AuthorityCheckIdClause",
+            Self::AuthorityCheckIdOperand => "AuthorityCheckIdOperand",
+            Self::AuthorityCheckFieldOperand => "AuthorityCheckFieldOperand",
             Self::GetTimeStampStmt => "GetTimeStampStmt",
             Self::GetReferenceStmt => "GetReferenceStmt",
             Self::GetBitStmt => "GetBitStmt",

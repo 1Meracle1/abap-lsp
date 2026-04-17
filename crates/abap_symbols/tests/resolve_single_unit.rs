@@ -1088,6 +1088,54 @@ ls_bj2_max-param_value = ls_bj2_max-param_value.
 }
 
 #[test]
+fn resolves_authority_check_operands_without_keyword_false_positives() {
+    let src = r#"
+CONSTANTS lc_auth_obj TYPE string VALUE 'S_CARRID'.
+CONSTANTS lc_carrid TYPE string VALUE 'CARRID'.
+CONSTANTS lc_actvt TYPE string VALUE 'ACTVT'.
+DATA lv_user TYPE sy-uname.
+DATA lv_carrid TYPE string.
+
+AUTHORITY-CHECK OBJECT lc_auth_obj FOR USER lv_user
+  ID lc_carrid FIELD lv_carrid
+  ID lc_actvt DUMMY.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///authority_check_stmt.abap", src, &parsed);
+
+    for name in ["lc_auth_obj", "lv_user", "lc_carrid", "lv_carrid", "lc_actvt"] {
+        assert!(
+            unit.references.iter().any(|reference| {
+                reference.namespace == Namespace::Value
+                    && reference.kind == ReferenceKind::Identifier
+                    && reference.name.as_ref() == name
+                    && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+            }),
+            "expected resolved AUTHORITY-CHECK reference for `{name}`, refs={:?} diagnostics={:?}",
+            unit.references,
+            unit.diagnostics
+        );
+        assert!(
+            !unit.diagnostics.iter().any(|diag| {
+                diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains(name)
+            }),
+            "unexpected AUTHORITY-CHECK diagnostics for `{name}`: {:?}",
+            unit.diagnostics
+        );
+    }
+
+    for keyword in ["object", "user", "id", "field", "dummy"] {
+        assert!(
+            !unit.diagnostics.iter().any(|diag| {
+                diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains(keyword)
+            }),
+            "unexpected unresolved AUTHORITY-CHECK keyword `{keyword}`: {:?}",
+            unit.diagnostics
+        );
+    }
+}
+
+#[test]
 fn resolves_get_time_stamp_field_target() {
     let src = r#"
 DATA lv_current_ts TYPE string.
