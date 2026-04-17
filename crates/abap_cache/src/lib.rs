@@ -8220,7 +8220,7 @@ ENDCLASS.";
     }
 
     #[test]
-    fn routine_analysis_flags_use_before_assignment_after_branch_join() {
+    fn routine_analysis_does_not_flag_classic_scalar_after_branch_join() {
         let store = DocumentStore::default();
         let src = "\
 CLASS lcl_demo DEFINITION.
@@ -8246,11 +8246,17 @@ ENDCLASS.";
             DiagnosticKind::UseBeforeDefiniteAssignment,
         );
 
-        assert!(use_before.iter().any(|slice| slice.contains("lv_value")));
+        let relevant: Vec<_> = use_before
+            .iter()
+            .filter(|slice| **slice == "lv_value")
+            .cloned()
+            .collect();
+
+        assert!(relevant.is_empty(), "{use_before:?}");
     }
 
     #[test]
-    fn routine_analysis_flags_use_before_assignment_after_loop_join() {
+    fn routine_analysis_does_not_flag_classic_scalar_after_loop_join() {
         let store = DocumentStore::default();
         let src = "\
 CLASS lcl_demo DEFINITION.
@@ -8277,7 +8283,13 @@ ENDCLASS.";
             DiagnosticKind::UseBeforeDefiniteAssignment,
         );
 
-        assert!(use_before.iter().any(|slice| slice.contains("lv_value")));
+        let relevant: Vec<_> = use_before
+            .iter()
+            .filter(|slice| **slice == "lv_value")
+            .cloned()
+            .collect();
+
+        assert!(relevant.is_empty(), "{use_before:?}");
     }
 
     #[test]
@@ -8349,7 +8361,7 @@ ENDCLASS.";
     }
 
     #[test]
-    fn routine_analysis_flags_use_before_assignment_after_try_catch_join() {
+    fn routine_analysis_does_not_flag_classic_scalar_after_try_catch_join() {
         let store = DocumentStore::default();
         let src = "\
 CLASS lcl_demo DEFINITION.
@@ -8379,7 +8391,13 @@ ENDCLASS.";
             DiagnosticKind::UseBeforeDefiniteAssignment,
         );
 
-        assert!(use_before.iter().any(|slice| slice.contains("lv_value")));
+        let relevant: Vec<_> = use_before
+            .iter()
+            .filter(|slice| **slice == "lv_value")
+            .cloned()
+            .collect();
+
+        assert!(relevant.is_empty(), "{use_before:?}");
     }
 
     #[test]
@@ -8503,6 +8521,37 @@ CLASS lcl_demo IMPLEMENTATION.
 ENDCLASS.";
 
         let snapshot = store.publish("file:///routine_struct_selector_full.abap", 1, src);
+        let use_before = diagnostic_slices(
+            src,
+            &snapshot.symbols.diagnostics,
+            DiagnosticKind::UseBeforeDefiniteAssignment,
+        );
+
+        assert!(use_before.is_empty(), "{use_before:?}");
+    }
+
+    #[test]
+    fn routine_analysis_treats_explicit_structure_initializer_as_definite_assignment() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    TYPES: BEGIN OF ty_job,
+             jobname TYPE string,
+             username TYPE string,
+           END OF ty_job.
+    METHODS run.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+    DATA ls_job TYPE ty_job VALUE IS INITIAL.
+    DATA lv_username TYPE string.
+    lv_username = ls_job-username.
+  ENDMETHOD.
+ENDCLASS.";
+
+        let snapshot = store.publish("file:///routine_struct_explicit_init.abap", 1, src);
         let use_before = diagnostic_slices(
             src,
             &snapshot.symbols.diagnostics,
@@ -8741,7 +8790,7 @@ ENDCLASS.";
     }
 
     #[test]
-    fn routine_analysis_reestablishes_is_not_initial_guards_after_table_mutation() {
+    fn routine_analysis_does_not_flag_typed_table_reads_after_table_mutation() {
         let store = DocumentStore::default();
         let src = "\
 CLASS lcl_demo DEFINITION.
@@ -8771,11 +8820,13 @@ ENDCLASS.";
             DiagnosticKind::UseBeforeDefiniteAssignment,
         );
 
-        let lt_jobs_count = use_before
+        let relevant: Vec<_> = use_before
             .iter()
             .filter(|slice| **slice == "lt_jobs")
-            .count();
-        assert_eq!(lt_jobs_count, 1, "{use_before:?}");
+            .cloned()
+            .collect();
+
+        assert!(relevant.is_empty(), "{use_before:?}");
     }
 
     #[test]

@@ -1959,12 +1959,16 @@ fn build_routine_dataflow(
     let mut entry_assigned = DenseBitSet::new(values.len());
     let mut entry_structure_fields = vec![0u64; values.len()];
     for value in &values {
-        if matches!(
-            value.kind,
-            DataflowValueKind::Parameter | DataflowValueKind::Constant
+        if value_is_definitely_assigned_on_entry(
+            unit,
+            value,
+            &values,
+            &structure_assignment_trackers,
         ) {
             entry_assigned.insert(value.id);
-            if let Some(tracker) = structure_assignment_trackers[value.id.as_usize()].as_ref() {
+            if let Some(tracker) = structure_assignment_trackers[value.id.as_usize()].as_ref()
+                && value_has_explicit_declaration_initializer(unit, value)
+            {
                 entry_structure_fields[value.id.as_usize()] = tracker.full_mask;
             }
         }
@@ -4180,6 +4184,39 @@ fn trackable_symbol_kind(kind: SymbolKind) -> bool {
             | SymbolKind::FieldSymbol
             | SymbolKind::Constant
     )
+}
+
+fn value_is_definitely_assigned_on_entry(
+    unit: &UnitAnalysis,
+    value: &RoutineDataflowValue,
+    values: &[RoutineDataflowValue],
+    structure_assignment_trackers: &[Option<StructureAssignmentTracker>],
+) -> bool {
+    match value.kind {
+        DataflowValueKind::Parameter | DataflowValueKind::Constant => true,
+        DataflowValueKind::Variable => {
+            if value_has_explicit_declaration_initializer(unit, value) {
+                return true;
+            }
+            unit.symbols
+                .get(value.symbol.symbol.as_usize())
+                .is_some_and(|symbol| {
+                    symbol.type_clause_display.is_some()
+                        && (structure_assignment_trackers[value.id.as_usize()].is_none()
+                            || value_symbol_is_internal_table(unit, value.id, values))
+                })
+        }
+        DataflowValueKind::FieldSymbol | DataflowValueKind::Other => false,
+    }
+}
+
+fn value_has_explicit_declaration_initializer(
+    unit: &UnitAnalysis,
+    value: &RoutineDataflowValue,
+) -> bool {
+    unit.symbols
+        .get(value.symbol.symbol.as_usize())
+        .is_some_and(|symbol| symbol.value_clause_display.is_some())
 }
 
 fn dataflow_value_kind(kind: SymbolKind) -> DataflowValueKind {

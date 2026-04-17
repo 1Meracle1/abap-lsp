@@ -74,6 +74,125 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             .collect_token_expression_refs_infos(tail, scope, true);
     }
 
+    fn consume_simple_operand_tokens(&self, tokens: &[SyntaxTokenInfo], start: usize) -> usize {
+        let Some(token) = tokens.get(start) else {
+            return start;
+        };
+        if token.text.as_ref() == "." {
+            return start;
+        }
+
+        let mut end = start + 1;
+        if matches!(token.text.as_ref(), "@" | "#") && end < tokens.len() {
+            end += 1;
+        }
+
+        loop {
+            let Some(next) = tokens.get(end) else {
+                break;
+            };
+            match next.text.as_ref() {
+                "-" | "->" | "=>" | "~" if end + 1 < tokens.len() => {
+                    end += 2;
+                }
+                "[" => {
+                    let Some(group_end) = self
+                        .collector
+                        .find_matching_group_end_infos(tokens, end, "[", "]")
+                    else {
+                        break;
+                    };
+                    end = group_end + 1;
+                }
+                _ => break,
+            }
+        }
+
+        end
+    }
+
+    fn collect_positional_operand_tokens(
+        &mut self,
+        tokens: &[SyntaxTokenInfo],
+        mut idx: usize,
+        count: usize,
+        scope: ScopeId,
+    ) -> usize {
+        for _ in 0..count {
+            let end = self.consume_simple_operand_tokens(tokens, idx);
+            if end <= idx {
+                break;
+            }
+            self.collector
+                .collect_token_expression_refs_infos(&tokens[idx..end], scope, true);
+            idx = end;
+        }
+        idx
+    }
+
+    fn collect_call_screen_stmt_infos(&mut self, tokens: &[SyntaxTokenInfo], scope: ScopeId) {
+        if tokens.len() < 3 || !Self::tokens_match_keyword_sequence(tokens, &["call", "screen"]) {
+            return;
+        }
+
+        let mut idx = 2usize;
+        let clause_idx = tokens
+            .iter()
+            .position(|token| {
+                token.text.as_ref() == "."
+                    || token.text.eq_ignore_ascii_case("starting")
+                    || token.text.eq_ignore_ascii_case("ending")
+            })
+            .unwrap_or(tokens.len());
+        if idx < clause_idx {
+            self.collector.collect_token_expression_refs_infos(
+                &tokens[idx..clause_idx],
+                scope,
+                true,
+            );
+            idx = clause_idx;
+        }
+
+        while idx < tokens.len() {
+            if tokens[idx].text.as_ref() == "." {
+                break;
+            }
+            if tokens[idx].text.eq_ignore_ascii_case("starting")
+                || tokens[idx].text.eq_ignore_ascii_case("ending")
+            {
+                idx += 1;
+                if tokens
+                    .get(idx)
+                    .is_some_and(|token| token.text.eq_ignore_ascii_case("at"))
+                {
+                    idx += 1;
+                }
+                idx = self.collect_positional_operand_tokens(tokens, idx, 2, scope);
+                continue;
+            }
+            idx += 1;
+        }
+    }
+
+    fn collect_modify_screen_stmt_infos(&mut self, tokens: &[SyntaxTokenInfo], scope: ScopeId) {
+        if tokens.len() < 2 || !Self::tokens_match_keyword_sequence(tokens, &["modify", "screen"]) {
+            return;
+        }
+        let Some(from_idx) = tokens
+            .iter()
+            .position(|token| token.text.eq_ignore_ascii_case("from"))
+        else {
+            return;
+        };
+        if from_idx + 1 < tokens.len() {
+            self.collector.collect_token_expression_refs_infos(
+                &tokens[from_idx + 1..],
+                scope,
+                true,
+            );
+        }
+    }
+
     fn record_routine_site(
         &mut self,
         scope: ScopeId,
@@ -622,6 +741,12 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
 
     pub(super) fn collect_modify_stmt(&mut self, node: NodeId, scope: ScopeId) {
         self.record_unknown_effect(node, scope);
+        let significant = self.collector.significant_stmt_token_infos(node);
+        if Self::tokens_match_keyword_sequence(&significant, &["modify", "screen"]) {
+            self.collect_modify_screen_stmt_infos(&significant, scope);
+            return;
+        }
+
         let (saw_table_keyword, head_expr, from_expr) = self.modify_stmt_operands(node);
         if !saw_table_keyword
             && from_expr.is_some()
@@ -1840,6 +1965,13 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             self.collector.walk_children(node, scope);
             return;
         };
+
+        if stmt.call_kind(self.collector.source) == Some(CallStmtKind::Screen) {
+            self.record_unknown_effect(node, scope);
+            let significant = self.collector.significant_stmt_token_infos(node);
+            self.collect_call_screen_stmt_infos(&significant, scope);
+            return;
+        }
 
         let function_name = if stmt.call_kind(self.collector.source) == Some(CallStmtKind::Function)
         {

@@ -171,6 +171,73 @@ pub const MATCH_RESULT_FIELDS: &[BuiltinFieldSpec] = &[
     },
 ];
 
+pub const SCREEN_FIELDS: &[BuiltinFieldSpec] = &[
+    BuiltinFieldSpec {
+        name: "name",
+        description: "Name of the current dynpro field or screen element.",
+    },
+    BuiltinFieldSpec {
+        name: "group1",
+        description: "Modification group 1 of the current screen element.",
+    },
+    BuiltinFieldSpec {
+        name: "group2",
+        description: "Modification group 2 of the current screen element.",
+    },
+    BuiltinFieldSpec {
+        name: "group3",
+        description: "Modification group 3 of the current screen element.",
+    },
+    BuiltinFieldSpec {
+        name: "group4",
+        description: "Modification group 4 of the current screen element.",
+    },
+    BuiltinFieldSpec {
+        name: "required",
+        description: "Whether the field is mandatory on the current dynpro.",
+    },
+    BuiltinFieldSpec {
+        name: "input",
+        description: "Whether the field is ready for input on the current dynpro.",
+    },
+    BuiltinFieldSpec {
+        name: "output",
+        description: "Whether the field is output-only on the current dynpro.",
+    },
+    BuiltinFieldSpec {
+        name: "intensified",
+        description: "Whether the field is highlighted on the current dynpro.",
+    },
+    BuiltinFieldSpec {
+        name: "invisible",
+        description: "Whether the field is hidden on the current dynpro.",
+    },
+    BuiltinFieldSpec {
+        name: "length",
+        description: "Visible field length of the current dynpro element.",
+    },
+    BuiltinFieldSpec {
+        name: "active",
+        description: "Combined active flag for the current dynpro element.",
+    },
+    BuiltinFieldSpec {
+        name: "display_3d",
+        description: "Whether the current dynpro box is shown three-dimensionally.",
+    },
+    BuiltinFieldSpec {
+        name: "value_help",
+        description: "Whether input help is shown for the current dynpro field.",
+    },
+    BuiltinFieldSpec {
+        name: "request",
+        description: "Whether input exists, or is simulated, for the current dynpro field.",
+    },
+    BuiltinFieldSpec {
+        name: "values_in_combo",
+        description: "Whether values exist in the current dynpro dropdown list box.",
+    },
+];
+
 pub const BAPIRET2_FIELDS: &[BuiltinFieldSpec] = &[
     BuiltinFieldSpec {
         name: "type",
@@ -236,6 +303,10 @@ pub const BUILTIN_STRUCTURES: &[BuiltinStructureSpec] = &[
         fields: SYST_FIELDS,
     },
     BuiltinStructureSpec {
+        name: "screen",
+        fields: SCREEN_FIELDS,
+    },
+    BuiltinStructureSpec {
         name: "match_result",
         fields: MATCH_RESULT_FIELDS,
     },
@@ -263,9 +334,19 @@ pub const BUILTIN_SYMBOLS: &[BuiltinSymbolSpec] = &[
         structure_name: Some("syst"),
     },
     BuiltinSymbolSpec {
+        name: "screen",
+        kind: BuiltinTypeKind::Type,
+        structure_name: Some("screen"),
+    },
+    BuiltinSymbolSpec {
         name: "sy",
         kind: BuiltinTypeKind::Variable,
         structure_name: Some("syst"),
+    },
+    BuiltinSymbolSpec {
+        name: "screen",
+        kind: BuiltinTypeKind::Variable,
+        structure_name: Some("screen"),
     },
     BuiltinSymbolSpec {
         name: "guid",
@@ -629,6 +710,31 @@ pub fn builtin_structure_field_type(
     structure_name: &str,
     field_name: &str,
 ) -> Option<(&'static str, Option<&'static str>)> {
+    if structure_name.eq_ignore_ascii_case("screen") {
+        if matches!(
+            field_name.to_ascii_lowercase().as_str(),
+            "name"
+                | "group1"
+                | "group2"
+                | "group3"
+                | "group4"
+                | "required"
+                | "input"
+                | "output"
+                | "intensified"
+                | "invisible"
+                | "active"
+                | "display_3d"
+                | "value_help"
+                | "request"
+                | "values_in_combo"
+        ) {
+            return Some(("c", None));
+        }
+        if field_name.eq_ignore_ascii_case("length") {
+            return Some(("x", None));
+        }
+    }
     if structure_name.eq_ignore_ascii_case("match_result") {
         if field_name.eq_ignore_ascii_case("offset")
             || field_name.eq_ignore_ascii_case("length")

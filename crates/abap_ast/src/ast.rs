@@ -71,6 +71,7 @@ pub enum CallStmtKind {
     Function,
     Transformation,
     Badi,
+    Screen,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2224,6 +2225,8 @@ impl<'a> CallStmt<'a> {
             Some(CallStmtKind::Transformation)
         } else if text.eq_ignore_ascii_case("badi") {
             Some(CallStmtKind::Badi)
+        } else if text.eq_ignore_ascii_case("screen") {
+            Some(CallStmtKind::Screen)
         } else {
             None
         }

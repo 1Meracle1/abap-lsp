@@ -61,6 +61,7 @@ const CALL_LIKE_LEADS: &[(&[&str], CallLikeLeadKind)] = &[
     (&["call", "function"], CallLikeLeadKind::CallStmt),
     (&["call", "transformation"], CallLikeLeadKind::CallStmt),
     (&["call", "badi"], CallLikeLeadKind::CallStmt),
+    (&["call", "screen"], CallLikeLeadKind::CallStmt),
     (&["create", "object"], CallLikeLeadKind::CreateObject),
     (&["create", "data"], CallLikeLeadKind::CreateData),
 ];
@@ -5783,22 +5784,29 @@ pub fn try_parse_call_like_stmt(
                 children.push(token_leaf(b, &tokens[period_i]));
             }
             CallLikeLeadKind::CallStmt => {
-                children.push(token_leaf(b, &tokens[idx]));
-                children.push(token_leaf(b, &tokens[idx + 1]));
-                let arg_start = scan_until_clause(tokens, lead_end, period_i, |tokens, at| {
-                    tokens
-                        .get(at)
-                        .is_some_and(|_| named_argument_section_keyword(source, tokens, at))
-                });
-                for t in &tokens[lead_end..arg_start] {
-                    children.push(token_leaf(b, t));
-                }
-                if let Some(arg_list) =
-                    build_call_argument_list_node(b, source, tokens, arg_start, period_i)
+                if tokens
+                    .get(idx + 1)
+                    .is_some_and(|token| is_keyword(source, token, "screen"))
                 {
-                    children.push(arg_list);
+                    children = token_children(b, tokens, idx, period_i + 1);
+                } else {
+                    children.push(token_leaf(b, &tokens[idx]));
+                    children.push(token_leaf(b, &tokens[idx + 1]));
+                    let arg_start = scan_until_clause(tokens, lead_end, period_i, |tokens, at| {
+                        tokens
+                            .get(at)
+                            .is_some_and(|_| named_argument_section_keyword(source, tokens, at))
+                    });
+                    for t in &tokens[lead_end..arg_start] {
+                        children.push(token_leaf(b, t));
+                    }
+                    if let Some(arg_list) =
+                        build_call_argument_list_node(b, source, tokens, arg_start, period_i)
+                    {
+                        children.push(arg_list);
+                    }
+                    children.push(token_leaf(b, &tokens[period_i]));
                 }
-                children.push(token_leaf(b, &tokens[period_i]));
             }
         }
         let node = b.branch(
@@ -6662,6 +6670,19 @@ pub fn try_parse_modify_stmt(
         errors,
         |_, end_exclusive| end_exclusive,
         |b, period_i, _errors| {
+            if tokens
+                .get(idx + 1)
+                .is_some_and(|token| is_keyword(source, token, "screen"))
+            {
+                let children = token_children(b, tokens, idx, period_i + 1);
+                let node = b.branch(
+                    SyntaxKind::ModifyStmt,
+                    modify_tok.range.start..tokens[period_i].range.end,
+                    &children,
+                );
+                return (node, period_i + 1);
+            }
+
             let clause_starts =
                 |tokens: &[Token], idx: usize| modify_clause_starts(source, tokens, idx);
             let Some(from_idx) =
@@ -8949,6 +8970,21 @@ CONCATENATE lv_evttime+6(4) '-'\n\
     }
 
     #[test]
+    fn parses_modify_screen_variants() {
+        for src in ["MODIFY SCREEN.", "MODIFY SCREEN FROM ls_screen."] {
+            let parsed = crate::parse(src);
+            assert!(parsed.errors.is_empty(), "{src}: {:?}", parsed.errors);
+            assert_eq!(
+                parsed
+                    .file
+                    .count_kind(parsed.file.root(), SyntaxKind::ModifyStmt),
+                1,
+                "{src}"
+            );
+        }
+    }
+
+    #[test]
     fn parses_multiline_update_set_statement_without_frontend_error() {
         let parsed = crate::parse(
             "UPDATE zattp_rs_represp\n  SET reprocessing_status = 'S'\n      retry_count = <fs_rs_represp>-retry_count\n  WHERE rep_evtid EQ <fs_rs_represp>-rep_evtid.",
@@ -9772,6 +9808,8 @@ CONCATENATE lv_evttime+6(4) '-'\n\
         for src in [
             "CALL TRANSFORMATION id SOURCE text = lv_xml RESULT XML lv_out.",
             "CALL BADI lo_badi->run.",
+            "CALL SCREEN 9000.",
+            "CALL SCREEN 9000 STARTING AT 10 5 ENDING AT 40 20.",
         ] {
             let parsed = crate::parse(src);
             assert!(parsed.errors.is_empty(), "{src}: {:?}", parsed.errors);

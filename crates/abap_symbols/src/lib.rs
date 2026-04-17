@@ -69,7 +69,11 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
 
-    use super::{Namespace, ReferenceKind, Resolution, SymbolKind, analyze_unit};
+    use super::{
+        Namespace, ReferenceKind, Resolution, RoutineInstructionKind, RoutineInstructionSite,
+        RoutineTerminatorKind, SymbolKind, analyze_project_from_units, analyze_unit,
+        build_project_routine_analysis,
+    };
     use crate::ids::{ScopeId, UnitId};
     use crate::project::{ProjectAnalysis, analyze_unit_locally};
     use crate::resolver::build_scope_index;
@@ -92,6 +96,132 @@ mod tests {
                 .is_some()
         );
         assert!(super::builtin_structure_field_description("nope", "subrc").is_none());
+    }
+
+    #[test]
+    fn dynpro_screen_support_resolves_and_affects_routine_analysis() {
+        let src = r#"
+REPORT z_screen_demo.
+
+DATA ls_screen TYPE screen.
+
+AT SELECTION-SCREEN OUTPUT.
+  LOOP AT SCREEN INTO ls_screen.
+    IF ls_screen-name = 'P_FOO'.
+      ls_screen-input = 0.
+      MODIFY SCREEN FROM ls_screen.
+    ENDIF.
+  ENDLOOP.
+
+START-OF-SELECTION.
+  CALL SCREEN 9000.
+
+MODULE status_9000 OUTPUT.
+  LOOP AT SCREEN.
+    IF screen-name = 'P_BAR'.
+      screen-input = 0.
+      MODIFY SCREEN.
+    ENDIF.
+  ENDLOOP.
+  LEAVE TO SCREEN 0.
+ENDMODULE.
+"#;
+
+        let parsed = parse(src);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let project = analyze_project_from_units(vec![analyze_unit(
+            "file:///screen_demo.abap",
+            src,
+            &parsed,
+        )]);
+        let unit = &project.units[0];
+
+        let screen_type = unit
+            .symbols
+            .iter()
+            .find(|symbol| {
+                symbol.kind == SymbolKind::BuiltinType && symbol.name.as_ref() == "screen"
+            })
+            .expect("builtin screen type");
+        assert!(screen_type.structure.is_some());
+
+        let screen_var = unit
+            .symbols
+            .iter()
+            .find(|symbol| {
+                symbol.kind == SymbolKind::BuiltinVariable && symbol.name.as_ref() == "screen"
+            })
+            .expect("builtin screen variable");
+        assert!(screen_var.structure.is_some());
+
+        let ls_screen = unit
+            .symbols
+            .iter()
+            .find(|symbol| {
+                symbol.kind == SymbolKind::Variable && symbol.name.as_ref() == "ls_screen"
+            })
+            .expect("ls_screen");
+        let ls_screen_structure = ls_screen
+            .structure
+            .and_then(|id| unit.structures.get(id.as_usize()))
+            .expect("ls_screen structure");
+        assert_eq!(ls_screen_structure.name.as_ref(), "screen");
+
+        assert!(
+            unit.references.iter().any(|reference| {
+                reference.namespace == Namespace::Value
+                    && reference.name.as_ref() == "screen"
+                    && reference.resolution.is_some()
+            }),
+            "{:#?}",
+            unit.references
+        );
+        assert!(
+            unit.diagnostics.iter().all(|diagnostic| {
+                !diagnostic.message.contains("unknown symbol 'screen'")
+                    && !diagnostic.message.contains("unknown field 'name'")
+                    && !diagnostic.message.contains("unknown field 'input'")
+            }),
+            "{:#?}",
+            unit.diagnostics
+        );
+
+        let routine_analysis = build_project_routine_analysis(&project);
+        let start_of_selection = routine_analysis
+            .routines
+            .iter()
+            .find(|routine| routine.descriptor.name.as_ref() == "start-of-selection")
+            .expect("start-of-selection routine");
+        assert!(
+            start_of_selection
+                .ir
+                .instructions
+                .iter()
+                .any(|instruction| {
+                    instruction.kind() == RoutineInstructionKind::UnknownEffect
+                        && src[instruction.range.clone()].contains("CALL SCREEN")
+                }),
+            "{:#?}",
+            start_of_selection.ir.instructions
+        );
+
+        let status_9000 = routine_analysis
+            .routines
+            .iter()
+            .find(|routine| routine.descriptor.name.as_ref() == "status_9000")
+            .expect("status_9000 routine");
+        assert!(
+            status_9000.ir.instructions.iter().any(|instruction| {
+                matches!(
+                    instruction.site,
+                    RoutineInstructionSite::Terminator {
+                        kind: RoutineTerminatorKind::Leave
+                    }
+                ) && src[instruction.range.clone()].contains("LEAVE TO SCREEN")
+            }),
+            "{:#?}",
+            status_9000.ir.instructions
+        );
     }
 
     #[test]
