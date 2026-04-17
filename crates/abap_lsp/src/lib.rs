@@ -2037,6 +2037,7 @@ fn named_argument_completion_item_metadata(
 #[cfg(test)]
 mod tests {
     use abap_cache::{DocumentStore, path_to_file_uri};
+    use abap_symbols::DiagnosticKind;
     use std::fs;
     use std::path::PathBuf;
     use std::str::FromStr;
@@ -3769,6 +3770,123 @@ ENDCLASS.";
             .expect("dependency snapshot after refresh");
         assert!(!refreshed.is_dependency);
         assert!(refreshed.definition_at(use_offset).is_some());
+
+        let _ = fs::remove_dir_all(&workspace_path);
+    }
+
+    #[test]
+    fn opening_cached_dependency_include_resolves_at_group_headers_without_def_assign_warnings() {
+        let workspace_path = temp_workspace_path("workspace_open_dependency_at_group_headers");
+        let src_dir = workspace_path.join("src");
+        let include_dir = workspace_path
+            .join(".abapls")
+            .join("cache")
+            .join("packages")
+            .join("_unknown")
+            .join("include");
+        let dependency_manifest_dir = workspace_path
+            .join(".abapls")
+            .join("cache")
+            .join("dependency-manifests");
+        fs::create_dir_all(&src_dir).expect("src dir");
+        fs::create_dir_all(&include_dir).expect("include dir");
+        fs::create_dir_all(&dependency_manifest_dir).expect("dependency manifest dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[[unit]]
+name = "ZMAIN"
+kind = "report"
+root_file = "src/ZMAIN.abap"
+"#,
+        )
+        .expect("manifest");
+        fs::write(
+            src_dir.join("ZMAIN.abap"),
+            "\
+REPORT zmain.
+INCLUDE ztop.
+INCLUDE zf02.",
+        )
+        .expect("main source");
+        fs::write(
+            dependency_manifest_dir.join("src%2FZMAIN.abap.toml"),
+            r#"
+source_file = "src/ZMAIN.abap"
+
+[[unit]]
+name = "ZTOP"
+kind = "include"
+root_file = ".abapls/cache/packages/_unknown/include/ZTOP.abap"
+
+[[unit]]
+name = "ZF02"
+kind = "include"
+root_file = ".abapls/cache/packages/_unknown/include/ZF02.abap"
+"#,
+        )
+        .expect("dependency manifest");
+        fs::write(
+            include_dir.join("ZTOP.abap"),
+            "\
+TYPES: BEGIN OF typ_output_data,
+         src_plant TYPE i,
+       END OF typ_output_data.
+DATA t_final_data TYPE STANDARD TABLE OF typ_output_data WITH DEFAULT KEY.",
+        )
+        .expect("top include");
+        let dependency_text = "\
+FORM create_sto.
+  FIELD-SYMBOLS <lfs_final_data> TYPE typ_output_data.
+  LOOP AT t_final_data ASSIGNING <lfs_final_data>.
+    AT NEW src_plant.
+      WRITE <lfs_final_data>-src_plant.
+    ENDAT.
+    AT END OF src_plant.
+      WRITE <lfs_final_data>-src_plant.
+    ENDAT.
+  ENDLOOP.
+ENDFORM.";
+        fs::write(include_dir.join("ZF02.abap"), dependency_text).expect("f02 include");
+
+        let workspace_uri = path_to_file_uri(&workspace_path);
+        let dependency_uri = format!(
+            "{workspace_uri}/.abapls/cache/packages/_unknown/include/ZF02.abap"
+        );
+        let normalized_dependency_uri = normalize_lsp_uri(&dependency_uri);
+        let mut state = ServerState::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        refresh_workspace(&mut state, &workspace_uri);
+
+        let before =
+            snapshot_for_uri(&state, &normalized_dependency_uri).expect("dependency snapshot");
+        assert!(before.is_dependency);
+
+        let opened = publish_open_document_mut(
+            &mut state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str(&dependency_uri).expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: dependency_text.to_string(),
+                },
+            },
+        );
+
+        assert!(!opened.is_dependency);
+        assert!(
+            opened.symbols.diagnostics.iter().all(|diag| {
+                !matches!(
+                    diag.kind,
+                    DiagnosticKind::UseBeforeDefiniteAssignment | DiagnosticKind::UnresolvedReference
+                ) || !diag.message.contains("src_plant")
+            }),
+            "{:#?}",
+            opened.symbols.diagnostics
+        );
 
         let _ = fs::remove_dir_all(&workspace_path);
     }

@@ -27,6 +27,7 @@ pub enum ScopeKind {
     WhileBlock,
     DoBlock,
     LoopBlock,
+    AtBlock,
     TryBlock,
     SelectBlock,
 }

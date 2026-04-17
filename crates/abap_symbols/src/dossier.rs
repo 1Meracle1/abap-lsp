@@ -1442,6 +1442,7 @@ fn scope_kind_name(kind: ScopeKind) -> &'static str {
         ScopeKind::WhileBlock => "while_block",
         ScopeKind::DoBlock => "do_block",
         ScopeKind::LoopBlock => "loop_block",
+        ScopeKind::AtBlock => "at_block",
         ScopeKind::TryBlock => "try_block",
         ScopeKind::SelectBlock => "select_block",
     }

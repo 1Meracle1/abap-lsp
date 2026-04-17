@@ -3,17 +3,19 @@ use std::sync::Arc;
 use abap_ast::SyntaxKind;
 use abap_ast::arena::NodeId;
 use abap_ast::ast::{AstNode, ConstructorBaseClause, ConstructorExpr, SortStmt, TableExpr};
+use abap_lexer::TextRange;
 
 use crate::def_map::{
-    CaseRegionData, FieldAccess, FieldAccessSegment, FieldTypeRefData, IfRegionData,
-    LoopRegionData, LoopWhereFieldContext, RoutineControlRegionData, RoutineLoopKind, SymbolKind,
-    TryRegionData, ValueStateCheckData, ValueStateCheckKind,
+    AtGroupKind, AtRegionData, CaseRegionData, FieldAccess, FieldAccessSegment, FieldTypeRefData,
+    IfRegionData, LoopAtFieldContext, LoopRegionData, LoopWhereFieldContext,
+    RoutineControlRegionData, RoutineLoopKind, SymbolKind, TryRegionData, ValueStateCheckData,
+    ValueStateCheckKind,
 };
 use crate::ids::{ScopeId, StructureId, SymbolId};
 use crate::scope::{Namespace, ScopeKind};
 
-use super::Collector;
 use super::emit::RefSink;
+use super::{Collector, LoopGroupContext, SyntaxTokenInfo};
 
 pub(super) struct ControlLowering<'ctx, 'a> {
     collector: &'ctx mut Collector<'a>,
@@ -95,7 +97,8 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
         let child_scope =
             self.collector
                 .push_scope(ScopeKind::LoopBlock, node_range.clone(), Some(scope), None);
-        let target_access = self.collect_loop_header_node(node, child_scope);
+        let loop_context = self.collect_loop_header_node(node, child_scope);
+        self.collector.loop_group_stack.push(loop_context.clone());
         for child in self.collector.file.children(node) {
             match self.collector.file.kind(child) {
                 SyntaxKind::LoopSourceClause
@@ -110,13 +113,70 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
                 _ => self.collector.walk_node(child, child_scope),
             }
         }
+        self.collector.loop_group_stack.pop();
         self.collector
             .add_routine_control_region(RoutineControlRegionData::Loop(LoopRegionData {
                 scope,
                 range: node_range,
                 kind: RoutineLoopKind::Loop,
                 body_scope: child_scope,
-                target_access,
+                target_access: loop_context.target_access,
+            }));
+    }
+
+    pub(super) fn walk_at_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        let Some(header) = self.at_stmt_header(node) else {
+            self.collector.walk_children(node, scope);
+            return;
+        };
+
+        let node_range = self.collector.file.range(node);
+        let child_scope =
+            self.collector
+                .push_scope(ScopeKind::AtBlock, node_range.clone(), Some(scope), None);
+        if let Some(range) = header.key_range.clone()
+            && let Some(loop_context) = self.collector.loop_group_stack.last()
+            && let Some(source_access) = loop_context.source_access.clone()
+        {
+            self.collector
+                .loop_at_field_contexts
+                .push(LoopAtFieldContext {
+                    scope: child_scope,
+                    range,
+                    source_access,
+                    target_access: loop_context.target_access.clone(),
+                });
+        }
+        if !header.key_tokens.is_empty() {
+            self.collector.collect_token_expression_refs_infos(
+                &header.key_tokens,
+                child_scope,
+                true,
+            );
+        }
+
+        let mut body_started = false;
+        for child in self.collector.file.children(node) {
+            if !body_started {
+                if self.collector.file.kind(child) == SyntaxKind::Token {
+                    let tokens = self.collector.syntax_token_nodes(child);
+                    if tokens.iter().any(|token| token.text.as_ref() == ".") {
+                        body_started = true;
+                    }
+                }
+                continue;
+            }
+            if self.collector.file.kind(child) != SyntaxKind::Token {
+                self.collector.walk_node(child, child_scope);
+            }
+        }
+
+        self.collector
+            .add_routine_control_region(RoutineControlRegionData::At(AtRegionData {
+                scope,
+                range: node_range,
+                kind: header.kind,
+                body_scope: child_scope,
             }));
     }
 
@@ -250,7 +310,7 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
         }
     }
 
-    fn collect_loop_header_node(&mut self, node: NodeId, scope: ScopeId) -> Option<FieldAccess> {
+    fn collect_loop_header_node(&mut self, node: NodeId, scope: ScopeId) -> LoopGroupContext {
         let mut source_metadata = (None, None);
         let mut source_access = None;
         let mut target_access = None;
@@ -324,7 +384,10 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
         }
         self.collector.scopes[scope.as_usize()].allows_internal_table_line_selector =
             allows_internal_table_line_selector;
-        target_access
+        LoopGroupContext {
+            source_access,
+            target_access,
+        }
     }
 
     fn walk_loop_like_stmt(
@@ -845,4 +908,67 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
             _ => None,
         }
     }
+
+    fn at_stmt_header(&self, node: NodeId) -> Option<AtStmtHeader> {
+        let mut header_tokens = Vec::new();
+        for child in self.collector.file.children(node) {
+            if self.collector.file.kind(child) != SyntaxKind::Token {
+                break;
+            }
+            let tokens = self.collector.syntax_token_nodes(child);
+            let saw_period = tokens.iter().any(|token| token.text.as_ref() == ".");
+            header_tokens.extend(tokens.into_iter().filter(|token| {
+                !self.collector.syntax_token_is_comment(token) && token.text.as_ref() != "."
+            }));
+            if saw_period {
+                break;
+            }
+        }
+        if header_tokens.len() < 2 || !header_tokens[0].text.eq_ignore_ascii_case("at") {
+            return None;
+        }
+
+        if header_tokens[1].text.eq_ignore_ascii_case("first") {
+            return Some(AtStmtHeader {
+                kind: AtGroupKind::First,
+                key_tokens: Vec::new(),
+                key_range: None,
+            });
+        }
+        if header_tokens[1].text.eq_ignore_ascii_case("last") {
+            return Some(AtStmtHeader {
+                kind: AtGroupKind::Last,
+                key_tokens: Vec::new(),
+                key_range: None,
+            });
+        }
+
+        let (kind, key_tokens) = if header_tokens[1].text.eq_ignore_ascii_case("new") {
+            (AtGroupKind::New, header_tokens[2..].to_vec())
+        } else if header_tokens.len() >= 4
+            && header_tokens[1].text.eq_ignore_ascii_case("end")
+            && header_tokens[2].text.eq_ignore_ascii_case("of")
+        {
+            (AtGroupKind::EndOf, header_tokens[3..].to_vec())
+        } else {
+            return None;
+        };
+
+        let key_range = match (key_tokens.first(), key_tokens.last()) {
+            (Some(first), Some(last)) => Some(first.range.start..last.range.end),
+            _ => None,
+        };
+        Some(AtStmtHeader {
+            kind,
+            key_tokens,
+            key_range,
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+struct AtStmtHeader {
+    kind: AtGroupKind,
+    key_tokens: Vec<SyntaxTokenInfo>,
+    key_range: Option<TextRange>,
 }

@@ -27,7 +27,7 @@ use crate::builtins::builtin_routine_spec;
 use crate::def_map::{
     AssignmentSiteData, CallSiteData, ClassInheritanceData, ClassMemberData, Diagnostic,
     ExpressionFactData, FieldAccess, FieldSymbolStateCheckData, FieldTypeRefData, FindSiteData,
-    FormRoutineData, FunctionModuleData, ImplementedInterfaceData, IncludeEdge,
+    FormRoutineData, FunctionModuleData, ImplementedInterfaceData, IncludeEdge, LoopAtFieldContext,
     LoopWhereFieldContext, MemberAliasData, NamedArgumentAccess, PerformCallData, ReferenceData,
     RoutineControlRegionData, RoutineSiteData, SqlNameRefData, SqlPredicateData, SqlProjectionData,
     SqlQueryData, SqlSourceData, SqlTargetData, StructureData, SymbolData, UnitAnalysis,
@@ -87,7 +87,7 @@ struct PendingMethodSignature {
     is_redefinition: bool,
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub(super) struct SyntaxTokenInfo {
     range: TextRange,
     text: Arc<str>,
@@ -103,6 +103,12 @@ enum SqlClauseKind {
     ForAllEntries,
 }
 
+#[derive(Debug, Clone)]
+struct LoopGroupContext {
+    source_access: Option<FieldAccess>,
+    target_access: Option<FieldAccess>,
+}
+
 pub struct Collector<'a> {
     source: &'a str,
     file: &'a File,
@@ -116,6 +122,7 @@ pub struct Collector<'a> {
     include_edges: Vec<IncludeEdge>,
     field_accesses: Vec<FieldAccess>,
     loop_where_field_contexts: Vec<LoopWhereFieldContext>,
+    loop_at_field_contexts: Vec<LoopAtFieldContext>,
     class_members: Vec<ClassMemberData>,
     implemented_interfaces: Vec<ImplementedInterfaceData>,
     member_aliases: Vec<MemberAliasData>,
@@ -148,6 +155,7 @@ pub struct Collector<'a> {
     /// `TYPE` vs `LIKE` for the innermost typed declaration clause being walked; drives whether
     /// simple names in `TypeRefSimple` (e.g. after `LINE OF`) resolve as types or data objects.
     type_clause_ns_stack: Vec<Namespace>,
+    loop_group_stack: Vec<LoopGroupContext>,
 }
 
 impl<'a> Collector<'a> {
@@ -171,6 +179,7 @@ impl<'a> Collector<'a> {
             include_edges: Vec::new(),
             field_accesses: Vec::new(),
             loop_where_field_contexts: Vec::new(),
+            loop_at_field_contexts: Vec::new(),
             class_members: Vec::new(),
             implemented_interfaces: Vec::new(),
             member_aliases: Vec::new(),
@@ -198,6 +207,7 @@ impl<'a> Collector<'a> {
             class_method_signatures: std::collections::HashMap::new(),
             scope_symbols: Vec::new(),
             type_clause_ns_stack: Vec::new(),
+            loop_group_stack: Vec::new(),
         }
     }
 
@@ -229,6 +239,7 @@ impl<'a> Collector<'a> {
             include_edges: self.include_edges,
             field_accesses: self.field_accesses,
             loop_where_field_contexts: self.loop_where_field_contexts,
+            loop_at_field_contexts: self.loop_at_field_contexts,
             class_members: self.class_members,
             class_inheritance,
             implemented_interfaces: self.implemented_interfaces,

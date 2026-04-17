@@ -70,9 +70,9 @@ mod tests {
     use std::sync::Arc;
 
     use super::{
-        Namespace, ReferenceKind, Resolution, RoutineInstructionKind, RoutineInstructionSite,
-        RoutineTerminatorKind, SymbolKind, analyze_project_from_units, analyze_unit,
-        build_project_routine_analysis,
+        DiagnosticKind, Namespace, ReferenceKind, Resolution, RoutineInstructionKind,
+        RoutineInstructionSite, RoutineTerminatorKind, ScopeKind, SymbolKind,
+        analyze_project_from_units, analyze_unit, build_project_routine_analysis,
     };
     use crate::ids::{ScopeId, UnitId};
     use crate::project::{ProjectAnalysis, analyze_unit_locally};
@@ -238,6 +238,224 @@ ENDMODULE.
                 && reference.name.as_ref() == "lv_value"
                 && reference.resolution.is_some()
         }));
+    }
+
+    #[test]
+    fn at_group_key_resolves_against_loop_row_fields() {
+        let src = "\
+TYPES: BEGIN OF ty_row,\n\
+         a TYPE i,\n\
+       END OF ty_row.\n\
+FORM run.\n\
+  DATA itab TYPE STANDARD TABLE OF ty_row WITH DEFAULT KEY.\n\
+  LOOP AT itab INTO DATA(ls_row).\n\
+    AT NEW a.\n\
+      WRITE ls_row-a.\n\
+    ENDAT.\n\
+  ENDLOOP.\n\
+ENDFORM.\n";
+        let parsed = parse(src);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let unit = analyze_unit("file:///at_group_key.abap", src, &parsed);
+
+        let header_offset = src.find("AT NEW a").expect("AT NEW header") + "AT NEW ".len();
+        let header_ref = unit
+            .semantic()
+            .refs()
+            .reference_at_offset(header_offset)
+            .expect("AT header reference");
+        assert_eq!(header_ref.name.as_ref(), "a");
+        assert!(matches!(header_ref.resolution, Some(Resolution::Symbol(_))));
+        assert!(
+            unit.scopes
+                .iter()
+                .any(|scope| scope.kind == ScopeKind::AtBlock)
+        );
+        assert!(
+            unit.diagnostics
+                .iter()
+                .all(|diagnostic| !diagnostic.message.contains("unknown symbol 'a'")),
+            "{:#?}",
+            unit.diagnostics
+        );
+    }
+
+    #[test]
+    fn at_group_keys_resolve_for_loop_assigning_field_symbols() {
+        let src = "\
+TYPES: BEGIN OF ty_row,\n\
+         src_plant TYPE i,\n\
+       END OF ty_row.\n\
+FORM run.\n\
+  DATA itab TYPE STANDARD TABLE OF ty_row WITH DEFAULT KEY.\n\
+  FIELD-SYMBOLS <lfs_final_data> TYPE ty_row.\n\
+  LOOP AT itab ASSIGNING <lfs_final_data>.\n\
+    AT NEW src_plant.\n\
+      WRITE <lfs_final_data>-src_plant.\n\
+    ENDAT.\n\
+    AT END OF src_plant.\n\
+      WRITE <lfs_final_data>-src_plant.\n\
+    ENDAT.\n\
+  ENDLOOP.\n\
+ENDFORM.\n";
+        let parsed = parse(src);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let unit = analyze_unit("file:///at_group_assigning.abap", src, &parsed);
+
+        let header_offsets = [
+            src.find("AT NEW src_plant").expect("AT NEW header") + "AT NEW ".len(),
+            src.find("AT END OF src_plant").expect("AT END OF header") + "AT END OF ".len(),
+        ];
+        for header_offset in header_offsets {
+            let header_ref = unit
+                .semantic()
+                .refs()
+                .reference_at_offset(header_offset)
+                .expect("AT header reference");
+            assert_eq!(header_ref.name.as_ref(), "src_plant");
+            assert!(matches!(header_ref.resolution, Some(Resolution::Symbol(_))));
+        }
+
+        assert_eq!(
+            unit.scopes
+                .iter()
+                .filter(|scope| scope.kind == ScopeKind::AtBlock)
+                .count(),
+            2
+        );
+        assert!(
+            unit.diagnostics
+                .iter()
+                .all(|diagnostic| !diagnostic.message.contains("unknown symbol 'src_plant'")),
+            "{:#?}",
+            unit.diagnostics
+        );
+    }
+
+    #[test]
+    fn at_group_headers_do_not_trigger_definite_assignment_warnings() {
+        let src = "\
+TYPES: BEGIN OF ty_row,\n\
+         src_plant TYPE i,\n\
+       END OF ty_row.\n\
+FORM run.\n\
+  DATA itab TYPE STANDARD TABLE OF ty_row WITH DEFAULT KEY.\n\
+  FIELD-SYMBOLS <lfs_final_data> TYPE ty_row.\n\
+  LOOP AT itab ASSIGNING <lfs_final_data>.\n\
+    AT NEW src_plant.\n\
+      WRITE <lfs_final_data>-src_plant.\n\
+    ENDAT.\n\
+    AT END OF src_plant.\n\
+      WRITE <lfs_final_data>-src_plant.\n\
+    ENDAT.\n\
+  ENDLOOP.\n\
+ENDFORM.\n";
+        let parsed = parse(src);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let unit = analyze_unit("file:///at_group_header_warnings.abap", src, &parsed);
+        let project = analyze_project_from_units(vec![unit.clone()]);
+        let routine_analysis = build_project_routine_analysis(&project);
+
+        let header_ranges = [
+            {
+                let start = src.find("AT NEW src_plant").expect("AT NEW header") + "AT NEW ".len();
+                start..start + "src_plant".len()
+            },
+            {
+                let start =
+                    src.find("AT END OF src_plant").expect("AT END OF header") + "AT END OF ".len();
+                start..start + "src_plant".len()
+            },
+        ];
+        assert!(
+            routine_analysis
+                .diagnostics_for_unit(unit.unit_id)
+                .iter()
+                .all(|diagnostic| {
+                    diagnostic.kind != DiagnosticKind::UseBeforeDefiniteAssignment
+                        || !header_ranges.iter().any(|range| diagnostic.range == *range)
+                }),
+            "{:#?}",
+            routine_analysis.diagnostics_for_unit(unit.unit_id)
+        );
+    }
+
+    #[test]
+    fn at_group_processing_branches_affect_dataflow() {
+        let src = "\
+FORM run.\n\
+  TYPES: BEGIN OF ty_row,\n\
+           a TYPE i,\n\
+         END OF ty_row.\n\
+  TYPES: BEGIN OF ty_state,\n\
+           x TYPE i,\n\
+         END OF ty_state.\n\
+  DATA itab TYPE STANDARD TABLE OF ty_row WITH DEFAULT KEY.\n\
+  DATA ls_state TYPE ty_state.\n\
+  DATA lv_sink TYPE i.\n\
+  LOOP AT itab INTO DATA(ls_row).\n\
+    AT END OF a.\n\
+      ls_state-x = 1.\n\
+    ENDAT.\n\
+    lv_sink = ls_state-x.\n\
+  ENDLOOP.\n\
+ENDFORM.\n";
+        let parsed = parse(src);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let unit = analyze_unit("file:///at_group_dataflow.abap", src, &parsed);
+        let project = analyze_project_from_units(vec![unit.clone()]);
+        let routine_analysis = build_project_routine_analysis(&project);
+
+        assert!(
+            routine_analysis
+                .diagnostics_for_unit(unit.unit_id)
+                .iter()
+                .any(|diagnostic| {
+                    diagnostic.kind == DiagnosticKind::UseBeforeDefiniteAssignment
+                        && src[diagnostic.range.clone()].contains("ls_state")
+                }),
+            "{:#?}",
+            routine_analysis.diagnostics_for_unit(unit.unit_id)
+        );
+
+        let src_without_at = "\
+FORM run.\n\
+  TYPES: BEGIN OF ty_row,\n\
+           a TYPE i,\n\
+         END OF ty_row.\n\
+  TYPES: BEGIN OF ty_state,\n\
+           x TYPE i,\n\
+         END OF ty_state.\n\
+  DATA itab TYPE STANDARD TABLE OF ty_row WITH DEFAULT KEY.\n\
+  DATA ls_state TYPE ty_state.\n\
+  DATA lv_sink TYPE i.\n\
+  LOOP AT itab INTO DATA(ls_row).\n\
+    ls_state-x = 1.\n\
+    lv_sink = ls_state-x.\n\
+  ENDLOOP.\n\
+ENDFORM.\n";
+        let parsed_without_at = parse(src_without_at);
+        assert!(
+            parsed_without_at.errors.is_empty(),
+            "{:?}",
+            parsed_without_at.errors
+        );
+        let unit_without_at = analyze_unit(
+            "file:///at_group_dataflow_no_at.abap",
+            src_without_at,
+            &parsed_without_at,
+        );
+        let project_without_at = analyze_project_from_units(vec![unit_without_at.clone()]);
+        let routine_analysis_without_at = build_project_routine_analysis(&project_without_at);
+
+        assert!(
+            routine_analysis_without_at
+                .diagnostics_for_unit(unit_without_at.unit_id)
+                .iter()
+                .all(|diagnostic| diagnostic.kind != DiagnosticKind::UseBeforeDefiniteAssignment),
+            "{:#?}",
+            routine_analysis_without_at.diagnostics_for_unit(unit_without_at.unit_id)
+        );
     }
 
     #[test]

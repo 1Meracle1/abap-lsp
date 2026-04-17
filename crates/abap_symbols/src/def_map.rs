@@ -326,6 +326,14 @@ pub struct LoopWhereFieldContext {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoopAtFieldContext {
+    pub scope: ScopeId,
+    pub range: TextRange,
+    pub source_access: FieldAccess,
+    pub target_access: Option<FieldAccess>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FieldAccessSegment {
     pub name: Arc<str>,
     pub range: TextRange,
@@ -765,6 +773,22 @@ pub struct LoopRegionData {
     pub target_access: Option<FieldAccess>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AtGroupKind {
+    First,
+    New,
+    EndOf,
+    Last,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AtRegionData {
+    pub scope: ScopeId,
+    pub range: TextRange,
+    pub kind: AtGroupKind,
+    pub body_scope: ScopeId,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TryRegionData {
     pub scope: ScopeId,
@@ -779,6 +803,7 @@ pub enum RoutineControlRegionData {
     If(IfRegionData),
     Case(CaseRegionData),
     Loop(LoopRegionData),
+    At(AtRegionData),
     Try(TryRegionData),
 }
 
@@ -788,6 +813,7 @@ impl RoutineControlRegionData {
             Self::If(data) => data.scope,
             Self::Case(data) => data.scope,
             Self::Loop(data) => data.scope,
+            Self::At(data) => data.scope,
             Self::Try(data) => data.scope,
         }
     }
@@ -797,6 +823,7 @@ impl RoutineControlRegionData {
             Self::If(data) => &data.range,
             Self::Case(data) => &data.range,
             Self::Loop(data) => &data.range,
+            Self::At(data) => &data.range,
             Self::Try(data) => &data.range,
         }
     }
@@ -815,6 +842,7 @@ pub struct UnitAnalysis {
     pub include_edges: Vec<IncludeEdge>,
     pub field_accesses: Vec<FieldAccess>,
     pub loop_where_field_contexts: Vec<LoopWhereFieldContext>,
+    pub loop_at_field_contexts: Vec<LoopAtFieldContext>,
     pub class_members: Vec<ClassMemberData>,
     pub class_inheritance: Vec<ClassInheritanceData>,
     pub implemented_interfaces: Vec<ImplementedInterfaceData>,

@@ -20,6 +20,7 @@ pub enum RoutineKind {
 pub enum RoutineBranchKind {
     If,
     Case,
+    At,
     Try,
 }
 

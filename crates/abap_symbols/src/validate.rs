@@ -9,10 +9,10 @@ use crate::compatibility::{
     type_facts_compatible,
 };
 use crate::def_map::{
-    Diagnostic, DiagnosticKind, FieldTypeRefData, FormParameterData, FormParameterSection,
-    FunctionModuleData, FunctionModuleParameterData, FunctionModuleParameterSection,
-    LoopWhereFieldContext, NamedArgumentTarget, PerformParameterSection, ReferenceKind, Resolution,
-    SqlNameRefKind, StructureFieldShape, TypeFactData,
+    Diagnostic, DiagnosticKind, FieldAccess, FieldTypeRefData, FormParameterData,
+    FormParameterSection, FunctionModuleData, FunctionModuleParameterData,
+    FunctionModuleParameterSection, NamedArgumentTarget, PerformParameterSection, ReferenceKind,
+    Resolution, SqlNameRefKind, StructureFieldShape, TypeFactData,
 };
 use crate::ids::{ScopeId, StructureId, SymbolHandle, SymbolId, UnitId};
 use crate::project::ProjectAnalysis;
@@ -24,6 +24,14 @@ struct ValidationLookup<'a> {
     scope_indexes: &'a [ScopeIndex],
     per_unit_root_index: Vec<HashMap<(Namespace, Arc<str>), Vec<SymbolId>>>,
     root_index: HashMap<(Namespace, Arc<str>), Vec<SymbolHandle>>,
+}
+
+#[derive(Clone, Copy)]
+struct LoopFieldContextView<'a> {
+    scope: ScopeId,
+    range: &'a TextRange,
+    source_access: &'a FieldAccess,
+    target_access: Option<&'a FieldAccess>,
 }
 
 fn build_validation_lookup<'a>(
@@ -1032,17 +1040,18 @@ fn inherited_redefinition_method_scope_symbol_specs(
     out
 }
 
-fn loop_where_scope_symbol_specs(
+fn loop_field_scope_symbol_specs<'a>(
     project: &ProjectAnalysis,
     lookup: &ValidationLookup<'_>,
     unit: &crate::UnitAnalysis,
     scope_indexes: &[ScopeIndex],
+    contexts: impl IntoIterator<Item = LoopFieldContextView<'a>>,
 ) -> Vec<(ScopeId, crate::SymbolData)> {
     let mut out = Vec::new();
     let mut next_symbol_id = unit.symbols.len() as u32;
     let mut seen: HashSet<(u32, Arc<str>)> = HashSet::new();
 
-    for context in &unit.loop_where_field_contexts {
+    for context in contexts {
         let mut push_fields =
             |scope: ScopeId, fields_unit: &crate::UnitAnalysis, structure_id: StructureId| {
                 for field in structure_field_infos_project(
@@ -1074,10 +1083,10 @@ fn loop_where_scope_symbol_specs(
                             name,
                             kind: crate::SymbolKind::Variable,
                             scope,
-                            decl_range: loop_where_synthetic_decl_range(
+                            decl_range: loop_field_synthetic_decl_range(
                                 unit.unit_id,
                                 &field,
-                                &context.range,
+                                context.range,
                             ),
                             structure: match field.shape {
                                 StructureFieldShape::Structured { structure } => Some(structure),
@@ -1092,15 +1101,13 @@ fn loop_where_scope_symbol_specs(
             };
 
         if let Some((fields_unit, structure_id)) =
-            resolve_loop_where_source_structure(project, lookup, unit, scope_indexes, context)
+            resolve_loop_field_source_structure(project, lookup, unit, scope_indexes, context)
         {
             push_fields(context.scope, fields_unit, structure_id);
         }
-        if let Some((fields_unit, structure_id)) =
-            context.target_access.as_ref().and_then(|access| {
-                resolve_field_access_structure(project, lookup, unit, scope_indexes, access)
-            })
-        {
+        if let Some((fields_unit, structure_id)) = context.target_access.and_then(|access| {
+            resolve_field_access_structure(project, lookup, unit, scope_indexes, access)
+        }) {
             push_fields(context.scope, fields_unit, structure_id);
         }
     }
@@ -1108,7 +1115,51 @@ fn loop_where_scope_symbol_specs(
     out
 }
 
-fn loop_where_synthetic_decl_range(
+fn loop_where_scope_symbol_specs(
+    project: &ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
+    unit: &crate::UnitAnalysis,
+    scope_indexes: &[ScopeIndex],
+) -> Vec<(ScopeId, crate::SymbolData)> {
+    loop_field_scope_symbol_specs(
+        project,
+        lookup,
+        unit,
+        scope_indexes,
+        unit.loop_where_field_contexts
+            .iter()
+            .map(|context| LoopFieldContextView {
+                scope: context.scope,
+                range: &context.range,
+                source_access: &context.source_access,
+                target_access: context.target_access.as_ref(),
+            }),
+    )
+}
+
+fn loop_at_scope_symbol_specs(
+    project: &ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
+    unit: &crate::UnitAnalysis,
+    scope_indexes: &[ScopeIndex],
+) -> Vec<(ScopeId, crate::SymbolData)> {
+    loop_field_scope_symbol_specs(
+        project,
+        lookup,
+        unit,
+        scope_indexes,
+        unit.loop_at_field_contexts
+            .iter()
+            .map(|context| LoopFieldContextView {
+                scope: context.scope,
+                range: &context.range,
+                source_access: &context.source_access,
+                target_access: context.target_access.as_ref(),
+            }),
+    )
+}
+
+fn loop_field_synthetic_decl_range(
     unit_id: UnitId,
     field: &crate::StructureFieldInfo,
     context_range: &TextRange,
@@ -1121,6 +1172,15 @@ fn loop_where_synthetic_decl_range(
     } else {
         context_range.start..context_range.start
     }
+}
+
+#[cfg(test)]
+fn loop_where_synthetic_decl_range(
+    unit_id: UnitId,
+    field: &crate::StructureFieldInfo,
+    context_range: &TextRange,
+) -> TextRange {
+    loop_field_synthetic_decl_range(unit_id, field, context_range)
 }
 
 fn resolve_class_type_symbol_in_hierarchy(
@@ -1889,31 +1949,27 @@ fn resolve_symbol_structure_project<'a>(
     None
 }
 
-fn resolve_loop_where_source_structure<'a>(
+fn resolve_loop_field_source_structure<'a>(
     project: &'a ProjectAnalysis,
     lookup: &ValidationLookup<'_>,
     unit: &'a crate::UnitAnalysis,
     scope_indexes: &[ScopeIndex],
-    context: &LoopWhereFieldContext,
+    context: LoopFieldContextView<'_>,
 ) -> Option<(&'a crate::UnitAnalysis, StructureId)> {
     if context.source_access.base_namespace != Namespace::Value {
         return None;
     }
     let scope_index = &scope_indexes[unit.unit_id.as_usize()];
-    let base_symbol_id = resolve_symbol_in_scope_chain(
-        unit,
-        scope_index,
-        context.scope,
-        Namespace::Value,
-        &context.source_access.base_name,
-    )?;
+    let base_handle =
+        resolve_field_access_base_symbol(project, lookup, unit, scope_index, context.source_access)?;
+    let base_unit = &project.units[base_handle.unit.as_usize()];
     let (current_unit, mut current_structure) = resolve_symbol_structure_project(
         project,
         lookup,
-        unit,
+        base_unit,
         scope_indexes,
-        context.scope,
-        base_symbol_id,
+        scope_for_unit(base_unit, context.scope),
+        base_handle.symbol,
     )?;
     if context.source_access.field_path.is_empty() {
         return Some((current_unit, current_structure));
@@ -2010,21 +2066,22 @@ fn resolve_field_access_structure<'a>(
     Some((current_unit, current_structure))
 }
 
-fn loop_where_reference_matches_source_field(
+fn loop_field_reference_matches_source_field<'a>(
     project: &ProjectAnalysis,
     lookup: &ValidationLookup<'_>,
     unit: &crate::UnitAnalysis,
     scope_indexes: &[ScopeIndex],
     reference: &crate::ReferenceData,
+    contexts: impl IntoIterator<Item = LoopFieldContextView<'a>>,
 ) -> bool {
     if reference.namespace != Namespace::Value || reference.kind != ReferenceKind::Identifier {
         return false;
     }
-    unit.loop_where_field_contexts.iter().any(|context| {
+    contexts.into_iter().any(|context| {
         context.range.start <= reference.range.start
             && reference.range.end <= context.range.end
             && {
-                let source_matches = resolve_loop_where_source_structure(
+                let source_matches = resolve_loop_field_source_structure(
                     project,
                     lookup,
                     unit,
@@ -2072,6 +2129,54 @@ fn loop_where_reference_matches_source_field(
                         })
             }
     })
+}
+
+fn loop_where_reference_matches_source_field(
+    project: &ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
+    unit: &crate::UnitAnalysis,
+    scope_indexes: &[ScopeIndex],
+    reference: &crate::ReferenceData,
+) -> bool {
+    loop_field_reference_matches_source_field(
+        project,
+        lookup,
+        unit,
+        scope_indexes,
+        reference,
+        unit.loop_where_field_contexts
+            .iter()
+            .map(|context| LoopFieldContextView {
+                scope: context.scope,
+                range: &context.range,
+                source_access: &context.source_access,
+                target_access: context.target_access.as_ref(),
+            }),
+    )
+}
+
+fn loop_at_reference_matches_source_field(
+    project: &ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
+    unit: &crate::UnitAnalysis,
+    scope_indexes: &[ScopeIndex],
+    reference: &crate::ReferenceData,
+) -> bool {
+    loop_field_reference_matches_source_field(
+        project,
+        lookup,
+        unit,
+        scope_indexes,
+        reference,
+        unit.loop_at_field_contexts
+            .iter()
+            .map(|context| LoopFieldContextView {
+                scope: context.scope,
+                range: &context.range,
+                source_access: &context.source_access,
+                target_access: context.target_access.as_ref(),
+            }),
+    )
 }
 
 fn reference_depends_on_unresolved_field_access_base(
@@ -2359,6 +2464,12 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
                 unit,
                 scope_indexes,
             ));
+            symbols.extend(loop_at_scope_symbol_specs(
+                project,
+                &lookup,
+                unit,
+                scope_indexes,
+            ));
             symbols
         };
         {
@@ -2478,6 +2589,15 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
                 continue;
             }
             if loop_where_reference_matches_source_field(
+                project,
+                &lookup,
+                unit,
+                scope_indexes,
+                reference,
+            ) {
+                continue;
+            }
+            if loop_at_reference_matches_source_field(
                 project,
                 &lookup,
                 unit,

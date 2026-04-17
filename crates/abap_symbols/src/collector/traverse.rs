@@ -92,6 +92,7 @@ impl<'a> Collector<'a> {
             SyntaxKind::WhileStmt => self.control_lowering().walk_while_stmt(node, scope),
             SyntaxKind::DoStmt => self.control_lowering().walk_do_stmt(node, scope),
             SyntaxKind::LoopStmt => self.control_lowering().walk_loop_stmt(node, scope),
+            SyntaxKind::AtStmt => self.control_lowering().walk_at_stmt(node, scope),
             SyntaxKind::TryStmt => self.control_lowering().walk_try_stmt(node, scope),
             SyntaxKind::CatchClause => {
                 let _ = self.control_lowering().walk_catch_clause(node, scope);

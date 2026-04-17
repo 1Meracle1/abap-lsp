@@ -610,6 +610,67 @@ pub fn try_parse_do_stmt(
     Some((node, next_after))
 }
 
+fn at_stmt_body_start(source: &str, tokens: &[Token], idx: usize) -> Option<usize> {
+    let at_tok = tokens.get(idx)?;
+    if !is_keyword(source, at_tok, "at") {
+        return None;
+    }
+
+    let first = skip_trivia(tokens, idx + 1);
+    let first_tok = tokens.get(first)?;
+    if is_keyword(source, first_tok, "first") || is_keyword(source, first_tok, "last") {
+        return Some(first + 1);
+    }
+    if is_keyword(source, first_tok, "new") {
+        return Some(skip_trivia(tokens, first + 1));
+    }
+    if is_keyword(source, first_tok, "end") {
+        let of_idx = skip_trivia(tokens, first + 1);
+        let of_tok = tokens.get(of_idx)?;
+        if is_keyword(source, of_tok, "of") {
+            return Some(skip_trivia(tokens, of_idx + 1));
+        }
+    }
+    None
+}
+
+pub fn try_parse_at_stmt(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    errors: &mut Vec<crate::ParseError>,
+) -> Option<(NodeId, usize)> {
+    let at_tok = tokens.get(idx)?;
+    let body_start_idx = at_stmt_body_start(source, tokens, idx)?;
+
+    let (mut children, mut next) = parse_header_until_period(
+        b,
+        source,
+        tokens,
+        idx,
+        body_start_idx,
+        errors,
+        "syntax error: expected '.' after AT header",
+    );
+    let (body, after_body) = parse_body_until_keywords(b, source, tokens, next, errors, &["ENDAT"]);
+    children.extend(body);
+    next = after_body;
+    let (end_children, next_after, end_pos) = parse_end_keyword(
+        b,
+        source,
+        tokens,
+        next,
+        at_tok,
+        "ENDAT",
+        "syntax error: expected ENDAT",
+        errors,
+    );
+    children.extend(end_children);
+    let node = b.branch(SyntaxKind::AtStmt, at_tok.range.start..end_pos, &children);
+    Some((node, next_after))
+}
+
 pub fn try_parse_loop_stmt(
     b: &mut SyntaxTreeBuilder,
     source: &str,
@@ -1145,6 +1206,19 @@ mod tests {
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
         let root = parsed.file.root();
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::DoStmt), 2);
+    }
+
+    #[test]
+    fn parses_at_group_processing_blocks_inside_loop() {
+        let parsed = crate::parse(
+            "LOOP AT itab INTO wa.\n  AT NEW a.\n    x = 1.\n  ENDAT.\n  AT LAST.\n    y = 2.\n  ENDAT.\nENDLOOP.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::LoopStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::AtStmt), 2);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::EndAtStmt), 0);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::UnparsedStmt), 0);
     }
 
     #[test]

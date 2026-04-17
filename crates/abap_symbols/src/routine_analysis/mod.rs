@@ -23,11 +23,11 @@ pub use metrics::ProjectRoutineAnalysisMetrics;
 
 use crate::builtin_routine_spec;
 use crate::def_map::{
-    CaseRegionData, Diagnostic, DiagnosticKind, FieldSymbolStateCheckKind, FormParameterSection,
-    FunctionModuleParameterSection, IfRegionData, LoopRegionData, MethodParameterSection,
-    PerformParameterSection, Resolution, RoutineControlRegionData, RoutineSiteKind, SymbolData,
-    SymbolKind, TryRegionData, UnitAnalysis, ValueFlowKind, ValueFlowTargetData,
-    ValueStateCheckKind,
+    AtRegionData, CaseRegionData, Diagnostic, DiagnosticKind, FieldSymbolStateCheckKind,
+    FormParameterSection, FunctionModuleParameterSection, IfRegionData, LoopRegionData,
+    MethodParameterSection, PerformParameterSection, Resolution, RoutineControlRegionData,
+    RoutineSiteKind, SymbolData, SymbolKind, TryRegionData, UnitAnalysis, ValueFlowKind,
+    ValueFlowTargetData, ValueStateCheckKind,
 };
 use crate::ids::{ScopeId, StructureId, SymbolHandle, UnitId};
 use crate::project::ProjectAnalysis;
@@ -353,6 +353,9 @@ pub fn build_project_routine_analysis(project: &ProjectAnalysis) -> ProjectRouti
                 },
                 RoutineControlRegionData::Case(_) => RoutineInstructionSite::Branch {
                     kind: RoutineBranchKind::Case,
+                },
+                RoutineControlRegionData::At(_) => RoutineInstructionSite::Branch {
+                    kind: RoutineBranchKind::At,
                 },
                 RoutineControlRegionData::Try(_) => RoutineInstructionSite::Branch {
                     kind: RoutineBranchKind::Try,
@@ -690,6 +693,7 @@ struct RoutineBuildIndex<'a> {
     instructions_by_scope: Vec<Vec<RoutineInstrId>>,
     if_regions: HashMap<ControlKey, &'a IfRegionData>,
     case_regions: HashMap<ControlKey, &'a CaseRegionData>,
+    at_regions: HashMap<ControlKey, &'a AtRegionData>,
     try_regions: HashMap<ControlKey, &'a TryRegionData>,
     loop_regions: HashMap<ControlKey, &'a LoopRegionData>,
 }
@@ -738,6 +742,7 @@ impl<'a> RoutineBuildIndex<'a> {
 
         let mut if_regions = HashMap::new();
         let mut case_regions = HashMap::new();
+        let mut at_regions = HashMap::new();
         let mut try_regions = HashMap::new();
         let mut loop_regions = HashMap::new();
         for region in &unit.routine_control_regions {
@@ -756,8 +761,11 @@ impl<'a> RoutineBuildIndex<'a> {
                 RoutineControlRegionData::Case(data) => {
                     case_regions.insert(control_key(data.scope, &data.range, 1), data);
                 }
+                RoutineControlRegionData::At(data) => {
+                    at_regions.insert(control_key(data.scope, &data.range, 2), data);
+                }
                 RoutineControlRegionData::Try(data) => {
-                    try_regions.insert(control_key(data.scope, &data.range, 2), data);
+                    try_regions.insert(control_key(data.scope, &data.range, 3), data);
                 }
                 RoutineControlRegionData::Loop(data) => {
                     loop_regions.insert(control_key(data.scope, &data.range, loop_tag(data)), data);
@@ -769,6 +777,7 @@ impl<'a> RoutineBuildIndex<'a> {
             instructions_by_scope,
             if_regions,
             case_regions,
+            at_regions,
             try_regions,
             loop_regions,
         }
@@ -786,9 +795,15 @@ impl<'a> RoutineBuildIndex<'a> {
             .copied()
     }
 
+    fn at_region(&self, instruction: &RoutineInstruction) -> Option<&'a AtRegionData> {
+        self.at_regions
+            .get(&control_key(instruction.scope, &instruction.range, 2))
+            .copied()
+    }
+
     fn try_region(&self, instruction: &RoutineInstruction) -> Option<&'a TryRegionData> {
         self.try_regions
-            .get(&control_key(instruction.scope, &instruction.range, 2))
+            .get(&control_key(instruction.scope, &instruction.range, 3))
             .copied()
     }
 
@@ -936,6 +951,7 @@ impl<'a> CfgBuilder<'a> {
         match kind {
             RoutineBranchKind::If => self.handle_if(state, instruction),
             RoutineBranchKind::Case => self.handle_case(state, instruction),
+            RoutineBranchKind::At => self.handle_at(state, instruction),
             RoutineBranchKind::Try => self.handle_try(state, instruction),
         }
     }
@@ -1033,6 +1049,36 @@ impl<'a> CfgBuilder<'a> {
         if !region.has_when_others {
             self.add_edge(state.block, join, RoutineEdgeKind::Fallthrough);
             join_reachable |= state.reachable;
+        }
+
+        ScopeExit {
+            block: join,
+            reachable: join_reachable,
+        }
+    }
+
+    fn handle_at(&mut self, state: ScopeExit, instruction: &RoutineInstruction) -> ScopeExit {
+        let Some(region) = self.index.at_region(instruction).cloned() else {
+            self.append_instruction(state.block, instruction.id);
+            return state;
+        };
+        self.append_instruction(state.block, instruction.id);
+        let join = self.new_block(RoutineBlockKind::Body, zero_range(instruction.range.end));
+        self.add_edge(state.block, join, RoutineEdgeKind::Branch);
+        let at_entry = self.new_block(RoutineBlockKind::Body, zero_range(region.range.start));
+        self.add_edge(state.block, at_entry, RoutineEdgeKind::Branch);
+
+        let at_exit = self.build_scope(
+            region.body_scope,
+            ScopeExit {
+                block: at_entry,
+                reachable: state.reachable,
+            },
+        );
+        let mut join_reachable = state.reachable;
+        if at_exit.reachable {
+            self.add_edge(at_exit.block, join, RoutineEdgeKind::Fallthrough);
+            join_reachable = true;
         }
 
         ScopeExit {
@@ -1447,8 +1493,13 @@ fn build_routine_dataflow(
         resolve_safe_value_state_checks(unit, &reference_uses, &value_ids_by_symbol);
     let condition_probe_reads =
         resolve_condition_probe_reads(unit, &reference_uses, &value_ids_by_symbol);
-    let safe_loop_where_field_refs =
+    let mut safe_loop_field_refs =
         resolve_safe_loop_where_field_refs(unit, &reference_uses, &values);
+    safe_loop_field_refs.extend(resolve_safe_loop_at_field_refs(
+        unit,
+        &reference_uses,
+        &values,
+    ));
     let is_not_initial_scope_refinements = resolve_is_not_initial_scope_refinements(
         unit,
         &reference_uses,
@@ -1482,7 +1533,7 @@ fn build_routine_dataflow(
     );
     let mut safe_read_refs = safe_field_symbol_checks.clone();
     safe_read_refs.extend(safe_value_state_checks);
-    safe_read_refs.extend(safe_loop_where_field_refs);
+    safe_read_refs.extend(safe_loop_field_refs);
     let mut suppressed_refs = std::collections::HashSet::new();
     for instruction in &routine.ir.instructions {
         match instruction.site {
@@ -3106,22 +3157,76 @@ fn resolve_safe_loop_where_field_refs(
     reference_uses: &[ReferenceUse],
     values: &[RoutineDataflowValue],
 ) -> std::collections::HashSet<crate::ReferenceId> {
-    let mut out = std::collections::HashSet::new();
-    for context in &unit.loop_where_field_contexts {
-        let Some(structure_id) =
-            resolve_value_access_structure(unit, reference_uses, values, &context.source_access)
-        else {
-            continue;
-        };
-        let Some(structure) = unit.structures.get(structure_id.as_usize()) else {
-            continue;
-        };
-        let field_names: std::collections::HashSet<_> = structure
-            .fields
+    resolve_safe_loop_field_refs(
+        unit,
+        reference_uses,
+        values,
+        unit.loop_where_field_contexts
             .iter()
-            .map(|field| field.name.as_ref())
-            .collect();
-        for use_site in reference_uses_in_range(reference_uses, &context.range) {
+            .map(|context| {
+                (
+                    &context.source_access,
+                    context.target_access.as_ref(),
+                    &context.range,
+                )
+            }),
+    )
+}
+
+fn resolve_safe_loop_at_field_refs(
+    unit: &UnitAnalysis,
+    reference_uses: &[ReferenceUse],
+    values: &[RoutineDataflowValue],
+) -> std::collections::HashSet<crate::ReferenceId> {
+    resolve_safe_loop_field_refs(
+        unit,
+        reference_uses,
+        values,
+        unit.loop_at_field_contexts
+            .iter()
+            .map(|context| {
+                (
+                    &context.source_access,
+                    context.target_access.as_ref(),
+                    &context.range,
+                )
+            }),
+    )
+}
+
+fn resolve_safe_loop_field_refs<'a>(
+    unit: &UnitAnalysis,
+    reference_uses: &[ReferenceUse],
+    values: &[RoutineDataflowValue],
+    contexts: impl IntoIterator<
+        Item = (
+            &'a crate::FieldAccess,
+            Option<&'a crate::FieldAccess>,
+            &'a TextRange,
+        ),
+    >,
+) -> std::collections::HashSet<crate::ReferenceId> {
+    let mut out = std::collections::HashSet::new();
+    for (source_access, target_access, range) in contexts {
+        let mut field_names = std::collections::HashSet::new();
+        for access in std::iter::once(Some(source_access)).chain(std::iter::once(target_access)) {
+            let Some(access) = access else {
+                continue;
+            };
+            let Some(structure_id) =
+                resolve_value_access_structure(unit, reference_uses, values, access)
+            else {
+                continue;
+            };
+            let Some(structure) = unit.structures.get(structure_id.as_usize()) else {
+                continue;
+            };
+            field_names.extend(structure.fields.iter().map(|field| field.name.as_ref()));
+        }
+        if field_names.is_empty() {
+            continue;
+        }
+        for use_site in reference_uses_in_range(reference_uses, range) {
             let Some(reference) = unit.references.get(use_site.reference.as_usize()) else {
                 continue;
             };
@@ -4122,7 +4227,8 @@ fn instruction_site_sort_key(site: RoutineInstructionSite) -> u32 {
         RoutineInstructionSite::Branch { kind } => match kind {
             RoutineBranchKind::If => 0,
             RoutineBranchKind::Case => 1,
-            RoutineBranchKind::Try => 2,
+            RoutineBranchKind::At => 2,
+            RoutineBranchKind::Try => 3,
         },
         RoutineInstructionSite::LoopHeader { kind } => match kind {
             crate::RoutineLoopKind::While => 0,
@@ -4158,6 +4264,7 @@ fn routine_kind(kind: ScopeKind) -> Option<RoutineKind> {
         | ScopeKind::WhileBlock
         | ScopeKind::DoBlock
         | ScopeKind::LoopBlock
+        | ScopeKind::AtBlock
         | ScopeKind::TryBlock
         | ScopeKind::SelectBlock => None,
     }

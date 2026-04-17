@@ -219,6 +219,8 @@ pub enum SyntaxKind {
     DoStmt,
     /// `LOOP ... . ... ENDLOOP.`
     LoopStmt,
+    /// `AT FIRST|LAST|NEW ...|END OF ... . ... ENDAT.` inside `LOOP`.
+    AtStmt,
     /// `AT source` inside `LOOP`.
     LoopSourceClause,
     /// `INTO target` inside `LOOP`.
@@ -544,6 +546,7 @@ impl SyntaxKind {
             Self::WhileStmt => "WhileStmt",
             Self::DoStmt => "DoStmt",
             Self::LoopStmt => "LoopStmt",
+            Self::AtStmt => "AtStmt",
             Self::LoopSourceClause => "LoopSourceClause",
             Self::LoopIntoClause => "LoopIntoClause",
             Self::LoopAssigningClause => "LoopAssigningClause",
