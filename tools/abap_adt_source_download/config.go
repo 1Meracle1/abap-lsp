@@ -17,16 +17,20 @@ const (
 )
 
 type Config struct {
-	BaseURL           string
-	Username          string
-	Password          string
-	SapClient         string
-	OutputDir         string
-	Packages          []string
-	RequestsPerMinute int
-	MaxConcurrent     int
-	CleanOutput       bool
-	EnvFile           string
+	BaseURL                  string
+	Username                 string
+	Password                 string
+	SapClient                string
+	OutputDir                string
+	ObjectsFile              string
+	ObjectFilter             *ObjectFilter
+	DependencyCandidatesFile string
+	DependencyInput          *DependencyInput
+	Packages                 []string
+	RequestsPerMinute        int
+	MaxConcurrent            int
+	CleanOutput              bool
+	EnvFile                  string
 }
 
 type stringSliceFlag []string
@@ -55,6 +59,8 @@ func loadConfig(args []string) (Config, error) {
 	fs.StringVar(&cfg.Password, "pass", "", "SAP password")
 	fs.StringVar(&cfg.SapClient, "client", "", "SAP client")
 	fs.StringVar(&cfg.OutputDir, "output", "", "Export root directory")
+	fs.StringVar(&cfg.ObjectsFile, "objects-file", "", "Optional newline-delimited object-name file; only matching objects are downloaded")
+	fs.StringVar(&cfg.DependencyCandidatesFile, "dependency-candidates-file", "", "Optional package-free dependency fetch input; accepts abap-cli remote-candidates JSON or plain text candidates")
 	fs.StringVar(&cfg.EnvFile, "env-file", "", "Optional dotenv file path")
 	fs.IntVar(&cfg.RequestsPerMinute, "rpm", 0, "Max ADT requests per minute")
 	fs.IntVar(&cfg.MaxConcurrent, "parallel", 0, "Max concurrent ADT requests")
@@ -71,6 +77,8 @@ func loadConfig(args []string) (Config, error) {
 		fmt.Fprintln(fs.Output(), "  ABAP_ADT_PASSWORD / SAPPASS")
 		fmt.Fprintln(fs.Output(), "  ABAP_ADT_CLIENT / SAPCLIENT")
 		fmt.Fprintln(fs.Output(), "  ABAP_ADT_OUTPUT / OUTPUT_FOLDER")
+		fmt.Fprintln(fs.Output(), "  ABAP_ADT_OBJECTS_FILE")
+		fmt.Fprintln(fs.Output(), "  ABAP_ADT_DEPENDENCY_CANDIDATES_FILE")
 		fmt.Fprintln(fs.Output(), "  ABAP_ADT_PACKAGES")
 		fmt.Fprintln(fs.Output(), "  RATE_LIMIT_RPM / MAX_CONCURRENT_REQUESTS")
 	}
@@ -134,6 +142,41 @@ func loadConfig(args []string) (Config, error) {
 		}
 		cfg.OutputDir = outputDir
 	}
+	cfg.ObjectsFile = firstNonEmpty(
+		cfg.ObjectsFile,
+		os.Getenv("ABAP_ADT_OBJECTS_FILE"),
+		dotenv["ABAP_ADT_OBJECTS_FILE"],
+	)
+	if cfg.ObjectsFile != "" {
+		objectsFile, err := filepath.Abs(cfg.ObjectsFile)
+		if err != nil {
+			return cfg, fmt.Errorf("resolve objects file: %w", err)
+		}
+		cfg.ObjectsFile = objectsFile
+		cfg.ObjectFilter, err = loadObjectFilter(cfg.ObjectsFile)
+		if err != nil {
+			return cfg, err
+		}
+	}
+	cfg.DependencyCandidatesFile = firstNonEmpty(
+		cfg.DependencyCandidatesFile,
+		os.Getenv("ABAP_ADT_DEPENDENCY_CANDIDATES_FILE"),
+		dotenv["ABAP_ADT_DEPENDENCY_CANDIDATES_FILE"],
+	)
+	if cfg.DependencyCandidatesFile != "" {
+		if cfg.OutputDir == "" {
+			return cfg, errors.New("dependency-candidates-file mode requires -output to point at the workspace root")
+		}
+		dependencyCandidatesFile, err := filepath.Abs(cfg.DependencyCandidatesFile)
+		if err != nil {
+			return cfg, fmt.Errorf("resolve dependency candidates file: %w", err)
+		}
+		cfg.DependencyCandidatesFile = dependencyCandidatesFile
+		cfg.DependencyInput, err = loadDependencyInput(cfg.DependencyCandidatesFile, cfg.OutputDir)
+		if err != nil {
+			return cfg, err
+		}
+	}
 	cfg.Packages = dedupeStrings(append(packages, splitPackageValues(firstNonEmpty(
 		os.Getenv("ABAP_ADT_PACKAGES"),
 		dotenv["ABAP_ADT_PACKAGES"],
@@ -163,7 +206,13 @@ func loadConfig(args []string) (Config, error) {
 	if cfg.OutputDir == "" {
 		return cfg, errors.New("missing output directory; set -output or ABAP_ADT_OUTPUT")
 	}
-	if len(cfg.Packages) == 0 {
+	if cfg.DependencyInput != nil && len(cfg.Packages) > 0 {
+		return cfg, errors.New("dependency-candidates-file mode does not combine with package export; choose one mode")
+	}
+	if cfg.DependencyInput != nil && cfg.ObjectFilter != nil {
+		return cfg, errors.New("dependency-candidates-file mode does not combine with objects-file package filtering")
+	}
+	if cfg.DependencyInput == nil && len(cfg.Packages) == 0 {
 		return cfg, errors.New("no packages configured; pass -package or ABAP_ADT_PACKAGES")
 	}
 

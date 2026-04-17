@@ -22,6 +22,8 @@ ABAP_ADT_USER=your_username
 ABAP_ADT_PASSWORD=your_password
 ABAP_ADT_CLIENT=100
 ABAP_ADT_OUTPUT=D:\dev\abap\sap_system_export
+ABAP_ADT_OBJECTS_FILE=D:\dev\abap\unknown_objects.txt
+ABAP_ADT_DEPENDENCY_CANDIDATES_FILE=D:\dev\rust\abap-lsp\remote_candidates.json
 ABAP_ADT_PACKAGES=/STTP/MAIN,/AIF/MAIN
 RATE_LIMIT_RPM=60
 MAX_CONCURRENT_REQUESTS=4
@@ -38,6 +40,7 @@ MAX_CONCURRENT_REQUESTS=4
   -pass your_password ^
   -client 100 ^
   -output D:\dev\abap\sap_system_export ^
+  -objects-file D:\dev\abap\unknown_objects.txt ^
   -package /STTP/MAIN ^
   -package /AIF/MAIN
 ```
@@ -45,8 +48,59 @@ MAX_CONCURRENT_REQUESTS=4
 Options:
 
 - `-package` is repeatable.
+- `-objects-file` is optional. When present, the exporter still walks the configured packages but only downloads objects whose names appear in the file. The file is plain text, one object name per line. Empty lines plus lines starting with `#` or `;` are ignored.
+- `-dependency-candidates-file` switches the tool into package-free dependency mode. In that mode, `-package` must be omitted and `-output` must point at the workspace root. The tool writes into `.abapls/cache/...` just like the VS Code extension.
 - `-clean` removes the existing export root contents before download.
 - `-rpm` and `-parallel` control request pacing.
+- At the end of a filtered run, the exporter logs any requested object names that were not found under the configured packages.
+
+## Building An Objects File From The Workspace
+
+`abap-cli` can emit remote dependency candidates from editable project files only.
+
+PowerShell example:
+
+```powershell
+cargo run -p abap_cli -- remote-candidates . | Set-Content .\unknown_objects.txt
+```
+
+If you want the structured output instead:
+
+```powershell
+cargo run -p abap_cli -- remote-candidates --json --pretty .
+```
+
+That JSON output now includes both the deduped candidate list and `source_candidates` keyed by source URI, so it can be consumed directly by the Go tool’s dependency mode.
+
+## Extension-Like Dependency Fetch Mode
+
+This mode mirrors the VS Code extension’s remote dependency flow:
+
+1. Read remote candidates from `abap-cli`.
+2. Search ADT globally with `quickSearch`.
+3. Pick the best supported object by candidate kind.
+4. Fetch the artifact by ADT URI.
+5. Write package cache files, object metadata, negative markers, and dependency-manifest entries under `.abapls/cache`.
+
+Generate the batch file:
+
+```powershell
+cargo run -p abap_cli -- remote-candidates --json --pretty . | Set-Content .\remote_candidates.json
+```
+
+Resolve dependencies into the current workspace cache:
+
+```powershell
+go run . `
+  -url https://your-sap-host:port `
+  -user your_username `
+  -pass your_password `
+  -client 100 `
+  -output D:\dev\rust\abap-lsp `
+  -dependency-candidates-file D:\dev\rust\abap-lsp\remote_candidates.json
+```
+
+Plain text input is also accepted in dependency mode. Each line may be either `object_name` or `object_name|kind`. When no kind is given, the tool uses `symbol`.
 
 ## Export Layout Compatibility
 

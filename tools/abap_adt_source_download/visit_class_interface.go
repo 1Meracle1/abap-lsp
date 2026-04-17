@@ -7,11 +7,15 @@ import (
 )
 
 func visitClass(ctx *SapContext, info AdtObjectNode, basePath string) {
+	if !ctx.shouldFetchObject(info.ObjectName) {
+		return
+	}
 	encodedClassName := encodeObjectName(info.ObjectName)
 	classPath := filepath.Join(basePath, encodedClassName+".abap")
 	if fileExists(classPath) {
 		return
 	}
+	createDirIfNotExists(basePath)
 	log.Printf("visited class %s", info.ObjectName)
 
 	classSource, err := fetchClassSource(ctx, encodedClassName)
@@ -27,11 +31,15 @@ func visitClass(ctx *SapContext, info AdtObjectNode, basePath string) {
 }
 
 func visitInteface(ctx *SapContext, info AdtObjectNode, basePath string) {
+	if !ctx.shouldFetchObject(info.ObjectName) {
+		return
+	}
 	encodedName := encodeObjectName(info.ObjectName)
 	filePath := filepath.Join(basePath, encodedName+".abap")
 	if fileExists(filePath) {
 		return
 	}
+	createDirIfNotExists(basePath)
 	log.Printf("visited interface %s", info.ObjectName)
 
 	source, err := fetchInterfaceSource(ctx, encodedName)

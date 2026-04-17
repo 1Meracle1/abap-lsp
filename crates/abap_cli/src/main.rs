@@ -8,13 +8,15 @@
 //! abap-cli analyze --json [--with-project] [--pretty] [FILE]
 //! abap-cli expand [--json] [--pretty] [FILE]
 //! abap-cli call-graph --json [--symbol NAME] [--pretty] [FILE]
+//! abap-cli remote-candidates [--json] [--pretty] [PATH]
 //! ```
 //!
 //! `FILE` is UTF-8 ABAP source; omit or use `-` for stdin.
+//! `PATH` for `remote-candidates` is a workspace file or directory anchor; omit it to use the current directory.
 
 mod human;
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::Read;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -27,6 +29,7 @@ use abap_cache::{
     build_effective_source, load_workspace_documents, manifest_document_metadata, path_to_file_uri,
 };
 use abap_lexer::tokenize;
+use abap_lsp::{RemoteDependencyCandidate, collect_remote_dependency_candidates};
 use abap_parser::parse;
 use abap_symbols::{
     DiagnosticKind, ProjectAnalysis, ProjectStaticAnalysisSummary, SemanticDossierContext,
@@ -44,6 +47,7 @@ enum Command {
     Analyze,
     Expand,
     CallGraph,
+    RemoteCandidates,
 }
 
 struct Cli {
@@ -58,11 +62,11 @@ struct Cli {
     unknown_only: bool,
     /// Analyze: load workspace peers for cross-unit resolution.
     analyze_with_project: bool,
-    /// Analyze/expand/call-graph: pretty-print JSON instead of compact output.
+    /// Analyze/expand/call-graph/remote-candidates: pretty-print JSON instead of compact output.
     pretty: bool,
     /// Call graph: focus queries on a matching callable name/id.
     call_graph_symbol: Option<String>,
-    /// Source path, or None / `-` for stdin.
+    /// Source path, or for remote-candidates a workspace file/directory anchor.
     path: Option<String>,
 }
 
@@ -77,8 +81,10 @@ Usage:
   abap-cli analyze --json [--with-project] [--pretty] [FILE]
   abap-cli expand [--json] [--pretty] [FILE]
   abap-cli call-graph --json [--symbol NAME] [--pretty] [FILE]
+  abap-cli remote-candidates [--json] [--pretty] [PATH]
 
 If FILE is omitted or `-`, read source from stdin.
+For `remote-candidates`, PATH may be a file or directory and defaults to the current directory.
 
 Commands:
   lex       Tokenize (`--json` for tokens on a clean run; human only prints a token list when lexing failed)
@@ -88,6 +94,7 @@ Commands:
   analyze   Semantic dossier export for AI/tooling consumption (`--json` required for structured output)
   expand    Effective source expansion with include source maps
   call-graph  Project-scale call graph export and caller/callee queries (`--json` required)
+  remote-candidates  Deduped remote dependency candidates from editable workspace files (`--json` also includes source-to-candidate mapping)
 
 Options:
   --json          Print JSON to stdout (no rustc-style rendering)
@@ -96,7 +103,7 @@ Options:
   --unknown-only  Symbols: only unknown / unresolved identifiers (empty until wired)
   --with-project  Analyze: load workspace peers around FILE for cross-unit resolution
   --symbol NAME   Call graph: focus on callable nodes matching NAME / qualified name / node id
-  --pretty        Analyze/expand/call-graph: pretty-print JSON
+  --pretty        Analyze/expand/call-graph/remote-candidates: pretty-print JSON
 
   -h, --help      Show this help
 "#
@@ -129,6 +136,7 @@ fn parse_cli_args(it: impl Iterator<Item = String>) -> Result<Cli, String> {
         "analyze" => Command::Analyze,
         "expand" => Command::Expand,
         "call-graph" => Command::CallGraph,
+        "remote-candidates" => Command::RemoteCandidates,
         _ => return Err(format!("unknown command {:?}\n{}", cmd, usage())),
     };
 
@@ -191,11 +199,11 @@ fn parse_cli_args(it: impl Iterator<Item = String>) -> Result<Cli, String> {
     if pretty
         && !matches!(
             command,
-            Command::Analyze | Command::Expand | Command::CallGraph
+            Command::Analyze | Command::Expand | Command::CallGraph | Command::RemoteCandidates
         )
     {
         return Err(format!(
-            "--pretty only applies to analyze, expand, and call-graph\n{}",
+            "--pretty only applies to analyze, expand, call-graph, and remote-candidates\n{}",
             usage()
         ));
     }
@@ -325,6 +333,9 @@ fn run() -> Result<i32, String> {
     }
     if cli.command == Command::CallGraph {
         return run_call_graph(&cli);
+    }
+    if cli.command == Command::RemoteCandidates {
+        return run_remote_candidates(&cli);
     }
 
     let source = read_source(cli.path.as_deref())?;
@@ -587,7 +598,9 @@ fn run() -> Result<i32, String> {
 
             Ok(human_exit(cli.json_output, !parsed.errors.is_empty()))
         }
-        Command::Analyze | Command::Expand | Command::CallGraph => unreachable!("handled above"),
+        Command::Analyze | Command::Expand | Command::CallGraph | Command::RemoteCandidates => {
+            unreachable!("handled above")
+        }
     }
 }
 
@@ -608,6 +621,14 @@ struct AnalyzeSnapshot {
 struct ExpandSnapshotSet {
     root: Arc<AnalysisSnapshot>,
     snapshots: HashMap<Arc<str>, Arc<AnalysisSnapshot>>,
+}
+
+struct RemoteCandidateWorkspace {
+    workspace_root_uri: String,
+    editable_document_count: usize,
+    source_uris: Vec<String>,
+    source_candidates: BTreeMap<String, Vec<RemoteDependencyCandidate>>,
+    candidates: Vec<RemoteDependencyCandidate>,
 }
 
 fn run_analyze(cli: &Cli) -> Result<i32, String> {
@@ -754,6 +775,129 @@ fn run_call_graph(cli: &Cli) -> Result<i32, String> {
     .map_err(|e| e.to_string())?;
     println!("{json}");
     Ok(0)
+}
+
+fn run_remote_candidates(cli: &Cli) -> Result<i32, String> {
+    let workspace = load_remote_candidate_workspace(cli.path.as_deref())?;
+
+    if cli.json_output {
+        let output = json!({
+            "phase": "remote_candidates",
+            "workspace_root_uri": workspace.workspace_root_uri,
+            "editable_document_count": workspace.editable_document_count,
+            "source_uri_count": workspace.source_uris.len(),
+            "candidate_count": workspace.candidates.len(),
+            "source_uris": workspace.source_uris,
+            "source_candidates": workspace.source_candidates,
+            "candidates": workspace.candidates,
+        });
+        let json = if cli.pretty {
+            serde_json::to_string_pretty(&output)
+        } else {
+            serde_json::to_string(&output)
+        }
+        .map_err(|e| e.to_string())?;
+        println!("{json}");
+        return Ok(0);
+    }
+
+    for candidate in workspace.candidates {
+        println!("{}", candidate.name);
+    }
+    Ok(0)
+}
+
+fn load_remote_candidate_workspace(path: Option<&str>) -> Result<RemoteCandidateWorkspace, String> {
+    let anchor_path = resolve_workspace_anchor_path(path)?;
+    let workspace_root = find_workspace_root_for_anchor(&anchor_path)?;
+    let workspace_root_uri = path_to_file_uri(&workspace_root);
+    let workspace = load_workspace_documents(&workspace_root_uri, &HashMap::new());
+    let editable_document_count = workspace
+        .documents
+        .iter()
+        .filter(|document| !document.is_dependency)
+        .count();
+
+    let inputs: Vec<DocumentInput> = workspace
+        .documents
+        .iter()
+        .map(|document| DocumentInput {
+            uri: Arc::clone(&document.uri),
+            version: document.version,
+            text: Arc::from(document.text.as_str()),
+            is_dependency: document.is_dependency,
+            object_name: document.object_name.clone(),
+        })
+        .collect();
+
+    let snapshots = DocumentStore::default().replace_all(inputs);
+    let mut deduped = BTreeMap::<String, RemoteDependencyCandidate>::new();
+    let mut source_uris = Vec::new();
+    let mut source_candidates = BTreeMap::<String, Vec<RemoteDependencyCandidate>>::new();
+    for document in workspace
+        .documents
+        .iter()
+        .filter(|document| !document.is_dependency)
+    {
+        let Some(snapshot) = snapshots.get(document.uri.as_ref()) else {
+            continue;
+        };
+        let mut per_source = BTreeMap::<String, RemoteDependencyCandidate>::new();
+        for candidate in collect_remote_dependency_candidates(snapshot.as_ref()) {
+            insert_remote_candidate(&mut deduped, candidate.clone());
+            insert_remote_candidate(&mut per_source, candidate);
+        }
+        if !per_source.is_empty() {
+            source_uris.push(document.uri.to_string());
+            source_candidates.insert(document.uri.to_string(), per_source.into_values().collect());
+        }
+    }
+
+    let mut candidates: Vec<_> = deduped.into_values().collect();
+    candidates.sort_by(|left, right| left.name.cmp(&right.name).then(left.kind.cmp(&right.kind)));
+
+    Ok(RemoteCandidateWorkspace {
+        workspace_root_uri,
+        editable_document_count,
+        source_uris,
+        source_candidates,
+        candidates,
+    })
+}
+
+fn insert_remote_candidate(
+    deduped: &mut BTreeMap<String, RemoteDependencyCandidate>,
+    candidate: RemoteDependencyCandidate,
+) {
+    let normalized_name = candidate.name.trim().to_ascii_lowercase();
+    if normalized_name.is_empty() {
+        return;
+    }
+
+    let priority = remote_candidate_kind_priority(candidate.kind.as_str());
+    match deduped.get(&normalized_name) {
+        Some(existing) if remote_candidate_kind_priority(existing.kind.as_str()) >= priority => {}
+        _ => {
+            deduped.insert(
+                normalized_name.clone(),
+                RemoteDependencyCandidate {
+                    name: normalized_name,
+                    kind: candidate.kind.trim().to_ascii_lowercase(),
+                },
+            );
+        }
+    }
+}
+
+fn remote_candidate_kind_priority(kind: &str) -> usize {
+    match kind.trim().to_ascii_lowercase().as_str() {
+        "message-class" => 5,
+        "include" => 4,
+        "function" => 4,
+        "static" => 3,
+        "type" => 2,
+        _ => 1,
+    }
 }
 
 fn dedup_edges(edges: impl IntoIterator<Item = CallGraphEdge>) -> Vec<CallGraphEdge> {
@@ -1151,10 +1295,43 @@ fn resolve_target_path(path: Option<&str>) -> Result<Option<PathBuf>, String> {
     }
 }
 
+fn resolve_workspace_anchor_path(path: Option<&str>) -> Result<PathBuf, String> {
+    match path {
+        None => std::env::current_dir()
+            .map_err(|e| format!("current dir: {e}"))?
+            .canonicalize()
+            .map(normalize_windows_path)
+            .map_err(|e| format!("current dir: {e}")),
+        Some("-") => Err("remote-candidates does not support stdin".to_string()),
+        Some(path) => {
+            let path = PathBuf::from(path);
+            let absolute = if path.is_absolute() {
+                path
+            } else {
+                std::env::current_dir()
+                    .map_err(|e| format!("current dir: {e}"))?
+                    .join(path)
+            };
+            absolute
+                .canonicalize()
+                .map(normalize_windows_path)
+                .map_err(|e| format!("{}: {e}", absolute.display()))
+        }
+    }
+}
+
 fn find_workspace_root(target_path: &Path) -> Result<PathBuf, String> {
-    let start = target_path
-        .parent()
-        .ok_or_else(|| format!("{} has no parent directory", target_path.display()))?;
+    find_workspace_root_for_anchor(target_path)
+}
+
+fn find_workspace_root_for_anchor(anchor_path: &Path) -> Result<PathBuf, String> {
+    let start = if anchor_path.is_dir() {
+        anchor_path
+    } else {
+        anchor_path
+            .parent()
+            .ok_or_else(|| format!("{} has no parent directory", anchor_path.display()))?
+    };
     for ancestor in start.ancestors() {
         if ancestor.join("abapls.toml").is_file() {
             return Ok(ancestor.to_path_buf());
@@ -1162,7 +1339,11 @@ fn find_workspace_root(target_path: &Path) -> Result<PathBuf, String> {
     }
 
     let cwd = std::env::current_dir().map_err(|e| format!("current dir: {e}"))?;
-    if target_path.starts_with(&cwd) {
+    let cwd = cwd
+        .canonicalize()
+        .map(normalize_windows_path)
+        .unwrap_or_else(|_| normalize_windows_path(cwd));
+    if anchor_path.starts_with(&cwd) {
         return Ok(cwd);
     }
 
@@ -1175,4 +1356,92 @@ fn normalize_windows_path(path: PathBuf) -> PathBuf {
         return PathBuf::from(stripped);
     }
     path
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{load_remote_candidate_workspace, parse_cli_args};
+    use std::fs;
+
+    #[test]
+    fn parses_remote_candidates_command() {
+        let cli = parse_cli_args(
+            ["remote-candidates", "--json", "--pretty", "."]
+                .into_iter()
+                .map(str::to_string),
+        )
+        .expect("cli");
+
+        assert!(cli.json_output);
+        assert!(cli.pretty);
+        assert_eq!(cli.path.as_deref(), Some("."));
+    }
+
+    #[test]
+    fn remote_candidates_only_use_editable_workspace_files() {
+        let root = std::env::temp_dir().join("abap-cli-remote-candidates-editable-only");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("src")).expect("src dir");
+        fs::create_dir_all(root.join(".abapls/cache/packages/ZPKG/global-class"))
+            .expect("dependency dir");
+        fs::write(
+            root.join("abapls.toml"),
+            r#"
+version = 1
+
+[resolution]
+cache_dir = ".abapls/cache"
+
+[[unit]]
+name = "ZMAIN"
+kind = "report"
+root_file = "src/ZMAIN.abap"
+
+[[unit]]
+name = "ZDEP"
+kind = "global-class"
+root_file = ".abapls/cache/packages/ZPKG/global-class/ZDEP.abap"
+dependency_of = [
+  "src/ZMAIN.abap"
+]
+"#,
+        )
+        .expect("manifest");
+        fs::write(
+            root.join("src/ZMAIN.abap"),
+            "REPORT zmain.\nDATA lo_main TYPE REF TO zcl_editable_missing.",
+        )
+        .expect("main");
+        fs::write(
+            root.join(".abapls/cache/packages/ZPKG/global-class/ZDEP.abap"),
+            "CLASS zdep DEFINITION.\n  PUBLIC SECTION.\n    DATA mo_dep TYPE REF TO zcl_dependency_missing.\nENDCLASS.\nCLASS zdep IMPLEMENTATION.\nENDCLASS.",
+        )
+        .expect("dep");
+
+        let workspace = load_remote_candidate_workspace(Some(root.to_string_lossy().as_ref()))
+            .expect("remote candidates");
+        let names: Vec<_> = workspace
+            .candidates
+            .iter()
+            .map(|candidate| candidate.name.as_str())
+            .collect();
+        let source_candidates = workspace
+            .source_candidates
+            .values()
+            .flat_map(|candidates| candidates.iter().map(|candidate| candidate.name.as_str()))
+            .collect::<Vec<_>>();
+
+        assert!(names.contains(&"zcl_editable_missing"), "{names:?}");
+        assert!(!names.contains(&"zcl_dependency_missing"), "{names:?}");
+        assert!(
+            source_candidates.contains(&"zcl_editable_missing"),
+            "{source_candidates:?}"
+        );
+        assert!(
+            !source_candidates.contains(&"zcl_dependency_missing"),
+            "{source_candidates:?}"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
 }

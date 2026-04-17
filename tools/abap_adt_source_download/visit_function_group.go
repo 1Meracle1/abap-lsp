@@ -7,22 +7,27 @@ import (
 )
 
 func visitFunctionGroup(ctx *SapContext, info AdtObjectNode, basePath string) {
-	log.Printf("visited function group %s", info.ObjectName)
+	fetchGroup := ctx.shouldFetchObject(info.ObjectName)
 	encodedFunctionGroupName := encodeObjectName(info.ObjectName)
 
 	functionGroupFolderPath := filepath.Join(basePath, encodedFunctionGroupName)
-	createDirIfNotExists(functionGroupFolderPath)
+	if fetchGroup {
+		log.Printf("visited function group %s", info.ObjectName)
+		createDirIfNotExists(functionGroupFolderPath)
 
-	functionGroupSource, err := fetchFunctionGroupSource(ctx, encodedFunctionGroupName)
-	if err != nil {
-		log.Printf("failed to fetch function group %s source code: %v", info.ObjectName, err)
-		return
-	}
+		reportPath := filepath.Join(functionGroupFolderPath, encodedFunctionGroupName+".abap")
+		if !fileExists(reportPath) {
+			functionGroupSource, err := fetchFunctionGroupSource(ctx, encodedFunctionGroupName)
+			if err != nil {
+				log.Printf("failed to fetch function group %s source code: %v", info.ObjectName, err)
+				return
+			}
 
-	reportPath := filepath.Join(functionGroupFolderPath, encodedFunctionGroupName+".abap")
-	err = os.WriteFile(reportPath, []byte(functionGroupSource), os.ModePerm)
-	if err != nil {
-		log.Panicf("failed to write function group file %s: %v", reportPath, err)
+			err = os.WriteFile(reportPath, []byte(functionGroupSource), os.ModePerm)
+			if err != nil {
+				log.Panicf("failed to write function group file %s: %v", reportPath, err)
+			}
+		}
 	}
 
 	if info.Expandable != "X" {
@@ -71,11 +76,15 @@ func visitFunctionModule(
 	basePath string,
 	functionGroupEncodedName string,
 ) {
+	if !ctx.shouldFetchObject(info.ObjectName) {
+		return
+	}
 	encodedName := encodeObjectName(info.ObjectName)
 	filePath := filepath.Join(basePath, encodedName+".abap")
 	if fileExists(filePath) {
 		return
 	}
+	createDirIfNotExists(basePath)
 	log.Printf("visited function module %s", info.ObjectName)
 
 	source, err := fetchFunctionModuleSource(ctx, functionGroupEncodedName, encodedName)

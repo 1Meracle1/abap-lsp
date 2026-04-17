@@ -38,6 +38,7 @@ dependencies = [
  "abap_ast",
  "abap_cache",
  "abap_lexer",
+ "abap_lsp",
  "abap_parser",
  "abap_symbols",
  "serde_json",

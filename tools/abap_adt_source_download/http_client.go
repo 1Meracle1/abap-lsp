@@ -116,6 +116,12 @@ func (ctx *SapContext) adtURL(relativePath string) string {
 	if strings.HasPrefix(relativePath, "http://") || strings.HasPrefix(relativePath, "https://") {
 		return relativePath
 	}
+	if strings.HasPrefix(relativePath, "/sap/bc/adt") {
+		if strings.HasSuffix(strings.ToLower(base), "/sap/bc/adt") {
+			return strings.TrimSuffix(base, "/sap/bc/adt") + relativePath
+		}
+		return base + relativePath
+	}
 	if strings.HasPrefix(relativePath, "/") {
 		return base + relativePath
 	}

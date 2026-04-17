@@ -7,22 +7,26 @@ import (
 )
 
 func visitReport(ctx *SapContext, info AdtObjectNode, basePath string) {
-	log.Printf("visited report %s", info.ObjectName)
+	fetchReport := ctx.shouldFetchObject(info.ObjectName)
 	encodedReportName := encodeObjectName(info.ObjectName)
-
 	reportFolderPath := filepath.Join(basePath, encodedReportName)
-	createDirIfNotExists(reportFolderPath)
+	if fetchReport {
+		log.Printf("visited report %s", info.ObjectName)
+		createDirIfNotExists(reportFolderPath)
 
-	reportSource, err := fetchReportSource(ctx, encodedReportName)
-	if err != nil {
-		log.Printf("failed to fetch report %s source code: %v", info.ObjectName, err)
-		return
-	}
+		reportPath := filepath.Join(reportFolderPath, encodedReportName+".abap")
+		if !fileExists(reportPath) {
+			reportSource, err := fetchReportSource(ctx, encodedReportName)
+			if err != nil {
+				log.Printf("failed to fetch report %s source code: %v", info.ObjectName, err)
+				return
+			}
 
-	reportPath := filepath.Join(reportFolderPath, encodedReportName+".abap")
-	err = os.WriteFile(reportPath, []byte(reportSource), os.ModePerm)
-	if err != nil {
-		log.Panicf("failed to write report file %s: %v", reportPath, err)
+			err = os.WriteFile(reportPath, []byte(reportSource), os.ModePerm)
+			if err != nil {
+				log.Panicf("failed to write report file %s: %v", reportPath, err)
+			}
+		}
 	}
 
 	if info.Expandable != "X" {
@@ -61,11 +65,15 @@ func visitReport(ctx *SapContext, info AdtObjectNode, basePath string) {
 }
 
 func visitInclude(ctx *SapContext, info AdtObjectNode, basePath string) {
+	if !ctx.shouldFetchObject(info.ObjectName) {
+		return
+	}
 	encodedIncludeName := encodeObjectName(info.ObjectName)
 	includePath := filepath.Join(basePath, encodedIncludeName+".abap")
 	if fileExists(includePath) {
 		return
 	}
+	createDirIfNotExists(basePath)
 	log.Printf("visited include %s", info.ObjectName)
 
 	includeSource, err := fetchIncludeSource(ctx, encodedIncludeName)

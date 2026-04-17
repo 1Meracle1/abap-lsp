@@ -46,10 +46,14 @@ func visitDictDataElement(
 	objectInfo AdtObjectNode,
 	basePath string,
 ) {
+	if !ctx.shouldFetchObject(objectInfo.ObjectName) {
+		return
+	}
 	filePath := filepath.Join(basePath, encodeObjectName(objectInfo.ObjectName)+".xml")
 	if fileExists(filePath) {
 		return
 	}
+	createDirIfNotExists(basePath)
 	log.Printf("visited %s %s", objectType.ObjectTypeLabel, objectInfo.ObjectName)
 
 	src, err := fetchDictDataElement(ctx, encodeObjectName(objectInfo.ObjectName))
@@ -70,10 +74,14 @@ func visitDictTable(
 	objectInfo AdtObjectNode,
 	basePath string,
 ) {
+	if !ctx.shouldFetchObject(objectInfo.ObjectName) {
+		return
+	}
 	filePath := filepath.Join(basePath, encodeObjectName(objectInfo.ObjectName)+".xml")
 	if fileExists(filePath) {
 		return
 	}
+	createDirIfNotExists(basePath)
 	log.Printf("visited %s %s", objectType.ObjectTypeLabel, objectInfo.ObjectName)
 
 	src, err := fetchDictElementInfo(ctx, encodeObjectName(objectInfo.ObjectName))

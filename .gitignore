@@ -8,3 +8,4 @@ editors/vscode/client/node_modules/
 *.rs.bk
 *.svg
 tmp
+*.zip

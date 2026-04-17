@@ -13,6 +13,7 @@ path = "src/main.rs"
 [dependencies]
 abap_ast = { path = "../abap_ast" }
 abap_cache = { path = "../abap_cache" }
+abap_lsp = { path = "../abap_lsp" }
 abap_lexer = { path = "../abap_lexer" }
 abap_parser = { path = "../abap_parser" }
 abap_symbols = { path = "../abap_symbols" }
