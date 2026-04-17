@@ -18,3 +18,4 @@ abap_lexer = { path = "../abap_lexer" }
 abap_parser = { path = "../abap_parser" }
 abap_symbols = { path = "../abap_symbols" }
 serde_json.workspace = true
+toml.workspace = true

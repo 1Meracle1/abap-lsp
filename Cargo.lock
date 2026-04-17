@@ -42,6 +42,7 @@ dependencies = [
  "abap_parser",
  "abap_symbols",
  "serde_json",
+ "toml",
 ]
 
 [[package]]

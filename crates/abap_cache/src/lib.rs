@@ -44,7 +44,8 @@ pub use effective_source::{
 pub use workspace::{
     DEFAULT_REMOTE_REQUESTS_PER_SECOND, DEPENDENCY_MODE_LOCAL_FIRST,
     DEPENDENCY_MODE_REMOTE_ON_DEMAND, EDITOR_FIRST_DEPENDENCY_MEMBER_THRESHOLD,
-    EDITOR_FIRST_MANIFEST_BYTES_THRESHOLD, EDITOR_FIRST_UNIT_COUNT_THRESHOLD, ManifestPerformance,
+    EDITOR_FIRST_MANIFEST_BYTES_THRESHOLD, EDITOR_FIRST_UNIT_COUNT_THRESHOLD,
+    LocalDependencySourceMode, LocalExportConfig, LocalExportResolver, ManifestPerformance,
     ManifestResolution, ManifestUnit, ManifestUnitDependencyOf, ManifestUnitMember,
     OpenDocumentOverlay, UNKNOWN_SYMBOL_MODE_LOG, UNKNOWN_SYMBOL_MODE_REMOTE,
     WORKSPACE_PERFORMANCE_MODE_AUTO, WORKSPACE_PERFORMANCE_MODE_EDITOR_FIRST,
@@ -52,10 +53,11 @@ pub use workspace::{
     WorkspaceManifest, WorkspacePerformanceMode, ddic_xml_to_abap_source, file_uri_to_path,
     is_remote_lookup_candidate, is_remote_lookup_name, load_manifest_from_workspace,
     load_manifest_from_workspace_result, load_workspace_documents,
-    load_workspace_documents_with_progress, manifest_cache_dir, manifest_declares_uri,
-    manifest_document_metadata, manifest_supports_remote_resolution, normalize_dependency_mode,
-    normalize_unknown_symbol_mode, normalize_workspace_performance_mode, path_to_file_uri,
-    resolve_workspace_performance_mode, uri_starts_with_workspace, workspace_relative_path,
+    load_workspace_documents_with_progress, local_export_config_for_source, manifest_cache_dir,
+    manifest_declares_uri, manifest_document_metadata, manifest_supports_remote_resolution,
+    normalize_dependency_mode, normalize_unknown_symbol_mode, normalize_workspace_performance_mode,
+    path_to_file_uri, resolve_local_export_dependency_document, resolve_workspace_performance_mode,
+    uri_starts_with_workspace, workspace_relative_path,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]

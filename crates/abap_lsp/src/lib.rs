@@ -3,16 +3,18 @@ mod perf_tests;
 pub(crate) mod sem_tokens;
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
 
 use abap_cache::{
-    DocumentInput, DocumentStore, UNKNOWN_SYMBOL_MODE_REMOTE, WorkspaceManifest, file_uri_to_path,
+    DocumentInput, DocumentStore, LocalExportConfig, LocalExportResolver,
+    UNKNOWN_SYMBOL_MODE_REMOTE, WorkspaceDocument, WorkspaceManifest, file_uri_to_path,
     is_remote_lookup_candidate, load_manifest_from_workspace_result,
-    load_workspace_documents_with_progress, manifest_cache_dir, manifest_declares_uri,
-    manifest_document_metadata, manifest_supports_remote_resolution, path_to_file_uri,
-    resolve_workspace_performance_mode, uri_starts_with_workspace,
+    load_workspace_documents_with_progress, local_export_config_for_source, manifest_cache_dir,
+    manifest_declares_uri, manifest_document_metadata, manifest_supports_remote_resolution,
+    path_to_file_uri, resolve_local_export_dependency_document, resolve_workspace_performance_mode,
+    uri_starts_with_workspace,
 };
 use abap_symbols::{DiagnosticKind, ReferenceKind, SqlResolution, UnitId};
 use lsp_types::{
@@ -309,6 +311,130 @@ fn snapshot_with_version(snapshot: &Arc<AnalysisSnapshot>, version: i32) -> Arc<
     })
 }
 
+fn document_input_from_workspace_document(document: &WorkspaceDocument) -> DocumentInput {
+    DocumentInput {
+        uri: Arc::clone(&document.uri),
+        version: document.version,
+        text: Arc::from(document.text.as_str()),
+        is_dependency: document.is_dependency,
+        object_name: document.object_name.clone(),
+    }
+}
+
+fn merge_local_export_config(target: &mut LocalExportConfig, incoming: &LocalExportConfig) -> bool {
+    let mut changed = false;
+    if incoming.mode == abap_cache::LocalDependencySourceMode::LocalOnly
+        && target.mode != abap_cache::LocalDependencySourceMode::LocalOnly
+    {
+        target.mode = abap_cache::LocalDependencySourceMode::LocalOnly;
+        changed = true;
+    } else if target.mode == abap_cache::LocalDependencySourceMode::AdtFirst
+        && incoming.mode == abap_cache::LocalDependencySourceMode::LocalFirst
+    {
+        target.mode = abap_cache::LocalDependencySourceMode::LocalFirst;
+        changed = true;
+    }
+
+    let mut seen = target
+        .roots
+        .iter()
+        .map(|path| {
+            path.to_string_lossy()
+                .replace('\\', "/")
+                .to_ascii_lowercase()
+        })
+        .collect::<HashSet<_>>();
+    for root in &incoming.roots {
+        let key = root
+            .to_string_lossy()
+            .replace('\\', "/")
+            .to_ascii_lowercase();
+        if seen.insert(key) {
+            target.roots.push(root.clone());
+            changed = true;
+        }
+    }
+    changed
+}
+
+pub fn replace_all_workspace_documents_with_local_exports(
+    store: &DocumentStore,
+    root_path: &Path,
+    documents: &[WorkspaceDocument],
+    progress: Option<&(dyn Fn(usize, usize) + Sync)>,
+) -> HashMap<Arc<str>, Arc<AnalysisSnapshot>> {
+    let mut inputs: Vec<_> = documents
+        .iter()
+        .map(document_input_from_workspace_document)
+        .collect();
+    let mut seen_uris = inputs
+        .iter()
+        .map(|input| input.uri.to_string())
+        .collect::<HashSet<_>>();
+    let mut document_configs = HashMap::<String, LocalExportConfig>::new();
+    for document in documents.iter().filter(|document| !document.is_dependency) {
+        document_configs.insert(
+            document.uri.to_string(),
+            local_export_config_for_source(root_path, document.uri.as_ref()),
+        );
+    }
+
+    let mut resolver = LocalExportResolver::default();
+    let mut snapshots = store.replace_all_with_progress(inputs.clone(), progress);
+    loop {
+        let mut changed = false;
+        let mut additions = Vec::<WorkspaceDocument>::new();
+        let mut uris: Vec<_> = snapshots.keys().cloned().collect();
+        uris.sort();
+
+        for uri in uris {
+            let Some(config) = document_configs.get(uri.as_ref()).cloned() else {
+                continue;
+            };
+            if !config.uses_local_exports() {
+                continue;
+            }
+            let Some(snapshot) = snapshots.get(uri.as_ref()) else {
+                continue;
+            };
+
+            for candidate in collect_remote_dependency_candidates(snapshot.as_ref()) {
+                let Some(document) = resolve_local_export_dependency_document(
+                    &config.roots,
+                    &mut resolver,
+                    &candidate.name,
+                    &candidate.kind,
+                ) else {
+                    continue;
+                };
+                let document_uri = document.uri.to_string();
+                let entry = document_configs
+                    .entry(document_uri.clone())
+                    .or_insert_with(|| config.clone());
+                changed |= merge_local_export_config(entry, &config);
+                if seen_uris.insert(document_uri) {
+                    additions.push(document);
+                    changed = true;
+                }
+            }
+        }
+
+        if !changed {
+            return snapshots;
+        }
+
+        inputs.extend(additions.iter().map(document_input_from_workspace_document));
+        snapshots = store.replace_all_with_progress(inputs.clone(), None);
+    }
+}
+
+fn document_uses_local_exports(workspace: &WorkspaceState, uri: &str) -> bool {
+    let Some(root_path) = file_uri_to_path(&workspace.root_uri) else {
+        return false;
+    };
+    local_export_config_for_source(&root_path, uri).uses_local_exports()
+}
+
 fn rebuild_workspace_cache_with_progress(
     workspace: &mut WorkspaceState,
     progress: Option<&(dyn Fn(usize, usize) + Sync)>,
@@ -323,30 +449,28 @@ fn rebuild_workspace_cache_with_progress(
     workspace.manifest = loaded.manifest.clone();
     workspace.manifest_uri = loaded.manifest_uri.to_string();
     workspace.manifest_error = loaded.manifest_error.clone();
-    let inputs: Vec<_> = loaded
-        .documents
-        .into_iter()
-        .map(|document| DocumentInput {
-            uri: document.uri,
-            version: document.version,
-            text: Arc::from(document.text),
-            is_dependency: document.is_dependency,
-            object_name: document.object_name,
-        })
-        .collect();
+    let documents = loaded.documents;
     if let Some(progress) = progress {
-        let stage_count = inputs.len();
+        let stage_count = documents.len();
         let analysis_progress = |processed: usize, _total: usize| {
             progress(
                 stage_count.saturating_add(processed),
                 stage_count.saturating_mul(2),
             );
         };
-        workspace
-            .cache
-            .replace_all_with_progress(inputs, Some(&analysis_progress))
+        replace_all_workspace_documents_with_local_exports(
+            &workspace.cache,
+            &loaded.root_path,
+            &documents,
+            Some(&analysis_progress),
+        )
     } else {
-        workspace.cache.replace_all_with_progress(inputs, None)
+        replace_all_workspace_documents_with_local_exports(
+            &workspace.cache,
+            &loaded.root_path,
+            &documents,
+            None,
+        )
     }
 }
 
@@ -555,6 +679,13 @@ pub fn publish_open_document_mut_with_progress(
                     .cloned()
                     .expect("opened manifest dependency should exist after rebuild");
             }
+            if document_uses_local_exports(workspace, &uri) {
+                let snapshots = rebuild_workspace_cache_with_progress(workspace, progress);
+                return snapshots
+                    .get(uri.as_str())
+                    .cloned()
+                    .expect("opened workspace document should exist after local export rebuild");
+            }
             if let Some(input) = incremental_workspace_document_input(
                 workspace,
                 &uri,
@@ -582,6 +713,13 @@ pub fn publish_open_document_mut_with_progress(
                 .get(uri.as_str())
                 .cloned()
                 .expect("opened manifest dependency should exist after rebuild");
+        }
+        if document_uses_local_exports(workspace, &uri) {
+            let snapshots = rebuild_workspace_cache_with_progress(workspace, progress);
+            return snapshots
+                .get(uri.as_str())
+                .cloned()
+                .expect("opened workspace document should exist after local export rebuild");
         }
         if let Some(input) = incremental_workspace_document_input(
             workspace,
@@ -644,6 +782,10 @@ pub fn publish_changed_document_mut_with_progress(
                     text: Arc::from(change.text.as_str()),
                 },
             );
+            if document_uses_local_exports(workspace, &uri) {
+                let snapshots = rebuild_workspace_cache_with_progress(workspace, progress);
+                return snapshots.get(uri.as_str()).cloned();
+            }
             if let Some(input) = incremental_workspace_document_input(
                 workspace,
                 &uri,
@@ -665,6 +807,10 @@ pub fn publish_changed_document_mut_with_progress(
                 text: Arc::from(change.text.as_str()),
             },
         );
+        if document_uses_local_exports(workspace, &uri) {
+            let snapshots = rebuild_workspace_cache_with_progress(workspace, progress);
+            return snapshots.get(uri.as_str()).cloned();
+        }
         if let Some(input) = incremental_workspace_document_input(
             workspace,
             &uri,
@@ -3589,6 +3735,157 @@ remote_requests_per_second = 12
         assert_eq!(request.remote_requests_per_second, Some(12));
 
         let _ = fs::remove_dir_all(&workspace_path);
+    }
+
+    #[test]
+    fn workspace_refresh_resolves_local_export_dependencies_from_unit_sidecars() {
+        let workspace_path = temp_workspace_path("workspace_local_export_refresh");
+        let export_root = temp_workspace_path("workspace_local_export_refresh_export");
+        let _ = fs::remove_dir_all(&workspace_path);
+        let _ = fs::remove_dir_all(&export_root);
+        fs::create_dir_all(workspace_path.join("src/reports/ZREP")).expect("report dir");
+        fs::create_dir_all(export_root.join("packages/ZFIC/ddic-data-element"))
+            .expect("export dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[resolution]
+dependency_mode = "remote-on-demand"
+unknown_symbol_mode = "remote"
+"#,
+        )
+        .expect("manifest");
+        fs::write(
+            workspace_path.join("src/reports/ZREP/ZREP.abap"),
+            "REPORT zrep.",
+        )
+        .expect("report");
+        fs::write(
+            workspace_path.join("src/reports/ZREP/ZREP_TOP.abap"),
+            "DATA lv_status TYPE zzf_status_code.\n",
+        )
+        .expect("top include");
+        fs::write(
+            workspace_path.join("src/reports/ZREP/abapls-unit.toml"),
+            format!(
+                "[local_export]\nroots = [\"{}\"]\n\n[dependencies]\nsource = \"local-first\"\n",
+                export_root.to_string_lossy().replace('\\', "/")
+            ),
+        )
+        .expect("sidecar");
+        fs::write(
+            export_root.join("packages/ZFIC/ddic-data-element/ZZF_STATUS_CODE.xml"),
+            r#"<?xml version="1.0" encoding="utf-8"?><dataElement />"#,
+        )
+        .expect("export");
+
+        let workspace_uri = path_to_file_uri(&workspace_path);
+        let target_uri =
+            normalize_lsp_uri(&format!("{workspace_uri}/src/reports/ZREP/ZREP_TOP.abap"));
+        let mut state = ServerState::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        refresh_workspace(&mut state, &workspace_uri);
+
+        let snapshot = snapshot_for_uri(&state, &target_uri).expect("snapshot");
+        assert!(
+            !snapshot
+                .symbols
+                .diagnostics
+                .iter()
+                .any(|diag| diag.message.contains("zzf_status_code")),
+            "{:#?}",
+            snapshot.symbols.diagnostics
+        );
+        assert!(
+            build_remote_dependency_request(&mut state, &target_uri).is_none(),
+            "resolved local export should not trigger remote request"
+        );
+
+        let _ = fs::remove_dir_all(&workspace_path);
+        let _ = fs::remove_dir_all(&export_root);
+    }
+
+    #[test]
+    fn opening_changed_workspace_file_rebuilds_local_export_dependencies() {
+        let workspace_path = temp_workspace_path("workspace_local_export_open_changed");
+        let export_root = temp_workspace_path("workspace_local_export_open_changed_export");
+        let _ = fs::remove_dir_all(&workspace_path);
+        let _ = fs::remove_dir_all(&export_root);
+        fs::create_dir_all(workspace_path.join("src/reports/ZREP")).expect("report dir");
+        fs::create_dir_all(export_root.join("packages/ZFIC/ddic-data-element"))
+            .expect("export dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[resolution]
+dependency_mode = "remote-on-demand"
+unknown_symbol_mode = "remote"
+"#,
+        )
+        .expect("manifest");
+        fs::write(
+            workspace_path.join("src/reports/ZREP/ZREP.abap"),
+            "REPORT zrep.",
+        )
+        .expect("report");
+        fs::write(
+            workspace_path.join("src/reports/ZREP/ZREP_TOP.abap"),
+            "DATA lv_text TYPE string.\n",
+        )
+        .expect("top include");
+        fs::write(
+            workspace_path.join("src/reports/ZREP/abapls-unit.toml"),
+            format!(
+                "[local_export]\nroots = [\"{}\"]\n\n[dependencies]\nsource = \"local-first\"\n",
+                export_root.to_string_lossy().replace('\\', "/")
+            ),
+        )
+        .expect("sidecar");
+        fs::write(
+            export_root.join("packages/ZFIC/ddic-data-element/ZZF_STATUS_CODE.xml"),
+            r#"<?xml version="1.0" encoding="utf-8"?><dataElement />"#,
+        )
+        .expect("export");
+
+        let workspace_uri = path_to_file_uri(&workspace_path);
+        let target_uri =
+            normalize_lsp_uri(&format!("{workspace_uri}/src/reports/ZREP/ZREP_TOP.abap"));
+        let mut state = ServerState::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        refresh_workspace(&mut state, &workspace_uri);
+
+        let opened = publish_open_document_mut(
+            &mut state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str(&target_uri).expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 2,
+                    text: "DATA lv_status TYPE zzf_status_code.\n".to_string(),
+                },
+            },
+        );
+
+        assert!(
+            !opened
+                .symbols
+                .diagnostics
+                .iter()
+                .any(|diag| diag.message.contains("zzf_status_code")),
+            "{:#?}",
+            opened.symbols.diagnostics
+        );
+        assert!(
+            build_remote_dependency_request(&mut state, &target_uri).is_none(),
+            "changed file should rebuild with local export dependency"
+        );
+
+        let _ = fs::remove_dir_all(&workspace_path);
+        let _ = fs::remove_dir_all(&export_root);
     }
 
     #[test]

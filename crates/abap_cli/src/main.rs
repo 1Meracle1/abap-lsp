@@ -16,7 +16,8 @@
 
 mod human;
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::fs;
 use std::io::Read;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -26,10 +27,14 @@ use abap_ast::SyntaxKind;
 use abap_ast::arena::NodeId;
 use abap_cache::{
     AnalysisSnapshot, CallGraphEdge, CallGraphNode, DocumentInput, DocumentStore, EffectiveSource,
-    build_effective_source, load_workspace_documents, manifest_document_metadata, path_to_file_uri,
+    build_effective_source, file_uri_to_path, load_workspace_documents, manifest_document_metadata,
+    path_to_file_uri,
 };
 use abap_lexer::tokenize;
-use abap_lsp::{RemoteDependencyCandidate, collect_remote_dependency_candidates};
+use abap_lsp::{
+    RemoteDependencyCandidate, collect_remote_dependency_candidates,
+    replace_all_workspace_documents_with_local_exports,
+};
 use abap_parser::parse;
 use abap_symbols::{
     DiagnosticKind, ProjectAnalysis, ProjectStaticAnalysisSummary, SemanticDossierContext,
@@ -37,6 +42,7 @@ use abap_symbols::{
     build_semantic_dossier,
 };
 use serde_json::{Value, json};
+use toml::Value as TomlValue;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Command {
@@ -631,6 +637,11 @@ struct RemoteCandidateWorkspace {
     candidates: Vec<RemoteDependencyCandidate>,
 }
 
+#[derive(Debug, Default)]
+struct LocalExportIndex {
+    file_names: HashSet<String>,
+}
+
 fn run_analyze(cli: &Cli) -> Result<i32, String> {
     if !cli.json_output {
         return Err("analyze currently requires --json".to_string());
@@ -812,6 +823,7 @@ fn load_remote_candidate_workspace(path: Option<&str>) -> Result<RemoteCandidate
     let workspace_root = find_workspace_root_for_anchor(&anchor_path)?;
     let workspace_root_uri = path_to_file_uri(&workspace_root);
     let workspace = load_workspace_documents(&workspace_root_uri, &HashMap::new());
+    let local_export_roots = collect_workspace_local_export_roots(&workspace);
     let editable_document_count = workspace
         .documents
         .iter()
@@ -831,6 +843,7 @@ fn load_remote_candidate_workspace(path: Option<&str>) -> Result<RemoteCandidate
         .collect();
 
     let snapshots = DocumentStore::default().replace_all(inputs);
+    let mut local_export_indices = HashMap::<String, LocalExportIndex>::new();
     let mut deduped = BTreeMap::<String, RemoteDependencyCandidate>::new();
     let mut source_uris = Vec::new();
     let mut source_candidates = BTreeMap::<String, Vec<RemoteDependencyCandidate>>::new();
@@ -844,6 +857,13 @@ fn load_remote_candidate_workspace(path: Option<&str>) -> Result<RemoteCandidate
         };
         let mut per_source = BTreeMap::<String, RemoteDependencyCandidate>::new();
         for candidate in collect_remote_dependency_candidates(snapshot.as_ref()) {
+            if candidate_is_resolved_by_local_export(
+                &candidate,
+                &local_export_roots,
+                &mut local_export_indices,
+            ) {
+                continue;
+            }
             insert_remote_candidate(&mut deduped, candidate.clone());
             insert_remote_candidate(&mut per_source, candidate);
         }
@@ -863,6 +883,231 @@ fn load_remote_candidate_workspace(path: Option<&str>) -> Result<RemoteCandidate
         source_candidates,
         candidates,
     })
+}
+
+fn collect_workspace_local_export_roots(
+    workspace: &abap_cache::WorkspaceLoadResult,
+) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    let mut seen = HashSet::new();
+    for document in workspace
+        .documents
+        .iter()
+        .filter(|document| !document.is_dependency)
+    {
+        for sidecar_path in source_unit_sidecar_paths(&workspace.root_path, document.uri.as_ref()) {
+            for root in read_unit_sidecar_local_roots(&sidecar_path) {
+                let key = normalized_local_export_path_key(&root);
+                if seen.insert(key) {
+                    roots.push(root);
+                }
+            }
+        }
+    }
+    roots
+}
+
+fn source_unit_sidecar_paths(workspace_root: &Path, source_uri: &str) -> Vec<PathBuf> {
+    let Some(source_path) = file_uri_to_path(source_uri) else {
+        return Vec::new();
+    };
+    if !source_path.starts_with(workspace_root) {
+        return Vec::new();
+    }
+
+    let mut sidecar_paths = Vec::new();
+    let mut seen = HashSet::new();
+
+    if let Some(file_name) = source_path.file_name().and_then(|value| value.to_str()) {
+        let sibling = source_path.with_file_name(format!("{file_name}.abapls-unit.toml"));
+        push_sidecar_path_if_exists(&mut sidecar_paths, &mut seen, sibling);
+    }
+
+    let mut current_dir = source_path.parent();
+    while let Some(dir) = current_dir {
+        if !dir.starts_with(workspace_root) {
+            break;
+        }
+        push_sidecar_path_if_exists(&mut sidecar_paths, &mut seen, dir.join("abapls-unit.toml"));
+        if dir == workspace_root {
+            break;
+        }
+        current_dir = dir.parent();
+    }
+
+    sidecar_paths
+}
+
+fn push_sidecar_path_if_exists(
+    sidecar_paths: &mut Vec<PathBuf>,
+    seen: &mut HashSet<String>,
+    path: PathBuf,
+) {
+    if !path.is_file() {
+        return;
+    }
+    let key = normalized_local_export_path_key(&path);
+    if seen.insert(key) {
+        sidecar_paths.push(path);
+    }
+}
+
+fn read_unit_sidecar_local_roots(sidecar_path: &Path) -> Vec<PathBuf> {
+    let text = match fs::read_to_string(sidecar_path) {
+        Ok(text) => text,
+        Err(_) => return Vec::new(),
+    };
+    let value: TomlValue = match toml::from_str(&text) {
+        Ok(value) => value,
+        Err(_) => return Vec::new(),
+    };
+    let roots = match value
+        .get("local_export")
+        .and_then(TomlValue::as_table)
+        .and_then(|table| table.get("roots"))
+        .and_then(TomlValue::as_array)
+    {
+        Some(roots) => roots,
+        None => return Vec::new(),
+    };
+
+    let mut resolved = Vec::new();
+    let mut seen = HashSet::new();
+    let base_dir = sidecar_path.parent().unwrap_or_else(|| Path::new("."));
+    for root in roots.iter().filter_map(TomlValue::as_str) {
+        let root = root.trim();
+        if root.is_empty() {
+            continue;
+        }
+        let path = if Path::new(root).is_absolute() {
+            PathBuf::from(root)
+        } else {
+            base_dir.join(root)
+        };
+        let normalized = match path.canonicalize() {
+            Ok(path) => normalize_windows_path(path),
+            Err(_) => normalize_windows_path(path),
+        };
+        let key = normalized_local_export_path_key(&normalized);
+        if seen.insert(key) {
+            resolved.push(normalized);
+        }
+    }
+    resolved
+}
+
+fn candidate_is_resolved_by_local_export(
+    candidate: &RemoteDependencyCandidate,
+    roots: &[PathBuf],
+    indices: &mut HashMap<String, LocalExportIndex>,
+) -> bool {
+    if roots.is_empty() {
+        return false;
+    }
+
+    roots.iter().any(|root| {
+        let key = normalized_local_export_path_key(root);
+        let index = indices
+            .entry(key)
+            .or_insert_with(|| build_local_export_index(root));
+        index_contains_candidate(index, candidate)
+    })
+}
+
+fn build_local_export_index(root: &Path) -> LocalExportIndex {
+    let mut index = LocalExportIndex::default();
+    if !root.is_dir() {
+        return index;
+    }
+
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(current) = stack.pop() {
+        let entries = match fs::read_dir(&current) {
+            Ok(entries) => entries,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let file_type = match entry.file_type() {
+                Ok(file_type) => file_type,
+                Err(_) => continue,
+            };
+            if file_type.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if !file_type.is_file() {
+                continue;
+            }
+            let Some(file_name) = path.file_name().and_then(|value| value.to_str()) else {
+                continue;
+            };
+            index.file_names.insert(file_name.to_ascii_lowercase());
+        }
+    }
+
+    index
+}
+
+fn index_contains_candidate(
+    index: &LocalExportIndex,
+    candidate: &RemoteDependencyCandidate,
+) -> bool {
+    local_export_candidate_file_names(candidate)
+        .into_iter()
+        .any(|file_name| index.file_names.contains(&file_name))
+}
+
+fn local_export_candidate_file_names(candidate: &RemoteDependencyCandidate) -> Vec<String> {
+    let encoded_name = encode_local_export_component(candidate.name.trim());
+    if encoded_name.is_empty() {
+        return Vec::new();
+    }
+    let extensions: &[&str] = match candidate.kind.trim().to_ascii_lowercase().as_str() {
+        "include" | "function" | "static" => &["abap"],
+        "message-class" => &["xml"],
+        "symbol" | "type" => &["xml", "abap"],
+        _ => &[],
+    };
+    extensions
+        .iter()
+        .map(|extension| format!("{encoded_name}.{extension}").to_ascii_lowercase())
+        .collect()
+}
+
+fn encode_local_export_component(value: &str) -> String {
+    let normalized = value.trim().to_ascii_uppercase();
+    let mut out = String::with_capacity(normalized.len());
+    for byte in normalized.bytes() {
+        if byte.is_ascii_alphanumeric()
+            || matches!(
+                byte,
+                b'-' | b'_' | b'.' | b'!' | b'~' | b'*' | b'\'' | b'(' | b')'
+            )
+        {
+            out.push(byte as char);
+            continue;
+        }
+        out.push('%');
+        out.push(local_export_hex_digit(byte >> 4));
+        out.push(local_export_hex_digit(byte & 0x0f));
+    }
+    out
+}
+
+fn local_export_hex_digit(value: u8) -> char {
+    match value {
+        0..=9 => (b'0' + value) as char,
+        10..=15 => (b'A' + (value - 10)) as char,
+        _ => '0',
+    }
+}
+
+fn normalized_local_export_path_key(path: &Path) -> String {
+    normalize_windows_path(path.to_path_buf())
+        .to_string_lossy()
+        .replace('\\', "/")
+        .to_ascii_lowercase()
 }
 
 fn insert_remote_candidate(
@@ -980,20 +1225,12 @@ fn load_call_graph_snapshot(
     let workspace_root = find_workspace_root(&target_path)?;
     let workspace_root_uri = path_to_file_uri(&workspace_root);
     let workspace = load_workspace_documents(&workspace_root_uri, &HashMap::new());
+    let mut documents = workspace.documents.clone();
 
-    let mut inputs: Vec<DocumentInput> = workspace
-        .documents
+    if !documents
         .iter()
-        .map(|document| DocumentInput {
-            uri: Arc::clone(&document.uri),
-            version: document.version,
-            text: Arc::from(document.text.as_str()),
-            is_dependency: document.is_dependency,
-            object_name: document.object_name.clone(),
-        })
-        .collect();
-
-    if !inputs.iter().any(|input| input.uri.as_ref() == target_uri) {
+        .any(|document| document.uri.as_ref() == target_uri)
+    {
         let source = std::fs::read_to_string(&target_path)
             .map_err(|e| format!("{}: {e}", target_path.display()))?;
         let (is_dependency, object_name) = workspace
@@ -1008,17 +1245,22 @@ fn load_call_graph_snapshot(
                 )
             })
             .unwrap_or((false, None));
-        inputs.push(DocumentInput {
+        documents.push(abap_cache::WorkspaceDocument {
             uri: Arc::from(target_uri.as_str()),
             version: 1,
-            text: Arc::from(source),
+            text: source,
             is_dependency,
             object_name,
         });
     }
 
     let store = DocumentStore::default();
-    let snapshots = store.replace_all(inputs);
+    let snapshots = replace_all_workspace_documents_with_local_exports(
+        &store,
+        &workspace.root_path,
+        &documents,
+        None,
+    );
     snapshots.get(target_uri.as_str()).cloned().ok_or_else(|| {
         format!(
             "workspace call graph did not include {}",
@@ -1034,26 +1276,13 @@ fn load_project_analyze_snapshot(path: Option<&str>) -> Result<AnalyzeSnapshot, 
     let workspace_root = find_workspace_root(&target_path)?;
     let workspace_root_uri = path_to_file_uri(&workspace_root);
     let workspace = load_workspace_documents(&workspace_root_uri, &HashMap::new());
-    let dependency_unit_count = workspace
-        .documents
-        .iter()
-        .filter(|document| document.is_dependency)
-        .count();
     let manifest_present = workspace.manifest.is_some();
+    let mut documents = workspace.documents.clone();
 
-    let mut inputs: Vec<DocumentInput> = workspace
-        .documents
+    if !documents
         .iter()
-        .map(|document| DocumentInput {
-            uri: Arc::clone(&document.uri),
-            version: document.version,
-            text: Arc::from(document.text.as_str()),
-            is_dependency: document.is_dependency,
-            object_name: document.object_name.clone(),
-        })
-        .collect();
-
-    if !inputs.iter().any(|input| input.uri.as_ref() == target_uri) {
+        .any(|document| document.uri.as_ref() == target_uri)
+    {
         let source = std::fs::read_to_string(&target_path)
             .map_err(|e| format!("{}: {e}", target_path.display()))?;
         let (is_dependency, object_name) = workspace
@@ -1068,23 +1297,32 @@ fn load_project_analyze_snapshot(path: Option<&str>) -> Result<AnalyzeSnapshot, 
                 )
             })
             .unwrap_or((false, None));
-        inputs.push(DocumentInput {
+        documents.push(abap_cache::WorkspaceDocument {
             uri: Arc::from(target_uri.as_str()),
             version: 1,
-            text: Arc::from(source),
+            text: source,
             is_dependency,
             object_name,
         });
     }
 
     let store = DocumentStore::default();
-    let snapshots = store.replace_all(inputs);
+    let snapshots = replace_all_workspace_documents_with_local_exports(
+        &store,
+        &workspace.root_path,
+        &documents,
+        None,
+    );
     let snapshot = snapshots.get(target_uri.as_str()).cloned().ok_or_else(|| {
         format!(
             "workspace analysis did not include {}",
             target_path.display()
         )
     })?;
+    let dependency_unit_count = snapshots
+        .values()
+        .filter(|snapshot| snapshot.is_dependency)
+        .count();
 
     Ok(AnalyzeSnapshot {
         unit: Arc::clone(&snapshot.symbols),
@@ -1153,20 +1391,12 @@ fn load_expand_snapshot_set(path: Option<&str>) -> Result<ExpandSnapshotSet, Str
     let workspace_root = find_workspace_root(&target_path)?;
     let workspace_root_uri = path_to_file_uri(&workspace_root);
     let workspace = load_workspace_documents(&workspace_root_uri, &HashMap::new());
+    let mut documents = workspace.documents.clone();
 
-    let mut inputs: Vec<DocumentInput> = workspace
-        .documents
+    if !documents
         .iter()
-        .map(|document| DocumentInput {
-            uri: Arc::clone(&document.uri),
-            version: document.version,
-            text: Arc::from(document.text.as_str()),
-            is_dependency: document.is_dependency,
-            object_name: document.object_name.clone(),
-        })
-        .collect();
-
-    if !inputs.iter().any(|input| input.uri.as_ref() == target_uri) {
+        .any(|document| document.uri.as_ref() == target_uri)
+    {
         let source = std::fs::read_to_string(&target_path)
             .map_err(|e| format!("{}: {e}", target_path.display()))?;
         let (is_dependency, object_name) = workspace
@@ -1181,17 +1411,22 @@ fn load_expand_snapshot_set(path: Option<&str>) -> Result<ExpandSnapshotSet, Str
                 )
             })
             .unwrap_or((false, None));
-        inputs.push(DocumentInput {
+        documents.push(abap_cache::WorkspaceDocument {
             uri: Arc::from(target_uri.as_str()),
             version: 1,
-            text: Arc::from(source),
+            text: source,
             is_dependency,
             object_name,
         });
     }
 
     let store = DocumentStore::default();
-    let snapshots = store.replace_all(inputs);
+    let snapshots = replace_all_workspace_documents_with_local_exports(
+        &store,
+        &workspace.root_path,
+        &documents,
+        None,
+    );
     let root = snapshots.get(target_uri.as_str()).cloned().ok_or_else(|| {
         format!(
             "workspace expansion did not include {}",
@@ -1443,5 +1678,72 @@ dependency_of = [
         );
 
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn remote_candidates_skip_local_exported_dependencies_from_unit_sidecars() {
+        let root = std::env::temp_dir().join("abap-cli-remote-candidates-local-export");
+        let export_root = std::env::temp_dir().join("abap-cli-remote-candidates-local-export-d04");
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&export_root);
+        fs::create_dir_all(root.join("src/reports/ZREP")).expect("report dir");
+        fs::create_dir_all(export_root.join("packages/ZFIC/ddic-data-element"))
+            .expect("export dir");
+        fs::write(
+            root.join("abapls.toml"),
+            r#"
+version = 1
+
+[resolution]
+cache_dir = ".abapls/cache"
+"#,
+        )
+        .expect("manifest");
+        fs::write(root.join("src/reports/ZREP/ZREP.abap"), "REPORT zrep.").expect("report");
+        fs::write(
+            root.join("src/reports/ZREP/ZREP_TOP.abap"),
+            "DATA lv_status TYPE zzf_status_code.\nDATA lv_missing TYPE zzf_missing.\n",
+        )
+        .expect("top include");
+        fs::write(
+            root.join("src/reports/ZREP/abapls-unit.toml"),
+            format!(
+                "[local_export]\nroots = [\"{}\"]\n\n[dependencies]\nsource = \"local-first\"\n",
+                export_root.to_string_lossy().replace('\\', "/")
+            ),
+        )
+        .expect("unit sidecar");
+        fs::write(
+            export_root.join("packages/ZFIC/ddic-data-element/ZZF_STATUS_CODE.xml"),
+            r#"<?xml version="1.0" encoding="utf-8"?><dataElement />"#,
+        )
+        .expect("exported ddic");
+
+        let workspace = load_remote_candidate_workspace(Some(root.to_string_lossy().as_ref()))
+            .expect("remote candidates");
+        let names: Vec<_> = workspace
+            .candidates
+            .iter()
+            .map(|candidate| candidate.name.as_str())
+            .collect();
+        let source_candidates = workspace
+            .source_candidates
+            .values()
+            .flat_map(|candidates| candidates.iter().map(|candidate| candidate.name.as_str()))
+            .collect::<Vec<_>>();
+
+        assert!(!names.contains(&"zzf_status_code"), "{names:?}");
+        assert!(names.contains(&"zzf_missing"), "{names:?}");
+        assert!(
+            !source_candidates.contains(&"zzf_status_code"),
+            "{source_candidates:?}"
+        );
+        assert!(
+            source_candidates.contains(&"zzf_missing"),
+            "{source_candidates:?}"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&export_root);
     }
 }

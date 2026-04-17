@@ -199,11 +199,64 @@ struct DependencyCacheManifest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+struct UnitSidecarLocalExport {
+    #[serde(default)]
+    pub roots: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+struct UnitSidecarDependencies {
+    #[serde(default)]
+    pub source: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LocalDependencySourceMode {
+    #[default]
+    LocalFirst,
+    LocalOnly,
+    AdtFirst,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct LocalExportConfig {
+    pub mode: LocalDependencySourceMode,
+    pub roots: Vec<PathBuf>,
+}
+
+impl LocalExportConfig {
+    pub fn uses_local_exports(&self) -> bool {
+        self.mode != LocalDependencySourceMode::AdtFirst && !self.roots.is_empty()
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct LocalExportResolver {
+    indices: HashMap<String, LocalExportIndex>,
+}
+
+#[derive(Debug, Default)]
+struct LocalExportIndex {
+    artifacts_by_file_name: HashMap<String, Vec<LocalExportArtifact>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LocalExportArtifact {
+    path: PathBuf,
+    kind_hint: String,
+    object_name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
 struct UnitSidecarManifest {
     #[serde(default)]
     pub includes: BTreeMap<String, String>,
     #[serde(default)]
     pub members: Vec<String>,
+    #[serde(default)]
+    pub local_export: UnitSidecarLocalExport,
+    #[serde(default)]
+    pub dependencies: UnitSidecarDependencies,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -929,6 +982,299 @@ fn load_single_file_unit_sidecar_manifest(file_path: &Path) -> Option<UnitSideca
     let sidecar_name = format!("{file_name}.abapls-unit.toml");
     let text = fs::read_to_string(file_path.with_file_name(sidecar_name)).ok()?;
     toml::from_str(&text).ok()
+}
+
+pub fn local_export_config_for_source(
+    workspace_root: &Path,
+    source_uri: &str,
+) -> LocalExportConfig {
+    let sidecar_paths = source_unit_sidecar_paths(workspace_root, source_uri);
+    if sidecar_paths.is_empty() {
+        return LocalExportConfig::default();
+    }
+
+    let mut roots = Vec::new();
+    let mut seen_roots = HashSet::new();
+    let mut saw_local_first = false;
+    let mut saw_adt_first = false;
+
+    for sidecar_path in sidecar_paths {
+        let Some(sidecar) = load_unit_sidecar_manifest(&sidecar_path) else {
+            continue;
+        };
+        for root in resolve_unit_sidecar_local_roots(&sidecar_path, &sidecar) {
+            let key = normalized_local_export_path_key(&root);
+            if seen_roots.insert(key) {
+                roots.push(root);
+            }
+        }
+
+        match normalize_local_dependency_source_mode(&sidecar.dependencies.source) {
+            LocalDependencySourceMode::LocalOnly => {
+                return LocalExportConfig {
+                    mode: LocalDependencySourceMode::LocalOnly,
+                    roots,
+                };
+            }
+            LocalDependencySourceMode::LocalFirst => saw_local_first = true,
+            LocalDependencySourceMode::AdtFirst => saw_adt_first = true,
+        }
+    }
+
+    let mode = if saw_local_first {
+        LocalDependencySourceMode::LocalFirst
+    } else if saw_adt_first {
+        LocalDependencySourceMode::AdtFirst
+    } else {
+        LocalDependencySourceMode::LocalFirst
+    };
+
+    LocalExportConfig { mode, roots }
+}
+
+pub fn resolve_local_export_dependency_document(
+    roots: &[PathBuf],
+    resolver: &mut LocalExportResolver,
+    candidate_name: &str,
+    candidate_kind: &str,
+) -> Option<WorkspaceDocument> {
+    let file_names = local_export_candidate_file_names(candidate_name, candidate_kind);
+    if file_names.is_empty() {
+        return None;
+    }
+
+    for root in roots {
+        let key = normalized_local_export_path_key(root);
+        let index = resolver
+            .indices
+            .entry(key)
+            .or_insert_with(|| build_local_export_index(root));
+        for file_name in &file_names {
+            let Some(artifacts) = index.artifacts_by_file_name.get(file_name) else {
+                continue;
+            };
+            let Some(artifact) = artifacts.first() else {
+                continue;
+            };
+            let source_text = fs::read_to_string(&artifact.path).ok()?;
+            let text = if artifact
+                .path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("xml"))
+            {
+                ddic_xml_to_abap_source(
+                    artifact.object_name.as_str(),
+                    artifact.kind_hint.as_str(),
+                    source_text.as_str(),
+                )
+                .unwrap_or(source_text)
+            } else {
+                source_text
+            };
+            return Some(WorkspaceDocument {
+                uri: Arc::from(path_to_file_uri(&artifact.path)),
+                version: 0,
+                text,
+                is_dependency: true,
+                object_name: Some(Arc::from(artifact.object_name.to_ascii_lowercase())),
+            });
+        }
+    }
+
+    None
+}
+
+fn source_unit_sidecar_paths(workspace_root: &Path, source_uri: &str) -> Vec<PathBuf> {
+    let Some(source_path) = file_uri_to_path(source_uri) else {
+        return Vec::new();
+    };
+    if !source_path.starts_with(workspace_root) {
+        return Vec::new();
+    }
+
+    let mut sidecar_paths = Vec::new();
+    let mut seen = HashSet::new();
+
+    if let Some(file_name) = source_path.file_name().and_then(|value| value.to_str()) {
+        push_sidecar_path_if_exists(
+            &mut sidecar_paths,
+            &mut seen,
+            source_path.with_file_name(format!("{file_name}.abapls-unit.toml")),
+        );
+    }
+
+    let mut current_dir = source_path.parent();
+    while let Some(dir) = current_dir {
+        if !dir.starts_with(workspace_root) {
+            break;
+        }
+        push_sidecar_path_if_exists(&mut sidecar_paths, &mut seen, dir.join("abapls-unit.toml"));
+        if dir == workspace_root {
+            break;
+        }
+        current_dir = dir.parent();
+    }
+
+    sidecar_paths
+}
+
+fn push_sidecar_path_if_exists(
+    sidecar_paths: &mut Vec<PathBuf>,
+    seen: &mut HashSet<String>,
+    path: PathBuf,
+) {
+    if !path.is_file() {
+        return;
+    }
+    let key = normalized_local_export_path_key(&path);
+    if seen.insert(key) {
+        sidecar_paths.push(path);
+    }
+}
+
+fn load_unit_sidecar_manifest(sidecar_path: &Path) -> Option<UnitSidecarManifest> {
+    let text = fs::read_to_string(sidecar_path).ok()?;
+    toml::from_str(&text).ok()
+}
+
+fn resolve_unit_sidecar_local_roots(
+    sidecar_path: &Path,
+    sidecar: &UnitSidecarManifest,
+) -> Vec<PathBuf> {
+    let base_dir = sidecar_path.parent().unwrap_or_else(|| Path::new("."));
+    let mut roots = Vec::new();
+    let mut seen = HashSet::new();
+
+    for root in &sidecar.local_export.roots {
+        let root = root.trim();
+        if root.is_empty() {
+            continue;
+        }
+        let path = if Path::new(root).is_absolute() {
+            PathBuf::from(root)
+        } else {
+            base_dir.join(root)
+        };
+        let normalized = match path.canonicalize() {
+            Ok(path) => normalize_windows_path(path),
+            Err(_) => normalize_windows_path(path),
+        };
+        let key = normalized_local_export_path_key(&normalized);
+        if seen.insert(key) {
+            roots.push(normalized);
+        }
+    }
+
+    roots
+}
+
+fn normalize_local_dependency_source_mode(value: &str) -> LocalDependencySourceMode {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "local-only" => LocalDependencySourceMode::LocalOnly,
+        "adt-first" => LocalDependencySourceMode::AdtFirst,
+        _ => LocalDependencySourceMode::LocalFirst,
+    }
+}
+
+fn build_local_export_index(root: &Path) -> LocalExportIndex {
+    let mut index = LocalExportIndex::default();
+    if !root.is_dir() {
+        return index;
+    }
+
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(current) = stack.pop() {
+        let mut entries: Vec<_> = match fs::read_dir(&current) {
+            Ok(entries) => entries.flatten().collect(),
+            Err(_) => continue,
+        };
+        entries.sort_by_key(|entry| entry.path());
+
+        for entry in entries {
+            let path = entry.path();
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if !file_type.is_file() {
+                continue;
+            }
+            let Some(file_name) = path.file_name().and_then(|value| value.to_str()) else {
+                continue;
+            };
+            let artifact = LocalExportArtifact {
+                kind_hint: infer_local_export_kind_hint(&path),
+                object_name: infer_object_name_from_manifest_path(file_name)
+                    .unwrap_or_else(|| percent_decode(file_name)),
+                path: path.clone(),
+            };
+            index
+                .artifacts_by_file_name
+                .entry(file_name.to_ascii_lowercase())
+                .or_default()
+                .push(artifact);
+        }
+    }
+
+    index
+}
+
+fn infer_local_export_kind_hint(path: &Path) -> String {
+    path.parent()
+        .and_then(|parent| parent.file_name())
+        .and_then(|name| name.to_str())
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "dependency".to_string())
+}
+
+fn local_export_candidate_file_names(candidate_name: &str, candidate_kind: &str) -> Vec<String> {
+    let encoded_name = encode_local_export_component(candidate_name.trim());
+    if encoded_name.is_empty() {
+        return Vec::new();
+    }
+    let extensions: &[&str] = match candidate_kind.trim().to_ascii_lowercase().as_str() {
+        "include" | "function" | "static" => &["abap"],
+        "message-class" => &["xml"],
+        "symbol" | "type" => &["xml", "abap"],
+        _ => &[],
+    };
+
+    extensions
+        .iter()
+        .map(|extension| format!("{encoded_name}.{extension}").to_ascii_lowercase())
+        .collect()
+}
+
+fn encode_local_export_component(value: &str) -> String {
+    let normalized = value.trim().to_ascii_uppercase();
+    let mut out = String::with_capacity(normalized.len());
+    for byte in normalized.bytes() {
+        if byte.is_ascii_alphanumeric()
+            || matches!(
+                byte,
+                b'-' | b'_' | b'.' | b'!' | b'~' | b'*' | b'\'' | b'(' | b')'
+            )
+        {
+            out.push(byte as char);
+            continue;
+        }
+        out.push('%');
+        out.push(hex_digit(byte >> 4));
+        out.push(hex_digit(byte & 0x0f));
+    }
+    out
+}
+
+fn normalized_local_export_path_key(path: &Path) -> String {
+    normalize_windows_path(path.to_path_buf())
+        .to_string_lossy()
+        .replace('\\', "/")
+        .to_ascii_lowercase()
 }
 
 fn collect_manifest_documents(
@@ -1665,6 +2011,14 @@ fn percent_decode(value: &str) -> String {
         idx += 1;
     }
     out
+}
+
+fn normalize_windows_path(path: PathBuf) -> PathBuf {
+    let text = path.to_string_lossy();
+    if let Some(stripped) = text.strip_prefix(r"\\?\") {
+        return PathBuf::from(stripped);
+    }
+    path
 }
 
 fn append_uri_path_char(out: &mut String, ch: char) {
