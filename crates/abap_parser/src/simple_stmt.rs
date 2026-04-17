@@ -51,6 +51,7 @@ const STRUCTURAL_SIMPLE_STMT_CLASSIFIERS: &[GuardedSimpleStmtClassifier] = &[
         &["public", "protected", "private"],
         classify_class_section_stmt,
     ),
+    GuardedSimpleStmtClassifier::new(&["set"], classify_set_gui_stmt),
     GuardedSimpleStmtClassifier::new(&["type"], classify_type_pools_stmt),
     GuardedSimpleStmtClassifier::new(&["methods", "class"], classify_methods_stmt),
     GuardedSimpleStmtClassifier::new(&["interfaces", "interface"], classify_interfaces_stmt),
@@ -1338,6 +1339,29 @@ fn classify_type_pools_stmt(source: &str, significant: &[&Token]) -> Option<Synt
         .then_some(SyntaxKind::TypePoolsStmt)
 }
 
+fn classify_set_gui_stmt(source: &str, significant: &[&Token]) -> Option<SyntaxKind> {
+    let last = *significant.last()?;
+    if last.kind != TokenKind::Period {
+        return None;
+    }
+
+    if significant.len() >= 6
+        && token_matches_keyword(source, significant[0], "set")
+        && token_matches_keyword(source, significant[1], "pf")
+        && significant[2].kind == TokenKind::Minus
+        && token_matches_keyword(source, significant[3], "status")
+    {
+        Some(SyntaxKind::SetPfStatusStmt)
+    } else if significant.len() >= 4
+        && token_matches_keyword(source, significant[0], "set")
+        && token_matches_keyword(source, significant[1], "titlebar")
+    {
+        Some(SyntaxKind::SetTitlebarStmt)
+    } else {
+        None
+    }
+}
+
 fn classify_direct_call_stmt(_source: &str, significant: &[&Token]) -> Option<SyntaxKind> {
     direct_call_statement(significant).then(|| {
         if direct_call_padding_is_valid(significant) {
@@ -1991,6 +2015,20 @@ WAIT UP TO lv_stamp SECONDS.",
             .expect("wait stmt");
         assert_eq!(parsed.file.count_kind(wait, SyntaxKind::WaitOperand), 1);
         assert_eq!(parsed.file.count_kind(wait, SyntaxKind::ExprIdent), 1);
+    }
+
+    #[test]
+    fn classifies_set_gui_statements_specifically() {
+        let src = "\
+SET PF-STATUS lv_status OF PROGRAM lv_prog EXCLUDING lt_excl.\n\
+SET TITLEBAR lv_title OF PROGRAM lv_prog WITH lv_text1 lv_text2.";
+        let parsed = crate::parse(src);
+        let root = parsed.file.root();
+
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::SetPfStatusStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::SetTitlebarStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::UnparsedStmt), 0);
     }
 
     #[test]

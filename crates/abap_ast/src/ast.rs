@@ -495,6 +495,8 @@ ast_node!(FindMatchTarget, SyntaxKind::FindMatchTarget);
 ast_node!(FindSubmatchTarget, SyntaxKind::FindSubmatchTarget);
 ast_node!(FindResultsTarget, SyntaxKind::FindResultsTarget);
 ast_node!(ReadTableStmt, SyntaxKind::ReadTableStmt);
+ast_node!(SetPfStatusStmt, SyntaxKind::SetPfStatusStmt);
+ast_node!(SetTitlebarStmt, SyntaxKind::SetTitlebarStmt);
 ast_node!(WriteStmt, SyntaxKind::WriteStmt);
 ast_node!(SplitStmt, SyntaxKind::SplitStmt);
 ast_node!(SplitSourceOperand, SyntaxKind::SplitSourceOperand);

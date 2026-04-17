@@ -193,6 +193,151 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
         }
     }
 
+    fn find_top_level_keyword_infos(
+        &self,
+        tokens: &[SyntaxTokenInfo],
+        start: usize,
+        keywords: &[&str],
+    ) -> Option<usize> {
+        let mut paren = 0i32;
+        let mut bracket = 0i32;
+        let mut brace = 0i32;
+        let mut idx = start;
+        while idx < tokens.len() {
+            let token = &tokens[idx];
+            match token.text.as_ref() {
+                "(" => paren += 1,
+                ")" => paren -= 1,
+                "[" => bracket += 1,
+                "]" => bracket -= 1,
+                "{" => brace += 1,
+                "}" => brace -= 1,
+                _ => {}
+            }
+            if paren == 0
+                && bracket == 0
+                && brace == 0
+                && keywords
+                    .iter()
+                    .any(|keyword| token.text.eq_ignore_ascii_case(keyword))
+            {
+                return Some(idx);
+            }
+            idx += 1;
+        }
+        None
+    }
+
+    fn collect_token_expression_refs_range(
+        &mut self,
+        tokens: &[SyntaxTokenInfo],
+        start: usize,
+        end: usize,
+        scope: ScopeId,
+    ) {
+        if start < end {
+            self.collector
+                .collect_token_expression_refs_infos(&tokens[start..end], scope, true);
+        }
+    }
+
+    fn collect_set_pf_status_stmt_infos(
+        &mut self,
+        tokens: &[SyntaxTokenInfo],
+        scope: ScopeId,
+    ) -> bool {
+        if tokens.len() < 6
+            || !Self::tokens_match_keyword_sequence(tokens, &["set", "pf", "-", "status"])
+        {
+            return false;
+        }
+
+        let Some(period_idx) = tokens.iter().position(|token| token.text.as_ref() == ".") else {
+            return false;
+        };
+        let status_start = 4usize;
+        let of_program_idx = self
+            .find_top_level_keyword_infos(tokens, status_start, &["OF"])
+            .filter(|&idx| {
+                tokens
+                    .get(idx + 1)
+                    .is_some_and(|token| token.text.eq_ignore_ascii_case("program"))
+            });
+        let excluding_idx = self.find_top_level_keyword_infos(tokens, status_start, &["EXCLUDING"]);
+        let status_end = of_program_idx
+            .into_iter()
+            .chain(excluding_idx)
+            .chain(std::iter::once(period_idx))
+            .min()
+            .unwrap_or(period_idx);
+        self.collect_token_expression_refs_range(tokens, status_start, status_end, scope);
+
+        if let Some(of_idx) = of_program_idx {
+            let program_start = of_idx + 2;
+            let program_end = excluding_idx
+                .filter(|&idx| idx > of_idx)
+                .unwrap_or(period_idx);
+            self.collect_token_expression_refs_range(tokens, program_start, program_end, scope);
+        }
+
+        if let Some(excluding_idx) = excluding_idx {
+            self.collect_token_expression_refs_range(tokens, excluding_idx + 1, period_idx, scope);
+        }
+
+        true
+    }
+
+    fn collect_set_titlebar_stmt_infos(
+        &mut self,
+        tokens: &[SyntaxTokenInfo],
+        scope: ScopeId,
+    ) -> bool {
+        if tokens.len() < 4 || !Self::tokens_match_keyword_sequence(tokens, &["set", "titlebar"]) {
+            return false;
+        }
+
+        let Some(period_idx) = tokens.iter().position(|token| token.text.as_ref() == ".") else {
+            return false;
+        };
+        let title_start = 2usize;
+        let of_program_idx = self
+            .find_top_level_keyword_infos(tokens, title_start, &["OF"])
+            .filter(|&idx| {
+                tokens
+                    .get(idx + 1)
+                    .is_some_and(|token| token.text.eq_ignore_ascii_case("program"))
+            });
+        let with_idx = self.find_top_level_keyword_infos(tokens, title_start, &["WITH"]);
+        let title_end = of_program_idx
+            .into_iter()
+            .chain(with_idx)
+            .chain(std::iter::once(period_idx))
+            .min()
+            .unwrap_or(period_idx);
+        self.collect_token_expression_refs_range(tokens, title_start, title_end, scope);
+
+        if let Some(of_idx) = of_program_idx {
+            let program_start = of_idx + 2;
+            let program_end = with_idx.filter(|&idx| idx > of_idx).unwrap_or(period_idx);
+            self.collect_token_expression_refs_range(tokens, program_start, program_end, scope);
+        }
+
+        if let Some(with_idx) = with_idx {
+            let mut idx = with_idx + 1;
+            while idx < period_idx {
+                let end = self.consume_simple_operand_tokens(tokens, idx);
+                if end <= idx {
+                    idx += 1;
+                    continue;
+                }
+                self.collect_token_expression_refs_range(tokens, idx, end, scope);
+                idx = end;
+            }
+        }
+
+        true
+    }
+
     fn record_routine_site(
         &mut self,
         scope: ScopeId,
@@ -1210,6 +1355,14 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
         if head.text.eq_ignore_ascii_case("set")
             && Self::tokens_match_keyword_sequence(tail, &["update", "task", "local"])
         {
+            return;
+        }
+
+        if head.text.eq_ignore_ascii_case("set")
+            && (self.collect_set_pf_status_stmt_infos(&significant, scope)
+                || self.collect_set_titlebar_stmt_infos(&significant, scope))
+        {
+            self.record_unknown_effect(node, scope);
             return;
         }
 

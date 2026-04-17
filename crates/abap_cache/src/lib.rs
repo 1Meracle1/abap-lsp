@@ -5454,6 +5454,8 @@ fn is_selector_query_container(kind: &str) -> bool {
             | "MoveStmt"
             | "ReplaceStmt"
             | "SortStmt"
+            | "SetPfStatusStmt"
+            | "SetTitlebarStmt"
             | "AssertStmt"
             | "CheckStmt"
             | "PerformStmt"

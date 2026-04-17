@@ -8273,6 +8273,63 @@ START-OF-SELECTION.
 }
 
 #[test]
+fn set_gui_statements_resolve_operands_without_keyword_diagnostics() {
+    let src = r#"
+START-OF-SELECTION.
+  DATA lv_status TYPE string VALUE 'MAIN'.
+  DATA lv_title TYPE string VALUE 'TITLE'.
+  DATA lv_prog TYPE string VALUE 'SAPLZDEMO'.
+  DATA lt_excl TYPE STANDARD TABLE OF string WITH DEFAULT KEY.
+  DATA lv_text1 TYPE string VALUE 'Hello'.
+  DATA lv_text2 TYPE string VALUE 'World'.
+
+  SET PF-STATUS lv_status OF PROGRAM lv_prog EXCLUDING lt_excl.
+  SET TITLEBAR lv_title OF PROGRAM lv_prog WITH lv_text1 lv_text2.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///set_gui_statements.abap", src, &parsed);
+
+    for keyword in [
+        "SET",
+        "PF",
+        "STATUS",
+        "TITLEBAR",
+        "OF",
+        "PROGRAM",
+        "EXCLUDING",
+        "WITH",
+    ] {
+        assert!(
+            !unit.diagnostics.iter().any(|diag| {
+                diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains(keyword)
+            }),
+            "unexpected unresolved keyword diagnostic for `{keyword}`: {:?}",
+            unit.diagnostics
+        );
+    }
+
+    for name in [
+        "lv_status",
+        "lv_title",
+        "lv_prog",
+        "lt_excl",
+        "lv_text1",
+        "lv_text2",
+    ] {
+        assert!(
+            unit.references.iter().any(|reference| {
+                reference.namespace == Namespace::Value
+                    && reference.name.as_ref() == name
+                    && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+            }),
+            "expected `{name}` reference to resolve, got refs={:?} diagnostics={:?}",
+            unit.references,
+            unit.diagnostics
+        );
+    }
+}
+
+#[test]
 fn collects_call_transformation_operands_without_keyword_diagnostics() {
     let src = r#"
 START-OF-SELECTION.

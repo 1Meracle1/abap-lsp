@@ -162,6 +162,8 @@ impl<'a> Collector<'a> {
             SyntaxKind::MessageStmt => self.stmt_lowering().collect_message_stmt(node, scope),
             SyntaxKind::ReplaceStmt => self.stmt_lowering().collect_replace_stmt(node, scope),
             SyntaxKind::UnparsedStmt
+            | SyntaxKind::SetPfStatusStmt
+            | SyntaxKind::SetTitlebarStmt
             | SyntaxKind::CommitWorkStmt
             | SyntaxKind::RollbackWorkStmt
             | SyntaxKind::EndAtStmt => self

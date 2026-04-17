@@ -411,6 +411,10 @@ pub enum SyntaxKind {
     GetBitStmt,
     /// `SET BIT ... OF ... TO ... .`
     SetBitStmt,
+    /// `SET PF-STATUS ... .`
+    SetPfStatusStmt,
+    /// `SET TITLEBAR ... .`
+    SetTitlebarStmt,
     /// `WRITE ... .`
     WriteStmt,
     /// `SPLIT ... AT ... INTO ... .`
@@ -642,6 +646,8 @@ impl SyntaxKind {
             Self::GetReferenceStmt => "GetReferenceStmt",
             Self::GetBitStmt => "GetBitStmt",
             Self::SetBitStmt => "SetBitStmt",
+            Self::SetPfStatusStmt => "SetPfStatusStmt",
+            Self::SetTitlebarStmt => "SetTitlebarStmt",
             Self::WriteStmt => "WriteStmt",
             Self::SplitStmt => "SplitStmt",
             Self::SplitSourceOperand => "SplitSourceOperand",
