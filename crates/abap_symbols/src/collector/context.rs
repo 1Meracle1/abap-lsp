@@ -674,6 +674,17 @@ impl<'ctx, 'a> SqlContext<'ctx, 'a> {
         self.collector.emit_sql_name_ref(name_ref);
     }
 
+    pub(super) fn add_system_field_update(
+        &mut self,
+        scope: ScopeId,
+        range: abap_lexer::TextRange,
+        statement: crate::def_map::SystemFieldStatementKind,
+        field_name: &'static str,
+    ) {
+        self.collector
+            .add_system_field_update(scope, range, statement, field_name);
+    }
+
     pub(super) fn sql_queries_len(&self) -> usize {
         self.collector.sql_queries.len()
     }

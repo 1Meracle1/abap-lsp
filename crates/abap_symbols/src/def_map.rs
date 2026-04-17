@@ -716,6 +716,35 @@ pub struct FindSiteData {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SystemFieldStatementKind {
+    Append,
+    AuthorityCheck,
+    DeleteTable,
+    DeleteDbTable,
+    DescribeTable,
+    Do,
+    Find,
+    InsertTable,
+    InsertDbTable,
+    LoopAt,
+    Message,
+    ModifyTable,
+    ModifyDbTable,
+    ReadTable,
+    Select,
+    UpdateDbTable,
+    While,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SystemFieldUpdateData {
+    pub scope: ScopeId,
+    pub range: TextRange,
+    pub statement: SystemFieldStatementKind,
+    pub field_name: Arc<str>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FieldSymbolStateCheckKind {
     IsAssigned,
     IsNotAssigned,
@@ -856,6 +885,7 @@ pub struct UnitAnalysis {
     pub value_flow_edges: Vec<ValueFlowEdgeData>,
     pub perform_calls: Vec<PerformCallData>,
     pub find_sites: Vec<FindSiteData>,
+    pub system_field_updates: Vec<SystemFieldUpdateData>,
     pub routine_sites: Vec<RoutineSiteData>,
     pub field_symbol_state_checks: Vec<FieldSymbolStateCheckData>,
     pub value_state_checks: Vec<ValueStateCheckData>,

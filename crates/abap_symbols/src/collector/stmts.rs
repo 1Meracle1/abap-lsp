@@ -11,8 +11,8 @@ use abap_ast::ast::{
 
 use crate::def_map::{
     AssignmentSiteData, FieldTypeRefData, FindSiteData, FindWriteTargetData, NamedArgumentTarget,
-    ReferenceKind, RoutineSiteData, RoutineSiteKind, SymbolKind, TypeFactData, ValueFlowEdgeData,
-    ValueFlowKind, ValueFlowTargetData,
+    ReferenceKind, RoutineSiteData, RoutineSiteKind, SymbolKind, SystemFieldStatementKind,
+    TypeFactData, ValueFlowEdgeData, ValueFlowKind, ValueFlowTargetData,
 };
 use crate::ids::ScopeId;
 use crate::scope::Namespace;
@@ -359,6 +359,20 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             self.collector.file.range(node),
             RoutineSiteKind::UnknownEffect,
         );
+    }
+
+    fn record_system_field_updates(
+        &mut self,
+        scope: ScopeId,
+        node: NodeId,
+        statement: SystemFieldStatementKind,
+        field_names: &[&'static str],
+    ) {
+        let range = self.collector.file.range(node);
+        for &field_name in field_names {
+            self.collector
+                .add_system_field_update(scope, range.clone(), statement, field_name);
+        }
     }
 
     fn tokens_match_keyword_sequence(tokens: &[SyntaxTokenInfo], keywords: &[&str]) -> bool {
@@ -853,6 +867,13 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             return;
         }
 
+        self.record_system_field_updates(
+            scope,
+            node,
+            SystemFieldStatementKind::DeleteTable,
+            &["subrc"],
+        );
+
         let source_expr = source_expr.or(stmt_source_expr);
         if let Some(source_expr) = source_expr {
             self.record_routine_site(
@@ -909,11 +930,19 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             return;
         }
 
+        self.record_system_field_updates(
+            scope,
+            node,
+            SystemFieldStatementKind::ModifyTable,
+            &["subrc"],
+        );
+
         self.collector.walk_children(node, scope);
     }
 
     pub(super) fn collect_append_stmt(&mut self, node: NodeId, scope: ScopeId) {
         self.record_unknown_effect(node, scope);
+        self.record_system_field_updates(scope, node, SystemFieldStatementKind::Append, &["tabix"]);
 
         #[derive(Clone, Copy, PartialEq, Eq)]
         enum AppendClause {
@@ -982,6 +1011,12 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
 
     pub(super) fn collect_read_table_stmt(&mut self, node: NodeId, scope: ScopeId) {
         self.record_unknown_effect(node, scope);
+        self.record_system_field_updates(
+            scope,
+            node,
+            SystemFieldStatementKind::ReadTable,
+            &["subrc", "tabix", "tfill", "tleng"],
+        );
         if let Some(stmt) = ReadTableStmt::cast(self.collector.syntax(node)) {
             let data_inline_targets: Vec<_> = stmt
                 .data_inline_targets()
@@ -1118,6 +1153,12 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
 
     pub(super) fn collect_authority_check_stmt(&mut self, node: NodeId, scope: ScopeId) {
         self.record_unknown_effect(node, scope);
+        self.record_system_field_updates(
+            scope,
+            node,
+            SystemFieldStatementKind::AuthorityCheck,
+            &["subrc"],
+        );
         if let Some(stmt) = AuthorityCheckStmt::cast(self.collector.syntax(node)) {
             let mut operand_ids = Vec::new();
             if let Some(object) = stmt.object().and_then(|operand| operand.value()) {
@@ -1144,6 +1185,12 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
 
     pub(super) fn collect_message_stmt(&mut self, node: NodeId, scope: ScopeId) {
         self.record_unknown_effect(node, scope);
+        self.record_system_field_updates(
+            scope,
+            node,
+            SystemFieldStatementKind::Message,
+            &["msgid", "msgno", "msgty", "msgv1", "msgv2", "msgv3", "msgv4"],
+        );
         let Some((
             head_clause_id,
             with_clause_id,
@@ -1236,6 +1283,17 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                 }
             }
         }
+    }
+
+    pub(super) fn collect_insert_table_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        self.record_unknown_effect(node, scope);
+        self.record_system_field_updates(
+            scope,
+            node,
+            SystemFieldStatementKind::InsertTable,
+            &["subrc"],
+        );
+        self.collector.walk_children(node, scope);
     }
 
     fn collect_message_head_clause_infos(&mut self, node: NodeId, scope: ScopeId) {
@@ -1530,6 +1588,12 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
 
     pub(super) fn collect_describe_stmt(&mut self, node: NodeId, scope: ScopeId) {
         self.record_unknown_effect(node, scope);
+        self.record_system_field_updates(
+            scope,
+            node,
+            SystemFieldStatementKind::DescribeTable,
+            &["tfill", "tleng"],
+        );
         if let Some(stmt) = DescribeStmt::cast(self.collector.syntax(node)) {
             let table_operand = stmt
                 .table_operand()
@@ -1774,6 +1838,12 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
     }
 
     pub(super) fn collect_find_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        self.record_system_field_updates(
+            scope,
+            node,
+            SystemFieldStatementKind::Find,
+            &["subrc", "fdpos"],
+        );
         if let Some(stmt) = FindStmt::cast(self.collector.syntax(node)) {
             let mut read_operand_ids = Vec::new();
             let mut read_ranges = Vec::new();

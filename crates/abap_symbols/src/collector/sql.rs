@@ -12,7 +12,7 @@ use abap_lexer::TextRange;
 use crate::def_map::{
     ReferenceKind, SqlNameRefData, SqlNameRefKind, SqlPredicateData, SqlPredicateKind,
     SqlProjectionData, SqlProjectionKind, SqlQueryData, SqlResolution, SqlSourceData,
-    SqlSourceKind, SqlTargetData, SqlTargetKind,
+    SqlSourceKind, SqlTargetData, SqlTargetKind, SystemFieldStatementKind,
 };
 use crate::ids::ScopeId;
 use crate::ids::StructureId;
@@ -51,7 +51,21 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
         Arc::<str>::from(text.to_ascii_lowercase())
     }
 
+    fn record_system_field_updates(
+        &mut self,
+        scope: ScopeId,
+        node: NodeId,
+        statement: SystemFieldStatementKind,
+    ) {
+        let range = self.ctx.file().range(node);
+        for field_name in ["subrc", "dbcnt"] {
+            self.ctx
+                .add_system_field_update(scope, range.clone(), statement, field_name);
+        }
+    }
+
     pub(super) fn collect_select_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        self.record_system_field_updates(scope, node, SystemFieldStatementKind::Select);
         let Some(stmt) = SelectStmt::cast(self.ctx.syntax(node)) else {
             self.ctx.walk_children(node, scope);
             return;
@@ -82,6 +96,7 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
     }
 
     pub(super) fn collect_insert_db_table_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        self.record_system_field_updates(scope, node, SystemFieldStatementKind::InsertDbTable);
         let query_id = self.ctx.sql_queries_len();
         let range = self.ctx.file().range(node);
         self.ctx.emit_sql_query(SqlQueryData {
@@ -129,6 +144,7 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
     }
 
     pub(super) fn collect_delete_db_table_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        self.record_system_field_updates(scope, node, SystemFieldStatementKind::DeleteDbTable);
         let mut head_expr = None;
         let mut from_expr = None;
         let mut where_expr = None;
@@ -231,6 +247,7 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
     }
 
     pub(super) fn collect_modify_db_table_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        self.record_system_field_updates(scope, node, SystemFieldStatementKind::ModifyDbTable);
         let mut head_expr = None;
         let mut from_expr = None;
         let mut saw_from = false;
@@ -320,6 +337,7 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
     }
 
     pub(super) fn collect_update_db_table_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        self.record_system_field_updates(scope, node, SystemFieldStatementKind::UpdateDbTable);
         let mut target_node = None;
         let mut from_node = None;
         let mut set_assignments = Vec::new();

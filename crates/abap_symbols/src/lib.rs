@@ -38,8 +38,9 @@ pub use def_map::{
     SqlNameRefData, SqlNameRefKind, SqlPredicateData, SqlPredicateKind, SqlProjectionData,
     SqlProjectionKind, SqlQueryData, SqlResolution, SqlSourceData, SqlSourceKind, SqlTargetData,
     SqlTargetKind, StructureData, StructureFieldData, StructureFieldInfo, StructureFieldShape,
-    SymbolData, SymbolKind, TryRegionData, TypeFactData, UnitAnalysis, ValueFlowEdgeData,
-    ValueFlowKind, ValueFlowTargetData, ValueStateCheckData, ValueStateCheckKind, Visibility,
+    SymbolData, SymbolKind, SystemFieldStatementKind, SystemFieldUpdateData, TryRegionData,
+    TypeFactData, UnitAnalysis, ValueFlowEdgeData, ValueFlowKind, ValueFlowTargetData,
+    ValueStateCheckData, ValueStateCheckKind, Visibility,
 };
 pub use dossier::*;
 pub use ids::{ReferenceId, ScopeId, StructureId, SymbolHandle, SymbolId, UnitId};
@@ -86,7 +87,10 @@ mod tests {
             subrc.contains("Return code") || subrc.contains("return code"),
             "{subrc}"
         );
+        assert!(super::builtin_structure_field_description("syst", "abcde").is_some());
+        assert!(super::builtin_structure_field_description("syst", "fdpos").is_some());
         assert!(super::builtin_structure_field_description("syst", "msgv1").is_some());
+        assert!(super::builtin_structure_field_description("syst", "tvar9").is_some());
         assert!(super::builtin_structure_field_description("syst", "zonlo").is_some());
         assert!(
             super::well_known_external_structure_field_description("bapiret2", "type").is_some()

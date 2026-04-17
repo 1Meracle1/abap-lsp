@@ -4484,6 +4484,8 @@ fn resolves_any_as_builtin_type() {
 fn resolves_builtin_sy_and_common_ddic_aliases() {
     let src = "\
 DATA lv_tabix TYPE sy-tabix.\n\
+DATA lv_user TYPE syst-uname.\n\
+DATA lv_time TYPE sy-uzeit.\n\
 DATA lv_guid TYPE guid.\n\
 DATA lv_flag TYPE xfeld.\n\
 DATA lv_table TYPE tabname.\n\
@@ -4491,14 +4493,17 @@ DATA lv_objcl TYPE cdobjectcl.\n\
 DATA lv_fm TYPE rs38l_fnam.\n\
 DATA lv_mem TYPE memoryid.\n\
 IF sy-subrc = 0.\n\
+  lv_user = syst-uname.\n\
   lv_tabix = sy-tabix.\n\
 ENDIF.";
     let parsed = parse(src);
     let unit = analyze_unit("file:///legacy_builtins.abap", src, &parsed);
 
     for (name, kind) in [
+        ("sy", abap_symbols::SymbolKind::BuiltinType),
         ("sy", abap_symbols::SymbolKind::BuiltinVariable),
         ("syst", abap_symbols::SymbolKind::BuiltinType),
+        ("syst", abap_symbols::SymbolKind::BuiltinVariable),
         ("guid", abap_symbols::SymbolKind::BuiltinType),
         ("xfeld", abap_symbols::SymbolKind::BuiltinType),
         ("tabname", abap_symbols::SymbolKind::BuiltinType),
@@ -4533,7 +4538,7 @@ ENDIF.";
         .iter()
         .filter(|reference| {
             reference.namespace == Namespace::Value
-                && reference.name.as_ref() == "sy"
+                && matches!(reference.name.as_ref(), "sy" | "syst")
                 && matches!(reference.resolution, Some(Resolution::Symbol(_)))
         })
         .count();
@@ -4541,9 +4546,18 @@ ENDIF.";
     let sy_symbol = unit
         .symbols
         .iter()
-        .find(|symbol| symbol.name.as_ref() == "sy")
+        .find(|symbol| {
+            symbol.name.as_ref() == "sy"
+                && symbol.kind == abap_symbols::SymbolKind::BuiltinVariable
+        })
         .expect("builtin sy symbol");
     let sy_structure = unit.structure(sy_symbol.structure.expect("sy structure metadata"));
+    assert!(
+        sy_structure
+            .fields
+            .iter()
+            .any(|field| field.name.as_ref() == "abcde")
+    );
     assert!(
         sy_structure
             .fields
@@ -4556,6 +4570,24 @@ ENDIF.";
             .iter()
             .any(|field| field.name.as_ref() == "msgv1")
     );
+    assert!(
+        sy_structure
+            .fields
+            .iter()
+            .any(|field| field.name.as_ref() == "tvar9")
+    );
+    let type_for = |field_name: &str| {
+        sy_structure
+            .fields
+            .iter()
+            .find(|field| field.name.as_ref() == field_name)
+            .and_then(|field| field.type_ref.as_ref())
+            .map(|type_ref| type_ref.base_name.as_ref())
+    };
+    assert_eq!(type_for("uzeit"), Some("t"));
+    assert_eq!(type_for("datum"), Some("d"));
+    assert_eq!(type_for("msgno"), Some("n"));
+    assert_eq!(type_for("fdpos"), Some("i"));
     assert!(
         !unit
             .diagnostics
@@ -4602,6 +4634,72 @@ fn rejects_unknown_sy_field_access() {
             .iter()
             .any(|diag| diag.kind == DiagnosticKind::UnknownField && diag.message.contains("nope"))
     );
+}
+
+#[test]
+fn collects_system_field_updates_for_supported_statements() {
+    let src = r#"
+DATA itab TYPE STANDARD TABLE OF i WITH EMPTY KEY.
+DATA wa TYPE i.
+
+APPEND 1 TO itab.
+INSERT 2 INTO TABLE itab.
+MODIFY TABLE itab FROM 3.
+DELETE itab WHERE table_line = 3.
+AUTHORITY-CHECK OBJECT 'S_CARRID'
+  ID 'ACTVT' FIELD '03'.
+DESCRIBE TABLE itab LINES DATA(lv_lines).
+READ TABLE itab INDEX 1 INTO wa.
+FIND '1' IN '123'.
+MESSAGE 'ready' TYPE 'S'.
+SELECT SINGLE carrid FROM scarr INTO @DATA(lv_carrid).
+DO 1 TIMES.
+ENDDO.
+WHILE 1 = 0.
+ENDWHILE.
+LOOP AT itab INTO wa.
+ENDLOOP.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///system_field_updates.abap", src, &parsed);
+
+    let has_update = |statement, field_name: &str| {
+        unit.system_field_updates.iter().any(|update| {
+            update.statement == statement && update.field_name.as_ref() == field_name
+        })
+    };
+
+    assert!(has_update(
+        abap_symbols::SystemFieldStatementKind::AuthorityCheck,
+        "subrc"
+    ));
+    assert!(has_update(abap_symbols::SystemFieldStatementKind::Append, "tabix"));
+    assert!(has_update(
+        abap_symbols::SystemFieldStatementKind::InsertTable,
+        "subrc"
+    ));
+    assert!(has_update(
+        abap_symbols::SystemFieldStatementKind::ModifyTable,
+        "subrc"
+    ));
+    assert!(has_update(
+        abap_symbols::SystemFieldStatementKind::DeleteTable,
+        "subrc"
+    ));
+    assert!(has_update(
+        abap_symbols::SystemFieldStatementKind::DescribeTable,
+        "tfill"
+    ));
+    assert!(has_update(
+        abap_symbols::SystemFieldStatementKind::ReadTable,
+        "tabix"
+    ));
+    assert!(has_update(abap_symbols::SystemFieldStatementKind::Find, "fdpos"));
+    assert!(has_update(abap_symbols::SystemFieldStatementKind::Message, "msgid"));
+    assert!(has_update(abap_symbols::SystemFieldStatementKind::Select, "dbcnt"));
+    assert!(has_update(abap_symbols::SystemFieldStatementKind::Do, "index"));
+    assert!(has_update(abap_symbols::SystemFieldStatementKind::While, "index"));
+    assert!(has_update(abap_symbols::SystemFieldStatementKind::LoopAt, "subrc"));
 }
 
 #[test]

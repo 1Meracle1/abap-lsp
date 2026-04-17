@@ -32,7 +32,7 @@ Notes:
 
 ## Top-level schema
 
-The current schema id is `abap.semantic_dossier` with `schema_version = 3`.
+The current schema id is `abap.semantic_dossier` with `schema_version = 4`.
 
 Top-level fields:
 
@@ -55,6 +55,7 @@ Top-level fields:
 - `expression_facts`
 - `value_flow_edges`
 - `perform_calls`
+- `system_field_updates`
 - `sql`
 - `includes`
 - `unresolved_names`
@@ -75,6 +76,8 @@ Top-level fields:
 
 - Stable counts for diagnostics, symbols, references, scopes, class facts, calls, SQL, and include
   edges.
+- Includes `system_field_update_count` for recorded statement-level updates to built-in system
+  fields such as `sy-subrc`, `sy-tabix`, `sy-dbcnt`, `sy-index`, and message metadata.
 - Also reports routine-summary and routine-finding counts when compact static analysis is
   available.
 
@@ -108,6 +111,14 @@ Top-level fields:
 - Records practical first-pass flow edges for assignments, call arguments, and inferable
   `ASSIGN ... TO FIELD-SYMBOL(...)` targets.
 - Call edges preserve the call target plus parameter metadata when it can be resolved.
+
+`system_field_updates`
+
+- Records statement sites that are known to update documented `sy`/`syst` fields.
+- Each entry includes the enclosing `scope_id`, the statement `range`, the normalized statement
+  kind, and the updated `field_name`.
+- Current coverage includes common control-flow, internal-table, Open SQL, `MESSAGE`,
+  `AUTHORITY-CHECK`, `DESCRIBE TABLE`, and `FIND` statements.
 
 `sql`
 

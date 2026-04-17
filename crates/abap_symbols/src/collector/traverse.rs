@@ -106,8 +106,8 @@ impl<'a> Collector<'a> {
             }
             SyntaxKind::SelectStmt => self.sql_lowering().collect_select_stmt(node, scope),
             SyntaxKind::AppendStmt => self.stmt_lowering().collect_append_stmt(node, scope),
-            SyntaxKind::InsertTableStmt
-            | SyntaxKind::MoveCorrespondingStmt
+            SyntaxKind::InsertTableStmt => self.stmt_lowering().collect_insert_table_stmt(node, scope),
+            SyntaxKind::MoveCorrespondingStmt
             | SyntaxKind::MoveStmt
             | SyntaxKind::UpdateTarget
             | SyntaxKind::GetReferenceStmt

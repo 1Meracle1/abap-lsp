@@ -246,7 +246,7 @@ WRITE lt_scarr.
         },
     );
 
-    assert_eq!(dossier.schema_version, 3);
+    assert_eq!(dossier.schema_version, 4);
     assert!(dossier.summary.expression_fact_count > 0);
     assert!(dossier.summary.value_flow_edge_count > 0);
     assert!(dossier.expression_facts.iter().any(|fact| {
@@ -327,7 +327,7 @@ ENDCLASS.
         .static_analysis
         .as_ref()
         .expect("static analysis section");
-    assert_eq!(dossier.schema_version, 3);
+    assert_eq!(dossier.schema_version, 4);
     assert_eq!(dossier.summary.static_analysis_routine_count, 1);
     assert_eq!(static_analysis.routine_count, 1);
     assert_eq!(dossier.summary.static_analysis_finding_count, 1);
@@ -337,5 +337,42 @@ ENDCLASS.
                 .findings
                 .iter()
                 .any(|finding| finding.kind == "unreachable_code")
+    }));
+}
+
+#[test]
+fn dossier_exports_system_field_updates() {
+    let src = r#"
+DATA itab TYPE STANDARD TABLE OF i WITH EMPTY KEY.
+DATA wa TYPE i.
+
+READ TABLE itab INDEX 1 INTO wa.
+MESSAGE 'ready' TYPE 'S'.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///system_fields_dossier.abap", src, &parsed);
+    let dossier = build_semantic_dossier(
+        &unit,
+        SemanticDossierContext {
+            parse_errors: &parsed.errors,
+            project: None,
+            static_analysis: None,
+            target_path: Some("D:\\system_fields_dossier.abap"),
+            object_name: None,
+            is_dependency: false,
+            workspace_root_uri: None,
+            manifest_present: false,
+            project_unit_count: None,
+            dependency_unit_count: None,
+        },
+    );
+
+    assert_eq!(dossier.schema_version, 4);
+    assert!(dossier.summary.system_field_update_count >= 2);
+    assert!(dossier.system_field_updates.iter().any(|update| {
+        update.statement == "read_table" && update.field_name == "tabix"
+    }));
+    assert!(dossier.system_field_updates.iter().any(|update| {
+        update.statement == "message" && update.field_name == "msgid"
     }));
 }

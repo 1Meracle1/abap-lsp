@@ -15,8 +15,8 @@ use crate::def_map::{
     ReferenceData, ReferenceKind, Resolution, SqlNameRefData, SqlNameRefKind, SqlPredicateData,
     SqlPredicateKind, SqlProjectionData, SqlProjectionKind, SqlQueryData, SqlResolution,
     SqlSourceData, SqlSourceKind, SqlTargetData, SqlTargetKind, StructureData, StructureFieldData,
-    SymbolData, SymbolKind, TypeFactData, UnitAnalysis, ValueFlowEdgeData, ValueFlowKind,
-    ValueFlowTargetData, Visibility,
+    SymbolData, SymbolKind, SystemFieldStatementKind, SystemFieldUpdateData, TypeFactData,
+    UnitAnalysis, ValueFlowEdgeData, ValueFlowKind, ValueFlowTargetData, Visibility,
 };
 use crate::ids::{SymbolHandle, UnitId};
 use crate::project::ProjectAnalysis;
@@ -62,6 +62,7 @@ pub struct SemanticDossier {
     pub expression_facts: Vec<ExpressionFactDossier>,
     pub value_flow_edges: Vec<ValueFlowEdgeDossier>,
     pub perform_calls: Vec<PerformCallDossier>,
+    pub system_field_updates: Vec<SystemFieldUpdateDossier>,
     pub sql: SqlSectionDossier,
     pub includes: Vec<IncludeEdgeDossier>,
     pub unresolved_names: UnresolvedNamesDossier,
@@ -104,6 +105,7 @@ pub struct DossierSummary {
     pub expression_fact_count: usize,
     pub value_flow_edge_count: usize,
     pub perform_call_count: usize,
+    pub system_field_update_count: usize,
     pub function_module_count: usize,
     pub sql_query_count: usize,
     pub sql_source_count: usize,
@@ -408,6 +410,14 @@ pub struct ExpressionFactDossier {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SystemFieldUpdateDossier {
+    pub scope_id: u32,
+    pub range: ByteRange,
+    pub statement: &'static str,
+    pub field_name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ValueFlowTargetDossier {
     Assignment {
@@ -651,6 +661,11 @@ pub fn build_semantic_dossier(
         .iter()
         .map(perform_call_dossier)
         .collect();
+    let system_field_updates: Vec<_> = unit
+        .system_field_updates
+        .iter()
+        .map(system_field_update_dossier)
+        .collect();
     let queries: Vec<_> = unit
         .sql_queries
         .iter()
@@ -691,7 +706,7 @@ pub fn build_semantic_dossier(
 
     SemanticDossier {
         schema: "abap.semantic_dossier",
-        schema_version: 3,
+        schema_version: 4,
         target: DossierTarget {
             unit_id: unit.unit_id.0,
             uri: unit.uri.to_string(),
@@ -735,6 +750,7 @@ pub fn build_semantic_dossier(
             expression_fact_count: expression_facts.len(),
             value_flow_edge_count: value_flow_edges.len(),
             perform_call_count: perform_calls.len(),
+            system_field_update_count: system_field_updates.len(),
             function_module_count: function_modules.len(),
             sql_query_count: queries.len(),
             sql_source_count: unit.sql_sources.len(),
@@ -756,6 +772,7 @@ pub fn build_semantic_dossier(
         expression_facts,
         value_flow_edges,
         perform_calls,
+        system_field_updates,
         sql: SqlSectionDossier {
             touched_objects,
             queries,
@@ -1141,6 +1158,15 @@ fn expression_fact_dossier(fact: &ExpressionFactData) -> ExpressionFactDossier {
     }
 }
 
+fn system_field_update_dossier(update: &SystemFieldUpdateData) -> SystemFieldUpdateDossier {
+    SystemFieldUpdateDossier {
+        scope_id: update.scope.0,
+        range: byte_range(&update.range),
+        statement: system_field_statement_kind_name(update.statement),
+        field_name: update.field_name.to_string(),
+    }
+}
+
 fn value_flow_edge_dossier(edge: &ValueFlowEdgeData) -> ValueFlowEdgeDossier {
     ValueFlowEdgeDossier {
         scope_id: edge.scope.0,
@@ -1488,6 +1514,28 @@ fn expression_fact_kind_name(kind: ExpressionFactKind) -> &'static str {
         ExpressionFactKind::Reference => "reference",
         ExpressionFactKind::Selector => "selector",
         ExpressionFactKind::CallResult => "call_result",
+    }
+}
+
+fn system_field_statement_kind_name(kind: SystemFieldStatementKind) -> &'static str {
+    match kind {
+        SystemFieldStatementKind::Append => "append",
+        SystemFieldStatementKind::AuthorityCheck => "authority_check",
+        SystemFieldStatementKind::DeleteTable => "delete_table",
+        SystemFieldStatementKind::DeleteDbTable => "delete_db_table",
+        SystemFieldStatementKind::DescribeTable => "describe_table",
+        SystemFieldStatementKind::Do => "do",
+        SystemFieldStatementKind::Find => "find",
+        SystemFieldStatementKind::InsertTable => "insert_table",
+        SystemFieldStatementKind::InsertDbTable => "insert_db_table",
+        SystemFieldStatementKind::LoopAt => "loop_at",
+        SystemFieldStatementKind::Message => "message",
+        SystemFieldStatementKind::ModifyTable => "modify_table",
+        SystemFieldStatementKind::ModifyDbTable => "modify_db_table",
+        SystemFieldStatementKind::ReadTable => "read_table",
+        SystemFieldStatementKind::Select => "select",
+        SystemFieldStatementKind::UpdateDbTable => "update_db_table",
+        SystemFieldStatementKind::While => "while",
     }
 }
 

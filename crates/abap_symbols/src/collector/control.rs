@@ -8,8 +8,8 @@ use abap_lexer::TextRange;
 use crate::def_map::{
     AtGroupKind, AtRegionData, CaseRegionData, FieldAccess, FieldAccessSegment, FieldTypeRefData,
     IfRegionData, LoopAtFieldContext, LoopRegionData, LoopWhereFieldContext,
-    RoutineControlRegionData, RoutineLoopKind, SymbolKind, TryRegionData, ValueStateCheckData,
-    ValueStateCheckKind,
+    RoutineControlRegionData, RoutineLoopKind, SymbolKind, SystemFieldStatementKind,
+    TryRegionData, ValueStateCheckData, ValueStateCheckKind,
 };
 use crate::ids::{ScopeId, StructureId, SymbolId};
 use crate::scope::{Namespace, ScopeKind};
@@ -28,6 +28,20 @@ impl<'a> Collector<'a> {
 }
 
 impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
+    fn record_system_field_updates(
+        &mut self,
+        scope: ScopeId,
+        node: NodeId,
+        statement: SystemFieldStatementKind,
+        field_names: &[&'static str],
+    ) {
+        let range = self.collector.file.range(node);
+        for &field_name in field_names {
+            self.collector
+                .add_system_field_update(scope, range.clone(), statement, field_name);
+        }
+    }
+
     pub(super) fn walk_if_stmt(&mut self, node: NodeId, scope: ScopeId) {
         let node_range = self.collector.file.range(node);
         let then_scope =
@@ -85,14 +99,32 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
     }
 
     pub(super) fn walk_while_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        self.record_system_field_updates(
+            scope,
+            node,
+            SystemFieldStatementKind::While,
+            &["index"],
+        );
         self.walk_loop_like_stmt(node, scope, ScopeKind::WhileBlock, RoutineLoopKind::While);
     }
 
     pub(super) fn walk_do_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        self.record_system_field_updates(
+            scope,
+            node,
+            SystemFieldStatementKind::Do,
+            &["index"],
+        );
         self.walk_loop_like_stmt(node, scope, ScopeKind::DoBlock, RoutineLoopKind::Do);
     }
 
     pub(super) fn walk_loop_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        self.record_system_field_updates(
+            scope,
+            node,
+            SystemFieldStatementKind::LoopAt,
+            &["subrc", "tabix", "tfill", "tleng"],
+        );
         let node_range = self.collector.file.range(node);
         let child_scope =
             self.collector

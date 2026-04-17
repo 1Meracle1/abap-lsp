@@ -43,112 +43,332 @@ pub struct BuiltinRoutineSpec {
 
 pub const SYST_FIELDS: &[BuiltinFieldSpec] = &[
     BuiltinFieldSpec {
-        name: "subrc",
-        description: "Return code from the last ABAP statement; 0 usually means success.",
-    },
-    BuiltinFieldSpec {
-        name: "tabix",
-        description: "Index of the current internal table row in LOOP AT or READ TABLE over the table body.",
-    },
-    BuiltinFieldSpec {
-        name: "index",
-        description: "Loop counter in DO … ENDDO and similar loop constructs.",
-    },
-    BuiltinFieldSpec {
-        name: "tfill",
-        description: "Number of lines in the internal table after statements that set this system field.",
-    },
-    BuiltinFieldSpec {
-        name: "tleng",
-        description: "Row length (bytes) of an internal table in contexts where this field is defined.",
-    },
-    BuiltinFieldSpec {
-        name: "dbcnt",
-        description: "Number of rows processed by the last Open SQL statement.",
-    },
-    BuiltinFieldSpec {
-        name: "datum",
-        description: "Current date on the application server at runtime.",
-    },
-    BuiltinFieldSpec {
-        name: "uzeit",
-        description: "Current time on the application server at runtime.",
-    },
-    BuiltinFieldSpec {
-        name: "zonlo",
-        description: "Time zone of the current user for local date/time (used with local conversion).",
-    },
-    BuiltinFieldSpec {
-        name: "datlo",
-        description: "Current date in the user's local time zone.",
-    },
-    BuiltinFieldSpec {
-        name: "timlo",
-        description: "Current time in the user's local time zone.",
-    },
-    BuiltinFieldSpec {
-        name: "mandt",
-        description: "Client (mandant) of the current SAP session.",
-    },
-    BuiltinFieldSpec {
-        name: "uname",
-        description: "Logon name of the current user.",
-    },
-    BuiltinFieldSpec {
-        name: "langu",
-        description: "Current logon language key.",
+        name: "abcde",
+        description: "Latin alphabet helper text that can be indexed directly by offset and length.",
     },
     BuiltinFieldSpec {
         name: "batch",
-        description: "Background processing: space in dialog, 'X' when running in batch.",
+        description: "Set to 'X' in background processing and initial in dialog processing.",
+    },
+    BuiltinFieldSpec {
+        name: "binpt",
+        description: "Set to 'X' while batch input is being processed.",
+    },
+    BuiltinFieldSpec {
+        name: "calld",
+        description: "Call-sequence marker: initial in the first program of a sequence and 'X' in called programs.",
+    },
+    BuiltinFieldSpec {
+        name: "callr",
+        description: "Spool origin marker that identifies where list spooling was started.",
+    },
+    BuiltinFieldSpec {
+        name: "colno",
+        description: "Current list-buffer column while a list is being created.",
+    },
+    BuiltinFieldSpec {
+        name: "cpage",
+        description: "Top page number of the displayed list when a list event was raised.",
     },
     BuiltinFieldSpec {
         name: "cprog",
-        description: "Name of the calling program in the current call chain.",
+        description: "Calling program for external procedures, otherwise the current program.",
     },
     BuiltinFieldSpec {
-        name: "repid",
-        description: "Name of the current ABAP program.",
+        name: "cucol",
+        description: "Horizontal dynpro cursor position after PAI.",
     },
     BuiltinFieldSpec {
-        name: "tcode",
-        description: "Transaction code of the current transaction.",
+        name: "curow",
+        description: "Vertical dynpro cursor position after PAI.",
     },
     BuiltinFieldSpec {
-        name: "ucomm",
-        description: "Function code from the last user action (GUI status / function code).",
+        name: "datar",
+        description: "Set to 'X' in PAI when at least one screen input field was changed.",
     },
     BuiltinFieldSpec {
-        name: "srows",
-        description: "Number of lines on the current list screen.",
+        name: "datlo",
+        description: "Current user date in the user's time zone.",
+    },
+    BuiltinFieldSpec {
+        name: "datum",
+        description: "Current system date.",
+    },
+    BuiltinFieldSpec {
+        name: "dayst",
+        description: "Set to 'X' during daylight saving time in the system time zone.",
+    },
+    BuiltinFieldSpec {
+        name: "dbcnt",
+        description: "Number of database rows processed by the last SQL statement that documents it.",
+    },
+    BuiltinFieldSpec {
+        name: "dbnam",
+        description: "Logical database name of the current executable program, when one is linked.",
+    },
+    BuiltinFieldSpec {
+        name: "dbsys",
+        description: "Database system identifier of the standard database, such as HDB.",
+    },
+    BuiltinFieldSpec {
+        name: "dyngr",
+        description: "Screen group of the current dynpro.",
+    },
+    BuiltinFieldSpec {
+        name: "dynnr",
+        description: "Current dynpro number, including selection screens and subscreens.",
+    },
+    BuiltinFieldSpec {
+        name: "fdayw",
+        description: "Factory-calendar weekday in the system time zone, with Monday as 1.",
+    },
+    BuiltinFieldSpec {
+        name: "fdpos",
+        description: "Found offset after supported search and comparison operations such as FIND.",
+    },
+    BuiltinFieldSpec {
+        name: "host",
+        description: "Host name of the current application server instance.",
+    },
+    BuiltinFieldSpec {
+        name: "index",
+        description: "Loop counter inside DO and WHILE loops; nested loops use the innermost counter.",
+    },
+    BuiltinFieldSpec {
+        name: "langu",
+        description: "Single-character locale language key for the current internal session.",
+    },
+    BuiltinFieldSpec {
+        name: "ldbpg",
+        description: "Database program name of the linked logical database, when applicable.",
+    },
+    BuiltinFieldSpec {
+        name: "lilli",
+        description: "List line on which a list event was raised, including the page header.",
+    },
+    BuiltinFieldSpec {
+        name: "linct",
+        description: "Configured page length of the current list during list creation.",
+    },
+    BuiltinFieldSpec {
+        name: "linno",
+        description: "Current list line while a list is being created, including the page header.",
+    },
+    BuiltinFieldSpec {
+        name: "linsz",
+        description: "List-buffer line width of the current list during list creation.",
+    },
+    BuiltinFieldSpec {
+        name: "lisel",
+        description: "Displayed list line content for the list event cursor position, truncated to 255 characters.",
+    },
+    BuiltinFieldSpec {
+        name: "listi",
+        description: "List level of the list for which a list event was raised.",
+    },
+    BuiltinFieldSpec {
+        name: "loopc",
+        description: "Number of currently displayed rows in a table control after PAI.",
+    },
+    BuiltinFieldSpec {
+        name: "lsind",
+        description: "List level of the list currently being created.",
+    },
+    BuiltinFieldSpec {
+        name: "macol",
+        description: "Left spool margin set by SET MARGIN.",
+    },
+    BuiltinFieldSpec {
+        name: "mandt",
+        description: "Client of the current user session.",
+    },
+    BuiltinFieldSpec {
+        name: "marow",
+        description: "Top spool margin set by SET MARGIN.",
+    },
+    BuiltinFieldSpec {
+        name: "modno",
+        description: "Index of the current ABAP session within the SAP GUI session.",
     },
     BuiltinFieldSpec {
         name: "msgid",
-        description: "Message class of the last message raised with MESSAGE.",
-    },
-    BuiltinFieldSpec {
-        name: "msgty",
-        description: "Message type of the last message (E, W, I, S, A, X, …).",
+        description: "Message class captured by the last MESSAGE statement.",
     },
     BuiltinFieldSpec {
         name: "msgno",
-        description: "Message number of the last message.",
+        description: "Message number captured by the last MESSAGE statement.",
+    },
+    BuiltinFieldSpec {
+        name: "msgty",
+        description: "Message type captured by the last MESSAGE statement.",
     },
     BuiltinFieldSpec {
         name: "msgv1",
-        description: "First placeholder variable for the text of the last MESSAGE.",
+        description: "First MESSAGE placeholder value captured by the last MESSAGE statement.",
     },
     BuiltinFieldSpec {
         name: "msgv2",
-        description: "Second placeholder variable for the text of the last MESSAGE.",
+        description: "Second MESSAGE placeholder value captured by the last MESSAGE statement.",
     },
     BuiltinFieldSpec {
         name: "msgv3",
-        description: "Third placeholder variable for the text of the last MESSAGE.",
+        description: "Third MESSAGE placeholder value captured by the last MESSAGE statement.",
     },
     BuiltinFieldSpec {
         name: "msgv4",
-        description: "Fourth placeholder variable for the text of the last MESSAGE.",
+        description: "Fourth MESSAGE placeholder value captured by the last MESSAGE statement.",
+    },
+    BuiltinFieldSpec {
+        name: "opsys",
+        description: "Operating system identifier of the current application server.",
+    },
+    BuiltinFieldSpec {
+        name: "pagno",
+        description: "Current page number while a list is being created.",
+    },
+    BuiltinFieldSpec {
+        name: "pfkey",
+        description: "Current dynpro GUI status after PAI.",
+    },
+    BuiltinFieldSpec {
+        name: "repid",
+        description: "Program name exposed through sy-repid and syst-repid; SAP documents this as a predefined constant and type, not a real SYST component.",
+    },
+    BuiltinFieldSpec {
+        name: "saprl",
+        description: "ABAP release identifier of the current system.",
+    },
+    BuiltinFieldSpec {
+        name: "scols",
+        description: "Number of columns in the current screen layout after PAI.",
+    },
+    BuiltinFieldSpec {
+        name: "slset",
+        description: "Selection-screen variant name used to fill the current selection screen.",
+    },
+    BuiltinFieldSpec {
+        name: "spono",
+        description: "Spool request number while list spooling is active.",
+    },
+    BuiltinFieldSpec {
+        name: "srows",
+        description: "Number of rows in the current screen layout after PAI.",
+    },
+    BuiltinFieldSpec {
+        name: "staco",
+        description: "First displayed list column when a list event was raised.",
+    },
+    BuiltinFieldSpec {
+        name: "staro",
+        description: "Top displayed list line of the displayed page when a list event was raised.",
+    },
+    BuiltinFieldSpec {
+        name: "stepl",
+        description: "Current row index of a table control during loop processing.",
+    },
+    BuiltinFieldSpec {
+        name: "subrc",
+        description: "Return code set by many ABAP statements; 0 usually indicates success for the documented statement.",
+    },
+    BuiltinFieldSpec {
+        name: "sysid",
+        description: "System ID of the current ABAP system.",
+    },
+    BuiltinFieldSpec {
+        name: "tabix",
+        description: "Current internal-table index from READ TABLE or LOOP AT on indexed access paths.",
+    },
+    BuiltinFieldSpec {
+        name: "tcode",
+        description: "Current transaction code, if one is active.",
+    },
+    BuiltinFieldSpec {
+        name: "tfill",
+        description: "Row count of the internal table accessed by DESCRIBE TABLE, LOOP AT, or READ TABLE.",
+    },
+    BuiltinFieldSpec {
+        name: "timlo",
+        description: "Current user time in the user's time zone.",
+    },
+    BuiltinFieldSpec {
+        name: "title",
+        description: "Current dynpro title-bar text.",
+    },
+    BuiltinFieldSpec {
+        name: "tleng",
+        description: "Row length in bytes of the internal table accessed by DESCRIBE TABLE, LOOP AT, or READ TABLE.",
+    },
+    BuiltinFieldSpec {
+        name: "tvar0",
+        description: "TOP-OF-PAGE replacement variable for placeholder &0 in list text elements.",
+    },
+    BuiltinFieldSpec {
+        name: "tvar1",
+        description: "TOP-OF-PAGE replacement variable for placeholder &1 in list text elements.",
+    },
+    BuiltinFieldSpec {
+        name: "tvar2",
+        description: "TOP-OF-PAGE replacement variable for placeholder &2 in list text elements.",
+    },
+    BuiltinFieldSpec {
+        name: "tvar3",
+        description: "TOP-OF-PAGE replacement variable for placeholder &3 in list text elements.",
+    },
+    BuiltinFieldSpec {
+        name: "tvar4",
+        description: "TOP-OF-PAGE replacement variable for placeholder &4 in list text elements.",
+    },
+    BuiltinFieldSpec {
+        name: "tvar5",
+        description: "TOP-OF-PAGE replacement variable for placeholder &5 in list text elements.",
+    },
+    BuiltinFieldSpec {
+        name: "tvar6",
+        description: "TOP-OF-PAGE replacement variable for placeholder &6 in list text elements.",
+    },
+    BuiltinFieldSpec {
+        name: "tvar7",
+        description: "TOP-OF-PAGE replacement variable for placeholder &7 in list text elements.",
+    },
+    BuiltinFieldSpec {
+        name: "tvar8",
+        description: "TOP-OF-PAGE replacement variable for placeholder &8 in list text elements.",
+    },
+    BuiltinFieldSpec {
+        name: "tvar9",
+        description: "TOP-OF-PAGE replacement variable for placeholder &9 in list text elements.",
+    },
+    BuiltinFieldSpec {
+        name: "tzone",
+        description: "System time-zone offset from UTC in seconds.",
+    },
+    BuiltinFieldSpec {
+        name: "ucomm",
+        description: "Function code that triggered the current PAI processing.",
+    },
+    BuiltinFieldSpec {
+        name: "uline",
+        description: "List helper value containing 255 horizontal line characters.",
+    },
+    BuiltinFieldSpec {
+        name: "uname",
+        description: "User name of the current session.",
+    },
+    BuiltinFieldSpec {
+        name: "uzeit",
+        description: "Current system time.",
+    },
+    BuiltinFieldSpec {
+        name: "vline",
+        description: "List helper value containing a vertical line character.",
+    },
+    BuiltinFieldSpec {
+        name: "wtitl",
+        description: "Set to 'N' when NO STANDARD PAGE HEADING was specified in REPORT-like declarations.",
+    },
+    BuiltinFieldSpec {
+        name: "zonlo",
+        description: "User time zone identifier.",
     },
 ];
 
@@ -329,6 +549,11 @@ pub const BUILTIN_SYMBOLS: &[BuiltinSymbolSpec] = &[
         structure_name: None,
     },
     BuiltinSymbolSpec {
+        name: "sy",
+        kind: BuiltinTypeKind::Type,
+        structure_name: Some("syst"),
+    },
+    BuiltinSymbolSpec {
         name: "syst",
         kind: BuiltinTypeKind::Type,
         structure_name: Some("syst"),
@@ -337,6 +562,11 @@ pub const BUILTIN_SYMBOLS: &[BuiltinSymbolSpec] = &[
         name: "screen",
         kind: BuiltinTypeKind::Type,
         structure_name: Some("screen"),
+    },
+    BuiltinSymbolSpec {
+        name: "syst",
+        kind: BuiltinTypeKind::Variable,
+        structure_name: Some("syst"),
     },
     BuiltinSymbolSpec {
         name: "sy",
@@ -628,7 +858,7 @@ pub fn builtin_routine_spec(name: &str) -> Option<&'static BuiltinRoutineSpec> {
         .find(|spec| spec.name.eq_ignore_ascii_case(name))
 }
 
-/// Documentation line for a field of a built-in structure (for example `syst` / `sy-…`).
+/// Documentation line for a field of a built-in structure (for example `syst` / `sy-...`).
 pub fn builtin_structure_field_description(
     structure_name: &str,
     field_name: &str,
@@ -650,10 +880,10 @@ fn well_known_bapiret2_field_type(
         return Some(("char1", None));
     }
     if field_name.eq_ignore_ascii_case("id") {
-        return Some(("symsgid", None));
+        return Some(("c", None));
     }
     if field_name.eq_ignore_ascii_case("number") {
-        return Some(("symsgno", None));
+        return Some(("n", None));
     }
     if field_name.eq_ignore_ascii_case("message") {
         return Some(("string", None));
@@ -662,14 +892,14 @@ fn well_known_bapiret2_field_type(
         return Some(("string", None));
     }
     if field_name.eq_ignore_ascii_case("log_msg_no") {
-        return Some(("symsgno", None));
+        return Some(("n", None));
     }
     if field_name.eq_ignore_ascii_case("message_v1")
         || field_name.eq_ignore_ascii_case("message_v2")
         || field_name.eq_ignore_ascii_case("message_v3")
         || field_name.eq_ignore_ascii_case("message_v4")
     {
-        return Some(("symsgv", None));
+        return Some(("c", None));
     }
     if field_name.eq_ignore_ascii_case("parameter")
         || field_name.eq_ignore_ascii_case("field")
@@ -681,6 +911,28 @@ fn well_known_bapiret2_field_type(
         return Some(("i", None));
     }
     None
+}
+
+fn builtin_syst_field_type(field_name: &str) -> Option<(&'static str, Option<&'static str>)> {
+    let type_name = match field_name.to_ascii_lowercase().as_str() {
+        "abcde" | "batch" | "binpt" | "calld" | "callr" | "cprog" | "datar" | "dayst"
+        | "dbnam" | "dbsys" | "dyngr" | "dynnr" | "host" | "langu" | "ldbpg" | "lisel"
+        | "opsys" | "pfkey" | "repid" | "saprl" | "slset" | "sysid" | "tcode" | "title"
+        | "ucomm" | "uline" | "uname" | "vline" | "wtitl" | "zonlo" => "c",
+        "colno" | "cpage" | "cucol" | "curow" | "dbcnt" | "fdpos" | "index" | "lilli"
+        | "linct" | "linno" | "linsz" | "listi" | "loopc" | "lsind" | "macol" | "marow"
+        | "modno" | "pagno" | "scols" | "srows" | "staco" | "staro" | "stepl" | "subrc"
+        | "tabix" | "tfill" | "tleng" | "tzone" => "i",
+        "datlo" | "datum" => "d",
+        "fdayw" => "b",
+        "msgno" | "spono" => "n",
+        "timlo" | "uzeit" => "t",
+        "mandt" | "msgid" | "msgty" | "msgv1" | "msgv2" | "msgv3" | "msgv4" | "tvar0"
+        | "tvar1" | "tvar2" | "tvar3" | "tvar4" | "tvar5" | "tvar6" | "tvar7" | "tvar8"
+        | "tvar9" => "c",
+        _ => return None,
+    };
+    Some((type_name, None))
 }
 
 pub fn well_known_external_structure_field_description(
@@ -710,6 +962,9 @@ pub fn builtin_structure_field_type(
     structure_name: &str,
     field_name: &str,
 ) -> Option<(&'static str, Option<&'static str>)> {
+    if structure_name.eq_ignore_ascii_case("syst") {
+        return builtin_syst_field_type(field_name);
+    }
     if structure_name.eq_ignore_ascii_case("screen") {
         if matches!(
             field_name.to_ascii_lowercase().as_str(),
@@ -748,3 +1003,5 @@ pub fn builtin_structure_field_type(
     }
     None
 }
+
+

@@ -7,7 +7,7 @@ use crate::builtins::{
 use crate::def_map::{
     Diagnostic, DiagnosticKind, FieldSymbolStateCheckData, FieldTypeRefData, ReferenceData,
     ReferenceKind, RoutineControlRegionData, RoutineSiteData, StructureData, StructureFieldData,
-    SymbolData, SymbolKind, ValueStateCheckData,
+    SymbolData, SymbolKind, SystemFieldStatementKind, SystemFieldUpdateData, ValueStateCheckData,
 };
 use crate::ids::{ReferenceId, ScopeId, StructureId, SymbolId};
 use crate::scope::{Namespace, ScopeData, ScopeKind};
@@ -272,6 +272,21 @@ impl<'a> Collector<'a> {
 
     pub(super) fn add_routine_site(&mut self, site: RoutineSiteData) {
         self.routine_sites.push(site);
+    }
+
+    pub(super) fn add_system_field_update(
+        &mut self,
+        scope: ScopeId,
+        range: TextRange,
+        statement: SystemFieldStatementKind,
+        field_name: &'static str,
+    ) {
+        self.system_field_updates.push(SystemFieldUpdateData {
+            scope,
+            range,
+            statement,
+            field_name: Arc::<str>::from(field_name),
+        });
     }
 
     pub(super) fn add_field_symbol_state_check(&mut self, check: FieldSymbolStateCheckData) {
