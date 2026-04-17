@@ -246,6 +246,21 @@ pub fn build_project_routine_analysis(project: &ProjectAnalysis) -> ProjectRouti
             }
         }
 
+        for (idx, find_site) in unit.find_sites.iter().enumerate() {
+            let Some(routine_id) = scope_map.get(find_site.scope.as_usize()).copied().flatten()
+            else {
+                continue;
+            };
+            if let Some(routine) = out.routines.get_mut(routine_id.as_usize()) {
+                routine.ir.instructions.push(RoutineInstruction {
+                    id: RoutineInstrId(0),
+                    scope: find_site.scope,
+                    range: find_site.range.clone(),
+                    site: RoutineInstructionSite::Find { index: idx as u32 },
+                });
+            }
+        }
+
         for (idx, query) in unit.sql_queries.iter().enumerate() {
             let Some(routine_id) = scope_map.get(query.scope.as_usize()).copied().flatten() else {
                 continue;
@@ -892,6 +907,7 @@ impl<'a> CfgBuilder<'a> {
                 | RoutineInstructionSite::Clear { .. }
                 | RoutineInstructionSite::Delete { .. }
                 | RoutineInstructionSite::ReadTable { .. }
+                | RoutineInstructionSite::Find { .. }
                 | RoutineInstructionSite::FieldSymbolBind { .. }
                 | RoutineInstructionSite::ValueRead { .. }
                 | RoutineInstructionSite::UnknownEffect => {
@@ -1503,6 +1519,17 @@ fn build_routine_dataflow(
                     suppressed_refs.extend(reference_ids_in_range(&reference_uses, &site.range));
                 }
             }
+            RoutineInstructionSite::Find { index } => {
+                if let Some(site) = unit.find_sites.get(index as usize) {
+                    for range in &site.read_ranges {
+                        suppressed_refs.extend(reference_ids_in_range(&reference_uses, range));
+                    }
+                    for target in &site.write_targets {
+                        suppressed_refs
+                            .extend(reference_ids_in_range(&reference_uses, &target.range));
+                    }
+                }
+            }
             RoutineInstructionSite::Perform { index } => {
                 if let Some(perform_call) = unit.perform_calls.get(index as usize) {
                     suppressed_refs
@@ -1707,6 +1734,61 @@ fn build_routine_dataflow(
                     transfer.writes.push(write_value);
                     transfer.assigned_writes.push(write_value);
                     transfer.non_initial_kills.push(write_value);
+                }
+            }
+            RoutineInstructionSite::Find { index } => {
+                if let Some(site) = unit.find_sites.get(index as usize) {
+                    for range in &site.read_ranges {
+                        transfer.reads.extend(read_occurrences_in_range(
+                            &reference_uses,
+                            range,
+                            &safe_read_refs,
+                        ));
+                    }
+                    for target in &site.write_targets {
+                        if let Some(selector_write) = selector_structure_write_for_range(
+                            unit,
+                            &target.range,
+                            &reference_uses,
+                            &structure_assignment_trackers,
+                        ) {
+                            transfer.reads.retain(|read| {
+                                !(read.value == selector_write.base_value
+                                    && read.range.start >= target.range.start
+                                    && read.range.end <= target.range.end)
+                            });
+                            transfer.writes.push(selector_write.base_value);
+                            transfer.non_initial_kills.push(selector_write.base_value);
+                            if target.definitely_assigned {
+                                transfer.assigned_writes.push(selector_write.base_value);
+                            }
+                            if let Some(mask) = selector_write.field_mask {
+                                transfer
+                                    .structure_field_writes
+                                    .push(StructureFieldWriteTransfer {
+                                        value: selector_write.base_value,
+                                        mask,
+                                    });
+                            }
+                            continue;
+                        }
+                        if let Some(write_value) = direct_write_value_id_for_range(
+                            unit,
+                            &target.range,
+                            &reference_uses,
+                            &value_ids_by_symbol,
+                            &values,
+                        ) {
+                            transfer.reads.retain(|read| {
+                                !(read.range == target.range && read.value == write_value)
+                            });
+                            transfer.writes.push(write_value);
+                            transfer.non_initial_kills.push(write_value);
+                            if target.definitely_assigned {
+                                transfer.assigned_writes.push(write_value);
+                            }
+                        }
+                    }
                 }
             }
             RoutineInstructionSite::Perform { index } => {
@@ -2414,6 +2496,7 @@ fn build_dead_store_tracked_values(
             | RoutineInstructionSite::Clear { .. }
             | RoutineInstructionSite::Delete { .. }
             | RoutineInstructionSite::ReadTable { .. }
+            | RoutineInstructionSite::Find { .. }
             | RoutineInstructionSite::ValueRead { .. }
             | RoutineInstructionSite::Branch { .. }
             | RoutineInstructionSite::LoopHeader { .. }
@@ -2689,6 +2772,25 @@ fn build_dead_store_instruction_summaries(
                         value,
                         range: target_range.clone(),
                     });
+                }
+            }
+            RoutineInstructionSite::Find { index } => {
+                if let Some(site) = unit.find_sites.get(index as usize) {
+                    for target in &site.write_targets {
+                        if let Some(value) = direct_write_value_id_for_range(
+                            unit,
+                            &target.range,
+                            reference_uses,
+                            value_ids_by_symbol,
+                            values,
+                        ) && tracked_values.contains(value)
+                        {
+                            writes.push(DeadStoreWrite {
+                                value,
+                                range: target.range.clone(),
+                            });
+                        }
+                    }
                 }
             }
             RoutineInstructionSite::Call { index } => {
@@ -3517,6 +3619,39 @@ fn direct_write_value_id_for_clear(
     (values[direct.value.as_usize()].kind != DataflowValueKind::FieldSymbol).then_some(direct.value)
 }
 
+fn direct_write_value_id_for_range(
+    unit: &UnitAnalysis,
+    range: &TextRange,
+    reference_uses: &[ReferenceUse],
+    value_ids_by_symbol: &HashMap<SymbolHandle, DataflowValueId>,
+    values: &[RoutineDataflowValue],
+) -> Option<DataflowValueId> {
+    let declared_values = unit
+        .symbols
+        .iter()
+        .filter(|symbol| {
+            trackable_symbol_kind(symbol.kind)
+                && symbol.decl_range.start >= range.start
+                && symbol.decl_range.end <= range.end
+        })
+        .filter_map(|symbol| {
+            value_ids_by_symbol
+                .get(&SymbolHandle {
+                    unit: unit.unit_id,
+                    symbol: symbol.id,
+                })
+                .copied()
+        })
+        .filter(|value| values[value.as_usize()].kind != DataflowValueKind::FieldSymbol)
+        .collect::<Vec<_>>();
+    if let [value] = declared_values.as_slice() {
+        return Some(*value);
+    }
+
+    let direct = exact_reference_use_in_range(reference_uses, range)?;
+    (values[direct.value.as_usize()].kind != DataflowValueKind::FieldSymbol).then_some(direct.value)
+}
+
 fn selector_structure_write_for_assignment(
     unit: &UnitAnalysis,
     assignment: &crate::AssignmentSiteData,
@@ -3531,6 +3666,52 @@ fn selector_structure_write_for_assignment(
         return None;
     }
     let base_use = reference_uses_in_range(reference_uses, &assignment.lhs_range)
+        .into_iter()
+        .filter(|use_site| {
+            unit.references
+                .get(use_site.reference.as_usize())
+                .is_some_and(|reference| reference.name == access.base_name)
+        })
+        .collect::<Vec<_>>();
+    let [base_use] = base_use.as_slice() else {
+        return None;
+    };
+    let tracker = structure_assignment_trackers
+        .get(base_use.value.as_usize())?
+        .as_ref()?;
+    let field_mask = (access.field_path.len() == 1)
+        .then(|| {
+            tracker
+                .fields_by_name
+                .get(&access.field_path[0].name)
+                .copied()
+        })
+        .flatten();
+    Some(SelectorStructureWrite {
+        base_value: base_use.value,
+        field_mask,
+    })
+}
+
+fn selector_structure_write_for_range(
+    unit: &UnitAnalysis,
+    range: &TextRange,
+    reference_uses: &[ReferenceUse],
+    structure_assignment_trackers: &[Option<StructureAssignmentTracker>],
+) -> Option<SelectorStructureWrite> {
+    let access = unit.field_accesses.iter().find(|access| {
+        if access.base_namespace != Namespace::Value
+            || access.field_path.is_empty()
+            || access.field_path.iter().any(|segment| segment.is_deref())
+        {
+            return false;
+        }
+        let Some(last_segment) = access.field_path.last() else {
+            return false;
+        };
+        access.base_range.start == range.start && last_segment.range.end == range.end
+    })?;
+    let base_use = reference_uses_in_range(reference_uses, range)
         .into_iter()
         .filter(|use_site| {
             unit.references
@@ -3911,12 +4092,13 @@ fn instruction_kind_sort_key(kind: RoutineInstructionKind) -> u8 {
         RoutineInstructionKind::Clear => 4,
         RoutineInstructionKind::Delete => 5,
         RoutineInstructionKind::ReadTable => 6,
-        RoutineInstructionKind::FieldSymbolBind => 7,
-        RoutineInstructionKind::ValueRead => 8,
-        RoutineInstructionKind::UnknownEffect => 9,
-        RoutineInstructionKind::Branch => 10,
-        RoutineInstructionKind::LoopHeader => 11,
-        RoutineInstructionKind::Terminator => 12,
+        RoutineInstructionKind::Find => 7,
+        RoutineInstructionKind::FieldSymbolBind => 8,
+        RoutineInstructionKind::ValueRead => 9,
+        RoutineInstructionKind::UnknownEffect => 10,
+        RoutineInstructionKind::Branch => 11,
+        RoutineInstructionKind::LoopHeader => 12,
+        RoutineInstructionKind::Terminator => 13,
     }
 }
 
@@ -3929,6 +4111,7 @@ fn instruction_site_sort_key(site: RoutineInstructionSite) -> u32 {
         | RoutineInstructionSite::Clear { index }
         | RoutineInstructionSite::Delete { index }
         | RoutineInstructionSite::ReadTable { index }
+        | RoutineInstructionSite::Find { index }
         | RoutineInstructionSite::FieldSymbolBind { index } => index,
         RoutineInstructionSite::ValueRead { reference } => reference.0,
         RoutineInstructionSite::UnknownEffect => 0,

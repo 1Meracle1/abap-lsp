@@ -693,6 +693,20 @@ pub struct RoutineSiteData {
     pub target_range: Option<TextRange>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FindWriteTargetData {
+    pub range: TextRange,
+    pub definitely_assigned: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FindSiteData {
+    pub scope: ScopeId,
+    pub range: TextRange,
+    pub read_ranges: Vec<TextRange>,
+    pub write_targets: Vec<FindWriteTargetData>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FieldSymbolStateCheckKind {
     IsAssigned,
@@ -813,6 +827,7 @@ pub struct UnitAnalysis {
     pub expression_facts: Vec<ExpressionFactData>,
     pub value_flow_edges: Vec<ValueFlowEdgeData>,
     pub perform_calls: Vec<PerformCallData>,
+    pub find_sites: Vec<FindSiteData>,
     pub routine_sites: Vec<RoutineSiteData>,
     pub field_symbol_state_checks: Vec<FieldSymbolStateCheckData>,
     pub value_state_checks: Vec<ValueStateCheckData>,

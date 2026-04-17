@@ -5142,6 +5142,17 @@ pub fn try_parse_find_stmt(
                         children.push(token_leaf(b, &tokens[value_start]));
                         value_start += 1;
                     }
+                    if let Some(next_idx) = push_wrapped_data_inline_decl_child(
+                        b,
+                        &mut children,
+                        source,
+                        tokens,
+                        value_start,
+                        SyntaxKind::FindMatchTarget,
+                    ) {
+                        i = next_idx;
+                        continue;
+                    }
                     let end_idx = consume_concatenate_operand(
                         source,
                         tokens,
@@ -5175,6 +5186,17 @@ pub fn try_parse_find_stmt(
                             .any(|keyword| is_keyword(source, &tokens[i], keyword))
                         {
                             break;
+                        }
+                        if let Some(next_idx) = push_wrapped_data_inline_decl_child(
+                            b,
+                            &mut children,
+                            source,
+                            tokens,
+                            i,
+                            SyntaxKind::FindSubmatchTarget,
+                        ) {
+                            i = next_idx;
+                            continue;
                         }
                         let end_idx = consume_concatenate_operand(
                             source,
@@ -9887,6 +9909,24 @@ CONCATENATE lv_evttime+6(4) '-'\n\
         assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::FindInOperand), 1);
         assert_eq!(
             parsed.file.count_kind(stmt, SyntaxKind::FindResultsTarget),
+            1
+        );
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::DataInlineDecl), 1);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::ExprIdent), 1);
+    }
+
+    #[test]
+    fn parses_find_stmt_with_submatches_inline_data_target() {
+        let parsed = crate::parse(
+            "FIND FIRST OCCURRENCE OF REGEX '<Modulus>\\s*([^<]+)\\s*</Modulus>' IN iv_key_text SUBMATCHES DATA(lv_modulus_b64).",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let stmt = parsed
+            .file
+            .find_first_kind(parsed.file.root(), SyntaxKind::FindStmt)
+            .expect("find stmt");
+        assert_eq!(
+            parsed.file.count_kind(stmt, SyntaxKind::FindSubmatchTarget),
             1
         );
         assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::DataInlineDecl), 1);

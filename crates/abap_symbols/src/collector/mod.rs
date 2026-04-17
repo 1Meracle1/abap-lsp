@@ -26,12 +26,12 @@ use abap_lexer::{TextRange, Token, TokenKind};
 use crate::builtins::builtin_routine_spec;
 use crate::def_map::{
     AssignmentSiteData, CallSiteData, ClassInheritanceData, ClassMemberData, Diagnostic,
-    ExpressionFactData, FieldAccess, FieldSymbolStateCheckData, FieldTypeRefData, FormRoutineData,
-    FunctionModuleData, ImplementedInterfaceData, IncludeEdge, LoopWhereFieldContext,
-    MemberAliasData, NamedArgumentAccess, PerformCallData, ReferenceData, RoutineControlRegionData,
-    RoutineSiteData, SqlNameRefData, SqlPredicateData, SqlProjectionData, SqlQueryData,
-    SqlSourceData, SqlTargetData, StructureData, SymbolData, UnitAnalysis, ValueFlowEdgeData,
-    ValueStateCheckData,
+    ExpressionFactData, FieldAccess, FieldSymbolStateCheckData, FieldTypeRefData, FindSiteData,
+    FormRoutineData, FunctionModuleData, ImplementedInterfaceData, IncludeEdge,
+    LoopWhereFieldContext, MemberAliasData, NamedArgumentAccess, PerformCallData, ReferenceData,
+    RoutineControlRegionData, RoutineSiteData, SqlNameRefData, SqlPredicateData, SqlProjectionData,
+    SqlQueryData, SqlSourceData, SqlTargetData, StructureData, SymbolData, UnitAnalysis,
+    ValueFlowEdgeData, ValueStateCheckData,
 };
 use crate::ids::{ScopeId, StructureId, SymbolId, UnitId};
 use crate::scope::{Namespace, ScopeData, ScopeKind};
@@ -127,6 +127,7 @@ pub struct Collector<'a> {
     expression_facts: Vec<ExpressionFactData>,
     value_flow_edges: Vec<ValueFlowEdgeData>,
     perform_calls: Vec<PerformCallData>,
+    find_sites: Vec<FindSiteData>,
     routine_sites: Vec<RoutineSiteData>,
     field_symbol_state_checks: Vec<FieldSymbolStateCheckData>,
     value_state_checks: Vec<ValueStateCheckData>,
@@ -181,6 +182,7 @@ impl<'a> Collector<'a> {
             expression_facts: Vec::new(),
             value_flow_edges: Vec::new(),
             perform_calls: Vec::new(),
+            find_sites: Vec::new(),
             routine_sites: Vec::new(),
             field_symbol_state_checks: Vec::new(),
             value_state_checks: Vec::new(),
@@ -239,6 +241,7 @@ impl<'a> Collector<'a> {
             expression_facts: self.expression_facts,
             value_flow_edges: self.value_flow_edges,
             perform_calls: self.perform_calls,
+            find_sites: self.find_sites,
             routine_sites: self.routine_sites,
             field_symbol_state_checks: self.field_symbol_state_checks,
             value_state_checks: self.value_state_checks,

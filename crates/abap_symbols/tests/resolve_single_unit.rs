@@ -7359,6 +7359,79 @@ ENDFORM.
 }
 
 #[test]
+fn find_submatches_target_counts_as_assignment_for_definite_assignment() {
+    let src = r#"
+FORM parse_xml_public_key USING iv_key_text TYPE string.
+  DATA lv_modulus_b64 TYPE string.
+
+  FIND FIRST OCCURRENCE OF REGEX '<Modulus>\s*([^<]+)\s*</Modulus>'
+    IN iv_key_text SUBMATCHES lv_modulus_b64.
+  IF sy-subrc <> 0 OR lv_modulus_b64 IS INITIAL.
+    MESSAGE 'Could not find <Modulus> in RSAKeyValue.' TYPE 'E'.
+  ENDIF.
+ENDFORM.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///find_submatches_assignment.abap", src, &parsed);
+
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UseBeforeDefiniteAssignment
+                && diag.message.contains("lv_modulus_b64")
+        }),
+        "{:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn find_submatches_inline_data_declares_string_target_and_counts_as_assignment() {
+    let src = r#"
+FORM parse_xml_public_key USING iv_key_text TYPE string.
+  FIND FIRST OCCURRENCE OF REGEX '<Modulus>\s*([^<]+)\s*</Modulus>'
+    IN iv_key_text SUBMATCHES DATA(lv_modulus_b64).
+  IF lv_modulus_b64 IS INITIAL.
+    MESSAGE 'Could not find <Modulus> in RSAKeyValue.' TYPE 'E'.
+  ENDIF.
+ENDFORM.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///find_submatches_inline.abap", src, &parsed);
+
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UseBeforeDefiniteAssignment
+                && diag.message.contains("lv_modulus_b64")
+        }),
+        "{:?}",
+        unit.diagnostics
+    );
+    assert!(
+        unit.references.iter().any(|reference| {
+            reference.namespace == Namespace::Value
+                && reference.kind == ReferenceKind::Identifier
+                && reference.name.as_ref() == "lv_modulus_b64"
+                && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+        }),
+        "expected resolved inline SUBMATCHES reference, refs={:?} diagnostics={:?}",
+        unit.references,
+        unit.diagnostics
+    );
+
+    let lv_modulus_b64 = unit
+        .symbols
+        .iter()
+        .find(|symbol| symbol.name.as_ref() == "lv_modulus_b64")
+        .expect("lv_modulus_b64 symbol");
+    let declared_type = lv_modulus_b64
+        .declared_type
+        .as_ref()
+        .expect("lv_modulus_b64 declared type");
+    assert_eq!(declared_type.namespace, Namespace::Type);
+    assert_eq!(declared_type.base_name.as_ref(), "string");
+}
+
+#[test]
 fn resolves_find_all_occurrences_regex_results_inline_data_statement() {
     let src = r#"
 FORM run USING lv_response_string TYPE string.

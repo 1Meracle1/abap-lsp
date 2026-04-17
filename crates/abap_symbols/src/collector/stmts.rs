@@ -9,9 +9,9 @@ use abap_ast::ast::{
 };
 
 use crate::def_map::{
-    AssignmentSiteData, FieldTypeRefData, NamedArgumentTarget, ReferenceKind, RoutineSiteData,
-    RoutineSiteKind, SymbolKind, TypeFactData, ValueFlowEdgeData, ValueFlowKind,
-    ValueFlowTargetData,
+    AssignmentSiteData, FieldTypeRefData, FindSiteData, FindWriteTargetData, NamedArgumentTarget,
+    ReferenceKind, RoutineSiteData, RoutineSiteKind, SymbolKind, TypeFactData, ValueFlowEdgeData,
+    ValueFlowKind, ValueFlowTargetData,
 };
 use crate::ids::ScopeId;
 use crate::scope::Namespace;
@@ -469,14 +469,57 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
         true
     }
 
-    fn find_results_type_name(&self, stmt_node: NodeId) -> &'static str {
-        let significant = self.collector.significant_stmt_token_infos(stmt_node);
-        match significant
+    fn declare_find_inline_target(
+        &mut self,
+        node: NodeId,
+        scope: ScopeId,
+        type_name: &'static str,
+    ) -> bool {
+        let Some(name_node) = self
+            .collector
+            .file
+            .children(node)
+            .find(|&child| self.collector.file.kind(child) == SyntaxKind::DataDeclName)
+        else {
+            return false;
+        };
+        let Some((name, range)) = self.collector.node_name(name_node) else {
+            return false;
+        };
+        self.collector.declare_symbol(
+            self.collector.declaration_scope(scope),
+            name,
+            SymbolKind::Variable,
+            range,
+            None,
+            Some(Self::builtin_type(type_name)),
+            None,
+            None,
+        );
+        true
+    }
+
+    fn declare_find_match_inline_target(&mut self, node: NodeId, scope: ScopeId) -> bool {
+        self.declare_find_inline_target(node, scope, "i")
+    }
+
+    fn declare_find_submatch_inline_target(&mut self, node: NodeId, scope: ScopeId) -> bool {
+        self.declare_find_inline_target(node, scope, "string")
+    }
+
+    fn find_stmt_is_all_occurrences(&self, stmt_node: NodeId) -> bool {
+        self.collector
+            .significant_stmt_token_infos(stmt_node)
             .get(1)
-            .map(|token| token.text.to_ascii_lowercase())
-        {
-            Some(keyword) if keyword == "all" => "match_result_tab",
-            _ => "match_result",
+            .map(|token| token.text.eq_ignore_ascii_case("all"))
+            .unwrap_or(false)
+    }
+
+    fn find_results_type_name(&self, stmt_node: NodeId) -> &'static str {
+        if self.find_stmt_is_all_occurrences(stmt_node) {
+            "match_result_tab"
+        } else {
+            "match_result"
         }
     }
 
@@ -1426,37 +1469,89 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
     }
 
     pub(super) fn collect_find_stmt(&mut self, node: NodeId, scope: ScopeId) {
-        self.record_unknown_effect(node, scope);
         if let Some(stmt) = FindStmt::cast(self.collector.syntax(node)) {
-            let mut operand_ids = Vec::new();
-            if let Some(pattern) = stmt.pattern().and_then(|operand| operand.value()) {
-                operand_ids.push(pattern.id());
+            let mut read_operand_ids = Vec::new();
+            let mut read_ranges = Vec::new();
+            let mut write_targets = Vec::new();
+            let pattern_id = stmt
+                .pattern()
+                .and_then(|operand| operand.value())
+                .map(|value| value.id());
+            let target_id = stmt
+                .target()
+                .and_then(|operand| operand.value())
+                .map(|value| value.id());
+            let match_target_ids: Vec<_> = stmt
+                .match_targets()
+                .filter_map(|operand| operand.value())
+                .map(|target| target.id())
+                .collect();
+            let submatch_target_ids: Vec<_> = stmt
+                .submatch_targets()
+                .filter_map(|operand| operand.value())
+                .map(|target| target.id())
+                .collect();
+            let result_target_ids: Vec<_> = stmt
+                .results_targets()
+                .filter_map(|target| target.value())
+                .map(|value| value.id())
+                .collect();
+
+            if let Some(pattern_id) = pattern_id {
+                read_ranges.push(self.collector.file.range(pattern_id));
+                read_operand_ids.push(pattern_id);
             }
-            if let Some(target) = stmt.target().and_then(|operand| operand.value()) {
-                operand_ids.push(target.id());
+            if let Some(target_id) = target_id {
+                read_ranges.push(self.collector.file.range(target_id));
+                read_operand_ids.push(target_id);
             }
-            operand_ids.extend(
-                stmt.match_targets()
-                    .filter_map(|operand| operand.value())
-                    .map(|operand| operand.id()),
-            );
-            operand_ids.extend(
-                stmt.submatch_targets()
-                    .filter_map(|operand| operand.value())
-                    .map(|operand| operand.id()),
-            );
-            let result_targets: Vec<_> = stmt.results_targets().collect();
-            let mut inline_result_targets = Vec::new();
-            for target in &result_targets {
-                if let Some(value) = target.value() {
-                    if value.kind() == SyntaxKind::DataInlineDecl {
-                        inline_result_targets.push(value.id());
-                    } else {
-                        operand_ids.push(value.id());
+
+            for target_id in match_target_ids {
+                write_targets.push(FindWriteTargetData {
+                    range: self.collector.file.range(target_id),
+                    definitely_assigned: true,
+                });
+                if self.collector.file.kind(target_id) == SyntaxKind::DataInlineDecl {
+                    if !self.declare_find_match_inline_target(target_id, scope) {
+                        self.collector
+                            .decl_lowering()
+                            .walk_inline_decl(target_id, scope);
                     }
+                } else {
+                    self.collector.walk_node(target_id, scope);
                 }
             }
-            for operand_id in operand_ids {
+
+            for target_id in submatch_target_ids {
+                write_targets.push(FindWriteTargetData {
+                    range: self.collector.file.range(target_id),
+                    definitely_assigned: true,
+                });
+                if self.collector.file.kind(target_id) == SyntaxKind::DataInlineDecl {
+                    if !self.declare_find_submatch_inline_target(target_id, scope) {
+                        self.collector
+                            .decl_lowering()
+                            .walk_inline_decl(target_id, scope);
+                    }
+                } else {
+                    self.collector.walk_node(target_id, scope);
+                }
+            }
+
+            let mut inline_result_targets = Vec::new();
+            for value_id in result_target_ids {
+                write_targets.push(FindWriteTargetData {
+                    range: self.collector.file.range(value_id),
+                    definitely_assigned: self.find_stmt_is_all_occurrences(node),
+                });
+                if self.collector.file.kind(value_id) == SyntaxKind::DataInlineDecl {
+                    inline_result_targets.push(value_id);
+                } else {
+                    self.collector.walk_node(value_id, scope);
+                }
+            }
+
+            for operand_id in read_operand_ids {
                 self.collector.walk_node(operand_id, scope);
             }
             for value_id in inline_result_targets {
@@ -1466,6 +1561,13 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                         .walk_inline_decl(value_id, scope);
                 }
             }
+
+            self.collector.find_sites.push(FindSiteData {
+                scope,
+                range: self.collector.file.range(node),
+                read_ranges,
+                write_targets,
+            });
         }
     }
 
