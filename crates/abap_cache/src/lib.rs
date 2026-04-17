@@ -9974,6 +9974,69 @@ ENDCLASS.";
     }
 
     #[test]
+    fn resolves_report_message_id_reference_from_cached_message_class_dependency() {
+        let xml = r#"
+<mc:messageClass adtcore:name="ZFIC"
+    xmlns:mc="http://www.sap.com/adt/MessageClass"
+    xmlns:adtcore="http://www.sap.com/adt/core">
+  <mc:messages mc:msgno="043" mc:msgtext="Demo message"/>
+</mc:messageClass>
+"#;
+        let dependency_text =
+            ddic_xml_to_abap_source("ZFIC", "message-class", xml).expect("dependency");
+        let main_src = "\
+REPORT zmain MESSAGE-ID zfic.
+START-OF-SELECTION.
+  MESSAGE i043.";
+
+        let store = DocumentStore::default();
+        let snapshots = store.replace_all(vec![
+            DocumentInput {
+                uri: Arc::from("file:///deps/zfic.xml"),
+                version: 1,
+                text: Arc::from(dependency_text),
+                is_dependency: true,
+                object_name: Some(Arc::from("zfic")),
+            },
+            DocumentInput {
+                uri: Arc::from("file:///main.abap"),
+                version: 1,
+                text: Arc::from(main_src),
+                is_dependency: false,
+                object_name: None,
+            },
+        ]);
+        let snapshot = snapshots.get("file:///main.abap").expect("main snapshot");
+        let reference = snapshot
+            .symbols
+            .references
+            .iter()
+            .find(|reference| {
+                reference.name.as_ref() == "zfic" && reference.kind == ReferenceKind::MessageClass
+            })
+            .expect("message class reference");
+        assert!(
+            reference.resolution.is_some(),
+            "{:?}",
+            snapshot.symbols.references
+        );
+        assert!(
+            snapshot
+                .definition_at(main_src.find("zfic").expect("message class use") + 1)
+                .is_some(),
+            "expected definition target for REPORT MESSAGE-ID reference"
+        );
+        assert!(
+            snapshot.symbols.diagnostics.iter().all(|diag| {
+                !diag.message.contains("unknown type 'zfic'")
+                    && !diag.message.contains("unknown symbol 'i043'")
+            }),
+            "{:?}",
+            snapshot.symbols.diagnostics
+        );
+    }
+
+    #[test]
     fn resolves_nested_fields_across_recursive_ddic_structure_dependencies() {
         let store = DocumentStore::default();
         let epcisdocument_xml = r#"

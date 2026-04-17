@@ -42,12 +42,7 @@ impl<'a> Collector<'a> {
             }
             SyntaxKind::DataInlineDecl => self.decl_lowering().walk_inline_decl(node, scope),
             SyntaxKind::IncludeStmt => self.decl_lowering().walk_include_stmt(node, scope),
-            SyntaxKind::ReportStmt => self.decl_lowering().walk_named_header_decl(
-                node,
-                scope,
-                SymbolKind::Report,
-                crate::ScopeKind::File,
-            ),
+            SyntaxKind::ReportStmt => self.decl_lowering().walk_report_decl(node, scope),
             SyntaxKind::FormDecl => self.decl_lowering().walk_block_decl(
                 node,
                 scope,

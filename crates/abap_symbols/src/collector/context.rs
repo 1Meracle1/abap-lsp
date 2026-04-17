@@ -523,6 +523,21 @@ impl<'ctx, 'a> DeclContext<'ctx, 'a> {
         self.collector.node_name(node)
     }
 
+    pub(super) fn syntax_token_nodes(&self, node: NodeId) -> Vec<SyntaxTokenInfo> {
+        self.collector.syntax_token_nodes(node)
+    }
+
+    pub(super) fn syntax_token_is_comment(&self, token: &SyntaxTokenInfo) -> bool {
+        self.collector.syntax_token_is_comment(token)
+    }
+
+    pub(super) fn simple_type_ref_base_from_infos(
+        &self,
+        tokens: &[SyntaxTokenInfo],
+    ) -> Option<(std::sync::Arc<str>, abap_lexer::TextRange)> {
+        self.collector.simple_type_ref_base_from_infos(tokens)
+    }
+
     pub(super) fn begin_of_clause_parts(
         &self,
         node: NodeId,

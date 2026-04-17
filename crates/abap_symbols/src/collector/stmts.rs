@@ -1311,6 +1311,17 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
     }
 
     fn collect_message_operand_node(&mut self, node: NodeId, scope: ScopeId) {
+        let sig = self.collector.significant_stmt_token_infos(node);
+        if sig.is_empty() {
+            return;
+        }
+        if self.collector.file.kind(node) == SyntaxKind::MessageCodeOperand
+            && self.is_compact_message_short_form(&sig)
+        {
+            // Short MESSAGE forms like `MESSAGE i043.` are not identifiers.
+            return;
+        }
+
         let non_token_children: Vec<_> = self
             .collector
             .file
@@ -1327,11 +1338,6 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             for child in non_token_children {
                 self.collector.walk_node(child, scope);
             }
-            return;
-        }
-
-        let sig = self.collector.significant_stmt_token_infos(node);
-        if sig.is_empty() {
             return;
         }
         match self.collector.file.kind(node) {
@@ -1837,6 +1843,20 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             return false;
         }
         chars.all(|ch| ch.is_ascii_digit()) && tokens.iter().any(|token| token.text.as_ref() == "(")
+    }
+
+    fn is_compact_message_short_form(&self, tokens: &[SyntaxTokenInfo]) -> bool {
+        let [head] = tokens else {
+            return false;
+        };
+        let mut chars = head.text.chars();
+        let Some(msgty) = chars.next() else {
+            return false;
+        };
+        matches!(
+            msgty.to_ascii_lowercase(),
+            'a' | 'e' | 'i' | 's' | 'w' | 'x'
+        ) && chars.all(|ch| ch.is_ascii_digit())
     }
 
     pub(super) fn collect_find_stmt(&mut self, node: NodeId, scope: ScopeId) {

@@ -11305,6 +11305,40 @@ ENDCLASS.
 }
 
 #[test]
+fn report_message_id_sets_default_for_short_message_form() {
+    let src = r#"
+REPORT zmain MESSAGE-ID zfic.
+
+START-OF-SELECTION.
+  MESSAGE i043.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///report_message_id.abap", src, &parsed);
+
+    assert!(
+        unit.references.iter().any(|reference| {
+            reference.kind == ReferenceKind::MessageClass && reference.name.as_ref() == "zfic"
+        }),
+        "expected REPORT MESSAGE-ID reference: {:?}",
+        unit.references
+    );
+    assert!(
+        !unit.references.iter().any(|reference| {
+            reference.kind == ReferenceKind::Identifier && reference.name.as_ref() == "i043"
+        }),
+        "short MESSAGE form should not be collected as an identifier: {:?}",
+        unit.references
+    );
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains("i043")
+        }),
+        "unexpected short MESSAGE unresolved diagnostic: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn ignores_plain_template_literal_text_in_token_collected_statements() {
     let src = r#"
 FORM run USING iv_tag_path TYPE string.

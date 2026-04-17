@@ -36,6 +36,56 @@ impl<'a> Collector<'a> {
 }
 
 impl<'ctx, 'a> DeclLowering<'ctx, 'a> {
+    fn hyphenated_keyword_end(
+        tokens: &[super::SyntaxTokenInfo],
+        idx: usize,
+        parts: &[&str],
+    ) -> Option<usize> {
+        let mut i = idx;
+        for (part_idx, part) in parts.iter().enumerate() {
+            let token = tokens.get(i)?;
+            if !token.text.eq_ignore_ascii_case(part) {
+                return None;
+            }
+            i += 1;
+            if part_idx + 1 < parts.len() {
+                let hyphen = tokens.get(i)?;
+                if hyphen.text.as_ref() != "-" {
+                    return None;
+                }
+                i += 1;
+            }
+        }
+        Some(i)
+    }
+
+    fn report_message_id_reference(
+        &self,
+        node: abap_ast::arena::NodeId,
+    ) -> Option<(Arc<str>, TextRange)> {
+        let tokens: Vec<_> = self
+            .ctx
+            .syntax_token_nodes(node)
+            .into_iter()
+            .filter(|token| !self.ctx.syntax_token_is_comment(token) && token.text.as_ref() != ".")
+            .collect();
+        let mut idx = 0usize;
+        while idx < tokens.len() {
+            let Some(next_idx) = (if tokens[idx].text.eq_ignore_ascii_case("message-id") {
+                Some(idx + 1)
+            } else {
+                Self::hyphenated_keyword_end(&tokens, idx, &["message", "id"])
+            }) else {
+                idx += 1;
+                continue;
+            };
+            return self
+                .ctx
+                .simple_type_ref_base_from_infos(&tokens[next_idx..]);
+        }
+        None
+    }
+
     fn include_stmt_is_structured_include(&self, include_stmt: IncludeStmt<'_>) -> bool {
         let mut tokens = include_stmt.syntax().children_by_kind(SyntaxKind::Token);
         let Some(include_kw) = tokens.next() else {
@@ -144,6 +194,20 @@ impl<'ctx, 'a> DeclLowering<'ctx, 'a> {
                 self.ctx.walk_node(child, block_scope);
             }
         }
+    }
+
+    pub(super) fn walk_report_decl(&mut self, node: abap_ast::arena::NodeId, scope: ScopeId) {
+        self.walk_named_header_decl(node, scope, SymbolKind::Report, crate::ScopeKind::File);
+        let Some((name, range)) = self.report_message_id_reference(node) else {
+            return;
+        };
+        self.ctx.add_reference(
+            scope,
+            name,
+            Namespace::Type,
+            ReferenceKind::MessageClass,
+            range,
+        );
     }
 
     pub(super) fn walk_block_decl(
