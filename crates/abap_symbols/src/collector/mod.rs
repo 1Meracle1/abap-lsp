@@ -27,12 +27,11 @@ use crate::builtins::builtin_routine_spec;
 use crate::def_map::{
     AssignmentSiteData, CallSiteData, ClassInheritanceData, ClassMemberData, Diagnostic,
     ExpressionFactData, FieldAccess, FieldSymbolStateCheckData, FieldTypeRefData, FindSiteData,
-    FormRoutineData, FunctionModuleData, ImplementedInterfaceData, IncludeEdge,
-    LoopAtFieldContext, LoopWhereFieldContext, MemberAliasData, NamedArgumentAccess,
-    PerformCallData, ReferenceData, RoutineControlRegionData, RoutineSiteData,
-    SqlNameRefData, SqlPredicateData, SqlProjectionData, SqlQueryData, SqlSourceData,
-    SqlTargetData, StructureData, SymbolData, SystemFieldUpdateData, UnitAnalysis,
-    ValueFlowEdgeData, ValueStateCheckData,
+    FormRoutineData, FunctionModuleData, ImplementedInterfaceData, IncludeEdge, LoopAtFieldContext,
+    LoopWhereFieldContext, MemberAliasData, NamedArgumentAccess, PerformCallData, ReferenceData,
+    RoutineControlRegionData, RoutineSiteData, SqlNameRefData, SqlPredicateData, SqlProjectionData,
+    SqlQueryData, SqlSourceData, SqlTargetData, StructureData, SymbolData, SystemFieldUpdateData,
+    UnitAnalysis, ValueFlowEdgeData, ValueStateCheckData,
 };
 use crate::ids::{ScopeId, StructureId, SymbolId, UnitId};
 use crate::scope::{Namespace, ScopeData, ScopeKind};

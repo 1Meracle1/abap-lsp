@@ -915,21 +915,20 @@ fn well_known_bapiret2_field_type(
 
 fn builtin_syst_field_type(field_name: &str) -> Option<(&'static str, Option<&'static str>)> {
     let type_name = match field_name.to_ascii_lowercase().as_str() {
-        "abcde" | "batch" | "binpt" | "calld" | "callr" | "cprog" | "datar" | "dayst"
-        | "dbnam" | "dbsys" | "dyngr" | "dynnr" | "host" | "langu" | "ldbpg" | "lisel"
-        | "opsys" | "pfkey" | "repid" | "saprl" | "slset" | "sysid" | "tcode" | "title"
-        | "ucomm" | "uline" | "uname" | "vline" | "wtitl" | "zonlo" => "c",
-        "colno" | "cpage" | "cucol" | "curow" | "dbcnt" | "fdpos" | "index" | "lilli"
-        | "linct" | "linno" | "linsz" | "listi" | "loopc" | "lsind" | "macol" | "marow"
-        | "modno" | "pagno" | "scols" | "srows" | "staco" | "staro" | "stepl" | "subrc"
-        | "tabix" | "tfill" | "tleng" | "tzone" => "i",
+        "abcde" | "batch" | "binpt" | "calld" | "callr" | "cprog" | "datar" | "dayst" | "dbnam"
+        | "dbsys" | "dyngr" | "dynnr" | "host" | "langu" | "ldbpg" | "lisel" | "opsys"
+        | "pfkey" | "repid" | "saprl" | "slset" | "sysid" | "tcode" | "title" | "ucomm"
+        | "uline" | "uname" | "vline" | "wtitl" | "zonlo" => "c",
+        "colno" | "cpage" | "cucol" | "curow" | "dbcnt" | "fdpos" | "index" | "lilli" | "linct"
+        | "linno" | "linsz" | "listi" | "loopc" | "lsind" | "macol" | "marow" | "modno"
+        | "pagno" | "scols" | "srows" | "staco" | "staro" | "stepl" | "subrc" | "tabix"
+        | "tfill" | "tleng" | "tzone" => "i",
         "datlo" | "datum" => "d",
         "fdayw" => "b",
         "msgno" | "spono" => "n",
         "timlo" | "uzeit" => "t",
-        "mandt" | "msgid" | "msgty" | "msgv1" | "msgv2" | "msgv3" | "msgv4" | "tvar0"
-        | "tvar1" | "tvar2" | "tvar3" | "tvar4" | "tvar5" | "tvar6" | "tvar7" | "tvar8"
-        | "tvar9" => "c",
+        "mandt" | "msgid" | "msgty" | "msgv1" | "msgv2" | "msgv3" | "msgv4" | "tvar0" | "tvar1"
+        | "tvar2" | "tvar3" | "tvar4" | "tvar5" | "tvar6" | "tvar7" | "tvar8" | "tvar9" => "c",
         _ => return None,
     };
     Some((type_name, None))
@@ -1003,5 +1002,3 @@ pub fn builtin_structure_field_type(
     }
     None
 }
-
-

@@ -5,8 +5,8 @@ use abap_ast::arena::NodeId;
 use abap_ast::ast::{
     AliasesStmt, AstNode, AuthorityCheckStmt, CallMethodStmt, CallStmt, CallStmtKind, ClearStmt,
     ConcatenateStmt, ConvertStmt, CreateDataStmt, CreateObjectStmt, DeleteStmt, DescribeStmt,
-    FindStmt, MessageStmt, MethodsStmt, RaiseStmt, ReadTableStmt, ReplaceStmt, SplitStmt,
-    WaitStmt, WriteStmt,
+    FindStmt, MessageStmt, MethodsStmt, RaiseStmt, ReadTableStmt, ReplaceStmt, SplitStmt, WaitStmt,
+    WriteStmt,
 };
 
 use crate::def_map::{
@@ -1189,7 +1189,9 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             scope,
             node,
             SystemFieldStatementKind::Message,
-            &["msgid", "msgno", "msgty", "msgv1", "msgv2", "msgv3", "msgv4"],
+            &[
+                "msgid", "msgno", "msgty", "msgv1", "msgv2", "msgv3", "msgv4",
+            ],
         );
         let Some((
             head_clause_id,

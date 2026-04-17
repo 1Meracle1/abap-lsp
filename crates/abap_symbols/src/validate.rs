@@ -1960,8 +1960,13 @@ fn resolve_loop_field_source_structure<'a>(
         return None;
     }
     let scope_index = &scope_indexes[unit.unit_id.as_usize()];
-    let base_handle =
-        resolve_field_access_base_symbol(project, lookup, unit, scope_index, context.source_access)?;
+    let base_handle = resolve_field_access_base_symbol(
+        project,
+        lookup,
+        unit,
+        scope_index,
+        context.source_access,
+    )?;
     let base_unit = &project.units[base_handle.unit.as_usize()];
     let (current_unit, mut current_structure) = resolve_symbol_structure_project(
         project,

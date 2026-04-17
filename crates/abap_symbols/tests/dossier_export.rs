@@ -369,10 +369,16 @@ MESSAGE 'ready' TYPE 'S'.
 
     assert_eq!(dossier.schema_version, 4);
     assert!(dossier.summary.system_field_update_count >= 2);
-    assert!(dossier.system_field_updates.iter().any(|update| {
-        update.statement == "read_table" && update.field_name == "tabix"
-    }));
-    assert!(dossier.system_field_updates.iter().any(|update| {
-        update.statement == "message" && update.field_name == "msgid"
-    }));
+    assert!(
+        dossier
+            .system_field_updates
+            .iter()
+            .any(|update| { update.statement == "read_table" && update.field_name == "tabix" })
+    );
+    assert!(
+        dossier
+            .system_field_updates
+            .iter()
+            .any(|update| { update.statement == "message" && update.field_name == "msgid" })
+    );
 }

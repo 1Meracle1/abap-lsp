@@ -6042,12 +6042,15 @@ pub fn try_parse_authority_check_stmt(
         errors,
         next_after_unterminated_scan,
         |b, period_i, _errors| {
-            let stmt_clause_starts =
-                |tokens: &[Token], idx: usize| authority_check_stmt_clause_starts(source, tokens, idx);
-            let id_clause_part_starts =
-                |tokens: &[Token], idx: usize| authority_check_id_clause_part_starts(source, tokens, idx);
-            let field_clause_starts =
-                |tokens: &[Token], idx: usize| authority_check_field_clause_starts(source, tokens, idx);
+            let stmt_clause_starts = |tokens: &[Token], idx: usize| {
+                authority_check_stmt_clause_starts(source, tokens, idx)
+            };
+            let id_clause_part_starts = |tokens: &[Token], idx: usize| {
+                authority_check_id_clause_part_starts(source, tokens, idx)
+            };
+            let field_clause_starts = |tokens: &[Token], idx: usize| {
+                authority_check_field_clause_starts(source, tokens, idx)
+            };
 
             let mut children = Vec::with_capacity(period_i - idx + 1);
             push_token_children(b, &mut children, tokens, idx, keyword_end);
@@ -8920,11 +8923,36 @@ CONCATENATE lv_evttime+6(4) '-'\n\
             .file
             .find_first_kind(parsed.file.root(), SyntaxKind::AuthorityCheckStmt)
             .expect("authority-check stmt");
-        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::AuthorityCheckObjectOperand), 1);
-        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::AuthorityCheckUserOperand), 1);
-        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::AuthorityCheckIdClause), 2);
-        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::AuthorityCheckIdOperand), 2);
-        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::AuthorityCheckFieldOperand), 1);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(stmt, SyntaxKind::AuthorityCheckObjectOperand),
+            1
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(stmt, SyntaxKind::AuthorityCheckUserOperand),
+            1
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(stmt, SyntaxKind::AuthorityCheckIdClause),
+            2
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(stmt, SyntaxKind::AuthorityCheckIdOperand),
+            2
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(stmt, SyntaxKind::AuthorityCheckFieldOperand),
+            1
+        );
     }
 
     #[test]
@@ -8937,7 +8965,12 @@ CONCATENATE lv_evttime+6(4) '-'\n\
             .file
             .find_first_kind(parsed.file.root(), SyntaxKind::AuthorityCheckStmt)
             .expect("authority-check stmt");
-        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::AuthorityCheckIdClause), 2);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(stmt, SyntaxKind::AuthorityCheckIdClause),
+            2
+        );
         assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::TemplateExpr), 5);
     }
 

@@ -500,7 +500,10 @@ ast_node!(
     AuthorityCheckObjectOperand,
     SyntaxKind::AuthorityCheckObjectOperand
 );
-ast_node!(AuthorityCheckUserOperand, SyntaxKind::AuthorityCheckUserOperand);
+ast_node!(
+    AuthorityCheckUserOperand,
+    SyntaxKind::AuthorityCheckUserOperand
+);
 ast_node!(AuthorityCheckIdClause, SyntaxKind::AuthorityCheckIdClause);
 ast_node!(AuthorityCheckIdOperand, SyntaxKind::AuthorityCheckIdOperand);
 ast_node!(
@@ -2439,7 +2442,9 @@ impl<'a> AuthorityCheckStmt<'a> {
     pub fn id_clauses(
         self,
     ) -> impl DoubleEndedIterator<Item = AuthorityCheckIdClause<'a>> + Clone + 'a {
-        self.syntax.children().filter_map(AuthorityCheckIdClause::cast)
+        self.syntax
+            .children()
+            .filter_map(AuthorityCheckIdClause::cast)
     }
 }
 

@@ -3852,9 +3852,8 @@ ENDFORM.";
         fs::write(include_dir.join("ZF02.abap"), dependency_text).expect("f02 include");
 
         let workspace_uri = path_to_file_uri(&workspace_path);
-        let dependency_uri = format!(
-            "{workspace_uri}/.abapls/cache/packages/_unknown/include/ZF02.abap"
-        );
+        let dependency_uri =
+            format!("{workspace_uri}/.abapls/cache/packages/_unknown/include/ZF02.abap");
         let normalized_dependency_uri = normalize_lsp_uri(&dependency_uri);
         let mut state = ServerState::default();
         state.register_workspace_folder(workspace_uri.clone());
@@ -3881,7 +3880,8 @@ ENDFORM.";
             opened.symbols.diagnostics.iter().all(|diag| {
                 !matches!(
                     diag.kind,
-                    DiagnosticKind::UseBeforeDefiniteAssignment | DiagnosticKind::UnresolvedReference
+                    DiagnosticKind::UseBeforeDefiniteAssignment
+                        | DiagnosticKind::UnresolvedReference
                 ) || !diag.message.contains("src_plant")
             }),
             "{:#?}",

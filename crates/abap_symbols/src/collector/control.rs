@@ -8,8 +8,8 @@ use abap_lexer::TextRange;
 use crate::def_map::{
     AtGroupKind, AtRegionData, CaseRegionData, FieldAccess, FieldAccessSegment, FieldTypeRefData,
     IfRegionData, LoopAtFieldContext, LoopRegionData, LoopWhereFieldContext,
-    RoutineControlRegionData, RoutineLoopKind, SymbolKind, SystemFieldStatementKind,
-    TryRegionData, ValueStateCheckData, ValueStateCheckKind,
+    RoutineControlRegionData, RoutineLoopKind, SymbolKind, SystemFieldStatementKind, TryRegionData,
+    ValueStateCheckData, ValueStateCheckKind,
 };
 use crate::ids::{ScopeId, StructureId, SymbolId};
 use crate::scope::{Namespace, ScopeKind};
@@ -99,22 +99,12 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
     }
 
     pub(super) fn walk_while_stmt(&mut self, node: NodeId, scope: ScopeId) {
-        self.record_system_field_updates(
-            scope,
-            node,
-            SystemFieldStatementKind::While,
-            &["index"],
-        );
+        self.record_system_field_updates(scope, node, SystemFieldStatementKind::While, &["index"]);
         self.walk_loop_like_stmt(node, scope, ScopeKind::WhileBlock, RoutineLoopKind::While);
     }
 
     pub(super) fn walk_do_stmt(&mut self, node: NodeId, scope: ScopeId) {
-        self.record_system_field_updates(
-            scope,
-            node,
-            SystemFieldStatementKind::Do,
-            &["index"],
-        );
+        self.record_system_field_updates(scope, node, SystemFieldStatementKind::Do, &["index"]);
         self.walk_loop_like_stmt(node, scope, ScopeKind::DoBlock, RoutineLoopKind::Do);
     }
 

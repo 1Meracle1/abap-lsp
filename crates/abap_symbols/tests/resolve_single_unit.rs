@@ -1103,7 +1103,13 @@ AUTHORITY-CHECK OBJECT lc_auth_obj FOR USER lv_user
     let parsed = parse(src);
     let unit = analyze_unit("file:///authority_check_stmt.abap", src, &parsed);
 
-    for name in ["lc_auth_obj", "lv_user", "lc_carrid", "lv_carrid", "lc_actvt"] {
+    for name in [
+        "lc_auth_obj",
+        "lv_user",
+        "lc_carrid",
+        "lv_carrid",
+        "lc_actvt",
+    ] {
         assert!(
             unit.references.iter().any(|reference| {
                 reference.namespace == Namespace::Value
@@ -4547,8 +4553,7 @@ ENDIF.";
         .symbols
         .iter()
         .find(|symbol| {
-            symbol.name.as_ref() == "sy"
-                && symbol.kind == abap_symbols::SymbolKind::BuiltinVariable
+            symbol.name.as_ref() == "sy" && symbol.kind == abap_symbols::SymbolKind::BuiltinVariable
         })
         .expect("builtin sy symbol");
     let sy_structure = unit.structure(sy_symbol.structure.expect("sy structure metadata"));
@@ -4664,16 +4669,19 @@ ENDLOOP.
     let unit = analyze_unit("file:///system_field_updates.abap", src, &parsed);
 
     let has_update = |statement, field_name: &str| {
-        unit.system_field_updates.iter().any(|update| {
-            update.statement == statement && update.field_name.as_ref() == field_name
-        })
+        unit.system_field_updates
+            .iter()
+            .any(|update| update.statement == statement && update.field_name.as_ref() == field_name)
     };
 
     assert!(has_update(
         abap_symbols::SystemFieldStatementKind::AuthorityCheck,
         "subrc"
     ));
-    assert!(has_update(abap_symbols::SystemFieldStatementKind::Append, "tabix"));
+    assert!(has_update(
+        abap_symbols::SystemFieldStatementKind::Append,
+        "tabix"
+    ));
     assert!(has_update(
         abap_symbols::SystemFieldStatementKind::InsertTable,
         "subrc"
@@ -4694,12 +4702,30 @@ ENDLOOP.
         abap_symbols::SystemFieldStatementKind::ReadTable,
         "tabix"
     ));
-    assert!(has_update(abap_symbols::SystemFieldStatementKind::Find, "fdpos"));
-    assert!(has_update(abap_symbols::SystemFieldStatementKind::Message, "msgid"));
-    assert!(has_update(abap_symbols::SystemFieldStatementKind::Select, "dbcnt"));
-    assert!(has_update(abap_symbols::SystemFieldStatementKind::Do, "index"));
-    assert!(has_update(abap_symbols::SystemFieldStatementKind::While, "index"));
-    assert!(has_update(abap_symbols::SystemFieldStatementKind::LoopAt, "subrc"));
+    assert!(has_update(
+        abap_symbols::SystemFieldStatementKind::Find,
+        "fdpos"
+    ));
+    assert!(has_update(
+        abap_symbols::SystemFieldStatementKind::Message,
+        "msgid"
+    ));
+    assert!(has_update(
+        abap_symbols::SystemFieldStatementKind::Select,
+        "dbcnt"
+    ));
+    assert!(has_update(
+        abap_symbols::SystemFieldStatementKind::Do,
+        "index"
+    ));
+    assert!(has_update(
+        abap_symbols::SystemFieldStatementKind::While,
+        "index"
+    ));
+    assert!(has_update(
+        abap_symbols::SystemFieldStatementKind::LoopAt,
+        "subrc"
+    ));
 }
 
 #[test]

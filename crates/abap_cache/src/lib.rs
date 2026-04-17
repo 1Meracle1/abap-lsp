@@ -9193,6 +9193,41 @@ ENDCLASS.";
     }
 
     #[test]
+    fn routine_analysis_treats_is_initial_check_as_dead_store_read() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run IMPORTING iv_flag TYPE abap_bool.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+    DATA lv_value TYPE abap_bool.
+    IF iv_flag = abap_true.
+      CLEAR lv_value.
+    ELSE.
+      lv_value = abap_true.
+    ENDIF.
+    IF lv_value IS INITIAL.
+    ENDIF.
+  ENDMETHOD.
+ENDCLASS.";
+
+        let snapshot = store.publish("file:///routine_dead_store_is_initial.abap", 1, src);
+        let dead_store = diagnostic_slices(
+            src,
+            &snapshot.symbols.diagnostics,
+            DiagnosticKind::DeadStore,
+        );
+
+        assert!(
+            dead_store.iter().all(|slice| slice != "lv_value"),
+            "{dead_store:?}"
+        );
+    }
+
+    #[test]
     fn routine_analysis_suppresses_dead_store_for_changing_and_outward_visible_state() {
         let store = DocumentStore::default();
         let src = "\

@@ -2413,6 +2413,8 @@ fn build_dead_store_diagnostics(
     if !tracked_values.words.iter().any(|word| *word != 0) {
         return Vec::new();
     }
+    let value_state_check_refs =
+        resolve_safe_value_state_checks(unit, reference_uses, value_ids_by_symbol);
 
     let instruction_summaries = build_dead_store_instruction_summaries(
         unit,
@@ -2423,6 +2425,7 @@ fn build_dead_store_diagnostics(
         instruction_summaries,
         &tracked_values,
         call_argument_effects,
+        &value_state_check_refs,
     );
     let block_summaries =
         build_dead_store_block_summaries(routine, &instruction_summaries, values.len());
@@ -2770,6 +2773,7 @@ fn build_dead_store_instruction_summaries(
     instruction_summaries: &[InstructionDataflowSummary],
     tracked_values: &DenseBitSet,
     call_argument_effects: &HashMap<(usize, usize, usize, usize), CallArgumentEffect>,
+    value_state_check_refs: &std::collections::HashSet<crate::ReferenceId>,
 ) -> Vec<DeadStoreInstructionSummary> {
     let mut out = Vec::with_capacity(routine.ir.instructions.len());
     for instruction in &routine.ir.instructions {
@@ -2871,11 +2875,20 @@ fn build_dead_store_instruction_summaries(
                     }
                 }
             }
+            RoutineInstructionSite::ValueRead { reference } => {
+                if value_state_check_refs.contains(&reference)
+                    && let Some(value) =
+                        resolved_value_id_for_reference(unit, reference, value_ids_by_symbol)
+                    && tracked_values.contains(value)
+                    && !reads.contains(&value)
+                {
+                    reads.push(value);
+                }
+            }
             RoutineInstructionSite::Perform { .. }
             | RoutineInstructionSite::SqlQuery { .. }
             | RoutineInstructionSite::Delete { .. }
             | RoutineInstructionSite::FieldSymbolBind { .. }
-            | RoutineInstructionSite::ValueRead { .. }
             | RoutineInstructionSite::UnknownEffect
             | RoutineInstructionSite::Branch { .. }
             | RoutineInstructionSite::LoopHeader { .. }
@@ -3161,15 +3174,13 @@ fn resolve_safe_loop_where_field_refs(
         unit,
         reference_uses,
         values,
-        unit.loop_where_field_contexts
-            .iter()
-            .map(|context| {
-                (
-                    &context.source_access,
-                    context.target_access.as_ref(),
-                    &context.range,
-                )
-            }),
+        unit.loop_where_field_contexts.iter().map(|context| {
+            (
+                &context.source_access,
+                context.target_access.as_ref(),
+                &context.range,
+            )
+        }),
     )
 }
 
@@ -3182,15 +3193,13 @@ fn resolve_safe_loop_at_field_refs(
         unit,
         reference_uses,
         values,
-        unit.loop_at_field_contexts
-            .iter()
-            .map(|context| {
-                (
-                    &context.source_access,
-                    context.target_access.as_ref(),
-                    &context.range,
-                )
-            }),
+        unit.loop_at_field_contexts.iter().map(|context| {
+            (
+                &context.source_access,
+                context.target_access.as_ref(),
+                &context.range,
+            )
+        }),
     )
 }
 
