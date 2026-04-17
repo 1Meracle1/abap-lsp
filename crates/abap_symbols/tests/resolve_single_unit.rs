@@ -3821,6 +3821,44 @@ ENDFORM.
 }
 
 #[test]
+fn legacy_table_body_assignment_target_counts_as_assignment_for_definite_assignment() {
+    let src = r#"
+TYPES: BEGIN OF ty_output_row,
+         src_plant TYPE i,
+         dest_plant TYPE i,
+       END OF ty_output_row.
+TYPES ty_output_tab TYPE STANDARD TABLE OF ty_output_row WITH EMPTY KEY.
+
+FORM f_sto_data USING it_src TYPE ty_output_tab.
+  DATA lt_temp TYPE ty_output_tab.
+
+  lt_temp[] = it_src[].
+  SORT lt_temp BY src_plant dest_plant.
+  DELETE ADJACENT DUPLICATES FROM lt_temp COMPARING src_plant dest_plant.
+ENDFORM.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///legacy_table_body_assignment.abap", src, &parsed);
+
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UseBeforeDefiniteAssignment
+                && diag.message.contains("lt_temp")
+        }),
+        "{:?}",
+        unit.diagnostics
+    );
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::IncompatibleAssignmentType
+                && diag.message.contains("ty_output_tab")
+        }),
+        "{:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn class_definition_and_implementation_are_not_duplicate_class_declarations() {
     let src = r#"
 CLASS some_class DEFINITION.

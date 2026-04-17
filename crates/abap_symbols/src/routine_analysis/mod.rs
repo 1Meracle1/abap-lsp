@@ -1689,7 +1689,9 @@ fn build_routine_dataflow(
                         &values,
                     ) {
                         transfer.reads.retain(|read| {
-                            !(read.range == assignment.lhs_range && read.value == write_value)
+                            !(read.value == write_value
+                                && read.range.start >= assignment.lhs_range.start
+                                && read.range.end <= assignment.lhs_range.end)
                         });
                         transfer.writes.push(write_value);
                         transfer.assigned_writes.push(write_value);
@@ -3858,8 +3860,44 @@ fn direct_write_value_id_for_assignment(
             return Some(value_id);
         }
     }
-    let direct = exact_reference_use_in_range(reference_uses, &assignment.lhs_range)?;
-    (values[direct.value.as_usize()].kind != DataflowValueKind::FieldSymbol).then_some(direct.value)
+    if let Some(access) = assignment.lhs_target_access.as_ref()
+        && access.base_namespace == Namespace::Value
+        && access.field_path.is_empty()
+    {
+        if let Some(direct) = exact_reference_use_in_range(reference_uses, &access.base_range)
+            && values[direct.value.as_usize()].kind != DataflowValueKind::FieldSymbol
+        {
+            return Some(direct.value);
+        }
+        let mut direct_values = reference_uses_in_range(reference_uses, &assignment.lhs_range)
+            .into_iter()
+            .filter_map(|use_site| {
+                (values[use_site.value.as_usize()].kind != DataflowValueKind::FieldSymbol)
+                    .then_some(use_site.value)
+            });
+        let first = direct_values.next()?;
+        return direct_values.all(|value| value == first).then_some(first);
+    }
+    if let Some(direct) = exact_reference_use_in_range(reference_uses, &assignment.lhs_range)
+        && values[direct.value.as_usize()].kind != DataflowValueKind::FieldSymbol
+    {
+        return Some(direct.value);
+    }
+    if assignment.lhs_target_access.is_none() {
+        let direct_values = reference_uses_in_range(reference_uses, &assignment.lhs_range)
+            .into_iter()
+            .filter(|use_site| {
+                values[use_site.value.as_usize()].kind != DataflowValueKind::FieldSymbol
+            })
+            .collect::<Vec<_>>();
+        if let [direct] = direct_values.as_slice()
+            && direct.range.start == assignment.lhs_range.start
+            && direct.range.end + 2 == assignment.lhs_range.end
+        {
+            return Some(direct.value);
+        }
+    }
+    None
 }
 
 fn direct_write_value_id_for_clear(

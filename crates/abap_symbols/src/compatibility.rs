@@ -114,6 +114,10 @@ fn classify_type_fact(
     if depth >= 8 {
         return None;
     }
+    if let Some(line_fact) = fact.table_line.as_deref() {
+        let line = classify_type_fact(project, unit, line_fact, depth + 1).map(Box::new);
+        return Some(ClassifiedType::Table(line));
+    }
     if fact
         .type_clause_display
         .as_deref()
@@ -129,7 +133,13 @@ fn classify_type_fact(
         return Some(ClassifiedType::Table(line));
     }
 
-    let declared_type = fact.declared_type.as_ref()?;
+    let Some(declared_type) = fact.declared_type.as_ref() else {
+        return Some(if fact.structure.is_some() {
+            ClassifiedType::Structure
+        } else {
+            ClassifiedType::Scalar
+        });
+    };
     if declared_type.is_ref {
         let target_handle =
             resolve_type_symbol_handle(project, unit, declared_type.base_name.as_ref());
@@ -137,9 +147,6 @@ fn classify_type_fact(
             target_name: Arc::clone(&declared_type.base_name),
             target_handle,
         });
-    }
-    if fact.structure.is_some() {
-        return Some(ClassifiedType::Structure);
     }
     if declared_type.namespace == Namespace::Type {
         if is_builtin_scalar_name(declared_type.base_name.as_ref()) {
@@ -150,6 +157,9 @@ fn classify_type_fact(
         {
             return classify_type_fact(project, resolved_unit, &resolved_fact, depth + 1);
         }
+    }
+    if fact.structure.is_some() {
+        return Some(ClassifiedType::Structure);
     }
     Some(ClassifiedType::Scalar)
 }
