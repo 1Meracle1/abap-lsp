@@ -703,6 +703,7 @@ pub enum FieldSymbolStateCheckKind {
 pub enum ValueStateCheckKind {
     IsInitial,
     IsNotInitial,
+    ConditionProbe,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

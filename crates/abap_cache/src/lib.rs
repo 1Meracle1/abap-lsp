@@ -8281,6 +8281,74 @@ ENDCLASS.";
     }
 
     #[test]
+    fn routine_analysis_skips_plain_if_condition_probes_for_scalar_values() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+    DATA lv_action TYPE i.
+    DATA lv_rc TYPE i.
+    IF lv_action <> 1 OR lv_rc = 0.
+      RETURN.
+    ENDIF.
+  ENDMETHOD.
+ENDCLASS.";
+
+        let snapshot = store.publish("file:///routine_condition_probe_if.abap", 1, src);
+        let use_before = diagnostic_slices(
+            src,
+            &snapshot.symbols.diagnostics,
+            DiagnosticKind::UseBeforeDefiniteAssignment,
+        );
+        let relevant: Vec<_> = use_before
+            .iter()
+            .filter(|slice| matches!(slice.as_str(), "lv_action" | "lv_rc"))
+            .cloned()
+            .collect();
+
+        assert!(relevant.is_empty(), "{use_before:?}");
+    }
+
+    #[test]
+    fn routine_analysis_skips_plain_while_condition_probes_for_scalar_values() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+    DATA lv_len TYPE i VALUE 3.
+    DATA lv_off TYPE i.
+    WHILE lv_off < lv_len.
+      lv_off = lv_len.
+    ENDWHILE.
+  ENDMETHOD.
+ENDCLASS.";
+
+        let snapshot = store.publish("file:///routine_condition_probe_while.abap", 1, src);
+        let use_before = diagnostic_slices(
+            src,
+            &snapshot.symbols.diagnostics,
+            DiagnosticKind::UseBeforeDefiniteAssignment,
+        );
+        let relevant: Vec<_> = use_before
+            .iter()
+            .filter(|slice| **slice == "lv_off")
+            .cloned()
+            .collect();
+
+        assert!(relevant.is_empty(), "{use_before:?}");
+    }
+
+    #[test]
     fn routine_analysis_flags_use_before_assignment_after_try_catch_join() {
         let store = DocumentStore::default();
         let src = "\

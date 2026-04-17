@@ -514,6 +514,7 @@ struct ReadOccurrence {
     reference: crate::ReferenceId,
     range: TextRange,
     value: DataflowValueId,
+    suppress_definite_assignment: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -1428,6 +1429,8 @@ fn build_routine_dataflow(
         resolve_safe_field_symbol_checks(unit, &reference_uses, &value_ids_by_symbol);
     let safe_value_state_checks =
         resolve_safe_value_state_checks(unit, &reference_uses, &value_ids_by_symbol);
+    let condition_probe_reads =
+        resolve_condition_probe_reads(unit, &reference_uses, &value_ids_by_symbol);
     let safe_loop_where_field_refs =
         resolve_safe_loop_where_field_refs(unit, &reference_uses, &values);
     let is_not_initial_scope_refinements = resolve_is_not_initial_scope_refinements(
@@ -1539,15 +1542,18 @@ fn build_routine_dataflow(
         match instruction.site {
             RoutineInstructionSite::ValueRead { reference } => {
                 if !suppressed_refs.contains(&reference)
-                    && !safe_read_refs.contains(&reference)
                     && let Some(value) =
                         resolved_value_id_for_reference(unit, reference, &value_ids_by_symbol)
                 {
-                    transfer.reads.push(ReadOccurrence {
-                        reference,
-                        range: instruction.range.clone(),
-                        value,
-                    });
+                    if !safe_read_refs.contains(&reference) {
+                        transfer.reads.push(ReadOccurrence {
+                            reference,
+                            range: instruction.range.clone(),
+                            value,
+                            suppress_definite_assignment: condition_probe_reads
+                                .contains(&reference),
+                        });
+                    }
                 }
             }
             RoutineInstructionSite::Assignment { index } => {
@@ -1782,6 +1788,7 @@ fn build_routine_dataflow(
                                             reference: source_use.reference,
                                             range: source_use.range.clone(),
                                             value: source_use.value,
+                                            suppress_definite_assignment: false,
                                         });
                                     }
                                     transfer.field_symbol_binding.push(
@@ -2113,6 +2120,9 @@ fn build_routine_dataflow(
                         }
                     }
                     DataflowValueKind::Variable | DataflowValueKind::Parameter => {
+                        if read.suppress_definite_assignment {
+                            continue;
+                        }
                         let (is_assigned, diagnostic_range) = if let Some(field_read) =
                             structure_field_reads.get(&read.reference).cloned()
                         {
@@ -2952,6 +2962,39 @@ fn resolve_safe_value_state_checks(
     out
 }
 
+fn resolve_condition_probe_reads(
+    unit: &UnitAnalysis,
+    reference_uses: &[ReferenceUse],
+    value_ids_by_symbol: &HashMap<SymbolHandle, DataflowValueId>,
+) -> std::collections::HashSet<crate::ReferenceId> {
+    let mut out = std::collections::HashSet::new();
+    for check in &unit.value_state_checks {
+        if check.kind != ValueStateCheckKind::ConditionProbe {
+            continue;
+        }
+        for use_site in reference_uses_in_range(reference_uses, &check.symbol_range) {
+            if use_site.range != check.symbol_range {
+                continue;
+            }
+            let Some(reference) = unit.references.get(use_site.reference.as_usize()) else {
+                continue;
+            };
+            let Some(Resolution::Symbol(handle)) = reference.resolution else {
+                continue;
+            };
+            if handle.unit != unit.unit_id
+                || !value_ids_by_symbol.contains_key(&handle)
+                || reference.scope != check.scope
+                || reference.name != check.symbol_name
+            {
+                continue;
+            }
+            out.insert(use_site.reference);
+        }
+    }
+    out
+}
+
 fn resolve_safe_loop_where_field_refs(
     unit: &UnitAnalysis,
     reference_uses: &[ReferenceUse],
@@ -3221,6 +3264,7 @@ fn read_occurrences_in_range(
             reference: use_site.reference,
             range: use_site.range,
             value: use_site.value,
+            suppress_definite_assignment: false,
         })
         .collect()
 }

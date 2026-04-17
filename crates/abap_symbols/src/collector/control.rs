@@ -7,7 +7,7 @@ use abap_ast::ast::{AstNode, ConstructorBaseClause, ConstructorExpr, SortStmt, T
 use crate::def_map::{
     CaseRegionData, FieldAccess, FieldAccessSegment, FieldTypeRefData, IfRegionData,
     LoopRegionData, LoopWhereFieldContext, RoutineControlRegionData, RoutineLoopKind, SymbolKind,
-    TryRegionData,
+    TryRegionData, ValueStateCheckData, ValueStateCheckKind,
 };
 use crate::ids::{ScopeId, StructureId, SymbolId};
 use crate::scope::{Namespace, ScopeKind};
@@ -31,6 +31,7 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
         let then_scope =
             self.collector
                 .push_scope(ScopeKind::IfBranch, node_range.clone(), Some(scope), None);
+        self.collect_condition_probe_refs(node, then_scope);
         let mut elseif_scopes = Vec::new();
         let mut else_scope = None;
         for child in self.collector.file.children(node) {
@@ -175,6 +176,9 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
         let child_scope = self
             .collector
             .push_scope(kind, node_range, Some(scope), None);
+        if self.collector.file.kind(node) == SyntaxKind::ElseifClause {
+            self.collect_condition_probe_refs(node, child_scope);
+        }
         for child in self.collector.file.children(node) {
             self.collector.walk_node(child, child_scope);
         }
@@ -334,6 +338,7 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
         let body_scope =
             self.collector
                 .push_scope(scope_kind, node_range.clone(), Some(scope), None);
+        self.collect_condition_probe_refs(node, body_scope);
         for child in self.collector.file.children(node) {
             self.collector.walk_node(child, body_scope);
         }
@@ -364,6 +369,58 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
                     in_type_position: false,
                 }),
             _ => self.collector.value_access_from_node(node, scope),
+        }
+    }
+
+    fn collect_condition_probe_refs(&mut self, node: NodeId, scope: ScopeId) {
+        let Some(condition) = self
+            .collector
+            .syntax(node)
+            .non_token_children()
+            .next()
+            .map(|child| child.id())
+        else {
+            return;
+        };
+        self.collect_direct_value_probe_refs(condition, scope);
+    }
+
+    fn collect_direct_value_probe_refs(&mut self, node: NodeId, scope: ScopeId) {
+        match self.collector.file.kind(node) {
+            SyntaxKind::ExprIdent => {
+                let Some((name, range)) = self.collector.node_name(node) else {
+                    return;
+                };
+                if name.starts_with('<') && name.ends_with('>') {
+                    return;
+                }
+                self.collector.add_value_state_check(ValueStateCheckData {
+                    scope,
+                    range: range.clone(),
+                    symbol_name: name,
+                    symbol_range: range,
+                    field_name: None,
+                    kind: ValueStateCheckKind::ConditionProbe,
+                });
+            }
+            SyntaxKind::TemplateExpr
+            | SyntaxKind::ParenExpr
+            | SyntaxKind::UnaryExpr
+            | SyntaxKind::BinaryExpr
+            | SyntaxKind::IsPredicate
+            | SyntaxKind::BetweenExpr
+            | SyntaxKind::InstanceOfPredicate => {
+                let children: Vec<_> = self
+                    .collector
+                    .syntax(node)
+                    .non_token_children()
+                    .map(|child| child.id())
+                    .collect();
+                for child in children {
+                    self.collect_direct_value_probe_refs(child, scope);
+                }
+            }
+            _ => {}
         }
     }
 
