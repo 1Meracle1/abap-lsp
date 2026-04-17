@@ -26,8 +26,8 @@ use crate::def_map::{
     AtRegionData, CaseRegionData, Diagnostic, DiagnosticKind, FieldSymbolStateCheckKind,
     FormParameterSection, FunctionModuleParameterSection, IfRegionData, LoopRegionData,
     MethodParameterSection, PerformParameterSection, Resolution, RoutineControlRegionData,
-    RoutineSiteKind, SymbolData, SymbolKind, TryRegionData, UnitAnalysis, ValueFlowKind,
-    ValueFlowTargetData, ValueStateCheckKind,
+    RoutineSiteKind, SymbolData, SymbolKind, SystemFieldStatementKind, TryRegionData, UnitAnalysis,
+    ValueFlowKind, ValueFlowTargetData, ValueStateCheckKind,
 };
 use crate::ids::{ScopeId, StructureId, SymbolHandle, UnitId};
 use crate::project::ProjectAnalysis;
@@ -1513,6 +1513,13 @@ fn build_routine_dataflow(
         &structure_assignment_trackers,
         &values,
     );
+    let sy_subrc_success_bound_scope_refinements = resolve_sy_subrc_success_bound_scope_refinements(
+        unit,
+        &reference_uses,
+        &value_ids_by_symbol,
+        &values,
+        values.len(),
+    );
     let structure_field_reads = resolve_structure_field_reads(
         unit,
         &reference_uses,
@@ -1529,6 +1536,12 @@ fn build_routine_dataflow(
         unit,
         routine,
         &is_not_initial_field_scope_refinements,
+        values.len(),
+    );
+    let block_bound_entry_refinements = block_bound_entry_refinements(
+        unit,
+        routine,
+        &sy_subrc_success_bound_scope_refinements,
         values.len(),
     );
     let mut safe_read_refs = safe_field_symbol_checks.clone();
@@ -2121,13 +2134,14 @@ fn build_routine_dataflow(
                     values.len(),
                 )
             };
-            let next_entry_bound = if !block.reachable {
+            let mut next_entry_bound = if !block.reachable {
                 DenseBitSet::new(values.len())
             } else if block.kind == RoutineBlockKind::Entry {
                 DenseBitSet::new(values.len())
             } else {
                 intersect_predecessor_bits(&block.predecessors, &block_exit_bound, values.len())
             };
+            next_entry_bound.union_from(&block_bound_entry_refinements[block_idx]);
             let next_entry_maybe_written = if !block.reachable {
                 DenseBitSet::new(values.len())
             } else {
@@ -3332,6 +3346,75 @@ fn resolve_is_not_initial_field_scope_refinements(
     out
 }
 
+fn resolve_sy_subrc_success_bound_scope_refinements(
+    unit: &UnitAnalysis,
+    reference_uses: &[ReferenceUse],
+    value_ids_by_symbol: &HashMap<SymbolHandle, DataflowValueId>,
+    values: &[RoutineDataflowValue],
+    value_count: usize,
+) -> Vec<DenseBitSet> {
+    let mut out = vec![DenseBitSet::new(value_count); unit.scopes.len()];
+    for check in &unit.value_state_checks {
+        if check.kind != ValueStateCheckKind::EqualsZero {
+            continue;
+        }
+        let Some(scope_data) = unit.scopes.get(check.scope.as_usize()) else {
+            continue;
+        };
+        if !matches!(
+            scope_data.kind,
+            ScopeKind::IfBranch | ScopeKind::ElseifBranch
+        ) {
+            continue;
+        }
+        let Some(field_name) = check.field_name.as_ref() else {
+            continue;
+        };
+        if !field_name.eq_ignore_ascii_case("subrc")
+            || !(check.symbol_name.eq_ignore_ascii_case("sy")
+                || check.symbol_name.eq_ignore_ascii_case("syst"))
+        {
+            continue;
+        }
+        let Some(scope_bits) = out.get_mut(check.scope.as_usize()) else {
+            continue;
+        };
+        let Some(update) = unit
+            .system_field_updates
+            .iter()
+            .filter(|update| {
+                update.field_name.eq_ignore_ascii_case("subrc")
+                    && update.range.end <= check.range.start
+                    && scope_descends_from(unit, check.scope, update.scope)
+            })
+            .max_by_key(|update| (update.range.end, update.range.start))
+        else {
+            continue;
+        };
+        if update.statement != SystemFieldStatementKind::ReadTable {
+            continue;
+        }
+        for edge in &unit.value_flow_edges {
+            if edge.kind != ValueFlowKind::ConditionalFieldSymbolAssignment
+                || edge.scope != update.scope
+                || !system_field_update_contains_field_symbol_bind(update, edge)
+            {
+                continue;
+            }
+            if let Some(target_value) = resolve_field_symbol_target_value_id(
+                unit,
+                edge,
+                reference_uses,
+                value_ids_by_symbol,
+                values,
+            ) {
+                scope_bits.insert(target_value);
+            }
+        }
+    }
+    out
+}
+
 fn block_non_initial_entry_refinements(
     unit: &UnitAnalysis,
     routine: &RoutineAnalysis,
@@ -3346,7 +3429,31 @@ fn block_non_initial_entry_refinements(
             let Some(first_instruction) = block.instructions.first() else {
                 return DenseBitSet::new(value_count);
             };
-            inherited_non_initial_scope_refinements(
+            inherited_dense_scope_refinements(
+                unit,
+                scope_refinements,
+                routine.ir.instructions[first_instruction.as_usize()].scope,
+                value_count,
+            )
+        })
+        .collect()
+}
+
+fn block_bound_entry_refinements(
+    unit: &UnitAnalysis,
+    routine: &RoutineAnalysis,
+    scope_refinements: &[DenseBitSet],
+    value_count: usize,
+) -> Vec<DenseBitSet> {
+    routine
+        .cfg
+        .blocks
+        .iter()
+        .map(|block| {
+            let Some(first_instruction) = block.instructions.first() else {
+                return DenseBitSet::new(value_count);
+            };
+            inherited_dense_scope_refinements(
                 unit,
                 scope_refinements,
                 routine.ir.instructions[first_instruction.as_usize()].scope,
@@ -3380,7 +3487,7 @@ fn block_non_initial_field_entry_refinements(
         .collect()
 }
 
-fn inherited_non_initial_scope_refinements(
+fn inherited_dense_scope_refinements(
     unit: &UnitAnalysis,
     scope_refinements: &[DenseBitSet],
     scope: ScopeId,
@@ -3405,6 +3512,33 @@ fn inherited_non_initial_scope_refinements(
         current = scope_data.parent;
     }
     out
+}
+
+fn scope_descends_from(unit: &UnitAnalysis, scope: ScopeId, ancestor: ScopeId) -> bool {
+    let mut current = Some(scope);
+    while let Some(scope_id) = current {
+        if scope_id == ancestor {
+            return true;
+        }
+        current = unit
+            .scopes
+            .get(scope_id.as_usize())
+            .and_then(|scope| scope.parent);
+    }
+    false
+}
+
+fn system_field_update_contains_field_symbol_bind(
+    update: &crate::SystemFieldUpdateData,
+    edge: &crate::ValueFlowEdgeData,
+) -> bool {
+    let crate::ValueFlowTargetData::FieldSymbol { range, .. } = &edge.target else {
+        return false;
+    };
+    update.range.start <= edge.source_range.start
+        && edge.source_range.end <= update.range.end
+        && update.range.start <= range.start
+        && range.end <= update.range.end
 }
 
 fn inherited_non_initial_field_scope_refinements(

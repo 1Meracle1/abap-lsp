@@ -8459,6 +8459,71 @@ ENDCLASS.";
     }
 
     #[test]
+    fn routine_analysis_allows_read_table_assigning_field_symbol_after_sy_subrc_success_guard() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+    DATA lt_values TYPE STANDARD TABLE OF i WITH EMPTY KEY.
+    READ TABLE lt_values ASSIGNING FIELD-SYMBOL(<lv_value>) INDEX 1.
+    IF sy-subrc = 0.
+      DATA lv_copy TYPE i.
+      lv_copy = <lv_value>.
+    ENDIF.
+  ENDMETHOD.
+ENDCLASS.";
+
+        let snapshot = store.publish("file:///routine_read_table_assigning_guarded.abap", 1, src);
+        let unbound = diagnostic_slices(
+            src,
+            &snapshot.symbols.diagnostics,
+            DiagnosticKind::PossiblyUnboundFieldSymbol,
+        );
+
+        assert!(unbound.is_empty(), "{unbound:?}");
+    }
+
+    #[test]
+    fn routine_analysis_keeps_read_table_assigning_field_symbol_unbound_after_other_subrc_update() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+    DATA lt_values TYPE STANDARD TABLE OF i WITH EMPTY KEY.
+    READ TABLE lt_values ASSIGNING FIELD-SYMBOL(<lv_value>) INDEX 1.
+    FIND '1' IN '123'.
+    IF sy-subrc = 0.
+      DATA lv_copy TYPE i.
+      lv_copy = <lv_value>.
+    ENDIF.
+  ENDMETHOD.
+ENDCLASS.";
+
+        let snapshot = store.publish(
+            "file:///routine_read_table_assigning_guarded_after_find.abap",
+            1,
+            src,
+        );
+        let unbound = diagnostic_slices(
+            src,
+            &snapshot.symbols.diagnostics,
+            DiagnosticKind::PossiblyUnboundFieldSymbol,
+        );
+
+        assert!(unbound.iter().any(|slice| slice.contains("<lv_value>")));
+    }
+
+    #[test]
     fn routine_analysis_distinguishes_direct_and_dynamic_field_symbol_assign() {
         let store = DocumentStore::default();
         let src = "\

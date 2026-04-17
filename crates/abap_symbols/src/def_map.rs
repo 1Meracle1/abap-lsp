@@ -754,6 +754,8 @@ pub enum FieldSymbolStateCheckKind {
 pub enum ValueStateCheckKind {
     IsInitial,
     IsNotInitial,
+    EqualsZero,
+    NotEqualsZero,
     ConditionProbe,
 }
 

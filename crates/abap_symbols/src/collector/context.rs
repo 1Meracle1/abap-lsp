@@ -6,7 +6,7 @@ use crate::def_map::{
     AssignmentSiteData, CallSiteData, FieldAccess, FieldTypeRefData, FormRoutineData, IncludeEdge,
     NamedArgumentAccess, NamedArgumentSection, NamedArgumentTarget, ReferenceKind, SqlNameRefData,
     SqlPredicateData, SqlProjectionData, SqlQueryData, SqlSourceData, SqlTargetData,
-    StructureFieldData, SymbolKind,
+    StructureFieldData, SymbolKind, ValueStateCheckData,
 };
 use crate::ids::{ScopeId, StructureId, SymbolId, UnitId};
 use crate::scope::Namespace;
@@ -118,6 +118,10 @@ impl<'ctx, 'a> ExprContext<'ctx, 'a> {
 
     pub(super) fn emit_named_argument(&mut self, access: NamedArgumentAccess) {
         self.collector.emit_named_argument(access);
+    }
+
+    pub(super) fn add_value_state_check(&mut self, check: ValueStateCheckData) {
+        self.collector.add_value_state_check(check);
     }
 
     pub(super) fn emit_field_access(&mut self, access: FieldAccess) {

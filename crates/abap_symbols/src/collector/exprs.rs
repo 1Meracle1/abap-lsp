@@ -15,7 +15,7 @@ use crate::builtins::builtin_routine_spec;
 use crate::def_map::{
     AssignmentSiteData, CallArgumentData, CallSiteData, FieldAccess, FieldTypeRefData,
     NamedArgumentAccess, NamedArgumentSection, NamedArgumentTarget, ReferenceKind,
-    StructureFieldData, SymbolKind, TypeFactData,
+    StructureFieldData, SymbolKind, TypeFactData, ValueStateCheckData, ValueStateCheckKind,
 };
 use crate::ids::ScopeId;
 use crate::ids::StructureId;
@@ -664,6 +664,7 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                     );
                 }
             }
+            SyntaxKind::BinaryExpr => self.collect_binary_expr(node, scope),
             SyntaxKind::SelectorExpr => self.collect_selector_expr(node, scope),
             SyntaxKind::TableExpr => {
                 let tokens = self.ctx.syntax_token_nodes(node);
@@ -849,6 +850,123 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                 }
             }
         }
+    }
+
+    fn collect_binary_expr(&mut self, node: NodeId, scope: ScopeId) {
+        self.collect_sy_subrc_zero_comparison_check(node, scope);
+        for child in self.ctx.file().children(node) {
+            match self.kind(child) {
+                SyntaxKind::ExprIdent
+                | SyntaxKind::SelectorExpr
+                | SyntaxKind::SubstringExpr
+                | SyntaxKind::CallExpr
+                | SyntaxKind::BinaryExpr
+                | SyntaxKind::UnaryExpr
+                | SyntaxKind::ParenExpr
+                | SyntaxKind::ConstructorExpr
+                | SyntaxKind::LetExpr
+                | SyntaxKind::TemplateExpr
+                | SyntaxKind::TemplateInterpolation
+                | SyntaxKind::TemplateFormatSpec
+                | SyntaxKind::IsPredicate
+                | SyntaxKind::InstanceOfPredicate
+                | SyntaxKind::BetweenExpr
+                | SyntaxKind::AssignStmt
+                | SyntaxKind::TypeRefSimple => self.collect_expr(child, scope),
+                _ => self.ctx.walk_node(child, scope),
+            }
+        }
+    }
+
+    fn collect_sy_subrc_zero_comparison_check(&mut self, node: NodeId, scope: ScopeId) {
+        let tokens: Vec<_> = self
+            .ctx
+            .syntax_token_nodes(node)
+            .into_iter()
+            .filter(|token| !self.ctx.syntax_token_is_comment(token))
+            .collect();
+        let Some((symbol_name, symbol_range, range, kind)) =
+            self.sy_subrc_zero_comparison_check_from_tokens(&tokens)
+        else {
+            return;
+        };
+        self.ctx.add_value_state_check(ValueStateCheckData {
+            scope,
+            range,
+            symbol_name,
+            symbol_range,
+            field_name: Some(Arc::from("subrc")),
+            kind,
+        });
+    }
+
+    fn sy_subrc_zero_comparison_check_from_tokens(
+        &self,
+        tokens: &[super::SyntaxTokenInfo],
+    ) -> Option<(Arc<str>, TextRange, TextRange, ValueStateCheckKind)> {
+        if tokens.len() != 5 {
+            return None;
+        }
+
+        let forward = self
+            .subrc_zero_comparison_kind(tokens[3].text.as_ref())
+            .map(|kind| {
+                (
+                    tokens[0].text.as_ref(),
+                    tokens[0].range.clone(),
+                    tokens[0].range.start..tokens[2].range.end,
+                    kind,
+                    tokens[1].text.as_ref(),
+                    tokens[2].text.as_ref(),
+                    tokens[4].text.as_ref(),
+                )
+            });
+        let reverse = self
+            .subrc_zero_comparison_kind(tokens[1].text.as_ref())
+            .map(|kind| {
+                (
+                    tokens[2].text.as_ref(),
+                    tokens[2].range.clone(),
+                    tokens[2].range.start..tokens[4].range.end,
+                    kind,
+                    tokens[3].text.as_ref(),
+                    tokens[4].text.as_ref(),
+                    tokens[0].text.as_ref(),
+                )
+            });
+
+        for (base_name, symbol_range, range, kind, dash, field_name, zero_literal) in
+            forward.into_iter().chain(reverse)
+        {
+            if !matches!(base_name.to_ascii_lowercase().as_str(), "sy" | "syst")
+                || dash != "-"
+                || !field_name.eq_ignore_ascii_case("subrc")
+                || !self.syntax_token_is_zero_text(zero_literal)
+            {
+                continue;
+            }
+            return Some((
+                Arc::<str>::from(base_name.to_ascii_lowercase()),
+                symbol_range,
+                range,
+                kind,
+            ));
+        }
+        None
+    }
+
+    fn subrc_zero_comparison_kind(&self, operator: &str) -> Option<ValueStateCheckKind> {
+        if operator == "=" || operator.eq_ignore_ascii_case("eq") {
+            return Some(ValueStateCheckKind::EqualsZero);
+        }
+        if operator == "<>" || operator.eq_ignore_ascii_case("ne") {
+            return Some(ValueStateCheckKind::NotEqualsZero);
+        }
+        None
+    }
+
+    fn syntax_token_is_zero_text(&self, text: &str) -> bool {
+        !text.is_empty() && text.chars().all(|ch| ch == '0')
     }
 
     fn collect_template_format_spec(&mut self, node: NodeId, scope: ScopeId) {

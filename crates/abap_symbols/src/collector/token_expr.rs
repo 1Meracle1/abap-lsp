@@ -358,7 +358,7 @@ impl<'a> Collector<'a> {
     ) -> Option<ValueStateCheckKind> {
         let next = tokens.get(idx)?;
         if !next.text.eq_ignore_ascii_case("is") {
-            return None;
+            return self.zero_comparison_value_state_check_kind(tokens, idx);
         }
         let third = tokens.get(idx + 1)?;
         if third.text.eq_ignore_ascii_case("initial") {
@@ -372,6 +372,29 @@ impl<'a> Collector<'a> {
             return Some(ValueStateCheckKind::IsNotInitial);
         }
         None
+    }
+
+    fn zero_comparison_value_state_check_kind(
+        &self,
+        tokens: &[SyntaxTokenInfo],
+        idx: usize,
+    ) -> Option<ValueStateCheckKind> {
+        let operator = tokens.get(idx)?;
+        let literal = tokens.get(idx + 1)?;
+        if !self.syntax_token_is_zero_numeric_literal(literal) {
+            return None;
+        }
+        if operator.text.as_ref() == "=" || operator.text.eq_ignore_ascii_case("eq") {
+            return Some(ValueStateCheckKind::EqualsZero);
+        }
+        if operator.text.as_ref() == "<>" || operator.text.eq_ignore_ascii_case("ne") {
+            return Some(ValueStateCheckKind::NotEqualsZero);
+        }
+        None
+    }
+
+    fn syntax_token_is_zero_numeric_literal(&self, token: &SyntaxTokenInfo) -> bool {
+        !token.text.is_empty() && token.text.chars().all(|ch| ch == '0')
     }
 
     fn is_field_symbol_name(name: &str) -> bool {
