@@ -1117,6 +1117,44 @@ ENDFORM.",
     }
 
     #[test]
+    fn resolves_chained_perform_edges() {
+        let graph = graph_for(
+            vec![DocumentInput {
+                uri: Arc::from("file:///main.abap"),
+                version: 1,
+                text: Arc::from(
+                    "\
+REPORT zmain.
+
+FORM do_work USING iv_name TYPE string.
+ENDFORM.
+
+START-OF-SELECTION.
+  PERFORM do_work USING:
+    'first',
+    'second'.",
+                ),
+                is_dependency: false,
+                object_name: None,
+            }],
+            "file:///main.abap",
+        );
+
+        let event = graph.find_nodes("start-of-selection")[0];
+        let form = graph
+            .find_nodes("do_work")
+            .into_iter()
+            .find(|node| node.kind == CallGraphNodeKind::Form)
+            .expect("form node");
+        let outbound = graph.outbound_calls(event.id.as_ref());
+        assert_eq!(outbound.len(), 2);
+        assert!(outbound.iter().all(|edge| {
+            edge.edge_kind == CallGraphEdgeKind::Perform
+                && edge.target.as_deref() == Some(form.id.as_ref())
+        }));
+    }
+
+    #[test]
     fn resolves_call_function_edges_across_units() {
         let graph = graph_for(
             vec![

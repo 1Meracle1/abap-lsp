@@ -461,6 +461,52 @@ PERFORM process_data TABLES lt_rows USING 'demo' CHANGING lv_count.
 }
 
 #[test]
+fn expands_chained_perform_calls_into_individual_calls() {
+    let src = r#"
+FORM append_fldcat1
+    USING pv_field TYPE string
+          pv_len TYPE i
+          pv_text TYPE string
+          pv_flag TYPE c.
+ENDFORM.
+
+DATA lv_flag1 TYPE c.
+DATA lv_flag2 TYPE c.
+PERFORM append_fldcat1 USING:
+  'MATNR' 18 'Material' lv_flag1,
+  'MAKTX' 40 'Description' lv_flag2.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///perform_chain.abap", src, &parsed);
+
+    assert!(
+        unit.diagnostics
+            .iter()
+            .all(|diag| diag.kind != DiagnosticKind::InvalidPerformCall),
+        "unexpected chained PERFORM diagnostics: {:?}",
+        unit.diagnostics
+    );
+    assert_eq!(unit.perform_calls.len(), 2);
+    assert!(unit.perform_calls.iter().all(|call| {
+        call.routine_name.as_ref() == "append_fldcat1"
+            && !call.section_order_invalid
+            && call.parameters
+                == vec![
+                    abap_symbols::PerformParameterSection::Using,
+                    abap_symbols::PerformParameterSection::Using,
+                    abap_symbols::PerformParameterSection::Using,
+                    abap_symbols::PerformParameterSection::Using,
+                ]
+            && call.arguments.len() == 4
+    }));
+    assert!(unit.references.iter().any(|reference| {
+        reference.namespace == Namespace::Value
+            && reference.name.as_ref() == "lv_flag2"
+            && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+    }));
+}
+
+#[test]
 fn rejects_invalid_perform_argument_shapes() {
     let cases = [
         "PERFORM process_data USING CHANGING lv_count.",

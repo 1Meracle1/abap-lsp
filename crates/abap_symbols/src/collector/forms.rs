@@ -29,6 +29,101 @@ impl<'a> Collector<'a> {
 }
 
 impl<'ctx, 'a> FormsLowering<'ctx, 'a> {
+    fn first_non_comment_range(tokens: &[SyntaxTokenInfo]) -> Option<abap_lexer::TextRange> {
+        tokens
+            .iter()
+            .find(|token| token.kind != abap_lexer::TokenKind::Comment)
+            .map(|token| token.range.clone())
+    }
+
+    fn split_chained_perform_calls_infos(
+        &self,
+        tokens: &[SyntaxTokenInfo],
+    ) -> Option<Vec<(Vec<SyntaxTokenInfo>, abap_lexer::TextRange)>> {
+        let mut paren = 0i32;
+        let mut bracket = 0i32;
+        let mut brace = 0i32;
+        let mut colon_idx = None;
+        let mut period_idx = None;
+
+        for (idx, token) in tokens.iter().enumerate() {
+            if paren == 0 && bracket == 0 && brace == 0 {
+                if token.text.as_ref() == ":" {
+                    colon_idx = Some(idx);
+                    continue;
+                }
+                if token.text.as_ref() == "." {
+                    period_idx = Some(idx);
+                    break;
+                }
+            }
+
+            match token.text.as_ref() {
+                "(" => paren += 1,
+                ")" => paren -= 1,
+                "[" => bracket += 1,
+                "]" => bracket -= 1,
+                "{" => brace += 1,
+                "}" => brace -= 1,
+                _ => {}
+            }
+        }
+
+        let colon_idx = colon_idx?;
+        let period_idx = period_idx?;
+        let prefix = &tokens[..colon_idx];
+        let period = tokens[period_idx].clone();
+
+        let mut items = Vec::new();
+        let mut item_start = colon_idx + 1;
+        let mut paren = 0i32;
+        let mut bracket = 0i32;
+        let mut brace = 0i32;
+        let mut idx = item_start;
+        while idx <= period_idx {
+            let token = &tokens[idx];
+            let is_separator = paren == 0
+                && bracket == 0
+                && brace == 0
+                && (token.text.as_ref() == "," || token.text.as_ref() == ".");
+            if is_separator {
+                let item_tokens = &tokens[item_start..idx];
+                if let Some(item_range) = Self::first_non_comment_range(item_tokens).map(|start| {
+                    let end = item_tokens
+                        .iter()
+                        .rev()
+                        .find(|token| token.kind != abap_lexer::TokenKind::Comment)
+                        .map(|token| token.range.end)
+                        .unwrap_or(start.end);
+                    start.start..end
+                }) {
+                    let mut expanded =
+                        Vec::with_capacity(prefix.len() + item_tokens.len() + usize::from(true));
+                    expanded.extend_from_slice(prefix);
+                    expanded.extend_from_slice(item_tokens);
+                    expanded.push(period.clone());
+                    items.push((expanded, item_range));
+                }
+                item_start = idx + 1;
+                idx += 1;
+                continue;
+            }
+
+            match token.text.as_ref() {
+                "(" => paren += 1,
+                ")" => paren -= 1,
+                "[" => bracket += 1,
+                "]" => bracket -= 1,
+                "{" => brace += 1,
+                "}" => brace -= 1,
+                _ => {}
+            }
+            idx += 1;
+        }
+
+        (!items.is_empty()).then_some(items)
+    }
+
     fn function_param_has_adt_untyped_pragma(
         &self,
         param: abap_ast::ast::FunctionParam<'_>,
@@ -161,6 +256,40 @@ impl<'ctx, 'a> FormsLowering<'ctx, 'a> {
             ReferenceKind::RoutineCall,
             routine_range.clone(),
         );
+
+        if let Some(calls) = self.split_chained_perform_calls_infos(tokens) {
+            for (call_tokens, call_range) in calls {
+                self.collect_single_perform_stmt_infos(
+                    &call_tokens,
+                    scope,
+                    Arc::clone(&routine_name),
+                    routine_range.clone(),
+                    call_range,
+                );
+            }
+            return;
+        }
+
+        self.collect_single_perform_stmt_infos(
+            tokens,
+            scope,
+            routine_name,
+            routine_range,
+            stmt_range,
+        );
+    }
+
+    fn collect_single_perform_stmt_infos(
+        &mut self,
+        tokens: &[SyntaxTokenInfo],
+        scope: ScopeId,
+        routine_name: Arc<str>,
+        routine_range: abap_lexer::TextRange,
+        stmt_range: abap_lexer::TextRange,
+    ) {
+        if tokens.is_empty() || !tokens[0].text.eq_ignore_ascii_case("perform") {
+            return;
+        }
 
         let mut parameters = Vec::new();
         let mut arguments = Vec::new();

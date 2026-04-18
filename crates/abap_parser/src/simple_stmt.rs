@@ -1852,6 +1852,14 @@ ENDCLASS.";
     }
 
     #[test]
+    fn classifies_chained_perform_statement_specifically() {
+        let parsed = crate::parse("PERFORM append_fldcat1 USING: a b c d, e f g h.");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::PerformStmt), 1);
+    }
+
+    #[test]
     fn classifies_commit_and_rollback_work_statements_specifically() {
         let parsed = crate::parse("COMMIT WORK. ROLLBACK WORK.");
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);

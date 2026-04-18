@@ -11989,6 +11989,37 @@ START-OF-SELECTION.
     }
 
     #[test]
+    fn definition_at_returns_variable_declaration_for_chained_perform_argument() {
+        let store = DocumentStore::default();
+        let src = "\
+FORM append_fldcat1
+    USING pv_field TYPE string
+          pv_len TYPE i
+          pv_text TYPE string
+          pv_flag TYPE c.
+ENDFORM.
+
+START-OF-SELECTION.
+  DATA lv_flag1 TYPE c.
+  DATA lv_flag2 TYPE c.
+  PERFORM append_fldcat1 USING:
+    'MATNR' 18 'Material' lv_flag1,
+    'MAKTX' 40 'Description' lv_flag2.
+";
+        let snapshot = store.publish("file:///demo.abap", 1, src);
+        let argument_use = src.rfind("lv_flag2").expect("perform argument use");
+
+        let target = snapshot
+            .definition_at(argument_use + 1)
+            .expect("definition target");
+        assert_target_slice(&target, "file:///demo.abap", src, "lv_flag2");
+        assert_eq!(
+            target.range.start,
+            src.find("lv_flag2 TYPE c").expect("variable declaration")
+        );
+    }
+
+    #[test]
     fn definition_at_returns_none_for_builtin_type() {
         let store = DocumentStore::default();
         let src = "DATA text TYPE string.";
