@@ -559,6 +559,94 @@ START-OF-SELECTION.
     }
 
     #[test]
+    fn submit_statement_collects_refs_for_full_option_set() {
+        let src = "\
+REPORT zsubmit_full.
+
+DATA:
+  lv_report  TYPE syrepid VALUE 'RSNAST0D',
+  lv_variant TYPE c LENGTH 14,
+  lv_prog    TYPE syrepid,
+  lt_rspar   TYPE STANDARD TABLE OF rsparams WITH EMPTY KEY,
+  lv_bukrs   TYPE bukrs,
+  lv_low     TYPE datum,
+  lv_high    TYPE datum,
+  lv_sign    TYPE c LENGTH 1,
+  lt_vkorg   TYPE RANGE OF vkorg,
+  lt_texpr   TYPE rsds_texpr,
+  lv_width   TYPE i,
+  lv_lines   TYPE i,
+  ls_pri     TYPE pri_params,
+  ls_arc     TYPE arc_params,
+  lv_user    TYPE syuname,
+  lv_job     TYPE tbtcjob-jobname,
+  lv_count   TYPE tbtcjob-jobcount,
+  lv_lang    TYPE sylangu.
+
+START-OF-SELECTION.
+  SUBMIT (lv_report)
+    USING SELECTION-SCREEN '1100'
+    USING SELECTION-SET lv_variant
+    USING SELECTION-SETS OF PROGRAM lv_prog
+    WITH SELECTION-TABLE lt_rspar
+    WITH p_bukrs EQ lv_bukrs
+    WITH s_erdat NOT BETWEEN lv_low AND lv_high SIGN lv_sign
+    WITH s_vkorg IN lt_vkorg
+    WITH FREE SELECTIONS lt_texpr
+    LINE-SIZE lv_width
+    LINE-COUNT lv_lines
+    TO SAP-SPOOL
+    SPOOL PARAMETERS ls_pri
+    ARCHIVE PARAMETERS ls_arc
+    WITHOUT SPOOL DYNPRO
+    USER lv_user
+    VIA JOB lv_job NUMBER lv_count LANGUAGE lv_lang
+    AND RETURN.
+";
+        let parsed = parse(src);
+        let unit = analyze_unit("file:///submit_full.abap", src, &parsed);
+
+        for name in [
+            "lv_report",
+            "lv_variant",
+            "lv_prog",
+            "lt_rspar",
+            "lv_bukrs",
+            "lv_low",
+            "lv_high",
+            "lv_sign",
+            "lt_vkorg",
+            "lt_texpr",
+            "lv_width",
+            "lv_lines",
+            "ls_pri",
+            "ls_arc",
+            "lv_user",
+            "lv_job",
+            "lv_count",
+            "lv_lang",
+        ] {
+            let offset = src
+                .rfind(name)
+                .unwrap_or_else(|| panic!("missing offset for {name}"))
+                + 1;
+            let reference = unit
+                .semantic()
+                .refs()
+                .reference_at_offset(offset)
+                .unwrap_or_else(|| panic!("missing reference for {name}"));
+            assert_eq!(reference.name.as_ref(), name);
+            assert!(matches!(reference.resolution, Some(Resolution::Symbol(_))));
+        }
+
+        assert!(
+            unit.routine_sites
+                .iter()
+                .any(|site| site.kind == super::RoutineSiteKind::UnknownEffect)
+        );
+    }
+
+    #[test]
     fn parameters_declare_symbols_and_at_selection_screen_becomes_event_block() {
         let src = "\
 REPORT z_demo.\n\

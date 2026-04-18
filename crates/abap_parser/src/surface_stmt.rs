@@ -2120,6 +2120,82 @@ fn find_matching_delim(
     None
 }
 
+fn match_submit_sequence(
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    parts: &[&str],
+) -> Option<usize> {
+    let mut i = idx;
+    for part in parts {
+        let tok = tokens.get(i)?;
+        if *part == "-" {
+            if tok.kind != TokenKind::Minus {
+                return None;
+            }
+        } else if !is_keyword(source, tok, part) {
+            return None;
+        }
+        i += 1;
+    }
+    Some(i)
+}
+
+fn submit_clause_starts(source: &str, tokens: &[Token], idx: usize) -> bool {
+    match_submit_sequence(source, tokens, idx, &["using", "selection", "-", "screen"]).is_some()
+        || match_submit_sequence(source, tokens, idx, &["via", "selection", "-", "screen"])
+            .is_some()
+        || match_submit_sequence(source, tokens, idx, &["using", "selection", "-", "set"]).is_some()
+        || match_submit_sequence(
+            source,
+            tokens,
+            idx,
+            &["using", "selection", "-", "sets", "of", "program"],
+        )
+        .is_some()
+        || match_submit_sequence(source, tokens, idx, &["with", "selection", "-", "table"])
+            .is_some()
+        || match_submit_sequence(source, tokens, idx, &["with", "free", "selections"]).is_some()
+        || match_submit_sequence(source, tokens, idx, &["with"]).is_some()
+        || match_submit_sequence(source, tokens, idx, &["line", "-", "size"]).is_some()
+        || match_submit_sequence(source, tokens, idx, &["line", "-", "count"]).is_some()
+        || match_submit_sequence(source, tokens, idx, &["exporting", "list", "to", "memory"])
+            .is_some()
+        || match_submit_sequence(source, tokens, idx, &["to", "sap", "-", "spool"]).is_some()
+        || match_submit_sequence(source, tokens, idx, &["spool", "parameters"]).is_some()
+        || match_submit_sequence(source, tokens, idx, &["archive", "parameters"]).is_some()
+        || match_submit_sequence(source, tokens, idx, &["without", "spool", "dynpro"]).is_some()
+        || match_submit_sequence(source, tokens, idx, &["user"]).is_some()
+        || match_submit_sequence(source, tokens, idx, &["via", "job"]).is_some()
+        || match_submit_sequence(source, tokens, idx, &["number"]).is_some()
+        || match_submit_sequence(source, tokens, idx, &["language"]).is_some()
+        || match_submit_sequence(source, tokens, idx, &["and", "return"]).is_some()
+}
+
+fn submit_is_comparison_operator(source: &str, tokens: &[Token], idx: usize) -> bool {
+    let Some(token) = tokens.get(idx) else {
+        return false;
+    };
+    token.kind == TokenKind::Eq
+        || (token.kind == TokenKind::Ident
+            && matches!(
+                token.lexeme(source).to_ascii_uppercase().as_str(),
+                "EQ" | "NE" | "CP" | "NP" | "GE" | "GT" | "LE" | "LT"
+            ))
+}
+
+fn scan_submit_expr_end(
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    end_exclusive: usize,
+    stop_clause: impl Fn(&[Token], usize) -> bool,
+) -> usize {
+    scan_until_clause(tokens, start, end_exclusive, |tokens, idx| {
+        stop_clause(tokens, idx) || submit_clause_starts(source, tokens, idx)
+    })
+}
+
 fn scan_and_push_expr_clause<F>(
     b: &mut SyntaxTreeBuilder,
     children: &mut Vec<NodeId>,
@@ -4987,6 +5063,727 @@ pub fn try_parse_message_stmt(
             let node = b.branch(
                 SyntaxKind::MessageStmt,
                 message_tok.range.start..tokens[period_i].range.end,
+                &children,
+            );
+            (node, period_i + 1)
+        },
+    ))
+}
+
+pub fn try_parse_submit_stmt(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    errors: &mut Vec<crate::ParseError>,
+) -> Option<(NodeId, usize)> {
+    let submit_tok = tokens.get(idx)?;
+    if !is_keyword(source, submit_tok, "submit") {
+        return None;
+    }
+    Some(parse_stmt_with_period_scan(
+        b,
+        source,
+        tokens,
+        idx,
+        idx + 1,
+        submit_tok,
+        "syntax error: expected '.' after SUBMIT",
+        errors,
+        next_after_unterminated_scan,
+        |b, period_i, _errors| {
+            let mut children = vec![token_leaf(b, submit_tok)];
+            let mut cursor = idx + 1;
+
+            let target_end = scan_until_clause(tokens, cursor, period_i, |tokens, i| {
+                submit_clause_starts(source, tokens, i)
+            });
+            if target_end > cursor {
+                let mut target_children = Vec::new();
+                if tokens[cursor].kind == TokenKind::LParen {
+                    if let Some(rparen_idx) =
+                        find_matching_delim(tokens, cursor, TokenKind::LParen, TokenKind::RParen)
+                        && rparen_idx < target_end
+                    {
+                        push_token_children(b, &mut target_children, tokens, cursor, cursor + 1);
+                        push_expr_child(
+                            b,
+                            &mut target_children,
+                            source,
+                            tokens,
+                            cursor + 1,
+                            rparen_idx,
+                            Some(&tokens[cursor]),
+                        );
+                        push_token_children(
+                            b,
+                            &mut target_children,
+                            tokens,
+                            rparen_idx,
+                            rparen_idx + 1,
+                        );
+                        if rparen_idx + 1 < target_end {
+                            push_token_children(
+                                b,
+                                &mut target_children,
+                                tokens,
+                                rparen_idx + 1,
+                                target_end,
+                            );
+                        }
+                    } else {
+                        push_token_children(b, &mut target_children, tokens, cursor, target_end);
+                    }
+                } else {
+                    push_token_children(b, &mut target_children, tokens, cursor, target_end);
+                }
+                children.push(b.branch(
+                    SyntaxKind::SubmitTarget,
+                    tokens[cursor].range.start..tokens[target_end - 1].range.end,
+                    &target_children,
+                ));
+                cursor = target_end;
+            }
+
+            while cursor < period_i {
+                if let Some(lead_end) = match_submit_sequence(
+                    source,
+                    tokens,
+                    cursor,
+                    &["using", "selection", "-", "screen"],
+                ) {
+                    let expr_end =
+                        scan_submit_expr_end(source, tokens, lead_end, period_i, |_, _| false);
+                    let clause_end = expr_end.max(lead_end);
+                    let mut clause_children = Vec::new();
+                    push_token_children(b, &mut clause_children, tokens, cursor, lead_end);
+                    push_expr_child(
+                        b,
+                        &mut clause_children,
+                        source,
+                        tokens,
+                        lead_end,
+                        expr_end,
+                        lead_end.checked_sub(1).and_then(|i| tokens.get(i)),
+                    );
+                    children.push(b.branch(
+                        SyntaxKind::SubmitSelectionScreenOperand,
+                        tokens[cursor].range.start..tokens[clause_end - 1].range.end,
+                        &clause_children,
+                    ));
+                    cursor = clause_end;
+                    continue;
+                }
+                if let Some(next) = match_submit_sequence(
+                    source,
+                    tokens,
+                    cursor,
+                    &["via", "selection", "-", "screen"],
+                ) {
+                    push_token_children(b, &mut children, tokens, cursor, next);
+                    cursor = next;
+                    continue;
+                }
+                if let Some(lead_end) = match_submit_sequence(
+                    source,
+                    tokens,
+                    cursor,
+                    &["using", "selection", "-", "set"],
+                ) {
+                    let expr_end =
+                        scan_submit_expr_end(source, tokens, lead_end, period_i, |_, _| false);
+                    let clause_end = expr_end.max(lead_end);
+                    let mut clause_children = Vec::new();
+                    push_token_children(b, &mut clause_children, tokens, cursor, lead_end);
+                    push_expr_child(
+                        b,
+                        &mut clause_children,
+                        source,
+                        tokens,
+                        lead_end,
+                        expr_end,
+                        lead_end.checked_sub(1).and_then(|i| tokens.get(i)),
+                    );
+                    children.push(b.branch(
+                        SyntaxKind::SubmitSelectionSetOperand,
+                        tokens[cursor].range.start..tokens[clause_end - 1].range.end,
+                        &clause_children,
+                    ));
+                    cursor = clause_end;
+                    continue;
+                }
+                if let Some(lead_end) = match_submit_sequence(
+                    source,
+                    tokens,
+                    cursor,
+                    &["using", "selection", "-", "sets", "of", "program"],
+                ) {
+                    let expr_end =
+                        scan_submit_expr_end(source, tokens, lead_end, period_i, |_, _| false);
+                    let clause_end = expr_end.max(lead_end);
+                    let mut clause_children = Vec::new();
+                    push_token_children(b, &mut clause_children, tokens, cursor, lead_end);
+                    push_expr_child(
+                        b,
+                        &mut clause_children,
+                        source,
+                        tokens,
+                        lead_end,
+                        expr_end,
+                        lead_end.checked_sub(1).and_then(|i| tokens.get(i)),
+                    );
+                    children.push(b.branch(
+                        SyntaxKind::SubmitSelectionSetsProgramOperand,
+                        tokens[cursor].range.start..tokens[clause_end - 1].range.end,
+                        &clause_children,
+                    ));
+                    cursor = clause_end;
+                    continue;
+                }
+                if let Some(lead_end) = match_submit_sequence(
+                    source,
+                    tokens,
+                    cursor,
+                    &["with", "selection", "-", "table"],
+                ) {
+                    let expr_end =
+                        scan_submit_expr_end(source, tokens, lead_end, period_i, |_, _| false);
+                    let clause_end = expr_end.max(lead_end);
+                    let mut clause_children = Vec::new();
+                    push_token_children(b, &mut clause_children, tokens, cursor, lead_end);
+                    push_expr_child(
+                        b,
+                        &mut clause_children,
+                        source,
+                        tokens,
+                        lead_end,
+                        expr_end,
+                        lead_end.checked_sub(1).and_then(|i| tokens.get(i)),
+                    );
+                    children.push(b.branch(
+                        SyntaxKind::SubmitSelectionTableOperand,
+                        tokens[cursor].range.start..tokens[clause_end - 1].range.end,
+                        &clause_children,
+                    ));
+                    cursor = clause_end;
+                    continue;
+                }
+                if let Some(lead_end) =
+                    match_submit_sequence(source, tokens, cursor, &["with", "free", "selections"])
+                {
+                    let expr_end =
+                        scan_submit_expr_end(source, tokens, lead_end, period_i, |_, _| false);
+                    let clause_end = expr_end.max(lead_end);
+                    let mut clause_children = Vec::new();
+                    push_token_children(b, &mut clause_children, tokens, cursor, lead_end);
+                    push_expr_child(
+                        b,
+                        &mut clause_children,
+                        source,
+                        tokens,
+                        lead_end,
+                        expr_end,
+                        lead_end.checked_sub(1).and_then(|i| tokens.get(i)),
+                    );
+                    children.push(b.branch(
+                        SyntaxKind::SubmitFreeSelectionsOperand,
+                        tokens[cursor].range.start..tokens[clause_end - 1].range.end,
+                        &clause_children,
+                    ));
+                    cursor = clause_end;
+                    continue;
+                }
+                if is_keyword(source, &tokens[cursor], "with") && cursor + 1 < period_i {
+                    let selector_end = cursor + 2;
+                    let operator_idx = selector_end;
+                    let mut clause_children = Vec::new();
+                    let mut clause_end = selector_end;
+                    let mut handled = false;
+
+                    if let Some(op_end) =
+                        match_submit_sequence(source, tokens, operator_idx, &["not", "between"])
+                    {
+                        let low_start = op_end;
+                        let low_end =
+                            scan_until_clause(tokens, low_start, period_i, |tokens, i| {
+                                tokens
+                                    .get(i)
+                                    .is_some_and(|token| is_keyword(source, token, "and"))
+                                    || submit_clause_starts(source, tokens, i)
+                            });
+                        let high_start = if tokens
+                            .get(low_end)
+                            .is_some_and(|token| is_keyword(source, token, "and"))
+                        {
+                            low_end + 1
+                        } else {
+                            low_end
+                        };
+                        let high_end = scan_submit_expr_end(
+                            source,
+                            tokens,
+                            high_start,
+                            period_i,
+                            |tokens, i| {
+                                match_submit_sequence(source, tokens, i, &["sign"]).is_some()
+                            },
+                        );
+                        push_token_children(b, &mut clause_children, tokens, cursor, low_start);
+                        push_expr_child(
+                            b,
+                            &mut clause_children,
+                            source,
+                            tokens,
+                            low_start,
+                            low_end,
+                            low_start.checked_sub(1).and_then(|i| tokens.get(i)),
+                        );
+                        push_token_children(b, &mut clause_children, tokens, low_end, high_start);
+                        push_expr_child(
+                            b,
+                            &mut clause_children,
+                            source,
+                            tokens,
+                            high_start,
+                            high_end,
+                            high_start.checked_sub(1).and_then(|i| tokens.get(i)),
+                        );
+                        clause_end = high_end;
+                        if let Some(sign_end) =
+                            match_submit_sequence(source, tokens, clause_end, &["sign"])
+                        {
+                            let value_end =
+                                scan_submit_expr_end(source, tokens, sign_end, period_i, |_, _| {
+                                    false
+                                });
+                            push_token_children(
+                                b,
+                                &mut clause_children,
+                                tokens,
+                                clause_end,
+                                sign_end,
+                            );
+                            push_expr_child(
+                                b,
+                                &mut clause_children,
+                                source,
+                                tokens,
+                                sign_end,
+                                value_end,
+                                sign_end.checked_sub(1).and_then(|i| tokens.get(i)),
+                            );
+                            clause_end = value_end.max(sign_end);
+                        }
+                        handled = true;
+                    } else if let Some(op_end) =
+                        match_submit_sequence(source, tokens, operator_idx, &["between"])
+                    {
+                        let low_start = op_end;
+                        let low_end =
+                            scan_until_clause(tokens, low_start, period_i, |tokens, i| {
+                                tokens
+                                    .get(i)
+                                    .is_some_and(|token| is_keyword(source, token, "and"))
+                                    || submit_clause_starts(source, tokens, i)
+                            });
+                        let high_start = if tokens
+                            .get(low_end)
+                            .is_some_and(|token| is_keyword(source, token, "and"))
+                        {
+                            low_end + 1
+                        } else {
+                            low_end
+                        };
+                        let high_end = scan_submit_expr_end(
+                            source,
+                            tokens,
+                            high_start,
+                            period_i,
+                            |tokens, i| {
+                                match_submit_sequence(source, tokens, i, &["sign"]).is_some()
+                            },
+                        );
+                        push_token_children(b, &mut clause_children, tokens, cursor, low_start);
+                        push_expr_child(
+                            b,
+                            &mut clause_children,
+                            source,
+                            tokens,
+                            low_start,
+                            low_end,
+                            low_start.checked_sub(1).and_then(|i| tokens.get(i)),
+                        );
+                        push_token_children(b, &mut clause_children, tokens, low_end, high_start);
+                        push_expr_child(
+                            b,
+                            &mut clause_children,
+                            source,
+                            tokens,
+                            high_start,
+                            high_end,
+                            high_start.checked_sub(1).and_then(|i| tokens.get(i)),
+                        );
+                        clause_end = high_end;
+                        if let Some(sign_end) =
+                            match_submit_sequence(source, tokens, clause_end, &["sign"])
+                        {
+                            let value_end =
+                                scan_submit_expr_end(source, tokens, sign_end, period_i, |_, _| {
+                                    false
+                                });
+                            push_token_children(
+                                b,
+                                &mut clause_children,
+                                tokens,
+                                clause_end,
+                                sign_end,
+                            );
+                            push_expr_child(
+                                b,
+                                &mut clause_children,
+                                source,
+                                tokens,
+                                sign_end,
+                                value_end,
+                                sign_end.checked_sub(1).and_then(|i| tokens.get(i)),
+                            );
+                            clause_end = value_end.max(sign_end);
+                        }
+                        handled = true;
+                    } else if let Some(op_end) =
+                        match_submit_sequence(source, tokens, operator_idx, &["in"])
+                    {
+                        let value_end =
+                            scan_submit_expr_end(source, tokens, op_end, period_i, |_, _| false);
+                        push_token_children(b, &mut clause_children, tokens, cursor, op_end);
+                        push_expr_child(
+                            b,
+                            &mut clause_children,
+                            source,
+                            tokens,
+                            op_end,
+                            value_end,
+                            op_end.checked_sub(1).and_then(|i| tokens.get(i)),
+                        );
+                        clause_end = value_end.max(op_end);
+                        handled = true;
+                    } else if submit_is_comparison_operator(source, tokens, operator_idx) {
+                        let value_start = operator_idx + 1;
+                        let value_end = scan_submit_expr_end(
+                            source,
+                            tokens,
+                            value_start,
+                            period_i,
+                            |tokens, i| {
+                                match_submit_sequence(source, tokens, i, &["sign"]).is_some()
+                            },
+                        );
+                        push_token_children(b, &mut clause_children, tokens, cursor, value_start);
+                        push_expr_child(
+                            b,
+                            &mut clause_children,
+                            source,
+                            tokens,
+                            value_start,
+                            value_end,
+                            value_start.checked_sub(1).and_then(|i| tokens.get(i)),
+                        );
+                        clause_end = value_end.max(value_start);
+                        if let Some(sign_end) =
+                            match_submit_sequence(source, tokens, clause_end, &["sign"])
+                        {
+                            let sign_value_end =
+                                scan_submit_expr_end(source, tokens, sign_end, period_i, |_, _| {
+                                    false
+                                });
+                            push_token_children(
+                                b,
+                                &mut clause_children,
+                                tokens,
+                                clause_end,
+                                sign_end,
+                            );
+                            push_expr_child(
+                                b,
+                                &mut clause_children,
+                                source,
+                                tokens,
+                                sign_end,
+                                sign_value_end,
+                                sign_end.checked_sub(1).and_then(|i| tokens.get(i)),
+                            );
+                            clause_end = sign_value_end.max(sign_end);
+                        }
+                        handled = true;
+                    }
+
+                    if handled {
+                        children.push(b.branch(
+                            SyntaxKind::SubmitWithClause,
+                            tokens[cursor].range.start..tokens[clause_end - 1].range.end,
+                            &clause_children,
+                        ));
+                        cursor = clause_end;
+                        continue;
+                    }
+                }
+                if let Some(lead_end) =
+                    match_submit_sequence(source, tokens, cursor, &["line", "-", "size"])
+                {
+                    let expr_end =
+                        scan_submit_expr_end(source, tokens, lead_end, period_i, |_, _| false);
+                    let clause_end = expr_end.max(lead_end);
+                    let mut clause_children = Vec::new();
+                    push_token_children(b, &mut clause_children, tokens, cursor, lead_end);
+                    push_expr_child(
+                        b,
+                        &mut clause_children,
+                        source,
+                        tokens,
+                        lead_end,
+                        expr_end,
+                        lead_end.checked_sub(1).and_then(|i| tokens.get(i)),
+                    );
+                    children.push(b.branch(
+                        SyntaxKind::SubmitLineSizeOperand,
+                        tokens[cursor].range.start..tokens[clause_end - 1].range.end,
+                        &clause_children,
+                    ));
+                    cursor = clause_end;
+                    continue;
+                }
+                if let Some(lead_end) =
+                    match_submit_sequence(source, tokens, cursor, &["line", "-", "count"])
+                {
+                    let expr_end =
+                        scan_submit_expr_end(source, tokens, lead_end, period_i, |_, _| false);
+                    let clause_end = expr_end.max(lead_end);
+                    let mut clause_children = Vec::new();
+                    push_token_children(b, &mut clause_children, tokens, cursor, lead_end);
+                    push_expr_child(
+                        b,
+                        &mut clause_children,
+                        source,
+                        tokens,
+                        lead_end,
+                        expr_end,
+                        lead_end.checked_sub(1).and_then(|i| tokens.get(i)),
+                    );
+                    children.push(b.branch(
+                        SyntaxKind::SubmitLineCountOperand,
+                        tokens[cursor].range.start..tokens[clause_end - 1].range.end,
+                        &clause_children,
+                    ));
+                    cursor = clause_end;
+                    continue;
+                }
+                if let Some(next) = match_submit_sequence(
+                    source,
+                    tokens,
+                    cursor,
+                    &["exporting", "list", "to", "memory"],
+                ) {
+                    push_token_children(b, &mut children, tokens, cursor, next);
+                    cursor = next;
+                    continue;
+                }
+                if let Some(next) =
+                    match_submit_sequence(source, tokens, cursor, &["to", "sap", "-", "spool"])
+                {
+                    push_token_children(b, &mut children, tokens, cursor, next);
+                    cursor = next;
+                    continue;
+                }
+                if let Some(lead_end) =
+                    match_submit_sequence(source, tokens, cursor, &["spool", "parameters"])
+                {
+                    let expr_end =
+                        scan_submit_expr_end(source, tokens, lead_end, period_i, |tokens, i| {
+                            match_submit_sequence(source, tokens, i, &["archive", "parameters"])
+                                .is_some()
+                                || match_submit_sequence(
+                                    source,
+                                    tokens,
+                                    i,
+                                    &["without", "spool", "dynpro"],
+                                )
+                                .is_some()
+                        });
+                    let clause_end = expr_end.max(lead_end);
+                    let mut clause_children = Vec::new();
+                    push_token_children(b, &mut clause_children, tokens, cursor, lead_end);
+                    push_expr_child(
+                        b,
+                        &mut clause_children,
+                        source,
+                        tokens,
+                        lead_end,
+                        expr_end,
+                        lead_end.checked_sub(1).and_then(|i| tokens.get(i)),
+                    );
+                    children.push(b.branch(
+                        SyntaxKind::SubmitSpoolParametersOperand,
+                        tokens[cursor].range.start..tokens[clause_end - 1].range.end,
+                        &clause_children,
+                    ));
+                    cursor = clause_end;
+                    continue;
+                }
+                if let Some(lead_end) =
+                    match_submit_sequence(source, tokens, cursor, &["archive", "parameters"])
+                {
+                    let expr_end =
+                        scan_submit_expr_end(source, tokens, lead_end, period_i, |tokens, i| {
+                            match_submit_sequence(
+                                source,
+                                tokens,
+                                i,
+                                &["without", "spool", "dynpro"],
+                            )
+                            .is_some()
+                        });
+                    let clause_end = expr_end.max(lead_end);
+                    let mut clause_children = Vec::new();
+                    push_token_children(b, &mut clause_children, tokens, cursor, lead_end);
+                    push_expr_child(
+                        b,
+                        &mut clause_children,
+                        source,
+                        tokens,
+                        lead_end,
+                        expr_end,
+                        lead_end.checked_sub(1).and_then(|i| tokens.get(i)),
+                    );
+                    children.push(b.branch(
+                        SyntaxKind::SubmitArchiveParametersOperand,
+                        tokens[cursor].range.start..tokens[clause_end - 1].range.end,
+                        &clause_children,
+                    ));
+                    cursor = clause_end;
+                    continue;
+                }
+                if let Some(next) =
+                    match_submit_sequence(source, tokens, cursor, &["without", "spool", "dynpro"])
+                {
+                    push_token_children(b, &mut children, tokens, cursor, next);
+                    cursor = next;
+                    continue;
+                }
+                if let Some(lead_end) = match_submit_sequence(source, tokens, cursor, &["user"]) {
+                    let expr_end =
+                        scan_submit_expr_end(source, tokens, lead_end, period_i, |_, _| false);
+                    let clause_end = expr_end.max(lead_end);
+                    let mut clause_children = Vec::new();
+                    push_token_children(b, &mut clause_children, tokens, cursor, lead_end);
+                    push_expr_child(
+                        b,
+                        &mut clause_children,
+                        source,
+                        tokens,
+                        lead_end,
+                        expr_end,
+                        lead_end.checked_sub(1).and_then(|i| tokens.get(i)),
+                    );
+                    children.push(b.branch(
+                        SyntaxKind::SubmitUserOperand,
+                        tokens[cursor].range.start..tokens[clause_end - 1].range.end,
+                        &clause_children,
+                    ));
+                    cursor = clause_end;
+                    continue;
+                }
+                if let Some(lead_end) =
+                    match_submit_sequence(source, tokens, cursor, &["via", "job"])
+                {
+                    let expr_end =
+                        scan_submit_expr_end(source, tokens, lead_end, period_i, |tokens, i| {
+                            match_submit_sequence(source, tokens, i, &["number"]).is_some()
+                        });
+                    let clause_end = expr_end.max(lead_end);
+                    let mut clause_children = Vec::new();
+                    push_token_children(b, &mut clause_children, tokens, cursor, lead_end);
+                    push_expr_child(
+                        b,
+                        &mut clause_children,
+                        source,
+                        tokens,
+                        lead_end,
+                        expr_end,
+                        lead_end.checked_sub(1).and_then(|i| tokens.get(i)),
+                    );
+                    children.push(b.branch(
+                        SyntaxKind::SubmitJobOperand,
+                        tokens[cursor].range.start..tokens[clause_end - 1].range.end,
+                        &clause_children,
+                    ));
+                    cursor = clause_end;
+                    continue;
+                }
+                if let Some(lead_end) = match_submit_sequence(source, tokens, cursor, &["number"]) {
+                    let expr_end =
+                        scan_submit_expr_end(source, tokens, lead_end, period_i, |tokens, i| {
+                            match_submit_sequence(source, tokens, i, &["language"]).is_some()
+                        });
+                    let clause_end = expr_end.max(lead_end);
+                    let mut clause_children = Vec::new();
+                    push_token_children(b, &mut clause_children, tokens, cursor, lead_end);
+                    push_expr_child(
+                        b,
+                        &mut clause_children,
+                        source,
+                        tokens,
+                        lead_end,
+                        expr_end,
+                        lead_end.checked_sub(1).and_then(|i| tokens.get(i)),
+                    );
+                    children.push(b.branch(
+                        SyntaxKind::SubmitJobNumberOperand,
+                        tokens[cursor].range.start..tokens[clause_end - 1].range.end,
+                        &clause_children,
+                    ));
+                    cursor = clause_end;
+                    continue;
+                }
+                if let Some(lead_end) = match_submit_sequence(source, tokens, cursor, &["language"])
+                {
+                    let expr_end =
+                        scan_submit_expr_end(source, tokens, lead_end, period_i, |_, _| false);
+                    let clause_end = expr_end.max(lead_end);
+                    let mut clause_children = Vec::new();
+                    push_token_children(b, &mut clause_children, tokens, cursor, lead_end);
+                    push_expr_child(
+                        b,
+                        &mut clause_children,
+                        source,
+                        tokens,
+                        lead_end,
+                        expr_end,
+                        lead_end.checked_sub(1).and_then(|i| tokens.get(i)),
+                    );
+                    children.push(b.branch(
+                        SyntaxKind::SubmitLanguageOperand,
+                        tokens[cursor].range.start..tokens[clause_end - 1].range.end,
+                        &clause_children,
+                    ));
+                    cursor = clause_end;
+                    continue;
+                }
+                if let Some(next) =
+                    match_submit_sequence(source, tokens, cursor, &["and", "return"])
+                {
+                    push_token_children(b, &mut children, tokens, cursor, next);
+                    cursor = next;
+                    continue;
+                }
+
+                children.push(token_leaf(b, &tokens[cursor]));
+                cursor += 1;
+            }
+
+            children.push(token_leaf(b, &tokens[period_i]));
+            let node = b.branch(
+                SyntaxKind::SubmitStmt,
+                submit_tok.range.start..tokens[period_i].range.end,
                 &children,
             );
             (node, period_i + 1)
@@ -7963,7 +8760,7 @@ mod tests {
     use abap_ast::ast::{
         AstNode, ClassDecl, DataLikeDecl, DataLikeStorageKind, FormDecl, FormParamPassingKind,
         FormParamSectionKind, FunctionDecl, FunctionParamSectionKind, IncludeStmt, MethodDecl,
-        SyntaxNodeRef,
+        SubmitStmt, SyntaxNodeRef,
     };
 
     #[test]
@@ -10221,6 +11018,69 @@ CONCATENATE lv_evttime+6(4) '-'\n\
             parsed
                 .file
                 .count_kind(parsed.file.root(), SyntaxKind::ClassDecl),
+            1
+        );
+    }
+
+    #[test]
+    fn parses_submit_stmt_with_full_documented_option_set() {
+        let src = "\
+SUBMIT (lv_report)
+  USING SELECTION-SCREEN '1100'
+  VIA SELECTION-SCREEN
+  USING SELECTION-SET lv_variant
+  USING SELECTION-SETS OF PROGRAM lv_prog
+  WITH SELECTION-TABLE lt_rspar
+  WITH p_bukrs EQ lv_bukrs
+  WITH s_erdat NOT BETWEEN lv_low AND lv_high SIGN lv_sign
+  WITH s_vkorg IN lt_vkorg
+  WITH FREE SELECTIONS lt_texpr
+  LINE-SIZE lv_width
+  LINE-COUNT lv_lines
+  TO SAP-SPOOL
+  SPOOL PARAMETERS ls_pri
+  ARCHIVE PARAMETERS ls_arc
+  WITHOUT SPOOL DYNPRO
+  USER lv_user
+  VIA JOB lv_job NUMBER lv_count LANGUAGE lv_lang
+  AND RETURN.";
+        let parsed = crate::parse(src);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+
+        let stmt = SubmitStmt::cast(SyntaxNodeRef::new(
+            &parsed.file,
+            parsed
+                .file
+                .find_first_kind(parsed.file.root(), SyntaxKind::SubmitStmt)
+                .expect("submit stmt"),
+        ))
+        .expect("submit stmt");
+
+        assert!(stmt.target().is_some());
+        assert!(stmt.selection_screen().is_some());
+        assert!(stmt.selection_set().is_some());
+        assert!(stmt.selection_sets_program().is_some());
+        assert!(stmt.selection_table().is_some());
+        assert_eq!(stmt.with_clauses().count(), 3);
+        assert!(stmt.free_selections().is_some());
+        assert!(stmt.line_size().is_some());
+        assert!(stmt.line_count().is_some());
+        assert!(stmt.spool_parameters().is_some());
+        assert!(stmt.archive_parameters().is_some());
+        assert!(stmt.user().is_some());
+        assert!(stmt.job().is_some());
+        assert!(stmt.job_number().is_some());
+        assert!(stmt.language().is_some());
+    }
+
+    #[test]
+    fn parses_submit_stmt_exporting_list_to_memory() {
+        let parsed = crate::parse("SUBMIT rsnast00 EXPORTING LIST TO MEMORY AND RETURN.");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::SubmitStmt),
             1
         );
     }

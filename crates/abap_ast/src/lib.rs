@@ -347,6 +347,36 @@ pub enum SyntaxKind {
     PerformStmt,
     /// `SUBMIT ... .`
     SubmitStmt,
+    /// Target report/program name after `SUBMIT`.
+    SubmitTarget,
+    /// Operand after `USING SELECTION-SCREEN`.
+    SubmitSelectionScreenOperand,
+    /// Operand after `USING SELECTION-SET`.
+    SubmitSelectionSetOperand,
+    /// Operand after `USING SELECTION-SETS OF PROGRAM`.
+    SubmitSelectionSetsProgramOperand,
+    /// Operand after `WITH SELECTION-TABLE`.
+    SubmitSelectionTableOperand,
+    /// One `WITH sel ...` clause inside `SUBMIT`.
+    SubmitWithClause,
+    /// Operand after `WITH FREE SELECTIONS`.
+    SubmitFreeSelectionsOperand,
+    /// Operand after `LINE-SIZE`.
+    SubmitLineSizeOperand,
+    /// Operand after `LINE-COUNT`.
+    SubmitLineCountOperand,
+    /// Operand after `SPOOL PARAMETERS`.
+    SubmitSpoolParametersOperand,
+    /// Operand after `ARCHIVE PARAMETERS`.
+    SubmitArchiveParametersOperand,
+    /// Operand after `USER`.
+    SubmitUserOperand,
+    /// Operand after `VIA JOB`.
+    SubmitJobOperand,
+    /// Operand after `NUMBER` in `VIA JOB`.
+    SubmitJobNumberOperand,
+    /// Operand after `LANGUAGE` in `VIA JOB`.
+    SubmitLanguageOperand,
     /// `CALL FUNCTION ... .`, `CALL TRANSFORMATION ... .`, or `CALL BADI ... .`
     CallStmt,
     /// `CREATE OBJECT ... .`
@@ -628,6 +658,21 @@ impl SyntaxKind {
             Self::CheckStmt => "CheckStmt",
             Self::PerformStmt => "PerformStmt",
             Self::SubmitStmt => "SubmitStmt",
+            Self::SubmitTarget => "SubmitTarget",
+            Self::SubmitSelectionScreenOperand => "SubmitSelectionScreenOperand",
+            Self::SubmitSelectionSetOperand => "SubmitSelectionSetOperand",
+            Self::SubmitSelectionSetsProgramOperand => "SubmitSelectionSetsProgramOperand",
+            Self::SubmitSelectionTableOperand => "SubmitSelectionTableOperand",
+            Self::SubmitWithClause => "SubmitWithClause",
+            Self::SubmitFreeSelectionsOperand => "SubmitFreeSelectionsOperand",
+            Self::SubmitLineSizeOperand => "SubmitLineSizeOperand",
+            Self::SubmitLineCountOperand => "SubmitLineCountOperand",
+            Self::SubmitSpoolParametersOperand => "SubmitSpoolParametersOperand",
+            Self::SubmitArchiveParametersOperand => "SubmitArchiveParametersOperand",
+            Self::SubmitUserOperand => "SubmitUserOperand",
+            Self::SubmitJobOperand => "SubmitJobOperand",
+            Self::SubmitJobNumberOperand => "SubmitJobNumberOperand",
+            Self::SubmitLanguageOperand => "SubmitLanguageOperand",
             Self::CallStmt => "CallStmt",
             Self::CreateObjectStmt => "CreateObjectStmt",
             Self::CreateDataStmt => "CreateDataStmt",

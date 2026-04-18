@@ -468,6 +468,42 @@ ast_node!(WaitStmt, SyntaxKind::WaitStmt);
 ast_node!(WaitOperand, SyntaxKind::WaitOperand);
 ast_node!(PerformStmt, SyntaxKind::PerformStmt);
 ast_node!(SubmitStmt, SyntaxKind::SubmitStmt);
+ast_node!(SubmitTarget, SyntaxKind::SubmitTarget);
+ast_node!(
+    SubmitSelectionScreenOperand,
+    SyntaxKind::SubmitSelectionScreenOperand
+);
+ast_node!(
+    SubmitSelectionSetOperand,
+    SyntaxKind::SubmitSelectionSetOperand
+);
+ast_node!(
+    SubmitSelectionSetsProgramOperand,
+    SyntaxKind::SubmitSelectionSetsProgramOperand
+);
+ast_node!(
+    SubmitSelectionTableOperand,
+    SyntaxKind::SubmitSelectionTableOperand
+);
+ast_node!(SubmitWithClause, SyntaxKind::SubmitWithClause);
+ast_node!(
+    SubmitFreeSelectionsOperand,
+    SyntaxKind::SubmitFreeSelectionsOperand
+);
+ast_node!(SubmitLineSizeOperand, SyntaxKind::SubmitLineSizeOperand);
+ast_node!(SubmitLineCountOperand, SyntaxKind::SubmitLineCountOperand);
+ast_node!(
+    SubmitSpoolParametersOperand,
+    SyntaxKind::SubmitSpoolParametersOperand
+);
+ast_node!(
+    SubmitArchiveParametersOperand,
+    SyntaxKind::SubmitArchiveParametersOperand
+);
+ast_node!(SubmitUserOperand, SyntaxKind::SubmitUserOperand);
+ast_node!(SubmitJobOperand, SyntaxKind::SubmitJobOperand);
+ast_node!(SubmitJobNumberOperand, SyntaxKind::SubmitJobNumberOperand);
+ast_node!(SubmitLanguageOperand, SyntaxKind::SubmitLanguageOperand);
 ast_node!(CreateObjectStmt, SyntaxKind::CreateObjectStmt);
 ast_node!(CreateDataStmt, SyntaxKind::CreateDataStmt);
 ast_node!(CallStmt, SyntaxKind::CallStmt);
@@ -2132,8 +2168,190 @@ impl<'a> SubmitStmt<'a> {
         self.syntax.children_by_kind(SyntaxKind::Token)
     }
 
+    pub fn target(self) -> Option<SubmitTarget<'a>> {
+        self.syntax
+            .child_by_kind(SyntaxKind::SubmitTarget)
+            .and_then(SubmitTarget::cast)
+    }
+
     pub fn target_token(self) -> Option<SyntaxNodeRef<'a>> {
-        self.tokens().nth(1)
+        self.target()
+            .and_then(|target| target.syntax.children_by_kind(SyntaxKind::Token).next())
+            .or_else(|| self.tokens().nth(1))
+    }
+
+    pub fn selection_screen(self) -> Option<SubmitSelectionScreenOperand<'a>> {
+        self.syntax
+            .child_by_kind(SyntaxKind::SubmitSelectionScreenOperand)
+            .and_then(SubmitSelectionScreenOperand::cast)
+    }
+
+    pub fn selection_set(self) -> Option<SubmitSelectionSetOperand<'a>> {
+        self.syntax
+            .child_by_kind(SyntaxKind::SubmitSelectionSetOperand)
+            .and_then(SubmitSelectionSetOperand::cast)
+    }
+
+    pub fn selection_sets_program(self) -> Option<SubmitSelectionSetsProgramOperand<'a>> {
+        self.syntax
+            .child_by_kind(SyntaxKind::SubmitSelectionSetsProgramOperand)
+            .and_then(SubmitSelectionSetsProgramOperand::cast)
+    }
+
+    pub fn selection_table(self) -> Option<SubmitSelectionTableOperand<'a>> {
+        self.syntax
+            .child_by_kind(SyntaxKind::SubmitSelectionTableOperand)
+            .and_then(SubmitSelectionTableOperand::cast)
+    }
+
+    pub fn with_clauses(
+        self,
+    ) -> impl DoubleEndedIterator<Item = SubmitWithClause<'a>> + Clone + 'a {
+        self.syntax.children().filter_map(SubmitWithClause::cast)
+    }
+
+    pub fn free_selections(self) -> Option<SubmitFreeSelectionsOperand<'a>> {
+        self.syntax
+            .child_by_kind(SyntaxKind::SubmitFreeSelectionsOperand)
+            .and_then(SubmitFreeSelectionsOperand::cast)
+    }
+
+    pub fn line_size(self) -> Option<SubmitLineSizeOperand<'a>> {
+        self.syntax
+            .child_by_kind(SyntaxKind::SubmitLineSizeOperand)
+            .and_then(SubmitLineSizeOperand::cast)
+    }
+
+    pub fn line_count(self) -> Option<SubmitLineCountOperand<'a>> {
+        self.syntax
+            .child_by_kind(SyntaxKind::SubmitLineCountOperand)
+            .and_then(SubmitLineCountOperand::cast)
+    }
+
+    pub fn spool_parameters(self) -> Option<SubmitSpoolParametersOperand<'a>> {
+        self.syntax
+            .child_by_kind(SyntaxKind::SubmitSpoolParametersOperand)
+            .and_then(SubmitSpoolParametersOperand::cast)
+    }
+
+    pub fn archive_parameters(self) -> Option<SubmitArchiveParametersOperand<'a>> {
+        self.syntax
+            .child_by_kind(SyntaxKind::SubmitArchiveParametersOperand)
+            .and_then(SubmitArchiveParametersOperand::cast)
+    }
+
+    pub fn user(self) -> Option<SubmitUserOperand<'a>> {
+        self.syntax
+            .child_by_kind(SyntaxKind::SubmitUserOperand)
+            .and_then(SubmitUserOperand::cast)
+    }
+
+    pub fn job(self) -> Option<SubmitJobOperand<'a>> {
+        self.syntax
+            .child_by_kind(SyntaxKind::SubmitJobOperand)
+            .and_then(SubmitJobOperand::cast)
+    }
+
+    pub fn job_number(self) -> Option<SubmitJobNumberOperand<'a>> {
+        self.syntax
+            .child_by_kind(SyntaxKind::SubmitJobNumberOperand)
+            .and_then(SubmitJobNumberOperand::cast)
+    }
+
+    pub fn language(self) -> Option<SubmitLanguageOperand<'a>> {
+        self.syntax
+            .child_by_kind(SyntaxKind::SubmitLanguageOperand)
+            .and_then(SubmitLanguageOperand::cast)
+    }
+}
+
+impl<'a> SubmitTarget<'a> {
+    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
+        self.syntax.first_non_token_child()
+    }
+}
+
+impl<'a> SubmitSelectionScreenOperand<'a> {
+    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
+        self.syntax.first_non_token_child()
+    }
+}
+
+impl<'a> SubmitSelectionSetOperand<'a> {
+    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
+        self.syntax.first_non_token_child()
+    }
+}
+
+impl<'a> SubmitSelectionSetsProgramOperand<'a> {
+    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
+        self.syntax.first_non_token_child()
+    }
+}
+
+impl<'a> SubmitSelectionTableOperand<'a> {
+    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
+        self.syntax.first_non_token_child()
+    }
+}
+
+impl<'a> SubmitWithClause<'a> {
+    pub fn operands(self) -> impl DoubleEndedIterator<Item = SyntaxNodeRef<'a>> + Clone + 'a {
+        self.syntax.non_token_children()
+    }
+}
+
+impl<'a> SubmitFreeSelectionsOperand<'a> {
+    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
+        self.syntax.first_non_token_child()
+    }
+}
+
+impl<'a> SubmitLineSizeOperand<'a> {
+    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
+        self.syntax.first_non_token_child()
+    }
+}
+
+impl<'a> SubmitLineCountOperand<'a> {
+    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
+        self.syntax.first_non_token_child()
+    }
+}
+
+impl<'a> SubmitSpoolParametersOperand<'a> {
+    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
+        self.syntax.first_non_token_child()
+    }
+}
+
+impl<'a> SubmitArchiveParametersOperand<'a> {
+    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
+        self.syntax.first_non_token_child()
+    }
+}
+
+impl<'a> SubmitUserOperand<'a> {
+    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
+        self.syntax.first_non_token_child()
+    }
+}
+
+impl<'a> SubmitJobOperand<'a> {
+    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
+        self.syntax.first_non_token_child()
+    }
+}
+
+impl<'a> SubmitJobNumberOperand<'a> {
+    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
+        self.syntax.first_non_token_child()
+    }
+}
+
+impl<'a> SubmitLanguageOperand<'a> {
+    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
+        self.syntax.first_non_token_child()
     }
 }
 
