@@ -1387,14 +1387,35 @@ fn method_parameter_type_fact(parameter: &crate::ClassMemberParameterData) -> Ty
 }
 
 fn function_module_parameter_type_fact(parameter: &FunctionModuleParameterData) -> TypeFactData {
-    TypeFactData {
+    let declared_type = (!parameter.is_untyped)
+        .then(|| parameter.declared_type.clone())
+        .flatten();
+    let type_clause_display = if parameter.section == FunctionModuleParameterSection::Tables {
+        parameter.type_clause_display.as_ref().map(|display| {
+            if display.as_ref().to_ascii_uppercase().contains(" TABLE OF ") {
+                Arc::clone(display)
+            } else {
+                Arc::from(format!("STANDARD TABLE OF {display}"))
+            }
+        })
+    } else {
+        parameter.type_clause_display.clone()
+    };
+    let mut fact = TypeFactData {
         structure: None,
-        declared_type: (!parameter.is_untyped)
-            .then(|| parameter.declared_type.clone())
-            .flatten(),
-        type_clause_display: parameter.type_clause_display.clone(),
+        declared_type: declared_type.clone(),
+        type_clause_display,
         table_line: None,
+    };
+    if parameter.section == FunctionModuleParameterSection::Tables {
+        fact.table_line = Some(Box::new(TypeFactData {
+            structure: None,
+            declared_type,
+            type_clause_display: None,
+            table_line: None,
+        }));
     }
+    fact
 }
 
 fn call_section_matches_function_parameter(

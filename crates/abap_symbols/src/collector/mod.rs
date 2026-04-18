@@ -1248,7 +1248,7 @@ impl<'a> Collector<'a> {
     fn type_clause_display_from_typed_clause(&self, node: NodeId) -> Option<Arc<str>> {
         let clause = DeclClause::cast(self.syntax(node))?;
         let (type_ref, _) = clause.type_ref_with_namespace(self.source)?;
-        Some(Arc::from(type_ref.display_text(self.source)?))
+        self.render_type_ref_display(type_ref.syntax().id())
     }
 
     fn value_clause_display_from_typed_clause(&self, node: NodeId) -> Option<Arc<str>> {
@@ -1302,6 +1302,45 @@ impl<'a> Collector<'a> {
             base_name,
             field_path: field_path.into_iter().map(|segment| segment.name).collect(),
         })
+    }
+
+    fn render_type_ref_display(&self, node: NodeId) -> Option<Arc<str>> {
+        let tokens = self.syntax_token_nodes(node);
+        let mut rendered_tokens = Vec::new();
+        let mut paren = 0i32;
+        let mut bracket = 0i32;
+        let mut brace = 0i32;
+
+        for token in tokens {
+            if self.syntax_token_is_comment(&token) {
+                continue;
+            }
+
+            if paren == 0 && bracket == 0 && brace == 0 && token.kind == TokenKind::Ident {
+                let text = token.text.as_ref();
+                if text.eq_ignore_ascii_case("initial")
+                    || text.eq_ignore_ascii_case("length")
+                    || text.eq_ignore_ascii_case("decimals")
+                {
+                    break;
+                }
+            }
+
+            match token.text.as_ref() {
+                "(" => paren += 1,
+                ")" => paren -= 1,
+                "[" => bracket += 1,
+                "]" => bracket -= 1,
+                "{" => brace += 1,
+                "}" => brace -= 1,
+                _ => {}
+            }
+
+            rendered_tokens.push(token);
+        }
+
+        let rendered = self.render_token_infos(&rendered_tokens);
+        (!rendered.is_empty()).then(|| Arc::from(rendered))
     }
 
     fn structure_from_typed_clause(&self, node: NodeId, scope: ScopeId) -> Option<StructureId> {

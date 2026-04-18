@@ -29,6 +29,20 @@ impl<'a> Collector<'a> {
 }
 
 impl<'ctx, 'a> FormsLowering<'ctx, 'a> {
+    fn function_table_parameter_type_display(
+        section: FunctionModuleParameterSection,
+        type_clause_display: Option<Arc<str>>,
+    ) -> Option<Arc<str>> {
+        if section != FunctionModuleParameterSection::Tables {
+            return type_clause_display;
+        }
+        let display = type_clause_display?;
+        if display.as_ref().to_ascii_uppercase().contains(" TABLE OF ") {
+            return Some(display);
+        }
+        Some(Arc::from(format!("STANDARD TABLE OF {display}")))
+    }
+
     fn first_non_comment_range(tokens: &[SyntaxTokenInfo]) -> Option<abap_lexer::TextRange> {
         tokens
             .iter()
@@ -445,10 +459,13 @@ impl<'ctx, 'a> FormsLowering<'ctx, 'a> {
                             }),
                             None => None,
                         };
-                        let type_clause_display = param
-                            .type_ref()
-                            .and_then(|type_ref| type_ref.display_text(self.collector.source))
-                            .map(Arc::from);
+                        let type_clause_display = Self::function_table_parameter_type_display(
+                            section_kind,
+                            param
+                                .type_ref()
+                                .and_then(|type_ref| type_ref.display_text(self.collector.source))
+                                .map(Arc::from),
+                        );
                         parameter_infos.push(FunctionModuleParameterData {
                             section: section_kind,
                             name,

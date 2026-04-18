@@ -9173,6 +9173,123 @@ START-OF-SELECTION.
 }
 
 #[test]
+fn treats_typed_function_module_tables_parameters_as_internal_tables() {
+    let dep_src = r#"
+FUNCTION z_table_param
+  TABLES
+    it_rows TYPE i.
+ENDFUNCTION.
+"#;
+    let main_src = r#"
+START-OF-SELECTION.
+  DATA lt_rows TYPE STANDARD TABLE OF i WITH EMPTY KEY.
+  CALL FUNCTION 'Z_TABLE_PARAM'
+    TABLES
+      it_rows = lt_rows.
+"#;
+
+    let dep_parsed = parse(dep_src);
+    let main_parsed = parse(main_src);
+    let project = analyze_project(&[
+        ProjectInput {
+            uri: "file:///fm_main_typed_table.abap",
+            source: main_src,
+            parse: &main_parsed,
+        },
+        ProjectInput {
+            uri: "file:///fm_dep_typed_table.abap",
+            source: dep_src,
+            parse: &dep_parsed,
+        },
+    ]);
+    let dep_unit = project
+        .unit_by_uri("file:///fm_dep_typed_table.abap")
+        .expect("dep unit");
+    let function_symbol = dep_unit
+        .symbols
+        .iter()
+        .find(|symbol| symbol.kind == SymbolKind::Module && symbol.name.as_ref() == "z_table_param")
+        .expect("function symbol");
+    let function_module = dep_unit
+        .function_module(function_symbol.id)
+        .expect("function module metadata");
+    let parameter = function_module
+        .parameters
+        .iter()
+        .find(|parameter| parameter.name.as_ref() == "it_rows")
+        .expect("it_rows parameter");
+    assert_eq!(
+        parameter.type_clause_display.as_deref(),
+        Some("STANDARD TABLE OF i")
+    );
+
+    let main_unit = project
+        .unit_by_uri("file:///fm_main_typed_table.abap")
+        .expect("main unit");
+    assert!(
+        !main_unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::IncompatibleArgumentType
+                && diag.message.contains("it_rows")
+        }),
+        "{:?}",
+        main_unit.diagnostics
+    );
+}
+
+#[test]
+fn strips_comments_and_initial_size_from_table_type_display_and_validation() {
+    let dep_src = r#"
+FUNCTION z_table_param
+  TABLES
+    it_rows TYPE i.
+ENDFUNCTION.
+"#;
+    let main_src = r#"
+START-OF-SELECTION.
+  DATA: lt_rows TYPE STANDARD TABLE OF i " comment
+                 INITIAL SIZE 0.
+  CALL FUNCTION 'Z_TABLE_PARAM'
+    TABLES
+      it_rows = lt_rows.
+"#;
+
+    let dep_parsed = parse(dep_src);
+    let main_parsed = parse(main_src);
+    let project = analyze_project(&[
+        ProjectInput {
+            uri: "file:///fm_main_table_comment.abap",
+            source: main_src,
+            parse: &main_parsed,
+        },
+        ProjectInput {
+            uri: "file:///fm_dep_table_comment.abap",
+            source: dep_src,
+            parse: &dep_parsed,
+        },
+    ]);
+    let main_unit = project
+        .unit_by_uri("file:///fm_main_table_comment.abap")
+        .expect("main unit");
+    let table_symbol = main_unit
+        .symbols
+        .iter()
+        .find(|symbol| symbol.kind == SymbolKind::Variable && symbol.name.as_ref() == "lt_rows")
+        .expect("table symbol");
+    assert_eq!(
+        table_symbol.type_clause_display.as_deref(),
+        Some("STANDARD TABLE OF i")
+    );
+    assert!(
+        !main_unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::IncompatibleArgumentType
+                && diag.message.contains("it_rows")
+        }),
+        "{:?}",
+        main_unit.diagnostics
+    );
+}
+
+#[test]
 fn treats_call_function_changing_arguments_as_written_for_definite_assignment() {
     let dep_src = r#"
 FUNCTION z_touch_text

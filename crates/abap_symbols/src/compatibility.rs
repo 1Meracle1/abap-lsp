@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
-use crate::def_map::{MethodParameterSection, NamedArgumentSection, TypeFactData};
+use crate::def_map::{
+    FieldTypeRefData, MethodParameterSection, NamedArgumentSection, TypeFactData,
+};
 use crate::ids::SymbolHandle;
 use crate::project::ProjectAnalysis;
 use crate::{Namespace, SymbolKind, UnitAnalysis};
@@ -59,8 +61,13 @@ pub(crate) fn type_facts_compatible(
     actual_unit: &UnitAnalysis,
     actual: &TypeFactData,
 ) -> Option<bool> {
-    let expected = classify_type_fact(project, expected_unit, expected, 0)?;
-    let actual = classify_type_fact(project, actual_unit, actual, 0)?;
+    let (expected_unit, expected) = normalize_type_fact(project, expected_unit, expected, 0)?;
+    let (actual_unit, actual) = normalize_type_fact(project, actual_unit, actual, 0)?;
+    if normalized_type_facts_match_by_name(&expected, &actual) {
+        return Some(true);
+    }
+    let expected = classify_normalized_type_fact(project, expected_unit, &expected, 0)?;
+    let actual = classify_normalized_type_fact(project, actual_unit, &actual, 0)?;
     types_compatible(project, &expected, &actual)
 }
 
@@ -104,18 +111,17 @@ fn types_compatible(
     }
 }
 
-fn classify_type_fact(
+fn classify_normalized_type_fact(
     project: &ProjectAnalysis,
     unit: &UnitAnalysis,
     fact: &TypeFactData,
     depth: usize,
 ) -> Option<ClassifiedType> {
-    let (unit, fact) = normalize_type_fact(project, unit, fact, depth)?;
     if depth >= 8 {
         return None;
     }
     if let Some(line_fact) = fact.table_line.as_deref() {
-        let line = classify_type_fact(project, unit, line_fact, depth + 1).map(Box::new);
+        let line = classify_normalized_type_fact(project, unit, line_fact, depth + 1).map(Box::new);
         return Some(ClassifiedType::Table(line));
     }
     if fact
@@ -129,7 +135,8 @@ fn classify_type_fact(
             type_clause_display: None,
             table_line: None,
         };
-        let line = classify_type_fact(project, unit, &line_fact, depth + 1).map(Box::new);
+        let line =
+            classify_normalized_type_fact(project, unit, &line_fact, depth + 1).map(Box::new);
         return Some(ClassifiedType::Table(line));
     }
 
@@ -155,13 +162,86 @@ fn classify_type_fact(
         if let Some((resolved_unit, resolved_fact)) =
             resolve_named_type_fact(project, unit, declared_type.base_name.as_ref())
         {
-            return classify_type_fact(project, resolved_unit, &resolved_fact, depth + 1);
+            return classify_normalized_type_fact(
+                project,
+                resolved_unit,
+                &resolved_fact,
+                depth + 1,
+            );
         }
     }
     if fact.structure.is_some() {
         return Some(ClassifiedType::Structure);
     }
     Some(ClassifiedType::Scalar)
+}
+
+fn normalized_type_facts_match_by_name(expected: &TypeFactData, actual: &TypeFactData) -> bool {
+    let expected_is_table = fact_is_table_shape(expected);
+    let actual_is_table = fact_is_table_shape(actual);
+    if expected_is_table != actual_is_table {
+        return false;
+    }
+
+    match (expected.table_line.as_deref(), actual.table_line.as_deref()) {
+        (Some(expected_line), Some(actual_line)) => {
+            normalized_type_facts_match_by_name(expected_line, actual_line)
+        }
+        _ => named_type_refs_match(
+            expected.declared_type.as_ref(),
+            actual.declared_type.as_ref(),
+        ),
+    }
+}
+
+fn named_type_refs_match(
+    expected: Option<&FieldTypeRefData>,
+    actual: Option<&FieldTypeRefData>,
+) -> bool {
+    matches!(
+        (expected, actual),
+        (Some(expected), Some(actual))
+            if !expected.is_ref
+                && !actual.is_ref
+                && expected.base_name == actual.base_name
+                && expected.field_path == actual.field_path
+                && (expected.namespace == actual.namespace
+                    || (expected.field_path.is_empty() && actual.field_path.is_empty()))
+    )
+}
+
+fn fact_is_table_shape(fact: &TypeFactData) -> bool {
+    fact.table_line.is_some()
+        || fact
+            .type_clause_display
+            .as_deref()
+            .is_some_and(is_internal_table_type_display)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::named_type_refs_match;
+    use crate::def_map::FieldTypeRefData;
+    use crate::scope::Namespace;
+    use std::sync::Arc;
+
+    #[test]
+    fn matches_plain_named_type_and_like_references_with_same_base_name() {
+        let like_ref = FieldTypeRefData {
+            namespace: Namespace::Value,
+            is_ref: false,
+            base_name: Arc::from("ltap_conf"),
+            field_path: Vec::new(),
+        };
+        let type_ref = FieldTypeRefData {
+            namespace: Namespace::Type,
+            is_ref: false,
+            base_name: Arc::from("ltap_conf"),
+            field_path: Vec::new(),
+        };
+
+        assert!(named_type_refs_match(Some(&like_ref), Some(&type_ref)));
+    }
 }
 
 fn normalize_type_fact<'a>(
