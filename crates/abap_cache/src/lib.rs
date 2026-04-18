@@ -6604,9 +6604,47 @@ fn dependency_surface_text(text: &str) -> Arc<str> {
         idx = period_idx + 1;
     }
 
+    restore_function_signature_statements(tokens, text, &mut projected);
+
     Arc::from(
         String::from_utf8(projected).expect("dependency surface projection should stay utf-8"),
     )
+}
+
+fn restore_function_signature_statements(
+    tokens: &[abap_lexer::Token],
+    text: &str,
+    projected: &mut [u8],
+) {
+    let original = text.as_bytes();
+    let mut idx = 0usize;
+
+    while idx < tokens.len() {
+        while idx < tokens.len() && tokens[idx].kind == TokenKind::Comment {
+            idx += 1;
+        }
+        if idx >= tokens.len() {
+            break;
+        }
+
+        let Some(period_idx) = tokens[idx..]
+            .iter()
+            .position(|token| token.kind == TokenKind::Period)
+            .map(|offset| idx + offset)
+        else {
+            break;
+        };
+
+        let keywords = statement_keywords(tokens, text, idx, period_idx);
+        if keywords.first().map(String::as_str) == Some("function")
+            && keywords.get(1).map(String::as_str) != Some("pool")
+        {
+            let statement_range = tokens[idx].range.start..tokens[period_idx].range.end;
+            projected[statement_range.clone()].copy_from_slice(&original[statement_range]);
+        }
+
+        idx = period_idx + 1;
+    }
 }
 
 fn opened_function_module_dependency_analysis_text(text: &str) -> Option<Arc<str>> {
@@ -11315,6 +11353,202 @@ START-OF-SELECTION.
                 .diagnostics
                 .iter()
                 .all(|diagnostic| diagnostic.message != "unknown routine 'bp_job_select'"),
+            "{:?}",
+            snapshot.symbols.diagnostics
+        );
+    }
+
+    #[test]
+    fn call_function_resolves_from_dependency_source_with_multiline_function_signature() {
+        let store = DocumentStore::default();
+        let dep_src = "\
+FUNCTION-POOL rsdg.
+INCLUDE lrsdctop.
+
+FUNCTION POPUP_TO_CONFIRM_WITH_TABLE
+  IMPORTING
+    TITLEBAR TYPE ANY DEFAULT SPACE ##ADT_PARAMETER_UNTYPED
+    START_COLUMN TYPE SY-CUCOL DEFAULT 25
+    START_ROW TYPE SY-CUROW DEFAULT 6
+    END_COLUMN TYPE SY-CUCOL DEFAULT 90
+    END_ROW TYPE SY-CUROW DEFAULT 20
+    COLUMNNAME TYPE ANY ##ADT_PARAMETER_UNTYPED
+  EXPORTING
+    ANSWER TYPE ANY ##ADT_PARAMETER_UNTYPED
+  CHANGING
+    CT_DISPLAYTABLE TYPE SESF_STRING_TAB.
+  DATA icon_question(21) TYPE c VALUE 'ICON_MESSAGE_QUESTION'.
+  answer = icon_question.
+ENDFUNCTION.
+
+MODULE init_0100 OUTPUT.
+  WRITE space.
+ENDMODULE.
+";
+        let main_src = "\
+START-OF-SELECTION.
+  CALL FUNCTION 'POPUP_TO_CONFIRM_WITH_TABLE'.";
+        store.replace_all(vec![
+            DocumentInput {
+                uri: Arc::from("file:///popup_main.abap"),
+                version: 1,
+                text: Arc::from(main_src),
+                is_dependency: false,
+                object_name: None,
+            },
+            DocumentInput {
+                uri: Arc::from("file:///popup_dep.abap"),
+                version: 1,
+                text: Arc::from(dep_src),
+                is_dependency: true,
+                object_name: Some(Arc::from("popup_to_confirm_with_table")),
+            },
+        ]);
+        let snapshot = store
+            .documents
+            .read()
+            .get("file:///popup_main.abap")
+            .cloned()
+            .expect("main snapshot");
+
+        assert!(
+            snapshot
+                .symbols
+                .diagnostics
+                .iter()
+                .all(|diagnostic| {
+                    diagnostic.message != "unknown routine 'popup_to_confirm_with_table'"
+                }),
+            "{:?}",
+            snapshot.symbols.diagnostics
+        );
+    }
+
+    #[test]
+    fn call_function_resolves_from_realistic_local_export_function_module_source() {
+        let dep_src = "\
+*******************************************************************
+*   System-defined Include-files.                                 *
+*******************************************************************
+  INCLUDE LRSDCTOP.                          \" Global Data
+* INCLUDE LRSDCUXX. Omitted in dependency cache; function module stays in its own unit.
+
+*******************************************************************
+*   User-defined Include-files (if necessary).                    *
+*******************************************************************
+  INCLUDE LRSDCF00.                          \" Subprograms
+* INCLUDE LRSDCO...                          \" PBO-Modules
+* INCLUDE LRSDCI...                          \" PAI-Modules
+
+TYPES: BEGIN OF ty_s_displaytab,
+         row(40) TYPE c,
+       END OF ty_s_displaytab.
+TYPES: ty_t_displaytab TYPE STANDARD TABLE OF ty_s_displaytab WITH DEFAULT KEY.
+
+CONSTANTS gc_max_height TYPE i VALUE '30'.
+
+DATA ok_code               TYPE sy-ucomm.
+DATA g_title(80)           TYPE c.
+DATA g_columnname          TYPE SCRTEXT_L.
+DATA g_antwort(1)          TYPE c.
+DATA gt_displaytab         TYPE ty_t_displaytab.
+DATA gr_table              TYPE REF TO cl_salv_table.
+DATA gr_container          TYPE REF TO cl_gui_custom_container.
+
+CLASS cl_gui_cfw DEFINITION LOAD.
+
+FUNCTION POPUP_TO_CONFIRM_WITH_TABLE
+  IMPORTING
+    TITLEBAR TYPE ANY DEFAULT SPACE ##ADT_PARAMETER_UNTYPED
+    START_COLUMN TYPE SY-CUCOL DEFAULT 25
+    START_ROW TYPE SY-CUROW DEFAULT 6
+    END_COLUMN TYPE SY-CUCOL DEFAULT 90
+    END_ROW TYPE SY-CUROW DEFAULT 20
+    COLUMNNAME TYPE ANY ##ADT_PARAMETER_UNTYPED
+  EXPORTING
+    ANSWER TYPE ANY ##ADT_PARAMETER_UNTYPED
+  CHANGING
+    CT_DISPLAYTABLE TYPE SESF_STRING_TAB.
+
+
+
+  DATA icon_question(21) TYPE c VALUE 'ICON_MESSAGE_QUESTION'.
+
+* Set texts
+  g_title      = titlebar.
+  g_columnname = columnname.
+
+* Move data
+  PERFORM map_input_data USING ct_displaytable CHANGING gt_displaytab.
+
+* Call popup
+  CALL SCREEN 0200 STARTING AT start_column start_row
+                     ENDING AT end_column end_row.
+  answer = g_antwort.
+ENDFUNCTION.
+
+MODULE init_0100 OUTPUT.
+  PERFORM display_data.
+ENDMODULE.
+
+FORM map_input_data USING ct_displaytable TYPE sesf_string_tab
+                    CHANGING ct_grid TYPE ty_t_displaytab.
+  LOOP AT ct_displaytable INTO DATA(lv_line).
+    APPEND VALUE #( row = lv_line ) TO ct_grid.
+  ENDLOOP.
+ENDFORM.
+
+FORM display_data.
+  WRITE space.
+ENDFORM.
+";
+        let projected = dependency_surface_text(dep_src);
+        assert!(
+            projected.contains("FUNCTION POPUP_TO_CONFIRM_WITH_TABLE"),
+            "{projected}"
+        );
+        let store = DocumentStore::default();
+        let main_src = "\
+START-OF-SELECTION.
+  CALL FUNCTION 'POPUP_TO_CONFIRM_WITH_TABLE'.";
+        let snapshots = store.replace_all(vec![
+            DocumentInput {
+                uri: Arc::from("file:///popup_real_main.abap"),
+                version: 1,
+                text: Arc::from(main_src),
+                is_dependency: false,
+                object_name: None,
+            },
+            DocumentInput {
+                uri: Arc::from("file:///popup_real_dep.abap"),
+                version: 1,
+                text: Arc::from(dep_src),
+                is_dependency: true,
+                object_name: Some(Arc::from("popup_to_confirm_with_table")),
+            },
+        ]);
+        let snapshot = snapshots
+            .get("file:///popup_real_main.abap")
+            .cloned()
+            .expect("main snapshot");
+        let dep = snapshots
+            .get("file:///popup_real_dep.abap")
+            .cloned()
+            .expect("dep snapshot");
+
+        assert!(
+            !dep.symbols.function_modules.is_empty(),
+            "{:#?}",
+            dep.symbols.function_modules
+        );
+        assert!(
+            snapshot
+                .symbols
+                .diagnostics
+                .iter()
+                .all(|diagnostic| {
+                    diagnostic.message != "unknown routine 'popup_to_confirm_with_table'"
+                }),
             "{:?}",
             snapshot.symbols.diagnostics
         );
