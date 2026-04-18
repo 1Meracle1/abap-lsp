@@ -4013,15 +4013,23 @@ pub fn try_parse_report_stmt(
     idx: usize,
     errors: &mut Vec<crate::ParseError>,
 ) -> Option<(NodeId, usize)> {
+    let tok = tokens.get(idx)?;
+    if !is_keyword(source, tok, "report") && !is_keyword(source, tok, "program") {
+        return None;
+    }
     parse_simple_keyword_stmt(
         b,
         source,
         tokens,
         idx,
         SyntaxKind::ReportStmt,
-        "report",
+        if is_keyword(source, tok, "program") {
+            "program"
+        } else {
+            "report"
+        },
         errors,
-        "syntax error: expected '.' after REPORT",
+        "syntax error: expected '.' after REPORT/PROGRAM",
     )
 }
 

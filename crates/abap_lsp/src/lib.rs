@@ -3885,6 +3885,65 @@ unknown_symbol_mode = "remote"
     }
 
     #[test]
+    fn workspace_refresh_resolves_submit_report_from_local_export_program_artifact() {
+        let workspace_path = temp_workspace_path("workspace_local_export_submit_program");
+        let export_root = temp_workspace_path("workspace_local_export_submit_program_export");
+        let _ = fs::remove_dir_all(&workspace_path);
+        let _ = fs::remove_dir_all(&export_root);
+        fs::create_dir_all(workspace_path.join("src/reports/ZREP")).expect("report dir");
+        fs::create_dir_all(export_root.join("packages/VN/report")).expect("export dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[resolution]
+dependency_mode = "remote-on-demand"
+unknown_symbol_mode = "remote"
+"#,
+        )
+        .expect("manifest");
+        fs::write(
+            workspace_path.join("src/reports/ZREP/ZREP.abap"),
+            "REPORT zrep.\nSTART-OF-SELECTION.\n  SUBMIT rsnast00.\n",
+        )
+        .expect("report");
+        fs::write(
+            workspace_path.join("src/reports/ZREP/abapls-unit.toml"),
+            format!(
+                "[local_export]\nroots = [\"{}\"]\n\n[dependencies]\nsource = \"local-first\"\n",
+                export_root.to_string_lossy().replace('\\', "/")
+            ),
+        )
+        .expect("sidecar");
+        fs::write(
+            export_root.join("packages/VN/report/RSNAST00.abap"),
+            "PROGRAM rsnast00 MESSAGE-ID vn.\n",
+        )
+        .expect("export");
+
+        let workspace_uri = path_to_file_uri(&workspace_path);
+        let target_uri = normalize_lsp_uri(&format!("{workspace_uri}/src/reports/ZREP/ZREP.abap"));
+        let mut state = ServerState::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        refresh_workspace(&mut state, &workspace_uri);
+
+        let snapshot = snapshot_for_uri(&state, &target_uri).expect("snapshot");
+        assert!(
+            !snapshot
+                .symbols
+                .diagnostics
+                .iter()
+                .any(|diag| diag.message.contains("unknown symbol 'rsnast00'")),
+            "{:#?}",
+            snapshot.symbols.diagnostics
+        );
+
+        let _ = fs::remove_dir_all(&workspace_path);
+        let _ = fs::remove_dir_all(&export_root);
+    }
+
+    #[test]
     fn definition_resolves_local_export_class_outside_workspace_root() {
         let workspace_path = temp_workspace_path("workspace_local_export_definition");
         let export_root = temp_workspace_path("workspace_local_export_definition_export");

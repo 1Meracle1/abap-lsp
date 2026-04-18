@@ -43,3 +43,12 @@ fn classifies_find_match_offset_statement() {
     let root = parsed.file.root();
     assert_eq!(parsed.file.count_kind(root, SyntaxKind::FindStmt), 1);
 }
+
+#[test]
+fn program_statement_is_classified_as_report_stmt() {
+    let src = "PROGRAM rsnast00 MESSAGE-ID vn.\n";
+    let parsed = parse(src);
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let root = parsed.file.root();
+    assert_eq!(parsed.file.count_kind(root, SyntaxKind::ReportStmt), 1);
+}

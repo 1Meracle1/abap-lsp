@@ -68,7 +68,7 @@ const IDENT_LEAD_PARSERS: &[GuardedParser] = &[
     GuardedParser::new(&["do"], control_stmt::try_parse_do_stmt),
     GuardedParser::new(&["loop"], control_stmt::try_parse_loop_stmt),
     GuardedParser::new(&["try"], control_stmt::try_parse_try_stmt),
-    GuardedParser::new(&["report"], surface_stmt::try_parse_report_stmt),
+    GuardedParser::new(&["report", "program"], surface_stmt::try_parse_report_stmt),
     GuardedParser::new(&["include"], surface_stmt::try_parse_include_stmt),
     GuardedParser::new(
         &["at", "initialization", "start", "end", "top"],
