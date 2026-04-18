@@ -8899,6 +8899,41 @@ ENDCLASS.";
     }
 
     #[test]
+    fn routine_analysis_supports_legacy_table_body_initial_guards() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+    DATA lt_jobs TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+    DATA lt_copy TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+    IF lt_jobs[] IS NOT INITIAL.
+      lt_copy = lt_jobs.
+    ENDIF.
+  ENDMETHOD.
+ENDCLASS.";
+
+        let snapshot = store.publish("file:///routine_legacy_table_body_guard.abap", 1, src);
+        let use_before = diagnostic_slices(
+            src,
+            &snapshot.symbols.diagnostics,
+            DiagnosticKind::UseBeforeDefiniteAssignment,
+        );
+
+        let relevant: Vec<_> = use_before
+            .iter()
+            .filter(|slice| **slice == "lt_jobs")
+            .cloned()
+            .collect();
+
+        assert!(relevant.is_empty(), "{use_before:?}");
+    }
+
+    #[test]
     fn routine_analysis_inherits_is_not_initial_guards_into_nested_loop_scopes() {
         let store = DocumentStore::default();
         let src = "\

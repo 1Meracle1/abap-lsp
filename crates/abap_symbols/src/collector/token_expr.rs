@@ -223,6 +223,18 @@ impl<'a> Collector<'a> {
                                 kind,
                             });
                         }
+                        if let Some((range, kind)) =
+                            self.legacy_table_body_value_state_check(tokens, idx)
+                        {
+                            self.add_value_state_check(ValueStateCheckData {
+                                scope,
+                                range,
+                                symbol_name: Self::lower_arc(text),
+                                symbol_range: token.range.clone(),
+                                field_name: None,
+                                kind,
+                            });
+                        }
                         if let Some(kind) = self.value_state_check_kind(tokens, idx) {
                             self.add_value_state_check(ValueStateCheckData {
                                 scope,
@@ -349,6 +361,29 @@ impl<'a> Collector<'a> {
             return Some(ValueStateCheckKind::IsNotInitial);
         }
         None
+    }
+
+    fn legacy_table_body_value_state_check(
+        &self,
+        tokens: &[SyntaxTokenInfo],
+        idx: usize,
+    ) -> Option<(TextRange, ValueStateCheckKind)> {
+        let token = tokens.get(idx)?;
+        if Self::is_field_symbol_name(token.text.as_ref())
+            || !self.syntax_token_is_ident_like(token)
+        {
+            return None;
+        }
+        let lbrack_idx = idx + 1;
+        if tokens.get(lbrack_idx)?.text.as_ref() != "[" {
+            return None;
+        }
+        let rbrack_idx = self.find_matching_group_end_infos(tokens, lbrack_idx, "[", "]")?;
+        if rbrack_idx != lbrack_idx + 1 {
+            return None;
+        }
+        let kind = self.selector_value_state_check_kind(tokens, rbrack_idx + 1)?;
+        Some((token.range.start..tokens.get(rbrack_idx)?.range.end, kind))
     }
 
     fn selector_value_state_check_kind(
