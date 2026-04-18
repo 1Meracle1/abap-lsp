@@ -278,16 +278,34 @@ pub fn normalize_lsp_uri(raw: &str) -> String {
 }
 
 fn cache_for_uri<'a>(state: &'a ServerState, uri: &str) -> &'a DocumentStore {
+    workspace_cache_for_uri(state, uri).unwrap_or(&state.cache)
+}
+
+fn workspace_cache_for_uri<'a>(state: &'a ServerState, uri: &str) -> Option<&'a DocumentStore> {
+    if let Some(workspace) = state.workspace_for_uri(uri) {
+        return Some(&workspace.cache);
+    }
+
     state
-        .workspace_for_uri(uri)
+        .workspaces
+        .values()
+        .find(|workspace| {
+            workspace.preview_snapshots.contains_key(uri) || workspace.cache.get(uri).is_some()
+        })
         .map(|workspace| &workspace.cache)
-        .unwrap_or(&state.cache)
 }
 
 fn snapshot_for_uri(state: &ServerState, uri: &str) -> Option<Arc<AnalysisSnapshot>> {
     if let Some(snapshot) = state
         .workspace_for_uri(uri)
         .and_then(|workspace| workspace.preview_snapshots.get(uri))
+    {
+        return Some(Arc::clone(snapshot));
+    }
+    if let Some(snapshot) = state
+        .workspaces
+        .values()
+        .find_map(|workspace| workspace.preview_snapshots.get(uri))
     {
         return Some(Arc::clone(snapshot));
     }
@@ -3861,6 +3879,87 @@ unknown_symbol_mode = "remote"
             build_remote_dependency_request(&mut state, &target_uri).is_none(),
             "resolved local export should not trigger remote request"
         );
+
+        let _ = fs::remove_dir_all(&workspace_path);
+        let _ = fs::remove_dir_all(&export_root);
+    }
+
+    #[test]
+    fn definition_resolves_local_export_class_outside_workspace_root() {
+        let workspace_path = temp_workspace_path("workspace_local_export_definition");
+        let export_root = temp_workspace_path("workspace_local_export_definition_export");
+        let _ = fs::remove_dir_all(&workspace_path);
+        let _ = fs::remove_dir_all(&export_root);
+        fs::create_dir_all(workspace_path.join("src/reports/ZREP")).expect("report dir");
+        fs::create_dir_all(export_root.join("packages/ZPKG/global-class")).expect("export dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[resolution]
+dependency_mode = "remote-on-demand"
+unknown_symbol_mode = "remote"
+"#,
+        )
+        .expect("manifest");
+        fs::write(
+            workspace_path.join("src/reports/ZREP/ZREP.abap"),
+            "REPORT zrep.",
+        )
+        .expect("report");
+        let source_text = "DATA lo_helper TYPE REF TO zcl_helper.\n";
+        fs::write(
+            workspace_path.join("src/reports/ZREP/ZREP_TOP.abap"),
+            source_text,
+        )
+        .expect("top include");
+        fs::write(
+            workspace_path.join("src/reports/ZREP/abapls-unit.toml"),
+            format!(
+                "[local_export]\nroots = [\"{}\"]\n\n[dependencies]\nsource = \"local-first\"\n",
+                export_root.to_string_lossy().replace('\\', "/")
+            ),
+        )
+        .expect("sidecar");
+        fs::write(
+            export_root.join("packages/ZPKG/global-class/ZCL_HELPER.abap"),
+            "CLASS zcl_helper DEFINITION PUBLIC.\nENDCLASS.\nCLASS zcl_helper IMPLEMENTATION.\nENDCLASS.\n",
+        )
+        .expect("export");
+
+        let workspace_uri = path_to_file_uri(&workspace_path);
+        let source_uri =
+            normalize_lsp_uri(&format!("{workspace_uri}/src/reports/ZREP/ZREP_TOP.abap"));
+        let helper_uri = normalize_lsp_uri(&path_to_file_uri(
+            &export_root.join("packages/ZPKG/global-class/ZCL_HELPER.abap"),
+        ));
+        let mut state = ServerState::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        refresh_workspace(&mut state, &workspace_uri);
+
+        let helper_col = source_text.find("zcl_helper").expect("type ref column") as u32 + 1;
+        let result = definition(
+            &state,
+            &GotoDefinitionParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str(&source_uri).expect("uri"),
+                    },
+                    position: Position {
+                        line: 0,
+                        character: helper_col,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            },
+        )
+        .expect("definition");
+        let GotoDefinitionResponse::Scalar(location) = result else {
+            panic!("expected scalar definition");
+        };
+        assert_eq!(normalize_lsp_uri(location.uri.as_str()), helper_uri);
 
         let _ = fs::remove_dir_all(&workspace_path);
         let _ = fs::remove_dir_all(&export_root);

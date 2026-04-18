@@ -11412,13 +11412,9 @@ START-OF-SELECTION.
             .expect("main snapshot");
 
         assert!(
-            snapshot
-                .symbols
-                .diagnostics
-                .iter()
-                .all(|diagnostic| {
-                    diagnostic.message != "unknown routine 'popup_to_confirm_with_table'"
-                }),
+            snapshot.symbols.diagnostics.iter().all(|diagnostic| {
+                diagnostic.message != "unknown routine 'popup_to_confirm_with_table'"
+            }),
             "{:?}",
             snapshot.symbols.diagnostics
         );
@@ -11542,13 +11538,9 @@ START-OF-SELECTION.
             dep.symbols.function_modules
         );
         assert!(
-            snapshot
-                .symbols
-                .diagnostics
-                .iter()
-                .all(|diagnostic| {
-                    diagnostic.message != "unknown routine 'popup_to_confirm_with_table'"
-                }),
+            snapshot.symbols.diagnostics.iter().all(|diagnostic| {
+                diagnostic.message != "unknown routine 'popup_to_confirm_with_table'"
+            }),
             "{:?}",
             snapshot.symbols.diagnostics
         );
