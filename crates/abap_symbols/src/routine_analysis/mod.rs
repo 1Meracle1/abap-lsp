@@ -589,6 +589,12 @@ struct SelectorStructureWrite {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ConditionalAssignedTarget {
+    value: DataflowValueId,
+    field_mask: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FieldSymbolBindingTransfer {
     Set(DataflowValueId),
     Copy {
@@ -1520,28 +1526,57 @@ fn build_routine_dataflow(
         &values,
         values.len(),
     );
+    let sy_subrc_success_assigned_scope_refinements =
+        resolve_sy_subrc_success_assigned_scope_refinements(
+            unit,
+            &reference_uses,
+            &value_ids_by_symbol,
+            &structure_assignment_trackers,
+            &values,
+            values.len(),
+        );
+    let sy_subrc_success_structure_field_scope_refinements =
+        resolve_sy_subrc_success_structure_field_scope_refinements(
+            unit,
+            &reference_uses,
+            &value_ids_by_symbol,
+            &structure_assignment_trackers,
+            &values,
+        );
     let structure_field_reads = resolve_structure_field_reads(
         unit,
         &reference_uses,
         &structure_assignment_trackers,
         &values,
     );
-    let block_non_initial_entry_refinements = block_non_initial_entry_refinements(
+    let block_non_initial_entry_bits = block_non_initial_entry_refinements(
         unit,
         routine,
         &is_not_initial_scope_refinements,
         values.len(),
     );
-    let block_non_initial_field_entry_refinements = block_non_initial_field_entry_refinements(
+    let block_non_initial_field_masks = block_non_initial_field_entry_refinements(
         unit,
         routine,
         &is_not_initial_field_scope_refinements,
         values.len(),
     );
-    let block_bound_entry_refinements = block_bound_entry_refinements(
+    let block_bound_entry_bits = block_bound_entry_refinements(
         unit,
         routine,
         &sy_subrc_success_bound_scope_refinements,
+        values.len(),
+    );
+    let block_assigned_entry_refinements = block_non_initial_entry_refinements(
+        unit,
+        routine,
+        &sy_subrc_success_assigned_scope_refinements,
+        values.len(),
+    );
+    let block_assigned_field_entry_refinements = block_non_initial_field_entry_refinements(
+        unit,
+        routine,
+        &sy_subrc_success_structure_field_scope_refinements,
         values.len(),
     );
     let mut safe_read_refs = safe_field_symbol_checks.clone();
@@ -1609,8 +1644,19 @@ fn build_routine_dataflow(
                     }
                 }
             }
-            RoutineInstructionSite::SqlQuery { .. }
-            | RoutineInstructionSite::ValueRead { .. }
+            RoutineInstructionSite::SqlQuery { index } => {
+                for target in unit
+                    .sql_targets
+                    .iter()
+                    .filter(|target| target.query_id == index as usize)
+                {
+                    suppressed_refs.extend(reference_ids_in_range(
+                        &reference_uses,
+                        sql_target_effective_range(target),
+                    ));
+                }
+            }
+            RoutineInstructionSite::ValueRead { .. }
             | RoutineInstructionSite::UnknownEffect
             | RoutineInstructionSite::Branch { .. }
             | RoutineInstructionSite::LoopHeader { .. }
@@ -2010,9 +2056,28 @@ fn build_routine_dataflow(
                     }
                 }
             }
-            RoutineInstructionSite::SqlQuery { .. }
-            | RoutineInstructionSite::Branch { .. }
-            | RoutineInstructionSite::Terminator { .. } => {}
+            RoutineInstructionSite::SqlQuery { index } => {
+                for target in sql_query_conditional_assignment_targets(
+                    unit,
+                    index as usize,
+                    &reference_uses,
+                    &value_ids_by_symbol,
+                    &structure_assignment_trackers,
+                    &values,
+                ) {
+                    transfer.writes.push(target.value);
+                    transfer.non_initial_kills.push(target.value);
+                    if let Some(mask) = target.field_mask {
+                        transfer
+                            .structure_field_writes
+                            .push(StructureFieldWriteTransfer {
+                                value: target.value,
+                                mask,
+                            });
+                    }
+                }
+            }
+            RoutineInstructionSite::Branch { .. } | RoutineInstructionSite::Terminator { .. } => {}
         }
         instruction_summaries.push(InstructionDataflowSummary {
             instruction: instruction.id,
@@ -2118,14 +2183,15 @@ fn build_routine_dataflow(
         iterations += 1;
         for block in &routine.cfg.blocks {
             let block_idx = block.id.as_usize();
-            let next_entry_assigned = if !block.reachable {
+            let mut next_entry_assigned = if !block.reachable {
                 DenseBitSet::new(values.len())
             } else if block.kind == RoutineBlockKind::Entry {
                 entry_assigned.clone()
             } else {
                 intersect_predecessor_bits(&block.predecessors, &block_exit_assigned, values.len())
             };
-            let next_entry_structure_fields = if !block.reachable {
+            next_entry_assigned.union_from(&block_assigned_entry_refinements[block_idx]);
+            let mut next_entry_structure_fields = if !block.reachable {
                 vec![0u64; values.len()]
             } else if block.kind == RoutineBlockKind::Entry {
                 entry_structure_fields.clone()
@@ -2136,6 +2202,10 @@ fn build_routine_dataflow(
                     values.len(),
                 )
             };
+            union_structure_field_masks(
+                &mut next_entry_structure_fields,
+                &block_assigned_field_entry_refinements[block_idx],
+            );
             let mut next_entry_bound = if !block.reachable {
                 DenseBitSet::new(values.len())
             } else if block.kind == RoutineBlockKind::Entry {
@@ -2143,7 +2213,7 @@ fn build_routine_dataflow(
             } else {
                 intersect_predecessor_bits(&block.predecessors, &block_exit_bound, values.len())
             };
-            next_entry_bound.union_from(&block_bound_entry_refinements[block_idx]);
+            next_entry_bound.union_from(&block_bound_entry_bits[block_idx]);
             let next_entry_maybe_written = if !block.reachable {
                 DenseBitSet::new(values.len())
             } else {
@@ -2158,7 +2228,7 @@ fn build_routine_dataflow(
                     values.len(),
                 )
             };
-            next_entry_non_initial.union_from(&block_non_initial_entry_refinements[block_idx]);
+            next_entry_non_initial.union_from(&block_non_initial_entry_bits[block_idx]);
             let mut next_entry_non_initial_fields = if !block.reachable {
                 vec![0u64; values.len()]
             } else {
@@ -2170,7 +2240,7 @@ fn build_routine_dataflow(
             };
             union_structure_field_masks(
                 &mut next_entry_non_initial_fields,
-                &block_non_initial_field_entry_refinements[block_idx],
+                &block_non_initial_field_masks[block_idx],
             );
             let (
                 next_exit_assigned,
@@ -3357,40 +3427,13 @@ fn resolve_sy_subrc_success_bound_scope_refinements(
 ) -> Vec<DenseBitSet> {
     let mut out = vec![DenseBitSet::new(value_count); unit.scopes.len()];
     for check in &unit.value_state_checks {
-        if check.kind != ValueStateCheckKind::EqualsZero {
-            continue;
-        }
-        let Some(scope_data) = unit.scopes.get(check.scope.as_usize()) else {
-            continue;
-        };
-        if !matches!(
-            scope_data.kind,
-            ScopeKind::IfBranch | ScopeKind::ElseifBranch
-        ) {
-            continue;
-        }
-        let Some(field_name) = check.field_name.as_ref() else {
-            continue;
-        };
-        if !field_name.eq_ignore_ascii_case("subrc")
-            || !(check.symbol_name.eq_ignore_ascii_case("sy")
-                || check.symbol_name.eq_ignore_ascii_case("syst"))
-        {
+        if !sy_subrc_success_check(unit, check) {
             continue;
         }
         let Some(scope_bits) = out.get_mut(check.scope.as_usize()) else {
             continue;
         };
-        let Some(update) = unit
-            .system_field_updates
-            .iter()
-            .filter(|update| {
-                update.field_name.eq_ignore_ascii_case("subrc")
-                    && update.range.end <= check.range.start
-                    && scope_descends_from(unit, check.scope, update.scope)
-            })
-            .max_by_key(|update| (update.range.end, update.range.start))
-        else {
+        let Some(update) = latest_subrc_update_before_check(unit, check) else {
             continue;
         };
         if update.statement != SystemFieldStatementKind::ReadTable {
@@ -3415,6 +3458,167 @@ fn resolve_sy_subrc_success_bound_scope_refinements(
         }
     }
     out
+}
+
+fn resolve_sy_subrc_success_assigned_scope_refinements(
+    unit: &UnitAnalysis,
+    reference_uses: &[ReferenceUse],
+    value_ids_by_symbol: &HashMap<SymbolHandle, DataflowValueId>,
+    structure_assignment_trackers: &[Option<StructureAssignmentTracker>],
+    values: &[RoutineDataflowValue],
+    value_count: usize,
+) -> Vec<DenseBitSet> {
+    let mut out = vec![DenseBitSet::new(value_count); unit.scopes.len()];
+    for check in &unit.value_state_checks {
+        if !sy_subrc_success_check(unit, check) {
+            continue;
+        }
+        let Some(scope_bits) = out.get_mut(check.scope.as_usize()) else {
+            continue;
+        };
+        let Some(update) = latest_subrc_update_before_check(unit, check) else {
+            continue;
+        };
+        for target in conditional_assignment_targets_for_subrc_success_update(
+            unit,
+            update,
+            reference_uses,
+            value_ids_by_symbol,
+            structure_assignment_trackers,
+            values,
+        ) {
+            if target.field_mask.is_none() {
+                scope_bits.insert(target.value);
+            }
+        }
+    }
+    out
+}
+
+fn resolve_sy_subrc_success_structure_field_scope_refinements(
+    unit: &UnitAnalysis,
+    reference_uses: &[ReferenceUse],
+    value_ids_by_symbol: &HashMap<SymbolHandle, DataflowValueId>,
+    structure_assignment_trackers: &[Option<StructureAssignmentTracker>],
+    values: &[RoutineDataflowValue],
+) -> Vec<Vec<u64>> {
+    let mut out = vec![vec![0u64; values.len()]; unit.scopes.len()];
+    for check in &unit.value_state_checks {
+        if !sy_subrc_success_check(unit, check) {
+            continue;
+        }
+        let Some(scope_masks) = out.get_mut(check.scope.as_usize()) else {
+            continue;
+        };
+        let Some(update) = latest_subrc_update_before_check(unit, check) else {
+            continue;
+        };
+        for target in conditional_assignment_targets_for_subrc_success_update(
+            unit,
+            update,
+            reference_uses,
+            value_ids_by_symbol,
+            structure_assignment_trackers,
+            values,
+        ) {
+            if let Some(mask) = target.field_mask {
+                scope_masks[target.value.as_usize()] |= mask;
+            }
+        }
+    }
+    out
+}
+
+fn sy_subrc_success_check(unit: &UnitAnalysis, check: &crate::ValueStateCheckData) -> bool {
+    if !matches!(
+        check.kind,
+        ValueStateCheckKind::EqualsZero | ValueStateCheckKind::IsInitial
+    ) {
+        return false;
+    }
+    let Some(scope_data) = unit.scopes.get(check.scope.as_usize()) else {
+        return false;
+    };
+    if !matches!(
+        scope_data.kind,
+        ScopeKind::IfBranch | ScopeKind::ElseifBranch
+    ) {
+        return false;
+    }
+    let Some(field_name) = check.field_name.as_ref() else {
+        return false;
+    };
+    field_name.eq_ignore_ascii_case("subrc")
+        && (check.symbol_name.eq_ignore_ascii_case("sy")
+            || check.symbol_name.eq_ignore_ascii_case("syst"))
+}
+
+fn latest_subrc_update_before_check<'a>(
+    unit: &'a UnitAnalysis,
+    check: &crate::ValueStateCheckData,
+) -> Option<&'a crate::SystemFieldUpdateData> {
+    unit.system_field_updates
+        .iter()
+        .filter(|update| {
+            update.field_name.eq_ignore_ascii_case("subrc")
+                && update.range.end <= check.range.start
+                && scope_descends_from(unit, check.scope, update.scope)
+        })
+        .max_by_key(|update| (update.range.end, update.range.start))
+}
+
+fn conditional_assignment_targets_for_subrc_success_update(
+    unit: &UnitAnalysis,
+    update: &crate::SystemFieldUpdateData,
+    reference_uses: &[ReferenceUse],
+    value_ids_by_symbol: &HashMap<SymbolHandle, DataflowValueId>,
+    structure_assignment_trackers: &[Option<StructureAssignmentTracker>],
+    values: &[RoutineDataflowValue],
+) -> Vec<ConditionalAssignedTarget> {
+    match update.statement {
+        SystemFieldStatementKind::ReadTable => unit
+            .routine_sites
+            .iter()
+            .find(|site| {
+                site.kind == RoutineSiteKind::ReadTable
+                    && site.scope == update.scope
+                    && site.range == update.range
+            })
+            .and_then(|site| {
+                site.target_range.as_ref().and_then(|target_range| {
+                    conditional_assignment_target_for_range(
+                        unit,
+                        target_range,
+                        reference_uses,
+                        value_ids_by_symbol,
+                        structure_assignment_trackers,
+                        values,
+                    )
+                })
+            })
+            .into_iter()
+            .collect(),
+        SystemFieldStatementKind::Select => unit
+            .sql_queries
+            .iter()
+            .filter(|query| {
+                query.scope == update.scope
+                    && update.range.start <= query.range.start
+                    && query.range.end <= update.range.end
+            })
+            .flat_map(|query| {
+                sql_query_conditional_assignment_targets(
+                    unit,
+                    query.id,
+                    reference_uses,
+                    value_ids_by_symbol,
+                    structure_assignment_trackers,
+                    values,
+                )
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
 }
 
 fn block_non_initial_entry_refinements(
@@ -3528,6 +3732,61 @@ fn scope_descends_from(unit: &UnitAnalysis, scope: ScopeId, ancestor: ScopeId) -
             .and_then(|scope| scope.parent);
     }
     false
+}
+
+fn sql_target_effective_range(target: &crate::SqlTargetData) -> &TextRange {
+    target.target_range.as_ref().unwrap_or(&target.range)
+}
+
+fn conditional_assignment_target_for_range(
+    unit: &UnitAnalysis,
+    range: &TextRange,
+    reference_uses: &[ReferenceUse],
+    value_ids_by_symbol: &HashMap<SymbolHandle, DataflowValueId>,
+    structure_assignment_trackers: &[Option<StructureAssignmentTracker>],
+    values: &[RoutineDataflowValue],
+) -> Option<ConditionalAssignedTarget> {
+    if let Some(selector_write) = selector_structure_write_for_range(
+        unit,
+        range,
+        reference_uses,
+        structure_assignment_trackers,
+    ) {
+        return Some(ConditionalAssignedTarget {
+            value: selector_write.base_value,
+            field_mask: selector_write.field_mask,
+        });
+    }
+    direct_write_value_id_for_range(unit, range, reference_uses, value_ids_by_symbol, values).map(
+        |value| ConditionalAssignedTarget {
+            value,
+            field_mask: None,
+        },
+    )
+}
+
+fn sql_query_conditional_assignment_targets(
+    unit: &UnitAnalysis,
+    query_id: usize,
+    reference_uses: &[ReferenceUse],
+    value_ids_by_symbol: &HashMap<SymbolHandle, DataflowValueId>,
+    structure_assignment_trackers: &[Option<StructureAssignmentTracker>],
+    values: &[RoutineDataflowValue],
+) -> Vec<ConditionalAssignedTarget> {
+    unit.sql_targets
+        .iter()
+        .filter(|target| target.query_id == query_id)
+        .filter_map(|target| {
+            conditional_assignment_target_for_range(
+                unit,
+                sql_target_effective_range(target),
+                reference_uses,
+                value_ids_by_symbol,
+                structure_assignment_trackers,
+                values,
+            )
+        })
+        .collect()
 }
 
 fn system_field_update_contains_field_symbol_bind(

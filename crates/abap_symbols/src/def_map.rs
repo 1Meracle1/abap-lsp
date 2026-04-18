@@ -230,6 +230,7 @@ pub struct SqlTargetData {
     pub query_id: usize,
     pub scope: ScopeId,
     pub range: TextRange,
+    pub target_range: Option<TextRange>,
     pub kind: SqlTargetKind,
     pub target_name: Option<Arc<str>>,
     pub is_table: bool,

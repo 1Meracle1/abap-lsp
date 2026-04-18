@@ -2369,18 +2369,19 @@ fn into_target_identifier_range(
     target: &crate::def_map::SqlTargetData,
     name: &Arc<str>,
 ) -> std::ops::Range<usize> {
+    let search_range = target.target_range.as_ref().unwrap_or(&target.range);
     unit.references
         .iter()
         .filter(|reference| {
             reference.namespace == Namespace::Value
                 && reference.kind == ReferenceKind::Identifier
                 && reference.name.as_ref().eq_ignore_ascii_case(name.as_ref())
-                && reference.range.start >= target.range.start
-                && reference.range.end <= target.range.end
+                && reference.range.start >= search_range.start
+                && reference.range.end <= search_range.end
         })
         .min_by_key(|reference| reference.range.end.saturating_sub(reference.range.start))
         .map(|reference| reference.range.clone())
-        .unwrap_or_else(|| target.range.clone())
+        .unwrap_or_else(|| search_range.clone())
 }
 
 fn validate_open_sql_into_targets(

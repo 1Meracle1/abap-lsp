@@ -943,14 +943,14 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
         let is_appending = into_clause.has_keyword(self.ctx.source(), "appending");
         let is_table = into_clause.has_keyword(self.ctx.source(), "table");
         let is_corresponding = into_clause.has_keyword(self.ctx.source(), "corresponding");
-
-        let mut target_name = None;
-        let mut is_inline = false;
         let children: Vec<_> = into_clause
             .target_children()
             .map(|child| child.id())
             .collect();
-        for child in children {
+
+        let mut target_name = None;
+        let mut is_inline = false;
+        for &child in &children {
             match self.ctx.file().kind(child) {
                 SyntaxKind::DataInlineDecl => {
                     is_inline = true;
@@ -1008,11 +1008,17 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
             }
         }
 
-        let target_range = self.ctx.file().range(node);
+        let clause_range = self.ctx.file().range(node);
+        let target_range = children
+            .iter()
+            .copied()
+            .map(|child| self.ctx.file().range(child))
+            .reduce(|acc, next| acc.start.min(next.start)..acc.end.max(next.end));
         self.ctx.emit_sql_target(SqlTargetData {
             query_id,
             scope,
-            range: target_range,
+            range: clause_range,
+            target_range,
             kind: if is_appending {
                 SqlTargetKind::Appending
             } else {
