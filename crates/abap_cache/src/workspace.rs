@@ -1090,38 +1090,117 @@ pub fn resolve_local_export_dependency_document(
             let Some(artifacts) = index.artifacts_by_file_name.get(file_name) else {
                 continue;
             };
-            let Some(artifact) = artifacts.iter().find(|artifact| {
-                local_export_artifact_matches_candidate(artifact, candidate_name, candidate_kind)
-            }) else {
-                continue;
-            };
-            let source_text = fs::read_to_string(&artifact.path).ok()?;
-            let text = if artifact
-                .path
-                .extension()
-                .and_then(|ext| ext.to_str())
-                .is_some_and(|ext| ext.eq_ignore_ascii_case("xml"))
-            {
-                ddic_xml_to_abap_source(
-                    artifact.object_name.as_str(),
-                    artifact.kind_hint.as_str(),
-                    source_text.as_str(),
-                )
-                .unwrap_or(source_text)
-            } else {
-                source_text
-            };
-            return Some(WorkspaceDocument {
-                uri: Arc::from(path_to_file_uri(&artifact.path)),
-                version: 0,
-                text,
-                is_dependency: true,
-                object_name: Some(Arc::from(artifact.object_name.to_ascii_lowercase())),
-            });
+            for artifact in artifacts {
+                let mut source_text = None;
+                if !local_export_artifact_matches_candidate(
+                    artifact,
+                    candidate_name,
+                    candidate_kind,
+                ) {
+                    source_text = local_export_fallback_source_if_matches(
+                        artifact,
+                        candidate_name,
+                        candidate_kind,
+                    );
+                    if source_text.is_none() {
+                        continue;
+                    }
+                }
+                let source_text = match source_text {
+                    Some(source_text) => source_text,
+                    None => fs::read_to_string(&artifact.path).ok()?,
+                };
+                let text = if artifact
+                    .path
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("xml"))
+                {
+                    ddic_xml_to_abap_source(
+                        artifact.object_name.as_str(),
+                        artifact.kind_hint.as_str(),
+                        source_text.as_str(),
+                    )
+                    .unwrap_or(source_text)
+                } else {
+                    source_text
+                };
+                return Some(WorkspaceDocument {
+                    uri: Arc::from(path_to_file_uri(&artifact.path)),
+                    version: 0,
+                    text,
+                    is_dependency: true,
+                    object_name: Some(Arc::from(artifact.object_name.to_ascii_lowercase())),
+                });
+            }
         }
     }
 
     None
+}
+
+fn local_export_fallback_source_if_matches(
+    artifact: &LocalExportArtifact,
+    candidate_name: &str,
+    candidate_kind: &str,
+) -> Option<String> {
+    match candidate_kind.trim().to_ascii_lowercase().as_str() {
+        "function" => local_export_flat_function_module_source_if_matches(artifact, candidate_name),
+        _ => None,
+    }
+}
+
+fn local_export_flat_function_module_source_if_matches(
+    artifact: &LocalExportArtifact,
+    candidate_name: &str,
+) -> Option<String> {
+    if !artifact
+        .path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("abap"))
+    {
+        return None;
+    }
+
+    let source_text = fs::read_to_string(&artifact.path).ok()?;
+    let function_name = first_abap_function_module_name(source_text.as_str())?;
+    function_name
+        .eq_ignore_ascii_case(candidate_name.trim())
+        .then_some(source_text)
+}
+
+fn first_abap_function_module_name(text: &str) -> Option<&str> {
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.is_empty() || trimmed.starts_with('*') || trimmed.starts_with('"') {
+            continue;
+        }
+        let rest = abap_keyword_rest(trimmed, "function")?;
+        return rest
+            .trim_start()
+            .split_whitespace()
+            .next()
+            .map(|name| name.trim_end_matches('.'));
+    }
+    None
+}
+
+fn abap_keyword_rest<'a>(line: &'a str, keyword: &str) -> Option<&'a str> {
+    if line.len() < keyword.len() {
+        return None;
+    }
+    let (head, tail) = line.split_at(keyword.len());
+    if !head.eq_ignore_ascii_case(keyword) {
+        return None;
+    }
+    if tail.is_empty() {
+        return Some(tail);
+    }
+    tail.chars()
+        .next()
+        .is_some_and(char::is_whitespace)
+        .then_some(tail)
 }
 
 fn source_unit_sidecar_paths(workspace_root: &Path, source_uri: &str) -> Vec<PathBuf> {
@@ -2893,6 +2972,48 @@ mode = "full-workspace"
         assert!(
             resolve_local_export_dependency_document(&roots, &mut resolver, "zcl_demo", "type")
                 .is_some()
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn local_export_resolver_accepts_flat_root_function_module_exports() {
+        let root = std::env::temp_dir().join("abap-lsp-local-export-flat-function-module");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("root dir");
+        fs::write(
+            root.join("ENQUEUE_E_TABLEE.abap"),
+            concat!(
+                "* generated export\n",
+                "FUNCTION ENQUEUE_E_TABLEE\n",
+                "ENDFUNCTION.\n",
+            ),
+        )
+        .expect("function module");
+
+        let mut resolver = LocalExportResolver::default();
+        let roots = vec![root.clone()];
+        let document = resolve_local_export_dependency_document(
+            &roots,
+            &mut resolver,
+            "enqueue_e_tablee",
+            "function",
+        )
+        .expect("flat function module");
+
+        assert!(
+            document.uri.ends_with("/ENQUEUE_E_TABLEE.abap"),
+            "{}",
+            document.uri
+        );
+        assert!(
+            document
+                .text
+                .to_ascii_lowercase()
+                .contains("function enqueue_e_tablee"),
+            "{}",
+            document.text
         );
 
         let _ = fs::remove_dir_all(&root);

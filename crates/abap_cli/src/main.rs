@@ -818,7 +818,6 @@ fn load_remote_candidate_workspace(path: Option<&str>) -> Result<RemoteCandidate
     let workspace_root = find_workspace_root_for_anchor(&anchor_path)?;
     let workspace_root_uri = path_to_file_uri(&workspace_root);
     let workspace = load_workspace_documents(&workspace_root_uri, &HashMap::new());
-    let local_export_roots = collect_workspace_local_export_roots(&workspace);
     let editable_document_count = workspace
         .documents
         .iter()
@@ -841,20 +840,15 @@ fn load_remote_candidate_workspace(path: Option<&str>) -> Result<RemoteCandidate
         .iter()
         .filter(|document| !document.is_dependency)
     {
-        let Some(snapshot) = snapshots.get(document.uri.as_ref()) else {
-            continue;
-        };
-        let mut per_source = BTreeMap::<String, RemoteDependencyCandidate>::new();
-        for candidate in collect_remote_dependency_candidates(snapshot.as_ref()) {
-            if candidate_is_resolved_by_local_export(
-                &candidate,
-                &local_export_roots,
-                &mut local_export_resolver,
-            ) {
-                continue;
-            }
+        let roots = source_local_export_roots(&workspace.root_path, document.uri.as_ref());
+        let per_source = collect_transitive_remote_candidates_for_source(
+            &snapshots,
+            document.uri.as_ref(),
+            &roots,
+            &mut local_export_resolver,
+        );
+        for candidate in per_source.values().cloned() {
             insert_remote_candidate(&mut deduped, candidate.clone());
-            insert_remote_candidate(&mut per_source, candidate);
         }
         if !per_source.is_empty() {
             source_uris.push(document.uri.to_string());
@@ -874,26 +868,118 @@ fn load_remote_candidate_workspace(path: Option<&str>) -> Result<RemoteCandidate
     })
 }
 
-fn collect_workspace_local_export_roots(
-    workspace: &abap_cache::WorkspaceLoadResult,
-) -> Vec<PathBuf> {
+fn source_local_export_roots(workspace_root: &Path, source_uri: &str) -> Vec<PathBuf> {
     let mut roots = Vec::new();
     let mut seen = HashSet::new();
-    for document in workspace
-        .documents
-        .iter()
-        .filter(|document| !document.is_dependency)
-    {
-        for sidecar_path in source_unit_sidecar_paths(&workspace.root_path, document.uri.as_ref()) {
-            for root in read_unit_sidecar_local_roots(&sidecar_path) {
-                let key = normalized_local_export_path_key(&root);
-                if seen.insert(key) {
-                    roots.push(root);
-                }
+    for sidecar_path in source_unit_sidecar_paths(workspace_root, source_uri) {
+        for root in read_unit_sidecar_local_roots(&sidecar_path) {
+            let key = normalized_local_export_path_key(&root);
+            if seen.insert(key) {
+                roots.push(root);
             }
         }
     }
     roots
+}
+
+fn collect_transitive_remote_candidates_for_source(
+    snapshots: &HashMap<Arc<str>, Arc<AnalysisSnapshot>>,
+    source_uri: &str,
+    roots: &[PathBuf],
+    resolver: &mut LocalExportResolver,
+) -> BTreeMap<String, RemoteDependencyCandidate> {
+    let mut deduped = BTreeMap::<String, RemoteDependencyCandidate>::new();
+    let mut visited_uris = HashSet::from([source_uri.to_string()]);
+    let mut queue = std::collections::VecDeque::from([source_uri.to_string()]);
+
+    while let Some(current_uri) = queue.pop_front() {
+        let Some(snapshot) = snapshots.get(current_uri.as_str()) else {
+            continue;
+        };
+
+        enqueue_resolved_local_export_dependency_uris_for_cli(
+            snapshot.as_ref(),
+            roots,
+            resolver,
+            &mut visited_uris,
+            &mut queue,
+        );
+        for candidate in collect_remote_dependency_candidates(snapshot.as_ref()) {
+            if let Some(document) =
+                resolve_candidate_from_local_export_roots(&candidate, roots, resolver)
+            {
+                let dependency_uri = document.uri.to_string();
+                if visited_uris.insert(dependency_uri.clone())
+                    && snapshots.get(dependency_uri.as_str()).is_some()
+                {
+                    queue.push_back(dependency_uri);
+                }
+                continue;
+            }
+            insert_remote_candidate(&mut deduped, candidate);
+        }
+    }
+
+    deduped
+}
+
+fn enqueue_resolved_local_export_dependency_uris_for_cli(
+    snapshot: &AnalysisSnapshot,
+    roots: &[PathBuf],
+    resolver: &mut LocalExportResolver,
+    visited_uris: &mut HashSet<String>,
+    queue: &mut std::collections::VecDeque<String>,
+) {
+    if roots.is_empty() {
+        return;
+    }
+
+    for reference in &snapshot.symbols.references {
+        let Some(kind) =
+            local_export_candidate_kind_for_reference(reference.kind, reference.namespace)
+        else {
+            continue;
+        };
+        let Some(abap_symbols::Resolution::Symbol(handle)) = &reference.resolution else {
+            continue;
+        };
+        let Some(document) = resolve_local_export_dependency_document(
+            roots,
+            resolver,
+            reference.name.as_ref(),
+            kind,
+        ) else {
+            continue;
+        };
+        let Some(resolved_unit) = snapshot.project.units.get(handle.unit.as_usize()) else {
+            continue;
+        };
+        if resolved_unit.uri.as_ref() != document.uri.as_ref() {
+            continue;
+        }
+        let dependency_uri = document.uri.to_string();
+        if dependency_uri != snapshot.uri.as_ref() && visited_uris.insert(dependency_uri.clone()) {
+            queue.push_back(dependency_uri);
+        }
+    }
+}
+
+fn local_export_candidate_kind_for_reference(
+    kind: abap_symbols::ReferenceKind,
+    namespace: abap_symbols::Namespace,
+) -> Option<&'static str> {
+    match kind {
+        abap_symbols::ReferenceKind::Include => Some("include"),
+        abap_symbols::ReferenceKind::StaticTarget => Some("static"),
+        abap_symbols::ReferenceKind::TypeRef => Some("type"),
+        abap_symbols::ReferenceKind::MessageClass => Some("message-class"),
+        abap_symbols::ReferenceKind::RoutineCall
+            if namespace == abap_symbols::Namespace::Routine =>
+        {
+            Some("function")
+        }
+        abap_symbols::ReferenceKind::Identifier | abap_symbols::ReferenceKind::RoutineCall => None,
+    }
 }
 
 fn source_unit_sidecar_paths(workspace_root: &Path, source_uri: &str) -> Vec<PathBuf> {
@@ -985,13 +1071,13 @@ fn read_unit_sidecar_local_roots(sidecar_path: &Path) -> Vec<PathBuf> {
     resolved
 }
 
-fn candidate_is_resolved_by_local_export(
+fn resolve_candidate_from_local_export_roots(
     candidate: &RemoteDependencyCandidate,
     roots: &[PathBuf],
     resolver: &mut LocalExportResolver,
-) -> bool {
+) -> Option<abap_cache::WorkspaceDocument> {
     if roots.is_empty() {
-        return false;
+        return None;
     }
 
     resolve_local_export_dependency_document(
@@ -1000,7 +1086,6 @@ fn candidate_is_resolved_by_local_export(
         candidate.name.as_str(),
         candidate.kind.as_str(),
     )
-    .is_some()
 }
 
 fn normalized_local_export_path_key(path: &Path) -> String {
@@ -1496,7 +1581,7 @@ fn normalize_windows_path(path: PathBuf) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::{load_remote_candidate_workspace, parse_cli_args};
+    use super::{load_remote_candidate_workspace, parse_cli_args, path_to_file_uri};
     use std::fs;
 
     #[test]
@@ -1708,6 +1793,72 @@ cache_dir = ".abapls/cache"
         );
         assert!(
             source_candidates.contains(&"tt_missing_vb"),
+            "{source_candidates:?}"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&export_root);
+    }
+
+    #[test]
+    fn remote_candidates_include_transitive_local_export_dependency_superclass() {
+        let root =
+            std::env::temp_dir().join("abap-cli-remote-candidates-local-export-public-superclass");
+        let export_root = std::env::temp_dir()
+            .join("abap-cli-remote-candidates-local-export-public-superclass-d04");
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&export_root);
+        fs::create_dir_all(root.join("src/reports/ZREP")).expect("report dir");
+        fs::create_dir_all(export_root.join("packages/ZPKG/global-class")).expect("export dir");
+        fs::write(
+            root.join("abapls.toml"),
+            r#"
+version = 1
+
+[resolution]
+cache_dir = ".abapls/cache"
+"#,
+        )
+        .expect("manifest");
+        fs::write(
+            root.join("src/reports/ZREP/ZREP.abap"),
+            "REPORT zrep.\nDATA lo_doc TYPE REF TO zcl_document.\nSTART-OF-SELECTION.\n  lo_doc->add_text( ).\n",
+        )
+        .expect("report");
+        fs::write(
+            root.join("src/reports/ZREP/abapls-unit.toml"),
+            format!(
+                "[local_export]\nroots = [\"{}\"]\n\n[dependencies]\nsource = \"local-first\"\n",
+                export_root.to_string_lossy().replace('\\', "/")
+            ),
+        )
+        .expect("unit sidecar");
+        fs::write(
+            export_root.join("packages/ZPKG/global-class/ZCL_DOCUMENT.abap"),
+            "CLASS zcl_document DEFINITION PUBLIC INHERITING FROM zcl_area CREATE PUBLIC.\n  PUBLIC SECTION.\n    METHODS display_document.\nENDCLASS.\nCLASS zcl_document IMPLEMENTATION.\n  METHOD display_document.\n  ENDMETHOD.\nENDCLASS.\n",
+        )
+        .expect("exported class");
+
+        let workspace = load_remote_candidate_workspace(Some(root.to_string_lossy().as_ref()))
+            .expect("remote candidates");
+        let names: Vec<_> = workspace
+            .candidates
+            .iter()
+            .map(|candidate| candidate.name.as_str())
+            .collect();
+        let report_uri = path_to_file_uri(&root.join("src/reports/ZREP/ZREP.abap"));
+        let source_candidates = workspace
+            .source_candidates
+            .get(report_uri.as_str())
+            .expect("report candidates")
+            .iter()
+            .map(|candidate| candidate.name.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(names.contains(&"zcl_area"), "{names:?}");
+        assert!(!names.contains(&"zcl_document"), "{names:?}");
+        assert!(
+            source_candidates.contains(&"zcl_area"),
             "{source_candidates:?}"
         );
 
