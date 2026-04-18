@@ -18,6 +18,7 @@ pub enum CallGraphNodeKind {
     Form,
     FunctionModule,
     EventBlock,
+    Report,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
@@ -260,6 +261,28 @@ fn collect_symbol_nodes(graph: &mut ProjectCallGraph, unit: &UnitAnalysis) {
         );
         graph.nodes.push(node);
     }
+
+    for symbol in &unit.symbols {
+        if symbol.kind != SymbolKind::Report {
+            continue;
+        }
+        let node = CallGraphNode {
+            id: symbol_node_id(unit, CallGraphNodeKind::Report, symbol),
+            kind: CallGraphNodeKind::Report,
+            name: Arc::clone(&symbol.name),
+            qualified_name: Arc::clone(&symbol.name),
+            unit_uri: Arc::clone(&unit.uri),
+            decl_range: symbol.decl_range.clone(),
+        };
+        graph.symbol_nodes.insert(
+            SymbolNodeKey {
+                unit: unit.unit_id,
+                symbol: symbol.id,
+            },
+            Arc::clone(&node.id),
+        );
+        graph.nodes.push(node);
+    }
 }
 
 fn collect_method_nodes(graph: &mut ProjectCallGraph, unit: &UnitAnalysis) {
@@ -308,6 +331,19 @@ fn index_callable_scopes(
                 })
             }
             ScopeKind::Method => method_node_id_for_scope(graph, unit, scope),
+            ScopeKind::File => unit
+                .symbols
+                .iter()
+                .find(|symbol| symbol.kind == SymbolKind::Report)
+                .and_then(|symbol| {
+                    graph
+                        .symbol_nodes
+                        .get(&SymbolNodeKey {
+                            unit: unit.unit_id,
+                            symbol: symbol.id,
+                        })
+                        .cloned()
+                }),
             _ => None,
         };
         if let Some(node_id) = node_id {
@@ -376,6 +412,17 @@ fn collect_call_site_edges(
                 )),
             ),
             Some(ResolvedCallTarget::FunctionModule { unit, symbol }) => (
+                graph
+                    .symbol_nodes
+                    .get(&SymbolNodeKey {
+                        unit: unit.unit_id,
+                        symbol,
+                    })
+                    .cloned(),
+                CallGraphResolutionStatus::Resolved,
+                Arc::clone(&unit.symbol(symbol).name),
+            ),
+            Some(ResolvedCallTarget::Report { unit, symbol }) => (
                 graph
                     .symbol_nodes
                     .get(&SymbolNodeKey {
@@ -546,6 +593,9 @@ fn callable_symbol_kind(
         (ScopeKind::EventBlock, SymbolKind::Event) => {
             Some((CallGraphNodeKind::EventBlock, Arc::clone(&symbol.name)))
         }
+        (ScopeKind::File, SymbolKind::Report) => {
+            Some((CallGraphNodeKind::Report, Arc::clone(&symbol.name)))
+        }
         _ => None,
     }
 }
@@ -556,6 +606,7 @@ fn symbol_node_id(unit: &UnitAnalysis, kind: CallGraphNodeKind, symbol: &SymbolD
         CallGraphNodeKind::Form => "form",
         CallGraphNodeKind::FunctionModule => "function",
         CallGraphNodeKind::EventBlock => "event",
+        CallGraphNodeKind::Report => "report",
     };
     Arc::from(format!("{prefix}:{}#{}", unit.uri, symbol.name))
 }
@@ -588,7 +639,9 @@ fn call_site_edge_kind(target: &NamedArgumentTarget) -> Option<CallGraphEdgeKind
         NamedArgumentTarget::Constructor { .. }
         | NamedArgumentTarget::ImplicitMethod { .. }
         | NamedArgumentTarget::Method { .. } => Some(CallGraphEdgeKind::MethodCall),
-        NamedArgumentTarget::Function { .. } => Some(CallGraphEdgeKind::FunctionCall),
+        NamedArgumentTarget::Function { .. } | NamedArgumentTarget::Report { .. } => {
+            Some(CallGraphEdgeKind::FunctionCall)
+        }
         NamedArgumentTarget::Routine { .. } => None,
     }
 }
@@ -599,6 +652,7 @@ fn unresolved_call_target_name(target: &NamedArgumentTarget) -> Arc<str> {
             Arc::from(format!("{type_name}~constructor"))
         }
         NamedArgumentTarget::Function { function_name } => Arc::clone(function_name),
+        NamedArgumentTarget::Report { report_name } => Arc::clone(report_name),
         NamedArgumentTarget::Routine { routine_name } => Arc::clone(routine_name),
         NamedArgumentTarget::ImplicitMethod { method_name } => Arc::clone(method_name),
         NamedArgumentTarget::Method {
@@ -639,6 +693,7 @@ fn call_site_covers_reference(
 fn routine_target_name(target: &NamedArgumentTarget) -> Option<&Arc<str>> {
     match target {
         NamedArgumentTarget::Function { function_name } => Some(function_name),
+        NamedArgumentTarget::Report { report_name } => Some(report_name),
         NamedArgumentTarget::ImplicitMethod { method_name } => Some(method_name),
         NamedArgumentTarget::Routine { routine_name } => Some(routine_name),
         NamedArgumentTarget::Constructor { .. } | NamedArgumentTarget::Method { .. } => None,
@@ -651,6 +706,10 @@ enum ResolvedCallTarget<'a> {
         member: &'a ClassMemberData,
     },
     FunctionModule {
+        unit: &'a UnitAnalysis,
+        symbol: SymbolId,
+    },
+    Report {
         unit: &'a UnitAnalysis,
         symbol: SymbolId,
     },
@@ -681,6 +740,22 @@ fn resolve_call_site_target<'a>(
                     symbol: handle.symbol,
                 })
         }
+        NamedArgumentTarget::Report { report_name } => {
+            let handle = resolve_symbol_in_scope_or_project(
+                project,
+                unit,
+                scope_index,
+                call_site.scope,
+                Namespace::Value,
+                report_name,
+                |symbol| symbol.kind == SymbolKind::Report,
+            )?;
+            let target_unit = &project.units[handle.unit.as_usize()];
+            Some(ResolvedCallTarget::Report {
+                unit: target_unit,
+                symbol: handle.symbol,
+            })
+        }
         NamedArgumentTarget::Constructor { .. }
         | NamedArgumentTarget::ImplicitMethod { .. }
         | NamedArgumentTarget::Method { .. } => {
@@ -696,7 +771,9 @@ fn resolve_call_site_target<'a>(
                 NamedArgumentTarget::Constructor { .. } => "constructor",
                 NamedArgumentTarget::ImplicitMethod { method_name } => method_name.as_ref(),
                 NamedArgumentTarget::Method { method_name, .. } => method_name.as_ref(),
-                NamedArgumentTarget::Function { .. } | NamedArgumentTarget::Routine { .. } => {
+                NamedArgumentTarget::Function { .. }
+                | NamedArgumentTarget::Report { .. }
+                | NamedArgumentTarget::Routine { .. } => {
                     return None;
                 }
             };
@@ -782,7 +859,9 @@ fn resolve_method_target(
             }
             Namespace::Routine => None,
         },
-        NamedArgumentTarget::Function { .. } | NamedArgumentTarget::Routine { .. } => None,
+        NamedArgumentTarget::Function { .. }
+        | NamedArgumentTarget::Report { .. }
+        | NamedArgumentTarget::Routine { .. } => None,
     }
 }
 
@@ -1279,5 +1358,41 @@ START-OF-SELECTION.
         );
         assert!(unresolved[0].target.is_none());
         assert_eq!(unresolved[0].target_name.as_ref(), "lv_func");
+    }
+
+    #[test]
+    fn submit_creates_report_call_edges() {
+        let graph = graph_for(
+            vec![
+                DocumentInput {
+                    uri: Arc::from("file:///caller.abap"),
+                    version: 1,
+                    text: Arc::from(
+                        "\
+REPORT zcaller.
+
+START-OF-SELECTION.
+  SUBMIT ztarget AND RETURN.",
+                    ),
+                    is_dependency: false,
+                    object_name: None,
+                },
+                DocumentInput {
+                    uri: Arc::from("file:///target.abap"),
+                    version: 1,
+                    text: Arc::from("REPORT ztarget.\n"),
+                    is_dependency: false,
+                    object_name: None,
+                },
+            ],
+            "file:///caller.abap",
+        );
+
+        let caller = graph.find_nodes("start-of-selection")[0];
+        let target = graph.find_nodes("ztarget")[0];
+        let outbound = graph.outbound_calls(caller.id.as_ref());
+        assert_eq!(outbound.len(), 1);
+        assert_eq!(outbound[0].edge_kind, CallGraphEdgeKind::FunctionCall);
+        assert_eq!(outbound[0].target.as_deref(), Some(target.id.as_ref()));
     }
 }

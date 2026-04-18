@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -47,7 +48,7 @@ func exportDependencies(ctx *SapContext, cfg Config) error {
 			continue
 		}
 
-		objectRef, domainOnly, err := resolveDependencyObject(ctx, candidate)
+		objectRefs, domainOnly, err := resolveDependencyObjects(ctx, candidate)
 		if err != nil {
 			if err := markNegativeRemoteDependencyCandidate(cfg.OutputDir, candidate, "lookup-failed"); err != nil {
 				return err
@@ -62,34 +63,40 @@ func exportDependencies(ctx *SapContext, cfg Config) error {
 			}
 			continue
 		}
-		if objectRef == nil {
+		if len(objectRefs) == 0 {
 			log.Printf("skipping %s (%s): no supported ADT dependency object matched", candidate.Name, candidate.Kind)
 			if err := markNegativeRemoteDependencyCandidate(cfg.OutputDir, candidate, "no-supported-match"); err != nil {
 				return err
 			}
 			continue
 		}
-		log.Printf("resolved %s (%s) to %s [%s]", candidate.Name, candidate.Kind, objectRef.Name, objectRef.Type)
-
-		fetched, err := fetchDependencyObject(ctx, *objectRef)
-		if err != nil {
+		var fetchedAny bool
+		for _, objectRef := range objectRefs {
+			log.Printf("resolved %s (%s) to %s [%s]", candidate.Name, candidate.Kind, objectRef.Name, objectRef.Type)
+			fetched, err := fetchDependencyObject(ctx, objectRef)
+			if err != nil {
+				log.Printf("failed to fetch %s [%s]: %v", objectRef.Name, objectRef.Type, err)
+				continue
+			}
+			if err := persistFetchedDependencyArtifact(cfg.OutputDir, objectRef, fetched, cfg.DependencyInput.SourceFiles[remoteCandidateKey(candidate)]); err != nil {
+				return err
+			}
+			for _, shared := range fetched.SharedDependencies {
+				if err := persistFetchedDependencyArtifact(cfg.OutputDir, shared.ObjectRef, AdtDependencyFetchResult{
+					Body:          shared.Body,
+					FileExtension: shared.FileExtension,
+					ManifestKind:  shared.ManifestKind,
+				}, cfg.DependencyInput.SourceFiles[remoteCandidateKey(candidate)]); err != nil {
+					return err
+				}
+			}
+			fetchedAny = true
+		}
+		if !fetchedAny {
 			if err := markNegativeRemoteDependencyCandidate(cfg.OutputDir, candidate, "fetch-failed"); err != nil {
 				return err
 			}
-			log.Printf("failed to fetch %s [%s]: %v", objectRef.Name, objectRef.Type, err)
 			continue
-		}
-		if err := persistFetchedDependencyArtifact(cfg.OutputDir, *objectRef, fetched, cfg.DependencyInput.SourceFiles[remoteCandidateKey(candidate)]); err != nil {
-			return err
-		}
-		for _, shared := range fetched.SharedDependencies {
-			if err := persistFetchedDependencyArtifact(cfg.OutputDir, shared.ObjectRef, AdtDependencyFetchResult{
-				Body:          shared.Body,
-				FileExtension: shared.FileExtension,
-				ManifestKind:  shared.ManifestKind,
-			}, cfg.DependencyInput.SourceFiles[remoteCandidateKey(candidate)]); err != nil {
-				return err
-			}
 		}
 		if err := clearNegativeRemoteDependencyCandidate(cfg.OutputDir, candidate); err != nil {
 			return err
@@ -205,7 +212,7 @@ func writeCachedRemoteObjectMetadata(workspaceRoot string, objectRef AdtObjectRe
 	}
 
 	metadataPath := filepath.Join(objectsDir, url.PathEscape(objectRef.Name)+".json")
-	payload, err := json.MarshalIndent(CachedRemoteObjectMetadata{
+	entry := CachedRemoteObjectMetadata{
 		URI:           objectRef.URI,
 		Type:          objectRef.Type,
 		Name:          objectRef.Name,
@@ -214,7 +221,23 @@ func writeCachedRemoteObjectMetadata(workspaceRoot string, objectRef AdtObjectRe
 		FileExtension: fileExtension,
 		Size:          size,
 		FetchedAt:     time.Now().UTC().Format(time.RFC3339),
-	}, "", "  ")
+	}
+	entries, err := readCachedRemoteObjectMetadataEntries(metadataPath)
+	if err != nil {
+		return err
+	}
+	replaced := false
+	for idx, existing := range entries {
+		if strings.EqualFold(existing.URI, entry.URI) && strings.EqualFold(existing.Type, entry.Type) {
+			entries[idx] = entry
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		entries = append(entries, entry)
+	}
+	payload, err := json.MarshalIndent(entries, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal object metadata for %s: %w", objectRef.Name, err)
 	}
@@ -222,6 +245,32 @@ func writeCachedRemoteObjectMetadata(workspaceRoot string, objectRef AdtObjectRe
 		return fmt.Errorf("write object metadata %s: %w", metadataPath, err)
 	}
 	return nil
+}
+
+func readCachedRemoteObjectMetadataEntries(metadataPath string) ([]CachedRemoteObjectMetadata, error) {
+	payload, err := os.ReadFile(metadataPath)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read object metadata %s: %w", metadataPath, err)
+	}
+	trimmed := bytes.TrimSpace(payload)
+	if len(trimmed) == 0 {
+		return nil, nil
+	}
+	if trimmed[0] == '[' {
+		var entries []CachedRemoteObjectMetadata
+		if err := json.Unmarshal(trimmed, &entries); err != nil {
+			return nil, fmt.Errorf("parse object metadata %s: %w", metadataPath, err)
+		}
+		return entries, nil
+	}
+	var entry CachedRemoteObjectMetadata
+	if err := json.Unmarshal(trimmed, &entry); err != nil {
+		return nil, fmt.Errorf("parse object metadata %s: %w", metadataPath, err)
+	}
+	return []CachedRemoteObjectMetadata{entry}, nil
 }
 
 func hasCachedRemoteDependencyCandidate(workspaceRoot string, candidate RemoteDependencyCandidate) bool {
@@ -250,12 +299,15 @@ func cachedRemoteDependencyCandidatePaths(workspaceRoot string, candidate Remote
 		return []string{filepath.Join(dependenciesRoot, "include", encodedName+".abap")}
 	case "message-class":
 		return []string{filepath.Join(dependenciesRoot, "message-class", encodedName+".xml")}
+	case "report":
+		return []string{filepath.Join(dependenciesRoot, "report", encodedName+".abap")}
 	case "function":
 		return []string{filepath.Join(dependenciesRoot, "function-group", encodedName+".abap")}
 	case "symbol", "static", "type":
 		return []string{
 			filepath.Join(dependenciesRoot, "global-class", encodedName+".abap"),
 			filepath.Join(dependenciesRoot, "global-interface", encodedName+".abap"),
+			filepath.Join(dependenciesRoot, "report", encodedName+".abap"),
 			filepath.Join(dependenciesRoot, "ddic-data-element", encodedName+".xml"),
 			filepath.Join(dependenciesRoot, "ddic-structure", encodedName+".xml"),
 			filepath.Join(dependenciesRoot, "ddic-table", encodedName+".xml"),

@@ -51,12 +51,13 @@ pub use workspace::{
     WORKSPACE_PERFORMANCE_MODE_AUTO, WORKSPACE_PERFORMANCE_MODE_EDITOR_FIRST,
     WORKSPACE_PERFORMANCE_MODE_FULL_WORKSPACE, WorkspaceDocument, WorkspaceLoadResult,
     WorkspaceManifest, WorkspacePerformanceMode, ddic_xml_to_abap_source, file_uri_to_path,
-    is_remote_lookup_candidate, is_remote_lookup_name, load_manifest_from_workspace,
-    load_manifest_from_workspace_result, load_workspace_documents,
-    load_workspace_documents_with_progress, local_export_config_for_source, manifest_cache_dir,
-    manifest_declares_uri, manifest_document_metadata, manifest_supports_remote_resolution,
-    normalize_dependency_mode, normalize_unknown_symbol_mode, normalize_workspace_performance_mode,
-    path_to_file_uri, resolve_local_export_dependency_document, resolve_workspace_performance_mode,
+    is_remote_lookup_candidate, is_remote_lookup_candidate_after_local_resolution,
+    is_remote_lookup_name, load_manifest_from_workspace, load_manifest_from_workspace_result,
+    load_workspace_documents, load_workspace_documents_with_progress,
+    local_export_config_for_source, manifest_cache_dir, manifest_declares_uri,
+    manifest_document_metadata, manifest_supports_remote_resolution, normalize_dependency_mode,
+    normalize_unknown_symbol_mode, normalize_workspace_performance_mode, path_to_file_uri,
+    resolve_local_export_dependency_document, resolve_workspace_performance_mode,
     uri_starts_with_workspace, workspace_relative_path,
 };
 
@@ -3893,6 +3894,7 @@ fn resolve_callable_completion_target<'a>(
                 unit.function_module(function_symbol_id)?,
             ))
         }
+        NamedArgumentTarget::Report { .. } => None,
         NamedArgumentTarget::Routine { .. } => None,
     }
 }
@@ -4017,6 +4019,7 @@ fn resolve_named_argument_parameter_with_scope_index<'a>(
                 declared_type: None,
             })
         }
+        NamedArgumentTarget::Report { .. } => None,
         NamedArgumentTarget::Routine { routine_name } => {
             resolve_routine_named_argument_parameter_with_scope_index(
                 snapshot,
@@ -4138,6 +4141,7 @@ fn resolve_named_argument_target(
                 .find(|exception| exception.name == access.name)?;
             Some(definition_target_for_range(unit, exception.range.clone()))
         }
+        NamedArgumentTarget::Report { .. } => None,
         NamedArgumentTarget::Routine { routine_name } => {
             let (unit, routine_symbol_id) = resolve_symbol_from_context(
                 snapshot,
@@ -4259,6 +4263,7 @@ fn resolve_named_argument_symbol(
             }
             None
         }
+        NamedArgumentTarget::Report { .. } => None,
         NamedArgumentTarget::Routine { routine_name } => {
             let (unit, routine_symbol_id) = resolve_symbol_from_context(
                 snapshot,

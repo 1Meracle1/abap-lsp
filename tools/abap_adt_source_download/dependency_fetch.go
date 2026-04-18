@@ -35,10 +35,10 @@ type AdtDependencyArtifact struct {
 	ManifestKind  string
 }
 
-func resolveDependencyObject(ctx *SapContext, candidate RemoteDependencyCandidate) (*AdtObjectRef, bool, error) {
+func resolveDependencyObjects(ctx *SapContext, candidate RemoteDependencyCandidate) ([]AdtObjectRef, bool, error) {
 	if normalizeCandidateKind(candidate.Kind) == "message-class" {
 		objectRef := buildMessageClassObjectRef(candidate.Name)
-		return &objectRef, false, nil
+		return []AdtObjectRef{objectRef}, false, nil
 	}
 
 	objects, err := searchRepositoryObjects(ctx, candidate.Name, 25)
@@ -49,11 +49,11 @@ func resolveDependencyObject(ctx *SapContext, candidate RemoteDependencyCandidat
 		return nil, true, nil
 	}
 
-	objectRef := pickBestDependencyObject(candidate.Name, objects, candidate.Kind)
-	if objectRef == nil {
+	selected := selectDependencyObjects(candidate.Name, objects, candidate.Kind)
+	if len(selected) == 0 {
 		return nil, false, nil
 	}
-	return objectRef, false, nil
+	return selected, false, nil
 }
 
 func fetchDependencyObject(ctx *SapContext, objectRef AdtObjectRef) (AdtDependencyFetchResult, error) {
@@ -225,6 +225,8 @@ func isSupportedDependencyObject(objectRef AdtObjectRef, kindHint string) bool {
 		return isMessageClassDependencyObject(objectRef)
 	case "include":
 		return strings.Contains(loweredURI, "/programs/includes/") || loweredType == "PROG/I"
+	case "report":
+		return strings.Contains(loweredURI, "/programs/programs/") || loweredType == "PROG/P"
 	case "function":
 		return strings.Contains(loweredURI, "/functions/groups/") || loweredType == "FUGR/F" || loweredType == "FUGR/FF"
 	case "static":
@@ -280,6 +282,68 @@ func hasOnlyUnsupportedExactDomainMatches(query string, objects []AdtObjectRef) 
 	return true
 }
 
+func selectDependencyObjects(query string, objects []AdtObjectRef, kindHint string) []AdtObjectRef {
+	normalizedQuery := normalizeRemoteDependencyName(query)
+	if normalizedQuery == "" {
+		return nil
+	}
+
+	var supportedExact []AdtObjectRef
+	for _, objectRef := range objects {
+		if normalizeRemoteDependencyName(objectRef.Name) == normalizedQuery &&
+			isSupportedDependencyObject(objectRef, "") {
+			supportedExact = append(supportedExact, objectRef)
+		}
+	}
+	if len(supportedExact) > 0 {
+		return dedupeAndSortDependencyObjects(supportedExact)
+	}
+
+	var supportedByHint []AdtObjectRef
+	for _, objectRef := range objects {
+		if isSupportedDependencyObject(objectRef, kindHint) {
+			supportedByHint = append(supportedByHint, objectRef)
+		}
+	}
+	if len(supportedByHint) == 0 {
+		for _, objectRef := range objects {
+			if isSupportedDependencyObject(objectRef, "") {
+				supportedByHint = append(supportedByHint, objectRef)
+			}
+		}
+	}
+	if len(supportedByHint) == 0 {
+		return nil
+	}
+
+	if preferred := pickBestDependencyObject(query, supportedByHint, kindHint); preferred != nil {
+		return []AdtObjectRef{*preferred}
+	}
+	return []AdtObjectRef{supportedByHint[0]}
+}
+
+func dedupeAndSortDependencyObjects(objects []AdtObjectRef) []AdtObjectRef {
+	seen := map[string]struct{}{}
+	out := make([]AdtObjectRef, 0, len(objects))
+	for _, objectRef := range objects {
+		key := strings.ToUpper(strings.TrimSpace(objectRef.Type)) + "::" + strings.ToLower(strings.TrimSpace(objectRef.URI))
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, objectRef)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		left := strings.ToUpper(strings.TrimSpace(out[i].Type))
+		right := strings.ToUpper(strings.TrimSpace(out[j].Type))
+		if left != right {
+			return left < right
+		}
+		return strings.ToLower(out[i].URI) < strings.ToLower(out[j].URI)
+	})
+	return out
+}
+
 func pickBestDependencyObject(query string, objects []AdtObjectRef, kindHint string) *AdtObjectRef {
 	normalizedQuery := normalizeRemoteDependencyName(query)
 	if normalizedQuery == "" {
@@ -323,6 +387,13 @@ func pickPreferredDependencyObject(objects []AdtObjectRef, kindHint string) *Adt
 	}
 
 	switch normalizeCandidateKind(kindHint) {
+	case "report":
+		for _, objectRef := range objects {
+			if strings.EqualFold(objectRef.Type, "PROG/P") {
+				ref := objectRef
+				return &ref
+			}
+		}
 	case "function":
 		for _, objectRef := range objects {
 			if strings.EqualFold(objectRef.Type, "FUGR/FF") {

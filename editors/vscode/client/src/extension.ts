@@ -31,7 +31,7 @@ import {
 	getSapConnectionConfig,
 	hasOnlyUnsupportedExactDomainMatches,
 	parseLocalDdicExportObjectRef,
-	pickBestDependencyObject,
+	selectDependencyObjects,
 } from "./adt";
 import {
 	dependencyModeLocalFirst,
@@ -97,7 +97,11 @@ interface RemoteDependencyResolutionResult {
 
 interface CachedRemoteObjectMetadata extends AdtObjectRef {
 	fileExtension?: "abap" | "xml";
+	size?: number;
+	fetchedAt?: string;
 }
+
+type CachedRemoteObjectMetadataFile = CachedRemoteObjectMetadata | CachedRemoteObjectMetadata[];
 
 interface WorkspaceManifestUpdatedParams {
 	workspaceUri: string;
@@ -1215,11 +1219,11 @@ async function resolveRemoteDependencyCandidate(
 	if (await hasCachedRemoteDependencyCandidate(workspaceFolder.uri.fsPath, candidate)) {
 		await clearNegativeRemoteDependencyCandidate(workspaceFolder, candidate);
 		const cachedMetadata = await readCachedRemoteObjectMetadata(workspaceFolder, candidate.name);
-		if (cachedMetadata) {
-			const filePath = targetDependencyWorkspaceFilePath(workspaceFolder, cachedMetadata);
+		for (const entry of cachedMetadata) {
+			const filePath = targetDependencyWorkspaceFilePath(workspaceFolder, entry);
 			await ensureDependencyCacheUnit(
 				workspaceFolder,
-				cachedMetadata,
+				entry,
 				filePath,
 				manifestDependencySourceFiles(workspaceFolder, sourceUris),
 			);
@@ -1233,11 +1237,11 @@ async function resolveRemoteDependencyCandidate(
 		if (result.fetchedName) {
 			await clearNegativeRemoteDependencyCandidate(workspaceFolder, candidate);
 			const cachedMetadata = await readCachedRemoteObjectMetadata(workspaceFolder, result.fetchedName);
-			if (cachedMetadata) {
-				const filePath = targetDependencyWorkspaceFilePath(workspaceFolder, cachedMetadata);
+			for (const entry of cachedMetadata) {
+				const filePath = targetDependencyWorkspaceFilePath(workspaceFolder, entry);
 				await ensureDependencyCacheUnit(
 					workspaceFolder,
-					cachedMetadata,
+					entry,
 					filePath,
 					manifestDependencySourceFiles(workspaceFolder, sourceUris),
 				);
@@ -1290,9 +1294,9 @@ async function resolveRemoteDependencyCandidate(
 				return { candidate };
 			}
 
-			let objectRef;
+			let objectRefs: AdtObjectRef[];
 			if (candidate.kind === "message-class") {
-				objectRef = buildMessageClassObjectRef(candidate.name);
+				objectRefs = [buildMessageClassObjectRef(candidate.name)];
 			} else {
 				const adtClient = await getAdtClient();
 				if (!adtClient) {
@@ -1313,9 +1317,9 @@ async function resolveRemoteDependencyCandidate(
 						: undefined;
 					return localResult ?? { candidate, failed: true };
 				}
-				objectRef = pickBestDependencyObject(candidate.name, objects, candidate.kind);
+				objectRefs = selectDependencyObjects(candidate.name, objects, candidate.kind);
 			}
-			if (!objectRef) {
+			if (objectRefs.length === 0) {
 				negativeRemoteDependencyCache.add(cacheKey);
 				await markNegativeRemoteDependencyCandidate(
 					workspaceFolder.uri.fsPath,
@@ -1328,51 +1332,70 @@ async function resolveRemoteDependencyCandidate(
 				return localResult ?? { candidate, failed: true };
 			}
 
-			let fetched: AdtDependencyFetchResult;
-			if (dependencySourceMode === "adt-first") {
-				const adtClient = await getAdtClient();
-				if (!adtClient) {
-					const localResult = await persistLocalDependency();
-					return localResult ?? { candidate };
-				}
-
-				try {
-					fetched = await adtClient.fetchDependencyObject(objectRef);
-				} catch (error) {
-					const localExport = await findLocalDependencyExport(workspaceFolder, objectRef, sourceUris);
-					if (!localExport) {
-						throw error;
-					}
-					fetched = localExport;
-				}
-			} else {
-				const localExport = await findLocalDependencyExport(workspaceFolder, objectRef, sourceUris);
-				if (localExport) {
-					fetched = localExport;
-				} else {
+			let fetchedAny = false;
+			for (const objectRef of objectRefs) {
+				let fetched: AdtDependencyFetchResult;
+				if (dependencySourceMode === "adt-first") {
 					const adtClient = await getAdtClient();
 					if (!adtClient) {
-						return { candidate };
+						const localResult = await persistLocalDependency();
+						return localResult ?? { candidate };
 					}
-					fetched = await adtClient.fetchDependencyObject(objectRef);
+
+					try {
+						fetched = await adtClient.fetchDependencyObject(objectRef);
+					} catch (error) {
+						const localExport = await findLocalDependencyExport(workspaceFolder, objectRef, sourceUris);
+						if (!localExport) {
+							console.warn(`ABAP LSP remote dependency fetch failed for ${objectRef.name} [${objectRef.type}]`, error);
+							continue;
+						}
+						fetched = localExport;
+					}
+				} else {
+					const localExport = await findLocalDependencyExport(workspaceFolder, objectRef, sourceUris);
+					if (localExport) {
+						fetched = localExport;
+					} else {
+						const adtClient = await getAdtClient();
+						if (!adtClient) {
+							return { candidate };
+						}
+						try {
+							fetched = await adtClient.fetchDependencyObject(objectRef);
+						} catch (error) {
+							console.warn(`ABAP LSP remote dependency fetch failed for ${objectRef.name} [${objectRef.type}]`, error);
+							continue;
+						}
+					}
 				}
-			}
-			await persistFetchedDependencyArtifact(
-				workspaceFolder,
-				objectRef,
-				fetched,
-				sourceUris,
-			);
-			for (const sharedDependency of fetched.sharedDependencies ?? []) {
 				await persistFetchedDependencyArtifact(
 					workspaceFolder,
-					sharedDependency.objectRef,
-					sharedDependency,
+					objectRef,
+					fetched,
 					sourceUris,
 				);
+				for (const sharedDependency of fetched.sharedDependencies ?? []) {
+					await persistFetchedDependencyArtifact(
+						workspaceFolder,
+						sharedDependency.objectRef,
+						sharedDependency,
+						sourceUris,
+					);
+				}
+				fetchedAny = true;
+			}
+			if (!fetchedAny) {
+				negativeRemoteDependencyCache.add(cacheKey);
+				await markNegativeRemoteDependencyCandidate(
+					workspaceFolder.uri.fsPath,
+					candidate,
+					"fetch-failed",
+				);
+				return { candidate, failed: true };
 			}
 			await clearNegativeRemoteDependencyCandidate(workspaceFolder, candidate);
-			return { candidate, fetchedName: objectRef.name };
+			return { candidate, fetchedName: candidate.name };
 		} catch (error) {
 			if (error instanceof AdtRequestCancelledError) {
 				return { candidate };
@@ -1874,7 +1897,7 @@ function manifestDependencySourceFiles(
 async function readCachedRemoteObjectMetadata(
 	workspaceFolder: vscode.WorkspaceFolder,
 	objectName: string,
-): Promise<CachedRemoteObjectMetadata | undefined> {
+): Promise<CachedRemoteObjectMetadata[]> {
 	const metadataPath = path.join(
 		workspaceFolder.uri.fsPath,
 		".abapls",
@@ -1883,9 +1906,10 @@ async function readCachedRemoteObjectMetadata(
 		`${encodeURIComponent(objectName)}.json`,
 	);
 	try {
-		return JSON.parse(await fs.promises.readFile(metadataPath, "utf8")) as CachedRemoteObjectMetadata;
+		const parsed = JSON.parse(await fs.promises.readFile(metadataPath, "utf8")) as CachedRemoteObjectMetadataFile;
+		return Array.isArray(parsed) ? parsed : [parsed];
 	} catch {
-		return undefined;
+		return [];
 	}
 }
 
@@ -1899,18 +1923,21 @@ async function writeCachedRemoteObjectMetadata(
 	await fs.promises.mkdir(objectsDir, { recursive: true });
 
 	const metadataPath = path.join(objectsDir, `${encodeURIComponent(objectRef.name)}.json`);
+	const existing = await readCachedRemoteObjectMetadata(workspaceFolder, objectRef.name);
+	const nextEntry: CachedRemoteObjectMetadata = {
+		...objectRef,
+		fileExtension,
+		size: source.length,
+		fetchedAt: new Date().toISOString(),
+	};
+	const updated = existing.filter((entry) =>
+		entry.uri.toLowerCase() !== objectRef.uri.toLowerCase() ||
+		entry.type.toUpperCase() !== objectRef.type.toUpperCase(),
+	);
+	updated.push(nextEntry);
 	await fs.promises.writeFile(
 		metadataPath,
-		JSON.stringify(
-			{
-				...objectRef,
-				fileExtension,
-				size: source.length,
-				fetchedAt: new Date().toISOString(),
-			},
-			null,
-			2,
-		),
+		JSON.stringify(updated, null, 2),
 		"utf8",
 	);
 }
@@ -2035,6 +2062,7 @@ function localExportExtensionsForCandidateKind(
 		case "include":
 		case "function":
 		case "static":
+		case "report":
 			return ["abap"];
 		case "message-class":
 			return ["xml"];

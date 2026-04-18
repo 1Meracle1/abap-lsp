@@ -169,7 +169,7 @@ func remoteDependencyKindPriority(kind string) int {
 	switch normalizeCandidateKind(kind) {
 	case "message-class":
 		return 5
-	case "include", "function":
+	case "include", "function", "report":
 		return 4
 	case "static":
 		return 3

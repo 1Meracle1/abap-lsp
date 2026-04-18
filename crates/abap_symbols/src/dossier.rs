@@ -370,6 +370,9 @@ pub enum CallTargetDossier {
     Function {
         function_name: String,
     },
+    Report {
+        report_name: String,
+    },
     Routine {
         routine_name: String,
     },
@@ -1106,6 +1109,9 @@ fn call_target_dossier(target: &NamedArgumentTarget) -> CallTargetDossier {
         },
         NamedArgumentTarget::Function { function_name } => CallTargetDossier::Function {
             function_name: function_name.to_string(),
+        },
+        NamedArgumentTarget::Report { report_name } => CallTargetDossier::Report {
+            report_name: report_name.to_string(),
         },
         NamedArgumentTarget::Routine { routine_name } => CallTargetDossier::Routine {
             routine_name: routine_name.to_string(),

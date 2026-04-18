@@ -129,6 +129,24 @@ suite("Remote dependency helpers", () => {
 		]);
 	});
 
+	test("Maps report candidates to report cache paths", () => {
+		const paths = cachedRemoteDependencyCandidatePaths("c:\\demo", {
+			name: "rsnast00",
+			kind: "report",
+		});
+
+		assert.deepStrictEqual(paths, [
+			path.join(
+				"c:\\demo",
+				".abapls",
+				"cache",
+				"dependencies",
+				"report",
+				"RSNAST00.abap",
+			),
+		]);
+	});
+
 	test("Skips ADT fetches when a matching cached dependency file already exists", async () => {
 		const workspacePath = await fs.promises.mkdtemp(path.join(os.tmpdir(), "abap-lsp-cache-hit-"));
 		const cachedFile = path.join(

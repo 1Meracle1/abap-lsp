@@ -289,6 +289,8 @@ export function isSupportedDependencyObject(objectRef: AdtObjectRef, kindHint?: 
 			return isMessageClassDependencyObject(objectRef);
 		case "include":
 			return loweredUri.includes("/programs/includes/") || loweredType === "PROG/I";
+		case "report":
+			return loweredUri.includes("/programs/programs/") || loweredType === "PROG/P";
 		case "function":
 			return loweredUri.includes("/functions/groups/") ||
 				loweredType === "FUGR/F" ||
@@ -339,6 +341,38 @@ export function hasOnlyUnsupportedExactDomainMatches(
 		exactMatches.every((objectRef) => isUnsupportedDomainDependencyObject(objectRef));
 }
 
+export function selectDependencyObjects(
+	query: string,
+	objects: AdtObjectRef[],
+	kindHint?: string,
+): AdtObjectRef[] {
+	const normalizedQuery = query.trim().toLowerCase();
+	if (!normalizedQuery) {
+		return [];
+	}
+
+	const supportedExact = dedupeDependencyObjects(
+		objects.filter((objectRef) =>
+			objectRef.name.trim().toLowerCase() === normalizedQuery &&
+			isSupportedDependencyObject(objectRef),
+		),
+	);
+	if (supportedExact.length > 0) {
+		return supportedExact;
+	}
+
+	const supportedByHint = objects.filter((objectRef) => isSupportedDependencyObject(objectRef, kindHint));
+	const fallbackSupported = supportedByHint.length > 0
+		? supportedByHint
+		: objects.filter((objectRef) => isSupportedDependencyObject(objectRef));
+	if (fallbackSupported.length === 0) {
+		return [];
+	}
+
+	const preferred = pickBestDependencyObject(query, fallbackSupported, kindHint);
+	return preferred ? [preferred] : [fallbackSupported[0]];
+}
+
 export function pickBestDependencyObject(
 	query: string,
 	objects: AdtObjectRef[],
@@ -371,6 +405,8 @@ function pickPreferredDependencyObject(
 	}
 
 	switch (kindHint?.trim().toLowerCase()) {
+		case "report":
+			return objects.find((objectRef) => objectRef.type.toUpperCase() === "PROG/P");
 		case "function":
 			return objects.find((objectRef) => objectRef.type.toUpperCase() === "FUGR/FF") ??
 				objects.find((objectRef) => objectRef.type.toUpperCase() === "FUGR/F");
@@ -384,6 +420,19 @@ function pickPreferredDependencyObject(
 		default:
 			return undefined;
 	}
+}
+
+function dedupeDependencyObjects(objects: AdtObjectRef[]): AdtObjectRef[] {
+	const deduped = new Map<string, AdtObjectRef>();
+	for (const objectRef of objects) {
+		const key = `${objectRef.type.toUpperCase()}::${objectRef.uri.toLowerCase()}`;
+		if (!deduped.has(key)) {
+			deduped.set(key, objectRef);
+		}
+	}
+	return [...deduped.values()].sort((left, right) =>
+		left.type.localeCompare(right.type) || left.uri.localeCompare(right.uri),
+	);
 }
 
 export async function configureSapConnection(
@@ -1164,6 +1213,8 @@ export function inferLocalExportObjectRef(
 	switch (kindHint.trim().toLowerCase()) {
 		case "include":
 			return buildIncludeObjectRef(normalizedFallbackName, "");
+		case "report":
+			return buildLocalReportObjectRef(normalizedFallbackName);
 		case "function":
 			return buildLocalFunctionModuleObjectRef(normalizedFallbackName);
 		case "static":
@@ -1207,6 +1258,17 @@ function buildLocalFunctionModuleObjectRef(name: string): AdtObjectRef {
 		name: normalizedName,
 		packageName: "",
 		description: "Function module",
+	};
+}
+
+function buildLocalReportObjectRef(name: string): AdtObjectRef {
+	const normalizedName = name.trim().toUpperCase();
+	return {
+		uri: `/sap/bc/adt/programs/programs/${encodeURIComponent(normalizedName)}`,
+		type: "PROG/P",
+		name: normalizedName,
+		packageName: "",
+		description: "Report",
 	};
 }
 

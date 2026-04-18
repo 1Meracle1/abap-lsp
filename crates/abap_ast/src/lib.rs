@@ -345,6 +345,8 @@ pub enum SyntaxKind {
     CheckStmt,
     /// `PERFORM ... .`
     PerformStmt,
+    /// `SUBMIT ... .`
+    SubmitStmt,
     /// `CALL FUNCTION ... .`, `CALL TRANSFORMATION ... .`, or `CALL BADI ... .`
     CallStmt,
     /// `CREATE OBJECT ... .`
@@ -625,6 +627,7 @@ impl SyntaxKind {
             Self::AssertStmt => "AssertStmt",
             Self::CheckStmt => "CheckStmt",
             Self::PerformStmt => "PerformStmt",
+            Self::SubmitStmt => "SubmitStmt",
             Self::CallStmt => "CallStmt",
             Self::CreateObjectStmt => "CreateObjectStmt",
             Self::CreateDataStmt => "CreateDataStmt",

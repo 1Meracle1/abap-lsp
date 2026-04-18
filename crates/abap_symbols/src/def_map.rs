@@ -545,6 +545,9 @@ pub enum NamedArgumentTarget {
     Function {
         function_name: Arc<str>,
     },
+    Report {
+        report_name: Arc<str>,
+    },
     Routine {
         routine_name: Arc<str>,
     },

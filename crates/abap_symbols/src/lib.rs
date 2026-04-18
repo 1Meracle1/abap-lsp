@@ -71,9 +71,9 @@ mod tests {
     use std::sync::Arc;
 
     use super::{
-        DiagnosticKind, Namespace, ReferenceKind, Resolution, RoutineInstructionKind,
-        RoutineInstructionSite, RoutineTerminatorKind, ScopeKind, SymbolKind,
-        analyze_project_from_units, analyze_unit, build_project_routine_analysis,
+        DiagnosticKind, NamedArgumentTarget, Namespace, ReferenceKind, Resolution,
+        RoutineInstructionKind, RoutineInstructionSite, RoutineTerminatorKind, ScopeKind,
+        SymbolKind, analyze_project_from_units, analyze_unit, build_project_routine_analysis,
     };
     use crate::ids::{ScopeId, UnitId};
     use crate::project::{ProjectAnalysis, analyze_unit_locally};
@@ -512,6 +512,50 @@ START-OF-SELECTION.
             .expect("event symbol");
         assert_eq!(event.name.as_ref(), "start-of-selection");
         assert_eq!(&src[event.decl_range.clone()], "START-OF-SELECTION");
+    }
+
+    #[test]
+    fn submit_statement_collects_report_call_sites_and_dynamic_target_refs() {
+        let src = "\
+REPORT zsubmit_demo.
+
+DATA lv_report TYPE syrepid VALUE 'RSNAST0D'.
+
+START-OF-SELECTION.
+  SUBMIT rsnast00.
+  SUBMIT (lv_report) AND RETURN.
+";
+        let parsed = parse(src);
+        let unit = analyze_unit("file:///submit.abap", src, &parsed);
+
+        assert!(unit.call_sites.iter().any(|call_site| {
+            matches!(
+                &call_site.target,
+                NamedArgumentTarget::Report { report_name } if report_name.as_ref() == "rsnast00"
+            )
+        }));
+        assert!(
+            unit.routine_sites
+                .iter()
+                .any(|site| site.kind == super::RoutineSiteKind::Leave)
+        );
+        assert!(
+            unit.routine_sites
+                .iter()
+                .any(|site| site.kind == super::RoutineSiteKind::UnknownEffect)
+        );
+
+        let dynamic_offset = src.rfind("lv_report").expect("dynamic submit target") + 1;
+        let dynamic_ref = unit
+            .semantic()
+            .refs()
+            .reference_at_offset(dynamic_offset)
+            .expect("dynamic submit reference");
+        assert_eq!(dynamic_ref.name.as_ref(), "lv_report");
+        assert!(matches!(
+            dynamic_ref.resolution,
+            Some(Resolution::Symbol(_))
+        ));
     }
 
     #[test]

@@ -10,10 +10,11 @@ use std::sync::Arc;
 use abap_cache::{
     DocumentInput, DocumentStore, LocalExportConfig, LocalExportResolver,
     UNKNOWN_SYMBOL_MODE_REMOTE, WorkspaceDocument, WorkspaceManifest, file_uri_to_path,
-    is_remote_lookup_candidate, load_manifest_from_workspace_result,
-    load_workspace_documents_with_progress, local_export_config_for_source, manifest_cache_dir,
-    manifest_declares_uri, manifest_document_metadata, manifest_supports_remote_resolution,
-    path_to_file_uri, resolve_local_export_dependency_document, resolve_workspace_performance_mode,
+    is_remote_lookup_candidate, is_remote_lookup_candidate_after_local_resolution,
+    load_manifest_from_workspace_result, load_workspace_documents_with_progress,
+    local_export_config_for_source, manifest_cache_dir, manifest_declares_uri,
+    manifest_document_metadata, manifest_supports_remote_resolution, path_to_file_uri,
+    resolve_local_export_dependency_document, resolve_workspace_performance_mode,
     uri_starts_with_workspace,
 };
 use abap_symbols::{DiagnosticKind, ReferenceKind, SqlResolution, UnitId};
@@ -971,9 +972,21 @@ fn collect_remote_dependency_candidates_for_unit(
             }
             ReferenceKind::Identifier | ReferenceKind::RoutineCall => "symbol",
         };
-        if reference.resolution.is_some()
-            || !is_remote_lookup_candidate(reference.name.as_ref(), kind)
-        {
+        if reference.resolution.is_some() {
+            continue;
+        }
+        let is_remote_candidate = match reference.kind {
+            ReferenceKind::StaticTarget | ReferenceKind::TypeRef => {
+                is_remote_lookup_candidate_after_local_resolution(reference.name.as_ref(), kind)
+            }
+            ReferenceKind::RoutineCall
+                if reference.namespace == abap_symbols::Namespace::Routine =>
+            {
+                is_remote_lookup_candidate_after_local_resolution(reference.name.as_ref(), kind)
+            }
+            _ => is_remote_lookup_candidate(reference.name.as_ref(), kind),
+        };
+        if !is_remote_candidate {
             continue;
         }
         insert_remote_candidate(
@@ -985,15 +998,14 @@ fn collect_remote_dependency_candidates_for_unit(
         );
     }
 
-    for sql_ref in semantic.sql().name_refs() {
-        if sql_ref.kind == abap_symbols::SqlNameRefKind::Source
-            && sql_ref.resolution == SqlResolution::External
-            && is_remote_lookup_candidate(sql_ref.name.as_ref(), "type")
+    for sql_source in &unit.sql_sources {
+        if sql_source.resolution == SqlResolution::External
+            && is_remote_lookup_candidate(sql_source.name.as_ref(), "type")
         {
             insert_remote_candidate(
                 &mut deduped,
                 RemoteDependencyCandidate {
-                    name: sql_ref.name.to_string(),
+                    name: sql_source.name.to_string(),
                     kind: "type".to_string(),
                 },
             );
@@ -1001,20 +1013,39 @@ fn collect_remote_dependency_candidates_for_unit(
     }
 
     for call_site in &unit.call_sites {
-        let abap_symbols::NamedArgumentTarget::Function { function_name } = &call_site.target
-        else {
-            continue;
-        };
-        if !is_remote_lookup_candidate(function_name.as_ref(), "function") {
-            continue;
+        match &call_site.target {
+            abap_symbols::NamedArgumentTarget::Function { function_name } => {
+                if !is_remote_lookup_candidate_after_local_resolution(
+                    function_name.as_ref(),
+                    "function",
+                ) {
+                    continue;
+                }
+                insert_remote_candidate(
+                    &mut deduped,
+                    RemoteDependencyCandidate {
+                        name: function_name.to_string(),
+                        kind: "function".to_string(),
+                    },
+                );
+            }
+            abap_symbols::NamedArgumentTarget::Report { report_name } => {
+                if !is_remote_lookup_candidate_after_local_resolution(
+                    report_name.as_ref(),
+                    "report",
+                ) {
+                    continue;
+                }
+                insert_remote_candidate(
+                    &mut deduped,
+                    RemoteDependencyCandidate {
+                        name: report_name.to_string(),
+                        kind: "report".to_string(),
+                    },
+                );
+            }
+            _ => {}
         }
-        insert_remote_candidate(
-            &mut deduped,
-            RemoteDependencyCandidate {
-                name: function_name.to_string(),
-                kind: "function".to_string(),
-            },
-        );
     }
 
     deduped.into_values().collect()
@@ -1580,17 +1611,31 @@ fn range_to_byte_range(text: &str, range: Range) -> Option<std::ops::Range<usize
 
 fn candidate_key_for_open_sql_source(snapshot: &AnalysisSnapshot, range: &Range) -> Option<String> {
     let byte_range = range_to_byte_range(snapshot.text.as_ref(), range.clone())?;
-    let sql_ref = snapshot.symbols.sql_name_refs.iter().find(|sql_ref| {
-        sql_ref.kind == abap_symbols::SqlNameRefKind::Source && sql_ref.range == byte_range
-    })?;
+    let name = snapshot
+        .symbols
+        .sql_sources
+        .iter()
+        .find(|sql_source| sql_source.range == byte_range)
+        .map(|sql_source| sql_source.name.as_ref())
+        .or_else(|| {
+            snapshot
+                .symbols
+                .sql_name_refs
+                .iter()
+                .find(|sql_ref| {
+                    sql_ref.kind == abap_symbols::SqlNameRefKind::Source
+                        && sql_ref.range == byte_range
+                })
+                .map(|sql_ref| sql_ref.name.as_ref())
+        })?;
     Some(remote_candidate_key(&RemoteDependencyCandidate {
-        name: sql_ref.name.to_string(),
+        name: name.to_string(),
         kind: "type".to_string(),
     }))
 }
 
 fn candidate_key_for_unresolved_type_name(name: &str) -> Option<String> {
-    if !is_remote_lookup_candidate(name, "type") {
+    if !is_remote_lookup_candidate_after_local_resolution(name, "type") {
         return None;
     }
     Some(remote_candidate_key(&RemoteDependencyCandidate {
@@ -3581,6 +3626,20 @@ unknown_symbol_mode = "remote"
     }
 
     #[test]
+    fn unresolved_local_style_type_name_emits_type_dependency_candidate() {
+        let store = DocumentStore::default();
+        let snapshot = store.publish("file:///tt_remote.abap", 1, "DATA lt_ltap TYPE tt_ltap_vb.");
+
+        let candidates = collect_remote_dependency_candidates(snapshot.as_ref());
+        assert!(
+            candidates
+                .iter()
+                .any(|candidate| { candidate.kind == "type" && candidate.name == "tt_ltap_vb" }),
+            "{candidates:#?}"
+        );
+    }
+
+    #[test]
     fn collects_function_module_remote_dependency_candidates() {
         let store = DocumentStore::default();
         let snapshot = store.publish(
@@ -4825,6 +4884,200 @@ unknown_symbol_mode = "remote"
         assert!(names.contains("if_sxml_node"));
         assert!(names.contains("cx_root"));
         assert!(names.contains("cx_sxml_parse_error"));
+
+        let _ = fs::remove_dir_all(&workspace_path);
+    }
+
+    #[test]
+    fn remote_dependency_request_includes_local_style_type_candidates_after_local_resolution() {
+        let workspace_path = temp_workspace_path("local_style_type_remote_candidates");
+        fs::create_dir_all(&workspace_path).expect("workspace dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[resolution]
+dependency_mode = "remote-on-demand"
+unknown_symbol_mode = "remote"
+"#,
+        )
+        .expect("manifest");
+        let workspace_uri = path_to_file_uri(&workspace_path);
+
+        let mut state = ServerState::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        publish_open_document_mut(
+            &mut state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str(&format!("{workspace_uri}/main.abap")).expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: "DATA lt_ltap TYPE tt_ltap_vb.".to_string(),
+                },
+            },
+        );
+
+        let request =
+            build_remote_dependency_request(&mut state, &format!("{workspace_uri}/main.abap"))
+                .expect("remote request");
+        assert!(
+            request
+                .candidates
+                .iter()
+                .any(|candidate| candidate.kind == "type" && candidate.name == "tt_ltap_vb"),
+            "{request:#?}"
+        );
+
+        let _ = fs::remove_dir_all(&workspace_path);
+    }
+
+    #[test]
+    fn remote_dependency_request_includes_local_style_function_candidates_after_local_resolution() {
+        let workspace_path = temp_workspace_path("local_style_function_remote_candidates");
+        fs::create_dir_all(&workspace_path).expect("workspace dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[resolution]
+dependency_mode = "remote-on-demand"
+unknown_symbol_mode = "remote"
+"#,
+        )
+        .expect("manifest");
+        let workspace_uri = path_to_file_uri(&workspace_path);
+
+        let mut state = ServerState::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        publish_open_document_mut(
+            &mut state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str(&format!("{workspace_uri}/main.abap")).expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: concat!(
+                        "CALL FUNCTION 'MD_CONVERT_MATERIAL_UNIT'.\n",
+                        "CALL FUNCTION 'SD_ROUTE_DETERMINATION'.\n",
+                        "CALL FUNCTION 'WS_DELIVERY_UPDATE_2'.\n",
+                    )
+                    .to_string(),
+                },
+            },
+        );
+
+        let request =
+            build_remote_dependency_request(&mut state, &format!("{workspace_uri}/main.abap"))
+                .expect("remote request");
+        let candidates: std::collections::HashSet<_> = request
+            .candidates
+            .iter()
+            .filter(|candidate| candidate.kind == "function")
+            .map(|candidate| candidate.name.as_str())
+            .collect();
+        assert!(
+            candidates.contains("md_convert_material_unit"),
+            "{request:#?}"
+        );
+        assert!(
+            candidates.contains("sd_route_determination"),
+            "{request:#?}"
+        );
+        assert!(candidates.contains("ws_delivery_update_2"), "{request:#?}");
+
+        let _ = fs::remove_dir_all(&workspace_path);
+    }
+
+    #[test]
+    fn remote_dependency_request_includes_submit_report_candidates() {
+        let workspace_path = temp_workspace_path("submit_report_remote_candidates");
+        fs::create_dir_all(&workspace_path).expect("workspace dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[resolution]
+dependency_mode = "remote-on-demand"
+unknown_symbol_mode = "remote"
+"#,
+        )
+        .expect("manifest");
+        let workspace_uri = path_to_file_uri(&workspace_path);
+
+        let mut state = ServerState::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        publish_open_document_mut(
+            &mut state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str(&format!("{workspace_uri}/main.abap")).expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: "SUBMIT rsnast00.\nSUBMIT rsnast0d AND RETURN.".to_string(),
+                },
+            },
+        );
+
+        let request =
+            build_remote_dependency_request(&mut state, &format!("{workspace_uri}/main.abap"))
+                .expect("remote request");
+        let candidates: std::collections::HashSet<_> = request
+            .candidates
+            .iter()
+            .filter(|candidate| candidate.kind == "report")
+            .map(|candidate| candidate.name.as_str())
+            .collect();
+        assert!(candidates.contains("rsnast00"), "{request:#?}");
+        assert!(candidates.contains("rsnast0d"), "{request:#?}");
+
+        let _ = fs::remove_dir_all(&workspace_path);
+    }
+
+    #[test]
+    fn remote_dependency_request_includes_open_sql_source_candidates() {
+        let workspace_path = temp_workspace_path("open_sql_remote_candidates");
+        fs::create_dir_all(&workspace_path).expect("workspace dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[resolution]
+dependency_mode = "remote-on-demand"
+unknown_symbol_mode = "remote"
+"#,
+        )
+        .expect("manifest");
+        let workspace_uri = path_to_file_uri(&workspace_path);
+
+        let mut state = ServerState::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        publish_open_document_mut(
+            &mut state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str(&format!("{workspace_uri}/main.abap")).expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: "SELECT * FROM ekko INTO TABLE @DATA(lt_ekko).".to_string(),
+                },
+            },
+        );
+
+        let request =
+            build_remote_dependency_request(&mut state, &format!("{workspace_uri}/main.abap"))
+                .expect("remote request");
+        assert!(
+            request
+                .candidates
+                .iter()
+                .any(|candidate| candidate.kind == "type" && candidate.name == "ekko"),
+            "{request:#?}"
+        );
 
         let _ = fs::remove_dir_all(&workspace_path);
     }

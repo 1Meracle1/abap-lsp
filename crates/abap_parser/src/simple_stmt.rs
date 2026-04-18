@@ -66,6 +66,7 @@ const KEYWORD_SIMPLE_STMT_KINDS: &[(&str, SyntaxKind)] = &[
     ("convert", SyntaxKind::ConvertStmt),
     ("describe", SyntaxKind::DescribeStmt),
     ("perform", SyntaxKind::PerformStmt),
+    ("submit", SyntaxKind::SubmitStmt),
     ("replace", SyntaxKind::ReplaceStmt),
     ("wait", SyntaxKind::WaitStmt),
 ];
@@ -1196,11 +1197,17 @@ fn class_section_statement(source: &str, significant: &[&Token]) -> bool {
         && token_matches_keyword(source, second, "section")
 }
 
-fn direct_call_statement(significant: &[&Token]) -> bool {
+fn direct_call_statement(source: &str, significant: &[&Token]) -> bool {
     let Some(last) = significant.last() else {
         return false;
     };
     if last.kind != TokenKind::Period {
+        return false;
+    }
+    if significant
+        .first()
+        .is_some_and(|token| token_matches_keyword(source, token, "submit"))
+    {
         return false;
     }
 
@@ -1362,8 +1369,8 @@ fn classify_set_gui_stmt(source: &str, significant: &[&Token]) -> Option<SyntaxK
     }
 }
 
-fn classify_direct_call_stmt(_source: &str, significant: &[&Token]) -> Option<SyntaxKind> {
-    direct_call_statement(significant).then(|| {
+fn classify_direct_call_stmt(source: &str, significant: &[&Token]) -> Option<SyntaxKind> {
+    direct_call_statement(source, significant).then(|| {
         if direct_call_padding_is_valid(significant) {
             SyntaxKind::CallStmt
         } else {
@@ -1491,7 +1498,7 @@ fn validate_unparsed_stmt(
     validate_method_modifier_order(source, tokens, idx, period_i, errors);
     let is_method_stmt = method_statement_name_idx(source, significant).is_some();
     if !is_method_stmt
-        && direct_call_statement(significant)
+        && direct_call_statement(source, significant)
         && !direct_call_padding_is_valid(significant)
     {
         errors.push(crate::ParseError {
@@ -1682,6 +1689,18 @@ ENDCLASS.";
             parsed
                 .file
                 .count_kind(parsed.file.root(), SyntaxKind::MethodsStmt),
+            1
+        );
+    }
+
+    #[test]
+    fn classifies_submit_statement_specifically() {
+        let parsed = crate::parse("SUBMIT rsnast00 AND RETURN.");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::SubmitStmt),
             1
         );
     }

@@ -300,9 +300,9 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                 };
                 self.type_fact_from_method_signature(scope, signature)
             }
-            NamedArgumentTarget::Constructor { .. } | NamedArgumentTarget::Function { .. } => {
-                TypeFactData::default()
-            }
+            NamedArgumentTarget::Constructor { .. }
+            | NamedArgumentTarget::Function { .. }
+            | NamedArgumentTarget::Report { .. } => TypeFactData::default(),
         }
     }
 

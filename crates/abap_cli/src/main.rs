@@ -27,8 +27,8 @@ use abap_ast::SyntaxKind;
 use abap_ast::arena::NodeId;
 use abap_cache::{
     AnalysisSnapshot, CallGraphEdge, CallGraphNode, DocumentInput, DocumentStore, EffectiveSource,
-    build_effective_source, file_uri_to_path, load_workspace_documents, manifest_document_metadata,
-    path_to_file_uri,
+    LocalExportResolver, build_effective_source, file_uri_to_path, load_workspace_documents,
+    manifest_document_metadata, path_to_file_uri, resolve_local_export_dependency_document,
 };
 use abap_lexer::tokenize;
 use abap_lsp::{
@@ -637,11 +637,6 @@ struct RemoteCandidateWorkspace {
     candidates: Vec<RemoteDependencyCandidate>,
 }
 
-#[derive(Debug, Default)]
-struct LocalExportIndex {
-    file_names: HashSet<String>,
-}
-
 fn run_analyze(cli: &Cli) -> Result<i32, String> {
     if !cli.json_output {
         return Err("analyze currently requires --json".to_string());
@@ -830,20 +825,14 @@ fn load_remote_candidate_workspace(path: Option<&str>) -> Result<RemoteCandidate
         .filter(|document| !document.is_dependency)
         .count();
 
-    let inputs: Vec<DocumentInput> = workspace
-        .documents
-        .iter()
-        .map(|document| DocumentInput {
-            uri: Arc::clone(&document.uri),
-            version: document.version,
-            text: Arc::from(document.text.as_str()),
-            is_dependency: document.is_dependency,
-            object_name: document.object_name.clone(),
-        })
-        .collect();
-
-    let snapshots = DocumentStore::default().replace_all(inputs);
-    let mut local_export_indices = HashMap::<String, LocalExportIndex>::new();
+    let store = DocumentStore::default();
+    let snapshots = replace_all_workspace_documents_with_local_exports(
+        &store,
+        &workspace.root_path,
+        &workspace.documents,
+        None,
+    );
+    let mut local_export_resolver = LocalExportResolver::default();
     let mut deduped = BTreeMap::<String, RemoteDependencyCandidate>::new();
     let mut source_uris = Vec::new();
     let mut source_candidates = BTreeMap::<String, Vec<RemoteDependencyCandidate>>::new();
@@ -860,7 +849,7 @@ fn load_remote_candidate_workspace(path: Option<&str>) -> Result<RemoteCandidate
             if candidate_is_resolved_by_local_export(
                 &candidate,
                 &local_export_roots,
-                &mut local_export_indices,
+                &mut local_export_resolver,
             ) {
                 continue;
             }
@@ -999,108 +988,19 @@ fn read_unit_sidecar_local_roots(sidecar_path: &Path) -> Vec<PathBuf> {
 fn candidate_is_resolved_by_local_export(
     candidate: &RemoteDependencyCandidate,
     roots: &[PathBuf],
-    indices: &mut HashMap<String, LocalExportIndex>,
+    resolver: &mut LocalExportResolver,
 ) -> bool {
     if roots.is_empty() {
         return false;
     }
 
-    roots.iter().any(|root| {
-        let key = normalized_local_export_path_key(root);
-        let index = indices
-            .entry(key)
-            .or_insert_with(|| build_local_export_index(root));
-        index_contains_candidate(index, candidate)
-    })
-}
-
-fn build_local_export_index(root: &Path) -> LocalExportIndex {
-    let mut index = LocalExportIndex::default();
-    if !root.is_dir() {
-        return index;
-    }
-
-    let mut stack = vec![root.to_path_buf()];
-    while let Some(current) = stack.pop() {
-        let entries = match fs::read_dir(&current) {
-            Ok(entries) => entries,
-            Err(_) => continue,
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let file_type = match entry.file_type() {
-                Ok(file_type) => file_type,
-                Err(_) => continue,
-            };
-            if file_type.is_dir() {
-                stack.push(path);
-                continue;
-            }
-            if !file_type.is_file() {
-                continue;
-            }
-            let Some(file_name) = path.file_name().and_then(|value| value.to_str()) else {
-                continue;
-            };
-            index.file_names.insert(file_name.to_ascii_lowercase());
-        }
-    }
-
-    index
-}
-
-fn index_contains_candidate(
-    index: &LocalExportIndex,
-    candidate: &RemoteDependencyCandidate,
-) -> bool {
-    local_export_candidate_file_names(candidate)
-        .into_iter()
-        .any(|file_name| index.file_names.contains(&file_name))
-}
-
-fn local_export_candidate_file_names(candidate: &RemoteDependencyCandidate) -> Vec<String> {
-    let encoded_name = encode_local_export_component(candidate.name.trim());
-    if encoded_name.is_empty() {
-        return Vec::new();
-    }
-    let extensions: &[&str] = match candidate.kind.trim().to_ascii_lowercase().as_str() {
-        "include" | "function" | "static" => &["abap"],
-        "message-class" => &["xml"],
-        "symbol" | "type" => &["xml", "abap"],
-        _ => &[],
-    };
-    extensions
-        .iter()
-        .map(|extension| format!("{encoded_name}.{extension}").to_ascii_lowercase())
-        .collect()
-}
-
-fn encode_local_export_component(value: &str) -> String {
-    let normalized = value.trim().to_ascii_uppercase();
-    let mut out = String::with_capacity(normalized.len());
-    for byte in normalized.bytes() {
-        if byte.is_ascii_alphanumeric()
-            || matches!(
-                byte,
-                b'-' | b'_' | b'.' | b'!' | b'~' | b'*' | b'\'' | b'(' | b')'
-            )
-        {
-            out.push(byte as char);
-            continue;
-        }
-        out.push('%');
-        out.push(local_export_hex_digit(byte >> 4));
-        out.push(local_export_hex_digit(byte & 0x0f));
-    }
-    out
-}
-
-fn local_export_hex_digit(value: u8) -> char {
-    match value {
-        0..=9 => (b'0' + value) as char,
-        10..=15 => (b'A' + (value - 10)) as char,
-        _ => '0',
-    }
+    resolve_local_export_dependency_document(
+        roots,
+        resolver,
+        candidate.name.as_str(),
+        candidate.kind.as_str(),
+    )
+    .is_some()
 }
 
 fn normalized_local_export_path_key(path: &Path) -> String {
@@ -1139,6 +1039,7 @@ fn remote_candidate_kind_priority(kind: &str) -> usize {
         "message-class" => 5,
         "include" => 4,
         "function" => 4,
+        "report" => 4,
         "static" => 3,
         "type" => 2,
         _ => 1,
@@ -1740,6 +1641,73 @@ cache_dir = ".abapls/cache"
         );
         assert!(
             source_candidates.contains(&"zzf_missing"),
+            "{source_candidates:?}"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&export_root);
+    }
+
+    #[test]
+    fn remote_candidates_try_local_export_before_remote_for_local_style_types() {
+        let root = std::env::temp_dir().join("abap-cli-remote-candidates-local-style-type");
+        let export_root =
+            std::env::temp_dir().join("abap-cli-remote-candidates-local-style-type-d04");
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&export_root);
+        fs::create_dir_all(root.join("src/reports/ZREP")).expect("report dir");
+        fs::create_dir_all(export_root.join("packages/ZWM/ddic-table-type")).expect("export dir");
+        fs::write(
+            root.join("abapls.toml"),
+            r#"
+version = 1
+
+[resolution]
+cache_dir = ".abapls/cache"
+"#,
+        )
+        .expect("manifest");
+        fs::write(root.join("src/reports/ZREP/ZREP.abap"), "REPORT zrep.").expect("report");
+        fs::write(
+            root.join("src/reports/ZREP/ZREP_TOP.abap"),
+            "DATA lt_exported TYPE tt_ltap_vb.\nDATA lt_missing TYPE tt_missing_vb.\n",
+        )
+        .expect("top include");
+        fs::write(
+            root.join("src/reports/ZREP/abapls-unit.toml"),
+            format!(
+                "[local_export]\nroots = [\"{}\"]\n\n[dependencies]\nsource = \"local-first\"\n",
+                export_root.to_string_lossy().replace('\\', "/")
+            ),
+        )
+        .expect("unit sidecar");
+        fs::write(
+            export_root.join("packages/ZWM/ddic-table-type/TT_LTAP_VB.xml"),
+            r#"<?xml version="1.0" encoding="utf-8"?><tableType />"#,
+        )
+        .expect("exported ddic table type");
+
+        let workspace = load_remote_candidate_workspace(Some(root.to_string_lossy().as_ref()))
+            .expect("remote candidates");
+        let names: Vec<_> = workspace
+            .candidates
+            .iter()
+            .map(|candidate| candidate.name.as_str())
+            .collect();
+        let source_candidates = workspace
+            .source_candidates
+            .values()
+            .flat_map(|candidates| candidates.iter().map(|candidate| candidate.name.as_str()))
+            .collect::<Vec<_>>();
+
+        assert!(!names.contains(&"tt_ltap_vb"), "{names:?}");
+        assert!(names.contains(&"tt_missing_vb"), "{names:?}");
+        assert!(
+            !source_candidates.contains(&"tt_ltap_vb"),
+            "{source_candidates:?}"
+        );
+        assert!(
+            source_candidates.contains(&"tt_missing_vb"),
             "{source_candidates:?}"
         );
 

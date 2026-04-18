@@ -483,7 +483,9 @@ impl<'a> FactBuilder<'a> {
                         .collect(),
                 )
             }
-            NamedArgumentTarget::Constructor { .. } | NamedArgumentTarget::Routine { .. } => None,
+            NamedArgumentTarget::Constructor { .. }
+            | NamedArgumentTarget::Report { .. }
+            | NamedArgumentTarget::Routine { .. } => None,
         }
     }
 

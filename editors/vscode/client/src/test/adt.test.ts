@@ -17,6 +17,7 @@ import {
 	parseLocalDdicExportObjectRef,
 	parseDotenvContents,
 	pickBestDependencyObject,
+	selectDependencyObjects,
 	resolveSapConnectionDefaults,
 	type AdtObjectRef,
 } from "../adt";
@@ -224,6 +225,47 @@ suite("ADT dependency helpers", () => {
 		assert.strictEqual(
 			pickBestDependencyObject("view_get_data", [functionRef], "function")?.name,
 			"VIEW_GET_DATA",
+		);
+	});
+
+	test("Selects all supported exact dependency matches before falling back to one object", () => {
+		const selected = selectDependencyObjects(
+			"EKKO",
+			[
+				{
+					uri: "/sap/bc/adt/ddic/dbtables/ekko",
+					type: "TABL/DT",
+					name: "EKKO",
+					packageName: "SABAP",
+					description: "Purchasing document header",
+				},
+				{
+					uri: "/sap/bc/adt/functions/groups/mm06e0/fmodules/ekko",
+					type: "FUGR/FF",
+					name: "EKKO",
+					packageName: "MM06E0",
+					description: "Function module",
+				},
+			],
+			"type",
+		);
+
+		assert.strictEqual(selected.length, 2);
+	});
+
+	test("Treats reports as supported report dependencies", () => {
+		const reportRef: AdtObjectRef = {
+			uri: "/sap/bc/adt/programs/programs/rsnast00",
+			type: "PROG/P",
+			name: "RSNAST00",
+			packageName: "VN",
+			description: "Report",
+		};
+
+		assert.strictEqual(isSupportedDependencyObject(reportRef, "report"), true);
+		assert.strictEqual(
+			selectDependencyObjects("rsnast00", [reportRef], "report")[0]?.type,
+			"PROG/P",
 		);
 	});
 

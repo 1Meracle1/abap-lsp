@@ -1494,7 +1494,9 @@ fn resolve_method_target_handle(
             }
             Namespace::Routine => None,
         },
-        NamedArgumentTarget::Function { .. } | NamedArgumentTarget::Routine { .. } => None,
+        NamedArgumentTarget::Function { .. }
+        | NamedArgumentTarget::Report { .. }
+        | NamedArgumentTarget::Routine { .. } => None,
     }
 }
 
@@ -1518,7 +1520,9 @@ fn resolve_call_target_member<'a>(
         NamedArgumentTarget::Constructor { .. } => "constructor",
         NamedArgumentTarget::ImplicitMethod { method_name } => method_name.as_ref(),
         NamedArgumentTarget::Method { method_name, .. } => method_name.as_ref(),
-        NamedArgumentTarget::Function { .. } | NamedArgumentTarget::Routine { .. } => return None,
+        NamedArgumentTarget::Function { .. }
+        | NamedArgumentTarget::Report { .. }
+        | NamedArgumentTarget::Routine { .. } => return None,
     };
     if target_unit.symbol(handle.symbol).kind == SymbolKind::Interface {
         return target_unit

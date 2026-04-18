@@ -467,6 +467,7 @@ ast_node!(ReplaceWithOperand, SyntaxKind::ReplaceWithOperand);
 ast_node!(WaitStmt, SyntaxKind::WaitStmt);
 ast_node!(WaitOperand, SyntaxKind::WaitOperand);
 ast_node!(PerformStmt, SyntaxKind::PerformStmt);
+ast_node!(SubmitStmt, SyntaxKind::SubmitStmt);
 ast_node!(CreateObjectStmt, SyntaxKind::CreateObjectStmt);
 ast_node!(CreateDataStmt, SyntaxKind::CreateDataStmt);
 ast_node!(CallStmt, SyntaxKind::CallStmt);
@@ -2122,6 +2123,16 @@ impl<'a> PerformStmt<'a> {
     }
 
     pub fn routine_token(self) -> Option<SyntaxNodeRef<'a>> {
+        self.tokens().nth(1)
+    }
+}
+
+impl<'a> SubmitStmt<'a> {
+    pub fn tokens(self) -> impl DoubleEndedIterator<Item = SyntaxNodeRef<'a>> + Clone + 'a {
+        self.syntax.children_by_kind(SyntaxKind::Token)
+    }
+
+    pub fn target_token(self) -> Option<SyntaxNodeRef<'a>> {
         self.tokens().nth(1)
     }
 }

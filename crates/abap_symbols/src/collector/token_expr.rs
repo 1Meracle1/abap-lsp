@@ -696,6 +696,7 @@ impl<'a> Collector<'a> {
                     .and_then(|param| param.declared_type.clone())
             }
             NamedArgumentTarget::Function { .. } => None,
+            NamedArgumentTarget::Report { .. } => None,
             NamedArgumentTarget::Routine { .. } => None,
             NamedArgumentTarget::ImplicitMethod { method_name } => {
                 let class_symbol = self.enclosing_class_owner(scope)?;

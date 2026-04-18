@@ -577,7 +577,24 @@ pub fn is_remote_lookup_candidate(name: &str, kind: &str) -> bool {
     }
 
     match kind.trim().to_ascii_lowercase().as_str() {
-        "type" | "static" | "function" => is_standard_remote_type_like_name(trimmed),
+        "type" | "static" | "function" | "report" => is_standard_remote_type_like_name(trimmed),
+        "message-class" => is_standard_message_class_name(trimmed),
+        _ => false,
+    }
+}
+
+pub fn is_remote_lookup_candidate_after_local_resolution(name: &str, kind: &str) -> bool {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    if is_remote_lookup_name(trimmed) {
+        return true;
+    }
+
+    match kind.trim().to_ascii_lowercase().as_str() {
+        "type" | "static" => is_standard_remote_type_like_name_after_local_resolution(trimmed),
+        "function" | "report" => is_standard_remote_type_like_name_after_local_resolution(trimmed),
         "message-class" => is_standard_message_class_name(trimmed),
         _ => false,
     }
@@ -599,6 +616,26 @@ fn is_standard_remote_type_like_name(name: &str) -> bool {
     if is_likely_local_identifier_style(&lower) {
         return false;
     }
+    if is_likely_builtin_type_name(&lower) {
+        return false;
+    }
+
+    chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '/')
+}
+
+fn is_standard_remote_type_like_name_after_local_resolution(name: &str) -> bool {
+    if name.starts_with('/') {
+        return true;
+    }
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !first.is_ascii_alphabetic() {
+        return false;
+    }
+
+    let lower = name.to_ascii_lowercase();
     if is_likely_builtin_type_name(&lower) {
         return false;
     }
@@ -1053,7 +1090,9 @@ pub fn resolve_local_export_dependency_document(
             let Some(artifacts) = index.artifacts_by_file_name.get(file_name) else {
                 continue;
             };
-            let Some(artifact) = artifacts.first() else {
+            let Some(artifact) = artifacts.iter().find(|artifact| {
+                local_export_artifact_matches_candidate(artifact, candidate_name, candidate_kind)
+            }) else {
                 continue;
             };
             let source_text = fs::read_to_string(&artifact.path).ok()?;
@@ -1232,13 +1271,71 @@ fn infer_local_export_kind_hint(path: &Path) -> String {
         .unwrap_or_else(|| "dependency".to_string())
 }
 
+fn local_export_artifact_matches_candidate(
+    artifact: &LocalExportArtifact,
+    candidate_name: &str,
+    candidate_kind: &str,
+) -> bool {
+    let kind = artifact.kind_hint.trim().to_ascii_lowercase();
+    match candidate_kind.trim().to_ascii_lowercase().as_str() {
+        "include" => kind == "include",
+        "function" => kind == "function-module",
+        "report" => matches!(kind.as_str(), "program" | "report"),
+        "message-class" => kind == "message-class",
+        "symbol" | "static" | "type" => {
+            local_export_artifact_matches_type_like_candidate(kind.as_str(), candidate_name)
+        }
+        _ => false,
+    }
+}
+
+fn local_export_artifact_matches_type_like_candidate(
+    kind_hint: &str,
+    candidate_name: &str,
+) -> bool {
+    if is_class_like_remote_type_name(candidate_name) {
+        return matches!(
+            kind_hint,
+            "class" | "global-class" | "interface" | "global-interface"
+        );
+    }
+
+    matches!(
+        kind_hint,
+        "ddic-data-element"
+            | "ddic-domain"
+            | "ddic-lock-object"
+            | "ddic-search-help"
+            | "ddic-structure"
+            | "ddic-table"
+            | "ddic-table-type"
+            | "ddic-view"
+            | "type-group"
+            | "type-pool"
+    )
+}
+
+fn is_class_like_remote_type_name(name: &str) -> bool {
+    let lower = name.trim().to_ascii_lowercase();
+    let tail = lower.rsplit('/').next().unwrap_or(lower.as_str());
+    tail.starts_with("cl_")
+        || tail.starts_with("cx_")
+        || tail.starts_with("if_")
+        || tail.starts_with("ycl_")
+        || tail.starts_with("ycx_")
+        || tail.starts_with("yif_")
+        || tail.starts_with("zcl_")
+        || tail.starts_with("zcx_")
+        || tail.starts_with("zif_")
+}
+
 fn local_export_candidate_file_names(candidate_name: &str, candidate_kind: &str) -> Vec<String> {
     let encoded_name = encode_local_export_component(candidate_name.trim());
     if encoded_name.is_empty() {
         return Vec::new();
     }
     let extensions: &[&str] = match candidate_kind.trim().to_ascii_lowercase().as_str() {
-        "include" | "function" | "static" => &["abap"],
+        "include" | "function" | "static" | "report" => &["abap"],
         "message-class" => &["xml"],
         "symbol" | "type" => &["xml", "abap"],
         _ => &[],
@@ -2520,12 +2617,14 @@ mod tests {
     use std::sync::Arc;
 
     use super::{
-        DEFAULT_REMOTE_REQUESTS_PER_SECOND, OpenDocumentOverlay, UNKNOWN_SYMBOL_MODE_REMOTE,
-        WORKSPACE_PERFORMANCE_MODE_AUTO, WORKSPACE_PERFORMANCE_MODE_EDITOR_FIRST,
-        WorkspaceManifest, WorkspacePerformanceMode, ddic_xml_to_abap_source,
-        is_remote_lookup_candidate, is_remote_lookup_name, load_manifest_from_workspace,
-        load_workspace_documents, manifest_declares_uri, manifest_document_metadata,
-        manifest_supports_remote_resolution, path_to_file_uri, resolve_workspace_performance_mode,
+        DEFAULT_REMOTE_REQUESTS_PER_SECOND, LocalExportResolver, OpenDocumentOverlay,
+        UNKNOWN_SYMBOL_MODE_REMOTE, WORKSPACE_PERFORMANCE_MODE_AUTO,
+        WORKSPACE_PERFORMANCE_MODE_EDITOR_FIRST, WorkspaceManifest, WorkspacePerformanceMode,
+        ddic_xml_to_abap_source, is_remote_lookup_candidate,
+        is_remote_lookup_candidate_after_local_resolution, is_remote_lookup_name,
+        load_manifest_from_workspace, load_workspace_documents, manifest_declares_uri,
+        manifest_document_metadata, manifest_supports_remote_resolution, path_to_file_uri,
+        resolve_local_export_dependency_document, resolve_workspace_performance_mode,
     };
 
     #[test]
@@ -2758,6 +2857,48 @@ mode = "full-workspace"
     }
 
     #[test]
+    fn local_export_resolver_requires_compatible_artifact_kind_for_type_candidates() {
+        let root = std::env::temp_dir().join("abap-lsp-local-export-kind-filter");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("packages/EE30/function-group")).expect("function group dir");
+        fs::create_dir_all(root.join("packages/ME/ddic-table")).expect("ddic table dir");
+        fs::create_dir_all(root.join("packages/ZPKG/global-class")).expect("class dir");
+        fs::write(
+            root.join("packages/EE30/function-group/EKKO.abap"),
+            "FUNCTION-POOL ekko.",
+        )
+        .expect("function group");
+        fs::write(
+            root.join("packages/ME/ddic-table/EKPO.xml"),
+            r#"<?xml version="1.0" encoding="utf-8"?><abapsource:elementInfo adtcore:uri="/sap/bc/adt/vit/wb/object_type/tabldt/object_name/EKPO" adtcore:type="TABL/DT" adtcore:name="ekpo" xmlns:abapsource="http://www.sap.com/adt/abapsource" xmlns:adtcore="http://www.sap.com/adt/core"></abapsource:elementInfo>"#,
+        )
+        .expect("ddic table");
+        fs::write(
+            root.join("packages/ZPKG/global-class/ZCL_DEMO.abap"),
+            "CLASS zcl_demo DEFINITION. ENDCLASS.",
+        )
+        .expect("class");
+
+        let mut resolver = LocalExportResolver::default();
+        let roots = vec![root.clone()];
+
+        assert!(
+            resolve_local_export_dependency_document(&roots, &mut resolver, "ekko", "type")
+                .is_none()
+        );
+        assert!(
+            resolve_local_export_dependency_document(&roots, &mut resolver, "ekpo", "type")
+                .is_some()
+        );
+        assert!(
+            resolve_local_export_dependency_document(&roots, &mut resolver, "zcl_demo", "type")
+                .is_some()
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn detects_remote_lookup_candidate_names() {
         assert!(is_remote_lookup_name("zcl_demo"));
         assert!(is_remote_lookup_name("/foo/bar"));
@@ -2789,6 +2930,47 @@ mode = "full-workspace"
         assert!(!is_remote_lookup_candidate("xsequence", "type"));
         assert!(!is_remote_lookup_candidate("decfloat", "type"));
         assert!(!is_remote_lookup_candidate("lv_msgid", "message-class"));
+    }
+
+    #[test]
+    fn detects_remote_lookup_candidates_after_local_resolution() {
+        assert!(is_remote_lookup_candidate_after_local_resolution(
+            "tt_ltap_vb",
+            "type"
+        ));
+        assert!(is_remote_lookup_candidate_after_local_resolution(
+            "ct_messages",
+            "static"
+        ));
+        assert!(is_remote_lookup_candidate_after_local_resolution(
+            "cl_abap_typedescr",
+            "type"
+        ));
+        assert!(is_remote_lookup_candidate_after_local_resolution(
+            "md_convert_material_unit",
+            "function"
+        ));
+        assert!(is_remote_lookup_candidate_after_local_resolution(
+            "sd_route_determination",
+            "function"
+        ));
+        assert!(is_remote_lookup_candidate_after_local_resolution(
+            "ws_delivery_update_2",
+            "function"
+        ));
+        assert!(is_remote_lookup_candidate_after_local_resolution(
+            "rsnast00", "report"
+        ));
+        assert!(!is_remote_lookup_candidate_after_local_resolution(
+            "time", "type"
+        ));
+        assert!(!is_remote_lookup_candidate_after_local_resolution(
+            "standard", "type"
+        ));
+        assert!(!is_remote_lookup_candidate_after_local_resolution(
+            "cl_abap_typedescr",
+            "symbol"
+        ));
     }
 
     #[test]

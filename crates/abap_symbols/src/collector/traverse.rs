@@ -158,6 +158,7 @@ impl<'a> Collector<'a> {
             SyntaxKind::ConvertStmt => self.stmt_lowering().collect_convert_stmt(node, scope),
             SyntaxKind::DescribeStmt => self.stmt_lowering().collect_describe_stmt(node, scope),
             SyntaxKind::FindStmt => self.stmt_lowering().collect_find_stmt(node, scope),
+            SyntaxKind::SubmitStmt => self.stmt_lowering().collect_submit_stmt(node, scope),
             SyntaxKind::CallStmt => self.stmt_lowering().collect_call_stmt(node, scope),
             SyntaxKind::MessageStmt => self.stmt_lowering().collect_message_stmt(node, scope),
             SyntaxKind::ReplaceStmt => self.stmt_lowering().collect_replace_stmt(node, scope),

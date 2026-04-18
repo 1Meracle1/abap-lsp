@@ -5,14 +5,14 @@ use abap_ast::arena::NodeId;
 use abap_ast::ast::{
     AliasesStmt, AstNode, AuthorityCheckStmt, CallMethodStmt, CallStmt, CallStmtKind, ClearStmt,
     ConcatenateStmt, ConvertStmt, CreateDataStmt, CreateObjectStmt, DeleteStmt, DescribeStmt,
-    FindStmt, MessageStmt, MethodsStmt, RaiseStmt, ReadTableStmt, ReplaceStmt, SplitStmt, WaitStmt,
-    WriteStmt,
+    FindStmt, MessageStmt, MethodsStmt, RaiseStmt, ReadTableStmt, ReplaceStmt, SplitStmt,
+    SubmitStmt, WaitStmt, WriteStmt,
 };
 
 use crate::def_map::{
-    AssignmentSiteData, FieldTypeRefData, FindSiteData, FindWriteTargetData, NamedArgumentTarget,
-    ReferenceKind, RoutineSiteData, RoutineSiteKind, SymbolKind, SystemFieldStatementKind,
-    TypeFactData, ValueFlowEdgeData, ValueFlowKind, ValueFlowTargetData,
+    AssignmentSiteData, CallSiteData, FieldTypeRefData, FindSiteData, FindWriteTargetData,
+    NamedArgumentTarget, ReferenceKind, RoutineSiteData, RoutineSiteKind, SymbolKind,
+    SystemFieldStatementKind, TypeFactData, ValueFlowEdgeData, ValueFlowKind, ValueFlowTargetData,
 };
 use crate::ids::ScopeId;
 use crate::scope::Namespace;
@@ -2298,6 +2298,189 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                 SyntaxKind::Token => {}
                 _ => self.collector.walk_node(child, scope),
             }
+        }
+    }
+
+    pub(super) fn collect_submit_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        let Some(stmt) = SubmitStmt::cast(self.collector.syntax(node)) else {
+            self.collector.walk_children(node, scope);
+            return;
+        };
+
+        let tokens = self.collector.significant_stmt_token_infos(node);
+        if tokens.len() < 3 || !tokens[0].text.eq_ignore_ascii_case("submit") {
+            self.collector.walk_children(node, scope);
+            return;
+        }
+        let Some(period_idx) = tokens.iter().position(|token| token.text.as_ref() == ".") else {
+            self.record_unknown_effect(node, scope);
+            self.collector.walk_children(node, scope);
+            return;
+        };
+
+        let stmt_range = self.collector.file.range(node);
+        let mut idx = 1usize;
+        let mut has_and_return = false;
+        let mut report_name: Option<Arc<str>> = None;
+
+        if tokens
+            .get(idx)
+            .is_some_and(|token| token.text.as_ref() == "(")
+        {
+            if let Some(end_idx) = self
+                .collector
+                .find_matching_group_end_infos(&tokens, idx, "(", ")")
+            {
+                self.collect_token_expression_refs_range(&tokens, idx + 1, end_idx, scope);
+                idx = end_idx + 1;
+            } else {
+                idx += 1;
+            }
+        } else if let Some(target) = stmt.target_token()
+            && let Some(name) = target.lower_trimmed_text(self.collector.source)
+        {
+            self.collector.add_reference(
+                scope,
+                Arc::clone(&name),
+                Namespace::Value,
+                ReferenceKind::Identifier,
+                target.range(),
+            );
+            report_name = Some(name);
+            idx += 1;
+        }
+
+        while idx < period_idx {
+            if Self::tokens_match_keyword_sequence(&tokens[idx..], &["and", "return"]) {
+                has_and_return = true;
+                idx += 2;
+                continue;
+            }
+            if Self::tokens_match_keyword_sequence(
+                &tokens[idx..],
+                &["using", "selection", "-", "screen"],
+            ) {
+                idx = self.collect_positional_operand_tokens(&tokens, idx + 4, 1, scope);
+                continue;
+            }
+            if Self::tokens_match_keyword_sequence(
+                &tokens[idx..],
+                &["using", "selection", "-", "set"],
+            ) {
+                idx = self.collect_positional_operand_tokens(&tokens, idx + 4, 1, scope);
+                continue;
+            }
+            if Self::tokens_match_keyword_sequence(
+                &tokens[idx..],
+                &["using", "selection", "-", "sets", "of", "program"],
+            ) {
+                idx = self.collect_positional_operand_tokens(&tokens, idx + 6, 1, scope);
+                continue;
+            }
+            if Self::tokens_match_keyword_sequence(
+                &tokens[idx..],
+                &["with", "selection", "-", "table"],
+            ) {
+                idx = self.collect_positional_operand_tokens(&tokens, idx + 4, 1, scope);
+                continue;
+            }
+            if Self::tokens_match_keyword_sequence(&tokens[idx..], &["with", "free", "selections"])
+            {
+                idx = self.collect_positional_operand_tokens(&tokens, idx + 3, 1, scope);
+                continue;
+            }
+            if Self::tokens_match_keyword_sequence(&tokens[idx..], &["with"]) {
+                let mut clause_idx = self.consume_simple_operand_tokens(&tokens, idx + 1);
+                if clause_idx >= period_idx {
+                    idx = period_idx;
+                    continue;
+                }
+                if tokens
+                    .get(clause_idx)
+                    .is_some_and(|token| token.text.eq_ignore_ascii_case("not"))
+                {
+                    clause_idx += 1;
+                }
+                if tokens
+                    .get(clause_idx)
+                    .is_some_and(|token| token.text.eq_ignore_ascii_case("between"))
+                {
+                    clause_idx =
+                        self.collect_positional_operand_tokens(&tokens, clause_idx + 1, 1, scope);
+                    if tokens
+                        .get(clause_idx)
+                        .is_some_and(|token| token.text.eq_ignore_ascii_case("and"))
+                    {
+                        clause_idx = self.collect_positional_operand_tokens(
+                            &tokens,
+                            clause_idx + 1,
+                            1,
+                            scope,
+                        );
+                    }
+                } else {
+                    if clause_idx < period_idx {
+                        clause_idx += 1;
+                    }
+                    clause_idx =
+                        self.collect_positional_operand_tokens(&tokens, clause_idx, 1, scope);
+                }
+                if tokens
+                    .get(clause_idx)
+                    .is_some_and(|token| token.text.eq_ignore_ascii_case("sign"))
+                {
+                    clause_idx =
+                        self.collect_positional_operand_tokens(&tokens, clause_idx + 1, 1, scope);
+                }
+                idx = clause_idx;
+                continue;
+            }
+            if Self::tokens_match_keyword_sequence(&tokens[idx..], &["line", "-", "size"])
+                || Self::tokens_match_keyword_sequence(&tokens[idx..], &["line", "-", "count"])
+            {
+                idx = self.collect_positional_operand_tokens(&tokens, idx + 3, 1, scope);
+                continue;
+            }
+            if Self::tokens_match_keyword_sequence(
+                &tokens[idx..],
+                &["to", "sap", "-", "spool", "spool", "parameters"],
+            ) {
+                idx = self.collect_positional_operand_tokens(&tokens, idx + 6, 1, scope);
+                if Self::tokens_match_keyword_sequence(&tokens[idx..], &["archive", "parameters"]) {
+                    idx = self.collect_positional_operand_tokens(&tokens, idx + 2, 1, scope);
+                }
+                continue;
+            }
+            if Self::tokens_match_keyword_sequence(&tokens[idx..], &["user"]) {
+                idx = self.collect_positional_operand_tokens(&tokens, idx + 1, 1, scope);
+                continue;
+            }
+            if Self::tokens_match_keyword_sequence(&tokens[idx..], &["via", "job"]) {
+                idx = self.collect_positional_operand_tokens(&tokens, idx + 2, 1, scope);
+                if Self::tokens_match_keyword_sequence(&tokens[idx..], &["number"]) {
+                    idx = self.collect_positional_operand_tokens(&tokens, idx + 1, 1, scope);
+                }
+                if Self::tokens_match_keyword_sequence(&tokens[idx..], &["language"]) {
+                    idx = self.collect_positional_operand_tokens(&tokens, idx + 1, 1, scope);
+                }
+                continue;
+            }
+            idx += 1;
+        }
+
+        if let Some(report_name) = report_name {
+            self.collector.emit_call_site(CallSiteData {
+                scope,
+                range: stmt_range.clone(),
+                target: NamedArgumentTarget::Report { report_name },
+                arguments: Vec::new(),
+            });
+        }
+
+        if has_and_return {
+            self.record_unknown_effect(node, scope);
+        } else {
+            self.record_routine_site(scope, stmt_range, RoutineSiteKind::Leave);
         }
     }
 

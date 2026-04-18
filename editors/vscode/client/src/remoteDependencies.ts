@@ -26,6 +26,7 @@ const candidateKindPriority = new Map<string, number>([
 	["message-class", 5],
 	["include", 4],
 	["function", 4],
+	["report", 4],
 	["static", 3],
 	["type", 2],
 	["symbol", 1],
@@ -120,6 +121,10 @@ export function cachedRemoteDependencyCandidatePaths(
 			return [
 				path.join(dependenciesRoot, "message-class", `${encodedName}.xml`),
 			];
+		case "report":
+			return [
+				path.join(dependenciesRoot, "report", `${encodedName}.abap`),
+			];
 		case "function":
 			return [
 				path.join(dependenciesRoot, "function-group", `${encodedName}.abap`),
@@ -130,6 +135,7 @@ export function cachedRemoteDependencyCandidatePaths(
 			return [
 				path.join(dependenciesRoot, "global-class", `${encodedName}.abap`),
 				path.join(dependenciesRoot, "global-interface", `${encodedName}.abap`),
+				path.join(dependenciesRoot, "report", `${encodedName}.abap`),
 				path.join(dependenciesRoot, "ddic-data-element", `${encodedName}.xml`),
 				path.join(dependenciesRoot, "ddic-structure", `${encodedName}.xml`),
 				path.join(dependenciesRoot, "ddic-table", `${encodedName}.xml`),
