@@ -25,10 +25,18 @@ use abap_symbols::{
 use parking_lot::RwLock;
 use rayon::prelude::*;
 
+mod call_dataflow;
 mod call_graph;
 mod callable_summary;
 mod effective_source;
 mod workspace;
+pub use call_dataflow::{
+    CallDataflowByteRange, CallDataflowFieldMapping, CallDataflowLifecycle,
+    CallDataflowLifecycleEdge, CallDataflowLifecycleNode, CallDataflowMatch,
+    CallDataflowParameterTrace, CallDataflowProvenanceEdge, CallDataflowProvenanceGraph,
+    CallDataflowProvenanceNode, CallDataflowQuery, CallDataflowSelectedCall, CallDataflowSummary,
+    CallDataflowTrace, build_call_dataflow_trace,
+};
 pub use call_graph::{
     CallGraphEdge, CallGraphEdgeKind, CallGraphNode, CallGraphNodeKind, CallGraphResolutionStatus,
     ProjectCallGraph,
@@ -66,6 +74,7 @@ pub struct AnalysisSnapshot {
     pub uri: Arc<str>,
     pub version: i32,
     pub text: Arc<str>,
+    pub project_texts: Arc<HashMap<Arc<str>, Arc<str>>>,
     pub is_dependency: bool,
     pub object_name: Option<Arc<str>>,
     pub parse: Arc<ParseResult>,
@@ -304,6 +313,10 @@ pub struct SemanticTokenLookupContext<'a> {
 impl AnalysisSnapshot {
     pub fn scope_index(&self) -> &ScopeIndex {
         self.scope_index.as_ref()
+    }
+
+    pub fn project_text(&self, uri: &str) -> Option<&str> {
+        self.project_texts.get(uri).map(|text| text.as_ref())
     }
 
     pub fn call_graph(&self) -> &ProjectCallGraph {
@@ -5897,6 +5910,7 @@ fn clone_snapshot_with_version(snapshot: &AnalysisSnapshot, version: i32) -> Arc
         uri: Arc::clone(&snapshot.uri),
         version,
         text: Arc::clone(&snapshot.text),
+        project_texts: Arc::clone(&snapshot.project_texts),
         is_dependency: snapshot.is_dependency,
         object_name: snapshot.object_name.clone(),
         parse: Arc::clone(&snapshot.parse),
@@ -6235,6 +6249,13 @@ fn materialize_snapshots(
     let mut locals = HashMap::with_capacity(prepared.len());
     let mut uri_order = Vec::with_capacity(prepared.len());
 
+    let project_texts = Arc::new(
+        prepared
+            .iter()
+            .map(|prepared| (Arc::clone(&prepared.uri), Arc::clone(&prepared.text)))
+            .collect::<HashMap<_, _>>(),
+    );
+
     for prepared in prepared {
         let unit = project
             .unit_by_uri(prepared.uri.as_ref())
@@ -6250,6 +6271,7 @@ fn materialize_snapshots(
                 uri: Arc::clone(&prepared.uri),
                 version: prepared.version,
                 text: Arc::clone(&prepared.text),
+                project_texts: Arc::clone(&project_texts),
                 is_dependency: prepared.is_dependency,
                 object_name: prepared.object_name.clone(),
                 parse: Arc::clone(&prepared.parse),
@@ -6775,11 +6797,16 @@ fn preview_snapshot_from_local(
     callable_summaries: Arc<ProjectCallableSummaryAnalysis>,
     call_graph: Arc<ProjectCallGraph>,
 ) -> Arc<AnalysisSnapshot> {
+    let project_texts = Arc::new(HashMap::from([(
+        Arc::clone(&input.uri),
+        Arc::clone(&input.text),
+    )]));
     Arc::new(AnalysisSnapshot {
         scope_index: Arc::new(local.scope_index),
         uri: Arc::clone(&input.uri),
         version: input.version,
         text: Arc::clone(&input.text),
+        project_texts,
         is_dependency: input.is_dependency,
         object_name: input.object_name.clone(),
         parse,

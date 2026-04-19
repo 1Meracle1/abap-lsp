@@ -9,7 +9,8 @@ use crate::def_map::{
     AtGroupKind, AtRegionData, CaseRegionData, FieldAccess, FieldAccessSegment, FieldTypeRefData,
     IfRegionData, LoopAtFieldContext, LoopRegionData, LoopWhereFieldContext,
     RoutineControlRegionData, RoutineLoopKind, SymbolKind, SystemFieldStatementKind, TryRegionData,
-    ValueStateCheckData, ValueStateCheckKind,
+    TypeFactData, ValueFlowEdgeData, ValueFlowKind, ValueFlowTargetData, ValueStateCheckData,
+    ValueStateCheckKind,
 };
 use crate::ids::{ScopeId, StructureId, SymbolId};
 use crate::scope::{Namespace, ScopeKind};
@@ -335,6 +336,7 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
     fn collect_loop_header_node(&mut self, node: NodeId, scope: ScopeId) -> LoopGroupContext {
         let mut source_metadata = (None, None);
         let mut source_access = None;
+        let mut source_range = None;
         let mut target_access = None;
         let mut allows_internal_table_line_selector = false;
         for child in self.collector.file.children(node) {
@@ -346,6 +348,7 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
                         self.collector.expr_lowering().collect_expr(expr, scope);
                         source_metadata = self.loop_source_line_metadata_from_node(expr, scope);
                         source_access = self.collector.value_access_from_node(expr, scope);
+                        source_range = Some(self.collector.file.range(expr));
                     }
                 }
                 SyntaxKind::LoopIntoClause => {
@@ -368,6 +371,19 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
                             SymbolKind::FieldSymbol,
                             &source_metadata,
                         );
+                        if let (Some(source_access), Some(source_range), Some(target_access)) = (
+                            source_access.as_ref(),
+                            source_range.clone(),
+                            target_access.as_ref(),
+                        ) {
+                            self.emit_loop_field_symbol_binding_edge(
+                                scope,
+                                source_access,
+                                source_range,
+                                &source_metadata,
+                                target_access,
+                            );
+                        }
                     }
                 }
                 SyntaxKind::LoopReferenceIntoClause => {
@@ -410,6 +426,40 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
             source_access,
             target_access,
         }
+    }
+
+    fn emit_loop_field_symbol_binding_edge(
+        &mut self,
+        scope: ScopeId,
+        source_access: &FieldAccess,
+        source_range: TextRange,
+        source_metadata: &(Option<StructureId>, Option<FieldTypeRefData>),
+        target_access: &FieldAccess,
+    ) {
+        let source_type = TypeFactData {
+            structure: source_metadata.0,
+            declared_type: source_metadata.1.clone(),
+            type_clause_display: None,
+            table_line: None,
+        };
+        let kind = if source_access.base_namespace == Namespace::Value
+            && source_access.field_path.is_empty()
+        {
+            ValueFlowKind::FieldSymbolAssignment
+        } else {
+            ValueFlowKind::ConditionalFieldSymbolAssignment
+        };
+        self.collector.emit_value_flow_edge(ValueFlowEdgeData {
+            scope,
+            kind,
+            source_range,
+            source_type: source_type.clone(),
+            target: ValueFlowTargetData::FieldSymbol {
+                range: target_access.base_range.clone(),
+                name: Some(Arc::clone(&target_access.base_name)),
+            },
+            target_type: source_type,
+        });
     }
 
     fn walk_loop_like_stmt(

@@ -8,6 +8,7 @@
 //! abap-cli analyze --json [--with-project] [--pretty] [FILE]
 //! abap-cli expand [--json] [--pretty] [FILE]
 //! abap-cli call-graph --json [--symbol NAME] [--pretty] [FILE]
+//! abap-cli call-dataflow [--json] --target NAME [--caller NAME] [--occurrence N] [--diagram ascii|svg|mermaid|rich-mermaid] [--pretty] [FILE]
 //! abap-cli remote-candidates [--json] [--pretty] [PATH]
 //! ```
 //!
@@ -26,9 +27,12 @@ use std::sync::Arc;
 use abap_ast::SyntaxKind;
 use abap_ast::arena::NodeId;
 use abap_cache::{
-    AnalysisSnapshot, CallGraphEdge, CallGraphNode, DocumentInput, DocumentStore, EffectiveSource,
-    LocalExportResolver, build_effective_source, file_uri_to_path, load_workspace_documents,
-    manifest_document_metadata, path_to_file_uri, resolve_local_export_dependency_document,
+    AnalysisSnapshot, CallDataflowLifecycle, CallDataflowMatch, CallDataflowParameterTrace,
+    CallDataflowProvenanceGraph, CallDataflowQuery, CallDataflowSelectedCall, CallDataflowTrace,
+    CallGraphEdge, CallGraphNode, DocumentInput, DocumentStore, EffectiveSource,
+    LocalExportResolver, build_call_dataflow_trace, build_effective_source, file_uri_to_path,
+    load_workspace_documents, manifest_document_metadata, path_to_file_uri,
+    resolve_local_export_dependency_document,
 };
 use abap_lexer::tokenize;
 use abap_lsp::{
@@ -53,9 +57,30 @@ enum Command {
     Analyze,
     Expand,
     CallGraph,
+    CallDataflow,
     RemoteCandidates,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CallDataflowDiagramFormat {
+    Ascii,
+    Svg,
+    Mermaid,
+    RichMermaid,
+}
+
+impl CallDataflowDiagramFormat {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Ascii => "ascii",
+            Self::Svg => "svg",
+            Self::Mermaid => "mermaid",
+            Self::RichMermaid => "rich-mermaid",
+        }
+    }
+}
+
+#[derive(Debug)]
 struct Cli {
     command: Command,
     /// Emit JSON (legacy / tooling). Default is human-readable output.
@@ -72,6 +97,14 @@ struct Cli {
     pretty: bool,
     /// Call graph: focus queries on a matching callable name/id.
     call_graph_symbol: Option<String>,
+    /// Call-dataflow: target callee name.
+    call_dataflow_target: Option<String>,
+    /// Call-dataflow: optional caller routine/module/method filter.
+    call_dataflow_caller: Option<String>,
+    /// Call-dataflow: choose one occurrence after deterministic sorting.
+    call_dataflow_occurrence: Option<usize>,
+    /// Call-dataflow: human diagram renderer.
+    call_dataflow_diagram: CallDataflowDiagramFormat,
     /// Source path, or for remote-candidates a workspace file/directory anchor.
     path: Option<String>,
 }
@@ -87,6 +120,7 @@ Usage:
   abap-cli analyze --json [--with-project] [--pretty] [FILE]
   abap-cli expand [--json] [--pretty] [FILE]
   abap-cli call-graph --json [--symbol NAME] [--pretty] [FILE]
+  abap-cli call-dataflow [--json] --target NAME [--caller NAME] [--occurrence N] [--diagram ascii|svg|mermaid|rich-mermaid] [--pretty] [FILE]
   abap-cli remote-candidates [--json] [--pretty] [PATH]
 
 If FILE is omitted or `-`, read source from stdin.
@@ -100,6 +134,7 @@ Commands:
   analyze   Semantic dossier export for AI/tooling consumption (`--json` required for structured output)
   expand    Effective source expansion with include source maps
   call-graph  Project-scale call graph export and caller/callee queries (`--json` required)
+  call-dataflow  High-level + technical data-flow trace for one call-site occurrence
   remote-candidates  Deduped remote dependency candidates from editable workspace files (`--json` also includes source-to-candidate mapping)
 
 Options:
@@ -109,7 +144,11 @@ Options:
   --unknown-only  Symbols: only unknown / unresolved identifiers (empty until wired)
   --with-project  Analyze: load workspace peers around FILE for cross-unit resolution
   --symbol NAME   Call graph: focus on callable nodes matching NAME / qualified name / node id
-  --pretty        Analyze/expand/call-graph/remote-candidates: pretty-print JSON
+  --target NAME   Call dataflow: target function module or method name
+  --caller NAME   Call dataflow: optional caller filter
+  --occurrence N  Call dataflow: select one deterministic match occurrence
+  --diagram KIND  Call dataflow: human diagram renderer (`ascii` default; `svg`, `mermaid`, and `rich-mermaid` available)
+  --pretty        Analyze/expand/call-graph/call-dataflow/remote-candidates: pretty-print JSON
 
   -h, --help      Show this help
 "#
@@ -142,6 +181,7 @@ fn parse_cli_args(it: impl Iterator<Item = String>) -> Result<Cli, String> {
         "analyze" => Command::Analyze,
         "expand" => Command::Expand,
         "call-graph" => Command::CallGraph,
+        "call-dataflow" => Command::CallDataflow,
         "remote-candidates" => Command::RemoteCandidates,
         _ => return Err(format!("unknown command {:?}\n{}", cmd, usage())),
     };
@@ -152,6 +192,11 @@ fn parse_cli_args(it: impl Iterator<Item = String>) -> Result<Cli, String> {
     let mut analyze_with_project = false;
     let mut pretty = false;
     let mut call_graph_symbol = None;
+    let mut call_dataflow_target = None;
+    let mut call_dataflow_caller = None;
+    let mut call_dataflow_occurrence = None;
+    let mut call_dataflow_diagram = CallDataflowDiagramFormat::Ascii;
+    let mut saw_call_dataflow_diagram = false;
     let mut path: Option<String> = None;
 
     let remaining: Vec<String> = it.collect();
@@ -171,6 +216,57 @@ fn parse_cli_args(it: impl Iterator<Item = String>) -> Result<Cli, String> {
                     return Err(format!("missing value for --symbol\n{}", usage()));
                 };
                 call_graph_symbol = Some(symbol.clone());
+            }
+            "--target" => {
+                idx += 1;
+                let Some(target) = remaining.get(idx) else {
+                    return Err(format!("missing value for --target\n{}", usage()));
+                };
+                call_dataflow_target = Some(target.clone());
+            }
+            "--caller" => {
+                idx += 1;
+                let Some(caller) = remaining.get(idx) else {
+                    return Err(format!("missing value for --caller\n{}", usage()));
+                };
+                call_dataflow_caller = Some(caller.clone());
+            }
+            "--occurrence" => {
+                idx += 1;
+                let Some(raw_occurrence) = remaining.get(idx) else {
+                    return Err(format!("missing value for --occurrence\n{}", usage()));
+                };
+                let occurrence = raw_occurrence.parse::<usize>().map_err(|_| {
+                    format!(
+                        "invalid value for --occurrence {:?}\n{}",
+                        raw_occurrence,
+                        usage()
+                    )
+                })?;
+                if occurrence == 0 {
+                    return Err(format!("--occurrence must be >= 1\n{}", usage()));
+                }
+                call_dataflow_occurrence = Some(occurrence);
+            }
+            "--diagram" => {
+                idx += 1;
+                let Some(raw_diagram) = remaining.get(idx) else {
+                    return Err(format!("missing value for --diagram\n{}", usage()));
+                };
+                saw_call_dataflow_diagram = true;
+                call_dataflow_diagram = match raw_diagram.to_ascii_lowercase().as_str() {
+                    "ascii" => CallDataflowDiagramFormat::Ascii,
+                    "svg" => CallDataflowDiagramFormat::Svg,
+                    "mermaid" => CallDataflowDiagramFormat::Mermaid,
+                    "rich-mermaid" | "rich" => CallDataflowDiagramFormat::RichMermaid,
+                    _ => {
+                        return Err(format!(
+                            "unsupported value for --diagram {:?}; expected `ascii`, `svg`, `mermaid`, or `rich-mermaid`\n{}",
+                            raw_diagram,
+                            usage()
+                        ));
+                    }
+                };
             }
             "-" => path = Some(arg.clone()),
             s if !s.starts_with('-') => {
@@ -205,16 +301,44 @@ fn parse_cli_args(it: impl Iterator<Item = String>) -> Result<Cli, String> {
     if pretty
         && !matches!(
             command,
-            Command::Analyze | Command::Expand | Command::CallGraph | Command::RemoteCandidates
+            Command::Analyze
+                | Command::Expand
+                | Command::CallGraph
+                | Command::CallDataflow
+                | Command::RemoteCandidates
         )
     {
         return Err(format!(
-            "--pretty only applies to analyze, expand, call-graph, and remote-candidates\n{}",
+            "--pretty only applies to analyze, expand, call-graph, call-dataflow, and remote-candidates\n{}",
             usage()
         ));
     }
     if call_graph_symbol.is_some() && command != Command::CallGraph {
         return Err(format!("--symbol only applies to call-graph\n{}", usage()));
+    }
+    if call_dataflow_target.is_some() && command != Command::CallDataflow {
+        return Err(format!(
+            "--target only applies to call-dataflow\n{}",
+            usage()
+        ));
+    }
+    if call_dataflow_caller.is_some() && command != Command::CallDataflow {
+        return Err(format!(
+            "--caller only applies to call-dataflow\n{}",
+            usage()
+        ));
+    }
+    if call_dataflow_occurrence.is_some() && command != Command::CallDataflow {
+        return Err(format!(
+            "--occurrence only applies to call-dataflow\n{}",
+            usage()
+        ));
+    }
+    if saw_call_dataflow_diagram && command != Command::CallDataflow {
+        return Err(format!(
+            "--diagram only applies to call-dataflow\n{}",
+            usage()
+        ));
     }
     if parse_show_ast && !matches!(command, Command::Parse) {
         return Err(format!("--ast only applies to parse\n{}", usage()));
@@ -224,6 +348,9 @@ fn parse_cli_args(it: impl Iterator<Item = String>) -> Result<Cli, String> {
             "--ast and --errors-only cannot be used together on parse\n{}",
             usage()
         ));
+    }
+    if command == Command::CallDataflow && call_dataflow_target.is_none() {
+        return Err(format!("call-dataflow requires --target NAME\n{}", usage()));
     }
 
     Ok(Cli {
@@ -235,6 +362,10 @@ fn parse_cli_args(it: impl Iterator<Item = String>) -> Result<Cli, String> {
         analyze_with_project,
         pretty,
         call_graph_symbol,
+        call_dataflow_target,
+        call_dataflow_caller,
+        call_dataflow_occurrence,
+        call_dataflow_diagram,
         path,
     })
 }
@@ -339,6 +470,9 @@ fn run() -> Result<i32, String> {
     }
     if cli.command == Command::CallGraph {
         return run_call_graph(&cli);
+    }
+    if cli.command == Command::CallDataflow {
+        return run_call_dataflow(&cli);
     }
     if cli.command == Command::RemoteCandidates {
         return run_remote_candidates(&cli);
@@ -604,7 +738,11 @@ fn run() -> Result<i32, String> {
 
             Ok(human_exit(cli.json_output, !parsed.errors.is_empty()))
         }
-        Command::Analyze | Command::Expand | Command::CallGraph | Command::RemoteCandidates => {
+        Command::Analyze
+        | Command::Expand
+        | Command::CallGraph
+        | Command::CallDataflow
+        | Command::RemoteCandidates => {
             unreachable!("handled above")
         }
     }
@@ -780,6 +918,38 @@ fn run_call_graph(cli: &Cli) -> Result<i32, String> {
     }
     .map_err(|e| e.to_string())?;
     println!("{json}");
+    Ok(0)
+}
+
+fn run_call_dataflow(cli: &Cli) -> Result<i32, String> {
+    let snapshot = load_call_graph_snapshot(cli.path.as_deref())?;
+    let trace = build_call_dataflow_trace(
+        snapshot.as_ref(),
+        CallDataflowQuery {
+            target: cli
+                .call_dataflow_target
+                .clone()
+                .ok_or_else(|| "call-dataflow requires --target NAME".to_string())?,
+            caller: cli.call_dataflow_caller.clone(),
+            occurrence: cli.call_dataflow_occurrence,
+        },
+    );
+
+    if cli.json_output {
+        let json = if cli.pretty {
+            serde_json::to_string_pretty(&trace)
+        } else {
+            serde_json::to_string(&trace)
+        }
+        .map_err(|e| e.to_string())?;
+        println!("{json}");
+        return Ok(0);
+    }
+
+    print!(
+        "{}",
+        render_call_dataflow_report(&trace, cli.call_dataflow_diagram)
+    );
     Ok(0)
 }
 
@@ -1167,6 +1337,1234 @@ fn call_graph_edge_json(edge: &CallGraphEdge) -> Value {
         "target_name": edge.target_name.as_ref(),
         "source_range": [edge.source_range.start, edge.source_range.end],
     })
+}
+
+fn render_call_dataflow_report(
+    trace: &CallDataflowTrace,
+    diagram_format: CallDataflowDiagramFormat,
+) -> String {
+    let mut out = String::new();
+    out.push_str("# Call Dataflow\n\n");
+    out.push_str(&format!(
+        "- Target: `{}`\n",
+        markdown_inline_code(&trace.query.target)
+    ));
+    if let Some(caller) = trace.query.caller.as_deref() {
+        out.push_str(&format!(
+            "- Caller filter: `{}`\n",
+            markdown_inline_code(caller)
+        ));
+    }
+    if let Some(occurrence) = trace.query.occurrence {
+        out.push_str(&format!("- Requested occurrence: `{occurrence}`\n"));
+    }
+    out.push_str(&format!(
+        "- Matches: `{}`\n- Parameters: `{}`\n- Mappings: `{}`\n- Diagram: `{}`\n",
+        trace.summary.match_count,
+        trace.summary.parameter_count,
+        trace.summary.mapping_count,
+        diagram_format.as_str()
+    ));
+
+    if trace.selected_call.is_none() && !trace.matches.is_empty() {
+        out.push_str("\n## Ambiguity\n\n");
+        out.push_str(
+            "More than one matching call site remained after filtering. Re-run with `--occurrence N`.\n\n",
+        );
+        out.push_str(&render_call_dataflow_matches_table(&trace.matches));
+        return out;
+    }
+
+    let Some(selected) = trace.selected_call.as_ref() else {
+        out.push_str("\n## Result\n\n");
+        out.push_str("No matching call sites were found in the loaded project context.\n");
+        return out;
+    };
+
+    out.push_str("\n## Selected Call\n\n");
+    out.push_str(&render_call_dataflow_selected_call(selected));
+
+    let rich_mermaid = diagram_format == CallDataflowDiagramFormat::RichMermaid;
+    out.push_str(if rich_mermaid {
+        "\n## Diagram\n\n"
+    } else {
+        "\n## Lifecycle\n\n"
+    });
+    if rich_mermaid {
+        if trace.selected_call.is_none() {
+            out.push_str("_No rich diagram could be rendered without a selected call._\n");
+        } else {
+            out.push_str(
+                "_Single Mermaid graph with lifecycle, merged parameter provenance, SQL predicates, and call bindings._\n\n",
+            );
+            out.push_str(&render_call_dataflow_rich_mermaid_block(trace));
+        }
+    } else if trace.lifecycle.nodes.is_empty() || trace.lifecycle.edges.is_empty() {
+        out.push_str("_No lifecycle edges resolved._\n");
+    } else {
+        match diagram_format {
+            CallDataflowDiagramFormat::Ascii => {
+                out.push_str("_ASCII tree view optimized for terminal reading._\n\n");
+            }
+            CallDataflowDiagramFormat::Svg => {
+                out.push_str(
+                    "_Inline SVG markup. Markdown or HTML renderers show the diagram; plain terminals show XML._\n\n",
+                );
+            }
+            CallDataflowDiagramFormat::Mermaid => {
+                out.push_str(
+                    "_Mermaid source block. Plain terminals show text; Mermaid-capable renderers turn this into a diagram._\n\n",
+                );
+            }
+            CallDataflowDiagramFormat::RichMermaid => unreachable!(),
+        }
+        out.push_str(&render_call_dataflow_diagram_block(
+            &trace.lifecycle,
+            trace.selected_call.as_ref(),
+            diagram_format,
+        ));
+        if trace.summary.synthetic_edge_count > 0 {
+            out.push_str(&format!(
+                "\nSynthetic edges: `{}`\n",
+                trace.summary.synthetic_edge_count
+            ));
+        }
+    }
+
+    out.push_str("\n## Parameters\n");
+    if trace.parameter_traces.is_empty() {
+        out.push_str("\n_No parameter traces were captured for the selected call._\n");
+        return out;
+    }
+    for parameter in &trace.parameter_traces {
+        out.push('\n');
+        out.push_str(&render_call_dataflow_parameter(parameter, !rich_mermaid));
+    }
+
+    out
+}
+
+fn render_call_dataflow_diagram_block(
+    lifecycle: &CallDataflowLifecycle,
+    selected: Option<&CallDataflowSelectedCall>,
+    diagram_format: CallDataflowDiagramFormat,
+) -> String {
+    match diagram_format {
+        CallDataflowDiagramFormat::Ascii => {
+            let mut out = String::new();
+            out.push_str("```text\n");
+            out.push_str(&render_call_dataflow_ascii(lifecycle, selected));
+            out.push_str("```\n");
+            out
+        }
+        CallDataflowDiagramFormat::Svg => render_call_dataflow_svg(lifecycle, selected),
+        CallDataflowDiagramFormat::Mermaid => {
+            let mut out = String::new();
+            out.push_str("```mermaid\n");
+            out.push_str(&render_call_dataflow_mermaid(lifecycle));
+            out.push_str("```\n");
+            out
+        }
+        CallDataflowDiagramFormat::RichMermaid => unreachable!(),
+    }
+}
+
+fn render_call_dataflow_selected_call(selected: &CallDataflowSelectedCall) -> String {
+    let mut out = String::new();
+    out.push_str(&format!(
+        "- Target: `{}`\n- Occurrence: `{}`\n- Call site: `{}`\n- Argument count: `{}`\n",
+        markdown_inline_code(&selected.target_name),
+        selected.occurrence,
+        markdown_inline_code(&format!(
+            "{}:{}-{}",
+            selected.unit_uri, selected.call_range.start, selected.call_range.end
+        )),
+        selected.argument_count
+    ));
+    if let Some(caller_name) = selected.caller_name.as_deref() {
+        out.push_str(&format!(
+            "- Caller: `{}`",
+            markdown_inline_code(caller_name)
+        ));
+        if let Some(caller_kind) = selected.caller_kind.as_deref() {
+            out.push_str(&format!(" (`{}`)", markdown_inline_code(caller_kind)));
+        }
+        out.push('\n');
+    }
+    if let Some(caller_unit_uri) = selected.caller_unit_uri.as_deref() {
+        out.push_str(&format!(
+            "- Caller unit: `{}`\n",
+            markdown_inline_code(caller_unit_uri)
+        ));
+    }
+    out
+}
+
+fn render_call_dataflow_matches_table(matches: &[CallDataflowMatch]) -> String {
+    let mut out = String::new();
+    out.push_str("| Occurrence | Caller | Call Site |\n");
+    out.push_str("| --- | --- | --- |\n");
+    for matched in matches {
+        let caller = matched.caller_name.as_deref().unwrap_or("<unknown>");
+        out.push_str(&format!(
+            "| {} | {} | {} |\n",
+            matched.occurrence,
+            markdown_table_cell(caller),
+            markdown_table_cell(&format!(
+                "{}:{}-{}",
+                matched.unit_uri, matched.call_range.start, matched.call_range.end
+            ))
+        ));
+    }
+    out
+}
+
+fn render_call_dataflow_parameter(
+    parameter: &CallDataflowParameterTrace,
+    include_provenance_diagram: bool,
+) -> String {
+    let mut out = String::new();
+    let name = parameter.parameter_name.as_deref().unwrap_or("<anonymous>");
+    out.push_str(&format!("### `{}`\n\n", markdown_inline_code(name)));
+    out.push_str(&format!(
+        "- Direction: `{}`\n- Argument: `{}`\n",
+        markdown_inline_code(&parameter.direction),
+        markdown_inline_code(&parameter.argument_text)
+    ));
+    if let Some(section) = parameter.section.as_deref() {
+        out.push_str(&format!("- Section: `{}`\n", markdown_inline_code(section)));
+    }
+    if let Some(argument_type) = parameter.argument_type.as_deref() {
+        out.push_str(&format!(
+            "- Type: `{}`\n",
+            markdown_inline_code(argument_type)
+        ));
+    }
+
+    if include_provenance_diagram
+        && !parameter.provenance.nodes.is_empty()
+        && !parameter.provenance.edges.is_empty()
+    {
+        out.push_str(
+            "\n#### Detailed Provenance\n\n_Mermaid graph of how the parameter or its fields get populated._\n\n",
+        );
+        out.push_str("```mermaid\n");
+        out.push_str(&render_call_dataflow_parameter_provenance_mermaid(
+            &parameter.provenance,
+        ));
+        out.push_str("```\n");
+    }
+
+    if parameter.field_mappings.is_empty() {
+        out.push_str("\n_No mappings resolved._\n");
+    } else {
+        out.push_str("\n| Target Path | Source | Kind | Location |\n");
+        out.push_str("| --- | --- | --- | --- |\n");
+        for mapping in &parameter.field_mappings {
+            out.push_str(&format!(
+                "| {} | {} | {} | {} |\n",
+                markdown_table_cell(&mapping.target_path),
+                markdown_table_cell(&mapping.source_display),
+                markdown_table_cell(&mapping.source_kind),
+                markdown_table_cell(&call_dataflow_mapping_location(mapping))
+            ));
+        }
+    }
+
+    if !parameter.notes.is_empty() {
+        out.push_str("\nNotes:\n");
+        for note in &parameter.notes {
+            out.push_str(&format!("- {}\n", markdown_table_cell(note)));
+        }
+    }
+
+    out
+}
+
+fn render_call_dataflow_parameter_provenance_mermaid(
+    provenance: &CallDataflowProvenanceGraph,
+) -> String {
+    let mut out = String::new();
+    out.push_str("flowchart LR\n");
+    for node in &provenance.nodes {
+        out.push_str(&format!(
+            "  {}[\"{}\"]\n",
+            node.id,
+            mermaid_label(&call_dataflow_provenance_node_label(node))
+        ));
+    }
+    for edge in &provenance.edges {
+        let label = call_dataflow_provenance_edge_label(edge);
+        if label.is_empty() {
+            out.push_str(&format!("  {} --> {}\n", edge.source, edge.target));
+        } else {
+            out.push_str(&format!(
+                "  {} -->|\"{}\"| {}\n",
+                edge.source,
+                mermaid_label(&label),
+                edge.target
+            ));
+        }
+    }
+
+    let mut target_nodes = Vec::new();
+    let mut transform_nodes = Vec::new();
+    let mut query_nodes = Vec::new();
+    let mut source_nodes = Vec::new();
+    for node in &provenance.nodes {
+        match node.kind.as_str() {
+            "parameter" | "target_value" | "target_field" | "target_table_row"
+            | "target_table_field" => target_nodes.push(node.id.clone()),
+            "sql_query" => query_nodes.push(node.id.clone()),
+            "assignment"
+            | "append_row"
+            | "perform_binding"
+            | "perform_write"
+            | "read_table_binding"
+            | "field_symbol_binding" => transform_nodes.push(node.id.clone()),
+            _ => source_nodes.push(node.id.clone()),
+        }
+    }
+    if !target_nodes.is_empty() {
+        out.push_str("  classDef target fill:#dcfce7,stroke:#166534,color:#14532d;\n");
+        out.push_str(&format!("  class {} target;\n", target_nodes.join(",")));
+    }
+    if !transform_nodes.is_empty() {
+        out.push_str("  classDef transform fill:#fff7ed,stroke:#c2410c,color:#7c2d12;\n");
+        out.push_str(&format!(
+            "  class {} transform;\n",
+            transform_nodes.join(",")
+        ));
+    }
+    if !query_nodes.is_empty() {
+        out.push_str("  classDef query fill:#dbeafe,stroke:#1d4ed8,color:#1e3a8a;\n");
+        out.push_str(&format!("  class {} query;\n", query_nodes.join(",")));
+    }
+    if !source_nodes.is_empty() {
+        out.push_str("  classDef source fill:#f8fafc,stroke:#475569,color:#0f172a;\n");
+        out.push_str(&format!("  class {} source;\n", source_nodes.join(",")));
+    }
+    out
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RichMermaidNodeGroup {
+    Lifecycle,
+    Provenance,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct RichMermaidNodeKey {
+    namespace: String,
+    kind: String,
+    label: String,
+    unit_uri: Option<String>,
+    range: Option<(usize, usize)>,
+    statement_text: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct RichMermaidNode {
+    id: String,
+    kind: String,
+    label: String,
+    group: RichMermaidNodeGroup,
+    synthetic: bool,
+    selected: bool,
+}
+
+fn render_call_dataflow_rich_mermaid_block(trace: &CallDataflowTrace) -> String {
+    let mut out = String::new();
+    out.push_str("```mermaid\n");
+    out.push_str(&render_call_dataflow_rich_mermaid(trace));
+    out.push_str("```\n");
+    out
+}
+
+fn render_call_dataflow_rich_mermaid(trace: &CallDataflowTrace) -> String {
+    let mut out = String::new();
+    out.push_str("flowchart LR\n");
+
+    let active_lifecycle_nodes = call_dataflow_active_node_ids(&trace.lifecycle);
+    let selected_target_id = trace
+        .selected_call
+        .as_ref()
+        .and_then(|selected| selected.target_node_id.as_deref());
+
+    let mut next_node_id = 0usize;
+    let mut nodes = Vec::<RichMermaidNode>::new();
+    let mut node_keys = HashMap::<RichMermaidNodeKey, String>::new();
+    let mut lifecycle_ids = HashMap::<String, String>::new();
+    let mut edges = BTreeSet::<(String, String, String)>::new();
+
+    let mut add_node = |namespace: String,
+                        kind: &str,
+                        label: String,
+                        unit_uri: Option<&str>,
+                        range: Option<&abap_cache::CallDataflowByteRange>,
+                        statement_text: Option<&str>,
+                        group: RichMermaidNodeGroup,
+                        synthetic: bool,
+                        selected: bool| {
+        let key = RichMermaidNodeKey {
+            namespace,
+            kind: kind.to_string(),
+            label: label.clone(),
+            unit_uri: unit_uri.map(str::to_string),
+            range: range.map(|range| (range.start, range.end)),
+            statement_text: statement_text.map(str::to_string),
+        };
+        if let Some(existing) = node_keys.get(&key) {
+            return existing.clone();
+        }
+        let node_id = format!("r{next_node_id}");
+        next_node_id += 1;
+        nodes.push(RichMermaidNode {
+            id: node_id.clone(),
+            kind: kind.to_string(),
+            label,
+            group,
+            synthetic,
+            selected,
+        });
+        node_keys.insert(key, node_id.clone());
+        node_id
+    };
+
+    for node in &trace.lifecycle.nodes {
+        if !active_lifecycle_nodes.contains(node.id.as_str()) {
+            continue;
+        }
+        let mut label = format!("{}: {}", node.kind, node.name);
+        if Some(node.id.as_str()) == selected_target_id {
+            label.push_str(" [selected call]");
+        }
+        if node.synthetic {
+            label.push_str(" [synthetic]");
+        }
+        let mermaid_id = add_node(
+            format!("lifecycle:{}", node.id),
+            &node.kind,
+            label,
+            Some(node.unit_uri.as_str()),
+            Some(&node.decl_range),
+            None,
+            RichMermaidNodeGroup::Lifecycle,
+            node.synthetic,
+            Some(node.id.as_str()) == selected_target_id,
+        );
+        lifecycle_ids.insert(node.id.clone(), mermaid_id);
+    }
+
+    let selected_call_id = if let Some(selected) = trace.selected_call.as_ref() {
+        if let Some(target_node_id) = selected.target_node_id.as_ref() {
+            lifecycle_ids.get(target_node_id).cloned()
+        } else {
+            None
+        }
+        .or_else(|| {
+            Some(add_node(
+                "selected_call".to_string(),
+                &selected.target_kind,
+                format!(
+                    "{}: {} [selected call]",
+                    selected.target_kind, selected.target_name
+                ),
+                Some(selected.unit_uri.as_str()),
+                Some(&selected.call_range),
+                None,
+                RichMermaidNodeGroup::Lifecycle,
+                false,
+                true,
+            ))
+        })
+    } else {
+        None
+    };
+
+    for edge in &trace.lifecycle.edges {
+        let Some(source_id) = lifecycle_ids.get(edge.source.as_str()) else {
+            continue;
+        };
+        let Some(target_id) = lifecycle_ids.get(edge.target.as_str()) else {
+            continue;
+        };
+        let label = edge
+            .label
+            .clone()
+            .unwrap_or_else(|| edge.kind.replace('_', " "));
+        edges.insert((source_id.clone(), target_id.clone(), label));
+    }
+
+    for parameter in &trace.parameter_traces {
+        let mut local_ids = HashMap::<String, String>::new();
+        let mut root_id = None;
+        for node in &parameter.provenance.nodes {
+            let mermaid_id = add_node(
+                "provenance".to_string(),
+                &node.kind,
+                call_dataflow_provenance_node_label(node),
+                node.unit_uri.as_deref(),
+                node.range.as_ref(),
+                node.statement_text.as_deref(),
+                RichMermaidNodeGroup::Provenance,
+                false,
+                false,
+            );
+            if node.kind == "parameter" {
+                root_id = Some(mermaid_id.clone());
+            }
+            local_ids.insert(node.id.clone(), mermaid_id);
+        }
+        for edge in &parameter.provenance.edges {
+            let Some(source_id) = local_ids.get(edge.source.as_str()) else {
+                continue;
+            };
+            let Some(target_id) = local_ids.get(edge.target.as_str()) else {
+                continue;
+            };
+            edges.insert((
+                source_id.clone(),
+                target_id.clone(),
+                call_dataflow_provenance_edge_label(edge),
+            ));
+        }
+
+        if let (Some(call_id), Some(parameter_root_id)) = (selected_call_id.as_ref(), root_id) {
+            let binding_label = rich_parameter_binding_label(parameter);
+            if parameter.direction == "output" {
+                edges.insert((call_id.clone(), parameter_root_id, binding_label));
+            } else {
+                edges.insert((parameter_root_id, call_id.clone(), binding_label));
+            }
+        }
+    }
+
+    for node in &nodes {
+        out.push_str(&format!(
+            "  {}[\"{}\"]\n",
+            node.id,
+            mermaid_label(&node.label)
+        ));
+    }
+    for (source, target, label) in edges {
+        if label.is_empty() {
+            out.push_str(&format!("  {source} --> {target}\n"));
+        } else {
+            out.push_str(&format!(
+                "  {source} -->|\"{}\"| {target}\n",
+                mermaid_label(&label)
+            ));
+        }
+    }
+
+    let mut lifecycle_nodes = Vec::new();
+    let mut parameter_nodes = Vec::new();
+    let mut target_nodes = Vec::new();
+    let mut query_nodes = Vec::new();
+    let mut transform_nodes = Vec::new();
+    let mut source_nodes = Vec::new();
+    let mut selected_nodes = Vec::new();
+    let mut synthetic_nodes = Vec::new();
+
+    for node in &nodes {
+        match node.group {
+            RichMermaidNodeGroup::Lifecycle => lifecycle_nodes.push(node.id.clone()),
+            RichMermaidNodeGroup::Provenance => match node.kind.as_str() {
+                "parameter" => parameter_nodes.push(node.id.clone()),
+                "target_value" | "target_field" | "target_table_row" | "target_table_field" => {
+                    target_nodes.push(node.id.clone())
+                }
+                "sql_query" | "sql_source" | "sql_predicate" | "sql_target" => {
+                    query_nodes.push(node.id.clone())
+                }
+                "assignment"
+                | "append_row"
+                | "perform_binding"
+                | "perform_write"
+                | "read_table_binding"
+                | "field_symbol_binding"
+                | "composite_expression"
+                | "literal_or_expression" => transform_nodes.push(node.id.clone()),
+                _ => source_nodes.push(node.id.clone()),
+            },
+        }
+        if node.selected {
+            selected_nodes.push(node.id.clone());
+        }
+        if node.synthetic {
+            synthetic_nodes.push(node.id.clone());
+        }
+    }
+
+    if !lifecycle_nodes.is_empty() {
+        out.push_str("  classDef lifecycle fill:#f8fafc,stroke:#64748b,color:#0f172a;\n");
+        out.push_str(&format!(
+            "  class {} lifecycle;\n",
+            lifecycle_nodes.join(",")
+        ));
+    }
+    if !parameter_nodes.is_empty() {
+        out.push_str("  classDef parameter fill:#ecfccb,stroke:#4d7c0f,color:#365314;\n");
+        out.push_str(&format!(
+            "  class {} parameter;\n",
+            parameter_nodes.join(",")
+        ));
+    }
+    if !target_nodes.is_empty() {
+        out.push_str("  classDef target fill:#dcfce7,stroke:#166534,color:#14532d;\n");
+        out.push_str(&format!("  class {} target;\n", target_nodes.join(",")));
+    }
+    if !query_nodes.is_empty() {
+        out.push_str("  classDef query fill:#dbeafe,stroke:#1d4ed8,color:#1e3a8a;\n");
+        out.push_str(&format!("  class {} query;\n", query_nodes.join(",")));
+    }
+    if !transform_nodes.is_empty() {
+        out.push_str("  classDef transform fill:#fff7ed,stroke:#c2410c,color:#7c2d12;\n");
+        out.push_str(&format!(
+            "  class {} transform;\n",
+            transform_nodes.join(",")
+        ));
+    }
+    if !source_nodes.is_empty() {
+        out.push_str("  classDef source fill:#f8fafc,stroke:#475569,color:#0f172a;\n");
+        out.push_str(&format!("  class {} source;\n", source_nodes.join(",")));
+    }
+    if !selected_nodes.is_empty() {
+        out.push_str("  classDef selected fill:#fee2e2,stroke:#b91c1c,color:#7f1d1d;\n");
+        out.push_str(&format!("  class {} selected;\n", selected_nodes.join(",")));
+    }
+    if !synthetic_nodes.is_empty() {
+        out.push_str("  classDef synthetic fill:#fff4cc,stroke:#b7791f,color:#5f370e;\n");
+        out.push_str(&format!(
+            "  class {} synthetic;\n",
+            synthetic_nodes.join(",")
+        ));
+    }
+
+    out
+}
+
+fn rich_parameter_binding_label(parameter: &CallDataflowParameterTrace) -> String {
+    let mut parts = Vec::new();
+    if let Some(section) = parameter.section.as_deref() {
+        parts.push(section.to_ascii_uppercase());
+    }
+    if let Some(name) = parameter.parameter_name.as_deref() {
+        parts.push(name.to_string());
+    }
+    if parts.is_empty() {
+        parameter.direction.replace('_', " ")
+    } else {
+        parts.join(" ")
+    }
+}
+
+struct CallDataflowLifecycleIndex<'a> {
+    node_by_id: HashMap<&'a str, &'a abap_cache::CallDataflowLifecycleNode>,
+    outbound: HashMap<&'a str, Vec<&'a abap_cache::CallDataflowLifecycleEdge>>,
+    roots: Vec<&'a abap_cache::CallDataflowLifecycleNode>,
+}
+
+struct CallDataflowTreeEntry {
+    kind: String,
+    name: String,
+    edge_label: Option<String>,
+    depth: usize,
+    parent_index: Option<usize>,
+    node_synthetic: bool,
+    edge_synthetic: bool,
+    selected: bool,
+}
+
+fn build_call_dataflow_lifecycle_index<'a>(
+    lifecycle: &'a CallDataflowLifecycle,
+) -> CallDataflowLifecycleIndex<'a> {
+    let active_node_ids = call_dataflow_active_node_ids(lifecycle);
+    let node_by_id: HashMap<_, _> = lifecycle
+        .nodes
+        .iter()
+        .filter(|node| active_node_ids.contains(node.id.as_str()))
+        .map(|node| (node.id.as_str(), node))
+        .collect();
+    let mut outbound = HashMap::<&str, Vec<&abap_cache::CallDataflowLifecycleEdge>>::new();
+    let mut inbound_count = HashMap::<&str, usize>::new();
+    for node in node_by_id.values() {
+        inbound_count.insert(node.id.as_str(), 0);
+    }
+    for edge in &lifecycle.edges {
+        if !node_by_id.contains_key(edge.source.as_str()) {
+            continue;
+        }
+        outbound.entry(edge.source.as_str()).or_default().push(edge);
+        if node_by_id.contains_key(edge.target.as_str()) {
+            *inbound_count.entry(edge.target.as_str()).or_insert(0) += 1;
+        }
+    }
+    for edges in outbound.values_mut() {
+        edges.sort_by(|left, right| {
+            ascii_edge_sort_key(left, &node_by_id).cmp(&ascii_edge_sort_key(right, &node_by_id))
+        });
+    }
+
+    let mut roots: Vec<_> = lifecycle
+        .nodes
+        .iter()
+        .filter(|node| {
+            node_by_id.contains_key(node.id.as_str())
+                && inbound_count.get(node.id.as_str()).copied().unwrap_or(0) == 0
+                && outbound.contains_key(node.id.as_str())
+        })
+        .collect();
+    if roots.is_empty() {
+        roots = lifecycle
+            .nodes
+            .iter()
+            .filter(|node| outbound.contains_key(node.id.as_str()))
+            .collect();
+    }
+    roots.sort_by(|left, right| ascii_node_sort_key(left).cmp(&ascii_node_sort_key(right)));
+
+    CallDataflowLifecycleIndex {
+        node_by_id,
+        outbound,
+        roots,
+    }
+}
+
+fn render_call_dataflow_ascii(
+    lifecycle: &CallDataflowLifecycle,
+    selected: Option<&CallDataflowSelectedCall>,
+) -> String {
+    let index = build_call_dataflow_lifecycle_index(lifecycle);
+    let mut out = String::new();
+    let selected_target_id = selected.and_then(|selected| selected.target_node_id.as_deref());
+    for (idx, root) in index.roots.iter().enumerate() {
+        if idx > 0 {
+            out.push('\n');
+        }
+        out.push_str(&ascii_node_label(root, selected_target_id));
+        out.push('\n');
+        let mut path = BTreeSet::new();
+        path.insert(root.id.clone());
+        render_call_dataflow_ascii_children(
+            root.id.as_str(),
+            "",
+            &index.outbound,
+            &index.node_by_id,
+            selected_target_id,
+            &mut path,
+            &mut out,
+        );
+    }
+    out
+}
+
+fn render_call_dataflow_svg(
+    lifecycle: &CallDataflowLifecycle,
+    selected: Option<&CallDataflowSelectedCall>,
+) -> String {
+    let entries = build_call_dataflow_tree_entries(lifecycle, selected);
+    if entries.is_empty() {
+        return String::new();
+    }
+
+    const MARGIN_X: usize = 32;
+    const MARGIN_Y: usize = 32;
+    const BOX_WIDTH: usize = 240;
+    const BOX_HEIGHT: usize = 64;
+    const DEPTH_GAP: usize = 320;
+    const ROW_GAP: usize = 96;
+    const EDGE_BEND: usize = 28;
+
+    let max_depth = entries.iter().map(|entry| entry.depth).max().unwrap_or(0);
+    let width = MARGIN_X * 2 + BOX_WIDTH + max_depth * DEPTH_GAP;
+    let height = MARGIN_Y * 2 + BOX_HEIGHT + entries.len().saturating_sub(1) * ROW_GAP;
+    let positions: Vec<_> = entries
+        .iter()
+        .enumerate()
+        .map(|(row, entry)| (MARGIN_X + entry.depth * DEPTH_GAP, MARGIN_Y + row * ROW_GAP))
+        .collect();
+
+    let mut out = String::new();
+    out.push_str(&format!(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{width}\" height=\"{height}\" viewBox=\"0 0 {width} {height}\" role=\"img\" aria-labelledby=\"call-dataflow-title\">\n"
+    ));
+    out.push_str("  <title id=\"call-dataflow-title\">Call dataflow lifecycle</title>\n");
+    out.push_str("  <defs>\n");
+    out.push_str("    <marker id=\"call-dataflow-arrow\" viewBox=\"0 0 10 10\" refX=\"9\" refY=\"5\" markerWidth=\"8\" markerHeight=\"8\" orient=\"auto-start-reverse\">\n");
+    out.push_str("      <path d=\"M 0 0 L 10 5 L 0 10 z\" fill=\"#475569\"/>\n");
+    out.push_str("    </marker>\n");
+    out.push_str("  </defs>\n");
+    out.push_str("  <style>\n");
+    out.push_str("    .canvas { fill: #f8fafc; }\n");
+    out.push_str("    .node { fill: #ffffff; stroke: #1f2937; stroke-width: 1.5; }\n");
+    out.push_str("    .node.selected { fill: #dcfce7; stroke: #166534; stroke-width: 2; }\n");
+    out.push_str("    .node.synthetic { fill: #fef3c7; stroke: #b45309; }\n");
+    out.push_str("    .edge { fill: none; stroke: #475569; stroke-width: 1.6; }\n");
+    out.push_str("    .edge.synthetic { stroke: #b45309; stroke-dasharray: 7 4; }\n");
+    out.push_str("    .edge-label { fill: #334155; font: 12px 'Segoe UI', sans-serif; }\n");
+    out.push_str("    .kind { fill: #64748b; font: 11px 'Segoe UI', sans-serif; text-transform: uppercase; letter-spacing: 0.08em; }\n");
+    out.push_str(
+        "    .name { fill: #0f172a; font: 14px 'Segoe UI', sans-serif; font-weight: 600; }\n",
+    );
+    out.push_str("    .badge { fill: #475569; font: 11px 'Segoe UI', sans-serif; }\n");
+    out.push_str("  </style>\n");
+    out.push_str(&format!(
+        "  <rect class=\"canvas\" x=\"0\" y=\"0\" width=\"{width}\" height=\"{height}\" rx=\"18\" ry=\"18\"/>\n"
+    ));
+
+    for (idx, entry) in entries.iter().enumerate() {
+        let Some(parent_index) = entry.parent_index else {
+            continue;
+        };
+        let (parent_x, parent_y) = positions[parent_index];
+        let (x, y) = positions[idx];
+        let start_x = parent_x + BOX_WIDTH;
+        let start_y = parent_y + BOX_HEIGHT / 2;
+        let end_x = x;
+        let end_y = y + BOX_HEIGHT / 2;
+        let bend_x = start_x + EDGE_BEND;
+        let edge_class = if entry.edge_synthetic {
+            "edge synthetic"
+        } else {
+            "edge"
+        };
+        out.push_str(&format!(
+            "  <path class=\"{edge_class}\" d=\"M {start_x} {start_y} L {bend_x} {start_y} L {bend_x} {end_y} L {end_x} {end_y}\" marker-end=\"url(#call-dataflow-arrow)\"/>\n"
+        ));
+        if let Some(label) = entry.edge_label.as_deref() {
+            let label_y = if start_y == end_y {
+                start_y.saturating_sub(10)
+            } else {
+                ((start_y + end_y) / 2).saturating_sub(6)
+            };
+            out.push_str(&format!(
+                "  <text class=\"edge-label\" x=\"{}\" y=\"{}\">{}</text>\n",
+                bend_x + 8,
+                label_y,
+                xml_text(label)
+            ));
+        }
+    }
+
+    for (idx, entry) in entries.iter().enumerate() {
+        let (x, y) = positions[idx];
+        let mut classes = vec!["node"];
+        if entry.selected {
+            classes.push("selected");
+        }
+        if entry.node_synthetic {
+            classes.push("synthetic");
+        }
+        out.push_str(&format!("  <g transform=\"translate({x},{y})\">\n"));
+        out.push_str(&format!(
+            "    <rect class=\"{}\" width=\"{BOX_WIDTH}\" height=\"{BOX_HEIGHT}\" rx=\"12\" ry=\"12\"/>\n",
+            classes.join(" ")
+        ));
+        out.push_str(&format!(
+            "    <text class=\"kind\" x=\"16\" y=\"22\">{}</text>\n",
+            xml_text(&entry.kind)
+        ));
+        out.push_str(&format!(
+            "    <text class=\"name\" x=\"16\" y=\"44\">{}</text>\n",
+            xml_text(&entry.name)
+        ));
+        let badge = call_dataflow_svg_badge(entry);
+        if !badge.is_empty() {
+            out.push_str(&format!(
+                "    <text class=\"badge\" x=\"{}\" y=\"22\" text-anchor=\"end\">{}</text>\n",
+                BOX_WIDTH.saturating_sub(14),
+                xml_text(&badge)
+            ));
+        }
+        out.push_str("  </g>\n");
+    }
+
+    out.push_str("</svg>\n");
+    out
+}
+
+fn render_call_dataflow_ascii_children(
+    node_id: &str,
+    prefix: &str,
+    outbound: &HashMap<&str, Vec<&abap_cache::CallDataflowLifecycleEdge>>,
+    node_by_id: &HashMap<&str, &abap_cache::CallDataflowLifecycleNode>,
+    selected_target_id: Option<&str>,
+    path: &mut BTreeSet<String>,
+    out: &mut String,
+) {
+    let Some(edges) = outbound.get(node_id) else {
+        return;
+    };
+    for (idx, edge) in edges.iter().enumerate() {
+        let is_last = idx + 1 == edges.len();
+        let branch = if is_last { "`-- " } else { "|-- " };
+        let child_prefix = if is_last { "    " } else { "|   " };
+        out.push_str(prefix);
+        out.push_str(branch);
+        out.push_str(&ascii_edge_label(edge, node_by_id, selected_target_id));
+        out.push('\n');
+
+        if edge.target.is_empty() || !path.insert(edge.target.clone()) {
+            continue;
+        }
+        let next_prefix = format!("{prefix}{child_prefix}");
+        render_call_dataflow_ascii_children(
+            edge.target.as_str(),
+            &next_prefix,
+            outbound,
+            node_by_id,
+            selected_target_id,
+            path,
+            out,
+        );
+        path.remove(edge.target.as_str());
+    }
+}
+
+fn ascii_edge_label(
+    edge: &abap_cache::CallDataflowLifecycleEdge,
+    node_by_id: &HashMap<&str, &abap_cache::CallDataflowLifecycleNode>,
+    selected_target_id: Option<&str>,
+) -> String {
+    let mut edge_desc = edge.kind.clone();
+    if let Some(label) = edge.label.as_deref()
+        && edge.kind != "selected_call"
+    {
+        edge_desc.push(' ');
+        edge_desc.push_str(label);
+    }
+
+    let target_desc = node_by_id
+        .get(edge.target.as_str())
+        .map(|node| ascii_node_label(node, selected_target_id))
+        .unwrap_or_else(|| "<unresolved>".to_string());
+    let mut out = format!("{edge_desc} -> {target_desc}");
+    if edge.synthetic {
+        out.push_str(" [synthetic]");
+    }
+    out
+}
+
+fn ascii_node_label(
+    node: &abap_cache::CallDataflowLifecycleNode,
+    selected_target_id: Option<&str>,
+) -> String {
+    let mut label = format!("{} {}", node.kind, node.name);
+    if selected_target_id == Some(node.id.as_str()) {
+        label.push_str(" [selected]");
+    }
+    if node.synthetic {
+        label.push_str(" [synthetic]");
+    }
+    label
+}
+
+fn ascii_edge_sort_key(
+    edge: &abap_cache::CallDataflowLifecycleEdge,
+    node_by_id: &HashMap<&str, &abap_cache::CallDataflowLifecycleNode>,
+) -> (String, String, usize, usize) {
+    let target = node_by_id
+        .get(edge.target.as_str())
+        .map(|node| ascii_node_sort_key(node))
+        .unwrap_or_else(|| ("zzzz".to_string(), String::new(), String::new()));
+    (
+        format!("{} {}", edge.kind, edge.label.as_deref().unwrap_or("")),
+        format!("{} {}", target.0, target.1),
+        edge.source_range
+            .as_ref()
+            .map(|range| range.start)
+            .unwrap_or(0),
+        edge.source_range
+            .as_ref()
+            .map(|range| range.end)
+            .unwrap_or(0),
+    )
+}
+
+fn ascii_node_sort_key(node: &abap_cache::CallDataflowLifecycleNode) -> (String, String, String) {
+    (node.kind.clone(), node.name.clone(), node.unit_uri.clone())
+}
+
+fn build_call_dataflow_tree_entries(
+    lifecycle: &CallDataflowLifecycle,
+    selected: Option<&CallDataflowSelectedCall>,
+) -> Vec<CallDataflowTreeEntry> {
+    let index = build_call_dataflow_lifecycle_index(lifecycle);
+    let selected_target_id = selected.and_then(|selected| selected.target_node_id.as_deref());
+    let mut entries = Vec::new();
+    for root in index.roots {
+        let mut path = BTreeSet::new();
+        path.insert(root.id.clone());
+        let root_index = entries.len();
+        entries.push(CallDataflowTreeEntry {
+            kind: root.kind.clone(),
+            name: root.name.clone(),
+            edge_label: None,
+            depth: 0,
+            parent_index: None,
+            node_synthetic: root.synthetic,
+            edge_synthetic: false,
+            selected: selected_target_id == Some(root.id.as_str()),
+        });
+        build_call_dataflow_tree_children(
+            root.id.as_str(),
+            0,
+            root_index,
+            &index.outbound,
+            &index.node_by_id,
+            selected_target_id,
+            &mut path,
+            &mut entries,
+        );
+    }
+    entries
+}
+
+fn build_call_dataflow_tree_children(
+    node_id: &str,
+    depth: usize,
+    parent_index: usize,
+    outbound: &HashMap<&str, Vec<&abap_cache::CallDataflowLifecycleEdge>>,
+    node_by_id: &HashMap<&str, &abap_cache::CallDataflowLifecycleNode>,
+    selected_target_id: Option<&str>,
+    path: &mut BTreeSet<String>,
+    entries: &mut Vec<CallDataflowTreeEntry>,
+) {
+    let Some(edges) = outbound.get(node_id) else {
+        return;
+    };
+
+    for edge in edges {
+        let entry = if let Some(node) = node_by_id.get(edge.target.as_str()) {
+            CallDataflowTreeEntry {
+                kind: node.kind.clone(),
+                name: node.name.clone(),
+                edge_label: Some(call_dataflow_edge_display(edge)),
+                depth: depth + 1,
+                parent_index: Some(parent_index),
+                node_synthetic: node.synthetic,
+                edge_synthetic: edge.synthetic,
+                selected: selected_target_id == Some(node.id.as_str()),
+            }
+        } else {
+            CallDataflowTreeEntry {
+                kind: "unresolved".to_string(),
+                name: "<unresolved>".to_string(),
+                edge_label: Some(call_dataflow_edge_display(edge)),
+                depth: depth + 1,
+                parent_index: Some(parent_index),
+                node_synthetic: false,
+                edge_synthetic: edge.synthetic,
+                selected: false,
+            }
+        };
+        let entry_index = entries.len();
+        entries.push(entry);
+
+        if edge.target.is_empty() {
+            continue;
+        }
+        let can_descend = path.insert(edge.target.clone());
+        if !can_descend {
+            continue;
+        }
+        build_call_dataflow_tree_children(
+            edge.target.as_str(),
+            depth + 1,
+            entry_index,
+            outbound,
+            node_by_id,
+            selected_target_id,
+            path,
+            entries,
+        );
+        path.remove(edge.target.as_str());
+    }
+}
+
+fn call_dataflow_edge_display(edge: &abap_cache::CallDataflowLifecycleEdge) -> String {
+    let mut label = edge.kind.clone();
+    if let Some(extra) = edge.label.as_deref()
+        && edge.kind != "selected_call"
+    {
+        label.push(' ');
+        label.push_str(extra);
+    }
+    label
+}
+
+fn call_dataflow_svg_badge(entry: &CallDataflowTreeEntry) -> String {
+    match (entry.selected, entry.node_synthetic) {
+        (true, true) => "selected, synthetic".to_string(),
+        (true, false) => "selected".to_string(),
+        (false, true) => "synthetic".to_string(),
+        (false, false) => String::new(),
+    }
+}
+
+fn render_call_dataflow_mermaid(lifecycle: &CallDataflowLifecycle) -> String {
+    let mut out = String::new();
+    out.push_str("flowchart TD\n");
+    let active_node_ids = call_dataflow_active_node_ids(lifecycle);
+    let node_ids: HashMap<_, _> = lifecycle
+        .nodes
+        .iter()
+        .filter(|node| active_node_ids.contains(node.id.as_str()))
+        .enumerate()
+        .map(|(idx, node)| (node.id.as_str(), format!("n{idx}")))
+        .collect();
+
+    for node in &lifecycle.nodes {
+        if !active_node_ids.contains(node.id.as_str()) {
+            continue;
+        }
+        let Some(mermaid_id) = node_ids.get(node.id.as_str()) else {
+            continue;
+        };
+        let mut label = format!("{}: {}", node.kind, node.name);
+        if node.synthetic {
+            label.push_str(" (synthetic)");
+        }
+        out.push_str(&format!(
+            "  {}[\"{}\"]\n",
+            mermaid_id,
+            mermaid_label(&label)
+        ));
+    }
+    for edge in &lifecycle.edges {
+        let Some(source_id) = node_ids.get(edge.source.as_str()) else {
+            continue;
+        };
+        let Some(target_id) = node_ids.get(edge.target.as_str()) else {
+            continue;
+        };
+        let label = edge
+            .label
+            .as_deref()
+            .unwrap_or(edge.kind.as_str())
+            .to_string();
+        out.push_str(&format!(
+            "  {} -->|\"{}\"| {}\n",
+            source_id,
+            mermaid_label(&label),
+            target_id
+        ));
+    }
+    let synthetic_nodes: Vec<_> = lifecycle
+        .nodes
+        .iter()
+        .filter(|node| node.synthetic)
+        .filter_map(|node| node_ids.get(node.id.as_str()).cloned())
+        .collect();
+    if !synthetic_nodes.is_empty() {
+        out.push_str("  classDef synthetic fill:#fff4cc,stroke:#b7791f,color:#5f370e;\n");
+        out.push_str(&format!(
+            "  class {} synthetic;\n",
+            synthetic_nodes.join(",")
+        ));
+    }
+    out
+}
+
+fn call_dataflow_active_node_ids(lifecycle: &CallDataflowLifecycle) -> HashSet<&str> {
+    let mut active = HashSet::new();
+    for edge in &lifecycle.edges {
+        active.insert(edge.source.as_str());
+        if !edge.target.is_empty() {
+            active.insert(edge.target.as_str());
+        }
+    }
+    active
+}
+
+fn call_dataflow_mapping_location(mapping: &abap_cache::CallDataflowFieldMapping) -> String {
+    match (
+        mapping.source_unit_uri.as_deref(),
+        mapping.source_range.as_ref(),
+    ) {
+        (Some(unit_uri), Some(range)) => format!("{unit_uri}:{}-{}", range.start, range.end),
+        (Some(unit_uri), None) => unit_uri.to_string(),
+        (None, Some(range)) => format!("{}-{}", range.start, range.end),
+        (None, None) => String::new(),
+    }
+}
+
+fn call_dataflow_provenance_node_label(node: &abap_cache::CallDataflowProvenanceNode) -> String {
+    let prefix = match node.kind.as_str() {
+        "parameter" => "parameter",
+        "target_value" | "target_field" | "target_table_row" | "target_table_field" => "target",
+        "assignment" => "assignment",
+        "append_row" => "append",
+        "perform_binding" => "perform bind",
+        "perform_write" => "perform write",
+        "read_table_binding" => "read table",
+        "field_symbol_binding" => "field-symbol bind",
+        "sql_query" => "sql query",
+        "sql_source" => "sql source",
+        "call_output" => "call output",
+        "constant" => "constant",
+        "global_state" => "global",
+        "symbol" => "symbol",
+        "literal_or_expression" => "expression",
+        "composite_expression" => "expression",
+        other => other,
+    };
+    let mut label = format!("{prefix}: {}", truncate_display(&node.label, 96));
+    if let (Some(unit_uri), Some(range)) = (node.unit_uri.as_deref(), node.range.as_ref()) {
+        label.push_str(&format!(
+            " @ {}:{}-{}",
+            short_unit_name(unit_uri),
+            range.start,
+            range.end
+        ));
+    }
+    label
+}
+
+fn call_dataflow_provenance_edge_label(edge: &abap_cache::CallDataflowProvenanceEdge) -> String {
+    edge.label
+        .clone()
+        .unwrap_or_else(|| edge.kind.replace('_', " "))
+}
+
+fn markdown_inline_code(value: &str) -> String {
+    value.replace('`', "'")
+}
+
+fn markdown_table_cell(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('|', "\\|")
+        .replace('\n', "<br/>")
+}
+
+fn mermaid_label(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('"', "'")
+        .replace('\n', " ")
+}
+
+fn short_unit_name(unit_uri: &str) -> String {
+    unit_uri.rsplit('/').next().unwrap_or(unit_uri).to_string()
+}
+
+fn truncate_display(value: &str, max_len: usize) -> String {
+    if value.chars().count() <= max_len {
+        return value.to_string();
+    }
+    let truncated: String = value.chars().take(max_len.saturating_sub(3)).collect();
+    format!("{truncated}...")
+}
+
+fn xml_text(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }
 
 fn load_single_file_analyze_snapshot(path: Option<&str>) -> Result<AnalyzeSnapshot, String> {
@@ -1581,7 +2979,16 @@ fn normalize_windows_path(path: PathBuf) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::{load_remote_candidate_workspace, parse_cli_args, path_to_file_uri};
+    use super::{
+        CallDataflowDiagramFormat, load_remote_candidate_workspace, parse_cli_args,
+        path_to_file_uri, render_call_dataflow_diagram_block, render_call_dataflow_report,
+    };
+    use abap_cache::{
+        CallDataflowByteRange, CallDataflowLifecycle, CallDataflowLifecycleEdge,
+        CallDataflowLifecycleNode, CallDataflowParameterTrace, CallDataflowProvenanceEdge,
+        CallDataflowProvenanceGraph, CallDataflowProvenanceNode, CallDataflowQuery,
+        CallDataflowSelectedCall, CallDataflowSummary, CallDataflowTrace,
+    };
     use std::fs;
 
     #[test]
@@ -1596,6 +3003,364 @@ mod tests {
         assert!(cli.json_output);
         assert!(cli.pretty);
         assert_eq!(cli.path.as_deref(), Some("."));
+    }
+
+    #[test]
+    fn parses_call_dataflow_command() {
+        let cli = parse_cli_args(
+            [
+                "call-dataflow",
+                "--target",
+                "BAPI_PO_CREATE1",
+                "--caller",
+                "call_api",
+                "--occurrence",
+                "2",
+                "--diagram",
+                "svg",
+                "--pretty",
+                "main.abap",
+            ]
+            .into_iter()
+            .map(str::to_string),
+        )
+        .expect("cli");
+
+        assert_eq!(cli.command, super::Command::CallDataflow);
+        assert_eq!(cli.call_dataflow_target.as_deref(), Some("BAPI_PO_CREATE1"));
+        assert_eq!(cli.call_dataflow_caller.as_deref(), Some("call_api"));
+        assert_eq!(cli.call_dataflow_occurrence, Some(2));
+        assert_eq!(cli.call_dataflow_diagram, CallDataflowDiagramFormat::Svg);
+        assert!(cli.pretty);
+        assert_eq!(cli.path.as_deref(), Some("main.abap"));
+    }
+
+    #[test]
+    fn parses_call_dataflow_rich_mermaid_diagram() {
+        let cli = parse_cli_args(
+            [
+                "call-dataflow",
+                "--target",
+                "BAPI_PO_CREATE1",
+                "--diagram",
+                "rich-mermaid",
+                "main.abap",
+            ]
+            .into_iter()
+            .map(str::to_string),
+        )
+        .expect("cli");
+
+        assert_eq!(
+            cli.call_dataflow_diagram,
+            CallDataflowDiagramFormat::RichMermaid
+        );
+    }
+
+    #[test]
+    fn call_dataflow_requires_target() {
+        let err = parse_cli_args(["call-dataflow"].into_iter().map(str::to_string))
+            .expect_err("missing target should fail");
+        assert!(
+            err.contains("call-dataflow requires --target NAME"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn call_dataflow_ascii_diagram_renders_tree() {
+        let lifecycle = CallDataflowLifecycle {
+            nodes: vec![
+                CallDataflowLifecycleNode {
+                    id: "event".to_string(),
+                    kind: "event_block".to_string(),
+                    name: "start-of-selection".to_string(),
+                    unit_uri: "file:///main.abap".to_string(),
+                    decl_range: CallDataflowByteRange { start: 0, end: 1 },
+                    synthetic: false,
+                },
+                CallDataflowLifecycleNode {
+                    id: "form".to_string(),
+                    kind: "form".to_string(),
+                    name: "create_sto".to_string(),
+                    unit_uri: "file:///main.abap".to_string(),
+                    decl_range: CallDataflowByteRange { start: 2, end: 3 },
+                    synthetic: false,
+                },
+                CallDataflowLifecycleNode {
+                    id: "target".to_string(),
+                    kind: "function_module".to_string(),
+                    name: "bapi_po_create1".to_string(),
+                    unit_uri: "file:///bapi.abap".to_string(),
+                    decl_range: CallDataflowByteRange { start: 4, end: 5 },
+                    synthetic: false,
+                },
+            ],
+            edges: vec![
+                CallDataflowLifecycleEdge {
+                    source: "event".to_string(),
+                    target: "form".to_string(),
+                    kind: "perform".to_string(),
+                    label: None,
+                    source_range: Some(CallDataflowByteRange { start: 10, end: 20 }),
+                    synthetic: false,
+                },
+                CallDataflowLifecycleEdge {
+                    source: "form".to_string(),
+                    target: "target".to_string(),
+                    kind: "selected_call".to_string(),
+                    label: Some("bapi_po_create1".to_string()),
+                    source_range: Some(CallDataflowByteRange { start: 30, end: 40 }),
+                    synthetic: false,
+                },
+            ],
+        };
+        let selected = CallDataflowSelectedCall {
+            occurrence: 1,
+            target_kind: "function".to_string(),
+            target_name: "bapi_po_create1".to_string(),
+            unit_uri: "file:///main.abap".to_string(),
+            call_range: CallDataflowByteRange { start: 30, end: 40 },
+            caller_node_id: Some("form".to_string()),
+            caller_kind: Some("form".to_string()),
+            caller_name: Some("create_sto".to_string()),
+            caller_unit_uri: Some("file:///main.abap".to_string()),
+            target_node_id: Some("target".to_string()),
+            argument_count: 1,
+        };
+
+        let rendered = render_call_dataflow_diagram_block(
+            &lifecycle,
+            Some(&selected),
+            CallDataflowDiagramFormat::Ascii,
+        );
+
+        assert!(rendered.contains("```text"));
+        assert!(rendered.contains("event_block start-of-selection"));
+        assert!(rendered.contains("perform -> form create_sto"));
+        assert!(rendered.contains("selected_call -> function_module bapi_po_create1 [selected]"));
+    }
+
+    #[test]
+    fn call_dataflow_svg_diagram_renders_svg_markup() {
+        let lifecycle = CallDataflowLifecycle {
+            nodes: vec![
+                CallDataflowLifecycleNode {
+                    id: "event".to_string(),
+                    kind: "event_block".to_string(),
+                    name: "end-of-selection".to_string(),
+                    unit_uri: "file:///main.abap".to_string(),
+                    decl_range: CallDataflowByteRange { start: 0, end: 1 },
+                    synthetic: false,
+                },
+                CallDataflowLifecycleNode {
+                    id: "target".to_string(),
+                    kind: "function_module".to_string(),
+                    name: "bapi_po_create1".to_string(),
+                    unit_uri: "file:///main.abap".to_string(),
+                    decl_range: CallDataflowByteRange { start: 2, end: 3 },
+                    synthetic: false,
+                },
+            ],
+            edges: vec![CallDataflowLifecycleEdge {
+                source: "event".to_string(),
+                target: "target".to_string(),
+                kind: "selected_call".to_string(),
+                label: Some("bapi_po_create1".to_string()),
+                source_range: Some(CallDataflowByteRange { start: 10, end: 20 }),
+                synthetic: false,
+            }],
+        };
+        let selected = CallDataflowSelectedCall {
+            occurrence: 1,
+            target_kind: "function".to_string(),
+            target_name: "bapi_po_create1".to_string(),
+            unit_uri: "file:///main.abap".to_string(),
+            call_range: CallDataflowByteRange { start: 10, end: 20 },
+            caller_node_id: Some("event".to_string()),
+            caller_kind: Some("event_block".to_string()),
+            caller_name: Some("end-of-selection".to_string()),
+            caller_unit_uri: Some("file:///main.abap".to_string()),
+            target_node_id: Some("target".to_string()),
+            argument_count: 1,
+        };
+
+        let rendered = render_call_dataflow_diagram_block(
+            &lifecycle,
+            Some(&selected),
+            CallDataflowDiagramFormat::Svg,
+        );
+
+        assert!(rendered.contains("<svg "));
+        assert!(rendered.contains("call-dataflow-arrow"));
+        assert!(rendered.contains("function_module"));
+        assert!(rendered.contains("bapi_po_create1"));
+        assert!(rendered.contains("selected"));
+    }
+
+    #[test]
+    fn call_dataflow_mermaid_diagram_quotes_edge_labels() {
+        let lifecycle = CallDataflowLifecycle {
+            nodes: vec![
+                CallDataflowLifecycleNode {
+                    id: "event".to_string(),
+                    kind: "event_block".to_string(),
+                    name: "end-of-selection".to_string(),
+                    unit_uri: "file:///main.abap".to_string(),
+                    decl_range: CallDataflowByteRange { start: 0, end: 1 },
+                    synthetic: false,
+                },
+                CallDataflowLifecycleNode {
+                    id: "target".to_string(),
+                    kind: "function_module".to_string(),
+                    name: "bapi_po_create1".to_string(),
+                    unit_uri: "file:///main.abap".to_string(),
+                    decl_range: CallDataflowByteRange { start: 2, end: 3 },
+                    synthetic: false,
+                },
+            ],
+            edges: vec![CallDataflowLifecycleEdge {
+                source: "event".to_string(),
+                target: "target".to_string(),
+                kind: "screen_dispatch".to_string(),
+                label: Some("CALL SCREEN 9000 (input)".to_string()),
+                source_range: Some(CallDataflowByteRange { start: 10, end: 20 }),
+                synthetic: true,
+            }],
+        };
+
+        let rendered = render_call_dataflow_diagram_block(
+            &lifecycle,
+            None,
+            CallDataflowDiagramFormat::Mermaid,
+        );
+
+        assert!(rendered.contains("```mermaid"));
+        assert!(rendered.contains("-->|\"CALL SCREEN 9000 (input)\"|"));
+    }
+
+    #[test]
+    fn call_dataflow_rich_mermaid_report_renders_single_merged_diagram() {
+        let trace = CallDataflowTrace {
+            schema: "abap.call_dataflow_trace",
+            schema_version: 1,
+            query: CallDataflowQuery {
+                target: "BAPI_PO_CREATE1".to_string(),
+                caller: Some("call_api".to_string()),
+                occurrence: None,
+            },
+            selected_call: Some(CallDataflowSelectedCall {
+                occurrence: 1,
+                target_kind: "function_module".to_string(),
+                target_name: "bapi_po_create1".to_string(),
+                unit_uri: "file:///main.abap".to_string(),
+                call_range: CallDataflowByteRange { start: 30, end: 40 },
+                caller_node_id: Some("form".to_string()),
+                caller_kind: Some("form".to_string()),
+                caller_name: Some("call_api".to_string()),
+                caller_unit_uri: Some("file:///main.abap".to_string()),
+                target_node_id: Some("target".to_string()),
+                argument_count: 1,
+            }),
+            matches: Vec::new(),
+            lifecycle: CallDataflowLifecycle {
+                nodes: vec![
+                    CallDataflowLifecycleNode {
+                        id: "form".to_string(),
+                        kind: "form".to_string(),
+                        name: "call_api".to_string(),
+                        unit_uri: "file:///main.abap".to_string(),
+                        decl_range: CallDataflowByteRange { start: 0, end: 1 },
+                        synthetic: false,
+                    },
+                    CallDataflowLifecycleNode {
+                        id: "target".to_string(),
+                        kind: "function_module".to_string(),
+                        name: "bapi_po_create1".to_string(),
+                        unit_uri: "file:///bapi.abap".to_string(),
+                        decl_range: CallDataflowByteRange { start: 2, end: 3 },
+                        synthetic: false,
+                    },
+                ],
+                edges: vec![CallDataflowLifecycleEdge {
+                    source: "form".to_string(),
+                    target: "target".to_string(),
+                    kind: "selected_call".to_string(),
+                    label: Some("bapi_po_create1".to_string()),
+                    source_range: Some(CallDataflowByteRange { start: 30, end: 40 }),
+                    synthetic: false,
+                }],
+            },
+            parameter_traces: vec![CallDataflowParameterTrace {
+                parameter_name: Some("poheader".to_string()),
+                section: Some("exporting".to_string()),
+                direction: "input".to_string(),
+                argument_text: "poheader = gs_header".to_string(),
+                argument_range: CallDataflowByteRange { start: 30, end: 40 },
+                argument_type: Some("bapimepoheader".to_string()),
+                field_mappings: Vec::new(),
+                provenance: CallDataflowProvenanceGraph {
+                    nodes: vec![
+                        CallDataflowProvenanceNode {
+                            id: "p0".to_string(),
+                            kind: "parameter".to_string(),
+                            label: "poheader [input / exporting] : bapimepoheader".to_string(),
+                            unit_uri: None,
+                            range: None,
+                            statement_text: None,
+                        },
+                        CallDataflowProvenanceNode {
+                            id: "p1".to_string(),
+                            kind: "assignment".to_string(),
+                            label: "gs_header-doc_type = 'NB'.".to_string(),
+                            unit_uri: Some("file:///main.abap".to_string()),
+                            range: Some(CallDataflowByteRange { start: 10, end: 20 }),
+                            statement_text: Some("gs_header-doc_type = 'NB'.".to_string()),
+                        },
+                        CallDataflowProvenanceNode {
+                            id: "p2".to_string(),
+                            kind: "target_field".to_string(),
+                            label: "poheader.doc_type".to_string(),
+                            unit_uri: None,
+                            range: None,
+                            statement_text: None,
+                        },
+                    ],
+                    edges: vec![
+                        CallDataflowProvenanceEdge {
+                            source: "p1".to_string(),
+                            target: "p2".to_string(),
+                            kind: "writes".to_string(),
+                            label: None,
+                        },
+                        CallDataflowProvenanceEdge {
+                            source: "p2".to_string(),
+                            target: "p0".to_string(),
+                            kind: "populates".to_string(),
+                            label: None,
+                        },
+                    ],
+                },
+                notes: Vec::new(),
+            }],
+            summary: CallDataflowSummary {
+                match_count: 1,
+                ambiguous: false,
+                lifecycle_node_count: 2,
+                lifecycle_edge_count: 1,
+                synthetic_edge_count: 0,
+                parameter_count: 1,
+                mapping_count: 0,
+            },
+        };
+
+        let rendered = render_call_dataflow_report(&trace, CallDataflowDiagramFormat::RichMermaid);
+
+        assert!(rendered.contains("## Diagram"));
+        assert!(rendered.contains("```mermaid"));
+        assert!(rendered.contains("|\"EXPORTING poheader\"|"));
+        assert!(rendered.contains("selected call"));
+        assert!(!rendered.contains("#### Detailed Provenance"));
     }
 
     #[test]

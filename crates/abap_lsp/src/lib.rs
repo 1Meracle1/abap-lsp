@@ -318,6 +318,7 @@ fn snapshot_with_version(snapshot: &Arc<AnalysisSnapshot>, version: i32) -> Arc<
         uri: Arc::clone(&snapshot.uri),
         version,
         text: Arc::clone(&snapshot.text),
+        project_texts: Arc::clone(&snapshot.project_texts),
         is_dependency: snapshot.is_dependency,
         object_name: snapshot.object_name.clone(),
         parse: Arc::clone(&snapshot.parse),

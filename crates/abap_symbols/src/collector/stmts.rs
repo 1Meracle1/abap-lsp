@@ -2237,6 +2237,7 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             self.collector.walk_children(node, scope);
             return;
         };
+        let stmt_range = self.collector.file.range(node);
 
         if stmt.call_kind(self.collector.source) == Some(CallStmtKind::Screen) {
             self.record_unknown_effect(node, scope);
@@ -2274,18 +2275,19 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
         } else {
             None
         };
+        let mut emitted_function_call_site = false;
 
         for child in self.collector.file.children(node) {
             match self.collector.file.kind(child) {
                 SyntaxKind::CallArgList => {
                     if let Some(function_name) = function_name.clone() {
-                        let call_range = self.collector.file.range(node);
                         self.collector.expr_lowering().collect_call_argument_list(
                             child,
                             scope,
                             NamedArgumentTarget::Function { function_name },
-                            call_range,
+                            stmt_range.clone(),
                         );
+                        emitted_function_call_site = true;
                     } else {
                         self.collector
                             .expr_lowering()
@@ -2298,6 +2300,17 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                 SyntaxKind::Token => {}
                 _ => self.collector.walk_node(child, scope),
             }
+        }
+
+        if let Some(function_name) = function_name
+            && !emitted_function_call_site
+        {
+            self.collector.emit_call_site(CallSiteData {
+                scope,
+                range: stmt_range,
+                target: NamedArgumentTarget::Function { function_name },
+                arguments: Vec::new(),
+            });
         }
     }
 

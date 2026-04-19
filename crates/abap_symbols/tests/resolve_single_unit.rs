@@ -3574,6 +3574,36 @@ ASSIGN lv_text TO FIELD-SYMBOL(<lv_text>).
 }
 
 #[test]
+fn semantic_facts_emit_field_symbol_assignment_flow_edges_for_loop_assigning() {
+    let src = r#"
+TYPES ty_row TYPE string.
+DATA lt_rows TYPE STANDARD TABLE OF ty_row WITH EMPTY KEY.
+
+LOOP AT lt_rows ASSIGNING FIELD-SYMBOL(<ls_row>).
+  WRITE <ls_row>.
+ENDLOOP.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///fact_loop_assigning.abap", src, &parsed);
+
+    let edge = unit
+        .semantic()
+        .facts()
+        .value_flow_edges()
+        .find(|edge| {
+            edge.kind == abap_symbols::ValueFlowKind::FieldSymbolAssignment
+                && &src[edge.source_range.clone()] == "lt_rows"
+        })
+        .expect("loop assigning field-symbol flow edge");
+    match &edge.target {
+        abap_symbols::ValueFlowTargetData::FieldSymbol { name, .. } => {
+            assert_eq!(name.as_deref(), Some("<ls_row>"));
+        }
+        other => panic!("expected field-symbol target, got {other:?}"),
+    }
+}
+
+#[test]
 fn semantic_facts_fall_back_to_unknown_when_return_type_is_not_inferable() {
     let src = r#"
 CLASS zcl_demo DEFINITION.
@@ -8429,6 +8459,29 @@ ENDCLASS.
         }),
         "unexpected diagnostics: {:?}",
         unit.diagnostics
+    );
+}
+
+#[test]
+fn collects_no_argument_call_function_site() {
+    let src = r#"
+FORM run.
+  CALL FUNCTION 'BAPI_PO_CREATE1'.
+ENDFORM.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///call_function_no_args.abap", src, &parsed);
+
+    assert!(
+        unit.call_sites.iter().any(|site| {
+            matches!(
+                &site.target,
+                abap_symbols::NamedArgumentTarget::Function { function_name }
+                    if function_name.as_ref() == "bapi_po_create1"
+            ) && site.arguments.is_empty()
+        }),
+        "missing no-argument function call site: {:?}",
+        unit.call_sites
     );
 }
 
