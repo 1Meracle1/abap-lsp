@@ -1619,6 +1619,7 @@ fn render_call_dataflow_parameter_provenance_mermaid(
             | "sql_target_field" => query_nodes.push(node.id.clone()),
             "assignment"
             | "append_row"
+            | "loop_binding"
             | "perform_binding"
             | "perform_write"
             | "read_table_binding"
@@ -1880,6 +1881,7 @@ fn render_call_dataflow_rich_mermaid(trace: &CallDataflowTrace) -> String {
                 | "sql_source_field" | "sql_target_field" => query_nodes.push(node.id.clone()),
                 "assignment"
                 | "append_row"
+                | "loop_binding"
                 | "perform_binding"
                 | "perform_write"
                 | "read_table_binding"
@@ -2497,6 +2499,7 @@ fn call_dataflow_provenance_node_label(node: &abap_cache::CallDataflowProvenance
         "target_value" | "target_field" | "target_table_row" | "target_table_field" => "target",
         "assignment" => "assignment",
         "append_row" => "append",
+        "loop_binding" => "loop bind",
         "perform_binding" => "perform bind",
         "perform_write" => "perform write",
         "read_table_binding" => "read table",

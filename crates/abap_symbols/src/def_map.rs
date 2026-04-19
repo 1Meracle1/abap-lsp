@@ -805,6 +805,7 @@ pub struct LoopRegionData {
     pub range: TextRange,
     pub kind: RoutineLoopKind,
     pub body_scope: ScopeId,
+    pub source_access: Option<FieldAccess>,
     pub target_access: Option<FieldAccess>,
 }
 

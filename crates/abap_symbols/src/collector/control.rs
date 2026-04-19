@@ -143,6 +143,7 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
                 range: node_range,
                 kind: RoutineLoopKind::Loop,
                 body_scope: child_scope,
+                source_access: loop_context.source_access,
                 target_access: loop_context.target_access,
             }));
     }
@@ -483,6 +484,7 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
                 range: node_range,
                 kind: loop_kind,
                 body_scope,
+                source_access: None,
                 target_access: None,
             }));
     }

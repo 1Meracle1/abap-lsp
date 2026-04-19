@@ -975,6 +975,16 @@ impl<'a> TraceBuilder<'a> {
             provenance,
             sink_node_id,
         );
+        found |= self.trace_loop_target_bindings(
+            context,
+            access,
+            target_path,
+            field_mappings,
+            notes,
+            depth + 1,
+            provenance,
+            sink_node_id,
+        );
         found |= self.trace_read_table_bindings(
             context,
             access,
@@ -1326,6 +1336,123 @@ impl<'a> TraceBuilder<'a> {
         found
     }
 
+    fn trace_loop_target_bindings(
+        &mut self,
+        context: TraceContext<'a>,
+        access: &ValueAccess,
+        target_path: &str,
+        field_mappings: &mut Vec<CallDataflowFieldMapping>,
+        notes: &mut Vec<String>,
+        depth: usize,
+        provenance: &mut ParameterProvenanceBuilder,
+        sink_node_id: &str,
+    ) -> bool {
+        let Some(current_routine) = context.routine else {
+            return false;
+        };
+        if access.handle.unit != context.unit.unit_id {
+            return false;
+        }
+        if context.unit.symbol(access.handle.symbol).kind == SymbolKind::FieldSymbol {
+            return false;
+        }
+
+        let mut best_region = None;
+        let mut best_start = 0usize;
+        let mut best_end = usize::MAX;
+        for region in &context.unit.routine_control_regions {
+            let abap_symbols::RoutineControlRegionData::Loop(region) = region else {
+                continue;
+            };
+            if region.range.start >= context.sink_offset
+                || access.range.start < region.range.start
+                || access.range.end > region.range.end
+                || !same_routine_scope(self.snapshot, context.unit, region.scope, current_routine)
+            {
+                continue;
+            }
+            if region.source_access.is_none() {
+                continue;
+            }
+            let Some(target_access) = region.target_access.as_ref() else {
+                continue;
+            };
+            let Some(target_handle) = resolve_access_handle(context.unit, target_access) else {
+                continue;
+            };
+            if target_handle != access.handle {
+                continue;
+            }
+            let target_field_path = field_access_path(target_access);
+            if relevant_target_suffix(&target_field_path, &access.field_path).is_none() {
+                continue;
+            }
+            if best_region.is_none()
+                || region.range.start > best_start
+                || (region.range.start == best_start && region.range.end < best_end)
+            {
+                best_start = region.range.start;
+                best_end = region.range.end;
+                best_region = Some(region);
+            }
+        }
+
+        let Some(region) = best_region else {
+            return false;
+        };
+        let Some(source_access) = region.source_access.as_ref() else {
+            return false;
+        };
+        let Some(target_access) = region.target_access.as_ref() else {
+            return false;
+        };
+        let target_field_path = field_access_path(target_access);
+        let Some(target_suffix) = relevant_target_suffix(&target_field_path, &access.field_path)
+        else {
+            return false;
+        };
+        let Some(source_value_access) =
+            field_access_to_value_access(context.unit, source_access, &target_suffix)
+        else {
+            return false;
+        };
+
+        let header_text = loop_header_statement_text(
+            self.snapshot.project_text(context.unit.uri.as_ref()),
+            region,
+        );
+        field_mappings.push(CallDataflowFieldMapping {
+            target_path: target_path.to_string(),
+            source_kind: "loop_binding".to_string(),
+            source_display: source_value_access.display.clone(),
+            source_unit_uri: Some(context.unit.uri.to_string()),
+            source_range: Some(byte_range(&field_access_range(source_access))),
+            statement_text: Some(header_text.clone()),
+        });
+        let binding_node_id = provenance.add_flow_node(
+            "loop_binding",
+            &format!("{} <- {}", access.display, header_text),
+            Some(context.unit.uri.as_ref()),
+            Some(byte_range(&region.range)),
+            Some(header_text),
+        );
+        provenance.add_edge(&binding_node_id, sink_node_id, "binds_to", None);
+        self.trace_symbol_access(
+            TraceContext {
+                sink_offset: region.range.start,
+                ..context
+            },
+            &source_value_access,
+            target_path,
+            field_mappings,
+            notes,
+            depth,
+            provenance,
+            &binding_node_id,
+        );
+        true
+    }
+
     fn trace_assignment_writers(
         &mut self,
         context: TraceContext<'a>,
@@ -1623,8 +1750,92 @@ impl<'a> TraceBuilder<'a> {
                 }
                 found = true;
             }
+
+            found |= self.trace_global_writes_from_perform_call(
+                context,
+                access,
+                target_path,
+                field_mappings,
+                notes,
+                depth,
+                provenance,
+                sink_node_id,
+                perform_call,
+                callee_owner,
+                callee_summary,
+            );
         }
         found
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn trace_global_writes_from_perform_call(
+        &mut self,
+        context: TraceContext<'a>,
+        access: &ValueAccess,
+        target_path: &str,
+        field_mappings: &mut Vec<CallDataflowFieldMapping>,
+        notes: &mut Vec<String>,
+        depth: usize,
+        provenance: &mut ParameterProvenanceBuilder,
+        sink_node_id: &str,
+        perform_call: &abap_symbols::PerformCallData,
+        callee_owner: SymbolHandle,
+        callee_summary: &super::CallableSummary,
+    ) -> bool {
+        let access_unit = &self.snapshot.project.units[access.handle.unit.as_usize()];
+        let access_symbol = access_unit.symbol(access.handle.symbol);
+        if access_symbol.scope != access_unit.root_scope {
+            return false;
+        }
+
+        let callee_unit = &self.snapshot.project.units[callee_owner.unit.as_usize()];
+        let callee_routine = self
+            .snapshot
+            .routine_analysis()
+            .routine_for_owner(callee_owner);
+        let Some(callee_routine) = callee_routine else {
+            return false;
+        };
+        if !self.routine_has_assignment_writer(callee_unit, callee_routine, access) {
+            return false;
+        }
+
+        let call_text = snippet(
+            self.snapshot.project_text(context.unit.uri.as_ref()),
+            &perform_call.range,
+        );
+        field_mappings.push(CallDataflowFieldMapping {
+            target_path: target_path.to_string(),
+            source_kind: "perform_write".to_string(),
+            source_display: format!("{}:{}", callee_summary.name, access.display),
+            source_unit_uri: Some(context.unit.uri.to_string()),
+            source_range: Some(byte_range(&perform_call.range)),
+            statement_text: Some(call_text.clone()),
+        });
+        let perform_write_node_id = provenance.add_flow_node(
+            "perform_write",
+            &format!("{} writes {}", callee_summary.name, access.display),
+            Some(context.unit.uri.as_ref()),
+            Some(byte_range(&perform_call.range)),
+            Some(call_text),
+        );
+        provenance.add_edge(&perform_write_node_id, sink_node_id, "writes", None);
+        self.trace_symbol_access(
+            TraceContext {
+                unit: callee_unit,
+                routine: Some(callee_routine),
+                sink_offset: usize::MAX,
+            },
+            access,
+            target_path,
+            field_mappings,
+            notes,
+            depth,
+            provenance,
+            &perform_write_node_id,
+        );
+        true
     }
 
     fn summarize_perform_write_behavior(
@@ -1721,6 +1932,22 @@ impl<'a> TraceBuilder<'a> {
         }
 
         (!parts.is_empty()).then(|| parts.join("; "))
+    }
+
+    fn routine_has_assignment_writer(
+        &self,
+        unit: &UnitAnalysis,
+        routine: &RoutineAnalysis,
+        access: &ValueAccess,
+    ) -> bool {
+        unit.assignment_sites.iter().any(|assignment| {
+            same_routine_scope(self.snapshot, unit, assignment.scope, routine)
+                && assignment_access(unit, assignment).is_some_and(|lhs_access| {
+                    lhs_access.handle == access.handle
+                        && relevant_target_suffix(&access.field_path, &lhs_access.field_path)
+                            .is_some()
+                })
+        })
     }
 
     fn trace_producer_call_outputs(
@@ -2453,25 +2680,11 @@ fn same_routine_scope(
 }
 
 fn assignment_access(unit: &UnitAnalysis, assignment: &AssignmentSiteData) -> Option<ValueAccess> {
-    let access = assignment.lhs_target_access.as_ref()?;
-    if access.base_namespace != Namespace::Value {
-        return None;
+    if let Some(access) = assignment.lhs_target_access.as_ref() {
+        return field_access_to_value_access(unit, access, &[]);
     }
-    let handle = resolve_access_handle(unit, access)?;
-    Some(ValueAccess {
-        handle,
-        field_path: access
-            .field_path
-            .iter()
-            .map(|segment| segment.name.to_string())
-            .collect(),
-        display: format_access_display(&unit.symbol(handle.symbol).name, &access.field_path),
-        range: access
-            .field_path
-            .last()
-            .map(|segment| access.base_range.start..segment.range.end)
-            .unwrap_or_else(|| access.base_range.clone()),
-    })
+    let accesses = value_accesses_in_range(unit, &assignment.lhs_range);
+    (accesses.len() == 1).then(|| accesses[0].clone())
 }
 
 fn resolve_access_handle(
@@ -2643,6 +2856,44 @@ fn clean_identifier_token(token: &str) -> &str {
 fn dedup_case_insensitive(values: &mut Vec<String>) {
     let mut seen = HashSet::<String>::new();
     values.retain(|value| seen.insert(value.to_ascii_lowercase()));
+}
+
+fn field_access_path(access: &abap_symbols::FieldAccess) -> Vec<String> {
+    access
+        .field_path
+        .iter()
+        .map(|segment| segment.name.to_string())
+        .collect()
+}
+
+fn field_access_range(access: &abap_symbols::FieldAccess) -> TextRange {
+    access
+        .field_path
+        .last()
+        .map(|segment| access.base_range.start..segment.range.end)
+        .unwrap_or_else(|| access.base_range.clone())
+}
+
+fn field_access_to_value_access(
+    unit: &UnitAnalysis,
+    access: &abap_symbols::FieldAccess,
+    suffix: &[String],
+) -> Option<ValueAccess> {
+    if access.base_namespace != Namespace::Value {
+        return None;
+    }
+    let handle = resolve_access_handle(unit, access)?;
+    let mut field_path = field_access_path(access);
+    field_path.extend(suffix.iter().cloned());
+    Some(ValueAccess {
+        handle,
+        display: format_access_display_from_path(
+            unit.symbol(handle.symbol).name.as_ref(),
+            &field_path,
+        ),
+        field_path,
+        range: field_access_range(access),
+    })
 }
 
 fn relevant_target_suffix(source_path: &[String], lhs_path: &[String]) -> Option<Vec<String>> {
@@ -3109,6 +3360,21 @@ fn snippet_without_comments_lines(text: Option<&str>, range: &TextRange) -> Vec<
 
 fn normalize_whitespace(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn loop_header_statement_text(text: Option<&str>, region: &abap_symbols::LoopRegionData) -> String {
+    let snippet = snippet_without_comments(text, &region.range);
+    let header = snippet
+        .split_once('.')
+        .map(|(head, _)| head.trim())
+        .unwrap_or_else(|| snippet.trim());
+    if header.is_empty() {
+        format!("LOOP @ {}..{}", region.range.start, region.range.end)
+    } else if header.ends_with('.') {
+        header.to_string()
+    } else {
+        format!("{header}.")
+    }
 }
 
 fn call_dataflow_provenance_is_empty(provenance: &CallDataflowProvenanceGraph) -> bool {
@@ -4537,6 +4803,143 @@ ENDFUNCTION.",
             }),
             "{:?}",
             it_schedule.provenance.edges
+        );
+    }
+
+    #[test]
+    fn traces_loop_into_row_bindings_back_to_original_schedule_assignments() {
+        let snapshot = snapshot_for(
+            vec![
+                DocumentInput {
+                    uri: Arc::from("file:///main.abap"),
+                    version: 1,
+                    text: Arc::from(
+                        "\
+REPORT z_loop_into_schedule_trace.
+
+TYPES: BEGIN OF ty_schedule,
+         po_item TYPE string,
+         delivery_date TYPE string,
+         quantity TYPE i,
+       END OF ty_schedule.
+TYPES ty_schedule_tab TYPE STANDARD TABLE OF ty_schedule WITH DEFAULT KEY.
+
+DATA gt_schedule TYPE ty_schedule_tab.
+
+FORM populate_schedule.
+  DATA ls_schedule TYPE ty_schedule.
+  DATA lv_quantity TYPE i.
+
+  lv_quantity = 5.
+  ls_schedule-po_item = '10'.
+  ls_schedule-delivery_date = '20240101'.
+  ls_schedule-quantity = lv_quantity.
+  APPEND ls_schedule TO gt_schedule.
+ENDFORM.
+
+FORM merge_schedule CHANGING ct_schedule TYPE ty_schedule_tab.
+  DATA lt_schedule TYPE ty_schedule_tab.
+  DATA ls_schedule TYPE ty_schedule.
+  FIELD-SYMBOLS <ls_existing> TYPE ty_schedule.
+
+  lt_schedule[] = ct_schedule[].
+  CLEAR ct_schedule[].
+  SORT lt_schedule BY po_item delivery_date.
+  LOOP AT lt_schedule INTO ls_schedule.
+    READ TABLE ct_schedule ASSIGNING <ls_existing>
+      WITH KEY po_item = ls_schedule-po_item
+               delivery_date = ls_schedule-delivery_date.
+    IF sy-subrc = 0.
+      <ls_existing>-quantity = <ls_existing>-quantity + ls_schedule-quantity.
+    ELSE.
+      APPEND ls_schedule TO ct_schedule.
+    ENDIF.
+  ENDLOOP.
+ENDFORM.
+
+FORM call_api.
+  PERFORM populate_schedule.
+  PERFORM merge_schedule CHANGING gt_schedule.
+  CALL FUNCTION 'TARGET_API'
+    TABLES
+      it_schedule = gt_schedule.
+ENDFORM.
+
+START-OF-SELECTION.
+  PERFORM call_api.",
+                    ),
+                    is_dependency: false,
+                    object_name: None,
+                },
+                DocumentInput {
+                    uri: Arc::from("file:///target.abap"),
+                    version: 1,
+                    text: Arc::from(
+                        "\
+FUNCTION target_api
+  TABLES
+    it_schedule TYPE string.
+ENDFUNCTION.",
+                    ),
+                    is_dependency: true,
+                    object_name: None,
+                },
+            ],
+            "file:///main.abap",
+        );
+
+        let trace = build_call_dataflow_trace(
+            snapshot.as_ref(),
+            CallDataflowQuery {
+                target: "TARGET_API".to_string(),
+                caller: Some("call_api".to_string()),
+                occurrence: None,
+            },
+        );
+
+        let it_schedule = trace
+            .parameter_traces
+            .iter()
+            .find(|trace| trace.parameter_name.as_deref() == Some("it_schedule"))
+            .expect("it_schedule trace");
+        assert!(
+            it_schedule.field_mappings.iter().any(|mapping| {
+                mapping.source_kind == "perform_write"
+                    && mapping.source_display == "populate_schedule:gt_schedule"
+            }),
+            "{:?}",
+            it_schedule.field_mappings
+        );
+        assert!(
+            it_schedule.field_mappings.iter().any(|mapping| {
+                mapping.source_kind == "loop_binding"
+                    && mapping.source_display == "lt_schedule"
+                    && mapping
+                        .statement_text
+                        .as_deref()
+                        .is_some_and(|text| text.contains("LOOP AT lt_schedule INTO ls_schedule"))
+            }),
+            "{:?}",
+            it_schedule.field_mappings
+        );
+        assert!(
+            it_schedule.field_mappings.iter().any(|mapping| {
+                mapping.target_path == "it_schedule[*].quantity"
+                    && mapping.source_kind == "assignment"
+                    && mapping.source_display == "lv_quantity"
+            }),
+            "{:?}",
+            it_schedule.field_mappings
+        );
+        assert!(
+            it_schedule.provenance.nodes.iter().any(|node| {
+                node.kind == "loop_binding"
+                    && node
+                        .label
+                        .contains("ls_schedule <- LOOP AT lt_schedule INTO ls_schedule")
+            }),
+            "{:?}",
+            it_schedule.provenance.nodes
         );
     }
 
