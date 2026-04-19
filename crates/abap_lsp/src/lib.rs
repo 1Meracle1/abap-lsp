@@ -12,8 +12,8 @@ use abap_cache::{
     UNKNOWN_SYMBOL_MODE_REMOTE, WorkspaceDocument, WorkspaceManifest, file_uri_to_path,
     is_remote_lookup_candidate, is_remote_lookup_candidate_after_local_resolution,
     load_manifest_from_workspace_result, load_workspace_documents_with_progress,
-    local_export_config_for_source, manifest_cache_dir, manifest_declares_uri,
-    manifest_document_metadata, manifest_supports_remote_resolution, path_to_file_uri,
+    local_export_config_for_source, manifest_cache_dir, manifest_document_metadata,
+    manifest_supports_remote_resolution, path_to_file_uri,
     resolve_local_export_dependency_document, resolve_workspace_performance_mode,
     uri_starts_with_workspace,
 };
@@ -48,6 +48,8 @@ const REMOTE_DEPENDENCY_BATCH_CANDIDATE_LIMIT: usize = 24;
 pub struct ServerState {
     pub cache: DocumentStore,
     pub workspaces: HashMap<String, WorkspaceState>,
+    pub workspace_roots_desc: Vec<String>,
+    pub document_workspace_index: HashMap<String, String>,
     pub client_capabilities: ClientCapabilitiesState,
     pub shutdown_requested: bool,
 }
@@ -77,6 +79,8 @@ impl Default for ServerState {
         Self {
             cache: DocumentStore::default(),
             workspaces: HashMap::new(),
+            workspace_roots_desc: Vec::new(),
+            document_workspace_index: HashMap::new(),
             client_capabilities: ClientCapabilitiesState::default(),
             shutdown_requested: false,
         }
@@ -149,27 +153,98 @@ impl ServerState {
     pub fn register_workspace_folder(&mut self, root_uri: impl Into<String>) {
         let root_uri = normalize_lsp_uri(&root_uri.into());
         self.workspaces.entry(root_uri.clone()).or_insert_with(|| {
-            let mut workspace = WorkspaceState::new(root_uri);
+            let mut workspace = WorkspaceState::new(root_uri.clone());
             prime_workspace_manifest_state(&mut workspace);
             workspace
         });
+        self.index_workspace_root(&root_uri);
+    }
+
+    pub fn refresh_workspace_routing(&mut self) {
+        self.workspace_roots_desc = self.workspaces.keys().cloned().collect();
+        self.workspace_roots_desc
+            .sort_by(|left, right| right.len().cmp(&left.len()).then_with(|| left.cmp(right)));
+    }
+
+    pub fn index_workspace_members(&mut self, workspace_uri: &str) {
+        let normalized_workspace_uri = normalize_lsp_uri(workspace_uri);
+        let Some(workspace) = self.workspaces.get(&normalized_workspace_uri) else {
+            return;
+        };
+        let workspace_root_uri = workspace.root_uri.clone();
+        let cached_uris = workspace.cache.uris();
+        let preview_uris: Vec<_> = workspace.preview_snapshots.keys().cloned().collect();
+        let open_uris: Vec<_> = workspace.open_documents.keys().cloned().collect();
+        let _ = workspace;
+
+        self.index_workspace_root(&workspace_root_uri);
+        for uri in cached_uris {
+            self.index_workspace_uri(&workspace_root_uri, uri.as_ref());
+        }
+        for uri in preview_uris {
+            self.index_workspace_uri(&workspace_root_uri, &uri);
+        }
+        for uri in open_uris {
+            self.index_workspace_uri(&workspace_root_uri, &uri);
+        }
     }
 
     pub fn workspace_for_uri(&self, uri: &str) -> Option<&WorkspaceState> {
+        self.workspace_key_for_uri(uri)
+            .and_then(|workspace_uri| self.workspaces.get(workspace_uri))
+    }
+
+    pub fn workspace_for_uri_mut(&mut self, uri: &str) -> Option<&mut WorkspaceState> {
+        let key = self.workspace_key_for_uri(uri).map(str::to_owned)?;
+        self.index_workspace_uri(&key, uri);
+        self.workspaces.get_mut(&key)
+    }
+
+    fn index_workspace_root(&mut self, workspace_uri: &str) {
+        if self
+            .workspace_roots_desc
+            .iter()
+            .any(|root_uri| root_uri == workspace_uri)
+        {
+            return;
+        }
+        self.workspace_roots_desc.push(workspace_uri.to_owned());
+        self.workspace_roots_desc
+            .sort_by(|left, right| right.len().cmp(&left.len()).then_with(|| left.cmp(right)));
+    }
+
+    fn index_workspace_uri(&mut self, workspace_uri: &str, uri: &str) {
+        self.index_workspace_root(workspace_uri);
+        match self.document_workspace_index.get(uri) {
+            Some(existing_workspace_uri) if existing_workspace_uri.len() > workspace_uri.len() => {}
+            _ => {
+                self.document_workspace_index
+                    .insert(uri.to_owned(), workspace_uri.to_owned());
+            }
+        }
+    }
+
+    fn workspace_key_for_uri(&self, uri: &str) -> Option<&str> {
+        if let Some(workspace_uri) = self.document_workspace_index.get(uri)
+            && self.workspaces.contains_key(workspace_uri)
+            && uri_starts_with_workspace(uri, workspace_uri)
+        {
+            return Some(workspace_uri.as_str());
+        }
+
+        for workspace_uri in &self.workspace_roots_desc {
+            if uri_starts_with_workspace(uri, workspace_uri)
+                && self.workspaces.contains_key(workspace_uri)
+            {
+                return Some(workspace_uri.as_str());
+            }
+        }
+
         self.workspaces
             .values()
             .filter(|workspace| uri_starts_with_workspace(uri, &workspace.root_uri))
             .max_by_key(|workspace| workspace.root_uri.len())
-    }
-
-    pub fn workspace_for_uri_mut(&mut self, uri: &str) -> Option<&mut WorkspaceState> {
-        let key = self
-            .workspaces
-            .values()
-            .filter(|workspace| uri_starts_with_workspace(uri, &workspace.root_uri))
-            .max_by_key(|workspace| workspace.root_uri.len())
-            .map(|workspace| workspace.root_uri.clone())?;
-        self.workspaces.get_mut(&key)
+            .map(|workspace| workspace.root_uri.as_str())
     }
 }
 
@@ -318,6 +393,7 @@ fn snapshot_with_version(snapshot: &Arc<AnalysisSnapshot>, version: i32) -> Arc<
         uri: Arc::clone(&snapshot.uri),
         version,
         text: Arc::clone(&snapshot.text),
+        line_index: Arc::clone(&snapshot.line_index),
         project_texts: Arc::clone(&snapshot.project_texts),
         is_dependency: snapshot.is_dependency,
         object_name: snapshot.object_name.clone(),
@@ -530,18 +606,31 @@ pub fn stage_workspace_preview_snapshot(
     text: &str,
 ) -> bool {
     let normalized_uri = normalize_lsp_uri(uri);
-    let Some(workspace) = state.workspace_for_uri_mut(&normalized_uri) else {
+    let Some((workspace_uri, preview)) = ({
+        let Some(workspace) = state.workspace_for_uri_mut(&normalized_uri) else {
+            return false;
+        };
+        if workspace.performance_mode == WorkspacePerformanceMode::EditorFirst
+            && workspace.cache.len() == 0
+        {
+            return false;
+        }
+        let preview =
+            incremental_workspace_document_input(workspace, &normalized_uri, version, text)
+                .map(|input| workspace.cache.preview_publish_input(input))
+                .unwrap_or_else(|| {
+                    DocumentStore::default().publish(normalized_uri.clone(), version, text)
+                });
+        let workspace_uri = workspace.root_uri.clone();
+        workspace
+            .preview_snapshots
+            .insert(normalized_uri.clone(), Arc::clone(&preview));
+        Some((workspace_uri, preview))
+    }) else {
         return false;
     };
-    if workspace.performance_mode == WorkspacePerformanceMode::EditorFirst
-        && workspace.cache.len() == 0
-    {
-        return false;
-    }
-    let preview = incremental_workspace_document_input(workspace, &normalized_uri, version, text)
-        .map(|input| workspace.cache.preview_publish_input(input))
-        .unwrap_or_else(|| DocumentStore::default().publish(normalized_uri.clone(), version, text));
-    workspace.preview_snapshots.insert(normalized_uri, preview);
+    let _ = preview;
+    state.index_workspace_uri(&workspace_uri, &normalized_uri);
     true
 }
 
@@ -678,8 +767,9 @@ pub fn publish_open_document_mut_with_progress(
     progress: Option<&(dyn Fn(usize, usize) + Sync)>,
 ) -> Arc<AnalysisSnapshot> {
     let uri = normalize_lsp_uri(params.text_document.uri.as_str());
-    if let Some(workspace) = state.workspace_for_uri_mut(&uri) {
+    let workspace_result = if let Some(workspace) = state.workspace_for_uri_mut(&uri) {
         let manifest_dependency_open = uri_is_manifest_dependency(workspace, &uri);
+        let workspace_uri = workspace.root_uri.clone();
         if let Some(current) = workspace
             .cache
             .get(&uri)
@@ -694,19 +784,24 @@ pub fn publish_open_document_mut_with_progress(
             );
             if manifest_dependency_open {
                 let snapshots = rebuild_workspace_cache_with_progress(workspace, progress);
-                return snapshots
-                    .get(uri.as_str())
-                    .cloned()
-                    .expect("opened manifest dependency should exist after rebuild");
-            }
-            if document_uses_local_exports(workspace, &uri) {
+                Some((
+                    workspace_uri,
+                    snapshots
+                        .get(uri.as_str())
+                        .cloned()
+                        .expect("opened manifest dependency should exist after rebuild"),
+                    true,
+                ))
+            } else if document_uses_local_exports(workspace, &uri) {
                 let snapshots = rebuild_workspace_cache_with_progress(workspace, progress);
-                return snapshots
-                    .get(uri.as_str())
-                    .cloned()
-                    .expect("opened workspace document should exist after local export rebuild");
-            }
-            if let Some(input) = incremental_workspace_document_input(
+                Some((
+                    workspace_uri,
+                    snapshots.get(uri.as_str()).cloned().expect(
+                        "opened workspace document should exist after local export rebuild",
+                    ),
+                    true,
+                ))
+            } else if let Some(input) = incremental_workspace_document_input(
                 workspace,
                 &uri,
                 params.text_document.version,
@@ -714,46 +809,68 @@ pub fn publish_open_document_mut_with_progress(
             ) && (current.is_dependency != input.is_dependency
                 || current.object_name != input.object_name)
             {
-                return workspace.cache.publish_input(input);
+                Some((workspace_uri, workspace.cache.publish_input(input), false))
+            } else {
+                let snapshot = snapshot_with_version(&current, params.text_document.version);
+                workspace.cache.insert_snapshot(Arc::clone(&snapshot));
+                Some((workspace_uri, snapshot, false))
             }
-            let snapshot = snapshot_with_version(&current, params.text_document.version);
-            workspace.cache.insert_snapshot(Arc::clone(&snapshot));
-            return snapshot;
+        } else {
+            workspace.open_documents.insert(
+                uri.clone(),
+                OpenDocumentOverlay {
+                    version: params.text_document.version,
+                    text: Arc::from(params.text_document.text.as_str()),
+                },
+            );
+            if manifest_dependency_open {
+                let snapshots = rebuild_workspace_cache_with_progress(workspace, progress);
+                Some((
+                    workspace_uri,
+                    snapshots
+                        .get(uri.as_str())
+                        .cloned()
+                        .expect("opened manifest dependency should exist after rebuild"),
+                    true,
+                ))
+            } else if document_uses_local_exports(workspace, &uri) {
+                let snapshots = rebuild_workspace_cache_with_progress(workspace, progress);
+                Some((
+                    workspace_uri,
+                    snapshots.get(uri.as_str()).cloned().expect(
+                        "opened workspace document should exist after local export rebuild",
+                    ),
+                    true,
+                ))
+            } else if let Some(input) = incremental_workspace_document_input(
+                workspace,
+                &uri,
+                params.text_document.version,
+                &params.text_document.text,
+            ) {
+                Some((workspace_uri, workspace.cache.publish_input(input), false))
+            } else {
+                let snapshots = rebuild_workspace_cache_with_progress(workspace, progress);
+                Some((
+                    workspace_uri,
+                    snapshots
+                        .get(uri.as_str())
+                        .cloned()
+                        .expect("opened workspace document should exist after rebuild"),
+                    true,
+                ))
+            }
         }
-        workspace.open_documents.insert(
-            uri.clone(),
-            OpenDocumentOverlay {
-                version: params.text_document.version,
-                text: Arc::from(params.text_document.text.as_str()),
-            },
-        );
-        if manifest_dependency_open {
-            let snapshots = rebuild_workspace_cache_with_progress(workspace, progress);
-            return snapshots
-                .get(uri.as_str())
-                .cloned()
-                .expect("opened manifest dependency should exist after rebuild");
+    } else {
+        None
+    };
+    if let Some((workspace_uri, snapshot, reindex_members)) = workspace_result {
+        if reindex_members {
+            state.index_workspace_members(&workspace_uri);
+        } else {
+            state.index_workspace_uri(&workspace_uri, &uri);
         }
-        if document_uses_local_exports(workspace, &uri) {
-            let snapshots = rebuild_workspace_cache_with_progress(workspace, progress);
-            return snapshots
-                .get(uri.as_str())
-                .cloned()
-                .expect("opened workspace document should exist after local export rebuild");
-        }
-        if let Some(input) = incremental_workspace_document_input(
-            workspace,
-            &uri,
-            params.text_document.version,
-            &params.text_document.text,
-        ) {
-            return workspace.cache.publish_input(input);
-        }
-        let snapshots = rebuild_workspace_cache_with_progress(workspace, progress);
-        return snapshots
-            .get(uri.as_str())
-            .cloned()
-            .expect("opened workspace document should exist after rebuild");
+        return snapshot;
     }
     state.cache.publish(
         uri,
@@ -789,7 +906,8 @@ pub fn publish_changed_document_mut_with_progress(
 ) -> Option<Arc<AnalysisSnapshot>> {
     let change = params.content_changes.last()?;
     let uri = normalize_lsp_uri(params.text_document.uri.as_str());
-    if let Some(workspace) = state.workspace_for_uri_mut(&uri) {
+    let workspace_result = if let Some(workspace) = state.workspace_for_uri_mut(&uri) {
+        let workspace_uri = workspace.root_uri.clone();
         if let Some(current) = workspace
             .cache
             .get(&uri)
@@ -804,9 +922,8 @@ pub fn publish_changed_document_mut_with_progress(
             );
             if document_uses_local_exports(workspace, &uri) {
                 let snapshots = rebuild_workspace_cache_with_progress(workspace, progress);
-                return snapshots.get(uri.as_str()).cloned();
-            }
-            if let Some(input) = incremental_workspace_document_input(
+                Some((workspace_uri, snapshots.get(uri.as_str()).cloned(), true))
+            } else if let Some(input) = incremental_workspace_document_input(
                 workspace,
                 &uri,
                 params.text_document.version,
@@ -814,33 +931,53 @@ pub fn publish_changed_document_mut_with_progress(
             ) && (current.is_dependency != input.is_dependency
                 || current.object_name != input.object_name)
             {
-                return Some(workspace.cache.publish_input(input));
+                Some((
+                    workspace_uri,
+                    Some(workspace.cache.publish_input(input)),
+                    false,
+                ))
+            } else {
+                let snapshot = snapshot_with_version(&current, params.text_document.version);
+                workspace.cache.insert_snapshot(Arc::clone(&snapshot));
+                Some((workspace_uri, Some(snapshot), false))
             }
-            let snapshot = snapshot_with_version(&current, params.text_document.version);
-            workspace.cache.insert_snapshot(Arc::clone(&snapshot));
-            return Some(snapshot);
+        } else {
+            workspace.open_documents.insert(
+                uri.clone(),
+                OpenDocumentOverlay {
+                    version: params.text_document.version,
+                    text: Arc::from(change.text.as_str()),
+                },
+            );
+            if document_uses_local_exports(workspace, &uri) {
+                let snapshots = rebuild_workspace_cache_with_progress(workspace, progress);
+                Some((workspace_uri, snapshots.get(uri.as_str()).cloned(), true))
+            } else if let Some(input) = incremental_workspace_document_input(
+                workspace,
+                &uri,
+                params.text_document.version,
+                &change.text,
+            ) {
+                Some((
+                    workspace_uri,
+                    Some(workspace.cache.publish_input(input)),
+                    false,
+                ))
+            } else {
+                let snapshots = rebuild_workspace_cache_with_progress(workspace, progress);
+                Some((workspace_uri, snapshots.get(uri.as_str()).cloned(), true))
+            }
         }
-        workspace.open_documents.insert(
-            uri.clone(),
-            OpenDocumentOverlay {
-                version: params.text_document.version,
-                text: Arc::from(change.text.as_str()),
-            },
-        );
-        if document_uses_local_exports(workspace, &uri) {
-            let snapshots = rebuild_workspace_cache_with_progress(workspace, progress);
-            return snapshots.get(uri.as_str()).cloned();
+    } else {
+        None
+    };
+    if let Some((workspace_uri, snapshot, reindex_members)) = workspace_result {
+        if reindex_members {
+            state.index_workspace_members(&workspace_uri);
+        } else {
+            state.index_workspace_uri(&workspace_uri, &uri);
         }
-        if let Some(input) = incremental_workspace_document_input(
-            workspace,
-            &uri,
-            params.text_document.version,
-            &change.text,
-        ) {
-            return Some(workspace.cache.publish_input(input));
-        }
-        let snapshots = rebuild_workspace_cache_with_progress(workspace, progress);
-        return snapshots.get(uri.as_str()).cloned();
+        return snapshot;
     }
     Some(
         state
@@ -865,9 +1002,12 @@ pub fn refresh_workspace_with_progress(
     let Some(workspace) = state.workspaces.get_mut(&workspace_uri) else {
         return Vec::new();
     };
-    rebuild_workspace_cache_with_progress(workspace, progress)
+    let snapshots: Vec<_> = rebuild_workspace_cache_with_progress(workspace, progress)
         .into_values()
-        .collect()
+        .collect();
+    let _ = workspace;
+    state.index_workspace_members(&workspace_uri);
+    snapshots
 }
 
 pub fn handle_workspace_manifest_updated(
@@ -1321,16 +1461,89 @@ fn remote_candidate_kind_priority(kind: &str) -> usize {
     }
 }
 
+struct RemoteDependencyCacheContext {
+    dependencies_root: Option<PathBuf>,
+    manifest_declared_uris: HashSet<String>,
+    manifest_candidate_paths: HashMap<String, Vec<PathBuf>>,
+}
+
+impl RemoteDependencyCacheContext {
+    fn new(workspace: &WorkspaceState) -> Self {
+        let root_path = file_uri_to_path(&workspace.root_uri);
+        let dependencies_root = root_path.as_ref().map(|root_path| {
+            root_path
+                .join(manifest_cache_dir(workspace.manifest.as_ref()))
+                .join("dependencies")
+        });
+        let (manifest_declared_uris, manifest_candidate_paths) = root_path
+            .as_ref()
+            .zip(workspace.manifest.as_ref())
+            .map(|(root_path, manifest)| {
+                let mut uris = HashSet::new();
+                let mut candidate_paths = HashMap::new();
+                for unit in &manifest.units {
+                    let mut unit_paths = Vec::new();
+                    if !unit.root_file.trim().is_empty() {
+                        let path =
+                            root_path.join(normalize_manifest_relative_path(&unit.root_file));
+                        uris.insert(path_to_file_uri(&path));
+                        unit_paths.push(path);
+                    }
+                    for member in &unit.members {
+                        if !member.file.trim().is_empty() {
+                            let path =
+                                root_path.join(normalize_manifest_relative_path(&member.file));
+                            uris.insert(path_to_file_uri(&path));
+                            unit_paths.push(path);
+                        }
+                    }
+                    if !unit_paths.is_empty() {
+                        if !unit.name.trim().is_empty() {
+                            candidate_paths
+                                .entry(unit.name.trim().to_ascii_lowercase())
+                                .or_insert_with(Vec::new)
+                                .extend(unit_paths.iter().cloned());
+                        }
+                        for member in &unit.members {
+                            if !member.object_name.trim().is_empty() {
+                                candidate_paths
+                                    .entry(member.object_name.trim().to_ascii_lowercase())
+                                    .or_insert_with(Vec::new)
+                                    .extend(unit_paths.iter().cloned());
+                            }
+                        }
+                    }
+                }
+                for paths in candidate_paths.values_mut() {
+                    paths.sort();
+                    paths.dedup();
+                }
+                (uris, candidate_paths)
+            })
+            .unwrap_or_default();
+        Self {
+            dependencies_root,
+            manifest_declared_uris,
+            manifest_candidate_paths,
+        }
+    }
+}
+
+fn normalize_manifest_relative_path(value: &str) -> String {
+    value
+        .trim()
+        .replace('\\', "/")
+        .trim_start_matches("./")
+        .to_string()
+}
+
 fn cached_remote_dependency_paths(
-    workspace: &WorkspaceState,
+    cache_context: &RemoteDependencyCacheContext,
     candidate: &RemoteDependencyCandidate,
 ) -> Vec<PathBuf> {
-    let Some(root_path) = file_uri_to_path(&workspace.root_uri) else {
+    let Some(dependencies_root) = cache_context.dependencies_root.as_ref() else {
         return Vec::new();
     };
-    let dependencies_root = root_path
-        .join(manifest_cache_dir(workspace.manifest.as_ref()))
-        .join("dependencies");
     let encoded_name = encode_dependency_cache_name(candidate.name.as_str());
 
     match candidate.kind.trim().to_ascii_lowercase().as_str() {
@@ -1379,69 +1592,122 @@ fn cached_remote_dependency_paths(
 }
 
 fn manifest_cached_remote_dependency_paths(
-    workspace: &WorkspaceState,
+    cache_context: &RemoteDependencyCacheContext,
     candidate: &RemoteDependencyCandidate,
 ) -> Vec<PathBuf> {
-    let Some(manifest) = workspace.manifest.as_ref() else {
-        return Vec::new();
-    };
-    let Some(root_path) = file_uri_to_path(&workspace.root_uri) else {
-        return Vec::new();
-    };
-    let normalized_name = candidate.name.trim().to_ascii_lowercase();
-    let mut paths = Vec::new();
-
-    for unit in &manifest.units {
-        let unit_name_matches =
-            !unit.name.trim().is_empty() && unit.name.trim().eq_ignore_ascii_case(&normalized_name);
-        let member_matches = unit.members.iter().any(|member| {
-            !member.object_name.trim().is_empty()
-                && member
-                    .object_name
-                    .trim()
-                    .eq_ignore_ascii_case(&normalized_name)
-        });
-        if !unit_name_matches && !member_matches {
-            continue;
-        }
-
-        if !unit.root_file.trim().is_empty() {
-            paths.push(root_path.join(unit.root_file.trim()));
-        }
-        for member in &unit.members {
-            if !member.file.trim().is_empty() {
-                paths.push(root_path.join(member.file.trim()));
-            }
-        }
-    }
-
-    paths
+    cache_context
+        .manifest_candidate_paths
+        .get(&candidate.name.trim().to_ascii_lowercase())
+        .cloned()
+        .unwrap_or_default()
 }
 
 fn has_cached_remote_dependency_candidate(
-    workspace: &WorkspaceState,
+    cache_context: &RemoteDependencyCacheContext,
     candidate: &RemoteDependencyCandidate,
 ) -> bool {
-    let manifest_paths = manifest_cached_remote_dependency_paths(workspace, candidate);
+    let manifest_paths = manifest_cached_remote_dependency_paths(cache_context, candidate);
     if !manifest_paths.is_empty() {
         return manifest_paths.into_iter().any(|path| path.exists());
     }
 
-    cached_remote_dependency_paths(workspace, candidate)
+    cached_remote_dependency_paths(cache_context, candidate)
         .into_iter()
         .any(|path| {
             path.exists()
-                && workspace.manifest.as_ref().is_some_and(|manifest| {
-                    file_uri_to_path(&workspace.root_uri).is_some_and(|root_path| {
-                        manifest_declares_uri(
-                            &root_path,
-                            &workspace.root_uri,
-                            manifest,
-                            &path_to_file_uri(&path),
-                        )
-                    })
-                })
+                && cache_context
+                    .manifest_declared_uris
+                    .contains(&path_to_file_uri(&path))
         })
+}
+
+struct RemoteDependencyMemo {
+    request_candidates: HashMap<String, Vec<RemoteDependencyCandidate>>,
+    cached_candidate_presence: HashMap<String, bool>,
+}
+
+impl RemoteDependencyMemo {
+    fn new() -> Self {
+        Self {
+            request_candidates: HashMap::new(),
+            cached_candidate_presence: HashMap::new(),
+        }
+    }
+
+    fn candidates_for_request(
+        &mut self,
+        workspace: &WorkspaceState,
+        snapshot: &AnalysisSnapshot,
+        source_uri: &str,
+    ) -> Vec<RemoteDependencyCandidate> {
+        self.request_candidates
+            .entry(source_uri.to_owned())
+            .or_insert_with(|| {
+                collect_remote_dependency_candidates_for_request(workspace, snapshot, source_uri)
+            })
+            .clone()
+    }
+
+    fn has_cached_candidate(
+        &mut self,
+        cache_context: &RemoteDependencyCacheContext,
+        candidate: &RemoteDependencyCandidate,
+    ) -> bool {
+        let key = remote_candidate_key(candidate);
+        if let Some(cached) = self.cached_candidate_presence.get(&key) {
+            return *cached;
+        }
+        let cached = has_cached_remote_dependency_candidate(cache_context, candidate);
+        self.cached_candidate_presence.insert(key, cached);
+        cached
+    }
+}
+
+fn build_remote_dependency_request_for_snapshot(
+    workspace: &mut WorkspaceState,
+    source_uri: &str,
+    snapshot: &AnalysisSnapshot,
+    memo: &mut RemoteDependencyMemo,
+    cache_context: &RemoteDependencyCacheContext,
+) -> Option<RemoteDependencyResolveParams> {
+    if snapshot.parse.errors.is_empty() {
+        let mut candidates = Vec::new();
+        for candidate in memo.candidates_for_request(workspace, snapshot, source_uri) {
+            if memo.has_cached_candidate(cache_context, &candidate) {
+                continue;
+            }
+            let key = remote_candidate_key(&candidate);
+            if workspace.remote_lookup_failures.contains(&key) {
+                continue;
+            }
+            if workspace.remote_resolution_seen.insert(key) {
+                candidates.push(candidate);
+            }
+        }
+        if !candidates.is_empty() {
+            return Some(RemoteDependencyResolveParams {
+                workspace_uri: workspace.root_uri.clone(),
+                source_uri: source_uri.to_owned(),
+                source_uris: Vec::new(),
+                unknown_symbol_mode: workspace
+                    .manifest
+                    .as_ref()
+                    .map(|manifest| manifest.resolution.unknown_symbol_mode.clone())
+                    .or(Some(UNKNOWN_SYMBOL_MODE_REMOTE.to_string())),
+                remote_request_parallelism: workspace
+                    .manifest
+                    .as_ref()
+                    .and_then(|manifest| manifest.resolution.remote_request_parallelism()),
+                remote_requests_per_second: workspace
+                    .manifest
+                    .as_ref()
+                    .map(|manifest| manifest.resolution.remote_requests_per_second),
+                source_candidates: HashMap::from([(source_uri.to_owned(), candidates.clone())]),
+                candidates,
+            });
+        }
+    }
+    None
 }
 
 fn encode_dependency_cache_name(name: &str) -> String {
@@ -1481,49 +1747,15 @@ pub fn build_remote_dependency_request(
         return None;
     }
     let snapshot = workspace.cache.get(&source_uri)?;
-    if !snapshot.parse.errors.is_empty() {
-        return None;
-    }
-
-    let mut candidates = Vec::new();
-    for candidate in
-        collect_remote_dependency_candidates_for_request(workspace, snapshot.as_ref(), &source_uri)
-    {
-        if has_cached_remote_dependency_candidate(workspace, &candidate) {
-            continue;
-        }
-        let key = remote_candidate_key(&candidate);
-        if workspace.remote_lookup_failures.contains(&key) {
-            continue;
-        }
-        if workspace.remote_resolution_seen.insert(key) {
-            candidates.push(candidate);
-        }
-    }
-    if candidates.is_empty() {
-        return None;
-    }
-
-    Some(RemoteDependencyResolveParams {
-        workspace_uri: workspace.root_uri.clone(),
-        source_uri: source_uri.clone(),
-        source_uris: Vec::new(),
-        unknown_symbol_mode: workspace
-            .manifest
-            .as_ref()
-            .map(|manifest| manifest.resolution.unknown_symbol_mode.clone())
-            .or(Some(UNKNOWN_SYMBOL_MODE_REMOTE.to_string())),
-        remote_request_parallelism: workspace
-            .manifest
-            .as_ref()
-            .and_then(|manifest| manifest.resolution.remote_request_parallelism()),
-        remote_requests_per_second: workspace
-            .manifest
-            .as_ref()
-            .map(|manifest| manifest.resolution.remote_requests_per_second),
-        source_candidates: HashMap::from([(source_uri.clone(), candidates.clone())]),
-        candidates,
-    })
+    let cache_context = RemoteDependencyCacheContext::new(workspace);
+    let mut memo = RemoteDependencyMemo::new();
+    build_remote_dependency_request_for_snapshot(
+        workspace,
+        &source_uri,
+        snapshot.as_ref(),
+        &mut memo,
+        &cache_context,
+    )
 }
 
 pub fn build_remote_dependency_batch_for_workspace(
@@ -1551,10 +1783,17 @@ pub fn build_remote_dependency_batch_for_workspace_filtered(
     } else {
         workspace.cache.uris()
     };
-    uris.sort_by(|left, right| {
-        remote_dependency_batch_phase(workspace, left.as_ref())
-            .cmp(&remote_dependency_batch_phase(workspace, right.as_ref()))
-            .then_with(|| left.as_ref().cmp(right.as_ref()))
+    let mut uri_entries: Vec<_> = uris
+        .drain(..)
+        .map(|uri| {
+            let phase = remote_dependency_batch_phase(workspace, uri.as_ref());
+            (uri, phase)
+        })
+        .collect();
+    uri_entries.sort_by(|left, right| {
+        left.1
+            .cmp(&right.1)
+            .then_with(|| left.0.as_ref().cmp(right.0.as_ref()))
     });
 
     let mut source_uris = Vec::new();
@@ -1563,6 +1802,8 @@ pub fn build_remote_dependency_batch_for_workspace_filtered(
     let mut batch_seen = HashSet::new();
     let mut selected_phase = None;
     let mut limit_reached = false;
+    let mut memo = RemoteDependencyMemo::new();
+    let cache_context = RemoteDependencyCacheContext::new(workspace);
     let unknown_symbol_mode = workspace
         .manifest
         .as_ref()
@@ -1577,8 +1818,7 @@ pub fn build_remote_dependency_batch_for_workspace_filtered(
         .as_ref()
         .map(|manifest| manifest.resolution.remote_requests_per_second);
 
-    'uri_loop: for uri in uris {
-        let phase = remote_dependency_batch_phase(workspace, uri.as_ref());
+    'uri_loop: for (uri, phase) in uri_entries {
         if selected_phase.is_some_and(|selected| phase != selected) {
             break;
         }
@@ -1593,12 +1833,8 @@ pub fn build_remote_dependency_batch_for_workspace_filtered(
         let mut added_for_uri = false;
         let mut uri_candidates = Vec::new();
         let mut uri_seen = HashSet::new();
-        for candidate in collect_remote_dependency_candidates_for_request(
-            workspace,
-            snapshot.as_ref(),
-            uri.as_ref(),
-        ) {
-            if has_cached_remote_dependency_candidate(workspace, &candidate) {
+        for candidate in memo.candidates_for_request(workspace, snapshot.as_ref(), uri.as_ref()) {
+            if memo.has_cached_candidate(&cache_context, &candidate) {
                 continue;
             }
             let key = remote_candidate_key(&candidate);
@@ -1662,14 +1898,35 @@ pub fn build_remote_dependency_requests_for_workspace(
     workspace_uri: &str,
 ) -> Vec<RemoteDependencyResolveParams> {
     let workspace_uri = normalize_lsp_uri(workspace_uri);
-    let Some(workspace) = state.workspaces.get(&workspace_uri) else {
+    let Some(sorted_uris) = state.workspaces.get(&workspace_uri).map(|workspace| {
+        let mut uris = workspace.cache.uris();
+        uris.sort();
+        uris
+    }) else {
         return Vec::new();
     };
-    let mut uris = workspace.cache.uris();
-    uris.sort();
+
+    let Some(workspace) = state.workspaces.get_mut(&workspace_uri) else {
+        return Vec::new();
+    };
+    if !manifest_supports_remote_resolution(workspace.manifest.as_ref()) {
+        return Vec::new();
+    }
+
+    let cache_context = RemoteDependencyCacheContext::new(workspace);
+    let mut memo = RemoteDependencyMemo::new();
     let mut requests = Vec::new();
-    for uri in uris {
-        if let Some(request) = build_remote_dependency_request(state, uri.as_ref()) {
+    for uri in sorted_uris {
+        let Some(snapshot) = workspace.cache.get(uri.as_ref()) else {
+            continue;
+        };
+        if let Some(request) = build_remote_dependency_request_for_snapshot(
+            workspace,
+            uri.as_ref(),
+            snapshot.as_ref(),
+            &mut memo,
+            &cache_context,
+        ) {
             requests.push(request);
         }
     }
@@ -1704,14 +1961,13 @@ fn semantic_diagnostic_severity(kind: DiagnosticKind) -> DiagnosticSeverity {
 }
 
 pub fn build_lsp_diagnostics(snapshot: &AnalysisSnapshot) -> Vec<Diagnostic> {
-    let text = snapshot.text.as_ref();
     let mut out: Vec<Diagnostic> = snapshot
         .parse
         .errors
         .iter()
         .filter_map(|err| {
             Some(Diagnostic {
-                range: byte_range_to_lsp_range(text, err.range.clone())?,
+                range: byte_range_to_lsp_range_snapshot(snapshot, err.range.clone())?,
                 severity: Some(DiagnosticSeverity::ERROR),
                 code: None,
                 code_description: None,
@@ -1724,7 +1980,8 @@ pub fn build_lsp_diagnostics(snapshot: &AnalysisSnapshot) -> Vec<Diagnostic> {
         })
         .collect();
     for diag_inner in &snapshot.symbols.diagnostics {
-        let Some(range) = byte_range_to_lsp_range(text, diag_inner.range.clone()) else {
+        let Some(range) = byte_range_to_lsp_range_snapshot(snapshot, diag_inner.range.clone())
+        else {
             continue;
         };
         out.push(Diagnostic {
@@ -1749,12 +2006,8 @@ pub fn build_lsp_diagnostics(snapshot: &AnalysisSnapshot) -> Vec<Diagnostic> {
     out
 }
 
-fn range_to_byte_range(text: &str, range: Range) -> Option<std::ops::Range<usize>> {
-    Some(position_to_offset(text, range.start)?..position_to_offset(text, range.end)?)
-}
-
 fn candidate_key_for_open_sql_source(snapshot: &AnalysisSnapshot, range: &Range) -> Option<String> {
-    let byte_range = range_to_byte_range(snapshot.text.as_ref(), range.clone())?;
+    let byte_range = range_to_byte_range_snapshot(snapshot, range.clone())?;
     let name = snapshot
         .symbols
         .sql_sources
@@ -1891,10 +2144,8 @@ pub fn hover(state: &ServerState, params: &HoverParams) -> Option<Hover> {
             .as_str(),
     );
     let snapshot = snapshot_for_uri(state, &uri)?;
-    let offset = position_to_offset(
-        snapshot.text.as_ref(),
-        params.text_document_position_params.position,
-    )?;
+    let offset =
+        position_to_offset_snapshot(&snapshot, params.text_document_position_params.position)?;
     if let Some(component) = snapshot.hovered_component_at(offset) {
         return structured_field_hover(&snapshot, component);
     }
@@ -1923,10 +2174,8 @@ pub fn definition(
             .as_str(),
     );
     let snapshot = snapshot_for_uri(state, &uri)?;
-    let offset = position_to_offset(
-        snapshot.text.as_ref(),
-        params.text_document_position_params.position,
-    )?;
+    let offset =
+        position_to_offset_snapshot(&snapshot, params.text_document_position_params.position)?;
     let target = snapshot.definition_at(offset)?;
     let target_snapshot = if target.uri.as_ref() == snapshot.uri.as_ref() {
         Arc::clone(&snapshot)
@@ -1938,17 +2187,14 @@ pub fn definition(
         .as_ref()
         .parse()
         .expect("cached document URI must be a valid URL");
-    let range = byte_range_to_lsp_range(target_snapshot.text.as_ref(), target.range)?;
+    let range = byte_range_to_lsp_range_snapshot(target_snapshot.as_ref(), target.range)?;
     Some(GotoDefinitionResponse::Scalar(Location { uri, range }))
 }
 
 pub fn references(state: &ServerState, params: &ReferenceParams) -> Option<Vec<Location>> {
     let uri = normalize_lsp_uri(params.text_document_position.text_document.uri.as_str());
     let snapshot = snapshot_for_uri(state, &uri)?;
-    let offset = position_to_offset(
-        snapshot.text.as_ref(),
-        params.text_document_position.position,
-    )?;
+    let offset = position_to_offset_snapshot(&snapshot, params.text_document_position.position)?;
     let references = cache_for_uri(state, &uri).references_for_snapshot(
         snapshot.as_ref(),
         offset,
@@ -1966,7 +2212,7 @@ pub fn references(state: &ServerState, params: &ReferenceParams) -> Option<Vec<L
             .as_ref()
             .parse()
             .expect("cached document URI must be a valid URL");
-        let range = byte_range_to_lsp_range(target_snapshot.text.as_ref(), reference.range)?;
+        let range = byte_range_to_lsp_range_snapshot(target_snapshot.as_ref(), reference.range)?;
         locations.push(Location { uri, range });
     }
     Some(locations)
@@ -1976,7 +2222,7 @@ fn resolved_symbol_hover(
     snapshot: &AnalysisSnapshot,
     info: abap_cache::HoveredSymbolInfo,
 ) -> Option<Hover> {
-    let range = byte_range_to_lsp_range(snapshot.text.as_ref(), info.range)?;
+    let range = byte_range_to_lsp_range_snapshot(snapshot, info.range)?;
     Some(Hover {
         contents: HoverContents::Markup(MarkupContent {
             kind: MarkupKind::Markdown,
@@ -2001,7 +2247,7 @@ fn structured_field_hover(
     snapshot: &AnalysisSnapshot,
     component: abap_cache::HoveredComponentInfo,
 ) -> Option<Hover> {
-    let range = byte_range_to_lsp_range(snapshot.text.as_ref(), component.range.clone())?;
+    let range = byte_range_to_lsp_range_snapshot(snapshot, component.range.clone())?;
     let is_method = matches!(component.kind, abap_cache::HoveredComponentKind::Method);
     let mut lines = vec![format!("`{}`", component.field_name)];
     match &component.kind {
@@ -2078,12 +2324,9 @@ fn structured_field_hover(
 pub fn completion(state: &ServerState, params: &CompletionParams) -> Option<CompletionResponse> {
     let uri = normalize_lsp_uri(params.text_document_position.text_document.uri.as_str());
     let snapshot = snapshot_for_uri(state, &uri)?;
-    let offset = position_to_offset(
-        snapshot.text.as_ref(),
-        params.text_document_position.position,
-    )?;
+    let offset = position_to_offset_snapshot(&snapshot, params.text_document_position.position)?;
     let completion = snapshot.completion_at(offset)?;
-    let range = byte_range_to_lsp_range(snapshot.text.as_ref(), completion.replace_range)?;
+    let range = byte_range_to_lsp_range_snapshot(snapshot.as_ref(), completion.replace_range)?;
     let items = completion
         .items
         .into_iter()
@@ -2110,13 +2353,13 @@ pub fn semantic_tokens(
 pub fn inlay_hints(state: &ServerState, params: &InlayHintParams) -> Option<Vec<InlayHint>> {
     let uri = normalize_lsp_uri(params.text_document.uri.as_str());
     let snapshot = snapshot_for_uri(state, &uri)?;
-    let byte_range = range_to_byte_range(snapshot.text.as_ref(), params.range.clone())?;
+    let byte_range = range_to_byte_range_snapshot(snapshot.as_ref(), params.range.clone())?;
     let hints = snapshot
         .perform_parameter_inlay_hints_in_range(byte_range)
         .into_iter()
         .filter_map(|hint| {
             Some(InlayHint {
-                position: offset_to_position(snapshot.text.as_ref(), hint.position)?,
+                position: offset_to_position_snapshot(snapshot.as_ref(), hint.position)?,
                 label: format!("{}:", hint.label).into(),
                 kind: Some(InlayHintKind::PARAMETER),
                 text_edits: None,
@@ -2175,13 +2418,17 @@ pub fn initialize_result(config: &ServerConfig) -> InitializeResult {
     }
 }
 
-fn byte_range_to_lsp_range(text: &str, range: std::ops::Range<usize>) -> Option<Range> {
+fn byte_range_to_lsp_range_snapshot(
+    snapshot: &AnalysisSnapshot,
+    range: std::ops::Range<usize>,
+) -> Option<Range> {
     Some(Range {
-        start: offset_to_position(text, range.start)?,
-        end: offset_to_position(text, range.end)?,
+        start: offset_to_position_snapshot(snapshot, range.start)?,
+        end: offset_to_position_snapshot(snapshot, range.end)?,
     })
 }
 
+#[cfg(test)]
 fn offset_to_position(text: &str, offset: usize) -> Option<Position> {
     if offset > text.len() {
         return None;
@@ -2214,30 +2461,23 @@ fn offset_to_position(text: &str, offset: usize) -> Option<Position> {
     Some(Position { line, character })
 }
 
-fn position_to_offset(text: &str, position: Position) -> Option<usize> {
-    let mut line_start = 0usize;
-    for _ in 0..position.line {
-        let rel = text[line_start..].find('\n')?;
-        line_start += rel + 1;
-    }
-    let line_end = text[line_start..]
-        .find('\n')
-        .map(|rel| line_start + rel)
-        .unwrap_or(text.len());
-    let line_text = text[line_start..line_end]
-        .strip_suffix('\r')
-        .unwrap_or(&text[line_start..line_end]);
-    let mut utf16_units = 0u32;
-    for (idx, ch) in line_text.char_indices() {
-        if utf16_units == position.character {
-            return Some(line_start + idx);
-        }
-        utf16_units += ch.len_utf16() as u32;
-        if utf16_units > position.character {
-            return None;
-        }
-    }
-    (utf16_units == position.character).then_some(line_start + line_text.len())
+fn offset_to_position_snapshot(snapshot: &AnalysisSnapshot, offset: usize) -> Option<Position> {
+    let (line, character) = snapshot.offset_to_line_utf16_position(offset)?;
+    Some(Position { line, character })
+}
+
+fn position_to_offset_snapshot(snapshot: &AnalysisSnapshot, position: Position) -> Option<usize> {
+    snapshot.line_utf16_position_to_offset(position.line, position.character)
+}
+
+fn range_to_byte_range_snapshot(
+    snapshot: &AnalysisSnapshot,
+    range: Range,
+) -> Option<std::ops::Range<usize>> {
+    Some(
+        position_to_offset_snapshot(snapshot, range.start)?
+            ..position_to_offset_snapshot(snapshot, range.end)?,
+    )
 }
 
 fn completion_item_to_lsp(

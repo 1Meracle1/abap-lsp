@@ -31,6 +31,7 @@ const METHOD_NOT_FOUND: i64 = -32601;
 const INVALID_REQUEST: i64 = -32600;
 const CHANGE_ANALYSIS_DEBOUNCE: Duration = Duration::from_millis(250);
 const EDITOR_FIRST_DIAGNOSTIC_LIMIT: usize = 16;
+const MAX_BACKGROUND_ANALYSIS_WORKERS: usize = 4;
 
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -186,6 +187,12 @@ struct DebouncedAnalysisTask {
     due_at: Instant,
 }
 
+#[derive(Default)]
+struct PendingAnalysisQueue {
+    pending_tasks: HashMap<String, AnalysisTask>,
+    scheduled_workspaces: HashSet<String>,
+}
+
 fn next_workspace_generation(
     generations: &Arc<Mutex<HashMap<String, u64>>>,
     workspace_uri: &str,
@@ -223,24 +230,70 @@ fn workspace_uses_editor_first_mode(state: &ServerState, workspace_uri: &str) ->
 fn enqueue_background_task(
     task: AnalysisTask,
     task_tx: &SyncSender<String>,
-    pending_tasks: &Arc<Mutex<HashMap<String, AnalysisTask>>>,
+    queue_state: &Arc<Mutex<PendingAnalysisQueue>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let workspace_uri = task.workspace_uri.clone();
-    pending_tasks
-        .lock()
-        .expect("pending analysis tasks should not be poisoned")
-        .insert(workspace_uri.clone(), task);
-    task_tx
-        .send(workspace_uri)
-        .map_err(|error| format!("failed to enqueue analysis task: {error}"))?;
+    let should_send = {
+        let mut queue = queue_state
+            .lock()
+            .expect("pending analysis queue should not be poisoned");
+        queue.pending_tasks.insert(workspace_uri.clone(), task);
+        queue.scheduled_workspaces.insert(workspace_uri.clone())
+    };
+    if should_send {
+        task_tx
+            .send(workspace_uri)
+            .map_err(|error| format!("failed to enqueue analysis task: {error}"))?;
+    }
     Ok(())
+}
+
+fn take_pending_background_task(
+    workspace_uri: &str,
+    queue_state: &Arc<Mutex<PendingAnalysisQueue>>,
+) -> Option<AnalysisTask> {
+    queue_state
+        .lock()
+        .expect("pending analysis queue should not be poisoned")
+        .pending_tasks
+        .remove(workspace_uri)
+}
+
+fn finish_background_task(
+    workspace_uri: &str,
+    task_tx: &SyncSender<String>,
+    queue_state: &Arc<Mutex<PendingAnalysisQueue>>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let should_reschedule = {
+        let mut queue = queue_state
+            .lock()
+            .expect("pending analysis queue should not be poisoned");
+        if queue.pending_tasks.contains_key(workspace_uri) {
+            true
+        } else {
+            queue.scheduled_workspaces.remove(workspace_uri);
+            false
+        }
+    };
+    if should_reschedule {
+        task_tx
+            .send(workspace_uri.to_owned())
+            .map_err(|error| format!("failed to requeue analysis task: {error}"))?;
+    }
+    Ok(())
+}
+
+fn background_analysis_worker_count() -> usize {
+    thread::available_parallelism()
+        .map(|parallelism| parallelism.get().min(MAX_BACKGROUND_ANALYSIS_WORKERS))
+        .unwrap_or(1)
 }
 
 fn flush_due_debounced_tasks(
     now: Instant,
     debounced_tasks: &mut HashMap<String, DebouncedAnalysisTask>,
     task_tx: &SyncSender<String>,
-    pending_tasks: &Arc<Mutex<HashMap<String, AnalysisTask>>>,
+    queue_state: &Arc<Mutex<PendingAnalysisQueue>>,
 ) -> Result<Vec<WorkspaceAnalysisStatusParams>, Box<dyn std::error::Error>> {
     let mut ready = Vec::new();
     let mut ready_keys = Vec::new();
@@ -258,7 +311,7 @@ fn flush_due_debounced_tasks(
         if let Some(started) = entry.task.started.clone() {
             ready.push(started);
         }
-        enqueue_background_task(entry.task, task_tx, pending_tasks)?;
+        enqueue_background_task(entry.task, task_tx, queue_state)?;
     }
     Ok(ready)
 }
@@ -267,7 +320,7 @@ fn try_schedule_background_analysis(
     state: &mut ServerState,
     message: &Value,
     task_tx: &SyncSender<String>,
-    pending_tasks: &Arc<Mutex<HashMap<String, AnalysisTask>>>,
+    queue_state: &Arc<Mutex<PendingAnalysisQueue>>,
     generations: &Arc<Mutex<HashMap<String, u64>>>,
     debounced_tasks: &mut HashMap<String, DebouncedAnalysisTask>,
 ) -> Result<Option<ScheduledBackgroundWork>, Box<dyn std::error::Error>> {
@@ -324,7 +377,7 @@ fn try_schedule_background_analysis(
                 kind: AnalysisTaskKind::DidOpen(params),
             };
             debounced_tasks.remove(&workspace_uri);
-            enqueue_background_task(task, task_tx, pending_tasks)?;
+            enqueue_background_task(task, task_tx, queue_state)?;
             Ok(Some(ScheduledBackgroundWork {
                 started_statuses,
                 notifications,
@@ -384,7 +437,7 @@ fn try_schedule_background_analysis(
                 );
                 started_statuses.clear();
             } else {
-                enqueue_background_task(task, task_tx, pending_tasks)?;
+                enqueue_background_task(task, task_tx, queue_state)?;
             }
             Ok(Some(ScheduledBackgroundWork {
                 started_statuses,
@@ -421,7 +474,7 @@ fn try_schedule_background_analysis(
                     }),
                 },
                 task_tx,
-                pending_tasks,
+                queue_state,
             )?;
             Ok(Some(ScheduledBackgroundWork {
                 started_statuses,
@@ -460,7 +513,7 @@ fn try_schedule_background_analysis(
                     ),
                 },
                 task_tx,
-                pending_tasks,
+                queue_state,
             )?;
             Ok(Some(ScheduledBackgroundWork {
                 started_statuses,
@@ -501,7 +554,7 @@ fn try_schedule_background_analysis(
                     ),
                 },
                 task_tx,
-                pending_tasks,
+                queue_state,
             )?;
             Ok(Some(ScheduledBackgroundWork {
                 started_statuses,
@@ -531,7 +584,7 @@ fn try_schedule_background_analysis(
                         kind: AnalysisTaskKind::Initialized,
                     },
                     task_tx,
-                    pending_tasks,
+                    queue_state,
                 )?;
             }
             Ok(Some(ScheduledBackgroundWork {
@@ -547,12 +600,12 @@ fn run_analysis_task(
     task: AnalysisTask,
     progress_sink: Option<&(dyn Fn(WorkspaceAnalysisStatusParams) + Sync)>,
 ) -> Result<AnalysisCompletion, Box<dyn std::error::Error>> {
-    let mut state = ServerState {
-        cache: Default::default(),
-        workspaces: HashMap::from([(task.workspace_uri.clone(), task.workspace)]),
-        client_capabilities: Default::default(),
-        shutdown_requested: false,
-    };
+    let mut state = ServerState::default();
+    state
+        .workspaces
+        .insert(task.workspace_uri.clone(), task.workspace);
+    state.refresh_workspace_routing();
+    state.index_workspace_members(&task.workspace_uri);
 
     let notifications = match &task.kind {
         AnalysisTaskKind::DidOpen(params) => {
@@ -610,6 +663,8 @@ fn flush_analysis_completions(
         if let Some(workspace) = state.workspaces.get_mut(&completion.workspace_uri) {
             prune_workspace_preview_snapshots(workspace);
         }
+        state.refresh_workspace_routing();
+        state.index_workspace_members(&completion.workspace_uri);
 
         for (method, params) in completion.notifications {
             send_notification(writer, &method, params)?;
@@ -656,8 +711,9 @@ fn serve(
     let config = ServerConfig::default();
     let generations = Arc::new(Mutex::new(HashMap::<String, u64>::new()));
     let (message_tx, message_rx) = mpsc::channel();
-    let pending_tasks = Arc::new(Mutex::new(HashMap::<String, AnalysisTask>::new()));
+    let queue_state = Arc::new(Mutex::new(PendingAnalysisQueue::default()));
     let (task_tx, task_rx): (SyncSender<String>, Receiver<String>) = mpsc::sync_channel(8);
+    let task_rx = Arc::new(Mutex::new(task_rx));
     let (completion_tx, completion_rx) = mpsc::channel();
     let (progress_tx, progress_rx) = mpsc::channel();
     let mut debounced_tasks = HashMap::<String, DebouncedAnalysisTask>::new();
@@ -689,52 +745,86 @@ fn serve(
             }
         });
 
-        let worker_generations = Arc::clone(&generations);
-        let worker_completion_tx = completion_tx.clone();
-        let worker_progress_tx = progress_tx.clone();
-        let worker_pending_tasks = Arc::clone(&pending_tasks);
-        scope.spawn(move || {
-            while let Ok(workspace_uri) = task_rx.recv() {
-                let Some(task) = worker_pending_tasks
-                    .lock()
-                    .expect("pending analysis tasks should not be poisoned")
-                    .remove(&workspace_uri)
-                else {
-                    continue;
-                };
-                if task.generation
-                    != current_workspace_generation(&worker_generations, &task.workspace_uri)
-                {
-                    continue;
-                }
-                let progress_workspace_uri = task.workspace_uri.clone();
-                let progress_generation = task.generation;
-                let progress = |params: WorkspaceAnalysisStatusParams| {
-                    let _ = worker_progress_tx.send(AnalysisProgress {
-                        workspace_uri: progress_workspace_uri.clone(),
-                        generation: progress_generation,
-                        params,
-                    });
-                };
-                match run_analysis_task(task, Some(&progress)) {
-                    Ok(completion) => {
-                        if completion.generation
-                            == current_workspace_generation(
-                                &worker_generations,
-                                &completion.workspace_uri,
-                            )
-                        {
-                            if worker_completion_tx.send(completion).is_err() {
+        let worker_count = background_analysis_worker_count();
+        debug!(worker_count, "starting background analysis workers");
+        for _ in 0..worker_count {
+            let worker_generations = Arc::clone(&generations);
+            let worker_completion_tx = completion_tx.clone();
+            let worker_progress_tx = progress_tx.clone();
+            let worker_queue_state = Arc::clone(&queue_state);
+            let worker_task_rx = Arc::clone(&task_rx);
+            let worker_task_tx = task_tx.clone();
+            scope.spawn(move || {
+                loop {
+                    let workspace_uri = {
+                        let receiver = worker_task_rx
+                            .lock()
+                            .expect("analysis task receiver should not be poisoned");
+                        match receiver.recv() {
+                            Ok(workspace_uri) => workspace_uri,
+                            Err(_) => break,
+                        }
+                    };
+                    let Some(task) =
+                        take_pending_background_task(&workspace_uri, &worker_queue_state)
+                    else {
+                        if let Err(error) = finish_background_task(
+                            &workspace_uri,
+                            &worker_task_tx,
+                            &worker_queue_state,
+                        ) {
+                            warn!(error = %error, "background analysis queue cleanup failed");
+                            break;
+                        }
+                        continue;
+                    };
+                    if task.generation
+                        != current_workspace_generation(&worker_generations, &task.workspace_uri)
+                    {
+                        if let Err(error) = finish_background_task(
+                            &workspace_uri,
+                            &worker_task_tx,
+                            &worker_queue_state,
+                        ) {
+                            warn!(error = %error, "background analysis queue cleanup failed");
+                            break;
+                        }
+                        continue;
+                    }
+                    let progress_workspace_uri = task.workspace_uri.clone();
+                    let progress_generation = task.generation;
+                    let progress = |params: WorkspaceAnalysisStatusParams| {
+                        let _ = worker_progress_tx.send(AnalysisProgress {
+                            workspace_uri: progress_workspace_uri.clone(),
+                            generation: progress_generation,
+                            params,
+                        });
+                    };
+                    match run_analysis_task(task, Some(&progress)) {
+                        Ok(completion) => {
+                            if completion.generation
+                                == current_workspace_generation(
+                                    &worker_generations,
+                                    &completion.workspace_uri,
+                                )
+                                && worker_completion_tx.send(completion).is_err()
+                            {
                                 break;
                             }
                         }
+                        Err(error) => {
+                            warn!(error = %error, "background analysis task failed");
+                        }
                     }
-                    Err(error) => {
-                        warn!(error = %error, "background analysis task failed");
+                    if let Err(error) =
+                        finish_background_task(&workspace_uri, &worker_task_tx, &worker_queue_state)
+                    {
+                        warn!(error = %error, "background analysis queue cleanup failed");
+                        break;
                     }
                 }
-            }
-        });
+            });
+        }
 
         let mut reader_closed = false;
         loop {
@@ -742,7 +832,7 @@ fn serve(
                 Instant::now(),
                 &mut debounced_tasks,
                 &task_tx,
-                &pending_tasks,
+                &queue_state,
             )? {
                 send_notification(
                     writer,
@@ -763,7 +853,7 @@ fn serve(
                         &mut state,
                         &message,
                         &task_tx,
-                        &pending_tasks,
+                        &queue_state,
                         &generations,
                         &mut debounced_tasks,
                     )? {
@@ -809,7 +899,7 @@ fn serve(
                         Instant::now(),
                         &mut debounced_tasks,
                         &task_tx,
-                        &pending_tasks,
+                        &queue_state,
                     )? {
                         send_notification(
                             writer,
@@ -841,7 +931,7 @@ fn serve(
             Instant::now() + CHANGE_ANALYSIS_DEBOUNCE,
             &mut debounced_tasks,
             &task_tx,
-            &pending_tasks,
+            &queue_state,
         )? {
             send_notification(
                 writer,
@@ -963,6 +1053,21 @@ fn workspace_open_dirty_uris(
         .collect()
 }
 
+fn workspace_uri_for_cached_snapshot(state: &ServerState, uri: &str) -> Option<String> {
+    state
+        .workspace_for_uri(uri)
+        .filter(|workspace| workspace.cache.get(uri).is_some())
+        .map(|workspace| workspace.root_uri.clone())
+}
+
+fn workspace_dirty_uris(state: &ServerState, workspace_uri: &str) -> HashSet<Arc<str>> {
+    state
+        .workspaces
+        .get(workspace_uri)
+        .map(|workspace| workspace.cache.last_dirty_uris())
+        .unwrap_or_default()
+}
+
 fn workspace_local_source_uris(state: &ServerState, workspace_uri: &str) -> HashSet<Arc<str>> {
     let workspace_uri = abap_lsp::normalize_lsp_uri(workspace_uri);
     let Some(workspace) = state.workspaces.get(&workspace_uri) else {
@@ -1062,6 +1167,90 @@ fn editor_first_diagnostic_uris(
     selected
 }
 
+fn push_document_update_diagnostics(
+    state: &ServerState,
+    workspace_uri: Option<&str>,
+    dirty_uris: Option<&HashSet<Arc<str>>>,
+    snapshot: &abap_lsp::AnalysisSnapshot,
+    unchanged: bool,
+    trigger: &str,
+    notifications: &mut Vec<(String, Value)>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let Some(workspace_uri) = workspace_uri else {
+        push_publish_diagnostics_notification(state, snapshot, notifications)?;
+        return Ok(());
+    };
+    let Some(dirty_uris) = dirty_uris else {
+        push_publish_diagnostics_notification(state, snapshot, notifications)?;
+        return Ok(());
+    };
+
+    if unchanged {
+        push_publish_diagnostics_notification(state, snapshot, notifications)?;
+        return Ok(());
+    }
+
+    if workspace_uses_editor_first_mode(state, workspace_uri) {
+        let selected_uris = editor_first_diagnostic_uris(
+            state,
+            workspace_uri,
+            Some(snapshot.uri.as_ref()),
+            dirty_uris,
+        );
+        debug!(
+            workspace_uri = %workspace_uri,
+            trigger = trigger,
+            dirty_uri_count = dirty_uris.len(),
+            selected_uri_count = selected_uris.len(),
+            "publishing editor-first workspace diagnostics"
+        );
+        for uri in selected_uris {
+            if let Some(snapshot) = state
+                .workspaces
+                .get(workspace_uri)
+                .and_then(|workspace| workspace.cache.get(uri.as_ref()))
+            {
+                push_publish_diagnostics_notification(state, snapshot.as_ref(), notifications)?;
+            }
+        }
+        return Ok(());
+    }
+
+    push_workspace_diagnostics_notifications_for_uris(
+        state,
+        workspace_uri,
+        Some(dirty_uris),
+        notifications,
+    )
+}
+
+fn build_dirty_remote_dependency_batch(
+    state: &mut ServerState,
+    workspace_uri: Option<&str>,
+    dirty_uris: Option<&HashSet<Arc<str>>>,
+    trigger: &str,
+) -> Option<abap_lsp::RemoteDependencyResolveParams> {
+    let workspace_uri = workspace_uri?;
+    let dirty_uris = dirty_uris?;
+    if workspace_uses_editor_first_mode(state, workspace_uri) {
+        let open_dirty = workspace_open_dirty_uris(state, workspace_uri, dirty_uris);
+        debug!(
+            workspace_uri = %workspace_uri,
+            trigger = trigger,
+            dirty_uri_count = dirty_uris.len(),
+            open_dirty_uri_count = open_dirty.len(),
+            "building editor-first workspace remote dependency batch"
+        );
+        build_remote_dependency_batch_for_workspace_filtered(
+            state,
+            workspace_uri,
+            Some(&open_dirty),
+        )
+    } else {
+        build_remote_dependency_batch_for_workspace_filtered(state, workspace_uri, Some(dirty_uris))
+    }
+}
+
 struct HandledMessage {
     response: Option<Response>,
     notifications: Vec<(String, Value)>,
@@ -1074,16 +1263,16 @@ fn handle_did_open_notifications(
 ) -> Result<Vec<(String, Value)>, Box<dyn std::error::Error>> {
     let mut notifications = Vec::new();
     let normalized_uri = abap_lsp::normalize_lsp_uri(params.text_document.uri.as_str());
+    let progress_workspace_uri = state
+        .workspace_for_uri(normalized_uri.as_str())
+        .map(|workspace| workspace.root_uri.clone());
     let unchanged_workspace_open = state
         .workspace_for_uri(&normalized_uri)
         .and_then(|workspace| workspace.cache.get(&normalized_uri))
         .is_some_and(|snapshot| snapshot.text.as_ref() == params.text_document.text.as_str());
     let progress_notifications = Mutex::new(Vec::new());
-    let workspace_uri = state
-        .workspace_for_uri(normalized_uri.as_str())
-        .map(|workspace| workspace.root_uri.clone());
     let progress = |processed: usize, total: usize| {
-        if let Some(workspace_uri) = workspace_uri.as_ref() {
+        if let Some(workspace_uri) = progress_workspace_uri.as_ref() {
             emit_workspace_analysis_progress(
                 Some(&progress_notifications),
                 progress_sink,
@@ -1100,94 +1289,31 @@ fn handle_did_open_notifications(
             .into_inner()
             .expect("progress notification collection should not be poisoned"),
     );
-    if unchanged_workspace_open {
-        push_publish_diagnostics_notification(state, &snapshot, &mut notifications)?;
-    } else if let Some(workspace_uri) = state
-        .workspace_for_uri(snapshot.uri.as_ref())
-        .filter(|workspace| workspace.cache.get(snapshot.uri.as_ref()).is_some())
-        .map(|workspace| workspace.root_uri.clone())
-    {
-        let dirty_uris = state
-            .workspaces
-            .get(&workspace_uri)
-            .map(|workspace| workspace.cache.last_dirty_uris())
-            .unwrap_or_default();
-        if workspace_uses_editor_first_mode(state, &workspace_uri) {
-            let selected_uris = editor_first_diagnostic_uris(
-                state,
-                &workspace_uri,
-                Some(snapshot.uri.as_ref()),
-                &dirty_uris,
-            );
-            debug!(
-                workspace_uri = %workspace_uri,
-                dirty_uri_count = dirty_uris.len(),
-                selected_uri_count = selected_uris.len(),
-                "publishing editor-first open diagnostics"
-            );
-            for uri in selected_uris {
-                if let Some(snapshot) = state
-                    .workspaces
-                    .get(&workspace_uri)
-                    .and_then(|workspace| workspace.cache.get(uri.as_ref()))
-                {
-                    push_publish_diagnostics_notification(
-                        state,
-                        snapshot.as_ref(),
-                        &mut notifications,
-                    )?;
-                }
-            }
-        } else {
-            push_workspace_diagnostics_notifications_for_uris(
-                state,
-                &workspace_uri,
-                Some(&dirty_uris),
-                &mut notifications,
-            )?;
-        }
-    } else {
-        push_publish_diagnostics_notification(state, &snapshot, &mut notifications)?;
-    }
-    if let Some(workspace_uri) = state
-        .workspace_for_uri(snapshot.uri.as_ref())
-        .map(|workspace| workspace.root_uri.clone())
-    {
+    let workspace_uri = workspace_uri_for_cached_snapshot(state, snapshot.uri.as_ref());
+    let dirty_uris = workspace_uri
+        .as_deref()
+        .map(|workspace_uri| workspace_dirty_uris(state, workspace_uri));
+    push_document_update_diagnostics(
+        state,
+        workspace_uri.as_deref(),
+        dirty_uris.as_ref(),
+        &snapshot,
+        unchanged_workspace_open,
+        "open",
+        &mut notifications,
+    )?;
+    if let Some(workspace_uri) = workspace_uri.as_deref() {
         push_workspace_manifest_diagnostics_notification(state, &workspace_uri, &mut notifications);
     }
     if let Some(request) = if unchanged_workspace_open && snapshot.is_dependency {
         build_remote_dependency_request(state, snapshot.uri.as_ref())
-    } else if let Some(workspace_uri) = state
-        .workspace_for_uri(snapshot.uri.as_ref())
-        .filter(|workspace| workspace.cache.get(snapshot.uri.as_ref()).is_some())
-        .map(|workspace| workspace.root_uri.clone())
-        && let Some(dirty_uris) = state
-            .workspaces
-            .get(&workspace_uri)
-            .map(|workspace| workspace.cache.last_dirty_uris())
-    {
-        if workspace_uses_editor_first_mode(state, &workspace_uri) {
-            let open_dirty = workspace_open_dirty_uris(state, &workspace_uri, &dirty_uris);
-            debug!(
-                workspace_uri = %workspace_uri,
-                dirty_uri_count = dirty_uris.len(),
-                open_dirty_uri_count = open_dirty.len(),
-                "building editor-first open remote dependency batch"
-            );
-            build_remote_dependency_batch_for_workspace_filtered(
-                state,
-                &workspace_uri,
-                Some(&open_dirty),
-            )
-        } else {
-            build_remote_dependency_batch_for_workspace_filtered(
-                state,
-                &workspace_uri,
-                Some(&dirty_uris),
-            )
-        }
     } else {
-        None
+        build_dirty_remote_dependency_batch(
+            state,
+            workspace_uri.as_deref(),
+            dirty_uris.as_ref(),
+            "open",
+        )
     } {
         notifications.push((
             RESOLVE_REMOTE_DEPENDENCIES.to_owned(),
@@ -1205,7 +1331,7 @@ fn handle_did_change_notifications(
     let mut notifications = Vec::new();
     let normalized_uri = abap_lsp::normalize_lsp_uri(params.text_document.uri.as_str());
     let progress_notifications = Mutex::new(Vec::new());
-    let workspace_uri = state
+    let progress_workspace_uri = state
         .workspace_for_uri(normalized_uri.as_str())
         .map(|workspace| workspace.root_uri.clone());
     let change = params.content_changes.last();
@@ -1216,7 +1342,7 @@ fn handle_did_change_notifications(
             .map(|snapshot| snapshot.text.as_ref() == change.text.as_str())
     }) == Some(true);
     let progress = |processed: usize, total: usize| {
-        if let Some(workspace_uri) = workspace_uri.as_ref() {
+        if let Some(workspace_uri) = progress_workspace_uri.as_ref() {
             emit_workspace_analysis_progress(
                 Some(&progress_notifications),
                 progress_sink,
@@ -1235,59 +1361,20 @@ fn handle_did_change_notifications(
                 .into_inner()
                 .expect("progress notification collection should not be poisoned"),
         );
-        if unchanged_workspace_change {
-            push_publish_diagnostics_notification(state, &snapshot, &mut notifications)?;
-        } else if let Some(workspace_uri) = state
-            .workspace_for_uri(snapshot.uri.as_ref())
-            .filter(|workspace| workspace.cache.get(snapshot.uri.as_ref()).is_some())
-            .map(|workspace| workspace.root_uri.clone())
-        {
-            let dirty_uris = state
-                .workspaces
-                .get(&workspace_uri)
-                .map(|workspace| workspace.cache.last_dirty_uris())
-                .unwrap_or_default();
-            if workspace_uses_editor_first_mode(state, &workspace_uri) {
-                let selected_uris = editor_first_diagnostic_uris(
-                    state,
-                    &workspace_uri,
-                    Some(snapshot.uri.as_ref()),
-                    &dirty_uris,
-                );
-                debug!(
-                    workspace_uri = %workspace_uri,
-                    dirty_uri_count = dirty_uris.len(),
-                    selected_uri_count = selected_uris.len(),
-                    "publishing editor-first change diagnostics"
-                );
-                for uri in selected_uris {
-                    if let Some(snapshot) = state
-                        .workspaces
-                        .get(&workspace_uri)
-                        .and_then(|workspace| workspace.cache.get(uri.as_ref()))
-                    {
-                        push_publish_diagnostics_notification(
-                            state,
-                            snapshot.as_ref(),
-                            &mut notifications,
-                        )?;
-                    }
-                }
-            } else {
-                push_workspace_diagnostics_notifications_for_uris(
-                    state,
-                    &workspace_uri,
-                    Some(&dirty_uris),
-                    &mut notifications,
-                )?;
-            }
-        } else {
-            push_publish_diagnostics_notification(state, &snapshot, &mut notifications)?;
-        }
-        if let Some(workspace_uri) = state
-            .workspace_for_uri(snapshot.uri.as_ref())
-            .map(|workspace| workspace.root_uri.clone())
-        {
+        let workspace_uri = workspace_uri_for_cached_snapshot(state, snapshot.uri.as_ref());
+        let dirty_uris = workspace_uri
+            .as_deref()
+            .map(|workspace_uri| workspace_dirty_uris(state, workspace_uri));
+        push_document_update_diagnostics(
+            state,
+            workspace_uri.as_deref(),
+            dirty_uris.as_ref(),
+            &snapshot,
+            unchanged_workspace_change,
+            "change",
+            &mut notifications,
+        )?;
+        if let Some(workspace_uri) = workspace_uri.as_deref() {
             push_workspace_manifest_diagnostics_notification(
                 state,
                 &workspace_uri,
@@ -1295,34 +1382,12 @@ fn handle_did_change_notifications(
             );
         }
         if !unchanged_workspace_change
-            && let Some(workspace_uri) = state
-                .workspace_for_uri(snapshot.uri.as_ref())
-                .filter(|workspace| workspace.cache.get(snapshot.uri.as_ref()).is_some())
-                .map(|workspace| workspace.root_uri.clone())
-            && let Some(dirty_uris) = state
-                .workspaces
-                .get(&workspace_uri)
-                .map(|workspace| workspace.cache.last_dirty_uris())
-            && let Some(request) = if workspace_uses_editor_first_mode(state, &workspace_uri) {
-                let open_dirty = workspace_open_dirty_uris(state, &workspace_uri, &dirty_uris);
-                debug!(
-                    workspace_uri = %workspace_uri,
-                    dirty_uri_count = dirty_uris.len(),
-                    open_dirty_uri_count = open_dirty.len(),
-                    "building editor-first change remote dependency batch"
-                );
-                build_remote_dependency_batch_for_workspace_filtered(
-                    state,
-                    &workspace_uri,
-                    Some(&open_dirty),
-                )
-            } else {
-                build_remote_dependency_batch_for_workspace_filtered(
-                    state,
-                    &workspace_uri,
-                    Some(&dirty_uris),
-                )
-            }
+            && let Some(request) = build_dirty_remote_dependency_batch(
+                state,
+                workspace_uri.as_deref(),
+                dirty_uris.as_ref(),
+                "change",
+            )
         {
             notifications.push((
                 RESOLVE_REMOTE_DEPENDENCIES.to_owned(),
@@ -1931,13 +1996,14 @@ fn workspace_analysis_status_finished(
     started: &WorkspaceAnalysisStatusParams,
 ) -> Option<WorkspaceAnalysisStatusParams> {
     let workspace = state.workspaces.get(&started.workspace_uri)?;
+    let document_count = workspace.cache.uris().len();
     Some(WorkspaceAnalysisStatusParams {
         workspace_uri: started.workspace_uri.clone(),
         phase: WorkspaceAnalysisPhase::Finished,
         trigger: started.trigger.clone(),
-        processed_document_count: workspace.cache.uris().len(),
-        total_document_count: workspace.cache.uris().len(),
-        analyzed_document_count: workspace.cache.uris().len(),
+        processed_document_count: document_count,
+        total_document_count: document_count,
+        analyzed_document_count: document_count,
         remote_resolution_in_flight: workspace.remote_resolution_in_flight,
     })
 }
@@ -1985,8 +2051,9 @@ mod tests {
 
     use super::{
         AnalysisTaskKind, CHANGE_ANALYSIS_DEBOUNCE, EDITOR_FIRST_DIAGNOSTIC_LIMIT,
-        REMOTE_DEPENDENCIES_UPDATED, RESOLVE_REMOTE_DEPENDENCIES, flush_due_debounced_tasks,
-        handle_did_change_notifications, handle_message, run_analysis_task,
+        PendingAnalysisQueue, REMOTE_DEPENDENCIES_UPDATED, RESOLVE_REMOTE_DEPENDENCIES,
+        finish_background_task, flush_due_debounced_tasks, handle_did_change_notifications,
+        handle_message, run_analysis_task, take_pending_background_task,
         try_schedule_background_analysis, workspace_analysis_status_finished,
         workspace_analysis_status_started,
     };
@@ -2318,7 +2385,7 @@ START-OF-SELECTION.
         let mut state = ServerState::default();
         state.register_workspace_folder(workspace_uri.clone());
         let generations = Arc::new(Mutex::new(HashMap::new()));
-        let pending_tasks = Arc::new(Mutex::new(HashMap::new()));
+        let queue_state = Arc::new(Mutex::new(PendingAnalysisQueue::default()));
         let mut debounced_tasks = HashMap::new();
         let (task_tx, task_rx) = mpsc::sync_channel(1);
         let message = json!({
@@ -2338,7 +2405,7 @@ START-OF-SELECTION.
             &mut state,
             &message,
             &task_tx,
-            &pending_tasks,
+            &queue_state,
             &generations,
             &mut debounced_tasks,
         )
@@ -2361,9 +2428,10 @@ START-OF-SELECTION.
 
         let queued_workspace_uri = task_rx.recv().expect("scheduled task");
         assert_eq!(queued_workspace_uri, normalized_workspace_uri);
-        let task = pending_tasks
+        let task = queue_state
             .lock()
-            .expect("pending task map")
+            .expect("pending analysis queue")
+            .pending_tasks
             .get(&queued_workspace_uri)
             .expect("pending analysis task")
             .workspace_uri
@@ -2458,7 +2526,7 @@ ENDCLASS.",
         ));
 
         let generations = Arc::new(Mutex::new(HashMap::new()));
-        let pending_tasks = Arc::new(Mutex::new(HashMap::new()));
+        let queue_state = Arc::new(Mutex::new(PendingAnalysisQueue::default()));
         let mut debounced_tasks = HashMap::new();
         let (task_tx, _task_rx) = mpsc::sync_channel(1);
         let message = json!({
@@ -2478,7 +2546,7 @@ ENDCLASS.",
             &mut state,
             &message,
             &task_tx,
-            &pending_tasks,
+            &queue_state,
             &generations,
             &mut debounced_tasks,
         )
@@ -2521,7 +2589,7 @@ ENDCLASS.",
         refresh_workspace(&mut state, &workspace_uri);
 
         let generations = Arc::new(Mutex::new(HashMap::new()));
-        let pending_tasks = Arc::new(Mutex::new(HashMap::new()));
+        let queue_state = Arc::new(Mutex::new(PendingAnalysisQueue::default()));
         let mut debounced_tasks = HashMap::new();
         let (task_tx, _task_rx) = mpsc::sync_channel(1);
         let changed_text = "DATA lv_value TYPE i.\n* lv_value = 1.\n";
@@ -2543,7 +2611,7 @@ ENDCLASS.",
             &mut state,
             &message,
             &task_tx,
-            &pending_tasks,
+            &queue_state,
             &generations,
             &mut debounced_tasks,
         )
@@ -2639,7 +2707,7 @@ lo_helper->",
         refresh_workspace(&mut state, &workspace_uri);
 
         let generations = Arc::new(Mutex::new(HashMap::new()));
-        let pending_tasks = Arc::new(Mutex::new(HashMap::new()));
+        let queue_state = Arc::new(Mutex::new(PendingAnalysisQueue::default()));
         let mut debounced_tasks = HashMap::new();
         let (task_tx, _task_rx) = mpsc::sync_channel(1);
         let changed_text = "\
@@ -2664,7 +2732,7 @@ lo_helper->r";
             &mut state,
             &message,
             &task_tx,
-            &pending_tasks,
+            &queue_state,
             &generations,
             &mut debounced_tasks,
         )
@@ -2716,7 +2784,7 @@ lo_helper->r";
         let mut state = ServerState::default();
         state.register_workspace_folder(workspace_uri.clone());
         let generations = Arc::new(Mutex::new(HashMap::new()));
-        let pending_tasks = Arc::new(Mutex::new(HashMap::new()));
+        let queue_state = Arc::new(Mutex::new(PendingAnalysisQueue::default()));
         let mut debounced_tasks = HashMap::new();
         let (task_tx, task_rx) = mpsc::sync_channel(4);
 
@@ -2738,7 +2806,7 @@ lo_helper->r";
                 &mut state,
                 &message,
                 &task_tx,
-                &pending_tasks,
+                &queue_state,
                 &generations,
                 &mut debounced_tasks,
             )
@@ -2748,11 +2816,89 @@ lo_helper->r";
 
         let first_workspace = task_rx.recv().expect("first queued workspace");
         assert_eq!(first_workspace, abap_lsp::normalize_lsp_uri(&workspace_uri));
-        let pending_guard = pending_tasks.lock().expect("pending tasks");
+        let pending_guard = queue_state.lock().expect("pending analysis queue");
         let latest_task = pending_guard
+            .pending_tasks
             .get(&first_workspace)
             .expect("latest pending task");
         match &latest_task.kind {
+            AnalysisTaskKind::DidChange(params) => {
+                assert_eq!(params.text_document.version, 3);
+            }
+            _ => panic!("expected didChange task"),
+        }
+
+        let _ = fs::remove_dir_all(&workspace_path);
+    }
+
+    #[test]
+    fn background_scheduler_requeues_latest_task_after_in_flight_workspace_finishes() {
+        let workspace_path = temp_workspace_path("background_requeue_latest");
+        fs::create_dir_all(&workspace_path).expect("workspace dir");
+        let workspace_uri = file_uri(&workspace_path);
+        let source_uri = format!("{workspace_uri}/main.abap");
+        let normalized_workspace_uri = abap_lsp::normalize_lsp_uri(&workspace_uri);
+
+        let mut state = ServerState::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        let generations = Arc::new(Mutex::new(HashMap::new()));
+        let queue_state = Arc::new(Mutex::new(PendingAnalysisQueue::default()));
+        let mut debounced_tasks = HashMap::new();
+        let (task_tx, task_rx) = mpsc::sync_channel(4);
+
+        let mut schedule_change = |state: &mut ServerState, version| {
+            try_schedule_background_analysis(
+                state,
+                &json!({
+                    "jsonrpc": "2.0",
+                    "method": "textDocument/didChange",
+                    "params": {
+                        "textDocument": {
+                            "uri": source_uri,
+                            "version": version
+                        },
+                        "contentChanges": [{
+                            "text": format!("DATA lv_value TYPE i.\nlv_value = {version}.\n")
+                        }]
+                    }
+                }),
+                &task_tx,
+                &queue_state,
+                &generations,
+                &mut debounced_tasks,
+            )
+            .expect("schedule")
+            .expect("background job");
+        };
+
+        schedule_change(&mut state, 2);
+        let first_workspace = task_rx.recv().expect("first queued workspace");
+        assert_eq!(first_workspace, normalized_workspace_uri);
+        let in_flight = take_pending_background_task(&first_workspace, &queue_state)
+            .expect("in-flight task should exist");
+        match &in_flight.kind {
+            AnalysisTaskKind::DidChange(params) => {
+                assert_eq!(params.text_document.version, 2);
+            }
+            _ => panic!("expected didChange task"),
+        }
+
+        schedule_change(&mut state, 3);
+        assert!(
+            task_rx.try_recv().is_err(),
+            "workspace should not be enqueued twice while already in flight"
+        );
+
+        finish_background_task(&first_workspace, &task_tx, &queue_state).expect("requeue");
+        let requeued_workspace = task_rx.recv().expect("requeued workspace");
+        assert_eq!(requeued_workspace, normalized_workspace_uri);
+        let pending_guard = queue_state.lock().expect("pending analysis queue");
+        match &pending_guard
+            .pending_tasks
+            .get(&requeued_workspace)
+            .expect("latest task")
+            .kind
+        {
             AnalysisTaskKind::DidChange(params) => {
                 assert_eq!(params.text_document.version, 3);
             }
@@ -2815,7 +2961,7 @@ lo_helper->",
         );
 
         let generations = Arc::new(Mutex::new(HashMap::new()));
-        let pending_tasks = Arc::new(Mutex::new(HashMap::new()));
+        let queue_state = Arc::new(Mutex::new(PendingAnalysisQueue::default()));
         let mut debounced_tasks = HashMap::new();
         let (task_tx, task_rx) = mpsc::sync_channel(1);
         let message = json!({
@@ -2840,7 +2986,7 @@ lo_helper->r"
             &mut state,
             &message,
             &task_tx,
-            &pending_tasks,
+            &queue_state,
             &generations,
             &mut debounced_tasks,
         )
@@ -2900,7 +3046,7 @@ lo_helper->r"
         refresh_workspace(&mut state, &workspace_uri);
 
         let generations = Arc::new(Mutex::new(HashMap::new()));
-        let pending_tasks = Arc::new(Mutex::new(HashMap::new()));
+        let queue_state = Arc::new(Mutex::new(PendingAnalysisQueue::default()));
         let mut debounced_tasks = HashMap::new();
         let (task_tx, task_rx) = mpsc::sync_channel(4);
 
@@ -2922,7 +3068,7 @@ lo_helper->r"
                 &mut state,
                 &message,
                 &task_tx,
-                &pending_tasks,
+                &queue_state,
                 &generations,
                 &mut debounced_tasks,
             )
@@ -2939,13 +3085,18 @@ lo_helper->r"
             Instant::now() + CHANGE_ANALYSIS_DEBOUNCE,
             &mut debounced_tasks,
             &task_tx,
-            &pending_tasks,
+            &queue_state,
         )
         .expect("flush");
         assert!(debounced_tasks.is_empty());
         let queued_workspace = task_rx.recv().expect("queued workspace");
-        let pending = pending_tasks.lock().expect("pending tasks");
-        match &pending.get(&queued_workspace).expect("latest task").kind {
+        let pending = queue_state.lock().expect("pending analysis queue");
+        match &pending
+            .pending_tasks
+            .get(&queued_workspace)
+            .expect("latest task")
+            .kind
+        {
             AnalysisTaskKind::DidChange(params) => {
                 assert_eq!(params.text_document.version, 3);
             }
@@ -2999,7 +3150,7 @@ lo_helper->",
         refresh_workspace(&mut state, &workspace_uri);
 
         let generations = Arc::new(Mutex::new(HashMap::new()));
-        let pending_tasks = Arc::new(Mutex::new(HashMap::new()));
+        let queue_state = Arc::new(Mutex::new(PendingAnalysisQueue::default()));
         let mut debounced_tasks = HashMap::new();
         let (task_tx, task_rx) = mpsc::sync_channel(1);
         let message = json!({
@@ -3023,7 +3174,7 @@ lo_helper->r"
             &mut state,
             &message,
             &task_tx,
-            &pending_tasks,
+            &queue_state,
             &generations,
             &mut debounced_tasks,
         )
@@ -3138,7 +3289,7 @@ lo_provider->value( )."
         .expect("didOpen");
 
         let generations = Arc::new(Mutex::new(HashMap::new()));
-        let pending_tasks = Arc::new(Mutex::new(HashMap::new()));
+        let queue_state = Arc::new(Mutex::new(PendingAnalysisQueue::default()));
         let mut debounced_tasks = HashMap::new();
         let (task_tx, task_rx) = mpsc::sync_channel(1);
         let message = json!({
@@ -3164,7 +3315,7 @@ ENDCLASS."
             &mut state,
             &message,
             &task_tx,
-            &pending_tasks,
+            &queue_state,
             &generations,
             &mut debounced_tasks,
         )
@@ -3191,13 +3342,14 @@ ENDCLASS."
             Instant::now() + CHANGE_ANALYSIS_DEBOUNCE,
             &mut debounced_tasks,
             &task_tx,
-            &pending_tasks,
+            &queue_state,
         )
         .expect("flush");
         let queued_workspace = task_rx.recv().expect("queued workspace");
-        let task = pending_tasks
+        let task = queue_state
             .lock()
-            .expect("pending tasks")
+            .expect("pending analysis queue")
+            .pending_tasks
             .remove(&queued_workspace)
             .expect("pending task");
         let completion = run_analysis_task(task, None).expect("analysis completion");
@@ -4853,7 +5005,7 @@ object_name = "ZREPORT_INIT"
         );
 
         let generations = Arc::new(Mutex::new(HashMap::new()));
-        let pending_tasks = Arc::new(Mutex::new(HashMap::new()));
+        let queue_state = Arc::new(Mutex::new(PendingAnalysisQueue::default()));
         let mut debounced_tasks = HashMap::new();
         let (task_tx, task_rx) = mpsc::sync_channel(1);
         let scheduled = try_schedule_background_analysis(
@@ -4864,7 +5016,7 @@ object_name = "ZREPORT_INIT"
                 "params": {}
             }),
             &task_tx,
-            &pending_tasks,
+            &queue_state,
             &generations,
             &mut debounced_tasks,
         )
@@ -4873,7 +5025,13 @@ object_name = "ZREPORT_INIT"
 
         assert!(scheduled.started_statuses.is_empty());
         assert!(scheduled.notifications.is_empty());
-        assert!(pending_tasks.lock().expect("pending tasks").is_empty());
+        assert!(
+            queue_state
+                .lock()
+                .expect("pending analysis queue")
+                .pending_tasks
+                .is_empty()
+        );
         assert!(task_rx.try_recv().is_err());
 
         let _ = fs::remove_dir_all(&workspace_path);

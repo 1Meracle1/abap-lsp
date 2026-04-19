@@ -124,6 +124,18 @@ fn run() -> Result<(), String> {
         std::time::Duration::from_micros(metrics.routine_analysis_dead_store_micros as u64)
     );
     println!(
+        "routine_analysis_perform_routines={}",
+        metrics.routine_analysis_perform_routine_count
+    );
+    println!(
+        "routine_analysis_dataflow_passes={}",
+        metrics.routine_analysis_dataflow_pass_count
+    );
+    println!(
+        "routine_analysis_dataflow_routine_runs={}",
+        metrics.routine_analysis_dataflow_routine_runs
+    );
+    println!(
         "static_analysis_summary={:?}",
         std::time::Duration::from_micros(metrics.static_analysis_summary_micros as u64)
     );

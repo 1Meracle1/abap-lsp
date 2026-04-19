@@ -434,13 +434,29 @@ pub fn build_project_routine_analysis(project: &ProjectAnalysis) -> ProjectRouti
         .units
         .iter()
         .any(|unit| !unit.perform_calls.is_empty());
+    let routine_has_perform_instruction: Vec<_> = out
+        .routines
+        .iter()
+        .map(|routine| {
+            routine.ir.instructions.iter().any(|instruction| {
+                matches!(instruction.site, RoutineInstructionSite::Perform { .. })
+            })
+        })
+        .collect();
+    out.metrics.perform_routine_count = routine_has_perform_instruction
+        .iter()
+        .filter(|has_perform| **has_perform)
+        .count();
     let max_dataflow_passes = if has_perform_calls { 6 } else { 1 };
     let mut form_parameter_effects = HashMap::new();
     let mut final_dataflow_diagnostics = vec![Vec::new(); out.routines.len()];
 
-    for _ in 0..max_dataflow_passes {
-        let mut pass_diagnostics = vec![Vec::new(); out.routines.len()];
+    for pass_idx in 0..max_dataflow_passes {
+        out.metrics.dataflow_pass_count += 1;
         for routine_id in 0..out.routines.len() {
+            if pass_idx > 0 && !routine_has_perform_instruction[routine_id] {
+                continue;
+            }
             let descriptor = out.routines[routine_id].descriptor.clone();
             let Some(unit) = project.units.get(descriptor.unit.as_usize()) else {
                 continue;
@@ -448,6 +464,7 @@ pub fn build_project_routine_analysis(project: &ProjectAnalysis) -> ProjectRouti
             let Some(scope_map) = out.scope_to_routine.get(descriptor.unit.as_usize()) else {
                 continue;
             };
+            out.metrics.dataflow_routine_runs += 1;
             let (inputs, result, diagnostics, dead_store_micros) = build_routine_dataflow(
                 project,
                 unit,
@@ -458,10 +475,9 @@ pub fn build_project_routine_analysis(project: &ProjectAnalysis) -> ProjectRouti
             out.metrics.dead_store_micros += dead_store_micros;
             out.routines[routine_id].dataflow_inputs = inputs;
             out.routines[routine_id].dataflow_result = result;
-            pass_diagnostics[routine_id] = diagnostics;
+            final_dataflow_diagnostics[routine_id] = diagnostics;
         }
 
-        final_dataflow_diagnostics = pass_diagnostics;
         if !has_perform_calls {
             break;
         }

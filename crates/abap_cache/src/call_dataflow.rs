@@ -2271,7 +2271,10 @@ impl<'a> TraceBuilder<'a> {
     ) -> bool {
         let mut found = false;
         for writer_unit in &self.snapshot.project.units {
-            for writer_routine in self.snapshot.routine_analysis().routines_for_unit(writer_unit.unit_id)
+            for writer_routine in self
+                .snapshot
+                .routine_analysis()
+                .routines_for_unit(writer_unit.unit_id)
             {
                 let writer_context = TraceContext {
                     unit: writer_unit,
@@ -3986,8 +3989,7 @@ ENDFORM.",
             symbol: SymbolId(wrong_symbol as u32),
         }));
 
-        let value_access =
-            field_access_to_value_access(&unit, &access, &[]).expect("value access");
+        let value_access = field_access_to_value_access(&unit, &access, &[]).expect("value access");
 
         assert_eq!(value_access.display, "ls_source-matnr");
         assert_eq!(value_access.handle.unit, UnitId(u32::MAX));

@@ -74,6 +74,7 @@ pub struct AnalysisSnapshot {
     pub uri: Arc<str>,
     pub version: i32,
     pub text: Arc<str>,
+    pub line_index: Arc<LineIndex>,
     pub project_texts: Arc<HashMap<Arc<str>, Arc<str>>>,
     pub is_dependency: bool,
     pub object_name: Option<Arc<str>>,
@@ -85,6 +86,11 @@ pub struct AnalysisSnapshot {
     pub callable_summaries: Arc<ProjectCallableSummaryAnalysis>,
     pub call_graph: Arc<ProjectCallGraph>,
     pub scope_index: Arc<ScopeIndex>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LineIndex {
+    line_starts: Vec<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -350,6 +356,16 @@ impl AnalysisSnapshot {
             snapshot: self,
             scope_index: self.scope_index.as_ref(),
         }
+    }
+
+    pub fn offset_to_line_utf16_position(&self, offset: usize) -> Option<(u32, u32)> {
+        self.line_index
+            .offset_to_line_utf16_position(self.text.as_ref(), offset)
+    }
+
+    pub fn line_utf16_position_to_offset(&self, line: u32, character: u32) -> Option<usize> {
+        self.line_index
+            .line_utf16_position_to_offset(self.text.as_ref(), line, character)
     }
 
     pub fn structure_field_infos(&self, structure_id: StructureId) -> Vec<StructureFieldInfo> {
@@ -1659,6 +1675,86 @@ impl AnalysisSnapshot {
             replace_range: parsed.replace_range,
             prefix: parsed.prefix,
         })
+    }
+}
+
+impl LineIndex {
+    pub fn new(text: &str) -> Self {
+        let mut line_starts =
+            Vec::with_capacity(text.bytes().filter(|byte| *byte == b'\n').count() + 1);
+        line_starts.push(0);
+        for (idx, byte) in text.bytes().enumerate() {
+            if byte == b'\n' {
+                line_starts.push(idx + 1);
+            }
+        }
+        Self { line_starts }
+    }
+
+    pub fn offset_to_line_utf16_position(&self, text: &str, offset: usize) -> Option<(u32, u32)> {
+        if offset > text.len() {
+            return None;
+        }
+        let line = self.line_for_offset(offset)?;
+        let (line_start, line_end) = self.line_bounds(text, line)?;
+        if offset < line_start || offset > line_end {
+            return None;
+        }
+        let character = text[line_start..offset]
+            .chars()
+            .map(|ch| ch.len_utf16() as u32)
+            .sum();
+        Some((line, character))
+    }
+
+    pub fn line_utf16_position_to_offset(
+        &self,
+        text: &str,
+        line: u32,
+        character: u32,
+    ) -> Option<usize> {
+        let (line_start, line_end) = self.line_bounds(text, line)?;
+        let line_text = &text[line_start..line_end];
+        let mut utf16_units = 0u32;
+        for (idx, ch) in line_text.char_indices() {
+            if utf16_units == character {
+                return Some(line_start + idx);
+            }
+            utf16_units += ch.len_utf16() as u32;
+            if utf16_units > character {
+                return None;
+            }
+        }
+        (utf16_units == character).then_some(line_start + line_text.len())
+    }
+
+    fn line_for_offset(&self, offset: usize) -> Option<u32> {
+        if self.line_starts.is_empty() {
+            return None;
+        }
+        let line = match self.line_starts.binary_search(&offset) {
+            Ok(line) => line,
+            Err(next_line) => next_line.checked_sub(1)?,
+        };
+        u32::try_from(line).ok()
+    }
+
+    fn line_bounds(&self, text: &str, line: u32) -> Option<(usize, usize)> {
+        let line = usize::try_from(line).ok()?;
+        let line_start = *self.line_starts.get(line)?;
+        let next_line_start = self
+            .line_starts
+            .get(line + 1)
+            .copied()
+            .unwrap_or(text.len());
+        let mut line_end = next_line_start;
+        if line_end > line_start && text.as_bytes().get(line_end - 1) == Some(&b'\n') {
+            line_end -= 1;
+        }
+        if line_end > line_start && text.as_bytes().get(line_end - 1) == Some(&b'\r') {
+            line_end -= 1;
+        }
+        Some((line_start, line_end))
     }
 }
 
@@ -5910,6 +6006,7 @@ fn clone_snapshot_with_version(snapshot: &AnalysisSnapshot, version: i32) -> Arc
         uri: Arc::clone(&snapshot.uri),
         version,
         text: Arc::clone(&snapshot.text),
+        line_index: Arc::clone(&snapshot.line_index),
         project_texts: Arc::clone(&snapshot.project_texts),
         is_dependency: snapshot.is_dependency,
         object_name: snapshot.object_name.clone(),
@@ -5941,6 +6038,9 @@ struct AnalysisMetrics {
     routine_analysis_cfg_micros: u128,
     routine_analysis_dataflow_micros: u128,
     routine_analysis_dead_store_micros: u128,
+    routine_analysis_perform_routine_count: usize,
+    routine_analysis_dataflow_pass_count: usize,
+    routine_analysis_dataflow_routine_runs: usize,
     static_analysis_summary_micros: u128,
     callable_summary_micros: u128,
     full_rebuild: bool,
@@ -5986,6 +6086,9 @@ pub struct WorkspaceAnalysisMetricsSnapshot {
     pub routine_analysis_cfg_micros: u128,
     pub routine_analysis_dataflow_micros: u128,
     pub routine_analysis_dead_store_micros: u128,
+    pub routine_analysis_perform_routine_count: usize,
+    pub routine_analysis_dataflow_pass_count: usize,
+    pub routine_analysis_dataflow_routine_runs: usize,
     pub static_analysis_summary_micros: u128,
     pub callable_summary_micros: u128,
     pub full_rebuild: bool,
@@ -6271,6 +6374,7 @@ fn materialize_snapshots(
                 uri: Arc::clone(&prepared.uri),
                 version: prepared.version,
                 text: Arc::clone(&prepared.text),
+                line_index: Arc::new(LineIndex::new(prepared.text.as_ref())),
                 project_texts: Arc::clone(&project_texts),
                 is_dependency: prepared.is_dependency,
                 object_name: prepared.object_name.clone(),
@@ -6294,6 +6398,9 @@ fn materialize_snapshots(
         routine_analysis_cfg_micros: routine_analysis.metrics.cfg_micros,
         routine_analysis_dataflow_micros: routine_analysis.metrics.dataflow_micros,
         routine_analysis_dead_store_micros: routine_analysis.metrics.dead_store_micros,
+        routine_analysis_perform_routine_count: routine_analysis.metrics.perform_routine_count,
+        routine_analysis_dataflow_pass_count: routine_analysis.metrics.dataflow_pass_count,
+        routine_analysis_dataflow_routine_runs: routine_analysis.metrics.dataflow_routine_runs,
         static_analysis_summary_micros,
         callable_summary_micros,
         ..AnalysisMetrics::default()
@@ -6806,6 +6913,7 @@ fn preview_snapshot_from_local(
         uri: Arc::clone(&input.uri),
         version: input.version,
         text: Arc::clone(&input.text),
+        line_index: Arc::new(LineIndex::new(input.text.as_ref())),
         project_texts,
         is_dependency: input.is_dependency,
         object_name: input.object_name.clone(),
@@ -7089,6 +7197,15 @@ impl DocumentStore {
                 routine_analysis_dead_store_micros: analysis
                     .metrics
                     .routine_analysis_dead_store_micros,
+                routine_analysis_perform_routine_count: analysis
+                    .metrics
+                    .routine_analysis_perform_routine_count,
+                routine_analysis_dataflow_pass_count: analysis
+                    .metrics
+                    .routine_analysis_dataflow_pass_count,
+                routine_analysis_dataflow_routine_runs: analysis
+                    .metrics
+                    .routine_analysis_dataflow_routine_runs,
                 static_analysis_summary_micros: analysis.metrics.static_analysis_summary_micros,
                 callable_summary_micros: analysis.metrics.callable_summary_micros,
                 full_rebuild: analysis.metrics.full_rebuild,
@@ -7728,6 +7845,35 @@ ENDCLASS.";
             &first.routine_analysis,
             &second.routine_analysis
         ));
+    }
+
+    #[test]
+    fn routine_analysis_metrics_only_recompute_perform_routines_across_passes() {
+        let store = DocumentStore::default();
+        let src = "\
+REPORT zperf.
+
+DATA lv_value TYPE i.
+
+START-OF-SELECTION.
+  PERFORM set_value CHANGING lv_value.
+
+FORM set_value CHANGING cv_value TYPE i.
+  cv_value = 1.
+ENDFORM.";
+
+        let snapshot = store.publish("file:///routine_metrics_perform.abap", 1, src);
+        let metrics = &snapshot.routine_analysis().metrics;
+
+        assert!(metrics.routine_count >= 2);
+        assert_eq!(metrics.perform_routine_count, 1);
+        assert!(metrics.dataflow_pass_count >= 2);
+        assert!(metrics.perform_routine_count < metrics.routine_count);
+        assert_eq!(
+            metrics.dataflow_routine_runs,
+            metrics.routine_count
+                + metrics.perform_routine_count * (metrics.dataflow_pass_count - 1)
+        );
     }
 
     #[test]
@@ -13273,5 +13419,45 @@ START-OF-SELECTION.
             &[("file:///refs_perform.abap", src, "lv_input"); 3],
         );
         assert_eq!(snapshot.version, 1);
+    }
+
+    #[test]
+    fn snapshot_line_index_maps_offsets_and_utf16_positions() {
+        let store = DocumentStore::default();
+        let src = "WRITE / |a😀|.\r\nWRITE / |bó|.\n";
+        let snapshot = store.publish("file:///line_index.abap", 1, src);
+
+        let emoji_offset = src.find("😀").expect("emoji offset");
+        assert_eq!(
+            snapshot.offset_to_line_utf16_position(emoji_offset),
+            Some((0, 10))
+        );
+        assert_eq!(
+            snapshot.line_utf16_position_to_offset(0, 10),
+            Some(emoji_offset)
+        );
+
+        let accented_offset = src.find("ó").expect("accented offset");
+        assert_eq!(
+            snapshot.offset_to_line_utf16_position(accented_offset),
+            Some((1, 10))
+        );
+        assert_eq!(
+            snapshot.line_utf16_position_to_offset(1, 10),
+            Some(accented_offset)
+        );
+
+        let cr_offset = src.find('\r').expect("carriage return offset");
+        assert_eq!(
+            snapshot.offset_to_line_utf16_position(cr_offset),
+            Some((0, 14))
+        );
+        assert_eq!(
+            snapshot.line_utf16_position_to_offset(0, 14),
+            Some(cr_offset)
+        );
+
+        let newline_offset = src.find('\n').expect("newline offset");
+        assert_eq!(snapshot.offset_to_line_utf16_position(newline_offset), None);
     }
 }
