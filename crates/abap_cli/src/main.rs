@@ -1385,23 +1385,12 @@ fn render_call_dataflow_report(
     out.push_str(&render_call_dataflow_selected_call(selected));
 
     let rich_mermaid = diagram_format == CallDataflowDiagramFormat::RichMermaid;
-    out.push_str(if rich_mermaid {
-        "\n## Diagram\n\n"
-    } else {
-        "\n## Lifecycle\n\n"
-    });
-    if rich_mermaid {
-        if trace.selected_call.is_none() {
-            out.push_str("_No rich diagram could be rendered without a selected call._\n");
-        } else {
-            out.push_str(
-                "_Single Mermaid graph with lifecycle, merged parameter provenance, SQL predicates, and call bindings._\n\n",
-            );
-            out.push_str(&render_call_dataflow_rich_mermaid_block(trace));
-        }
-    } else if trace.lifecycle.nodes.is_empty() || trace.lifecycle.edges.is_empty() {
+    if !rich_mermaid {
+        out.push_str("\n## Lifecycle\n\n");
+    }
+    if !rich_mermaid && (trace.lifecycle.nodes.is_empty() || trace.lifecycle.edges.is_empty()) {
         out.push_str("_No lifecycle edges resolved._\n");
-    } else {
+    } else if !rich_mermaid {
         match diagram_format {
             CallDataflowDiagramFormat::Ascii => {
                 out.push_str("_ASCII tree view optimized for terminal reading._\n\n");
@@ -1436,9 +1425,21 @@ fn render_call_dataflow_report(
         out.push_str("\n_No parameter traces were captured for the selected call._\n");
         return out;
     }
+    if rich_mermaid {
+        out.push_str(
+            "\n_Rich Mermaid renders one graph per target parameter instead of one merged all-parameter graph._\n",
+        );
+    }
     for parameter in &trace.parameter_traces {
         out.push('\n');
-        out.push_str(&render_call_dataflow_parameter(parameter, !rich_mermaid));
+        out.push_str(&render_call_dataflow_parameter(
+            parameter,
+            if rich_mermaid {
+                CallDataflowParameterDiagram::RichMermaid
+            } else {
+                CallDataflowParameterDiagram::Mermaid
+            },
+        ));
     }
 
     out
@@ -1519,9 +1520,15 @@ fn render_call_dataflow_matches_table(matches: &[CallDataflowMatch]) -> String {
     out
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CallDataflowParameterDiagram {
+    Mermaid,
+    RichMermaid,
+}
+
 fn render_call_dataflow_parameter(
     parameter: &CallDataflowParameterTrace,
-    include_provenance_diagram: bool,
+    diagram: CallDataflowParameterDiagram,
 ) -> String {
     let mut out = String::new();
     let name = parameter.parameter_name.as_deref().unwrap_or("<anonymous>");
@@ -1541,18 +1548,27 @@ fn render_call_dataflow_parameter(
         ));
     }
 
-    if include_provenance_diagram
-        && !parameter.provenance.nodes.is_empty()
-        && !parameter.provenance.edges.is_empty()
-    {
-        out.push_str(
-            "\n#### Detailed Provenance\n\n_Mermaid graph of how the parameter or its fields get populated._\n\n",
-        );
-        out.push_str("```mermaid\n");
-        out.push_str(&render_call_dataflow_parameter_provenance_mermaid(
-            &parameter.provenance,
-        ));
-        out.push_str("```\n");
+    if !parameter.provenance.nodes.is_empty() && !parameter.provenance.edges.is_empty() {
+        match diagram {
+            CallDataflowParameterDiagram::Mermaid => {
+                out.push_str(
+                    "\n#### Detailed Provenance\n\n_Mermaid graph of how the parameter or its fields get populated._\n\n",
+                );
+                out.push_str("```mermaid\n");
+                out.push_str(&render_call_dataflow_parameter_provenance_mermaid(
+                    &parameter.provenance,
+                ));
+                out.push_str("```\n");
+            }
+            CallDataflowParameterDiagram::RichMermaid => {
+                out.push_str(
+                    "\n#### Rich Diagram\n\n_Single Mermaid graph for this target parameter only._\n\n",
+                );
+                out.push_str(&render_call_dataflow_parameter_rich_mermaid_block(
+                    parameter,
+                ));
+            }
+        }
     }
 
     if parameter.field_mappings.is_empty() {
@@ -1579,6 +1595,205 @@ fn render_call_dataflow_parameter(
     }
 
     out
+}
+
+fn render_call_dataflow_parameter_rich_mermaid_block(
+    parameter: &CallDataflowParameterTrace,
+) -> String {
+    let mut out = String::new();
+    out.push_str("```mermaid\n");
+    out.push_str(&render_call_dataflow_parameter_rich_mermaid(parameter));
+    out.push_str("```\n");
+    out
+}
+
+fn render_call_dataflow_parameter_rich_mermaid(parameter: &CallDataflowParameterTrace) -> String {
+    let simplified =
+        compact_rich_mermaid_diagram_noise(simplify_rich_mermaid_provenance(parameter));
+
+    let mut out = String::new();
+    out.push_str("flowchart LR\n");
+
+    let mut query_nodes = Vec::new();
+    let mut state_nodes = Vec::new();
+
+    for node in &simplified.nodes {
+        out.push_str(&format!(
+            "  {}[\"{}\"]\n",
+            node.id,
+            mermaid_node_label(&rich_mermaid_rendered_view_node_label(node, true))
+        ));
+        match node.kind.as_str() {
+            "sql_query" => query_nodes.push(node.id.clone()),
+            _ => state_nodes.push(node.id.clone()),
+        }
+    }
+
+    for edge in &simplified.edges {
+        if edge.label.is_empty() {
+            out.push_str(&format!("  {} --> {}\n", edge.source, edge.target));
+        } else {
+            out.push_str(&format!(
+                "  {} -->|\"{}\"| {}\n",
+                edge.source,
+                mermaid_label(&edge.label),
+                edge.target
+            ));
+        }
+    }
+
+    out.push_str("  classDef query fill:#eef6ff,stroke:#1d4ed8,color:#0f172a;\n");
+    out.push_str("  classDef state fill:#f8fafc,stroke:#475569,color:#0f172a;\n");
+    out.push_str("  classDef warn fill:#fee2e2,stroke:#b91c1c,color:#7f1d1d;\n");
+
+    if !query_nodes.is_empty() {
+        out.push_str(&format!("  class {} query;\n", query_nodes.join(",")));
+    }
+    if !state_nodes.is_empty() {
+        out.push_str(&format!("  class {} state;\n", state_nodes.join(",")));
+    }
+
+    out
+}
+
+fn compact_rich_mermaid_diagram_noise(
+    view: RichMermaidProvenanceView,
+) -> RichMermaidProvenanceView {
+    let node_by_id: HashMap<_, _> = view
+        .nodes
+        .iter()
+        .map(|node| (node.id.as_str(), node))
+        .collect();
+    let mut inbound = HashMap::<&str, Vec<&RichMermaidProvenanceViewEdge>>::new();
+    let mut outbound = HashMap::<&str, Vec<&RichMermaidProvenanceViewEdge>>::new();
+    for edge in &view.edges {
+        inbound.entry(edge.target.as_str()).or_default().push(edge);
+        outbound.entry(edge.source.as_str()).or_default().push(edge);
+    }
+
+    let removed_ids: HashSet<_> = view
+        .nodes
+        .iter()
+        .filter(|node| rich_mermaid_remove_compacted_node(node, &node_by_id, &inbound, &outbound))
+        .map(|node| node.id.clone())
+        .collect();
+    if removed_ids.is_empty() {
+        return view;
+    }
+
+    let kept_nodes: Vec<_> = view
+        .nodes
+        .into_iter()
+        .filter(|node| !removed_ids.contains(node.id.as_str()))
+        .collect();
+    let kept_ids: HashSet<_> = kept_nodes.iter().map(|node| node.id.as_str()).collect();
+
+    let mut seen_edges = BTreeSet::<(String, String, String)>::new();
+    let mut edges = Vec::<RichMermaidProvenanceViewEdge>::new();
+
+    for edge in &view.edges {
+        if kept_ids.contains(edge.source.as_str())
+            && kept_ids.contains(edge.target.as_str())
+            && seen_edges.insert((edge.source.clone(), edge.target.clone(), edge.label.clone()))
+        {
+            edges.push(edge.clone());
+        }
+    }
+
+    for kept in &kept_nodes {
+        let mut stack = Vec::<&str>::new();
+        let mut visited = HashSet::<&str>::new();
+        for edge in outbound.get(kept.id.as_str()).into_iter().flatten() {
+            if removed_ids.contains(edge.target.as_str()) {
+                stack.push(edge.target.as_str());
+            }
+        }
+
+        while let Some(current) = stack.pop() {
+            if !visited.insert(current) {
+                continue;
+            }
+            for edge in outbound.get(current).into_iter().flatten() {
+                if removed_ids.contains(edge.target.as_str()) {
+                    stack.push(edge.target.as_str());
+                    continue;
+                }
+                if !kept_ids.contains(edge.target.as_str()) || kept.id == edge.target {
+                    continue;
+                }
+                if seen_edges.insert((kept.id.clone(), edge.target.clone(), String::new())) {
+                    edges.push(RichMermaidProvenanceViewEdge {
+                        source: kept.id.clone(),
+                        target: edge.target.clone(),
+                        label: String::new(),
+                    });
+                }
+            }
+        }
+    }
+
+    RichMermaidProvenanceView {
+        nodes: kept_nodes,
+        edges,
+    }
+}
+
+fn rich_mermaid_remove_compacted_node(
+    node: &RichMermaidProvenanceViewNode,
+    node_by_id: &HashMap<&str, &RichMermaidProvenanceViewNode>,
+    inbound: &HashMap<&str, Vec<&RichMermaidProvenanceViewEdge>>,
+    outbound: &HashMap<&str, Vec<&RichMermaidProvenanceViewEdge>>,
+) -> bool {
+    if rich_mermaid_compacted_node_kind(node.kind.as_str()) {
+        return true;
+    }
+    if node.kind != "symbol" {
+        return false;
+    }
+
+    let neighbors = inbound
+        .get(node.id.as_str())
+        .into_iter()
+        .flatten()
+        .map(|edge| edge.source.as_str())
+        .chain(
+            outbound
+                .get(node.id.as_str())
+                .into_iter()
+                .flatten()
+                .map(|edge| edge.target.as_str()),
+        );
+
+    let mut saw_neighbor = false;
+    for neighbor_id in neighbors {
+        let Some(neighbor) = node_by_id.get(neighbor_id).copied() else {
+            return false;
+        };
+        saw_neighbor = true;
+        if !rich_mermaid_sql_related_kind(neighbor.kind.as_str()) {
+            return false;
+        }
+    }
+
+    saw_neighbor
+}
+
+fn rich_mermaid_sql_helper_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "sql_source" | "sql_predicate" | "sql_target" | "sql_source_field" | "sql_target_field"
+    )
+}
+
+fn rich_mermaid_compacted_node_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "perform_binding" | "perform_write" | "read_table_binding" | "field_symbol_binding"
+    ) || rich_mermaid_sql_helper_kind(kind)
+}
+
+fn rich_mermaid_sql_related_kind(kind: &str) -> bool {
+    kind == "sql_query" || rich_mermaid_sql_helper_kind(kind)
 }
 
 fn render_call_dataflow_parameter_provenance_mermaid(
@@ -1649,340 +1864,6 @@ fn render_call_dataflow_parameter_provenance_mermaid(
     out
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RichMermaidNodeGroup {
-    Lifecycle,
-    Provenance,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct RichMermaidNodeKey {
-    namespace: String,
-    kind: String,
-    label: String,
-    unit_uri: Option<String>,
-    range: Option<(usize, usize)>,
-    statement_text: Option<String>,
-}
-
-#[derive(Debug, Clone)]
-struct RichMermaidNode {
-    id: String,
-    kind: String,
-    label: String,
-    group: RichMermaidNodeGroup,
-    synthetic: bool,
-    selected: bool,
-}
-
-fn render_call_dataflow_rich_mermaid_block(trace: &CallDataflowTrace) -> String {
-    let mut out = String::new();
-    out.push_str("```mermaid\n");
-    out.push_str(&render_call_dataflow_rich_mermaid(trace));
-    out.push_str("```\n");
-    out
-}
-
-fn render_call_dataflow_rich_mermaid(trace: &CallDataflowTrace) -> String {
-    let mut out = String::new();
-    out.push_str("flowchart LR\n");
-
-    let active_lifecycle_nodes = call_dataflow_active_node_ids(&trace.lifecycle);
-    let selected_target_id = trace
-        .selected_call
-        .as_ref()
-        .and_then(|selected| selected.target_node_id.as_deref());
-
-    let mut next_node_id = 0usize;
-    let mut nodes = Vec::<RichMermaidNode>::new();
-    let mut node_keys = HashMap::<RichMermaidNodeKey, String>::new();
-    let mut lifecycle_ids = HashMap::<String, String>::new();
-    let mut lifecycle_names = HashMap::<String, String>::new();
-    let mut edges = BTreeSet::<(String, String, String)>::new();
-
-    let mut add_node = |namespace: String,
-                        kind: &str,
-                        label: String,
-                        unit_uri: Option<&str>,
-                        range: Option<&abap_cache::CallDataflowByteRange>,
-                        statement_text: Option<&str>,
-                        group: RichMermaidNodeGroup,
-                        synthetic: bool,
-                        selected: bool| {
-        let key = RichMermaidNodeKey {
-            namespace,
-            kind: kind.to_string(),
-            label: label.clone(),
-            unit_uri: unit_uri.map(str::to_string),
-            range: range.map(|range| (range.start, range.end)),
-            statement_text: statement_text.map(str::to_string),
-        };
-        if let Some(existing) = node_keys.get(&key) {
-            return existing.clone();
-        }
-        let node_id = format!("r{next_node_id}");
-        next_node_id += 1;
-        nodes.push(RichMermaidNode {
-            id: node_id.clone(),
-            kind: kind.to_string(),
-            label,
-            group,
-            synthetic,
-            selected,
-        });
-        node_keys.insert(key, node_id.clone());
-        node_id
-    };
-
-    for node in &trace.lifecycle.nodes {
-        if !active_lifecycle_nodes.contains(node.id.as_str()) {
-            continue;
-        }
-        let mut label = format!("{}: {}", node.kind, node.name);
-        if Some(node.id.as_str()) == selected_target_id {
-            label.push_str(" [selected call]");
-        }
-        if node.synthetic {
-            label.push_str(" [synthetic]");
-        }
-        let mermaid_id = add_node(
-            format!("lifecycle:{}", node.id),
-            &node.kind,
-            label,
-            Some(node.unit_uri.as_str()),
-            Some(&node.decl_range),
-            None,
-            RichMermaidNodeGroup::Lifecycle,
-            node.synthetic,
-            Some(node.id.as_str()) == selected_target_id,
-        );
-        lifecycle_ids.insert(node.id.clone(), mermaid_id.clone());
-        lifecycle_names.insert(node.name.to_ascii_lowercase(), mermaid_id);
-    }
-
-    let selected_call_id = if let Some(selected) = trace.selected_call.as_ref() {
-        if let Some(target_node_id) = selected.target_node_id.as_ref() {
-            lifecycle_ids.get(target_node_id).cloned()
-        } else {
-            None
-        }
-        .or_else(|| {
-            Some(add_node(
-                "selected_call".to_string(),
-                &selected.target_kind,
-                format!(
-                    "{}: {} [selected call]",
-                    selected.target_kind, selected.target_name
-                ),
-                Some(selected.unit_uri.as_str()),
-                Some(&selected.call_range),
-                None,
-                RichMermaidNodeGroup::Lifecycle,
-                false,
-                true,
-            ))
-        })
-    } else {
-        None
-    };
-
-    for edge in &trace.lifecycle.edges {
-        let Some(source_id) = lifecycle_ids.get(edge.source.as_str()) else {
-            continue;
-        };
-        let Some(target_id) = lifecycle_ids.get(edge.target.as_str()) else {
-            continue;
-        };
-        let label = edge
-            .label
-            .clone()
-            .unwrap_or_else(|| edge.kind.replace('_', " "));
-        edges.insert((source_id.clone(), target_id.clone(), label));
-    }
-
-    for parameter in &trace.parameter_traces {
-        let simplified = simplify_rich_mermaid_provenance(parameter);
-        let mut local_ids = HashMap::<String, String>::new();
-        let mut root_id = None;
-        for node in &simplified.nodes {
-            let owner_id = node
-                .scope_name
-                .as_deref()
-                .and_then(|scope_name| lifecycle_names.get(&scope_name.to_ascii_lowercase()))
-                .cloned();
-            let namespace = if node.synthetic && node.kind == "collapsed_summary" {
-                format!("provenance:{}", node.id)
-            } else {
-                "provenance".to_string()
-            };
-            let mermaid_id = add_node(
-                namespace,
-                &node.kind,
-                rich_mermaid_rendered_view_node_label(node, owner_id.is_some()),
-                node.unit_uri.as_deref(),
-                node.range.as_ref(),
-                node.statement_text.as_deref(),
-                RichMermaidNodeGroup::Provenance,
-                node.synthetic,
-                false,
-            );
-            if let Some(owner_id) = owner_id {
-                match node.kind.as_str() {
-                    "perform_binding" => {
-                        edges.insert((mermaid_id.clone(), owner_id, String::new()));
-                    }
-                    "perform_write" | "collapsed_summary" => {
-                        edges.insert((owner_id, mermaid_id.clone(), String::new()));
-                    }
-                    _ => {}
-                }
-            }
-            if node.kind == "parameter" {
-                root_id = Some(mermaid_id.clone());
-            }
-            local_ids.insert(node.id.clone(), mermaid_id);
-        }
-        for edge in &simplified.edges {
-            let Some(source_id) = local_ids.get(edge.source.as_str()) else {
-                continue;
-            };
-            let Some(target_id) = local_ids.get(edge.target.as_str()) else {
-                continue;
-            };
-            edges.insert((source_id.clone(), target_id.clone(), edge.label.clone()));
-        }
-
-        if let (Some(call_id), Some(parameter_root_id)) = (selected_call_id.as_ref(), root_id) {
-            let binding_label = rich_parameter_binding_label(parameter);
-            if parameter.direction == "output" {
-                edges.insert((call_id.clone(), parameter_root_id, binding_label));
-            } else {
-                edges.insert((parameter_root_id, call_id.clone(), binding_label));
-            }
-        }
-    }
-
-    for node in &nodes {
-        out.push_str(&format!(
-            "  {}[\"{}\"]\n",
-            node.id,
-            mermaid_node_label(&node.label)
-        ));
-    }
-    for (source, target, label) in edges {
-        if label.is_empty() {
-            out.push_str(&format!("  {source} --> {target}\n"));
-        } else {
-            out.push_str(&format!(
-                "  {source} -->|\"{}\"| {target}\n",
-                mermaid_label(&label)
-            ));
-        }
-    }
-
-    let mut lifecycle_nodes = Vec::new();
-    let mut parameter_nodes = Vec::new();
-    let mut target_nodes = Vec::new();
-    let mut query_nodes = Vec::new();
-    let mut transform_nodes = Vec::new();
-    let mut source_nodes = Vec::new();
-    let mut selected_nodes = Vec::new();
-    let mut synthetic_nodes = Vec::new();
-
-    for node in &nodes {
-        match node.group {
-            RichMermaidNodeGroup::Lifecycle => lifecycle_nodes.push(node.id.clone()),
-            RichMermaidNodeGroup::Provenance => match node.kind.as_str() {
-                "parameter" => parameter_nodes.push(node.id.clone()),
-                "target_value" | "target_field" | "target_table_row" | "target_table_field" => {
-                    target_nodes.push(node.id.clone())
-                }
-                "sql_query" | "sql_source" | "sql_predicate" | "sql_target"
-                | "sql_source_field" | "sql_target_field" => query_nodes.push(node.id.clone()),
-                "assignment"
-                | "append_row"
-                | "loop_binding"
-                | "perform_binding"
-                | "perform_write"
-                | "read_table_binding"
-                | "field_symbol_binding"
-                | "collapsed_summary"
-                | "composite_expression"
-                | "literal_or_expression" => transform_nodes.push(node.id.clone()),
-                _ => source_nodes.push(node.id.clone()),
-            },
-        }
-        if node.selected {
-            selected_nodes.push(node.id.clone());
-        }
-        if node.synthetic {
-            synthetic_nodes.push(node.id.clone());
-        }
-    }
-
-    if !lifecycle_nodes.is_empty() {
-        out.push_str("  classDef lifecycle fill:#f8fafc,stroke:#64748b,color:#0f172a;\n");
-        out.push_str(&format!(
-            "  class {} lifecycle;\n",
-            lifecycle_nodes.join(",")
-        ));
-    }
-    if !parameter_nodes.is_empty() {
-        out.push_str("  classDef parameter fill:#ecfccb,stroke:#4d7c0f,color:#365314;\n");
-        out.push_str(&format!(
-            "  class {} parameter;\n",
-            parameter_nodes.join(",")
-        ));
-    }
-    if !target_nodes.is_empty() {
-        out.push_str("  classDef target fill:#dcfce7,stroke:#166534,color:#14532d;\n");
-        out.push_str(&format!("  class {} target;\n", target_nodes.join(",")));
-    }
-    if !query_nodes.is_empty() {
-        out.push_str("  classDef query fill:#dbeafe,stroke:#1d4ed8,color:#1e3a8a;\n");
-        out.push_str(&format!("  class {} query;\n", query_nodes.join(",")));
-    }
-    if !transform_nodes.is_empty() {
-        out.push_str("  classDef transform fill:#fff7ed,stroke:#c2410c,color:#7c2d12;\n");
-        out.push_str(&format!(
-            "  class {} transform;\n",
-            transform_nodes.join(",")
-        ));
-    }
-    if !source_nodes.is_empty() {
-        out.push_str("  classDef source fill:#f8fafc,stroke:#475569,color:#0f172a;\n");
-        out.push_str(&format!("  class {} source;\n", source_nodes.join(",")));
-    }
-    if !selected_nodes.is_empty() {
-        out.push_str("  classDef selected fill:#fee2e2,stroke:#b91c1c,color:#7f1d1d;\n");
-        out.push_str(&format!("  class {} selected;\n", selected_nodes.join(",")));
-    }
-    if !synthetic_nodes.is_empty() {
-        out.push_str("  classDef synthetic fill:#fff4cc,stroke:#b7791f,color:#5f370e;\n");
-        out.push_str(&format!(
-            "  class {} synthetic;\n",
-            synthetic_nodes.join(",")
-        ));
-    }
-
-    out
-}
-
-fn rich_parameter_binding_label(parameter: &CallDataflowParameterTrace) -> String {
-    let mut parts = Vec::new();
-    if let Some(section) = parameter.section.as_deref() {
-        parts.push(section.to_ascii_uppercase());
-    }
-    if let Some(name) = parameter.parameter_name.as_deref() {
-        parts.push(name.to_string());
-    }
-    if parts.is_empty() {
-        parameter.direction.replace('_', " ")
-    } else {
-        parts.join(" ")
-    }
-}
-
 fn rich_mermaid_rendered_view_node_label(
     node: &RichMermaidProvenanceViewNode,
     strip_scope_name: bool,
@@ -1992,6 +1873,7 @@ fn rich_mermaid_rendered_view_node_label(
     }
 
     match node.kind.as_str() {
+        "sql_query" => rich_mermaid_sql_query_label(node),
         "perform_binding" => {
             let compact = node
                 .raw_label
@@ -2029,6 +1911,23 @@ fn rich_mermaid_rendered_view_node_label(
     }
 }
 
+fn rich_mermaid_sql_query_label(node: &RichMermaidProvenanceViewNode) -> String {
+    let mut query = node
+        .raw_label
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("HOSTS "))
+        .collect::<Vec<_>>()
+        .join("\n");
+    query = truncate_display(&query, 320);
+
+    let mut label = format!("sql query: {query}");
+    if let (Some(unit_uri), Some(range)) = (node.unit_uri.as_deref(), node.range.as_ref()) {
+        label.push_str("\n@ ");
+        label.push_str(&call_dataflow_short_location(unit_uri, range));
+    }
+    label
+}
+
 fn rich_mermaid_format_provenance_label(
     prefix: &str,
     raw_label: &str,
@@ -2058,21 +1957,6 @@ fn rich_mermaid_compact_summary_label(raw_label: &str) -> String {
     }
 }
 
-fn rich_mermaid_provenance_scope_name(kind: &str, raw_label: &str) -> Option<String> {
-    match kind {
-        "perform_binding" => {
-            let (_, target) = raw_label.split_once(" -> ")?;
-            Some(target.split_once('.')?.0.to_string())
-        }
-        "perform_write" => Some(raw_label.split_once(" writes ")?.0.to_string()),
-        "collapsed_summary" => {
-            let rest = raw_label.strip_prefix("FORM ")?;
-            Some(rest.split_once(':')?.0.to_string())
-        }
-        _ => None,
-    }
-}
-
 #[derive(Debug, Clone)]
 struct RichMermaidProvenanceView {
     nodes: Vec<RichMermaidProvenanceViewNode>,
@@ -2085,11 +1969,8 @@ struct RichMermaidProvenanceViewNode {
     kind: String,
     label: String,
     raw_label: String,
-    scope_name: Option<String>,
     unit_uri: Option<String>,
     range: Option<abap_cache::CallDataflowByteRange>,
-    statement_text: Option<String>,
-    synthetic: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -2103,7 +1984,6 @@ struct RichMermaidProvenanceViewEdge {
 struct RichMermaidCollapseGroup {
     summary_id: String,
     label: String,
-    scope_name: Option<String>,
     unit_uri: Option<String>,
     range: Option<abap_cache::CallDataflowByteRange>,
     member_ids: HashSet<String>,
@@ -2124,14 +2004,8 @@ fn simplify_rich_mermaid_provenance(
                     kind: node.kind.clone(),
                     label: call_dataflow_provenance_node_label(node),
                     raw_label: node.label.clone(),
-                    scope_name: rich_mermaid_provenance_scope_name(
-                        node.kind.as_str(),
-                        node.label.as_str(),
-                    ),
                     unit_uri: node.unit_uri.clone(),
                     range: node.range.clone(),
-                    statement_text: node.statement_text.clone(),
-                    synthetic: false,
                 })
                 .collect(),
             edges: parameter
@@ -2164,14 +2038,8 @@ fn simplify_rich_mermaid_provenance(
             kind: node.kind.clone(),
             label: call_dataflow_provenance_node_label(node),
             raw_label: node.label.clone(),
-            scope_name: rich_mermaid_provenance_scope_name(
-                node.kind.as_str(),
-                node.label.as_str(),
-            ),
             unit_uri: node.unit_uri.clone(),
             range: node.range.clone(),
-            statement_text: node.statement_text.clone(),
-            synthetic: false,
         });
     }
     for group in &groups {
@@ -2180,11 +2048,8 @@ fn simplify_rich_mermaid_provenance(
             kind: "collapsed_summary".to_string(),
             label: group.label.clone(),
             raw_label: group.label.clone(),
-            scope_name: group.scope_name.clone(),
             unit_uri: group.unit_uri.clone(),
             range: group.range.clone(),
-            statement_text: None,
-            synthetic: true,
         });
     }
 
@@ -2325,7 +2190,6 @@ fn build_rich_mermaid_collapse_groups(
         groups.push(RichMermaidCollapseGroup {
             summary_id: format!("collapsed_{}", groups.len()),
             label,
-            scope_name,
             unit_uri,
             range,
             member_ids,
@@ -3678,7 +3542,8 @@ mod tests {
     use super::{
         CallDataflowDiagramFormat, load_remote_candidate_workspace, parse_cli_args,
         path_to_file_uri, render_call_dataflow_diagram_block,
-        render_call_dataflow_parameter_provenance_mermaid, render_call_dataflow_report,
+        render_call_dataflow_parameter_provenance_mermaid,
+        render_call_dataflow_parameter_rich_mermaid, render_call_dataflow_report,
     };
     use abap_cache::{
         CallDataflowByteRange, CallDataflowLifecycle, CallDataflowLifecycleEdge,
@@ -3956,7 +3821,130 @@ mod tests {
     }
 
     #[test]
-    fn call_dataflow_rich_mermaid_report_renders_single_merged_diagram() {
+    fn call_dataflow_rich_mermaid_parameter_omits_sql_helper_nodes() {
+        let parameter = CallDataflowParameterTrace {
+            parameter_name: Some("poheader".to_string()),
+            section: Some("exporting".to_string()),
+            direction: "input".to_string(),
+            argument_text: "poheader = gs_header".to_string(),
+            argument_range: CallDataflowByteRange { start: 30, end: 40 },
+            argument_type: Some("bapimepoheader".to_string()),
+            field_mappings: Vec::new(),
+            provenance: CallDataflowProvenanceGraph {
+                nodes: vec![
+                    CallDataflowProvenanceNode {
+                        id: "p0".to_string(),
+                        kind: "parameter".to_string(),
+                        label: "poheader [input / exporting] : bapimepoheader".to_string(),
+                        unit_uri: None,
+                        range: None,
+                        statement_text: None,
+                    },
+                    CallDataflowProvenanceNode {
+                        id: "p1".to_string(),
+                        kind: "perform_write".to_string(),
+                        label: "f_header writes cs_poheader".to_string(),
+                        unit_uri: Some("file:///main.abap".to_string()),
+                        range: Some(CallDataflowByteRange { start: 50, end: 60 }),
+                        statement_text: Some("PERFORM f_header CHANGING cs_poheader.".to_string()),
+                    },
+                    CallDataflowProvenanceNode {
+                        id: "p2".to_string(),
+                        kind: "sql_query".to_string(),
+                        label: "SELECT ekorg, bukrs\nFROM t024e\nINTO TABLE ct_t024e\nWHERE ekorg = lt_temp-ekorg".to_string(),
+                        unit_uri: Some("file:///main.abap".to_string()),
+                        range: Some(CallDataflowByteRange { start: 10, end: 40 }),
+                        statement_text: None,
+                    },
+                    CallDataflowProvenanceNode {
+                        id: "p3".to_string(),
+                        kind: "sql_source".to_string(),
+                        label: "FROM t024e".to_string(),
+                        unit_uri: Some("file:///main.abap".to_string()),
+                        range: Some(CallDataflowByteRange { start: 14, end: 19 }),
+                        statement_text: None,
+                    },
+                    CallDataflowProvenanceNode {
+                        id: "p4".to_string(),
+                        kind: "sql_predicate".to_string(),
+                        label: "WHERE ekorg = lt_temp-ekorg".to_string(),
+                        unit_uri: Some("file:///main.abap".to_string()),
+                        range: Some(CallDataflowByteRange { start: 20, end: 30 }),
+                        statement_text: None,
+                    },
+                    CallDataflowProvenanceNode {
+                        id: "p5".to_string(),
+                        kind: "sql_target_field".to_string(),
+                        label: "ct_t024e-bukrs".to_string(),
+                        unit_uri: Some("file:///main.abap".to_string()),
+                        range: Some(CallDataflowByteRange { start: 31, end: 35 }),
+                        statement_text: None,
+                    },
+                    CallDataflowProvenanceNode {
+                        id: "p6".to_string(),
+                        kind: "symbol".to_string(),
+                        label: "lt_temp-ekorg".to_string(),
+                        unit_uri: Some("file:///main.abap".to_string()),
+                        range: Some(CallDataflowByteRange { start: 24, end: 29 }),
+                        statement_text: None,
+                    },
+                ],
+                edges: vec![
+                    CallDataflowProvenanceEdge {
+                        source: "p6".to_string(),
+                        target: "p4".to_string(),
+                        kind: "uses".to_string(),
+                        label: None,
+                    },
+                    CallDataflowProvenanceEdge {
+                        source: "p4".to_string(),
+                        target: "p2".to_string(),
+                        kind: "filters".to_string(),
+                        label: None,
+                    },
+                    CallDataflowProvenanceEdge {
+                        source: "p3".to_string(),
+                        target: "p2".to_string(),
+                        kind: "reads_from".to_string(),
+                        label: None,
+                    },
+                    CallDataflowProvenanceEdge {
+                        source: "p2".to_string(),
+                        target: "p5".to_string(),
+                        kind: "selects_into".to_string(),
+                        label: None,
+                    },
+                    CallDataflowProvenanceEdge {
+                        source: "p5".to_string(),
+                        target: "p1".to_string(),
+                        kind: "flows_to".to_string(),
+                        label: None,
+                    },
+                    CallDataflowProvenanceEdge {
+                        source: "p1".to_string(),
+                        target: "p0".to_string(),
+                        kind: "writes".to_string(),
+                        label: None,
+                    },
+                ],
+            },
+            notes: Vec::new(),
+        };
+
+        let rendered = render_call_dataflow_parameter_rich_mermaid(&parameter);
+
+        assert!(rendered.contains("sql query: SELECT ekorg, bukrs"));
+        assert!(!rendered.contains("HOSTS lt_temp-ekorg"));
+        assert!(rendered.contains("p2 --> p0"));
+        assert!(!rendered.contains("sql source:"));
+        assert!(!rendered.contains("sql predicate:"));
+        assert!(!rendered.contains("sql target:"));
+        assert!(!rendered.contains("symbol: lt_temp-ekorg"));
+        assert!(!rendered.contains("perform write:"));
+    }
+
+    #[test]
+    fn call_dataflow_rich_mermaid_report_renders_parameter_scoped_diagram() {
         let trace = CallDataflowTrace {
             schema: "abap.call_dataflow_trace",
             schema_version: 1,
@@ -4072,10 +4060,11 @@ mod tests {
 
         let rendered = render_call_dataflow_report(&trace, CallDataflowDiagramFormat::RichMermaid);
 
-        assert!(rendered.contains("## Diagram"));
+        assert!(rendered.contains("## Parameters"));
+        assert!(rendered.contains("#### Rich Diagram"));
         assert!(rendered.contains("```mermaid"));
-        assert!(rendered.contains("|\"EXPORTING poheader\"|"));
-        assert!(rendered.contains("selected call"));
+        assert!(rendered.contains("poheader.doc_type"));
+        assert!(!rendered.contains("## Diagram"));
         assert!(!rendered.contains("#### Detailed Provenance"));
     }
 
@@ -4313,14 +4302,14 @@ mod tests {
 
         let rendered = render_call_dataflow_report(&trace, CallDataflowDiagramFormat::RichMermaid);
 
-        assert!(rendered.contains("form: f_bapi_item_data"));
+        assert!(rendered.contains("#### Rich Diagram"));
         assert!(rendered.contains("updates:"));
         assert!(rendered.contains("material=ls_src-matnr"));
         assert!(rendered.contains("plant=ls_src-werks"));
         assert!(rendered.contains("quantity=lv_qty"));
         assert!(rendered.contains("stge_loc=lv_lgort"));
-        assert!(rendered.contains("perform write: ct_poitem (append rows)"));
         assert!(!rendered.contains("FORM f_bapi_item_data:"));
+        assert!(!rendered.contains("perform write:"));
         assert!(!rendered.contains("perform write: f_bapi_item_data writes"));
         assert!(!rendered.contains("poitem[*].material"));
         assert!(!rendered.contains("ls_poitem-material = ls_src-matnr."));
@@ -4462,9 +4451,7 @@ mod tests {
                             label: "cs_po_headerx-doc_date = abap_true.".to_string(),
                             unit_uri: Some("file:///main.abap".to_string()),
                             range: Some(CallDataflowByteRange { start: 21, end: 31 }),
-                            statement_text: Some(
-                                "cs_po_headerx-doc_date = abap_true.".to_string(),
-                            ),
+                            statement_text: Some("cs_po_headerx-doc_date = abap_true.".to_string()),
                         },
                         CallDataflowProvenanceNode {
                             id: "p8".to_string(),
@@ -4514,9 +4501,7 @@ mod tests {
                             label: "cs_po_headerx-ref_1 = abap_true.".to_string(),
                             unit_uri: Some("file:///main.abap".to_string()),
                             range: Some(CallDataflowByteRange { start: 43, end: 53 }),
-                            statement_text: Some(
-                                "cs_po_headerx-ref_1 = abap_true.".to_string(),
-                            ),
+                            statement_text: Some("cs_po_headerx-ref_1 = abap_true.".to_string()),
                         },
                         CallDataflowProvenanceNode {
                             id: "p14".to_string(),
@@ -4653,16 +4638,15 @@ mod tests {
 
         let rendered = render_call_dataflow_report(&trace, CallDataflowDiagramFormat::RichMermaid);
 
-        assert!(rendered.contains("form: f_bapi_header_data"));
+        assert!(rendered.contains("#### Rich Diagram"));
         assert!(rendered.contains("updates:"));
         assert!(rendered.contains("comp_code=abap_true"));
         assert!(rendered.contains("doc_date=abap_true"));
         assert!(rendered.contains("purch_org=abap_true"));
         assert!(rendered.contains("ref_1=abap_true"));
-        assert!(rendered.contains("perform bind: gs_headerx -> cs_po_headerx"));
-        assert!(rendered.contains("perform write: cs_po_headerx"));
         assert!(!rendered.contains("FORM f_bapi_header_data:"));
-        assert!(!rendered.contains("perform bind: gs_headerx -> f_bapi_header_data.cs_po_headerx"));
+        assert!(!rendered.contains("perform bind:"));
+        assert!(!rendered.contains("perform write:"));
         assert!(!rendered.contains("perform write: f_bapi_header_data writes cs_po_headerx"));
         assert!(!rendered.contains("constant: abap_true"));
     }

@@ -1044,6 +1044,18 @@ impl<'a> TraceBuilder<'a> {
                 provenance,
                 sink_node_id,
             );
+            if !found {
+                found |= self.trace_project_global_writers(
+                    context,
+                    access,
+                    target_path,
+                    field_mappings,
+                    notes,
+                    depth + 1,
+                    provenance,
+                    sink_node_id,
+                );
+            }
         }
 
         if !found {
@@ -2246,6 +2258,56 @@ impl<'a> TraceBuilder<'a> {
         found
     }
 
+    fn trace_project_global_writers(
+        &mut self,
+        context: TraceContext<'a>,
+        access: &ValueAccess,
+        target_path: &str,
+        field_mappings: &mut Vec<CallDataflowFieldMapping>,
+        notes: &mut Vec<String>,
+        depth: usize,
+        provenance: &mut ParameterProvenanceBuilder,
+        sink_node_id: &str,
+    ) -> bool {
+        let mut found = false;
+        for writer_unit in &self.snapshot.project.units {
+            for writer_routine in self.snapshot.routine_analysis().routines_for_unit(writer_unit.unit_id)
+            {
+                let writer_context = TraceContext {
+                    unit: writer_unit,
+                    routine: Some(writer_routine),
+                    sink_offset: if writer_unit.unit_id == context.unit.unit_id
+                        && writer_routine.descriptor.owner
+                            == context.routine.and_then(|routine| routine.descriptor.owner)
+                    {
+                        context.sink_offset
+                    } else {
+                        usize::MAX
+                    },
+                };
+                found |= self.trace_assignment_writers(
+                    writer_context,
+                    access,
+                    target_path,
+                    field_mappings,
+                    notes,
+                    depth,
+                    provenance,
+                    sink_node_id,
+                );
+                found |= self.trace_sql_writers(
+                    writer_context,
+                    access,
+                    target_path,
+                    field_mappings,
+                    provenance,
+                    sink_node_id,
+                );
+            }
+        }
+        found
+    }
+
     fn inbound_perform_calls(
         &self,
         owner: SymbolHandle,
@@ -2695,6 +2757,7 @@ fn resolve_access_handle(
         reference.scope == access.scope
             && reference.namespace == access.base_namespace
             && reference.range == access.base_range
+            && reference.name == access.base_name
     })?;
     let Resolution::Symbol(handle) = reference.resolution? else {
         return None;
@@ -2727,7 +2790,7 @@ fn value_accesses_in_range(unit: &UnitAnalysis, range: &TextRange) -> Vec<ValueA
                 .iter()
                 .map(|segment| segment.name.to_string())
                 .collect(),
-            display: format_access_display(&unit.symbol(handle.symbol).name, &access.field_path),
+            display: format_access_display(&access.base_name, &access.field_path),
             range: access.base_range.start..access_end,
         });
     }
@@ -2887,10 +2950,7 @@ fn field_access_to_value_access(
     field_path.extend(suffix.iter().cloned());
     Some(ValueAccess {
         handle,
-        display: format_access_display_from_path(
-            unit.symbol(handle.symbol).name.as_ref(),
-            &field_path,
-        ),
+        display: format_access_display_from_path(access.base_name.as_ref(), &field_path),
         field_path,
         range: field_access_range(access),
     })
@@ -3613,7 +3673,13 @@ impl UnitAnalysisExt for UnitAnalysis {
 mod tests {
     use std::sync::Arc;
 
+    use abap_symbols::{
+        Namespace, ReferenceData, ReferenceId, Resolution, SymbolHandle, SymbolId, UnitId,
+    };
+
     use crate::{CallDataflowQuery, DocumentInput, DocumentStore, build_call_dataflow_trace};
+
+    use super::{field_access_to_value_access, resolve_access_handle};
 
     fn snapshot_for(inputs: Vec<DocumentInput>, target_uri: &str) -> Arc<crate::AnalysisSnapshot> {
         let store = DocumentStore::default();
@@ -3782,6 +3848,233 @@ ENDFUNCTION.",
             }),
             "{:?}",
             poitem.field_mappings
+        );
+    }
+
+    #[test]
+    fn resolves_field_access_handles_by_base_name_when_ranges_collide() {
+        let snapshot = snapshot_for(
+            vec![DocumentInput {
+                uri: Arc::from("file:///main.abap"),
+                version: 1,
+                text: Arc::from(
+                    "\
+REPORT z_resolve_field_access.
+
+TYPES: BEGIN OF ty_row,
+         matnr TYPE string,
+       END OF ty_row.
+DATA ls_source TYPE ty_row.
+DATA ls_other TYPE ty_row.
+
+FORM foo.
+  DATA lv_text TYPE string.
+  lv_text = ls_source-matnr.
+ENDFORM.",
+                ),
+                is_dependency: false,
+                object_name: None,
+            }],
+            "file:///main.abap",
+        );
+
+        let mut unit = snapshot.symbols.as_ref().clone();
+        let access = unit
+            .field_accesses
+            .iter()
+            .find(|access| {
+                access.base_namespace == Namespace::Value
+                    && access.base_name.as_ref() == "ls_source"
+                    && access.field_path.len() == 1
+                    && access.field_path[0].name.as_ref() == "matnr"
+            })
+            .expect("field access")
+            .clone();
+        let correct_reference = unit
+            .references
+            .iter()
+            .find(|reference| {
+                reference.scope == access.scope
+                    && reference.namespace == access.base_namespace
+                    && reference.range == access.base_range
+                    && reference.name.as_ref() == "ls_source"
+            })
+            .expect("source reference")
+            .clone();
+        let wrong_symbol = unit
+            .symbols
+            .iter()
+            .position(|symbol| symbol.name.as_ref() == "ls_other")
+            .expect("other symbol");
+        unit.references.insert(
+            0,
+            ReferenceData {
+                id: ReferenceId(u32::MAX),
+                name: Arc::from("ls_other"),
+                namespace: Namespace::Value,
+                kind: correct_reference.kind,
+                scope: access.scope,
+                range: access.base_range.clone(),
+                resolution: Some(Resolution::Symbol(SymbolHandle {
+                    unit: unit.unit_id,
+                    symbol: SymbolId(wrong_symbol as u32),
+                })),
+            },
+        );
+
+        let handle = resolve_access_handle(&unit, &access).expect("resolved handle");
+
+        assert_eq!(unit.symbol(handle.symbol).name.as_ref(), "ls_source");
+    }
+
+    #[test]
+    fn keeps_field_access_display_from_access_text_for_cross_unit_handles() {
+        let snapshot = snapshot_for(
+            vec![DocumentInput {
+                uri: Arc::from("file:///main.abap"),
+                version: 1,
+                text: Arc::from(
+                    "\
+REPORT z_cross_unit_display.
+
+TYPES: BEGIN OF ty_row,
+         matnr TYPE string,
+       END OF ty_row.
+DATA ls_source TYPE ty_row.
+DATA ls_other TYPE ty_row.
+
+FORM foo.
+  DATA lv_text TYPE string.
+  lv_text = ls_source-matnr.
+ENDFORM.",
+                ),
+                is_dependency: false,
+                object_name: None,
+            }],
+            "file:///main.abap",
+        );
+
+        let mut unit = snapshot.symbols.as_ref().clone();
+        let access = unit
+            .field_accesses
+            .iter()
+            .find(|access| {
+                access.base_namespace == Namespace::Value
+                    && access.base_name.as_ref() == "ls_source"
+                    && access.field_path.len() == 1
+                    && access.field_path[0].name.as_ref() == "matnr"
+            })
+            .expect("field access")
+            .clone();
+        let wrong_symbol = unit
+            .symbols
+            .iter()
+            .position(|symbol| symbol.name.as_ref() == "ls_other")
+            .expect("other symbol");
+        let source_reference = unit
+            .references
+            .iter_mut()
+            .find(|reference| {
+                reference.scope == access.scope
+                    && reference.namespace == access.base_namespace
+                    && reference.range == access.base_range
+                    && reference.name.as_ref() == "ls_source"
+            })
+            .expect("source reference");
+        source_reference.resolution = Some(Resolution::Symbol(SymbolHandle {
+            unit: UnitId(u32::MAX),
+            symbol: SymbolId(wrong_symbol as u32),
+        }));
+
+        let value_access =
+            field_access_to_value_access(&unit, &access, &[]).expect("value access");
+
+        assert_eq!(value_access.display, "ls_source-matnr");
+        assert_eq!(value_access.handle.unit, UnitId(u32::MAX));
+    }
+
+    #[test]
+    fn traces_global_sql_writers_across_sibling_routines() {
+        let snapshot = snapshot_for(
+            vec![
+                DocumentInput {
+                    uri: Arc::from("file:///main.abap"),
+                    version: 1,
+                    text: Arc::from(
+                        "\
+REPORT z_global_sql_writers.
+
+TYPES: BEGIN OF ty_state,
+         bukrs TYPE string,
+       END OF ty_state.
+DATA gs_state TYPE ty_state.
+
+FORM load_state.
+  SELECT SINGLE bukrs
+    FROM t001k
+    INTO gs_state
+    WHERE bwkey = 'PL01'.
+ENDFORM.
+
+FORM call_api.
+  CALL FUNCTION 'BAPI_PO_CREATE1'
+    EXPORTING
+      poheader = gs_state-bukrs.
+ENDFORM.
+
+START-OF-SELECTION.
+  PERFORM load_state.
+  PERFORM call_api.",
+                    ),
+                    is_dependency: false,
+                    object_name: None,
+                },
+                DocumentInput {
+                    uri: Arc::from("file:///bapi.abap"),
+                    version: 1,
+                    text: Arc::from(
+                        "\
+FUNCTION bapi_po_create1
+  IMPORTING
+    poheader TYPE string.
+ENDFUNCTION.",
+                    ),
+                    is_dependency: true,
+                    object_name: None,
+                },
+            ],
+            "file:///main.abap",
+        );
+
+        let trace = build_call_dataflow_trace(
+            snapshot.as_ref(),
+            CallDataflowQuery {
+                target: "BAPI_PO_CREATE1".to_string(),
+                caller: Some("call_api".to_string()),
+                occurrence: None,
+            },
+        );
+
+        let poheader = trace
+            .parameter_traces
+            .iter()
+            .find(|trace| trace.parameter_name.as_deref() == Some("poheader"))
+            .expect("poheader trace");
+        assert!(
+            poheader.field_mappings.iter().any(|mapping| {
+                mapping.source_kind == "sql_target" && mapping.source_display == "gs_state-bukrs"
+            }),
+            "{:?}",
+            poheader.field_mappings
+        );
+        assert!(
+            poheader
+                .provenance
+                .nodes
+                .iter()
+                .any(|node| node.kind == "sql_query" && node.label.contains("FROM t001k")),
+            "{:?}",
+            poheader.provenance.nodes
         );
     }
 

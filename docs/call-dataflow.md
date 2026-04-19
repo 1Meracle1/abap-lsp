@@ -46,13 +46,12 @@ It includes:
 - detailed Mermaid provenance graph per parameter
 - one technical mapping table per parameter
 
-With `--diagram rich-mermaid`, the human output switches to one merged Mermaid graph that combines:
+With `--diagram rich-mermaid`, the human output keeps the selected-call summary and parameter tables, but each parameter section now includes one rich Mermaid graph for that parameter only. Each graph combines:
 
-- lifecycle path to the selected call
-- parameter root nodes connected directly to the selected call
-- merged provenance nodes across parameters
+- collapsed provenance for one target parameter
 - SQL source tables, SQL predicates, and predicate host-variable inputs
 - field-level target nodes where the trace can resolve them
+- compact summaries for multi-field row builders and field-update blocks
 
 Available human diagram renderers:
 
@@ -145,13 +144,13 @@ event_block end-of-selection
 - ASCII is the default terminal-oriented renderer in V1.
 - SVG is the graphical renderer for Markdown/HTML-capable viewers and for downstream tooling.
 - Mermaid remains available as a source-format alternative with `--diagram mermaid`.
-- `rich-mermaid` is the preferred single-diagram renderer when you want one field-level graph instead of separate per-parameter graphs.
+- `rich-mermaid` is the preferred renderer when you want one field-level graph per target parameter instead of one all-parameter supergraph.
 - The renderer boundary is intentionally narrow so additional diagram formats can be added without changing the trace schema.
 - JSON is the canonical intermediate format for downstream LLM or SVG generation.
 
 ## Prompt Recipe
 
-When you want a narrative review or a custom re-rendering on top of the canonical trace, capture both the JSON and the merged graph:
+When you want a narrative review or a custom re-rendering on top of the canonical trace, capture both the JSON and the emitted rich parameter graphs:
 
 ```text
 abap_cli --json call-dataflow --target BAPI_PO_CREATE1 --caller f_bapi_po_create_fm path\to\report.abap > call-dataflow.json
@@ -161,10 +160,10 @@ abap_cli call-dataflow --target BAPI_PO_CREATE1 --caller f_bapi_po_create_fm --d
 Then use a prompt in this shape:
 
 ```text
-Analyze the attached `call-dataflow.json` and the emitted `rich-mermaid` graph.
+Analyze the attached `call-dataflow.json` and the emitted `rich-mermaid` parameter graphs.
 
-Produce one single rich dataflow diagram for the selected call with these rules:
-- show one merged graph, not separate parameter diagrams
+Produce a rich dataflow diagram set for the selected call with these rules:
+- show one graph per target parameter
 - trace exact field-to-field mappings into the target call parameters
 - for each SQL query, show:
   - source tables actually used
