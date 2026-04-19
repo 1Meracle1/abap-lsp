@@ -994,6 +994,7 @@ impl<'a> TraceBuilder<'a> {
             notes,
             depth + 1,
             provenance,
+            sink_node_id,
         );
         found |= self.trace_producer_perform_calls(
             context,
@@ -1334,6 +1335,7 @@ impl<'a> TraceBuilder<'a> {
         notes: &mut Vec<String>,
         depth: usize,
         provenance: &mut ParameterProvenanceBuilder,
+        sink_node_id: &str,
     ) -> bool {
         let Some(current_routine) = context.routine else {
             return false;
@@ -1400,6 +1402,11 @@ impl<'a> TraceBuilder<'a> {
                     )),
                 );
                 provenance.add_edge(&append_node_id, &append_target_node_id, "appends", None);
+                if provenance.node_kind(sink_node_id) == Some("perform_write")
+                    && append_target_node_id != sink_node_id
+                {
+                    provenance.add_edge(&append_target_node_id, sink_node_id, "flows_to", None);
+                }
                 self.trace_bound_range(
                     TraceContext {
                         sink_offset: assignment.range.start,
@@ -1450,6 +1457,11 @@ impl<'a> TraceBuilder<'a> {
                 "writes",
                 None,
             );
+            if provenance.node_kind(sink_node_id) == Some("perform_write")
+                && assignment_target_node_id != sink_node_id
+            {
+                provenance.add_edge(&assignment_target_node_id, sink_node_id, "flows_to", None);
+            }
             self.trace_bound_range(
                 TraceContext {
                     sink_offset: assignment.range.start,
@@ -1539,9 +1551,33 @@ impl<'a> TraceBuilder<'a> {
                         &perform_call.range,
                     )),
                 });
+                let write_summary = parameter
+                    .symbol
+                    .and_then(|parameter_symbol| {
+                        let callee_unit =
+                            &self.snapshot.project.units[parameter_symbol.unit.as_usize()];
+                        let callee_routine = self
+                            .snapshot
+                            .routine_analysis()
+                            .routine_for_owner(callee_owner);
+                        self.summarize_perform_write_behavior(
+                            callee_unit,
+                            callee_routine,
+                            parameter_symbol,
+                        )
+                    })
+                    .map(|summary| {
+                        format!(
+                            "{} writes {} ({summary})",
+                            callee_summary.name, parameter.name
+                        )
+                    })
+                    .unwrap_or_else(|| {
+                        format!("{} writes {}", callee_summary.name, parameter.name)
+                    });
                 let perform_write_node_id = provenance.add_flow_node(
                     "perform_write",
-                    &format!("{} writes {}", callee_summary.name, parameter.name),
+                    &write_summary,
                     Some(context.unit.uri.as_ref()),
                     Some(byte_range(&perform_call.range)),
                     Some(snippet(
@@ -1589,6 +1625,102 @@ impl<'a> TraceBuilder<'a> {
             }
         }
         found
+    }
+
+    fn summarize_perform_write_behavior(
+        &self,
+        unit: &UnitAnalysis,
+        routine: Option<&RoutineAnalysis>,
+        parameter_symbol: SymbolHandle,
+    ) -> Option<String> {
+        let routine = routine?;
+        let source_text = self.snapshot.project_text(unit.uri.as_ref())?;
+        let formal_name = unit.symbol(parameter_symbol.symbol).name.as_ref();
+        let formal_name_lower = formal_name.to_ascii_lowercase();
+
+        let cleared_target = unit.routine_sites.iter().any(|site| {
+            site.kind == abap_symbols::RoutineSiteKind::Clear
+                && same_routine_scope(self.snapshot, unit, site.scope, routine)
+                && (site.target_range.as_ref().is_some_and(|target_range| {
+                    value_accesses_in_range(unit, target_range)
+                        .iter()
+                        .any(|access| access.handle == parameter_symbol)
+                }) || snippet_without_comments(Some(source_text), &site.range)
+                    .to_ascii_lowercase()
+                    .contains(&formal_name_lower))
+        });
+
+        let appended_target = unit.assignment_sites.iter().any(|assignment| {
+            same_routine_scope(self.snapshot, unit, assignment.scope, routine)
+                && assignment_access(unit, assignment)
+                    .is_some_and(|lhs_access| lhs_access.handle == parameter_symbol)
+                && snippet_without_comments(Some(source_text), &assignment.range)
+                    .to_ascii_lowercase()
+                    .starts_with("append ")
+        });
+
+        let mut read_keys = Vec::<String>::new();
+        for site in &unit.routine_sites {
+            if !same_routine_scope(self.snapshot, unit, site.scope, routine) {
+                continue;
+            }
+            let statement = snippet_without_comments(Some(source_text), &site.range);
+            let statement_lower = statement.to_ascii_lowercase();
+            if !statement_lower.starts_with("read table ")
+                || !statement_lower.contains(&formal_name_lower)
+            {
+                continue;
+            }
+            read_keys.extend(parse_read_table_key_fields(&statement));
+        }
+        dedup_case_insensitive(&mut read_keys);
+
+        let mut additive_fields = Vec::<String>::new();
+        for assignment in &unit.assignment_sites {
+            if !same_routine_scope(self.snapshot, unit, assignment.scope, routine) {
+                continue;
+            }
+            let Some(lhs_access) = assignment_access(unit, assignment) else {
+                continue;
+            };
+            if !assignment.rhs_is_top_level_sum {
+                continue;
+            }
+            let mutates_target = lhs_access.handle == parameter_symbol
+                || (unit.symbol(lhs_access.handle.symbol).kind == SymbolKind::FieldSymbol
+                    && field_symbol_bound_to_table_parameter(
+                        unit,
+                        routine,
+                        source_text,
+                        &formal_name_lower,
+                        unit.symbol(lhs_access.handle.symbol).name.as_ref(),
+                        assignment.range.start,
+                    ));
+            if !mutates_target {
+                continue;
+            }
+            if let Some(field_name) = lhs_access.field_path.last() {
+                additive_fields.push(field_name.clone());
+            }
+        }
+        dedup_case_insensitive(&mut additive_fields);
+
+        let mut parts = Vec::new();
+        if !read_keys.is_empty() {
+            parts.push(format!("merge by {}", read_keys.join(", ")));
+        } else if cleared_target && appended_target {
+            parts.push("rebuild rows".to_string());
+        }
+        if !additive_fields.is_empty() {
+            parts.push(format!("sum {}", additive_fields.join(", ")));
+        } else if appended_target && read_keys.is_empty() {
+            parts.push("append rows".to_string());
+        }
+        if parts.is_empty() && cleared_target {
+            parts.push(format!("clear {formal_name}"));
+        }
+
+        (!parts.is_empty()).then(|| parts.join("; "))
     }
 
     fn trace_producer_call_outputs(
@@ -2159,6 +2291,14 @@ impl ParameterProvenanceBuilder {
         });
     }
 
+    fn node_kind(&self, node_id: &str) -> Option<&str> {
+        self.graph
+            .nodes
+            .iter()
+            .find(|node| node.id == node_id)
+            .map(|node| node.kind.as_str())
+    }
+
     fn create_node(
         &mut self,
         key: &str,
@@ -2419,6 +2559,90 @@ fn value_accesses_in_range(unit: &UnitAnalysis, range: &TextRange) -> Vec<ValueA
     });
     refs.dedup_by(|left, right| left.range == right.range && left.display == right.display);
     refs
+}
+
+fn field_symbol_bound_to_table_parameter(
+    unit: &UnitAnalysis,
+    routine: &RoutineAnalysis,
+    source_text: &str,
+    table_parameter_name_lower: &str,
+    field_symbol_name: &str,
+    before_offset: usize,
+) -> bool {
+    let scope_range = &routine.descriptor.scope_range;
+    let field_symbol_name_lower = field_symbol_name.to_ascii_lowercase();
+    unit.routine_sites.iter().any(|site| {
+        site.range.start >= scope_range.start
+            && site.range.end <= scope_range.end
+            && site.range.end <= before_offset
+            && {
+                let statement = snippet_without_comments(Some(source_text), &site.range);
+                let statement_lower = statement.to_ascii_lowercase();
+                statement_lower.starts_with("read table ")
+                    && statement_lower.contains(table_parameter_name_lower)
+                    && statement_lower.contains(&field_symbol_name_lower)
+            }
+    })
+}
+
+fn parse_read_table_key_fields(statement: &str) -> Vec<String> {
+    let Some(key_clause) = read_table_key_clause(statement) else {
+        return Vec::new();
+    };
+    let normalized = key_clause
+        .replace('=', " = ")
+        .replace('.', " ")
+        .replace(',', " ");
+    let tokens: Vec<_> = normalized.split_whitespace().collect();
+    let mut fields = Vec::new();
+    for index in 1..tokens.len() {
+        if tokens[index] != "=" {
+            continue;
+        }
+        let field = clean_identifier_token(tokens[index - 1]);
+        if !field.is_empty() {
+            fields.push(field.to_string());
+        }
+    }
+    dedup_case_insensitive(&mut fields);
+    fields
+}
+
+fn read_table_key_clause(statement: &str) -> Option<&str> {
+    let uppercase = statement.to_ascii_uppercase();
+    let key_start = uppercase
+        .find(" WITH TABLE KEY ")
+        .map(|index| index + " WITH TABLE KEY ".len())
+        .or_else(|| {
+            uppercase
+                .find(" WITH KEY ")
+                .map(|index| index + " WITH KEY ".len())
+        })?;
+    let suffix = &statement[key_start..];
+    let suffix_upper = &uppercase[key_start..];
+    let mut end = suffix.len();
+    for marker in [
+        " BINARY SEARCH",
+        " TRANSPORTING",
+        " COMPARING",
+        " INTO ",
+        " ASSIGNING ",
+        " REFERENCE INTO ",
+    ] {
+        if let Some(index) = suffix_upper.find(marker) {
+            end = end.min(index);
+        }
+    }
+    Some(suffix[..end].trim())
+}
+
+fn clean_identifier_token(token: &str) -> &str {
+    token.trim_matches(|ch: char| matches!(ch, '(' | ')' | '[' | ']' | ',' | '.'))
+}
+
+fn dedup_case_insensitive(values: &mut Vec<String>) {
+    let mut seen = HashSet::<String>::new();
+    values.retain(|value| seen.insert(value.to_ascii_lowercase()));
 }
 
 fn relevant_target_suffix(source_path: &[String], lhs_path: &[String]) -> Option<Vec<String>> {
@@ -4184,6 +4408,135 @@ ENDFUNCTION.",
                 .any(|node| node.kind == "sql_source" && node.label.contains("mara")),
             "{:?}",
             poheader.provenance.nodes
+        );
+    }
+
+    #[test]
+    fn summarizes_mutating_perform_writes_and_links_internal_table_writes() {
+        let snapshot = snapshot_for(
+            vec![
+                DocumentInput {
+                    uri: Arc::from("file:///main.abap"),
+                    version: 1,
+                    text: Arc::from(
+                        "\
+REPORT z_perform_write_summary.
+
+TYPES: BEGIN OF ty_schedule,
+         po_item TYPE string,
+         delivery_date TYPE string,
+         quantity TYPE i,
+       END OF ty_schedule.
+TYPES ty_schedule_tab TYPE STANDARD TABLE OF ty_schedule WITH DEFAULT KEY.
+
+DATA gt_schedule TYPE ty_schedule_tab.
+
+FORM merge_schedule CHANGING ct_schedule TYPE ty_schedule_tab.
+  DATA lt_schedule TYPE ty_schedule_tab.
+  DATA ls_schedule TYPE ty_schedule.
+  FIELD-SYMBOLS <ls_existing> TYPE ty_schedule.
+
+  ls_schedule-po_item = '10'.
+  ls_schedule-delivery_date = '20240101'.
+  ls_schedule-quantity = 1.
+  APPEND ls_schedule TO ct_schedule.
+  APPEND ls_schedule TO ct_schedule.
+
+  lt_schedule = ct_schedule.
+  CLEAR ct_schedule.
+  SORT lt_schedule BY po_item delivery_date.
+  LOOP AT lt_schedule INTO ls_schedule.
+    READ TABLE ct_schedule ASSIGNING <ls_existing>
+      WITH KEY po_item = ls_schedule-po_item
+               delivery_date = ls_schedule-delivery_date.
+    IF sy-subrc = 0.
+      <ls_existing>-quantity = <ls_existing>-quantity + ls_schedule-quantity.
+    ELSE.
+      APPEND ls_schedule TO ct_schedule.
+    ENDIF.
+  ENDLOOP.
+ENDFORM.
+
+FORM call_api USING ut_schedule TYPE ty_schedule_tab.
+  CALL FUNCTION 'TARGET_API'
+    EXPORTING
+      it_schedule = ut_schedule.
+ENDFORM.
+
+START-OF-SELECTION.
+  PERFORM merge_schedule CHANGING gt_schedule.
+  PERFORM call_api USING gt_schedule.",
+                    ),
+                    is_dependency: false,
+                    object_name: None,
+                },
+                DocumentInput {
+                    uri: Arc::from("file:///target.abap"),
+                    version: 1,
+                    text: Arc::from(
+                        "\
+FUNCTION target_api
+  IMPORTING
+    it_schedule TYPE string.
+ENDFUNCTION.",
+                    ),
+                    is_dependency: true,
+                    object_name: None,
+                },
+            ],
+            "file:///main.abap",
+        );
+
+        let trace = build_call_dataflow_trace(
+            snapshot.as_ref(),
+            CallDataflowQuery {
+                target: "TARGET_API".to_string(),
+                caller: Some("call_api".to_string()),
+                occurrence: None,
+            },
+        );
+
+        let it_schedule = trace
+            .parameter_traces
+            .iter()
+            .find(|trace| trace.parameter_name.as_deref() == Some("it_schedule"))
+            .expect("it_schedule trace");
+        let perform_write = it_schedule
+            .provenance
+            .nodes
+            .iter()
+            .find(|node| {
+                node.kind == "perform_write"
+                    && node.label.contains("merge_schedule writes ct_schedule")
+            })
+            .expect("perform write node");
+        assert!(
+            perform_write
+                .label
+                .contains("merge by po_item, delivery_date"),
+            "{}",
+            perform_write.label
+        );
+        assert!(
+            perform_write.label.contains("sum quantity"),
+            "{}",
+            perform_write.label
+        );
+
+        let table_row_node = it_schedule
+            .provenance
+            .nodes
+            .iter()
+            .find(|node| node.kind == "target_table_row" && node.label == "it_schedule[*]")
+            .expect("target table row node");
+        assert!(
+            it_schedule.provenance.edges.iter().any(|edge| {
+                edge.source == table_row_node.id
+                    && edge.target == perform_write.id
+                    && edge.kind == "flows_to"
+            }),
+            "{:?}",
+            it_schedule.provenance.edges
         );
     }
 
