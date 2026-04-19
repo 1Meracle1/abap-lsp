@@ -5358,6 +5358,64 @@ ls_cust_info-root = 'node'.";
 }
 
 #[test]
+fn collects_legacy_type_pool_structured_fields_with_like_and_untyped_components() {
+    let src = "\
+TYPES: BEGIN OF slis_seldis1_alv.\n\
+TYPES: field LIKE sy-ucomm,\n\
+       table LIKE sy-repid,\n\
+       stext(40),\n\
+       sign0(1),\n\
+       length TYPE p,\n\
+END OF slis_seldis1_alv.\n\
+DATA ls_seldis TYPE slis_seldis1_alv.\n\
+ls_seldis-field = sy-ucomm.\n\
+ls_seldis-stext = 'X'.";
+    let parsed = parse(src);
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let unit = analyze_unit("file:///legacy_type_pool_structured_fields.abap", src, &parsed);
+
+    let type_symbol = unit
+        .symbols
+        .iter()
+        .find(|symbol| {
+            symbol.kind == abap_symbols::SymbolKind::TypeDef
+                && symbol.name.as_ref() == "slis_seldis1_alv"
+        })
+        .expect("structured type symbol");
+    let structure = unit.structure(type_symbol.structure.expect("structure metadata"));
+    assert!(
+        structure.fields.iter().any(|field| field.name.as_ref() == "field"),
+        "expected field component, fields={:?}",
+        structure.fields
+    );
+    assert!(
+        structure.fields.iter().any(|field| field.name.as_ref() == "table"),
+        "expected table component, fields={:?}",
+        structure.fields
+    );
+    assert!(
+        structure.fields.iter().any(|field| field.name.as_ref() == "stext"),
+        "expected untyped character component, fields={:?}",
+        structure.fields
+    );
+    assert!(
+        structure.fields.iter().any(|field| field.name.as_ref() == "sign0"),
+        "expected untyped numeric component, fields={:?}",
+        structure.fields
+    );
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnknownField
+                || (diag.kind == DiagnosticKind::UnresolvedReference
+                    && (diag.message.contains("slis_seldis1_alv")
+                        || diag.message.contains("ls_seldis")))
+        }),
+        "unexpected diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn exposes_structure_field_query_info() {
     let src = "\
 TYPES: BEGIN OF ty_inner,\n\

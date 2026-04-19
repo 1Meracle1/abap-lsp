@@ -1116,7 +1116,7 @@ pub fn try_parse_types_decl(
             "types",
             SyntaxKind::TypesDecl,
             SyntaxKind::TypesTypedClause,
-            false,
+            true,
             false,
         )
     })
@@ -1259,18 +1259,17 @@ fn parse_structured_types_component_run(
             tokens,
             idx,
             SyntaxKind::StructuredDecl,
-            false,
+            true,
             false,
         )
         .or_else(|| parse_structured_include_clause(b, source, tokens, idx))
         .or_else(|| {
-            parse_decl_clause(
+            parse_structured_field_clause(
                 b,
                 source,
                 tokens,
                 idx,
-                SyntaxKind::TypesTypedClause,
-                false,
+                true,
                 false,
             )
         })?;
@@ -1587,6 +1586,17 @@ mod tests {
     }
 
     #[test]
+    fn types_decl_accepts_like_clause() {
+        let file = tree_ok("TYPES ty_repid LIKE sy-repid.");
+        assert_eq!(file.count_kind(file.root(), SyntaxKind::TypesDecl), 1);
+        assert_eq!(
+            file.count_kind(file.root(), SyntaxKind::TypesTypedClause),
+            1
+        );
+        assert_eq!(file.count_kind(file.root(), SyntaxKind::TypeRefSimple), 1);
+    }
+
+    #[test]
     fn structured_types_clause_parses_component_fields() {
         let file = tree_ok(
             "TYPES: BEGIN OF ts_cust_info, type TYPE char1, root TYPE string, END OF ts_cust_info.",
@@ -1613,6 +1623,31 @@ mod tests {
     }
 
     #[test]
+    fn structured_types_clause_accepts_like_components() {
+        let file = tree_ok(
+            "TYPES: BEGIN OF ty_evt, ucomm LIKE sy-ucomm, fieldname LIKE dd03p-fieldname, END OF ty_evt.",
+        );
+        assert_eq!(file.count_kind(file.root(), SyntaxKind::TypesDecl), 1);
+        assert_eq!(
+            file.count_kind(file.root(), SyntaxKind::StructuredFieldClause),
+            2
+        );
+        assert_eq!(file.count_kind(file.root(), SyntaxKind::TypeRefSimple), 2);
+    }
+
+    #[test]
+    fn structured_types_clause_accepts_untyped_components() {
+        let file = tree_ok(
+            "TYPES: BEGIN OF ty_sel, stext(40), sign0(1), length TYPE p, END OF ty_sel.",
+        );
+        assert_eq!(file.count_kind(file.root(), SyntaxKind::TypesDecl), 1);
+        assert_eq!(
+            file.count_kind(file.root(), SyntaxKind::StructuredFieldClause),
+            3
+        );
+    }
+
+    #[test]
     fn block_structured_types_clause_parses_include_components() {
         let file = tree_ok(
             "TYPES: BEGIN OF ty_outer. INCLUDE TYPE ty_inner AS inner. TYPES: field TYPE i, other TYPE string, END OF ty_outer.",
@@ -1624,8 +1659,34 @@ mod tests {
             1
         );
         assert_eq!(
-            file.count_kind(file.root(), SyntaxKind::TypesTypedClause),
+            file.count_kind(file.root(), SyntaxKind::StructuredFieldClause),
             2
+        );
+    }
+
+    #[test]
+    fn block_structured_types_clause_accepts_like_and_untyped_components() {
+        let src = "\
+TYPES: BEGIN OF slis_seldis1_alv.\n\
+TYPES: field LIKE dfies-fieldname,\n\
+       table LIKE dfies-tabname,\n\
+       stext(40),\n\
+       valuf(80),\n\
+       length TYPE p,\n\
+END OF slis_seldis1_alv.";
+        let parsed = crate::parse(src);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::StructuredFieldClause),
+            5
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::TypesTypedClause),
+            0
         );
     }
 
