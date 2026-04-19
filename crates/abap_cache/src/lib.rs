@@ -1157,6 +1157,7 @@ impl AnalysisSnapshot {
             })
             .min_by_key(|(width, _)| *width)
             .map(|(_, target)| target)
+            .or_else(|| definition_target_for_dd_like_type_name(self.project.as_ref(), name))
     }
 
     fn reference_search_target_for_dd_like_type_name(
@@ -2885,8 +2886,56 @@ fn reference_target_for_search_target(
                 range: field.decl_range?,
             })
         }
-        ReferenceSearchTarget::DdLikeTypeName { .. } => None,
+        ReferenceSearchTarget::DdLikeTypeName { name, .. } => {
+            let target = definition_target_for_dd_like_type_name(project, name.as_ref())?;
+            Some(ReferenceTarget {
+                uri: target.uri,
+                range: target.range,
+            })
+        }
     }
+}
+
+fn definition_target_for_dd_like_type_name(
+    project: &ProjectAnalysis,
+    name: &str,
+) -> Option<DefinitionTarget> {
+    let unit = dd_like_type_definition_unit(project, name)?;
+    if let Some(symbol) = unit.symbols.iter().find(|symbol| {
+        symbol.scope == unit.root_scope
+            && symbol.kind.occupies(Namespace::Type)
+            && symbol.name.eq_ignore_ascii_case(name)
+    }) {
+        return Some(definition_target_for_symbol(unit, symbol));
+    }
+
+    Some(definition_target_for_range(unit, 0..0))
+}
+
+fn dd_like_type_definition_unit<'a>(
+    project: &'a ProjectAnalysis,
+    name: &str,
+) -> Option<&'a UnitAnalysis> {
+    project
+        .provided_name_to_unit
+        .get(name)
+        .and_then(|unit_id| project.units.get(unit_id.as_usize()))
+        .or_else(|| {
+            project.units.iter().find(|unit| {
+                unit.provided_names
+                    .iter()
+                    .any(|provided| provided.eq_ignore_ascii_case(name))
+            })
+        })
+        .or_else(|| {
+            project.units.iter().find(|unit| {
+                unit.symbols.iter().any(|symbol| {
+                    symbol.scope == unit.root_scope
+                        && symbol.kind.occupies(Namespace::Type)
+                        && symbol.name.eq_ignore_ascii_case(name)
+                })
+            })
+        })
 }
 
 fn symbol_handle_for_decl_range(
@@ -11116,6 +11165,40 @@ SELECT * FROM ty_demo INTO TABLE lt.
         let def = snapshot.definition_at(offset).expect("definition target");
         assert_eq!(def.uri.as_ref(), "file:///sql.abap");
         assert_eq!(&src[def.range.clone()], "ty_demo");
+    }
+
+    #[test]
+    fn definition_from_select_from_resolves_dependency_ddic_object_without_local_type_ref() {
+        let store = DocumentStore::default();
+        let dep_src = "\
+TYPES: BEGIN OF ekpo,
+         ebeln TYPE string,
+       END OF ekpo.
+";
+        let main_src = "SELECT ebeln FROM ekpo INTO TABLE @DATA(lt_ekpo).\n";
+        let snapshots = store.replace_all(vec![
+            DocumentInput {
+                uri: Arc::from("file:///deps/EKPO.abap"),
+                version: 1,
+                text: Arc::from(dep_src),
+                is_dependency: true,
+                object_name: Some(Arc::from("ekpo")),
+            },
+            DocumentInput {
+                uri: Arc::from("file:///main.abap"),
+                version: 1,
+                text: Arc::from(main_src),
+                is_dependency: false,
+                object_name: None,
+            },
+        ]);
+        let snapshot = snapshots.get("file:///main.abap").expect("main snapshot");
+        let offset = main_src.find("FROM ekpo").expect("sql source") + "FROM ".len() + 1;
+
+        let def = snapshot.definition_at(offset).expect("definition target");
+
+        assert_eq!(def.uri.as_ref(), "file:///deps/EKPO.abap");
+        assert_target_slice(&def, "file:///deps/EKPO.abap", dep_src, "ekpo");
     }
 
     #[test]
