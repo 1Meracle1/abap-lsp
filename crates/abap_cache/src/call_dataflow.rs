@@ -4,9 +4,9 @@ use std::sync::Arc;
 use abap_lexer::TextRange;
 use abap_symbols::{
     AssignmentSiteData, CallSiteData, NamedArgumentSection, NamedArgumentTarget, Namespace,
-    PerformCallData, ReferenceKind, Resolution, RoutineAnalysis, ScopeId, SqlProjectionData,
-    SqlProjectionKind, SqlQueryData, SqlSourceData, SqlSourceKind, SqlTargetData, SqlTargetKind,
-    SymbolHandle, SymbolKind, UnitAnalysis,
+    PerformCallData, ReferenceKind, Resolution, RoutineAnalysis, ScopeId, SqlNameRefKind,
+    SqlProjectionData, SqlProjectionKind, SqlQueryData, SqlSourceData, SqlSourceKind,
+    SqlTargetData, SqlTargetKind, SymbolHandle, SymbolKind, UnitAnalysis,
 };
 use serde::Serialize;
 
@@ -1732,13 +1732,15 @@ impl<'a> TraceBuilder<'a> {
                     || relevant_projections.len() == 1)
                     && !access.display.is_empty())
                 .then(|| {
+                    let target_field_range =
+                        sql_target_field_precise_range(context.unit, target, access)
+                            .or_else(|| target.target_range.clone())
+                            .unwrap_or_else(|| target.range.clone());
                     provenance.add_flow_node(
                         "sql_target_field",
                         &access.display,
                         Some(context.unit.uri.as_ref()),
-                        Some(byte_range(
-                            target.target_range.as_ref().unwrap_or(&target.range),
-                        )),
+                        Some(byte_range(&target_field_range)),
                         None,
                     )
                 });
@@ -1760,7 +1762,10 @@ impl<'a> TraceBuilder<'a> {
                         "sql_source_field",
                         &projection_label,
                         Some(context.unit.uri.as_ref()),
-                        Some(byte_range(&projection.range)),
+                        Some(byte_range(
+                            &sql_projection_precise_range(context.unit, query.id, projection)
+                                .unwrap_or_else(|| projection.range.clone()),
+                        )),
                         None,
                     );
                     provenance.add_edge(&projection_node_id, &query_node_id, "projects", None);
@@ -2679,6 +2684,61 @@ fn sql_projection_source_lookup_key(
     }
 
     None
+}
+
+fn sql_projection_precise_range(
+    unit: &UnitAnalysis,
+    query_id: usize,
+    projection: &SqlProjectionData,
+) -> Option<TextRange> {
+    let name = projection.name.as_deref()?;
+    let mut matches: Vec<_> = unit
+        .sql_name_refs
+        .iter()
+        .filter(|name_ref| {
+            name_ref.query_id == query_id
+                && name_ref.range.start >= projection.range.start
+                && name_ref.range.end <= projection.range.end
+                && name_ref.name.as_ref().eq_ignore_ascii_case(name)
+                && matches!(
+                    name_ref.kind,
+                    SqlNameRefKind::Column | SqlNameRefKind::QualifiedColumn
+                )
+                && match projection.source_alias.as_deref() {
+                    Some(alias) => name_ref.qualifier.as_deref() == Some(alias),
+                    None => true,
+                }
+        })
+        .collect();
+    matches.sort_by(|left, right| {
+        left.range
+            .start
+            .cmp(&right.range.start)
+            .then(left.range.end.cmp(&right.range.end))
+    });
+    matches.first().map(|name_ref| name_ref.range.clone())
+}
+
+fn sql_target_field_precise_range(
+    unit: &UnitAnalysis,
+    target: &SqlTargetData,
+    access: &ValueAccess,
+) -> Option<TextRange> {
+    let target_range = target.target_range.as_ref()?;
+    let accesses = value_accesses_in_range(unit, target_range);
+    accesses
+        .iter()
+        .find(|candidate| {
+            candidate.handle == access.handle && candidate.field_path == access.field_path
+        })
+        .or_else(|| {
+            access.field_path.is_empty().then(|| {
+                accesses
+                    .iter()
+                    .find(|candidate| candidate.handle == access.handle)
+            })?
+        })
+        .map(|candidate| candidate.range.clone())
 }
 
 fn sql_query_source_clause(unit: &UnitAnalysis, query_id: usize) -> Option<String> {
@@ -3644,6 +3704,99 @@ ENDFUNCTION.",
             "{:?}",
             poheader.provenance.edges
         );
+    }
+
+    #[test]
+    fn traces_precise_sql_source_field_range_for_multi_column_select() {
+        let snapshot = snapshot_for(
+            vec![
+                DocumentInput {
+                    uri: Arc::from("file:///main.abap"),
+                    version: 1,
+                    text: Arc::from(
+                        "\
+REPORT z_sql_projection_range.
+
+TYPES: BEGIN OF ty_header,
+         bsart TYPE string,
+       END OF ty_header.
+TYPES: BEGIN OF ty_sql,
+         reswk TYPE string,
+         werks TYPE string,
+         bsart TYPE string,
+       END OF ty_sql.
+DATA gs_header TYPE ty_header.
+
+FORM build_header CHANGING cs_header TYPE ty_header.
+  DATA ls_sql TYPE ty_sql.
+  SELECT SINGLE reswk
+                werks
+                bsart
+    FROM t161w
+    INTO @ls_sql.
+  cs_header-bsart = ls_sql-bsart.
+ENDFORM.
+
+FORM call_api USING us_header TYPE ty_header.
+  CALL FUNCTION 'BAPI_PO_CREATE1'
+    EXPORTING
+      poheader = us_header.
+ENDFORM.
+
+START-OF-SELECTION.
+  PERFORM build_header CHANGING gs_header.
+  PERFORM call_api USING gs_header.",
+                    ),
+                    is_dependency: false,
+                    object_name: None,
+                },
+                DocumentInput {
+                    uri: Arc::from("file:///bapi.abap"),
+                    version: 1,
+                    text: Arc::from(
+                        "\
+FUNCTION bapi_po_create1
+  IMPORTING
+    poheader TYPE string.
+ENDFUNCTION.",
+                    ),
+                    is_dependency: true,
+                    object_name: None,
+                },
+            ],
+            "file:///main.abap",
+        );
+
+        let trace = build_call_dataflow_trace(
+            snapshot.as_ref(),
+            CallDataflowQuery {
+                target: "BAPI_PO_CREATE1".to_string(),
+                caller: Some("call_api".to_string()),
+                occurrence: None,
+            },
+        );
+
+        let poheader = trace
+            .parameter_traces
+            .iter()
+            .find(|trace| trace.parameter_name.as_deref() == Some("poheader"))
+            .expect("poheader trace");
+        let sql_field = poheader
+            .provenance
+            .nodes
+            .iter()
+            .find(|node| node.kind == "sql_source_field" && node.label == "t161w.bsart")
+            .expect("sql source field");
+        let range = sql_field.range.as_ref().expect("range");
+        let source_text = snapshot
+            .project_text("file:///main.abap")
+            .expect("main source text");
+        let exact = source_text
+            .get(range.start..range.end)
+            .expect("slice")
+            .trim();
+
+        assert_eq!(exact, "bsart");
     }
 
     #[test]
