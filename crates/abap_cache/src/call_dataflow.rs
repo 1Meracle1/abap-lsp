@@ -1703,22 +1703,15 @@ impl<'a> TraceBuilder<'a> {
                 .iter()
                 .find(|query| query.id == target.query_id)
             {
-                let query_statement = snippet(
-                    self.snapshot.project_text(context.unit.uri.as_ref()),
-                    &query.range,
-                );
+                let source_text = self.snapshot.project_text(context.unit.uri.as_ref());
+                let query_statement = snippet(source_text, &query.range);
                 let query_node_id = provenance.add_query_node(
                     context.unit.uri.as_ref(),
                     query,
-                    &summarize_sql_query(
-                        context.unit,
-                        query,
-                        target,
-                        self.snapshot.project_text(context.unit.uri.as_ref()),
-                    ),
+                    &summarize_sql_query(context.unit, query, target, source_text),
                     query_statement,
                 );
-                provenance.add_edge(&query_node_id, sink_node_id, "selects_into", None);
+                let mut source_node_ids = HashMap::<String, String>::new();
                 for source in context
                     .unit
                     .sql_sources
@@ -1728,8 +1721,57 @@ impl<'a> TraceBuilder<'a> {
                     let source_node_id =
                         provenance.add_sql_source_node(context.unit.uri.as_ref(), query.id, source);
                     provenance.add_edge(&source_node_id, &query_node_id, "reads_from", None);
+                    source_node_ids.insert(source.name.to_string(), source_node_id.clone());
+                    if let Some(alias) = source.alias.as_deref() {
+                        source_node_ids.insert(alias.to_string(), source_node_id.clone());
+                    }
                 }
-                let source_text = self.snapshot.project_text(context.unit.uri.as_ref());
+                let relevant_projections =
+                    sql_relevant_query_projections(context.unit, query.id, access);
+                let target_field_node_id = ((!access.field_path.is_empty()
+                    || relevant_projections.len() == 1)
+                    && !access.display.is_empty())
+                .then(|| {
+                    provenance.add_flow_node(
+                        "sql_target_field",
+                        &access.display,
+                        Some(context.unit.uri.as_ref()),
+                        Some(byte_range(
+                            target.target_range.as_ref().unwrap_or(&target.range),
+                        )),
+                        None,
+                    )
+                });
+                if let Some(target_field_node_id) = target_field_node_id.as_ref() {
+                    provenance.add_edge(&query_node_id, target_field_node_id, "selects_into", None);
+                    provenance.add_edge(target_field_node_id, sink_node_id, "flows_to", None);
+                } else {
+                    provenance.add_edge(&query_node_id, sink_node_id, "selects_into", None);
+                }
+                for projection in relevant_projections {
+                    let projection_label = sql_projection_source_field_label(
+                        context.unit,
+                        query.id,
+                        projection,
+                        source_text,
+                    )
+                    .unwrap_or_else(|| sql_projection_label(projection, source_text));
+                    let projection_node_id = provenance.add_flow_node(
+                        "sql_source_field",
+                        &projection_label,
+                        Some(context.unit.uri.as_ref()),
+                        Some(byte_range(&projection.range)),
+                        None,
+                    );
+                    provenance.add_edge(&projection_node_id, &query_node_id, "projects", None);
+                    if let Some(source_lookup_key) =
+                        sql_projection_source_lookup_key(context.unit, query.id, projection)
+                        && let Some(source_node_id) =
+                            source_node_ids.get(source_lookup_key.as_str())
+                    {
+                        provenance.add_edge(source_node_id, &projection_node_id, "column", None);
+                    }
+                }
                 for predicate in context
                     .unit
                     .sql_predicates
@@ -2505,7 +2547,7 @@ fn sql_query_projection_text(
     let clause_text = query
         .projection_clause
         .as_ref()
-        .map(|range| snippet_without_comments(source_text, range))
+        .map(|range| projection_clause_text(source_text, range))
         .filter(|text| !text.is_empty());
 
     match (structured.is_empty(), clause_text) {
@@ -2549,6 +2591,94 @@ fn sql_projection_label(projection: &SqlProjectionData, source_text: Option<&str
             snippet_without_comments(source_text, &projection.range)
         }
     }
+}
+
+fn sql_relevant_query_projections<'a>(
+    unit: &'a UnitAnalysis,
+    query_id: usize,
+    access: &ValueAccess,
+) -> Vec<&'a SqlProjectionData> {
+    let mut projections: Vec<_> = unit
+        .sql_projections
+        .iter()
+        .filter(|projection| projection.query_id == query_id)
+        .collect();
+    projections.sort_by(|left, right| left.range.start.cmp(&right.range.start));
+    if projections.is_empty() {
+        return Vec::new();
+    }
+
+    if let Some(target_field_name) = access.field_path.last().map(String::as_str) {
+        let matching: Vec<_> = projections
+            .iter()
+            .copied()
+            .filter(|projection| {
+                projection
+                    .alias
+                    .as_deref()
+                    .or(projection.name.as_deref())
+                    .is_some_and(|name| name.eq_ignore_ascii_case(target_field_name))
+            })
+            .collect();
+        if !matching.is_empty() {
+            return matching;
+        }
+    }
+
+    if access.field_path.is_empty() && projections.len() == 1 {
+        return vec![projections[0]];
+    }
+
+    Vec::new()
+}
+
+fn sql_projection_source_field_label(
+    unit: &UnitAnalysis,
+    query_id: usize,
+    projection: &SqlProjectionData,
+    source_text: Option<&str>,
+) -> Option<String> {
+    let field_name = projection.name.as_deref()?;
+    let source_name = sql_projection_source_lookup_key(unit, query_id, projection)?;
+    let mut label = format!("{source_name}.{field_name}");
+    if let Some(alias) = projection.alias.as_deref()
+        && alias != field_name
+    {
+        label.push_str(" AS ");
+        label.push_str(alias);
+    }
+    if label.is_empty() {
+        Some(sql_projection_label(projection, source_text))
+    } else {
+        Some(label)
+    }
+}
+
+fn sql_projection_source_lookup_key(
+    unit: &UnitAnalysis,
+    query_id: usize,
+    projection: &SqlProjectionData,
+) -> Option<String> {
+    if let Some(source_alias) = projection.source_alias.as_deref()
+        && let Some(source) = unit.sql_sources.iter().find(|source| {
+            source.query_id == query_id
+                && (source.alias.as_deref() == Some(source_alias)
+                    || source.name.as_ref() == source_alias)
+        })
+    {
+        return Some(source.name.to_string());
+    }
+
+    let sources: Vec<_> = unit
+        .sql_sources
+        .iter()
+        .filter(|source| source.query_id == query_id)
+        .collect();
+    if sources.len() == 1 {
+        return Some(sources[0].name.to_string());
+    }
+
+    None
 }
 
 fn sql_query_source_clause(unit: &UnitAnalysis, query_id: usize) -> Option<String> {
@@ -2653,12 +2783,25 @@ fn snippet(text: Option<&str>, range: &TextRange) -> String {
     normalize_whitespace(slice)
 }
 
+fn projection_clause_text(text: Option<&str>, range: &TextRange) -> String {
+    let lines = snippet_without_comments_lines(text, range);
+    match lines.len() {
+        0 => String::new(),
+        1 => lines[0].clone(),
+        _ => lines.join(", "),
+    }
+}
+
 fn snippet_without_comments(text: Option<&str>, range: &TextRange) -> String {
+    normalize_whitespace(&snippet_without_comments_lines(text, range).join(" "))
+}
+
+fn snippet_without_comments_lines(text: Option<&str>, range: &TextRange) -> Vec<String> {
     let Some(text) = text else {
-        return format!("{}..{}", range.start, range.end);
+        return vec![format!("{}..{}", range.start, range.end)];
     };
     let Some(slice) = text.get(range.clone()) else {
-        return format!("{}..{}", range.start, range.end);
+        return vec![format!("{}..{}", range.start, range.end)];
     };
     let mut parts = Vec::new();
     for raw_line in slice.lines() {
@@ -2667,10 +2810,10 @@ fn snippet_without_comments(text: Option<&str>, range: &TextRange) -> String {
         }
         let without_comment = raw_line.split('"').next().unwrap_or_default().trim();
         if !without_comment.is_empty() {
-            parts.push(without_comment);
+            parts.push(normalize_whitespace(without_comment));
         }
     }
-    normalize_whitespace(&parts.join(" "))
+    parts
 }
 
 fn normalize_whitespace(text: &str) -> String {
@@ -3373,7 +3516,7 @@ ENDFUNCTION.",
             .expect("sql query node");
 
         assert!(
-            sql_query.label.contains("SELECT SINGLE matnr meins"),
+            sql_query.label.contains("SELECT SINGLE matnr, meins"),
             "{}",
             sql_query.label
         );
@@ -3395,6 +3538,112 @@ ENDFUNCTION.",
             sql_query.label
         );
         assert!(!sql_query.label.contains("master"), "{}", sql_query.label);
+    }
+
+    #[test]
+    fn traces_field_level_sql_projection_flow_for_scalar_targets() {
+        let snapshot = snapshot_for(
+            vec![
+                DocumentInput {
+                    uri: Arc::from("file:///main.abap"),
+                    version: 1,
+                    text: Arc::from(
+                        "\
+REPORT z_sql_projection_flow.
+
+TYPES: BEGIN OF ty_header,
+         matnr TYPE string,
+       END OF ty_header.
+DATA gs_header TYPE ty_header.
+
+FORM build_header CHANGING cs_header TYPE ty_header.
+  DATA lv_matnr TYPE string.
+  SELECT SINGLE matnr
+    FROM mara
+    INTO @lv_matnr.
+  cs_header-matnr = lv_matnr.
+ENDFORM.
+
+FORM call_api USING us_header TYPE ty_header.
+  CALL FUNCTION 'BAPI_PO_CREATE1'
+    EXPORTING
+      poheader = us_header.
+ENDFORM.
+
+START-OF-SELECTION.
+  PERFORM build_header CHANGING gs_header.
+  PERFORM call_api USING gs_header.",
+                    ),
+                    is_dependency: false,
+                    object_name: None,
+                },
+                DocumentInput {
+                    uri: Arc::from("file:///bapi.abap"),
+                    version: 1,
+                    text: Arc::from(
+                        "\
+FUNCTION bapi_po_create1
+  IMPORTING
+    poheader TYPE string.
+ENDFUNCTION.",
+                    ),
+                    is_dependency: true,
+                    object_name: None,
+                },
+            ],
+            "file:///main.abap",
+        );
+
+        let trace = build_call_dataflow_trace(
+            snapshot.as_ref(),
+            CallDataflowQuery {
+                target: "BAPI_PO_CREATE1".to_string(),
+                caller: Some("call_api".to_string()),
+                occurrence: None,
+            },
+        );
+
+        let poheader = trace
+            .parameter_traces
+            .iter()
+            .find(|trace| trace.parameter_name.as_deref() == Some("poheader"))
+            .expect("poheader trace");
+        assert!(
+            poheader
+                .provenance
+                .nodes
+                .iter()
+                .any(|node| node.kind == "sql_source_field" && node.label == "mara.matnr"),
+            "{:?}",
+            poheader.provenance.nodes
+        );
+        assert!(
+            poheader
+                .provenance
+                .nodes
+                .iter()
+                .any(|node| node.kind == "sql_target_field" && node.label == "lv_matnr"),
+            "{:?}",
+            poheader.provenance.nodes
+        );
+        assert!(
+            poheader
+                .provenance
+                .edges
+                .iter()
+                .any(|edge| edge.kind == "projects"),
+            "{:?}",
+            poheader.provenance.edges
+        );
+        assert!(
+            poheader
+                .provenance
+                .edges
+                .iter()
+                .any(|edge| edge.kind == "selects_into"),
+            "{:?}",
+            poheader.provenance.edges
+        );
     }
 
     #[test]

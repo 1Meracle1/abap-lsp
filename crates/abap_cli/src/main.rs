@@ -1615,7 +1615,8 @@ fn render_call_dataflow_parameter_provenance_mermaid(
         match node.kind.as_str() {
             "parameter" | "target_value" | "target_field" | "target_table_row"
             | "target_table_field" => target_nodes.push(node.id.clone()),
-            "sql_query" => query_nodes.push(node.id.clone()),
+            "sql_query" | "sql_source" | "sql_predicate" | "sql_source_field"
+            | "sql_target_field" => query_nodes.push(node.id.clone()),
             "assignment"
             | "append_row"
             | "perform_binding"
@@ -1875,9 +1876,8 @@ fn render_call_dataflow_rich_mermaid(trace: &CallDataflowTrace) -> String {
                 "target_value" | "target_field" | "target_table_row" | "target_table_field" => {
                     target_nodes.push(node.id.clone())
                 }
-                "sql_query" | "sql_source" | "sql_predicate" | "sql_target" => {
-                    query_nodes.push(node.id.clone())
-                }
+                "sql_query" | "sql_source" | "sql_predicate" | "sql_target"
+                | "sql_source_field" | "sql_target_field" => query_nodes.push(node.id.clone()),
                 "assignment"
                 | "append_row"
                 | "perform_binding"
@@ -2503,6 +2503,9 @@ fn call_dataflow_provenance_node_label(node: &abap_cache::CallDataflowProvenance
         "field_symbol_binding" => "field-symbol bind",
         "sql_query" => "sql query",
         "sql_source" => "sql source",
+        "sql_predicate" => "sql predicate",
+        "sql_source_field" => "sql column",
+        "sql_target_field" => "sql target",
         "call_output" => "call output",
         "constant" => "constant",
         "global_state" => "global",
@@ -2515,6 +2518,7 @@ fn call_dataflow_provenance_node_label(node: &abap_cache::CallDataflowProvenance
         "sql_query" => 320,
         "sql_predicate" => 220,
         "sql_source" => 160,
+        "sql_source_field" | "sql_target_field" => 180,
         _ => 96,
     };
     let mut label = format!("{prefix}: {}", truncate_display(&node.label, max_len));
