@@ -4,9 +4,9 @@ use std::sync::Arc;
 use abap_lexer::TextRange;
 use abap_symbols::{
     AssignmentSiteData, CallSiteData, NamedArgumentSection, NamedArgumentTarget, Namespace,
-    PerformCallData, ReferenceKind, Resolution, RoutineAnalysis, ScopeId, SqlQueryData,
-    SqlSourceData, SqlSourceKind, SqlTargetData, SqlTargetKind, SymbolHandle, SymbolKind,
-    UnitAnalysis,
+    PerformCallData, ReferenceKind, Resolution, RoutineAnalysis, ScopeId, SqlProjectionData,
+    SqlProjectionKind, SqlQueryData, SqlSourceData, SqlSourceKind, SqlTargetData, SqlTargetKind,
+    SymbolHandle, SymbolKind, UnitAnalysis,
 };
 use serde::Serialize;
 
@@ -2426,61 +2426,37 @@ fn summarize_sql_query(
     target: &SqlTargetData,
     source_text: Option<&str>,
 ) -> String {
-    let mut label = String::from("SELECT");
+    let mut lines = Vec::new();
+    let mut select_line = String::from("SELECT");
     if query.is_single {
-        label.push_str(" SINGLE");
+        select_line.push_str(" SINGLE");
     }
     if query.is_distinct {
-        label.push_str(" DISTINCT");
+        select_line.push_str(" DISTINCT");
     }
-    if let Some(projection) = query
-        .projection_clause
-        .as_ref()
-        .map(|range| snippet(source_text, range))
-        .filter(|projection| !projection.trim().is_empty())
-    {
-        label.push(' ');
-        label.push_str(projection.trim());
+    let projection_text = sql_query_projection_text(unit, query, source_text);
+    if let Some(projection_text) = projection_text {
+        select_line.push(' ');
+        select_line.push_str(&projection_text);
+    } else {
+        select_line.push_str(" *");
     }
-    if let Some(target_name) = target.target_name.as_deref() {
-        label.push_str(match target.kind {
-            SqlTargetKind::Into => " INTO ",
-            SqlTargetKind::Appending => " APPENDING ",
-        });
-        label.push_str(target_name);
+    lines.push(select_line);
+
+    if let Some(source_clause) = sql_query_source_clause(unit, query.id) {
+        lines.push(format!("FROM {source_clause}"));
     }
-    let sources: Vec<_> = unit
-        .sql_sources
-        .iter()
-        .filter(|source| source.query_id == query.id)
-        .map(|source| match source.source_kind {
-            SqlSourceKind::From => source.name.to_string(),
-            SqlSourceKind::Join => format!(
-                "{} {}",
-                source.join_kind.as_deref().unwrap_or("JOIN"),
-                source.name
-            ),
-        })
-        .collect();
-    if !sources.is_empty() {
-        label.push_str(" FROM ");
-        label.push_str(&sources.join(", "));
+    if let Some(target_clause) = sql_query_target_clause(target, source_text) {
+        lines.push(target_clause);
     }
-    if let Some(where_clause) = query
-        .where_clause
-        .as_ref()
-        .map(|range| snippet(source_text, range))
-        .filter(|clause| !clause.trim().is_empty())
-    {
-        label.push_str("\n");
-        label.push_str(where_clause.trim());
+    for clause in sql_query_non_target_clause_lines(query, source_text) {
+        lines.push(clause);
     }
     let host_inputs = sql_query_host_inputs(unit, query);
     if !host_inputs.is_empty() {
-        label.push_str("\nHOSTS ");
-        label.push_str(&host_inputs.join(", "));
+        lines.push(format!("HOSTS {}", host_inputs.join(", ")));
     }
-    label
+    lines.join("\n")
 }
 
 fn summarize_sql_predicate(
@@ -2494,12 +2470,161 @@ fn summarize_sql_predicate(
         abap_symbols::SqlPredicateKind::DynamicWhere => "DYNAMIC WHERE",
         abap_symbols::SqlPredicateKind::ForAllEntries => "FOR ALL ENTRIES",
     };
-    let clause = snippet(source_text, &predicate.range);
+    let clause = snippet_without_comments(source_text, &predicate.range);
     if clause.trim().is_empty() {
         kind.to_string()
     } else {
         clause
     }
+}
+
+fn sql_query_projection_labels(
+    unit: &UnitAnalysis,
+    query_id: usize,
+    source_text: Option<&str>,
+) -> Vec<String> {
+    let mut projections: Vec<_> = unit
+        .sql_projections
+        .iter()
+        .filter(|projection| projection.query_id == query_id)
+        .collect();
+    projections.sort_by(|left, right| left.range.start.cmp(&right.range.start));
+    projections
+        .into_iter()
+        .map(|projection| sql_projection_label(projection, source_text))
+        .filter(|label| !label.is_empty())
+        .collect()
+}
+
+fn sql_query_projection_text(
+    unit: &UnitAnalysis,
+    query: &SqlQueryData,
+    source_text: Option<&str>,
+) -> Option<String> {
+    let structured = sql_query_projection_labels(unit, query.id, source_text);
+    let clause_text = query
+        .projection_clause
+        .as_ref()
+        .map(|range| snippet_without_comments(source_text, range))
+        .filter(|text| !text.is_empty());
+
+    match (structured.is_empty(), clause_text) {
+        (false, Some(clause_text))
+            if structured.len() <= 1 && clause_text.split_whitespace().count() > 1 =>
+        {
+            Some(clause_text)
+        }
+        (false, _) => Some(structured.join(", ")),
+        (true, Some(clause_text)) => Some(clause_text),
+        (true, None) => None,
+    }
+}
+
+fn sql_projection_label(projection: &SqlProjectionData, source_text: Option<&str>) -> String {
+    match projection.kind {
+        SqlProjectionKind::Star => "*".to_string(),
+        SqlProjectionKind::QualifiedStar => projection
+            .source_alias
+            .as_deref()
+            .map(|alias| format!("{alias}~*"))
+            .unwrap_or_else(|| "*".to_string()),
+        SqlProjectionKind::Column => {
+            let Some(name) = projection.name.as_deref() else {
+                return snippet_without_comments(source_text, &projection.range);
+            };
+            let mut label = projection
+                .source_alias
+                .as_deref()
+                .map(|alias| format!("{alias}~{name}"))
+                .unwrap_or_else(|| name.to_string());
+            if let Some(alias) = projection.alias.as_deref()
+                && alias != name
+            {
+                label.push_str(" AS ");
+                label.push_str(alias);
+            }
+            label
+        }
+        SqlProjectionKind::Aggregate | SqlProjectionKind::Expression => {
+            snippet_without_comments(source_text, &projection.range)
+        }
+    }
+}
+
+fn sql_query_source_clause(unit: &UnitAnalysis, query_id: usize) -> Option<String> {
+    let mut sources: Vec<_> = unit
+        .sql_sources
+        .iter()
+        .filter(|source| source.query_id == query_id)
+        .collect();
+    sources.sort_by(|left, right| left.range.start.cmp(&right.range.start));
+    if sources.is_empty() {
+        return None;
+    }
+
+    let mut parts = Vec::new();
+    for source in sources {
+        let mut label = match source.source_kind {
+            SqlSourceKind::From => source.name.to_string(),
+            SqlSourceKind::Join => format!(
+                "{} {}",
+                source.join_kind.as_deref().unwrap_or("JOIN"),
+                source.name
+            ),
+        };
+        if let Some(alias) = source.alias.as_deref()
+            && alias != source.name.as_ref()
+        {
+            label.push_str(" AS ");
+            label.push_str(alias);
+        }
+        parts.push(label);
+    }
+    Some(parts.join(" "))
+}
+
+fn sql_query_target_clause(target: &SqlTargetData, source_text: Option<&str>) -> Option<String> {
+    if let Some(target_name) = target.target_name.as_deref() {
+        let mut label = match target.kind {
+            SqlTargetKind::Into => "INTO ".to_string(),
+            SqlTargetKind::Appending => "APPENDING ".to_string(),
+        };
+        if target.is_corresponding {
+            label.push_str("CORRESPONDING FIELDS OF ");
+        }
+        if target.is_table {
+            label.push_str("TABLE ");
+        }
+        label.push_str(target_name);
+        return Some(label);
+    }
+
+    let label = snippet_without_comments(source_text, &target.range);
+    (!label.is_empty()).then_some(label)
+}
+
+fn sql_query_non_target_clause_lines(
+    query: &SqlQueryData,
+    source_text: Option<&str>,
+) -> Vec<String> {
+    let mut clauses = Vec::new();
+    for range in [
+        query.for_all_entries_clause.as_ref(),
+        query.where_clause.as_ref(),
+        query.group_by_clause.as_ref(),
+        query.having_clause.as_ref(),
+        query.order_by_clause.as_ref(),
+        query.up_to_clause.as_ref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        let clause = snippet_without_comments(source_text, range);
+        if !clause.is_empty() {
+            clauses.push(clause);
+        }
+    }
+    clauses
 }
 
 fn sql_query_host_inputs(unit: &UnitAnalysis, query: &SqlQueryData) -> Vec<String> {
@@ -2526,6 +2651,26 @@ fn snippet(text: Option<&str>, range: &TextRange) -> String {
         return format!("{}..{}", range.start, range.end);
     };
     normalize_whitespace(slice)
+}
+
+fn snippet_without_comments(text: Option<&str>, range: &TextRange) -> String {
+    let Some(text) = text else {
+        return format!("{}..{}", range.start, range.end);
+    };
+    let Some(slice) = text.get(range.clone()) else {
+        return format!("{}..{}", range.start, range.end);
+    };
+    let mut parts = Vec::new();
+    for raw_line in slice.lines() {
+        if raw_line.starts_with('*') {
+            continue;
+        }
+        let without_comment = raw_line.split('"').next().unwrap_or_default().trim();
+        if !without_comment.is_empty() {
+            parts.push(without_comment);
+        }
+    }
+    normalize_whitespace(&parts.join(" "))
 }
 
 fn normalize_whitespace(text: &str) -> String {
@@ -3143,6 +3288,113 @@ ENDFUNCTION.",
             "{:?}",
             poheader.provenance.edges
         );
+    }
+
+    #[test]
+    fn summarizes_sql_queries_from_structured_metadata_without_comments() {
+        let snapshot = snapshot_for(
+            vec![
+                DocumentInput {
+                    uri: Arc::from("file:///main.abap"),
+                    version: 1,
+                    text: Arc::from(
+                        "\
+REPORT z_sql_comment_trace.
+PARAMETERS p_matnr TYPE string.
+
+TYPES: BEGIN OF ty_header,
+         matnr TYPE string,
+       END OF ty_header.
+TYPES: BEGIN OF ty_mara,
+         matnr TYPE string,
+         meins TYPE string,
+       END OF ty_mara.
+DATA gs_header TYPE ty_header.
+
+FORM build_header CHANGING cs_header TYPE ty_header.
+  DATA ls_mara TYPE ty_mara.
+  SELECT SINGLE matnr      \" material
+                meins      \" base unit
+    FROM mara              \" material master
+    INTO @ls_mara
+    WHERE matnr = @p_matnr. \" host filter
+  cs_header-matnr = ls_mara-matnr.
+ENDFORM.
+
+FORM call_api USING us_header TYPE ty_header.
+  CALL FUNCTION 'BAPI_PO_CREATE1'
+    EXPORTING
+      poheader = us_header.
+ENDFORM.
+
+START-OF-SELECTION.
+  PERFORM build_header CHANGING gs_header.
+  PERFORM call_api USING gs_header.",
+                    ),
+                    is_dependency: false,
+                    object_name: None,
+                },
+                DocumentInput {
+                    uri: Arc::from("file:///bapi.abap"),
+                    version: 1,
+                    text: Arc::from(
+                        "\
+FUNCTION bapi_po_create1
+  IMPORTING
+    poheader TYPE string.
+ENDFUNCTION.",
+                    ),
+                    is_dependency: true,
+                    object_name: None,
+                },
+            ],
+            "file:///main.abap",
+        );
+
+        let trace = build_call_dataflow_trace(
+            snapshot.as_ref(),
+            CallDataflowQuery {
+                target: "BAPI_PO_CREATE1".to_string(),
+                caller: Some("call_api".to_string()),
+                occurrence: None,
+            },
+        );
+
+        let poheader = trace
+            .parameter_traces
+            .iter()
+            .find(|trace| trace.parameter_name.as_deref() == Some("poheader"))
+            .expect("poheader trace");
+        let sql_query = poheader
+            .provenance
+            .nodes
+            .iter()
+            .find(|node| node.kind == "sql_query")
+            .expect("sql query node");
+
+        assert!(
+            sql_query.label.contains("SELECT SINGLE matnr meins"),
+            "{}",
+            sql_query.label
+        );
+        assert!(sql_query.label.contains("FROM mara"), "{}", sql_query.label);
+        assert!(
+            sql_query.label.contains("INTO ls_mara"),
+            "{}",
+            sql_query.label
+        );
+        assert!(
+            sql_query.label.contains("WHERE matnr = @p_matnr"),
+            "{}",
+            sql_query.label
+        );
+        assert!(!sql_query.label.contains("material"), "{}", sql_query.label);
+        assert!(
+            !sql_query.label.contains("base unit"),
+            "{}",
+            sql_query.label
+        );
+        assert!(!sql_query.label.contains("master"), "{}", sql_query.label);
     }
 
     #[test]

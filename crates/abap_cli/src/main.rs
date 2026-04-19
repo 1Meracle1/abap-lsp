@@ -1590,7 +1590,7 @@ fn render_call_dataflow_parameter_provenance_mermaid(
         out.push_str(&format!(
             "  {}[\"{}\"]\n",
             node.id,
-            mermaid_label(&call_dataflow_provenance_node_label(node))
+            mermaid_node_label(&call_dataflow_provenance_node_label(node))
         ));
     }
     for edge in &provenance.edges {
@@ -1844,7 +1844,7 @@ fn render_call_dataflow_rich_mermaid(trace: &CallDataflowTrace) -> String {
         out.push_str(&format!(
             "  {}[\"{}\"]\n",
             node.id,
-            mermaid_label(&node.label)
+            mermaid_node_label(&node.label)
         ));
     }
     for (source, target, label) in edges {
@@ -2430,7 +2430,7 @@ fn render_call_dataflow_mermaid(lifecycle: &CallDataflowLifecycle) -> String {
         out.push_str(&format!(
             "  {}[\"{}\"]\n",
             mermaid_id,
-            mermaid_label(&label)
+            mermaid_node_label(&label)
         ));
     }
     for edge in &lifecycle.edges {
@@ -2511,14 +2511,32 @@ fn call_dataflow_provenance_node_label(node: &abap_cache::CallDataflowProvenance
         "composite_expression" => "expression",
         other => other,
     };
-    let mut label = format!("{prefix}: {}", truncate_display(&node.label, 96));
+    let max_len = match node.kind.as_str() {
+        "sql_query" => 320,
+        "sql_predicate" => 220,
+        "sql_source" => 160,
+        _ => 96,
+    };
+    let mut label = format!("{prefix}: {}", truncate_display(&node.label, max_len));
     if let (Some(unit_uri), Some(range)) = (node.unit_uri.as_deref(), node.range.as_ref()) {
-        label.push_str(&format!(
-            " @ {}:{}-{}",
-            short_unit_name(unit_uri),
-            range.start,
-            range.end
-        ));
+        if matches!(
+            node.kind.as_str(),
+            "sql_query" | "sql_predicate" | "sql_source"
+        ) {
+            label.push_str(&format!(
+                "\n@ {}:{}-{}",
+                short_unit_name(unit_uri),
+                range.start,
+                range.end
+            ));
+        } else {
+            label.push_str(&format!(
+                " @ {}:{}-{}",
+                short_unit_name(unit_uri),
+                range.start,
+                range.end
+            ));
+        }
     }
     label
 }
@@ -2537,6 +2555,13 @@ fn markdown_table_cell(value: &str) -> String {
     value
         .replace('\\', "\\\\")
         .replace('|', "\\|")
+        .replace('\n', "<br/>")
+}
+
+fn mermaid_node_label(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('"', "'")
         .replace('\n', "<br/>")
 }
 
@@ -2981,7 +3006,8 @@ fn normalize_windows_path(path: PathBuf) -> PathBuf {
 mod tests {
     use super::{
         CallDataflowDiagramFormat, load_remote_candidate_workspace, parse_cli_args,
-        path_to_file_uri, render_call_dataflow_diagram_block, render_call_dataflow_report,
+        path_to_file_uri, render_call_dataflow_diagram_block,
+        render_call_dataflow_parameter_provenance_mermaid, render_call_dataflow_report,
     };
     use abap_cache::{
         CallDataflowByteRange, CallDataflowLifecycle, CallDataflowLifecycleEdge,
@@ -3237,6 +3263,25 @@ mod tests {
 
         assert!(rendered.contains("```mermaid"));
         assert!(rendered.contains("-->|\"CALL SCREEN 9000 (input)\"|"));
+    }
+
+    #[test]
+    fn call_dataflow_mermaid_query_nodes_keep_clause_line_breaks() {
+        let provenance = CallDataflowProvenanceGraph {
+            nodes: vec![CallDataflowProvenanceNode {
+                id: "p0".to_string(),
+                kind: "sql_query".to_string(),
+                label: "SELECT matnr, meins\nFROM mara\nWHERE matnr = p_matnr".to_string(),
+                unit_uri: Some("file:///main.abap".to_string()),
+                range: Some(CallDataflowByteRange { start: 10, end: 40 }),
+                statement_text: None,
+            }],
+            edges: Vec::new(),
+        };
+
+        let rendered = render_call_dataflow_parameter_provenance_mermaid(&provenance);
+
+        assert!(rendered.contains("SELECT matnr, meins<br/>FROM mara<br/>WHERE matnr = p_matnr"));
     }
 
     #[test]
