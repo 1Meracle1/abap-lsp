@@ -1799,18 +1799,24 @@ fn render_call_dataflow_rich_mermaid(trace: &CallDataflowTrace) -> String {
     }
 
     for parameter in &trace.parameter_traces {
+        let simplified = simplify_rich_mermaid_provenance(parameter);
         let mut local_ids = HashMap::<String, String>::new();
         let mut root_id = None;
-        for node in &parameter.provenance.nodes {
+        for node in &simplified.nodes {
+            let namespace = if node.synthetic && node.kind == "collapsed_summary" {
+                format!("provenance:{}", node.id)
+            } else {
+                "provenance".to_string()
+            };
             let mermaid_id = add_node(
-                "provenance".to_string(),
+                namespace,
                 &node.kind,
-                call_dataflow_provenance_node_label(node),
+                node.label.clone(),
                 node.unit_uri.as_deref(),
                 node.range.as_ref(),
                 node.statement_text.as_deref(),
                 RichMermaidNodeGroup::Provenance,
-                false,
+                node.synthetic,
                 false,
             );
             if node.kind == "parameter" {
@@ -1818,18 +1824,14 @@ fn render_call_dataflow_rich_mermaid(trace: &CallDataflowTrace) -> String {
             }
             local_ids.insert(node.id.clone(), mermaid_id);
         }
-        for edge in &parameter.provenance.edges {
+        for edge in &simplified.edges {
             let Some(source_id) = local_ids.get(edge.source.as_str()) else {
                 continue;
             };
             let Some(target_id) = local_ids.get(edge.target.as_str()) else {
                 continue;
             };
-            edges.insert((
-                source_id.clone(),
-                target_id.clone(),
-                call_dataflow_provenance_edge_label(edge),
-            ));
+            edges.insert((source_id.clone(), target_id.clone(), edge.label.clone()));
         }
 
         if let (Some(call_id), Some(parameter_root_id)) = (selected_call_id.as_ref(), root_id) {
@@ -1886,6 +1888,7 @@ fn render_call_dataflow_rich_mermaid(trace: &CallDataflowTrace) -> String {
                 | "perform_write"
                 | "read_table_binding"
                 | "field_symbol_binding"
+                | "collapsed_summary"
                 | "composite_expression"
                 | "literal_or_expression" => transform_nodes.push(node.id.clone()),
                 _ => source_nodes.push(node.id.clone()),
@@ -1959,6 +1962,355 @@ fn rich_parameter_binding_label(parameter: &CallDataflowParameterTrace) -> Strin
         parameter.direction.replace('_', " ")
     } else {
         parts.join(" ")
+    }
+}
+
+#[derive(Debug, Clone)]
+struct RichMermaidProvenanceView {
+    nodes: Vec<RichMermaidProvenanceViewNode>,
+    edges: Vec<RichMermaidProvenanceViewEdge>,
+}
+
+#[derive(Debug, Clone)]
+struct RichMermaidProvenanceViewNode {
+    id: String,
+    kind: String,
+    label: String,
+    unit_uri: Option<String>,
+    range: Option<abap_cache::CallDataflowByteRange>,
+    statement_text: Option<String>,
+    synthetic: bool,
+}
+
+#[derive(Debug, Clone)]
+struct RichMermaidProvenanceViewEdge {
+    source: String,
+    target: String,
+    label: String,
+}
+
+#[derive(Debug, Clone)]
+struct RichMermaidCollapseGroup {
+    summary_id: String,
+    label: String,
+    unit_uri: Option<String>,
+    range: Option<abap_cache::CallDataflowByteRange>,
+    member_ids: HashSet<String>,
+}
+
+fn simplify_rich_mermaid_provenance(
+    parameter: &CallDataflowParameterTrace,
+) -> RichMermaidProvenanceView {
+    let groups = build_rich_mermaid_collapse_groups(parameter);
+    if groups.is_empty() {
+        return RichMermaidProvenanceView {
+            nodes: parameter
+                .provenance
+                .nodes
+                .iter()
+                .map(|node| RichMermaidProvenanceViewNode {
+                    id: node.id.clone(),
+                    kind: node.kind.clone(),
+                    label: call_dataflow_provenance_node_label(node),
+                    unit_uri: node.unit_uri.clone(),
+                    range: node.range.clone(),
+                    statement_text: node.statement_text.clone(),
+                    synthetic: false,
+                })
+                .collect(),
+            edges: parameter
+                .provenance
+                .edges
+                .iter()
+                .map(|edge| RichMermaidProvenanceViewEdge {
+                    source: edge.source.clone(),
+                    target: edge.target.clone(),
+                    label: call_dataflow_provenance_edge_label(edge),
+                })
+                .collect(),
+        };
+    }
+
+    let mut member_to_group = HashMap::<&str, &RichMermaidCollapseGroup>::new();
+    for group in &groups {
+        for member_id in &group.member_ids {
+            member_to_group.insert(member_id.as_str(), group);
+        }
+    }
+
+    let mut nodes = Vec::new();
+    for node in &parameter.provenance.nodes {
+        if member_to_group.contains_key(node.id.as_str()) {
+            continue;
+        }
+        nodes.push(RichMermaidProvenanceViewNode {
+            id: node.id.clone(),
+            kind: node.kind.clone(),
+            label: call_dataflow_provenance_node_label(node),
+            unit_uri: node.unit_uri.clone(),
+            range: node.range.clone(),
+            statement_text: node.statement_text.clone(),
+            synthetic: false,
+        });
+    }
+    for group in &groups {
+        nodes.push(RichMermaidProvenanceViewNode {
+            id: group.summary_id.clone(),
+            kind: "collapsed_summary".to_string(),
+            label: group.label.clone(),
+            unit_uri: group.unit_uri.clone(),
+            range: group.range.clone(),
+            statement_text: None,
+            synthetic: true,
+        });
+    }
+
+    let mut seen_edges = BTreeSet::<(String, String, String)>::new();
+    let mut edges = Vec::new();
+    for edge in &parameter.provenance.edges {
+        let source_group = member_to_group.get(edge.source.as_str()).copied();
+        let target_group = member_to_group.get(edge.target.as_str()).copied();
+        let source = source_group
+            .map(|group| group.summary_id.clone())
+            .unwrap_or_else(|| edge.source.clone());
+        let target = target_group
+            .map(|group| group.summary_id.clone())
+            .unwrap_or_else(|| edge.target.clone());
+        if source == target {
+            continue;
+        }
+        let label =
+            rich_mermaid_summary_edge_label(edge, source_group.is_some() || target_group.is_some());
+        if !seen_edges.insert((source.clone(), target.clone(), label.clone())) {
+            continue;
+        }
+        edges.push(RichMermaidProvenanceViewEdge {
+            source,
+            target,
+            label,
+        });
+    }
+
+    RichMermaidProvenanceView { nodes, edges }
+}
+
+fn build_rich_mermaid_collapse_groups(
+    parameter: &CallDataflowParameterTrace,
+) -> Vec<RichMermaidCollapseGroup> {
+    let node_by_id: HashMap<_, _> = parameter
+        .provenance
+        .nodes
+        .iter()
+        .map(|node| (node.id.as_str(), node))
+        .collect();
+    let mut inbound = HashMap::<&str, Vec<&abap_cache::CallDataflowProvenanceEdge>>::new();
+    let mut outbound = HashMap::<&str, Vec<&abap_cache::CallDataflowProvenanceEdge>>::new();
+    for edge in &parameter.provenance.edges {
+        inbound.entry(edge.target.as_str()).or_default().push(edge);
+        outbound.entry(edge.source.as_str()).or_default().push(edge);
+    }
+
+    let mut groups = Vec::new();
+    let mut claimed = HashSet::<String>::new();
+    for anchor in &parameter.provenance.nodes {
+        if !matches!(anchor.kind.as_str(), "parameter" | "target_table_row") {
+            continue;
+        }
+
+        let mut target_nodes = Vec::<&abap_cache::CallDataflowProvenanceNode>::new();
+        let mut target_ids = HashSet::<String>::new();
+        let mut writer_ids = HashSet::<String>::new();
+        let mut member_ids = HashSet::<String>::new();
+
+        for edge in inbound.get(anchor.id.as_str()).into_iter().flatten() {
+            let Some(source_node) = node_by_id.get(edge.source.as_str()).copied() else {
+                continue;
+            };
+            if !matches!(edge.kind.as_str(), "populates") {
+                continue;
+            }
+            if !matches!(
+                source_node.kind.as_str(),
+                "target_field" | "target_table_field"
+            ) {
+                continue;
+            }
+            if claimed.contains(source_node.id.as_str())
+                || !target_ids.insert(source_node.id.clone())
+            {
+                continue;
+            }
+            member_ids.insert(source_node.id.clone());
+            target_nodes.push(source_node);
+
+            for writer_edge in inbound.get(source_node.id.as_str()).into_iter().flatten() {
+                if !matches!(writer_edge.kind.as_str(), "writes" | "appends" | "produces") {
+                    continue;
+                }
+                let Some(writer_node) = node_by_id.get(writer_edge.source.as_str()).copied() else {
+                    continue;
+                };
+                if !rich_mermaid_collapsible_writer_kind(writer_node.kind.as_str())
+                    || claimed.contains(writer_node.id.as_str())
+                    || !writer_ids.insert(writer_node.id.clone())
+                {
+                    continue;
+                }
+                member_ids.insert(writer_node.id.clone());
+            }
+        }
+
+        if target_nodes.len() < 4 {
+            continue;
+        }
+
+        let field_summary = rich_mermaid_collapsed_field_summary(&target_nodes);
+        if field_summary.is_empty() {
+            continue;
+        }
+
+        let scope_name =
+            rich_mermaid_collapsed_scope_name(anchor, &target_nodes, &node_by_id, &outbound);
+        let base_label = if anchor.kind == "target_table_row" {
+            "row build"
+        } else {
+            "field updates"
+        };
+        let mut label = if let Some(scope_name) = scope_name {
+            format!("{base_label} in {scope_name}: {field_summary}")
+        } else {
+            format!("{base_label}: {field_summary}")
+        };
+        let (unit_uri, range, location) =
+            rich_mermaid_collapsed_location(member_ids.iter(), &node_by_id);
+        if let Some(location) = location {
+            label.push_str(" @ ");
+            label.push_str(&location);
+        }
+
+        claimed.extend(member_ids.iter().cloned());
+        groups.push(RichMermaidCollapseGroup {
+            summary_id: format!("collapsed_{}", groups.len()),
+            label,
+            unit_uri,
+            range,
+            member_ids,
+        });
+    }
+
+    groups
+}
+
+fn rich_mermaid_collapsible_writer_kind(kind: &str) -> bool {
+    matches!(kind, "assignment" | "append_row" | "call_output")
+}
+
+fn rich_mermaid_collapsed_field_summary(
+    target_nodes: &[&abap_cache::CallDataflowProvenanceNode],
+) -> String {
+    let mut names = Vec::<String>::new();
+    let mut seen = HashSet::<String>::new();
+    for node in target_nodes {
+        let name = rich_mermaid_target_field_name(&node.label);
+        if !seen.insert(name.to_ascii_lowercase()) {
+            continue;
+        }
+        names.push(name);
+    }
+    match names.len() {
+        0 => String::new(),
+        1..=6 => names.join(", "),
+        _ => format!("{}, +{} more", names[..6].join(", "), names.len() - 6),
+    }
+}
+
+fn rich_mermaid_target_field_name(label: &str) -> String {
+    label.rsplit('.').next().unwrap_or(label).trim().to_string()
+}
+
+fn rich_mermaid_collapsed_scope_name(
+    anchor: &abap_cache::CallDataflowProvenanceNode,
+    target_nodes: &[&abap_cache::CallDataflowProvenanceNode],
+    node_by_id: &HashMap<&str, &abap_cache::CallDataflowProvenanceNode>,
+    outbound: &HashMap<&str, Vec<&abap_cache::CallDataflowProvenanceEdge>>,
+) -> Option<String> {
+    let mut scopes = Vec::<String>::new();
+    let mut seen = HashSet::<String>::new();
+    for node_id in
+        std::iter::once(anchor.id.as_str()).chain(target_nodes.iter().map(|node| node.id.as_str()))
+    {
+        for edge in outbound.get(node_id).into_iter().flatten() {
+            let Some(target_node) = node_by_id.get(edge.target.as_str()).copied() else {
+                continue;
+            };
+            if target_node.kind != "perform_write" {
+                continue;
+            }
+            let Some(scope_name) = target_node.label.split(" writes ").next() else {
+                continue;
+            };
+            if !seen.insert(scope_name.to_ascii_lowercase()) {
+                continue;
+            }
+            scopes.push(scope_name.to_string());
+        }
+    }
+    (scopes.len() == 1).then(|| scopes.remove(0))
+}
+
+fn rich_mermaid_collapsed_location<'a>(
+    member_ids: impl Iterator<Item = &'a String>,
+    node_by_id: &HashMap<&str, &abap_cache::CallDataflowProvenanceNode>,
+) -> (
+    Option<String>,
+    Option<abap_cache::CallDataflowByteRange>,
+    Option<String>,
+) {
+    let mut unit_uri = None::<&str>;
+    let mut start = None::<usize>;
+    let mut end = None::<usize>;
+
+    for member_id in member_ids {
+        let Some(node) = node_by_id.get(member_id.as_str()).copied() else {
+            continue;
+        };
+        let (Some(node_unit_uri), Some(range)) = (node.unit_uri.as_deref(), node.range.as_ref())
+        else {
+            continue;
+        };
+        match unit_uri {
+            None => unit_uri = Some(node_unit_uri),
+            Some(existing) if existing == node_unit_uri => {}
+            Some(_) => return (None, None, None),
+        }
+        start = Some(start.map_or(range.start, |value| value.min(range.start)));
+        end = Some(end.map_or(range.end, |value| value.max(range.end)));
+    }
+
+    let (Some(unit_uri), Some(start), Some(end)) = (unit_uri, start, end) else {
+        return (None, None, None);
+    };
+    let range = abap_cache::CallDataflowByteRange { start, end };
+    (
+        Some(unit_uri.to_string()),
+        Some(range.clone()),
+        Some(call_dataflow_short_location(unit_uri, &range)),
+    )
+}
+
+fn rich_mermaid_summary_edge_label(
+    edge: &abap_cache::CallDataflowProvenanceEdge,
+    touches_summary: bool,
+) -> String {
+    if touches_summary
+        && matches!(
+            edge.kind.as_str(),
+            "writes" | "appends" | "produces" | "binds_to" | "flows_to" | "populates"
+        )
+    {
+        String::new()
+    } else {
+        call_dataflow_provenance_edge_label(edge)
     }
 }
 
@@ -3480,6 +3832,246 @@ mod tests {
         assert!(rendered.contains("|\"EXPORTING poheader\"|"));
         assert!(rendered.contains("selected call"));
         assert!(!rendered.contains("#### Detailed Provenance"));
+    }
+
+    #[test]
+    fn call_dataflow_rich_mermaid_collapses_multi_field_row_build() {
+        let trace = CallDataflowTrace {
+            schema: "abap.call_dataflow_trace",
+            schema_version: 1,
+            query: CallDataflowQuery {
+                target: "BAPI_PO_CREATE1".to_string(),
+                caller: Some("call_api".to_string()),
+                occurrence: None,
+            },
+            selected_call: Some(CallDataflowSelectedCall {
+                occurrence: 1,
+                target_kind: "function_module".to_string(),
+                target_name: "bapi_po_create1".to_string(),
+                unit_uri: "file:///main.abap".to_string(),
+                call_range: CallDataflowByteRange { start: 30, end: 40 },
+                caller_node_id: Some("form".to_string()),
+                caller_kind: Some("form".to_string()),
+                caller_name: Some("call_api".to_string()),
+                caller_unit_uri: Some("file:///main.abap".to_string()),
+                target_node_id: Some("target".to_string()),
+                argument_count: 1,
+            }),
+            matches: Vec::new(),
+            lifecycle: CallDataflowLifecycle {
+                nodes: vec![
+                    CallDataflowLifecycleNode {
+                        id: "form".to_string(),
+                        kind: "form".to_string(),
+                        name: "call_api".to_string(),
+                        unit_uri: "file:///main.abap".to_string(),
+                        decl_range: CallDataflowByteRange { start: 0, end: 1 },
+                        synthetic: false,
+                    },
+                    CallDataflowLifecycleNode {
+                        id: "target".to_string(),
+                        kind: "function_module".to_string(),
+                        name: "bapi_po_create1".to_string(),
+                        unit_uri: "file:///bapi.abap".to_string(),
+                        decl_range: CallDataflowByteRange { start: 2, end: 3 },
+                        synthetic: false,
+                    },
+                ],
+                edges: vec![CallDataflowLifecycleEdge {
+                    source: "form".to_string(),
+                    target: "target".to_string(),
+                    kind: "selected_call".to_string(),
+                    label: Some("bapi_po_create1".to_string()),
+                    source_range: Some(CallDataflowByteRange { start: 30, end: 40 }),
+                    synthetic: false,
+                }],
+            },
+            parameter_traces: vec![CallDataflowParameterTrace {
+                parameter_name: Some("poitem".to_string()),
+                section: Some("tables".to_string()),
+                direction: "in_out".to_string(),
+                argument_text: "poitem = gt_poitem".to_string(),
+                argument_range: CallDataflowByteRange { start: 30, end: 40 },
+                argument_type: Some("typ_t_poitem".to_string()),
+                field_mappings: Vec::new(),
+                provenance: CallDataflowProvenanceGraph {
+                    nodes: vec![
+                        CallDataflowProvenanceNode {
+                            id: "p0".to_string(),
+                            kind: "parameter".to_string(),
+                            label: "poitem [in_out / tables] : typ_t_poitem".to_string(),
+                            unit_uri: None,
+                            range: None,
+                            statement_text: None,
+                        },
+                        CallDataflowProvenanceNode {
+                            id: "p1".to_string(),
+                            kind: "target_table_row".to_string(),
+                            label: "poitem[*]".to_string(),
+                            unit_uri: None,
+                            range: None,
+                            statement_text: None,
+                        },
+                        CallDataflowProvenanceNode {
+                            id: "p2".to_string(),
+                            kind: "perform_write".to_string(),
+                            label: "f_bapi_item_data writes ct_poitem (append rows)".to_string(),
+                            unit_uri: Some("file:///main.abap".to_string()),
+                            range: Some(CallDataflowByteRange {
+                                start: 80,
+                                end: 120,
+                            }),
+                            statement_text: Some(
+                                "PERFORM f_bapi_item_data CHANGING ct_poitem.".to_string(),
+                            ),
+                        },
+                        CallDataflowProvenanceNode {
+                            id: "p10".to_string(),
+                            kind: "target_table_field".to_string(),
+                            label: "poitem[*].material".to_string(),
+                            unit_uri: None,
+                            range: None,
+                            statement_text: None,
+                        },
+                        CallDataflowProvenanceNode {
+                            id: "p11".to_string(),
+                            kind: "assignment".to_string(),
+                            label: "ls_poitem-material = ls_src-matnr.".to_string(),
+                            unit_uri: Some("file:///main.abap".to_string()),
+                            range: Some(CallDataflowByteRange { start: 10, end: 20 }),
+                            statement_text: Some("ls_poitem-material = ls_src-matnr.".to_string()),
+                        },
+                        CallDataflowProvenanceNode {
+                            id: "p12".to_string(),
+                            kind: "target_table_field".to_string(),
+                            label: "poitem[*].plant".to_string(),
+                            unit_uri: None,
+                            range: None,
+                            statement_text: None,
+                        },
+                        CallDataflowProvenanceNode {
+                            id: "p13".to_string(),
+                            kind: "assignment".to_string(),
+                            label: "ls_poitem-plant = ls_src-werks.".to_string(),
+                            unit_uri: Some("file:///main.abap".to_string()),
+                            range: Some(CallDataflowByteRange { start: 21, end: 30 }),
+                            statement_text: Some("ls_poitem-plant = ls_src-werks.".to_string()),
+                        },
+                        CallDataflowProvenanceNode {
+                            id: "p14".to_string(),
+                            kind: "target_table_field".to_string(),
+                            label: "poitem[*].quantity".to_string(),
+                            unit_uri: None,
+                            range: None,
+                            statement_text: None,
+                        },
+                        CallDataflowProvenanceNode {
+                            id: "p15".to_string(),
+                            kind: "assignment".to_string(),
+                            label: "ls_poitem-quantity = lv_qty.".to_string(),
+                            unit_uri: Some("file:///main.abap".to_string()),
+                            range: Some(CallDataflowByteRange { start: 31, end: 40 }),
+                            statement_text: Some("ls_poitem-quantity = lv_qty.".to_string()),
+                        },
+                        CallDataflowProvenanceNode {
+                            id: "p16".to_string(),
+                            kind: "target_table_field".to_string(),
+                            label: "poitem[*].stge_loc".to_string(),
+                            unit_uri: None,
+                            range: None,
+                            statement_text: None,
+                        },
+                        CallDataflowProvenanceNode {
+                            id: "p17".to_string(),
+                            kind: "assignment".to_string(),
+                            label: "ls_poitem-stge_loc = lv_lgort.".to_string(),
+                            unit_uri: Some("file:///main.abap".to_string()),
+                            range: Some(CallDataflowByteRange { start: 41, end: 50 }),
+                            statement_text: Some("ls_poitem-stge_loc = lv_lgort.".to_string()),
+                        },
+                    ],
+                    edges: vec![
+                        CallDataflowProvenanceEdge {
+                            source: "p11".to_string(),
+                            target: "p10".to_string(),
+                            kind: "writes".to_string(),
+                            label: None,
+                        },
+                        CallDataflowProvenanceEdge {
+                            source: "p13".to_string(),
+                            target: "p12".to_string(),
+                            kind: "writes".to_string(),
+                            label: None,
+                        },
+                        CallDataflowProvenanceEdge {
+                            source: "p15".to_string(),
+                            target: "p14".to_string(),
+                            kind: "writes".to_string(),
+                            label: None,
+                        },
+                        CallDataflowProvenanceEdge {
+                            source: "p17".to_string(),
+                            target: "p16".to_string(),
+                            kind: "writes".to_string(),
+                            label: None,
+                        },
+                        CallDataflowProvenanceEdge {
+                            source: "p10".to_string(),
+                            target: "p1".to_string(),
+                            kind: "populates".to_string(),
+                            label: None,
+                        },
+                        CallDataflowProvenanceEdge {
+                            source: "p12".to_string(),
+                            target: "p1".to_string(),
+                            kind: "populates".to_string(),
+                            label: None,
+                        },
+                        CallDataflowProvenanceEdge {
+                            source: "p14".to_string(),
+                            target: "p1".to_string(),
+                            kind: "populates".to_string(),
+                            label: None,
+                        },
+                        CallDataflowProvenanceEdge {
+                            source: "p16".to_string(),
+                            target: "p1".to_string(),
+                            kind: "populates".to_string(),
+                            label: None,
+                        },
+                        CallDataflowProvenanceEdge {
+                            source: "p1".to_string(),
+                            target: "p0".to_string(),
+                            kind: "populates".to_string(),
+                            label: None,
+                        },
+                        CallDataflowProvenanceEdge {
+                            source: "p1".to_string(),
+                            target: "p2".to_string(),
+                            kind: "flows_to".to_string(),
+                            label: None,
+                        },
+                    ],
+                },
+                notes: Vec::new(),
+            }],
+            summary: CallDataflowSummary {
+                match_count: 1,
+                ambiguous: false,
+                lifecycle_node_count: 2,
+                lifecycle_edge_count: 1,
+                synthetic_edge_count: 0,
+                parameter_count: 1,
+                mapping_count: 0,
+            },
+        };
+
+        let rendered = render_call_dataflow_report(&trace, CallDataflowDiagramFormat::RichMermaid);
+
+        assert!(rendered.contains("row build in f_bapi_item_data"));
+        assert!(rendered.contains("material, plant, quantity, stge_loc"));
+        assert!(!rendered.contains("poitem[*].material"));
+        assert!(!rendered.contains("ls_poitem-material = ls_src-matnr."));
     }
 
     #[test]
