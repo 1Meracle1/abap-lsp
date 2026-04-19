@@ -22,7 +22,7 @@ use std::fs;
 use std::io::Read;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use abap_ast::SyntaxKind;
 use abap_ast::arena::NodeId;
@@ -1475,9 +1475,9 @@ fn render_call_dataflow_selected_call(selected: &CallDataflowSelectedCall) -> St
         "- Target: `{}`\n- Occurrence: `{}`\n- Call site: `{}`\n- Argument count: `{}`\n",
         markdown_inline_code(&selected.target_name),
         selected.occurrence,
-        markdown_inline_code(&format!(
-            "{}:{}-{}",
-            selected.unit_uri, selected.call_range.start, selected.call_range.end
+        markdown_inline_code(&call_dataflow_display_location(
+            &selected.unit_uri,
+            &selected.call_range,
         )),
         selected.argument_count
     ));
@@ -1510,9 +1510,9 @@ fn render_call_dataflow_matches_table(matches: &[CallDataflowMatch]) -> String {
             "| {} | {} | {} |\n",
             matched.occurrence,
             markdown_table_cell(caller),
-            markdown_table_cell(&format!(
-                "{}:{}-{}",
-                matched.unit_uri, matched.call_range.start, matched.call_range.end
+            markdown_table_cell(&call_dataflow_display_location(
+                &matched.unit_uri,
+                &matched.call_range,
             ))
         ));
     }
@@ -2484,7 +2484,7 @@ fn call_dataflow_mapping_location(mapping: &abap_cache::CallDataflowFieldMapping
         mapping.source_unit_uri.as_deref(),
         mapping.source_range.as_ref(),
     ) {
-        (Some(unit_uri), Some(range)) => format!("{unit_uri}:{}-{}", range.start, range.end),
+        (Some(unit_uri), Some(range)) => call_dataflow_display_location(unit_uri, range),
         (Some(unit_uri), None) => unit_uri.to_string(),
         (None, Some(range)) => format!("{}-{}", range.start, range.end),
         (None, None) => String::new(),
@@ -2523,23 +2523,14 @@ fn call_dataflow_provenance_node_label(node: &abap_cache::CallDataflowProvenance
     };
     let mut label = format!("{prefix}: {}", truncate_display(&node.label, max_len));
     if let (Some(unit_uri), Some(range)) = (node.unit_uri.as_deref(), node.range.as_ref()) {
+        let location = call_dataflow_short_location(unit_uri, range);
         if matches!(
             node.kind.as_str(),
             "sql_query" | "sql_predicate" | "sql_source"
         ) {
-            label.push_str(&format!(
-                "\n@ {}:{}-{}",
-                short_unit_name(unit_uri),
-                range.start,
-                range.end
-            ));
+            label.push_str(&format!("\n@ {location}"));
         } else {
-            label.push_str(&format!(
-                " @ {}:{}-{}",
-                short_unit_name(unit_uri),
-                range.start,
-                range.end
-            ));
+            label.push_str(&format!(" @ {location}"));
         }
     }
     label
@@ -2578,6 +2569,82 @@ fn mermaid_label(value: &str) -> String {
 
 fn short_unit_name(unit_uri: &str) -> String {
     unit_uri.rsplit('/').next().unwrap_or(unit_uri).to_string()
+}
+
+fn call_dataflow_display_location(
+    unit_uri: &str,
+    range: &abap_cache::CallDataflowByteRange,
+) -> String {
+    if let Some(line_range) = call_dataflow_line_range(unit_uri, range) {
+        format!("{unit_uri}:{line_range}")
+    } else {
+        format!("{unit_uri}:{}-{}", range.start, range.end)
+    }
+}
+
+fn call_dataflow_short_location(
+    unit_uri: &str,
+    range: &abap_cache::CallDataflowByteRange,
+) -> String {
+    if let Some(line_range) = call_dataflow_line_range(unit_uri, range) {
+        format!("{}:{line_range}", short_unit_name(unit_uri))
+    } else {
+        format!(
+            "{}:{}-{}",
+            short_unit_name(unit_uri),
+            range.start,
+            range.end
+        )
+    }
+}
+
+fn call_dataflow_line_range(
+    unit_uri: &str,
+    range: &abap_cache::CallDataflowByteRange,
+) -> Option<String> {
+    let text = call_dataflow_source_text(unit_uri)?;
+    let start_line = byte_offset_to_line(text.as_str(), range.start);
+    let end_line = if range.end > range.start {
+        byte_offset_to_line(text.as_str(), range.end.saturating_sub(1))
+    } else {
+        start_line
+    };
+    Some(if start_line == end_line {
+        format!("L{start_line}")
+    } else {
+        format!("L{start_line}-L{end_line}")
+    })
+}
+
+fn call_dataflow_source_text(unit_uri: &str) -> Option<Arc<String>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, Option<Arc<String>>>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+
+    if let Some(cached) = cache
+        .lock()
+        .expect("call-dataflow source text cache lock")
+        .get(unit_uri)
+        .cloned()
+    {
+        return cached;
+    }
+
+    let loaded = file_uri_to_path(unit_uri)
+        .and_then(|path| fs::read_to_string(path).ok())
+        .map(Arc::new);
+    cache
+        .lock()
+        .expect("call-dataflow source text cache lock")
+        .insert(unit_uri.to_string(), loaded.clone());
+    loaded
+}
+
+fn byte_offset_to_line(text: &str, offset: usize) -> usize {
+    let clamped = offset.min(text.len());
+    1 + text.as_bytes()[..clamped]
+        .iter()
+        .filter(|byte| **byte == b'\n')
+        .count()
 }
 
 fn truncate_display(value: &str, max_len: usize) -> String {

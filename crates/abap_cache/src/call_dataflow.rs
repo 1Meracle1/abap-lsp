@@ -1058,7 +1058,7 @@ impl<'a> TraceBuilder<'a> {
 
     fn trace_form_parameter_bindings(
         &mut self,
-        _context: TraceContext<'a>,
+        context: TraceContext<'a>,
         access: &ValueAccess,
         target_path: &str,
         field_mappings: &mut Vec<CallDataflowFieldMapping>,
@@ -1077,6 +1077,11 @@ impl<'a> TraceBuilder<'a> {
         let Some(inbound) = self.inbound_perform_calls(symbol) else {
             return false;
         };
+        let formal_name = unit.symbol(access.handle.symbol).name.as_ref();
+        let callee_name = context
+            .routine
+            .map(|routine| routine.descriptor.name.as_ref())
+            .unwrap_or("<unknown>");
 
         let mut found = false;
         for (caller_unit, caller_routine, perform_call) in inbound {
@@ -1104,9 +1109,14 @@ impl<'a> TraceBuilder<'a> {
             });
             let binding_node_id = provenance.add_flow_node(
                 "perform_binding",
-                &snippet(
-                    self.snapshot.project_text(caller_unit.uri.as_ref()),
-                    &perform_call.range,
+                &format!(
+                    "{} -> {}.{}",
+                    snippet(
+                        self.snapshot.project_text(caller_unit.uri.as_ref()),
+                        &argument.range
+                    ),
+                    callee_name,
+                    formal_name,
                 ),
                 Some(caller_unit.uri.as_ref()),
                 Some(byte_range(&perform_call.range)),
@@ -1531,10 +1541,7 @@ impl<'a> TraceBuilder<'a> {
                 });
                 let perform_write_node_id = provenance.add_flow_node(
                     "perform_write",
-                    &snippet(
-                        self.snapshot.project_text(context.unit.uri.as_ref()),
-                        &perform_call.range,
-                    ),
+                    &format!("{} writes {}", callee_summary.name, parameter.name),
                     Some(context.unit.uri.as_ref()),
                     Some(byte_range(&perform_call.range)),
                     Some(snippet(
