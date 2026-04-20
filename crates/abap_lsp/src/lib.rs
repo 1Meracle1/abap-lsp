@@ -2659,7 +2659,8 @@ pub fn inlay_hints(state: &ServerState, params: &InlayHintParams) -> Option<Vec<
     let snapshot = snapshot_for_uri(state, &uri)?;
     let byte_range = range_to_byte_range_snapshot(snapshot.as_ref(), params.range.clone())?;
     let mut hint_infos = snapshot.perform_parameter_inlay_hints_in_range(byte_range.clone());
-    hint_infos.extend(snapshot.function_module_parameter_inlay_hints_in_range(byte_range));
+    hint_infos.extend(snapshot.function_module_parameter_inlay_hints_in_range(byte_range.clone()));
+    hint_infos.extend(snapshot.method_parameter_inlay_hints_in_range(byte_range));
     hint_infos.sort_by_key(|hint| hint.position);
     let hints = hint_infos
         .into_iter()
@@ -9642,6 +9643,121 @@ START-OF-SELECTION.
         );
         assert!(changing_tooltip.value.contains("CHANGING"));
         assert!(changing_tooltip.value.contains("cv_text TYPE string"));
+    }
+
+    #[test]
+    fn inlay_hints_cover_method_and_constructor_parameters_in_all_call_syntaxes() {
+        let state = ServerState::default();
+        let text = "\
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS constructor
+      IMPORTING
+        iv_ctor_text TYPE string.
+    METHODS run
+      IMPORTING
+        iv_name TYPE string
+      CHANGING
+        cv_count TYPE i.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD constructor.
+  ENDMETHOD.
+  METHOD run.
+  ENDMETHOD.
+ENDCLASS.
+
+START-OF-SELECTION.
+  DATA lo_demo TYPE REF TO lcl_demo.
+  CREATE OBJECT lo_demo
+    EXPORTING
+      iv_ctor_text = 'legacy ctor'.
+  CALL METHOD lo_demo->run
+    EXPORTING
+      iv_name = 'legacy method'
+    CHANGING
+      cv_count = DATA(lv_legacy_count).
+  lo_demo->run(
+    EXPORTING
+      iv_name = 'expr method'
+    CHANGING
+      cv_count = DATA(lv_expr_count) ).
+  DATA(lo_new) = NEW lcl_demo(
+    iv_ctor_text = 'expr ctor' ).
+";
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///method_ctor_inlay.abap").expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: text.to_string(),
+                },
+            },
+        );
+
+        let range = Range {
+            start: offset_to_position(text, 0).expect("start position"),
+            end: offset_to_position(text, text.len()).expect("end position"),
+        };
+        let hints = inlay_hints(
+            &state,
+            &InlayHintParams {
+                text_document: TextDocumentIdentifier {
+                    uri: Uri::from_str("file:///method_ctor_inlay.abap").expect("uri"),
+                },
+                range,
+                work_done_progress_params: Default::default(),
+            },
+        )
+        .expect("inlay hints");
+
+        assert_eq!(hints.len(), 6, "{hints:?}");
+
+        let expected_positions = [
+            text.find("'legacy ctor'").expect("legacy ctor position"),
+            text.find("'legacy method'")
+                .expect("legacy method position"),
+            text.find("DATA(lv_legacy_count)")
+                .expect("legacy changing position"),
+            text.find("'expr method'").expect("expr method position"),
+            text.find("DATA(lv_expr_count)")
+                .expect("expr changing position"),
+            text.find("'expr ctor'").expect("expr ctor position"),
+        ];
+        let expected_labels = ["string", "string", "i", "string", "i", "string"];
+        let expected_tooltip_snippets = [
+            (
+                "parameter of CONSTRUCTOR `lcl_demo`",
+                "iv_ctor_text TYPE string",
+            ),
+            ("parameter of METHOD `run`", "iv_name TYPE string"),
+            ("parameter of METHOD `run`", "cv_count TYPE i"),
+            ("parameter of METHOD `run`", "iv_name TYPE string"),
+            ("parameter of METHOD `run`", "cv_count TYPE i"),
+            (
+                "parameter of CONSTRUCTOR `lcl_demo`",
+                "iv_ctor_text TYPE string",
+            ),
+        ];
+
+        for (idx, hint) in hints.iter().enumerate() {
+            assert_eq!(
+                hint.position,
+                offset_to_position(text, expected_positions[idx]).expect("hint position")
+            );
+            let InlayHintLabel::String(label) = &hint.label else {
+                panic!("expected string label");
+            };
+            assert_eq!(label, expected_labels[idx]);
+            let Some(InlayHintTooltip::MarkupContent(tooltip)) = hint.tooltip.as_ref() else {
+                panic!("expected markdown tooltip");
+            };
+            assert!(tooltip.value.contains(expected_tooltip_snippets[idx].0));
+            assert!(tooltip.value.contains(expected_tooltip_snippets[idx].1));
+        }
     }
 
     #[test]

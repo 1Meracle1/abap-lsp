@@ -730,7 +730,19 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                     }
                 }
                 if let Some(arg_list) = arg_list {
-                    if self.call_arg_list_has_structured_constructor_nodes(arg_list) {
+                    if constructor_keyword.as_deref() == Some("new")
+                        && let Some((type_name, _)) = self.ctx.constructor_type_ref(node)
+                    {
+                        let tokens = self.ctx.syntax_token_nodes(arg_list);
+                        if tokens.len() >= 2 {
+                            self.collect_call_arguments_from_infos(
+                                &tokens[1..tokens.len() - 1],
+                                scope,
+                                NamedArgumentTarget::Constructor { type_name },
+                                self.ctx.file().range(node),
+                            );
+                        }
+                    } else if self.call_arg_list_has_structured_constructor_nodes(arg_list) {
                         match constructor_keyword.as_deref() {
                             Some("cond") => self.collect_structured_cond_constructor_nodes(
                                 &CallArgList::cast(self.ctx.syntax(arg_list))
@@ -765,15 +777,6 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                                 scope,
                             ),
                         }
-                    } else if constructor_keyword.as_deref() == Some("new")
-                        && let Some((type_name, _)) = self.ctx.constructor_type_ref(node)
-                    {
-                        self.collect_call_argument_list(
-                            arg_list,
-                            scope,
-                            NamedArgumentTarget::Constructor { type_name },
-                            self.ctx.file().range(node),
-                        );
                     } else if constructor_keyword.as_deref() == Some("value") {
                         self.collect_value_constructor_arg_list(arg_list, scope);
                     } else if constructor_keyword.as_deref() == Some("cond") {

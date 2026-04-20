@@ -884,6 +884,25 @@ impl AnalysisSnapshot {
         hints
     }
 
+    pub fn method_parameter_inlay_hints_in_range(
+        &self,
+        range: Range<usize>,
+    ) -> Vec<ParameterInlayHintInfo> {
+        let mut hints: Vec<_> = self
+            .symbols
+            .call_sites
+            .iter()
+            .flat_map(|call_site| {
+                call_site.arguments.iter().filter_map(|argument| {
+                    method_parameter_inlay_hint(self, call_site, argument)
+                        .filter(|hint| range.start <= hint.position && hint.position < range.end)
+                })
+            })
+            .collect();
+        hints.sort_by_key(|hint| hint.position);
+        hints
+    }
+
     /// Hover for an Open SQL name span (`FROM` source, column, alias, and similar).
     pub fn hovered_sql_name_ref_at(&self, offset: usize) -> Option<HoveredSymbolInfo> {
         let sql_ref = self.symbols.semantic().sql().name_ref_at_offset(offset)?;
@@ -3018,6 +3037,38 @@ fn function_module_parameter_section_keyword(
     }
 }
 
+fn method_parameter_section_keyword(section: MethodParameterSection) -> &'static str {
+    match section {
+        MethodParameterSection::Importing => "IMPORTING",
+        MethodParameterSection::Exporting => "EXPORTING",
+        MethodParameterSection::Changing => "CHANGING",
+        MethodParameterSection::Receiving => "RECEIVING",
+        MethodParameterSection::Returning => "RETURNING",
+    }
+}
+
+fn render_method_parameter_signature(parameter: &ClassMemberParameterData) -> String {
+    let mut rendered = parameter.name.to_string();
+    if let Some(type_clause) = parameter
+        .declared_type
+        .as_ref()
+        .map(format_field_type_ref)
+        .or_else(|| {
+            parameter
+                .type_clause_display
+                .as_ref()
+                .map(|display| display.trim().to_string())
+        })
+    {
+        rendered.push(' ');
+        rendered.push_str(&type_clause);
+    }
+    if parameter.is_optional {
+        rendered.push_str(" OPTIONAL");
+    }
+    rendered
+}
+
 fn render_function_module_parameter_signature(parameter: &FunctionModuleParameterData) -> String {
     let mut rendered = parameter.name.to_string();
     if let Some(type_clause) = parameter.declared_type.as_ref().map(format_field_type_ref) {
@@ -3094,6 +3145,27 @@ fn function_module_parameter_inlay_hint_markdown(
             "{}\n  {}",
             function_module_parameter_section_keyword(parameter.section),
             render_function_module_parameter_signature(parameter)
+        ))
+    )
+}
+
+fn method_parameter_inlay_hint_markdown(
+    call_site: &CallSiteData,
+    member: &ClassMemberData,
+    parameter: &ClassMemberParameterData,
+) -> String {
+    let owner = match &call_site.target {
+        NamedArgumentTarget::Constructor { type_name } => {
+            format!("parameter of CONSTRUCTOR `{}`", type_name)
+        }
+        _ => format!("parameter of METHOD `{}`", member.name),
+    };
+    format!(
+        "{owner}\n\n{}",
+        format_hover_abap(&format!(
+            "{}\n  {}",
+            method_parameter_section_keyword(parameter.section),
+            render_method_parameter_signature(parameter)
         ))
     )
 }
@@ -5008,15 +5080,52 @@ fn function_module_parameter_inlay_hint(
     })
 }
 
+fn method_parameter_inlay_hint(
+    snapshot: &AnalysisSnapshot,
+    call_site: &CallSiteData,
+    argument: &CallArgumentData,
+) -> Option<ParameterInlayHintInfo> {
+    if matches!(
+        call_site.target,
+        NamedArgumentTarget::Function { .. }
+            | NamedArgumentTarget::Routine { .. }
+            | NamedArgumentTarget::Report { .. }
+    ) {
+        return None;
+    }
+    let argument_name = argument.name.as_ref()?;
+    let CallableCompletionTarget::Method(member) =
+        resolve_callable_completion_target(snapshot, call_site)?
+    else {
+        return None;
+    };
+    let parameter = member.parameters.iter().find(|parameter| {
+        parameter.name == *argument_name
+            && call_section_matches_parameter(argument.section, parameter.section)
+    })?;
+    let position = named_argument_value_inlay_position(snapshot.text.as_ref(), &argument.range)?;
+    let label = parameter_completion_declared_type(parameter)?;
+    Some(ParameterInlayHintInfo {
+        position,
+        label: Arc::from(label),
+        trailing_colon: false,
+        tooltip_markdown: method_parameter_inlay_hint_markdown(call_site, member, parameter),
+    })
+}
+
 fn named_argument_value_inlay_position(text: &str, range: &Range<usize>) -> Option<usize> {
     let arg_text = text.get(range.clone())?;
-    let eq_offset = arg_text.find('=')?;
-    let value_start = range.start + eq_offset + 1;
-    let remaining = text.get(value_start..range.end)?;
-    let non_whitespace_offset = remaining
+    if let Some(eq_offset) = arg_text.find('=') {
+        let value_start = range.start + eq_offset + 1;
+        let remaining = text.get(value_start..range.end)?;
+        let non_whitespace_offset = remaining
+            .char_indices()
+            .find_map(|(offset, ch)| (!ch.is_whitespace()).then_some(offset))?;
+        return Some(value_start + non_whitespace_offset);
+    }
+    arg_text
         .char_indices()
-        .find_map(|(offset, ch)| (!ch.is_whitespace()).then_some(offset))?;
-    Some(value_start + non_whitespace_offset)
+        .find_map(|(offset, ch)| (!ch.is_whitespace()).then_some(range.start + offset))
 }
 
 fn resolve_named_argument_target(
