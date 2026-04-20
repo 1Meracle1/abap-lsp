@@ -12,9 +12,10 @@ use abap_cache::{
     CallableCompletionKind, DocumentInput, DocumentStore, LocalExportConfig, LocalExportResolver,
     UNKNOWN_SYMBOL_MODE_REMOTE, WorkspaceDocument, WorkspaceManifest, ddic_xml_to_abap_source,
     file_uri_to_path, function_module_completion_items_from_source, is_remote_lookup_candidate,
-    is_remote_lookup_candidate_after_local_resolution, load_manifest_from_workspace_result,
-    load_workspace_documents_with_progress, local_export_config_for_source, manifest_cache_dir,
-    manifest_document_metadata, manifest_supports_remote_resolution, path_to_file_uri,
+    is_remote_lookup_candidate_after_local_resolution,
+    load_effective_manifest_from_workspace_result, load_workspace_documents_with_progress,
+    local_export_config_for_source, manifest_cache_dir, manifest_document_metadata,
+    manifest_supports_remote_resolution, path_to_file_uri,
     resolve_local_export_dependency_document,
     resolve_local_export_function_module_documents_by_prefix, resolve_workspace_performance_mode,
     uri_starts_with_workspace,
@@ -134,7 +135,11 @@ fn prime_workspace_manifest_state(workspace: &mut WorkspaceState) {
         .ok()
         .map(|metadata| metadata.len() as usize)
         .unwrap_or(0);
-    match load_manifest_from_workspace_result(&root_path) {
+    match load_effective_manifest_from_workspace_result(
+        &root_path,
+        &workspace.root_uri,
+        &workspace.open_documents,
+    ) {
         Ok(manifest) => {
             workspace.performance_mode =
                 resolve_workspace_performance_mode(manifest.as_ref(), manifest_len_bytes);
@@ -683,14 +688,17 @@ fn workspace_remote_dependency_refresh_inputs(
     uris.sort();
     uris.into_iter()
         .map(|uri| {
+            let current = workspace.cache.get(&uri);
             let manifest_info = workspace_manifest_document_info(workspace, &uri);
             let (version, source_text) = if let Some(overlay) = workspace.open_documents.get(&uri) {
                 (overlay.version, overlay.text.to_string())
+            } else if let Some(current) = current.as_ref() {
+                (current.version, current.text.to_string())
             } else {
                 let path = file_uri_to_path(&uri)?;
                 (0, fs::read_to_string(&path).ok()?)
             };
-            let (is_dependency, object_name) = if let Some(current) = workspace.cache.get(&uri) {
+            let (is_dependency, object_name) = if let Some(current) = current.as_ref() {
                 (current.is_dependency, current.object_name.clone())
             } else {
                 let info = manifest_info.as_ref()?;
@@ -1270,6 +1278,9 @@ pub fn handle_remote_dependencies_updated_with_progress(
     let workspace_uri = normalize_lsp_uri(&params.workspace_uri);
     let targeted_refresh = if let Some(workspace) = state.workspaces.get_mut(&workspace_uri) {
         workspace.remote_resolution_in_flight = false;
+        if !params.fetched.is_empty() {
+            prime_workspace_manifest_state(workspace);
+        }
         for name in &params.fetched {
             workspace
                 .remote_lookup_failures
@@ -1839,6 +1850,7 @@ fn has_cached_remote_dependency_candidate(
 struct RemoteDependencyMemo {
     request_candidates: HashMap<String, Vec<RemoteDependencyCandidate>>,
     cached_candidate_presence: HashMap<String, bool>,
+    negative_candidate_presence: HashMap<String, bool>,
 }
 
 impl RemoteDependencyMemo {
@@ -1846,6 +1858,7 @@ impl RemoteDependencyMemo {
         Self {
             request_candidates: HashMap::new(),
             cached_candidate_presence: HashMap::new(),
+            negative_candidate_presence: HashMap::new(),
         }
     }
 
@@ -1876,6 +1889,51 @@ impl RemoteDependencyMemo {
         self.cached_candidate_presence.insert(key, cached);
         cached
     }
+
+    fn has_persisted_negative_candidate(
+        &mut self,
+        workspace: &WorkspaceState,
+        candidate: &RemoteDependencyCandidate,
+    ) -> bool {
+        let key = remote_candidate_key(candidate);
+        if let Some(negative) = self.negative_candidate_presence.get(&key) {
+            return *negative;
+        }
+        let negative = has_persisted_negative_remote_dependency_candidate(workspace, candidate);
+        self.negative_candidate_presence.insert(key, negative);
+        negative
+    }
+}
+
+fn persisted_negative_remote_dependency_marker_path(
+    workspace: &WorkspaceState,
+    candidate: &RemoteDependencyCandidate,
+) -> Option<PathBuf> {
+    let root_path = file_uri_to_path(&workspace.root_uri)?;
+    let encoded_name = encode_dependency_cache_name(&candidate.name);
+    if encoded_name.is_empty() {
+        return None;
+    }
+    let kind = candidate.kind.trim().to_ascii_lowercase();
+    let kind = if kind.is_empty() { "unknown" } else { &kind };
+    // The VS Code client currently persists negative markers under the default cache root
+    // independent of manifest cache_dir, so the server mirrors that location here.
+    Some(
+        root_path
+            .join(".abapls")
+            .join("cache")
+            .join("negative-dependencies")
+            .join(kind)
+            .join(format!("{encoded_name}.json")),
+    )
+}
+
+fn has_persisted_negative_remote_dependency_candidate(
+    workspace: &WorkspaceState,
+    candidate: &RemoteDependencyCandidate,
+) -> bool {
+    persisted_negative_remote_dependency_marker_path(workspace, candidate)
+        .is_some_and(|path| path.exists())
 }
 
 fn build_remote_dependency_request_for_snapshot(
@@ -1887,8 +1945,15 @@ fn build_remote_dependency_request_for_snapshot(
 ) -> Option<RemoteDependencyResolveParams> {
     if snapshot.parse.errors.is_empty() {
         let mut candidates = Vec::new();
+        let source_uses_local_exports =
+            !snapshot.is_dependency && document_uses_local_exports(workspace, source_uri);
         for candidate in memo.candidates_for_request(workspace, snapshot, source_uri) {
             if memo.has_cached_candidate(cache_context, &candidate) {
+                continue;
+            }
+            if !source_uses_local_exports
+                && memo.has_persisted_negative_candidate(workspace, &candidate)
+            {
                 continue;
             }
             let key = remote_candidate_key(&candidate);
@@ -2048,8 +2113,15 @@ pub fn build_remote_dependency_batch_for_workspace_filtered(
         let mut added_for_uri = false;
         let mut uri_candidates = Vec::new();
         let mut uri_seen = HashSet::new();
+        let source_uses_local_exports =
+            !snapshot.is_dependency && document_uses_local_exports(workspace, uri.as_ref());
         for candidate in memo.candidates_for_request(workspace, snapshot.as_ref(), uri.as_ref()) {
             if memo.has_cached_candidate(&cache_context, &candidate) {
+                continue;
+            }
+            if !source_uses_local_exports
+                && memo.has_persisted_negative_candidate(workspace, &candidate)
+            {
                 continue;
             }
             let key = remote_candidate_key(&candidate);
@@ -6572,8 +6644,80 @@ object_name = "ZMAIN"
     }
 
     #[test]
-    fn remote_dependency_request_still_emits_candidates_with_persisted_negative_markers() {
+    fn remote_dependency_request_still_emits_candidates_with_persisted_negative_markers_for_local_exports()
+     {
         let workspace_path = temp_workspace_path("workspace_negative_dependency_marker");
+        let export_root = temp_workspace_path("workspace_negative_dependency_marker_export");
+        let _ = fs::remove_dir_all(&export_root);
+        fs::create_dir_all(&workspace_path).expect("workspace dir");
+        fs::create_dir_all(&export_root).expect("export root");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[resolution]
+dependency_mode = "remote-on-demand"
+unknown_symbol_mode = "remote"
+"#,
+        )
+        .expect("manifest");
+        let workspace_uri = path_to_file_uri(&workspace_path);
+        fs::write(
+            workspace_path.join("main.abap.abapls-unit.toml"),
+            format!(
+                "[local_export]\nroots = [\"{}\"]\n\n[dependencies]\nsource = \"local-first\"\n",
+                export_root.to_string_lossy().replace('\\', "/")
+            ),
+        )
+        .expect("sidecar");
+
+        let negative_path = workspace_path
+            .join(".abapls")
+            .join("cache")
+            .join("negative-dependencies")
+            .join("type")
+            .join("BOOLEAN.json");
+        fs::create_dir_all(negative_path.parent().expect("negative marker dir"))
+            .expect("negative marker dir");
+        fs::write(
+            &negative_path,
+            r#"{"name":"boolean","kind":"type","reason":"exact-match-domain-only"}"#,
+        )
+        .expect("negative marker");
+
+        let mut state = ServerState::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        publish_open_document_mut(
+            &mut state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str(&format!("{workspace_uri}/main.abap")).expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: "DATA lv_boolean TYPE boolean.".to_string(),
+                },
+            },
+        );
+
+        let request =
+            build_remote_dependency_request(&mut state, &format!("{workspace_uri}/main.abap"))
+                .expect("remote request");
+        assert!(
+            request
+                .candidates
+                .iter()
+                .any(|candidate| candidate.kind == "type" && candidate.name == "boolean"),
+            "persisted negative markers must not suppress client-side local-first resolution: {request:#?}"
+        );
+
+        let _ = fs::remove_dir_all(&workspace_path);
+        let _ = fs::remove_dir_all(&export_root);
+    }
+
+    #[test]
+    fn workspace_remote_dependency_batch_skips_persisted_negative_markers_without_local_exports() {
+        let workspace_path = temp_workspace_path("workspace_negative_dependency_batch");
         fs::create_dir_all(&workspace_path).expect("workspace dir");
         fs::write(
             workspace_path.join("abapls.toml"),
@@ -6616,15 +6760,9 @@ unknown_symbol_mode = "remote"
             },
         );
 
-        let request =
-            build_remote_dependency_request(&mut state, &format!("{workspace_uri}/main.abap"))
-                .expect("remote request");
         assert!(
-            request
-                .candidates
-                .iter()
-                .any(|candidate| candidate.kind == "type" && candidate.name == "boolean"),
-            "persisted negative markers must not suppress client-side local-first resolution: {request:#?}"
+            build_remote_dependency_batch_for_workspace(&mut state, &workspace_uri).is_none(),
+            "persisted negative markers should suppress repeated remote batches when no local export roots are configured"
         );
 
         let _ = fs::remove_dir_all(&workspace_path);
@@ -6719,6 +6857,150 @@ root_file = ".abapls/cache/dependencies/global-class/ZCL_FIRST.abap"
                     .iter()
                     .any(|candidate| candidate.name == "zcl_second")
         }));
+
+        let _ = fs::remove_dir_all(&workspace_path);
+    }
+
+    #[test]
+    fn remote_dependency_updates_refresh_new_sidecar_without_full_workspace_fanout() {
+        let workspace_path = temp_workspace_path("dependency_sidecar_targeted_refresh");
+        let source_dir = workspace_path.join("src");
+        let dependency_dir = workspace_path
+            .join(".abapls")
+            .join("cache")
+            .join("dependencies")
+            .join("global-class");
+        let dependency_manifest_dir = workspace_path
+            .join(".abapls")
+            .join("cache")
+            .join("dependency-manifests");
+        fs::create_dir_all(&source_dir).expect("source dir");
+        fs::create_dir_all(&dependency_dir).expect("dependency dir");
+        fs::create_dir_all(&dependency_manifest_dir).expect("dependency manifest dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[resolution]
+dependency_mode = "remote-on-demand"
+unknown_symbol_mode = "remote"
+
+[[unit]]
+name = "ZREPORT_MAIN"
+kind = "report"
+root_file = "src/ZREPORT_MAIN.abap"
+
+[[unit.member]]
+role = "root"
+file = "src/ZREPORT_MAIN.abap"
+object_name = "ZREPORT_MAIN"
+
+[[unit]]
+name = "ZREPORT_OTHER"
+kind = "report"
+root_file = "src/ZREPORT_OTHER.abap"
+
+[[unit.member]]
+role = "root"
+file = "src/ZREPORT_OTHER.abap"
+object_name = "ZREPORT_OTHER"
+"#,
+        )
+        .expect("manifest");
+        fs::write(
+            source_dir.join("ZREPORT_MAIN.abap"),
+            "REPORT zreport_main.\nDATA lo_dep TYPE REF TO zcl_dep.\n",
+        )
+        .expect("main");
+        fs::write(
+            source_dir.join("ZREPORT_OTHER.abap"),
+            "REPORT zreport_other.\nWRITE 'ok'.\n",
+        )
+        .expect("other");
+
+        let workspace_uri = path_to_file_uri(&workspace_path);
+        let source_uri = normalize_lsp_uri(&format!("{workspace_uri}/src/ZREPORT_MAIN.abap"));
+        let unrelated_uri = normalize_lsp_uri(&format!("{workspace_uri}/src/ZREPORT_OTHER.abap"));
+        let dependency_uri = normalize_lsp_uri(&format!(
+            "{workspace_uri}/.abapls/cache/dependencies/global-class/ZCL_DEP.abap"
+        ));
+
+        let mut state = ServerState::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        refresh_workspace(&mut state, &workspace_uri);
+
+        fs::write(
+            dependency_dir.join("ZCL_DEP.abap"),
+            "\
+CLASS zcl_dep DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS create RETURNING VALUE(ro_dep) TYPE REF TO object.
+ENDCLASS.
+CLASS zcl_dep IMPLEMENTATION.
+  METHOD create.
+  ENDMETHOD.
+ENDCLASS.",
+        )
+        .expect("dependency file");
+        fs::write(
+            dependency_manifest_dir.join("src%2FZREPORT_MAIN.abap.toml"),
+            r#"
+source_file = "src/ZREPORT_MAIN.abap"
+
+[[unit]]
+name = "ZCL_DEP"
+kind = "global-class"
+root_file = ".abapls/cache/dependencies/global-class/ZCL_DEP.abap"
+
+[[unit.member]]
+role = "dependency"
+file = ".abapls/cache/dependencies/global-class/ZCL_DEP.abap"
+object_name = "ZCL_DEP"
+"#,
+        )
+        .expect("dependency manifest");
+
+        let refreshed = handle_remote_dependencies_updated(
+            &mut state,
+            &super::RemoteDependenciesUpdatedParams {
+                workspace_uri: workspace_uri.clone(),
+                source_uri: source_uri.clone(),
+                source_uris: vec![source_uri.clone()],
+                fetched: vec!["ZCL_DEP".to_string()],
+                failed: Vec::new(),
+            },
+        );
+
+        let refreshed_uris: Vec<_> = refreshed
+            .iter()
+            .map(|snapshot| snapshot.uri.as_ref())
+            .collect();
+        assert_eq!(refreshed_uris.len(), 2, "{refreshed_uris:?}");
+        assert!(
+            refreshed_uris.contains(&source_uri.as_str()),
+            "{refreshed_uris:?}"
+        );
+        assert!(
+            refreshed_uris.contains(&dependency_uri.as_str()),
+            "{refreshed_uris:?}"
+        );
+        assert!(
+            !refreshed_uris.contains(&unrelated_uri.as_str()),
+            "{refreshed_uris:?}"
+        );
+
+        let workspace = state
+            .workspaces
+            .get(&normalize_lsp_uri(&workspace_uri))
+            .expect("workspace");
+        assert!(
+            workspace
+                .manifest
+                .as_ref()
+                .is_some_and(|manifest| manifest.units.iter().any(|unit| unit.name == "ZCL_DEP")),
+            "expected refreshed manifest to include new dependency unit"
+        );
 
         let _ = fs::remove_dir_all(&workspace_path);
     }

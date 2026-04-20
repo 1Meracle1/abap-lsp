@@ -311,6 +311,29 @@ pub fn load_manifest_from_workspace_result(
     Ok(Some(manifest))
 }
 
+pub fn load_effective_manifest_from_workspace_result(
+    root_path: &Path,
+    root_uri: &str,
+    overlays: &HashMap<String, OpenDocumentOverlay>,
+) -> Result<Option<WorkspaceManifest>, String> {
+    let manifest = load_manifest_from_workspace_result(root_path)?;
+    Ok(manifest.map(|manifest| {
+        let mut effective = manifest_with_discovered_units(&manifest, root_path);
+        let cache_dir = manifest_cache_dir(Some(&effective)).to_string();
+        let mut loaded_units = effective.units.clone();
+        collect_dependency_cache_units(
+            &effective,
+            root_path,
+            root_uri,
+            &cache_dir,
+            overlays,
+            &mut loaded_units,
+        );
+        effective.units = loaded_units;
+        effective
+    }))
+}
+
 pub fn load_workspace_documents(
     root_uri: &str,
     overlays: &HashMap<String, OpenDocumentOverlay>,
@@ -1812,7 +1835,6 @@ fn collect_dependency_cache_documents(
             if loaded_unit_keys.insert(unit_key) {
                 loaded_units.push(unit.clone());
             }
-
             let mut seen_files = HashSet::new();
             for member in &unit.members {
                 let relative = normalize_manifest_path(&member.file);
@@ -1850,6 +1872,40 @@ fn collect_dependency_cache_documents(
             }
 
             pending_sources.extend(unit_files);
+        }
+    }
+}
+
+fn collect_dependency_cache_units(
+    manifest: &WorkspaceManifest,
+    root_path: &Path,
+    root_uri: &str,
+    cache_dir: &str,
+    overlays: &HashMap<String, OpenDocumentOverlay>,
+    loaded_units: &mut Vec<ManifestUnit>,
+) {
+    let mut pending_sources: Vec<_> =
+        initial_dependency_cache_sources(manifest, root_path, root_uri, cache_dir, overlays)
+            .into_iter()
+            .collect();
+    let mut visited_sources = HashSet::new();
+    let mut loaded_unit_keys = loaded_units
+        .iter()
+        .map(manifest_unit_identity_key)
+        .collect::<HashSet<_>>();
+
+    while let Some(source_file) = pending_sources.pop() {
+        let source_file = normalize_manifest_path(&source_file);
+        if source_file.is_empty() || !visited_sources.insert(source_file.clone()) {
+            continue;
+        }
+        let units = load_dependency_cache_manifest_units(root_path, cache_dir, &source_file);
+        for unit in units {
+            pending_sources.extend(manifest_unit_files(&unit));
+            let unit_key = manifest_unit_identity_key(&unit);
+            if loaded_unit_keys.insert(unit_key) {
+                loaded_units.push(unit);
+            }
         }
     }
 }
