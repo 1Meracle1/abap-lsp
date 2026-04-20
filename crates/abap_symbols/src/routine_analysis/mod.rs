@@ -3618,7 +3618,7 @@ fn conditional_assignment_targets_for_subrc_success_update(
             .sql_queries
             .iter()
             .filter(|query| {
-                query.scope == update.scope
+                scope_descends_from(unit, query.scope, update.scope)
                     && update.range.start <= query.range.start
                     && query.range.end <= update.range.end
             })
