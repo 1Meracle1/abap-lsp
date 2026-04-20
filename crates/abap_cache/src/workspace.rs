@@ -2340,6 +2340,7 @@ struct DdicField {
     name: String,
     type_name: Option<String>,
     builtin_type: Option<String>,
+    short_text: Option<String>,
     is_table: bool,
     include_part_of: Option<String>,
 }
@@ -2376,11 +2377,14 @@ fn data_element_to_abap_source(object_name: &str, xml: &str) -> String {
             .map(|value| normalize_ddic_builtin_type(&value).into_owned())
     })
     .unwrap_or_else(|| "string".to_string());
-    format!(
-        "TYPES {name} TYPE {ty}.\n",
+    let mut out = format!(
+        "TYPES {name} TYPE {ty}.",
         name = object_name.to_ascii_lowercase(),
         ty = referenced
-    )
+    );
+    append_inline_comment(&mut out, ddic_short_text(xml).as_deref());
+    out.push('\n');
+    out
 }
 
 fn table_type_to_abap_source(object_name: &str, xml: &str) -> String {
@@ -2397,11 +2401,14 @@ fn table_type_to_abap_source(object_name: &str, xml: &str) -> String {
         )
         .unwrap_or_else(|| "string".to_string())
     });
-    format!(
-        "TYPES {name} TYPE STANDARD TABLE OF {line_type} WITH EMPTY KEY.\n",
+    let mut out = format!(
+        "TYPES {name} TYPE STANDARD TABLE OF {line_type} WITH EMPTY KEY.",
         name = object_name.to_ascii_lowercase(),
         line_type = normalize_ddic_type_name(&line_type)
-    )
+    );
+    append_inline_comment(&mut out, ddic_short_text(xml).as_deref());
+    out.push('\n');
+    out
 }
 
 fn table_type_line_type(xml: &str) -> Option<String> {
@@ -2459,17 +2466,22 @@ fn table_type_line_type(xml: &str) -> Option<String> {
 fn structured_ddic_to_abap_source(object_name: &str, xml: &str) -> String {
     let fields = collect_ddic_fields(xml);
     if fields.is_empty() {
-        return format!(
-            "TYPES {name} TYPE string.\n",
+        let mut out = format!(
+            "TYPES {name} TYPE string.",
             name = object_name.to_ascii_lowercase()
         );
+        append_inline_comment(&mut out, ddic_short_text(xml).as_deref());
+        out.push('\n');
+        return out;
     }
 
     let mut out = String::new();
     out.push_str(&format!(
-        "TYPES: BEGIN OF {name},\n",
+        "TYPES: BEGIN OF {name},",
         name = object_name.to_ascii_lowercase()
     ));
+    append_inline_comment(&mut out, ddic_short_text(xml).as_deref());
+    out.push('\n');
     for (idx, field) in fields.iter().enumerate() {
         let suffix = if idx + 1 == fields.len() { "" } else { "," };
         let ty = if let Some(type_name) = field.type_name.as_ref() {
@@ -2481,15 +2493,17 @@ fn structured_ddic_to_abap_source(object_name: &str, xml: &str) -> String {
         };
         if field.is_table {
             out.push_str(&format!(
-                "  {field_name} TYPE STANDARD TABLE OF {ty} WITH EMPTY KEY{suffix}\n",
+                "  {field_name} TYPE STANDARD TABLE OF {ty} WITH EMPTY KEY{suffix}",
                 field_name = field.name.to_ascii_lowercase(),
             ));
         } else {
             out.push_str(&format!(
-                "  {field_name} TYPE {ty}{suffix}\n",
+                "  {field_name} TYPE {ty}{suffix}",
                 field_name = field.name.to_ascii_lowercase(),
             ));
         }
+        append_inline_comment(&mut out, field.short_text.as_deref());
+        out.push('\n');
     }
     out.push_str(&format!(
         "END OF {name}.\n",
@@ -2500,9 +2514,11 @@ fn structured_ddic_to_abap_source(object_name: &str, xml: &str) -> String {
 
 fn message_class_to_abap_source(object_name: &str, xml: &str) -> String {
     let mut out = format!(
-        "TYPES {name} TYPE c LENGTH 1.\n",
+        "TYPES {name} TYPE c LENGTH 1.",
         name = object_name.to_ascii_lowercase()
     );
+    append_inline_comment(&mut out, ddic_short_text(xml).as_deref());
+    out.push('\n');
     let messages = collect_message_class_messages(xml);
     if messages.is_empty() {
         return out;
@@ -2550,6 +2566,7 @@ fn collect_ddic_fields(xml: &str) -> Vec<DdicField> {
     let mut fields = Vec::new();
     let mut current = None::<DdicField>;
     let mut current_property_key = None::<String>;
+    let mut current_documentation_rel = None::<String>;
     let mut tag_stack: Vec<Vec<u8>> = Vec::new();
 
     loop {
@@ -2561,6 +2578,7 @@ fn collect_ddic_fields(xml: &str) -> Vec<DdicField> {
                         type_name: attr_local_text(&start, b"rollname")
                             .or_else(|| attr_local_text(&start, b"refname")),
                         builtin_type: attr_local_text(&start, b"datatype"),
+                        short_text: None,
                         is_table: attr_local_text(&start, b"isTableType")
                             .is_some_and(|value| value.eq_ignore_ascii_case("true")),
                         include_part_of: None,
@@ -2568,6 +2586,9 @@ fn collect_ddic_fields(xml: &str) -> Vec<DdicField> {
                 }
                 if local_name_eq(start.name().as_ref(), b"entry") {
                     current_property_key = attr_local_text(&start, b"key");
+                }
+                if local_name_eq(start.name().as_ref(), b"documentation") {
+                    current_documentation_rel = attr_local_text(&start, b"rel");
                 }
                 tag_stack.push(start.name().as_ref().to_vec());
             }
@@ -2578,6 +2599,7 @@ fn collect_ddic_fields(xml: &str) -> Vec<DdicField> {
                         type_name: attr_local_text(&start, b"rollname")
                             .or_else(|| attr_local_text(&start, b"refname")),
                         builtin_type: attr_local_text(&start, b"datatype"),
+                        short_text: None,
                         is_table: attr_local_text(&start, b"isTableType")
                             .is_some_and(|value| value.eq_ignore_ascii_case("true")),
                         include_part_of: None,
@@ -2627,6 +2649,15 @@ fn collect_ddic_fields(xml: &str) -> Vec<DdicField> {
                     current.builtin_type = Some(value);
                     continue;
                 }
+                if local_name_eq(name, b"documentation")
+                    && current_documentation_rel
+                        .as_deref()
+                        .is_some_and(|rel| rel.eq_ignore_ascii_case("shorttext"))
+                    && current.short_text.is_none()
+                {
+                    current.short_text = Some(normalize_ddic_comment_text(&value));
+                    continue;
+                }
                 if matches_local_name(name, &[b"name", b"fieldname", b"scrtext_s"])
                     && current.name.is_empty()
                 {
@@ -2657,6 +2688,9 @@ fn collect_ddic_fields(xml: &str) -> Vec<DdicField> {
                 }
                 if local_name_eq(end.name().as_ref(), b"entry") {
                     current_property_key = None;
+                }
+                if local_name_eq(end.name().as_ref(), b"documentation") {
+                    current_documentation_rel = None;
                 }
                 let _ = tag_stack.pop();
             }
@@ -2692,6 +2726,64 @@ fn attr_local_text(start: &BytesStart<'_>, key: &[u8]) -> Option<String> {
         .flatten()
         .find(|attr| local_name_eq(attr.key.as_ref(), key))
         .and_then(|attr| String::from_utf8(attr.value.into_owned()).ok())
+}
+
+fn ddic_short_text(xml: &str) -> Option<String> {
+    let mut reader = Reader::from_str(xml);
+    reader.config_mut().trim_text(true);
+    let mut tag_stack: Vec<Vec<u8>> = Vec::new();
+    let mut current_documentation_rel = None::<String>;
+
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(start)) => {
+                if local_name_eq(start.name().as_ref(), b"documentation") {
+                    current_documentation_rel = attr_local_text(&start, b"rel");
+                }
+                tag_stack.push(start.name().as_ref().to_vec());
+            }
+            Ok(Event::Text(text)) => {
+                if tag_stack.len() == 2
+                    && tag_stack
+                        .last()
+                        .is_some_and(|name| local_name_eq(name.as_slice(), b"documentation"))
+                    && current_documentation_rel
+                        .as_deref()
+                        .is_some_and(|rel| rel.eq_ignore_ascii_case("shorttext"))
+                {
+                    let value = text.decode().ok().map(Cow::into_owned)?;
+                    return Some(normalize_ddic_comment_text(&value));
+                }
+            }
+            Ok(Event::End(end)) => {
+                if local_name_eq(end.name().as_ref(), b"documentation") {
+                    current_documentation_rel = None;
+                }
+                let _ = tag_stack.pop();
+            }
+            Ok(Event::Eof) => break,
+            Err(_) => break,
+            _ => {}
+        }
+    }
+
+    None
+}
+
+fn normalize_ddic_comment_text(value: &str) -> String {
+    value
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .replace('"', "'")
+}
+
+fn append_inline_comment(out: &mut String, text: Option<&str>) {
+    let Some(text) = text.map(str::trim).filter(|text| !text.is_empty()) else {
+        return;
+    };
+    out.push_str(" \" ");
+    out.push_str(text);
 }
 
 fn first_tag_text(xml: &str, tags: &[&str]) -> Option<String> {
@@ -2954,6 +3046,41 @@ mode = "full-workspace"
         assert!(lowered.contains("controller type prxctrltab"));
         assert!(lowered.contains("content type string"));
         assert!(!lowered.contains("/sttp/epc1 type"));
+    }
+
+    #[test]
+    fn preserves_ddic_short_texts_as_inline_comments_in_dependency_source() {
+        let xml = r#"
+<abapsource:elementInfo adtcore:name="lagp"
+    xmlns:abapsource="http://www.sap.com/adt/abapsource"
+    xmlns:adtcore="http://www.sap.com/adt/core">
+  <abapsource:properties/>
+  <abapsource:documentation abapsource:rel="shorttext" abapsource:type="text/plain">
+    Storage bins
+  </abapsource:documentation>
+  <abapsource:elementInfo adtcore:type="TABL/DTF" adtcore:name="lgnum">
+    <abapsource:properties>
+      <abapsource:entry abapsource:key="ddicDataElement">lgnum</abapsource:entry>
+    </abapsource:properties>
+    <abapsource:documentation abapsource:rel="shorttext" abapsource:type="text/plain">
+      Warehouse number
+    </abapsource:documentation>
+  </abapsource:elementInfo>
+  <abapsource:elementInfo adtcore:type="TABL/DTF" adtcore:name="lgpla">
+    <abapsource:properties>
+      <abapsource:entry abapsource:key="ddicDataElement">lgpla</abapsource:entry>
+    </abapsource:properties>
+    <abapsource:documentation abapsource:rel="shorttext" abapsource:type="text/plain">
+      Storage bin
+    </abapsource:documentation>
+  </abapsource:elementInfo>
+</abapsource:elementInfo>
+"#;
+        let source = ddic_xml_to_abap_source("LAGP", "ddic-table", xml).expect("source");
+        let lowered = source.to_ascii_lowercase();
+        assert!(lowered.contains("types: begin of lagp, \" storage bins"));
+        assert!(lowered.contains("lgnum type lgnum, \" warehouse number"));
+        assert!(lowered.contains("lgpla type lgpla \" storage bin"));
     }
 
     #[test]

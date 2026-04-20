@@ -133,6 +133,7 @@ pub struct HoveredComponentInfo {
     pub field_owner_structure_name: Option<Arc<str>>,
     pub range: Range<usize>,
     pub declared_type: Option<String>,
+    pub description: Option<String>,
     pub value_clause_display: Option<Arc<str>>,
     pub declaration: Option<String>,
     pub kind: HoveredComponentKind,
@@ -288,6 +289,16 @@ struct InferredDdicFieldTarget {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+struct ResolvedSqlFieldTarget {
+    range: Range<usize>,
+    source_name: Arc<str>,
+    source_alias: Option<Arc<str>>,
+    field: StructureFieldInfo,
+    field_owner_structure_name: Arc<str>,
+    description: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum ReferenceSearchTarget {
     Symbol(abap_symbols::SymbolHandle),
     ClassMember {
@@ -307,7 +318,10 @@ enum ReferenceSearchTarget {
     },
 }
 
-fn markdown_lines_for_sql_name_ref(sql_ref: &SqlNameRefData) -> Vec<String> {
+fn markdown_lines_for_sql_name_ref(
+    snapshot: &AnalysisSnapshot,
+    sql_ref: &SqlNameRefData,
+) -> Vec<String> {
     let title = match sql_ref.kind {
         SqlNameRefKind::Source => "Open SQL data source (DDIC object)",
         SqlNameRefKind::Alias => "Open SQL alias",
@@ -322,10 +336,37 @@ fn markdown_lines_for_sql_name_ref(sql_ref: &SqlNameRefData) -> Vec<String> {
         lines.push(format!("Table alias `{}`", qual));
     }
     if matches!(sql_ref.kind, SqlNameRefKind::Source) {
+        if let Some(target) = snapshot.definition_target_for_sql_name_ref_at(sql_ref.range.start)
+            && let Some(description) =
+                description_for_definition_target(snapshot, &target).filter(|text| !text.is_empty())
+        {
+            lines.push(description);
+            return lines;
+        }
         lines.push(
             "The analyzer emits a warning until the source is verified against SAP DDIC/repository (not connected in this build). Use SAP ADT or the VS Code remote dependency fetch for metadata."
                 .to_string(),
         );
+        return lines;
+    }
+    if matches!(
+        sql_ref.kind,
+        SqlNameRefKind::Column | SqlNameRefKind::QualifiedColumn
+    ) && let Some(target) = snapshot.sql_field_target_at(sql_ref.range.start)
+    {
+        if let Some(description) = target.description {
+            lines.push(description);
+        }
+        if let Some(type_ref) = &target.field.type_ref {
+            lines.push(format_hover_type_clause(&format_field_type_ref(type_ref)));
+        }
+        let mut source_line = format!("column of `{}`", target.field_owner_structure_name);
+        if let Some(alias) = target.source_alias.as_ref()
+            && alias.as_ref() != target.source_name.as_ref()
+        {
+            source_line.push_str(&format!(" via alias `{}`", alias));
+        }
+        lines.push(source_line);
     }
     lines
 }
@@ -482,6 +523,7 @@ impl AnalysisSnapshot {
                     field_owner_structure_name: None,
                     range: access.field_path[0].range.clone(),
                     declared_type: None,
+                    description: None,
                     value_clause_display: None,
                     declaration: Some(format!(
                         "INTERFACE {}",
@@ -503,6 +545,7 @@ impl AnalysisSnapshot {
                     field_owner_structure_name: None,
                     range: access.field_path[0].range.clone(),
                     declared_type: None,
+                    description: None,
                     value_clause_display: None,
                     declaration: Some(format!("INTERFACE {}", access.field_path[0].name)),
                     kind: HoveredComponentKind::Interface,
@@ -526,6 +569,7 @@ impl AnalysisSnapshot {
                     field_owner_structure_name: None,
                     range: access.field_path[segment_index].range.clone(),
                     declared_type: None,
+                    description: None,
                     value_clause_display: None,
                     declaration: Some(format_class_member_signature(unit, member)),
                     kind: hovered_component_kind_for_class_member(member),
@@ -550,6 +594,7 @@ impl AnalysisSnapshot {
                     field_owner_structure_name: None,
                     range: access.field_path[segment_index].range.clone(),
                     declared_type: None,
+                    description: None,
                     value_clause_display: None,
                     declaration: Some(format!("METHOD {}", method_symbol.name)),
                     kind: HoveredComponentKind::Method,
@@ -578,6 +623,7 @@ impl AnalysisSnapshot {
                     field_owner_structure_name: Some(owner_structure_name),
                     range: access.field_path[segment_index].range.clone(),
                     declared_type: Some(format_field_type_ref(&declared_type)),
+                    description: None,
                     value_clause_display: None,
                     declaration: Some("well-known external DDIC structure field".to_string()),
                     kind,
@@ -621,6 +667,7 @@ impl AnalysisSnapshot {
                     field_owner_structure_name: inferred.field_owner_structure_name,
                     range: access.field_path[segment_index].range.clone(),
                     declared_type: Some(format!("TYPE {}", inferred.declared_type_name)),
+                    description: description_for_definition_target(self, &inferred.definition),
                     value_clause_display: None,
                     declaration: Some("DDIC field inferred from incomplete cache".to_string()),
                     kind: HoveredComponentKind::Scalar,
@@ -649,6 +696,7 @@ impl AnalysisSnapshot {
                 field_owner_structure_name,
                 range: access.field_path[segment_index].range.clone(),
                 declared_type: field.type_ref.as_ref().map(format_field_type_ref),
+                description: description_for_field_info(self, &field),
                 value_clause_display: field.value_clause_display.clone(),
                 declaration: None,
                 kind,
@@ -675,6 +723,7 @@ impl AnalysisSnapshot {
                 )),
                 range: target.range,
                 declared_type: field.type_ref.as_ref().map(format_field_type_ref),
+                description: description_for_field_info(self, field),
                 value_clause_display: field.value_clause_display.clone(),
                 declaration: None,
                 kind,
@@ -704,6 +753,7 @@ impl AnalysisSnapshot {
                     field_owner_structure_name: inferred.field_owner_structure_name,
                     range: token.range.clone(),
                     declared_type: Some(format!("TYPE {}", inferred.declared_type_name)),
+                    description: description_for_definition_target(self, &inferred.definition),
                     value_clause_display: None,
                     declaration: Some("DDIC field inferred from incomplete cache".to_string()),
                     kind: HoveredComponentKind::Scalar,
@@ -819,7 +869,7 @@ impl AnalysisSnapshot {
         Some(HoveredSymbolInfo {
             range: sql_ref.range.clone(),
             display_name: Arc::clone(&sql_ref.name),
-            markdown_lines: markdown_lines_for_sql_name_ref(sql_ref),
+            markdown_lines: markdown_lines_for_sql_name_ref(self, sql_ref),
         })
     }
 
@@ -833,7 +883,7 @@ impl AnalysisSnapshot {
         if let Some(target) = self.definition_target_for_named_argument_at(offset) {
             return Some(target);
         }
-        if let Some(target) = self.definition_target_for_sql_source_matching_type_ref(offset) {
+        if let Some(target) = self.definition_target_for_sql_name_ref_at(offset) {
             return Some(target);
         }
         self.definition_target_for_resolved_symbol_at(offset)
@@ -1209,6 +1259,86 @@ impl AnalysisSnapshot {
             .min_by_key(|(width, _)| *width)
             .map(|(_, target)| target)
             .or_else(|| definition_target_for_dd_like_type_name(self.project.as_ref(), name))
+    }
+
+    fn definition_target_for_sql_name_ref_at(&self, offset: usize) -> Option<DefinitionTarget> {
+        let sql_ref = self.symbols.semantic().sql().name_ref_at_offset(offset)?;
+        match sql_ref.kind {
+            SqlNameRefKind::Source => {
+                self.definition_target_for_sql_source_matching_type_ref(offset)
+            }
+            SqlNameRefKind::Column | SqlNameRefKind::QualifiedColumn => {
+                let target = self.sql_field_target_at(offset)?;
+                let decl_range = target.field.decl_range?;
+                Some(definition_target_for_range(
+                    &self.project.units[target.field.decl_unit.as_usize()],
+                    decl_range,
+                ))
+            }
+            _ => None,
+        }
+    }
+
+    fn sql_field_target_at(&self, offset: usize) -> Option<ResolvedSqlFieldTarget> {
+        let sql_ref = self.symbols.semantic().sql().name_ref_at_offset(offset)?;
+        if !matches!(
+            sql_ref.kind,
+            SqlNameRefKind::Column | SqlNameRefKind::QualifiedColumn
+        ) {
+            return None;
+        }
+        let source_name = self.sql_source_name_for_ref(sql_ref)?;
+        let (source_unit, structure_id) =
+            self.sql_source_structure_for_name(sql_ref.scope, &source_name)?;
+        let field = source_unit
+            .semantic()
+            .decls()
+            .structure_field_info(structure_id, sql_ref.name.as_ref())?;
+        let field_owner_structure_name = Arc::clone(&source_unit.structure(field.owner).name);
+        Some(ResolvedSqlFieldTarget {
+            range: sql_ref.range.clone(),
+            source_name,
+            source_alias: sql_ref.qualifier.clone(),
+            description: description_for_field_info(self, &field),
+            field,
+            field_owner_structure_name,
+        })
+    }
+
+    fn sql_source_name_for_ref(&self, sql_ref: &SqlNameRefData) -> Option<Arc<str>> {
+        if matches!(sql_ref.kind, SqlNameRefKind::Source) {
+            return Some(Arc::clone(&sql_ref.name));
+        }
+        let sources: Vec<_> = self
+            .symbols
+            .sql_sources
+            .iter()
+            .filter(|source| source.query_id == sql_ref.query_id)
+            .collect();
+        if let Some(qualifier) = sql_ref.qualifier.as_ref() {
+            return sources
+                .into_iter()
+                .find(|source| {
+                    source.alias.as_ref() == Some(qualifier) || source.name == *qualifier
+                })
+                .map(|source| Arc::clone(&source.name));
+        }
+        if sources.len() == 1 {
+            return sources.first().map(|source| Arc::clone(&source.name));
+        }
+        None
+    }
+
+    fn sql_source_structure_for_name(
+        &self,
+        scope: ScopeId,
+        source_name: &Arc<str>,
+    ) -> Option<(&UnitAnalysis, StructureId)> {
+        let (unit, symbol_id) =
+            resolve_symbol_from_context(self, scope, Namespace::Type, source_name, false).or_else(
+                || resolve_symbol_from_context(self, scope, Namespace::Value, source_name, false),
+            )?;
+        Some((unit, unit.symbol(symbol_id).structure?))
     }
 
     fn reference_search_target_for_dd_like_type_name(
@@ -2759,6 +2889,39 @@ fn format_hover_abap(rendered: &str) -> String {
     format!("```abap\n{rendered}\n```")
 }
 
+fn description_for_field_info(
+    snapshot: &AnalysisSnapshot,
+    field: &StructureFieldInfo,
+) -> Option<String> {
+    let uri = snapshot
+        .project
+        .units
+        .get(field.decl_unit.as_usize())?
+        .uri
+        .as_ref();
+    let text = snapshot.project_text(uri)?;
+    let range = field.decl_range.as_ref()?;
+    inline_comment_after_range(text, range)
+}
+
+fn description_for_definition_target(
+    snapshot: &AnalysisSnapshot,
+    target: &DefinitionTarget,
+) -> Option<String> {
+    let text = snapshot.project_text(target.uri.as_ref())?;
+    inline_comment_after_range(text, &target.range)
+}
+
+fn inline_comment_after_range(text: &str, range: &Range<usize>) -> Option<String> {
+    let line_end = text[range.start..]
+        .find('\n')
+        .map(|offset| range.start + offset)
+        .unwrap_or(text.len());
+    let line = text.get(range.end.min(line_end)..line_end)?;
+    let comment = line.split_once('"')?.1.trim();
+    (!comment.is_empty()).then(|| comment.to_string())
+}
+
 fn form_parameter_section_keyword(section: FormParameterSection) -> &'static str {
     match section {
         FormParameterSection::Tables => "TABLES",
@@ -3284,6 +3447,7 @@ fn synthetic_loop_where_hovered_component_at(
                 )),
                 range: reference.range.clone(),
                 declared_type: field.type_ref.as_ref().map(format_field_type_ref),
+                description: description_for_field_info(snapshot, &field),
                 value_clause_display: field.value_clause_display.clone(),
                 declaration: None,
                 kind,
@@ -11811,6 +11975,160 @@ ENDCLASS.";
                 .any(|line| line.contains("Open SQL data source")),
             "{:?}",
             hovered.markdown_lines
+        );
+    }
+
+    #[test]
+    fn sql_hover_and_definition_use_ddic_short_texts_for_source_and_fields() {
+        let store = DocumentStore::default();
+        let lagp_xml = r#"
+<abapsource:elementInfo adtcore:name="lagp"
+    xmlns:abapsource="http://www.sap.com/adt/abapsource"
+    xmlns:adtcore="http://www.sap.com/adt/core">
+  <abapsource:properties/>
+  <abapsource:documentation abapsource:rel="shorttext" abapsource:type="text/plain">
+    Storage bins
+  </abapsource:documentation>
+  <abapsource:elementInfo adtcore:type="TABL/DTF" adtcore:name="lgnum">
+    <abapsource:properties>
+      <abapsource:entry abapsource:key="ddicDataElement">lgnum</abapsource:entry>
+    </abapsource:properties>
+    <abapsource:documentation abapsource:rel="shorttext" abapsource:type="text/plain">
+      Warehouse number
+    </abapsource:documentation>
+  </abapsource:elementInfo>
+  <abapsource:elementInfo adtcore:type="TABL/DTF" adtcore:name="lgpla">
+    <abapsource:properties>
+      <abapsource:entry abapsource:key="ddicDataElement">lgpla</abapsource:entry>
+    </abapsource:properties>
+    <abapsource:documentation abapsource:rel="shorttext" abapsource:type="text/plain">
+      Storage bin
+    </abapsource:documentation>
+  </abapsource:elementInfo>
+  <abapsource:elementInfo adtcore:type="TABL/DTF" adtcore:name="skzsi">
+    <abapsource:properties>
+      <abapsource:entry abapsource:key="ddicDataElement">lagp_skzsi</abapsource:entry>
+    </abapsource:properties>
+    <abapsource:documentation abapsource:rel="shorttext" abapsource:type="text/plain">
+      Blocking indicator: current inventory (system)
+    </abapsource:documentation>
+  </abapsource:elementInfo>
+</abapsource:elementInfo>
+"#;
+        let dep_src = ddic_xml_to_abap_source("LAGP", "ddic-table", lagp_xml).expect("dependency");
+        let main_src = "\
+DATA lv_lgnum TYPE lgnum.\n\
+DATA lv_lgpla TYPE lgpla.\n\
+SELECT SINGLE lgpla\n\
+  FROM lagp\n\
+  INTO @DATA(lv_storage_bin)\n\
+  WHERE lgnum = @lv_lgnum\n\
+    AND lgpla = @lv_lgpla.\n";
+        let snapshots = store.replace_all(vec![
+            DocumentInput {
+                uri: Arc::from("file:///deps/LAGP.xml"),
+                version: 1,
+                text: Arc::from(dep_src),
+                is_dependency: true,
+                object_name: Some(Arc::from("lagp")),
+            },
+            DocumentInput {
+                uri: Arc::from("file:///main.abap"),
+                version: 1,
+                text: Arc::from(main_src),
+                is_dependency: false,
+                object_name: None,
+            },
+        ]);
+        let snapshot = snapshots.get("file:///main.abap").expect("main snapshot");
+
+        let source_offset = main_src.find("lagp").expect("lagp source") + 1;
+        let source_hover = snapshot
+            .hovered_sql_name_ref_at(source_offset)
+            .expect("sql source hover");
+        assert!(
+            source_hover
+                .markdown_lines
+                .iter()
+                .any(|line| line == "Storage bins"),
+            "{:?}",
+            source_hover.markdown_lines
+        );
+        assert!(
+            source_hover
+                .markdown_lines
+                .iter()
+                .all(|line| !line.contains("not connected in this build")),
+            "{:?}",
+            source_hover.markdown_lines
+        );
+
+        let select_field_offset = main_src.find("lgpla\n").expect("select field") + 1;
+        let select_field_hover = snapshot
+            .hovered_sql_name_ref_at(select_field_offset)
+            .expect("select field hover");
+        assert!(
+            select_field_hover
+                .markdown_lines
+                .iter()
+                .any(|line| line == "Storage bin"),
+            "{:?}",
+            select_field_hover.markdown_lines
+        );
+        assert!(
+            select_field_hover
+                .markdown_lines
+                .iter()
+                .any(|line| line == "```abap\nTYPE lgpla\n```"),
+            "{:?}",
+            select_field_hover.markdown_lines
+        );
+
+        let select_definition = snapshot
+            .definition_at(select_field_offset)
+            .expect("select field definition");
+        assert_eq!(select_definition.uri.as_ref(), "file:///deps/LAGP.xml");
+        let dep_text = snapshots
+            .get("file:///deps/LAGP.xml")
+            .expect("dependency snapshot")
+            .text
+            .as_ref();
+        assert_target_slice(
+            &select_definition,
+            "file:///deps/LAGP.xml",
+            dep_text,
+            "lgpla",
+        );
+
+        let where_field_offset = main_src.find("lgnum =").expect("where field") + 1;
+        let where_hover = snapshot
+            .hovered_sql_name_ref_at(where_field_offset)
+            .expect("where field hover");
+        assert!(
+            where_hover
+                .markdown_lines
+                .iter()
+                .any(|line| line == "Warehouse number"),
+            "{:?}",
+            where_hover.markdown_lines
+        );
+        assert!(
+            where_hover
+                .markdown_lines
+                .iter()
+                .any(|line| line == "```abap\nTYPE lgnum\n```"),
+            "{:?}",
+            where_hover.markdown_lines
+        );
+
+        let where_definition = snapshot
+            .definition_at(where_field_offset)
+            .expect("where field definition");
+        assert_target_slice(
+            &where_definition,
+            "file:///deps/LAGP.xml",
+            dep_text,
+            "lgnum",
         );
     }
 

@@ -2259,10 +2259,14 @@ fn structured_field_hover(
     let is_method = matches!(component.kind, abap_cache::HoveredComponentKind::Method);
     let mut lines = vec![format!("`{}`", component.field_name)];
     match &component.kind {
-        abap_cache::HoveredComponentKind::Scalar => lines.push(scalar_component_summary(
-            component.field_owner_structure_name.as_ref(),
-            component.field_name.as_ref(),
-        )),
+        abap_cache::HoveredComponentKind::Scalar => {
+            lines.push(component.description.unwrap_or_else(|| {
+                scalar_component_summary(
+                    component.field_owner_structure_name.as_ref(),
+                    component.field_name.as_ref(),
+                )
+            }))
+        }
         abap_cache::HoveredComponentKind::Structured { structure_name } => {
             lines.push(format!("structured component of `{}`", structure_name))
         }
