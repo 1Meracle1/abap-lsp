@@ -1656,6 +1656,62 @@ ENDCLASS.
 }
 
 #[test]
+fn open_sql_where_eq_operator_is_not_collected_as_sql_column() {
+    let src = r#"
+FORM run.
+  TYPES: BEGIN OF ty_key,
+           matnr TYPE string,
+           lgnum TYPE string,
+         END OF ty_key.
+  DATA lt_lqua TYPE STANDARD TABLE OF ty_key WITH EMPTY KEY.
+
+  SELECT matnr
+         lgnum
+    FROM mlgn
+    INTO TABLE @DATA(lt_mlgn)
+    FOR ALL ENTRIES IN lt_lqua
+    WHERE matnr EQ lt_lqua-matnr
+      AND lgnum EQ lt_lqua-lgnum.
+ENDFORM.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///opensql_where_eq_operator.abap", src, &parsed);
+
+    assert!(
+        !unit
+            .sql_name_refs
+            .iter()
+            .any(|reference| reference.kind == SqlNameRefKind::Column
+                && reference.name.as_ref() == "eq"),
+        "EQ operator should not be recorded as Open SQL column: {:?}",
+        unit.sql_name_refs
+    );
+    assert!(unit.sql_name_refs.iter().any(|reference| {
+        reference.kind == SqlNameRefKind::Column && reference.name.as_ref() == "matnr"
+    }));
+    assert!(unit.sql_name_refs.iter().any(|reference| {
+        reference.kind == SqlNameRefKind::Column && reference.name.as_ref() == "lgnum"
+    }));
+    assert!(unit.references.iter().any(|reference| {
+        reference.namespace == Namespace::Value
+            && reference.name.as_ref() == "lt_lqua"
+            && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+    }));
+    assert!(unit.field_accesses.iter().any(|access| {
+        access.base_namespace == Namespace::Value
+            && access.base_name.as_ref() == "lt_lqua"
+            && access.field_path.len() == 1
+            && access.field_path[0].name.as_ref() == "matnr"
+    }));
+    assert!(unit.field_accesses.iter().any(|access| {
+        access.base_namespace == Namespace::Value
+            && access.base_name.as_ref() == "lt_lqua"
+            && access.field_path.len() == 1
+            && access.field_path[0].name.as_ref() == "lgnum"
+    }));
+}
+
+#[test]
 fn collects_sql_semantics_for_join_dynamic_where_and_for_all_entries() {
     let src = r#"
 DATA lt_keys TYPE string.

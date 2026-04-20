@@ -697,6 +697,58 @@ DATA(lv_msgv1) = <ls_return>-message_v1.
     }
 
     #[test]
+    fn semantic_tokens_do_not_mark_open_sql_eq_operator_as_property() {
+        let store = DocumentStore::default();
+        let src = "\
+FORM run.
+  TYPES: BEGIN OF ty_key,
+           matnr TYPE string,
+           lgnum TYPE string,
+         END OF ty_key.
+  DATA lt_lqua TYPE STANDARD TABLE OF ty_key WITH EMPTY KEY.
+
+  SELECT matnr
+         lgnum
+    FROM mlgn
+    INTO TABLE @DATA(lt_mlgn)
+    FOR ALL ENTRIES IN lt_lqua
+    WHERE matnr EQ lt_lqua-matnr
+      AND lgnum EQ lt_lqua-lgnum.
+ENDFORM.
+";
+        let snapshot = store.publish("file:///semantic_sql_eq.abap", 1, src);
+        let tokens = build_semantic_tokens(snapshot.as_ref());
+        let legend = semantic_tokens_legend();
+        let property_idx = legend
+            .token_types
+            .iter()
+            .position(|t| *t == SemanticTokenType::PROPERTY)
+            .expect("legend has property") as u32;
+
+        let where_matnr_offset = src
+            .find("WHERE matnr")
+            .map(|offset| offset + "WHERE ".len())
+            .expect("WHERE matnr offset");
+        let eq_offset = src.find("EQ lt_lqua-matnr").expect("EQ offset");
+        let (where_matnr_line, where_matnr_char) =
+            byte_offset_to_line_character_utf16_reference(src, where_matnr_offset)
+                .expect("WHERE matnr position");
+        let (eq_line, eq_char) =
+            byte_offset_to_line_character_utf16_reference(src, eq_offset).expect("EQ position");
+
+        assert_eq!(
+            semantic_token_type_at(&tokens.data, where_matnr_line, where_matnr_char),
+            Some(property_idx),
+            "expected Open SQL column in WHERE to highlight as property"
+        );
+        assert_ne!(
+            semantic_token_type_at(&tokens.data, eq_line, eq_char),
+            Some(property_idx),
+            "EQ operator must not highlight as Open SQL column/property"
+        );
+    }
+
+    #[test]
     fn semantic_tokens_cover_function_module_type_refs_and_selectors() {
         let store = DocumentStore::default();
         let src = "\
