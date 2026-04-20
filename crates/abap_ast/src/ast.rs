@@ -2845,6 +2845,25 @@ impl<'a> DeleteStmt<'a> {
         }
         None
     }
+
+    pub fn comparing_operands(self, source: &str) -> Vec<SyntaxNodeRef<'a>> {
+        let mut saw_comparing = false;
+        let mut operands = Vec::new();
+        for child in self.syntax.children() {
+            if child.kind() == SyntaxKind::Token
+                && child
+                    .text(source)
+                    .is_some_and(|text| text.eq_ignore_ascii_case("comparing"))
+            {
+                saw_comparing = true;
+                continue;
+            }
+            if saw_comparing && child.kind() != SyntaxKind::Token {
+                operands.push(child);
+            }
+        }
+        operands
+    }
 }
 
 impl<'a> SortStmt<'a> {

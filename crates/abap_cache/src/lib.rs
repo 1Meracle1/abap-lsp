@@ -6395,15 +6395,37 @@ fn parse_bare_where_field_query(
         .collect();
     let first_idx = *significant.first()?;
     let first = parse.tokens[first_idx].lexeme(text);
-    let (source_start_sig, source_end_sig, where_sig) = if first.eq_ignore_ascii_case("delete") {
-        let where_sig = significant.iter().position(|&idx| {
-            parse.tokens[idx].kind.as_str() == "Ident"
-                && parse.tokens[idx].lexeme(text).eq_ignore_ascii_case("where")
-        })?;
-        if where_sig <= 1 {
-            return None;
+    let (source_start_sig, source_end_sig, clause_sig) = if first.eq_ignore_ascii_case("delete") {
+        let find_keyword = |keyword: &str| {
+            significant.iter().position(|&idx| {
+                parse.tokens[idx].kind.as_str() == "Ident"
+                    && parse.tokens[idx].lexeme(text).eq_ignore_ascii_case(keyword)
+            })
+        };
+        if let Some(comparing_sig) = find_keyword("comparing") {
+            let from_sig = find_keyword("from")?;
+            let source_start_sig = from_sig + 1;
+            let source_end_sig = significant
+                .iter()
+                .enumerate()
+                .skip(source_start_sig)
+                .find_map(|(pos, &idx)| {
+                    let lexeme = parse.tokens[idx].lexeme(text);
+                    matches!(lexeme.to_ascii_lowercase().as_str(), "using" | "comparing")
+                        .then_some(pos)
+                })
+                .unwrap_or(comparing_sig);
+            if source_start_sig >= source_end_sig || source_end_sig > comparing_sig {
+                return None;
+            }
+            (source_start_sig, source_end_sig, comparing_sig)
+        } else {
+            let where_sig = find_keyword("where")?;
+            if where_sig <= 1 {
+                return None;
+            }
+            (1usize, where_sig, where_sig)
         }
-        (1usize, where_sig, where_sig)
     } else if first.eq_ignore_ascii_case("loop") {
         if significant
             .get(1)
@@ -6443,24 +6465,24 @@ fn parse_bare_where_field_query(
         return None;
     };
 
-    let where_idx = *significant.get(where_sig)?;
-    let after_where = parse.tokens[where_idx].range.end;
+    let clause_idx = *significant.get(clause_sig)?;
+    let after_clause = parse.tokens[clause_idx].range.end;
     let statement_end = parse.tokens[*significant.last()?].range.end.max(offset);
-    if offset < after_where || offset > statement_end {
+    if offset < after_clause || offset > statement_end {
         return None;
     }
 
     let source_tokens: Vec<usize> = significant[source_start_sig..source_end_sig]
         .iter()
         .copied()
-        .filter(|&idx| parse.tokens[idx].range.end <= parse.tokens[where_idx].range.start)
+        .filter(|&idx| parse.tokens[idx].range.end <= parse.tokens[clause_idx].range.start)
         .collect();
     let source = parse_value_access_tokens(text, parse, &source_tokens)?;
 
     let prefix_token = significant
         .iter()
         .copied()
-        .skip(where_sig + 1)
+        .skip(clause_sig + 1)
         .find(|&idx| {
             parse.tokens[idx].kind.as_str() == "Ident"
                 && parse.tokens[idx].range.start <= offset

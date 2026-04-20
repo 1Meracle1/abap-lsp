@@ -10,9 +10,10 @@ use abap_ast::ast::{
 };
 
 use crate::def_map::{
-    AssignmentSiteData, CallSiteData, FieldTypeRefData, FindSiteData, FindWriteTargetData,
-    NamedArgumentTarget, ReferenceKind, RoutineSiteData, RoutineSiteKind, SymbolKind,
-    SystemFieldStatementKind, TypeFactData, ValueFlowEdgeData, ValueFlowKind, ValueFlowTargetData,
+    AssignmentSiteData, CallSiteData, FieldAccess, FieldAccessSegment, FieldTypeRefData,
+    FindSiteData, FindWriteTargetData, NamedArgumentTarget, ReferenceKind, RoutineSiteData,
+    RoutineSiteKind, SymbolKind, SystemFieldStatementKind, TypeFactData, ValueFlowEdgeData,
+    ValueFlowKind, ValueFlowTargetData,
 };
 use crate::ids::ScopeId;
 use crate::scope::Namespace;
@@ -649,6 +650,40 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
         Some(Arc::<str>::from(tokens[0].text.to_ascii_lowercase()))
     }
 
+    fn delete_operand_expr_node(&self, node: NodeId) -> NodeId {
+        if self.collector.file.kind(node) == SyntaxKind::TemplateExpr {
+            self.collector.first_non_token_child(node).unwrap_or(node)
+        } else {
+            node
+        }
+    }
+
+    fn delete_comparing_field_segments_from_expr(
+        &self,
+        inner: NodeId,
+    ) -> Option<Vec<FieldAccessSegment>> {
+        match self.collector.file.kind(inner) {
+            SyntaxKind::ExprIdent => {
+                let (name, range) = self.collector.node_name(inner)?;
+                Some(vec![FieldAccessSegment { name, range }])
+            }
+            SyntaxKind::SelectorExpr => {
+                let (namespace, base_name, base_range, mut path) =
+                    self.collector.selector_access_chain(inner)?;
+                if namespace != Namespace::Value {
+                    return None;
+                }
+                let mut out = vec![FieldAccessSegment {
+                    name: base_name,
+                    range: base_range,
+                }];
+                out.append(&mut path);
+                Some(out)
+            }
+            _ => None,
+        }
+    }
+
     fn builtin_type(name: &'static str) -> FieldTypeRefData {
         FieldTypeRefData {
             namespace: Namespace::Type,
@@ -840,11 +875,15 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
 
     pub(super) fn collect_delete_stmt(&mut self, node: NodeId, scope: ScopeId) {
         self.record_unknown_effect(node, scope);
-        let Some((stmt_source_expr, stmt_where_expr)) =
+        let Some((stmt_source_expr, stmt_where_expr, stmt_comparing_operands)) =
             DeleteStmt::cast(self.collector.syntax(node)).map(|stmt| {
                 (
                     stmt.source().map(|expr| expr.id()),
                     stmt.where_expr(self.collector.source).map(|expr| expr.id()),
+                    stmt.comparing_operands(self.collector.source)
+                        .into_iter()
+                        .map(|expr| expr.id())
+                        .collect::<Vec<_>>(),
                 )
             })
         else {
@@ -875,6 +914,10 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
         );
 
         let source_expr = source_expr.or(stmt_source_expr);
+        let comparing_itab_base = source_expr.and_then(|expr| {
+            self.collector
+                .sql_target_name_from_expr(self.delete_operand_expr_node(expr))
+        });
         if let Some(source_expr) = source_expr {
             self.record_routine_site(
                 scope,
@@ -883,7 +926,34 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             );
         }
 
-        self.collector.walk_children(node, scope);
+        for child in self.collector.file.children(node) {
+            if stmt_comparing_operands.contains(&child) {
+                continue;
+            }
+            self.collector.walk_node(child, scope);
+        }
+
+        if let Some(itab_base) = comparing_itab_base {
+            for child in stmt_comparing_operands {
+                let expr = self.delete_operand_expr_node(child);
+                if let Some(field_path) = self.delete_comparing_field_segments_from_expr(expr) {
+                    self.collector.emit_field_access(FieldAccess {
+                        scope,
+                        base_namespace: Namespace::Value,
+                        base_name: Arc::clone(&itab_base),
+                        base_range: self.collector.file.range(expr),
+                        field_path,
+                        in_type_position: false,
+                    });
+                    continue;
+                }
+                self.collector.walk_node(child, scope);
+            }
+        } else {
+            for child in stmt_comparing_operands {
+                self.collector.walk_node(child, scope);
+            }
+        }
 
         let where_expr = where_expr.or(stmt_where_expr);
 

@@ -9525,6 +9525,56 @@ DELETE lt_trans_del WHERE "
     }
 
     #[test]
+    fn completion_returns_delete_comparing_fields_after_comparing_keyword() {
+        let state = ServerState::default();
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///completion_comparing.abap").expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: "\
+TYPES: BEGIN OF ty_row,
+         matnr TYPE i,
+         lgnum TYPE i,
+       END OF ty_row.
+TYPES ty_tab TYPE STANDARD TABLE OF ty_row WITH EMPTY KEY.
+DATA lt_lqua TYPE ty_tab.
+DELETE ADJACENT DUPLICATES FROM lt_lqua COMPARING "
+                        .to_string(),
+                },
+            },
+        );
+
+        let completion = completion(
+            &state,
+            &CompletionParams {
+                text_document_position: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///completion_comparing.abap").expect("uri"),
+                    },
+                    position: Position {
+                        line: 6,
+                        character: 49,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+                context: None,
+            },
+        )
+        .expect("completion");
+
+        let CompletionResponse::Array(items) = completion else {
+            panic!("expected array completion");
+        };
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].label, "lgnum");
+        assert_eq!(items[1].label, "matnr");
+    }
+
+    #[test]
     fn completion_returns_public_static_methods_after_fat_arrow() {
         let state = ServerState::default();
         publish_open_document(

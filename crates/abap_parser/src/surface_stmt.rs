@@ -8047,9 +8047,35 @@ pub fn try_parse_delete_stmt(
                 if is_keyword(source, token, "comparing") {
                     children.push(token_leaf(b, token));
                     i += 1;
-                    while i < period_i && !clause_starts(tokens, i) {
+                    if tokens
+                        .get(i)
+                        .is_some_and(|next| is_keyword(source, next, "all"))
+                        && tokens
+                            .get(i + 1)
+                            .is_some_and(|next| is_keyword(source, next, "fields"))
+                    {
                         children.push(token_leaf(b, &tokens[i]));
-                        i += 1;
+                        children.push(token_leaf(b, &tokens[i + 1]));
+                        i += 2;
+                        continue;
+                    }
+                    while i < period_i && !clause_starts(tokens, i) {
+                        let operand_end = consume_sort_by_operand(source, tokens, i, period_i);
+                        if operand_end == i {
+                            children.push(token_leaf(b, &tokens[i]));
+                            i += 1;
+                            continue;
+                        }
+                        i = scan_and_push_expr_clause(
+                            b,
+                            &mut children,
+                            source,
+                            tokens,
+                            i,
+                            operand_end,
+                            Some(token),
+                            &clause_starts,
+                        );
                     }
                     continue;
                 }
@@ -10255,7 +10281,8 @@ CONCATENATE lv_evttime+6(4) '-'\n\
             .file
             .find_first_kind(parsed.file.root(), SyntaxKind::DeleteStmt)
             .expect("delete stmt");
-        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::TemplateExpr), 1);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::TemplateExpr), 2);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::ExprIdent), 2);
     }
 
     #[test]

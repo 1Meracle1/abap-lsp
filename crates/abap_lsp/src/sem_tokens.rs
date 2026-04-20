@@ -697,6 +697,47 @@ DATA(lv_msgv1) = <ls_return>-message_v1.
     }
 
     #[test]
+    fn semantic_tokens_mark_delete_comparing_fields_as_property() {
+        let store = DocumentStore::default();
+        let src = "\
+FORM run.
+  TYPES: BEGIN OF ty_row,
+           matnr TYPE string,
+           lgnum TYPE string,
+         END OF ty_row.
+  DATA lt_lqua TYPE STANDARD TABLE OF ty_row WITH EMPTY KEY.
+
+  DELETE ADJACENT DUPLICATES FROM lt_lqua COMPARING matnr lgnum.
+ENDFORM.
+";
+        let snapshot = store.publish("file:///semantic_delete_comparing.abap", 1, src);
+        let tokens = build_semantic_tokens(snapshot.as_ref());
+        let legend = semantic_tokens_legend();
+        let property_idx = legend
+            .token_types
+            .iter()
+            .position(|t| *t == SemanticTokenType::PROPERTY)
+            .expect("legend has property") as u32;
+        let mut search_from = src.find("COMPARING ").expect("COMPARING") + "COMPARING ".len();
+
+        for field_name in ["matnr", "lgnum"] {
+            let field_offset = src
+                .get(search_from..)
+                .and_then(|tail| tail.find(field_name).map(|offset| search_from + offset))
+                .expect("field use");
+            search_from = field_offset + field_name.len();
+            let (line, character) =
+                byte_offset_to_line_character_utf16_reference(src, field_offset)
+                    .expect("field position");
+            assert_eq!(
+                semantic_token_type_at(&tokens.data, line, character),
+                Some(property_idx),
+                "expected `{field_name}` to highlight as property"
+            );
+        }
+    }
+
+    #[test]
     fn semantic_tokens_do_not_mark_open_sql_eq_operator_as_property() {
         let store = DocumentStore::default();
         let src = "\
