@@ -4751,6 +4751,58 @@ FIELD-SYMBOLS <ls> LIKE LINE OF lt_tab.";
 }
 
 #[test]
+fn range_of_type_synthesizes_selection_range_line_structure() {
+    let src = r#"
+TYPES ty_range TYPE RANGE OF string.
+DATA lt_rng TYPE ty_range.
+DATA ls_rng LIKE LINE OF lt_rng.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///range_line_type.abap", src, &parsed);
+
+    let ls_rng = unit
+        .symbols
+        .iter()
+        .find(|symbol| symbol.name.as_ref() == "ls_rng")
+        .expect("ls_rng symbol");
+    let structure = unit.structure(ls_rng.structure.expect("range line structure"));
+    let field_names = structure
+        .fields
+        .iter()
+        .map(|field| field.name.as_ref())
+        .collect::<Vec<_>>();
+
+    assert_eq!(field_names, vec!["sign", "option", "low", "high"]);
+}
+
+#[test]
+fn partial_assignment_of_range_line_does_not_warn_on_append() {
+    let src = r#"
+FORM save_range.
+  TYPES ty_range TYPE RANGE OF string.
+  DATA lt_rng TYPE ty_range.
+  DATA ls_rng LIKE LINE OF lt_rng.
+
+  ls_rng-sign = 'I'.
+  ls_rng-option = 'EQ'.
+  ls_rng-low = 'A'.
+  APPEND ls_rng TO lt_rng.
+ENDFORM.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///range_append_assignment.abap", src, &parsed);
+
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UseBeforeDefiniteAssignment
+                && diag.message.contains("ls_rng")
+        }),
+        "{:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn recovers_after_syntax_errors_and_keeps_later_resolution() {
     let src = "DATA broken TYPE string\nDATA ok TYPE i.\nok = 1.";
     let parsed = parse(src);
@@ -12372,8 +12424,7 @@ START-OF-SELECTION.
 
     assert!(
         !main_unit.diagnostics.iter().any(|diag| {
-            diag.kind == DiagnosticKind::IncompatibleArgumentType
-                && diag.message.contains("return")
+            diag.kind == DiagnosticKind::IncompatibleArgumentType && diag.message.contains("return")
         }),
         "{:#?}",
         main_unit.diagnostics
@@ -12421,8 +12472,7 @@ START-OF-SELECTION.
 
     assert!(
         !main_unit.diagnostics.iter().any(|diag| {
-            diag.kind == DiagnosticKind::IncompatibleArgumentType
-                && diag.message.contains("return")
+            diag.kind == DiagnosticKind::IncompatibleArgumentType && diag.message.contains("return")
         }),
         "{:#?}",
         main_unit.diagnostics

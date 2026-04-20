@@ -30,8 +30,8 @@ use crate::def_map::{
     FormRoutineData, FunctionModuleData, ImplementedInterfaceData, IncludeEdge, LoopAtFieldContext,
     LoopWhereFieldContext, MemberAliasData, NamedArgumentAccess, PerformCallData, ReferenceData,
     RoutineControlRegionData, RoutineSiteData, SqlNameRefData, SqlPredicateData, SqlProjectionData,
-    SqlQueryData, SqlSourceData, SqlTargetData, StructureData, SymbolData, SystemFieldUpdateData,
-    UnitAnalysis, ValueFlowEdgeData, ValueStateCheckData,
+    SqlQueryData, SqlSourceData, SqlTargetData, StructureData, StructureFieldData, SymbolData,
+    SystemFieldUpdateData, UnitAnalysis, ValueFlowEdgeData, ValueStateCheckData,
 };
 use crate::ids::{ScopeId, StructureId, SymbolId, UnitId};
 use crate::scope::{Namespace, ScopeData, ScopeKind};
@@ -1343,10 +1343,76 @@ impl<'a> Collector<'a> {
         (!rendered.is_empty()).then(|| Arc::from(rendered))
     }
 
-    fn structure_from_typed_clause(&self, node: NodeId, scope: ScopeId) -> Option<StructureId> {
+    fn structure_from_typed_clause(&mut self, node: NodeId, scope: ScopeId) -> Option<StructureId> {
         let (type_ref_node, namespace) = self.typed_clause_type_ref_node(node)?;
-        let (_, _, base_name, _, field_path) =
+        let (_, is_ref, base_name, _, field_path) =
             self.type_ref_access_chain(type_ref_node, namespace)?;
+        if field_path.is_empty()
+            && self
+                .render_type_ref_display(type_ref_node)
+                .is_some_and(|display| {
+                    display
+                        .as_ref()
+                        .to_ascii_uppercase()
+                        .starts_with("RANGE OF ")
+                })
+        {
+            let low_high_type = FieldTypeRefData {
+                namespace,
+                is_ref,
+                base_name: Arc::clone(&base_name),
+                field_path: Vec::new(),
+            };
+            let sign_type = FieldTypeRefData {
+                namespace: Namespace::Type,
+                is_ref: false,
+                base_name: Arc::from("ddsign"),
+                field_path: Vec::new(),
+            };
+            let option_type = FieldTypeRefData {
+                namespace: Namespace::Type,
+                is_ref: false,
+                base_name: Arc::from("ddoption"),
+                field_path: Vec::new(),
+            };
+            return Some(self.push_structure(
+                Arc::from(format!("<range:{}>", base_name)),
+                [
+                    StructureFieldData {
+                        name: Arc::from("sign"),
+                        decl_range: None,
+                        decl_unit: self.unit_id,
+                        structure: self.resolve_field_type_ref(scope, &sign_type),
+                        type_ref: Some(sign_type),
+                        value_clause_display: None,
+                    },
+                    StructureFieldData {
+                        name: Arc::from("option"),
+                        decl_range: None,
+                        decl_unit: self.unit_id,
+                        structure: self.resolve_field_type_ref(scope, &option_type),
+                        type_ref: Some(option_type),
+                        value_clause_display: None,
+                    },
+                    StructureFieldData {
+                        name: Arc::from("low"),
+                        decl_range: None,
+                        decl_unit: self.unit_id,
+                        structure: self.resolve_field_type_ref(scope, &low_high_type),
+                        type_ref: Some(low_high_type.clone()),
+                        value_clause_display: None,
+                    },
+                    StructureFieldData {
+                        name: Arc::from("high"),
+                        decl_range: None,
+                        decl_unit: self.unit_id,
+                        structure: self.resolve_field_type_ref(scope, &low_high_type),
+                        type_ref: Some(low_high_type),
+                        value_clause_display: None,
+                    },
+                ],
+            ));
+        }
         let field_path_names = field_path
             .iter()
             .map(|segment| Arc::clone(&segment.name))

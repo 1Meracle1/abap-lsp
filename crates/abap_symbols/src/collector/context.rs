@@ -559,7 +559,7 @@ impl<'ctx, 'a> DeclContext<'ctx, 'a> {
     }
 
     pub(super) fn structure_from_typed_clause(
-        &self,
+        &mut self,
         node: NodeId,
         scope: ScopeId,
     ) -> Option<StructureId> {
