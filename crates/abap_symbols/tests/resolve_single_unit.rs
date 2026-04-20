@@ -4250,6 +4250,42 @@ ENDCLASS.
 }
 
 #[test]
+fn collects_clean_type_display_for_multiline_bang_prefixed_method_parameters() {
+    let src = r#"
+CLASS zcl_read_char_value_matnr DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS read_char_value
+      IMPORTING
+        !ip_product TYPE ANY
+        !ip_charact TYPE ANY
+      EXPORTING
+        !ep_value TYPE ANY.
+ENDCLASS.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///class_methods_bang_params.abap", src, &parsed);
+
+    let class_symbol = unit
+        .symbols
+        .iter()
+        .find(|symbol| {
+            symbol.kind == abap_symbols::SymbolKind::Class
+                && symbol.name.as_ref() == "zcl_read_char_value_matnr"
+        })
+        .expect("class symbol");
+    let member = unit
+        .class_member(class_symbol.id, "read_char_value")
+        .expect("class method metadata");
+
+    let displays: Vec<_> = member
+        .parameters
+        .iter()
+        .map(|parameter| parameter.type_clause_display.as_deref())
+        .collect();
+    assert_eq!(displays, vec![Some("ANY"), Some("ANY"), Some("ANY")]);
+}
+
+#[test]
 fn resolves_public_class_data_static_members() {
     let src = r#"
 CLASS zcl_demo DEFINITION.

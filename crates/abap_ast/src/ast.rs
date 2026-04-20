@@ -94,6 +94,7 @@ pub struct MethodsStmtParameter<'a> {
     name: SyntaxNodeRef<'a>,
     type_clause: MethodsTypeClauseKind,
     type_ref: Option<TypeRefSimple<'a>>,
+    type_display_range: Option<(usize, usize)>,
     is_optional: bool,
 }
 
@@ -112,6 +113,21 @@ impl<'a> MethodsStmtParameter<'a> {
 
     pub fn type_ref(self) -> Option<TypeRefSimple<'a>> {
         self.type_ref
+    }
+
+    pub fn type_display_text(self, source: &'a str) -> Option<&'a str> {
+        let (start, end) = self.type_display_range?;
+        let text = source.get(start..end)?;
+        let mut trimmed = text.trim();
+        if let Some(cutoff) = trimmed.match_indices('\n').find_map(|(idx, _)| {
+            let continuation = trimmed
+                .get(idx + 1..)?
+                .trim_start_matches(|ch| matches!(ch, ' ' | '\t' | '\r'));
+            continuation.starts_with('!').then_some(idx)
+        }) {
+            trimmed = trimmed.get(..cutoff)?.trim_end();
+        }
+        (!trimmed.is_empty()).then_some(trimmed)
     }
 
     pub fn is_optional(self) -> bool {
@@ -1896,6 +1912,7 @@ impl<'a> MethodsStmt<'a> {
 
         let type_ref = items.get(j).copied().and_then(TypeRefSimple::cast);
         let next_idx = Self::skip_type_expression(items, j, source);
+        let type_display_range = Self::token_span(&items[j..next_idx]);
         let is_optional = items.get(next_idx).is_some_and(|item| {
             Self::token_text_is(*item, source, "optional")
                 || Self::token_text_is(*item, source, "default")
@@ -1906,6 +1923,7 @@ impl<'a> MethodsStmt<'a> {
                 name,
                 type_clause,
                 type_ref,
+                type_display_range,
                 is_optional,
             },
             next_idx,
@@ -1961,6 +1979,13 @@ impl<'a> MethodsStmt<'a> {
         source: &str,
     ) -> Option<(SyntaxNodeRef<'a>, usize)> {
         let item = *items.get(idx)?;
+        if Self::token_text_is(item, source, "!") {
+            let ident = *items.get(idx + 1)?;
+            if !Self::is_ident_token(ident, source) {
+                return None;
+            }
+            return Some((ident, idx + 2));
+        }
         if Self::token_text_is(item, source, "value")
             || Self::token_text_is(item, source, "reference")
         {
@@ -2022,6 +2047,19 @@ impl<'a> MethodsStmt<'a> {
                 Self::token_text_is(next, source, "type")
                     || Self::token_text_is(next, source, "like")
             })
+    }
+
+    fn token_span(items: &[SyntaxNodeRef<'a>]) -> Option<(usize, usize)> {
+        let mut first = None;
+        let mut last = None;
+        for item in items {
+            for token in item.token_descendants() {
+                let range = token.range();
+                first.get_or_insert(range.start);
+                last = Some(range.end);
+            }
+        }
+        first.zip(last)
     }
 }
 
@@ -3551,6 +3589,102 @@ mod tests {
         );
         assert_eq!(signature.parameters()[1].name_token().range(), rv_y_range);
         assert!(signature.parameters()[1].type_ref().is_some());
+    }
+
+    #[test]
+    fn methods_stmt_parameter_type_display_stops_before_bang_prefixed_next_parameter() {
+        let source = "\
+CLASS-METHODS read_char_value
+  IMPORTING
+    !ip_product TYPE ANY
+    !ip_charact TYPE ANY
+  EXPORTING
+    !ep_value TYPE ANY.";
+        let mut b = SyntaxTreeBuilder::default();
+        let mut cursor = 0usize;
+        let mut last_range = 0..0;
+        let mut take = |needle: &str, builder: &mut SyntaxTreeBuilder| {
+            let rel = source[cursor..].find(needle).expect("token text");
+            let start = cursor + rel;
+            let end = start + needle.len();
+            cursor = end;
+            last_range = start..end;
+            (
+                builder.leaf(SyntaxKind::Token, start..end),
+                last_range.clone(),
+            )
+        };
+
+        let (class_tok, class_range) = take("CLASS", &mut b);
+        let (minus_tok, _) = take("-", &mut b);
+        let (methods_tok, _) = take("METHODS", &mut b);
+        let (name_tok, _) = take("read_char_value", &mut b);
+        let (importing_tok, _) = take("IMPORTING", &mut b);
+        let (bang_1_tok, _) = take("!", &mut b);
+        let (ip_product_tok, _) = take("ip_product", &mut b);
+        let (type_1_tok, _) = take("TYPE", &mut b);
+        let (any_1_tok, any_1_range) = take("ANY", &mut b);
+        let (bang_2_tok, bang_2_range) = take("!", &mut b);
+        let any_1_type = b.branch(
+            SyntaxKind::TypeRefSimple,
+            any_1_range.start..bang_2_range.end,
+            &[any_1_tok],
+        );
+        let (ip_charact_tok, _) = take("ip_charact", &mut b);
+        let (type_2_tok, _) = take("TYPE", &mut b);
+        let (any_2_tok, any_2_range) = take("ANY", &mut b);
+        let any_2_type = b.branch(SyntaxKind::TypeRefSimple, any_2_range.clone(), &[any_2_tok]);
+        let (exporting_tok, _) = take("EXPORTING", &mut b);
+        let (bang_3_tok, _) = take("!", &mut b);
+        let (ep_value_tok, _) = take("ep_value", &mut b);
+        let (type_3_tok, _) = take("TYPE", &mut b);
+        let (any_3_tok, any_3_range) = take("ANY", &mut b);
+        let any_3_type = b.branch(SyntaxKind::TypeRefSimple, any_3_range.clone(), &[any_3_tok]);
+        let (period_tok, period_range) = take(".", &mut b);
+
+        let methods_stmt = b.branch(
+            SyntaxKind::MethodsStmt,
+            class_range.start..period_range.end,
+            &[
+                class_tok,
+                minus_tok,
+                methods_tok,
+                name_tok,
+                importing_tok,
+                bang_1_tok,
+                ip_product_tok,
+                type_1_tok,
+                any_1_type,
+                bang_2_tok,
+                ip_charact_tok,
+                type_2_tok,
+                any_2_type,
+                exporting_tok,
+                bang_3_tok,
+                ep_value_tok,
+                type_3_tok,
+                any_3_type,
+                period_tok,
+            ],
+        );
+        let tree = b.finish(methods_stmt);
+        let methods_stmt =
+            MethodsStmt::cast(SyntaxNodeRef::new(&tree, methods_stmt)).expect("methods stmt");
+        let signature = methods_stmt.signature(source);
+
+        assert_eq!(signature.parameters().len(), 3);
+        assert_eq!(
+            signature.parameters()[0].type_display_text(source),
+            Some("ANY")
+        );
+        assert_eq!(
+            signature.parameters()[1].type_display_text(source),
+            Some("ANY")
+        );
+        assert_eq!(
+            signature.parameters()[2].type_display_text(source),
+            Some("ANY")
+        );
     }
 
     #[test]
