@@ -104,6 +104,77 @@ pub struct DocumentInput {
     pub object_name: Option<Arc<str>>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SnapshotBuildPlan {
+    pub routine_analysis: bool,
+    pub static_analysis: bool,
+    pub call_graph: bool,
+    pub callable_summaries: bool,
+}
+
+impl SnapshotBuildPlan {
+    pub const FULL: Self = Self {
+        routine_analysis: true,
+        static_analysis: true,
+        call_graph: true,
+        callable_summaries: true,
+    };
+
+    pub const SEMANTIC_DOSSIER: Self = Self {
+        routine_analysis: true,
+        static_analysis: true,
+        call_graph: false,
+        callable_summaries: false,
+    };
+
+    pub const EFFECTIVE_SOURCE: Self = Self {
+        routine_analysis: false,
+        static_analysis: false,
+        call_graph: false,
+        callable_summaries: false,
+    };
+
+    pub const REMOTE_CANDIDATES: Self = Self::EFFECTIVE_SOURCE;
+
+    pub const EDITOR_WORKSPACE: Self = Self {
+        routine_analysis: true,
+        static_analysis: false,
+        call_graph: false,
+        callable_summaries: false,
+    };
+
+    pub const CALL_GRAPH: Self = Self {
+        routine_analysis: false,
+        static_analysis: false,
+        call_graph: true,
+        callable_summaries: false,
+    };
+
+    pub const CALL_DATAFLOW: Self = Self {
+        routine_analysis: true,
+        static_analysis: false,
+        call_graph: true,
+        callable_summaries: true,
+    };
+
+    pub const fn normalized(self) -> Self {
+        Self {
+            routine_analysis: self.routine_analysis
+                || self.static_analysis
+                || self.callable_summaries,
+            static_analysis: self.static_analysis,
+            call_graph: self.call_graph || self.callable_summaries,
+            callable_summaries: self.callable_summaries,
+        }
+    }
+}
+
+impl Default for SnapshotBuildPlan {
+    fn default() -> Self {
+        Self::FULL
+    }
+}
+
 #[derive(Debug, Clone)]
 struct StagedDocument {
     uri: Arc<str>,
@@ -3834,19 +3905,6 @@ fn equivalent_symbol_handles(
     out
 }
 
-fn build_scope_index(unit: &UnitAnalysis) -> ScopeIndex {
-    let mut out: ScopeIndex = vec![HashMap::new(); unit.scopes.len()];
-    for symbol in &unit.symbols {
-        for &namespace in symbol.kind.namespaces() {
-            out[symbol.scope.as_usize()]
-                .entry((namespace, Arc::clone(&symbol.name)))
-                .or_default()
-                .push(symbol.id);
-        }
-    }
-    out
-}
-
 fn resolve_project_class_symbol<'a>(
     snapshot: &'a AnalysisSnapshot,
     preferred_unit: &'a UnitAnalysis,
@@ -7135,6 +7193,13 @@ fn snapshot_matches_input(snapshot: &AnalysisSnapshot, input: &DocumentInput) ->
         && snapshot.object_name == input.object_name
 }
 
+fn build_plan_matches_cached_analysis(
+    analysis: Option<&CachedWorkspaceAnalysis>,
+    build_plan: SnapshotBuildPlan,
+) -> bool {
+    analysis.is_some_and(|analysis| analysis.build_plan == build_plan.normalized())
+}
+
 fn clone_snapshot_with_version(snapshot: &AnalysisSnapshot, version: i32) -> Arc<AnalysisSnapshot> {
     Arc::new(AnalysisSnapshot {
         scope_index: Arc::clone(&snapshot.scope_index),
@@ -7257,6 +7322,7 @@ struct CachedWorkspaceAnalysis {
     locals: HashMap<Arc<str>, LocalAnalysis>,
     dirty_uris: HashSet<Arc<str>>,
     metrics: AnalysisMetrics,
+    build_plan: SnapshotBuildPlan,
 }
 
 #[derive(Debug, Clone)]
@@ -7453,36 +7519,67 @@ fn prepare_documents(
 fn materialize_snapshots(
     prepared: Vec<PreparedDocument>,
     update: IncrementalProjectUpdate,
+    build_plan: SnapshotBuildPlan,
 ) -> (
     HashMap<Arc<str>, Arc<AnalysisSnapshot>>,
     CachedWorkspaceAnalysis,
 ) {
     let snapshot_timer = std::time::Instant::now();
+    let build_plan = build_plan.normalized();
     let project = Arc::new(update.project);
-    let mut scope_indexes = vec![ScopeIndex::default(); project.units.len()];
-    for prepared in &prepared {
-        scope_indexes[prepared.local.unit.unit_id.as_usize()] = prepared.local.scope_index.clone();
-    }
-    let routine_analysis_timer = std::time::Instant::now();
-    let routine_analysis = Arc::new(build_project_routine_analysis(project.as_ref()));
-    let routine_analysis_micros = routine_analysis_timer.elapsed().as_micros();
-    let static_analysis_timer = std::time::Instant::now();
-    let static_analysis = Arc::new(build_project_static_analysis_summary(
-        project.as_ref(),
-        routine_analysis.as_ref(),
-    ));
-    let static_analysis_summary_micros = static_analysis_timer.elapsed().as_micros();
-    let call_graph = Arc::new(call_graph::build_project_call_graph(
-        project.as_ref(),
-        &scope_indexes,
-    ));
-    let callable_summary_timer = std::time::Instant::now();
-    let callable_summaries = Arc::new(callable_summary::build_project_callable_summary_analysis(
-        project.as_ref(),
-        routine_analysis.as_ref(),
-        call_graph.as_ref(),
-    ));
-    let callable_summary_micros = callable_summary_timer.elapsed().as_micros();
+    let scope_indexes = if build_plan.call_graph {
+        let mut scope_indexes = vec![ScopeIndex::default(); project.units.len()];
+        for prepared in &prepared {
+            scope_indexes[prepared.local.unit.unit_id.as_usize()] =
+                prepared.local.scope_index.clone();
+        }
+        scope_indexes
+    } else {
+        Vec::new()
+    };
+    let (routine_analysis, routine_analysis_micros) = if build_plan.routine_analysis {
+        let routine_analysis_timer = std::time::Instant::now();
+        let routine_analysis = Arc::new(build_project_routine_analysis(project.as_ref()));
+        (
+            routine_analysis,
+            routine_analysis_timer.elapsed().as_micros(),
+        )
+    } else {
+        (Arc::new(ProjectRoutineAnalysis::default()), 0)
+    };
+    let (static_analysis, static_analysis_summary_micros) = if build_plan.static_analysis {
+        let static_analysis_timer = std::time::Instant::now();
+        (
+            Some(Arc::new(build_project_static_analysis_summary(
+                project.as_ref(),
+                routine_analysis.as_ref(),
+            ))),
+            static_analysis_timer.elapsed().as_micros(),
+        )
+    } else {
+        (None, 0)
+    };
+    let call_graph = if build_plan.call_graph {
+        Arc::new(call_graph::build_project_call_graph(
+            project.as_ref(),
+            &scope_indexes,
+        ))
+    } else {
+        Arc::new(ProjectCallGraph::default())
+    };
+    let (callable_summaries, callable_summary_micros) = if build_plan.callable_summaries {
+        let callable_summary_timer = std::time::Instant::now();
+        (
+            Arc::new(callable_summary::build_project_callable_summary_analysis(
+                project.as_ref(),
+                routine_analysis.as_ref(),
+                call_graph.as_ref(),
+            )),
+            callable_summary_timer.elapsed().as_micros(),
+        )
+    } else {
+        (Arc::new(ProjectCallableSummaryAnalysis::default()), 0)
+    };
     let mut snapshots = HashMap::with_capacity(prepared.len());
     let mut locals = HashMap::with_capacity(prepared.len());
     let mut uri_order = Vec::with_capacity(prepared.len());
@@ -7499,13 +7596,18 @@ fn materialize_snapshots(
             .unit_by_uri(prepared.uri.as_ref())
             .cloned()
             .expect("project analysis should include every prepared document");
-        let unit = augment_unit_with_routine_diagnostics(unit, routine_analysis.as_ref());
+        let unit = if build_plan.routine_analysis {
+            augment_unit_with_routine_diagnostics(unit, routine_analysis.as_ref())
+        } else {
+            unit
+        };
+        let scope_index = Arc::new(prepared.local.scope_index.clone());
         locals.insert(Arc::clone(&prepared.uri), prepared.local);
         uri_order.push(Arc::clone(&prepared.uri));
         snapshots.insert(
             Arc::clone(&prepared.uri),
             Arc::new(AnalysisSnapshot {
-                scope_index: Arc::new(build_scope_index(&unit)),
+                scope_index,
                 uri: Arc::clone(&prepared.uri),
                 version: prepared.version,
                 text: Arc::clone(&prepared.text),
@@ -7517,7 +7619,7 @@ fn materialize_snapshots(
                 symbols: Arc::new(unit),
                 project: Arc::clone(&project),
                 routine_analysis: Arc::clone(&routine_analysis),
-                static_analysis: Some(Arc::clone(&static_analysis)),
+                static_analysis: static_analysis.as_ref().map(Arc::clone),
                 callable_summaries: Arc::clone(&callable_summaries),
                 call_graph: Arc::clone(&call_graph),
             }),
@@ -7547,6 +7649,7 @@ fn materialize_snapshots(
             locals,
             dirty_uris: update.dirty_uris,
             metrics,
+            build_plan,
         },
     )
 }
@@ -7578,6 +7681,7 @@ fn analyze_inputs_with_progress(
     progress: Option<&(dyn Fn(usize, usize) + Sync)>,
     changed_uris: &HashSet<Arc<str>>,
     force_full: bool,
+    build_plan: SnapshotBuildPlan,
 ) -> (
     HashMap<Arc<str>, Arc<AnalysisSnapshot>>,
     CachedWorkspaceAnalysis,
@@ -7614,7 +7718,7 @@ fn analyze_inputs_with_progress(
     metrics.rebuild_semantic_index_micros = update.rebuild_semantic_index_micros;
     metrics.validate_micros = update.validate_micros;
     metrics.collect_project_diagnostics_micros = update.collect_project_diagnostics_micros;
-    let (snapshots, mut analysis) = materialize_snapshots(prepared, update);
+    let (snapshots, mut analysis) = materialize_snapshots(prepared, update, build_plan);
     analysis.metrics.parse_count = metrics.parse_count;
     analysis.metrics.local_phase_count = metrics.local_phase_count;
     analysis.metrics.parse_micros = metrics.parse_micros;
@@ -8168,6 +8272,23 @@ impl DocumentStore {
         inputs: Vec<DocumentInput>,
         progress: Option<&(dyn Fn(usize, usize) + Sync)>,
     ) -> HashMap<Arc<str>, Arc<AnalysisSnapshot>> {
+        self.replace_all_with_build_plan_and_progress(inputs, SnapshotBuildPlan::FULL, progress)
+    }
+
+    pub fn replace_all_with_build_plan(
+        &self,
+        inputs: Vec<DocumentInput>,
+        build_plan: SnapshotBuildPlan,
+    ) -> HashMap<Arc<str>, Arc<AnalysisSnapshot>> {
+        self.replace_all_with_build_plan_and_progress(inputs, build_plan, None)
+    }
+
+    pub fn replace_all_with_build_plan_and_progress(
+        &self,
+        inputs: Vec<DocumentInput>,
+        build_plan: SnapshotBuildPlan,
+        progress: Option<&(dyn Fn(usize, usize) + Sync)>,
+    ) -> HashMap<Arc<str>, Arc<AnalysisSnapshot>> {
         let existing = self.documents.read();
         let analysis = self.analysis.read();
         let changed_uris = changed_uris_for_inputs(&inputs, Some(&existing));
@@ -8178,6 +8299,7 @@ impl DocumentStore {
             progress,
             &changed_uris,
             true,
+            build_plan,
         );
         drop(analysis);
         drop(existing);
@@ -8202,12 +8324,21 @@ impl DocumentStore {
     }
 
     pub fn publish_input(&self, input: DocumentInput) -> Arc<AnalysisSnapshot> {
+        self.publish_input_with_build_plan(input, SnapshotBuildPlan::FULL)
+    }
+
+    pub fn publish_input_with_build_plan(
+        &self,
+        input: DocumentInput,
+        build_plan: SnapshotBuildPlan,
+    ) -> Arc<AnalysisSnapshot> {
         let existing = self.documents.read();
         let analysis = self.analysis.read();
         if let Some(current) = existing.get(input.uri.as_ref())
             && current.text.as_ref() == input.text.as_ref()
             && current.is_dependency == input.is_dependency
             && current.object_name == input.object_name
+            && build_plan_matches_cached_analysis(analysis.as_ref(), build_plan)
         {
             let snapshot = clone_snapshot_with_version(current, input.version);
             drop(existing);
@@ -8227,6 +8358,7 @@ impl DocumentStore {
             None,
             &changed_uris,
             force_full,
+            SnapshotBuildPlan::FULL,
         );
         drop(analysis);
         drop(existing);
@@ -8250,6 +8382,23 @@ impl DocumentStore {
         inputs: Vec<DocumentInput>,
         progress: Option<&(dyn Fn(usize, usize) + Sync)>,
     ) -> HashMap<Arc<str>, Arc<AnalysisSnapshot>> {
+        self.publish_inputs_with_build_plan_and_progress(inputs, SnapshotBuildPlan::FULL, progress)
+    }
+
+    pub fn publish_inputs_with_build_plan(
+        &self,
+        inputs: Vec<DocumentInput>,
+        build_plan: SnapshotBuildPlan,
+    ) -> HashMap<Arc<str>, Arc<AnalysisSnapshot>> {
+        self.publish_inputs_with_build_plan_and_progress(inputs, build_plan, None)
+    }
+
+    pub fn publish_inputs_with_build_plan_and_progress(
+        &self,
+        inputs: Vec<DocumentInput>,
+        build_plan: SnapshotBuildPlan,
+        progress: Option<&(dyn Fn(usize, usize) + Sync)>,
+    ) -> HashMap<Arc<str>, Arc<AnalysisSnapshot>> {
         if inputs.is_empty() {
             return self.documents.read().clone();
         }
@@ -8265,7 +8414,9 @@ impl DocumentStore {
             })
             .map(|input| Arc::clone(&input.uri))
             .collect();
-        if changed_uris.is_empty() {
+        if changed_uris.is_empty()
+            && build_plan_matches_cached_analysis(analysis.as_ref(), build_plan)
+        {
             let mut updated = existing.clone();
             for input in &inputs {
                 let Some(current) = existing.get(input.uri.as_ref()) else {
@@ -8291,6 +8442,7 @@ impl DocumentStore {
             progress,
             &changed_uris,
             force_full,
+            SnapshotBuildPlan::FULL,
         );
         drop(analysis);
         drop(existing);
@@ -8320,7 +8472,9 @@ impl DocumentStore {
         }
         let (parse, local, parse_count, local_phase_count) =
             build_preview_parse_and_local(&input, &existing, analysis.as_ref());
-        let committed_snapshot = existing.values().next().cloned();
+        let committed_snapshot = analysis
+            .as_ref()
+            .and_then(|_| existing.values().next().cloned());
         let (
             project,
             routine_analysis,
@@ -8540,8 +8694,8 @@ impl DocumentStore {
 mod tests {
     use super::{
         AnalysisSnapshot, CallableSummary, DefinitionTarget, DocumentInput, DocumentStore,
-        HoveredComponentKind, ReferenceTarget, ddic_xml_to_abap_source, dependency_surface_text,
-        opened_function_module_dependency_analysis_text,
+        HoveredComponentKind, ReferenceTarget, SnapshotBuildPlan, ddic_xml_to_abap_source,
+        dependency_surface_text, opened_function_module_dependency_analysis_text,
     };
     use abap_symbols::{
         Diagnostic, DiagnosticKind, ReferenceKind, RoutineBlockKind, RoutineBranchKind,
@@ -9291,6 +9445,41 @@ ENDCLASS.";
                 .as_ref()
                 .expect("second static analysis")
         ));
+    }
+
+    #[test]
+    fn replace_all_with_effective_source_plan_skips_unrequested_artifacts() {
+        let store = DocumentStore::default();
+        let snapshots = store.replace_all_with_build_plan(
+            vec![DocumentInput {
+                uri: Arc::from("file:///effective_source_plan.abap"),
+                version: 1,
+                text: Arc::from(
+                    "\
+REPORT zplan.
+
+DATA lv_value TYPE i.
+lv_value = 1.",
+                ),
+                is_dependency: false,
+                object_name: None,
+            }],
+            SnapshotBuildPlan::EFFECTIVE_SOURCE,
+        );
+        let snapshot = snapshots
+            .get("file:///effective_source_plan.abap")
+            .expect("snapshot");
+        let metrics = store
+            .last_analysis_metrics_snapshot()
+            .expect("analysis metrics snapshot");
+
+        assert!(snapshot.routine_analysis().routines.is_empty());
+        assert!(snapshot.static_analysis().is_none());
+        assert!(snapshot.call_graph().nodes.is_empty());
+        assert!(snapshot.callable_summaries().summaries.is_empty());
+        assert_eq!(metrics.routine_analysis_micros, 0);
+        assert_eq!(metrics.static_analysis_summary_micros, 0);
+        assert_eq!(metrics.callable_summary_micros, 0);
     }
 
     #[test]

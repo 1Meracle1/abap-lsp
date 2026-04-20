@@ -5,10 +5,13 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use abap_cache::{
-    DocumentInput, DocumentStore, WorkspaceDocument, WorkspaceLoadResult, load_workspace_documents,
-    manifest_document_metadata, path_to_file_uri,
+    DocumentInput, DocumentStore, SnapshotBuildPlan, WorkspaceDocument, WorkspaceLoadResult,
+    load_workspace_documents, manifest_document_metadata, path_to_file_uri,
 };
-use abap_lsp::replace_all_workspace_documents_with_local_exports;
+use abap_lsp::{
+    replace_all_workspace_documents_with_local_exports,
+    replace_all_workspace_documents_with_local_exports_for_build_plan,
+};
 
 struct Config {
     workspace_root: PathBuf,
@@ -83,6 +86,21 @@ fn run() -> Result<(), String> {
         .last_analysis_metrics_snapshot()
         .ok_or_else(|| "warm local-export analysis metrics were not recorded".to_string())?;
 
+    let editor_workspace_store = DocumentStore::default();
+    let editor_workspace_start = Instant::now();
+    let editor_workspace_snapshots =
+        replace_all_workspace_documents_with_local_exports_for_build_plan(
+            &editor_workspace_store,
+            &workspace.root_path,
+            &documents,
+            SnapshotBuildPlan::EDITOR_WORKSPACE,
+            None,
+        );
+    let editor_workspace_elapsed = editor_workspace_start.elapsed();
+    let editor_workspace_metrics = editor_workspace_store
+        .last_analysis_metrics_snapshot()
+        .ok_or_else(|| "editor-workspace analysis metrics were not recorded".to_string())?;
+
     let target_uri = config
         .target_file
         .as_ref()
@@ -100,6 +118,10 @@ fn run() -> Result<(), String> {
     let local_export_warm_target = target_uri
         .as_deref()
         .and_then(|uri| local_export_warm_snapshots.get(uri))
+        .cloned();
+    let editor_workspace_target = target_uri
+        .as_deref()
+        .and_then(|uri| editor_workspace_snapshots.get(uri))
         .cloned();
 
     println!("workspace_root={}", config.workspace_root.display());
@@ -153,6 +175,21 @@ fn run() -> Result<(), String> {
         local_export_warm_target
             .as_ref()
             .map_or(local_export_warm_snapshots.len(), |snapshot| {
+                snapshot.project.units.len()
+            }),
+    );
+    print_result(
+        "editor_workspace",
+        editor_workspace_elapsed,
+        &editor_workspace_metrics,
+        editor_workspace_snapshots.len(),
+        editor_workspace_snapshots
+            .values()
+            .filter(|snapshot| snapshot.is_dependency)
+            .count(),
+        editor_workspace_target
+            .as_ref()
+            .map_or(editor_workspace_snapshots.len(), |snapshot| {
                 snapshot.project.units.len()
             }),
     );

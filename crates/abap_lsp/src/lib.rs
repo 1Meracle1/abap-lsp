@@ -10,9 +10,10 @@ use std::sync::{Arc, Mutex};
 
 use abap_cache::{
     CallableCompletionKind, DocumentInput, DocumentStore, LocalExportConfig, LocalExportResolver,
-    UNKNOWN_SYMBOL_MODE_REMOTE, WorkspaceDocument, WorkspaceManifest, analysis_text_for_document,
-    ddic_xml_to_abap_source, file_uri_to_path, function_module_completion_items_from_source,
-    is_remote_lookup_candidate, is_remote_lookup_candidate_after_local_resolution,
+    SnapshotBuildPlan, UNKNOWN_SYMBOL_MODE_REMOTE, WorkspaceDocument, WorkspaceManifest,
+    analysis_text_for_document, ddic_xml_to_abap_source, file_uri_to_path,
+    function_module_completion_items_from_source, is_remote_lookup_candidate,
+    is_remote_lookup_candidate_after_local_resolution,
     load_effective_manifest_from_workspace_result, load_workspace_documents_with_progress,
     local_export_config_for_source, manifest_cache_dir, manifest_document_metadata,
     manifest_supports_remote_resolution, path_to_file_uri,
@@ -470,6 +471,22 @@ pub fn replace_all_workspace_documents_with_local_exports(
     documents: &[WorkspaceDocument],
     progress: Option<&(dyn Fn(usize, usize) + Sync)>,
 ) -> HashMap<Arc<str>, Arc<AnalysisSnapshot>> {
+    replace_all_workspace_documents_with_local_exports_for_build_plan(
+        store,
+        root_path,
+        documents,
+        SnapshotBuildPlan::FULL,
+        progress,
+    )
+}
+
+pub fn replace_all_workspace_documents_with_local_exports_for_build_plan(
+    store: &DocumentStore,
+    root_path: &Path,
+    documents: &[WorkspaceDocument],
+    build_plan: SnapshotBuildPlan,
+    progress: Option<&(dyn Fn(usize, usize) + Sync)>,
+) -> HashMap<Arc<str>, Arc<AnalysisSnapshot>> {
     let mut inputs: Vec<_> = documents
         .iter()
         .map(document_input_from_workspace_document)
@@ -477,7 +494,7 @@ pub fn replace_all_workspace_documents_with_local_exports(
     let mut additions = collect_local_export_dependency_closure_documents(root_path, documents);
     additions.sort_by(|left, right| left.uri.cmp(&right.uri));
     inputs.extend(additions.iter().map(document_input_from_workspace_document));
-    store.replace_all_with_progress(inputs, progress)
+    store.replace_all_with_build_plan_and_progress(inputs, build_plan, progress)
 }
 
 fn collect_local_export_dependency_closure_documents(
@@ -764,13 +781,18 @@ fn refresh_workspace_inputs_with_progress(
         return Vec::new();
     }
     let refreshed_uris: Vec<_> = inputs.iter().map(|input| Arc::clone(&input.uri)).collect();
+    let build_plan = workspace_committed_build_plan(workspace);
     let snapshots = workspace
         .cache
-        .publish_inputs_with_progress(inputs, progress);
+        .publish_inputs_with_build_plan_and_progress(inputs, build_plan, progress);
     refreshed_uris
         .into_iter()
         .filter_map(|uri| snapshots.get(uri.as_ref()).cloned())
         .collect()
+}
+
+fn workspace_committed_build_plan(_workspace: &WorkspaceState) -> SnapshotBuildPlan {
+    SnapshotBuildPlan::EDITOR_WORKSPACE
 }
 
 fn rebuild_workspace_cache_with_progress(
@@ -792,6 +814,7 @@ fn rebuild_workspace_cache_with_progress(
     workspace.manifest_uri = loaded.manifest_uri.to_string();
     workspace.manifest_error = loaded.manifest_error.clone();
     let documents = loaded.documents;
+    let build_plan = workspace_committed_build_plan(workspace);
     if let Some(progress) = progress {
         let stage_count = documents.len();
         let analysis_progress = |processed: usize, _total: usize| {
@@ -800,17 +823,19 @@ fn rebuild_workspace_cache_with_progress(
                 stage_count.saturating_mul(2),
             );
         };
-        replace_all_workspace_documents_with_local_exports(
+        replace_all_workspace_documents_with_local_exports_for_build_plan(
             &workspace.cache,
             &loaded.root_path,
             &documents,
+            build_plan,
             Some(&analysis_progress),
         )
     } else {
-        replace_all_workspace_documents_with_local_exports(
+        replace_all_workspace_documents_with_local_exports_for_build_plan(
             &workspace.cache,
             &loaded.root_path,
             &documents,
+            build_plan,
             None,
         )
     }
@@ -1016,6 +1041,7 @@ pub fn publish_open_document_mut_with_progress(
     let workspace_result = if let Some(workspace) = state.workspace_for_uri_mut(&uri) {
         let manifest_dependency_open = uri_is_manifest_dependency(workspace, &uri);
         let workspace_uri = workspace.root_uri.clone();
+        let build_plan = workspace_committed_build_plan(workspace);
         if let Some(current) = workspace
             .cache
             .get(&uri)
@@ -1055,7 +1081,13 @@ pub fn publish_open_document_mut_with_progress(
             ) && (current.is_dependency != input.is_dependency
                 || current.object_name != input.object_name)
             {
-                Some((workspace_uri, workspace.cache.publish_input(input), false))
+                Some((
+                    workspace_uri,
+                    workspace
+                        .cache
+                        .publish_input_with_build_plan(input, build_plan),
+                    false,
+                ))
             } else {
                 let snapshot = snapshot_with_version(&current, params.text_document.version);
                 workspace.cache.insert_snapshot(Arc::clone(&snapshot));
@@ -1094,7 +1126,13 @@ pub fn publish_open_document_mut_with_progress(
                 params.text_document.version,
                 &params.text_document.text,
             ) {
-                Some((workspace_uri, workspace.cache.publish_input(input), false))
+                Some((
+                    workspace_uri,
+                    workspace
+                        .cache
+                        .publish_input_with_build_plan(input, build_plan),
+                    false,
+                ))
             } else {
                 let snapshots = rebuild_workspace_cache_with_progress(workspace, progress);
                 Some((
@@ -1154,6 +1192,7 @@ pub fn publish_changed_document_mut_with_progress(
     let uri = normalize_lsp_uri(params.text_document.uri.as_str());
     let workspace_result = if let Some(workspace) = state.workspace_for_uri_mut(&uri) {
         let workspace_uri = workspace.root_uri.clone();
+        let build_plan = workspace_committed_build_plan(workspace);
         if let Some(current) = workspace
             .cache
             .get(&uri)
@@ -1179,7 +1218,11 @@ pub fn publish_changed_document_mut_with_progress(
             {
                 Some((
                     workspace_uri,
-                    Some(workspace.cache.publish_input(input)),
+                    Some(
+                        workspace
+                            .cache
+                            .publish_input_with_build_plan(input, build_plan),
+                    ),
                     false,
                 ))
             } else {
@@ -1206,7 +1249,11 @@ pub fn publish_changed_document_mut_with_progress(
             ) {
                 Some((
                     workspace_uri,
-                    Some(workspace.cache.publish_input(input)),
+                    Some(
+                        workspace
+                            .cache
+                            .publish_input_with_build_plan(input, build_plan),
+                    ),
                     false,
                 ))
             } else {
@@ -4790,6 +4837,47 @@ ENDCLASS.
 
         let _ = fs::remove_dir_all(&workspace_path);
         let _ = fs::remove_dir_all(&export_root);
+    }
+
+    #[test]
+    fn workspace_refresh_uses_editor_workspace_build_plan() {
+        let workspace_path = temp_workspace_path("workspace_editor_build_plan");
+        let _ = fs::remove_dir_all(&workspace_path);
+        fs::create_dir_all(&workspace_path).expect("workspace dir");
+        fs::write(
+            workspace_path.join("main.abap"),
+            "\
+REPORT zworkspace_plan.
+
+DATA lv_value TYPE i.
+
+START-OF-SELECTION.
+  lv_value = 1.
+",
+        )
+        .expect("main");
+
+        let workspace_uri = path_to_file_uri(&workspace_path);
+        let source_uri = normalize_lsp_uri(&format!("{workspace_uri}/main.abap"));
+        let mut state = ServerState::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        refresh_workspace(&mut state, &workspace_uri);
+
+        let snapshot = snapshot_for_uri(&state, &source_uri).expect("snapshot");
+        let metrics = state
+            .workspaces
+            .get(&normalize_lsp_uri(&workspace_uri))
+            .and_then(|workspace| workspace.cache.last_analysis_metrics_snapshot())
+            .expect("workspace analysis metrics");
+
+        assert!(!snapshot.routine_analysis().routines.is_empty());
+        assert!(snapshot.static_analysis().is_none());
+        assert!(snapshot.call_graph().nodes.is_empty());
+        assert!(snapshot.callable_summaries().summaries.is_empty());
+        assert_eq!(metrics.static_analysis_summary_micros, 0);
+        assert_eq!(metrics.callable_summary_micros, 0);
+
+        let _ = fs::remove_dir_all(&workspace_path);
     }
 
     #[test]

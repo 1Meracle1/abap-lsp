@@ -30,14 +30,14 @@ use abap_cache::{
     AnalysisSnapshot, CallDataflowLifecycle, CallDataflowMatch, CallDataflowParameterTrace,
     CallDataflowProvenanceGraph, CallDataflowQuery, CallDataflowSelectedCall, CallDataflowTrace,
     CallGraphEdge, CallGraphNode, DocumentInput, DocumentStore, EffectiveSource,
-    LocalExportResolver, build_call_dataflow_trace, build_effective_source, file_uri_to_path,
-    load_workspace_documents, manifest_document_metadata, path_to_file_uri,
+    LocalExportResolver, SnapshotBuildPlan, build_call_dataflow_trace, build_effective_source,
+    file_uri_to_path, load_workspace_documents, manifest_document_metadata, path_to_file_uri,
     resolve_local_export_dependency_document,
 };
 use abap_lexer::tokenize;
 use abap_lsp::{
     RemoteDependencyCandidate, collect_remote_dependency_candidates,
-    replace_all_workspace_documents_with_local_exports,
+    replace_all_workspace_documents_with_local_exports_for_build_plan,
 };
 use abap_parser::parse;
 use abap_symbols::{
@@ -836,7 +836,7 @@ fn run_call_graph(cli: &Cli) -> Result<i32, String> {
         return Err("call-graph currently requires --json".to_string());
     }
 
-    let snapshot = load_call_graph_snapshot(cli.path.as_deref())?;
+    let snapshot = load_call_graph_snapshot(cli.path.as_deref(), SnapshotBuildPlan::CALL_GRAPH)?;
     let graph = snapshot.call_graph();
 
     let output = if let Some(symbol_query) = cli.call_graph_symbol.as_deref() {
@@ -922,7 +922,7 @@ fn run_call_graph(cli: &Cli) -> Result<i32, String> {
 }
 
 fn run_call_dataflow(cli: &Cli) -> Result<i32, String> {
-    let snapshot = load_call_graph_snapshot(cli.path.as_deref())?;
+    let snapshot = load_call_graph_snapshot(cli.path.as_deref(), SnapshotBuildPlan::CALL_DATAFLOW)?;
     let trace = build_call_dataflow_trace(
         snapshot.as_ref(),
         CallDataflowQuery {
@@ -995,10 +995,11 @@ fn load_remote_candidate_workspace(path: Option<&str>) -> Result<RemoteCandidate
         .count();
 
     let store = DocumentStore::default();
-    let snapshots = replace_all_workspace_documents_with_local_exports(
+    let snapshots = replace_all_workspace_documents_with_local_exports_for_build_plan(
         &store,
         &workspace.root_path,
         &workspace.documents,
+        SnapshotBuildPlan::REMOTE_CANDIDATES,
         None,
     );
     let mut local_export_resolver = LocalExportResolver::default();
@@ -3158,11 +3159,25 @@ fn load_single_file_analyze_snapshot(path: Option<&str>) -> Result<AnalyzeSnapsh
 
 fn load_call_graph_snapshot(
     path: Option<&str>,
+    build_plan: SnapshotBuildPlan,
 ) -> Result<Arc<abap_cache::AnalysisSnapshot>, String> {
     let Some(target_path) = resolve_target_path(path)? else {
         let source = read_source(path)?;
         let store = DocumentStore::default();
-        return Ok(store.publish("file:///stdin.abap", 1, &source));
+        let snapshots = store.replace_all_with_build_plan(
+            vec![DocumentInput {
+                uri: Arc::from("file:///stdin.abap"),
+                version: 1,
+                text: Arc::from(source),
+                is_dependency: false,
+                object_name: None,
+            }],
+            build_plan,
+        );
+        return snapshots
+            .get("file:///stdin.abap")
+            .cloned()
+            .ok_or_else(|| "stdin analysis did not materialize file:///stdin.abap".to_string());
     };
 
     let target_uri = path_to_file_uri(&target_path);
@@ -3199,10 +3214,11 @@ fn load_call_graph_snapshot(
     }
 
     let store = DocumentStore::default();
-    let snapshots = replace_all_workspace_documents_with_local_exports(
+    let snapshots = replace_all_workspace_documents_with_local_exports_for_build_plan(
         &store,
         &workspace.root_path,
         &documents,
+        build_plan,
         None,
     );
     snapshots.get(target_uri.as_str()).cloned().ok_or_else(|| {
@@ -3251,10 +3267,11 @@ fn load_project_analyze_snapshot(path: Option<&str>) -> Result<AnalyzeSnapshot, 
     }
 
     let store = DocumentStore::default();
-    let snapshots = replace_all_workspace_documents_with_local_exports(
+    let snapshots = replace_all_workspace_documents_with_local_exports_for_build_plan(
         &store,
         &workspace.root_path,
         &documents,
+        SnapshotBuildPlan::SEMANTIC_DOSSIER,
         None,
     );
     let snapshot = snapshots.get(target_uri.as_str()).cloned().ok_or_else(|| {
@@ -3318,16 +3335,23 @@ fn load_expand_snapshot_set(path: Option<&str>) -> Result<ExpandSnapshotSet, Str
     let Some(target_path) = resolve_target_path(path)? else {
         let source = read_source(path)?;
         let store = DocumentStore::default();
-        let root = store.publish_input(DocumentInput {
-            uri: Arc::from("file:///stdin.abap"),
-            version: 1,
-            text: Arc::from(source),
-            is_dependency: false,
-            object_name: None,
-        });
+        let snapshots = store.replace_all_with_build_plan(
+            vec![DocumentInput {
+                uri: Arc::from("file:///stdin.abap"),
+                version: 1,
+                text: Arc::from(source),
+                is_dependency: false,
+                object_name: None,
+            }],
+            SnapshotBuildPlan::EFFECTIVE_SOURCE,
+        );
+        let root = snapshots
+            .get("file:///stdin.abap")
+            .cloned()
+            .ok_or_else(|| "stdin expansion did not materialize file:///stdin.abap".to_string())?;
         return Ok(ExpandSnapshotSet {
             root: Arc::clone(&root),
-            snapshots: HashMap::from([(Arc::clone(&root.uri), root)]),
+            snapshots,
         });
     };
 
@@ -3365,10 +3389,11 @@ fn load_expand_snapshot_set(path: Option<&str>) -> Result<ExpandSnapshotSet, Str
     }
 
     let store = DocumentStore::default();
-    let snapshots = replace_all_workspace_documents_with_local_exports(
+    let snapshots = replace_all_workspace_documents_with_local_exports_for_build_plan(
         &store,
         &workspace.root_path,
         &documents,
+        SnapshotBuildPlan::EFFECTIVE_SOURCE,
         None,
     );
     let root = snapshots.get(target_uri.as_str()).cloned().ok_or_else(|| {
