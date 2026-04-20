@@ -2965,6 +2965,43 @@ ENDFORM.
 }
 
 #[test]
+fn delete_adjacent_duplicates_does_not_collect_open_sql_source_for_unresolved_itab() {
+    let src = r#"
+FORM f.
+  DELETE ADJACENT DUPLICATES FROM t_exidv COMPARING exidv vbeln.
+ENDFORM.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///delete_adjacent_duplicates_unresolved.abap", src, &parsed);
+
+    assert!(
+        !unit.sql_name_refs.iter().any(|sql_ref| {
+            sql_ref.kind == SqlNameRefKind::Source && sql_ref.name.as_ref() == "t_exidv"
+        }),
+        "unexpected Open SQL source ref for DELETE ADJACENT DUPLICATES, sql refs={:?} diagnostics={:?}",
+        unit.sql_name_refs,
+        unit.diagnostics
+    );
+    assert!(
+        !unit
+            .diagnostics
+            .iter()
+            .any(|diag| diag.kind == DiagnosticKind::UnverifiedOpenSqlSource),
+        "unexpected Open SQL diagnostic: {:?}",
+        unit.diagnostics
+    );
+    assert!(
+        unit.references.iter().any(|reference| {
+            reference.namespace == Namespace::Value
+                && reference.kind == ReferenceKind::Identifier
+                && reference.name.as_ref() == "t_exidv"
+        }),
+        "expected value reference for internal table delete source, refs={:?}",
+        unit.references
+    );
+}
+
+#[test]
 fn resolves_concatenate_operands_and_selector_sources() {
     let src = r#"
 CLASS zcl_program DEFINITION.

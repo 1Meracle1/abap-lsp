@@ -589,6 +589,9 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
 
             if head_expr.is_none() {
                 head_expr = Some(child);
+                if expect_from_expr {
+                    expect_from_expr = false;
+                }
                 continue;
             }
             if expect_from_expr {
