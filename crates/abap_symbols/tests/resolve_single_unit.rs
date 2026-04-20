@@ -12330,3 +12330,101 @@ START-OF-SELECTION.
         unit.diagnostics
     );
 }
+
+#[test]
+fn accepts_project_table_type_alias_for_typed_function_module_table_parameter() {
+    let dep_src = r#"
+TYPES: BEGIN OF bapiret2,
+         type TYPE c LENGTH 1,
+       END OF bapiret2.
+TYPES bapiret2_t TYPE STANDARD TABLE OF bapiret2 WITH EMPTY KEY.
+
+FUNCTION z_bapi_return
+  TABLES
+    return TYPE bapiret2.
+ENDFUNCTION.
+"#;
+    let main_src = r#"
+START-OF-SELECTION.
+  DATA lt_return TYPE bapiret2_t.
+  CALL FUNCTION 'Z_BAPI_RETURN'
+    TABLES
+      return = lt_return.
+"#;
+
+    let dep_parsed = parse(dep_src);
+    let main_parsed = parse(main_src);
+    let project = analyze_project(&[
+        ProjectInput {
+            uri: "file:///main_bapiret2_table_alias.abap",
+            source: main_src,
+            parse: &main_parsed,
+        },
+        ProjectInput {
+            uri: "file:///dep_bapiret2_table_alias.abap",
+            source: dep_src,
+            parse: &dep_parsed,
+        },
+    ]);
+    let main_unit = project
+        .unit_by_uri("file:///main_bapiret2_table_alias.abap")
+        .expect("main unit");
+
+    assert!(
+        !main_unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::IncompatibleArgumentType
+                && diag.message.contains("return")
+        }),
+        "{:#?}",
+        main_unit.diagnostics
+    );
+}
+
+#[test]
+fn accepts_project_table_type_alias_for_like_function_module_table_parameter() {
+    let dep_src = r#"
+TYPES: BEGIN OF bapiret2,
+         type TYPE c LENGTH 1,
+       END OF bapiret2.
+TYPES bapiret2_t TYPE STANDARD TABLE OF bapiret2 WITH EMPTY KEY.
+
+FUNCTION z_bapi_return_like
+  TABLES
+    return LIKE bapiret2.
+ENDFUNCTION.
+"#;
+    let main_src = r#"
+START-OF-SELECTION.
+  DATA lt_return TYPE bapiret2_t.
+  CALL FUNCTION 'Z_BAPI_RETURN_LIKE'
+    TABLES
+      return = lt_return.
+"#;
+
+    let dep_parsed = parse(dep_src);
+    let main_parsed = parse(main_src);
+    let project = analyze_project(&[
+        ProjectInput {
+            uri: "file:///main_bapiret2_table_alias_like.abap",
+            source: main_src,
+            parse: &main_parsed,
+        },
+        ProjectInput {
+            uri: "file:///dep_bapiret2_table_alias_like.abap",
+            source: dep_src,
+            parse: &dep_parsed,
+        },
+    ]);
+    let main_unit = project
+        .unit_by_uri("file:///main_bapiret2_table_alias_like.abap")
+        .expect("main unit");
+
+    assert!(
+        !main_unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::IncompatibleArgumentType
+                && diag.message.contains("return")
+        }),
+        "{:#?}",
+        main_unit.diagnostics
+    );
+}

@@ -164,12 +164,13 @@ fn classify_normalized_type_fact(
             target_handle,
         });
     }
-    if declared_type.namespace == Namespace::Type {
+    if declared_type.field_path.is_empty() {
         if is_builtin_scalar_name(declared_type.base_name.as_ref()) {
             return Some(ClassifiedType::Scalar);
         }
-        if let Some((resolved_unit, resolved_fact)) =
-            resolve_named_type_fact(project, unit, declared_type.base_name.as_ref())
+        if matches!(declared_type.namespace, Namespace::Type | Namespace::Value)
+            && let Some((resolved_unit, resolved_fact)) =
+                resolve_named_type_fact(project, unit, declared_type.base_name.as_ref())
         {
             return classify_normalized_type_fact(
                 project,
