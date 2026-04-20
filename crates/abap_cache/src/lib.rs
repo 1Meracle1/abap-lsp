@@ -7753,11 +7753,14 @@ fn document_inputs_for_publish_many(
 }
 
 fn analysis_text_for_input(input: &DocumentInput) -> Arc<str> {
-    if input.is_dependency {
-        return dependency_surface_text(input.text.as_ref());
+    analysis_text_for_document(input.text.as_ref(), input.is_dependency)
+}
+
+pub fn analysis_text_for_document(text: &str, is_dependency: bool) -> Arc<str> {
+    if is_dependency {
+        return dependency_surface_text(text);
     }
-    opened_function_module_dependency_analysis_text(input.text.as_ref())
-        .unwrap_or_else(|| Arc::clone(&input.text))
+    opened_function_module_dependency_analysis_text(text).unwrap_or_else(|| Arc::from(text))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

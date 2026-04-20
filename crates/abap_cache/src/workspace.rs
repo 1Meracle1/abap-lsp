@@ -2,7 +2,7 @@ use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use quick_xml::Reader;
 use quick_xml::events::{BytesStart, Event};
@@ -232,7 +232,8 @@ impl LocalExportConfig {
 
 #[derive(Debug, Default)]
 pub struct LocalExportResolver {
-    indices: HashMap<String, LocalExportIndex>,
+    indices: HashMap<String, Arc<LocalExportIndex>>,
+    fresh_indices: HashSet<String>,
 }
 
 #[derive(Debug, Default)]
@@ -259,6 +260,25 @@ struct UnitSidecarManifest {
     pub dependencies: UnitSidecarDependencies,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LocalExportPathState {
+    len: u64,
+    modified_nanos: Option<u128>,
+}
+
+#[derive(Debug, Clone)]
+struct CachedUnitSidecarManifest {
+    state: Option<LocalExportPathState>,
+    manifest: Option<UnitSidecarManifest>,
+}
+
+#[derive(Debug, Clone)]
+struct CachedLocalExportConfig {
+    sidecar_keys: Vec<String>,
+    sidecar_states: Vec<Option<LocalExportPathState>>,
+    config: LocalExportConfig,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkspaceDocument {
     pub uri: Arc<str>,
@@ -283,6 +303,38 @@ pub struct WorkspaceLoadResult {
 pub struct OpenDocumentOverlay {
     pub version: i32,
     pub text: Arc<str>,
+}
+
+fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|error| error.into_inner())
+}
+
+fn local_export_index_cache() -> &'static Mutex<HashMap<String, Arc<LocalExportIndex>>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, Arc<LocalExportIndex>>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn unit_sidecar_manifest_cache() -> &'static Mutex<HashMap<String, CachedUnitSidecarManifest>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, CachedUnitSidecarManifest>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn local_export_config_cache() -> &'static Mutex<HashMap<String, CachedLocalExportConfig>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, CachedLocalExportConfig>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn local_export_path_state(path: &Path) -> Option<LocalExportPathState> {
+    let metadata = fs::metadata(path).ok()?;
+    let modified_nanos = metadata
+        .modified()
+        .ok()
+        .and_then(|value| value.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|duration| duration.as_nanos());
+    Some(LocalExportPathState {
+        len: metadata.len(),
+        modified_nanos,
+    })
 }
 
 pub fn load_manifest_from_workspace(root_path: &Path) -> Option<WorkspaceManifest> {
@@ -1033,15 +1085,12 @@ fn append_sidecar_member(
 }
 
 fn load_folder_unit_sidecar_manifest(dir_path: &Path) -> Option<UnitSidecarManifest> {
-    let text = fs::read_to_string(dir_path.join("abapls-unit.toml")).ok()?;
-    toml::from_str(&text).ok()
+    load_unit_sidecar_manifest(&dir_path.join("abapls-unit.toml"))
 }
 
 fn load_single_file_unit_sidecar_manifest(file_path: &Path) -> Option<UnitSidecarManifest> {
     let file_name = file_path.file_name()?.to_str()?;
-    let sidecar_name = format!("{file_name}.abapls-unit.toml");
-    let text = fs::read_to_string(file_path.with_file_name(sidecar_name)).ok()?;
-    toml::from_str(&text).ok()
+    load_unit_sidecar_manifest(&file_path.with_file_name(format!("{file_name}.abapls-unit.toml")))
 }
 
 pub fn local_export_config_for_source(
@@ -1049,6 +1098,47 @@ pub fn local_export_config_for_source(
     source_uri: &str,
 ) -> LocalExportConfig {
     let sidecar_paths = source_unit_sidecar_paths(workspace_root, source_uri);
+    let sidecar_keys: Vec<_> = sidecar_paths
+        .iter()
+        .map(|path| normalized_local_export_path_key(path))
+        .collect();
+    let sidecar_states: Vec<_> = sidecar_paths
+        .iter()
+        .map(|path| local_export_path_state(path))
+        .collect();
+    let cache_key = local_export_config_cache_key(workspace_root, source_uri);
+
+    if let Some(cached) = lock_unpoisoned(local_export_config_cache())
+        .get(&cache_key)
+        .filter(|cached| {
+            cached.sidecar_keys == sidecar_keys && cached.sidecar_states == sidecar_states
+        })
+        .cloned()
+    {
+        return cached.config;
+    }
+
+    let config = build_local_export_config_from_sidecar_paths(&sidecar_paths);
+    lock_unpoisoned(local_export_config_cache()).insert(
+        cache_key,
+        CachedLocalExportConfig {
+            sidecar_keys,
+            sidecar_states,
+            config: config.clone(),
+        },
+    );
+    config
+}
+
+fn local_export_config_cache_key(workspace_root: &Path, source_uri: &str) -> String {
+    let workspace_key = normalized_local_export_path_key(workspace_root);
+    let source_key = file_uri_to_path(source_uri)
+        .map(|path| normalized_local_export_path_key(&path))
+        .unwrap_or_else(|| source_uri.to_ascii_lowercase());
+    format!("{workspace_key}::{source_key}")
+}
+
+fn build_local_export_config_from_sidecar_paths(sidecar_paths: &[PathBuf]) -> LocalExportConfig {
     if sidecar_paths.is_empty() {
         return LocalExportConfig::default();
     }
@@ -1092,6 +1182,128 @@ pub fn local_export_config_for_source(
     LocalExportConfig { mode, roots }
 }
 
+fn local_export_index_for_root(
+    root: &Path,
+    resolver: &mut LocalExportResolver,
+) -> Arc<LocalExportIndex> {
+    let key = normalized_local_export_path_key(root);
+    if let Some(index) = resolver.indices.get(&key) {
+        return Arc::clone(index);
+    }
+
+    if let Some(index) = lock_unpoisoned(local_export_index_cache())
+        .get(&key)
+        .cloned()
+    {
+        resolver.indices.insert(key, Arc::clone(&index));
+        return index;
+    }
+
+    let index = Arc::new(build_local_export_index(root));
+    lock_unpoisoned(local_export_index_cache()).insert(key.clone(), Arc::clone(&index));
+    resolver.fresh_indices.insert(key.clone());
+    resolver.indices.insert(key, Arc::clone(&index));
+    index
+}
+
+fn refresh_local_export_index_for_root(
+    root: &Path,
+    resolver: &mut LocalExportResolver,
+) -> Arc<LocalExportIndex> {
+    let key = normalized_local_export_path_key(root);
+    let index = Arc::new(build_local_export_index(root));
+    lock_unpoisoned(local_export_index_cache()).insert(key.clone(), Arc::clone(&index));
+    resolver.fresh_indices.insert(key.clone());
+    resolver.indices.insert(key, Arc::clone(&index));
+    index
+}
+
+fn resolve_local_export_dependency_document_in_index(
+    index: &LocalExportIndex,
+    file_names: &[String],
+    candidate_name: &str,
+    candidate_kind: &str,
+) -> Option<WorkspaceDocument> {
+    for file_name in file_names {
+        let Some(artifacts) = index.artifacts_by_file_name.get(file_name) else {
+            continue;
+        };
+        for artifact in artifacts {
+            let mut source_text = None;
+            if !local_export_artifact_matches_candidate(artifact, candidate_name, candidate_kind) {
+                source_text = local_export_fallback_source_if_matches(
+                    artifact,
+                    candidate_name,
+                    candidate_kind,
+                );
+                if source_text.is_none() {
+                    continue;
+                }
+            }
+            let source_text = match source_text {
+                Some(source_text) => source_text,
+                None => match fs::read_to_string(&artifact.path) {
+                    Ok(source_text) => source_text,
+                    Err(_) => continue,
+                },
+            };
+            let text = if artifact
+                .path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("xml"))
+            {
+                ddic_xml_to_abap_source(
+                    artifact.object_name.as_str(),
+                    artifact.kind_hint.as_str(),
+                    source_text.as_str(),
+                )
+                .unwrap_or(source_text)
+            } else {
+                source_text
+            };
+            return Some(WorkspaceDocument {
+                uri: Arc::from(path_to_file_uri(&artifact.path)),
+                version: 0,
+                text,
+                is_dependency: true,
+                object_name: Some(Arc::from(artifact.object_name.to_ascii_lowercase())),
+            });
+        }
+    }
+
+    None
+}
+
+fn resolve_local_export_dependency_document_in_root(
+    root: &Path,
+    resolver: &mut LocalExportResolver,
+    file_names: &[String],
+    candidate_name: &str,
+    candidate_kind: &str,
+) -> Option<WorkspaceDocument> {
+    let key = normalized_local_export_path_key(root);
+    let index = local_export_index_for_root(root, resolver);
+    if let Some(document) = resolve_local_export_dependency_document_in_index(
+        index.as_ref(),
+        file_names,
+        candidate_name,
+        candidate_kind,
+    ) {
+        return Some(document);
+    }
+    if resolver.fresh_indices.contains(&key) {
+        return None;
+    }
+    let refreshed = refresh_local_export_index_for_root(root, resolver);
+    resolve_local_export_dependency_document_in_index(
+        refreshed.as_ref(),
+        file_names,
+        candidate_name,
+        candidate_kind,
+    )
+}
+
 pub fn resolve_local_export_dependency_document(
     roots: &[PathBuf],
     resolver: &mut LocalExportResolver,
@@ -1104,58 +1316,14 @@ pub fn resolve_local_export_dependency_document(
     }
 
     for root in roots {
-        let key = normalized_local_export_path_key(root);
-        let index = resolver
-            .indices
-            .entry(key)
-            .or_insert_with(|| build_local_export_index(root));
-        for file_name in &file_names {
-            let Some(artifacts) = index.artifacts_by_file_name.get(file_name) else {
-                continue;
-            };
-            for artifact in artifacts {
-                let mut source_text = None;
-                if !local_export_artifact_matches_candidate(
-                    artifact,
-                    candidate_name,
-                    candidate_kind,
-                ) {
-                    source_text = local_export_fallback_source_if_matches(
-                        artifact,
-                        candidate_name,
-                        candidate_kind,
-                    );
-                    if source_text.is_none() {
-                        continue;
-                    }
-                }
-                let source_text = match source_text {
-                    Some(source_text) => source_text,
-                    None => fs::read_to_string(&artifact.path).ok()?,
-                };
-                let text = if artifact
-                    .path
-                    .extension()
-                    .and_then(|ext| ext.to_str())
-                    .is_some_and(|ext| ext.eq_ignore_ascii_case("xml"))
-                {
-                    ddic_xml_to_abap_source(
-                        artifact.object_name.as_str(),
-                        artifact.kind_hint.as_str(),
-                        source_text.as_str(),
-                    )
-                    .unwrap_or(source_text)
-                } else {
-                    source_text
-                };
-                return Some(WorkspaceDocument {
-                    uri: Arc::from(path_to_file_uri(&artifact.path)),
-                    version: 0,
-                    text,
-                    is_dependency: true,
-                    object_name: Some(Arc::from(artifact.object_name.to_ascii_lowercase())),
-                });
-            }
+        if let Some(document) = resolve_local_export_dependency_document_in_root(
+            root,
+            resolver,
+            &file_names,
+            candidate_name,
+            candidate_kind,
+        ) {
+            return Some(document);
         }
     }
 
@@ -1183,67 +1351,120 @@ pub fn resolve_local_export_function_module_documents_by_prefix(
     let mut seen = HashSet::<String>::new();
 
     for root in roots {
-        let key = normalized_local_export_path_key(root);
-        let index = resolver
-            .indices
-            .entry(key)
-            .or_insert_with(|| build_local_export_index(root));
-        let mut file_names: Vec<_> = index
-            .artifacts_by_file_name
-            .keys()
-            .filter(|file_name| {
-                file_name.starts_with(&encoded_prefix) && file_name.ends_with(".abap")
-            })
-            .cloned()
-            .collect();
-        file_names.sort();
+        let remaining = limit.saturating_sub(out.len());
+        if remaining == 0 {
+            return out;
+        }
 
-        for file_name in file_names {
-            let Some(artifacts) = index.artifacts_by_file_name.get(&file_name) else {
+        for document in resolve_local_export_function_module_documents_by_prefix_in_root(
+            root,
+            resolver,
+            &encoded_prefix,
+            &prefix_lower,
+            remaining,
+        ) {
+            let Some(object_name) = document.object_name.as_ref() else {
                 continue;
             };
-            for artifact in artifacts {
-                let Ok(source_text) = fs::read_to_string(&artifact.path) else {
-                    continue;
-                };
-                let function_name = if artifact.kind_hint.eq_ignore_ascii_case("function-module")
-                    && artifact
-                        .object_name
-                        .to_ascii_lowercase()
-                        .starts_with(&prefix_lower)
-                {
-                    artifact.object_name.clone()
-                } else {
-                    let Some(function_name) = first_abap_function_module_name(&source_text) else {
-                        continue;
-                    };
-                    if !function_name
-                        .to_ascii_lowercase()
-                        .starts_with(&prefix_lower)
-                    {
-                        continue;
-                    }
-                    function_name.to_string()
-                };
-                let dedupe_key = function_name.to_ascii_lowercase();
-                if !seen.insert(dedupe_key.clone()) {
-                    continue;
-                }
-                out.push(WorkspaceDocument {
-                    uri: Arc::from(path_to_file_uri(&artifact.path)),
-                    version: 0,
-                    text: source_text,
-                    is_dependency: true,
-                    object_name: Some(Arc::from(dedupe_key)),
-                });
-                if out.len() >= limit {
-                    return out;
-                }
+            let dedupe_key = object_name.to_string();
+            if !seen.insert(dedupe_key) {
+                continue;
+            }
+            out.push(document);
+            if out.len() >= limit {
+                return out;
             }
         }
     }
 
     out
+}
+
+fn resolve_local_export_function_module_documents_by_prefix_in_index(
+    index: &LocalExportIndex,
+    encoded_prefix: &str,
+    prefix_lower: &str,
+    limit: usize,
+) -> Vec<WorkspaceDocument> {
+    let mut out = Vec::new();
+    let mut seen = HashSet::<String>::new();
+    let mut file_names: Vec<_> = index
+        .artifacts_by_file_name
+        .keys()
+        .filter(|file_name| file_name.starts_with(encoded_prefix) && file_name.ends_with(".abap"))
+        .cloned()
+        .collect();
+    file_names.sort();
+
+    for file_name in file_names {
+        let Some(artifacts) = index.artifacts_by_file_name.get(&file_name) else {
+            continue;
+        };
+        for artifact in artifacts {
+            let Ok(source_text) = fs::read_to_string(&artifact.path) else {
+                continue;
+            };
+            let function_name = if artifact.kind_hint.eq_ignore_ascii_case("function-module")
+                && artifact
+                    .object_name
+                    .to_ascii_lowercase()
+                    .starts_with(prefix_lower)
+            {
+                artifact.object_name.clone()
+            } else {
+                let Some(function_name) = first_abap_function_module_name(&source_text) else {
+                    continue;
+                };
+                if !function_name.to_ascii_lowercase().starts_with(prefix_lower) {
+                    continue;
+                }
+                function_name.to_string()
+            };
+            let dedupe_key = function_name.to_ascii_lowercase();
+            if !seen.insert(dedupe_key.clone()) {
+                continue;
+            }
+            out.push(WorkspaceDocument {
+                uri: Arc::from(path_to_file_uri(&artifact.path)),
+                version: 0,
+                text: source_text,
+                is_dependency: true,
+                object_name: Some(Arc::from(dedupe_key)),
+            });
+            if out.len() >= limit {
+                return out;
+            }
+        }
+    }
+
+    out
+}
+
+fn resolve_local_export_function_module_documents_by_prefix_in_root(
+    root: &Path,
+    resolver: &mut LocalExportResolver,
+    encoded_prefix: &str,
+    prefix_lower: &str,
+    limit: usize,
+) -> Vec<WorkspaceDocument> {
+    let key = normalized_local_export_path_key(root);
+    let index = local_export_index_for_root(root, resolver);
+    let out = resolve_local_export_function_module_documents_by_prefix_in_index(
+        index.as_ref(),
+        encoded_prefix,
+        prefix_lower,
+        limit,
+    );
+    if !out.is_empty() || resolver.fresh_indices.contains(&key) {
+        return out;
+    }
+    let refreshed = refresh_local_export_index_for_root(root, resolver);
+    resolve_local_export_function_module_documents_by_prefix_in_index(
+        refreshed.as_ref(),
+        encoded_prefix,
+        prefix_lower,
+        limit,
+    )
 }
 
 fn local_export_fallback_source_if_matches(
@@ -1359,8 +1580,27 @@ fn push_sidecar_path_if_exists(
 }
 
 fn load_unit_sidecar_manifest(sidecar_path: &Path) -> Option<UnitSidecarManifest> {
-    let text = fs::read_to_string(sidecar_path).ok()?;
-    toml::from_str(&text).ok()
+    let key = normalized_local_export_path_key(sidecar_path);
+    let state = local_export_path_state(sidecar_path);
+    if let Some(cached) = lock_unpoisoned(unit_sidecar_manifest_cache())
+        .get(&key)
+        .filter(|cached| cached.state == state)
+        .cloned()
+    {
+        return cached.manifest;
+    }
+
+    let manifest = fs::read_to_string(sidecar_path)
+        .ok()
+        .and_then(|text| toml::from_str(&text).ok());
+    lock_unpoisoned(unit_sidecar_manifest_cache()).insert(
+        key,
+        CachedUnitSidecarManifest {
+            state,
+            manifest: manifest.clone(),
+        },
+    );
+    manifest
 }
 
 fn resolve_unit_sidecar_local_roots(
@@ -2928,14 +3168,15 @@ mod tests {
     use std::sync::Arc;
 
     use super::{
-        DEFAULT_REMOTE_REQUESTS_PER_SECOND, LocalExportResolver, OpenDocumentOverlay,
-        UNKNOWN_SYMBOL_MODE_REMOTE, WORKSPACE_PERFORMANCE_MODE_AUTO,
+        DEFAULT_REMOTE_REQUESTS_PER_SECOND, LocalDependencySourceMode, LocalExportResolver,
+        OpenDocumentOverlay, UNKNOWN_SYMBOL_MODE_REMOTE, WORKSPACE_PERFORMANCE_MODE_AUTO,
         WORKSPACE_PERFORMANCE_MODE_EDITOR_FIRST, WorkspaceManifest, WorkspacePerformanceMode,
         ddic_xml_to_abap_source, is_remote_lookup_candidate,
         is_remote_lookup_candidate_after_local_resolution, is_remote_lookup_name,
-        load_manifest_from_workspace, load_workspace_documents, manifest_declares_uri,
-        manifest_document_metadata, manifest_supports_remote_resolution, path_to_file_uri,
-        resolve_local_export_dependency_document, resolve_workspace_performance_mode,
+        load_manifest_from_workspace, load_workspace_documents, local_export_config_for_source,
+        manifest_declares_uri, manifest_document_metadata, manifest_supports_remote_resolution,
+        path_to_file_uri, resolve_local_export_dependency_document,
+        resolve_workspace_performance_mode,
     };
 
     #[test]
@@ -3282,6 +3523,76 @@ mode = "full-workspace"
             "{}",
             document.text
         );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn local_export_resolver_refreshes_cached_root_index_after_miss() {
+        let root = std::env::temp_dir().join("abap-lsp-local-export-refresh-on-miss");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("packages/ME/ddic-table")).expect("ddic table dir");
+        fs::write(
+            root.join("packages/ME/ddic-table/EKPO.xml"),
+            r#"<?xml version="1.0" encoding="utf-8"?><abapsource:elementInfo adtcore:uri="/sap/bc/adt/vit/wb/object_type/tabldt/object_name/EKPO" adtcore:type="TABL/DT" adtcore:name="ekpo" xmlns:abapsource="http://www.sap.com/adt/abapsource" xmlns:adtcore="http://www.sap.com/adt/core"></abapsource:elementInfo>"#,
+        )
+        .expect("ddic table");
+
+        let roots = vec![root.clone()];
+        let mut first_resolver = LocalExportResolver::default();
+        assert!(
+            resolve_local_export_dependency_document(&roots, &mut first_resolver, "ekko", "type")
+                .is_none()
+        );
+
+        fs::write(
+            root.join("packages/ME/ddic-table/EKKO.xml"),
+            r#"<?xml version="1.0" encoding="utf-8"?><abapsource:elementInfo adtcore:uri="/sap/bc/adt/vit/wb/object_type/tabldt/object_name/EKKO" adtcore:type="TABL/DT" adtcore:name="ekko" xmlns:abapsource="http://www.sap.com/adt/abapsource" xmlns:adtcore="http://www.sap.com/adt/core"></abapsource:elementInfo>"#,
+        )
+        .expect("new ddic table");
+
+        let mut second_resolver = LocalExportResolver::default();
+        let document =
+            resolve_local_export_dependency_document(&roots, &mut second_resolver, "ekko", "type")
+                .expect("refreshed local export dependency");
+
+        assert!(document.uri.ends_with("/EKKO.xml"), "{}", document.uri);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn local_export_config_cache_refreshes_when_sidecar_changes() {
+        let root = std::env::temp_dir().join("abap-lsp-local-export-config-cache");
+        let _ = fs::remove_dir_all(&root);
+        let source_dir = root.join("src/reports/ZREP");
+        fs::create_dir_all(&source_dir).expect("source dir");
+        fs::create_dir_all(root.join("deps-a")).expect("deps a");
+        fs::create_dir_all(root.join("deps-b")).expect("deps b");
+        let source_path = source_dir.join("zrep.abap");
+        fs::write(&source_path, "REPORT zrep.").expect("source");
+        let sidecar_path = source_dir.join("abapls-unit.toml");
+        fs::write(
+            &sidecar_path,
+            "[local_export]\nroots = [\"../../../deps-a\"]\n\n[dependencies]\nsource = \"local-first\"\n",
+        )
+        .expect("sidecar a");
+
+        let source_uri = path_to_file_uri(&source_path);
+        let first = local_export_config_for_source(&root, &source_uri);
+        assert_eq!(first.mode, LocalDependencySourceMode::LocalFirst);
+        assert_eq!(first.roots.len(), 1);
+        assert_eq!(first.roots[0], root.join("deps-a"));
+
+        fs::write(
+            &sidecar_path,
+            "[local_export]\nroots = [\"../../../deps-b\"]\n\n[dependencies]\nsource = \"local-only\"\n",
+        )
+        .expect("sidecar b");
+
+        let second = local_export_config_for_source(&root, &source_uri);
+        assert_eq!(second.mode, LocalDependencySourceMode::LocalOnly);
+        assert_eq!(second.roots.len(), 1);
+        assert_eq!(second.roots[0], root.join("deps-b"));
 
         let _ = fs::remove_dir_all(&root);
     }

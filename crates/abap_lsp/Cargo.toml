@@ -8,6 +8,7 @@ rust-version.workspace = true
 [dependencies]
 abap_cache = { path = "../abap_cache" }
 abap_jsonrpc = { path = "../abap_jsonrpc" }
+abap_parser = { path = "../abap_parser" }
 abap_symbols = { path = "../abap_symbols" }
 lsp-types.workspace = true
 serde.workspace = true
