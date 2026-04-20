@@ -795,6 +795,22 @@ impl<'ctx, 'a> SqlContext<'ctx, 'a> {
         self.collector.syntax_token_is_ident_like(token)
     }
 
+    pub(super) fn consume_selector_access_from_infos(
+        &self,
+        tokens: &[SyntaxTokenInfo],
+        idx: usize,
+    ) -> Option<(
+        usize,
+        Namespace,
+        std::sync::Arc<str>,
+        abap_lexer::TextRange,
+        Vec<crate::def_map::FieldAccessSegment>,
+        Vec<(usize, usize, bool)>,
+    )> {
+        self.collector
+            .consume_selector_access_from_infos(tokens, idx)
+    }
+
     pub(super) fn count_kind(&self, node: NodeId, kind: abap_ast::SyntaxKind) -> usize {
         self.collector.file.count_kind(node, kind)
     }

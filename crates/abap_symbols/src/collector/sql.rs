@@ -943,18 +943,38 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
         let is_appending = into_clause.has_keyword(self.ctx.source(), "appending");
         let is_table = into_clause.has_keyword(self.ctx.source(), "table");
         let is_corresponding = into_clause.has_keyword(self.ctx.source(), "corresponding");
+        let target_kind = if is_appending {
+            SqlTargetKind::Appending
+        } else {
+            SqlTargetKind::Into
+        };
         let children: Vec<_> = into_clause
             .target_children()
             .map(|child| child.id())
             .collect();
+        let clause_range = self.ctx.file().range(node);
+        let clause_tokens = self.ctx.syntax_token_nodes(node);
+        if let Some(target_segments) = self.parenthesized_select_target_segments_from_tokens(
+            self.select_into_clause_target_tokens(&clause_tokens),
+        ) {
+            for target_tokens in target_segments {
+                self.collect_select_target_tokens(
+                    query_id,
+                    scope,
+                    &clause_range,
+                    target_kind,
+                    &target_tokens,
+                    is_table,
+                    is_corresponding,
+                );
+            }
+            return;
+        }
 
-        let mut target_name = None;
-        let mut is_inline = false;
         for &child in &children {
             match self.ctx.file().kind(child) {
                 SyntaxKind::DataInlineDecl => {
-                    is_inline = true;
-                    target_name = self.inline_decl_name(child);
+                    let target_name = self.inline_decl_name(child);
                     let inferred_metadata = if is_table {
                         target_name
                             .as_ref()
@@ -976,13 +996,34 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
                     } else {
                         self.ctx.decl_lowering().walk_inline_decl(child, scope);
                     }
+                    self.ctx.emit_sql_target(SqlTargetData {
+                        query_id,
+                        scope,
+                        range: clause_range.clone(),
+                        target_range: Some(self.ctx.file().range(child)),
+                        kind: target_kind,
+                        target_name,
+                        is_table,
+                        is_corresponding,
+                        is_inline: true,
+                    });
                 }
                 SyntaxKind::FieldSymbolInlineDecl => {
-                    is_inline = true;
-                    target_name = self.inline_decl_name(child);
+                    let target_name = self.inline_decl_name(child);
                     self.ctx
                         .decl_lowering()
                         .declare_inline_field_symbol_decl(child, scope, None, None);
+                    self.ctx.emit_sql_target(SqlTargetData {
+                        query_id,
+                        scope,
+                        range: clause_range.clone(),
+                        target_range: Some(self.ctx.file().range(child)),
+                        kind: target_kind,
+                        target_name,
+                        is_table,
+                        is_corresponding,
+                        is_inline: true,
+                    });
                 }
                 SyntaxKind::ExprIdent
                 | SyntaxKind::SelectorExpr
@@ -991,43 +1032,227 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
                 | SyntaxKind::UnaryExpr
                 | SyntaxKind::ParenExpr
                 | SyntaxKind::ConstructorExpr => {
-                    if target_name.is_none() {
-                        target_name = self.ctx.sql_target_name_from_expr(child);
+                    if let Some(target_segments) = self.parenthesized_select_target_segments(child)
+                    {
+                        for target_tokens in target_segments {
+                            self.collect_select_target_tokens(
+                                query_id,
+                                scope,
+                                &clause_range,
+                                target_kind,
+                                &target_tokens,
+                                is_table,
+                                is_corresponding,
+                            );
+                        }
+                        continue;
                     }
+                    let target_name = self.ctx.sql_target_name_from_expr(child);
                     self.ctx.expr_lowering().collect_expr(child, scope);
+                    self.ctx.emit_sql_target(SqlTargetData {
+                        query_id,
+                        scope,
+                        range: clause_range.clone(),
+                        target_range: Some(self.ctx.file().range(child)),
+                        kind: target_kind,
+                        target_name,
+                        is_table,
+                        is_corresponding,
+                        is_inline: false,
+                    });
                 }
                 SyntaxKind::TemplateExpr => {
+                    if let Some(target_segments) = self.parenthesized_select_target_segments(child)
+                    {
+                        for target_tokens in target_segments {
+                            self.collect_select_target_tokens(
+                                query_id,
+                                scope,
+                                &clause_range,
+                                target_kind,
+                                &target_tokens,
+                                is_table,
+                                is_corresponding,
+                            );
+                        }
+                        continue;
+                    }
+                    let mut target_name = None;
                     for grandchild in self.ctx.file().children(child) {
                         if target_name.is_none() {
                             target_name = self.ctx.sql_target_name_from_expr(grandchild);
                         }
                         self.ctx.expr_lowering().collect_expr(grandchild, scope);
                     }
+                    self.ctx.emit_sql_target(SqlTargetData {
+                        query_id,
+                        scope,
+                        range: clause_range.clone(),
+                        target_range: Some(self.ctx.file().range(child)),
+                        kind: target_kind,
+                        target_name,
+                        is_table,
+                        is_corresponding,
+                        is_inline: false,
+                    });
                 }
                 _ => {}
             }
         }
+    }
 
-        let clause_range = self.ctx.file().range(node);
-        let target_range = children
+    fn parenthesized_select_target_segments(
+        &self,
+        node: NodeId,
+    ) -> Option<Vec<Vec<SyntaxTokenInfo>>> {
+        let tokens = self.ctx.syntax_token_nodes(node);
+        self.parenthesized_select_target_segments_from_tokens(&tokens)
+    }
+
+    fn select_into_clause_target_tokens<'b>(
+        &self,
+        tokens: &'b [SyntaxTokenInfo],
+    ) -> &'b [SyntaxTokenInfo] {
+        let mut idx = 0usize;
+        idx = self.skip_comment_tokens(tokens, idx);
+        if tokens.get(idx).is_some_and(|token| {
+            matches!(
+                token.text.to_ascii_lowercase().as_str(),
+                "into" | "appending"
+            )
+        }) {
+            idx += 1;
+            idx = self.skip_comment_tokens(tokens, idx);
+        }
+        if tokens
+            .get(idx)
+            .is_some_and(|token| token.text.eq_ignore_ascii_case("corresponding"))
+        {
+            idx += 1;
+            idx = self.skip_comment_tokens(tokens, idx);
+            if tokens
+                .get(idx)
+                .is_some_and(|token| token.text.eq_ignore_ascii_case("fields"))
+            {
+                idx += 1;
+                idx = self.skip_comment_tokens(tokens, idx);
+            }
+            if tokens
+                .get(idx)
+                .is_some_and(|token| token.text.eq_ignore_ascii_case("of"))
+            {
+                idx += 1;
+                idx = self.skip_comment_tokens(tokens, idx);
+            }
+        }
+        if tokens
+            .get(idx)
+            .is_some_and(|token| token.text.eq_ignore_ascii_case("table"))
+        {
+            idx += 1;
+            idx = self.skip_comment_tokens(tokens, idx);
+        }
+        &tokens[idx..]
+    }
+
+    fn skip_comment_tokens(&self, tokens: &[SyntaxTokenInfo], mut idx: usize) -> usize {
+        while idx < tokens.len() && self.ctx.syntax_token_is_comment(&tokens[idx]) {
+            idx += 1;
+        }
+        idx
+    }
+
+    fn parenthesized_select_target_segments_from_tokens(
+        &self,
+        tokens: &[SyntaxTokenInfo],
+    ) -> Option<Vec<Vec<SyntaxTokenInfo>>> {
+        let tokens: Vec<_> = tokens
             .iter()
-            .copied()
-            .map(|child| self.ctx.file().range(child))
-            .reduce(|acc, next| acc.start.min(next.start)..acc.end.max(next.end));
+            .filter(|token| !self.ctx.syntax_token_is_comment(token))
+            .cloned()
+            .collect();
+        let inner = Self::dynamic_parenthesized_operand_tokens(&tokens)?;
+        let mut out = Vec::new();
+        let mut start = 0usize;
+        let mut paren = 0i32;
+        let mut bracket = 0i32;
+        let mut brace = 0i32;
+        for (idx, token) in inner.iter().enumerate() {
+            match token.text.as_ref() {
+                "(" => paren += 1,
+                ")" => paren -= 1,
+                "[" => bracket += 1,
+                "]" => bracket -= 1,
+                "{" => brace += 1,
+                "}" => brace -= 1,
+                "," if paren == 0 && bracket == 0 && brace == 0 => {
+                    if let Some(segment) = Self::trim_select_target_tokens(&inner[start..idx]) {
+                        out.push(segment.to_vec());
+                    }
+                    start = idx + 1;
+                }
+                _ => {}
+            }
+        }
+        if let Some(segment) = Self::trim_select_target_tokens(&inner[start..]) {
+            out.push(segment.to_vec());
+        }
+        (!out.is_empty()).then_some(out)
+    }
+
+    fn trim_select_target_tokens(tokens: &[SyntaxTokenInfo]) -> Option<&[SyntaxTokenInfo]> {
+        let mut start = 0usize;
+        let mut end = tokens.len();
+        while start < end && tokens[start].text.as_ref() == "@" {
+            start += 1;
+        }
+        while start < end && tokens[end - 1].text.as_ref() == "@" {
+            end -= 1;
+        }
+        (start < end).then_some(&tokens[start..end])
+    }
+
+    fn sql_target_name_from_infos(&self, tokens: &[SyntaxTokenInfo]) -> Option<Arc<str>> {
+        let first_ident_idx = tokens
+            .iter()
+            .position(|token| self.ctx.syntax_token_is_ident_like(token))?;
+        if let Some((_next_idx, namespace, base_name, _base_range, _field_path, _groups)) = self
+            .ctx
+            .consume_selector_access_from_infos(tokens, first_ident_idx)
+            && namespace == Namespace::Value
+        {
+            return Some(base_name);
+        }
+        (tokens.len() == first_ident_idx + 1)
+            .then(|| Arc::<str>::from(tokens[first_ident_idx].text.to_ascii_lowercase()))
+    }
+
+    fn collect_select_target_tokens(
+        &mut self,
+        query_id: usize,
+        scope: ScopeId,
+        clause_range: &TextRange,
+        target_kind: SqlTargetKind,
+        tokens: &[SyntaxTokenInfo],
+        is_table: bool,
+        is_corresponding: bool,
+    ) {
+        let Some(tokens) = Self::trim_select_target_tokens(tokens) else {
+            return;
+        };
+        self.ctx
+            .collect_token_expression_refs_infos(tokens, scope, true);
+        let target_range = tokens.first().unwrap().range.start..tokens.last().unwrap().range.end;
         self.ctx.emit_sql_target(SqlTargetData {
             query_id,
             scope,
-            range: clause_range,
-            target_range,
-            kind: if is_appending {
-                SqlTargetKind::Appending
-            } else {
-                SqlTargetKind::Into
-            },
-            target_name,
+            range: clause_range.clone(),
+            target_range: Some(target_range),
+            kind: target_kind,
+            target_name: self.sql_target_name_from_infos(tokens),
             is_table,
             is_corresponding,
-            is_inline,
+            is_inline: false,
         });
     }
 

@@ -5,11 +5,11 @@ use abap_parser::ParseResult;
 
 use crate::collector::collect_unit;
 use crate::def_map::{
-    Diagnostic, DiagnosticKind, Resolution, SqlProjectionKind, StructureData, StructureFieldData,
-    UnitAnalysis,
+    Diagnostic, DiagnosticKind, ReferenceData, ReferenceKind, Resolution, SqlNameRefKind,
+    SqlProjectionKind, StructureData, StructureFieldData, UnitAnalysis,
 };
 use crate::facts::infer_semantic_facts;
-use crate::ids::{SymbolHandle, SymbolId, UnitId};
+use crate::ids::{ReferenceId, SymbolHandle, SymbolId, UnitId};
 use crate::resolver::{
     ScopeIndex, build_scope_index, resolve_project_cross_unit,
     resolve_project_cross_unit_for_units, resolve_unit_with_index,
@@ -206,6 +206,75 @@ fn infer_inline_select_target_shapes(unit: &mut UnitAnalysis, scope_index: &Scop
             fields,
         });
         unit.symbols[symbol_id.as_usize()].structure = Some(structure_id);
+    }
+}
+
+fn reclassify_project_open_sql_predicate_host_variables(units: &mut [UnitAnalysis]) {
+    let mut root_value_symbols: HashMap<Arc<str>, SymbolHandle> = HashMap::new();
+    for unit in units.iter() {
+        for symbol in unit.symbols.iter().filter(|symbol| {
+            symbol.scope == unit.root_scope && symbol.kind.occupies(Namespace::Value)
+        }) {
+            root_value_symbols
+                .entry(Arc::clone(&symbol.name))
+                .or_insert(SymbolHandle {
+                    unit: unit.unit_id,
+                    symbol: symbol.id,
+                });
+        }
+    }
+
+    for unit in units.iter_mut() {
+        let predicate_ranges_by_query: HashMap<usize, Vec<std::ops::Range<usize>>> = unit
+            .sql_predicates
+            .iter()
+            .fold(HashMap::new(), |mut ranges, predicate| {
+                ranges
+                    .entry(predicate.query_id)
+                    .or_default()
+                    .push(predicate.range.clone());
+                ranges
+            });
+        let mut rewritten_sql_refs = Vec::with_capacity(unit.sql_name_refs.len());
+
+        for sql_ref in unit.sql_name_refs.drain(..) {
+            let in_predicate = predicate_ranges_by_query
+                .get(&sql_ref.query_id)
+                .is_some_and(|ranges| {
+                    ranges.iter().any(|range| {
+                        range.start <= sql_ref.range.start && sql_ref.range.end <= range.end
+                    })
+                });
+            let promoted_handle = (sql_ref.kind == SqlNameRefKind::Column && in_predicate)
+                .then(|| root_value_symbols.get(&sql_ref.name).copied())
+                .flatten();
+
+            if let Some(handle) = promoted_handle {
+                let already_present = unit.references.iter().any(|reference| {
+                    reference.namespace == Namespace::Value
+                        && reference.kind == ReferenceKind::Identifier
+                        && reference.name == sql_ref.name
+                        && reference.range == sql_ref.range
+                });
+                if !already_present {
+                    let id = ReferenceId(unit.references.len() as u32);
+                    unit.references.push(ReferenceData {
+                        id,
+                        name: Arc::clone(&sql_ref.name),
+                        namespace: Namespace::Value,
+                        kind: ReferenceKind::Identifier,
+                        scope: sql_ref.scope,
+                        range: sql_ref.range.clone(),
+                        resolution: Some(Resolution::Symbol(handle)),
+                    });
+                }
+                continue;
+            }
+
+            rewritten_sql_refs.push(sql_ref);
+        }
+
+        unit.sql_name_refs = rewritten_sql_refs;
     }
 }
 
@@ -601,6 +670,7 @@ pub(crate) fn analyze_project_incremental_from_locals(
     metrics.resolve_include_edges_micros = resolve_include_edges_timer.elapsed().as_micros();
     let resolve_cross_unit_timer = std::time::Instant::now();
     resolve_project_cross_unit_for_units(&mut units, &dirty_set.unit_ids);
+    reclassify_project_open_sql_predicate_host_variables(&mut units);
     metrics.resolve_cross_unit_micros = resolve_cross_unit_timer.elapsed().as_micros();
     let infer_semantic_facts_timer = std::time::Instant::now();
     infer_semantic_facts(&mut units);
@@ -666,6 +736,7 @@ fn analyze_project_from_local_units_profiled(
     metrics.resolve_include_edges_micros = resolve_include_edges_timer.elapsed().as_micros();
     let resolve_cross_unit_timer = std::time::Instant::now();
     resolve_project_cross_unit(&mut units);
+    reclassify_project_open_sql_predicate_host_variables(&mut units);
     metrics.resolve_cross_unit_micros = resolve_cross_unit_timer.elapsed().as_micros();
     let infer_semantic_facts_timer = std::time::Instant::now();
     infer_semantic_facts(&mut units);

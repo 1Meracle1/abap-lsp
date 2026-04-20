@@ -324,6 +324,9 @@ fn push_select_target_clause_children(
         {
             children.push(inline_decl);
             push_token_children(b, children, tokens, inline_end, target_end);
+        } else if push_parenthesized_select_target_list_children(
+            b, children, source, tokens, expr_start, target_end,
+        ) {
         } else {
             push_expr_child(
                 b,
@@ -337,6 +340,94 @@ fn push_select_target_clause_children(
         }
     }
     target_end
+}
+
+fn push_parenthesized_select_target_list_children(
+    b: &mut SyntaxTreeBuilder,
+    children: &mut Vec<NodeId>,
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    end_exclusive: usize,
+) -> bool {
+    if start >= end_exclusive
+        || tokens.get(start).map(|token| token.kind) != Some(TokenKind::LParen)
+    {
+        return false;
+    }
+    let mut paren = 0i32;
+    let mut bracket = 0i32;
+    let mut brace = 0i32;
+    let mut close_idx = None;
+    for idx in start..end_exclusive {
+        match tokens[idx].kind {
+            TokenKind::LParen => paren += 1,
+            TokenKind::RParen => {
+                paren -= 1;
+                if paren == 0 && bracket == 0 && brace == 0 {
+                    close_idx = Some(idx);
+                    break;
+                }
+            }
+            TokenKind::LBracket => bracket += 1,
+            TokenKind::RBracket => bracket -= 1,
+            TokenKind::LBrace => brace += 1,
+            TokenKind::RBrace => brace -= 1,
+            _ => {}
+        }
+    }
+    let Some(close_idx) = close_idx else {
+        return false;
+    };
+    if close_idx + 1 != end_exclusive {
+        return false;
+    }
+
+    children.push(token_leaf(b, &tokens[start]));
+    let mut item_start = skip_trivia(tokens, start + 1);
+    let mut inner_paren = 0i32;
+    let mut inner_bracket = 0i32;
+    let mut inner_brace = 0i32;
+    let mut idx = item_start;
+    while idx < close_idx {
+        match tokens[idx].kind {
+            TokenKind::LParen => inner_paren += 1,
+            TokenKind::RParen => inner_paren -= 1,
+            TokenKind::LBracket => inner_bracket += 1,
+            TokenKind::RBracket => inner_bracket -= 1,
+            TokenKind::LBrace => inner_brace += 1,
+            TokenKind::RBrace => inner_brace -= 1,
+            TokenKind::Comma if inner_paren == 0 && inner_bracket == 0 && inner_brace == 0 => {
+                let item_end = trim_trailing_comment_tokens(tokens, item_start, idx);
+                push_expr_child(
+                    b,
+                    children,
+                    source,
+                    tokens,
+                    item_start,
+                    item_end,
+                    tokens.get(item_start.saturating_sub(1)),
+                );
+                children.push(token_leaf(b, &tokens[idx]));
+                item_start = skip_trivia(tokens, idx + 1);
+            }
+            _ => {}
+        }
+        idx += 1;
+    }
+
+    let item_end = trim_trailing_comment_tokens(tokens, item_start, close_idx);
+    push_expr_child(
+        b,
+        children,
+        source,
+        tokens,
+        item_start,
+        item_end,
+        tokens.get(item_start.saturating_sub(1)),
+    );
+    children.push(token_leaf(b, &tokens[close_idx]));
+    true
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -8934,7 +9025,7 @@ mod tests {
     use abap_ast::ast::{
         AstNode, ClassDecl, DataLikeDecl, DataLikeStorageKind, FormDecl, FormParamPassingKind,
         FormParamSectionKind, FunctionDecl, FunctionParamSectionKind, IncludeStmt, MethodDecl,
-        SubmitStmt, SyntaxNodeRef,
+        SelectIntoClause, SubmitStmt, SyntaxNodeRef,
     };
 
     #[test]
@@ -9506,18 +9597,15 @@ CONCATENATE lv_evttime+6(4) '-'\n\
             "SELECT MAX( bup_role_variant ) COUNT( * ) INTO ( lv_max, lv_count ) FROM demo. IF lv_count > 0. ENDIF.",
         );
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-        assert_eq!(
-            parsed
-                .file
-                .count_kind(parsed.file.root(), SyntaxKind::SelectStmt),
-            1
-        );
-        assert_eq!(
-            parsed
-                .file
-                .count_kind(parsed.file.root(), SyntaxKind::IfStmt),
-            1
-        );
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::SelectStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::IfStmt), 1);
+        let into_clause = parsed
+            .file
+            .find_first_kind(root, SyntaxKind::SelectIntoClause)
+            .and_then(|node| SelectIntoClause::cast(SyntaxNodeRef::new(&parsed.file, node)))
+            .expect("SELECT INTO clause");
+        assert_eq!(into_clause.target_children().count(), 2);
     }
 
     #[test]

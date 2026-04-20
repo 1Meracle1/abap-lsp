@@ -1,6 +1,9 @@
 use abap_parser::parse;
 
-use abap_symbols::{DiagnosticKind, ProjectInput, Resolution, analyze_project};
+use abap_symbols::{
+    DiagnosticKind, Namespace, ProjectInput, ReferenceKind, Resolution, SqlNameRefKind,
+    analyze_project,
+};
 
 #[test]
 fn resolves_symbols_from_included_units() {
@@ -201,6 +204,78 @@ ENDCLASS.
         "expected UnknownField for CALL METHOD on attribute across include units, got {:?}",
         root.diagnostics
     );
+}
+
+#[test]
+fn classic_open_sql_where_globals_from_top_include_are_not_collected_as_sql_columns() {
+    let root_src = r#"
+REPORT zmain.
+INCLUDE: ztop,
+         zf01.
+"#;
+    let top_src = r#"
+DATA p_lgnum TYPE string.
+DATA p_lgtyp TYPE string.
+DATA p_lgpla TYPE string.
+"#;
+    let f01_src = r#"
+FORM run.
+  DATA lw_lgpla TYPE string.
+  DATA lw_skzsi TYPE string.
+
+  SELECT SINGLE lgpla
+                skzsi
+    FROM lagp
+    INTO (lw_lgpla, lw_skzsi)
+    WHERE lgnum = p_lgnum
+      AND lgtyp = p_lgtyp
+      AND lgpla = p_lgpla.
+ENDFORM.
+"#;
+    let root_parse = parse(root_src);
+    let top_parse = parse(top_src);
+    let f01_parse = parse(f01_src);
+
+    let project = analyze_project(&[
+        ProjectInput {
+            uri: "zmain.abap",
+            source: root_src,
+            parse: &root_parse,
+        },
+        ProjectInput {
+            uri: "ztop.abap",
+            source: top_src,
+            parse: &top_parse,
+        },
+        ProjectInput {
+            uri: "zf01.abap",
+            source: f01_src,
+            parse: &f01_parse,
+        },
+    ]);
+
+    let unit = project.unit_by_uri("zf01.abap").expect("include unit");
+
+    for name in ["p_lgnum", "p_lgtyp", "p_lgpla"] {
+        assert!(
+            !unit.sql_name_refs.iter().any(|reference| {
+                reference.kind == SqlNameRefKind::Column && reference.name.as_ref() == name
+            }),
+            "include global {name} must not be recorded as Open SQL column: {:?}",
+            unit.sql_name_refs
+        );
+        assert!(
+            unit.references.iter().any(|reference| {
+                reference.namespace == Namespace::Value
+                    && reference.kind == ReferenceKind::Identifier
+                    && reference.name.as_ref() == name
+                    && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+            }),
+            "expected include global {name} to resolve as value reference, refs={:?} diagnostics={:?}",
+            unit.references,
+            unit.diagnostics
+        );
+    }
 }
 
 #[test]

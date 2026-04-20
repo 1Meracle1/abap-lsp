@@ -2730,6 +2730,60 @@ SELECT * FROM demo INTO lt.
 }
 
 #[test]
+fn resolves_each_target_in_select_single_into_tuple() {
+    let src = r#"
+TYPES: BEGIN OF lagp,
+         lgpla TYPE string,
+         skzsi TYPE string,
+         lgnum TYPE string,
+         lgtyp TYPE string,
+       END OF lagp.
+
+DATA lw_lgpla TYPE string.
+DATA lw_skzsi TYPE string.
+DATA p_lgnum TYPE string.
+DATA p_lgtyp TYPE string.
+DATA p_lgpla TYPE string.
+
+SELECT SINGLE lgpla
+              skzsi
+  FROM lagp
+  INTO (lw_lgpla, lw_skzsi)
+  WHERE lgnum = p_lgnum
+  AND   lgtyp = p_lgtyp
+  AND   lgpla = p_lgpla.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///select_single_into_tuple.abap", src, &parsed);
+    let into_pos = src.find("INTO").expect("INTO");
+
+    for target_name in ["lw_lgpla", "lw_skzsi"] {
+        assert!(
+            unit.references.iter().any(|reference| {
+                reference.kind == ReferenceKind::Identifier
+                    && reference.name.as_ref() == target_name
+                    && reference.range.start >= into_pos
+                    && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+            }),
+            "expected INTO tuple target {target_name} to resolve, refs={:?} diagnostics={:?}",
+            unit.references,
+            unit.diagnostics
+        );
+        assert!(
+            unit.sql_targets.iter().any(|target| {
+                target.target_name.as_deref() == Some(target_name)
+                    && target
+                        .target_range
+                        .as_ref()
+                        .is_some_and(|range| range.start >= into_pos)
+            }),
+            "expected SQL target entry for {target_name}, sql_targets={:?}",
+            unit.sql_targets
+        );
+    }
+}
+
+#[test]
 fn reports_invalid_into_corresponding_when_target_is_not_structure_like() {
     let src = r#"
 TYPES ty_scalar TYPE i.
