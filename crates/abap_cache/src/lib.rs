@@ -343,7 +343,6 @@ struct FormParameterHoverInfo {
     section: FormParameterSection,
     passing: FormParameterPassingKind,
     declared_type: Option<FieldTypeRefData>,
-    signature: String,
 }
 
 type ScopeIndex = Vec<HashMap<(Namespace, Arc<str>), Vec<SymbolId>>>;
@@ -2782,6 +2781,14 @@ fn render_form_parameter_signature(info: &FormParameterHoverInfo) -> String {
     rendered
 }
 
+fn render_form_parameter_hover_signature(info: &FormParameterHoverInfo) -> String {
+    format!(
+        "{}\n  {}",
+        form_parameter_section_keyword(info.section),
+        render_form_parameter_signature(info)
+    )
+}
+
 fn render_form_parameter_signature_data(
     unit: &UnitAnalysis,
     parameter: &FormParameterData,
@@ -2793,7 +2800,6 @@ fn render_form_parameter_signature_data(
         section: parameter.section,
         passing: parameter.passing,
         declared_type: symbol.declared_type.clone(),
-        signature: String::new(),
     })
 }
 
@@ -2873,7 +2879,7 @@ fn markdown_lines_for_form_parameter(info: &FormParameterHoverInfo) -> Vec<Strin
     vec![
         format!("`{}`", info.name),
         "Parameter".to_string(),
-        format_hover_abap(&info.signature),
+        format_hover_abap(&render_form_parameter_hover_signature(info)),
         format!("parameter of FORM `{}`", info.form_name),
     ]
 }
@@ -4262,14 +4268,12 @@ fn form_parameter_hover_info(
         .parameters
         .iter()
         .find(|parameter| parameter.symbol == symbol.id)?;
-    let signature = render_form_signature(unit, unit.symbol(form_symbol))?;
     Some(FormParameterHoverInfo {
         form_name: Arc::clone(&unit.symbol(form_symbol).name),
         name: Arc::clone(&symbol.name),
         section: parameter.section,
         passing: parameter.passing,
         declared_type: symbol.declared_type.clone(),
-        signature,
     })
 }
 
@@ -4279,14 +4283,12 @@ fn form_parameter_hover_info_from_metadata(
     parameter: &FormParameterData,
 ) -> Option<FormParameterHoverInfo> {
     let symbol = unit.symbol(parameter.symbol);
-    let signature = render_form_signature(unit, unit.symbol(form_symbol))?;
     Some(FormParameterHoverInfo {
         form_name: Arc::clone(&unit.symbol(form_symbol).name),
         name: Arc::clone(&symbol.name),
         section: parameter.section,
         passing: parameter.passing,
         declared_type: symbol.declared_type.clone(),
-        signature,
     })
 }
 
@@ -12224,6 +12226,38 @@ START-OF-SELECTION.
                 .markdown_lines
                 .iter()
                 .any(|line| line.contains("EXCEPTIONS")),
+            "{:?}",
+            hovered.markdown_lines
+        );
+    }
+
+    #[test]
+    fn hovered_resolved_symbol_at_formats_form_parameter_signature() {
+        let store = DocumentStore::default();
+        let src = "\
+FORM f USING VALUE(iv_input) TYPE i CHANGING cv_text TYPE string.
+  cv_text = |{ iv_input }|.
+ENDFORM.";
+        let snapshot = store.publish("file:///form_hover.abap", 1, src);
+        let offset = src.rfind("iv_input").expect("parameter use") + 1;
+
+        let hovered = snapshot
+            .hovered_resolved_symbol_at(offset)
+            .expect("form parameter hover");
+        assert_eq!(hovered.display_name.as_ref(), "iv_input");
+        assert!(
+            hovered
+                .markdown_lines
+                .iter()
+                .any(|line| line == "```abap\nUSING\n  VALUE(iv_input) TYPE i\n```"),
+            "{:?}",
+            hovered.markdown_lines
+        );
+        assert!(
+            hovered
+                .markdown_lines
+                .iter()
+                .all(|line| !line.contains("FORM f")),
             "{:?}",
             hovered.markdown_lines
         );

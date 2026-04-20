@@ -8883,11 +8883,12 @@ AT SELECTION-SCREEN ON VALUE-REQUEST FOR p_pub.\n\
         assert!(
             markup
                 .value
-                .contains("```abap\nFORM f\n  CHANGING\n    cv TYPE string\n```"),
+                .contains("```abap\nCHANGING\n  cv TYPE string\n```"),
             "{}",
             markup.value
         );
         assert!(markup.value.contains("parameter of FORM `f`"));
+        assert!(!markup.value.contains("FORM f"), "{}", markup.value);
     }
 
     #[test]
