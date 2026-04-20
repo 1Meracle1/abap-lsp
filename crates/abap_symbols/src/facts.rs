@@ -16,6 +16,7 @@ struct InferredUnitFacts {
     expression_facts: Vec<ExpressionFactData>,
     value_flow_edges: Vec<ValueFlowEdgeData>,
     symbol_type_facts: Vec<(SymbolId, TypeFactData)>,
+    assignment_type_facts: Vec<(usize, TypeFactData, TypeFactData)>,
 }
 
 #[derive(Debug, Clone)]
@@ -55,6 +56,12 @@ pub(crate) fn infer_semantic_facts(units: &mut [UnitAnalysis]) {
             if symbol.declared_type.is_none() {
                 symbol.structure = symbol.structure.or(type_fact.structure);
                 symbol.declared_type = type_fact.declared_type;
+            }
+        }
+        for (assignment_idx, lhs, rhs) in facts.assignment_type_facts {
+            if let Some(assignment) = unit.assignment_sites.get_mut(assignment_idx) {
+                assignment.lhs = lhs;
+                assignment.rhs = rhs;
             }
         }
     }
@@ -184,23 +191,23 @@ impl<'a> FactBuilder<'a> {
         }
 
         for assignment in &unit.assignment_sites {
+            let lhs_type = self.assignment_target_type_fact(unit_idx, assignment);
+            let rhs_type =
+                self.enrich_existing_type_fact(unit_idx, assignment.scope, &assignment.rhs);
+            out.assignment_type_facts.push((
+                out.assignment_type_facts.len(),
+                lhs_type.clone(),
+                rhs_type.clone(),
+            ));
             out.value_flow_edges.push(ValueFlowEdgeData {
                 scope: assignment.scope,
                 kind: ValueFlowKind::Assignment,
                 source_range: assignment.rhs_range.clone(),
-                source_type: self.enrich_existing_type_fact(
-                    unit_idx,
-                    assignment.scope,
-                    &assignment.rhs,
-                ),
+                source_type: rhs_type,
                 target: ValueFlowTargetData::Assignment {
                     range: assignment.lhs_range.clone(),
                 },
-                target_type: self.enrich_existing_type_fact(
-                    unit_idx,
-                    assignment.scope,
-                    &assignment.lhs,
-                ),
+                target_type: lhs_type,
             });
             if let Some((symbol_id, type_fact)) =
                 self.infer_inline_assignment_symbol_type(unit_idx, assignment)
@@ -363,6 +370,21 @@ impl<'a> FactBuilder<'a> {
         }
 
         out
+    }
+
+    fn assignment_target_type_fact(
+        &self,
+        unit_idx: usize,
+        assignment: &crate::AssignmentSiteData,
+    ) -> TypeFactData {
+        let fact = self.enrich_existing_type_fact(unit_idx, assignment.scope, &assignment.lhs);
+        if fact.is_known() {
+            return fact;
+        }
+        let Some(access) = assignment.lhs_target_access.as_ref() else {
+            return fact;
+        };
+        self.type_fact_for_access(unit_idx, access)
     }
 
     fn call_parameter_infos(
@@ -703,6 +725,33 @@ impl<'a> FactBuilder<'a> {
             }
             Namespace::Routine => None,
         }
+    }
+
+    fn type_fact_for_access(&self, unit_idx: usize, access: &FieldAccess) -> TypeFactData {
+        let Some(mut current_fact) = self.base_access_type_fact(
+            unit_idx,
+            access.scope,
+            access.base_namespace,
+            &access.base_name,
+        ) else {
+            return TypeFactData::default();
+        };
+        let mut current_unit_idx = unit_idx;
+
+        for segment in &access.field_path {
+            let (next_unit_idx, next_fact) = self.resolve_selector_segment(
+                unit_idx,
+                access.scope,
+                current_unit_idx,
+                current_fact,
+                access.base_namespace,
+                segment,
+            );
+            current_unit_idx = next_unit_idx;
+            current_fact = next_fact;
+        }
+
+        current_fact
     }
 
     fn symbol_type_fact_for_site(

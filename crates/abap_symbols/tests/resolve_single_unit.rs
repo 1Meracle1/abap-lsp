@@ -12264,3 +12264,69 @@ START-OF-SELECTION.
         .collect();
     assert_eq!(diags.len(), 2, "{diags:#?}");
 }
+
+#[test]
+fn allows_compatible_assignment_between_structure_selectors_with_shared_alias_type() {
+    let src = r#"
+TYPES charg_d TYPE c LENGTH 10.
+
+TYPES: BEGIN OF ty_itemunpack,
+         batch TYPE charg_d,
+       END OF ty_itemunpack.
+TYPES: BEGIN OF ty_vepo,
+         charg TYPE charg_d,
+       END OF ty_vepo.
+
+DATA lw_itemunpack TYPE ty_itemunpack.
+DATA ls_vepo TYPE ty_vepo.
+
+START-OF-SELECTION.
+  lw_itemunpack-batch = ls_vepo-charg.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///compatible_selector_assignment.abap", src, &parsed);
+
+    assert!(
+        unit.diagnostics
+            .iter()
+            .all(|diag| diag.kind != DiagnosticKind::IncompatibleAssignmentType),
+        "{:#?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn accepts_specific_table_alias_for_generic_standard_table_method_parameter() {
+    let src = r#"
+TYPES: BEGIN OF typ_to_display,
+         field TYPE i,
+       END OF typ_to_display.
+TYPES typ_t_to_display TYPE STANDARD TABLE OF typ_to_display WITH EMPTY KEY.
+
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS run IMPORTING it_outtab TYPE STANDARD TABLE.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+  ENDMETHOD.
+ENDCLASS.
+
+DATA lt_outtab TYPE typ_t_to_display.
+
+START-OF-SELECTION.
+  lcl_demo=>run( it_outtab = lt_outtab ).
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///generic_standard_table_param.abap", src, &parsed);
+
+    assert!(
+        unit.diagnostics.iter().all(|diag| {
+            diag.kind != DiagnosticKind::IncompatibleArgumentType
+                || !diag.message.contains("it_outtab")
+        }),
+        "{:#?}",
+        unit.diagnostics
+    );
+}
