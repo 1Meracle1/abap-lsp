@@ -665,6 +665,11 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                 }
             }
             SyntaxKind::BinaryExpr => self.collect_binary_expr(node, scope),
+            SyntaxKind::UnaryExpr => {
+                let tokens = self.subtree_token_infos(node);
+                self.ctx
+                    .collect_token_expression_refs_infos(&tokens, scope, true);
+            }
             SyntaxKind::SelectorExpr => self.collect_selector_expr(node, scope),
             SyntaxKind::TableExpr => {
                 let tokens = self.ctx.syntax_token_nodes(node);
@@ -853,6 +858,18 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                 }
             }
         }
+    }
+
+    fn subtree_token_infos(&self, node: NodeId) -> Vec<super::SyntaxTokenInfo> {
+        let children: Vec<_> = self.ctx.file().children(node).collect();
+        if children.is_empty() {
+            return self.ctx.syntax_token_nodes(node);
+        }
+        let mut tokens = Vec::new();
+        for child in children {
+            tokens.extend(self.subtree_token_infos(child));
+        }
+        tokens
     }
 
     fn collect_binary_expr(&mut self, node: NodeId, scope: ScopeId) {

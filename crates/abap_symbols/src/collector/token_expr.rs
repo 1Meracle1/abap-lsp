@@ -134,7 +134,7 @@ impl<'a> Collector<'a> {
                             && field_path.len() == 1
                             && !field_path[0].is_deref()
                             && let Some(kind) =
-                                self.selector_value_state_check_kind(tokens, next_idx)
+                                self.selector_value_state_check_kind(tokens, idx, next_idx)
                         {
                             self.add_value_state_check(ValueStateCheckData {
                                 scope,
@@ -349,16 +349,21 @@ impl<'a> Collector<'a> {
         if !next.text.eq_ignore_ascii_case("is") {
             return None;
         }
+        let is_negated = self.preceded_by_not(tokens, idx);
         let third = tokens.get(idx + 2)?;
         if third.text.eq_ignore_ascii_case("initial") {
-            return Some(ValueStateCheckKind::IsInitial);
+            return Some(
+                self.negate_value_state_check_kind(ValueStateCheckKind::IsInitial, is_negated),
+            );
         }
         if third.text.eq_ignore_ascii_case("not")
             && tokens
                 .get(idx + 3)
                 .is_some_and(|token| token.text.eq_ignore_ascii_case("initial"))
         {
-            return Some(ValueStateCheckKind::IsNotInitial);
+            return Some(
+                self.negate_value_state_check_kind(ValueStateCheckKind::IsNotInitial, is_negated),
+            );
         }
         None
     }
@@ -382,31 +387,67 @@ impl<'a> Collector<'a> {
         if rbrack_idx != lbrack_idx + 1 {
             return None;
         }
-        let kind = self.selector_value_state_check_kind(tokens, rbrack_idx + 1)?;
+        let kind = self.selector_value_state_check_kind(tokens, idx, rbrack_idx + 1)?;
         Some((token.range.start..tokens.get(rbrack_idx)?.range.end, kind))
     }
 
     fn selector_value_state_check_kind(
         &self,
         tokens: &[SyntaxTokenInfo],
+        value_idx: usize,
         idx: usize,
     ) -> Option<ValueStateCheckKind> {
         let next = tokens.get(idx)?;
         if !next.text.eq_ignore_ascii_case("is") {
-            return self.zero_comparison_value_state_check_kind(tokens, idx);
+            return self
+                .zero_comparison_value_state_check_kind(tokens, idx)
+                .map(|kind| {
+                    self.negate_value_state_check_kind(
+                        kind,
+                        self.preceded_by_not(tokens, value_idx),
+                    )
+                });
         }
+        let is_negated = self.preceded_by_not(tokens, value_idx);
         let third = tokens.get(idx + 1)?;
         if third.text.eq_ignore_ascii_case("initial") {
-            return Some(ValueStateCheckKind::IsInitial);
+            return Some(
+                self.negate_value_state_check_kind(ValueStateCheckKind::IsInitial, is_negated),
+            );
         }
         if third.text.eq_ignore_ascii_case("not")
             && tokens
                 .get(idx + 2)
                 .is_some_and(|token| token.text.eq_ignore_ascii_case("initial"))
         {
-            return Some(ValueStateCheckKind::IsNotInitial);
+            return Some(
+                self.negate_value_state_check_kind(ValueStateCheckKind::IsNotInitial, is_negated),
+            );
         }
         None
+    }
+
+    fn preceded_by_not(&self, tokens: &[SyntaxTokenInfo], idx: usize) -> bool {
+        idx.checked_sub(1)
+            .and_then(|prev| tokens.get(prev))
+            .is_some_and(|token| token.text.eq_ignore_ascii_case("not"))
+    }
+
+    fn negate_value_state_check_kind(
+        &self,
+        kind: ValueStateCheckKind,
+        negated: bool,
+    ) -> ValueStateCheckKind {
+        if !negated {
+            return kind;
+        }
+        match kind {
+            ValueStateCheckKind::IsInitial => ValueStateCheckKind::IsNotInitial,
+            ValueStateCheckKind::IsNotInitial => ValueStateCheckKind::IsInitial,
+            ValueStateCheckKind::EqualsZero => ValueStateCheckKind::NotEqualsZero,
+            ValueStateCheckKind::NotEqualsZero => ValueStateCheckKind::EqualsZero,
+            ValueStateCheckKind::ConditionProbe => ValueStateCheckKind::ConditionProbe,
+        }
     }
 
     fn zero_comparison_value_state_check_kind(
@@ -872,6 +913,7 @@ impl<'a> Collector<'a> {
             || token.text.eq_ignore_ascii_case("and")
             || token.text.eq_ignore_ascii_case("or")
             || token.text.eq_ignore_ascii_case("is")
+            || token.text.eq_ignore_ascii_case("initial")
             || token.text.eq_ignore_ascii_case("in")
             || token.text.eq_ignore_ascii_case("not")
             || token.text.eq_ignore_ascii_case("let")
@@ -896,6 +938,7 @@ impl<'a> Collector<'a> {
         let prev = idx.checked_sub(1).and_then(|prev| tokens.get(prev));
         allow_leading_value_ident && idx == 0
             || prev.is_some_and(|token| self.syntax_token_is_literal_like(token))
+            || prev.is_some_and(|token| token.text.eq_ignore_ascii_case("not"))
             || matches!(
                 prev.map(|token| token.text.as_ref()),
                 Some(

@@ -629,6 +629,42 @@ ENDFORM.\n";
     }
 
     #[test]
+    fn open_sql_into_target_is_safe_after_not_is_initial_guard() {
+        let src = "\
+FORM run.\n\
+  TYPES: BEGIN OF ty_row,\n\
+           carrid TYPE scarr-carrid,\n\
+         END OF ty_row.\n\
+  DATA ls_row TYPE ty_row.\n\
+  DATA lv_copy TYPE scarr-carrid.\n\
+  SELECT SINGLE carrid\n\
+    FROM scarr\n\
+    INTO ls_row.\n\
+  IF NOT ls_row IS INITIAL.\n\
+    lv_copy = ls_row-carrid.\n\
+  ENDIF.\n\
+ENDFORM.\n";
+        let parsed = parse(src);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let unit = analyze_unit(
+            "file:///open_sql_into_guarded_not_prefix_initial.abap",
+            src,
+            &parsed,
+        );
+        let project = analyze_project_from_units(vec![unit.clone()]);
+        let routine_analysis = build_project_routine_analysis(&project);
+
+        assert!(
+            routine_analysis
+                .diagnostics_for_unit(unit.unit_id)
+                .iter()
+                .all(|diagnostic| diagnostic.kind != DiagnosticKind::UseBeforeDefiniteAssignment),
+            "{:#?}",
+            routine_analysis.diagnostics_for_unit(unit.unit_id)
+        );
+    }
+
+    #[test]
     fn open_sql_into_target_stays_possibly_unassigned_after_sy_subrc_not_equals_zero_guard() {
         let src = "\
 FORM run.\n\
