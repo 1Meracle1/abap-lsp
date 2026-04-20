@@ -71,9 +71,10 @@ mod tests {
     use std::sync::Arc;
 
     use super::{
-        DiagnosticKind, NamedArgumentTarget, Namespace, ReferenceKind, Resolution,
+        DiagnosticKind, NamedArgumentTarget, Namespace, ProjectInput, ReferenceKind, Resolution,
         RoutineInstructionKind, RoutineInstructionSite, RoutineTerminatorKind, ScopeKind,
-        SymbolKind, analyze_project_from_units, analyze_unit, build_project_routine_analysis,
+        SymbolKind, analyze_project, analyze_project_from_units, analyze_unit,
+        build_project_routine_analysis,
     };
     use crate::ids::{ScopeId, UnitId};
     use crate::project::{ProjectAnalysis, analyze_unit_locally};
@@ -378,6 +379,78 @@ ENDFORM.\n";
                 .all(|diagnostic| {
                     diagnostic.kind != DiagnosticKind::UseBeforeDefiniteAssignment
                         || !header_ranges.iter().any(|range| diagnostic.range == *range)
+                }),
+            "{:#?}",
+            routine_analysis.diagnostics_for_unit(unit.unit_id)
+        );
+    }
+
+    #[test]
+    fn delete_where_row_field_from_project_table_type_does_not_trigger_definite_assignment_warning()
+    {
+        let main_src = r#"
+FORM f_bapi_outb_deliv.
+  DATA t_to_display TYPE /sttp/t_to_display.
+  DATA ls_ltak TYPE /sttp/s_ltak.
+
+  ls_ltak-tanum = 1.
+  DELETE t_to_display WHERE tanum = ls_ltak-tanum.
+ENDFORM.
+"#;
+        let table_src = r#"
+TYPES /sttp/t_to_display TYPE STANDARD TABLE OF /sttp/s_to_display WITH EMPTY KEY.
+"#;
+        let row_src = r#"
+TYPES: BEGIN OF /sttp/s_to_display,
+         tanum TYPE i,
+       END OF /sttp/s_to_display.
+"#;
+        let ltak_src = r#"
+TYPES: BEGIN OF /sttp/s_ltak,
+         tanum TYPE i,
+       END OF /sttp/s_ltak.
+"#;
+
+        let main_parse = parse(main_src);
+        let table_parse = parse(table_src);
+        let row_parse = parse(row_src);
+        let ltak_parse = parse(ltak_src);
+        let project = analyze_project(&[
+            ProjectInput {
+                uri: "file:///main.abap",
+                source: main_src,
+                parse: &main_parse,
+            },
+            ProjectInput {
+                uri: "file:///ddic_table.abap",
+                source: table_src,
+                parse: &table_parse,
+            },
+            ProjectInput {
+                uri: "file:///ddic_row.abap",
+                source: row_src,
+                parse: &row_parse,
+            },
+            ProjectInput {
+                uri: "file:///ddic_ltak.abap",
+                source: ltak_src,
+                parse: &ltak_parse,
+            },
+        ]);
+        let unit = project.unit_by_uri("file:///main.abap").expect("main unit");
+        let routine_analysis = build_project_routine_analysis(&project);
+
+        let first_tanum_start = main_src
+            .find("tanum = ls_ltak-tanum")
+            .expect("DELETE WHERE field");
+        let first_tanum_range = first_tanum_start..first_tanum_start + "tanum".len();
+        assert!(
+            routine_analysis
+                .diagnostics_for_unit(unit.unit_id)
+                .iter()
+                .all(|diagnostic| {
+                    diagnostic.kind != DiagnosticKind::UseBeforeDefiniteAssignment
+                        || diagnostic.range != first_tanum_range
                 }),
             "{:#?}",
             routine_analysis.diagnostics_for_unit(unit.unit_id)

@@ -1516,8 +1516,9 @@ fn build_routine_dataflow(
     let condition_probe_reads =
         resolve_condition_probe_reads(unit, &reference_uses, &value_ids_by_symbol);
     let mut safe_loop_field_refs =
-        resolve_safe_loop_where_field_refs(unit, &reference_uses, &values);
+        resolve_safe_loop_where_field_refs(project, unit, &reference_uses, &values);
     safe_loop_field_refs.extend(resolve_safe_loop_at_field_refs(
+        project,
         unit,
         &reference_uses,
         &values,
@@ -3268,11 +3269,13 @@ fn resolve_condition_probe_reads(
 }
 
 fn resolve_safe_loop_where_field_refs(
+    project: &ProjectAnalysis,
     unit: &UnitAnalysis,
     reference_uses: &[ReferenceUse],
     values: &[RoutineDataflowValue],
 ) -> std::collections::HashSet<crate::ReferenceId> {
     resolve_safe_loop_field_refs(
+        project,
         unit,
         reference_uses,
         values,
@@ -3287,11 +3290,13 @@ fn resolve_safe_loop_where_field_refs(
 }
 
 fn resolve_safe_loop_at_field_refs(
+    project: &ProjectAnalysis,
     unit: &UnitAnalysis,
     reference_uses: &[ReferenceUse],
     values: &[RoutineDataflowValue],
 ) -> std::collections::HashSet<crate::ReferenceId> {
     resolve_safe_loop_field_refs(
+        project,
         unit,
         reference_uses,
         values,
@@ -3306,6 +3311,7 @@ fn resolve_safe_loop_at_field_refs(
 }
 
 fn resolve_safe_loop_field_refs<'a>(
+    project: &ProjectAnalysis,
     unit: &UnitAnalysis,
     reference_uses: &[ReferenceUse],
     values: &[RoutineDataflowValue],
@@ -3324,12 +3330,16 @@ fn resolve_safe_loop_field_refs<'a>(
             let Some(access) = access else {
                 continue;
             };
-            let Some(structure_id) =
-                resolve_value_access_structure(unit, reference_uses, values, access)
-            else {
+            let Some((structure_unit, structure_id)) = resolve_value_access_structure_project(
+                project,
+                unit,
+                reference_uses,
+                values,
+                access,
+            ) else {
                 continue;
             };
-            let Some(structure) = unit.structures.get(structure_id.as_usize()) else {
+            let Some(structure) = structure_unit.structures.get(structure_id.as_usize()) else {
                 continue;
             };
             field_names.extend(structure.fields.iter().map(|field| field.name.as_ref()));
@@ -3991,42 +4001,217 @@ fn value_symbol_is_internal_table(
         })
 }
 
-fn resolve_value_access_structure(
-    unit: &UnitAnalysis,
+fn resolve_value_access_structure_project<'a>(
+    project: &'a ProjectAnalysis,
+    unit: &'a UnitAnalysis,
     reference_uses: &[ReferenceUse],
     values: &[RoutineDataflowValue],
     access: &crate::FieldAccess,
-) -> Option<StructureId> {
+) -> Option<(&'a UnitAnalysis, StructureId)> {
     if access.base_namespace != Namespace::Value {
         return None;
     }
-    let base_value = exact_reference_use_in_range(reference_uses, &access.base_range)
-        .map(|use_site| use_site.value)
-        .or_else(|| resolve_declared_value_id_for_access(unit, access, values))?;
-    let symbol_id = values.get(base_value.as_usize())?.symbol.symbol;
-    let mut structure = unit.symbols.get(symbol_id.as_usize())?.structure;
-    if access.field_path.is_empty() {
-        return structure;
-    }
+    let base_handle = resolved_symbol_handle_for_access_base(unit, reference_uses, values, access)?;
+    let (mut current_unit, mut current_structure) = resolve_symbol_structure_project(
+        project,
+        project.units.get(base_handle.unit.as_usize())?,
+        unit,
+        access.scope,
+        base_handle.symbol,
+    )?;
+
     for segment in &access.field_path {
         if segment.is_deref() {
             return None;
         }
-        let structure_id = structure?;
-        let field = unit
+        let field = current_unit
             .structures
-            .get(structure_id.as_usize())?
+            .get(current_structure.as_usize())?
             .fields
             .iter()
             .find(|field| field.name == segment.name)?;
-        structure = field.structure.or_else(|| {
-            field
-                .type_ref
-                .as_ref()
-                .and_then(|type_ref| resolve_type_ref_structure(unit, access.scope, type_ref))
-        });
+        let Some((next_unit, next_structure)) =
+            resolve_structure_from_field_project(project, current_unit, unit, access.scope, field)
+        else {
+            return None;
+        };
+        current_unit = next_unit;
+        current_structure = next_structure;
     }
-    structure
+
+    Some((current_unit, current_structure))
+}
+
+fn resolved_symbol_handle_for_access_base(
+    unit: &UnitAnalysis,
+    reference_uses: &[ReferenceUse],
+    values: &[RoutineDataflowValue],
+    access: &crate::FieldAccess,
+) -> Option<SymbolHandle> {
+    if access.base_namespace != Namespace::Value {
+        return None;
+    }
+    let reference = exact_reference_use_in_range(reference_uses, &access.base_range)
+        .and_then(|use_site| unit.references.get(use_site.reference.as_usize()))
+        .or_else(|| {
+            unit.references
+                .iter()
+                .find(|reference| reference.range == access.base_range)
+        });
+    if let Some(reference) = reference
+        && let Some(Resolution::Symbol(handle)) = reference.resolution
+    {
+        return Some(handle);
+    }
+    resolve_declared_value_id_for_access(unit, access, values)
+        .and_then(|value_id| values.get(value_id.as_usize()))
+        .map(|value| value.symbol)
+}
+
+fn resolve_symbol_structure_project<'a>(
+    project: &'a ProjectAnalysis,
+    current_unit: &'a UnitAnalysis,
+    origin_unit: &'a UnitAnalysis,
+    scope: ScopeId,
+    symbol_id: crate::ids::SymbolId,
+) -> Option<(&'a UnitAnalysis, StructureId)> {
+    let mut current_unit = current_unit;
+    let mut current_symbol_id = symbol_id;
+    let mut seen = std::collections::HashSet::new();
+    for _ in 0..8 {
+        let symbol = current_unit.symbols.get(current_symbol_id.as_usize())?;
+        if let Some(structure_id) = symbol.structure {
+            return Some((current_unit, structure_id));
+        }
+        let type_ref = symbol.declared_type.as_ref()?;
+        let (next_unit, next_symbol_id) =
+            resolve_type_ref_symbol_project(project, current_unit, origin_unit, scope, type_ref)?;
+        if !seen.insert((next_unit.unit_id.0, next_symbol_id.0)) {
+            return None;
+        }
+        current_unit = next_unit;
+        current_symbol_id = next_symbol_id;
+    }
+    None
+}
+
+fn resolve_structure_from_field_project<'a>(
+    project: &'a ProjectAnalysis,
+    current_unit: &'a UnitAnalysis,
+    origin_unit: &'a UnitAnalysis,
+    scope: ScopeId,
+    field: &crate::StructureFieldData,
+) -> Option<(&'a UnitAnalysis, StructureId)> {
+    if let Some(structure_id) = field.structure {
+        return Some((current_unit, structure_id));
+    }
+    let type_ref = field.type_ref.as_ref()?;
+    let (next_unit, next_symbol_id) =
+        resolve_type_ref_symbol_project(project, current_unit, origin_unit, scope, type_ref)?;
+    let (next_unit, next_structure) =
+        resolve_symbol_structure_project(project, next_unit, origin_unit, scope, next_symbol_id)?;
+    Some((next_unit, next_structure))
+}
+
+fn resolve_type_ref_symbol_project<'a>(
+    project: &'a ProjectAnalysis,
+    current_unit: &'a UnitAnalysis,
+    origin_unit: &'a UnitAnalysis,
+    scope: ScopeId,
+    type_ref: &crate::FieldTypeRefData,
+) -> Option<(&'a UnitAnalysis, crate::ids::SymbolId)> {
+    if !type_ref.field_path.is_empty() {
+        return None;
+    }
+    let scope = if current_unit.scopes.get(scope.as_usize()).is_some() {
+        scope
+    } else {
+        current_unit.root_scope
+    };
+    let namespaces = if type_ref.namespace == Namespace::Value {
+        [Namespace::Value, Namespace::Type]
+    } else {
+        [type_ref.namespace, type_ref.namespace]
+    };
+    for namespace in namespaces {
+        if let Some(symbol_id) =
+            resolve_symbol_id_in_scope_chain(current_unit, scope, namespace, &type_ref.base_name)
+        {
+            return Some((current_unit, symbol_id));
+        }
+        if current_unit.unit_id != origin_unit.unit_id
+            && let Some(symbol_id) =
+                resolve_symbol_id_in_scope_chain(origin_unit, scope, namespace, &type_ref.base_name)
+        {
+            return Some((origin_unit, symbol_id));
+        }
+        if let Some((resolved_unit, symbol_id)) =
+            resolve_project_root_symbol(project, namespace, &type_ref.base_name)
+        {
+            return Some((resolved_unit, symbol_id));
+        }
+    }
+    None
+}
+
+fn resolve_symbol_id_in_scope_chain(
+    unit: &UnitAnalysis,
+    scope: ScopeId,
+    namespace: Namespace,
+    name: &str,
+) -> Option<crate::ids::SymbolId> {
+    let mut current = Some(scope);
+    while let Some(scope_id) = current {
+        if let Some(symbol_id) = unit.symbols.iter().find_map(|symbol| {
+            (symbol.scope == scope_id
+                && symbol.kind.occupies(namespace)
+                && symbol.name.as_ref().eq_ignore_ascii_case(name))
+            .then_some(symbol.id)
+        }) {
+            return Some(symbol_id);
+        }
+        current = unit
+            .scopes
+            .get(scope_id.as_usize())
+            .and_then(|scope_data| scope_data.parent);
+    }
+    None
+}
+
+fn resolve_project_root_symbol<'a>(
+    project: &'a ProjectAnalysis,
+    namespace: Namespace,
+    name: &str,
+) -> Option<(&'a UnitAnalysis, crate::ids::SymbolId)> {
+    if let Some(unit_id) =
+        project
+            .provided_name_to_unit
+            .iter()
+            .find_map(|(provided_name, unit_id)| {
+                provided_name
+                    .as_ref()
+                    .eq_ignore_ascii_case(name)
+                    .then_some(*unit_id)
+            })
+    {
+        let unit = project.units.get(unit_id.as_usize())?;
+        if let Some(symbol_id) = unit.symbols.iter().find_map(|symbol| {
+            (symbol.scope == unit.root_scope
+                && symbol.kind.occupies(namespace)
+                && symbol.name.as_ref().eq_ignore_ascii_case(name))
+            .then_some(symbol.id)
+        }) {
+            return Some((unit, symbol_id));
+        }
+    }
+    project.units.iter().find_map(|unit| {
+        unit.symbols.iter().find_map(|symbol| {
+            (symbol.scope == unit.root_scope
+                && symbol.kind.occupies(namespace)
+                && symbol.name.as_ref().eq_ignore_ascii_case(name))
+            .then_some((unit, symbol.id))
+        })
+    })
 }
 
 fn resolve_declared_value_id_for_access(
@@ -4060,55 +4245,6 @@ fn symbol_type_clause_suggests_internal_table(symbol: &crate::SymbolData) -> boo
         || upper.contains("ANY TABLE")
         || upper.contains("INDEX TABLE")
         || upper.contains("TABLE OF")
-}
-
-fn resolve_type_ref_structure(
-    unit: &UnitAnalysis,
-    scope: ScopeId,
-    type_ref: &crate::FieldTypeRefData,
-) -> Option<StructureId> {
-    let symbol_id =
-        resolve_symbol_in_scope_chain(unit, scope, type_ref.namespace, &type_ref.base_name)?;
-    let mut structure = unit.symbols.get(symbol_id.as_usize())?.structure;
-    for segment in &type_ref.field_path {
-        let structure_id = structure?;
-        let field = unit
-            .structures
-            .get(structure_id.as_usize())?
-            .fields
-            .iter()
-            .find(|field| field.name.as_ref() == segment.as_ref())?;
-        structure = field.structure.or_else(|| {
-            field
-                .type_ref
-                .as_ref()
-                .and_then(|nested| resolve_type_ref_structure(unit, scope, nested))
-        });
-    }
-    structure
-}
-
-fn resolve_symbol_in_scope_chain(
-    unit: &UnitAnalysis,
-    scope: ScopeId,
-    namespace: Namespace,
-    name: &str,
-) -> Option<crate::ids::SymbolId> {
-    let mut current = Some(scope);
-    while let Some(scope_id) = current {
-        if let Some(symbol) = unit.symbols.iter().find(|symbol| {
-            symbol.scope == scope_id
-                && symbol.name.as_ref() == name
-                && symbol.kind.namespaces().contains(&namespace)
-        }) {
-            return Some(symbol.id);
-        }
-        current = unit
-            .scopes
-            .get(scope_id.as_usize())
-            .and_then(|scope| scope.parent);
-    }
-    None
 }
 
 fn direct_write_value_id_for_assignment(

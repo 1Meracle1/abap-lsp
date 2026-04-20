@@ -737,7 +737,9 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
                     self.collector
                         .field_type_ref_from_node(type_ref.syntax().id(), clause_ns)
                 }),
-                type_clause_display: param.type_display_text(self.collector.source).map(Arc::from),
+                type_clause_display: param
+                    .type_display_text(self.collector.source)
+                    .map(Arc::from),
                 is_optional: param.is_optional(),
             });
         }
