@@ -185,6 +185,12 @@ impl<'ctx, 'a> FormsLowering<'ctx, 'a> {
                         self.collector
                             .field_type_ref_from_node(type_ref.syntax().id(), Namespace::Value)
                     }),
+                    None if section_kind == FormParameterSection::Tables => {
+                        param.type_ref().and_then(|type_ref| {
+                            self.collector
+                                .field_type_ref_from_node(type_ref.syntax().id(), Namespace::Type)
+                        })
+                    }
                     None => None,
                 };
                 let type_clause_display = param
@@ -457,6 +463,14 @@ impl<'ctx, 'a> FormsLowering<'ctx, 'a> {
                                     Namespace::Value,
                                 )
                             }),
+                            None if section_kind == FunctionModuleParameterSection::Tables => {
+                                param.type_ref().and_then(|type_ref| {
+                                    self.collector.field_type_ref_from_node(
+                                        type_ref.syntax().id(),
+                                        Namespace::Type,
+                                    )
+                                })
+                            }
                             None => None,
                         };
                         let type_clause_display = Self::function_table_parameter_type_display(

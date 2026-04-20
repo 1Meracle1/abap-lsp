@@ -2972,7 +2972,11 @@ FORM f.
 ENDFORM.
 "#;
     let parsed = parse(src);
-    let unit = analyze_unit("file:///delete_adjacent_duplicates_unresolved.abap", src, &parsed);
+    let unit = analyze_unit(
+        "file:///delete_adjacent_duplicates_unresolved.abap",
+        src,
+        &parsed,
+    );
 
     assert!(
         !unit.sql_name_refs.iter().any(|sql_ref| {
@@ -9584,6 +9588,61 @@ START-OF-SELECTION.
         !main_unit.diagnostics.iter().any(|diag| {
             diag.kind == DiagnosticKind::IncompatibleArgumentType
                 && diag.message.contains("it_rows")
+        }),
+        "{:?}",
+        main_unit.diagnostics
+    );
+}
+
+#[test]
+fn treats_structure_typed_function_module_tables_parameters_as_standard_tables() {
+    let row_src = r#"
+TYPES: BEGIN OF tline,
+         tdformat TYPE c LENGTH 2,
+         tdline   TYPE c LENGTH 132,
+       END OF tline.
+"#;
+    let dep_src = r#"
+FUNCTION save_text
+  TABLES
+    lines STRUCTURE TLINE.
+ENDFUNCTION.
+"#;
+    let main_src = r#"
+START-OF-SELECTION.
+  DATA lt_tline TYPE TABLE OF tline WITH EMPTY KEY.
+  CALL FUNCTION 'SAVE_TEXT'
+    TABLES
+      lines = lt_tline.
+"#;
+
+    let row_parsed = parse(row_src);
+    let dep_parsed = parse(dep_src);
+    let main_parsed = parse(main_src);
+    let project = analyze_project(&[
+        ProjectInput {
+            uri: "file:///ddic_tline.abap",
+            source: row_src,
+            parse: &row_parsed,
+        },
+        ProjectInput {
+            uri: "file:///fm_dep_save_text.abap",
+            source: dep_src,
+            parse: &dep_parsed,
+        },
+        ProjectInput {
+            uri: "file:///fm_main_save_text.abap",
+            source: main_src,
+            parse: &main_parsed,
+        },
+    ]);
+
+    let main_unit = project
+        .unit_by_uri("file:///fm_main_save_text.abap")
+        .expect("main unit");
+    assert!(
+        !main_unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::IncompatibleArgumentType && diag.message.contains("lines")
         }),
         "{:?}",
         main_unit.diagnostics

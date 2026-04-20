@@ -3650,7 +3650,10 @@ fn build_form_param_node(
         j += 1;
     }
 
-    if j < end && (is_keyword(source, &tokens[j], "type") || is_keyword(source, &tokens[j], "like"))
+    if j < end
+        && (is_keyword(source, &tokens[j], "type")
+            || is_keyword(source, &tokens[j], "like")
+            || is_keyword(source, &tokens[j], "structure"))
     {
         children.push(token_leaf(b, &tokens[j]));
         j += 1;
@@ -3808,7 +3811,10 @@ fn build_function_param_node(
         i += 1;
     }
 
-    if i < end && (is_keyword(source, &tokens[i], "type") || is_keyword(source, &tokens[i], "like"))
+    if i < end
+        && (is_keyword(source, &tokens[i], "type")
+            || is_keyword(source, &tokens[i], "like")
+            || is_keyword(source, &tokens[i], "structure"))
     {
         children.push(token_leaf(b, &tokens[i]));
         i += 1;

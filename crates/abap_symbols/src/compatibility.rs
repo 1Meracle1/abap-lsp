@@ -63,6 +63,9 @@ pub(crate) fn type_facts_compatible(
 ) -> Option<bool> {
     let (expected_unit, expected) = normalize_type_fact(project, expected_unit, expected, 0)?;
     let (actual_unit, actual) = normalize_type_fact(project, actual_unit, actual, 0)?;
+    if normalized_internal_table_displays_match(&expected, &actual) {
+        return Some(true);
+    }
     if normalized_type_facts_match_by_name(&expected, &actual) {
         return Some(true);
     }
@@ -210,6 +213,29 @@ fn named_type_refs_match(
     )
 }
 
+fn normalized_internal_table_displays_match(
+    expected: &TypeFactData,
+    actual: &TypeFactData,
+) -> bool {
+    let Some(expected_display) = expected.type_clause_display.as_deref() else {
+        return false;
+    };
+    let Some(actual_display) = actual.type_clause_display.as_deref() else {
+        return false;
+    };
+    let Some(expected_table) = parse_internal_table_display(expected_display) else {
+        return false;
+    };
+    let Some(actual_table) = parse_internal_table_display(actual_display) else {
+        return false;
+    };
+
+    expected_table.kind == actual_table.kind
+        && expected_table
+            .line_display
+            .eq_ignore_ascii_case(actual_table.line_display.as_ref())
+}
+
 fn fact_is_table_shape(fact: &TypeFactData) -> bool {
     fact.table_line.is_some()
         || fact
@@ -218,10 +244,62 @@ fn fact_is_table_shape(fact: &TypeFactData) -> bool {
             .is_some_and(is_internal_table_type_display)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InternalTableDisplayKind {
+    Standard,
+    Sorted,
+    Hashed,
+    Any,
+    Index,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InternalTableDisplay<'a> {
+    kind: InternalTableDisplayKind,
+    line_display: &'a str,
+}
+
+fn parse_internal_table_display(display: &str) -> Option<InternalTableDisplay<'_>> {
+    let trimmed = display.trim();
+    let upper = trimmed.to_ascii_uppercase();
+
+    for (prefix, kind) in [
+        ("STANDARD TABLE OF ", InternalTableDisplayKind::Standard),
+        ("TABLE OF ", InternalTableDisplayKind::Standard),
+        ("SORTED TABLE OF ", InternalTableDisplayKind::Sorted),
+        ("HASHED TABLE OF ", InternalTableDisplayKind::Hashed),
+        ("ANY TABLE OF ", InternalTableDisplayKind::Any),
+        ("INDEX TABLE OF ", InternalTableDisplayKind::Index),
+    ] {
+        if upper.starts_with(prefix) {
+            let line_display = trimmed[prefix.len()..].trim();
+            return Some(InternalTableDisplay {
+                kind,
+                line_display: trim_internal_table_line_display(line_display),
+            });
+        }
+    }
+
+    None
+}
+
+fn trim_internal_table_line_display(display: &str) -> &str {
+    let upper = display.to_ascii_uppercase();
+    for marker in [" WITH ", " INITIAL "] {
+        if let Some(idx) = upper.find(marker) {
+            return display[..idx].trim_end();
+        }
+    }
+    display.trim()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::named_type_refs_match;
-    use crate::def_map::FieldTypeRefData;
+    use super::{
+        InternalTableDisplayKind, named_type_refs_match, normalized_internal_table_displays_match,
+        parse_internal_table_display,
+    };
+    use crate::def_map::{FieldTypeRefData, TypeFactData};
     use crate::scope::Namespace;
     use std::sync::Arc;
 
@@ -241,6 +319,38 @@ mod tests {
         };
 
         assert!(named_type_refs_match(Some(&like_ref), Some(&type_ref)));
+    }
+
+    #[test]
+    fn parses_bare_table_of_as_standard_table_display() {
+        let parsed = parse_internal_table_display("TABLE OF tline").expect("table display");
+        assert_eq!(parsed.kind, InternalTableDisplayKind::Standard);
+        assert_eq!(parsed.line_display, "tline");
+    }
+
+    #[test]
+    fn strips_table_key_additions_from_internal_table_display() {
+        let parsed =
+            parse_internal_table_display("TABLE OF tline WITH EMPTY KEY").expect("table display");
+        assert_eq!(parsed.line_display, "tline");
+    }
+
+    #[test]
+    fn matches_standard_and_bare_table_displays_case_insensitively() {
+        let expected = TypeFactData {
+            structure: None,
+            declared_type: None,
+            type_clause_display: Some(Arc::from("STANDARD TABLE OF TLINE")),
+            table_line: None,
+        };
+        let actual = TypeFactData {
+            structure: None,
+            declared_type: None,
+            type_clause_display: Some(Arc::from("TABLE OF tline")),
+            table_line: None,
+        };
+
+        assert!(normalized_internal_table_displays_match(&expected, &actual));
     }
 }
 
