@@ -2831,6 +2831,44 @@ ENDFORM.
 }
 
 #[test]
+fn sort_by_multiple_components_collects_all_field_accesses() {
+    let src = r#"
+TYPES: BEGIN OF ty_row,
+         matnr TYPE string,
+         lgnum TYPE string,
+       END OF ty_row.
+FORM f.
+  DATA lt_lqua TYPE STANDARD TABLE OF ty_row.
+  SORT lt_lqua BY matnr lgnum.
+ENDFORM.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///sort_by_multiple_fields.abap", src, &parsed);
+    for field_name in ["matnr", "lgnum"] {
+        assert!(
+            unit.field_accesses.iter().any(|access| {
+                access.base_namespace == Namespace::Value
+                    && access.base_name.as_ref() == "lt_lqua"
+                    && access.field_path.len() == 1
+                    && access.field_path[0].name.as_ref() == field_name
+            }),
+            "expected SORT BY to record field access for `{field_name}`: {:?}",
+            unit.field_accesses
+        );
+        assert!(
+            !unit.diagnostics.iter().any(|diag| {
+                matches!(
+                    diag.kind,
+                    DiagnosticKind::UnknownField | DiagnosticKind::UnresolvedReference
+                ) && diag.message.contains(field_name)
+            }),
+            "unexpected diagnostics for `{field_name}`: {:?}",
+            unit.diagnostics
+        );
+    }
+}
+
+#[test]
 fn resolves_concatenate_operands_and_selector_sources() {
     let src = r#"
 CLASS zcl_program DEFINITION.

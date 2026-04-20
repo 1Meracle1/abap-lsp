@@ -7510,6 +7510,113 @@ fn sort_modifier_before_period_starts(source: &str, tokens: &[Token], idx: usize
                 .is_some_and(|next| is_keyword(source, next, "text")))
 }
 
+fn sort_key_modifier_starts(source: &str, tokens: &[Token], idx: usize) -> bool {
+    let Some(token) = tokens.get(idx) else {
+        return false;
+    };
+    token.kind == TokenKind::Ident
+        && (is_keyword(source, token, "ascending")
+            || is_keyword(source, token, "descending")
+            || (is_keyword(source, token, "as")
+                && tokens
+                    .get(idx + 1)
+                    .is_some_and(|next| is_keyword(source, next, "text"))))
+}
+
+fn token_starts_sort_by_operand(source: &str, tokens: &[Token], idx: usize) -> bool {
+    let Some(token) = tokens.get(idx) else {
+        return false;
+    };
+    if !matches!(
+        token.kind,
+        TokenKind::Ident
+            | TokenKind::Number
+            | TokenKind::String
+            | TokenKind::StringTemplate
+            | TokenKind::LParen
+            | TokenKind::LBracket
+            | TokenKind::LBrace
+            | TokenKind::At
+            | TokenKind::Hash
+    ) {
+        return false;
+    }
+    if token.kind == TokenKind::Ident
+        && (is_keyword(source, token, "ascending")
+            || is_keyword(source, token, "descending")
+            || is_keyword(source, token, "as"))
+    {
+        return false;
+    }
+    let Some(prev) = idx.checked_sub(1).and_then(|prev_idx| tokens.get(prev_idx)) else {
+        return true;
+    };
+    have_space_between(prev, token)
+        && !matches!(
+            prev.kind,
+            TokenKind::Arrow
+                | TokenKind::FatArrow
+                | TokenKind::Tilde
+                | TokenKind::Eq
+                | TokenKind::Minus
+                | TokenKind::Plus
+                | TokenKind::Star
+                | TokenKind::Slash
+                | TokenKind::Lt
+                | TokenKind::Gt
+                | TokenKind::Le
+                | TokenKind::Ge
+                | TokenKind::Ne
+                | TokenKind::QuestionEq
+                | TokenKind::LParen
+                | TokenKind::LBracket
+                | TokenKind::LBrace
+                | TokenKind::At
+                | TokenKind::Hash
+                | TokenKind::Ampersand
+                | TokenKind::Pipe
+        )
+}
+
+fn consume_sort_by_operand(
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    end_exclusive: usize,
+) -> usize {
+    let mut idx = start;
+    let mut paren = 0i32;
+    let mut bracket = 0i32;
+    let mut brace = 0i32;
+    let mut consumed_any = false;
+
+    while idx < end_exclusive {
+        let token = &tokens[idx];
+        if paren == 0 && bracket == 0 && brace == 0 {
+            if sort_key_modifier_starts(source, tokens, idx) {
+                break;
+            }
+            if consumed_any && token_starts_sort_by_operand(source, tokens, idx) {
+                break;
+            }
+        }
+
+        consumed_any = true;
+        match token.kind {
+            TokenKind::LParen => paren += 1,
+            TokenKind::RParen => paren -= 1,
+            TokenKind::LBracket => bracket += 1,
+            TokenKind::RBracket => bracket -= 1,
+            TokenKind::LBrace => brace += 1,
+            TokenKind::RBrace => brace -= 1,
+            _ => {}
+        }
+        idx += 1;
+    }
+
+    idx
+}
+
 pub fn try_parse_sort_stmt(
     b: &mut SyntaxTreeBuilder,
     source: &str,
@@ -7535,7 +7642,6 @@ pub fn try_parse_sort_stmt(
             let by_idx = find_top_level_keyword_index(source, tokens, idx + 1, period_i, "by");
             let mut children = Vec::with_capacity(period_i - idx + 1);
             children.push(token_leaf(b, sort_tok));
-            let no_split = |_: &[Token], _: usize| false;
 
             if let Some(by_idx) = by_idx {
                 let mut cur = idx + 1;
@@ -7572,19 +7678,53 @@ pub fn try_parse_sort_stmt(
                 }
                 push_token_children(b, &mut children, tokens, cur, by_idx);
                 children.push(token_leaf(b, &tokens[by_idx]));
-                let mut tail = scan_and_push_expr_clause(
-                    b,
-                    &mut children,
-                    source,
-                    tokens,
-                    by_idx + 1,
-                    period_i,
-                    Some(&tokens[by_idx]),
-                    &no_split,
-                );
+                let mut tail = by_idx + 1;
                 while tail < period_i {
-                    children.push(token_leaf(b, &tokens[tail]));
-                    tail += 1;
+                    if matches!(tokens[tail].kind, TokenKind::Comment) {
+                        children.push(token_leaf(b, &tokens[tail]));
+                        tail += 1;
+                        continue;
+                    }
+
+                    let operand_end = consume_sort_by_operand(source, tokens, tail, period_i);
+                    if operand_end == tail {
+                        children.push(token_leaf(b, &tokens[tail]));
+                        tail += 1;
+                    } else {
+                        push_expr_child(
+                            b,
+                            &mut children,
+                            source,
+                            tokens,
+                            tail,
+                            operand_end,
+                            tail.checked_sub(1).and_then(|idx| tokens.get(idx)),
+                        );
+                        tail = operand_end;
+                    }
+
+                    while tail < period_i {
+                        let token = &tokens[tail];
+                        if matches!(token.kind, TokenKind::Comment) {
+                            children.push(token_leaf(b, token));
+                            tail += 1;
+                        } else if is_keyword(source, token, "ascending")
+                            || is_keyword(source, token, "descending")
+                        {
+                            children.push(token_leaf(b, token));
+                            tail += 1;
+                        } else if is_keyword(source, token, "as")
+                            && tokens
+                                .get(tail + 1)
+                                .is_some_and(|next| is_keyword(source, next, "text"))
+                        {
+                            children.push(token_leaf(b, token));
+                            children.push(token_leaf(b, &tokens[tail + 1]));
+                            tail += 2;
+                        } else {
+                            break;
+                        }
+                    }
                 }
             } else {
                 let mut cur = idx + 1;
@@ -9987,6 +10127,19 @@ CONCATENATE lv_evttime+6(4) '-'\n\
             .expect("sort stmt");
         assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::TemplateExpr), 2);
         assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::ExprIdent), 2);
+    }
+
+    #[test]
+    fn parses_sort_by_multiple_fields_as_ast_children() {
+        let parsed =
+            crate::parse("SORT lt_gs1_gcp BY gs1_gcp ASCENDING matnr DESCENDING lgnum AS TEXT.");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let stmt = parsed
+            .file
+            .find_first_kind(parsed.file.root(), SyntaxKind::SortStmt)
+            .expect("sort stmt");
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::TemplateExpr), 4);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::ExprIdent), 4);
     }
 
     #[test]
