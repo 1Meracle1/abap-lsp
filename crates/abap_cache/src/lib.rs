@@ -4476,14 +4476,15 @@ fn resolve_selector_component_path_structure_with_scope_index<'a>(
     let mut structure_id = match current_structure {
         Some(structure_id) => structure_id,
         None => {
-            resolve_symbol_structure_with_scope_index(
+            let (resolved_unit, resolved_structure_id) = resolve_symbol_structure_with_scope_index(
                 snapshot,
                 scope_index,
                 current_unit,
                 scope,
                 symbol_id,
-            )?
-            .1
+            )?;
+            current_unit = resolved_unit;
+            resolved_structure_id
         }
     };
 

@@ -5851,6 +5851,251 @@ ENDFORM.";
     }
 
     #[test]
+    fn completion_for_opened_include_field_symbol_does_not_leak_adjacent_structure_fields() {
+        let workspace_path = temp_workspace_path("workspace_include_selector_completion");
+        let src_dir = workspace_path.join("src");
+        let include_dir = workspace_path
+            .join(".abapls")
+            .join("cache")
+            .join("packages")
+            .join("_unknown")
+            .join("include");
+        let dependency_manifest_dir = workspace_path
+            .join(".abapls")
+            .join("cache")
+            .join("dependency-manifests");
+        fs::create_dir_all(&src_dir).expect("src dir");
+        fs::create_dir_all(&include_dir).expect("include dir");
+        fs::create_dir_all(&dependency_manifest_dir).expect("dependency manifest dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[[unit]]
+name = "ZMAIN"
+kind = "report"
+root_file = "src/ZMAIN.abap"
+"#,
+        )
+        .expect("manifest");
+        fs::write(
+            src_dir.join("ZMAIN.abap"),
+            "\
+REPORT zmain.
+INCLUDE ztop.
+INCLUDE zf01.",
+        )
+        .expect("main source");
+        fs::write(
+            dependency_manifest_dir.join("src%2FZMAIN.abap.toml"),
+            r#"
+source_file = "src/ZMAIN.abap"
+
+[[unit]]
+name = "ZTOP"
+kind = "include"
+root_file = ".abapls/cache/packages/_unknown/include/ZTOP.abap"
+
+[[unit]]
+name = "ZF01"
+kind = "include"
+root_file = ".abapls/cache/packages/_unknown/include/ZF01.abap"
+"#,
+        )
+        .expect("dependency manifest");
+        fs::write(
+            include_dir.join("ZTOP.abap"),
+            "\
+TYPES: BEGIN OF typ_output_data,
+         message_attp TYPE string,
+         vbeln TYPE string,
+       END OF typ_output_data,
+       BEGIN OF typ_header,
+         lgnum TYPE string,
+         lgtyp TYPE string,
+       END OF typ_header.
+DATA t_final_data TYPE STANDARD TABLE OF typ_output_data WITH DEFAULT KEY.",
+        )
+        .expect("top include");
+        let f01_text = "\
+FORM update_message_final_tab.
+  FIELD-SYMBOLS <lfs_final_data> TYPE typ_output_data.
+  LOOP AT t_final_data ASSIGNING <lfs_final_data>.
+    <lfs_final_data>-
+  ENDLOOP.
+ENDFORM.";
+        fs::write(include_dir.join("ZF01.abap"), f01_text).expect("f01 include");
+
+        let workspace_uri = path_to_file_uri(&workspace_path);
+        let f01_uri = format!("{workspace_uri}/.abapls/cache/packages/_unknown/include/ZF01.abap");
+        let normalized_f01_uri = normalize_lsp_uri(&f01_uri);
+        let mut state = ServerState::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        refresh_workspace(&mut state, &workspace_uri);
+
+        publish_open_document_mut(
+            &mut state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str(&f01_uri).expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: f01_text.to_string(),
+                },
+            },
+        );
+
+        let snapshot = snapshot_for_uri(&state, &normalized_f01_uri).expect("workspace snapshot");
+        let offset =
+            snapshot.text.find("<lfs_final_data>-").expect("selector") + "<lfs_final_data>-".len();
+        let completion = snapshot.completion_at(offset).expect("completion");
+        let labels: Vec<_> = completion
+            .items
+            .into_iter()
+            .map(|item| match item {
+                abap_cache::CompletionItem::Selector(item) => item.name.to_string(),
+                abap_cache::CompletionItem::NamedArgument(item) => item.name.to_string(),
+                abap_cache::CompletionItem::Callable(item) => item.name.to_string(),
+            })
+            .collect();
+
+        assert!(
+            labels.iter().any(|label| label == "message_attp"),
+            "expected typ_output_data selector completion: {labels:?}"
+        );
+        assert!(
+            !labels
+                .iter()
+                .any(|label| label == "lgnum" || label == "lgtyp"),
+            "unexpected leaked selector completions: {labels:?}"
+        );
+
+        let _ = fs::remove_dir_all(&workspace_path);
+    }
+
+    #[test]
+    fn preview_completion_for_local_include_field_symbol_does_not_leak_adjacent_structure_fields() {
+        let workspace_path =
+            temp_workspace_path("workspace_preview_local_include_selector_completion");
+        let report_dir = workspace_path.join("src/reports/ZREP/forms");
+        fs::create_dir_all(&report_dir).expect("report dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[resolution]
+dependency_mode = "local-first"
+cache_dir = ".abapls/cache"
+unknown_symbol_mode = "log"
+"#,
+        )
+        .expect("manifest");
+        fs::write(
+            workspace_path.join("src/reports/ZREP/ZREP.abap"),
+            "\
+REPORT zrep.
+INCLUDE zrep_top.
+INCLUDE zrep_f01.",
+        )
+        .expect("report");
+        fs::write(
+            workspace_path.join("src/reports/ZREP/abapls-unit.toml"),
+            r#"
+members = ["ZREP_TOP.abap", "forms/ZREP_F01.abap"]
+includes = { "ZREP_TOP" = "ZREP_TOP.abap", "ZREP_F01" = "forms/ZREP_F01.abap" }
+"#,
+        )
+        .expect("unit sidecar");
+        fs::write(
+            workspace_path.join("src/reports/ZREP/ZREP_TOP.abap"),
+            "\
+TYPES: BEGIN OF typ_output_data,
+         message_attp TYPE string,
+         vbeln TYPE string,
+       END OF typ_output_data,
+       BEGIN OF typ_header,
+         lgnum TYPE string,
+         lgtyp TYPE string,
+       END OF typ_header.
+DATA t_final_data TYPE STANDARD TABLE OF typ_output_data WITH DEFAULT KEY.",
+        )
+        .expect("top include");
+        fs::write(
+            workspace_path.join("src/reports/ZREP/forms/ZREP_F01.abap"),
+            "\
+FORM update_message_final_tab.
+  FIELD-SYMBOLS <lfs_final_data> TYPE typ_output_data.
+  LOOP AT t_final_data ASSIGNING <lfs_final_data>.
+  ENDLOOP.
+ENDFORM.",
+        )
+        .expect("f01");
+
+        let preview_text = "\
+FORM update_message_final_tab.
+  FIELD-SYMBOLS <lfs_final_data> TYPE typ_output_data.
+  LOOP AT t_final_data ASSIGNING <lfs_final_data>.
+    <lfs_final_data>-
+  ENDLOOP.
+ENDFORM.";
+
+        let workspace_uri = path_to_file_uri(&workspace_path);
+        let f01_uri = format!("{workspace_uri}/src/reports/ZREP/forms/ZREP_F01.abap");
+        let mut state = ServerState::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        refresh_workspace(&mut state, &workspace_uri);
+
+        assert!(stage_workspace_preview_snapshot(
+            &mut state,
+            &f01_uri,
+            2,
+            preview_text
+        ));
+
+        let completion_offset = preview_text
+            .find("<lfs_final_data>-")
+            .expect("selector offset")
+            + "<lfs_final_data>-".len();
+        let position = offset_to_position(preview_text, completion_offset).expect("position");
+
+        let completion = completion(
+            &state,
+            &CompletionParams {
+                text_document_position: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str(&f01_uri).expect("uri"),
+                    },
+                    position,
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+                context: None,
+            },
+        )
+        .expect("completion");
+
+        let CompletionResponse::Array(items) = completion else {
+            panic!("expected array completion");
+        };
+        let labels: Vec<_> = items.into_iter().map(|item| item.label).collect();
+
+        assert!(
+            labels.iter().any(|label| label == "message_attp"),
+            "expected typ_output_data preview selector completion: {labels:?}"
+        );
+        assert!(
+            !labels
+                .iter()
+                .any(|label| label == "lgnum" || label == "lgtyp"),
+            "unexpected leaked preview selector completions: {labels:?}"
+        );
+
+        let _ = fs::remove_dir_all(&workspace_path);
+    }
+
+    #[test]
     fn opening_changed_cached_workspace_file_does_not_reload_other_workspace_files_from_disk() {
         let workspace_path = temp_workspace_path("workspace_open_incremental");
         fs::create_dir_all(workspace_path.join("src")).expect("src dir");
