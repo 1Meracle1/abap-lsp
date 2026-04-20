@@ -7475,6 +7475,52 @@ fn document_inputs_for_publish(
     out
 }
 
+fn document_inputs_for_publish_many(
+    existing: &HashMap<Arc<str>, Arc<AnalysisSnapshot>>,
+    analysis: Option<&CachedWorkspaceAnalysis>,
+    inputs: &[DocumentInput],
+) -> Vec<DocumentInput> {
+    let input_by_uri: HashMap<_, _> = inputs
+        .iter()
+        .map(|input| (Arc::clone(&input.uri), input))
+        .collect();
+    let mut out = Vec::with_capacity(
+        existing.len()
+            + inputs
+                .iter()
+                .filter(|input| !existing.contains_key(input.uri.as_ref()))
+                .count(),
+    );
+    let mut seen = HashSet::new();
+    for uri in current_uri_order(existing, analysis) {
+        if let Some(input) = input_by_uri.get(&uri) {
+            out.push((*input).clone());
+            seen.insert(Arc::clone(&uri));
+            continue;
+        }
+        let Some(snapshot) = existing.get(uri.as_ref()) else {
+            continue;
+        };
+        out.push(DocumentInput {
+            uri: Arc::clone(&snapshot.uri),
+            version: snapshot.version,
+            text: Arc::clone(&snapshot.text),
+            is_dependency: snapshot.is_dependency,
+            object_name: snapshot.object_name.clone(),
+        });
+        seen.insert(Arc::clone(&snapshot.uri));
+    }
+
+    let mut remaining: Vec<_> = inputs
+        .iter()
+        .filter(|input| !seen.contains(input.uri.as_ref()))
+        .cloned()
+        .collect();
+    remaining.sort_by(|left, right| left.uri.cmp(&right.uri));
+    out.extend(remaining);
+    out
+}
+
 fn analysis_text_for_input(input: &DocumentInput) -> Arc<str> {
     if input.is_dependency {
         return dependency_surface_text(input.text.as_ref());
@@ -7956,6 +8002,67 @@ impl DocumentStore {
             .get(input.uri.as_ref())
             .cloned()
             .expect("published snapshot should exist")
+    }
+
+    pub fn publish_inputs(
+        &self,
+        inputs: Vec<DocumentInput>,
+    ) -> HashMap<Arc<str>, Arc<AnalysisSnapshot>> {
+        self.publish_inputs_with_progress(inputs, None)
+    }
+
+    pub fn publish_inputs_with_progress(
+        &self,
+        inputs: Vec<DocumentInput>,
+        progress: Option<&(dyn Fn(usize, usize) + Sync)>,
+    ) -> HashMap<Arc<str>, Arc<AnalysisSnapshot>> {
+        if inputs.is_empty() {
+            return self.documents.read().clone();
+        }
+
+        let existing = self.documents.read();
+        let analysis = self.analysis.read();
+        let changed_uris: HashSet<_> = inputs
+            .iter()
+            .filter(|input| {
+                existing
+                    .get(input.uri.as_ref())
+                    .is_none_or(|snapshot| !snapshot_matches_input(snapshot, input))
+            })
+            .map(|input| Arc::clone(&input.uri))
+            .collect();
+        if changed_uris.is_empty() {
+            let mut updated = existing.clone();
+            for input in &inputs {
+                let Some(current) = existing.get(input.uri.as_ref()) else {
+                    continue;
+                };
+                updated.insert(
+                    Arc::clone(&input.uri),
+                    clone_snapshot_with_version(current, input.version),
+                );
+            }
+            drop(analysis);
+            drop(existing);
+            self.documents.write().clone_from(&updated);
+            return updated;
+        }
+
+        let merged_inputs = document_inputs_for_publish_many(&existing, analysis.as_ref(), &inputs);
+        let force_full = force_full_rebuild(analysis.as_ref(), &merged_inputs);
+        let (rebuilt, rebuilt_analysis) = analyze_inputs_with_progress(
+            &merged_inputs,
+            Some(&existing),
+            analysis.as_ref(),
+            progress,
+            &changed_uris,
+            force_full,
+        );
+        drop(analysis);
+        drop(existing);
+        self.documents.write().clone_from(&rebuilt);
+        *self.analysis.write() = Some(rebuilt_analysis);
+        rebuilt
     }
 
     pub fn preview_publish_input(&self, input: DocumentInput) -> Arc<AnalysisSnapshot> {
@@ -10689,6 +10796,77 @@ START-OF-SELECTION.
         let dirty = store.last_dirty_uris();
         assert!(dirty.contains("file:///dep.abap"));
         assert!(dirty.contains("file:///consumer.abap"));
+    }
+
+    #[test]
+    fn batch_publish_updates_only_changed_inputs_and_dependents() {
+        let store = DocumentStore::default();
+        let provider_v1 = "\
+CLASS zcl_dep DEFINITION.
+  PUBLIC SECTION.
+    METHODS value RETURNING VALUE(rv_value) TYPE i.
+ENDCLASS.
+CLASS zcl_dep IMPLEMENTATION.
+  METHOD value.
+    rv_value = 1.
+  ENDMETHOD.
+ENDCLASS.";
+        let provider_v2 = provider_v1.replace("rv_value = 1.", "rv_value = 2.");
+        let unrelated_v1 = "REPORT zother.\nWRITE 'one'.";
+        let unrelated_v2 = "REPORT zother.\nWRITE 'two'.";
+        let consumer = "\
+DATA lo_dep TYPE REF TO zcl_dep.
+START-OF-SELECTION.
+  lo_dep->value( ).";
+
+        store.replace_all(vec![
+            DocumentInput {
+                uri: Arc::from("file:///dep.abap"),
+                version: 1,
+                text: Arc::from(provider_v1),
+                is_dependency: false,
+                object_name: None,
+            },
+            DocumentInput {
+                uri: Arc::from("file:///consumer.abap"),
+                version: 1,
+                text: Arc::from(consumer),
+                is_dependency: false,
+                object_name: None,
+            },
+            DocumentInput {
+                uri: Arc::from("file:///other.abap"),
+                version: 1,
+                text: Arc::from(unrelated_v1),
+                is_dependency: false,
+                object_name: None,
+            },
+        ]);
+
+        store.publish_inputs(vec![
+            DocumentInput {
+                uri: Arc::from("file:///dep.abap"),
+                version: 2,
+                text: Arc::from(provider_v2.as_str()),
+                is_dependency: false,
+                object_name: None,
+            },
+            DocumentInput {
+                uri: Arc::from("file:///other.abap"),
+                version: 2,
+                text: Arc::from(unrelated_v2),
+                is_dependency: false,
+                object_name: None,
+            },
+        ]);
+
+        let dirty = store.last_dirty_uris();
+        assert_eq!(dirty.len(), 2);
+        assert!(dirty.contains("file:///dep.abap"));
+        assert!(dirty.contains("file:///other.abap"));
+        assert!(!dirty.contains("file:///consumer.abap"));
+        let metrics = store.last_analysis_metrics().expect("analysis metrics");
+        assert_eq!(metrics.2, 2);
     }
 
     #[test]

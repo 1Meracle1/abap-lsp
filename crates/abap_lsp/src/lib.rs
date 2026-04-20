@@ -3,14 +3,15 @@ mod perf_tests;
 pub(crate) mod sem_tokens;
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
 use abap_cache::{
     CallableCompletionKind, DocumentInput, DocumentStore, LocalExportConfig, LocalExportResolver,
-    UNKNOWN_SYMBOL_MODE_REMOTE, WorkspaceDocument, WorkspaceManifest, file_uri_to_path,
-    function_module_completion_items_from_source, is_remote_lookup_candidate,
+    UNKNOWN_SYMBOL_MODE_REMOTE, WorkspaceDocument, WorkspaceManifest, ddic_xml_to_abap_source,
+    file_uri_to_path, function_module_completion_items_from_source, is_remote_lookup_candidate,
     is_remote_lookup_candidate_after_local_resolution, load_manifest_from_workspace_result,
     load_workspace_documents_with_progress, local_export_config_for_source, manifest_cache_dir,
     manifest_document_metadata, manifest_supports_remote_resolution, path_to_file_uri,
@@ -533,6 +534,206 @@ fn document_uses_local_exports(workspace: &WorkspaceState, uri: &str) -> bool {
         return false;
     };
     local_export_config_for_source(&root_path, uri).uses_local_exports()
+}
+
+#[derive(Debug, Clone)]
+struct WorkspaceManifestDocumentInfo {
+    unit_name: String,
+    unit_kind: String,
+    is_dependency: bool,
+    object_name: Option<Arc<str>>,
+}
+
+#[derive(Debug, Default)]
+struct WorkspaceManifestObjectMatches {
+    uris: HashSet<String>,
+    matched_names: HashSet<String>,
+}
+
+fn normalize_targeted_refresh_manifest_path(value: &str) -> String {
+    value
+        .trim()
+        .replace('\\', "/")
+        .trim_start_matches("./")
+        .to_string()
+}
+
+fn workspace_manifest_document_info(
+    workspace: &WorkspaceState,
+    uri: &str,
+) -> Option<WorkspaceManifestDocumentInfo> {
+    let root_path = file_uri_to_path(&workspace.root_uri)?;
+    let manifest = workspace.manifest.as_ref()?;
+    let (is_dependency, object_name) =
+        manifest_document_metadata(&root_path, &workspace.root_uri, manifest, uri)?;
+
+    manifest.units.iter().find_map(|unit| {
+        let root_file = normalize_targeted_refresh_manifest_path(&unit.root_file);
+        let root_uri =
+            (!root_file.is_empty()).then(|| path_to_file_uri(&root_path.join(&root_file)));
+        let member_match = unit.members.iter().any(|member| {
+            let member_file = normalize_targeted_refresh_manifest_path(&member.file);
+            !member_file.is_empty() && path_to_file_uri(&root_path.join(member_file)) == uri
+        });
+        (root_uri.as_deref() == Some(uri) || member_match).then(|| WorkspaceManifestDocumentInfo {
+            unit_name: unit.name.clone(),
+            unit_kind: unit.kind.clone(),
+            is_dependency,
+            object_name: object_name.clone(),
+        })
+    })
+}
+
+fn workspace_manifest_uris_for_object_names(
+    workspace: &WorkspaceState,
+    fetched_names: &HashSet<String>,
+) -> WorkspaceManifestObjectMatches {
+    let Some(root_path) = file_uri_to_path(&workspace.root_uri) else {
+        return WorkspaceManifestObjectMatches::default();
+    };
+    let Some(manifest) = workspace.manifest.as_ref() else {
+        return WorkspaceManifestObjectMatches::default();
+    };
+
+    let mut matches = WorkspaceManifestObjectMatches::default();
+    for unit in &manifest.units {
+        let unit_name = unit.name.trim().to_ascii_lowercase();
+        let unit_matches = !unit_name.is_empty() && fetched_names.contains(&unit_name);
+        let member_matches: Vec<_> = unit
+            .members
+            .iter()
+            .filter_map(|member| {
+                let object_name = member.object_name.trim().to_ascii_lowercase();
+                fetched_names.contains(&object_name).then_some(object_name)
+            })
+            .collect();
+        if !unit_matches && member_matches.is_empty() {
+            continue;
+        }
+
+        if unit_matches {
+            matches.matched_names.insert(unit_name);
+        }
+        matches.matched_names.extend(member_matches);
+
+        let root_file = normalize_targeted_refresh_manifest_path(&unit.root_file);
+        if !root_file.is_empty() {
+            matches
+                .uris
+                .insert(path_to_file_uri(&root_path.join(root_file)));
+        }
+        for member in &unit.members {
+            let member_file = normalize_targeted_refresh_manifest_path(&member.file);
+            if member_file.is_empty() {
+                continue;
+            }
+            matches
+                .uris
+                .insert(path_to_file_uri(&root_path.join(member_file)));
+        }
+    }
+
+    matches
+}
+
+fn workspace_remote_dependency_refresh_inputs(
+    workspace: &WorkspaceState,
+    params: &RemoteDependenciesUpdatedParams,
+) -> Option<Vec<DocumentInput>> {
+    let mut target_uris = HashSet::<String>::new();
+    for uri in params
+        .source_uris
+        .iter()
+        .map(|uri| normalize_lsp_uri(uri))
+        .chain((!params.source_uri.is_empty()).then(|| normalize_lsp_uri(&params.source_uri)))
+    {
+        target_uris.insert(uri);
+    }
+
+    let fetched_names: HashSet<_> = params
+        .fetched
+        .iter()
+        .map(|name| name.trim().to_ascii_lowercase())
+        .filter(|name| !name.is_empty())
+        .collect();
+    let mut matched_names = HashSet::<String>::new();
+    for uri in workspace.cache.uris() {
+        let Some(snapshot) = workspace.cache.get(uri.as_ref()) else {
+            continue;
+        };
+        let Some(object_name) = snapshot.object_name.as_ref() else {
+            continue;
+        };
+        let normalized_name = object_name.trim().to_ascii_lowercase();
+        if fetched_names.contains(&normalized_name) {
+            matched_names.insert(normalized_name);
+            target_uris.insert(uri.to_string());
+        }
+    }
+
+    let manifest_matches = workspace_manifest_uris_for_object_names(workspace, &fetched_names);
+    matched_names.extend(manifest_matches.matched_names);
+    target_uris.extend(manifest_matches.uris);
+
+    if !fetched_names.is_subset(&matched_names) {
+        return None;
+    }
+
+    let mut uris: Vec<_> = target_uris.into_iter().collect();
+    uris.sort();
+    uris.into_iter()
+        .map(|uri| {
+            let manifest_info = workspace_manifest_document_info(workspace, &uri);
+            let (version, source_text) = if let Some(overlay) = workspace.open_documents.get(&uri) {
+                (overlay.version, overlay.text.to_string())
+            } else {
+                let path = file_uri_to_path(&uri)?;
+                (0, fs::read_to_string(&path).ok()?)
+            };
+            let (is_dependency, object_name) = if let Some(current) = workspace.cache.get(&uri) {
+                (current.is_dependency, current.object_name.clone())
+            } else {
+                let info = manifest_info.as_ref()?;
+                (info.is_dependency, info.object_name.clone())
+            };
+            let text = if uri.ends_with(".xml") {
+                let info = manifest_info.as_ref()?;
+                ddic_xml_to_abap_source(
+                    info.unit_name.as_str(),
+                    info.unit_kind.as_str(),
+                    source_text.as_str(),
+                )
+                .unwrap_or(source_text)
+            } else {
+                source_text
+            };
+            Some(DocumentInput {
+                uri: Arc::from(uri.as_str()),
+                version,
+                text: Arc::from(text),
+                is_dependency,
+                object_name,
+            })
+        })
+        .collect()
+}
+
+fn refresh_workspace_inputs_with_progress(
+    workspace: &mut WorkspaceState,
+    inputs: Vec<DocumentInput>,
+    progress: Option<&(dyn Fn(usize, usize) + Sync)>,
+) -> Vec<Arc<AnalysisSnapshot>> {
+    if inputs.is_empty() {
+        return Vec::new();
+    }
+    let refreshed_uris: Vec<_> = inputs.iter().map(|input| Arc::clone(&input.uri)).collect();
+    let snapshots = workspace
+        .cache
+        .publish_inputs_with_progress(inputs, progress);
+    refreshed_uris
+        .into_iter()
+        .filter_map(|uri| snapshots.get(uri.as_ref()).cloned())
+        .collect()
 }
 
 fn rebuild_workspace_cache_with_progress(
@@ -1067,7 +1268,7 @@ pub fn handle_remote_dependencies_updated_with_progress(
     progress: Option<&(dyn Fn(usize, usize) + Sync)>,
 ) -> Vec<Arc<AnalysisSnapshot>> {
     let workspace_uri = normalize_lsp_uri(&params.workspace_uri);
-    if let Some(workspace) = state.workspaces.get_mut(&workspace_uri) {
+    let targeted_refresh = if let Some(workspace) = state.workspaces.get_mut(&workspace_uri) {
         workspace.remote_resolution_in_flight = false;
         for name in &params.fetched {
             workspace
@@ -1082,8 +1283,14 @@ pub fn handle_remote_dependencies_updated_with_progress(
                 .remote_lookup_failures
                 .insert(remote_candidate_key(candidate));
         }
-    }
-    refresh_workspace_with_progress(state, &params.workspace_uri, progress)
+        workspace_remote_dependency_refresh_inputs(workspace, params)
+            .map(|inputs| refresh_workspace_inputs_with_progress(workspace, inputs, progress))
+    } else {
+        return Vec::new();
+    };
+
+    targeted_refresh
+        .unwrap_or_else(|| refresh_workspace_with_progress(state, &params.workspace_uri, progress))
 }
 
 pub fn collect_remote_dependency_candidates(
