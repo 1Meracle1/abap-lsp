@@ -900,6 +900,7 @@ impl<'a> Collector<'a> {
                 prev.map(|token| token.text.as_ref()),
                 Some(
                     "=" | ","
+                        | ":"
                         | "("
                         | "["
                         | "{"

@@ -6816,6 +6816,46 @@ fn parse_bare_where_field_query(
             })
             .unwrap_or(where_sig);
         (2usize, source_end_sig, where_sig)
+    } else if first.eq_ignore_ascii_case("read")
+        && significant.get(1).is_some_and(|&idx| {
+            parse.tokens[idx].kind.as_str() == "Ident"
+                && parse.tokens[idx].lexeme(text).eq_ignore_ascii_case("table")
+        })
+    {
+        let with_sig = significant.iter().position(|&idx| {
+            parse.tokens[idx].kind.as_str() == "Ident"
+                && parse.tokens[idx].lexeme(text).eq_ignore_ascii_case("with")
+        })?;
+        let key_sig = with_sig + 1;
+        if significant.get(key_sig).is_none_or(|&idx| {
+            parse.tokens[idx].kind.as_str() != "Ident"
+                || !parse.tokens[idx].lexeme(text).eq_ignore_ascii_case("key")
+        }) {
+            return None;
+        }
+        let source_start_sig = 2usize;
+        let source_end_sig = significant
+            .iter()
+            .enumerate()
+            .skip(source_start_sig)
+            .find_map(|(pos, &idx)| {
+                let lexeme = parse.tokens[idx].lexeme(text);
+                matches!(
+                    lexeme.to_ascii_lowercase().as_str(),
+                    "into"
+                        | "assigning"
+                        | "with"
+                        | "index"
+                        | "using"
+                        | "transporting"
+                        | "comparing"
+                        | "binary"
+                        | "reference"
+                )
+                .then_some(pos)
+            })
+            .unwrap_or(with_sig);
+        (source_start_sig, source_end_sig, key_sig)
     } else {
         return None;
     };
@@ -12327,6 +12367,34 @@ ENDCLASS.";
     }
 
     #[test]
+    fn definition_at_returns_read_table_with_key_field_declaration() {
+        let store = DocumentStore::default();
+        let src = "\
+TYPES: BEGIN OF ty_vbfa,
+         vbeln TYPE string,
+         posnn TYPE string,
+       END OF ty_vbfa.
+TYPES ty_vbfa_tab TYPE STANDARD TABLE OF ty_vbfa WITH EMPTY KEY.
+DATA t_vbfa TYPE ty_vbfa_tab.
+DATA ls_vbfa TYPE ty_vbfa.
+DATA us_ltap TYPE ty_vbfa.
+
+READ TABLE t_vbfa INTO ls_vbfa WITH KEY vbeln = us_ltap-vbeln
+                                      posnn = us_ltap-posnn.";
+        let snapshot = store.publish("file:///demo.abap", 1, src);
+        let offset = src.rfind("posnn = us_ltap-posnn").expect("key field use") + 1;
+
+        let hovered = snapshot
+            .hovered_component_at(offset)
+            .expect("hovered read table key field");
+        assert_eq!(hovered.field_name.as_ref(), "posnn");
+
+        let definition = snapshot.definition_at(offset).expect("field definition");
+        assert_eq!(definition.uri.as_ref(), "file:///demo.abap");
+        assert_eq!(&src[definition.range], "posnn");
+    }
+
+    #[test]
     fn hovered_sql_name_ref_at_shows_open_sql_source() {
         let store = DocumentStore::default();
         let src = "SELECT * FROM /sttp/gs1_gcp INTO TABLE DATA(lt).\n";
@@ -14947,6 +15015,53 @@ DELETE lt_trans_del WHERE sta";
         assert_eq!(completion.items.len(), 1);
         assert_eq!(completion.items[0].name.as_ref(), "status_trn");
         assert_eq!(&src[completion.replace_range], "sta");
+    }
+
+    #[test]
+    fn lists_read_table_with_key_field_completion_items_with_prefix() {
+        let store = DocumentStore::default();
+        let src = "\
+TYPES: BEGIN OF ty_row,
+         vbeln TYPE string,
+         posnn TYPE string,
+       END OF ty_row.
+TYPES ty_tab TYPE STANDARD TABLE OF ty_row WITH EMPTY KEY.
+DATA t_vbfa TYPE ty_tab.
+DATA ls_vbfa TYPE ty_row.
+READ TABLE t_vbfa INTO ls_vbfa WITH KEY vb";
+        let snapshot = store.publish("file:///demo.abap", 1, src);
+
+        let completion = snapshot
+            .selector_completion_at(src.len())
+            .expect("read table key completion");
+        assert_eq!(completion.items.len(), 1);
+        assert_eq!(completion.items[0].name.as_ref(), "vbeln");
+        assert_eq!(&src[completion.replace_range], "vb");
+    }
+
+    #[test]
+    fn definition_at_returns_first_refresh_target_declaration() {
+        let store = DocumentStore::default();
+        let src = "\
+DATA lt_packing TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+DATA lt_prot TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+
+REFRESH:
+  lt_packing,
+  lt_prot.";
+        let snapshot = store.publish("file:///demo.abap", 1, src);
+        let offset = src.find("lt_packing,").expect("refresh target") + 1;
+
+        let hovered = snapshot
+            .hovered_resolved_symbol_at(offset)
+            .expect("refresh target hover");
+        assert_eq!(hovered.display_name.as_ref(), "lt_packing");
+
+        let definition = snapshot
+            .definition_at(offset)
+            .expect("refresh target definition");
+        assert_eq!(definition.uri.as_ref(), "file:///demo.abap");
+        assert_eq!(&src[definition.range], "lt_packing");
     }
 
     #[test]

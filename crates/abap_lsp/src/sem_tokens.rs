@@ -738,6 +738,49 @@ ENDFORM.
     }
 
     #[test]
+    fn semantic_tokens_mark_read_table_with_key_fields_as_property() {
+        let store = DocumentStore::default();
+        let src = "\
+FORM run.
+  TYPES: BEGIN OF ty_row,
+           vbeln TYPE string,
+           posnn TYPE string,
+         END OF ty_row.
+  DATA t_vbfa TYPE STANDARD TABLE OF ty_row WITH EMPTY KEY.
+  DATA ls_vbfa TYPE ty_row.
+  DATA us_ltap TYPE ty_row.
+
+  READ TABLE t_vbfa INTO ls_vbfa WITH KEY vbeln = us_ltap-vbeln
+                                          posnn = us_ltap-posnn.
+ENDFORM.
+";
+        let snapshot = store.publish("file:///semantic_read_table_with_key.abap", 1, src);
+        let tokens = build_semantic_tokens(snapshot.as_ref());
+        let legend = semantic_tokens_legend();
+        let property_idx = legend
+            .token_types
+            .iter()
+            .position(|t| *t == SemanticTokenType::PROPERTY)
+            .expect("legend has property") as u32;
+        let key_offset = src.find("WITH KEY ").expect("WITH KEY") + "WITH KEY ".len();
+
+        for field_name in ["vbeln", "posnn"] {
+            let field_offset = src[key_offset..]
+                .find(field_name)
+                .map(|offset| key_offset + offset)
+                .expect("field use");
+            let (line, character) =
+                byte_offset_to_line_character_utf16_reference(src, field_offset)
+                    .expect("field position");
+            assert_eq!(
+                semantic_token_type_at(&tokens.data, line, character),
+                Some(property_idx),
+                "expected `{field_name}` to highlight as property"
+            );
+        }
+    }
+
+    #[test]
     fn semantic_tokens_do_not_mark_open_sql_eq_operator_as_property() {
         let store = DocumentStore::default();
         let src = "\

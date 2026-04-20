@@ -243,6 +243,136 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
         }
     }
 
+    fn read_table_clause_starts_infos(&self, tokens: &[SyntaxTokenInfo], idx: usize) -> bool {
+        let Some(token) = tokens.get(idx) else {
+            return false;
+        };
+        token.kind == abap_lexer::TokenKind::Ident
+            && (token.text.eq_ignore_ascii_case("into")
+                || token.text.eq_ignore_ascii_case("assigning")
+                || token.text.eq_ignore_ascii_case("with")
+                || token.text.eq_ignore_ascii_case("index")
+                || token.text.eq_ignore_ascii_case("using")
+                || token.text.eq_ignore_ascii_case("transporting")
+                || token.text.eq_ignore_ascii_case("comparing")
+                || token.text.eq_ignore_ascii_case("binary")
+                || (token.text.eq_ignore_ascii_case("reference")
+                    && tokens
+                        .get(idx + 1)
+                        .is_some_and(|next| next.text.eq_ignore_ascii_case("into"))))
+    }
+
+    fn scan_read_table_key_value_end_infos(
+        &self,
+        tokens: &[SyntaxTokenInfo],
+        start: usize,
+    ) -> usize {
+        let mut paren = 0i32;
+        let mut bracket = 0i32;
+        let mut brace = 0i32;
+        let mut idx = start;
+        while idx < tokens.len() {
+            let token = &tokens[idx];
+            if paren == 0 && bracket == 0 && brace == 0 {
+                if token.text.as_ref() == "." || self.read_table_clause_starts_infos(tokens, idx) {
+                    break;
+                }
+                if token.kind == abap_lexer::TokenKind::Ident
+                    && tokens
+                        .get(idx + 1)
+                        .is_some_and(|next| next.text.as_ref() == "=")
+                {
+                    break;
+                }
+            }
+            match token.text.as_ref() {
+                "(" => paren += 1,
+                ")" => paren -= 1,
+                "[" => bracket += 1,
+                "]" => bracket -= 1,
+                "{" => brace += 1,
+                "}" => brace -= 1,
+                _ => {}
+            }
+            idx += 1;
+        }
+        idx
+    }
+
+    fn read_table_key_field_segments_from_infos(
+        &self,
+        tokens: &[SyntaxTokenInfo],
+        start: usize,
+    ) -> Option<(Vec<FieldAccessSegment>, usize)> {
+        let token = tokens.get(start)?;
+        if token.kind != abap_lexer::TokenKind::Ident {
+            return None;
+        }
+        let mut segments = vec![FieldAccessSegment {
+            name: Arc::<str>::from(token.text.to_ascii_lowercase()),
+            range: token.range.clone(),
+        }];
+        let mut idx = start + 1;
+        while idx + 1 < tokens.len() {
+            let sep = &tokens[idx];
+            let next = &tokens[idx + 1];
+            if sep.text.as_ref() != "-" || next.kind != abap_lexer::TokenKind::Ident {
+                break;
+            }
+            segments.push(FieldAccessSegment {
+                name: Arc::<str>::from(next.text.to_ascii_lowercase()),
+                range: next.range.clone(),
+            });
+            idx += 2;
+        }
+        Some((segments, idx))
+    }
+
+    fn collect_read_table_with_key_field_accesses(
+        &mut self,
+        tokens: &[SyntaxTokenInfo],
+        scope: ScopeId,
+        source_access: &FieldAccess,
+    ) {
+        let Some(with_idx) = tokens
+            .windows(2)
+            .position(|window| Self::tokens_match_keyword_sequence(window, &["with", "key"]))
+        else {
+            return;
+        };
+
+        let mut idx = with_idx + 2;
+        while idx < tokens.len() {
+            if self.read_table_clause_starts_infos(tokens, idx) || tokens[idx].text.as_ref() == "."
+            {
+                break;
+            }
+            let Some((mut key_path, eq_idx)) =
+                self.read_table_key_field_segments_from_infos(tokens, idx)
+            else {
+                idx += 1;
+                continue;
+            };
+            if tokens.get(eq_idx).map(|token| token.text.as_ref()) != Some("=") {
+                idx += 1;
+                continue;
+            }
+
+            let mut field_path = source_access.field_path.clone();
+            field_path.append(&mut key_path);
+            self.collector.emit_field_access(FieldAccess {
+                scope,
+                base_namespace: source_access.base_namespace,
+                base_name: Arc::clone(&source_access.base_name),
+                base_range: source_access.base_range.clone(),
+                field_path,
+                in_type_position: false,
+            });
+
+            idx = self.scan_read_table_key_value_end_infos(tokens, eq_idx + 1);
+        }
+    }
+
     fn collect_set_pf_status_stmt_infos(
         &mut self,
         tokens: &[SyntaxTokenInfo],
@@ -1177,6 +1307,16 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                     kind: RoutineSiteKind::ReadTable,
                     target_range: named_into_target.map(|target| self.collector.file.range(target)),
                 });
+                if let Some(source_access) =
+                    self.collector.value_access_from_node(source_expr, scope)
+                {
+                    let significant = self.collector.significant_stmt_token_infos(node);
+                    self.collect_read_table_with_key_field_accesses(
+                        &significant,
+                        scope,
+                        &source_access,
+                    );
+                }
             }
 
             if target_kind == Some("assigning") {
