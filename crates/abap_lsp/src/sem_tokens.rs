@@ -1059,4 +1059,69 @@ ENDCLASS.";
             );
         }
     }
+
+    #[test]
+    fn semantic_tokens_mark_call_function_parameter_and_exception_names() {
+        let store = DocumentStore::default();
+        let dep_src = "\
+FUNCTION z_demo_call
+  IMPORTING
+    iv_name TYPE string
+  CHANGING
+    cv_text TYPE string
+  EXCEPTIONS
+    failed.
+ENDFUNCTION.
+";
+        let main_src = "\
+START-OF-SELECTION.
+  DATA lv_name TYPE string.
+  DATA lv_text TYPE string.
+  CALL FUNCTION 'z_demo_call'
+    EXPORTING
+      iv_name = lv_name
+    CHANGING
+      cv_text = lv_text
+    EXCEPTIONS
+      failed = 1.
+";
+        let snapshots = store.replace_all(vec![
+            DocumentInput {
+                uri: Arc::from("file:///function_sem_tokens_dep.abap"),
+                version: 1,
+                text: Arc::from(dep_src),
+                is_dependency: true,
+                object_name: None,
+            },
+            DocumentInput {
+                uri: Arc::from("file:///function_sem_tokens_main.abap"),
+                version: 1,
+                text: Arc::from(main_src),
+                is_dependency: false,
+                object_name: None,
+            },
+        ]);
+        let snapshot = snapshots
+            .get("file:///function_sem_tokens_main.abap")
+            .expect("main snapshot");
+        let tokens = build_semantic_tokens(snapshot.as_ref());
+        let legend = semantic_tokens_legend();
+        let parameter_idx = legend
+            .token_types
+            .iter()
+            .position(|t| *t == SemanticTokenType::PARAMETER)
+            .expect("legend has parameter") as u32;
+
+        for needle in ["iv_name", "cv_text", "failed"] {
+            let offset = main_src.find(needle).expect("needle offset");
+            let (line, character) =
+                byte_offset_to_line_character_utf16_reference(main_src, offset + 1)
+                    .expect("needle position");
+            assert_eq!(
+                semantic_token_type_at(&tokens.data, line, character),
+                Some(parameter_idx),
+                "expected CALL FUNCTION name `{needle}` to highlight as parameter"
+            );
+        }
+    }
 }

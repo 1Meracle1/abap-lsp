@@ -6,9 +6,9 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use abap_lexer::{TokenKind, tokenize};
 use abap_parser::{ParseResult, parse};
 use abap_symbols::{
-    ClassMemberData, ClassMemberKind, ClassMemberParameterData, FieldTypeRefData,
-    FormParameterData, FormParameterPassingKind, FormParameterSection, FormRoutineData,
-    FunctionModuleData, FunctionModuleExceptionData, FunctionModuleParameterData,
+    CallArgumentData, CallSiteData, ClassMemberData, ClassMemberKind, ClassMemberParameterData,
+    FieldTypeRefData, FormParameterData, FormParameterPassingKind, FormParameterSection,
+    FormRoutineData, FunctionModuleData, FunctionModuleExceptionData, FunctionModuleParameterData,
     FunctionModuleParameterSection, MethodParameterSection, NamedArgumentAccess,
     NamedArgumentSection, NamedArgumentTarget, Namespace, PerformArgumentData, PerformCallData,
     PerformParameterSection, ProjectAnalysis, ProjectRoutineAnalysis, ProjectStaticAnalysisSummary,
@@ -153,6 +153,7 @@ pub struct HoveredSymbolInfo {
 pub struct ParameterInlayHintInfo {
     pub position: usize,
     pub label: Arc<str>,
+    pub trailing_colon: bool,
     pub tooltip_markdown: String,
 }
 
@@ -854,8 +855,28 @@ impl AnalysisSnapshot {
                     Some(ParameterInlayHintInfo {
                         position: argument.range.start,
                         label: Arc::clone(&parameter.name),
+                        trailing_colon: true,
                         tooltip_markdown: perform_parameter_inlay_hint_markdown(&parameter),
                     })
+                })
+            })
+            .collect();
+        hints.sort_by_key(|hint| hint.position);
+        hints
+    }
+
+    pub fn function_module_parameter_inlay_hints_in_range(
+        &self,
+        range: Range<usize>,
+    ) -> Vec<ParameterInlayHintInfo> {
+        let mut hints: Vec<_> = self
+            .symbols
+            .call_sites
+            .iter()
+            .flat_map(|call_site| {
+                call_site.arguments.iter().filter_map(|argument| {
+                    function_module_parameter_inlay_hint(self, call_site, argument)
+                        .filter(|hint| range.start <= hint.position && hint.position < range.end)
                 })
             })
             .collect();
@@ -3062,6 +3083,21 @@ fn perform_parameter_inlay_hint_markdown(info: &FormParameterHoverInfo) -> Strin
     )
 }
 
+fn function_module_parameter_inlay_hint_markdown(
+    function_name: &Arc<str>,
+    parameter: &FunctionModuleParameterData,
+) -> String {
+    format!(
+        "parameter of FUNCTION MODULE `{}`\n\n{}",
+        function_name,
+        format_hover_abap(&format!(
+            "{}\n  {}",
+            function_module_parameter_section_keyword(parameter.section),
+            render_function_module_parameter_signature(parameter)
+        ))
+    )
+}
+
 fn markdown_lines_for_declared_symbol(unit: &UnitAnalysis, symbol: &SymbolData) -> Vec<String> {
     if let Some(info) = form_parameter_hover_info(unit, symbol) {
         return markdown_lines_for_form_parameter(&info);
@@ -4935,6 +4971,52 @@ fn resolve_named_argument_parameter_with_scope_index<'a>(
             })
         }
     }
+}
+
+fn function_module_parameter_inlay_hint(
+    snapshot: &AnalysisSnapshot,
+    call_site: &CallSiteData,
+    argument: &CallArgumentData,
+) -> Option<ParameterInlayHintInfo> {
+    let NamedArgumentTarget::Function { function_name } = &call_site.target else {
+        return None;
+    };
+    if matches!(argument.section, Some(NamedArgumentSection::Exceptions)) {
+        return None;
+    }
+    let argument_name = argument.name.as_ref()?;
+    let (unit, function_symbol_id) = resolve_symbol_from_context_with_scope_index(
+        snapshot,
+        snapshot.scope_index(),
+        call_site.scope,
+        Namespace::Routine,
+        function_name,
+        false,
+    )?;
+    let function_module = unit.function_module(function_symbol_id)?;
+    let parameter = function_module.parameters.iter().find(|parameter| {
+        parameter.name == *argument_name
+            && call_section_matches_function_parameter(argument.section, parameter)
+    })?;
+    let position = named_argument_value_inlay_position(snapshot.text.as_ref(), &argument.range)?;
+    let label = function_module_parameter_completion_declared_type(parameter)?;
+    Some(ParameterInlayHintInfo {
+        position,
+        label: Arc::from(label),
+        trailing_colon: false,
+        tooltip_markdown: function_module_parameter_inlay_hint_markdown(function_name, parameter),
+    })
+}
+
+fn named_argument_value_inlay_position(text: &str, range: &Range<usize>) -> Option<usize> {
+    let arg_text = text.get(range.clone())?;
+    let eq_offset = arg_text.find('=')?;
+    let value_start = range.start + eq_offset + 1;
+    let remaining = text.get(value_start..range.end)?;
+    let non_whitespace_offset = remaining
+        .char_indices()
+        .find_map(|(offset, ch)| (!ch.is_whitespace()).then_some(offset))?;
+    Some(value_start + non_whitespace_offset)
 }
 
 fn resolve_named_argument_target(

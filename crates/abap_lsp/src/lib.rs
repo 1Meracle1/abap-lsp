@@ -2658,13 +2658,20 @@ pub fn inlay_hints(state: &ServerState, params: &InlayHintParams) -> Option<Vec<
     let uri = normalize_lsp_uri(params.text_document.uri.as_str());
     let snapshot = snapshot_for_uri(state, &uri)?;
     let byte_range = range_to_byte_range_snapshot(snapshot.as_ref(), params.range.clone())?;
-    let hints = snapshot
-        .perform_parameter_inlay_hints_in_range(byte_range)
+    let mut hint_infos = snapshot.perform_parameter_inlay_hints_in_range(byte_range.clone());
+    hint_infos.extend(snapshot.function_module_parameter_inlay_hints_in_range(byte_range));
+    hint_infos.sort_by_key(|hint| hint.position);
+    let hints = hint_infos
         .into_iter()
         .filter_map(|hint| {
+            let label = if hint.trailing_colon {
+                format!("{}:", hint.label)
+            } else {
+                hint.label.to_string()
+            };
             Some(InlayHint {
                 position: offset_to_position_snapshot(snapshot.as_ref(), hint.position)?,
-                label: format!("{}:", hint.label).into(),
+                label: label.into(),
                 kind: Some(InlayHintKind::PARAMETER),
                 text_edits: None,
                 tooltip: Some(
@@ -2970,8 +2977,9 @@ mod tests {
     use lsp_types::{
         DiagnosticSeverity, DidChangeTextDocumentParams, DidOpenTextDocumentParams, Documentation,
         GotoDefinitionResponse, HoverContents, InlayHintKind, InlayHintLabel, InlayHintTooltip,
-        InsertTextFormat, Position, Range, TextDocumentContentChangeEvent, TextDocumentIdentifier,
-        TextDocumentItem, TextDocumentPositionParams, Uri, VersionedTextDocumentIdentifier,
+        InsertTextFormat, Position, Range, SemanticTokensParams, TextDocumentContentChangeEvent,
+        TextDocumentIdentifier, TextDocumentItem, TextDocumentPositionParams, Uri,
+        VersionedTextDocumentIdentifier,
     };
 
     use crate::sem_tokens;
@@ -2987,7 +2995,7 @@ mod tests {
         handle_remote_dependencies_updated, hover, initialize_result, inlay_hints,
         normalize_lsp_uri, offset_to_position, publish_changed_document,
         publish_changed_document_mut, publish_open_document, publish_open_document_mut, references,
-        refresh_workspace, snapshot_for_uri, stage_workspace_preview_snapshot,
+        refresh_workspace, semantic_tokens, snapshot_for_uri, stage_workspace_preview_snapshot,
     };
 
     fn temp_workspace_path(name: &str) -> PathBuf {
@@ -4592,6 +4600,259 @@ unknown_symbol_mode = "remote"
         assert!(
             build_remote_dependency_request(&mut state, &target_uri).is_none(),
             "resolved local export should not trigger remote request"
+        );
+
+        let _ = fs::remove_dir_all(&workspace_path);
+        let _ = fs::remove_dir_all(&export_root);
+    }
+
+    #[test]
+    fn workspace_include_member_semantic_tokens_and_inlay_hints_cover_local_export_function_module_calls()
+     {
+        use lsp_types::SemanticTokenType;
+
+        let workspace_path = temp_workspace_path("workspace_local_export_function_semantics");
+        let export_root = temp_workspace_path("workspace_local_export_function_semantics_export");
+        let _ = fs::remove_dir_all(&workspace_path);
+        let _ = fs::remove_dir_all(&export_root);
+        fs::create_dir_all(workspace_path.join("src/reports/ZREP")).expect("report dir");
+        fs::create_dir_all(export_root.join("packages/STXD/function-module")).expect("export dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[resolution]
+dependency_mode = "remote-on-demand"
+unknown_symbol_mode = "remote"
+"#,
+        )
+        .expect("manifest");
+        fs::write(
+            workspace_path.join("src/reports/ZREP/ZREP.abap"),
+            "REPORT zrep.\nINCLUDE zrep_f01.\nSTART-OF-SELECTION.\n  PERFORM f_save_text.\n",
+        )
+        .expect("report");
+        let include_text = "\
+FORM f_save_text.
+  DATA ls_header TYPE thead.
+  DATA ls_header_new TYPE thead.
+  DATA lt_tline TYPE STANDARD TABLE OF tline WITH EMPTY KEY.
+  DATA lw_value TYPE c LENGTH 1.
+  CALL FUNCTION 'SAVE_TEXT'
+    EXPORTING
+      header          = ls_header
+      insert          = abap_true
+      savemode_direct = abap_true
+    IMPORTING
+      function        = lw_value
+      newheader       = ls_header_new
+    TABLES
+      lines           = lt_tline
+    EXCEPTIONS
+      id              = 1
+      language        = 2
+      name            = 3
+      object          = 4
+      OTHERS          = 5.
+ENDFORM.
+";
+        fs::write(
+            workspace_path.join("src/reports/ZREP/ZREP_F01.abap"),
+            include_text,
+        )
+        .expect("include");
+        fs::write(
+            workspace_path.join("src/reports/ZREP/abapls-unit.toml"),
+            format!(
+                "[local_export]\nroots = [\"{}\"]\n\n[dependencies]\nsource = \"local-first\"\n",
+                export_root.to_string_lossy().replace('\\', "/")
+            ),
+        )
+        .expect("sidecar");
+        fs::write(
+            export_root.join("packages/STXD/function-module/SAVE_TEXT.abap"),
+            "\
+FUNCTION SAVE_TEXT
+  IMPORTING
+    VALUE(CLIENT) LIKE SY-MANDT DEFAULT SY-MANDT
+    VALUE(HEADER) LIKE THEAD
+    VALUE(INSERT) TYPE ANY DEFAULT SPACE ##ADT_PARAMETER_UNTYPED
+    VALUE(SAVEMODE_DIRECT) TYPE ANY DEFAULT SPACE ##ADT_PARAMETER_UNTYPED
+    VALUE(OWNER_SPECIFIED) TYPE ANY DEFAULT SPACE ##ADT_PARAMETER_UNTYPED
+    VALUE(LOCAL_CAT) TYPE ANY DEFAULT SPACE ##ADT_PARAMETER_UNTYPED
+    VALUE(KEEP_LAST_CHANGED) TYPE ANY DEFAULT SPACE ##ADT_PARAMETER_UNTYPED
+  EXPORTING
+    VALUE(FUNCTION) TYPE ANY ##ADT_PARAMETER_UNTYPED
+    VALUE(NEWHEADER) LIKE THEAD
+  TABLES
+    LINES LIKE TLINE
+  EXCEPTIONS
+    ID
+    LANGUAGE
+    NAME
+    OBJECT.
+ENDFUNCTION.",
+        )
+        .expect("export");
+
+        let workspace_uri = path_to_file_uri(&workspace_path);
+        let source_uri =
+            normalize_lsp_uri(&format!("{workspace_uri}/src/reports/ZREP/ZREP_F01.abap"));
+        let mut state = ServerState::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        refresh_workspace(&mut state, &workspace_uri);
+        publish_open_document_mut(
+            &mut state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str(&source_uri).expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: include_text.to_string(),
+                },
+            },
+        );
+
+        let snapshot = snapshot_for_uri(&state, &source_uri).expect("snapshot");
+        let dep_unit = snapshot
+            .project
+            .units
+            .iter()
+            .find(|unit| {
+                unit.uri
+                    .ends_with("/packages/STXD/function-module/SAVE_TEXT.abap")
+            })
+            .expect("dependency unit");
+        let function_module = dep_unit.function_modules.first().expect("function module");
+        let parameter_names: Vec<_> = function_module
+            .parameters
+            .iter()
+            .map(|parameter| parameter.name.as_ref())
+            .collect();
+        assert_eq!(
+            parameter_names,
+            vec![
+                "client",
+                "header",
+                "insert",
+                "savemode_direct",
+                "owner_specified",
+                "local_cat",
+                "keep_last_changed",
+                "function",
+                "newheader",
+                "lines",
+            ]
+        );
+        let exception_names: Vec<_> = function_module
+            .exceptions
+            .iter()
+            .map(|exception| exception.name.as_ref())
+            .collect();
+        assert_eq!(exception_names, vec!["id", "language", "name", "object"]);
+        let tokens = semantic_tokens(
+            &state,
+            &SemanticTokensParams {
+                text_document: TextDocumentIdentifier {
+                    uri: Uri::from_str(&source_uri).expect("uri"),
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            },
+        )
+        .expect("semantic tokens");
+        let legend = sem_tokens::semantic_tokens_legend();
+        let parameter_idx = legend
+            .token_types
+            .iter()
+            .position(|t| *t == SemanticTokenType::PARAMETER)
+            .expect("legend has parameter") as u32;
+
+        for (needle, marker) in [
+            ("header", "      header          ="),
+            ("insert", "      insert          ="),
+            ("savemode_direct", "      savemode_direct ="),
+            ("function", "      function        ="),
+            ("newheader", "      newheader       ="),
+            ("lines", "      lines           ="),
+            ("id", "      id              ="),
+            ("language", "      language        ="),
+            ("name", "      name            ="),
+            ("object", "      object          ="),
+        ] {
+            let offset = include_text.find(marker).expect("needle offset");
+            let offset = offset + marker.find(needle).expect("needle in marker");
+            let position = offset_to_position(include_text, offset + 1).expect("needle position");
+            assert_eq!(
+                semantic_token_type_at(&tokens, position.line, position.character),
+                Some(parameter_idx),
+                "expected semantic token for `{needle}`"
+            );
+        }
+
+        let range = Range {
+            start: Position {
+                line: 0,
+                character: 0,
+            },
+            end: offset_to_position(include_text, include_text.len()).expect("end position"),
+        };
+        let hints = inlay_hints(
+            &state,
+            &InlayHintParams {
+                text_document: TextDocumentIdentifier {
+                    uri: Uri::from_str(&source_uri).expect("uri"),
+                },
+                range,
+                work_done_progress_params: Default::default(),
+            },
+        )
+        .expect("inlay hints");
+
+        let labels: Vec<_> = hints
+            .iter()
+            .map(|hint| match &hint.label {
+                InlayHintLabel::String(label) => label.clone(),
+                _ => String::new(),
+            })
+            .collect();
+        assert_eq!(
+            labels,
+            vec![
+                "THEAD".to_string(),
+                "ANY".to_string(),
+                "ANY".to_string(),
+                "ANY".to_string(),
+                "THEAD".to_string(),
+                "STANDARD TABLE OF TLINE".to_string(),
+            ]
+        );
+
+        let header_hint = hints.first().expect("header hint");
+        let Some(InlayHintTooltip::MarkupContent(header_tooltip)) = header_hint.tooltip.as_ref()
+        else {
+            panic!("expected markdown tooltip");
+        };
+        assert!(
+            header_tooltip
+                .value
+                .contains("parameter of FUNCTION MODULE `save_text`")
+        );
+        assert!(header_tooltip.value.contains("IMPORTING"));
+        assert!(header_tooltip.value.contains("header LIKE thead"));
+
+        assert!(
+            snapshot
+                .hovered_named_argument_at(
+                    include_text
+                        .find("      header          =")
+                        .expect("header marker")
+                        + "      ".len()
+                        + 1,
+                )
+                .is_some(),
+            "named argument hover should resolve against local export function module"
         );
 
         let _ = fs::remove_dir_all(&workspace_path);
@@ -9266,6 +9527,120 @@ START-OF-SELECTION.
             panic!("expected markdown tooltip");
         };
         assert!(changing_tooltip.value.contains("parameter of FORM `f`"));
+        assert!(changing_tooltip.value.contains("cv_text TYPE string"));
+    }
+
+    #[test]
+    fn inlay_hints_cover_call_function_parameters() {
+        let state = ServerState::default();
+        let dep_text = "\
+FUNCTION z_demo_call
+  IMPORTING
+    iv_name TYPE string
+  CHANGING
+    cv_text TYPE string
+  EXCEPTIONS
+    failed.
+ENDFUNCTION.
+";
+        let main_text = "\
+START-OF-SELECTION.
+  DATA lv_name TYPE string.
+  DATA lv_text TYPE string.
+  CALL FUNCTION 'z_demo_call'
+    EXPORTING
+      iv_name = lv_name
+    CHANGING
+      cv_text = lv_text
+    EXCEPTIONS
+      failed = 1.
+";
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///function_hint_dep.abap").expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: dep_text.to_string(),
+                },
+            },
+        );
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///function_hint_main.abap").expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: main_text.to_string(),
+                },
+            },
+        );
+
+        let range = Range {
+            start: offset_to_position(main_text, 0).expect("start position"),
+            end: offset_to_position(main_text, main_text.len()).expect("end position"),
+        };
+        let hints = inlay_hints(
+            &state,
+            &InlayHintParams {
+                text_document: TextDocumentIdentifier {
+                    uri: Uri::from_str("file:///function_hint_main.abap").expect("uri"),
+                },
+                range,
+                work_done_progress_params: Default::default(),
+            },
+        )
+        .expect("inlay hints");
+
+        assert_eq!(hints.len(), 2, "{hints:?}");
+        assert_eq!(
+            hints[0].position,
+            offset_to_position(
+                main_text,
+                main_text.rfind("lv_name").expect("exporting argument")
+            )
+            .expect("exporting argument position")
+        );
+        let InlayHintLabel::String(exporting_label) = &hints[0].label else {
+            panic!("expected string label");
+        };
+        assert_eq!(exporting_label, "string");
+        let Some(InlayHintTooltip::MarkupContent(exporting_tooltip)) = hints[0].tooltip.as_ref()
+        else {
+            panic!("expected markdown tooltip");
+        };
+        assert!(
+            exporting_tooltip
+                .value
+                .contains("parameter of FUNCTION MODULE `z_demo_call`")
+        );
+        assert!(exporting_tooltip.value.contains("IMPORTING"));
+        assert!(exporting_tooltip.value.contains("iv_name TYPE string"));
+
+        assert_eq!(
+            hints[1].position,
+            offset_to_position(
+                main_text,
+                main_text.rfind("lv_text").expect("changing argument")
+            )
+            .expect("changing argument position")
+        );
+        let InlayHintLabel::String(changing_label) = &hints[1].label else {
+            panic!("expected string label");
+        };
+        assert_eq!(changing_label, "string");
+        let Some(InlayHintTooltip::MarkupContent(changing_tooltip)) = hints[1].tooltip.as_ref()
+        else {
+            panic!("expected markdown tooltip");
+        };
+        assert!(
+            changing_tooltip
+                .value
+                .contains("parameter of FUNCTION MODULE `z_demo_call`")
+        );
+        assert!(changing_tooltip.value.contains("CHANGING"));
         assert!(changing_tooltip.value.contains("cv_text TYPE string"));
     }
 
