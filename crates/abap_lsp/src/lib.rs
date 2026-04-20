@@ -5,16 +5,17 @@ pub(crate) mod sem_tokens;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use abap_cache::{
-    DocumentInput, DocumentStore, LocalExportConfig, LocalExportResolver,
+    CallableCompletionKind, DocumentInput, DocumentStore, LocalExportConfig, LocalExportResolver,
     UNKNOWN_SYMBOL_MODE_REMOTE, WorkspaceDocument, WorkspaceManifest, file_uri_to_path,
-    is_remote_lookup_candidate, is_remote_lookup_candidate_after_local_resolution,
-    load_manifest_from_workspace_result, load_workspace_documents_with_progress,
-    local_export_config_for_source, manifest_cache_dir, manifest_document_metadata,
-    manifest_supports_remote_resolution, path_to_file_uri,
-    resolve_local_export_dependency_document, resolve_workspace_performance_mode,
+    function_module_completion_items_from_source, is_remote_lookup_candidate,
+    is_remote_lookup_candidate_after_local_resolution, load_manifest_from_workspace_result,
+    load_workspace_documents_with_progress, local_export_config_for_source, manifest_cache_dir,
+    manifest_document_metadata, manifest_supports_remote_resolution, path_to_file_uri,
+    resolve_local_export_dependency_document,
+    resolve_local_export_function_module_documents_by_prefix, resolve_workspace_performance_mode,
     uri_starts_with_workspace,
 };
 use abap_symbols::{DiagnosticKind, ReferenceKind, SqlResolution, UnitId};
@@ -43,6 +44,7 @@ pub const WORKSPACE_MANIFEST_UPDATED: &str = "abapls/workspaceManifestUpdated";
 pub const DEPENDENCY_CACHE_CLEARED: &str = "abapls/dependencyCacheCleared";
 pub const WORKSPACE_ANALYSIS_STATUS: &str = "abapls/workspaceAnalysisStatus";
 const REMOTE_DEPENDENCY_BATCH_CANDIDATE_LIMIT: usize = 24;
+const LOCAL_EXPORT_FUNCTION_MODULE_COMPLETION_LIMIT: usize = 64;
 
 #[derive(Debug, Clone)]
 pub struct ServerState {
@@ -64,6 +66,7 @@ pub struct WorkspaceState {
     pub root_uri: String,
     pub cache: DocumentStore,
     pub preview_snapshots: HashMap<String, Arc<AnalysisSnapshot>>,
+    pub local_export_resolver: Arc<Mutex<LocalExportResolver>>,
     pub manifest: Option<WorkspaceManifest>,
     pub manifest_uri: String,
     pub manifest_error: Option<String>,
@@ -108,6 +111,7 @@ impl WorkspaceState {
             root_uri: root_uri.into(),
             cache: DocumentStore::default(),
             preview_snapshots: HashMap::new(),
+            local_export_resolver: Arc::new(Mutex::new(LocalExportResolver::default())),
             manifest: None,
             manifest_uri: String::new(),
             manifest_error: None,
@@ -535,6 +539,10 @@ fn rebuild_workspace_cache_with_progress(
     workspace: &mut WorkspaceState,
     progress: Option<&(dyn Fn(usize, usize) + Sync)>,
 ) -> HashMap<Arc<str>, Arc<AnalysisSnapshot>> {
+    *workspace
+        .local_export_resolver
+        .lock()
+        .unwrap_or_else(|error| error.into_inner()) = LocalExportResolver::default();
     let loaded = load_workspace_documents_with_progress(
         &workspace.root_uri,
         &workspace.open_documents,
@@ -2325,7 +2333,13 @@ pub fn completion(state: &ServerState, params: &CompletionParams) -> Option<Comp
     let uri = normalize_lsp_uri(params.text_document_position.text_document.uri.as_str());
     let snapshot = snapshot_for_uri(state, &uri)?;
     let offset = position_to_offset_snapshot(&snapshot, params.text_document_position.position)?;
-    let completion = snapshot.completion_at(offset)?;
+    let completion = supplement_function_module_completion_from_local_exports(
+        state,
+        &uri,
+        snapshot.as_ref(),
+        snapshot.completion_at(offset),
+        snapshot.callable_statement_completion_context_at(offset),
+    )?;
     let range = byte_range_to_lsp_range_snapshot(snapshot.as_ref(), completion.replace_range)?;
     let items = completion
         .items
@@ -2339,6 +2353,85 @@ pub fn completion(state: &ServerState, params: &CompletionParams) -> Option<Comp
         })
         .collect();
     Some(CompletionResponse::Array(items))
+}
+
+fn supplement_function_module_completion_from_local_exports(
+    state: &ServerState,
+    uri: &str,
+    _snapshot: &AnalysisSnapshot,
+    completion: Option<abap_cache::CompletionInfo>,
+    callable_context: Option<abap_cache::CallableStatementCompletionContext>,
+) -> Option<abap_cache::CompletionInfo> {
+    let Some(context) = callable_context else {
+        return completion;
+    };
+    if context.kind != CallableCompletionKind::FunctionModule || context.prefix.is_empty() {
+        return completion;
+    }
+    let Some(workspace) = state.workspace_for_uri(uri) else {
+        return completion;
+    };
+    let Some(root_path) = file_uri_to_path(&workspace.root_uri) else {
+        return completion;
+    };
+    let config = local_export_config_for_source(&root_path, uri);
+    if !config.uses_local_exports() {
+        return completion;
+    }
+
+    let documents = {
+        let mut resolver = workspace
+            .local_export_resolver
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        resolve_local_export_function_module_documents_by_prefix(
+            &config.roots,
+            &mut resolver,
+            context.prefix.as_ref(),
+            LOCAL_EXPORT_FUNCTION_MODULE_COMPLETION_LIMIT,
+        )
+    };
+    if documents.is_empty() {
+        return completion;
+    }
+
+    let mut replace_range = context.replace_range.clone();
+    let mut in_type_position = false;
+    let mut items = match completion {
+        Some(completion) => {
+            replace_range = completion.replace_range;
+            in_type_position = completion.in_type_position;
+            completion.items
+        }
+        None => Vec::new(),
+    };
+    let mut seen: HashSet<_> = items.iter().map(cache_completion_item_key).collect();
+
+    for document in documents {
+        for item in function_module_completion_items_from_source(
+            document.uri.as_ref(),
+            document.text.as_str(),
+            document.object_name.clone(),
+        ) {
+            let key = item.name.to_ascii_lowercase();
+            if !key.starts_with(context.prefix.as_ref()) || !seen.insert(key) {
+                continue;
+            }
+            items.push(abap_cache::CompletionItem::Callable(item));
+        }
+    }
+
+    if items.is_empty() {
+        return None;
+    }
+    items.sort_by(|left, right| {
+        cache_completion_item_name(left).cmp(cache_completion_item_name(right))
+    });
+    Some(abap_cache::CompletionInfo {
+        replace_range,
+        items,
+        in_type_position,
+    })
 }
 
 pub fn semantic_tokens(
@@ -2480,6 +2573,18 @@ fn range_to_byte_range_snapshot(
     )
 }
 
+fn cache_completion_item_name(item: &abap_cache::CompletionItem) -> &str {
+    match item {
+        abap_cache::CompletionItem::Selector(item) => item.name.as_ref(),
+        abap_cache::CompletionItem::NamedArgument(item) => item.name.as_ref(),
+        abap_cache::CompletionItem::Callable(item) => item.name.as_ref(),
+    }
+}
+
+fn cache_completion_item_key(item: &abap_cache::CompletionItem) -> String {
+    cache_completion_item_name(item).to_ascii_lowercase()
+}
+
 fn completion_item_to_lsp(
     item: &abap_cache::CompletionItem,
     range: Range,
@@ -2510,6 +2615,17 @@ fn completion_item_to_lsp(
             (
                 item.name.to_string(),
                 Some(CompletionItemKind::VARIABLE),
+                detail,
+                documentation,
+                item.insertion.plain_text.clone(),
+                item.insertion.snippet_text.clone(),
+            )
+        }
+        abap_cache::CompletionItem::Callable(item) => {
+            let (detail, documentation) = callable_completion_item_metadata(item);
+            (
+                item.name.to_string(),
+                Some(CompletionItemKind::FUNCTION),
                 detail,
                 documentation,
                 item.insertion.plain_text.clone(),
@@ -2607,6 +2723,27 @@ fn named_argument_completion_item_metadata(
         item.declaration.clone().or(item.declared_type.clone()),
         documentation,
     )
+}
+
+fn callable_completion_item_metadata(
+    item: &abap_cache::CallableCompletionItem,
+) -> (Option<String>, Option<Documentation>) {
+    let mut lines = vec![format!("`{}`", item.name)];
+    if let Some(declaration) = &item.declaration {
+        lines[0] = format!("```abap\n{}\n```", declaration);
+    }
+    lines.push(
+        match item.kind {
+            abap_cache::CallableCompletionKind::FunctionModule => "function module",
+            abap_cache::CallableCompletionKind::Form => "form routine",
+        }
+        .to_string(),
+    );
+    let documentation = Some(Documentation::MarkupContent(MarkupContent {
+        kind: MarkupKind::Markdown,
+        value: lines.join("\n\n"),
+    }));
+    (item.declaration.clone(), documentation)
 }
 
 #[cfg(test)]
@@ -9634,6 +9771,225 @@ some_class=>r"
     }
 
     #[test]
+    fn completion_emits_function_module_call_snippet() {
+        let mut state = ServerState::default();
+        state.client_capabilities.completion_snippet_support = true;
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///completion_function_module.abap").expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: "\
+FUNCTION z_demo_call
+  IMPORTING
+    iv_name TYPE string
+  EXPORTING
+    ev_text TYPE string
+  EXCEPTIONS
+    failed.
+ENDFUNCTION.
+
+START-OF-SELECTION.
+  CALL FUNCTION 'z_de"
+                        .to_string(),
+                },
+            },
+        );
+
+        let completion = completion(
+            &state,
+            &CompletionParams {
+                text_document_position: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///completion_function_module.abap").expect("uri"),
+                    },
+                    position: Position {
+                        line: 10,
+                        character: 21,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+                context: None,
+            },
+        )
+        .expect("completion");
+
+        let CompletionResponse::Array(items) = completion else {
+            panic!("expected array completion");
+        };
+        let item = items
+            .into_iter()
+            .find(|item| item.label == "z_demo_call")
+            .expect("function module completion item");
+        assert_eq!(item.kind, Some(lsp_types::CompletionItemKind::FUNCTION));
+        assert_eq!(item.insert_text_format, Some(InsertTextFormat::SNIPPET));
+        let Some(lsp_types::CompletionTextEdit::Edit(edit)) = item.text_edit else {
+            panic!("expected text edit");
+        };
+        assert_eq!(
+            edit.new_text,
+            "z_demo_call'\n  EXPORTING\n    iv_name = ${1}\n  IMPORTING\n    ev_text = ${2}\n  EXCEPTIONS\n    failed = ${3:1}.$0"
+        );
+    }
+
+    #[test]
+    fn completion_emits_perform_call_template_without_snippet_support() {
+        let state = ServerState::default();
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///completion_perform.abap").expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: "\
+FORM update_item USING uv_name TYPE string CHANGING cv_total TYPE i.
+ENDFORM.
+
+START-OF-SELECTION.
+  PERFORM up"
+                        .to_string(),
+                },
+            },
+        );
+
+        let completion = completion(
+            &state,
+            &CompletionParams {
+                text_document_position: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///completion_perform.abap").expect("uri"),
+                    },
+                    position: Position {
+                        line: 4,
+                        character: 12,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+                context: None,
+            },
+        )
+        .expect("completion");
+
+        let CompletionResponse::Array(items) = completion else {
+            panic!("expected array completion");
+        };
+        let item = items
+            .into_iter()
+            .find(|item| item.label == "update_item")
+            .expect("perform completion item");
+        assert_eq!(item.kind, Some(lsp_types::CompletionItemKind::FUNCTION));
+        assert_eq!(item.insert_text_format, None);
+        let Some(lsp_types::CompletionTextEdit::Edit(edit)) = item.text_edit else {
+            panic!("expected text edit");
+        };
+        assert_eq!(
+            edit.new_text,
+            "update_item\n  USING\n    uv_name\n  CHANGING\n    cv_total."
+        );
+    }
+
+    #[test]
+    fn completion_returns_local_export_function_module_template_from_workspace_sidecar() {
+        let workspace_path = temp_workspace_path("workspace_local_export_function_completion");
+        let export_root = temp_workspace_path("workspace_local_export_function_completion_export");
+        let _ = fs::remove_dir_all(&workspace_path);
+        let _ = fs::remove_dir_all(&export_root);
+        fs::create_dir_all(workspace_path.join("src/reports/ZREP")).expect("report dir");
+        fs::create_dir_all(export_root.join("function-module")).expect("export dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[resolution]
+dependency_mode = "remote-on-demand"
+unknown_symbol_mode = "remote"
+"#,
+        )
+        .expect("manifest");
+        let source = "\
+REPORT zrep.
+START-OF-SELECTION.
+  CALL FUNCTION 'z_de";
+        fs::write(workspace_path.join("src/reports/ZREP/ZREP.abap"), source).expect("report");
+        fs::write(
+            workspace_path.join("src/reports/ZREP/abapls-unit.toml"),
+            format!(
+                "[local_export]\nroots = [\"{}\"]\n\n[dependencies]\nsource = \"local-first\"\n",
+                export_root.to_string_lossy().replace('\\', "/")
+            ),
+        )
+        .expect("sidecar");
+        fs::write(
+            export_root.join("function-module/Z_DEMO_CALL.abap"),
+            "\
+FUNCTION z_demo_call
+  IMPORTING
+    iv_name TYPE string
+  EXPORTING
+    ev_text TYPE string
+  EXCEPTIONS
+    failed.
+ENDFUNCTION.",
+        )
+        .expect("export");
+
+        let workspace_uri = path_to_file_uri(&workspace_path);
+        let source_uri = format!("{workspace_uri}/src/reports/ZREP/ZREP.abap");
+        let mut state = ServerState::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        refresh_workspace(&mut state, &workspace_uri);
+
+        let line = source
+            .lines()
+            .enumerate()
+            .find(|(_, line)| line.contains("CALL FUNCTION"))
+            .expect("call line");
+        let character = line.1.find("z_de").expect("prefix") as u32 + 4;
+        let completion = completion(
+            &state,
+            &CompletionParams {
+                text_document_position: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str(&source_uri).expect("uri"),
+                    },
+                    position: Position {
+                        line: line.0 as u32,
+                        character,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+                context: None,
+            },
+        )
+        .expect("completion");
+
+        let CompletionResponse::Array(items) = completion else {
+            panic!("expected array completion");
+        };
+        let item = items
+            .into_iter()
+            .find(|item| item.label == "z_demo_call")
+            .expect("function module completion item");
+        let Some(lsp_types::CompletionTextEdit::Edit(edit)) = item.text_edit else {
+            panic!("expected text edit");
+        };
+        assert_eq!(
+            edit.new_text,
+            "z_demo_call'\n  EXPORTING\n    iv_name = \n  IMPORTING\n    ev_text = \n  EXCEPTIONS\n    failed = 1."
+        );
+
+        let _ = fs::remove_dir_all(&workspace_path);
+        let _ = fs::remove_dir_all(&export_root);
+    }
+
+    #[test]
     fn completion_emits_constructor_call_snippet() {
         let mut state = ServerState::default();
         state.client_capabilities.completion_snippet_support = true;
@@ -9910,6 +10266,267 @@ lo_helper->r"
         );
 
         let _ = fs::remove_dir_all(&workspace_path);
+    }
+
+    #[test]
+    fn preview_completion_returns_current_document_form_templates() {
+        let workspace_path = temp_workspace_path("preview_local_form_completion");
+        let _ = fs::remove_dir_all(&workspace_path);
+        fs::create_dir_all(&workspace_path).expect("workspace dir");
+        fs::write(
+            workspace_path.join("main.abap"),
+            "\
+REPORT zpreview.
+START-OF-SELECTION.
+  PERFORM he",
+        )
+        .expect("main");
+
+        let workspace_uri = path_to_file_uri(&workspace_path);
+        let source_uri = format!("{workspace_uri}/main.abap");
+        let mut state = ServerState::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        refresh_workspace(&mut state, &workspace_uri);
+
+        let preview = "\
+REPORT zpreview.
+START-OF-SELECTION.
+  PERFORM he
+
+FORM helper USING iv_value TYPE i.
+ENDFORM.";
+        assert!(stage_workspace_preview_snapshot(
+            &mut state,
+            &source_uri,
+            2,
+            preview
+        ));
+
+        let completion = completion(
+            &state,
+            &CompletionParams {
+                text_document_position: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str(&source_uri).expect("uri"),
+                    },
+                    position: Position {
+                        line: 2,
+                        character: 12,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+                context: None,
+            },
+        )
+        .expect("completion");
+
+        let CompletionResponse::Array(items) = completion else {
+            panic!("expected array completion");
+        };
+        let item = items
+            .into_iter()
+            .find(|item| item.label == "helper")
+            .expect("perform completion item");
+        let Some(lsp_types::CompletionTextEdit::Edit(edit)) = item.text_edit else {
+            panic!("expected text edit");
+        };
+        assert_eq!(edit.new_text, "helper\n  USING\n    iv_value.");
+
+        let _ = fs::remove_dir_all(&workspace_path);
+    }
+
+    #[test]
+    fn preview_completion_returns_current_document_form_templates_before_endform() {
+        let workspace_path = temp_workspace_path("preview_local_form_completion_before_endform");
+        let _ = fs::remove_dir_all(&workspace_path);
+        fs::create_dir_all(&workspace_path).expect("workspace dir");
+        fs::write(
+            workspace_path.join("main.abap"),
+            "\
+REPORT zpreview.
+
+FORM run.
+  WRITE space.
+ENDFORM.
+
+FORM helper USING iv_value TYPE i.
+ENDFORM.",
+        )
+        .expect("main");
+
+        let workspace_uri = path_to_file_uri(&workspace_path);
+        let source_uri = format!("{workspace_uri}/main.abap");
+        let mut state = ServerState::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        refresh_workspace(&mut state, &workspace_uri);
+
+        let preview = "\
+REPORT zpreview.
+
+FORM run.
+  PERFORM he
+ENDFORM.
+
+FORM helper USING iv_value TYPE i.
+ENDFORM.";
+        assert!(stage_workspace_preview_snapshot(
+            &mut state,
+            &source_uri,
+            2,
+            preview
+        ));
+
+        let completion = completion(
+            &state,
+            &CompletionParams {
+                text_document_position: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str(&source_uri).expect("uri"),
+                    },
+                    position: Position {
+                        line: 3,
+                        character: 12,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+                context: None,
+            },
+        )
+        .expect("completion");
+
+        let CompletionResponse::Array(items) = completion else {
+            panic!("expected array completion");
+        };
+        let item = items
+            .into_iter()
+            .find(|item| item.label == "helper")
+            .expect("perform completion item");
+        let Some(lsp_types::CompletionTextEdit::Edit(edit)) = item.text_edit else {
+            panic!("expected text edit");
+        };
+        assert_eq!(edit.new_text, "helper\n  USING\n    iv_value.");
+
+        let _ = fs::remove_dir_all(&workspace_path);
+    }
+
+    #[test]
+    fn preview_completion_returns_current_document_form_templates_before_endform_with_crlf() {
+        let workspace_path =
+            temp_workspace_path("preview_local_form_completion_before_endform_crlf");
+        let _ = fs::remove_dir_all(&workspace_path);
+        fs::create_dir_all(&workspace_path).expect("workspace dir");
+        fs::write(
+            workspace_path.join("main.abap"),
+            "REPORT zpreview.\r\n\r\nFORM run.\r\n  WRITE space.\r\nENDFORM.\r\n\r\nFORM helper USING iv_value TYPE i.\r\nENDFORM.\r\n",
+        )
+        .expect("main");
+
+        let workspace_uri = path_to_file_uri(&workspace_path);
+        let source_uri = format!("{workspace_uri}/main.abap");
+        let mut state = ServerState::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        refresh_workspace(&mut state, &workspace_uri);
+
+        let preview = "REPORT zpreview.\r\n\r\nFORM run.\r\n  PERFORM he\r\nENDFORM.\r\n\r\nFORM helper USING iv_value TYPE i.\r\nENDFORM.\r\n";
+        assert!(stage_workspace_preview_snapshot(
+            &mut state,
+            &source_uri,
+            2,
+            preview
+        ));
+
+        let completion = completion(
+            &state,
+            &CompletionParams {
+                text_document_position: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str(&source_uri).expect("uri"),
+                    },
+                    position: Position {
+                        line: 3,
+                        character: 12,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+                context: None,
+            },
+        )
+        .expect("completion");
+
+        let CompletionResponse::Array(items) = completion else {
+            panic!("expected array completion");
+        };
+        let item = items
+            .into_iter()
+            .find(|item| item.label == "helper")
+            .expect("perform completion item");
+        let Some(lsp_types::CompletionTextEdit::Edit(edit)) = item.text_edit else {
+            panic!("expected text edit");
+        };
+        assert_eq!(edit.new_text, "helper\n  USING\n    iv_value.");
+
+        let _ = fs::remove_dir_all(&workspace_path);
+    }
+
+    #[test]
+    fn completion_emits_function_module_call_snippet_before_endform_with_crlf() {
+        let mut state = ServerState::default();
+        state.client_capabilities.completion_snippet_support = true;
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///completion_function_module_before_endform_crlf.abap")
+                        .expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: "FUNCTION z_demo_call\r\n  IMPORTING\r\n    iv_name TYPE string\r\n  EXPORTING\r\n    ev_text TYPE string\r\n  EXCEPTIONS\r\n    failed.\r\nENDFUNCTION.\r\n\r\nFORM run.\r\n  CALL FUNCTION 'z_de\r\nENDFORM.\r\n"
+                        .to_string(),
+                },
+            },
+        );
+
+        let completion = completion(
+            &state,
+            &CompletionParams {
+                text_document_position: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str(
+                            "file:///completion_function_module_before_endform_crlf.abap",
+                        )
+                        .expect("uri"),
+                    },
+                    position: Position {
+                        line: 10,
+                        character: 21,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+                context: None,
+            },
+        )
+        .expect("completion");
+
+        let CompletionResponse::Array(items) = completion else {
+            panic!("expected array completion");
+        };
+        let item = items
+            .into_iter()
+            .find(|item| item.label == "z_demo_call")
+            .expect("function module completion item");
+        assert_eq!(item.kind, Some(lsp_types::CompletionItemKind::FUNCTION));
+        assert_eq!(item.insert_text_format, Some(InsertTextFormat::SNIPPET));
+        let Some(lsp_types::CompletionTextEdit::Edit(edit)) = item.text_edit else {
+            panic!("expected text edit");
+        };
+        assert_eq!(
+            edit.new_text,
+            "z_demo_call'\n  EXPORTING\n    iv_name = ${1}\n  IMPORTING\n    ev_text = ${2}\n  EXCEPTIONS\n    failed = ${3:1}.$0"
+        );
     }
 
     #[test]

@@ -1139,6 +1139,90 @@ pub fn resolve_local_export_dependency_document(
     None
 }
 
+pub fn resolve_local_export_function_module_documents_by_prefix(
+    roots: &[PathBuf],
+    resolver: &mut LocalExportResolver,
+    prefix: &str,
+    limit: usize,
+) -> Vec<WorkspaceDocument> {
+    let prefix = prefix.trim();
+    if prefix.is_empty() || limit == 0 {
+        return Vec::new();
+    }
+
+    let prefix_lower = prefix.to_ascii_lowercase();
+    let encoded_prefix = encode_local_export_component(prefix).to_ascii_lowercase();
+    if encoded_prefix.is_empty() {
+        return Vec::new();
+    }
+
+    let mut out = Vec::new();
+    let mut seen = HashSet::<String>::new();
+
+    for root in roots {
+        let key = normalized_local_export_path_key(root);
+        let index = resolver
+            .indices
+            .entry(key)
+            .or_insert_with(|| build_local_export_index(root));
+        let mut file_names: Vec<_> = index
+            .artifacts_by_file_name
+            .keys()
+            .filter(|file_name| {
+                file_name.starts_with(&encoded_prefix) && file_name.ends_with(".abap")
+            })
+            .cloned()
+            .collect();
+        file_names.sort();
+
+        for file_name in file_names {
+            let Some(artifacts) = index.artifacts_by_file_name.get(&file_name) else {
+                continue;
+            };
+            for artifact in artifacts {
+                let Ok(source_text) = fs::read_to_string(&artifact.path) else {
+                    continue;
+                };
+                let function_name = if artifact.kind_hint.eq_ignore_ascii_case("function-module")
+                    && artifact
+                        .object_name
+                        .to_ascii_lowercase()
+                        .starts_with(&prefix_lower)
+                {
+                    artifact.object_name.clone()
+                } else {
+                    let Some(function_name) = first_abap_function_module_name(&source_text) else {
+                        continue;
+                    };
+                    if !function_name
+                        .to_ascii_lowercase()
+                        .starts_with(&prefix_lower)
+                    {
+                        continue;
+                    }
+                    function_name.to_string()
+                };
+                let dedupe_key = function_name.to_ascii_lowercase();
+                if !seen.insert(dedupe_key.clone()) {
+                    continue;
+                }
+                out.push(WorkspaceDocument {
+                    uri: Arc::from(path_to_file_uri(&artifact.path)),
+                    version: 0,
+                    text: source_text,
+                    is_dependency: true,
+                    object_name: Some(Arc::from(dedupe_key)),
+                });
+                if out.len() >= limit {
+                    return out;
+                }
+            }
+        }
+    }
+
+    out
+}
+
 fn local_export_fallback_source_if_matches(
     artifact: &LocalExportArtifact,
     candidate_name: &str,

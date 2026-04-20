@@ -1263,16 +1263,7 @@ fn parse_structured_types_component_run(
             false,
         )
         .or_else(|| parse_structured_include_clause(b, source, tokens, idx))
-        .or_else(|| {
-            parse_structured_field_clause(
-                b,
-                source,
-                tokens,
-                idx,
-                true,
-                false,
-            )
-        })?;
+        .or_else(|| parse_structured_field_clause(b, source, tokens, idx, true, false))?;
         out.push(component);
         idx = next_i;
 
@@ -1637,9 +1628,8 @@ mod tests {
 
     #[test]
     fn structured_types_clause_accepts_untyped_components() {
-        let file = tree_ok(
-            "TYPES: BEGIN OF ty_sel, stext(40), sign0(1), length TYPE p, END OF ty_sel.",
-        );
+        let file =
+            tree_ok("TYPES: BEGIN OF ty_sel, stext(40), sign0(1), length TYPE p, END OF ty_sel.");
         assert_eq!(file.count_kind(file.root(), SyntaxKind::TypesDecl), 1);
         assert_eq!(
             file.count_kind(file.root(), SyntaxKind::StructuredFieldClause),

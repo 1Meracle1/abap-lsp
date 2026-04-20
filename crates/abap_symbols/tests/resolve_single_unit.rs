@@ -5372,7 +5372,11 @@ ls_seldis-field = sy-ucomm.\n\
 ls_seldis-stext = 'X'.";
     let parsed = parse(src);
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-    let unit = analyze_unit("file:///legacy_type_pool_structured_fields.abap", src, &parsed);
+    let unit = analyze_unit(
+        "file:///legacy_type_pool_structured_fields.abap",
+        src,
+        &parsed,
+    );
 
     let type_symbol = unit
         .symbols
@@ -5384,22 +5388,34 @@ ls_seldis-stext = 'X'.";
         .expect("structured type symbol");
     let structure = unit.structure(type_symbol.structure.expect("structure metadata"));
     assert!(
-        structure.fields.iter().any(|field| field.name.as_ref() == "field"),
+        structure
+            .fields
+            .iter()
+            .any(|field| field.name.as_ref() == "field"),
         "expected field component, fields={:?}",
         structure.fields
     );
     assert!(
-        structure.fields.iter().any(|field| field.name.as_ref() == "table"),
+        structure
+            .fields
+            .iter()
+            .any(|field| field.name.as_ref() == "table"),
         "expected table component, fields={:?}",
         structure.fields
     );
     assert!(
-        structure.fields.iter().any(|field| field.name.as_ref() == "stext"),
+        structure
+            .fields
+            .iter()
+            .any(|field| field.name.as_ref() == "stext"),
         "expected untyped character component, fields={:?}",
         structure.fields
     );
     assert!(
-        structure.fields.iter().any(|field| field.name.as_ref() == "sign0"),
+        structure
+            .fields
+            .iter()
+            .any(|field| field.name.as_ref() == "sign0"),
         "expected untyped numeric component, fields={:?}",
         structure.fields
     );

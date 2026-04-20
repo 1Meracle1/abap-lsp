@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::io::{self, BufRead, BufReader, BufWriter, Write};
 use std::net::{SocketAddr, TcpListener};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -800,20 +801,44 @@ fn serve(
                             params,
                         });
                     };
-                    match run_analysis_task(task, Some(&progress)) {
-                        Ok(completion) => {
-                            if completion.generation
-                                == current_workspace_generation(
-                                    &worker_generations,
-                                    &completion.workspace_uri,
-                                )
-                                && worker_completion_tx.send(completion).is_err()
-                            {
-                                break;
+                    let fallback_finished = task.started.as_ref().map(|started| {
+                        workspace_analysis_status_finished_for_workspace(started, &task.workspace)
+                    });
+                    match catch_unwind(AssertUnwindSafe(|| {
+                        run_analysis_task(task, Some(&progress))
+                    })) {
+                        Ok(completion) => match completion {
+                            Ok(completion) => {
+                                if completion.generation
+                                    == current_workspace_generation(
+                                        &worker_generations,
+                                        &completion.workspace_uri,
+                                    )
+                                    && worker_completion_tx.send(completion).is_err()
+                                {
+                                    break;
+                                }
                             }
-                        }
-                        Err(error) => {
-                            warn!(error = %error, "background analysis task failed");
+                            Err(error) => {
+                                warn!(error = %error, "background analysis task failed");
+                                if let Some(params) = fallback_finished.clone() {
+                                    let _ = worker_progress_tx.send(AnalysisProgress {
+                                        workspace_uri: progress_workspace_uri.clone(),
+                                        generation: progress_generation,
+                                        params,
+                                    });
+                                }
+                            }
+                        },
+                        Err(_) => {
+                            warn!("background analysis task panicked");
+                            if let Some(params) = fallback_finished {
+                                let _ = worker_progress_tx.send(AnalysisProgress {
+                                    workspace_uri: progress_workspace_uri.clone(),
+                                    generation: progress_generation,
+                                    params,
+                                });
+                            }
                         }
                     }
                     if let Err(error) =
@@ -1996,8 +2021,17 @@ fn workspace_analysis_status_finished(
     started: &WorkspaceAnalysisStatusParams,
 ) -> Option<WorkspaceAnalysisStatusParams> {
     let workspace = state.workspaces.get(&started.workspace_uri)?;
+    Some(workspace_analysis_status_finished_for_workspace(
+        started, workspace,
+    ))
+}
+
+fn workspace_analysis_status_finished_for_workspace(
+    started: &WorkspaceAnalysisStatusParams,
+    workspace: &WorkspaceState,
+) -> WorkspaceAnalysisStatusParams {
     let document_count = workspace.cache.uris().len();
-    Some(WorkspaceAnalysisStatusParams {
+    WorkspaceAnalysisStatusParams {
         workspace_uri: started.workspace_uri.clone(),
         phase: WorkspaceAnalysisPhase::Finished,
         trigger: started.trigger.clone(),
@@ -2005,7 +2039,7 @@ fn workspace_analysis_status_finished(
         total_document_count: document_count,
         analyzed_document_count: document_count,
         remote_resolution_in_flight: workspace.remote_resolution_in_flight,
-    })
+    }
 }
 
 fn emit_workspace_analysis_progress(

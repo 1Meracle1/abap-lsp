@@ -7,13 +7,14 @@ use abap_lexer::{TokenKind, tokenize};
 use abap_parser::{ParseResult, parse};
 use abap_symbols::{
     ClassMemberData, ClassMemberKind, ClassMemberParameterData, FieldTypeRefData,
-    FormParameterData, FormParameterPassingKind, FormParameterSection, FunctionModuleData,
-    FunctionModuleParameterData, FunctionModuleParameterSection, MethodParameterSection,
-    NamedArgumentAccess, NamedArgumentSection, NamedArgumentTarget, Namespace, PerformArgumentData,
-    PerformCallData, PerformParameterSection, ProjectAnalysis, ProjectRoutineAnalysis,
-    ProjectStaticAnalysisSummary, ReferenceKind, Resolution, ScopeId, ScopeKind, SqlNameRefData,
-    SqlNameRefKind, StructureFieldData, StructureFieldInfo, StructureFieldShape, StructureId,
-    SymbolData, SymbolHandle, SymbolId, SymbolKind, UnitAnalysis, UnitId, Visibility,
+    FormParameterData, FormParameterPassingKind, FormParameterSection, FormRoutineData,
+    FunctionModuleData, FunctionModuleExceptionData, FunctionModuleParameterData,
+    FunctionModuleParameterSection, MethodParameterSection, NamedArgumentAccess,
+    NamedArgumentSection, NamedArgumentTarget, Namespace, PerformArgumentData, PerformCallData,
+    PerformParameterSection, ProjectAnalysis, ProjectRoutineAnalysis, ProjectStaticAnalysisSummary,
+    ReferenceKind, Resolution, ScopeId, ScopeKind, SqlNameRefData, SqlNameRefKind,
+    StructureFieldData, StructureFieldInfo, StructureFieldShape, StructureId, SymbolData,
+    SymbolHandle, SymbolId, SymbolKind, UnitAnalysis, UnitId, Visibility,
     build_project_routine_analysis, build_project_static_analysis_summary, builtin_routine_spec,
     call_section_matches_parameter, parameter_is_required,
     perf_api::{
@@ -65,7 +66,8 @@ pub use workspace::{
     local_export_config_for_source, manifest_cache_dir, manifest_declares_uri,
     manifest_document_metadata, manifest_supports_remote_resolution, normalize_dependency_mode,
     normalize_unknown_symbol_mode, normalize_workspace_performance_mode, path_to_file_uri,
-    resolve_local_export_dependency_document, resolve_workspace_performance_mode,
+    resolve_local_export_dependency_document,
+    resolve_local_export_function_module_documents_by_prefix, resolve_workspace_performance_mode,
     uri_starts_with_workspace, workspace_relative_path,
 };
 
@@ -196,10 +198,25 @@ pub struct NamedArgumentCompletionItem {
     pub insertion: CompletionInsertion,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CallableCompletionKind {
+    FunctionModule,
+    Form,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallableCompletionItem {
+    pub name: Arc<str>,
+    pub declaration: Option<String>,
+    pub kind: CallableCompletionKind,
+    pub insertion: CompletionInsertion,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CompletionItem {
     Selector(SelectorCompletionItem),
     NamedArgument(NamedArgumentCompletionItem),
+    Callable(CallableCompletionItem),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -207,6 +224,13 @@ pub struct CompletionInfo {
     pub replace_range: Range<usize>,
     pub items: Vec<CompletionItem>,
     pub in_type_position: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallableStatementCompletionContext {
+    pub replace_range: Range<usize>,
+    pub prefix: Arc<str>,
+    pub kind: CallableCompletionKind,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -233,6 +257,19 @@ struct BareWhereFieldQuery {
     structure_id: StructureId,
     replace_range: Range<usize>,
     prefix: Arc<str>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CallableStatementCompletionQuery {
+    scope: ScopeId,
+    replace_range: Range<usize>,
+    prefix: Arc<str>,
+    kind: CallableCompletionKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InferredFunctionModuleCallTemplate {
+    sections: Vec<(NamedArgumentSection, Vec<Arc<str>>)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -704,7 +741,22 @@ impl AnalysisSnapshot {
                 in_type_position: completion.in_type_position,
             });
         }
+        if let Some(completion) = self.callable_statement_completion_at(offset) {
+            return Some(completion);
+        }
         self.named_argument_completion_at(offset)
+    }
+
+    pub fn callable_statement_completion_context_at(
+        &self,
+        offset: usize,
+    ) -> Option<CallableStatementCompletionContext> {
+        let query = self.callable_statement_completion_query_at(offset)?;
+        Some(CallableStatementCompletionContext {
+            replace_range: query.replace_range,
+            prefix: query.prefix,
+            kind: query.kind,
+        })
     }
 
     pub fn hovered_named_argument_at(&self, offset: usize) -> Option<HoveredSymbolInfo> {
@@ -1528,6 +1580,114 @@ impl AnalysisSnapshot {
         })
     }
 
+    fn callable_statement_completion_at(&self, offset: usize) -> Option<CompletionInfo> {
+        let query = self.callable_statement_completion_query_at(offset)?;
+        let mut items: Vec<CompletionItem> = Vec::new();
+        match query.kind {
+            CallableCompletionKind::FunctionModule => {
+                let mut seen = HashSet::<Arc<str>>::new();
+                for unit in self.callable_completion_units() {
+                    for function_module in &unit.function_modules {
+                        let symbol = unit.symbol(function_module.symbol);
+                        if !symbol.name.as_ref().starts_with(query.prefix.as_ref())
+                            || !seen.insert(Arc::clone(&symbol.name))
+                        {
+                            continue;
+                        }
+                        items.push(CompletionItem::Callable(CallableCompletionItem {
+                            name: Arc::clone(&symbol.name),
+                            declaration: render_function_module_signature(unit, symbol),
+                            kind: CallableCompletionKind::FunctionModule,
+                            insertion: function_module_completion_insertion(
+                                symbol.name.as_ref(),
+                                function_module,
+                            ),
+                        }));
+                    }
+                }
+                for (function_name, template) in inferred_function_module_templates(self) {
+                    if !function_name.as_ref().starts_with(query.prefix.as_ref())
+                        || !seen.insert(Arc::clone(&function_name))
+                    {
+                        continue;
+                    }
+                    items.push(CompletionItem::Callable(CallableCompletionItem {
+                        name: Arc::clone(&function_name),
+                        declaration: Some(format!(
+                            "CALL FUNCTION '{}' (inferred from project call sites)",
+                            function_name
+                        )),
+                        kind: CallableCompletionKind::FunctionModule,
+                        insertion: inferred_function_module_completion_insertion(
+                            function_name.as_ref(),
+                            &template,
+                        ),
+                    }));
+                }
+            }
+            CallableCompletionKind::Form => {
+                let mut seen = HashSet::<(UnitId, SymbolId)>::new();
+                for unit in self.callable_completion_units() {
+                    for form_routine in &unit.form_routines {
+                        let symbol = unit.symbol(form_routine.symbol);
+                        if !symbol.name.as_ref().starts_with(query.prefix.as_ref()) {
+                            continue;
+                        }
+                        let Some((resolved_unit, resolved_symbol_id)) = resolve_symbol_from_context(
+                            self,
+                            query.scope,
+                            Namespace::Routine,
+                            &symbol.name,
+                            false,
+                        ) else {
+                            continue;
+                        };
+                        if resolved_unit.symbol(resolved_symbol_id).kind != SymbolKind::Form
+                            || !seen.insert((resolved_unit.unit_id, resolved_symbol_id))
+                        {
+                            continue;
+                        }
+                        let resolved_symbol = resolved_unit.symbol(resolved_symbol_id);
+                        let Some(resolved_form) = resolved_unit
+                            .semantic()
+                            .decls()
+                            .form_routine(resolved_symbol_id)
+                        else {
+                            continue;
+                        };
+                        items.push(CompletionItem::Callable(CallableCompletionItem {
+                            name: Arc::clone(&resolved_symbol.name),
+                            declaration: render_form_signature(resolved_unit, resolved_symbol),
+                            kind: CallableCompletionKind::Form,
+                            insertion: form_completion_insertion(
+                                resolved_unit,
+                                resolved_symbol.name.as_ref(),
+                                resolved_form,
+                            ),
+                        }));
+                    }
+                }
+            }
+        }
+        if items.is_empty() {
+            return None;
+        }
+        items.sort_by(|left, right| completion_item_name(left).cmp(completion_item_name(right)));
+        Some(CompletionInfo {
+            replace_range: query.replace_range,
+            items,
+            in_type_position: false,
+        })
+    }
+
+    fn callable_statement_completion_query_at(
+        &self,
+        offset: usize,
+    ) -> Option<CallableStatementCompletionQuery> {
+        parse_function_module_completion_query(self, offset)
+            .or_else(|| parse_form_completion_query(self, offset))
+    }
+
     fn call_target_method_at(
         &self,
         offset: usize,
@@ -1676,6 +1836,19 @@ impl AnalysisSnapshot {
             replace_range: parsed.replace_range,
             prefix: parsed.prefix,
         })
+    }
+
+    fn callable_completion_units(&self) -> Vec<&UnitAnalysis> {
+        let current_unit = self.symbols.as_ref();
+        let mut units = Vec::with_capacity(self.project.units.len() + 1);
+        units.push(current_unit);
+        units.extend(
+            self.project
+                .units
+                .iter()
+                .filter(|unit| unit.unit_id != current_unit.unit_id),
+        );
+        units
     }
 }
 
@@ -2110,6 +2283,267 @@ fn callable_completion_insertion(member: &ClassMemberData) -> CompletionInsertio
     }
 }
 
+fn function_module_completion_insertion(
+    function_name: &str,
+    function_module: &FunctionModuleData,
+) -> CompletionInsertion {
+    fn push_named_section(
+        plain_lines: &mut Vec<String>,
+        snippet_lines: &mut Vec<String>,
+        keyword: &str,
+        parameters: &[&FunctionModuleParameterData],
+        tabstop: &mut usize,
+    ) {
+        if parameters.is_empty() {
+            return;
+        }
+        plain_lines.push(format!("  {keyword}"));
+        snippet_lines.push(format!("  {keyword}"));
+        for parameter in parameters {
+            plain_lines.push(format!("    {} = ", parameter.name));
+            snippet_lines.push(format!("    {} = ${{{tabstop}}}", parameter.name));
+            *tabstop += 1;
+        }
+    }
+
+    fn push_exception_section(
+        plain_lines: &mut Vec<String>,
+        snippet_lines: &mut Vec<String>,
+        exceptions: &[FunctionModuleExceptionData],
+        tabstop: &mut usize,
+    ) {
+        if exceptions.is_empty() {
+            return;
+        }
+        plain_lines.push("  EXCEPTIONS".to_string());
+        snippet_lines.push("  EXCEPTIONS".to_string());
+        for (idx, exception) in exceptions.iter().enumerate() {
+            let code = idx + 1;
+            plain_lines.push(format!("    {} = {code}", exception.name));
+            snippet_lines.push(format!("    {} = ${{{tabstop}:{code}}}", exception.name));
+            *tabstop += 1;
+        }
+    }
+
+    let call_exporting: Vec<_> = function_module
+        .parameters
+        .iter()
+        .filter(|parameter| {
+            parameter.section == FunctionModuleParameterSection::Importing
+                && !parameter.is_optional
+                && !parameter.has_default_value
+        })
+        .collect();
+    let call_importing: Vec<_> = function_module
+        .parameters
+        .iter()
+        .filter(|parameter| parameter.section == FunctionModuleParameterSection::Exporting)
+        .collect();
+    let call_changing: Vec<_> = function_module
+        .parameters
+        .iter()
+        .filter(|parameter| parameter.section == FunctionModuleParameterSection::Changing)
+        .collect();
+    let call_tables: Vec<_> = function_module
+        .parameters
+        .iter()
+        .filter(|parameter| parameter.section == FunctionModuleParameterSection::Tables)
+        .collect();
+
+    let mut plain_lines = vec![format!("{function_name}'")];
+    let mut snippet_lines = vec![format!("{function_name}'")];
+    let mut tabstop = 1usize;
+
+    push_named_section(
+        &mut plain_lines,
+        &mut snippet_lines,
+        "EXPORTING",
+        &call_exporting,
+        &mut tabstop,
+    );
+    push_named_section(
+        &mut plain_lines,
+        &mut snippet_lines,
+        "IMPORTING",
+        &call_importing,
+        &mut tabstop,
+    );
+    push_named_section(
+        &mut plain_lines,
+        &mut snippet_lines,
+        "CHANGING",
+        &call_changing,
+        &mut tabstop,
+    );
+    push_named_section(
+        &mut plain_lines,
+        &mut snippet_lines,
+        "TABLES",
+        &call_tables,
+        &mut tabstop,
+    );
+    push_exception_section(
+        &mut plain_lines,
+        &mut snippet_lines,
+        &function_module.exceptions,
+        &mut tabstop,
+    );
+
+    if let Some(last) = plain_lines.last_mut() {
+        last.push('.');
+    }
+    if let Some(last) = snippet_lines.last_mut() {
+        last.push_str(".$0");
+    }
+
+    CompletionInsertion {
+        plain_text: plain_lines.join("\n"),
+        snippet_text: Some(snippet_lines.join("\n")),
+    }
+}
+
+fn inferred_function_module_templates(
+    snapshot: &AnalysisSnapshot,
+) -> HashMap<Arc<str>, InferredFunctionModuleCallTemplate> {
+    let mut templates = HashMap::<Arc<str>, InferredFunctionModuleCallTemplate>::new();
+    for unit in snapshot.callable_completion_units() {
+        for call_site in &unit.call_sites {
+            let NamedArgumentTarget::Function { function_name } = &call_site.target else {
+                continue;
+            };
+            let template = inferred_function_module_template_from_call_site(call_site);
+            if template.sections.is_empty() {
+                continue;
+            }
+            let score = inferred_function_module_template_score(&template);
+            let replace = templates
+                .get(function_name)
+                .is_none_or(|current| inferred_function_module_template_score(current) < score);
+            if replace {
+                templates.insert(Arc::clone(function_name), template);
+            }
+        }
+    }
+    templates
+}
+
+fn inferred_function_module_template_from_call_site(
+    call_site: &abap_symbols::CallSiteData,
+) -> InferredFunctionModuleCallTemplate {
+    let mut sections = Vec::new();
+    for section in [
+        NamedArgumentSection::Exporting,
+        NamedArgumentSection::Importing,
+        NamedArgumentSection::Changing,
+        NamedArgumentSection::Tables,
+        NamedArgumentSection::Exceptions,
+    ] {
+        let mut names: Vec<_> = call_site
+            .arguments
+            .iter()
+            .filter(|argument| argument.section == Some(section))
+            .filter_map(|argument| argument.name.as_ref().map(|name| (argument.ordinal, name)))
+            .collect();
+        names.sort_by_key(|(ordinal, _)| *ordinal);
+        names.dedup_by(|left, right| left.1 == right.1);
+        if !names.is_empty() {
+            sections.push((
+                section,
+                names
+                    .into_iter()
+                    .map(|(_, name)| Arc::clone(name))
+                    .collect(),
+            ));
+        }
+    }
+    InferredFunctionModuleCallTemplate { sections }
+}
+
+fn inferred_function_module_template_score(template: &InferredFunctionModuleCallTemplate) -> usize {
+    template
+        .sections
+        .iter()
+        .map(|(_, names)| names.len())
+        .sum::<usize>()
+}
+
+fn inferred_function_module_completion_insertion(
+    function_name: &str,
+    template: &InferredFunctionModuleCallTemplate,
+) -> CompletionInsertion {
+    let mut plain_lines = vec![format!("{function_name}'")];
+    let mut snippet_lines = vec![format!("{function_name}'")];
+    let mut tabstop = 1usize;
+
+    for (section, names) in &template.sections {
+        let keyword = match section {
+            NamedArgumentSection::Exporting => "EXPORTING",
+            NamedArgumentSection::Importing => "IMPORTING",
+            NamedArgumentSection::Changing => "CHANGING",
+            NamedArgumentSection::Tables => "TABLES",
+            NamedArgumentSection::Exceptions => "EXCEPTIONS",
+            NamedArgumentSection::Receiving => "RECEIVING",
+        };
+        if names.is_empty() {
+            continue;
+        }
+        plain_lines.push(format!("  {keyword}"));
+        snippet_lines.push(format!("  {keyword}"));
+        for (idx, name) in names.iter().enumerate() {
+            if *section == NamedArgumentSection::Exceptions {
+                let code = idx + 1;
+                plain_lines.push(format!("    {name} = {code}"));
+                snippet_lines.push(format!("    {name} = ${{{tabstop}:{code}}}"));
+            } else {
+                plain_lines.push(format!("    {name} = "));
+                snippet_lines.push(format!("    {name} = ${{{tabstop}}}"));
+            }
+            tabstop += 1;
+        }
+    }
+
+    if let Some(last) = plain_lines.last_mut() {
+        last.push('.');
+    }
+    if let Some(last) = snippet_lines.last_mut() {
+        last.push_str(".$0");
+    }
+
+    CompletionInsertion {
+        plain_text: plain_lines.join("\n"),
+        snippet_text: Some(snippet_lines.join("\n")),
+    }
+}
+
+pub fn function_module_completion_items_from_source(
+    uri: &str,
+    text: &str,
+    object_name: Option<Arc<str>>,
+) -> Vec<CallableCompletionItem> {
+    let parse = Arc::new(parse(text));
+    let local = local_analysis_with_object_name(
+        analyze_unit_local_state(UnitId(0), Arc::from(uri), text, parse.as_ref()),
+        object_name.as_ref(),
+    );
+    let unit = local.unit;
+    let mut seen = HashSet::<Arc<str>>::new();
+    let mut items = Vec::new();
+    for function_module in &unit.function_modules {
+        let symbol = unit.symbol(function_module.symbol);
+        if !seen.insert(Arc::clone(&symbol.name)) {
+            continue;
+        }
+        items.push(CallableCompletionItem {
+            name: Arc::clone(&symbol.name),
+            declaration: render_function_module_signature(&unit, symbol),
+            kind: CallableCompletionKind::FunctionModule,
+            insertion: function_module_completion_insertion(symbol.name.as_ref(), function_module),
+        });
+    }
+    items.sort_by(|left, right| left.name.cmp(&right.name));
+    items
+}
+
 fn call_section_matches_function_parameter(
     section: Option<NamedArgumentSection>,
     parameter: &FunctionModuleParameterData,
@@ -2136,6 +2570,90 @@ fn named_argument_completion_insertion(name: &str) -> CompletionInsertion {
     CompletionInsertion {
         plain_text: format!("{name} = "),
         snippet_text: Some(format!("{name} = ${{1}}")),
+    }
+}
+
+fn form_completion_insertion(
+    unit: &UnitAnalysis,
+    form_name: &str,
+    form_routine: &FormRoutineData,
+) -> CompletionInsertion {
+    fn push_form_section(
+        plain_lines: &mut Vec<String>,
+        snippet_lines: &mut Vec<String>,
+        keyword: &str,
+        parameters: &[&FormParameterData],
+        unit: &UnitAnalysis,
+        tabstop: &mut usize,
+    ) {
+        if parameters.is_empty() {
+            return;
+        }
+        plain_lines.push(format!("  {keyword}"));
+        snippet_lines.push(format!("  {keyword}"));
+        for parameter in parameters {
+            let name = unit.symbol(parameter.symbol).name.as_ref();
+            plain_lines.push(format!("    {name}"));
+            snippet_lines.push(format!("    ${{{tabstop}:{name}}}"));
+            *tabstop += 1;
+        }
+    }
+
+    let tables: Vec<_> = form_routine
+        .parameters
+        .iter()
+        .filter(|parameter| parameter.section == FormParameterSection::Tables)
+        .collect();
+    let using: Vec<_> = form_routine
+        .parameters
+        .iter()
+        .filter(|parameter| parameter.section == FormParameterSection::Using)
+        .collect();
+    let changing: Vec<_> = form_routine
+        .parameters
+        .iter()
+        .filter(|parameter| parameter.section == FormParameterSection::Changing)
+        .collect();
+
+    let mut plain_lines = vec![form_name.to_string()];
+    let mut snippet_lines = vec![form_name.to_string()];
+    let mut tabstop = 1usize;
+
+    push_form_section(
+        &mut plain_lines,
+        &mut snippet_lines,
+        "TABLES",
+        &tables,
+        unit,
+        &mut tabstop,
+    );
+    push_form_section(
+        &mut plain_lines,
+        &mut snippet_lines,
+        "USING",
+        &using,
+        unit,
+        &mut tabstop,
+    );
+    push_form_section(
+        &mut plain_lines,
+        &mut snippet_lines,
+        "CHANGING",
+        &changing,
+        unit,
+        &mut tabstop,
+    );
+
+    if let Some(last) = plain_lines.last_mut() {
+        last.push('.');
+    }
+    if let Some(last) = snippet_lines.last_mut() {
+        last.push_str(".$0");
+    }
+
+    CompletionInsertion {
+        plain_text: plain_lines.join("\n"),
+        snippet_text: Some(snippet_lines.join("\n")),
     }
 }
 
@@ -2177,6 +2695,7 @@ fn completion_item_name(item: &CompletionItem) -> &str {
     match item {
         CompletionItem::Selector(item) => item.name.as_ref(),
         CompletionItem::NamedArgument(item) => item.name.as_ref(),
+        CompletionItem::Callable(item) => item.name.as_ref(),
     }
 }
 
@@ -5589,6 +6108,154 @@ fn statement_query_range(parse: &ParseResult, offset: usize) -> Option<Range<usi
             context.range.end = offset;
         }
         context.range
+    })
+}
+
+fn significant_statement_tokens(parse: &ParseResult, range: &Range<usize>) -> Option<Vec<usize>> {
+    let (token_start, token_end) = token_window_for_range(parse, range)?;
+    Some(
+        (token_start..token_end)
+            .filter(|&idx| !matches!(parse.tokens[idx].kind.as_str(), "Comment" | "Eof"))
+            .collect(),
+    )
+}
+
+fn string_literal_content_range(text: &str, token: &abap_lexer::Token) -> Option<Range<usize>> {
+    if token.kind != TokenKind::String {
+        return None;
+    }
+    let lexeme = text.get(token.range.clone())?;
+    let quote = lexeme.chars().next()?;
+    if quote != '\'' && quote != '`' {
+        return None;
+    }
+    let start = token.range.start + quote.len_utf8();
+    let end = if lexeme.ends_with(quote) && token.range.end > start {
+        token.range.end - quote.len_utf8()
+    } else {
+        token.range.end
+    };
+    Some(start..end)
+}
+
+fn line_end_offset(text: &str, offset: usize) -> usize {
+    let mut end = text
+        .get(offset..)
+        .and_then(|tail| tail.find('\n').map(|idx| offset + idx))
+        .unwrap_or(text.len());
+    if end > offset && text.as_bytes().get(end - 1) == Some(&b'\r') {
+        end -= 1;
+    }
+    end
+}
+
+fn parse_function_module_completion_query(
+    snapshot: &AnalysisSnapshot,
+    offset: usize,
+) -> Option<CallableStatementCompletionQuery> {
+    let statement_range = statement_query_range(&snapshot.parse, offset)?;
+    let significant = significant_statement_tokens(&snapshot.parse, &statement_range)?;
+    if significant.len() < 3 {
+        return None;
+    }
+    let call_idx = significant[0];
+    let function_idx = significant[1];
+    let target_idx = significant[2];
+    let call_token = &snapshot.parse.tokens[call_idx];
+    let function_token = &snapshot.parse.tokens[function_idx];
+    let target = &snapshot.parse.tokens[target_idx];
+    if !call_token
+        .lexeme(snapshot.text.as_ref())
+        .eq_ignore_ascii_case("call")
+        || !function_token
+            .lexeme(snapshot.text.as_ref())
+            .eq_ignore_ascii_case("function")
+    {
+        return None;
+    }
+
+    let line_end = line_end_offset(snapshot.text.as_ref(), target.range.start);
+
+    if significant.iter().copied().skip(3).any(|idx| {
+        let token = &snapshot.parse.tokens[idx];
+        token.range.start < line_end && token.kind != TokenKind::Period
+    }) {
+        return None;
+    }
+
+    let content_range = string_literal_content_range(snapshot.text.as_ref(), target)?;
+    if offset < content_range.start || offset > content_range.end {
+        return None;
+    }
+
+    let prefix_end = offset.min(content_range.end);
+    Some(CallableStatementCompletionQuery {
+        scope: innermost_scope_at(&snapshot.symbols, statement_range.start),
+        replace_range: content_range.start..line_end,
+        prefix: Arc::from(snapshot.text[content_range.start..prefix_end].to_ascii_lowercase()),
+        kind: CallableCompletionKind::FunctionModule,
+    })
+}
+
+fn parse_form_completion_query(
+    snapshot: &AnalysisSnapshot,
+    offset: usize,
+) -> Option<CallableStatementCompletionQuery> {
+    let statement_range = statement_query_range(&snapshot.parse, offset)?;
+    let significant = significant_statement_tokens(&snapshot.parse, &statement_range)?;
+    let perform_idx = *significant.first()?;
+    let perform_token = &snapshot.parse.tokens[perform_idx];
+    if !perform_token
+        .lexeme(snapshot.text.as_ref())
+        .eq_ignore_ascii_case("perform")
+    {
+        return None;
+    }
+
+    let target_idx = significant
+        .get(1)
+        .copied()
+        .filter(|&idx| snapshot.parse.tokens[idx].kind == TokenKind::Ident);
+
+    let (replace_range, prefix, remaining_start) = if let Some(target_idx) = target_idx {
+        let target = &snapshot.parse.tokens[target_idx];
+        let line_end = line_end_offset(snapshot.text.as_ref(), target.range.start);
+        if offset < target.range.start || offset > target.range.end {
+            return None;
+        }
+        let prefix_end = offset.min(target.range.end);
+        (
+            target.range.start..line_end,
+            Arc::from(snapshot.text[target.range.start..prefix_end].to_ascii_lowercase()),
+            2usize,
+        )
+    } else {
+        let line_end = line_end_offset(snapshot.text.as_ref(), perform_token.range.start);
+        if offset < perform_token.range.end || offset > line_end {
+            return None;
+        }
+        (offset..line_end, Arc::<str>::from(""), 1usize)
+    };
+
+    let line_end = replace_range.end;
+
+    if significant
+        .iter()
+        .copied()
+        .skip(remaining_start)
+        .any(|idx| {
+            let token = &snapshot.parse.tokens[idx];
+            token.range.start < line_end && token.kind != TokenKind::Period
+        })
+    {
+        return None;
+    }
+
+    Some(CallableStatementCompletionQuery {
+        scope: innermost_scope_at(&snapshot.symbols, statement_range.start),
+        replace_range,
+        prefix,
+        kind: CallableCompletionKind::Form,
     })
 }
 
@@ -11900,6 +12567,7 @@ START-OF-SELECTION.
             .map(|item| match item {
                 crate::CompletionItem::Selector(item) => item.name.as_ref(),
                 crate::CompletionItem::NamedArgument(item) => item.name.as_ref(),
+                crate::CompletionItem::Callable(item) => item.name.as_ref(),
             })
             .collect();
         assert_eq!(names, vec!["iv_mode", "iv_name"]);
@@ -11922,6 +12590,319 @@ START-OF-SELECTION.
             .expect("parameter definition");
         assert_eq!(target.uri.as_ref(), "file:///fm_completion_dep.abap");
         assert_eq!(&dep_src[target.range.clone()], "cv_text");
+    }
+
+    #[test]
+    fn completion_returns_function_module_call_templates() {
+        let store = DocumentStore::default();
+        let dep_src = "\
+FUNCTION z_demo_call
+  IMPORTING
+    iv_name TYPE string
+    iv_mode TYPE i OPTIONAL
+  EXPORTING
+    ev_text TYPE string
+  CHANGING
+    cv_total TYPE i
+  TABLES
+    tt_return STRUCTURE bapiret2
+  EXCEPTIONS
+    failed
+    missing_input.
+ENDFUNCTION.";
+        let main_src = "\
+START-OF-SELECTION.
+  CALL FUNCTION 'z_de";
+        store.replace_all(vec![
+            DocumentInput {
+                uri: Arc::from("file:///fm_template_main.abap"),
+                version: 1,
+                text: Arc::from(main_src),
+                is_dependency: false,
+                object_name: None,
+            },
+            DocumentInput {
+                uri: Arc::from("file:///fm_template_dep.abap"),
+                version: 1,
+                text: Arc::from(dep_src),
+                is_dependency: true,
+                object_name: None,
+            },
+        ]);
+        let snapshot = store
+            .documents
+            .read()
+            .get("file:///fm_template_main.abap")
+            .cloned()
+            .expect("main snapshot");
+
+        let completion_offset = main_src.len();
+        let completion = snapshot
+            .completion_at(completion_offset)
+            .expect("call function completion");
+        let item = completion
+            .items
+            .iter()
+            .find_map(|item| match item {
+                crate::CompletionItem::Callable(item) if item.name.as_ref() == "z_demo_call" => {
+                    Some(item)
+                }
+                _ => None,
+            })
+            .expect("function module completion item");
+        assert_eq!(
+            item.insertion.plain_text,
+            "z_demo_call'\n  EXPORTING\n    iv_name = \n  IMPORTING\n    ev_text = \n  CHANGING\n    cv_total = \n  TABLES\n    tt_return = \n  EXCEPTIONS\n    failed = 1\n    missing_input = 2."
+        );
+        assert_eq!(
+            item.insertion.snippet_text.as_deref(),
+            Some(
+                "z_demo_call'\n  EXPORTING\n    iv_name = ${1}\n  IMPORTING\n    ev_text = ${2}\n  CHANGING\n    cv_total = ${3}\n  TABLES\n    tt_return = ${4}\n  EXCEPTIONS\n    failed = ${5:1}\n    missing_input = ${6:2}.$0"
+            )
+        );
+    }
+
+    #[test]
+    fn completion_returns_function_module_call_templates_before_following_statement() {
+        let store = DocumentStore::default();
+        let dep_src = "\
+FUNCTION job_close
+  IMPORTING
+    jobcount TYPE btcjobcnt
+    jobname TYPE btcjob
+  EXCEPTIONS
+    cant_start_immediate.
+ENDFUNCTION.";
+        let main_src = "\
+START-OF-SELECTION.
+  CALL FUNCTION 'JOB_
+  LOOP AT lt_items INTO DATA(ls_item).
+  ENDLOOP.";
+        store.replace_all(vec![
+            DocumentInput {
+                uri: Arc::from("file:///fm_line_local_main.abap"),
+                version: 1,
+                text: Arc::from(main_src),
+                is_dependency: false,
+                object_name: None,
+            },
+            DocumentInput {
+                uri: Arc::from("file:///fm_line_local_dep.abap"),
+                version: 1,
+                text: Arc::from(dep_src),
+                is_dependency: true,
+                object_name: None,
+            },
+        ]);
+        let snapshot = store
+            .documents
+            .read()
+            .get("file:///fm_line_local_main.abap")
+            .cloned()
+            .expect("main snapshot");
+
+        let completion_offset = main_src.find("JOB_").expect("JOB_ prefix") + 4;
+        let completion = snapshot
+            .completion_at(completion_offset)
+            .expect("call function completion");
+        assert_eq!(&main_src[completion.replace_range.clone()], "JOB_");
+        let item = completion
+            .items
+            .iter()
+            .find_map(|item| match item {
+                crate::CompletionItem::Callable(item) if item.name.as_ref() == "job_close" => {
+                    Some(item)
+                }
+                _ => None,
+            })
+            .expect("function module completion item");
+        assert_eq!(
+            item.insertion.snippet_text.as_deref(),
+            Some(
+                "job_close'\n  EXPORTING\n    jobcount = ${1}\n    jobname = ${2}\n  EXCEPTIONS\n    cant_start_immediate = ${3:1}.$0"
+            )
+        );
+    }
+
+    #[test]
+    fn completion_infers_function_module_template_from_other_project_call_sites() {
+        let store = DocumentStore::default();
+        let src = "\
+REPORT zdemo.
+CALL FUNCTION 'z_vle_attp_del_block_unblock
+LOOP AT lt_items INTO DATA(ls_item).
+ENDLOOP.
+
+CALL FUNCTION 'Z_VLE_ATTP_DEL_BLOCK_UNBLOCK'
+  EXPORTING
+    iw_warehouse   = lw_lgnum
+    iw_plant       = lw_werks
+    iw_delivery    = lw_vbeln
+    iw_uname       = sy-uname
+    iw_clear_block = abap_true.";
+        let snapshot = store.publish("file:///fm_inferred_template.abap", 1, src);
+
+        let completion_offset = src.find("z_vle_attp_del_block_unblock").expect("prefix")
+            + "z_vle_attp_del_block_unblock".len();
+        let completion = snapshot
+            .completion_at(completion_offset)
+            .expect("call function completion");
+        let item = completion
+            .items
+            .iter()
+            .find_map(|item| match item {
+                crate::CompletionItem::Callable(item)
+                    if item.name.as_ref() == "z_vle_attp_del_block_unblock" =>
+                {
+                    Some(item)
+                }
+                _ => None,
+            })
+            .expect("inferred function module completion item");
+        assert!(
+            item.declaration
+                .as_deref()
+                .is_some_and(|declaration| declaration.contains("inferred from project call sites"))
+        );
+        assert_eq!(
+            item.insertion.plain_text,
+            "z_vle_attp_del_block_unblock'\n  EXPORTING\n    iw_warehouse = \n    iw_plant = \n    iw_delivery = \n    iw_uname = \n    iw_clear_block = ."
+        );
+        assert_eq!(
+            item.insertion.snippet_text.as_deref(),
+            Some(
+                "z_vle_attp_del_block_unblock'\n  EXPORTING\n    iw_warehouse = ${1}\n    iw_plant = ${2}\n    iw_delivery = ${3}\n    iw_uname = ${4}\n    iw_clear_block = ${5}.$0"
+            )
+        );
+    }
+
+    #[test]
+    fn completion_returns_perform_call_templates() {
+        let store = DocumentStore::default();
+        let src = "\
+FORM update_item USING uv_name TYPE string CHANGING cv_total TYPE i.
+ENDFORM.
+
+START-OF-SELECTION.
+  PERFORM up";
+        let snapshot = store.publish("file:///perform_template.abap", 1, src);
+
+        let completion = snapshot
+            .completion_at(src.len())
+            .expect("perform completion");
+        let item = completion
+            .items
+            .iter()
+            .find_map(|item| match item {
+                crate::CompletionItem::Callable(item) if item.name.as_ref() == "update_item" => {
+                    Some(item)
+                }
+                _ => None,
+            })
+            .expect("perform completion item");
+        assert_eq!(
+            item.insertion.plain_text,
+            "update_item\n  USING\n    uv_name\n  CHANGING\n    cv_total."
+        );
+        assert_eq!(
+            item.insertion.snippet_text.as_deref(),
+            Some("update_item\n  USING\n    ${1:uv_name}\n  CHANGING\n    ${2:cv_total}.$0")
+        );
+    }
+
+    #[test]
+    fn completion_returns_perform_call_templates_before_endform() {
+        let store = DocumentStore::default();
+        let src = "\
+FORM run.
+  PERFORM he
+ENDFORM.
+
+FORM helper USING iv_value TYPE i.
+ENDFORM.";
+        let snapshot = store.publish("file:///perform_before_endform.abap", 1, src);
+
+        let completion_offset =
+            src.find("PERFORM he").expect("perform prefix") + "PERFORM he".len();
+        let completion = snapshot
+            .completion_at(completion_offset)
+            .expect("perform completion");
+        assert_eq!(&src[completion.replace_range.clone()], "he");
+        let item = completion
+            .items
+            .iter()
+            .find_map(|item| match item {
+                crate::CompletionItem::Callable(item) if item.name.as_ref() == "helper" => {
+                    Some(item)
+                }
+                _ => None,
+            })
+            .expect("perform completion item");
+        assert_eq!(item.insertion.plain_text, "helper\n  USING\n    iv_value.");
+        assert_eq!(
+            item.insertion.snippet_text.as_deref(),
+            Some("helper\n  USING\n    ${1:iv_value}.$0")
+        );
+    }
+
+    #[test]
+    fn completion_returns_function_module_call_templates_before_endform() {
+        let store = DocumentStore::default();
+        let dep_src = "\
+FUNCTION z_demo_call
+  IMPORTING
+    iv_name TYPE string
+  EXPORTING
+    ev_text TYPE string
+  EXCEPTIONS
+    failed.
+ENDFUNCTION.";
+        let main_src = "\
+FORM run.
+  CALL FUNCTION 'z_de
+ENDFORM.";
+        store.replace_all(vec![
+            DocumentInput {
+                uri: Arc::from("file:///fm_before_endform_main.abap"),
+                version: 1,
+                text: Arc::from(main_src),
+                is_dependency: false,
+                object_name: None,
+            },
+            DocumentInput {
+                uri: Arc::from("file:///fm_before_endform_dep.abap"),
+                version: 1,
+                text: Arc::from(dep_src),
+                is_dependency: true,
+                object_name: None,
+            },
+        ]);
+        let snapshot = store
+            .documents
+            .read()
+            .get("file:///fm_before_endform_main.abap")
+            .cloned()
+            .expect("main snapshot");
+
+        let completion_offset = main_src.find("z_de").expect("function prefix") + "z_de".len();
+        let completion = snapshot
+            .completion_at(completion_offset)
+            .expect("call function completion");
+        assert_eq!(&main_src[completion.replace_range.clone()], "z_de");
+        let item = completion
+            .items
+            .iter()
+            .find_map(|item| match item {
+                crate::CompletionItem::Callable(item) if item.name.as_ref() == "z_demo_call" => {
+                    Some(item)
+                }
+                _ => None,
+            })
+            .expect("function module completion item");
+        assert_eq!(
+            item.insertion.plain_text,
+            "z_demo_call'\n  EXPORTING\n    iv_name = \n  IMPORTING\n    ev_text = \n  EXCEPTIONS\n    failed = 1."
+        );
     }
 
     #[test]
