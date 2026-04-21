@@ -9,15 +9,15 @@ use std::time::{Duration, Instant};
 
 use abap_jsonrpc::{JSON_RPC_VERSION, Response, read_frame, write_frame};
 use abap_lsp::{
-    CompletionParams, DEPENDENCY_CACHE_CLEARED, DidChangeTextDocumentParams,
-    DidOpenTextDocumentParams, GotoDefinitionParams, HoverParams, InlayHintParams,
-    REMOTE_DEPENDENCIES_UPDATED, RESOLVE_REMOTE_DEPENDENCIES, ReferenceParams,
+    CodeActionParams, CompletionParams, DEPENDENCY_CACHE_CLEARED,
+    DidChangeTextDocumentParams, DidOpenTextDocumentParams, GotoDefinitionParams, HoverParams,
+    InlayHintParams, REMOTE_DEPENDENCIES_UPDATED, RESOLVE_REMOTE_DEPENDENCIES, ReferenceParams,
     SemanticTokensParams, ServerConfig, ServerState, WORKSPACE_ANALYSIS_STATUS,
     WORKSPACE_MANIFEST_UPDATED, WorkspaceAnalysisPhase, WorkspaceAnalysisStatusParams,
     WorkspaceManifestUpdatedParams, WorkspacePerformanceMode, WorkspaceState,
     build_remote_dependency_batch_for_workspace,
     build_remote_dependency_batch_for_workspace_filtered, build_remote_dependency_request,
-    completion, definition, handle_dependency_cache_cleared_with_progress,
+    code_actions, completion, definition, handle_dependency_cache_cleared_with_progress,
     handle_remote_dependencies_updated_with_progress,
     handle_workspace_manifest_updated_with_progress, hover, initialize_result, inlay_hints,
     prune_workspace_preview_snapshots, publish_changed_document_mut_with_progress,
@@ -1860,6 +1860,23 @@ fn handle_message(
                 });
             };
             let result = serde_json::to_value(completion(state, &completion_params))?;
+            Ok(HandledMessage {
+                response: Some(Response::success(id.unwrap_or(Value::Null), result)),
+                notifications: Vec::new(),
+            })
+        }
+        Some("textDocument/codeAction") => {
+            let Some(code_action_params) = parse_params::<CodeActionParams>(&message)? else {
+                return Ok(HandledMessage {
+                    response: Some(Response::failure(
+                        id.unwrap_or(Value::Null),
+                        INVALID_REQUEST,
+                        "textDocument/codeAction requires params",
+                    )),
+                    notifications: Vec::new(),
+                });
+            };
+            let result = serde_json::to_value(code_actions(state, &code_action_params))?;
             Ok(HandledMessage {
                 response: Some(Response::success(id.unwrap_or(Value::Null), result)),
                 notifications: Vec::new(),

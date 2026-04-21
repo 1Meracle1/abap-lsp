@@ -11815,6 +11815,42 @@ ENDCLASS.
 }
 
 #[test]
+fn reports_missing_class_method_implementation_on_definition() {
+    let src = r#"
+CLASS lo_epcis_builder DEFINITION.
+  PUBLIC SECTION.
+    METHODS build.
+ENDCLASS.
+
+CLASS lo_epcis_builder IMPLEMENTATION.
+  METHOD build.
+  ENDMETHOD.
+ENDCLASS.
+
+CLASS lcl_object_event DEFINITION.
+  PUBLIC SECTION.
+    METHODS add_to_epcis
+      CHANGING
+        co_epcis_builder TYPE REF TO lo_epcis_builder.
+ENDCLASS.
+
+CLASS lcl_object_event IMPLEMENTATION.
+
+ENDCLASS.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///missing_method_impl.abap", src, &parsed);
+    let method_offset = src.find("add_to_epcis").expect("method declaration");
+    let method_range = method_offset..method_offset + "add_to_epcis".len();
+
+    assert!(unit.diagnostics.iter().any(|diag| {
+        diag.kind == DiagnosticKind::MissingMethodImplementation
+            && diag.message.contains("add_to_epcis")
+            && diag.range == method_range
+    }), "{:#?}", unit.diagnostics);
+}
+
+#[test]
 fn message_stmt_resolves_with_into_and_dynamic_text() {
     let src = r#"
 CLASS zcl_demo DEFINITION.

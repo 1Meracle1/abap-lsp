@@ -455,6 +455,34 @@ fn validate_super_constructor_calls(
     diagnostics
 }
 
+fn validate_missing_method_implementations(unit: &crate::UnitAnalysis) -> Vec<Diagnostic> {
+    unit.class_members
+        .iter()
+        .filter(|member| member.kind == ClassMemberKind::Method)
+        .filter(|member| member.implementation_range.is_none())
+        .filter(|member| unit.symbol(member.class_symbol).kind == SymbolKind::Class)
+        .filter(|member| {
+            !unit.member_aliases.iter().any(|alias| {
+                alias.owner_symbol == member.class_symbol && alias.alias_name == member.name
+            })
+        })
+        .filter(|member| {
+            !member
+                .signature
+                .split_ascii_whitespace()
+                .any(|part| part.eq_ignore_ascii_case("abstract"))
+        })
+        .map(|member| Diagnostic {
+            kind: DiagnosticKind::MissingMethodImplementation,
+            range: member.decl_range.clone(),
+            message: format!(
+                "method '{}' is declared but missing an implementation",
+                member.name
+            ),
+        })
+        .collect()
+}
+
 fn resolve_project_class_symbol<'a>(
     project: &'a ProjectAnalysis,
     lookup: &ValidationLookup<'_>,
@@ -3424,6 +3452,7 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
             unit,
             scope_indexes,
         ));
+        unit_diagnostics.extend(validate_missing_method_implementations(unit));
         unit_diagnostics.extend(constructor_diagnostics);
 
         {

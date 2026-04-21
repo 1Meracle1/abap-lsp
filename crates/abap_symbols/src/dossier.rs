@@ -1565,6 +1565,7 @@ fn diagnostic_kind_name(kind: DiagnosticKind) -> &'static str {
         DiagnosticKind::UnknownField => "unknown_field",
         DiagnosticKind::InvalidBuiltinNamedArgument => "invalid_builtin_named_argument",
         DiagnosticKind::InvalidPerformCall => "invalid_perform_call",
+        DiagnosticKind::MissingMethodImplementation => "missing_method_implementation",
         DiagnosticKind::MissingSuperConstructorCall => "missing_super_constructor_call",
         DiagnosticKind::IncompatibleAssignmentType => "incompatible_assignment_type",
         DiagnosticKind::IncompatibleArgumentType => "incompatible_argument_type",

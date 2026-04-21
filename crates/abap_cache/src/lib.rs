@@ -235,6 +235,13 @@ pub struct DefinitionTarget {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MissingMethodImplementationAction {
+    pub title: String,
+    pub insert_offset: usize,
+    pub new_text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReferenceTarget {
     pub uri: Arc<str>,
     pub range: Range<usize>,
@@ -1028,6 +1035,38 @@ impl AnalysisSnapshot {
         }
         self.definition_target_for_resolved_symbol_at(offset)
             .or_else(|| self.definition_target_for_bare_where_field_at(offset))
+    }
+
+    pub fn missing_method_implementation_action_at(
+        &self,
+        offset: usize,
+    ) -> Option<MissingMethodImplementationAction> {
+        let member = self.symbols.semantic().decls().class_member_at_offset(offset)?;
+        if member.kind != ClassMemberKind::Method
+            || member.implementation_range.is_some()
+            || self.symbols.symbol(member.class_symbol).kind != SymbolKind::Class
+            || self.symbols.member_aliases.iter().any(|alias| {
+                alias.owner_symbol == member.class_symbol && alias.alias_name == member.name
+            })
+            || member
+                .signature
+                .split_ascii_whitespace()
+                .any(|part| part.eq_ignore_ascii_case("abstract"))
+        {
+            return None;
+        }
+
+        let class_name = self.symbols.symbol(member.class_symbol).name.as_ref();
+        let implementation = class_implementation_edit_target(&self.parse, self.text.as_ref(), class_name)?;
+        Some(MissingMethodImplementationAction {
+            title: format!("Create method implementation '{}'", member.name),
+            insert_offset: implementation.insert_offset,
+            new_text: build_missing_method_implementation_text(
+                self.text.as_ref(),
+                member.name.as_ref(),
+                implementation.body_is_empty,
+            ),
+        })
     }
 
     fn reference_search_target_at(&self, offset: usize) -> Option<ReferenceSearchTarget> {
@@ -6687,6 +6726,68 @@ fn line_end_offset(text: &str, offset: usize) -> usize {
         end -= 1;
     }
     end
+}
+
+struct ClassImplementationEditTarget {
+    insert_offset: usize,
+    body_is_empty: bool,
+}
+
+fn class_implementation_edit_target(
+    parse: &ParseResult,
+    text: &str,
+    class_name: &str,
+) -> Option<ClassImplementationEditTarget> {
+    let root = parse.file.root();
+    for child in parse.file.children(root) {
+        let range = parse.file.range(child);
+        let (token_start, token_end) = token_window_for_range(parse, &range)?;
+        let header_period =
+            (token_start..token_end).find(|&idx| parse.tokens[idx].kind == TokenKind::Period)?;
+        let header_tokens: Vec<_> = (token_start..=header_period)
+            .filter(|&idx| !matches!(parse.tokens[idx].kind.as_str(), "Comment" | "Eof"))
+            .collect();
+        if header_tokens.len() < 3 {
+            continue;
+        }
+
+        let class_token = &parse.tokens[header_tokens[0]];
+        let name_token = &parse.tokens[header_tokens[1]];
+        let implementation_token = &parse.tokens[header_tokens[2]];
+        if !class_token.lexeme(text).eq_ignore_ascii_case("class")
+            || name_token.kind != TokenKind::Ident
+            || !name_token.lexeme(text).eq_ignore_ascii_case(class_name)
+            || !implementation_token
+                .lexeme(text)
+                .eq_ignore_ascii_case("implementation")
+        {
+            continue;
+        }
+
+        let endclass_idx = (token_start..token_end).rfind(|&idx| {
+            parse.tokens[idx].kind == TokenKind::Ident
+                && parse.tokens[idx].lexeme(text).eq_ignore_ascii_case("endclass")
+        })?;
+        let body_range = parse.tokens[header_period].range.end..parse.tokens[endclass_idx].range.start;
+        return Some(ClassImplementationEditTarget {
+            insert_offset: parse.tokens[endclass_idx].range.start,
+            body_is_empty: text[body_range].trim().is_empty(),
+        });
+    }
+
+    None
+}
+
+fn build_missing_method_implementation_text(
+    text: &str,
+    method_name: &str,
+    body_is_empty: bool,
+) -> String {
+    let newline = if text.contains("\r\n") { "\r\n" } else { "\n" };
+    let prefix = if body_is_empty { "" } else { newline };
+    format!(
+        "{prefix}  METHOD {method_name}.{newline}  ENDMETHOD.{newline}"
+    )
 }
 
 fn parse_function_module_completion_query(

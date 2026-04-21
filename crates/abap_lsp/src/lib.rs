@@ -24,18 +24,20 @@ use abap_cache::{
 use abap_parser::parse;
 use abap_symbols::{DiagnosticKind, ReferenceKind, SqlResolution, UnitId, analyze_unit};
 use lsp_types::{
+    CodeAction, CodeActionKind, CodeActionOrCommand, CodeActionProviderCapability,
     CompletionItem, CompletionItemKind, CompletionOptions, Diagnostic, DiagnosticSeverity,
     Documentation, GotoDefinitionResponse, Hover, HoverContents, HoverProviderCapability,
     InitializeResult, InlayHint, InlayHintKind, InlayHintOptions, InlayHintServerCapabilities,
-    InsertTextFormat, Location, MarkupContent, MarkupKind, OneOf, Position,
+    InsertTextFormat, Location, MarkupContent, MarkupKind, NumberOrString, OneOf, Position,
     PublishDiagnosticsParams, Range, SemanticTokens, SemanticTokensFullOptions,
     SemanticTokensOptions, SemanticTokensServerCapabilities, ServerCapabilities,
-    TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri,
+    TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri, WorkspaceEdit,
 };
 use serde::{Deserialize, Serialize};
 
 pub use abap_cache::{AnalysisSnapshot, OpenDocumentOverlay, WorkspacePerformanceMode};
 pub use lsp_types::{
+    CodeActionParams, CodeActionResponse,
     CompletionParams, CompletionResponse, DidChangeTextDocumentParams, DidOpenTextDocumentParams,
     GotoDefinitionParams, HoverParams, InlayHintParams, ReferenceParams, SemanticTokensParams,
 };
@@ -49,6 +51,7 @@ pub const DEPENDENCY_CACHE_CLEARED: &str = "abapls/dependencyCacheCleared";
 pub const WORKSPACE_ANALYSIS_STATUS: &str = "abapls/workspaceAnalysisStatus";
 const REMOTE_DEPENDENCY_BATCH_CANDIDATE_LIMIT: usize = 24;
 const LOCAL_EXPORT_FUNCTION_MODULE_COMPLETION_LIMIT: usize = 64;
+const DIAGNOSTIC_CODE_MISSING_METHOD_IMPLEMENTATION: &str = "missing-method-implementation";
 
 #[derive(Debug, Clone)]
 pub struct ServerState {
@@ -2306,7 +2309,8 @@ fn semantic_diagnostic_severity(kind: DiagnosticKind) -> DiagnosticSeverity {
         | DiagnosticKind::PossiblyUnboundFieldSymbol
         | DiagnosticKind::UnreachableCode
         | DiagnosticKind::DeadStore => DiagnosticSeverity::WARNING,
-        DiagnosticKind::IncompatibleAssignmentType => DiagnosticSeverity::ERROR,
+        DiagnosticKind::IncompatibleAssignmentType
+        | DiagnosticKind::MissingMethodImplementation => DiagnosticSeverity::ERROR,
         DiagnosticKind::UnverifiedOpenSqlSource => DiagnosticSeverity::ERROR,
         DiagnosticKind::UnresolvedReference
         | DiagnosticKind::UnresolvedInclude
@@ -2320,6 +2324,15 @@ fn semantic_diagnostic_severity(kind: DiagnosticKind) -> DiagnosticSeverity {
         | DiagnosticKind::DuplicateNamedParameter
         | DiagnosticKind::MissingRequiredParameter
         | DiagnosticKind::InvalidOpenSqlIntoTarget => DiagnosticSeverity::ERROR,
+    }
+}
+
+fn semantic_diagnostic_code(kind: DiagnosticKind) -> Option<NumberOrString> {
+    match kind {
+        DiagnosticKind::MissingMethodImplementation => Some(NumberOrString::String(
+            DIAGNOSTIC_CODE_MISSING_METHOD_IMPLEMENTATION.to_string(),
+        )),
+        _ => None,
     }
 }
 
@@ -2350,7 +2363,7 @@ pub fn build_lsp_diagnostics(snapshot: &AnalysisSnapshot) -> Vec<Diagnostic> {
         out.push(Diagnostic {
             range,
             severity: Some(semantic_diagnostic_severity(diag_inner.kind)),
-            code: None,
+            code: semantic_diagnostic_code(diag_inner.kind),
             code_description: None,
             source: Some("abap-symbols".to_owned()),
             message: diag_inner.message.clone(),
@@ -2579,6 +2592,70 @@ pub fn references(state: &ServerState, params: &ReferenceParams) -> Option<Vec<L
         locations.push(Location { uri, range });
     }
     Some(locations)
+}
+
+pub fn code_actions(
+    state: &ServerState,
+    params: &CodeActionParams,
+) -> Option<CodeActionResponse> {
+    let uri = normalize_lsp_uri(params.text_document.uri.as_str());
+    let snapshot = snapshot_for_uri(state, &uri)?;
+    let mut actions = Vec::new();
+    let mut seen = HashSet::new();
+
+    for diagnostic in &params.context.diagnostics {
+        let Some(NumberOrString::String(code)) = diagnostic.code.as_ref() else {
+            continue;
+        };
+        if code != DIAGNOSTIC_CODE_MISSING_METHOD_IMPLEMENTATION {
+            continue;
+        }
+
+        let Some(offset) = position_to_offset_snapshot(&snapshot, diagnostic.range.start) else {
+            continue;
+        };
+        let Some(action) = snapshot.missing_method_implementation_action_at(offset) else {
+            continue;
+        };
+        if !seen.insert(action.insert_offset) {
+            continue;
+        }
+
+        let Some(position) = offset_to_position_snapshot(snapshot.as_ref(), action.insert_offset)
+        else {
+            continue;
+        };
+        let uri: Uri = snapshot
+            .uri
+            .as_ref()
+            .parse()
+            .expect("cached document URI must be a valid URL");
+        actions.push(CodeActionOrCommand::CodeAction(CodeAction {
+            title: action.title,
+            kind: Some(CodeActionKind::QUICKFIX),
+            diagnostics: Some(vec![diagnostic.clone()]),
+            edit: Some(WorkspaceEdit {
+                changes: Some(HashMap::from([(
+                    uri,
+                    vec![TextEdit {
+                        range: Range {
+                            start: position,
+                            end: position,
+                        },
+                        new_text: action.new_text,
+                    }],
+                )])),
+                document_changes: None,
+                change_annotations: None,
+            }),
+            is_preferred: Some(true),
+            disabled: None,
+            data: None,
+            command: None,
+        }));
+    }
+
+    Some(actions)
 }
 
 fn resolved_symbol_hover(
@@ -2873,6 +2950,7 @@ pub fn initialize_result(config: &ServerConfig) -> InitializeResult {
                     work_done_progress_options: Default::default(),
                 }),
             ),
+            code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
             ..ServerCapabilities::default()
         },
     }
@@ -3133,23 +3211,26 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use lsp_types::{
-        DiagnosticSeverity, DidChangeTextDocumentParams, DidOpenTextDocumentParams, Documentation,
+        CodeActionContext, CodeActionOrCommand, DiagnosticSeverity,
+        DidChangeTextDocumentParams, DidOpenTextDocumentParams, Documentation,
         GotoDefinitionResponse, HoverContents, InlayHintKind, InlayHintLabel, InlayHintTooltip,
-        InsertTextFormat, Position, Range, SemanticTokensParams, TextDocumentContentChangeEvent,
-        TextDocumentIdentifier, TextDocumentItem, TextDocumentPositionParams, Uri,
+        InsertTextFormat, NumberOrString, Position, Range, SemanticTokensParams,
+        TextDocumentContentChangeEvent, TextDocumentIdentifier, TextDocumentItem,
+        TextDocumentPositionParams, Uri,
         VersionedTextDocumentIdentifier,
     };
 
     use crate::sem_tokens;
 
     use super::{
-        CompletionParams, CompletionResponse, DEPENDENCY_CACHE_CLEARED, GotoDefinitionParams,
-        HoverParams, InlayHintParams, REMOTE_DEPENDENCIES_UPDATED, RESOLVE_REMOTE_DEPENDENCIES,
+        CodeActionParams, CompletionParams, CompletionResponse, DEPENDENCY_CACHE_CLEARED,
+        DIAGNOSTIC_CODE_MISSING_METHOD_IMPLEMENTATION, GotoDefinitionParams, HoverParams,
+        InlayHintParams, REMOTE_DEPENDENCIES_UPDATED, RESOLVE_REMOTE_DEPENDENCIES,
         ReferenceParams, ServerState, WORKSPACE_MANIFEST_UPDATED, WorkspaceManifestUpdatedParams,
         build_lsp_diagnostics, build_lsp_diagnostics_for_workspace,
         build_remote_dependency_batch_for_workspace, build_remote_dependency_request,
         build_remote_dependency_requests_for_workspace, collect_remote_dependency_candidates,
-        completion, definition, handle_dependency_cache_cleared,
+        code_actions, completion, definition, handle_dependency_cache_cleared,
         handle_remote_dependencies_updated, hover, initialize_result, inlay_hints,
         normalize_lsp_uri, offset_to_position, publish_changed_document,
         publish_changed_document_mut, publish_open_document, publish_open_document_mut, references,
@@ -3255,7 +3336,163 @@ mod tests {
                 lsp_types::InlayHintServerCapabilities::Options(_)
             ))
         ));
+        assert!(matches!(
+            result.capabilities.code_action_provider,
+            Some(lsp_types::CodeActionProviderCapability::Simple(true))
+        ));
         assert!(result.server_info.is_some());
+    }
+
+    #[test]
+    fn code_action_creates_missing_method_implementation_at_end_of_class_impl() {
+        let state = ServerState::default();
+        let uri = Uri::from_str("file:///missing_method_code_action.abap").expect("uri");
+        let text = "\
+CLASS lcl_demo DEFINITION.\n\
+  PUBLIC SECTION.\n\
+    METHODS existing.\n\
+    METHODS missing.\n\
+ENDCLASS.\n\
+\n\
+CLASS lcl_demo IMPLEMENTATION.\n\
+  METHOD existing.\n\
+  ENDMETHOD.\n\
+ENDCLASS.\n";
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: uri.clone(),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: text.to_string(),
+                },
+            },
+        );
+
+        let snapshot = snapshot_for_uri(&state, uri.as_str()).expect("snapshot");
+        let diagnostic = build_lsp_diagnostics(snapshot.as_ref())
+            .into_iter()
+            .find(|diag| {
+                diag.code.as_ref().is_some_and(|code| matches!(
+                    code,
+                    NumberOrString::String(value)
+                        if value == DIAGNOSTIC_CODE_MISSING_METHOD_IMPLEMENTATION
+                )) && diag.message.contains("missing")
+            })
+            .expect("missing method diagnostic");
+
+        let actions = code_actions(
+            &state,
+            &CodeActionParams {
+                text_document: TextDocumentIdentifier { uri: uri.clone() },
+                range: diagnostic.range,
+                context: CodeActionContext {
+                    diagnostics: vec![diagnostic],
+                    only: None,
+                    trigger_kind: None,
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            },
+        )
+        .expect("code actions");
+
+        assert_eq!(actions.len(), 1);
+        let CodeActionOrCommand::CodeAction(action) = &actions[0] else {
+            panic!("expected code action");
+        };
+        let changes = action
+            .edit
+            .as_ref()
+            .and_then(|edit| edit.changes.as_ref())
+            .expect("workspace changes");
+        let edits = changes.get(&uri).expect("uri changes");
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].new_text, "\n  METHOD missing.\n  ENDMETHOD.\n");
+        assert_eq!(edits[0].range.start, Position { line: 9, character: 0 });
+        assert_eq!(edits[0].range.end, Position { line: 9, character: 0 });
+    }
+
+    #[test]
+    fn code_action_creates_missing_method_implementation_in_empty_class_impl() {
+        let state = ServerState::default();
+        let uri = Uri::from_str("file:///missing_method_empty_impl.abap").expect("uri");
+        let text = "\
+CLASS lo_epcis_builder DEFINITION.\n\
+  PUBLIC SECTION.\n\
+    METHODS build.\n\
+ENDCLASS.\n\
+\n\
+CLASS lo_epcis_builder IMPLEMENTATION.\n\
+  METHOD build.\n\
+  ENDMETHOD.\n\
+ENDCLASS.\n\
+\n\
+CLASS lcl_object_event DEFINITION.\n\
+  PUBLIC SECTION.\n\
+    METHODS add_to_epcis\n\
+      CHANGING\n\
+        co_epcis_builder TYPE REF TO lo_epcis_builder.\n\
+ENDCLASS.\n\
+\n\
+CLASS lcl_object_event IMPLEMENTATION.\n\
+\n\
+ENDCLASS.\n";
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: uri.clone(),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: text.to_string(),
+                },
+            },
+        );
+
+        let snapshot = snapshot_for_uri(&state, uri.as_str()).expect("snapshot");
+        let diagnostic = build_lsp_diagnostics(snapshot.as_ref())
+            .into_iter()
+            .find(|diag| {
+                diag.code.as_ref().is_some_and(|code| matches!(
+                    code,
+                    NumberOrString::String(value)
+                        if value == DIAGNOSTIC_CODE_MISSING_METHOD_IMPLEMENTATION
+                )) && diag.message.contains("add_to_epcis")
+            })
+            .expect("missing method diagnostic");
+
+        let actions = code_actions(
+            &state,
+            &CodeActionParams {
+                text_document: TextDocumentIdentifier { uri: uri.clone() },
+                range: diagnostic.range,
+                context: CodeActionContext {
+                    diagnostics: vec![diagnostic],
+                    only: None,
+                    trigger_kind: None,
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            },
+        )
+        .expect("code actions");
+
+        assert_eq!(actions.len(), 1);
+        let CodeActionOrCommand::CodeAction(action) = &actions[0] else {
+            panic!("expected code action");
+        };
+        let changes = action
+            .edit
+            .as_ref()
+            .and_then(|edit| edit.changes.as_ref())
+            .expect("workspace changes");
+        let edits = changes.get(&uri).expect("uri changes");
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].new_text, "  METHOD add_to_epcis.\n  ENDMETHOD.\n");
+        assert_eq!(edits[0].range.start, Position { line: 19, character: 0 });
+        assert_eq!(edits[0].range.end, Position { line: 19, character: 0 });
     }
 
     #[test]

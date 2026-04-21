@@ -278,6 +278,7 @@ pub enum DiagnosticKind {
     UnknownField,
     InvalidBuiltinNamedArgument,
     InvalidPerformCall,
+    MissingMethodImplementation,
     MissingSuperConstructorCall,
     IncompatibleAssignmentType,
     IncompatibleArgumentType,
