@@ -77,6 +77,12 @@ pub enum SyntaxKind {
     ConstructorNextClause,
     /// One `name = expr` assignment inside constructor bodies / `INIT` / `NEXT`.
     ConstructorNamedAssignment,
+    /// `MAPPING ...` clause inside `CORRESPONDING`.
+    ConstructorCorrespondingMappingClause,
+    /// One `target = source ...` mapping relationship inside `CORRESPONDING`.
+    ConstructorCorrespondingMappingAssignment,
+    /// `EXCEPT ...` clause inside `CORRESPONDING`.
+    ConstructorCorrespondingExceptClause,
     /// `BASE expr` inside a value constructor.
     ConstructorBaseClause,
     /// `LINES OF ...` inside a value constructor.
@@ -539,6 +545,11 @@ impl SyntaxKind {
             Self::ConstructorInitClause => "ConstructorInitClause",
             Self::ConstructorNextClause => "ConstructorNextClause",
             Self::ConstructorNamedAssignment => "ConstructorNamedAssignment",
+            Self::ConstructorCorrespondingMappingClause => "ConstructorCorrespondingMappingClause",
+            Self::ConstructorCorrespondingMappingAssignment => {
+                "ConstructorCorrespondingMappingAssignment"
+            }
+            Self::ConstructorCorrespondingExceptClause => "ConstructorCorrespondingExceptClause",
             Self::ConstructorBaseClause => "ConstructorBaseClause",
             Self::ConstructorLinesOfClause => "ConstructorLinesOfClause",
             Self::ConstructorOptionalExpr => "ConstructorOptionalExpr",

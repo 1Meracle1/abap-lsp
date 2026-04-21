@@ -1047,6 +1047,107 @@ MOVE-CORRESPONDING ls_general TO ls_ord_head.
 }
 
 #[test]
+fn corresponding_mapping_resolves_outer_operands_without_component_unresolved_refs() {
+    let src = r#"
+TYPES: BEGIN OF ty_child_src,
+         src_nested TYPE i,
+         spare TYPE i,
+       END OF ty_child_src.
+TYPES: BEGIN OF ty_src,
+         src_field TYPE i,
+         child TYPE ty_child_src,
+       END OF ty_src.
+TYPES: BEGIN OF ty_child_dst,
+         dst_nested TYPE i,
+       END OF ty_child_dst.
+TYPES: BEGIN OF ty_dst,
+         dst_field TYPE i,
+         fallback TYPE i,
+         unused TYPE i,
+         child TYPE ty_child_dst,
+       END OF ty_dst.
+
+DATA ls_src TYPE ty_src.
+DATA ls_dst TYPE ty_dst.
+DATA lv_fallback TYPE i.
+
+ls_dst = CORRESPONDING ty_dst( ls_src
+  MAPPING dst_field = src_field
+          fallback = DEFAULT lv_fallback
+          ( child = child MAPPING dst_nested = src_nested EXCEPT spare )
+  EXCEPT unused ).
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///corresponding_mapping_expr.abap", src, &parsed);
+
+    for name in ["ls_src", "ls_dst", "lv_fallback"] {
+        assert!(
+            unit.references.iter().any(|reference| {
+                reference.namespace == Namespace::Value
+                    && reference.kind == ReferenceKind::Identifier
+                    && reference.name.as_ref() == name
+                    && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+            }),
+            "expected resolved CORRESPONDING reference for `{name}`, refs={:?} diagnostics={:?}",
+            unit.references,
+            unit.diagnostics
+        );
+        assert!(
+            !unit.diagnostics.iter().any(|diag| {
+                diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains(name)
+            }),
+            "unexpected CORRESPONDING diagnostics for `{name}`: {:?}",
+            unit.diagnostics
+        );
+    }
+
+    for component_name in [
+        "dst_field",
+        "src_field",
+        "dst_nested",
+        "src_nested",
+        "unused",
+        "spare",
+    ] {
+        assert!(
+            !unit.diagnostics.iter().any(|diag| {
+                diag.kind == DiagnosticKind::UnresolvedReference
+                    && diag.message.contains(component_name)
+            }),
+            "unexpected unresolved component diagnostic for `{component_name}`: {:?}",
+            unit.diagnostics
+        );
+    }
+
+    assert!(
+        unit.field_accesses.iter().any(|access| {
+            access.base_name.as_ref() == "ls_src"
+                && access
+                    .field_path
+                    .iter()
+                    .map(|s| s.name.as_ref())
+                    .collect::<Vec<_>>()
+                    == vec!["src_field"]
+        }),
+        "expected CORRESPONDING source field access, accesses={:?}",
+        unit.field_accesses
+    );
+    assert!(
+        unit.field_accesses.iter().any(|access| {
+            access.base_name.as_ref() == "ty_dst"
+                && access
+                    .field_path
+                    .iter()
+                    .map(|s| s.name.as_ref())
+                    .collect::<Vec<_>>()
+                    == vec!["dst_field"]
+        }),
+        "expected CORRESPONDING target field access, accesses={:?}",
+        unit.field_accesses
+    );
+}
+
+#[test]
 fn resolves_modify_source_and_target() {
     let src = r#"
 TYPES ty_trans TYPE BEGIN OF ty_trans,

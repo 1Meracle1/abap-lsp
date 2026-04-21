@@ -4,18 +4,21 @@ use abap_ast::SyntaxKind;
 use abap_ast::arena::NodeId;
 use abap_ast::ast::{
     AstNode, CallArgList, CallExpr, CallNamedArg, CallPositionalArg, ConstructorBaseClause,
-    ConstructorElseClause, ConstructorExpr, ConstructorForClause, ConstructorInitClause,
-    ConstructorLinesOfClause, ConstructorNamedAssignment, ConstructorNextClause,
-    ConstructorOptionalExpr, ConstructorWhenClause, LetExpr, MethodsParamSectionKind, ParenExpr,
-    TableExpr, TemplateExpr, TemplateInterpolation,
+    ConstructorCorrespondingExceptClause, ConstructorCorrespondingMappingAssignment,
+    ConstructorCorrespondingMappingClause, ConstructorElseClause, ConstructorExpr,
+    ConstructorForClause, ConstructorInitClause, ConstructorLinesOfClause,
+    ConstructorNamedAssignment, ConstructorNextClause, ConstructorOptionalExpr,
+    ConstructorWhenClause, LetExpr, MethodsParamSectionKind, ParenExpr, TableExpr, TemplateExpr,
+    TemplateInterpolation,
 };
 use abap_lexer::{TextRange, TokenKind};
 
 use crate::builtins::builtin_routine_spec;
 use crate::def_map::{
-    AssignmentSiteData, CallArgumentData, CallSiteData, FieldAccess, FieldTypeRefData,
-    NamedArgumentAccess, NamedArgumentSection, NamedArgumentTarget, ReferenceKind,
-    StructureFieldData, SymbolKind, TypeFactData, ValueStateCheckData, ValueStateCheckKind,
+    AssignmentSiteData, CallArgumentData, CallSiteData, FieldAccess, FieldAccessSegment,
+    FieldTypeRefData, NamedArgumentAccess, NamedArgumentSection, NamedArgumentTarget,
+    ReferenceKind, StructureFieldData, SymbolKind, TypeFactData, ValueStateCheckData,
+    ValueStateCheckKind,
 };
 use crate::ids::ScopeId;
 use crate::ids::StructureId;
@@ -847,6 +850,16 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                         }
                     } else if self.call_arg_list_has_structured_constructor_nodes(arg_list) {
                         match constructor_keyword.as_deref() {
+                            Some("corresponding") => self
+                                .collect_structured_corresponding_constructor_nodes(
+                                    node,
+                                    &CallArgList::cast(self.ctx.syntax(arg_list))
+                                        .map(|list| {
+                                            list.items().map(|child| child.id()).collect::<Vec<_>>()
+                                        })
+                                        .unwrap_or_default(),
+                                    scope,
+                                ),
                             Some("cond") => self.collect_structured_cond_constructor_nodes(
                                 &CallArgList::cast(self.ctx.syntax(arg_list))
                                     .map(|list| {
@@ -3059,10 +3072,236 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                     | SyntaxKind::ConstructorInitClause
                     | SyntaxKind::ConstructorNextClause
                     | SyntaxKind::ConstructorNamedAssignment
+                    | SyntaxKind::ConstructorCorrespondingMappingClause
+                    | SyntaxKind::ConstructorCorrespondingMappingAssignment
+                    | SyntaxKind::ConstructorCorrespondingExceptClause
                     | SyntaxKind::ConstructorBaseClause
                     | SyntaxKind::ConstructorLinesOfClause
             )
         })
+    }
+
+    fn emit_corresponding_field_access(
+        &mut self,
+        base_access: &FieldAccess,
+        relative_segments: &[FieldAccessSegment],
+    ) -> FieldAccess {
+        let mut access = base_access.clone();
+        access.field_path.extend(relative_segments.iter().cloned());
+        self.ctx.emit_field_access(access.clone());
+        access
+    }
+
+    fn corresponding_relative_field_segments_from_node(
+        &self,
+        node: NodeId,
+    ) -> Option<Vec<FieldAccessSegment>> {
+        let node = self.simple_wrapped_expr_node(node).unwrap_or(node);
+        match self.kind(node) {
+            SyntaxKind::ExprIdent => self
+                .ctx
+                .node_name(node)
+                .map(|(name, range)| vec![FieldAccessSegment { name, range }]),
+            SyntaxKind::SelectorExpr => {
+                let (namespace, base_name, base_range, mut path) =
+                    self.ctx.selector_access_chain(node)?;
+                if namespace != Namespace::Value {
+                    return None;
+                }
+                let mut out = vec![FieldAccessSegment {
+                    name: base_name,
+                    range: base_range,
+                }];
+                out.append(&mut path);
+                Some(out)
+            }
+            _ => None,
+        }
+    }
+
+    fn corresponding_target_access_from_constructor(
+        &self,
+        node: NodeId,
+        scope: ScopeId,
+    ) -> Option<FieldAccess> {
+        let constructor = ConstructorExpr::cast(self.ctx.syntax(node))?;
+        let type_ref = constructor.type_ref()?;
+        let declared_type = self
+            .ctx
+            .field_type_ref_from_node(type_ref.syntax().id(), Namespace::Type)?;
+        Some(FieldAccess {
+            scope,
+            base_namespace: declared_type.namespace,
+            base_name: declared_type.base_name,
+            base_range: type_ref.syntax().range(),
+            field_path: declared_type
+                .field_path
+                .into_iter()
+                .map(|name| FieldAccessSegment {
+                    name,
+                    range: type_ref.syntax().range(),
+                })
+                .collect(),
+            in_type_position: true,
+        })
+    }
+
+    fn corresponding_source_access_from_value_children(
+        &self,
+        value_children: &[NodeId],
+        scope: ScopeId,
+    ) -> Option<FieldAccess> {
+        (value_children.len() == 1)
+            .then(|| self.value_access_from_node(value_children[0], scope))
+            .flatten()
+    }
+
+    fn collect_corresponding_mapping_assignment_with_context(
+        &mut self,
+        node: NodeId,
+        scope: ScopeId,
+        source_base: Option<&FieldAccess>,
+        target_base: Option<&FieldAccess>,
+    ) {
+        let Some((target, source_value_id, default_value_id, mapping_clause_id)) = (|| {
+            let assignment =
+                ConstructorCorrespondingMappingAssignment::cast(self.ctx.syntax(node))?;
+            Some((
+                assignment.target_token().and_then(|token| {
+                    token
+                        .text(self.source())
+                        .map(|text| (token.range(), Arc::<str>::from(text.to_ascii_lowercase())))
+                }),
+                assignment
+                    .source_value(self.source())
+                    .map(|value| value.id()),
+                assignment
+                    .default_value(self.source())
+                    .map(|value| value.id()),
+                assignment
+                    .mapping_clause()
+                    .map(|clause| clause.syntax().id()),
+            ))
+        })() else {
+            return;
+        };
+
+        let target_access = target_base.zip(target).map(|(base, (range, text))| {
+            self.emit_corresponding_field_access(base, &[FieldAccessSegment { name: text, range }])
+        });
+        let source_access = source_base
+            .zip(source_value_id)
+            .and_then(|(base, value_id)| {
+                let relative_segments =
+                    self.corresponding_relative_field_segments_from_node(value_id)?;
+                Some(self.emit_corresponding_field_access(base, &relative_segments))
+            });
+
+        if let Some(default_value_id) = default_value_id {
+            self.collect_expr(default_value_id, scope);
+        }
+        if let Some(mapping_clause_id) = mapping_clause_id {
+            self.collect_corresponding_mapping_clause_with_context(
+                mapping_clause_id,
+                scope,
+                source_access.as_ref().or(source_base),
+                target_access.as_ref().or(target_base),
+            );
+        }
+    }
+
+    fn collect_corresponding_mapping_clause_with_context(
+        &mut self,
+        node: NodeId,
+        scope: ScopeId,
+        source_base: Option<&FieldAccess>,
+        target_base: Option<&FieldAccess>,
+    ) {
+        let Some(assignment_ids) =
+            ConstructorCorrespondingMappingClause::cast(self.ctx.syntax(node)).map(|clause| {
+                clause
+                    .assignments()
+                    .map(|assignment| assignment.syntax().id())
+                    .collect::<Vec<_>>()
+            })
+        else {
+            return;
+        };
+        for assignment_id in assignment_ids {
+            self.collect_corresponding_mapping_assignment_with_context(
+                assignment_id,
+                scope,
+                source_base,
+                target_base,
+            );
+        }
+    }
+
+    fn collect_structured_corresponding_constructor_nodes(
+        &mut self,
+        constructor_node: NodeId,
+        nodes: &[NodeId],
+        scope: ScopeId,
+    ) {
+        let source_base = nodes.iter().find_map(|&node| {
+            (self.kind(node) == SyntaxKind::CallPositionalArg).then(|| {
+                let value_children: Vec<_> = CallPositionalArg::cast(self.ctx.syntax(node))
+                    .map(|arg| {
+                        arg.value_children()
+                            .into_iter()
+                            .map(|child| child.id())
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                self.corresponding_source_access_from_value_children(&value_children, scope)
+            })?
+        });
+        let target_base =
+            self.corresponding_target_access_from_constructor(constructor_node, scope);
+
+        for &node in nodes {
+            match self.kind(node) {
+                SyntaxKind::CallPositionalArg => {
+                    let value_children: Vec<_> = CallPositionalArg::cast(self.ctx.syntax(node))
+                        .map(|arg| {
+                            arg.value_children()
+                                .into_iter()
+                                .map(|child| child.id())
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    self.collect_structured_argument_values(&value_children, scope);
+                }
+                SyntaxKind::ConstructorBaseClause => {
+                    let value_id = ConstructorBaseClause::cast(self.ctx.syntax(node))
+                        .and_then(|clause| clause.value())
+                        .map(|value| value.id());
+                    if let Some(value_id) = value_id {
+                        self.collect_expr(value_id, scope);
+                    }
+                }
+                SyntaxKind::ConstructorCorrespondingMappingClause => {
+                    self.collect_corresponding_mapping_clause_with_context(
+                        node,
+                        scope,
+                        source_base.as_ref(),
+                        target_base.as_ref(),
+                    );
+                }
+                SyntaxKind::ConstructorCorrespondingMappingAssignment => {
+                    self.collect_corresponding_mapping_assignment_with_context(
+                        node,
+                        scope,
+                        source_base.as_ref(),
+                        target_base.as_ref(),
+                    );
+                }
+                SyntaxKind::ConstructorCorrespondingExceptClause => {
+                    let _ = ConstructorCorrespondingExceptClause::cast(self.ctx.syntax(node));
+                }
+                _ => self.collect_expr(node, scope),
+            }
+        }
     }
 
     fn collect_structured_let_expr_node(

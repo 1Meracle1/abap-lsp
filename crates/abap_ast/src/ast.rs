@@ -437,6 +437,18 @@ ast_node!(
     ConstructorNamedAssignment,
     SyntaxKind::ConstructorNamedAssignment
 );
+ast_node!(
+    ConstructorCorrespondingMappingClause,
+    SyntaxKind::ConstructorCorrespondingMappingClause
+);
+ast_node!(
+    ConstructorCorrespondingMappingAssignment,
+    SyntaxKind::ConstructorCorrespondingMappingAssignment
+);
+ast_node!(
+    ConstructorCorrespondingExceptClause,
+    SyntaxKind::ConstructorCorrespondingExceptClause
+);
 ast_node!(ConstructorBaseClause, SyntaxKind::ConstructorBaseClause);
 ast_node!(
     ConstructorLinesOfClause,
@@ -1459,6 +1471,24 @@ impl<'a> CallArgList<'a> {
             .filter_map(ConstructorNamedAssignment::cast)
     }
 
+    pub fn corresponding_mapping_clauses(
+        self,
+    ) -> impl DoubleEndedIterator<Item = ConstructorCorrespondingMappingClause<'a>> + Clone + 'a
+    {
+        self.syntax
+            .children()
+            .filter_map(ConstructorCorrespondingMappingClause::cast)
+    }
+
+    pub fn corresponding_except_clauses(
+        self,
+    ) -> impl DoubleEndedIterator<Item = ConstructorCorrespondingExceptClause<'a>> + Clone + 'a
+    {
+        self.syntax
+            .children()
+            .filter_map(ConstructorCorrespondingExceptClause::cast)
+    }
+
     pub fn let_exprs(self) -> impl DoubleEndedIterator<Item = LetExpr<'a>> + Clone + 'a {
         self.syntax.children().filter_map(LetExpr::cast)
     }
@@ -1622,6 +1652,72 @@ impl<'a> ConstructorNamedAssignment<'a> {
 
     pub fn value_children(self) -> Vec<SyntaxNodeRef<'a>> {
         self.syntax.children().skip(2).collect()
+    }
+}
+
+impl<'a> ConstructorCorrespondingMappingClause<'a> {
+    pub fn assignments(
+        self,
+    ) -> impl DoubleEndedIterator<Item = ConstructorCorrespondingMappingAssignment<'a>> + Clone + 'a
+    {
+        self.syntax
+            .children()
+            .filter_map(ConstructorCorrespondingMappingAssignment::cast)
+    }
+}
+
+impl<'a> ConstructorCorrespondingMappingAssignment<'a> {
+    pub fn target_token(self) -> Option<SyntaxNodeRef<'a>> {
+        self.syntax.children_by_kind(SyntaxKind::Token).next()
+    }
+
+    pub fn source_value(self, source: &str) -> Option<SyntaxNodeRef<'a>> {
+        let mut seen_suffix = false;
+        for child in self.syntax.children() {
+            match child.kind() {
+                SyntaxKind::Token => {
+                    if child.text(source).is_some_and(|text| {
+                        matches!(
+                            text.to_ascii_uppercase().as_str(),
+                            "DEFAULT" | "MAPPING" | "EXCEPT"
+                        )
+                    }) {
+                        seen_suffix = true;
+                    }
+                }
+                _ if !seen_suffix => return Some(child),
+                _ => {}
+            }
+        }
+        None
+    }
+
+    pub fn default_value(self, source: &str) -> Option<SyntaxNodeRef<'a>> {
+        let mut after_default = false;
+        for child in self.syntax.children() {
+            match child.kind() {
+                SyntaxKind::Token => {
+                    after_default = child
+                        .text(source)
+                        .is_some_and(|text| text.eq_ignore_ascii_case("DEFAULT"));
+                }
+                _ if after_default => return Some(child),
+                _ => {}
+            }
+        }
+        None
+    }
+
+    pub fn mapping_clause(self) -> Option<ConstructorCorrespondingMappingClause<'a>> {
+        self.syntax
+            .child_by_kind(SyntaxKind::ConstructorCorrespondingMappingClause)
+            .and_then(ConstructorCorrespondingMappingClause::cast)
+    }
+
+    pub fn except_clause(self) -> Option<ConstructorCorrespondingExceptClause<'a>> {
+        self.syntax
+            .child_by_kind(SyntaxKind::ConstructorCorrespondingExceptClause)
+            .and_then(ConstructorCorrespondingExceptClause::cast)
     }
 }
 

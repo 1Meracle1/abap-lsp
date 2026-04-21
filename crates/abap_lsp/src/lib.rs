@@ -4790,6 +4790,67 @@ ls_row-field_a = 1.";
     }
 
     #[test]
+    fn semantic_tokens_mark_corresponding_mapping_fields() {
+        use lsp_types::SemanticTokenType;
+
+        let state = ServerState::default();
+        let text = "\
+TYPES ty_objid_rng TYPE RANGE OF i.
+TYPES: BEGIN OF ty_evt,
+         objid TYPE i,
+       END OF ty_evt.
+DATA ct_amdp_rec_evt_objid TYPE STANDARD TABLE OF ty_evt WITH EMPTY KEY.
+DATA(lr_objid) = CORRESPONDING ty_objid_rng(
+                   ct_amdp_rec_evt_objid
+                 MAPPING low = objid ).";
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///sem_corresponding_mapping.abap").expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: text.to_string(),
+                },
+            },
+        );
+
+        let snapshot = state
+            .cache
+            .get("file:///sem_corresponding_mapping.abap")
+            .expect("snapshot");
+        let tokens = sem_tokens::build_semantic_tokens(snapshot.as_ref());
+        let legend = sem_tokens::semantic_tokens_legend();
+        let property_idx = legend
+            .token_types
+            .iter()
+            .position(|t| *t == SemanticTokenType::PROPERTY)
+            .expect("legend has property") as u32;
+
+        let lines: Vec<_> = text.lines().collect();
+        let target_char = lines[7].find("low").expect("target field") as u32;
+        let source_char = lines[7].find("objid").expect("source field") as u32;
+        let positions = semantic_token_positions(&tokens);
+
+        assert!(
+            positions
+                .iter()
+                .any(|&(line, character, _, token_type, _)| {
+                    line == 7 && character == target_char && token_type == property_idx
+                }),
+            "expected CORRESPONDING target field token, tokens={positions:?}"
+        );
+        assert!(
+            positions
+                .iter()
+                .any(|&(line, character, _, token_type, _)| {
+                    line == 7 && character == source_char && token_type == property_idx
+                }),
+            "expected CORRESPONDING source field token, tokens={positions:?}"
+        );
+    }
+
+    #[test]
     fn semantic_tokens_mark_static_method_declaration_and_use() {
         use lsp_types::SemanticTokenType;
 

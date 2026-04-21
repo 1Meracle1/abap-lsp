@@ -4,7 +4,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use abap_ast::SyntaxKind;
-use abap_ast::ast::{AstNode, ConstructorExpr, SyntaxNodeRef};
+use abap_ast::ast::{
+    AstNode, ConstructorCorrespondingMappingAssignment, ConstructorExpr, SyntaxNodeRef,
+};
 use abap_lexer::{TokenKind, tokenize};
 use abap_parser::{ParseResult, parse};
 use abap_symbols::{
@@ -2172,6 +2174,9 @@ impl AnalysisSnapshot {
                         &context,
                     )
                 })
+            })
+            .or_else(|| {
+                parse_corresponding_mapping_field_query(self.text.as_ref(), &self.parse, offset)
             })?;
         Some(SelectorCompletionQuery {
             scope: innermost_scope_at(&self.symbols, query.replace_range.start),
@@ -7260,6 +7265,200 @@ fn selector_completion_context(
         range: parse.file.range(container),
         in_type_position: false,
     })
+}
+
+fn node_path_at_offset(parse: &ParseResult, offset: usize) -> Vec<abap_ast::arena::NodeId> {
+    let root = parse.file.root();
+    let root_range = parse.file.range(root);
+    if !(root_range.start <= offset && offset <= root_range.end) {
+        return Vec::new();
+    }
+
+    let mut path = vec![root];
+    let mut current = root;
+    loop {
+        let Some(next) = parse
+            .file
+            .children(current)
+            .filter(|&child| {
+                let range = parse.file.range(child);
+                range.start <= offset && offset <= range.end
+            })
+            .min_by_key(|&child| {
+                let range = parse.file.range(child);
+                range.end.saturating_sub(range.start)
+            })
+        else {
+            break;
+        };
+        path.push(next);
+        current = next;
+    }
+    path
+}
+
+fn corresponding_constructor_source_query(
+    text: &str,
+    parse: &ParseResult,
+    constructor: ConstructorExpr<'_>,
+) -> Option<SelectorCompletionQuery> {
+    let arg_list = constructor.arg_list()?;
+    let source_arg = arg_list.positional_args().next()?;
+    let range = source_arg.syntax().range();
+    let (token_start, token_end) = token_window_for_range(parse, &range)?;
+    let token_ids: Vec<_> = (token_start..token_end)
+        .filter(|&idx| !matches!(parse.tokens[idx].kind.as_str(), "Comment" | "Eof"))
+        .collect();
+    parse_value_access_tokens(text, parse, &token_ids)
+}
+
+fn corresponding_constructor_target_query(
+    text: &str,
+    parse: &ParseResult,
+    constructor: ConstructorExpr<'_>,
+) -> Option<SelectorCompletionQuery> {
+    let type_ref = constructor.type_ref()?;
+    let range = type_ref.syntax().range();
+    let (token_start, token_end) = token_window_for_range(parse, &range)?;
+    let token_ids: Vec<_> = (token_start..token_end)
+        .filter(|&idx| !matches!(parse.tokens[idx].kind.as_str(), "Comment" | "Eof"))
+        .collect();
+    let mut query = parse_value_access_tokens(text, parse, &token_ids)?;
+    query.base_namespace = Namespace::Type;
+    query.in_type_position = false;
+    Some(query)
+}
+
+fn corresponding_relative_component_names(
+    text: &str,
+    parse: &ParseResult,
+    range: &Range<usize>,
+) -> Option<Vec<Arc<str>>> {
+    let (token_start, token_end) = token_window_for_range(parse, range)?;
+    let token_ids: Vec<_> = (token_start..token_end)
+        .filter(|&idx| !matches!(parse.tokens[idx].kind.as_str(), "Comment" | "Eof"))
+        .collect();
+    let query = parse_value_access_tokens(text, parse, &token_ids)?;
+    let mut names = Vec::with_capacity(query.component_path.len() + 1);
+    names.push(query.base_name);
+    names.extend(query.component_path);
+    Some(names)
+}
+
+fn corresponding_component_completion_prefix(
+    text: &str,
+    parse: &ParseResult,
+    range: &Range<usize>,
+    offset: usize,
+) -> Option<(Vec<Arc<str>>, Range<usize>, Arc<str>)> {
+    let (token_start, token_end) = token_window_for_range(parse, range)?;
+    let prefix_idx = prefix_token_at_offset(parse, token_start, token_end, offset)?;
+    let prefix_token = &parse.tokens[prefix_idx];
+    if prefix_token.kind.as_str() != "Ident" {
+        return None;
+    }
+
+    let significant: Vec<_> = (token_start..token_end)
+        .filter(|&idx| !matches!(parse.tokens[idx].kind.as_str(), "Comment" | "Eof"))
+        .collect();
+    let ident_positions: Vec<_> = significant
+        .iter()
+        .copied()
+        .filter(|&idx| parse.tokens[idx].kind.as_str() == "Ident")
+        .collect();
+    let prefix_pos = ident_positions.iter().position(|&idx| idx == prefix_idx)?;
+    let path = ident_positions[..prefix_pos]
+        .iter()
+        .map(|&idx| Arc::<str>::from(parse.tokens[idx].lexeme(text).to_ascii_lowercase()))
+        .collect::<Vec<_>>();
+    let prefix_end = offset.min(prefix_token.range.end);
+    Some((
+        path,
+        prefix_token.range.start..prefix_end,
+        Arc::<str>::from(text[prefix_token.range.start..prefix_end].to_ascii_lowercase()),
+    ))
+}
+
+fn parse_corresponding_mapping_field_query(
+    text: &str,
+    parse: &ParseResult,
+    offset: usize,
+) -> Option<SelectorCompletionQuery> {
+    let path = node_path_at_offset(parse, offset);
+    let assignment_id = path.iter().rev().copied().find(|&node| {
+        parse.file.kind(node) == SyntaxKind::ConstructorCorrespondingMappingAssignment
+    })?;
+    let constructor_id = path.iter().rev().copied().find(|&node| {
+        ConstructorExpr::cast(SyntaxNodeRef::new(&parse.file, node))
+            .and_then(|expr| expr.keyword(text))
+            .is_some_and(|keyword| keyword.as_ref() == "corresponding")
+    })?;
+    let assignment_chain: Vec<_> = path
+        .iter()
+        .copied()
+        .filter(|&node| {
+            parse.file.kind(node) == SyntaxKind::ConstructorCorrespondingMappingAssignment
+        })
+        .collect();
+
+    let constructor = ConstructorExpr::cast(SyntaxNodeRef::new(&parse.file, constructor_id))?;
+    let assignment = ConstructorCorrespondingMappingAssignment::cast(SyntaxNodeRef::new(
+        &parse.file,
+        assignment_id,
+    ))?;
+    let target_token = assignment.target_token()?;
+    let target_range = target_token.range();
+    let source_range = assignment.source_value(text).map(|value| value.range());
+
+    let in_target = target_range.start <= offset && offset <= target_range.end;
+    let in_source = source_range
+        .as_ref()
+        .is_some_and(|range| range.start <= offset && offset <= range.end);
+    if !in_target && !in_source {
+        return None;
+    }
+
+    let mut target_query = corresponding_constructor_target_query(text, parse, constructor)?;
+    let mut source_query = corresponding_constructor_source_query(text, parse, constructor)?;
+
+    for ancestor_id in assignment_chain {
+        if ancestor_id == assignment_id {
+            break;
+        }
+        let ancestor = ConstructorCorrespondingMappingAssignment::cast(SyntaxNodeRef::new(
+            &parse.file,
+            ancestor_id,
+        ))?;
+        let ancestor_target = ancestor.target_token()?;
+        let ancestor_target_name =
+            Arc::<str>::from(ancestor_target.text(text)?.to_ascii_lowercase());
+        target_query.component_path.push(ancestor_target_name);
+
+        let ancestor_source_range = ancestor.source_value(text)?.range();
+        source_query
+            .component_path
+            .extend(corresponding_relative_component_names(
+                text,
+                parse,
+                &ancestor_source_range,
+            )?);
+    }
+
+    if in_target {
+        let (_, replace_range, prefix) =
+            corresponding_component_completion_prefix(text, parse, &target_range, offset)?;
+        target_query.replace_range = replace_range;
+        target_query.prefix = prefix;
+        return Some(target_query);
+    }
+
+    let source_range = source_range?;
+    let (relative_path, replace_range, prefix) =
+        corresponding_component_completion_prefix(text, parse, &source_range, offset)?;
+    source_query.component_path.extend(relative_path);
+    source_query.replace_range = replace_range;
+    source_query.prefix = prefix;
+    Some(source_query)
 }
 
 fn selector_completion_statement_context(
@@ -16835,6 +17034,72 @@ READ TABLE t_vbfa INTO ls_vbfa WITH KEY vb";
         assert_eq!(completion.items.len(), 1);
         assert_eq!(completion.items[0].name.as_ref(), "vbeln");
         assert_eq!(&src[completion.replace_range], "vb");
+    }
+
+    #[test]
+    fn lists_corresponding_mapping_target_field_completion_items_with_prefix() {
+        let store = DocumentStore::default();
+        let src = "\
+TYPES ty_objid_rng TYPE RANGE OF i.
+TYPES: BEGIN OF ty_evt,
+         objid TYPE i,
+       END OF ty_evt.
+DATA ct_amdp_rec_evt_objid TYPE STANDARD TABLE OF ty_evt WITH EMPTY KEY.
+DATA(lr_objid) = CORRESPONDING ty_objid_rng(
+                   ct_amdp_rec_evt_objid
+                 MAPPING lo = objid ).";
+        let snapshot = store.publish("file:///demo.abap", 1, src);
+        let offset = src.find("lo = objid").expect("target prefix") + 2;
+
+        let completion = snapshot
+            .selector_completion_at(offset)
+            .expect("mapping target completion");
+        assert!(
+            completion
+                .items
+                .iter()
+                .any(|item| item.name.as_ref() == "low"),
+            "expected mapping target field completion: {:?}",
+            completion
+                .items
+                .iter()
+                .map(|item| item.name.as_ref())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(&src[completion.replace_range], "lo");
+    }
+
+    #[test]
+    fn lists_corresponding_mapping_source_field_completion_items_with_prefix() {
+        let store = DocumentStore::default();
+        let src = "\
+TYPES ty_objid_rng TYPE RANGE OF i.
+TYPES: BEGIN OF ty_evt,
+         objid TYPE i,
+       END OF ty_evt.
+DATA ct_amdp_rec_evt_objid TYPE STANDARD TABLE OF ty_evt WITH EMPTY KEY.
+DATA(lr_objid) = CORRESPONDING ty_objid_rng(
+                   ct_amdp_rec_evt_objid
+                 MAPPING low = obj ).";
+        let snapshot = store.publish("file:///demo.abap", 1, src);
+        let offset = src.find("obj ).").expect("source prefix") + 3;
+
+        let completion = snapshot
+            .selector_completion_at(offset)
+            .expect("mapping source completion");
+        assert!(
+            completion
+                .items
+                .iter()
+                .any(|item| item.name.as_ref() == "objid"),
+            "expected mapping source field completion: {:?}",
+            completion
+                .items
+                .iter()
+                .map(|item| item.name.as_ref())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(&src[completion.replace_range], "obj");
     }
 
     #[test]

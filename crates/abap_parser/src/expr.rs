@@ -34,6 +34,7 @@ enum ParenInner {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ConstructorSequenceKind {
     Value,
+    Corresponding,
     Cond,
     Switch,
     Reduce,
@@ -1352,6 +1353,209 @@ impl<'a, 'b> Parser<'a, 'b> {
         )
     }
 
+    fn parse_corresponding_except_clause_slice(&mut self, tokens: &'a [Token]) -> Option<NodeId> {
+        let except_tok = tokens.first()?;
+        if !ident_eq(self.source, except_tok, "EXCEPT") {
+            return None;
+        }
+        let children = tokens
+            .iter()
+            .map(|token| token_leaf(self.b, token))
+            .collect::<Vec<_>>();
+        Some(self.b.branch(
+            SyntaxKind::ConstructorCorrespondingExceptClause,
+            except_tok.range.start..tokens.last()?.range.end,
+            &children,
+        ))
+    }
+
+    fn parse_corresponding_mapping_assignment_slice(
+        &mut self,
+        tokens: &'a [Token],
+    ) -> Option<NodeId> {
+        if tokens.is_empty() {
+            return None;
+        }
+
+        let (body_tokens, wrapped) = if tokens.first()?.kind == TokenKind::LParen
+            && self.find_matching_group_in_slice(tokens, 0, TokenKind::LParen, TokenKind::RParen)
+                == Some(tokens.len() - 1)
+        {
+            (&tokens[1..tokens.len() - 1], true)
+        } else {
+            (tokens, false)
+        };
+
+        if body_tokens.len() < 3
+            || body_tokens.first()?.kind != TokenKind::Ident
+            || body_tokens.get(1)?.kind != TokenKind::Eq
+        {
+            return None;
+        }
+
+        let mut children = Vec::new();
+        if wrapped {
+            children.push(token_leaf(self.b, &tokens[0]));
+        }
+        children.push(token_leaf(self.b, &body_tokens[0]));
+        children.push(token_leaf(self.b, &body_tokens[1]));
+
+        let mut idx = 2usize;
+        let source_end = self
+            .find_top_level_keyword_any_in_slice(
+                body_tokens,
+                idx,
+                &["DEFAULT", "DISCARDING", "MAPPING", "EXCEPT"],
+            )
+            .unwrap_or(body_tokens.len());
+        if source_end > idx {
+            children.push(
+                self.parse_complete_concat_expr(&body_tokens[idx..source_end], &body_tokens[1])?,
+            );
+        }
+        idx = source_end;
+
+        if body_tokens
+            .get(idx)
+            .is_some_and(|token| ident_eq(self.source, token, "DISCARDING"))
+        {
+            children.push(token_leaf(self.b, &body_tokens[idx]));
+            idx += 1;
+            if let Some(token) = body_tokens.get(idx) {
+                children.push(token_leaf(self.b, token));
+                idx += 1;
+            }
+        }
+
+        if body_tokens
+            .get(idx)
+            .is_some_and(|token| ident_eq(self.source, token, "DEFAULT"))
+        {
+            let default_tok = &body_tokens[idx];
+            children.push(token_leaf(self.b, default_tok));
+            idx += 1;
+            let default_end = self
+                .find_top_level_keyword_any_in_slice(body_tokens, idx, &["MAPPING", "EXCEPT"])
+                .unwrap_or(body_tokens.len());
+            if default_end > idx {
+                children.push(
+                    self.parse_complete_concat_expr(&body_tokens[idx..default_end], default_tok)?,
+                );
+            }
+            idx = default_end;
+        }
+
+        if body_tokens
+            .get(idx)
+            .is_some_and(|token| ident_eq(self.source, token, "MAPPING"))
+        {
+            let mapping_end = self
+                .find_top_level_keyword_in_slice(body_tokens, idx + 1, "EXCEPT")
+                .unwrap_or(body_tokens.len());
+            children.push(
+                self.parse_corresponding_mapping_clause_slice(&body_tokens[idx..mapping_end])?,
+            );
+            idx = mapping_end;
+        }
+
+        if idx < body_tokens.len()
+            && body_tokens
+                .get(idx)
+                .is_some_and(|token| ident_eq(self.source, token, "EXCEPT"))
+        {
+            children.push(self.parse_corresponding_except_clause_slice(&body_tokens[idx..])?);
+        }
+
+        if wrapped {
+            children.push(token_leaf(self.b, tokens.last()?));
+        }
+
+        Some(self.b.branch(
+            SyntaxKind::ConstructorCorrespondingMappingAssignment,
+            tokens.first()?.range.start..tokens.last()?.range.end,
+            &children,
+        ))
+    }
+
+    fn parse_corresponding_mapping_clause_slice(&mut self, tokens: &'a [Token]) -> Option<NodeId> {
+        let mapping_tok = tokens.first()?;
+        if !ident_eq(self.source, mapping_tok, "MAPPING") {
+            return None;
+        }
+
+        let mut children = vec![token_leaf(self.b, mapping_tok)];
+        let mut idx = 1usize;
+        while idx < tokens.len() {
+            let token = &tokens[idx];
+            if token.kind == TokenKind::Comment {
+                children.push(token_leaf(self.b, token));
+                idx += 1;
+                continue;
+            }
+            if token.kind == TokenKind::LParen
+                && let Some(end_idx) = self.find_matching_group_in_slice(
+                    tokens,
+                    idx,
+                    TokenKind::LParen,
+                    TokenKind::RParen,
+                )
+            {
+                if let Some(node) =
+                    self.parse_corresponding_mapping_assignment_slice(&tokens[idx..=end_idx])
+                {
+                    children.push(node);
+                }
+                idx = end_idx + 1;
+                continue;
+            }
+            if token.kind == TokenKind::Ident
+                && tokens.get(idx + 1).map(|next| next.kind) == Some(TokenKind::Eq)
+            {
+                let mut end_idx = idx + 2;
+                let mut paren = 0i32;
+                let mut bracket = 0i32;
+                let mut brace = 0i32;
+                while end_idx < tokens.len() {
+                    let end_token = &tokens[end_idx];
+                    if paren == 0 && bracket == 0 && brace == 0 {
+                        if end_token.kind == TokenKind::LParen
+                            || (end_token.kind == TokenKind::Ident
+                                && tokens.get(end_idx + 1).map(|next| next.kind)
+                                    == Some(TokenKind::Eq))
+                        {
+                            break;
+                        }
+                    }
+                    match end_token.kind {
+                        TokenKind::LParen => paren += 1,
+                        TokenKind::RParen => paren -= 1,
+                        TokenKind::LBracket => bracket += 1,
+                        TokenKind::RBracket => bracket -= 1,
+                        TokenKind::LBrace => brace += 1,
+                        TokenKind::RBrace => brace -= 1,
+                        _ => {}
+                    }
+                    end_idx += 1;
+                }
+                if let Some(node) =
+                    self.parse_corresponding_mapping_assignment_slice(&tokens[idx..end_idx])
+                {
+                    children.push(node);
+                }
+                idx = end_idx;
+                continue;
+            }
+            children.push(token_leaf(self.b, token));
+            idx += 1;
+        }
+
+        Some(self.b.branch(
+            SyntaxKind::ConstructorCorrespondingMappingClause,
+            mapping_tok.range.start..tokens.last()?.range.end,
+            &children,
+        ))
+    }
+
     fn constructor_assignment_value_end(&self, tokens: &[Token], start: usize) -> usize {
         let mut paren = 0i32;
         let mut bracket = 0i32;
@@ -1592,6 +1796,36 @@ impl<'a, 'b> Parser<'a, 'b> {
         idx
     }
 
+    fn next_corresponding_sequence_break(&self, tokens: &[Token], start_idx: usize) -> usize {
+        let mut paren = 0i32;
+        let mut bracket = 0i32;
+        let mut brace = 0i32;
+        let mut idx = start_idx;
+        while idx < tokens.len() {
+            let token = &tokens[idx];
+            if paren == 0
+                && bracket == 0
+                && brace == 0
+                && (ident_eq(self.source, token, "BASE")
+                    || ident_eq(self.source, token, "MAPPING")
+                    || ident_eq(self.source, token, "EXCEPT"))
+            {
+                break;
+            }
+            match token.kind {
+                TokenKind::LParen => paren += 1,
+                TokenKind::RParen => paren -= 1,
+                TokenKind::LBracket => bracket += 1,
+                TokenKind::RBracket => bracket -= 1,
+                TokenKind::LBrace => brace += 1,
+                TokenKind::RBrace => brace -= 1,
+                _ => {}
+            }
+            idx += 1;
+        }
+        idx
+    }
+
     fn find_next_top_level_cond_clause_start_in_slice(
         &self,
         tokens: &[Token],
@@ -1802,6 +2036,59 @@ impl<'a, 'b> Parser<'a, 'b> {
         children
     }
 
+    fn parse_corresponding_sequence(
+        &mut self,
+        tokens: &'a [Token],
+        prev_before_first: &'a Token,
+    ) -> Vec<NodeId> {
+        let mut children = Vec::new();
+        let mut idx = 0usize;
+        while idx < tokens.len() {
+            let token = &tokens[idx];
+            if token.kind == TokenKind::Comment {
+                idx += 1;
+                continue;
+            }
+            if ident_eq(self.source, token, "BASE") {
+                let end = self.next_corresponding_sequence_break(tokens, idx + 1);
+                if let Some(node) = self.parse_constructor_base_clause_slice(&tokens[idx..end]) {
+                    children.push(node);
+                }
+                idx = end;
+                continue;
+            }
+            if ident_eq(self.source, token, "MAPPING") {
+                let end = self
+                    .find_top_level_keyword_in_slice(tokens, idx + 1, "EXCEPT")
+                    .unwrap_or(tokens.len());
+                if let Some(node) = self.parse_corresponding_mapping_clause_slice(&tokens[idx..end])
+                {
+                    children.push(node);
+                }
+                idx = end;
+                continue;
+            }
+            if ident_eq(self.source, token, "EXCEPT") {
+                if let Some(node) = self.parse_corresponding_except_clause_slice(&tokens[idx..]) {
+                    children.push(node);
+                }
+                break;
+            }
+
+            let next = self.next_corresponding_sequence_break(tokens, idx + 1);
+            let prev_token = self
+                .previous_non_comment_token(tokens, idx)
+                .unwrap_or(prev_before_first);
+            if let Some(node) =
+                self.build_constructor_positional_arg(&tokens[idx..next], prev_token)
+            {
+                children.push(node);
+            }
+            idx = next.max(idx + 1);
+        }
+        children
+    }
+
     fn parse_cond_sequence(
         &mut self,
         tokens: &'a [Token],
@@ -1997,6 +2284,9 @@ impl<'a, 'b> Parser<'a, 'b> {
     ) -> Vec<NodeId> {
         match kind {
             ConstructorSequenceKind::Value => self.parse_value_sequence(tokens, prev_before_first),
+            ConstructorSequenceKind::Corresponding => {
+                self.parse_corresponding_sequence(tokens, prev_before_first)
+            }
             ConstructorSequenceKind::Cond => self.parse_cond_sequence(tokens, prev_before_first),
             ConstructorSequenceKind::Switch => {
                 self.parse_switch_sequence(tokens, prev_before_first)
@@ -2044,6 +2334,7 @@ impl<'a, 'b> Parser<'a, 'b> {
     fn parse_constructor_expr(&mut self) -> Option<NodeId> {
         let kw_tok = self.bump()?;
         let constructor_kind = match kw_tok.lexeme(self.source).to_ascii_uppercase().as_str() {
+            "CORRESPONDING" => ConstructorSequenceKind::Corresponding,
             "COND" => ConstructorSequenceKind::Cond,
             "SWITCH" => ConstructorSequenceKind::Switch,
             "REDUCE" => ConstructorSequenceKind::Reduce,
@@ -3123,6 +3414,36 @@ mod tests {
             1
         );
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::SelectorExpr), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
+    }
+
+    #[test]
+    fn corresponding_constructor_with_mapping_parses_structured_clauses() {
+        let parsed = crate::parse(
+            "DATA(ls_dst) = CORRESPONDING #( ls_src MAPPING dst_field = src_field fallback = DEFAULT lv_fallback ( child = child MAPPING dst_nested = src_nested EXCEPT spare ) EXCEPT unused ).",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::ConstructorExpr), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::CallArgList), 1);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::ConstructorCorrespondingMappingClause),
+            2
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::ConstructorCorrespondingMappingAssignment),
+            4
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::ConstructorCorrespondingExceptClause),
+            2
+        );
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
     }
 
