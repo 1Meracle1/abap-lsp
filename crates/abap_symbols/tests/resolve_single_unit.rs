@@ -5176,6 +5176,27 @@ APPEND ls_archive_name TO lr_archive_name.
 }
 
 #[test]
+fn append_of_like_line_of_named_string_table_is_type_compatible() {
+    let src = r#"
+TYPES: tt_dm_obj_arc TYPE STANDARD TABLE OF string.
+DATA et_dm_obj_arc TYPE tt_dm_obj_arc.
+DATA ls_dm_obj_arc LIKE LINE OF et_dm_obj_arc.
+APPEND ls_dm_obj_arc TO et_dm_obj_arc.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///named_string_table_append.abap", src, &parsed);
+
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::IncompatibleAssignmentType
+                && diag.message.contains("tt_dm_obj_arc")
+        }),
+        "{:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn recovers_after_syntax_errors_and_keeps_later_resolution() {
     let src = "DATA broken TYPE string\nDATA ok TYPE i.\nok = 1.";
     let parsed = parse(src);

@@ -192,8 +192,12 @@ impl<'a> FactBuilder<'a> {
 
         for assignment in &unit.assignment_sites {
             let lhs_type = self.assignment_target_type_fact(unit_idx, assignment);
-            let rhs_type =
-                self.enrich_existing_type_fact(unit_idx, assignment.scope, &assignment.rhs);
+            let rhs_type = self.enrich_existing_type_fact(
+                unit_idx,
+                assignment.scope,
+                unit_idx,
+                &assignment.rhs,
+            );
             out.assignment_type_facts.push((
                 out.assignment_type_facts.len(),
                 lhs_type.clone(),
@@ -356,6 +360,7 @@ impl<'a> FactBuilder<'a> {
                 source_type: self.enrich_existing_type_fact(
                     unit_idx,
                     call_site.scope,
+                    unit_idx,
                     &argument.type_fact,
                 ),
                 target: ValueFlowTargetData::CallParameter {
@@ -385,7 +390,8 @@ impl<'a> FactBuilder<'a> {
                 return line_fact.clone();
             }
         }
-        let fact = self.enrich_existing_type_fact(unit_idx, assignment.scope, &assignment.lhs);
+        let fact =
+            self.enrich_existing_type_fact(unit_idx, assignment.scope, unit_idx, &assignment.lhs);
         if fact.is_known() {
             return fact;
         }
@@ -792,7 +798,7 @@ impl<'a> FactBuilder<'a> {
                 }),
             ));
         }
-        self.enrich_existing_type_fact(site_unit_idx, scope, &fact)
+        self.enrich_existing_type_fact(site_unit_idx, scope, symbol_unit_idx, &fact)
     }
 
     fn type_fact_from_declared_type(
@@ -838,28 +844,22 @@ impl<'a> FactBuilder<'a> {
                 table_line: None,
             })));
         }
-        self.enrich_existing_type_fact(site_unit_idx, scope, &fact)
+        self.enrich_existing_type_fact(site_unit_idx, scope, current_unit_idx, &fact)
     }
 
     fn enrich_existing_type_fact(
         &self,
         site_unit_idx: usize,
         scope: ScopeId,
+        current_unit_idx: usize,
         fact: &TypeFactData,
     ) -> TypeFactData {
         let mut fact = fact.clone();
         if fact.table_line.is_none()
-            && fact
-                .type_clause_display
-                .as_deref()
-                .is_some_and(is_table_like_type_display)
+            && let Some(line_fact) =
+                self.resolve_table_line_fact(site_unit_idx, scope, current_unit_idx, &fact, 0)
         {
-            fact.table_line = Some(Box::new(self.synthesized_table_line_fact(TypeFactData {
-                structure: fact.structure,
-                declared_type: fact.declared_type.clone(),
-                type_clause_display: fact.type_clause_display.clone(),
-                table_line: None,
-            })));
+            fact.table_line = Some(Box::new(line_fact));
         }
         if fact.structure.is_none()
             && fact
@@ -909,10 +909,67 @@ impl<'a> FactBuilder<'a> {
             fact.table_line = Some(Box::new(self.enrich_existing_type_fact(
                 site_unit_idx,
                 scope,
+                current_unit_idx,
                 &line_fact,
             )));
         }
         fact
+    }
+
+    fn resolve_table_line_fact(
+        &self,
+        site_unit_idx: usize,
+        scope: ScopeId,
+        current_unit_idx: usize,
+        fact: &TypeFactData,
+        depth: usize,
+    ) -> Option<TypeFactData> {
+        if depth >= 8 {
+            return None;
+        }
+        if fact
+            .type_clause_display
+            .as_deref()
+            .is_some_and(is_table_like_type_display)
+        {
+            return Some(self.synthesized_table_line_fact(fact.clone()));
+        }
+
+        let declared_type = fact.declared_type.as_ref()?;
+        if declared_type.namespace != Namespace::Type
+            || declared_type.is_ref
+            || !declared_type.field_path.is_empty()
+        {
+            return None;
+        }
+        let handle = self.resolve_type_symbol_handle(
+            current_unit_idx,
+            scope,
+            declared_type.base_name.as_ref(),
+        )?;
+        let type_unit_idx = self.unit_index(handle.unit)?;
+        let type_symbol = self.units[type_unit_idx].symbol(handle.symbol);
+        if !type_symbol
+            .type_clause_display
+            .as_deref()
+            .is_some_and(is_table_like_type_display)
+        {
+            return None;
+        }
+
+        let line_fact = self.resolve_table_line_fact(
+            site_unit_idx,
+            scope,
+            type_unit_idx,
+            &TypeFactData {
+                structure: type_symbol.structure,
+                declared_type: type_symbol.declared_type.clone(),
+                type_clause_display: type_symbol.type_clause_display.clone(),
+                table_line: None,
+            },
+            depth + 1,
+        )?;
+        Some(self.portable_fact(site_unit_idx, type_unit_idx, line_fact))
     }
 
     fn synthesized_table_line_fact(&self, fact: TypeFactData) -> TypeFactData {
