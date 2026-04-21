@@ -46,7 +46,8 @@
         // "--disable-extensions",
         "--extensionDevelopmentPath=${workspaceFolder}/editors/vscode",
         // "--folder-uri=D:/dev/abap/prod_rep_check/"
-        "--folder-uri=D:/dev/abap/po_creation/"
+        // "--folder-uri=D:/dev/abap/po_creation/"
+        "--folder-uri=D:/dev/abap/archiving/"
         // "--folder-uri=D:/dev/abap/rsa_encryption/"
         // "--folder-uri=D:/dev/abap/test_function_module"
         // "--folder-uri=D:/dev/abap/lsp_development_examples2/"
