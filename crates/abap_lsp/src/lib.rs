@@ -12131,6 +12131,63 @@ ENDFORM.";
     }
 
     #[test]
+    fn completion_emits_method_definition_template_snippet_inside_class_definition() {
+        let mut state = ServerState::default();
+        state.client_capabilities.completion_snippet_support = true;
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///completion_method_definition_template.abap")
+                        .expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: "CLASS lcl_demo DEFINITION.\n  PUBLIC SECTION.\n    meth\nENDCLASS."
+                        .to_string(),
+                },
+            },
+        );
+
+        let completion = completion(
+            &state,
+            &CompletionParams {
+                text_document_position: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///completion_method_definition_template.abap")
+                            .expect("uri"),
+                    },
+                    position: Position {
+                        line: 2,
+                        character: 8,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+                context: None,
+            },
+        )
+        .expect("completion");
+
+        let CompletionResponse::Array(items) = completion else {
+            panic!("expected array completion");
+        };
+        let item = items
+            .into_iter()
+            .find(|item| item.label == "methods")
+            .expect("method definition template item");
+        assert_eq!(item.kind, Some(lsp_types::CompletionItemKind::SNIPPET));
+        assert_eq!(item.detail.as_deref(), Some("Method definition"));
+        assert_eq!(item.insert_text_format, Some(InsertTextFormat::SNIPPET));
+        let Some(lsp_types::CompletionTextEdit::Edit(edit)) = item.text_edit else {
+            panic!("expected text edit");
+        };
+        assert_eq!(
+            edit.new_text,
+            "METHODS ${1:method_name}\n  IMPORTING\n    ${2:iv_importing} TYPE ${3:i}\n  EXPORTING\n    ${4:ev_exporting} TYPE ${5:i}\n  CHANGING\n    ${6:cv_changing} TYPE ${7:i}\n  RECEIVING\n    VALUE(${8:rv_receiving}) TYPE ${9:i}\n  RETURNING\n    VALUE(${10:rv_returning}) TYPE ${11:i}.$0"
+        );
+    }
+
+    #[test]
     fn completion_emits_local_test_class_definition_template_snippet() {
         let mut state = ServerState::default();
         state.client_capabilities.completion_snippet_support = true;

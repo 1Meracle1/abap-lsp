@@ -355,6 +355,11 @@ struct TemplateCompletionQuery {
     kind: LocalClassTemplateKind,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MethodDefinitionTemplateQuery {
+    replace_range: Range<usize>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LocalClassTemplateKind {
     Standard,
@@ -1953,25 +1958,37 @@ impl AnalysisSnapshot {
     }
 
     fn template_completion_at(&self, offset: usize) -> Option<CompletionInfo> {
-        let query = parse_local_class_template_query(self, offset)?;
-        let class_name =
-            normalized_local_class_template_name(query.kind, query.class_name_hint.as_ref());
-        let (detail, insertion) = match query.kind {
-            LocalClassTemplateKind::Standard => (
-                "Local class definition".to_string(),
-                local_class_template_completion_insertion(class_name.as_ref()),
-            ),
-            LocalClassTemplateKind::Test => (
-                "Local test class definition".to_string(),
-                local_test_class_template_completion_insertion(class_name.as_ref()),
-            ),
-        };
+        if let Some(query) = parse_local_class_template_query(self, offset) {
+            let class_name =
+                normalized_local_class_template_name(query.kind, query.class_name_hint.as_ref());
+            let (detail, insertion) = match query.kind {
+                LocalClassTemplateKind::Standard => (
+                    "Local class definition".to_string(),
+                    local_class_template_completion_insertion(class_name.as_ref()),
+                ),
+                LocalClassTemplateKind::Test => (
+                    "Local test class definition".to_string(),
+                    local_test_class_template_completion_insertion(class_name.as_ref()),
+                ),
+            };
+            return Some(CompletionInfo {
+                replace_range: query.replace_range,
+                items: vec![CompletionItem::Template(TemplateCompletionItem {
+                    name: Arc::clone(&class_name),
+                    detail: Some(detail),
+                    insertion,
+                })],
+                in_type_position: false,
+            });
+        }
+
+        let query = parse_method_definition_template_query(self, offset)?;
         Some(CompletionInfo {
             replace_range: query.replace_range,
             items: vec![CompletionItem::Template(TemplateCompletionItem {
-                name: Arc::clone(&class_name),
-                detail: Some(detail),
-                insertion,
+                name: Arc::from("methods"),
+                detail: Some("Method definition".to_string()),
+                insertion: method_definition_template_completion_insertion(),
             })],
             in_type_position: false,
         })
@@ -2907,6 +2924,15 @@ fn local_test_class_template_completion_insertion(class_name: &str) -> Completio
         snippet_text: Some(format!(
             "CLASS ${{1:{class_name}}} DEFINITION FOR TESTING \n  DURATION SHORT\n  RISK LEVEL HARMLESS.\n\n  PRIVATE SECTION.\n    METHODS:\n      setup,\n      teardown,\n      ${{2:test_demo}} FOR TESTING.\nENDCLASS.\n\nCLASS ${{1:{class_name}}} IMPLEMENTATION.\n\n  METHOD setup.\n  ENDMETHOD.\n\n  METHOD teardown.\n  ENDMETHOD.\n\n  METHOD ${{2:test_demo}}.\n    cl_abap_unit_assert=>assert_equals(\n      act = ${{3:abap_true}} \n      exp = ${{4:abap_true}} \n    ).\n    $0\n  ENDMETHOD.\nENDCLASS."
         )),
+    }
+}
+
+fn method_definition_template_completion_insertion() -> CompletionInsertion {
+    CompletionInsertion {
+        plain_text: "METHODS method_name\n  IMPORTING\n    iv_importing TYPE i\n  EXPORTING\n    ev_exporting TYPE i\n  CHANGING\n    cv_changing TYPE i\n  RECEIVING\n    VALUE(rv_receiving) TYPE i\n  RETURNING\n    VALUE(rv_returning) TYPE i.".to_string(),
+        snippet_text: Some(
+            "METHODS ${1:method_name}\n  IMPORTING\n    ${2:iv_importing} TYPE ${3:i}\n  EXPORTING\n    ${4:ev_exporting} TYPE ${5:i}\n  CHANGING\n    ${6:cv_changing} TYPE ${7:i}\n  RECEIVING\n    VALUE(${8:rv_receiving}) TYPE ${9:i}\n  RETURNING\n    VALUE(${10:rv_returning}) TYPE ${11:i}.$0".to_string(),
+        ),
     }
 }
 
@@ -6808,6 +6834,148 @@ fn parse_local_class_template_query(
         class_name_hint: Arc::from(class_name_hint),
         kind,
     })
+}
+
+fn parse_method_definition_template_query(
+    snapshot: &AnalysisSnapshot,
+    offset: usize,
+) -> Option<MethodDefinitionTemplateQuery> {
+    let statement_range = statement_query_range(&snapshot.parse, offset)?;
+    if !inside_class_definition_at(snapshot, statement_range.start) {
+        return None;
+    }
+
+    let significant = significant_statement_tokens(&snapshot.parse, &statement_range)?;
+    let token = &snapshot.parse.tokens[*significant.first()?];
+    if token.kind != TokenKind::Ident || offset < token.range.start || offset > token.range.end {
+        return None;
+    }
+    let line_end = line_end_offset(snapshot.text.as_ref(), token.range.start);
+    if significant.iter().copied().skip(1).any(|idx| {
+        let next = &snapshot.parse.tokens[idx];
+        next.range.start < line_end && next.kind != TokenKind::Period
+    }) {
+        return None;
+    }
+
+    let prefix_end = offset.min(token.range.end);
+    let prefix = snapshot.text[token.range.start..prefix_end].trim();
+    if prefix.len() < 4 {
+        return None;
+    }
+    let lower = prefix.to_ascii_lowercase();
+    if !"methods".starts_with(lower.as_str()) {
+        return None;
+    }
+
+    Some(MethodDefinitionTemplateQuery {
+        replace_range: token.range.start..line_end,
+    })
+}
+
+fn inside_class_definition_at(snapshot: &AnalysisSnapshot, offset: usize) -> bool {
+    let Some(statement_range) = statement_query_range(&snapshot.parse, offset) else {
+        return false;
+    };
+    let Some((target_token_start, _)) = token_window_for_range(&snapshot.parse, &statement_range)
+    else {
+        return false;
+    };
+
+    let tokens = snapshot.parse.tokens.as_ref();
+    let text = snapshot.text.as_ref();
+    let mut stack = Vec::<DependencyBlock>::new();
+    let mut idx = 0usize;
+
+    while idx < target_token_start {
+        while idx < target_token_start && tokens[idx].kind == TokenKind::Comment {
+            idx += 1;
+        }
+        if idx >= target_token_start {
+            break;
+        }
+
+        let Some(period_idx) = tokens[idx..]
+            .iter()
+            .position(|token| token.kind == TokenKind::Period)
+            .map(|offset| idx + offset)
+        else {
+            break;
+        };
+        if period_idx >= target_token_start {
+            break;
+        }
+
+        let keywords = statement_keywords(tokens, text, idx, period_idx);
+        let first = keywords.first().map(String::as_str);
+        let second = keywords.get(1).map(String::as_str);
+
+        match stack.last_mut() {
+            Some(DependencyBlock::Method) => {
+                if first == Some("endmethod") {
+                    stack.pop();
+                }
+            }
+            Some(DependencyBlock::Form) => {
+                if first == Some("endform") {
+                    stack.pop();
+                }
+            }
+            Some(DependencyBlock::Function) => {
+                if first == Some("endfunction") {
+                    stack.pop();
+                }
+            }
+            Some(DependencyBlock::ClassImplementation) => match first {
+                Some("method") => stack.push(DependencyBlock::Method),
+                Some("endclass") => {
+                    stack.pop();
+                }
+                _ => {}
+            },
+            Some(DependencyBlock::ClassDefinition { visibility }) => {
+                if first == Some("endclass") {
+                    stack.pop();
+                    idx = period_idx + 1;
+                    continue;
+                }
+
+                if matches!(first, Some("public" | "protected" | "private"))
+                    && second == Some("section")
+                {
+                    *visibility = match first.expect("section keyword") {
+                        "public" => DependencyVisibility::Public,
+                        "protected" => DependencyVisibility::Protected,
+                        _ => DependencyVisibility::Private,
+                    };
+                    idx = period_idx + 1;
+                    continue;
+                }
+
+                if let Some(block) = dependency_class_block_for_keywords(&keywords) {
+                    stack.push(block);
+                } else if let Some(block) = dependency_block_for_keywords(&keywords) {
+                    stack.push(block);
+                }
+            }
+            None => match first {
+                Some("class") => {
+                    if let Some(block) = dependency_class_block_for_keywords(&keywords) {
+                        stack.push(block);
+                    }
+                }
+                _ => {
+                    if let Some(block) = dependency_block_for_keywords(&keywords) {
+                        stack.push(block);
+                    }
+                }
+            },
+        }
+
+        idx = period_idx + 1;
+    }
+
+    matches!(stack.last(), Some(DependencyBlock::ClassDefinition { .. }))
 }
 
 fn is_selector_query_container(kind: &str) -> bool {
@@ -14208,6 +14376,56 @@ ltcl";
             "{}",
             item.insertion.plain_text
         );
+    }
+
+    #[test]
+    fn completion_returns_method_definition_template_inside_class_definition() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    meth
+ENDCLASS.";
+        let completion_offset = src.find("meth").expect("method prefix") + "meth".len();
+        let snapshot = store.publish("file:///method_definition_template.abap", 1, src);
+
+        let completion = snapshot
+            .completion_at(completion_offset)
+            .expect("method definition template completion");
+        assert_eq!(&src[completion.replace_range.clone()], "meth");
+        let item = completion
+            .items
+            .iter()
+            .find_map(|item| match item {
+                crate::CompletionItem::Template(item) if item.name.as_ref() == "methods" => {
+                    Some(item)
+                }
+                _ => None,
+            })
+            .expect("method definition template item");
+        assert_eq!(item.detail.as_deref(), Some("Method definition"));
+        assert_eq!(
+            item.insertion.plain_text,
+            "METHODS method_name\n  IMPORTING\n    iv_importing TYPE i\n  EXPORTING\n    ev_exporting TYPE i\n  CHANGING\n    cv_changing TYPE i\n  RECEIVING\n    VALUE(rv_receiving) TYPE i\n  RETURNING\n    VALUE(rv_returning) TYPE i."
+        );
+        assert_eq!(
+            item.insertion.snippet_text.as_deref(),
+            Some(
+                "METHODS ${1:method_name}\n  IMPORTING\n    ${2:iv_importing} TYPE ${3:i}\n  EXPORTING\n    ${4:ev_exporting} TYPE ${5:i}\n  CHANGING\n    ${6:cv_changing} TYPE ${7:i}\n  RECEIVING\n    VALUE(${8:rv_receiving}) TYPE ${9:i}\n  RETURNING\n    VALUE(${10:rv_returning}) TYPE ${11:i}.$0"
+            )
+        );
+    }
+
+    #[test]
+    fn completion_does_not_return_method_definition_template_outside_class_definition() {
+        let store = DocumentStore::default();
+        let src = "\
+REPORT zdemo.
+
+meth";
+        let snapshot = store.publish("file:///method_definition_template_global.abap", 1, src);
+
+        assert!(snapshot.completion_at(src.len()).is_none());
     }
 
     #[test]
