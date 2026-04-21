@@ -679,6 +679,7 @@ pub struct PerformCallData {
     pub range: TextRange,
     pub routine_name: Arc<str>,
     pub routine_range: TextRange,
+    pub is_dynamic: bool,
     pub parameters: Vec<PerformParameterSection>,
     pub arguments: Vec<PerformArgumentData>,
     pub section_order_invalid: bool,

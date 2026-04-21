@@ -87,6 +87,7 @@ const IDENT_LEAD_PARSERS: &[GuardedParser] = &[
     GuardedParser::new(&["interface"], surface_stmt::try_parse_interface_decl),
     GuardedParser::new(&["method"], surface_stmt::try_parse_method_decl),
     GuardedParser::new(&["select"], surface_stmt::try_parse_select_stmt),
+    GuardedParser::new(&["open"], surface_stmt::try_parse_open_cursor_stmt),
     GuardedParser::new(&["read"], surface_stmt::try_parse_read_table_stmt),
     GuardedParser::new(&["authority"], surface_stmt::try_parse_authority_check_stmt),
     GuardedParser::new(&["append"], surface_stmt::try_parse_append_stmt),

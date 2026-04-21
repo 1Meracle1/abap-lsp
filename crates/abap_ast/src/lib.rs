@@ -261,6 +261,10 @@ pub enum SyntaxKind {
     MethodDeclTarget,
     /// `SELECT ... .` or `SELECT ... . ... ENDSELECT.`
     SelectStmt,
+    /// `OPEN CURSOR ... FOR SELECT ... .`
+    OpenCursorStmt,
+    /// Cursor handle operand in `OPEN CURSOR ...`, `FETCH NEXT CURSOR ...`, etc.
+    CursorHandleOperand,
     /// Structured SQL query payload inside `SELECT`.
     SelectQuery,
     /// Projection segment between `SELECT` and the next SQL clause.
@@ -619,6 +623,8 @@ impl SyntaxKind {
             Self::MethodDecl => "MethodDecl",
             Self::MethodDeclTarget => "MethodDeclTarget",
             Self::SelectStmt => "SelectStmt",
+            Self::OpenCursorStmt => "OpenCursorStmt",
+            Self::CursorHandleOperand => "CursorHandleOperand",
             Self::SelectQuery => "SelectQuery",
             Self::SelectProjectionList => "SelectProjectionList",
             Self::SelectFromClause => "SelectFromClause",

@@ -9056,13 +9056,101 @@ pub fn try_parse_select_stmt(
     Some((node, cursor))
 }
 
+pub fn try_parse_open_cursor_stmt(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    errors: &mut Vec<crate::ParseError>,
+) -> Option<(NodeId, usize)> {
+    let open_tok = tokens.get(idx)?;
+    if !is_keyword(source, open_tok, "open") {
+        return None;
+    }
+
+    let cursor_idx = skip_trivia(tokens, idx + 1);
+    let cursor_tok = tokens.get(cursor_idx)?;
+    if !is_keyword(source, cursor_tok, "cursor") {
+        return None;
+    }
+
+    let mut handle_start = skip_trivia(tokens, cursor_idx + 1);
+    if let Some(with_hold_end) =
+        match_keyword_sequence(source, tokens, handle_start, &["with", "hold"])
+    {
+        handle_start = skip_trivia(tokens, with_hold_end);
+    }
+
+    let Some(period_i) = scan_until_top_level_period(tokens, cursor_idx + 1) else {
+        let eof_idx = tokens
+            .iter()
+            .position(|token| token.kind == TokenKind::Eof)
+            .unwrap_or(tokens.len());
+        let err_end = tokens
+            .get(eof_idx.saturating_sub(1))
+            .map(|token| token.range.end)
+            .unwrap_or(open_tok.range.end);
+        errors.push(crate::ParseError {
+            message: "syntax error: expected '.' after OPEN CURSOR statement".to_string(),
+            range: open_tok.range.start..err_end,
+        });
+        let err_children = error_token_children(b, tokens, idx, eof_idx);
+        let node = b.branch(
+            SyntaxKind::Error,
+            open_tok.range.start..err_end,
+            &err_children,
+        );
+        return Some((node, tokens.len()));
+    };
+
+    let Some(for_idx) = find_top_level_keyword(source, tokens, handle_start, period_i, "for")
+    else {
+        return None;
+    };
+    let select_idx = skip_trivia(tokens, for_idx + 1);
+    if !tokens
+        .get(select_idx)
+        .is_some_and(|token| is_keyword(source, token, "select"))
+    {
+        return None;
+    }
+
+    let mut children = Vec::new();
+    push_token_children(b, &mut children, tokens, idx, handle_start);
+    if let Some(handle) = build_token_branch(
+        b,
+        SyntaxKind::CursorHandleOperand,
+        tokens,
+        handle_start,
+        for_idx,
+    ) {
+        children.push(handle);
+    }
+    push_token_children(b, &mut children, tokens, for_idx, select_idx + 1);
+    let (select_children, next) =
+        parse_select_header_until_period(b, source, tokens, select_idx, errors);
+    children.extend(select_children);
+
+    let end = children
+        .last()
+        .copied()
+        .map(|id| b.span(id).end)
+        .unwrap_or(open_tok.range.end);
+    let node = b.branch(
+        SyntaxKind::OpenCursorStmt,
+        open_tok.range.start..end,
+        &children,
+    );
+    Some((node, next))
+}
+
 #[cfg(test)]
 mod tests {
     use abap_ast::SyntaxKind;
     use abap_ast::ast::{
         AstNode, ClassDecl, DataLikeDecl, DataLikeStorageKind, FormDecl, FormParamPassingKind,
         FormParamSectionKind, FunctionDecl, FunctionParamSectionKind, IncludeStmt, MethodDecl,
-        SelectIntoClause, SubmitStmt, SyntaxNodeRef,
+        OpenCursorStmt, SelectIntoClause, SubmitStmt, SyntaxNodeRef,
     };
 
     #[test]
@@ -10734,6 +10822,61 @@ CONCATENATE lv_evttime+6(4) '-'\n\
             1
         );
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::DataInlineDecl), 1);
+    }
+
+    #[test]
+    fn parses_open_cursor_with_hold_and_for_all_entries_query() {
+        let parsed = crate::parse(
+            "OPEN CURSOR WITH HOLD @lv_cursor\n  FOR\n  SELECT a~objid,\n         c~gtin\n  FROM /sttp/dm_obj AS a\n  JOIN /sttp/dm_obj_ids AS b ON a~objid = b~objid\n  LEFT JOIN /sttp/dm_obj_itm AS c ON a~objid = c~objid\n  FOR ALL ENTRIES IN @lt_event_rel\n  WHERE a~objid = @lt_event_rel-objid\n    AND ( b~storage = @/sttp/cl_constants=>gcs_storage-active_hot\n       OR b~storage = @/sttp/cl_constants=>gcs_storage-active_cold ).",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::OpenCursorStmt), 1);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::CursorHandleOperand),
+            1
+        );
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::SelectQuery), 1);
+        assert_eq!(
+            parsed.file.count_kind(root, SyntaxKind::SelectFromClause),
+            1
+        );
+        assert_eq!(
+            parsed.file.count_kind(root, SyntaxKind::SelectJoinClause),
+            2
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::SelectForAllEntriesClause),
+            1
+        );
+        assert_eq!(
+            parsed.file.count_kind(root, SyntaxKind::SelectWhereClause),
+            1
+        );
+        let stmt = parsed
+            .file
+            .find_first_kind(root, SyntaxKind::OpenCursorStmt)
+            .and_then(|node| OpenCursorStmt::cast(SyntaxNodeRef::new(&parsed.file, node)))
+            .expect("open cursor stmt");
+        assert!(stmt.handle().is_some());
+        assert!(stmt.query().is_some());
+    }
+
+    #[test]
+    fn open_cursor_stmt_does_not_cascade_into_following_method() {
+        let parsed = crate::parse(
+            "CLASS lcl DEFINITION.\n  PUBLIC SECTION.\n    METHODS first.\n    METHODS second.\nENDCLASS.\nCLASS lcl IMPLEMENTATION.\n  METHOD first.\n    OPEN CURSOR WITH HOLD lv_cursor\n    FOR\n    SELECT *\n    FROM /sttp/dm_obj_ids\n    WHERE (lt_sql_cond).\n  ENDMETHOD.\n  METHOD second.\n  ENDMETHOD.\nENDCLASS.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::ClassDecl), 2);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::MethodDecl), 2);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::OpenCursorStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
     }
 
     #[test]

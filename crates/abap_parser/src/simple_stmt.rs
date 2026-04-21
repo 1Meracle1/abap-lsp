@@ -1204,10 +1204,10 @@ fn direct_call_statement(source: &str, significant: &[&Token]) -> bool {
     if last.kind != TokenKind::Period {
         return false;
     }
-    if significant
-        .first()
-        .is_some_and(|token| token_matches_keyword(source, token, "submit"))
-    {
+    if significant.first().is_some_and(|token| {
+        token_matches_keyword(source, token, "submit")
+            || token_matches_keyword(source, token, "perform")
+    }) {
         return false;
     }
 
@@ -1876,6 +1876,18 @@ ENDCLASS.";
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
         let root = parsed.file.root();
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::PerformStmt), 1);
+    }
+
+    #[test]
+    fn parses_dynamic_perform_in_program_without_direct_call_spacing_error() {
+        let parsed = crate::parse(
+            "PERFORM (lc_formname) IN PROGRAM (lc_progname) USING lt_files_index_del[] lv_log_handle.",
+        );
+        let root = parsed.file.root();
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::PerformStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::CallStmt), 0);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
     }
 
     #[test]

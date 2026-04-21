@@ -433,6 +433,7 @@ PERFORM process_data TABLES lt_rows USING 'demo' CHANGING lv_count.
 
     let call = unit.perform_calls.first().expect("perform call");
     assert_eq!(call.routine_name.as_ref(), "process_data");
+    assert!(!call.is_dynamic);
     assert!(!call.section_order_invalid);
     assert_eq!(
         call.parameters,
@@ -458,6 +459,61 @@ PERFORM process_data TABLES lt_rows USING 'demo' CHANGING lv_count.
         abap_symbols::PerformParameterSection::Changing
     );
     assert_eq!(call.arguments[2].ordinal_in_section, 0);
+}
+
+#[test]
+fn dynamic_perform_in_program_collects_target_refs_without_unknown_routine_diag() {
+    let src = r#"
+FORM process_data
+    USING pv_mode TYPE string
+    CHANGING cv_count TYPE i.
+ENDFORM.
+
+DATA: lv_form  TYPE string VALUE 'process_data',
+      lv_prog  TYPE syrepid VALUE sy-repid,
+      lv_count TYPE i.
+PERFORM (lv_form) IN PROGRAM (lv_prog) USING 'demo' CHANGING lv_count.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///perform_dynamic.abap", src, &parsed);
+
+    assert!(
+        unit.diagnostics
+            .iter()
+            .all(|diag| !diag.message.contains("unknown routine")),
+        "unexpected dynamic PERFORM diagnostics: {:?}",
+        unit.diagnostics
+    );
+
+    let call = unit.perform_calls.first().expect("perform call");
+    assert!(call.is_dynamic);
+    assert_eq!(call.routine_name.as_ref(), "lv_form");
+    assert_eq!(
+        call.parameters,
+        vec![
+            abap_symbols::PerformParameterSection::Using,
+            abap_symbols::PerformParameterSection::Changing,
+        ]
+    );
+    assert_eq!(call.arguments.len(), 2);
+
+    let form_offset = src.match_indices("lv_form").last().expect("lv_form call").0 + 1;
+    let form_ref = unit
+        .semantic()
+        .refs()
+        .reference_at_offset(form_offset)
+        .expect("dynamic PERFORM target reference");
+    assert_eq!(form_ref.name.as_ref(), "lv_form");
+    assert!(matches!(form_ref.resolution, Some(Resolution::Symbol(_))));
+
+    let prog_offset = src.match_indices("lv_prog").last().expect("lv_prog call").0 + 1;
+    let prog_ref = unit
+        .semantic()
+        .refs()
+        .reference_at_offset(prog_offset)
+        .expect("dynamic PERFORM program reference");
+    assert_eq!(prog_ref.name.as_ref(), "lv_prog");
+    assert!(matches!(prog_ref.resolution, Some(Resolution::Symbol(_))));
 }
 
 #[test]

@@ -29,6 +29,35 @@ impl<'a> Collector<'a> {
 }
 
 impl<'ctx, 'a> FormsLowering<'ctx, 'a> {
+    fn lowered_source_range(&self, range: &abap_lexer::TextRange) -> Option<Arc<str>> {
+        self.collector
+            .source
+            .get(range.clone())
+            .map(|text| Arc::<str>::from(text.trim().to_ascii_lowercase()))
+    }
+
+    fn token_span(
+        tokens: &[SyntaxTokenInfo],
+        start: usize,
+        end_exclusive: usize,
+    ) -> Option<abap_lexer::TextRange> {
+        let first = tokens.get(start)?;
+        let last = tokens.get(end_exclusive.checked_sub(1)?)?;
+        Some(first.range.start..last.range.end)
+    }
+
+    fn tokens_match_keyword_sequence(
+        tokens: &[SyntaxTokenInfo],
+        start: usize,
+        keywords: &[&str],
+    ) -> bool {
+        keywords.iter().enumerate().all(|(offset, keyword)| {
+            tokens
+                .get(start + offset)
+                .is_some_and(|token| token.text.eq_ignore_ascii_case(keyword))
+        })
+    }
+
     fn function_table_parameter_type_display(
         section: FunctionModuleParameterSection,
         type_clause_display: Option<Arc<str>>,
@@ -150,6 +179,86 @@ impl<'ctx, 'a> FormsLowering<'ctx, 'a> {
             .is_some_and(|line| line.contains("##ADT_PARAMETER_UNTYPED"))
     }
 
+    fn collect_dynamic_perform_operand_refs(
+        &mut self,
+        tokens: &[SyntaxTokenInfo],
+        start: usize,
+        end_exclusive: usize,
+        scope: ScopeId,
+    ) {
+        if start < end_exclusive {
+            self.collector.collect_token_expression_refs_infos(
+                &tokens[start..end_exclusive],
+                scope,
+                true,
+            );
+        }
+    }
+
+    fn collect_perform_target_info(
+        &mut self,
+        tokens: &[SyntaxTokenInfo],
+        scope: ScopeId,
+    ) -> Option<(Arc<str>, abap_lexer::TextRange, bool, usize)> {
+        if tokens.len() < 2 || !tokens[0].text.eq_ignore_ascii_case("perform") {
+            return None;
+        }
+
+        let mut idx = 1usize;
+        let (routine_name, routine_range, is_dynamic) = if tokens
+            .get(idx)
+            .is_some_and(|token| token.text.as_ref() == "(")
+        {
+            let end_idx = self
+                .collector
+                .find_matching_group_end_infos(tokens, idx, "(", ")")?;
+            self.collect_dynamic_perform_operand_refs(tokens, idx + 1, end_idx, scope);
+            let routine_range = Self::token_span(tokens, idx + 1, end_idx)
+                .unwrap_or_else(|| tokens[idx].range.clone());
+            let routine_name = self
+                .lowered_source_range(&routine_range)
+                .unwrap_or_else(|| Arc::<str>::from("<dynamic>"));
+            idx = end_idx + 1;
+            (routine_name, routine_range, true)
+        } else {
+            let token = tokens.get(idx)?;
+            if !self.collector.syntax_token_is_ident_like(token) {
+                return None;
+            }
+            idx += 1;
+            (
+                Arc::<str>::from(token.text.to_ascii_lowercase()),
+                token.range.clone(),
+                false,
+            )
+        };
+
+        if Self::tokens_match_keyword_sequence(tokens, idx, &["in", "program"]) {
+            idx += 2;
+            if tokens
+                .get(idx)
+                .is_some_and(|token| token.text.as_ref() == "(")
+            {
+                if let Some(end_idx) = self
+                    .collector
+                    .find_matching_group_end_infos(tokens, idx, "(", ")")
+                {
+                    self.collect_dynamic_perform_operand_refs(tokens, idx + 1, end_idx, scope);
+                    idx = end_idx + 1;
+                } else {
+                    idx += 1;
+                }
+            } else if !Self::tokens_match_keyword_sequence(tokens, idx, &["if", "found"]) {
+                let next_idx = self.consume_perform_argument_infos(tokens, idx);
+                if next_idx > idx {
+                    idx = next_idx;
+                }
+            }
+        }
+
+        Some((routine_name, routine_range, is_dynamic, idx))
+    }
+
     pub(super) fn declare_form_parameters_from_header(
         &mut self,
         form_node: NodeId,
@@ -236,25 +345,22 @@ impl<'ctx, 'a> FormsLowering<'ctx, 'a> {
     }
 
     pub(super) fn collect_perform_stmt_node(&mut self, node: NodeId, scope: ScopeId) {
-        let Some(stmt) = PerformStmt::cast(self.collector.syntax(node)) else {
+        let Some(_stmt) = PerformStmt::cast(self.collector.syntax(node)) else {
             return;
         };
-        let Some(routine) = stmt
-            .routine_token()
-            .and_then(|token| token.lower_trimmed_text(self.collector.source))
+        let tokens = self.collector.significant_stmt_token_infos(node);
+        let Some((routine_name, routine_range, is_dynamic, arguments_start_idx)) =
+            self.collect_perform_target_info(&tokens, scope)
         else {
             return;
         };
-        let routine_range = stmt.routine_token().map(|token| token.range());
-        let tokens = stmt
-            .tokens()
-            .flat_map(|token| self.collector.syntax_token_nodes(token.id()))
-            .collect::<Vec<_>>();
         self.collect_perform_stmt_infos(
             &tokens,
             scope,
-            routine,
-            routine_range.unwrap_or_else(|| self.collector.file.range(node)),
+            routine_name,
+            routine_range,
+            is_dynamic,
+            arguments_start_idx,
             self.collector.file.range(node),
         );
     }
@@ -265,18 +371,22 @@ impl<'ctx, 'a> FormsLowering<'ctx, 'a> {
         scope: ScopeId,
         routine_name: Arc<str>,
         routine_range: abap_lexer::TextRange,
+        is_dynamic: bool,
+        arguments_start_idx: usize,
         stmt_range: abap_lexer::TextRange,
     ) {
         if tokens.is_empty() || !tokens[0].text.eq_ignore_ascii_case("perform") {
             return;
         }
-        self.collector.add_reference(
-            scope,
-            Arc::clone(&routine_name),
-            Namespace::Routine,
-            ReferenceKind::RoutineCall,
-            routine_range.clone(),
-        );
+        if !is_dynamic {
+            self.collector.add_reference(
+                scope,
+                Arc::clone(&routine_name),
+                Namespace::Routine,
+                ReferenceKind::RoutineCall,
+                routine_range.clone(),
+            );
+        }
 
         if let Some(calls) = self.split_chained_perform_calls_infos(tokens) {
             for (call_tokens, call_range) in calls {
@@ -285,6 +395,8 @@ impl<'ctx, 'a> FormsLowering<'ctx, 'a> {
                     scope,
                     Arc::clone(&routine_name),
                     routine_range.clone(),
+                    is_dynamic,
+                    arguments_start_idx,
                     call_range,
                 );
             }
@@ -296,6 +408,8 @@ impl<'ctx, 'a> FormsLowering<'ctx, 'a> {
             scope,
             routine_name,
             routine_range,
+            is_dynamic,
+            arguments_start_idx,
             stmt_range,
         );
     }
@@ -306,6 +420,8 @@ impl<'ctx, 'a> FormsLowering<'ctx, 'a> {
         scope: ScopeId,
         routine_name: Arc<str>,
         routine_range: abap_lexer::TextRange,
+        is_dynamic: bool,
+        arguments_start_idx: usize,
         stmt_range: abap_lexer::TextRange,
     ) {
         if tokens.is_empty() || !tokens[0].text.eq_ignore_ascii_case("perform") {
@@ -320,7 +436,7 @@ impl<'ctx, 'a> FormsLowering<'ctx, 'a> {
         let mut tables_ordinal = 0usize;
         let mut using_ordinal = 0usize;
         let mut changing_ordinal = 0usize;
-        let mut idx = 2usize;
+        let mut idx = arguments_start_idx;
 
         while idx < tokens.len() {
             let token = &tokens[idx];
@@ -394,6 +510,7 @@ impl<'ctx, 'a> FormsLowering<'ctx, 'a> {
             range: stmt_range,
             routine_name,
             routine_range,
+            is_dynamic,
             parameters,
             arguments,
             section_order_invalid,

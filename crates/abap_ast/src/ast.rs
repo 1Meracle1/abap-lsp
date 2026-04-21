@@ -585,6 +585,8 @@ ast_node!(
     SyntaxKind::ConcatenateSeparatorOperand
 );
 ast_node!(SelectStmt, SyntaxKind::SelectStmt);
+ast_node!(OpenCursorStmt, SyntaxKind::OpenCursorStmt);
+ast_node!(CursorHandleOperand, SyntaxKind::CursorHandleOperand);
 ast_node!(SelectQuery, SyntaxKind::SelectQuery);
 ast_node!(SelectProjectionList, SyntaxKind::SelectProjectionList);
 ast_node!(SelectFromClause, SyntaxKind::SelectFromClause);
@@ -2218,7 +2220,14 @@ impl<'a> PerformStmt<'a> {
     }
 
     pub fn routine_token(self) -> Option<SyntaxNodeRef<'a>> {
-        self.tokens().nth(1)
+        let token = self.tokens().nth(1)?;
+        matches!(token.token_kind(), Some(TokenKind::Ident)).then_some(token)
+    }
+}
+
+impl<'a> CursorHandleOperand<'a> {
+    pub fn tokens(self) -> impl DoubleEndedIterator<Item = SyntaxNodeRef<'a>> + Clone + 'a {
+        self.syntax.children_by_kind(SyntaxKind::Token)
     }
 }
 
@@ -3009,6 +3018,20 @@ impl<'a> SelectStmt<'a> {
         self.syntax
             .non_token_children()
             .filter(|child| child.kind() != SyntaxKind::SelectQuery)
+    }
+}
+
+impl<'a> OpenCursorStmt<'a> {
+    pub fn handle(&self) -> Option<CursorHandleOperand<'a>> {
+        self.syntax
+            .child_by_kind(SyntaxKind::CursorHandleOperand)
+            .and_then(CursorHandleOperand::cast)
+    }
+
+    pub fn query(&self) -> Option<SelectQuery<'a>> {
+        self.syntax
+            .child_by_kind(SyntaxKind::SelectQuery)
+            .and_then(SelectQuery::cast)
     }
 }
 
