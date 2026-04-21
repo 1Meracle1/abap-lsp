@@ -10,6 +10,7 @@ use super::ids::{RoutineId, RoutineInstrId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RoutineKind {
+    GlobalDeclarations,
     Method,
     Form,
     Module,

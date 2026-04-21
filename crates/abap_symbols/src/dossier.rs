@@ -1449,6 +1449,7 @@ fn namespace_name(namespace: Namespace) -> &'static str {
 
 fn routine_kind_name(kind: RoutineKind) -> &'static str {
     match kind {
+        RoutineKind::GlobalDeclarations => "global_declarations",
         RoutineKind::Method => "method",
         RoutineKind::Form => "form",
         RoutineKind::Module => "module",

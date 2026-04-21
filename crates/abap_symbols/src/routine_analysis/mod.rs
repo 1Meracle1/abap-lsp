@@ -115,6 +115,11 @@ pub fn build_project_routine_analysis(project: &ProjectAnalysis) -> ProjectRouti
             let Some(kind) = routine_kind(scope.kind) else {
                 continue;
             };
+            if kind == RoutineKind::GlobalDeclarations
+                && !scope_has_global_declaration_activity(unit, scope.id)
+            {
+                continue;
+            }
             let routine_id = RoutineId(out.routines.len() as u32);
             let owner = scope.owner.map(|symbol| SymbolHandle {
                 unit: unit.unit_id,
@@ -2550,10 +2555,7 @@ fn build_dead_store_diagnostics(
                 diagnostics.push(Diagnostic {
                     kind: DiagnosticKind::DeadStore,
                     range: write.range.clone(),
-                    message: format!(
-                        "write to local variable '{}' is never read in routine '{}'",
-                        value.name, routine.descriptor.name
-                    ),
+                    message: dead_store_message(routine, value),
                 });
             }
             for write in &summary.writes {
@@ -2574,6 +2576,21 @@ fn build_dead_store_diagnostics(
     });
     diagnostics.dedup();
     diagnostics
+}
+
+fn dead_store_message(routine: &RoutineAnalysis, value: &RoutineDataflowValue) -> String {
+    match routine.descriptor.kind {
+        RoutineKind::GlobalDeclarations => format!(
+            "write to global variable '{}' is never read in global declarations",
+            value.name
+        ),
+        RoutineKind::Method | RoutineKind::Form | RoutineKind::Module | RoutineKind::EventBlock => {
+            format!(
+                "write to local variable '{}' is never read in routine '{}'",
+                value.name, routine.descriptor.name
+            )
+        }
+    }
 }
 
 fn build_dead_store_tracked_values(
@@ -4840,12 +4857,12 @@ fn instruction_site_sort_key(site: RoutineInstructionSite) -> u32 {
 
 fn routine_kind(kind: ScopeKind) -> Option<RoutineKind> {
     match kind {
+        ScopeKind::File => Some(RoutineKind::GlobalDeclarations),
         ScopeKind::Method => Some(RoutineKind::Method),
         ScopeKind::Form => Some(RoutineKind::Form),
         ScopeKind::Module => Some(RoutineKind::Module),
         ScopeKind::EventBlock => Some(RoutineKind::EventBlock),
-        ScopeKind::File
-        | ScopeKind::Class
+        ScopeKind::Class
         | ScopeKind::Interface
         | ScopeKind::IfBranch
         | ScopeKind::ElseifBranch
@@ -4866,6 +4883,7 @@ fn synthetic_routine_name(kind: RoutineKind, scope: ScopeId) -> Arc<str> {
     Arc::from(format!(
         "<{}:{}>",
         match kind {
+            RoutineKind::GlobalDeclarations => "global_declarations",
             RoutineKind::Method => "method",
             RoutineKind::Form => "form",
             RoutineKind::Module => "module",
@@ -4873,6 +4891,77 @@ fn synthetic_routine_name(kind: RoutineKind, scope: ScopeId) -> Arc<str> {
         },
         scope.0
     ))
+}
+
+fn scope_has_global_declaration_activity(unit: &UnitAnalysis, file_scope: ScopeId) -> bool {
+    unit.assignment_sites
+        .iter()
+        .any(|site| scope_maps_to_global_declarations(unit, site.scope, file_scope))
+        || unit
+            .call_sites
+            .iter()
+            .any(|site| scope_maps_to_global_declarations(unit, site.scope, file_scope))
+        || unit
+            .perform_calls
+            .iter()
+            .any(|call| scope_maps_to_global_declarations(unit, call.scope, file_scope))
+        || unit
+            .find_sites
+            .iter()
+            .any(|site| scope_maps_to_global_declarations(unit, site.scope, file_scope))
+        || unit
+            .sql_queries
+            .iter()
+            .any(|query| scope_maps_to_global_declarations(unit, query.scope, file_scope))
+        || unit.value_flow_edges.iter().any(|edge| {
+            matches!(
+                edge.kind,
+                crate::ValueFlowKind::FieldSymbolAssignment
+                    | crate::ValueFlowKind::ConditionalFieldSymbolAssignment
+            ) && scope_maps_to_global_declarations(unit, edge.scope, file_scope)
+        })
+        || unit
+            .routine_sites
+            .iter()
+            .any(|site| scope_maps_to_global_declarations(unit, site.scope, file_scope))
+        || unit
+            .routine_control_regions
+            .iter()
+            .any(|region| scope_maps_to_global_declarations(unit, region.scope(), file_scope))
+}
+
+fn scope_maps_to_global_declarations(
+    unit: &UnitAnalysis,
+    scope: ScopeId,
+    file_scope: ScopeId,
+) -> bool {
+    let mut current = Some(scope);
+    while let Some(scope_id) = current {
+        let Some(scope_data) = unit.scopes.get(scope_id.as_usize()) else {
+            return false;
+        };
+        match scope_data.kind {
+            ScopeKind::File => return scope_id == file_scope,
+            ScopeKind::Method | ScopeKind::Form | ScopeKind::Module | ScopeKind::EventBlock => {
+                return false;
+            }
+            ScopeKind::Class
+            | ScopeKind::Interface
+            | ScopeKind::IfBranch
+            | ScopeKind::ElseifBranch
+            | ScopeKind::ElseBranch
+            | ScopeKind::WhenBranch
+            | ScopeKind::CatchClause
+            | ScopeKind::CleanupClause
+            | ScopeKind::WhileBlock
+            | ScopeKind::DoBlock
+            | ScopeKind::LoopBlock
+            | ScopeKind::AtBlock
+            | ScopeKind::TryBlock
+            | ScopeKind::SelectBlock => current = scope_data.parent,
+        }
+    }
+    false
 }
 
 fn trackable_symbol_kind(kind: SymbolKind) -> bool {

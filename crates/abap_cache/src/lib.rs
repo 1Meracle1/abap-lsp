@@ -11578,6 +11578,42 @@ ENDCLASS.";
     }
 
     #[test]
+    fn routine_analysis_flags_dead_store_in_global_declarations() {
+        let store = DocumentStore::default();
+        let src = "\
+REPORT zdead_store.
+
+DATA gv_unused TYPE i.
+gv_unused = 1.";
+
+        let snapshot = store.publish("file:///global_dead_store.abap", 1, src);
+        let dead_store = diagnostic_slices(
+            src,
+            &snapshot.symbols.diagnostics,
+            DiagnosticKind::DeadStore,
+        );
+        let dead_store_messages: Vec<_> = snapshot
+            .symbols
+            .diagnostics
+            .iter()
+            .filter(|diag| diag.kind == DiagnosticKind::DeadStore)
+            .map(|diag| diag.message.as_str())
+            .collect();
+
+        assert!(
+            dead_store.iter().any(|slice| slice == "gv_unused"),
+            "{dead_store:?}"
+        );
+        assert!(
+            dead_store_messages.iter().any(|message| {
+                *message
+                    == "write to global variable 'gv_unused' is never read in global declarations"
+            }),
+            "{dead_store_messages:?}"
+        );
+    }
+
+    #[test]
     fn routine_analysis_keeps_loop_carried_variable_writes_live() {
         let store = DocumentStore::default();
         let src = "\

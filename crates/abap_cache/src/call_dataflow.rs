@@ -2699,6 +2699,7 @@ fn caller_matches(caller: Option<&RoutineAnalysis>, query: &str) -> bool {
 
 fn routine_kind_name(routine: &RoutineAnalysis) -> String {
     match routine.descriptor.kind {
+        abap_symbols::RoutineKind::GlobalDeclarations => "global_declarations",
         abap_symbols::RoutineKind::Method => "method",
         abap_symbols::RoutineKind::Form => "form",
         abap_symbols::RoutineKind::Module => "module",
