@@ -12973,7 +12973,7 @@ ENDFORM.";
         };
         assert_eq!(
             edit.new_text,
-            "CLASS ${1:lcl_demo} DEFINITION.\n  PUBLIC SECTION.\n    METHODS ${2:run}.\nENDCLASS.\n\nCLASS ${1:lcl_demo} IMPLEMENTATION.\n  METHOD ${2:run}.\n    $0\n  ENDMETHOD.\nENDCLASS."
+            "CLASS ${1:lcl_demo} DEFINITION.\n  PUBLIC SECTION.\n    $0\nENDCLASS.\n\nCLASS ${1:lcl_demo} IMPLEMENTATION.\nENDCLASS."
         );
     }
 
@@ -13027,7 +13027,7 @@ ENDFORM.";
         };
         assert_eq!(
             edit.new_text,
-            "CLASS lcl_demo DEFINITION.\n  PUBLIC SECTION.\n    METHODS run.\nENDCLASS.\n\nCLASS lcl_demo IMPLEMENTATION.\n  METHOD run.\n  ENDMETHOD.\nENDCLASS."
+            "CLASS lcl_demo DEFINITION.\n  PUBLIC SECTION.\nENDCLASS.\n\nCLASS lcl_demo IMPLEMENTATION.\nENDCLASS."
         );
     }
 

@@ -3466,10 +3466,10 @@ fn normalized_local_class_template_name(kind: LocalClassTemplateKind, name_hint:
 fn local_class_template_completion_insertion(class_name: &str) -> CompletionInsertion {
     CompletionInsertion {
         plain_text: format!(
-            "CLASS {class_name} DEFINITION.\n  PUBLIC SECTION.\n    METHODS run.\nENDCLASS.\n\nCLASS {class_name} IMPLEMENTATION.\n  METHOD run.\n  ENDMETHOD.\nENDCLASS."
+            "CLASS {class_name} DEFINITION.\n  PUBLIC SECTION.\nENDCLASS.\n\nCLASS {class_name} IMPLEMENTATION.\nENDCLASS."
         ),
         snippet_text: Some(format!(
-            "CLASS ${{1:{class_name}}} DEFINITION.\n  PUBLIC SECTION.\n    METHODS ${{2:run}}.\nENDCLASS.\n\nCLASS ${{1:{class_name}}} IMPLEMENTATION.\n  METHOD ${{2:run}}.\n    $0\n  ENDMETHOD.\nENDCLASS."
+            "CLASS ${{1:{class_name}}} DEFINITION.\n  PUBLIC SECTION.\n    $0\nENDCLASS.\n\nCLASS ${{1:{class_name}}} IMPLEMENTATION.\nENDCLASS."
         )),
     }
 }
@@ -15237,12 +15237,12 @@ lcl_demo";
         assert_eq!(item.detail.as_deref(), Some("Local class definition"));
         assert_eq!(
             item.insertion.plain_text,
-            "CLASS lcl_demo DEFINITION.\n  PUBLIC SECTION.\n    METHODS run.\nENDCLASS.\n\nCLASS lcl_demo IMPLEMENTATION.\n  METHOD run.\n  ENDMETHOD.\nENDCLASS."
+            "CLASS lcl_demo DEFINITION.\n  PUBLIC SECTION.\nENDCLASS.\n\nCLASS lcl_demo IMPLEMENTATION.\nENDCLASS."
         );
         assert_eq!(
             item.insertion.snippet_text.as_deref(),
             Some(
-                "CLASS ${1:lcl_demo} DEFINITION.\n  PUBLIC SECTION.\n    METHODS ${2:run}.\nENDCLASS.\n\nCLASS ${1:lcl_demo} IMPLEMENTATION.\n  METHOD ${2:run}.\n    $0\n  ENDMETHOD.\nENDCLASS."
+                "CLASS ${1:lcl_demo} DEFINITION.\n  PUBLIC SECTION.\n    $0\nENDCLASS.\n\nCLASS ${1:lcl_demo} IMPLEMENTATION.\nENDCLASS."
             )
         );
     }
