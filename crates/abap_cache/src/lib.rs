@@ -6805,12 +6805,18 @@ fn parse_local_class_template_query(
 ) -> Option<TemplateCompletionQuery> {
     let statement_range = statement_query_range(&snapshot.parse, offset)?;
     let significant = significant_statement_tokens(&snapshot.parse, &statement_range)?;
-    if significant.len() != 1 {
+    let token_idx = significant.iter().copied().find(|&idx| {
+        let token = &snapshot.parse.tokens[idx];
+        token.kind == TokenKind::Ident && token.range.start <= offset && offset <= token.range.end
+    })?;
+    let token = &snapshot.parse.tokens[token_idx];
+    if token.kind != TokenKind::Ident || offset < token.range.start || offset > token.range.end {
         return None;
     }
-
-    let token = &snapshot.parse.tokens[*significant.first()?];
-    if token.kind != TokenKind::Ident || offset < token.range.start || offset > token.range.end {
+    let line_end = line_end_offset(snapshot.text.as_ref(), token.range.start);
+    if significant.iter().copied().any(|idx| {
+        idx != token_idx && snapshot.parse.tokens[idx].range.start < line_end
+    }) {
         return None;
     }
 
@@ -6829,8 +6835,7 @@ fn parse_local_class_template_query(
     };
 
     Some(TemplateCompletionQuery {
-        replace_range: token.range.start
-            ..line_end_offset(snapshot.text.as_ref(), token.range.start),
+        replace_range: token.range.start..line_end,
         class_name_hint: Arc::from(class_name_hint),
         kind,
     })
@@ -14448,6 +14453,53 @@ lcl_demo";
         let completion = snapshot
             .completion_at(src.len())
             .expect("repeated local class template completion");
+        let item = completion
+            .items
+            .iter()
+            .find_map(|item| match item {
+                crate::CompletionItem::Template(item) if item.name.as_ref() == "lcl_demo" => {
+                    Some(item)
+                }
+                _ => None,
+            })
+            .expect("local class template item");
+        assert_eq!(item.detail.as_deref(), Some("Local class definition"));
+    }
+
+    #[test]
+    fn completion_keeps_local_class_template_between_abap_statements() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS lo_epcis_builder DEFINITION.
+  PUBLIC SECTION.
+    METHODS build.
+ENDCLASS.
+
+CLASS lo_epcis_builder IMPLEMENTATION.
+  METHOD build.
+    
+  ENDMETHOD.
+ENDCLASS.
+
+lcl
+
+CLASS lcl_object_event DEFINITION.
+  PUBLIC SECTION.
+    METHODS add_to_epcis
+      CHANGING
+        co_epcis_builder TYPE REF TO lo_epcis_builder.
+ENDCLASS.
+
+CLASS lcl_object_event IMPLEMENTATION.
+
+ENDCLASS.";
+        let completion_offset = src.find("\nlcl\n").expect("lcl line") + "\nlcl".len();
+        let snapshot = store.publish("file:///local_class_template_between_statements.abap", 1, src);
+
+        let completion = snapshot
+            .completion_at(completion_offset)
+            .expect("local class template completion");
+        assert_eq!(&src[completion.replace_range.clone()], "lcl");
         let item = completion
             .items
             .iter()

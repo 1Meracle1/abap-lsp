@@ -12131,6 +12131,57 @@ ENDFORM.";
     }
 
     #[test]
+    fn completion_emits_local_class_definition_template_between_abap_statements() {
+        let mut state = ServerState::default();
+        state.client_capabilities.completion_snippet_support = true;
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///completion_local_class_template_between_statements.abap")
+                        .expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: "CLASS lo_epcis_builder DEFINITION.\n  PUBLIC SECTION.\n    METHODS build.\nENDCLASS.\n\nCLASS lo_epcis_builder IMPLEMENTATION.\n  METHOD build.\n    \n  ENDMETHOD.\nENDCLASS.\n\nlcl\n\nCLASS lcl_object_event DEFINITION.\n  PUBLIC SECTION.\n    METHODS add_to_epcis\n      CHANGING\n        co_epcis_builder TYPE REF TO lo_epcis_builder.\nENDCLASS.\n\nCLASS lcl_object_event IMPLEMENTATION.\n\nENDCLASS.".to_string(),
+                },
+            },
+        );
+
+        let completion = completion(
+            &state,
+            &CompletionParams {
+                text_document_position: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str(
+                            "file:///completion_local_class_template_between_statements.abap",
+                        )
+                        .expect("uri"),
+                    },
+                    position: Position {
+                        line: 11,
+                        character: 3,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+                context: None,
+            },
+        )
+        .expect("completion");
+
+        let CompletionResponse::Array(items) = completion else {
+            panic!("expected array completion");
+        };
+        let item = items
+            .into_iter()
+            .find(|item| item.label == "lcl_demo")
+            .expect("local class template item");
+        assert_eq!(item.kind, Some(lsp_types::CompletionItemKind::SNIPPET));
+        assert_eq!(item.detail.as_deref(), Some("Local class definition"));
+        assert_eq!(item.insert_text_format, Some(InsertTextFormat::SNIPPET));
+    }
+
+    #[test]
     fn completion_emits_method_definition_template_snippet_inside_class_definition() {
         let mut state = ServerState::default();
         state.client_capabilities.completion_snippet_support = true;
