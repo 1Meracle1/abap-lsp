@@ -12354,6 +12354,43 @@ START-OF-SELECTION.
 }
 
 #[test]
+fn reports_incompatible_assignment_types_for_move_and_plain_structure_assignment() {
+    let src = r#"
+TYPES: BEGIN OF street_type,
+         name TYPE string,
+         no TYPE i,
+       END OF street_type.
+
+FORM some_form.
+  DATA lv_address TYPE street_type.
+  MOVE 'joe' TO lv_address.
+  lv_address = 2.
+ENDFORM.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit(
+        "file:///incompatible_structure_assignments.abap",
+        src,
+        &parsed,
+    );
+
+    let diags: Vec<_> = unit
+        .diagnostics
+        .iter()
+        .filter(|diag| diag.kind == DiagnosticKind::IncompatibleAssignmentType)
+        .collect();
+    assert_eq!(diags.len(), 2, "{diags:#?}");
+    assert!(diags.iter().any(|diag| {
+        diag.message
+            .contains("assignment target 'street_type' is incompatible with source 'string'")
+    }));
+    assert!(diags.iter().any(|diag| {
+        diag.message
+            .contains("assignment target 'street_type' is incompatible with source 'i'")
+    }));
+}
+
+#[test]
 fn allows_compatible_assignment_between_structure_selectors_with_shared_alias_type() {
     let src = r#"
 TYPES charg_d TYPE c LENGTH 10.

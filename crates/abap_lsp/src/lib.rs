@@ -2301,12 +2301,12 @@ fn semantic_diagnostic_severity(kind: DiagnosticKind) -> DiagnosticSeverity {
         DiagnosticKind::DuplicateDeclaration | DiagnosticKind::ShadowedSymbol => {
             DiagnosticSeverity::WARNING
         }
-        DiagnosticKind::IncompatibleAssignmentType
-        | DiagnosticKind::IncompatibleArgumentType
+        DiagnosticKind::IncompatibleArgumentType
         | DiagnosticKind::UseBeforeDefiniteAssignment
         | DiagnosticKind::PossiblyUnboundFieldSymbol
         | DiagnosticKind::UnreachableCode
         | DiagnosticKind::DeadStore => DiagnosticSeverity::WARNING,
+        DiagnosticKind::IncompatibleAssignmentType => DiagnosticSeverity::ERROR,
         DiagnosticKind::UnverifiedOpenSqlSource => DiagnosticSeverity::ERROR,
         DiagnosticKind::UnresolvedReference
         | DiagnosticKind::UnresolvedInclude
@@ -12319,6 +12319,44 @@ START-OF-SELECTION.
         }));
         assert!(diagnostics.iter().any(|diag| {
             diag.message.contains("it_values") && diag.severity == Some(DiagnosticSeverity::WARNING)
+        }));
+    }
+
+    #[test]
+    fn incompatible_assignment_type_is_reported_as_error() {
+        let state = ServerState::default();
+        let text = "\
+TYPES: BEGIN OF street_type,
+         name TYPE string,
+         no TYPE i,
+       END OF street_type.
+
+DATA lv_address TYPE street_type.
+
+START-OF-SELECTION.
+  lv_address = 2.";
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///assignment_diag_severity.abap").expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: text.to_string(),
+                },
+            },
+        );
+
+        let snapshot = state
+            .cache
+            .get("file:///assignment_diag_severity.abap")
+            .expect("snapshot");
+        let diagnostics = build_lsp_diagnostics(snapshot.as_ref());
+
+        assert!(diagnostics.iter().any(|diag| {
+            diag.message
+                .contains("assignment target 'street_type' is incompatible with source 'i'")
+                && diag.severity == Some(DiagnosticSeverity::ERROR)
         }));
     }
 

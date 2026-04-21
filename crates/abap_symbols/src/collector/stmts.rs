@@ -32,6 +32,39 @@ impl<'a> Collector<'a> {
 }
 
 impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
+    pub(super) fn collect_move_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        let stmt_range = self.collector.file.range(node);
+        let mut source_expr = None;
+        let mut target_expr = None;
+        let mut saw_to = false;
+
+        for child in self.collector.file.children(node) {
+            if self.collector.file.kind(child) == SyntaxKind::Token {
+                if let Some(token) = self.collector.syntax_token_nodes(child).into_iter().next()
+                    && token.text.eq_ignore_ascii_case("to")
+                {
+                    saw_to = true;
+                }
+                continue;
+            }
+
+            if saw_to {
+                if target_expr.is_none() {
+                    target_expr = Some(child);
+                }
+            } else if source_expr.is_none() {
+                source_expr = Some(child);
+            }
+
+            self.collector.walk_node(child, scope);
+        }
+
+        if let Some(target_expr) = target_expr {
+            let rhs_nodes = source_expr.into_iter().collect::<Vec<_>>();
+            self.emit_assignment_site_from_ranges(scope, stmt_range, target_expr, &rhs_nodes);
+        }
+    }
+
     fn collect_leave_operand_tokens(&mut self, tail: &[SyntaxTokenInfo], scope: ScopeId) {
         if tail.is_empty() {
             return;
@@ -575,12 +608,32 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
         lhs: NodeId,
         rhs_nodes: &[NodeId],
     ) {
+        let type_fact_from_node = |node: NodeId| {
+            let (structure, declared_type) =
+                if self.collector.file.kind(node) == SyntaxKind::DataInlineDecl {
+                    self.collector.inline_decl_inferred_type(node, scope)
+                } else {
+                    self.collector
+                        .inline_decl_assignment_source_metadata(node, scope)
+                };
+            TypeFactData {
+                structure,
+                declared_type,
+                type_clause_display: None,
+                table_line: None,
+            }
+        };
         let lhs_range = self.collector.file.range(lhs);
         let rhs_range = rhs_nodes
             .iter()
             .map(|&node| self.collector.file.range(node))
             .reduce(|acc, next| acc.start.min(next.start)..acc.end.max(next.end))
             .unwrap_or_else(|| range.start..range.start);
+        let lhs_fact = type_fact_from_node(lhs);
+        let rhs_fact = match rhs_nodes {
+            [rhs] => type_fact_from_node(*rhs),
+            _ => TypeFactData::default(),
+        };
 
         self.collector.emit_assignment_site(AssignmentSiteData {
             scope,
@@ -588,9 +641,9 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             lhs_range,
             rhs_range,
             lhs_target_access: self.collector.value_access_from_node(lhs, scope),
-            lhs: TypeFactData::default(),
-            rhs: TypeFactData::default(),
-            rhs_is_top_level_sum: false,
+            lhs: lhs_fact,
+            rhs: rhs_fact,
+            rhs_is_top_level_sum: matches!(rhs_nodes, [rhs] if self.collector.rhs_is_top_level_sum(*rhs)),
         });
     }
 

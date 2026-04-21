@@ -104,8 +104,8 @@ impl<'a> Collector<'a> {
             SyntaxKind::InsertTableStmt => {
                 self.stmt_lowering().collect_insert_table_stmt(node, scope)
             }
+            SyntaxKind::MoveStmt => self.stmt_lowering().collect_move_stmt(node, scope),
             SyntaxKind::MoveCorrespondingStmt
-            | SyntaxKind::MoveStmt
             | SyntaxKind::UpdateTarget
             | SyntaxKind::GetReferenceStmt
             | SyntaxKind::GetBitStmt
