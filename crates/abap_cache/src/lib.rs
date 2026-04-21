@@ -16210,6 +16210,46 @@ ENDCLASS.";
     }
 
     #[test]
+    fn hover_and_definition_work_for_value_constructor_named_field() {
+        let store = DocumentStore::default();
+        let src = "\
+TYPES: BEGIN OF ty_selopt,
+         sign TYPE c LENGTH 1,
+         option TYPE c LENGTH 2,
+       END OF ty_selopt.
+DATA(ls_selopt) = VALUE ty_selopt(
+  sign = 'I'
+  option = 'EQ' ).";
+        let snapshot = store.publish("file:///demo.abap", 1, src);
+        let field_use = src.rfind("option").expect("value field use");
+
+        let hovered = snapshot
+            .hovered_component_at(field_use + 1)
+            .expect("hovered value-constructor field");
+        assert_eq!(hovered.base_name.as_ref(), "ty_selopt");
+        assert_eq!(
+            hovered
+                .component_path
+                .iter()
+                .map(|part| part.as_ref())
+                .collect::<Vec<_>>(),
+            vec!["option"]
+        );
+        assert_eq!(hovered.field_name.as_ref(), "option");
+        assert_eq!(hovered.declared_type.as_deref(), Some("TYPE c"));
+        assert!(matches!(hovered.kind, HoveredComponentKind::Scalar));
+
+        let target = snapshot
+            .definition_at(field_use + 1)
+            .expect("definition target");
+        assert_target_slice(&target, "file:///demo.abap", src, "option");
+        assert_eq!(
+            target.range.start,
+            src.find("option TYPE c").expect("field declaration")
+        );
+    }
+
+    #[test]
     fn definition_at_returns_named_argument_parameter_declaration() {
         let store = DocumentStore::default();
         let src = "\

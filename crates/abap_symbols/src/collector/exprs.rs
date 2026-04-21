@@ -884,14 +884,19 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                                     .unwrap_or_default(),
                                 scope,
                             ),
-                            _ => self.collect_structured_value_constructor_nodes(
-                                &CallArgList::cast(self.ctx.syntax(arg_list))
-                                    .map(|list| {
-                                        list.items().map(|child| child.id()).collect::<Vec<_>>()
-                                    })
-                                    .unwrap_or_default(),
-                                scope,
-                            ),
+                            _ => {
+                                let target_access =
+                                    self.constructor_target_access_from_constructor(node, scope);
+                                self.collect_structured_value_constructor_nodes(
+                                    &CallArgList::cast(self.ctx.syntax(arg_list))
+                                        .map(|list| {
+                                            list.items().map(|child| child.id()).collect::<Vec<_>>()
+                                        })
+                                        .unwrap_or_default(),
+                                    scope,
+                                    target_access.as_ref(),
+                                )
+                            }
                         }
                     } else if constructor_keyword.as_deref() == Some("value") {
                         self.collect_value_constructor_arg_list(arg_list, scope);
@@ -1287,7 +1292,12 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
     fn collect_let_expr(&mut self, node: NodeId, scope: ScopeId) {
         if LetExpr::cast(self.ctx.syntax(node)).is_some_and(|expr| expr.bindings().next().is_some())
         {
-            self.collect_structured_let_expr_node(node, scope, StructuredConstructorMode::Expr);
+            self.collect_structured_let_expr_node(
+                node,
+                scope,
+                StructuredConstructorMode::Expr,
+                None,
+            );
             return;
         }
         let tokens = self.ctx.syntax_token_nodes(node);
@@ -3081,7 +3091,7 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
         })
     }
 
-    fn emit_corresponding_field_access(
+    fn emit_relative_field_access(
         &mut self,
         base_access: &FieldAccess,
         relative_segments: &[FieldAccessSegment],
@@ -3119,13 +3129,16 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
         }
     }
 
-    fn corresponding_target_access_from_constructor(
+    fn constructor_target_access_from_constructor(
         &self,
         node: NodeId,
         scope: ScopeId,
     ) -> Option<FieldAccess> {
         let constructor = ConstructorExpr::cast(self.ctx.syntax(node))?;
         let type_ref = constructor.type_ref()?;
+        if type_ref.display_text(self.source())? == "#" {
+            return None;
+        }
         let declared_type = self
             .ctx
             .field_type_ref_from_node(type_ref.syntax().id(), Namespace::Type)?;
@@ -3187,14 +3200,14 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
         };
 
         let target_access = target_base.zip(target).map(|(base, (range, text))| {
-            self.emit_corresponding_field_access(base, &[FieldAccessSegment { name: text, range }])
+            self.emit_relative_field_access(base, &[FieldAccessSegment { name: text, range }])
         });
         let source_access = source_base
             .zip(source_value_id)
             .and_then(|(base, value_id)| {
                 let relative_segments =
                     self.corresponding_relative_field_segments_from_node(value_id)?;
-                Some(self.emit_corresponding_field_access(base, &relative_segments))
+                Some(self.emit_relative_field_access(base, &relative_segments))
             });
 
         if let Some(default_value_id) = default_value_id {
@@ -3256,8 +3269,7 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                 self.corresponding_source_access_from_value_children(&value_children, scope)
             })?
         });
-        let target_base =
-            self.corresponding_target_access_from_constructor(constructor_node, scope);
+        let target_base = self.constructor_target_access_from_constructor(constructor_node, scope);
 
         for &node in nodes {
             match self.kind(node) {
@@ -3309,6 +3321,7 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
         node: NodeId,
         scope: ScopeId,
         mode: StructuredConstructorMode,
+        value_target_base: Option<&FieldAccess>,
     ) {
         let Some((range, bindings, result_nodes)) = (|| {
             let expr = LetExpr::cast(self.ctx.syntax(node))?;
@@ -3366,9 +3379,11 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
         }
 
         match mode {
-            StructuredConstructorMode::Value => {
-                self.collect_structured_value_constructor_nodes(&result_nodes, let_scope)
-            }
+            StructuredConstructorMode::Value => self.collect_structured_value_constructor_nodes(
+                &result_nodes,
+                let_scope,
+                value_target_base,
+            ),
             StructuredConstructorMode::Cond => {
                 self.collect_structured_cond_constructor_nodes(&result_nodes, let_scope)
             }
@@ -3386,7 +3401,24 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
         }
     }
 
-    fn collect_structured_constructor_assignment(&mut self, node: NodeId, scope: ScopeId) {
+    fn collect_structured_constructor_assignment(
+        &mut self,
+        node: NodeId,
+        scope: ScopeId,
+        target_base: Option<&FieldAccess>,
+    ) {
+        let assignment_access = target_base.and_then(|base| {
+            let assignment = ConstructorNamedAssignment::cast(self.ctx.syntax(node))?;
+            let token = assignment.name_token()?;
+            let name = token.text(self.source())?;
+            Some(self.emit_relative_field_access(
+                base,
+                &[FieldAccessSegment {
+                    name: Arc::<str>::from(name.to_ascii_lowercase()),
+                    range: token.range(),
+                }],
+            ))
+        });
         let value_children: Vec<_> = ConstructorNamedAssignment::cast(self.ctx.syntax(node))
             .map(|assignment| {
                 assignment
@@ -3396,7 +3428,80 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                     .collect()
             })
             .unwrap_or_default();
-        self.collect_structured_argument_values(&value_children, scope);
+        self.collect_value_constructor_argument_values(
+            &value_children,
+            scope,
+            assignment_access.as_ref(),
+        );
+    }
+
+    fn collect_value_constructor_argument_values(
+        &mut self,
+        nodes: &[NodeId],
+        scope: ScopeId,
+        target_base: Option<&FieldAccess>,
+    ) {
+        if nodes.is_empty() {
+            return;
+        }
+        if nodes
+            .iter()
+            .all(|&node| self.kind(node) == SyntaxKind::Token)
+        {
+            let tokens = nodes
+                .iter()
+                .flat_map(|&node| self.ctx.syntax_token_nodes(node))
+                .collect::<Vec<_>>();
+            self.collect_argument_token_refs(&tokens, scope);
+            return;
+        }
+
+        for &node in nodes {
+            match self.kind(node) {
+                SyntaxKind::DataInlineDecl => {
+                    self.ctx.decl_lowering().walk_inline_decl(node, scope)
+                }
+                SyntaxKind::FieldSymbolInlineDecl => self
+                    .ctx
+                    .decl_lowering()
+                    .walk_inline_field_symbol_decl(node, scope),
+                SyntaxKind::ConstructorNamedAssignment => {
+                    self.collect_structured_constructor_assignment(node, scope, target_base)
+                }
+                SyntaxKind::ConstructorExpr => {
+                    let nested_target = self
+                        .constructor_target_access_from_constructor(node, scope)
+                        .or_else(|| target_base.cloned());
+                    let structured_items = ConstructorExpr::cast(self.ctx.syntax(node))
+                        .filter(|constructor| {
+                            constructor.keyword(self.source()).as_deref() == Some("value")
+                        })
+                        .and_then(|constructor| constructor.arg_list())
+                        .map(|arg_list| arg_list.syntax().id())
+                        .filter(|&arg_list| {
+                            self.call_arg_list_has_structured_constructor_nodes(arg_list)
+                        })
+                        .map(|arg_list| {
+                            CallArgList::cast(self.ctx.syntax(arg_list))
+                                .map(|list| {
+                                    list.items().map(|child| child.id()).collect::<Vec<_>>()
+                                })
+                                .unwrap_or_default()
+                        });
+                    if let Some(items) = structured_items {
+                        self.collect_structured_value_constructor_nodes(
+                            &items,
+                            scope,
+                            nested_target.as_ref(),
+                        );
+                    } else {
+                        self.collect_expr(node, scope);
+                    }
+                }
+                SyntaxKind::Token => {}
+                _ => self.collect_expr(node, scope),
+            }
+        }
     }
 
     fn collect_structured_constructor_for_clause(
@@ -3404,6 +3509,7 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
         node: NodeId,
         scope: ScopeId,
         mode: StructuredConstructorMode,
+        value_target_base: Option<&FieldAccess>,
     ) {
         let Some((
             range,
@@ -3533,9 +3639,11 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
             }
         }
         match mode {
-            StructuredConstructorMode::Value => {
-                self.collect_structured_value_constructor_nodes(&body_nodes, child_scope)
-            }
+            StructuredConstructorMode::Value => self.collect_structured_value_constructor_nodes(
+                &body_nodes,
+                child_scope,
+                value_target_base,
+            ),
             StructuredConstructorMode::Reduce => {
                 self.collect_structured_reduce_constructor_nodes(&body_nodes, child_scope)
             }
@@ -3543,7 +3651,12 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
         }
     }
 
-    fn collect_structured_value_constructor_nodes(&mut self, nodes: &[NodeId], scope: ScopeId) {
+    fn collect_structured_value_constructor_nodes(
+        &mut self,
+        nodes: &[NodeId],
+        scope: ScopeId,
+        target_base: Option<&FieldAccess>,
+    ) {
         for &node in nodes {
             match self.kind(node) {
                 SyntaxKind::CallPositionalArg => {
@@ -3555,10 +3668,14 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                                 .collect()
                         })
                         .unwrap_or_default();
-                    self.collect_structured_argument_values(&value_children, scope);
+                    self.collect_value_constructor_argument_values(
+                        &value_children,
+                        scope,
+                        target_base,
+                    );
                 }
                 SyntaxKind::ConstructorNamedAssignment => {
-                    self.collect_structured_constructor_assignment(node, scope);
+                    self.collect_structured_constructor_assignment(node, scope, target_base);
                 }
                 SyntaxKind::ConstructorBaseClause => {
                     let value_id = ConstructorBaseClause::cast(self.ctx.syntax(node))
@@ -3594,6 +3711,7 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                         node,
                         scope,
                         StructuredConstructorMode::Value,
+                        target_base,
                     );
                 }
                 SyntaxKind::LetExpr => {
@@ -3601,6 +3719,7 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                         node,
                         scope,
                         StructuredConstructorMode::Value,
+                        target_base,
                     );
                 }
                 _ => self.collect_expr(node, scope),
@@ -3616,6 +3735,7 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                         node,
                         scope,
                         StructuredConstructorMode::Cond,
+                        None,
                     );
                 }
                 SyntaxKind::ConstructorWhenClause => {
@@ -3640,6 +3760,7 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                             let_id,
                             scope,
                             StructuredConstructorMode::Expr,
+                            None,
                         );
                     } else if let Some(result_id) = result_id {
                         self.collect_expr(result_id, scope);
@@ -3661,6 +3782,7 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                             let_id,
                             scope,
                             StructuredConstructorMode::Expr,
+                            None,
                         );
                     } else if let Some(result_id) = result_id {
                         self.collect_expr(result_id, scope);
@@ -3679,6 +3801,7 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                         node,
                         scope,
                         StructuredConstructorMode::Switch,
+                        None,
                     );
                 }
                 SyntaxKind::CallPositionalArg => {
@@ -3714,6 +3837,7 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                             let_id,
                             scope,
                             StructuredConstructorMode::Expr,
+                            None,
                         );
                     } else if let Some(result_id) = result_id {
                         self.collect_expr(result_id, scope);
@@ -3740,6 +3864,7 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                         node,
                         scope,
                         StructuredConstructorMode::Reduce,
+                        None,
                     );
                 }
                 SyntaxKind::ConstructorInitClause => {
@@ -3786,6 +3911,7 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                         node,
                         scope,
                         StructuredConstructorMode::Reduce,
+                        None,
                     );
                 }
                 SyntaxKind::ConstructorNextClause => {
@@ -3798,7 +3924,11 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                         })
                         .unwrap_or_default();
                     for assignment_node in assignment_nodes {
-                        self.collect_structured_constructor_assignment(assignment_node, scope);
+                        self.collect_structured_constructor_assignment(
+                            assignment_node,
+                            scope,
+                            None,
+                        );
                     }
                 }
                 _ => self.collect_expr(node, scope),
@@ -3908,7 +4038,7 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                     .decl_lowering()
                     .walk_inline_field_symbol_decl(node, scope),
                 SyntaxKind::ConstructorNamedAssignment => {
-                    self.collect_structured_constructor_assignment(node, scope)
+                    self.collect_structured_constructor_assignment(node, scope, None)
                 }
                 SyntaxKind::Token => {}
                 _ => self.collect_expr(node, scope),

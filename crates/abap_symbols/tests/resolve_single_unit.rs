@@ -7935,6 +7935,50 @@ DATA(lr_obj_ids) = VALUE rseloption(
 }
 
 #[test]
+fn value_constructor_named_assignments_record_target_field_accesses() {
+    let src = r#"
+TYPES: BEGIN OF ty_selopt,
+         sign TYPE c LENGTH 1,
+         option TYPE c LENGTH 2,
+       END OF ty_selopt.
+
+DATA(ls_selopt) = VALUE ty_selopt(
+  sign = 'I'
+  option = 'EQ' ).
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///value_constructor_fields.abap", src, &parsed);
+
+    for field_name in ["sign", "option"] {
+        assert!(
+            unit.field_accesses.iter().any(|access| {
+                access.base_namespace == Namespace::Type
+                    && access.base_name.as_ref() == "ty_selopt"
+                    && access
+                        .field_path
+                        .iter()
+                        .map(|segment| segment.name.as_ref())
+                        .collect::<Vec<_>>()
+                        == vec![field_name]
+            }),
+            "expected VALUE constructor field access for `{field_name}`, accesses={:?}",
+            unit.field_accesses
+        );
+    }
+
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            matches!(
+                diag.kind,
+                DiagnosticKind::UnresolvedReference | DiagnosticKind::UnknownField
+            ) && (diag.message.contains("sign") || diag.message.contains("option"))
+        }),
+        "unexpected diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn resolves_cond_let_bindings_and_field_symbols() {
     let src = r#"
 TYPES:
