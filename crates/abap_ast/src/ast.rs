@@ -586,6 +586,7 @@ ast_node!(
 );
 ast_node!(SelectStmt, SyntaxKind::SelectStmt);
 ast_node!(OpenCursorStmt, SyntaxKind::OpenCursorStmt);
+ast_node!(CloseCursorStmt, SyntaxKind::CloseCursorStmt);
 ast_node!(CursorHandleOperand, SyntaxKind::CursorHandleOperand);
 ast_node!(SelectQuery, SyntaxKind::SelectQuery);
 ast_node!(SelectProjectionList, SyntaxKind::SelectProjectionList);
@@ -3032,6 +3033,14 @@ impl<'a> OpenCursorStmt<'a> {
         self.syntax
             .child_by_kind(SyntaxKind::SelectQuery)
             .and_then(SelectQuery::cast)
+    }
+}
+
+impl<'a> CloseCursorStmt<'a> {
+    pub fn handle(&self) -> Option<CursorHandleOperand<'a>> {
+        self.syntax
+            .child_by_kind(SyntaxKind::CursorHandleOperand)
+            .and_then(CursorHandleOperand::cast)
     }
 }
 

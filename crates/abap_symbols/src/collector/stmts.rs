@@ -1815,6 +1815,19 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             .collect_token_expression_refs_infos(tail, scope, true);
     }
 
+    pub(super) fn collect_close_cursor_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        self.record_unknown_effect(node, scope);
+        let handle_tokens = self
+            .collector
+            .file
+            .children(node)
+            .find(|&child| self.collector.file.kind(child) == SyntaxKind::CursorHandleOperand)
+            .map(|handle| self.collector.syntax_token_nodes(handle))
+            .unwrap_or_default();
+        self.collector
+            .collect_token_expression_refs_infos(&handle_tokens, scope, true);
+    }
+
     pub(super) fn collect_wait_stmt(&mut self, node: NodeId, scope: ScopeId) {
         self.record_unknown_effect(node, scope);
         if let Some(stmt) = WaitStmt::cast(self.collector.syntax(node))

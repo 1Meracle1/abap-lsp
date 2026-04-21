@@ -5126,6 +5126,37 @@ DATA lv_cursor TYPE cursor.";
 }
 
 #[test]
+fn resolves_close_cursor_handle_operand() {
+    let src = "\
+DATA lv_cursor TYPE cursor.\n\
+CLOSE CURSOR @lv_cursor.";
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///close_cursor.abap", src, &parsed);
+
+    let refs: Vec<_> = unit
+        .references
+        .iter()
+        .filter(|reference| {
+            reference.namespace == Namespace::Value && reference.name.as_ref() == "lv_cursor"
+        })
+        .collect();
+    assert_eq!(
+        refs.len(),
+        1,
+        "expected one lv_cursor reference, got {:?}",
+        refs
+    );
+    assert!(
+        refs[0].resolution.is_some(),
+        "expected CLOSE CURSOR handle to resolve, got {:?}",
+        refs
+    );
+    assert!(!unit.diagnostics.iter().any(|diag| {
+        diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains("lv_cursor")
+    }));
+}
+
+#[test]
 fn rejects_unknown_sy_field_access() {
     let src = "IF sy-nope = 0. ENDIF. DATA lv_bad TYPE sy-nope.";
     let parsed = parse(src);

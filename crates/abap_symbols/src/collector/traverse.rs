@@ -166,6 +166,9 @@ impl<'a> Collector<'a> {
             SyntaxKind::CallStmt => self.stmt_lowering().collect_call_stmt(node, scope),
             SyntaxKind::MessageStmt => self.stmt_lowering().collect_message_stmt(node, scope),
             SyntaxKind::ReplaceStmt => self.stmt_lowering().collect_replace_stmt(node, scope),
+            SyntaxKind::CloseCursorStmt => {
+                self.stmt_lowering().collect_close_cursor_stmt(node, scope)
+            }
             SyntaxKind::SelectionScreenStmt => self
                 .stmt_lowering()
                 .collect_selection_screen_stmt(node, scope),

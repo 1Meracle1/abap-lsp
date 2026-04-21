@@ -9144,13 +9144,84 @@ pub fn try_parse_open_cursor_stmt(
     Some((node, next))
 }
 
+pub fn try_parse_close_cursor_stmt(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    errors: &mut Vec<crate::ParseError>,
+) -> Option<(NodeId, usize)> {
+    let close_tok = tokens.get(idx)?;
+    if !is_keyword(source, close_tok, "close") {
+        return None;
+    }
+
+    let cursor_idx = skip_trivia(tokens, idx + 1);
+    let cursor_tok = tokens.get(cursor_idx)?;
+    if !is_keyword(source, cursor_tok, "cursor") {
+        return None;
+    }
+
+    let Some(period_i) = scan_until_top_level_period(tokens, cursor_idx + 1) else {
+        let eof_idx = tokens
+            .iter()
+            .position(|token| token.kind == TokenKind::Eof)
+            .unwrap_or(tokens.len());
+        let err_end = tokens
+            .get(eof_idx.saturating_sub(1))
+            .map(|token| token.range.end)
+            .unwrap_or(close_tok.range.end);
+        errors.push(crate::ParseError {
+            message: "syntax error: expected '.' after CLOSE CURSOR statement".to_string(),
+            range: close_tok.range.start..err_end,
+        });
+        let err_children = error_token_children(b, tokens, idx, eof_idx);
+        let node = b.branch(
+            SyntaxKind::Error,
+            close_tok.range.start..err_end,
+            &err_children,
+        );
+        return Some((node, tokens.len()));
+    };
+
+    let handle_start = skip_trivia(tokens, cursor_idx + 1);
+    if handle_start >= period_i {
+        return None;
+    }
+
+    let mut children = Vec::new();
+    push_token_children(b, &mut children, tokens, idx, handle_start);
+    if let Some(handle) = build_token_branch(
+        b,
+        SyntaxKind::CursorHandleOperand,
+        tokens,
+        handle_start,
+        period_i,
+    ) {
+        children.push(handle);
+    }
+    push_token_children(b, &mut children, tokens, period_i, period_i + 1);
+
+    let end = children
+        .last()
+        .copied()
+        .map(|id| b.span(id).end)
+        .unwrap_or(close_tok.range.end);
+    let node = b.branch(
+        SyntaxKind::CloseCursorStmt,
+        close_tok.range.start..end,
+        &children,
+    );
+    Some((node, period_i + 1))
+}
+
 #[cfg(test)]
 mod tests {
     use abap_ast::SyntaxKind;
     use abap_ast::ast::{
-        AstNode, ClassDecl, DataLikeDecl, DataLikeStorageKind, FormDecl, FormParamPassingKind,
-        FormParamSectionKind, FunctionDecl, FunctionParamSectionKind, IncludeStmt, MethodDecl,
-        OpenCursorStmt, SelectIntoClause, SubmitStmt, SyntaxNodeRef,
+        AstNode, ClassDecl, CloseCursorStmt, DataLikeDecl, DataLikeStorageKind, FormDecl,
+        FormParamPassingKind, FormParamSectionKind, FunctionDecl, FunctionParamSectionKind,
+        IncludeStmt, MethodDecl, OpenCursorStmt, SelectIntoClause, SubmitStmt, SyntaxNodeRef,
     };
 
     #[test]
@@ -10877,6 +10948,26 @@ CONCATENATE lv_evttime+6(4) '-'\n\
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::MethodDecl), 2);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::OpenCursorStmt), 1);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
+    }
+
+    #[test]
+    fn parses_close_cursor_stmt_with_host_handle() {
+        let parsed = crate::parse("CLOSE CURSOR @lv_cursor.");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::CloseCursorStmt), 1);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::CursorHandleOperand),
+            1
+        );
+        let stmt = parsed
+            .file
+            .find_first_kind(root, SyntaxKind::CloseCursorStmt)
+            .and_then(|node| CloseCursorStmt::cast(SyntaxNodeRef::new(&parsed.file, node)))
+            .expect("close cursor stmt");
+        assert!(stmt.handle().is_some());
     }
 
     #[test]
