@@ -1541,12 +1541,22 @@ fn build_routine_dataflow(
         &structure_assignment_trackers,
         &values,
     );
-    let sy_subrc_success_bound_scope_refinements = resolve_sy_subrc_success_bound_scope_refinements(
-        unit,
-        &reference_uses,
-        &value_ids_by_symbol,
-        &values,
-        values.len(),
+    let mut sy_subrc_success_bound_scope_refinements =
+        resolve_sy_subrc_success_bound_scope_refinements(
+            unit,
+            &reference_uses,
+            &value_ids_by_symbol,
+            &values,
+            values.len(),
+        );
+    union_dense_scope_refinements(
+        &mut sy_subrc_success_bound_scope_refinements,
+        &resolve_is_assigned_bound_scope_refinements(
+            unit,
+            &reference_uses,
+            &value_ids_by_symbol,
+            values.len(),
+        ),
     );
     let sy_subrc_success_assigned_scope_refinements =
         resolve_sy_subrc_success_assigned_scope_refinements(
@@ -3488,7 +3498,10 @@ fn resolve_sy_subrc_success_bound_scope_refinements(
         let Some(update) = latest_subrc_update_before_check(unit, check) else {
             continue;
         };
-        if update.statement != SystemFieldStatementKind::ReadTable {
+        if !matches!(
+            update.statement,
+            SystemFieldStatementKind::Assign | SystemFieldStatementKind::ReadTable
+        ) {
             continue;
         }
         for edge in &unit.value_flow_edges {
@@ -3507,6 +3520,45 @@ fn resolve_sy_subrc_success_bound_scope_refinements(
             ) {
                 scope_bits.insert(target_value);
             }
+        }
+    }
+    out
+}
+
+fn resolve_is_assigned_bound_scope_refinements(
+    unit: &UnitAnalysis,
+    reference_uses: &[ReferenceUse],
+    value_ids_by_symbol: &HashMap<SymbolHandle, DataflowValueId>,
+    value_count: usize,
+) -> Vec<DenseBitSet> {
+    let mut out = vec![DenseBitSet::new(value_count); unit.scopes.len()];
+    for check in &unit.field_symbol_state_checks {
+        if check.kind != FieldSymbolStateCheckKind::IsAssigned
+            || !is_positive_branch_scope(unit, check.scope)
+        {
+            continue;
+        }
+        let Some(scope_bits) = out.get_mut(check.scope.as_usize()) else {
+            continue;
+        };
+        for use_site in reference_uses_in_range(reference_uses, &check.symbol_range) {
+            if use_site.range != check.symbol_range {
+                continue;
+            }
+            let Some(reference) = unit.references.get(use_site.reference.as_usize()) else {
+                continue;
+            };
+            let Some(Resolution::Symbol(handle)) = reference.resolution else {
+                continue;
+            };
+            if handle.unit != unit.unit_id
+                || !value_ids_by_symbol.contains_key(&handle)
+                || reference.scope != check.scope
+                || reference.name != check.symbol_name
+            {
+                continue;
+            }
+            scope_bits.insert(use_site.value);
         }
     }
     out
@@ -3588,13 +3640,7 @@ fn sy_subrc_success_check(unit: &UnitAnalysis, check: &crate::ValueStateCheckDat
     ) {
         return false;
     }
-    let Some(scope_data) = unit.scopes.get(check.scope.as_usize()) else {
-        return false;
-    };
-    if !matches!(
-        scope_data.kind,
-        ScopeKind::IfBranch | ScopeKind::ElseifBranch
-    ) {
+    if !is_positive_branch_scope(unit, check.scope) {
         return false;
     }
     let Some(field_name) = check.field_name.as_ref() else {
@@ -3603,6 +3649,22 @@ fn sy_subrc_success_check(unit: &UnitAnalysis, check: &crate::ValueStateCheckDat
     field_name.eq_ignore_ascii_case("subrc")
         && (check.symbol_name.eq_ignore_ascii_case("sy")
             || check.symbol_name.eq_ignore_ascii_case("syst"))
+}
+
+fn is_positive_branch_scope(unit: &UnitAnalysis, scope: ScopeId) -> bool {
+    let Some(scope_data) = unit.scopes.get(scope.as_usize()) else {
+        return false;
+    };
+    matches!(
+        scope_data.kind,
+        ScopeKind::IfBranch | ScopeKind::ElseifBranch
+    )
+}
+
+fn union_dense_scope_refinements(out: &mut [DenseBitSet], incoming: &[DenseBitSet]) {
+    for (out_bits, incoming_bits) in out.iter_mut().zip(incoming) {
+        out_bits.union_from(incoming_bits);
+    }
 }
 
 fn latest_subrc_update_before_check<'a>(

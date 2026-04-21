@@ -2935,6 +2935,7 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
     }
 
     pub(super) fn collect_assign_keyword_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        self.record_system_field_updates(scope, node, SystemFieldStatementKind::Assign, &["subrc"]);
         let mut source_expr = None;
         let mut inline_targets = Vec::new();
         let mut named_target = None;

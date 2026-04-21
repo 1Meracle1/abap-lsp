@@ -1529,6 +1529,7 @@ fn expression_fact_kind_name(kind: ExpressionFactKind) -> &'static str {
 fn system_field_statement_kind_name(kind: SystemFieldStatementKind) -> &'static str {
     match kind {
         SystemFieldStatementKind::Append => "append",
+        SystemFieldStatementKind::Assign => "assign",
         SystemFieldStatementKind::AuthorityCheck => "authority_check",
         SystemFieldStatementKind::DeleteTable => "delete_table",
         SystemFieldStatementKind::DeleteDbTable => "delete_db_table",

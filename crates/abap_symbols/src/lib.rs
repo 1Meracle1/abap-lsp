@@ -854,6 +854,92 @@ ENDFORM.\n";
     }
 
     #[test]
+    fn assign_field_symbol_is_bound_after_sy_subrc_equals_zero_guard() {
+        let src = "\
+FORM run.\n\
+  FIELD-SYMBOLS <year> TYPE n.\n\
+  ASSIGN sy-datlo+0(4) TO <year>.\n\
+  IF sy-subrc = 0.\n\
+    WRITE: / <year>.\n\
+  ENDIF.\n\
+ENDFORM.\n";
+        let parsed = parse(src);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let unit = analyze_unit("file:///assign_field_symbol_guarded_eq.abap", src, &parsed);
+        let project = analyze_project_from_units(vec![unit.clone()]);
+        let routine_analysis = build_project_routine_analysis(&project);
+
+        assert!(
+            routine_analysis
+                .diagnostics_for_unit(unit.unit_id)
+                .iter()
+                .all(|diagnostic| diagnostic.kind != DiagnosticKind::PossiblyUnboundFieldSymbol),
+            "{:#?}",
+            routine_analysis.diagnostics_for_unit(unit.unit_id)
+        );
+    }
+
+    #[test]
+    fn assign_field_symbol_is_bound_after_sy_subrc_is_initial_guard() {
+        let src = "\
+FORM run.\n\
+  FIELD-SYMBOLS <year> TYPE n.\n\
+  ASSIGN sy-datlo+0(4) TO <year>.\n\
+  IF sy-subrc IS INITIAL.\n\
+    WRITE: / <year>.\n\
+  ENDIF.\n\
+ENDFORM.\n";
+        let parsed = parse(src);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let unit = analyze_unit(
+            "file:///assign_field_symbol_guarded_initial.abap",
+            src,
+            &parsed,
+        );
+        let project = analyze_project_from_units(vec![unit.clone()]);
+        let routine_analysis = build_project_routine_analysis(&project);
+
+        assert!(
+            routine_analysis
+                .diagnostics_for_unit(unit.unit_id)
+                .iter()
+                .all(|diagnostic| diagnostic.kind != DiagnosticKind::PossiblyUnboundFieldSymbol),
+            "{:#?}",
+            routine_analysis.diagnostics_for_unit(unit.unit_id)
+        );
+    }
+
+    #[test]
+    fn assign_field_symbol_is_bound_after_is_assigned_guard() {
+        let src = "\
+FORM run.\n\
+  FIELD-SYMBOLS <year> TYPE n.\n\
+  ASSIGN sy-datlo+0(4) TO <year>.\n\
+  IF <year> IS ASSIGNED.\n\
+    WRITE: / <year>.\n\
+  ENDIF.\n\
+ENDFORM.\n";
+        let parsed = parse(src);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let unit = analyze_unit(
+            "file:///assign_field_symbol_guarded_assigned.abap",
+            src,
+            &parsed,
+        );
+        let project = analyze_project_from_units(vec![unit.clone()]);
+        let routine_analysis = build_project_routine_analysis(&project);
+
+        assert!(
+            routine_analysis
+                .diagnostics_for_unit(unit.unit_id)
+                .iter()
+                .all(|diagnostic| diagnostic.kind != DiagnosticKind::PossiblyUnboundFieldSymbol),
+            "{:#?}",
+            routine_analysis.diagnostics_for_unit(unit.unit_id)
+        );
+    }
+
+    #[test]
     fn open_sql_into_target_stays_possibly_unassigned_after_irrelevant_not_initial_guard() {
         let src = "\
 FORM run.\n\

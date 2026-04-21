@@ -731,6 +731,7 @@ pub struct FindSiteData {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SystemFieldStatementKind {
     Append,
+    Assign,
     AuthorityCheck,
     DeleteTable,
     DeleteDbTable,
