@@ -10148,6 +10148,41 @@ ENDIF.";
 }
 
 #[test]
+fn infers_inline_data_type_from_string_template_expression() {
+    let src = "\
+DATA(lv_data) = 'hello'.
+DATA(lv_data_2) = |{ lv_data }, world|.
+
+WRITE lv_data_2.";
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///inline_string_template_type.abap", src, &parsed);
+
+    let symbol = unit
+        .symbols
+        .iter()
+        .find(|symbol| symbol.kind == SymbolKind::Variable && symbol.name.as_ref() == "lv_data_2")
+        .expect("inline lv_data_2 symbol");
+    let declared_type = symbol
+        .declared_type
+        .as_ref()
+        .expect("declared type for lv_data_2");
+    assert_eq!(declared_type.namespace, Namespace::Type);
+    assert!(!declared_type.is_ref);
+    assert_eq!(declared_type.base_name.as_ref(), "string");
+
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            matches!(
+                diag.kind,
+                DiagnosticKind::UnresolvedReference | DiagnosticKind::UnknownField
+            ) && diag.message.contains("lv_data_2")
+        }),
+        "unexpected diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn resolves_host_expression_in_for_all_entries_clause() {
     let src = "\
 DATA lt_rep_evt TYPE STANDARD TABLE OF string WITH EMPTY KEY.

@@ -400,6 +400,15 @@ impl<'a> Collector<'a> {
     ) -> (Option<StructureId>, Option<FieldTypeRefData>) {
         let node = self.unwrap_simple_expr_wrapper(node);
         match self.file.kind(node) {
+            SyntaxKind::CharStringTemplate => (
+                None,
+                Some(FieldTypeRefData {
+                    namespace: Namespace::Type,
+                    is_ref: false,
+                    base_name: Arc::<str>::from("string"),
+                    field_path: Vec::new(),
+                }),
+            ),
             SyntaxKind::TemplateExpr => {
                 if let Some(child) = self.first_non_token_child(node) {
                     return self.inline_decl_assignment_source_metadata(child, scope);

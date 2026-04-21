@@ -9,7 +9,7 @@ use abap_ast::ast::{
     ConstructorOptionalExpr, ConstructorWhenClause, LetExpr, MethodsParamSectionKind, ParenExpr,
     TableExpr, TemplateExpr, TemplateInterpolation,
 };
-use abap_lexer::TextRange;
+use abap_lexer::{TextRange, TokenKind};
 
 use crate::builtins::builtin_routine_spec;
 use crate::def_map::{
@@ -53,6 +53,19 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
             base_name: Arc::<str>::from(name),
             field_path: Vec::new(),
         }
+    }
+
+    fn is_string_template_expr_tokens(tokens: &[super::SyntaxTokenInfo]) -> bool {
+        matches!(
+            (
+                tokens.first().map(|token| token.kind),
+                tokens.last().map(|token| token.kind)
+            ),
+            (
+                Some(TokenKind::StringTemplate),
+                Some(TokenKind::StringTemplate)
+            )
+        )
     }
 
     fn kind(&self, node: NodeId) -> SyntaxKind {
@@ -435,6 +448,9 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                 );
             }
         }
+        if Self::is_string_template_expr_tokens(&tokens) {
+            return (None, Some(Self::builtin_type("string")));
+        }
         (None, None)
     }
 
@@ -485,6 +501,14 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
             {
                 return self.type_fact_from_symbol(symbol_id);
             }
+        }
+        if Self::is_string_template_expr_tokens(&tokens) {
+            return TypeFactData {
+                structure: None,
+                declared_type: Some(Self::builtin_type("string")),
+                type_clause_display: None,
+                table_line: None,
+            };
         }
         if let Some(type_fact) = self.type_fact_from_top_level_sum_tokens(&tokens, scope) {
             return type_fact;
@@ -618,6 +642,12 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
             SyntaxKind::CallExpr => self.type_fact_from_call_expr(node, scope),
             SyntaxKind::SubstringExpr => self.type_fact_from_substring_expr(node, scope),
             SyntaxKind::ConstructorExpr => self.type_fact_from_constructor_expr(node, scope),
+            SyntaxKind::CharStringTemplate => TypeFactData {
+                structure: None,
+                declared_type: Some(Self::builtin_type("string")),
+                type_clause_display: None,
+                table_line: None,
+            },
             SyntaxKind::TableExpr => TableExpr::cast(self.ctx.syntax(node))
                 .and_then(|expr| expr.base())
                 .map(|base| {
