@@ -92,6 +92,8 @@ mod tests {
         assert!(super::builtin_structure_field_description("syst", "fdpos").is_some());
         assert!(super::builtin_structure_field_description("syst", "msgv1").is_some());
         assert!(super::builtin_structure_field_description("syst", "tvar9").is_some());
+        let xform = super::builtin_structure_field_description("syst", "xform").expect("xform");
+        assert_eq!(xform, "ABAP System Field: Internal Use");
         assert!(super::builtin_structure_field_description("syst", "zonlo").is_some());
         assert!(
             super::well_known_external_structure_field_description("bapiret2", "type").is_some()

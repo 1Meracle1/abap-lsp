@@ -367,6 +367,10 @@ pub const SYST_FIELDS: &[BuiltinFieldSpec] = &[
         description: "Set to 'N' when NO STANDARD PAGE HEADING was specified in REPORT-like declarations.",
     },
     BuiltinFieldSpec {
+        name: "xform",
+        description: "ABAP System Field: Internal Use",
+    },
+    BuiltinFieldSpec {
         name: "zonlo",
         description: "User time zone identifier.",
     },
@@ -914,6 +918,9 @@ fn well_known_bapiret2_field_type(
 }
 
 fn builtin_syst_field_type(field_name: &str) -> Option<(&'static str, Option<&'static str>)> {
+    if field_name.eq_ignore_ascii_case("xform") {
+        return Some(("char30", None));
+    }
     let type_name = match field_name.to_ascii_lowercase().as_str() {
         "abcde" | "batch" | "binpt" | "calld" | "callr" | "cprog" | "datar" | "dayst" | "dbnam"
         | "dbsys" | "dyngr" | "dynnr" | "host" | "langu" | "ldbpg" | "lisel" | "opsys"

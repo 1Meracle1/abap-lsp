@@ -4981,6 +4981,7 @@ fn resolves_builtin_sy_and_common_ddic_aliases() {
 DATA lv_tabix TYPE sy-tabix.\n\
 DATA lv_user TYPE syst-uname.\n\
 DATA lv_time TYPE sy-uzeit.\n\
+DATA lv_xform TYPE sy-xform.\n\
 DATA lv_guid TYPE guid.\n\
 DATA lv_flag TYPE xfeld.\n\
 DATA lv_table TYPE tabname.\n\
@@ -5068,6 +5069,12 @@ ENDIF.";
         sy_structure
             .fields
             .iter()
+            .any(|field| field.name.as_ref() == "xform")
+    );
+    assert!(
+        sy_structure
+            .fields
+            .iter()
             .any(|field| field.name.as_ref() == "tvar9")
     );
     let type_for = |field_name: &str| {
@@ -5082,6 +5089,7 @@ ENDIF.";
     assert_eq!(type_for("datum"), Some("d"));
     assert_eq!(type_for("msgno"), Some("n"));
     assert_eq!(type_for("fdpos"), Some("i"));
+    assert_eq!(type_for("xform"), Some("char30"));
     assert!(
         !unit
             .diagnostics
