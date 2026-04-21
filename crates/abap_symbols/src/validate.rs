@@ -2417,6 +2417,14 @@ fn symbol_is_structure_like_for_into(symbol: &crate::SymbolData) -> bool {
     if symbol.structure.is_some() {
         return true;
     }
+    if symbol.kind == crate::SymbolKind::FieldSymbol
+        && symbol
+            .declared_type
+            .as_ref()
+            .is_some_and(symbol_is_generic_dynamic_type)
+    {
+        return true;
+    }
     symbol
         .type_clause_display
         .as_deref()
@@ -2424,6 +2432,13 @@ fn symbol_is_structure_like_for_into(symbol: &crate::SymbolData) -> bool {
             let upper = display.to_ascii_uppercase();
             upper.contains("BEGIN OF")
         })
+}
+
+fn symbol_is_generic_dynamic_type(type_ref: &crate::FieldTypeRefData) -> bool {
+    type_ref.namespace == Namespace::Type
+        && !type_ref.is_ref
+        && type_ref.field_path.is_empty()
+        && matches!(type_ref.base_name.as_ref(), "any" | "data")
 }
 
 fn into_target_identifier_range(

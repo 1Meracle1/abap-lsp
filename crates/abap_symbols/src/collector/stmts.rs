@@ -2938,9 +2938,21 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
         let mut source_expr = None;
         let mut inline_targets = Vec::new();
         let mut named_target = None;
+        let mut in_casting_clause = false;
+        let mut casting_type_ref = None;
         for child in self.collector.file.children(node) {
             match self.collector.file.kind(child) {
-                SyntaxKind::Token => {}
+                SyntaxKind::Token => {
+                    if self
+                        .collector
+                        .syntax_token_nodes(child)
+                        .into_iter()
+                        .next()
+                        .is_some_and(|token| token.text.eq_ignore_ascii_case("casting"))
+                    {
+                        in_casting_clause = true;
+                    }
+                }
                 SyntaxKind::AssignSourceExpr => {
                     let Some(expr) = self.collector.first_non_token_child(child) else {
                         continue;
@@ -2949,6 +2961,10 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                     self.collector.expr_lowering().collect_expr(expr, scope);
                 }
                 SyntaxKind::FieldSymbolInlineDecl => inline_targets.push(child),
+                SyntaxKind::TypeRefSimple if in_casting_clause => {
+                    casting_type_ref = Some(child);
+                    self.collector.walk_node(child, scope);
+                }
                 _ => {
                     if named_target.is_none() {
                         named_target = self.direct_field_symbol_target(child, scope);
@@ -2958,13 +2974,23 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             }
         }
 
-        let inferred_metadata = source_expr
+        let mut inferred_metadata = source_expr
             .map(|expr| {
                 self.collector
                     .control_lowering()
                     .loop_source_line_metadata_from_node(expr, scope)
             })
             .unwrap_or((None, None));
+        if let Some(type_ref_node) = casting_type_ref
+            && let Some(type_ref) = self
+                .collector
+                .field_type_ref_from_node(type_ref_node, Namespace::Type)
+        {
+            inferred_metadata = (
+                self.collector.resolve_field_type_ref(scope, &type_ref),
+                Some(type_ref),
+            );
+        }
         let flow_kind = self.assign_keyword_binding_kind(node, scope, source_expr);
         for target in inline_targets {
             let target_name = self

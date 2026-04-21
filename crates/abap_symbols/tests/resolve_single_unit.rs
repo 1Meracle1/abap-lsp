@@ -2879,6 +2879,97 @@ SELECT * FROM demo INTO CORRESPONDING FIELDS OF TABLE lt_gs1_gcp.
 }
 
 #[test]
+fn into_corresponding_fields_accepts_generic_field_symbol_target() {
+    let src = r#"
+DATA: lo_data TYPE REF TO data.
+FIELD-SYMBOLS: <ls_data> TYPE any.
+
+DATA(lv_gentab) = '/STTP/DM_OBJ'.
+
+CREATE DATA lo_data TYPE (lv_gentab).
+ASSIGN lo_data->* TO <ls_data> CASTING TYPE (lv_gentab).
+IF NOT <ls_data> IS ASSIGNED.
+  RETURN.
+ENDIF.
+
+SELECT SINGLE *
+  FROM (lv_gentab)
+  INTO CORRESPONDING FIELDS OF <ls_data>.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///into_corr_field_symbol.abap", src, &parsed);
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::InvalidOpenSqlIntoTarget
+                && diag.message.contains("<ls_data>")
+        }),
+        "unexpected InvalidOpenSqlIntoTarget for generic field symbol: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn assign_casting_type_dynamic_operand_is_collected_as_value_reference() {
+    let src = r#"
+DATA: lo_data TYPE REF TO data.
+FIELD-SYMBOLS: <ls_data> TYPE any.
+DATA(lv_gentab) = '/STTP/DM_OBJ'.
+
+ASSIGN lo_data->* TO <ls_data> CASTING TYPE (lv_gentab).
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///assign_casting_dynamic.abap", src, &parsed);
+    assert!(
+        unit.references.iter().any(|reference| {
+            reference.kind == ReferenceKind::Identifier
+                && reference.namespace == Namespace::Value
+                && reference.name.as_ref() == "lv_gentab"
+                && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+        }),
+        "expected resolved dynamic CASTING TYPE operand, refs={:?} diagnostics={:?}",
+        unit.references,
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn assign_casting_type_static_type_is_propagated_to_field_symbol_binding() {
+    let src = r#"
+TYPES: BEGIN OF ty_row,
+         carrid TYPE i,
+       END OF ty_row.
+
+DATA: lo_data TYPE REF TO data.
+FIELD-SYMBOLS: <ls_data> TYPE any.
+
+ASSIGN lo_data->* TO <ls_data> CASTING TYPE ty_row.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///assign_casting_static.abap", src, &parsed);
+    let edge = unit
+        .semantic()
+        .facts()
+        .value_flow_edges()
+        .find(|edge| {
+            edge.kind == abap_symbols::ValueFlowKind::ConditionalFieldSymbolAssignment
+                && matches!(
+                    &edge.target,
+                    abap_symbols::ValueFlowTargetData::FieldSymbol { name: Some(name), .. }
+                        if name.as_ref() == "<ls_data>"
+                )
+        })
+        .expect("field symbol assignment edge");
+    let declared_type = edge
+        .target_type
+        .declared_type
+        .as_ref()
+        .expect("static CASTING TYPE declared type");
+    assert_eq!(declared_type.namespace, Namespace::Type);
+    assert_eq!(declared_type.base_name.as_ref(), "ty_row");
+    assert!(edge.target_type.structure.is_some());
+}
+
+#[test]
 fn sort_by_component_does_not_report_unknown_symbol_when_row_structure_unresolved() {
     let src = r#"
 FORM f.

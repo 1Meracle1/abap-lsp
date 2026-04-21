@@ -8533,10 +8533,14 @@ pub fn try_parse_assign_keyword_stmt(
                 ));
             }
 
+            let casting_idx =
+                find_top_level_keyword_index(source, tokens, to_idx + 1, period_i, "casting");
+            let target_end = casting_idx.unwrap_or(period_i);
+
             children.push(token_leaf(b, &tokens[to_idx]));
             if let Some((inline_decl, next_i)) =
                 try_parse_field_symbol_inline_decl(b, source, tokens, to_idx + 1)
-                && skip_trivia(tokens, next_i) == period_i
+                && skip_trivia(tokens, next_i) == target_end
             {
                 children.push(inline_decl);
             } else {
@@ -8546,9 +8550,56 @@ pub fn try_parse_assign_keyword_stmt(
                     source,
                     tokens,
                     to_idx + 1,
-                    period_i,
+                    target_end,
                     Some(&tokens[to_idx]),
                 );
+            }
+
+            if let Some(casting_idx) = casting_idx {
+                children.push(token_leaf(b, &tokens[casting_idx]));
+                let clause_idx = casting_idx + 1;
+                if clause_idx < period_i {
+                    let clause_token = &tokens[clause_idx];
+                    if is_keyword(source, clause_token, "type") {
+                        children.push(token_leaf(b, clause_token));
+                        let type_start = clause_idx + 1;
+                        if type_start < period_i {
+                            if tokens[type_start].kind == TokenKind::LParen {
+                                push_expr_child(
+                                    b,
+                                    &mut children,
+                                    source,
+                                    tokens,
+                                    type_start,
+                                    period_i,
+                                    Some(clause_token),
+                                );
+                            } else if let Some((type_ref, next_i)) =
+                                parse_type_ref_tokens(b, source, tokens, type_start, &[])
+                            {
+                                children.push(type_ref);
+                                for token in &tokens[next_i..period_i] {
+                                    children.push(token_leaf(b, token));
+                                }
+                            }
+                        }
+                    } else if is_keyword(source, clause_token, "like") {
+                        children.push(token_leaf(b, clause_token));
+                        push_expr_child(
+                            b,
+                            &mut children,
+                            source,
+                            tokens,
+                            clause_idx + 1,
+                            period_i,
+                            Some(clause_token),
+                        );
+                    } else {
+                        for token in &tokens[clause_idx..period_i] {
+                            children.push(token_leaf(b, token));
+                        }
+                    }
+                }
             }
             children.push(token_leaf(b, &tokens[period_i]));
             let node = b.branch(
@@ -10694,6 +10745,56 @@ CONCATENATE lv_evttime+6(4) '-'\n\
                 .file
                 .count_kind(parsed.file.root(), SyntaxKind::FieldSymbolInlineDecl),
             1
+        );
+    }
+
+    #[test]
+    fn parses_assign_to_inline_field_symbol_with_casting_type() {
+        let parsed =
+            crate::parse("ASSIGN lo_data->* TO FIELD-SYMBOL(<ls_data>) CASTING TYPE ty_row.");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let stmt = parsed
+            .file
+            .find_first_kind(parsed.file.root(), SyntaxKind::AssignKeywordStmt)
+            .expect("assign keyword stmt");
+        assert_eq!(
+            parsed.file.count_kind(stmt, SyntaxKind::AssignSourceExpr),
+            1
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(stmt, SyntaxKind::FieldSymbolInlineDecl),
+            1
+        );
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::TypeRefSimple), 1);
+    }
+
+    #[test]
+    fn parses_assign_with_dynamic_casting_type_expression() {
+        let parsed = crate::parse("ASSIGN lo_data->* TO <ls_data> CASTING TYPE (lv_gentab).");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let stmt = parsed
+            .file
+            .find_first_kind(parsed.file.root(), SyntaxKind::AssignKeywordStmt)
+            .expect("assign keyword stmt");
+        assert_eq!(
+            parsed.file.count_kind(stmt, SyntaxKind::AssignSourceExpr),
+            1
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(stmt, SyntaxKind::FieldSymbolInlineDecl),
+            0
+        );
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::TypeRefSimple), 0);
+        assert!(
+            parsed
+                .file
+                .find_first_kind(stmt, SyntaxKind::ParenExpr)
+                .is_some(),
+            "expected dynamic CASTING TYPE operand to remain as an expression"
         );
     }
 
