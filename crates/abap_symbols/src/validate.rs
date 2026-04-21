@@ -12,7 +12,8 @@ use crate::def_map::{
     Diagnostic, DiagnosticKind, FieldAccess, FieldTypeRefData, FormParameterData,
     FormParameterSection, FunctionModuleData, FunctionModuleParameterData,
     FunctionModuleParameterSection, NamedArgumentTarget, PerformParameterSection, ReferenceKind,
-    Resolution, SqlNameRefKind, StructureFieldShape, TypeFactData,
+    Resolution, SqlNameRefKind, StructureFieldShape, TypeFactData, ValueFlowKind,
+    ValueFlowTargetData,
 };
 use crate::ids::{ScopeId, StructureId, SymbolHandle, SymbolId, UnitId};
 use crate::project::ProjectAnalysis;
@@ -2353,6 +2354,28 @@ fn reference_depends_on_unresolved_field_access_base(
     })
 }
 
+fn reference_is_field_symbol_binding_target(
+    unit: &crate::UnitAnalysis,
+    reference: &crate::ReferenceData,
+) -> bool {
+    if reference.namespace != Namespace::Value || reference.kind != ReferenceKind::Identifier {
+        return false;
+    }
+
+    unit.value_flow_edges.iter().any(|edge| {
+        matches!(
+            edge.kind,
+            ValueFlowKind::FieldSymbolAssignment | ValueFlowKind::ConditionalFieldSymbolAssignment
+        ) && matches!(
+            &edge.target,
+            ValueFlowTargetData::FieldSymbol {
+                range,
+                name: Some(name),
+            } if range == &reference.range && name.as_ref() == reference.name.as_ref()
+        )
+    })
+}
+
 fn symbol_is_internal_table(
     project: &ProjectAnalysis,
     lookup: &ValidationLookup<'_>,
@@ -2702,6 +2725,8 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
             if reference.resolution.is_some() {
                 continue;
             }
+            let is_field_symbol_binding_target =
+                reference_is_field_symbol_binding_target(unit, reference);
             if loop_where_reference_matches_source_field(
                 project,
                 &lookup,
@@ -2726,7 +2751,8 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
                 unit,
                 &scope_index,
                 reference,
-            ) {
+            ) && !is_field_symbol_binding_target
+            {
                 continue;
             }
             if reference.namespace == Namespace::Value

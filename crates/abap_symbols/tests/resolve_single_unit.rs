@@ -3407,6 +3407,35 @@ ASSIGN lv_value TO FIELD-SYMBOL(<lv_value>).
 }
 
 #[test]
+fn reports_unknown_named_assign_field_symbol_target() {
+    let src = r#"
+ASSIGN sy-datlo+0(4) TO <s>.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///assign_unknown_field_symbol_target.abap", src, &parsed);
+
+    assert!(
+        unit.references.iter().any(|reference| {
+            reference.namespace == Namespace::Value
+                && reference.kind == ReferenceKind::Identifier
+                && reference.name.as_ref() == "<s>"
+                && reference.resolution.is_none()
+        }),
+        "expected unresolved ASSIGN field-symbol target reference, refs={:?}",
+        unit.references
+    );
+    assert!(
+        unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference
+                && diag.message.contains("unknown symbol '<s>'")
+        }),
+        "expected unresolved ASSIGN field-symbol target diagnostic, refs={:?} diagnostics={:?}",
+        unit.references,
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn resolves_assign_component_to_inline_field_symbol() {
     let src = r#"
 FIELD-SYMBOLS <ls_outbound> TYPE any.
