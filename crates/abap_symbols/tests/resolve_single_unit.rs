@@ -11843,11 +11843,15 @@ ENDCLASS.
     let method_offset = src.find("add_to_epcis").expect("method declaration");
     let method_range = method_offset..method_offset + "add_to_epcis".len();
 
-    assert!(unit.diagnostics.iter().any(|diag| {
-        diag.kind == DiagnosticKind::MissingMethodImplementation
-            && diag.message.contains("add_to_epcis")
-            && diag.range == method_range
-    }), "{:#?}", unit.diagnostics);
+    assert!(
+        unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::MissingMethodImplementation
+                && diag.message.contains("add_to_epcis")
+                && diag.range == method_range
+        }),
+        "{:#?}",
+        unit.diagnostics
+    );
 }
 
 #[test]

@@ -9,9 +9,9 @@ use std::time::{Duration, Instant};
 
 use abap_jsonrpc::{JSON_RPC_VERSION, Response, read_frame, write_frame};
 use abap_lsp::{
-    CodeActionParams, CompletionParams, DEPENDENCY_CACHE_CLEARED,
-    DidChangeTextDocumentParams, DidOpenTextDocumentParams, GotoDefinitionParams, HoverParams,
-    InlayHintParams, REMOTE_DEPENDENCIES_UPDATED, RESOLVE_REMOTE_DEPENDENCIES, ReferenceParams,
+    CodeActionParams, CompletionParams, DEPENDENCY_CACHE_CLEARED, DidChangeTextDocumentParams,
+    DidOpenTextDocumentParams, GotoDefinitionParams, HoverParams, InlayHintParams,
+    REMOTE_DEPENDENCIES_UPDATED, RESOLVE_REMOTE_DEPENDENCIES, ReferenceParams,
     SemanticTokensParams, ServerConfig, ServerState, WORKSPACE_ANALYSIS_STATUS,
     WORKSPACE_MANIFEST_UPDATED, WorkspaceAnalysisPhase, WorkspaceAnalysisStatusParams,
     WorkspaceManifestUpdatedParams, WorkspacePerformanceMode, WorkspaceState,

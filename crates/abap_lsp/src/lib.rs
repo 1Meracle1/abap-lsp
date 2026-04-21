@@ -24,22 +24,22 @@ use abap_cache::{
 use abap_parser::parse;
 use abap_symbols::{DiagnosticKind, ReferenceKind, SqlResolution, UnitId, analyze_unit};
 use lsp_types::{
-    CodeAction, CodeActionKind, CodeActionOrCommand, CodeActionProviderCapability,
-    CompletionItem, CompletionItemKind, CompletionOptions, Diagnostic, DiagnosticSeverity,
-    Documentation, GotoDefinitionResponse, Hover, HoverContents, HoverProviderCapability,
-    InitializeResult, InlayHint, InlayHintKind, InlayHintOptions, InlayHintServerCapabilities,
-    InsertTextFormat, Location, MarkupContent, MarkupKind, NumberOrString, OneOf, Position,
-    PublishDiagnosticsParams, Range, SemanticTokens, SemanticTokensFullOptions,
-    SemanticTokensOptions, SemanticTokensServerCapabilities, ServerCapabilities,
-    TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri, WorkspaceEdit,
+    CodeAction, CodeActionKind, CodeActionOrCommand, CodeActionProviderCapability, CompletionItem,
+    CompletionItemKind, CompletionOptions, Diagnostic, DiagnosticSeverity, Documentation,
+    GotoDefinitionResponse, Hover, HoverContents, HoverProviderCapability, InitializeResult,
+    InlayHint, InlayHintKind, InlayHintOptions, InlayHintServerCapabilities, InsertTextFormat,
+    Location, MarkupContent, MarkupKind, NumberOrString, OneOf, Position, PublishDiagnosticsParams,
+    Range, SemanticTokens, SemanticTokensFullOptions, SemanticTokensOptions,
+    SemanticTokensServerCapabilities, ServerCapabilities, TextDocumentSyncCapability,
+    TextDocumentSyncKind, TextEdit, Uri, WorkspaceEdit,
 };
 use serde::{Deserialize, Serialize};
 
 pub use abap_cache::{AnalysisSnapshot, OpenDocumentOverlay, WorkspacePerformanceMode};
 pub use lsp_types::{
-    CodeActionParams, CodeActionResponse,
-    CompletionParams, CompletionResponse, DidChangeTextDocumentParams, DidOpenTextDocumentParams,
-    GotoDefinitionParams, HoverParams, InlayHintParams, ReferenceParams, SemanticTokensParams,
+    CodeActionParams, CodeActionResponse, CompletionParams, CompletionResponse,
+    DidChangeTextDocumentParams, DidOpenTextDocumentParams, GotoDefinitionParams, HoverParams,
+    InlayHintParams, ReferenceParams, SemanticTokensParams,
 };
 pub use sem_tokens::build_semantic_tokens;
 pub use serde;
@@ -2594,10 +2594,7 @@ pub fn references(state: &ServerState, params: &ReferenceParams) -> Option<Vec<L
     Some(locations)
 }
 
-pub fn code_actions(
-    state: &ServerState,
-    params: &CodeActionParams,
-) -> Option<CodeActionResponse> {
+pub fn code_actions(state: &ServerState, params: &CodeActionParams) -> Option<CodeActionResponse> {
     let uri = normalize_lsp_uri(params.text_document.uri.as_str());
     let snapshot = snapshot_for_uri(state, &uri)?;
     let mut actions = Vec::new();
@@ -3211,12 +3208,11 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use lsp_types::{
-        CodeActionContext, CodeActionOrCommand, DiagnosticSeverity,
-        DidChangeTextDocumentParams, DidOpenTextDocumentParams, Documentation,
-        GotoDefinitionResponse, HoverContents, InlayHintKind, InlayHintLabel, InlayHintTooltip,
-        InsertTextFormat, NumberOrString, Position, Range, SemanticTokensParams,
-        TextDocumentContentChangeEvent, TextDocumentIdentifier, TextDocumentItem,
-        TextDocumentPositionParams, Uri,
+        CodeActionContext, CodeActionOrCommand, DiagnosticSeverity, DidChangeTextDocumentParams,
+        DidOpenTextDocumentParams, Documentation, GotoDefinitionResponse, HoverContents,
+        InlayHintKind, InlayHintLabel, InlayHintTooltip, InsertTextFormat, NumberOrString,
+        Position, Range, SemanticTokensParams, TextDocumentContentChangeEvent,
+        TextDocumentIdentifier, TextDocumentItem, TextDocumentPositionParams, Uri,
         VersionedTextDocumentIdentifier,
     };
 
@@ -3225,16 +3221,17 @@ mod tests {
     use super::{
         CodeActionParams, CompletionParams, CompletionResponse, DEPENDENCY_CACHE_CLEARED,
         DIAGNOSTIC_CODE_MISSING_METHOD_IMPLEMENTATION, GotoDefinitionParams, HoverParams,
-        InlayHintParams, REMOTE_DEPENDENCIES_UPDATED, RESOLVE_REMOTE_DEPENDENCIES,
-        ReferenceParams, ServerState, WORKSPACE_MANIFEST_UPDATED, WorkspaceManifestUpdatedParams,
+        InlayHintParams, REMOTE_DEPENDENCIES_UPDATED, RESOLVE_REMOTE_DEPENDENCIES, ReferenceParams,
+        ServerState, WORKSPACE_MANIFEST_UPDATED, WorkspaceManifestUpdatedParams,
         build_lsp_diagnostics, build_lsp_diagnostics_for_workspace,
         build_remote_dependency_batch_for_workspace, build_remote_dependency_request,
-        build_remote_dependency_requests_for_workspace, collect_remote_dependency_candidates,
-        code_actions, completion, definition, handle_dependency_cache_cleared,
-        handle_remote_dependencies_updated, hover, initialize_result, inlay_hints,
-        normalize_lsp_uri, offset_to_position, publish_changed_document,
-        publish_changed_document_mut, publish_open_document, publish_open_document_mut, references,
-        refresh_workspace, semantic_tokens, snapshot_for_uri, stage_workspace_preview_snapshot,
+        build_remote_dependency_requests_for_workspace, code_actions,
+        collect_remote_dependency_candidates, completion, definition,
+        handle_dependency_cache_cleared, handle_remote_dependencies_updated, hover,
+        initialize_result, inlay_hints, normalize_lsp_uri, offset_to_position,
+        publish_changed_document, publish_changed_document_mut, publish_open_document,
+        publish_open_document_mut, references, refresh_workspace, semantic_tokens,
+        snapshot_for_uri, stage_workspace_preview_snapshot,
     };
 
     fn temp_workspace_path(name: &str) -> PathBuf {
@@ -3374,11 +3371,13 @@ ENDCLASS.\n";
         let diagnostic = build_lsp_diagnostics(snapshot.as_ref())
             .into_iter()
             .find(|diag| {
-                diag.code.as_ref().is_some_and(|code| matches!(
-                    code,
-                    NumberOrString::String(value)
-                        if value == DIAGNOSTIC_CODE_MISSING_METHOD_IMPLEMENTATION
-                )) && diag.message.contains("missing")
+                diag.code.as_ref().is_some_and(|code| {
+                    matches!(
+                        code,
+                        NumberOrString::String(value)
+                            if value == DIAGNOSTIC_CODE_MISSING_METHOD_IMPLEMENTATION
+                    )
+                }) && diag.message.contains("missing")
             })
             .expect("missing method diagnostic");
 
@@ -3410,8 +3409,20 @@ ENDCLASS.\n";
         let edits = changes.get(&uri).expect("uri changes");
         assert_eq!(edits.len(), 1);
         assert_eq!(edits[0].new_text, "\n  METHOD missing.\n  ENDMETHOD.\n");
-        assert_eq!(edits[0].range.start, Position { line: 9, character: 0 });
-        assert_eq!(edits[0].range.end, Position { line: 9, character: 0 });
+        assert_eq!(
+            edits[0].range.start,
+            Position {
+                line: 9,
+                character: 0
+            }
+        );
+        assert_eq!(
+            edits[0].range.end,
+            Position {
+                line: 9,
+                character: 0
+            }
+        );
     }
 
     #[test]
@@ -3455,11 +3466,13 @@ ENDCLASS.\n";
         let diagnostic = build_lsp_diagnostics(snapshot.as_ref())
             .into_iter()
             .find(|diag| {
-                diag.code.as_ref().is_some_and(|code| matches!(
-                    code,
-                    NumberOrString::String(value)
-                        if value == DIAGNOSTIC_CODE_MISSING_METHOD_IMPLEMENTATION
-                )) && diag.message.contains("add_to_epcis")
+                diag.code.as_ref().is_some_and(|code| {
+                    matches!(
+                        code,
+                        NumberOrString::String(value)
+                            if value == DIAGNOSTIC_CODE_MISSING_METHOD_IMPLEMENTATION
+                    )
+                }) && diag.message.contains("add_to_epcis")
             })
             .expect("missing method diagnostic");
 
@@ -3491,8 +3504,20 @@ ENDCLASS.\n";
         let edits = changes.get(&uri).expect("uri changes");
         assert_eq!(edits.len(), 1);
         assert_eq!(edits[0].new_text, "  METHOD add_to_epcis.\n  ENDMETHOD.\n");
-        assert_eq!(edits[0].range.start, Position { line: 19, character: 0 });
-        assert_eq!(edits[0].range.end, Position { line: 19, character: 0 });
+        assert_eq!(
+            edits[0].range.start,
+            Position {
+                line: 19,
+                character: 0
+            }
+        );
+        assert_eq!(
+            edits[0].range.end,
+            Position {
+                line: 19,
+                character: 0
+            }
+        );
     }
 
     #[test]
@@ -11840,6 +11865,74 @@ lo_demo->run( iv_v )"
             panic!("expected text edit");
         };
         assert_eq!(edit.new_text, "iv_value = ${1}");
+    }
+
+    #[test]
+    fn completion_returns_method_parameters_inside_method_implementation() {
+        let state = ServerState::default();
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///completion_method_impl_params.abap").expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: "\
+CLASS lo_epcis_builder DEFINITION.
+  PUBLIC SECTION.
+    METHODS method_name
+      IMPORTING
+        iv_importing TYPE i
+      EXPORTING
+        ev_exporting TYPE i
+      CHANGING
+        cv_changing TYPE i
+      RETURNING
+        VALUE(rv_returning) TYPE i.
+ENDCLASS.
+
+CLASS lo_epcis_builder IMPLEMENTATION.
+  METHOD method_name.
+    rv_returning = iv_imp
+  ENDMETHOD.
+ENDCLASS."
+                        .to_string(),
+                },
+            },
+        );
+
+        let completion = completion(
+            &state,
+            &CompletionParams {
+                text_document_position: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///completion_method_impl_params.abap")
+                            .expect("uri"),
+                    },
+                    position: Position {
+                        line: 15,
+                        character: 25,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+                context: None,
+            },
+        )
+        .expect("completion");
+
+        let CompletionResponse::Array(items) = completion else {
+            panic!("expected array completion");
+        };
+        let item = items
+            .into_iter()
+            .find(|item| item.label == "iv_importing")
+            .expect("iv_importing completion item");
+        assert_eq!(item.kind, Some(lsp_types::CompletionItemKind::VARIABLE));
+        let Some(lsp_types::CompletionTextEdit::Edit(edit)) = item.text_edit else {
+            panic!("expected text edit");
+        };
+        assert_eq!(edit.new_text, "iv_importing");
     }
 
     #[test]

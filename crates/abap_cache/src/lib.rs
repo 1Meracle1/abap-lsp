@@ -901,7 +901,10 @@ impl AnalysisSnapshot {
         if let Some(completion) = self.callable_statement_completion_at(offset) {
             return Some(completion);
         }
-        self.named_argument_completion_at(offset)
+        if let Some(completion) = self.named_argument_completion_at(offset) {
+            return Some(completion);
+        }
+        self.method_parameter_completion_at(offset)
     }
 
     pub fn callable_statement_completion_context_at(
@@ -1041,7 +1044,11 @@ impl AnalysisSnapshot {
         &self,
         offset: usize,
     ) -> Option<MissingMethodImplementationAction> {
-        let member = self.symbols.semantic().decls().class_member_at_offset(offset)?;
+        let member = self
+            .symbols
+            .semantic()
+            .decls()
+            .class_member_at_offset(offset)?;
         if member.kind != ClassMemberKind::Method
             || member.implementation_range.is_some()
             || self.symbols.symbol(member.class_symbol).kind != SymbolKind::Class
@@ -1057,7 +1064,8 @@ impl AnalysisSnapshot {
         }
 
         let class_name = self.symbols.symbol(member.class_symbol).name.as_ref();
-        let implementation = class_implementation_edit_target(&self.parse, self.text.as_ref(), class_name)?;
+        let implementation =
+            class_implementation_edit_target(&self.parse, self.text.as_ref(), class_name)?;
         Some(MissingMethodImplementationAction {
             title: format!("Create method implementation '{}'", member.name),
             insert_offset: implementation.insert_offset,
@@ -2129,6 +2137,69 @@ impl AnalysisSnapshot {
         })
     }
 
+    fn method_parameter_completion_at(&self, offset: usize) -> Option<CompletionInfo> {
+        if self
+            .symbols
+            .call_sites
+            .iter()
+            .any(|call_site| call_site.range.start <= offset && offset <= call_site.range.end)
+        {
+            return None;
+        }
+        let (replace_range, prefix) = self.bare_identifier_completion_context(offset)?;
+        let scope = innermost_scope_at(&self.symbols, replace_range.start);
+        let method_scope = enclosing_method_scope_with_owner(&self.symbols, scope)?;
+        let mut items: Vec<_> = self
+            .symbols
+            .symbols
+            .iter()
+            .filter(|symbol| symbol.kind == SymbolKind::Parameter && symbol.scope == method_scope)
+            .filter(|symbol| symbol.name.as_ref().starts_with(prefix.as_ref()))
+            .map(|symbol| {
+                CompletionItem::NamedArgument(NamedArgumentCompletionItem {
+                    name: Arc::clone(&symbol.name),
+                    declared_type: symbol_completion_declared_type(symbol),
+                    declaration: Some(format_symbol_completion_declaration(symbol)),
+                    insertion: identifier_completion_insertion(symbol.name.as_ref()),
+                })
+            })
+            .collect();
+        if items.is_empty() {
+            return None;
+        }
+        items.sort_by(|left, right| completion_item_name(left).cmp(completion_item_name(right)));
+        Some(CompletionInfo {
+            replace_range,
+            items,
+            in_type_position: false,
+        })
+    }
+
+    fn bare_identifier_completion_context(
+        &self,
+        offset: usize,
+    ) -> Option<(Range<usize>, Arc<str>)> {
+        let range = statement_query_range(&self.parse, offset)?;
+        let (token_start, token_end) = token_window_for_range(&self.parse, &range)?;
+        let prefix_idx = prefix_token_at_offset(&self.parse, token_start, token_end, offset)?;
+        let token = &self.parse.tokens[prefix_idx];
+        if previous_significant_token(&self.parse, token_start, prefix_idx).is_some_and(
+            |prev_idx| {
+                matches!(
+                    self.parse.tokens[prev_idx].kind.as_str(),
+                    "Minus" | "Arrow" | "Tilde" | "FatArrow"
+                )
+            },
+        ) {
+            return None;
+        }
+        let prefix_end = offset.min(token.range.end);
+        Some((
+            token.range.start..prefix_end,
+            Arc::<str>::from(self.text[token.range.start..prefix_end].to_ascii_lowercase()),
+        ))
+    }
+
     fn bare_where_field_target_at(&self, offset: usize) -> Option<BareWhereFieldTarget> {
         let query = self.bare_where_field_query_at(offset)?;
         let (token_start, token_end) =
@@ -3067,6 +3138,14 @@ fn parameter_completion_declared_type(parameter: &ClassMemberParameterData) -> O
         .or_else(|| parameter.declared_type.as_ref().map(format_field_type_ref))
 }
 
+fn symbol_completion_declared_type(symbol: &SymbolData) -> Option<String> {
+    symbol
+        .type_clause_display
+        .as_ref()
+        .map(|display| display.trim().to_string())
+        .or_else(|| symbol.declared_type.as_ref().map(format_field_type_ref))
+}
+
 fn function_module_parameter_completion_declared_type(
     parameter: &FunctionModuleParameterData,
 ) -> Option<String> {
@@ -3090,6 +3169,13 @@ fn format_parameter_completion_declaration(parameter: &ClassMemberParameterData)
     match parameter_completion_declared_type(parameter) {
         Some(declared_type) => format!("{} {}", parameter.name, declared_type),
         None => parameter.name.to_string(),
+    }
+}
+
+fn format_symbol_completion_declaration(symbol: &SymbolData) -> String {
+    match symbol_completion_declared_type(symbol) {
+        Some(declared_type) => format!("{} {}", symbol.name, declared_type),
+        None => symbol.name.to_string(),
     }
 }
 
@@ -6595,6 +6681,18 @@ fn innermost_scope_at(unit: &UnitAnalysis, offset: usize) -> ScopeId {
         .unwrap_or(unit.root_scope)
 }
 
+fn enclosing_method_scope_with_owner(unit: &UnitAnalysis, scope: ScopeId) -> Option<ScopeId> {
+    let mut current = Some(scope);
+    while let Some(scope_id) = current {
+        let current_scope = unit.scope(scope_id);
+        if current_scope.kind == ScopeKind::Method && current_scope.owner.is_some() {
+            return Some(scope_id);
+        }
+        current = current_scope.parent;
+    }
+    None
+}
+
 fn selector_completion_context(
     parse: &ParseResult,
     offset: usize,
@@ -6766,9 +6864,12 @@ fn class_implementation_edit_target(
 
         let endclass_idx = (token_start..token_end).rfind(|&idx| {
             parse.tokens[idx].kind == TokenKind::Ident
-                && parse.tokens[idx].lexeme(text).eq_ignore_ascii_case("endclass")
+                && parse.tokens[idx]
+                    .lexeme(text)
+                    .eq_ignore_ascii_case("endclass")
         })?;
-        let body_range = parse.tokens[header_period].range.end..parse.tokens[endclass_idx].range.start;
+        let body_range =
+            parse.tokens[header_period].range.end..parse.tokens[endclass_idx].range.start;
         return Some(ClassImplementationEditTarget {
             insert_offset: parse.tokens[endclass_idx].range.start,
             body_is_empty: text[body_range].trim().is_empty(),
@@ -6785,9 +6886,7 @@ fn build_missing_method_implementation_text(
 ) -> String {
     let newline = if text.contains("\r\n") { "\r\n" } else { "\n" };
     let prefix = if body_is_empty { "" } else { newline };
-    format!(
-        "{prefix}  METHOD {method_name}.{newline}  ENDMETHOD.{newline}"
-    )
+    format!("{prefix}  METHOD {method_name}.{newline}  ENDMETHOD.{newline}")
 }
 
 fn parse_function_module_completion_query(
@@ -6915,9 +7014,11 @@ fn parse_local_class_template_query(
         return None;
     }
     let line_end = line_end_offset(snapshot.text.as_ref(), token.range.start);
-    if significant.iter().copied().any(|idx| {
-        idx != token_idx && snapshot.parse.tokens[idx].range.start < line_end
-    }) {
+    if significant
+        .iter()
+        .copied()
+        .any(|idx| idx != token_idx && snapshot.parse.tokens[idx].range.start < line_end)
+    {
         return None;
     }
 
@@ -14110,6 +14211,75 @@ START-OF-SELECTION.
     }
 
     #[test]
+    fn completion_returns_method_parameters_inside_method_implementation() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS lo_epcis_builder DEFINITION.
+  PUBLIC SECTION.
+    METHODS method_name
+      IMPORTING
+        iv_importing TYPE i
+      EXPORTING
+        ev_exporting TYPE i
+      CHANGING
+        cv_changing TYPE i
+      RETURNING
+        VALUE(rv_returning) TYPE i.
+ENDCLASS.
+
+CLASS lo_epcis_builder IMPLEMENTATION.
+  METHOD method_name.
+    rv_returning = iv_imp
+  ENDMETHOD.
+ENDCLASS.";
+        store.replace_all(vec![DocumentInput {
+            uri: Arc::from("file:///method_impl_param_completion.abap"),
+            version: 1,
+            text: Arc::from(src),
+            is_dependency: false,
+            object_name: None,
+        }]);
+        let snapshot = store
+            .documents
+            .read()
+            .get("file:///method_impl_param_completion.abap")
+            .cloned()
+            .expect("snapshot");
+
+        let completion_offset =
+            src.rfind("iv_imp").expect("iv_imp prefix in method body") + "iv_imp".len();
+        let completion = snapshot
+            .completion_at(completion_offset)
+            .expect("method parameter completion");
+        let names: Vec<_> = completion
+            .items
+            .iter()
+            .map(|item| match item {
+                crate::CompletionItem::Selector(item) => item.name.as_ref(),
+                crate::CompletionItem::NamedArgument(item) => item.name.as_ref(),
+                crate::CompletionItem::Template(item) => item.name.as_ref(),
+                crate::CompletionItem::Callable(item) => item.name.as_ref(),
+            })
+            .collect();
+        assert_eq!(names, vec!["iv_importing"]);
+
+        let item = completion
+            .items
+            .iter()
+            .find_map(|item| match item {
+                crate::CompletionItem::NamedArgument(item)
+                    if item.name.as_ref() == "iv_importing" =>
+                {
+                    Some(item)
+                }
+                _ => None,
+            })
+            .expect("iv_importing completion item");
+        assert_eq!(item.insertion.plain_text, "iv_importing");
+        assert_eq!(item.declaration.as_deref(), Some("iv_importing i"));
+    }
+
+    #[test]
     fn completion_returns_function_module_call_templates_before_following_statement() {
         let store = DocumentStore::default();
         let dep_src = "\
@@ -14595,7 +14765,11 @@ CLASS lcl_object_event IMPLEMENTATION.
 
 ENDCLASS.";
         let completion_offset = src.find("\nlcl\n").expect("lcl line") + "\nlcl".len();
-        let snapshot = store.publish("file:///local_class_template_between_statements.abap", 1, src);
+        let snapshot = store.publish(
+            "file:///local_class_template_between_statements.abap",
+            1,
+            src,
+        );
 
         let completion = snapshot
             .completion_at(completion_offset)
