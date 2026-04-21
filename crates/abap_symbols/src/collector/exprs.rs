@@ -620,7 +620,10 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
             SyntaxKind::ConstructorExpr => self.type_fact_from_constructor_expr(node, scope),
             SyntaxKind::TableExpr => TableExpr::cast(self.ctx.syntax(node))
                 .and_then(|expr| expr.base())
-                .map(|base| self.type_fact_from_expr_node(base.id(), scope))
+                .map(|base| {
+                    let type_fact = self.type_fact_from_expr_node(base.id(), scope);
+                    self.type_fact_for_internal_table_line(scope, type_fact)
+                })
                 .unwrap_or_default(),
             _ => self.type_fact_from_tokens(&self.ctx.syntax_token_nodes(node), scope),
         }
@@ -642,6 +645,46 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                 self.type_fact_from_tokens(&tokens, scope)
             }
             _ => TypeFactData::default(),
+        }
+    }
+
+    fn type_fact_for_internal_table_line(
+        &self,
+        scope: ScopeId,
+        type_fact: TypeFactData,
+    ) -> TypeFactData {
+        let Some(type_ref) = type_fact.declared_type.as_ref() else {
+            return type_fact;
+        };
+        if type_ref.namespace != Namespace::Type
+            || type_ref.is_ref
+            || !type_ref.field_path.is_empty()
+        {
+            return type_fact;
+        }
+        let Some(type_symbol_id) = self.ctx.lookup_symbol_in_scope_chain(
+            scope,
+            Namespace::Type,
+            type_ref.base_name.as_ref(),
+        ) else {
+            return type_fact;
+        };
+        if !self
+            .ctx
+            .symbol_type_clause_display(type_symbol_id)
+            .as_deref()
+            .is_some_and(super::is_internal_table_type_display)
+        {
+            return type_fact;
+        }
+        TypeFactData {
+            structure: self
+                .ctx
+                .symbol_structure(type_symbol_id)
+                .or(type_fact.structure),
+            declared_type: self.ctx.symbol_declared_type(type_symbol_id),
+            type_clause_display: None,
+            table_line: None,
         }
     }
 

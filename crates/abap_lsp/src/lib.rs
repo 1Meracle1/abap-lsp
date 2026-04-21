@@ -2882,9 +2882,9 @@ pub fn inlay_hints(state: &ServerState, params: &InlayHintParams) -> Option<Vec<
     let byte_range = range_to_byte_range_snapshot(snapshot.as_ref(), params.range.clone())?;
     let mut hint_infos = snapshot.perform_parameter_inlay_hints_in_range(byte_range.clone());
     hint_infos.extend(snapshot.function_module_parameter_inlay_hints_in_range(byte_range.clone()));
-    hint_infos.extend(snapshot.method_parameter_inlay_hints_in_range(byte_range));
+    hint_infos.extend(snapshot.method_parameter_inlay_hints_in_range(byte_range.clone()));
     hint_infos.sort_by_key(|hint| hint.position);
-    let hints = hint_infos
+    let mut hints: Vec<_> = hint_infos
         .into_iter()
         .filter_map(|hint| {
             let label = if hint.trailing_colon {
@@ -2910,6 +2910,40 @@ pub fn inlay_hints(state: &ServerState, params: &InlayHintParams) -> Option<Vec<
             })
         })
         .collect();
+    hints.extend(
+        snapshot
+            .inline_variable_type_inlay_hints_in_range(byte_range)
+            .into_iter()
+            .filter_map(|hint| {
+                Some(InlayHint {
+                    position: offset_to_position_snapshot(snapshot.as_ref(), hint.position)?,
+                    label: hint.label.to_string().into(),
+                    kind: Some(InlayHintKind::TYPE),
+                    text_edits: None,
+                    tooltip: Some(
+                        MarkupContent {
+                            kind: MarkupKind::Markdown,
+                            value: hint.tooltip_markdown,
+                        }
+                        .into(),
+                    ),
+                    padding_left: Some(true),
+                    padding_right: None,
+                    data: None,
+                })
+            }),
+    );
+    hints.sort_by_key(|hint| {
+        (
+            hint.position.line,
+            hint.position.character,
+            match hint.kind {
+                Some(InlayHintKind::PARAMETER) => 0u8,
+                Some(InlayHintKind::TYPE) => 1u8,
+                _ => 2u8,
+            },
+        )
+    });
     Some(hints)
 }
 
@@ -10532,6 +10566,98 @@ START-OF-SELECTION.
     }
 
     #[test]
+    fn inlay_hints_show_inline_variable_types() {
+        let state = ServerState::default();
+        let text = "\
+CLASS lcl_demo DEFINITION.
+ENDCLASS.
+
+TYPES: stringtab TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+
+START-OF-SELECTION.
+  DATA(lt_text) = VALUE stringtab( FOR n = 1 UNTIL n > 3 ( |{ n }| ) ).
+  DATA(lo_demo) = NEW lcl_demo( ).
+";
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///inline_type_hint.abap").expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: text.to_string(),
+                },
+            },
+        );
+
+        let range = Range {
+            start: offset_to_position(text, 0).expect("start position"),
+            end: offset_to_position(text, text.len()).expect("end position"),
+        };
+        let hints = inlay_hints(
+            &state,
+            &InlayHintParams {
+                text_document: TextDocumentIdentifier {
+                    uri: Uri::from_str("file:///inline_type_hint.abap").expect("uri"),
+                },
+                range,
+                work_done_progress_params: Default::default(),
+            },
+        )
+        .expect("inlay hints");
+
+        let type_hints: Vec<_> = hints
+            .iter()
+            .filter(|hint| matches!(hint.kind, Some(InlayHintKind::TYPE)))
+            .collect();
+        assert_eq!(type_hints.len(), 2, "{hints:?}");
+
+        assert_eq!(
+            type_hints[0].position,
+            offset_to_position(
+                text,
+                text.find("lt_text").expect("lt_text declaration") + "lt_text".len()
+            )
+            .expect("lt_text position")
+        );
+        let InlayHintLabel::String(lt_text_label) = &type_hints[0].label else {
+            panic!("expected string label");
+        };
+        assert_eq!(lt_text_label, "stringtab");
+        let Some(InlayHintTooltip::MarkupContent(lt_text_tooltip)) = type_hints[0].tooltip.as_ref()
+        else {
+            panic!("expected markdown tooltip");
+        };
+        assert!(
+            lt_text_tooltip
+                .value
+                .contains("```abap\nTYPE stringtab\n```")
+        );
+
+        assert_eq!(
+            type_hints[1].position,
+            offset_to_position(
+                text,
+                text.find("lo_demo").expect("lo_demo declaration") + "lo_demo".len()
+            )
+            .expect("lo_demo position")
+        );
+        let InlayHintLabel::String(lo_demo_label) = &type_hints[1].label else {
+            panic!("expected string label");
+        };
+        assert_eq!(lo_demo_label, "REF TO lcl_demo");
+        let Some(InlayHintTooltip::MarkupContent(lo_demo_tooltip)) = type_hints[1].tooltip.as_ref()
+        else {
+            panic!("expected markdown tooltip");
+        };
+        assert!(
+            lo_demo_tooltip
+                .value
+                .contains("```abap\nTYPE REF TO lcl_demo\n```")
+        );
+    }
+
+    #[test]
     fn inlay_hints_cover_call_function_parameters() {
         let state = ServerState::default();
         let dep_text = "\
@@ -10714,7 +10840,17 @@ START-OF-SELECTION.
         )
         .expect("inlay hints");
 
-        assert_eq!(hints.len(), 6, "{hints:?}");
+        let parameter_hints: Vec<_> = hints
+            .iter()
+            .filter(|hint| matches!(hint.kind, Some(InlayHintKind::PARAMETER)))
+            .collect();
+        let type_hints: Vec<_> = hints
+            .iter()
+            .filter(|hint| matches!(hint.kind, Some(InlayHintKind::TYPE)))
+            .collect();
+
+        assert_eq!(parameter_hints.len(), 6, "{hints:?}");
+        assert_eq!(type_hints.len(), 3, "{hints:?}");
 
         let expected_positions = [
             text.find("'legacy ctor'").expect("legacy ctor position"),
@@ -10743,7 +10879,7 @@ START-OF-SELECTION.
             ),
         ];
 
-        for (idx, hint) in hints.iter().enumerate() {
+        for (idx, hint) in parameter_hints.iter().enumerate() {
             assert_eq!(
                 hint.position,
                 offset_to_position(text, expected_positions[idx]).expect("hint position")
@@ -10757,6 +10893,35 @@ START-OF-SELECTION.
             };
             assert!(tooltip.value.contains(expected_tooltip_snippets[idx].0));
             assert!(tooltip.value.contains(expected_tooltip_snippets[idx].1));
+        }
+
+        let expected_type_positions = [
+            text.find("lv_legacy_count")
+                .expect("legacy inline declaration")
+                + "lv_legacy_count".len(),
+            text.find("lv_expr_count").expect("expr inline declaration") + "lv_expr_count".len(),
+            text.find("lo_new").expect("constructor inline declaration") + "lo_new".len(),
+        ];
+        let expected_type_labels = ["i", "i", "REF TO lcl_demo"];
+        let expected_type_tooltips = [
+            "```abap\nTYPE i\n```",
+            "```abap\nTYPE i\n```",
+            "```abap\nTYPE REF TO lcl_demo\n```",
+        ];
+
+        for (idx, hint) in type_hints.iter().enumerate() {
+            assert_eq!(
+                hint.position,
+                offset_to_position(text, expected_type_positions[idx]).expect("type hint position")
+            );
+            let InlayHintLabel::String(label) = &hint.label else {
+                panic!("expected string label");
+            };
+            assert_eq!(label, expected_type_labels[idx]);
+            let Some(InlayHintTooltip::MarkupContent(tooltip)) = hint.tooltip.as_ref() else {
+                panic!("expected markdown tooltip");
+            };
+            assert!(tooltip.value.contains(expected_type_tooltips[idx]));
         }
     }
 
@@ -10956,6 +11121,121 @@ DATA(lt_text) = VALUE stringtab( FOR n = 1 UNTIL n > 3 ( |{ n }| ) ).";
         assert!(markup.value.contains("Variable"), "{}", markup.value);
         assert!(
             markup.value.contains("```abap\nTYPE i\n```"),
+            "{}",
+            markup.value
+        );
+    }
+
+    #[test]
+    fn hover_preserves_named_value_constructor_type_for_inline_variable() {
+        let state = ServerState::default();
+        let text = "\
+TYPES: stringtab TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+
+DATA(lt_text) = VALUE stringtab( FOR n = 1 UNTIL n > 3 ( |{ n }| ) ).
+CLEAR lt_text.";
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///inline_value_hover.abap").expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: text.to_string(),
+                },
+            },
+        );
+        let lt_text_offset = text.rfind("lt_text").expect("lt_text use") + 2;
+        let line_start = text[..lt_text_offset].rfind('\n').expect("line newline") + 1;
+        let column = (lt_text_offset - line_start) as u32;
+        let line = text[..lt_text_offset]
+            .bytes()
+            .filter(|&b| b == b'\n')
+            .count() as u32;
+
+        let hover = hover(
+            &state,
+            &HoverParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///inline_value_hover.abap").expect("uri"),
+                    },
+                    position: Position {
+                        line,
+                        character: column,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+            },
+        )
+        .expect("hover");
+
+        let HoverContents::Markup(markup) = hover.contents else {
+            panic!("expected markdown hover");
+        };
+        assert!(markup.value.contains("`lt_text`"), "{}", markup.value);
+        assert!(markup.value.contains("Variable"), "{}", markup.value);
+        assert!(
+            markup.value.contains("```abap\nTYPE stringtab\n```"),
+            "{}",
+            markup.value
+        );
+    }
+
+    #[test]
+    fn hover_uses_row_type_for_value_optional_table_expression_with_named_table_type() {
+        let state = ServerState::default();
+        let text = "\
+TYPES: BEGIN OF ty_item,
+         objid TYPE string,
+       END OF ty_item.
+
+TYPES: tty_item TYPE STANDARD TABLE OF ty_item WITH EMPTY KEY.
+
+DATA it_obj_itm TYPE tty_item.
+DATA is_obj_ids TYPE ty_item.
+DATA(ls_obj_itm) = VALUE #( it_obj_itm[ objid = is_obj_ids-objid ] OPTIONAL ).
+CLEAR ls_obj_itm.";
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///value_optional_row_hover.abap").expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: text.to_string(),
+                },
+            },
+        );
+        let offset = text.rfind("ls_obj_itm").expect("ls_obj_itm use") + 2;
+        let line_start = text[..offset].rfind('\n').expect("line newline") + 1;
+        let column = (offset - line_start) as u32;
+        let line = text[..offset].bytes().filter(|&b| b == b'\n').count() as u32;
+
+        let hover = hover(
+            &state,
+            &HoverParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///value_optional_row_hover.abap").expect("uri"),
+                    },
+                    position: Position {
+                        line,
+                        character: column,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+            },
+        )
+        .expect("hover");
+
+        let HoverContents::Markup(markup) = hover.contents else {
+            panic!("expected markdown hover");
+        };
+        assert!(markup.value.contains("`ls_obj_itm`"), "{}", markup.value);
+        assert!(markup.value.contains("Variable"), "{}", markup.value);
+        assert!(
+            markup.value.contains("```abap\nTYPE ty_item\n```"),
             "{}",
             markup.value
         );

@@ -6780,6 +6780,53 @@ DATA(ls_obj_itm) = VALUE #( it_obj_itm[ objid = is_obj_ids-objid ] OPTIONAL ).
             .any(|field| field.name.as_ref() == "objid"),
         "expected objid in inferred VALUE row shape, structure={structure:?}"
     );
+    let declared_type = ls_obj_itm
+        .declared_type
+        .as_ref()
+        .expect("declared type inferred from VALUE table expression");
+    assert_eq!(declared_type.namespace, Namespace::Type);
+    assert!(!declared_type.is_ref);
+    assert_eq!(declared_type.base_name.as_ref(), "ty_item");
+    assert!(declared_type.field_path.is_empty());
+}
+
+#[test]
+fn resolves_value_table_expression_optional_with_named_table_type_to_row_type() {
+    let src = r#"
+TYPES: BEGIN OF ty_item,
+         objid TYPE string,
+       END OF ty_item.
+
+TYPES: tty_item TYPE STANDARD TABLE OF ty_item WITH EMPTY KEY.
+
+DATA it_obj_itm TYPE tty_item.
+DATA is_obj_ids TYPE ty_item.
+DATA(ls_obj_itm) = VALUE #( it_obj_itm[ objid = is_obj_ids-objid ] OPTIONAL ).
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///value_optional_named_table_type.abap", src, &parsed);
+
+    let ls_obj_itm = unit
+        .symbols
+        .iter()
+        .find(|symbol| symbol.name.as_ref() == "ls_obj_itm")
+        .expect("inline value target");
+    let structure = unit.structure(ls_obj_itm.structure.expect("inferred row structure"));
+    assert!(
+        structure
+            .fields
+            .iter()
+            .any(|field| field.name.as_ref() == "objid"),
+        "expected objid in inferred VALUE row shape, structure={structure:?}"
+    );
+    let declared_type = ls_obj_itm
+        .declared_type
+        .as_ref()
+        .expect("declared type inferred from named table type");
+    assert_eq!(declared_type.namespace, Namespace::Type);
+    assert!(!declared_type.is_ref);
+    assert_eq!(declared_type.base_name.as_ref(), "ty_item");
+    assert!(declared_type.field_path.is_empty());
 }
 
 #[test]

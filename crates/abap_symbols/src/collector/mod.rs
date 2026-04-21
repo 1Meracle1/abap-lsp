@@ -489,7 +489,9 @@ impl<'a> Collector<'a> {
                 else {
                     return (None, None);
                 };
-                self.inline_decl_assignment_source_metadata(base.id(), scope)
+                let (structure, declared_type) =
+                    self.inline_decl_assignment_source_metadata(base.id(), scope);
+                self.internal_table_line_metadata(scope, structure, declared_type)
             }
             SyntaxKind::CallExpr => self.call_expr_inferred_metadata(node, scope),
             SyntaxKind::ExprLiteral => {
@@ -618,6 +620,40 @@ impl<'a> Collector<'a> {
         }
 
         self.normalize_inferred_metadata(scope, None, declared_type)
+    }
+
+    fn internal_table_line_metadata(
+        &self,
+        scope: ScopeId,
+        structure: Option<StructureId>,
+        declared_type: Option<FieldTypeRefData>,
+    ) -> (Option<StructureId>, Option<FieldTypeRefData>) {
+        let Some(type_ref) = declared_type.as_ref() else {
+            return (structure, declared_type);
+        };
+        if type_ref.namespace != Namespace::Type
+            || type_ref.is_ref
+            || !type_ref.field_path.is_empty()
+        {
+            return (structure, declared_type);
+        }
+        let Some(type_symbol_id) =
+            self.lookup_symbol_in_scope_chain(scope, Namespace::Type, type_ref.base_name.as_ref())
+        else {
+            return (structure, declared_type);
+        };
+        let type_symbol = self.symbol(type_symbol_id);
+        if !type_symbol
+            .type_clause_display
+            .as_deref()
+            .is_some_and(is_internal_table_type_display)
+        {
+            return (structure, declared_type);
+        }
+        (
+            type_symbol.structure.or(structure),
+            type_symbol.declared_type.clone(),
+        )
     }
 
     fn rhs_is_top_level_sum(&self, node: NodeId) -> bool {
@@ -1516,6 +1552,21 @@ impl<'a> Collector<'a> {
             token.range.clone(),
         ))
     }
+}
+
+fn is_internal_table_type_display(display: &str) -> bool {
+    let trimmed = display.trim();
+    let upper = trimmed.to_ascii_uppercase();
+    [
+        "STANDARD TABLE",
+        "SORTED TABLE",
+        "HASHED TABLE",
+        "ANY TABLE",
+        "INDEX TABLE",
+        "TABLE",
+    ]
+    .into_iter()
+    .any(|prefix| upper.starts_with(prefix))
 }
 
 pub fn collect_unit(

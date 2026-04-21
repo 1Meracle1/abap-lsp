@@ -667,7 +667,13 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
                     ) {
                         declared_type.is_ref = true;
                     }
-                    return self.normalize_inferred_metadata(scope, None, Some(declared_type));
+                    let (structure, declared_type) =
+                        self.normalize_inferred_metadata(scope, None, Some(declared_type));
+                    return self.collector.internal_table_line_metadata(
+                        scope,
+                        structure,
+                        declared_type,
+                    );
                 }
                 if let Some(base_value) = constructor
                     .arg_list()
@@ -703,10 +709,16 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
                                     )
                                 {
                                     let symbol = self.collector.symbol(symbol_id);
-                                    return self.normalize_inferred_metadata(
+                                    let (structure, declared_type) = self
+                                        .normalize_inferred_metadata(
+                                            scope,
+                                            symbol.structure,
+                                            symbol.declared_type.clone(),
+                                        );
+                                    return self.collector.internal_table_line_metadata(
                                         scope,
-                                        symbol.structure,
-                                        symbol.declared_type.clone(),
+                                        structure,
+                                        declared_type,
                                     );
                                 }
                             } else if let Some(symbol_id) =
@@ -719,7 +731,13 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
                                 if let Some((structure, declared_type)) =
                                     self.loop_source_field_metadata(scope, symbol_id, &field_path)
                                 {
-                                    return self.normalize_inferred_metadata(
+                                    let (structure, declared_type) = self
+                                        .normalize_inferred_metadata(
+                                            scope,
+                                            structure,
+                                            declared_type,
+                                        );
+                                    return self.collector.internal_table_line_metadata(
                                         scope,
                                         structure,
                                         declared_type,
@@ -745,10 +763,15 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
                     )
                 {
                     let symbol = self.collector.symbol(symbol_id);
-                    return self.normalize_inferred_metadata(
+                    let (structure, declared_type) = self.normalize_inferred_metadata(
                         scope,
                         symbol.structure,
                         symbol.declared_type.clone(),
+                    );
+                    return self.collector.internal_table_line_metadata(
+                        scope,
+                        structure,
+                        declared_type,
                     );
                 }
                 (None, None)
@@ -765,11 +788,13 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
                     return (None, None);
                 };
                 let symbol = self.collector.symbol(symbol_id);
-                self.normalize_inferred_metadata(
+                let (structure, declared_type) = self.normalize_inferred_metadata(
                     scope,
                     symbol.structure,
                     symbol.declared_type.clone(),
-                )
+                );
+                self.collector
+                    .internal_table_line_metadata(scope, structure, declared_type)
             }
             SyntaxKind::SelectorExpr => {
                 let Some((namespace, base_name, _, field_path)) =
@@ -789,15 +814,23 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
                 };
                 if field_path.is_empty() {
                     let symbol = self.collector.symbol(symbol_id);
-                    return self.normalize_inferred_metadata(
+                    let (structure, declared_type) = self.normalize_inferred_metadata(
                         scope,
                         symbol.structure,
                         symbol.declared_type.clone(),
                     );
+                    return self.collector.internal_table_line_metadata(
+                        scope,
+                        structure,
+                        declared_type,
+                    );
                 }
                 self.loop_source_field_metadata(scope, symbol_id, &field_path)
                     .map(|(structure, declared_type)| {
-                        self.normalize_inferred_metadata(scope, structure, declared_type)
+                        let (structure, declared_type) =
+                            self.normalize_inferred_metadata(scope, structure, declared_type);
+                        self.collector
+                            .internal_table_line_metadata(scope, structure, declared_type)
                     })
                     .unwrap_or((None, None))
             }
@@ -807,7 +840,10 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
                 else {
                     return (None, None);
                 };
-                self.loop_source_line_metadata_from_node(base.id(), scope)
+                let (structure, declared_type) =
+                    self.loop_source_line_metadata_from_node(base.id(), scope);
+                self.collector
+                    .internal_table_line_metadata(scope, structure, declared_type)
             }
             _ => (None, None),
         }

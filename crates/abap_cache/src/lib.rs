@@ -3,6 +3,8 @@ use std::ops::Range;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
+use abap_ast::SyntaxKind;
+use abap_ast::ast::{AstNode, ConstructorExpr, SyntaxNodeRef};
 use abap_lexer::{TokenKind, tokenize};
 use abap_parser::{ParseResult, parse};
 use abap_symbols::{
@@ -225,6 +227,13 @@ pub struct ParameterInlayHintInfo {
     pub position: usize,
     pub label: Arc<str>,
     pub trailing_colon: bool,
+    pub tooltip_markdown: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypeInlayHintInfo {
+    pub position: usize,
+    pub label: Arc<str>,
     pub tooltip_markdown: String,
 }
 
@@ -1013,6 +1022,47 @@ impl AnalysisSnapshot {
         hints
     }
 
+    pub fn inline_variable_type_inlay_hints_in_range(
+        &self,
+        range: Range<usize>,
+    ) -> Vec<TypeInlayHintInfo> {
+        let mut hints = Vec::new();
+        let mut stack = vec![self.parse.file.root()];
+        while let Some(node) = stack.pop() {
+            if self.parse.file.kind(node) == SyntaxKind::DataInlineDecl
+                && let Some(name_range) = self.parse.file.children(node).find_map(|child| {
+                    (self.parse.file.kind(child) == SyntaxKind::DataDeclName)
+                        .then(|| self.parse.file.range(child))
+                })
+            {
+                let position = name_range.end;
+                if range.start <= position
+                    && position < range.end
+                    && let Some(symbol) = self.symbols.symbols.iter().find(|symbol| {
+                        symbol.kind == SymbolKind::Variable && symbol.decl_range == name_range
+                    })
+                    && let Some(type_presentation) =
+                        symbol_inlay_type_presentation(Some(self), symbol)
+                {
+                    hints.push(TypeInlayHintInfo {
+                        position,
+                        label: Arc::from(type_presentation.hint_label),
+                        tooltip_markdown: format_hover_type_clause(
+                            &type_presentation.rendered_clause,
+                        ),
+                    });
+                }
+            }
+
+            for child in self.parse.file.children(node) {
+                stack.push(child);
+            }
+        }
+
+        hints.sort_by_key(|hint| hint.position);
+        hints
+    }
+
     /// Hover for an Open SQL name span (`FROM` source, column, alias, and similar).
     pub fn hovered_sql_name_ref_at(&self, offset: usize) -> Option<HoveredSymbolInfo> {
         let sql_ref = self.symbols.semantic().sql().name_ref_at_offset(offset)?;
@@ -1123,7 +1173,7 @@ impl AnalysisSnapshot {
         Some(HoveredSymbolInfo {
             range: symbol.decl_range.clone(),
             display_name: Arc::clone(&symbol.name),
-            markdown_lines: markdown_lines_for_declared_symbol(self.symbols.as_ref(), symbol),
+            markdown_lines: markdown_lines_for_declared_symbol(self, self.symbols.as_ref(), symbol),
         })
     }
 
@@ -2392,6 +2442,131 @@ fn format_hover_type_clause(rendered_type: &str) -> String {
     format!("```abap\n{rendered_type}\n```")
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SymbolTypePresentation {
+    rendered_clause: String,
+    hint_label: String,
+}
+
+fn type_presentation_from_display(
+    declared_type: Option<&FieldTypeRefData>,
+    display: &str,
+) -> SymbolTypePresentation {
+    let keyword = match declared_type.map(|type_ref| type_ref.namespace) {
+        Some(Namespace::Value) => "LIKE",
+        _ => "TYPE",
+    };
+    SymbolTypePresentation {
+        rendered_clause: format!("{keyword} {}", display.trim()),
+        hint_label: display.trim().to_string(),
+    }
+}
+
+fn strip_type_clause_keyword(rendered_clause: &str) -> &str {
+    rendered_clause
+        .strip_prefix("TYPE ")
+        .or_else(|| rendered_clause.strip_prefix("LIKE "))
+        .unwrap_or(rendered_clause)
+}
+
+fn symbol_inline_explicit_type_display(
+    snapshot: &AnalysisSnapshot,
+    decl_range: &Range<usize>,
+) -> Option<String> {
+    let mut stack = vec![snapshot.parse.file.root()];
+    while let Some(node) = stack.pop() {
+        if snapshot.parse.file.kind(node) == SyntaxKind::DataInlineDecl {
+            let name_matches = snapshot.parse.file.children(node).any(|child| {
+                snapshot.parse.file.kind(child) == SyntaxKind::DataDeclName
+                    && snapshot.parse.file.range(child) == *decl_range
+            });
+            if name_matches {
+                let rhs_expr = snapshot.parse.file.children(node).find(|&child| {
+                    !matches!(
+                        snapshot.parse.file.kind(child),
+                        SyntaxKind::Token | SyntaxKind::DataDeclName
+                    )
+                })?;
+                let constructor_node =
+                    if snapshot.parse.file.kind(rhs_expr) == SyntaxKind::ConstructorExpr {
+                        Some(rhs_expr)
+                    } else {
+                        snapshot
+                            .parse
+                            .file
+                            .find_first_kind(rhs_expr, SyntaxKind::ConstructorExpr)
+                    }?;
+                let constructor = ConstructorExpr::cast(SyntaxNodeRef::new(
+                    &snapshot.parse.file,
+                    constructor_node,
+                ))?;
+                let type_ref = constructor.type_ref()?;
+                let display = type_ref.display_text(snapshot.text.as_ref())?.trim();
+                if display == "#" {
+                    return None;
+                }
+                let keyword = constructor.keyword(snapshot.text.as_ref())?;
+                return Some(if keyword.as_ref() == "new" {
+                    format!("REF TO {display}")
+                } else {
+                    display.to_string()
+                });
+            }
+        }
+
+        for child in snapshot.parse.file.children(node) {
+            stack.push(child);
+        }
+    }
+    None
+}
+
+fn symbol_type_presentation(
+    snapshot: Option<&AnalysisSnapshot>,
+    symbol: &SymbolData,
+) -> Option<SymbolTypePresentation> {
+    if let Some(display) = symbol.type_clause_display.as_deref() {
+        return Some(type_presentation_from_display(
+            symbol.declared_type.as_ref(),
+            display,
+        ));
+    }
+    if let Some(snapshot) = snapshot
+        && let Some(display) = symbol_inline_explicit_type_display(snapshot, &symbol.decl_range)
+    {
+        return Some(type_presentation_from_display(
+            symbol.declared_type.as_ref(),
+            &display,
+        ));
+    }
+    let type_ref = symbol.declared_type.as_ref()?;
+    let rendered_clause = format_field_type_ref(type_ref);
+    Some(SymbolTypePresentation {
+        hint_label: strip_type_clause_keyword(&rendered_clause).to_string(),
+        rendered_clause,
+    })
+}
+
+fn symbol_hover_type_clause(
+    snapshot: Option<&AnalysisSnapshot>,
+    unit: &UnitAnalysis,
+    symbol: &SymbolData,
+) -> Option<String> {
+    if let Some(type_presentation) = symbol_type_presentation(snapshot, symbol) {
+        return Some(format_hover_type_clause(&type_presentation.rendered_clause));
+    }
+    let structure_id = symbol.structure?;
+    let name = unit.structure(structure_id).name.as_ref();
+    Some(format_hover_type_clause(&format!("TYPE {name}")))
+}
+
+fn symbol_inlay_type_presentation(
+    snapshot: Option<&AnalysisSnapshot>,
+    symbol: &SymbolData,
+) -> Option<SymbolTypePresentation> {
+    symbol_type_presentation(snapshot, symbol)
+}
+
 fn try_format_method_signature(signature: &str) -> Option<String> {
     let tokens: Vec<&str> = signature.split_whitespace().collect();
     if tokens.len() < 2 {
@@ -3218,25 +3393,6 @@ fn symbol_kind_label(kind: SymbolKind) -> &'static str {
     }
 }
 
-fn symbol_type_line(unit: &UnitAnalysis, symbol: &SymbolData) -> Option<String> {
-    if let Some(display) = symbol.type_clause_display.as_ref() {
-        let keyword = match symbol.declared_type.as_ref().map(|t| t.namespace) {
-            Some(Namespace::Value) => "LIKE",
-            _ => "TYPE",
-        };
-        return Some(format_hover_type_clause(&format!(
-            "{keyword} {}",
-            display.trim()
-        )));
-    }
-    if let Some(structure_id) = symbol.structure {
-        let name = unit.structure(structure_id).name.as_ref();
-        return Some(format_hover_type_clause(&format!("TYPE {name}")));
-    }
-    let type_ref = symbol.declared_type.as_ref()?;
-    Some(format_hover_type_clause(&format_field_type_ref(type_ref)))
-}
-
 fn symbol_value_line(symbol: &SymbolData) -> Option<String> {
     if symbol.kind != SymbolKind::Constant {
         return None;
@@ -3490,7 +3646,11 @@ fn method_parameter_inlay_hint_markdown(
     )
 }
 
-fn markdown_lines_for_declared_symbol(unit: &UnitAnalysis, symbol: &SymbolData) -> Vec<String> {
+fn markdown_lines_for_declared_symbol(
+    snapshot: &AnalysisSnapshot,
+    unit: &UnitAnalysis,
+    symbol: &SymbolData,
+) -> Vec<String> {
     if let Some(info) = form_parameter_hover_info(unit, symbol) {
         return markdown_lines_for_form_parameter(&info);
     }
@@ -3506,7 +3666,7 @@ fn markdown_lines_for_declared_symbol(unit: &UnitAnalysis, symbol: &SymbolData) 
         format!("`{}`", symbol.name),
         symbol_kind_label(symbol.kind).to_string(),
     ];
-    if let Some(type_line) = symbol_type_line(unit, symbol) {
+    if let Some(type_line) = symbol_hover_type_clause(Some(snapshot), unit, symbol) {
         lines.push(type_line);
     }
     if let Some(value_line) = symbol_value_line(symbol) {
@@ -3582,7 +3742,8 @@ fn markdown_lines_for_resolution(
                 format!("`{at_name}`"),
                 symbol_kind_label(symbol.kind).to_string(),
             ];
-            if let Some(type_line) = symbol_type_line(unit, symbol) {
+            let type_snapshot = (unit.uri == snapshot.uri).then_some(snapshot);
+            if let Some(type_line) = symbol_hover_type_clause(type_snapshot, unit, symbol) {
                 lines.push(type_line);
             }
             if let Some(value_line) = symbol_value_line(symbol) {
