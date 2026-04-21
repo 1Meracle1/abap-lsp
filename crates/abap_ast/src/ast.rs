@@ -474,6 +474,12 @@ ast_node!(ConvertStmt, SyntaxKind::ConvertStmt);
 ast_node!(ConvertOperand, SyntaxKind::ConvertOperand);
 ast_node!(ConvertTargetOperand, SyntaxKind::ConvertTargetOperand);
 ast_node!(ConvertTimeZoneOperand, SyntaxKind::ConvertTimeZoneOperand);
+ast_node!(ConvertDateTarget, SyntaxKind::ConvertDateTarget);
+ast_node!(ConvertTimeTarget, SyntaxKind::ConvertTimeTarget);
+ast_node!(
+    ConvertDaylightSavingTarget,
+    SyntaxKind::ConvertDaylightSavingTarget
+);
 ast_node!(DescribeStmt, SyntaxKind::DescribeStmt);
 ast_node!(DescribeTableOperand, SyntaxKind::DescribeTableOperand);
 ast_node!(DescribeLinesTarget, SyntaxKind::DescribeLinesTarget);
@@ -2117,6 +2123,24 @@ impl<'a> ConvertTimeZoneOperand<'a> {
     }
 }
 
+impl<'a> ConvertDateTarget<'a> {
+    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
+        self.syntax.first_non_token_child()
+    }
+}
+
+impl<'a> ConvertTimeTarget<'a> {
+    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
+        self.syntax.first_non_token_child()
+    }
+}
+
+impl<'a> ConvertDaylightSavingTarget<'a> {
+    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
+        self.syntax.first_non_token_child()
+    }
+}
+
 impl<'a> ConvertStmt<'a> {
     pub fn operands(self) -> impl DoubleEndedIterator<Item = ConvertOperand<'a>> + Clone + 'a {
         self.syntax.children().filter_map(ConvertOperand::cast)
@@ -2132,6 +2156,24 @@ impl<'a> ConvertStmt<'a> {
         self.syntax
             .child_by_kind(SyntaxKind::ConvertTimeZoneOperand)
             .and_then(ConvertTimeZoneOperand::cast)
+    }
+
+    pub fn date_target(self) -> Option<ConvertDateTarget<'a>> {
+        self.syntax
+            .child_by_kind(SyntaxKind::ConvertDateTarget)
+            .and_then(ConvertDateTarget::cast)
+    }
+
+    pub fn time_target(self) -> Option<ConvertTimeTarget<'a>> {
+        self.syntax
+            .child_by_kind(SyntaxKind::ConvertTimeTarget)
+            .and_then(ConvertTimeTarget::cast)
+    }
+
+    pub fn daylight_saving_target(self) -> Option<ConvertDaylightSavingTarget<'a>> {
+        self.syntax
+            .child_by_kind(SyntaxKind::ConvertDaylightSavingTarget)
+            .and_then(ConvertDaylightSavingTarget::cast)
     }
 }
 

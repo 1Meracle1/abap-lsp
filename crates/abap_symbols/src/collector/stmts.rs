@@ -1074,6 +1074,53 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
         true
     }
 
+    fn declare_convert_inline_target(
+        &mut self,
+        node: NodeId,
+        scope: ScopeId,
+        type_name: &'static str,
+    ) -> bool {
+        let Some(name_node) = self
+            .collector
+            .file
+            .children(node)
+            .find(|&child| self.collector.file.kind(child) == SyntaxKind::DataDeclName)
+        else {
+            return false;
+        };
+        let Some((name, range)) = self.collector.node_name(name_node) else {
+            return false;
+        };
+        self.collector.declare_symbol(
+            self.collector.declaration_scope(scope),
+            name,
+            SymbolKind::Variable,
+            range,
+            None,
+            Some(Self::builtin_type(type_name)),
+            None,
+            None,
+        );
+        true
+    }
+
+    fn collect_convert_output_target(
+        &mut self,
+        target_id: NodeId,
+        scope: ScopeId,
+        type_name: &'static str,
+    ) {
+        if self.collector.file.kind(target_id) == SyntaxKind::DataInlineDecl {
+            if !self.declare_convert_inline_target(target_id, scope, type_name) {
+                self.collector
+                    .decl_lowering()
+                    .walk_inline_decl(target_id, scope);
+            }
+        } else {
+            self.collector.walk_node(target_id, scope);
+        }
+    }
+
     pub(super) fn collect_delete_stmt(&mut self, node: NodeId, scope: ScopeId) {
         self.record_unknown_effect(node, scope);
         let Some((stmt_source_expr, stmt_where_expr, stmt_comparing_operands)) =
@@ -1974,21 +2021,58 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
 
     pub(super) fn collect_convert_stmt(&mut self, node: NodeId, scope: ScopeId) {
         self.record_unknown_effect(node, scope);
-        if let Some(stmt) = ConvertStmt::cast(self.collector.syntax(node)) {
-            let mut operands: Vec<_> = stmt
-                .operands()
-                .filter_map(|operand| operand.value())
-                .map(|value| value.id())
-                .collect();
-            if let Some(target) = stmt.target().and_then(|target| target.value()) {
-                operands.push(target.id());
-            }
-            if let Some(time_zone) = stmt.time_zone().and_then(|target| target.value()) {
-                operands.push(time_zone.id());
-            }
-            for operand in operands {
-                self.collector.walk_node(operand, scope);
-            }
+        self.record_system_field_updates(
+            scope,
+            node,
+            SystemFieldStatementKind::Convert,
+            &["subrc"],
+        );
+        let Some((operands, time_zone, target, date_target, time_target, daylight_saving_target)) =
+            (match ConvertStmt::cast(self.collector.syntax(node)) {
+                Some(stmt) => Some((
+                    stmt.operands()
+                        .filter_map(|operand| operand.value())
+                        .map(|value| value.id())
+                        .collect::<Vec<_>>(),
+                    stmt.time_zone()
+                        .and_then(|target| target.value())
+                        .map(|value| value.id()),
+                    stmt.target()
+                        .and_then(|target| target.value())
+                        .map(|value| value.id()),
+                    stmt.date_target()
+                        .and_then(|target| target.value())
+                        .map(|value| value.id()),
+                    stmt.time_target()
+                        .and_then(|target| target.value())
+                        .map(|value| value.id()),
+                    stmt.daylight_saving_target()
+                        .and_then(|target| target.value())
+                        .map(|value| value.id()),
+                )),
+                None => None,
+            })
+        else {
+            return;
+        };
+
+        for operand in operands {
+            self.collector.walk_node(operand, scope);
+        }
+        if let Some(time_zone) = time_zone {
+            self.collector.walk_node(time_zone, scope);
+        }
+        if let Some(target) = target {
+            self.collector.walk_node(target, scope);
+        }
+        if let Some(target) = date_target {
+            self.collect_convert_output_target(target, scope, "d");
+        }
+        if let Some(target) = time_target {
+            self.collect_convert_output_target(target, scope, "t");
+        }
+        if let Some(target) = daylight_saving_target {
+            self.collect_convert_output_target(target, scope, "c");
         }
     }
 

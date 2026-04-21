@@ -1531,6 +1531,7 @@ fn system_field_statement_kind_name(kind: SystemFieldStatementKind) -> &'static 
         SystemFieldStatementKind::Append => "append",
         SystemFieldStatementKind::Assign => "assign",
         SystemFieldStatementKind::AuthorityCheck => "authority_check",
+        SystemFieldStatementKind::Convert => "convert",
         SystemFieldStatementKind::DeleteTable => "delete_table",
         SystemFieldStatementKind::DeleteDbTable => "delete_db_table",
         SystemFieldStatementKind::DescribeTable => "describe_table",

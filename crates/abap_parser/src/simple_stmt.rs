@@ -534,7 +534,9 @@ fn build_data_inline_decl_local(
     end: usize,
 ) -> Option<NodeId> {
     let data_tok = tokens.get(start)?;
-    if !token_matches_keyword(source, data_tok, "data") {
+    if !(token_matches_keyword(source, data_tok, "data")
+        || token_matches_keyword(source, data_tok, "final"))
+    {
         return None;
     }
     let lparen = tokens.get(start + 1)?;
@@ -575,6 +577,13 @@ fn next_non_comment(tokens: &[Token], mut idx: usize, end: usize) -> usize {
     idx
 }
 
+fn trim_trailing_comments(tokens: &[Token], start: usize, mut end: usize) -> usize {
+    while end > start && tokens[end - 1].kind == TokenKind::Comment {
+        end -= 1;
+    }
+    end
+}
+
 fn find_top_level_keyword_index(
     source: &str,
     tokens: &[Token],
@@ -596,6 +605,61 @@ fn find_top_level_keyword_index(
         {
             return Some(idx);
         }
+        match token.kind {
+            TokenKind::LParen => paren += 1,
+            TokenKind::RParen => paren -= 1,
+            TokenKind::LBracket => bracket += 1,
+            TokenKind::RBracket => bracket -= 1,
+            TokenKind::LBrace => brace += 1,
+            TokenKind::RBrace => brace -= 1,
+            _ => {}
+        }
+        idx += 1;
+    }
+    None
+}
+
+fn find_top_level_keyword_sequence_start(
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    end: usize,
+    keywords: &[&str],
+) -> Option<usize> {
+    if keywords.is_empty() {
+        return None;
+    }
+
+    let mut paren = 0i32;
+    let mut bracket = 0i32;
+    let mut brace = 0i32;
+    let mut idx = start;
+    while idx < end {
+        let token = &tokens[idx];
+        if token.kind == TokenKind::Comment {
+            idx += 1;
+            continue;
+        }
+
+        if paren == 0
+            && bracket == 0
+            && brace == 0
+            && token_matches_keyword(source, token, keywords[0])
+        {
+            let mut probe = idx;
+            let mut matched = true;
+            for keyword in keywords.iter().skip(1) {
+                probe = next_non_comment(tokens, probe + 1, end);
+                if probe >= end || !token_matches_keyword(source, &tokens[probe], keyword) {
+                    matched = false;
+                    break;
+                }
+            }
+            if matched {
+                return Some(idx);
+            }
+        }
+
         match token.kind {
             TokenKind::LParen => paren += 1,
             TokenKind::RParen => paren -= 1,
@@ -690,6 +754,41 @@ fn build_wrapped_data_inline_decl_child(
         kind,
         tokens[start].range.start..tokens[end - 1].range.end,
         &[inner],
+    ))
+}
+
+fn build_wrapped_expr_or_data_inline_decl_child(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    end: usize,
+    kind: SyntaxKind,
+) -> Option<NodeId> {
+    let value_start = next_non_comment(tokens, start, end);
+    let value_end = trim_trailing_comments(tokens, value_start, end);
+    if value_start >= value_end {
+        return None;
+    }
+    if token_matches_keyword(source, &tokens[value_start], "data")
+        || token_matches_keyword(source, &tokens[value_start], "final")
+    {
+        return build_wrapped_data_inline_decl_child(
+            b,
+            source,
+            tokens,
+            value_start,
+            value_end,
+            kind,
+        );
+    }
+    Some(build_wrapped_expr_child(
+        b,
+        source,
+        tokens,
+        value_start,
+        value_end,
+        kind,
     ))
 }
 
@@ -855,6 +954,23 @@ fn build_convert_stmt_children(
     idx: usize,
     period_i: usize,
 ) -> Vec<NodeId> {
+    let next_idx = next_non_comment(tokens, idx + 1, period_i);
+    if next_idx < period_i && token_matches_keyword(source, &tokens[next_idx], "time") {
+        let stamp_idx = next_non_comment(tokens, next_idx + 1, period_i);
+        if stamp_idx < period_i && token_matches_keyword(source, &tokens[stamp_idx], "stamp") {
+            return build_convert_time_stamp_stmt_children(b, source, tokens, idx, period_i);
+        }
+    }
+    build_convert_date_into_time_stamp_stmt_children(b, source, tokens, idx, period_i)
+}
+
+fn build_convert_date_into_time_stamp_stmt_children(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    period_i: usize,
+) -> Vec<NodeId> {
     let mut children = Vec::with_capacity(period_i - idx + 1);
     children.push(token_leaf(b, &tokens[idx]));
     let mut cursor = idx + 1;
@@ -963,6 +1079,210 @@ fn build_convert_stmt_children(
     }
 
     push_token_range(b, &mut children, tokens, trailing_start, period_i + 1);
+    children
+}
+
+fn build_convert_time_stamp_stmt_children(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    period_i: usize,
+) -> Vec<NodeId> {
+    let mut children = Vec::with_capacity(period_i - idx + 1);
+    children.push(token_leaf(b, &tokens[idx]));
+
+    let mut cursor = idx + 1;
+    let time_idx = next_non_comment(tokens, cursor, period_i);
+    push_token_range(b, &mut children, tokens, cursor, time_idx);
+    if time_idx >= period_i || !token_matches_keyword(source, &tokens[time_idx], "time") {
+        push_token_range(b, &mut children, tokens, time_idx, period_i + 1);
+        return children;
+    }
+    children.push(token_leaf(b, &tokens[time_idx]));
+
+    cursor = time_idx + 1;
+    let stamp_idx = next_non_comment(tokens, cursor, period_i);
+    push_token_range(b, &mut children, tokens, cursor, stamp_idx);
+    if stamp_idx >= period_i || !token_matches_keyword(source, &tokens[stamp_idx], "stamp") {
+        push_token_range(b, &mut children, tokens, stamp_idx, period_i + 1);
+        return children;
+    }
+    children.push(token_leaf(b, &tokens[stamp_idx]));
+
+    cursor = stamp_idx + 1;
+    let source_start = next_non_comment(tokens, cursor, period_i);
+    let Some(time_zone_idx) = find_top_level_keyword_sequence_start(
+        source,
+        tokens,
+        source_start,
+        period_i,
+        &["time", "zone"],
+    ) else {
+        push_token_range(b, &mut children, tokens, cursor, period_i + 1);
+        return children;
+    };
+    push_token_range(b, &mut children, tokens, cursor, source_start);
+    if source_start < time_zone_idx {
+        children.push(build_wrapped_expr_child(
+            b,
+            source,
+            tokens,
+            source_start,
+            time_zone_idx,
+            SyntaxKind::ConvertOperand,
+        ));
+    }
+
+    children.push(token_leaf(b, &tokens[time_zone_idx]));
+    let zone_idx = next_non_comment(tokens, time_zone_idx + 1, period_i);
+    push_token_range(b, &mut children, tokens, time_zone_idx + 1, zone_idx);
+    if zone_idx >= period_i || !token_matches_keyword(source, &tokens[zone_idx], "zone") {
+        push_token_range(b, &mut children, tokens, zone_idx, period_i + 1);
+        return children;
+    }
+    children.push(token_leaf(b, &tokens[zone_idx]));
+
+    cursor = zone_idx + 1;
+    let zone_start = next_non_comment(tokens, cursor, period_i);
+    let Some(into_idx) = find_top_level_keyword_index(source, tokens, zone_start, period_i, "into")
+    else {
+        push_token_range(b, &mut children, tokens, cursor, period_i + 1);
+        return children;
+    };
+    push_token_range(b, &mut children, tokens, cursor, zone_start);
+    if zone_start < into_idx {
+        children.push(build_wrapped_expr_child(
+            b,
+            source,
+            tokens,
+            zone_start,
+            into_idx,
+            SyntaxKind::ConvertTimeZoneOperand,
+        ));
+    }
+
+    children.push(token_leaf(b, &tokens[into_idx]));
+    cursor = into_idx + 1;
+
+    let daylight_idx = find_top_level_keyword_sequence_start(
+        source,
+        tokens,
+        cursor,
+        period_i,
+        &["daylight", "saving", "time"],
+    );
+
+    let date_idx = next_non_comment(tokens, cursor, period_i);
+    if date_idx < period_i && token_matches_keyword(source, &tokens[date_idx], "date") {
+        push_token_range(b, &mut children, tokens, cursor, date_idx);
+        children.push(token_leaf(b, &tokens[date_idx]));
+        let target_start = next_non_comment(tokens, date_idx + 1, period_i);
+        let time_target_idx =
+            find_top_level_keyword_index(source, tokens, target_start, period_i, "time").filter(
+                |time_idx| {
+                    daylight_idx
+                        .map(|daylight_idx| *time_idx < daylight_idx)
+                        .unwrap_or(true)
+                },
+            );
+        let target_end = time_target_idx.or(daylight_idx).unwrap_or(period_i);
+        push_token_range(b, &mut children, tokens, date_idx + 1, target_start);
+        if let Some(target) = build_wrapped_expr_or_data_inline_decl_child(
+            b,
+            source,
+            tokens,
+            target_start,
+            target_end,
+            SyntaxKind::ConvertDateTarget,
+        ) {
+            children.push(target);
+        }
+        push_token_range(
+            b,
+            &mut children,
+            tokens,
+            trim_trailing_comments(tokens, target_start, target_end),
+            target_end,
+        );
+        cursor = target_end;
+    }
+
+    let time_idx = next_non_comment(tokens, cursor, period_i);
+    if time_idx < period_i
+        && token_matches_keyword(source, &tokens[time_idx], "time")
+        && !tokens
+            .get(next_non_comment(tokens, time_idx + 1, period_i))
+            .is_some_and(|token| token_matches_keyword(source, token, "zone"))
+    {
+        push_token_range(b, &mut children, tokens, cursor, time_idx);
+        children.push(token_leaf(b, &tokens[time_idx]));
+        let target_start = next_non_comment(tokens, time_idx + 1, period_i);
+        let target_end = daylight_idx.unwrap_or(period_i);
+        push_token_range(b, &mut children, tokens, time_idx + 1, target_start);
+        if let Some(target) = build_wrapped_expr_or_data_inline_decl_child(
+            b,
+            source,
+            tokens,
+            target_start,
+            target_end,
+            SyntaxKind::ConvertTimeTarget,
+        ) {
+            children.push(target);
+        }
+        push_token_range(
+            b,
+            &mut children,
+            tokens,
+            trim_trailing_comments(tokens, target_start, target_end),
+            target_end,
+        );
+        cursor = target_end;
+    }
+
+    if let Some(daylight_idx) = daylight_idx {
+        push_token_range(b, &mut children, tokens, cursor, daylight_idx);
+        children.push(token_leaf(b, &tokens[daylight_idx]));
+        let saving_idx = next_non_comment(tokens, daylight_idx + 1, period_i);
+        push_token_range(b, &mut children, tokens, daylight_idx + 1, saving_idx);
+        if saving_idx >= period_i || !token_matches_keyword(source, &tokens[saving_idx], "saving") {
+            push_token_range(b, &mut children, tokens, saving_idx, period_i + 1);
+            return children;
+        }
+        children.push(token_leaf(b, &tokens[saving_idx]));
+
+        let dst_time_idx = next_non_comment(tokens, saving_idx + 1, period_i);
+        push_token_range(b, &mut children, tokens, saving_idx + 1, dst_time_idx);
+        if dst_time_idx >= period_i || !token_matches_keyword(source, &tokens[dst_time_idx], "time")
+        {
+            push_token_range(b, &mut children, tokens, dst_time_idx, period_i + 1);
+            return children;
+        }
+        children.push(token_leaf(b, &tokens[dst_time_idx]));
+
+        let target_start = next_non_comment(tokens, dst_time_idx + 1, period_i);
+        push_token_range(b, &mut children, tokens, dst_time_idx + 1, target_start);
+        if let Some(target) = build_wrapped_expr_or_data_inline_decl_child(
+            b,
+            source,
+            tokens,
+            target_start,
+            period_i,
+            SyntaxKind::ConvertDaylightSavingTarget,
+        ) {
+            children.push(target);
+        }
+        push_token_range(
+            b,
+            &mut children,
+            tokens,
+            trim_trailing_comments(tokens, target_start, period_i),
+            period_i,
+        );
+        cursor = period_i;
+    }
+
+    push_token_range(b, &mut children, tokens, cursor, period_i + 1);
     children
 }
 
@@ -2054,6 +2374,84 @@ WAIT UP TO lv_stamp SECONDS.",
             .expect("wait stmt");
         assert_eq!(parsed.file.count_kind(wait, SyntaxKind::WaitOperand), 1);
         assert_eq!(parsed.file.count_kind(wait, SyntaxKind::ExprIdent), 1);
+    }
+
+    #[test]
+    fn parses_convert_time_stamp_with_existing_targets() {
+        let parsed = crate::parse(
+            "\
+DATA lv_stamp TYPE timestamp.
+DATA lv_tzone TYPE tznzone.
+DATA lv_date TYPE d.
+DATA lv_time TYPE t.
+DATA lv_dst TYPE c LENGTH 1.
+CONVERT TIME STAMP lv_stamp TIME ZONE lv_tzone INTO DATE lv_date TIME lv_time DAYLIGHT SAVING TIME lv_dst.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let stmt = parsed
+            .file
+            .find_first_kind(parsed.file.root(), SyntaxKind::ConvertStmt)
+            .expect("convert stmt");
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::ConvertOperand), 1);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(stmt, SyntaxKind::ConvertTimeZoneOperand),
+            1
+        );
+        assert_eq!(
+            parsed.file.count_kind(stmt, SyntaxKind::ConvertDateTarget),
+            1
+        );
+        assert_eq!(
+            parsed.file.count_kind(stmt, SyntaxKind::ConvertTimeTarget),
+            1
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(stmt, SyntaxKind::ConvertDaylightSavingTarget),
+            1
+        );
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::ExprIdent), 5);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::Error), 0);
+    }
+
+    #[test]
+    fn parses_convert_time_stamp_with_inline_targets() {
+        let parsed = crate::parse(
+            "\
+DATA lv_stamp TYPE timestamp.
+CONVERT TIME STAMP lv_stamp TIME ZONE 'UTC' INTO DATE FINAL(lv_date) TIME DATA(lv_time) DAYLIGHT SAVING TIME FINAL(lv_dst).",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let stmt = parsed
+            .file
+            .find_first_kind(parsed.file.root(), SyntaxKind::ConvertStmt)
+            .expect("convert stmt");
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::ConvertOperand), 1);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(stmt, SyntaxKind::ConvertTimeZoneOperand),
+            1
+        );
+        assert_eq!(
+            parsed.file.count_kind(stmt, SyntaxKind::ConvertDateTarget),
+            1
+        );
+        assert_eq!(
+            parsed.file.count_kind(stmt, SyntaxKind::ConvertTimeTarget),
+            1
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(stmt, SyntaxKind::ConvertDaylightSavingTarget),
+            1
+        );
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::DataInlineDecl), 3);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::Error), 0);
     }
 
     #[test]

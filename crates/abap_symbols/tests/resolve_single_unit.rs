@@ -1377,6 +1377,108 @@ ENDFORM.
 }
 
 #[test]
+fn resolves_convert_time_stamp_operands_and_targets() {
+    let src = r#"
+FORM run USING iv_stamp TYPE timestamp
+               iv_tzone TYPE string
+               iv_date TYPE d
+               iv_time TYPE t
+               iv_dst TYPE c.
+  CONVERT TIME STAMP iv_stamp
+          TIME ZONE iv_tzone
+          INTO DATE iv_date
+               TIME iv_time
+               DAYLIGHT SAVING TIME iv_dst.
+ENDFORM.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///convert_time_stamp_stmt.abap", src, &parsed);
+
+    for name in ["iv_stamp", "iv_tzone", "iv_date", "iv_time", "iv_dst"] {
+        assert!(
+            unit.references.iter().any(|reference| {
+                reference.namespace == Namespace::Value
+                    && reference.kind == ReferenceKind::Identifier
+                    && reference.name.as_ref() == name
+                    && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+            }),
+            "expected resolved CONVERT TIME STAMP reference for `{name}`, refs={:?} diagnostics={:?}",
+            unit.references,
+            unit.diagnostics
+        );
+        assert!(
+            !unit.diagnostics.iter().any(|diag| {
+                diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains(name)
+            }),
+            "unexpected CONVERT TIME STAMP diagnostics for `{name}`: {:?}",
+            unit.diagnostics
+        );
+    }
+}
+
+#[test]
+fn declares_inline_convert_time_stamp_targets_with_builtin_types() {
+    let src = r#"
+FORM run USING iv_stamp TYPE timestamp
+               iv_tzone TYPE string.
+  CONVERT TIME STAMP iv_stamp
+          TIME ZONE iv_tzone
+          INTO DATE FINAL(lv_date)
+               TIME DATA(lv_time)
+               DAYLIGHT SAVING TIME FINAL(lv_dst).
+
+  WRITE lv_date.
+  WRITE lv_time.
+  WRITE lv_dst.
+ENDFORM.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///convert_time_stamp_inline_stmt.abap", src, &parsed);
+
+    for (name, type_name) in [("lv_date", "d"), ("lv_time", "t"), ("lv_dst", "c")] {
+        let symbol = unit
+            .symbols
+            .iter()
+            .find(|symbol| {
+                symbol.kind == abap_symbols::SymbolKind::Variable && symbol.name.as_ref() == name
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "expected inline CONVERT target `{name}`, symbols={:?}",
+                    unit.symbols
+                )
+            });
+        let declared_type = symbol
+            .declared_type
+            .as_ref()
+            .unwrap_or_else(|| panic!("expected declared type for `{name}`"));
+        assert_eq!(declared_type.base_name.as_ref(), type_name);
+    }
+
+    for name in ["iv_stamp", "iv_tzone", "lv_date", "lv_time", "lv_dst"] {
+        assert!(
+            unit.references.iter().any(|reference| {
+                reference.namespace == Namespace::Value
+                    && reference.kind == ReferenceKind::Identifier
+                    && reference.name.as_ref() == name
+                    && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+            }),
+            "expected resolved CONVERT TIME STAMP inline reference for `{name}`, refs={:?} diagnostics={:?}",
+            unit.references,
+            unit.diagnostics
+        );
+    }
+    assert!(
+        !unit
+            .diagnostics
+            .iter()
+            .any(|diag| diag.kind == DiagnosticKind::UnresolvedReference),
+        "unexpected CONVERT TIME STAMP inline diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn resolves_get_time_stamp_inline_data_target() {
     let src = r#"
 GET TIME STAMP FIELD DATA(lv_current_ts).
@@ -3412,7 +3514,11 @@ fn reports_unknown_named_assign_field_symbol_target() {
 ASSIGN sy-datlo+0(4) TO <s>.
 "#;
     let parsed = parse(src);
-    let unit = analyze_unit("file:///assign_unknown_field_symbol_target.abap", src, &parsed);
+    let unit = analyze_unit(
+        "file:///assign_unknown_field_symbol_target.abap",
+        src,
+        &parsed,
+    );
 
     assert!(
         unit.references.iter().any(|reference| {

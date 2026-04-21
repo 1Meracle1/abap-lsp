@@ -733,6 +733,7 @@ pub enum SystemFieldStatementKind {
     Append,
     Assign,
     AuthorityCheck,
+    Convert,
     DeleteTable,
     DeleteDbTable,
     DescribeTable,

@@ -781,14 +781,16 @@ impl<'a> FactBuilder<'a> {
             table_line: None,
         };
         if self.symbol_is_table(handle, symbol) {
-            fact.table_line = Some(Box::new(self.synthesized_table_line_fact(TypeFactData {
-                structure: (site_unit_idx == symbol_unit_idx)
-                    .then_some(symbol.structure)
-                    .flatten(),
-                declared_type: symbol.declared_type.clone(),
-                type_clause_display: symbol.type_clause_display.clone(),
-                table_line: None,
-            })));
+            fact.table_line = Some(Box::new(
+                self.synthesized_table_line_fact(TypeFactData {
+                    structure: (site_unit_idx == symbol_unit_idx)
+                        .then_some(symbol.structure)
+                        .flatten(),
+                    declared_type: symbol.declared_type.clone(),
+                    type_clause_display: symbol.type_clause_display.clone(),
+                    table_line: None,
+                }),
+            ));
         }
         self.enrich_existing_type_fact(site_unit_idx, scope, &fact)
     }

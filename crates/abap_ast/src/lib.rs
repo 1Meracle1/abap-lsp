@@ -165,14 +165,20 @@ pub enum SyntaxKind {
     ClearStmt,
     /// One cleared operand inside `CLEAR`.
     ClearOperand,
-    /// `CONVERT DATE ... TIME ... INTO TIME STAMP ... .`
+    /// `CONVERT ... .`
     ConvertStmt,
-    /// Source date/time operand inside `CONVERT`.
+    /// Source operand inside `CONVERT`.
     ConvertOperand,
-    /// Target timestamp operand inside `CONVERT`.
+    /// Target timestamp operand inside `CONVERT ... INTO TIME STAMP ...`.
     ConvertTargetOperand,
     /// `TIME ZONE ...` operand inside `CONVERT`.
     ConvertTimeZoneOperand,
+    /// `DATE ...` target inside `CONVERT TIME STAMP ... INTO ...`.
+    ConvertDateTarget,
+    /// `TIME ...` target inside `CONVERT TIME STAMP ... INTO ...`.
+    ConvertTimeTarget,
+    /// `DAYLIGHT SAVING TIME ...` target inside `CONVERT TIME STAMP ... INTO ...`.
+    ConvertDaylightSavingTarget,
     /// `DESCRIBE TABLE ... LINES ... .`
     DescribeStmt,
     /// Table operand inside `DESCRIBE TABLE`.
@@ -581,6 +587,9 @@ impl SyntaxKind {
             Self::ConvertOperand => "ConvertOperand",
             Self::ConvertTargetOperand => "ConvertTargetOperand",
             Self::ConvertTimeZoneOperand => "ConvertTimeZoneOperand",
+            Self::ConvertDateTarget => "ConvertDateTarget",
+            Self::ConvertTimeTarget => "ConvertTimeTarget",
+            Self::ConvertDaylightSavingTarget => "ConvertDaylightSavingTarget",
             Self::DescribeStmt => "DescribeStmt",
             Self::DescribeTableOperand => "DescribeTableOperand",
             Self::DescribeLinesTarget => "DescribeLinesTarget",
