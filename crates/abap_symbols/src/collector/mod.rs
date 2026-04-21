@@ -1631,6 +1631,7 @@ fn is_internal_table_type_display(display: &str) -> bool {
     ]
     .into_iter()
     .any(|prefix| upper.starts_with(prefix))
+        || upper.starts_with("RANGE OF ")
 }
 
 fn is_generic_internal_table_type_display(display: &str) -> bool {

@@ -1717,15 +1717,19 @@ fn build_routine_dataflow(
             }
             RoutineInstructionSite::Assignment { index } => {
                 if let Some(assignment) = unit.assignment_sites.get(index as usize) {
+                    let suppress_rhs_definite_assignment =
+                        is_append_assignment(unit, &assignment.range);
                     transfer.reads.extend(read_occurrences_in_range(
                         &reference_uses,
                         &assignment.lhs_range,
                         &safe_read_refs,
+                        false,
                     ));
                     transfer.reads.extend(read_occurrences_in_range(
                         &reference_uses,
                         &assignment.rhs_range,
                         &safe_read_refs,
+                        suppress_rhs_definite_assignment,
                     ));
                     if let Some(selector_write) = selector_structure_write_for_assignment(
                         unit,
@@ -1774,6 +1778,7 @@ fn build_routine_dataflow(
                             &reference_uses,
                             &call_site.range,
                             &safe_read_refs,
+                            false,
                         ));
                     }
                     for argument in &call_site.arguments {
@@ -1877,6 +1882,7 @@ fn build_routine_dataflow(
                             &reference_uses,
                             range,
                             &safe_read_refs,
+                            false,
                         ));
                     }
                     for target in &site.write_targets {
@@ -1931,6 +1937,7 @@ fn build_routine_dataflow(
                         &reference_uses,
                         &perform_call.range,
                         &safe_read_refs,
+                        false,
                     ));
                     for argument in &perform_call.arguments {
                         let effect = perform_argument_effect_for_argument(
@@ -2023,6 +2030,7 @@ fn build_routine_dataflow(
                                     &reference_uses,
                                     &edge.source_range,
                                     &safe_read_refs,
+                                    false,
                                 ));
                                 transfer
                                     .field_symbol_binding
@@ -2034,6 +2042,7 @@ fn build_routine_dataflow(
                                 &reference_uses,
                                 &edge.source_range,
                                 &safe_read_refs,
+                                false,
                             ));
                             transfer
                                 .field_symbol_binding
@@ -3914,6 +3923,7 @@ fn read_occurrences_in_range(
     reference_uses: &[ReferenceUse],
     range: &TextRange,
     safe_field_symbol_checks: &std::collections::HashSet<crate::ReferenceId>,
+    suppress_definite_assignment: bool,
 ) -> Vec<ReadOccurrence> {
     reference_uses_in_range(reference_uses, range)
         .into_iter()
@@ -3922,9 +3932,15 @@ fn read_occurrences_in_range(
             reference: use_site.reference,
             range: use_site.range,
             value: use_site.value,
-            suppress_definite_assignment: false,
+            suppress_definite_assignment,
         })
         .collect()
+}
+
+fn is_append_assignment(unit: &UnitAnalysis, range: &TextRange) -> bool {
+    unit.system_field_updates.iter().any(|update| {
+        update.statement == crate::SystemFieldStatementKind::Append && &update.range == range
+    })
 }
 
 fn resolve_structure_field_reads(

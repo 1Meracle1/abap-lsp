@@ -609,17 +609,32 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
         rhs_nodes: &[NodeId],
     ) {
         let type_fact_from_node = |node: NodeId| {
-            let (structure, declared_type) =
+            let (mut structure, mut declared_type) =
                 if self.collector.file.kind(node) == SyntaxKind::DataInlineDecl {
                     self.collector.inline_decl_inferred_type(node, scope)
                 } else {
                     self.collector
                         .inline_decl_assignment_source_metadata(node, scope)
                 };
+            let mut type_clause_display = None;
+            if let Some(access) = self.collector.value_access_from_node(node, scope)
+                && access.base_namespace == Namespace::Value
+                && access.field_path.is_empty()
+                && let Some(symbol_id) = self.collector.lookup_symbol_in_scope_chain(
+                    scope,
+                    Namespace::Value,
+                    access.base_name.as_ref(),
+                )
+            {
+                let symbol = self.collector.symbol(symbol_id);
+                structure = structure.or(symbol.structure);
+                declared_type = declared_type.or_else(|| symbol.declared_type.clone());
+                type_clause_display = symbol.type_clause_display.clone();
+            }
             TypeFactData {
                 structure,
                 declared_type,
-                type_clause_display: None,
+                type_clause_display,
                 table_line: None,
             }
         };

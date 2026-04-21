@@ -4895,6 +4895,61 @@ ENDFORM.
 }
 
 #[test]
+fn append_of_like_line_of_forward_range_reference_is_type_compatible() {
+    let src = r#"
+TYPES arkey TYPE string.
+DATA:
+  ls_archive_name LIKE LINE OF lr_archive_name,
+  lr_archive_name TYPE RANGE OF arkey.
+
+APPEND ls_archive_name TO lr_archive_name.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///range_append_forward_ref.abap", src, &parsed);
+
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::IncompatibleAssignmentType
+                && diag.message.contains("archive_name")
+        }),
+        "{:?}",
+        unit.diagnostics
+    );
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UseBeforeDefiniteAssignment
+                && diag.message.contains("ls_archive_name")
+        }),
+        "{:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn append_of_like_line_of_range_reference_is_type_compatible_in_decl_order() {
+    let src = r#"
+DATA: lr_archive_name TYPE RANGE OF string,
+      ls_archive_name LIKE LINE OF lr_archive_name.
+
+APPEND ls_archive_name TO lr_archive_name.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///range_append_decl_order.abap", src, &parsed);
+
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            matches!(
+                diag.kind,
+                DiagnosticKind::IncompatibleAssignmentType
+                    | DiagnosticKind::UseBeforeDefiniteAssignment
+            )
+        }),
+        "{:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn recovers_after_syntax_errors_and_keeps_later_resolution() {
     let src = "DATA broken TYPE string\nDATA ok TYPE i.\nok = 1.";
     let parsed = parse(src);

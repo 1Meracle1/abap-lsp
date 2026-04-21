@@ -377,6 +377,14 @@ impl<'a> FactBuilder<'a> {
         unit_idx: usize,
         assignment: &crate::AssignmentSiteData,
     ) -> TypeFactData {
+        if let Some(access) = assignment.lhs_target_access.as_ref()
+            && is_append_assignment(&self.units[unit_idx], &assignment.range)
+        {
+            let access_fact = self.type_fact_for_access(unit_idx, access);
+            if let Some(line_fact) = access_fact.table_line.as_deref() {
+                return line_fact.clone();
+            }
+        }
         let fact = self.enrich_existing_type_fact(unit_idx, assignment.scope, &assignment.lhs);
         if fact.is_known() {
             return fact;
@@ -773,14 +781,14 @@ impl<'a> FactBuilder<'a> {
             table_line: None,
         };
         if self.symbol_is_table(handle, symbol) {
-            fact.table_line = Some(Box::new(TypeFactData {
+            fact.table_line = Some(Box::new(self.synthesized_table_line_fact(TypeFactData {
                 structure: (site_unit_idx == symbol_unit_idx)
                     .then_some(symbol.structure)
                     .flatten(),
                 declared_type: symbol.declared_type.clone(),
-                type_clause_display: None,
+                type_clause_display: symbol.type_clause_display.clone(),
                 table_line: None,
-            }));
+            })));
         }
         self.enrich_existing_type_fact(site_unit_idx, scope, &fact)
     }
@@ -819,14 +827,14 @@ impl<'a> FactBuilder<'a> {
         if fact
             .type_clause_display
             .as_deref()
-            .is_some_and(is_internal_table_type_display)
+            .is_some_and(is_table_like_type_display)
         {
-            fact.table_line = Some(Box::new(TypeFactData {
+            fact.table_line = Some(Box::new(self.synthesized_table_line_fact(TypeFactData {
                 structure: fact.structure,
                 declared_type: fact.declared_type.clone(),
-                type_clause_display: None,
+                type_clause_display: fact.type_clause_display.clone(),
                 table_line: None,
-            }));
+            })));
         }
         self.enrich_existing_type_fact(site_unit_idx, scope, &fact)
     }
@@ -842,14 +850,44 @@ impl<'a> FactBuilder<'a> {
             && fact
                 .type_clause_display
                 .as_deref()
-                .is_some_and(is_internal_table_type_display)
+                .is_some_and(is_table_like_type_display)
         {
-            fact.table_line = Some(Box::new(TypeFactData {
+            fact.table_line = Some(Box::new(self.synthesized_table_line_fact(TypeFactData {
                 structure: fact.structure,
                 declared_type: fact.declared_type.clone(),
-                type_clause_display: None,
+                type_clause_display: fact.type_clause_display.clone(),
                 table_line: None,
-            }));
+            })));
+        }
+        if fact.structure.is_none()
+            && fact
+                .type_clause_display
+                .as_deref()
+                .is_some_and(is_line_of_type_display)
+            && let Some(declared_type) = fact.declared_type.as_ref()
+            && declared_type.namespace == Namespace::Value
+            && !declared_type.is_ref
+            && declared_type.field_path.is_empty()
+            && let Some(symbol_id) = lookup_scope_chain(
+                &self.units[site_unit_idx],
+                &self.scope_indexes[site_unit_idx],
+                scope,
+                Namespace::Value,
+                &declared_type.base_name,
+            )
+        {
+            let symbol_fact = self.symbol_type_fact_for_site(
+                site_unit_idx,
+                scope,
+                SymbolHandle {
+                    unit: self.units[site_unit_idx].unit_id,
+                    symbol: symbol_id,
+                },
+            );
+            if let Some(line_fact) = symbol_fact.table_line.as_deref() {
+                fact.structure = line_fact.structure;
+                fact.declared_type = line_fact.declared_type.clone();
+            }
         }
         if fact.structure.is_none()
             && let Some(declared_type) = fact.declared_type.as_ref()
@@ -873,6 +911,28 @@ impl<'a> FactBuilder<'a> {
             )));
         }
         fact
+    }
+
+    fn synthesized_table_line_fact(&self, fact: TypeFactData) -> TypeFactData {
+        if fact
+            .type_clause_display
+            .as_deref()
+            .is_some_and(is_range_table_type_display)
+        {
+            return TypeFactData {
+                structure: fact.structure,
+                declared_type: None,
+                type_clause_display: None,
+                table_line: None,
+            };
+        }
+
+        TypeFactData {
+            structure: fact.structure,
+            declared_type: fact.declared_type,
+            type_clause_display: None,
+            table_line: None,
+        }
     }
 
     fn dereference_type_fact(
@@ -1082,6 +1142,24 @@ fn enclosing_class_owner(unit: &UnitAnalysis, scope: ScopeId) -> Option<SymbolId
 fn is_internal_table_type_display(display: &str) -> bool {
     let upper = display.trim().to_ascii_uppercase();
     upper.contains(" TABLE OF ")
+}
+
+fn is_range_table_type_display(display: &str) -> bool {
+    display.trim().to_ascii_uppercase().starts_with("RANGE OF ")
+}
+
+fn is_table_like_type_display(display: &str) -> bool {
+    is_internal_table_type_display(display) || is_range_table_type_display(display)
+}
+
+fn is_line_of_type_display(display: &str) -> bool {
+    display.trim().to_ascii_uppercase().starts_with("LINE OF ")
+}
+
+fn is_append_assignment(unit: &UnitAnalysis, range: &abap_lexer::TextRange) -> bool {
+    unit.system_field_updates.iter().any(|update| {
+        update.statement == crate::SystemFieldStatementKind::Append && &update.range == range
+    })
 }
 
 fn method_parameter_section(section: crate::MethodParameterSection) -> MethodParameterSection {
