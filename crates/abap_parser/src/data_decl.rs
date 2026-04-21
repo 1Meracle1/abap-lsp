@@ -1687,6 +1687,20 @@ mod tests {
     }
 
     #[test]
+    fn field_symbols_generic_standard_table() {
+        let file = tree_ok("FIELD-SYMBOLS: <lt_records> TYPE STANDARD TABLE.");
+        assert_eq!(
+            file.count_kind(file.root(), SyntaxKind::FieldSymbolsDecl),
+            1
+        );
+        assert_eq!(
+            file.count_kind(file.root(), SyntaxKind::FieldSymbolClause),
+            1
+        );
+        assert_eq!(file.count_kind(file.root(), SyntaxKind::Error), 0);
+    }
+
+    #[test]
     fn types_begin_end_of_clause() {
         let file = tree_ok("TYPES: BEGIN OF ty_pair, a TYPE i, b TYPE string, END OF ty_pair.");
         assert_eq!(file.count_kind(file.root(), SyntaxKind::TypesDecl), 1);

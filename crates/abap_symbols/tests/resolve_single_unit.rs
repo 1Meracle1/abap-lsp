@@ -9894,6 +9894,42 @@ START-OF-SELECTION.
 }
 
 #[test]
+fn field_symbol_accepts_generic_standard_table_type() {
+    let src = r#"
+FIELD-SYMBOLS: <lt_records> TYPE STANDARD TABLE.
+"#;
+
+    let parsed = parse(src);
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+
+    let unit = analyze_unit("file:///field_symbol_standard_table.abap", src, &parsed);
+    let field_symbol = unit
+        .symbols
+        .iter()
+        .find(|symbol| {
+            symbol.kind == SymbolKind::FieldSymbol && symbol.name.as_ref() == "<lt_records>"
+        })
+        .expect("field-symbol declaration");
+
+    assert_eq!(
+        field_symbol.type_clause_display.as_deref(),
+        Some("STANDARD TABLE")
+    );
+    assert!(
+        field_symbol.declared_type.is_none(),
+        "generic table declaration should not invent a concrete base type: {:?}",
+        field_symbol.declared_type
+    );
+    assert!(
+        !unit.references.iter().any(|reference| {
+            reference.kind == ReferenceKind::TypeRef && reference.name.as_ref() == "standard"
+        }),
+        "generic STANDARD TABLE should not create a fake type reference: {:?}",
+        unit.references
+    );
+}
+
+#[test]
 fn treats_call_function_changing_arguments_as_written_for_definite_assignment() {
     let dep_src = r#"
 FUNCTION z_touch_text

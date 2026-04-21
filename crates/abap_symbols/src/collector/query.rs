@@ -628,6 +628,13 @@ impl<'a> Collector<'a> {
                 Some((namespace, false, base_name, base_range, field_path))
             }
             SyntaxKind::TypeRefSimple => {
+                if self
+                    .render_type_ref_display(node)
+                    .as_deref()
+                    .is_some_and(super::is_generic_internal_table_type_display)
+                {
+                    return None;
+                }
                 let mut is_ref = false;
                 for child in self.file.children(node) {
                     if self.file.kind(child) == SyntaxKind::Token

@@ -1593,6 +1593,9 @@ impl<'a> Collector<'a> {
         &self,
         tokens: &[SyntaxTokenInfo],
     ) -> Option<(Arc<str>, TextRange)> {
+        if is_generic_internal_table_type_display(&self.render_token_infos(tokens)) {
+            return None;
+        }
         let mut i = 0usize;
         if tokens
             .get(i)
@@ -1628,6 +1631,13 @@ fn is_internal_table_type_display(display: &str) -> bool {
     ]
     .into_iter()
     .any(|prefix| upper.starts_with(prefix))
+}
+
+fn is_generic_internal_table_type_display(display: &str) -> bool {
+    matches!(
+        display.trim().to_ascii_uppercase().as_str(),
+        "STANDARD TABLE" | "SORTED TABLE" | "HASHED TABLE" | "ANY TABLE" | "INDEX TABLE" | "TABLE"
+    )
 }
 
 pub fn collect_unit(
