@@ -271,6 +271,13 @@ pub struct NamedArgumentCompletionItem {
     pub insertion: CompletionInsertion,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TemplateCompletionItem {
+    pub name: Arc<str>,
+    pub detail: Option<String>,
+    pub insertion: CompletionInsertion,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CallableCompletionKind {
     FunctionModule,
@@ -289,6 +296,7 @@ pub struct CallableCompletionItem {
 pub enum CompletionItem {
     Selector(SelectorCompletionItem),
     NamedArgument(NamedArgumentCompletionItem),
+    Template(TemplateCompletionItem),
     Callable(CallableCompletionItem),
 }
 
@@ -338,6 +346,19 @@ struct CallableStatementCompletionQuery {
     replace_range: Range<usize>,
     prefix: Arc<str>,
     kind: CallableCompletionKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TemplateCompletionQuery {
+    replace_range: Range<usize>,
+    class_name_hint: Arc<str>,
+    kind: LocalClassTemplateKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LocalClassTemplateKind {
+    Standard,
+    Test,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -851,6 +872,9 @@ impl AnalysisSnapshot {
     }
 
     pub fn completion_at(&self, offset: usize) -> Option<CompletionInfo> {
+        if let Some(completion) = self.template_completion_at(offset) {
+            return Some(completion);
+        }
         if let Some(completion) = self.selector_completion_at(offset) {
             return Some(CompletionInfo {
                 replace_range: completion.replace_range,
@@ -1928,6 +1952,31 @@ impl AnalysisSnapshot {
             .or_else(|| parse_form_completion_query(self, offset))
     }
 
+    fn template_completion_at(&self, offset: usize) -> Option<CompletionInfo> {
+        let query = parse_local_class_template_query(self, offset)?;
+        let class_name =
+            normalized_local_class_template_name(query.kind, query.class_name_hint.as_ref());
+        let (detail, insertion) = match query.kind {
+            LocalClassTemplateKind::Standard => (
+                "Local class definition".to_string(),
+                local_class_template_completion_insertion(class_name.as_ref()),
+            ),
+            LocalClassTemplateKind::Test => (
+                "Local test class definition".to_string(),
+                local_test_class_template_completion_insertion(class_name.as_ref()),
+            ),
+        };
+        Some(CompletionInfo {
+            replace_range: query.replace_range,
+            items: vec![CompletionItem::Template(TemplateCompletionItem {
+                name: Arc::clone(&class_name),
+                detail: Some(detail),
+                insertion,
+            })],
+            in_type_position: false,
+        })
+    }
+
     fn call_target_method_at(
         &self,
         offset: usize,
@@ -2813,6 +2862,54 @@ fn named_argument_completion_insertion(name: &str) -> CompletionInsertion {
     }
 }
 
+fn normalized_local_class_template_name(kind: LocalClassTemplateKind, name_hint: &str) -> Arc<str> {
+    let trimmed = name_hint.trim();
+    match kind {
+        LocalClassTemplateKind::Standard => {
+            if trimmed.is_empty()
+                || trimmed.eq_ignore_ascii_case("lcl")
+                || trimmed.eq_ignore_ascii_case("lcl_")
+            {
+                Arc::from("lcl_demo")
+            } else {
+                Arc::from(trimmed)
+            }
+        }
+        LocalClassTemplateKind::Test => {
+            if trimmed.is_empty()
+                || trimmed.eq_ignore_ascii_case("ltcl")
+                || trimmed.eq_ignore_ascii_case("ltcl_")
+            {
+                Arc::from("ltcl_demo")
+            } else {
+                Arc::from(trimmed)
+            }
+        }
+    }
+}
+
+fn local_class_template_completion_insertion(class_name: &str) -> CompletionInsertion {
+    CompletionInsertion {
+        plain_text: format!(
+            "CLASS {class_name} DEFINITION.\n  PUBLIC SECTION.\n    METHODS run.\nENDCLASS.\n\nCLASS {class_name} IMPLEMENTATION.\n  METHOD run.\n  ENDMETHOD.\nENDCLASS."
+        ),
+        snippet_text: Some(format!(
+            "CLASS ${{1:{class_name}}} DEFINITION.\n  PUBLIC SECTION.\n    METHODS ${{2:run}}.\nENDCLASS.\n\nCLASS ${{1:{class_name}}} IMPLEMENTATION.\n  METHOD ${{2:run}}.\n    $0\n  ENDMETHOD.\nENDCLASS."
+        )),
+    }
+}
+
+fn local_test_class_template_completion_insertion(class_name: &str) -> CompletionInsertion {
+    CompletionInsertion {
+        plain_text: format!(
+            "CLASS {class_name} DEFINITION FOR TESTING \n  DURATION SHORT\n  RISK LEVEL HARMLESS.\n\n  PRIVATE SECTION.\n    METHODS:\n      setup,\n      teardown,\n      test_demo FOR TESTING.\nENDCLASS.\n\nCLASS {class_name} IMPLEMENTATION.\n\n  METHOD setup.\n  ENDMETHOD.\n\n  METHOD teardown.\n  ENDMETHOD.\n\n  METHOD test_demo.\n    cl_abap_unit_assert=>assert_equals(\n      act = abap_true \n      exp = abap_true \n    ).\n  ENDMETHOD.\nENDCLASS."
+        ),
+        snippet_text: Some(format!(
+            "CLASS ${{1:{class_name}}} DEFINITION FOR TESTING \n  DURATION SHORT\n  RISK LEVEL HARMLESS.\n\n  PRIVATE SECTION.\n    METHODS:\n      setup,\n      teardown,\n      ${{2:test_demo}} FOR TESTING.\nENDCLASS.\n\nCLASS ${{1:{class_name}}} IMPLEMENTATION.\n\n  METHOD setup.\n  ENDMETHOD.\n\n  METHOD teardown.\n  ENDMETHOD.\n\n  METHOD ${{2:test_demo}}.\n    cl_abap_unit_assert=>assert_equals(\n      act = ${{3:abap_true}} \n      exp = ${{4:abap_true}} \n    ).\n    $0\n  ENDMETHOD.\nENDCLASS."
+        )),
+    }
+}
+
 fn form_completion_insertion(
     unit: &UnitAnalysis,
     form_name: &str,
@@ -2935,6 +3032,7 @@ fn completion_item_name(item: &CompletionItem) -> &str {
     match item {
         CompletionItem::Selector(item) => item.name.as_ref(),
         CompletionItem::NamedArgument(item) => item.name.as_ref(),
+        CompletionItem::Template(item) => item.name.as_ref(),
         CompletionItem::Callable(item) => item.name.as_ref(),
     }
 }
@@ -6672,6 +6770,43 @@ fn parse_form_completion_query(
         replace_range,
         prefix,
         kind: CallableCompletionKind::Form,
+    })
+}
+
+fn parse_local_class_template_query(
+    snapshot: &AnalysisSnapshot,
+    offset: usize,
+) -> Option<TemplateCompletionQuery> {
+    let statement_range = statement_query_range(&snapshot.parse, offset)?;
+    let significant = significant_statement_tokens(&snapshot.parse, &statement_range)?;
+    if significant.len() != 1 {
+        return None;
+    }
+
+    let token = &snapshot.parse.tokens[*significant.first()?];
+    if token.kind != TokenKind::Ident || offset < token.range.start || offset > token.range.end {
+        return None;
+    }
+
+    let prefix_end = offset.min(token.range.end);
+    let class_name_hint = snapshot.text[token.range.start..prefix_end].trim();
+    if class_name_hint.is_empty() {
+        return None;
+    }
+    let lower = class_name_hint.to_ascii_lowercase();
+    let kind = if lower.starts_with("ltcl") {
+        LocalClassTemplateKind::Test
+    } else if lower.starts_with("lcl") {
+        LocalClassTemplateKind::Standard
+    } else {
+        return None;
+    };
+
+    Some(TemplateCompletionQuery {
+        replace_range: token.range.start
+            ..line_end_offset(snapshot.text.as_ref(), token.range.start),
+        class_name_hint: Arc::from(class_name_hint),
+        kind,
     })
 }
 
@@ -13604,6 +13739,7 @@ START-OF-SELECTION.
             .map(|item| match item {
                 crate::CompletionItem::Selector(item) => item.name.as_ref(),
                 crate::CompletionItem::NamedArgument(item) => item.name.as_ref(),
+                crate::CompletionItem::Template(item) => item.name.as_ref(),
                 crate::CompletionItem::Callable(item) => item.name.as_ref(),
             })
             .collect();
@@ -13940,6 +14076,207 @@ ENDFORM.";
             item.insertion.plain_text,
             "z_demo_call'\n  EXPORTING\n    iv_name = \n  IMPORTING\n    ev_text = \n  EXCEPTIONS\n    failed = 1."
         );
+    }
+
+    #[test]
+    fn completion_returns_local_class_definition_template_from_lcl_shorthand() {
+        let store = DocumentStore::default();
+        let src = "\
+REPORT zdemo.
+
+lcl_demo";
+        let snapshot = store.publish("file:///local_class_template.abap", 1, src);
+
+        let completion = snapshot
+            .completion_at(src.len())
+            .expect("local class template completion");
+        assert_eq!(&src[completion.replace_range.clone()], "lcl_demo");
+        let item = completion
+            .items
+            .iter()
+            .find_map(|item| match item {
+                crate::CompletionItem::Template(item) if item.name.as_ref() == "lcl_demo" => {
+                    Some(item)
+                }
+                _ => None,
+            })
+            .expect("local class template item");
+        assert_eq!(item.detail.as_deref(), Some("Local class definition"));
+        assert_eq!(
+            item.insertion.plain_text,
+            "CLASS lcl_demo DEFINITION.\n  PUBLIC SECTION.\n    METHODS run.\nENDCLASS.\n\nCLASS lcl_demo IMPLEMENTATION.\n  METHOD run.\n  ENDMETHOD.\nENDCLASS."
+        );
+        assert_eq!(
+            item.insertion.snippet_text.as_deref(),
+            Some(
+                "CLASS ${1:lcl_demo} DEFINITION.\n  PUBLIC SECTION.\n    METHODS ${2:run}.\nENDCLASS.\n\nCLASS ${1:lcl_demo} IMPLEMENTATION.\n  METHOD ${2:run}.\n    $0\n  ENDMETHOD.\nENDCLASS."
+            )
+        );
+    }
+
+    #[test]
+    fn completion_defaults_local_class_template_name_when_only_lcl_prefix_is_typed() {
+        let store = DocumentStore::default();
+        let src = "\
+REPORT zdemo.
+
+lcl";
+        let snapshot = store.publish("file:///local_class_template_default.abap", 1, src);
+
+        let completion = snapshot
+            .completion_at(src.len())
+            .expect("local class template completion");
+        let item = completion
+            .items
+            .iter()
+            .find_map(|item| match item {
+                crate::CompletionItem::Template(item) => Some(item),
+                _ => None,
+            })
+            .expect("local class template item");
+        assert_eq!(item.name.as_ref(), "lcl_demo");
+        assert!(
+            item.insertion
+                .plain_text
+                .starts_with("CLASS lcl_demo DEFINITION."),
+            "{}",
+            item.insertion.plain_text
+        );
+    }
+
+    #[test]
+    fn completion_returns_local_test_class_template_from_ltcl_shorthand() {
+        let store = DocumentStore::default();
+        let src = "\
+REPORT zdemo.
+
+ltcl_demo";
+        let snapshot = store.publish("file:///local_test_class_template.abap", 1, src);
+
+        let completion = snapshot
+            .completion_at(src.len())
+            .expect("local test class template completion");
+        assert_eq!(&src[completion.replace_range.clone()], "ltcl_demo");
+        let item = completion
+            .items
+            .iter()
+            .find_map(|item| match item {
+                crate::CompletionItem::Template(item) if item.name.as_ref() == "ltcl_demo" => {
+                    Some(item)
+                }
+                _ => None,
+            })
+            .expect("local test class template item");
+        assert_eq!(item.detail.as_deref(), Some("Local test class definition"));
+        assert_eq!(
+            item.insertion.plain_text,
+            "CLASS ltcl_demo DEFINITION FOR TESTING \n  DURATION SHORT\n  RISK LEVEL HARMLESS.\n\n  PRIVATE SECTION.\n    METHODS:\n      setup,\n      teardown,\n      test_demo FOR TESTING.\nENDCLASS.\n\nCLASS ltcl_demo IMPLEMENTATION.\n\n  METHOD setup.\n  ENDMETHOD.\n\n  METHOD teardown.\n  ENDMETHOD.\n\n  METHOD test_demo.\n    cl_abap_unit_assert=>assert_equals(\n      act = abap_true \n      exp = abap_true \n    ).\n  ENDMETHOD.\nENDCLASS."
+        );
+        assert_eq!(
+            item.insertion.snippet_text.as_deref(),
+            Some(
+                "CLASS ${1:ltcl_demo} DEFINITION FOR TESTING \n  DURATION SHORT\n  RISK LEVEL HARMLESS.\n\n  PRIVATE SECTION.\n    METHODS:\n      setup,\n      teardown,\n      ${2:test_demo} FOR TESTING.\nENDCLASS.\n\nCLASS ${1:ltcl_demo} IMPLEMENTATION.\n\n  METHOD setup.\n  ENDMETHOD.\n\n  METHOD teardown.\n  ENDMETHOD.\n\n  METHOD ${2:test_demo}.\n    cl_abap_unit_assert=>assert_equals(\n      act = ${3:abap_true} \n      exp = ${4:abap_true} \n    ).\n    $0\n  ENDMETHOD.\nENDCLASS."
+            )
+        );
+    }
+
+    #[test]
+    fn completion_defaults_local_test_class_template_name_when_only_ltcl_prefix_is_typed() {
+        let store = DocumentStore::default();
+        let src = "\
+REPORT zdemo.
+
+ltcl";
+        let snapshot = store.publish("file:///local_test_class_template_default.abap", 1, src);
+
+        let completion = snapshot
+            .completion_at(src.len())
+            .expect("local test class template completion");
+        let item = completion
+            .items
+            .iter()
+            .find_map(|item| match item {
+                crate::CompletionItem::Template(item) => Some(item),
+                _ => None,
+            })
+            .expect("local test class template item");
+        assert_eq!(item.name.as_ref(), "ltcl_demo");
+        assert!(
+            item.insertion
+                .plain_text
+                .starts_with("CLASS ltcl_demo DEFINITION FOR TESTING"),
+            "{}",
+            item.insertion.plain_text
+        );
+    }
+
+    #[test]
+    fn completion_keeps_local_class_template_after_same_class_already_exists() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+  ENDMETHOD.
+ENDCLASS.
+
+lcl_demo";
+        let snapshot = store.publish("file:///local_class_template_repeat.abap", 1, src);
+
+        let completion = snapshot
+            .completion_at(src.len())
+            .expect("repeated local class template completion");
+        let item = completion
+            .items
+            .iter()
+            .find_map(|item| match item {
+                crate::CompletionItem::Template(item) if item.name.as_ref() == "lcl_demo" => {
+                    Some(item)
+                }
+                _ => None,
+            })
+            .expect("local class template item");
+        assert_eq!(item.detail.as_deref(), Some("Local class definition"));
+    }
+
+    #[test]
+    fn completion_keeps_local_test_class_template_after_same_class_already_exists() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS ltcl_demo DEFINITION FOR TESTING.
+  DURATION SHORT.
+  RISK LEVEL HARMLESS.
+
+  PRIVATE SECTION.
+    METHODS test_demo FOR TESTING.
+ENDCLASS.
+
+CLASS ltcl_demo IMPLEMENTATION.
+  METHOD test_demo.
+  ENDMETHOD.
+ENDCLASS.
+
+ltcl_demo";
+        let snapshot = store.publish("file:///local_test_class_template_repeat.abap", 1, src);
+
+        let completion = snapshot
+            .completion_at(src.len())
+            .expect("repeated local test class template completion");
+        let item = completion
+            .items
+            .iter()
+            .find_map(|item| match item {
+                crate::CompletionItem::Template(item) if item.name.as_ref() == "ltcl_demo" => {
+                    Some(item)
+                }
+                _ => None,
+            })
+            .expect("local test class template item");
+        assert_eq!(item.detail.as_deref(), Some("Local test class definition"));
     }
 
     #[test]

@@ -139,7 +139,12 @@
         "scopeName": "source.abap",
         "path": "./syntaxes/abap.tmLanguage.json"
       }
-    ]
+    ],
+    "configurationDefaults": {
+      "[abap]": {
+        "editor.wordBasedSuggestions": "off"
+      }
+    }
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",

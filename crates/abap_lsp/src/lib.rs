@@ -2944,6 +2944,7 @@ fn cache_completion_item_name(item: &abap_cache::CompletionItem) -> &str {
     match item {
         abap_cache::CompletionItem::Selector(item) => item.name.as_ref(),
         abap_cache::CompletionItem::NamedArgument(item) => item.name.as_ref(),
+        abap_cache::CompletionItem::Template(item) => item.name.as_ref(),
         abap_cache::CompletionItem::Callable(item) => item.name.as_ref(),
     }
 }
@@ -2988,6 +2989,14 @@ fn completion_item_to_lsp(
                 item.insertion.snippet_text.clone(),
             )
         }
+        abap_cache::CompletionItem::Template(item) => (
+            item.name.to_string(),
+            Some(CompletionItemKind::SNIPPET),
+            item.detail.clone(),
+            None,
+            item.insertion.plain_text.clone(),
+            item.insertion.snippet_text.clone(),
+        ),
         abap_cache::CompletionItem::Callable(item) => {
             let (detail, documentation) = callable_completion_item_metadata(item);
             (
@@ -5956,6 +5965,7 @@ ENDFORM.";
             .map(|item| match item {
                 abap_cache::CompletionItem::Selector(item) => item.name.to_string(),
                 abap_cache::CompletionItem::NamedArgument(item) => item.name.to_string(),
+                abap_cache::CompletionItem::Template(item) => item.name.to_string(),
                 abap_cache::CompletionItem::Callable(item) => item.name.to_string(),
             })
             .collect();
@@ -12008,6 +12018,279 @@ ENDFORM.";
             edit.new_text,
             "z_demo_call'\n  EXPORTING\n    iv_name = ${1}\n  IMPORTING\n    ev_text = ${2}\n  EXCEPTIONS\n    failed = ${3:1}.$0"
         );
+    }
+
+    #[test]
+    fn completion_emits_local_class_definition_template_snippet() {
+        let mut state = ServerState::default();
+        state.client_capabilities.completion_snippet_support = true;
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///completion_local_class_template.abap")
+                        .expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: "REPORT zdemo.\n\nlcl_demo".to_string(),
+                },
+            },
+        );
+
+        let completion = completion(
+            &state,
+            &CompletionParams {
+                text_document_position: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///completion_local_class_template.abap")
+                            .expect("uri"),
+                    },
+                    position: Position {
+                        line: 2,
+                        character: 8,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+                context: None,
+            },
+        )
+        .expect("completion");
+
+        let CompletionResponse::Array(items) = completion else {
+            panic!("expected array completion");
+        };
+        let item = items
+            .into_iter()
+            .find(|item| item.label == "lcl_demo")
+            .expect("local class template item");
+        assert_eq!(item.kind, Some(lsp_types::CompletionItemKind::SNIPPET));
+        assert_eq!(item.detail.as_deref(), Some("Local class definition"));
+        assert_eq!(item.insert_text_format, Some(InsertTextFormat::SNIPPET));
+        let Some(lsp_types::CompletionTextEdit::Edit(edit)) = item.text_edit else {
+            panic!("expected text edit");
+        };
+        assert_eq!(
+            edit.new_text,
+            "CLASS ${1:lcl_demo} DEFINITION.\n  PUBLIC SECTION.\n    METHODS ${2:run}.\nENDCLASS.\n\nCLASS ${1:lcl_demo} IMPLEMENTATION.\n  METHOD ${2:run}.\n    $0\n  ENDMETHOD.\nENDCLASS."
+        );
+    }
+
+    #[test]
+    fn completion_falls_back_to_plain_local_class_definition_template_without_snippet_support() {
+        let state = ServerState::default();
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///completion_local_class_template_plain.abap")
+                        .expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: "REPORT zdemo.\n\nlcl".to_string(),
+                },
+            },
+        );
+
+        let completion = completion(
+            &state,
+            &CompletionParams {
+                text_document_position: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///completion_local_class_template_plain.abap")
+                            .expect("uri"),
+                    },
+                    position: Position {
+                        line: 2,
+                        character: 3,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+                context: None,
+            },
+        )
+        .expect("completion");
+
+        let CompletionResponse::Array(items) = completion else {
+            panic!("expected array completion");
+        };
+        let item = items
+            .into_iter()
+            .find(|item| item.label == "lcl_demo")
+            .expect("local class template item");
+        assert_eq!(item.kind, Some(lsp_types::CompletionItemKind::SNIPPET));
+        assert_eq!(item.insert_text_format, None);
+        let Some(lsp_types::CompletionTextEdit::Edit(edit)) = item.text_edit else {
+            panic!("expected text edit");
+        };
+        assert_eq!(
+            edit.new_text,
+            "CLASS lcl_demo DEFINITION.\n  PUBLIC SECTION.\n    METHODS run.\nENDCLASS.\n\nCLASS lcl_demo IMPLEMENTATION.\n  METHOD run.\n  ENDMETHOD.\nENDCLASS."
+        );
+    }
+
+    #[test]
+    fn completion_emits_local_test_class_definition_template_snippet() {
+        let mut state = ServerState::default();
+        state.client_capabilities.completion_snippet_support = true;
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///completion_local_test_class_template.abap")
+                        .expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: "REPORT zdemo.\n\nltcl_demo".to_string(),
+                },
+            },
+        );
+
+        let completion = completion(
+            &state,
+            &CompletionParams {
+                text_document_position: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///completion_local_test_class_template.abap")
+                            .expect("uri"),
+                    },
+                    position: Position {
+                        line: 2,
+                        character: 9,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+                context: None,
+            },
+        )
+        .expect("completion");
+
+        let CompletionResponse::Array(items) = completion else {
+            panic!("expected array completion");
+        };
+        let item = items
+            .into_iter()
+            .find(|item| item.label == "ltcl_demo")
+            .expect("local test class template item");
+        assert_eq!(item.kind, Some(lsp_types::CompletionItemKind::SNIPPET));
+        assert_eq!(item.detail.as_deref(), Some("Local test class definition"));
+        assert_eq!(item.insert_text_format, Some(InsertTextFormat::SNIPPET));
+        let Some(lsp_types::CompletionTextEdit::Edit(edit)) = item.text_edit else {
+            panic!("expected text edit");
+        };
+        assert_eq!(
+            edit.new_text,
+            "CLASS ${1:ltcl_demo} DEFINITION FOR TESTING \n  DURATION SHORT\n  RISK LEVEL HARMLESS.\n\n  PRIVATE SECTION.\n    METHODS:\n      setup,\n      teardown,\n      ${2:test_demo} FOR TESTING.\nENDCLASS.\n\nCLASS ${1:ltcl_demo} IMPLEMENTATION.\n\n  METHOD setup.\n  ENDMETHOD.\n\n  METHOD teardown.\n  ENDMETHOD.\n\n  METHOD ${2:test_demo}.\n    cl_abap_unit_assert=>assert_equals(\n      act = ${3:abap_true} \n      exp = ${4:abap_true} \n    ).\n    $0\n  ENDMETHOD.\nENDCLASS."
+        );
+    }
+
+    #[test]
+    fn completion_falls_back_to_plain_local_test_class_definition_template_without_snippet_support()
+    {
+        let state = ServerState::default();
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///completion_local_test_class_template_plain.abap")
+                        .expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: "REPORT zdemo.\n\nltcl".to_string(),
+                },
+            },
+        );
+
+        let completion = completion(
+            &state,
+            &CompletionParams {
+                text_document_position: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str(
+                            "file:///completion_local_test_class_template_plain.abap",
+                        )
+                        .expect("uri"),
+                    },
+                    position: Position {
+                        line: 2,
+                        character: 4,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+                context: None,
+            },
+        )
+        .expect("completion");
+
+        let CompletionResponse::Array(items) = completion else {
+            panic!("expected array completion");
+        };
+        let item = items
+            .into_iter()
+            .find(|item| item.label == "ltcl_demo")
+            .expect("local test class template item");
+        assert_eq!(item.kind, Some(lsp_types::CompletionItemKind::SNIPPET));
+        assert_eq!(item.insert_text_format, None);
+        let Some(lsp_types::CompletionTextEdit::Edit(edit)) = item.text_edit else {
+            panic!("expected text edit");
+        };
+        assert_eq!(
+            edit.new_text,
+            "CLASS ltcl_demo DEFINITION FOR TESTING \n  DURATION SHORT\n  RISK LEVEL HARMLESS.\n\n  PRIVATE SECTION.\n    METHODS:\n      setup,\n      teardown,\n      test_demo FOR TESTING.\nENDCLASS.\n\nCLASS ltcl_demo IMPLEMENTATION.\n\n  METHOD setup.\n  ENDMETHOD.\n\n  METHOD teardown.\n  ENDMETHOD.\n\n  METHOD test_demo.\n    cl_abap_unit_assert=>assert_equals(\n      act = abap_true \n      exp = abap_true \n    ).\n  ENDMETHOD.\nENDCLASS."
+        );
+    }
+
+    #[test]
+    fn completion_still_emits_local_test_class_template_after_previous_one_exists() {
+        let mut state = ServerState::default();
+        state.client_capabilities.completion_snippet_support = true;
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///completion_local_test_class_template_repeat.abap")
+                        .expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: "CLASS ltcl_demo DEFINITION FOR TESTING.\n  DURATION SHORT.\n  RISK LEVEL HARMLESS.\n\n  PRIVATE SECTION.\n    METHODS test_demo FOR TESTING.\nENDCLASS.\n\nCLASS ltcl_demo IMPLEMENTATION.\n  METHOD test_demo.\n  ENDMETHOD.\nENDCLASS.\n\nltcl_demo".to_string(),
+                },
+            },
+        );
+
+        let completion = completion(
+            &state,
+            &CompletionParams {
+                text_document_position: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str(
+                            "file:///completion_local_test_class_template_repeat.abap",
+                        )
+                        .expect("uri"),
+                    },
+                    position: Position {
+                        line: 13,
+                        character: 9,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+                context: None,
+            },
+        )
+        .expect("completion");
+
+        let CompletionResponse::Array(items) = completion else {
+            panic!("expected array completion");
+        };
+        let item = items
+            .into_iter()
+            .find(|item| item.label == "ltcl_demo")
+            .expect("local test class template item");
+        assert_eq!(item.detail.as_deref(), Some("Local test class definition"));
+        assert_eq!(item.insert_text_format, Some(InsertTextFormat::SNIPPET));
     }
 
     #[test]
