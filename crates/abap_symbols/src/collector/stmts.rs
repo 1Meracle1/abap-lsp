@@ -840,11 +840,16 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
         (head_expr, from_expr, where_expr)
     }
 
-    fn modify_stmt_operands(&self, node: NodeId) -> (bool, Option<NodeId>, Option<NodeId>) {
+    fn modify_stmt_operands(
+        &self,
+        node: NodeId,
+    ) -> (bool, Option<NodeId>, Option<NodeId>, Option<NodeId>) {
         let mut saw_table_keyword = false;
         let mut head_expr = None;
         let mut from_expr = None;
+        let mut where_expr = None;
         let mut expect_from_expr = false;
+        let mut saw_where = false;
 
         for child in self.collector.file.children(node) {
             if self.collector.file.kind(child) == SyntaxKind::Token {
@@ -853,6 +858,10 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                         saw_table_keyword = true;
                     } else if text.eq_ignore_ascii_case("from") {
                         expect_from_expr = true;
+                        saw_where = false;
+                    } else if text.eq_ignore_ascii_case("where") {
+                        saw_where = true;
+                        expect_from_expr = false;
                     } else if expect_from_expr && text.eq_ignore_ascii_case("table") {
                         continue;
                     }
@@ -867,10 +876,126 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             if expect_from_expr {
                 from_expr = Some(child);
                 expect_from_expr = false;
+                continue;
+            }
+            if saw_where && where_expr.is_none() {
+                where_expr = Some(child);
             }
         }
 
-        (saw_table_keyword, head_expr, from_expr)
+        (saw_table_keyword, head_expr, from_expr, where_expr)
+    }
+
+    fn modify_transporting_field_paths(&self, node: NodeId) -> Vec<Vec<FieldAccessSegment>> {
+        let tokens = self.collector.significant_stmt_token_infos(node);
+        let Some(transporting_idx) = tokens
+            .iter()
+            .position(|token| token.text.eq_ignore_ascii_case("transporting"))
+        else {
+            return Vec::new();
+        };
+        let clause_end = tokens[transporting_idx + 1..]
+            .iter()
+            .position(|token| {
+                token.text.eq_ignore_ascii_case("where") || token.text.as_ref() == "."
+            })
+            .map(|offset| transporting_idx + 1 + offset)
+            .unwrap_or(tokens.len());
+        let mut idx = transporting_idx + 1;
+        let mut out = Vec::new();
+
+        while idx < clause_end {
+            let Some(token) = tokens.get(idx) else {
+                break;
+            };
+            if !self.collector.syntax_token_is_ident_like(token) {
+                idx += 1;
+                continue;
+            }
+
+            if let Some((next_idx, namespace, base_name, base_range, mut field_path, _)) = self
+                .collector
+                .consume_selector_access_from_infos(&tokens[..clause_end], idx)
+                && namespace == Namespace::Value
+                && next_idx <= clause_end
+            {
+                let mut components = Vec::with_capacity(1 + field_path.len());
+                components.push(FieldAccessSegment {
+                    name: base_name,
+                    range: base_range,
+                });
+                components.append(&mut field_path);
+                out.push(components);
+                idx = next_idx;
+                continue;
+            }
+
+            out.push(vec![FieldAccessSegment {
+                name: Arc::<str>::from(token.text.to_ascii_lowercase()),
+                range: token.range.clone(),
+            }]);
+            idx += 1;
+        }
+
+        out
+    }
+
+    fn modify_where_clause_tokens(
+        &self,
+        node: NodeId,
+    ) -> Option<(Vec<SyntaxTokenInfo>, abap_lexer::TextRange)> {
+        let tokens = self.collector.significant_stmt_token_infos(node);
+        let where_idx = tokens
+            .iter()
+            .position(|token| token.text.eq_ignore_ascii_case("where"))?;
+        let clause_end = tokens[where_idx + 1..]
+            .iter()
+            .position(|token| token.text.as_ref() == ".")
+            .map(|offset| where_idx + 1 + offset)
+            .unwrap_or(tokens.len());
+        if where_idx + 1 >= clause_end {
+            return None;
+        }
+        Some((
+            tokens[where_idx + 1..clause_end].to_vec(),
+            tokens[where_idx].range.start..tokens[clause_end - 1].range.end,
+        ))
+    }
+
+    fn collect_modify_where_clause_refs(&mut self, tokens: &[SyntaxTokenInfo], scope: ScopeId) {
+        let mut segment_start = 0usize;
+        let mut paren_depth = 0usize;
+        let mut bracket_depth = 0usize;
+        let mut brace_depth = 0usize;
+
+        let flush_segment = |collector: &mut Collector<'a>, start: usize, end: usize| {
+            if start < end {
+                collector.collect_token_expression_refs_infos(&tokens[start..end], scope, true);
+            }
+        };
+
+        for (idx, token) in tokens.iter().enumerate() {
+            match token.text.as_ref() {
+                "(" => paren_depth += 1,
+                ")" => paren_depth = paren_depth.saturating_sub(1),
+                "[" => bracket_depth += 1,
+                "]" => bracket_depth = bracket_depth.saturating_sub(1),
+                "{" => brace_depth += 1,
+                "}" => brace_depth = brace_depth.saturating_sub(1),
+                _ => {}
+            }
+
+            if paren_depth == 0
+                && bracket_depth == 0
+                && brace_depth == 0
+                && matches!(token.text.to_ascii_uppercase().as_str(), "AND" | "OR")
+            {
+                flush_segment(self.collector, segment_start, idx);
+                segment_start = idx + 1;
+            }
+        }
+
+        flush_segment(self.collector, segment_start, tokens.len());
     }
 
     fn simple_delete_source_name(&self, node: NodeId) -> Option<Arc<str>> {
@@ -1267,7 +1392,8 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             return;
         }
 
-        let (saw_table_keyword, head_expr, from_expr) = self.modify_stmt_operands(node);
+        let (saw_table_keyword, head_expr, from_expr, _where_expr) =
+            self.modify_stmt_operands(node);
         if !saw_table_keyword
             && from_expr.is_some()
             && let Some(source_expr) = head_expr
@@ -1290,7 +1416,52 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             &["subrc"],
         );
 
+        let modify_target_access = head_expr.and_then(|expr| {
+            self.collector
+                .value_access_from_node(expr, scope)
+                .filter(|access| access.base_namespace == Namespace::Value)
+        });
+        let modify_from_access = from_expr.and_then(|expr| {
+            self.collector
+                .value_access_from_node(expr, scope)
+                .filter(|access| access.base_namespace == Namespace::Value)
+        });
+
         self.collector.walk_children(node, scope);
+
+        if let Some(base_access) = modify_target_access
+            .clone()
+            .or_else(|| modify_from_access.clone())
+        {
+            for component_path in self.modify_transporting_field_paths(node) {
+                let mut field_path = base_access.field_path.clone();
+                field_path.extend(component_path);
+                self.collector.emit_field_access(FieldAccess {
+                    scope,
+                    base_namespace: base_access.base_namespace,
+                    base_name: Arc::clone(&base_access.base_name),
+                    base_range: base_access.base_range.clone(),
+                    field_path,
+                    in_type_position: false,
+                });
+            }
+        }
+
+        if let Some((where_tokens, where_range)) = self.modify_where_clause_tokens(node) {
+            self.collect_modify_where_clause_refs(&where_tokens, scope);
+
+            if let Some(source_access) = modify_target_access.or_else(|| modify_from_access.clone())
+            {
+                self.collector.loop_where_field_contexts.push(
+                    crate::def_map::LoopWhereFieldContext {
+                        scope,
+                        range: where_range,
+                        source_access,
+                        target_access: modify_from_access,
+                    },
+                );
+            }
+        }
     }
 
     pub(super) fn collect_append_stmt(&mut self, node: NodeId, scope: ScopeId) {

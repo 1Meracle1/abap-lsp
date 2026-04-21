@@ -11970,6 +11970,113 @@ DELETE ADJACENT DUPLICATES FROM lt_lqua COMPARING "
     }
 
     #[test]
+    fn completion_returns_modify_transporting_fields_after_transporting_keyword() {
+        let state = ServerState::default();
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///completion_modify_transporting.abap").expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: "\
+TYPES: BEGIN OF ty_row,
+         low TYPE string,
+         sign TYPE string,
+         option TYPE string,
+       END OF ty_row.
+TYPES ty_tab TYPE STANDARD TABLE OF ty_row WITH EMPTY KEY.
+DATA lt_rows TYPE ty_tab.
+DATA ls_row TYPE ty_row.
+MODIFY lt_rows FROM ls_row TRANSPORTING "
+                        .to_string(),
+                },
+            },
+        );
+
+        let completion = completion(
+            &state,
+            &CompletionParams {
+                text_document_position: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///completion_modify_transporting.abap")
+                            .expect("uri"),
+                    },
+                    position: Position {
+                        line: 8,
+                        character: 40,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+                context: None,
+            },
+        )
+        .expect("completion");
+
+        let CompletionResponse::Array(items) = completion else {
+            panic!("expected array completion");
+        };
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0].label, "low");
+        assert_eq!(items[1].label, "option");
+        assert_eq!(items[2].label, "sign");
+    }
+
+    #[test]
+    fn completion_returns_modify_where_fields_after_where_keyword() {
+        let state = ServerState::default();
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///completion_modify_where.abap").expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: "\
+TYPES: BEGIN OF ty_row,
+         low TYPE string,
+         sign TYPE string,
+         option TYPE string,
+       END OF ty_row.
+TYPES ty_tab TYPE STANDARD TABLE OF ty_row WITH EMPTY KEY.
+DATA lt_rows TYPE ty_tab.
+DATA ls_row TYPE ty_row.
+MODIFY lt_rows FROM ls_row TRANSPORTING sign option WHERE "
+                        .to_string(),
+                },
+            },
+        );
+
+        let completion = completion(
+            &state,
+            &CompletionParams {
+                text_document_position: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///completion_modify_where.abap").expect("uri"),
+                    },
+                    position: Position {
+                        line: 8,
+                        character: 58,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+                context: None,
+            },
+        )
+        .expect("completion");
+
+        let CompletionResponse::Array(items) = completion else {
+            panic!("expected array completion");
+        };
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0].label, "low");
+        assert_eq!(items[1].label, "option");
+        assert_eq!(items[2].label, "sign");
+    }
+
+    #[test]
     fn completion_returns_public_static_methods_after_fat_arrow() {
         let state = ServerState::default();
         publish_open_document(

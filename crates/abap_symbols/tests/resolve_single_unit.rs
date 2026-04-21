@@ -1184,6 +1184,69 @@ MODIFY zatt_trans_cust FROM ls_trans.
 }
 
 #[test]
+fn collects_modify_transporting_field_accesses_and_where_context() {
+    let src = r#"
+TYPES: BEGIN OF ty_row,
+         low TYPE string,
+         sign TYPE string,
+         option TYPE string,
+       END OF ty_row.
+TYPES ty_tab TYPE STANDARD TABLE OF ty_row WITH EMPTY KEY.
+DATA lt_rows TYPE ty_tab.
+DATA ls_row TYPE ty_row.
+
+MODIFY lt_rows FROM ls_row
+  TRANSPORTING sign option
+  WHERE low IS NOT INITIAL
+    AND sign IS INITIAL
+    AND option IS INITIAL.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///modify_transporting_where.abap", src, &parsed);
+
+    for field_name in ["sign", "option"] {
+        assert!(
+            unit.field_accesses.iter().any(|access| {
+                access.base_namespace == Namespace::Value
+                    && access.base_name.as_ref() == "lt_rows"
+                    && access.field_path.len() == 1
+                    && access.field_path[0].name.as_ref() == field_name
+            }),
+            "expected MODIFY TRANSPORTING field access for `{field_name}`, accesses={:?}",
+            unit.field_accesses
+        );
+    }
+
+    assert!(unit.loop_where_field_contexts.iter().any(|ctx| {
+        ctx.source_access.base_name.as_ref() == "lt_rows"
+            && ctx
+                .target_access
+                .as_ref()
+                .is_some_and(|access| access.base_name.as_ref() == "ls_row")
+    }));
+
+    for field_name in ["low", "sign", "option"] {
+        assert!(
+            unit.references.iter().any(|reference| {
+                reference.name.as_ref() == field_name
+                    && reference.namespace == Namespace::Value
+                    && reference.kind == ReferenceKind::Identifier
+            }),
+            "expected MODIFY WHERE reference for `{field_name}`, refs={:?}",
+            unit.references
+        );
+        assert!(
+            !unit.diagnostics.iter().any(|diag| {
+                diag.kind == DiagnosticKind::UnresolvedReference
+                    && diag.message.contains(&format!("'{field_name}'"))
+            }),
+            "unexpected unresolved diagnostic for MODIFY field `{field_name}`: {:?}",
+            unit.diagnostics
+        );
+    }
+}
+
+#[test]
 fn collects_sql_semantics_for_modify_dbtab_from_work_area() {
     let src = r#"
 TYPES ty_trans TYPE BEGIN OF ty_trans,

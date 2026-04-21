@@ -781,6 +781,62 @@ ENDFORM.
     }
 
     #[test]
+    fn semantic_tokens_mark_modify_transporting_and_where_fields_as_property() {
+        let store = DocumentStore::default();
+        let src = "\
+FORM run.
+  TYPES: BEGIN OF ty_row,
+           low TYPE string,
+           sign TYPE string,
+           option TYPE string,
+         END OF ty_row.
+  DATA lt_rows TYPE STANDARD TABLE OF ty_row WITH EMPTY KEY.
+  DATA ls_row TYPE ty_row.
+
+  MODIFY lt_rows FROM ls_row
+    TRANSPORTING sign option
+    WHERE low IS NOT INITIAL
+      AND sign IS INITIAL
+      AND option IS INITIAL.
+ENDFORM.
+";
+        let snapshot = store.publish("file:///semantic_modify_transporting_where.abap", 1, src);
+        let tokens = build_semantic_tokens(snapshot.as_ref());
+        let legend = semantic_tokens_legend();
+        let property_idx = legend
+            .token_types
+            .iter()
+            .position(|t| *t == SemanticTokenType::PROPERTY)
+            .expect("legend has property") as u32;
+
+        let transporting_offset = src.find("TRANSPORTING ").expect("TRANSPORTING");
+        let transporting_start = transporting_offset + "TRANSPORTING ".len();
+        let where_offset = src.find("WHERE ").expect("WHERE");
+        let where_start = where_offset + "WHERE ".len();
+
+        for (field_name, start_offset) in [
+            ("sign", transporting_start),
+            ("option", transporting_start),
+            ("low", where_start),
+            ("sign", where_start),
+            ("option", where_start),
+        ] {
+            let field_offset = src[start_offset..]
+                .find(field_name)
+                .map(|offset| start_offset + offset)
+                .expect("field use");
+            let (line, character) =
+                byte_offset_to_line_character_utf16_reference(src, field_offset)
+                    .expect("field position");
+            assert_eq!(
+                semantic_token_type_at(&tokens.data, line, character),
+                Some(property_idx),
+                "expected `{field_name}` to highlight as property"
+            );
+        }
+    }
+
+    #[test]
     fn semantic_tokens_do_not_mark_open_sql_eq_operator_as_property() {
         let store = DocumentStore::default();
         let src = "\

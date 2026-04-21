@@ -8114,120 +8114,167 @@ fn parse_bare_where_field_query(
         .collect();
     let first_idx = *significant.first()?;
     let first = parse.tokens[first_idx].lexeme(text);
-    let (source_start_sig, source_end_sig, clause_sig) = if first.eq_ignore_ascii_case("delete") {
-        let find_keyword = |keyword: &str| {
-            significant.iter().position(|&idx| {
+    let find_keyword = |keyword: &str| {
+        significant.iter().position(|&idx| {
+            parse.tokens[idx].kind.as_str() == "Ident"
+                && parse.tokens[idx].lexeme(text).eq_ignore_ascii_case(keyword)
+        })
+    };
+    let (source_start_sig, source_end_sig, clause_sig, clause_end_sig) =
+        if first.eq_ignore_ascii_case("delete") {
+            if let Some(comparing_sig) = find_keyword("comparing") {
+                let from_sig = find_keyword("from")?;
+                let source_start_sig = from_sig + 1;
+                let source_end_sig = significant
+                    .iter()
+                    .enumerate()
+                    .skip(source_start_sig)
+                    .find_map(|(pos, &idx)| {
+                        let lexeme = parse.tokens[idx].lexeme(text);
+                        matches!(lexeme.to_ascii_lowercase().as_str(), "using" | "comparing")
+                            .then_some(pos)
+                    })
+                    .unwrap_or(comparing_sig);
+                if source_start_sig >= source_end_sig || source_end_sig > comparing_sig {
+                    return None;
+                }
+                (
+                    source_start_sig,
+                    source_end_sig,
+                    comparing_sig,
+                    significant.len(),
+                )
+            } else {
+                let where_sig = find_keyword("where")?;
+                if where_sig <= 1 {
+                    return None;
+                }
+                (1usize, where_sig, where_sig, significant.len())
+            }
+        } else if first.eq_ignore_ascii_case("loop") {
+            if significant
+                .get(1)
+                .is_none_or(|&idx| !parse.tokens[idx].lexeme(text).eq_ignore_ascii_case("at"))
+            {
+                return None;
+            }
+            let where_sig = significant.iter().position(|&idx| {
                 parse.tokens[idx].kind.as_str() == "Ident"
-                    && parse.tokens[idx].lexeme(text).eq_ignore_ascii_case(keyword)
+                    && parse.tokens[idx].lexeme(text).eq_ignore_ascii_case("where")
+            })?;
+            if where_sig <= 2 {
+                return None;
+            }
+            let source_end_sig = significant
+                .iter()
+                .enumerate()
+                .skip(2)
+                .find_map(|(pos, &idx)| {
+                    let lexeme = parse.tokens[idx].lexeme(text);
+                    matches!(
+                        lexeme.to_ascii_lowercase().as_str(),
+                        "into"
+                            | "assigning"
+                            | "reference"
+                            | "transporting"
+                            | "where"
+                            | "from"
+                            | "to"
+                            | "step"
+                    )
+                    .then_some(pos)
+                })
+                .unwrap_or(where_sig);
+            (2usize, source_end_sig, where_sig, significant.len())
+        } else if first.eq_ignore_ascii_case("read")
+            && significant.get(1).is_some_and(|&idx| {
+                parse.tokens[idx].kind.as_str() == "Ident"
+                    && parse.tokens[idx].lexeme(text).eq_ignore_ascii_case("table")
             })
-        };
-        if let Some(comparing_sig) = find_keyword("comparing") {
-            let from_sig = find_keyword("from")?;
-            let source_start_sig = from_sig + 1;
+        {
+            let with_sig = significant.iter().position(|&idx| {
+                parse.tokens[idx].kind.as_str() == "Ident"
+                    && parse.tokens[idx].lexeme(text).eq_ignore_ascii_case("with")
+            })?;
+            let key_sig = with_sig + 1;
+            if significant.get(key_sig).is_none_or(|&idx| {
+                parse.tokens[idx].kind.as_str() != "Ident"
+                    || !parse.tokens[idx].lexeme(text).eq_ignore_ascii_case("key")
+            }) {
+                return None;
+            }
+            let source_start_sig = 2usize;
             let source_end_sig = significant
                 .iter()
                 .enumerate()
                 .skip(source_start_sig)
                 .find_map(|(pos, &idx)| {
                     let lexeme = parse.tokens[idx].lexeme(text);
-                    matches!(lexeme.to_ascii_lowercase().as_str(), "using" | "comparing")
-                        .then_some(pos)
+                    matches!(
+                        lexeme.to_ascii_lowercase().as_str(),
+                        "into"
+                            | "assigning"
+                            | "with"
+                            | "index"
+                            | "using"
+                            | "transporting"
+                            | "comparing"
+                            | "binary"
+                            | "reference"
+                    )
+                    .then_some(pos)
                 })
-                .unwrap_or(comparing_sig);
-            if source_start_sig >= source_end_sig || source_end_sig > comparing_sig {
+                .unwrap_or(with_sig);
+            (source_start_sig, source_end_sig, key_sig, significant.len())
+        } else if first.eq_ignore_ascii_case("modify") {
+            let from_sig = find_keyword("from")?;
+            let source_start_sig = if significant.get(1).is_some_and(|&idx| {
+                parse.tokens[idx].kind.as_str() == "Ident"
+                    && parse.tokens[idx].lexeme(text).eq_ignore_ascii_case("table")
+            }) {
+                2usize
+            } else {
+                1usize
+            };
+            if from_sig <= source_start_sig {
                 return None;
             }
-            (source_start_sig, source_end_sig, comparing_sig)
+
+            let transporting_sig = find_keyword("transporting")?;
+            let where_sig = find_keyword("where");
+            let transporting_idx = *significant.get(transporting_sig)?;
+            let where_idx = where_sig.and_then(|sig| significant.get(sig).copied());
+
+            if offset >= parse.tokens[transporting_idx].range.end
+                && where_idx.is_none_or(|idx| offset <= parse.tokens[idx].range.start)
+            {
+                (
+                    source_start_sig,
+                    from_sig,
+                    transporting_sig,
+                    where_sig.unwrap_or(significant.len()),
+                )
+            } else if let Some(where_sig) = where_sig {
+                let where_idx = *significant.get(where_sig)?;
+                if offset < parse.tokens[where_idx].range.end {
+                    return None;
+                }
+                (source_start_sig, from_sig, where_sig, significant.len())
+            } else {
+                return None;
+            }
         } else {
-            let where_sig = find_keyword("where")?;
-            if where_sig <= 1 {
-                return None;
-            }
-            (1usize, where_sig, where_sig)
-        }
-    } else if first.eq_ignore_ascii_case("loop") {
-        if significant
-            .get(1)
-            .is_none_or(|&idx| !parse.tokens[idx].lexeme(text).eq_ignore_ascii_case("at"))
-        {
             return None;
-        }
-        let where_sig = significant.iter().position(|&idx| {
-            parse.tokens[idx].kind.as_str() == "Ident"
-                && parse.tokens[idx].lexeme(text).eq_ignore_ascii_case("where")
-        })?;
-        if where_sig <= 2 {
-            return None;
-        }
-        let source_end_sig = significant
-            .iter()
-            .enumerate()
-            .skip(2)
-            .find_map(|(pos, &idx)| {
-                let lexeme = parse.tokens[idx].lexeme(text);
-                matches!(
-                    lexeme.to_ascii_lowercase().as_str(),
-                    "into"
-                        | "assigning"
-                        | "reference"
-                        | "transporting"
-                        | "where"
-                        | "from"
-                        | "to"
-                        | "step"
-                )
-                .then_some(pos)
-            })
-            .unwrap_or(where_sig);
-        (2usize, source_end_sig, where_sig)
-    } else if first.eq_ignore_ascii_case("read")
-        && significant.get(1).is_some_and(|&idx| {
-            parse.tokens[idx].kind.as_str() == "Ident"
-                && parse.tokens[idx].lexeme(text).eq_ignore_ascii_case("table")
-        })
-    {
-        let with_sig = significant.iter().position(|&idx| {
-            parse.tokens[idx].kind.as_str() == "Ident"
-                && parse.tokens[idx].lexeme(text).eq_ignore_ascii_case("with")
-        })?;
-        let key_sig = with_sig + 1;
-        if significant.get(key_sig).is_none_or(|&idx| {
-            parse.tokens[idx].kind.as_str() != "Ident"
-                || !parse.tokens[idx].lexeme(text).eq_ignore_ascii_case("key")
-        }) {
-            return None;
-        }
-        let source_start_sig = 2usize;
-        let source_end_sig = significant
-            .iter()
-            .enumerate()
-            .skip(source_start_sig)
-            .find_map(|(pos, &idx)| {
-                let lexeme = parse.tokens[idx].lexeme(text);
-                matches!(
-                    lexeme.to_ascii_lowercase().as_str(),
-                    "into"
-                        | "assigning"
-                        | "with"
-                        | "index"
-                        | "using"
-                        | "transporting"
-                        | "comparing"
-                        | "binary"
-                        | "reference"
-                )
-                .then_some(pos)
-            })
-            .unwrap_or(with_sig);
-        (source_start_sig, source_end_sig, key_sig)
-    } else {
-        return None;
-    };
+        };
 
     let clause_idx = *significant.get(clause_sig)?;
     let after_clause = parse.tokens[clause_idx].range.end;
-    let statement_end = parse.tokens[*significant.last()?].range.end.max(offset);
-    if offset < after_clause || offset > statement_end {
+    let clause_end = if clause_end_sig < significant.len() {
+        parse.tokens[*significant.get(clause_end_sig)?].range.start
+    } else {
+        parse.tokens[*significant.last()?].range.end.max(offset)
+    };
+    if offset < after_clause || offset > clause_end {
         return None;
     }
 
@@ -8238,10 +8285,9 @@ fn parse_bare_where_field_query(
         .collect();
     let source = parse_value_access_tokens(text, parse, &source_tokens)?;
 
-    let prefix_token = significant
+    let prefix_token = significant[clause_sig + 1..clause_end_sig]
         .iter()
         .copied()
-        .skip(clause_sig + 1)
         .find(|&idx| {
             parse.tokens[idx].kind.as_str() == "Ident"
                 && parse.tokens[idx].range.start <= offset

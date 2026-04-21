@@ -1144,7 +1144,7 @@ fn loop_field_scope_symbol_specs<'a>(
                         crate::SymbolData {
                             id,
                             name,
-                            kind: crate::SymbolKind::Variable,
+                            kind: crate::SymbolKind::Field,
                             scope,
                             decl_range: loop_field_synthetic_decl_range(
                                 unit.unit_id,
