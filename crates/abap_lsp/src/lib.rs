@@ -2614,11 +2614,15 @@ pub fn code_actions(state: &ServerState, params: &CodeActionParams) -> Option<Co
         let Some(action) = snapshot.missing_method_implementation_action_at(offset) else {
             continue;
         };
-        if !seen.insert(action.insert_offset) {
+        if !seen.insert((action.edit_range.start, action.edit_range.end)) {
             continue;
         }
 
-        let Some(position) = offset_to_position_snapshot(snapshot.as_ref(), action.insert_offset)
+        let Some(start) = offset_to_position_snapshot(snapshot.as_ref(), action.edit_range.start)
+        else {
+            continue;
+        };
+        let Some(end) = offset_to_position_snapshot(snapshot.as_ref(), action.edit_range.end)
         else {
             continue;
         };
@@ -2635,10 +2639,7 @@ pub fn code_actions(state: &ServerState, params: &CodeActionParams) -> Option<Co
                 changes: Some(HashMap::from([(
                     uri,
                     vec![TextEdit {
-                        range: Range {
-                            start: position,
-                            end: position,
-                        },
+                        range: Range { start, end },
                         new_text: action.new_text,
                     }],
                 )])),
@@ -3550,6 +3551,89 @@ ENDCLASS.\n";
             Position {
                 line: 19,
                 character: 0
+            }
+        );
+    }
+
+    #[test]
+    fn code_action_creates_missing_class_implementation_when_absent() {
+        let state = ServerState::default();
+        let uri = Uri::from_str("file:///missing_class_impl.abap").expect("uri");
+        let text = "\
+CLASS zcl_ast_node DEFINITION.\n\
+  PUBLIC SECTION.\n\
+    METHODS to_string \n\
+      RETURNING VALUE(rv_text) TYPE string.\n\
+ENDCLASS.";
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: uri.clone(),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: text.to_string(),
+                },
+            },
+        );
+
+        let snapshot = snapshot_for_uri(&state, uri.as_str()).expect("snapshot");
+        let diagnostic = build_lsp_diagnostics(snapshot.as_ref())
+            .into_iter()
+            .find(|diag| {
+                diag.code.as_ref().is_some_and(|code| {
+                    matches!(
+                        code,
+                        NumberOrString::String(value)
+                            if value == DIAGNOSTIC_CODE_MISSING_METHOD_IMPLEMENTATION
+                    )
+                }) && diag.message.contains("to_string")
+            })
+            .expect("missing method diagnostic");
+
+        let actions = code_actions(
+            &state,
+            &CodeActionParams {
+                text_document: TextDocumentIdentifier { uri: uri.clone() },
+                range: diagnostic.range,
+                context: CodeActionContext {
+                    diagnostics: vec![diagnostic],
+                    only: None,
+                    trigger_kind: None,
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            },
+        )
+        .expect("code actions");
+
+        assert_eq!(actions.len(), 1);
+        let CodeActionOrCommand::CodeAction(action) = &actions[0] else {
+            panic!("expected code action");
+        };
+        let changes = action
+            .edit
+            .as_ref()
+            .and_then(|edit| edit.changes.as_ref())
+            .expect("workspace changes");
+        let edits = changes.get(&uri).expect("uri changes");
+        assert_eq!(edits.len(), 1);
+        assert_eq!(
+            edits[0].new_text,
+            "\n\nCLASS zcl_ast_node IMPLEMENTATION.\n  METHOD to_string.\n  ENDMETHOD.\nENDCLASS.\n"
+        );
+        assert_eq!(
+            edits[0].range.start,
+            Position {
+                line: 4,
+                character: 9
+            }
+        );
+        assert_eq!(
+            edits[0].range.end,
+            Position {
+                line: 4,
+                character: 9
             }
         );
     }

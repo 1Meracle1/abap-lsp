@@ -246,7 +246,7 @@ pub struct DefinitionTarget {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MissingMethodImplementationAction {
     pub title: String,
-    pub insert_offset: usize,
+    pub edit_range: Range<usize>,
     pub new_text: String,
 }
 
@@ -1118,12 +1118,24 @@ impl AnalysisSnapshot {
             class_implementation_edit_target(&self.parse, self.text.as_ref(), class_name)?;
         Some(MissingMethodImplementationAction {
             title: format!("Create method implementation '{}'", member.name),
-            insert_offset: implementation.insert_offset,
-            new_text: build_missing_method_implementation_text(
-                self.text.as_ref(),
-                member.name.as_ref(),
-                implementation.body_is_empty,
-            ),
+            edit_range: implementation.edit_range.clone(),
+            new_text: match implementation.kind {
+                ClassImplementationEditKind::ExistingBody { body_is_empty } => {
+                    build_missing_method_implementation_text(
+                        self.text.as_ref(),
+                        member.name.as_ref(),
+                        body_is_empty,
+                    )
+                }
+                ClassImplementationEditKind::MissingBlock => {
+                    build_missing_class_implementation_text(
+                        self.text.as_ref(),
+                        class_name,
+                        member.name.as_ref(),
+                        implementation.edit_range.end < self.text.len(),
+                    )
+                }
+            },
         })
     }
 
@@ -6988,8 +7000,13 @@ fn line_end_offset(text: &str, offset: usize) -> usize {
 }
 
 struct ClassImplementationEditTarget {
-    insert_offset: usize,
-    body_is_empty: bool,
+    edit_range: Range<usize>,
+    kind: ClassImplementationEditKind,
+}
+
+enum ClassImplementationEditKind {
+    ExistingBody { body_is_empty: bool },
+    MissingBlock,
 }
 
 fn class_implementation_edit_target(
@@ -6998,6 +7015,7 @@ fn class_implementation_edit_target(
     class_name: &str,
 ) -> Option<ClassImplementationEditTarget> {
     let root = parse.file.root();
+    let mut definition_end = None;
     for child in parse.file.children(root) {
         let range = parse.file.range(child);
         let (token_start, token_end) = token_window_for_range(parse, &range)?;
@@ -7016,9 +7034,23 @@ fn class_implementation_edit_target(
         if !class_token.lexeme(text).eq_ignore_ascii_case("class")
             || name_token.kind != TokenKind::Ident
             || !name_token.lexeme(text).eq_ignore_ascii_case(class_name)
-            || !implementation_token
-                .lexeme(text)
-                .eq_ignore_ascii_case("implementation")
+        {
+            continue;
+        }
+
+        if implementation_token
+            .lexeme(text)
+            .eq_ignore_ascii_case("definition")
+        {
+            let final_period_idx = (token_start..token_end)
+                .rfind(|&idx| parse.tokens[idx].kind == TokenKind::Period)?;
+            definition_end = Some(parse.tokens[final_period_idx].range.end);
+            continue;
+        }
+
+        if !implementation_token
+            .lexeme(text)
+            .eq_ignore_ascii_case("implementation")
         {
             continue;
         }
@@ -7032,12 +7064,20 @@ fn class_implementation_edit_target(
         let body_range =
             parse.tokens[header_period].range.end..parse.tokens[endclass_idx].range.start;
         return Some(ClassImplementationEditTarget {
-            insert_offset: parse.tokens[endclass_idx].range.start,
-            body_is_empty: text[body_range].trim().is_empty(),
+            edit_range: parse.tokens[endclass_idx].range.start
+                ..parse.tokens[endclass_idx].range.start,
+            kind: ClassImplementationEditKind::ExistingBody {
+                body_is_empty: text[body_range].trim().is_empty(),
+            },
         });
     }
 
-    None
+    let definition_end = definition_end?;
+    let gap_end = blank_line_gap_end(text, definition_end);
+    Some(ClassImplementationEditTarget {
+        edit_range: definition_end..gap_end,
+        kind: ClassImplementationEditKind::MissingBlock,
+    })
 }
 
 fn build_missing_method_implementation_text(
@@ -7048,6 +7088,59 @@ fn build_missing_method_implementation_text(
     let newline = if text.contains("\r\n") { "\r\n" } else { "\n" };
     let prefix = if body_is_empty { "" } else { newline };
     format!("{prefix}  METHOD {method_name}.{newline}  ENDMETHOD.{newline}")
+}
+
+fn build_missing_class_implementation_text(
+    text: &str,
+    class_name: &str,
+    method_name: &str,
+    has_following_content: bool,
+) -> String {
+    let newline = if text.contains("\r\n") { "\r\n" } else { "\n" };
+    let suffix = if has_following_content {
+        format!("{newline}{newline}")
+    } else {
+        newline.to_string()
+    };
+    format!(
+        "{newline}{newline}CLASS {class_name} IMPLEMENTATION.{newline}  METHOD {method_name}.{newline}  ENDMETHOD.{newline}ENDCLASS.{suffix}"
+    )
+}
+
+fn blank_line_gap_end(text: &str, offset: usize) -> usize {
+    let bytes = text.as_bytes();
+    let len = bytes.len();
+    let mut idx = offset;
+
+    if idx >= len {
+        return idx;
+    }
+    if bytes[idx] == b'\r' && bytes.get(idx + 1) == Some(&b'\n') {
+        idx += 2;
+    } else if bytes[idx] == b'\n' {
+        idx += 1;
+    } else {
+        return idx;
+    }
+
+    loop {
+        let line_start = idx;
+        while idx < len && matches!(bytes[idx], b' ' | b'\t') {
+            idx += 1;
+        }
+        if idx >= len {
+            return idx;
+        }
+        if bytes[idx] == b'\r' && bytes.get(idx + 1) == Some(&b'\n') {
+            idx += 2;
+            continue;
+        }
+        if bytes[idx] == b'\n' {
+            idx += 1;
+            continue;
+        }
+        return line_start;
+    }
 }
 
 fn parse_function_module_completion_query(
