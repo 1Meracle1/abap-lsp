@@ -1662,6 +1662,61 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
         }
     }
 
+    fn collect_selection_screen_title_refs(
+        &mut self,
+        tokens: &[SyntaxTokenInfo],
+        start: usize,
+        scope: ScopeId,
+    ) {
+        let period_idx = tokens
+            .iter()
+            .position(|token| token.text.as_ref() == ".")
+            .unwrap_or(tokens.len());
+        if start >= period_idx {
+            return;
+        }
+
+        let mut batch_start = start;
+        let mut idx = start;
+        while idx < period_idx {
+            let is_text_pool = tokens[idx].text.eq_ignore_ascii_case("text")
+                && tokens
+                    .get(idx + 1)
+                    .is_some_and(|token| token.text.as_ref() == "-")
+                && tokens
+                    .get(idx + 2)
+                    .is_some_and(|token| token.text.chars().all(|ch| ch.is_ascii_digit()));
+            if is_text_pool {
+                self.collect_token_expression_refs_range(tokens, batch_start, idx, scope);
+                idx += 3;
+                batch_start = idx;
+                continue;
+            }
+            idx += 1;
+        }
+        self.collect_token_expression_refs_range(tokens, batch_start, period_idx, scope);
+    }
+
+    pub(super) fn collect_selection_screen_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        let tokens = self.collector.significant_stmt_token_infos(node);
+        if tokens.len() < 6
+            || !Self::tokens_match_keyword_sequence(&tokens, &["selection", "-", "screen"])
+        {
+            return;
+        }
+
+        if Self::tokens_match_keyword_sequence(&tokens[3..], &["begin", "of", "block"]) {
+            if let Some(with_idx) = self.find_top_level_keyword_infos(&tokens, 6, &["WITH"])
+                && Self::tokens_match_keyword_sequence(
+                    &tokens[with_idx..],
+                    &["with", "frame", "title"],
+                )
+            {
+                self.collect_selection_screen_title_refs(&tokens, with_idx + 3, scope);
+            }
+        }
+    }
+
     pub(super) fn collect_generic_simple_stmt(&mut self, node: NodeId, scope: ScopeId) {
         if self.collector.node_has_structured_children(node) {
             self.collector.walk_children(node, scope);
@@ -2431,6 +2486,7 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                         }
                     }
                 }
+                Some(abap_ast::ast::TypeClauseKind::For) => {}
                 None => {}
             }
             return;

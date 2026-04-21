@@ -59,6 +59,38 @@ impl<'ctx, 'a> DeclLowering<'ctx, 'a> {
         Some(i)
     }
 
+    fn checkbox_parameter_type_from_clause(
+        &self,
+        node: abap_ast::arena::NodeId,
+    ) -> Option<FieldTypeRefData> {
+        let clause = DeclClause::cast(self.ctx.syntax(node))?;
+        if clause.type_clause_kind(self.ctx.source()).is_some() {
+            return None;
+        }
+
+        let tokens = self
+            .ctx
+            .syntax_token_nodes(node)
+            .into_iter()
+            .filter(|token| !self.ctx.syntax_token_is_comment(token))
+            .collect::<Vec<_>>();
+        for idx in 0..tokens.len() {
+            if tokens[idx].text.eq_ignore_ascii_case("as")
+                && tokens
+                    .get(idx + 1)
+                    .is_some_and(|token| token.text.eq_ignore_ascii_case("checkbox"))
+            {
+                return Some(FieldTypeRefData {
+                    namespace: Namespace::Type,
+                    is_ref: false,
+                    base_name: Arc::from("abap_bool"),
+                    field_path: Vec::new(),
+                });
+            }
+        }
+        None
+    }
+
     fn report_message_id_reference(
         &self,
         node: abap_ast::arena::NodeId,
@@ -433,7 +465,10 @@ impl<'ctx, 'a> DeclLowering<'ctx, 'a> {
         {
             let range = name_node.range();
             let structure = self.ctx.structure_from_typed_clause(node, scope);
-            let declared_type = self.ctx.type_ref_from_typed_clause(node);
+            let declared_type = self
+                .ctx
+                .type_ref_from_typed_clause(node)
+                .or_else(|| self.checkbox_parameter_type_from_clause(node));
             let type_clause_display = self.ctx.type_clause_display_from_typed_clause(node);
             let value_clause_display = self.ctx.value_clause_display_from_typed_clause(node);
             self.ctx.declare_symbol(

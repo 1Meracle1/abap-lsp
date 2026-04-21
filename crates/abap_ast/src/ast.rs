@@ -35,6 +35,7 @@ pub enum MethodsRaiseKind {
 pub enum TypeClauseKind {
     Type,
     Like,
+    For,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -650,6 +651,7 @@ impl<'a> AstNode<'a> for DataLikeDecl<'a> {
             kind,
             SyntaxKind::DataDecl
                 | SyntaxKind::ParametersDecl
+                | SyntaxKind::SelectOptionsDecl
                 | SyntaxKind::TypesDecl
                 | SyntaxKind::ConstantsDecl
                 | SyntaxKind::FieldSymbolsDecl
@@ -1014,7 +1016,9 @@ impl<'a> DataLikeDecl<'a> {
         match self.syntax.kind() {
             SyntaxKind::ConstantsDecl => Some(DataLikeStorageKind::Constant),
             SyntaxKind::StaticsDecl => Some(DataLikeStorageKind::Static),
-            SyntaxKind::ParametersDecl => Some(DataLikeStorageKind::Instance),
+            SyntaxKind::ParametersDecl | SyntaxKind::SelectOptionsDecl => {
+                Some(DataLikeStorageKind::Instance)
+            }
             SyntaxKind::DataDecl => {
                 let mut texts = self
                     .syntax
@@ -1065,7 +1069,9 @@ impl<'a> DeclClause<'a> {
             .children_by_kind(SyntaxKind::Token)
             .find(|token| {
                 token.text(source).is_some_and(|text| {
-                    text.eq_ignore_ascii_case("type") || text.eq_ignore_ascii_case("like")
+                    text.eq_ignore_ascii_case("type")
+                        || text.eq_ignore_ascii_case("like")
+                        || text.eq_ignore_ascii_case("for")
                 })
             })
     }
@@ -1077,6 +1083,8 @@ impl<'a> DeclClause<'a> {
             Some(TypeClauseKind::Type)
         } else if text.eq_ignore_ascii_case("like") {
             Some(TypeClauseKind::Like)
+        } else if text.eq_ignore_ascii_case("for") {
+            Some(TypeClauseKind::For)
         } else {
             None
         }
@@ -1097,6 +1105,10 @@ impl<'a> DeclClause<'a> {
                 }
                 if text.eq_ignore_ascii_case("like") {
                     namespace = Some(TypeClauseKind::Like);
+                    continue;
+                }
+                if text.eq_ignore_ascii_case("for") {
+                    namespace = Some(TypeClauseKind::For);
                     continue;
                 }
             }

@@ -944,6 +944,21 @@ START-OF-SELECTION.
     }
 
     #[test]
+    fn at_line_selection_uses_full_event_header_as_symbol_name() {
+        let src = "AT LINE-SELECTION.\n  WRITE 'x'.\n";
+        let parsed = parse(src);
+        let unit = analyze_unit("file:///line_event.abap", src, &parsed);
+
+        let event = unit
+            .symbols
+            .iter()
+            .find(|symbol| symbol.kind == SymbolKind::Event)
+            .expect("event symbol");
+        assert_eq!(event.name.as_ref(), "at line-selection");
+        assert_eq!(&src[event.decl_range.clone()], "AT LINE-SELECTION");
+    }
+
+    #[test]
     fn submit_statement_collects_report_call_sites_and_dynamic_target_refs() {
         let src = "\
 REPORT zsubmit_demo.
@@ -1138,6 +1153,105 @@ START-OF-SELECTION.\n\
             "{:#?}",
             unit.diagnostics
         );
+    }
+
+    #[test]
+    fn selection_screen_block_title_resolves_without_screen_false_positive() {
+        let src = "\
+DATA gv_fselc TYPE string.\n\
+SELECTION-SCREEN BEGIN OF BLOCK fsc WITH FRAME TITLE gv_fselc.\n\
+SELECTION-SCREEN END OF BLOCK fsc.\n";
+        let parsed = parse(src);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let unit = analyze_unit("file:///selection_screen_block.abap", src, &parsed);
+
+        let title_offset = src.rfind("gv_fselc").expect("title variable") + 1;
+        let title_ref = unit
+            .semantic()
+            .refs()
+            .reference_at_offset(title_offset)
+            .expect("title reference");
+        assert_eq!(title_ref.name.as_ref(), "gv_fselc");
+        assert!(matches!(title_ref.resolution, Some(Resolution::Symbol(_))));
+
+        let screen_offset = src.find("SCREEN BEGIN").expect("selection-screen keyword") + 1;
+        assert!(
+            unit.semantic()
+                .refs()
+                .reference_at_offset(screen_offset)
+                .is_none(),
+            "{:#?}",
+            unit.references
+        );
+        assert!(
+            unit.diagnostics
+                .iter()
+                .all(|diagnostic| !diagnostic.message.contains("unknown symbol 'screen'")),
+            "{:#?}",
+            unit.diagnostics
+        );
+    }
+
+    #[test]
+    fn select_options_declare_range_table_symbol_and_resolve_for_operand() {
+        let src = "\
+DATA lv_rogln TYPE string.\n\
+SELECT-OPTIONS: s_rogln FOR lv_rogln.\n";
+        let parsed = parse(src);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let unit = analyze_unit("file:///select_options.abap", src, &parsed);
+
+        let symbol = unit
+            .symbols
+            .iter()
+            .find(|symbol| symbol.kind == SymbolKind::Variable && symbol.name.as_ref() == "s_rogln")
+            .expect("select-options symbol");
+        assert!(symbol.declared_type.is_none());
+        assert_eq!(
+            symbol.type_clause_display.as_deref(),
+            Some("RANGE OF lv_rogln")
+        );
+
+        let structure = symbol
+            .structure
+            .and_then(|id| unit.structures.get(id.as_usize()))
+            .expect("range structure");
+        let fields = structure
+            .fields
+            .iter()
+            .map(|field| field.name.as_ref())
+            .collect::<Vec<_>>();
+        assert_eq!(fields, vec!["sign", "option", "low", "high"]);
+
+        let operand_offset = src.rfind("lv_rogln").expect("for operand") + 1;
+        let operand_ref = unit
+            .semantic()
+            .refs()
+            .reference_at_offset(operand_offset)
+            .expect("for operand reference");
+        assert_eq!(operand_ref.name.as_ref(), "lv_rogln");
+        assert!(matches!(
+            operand_ref.resolution,
+            Some(Resolution::Symbol(_))
+        ));
+    }
+
+    #[test]
+    fn checkbox_parameters_default_to_abap_bool() {
+        let src = "PARAMETERS: c_rom AS CHECKBOX.\n";
+        let parsed = parse(src);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let unit = analyze_unit("file:///checkbox_param.abap", src, &parsed);
+
+        let symbol = unit
+            .symbols
+            .iter()
+            .find(|symbol| symbol.kind == SymbolKind::Variable && symbol.name.as_ref() == "c_rom")
+            .expect("checkbox parameter");
+        let declared_type = symbol.declared_type.as_ref().expect("declared type");
+        assert_eq!(declared_type.namespace, Namespace::Type);
+        assert_eq!(declared_type.base_name.as_ref(), "abap_bool");
+        assert!(declared_type.field_path.is_empty());
     }
 
     #[test]

@@ -64,6 +64,17 @@ const PARAMETERS_TYPE_STOP_KEYWORDS: &[&str] = &[
     "VISIBLE",
 ];
 
+const SELECT_OPTIONS_FOR_STOP_KEYWORDS: &[&str] = &[
+    "DEFAULT",
+    "LOWER",
+    "MATCHCODE",
+    "MEMORY",
+    "MODIF",
+    "NO",
+    "OBLIGATORY",
+    "VISIBLE",
+];
+
 /// If `tokens[idx]` begins `DATA … TYPE … .` (optionally `DATA:` and comma-separated clauses),
 /// returns the structured node and the index after the closing `.`. Otherwise `None`.
 pub fn try_parse_data_decl(
@@ -166,6 +177,54 @@ pub fn try_parse_parameters_decl(
                 let node = b.branch(
                     SyntaxKind::ParametersDecl,
                     kw_tok.range.start..next.range.end,
+                    &children,
+                );
+                return Some((node, i + 1));
+            }
+            _ => return None,
+        }
+    }
+}
+
+pub fn try_parse_select_options_decl(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    _errors: &mut Vec<crate::ParseError>,
+) -> Option<(NodeId, usize)> {
+    let kw_end = match_hyphenated_keyword(source, tokens, idx, &["select", "options"])?;
+
+    let mut i = kw_end;
+    let has_colon = match tokens.get(i).map(|t| t.kind) {
+        Some(TokenKind::Colon) => {
+            i += 1;
+            true
+        }
+        _ => false,
+    };
+
+    let mut clause_nodes = Vec::new();
+    loop {
+        while tokens.get(i).map(|t| t.kind) == Some(TokenKind::Comment) {
+            i += 1;
+        }
+        let (clause, next_i) = parse_select_options_clause(b, source, tokens, i)?;
+        clause_nodes.push(clause);
+        i = next_i;
+        let next = tokens.get(i)?;
+        match next.kind {
+            TokenKind::Comma if has_colon => i += 1,
+            TokenKind::Period => {
+                let mut children = Vec::with_capacity(clause_nodes.len() + (kw_end - idx) + 1);
+                for token in &tokens[idx..kw_end] {
+                    children.push(token_leaf(b, token));
+                }
+                children.extend(clause_nodes);
+                children.push(token_leaf(b, next));
+                let node = b.branch(
+                    SyntaxKind::SelectOptionsDecl,
+                    tokens[idx].range.start..next.range.end,
                     &children,
                 );
                 return Some((node, i + 1));
@@ -770,6 +829,44 @@ fn parse_parameters_clause(
                     children.push(token_leaf(b, tok));
                     i += 1;
                 }
+            }
+        }
+    }
+
+    let range = b.span(*children.first().unwrap()).start..b.span(*children.last().unwrap()).end;
+    Some((b.branch(SyntaxKind::DataTypedClause, range, &children), i))
+}
+
+fn parse_select_options_clause(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+) -> Option<(NodeId, usize)> {
+    let (name, mut i) = parse_data_decl_name(b, source, tokens, idx)?;
+    let mut children = vec![name];
+
+    let for_tok = tokens.get(i)?;
+    if !is_keyword(source, for_tok, "for") {
+        return None;
+    }
+    children.push(token_leaf(b, for_tok));
+    i += 1;
+
+    let (typed, j) = parse_type_ref_tokens(b, source, tokens, i, SELECT_OPTIONS_FOR_STOP_KEYWORDS)?;
+    children.push(typed);
+    i = j;
+
+    while let Some(tok) = tokens.get(i) {
+        match tok.kind {
+            TokenKind::Comment => {
+                children.push(token_leaf(b, tok));
+                i += 1;
+            }
+            TokenKind::Comma | TokenKind::Period | TokenKind::Eof => break,
+            _ => {
+                children.push(token_leaf(b, tok));
+                i += 1;
             }
         }
     }
@@ -1428,6 +1525,25 @@ mod tests {
         assert_eq!(file.count_kind(file.root(), SyntaxKind::ParametersDecl), 1);
         assert_eq!(file.count_kind(file.root(), SyntaxKind::DataTypedClause), 1);
         assert!(file.count_kind(file.root(), SyntaxKind::LengthSpec) >= 1);
+    }
+
+    #[test]
+    fn parameters_clause_accepts_checkbox_form_without_explicit_type() {
+        let file = tree_ok("PARAMETERS: c_rom AS CHECKBOX.");
+        assert_eq!(file.count_kind(file.root(), SyntaxKind::ParametersDecl), 1);
+        assert_eq!(file.count_kind(file.root(), SyntaxKind::DataTypedClause), 1);
+        assert_eq!(file.count_kind(file.root(), SyntaxKind::TypeRefSimple), 0);
+    }
+
+    #[test]
+    fn select_options_clause_parses_for_operand_structurally() {
+        let file = tree_ok("SELECT-OPTIONS: s_rogln FOR lv_rogln.");
+        assert_eq!(
+            file.count_kind(file.root(), SyntaxKind::SelectOptionsDecl),
+            1
+        );
+        assert_eq!(file.count_kind(file.root(), SyntaxKind::DataTypedClause), 1);
+        assert_eq!(file.count_kind(file.root(), SyntaxKind::TypeRefSimple), 1);
     }
 
     #[test]

@@ -339,6 +339,13 @@ impl<'a> Collector<'a> {
             {
                 (*tokens.first()?, *tokens.last()?)
             }
+            _ if self.event_header_token_is(&tokens, 0, "at")
+                && self
+                    .event_header_matches_hyphenated(&tokens, 1, &["line", "selection"])
+                    .is_some_and(|next| next == tokens.len()) =>
+            {
+                (*tokens.first()?, *tokens.last()?)
+            }
             _ => return None,
         };
         Some((

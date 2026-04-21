@@ -25,9 +25,13 @@ impl<'a> Collector<'a> {
                     self.collect_token_expression_refs_infos(&tokens, scope, true);
                 }
             }
-            SyntaxKind::DataDecl | SyntaxKind::ParametersDecl | SyntaxKind::StaticsDecl => self
-                .decl_lowering()
-                .walk_data_like_decl(node, scope, SymbolKind::Variable),
+            SyntaxKind::DataDecl
+            | SyntaxKind::ParametersDecl
+            | SyntaxKind::SelectOptionsDecl
+            | SyntaxKind::StaticsDecl => {
+                self.decl_lowering()
+                    .walk_data_like_decl(node, scope, SymbolKind::Variable)
+            }
             SyntaxKind::TypesDecl => {
                 self.decl_lowering()
                     .walk_data_like_decl(node, scope, SymbolKind::TypeDef)
@@ -162,6 +166,9 @@ impl<'a> Collector<'a> {
             SyntaxKind::CallStmt => self.stmt_lowering().collect_call_stmt(node, scope),
             SyntaxKind::MessageStmt => self.stmt_lowering().collect_message_stmt(node, scope),
             SyntaxKind::ReplaceStmt => self.stmt_lowering().collect_replace_stmt(node, scope),
+            SyntaxKind::SelectionScreenStmt => self
+                .stmt_lowering()
+                .collect_selection_screen_stmt(node, scope),
             SyntaxKind::UnparsedStmt
             | SyntaxKind::SetPfStatusStmt
             | SyntaxKind::SetTitlebarStmt

@@ -185,6 +185,7 @@ impl<'ctx, 'a> FormsLowering<'ctx, 'a> {
                         self.collector
                             .field_type_ref_from_node(type_ref.syntax().id(), Namespace::Value)
                     }),
+                    Some(TypeClauseKind::For) => None,
                     None if section_kind == FormParameterSection::Tables => {
                         param.type_ref().and_then(|type_ref| {
                             self.collector
@@ -463,6 +464,7 @@ impl<'ctx, 'a> FormsLowering<'ctx, 'a> {
                                     Namespace::Value,
                                 )
                             }),
+                            Some(TypeClauseKind::For) => None,
                             None if section_kind == FunctionModuleParameterSection::Tables => {
                                 param.type_ref().and_then(|type_ref| {
                                     self.collector.field_type_ref_from_node(

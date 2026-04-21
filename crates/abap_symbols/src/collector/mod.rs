@@ -1281,6 +1281,63 @@ impl<'a> Collector<'a> {
         })
     }
 
+    fn push_range_table_structure(
+        &mut self,
+        scope: ScopeId,
+        name_suffix: &str,
+        low_high_type: FieldTypeRefData,
+    ) -> StructureId {
+        let sign_type = FieldTypeRefData {
+            namespace: Namespace::Type,
+            is_ref: false,
+            base_name: Arc::from("ddsign"),
+            field_path: Vec::new(),
+        };
+        let option_type = FieldTypeRefData {
+            namespace: Namespace::Type,
+            is_ref: false,
+            base_name: Arc::from("ddoption"),
+            field_path: Vec::new(),
+        };
+        self.push_structure(
+            Arc::from(format!("<range:{name_suffix}>")),
+            [
+                StructureFieldData {
+                    name: Arc::from("sign"),
+                    decl_range: None,
+                    decl_unit: self.unit_id,
+                    structure: self.resolve_field_type_ref(scope, &sign_type),
+                    type_ref: Some(sign_type),
+                    value_clause_display: None,
+                },
+                StructureFieldData {
+                    name: Arc::from("option"),
+                    decl_range: None,
+                    decl_unit: self.unit_id,
+                    structure: self.resolve_field_type_ref(scope, &option_type),
+                    type_ref: Some(option_type),
+                    value_clause_display: None,
+                },
+                StructureFieldData {
+                    name: Arc::from("low"),
+                    decl_range: None,
+                    decl_unit: self.unit_id,
+                    structure: self.resolve_field_type_ref(scope, &low_high_type),
+                    type_ref: Some(low_high_type.clone()),
+                    value_clause_display: None,
+                },
+                StructureFieldData {
+                    name: Arc::from("high"),
+                    decl_range: None,
+                    decl_unit: self.unit_id,
+                    structure: self.resolve_field_type_ref(scope, &low_high_type),
+                    type_ref: Some(low_high_type),
+                    value_clause_display: None,
+                },
+            ],
+        )
+    }
+
     fn direct_type_ref_children(&self, node: NodeId) -> Vec<NodeId> {
         self.syntax(node)
             .children()
@@ -1306,7 +1363,12 @@ impl<'a> Collector<'a> {
     fn type_clause_display_from_typed_clause(&self, node: NodeId) -> Option<Arc<str>> {
         let clause = DeclClause::cast(self.syntax(node))?;
         let (type_ref, _) = clause.type_ref_with_namespace(self.source)?;
-        self.render_type_ref_display(type_ref.syntax().id())
+        let rendered = self.render_type_ref_display(type_ref.syntax().id())?;
+        if clause.type_clause_kind(self.source) == Some(TypeClauseKind::For) {
+            Some(Arc::from(format!("RANGE OF {rendered}")))
+        } else {
+            Some(rendered)
+        }
     }
 
     fn value_clause_display_from_typed_clause(&self, node: NodeId) -> Option<Arc<str>> {
@@ -1351,6 +1413,10 @@ impl<'a> Collector<'a> {
     }
 
     fn type_ref_from_typed_clause(&self, node: NodeId) -> Option<FieldTypeRefData> {
+        let clause = DeclClause::cast(self.syntax(node))?;
+        if clause.type_clause_kind(self.source) == Some(TypeClauseKind::For) {
+            return None;
+        }
         let (type_ref_node, namespace) = self.typed_clause_type_ref_node(node)?;
         let (_, is_ref, base_name, _, field_path) =
             self.type_ref_access_chain(type_ref_node, namespace)?;
@@ -1402,9 +1468,29 @@ impl<'a> Collector<'a> {
     }
 
     fn structure_from_typed_clause(&mut self, node: NodeId, scope: ScopeId) -> Option<StructureId> {
+        let clause = DeclClause::cast(self.syntax(node))?;
         let (type_ref_node, namespace) = self.typed_clause_type_ref_node(node)?;
         let (_, is_ref, base_name, _, field_path) =
             self.type_ref_access_chain(type_ref_node, namespace)?;
+        if clause.type_clause_kind(self.source) == Some(TypeClauseKind::For) {
+            let low_high_type = FieldTypeRefData {
+                namespace,
+                is_ref,
+                base_name: Arc::clone(&base_name),
+                field_path: field_path
+                    .iter()
+                    .map(|segment| Arc::clone(&segment.name))
+                    .collect(),
+            };
+            let range_name = self
+                .render_type_ref_display(type_ref_node)
+                .unwrap_or_else(|| Arc::clone(&base_name));
+            return Some(self.push_range_table_structure(
+                scope,
+                range_name.as_ref(),
+                low_high_type,
+            ));
+        }
         if field_path.is_empty()
             && self
                 .render_type_ref_display(type_ref_node)
@@ -1421,55 +1507,7 @@ impl<'a> Collector<'a> {
                 base_name: Arc::clone(&base_name),
                 field_path: Vec::new(),
             };
-            let sign_type = FieldTypeRefData {
-                namespace: Namespace::Type,
-                is_ref: false,
-                base_name: Arc::from("ddsign"),
-                field_path: Vec::new(),
-            };
-            let option_type = FieldTypeRefData {
-                namespace: Namespace::Type,
-                is_ref: false,
-                base_name: Arc::from("ddoption"),
-                field_path: Vec::new(),
-            };
-            return Some(self.push_structure(
-                Arc::from(format!("<range:{}>", base_name)),
-                [
-                    StructureFieldData {
-                        name: Arc::from("sign"),
-                        decl_range: None,
-                        decl_unit: self.unit_id,
-                        structure: self.resolve_field_type_ref(scope, &sign_type),
-                        type_ref: Some(sign_type),
-                        value_clause_display: None,
-                    },
-                    StructureFieldData {
-                        name: Arc::from("option"),
-                        decl_range: None,
-                        decl_unit: self.unit_id,
-                        structure: self.resolve_field_type_ref(scope, &option_type),
-                        type_ref: Some(option_type),
-                        value_clause_display: None,
-                    },
-                    StructureFieldData {
-                        name: Arc::from("low"),
-                        decl_range: None,
-                        decl_unit: self.unit_id,
-                        structure: self.resolve_field_type_ref(scope, &low_high_type),
-                        type_ref: Some(low_high_type.clone()),
-                        value_clause_display: None,
-                    },
-                    StructureFieldData {
-                        name: Arc::from("high"),
-                        decl_range: None,
-                        decl_unit: self.unit_id,
-                        structure: self.resolve_field_type_ref(scope, &low_high_type),
-                        type_ref: Some(low_high_type),
-                        value_clause_display: None,
-                    },
-                ],
-            ));
+            return Some(self.push_range_table_structure(scope, base_name.as_ref(), low_high_type));
         }
         let field_path_names = field_path
             .iter()
@@ -1489,6 +1527,7 @@ impl<'a> Collector<'a> {
         match kind {
             TypeClauseKind::Type => Namespace::Type,
             TypeClauseKind::Like => Namespace::Value,
+            TypeClauseKind::For => Namespace::Value,
         }
     }
 

@@ -143,6 +143,10 @@ pub enum SyntaxKind {
     ReportStmt,
     /// `PARAMETERS ... .`
     ParametersDecl,
+    /// `SELECT-OPTIONS ... .`
+    SelectOptionsDecl,
+    /// `SELECTION-SCREEN ... .`
+    SelectionScreenStmt,
     /// `INCLUDE ... .`
     IncludeStmt,
     /// One include program name inside `INCLUDE ... .`
@@ -556,6 +560,8 @@ impl SyntaxKind {
             Self::InterfacesStmt => "InterfacesStmt",
             Self::ReportStmt => "ReportStmt",
             Self::ParametersDecl => "ParametersDecl",
+            Self::SelectOptionsDecl => "SelectOptionsDecl",
+            Self::SelectionScreenStmt => "SelectionScreenStmt",
             Self::IncludeStmt => "IncludeStmt",
             Self::IncludeName => "IncludeName",
             Self::TypePoolsStmt => "TypePoolsStmt",

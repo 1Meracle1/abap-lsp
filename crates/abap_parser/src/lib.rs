@@ -57,6 +57,7 @@ impl GuardedParser {
 const IDENT_LEAD_PARSERS: &[GuardedParser] = &[
     GuardedParser::new(&["data"], data_decl::try_parse_data_decl),
     GuardedParser::new(&["parameters"], data_decl::try_parse_parameters_decl),
+    GuardedParser::new(&["select"], data_decl::try_parse_select_options_decl),
     GuardedParser::new(&["class"], data_decl::try_parse_class_data_decl),
     GuardedParser::new(&["if"], if_stmt::try_parse_if_stmt),
     GuardedParser::new(&["statics"], data_decl::try_parse_statics_decl),
@@ -70,6 +71,10 @@ const IDENT_LEAD_PARSERS: &[GuardedParser] = &[
     GuardedParser::new(&["try"], control_stmt::try_parse_try_stmt),
     GuardedParser::new(&["report", "program"], surface_stmt::try_parse_report_stmt),
     GuardedParser::new(&["include"], surface_stmt::try_parse_include_stmt),
+    GuardedParser::new(
+        &["selection"],
+        surface_stmt::try_parse_selection_screen_stmt,
+    ),
     GuardedParser::new(
         &["at", "initialization", "start", "end", "top"],
         surface_stmt::try_parse_event_block,

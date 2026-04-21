@@ -19,7 +19,7 @@ use crate::type_ref::{build_type_ref_node, parse_type_ref_tokens};
 enum EventBlockLead {
     Single(&'static str),
     Hyphenated(&'static [&'static str]),
-    AtSelectionScreen,
+    AtHyphenated(&'static [&'static str]),
 }
 
 const EVENT_BLOCK_LEADS: &[EventBlockLead] = &[
@@ -28,7 +28,8 @@ const EVENT_BLOCK_LEADS: &[EventBlockLead] = &[
     EventBlockLead::Hyphenated(&["end", "of", "selection"]),
     EventBlockLead::Hyphenated(&["top", "of", "page"]),
     EventBlockLead::Hyphenated(&["end", "of", "page"]),
-    EventBlockLead::AtSelectionScreen,
+    EventBlockLead::AtHyphenated(&["selection", "screen"]),
+    EventBlockLead::AtHyphenated(&["line", "selection"]),
 ];
 
 const EVENT_BLOCK_BODY_BOUNDARY_KEYWORDS: &[&str] = &[
@@ -4089,10 +4090,9 @@ fn event_block_header_end(source: &str, tokens: &[Token], idx: usize) -> Option<
                     return Some(next);
                 }
             }
-            EventBlockLead::AtSelectionScreen => {
+            EventBlockLead::AtHyphenated(parts) => {
                 if is_keyword(source, start_tok, "at")
-                    && let Some(next) =
-                        match_hyphenated_keyword(source, tokens, idx + 1, &["selection", "screen"])
+                    && let Some(next) = match_hyphenated_keyword(source, tokens, idx + 1, parts)
                 {
                     return Some(next);
                 }
@@ -5913,6 +5913,37 @@ pub fn try_parse_leave_stmt(
         errors,
         "syntax error: expected '.' after LEAVE statement",
     )
+}
+
+pub fn try_parse_selection_screen_stmt(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    errors: &mut Vec<crate::ParseError>,
+) -> Option<(NodeId, usize)> {
+    let lead_end = match_hyphenated_keyword(source, tokens, idx, &["selection", "screen"])?;
+    let start_tok = tokens.get(idx)?;
+    Some(parse_stmt_with_period_scan(
+        b,
+        source,
+        tokens,
+        idx,
+        lead_end,
+        start_tok,
+        "syntax error: expected '.' after SELECTION-SCREEN statement",
+        errors,
+        next_after_unterminated_scan,
+        |b, period_i, _errors| {
+            let children = token_children(b, tokens, idx, period_i + 1);
+            let node = b.branch(
+                SyntaxKind::SelectionScreenStmt,
+                start_tok.range.start..tokens[period_i].range.end,
+                &children,
+            );
+            (node, period_i + 1)
+        },
+    ))
 }
 
 pub fn try_parse_endat_stmt(
@@ -9053,12 +9084,13 @@ mod tests {
 START-OF-SELECTION.\nWRITE 'b'.\n\
 END-OF-SELECTION.\nWRITE 'c'.\n\
 TOP-OF-PAGE.\nWRITE 'd'.\n\
-END-OF-PAGE.\nWRITE 'e'.",
+END-OF-PAGE.\nWRITE 'e'.\n\
+AT LINE-SELECTION.\nWRITE 'f'.",
         );
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
         let root = parsed.file.root();
-        assert_eq!(parsed.file.count_kind(root, SyntaxKind::EventBlock), 5);
-        assert_eq!(parsed.file.count_kind(root, SyntaxKind::WriteStmt), 5);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::EventBlock), 6);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::WriteStmt), 6);
     }
 
     #[test]
@@ -9072,6 +9104,23 @@ AT SELECTION-SCREEN ON VALUE-REQUEST FOR p_pub.\nWRITE 'c'.",
         let root = parsed.file.root();
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::EventBlock), 3);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::WriteStmt), 3);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::UnparsedStmt), 0);
+    }
+
+    #[test]
+    fn parses_selection_screen_block_statements_structurally() {
+        let parsed = crate::parse(
+            "SELECTION-SCREEN BEGIN OF BLOCK date WITH FRAME TITLE gv_fselc.\n\
+SELECTION-SCREEN END OF BLOCK date.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::SelectionScreenStmt),
+            2
+        );
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::UnparsedStmt), 0);
     }
 
