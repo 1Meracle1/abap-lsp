@@ -76,6 +76,31 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
         self.ctx.source()
     }
 
+    fn render_token_display(&self, tokens: &[super::SyntaxTokenInfo]) -> Option<Arc<str>> {
+        let mut rendered = String::new();
+        let mut prev_text: Option<&str> = None;
+        for token in tokens {
+            if self.ctx.syntax_token_is_comment(token) {
+                continue;
+            }
+            let text = token.text.as_ref();
+            let needs_space = !rendered.is_empty()
+                && !matches!(text, "," | ":" | "-" | ")" | "]")
+                && !matches!(prev_text, Some("(" | "[" | ":" | "-"));
+            if needs_space {
+                rendered.push(' ');
+            }
+            rendered.push_str(text);
+            prev_text = Some(text);
+        }
+        (!rendered.is_empty()).then(|| Arc::from(rendered))
+    }
+
+    fn render_node_display(&self, node: NodeId) -> Option<Arc<str>> {
+        let tokens = self.ctx.syntax_token_nodes(node);
+        self.render_token_display(&tokens)
+    }
+
     fn simple_wrapped_expr_node(&self, node: NodeId) -> Option<NodeId> {
         match self.kind(node) {
             SyntaxKind::TemplateExpr => TemplateExpr::cast(self.ctx.syntax(node))
@@ -2093,6 +2118,7 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
             .collect_token_expression_refs_infos(&tokens[start + 3..term_idx], scope, true);
         let (structure, declared_type) =
             self.inferred_metadata_from_tokens(&tokens[start + 3..term_idx], scope);
+        let value_clause_display = self.render_token_display(&tokens[start + 3..term_idx]);
 
         let Some(last) = tokens.last() else {
             return;
@@ -2111,7 +2137,7 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
             structure,
             declared_type,
             None,
-            None,
+            value_clause_display,
         );
 
         let mut cursor = term_idx;
@@ -2406,18 +2432,19 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
             Some(scope),
             None,
         );
-        self.ctx.declare_symbol(
-            child_scope,
-            Arc::<str>::from(name_tok.text.to_ascii_lowercase()),
-            SymbolKind::Variable,
-            name_tok.range.clone(),
-            None,
-            None,
-            None,
-            None,
-        );
+        let iter_name = Arc::<str>::from(name_tok.text.to_ascii_lowercase());
 
         if third_tok.text.eq_ignore_ascii_case("IN") {
+            self.ctx.declare_symbol(
+                child_scope,
+                Arc::clone(&iter_name),
+                SymbolKind::Variable,
+                name_tok.range.clone(),
+                None,
+                None,
+                None,
+                None,
+            );
             let source_start = start + 3;
             let source_end = self.value_for_source_end(tokens, source_start);
             let source_access =
@@ -2446,7 +2473,7 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                             target_access: Some(FieldAccess {
                                 scope: child_scope,
                                 base_namespace: Namespace::Value,
-                                base_name: Arc::<str>::from(name_tok.text.to_ascii_lowercase()),
+                                base_name: Arc::clone(&iter_name),
                                 base_range: name_tok.range.clone(),
                                 field_path: Vec::new(),
                                 in_type_position: false,
@@ -2466,10 +2493,31 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
             let Some(term_idx) =
                 self.find_top_level_keyword(tokens, start + 3, &["THEN", "UNTIL", "WHILE"])
             else {
+                self.ctx.declare_symbol(
+                    child_scope,
+                    iter_name,
+                    SymbolKind::Variable,
+                    name_tok.range.clone(),
+                    None,
+                    None,
+                    None,
+                    None,
+                );
                 self.ctx
                     .collect_token_expression_refs_infos(&tokens[start + 3..], scope, true);
                 return child_scope;
             };
+            let value_clause_display = self.render_token_display(&tokens[start + 3..term_idx]);
+            self.ctx.declare_symbol(
+                child_scope,
+                iter_name,
+                SymbolKind::Variable,
+                name_tok.range.clone(),
+                None,
+                None,
+                None,
+                value_clause_display,
+            );
             self.ctx
                 .collect_token_expression_refs_infos(&tokens[start + 3..term_idx], scope, true);
 
@@ -3220,9 +3268,11 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
             }
         } else {
             let mut type_fact = TypeFactData::default();
+            let mut value_clause_display = None;
             if let Some(init_id) = init_id {
                 self.collect_expr(init_id, scope);
                 type_fact = self.type_fact_from_expr_node(init_id, scope);
+                value_clause_display = self.render_node_display(init_id);
             }
             if let Some((decl_range, name_text)) = iterator_name {
                 self.ctx.declare_symbol(
@@ -3233,7 +3283,7 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                     type_fact.structure,
                     type_fact.declared_type,
                     type_fact.type_clause_display,
-                    None,
+                    value_clause_display,
                 );
             }
             if let Some(then_id) = then_id {

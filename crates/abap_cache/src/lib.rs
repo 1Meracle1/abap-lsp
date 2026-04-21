@@ -11978,6 +11978,30 @@ START-OF-SELECTION.
     }
 
     #[test]
+    fn routine_analysis_does_not_flag_conditional_for_iterator_initializer() {
+        let store = DocumentStore::default();
+        let src = "\
+TYPES: stringtab TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+
+START-OF-SELECTION.
+  DATA(lt_text) = VALUE stringtab( FOR n = 1 UNTIL n > 3 ( |{ n }| ) ).";
+
+        let snapshot = store.publish("file:///routine_value_for_iterator.abap", 1, src);
+        let use_before = diagnostic_slices(
+            src,
+            &snapshot.symbols.diagnostics,
+            DiagnosticKind::UseBeforeDefiniteAssignment,
+        );
+        let relevant: Vec<_> = use_before
+            .iter()
+            .filter(|slice| **slice == "n")
+            .cloned()
+            .collect();
+
+        assert!(relevant.is_empty(), "{use_before:?}");
+    }
+
+    #[test]
     fn routine_analysis_flags_dead_store_on_overwrite_before_read() {
         let store = DocumentStore::default();
         let src = "\
