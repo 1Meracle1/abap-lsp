@@ -257,6 +257,19 @@ pub struct ReferenceTarget {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RenamePlan {
+    pub range: Range<usize>,
+    pub placeholder: String,
+    pub locations: Vec<ReferenceTarget>,
+}
+
+impl RenamePlan {
+    pub fn validate_new_name(&self, new_name: &str) -> Result<(), String> {
+        validate_rename_identifier(self.placeholder.as_str(), new_name)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SelectorCompletionItem {
     pub name: Arc<str>,
     pub declared_type: Option<String>,
@@ -1152,6 +1165,16 @@ impl AnalysisSnapshot {
         self.reference_search_target_for_resolved_symbol_at(offset)
     }
 
+    fn rename_target_at(&self, offset: usize) -> Option<(ReferenceSearchTarget, Range<usize>)> {
+        if let Some(target) = self.rename_target_for_component_at(offset) {
+            return Some(target);
+        }
+        if let Some(target) = self.rename_target_for_named_argument_at(offset) {
+            return Some(target);
+        }
+        self.rename_target_for_resolved_symbol_at(offset)
+    }
+
     /// Hover for a resolved reference (narrowest matching range) or, if none, a symbol declaration
     /// covering the offset.
     pub fn hovered_resolved_symbol_at(&self, offset: usize) -> Option<HoveredSymbolInfo> {
@@ -1314,6 +1337,21 @@ impl AnalysisSnapshot {
         &self,
         offset: usize,
     ) -> Option<ReferenceSearchTarget> {
+        self.component_reference_search_target_at(offset)
+            .map(|(target, _)| target)
+    }
+
+    fn rename_target_for_component_at(
+        &self,
+        offset: usize,
+    ) -> Option<(ReferenceSearchTarget, Range<usize>)> {
+        self.component_reference_search_target_at(offset)
+    }
+
+    fn component_reference_search_target_at(
+        &self,
+        offset: usize,
+    ) -> Option<(ReferenceSearchTarget, Range<usize>)> {
         if let Some((access, segment_index)) =
             self.symbols.field_accesses.iter().find_map(|access| {
                 access
@@ -1330,11 +1368,14 @@ impl AnalysisSnapshot {
             if let Some((member_unit, member)) =
                 resolve_class_selector_member(self, access, segment_index, unit, symbol_id)
             {
-                return Some(ReferenceSearchTarget::ClassMember {
-                    unit: member_unit.unit_id,
-                    class_symbol: member.class_symbol,
-                    name: Arc::clone(&member.name),
-                });
+                return Some((
+                    ReferenceSearchTarget::ClassMember {
+                        unit: member_unit.unit_id,
+                        class_symbol: member.class_symbol,
+                        name: Arc::clone(&member.name),
+                    },
+                    access.field_path[segment_index].range.clone(),
+                ));
             }
             let (structure_unit, field) = resolve_field_access_component_with_scope_index(
                 self,
@@ -1344,20 +1385,26 @@ impl AnalysisSnapshot {
                 unit,
                 symbol_id,
             )?;
-            return Some(ReferenceSearchTarget::StructField {
-                unit: field.owner_unit,
-                owner: structure_unit.structure(field.owner).origin_structure,
-                name: Arc::clone(&field.name),
-            });
+            return Some((
+                ReferenceSearchTarget::StructField {
+                    unit: field.owner_unit,
+                    owner: structure_unit.structure(field.owner).origin_structure,
+                    name: Arc::clone(&field.name),
+                },
+                access.field_path[segment_index].range.clone(),
+            ));
         }
         let target = self.bare_where_field_target_at(offset)?;
-        Some(ReferenceSearchTarget::StructField {
-            unit: target.field.owner_unit,
-            owner: self.project.units[target.structure_unit_id.as_usize()]
-                .structure(target.field.owner)
-                .origin_structure,
-            name: Arc::clone(&target.field.name),
-        })
+        Some((
+            ReferenceSearchTarget::StructField {
+                unit: target.field.owner_unit,
+                owner: self.project.units[target.structure_unit_id.as_usize()]
+                    .structure(target.field.owner)
+                    .origin_structure,
+                name: Arc::clone(&target.field.name),
+            },
+            target.range,
+        ))
     }
 
     fn definition_target_for_named_argument_at(&self, offset: usize) -> Option<DefinitionTarget> {
@@ -1380,6 +1427,22 @@ impl AnalysisSnapshot {
             .find(|access| access.range.start <= offset && offset < access.range.end)?;
         Some(ReferenceSearchTarget::Symbol(
             resolve_named_argument_symbol(self, access)?,
+        ))
+    }
+
+    fn rename_target_for_named_argument_at(
+        &self,
+        offset: usize,
+    ) -> Option<(ReferenceSearchTarget, Range<usize>)> {
+        let access = self
+            .symbols
+            .named_arguments
+            .iter()
+            .find(|access| access.range.start <= offset && offset < access.range.end)?;
+        let handle = resolve_named_argument_symbol(self, access)?;
+        Some((
+            self.rename_search_target_for_symbol_handle(handle)?,
+            access.range.clone(),
         ))
     }
 
@@ -1473,6 +1536,69 @@ impl AnalysisSnapshot {
             }));
         }
 
+        self.reference_search_target_for_declared_structure_field_at(offset)
+    }
+
+    fn rename_target_for_resolved_symbol_at(
+        &self,
+        offset: usize,
+    ) -> Option<(ReferenceSearchTarget, Range<usize>)> {
+        if let Some(reference) = self.symbols.semantic().refs().reference_at_offset(offset)
+            && let Some(Resolution::Symbol(handle)) = reference.resolution
+        {
+            return Some((
+                self.rename_search_target_for_symbol_handle(handle)?,
+                reference.range.clone(),
+            ));
+        }
+
+        if let Some(member) = self
+            .symbols
+            .semantic()
+            .decls()
+            .class_member_at_offset(offset)
+        {
+            let range = rename_range_for_class_member(self.text.as_ref(), member, offset)?;
+            return Some((
+                ReferenceSearchTarget::ClassMember {
+                    unit: self.symbols.unit_id,
+                    class_symbol: member.class_symbol,
+                    name: Arc::clone(&member.name),
+                },
+                range,
+            ));
+        }
+
+        if let Some(symbol) = self.symbols.semantic().decls().symbol_at_offset(offset) {
+            let handle = abap_symbols::SymbolHandle {
+                unit: self.symbols.unit_id,
+                symbol: symbol.id,
+            };
+            return Some((
+                self.rename_search_target_for_symbol_handle(handle)?,
+                symbol.decl_range.clone(),
+            ));
+        }
+
+        let field = self
+            .symbols
+            .semantic()
+            .decls()
+            .structure_field_at_offset(offset)?;
+        Some((
+            ReferenceSearchTarget::StructField {
+                unit: field.owner_unit,
+                owner: self.symbols.structure(field.owner).origin_structure,
+                name: field.name,
+            },
+            field.decl_range?,
+        ))
+    }
+
+    fn reference_search_target_for_declared_structure_field_at(
+        &self,
+        offset: usize,
+    ) -> Option<ReferenceSearchTarget> {
         self.symbols
             .semantic()
             .decls()
@@ -1482,6 +1608,32 @@ impl AnalysisSnapshot {
                 owner: self.symbols.structure(field.owner).origin_structure,
                 name: field.name,
             })
+    }
+
+    fn rename_search_target_for_symbol_handle(
+        &self,
+        handle: abap_symbols::SymbolHandle,
+    ) -> Option<ReferenceSearchTarget> {
+        let unit = &self.project.units[handle.unit.as_usize()];
+        let symbol = unit.symbol(handle.symbol);
+        if !rename_supported_symbol_kind(symbol.kind) {
+            return None;
+        }
+        if symbol.kind == SymbolKind::Method
+            && let Some(class_symbol) = enclosing_class_owner(unit, symbol.scope)
+            && unit
+                .semantic()
+                .decls()
+                .class_member(class_symbol, symbol.name.as_ref())
+                .is_some()
+        {
+            return Some(ReferenceSearchTarget::ClassMember {
+                unit: handle.unit,
+                class_symbol,
+                name: Arc::clone(&symbol.name),
+            });
+        }
+        Some(ReferenceSearchTarget::Symbol(handle))
     }
 
     fn definition_target_for_sql_source_matching_type_ref(
@@ -1635,6 +1787,80 @@ impl AnalysisSnapshot {
         }
     }
 
+    fn local_rename_locations_for_target(
+        &self,
+        target: &ReferenceSearchTarget,
+    ) -> Vec<ReferenceTarget> {
+        let mut out = self.local_references_for_target(target);
+        out.extend(self.local_declaration_locations_for_target(target));
+        out.sort_by(|left, right| {
+            left.uri
+                .cmp(&right.uri)
+                .then(left.range.start.cmp(&right.range.start))
+                .then(left.range.end.cmp(&right.range.end))
+        });
+        out.dedup_by(|left, right| left.uri == right.uri && left.range == right.range);
+        out
+    }
+
+    fn local_declaration_locations_for_target(
+        &self,
+        target: &ReferenceSearchTarget,
+    ) -> Vec<ReferenceTarget> {
+        match target {
+            ReferenceSearchTarget::Symbol(handle) => {
+                equivalent_symbol_handles(self.project.as_ref(), *handle)
+                    .into_iter()
+                    .filter(|equivalent| equivalent.unit == self.symbols.unit_id)
+                    .map(|equivalent| ReferenceTarget {
+                        uri: Arc::clone(&self.uri),
+                        range: self.project.units[equivalent.unit.as_usize()]
+                            .symbol(equivalent.symbol)
+                            .decl_range
+                            .clone(),
+                    })
+                    .collect()
+            }
+            ReferenceSearchTarget::ClassMember {
+                unit,
+                class_symbol,
+                name,
+            } => {
+                if *unit != self.symbols.unit_id {
+                    return Vec::new();
+                }
+                let Some(member) = self
+                    .symbols
+                    .semantic()
+                    .decls()
+                    .class_member(*class_symbol, name.as_ref())
+                else {
+                    return Vec::new();
+                };
+                let mut out = vec![ReferenceTarget {
+                    uri: Arc::clone(&self.uri),
+                    range: member.decl_range.clone(),
+                }];
+                if let Some(range) =
+                    rename_implementation_range_for_class_member(self.text.as_ref(), member)
+                {
+                    out.push(ReferenceTarget {
+                        uri: Arc::clone(&self.uri),
+                        range,
+                    });
+                }
+                out
+            }
+            ReferenceSearchTarget::StructField { .. } => {
+                reference_target_for_search_target(self.project.as_ref(), target)
+                    .filter(|target| target.uri.as_ref() == self.uri.as_ref())
+                    .into_iter()
+                    .collect()
+            }
+            ReferenceSearchTarget::DdLikeTypeName { .. } => Vec::new(),
+        }
+    }
+
     fn local_dd_like_type_name_references(
         &self,
         target_unit: UnitId,
@@ -1743,22 +1969,57 @@ impl AnalysisSnapshot {
         class_symbol: SymbolId,
         name: &Arc<str>,
     ) -> Vec<ReferenceTarget> {
-        self.symbols
-            .field_accesses
+        let target_analysis = &self.project.units[target_unit.as_usize()];
+        let method_handles: Vec<_> = target_analysis
+            .symbols
             .iter()
-            .filter_map(|access| {
-                let (unit, symbol_id) = resolve_field_access_base_symbol(self, access)?;
-                let (member_unit, member) =
-                    resolve_class_selector_member(self, access, 0, unit, symbol_id)?;
-                (member_unit.unit_id == target_unit
-                    && member.class_symbol == class_symbol
-                    && member.name == *name)
-                    .then(|| ReferenceTarget {
-                        uri: Arc::clone(&self.uri),
-                        range: access.field_path[0].range.clone(),
-                    })
+            .filter(|symbol| {
+                symbol.kind == SymbolKind::Method
+                    && symbol.name == *name
+                    && enclosing_class_owner(target_analysis, symbol.scope) == Some(class_symbol)
             })
-            .collect()
+            .map(|symbol| abap_symbols::SymbolHandle {
+                unit: target_unit,
+                symbol: symbol.id,
+            })
+            .collect();
+        let mut references: Vec<_> = self
+            .related_symbol_references(&method_handles)
+            .map(|reference| ReferenceTarget {
+                uri: Arc::clone(&self.uri),
+                range: reference.range.clone(),
+            })
+            .collect();
+        references.extend(
+            self.symbols
+                .field_accesses
+                .iter()
+                .filter_map(|access| {
+                    let (unit, symbol_id) = resolve_field_access_base_symbol(self, access)?;
+                    access
+                        .field_path
+                        .iter()
+                        .enumerate()
+                        .find_map(|(segment_index, segment)| {
+                            let (member_unit, member) = resolve_class_selector_member(
+                                self,
+                                access,
+                                segment_index,
+                                unit,
+                                symbol_id,
+                            )?;
+                            (member_unit.unit_id == target_unit
+                                && member.class_symbol == class_symbol
+                                && member.name == *name)
+                                .then(|| ReferenceTarget {
+                                    uri: Arc::clone(&self.uri),
+                                    range: segment.range.clone(),
+                                })
+                        })
+                })
+                .collect::<Vec<_>>(),
+        );
+        references
     }
 
     fn local_structure_field_references(
@@ -3824,6 +4085,36 @@ fn class_member_name_range_at_offset(
         .filter(|range| range.start <= offset && offset < range.end)
 }
 
+fn rename_range_for_class_member(
+    text: &str,
+    member: &ClassMemberData,
+    offset: usize,
+) -> Option<Range<usize>> {
+    if member.decl_range.start <= offset && offset < member.decl_range.end {
+        return Some(member.decl_range.clone());
+    }
+    let range = rename_implementation_range_for_class_member(text, member)?;
+    (range.start <= offset && offset < range.end).then_some(range)
+}
+
+fn rename_implementation_range_for_class_member(
+    text: &str,
+    member: &ClassMemberData,
+) -> Option<Range<usize>> {
+    let range = member.implementation_range.clone()?;
+    let Some(implementation_text) = text.get(range.clone()) else {
+        return Some(range);
+    };
+    let Some(separator) = implementation_text.rfind('~') else {
+        return Some(range);
+    };
+    let member_start = range.start + separator + '~'.len_utf8();
+    let member_range = member_start..range.end;
+    text.get(member_range.clone())
+        .filter(|slice| slice.eq_ignore_ascii_case(member.name.as_ref()))
+        .map(|_| member_range)
+}
+
 fn definition_target_for_class_member_name_at(
     unit: &UnitAnalysis,
     member: &ClassMemberData,
@@ -4325,6 +4616,56 @@ fn equivalent_symbol_handles(
     out.sort_by_key(|handle| handle.symbol.0);
     out.dedup();
     out
+}
+
+fn rename_supported_symbol_kind(kind: SymbolKind) -> bool {
+    matches!(
+        kind,
+        SymbolKind::Variable
+            | SymbolKind::Constant
+            | SymbolKind::TypeDef
+            | SymbolKind::FieldSymbol
+            | SymbolKind::Form
+            | SymbolKind::Parameter
+            | SymbolKind::Class
+            | SymbolKind::Interface
+            | SymbolKind::Method
+            | SymbolKind::Field
+            | SymbolKind::Event
+            | SymbolKind::Module
+            | SymbolKind::Control
+    )
+}
+
+fn validate_rename_identifier(current: &str, new_name: &str) -> Result<(), String> {
+    if new_name.is_empty() {
+        return Err("new name must not be empty".to_string());
+    }
+    if new_name.trim() != new_name {
+        return Err("new name must not contain leading or trailing whitespace".to_string());
+    }
+    let current_is_field_symbol = current.starts_with('<') && current.ends_with('>');
+    let new_is_field_symbol = new_name.starts_with('<') && new_name.ends_with('>');
+    if current_is_field_symbol && !new_is_field_symbol {
+        return Err("field-symbol rename must keep angle brackets".to_string());
+    }
+    if !current_is_field_symbol && new_is_field_symbol {
+        return Err("new name is not a valid ABAP identifier".to_string());
+    }
+
+    let tokenized = abap_lexer::tokenize(new_name);
+    if !tokenized.errors.is_empty() {
+        return Err("new name is not a valid ABAP identifier".to_string());
+    }
+    let tokens = tokenized.tokens.as_ref();
+    if tokens.len() != 2
+        || tokens[0].kind != abap_lexer::TokenKind::Ident
+        || tokens[0].range != (0..new_name.len())
+        || tokens[1].kind != abap_lexer::TokenKind::Eof
+    {
+        return Err("new name is not a valid ABAP identifier".to_string());
+    }
+    Ok(())
 }
 
 fn resolve_project_class_symbol<'a>(
@@ -9444,6 +9785,40 @@ impl DocumentStore {
         });
         references.dedup_by(|left, right| left.uri == right.uri && left.range == right.range);
         Some(references)
+    }
+
+    pub fn rename_plan(&self, uri: &str, offset: usize) -> Option<RenamePlan> {
+        let snapshot = self.get(uri)?;
+        self.rename_plan_for_snapshot(snapshot.as_ref(), offset)
+    }
+
+    pub fn rename_plan_for_snapshot(
+        &self,
+        snapshot: &AnalysisSnapshot,
+        offset: usize,
+    ) -> Option<RenamePlan> {
+        let (target, range) = snapshot.rename_target_at(offset)?;
+        let placeholder = snapshot.text.get(range.clone())?.to_string();
+        let mut locations = snapshot.local_rename_locations_for_target(&target);
+        locations.extend(
+            self.documents
+                .read()
+                .values()
+                .filter(|candidate| candidate.uri.as_ref() != snapshot.uri.as_ref())
+                .flat_map(|candidate| candidate.local_rename_locations_for_target(&target)),
+        );
+        locations.sort_by(|left, right| {
+            left.uri
+                .cmp(&right.uri)
+                .then(left.range.start.cmp(&right.range.start))
+                .then(left.range.end.cmp(&right.range.end))
+        });
+        locations.dedup_by(|left, right| left.uri == right.uri && left.range == right.range);
+        Some(RenamePlan {
+            range,
+            placeholder,
+            locations,
+        })
     }
 
     pub fn len(&self) -> usize {
@@ -16537,6 +16912,74 @@ ENDCLASS.";
             ],
         );
         assert_eq!(main.version, 1);
+    }
+
+    #[test]
+    fn rename_plan_includes_method_declaration_implementation_and_call() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run.
+    METHODS caller.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+  ENDMETHOD.
+  METHOD caller.
+    run( ).
+  ENDMETHOD.
+ENDCLASS.";
+        let snapshot = store.publish("file:///rename_method.abap", 1, src);
+
+        let offset = src.rfind("run(").expect("method call") + 1;
+        let plan = store
+            .rename_plan("file:///rename_method.abap", offset)
+            .expect("rename plan");
+
+        assert_eq!(plan.placeholder, "run");
+        assert_reference_slices(
+            &plan.locations,
+            &[("file:///rename_method.abap", src, "run"); 3],
+        );
+        assert_eq!(snapshot.version, 1);
+    }
+
+    #[test]
+    fn rename_plan_uses_member_segment_for_interface_qualified_method_calls() {
+        let store = DocumentStore::default();
+        let src = "\
+INTERFACE i1.
+  METHODS meth.
+ENDINTERFACE.
+
+CLASS c1 DEFINITION.
+  PUBLIC SECTION.
+    INTERFACES i1.
+ENDCLASS.
+
+CLASS c1 IMPLEMENTATION.
+  METHOD i1~meth.
+  ENDMETHOD.
+ENDCLASS.
+
+START-OF-SELECTION.
+  DATA lo_obj TYPE REF TO c1.
+  lo_obj->i1~meth( ).";
+        let snapshot = store.publish("file:///qualified_method.abap", 1, src);
+
+        let offset = src.rfind("meth(").expect("qualified method call") + 1;
+        let plan = store
+            .rename_plan("file:///qualified_method.abap", offset)
+            .expect("rename plan");
+
+        assert_eq!(plan.placeholder, "meth");
+        assert_reference_slices(
+            &plan.locations,
+            &[("file:///qualified_method.abap", src, "meth"); 3],
+        );
+        assert_eq!(snapshot.version, 1);
     }
 
     #[test]

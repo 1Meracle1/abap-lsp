@@ -28,10 +28,10 @@ use lsp_types::{
     CompletionItemKind, CompletionOptions, Diagnostic, DiagnosticSeverity, Documentation,
     GotoDefinitionResponse, Hover, HoverContents, HoverProviderCapability, InitializeResult,
     InlayHint, InlayHintKind, InlayHintOptions, InlayHintServerCapabilities, InsertTextFormat,
-    Location, MarkupContent, MarkupKind, NumberOrString, OneOf, Position, PublishDiagnosticsParams,
-    Range, SemanticTokens, SemanticTokensFullOptions, SemanticTokensOptions,
-    SemanticTokensServerCapabilities, ServerCapabilities, TextDocumentSyncCapability,
-    TextDocumentSyncKind, TextEdit, Uri, WorkspaceEdit,
+    Location, MarkupContent, MarkupKind, NumberOrString, OneOf, Position, PrepareRenameResponse,
+    PublishDiagnosticsParams, Range, RenameOptions, SemanticTokens, SemanticTokensFullOptions,
+    SemanticTokensOptions, SemanticTokensServerCapabilities, ServerCapabilities,
+    TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri, WorkspaceEdit,
 };
 use serde::{Deserialize, Serialize};
 
@@ -39,7 +39,8 @@ pub use abap_cache::{AnalysisSnapshot, OpenDocumentOverlay, WorkspacePerformance
 pub use lsp_types::{
     CodeActionParams, CodeActionResponse, CompletionParams, CompletionResponse,
     DidChangeTextDocumentParams, DidOpenTextDocumentParams, GotoDefinitionParams, HoverParams,
-    InlayHintParams, ReferenceParams, SemanticTokensParams,
+    InlayHintParams, ReferenceParams, RenameParams, SemanticTokensParams,
+    TextDocumentPositionParams,
 };
 pub use sem_tokens::build_semantic_tokens;
 pub use serde;
@@ -2594,6 +2595,70 @@ pub fn references(state: &ServerState, params: &ReferenceParams) -> Option<Vec<L
     Some(locations)
 }
 
+pub fn prepare_rename(
+    state: &ServerState,
+    params: &TextDocumentPositionParams,
+) -> Option<PrepareRenameResponse> {
+    let uri = normalize_lsp_uri(params.text_document.uri.as_str());
+    let snapshot = snapshot_for_uri(state, &uri)?;
+    let offset = position_to_offset_snapshot(&snapshot, params.position)?;
+    let plan = cache_for_uri(state, &uri).rename_plan_for_snapshot(snapshot.as_ref(), offset)?;
+    let range = byte_range_to_lsp_range_snapshot(snapshot.as_ref(), plan.range)?;
+    Some(PrepareRenameResponse::RangeWithPlaceholder {
+        range,
+        placeholder: plan.placeholder,
+    })
+}
+
+pub fn rename(state: &ServerState, params: &RenameParams) -> Result<Option<WorkspaceEdit>, String> {
+    let uri = normalize_lsp_uri(params.text_document_position.text_document.uri.as_str());
+    let snapshot = match snapshot_for_uri(state, &uri) {
+        Some(snapshot) => snapshot,
+        None => return Ok(None),
+    };
+    let Some(offset) =
+        position_to_offset_snapshot(&snapshot, params.text_document_position.position)
+    else {
+        return Ok(None);
+    };
+    let Some(plan) = cache_for_uri(state, &uri).rename_plan_for_snapshot(snapshot.as_ref(), offset)
+    else {
+        return Ok(None);
+    };
+    plan.validate_new_name(&params.new_name)?;
+
+    let mut changes: HashMap<Uri, Vec<TextEdit>> = HashMap::new();
+    for location in plan.locations {
+        let target_snapshot = if location.uri.as_ref() == snapshot.uri.as_ref() {
+            Arc::clone(&snapshot)
+        } else {
+            match snapshot_for_uri(state, location.uri.as_ref()) {
+                Some(target_snapshot) => target_snapshot,
+                None => return Ok(None),
+            }
+        };
+        let uri: Uri = location
+            .uri
+            .as_ref()
+            .parse()
+            .expect("cached document URI must be a valid URL");
+        let Some(range) =
+            byte_range_to_lsp_range_snapshot(target_snapshot.as_ref(), location.range)
+        else {
+            return Ok(None);
+        };
+        changes.entry(uri).or_default().push(TextEdit {
+            range,
+            new_text: params.new_name.clone(),
+        });
+    }
+
+    Ok(Some(WorkspaceEdit {
+        changes: Some(changes),
+        ..WorkspaceEdit::default()
+    }))
+}
+
 pub fn code_actions(state: &ServerState, params: &CodeActionParams) -> Option<CodeActionResponse> {
     let uri = normalize_lsp_uri(params.text_document.uri.as_str());
     let snapshot = snapshot_for_uri(state, &uri)?;
@@ -2968,6 +3033,10 @@ pub fn initialize_result(config: &ServerConfig) -> InitializeResult {
             }),
             definition_provider: Some(OneOf::Left(true)),
             references_provider: Some(OneOf::Left(true)),
+            rename_provider: Some(OneOf::Right(RenameOptions {
+                prepare_provider: Some(true),
+                work_done_progress_options: Default::default(),
+            })),
             inlay_hint_provider: Some(OneOf::Right(InlayHintServerCapabilities::Options(
                 InlayHintOptions {
                     resolve_provider: None,
@@ -3246,9 +3315,9 @@ mod tests {
         CodeActionContext, CodeActionOrCommand, DiagnosticSeverity, DidChangeTextDocumentParams,
         DidOpenTextDocumentParams, Documentation, GotoDefinitionResponse, HoverContents,
         InlayHintKind, InlayHintLabel, InlayHintTooltip, InsertTextFormat, NumberOrString,
-        Position, Range, SemanticTokensParams, TextDocumentContentChangeEvent,
-        TextDocumentIdentifier, TextDocumentItem, TextDocumentPositionParams, Uri,
-        VersionedTextDocumentIdentifier,
+        Position, PrepareRenameResponse, Range, SemanticTokensParams,
+        TextDocumentContentChangeEvent, TextDocumentIdentifier, TextDocumentItem,
+        TextDocumentPositionParams, Uri, VersionedTextDocumentIdentifier,
     };
 
     use crate::sem_tokens;
@@ -3257,15 +3326,15 @@ mod tests {
         CodeActionParams, CompletionParams, CompletionResponse, DEPENDENCY_CACHE_CLEARED,
         DIAGNOSTIC_CODE_MISSING_METHOD_IMPLEMENTATION, GotoDefinitionParams, HoverParams,
         InlayHintParams, REMOTE_DEPENDENCIES_UPDATED, RESOLVE_REMOTE_DEPENDENCIES, ReferenceParams,
-        ServerState, WORKSPACE_MANIFEST_UPDATED, WorkspaceManifestUpdatedParams,
+        RenameParams, ServerState, WORKSPACE_MANIFEST_UPDATED, WorkspaceManifestUpdatedParams,
         build_lsp_diagnostics, build_lsp_diagnostics_for_workspace,
         build_remote_dependency_batch_for_workspace, build_remote_dependency_request,
         build_remote_dependency_requests_for_workspace, code_actions,
         collect_remote_dependency_candidates, completion, definition,
         handle_dependency_cache_cleared, handle_remote_dependencies_updated, hover,
-        initialize_result, inlay_hints, normalize_lsp_uri, offset_to_position,
+        initialize_result, inlay_hints, normalize_lsp_uri, offset_to_position, prepare_rename,
         publish_changed_document, publish_changed_document_mut, publish_open_document,
-        publish_open_document_mut, references, refresh_workspace, semantic_tokens,
+        publish_open_document_mut, references, refresh_workspace, rename, semantic_tokens,
         snapshot_for_uri, stage_workspace_preview_snapshot,
     };
 
@@ -3361,6 +3430,13 @@ mod tests {
         assert!(matches!(
             result.capabilities.references_provider,
             Some(lsp_types::OneOf::Left(true))
+        ));
+        assert!(matches!(
+            result.capabilities.rename_provider,
+            Some(lsp_types::OneOf::Right(lsp_types::RenameOptions {
+                prepare_provider: Some(true),
+                ..
+            }))
         ));
         assert!(matches!(
             result.capabilities.inlay_hint_provider,
@@ -3678,6 +3754,137 @@ ENDCLASS.";
         assert_eq!(locations.len(), 2);
         assert_eq!(locations[0].range.start.line, 0);
         assert_eq!(locations[1].range.start.line, 1);
+    }
+
+    #[test]
+    fn prepare_rename_returns_placeholder_and_range_for_variable() {
+        let state = ServerState::default();
+        let text = "DATA lv TYPE i.\nlv = 1.";
+        let uri = Uri::from_str("file:///prepare_rename.abap").expect("uri");
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: uri.clone(),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: text.to_string(),
+                },
+            },
+        );
+
+        let offset = text.rfind("lv").expect("variable use") + 1;
+        let position = offset_to_position(text, offset).expect("position");
+        let response = prepare_rename(
+            &state,
+            &TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri },
+                position,
+            },
+        )
+        .expect("prepare rename");
+
+        let PrepareRenameResponse::RangeWithPlaceholder { range, placeholder } = response else {
+            panic!("expected placeholder response");
+        };
+        assert_eq!(placeholder, "lv");
+        assert_eq!(range.start.line, 1);
+        assert_eq!(range.start.character, 0);
+        assert_eq!(range.end.character, 2);
+    }
+
+    #[test]
+    fn rename_returns_workspace_edit_for_method_declaration_implementation_and_call() {
+        let state = ServerState::default();
+        let text = "\
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run.
+    METHODS caller.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+  ENDMETHOD.
+  METHOD caller.
+    run( ).
+  ENDMETHOD.
+ENDCLASS.";
+        let uri = Uri::from_str("file:///rename_method.abap").expect("uri");
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: uri.clone(),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: text.to_string(),
+                },
+            },
+        );
+
+        let offset = text.rfind("run(").expect("method call") + 1;
+        let position = offset_to_position(text, offset).expect("position");
+        let edit = rename(
+            &state,
+            &RenameParams {
+                text_document_position: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier { uri: uri.clone() },
+                    position,
+                },
+                new_name: "execute".to_string(),
+                work_done_progress_params: Default::default(),
+            },
+        )
+        .expect("rename request")
+        .expect("workspace edit");
+
+        let changes = edit.changes.expect("changes");
+        let edits = changes.get(&uri).expect("uri edits");
+        assert_eq!(edits.len(), 3, "{edits:?}");
+        assert!(edits.iter().all(|edit| edit.new_text == "execute"));
+        assert_eq!(
+            edits
+                .iter()
+                .map(|edit| edit.range.start.line)
+                .collect::<Vec<_>>(),
+            vec![2, 7, 10]
+        );
+    }
+
+    #[test]
+    fn rename_rejects_field_symbol_name_without_angle_brackets() {
+        let state = ServerState::default();
+        let text = "FIELD-SYMBOLS <fs> TYPE any.\nASSIGN 1 TO <fs>.";
+        let uri = Uri::from_str("file:///rename_field_symbol.abap").expect("uri");
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: uri.clone(),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: text.to_string(),
+                },
+            },
+        );
+
+        let offset = text.rfind("<fs>").expect("field symbol use") + 1;
+        let position = offset_to_position(text, offset).expect("position");
+        let error = rename(
+            &state,
+            &RenameParams {
+                text_document_position: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier { uri },
+                    position,
+                },
+                new_name: "fs2".to_string(),
+                work_done_progress_params: Default::default(),
+            },
+        )
+        .expect_err("rename should reject invalid field-symbol name");
+
+        assert!(error.contains("angle brackets"), "{error}");
     }
 
     #[test]

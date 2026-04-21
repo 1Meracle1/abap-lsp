@@ -11,18 +11,18 @@ use abap_jsonrpc::{JSON_RPC_VERSION, Response, read_frame, write_frame};
 use abap_lsp::{
     CodeActionParams, CompletionParams, DEPENDENCY_CACHE_CLEARED, DidChangeTextDocumentParams,
     DidOpenTextDocumentParams, GotoDefinitionParams, HoverParams, InlayHintParams,
-    REMOTE_DEPENDENCIES_UPDATED, RESOLVE_REMOTE_DEPENDENCIES, ReferenceParams,
-    SemanticTokensParams, ServerConfig, ServerState, WORKSPACE_ANALYSIS_STATUS,
-    WORKSPACE_MANIFEST_UPDATED, WorkspaceAnalysisPhase, WorkspaceAnalysisStatusParams,
-    WorkspaceManifestUpdatedParams, WorkspacePerformanceMode, WorkspaceState,
-    build_remote_dependency_batch_for_workspace,
+    REMOTE_DEPENDENCIES_UPDATED, RESOLVE_REMOTE_DEPENDENCIES, ReferenceParams, RenameParams,
+    SemanticTokensParams, ServerConfig, ServerState, TextDocumentPositionParams,
+    WORKSPACE_ANALYSIS_STATUS, WORKSPACE_MANIFEST_UPDATED, WorkspaceAnalysisPhase,
+    WorkspaceAnalysisStatusParams, WorkspaceManifestUpdatedParams, WorkspacePerformanceMode,
+    WorkspaceState, build_remote_dependency_batch_for_workspace,
     build_remote_dependency_batch_for_workspace_filtered, build_remote_dependency_request,
     code_actions, completion, definition, handle_dependency_cache_cleared_with_progress,
     handle_remote_dependencies_updated_with_progress,
     handle_workspace_manifest_updated_with_progress, hover, initialize_result, inlay_hints,
-    prune_workspace_preview_snapshots, publish_changed_document_mut_with_progress,
+    prepare_rename, prune_workspace_preview_snapshots, publish_changed_document_mut_with_progress,
     publish_diagnostics_params, publish_open_document_mut_with_progress, references,
-    refresh_workspace_with_progress, semantic_tokens, stage_workspace_preview_snapshot,
+    refresh_workspace_with_progress, rename, semantic_tokens, stage_workspace_preview_snapshot,
     workspace_manifest_diagnostics_params,
 };
 use serde_json::{Value, json};
@@ -30,6 +30,7 @@ use tracing::{debug, warn};
 
 const METHOD_NOT_FOUND: i64 = -32601;
 const INVALID_REQUEST: i64 = -32600;
+const INVALID_PARAMS: i64 = -32602;
 const CHANGE_ANALYSIS_DEBOUNCE: Duration = Duration::from_millis(250);
 const EDITOR_FIRST_DIAGNOSTIC_LIMIT: usize = 16;
 const MAX_BACKGROUND_ANALYSIS_WORKERS: usize = 4;
@@ -1843,6 +1844,53 @@ fn handle_message(
                 });
             };
             let result = serde_json::to_value(references(state, &reference_params))?;
+            Ok(HandledMessage {
+                response: Some(Response::success(id.unwrap_or(Value::Null), result)),
+                notifications: Vec::new(),
+            })
+        }
+        Some("textDocument/prepareRename") => {
+            let Some(rename_params) = parse_params::<TextDocumentPositionParams>(&message)? else {
+                return Ok(HandledMessage {
+                    response: Some(Response::failure(
+                        id.unwrap_or(Value::Null),
+                        INVALID_REQUEST,
+                        "textDocument/prepareRename requires params",
+                    )),
+                    notifications: Vec::new(),
+                });
+            };
+            let result = serde_json::to_value(prepare_rename(state, &rename_params))?;
+            Ok(HandledMessage {
+                response: Some(Response::success(id.unwrap_or(Value::Null), result)),
+                notifications: Vec::new(),
+            })
+        }
+        Some("textDocument/rename") => {
+            let Some(rename_params) = parse_params::<RenameParams>(&message)? else {
+                return Ok(HandledMessage {
+                    response: Some(Response::failure(
+                        id.unwrap_or(Value::Null),
+                        INVALID_REQUEST,
+                        "textDocument/rename requires params",
+                    )),
+                    notifications: Vec::new(),
+                });
+            };
+            let result = match rename(state, &rename_params) {
+                Ok(result) => result,
+                Err(message) => {
+                    return Ok(HandledMessage {
+                        response: Some(Response::failure(
+                            id.unwrap_or(Value::Null),
+                            INVALID_PARAMS,
+                            message,
+                        )),
+                        notifications: Vec::new(),
+                    });
+                }
+            };
+            let result = serde_json::to_value(result)?;
             Ok(HandledMessage {
                 response: Some(Response::success(id.unwrap_or(Value::Null), result)),
                 notifications: Vec::new(),
@@ -5331,6 +5379,140 @@ object_name = "ZCL_TWO"
             .expect("references result");
         let locations = result.as_array().expect("array result");
         assert_eq!(locations.len(), 2);
+    }
+
+    #[test]
+    fn handles_prepare_rename_and_rename_after_open_document() {
+        let mut state = ServerState::default();
+        let config = ServerConfig::default();
+
+        let opened = handle_message(
+            &mut state,
+            &config,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": {
+                    "textDocument": {
+                        "uri": "file:///rename.abap",
+                        "languageId": "abap",
+                        "version": 1,
+                        "text": "CLASS lcl_demo DEFINITION.\n  PUBLIC SECTION.\n    METHODS run.\nENDCLASS.\n\nCLASS lcl_demo IMPLEMENTATION.\n  METHOD run.\n    run( ).\n  ENDMETHOD.\nENDCLASS."
+                    }
+                }
+            }),
+        )
+        .expect("didOpen");
+        assert!(opened.response.is_none());
+
+        let prepare_msg = handle_message(
+            &mut state,
+            &config,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "textDocument/prepareRename",
+                "params": {
+                    "textDocument": { "uri": "file:///rename.abap" },
+                    "position": { "line": 7, "character": 5 }
+                }
+            }),
+        )
+        .expect("prepareRename");
+
+        let prepare_result = prepare_msg
+            .response
+            .expect("prepareRename response")
+            .result
+            .expect("prepareRename result");
+        assert_eq!(
+            prepare_result
+                .get("placeholder")
+                .and_then(|value| value.as_str()),
+            Some("run")
+        );
+
+        let rename_msg = handle_message(
+            &mut state,
+            &config,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "textDocument/rename",
+                "params": {
+                    "textDocument": { "uri": "file:///rename.abap" },
+                    "position": { "line": 7, "character": 5 },
+                    "newName": "execute"
+                }
+            }),
+        )
+        .expect("rename");
+
+        let result = rename_msg
+            .response
+            .expect("rename response")
+            .result
+            .expect("rename result");
+        let edits = result
+            .get("changes")
+            .and_then(|changes| changes.get("file:///rename.abap"))
+            .and_then(|value| value.as_array())
+            .expect("rename edits");
+        assert_eq!(edits.len(), 3);
+        assert!(edits.iter().all(|edit| {
+            edit.get("newText")
+                .and_then(|value| value.as_str())
+                .is_some_and(|text| text == "execute")
+        }));
+    }
+
+    #[test]
+    fn rename_returns_invalid_params_for_bad_new_name() {
+        let mut state = ServerState::default();
+        let config = ServerConfig::default();
+
+        handle_message(
+            &mut state,
+            &config,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": {
+                    "textDocument": {
+                        "uri": "file:///field_symbol.abap",
+                        "languageId": "abap",
+                        "version": 1,
+                        "text": "FIELD-SYMBOLS <fs> TYPE any.\nASSIGN 1 TO <fs>."
+                    }
+                }
+            }),
+        )
+        .expect("didOpen");
+
+        let rename_msg = handle_message(
+            &mut state,
+            &config,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 4,
+                "method": "textDocument/rename",
+                "params": {
+                    "textDocument": { "uri": "file:///field_symbol.abap" },
+                    "position": { "line": 1, "character": 13 },
+                    "newName": "fs2"
+                }
+            }),
+        )
+        .expect("rename");
+
+        let response = rename_msg.response.expect("rename response");
+        let error = response.error.expect("rename error");
+        assert_eq!(error.code, crate::INVALID_PARAMS);
+        assert!(
+            error.message.contains("angle brackets"),
+            "{}",
+            error.message
+        );
     }
 
     #[test]
