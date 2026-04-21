@@ -483,6 +483,40 @@ fn validate_missing_method_implementations(unit: &crate::UnitAnalysis) -> Vec<Di
         .collect()
 }
 
+fn validate_abstract_class_instantiations(
+    project: &ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
+    unit: &crate::UnitAnalysis,
+    scope_index: &ScopeIndex,
+) -> Vec<Diagnostic> {
+    unit.call_sites
+        .iter()
+        .filter(|call_site| matches!(call_site.target, NamedArgumentTarget::Constructor { .. }))
+        .filter_map(|call_site| {
+            let handle = resolve_method_target_handle(
+                project,
+                lookup,
+                unit,
+                scope_index,
+                call_site.scope,
+                &call_site.target,
+            )?;
+            let target_unit = &project.units[handle.unit.as_usize()];
+            let target_symbol = target_unit.symbol(handle.symbol);
+            if target_symbol.kind != SymbolKind::Class
+                || !target_unit.class_is_abstract(handle.symbol)
+            {
+                return None;
+            }
+            Some(Diagnostic {
+                kind: DiagnosticKind::AbstractClassInstantiation,
+                range: call_site.range.clone(),
+                message: format!("cannot instantiate abstract class '{}'", target_symbol.name),
+            })
+        })
+        .collect()
+}
+
 fn resolve_project_class_symbol<'a>(
     project: &'a ProjectAnalysis,
     lookup: &ValidationLookup<'_>,
@@ -2605,6 +2639,12 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
             &project.units[unit_idx],
             &scope_index,
         );
+        let abstract_instantiation_diagnostics = validate_abstract_class_instantiations(
+            project,
+            &lookup,
+            &project.units[unit_idx],
+            &scope_index,
+        );
         let field_access_bases: Vec<_> = project.units[unit_idx]
             .field_accesses
             .iter()
@@ -3452,6 +3492,7 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
             unit,
             scope_indexes,
         ));
+        unit_diagnostics.extend(abstract_instantiation_diagnostics);
         unit_diagnostics.extend(validate_missing_method_implementations(unit));
         unit_diagnostics.extend(constructor_diagnostics);
 

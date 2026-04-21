@@ -255,6 +255,7 @@ fn static_analysis_finding(diagnostic: &Diagnostic) -> Option<StaticAnalysisFind
         | DiagnosticKind::UnknownField
         | DiagnosticKind::InvalidBuiltinNamedArgument
         | DiagnosticKind::InvalidPerformCall
+        | DiagnosticKind::AbstractClassInstantiation
         | DiagnosticKind::MissingMethodImplementation
         | DiagnosticKind::MissingSuperConstructorCall
         | DiagnosticKind::IncompatibleAssignmentType

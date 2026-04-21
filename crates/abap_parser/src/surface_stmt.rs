@@ -9188,7 +9188,7 @@ AT SELECTION-SCREEN ON VALUE-REQUEST FOR p_pub.\nWRITE 'c'.",
 
     #[test]
     fn class_decl_exposes_name_superclass_and_implementation_marker() {
-        let src = "CLASS lcl_demo DEFINITION INHERITING FROM zcl_base. ENDCLASS. CLASS lcl_demo IMPLEMENTATION. ENDCLASS.";
+        let src = "CLASS lcl_demo DEFINITION ABSTRACT INHERITING FROM zcl_base. ENDCLASS. CLASS lcl_demo IMPLEMENTATION. ENDCLASS.";
         let parsed = crate::parse(src);
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
         let class_nodes = parsed
@@ -9209,7 +9209,9 @@ AT SELECTION-SCREEN ON VALUE-REQUEST FOR p_pub.\nWRITE 'c'.",
                 .as_deref(),
             Some("zcl_base")
         );
+        assert!(def.is_abstract(src));
         assert!(!def.is_implementation());
+        assert!(!imp.is_abstract(src));
         assert!(imp.is_implementation());
     }
 

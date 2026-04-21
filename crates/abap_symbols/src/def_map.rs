@@ -278,6 +278,7 @@ pub enum DiagnosticKind {
     UnknownField,
     InvalidBuiltinNamedArgument,
     InvalidPerformCall,
+    AbstractClassInstantiation,
     MissingMethodImplementation,
     MissingSuperConstructorCall,
     IncompatibleAssignmentType,
@@ -511,6 +512,12 @@ pub struct ClassMemberData {
 pub struct ClassInheritanceData {
     pub class_symbol: SymbolId,
     pub superclass_name: Arc<str>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClassDefinitionData {
+    pub class_symbol: SymbolId,
+    pub is_abstract: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -881,6 +888,7 @@ pub struct UnitAnalysis {
     pub loop_where_field_contexts: Vec<LoopWhereFieldContext>,
     pub loop_at_field_contexts: Vec<LoopAtFieldContext>,
     pub class_members: Vec<ClassMemberData>,
+    pub class_definitions: Vec<ClassDefinitionData>,
     pub class_inheritance: Vec<ClassInheritanceData>,
     pub implemented_interfaces: Vec<ImplementedInterfaceData>,
     pub member_aliases: Vec<MemberAliasData>,
@@ -947,6 +955,17 @@ impl UnitAnalysis {
         let semantic_id = self.semantic_index.class_member_at_offset(offset)?;
         let member = self.semantic_index.class_member(semantic_id);
         self.class_members.get(member.raw_index)
+    }
+
+    pub fn class_definition(&self, class_symbol: SymbolId) -> Option<&ClassDefinitionData> {
+        self.class_definitions
+            .iter()
+            .find(|definition| definition.class_symbol == class_symbol)
+    }
+
+    pub fn class_is_abstract(&self, class_symbol: SymbolId) -> bool {
+        self.class_definition(class_symbol)
+            .is_some_and(|definition| definition.is_abstract)
     }
 
     pub(crate) fn symbol_with_kind_and_decl_range(

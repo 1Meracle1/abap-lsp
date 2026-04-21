@@ -25,13 +25,14 @@ use abap_lexer::{TextRange, Token, TokenKind};
 
 use crate::builtins::builtin_routine_spec;
 use crate::def_map::{
-    AssignmentSiteData, CallSiteData, ClassInheritanceData, ClassMemberData, Diagnostic,
-    ExpressionFactData, FieldAccess, FieldSymbolStateCheckData, FieldTypeRefData, FindSiteData,
-    FormRoutineData, FunctionModuleData, ImplementedInterfaceData, IncludeEdge, LoopAtFieldContext,
-    LoopWhereFieldContext, MemberAliasData, NamedArgumentAccess, PerformCallData, ReferenceData,
-    RoutineControlRegionData, RoutineSiteData, SqlNameRefData, SqlPredicateData, SqlProjectionData,
-    SqlQueryData, SqlSourceData, SqlTargetData, StructureData, StructureFieldData, SymbolData,
-    SystemFieldUpdateData, UnitAnalysis, ValueFlowEdgeData, ValueStateCheckData,
+    AssignmentSiteData, CallSiteData, ClassDefinitionData, ClassInheritanceData, ClassMemberData,
+    Diagnostic, ExpressionFactData, FieldAccess, FieldSymbolStateCheckData, FieldTypeRefData,
+    FindSiteData, FormRoutineData, FunctionModuleData, ImplementedInterfaceData, IncludeEdge,
+    LoopAtFieldContext, LoopWhereFieldContext, MemberAliasData, NamedArgumentAccess,
+    PerformCallData, ReferenceData, RoutineControlRegionData, RoutineSiteData, SqlNameRefData,
+    SqlPredicateData, SqlProjectionData, SqlQueryData, SqlSourceData, SqlTargetData, StructureData,
+    StructureFieldData, SymbolData, SystemFieldUpdateData, UnitAnalysis, ValueFlowEdgeData,
+    ValueStateCheckData,
 };
 use crate::ids::{ScopeId, StructureId, SymbolId, UnitId};
 use crate::scope::{Namespace, ScopeData, ScopeKind};
@@ -124,6 +125,7 @@ pub struct Collector<'a> {
     loop_where_field_contexts: Vec<LoopWhereFieldContext>,
     loop_at_field_contexts: Vec<LoopAtFieldContext>,
     class_members: Vec<ClassMemberData>,
+    abstract_classes: std::collections::HashSet<SymbolId>,
     implemented_interfaces: Vec<ImplementedInterfaceData>,
     member_aliases: Vec<MemberAliasData>,
     form_routines: Vec<FormRoutineData>,
@@ -182,6 +184,7 @@ impl<'a> Collector<'a> {
             loop_where_field_contexts: Vec::new(),
             loop_at_field_contexts: Vec::new(),
             class_members: Vec::new(),
+            abstract_classes: std::collections::HashSet::new(),
             implemented_interfaces: Vec::new(),
             member_aliases: Vec::new(),
             form_routines: Vec::new(),
@@ -229,6 +232,15 @@ impl<'a> Collector<'a> {
                 superclass_name,
             })
             .collect();
+        let mut class_definitions: Vec<_> = self
+            .abstract_classes
+            .into_iter()
+            .map(|class_symbol| ClassDefinitionData {
+                class_symbol,
+                is_abstract: true,
+            })
+            .collect();
+        class_definitions.sort_by_key(|definition| definition.class_symbol.as_usize());
         UnitAnalysis {
             unit_id: self.unit_id,
             uri: self.uri,
@@ -243,6 +255,7 @@ impl<'a> Collector<'a> {
             loop_where_field_contexts: self.loop_where_field_contexts,
             loop_at_field_contexts: self.loop_at_field_contexts,
             class_members: self.class_members,
+            class_definitions,
             class_inheritance,
             implemented_interfaces: self.implemented_interfaces,
             member_aliases: self.member_aliases,

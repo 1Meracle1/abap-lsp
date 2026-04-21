@@ -952,6 +952,15 @@ impl<'a> ClassDecl<'a> {
         self.inheritance_clause()
             .and_then(|clause| clause.type_ref())
     }
+
+    pub fn is_abstract(self, source: &str) -> bool {
+        self.syntax.children().any(|child| {
+            child.kind() == SyntaxKind::Token
+                && child
+                    .text(source)
+                    .is_some_and(|text| text.eq_ignore_ascii_case("abstract"))
+        })
+    }
 }
 
 impl<'a> InterfaceDecl<'a> {

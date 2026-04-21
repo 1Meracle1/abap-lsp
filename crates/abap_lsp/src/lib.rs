@@ -2320,6 +2320,7 @@ fn semantic_diagnostic_severity(kind: DiagnosticKind) -> DiagnosticSeverity {
         | DiagnosticKind::UnknownField
         | DiagnosticKind::InvalidBuiltinNamedArgument
         | DiagnosticKind::InvalidPerformCall
+        | DiagnosticKind::AbstractClassInstantiation
         | DiagnosticKind::MissingSuperConstructorCall
         | DiagnosticKind::UnknownNamedParameter
         | DiagnosticKind::DuplicateNamedParameter

@@ -356,11 +356,13 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
     }
 
     pub(super) fn walk_class_decl(&mut self, node: NodeId, scope: ScopeId) {
-        let Some((is_implementation, name, range, superclass_info)) = (|| {
+        let Some((is_implementation, is_abstract, name, range, superclass_info)) = (|| {
             let class_decl = ClassDecl::cast(self.collector.syntax(node))?;
             let name_tok = class_decl.name_token()?;
             let name = name_tok.name(self.collector.source)?;
             let range = name_tok.range();
+            let is_abstract =
+                !class_decl.is_implementation() && class_decl.is_abstract(self.collector.source);
             let superclass_info = if class_decl.is_implementation() {
                 None
             } else {
@@ -373,7 +375,13 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
                     })
                 })
             };
-            Some((class_decl.is_implementation(), name, range, superclass_info))
+            Some((
+                class_decl.is_implementation(),
+                is_abstract,
+                name,
+                range,
+                superclass_info,
+            ))
         })() else {
             self.collector.walk_children(node, scope);
             return;
@@ -423,6 +431,9 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
                 ReferenceKind::TypeRef,
                 superclass_range,
             );
+        }
+        if !is_implementation && is_abstract {
+            self.collector.abstract_classes.insert(owner);
         }
         let parent_scope = if is_implementation {
             self.collector

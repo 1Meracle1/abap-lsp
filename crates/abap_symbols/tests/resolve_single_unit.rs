@@ -12237,6 +12237,30 @@ START-OF-SELECTION.
 }
 
 #[test]
+fn reports_instantiating_abstract_class_via_new() {
+    let src = r#"
+CLASS lcl_ast_node DEFINITION ABSTRACT.
+  PUBLIC SECTION.
+    METHODS to_string ABSTRACT
+      RETURNING
+        VALUE(rv_text) TYPE string.
+ENDCLASS.
+
+CLASS lcl_ast_node IMPLEMENTATION.
+ENDCLASS.
+
+DATA(lo_node) = NEW lcl_ast_node( ).
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///abstract_class_new.abap", src, &parsed);
+
+    assert!(unit.diagnostics.iter().any(|diag| {
+        diag.kind == DiagnosticKind::AbstractClassInstantiation
+            && diag.message.contains("lcl_ast_node")
+    }));
+}
+
+#[test]
 fn validates_token_only_implicit_method_calls_inside_value_bodies() {
     let src = r#"
 CLASS lcl_demo DEFINITION.

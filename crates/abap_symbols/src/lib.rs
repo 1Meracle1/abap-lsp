@@ -25,9 +25,9 @@ pub use builtins::{
 };
 pub use compatibility::{call_section_matches_parameter, parameter_is_required};
 pub use def_map::{
-    AssignmentSiteData, CallArgumentData, CallSiteData, CaseRegionData, ClassInheritanceData,
-    ClassMemberData, ClassMemberKind, ClassMemberParameterData, Diagnostic, DiagnosticKind,
-    ExpressionFactData, ExpressionFactKind, FieldAccess, FieldAccessSegment,
+    AssignmentSiteData, CallArgumentData, CallSiteData, CaseRegionData, ClassDefinitionData,
+    ClassInheritanceData, ClassMemberData, ClassMemberKind, ClassMemberParameterData, Diagnostic,
+    DiagnosticKind, ExpressionFactData, ExpressionFactKind, FieldAccess, FieldAccessSegment,
     FieldSymbolStateCheckData, FieldSymbolStateCheckKind, FieldTypeRefData, FormParameterData,
     FormParameterPassingKind, FormParameterSection, FormRoutineData, FunctionModuleData,
     FunctionModuleExceptionData, FunctionModuleParameterData, FunctionModuleParameterSection,
