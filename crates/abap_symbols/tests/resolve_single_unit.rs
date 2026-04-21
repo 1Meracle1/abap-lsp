@@ -5975,6 +5975,100 @@ DATA lv_alias TYPE ty_outer-monday-work.";
 }
 
 #[test]
+fn include_type_alias_is_preserved_for_unresolved_external_types() {
+    let src = "\
+TYPES: BEGIN OF ty_outer.\n\
+INCLUDE TYPE /sttp/s_obj_ids AS obj_ids.\n\
+TYPES: END OF ty_outer.";
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///include_type_external_alias.abap", src, &parsed);
+
+    let ty_outer = unit
+        .symbols
+        .iter()
+        .find(|symbol| {
+            symbol.kind == abap_symbols::SymbolKind::TypeDef && symbol.name.as_ref() == "ty_outer"
+        })
+        .expect("outer type");
+    let outer_structure = unit.structure(ty_outer.structure.expect("outer structure"));
+    let alias_field = outer_structure
+        .fields
+        .iter()
+        .find(|field| field.name.as_ref() == "obj_ids")
+        .expect("expected unresolved include alias field");
+
+    assert_eq!(
+        alias_field
+            .type_ref
+            .as_ref()
+            .map(|type_ref| type_ref.base_name.as_ref()),
+        Some("/sttp/s_obj_ids")
+    );
+    assert_eq!(alias_field.structure, None);
+}
+
+#[test]
+fn project_resolves_external_include_alias_component_and_leaf_fields() {
+    let main_src = "\
+TYPES: BEGIN OF ts_object.\n\
+  INCLUDE TYPE /sttp/s_obj_ids AS obj_ids.\n\
+TYPES: END OF ts_object.\n\
+DATA is_object TYPE ts_object.\n\
+DATA ls_obj_ids TYPE /sttp/s_obj_ids.\n\
+ls_obj_ids = is_object-obj_ids.\n\
+DATA lv_owner TYPE string.\n\
+lv_owner = is_object-owner.";
+    let ddic_src = "\
+TYPES: BEGIN OF /sttp/s_obj_ids,\n\
+         owner TYPE string,\n\
+       END OF /sttp/s_obj_ids.";
+    let main_parse = parse(main_src);
+    let ddic_parse = parse(ddic_src);
+
+    let project = analyze_project(&[
+        ProjectInput {
+            uri: "file:///main.abap",
+            source: main_src,
+            parse: &main_parse,
+        },
+        ProjectInput {
+            uri: "file:///sttp_s_obj_ids.abap",
+            source: ddic_src,
+            parse: &ddic_parse,
+        },
+    ]);
+    let unit = project.unit_by_uri("file:///main.abap").expect("main unit");
+
+    let ts_object = unit
+        .symbols
+        .iter()
+        .find(|symbol| {
+            symbol.kind == abap_symbols::SymbolKind::TypeDef && symbol.name.as_ref() == "ts_object"
+        })
+        .expect("object type");
+    let object_structure = unit.structure(ts_object.structure.expect("object structure"));
+    assert!(
+        object_structure
+            .fields
+            .iter()
+            .any(|field| field.name.as_ref() == "obj_ids"),
+        "expected external include alias proxy field, fields={:?}",
+        object_structure.fields
+    );
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnknownField
+                || (diag.kind == DiagnosticKind::UnresolvedReference
+                    && (diag.message.contains("/sttp/s_obj_ids")
+                        || diag.message.contains("is_object")
+                        || diag.message.contains("obj_ids")))
+        }),
+        "unexpected diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn include_type_in_hybrid_local_types_block_does_not_leak_unknown_type_token() {
     let src = "\
 METHOD run.\n\

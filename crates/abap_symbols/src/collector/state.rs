@@ -168,27 +168,25 @@ impl<'a> Collector<'a> {
         include: &PendingStructureInclude,
         fields: &mut Vec<StructureFieldData>,
     ) {
-        let Some(structure_id) = self.resolve_field_type_ref(scope, &include.type_ref) else {
-            return;
-        };
-        let Some(included) = self.structure(structure_id).cloned() else {
-            return;
-        };
-
-        fields.extend(included.fields.iter().map(|field| {
-            let mut field = field.clone();
-            if let Some(suffix) = include.suffix.as_ref() {
-                field.name = Arc::from(format!("{}{}", field.name, suffix));
-            }
-            field
-        }));
+        let resolved_structure = self.resolve_field_type_ref(scope, &include.type_ref);
+        if let Some(structure_id) = resolved_structure
+            && let Some(included) = self.structure(structure_id).cloned()
+        {
+            fields.extend(included.fields.iter().map(|field| {
+                let mut field = field.clone();
+                if let Some(suffix) = include.suffix.as_ref() {
+                    field.name = Arc::from(format!("{}{}", field.name, suffix));
+                }
+                field
+            }));
+        }
 
         if let Some(alias) = include.alias.as_ref() {
             fields.push(StructureFieldData {
                 name: Arc::clone(alias),
                 decl_range: None,
                 decl_unit: self.unit_id,
-                structure: Some(structure_id),
+                structure: resolved_structure,
                 type_ref: Some(include.type_ref.clone()),
                 value_clause_display: None,
             });

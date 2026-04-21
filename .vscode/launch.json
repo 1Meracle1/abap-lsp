@@ -49,8 +49,8 @@
         // "--folder-uri=D:/dev/abap/po_creation/"
         // "--folder-uri=D:/dev/abap/rsa_encryption/"
         // "--folder-uri=D:/dev/abap/test_function_module"
-        // "--folder-uri=D:/dev/abap/archiving/"
-        "--folder-uri=D:/dev/abap/lsp_development_examples2/"
+        "--folder-uri=D:/dev/abap/archiving/"
+        // "--folder-uri=D:/dev/abap/lsp_development_examples2/"
       ],
       "outFiles": [
         "${workspaceFolder}/editors/vscode/out/**/*.js"
