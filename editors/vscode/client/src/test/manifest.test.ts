@@ -7,6 +7,7 @@ import * as vscode from "vscode";
 import {
 	dependencyCacheManifestPath,
 	ensureDependencyCacheUnit,
+	ensureDependencyCacheUnits,
 	ensureWorkspaceManifest,
 	inferManifestUnitSpec,
 	targetDependencyWorkspaceFilePath,
@@ -198,6 +199,66 @@ suite("Manifest helpers", () => {
 		assert.strictEqual((text.match(/^\[\[unit\]\]$/gm) ?? []).length, 1);
 		assert.ok(text.includes('"src/reports/ZMAIN/ZMAIN.abap"'));
 		assert.ok(text.includes('"src/includes/ZHELPER.abap"'));
+	});
+
+	test("Batches dependency cache manifest updates across many units", async () => {
+		const workspaceFolder = await createTempWorkspaceFolder("bulk-cache-manifest");
+		const classRef: AdtObjectRef = {
+			uri: "/sap/bc/adt/oo/classes/zcl_remote_main",
+			type: "CLAS/OC",
+			name: "ZCL_REMOTE_MAIN",
+			packageName: "ZPKG",
+			description: "Main remote class",
+		};
+		const helperRef: AdtObjectRef = {
+			uri: "/sap/bc/adt/oo/classes/zcl_remote_helper",
+			type: "CLAS/OC",
+			name: "ZCL_REMOTE_HELPER",
+			packageName: "ZPKG",
+			description: "Helper remote class",
+		};
+
+		await ensureDependencyCacheUnits(workspaceFolder, [
+			{
+				objectRef: classRef,
+				filePath: targetDependencyWorkspaceFilePath(workspaceFolder, classRef),
+				sourceFiles: [
+					"src/reports/ZMAIN/ZMAIN.abap",
+					"src/includes/ZHELPER.abap",
+				],
+			},
+			{
+				objectRef: helperRef,
+				filePath: targetDependencyWorkspaceFilePath(workspaceFolder, helperRef),
+				sourceFiles: [
+					"src/reports/ZMAIN/ZMAIN.abap",
+				],
+			},
+			{
+				objectRef: classRef,
+				filePath: targetDependencyWorkspaceFilePath(workspaceFolder, classRef),
+				sourceFiles: [
+					"src/reports/ZMAIN/ZMAIN.abap",
+				],
+			},
+		]);
+
+		const reportManifestText = await fs.promises.readFile(
+			dependencyCacheManifestPath(workspaceFolder, "src/reports/ZMAIN/ZMAIN.abap"),
+			"utf8",
+		);
+		const includeManifestText = await fs.promises.readFile(
+			dependencyCacheManifestPath(workspaceFolder, "src/includes/ZHELPER.abap"),
+			"utf8",
+		);
+
+		assert.strictEqual((reportManifestText.match(/^\[\[unit\]\]$/gm) ?? []).length, 2);
+		assert.ok(reportManifestText.includes('name = "ZCL_REMOTE_MAIN"'));
+		assert.ok(reportManifestText.includes('name = "ZCL_REMOTE_HELPER"'));
+		assert.ok(reportManifestText.includes('"src/reports/ZMAIN/ZMAIN.abap"'));
+		assert.ok(reportManifestText.includes('"src/includes/ZHELPER.abap"'));
+		assert.strictEqual((includeManifestText.match(/^\[\[unit\]\]$/gm) ?? []).length, 1);
+		assert.ok(includeManifestText.includes('name = "ZCL_REMOTE_MAIN"'));
 	});
 });
 

@@ -14,13 +14,17 @@ interface LocalExportIndex {
 }
 
 const localExportIndexCache = new Map<string, LocalExportIndex>();
+const pendingLocalExportIndexBuilds = new Map<string, Promise<LocalExportIndex>>();
 
 export function clearLocalExportIndexCache(root?: string): void {
 	if (!root) {
 		localExportIndexCache.clear();
+		pendingLocalExportIndexBuilds.clear();
 		return;
 	}
-	localExportIndexCache.delete(normalizedLocalExportRootKey(root));
+	const key = normalizedLocalExportRootKey(root);
+	localExportIndexCache.delete(key);
+	pendingLocalExportIndexBuilds.delete(key);
 }
 
 export async function findLocalExportFileInIndexedRoot(
@@ -29,13 +33,7 @@ export async function findLocalExportFileInIndexedRoot(
 	encodedPackageName: string,
 	extensions: readonly LocalExportFileExtension[],
 ): Promise<{ filePath: string; fileExtension: LocalExportFileExtension; score: number } | undefined> {
-	let index = await localExportIndexForRoot(root);
-	let match = findLocalExportFileInIndex(index, encodedName, encodedPackageName, extensions);
-	if (match) {
-		return match;
-	}
-
-	index = await refreshLocalExportIndexForRoot(root);
+	const index = await localExportIndexForRoot(root);
 	return findLocalExportFileInIndex(index, encodedName, encodedPackageName, extensions);
 }
 
@@ -45,16 +43,27 @@ async function localExportIndexForRoot(root: string): Promise<LocalExportIndex> 
 	if (cached) {
 		return cached;
 	}
-	const index = await buildLocalExportIndex(root);
-	localExportIndexCache.set(key, index);
-	return index;
-}
 
-async function refreshLocalExportIndexForRoot(root: string): Promise<LocalExportIndex> {
-	const key = normalizedLocalExportRootKey(root);
-	const index = await buildLocalExportIndex(root);
-	localExportIndexCache.set(key, index);
-	return index;
+	const pending = pendingLocalExportIndexBuilds.get(key);
+	if (pending) {
+		return pending;
+	}
+
+	let build: Promise<LocalExportIndex>;
+	build = buildLocalExportIndex(root)
+		.then((index) => {
+			if (pendingLocalExportIndexBuilds.get(key) === build) {
+				localExportIndexCache.set(key, index);
+			}
+			return index;
+		})
+		.finally(() => {
+			if (pendingLocalExportIndexBuilds.get(key) === build) {
+				pendingLocalExportIndexBuilds.delete(key);
+			}
+		});
+	pendingLocalExportIndexBuilds.set(key, build);
+	return build;
 }
 
 async function buildLocalExportIndex(root: string): Promise<LocalExportIndex> {

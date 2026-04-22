@@ -3,6 +3,7 @@ import * as vscode from "vscode";
 
 import {
 	buildFunctionModuleDependencySource,
+	directDependencyObjectRefs,
 	buildMessageClassObjectRef,
 	extractActiveTopLevelIncludeNames,
 	formatDdicXml,
@@ -169,6 +170,32 @@ suite("ADT dependency helpers", () => {
 		assert.strictEqual(isSupportedDependencyObject(objectRef, "message-class"), true);
 		assert.ok(filePath.endsWith("%2FSTTP%2FINT_MSG.xml"));
 		assert.strictEqual(unit.kind, "message-class");
+	});
+
+	test("Builds direct fetch refs for reports and includes", () => {
+		assert.deepStrictEqual(
+			directDependencyObjectRefs("rsnast00", "report").map((objectRef) => objectRef.uri),
+			["/sap/bc/adt/programs/programs/RSNAST00"],
+		);
+		assert.deepStrictEqual(
+			directDependencyObjectRefs("/sttp/linclude", "include").map((objectRef) => objectRef.uri),
+			["/sap/bc/adt/programs/includes/%2FSTTP%2FLINCLUDE"],
+		);
+	});
+
+	test("Builds direct fetch refs for class and interface-shaped dependencies", () => {
+		assert.deepStrictEqual(
+			directDependencyObjectRefs("cl_abap_typedescr", "type").map((objectRef) => objectRef.type),
+			["CLAS/OC"],
+		);
+		assert.deepStrictEqual(
+			directDependencyObjectRefs("/sttp/if_demo", "type").map((objectRef) => objectRef.type),
+			["INTF/OI"],
+		);
+		assert.deepStrictEqual(
+			directDependencyObjectRefs("zfactory", "static").map((objectRef) => objectRef.type),
+			["CLAS/OC", "INTF/OI"],
+		);
 	});
 
 	test("Prefers a fetchable data element over unsupported exact matches", () => {

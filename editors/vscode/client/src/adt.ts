@@ -77,6 +77,21 @@ interface GetSapConnectionOptions {
 interface AdtClientOptions {
 	beforeRequest?: () => Promise<void>;
 	isCancelled?: () => boolean;
+	onRequestStart?: (event: AdtRequestStartEvent) => void;
+	onRequestFinished?: (event: AdtRequestFinishedEvent) => void;
+}
+
+export interface AdtRequestStartEvent {
+	method: string;
+	pathOrUrl: string;
+}
+
+export interface AdtRequestFinishedEvent {
+	method: string;
+	pathOrUrl: string;
+	durationMs: number;
+	statusCode?: number;
+	error?: unknown;
 }
 
 const SAP_BASE_URL_ENV_KEYS = ["ABAP_ADT_URL", "ABAP_ADT_BASE_URL", "SAPBASE_URL"] as const;
@@ -785,6 +800,12 @@ export class AdtClient {
 		this.throwIfCancelled();
 		await this.options.beforeRequest?.();
 		this.throwIfCancelled();
+		const method = options.method ?? "GET";
+		const startedAt = Date.now();
+		this.options.onRequestStart?.({
+			method,
+			pathOrUrl,
+		});
 
 		const url = toAbsoluteUrl(this.connection.baseUrl, pathOrUrl);
 		const parsed = new URL(url);
@@ -799,10 +820,25 @@ export class AdtClient {
 		}
 
 		return new Promise<HttpResponseData>((resolve, reject) => {
+			let finished = false;
+			const finish = (
+				event: Omit<AdtRequestFinishedEvent, "method" | "pathOrUrl" | "durationMs">,
+			) => {
+				if (finished) {
+					return;
+				}
+				finished = true;
+				this.options.onRequestFinished?.({
+					method,
+					pathOrUrl,
+					durationMs: Date.now() - startedAt,
+					...event,
+				});
+			};
 			const request = client.request(
 				parsed,
 				{
-					method: options.method ?? "GET",
+					method,
 					headers,
 				},
 				(response) => {
@@ -814,9 +850,14 @@ export class AdtClient {
 						const body = Buffer.concat(chunks).toString("utf8");
 						const statusCode = response.statusCode ?? 0;
 						if (statusCode >= 400) {
+							finish({
+								statusCode,
+								error: new Error(`ADT request failed (${statusCode}): ${body}`),
+							});
 							reject(new Error(`ADT request failed (${statusCode}): ${body}`));
 							return;
 						}
+						finish({ statusCode });
 						resolve({
 							statusCode,
 							headers: response.headers,
@@ -830,7 +871,10 @@ export class AdtClient {
 			request.on("close", () => {
 				AdtClient.activeRequests.delete(request);
 			});
-			request.on("error", reject);
+			request.on("error", (error) => {
+				finish({ error });
+				reject(error);
+			});
 			if (options.body !== undefined) {
 				request.write(options.body, "utf8");
 			}
@@ -869,7 +913,7 @@ export function buildMessageClassObjectRef(name: string): AdtObjectRef {
 	};
 }
 
-function buildIncludeObjectRef(name: string, packageName: string): AdtObjectRef {
+export function buildIncludeObjectRef(name: string, packageName = ""): AdtObjectRef {
 	const normalizedName = name.trim().toUpperCase();
 	return {
 		uri: `/sap/bc/adt/programs/includes/${encodeURIComponent(normalizedName)}`,
@@ -878,6 +922,59 @@ function buildIncludeObjectRef(name: string, packageName: string): AdtObjectRef 
 		packageName,
 		description: "Include",
 	};
+}
+
+export function buildReportObjectRef(name: string, packageName = ""): AdtObjectRef {
+	const normalizedName = name.trim().toUpperCase();
+	return {
+		uri: `/sap/bc/adt/programs/programs/${encodeURIComponent(normalizedName)}`,
+		type: "PROG/P",
+		name: normalizedName,
+		packageName,
+		description: "Report",
+	};
+}
+
+export function buildClassObjectRef(name: string, packageName = ""): AdtObjectRef {
+	const normalizedName = name.trim().toUpperCase();
+	return {
+		uri: `/sap/bc/adt/oo/classes/${encodeURIComponent(normalizedName)}`,
+		type: "CLAS/OC",
+		name: normalizedName,
+		packageName,
+		description: "Global class",
+	};
+}
+
+export function buildInterfaceObjectRef(name: string, packageName = ""): AdtObjectRef {
+	const normalizedName = name.trim().toUpperCase();
+	return {
+		uri: `/sap/bc/adt/oo/interfaces/${encodeURIComponent(normalizedName)}`,
+		type: "INTF/OI",
+		name: normalizedName,
+		packageName,
+		description: "Global interface",
+	};
+}
+
+export function directDependencyObjectRefs(
+	name: string,
+	kindHint?: string,
+): AdtObjectRef[] {
+	switch (kindHint?.trim().toLowerCase()) {
+		case "message-class":
+			return [buildMessageClassObjectRef(name)];
+		case "include":
+			return [buildIncludeObjectRef(name)];
+		case "report":
+			return [buildReportObjectRef(name)];
+		case "static":
+			return directClassInterfaceObjectRefs(name, true);
+		case "type":
+			return directClassInterfaceObjectRefs(name, false);
+		default:
+			return [];
+	}
 }
 
 export function isFunctionModuleObject(objectRef: AdtObjectRef): boolean {
@@ -889,6 +986,47 @@ export function isFunctionModuleObject(objectRef: AdtObjectRef): boolean {
 export function inferFunctionGroupUri(objectRef: AdtObjectRef): string | undefined {
 	const match = objectRef.uri.match(/^(.*\/functions\/groups\/[^/]+)(?:\/fmodules\/[^/]+)?$/i);
 	return match?.[1];
+}
+
+function directClassInterfaceObjectRefs(
+	name: string,
+	fallbackBothKinds: boolean,
+): AdtObjectRef[] {
+	if (looksLikeGlobalInterfaceName(name)) {
+		return [buildInterfaceObjectRef(name)];
+	}
+	if (looksLikeGlobalClassName(name)) {
+		return [buildClassObjectRef(name)];
+	}
+	return fallbackBothKinds
+		? [buildClassObjectRef(name), buildInterfaceObjectRef(name)]
+		: [];
+}
+
+function looksLikeGlobalClassName(name: string): boolean {
+	const localName = localObjectName(name);
+	return localName.startsWith("CL_") ||
+		localName.startsWith("ZCL_") ||
+		localName.startsWith("YCL_") ||
+		localName.startsWith("CX_") ||
+		localName.startsWith("ZCX_") ||
+		localName.startsWith("YCX_");
+}
+
+function looksLikeGlobalInterfaceName(name: string): boolean {
+	const localName = localObjectName(name);
+	return localName.startsWith("IF_") ||
+		localName.startsWith("ZIF_") ||
+		localName.startsWith("YIF_");
+}
+
+function localObjectName(name: string): string {
+	const normalized = name.trim().toUpperCase();
+	if (!normalized.startsWith("/")) {
+		return normalized;
+	}
+	const parts = normalized.split("/");
+	return parts[parts.length - 1] || normalized;
 }
 
 export function extractActiveTopLevelIncludeNames(source: string): string[] {

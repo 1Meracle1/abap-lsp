@@ -27,9 +27,10 @@ export interface ManifestUnitMemberSpec {
 	objectName?: string;
 }
 
-interface ManifestUnitMatch {
-	start: number;
-	end: number;
+export interface DependencyCacheUnitEntry {
+	objectRef: AdtObjectRef;
+	filePath: string;
+	sourceFiles: readonly string[];
 }
 
 const pendingManifestUpdates = new Map<string, Promise<void>>();
@@ -208,29 +209,55 @@ export async function ensureDependencyCacheUnit(
 	filePath: string,
 	sourceFiles: readonly string[],
 ): Promise<vscode.Uri> {
-	const relativeFile = path.relative(workspaceFolder.uri.fsPath, filePath);
-	const normalizedSourceFiles = [...new Set(
-		sourceFiles
-			.map((file) => normalizeRelativePath(file))
-			.filter((file) => file.length > 0),
-	)];
-	if (normalizedSourceFiles.length === 0) {
+	const touched = await ensureDependencyCacheUnits(workspaceFolder, [{
+		objectRef,
+		filePath,
+		sourceFiles,
+	}]);
+	const lastTouched = touched.at(-1);
+	if (!lastTouched) {
 		throw new Error("ensureDependencyCacheUnit requires at least one source file");
 	}
-	const unit = inferManifestUnitSpec(objectRef, relativeFile);
-	unit.dependencyOf = normalizedSourceFiles.map((file) => ({ file }));
+	return lastTouched;
+}
 
-	let lastUri = vscode.Uri.file(dependencyCacheManifestPath(workspaceFolder, normalizedSourceFiles[0]));
-	for (const sourceFile of normalizedSourceFiles) {
-		const manifestPath = dependencyCacheManifestPath(workspaceFolder, sourceFile);
-		await ensureTomlUnitFile(
-			manifestPath,
-			() => `${renderDependencyCacheManifestHeader(sourceFile)}\n`,
-			unit,
-		);
-		lastUri = vscode.Uri.file(manifestPath);
+export async function ensureDependencyCacheUnits(
+	workspaceFolder: vscode.WorkspaceFolder,
+	entries: readonly DependencyCacheUnitEntry[],
+): Promise<vscode.Uri[]> {
+	const groupedUnits = new Map<string, { sourceFile: string; units: ManifestUnitSpec[] }>();
+	const manifestOrder: string[] = [];
+
+	for (const entry of entries) {
+		const prepared = prepareDependencyCacheUnitEntry(workspaceFolder, entry);
+		for (const sourceFile of prepared.sourceFiles) {
+			const manifestPath = dependencyCacheManifestPath(workspaceFolder, sourceFile);
+			let manifestEntry = groupedUnits.get(manifestPath);
+			if (!manifestEntry) {
+				manifestEntry = {
+					sourceFile,
+					units: [],
+				};
+				groupedUnits.set(manifestPath, manifestEntry);
+				manifestOrder.push(manifestPath);
+			}
+			manifestEntry.units.push(prepared.unit);
+		}
 	}
-	return lastUri;
+
+	for (const manifestPath of manifestOrder) {
+		const manifestEntry = groupedUnits.get(manifestPath);
+		if (!manifestEntry) {
+			continue;
+		}
+		await ensureTomlUnitsFile(
+			manifestPath,
+			() => `${renderDependencyCacheManifestHeader(manifestEntry.sourceFile)}\n`,
+			manifestEntry.units,
+		);
+	}
+
+	return manifestOrder.map((manifestPath) => vscode.Uri.file(manifestPath));
 }
 
 function renderManifestHeader(options: ManifestOptions = {}): string {
@@ -283,37 +310,37 @@ function normalizeRelativePath(value: string): string {
 	return value.replace(/\\/g, "/").replace(/^\.\//, "");
 }
 
-function findManifestUnit(text: string, unit: ManifestUnitSpec): ManifestUnitMatch | undefined {
-	const candidateName = normalizeCandidateName(unit.name);
-	const candidateRootFile = normalizeCandidateFile(unit.rootFile);
-	const matches = [...text.matchAll(/^\[\[unit\]\]\s*$/gm)];
-	for (let index = 0; index < matches.length; index += 1) {
-		const start = matches[index].index ?? 0;
-		const end = matches[index + 1]?.index ?? text.length;
-		const block = text.slice(start, end);
-		const blockName = normalizeCandidateName(readTomlString(block, "name"));
-		const blockRootFile = normalizeCandidateFile(readTomlString(block, "root_file"));
-		if (
-			(candidateRootFile && blockRootFile === candidateRootFile) ||
-			(candidateName && blockName === candidateName)
-		) {
-			return { start, end };
-		}
+function prepareDependencyCacheUnitEntry(
+	workspaceFolder: vscode.WorkspaceFolder,
+	entry: DependencyCacheUnitEntry,
+): { sourceFiles: string[]; unit: ManifestUnitSpec } {
+	const relativeFile = path.relative(workspaceFolder.uri.fsPath, entry.filePath);
+	const sourceFiles = [...new Set(
+		entry.sourceFiles
+			.map((file) => normalizeRelativePath(file))
+			.filter((file) => file.length > 0),
+	)];
+	if (sourceFiles.length === 0) {
+		throw new Error("ensureDependencyCacheUnit requires at least one source file");
 	}
-	return undefined;
+	const unit = inferManifestUnitSpec(entry.objectRef, relativeFile);
+	unit.dependencyOf = sourceFiles.map((file) => ({ file }));
+	return { sourceFiles, unit };
 }
 
-function mergeManifestUnit(block: string, unit: ManifestUnitSpec): ManifestUnitSpec {
-	if (!unit.dependencyOf?.length) {
-		return unit;
-	}
-
+function mergeManifestUnitSpecs(
+	current: ManifestUnitSpec,
+	incoming: ManifestUnitSpec,
+): ManifestUnitSpec {
 	return {
-		...unit,
-		dependencyOf: [
-			...readManifestDependencyOf(block),
-			...unit.dependencyOf,
-		],
+		...current,
+		...incoming,
+		name: incoming.name || current.name,
+		kind: incoming.kind || current.kind,
+		rootFile: incoming.rootFile || current.rootFile,
+		packageName: incoming.packageName ?? current.packageName,
+		members: [...(current.members ?? []), ...(incoming.members ?? [])],
+		dependencyOf: [...(current.dependencyOf ?? []), ...(incoming.dependencyOf ?? [])],
 	};
 }
 
@@ -488,29 +515,127 @@ async function ensureTomlUnitFile(
 	initialText: () => string,
 	unit: ManifestUnitSpec,
 ): Promise<void> {
+	await ensureTomlUnitsFile(filePath, initialText, [unit]);
+}
+
+async function ensureTomlUnitsFile(
+	filePath: string,
+	initialText: () => string,
+	units: readonly ManifestUnitSpec[],
+): Promise<void> {
+	const mergedUnits = mergeManifestUnits(units);
+	if (mergedUnits.length === 0) {
+		return;
+	}
+
 	await withManifestUpdateLock(filePath, async () => {
 		await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
 		const existing = await readTextIfExists(filePath);
 
 		if (!existing) {
-			const unitBlock = renderUnitBlock(unit);
-			await fs.promises.writeFile(filePath, `${initialText()}${unitBlock}`, "utf8");
+			const unitBlocks = mergedUnits.map((entry) => renderUnitBlock(entry)).join("");
+			await fs.promises.writeFile(filePath, `${initialText()}${unitBlocks}`, "utf8");
 			return;
 		}
 
-		const match = findManifestUnit(existing, unit);
-		if (match) {
-			const mergedUnit = mergeManifestUnit(existing.slice(match.start, match.end), unit);
-			const unitBlock = renderUnitBlock(mergedUnit);
-			const updated = `${existing.slice(0, match.start)}${unitBlock}${existing.slice(match.end)}`;
+		const updated = mergeTomlUnitsText(existing, mergedUnits);
+		if (updated !== existing) {
 			await fs.promises.writeFile(filePath, updated, "utf8");
-			return;
 		}
-
-		const unitBlock = renderUnitBlock(unit);
-		const separator = existing.endsWith("\n") ? "\n" : "\n\n";
-		await fs.promises.writeFile(filePath, `${existing}${separator}${unitBlock}`, "utf8");
 	});
+}
+
+function mergeTomlUnitsText(existing: string, incomingUnits: readonly ManifestUnitSpec[]): string {
+	const parsed = parseManifestUnitFile(existing);
+	const unitsByKey = new Map<string, ManifestUnitSpec>();
+	const unitOrder: string[] = [];
+
+	for (const unit of parsed.units) {
+		const key = manifestUnitKey(unit);
+		if (!key || unitsByKey.has(key)) {
+			continue;
+		}
+		unitsByKey.set(key, unit);
+		unitOrder.push(key);
+	}
+
+	for (const unit of mergeManifestUnits(incomingUnits)) {
+		const key = manifestUnitKey(unit);
+		if (!key) {
+			continue;
+		}
+		const current = unitsByKey.get(key);
+		if (current) {
+			unitsByKey.set(key, mergeManifestUnitSpecs(current, unit));
+			continue;
+		}
+		unitsByKey.set(key, unit);
+		unitOrder.push(key);
+	}
+
+	return `${parsed.header}${unitOrder.map((key) => renderUnitBlock(unitsByKey.get(key)!)).join("")}`;
+}
+
+function mergeManifestUnits(units: readonly ManifestUnitSpec[]): ManifestUnitSpec[] {
+	const merged = new Map<string, ManifestUnitSpec>();
+	const order: string[] = [];
+
+	for (const unit of units) {
+		const key = manifestUnitKey(unit);
+		if (!key) {
+			continue;
+		}
+		const current = merged.get(key);
+		if (current) {
+			merged.set(key, mergeManifestUnitSpecs(current, unit));
+			continue;
+		}
+		merged.set(key, unit);
+		order.push(key);
+	}
+
+	return order.map((key) => merged.get(key)!);
+}
+
+function parseManifestUnitFile(text: string): { header: string; units: ManifestUnitSpec[] } {
+	const matches = [...text.matchAll(/^\[\[unit\]\]\s*$/gm)];
+	if (matches.length === 0) {
+		return {
+			header: text,
+			units: [],
+		};
+	}
+
+	const header = text.slice(0, matches[0].index ?? 0);
+	const units = matches
+		.map((match, index) => {
+			const start = match.index ?? 0;
+			const end = matches[index + 1]?.index ?? text.length;
+			return parseManifestUnitBlock(text.slice(start, end));
+		})
+		.filter((unit): unit is ManifestUnitSpec => unit !== undefined);
+	return { header, units };
+}
+
+function parseManifestUnitBlock(block: string): ManifestUnitSpec | undefined {
+	const name = readTomlString(block, "name");
+	const kind = readTomlString(block, "kind");
+	const rootFile = readTomlString(block, "root_file");
+	if (!name || !kind || !rootFile) {
+		return undefined;
+	}
+
+	return {
+		name,
+		kind,
+		rootFile,
+		packageName: readTomlString(block, "package_name"),
+		dependencyOf: readManifestDependencyOf(block),
+	};
+}
+
+function manifestUnitKey(unit: ManifestUnitSpec): string {
+	return normalizeCandidateFile(unit.rootFile) ?? normalizeCandidateName(unit.name) ?? "";
 }
 
 async function withManifestUpdateLock<T>(manifestPath: string, action: () => Promise<T>): Promise<T> {

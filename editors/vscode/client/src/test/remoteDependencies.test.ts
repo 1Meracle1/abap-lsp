@@ -62,6 +62,18 @@ suite("Remote dependency helpers", () => {
 		);
 	});
 
+	test("Allows higher derived parallelism for high request-rate workspaces", () => {
+		assert.deepStrictEqual(
+			resolveRemoteDependencyFetchPolicy({
+				remoteRequestsPerSecond: 240,
+			}),
+			{
+				remoteRequestParallelism: 64,
+				remoteRequestsPerSecond: 240,
+			},
+		);
+	});
+
 	test("Merges candidates with strongest kind preserved", () => {
 		assert.deepStrictEqual(
 			mergeRemoteDependencyCandidates(

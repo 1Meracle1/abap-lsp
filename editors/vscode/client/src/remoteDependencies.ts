@@ -22,6 +22,8 @@ export interface ResolvedRemoteDependencyFetchPolicy {
 	remoteRequestsPerSecond: number;
 }
 
+const maxDerivedRemoteRequestParallelism = 64;
+
 const candidateKindPriority = new Map<string, number>([
 	["message-class", 5],
 	["include", 4],
@@ -319,7 +321,8 @@ function deriveRemoteRequestParallelism(remoteRequestsPerSecond: number): number
 	return Math.max(
 		1,
 		Math.min(
-			defaultRemoteRequestParallelism,
+			maxDerivedRemoteRequestParallelism,
+			remoteRequestsPerSecond,
 			Math.ceil(remoteRequestsPerSecond / requestsPerWorker),
 		),
 	);
