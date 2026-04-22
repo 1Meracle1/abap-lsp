@@ -2326,20 +2326,19 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
     }
 
     pub(super) fn collect_raise_stmt(&mut self, node: NodeId, scope: ScopeId) {
-        let Some((type_ref_id, trailing_child_ids)) =
-            (match RaiseStmt::cast(self.collector.syntax(node)) {
-                Some(stmt) => stmt.exception_type_ref().map(|type_ref| {
-                    (
-                        type_ref.syntax().id(),
-                        stmt.trailing_children()
-                            .into_iter()
-                            .map(|child| child.id())
-                            .collect::<Vec<_>>(),
-                    )
-                }),
-                None => None,
-            })
-        else {
+        let Some((type_ref_id, trailing_children)) = (match RaiseStmt::cast(self.collector.syntax(node))
+        {
+            Some(stmt) => stmt.exception_type_ref().map(|type_ref| {
+                (
+                    type_ref.syntax().id(),
+                    stmt.trailing_children()
+                        .into_iter()
+                        .map(|child| (child.id(), child.kind()))
+                        .collect::<Vec<_>>(),
+                )
+            }),
+            None => None,
+        }) else {
             self.collect_generic_simple_stmt(node, scope);
             return;
         };
@@ -2353,10 +2352,37 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             .decl_lowering()
             .collect_type_ref(type_ref_id, scope);
 
-        let trailing_tokens: Vec<_> = trailing_child_ids
-            .into_iter()
-            .flat_map(|child_id| self.collector.syntax_token_nodes(child_id))
-            .collect();
+        let constructor_target = self
+            .collector
+            .type_ref_access_chain(type_ref_id, Namespace::Type)
+            .and_then(|(namespace, _, base_name, _, field_path)| {
+                (namespace == Namespace::Type && field_path.is_empty()).then_some(
+                    NamedArgumentTarget::Constructor {
+                        type_name: base_name,
+                    },
+                )
+            });
+
+        let call_range = self.collector.file.range(node);
+        let mut trailing_tokens = Vec::new();
+        for (child_id, child_kind) in trailing_children {
+            if child_kind == SyntaxKind::CallArgList {
+                if let Some(target) = constructor_target.clone() {
+                    self.collector.expr_lowering().collect_call_argument_list(
+                        child_id,
+                        scope,
+                        target,
+                        call_range.clone(),
+                    );
+                } else {
+                    self.collector
+                        .expr_lowering()
+                        .collect_structured_argument_values_from_children(child_id, scope);
+                }
+                continue;
+            }
+            trailing_tokens.extend(self.collector.syntax_token_nodes(child_id));
+        }
         if !trailing_tokens.is_empty() {
             self.collector
                 .collect_token_expression_refs_infos(&trailing_tokens, scope, true);

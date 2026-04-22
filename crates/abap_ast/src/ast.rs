@@ -2569,6 +2569,12 @@ impl<'a> RaiseStmt<'a> {
             .and_then(TypeRefSimple::cast)
     }
 
+    pub fn arg_list(self) -> Option<CallArgList<'a>> {
+        self.syntax
+            .child_by_kind(SyntaxKind::CallArgList)
+            .and_then(CallArgList::cast)
+    }
+
     pub fn trailing_children(self) -> Vec<SyntaxNodeRef<'a>> {
         let mut seen_type_ref = false;
         let mut trailing = Vec::new();

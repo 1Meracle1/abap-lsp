@@ -11260,6 +11260,55 @@ ENDCLASS.";
     }
 
     #[test]
+    fn routine_analysis_does_not_flag_raise_exception_exporting_arguments_as_unreachable() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS cx_demo DEFINITION INHERITING FROM cx_static_check.
+  PUBLIC SECTION.
+    METHODS constructor
+      IMPORTING
+        textid TYPE string.
+ENDCLASS.
+
+CLASS cx_demo IMPLEMENTATION.
+  METHOD constructor.
+    super->constructor( ).
+  ENDMETHOD.
+ENDCLASS.
+
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS raise_ilm_exception_with_msg
+      IMPORTING iv_textid TYPE string
+      RAISING cx_demo.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD raise_ilm_exception_with_msg.
+    RAISE EXCEPTION TYPE cx_demo
+      EXPORTING
+        textid = iv_textid.
+  ENDMETHOD.
+ENDCLASS.";
+
+        let snapshot = store.publish("file:///raise_exception_exporting_unreachable.abap", 1, src);
+        let unreachable: Vec<_> = snapshot
+            .symbols
+            .diagnostics
+            .iter()
+            .filter(|diag| diag.kind == DiagnosticKind::UnreachableCode)
+            .map(|diag| src[diag.range.clone()].to_string())
+            .collect();
+        assert!(
+            !unreachable.iter().any(|slice| {
+                slice.contains("iv_textid") || slice.contains("textid = iv_textid")
+            }),
+            "unexpected unreachable diagnostics: {:?}",
+            unreachable
+        );
+    }
+
+    #[test]
     fn routine_analysis_does_not_flag_classic_scalar_after_branch_join() {
         let store = DocumentStore::default();
         let src = "\

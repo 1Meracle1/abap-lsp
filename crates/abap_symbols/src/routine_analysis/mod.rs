@@ -183,6 +183,11 @@ pub fn build_project_routine_analysis(project: &ProjectAnalysis) -> ProjectRouti
         for reference in unit.references.iter().filter(|reference| {
             reference.namespace == Namespace::Value
                 && !matches!(reference.kind, crate::ReferenceKind::TypeRef)
+                // Structured instruction sites already model execution of nested references.
+                && !unit.call_sites.iter().any(|call_site| {
+                    call_site.scope == reference.scope
+                        && range_contains(&call_site.range, &reference.range)
+                })
         }) {
             let Some(routine_id) = scope_map.get(reference.scope.as_usize()).copied().flatten()
             else {
@@ -5150,4 +5155,8 @@ fn push_unique(values: &mut Vec<RoutineBlockId>, value: RoutineBlockId) {
 
 fn zero_range(offset: usize) -> TextRange {
     offset..offset
+}
+
+fn range_contains(outer: &TextRange, inner: &TextRange) -> bool {
+    outer.start <= inner.start && inner.end <= outer.end
 }

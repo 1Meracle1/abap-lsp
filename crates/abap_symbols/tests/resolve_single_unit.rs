@@ -7190,6 +7190,65 @@ ENDCLASS.
 }
 
 #[test]
+fn raise_exception_type_exporting_builds_constructor_call_site() {
+    let src = r#"
+CLASS cx_demo DEFINITION INHERITING FROM cx_static_check.
+  PUBLIC SECTION.
+    METHODS constructor
+      IMPORTING
+        iv_text TYPE string.
+ENDCLASS.
+
+CLASS cx_demo IMPLEMENTATION.
+  METHOD constructor.
+    super->constructor( ).
+  ENDMETHOD.
+ENDCLASS.
+
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run IMPORTING iv_text TYPE string RAISING cx_demo.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+    RAISE EXCEPTION TYPE cx_demo
+      EXPORTING
+        iv_text = iv_text.
+  ENDMETHOD.
+ENDCLASS.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///raise_exception_type_exporting.abap", src, &parsed);
+
+    assert!(unit.call_sites.iter().any(|site| {
+        matches!(
+            &site.target,
+            abap_symbols::NamedArgumentTarget::Constructor { type_name }
+                if type_name.as_ref() == "cx_demo"
+        ) && site.arguments.len() == 1
+            && site.arguments[0].name.as_deref().map(|name| name.as_ref()) == Some("iv_text")
+            && site.arguments[0].section == Some(abap_symbols::NamedArgumentSection::Exporting)
+    }));
+    assert!(unit.named_arguments.iter().any(|access| {
+        access.name.as_ref() == "iv_text"
+            && access.section == Some(abap_symbols::NamedArgumentSection::Exporting)
+            && matches!(
+                access.target,
+                abap_symbols::NamedArgumentTarget::Constructor { ref type_name }
+                    if type_name.as_ref() == "cx_demo"
+            )
+    }));
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains("iv_text")
+        }),
+        "unexpected unresolved diagnostic: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn resolves_constructor_arguments_and_token_only_statement_references() {
     let src = r#"
 CLASS zcl_ast_node DEFINITION ABSTRACT.

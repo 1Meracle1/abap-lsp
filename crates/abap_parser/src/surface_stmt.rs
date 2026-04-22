@@ -4634,9 +4634,24 @@ pub fn try_parse_raise_stmt(
                 source,
                 &tokens[type_start..type_end],
             ));
-            for token in &tokens[type_end..=period_i] {
+            let arg_start = scan_until_clause(tokens, type_end, period_i, |tokens, at| {
+                named_argument_section_keyword(source, tokens, at)
+            });
+            for token in &tokens[type_end..arg_start] {
                 children.push(token_leaf(b, token));
             }
+            if arg_start < period_i {
+                if let Some(arg_list) =
+                    build_call_argument_list_node(b, source, tokens, arg_start, period_i)
+                {
+                    children.push(arg_list);
+                } else {
+                    for token in &tokens[arg_start..period_i] {
+                        children.push(token_leaf(b, token));
+                    }
+                }
+            }
+            children.push(token_leaf(b, &tokens[period_i]));
             let node = b.branch(
                 SyntaxKind::RaiseStmt,
                 first.range.start..tokens[period_i].range.end,
@@ -11128,6 +11143,9 @@ CONCATENATE lv_evttime+6(4) '-'\n\
             1
         );
         assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::TypeRefSimple), 1);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::CallArgList), 1);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::CallArgSection), 1);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::CallNamedArg), 2);
         assert_eq!(
             parsed
                 .file
