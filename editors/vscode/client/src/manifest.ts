@@ -209,9 +209,6 @@ export async function ensureDependencyCacheUnit(
 	sourceFiles: readonly string[],
 ): Promise<vscode.Uri> {
 	const relativeFile = path.relative(workspaceFolder.uri.fsPath, filePath);
-	const unit = inferManifestUnitSpec(objectRef, relativeFile);
-	unit.dependencyOf = [];
-
 	const normalizedSourceFiles = [...new Set(
 		sourceFiles
 			.map((file) => normalizeRelativePath(file))
@@ -220,6 +217,8 @@ export async function ensureDependencyCacheUnit(
 	if (normalizedSourceFiles.length === 0) {
 		throw new Error("ensureDependencyCacheUnit requires at least one source file");
 	}
+	const unit = inferManifestUnitSpec(objectRef, relativeFile);
+	unit.dependencyOf = normalizedSourceFiles.map((file) => ({ file }));
 
 	let lastUri = vscode.Uri.file(dependencyCacheManifestPath(workspaceFolder, normalizedSourceFiles[0]));
 	for (const sourceFile of normalizedSourceFiles) {

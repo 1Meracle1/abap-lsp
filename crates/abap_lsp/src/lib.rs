@@ -50,7 +50,6 @@ pub const REMOTE_DEPENDENCIES_UPDATED: &str = "abapls/remoteDependenciesUpdated"
 pub const WORKSPACE_MANIFEST_UPDATED: &str = "abapls/workspaceManifestUpdated";
 pub const DEPENDENCY_CACHE_CLEARED: &str = "abapls/dependencyCacheCleared";
 pub const WORKSPACE_ANALYSIS_STATUS: &str = "abapls/workspaceAnalysisStatus";
-const REMOTE_DEPENDENCY_BATCH_CANDIDATE_LIMIT: usize = 24;
 const LOCAL_EXPORT_FUNCTION_MODULE_COMPLETION_LIMIT: usize = 64;
 const DIAGNOSTIC_CODE_MISSING_METHOD_IMPLEMENTATION: &str = "missing-method-implementation";
 
@@ -334,9 +333,8 @@ pub struct WorkspaceAnalysisStatusParams {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum RemoteDependencyBatchPhase {
-    OpenLocal,
+    PriorityLocal,
     Dependency,
-    SrcLocal,
     OtherLocal,
 }
 
@@ -780,6 +778,97 @@ fn workspace_remote_dependency_refresh_inputs(
             })
         })
         .collect()
+}
+
+fn remote_dependency_source_context_uris(
+    workspace: &WorkspaceState,
+    source_uri: &str,
+) -> Vec<String> {
+    let source_uri = normalize_lsp_uri(source_uri);
+    let Some(root_path) = file_uri_to_path(&workspace.root_uri) else {
+        return vec![source_uri];
+    };
+    let Some(manifest) = workspace.manifest.as_ref() else {
+        return vec![source_uri];
+    };
+
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    let mut queue = VecDeque::from([source_uri]);
+    while let Some(current_uri) = queue.pop_front() {
+        if !seen.insert(current_uri.clone()) {
+            continue;
+        }
+        out.push(current_uri.clone());
+        queue.extend(remote_dependency_manifest_parent_uris(
+            manifest,
+            &root_path,
+            &current_uri,
+        ));
+    }
+    out
+}
+
+fn remote_dependency_manifest_parent_uris(
+    manifest: &WorkspaceManifest,
+    root_path: &Path,
+    uri: &str,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+
+    for unit in &manifest.units {
+        let root_file = normalize_targeted_refresh_manifest_path(&unit.root_file);
+        let root_matches =
+            !root_file.is_empty() && path_to_file_uri(&root_path.join(&root_file)) == uri;
+        let member_matches = unit.members.iter().any(|member| {
+            let member_file = normalize_targeted_refresh_manifest_path(&member.file);
+            !member_file.is_empty() && path_to_file_uri(&root_path.join(member_file)) == uri
+        });
+        if !root_matches && !member_matches {
+            continue;
+        }
+
+        for dependency in &unit.dependency_of {
+            let dependency_file = normalize_targeted_refresh_manifest_path(&dependency.file);
+            if dependency_file.is_empty() {
+                continue;
+            }
+            let dependency_uri = path_to_file_uri(&root_path.join(dependency_file));
+            if seen.insert(dependency_uri.clone()) {
+                out.push(dependency_uri);
+            }
+        }
+    }
+
+    out
+}
+
+fn source_context_uses_local_exports(workspace: &WorkspaceState, source_uri: &str) -> bool {
+    let Some(root_path) = file_uri_to_path(&workspace.root_uri) else {
+        return false;
+    };
+    remote_dependency_source_context_uris(workspace, source_uri)
+        .into_iter()
+        .any(|uri| local_export_config_for_source(&root_path, &uri).uses_local_exports())
+}
+
+fn extend_remote_dependency_source_candidates(
+    source_candidates: &mut HashMap<String, Vec<RemoteDependencyCandidate>>,
+    source_uris: &mut Vec<String>,
+    source_uri_seen: &mut HashSet<String>,
+    context_uris: &[String],
+    candidates: &[RemoteDependencyCandidate],
+) {
+    for context_uri in context_uris {
+        if source_uri_seen.insert(context_uri.clone()) {
+            source_uris.push(context_uri.clone());
+        }
+        source_candidates
+            .entry(context_uri.clone())
+            .or_default()
+            .extend(candidates.iter().cloned());
+    }
 }
 
 fn refresh_workspace_inputs_with_progress(
@@ -1364,6 +1453,7 @@ pub fn handle_remote_dependencies_updated_with_progress(
     let workspace_uri = normalize_lsp_uri(&params.workspace_uri);
     let targeted_refresh = if let Some(workspace) = state.workspaces.get_mut(&workspace_uri) {
         workspace.remote_resolution_in_flight = false;
+        workspace.remote_resolution_seen.clear();
         if !params.fetched.is_empty() {
             prime_workspace_manifest_state(workspace);
         }
@@ -1734,11 +1824,11 @@ fn remote_dependency_batch_phase(
     workspace: &WorkspaceState,
     uri: &str,
 ) -> RemoteDependencyBatchPhase {
+    if workspace.open_documents.contains_key(uri) {
+        return RemoteDependencyBatchPhase::PriorityLocal;
+    }
     if uri_is_manifest_dependency(workspace, uri) {
         return RemoteDependencyBatchPhase::Dependency;
-    }
-    if workspace.open_documents.contains_key(uri) {
-        return RemoteDependencyBatchPhase::OpenLocal;
     }
 
     let Some(root_path) = file_uri_to_path(&workspace.root_uri) else {
@@ -1749,7 +1839,7 @@ fn remote_dependency_batch_phase(
         .unwrap_or_default()
         .replace('\\', "/");
     if relative == "src" || relative.starts_with("src/") {
-        RemoteDependencyBatchPhase::SrcLocal
+        RemoteDependencyBatchPhase::PriorityLocal
     } else {
         RemoteDependencyBatchPhase::OtherLocal
     }
@@ -1954,6 +2044,8 @@ struct RemoteDependencyMemo {
     batch_candidates: HashMap<String, Vec<RemoteDependencyCandidate>>,
     cached_candidate_presence: HashMap<String, bool>,
     negative_candidate_presence: HashMap<String, bool>,
+    source_context_uris: HashMap<String, Vec<String>>,
+    source_context_local_exports: HashMap<String, bool>,
 }
 
 impl RemoteDependencyMemo {
@@ -1963,6 +2055,8 @@ impl RemoteDependencyMemo {
             batch_candidates: HashMap::new(),
             cached_candidate_presence: HashMap::new(),
             negative_candidate_presence: HashMap::new(),
+            source_context_uris: HashMap::new(),
+            source_context_local_exports: HashMap::new(),
         }
     }
 
@@ -1992,6 +2086,23 @@ impl RemoteDependencyMemo {
                 collect_remote_dependency_candidates_for_batch(workspace, snapshot, source_uri)
             })
             .clone()
+    }
+
+    fn source_context_uris(&mut self, workspace: &WorkspaceState, source_uri: &str) -> Vec<String> {
+        self.source_context_uris
+            .entry(source_uri.to_owned())
+            .or_insert_with(|| remote_dependency_source_context_uris(workspace, source_uri))
+            .clone()
+    }
+
+    fn source_uses_local_exports(&mut self, workspace: &WorkspaceState, source_uri: &str) -> bool {
+        if let Some(uses_local_exports) = self.source_context_local_exports.get(source_uri) {
+            return *uses_local_exports;
+        }
+        let uses_local_exports = source_context_uses_local_exports(workspace, source_uri);
+        self.source_context_local_exports
+            .insert(source_uri.to_owned(), uses_local_exports);
+        uses_local_exports
     }
 
     fn has_cached_candidate(
@@ -2063,8 +2174,7 @@ fn build_remote_dependency_request_for_snapshot(
 ) -> Option<RemoteDependencyResolveParams> {
     if snapshot.parse.errors.is_empty() {
         let mut candidates = Vec::new();
-        let source_uses_local_exports =
-            !snapshot.is_dependency && document_uses_local_exports(workspace, source_uri);
+        let source_uses_local_exports = memo.source_uses_local_exports(workspace, source_uri);
         for candidate in memo.candidates_for_request(workspace, snapshot, source_uri) {
             if memo.has_cached_candidate(cache_context, &candidate) {
                 continue;
@@ -2083,10 +2193,21 @@ fn build_remote_dependency_request_for_snapshot(
             }
         }
         if !candidates.is_empty() {
+            let context_uris = memo.source_context_uris(workspace, source_uri);
+            let mut source_uris = Vec::new();
+            let mut source_uri_seen = HashSet::new();
+            let mut source_candidates = HashMap::new();
+            extend_remote_dependency_source_candidates(
+                &mut source_candidates,
+                &mut source_uris,
+                &mut source_uri_seen,
+                &context_uris,
+                &candidates,
+            );
             return Some(RemoteDependencyResolveParams {
                 workspace_uri: workspace.root_uri.clone(),
                 source_uri: source_uri.to_owned(),
-                source_uris: Vec::new(),
+                source_uris,
                 unknown_symbol_mode: workspace
                     .manifest
                     .as_ref()
@@ -2100,7 +2221,7 @@ fn build_remote_dependency_request_for_snapshot(
                     .manifest
                     .as_ref()
                     .map(|manifest| manifest.resolution.remote_requests_per_second),
-                source_candidates: HashMap::from([(source_uri.to_owned(), candidates.clone())]),
+                source_candidates,
                 candidates,
             });
         }
@@ -2198,8 +2319,8 @@ pub fn build_remote_dependency_batch_for_workspace_filtered(
     let mut candidates = Vec::new();
     let mut source_candidates = HashMap::new();
     let mut batch_seen = HashSet::new();
+    let mut source_uri_seen = HashSet::new();
     let mut selected_phase = None;
-    let mut limit_reached = false;
     let mut memo = RemoteDependencyMemo::new();
     let cache_context = RemoteDependencyCacheContext::new(workspace);
     let unknown_symbol_mode = workspace
@@ -2216,7 +2337,7 @@ pub fn build_remote_dependency_batch_for_workspace_filtered(
         .as_ref()
         .map(|manifest| manifest.resolution.remote_requests_per_second);
 
-    'uri_loop: for (uri, phase) in uri_entries {
+    for (uri, phase) in uri_entries {
         if selected_phase.is_some_and(|selected| phase != selected) {
             break;
         }
@@ -2231,8 +2352,7 @@ pub fn build_remote_dependency_batch_for_workspace_filtered(
         let mut added_for_uri = false;
         let mut uri_candidates = Vec::new();
         let mut uri_seen = HashSet::new();
-        let source_uses_local_exports =
-            !snapshot.is_dependency && document_uses_local_exports(workspace, uri.as_ref());
+        let source_uses_local_exports = memo.source_uses_local_exports(workspace, uri.as_ref());
         for candidate in memo.candidates_for_batch(workspace, snapshot.as_ref(), uri.as_ref()) {
             if memo.has_cached_candidate(&cache_context, &candidate) {
                 continue;
@@ -2259,18 +2379,17 @@ pub fn build_remote_dependency_batch_for_workspace_filtered(
             }
             candidates.push(candidate);
             added_for_uri = true;
-            if candidates.len() >= REMOTE_DEPENDENCY_BATCH_CANDIDATE_LIMIT {
-                limit_reached = true;
-                break;
-            }
         }
 
         if added_for_uri {
-            source_uris.push(uri.to_string());
-            source_candidates.insert(uri.to_string(), uri_candidates);
-        }
-        if limit_reached {
-            break 'uri_loop;
+            let context_uris = memo.source_context_uris(workspace, uri.as_ref());
+            extend_remote_dependency_source_candidates(
+                &mut source_candidates,
+                &mut source_uris,
+                &mut source_uri_seen,
+                &context_uris,
+                &uri_candidates,
+            );
         }
     }
 
@@ -7732,7 +7851,13 @@ unknown_symbol_mode = "remote"
     #[test]
     fn workspace_remote_dependency_batch_is_single_wave_and_blocks_while_in_flight() {
         let workspace_path = temp_workspace_path("workspace_remote_batch");
+        let dependency_dir = workspace_path
+            .join(".abapls")
+            .join("cache")
+            .join("dependencies")
+            .join("global-class");
         fs::create_dir_all(&workspace_path).expect("workspace dir");
+        fs::create_dir_all(&dependency_dir).expect("dependency dir");
         fs::write(
             workspace_path.join("abapls.toml"),
             r#"
@@ -7782,6 +7907,28 @@ unknown_symbol_mode = "remote"
             build_remote_dependency_batch_for_workspace(&mut state, &workspace_uri).is_none(),
             "second batch should be suppressed while first wave is in flight"
         );
+
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[resolution]
+dependency_mode = "remote-on-demand"
+unknown_symbol_mode = "remote"
+
+[[unit]]
+name = "ZCL_FIRST"
+kind = "global-class"
+root_file = ".abapls/cache/dependencies/global-class/ZCL_FIRST.abap"
+"#,
+        )
+        .expect("updated manifest");
+        fs::write(
+            dependency_dir.join("ZCL_FIRST.abap"),
+            "CLASS zcl_first DEFINITION.\nENDCLASS.\nCLASS zcl_first IMPLEMENTATION.\nENDCLASS.\n",
+        )
+        .expect("dependency");
 
         let _ = handle_remote_dependencies_updated(
             &mut state,
@@ -7849,7 +7996,7 @@ unknown_symbol_mode = "remote"
     }
 
     #[test]
-    fn workspace_remote_dependency_batch_prioritizes_dependencies_before_unopened_src_sources() {
+    fn workspace_remote_dependency_batch_prioritizes_open_and_src_sources_before_dependencies() {
         let workspace_path = temp_workspace_path("workspace_remote_batch_src_priority");
         let source_dir = workspace_path.join("src");
         let dependency_dir = workspace_path
@@ -7910,21 +8057,21 @@ object_name = "ZCL_DEP"
             .expect("workspace batch");
         assert_eq!(batch.source_uris.len(), 1, "{batch:#?}");
         assert!(
-            batch.source_uris[0].ends_with("/.abapls/cache/dependencies/global-class/ZCL_DEP.abap"),
+            batch.source_uris[0].ends_with("/src/ZMAIN.abap"),
             "{batch:#?}"
         );
         assert!(
             batch
                 .candidates
                 .iter()
-                .any(|candidate| candidate.name == "bal_s_msg"),
+                .any(|candidate| candidate.name == "zcl_first"),
             "{batch:#?}"
         );
         assert!(
             batch
                 .candidates
                 .iter()
-                .all(|candidate| candidate.name != "zcl_first"),
+                .all(|candidate| candidate.name != "bal_s_msg"),
             "{batch:#?}"
         );
 
@@ -7932,9 +8079,10 @@ object_name = "ZCL_DEP"
     }
 
     #[test]
-    fn workspace_remote_dependency_batch_chunks_high_priority_candidates() {
+    fn workspace_remote_dependency_batch_requests_all_priority_candidates_without_tiny_cap() {
         let workspace_path = temp_workspace_path("workspace_remote_batch_chunking");
         let source_dir = workspace_path.join("src");
+        let candidate_count = 27;
         fs::create_dir_all(&source_dir).expect("source dir");
         fs::write(
             workspace_path.join("abapls.toml"),
@@ -7957,7 +8105,7 @@ object_name = "ZMAIN"
 "#,
         )
         .expect("manifest");
-        let source = (0..(super::REMOTE_DEPENDENCY_BATCH_CANDIDATE_LIMIT + 3))
+        let source = (0..candidate_count)
             .map(|index| {
                 format!(
                     "DATA lo_{index} TYPE REF TO zcl_remote_{index:02}.\nlo_{index} = zcl_remote_{index:02}=>create( )."
@@ -7974,9 +8122,148 @@ object_name = "ZMAIN"
 
         let first = build_remote_dependency_batch_for_workspace(&mut state, &workspace_uri)
             .expect("first batch");
-        assert_eq!(
-            first.candidates.len(),
-            super::REMOTE_DEPENDENCY_BATCH_CANDIDATE_LIMIT,
+        assert_eq!(first.candidates.len(), candidate_count, "{first:#?}");
+
+        let _ = fs::remove_dir_all(&workspace_path);
+    }
+
+    #[test]
+    fn dependency_batches_retain_local_export_context_from_ancestor_sources() {
+        let workspace_path = temp_workspace_path("workspace_remote_dependency_context");
+        let source_dir = workspace_path.join("src");
+        let dependency_dir = workspace_path
+            .join(".abapls")
+            .join("cache")
+            .join("dependencies")
+            .join("global-class");
+        let negative_path = workspace_path
+            .join(".abapls")
+            .join("cache")
+            .join("negative-dependencies")
+            .join("type")
+            .join("BAL_S_MSG.json");
+        fs::create_dir_all(&source_dir).expect("source dir");
+        fs::create_dir_all(&dependency_dir).expect("dependency dir");
+        fs::create_dir_all(negative_path.parent().expect("negative dir")).expect("negative dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[resolution]
+dependency_mode = "remote-on-demand"
+unknown_symbol_mode = "remote"
+
+[[unit]]
+name = "ZMAIN"
+kind = "report"
+root_file = "src/ZMAIN.abap"
+
+[[unit.member]]
+role = "root"
+file = "src/ZMAIN.abap"
+object_name = "ZMAIN"
+
+[[unit]]
+name = "ZCL_DEP"
+kind = "global-class"
+root_file = ".abapls/cache/dependencies/global-class/ZCL_DEP.abap"
+dependency_of = [
+  "src/ZMAIN.abap"
+]
+
+[[unit.member]]
+role = "dependency"
+file = ".abapls/cache/dependencies/global-class/ZCL_DEP.abap"
+object_name = "ZCL_DEP"
+"#,
+        )
+        .expect("manifest");
+        fs::write(
+            source_dir.join("ZMAIN.abap"),
+            "REPORT zmain.\nWRITE 'ok'.\n",
+        )
+        .expect("source");
+        fs::write(
+            source_dir.join("ZMAIN.abap.abapls-unit.toml"),
+            "[local_export]\nroots = [\"D:/dev/abap/d65\"]\n\n[dependencies]\nsource = \"local-first\"\n",
+        )
+        .expect("sidecar");
+        fs::write(
+            dependency_dir.join("ZCL_DEP.abap"),
+            "CLASS zcl_dep DEFINITION.\n  PUBLIC SECTION.\n    DATA ms_bal TYPE bal_s_msg.\nENDCLASS.\nCLASS zcl_dep IMPLEMENTATION.\nENDCLASS.\n",
+        )
+        .expect("dependency");
+        fs::write(
+            &negative_path,
+            r#"{"name":"bal_s_msg","kind":"type","reason":"stale-test-marker"}"#,
+        )
+        .expect("negative marker");
+
+        let workspace_uri = path_to_file_uri(&workspace_path);
+        let source_uri = normalize_lsp_uri(&format!("{workspace_uri}/src/ZMAIN.abap"));
+        let dependency_uri = normalize_lsp_uri(&format!(
+            "{workspace_uri}/.abapls/cache/dependencies/global-class/ZCL_DEP.abap"
+        ));
+
+        let mut state = ServerState::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        refresh_workspace(&mut state, &workspace_uri);
+
+        let batch = build_remote_dependency_batch_for_workspace(&mut state, &workspace_uri)
+            .expect("dependency batch");
+        assert!(batch.source_uris.contains(&dependency_uri), "{batch:#?}");
+        assert!(batch.source_uris.contains(&source_uri), "{batch:#?}");
+        assert!(
+            batch
+                .candidates
+                .iter()
+                .any(|candidate| candidate.name == "bal_s_msg"),
+            "{batch:#?}"
+        );
+
+        let _ = fs::remove_dir_all(&workspace_path);
+    }
+
+    #[test]
+    fn remote_dependency_updates_clear_seen_candidates_for_same_session_retry() {
+        let workspace_path = temp_workspace_path("workspace_remote_retry_after_update");
+        fs::create_dir_all(&workspace_path).expect("workspace dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[resolution]
+dependency_mode = "remote-on-demand"
+unknown_symbol_mode = "remote"
+"#,
+        )
+        .expect("manifest");
+        let workspace_uri = path_to_file_uri(&workspace_path);
+
+        let mut state = ServerState::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        publish_open_document_mut(
+            &mut state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str(&format!("{workspace_uri}/main.abap")).expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: "DATA lo_demo TYPE REF TO zcl_retry.\nlo_demo = zcl_retry=>create( )."
+                        .to_string(),
+                },
+            },
+        );
+
+        let first = build_remote_dependency_batch_for_workspace(&mut state, &workspace_uri)
+            .expect("first batch");
+        assert!(
+            first
+                .candidates
+                .iter()
+                .any(|candidate| candidate.name == "zcl_retry"),
             "{first:#?}"
         );
 
@@ -7993,13 +8280,12 @@ object_name = "ZMAIN"
 
         let second = build_remote_dependency_batch_for_workspace(&mut state, &workspace_uri)
             .expect("second batch");
-        assert_eq!(second.candidates.len(), 3, "{second:#?}");
         assert!(
             second
                 .candidates
                 .iter()
-                .all(|candidate| !first.candidates.contains(candidate)),
-            "first={first:#?}\nsecond={second:#?}"
+                .any(|candidate| candidate.name == "zcl_retry"),
+            "{second:#?}"
         );
 
         let _ = fs::remove_dir_all(&workspace_path);

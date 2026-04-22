@@ -56,6 +56,10 @@ import {
 	RemoteDependencyFetchPolicy,
 	RemoteDependencyScheduler,
 } from "./remoteDependencies";
+import {
+	clearLocalExportIndexCache,
+	findLocalExportFileInIndexedRoot,
+} from "./localExportIndex";
 
 let client: LanguageClient;
 let adtRequestGeneration = 0;
@@ -728,6 +732,9 @@ function formatWorkspaceDocumentCount(value: number): string {
 function workspaceAnalysisProgressMessage(params: WorkspaceAnalysisStatusParams): string {
 	const total = Math.max(0, Math.trunc(params.totalDocumentCount));
 	const processedRaw = Math.max(0, Math.trunc(params.processedDocumentCount));
+	if (params.remoteResolutionInFlight && total > 0 && processedRaw >= total) {
+		return "Document analysis is complete; resolving dependency waves...";
+	}
 	if (total > 0) {
 		const stageTotal = Math.max(1, Math.floor(total / 2));
 		if (processedRaw <= stageTotal) {
@@ -860,10 +867,9 @@ async function resolveRemoteDependencies(
 				},
 			);
 		} catch (error) {
-			if (error instanceof AdtRequestCancelledError) {
-				return;
+			if (!(error instanceof AdtRequestCancelledError)) {
+				throw error;
 			}
-			throw error;
 		}
 	}
 
@@ -1998,7 +2004,7 @@ async function findLocalDependencyExportByName(
 	for (const extension of extensions) {
 		let bestMatch: { filePath: string; fileExtension: "abap" | "xml"; score: number } | undefined;
 		for (const root of roots) {
-			const match = await findLocalDependencyExportInRoot(
+			const match = await findLocalExportFileInIndexedRoot(
 				root,
 				encodedName,
 				encodedPackageName,
@@ -2016,11 +2022,15 @@ async function findLocalDependencyExportByName(
 			continue;
 		}
 
-		return {
-			body: await fs.promises.readFile(bestMatch.filePath, "utf8"),
-			fileExtension: bestMatch.fileExtension,
-			manifestKind: "",
-		};
+		try {
+			return {
+				body: await fs.promises.readFile(bestMatch.filePath, "utf8"),
+				fileExtension: bestMatch.fileExtension,
+				manifestKind: "",
+			};
+		} catch {
+			clearLocalExportIndexCache();
+		}
 	}
 
 	return undefined;
@@ -2248,48 +2258,6 @@ async function readUnitSidecarDependencySourceMode(
 		return undefined;
 	}
 	return parseUnitSidecarDependencySourceMode(text);
-}
-
-async function findLocalDependencyExportInRoot(
-	root: string,
-	encodedName: string,
-	encodedPackageName: string,
-	extensions: Array<"abap" | "xml">,
-): Promise<{ filePath: string; fileExtension: "abap" | "xml"; score: number } | undefined> {
-	const stack = [root];
-	let bestMatch: { filePath: string; fileExtension: "abap" | "xml"; score: number } | undefined;
-
-	while (stack.length > 0) {
-		const current = stack.pop();
-		if (!current) {
-			continue;
-		}
-		let entries: fs.Dirent[];
-		try {
-			entries = await fs.promises.readdir(current, { withFileTypes: true });
-		} catch {
-			continue;
-		}
-
-		for (const entry of entries) {
-			const fullPath = path.join(current, entry.name);
-			if (entry.isDirectory()) {
-				stack.push(fullPath);
-				continue;
-			}
-			const fileExtension = extensions.find((extension) => entry.name === `${encodedName}.${extension}`);
-			if (!fileExtension) {
-				continue;
-			}
-			const normalizedPath = fullPath.replace(/\\/g, "/");
-			const score = encodedPackageName && normalizedPath.includes(`/${encodedPackageName}/`) ? 2 : 1;
-			if (!bestMatch || score > bestMatch.score) {
-				bestMatch = { filePath: fullPath, fileExtension, score };
-			}
-		}
-	}
-
-	return bestMatch;
 }
 
 function clearRemoteDependencyCaches(workspaceFolder: vscode.WorkspaceFolder): void {
