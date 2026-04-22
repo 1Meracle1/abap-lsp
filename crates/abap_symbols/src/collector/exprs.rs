@@ -514,7 +514,9 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                     table_line: None,
                 };
             }
-            if text.starts_with('`') && text.ends_with('`') {
+            if matches!(first.kind, TokenKind::String | TokenKind::StringTemplate)
+                || (text.starts_with('`') && text.ends_with('`'))
+            {
                 return TypeFactData {
                     structure: None,
                     declared_type: Some(Self::builtin_type("string")),

@@ -4490,6 +4490,128 @@ ENDLOOP.
 }
 
 #[test]
+fn loop_inline_target_preserves_line_of_display_for_named_string_table_variables() {
+    let src = r#"
+TYPES tt_dm_obj_arc TYPE STANDARD TABLE OF string.
+DATA lt_dm_obj_temp TYPE tt_dm_obj_arc.
+
+LOOP AT lt_dm_obj_temp INTO DATA(ls_dm_obj_tmp).
+  CLEAR ls_dm_obj_tmp.
+ENDLOOP.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///loop_named_string_line_display.abap", src, &parsed);
+
+    let ls_dm_obj_tmp = unit
+        .symbols
+        .iter()
+        .find(|symbol| symbol.name.as_ref() == "ls_dm_obj_tmp")
+        .expect("inline LOOP target");
+    let declared_type = ls_dm_obj_tmp
+        .declared_type
+        .as_ref()
+        .expect("loop target declared type");
+
+    assert_eq!(declared_type.namespace, Namespace::Value);
+    assert_eq!(declared_type.base_name.as_ref(), "lt_dm_obj_temp");
+    assert!(declared_type.field_path.is_empty());
+    assert_eq!(
+        ls_dm_obj_tmp.type_clause_display.as_deref(),
+        Some("LINE OF lt_dm_obj_temp")
+    );
+}
+
+#[test]
+fn loop_inline_named_string_table_target_stays_assignment_compatible_with_like_line_of_field_symbol() {
+    let src = r#"
+TYPES: tt_dm_obj_arc TYPE STANDARD TABLE OF string.
+DATA lt_dm_obj_arc TYPE tt_dm_obj_arc.
+DATA lt_dm_obj_temp TYPE tt_dm_obj_arc.
+FIELD-SYMBOLS: <ls_obj_data> LIKE LINE OF lt_dm_obj_arc.
+
+LOOP AT lt_dm_obj_temp INTO DATA(ls_dm_obj_tmp).
+  APPEND INITIAL LINE TO lt_dm_obj_arc ASSIGNING <ls_obj_data>.
+  <ls_obj_data> = ls_dm_obj_tmp.
+ENDLOOP.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///loop_named_string_assignment.abap", src, &parsed);
+
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::IncompatibleAssignmentType
+                && diag.message.contains("ls_obj_data")
+        }),
+        "{:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn reports_incompatible_assignment_for_field_symbol_bound_to_string_line_and_xstring_source() {
+    let src = r#"
+TYPES: tt_dm_obj_arc TYPE STANDARD TABLE OF string.
+DATA lt_dm_obj_arc TYPE tt_dm_obj_arc.
+DATA lv_bytes TYPE xstring.
+FIELD-SYMBOLS: <ls_obj_data> LIKE LINE OF lt_dm_obj_arc.
+
+APPEND INITIAL LINE TO lt_dm_obj_arc ASSIGNING <ls_obj_data>.
+<ls_obj_data> = lv_bytes.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit(
+        "file:///field_symbol_string_xstring_assignment.abap",
+        src,
+        &parsed,
+    );
+
+    assert!(
+        unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::IncompatibleAssignmentType
+                && diag.message.contains("LINE OF lt_dm_obj_arc")
+                && diag.message.contains("xstring")
+        }),
+        "{:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn reports_incompatible_assignment_for_field_symbol_bound_to_structured_line_and_scalar_source() {
+    let src = r#"
+TYPES: BEGIN OF ty_item_repr,
+         objid TYPE string,
+         serial TYPE string,
+       END OF ty_item_repr.
+TYPES: tt_dm_obj_arc TYPE STANDARD TABLE OF ty_item_repr.
+DATA lt_dm_obj_arc TYPE tt_dm_obj_arc.
+DATA lt_dm_obj_temp TYPE tt_dm_obj_arc.
+FIELD-SYMBOLS: <ls_obj_data> LIKE LINE OF lt_dm_obj_arc.
+
+LOOP AT lt_dm_obj_temp INTO DATA(ls_dm_obj_tmp).
+  APPEND INITIAL LINE TO lt_dm_obj_arc ASSIGNING <ls_obj_data>.
+  <ls_obj_data> = 'sdf'.
+ENDLOOP.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit(
+        "file:///field_symbol_structured_scalar_assignment.abap",
+        src,
+        &parsed,
+    );
+
+    assert!(
+        unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::IncompatibleAssignmentType
+                && diag.message.contains("LINE OF lt_dm_obj_arc")
+                && diag.message.contains("string")
+        }),
+        "{:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn reports_duplicate_declarations() {
     let src = "DATA lv_value TYPE i. DATA lv_value TYPE i.";
     let parsed = parse(src);

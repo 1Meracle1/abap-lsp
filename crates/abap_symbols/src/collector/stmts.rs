@@ -1682,6 +1682,7 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                             scope,
                             inferred_metadata.0,
                             inferred_metadata.1.clone(),
+                            None,
                         );
                     if let Some((target_name, target_range)) = target_name {
                         self.emit_field_symbol_binding_edge(
@@ -2326,19 +2327,20 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
     }
 
     pub(super) fn collect_raise_stmt(&mut self, node: NodeId, scope: ScopeId) {
-        let Some((type_ref_id, trailing_children)) = (match RaiseStmt::cast(self.collector.syntax(node))
-        {
-            Some(stmt) => stmt.exception_type_ref().map(|type_ref| {
-                (
-                    type_ref.syntax().id(),
-                    stmt.trailing_children()
-                        .into_iter()
-                        .map(|child| (child.id(), child.kind()))
-                        .collect::<Vec<_>>(),
-                )
-            }),
-            None => None,
-        }) else {
+        let Some((type_ref_id, trailing_children)) =
+            (match RaiseStmt::cast(self.collector.syntax(node)) {
+                Some(stmt) => stmt.exception_type_ref().map(|type_ref| {
+                    (
+                        type_ref.syntax().id(),
+                        stmt.trailing_children()
+                            .into_iter()
+                            .map(|child| (child.id(), child.kind()))
+                            .collect::<Vec<_>>(),
+                    )
+                }),
+                None => None,
+            })
+        else {
             self.collect_generic_simple_stmt(node, scope);
             return;
         };
@@ -3350,6 +3352,7 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                     scope,
                     inferred_metadata.0,
                     inferred_metadata.1.clone(),
+                    None,
                 );
             if let Some(source_expr) = source_expr
                 && let Some((target_name, target_range)) = target_name.clone()

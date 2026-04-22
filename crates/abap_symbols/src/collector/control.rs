@@ -22,6 +22,13 @@ pub(super) struct ControlLowering<'ctx, 'a> {
     collector: &'ctx mut Collector<'a>,
 }
 
+#[derive(Clone)]
+struct InlineLoopTargetMetadata {
+    structure: Option<StructureId>,
+    declared_type: Option<FieldTypeRefData>,
+    type_clause_display: Option<Arc<str>>,
+}
+
 impl<'a> Collector<'a> {
     pub(super) fn control_lowering(&mut self) -> ControlLowering<'_, 'a> {
         ControlLowering { collector: self }
@@ -239,6 +246,11 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
             self.collector
                 .push_scope(ScopeKind::CatchClause, node_range, Some(scope), None);
         let inline_decl_metadata = self.catch_inline_decl_metadata(node, child_scope);
+        let inline_decl_metadata = InlineLoopTargetMetadata {
+            structure: inline_decl_metadata.0,
+            declared_type: inline_decl_metadata.1,
+            type_clause_display: None,
+        };
         for child in self.collector.file.children(node) {
             match self.collector.file.kind(child) {
                 SyntaxKind::DataInlineDecl => {
@@ -335,7 +347,11 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
     }
 
     fn collect_loop_header_node(&mut self, node: NodeId, scope: ScopeId) -> LoopGroupContext {
-        let mut source_metadata = (None, None);
+        let mut source_metadata = InlineLoopTargetMetadata {
+            structure: None,
+            declared_type: None,
+            type_clause_display: None,
+        };
         let mut source_access = None;
         let mut source_range = None;
         let mut target_access = None;
@@ -347,8 +363,27 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
                         allows_internal_table_line_selector =
                             self.internal_table_line_selector_allowed_for_source(expr, scope);
                         self.collector.expr_lowering().collect_expr(expr, scope);
-                        source_metadata = self.loop_source_line_metadata_from_node(expr, scope);
+                        let (structure, declared_type) =
+                            self.loop_source_line_metadata_from_node(expr, scope);
                         source_access = self.collector.value_access_from_node(expr, scope);
+                        let (declared_type, type_clause_display) = source_access
+                            .as_ref()
+                            .and_then(|access| {
+                                Self::line_of_declared_type_from_source_access(
+                                    access,
+                                    structure,
+                                    declared_type.as_ref(),
+                                )
+                            })
+                            .map(|(declared_type, type_clause_display)| {
+                                (Some(declared_type), Some(type_clause_display))
+                            })
+                            .unwrap_or((declared_type, None));
+                        source_metadata = InlineLoopTargetMetadata {
+                            structure,
+                            declared_type,
+                            type_clause_display,
+                        };
                         source_range = Some(self.collector.file.range(expr));
                     }
                 }
@@ -381,7 +416,10 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
                                 scope,
                                 source_access,
                                 source_range,
-                                &source_metadata,
+                                &(
+                                    source_metadata.structure,
+                                    source_metadata.declared_type.clone(),
+                                ),
                                 target_access,
                             );
                         }
@@ -394,7 +432,11 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
                             target,
                             scope,
                             SymbolKind::Variable,
-                            &(None, None),
+                            &InlineLoopTargetMetadata {
+                                structure: None,
+                                declared_type: None,
+                                type_clause_display: None,
+                            },
                         );
                     }
                 }
@@ -566,7 +608,7 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
         node: NodeId,
         scope: ScopeId,
         symbol_kind: SymbolKind,
-        inferred_metadata: &(Option<StructureId>, Option<FieldTypeRefData>),
+        inferred_metadata: &InlineLoopTargetMetadata,
     ) {
         match self.collector.file.kind(node) {
             SyntaxKind::DataInlineDecl if symbol_kind == SymbolKind::Variable => {
@@ -578,8 +620,9 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
                     .declare_inline_field_symbol_decl(
                         node,
                         scope,
-                        inferred_metadata.0,
-                        inferred_metadata.1.clone(),
+                        inferred_metadata.structure,
+                        inferred_metadata.declared_type.clone(),
+                        inferred_metadata.type_clause_display.clone(),
                     );
             }
             _ => self.collector.expr_lowering().collect_expr(node, scope),
@@ -590,7 +633,7 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
         &mut self,
         node: NodeId,
         scope: ScopeId,
-        inferred_metadata: &(Option<StructureId>, Option<FieldTypeRefData>),
+        inferred_metadata: &InlineLoopTargetMetadata,
     ) {
         let decl_scope = self.collector.declaration_scope(scope);
         if let Some(name_node) = self
@@ -605,12 +648,40 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
                 name,
                 SymbolKind::Variable,
                 range,
-                inferred_metadata.0,
-                inferred_metadata.1.clone(),
-                None,
+                inferred_metadata.structure,
+                inferred_metadata.declared_type.clone(),
+                inferred_metadata.type_clause_display.clone(),
                 None,
             );
         }
+    }
+
+    fn line_of_declared_type_from_source_access(
+        access: &FieldAccess,
+        structure: Option<StructureId>,
+        declared_type: Option<&FieldTypeRefData>,
+    ) -> Option<(FieldTypeRefData, Arc<str>)> {
+        if access.base_namespace != Namespace::Value
+            || !access.field_path.is_empty()
+            || structure.is_some()
+            || !declared_type.is_some_and(|type_ref| {
+                type_ref.namespace == Namespace::Type
+                    && !type_ref.is_ref
+                    && type_ref.field_path.is_empty()
+                    && is_builtin_scalar_name(type_ref.base_name.as_ref())
+            })
+        {
+            return None;
+        }
+        Some((
+            FieldTypeRefData {
+                namespace: Namespace::Value,
+                is_ref: false,
+                base_name: Arc::clone(&access.base_name),
+                field_path: Vec::new(),
+            },
+            Arc::from(format!("LINE OF {}", access.base_name)),
+        ))
     }
 
     fn catch_inline_decl_metadata(
@@ -1074,6 +1145,32 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
             key_range,
         })
     }
+}
+
+fn is_builtin_scalar_name(name: &str) -> bool {
+    matches!(
+        name,
+        "i" | "int1"
+            | "int2"
+            | "int4"
+            | "int8"
+            | "f"
+            | "p"
+            | "decfloat16"
+            | "decfloat34"
+            | "string"
+            | "c"
+            | "n"
+            | "d"
+            | "t"
+            | "x"
+            | "xstring"
+            | "data"
+            | "any"
+            | "abap_bool"
+            | "flag"
+            | "xfeld"
+    ) || (name.starts_with("char") && name[4..].chars().all(|ch| ch.is_ascii_digit()))
 }
 
 #[derive(Debug, Clone)]

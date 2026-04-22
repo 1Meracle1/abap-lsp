@@ -9,13 +9,20 @@ use crate::{Namespace, SymbolKind, UnitAnalysis};
 
 #[derive(Debug, Clone)]
 enum ClassifiedType {
-    Scalar,
+    Scalar(ScalarCompatibilityKind),
     Structure,
     Table(Option<Box<ClassifiedType>>),
     Ref {
         target_name: Arc<str>,
         target_handle: Option<SymbolHandle>,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScalarCompatibilityKind {
+    Generic,
+    ByteLike,
+    Other,
 }
 
 pub fn parameter_is_required(section: MethodParameterSection, is_optional: bool) -> bool {
@@ -83,7 +90,9 @@ fn types_compatible(
     actual: &ClassifiedType,
 ) -> Option<bool> {
     match (expected, actual) {
-        (ClassifiedType::Scalar, ClassifiedType::Scalar) => Some(true),
+        (ClassifiedType::Scalar(expected), ClassifiedType::Scalar(actual)) => {
+            scalar_kinds_compatible(*expected, *actual)
+        }
         (ClassifiedType::Structure, ClassifiedType::Structure) => Some(true),
         (ClassifiedType::Table(expected_line), ClassifiedType::Table(actual_line)) => {
             match (expected_line.as_deref(), actual_line.as_deref()) {
@@ -153,7 +162,7 @@ fn classify_normalized_type_fact(
         return Some(if fact.structure.is_some() {
             ClassifiedType::Structure
         } else {
-            ClassifiedType::Scalar
+            ClassifiedType::Scalar(ScalarCompatibilityKind::Other)
         });
     };
     if declared_type.is_ref {
@@ -166,7 +175,9 @@ fn classify_normalized_type_fact(
     }
     if declared_type.field_path.is_empty() {
         if is_builtin_scalar_name(declared_type.base_name.as_ref()) {
-            return Some(ClassifiedType::Scalar);
+            return Some(ClassifiedType::Scalar(scalar_compatibility_kind(
+                declared_type.base_name.as_ref(),
+            )));
         }
         if matches!(declared_type.namespace, Namespace::Type | Namespace::Value)
             && let Some((resolved_unit, resolved_fact)) =
@@ -183,7 +194,29 @@ fn classify_normalized_type_fact(
     if fact.structure.is_some() {
         return Some(ClassifiedType::Structure);
     }
-    Some(ClassifiedType::Scalar)
+    Some(ClassifiedType::Scalar(ScalarCompatibilityKind::Other))
+}
+
+fn scalar_kinds_compatible(
+    expected: ScalarCompatibilityKind,
+    actual: ScalarCompatibilityKind,
+) -> Option<bool> {
+    match (expected, actual) {
+        (ScalarCompatibilityKind::Generic, _)
+        | (_, ScalarCompatibilityKind::Generic)
+        | (ScalarCompatibilityKind::Other, ScalarCompatibilityKind::Other)
+        | (ScalarCompatibilityKind::ByteLike, ScalarCompatibilityKind::ByteLike) => Some(true),
+        (ScalarCompatibilityKind::ByteLike, ScalarCompatibilityKind::Other)
+        | (ScalarCompatibilityKind::Other, ScalarCompatibilityKind::ByteLike) => Some(false),
+    }
+}
+
+fn scalar_compatibility_kind(name: &str) -> ScalarCompatibilityKind {
+    match name {
+        "any" | "data" => ScalarCompatibilityKind::Generic,
+        "x" | "xstring" => ScalarCompatibilityKind::ByteLike,
+        _ => ScalarCompatibilityKind::Other,
+    }
 }
 
 fn normalized_type_facts_match_by_name(expected: &TypeFactData, actual: &TypeFactData) -> bool {
@@ -322,8 +355,9 @@ fn trim_internal_table_line_display(display: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::{
-        InternalTableDisplayKind, named_type_refs_match, normalized_internal_table_displays_match,
-        parse_internal_table_display,
+        InternalTableDisplayKind, ScalarCompatibilityKind, named_type_refs_match,
+        normalized_internal_table_displays_match, parse_internal_table_display,
+        scalar_kinds_compatible,
     };
     use crate::def_map::{FieldTypeRefData, TypeFactData};
     use crate::scope::Namespace;
@@ -402,6 +436,31 @@ mod tests {
         };
 
         assert!(normalized_internal_table_displays_match(&expected, &actual));
+    }
+
+    #[test]
+    fn marks_byte_like_scalars_as_hard_incompatible_with_other_scalar_kinds() {
+        assert_eq!(
+            scalar_kinds_compatible(
+                ScalarCompatibilityKind::ByteLike,
+                ScalarCompatibilityKind::Other,
+            ),
+            Some(false)
+        );
+        assert_eq!(
+            scalar_kinds_compatible(
+                ScalarCompatibilityKind::Other,
+                ScalarCompatibilityKind::ByteLike,
+            ),
+            Some(false)
+        );
+        assert_eq!(
+            scalar_kinds_compatible(
+                ScalarCompatibilityKind::ByteLike,
+                ScalarCompatibilityKind::ByteLike,
+            ),
+            Some(true)
+        );
     }
 }
 

@@ -589,7 +589,7 @@ impl<'ctx, 'a> DeclLowering<'ctx, 'a> {
         node: abap_ast::arena::NodeId,
         scope: ScopeId,
     ) {
-        self.declare_inline_field_symbol_decl(node, scope, None, None);
+        self.declare_inline_field_symbol_decl(node, scope, None, None, None);
     }
 
     pub(super) fn declare_inline_field_symbol_decl(
@@ -598,6 +598,7 @@ impl<'ctx, 'a> DeclLowering<'ctx, 'a> {
         scope: ScopeId,
         structure: Option<StructureId>,
         declared_type: Option<FieldTypeRefData>,
+        type_clause_display: Option<Arc<str>>,
     ) {
         let decl_scope = self.ctx.declaration_scope(scope);
         for child in self.ctx.file().children(node) {
@@ -611,7 +612,7 @@ impl<'ctx, 'a> DeclLowering<'ctx, 'a> {
                     range,
                     structure,
                     declared_type.clone(),
-                    None,
+                    type_clause_display.clone(),
                     None,
                 );
                 break;

@@ -1364,11 +1364,34 @@ impl<'a> Collector<'a> {
         let clause = DeclClause::cast(self.syntax(node))?;
         let (type_ref, _) = clause.type_ref_with_namespace(self.source)?;
         let rendered = self.render_type_ref_display(type_ref.syntax().id())?;
-        if clause.type_clause_kind(self.source) == Some(TypeClauseKind::For) {
-            Some(Arc::from(format!("RANGE OF {rendered}")))
-        } else {
-            Some(rendered)
+        match clause.type_clause_kind(self.source) {
+            Some(TypeClauseKind::For) => Some(Arc::from(format!("RANGE OF {rendered}"))),
+            Some(TypeClauseKind::Like) if self.typed_clause_uses_line_of(node) => {
+                if rendered
+                    .as_ref()
+                    .to_ascii_uppercase()
+                    .starts_with("LINE OF ")
+                {
+                    Some(rendered)
+                } else {
+                    Some(Arc::from(format!("LINE OF {rendered}")))
+                }
+            }
+            _ => Some(rendered),
         }
+    }
+
+    fn typed_clause_uses_line_of(&self, node: NodeId) -> bool {
+        let tokens = self
+            .syntax_token_nodes(node)
+            .into_iter()
+            .filter(|token| !self.syntax_token_is_comment(token))
+            .collect::<Vec<_>>();
+        tokens.windows(3).any(|window| {
+            window[0].text.eq_ignore_ascii_case("like")
+                && window[1].text.eq_ignore_ascii_case("line")
+                && window[2].text.eq_ignore_ascii_case("of")
+        })
     }
 
     fn value_clause_display_from_typed_clause(&self, node: NodeId) -> Option<Arc<str>> {

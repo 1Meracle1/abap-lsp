@@ -1012,7 +1012,7 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
                     let target_name = self.inline_decl_name(child);
                     self.ctx
                         .decl_lowering()
-                        .declare_inline_field_symbol_decl(child, scope, None, None);
+                        .declare_inline_field_symbol_decl(child, scope, None, None, None);
                     self.ctx.emit_sql_target(SqlTargetData {
                         query_id,
                         scope,
