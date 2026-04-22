@@ -51,6 +51,7 @@
         // "--folder-uri=D:/dev/abap/test_function_module"
         "--folder-uri=D:/dev/abap/archiving/"
         // "--folder-uri=D:/dev/abap/lsp_development_examples2/"
+        // "--folder-uri=D:/dev/abap/us_sn_reset/"
       ],
       "outFiles": [
         "${workspaceFolder}/editors/vscode/out/**/*.js"

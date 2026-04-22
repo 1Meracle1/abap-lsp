@@ -19,6 +19,7 @@ import {
 	pickBestDependencyObject,
 	selectDependencyObjects,
 	resolveSapConnectionDefaults,
+	SESSION_BOOTSTRAP_ACCEPT,
 	type AdtObjectRef,
 } from "../adt";
 import { inferManifestUnitSpec, targetDependencyWorkspaceFilePath } from "../manifest";
@@ -123,6 +124,11 @@ suite("ADT dependency helpers", () => {
 		assert.strictEqual(dotenv.get("ABAP_ADT_USER"), "DEMO_USER");
 		assert.strictEqual(dotenv.get("ABAP_ADT_PASSWORD"), "secret value");
 		assert.strictEqual(dotenv.get("SAPBASE_URL"), "https://ignored.example.com");
+	});
+
+	test("Session bootstrap accepts atom feeds and xml", () => {
+		assert.ok(SESSION_BOOTSTRAP_ACCEPT.includes("application/atom+xml;type=feed"));
+		assert.ok(SESSION_BOOTSTRAP_ACCEPT.includes("application/xml"));
 	});
 
 	test("Resolves SAP connection defaults from env before dotenv", () => {

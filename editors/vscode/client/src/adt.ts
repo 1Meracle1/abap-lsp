@@ -5,6 +5,9 @@ import * as path from "path";
 import * as vscode from "vscode";
 
 const SAP_PASSWORD_SECRET_PREFIX = "abap-ls.sapPassword";
+// Newer ADT backends expose system messages as an Atom feed, while older
+// systems still accept generic XML for the same CSRF bootstrap request.
+export const SESSION_BOOTSTRAP_ACCEPT = "application/atom+xml;type=feed, application/xml";
 
 export interface SapConnectionConfig {
 	baseUrl: string;
@@ -748,7 +751,7 @@ export class AdtClient {
 
 		const response = await this.request("/sap/bc/adt/runtime/systemmessages", {
 			headers: {
-				Accept: "application/xml",
+				Accept: SESSION_BOOTSTRAP_ACCEPT,
 				"Cache-Control": "no-cache",
 				"x-csrf-token": "Fetch",
 			},

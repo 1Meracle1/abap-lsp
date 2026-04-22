@@ -18,6 +18,10 @@ use serde_json::json;
 
 type AppResult<T> = Result<T, String>;
 
+// Newer ADT backends expose system messages as an Atom feed, while older
+// systems still accept generic XML for the same CSRF bootstrap request.
+const SESSION_BOOTSTRAP_ACCEPT: &str = "application/atom+xml;type=feed, application/xml";
+
 #[derive(Debug, Default, Clone)]
 struct ConnectionOverrides {
     base_url: Option<String>,
@@ -527,7 +531,7 @@ impl AdtClient {
             .request(Method::GET, url)
             .basic_auth(&self.connection.username, Some(&self.connection.password))
             .header(CACHE_CONTROL, "no-cache")
-            .header(ACCEPT, "application/xml")
+            .header(ACCEPT, SESSION_BOOTSTRAP_ACCEPT)
             .header("x-csrf-token", "Fetch")
             .send()
             .map_err(|e| format!("failed to establish ADT session: {e}"))?;
@@ -1485,5 +1489,11 @@ ABAP_ADT_CLIENT=100 # inline comment
         assert_eq!(config.base_url, "https://sap.example.com/sap/bc/adt");
         assert_eq!(config.username, "demo");
         assert_eq!(config.password, "secret");
+    }
+
+    #[test]
+    fn session_bootstrap_accept_header_advertises_atom_feed_and_xml() {
+        assert!(SESSION_BOOTSTRAP_ACCEPT.contains("application/atom+xml;type=feed"));
+        assert!(SESSION_BOOTSTRAP_ACCEPT.contains("application/xml"));
     }
 }

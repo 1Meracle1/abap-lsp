@@ -37,6 +37,10 @@ Accepted aliases:
 
 If the configured URL does not already end in `/sap/bc/adt`, the CLI appends that suffix automatically.
 
+For CSRF session bootstrap, the CLI advertises both `application/atom+xml;type=feed`
+and `application/xml` on `/runtime/systemmessages`. This keeps ADT lookups working
+across SAP releases that expose that endpoint with different feed representations.
+
 ## Command Shapes
 
 ```text

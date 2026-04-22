@@ -5,6 +5,10 @@ import (
 	"net/http"
 )
 
+// Newer ADT backends expose system messages as an Atom feed, while older
+// systems still accept generic XML for the same CSRF bootstrap request.
+const sessionBootstrapAccept = "application/atom+xml;type=feed, application/xml"
+
 func fetchSystemMessages(ctx *SapContext) (csrfToken string, cookies []*http.Cookie, err error) {
 	client := ctx.httpClient
 	if client == nil {
@@ -22,7 +26,7 @@ func fetchSystemMessages(ctx *SapContext) (csrfToken string, cookies []*http.Coo
 
 	headers := map[string]string{
 		"Cache-Control":       "no-cache",
-		"Accept":              "application/xml",
+		"Accept":              sessionBootstrapAccept,
 		"X-sap-adt-profiling": "server-time",
 		"x-csrf-token":        "Fetch",
 	}

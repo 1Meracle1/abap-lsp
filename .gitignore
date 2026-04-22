@@ -2,7 +2,7 @@ target/
 coverage/
 logs.txt
 bin/*
-.env
+.env*
 editors/vscode/node_modules/
 editors/vscode/client/node_modules/
 *.rs.bk
