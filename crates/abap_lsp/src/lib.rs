@@ -335,9 +335,9 @@ pub struct WorkspaceAnalysisStatusParams {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum RemoteDependencyBatchPhase {
     OpenLocal,
+    Dependency,
     SrcLocal,
     OtherLocal,
-    Dependency,
 }
 
 /// Normalizes `file:` URIs so `DocumentStore` lookups stay stable (e.g. Windows `file:///C:/` vs `file:///c:/`).
@@ -578,7 +578,13 @@ fn collect_local_export_dependency_closure_documents(
 fn collect_local_export_dependency_candidates(
     document: &WorkspaceDocument,
 ) -> Vec<RemoteDependencyCandidate> {
-    let analysis_text = analysis_text_for_document(document.text.as_ref(), document.is_dependency);
+    let analysis_text = if document.is_dependency {
+        // Dependency surface projection strips method bodies, but local export closure
+        // needs full dependency text to discover implementation-only transitive refs.
+        Arc::<str>::from(document.text.as_str())
+    } else {
+        analysis_text_for_document(document.text.as_ref(), false)
+    };
     let parsed = parse(analysis_text.as_ref());
     let unit = analyze_unit(Arc::clone(&document.uri), analysis_text.as_ref(), &parsed);
     collect_remote_dependency_candidates_for_unit(&unit)
@@ -1404,6 +1410,22 @@ fn collect_remote_dependency_candidates_for_request(
     collect_remote_dependency_candidates_for_include_component(snapshot)
 }
 
+fn collect_remote_dependency_candidates_for_batch(
+    workspace: &WorkspaceState,
+    snapshot: &AnalysisSnapshot,
+    source_uri: &str,
+) -> Vec<RemoteDependencyCandidate> {
+    if snapshot.is_dependency {
+        // Background dependency batches need the full dependency text so transitive
+        // implementation refs are discovered even when the dependency file stays closed.
+        return collect_remote_dependency_candidates_for_workspace_batch(snapshot);
+    }
+    if document_uses_local_exports(workspace, source_uri) {
+        return collect_remote_dependency_candidates_for_local_export_chain(workspace, source_uri);
+    }
+    collect_remote_dependency_candidates_for_include_component(snapshot)
+}
+
 fn collect_remote_dependency_candidates_for_local_export_chain(
     workspace: &WorkspaceState,
     source_uri: &str,
@@ -1929,6 +1951,7 @@ fn has_cached_remote_dependency_candidate(
 
 struct RemoteDependencyMemo {
     request_candidates: HashMap<String, Vec<RemoteDependencyCandidate>>,
+    batch_candidates: HashMap<String, Vec<RemoteDependencyCandidate>>,
     cached_candidate_presence: HashMap<String, bool>,
     negative_candidate_presence: HashMap<String, bool>,
 }
@@ -1937,6 +1960,7 @@ impl RemoteDependencyMemo {
     fn new() -> Self {
         Self {
             request_candidates: HashMap::new(),
+            batch_candidates: HashMap::new(),
             cached_candidate_presence: HashMap::new(),
             negative_candidate_presence: HashMap::new(),
         }
@@ -1952,6 +1976,20 @@ impl RemoteDependencyMemo {
             .entry(source_uri.to_owned())
             .or_insert_with(|| {
                 collect_remote_dependency_candidates_for_request(workspace, snapshot, source_uri)
+            })
+            .clone()
+    }
+
+    fn candidates_for_batch(
+        &mut self,
+        workspace: &WorkspaceState,
+        snapshot: &AnalysisSnapshot,
+        source_uri: &str,
+    ) -> Vec<RemoteDependencyCandidate> {
+        self.batch_candidates
+            .entry(source_uri.to_owned())
+            .or_insert_with(|| {
+                collect_remote_dependency_candidates_for_batch(workspace, snapshot, source_uri)
             })
             .clone()
     }
@@ -2195,7 +2233,7 @@ pub fn build_remote_dependency_batch_for_workspace_filtered(
         let mut uri_seen = HashSet::new();
         let source_uses_local_exports =
             !snapshot.is_dependency && document_uses_local_exports(workspace, uri.as_ref());
-        for candidate in memo.candidates_for_request(workspace, snapshot.as_ref(), uri.as_ref()) {
+        for candidate in memo.candidates_for_batch(workspace, snapshot.as_ref(), uri.as_ref()) {
             if memo.has_cached_candidate(&cache_context, &candidate) {
                 continue;
             }
@@ -3304,7 +3342,7 @@ fn callable_completion_item_metadata(
 
 #[cfg(test)]
 mod tests {
-    use abap_cache::{DocumentStore, path_to_file_uri};
+    use abap_cache::{DocumentStore, WorkspaceDocument, path_to_file_uri};
     use abap_symbols::DiagnosticKind;
     use std::fs;
     use std::path::PathBuf;
@@ -3331,12 +3369,13 @@ mod tests {
         build_lsp_diagnostics, build_lsp_diagnostics_for_workspace,
         build_remote_dependency_batch_for_workspace, build_remote_dependency_request,
         build_remote_dependency_requests_for_workspace, code_actions,
-        collect_remote_dependency_candidates, completion, definition,
-        handle_dependency_cache_cleared, handle_remote_dependencies_updated, hover,
-        initialize_result, inlay_hints, normalize_lsp_uri, offset_to_position, prepare_rename,
-        publish_changed_document, publish_changed_document_mut, publish_open_document,
-        publish_open_document_mut, references, refresh_workspace, rename, semantic_tokens,
-        snapshot_for_uri, stage_workspace_preview_snapshot,
+        collect_local_export_dependency_candidates, collect_remote_dependency_candidates,
+        completion, definition, handle_dependency_cache_cleared,
+        handle_remote_dependencies_updated, hover, initialize_result, inlay_hints,
+        normalize_lsp_uri, offset_to_position, prepare_rename, publish_changed_document,
+        publish_changed_document_mut, publish_open_document, publish_open_document_mut, references,
+        refresh_workspace, rename, semantic_tokens, snapshot_for_uri,
+        stage_workspace_preview_snapshot,
     };
 
     fn temp_workspace_path(name: &str) -> PathBuf {
@@ -5558,6 +5597,164 @@ ENDCLASS.
     }
 
     #[test]
+    fn workspace_refresh_resolves_legacy_layout_static_local_export_dependencies() {
+        let workspace_path = temp_workspace_path("workspace_local_export_legacy_static_refresh");
+        let export_root =
+            temp_workspace_path("workspace_local_export_legacy_static_refresh_export");
+        let _ = fs::remove_dir_all(&workspace_path);
+        let _ = fs::remove_dir_all(&export_root);
+        fs::create_dir_all(workspace_path.join("src/reports/ZREP")).expect("report dir");
+        fs::create_dir_all(export_root.join("ZPKG/Source Code Library/Classes"))
+            .expect("class dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[resolution]
+dependency_mode = "remote-on-demand"
+unknown_symbol_mode = "remote"
+"#,
+        )
+        .expect("manifest");
+        fs::write(
+            workspace_path.join("src/reports/ZREP/ZREP.abap"),
+            "REPORT zrep.",
+        )
+        .expect("report");
+        fs::write(
+            workspace_path.join("src/reports/ZREP/ZREP_TOP.abap"),
+            "DATA lo_factory TYPE REF TO zcl_factory.\n",
+        )
+        .expect("top include");
+        fs::write(
+            workspace_path.join("src/reports/ZREP/abapls-unit.toml"),
+            format!(
+                "[local_export]\nroots = [\"{}\"]\n\n[dependencies]\nsource = \"local-first\"\n",
+                export_root.to_string_lossy().replace('\\', "/")
+            ),
+        )
+        .expect("sidecar");
+        fs::write(
+            export_root.join("ZPKG/Source Code Library/Classes/ZCL_FACTORY.abap"),
+            "\
+CLASS zcl_factory DEFINITION PUBLIC FINAL CREATE PUBLIC.
+  PUBLIC SECTION.
+    CLASS-METHODS build.
+ENDCLASS.
+CLASS zcl_factory IMPLEMENTATION.
+  METHOD build.
+    zcl_helper=>assist( ).
+  ENDMETHOD.
+ENDCLASS.
+",
+        )
+        .expect("factory export");
+        fs::write(
+            export_root.join("ZPKG/Source Code Library/Classes/ZCL_HELPER.abap"),
+            "\
+CLASS zcl_helper DEFINITION PUBLIC FINAL CREATE PUBLIC.
+  PUBLIC SECTION.
+    CLASS-METHODS assist.
+ENDCLASS.
+CLASS zcl_helper IMPLEMENTATION.
+  METHOD assist.
+  ENDMETHOD.
+ENDCLASS.
+",
+        )
+        .expect("helper export");
+
+        let workspace_uri = path_to_file_uri(&workspace_path);
+        let target_uri =
+            normalize_lsp_uri(&format!("{workspace_uri}/src/reports/ZREP/ZREP_TOP.abap"));
+        let mut state = ServerState::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        refresh_workspace(&mut state, &workspace_uri);
+
+        let target_snapshot = snapshot_for_uri(&state, &target_uri).expect("target snapshot");
+        assert!(
+            !target_snapshot
+                .symbols
+                .diagnostics
+                .iter()
+                .any(|diag| diag.message.contains("zcl_factory")),
+            "{:#?}",
+            target_snapshot.symbols.diagnostics
+        );
+
+        let workspace = state
+            .workspaces
+            .get(&normalize_lsp_uri(&workspace_uri))
+            .expect("workspace");
+        let factory_uri = workspace
+            .cache
+            .uris()
+            .into_iter()
+            .map(|uri| uri.to_string())
+            .find(|uri| uri.ends_with("/ZCL_FACTORY.abap"))
+            .expect("factory uri");
+        let helper_uri = workspace
+            .cache
+            .uris()
+            .into_iter()
+            .map(|uri| uri.to_string())
+            .find(|uri| uri.ends_with("/ZCL_HELPER.abap"))
+            .expect("helper uri");
+        let factory_snapshot = snapshot_for_uri(&state, &factory_uri).expect("factory snapshot");
+        assert!(
+            !factory_snapshot
+                .symbols
+                .diagnostics
+                .iter()
+                .any(|diag| diag.message.contains("zcl_helper")),
+            "{:#?}",
+            factory_snapshot.symbols.diagnostics
+        );
+        assert!(
+            snapshot_for_uri(&state, &helper_uri).is_some(),
+            "transitive helper dependency should be loaded from legacy layout"
+        );
+        assert!(
+            build_remote_dependency_request(&mut state, &target_uri).is_none(),
+            "legacy local export should not trigger remote request"
+        );
+
+        let _ = fs::remove_dir_all(&workspace_path);
+        let _ = fs::remove_dir_all(&export_root);
+    }
+
+    #[test]
+    fn collect_local_export_dependency_candidates_includes_static_targets_for_dependencies() {
+        let document = WorkspaceDocument {
+            uri: Arc::from("file:///factory.abap"),
+            version: 0,
+            text: "\
+CLASS zcl_factory DEFINITION PUBLIC FINAL CREATE PUBLIC.
+  PUBLIC SECTION.
+    CLASS-METHODS build.
+ENDCLASS.
+CLASS zcl_factory IMPLEMENTATION.
+  METHOD build.
+    zcl_helper=>assist( ).
+  ENDMETHOD.
+ENDCLASS.
+"
+            .to_string(),
+            is_dependency: true,
+            object_name: Some(Arc::from("zcl_factory")),
+        };
+
+        let candidates = collect_local_export_dependency_candidates(&document);
+        assert!(
+            candidates
+                .iter()
+                .any(|candidate| candidate.kind == "static" && candidate.name == "zcl_helper"),
+            "{candidates:#?}"
+        );
+    }
+
+    #[test]
     fn workspace_refresh_uses_editor_workspace_build_plan() {
         let workspace_path = temp_workspace_path("workspace_editor_build_plan");
         let _ = fs::remove_dir_all(&workspace_path);
@@ -7652,7 +7849,7 @@ unknown_symbol_mode = "remote"
     }
 
     #[test]
-    fn workspace_remote_dependency_batch_prioritizes_open_and_src_sources_before_dependencies() {
+    fn workspace_remote_dependency_batch_prioritizes_dependencies_before_unopened_src_sources() {
         let workspace_path = temp_workspace_path("workspace_remote_batch_src_priority");
         let source_dir = workspace_path.join("src");
         let dependency_dir = workspace_path
@@ -7713,21 +7910,21 @@ object_name = "ZCL_DEP"
             .expect("workspace batch");
         assert_eq!(batch.source_uris.len(), 1, "{batch:#?}");
         assert!(
-            batch.source_uris[0].ends_with("/src/ZMAIN.abap"),
+            batch.source_uris[0].ends_with("/.abapls/cache/dependencies/global-class/ZCL_DEP.abap"),
             "{batch:#?}"
         );
         assert!(
             batch
                 .candidates
                 .iter()
-                .any(|candidate| candidate.name == "zcl_first"),
+                .any(|candidate| candidate.name == "bal_s_msg"),
             "{batch:#?}"
         );
         assert!(
             batch
                 .candidates
                 .iter()
-                .all(|candidate| candidate.name != "bal_s_msg"),
+                .all(|candidate| candidate.name != "zcl_first"),
             "{batch:#?}"
         );
 
@@ -8171,7 +8368,7 @@ object_name = "ZCL_DEP"
     }
 
     #[test]
-    fn workspace_dependency_refresh_keeps_closed_dependencies_on_public_surface() {
+    fn workspace_dependency_refresh_batches_closed_dependency_transitive_references() {
         let workspace_path = temp_workspace_path("dependency_impl_batch_refresh");
         let dependency_dir = workspace_path
             .join(".abapls")
@@ -8251,9 +8448,20 @@ root_file = ".abapls/cache/dependencies/global-class/ZCL_FIRST.abap"
             },
         );
 
+        let batch = build_remote_dependency_batch_for_workspace(&mut state, &workspace_uri)
+            .expect("follow-up batch");
         assert!(
-            build_remote_dependency_batch_for_workspace(&mut state, &workspace_uri).is_none(),
-            "closed dependency implementation references should stay out of follow-up batches"
+            batch
+                .source_uri
+                .ends_with("/.abapls/cache/dependencies/global-class/ZCL_FIRST.abap"),
+            "{batch:#?}"
+        );
+        assert!(
+            batch
+                .candidates
+                .iter()
+                .any(|candidate| candidate.kind == "type" && candidate.name == "/aif/t_finf"),
+            "{batch:#?}"
         );
 
         let _ = fs::remove_dir_all(&workspace_path);
@@ -9112,6 +9320,79 @@ ENDCLASS.";
                 .iter()
                 .any(|candidate| candidate.name == "zcl_missing"),
             "request={request:#?}"
+        );
+
+        let _ = fs::remove_dir_all(&workspace_path);
+    }
+
+    #[test]
+    fn closed_dependency_batches_collect_full_transitive_candidates() {
+        let workspace_path = temp_workspace_path("closed_dependency_batch_remote_candidates");
+        let dependency_dir = workspace_path
+            .join(".abapls")
+            .join("cache")
+            .join("dependencies")
+            .join("global-class");
+        fs::create_dir_all(&dependency_dir).expect("dependency dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[resolution]
+dependency_mode = "remote-on-demand"
+unknown_symbol_mode = "remote"
+
+[[unit]]
+name = "ZCL_DEP"
+kind = "global-class"
+root_file = ".abapls/cache/dependencies/global-class/ZCL_DEP.abap"
+"#,
+        )
+        .expect("manifest");
+        let dependency_text = "\
+CLASS zcl_dep DEFINITION.
+  PUBLIC SECTION.
+    METHODS run.
+ENDCLASS.
+CLASS zcl_dep IMPLEMENTATION.
+  METHOD run.
+    DATA lv_dbcnt TYPE sydbcnt.
+    DATA lv_objtype TYPE string.
+    lv_objtype = /sttp/cl_dm_constants=>gcs_objtype-lot.
+    lv_dbcnt = 1.
+  ENDMETHOD.
+ENDCLASS.";
+        fs::write(dependency_dir.join("ZCL_DEP.abap"), dependency_text).expect("dependency file");
+
+        let workspace_uri = path_to_file_uri(&workspace_path);
+        let dependency_uri =
+            format!("{workspace_uri}/.abapls/cache/dependencies/global-class/ZCL_DEP.abap");
+        let normalized_dependency_uri = normalize_lsp_uri(&dependency_uri);
+        let mut state = ServerState::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        refresh_workspace(&mut state, &workspace_uri);
+
+        assert!(
+            build_remote_dependency_request(&mut state, &normalized_dependency_uri).is_none(),
+            "closed direct request should stay on public-surface candidates only"
+        );
+
+        let batch = build_remote_dependency_batch_for_workspace(&mut state, &workspace_uri)
+            .expect("workspace batch");
+        assert_eq!(batch.source_uri, normalized_dependency_uri, "{batch:#?}");
+        assert!(
+            batch
+                .candidates
+                .iter()
+                .any(|candidate| candidate.kind == "type" && candidate.name == "sydbcnt"),
+            "{batch:#?}"
+        );
+        assert!(
+            batch.candidates.iter().any(|candidate| {
+                candidate.kind == "static" && candidate.name == "/sttp/cl_dm_constants"
+            }),
+            "{batch:#?}"
         );
 
         let _ = fs::remove_dir_all(&workspace_path);

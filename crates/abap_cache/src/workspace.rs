@@ -1689,12 +1689,86 @@ fn build_local_export_index(root: &Path) -> LocalExportIndex {
 }
 
 fn infer_local_export_kind_hint(path: &Path) -> String {
-    path.parent()
-        .and_then(|parent| parent.file_name())
-        .and_then(|name| name.to_str())
-        .map(|name| name.trim().to_string())
-        .filter(|name| !name.is_empty())
-        .unwrap_or_else(|| "dependency".to_string())
+    let ancestor_keys: Vec<_> = path
+        .ancestors()
+        .skip(1)
+        .filter_map(|ancestor| ancestor.file_name().and_then(|name| name.to_str()))
+        .map(local_export_path_segment_key)
+        .collect();
+
+    for (idx, key) in ancestor_keys.iter().enumerate() {
+        if let Some(kind) = canonical_local_export_kind_for_ancestor(&ancestor_keys, idx, key) {
+            return kind.to_string();
+        }
+    }
+
+    "dependency".to_string()
+}
+
+fn local_export_path_segment_key(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    let mut needs_separator = false;
+
+    for ch in name.trim().chars() {
+        if ch.is_ascii_alphanumeric() {
+            if needs_separator && !out.is_empty() {
+                out.push('-');
+            }
+            out.push(ch.to_ascii_lowercase());
+            needs_separator = false;
+        } else if !out.is_empty() {
+            needs_separator = true;
+        }
+    }
+
+    out
+}
+
+fn canonical_local_export_kind_for_ancestor(
+    ancestor_keys: &[String],
+    idx: usize,
+    key: &str,
+) -> Option<&'static str> {
+    let parent = ancestor_keys.get(idx + 1).map(String::as_str);
+    match key {
+        "global-class" => Some("global-class"),
+        "class" => Some("class"),
+        "global-interface" => Some("global-interface"),
+        "interface" => Some("interface"),
+        "function-module" => Some("function-module"),
+        "function-group" => Some("function-group"),
+        "include" => Some("include"),
+        "program" | "report" => Some("program"),
+        "message-class" => Some("message-class"),
+        "ddic-data-element" => Some("ddic-data-element"),
+        "ddic-domain" => Some("ddic-domain"),
+        "ddic-lock-object" => Some("ddic-lock-object"),
+        "ddic-search-help" => Some("ddic-search-help"),
+        "ddic-structure" => Some("ddic-structure"),
+        "ddic-table" => Some("ddic-table"),
+        "ddic-table-type" => Some("ddic-table-type"),
+        "ddic-view" => Some("ddic-view"),
+        "type-group" => Some("type-group"),
+        "type-pool" => Some("type-pool"),
+        "classes" if parent == Some("source-code-library") => Some("global-class"),
+        "interfaces" if parent == Some("source-code-library") => Some("global-interface"),
+        "includes" => Some("include"),
+        "function-modules" => Some("function-module"),
+        "function-groups" if parent == Some("source-code-library") => Some("function-group"),
+        "programs" if parent == Some("source-code-library") => Some("program"),
+        "message-classes" => Some("message-class"),
+        "data-elements" if parent == Some("dictionary") => Some("ddic-data-element"),
+        "database-tables" if parent == Some("dictionary") => Some("ddic-table"),
+        "domains" if parent == Some("dictionary") => Some("ddic-domain"),
+        "lock-objects" if parent == Some("dictionary") => Some("ddic-lock-object"),
+        "search-helps" | "srch-helps" if parent == Some("dictionary") => Some("ddic-search-help"),
+        "structures" if parent == Some("dictionary") => Some("ddic-structure"),
+        "table-types" if parent == Some("dictionary") => Some("ddic-table-type"),
+        "views" if parent == Some("dictionary") => Some("ddic-view"),
+        "type-groups" if parent == Some("others") => Some("type-group"),
+        "type-pools" if parent == Some("others") => Some("type-pool"),
+        _ => None,
+    }
 }
 
 fn local_export_artifact_matches_candidate(
@@ -3480,6 +3554,78 @@ mode = "full-workspace"
         assert!(
             resolve_local_export_dependency_document(&roots, &mut resolver, "zcl_demo", "type")
                 .is_some()
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn local_export_resolver_accepts_legacy_export_layouts() {
+        let root = std::env::temp_dir().join("abap-lsp-local-export-legacy-layout");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("ZPKG/Source Code Library/Classes")).expect("class dir");
+        fs::create_dir_all(root.join("ZPKG/Dictionary/Data Elements")).expect("type dir");
+        fs::create_dir_all(root.join("ZPKG/Source Code Library/Programs/ZREP/Includes"))
+            .expect("program include dir");
+        fs::create_dir_all(
+            root.join("ZPKG/Source Code Library/Function Groups/ZFG/Function Modules"),
+        )
+        .expect("function module dir");
+        fs::write(
+            root.join("ZPKG/Source Code Library/Classes/ZCL_DEMO.abap"),
+            "CLASS zcl_demo DEFINITION. ENDCLASS.",
+        )
+        .expect("class");
+        fs::write(
+            root.join("ZPKG/Dictionary/Data Elements/ZZD_STATUS.xml"),
+            r#"<?xml version="1.0" encoding="utf-8"?><dataElement />"#,
+        )
+        .expect("ddic type");
+        fs::write(
+            root.join("ZPKG/Source Code Library/Programs/ZREP/ZREP.abap"),
+            "REPORT zrep.",
+        )
+        .expect("program");
+        fs::write(
+            root.join("ZPKG/Source Code Library/Programs/ZREP/Includes/ZREP_TOP.abap"),
+            "DATA gv_demo TYPE i.",
+        )
+        .expect("include");
+        fs::write(
+            root.join(
+                "ZPKG/Source Code Library/Function Groups/ZFG/Function Modules/Z_FM_DEMO.abap",
+            ),
+            "FUNCTION z_fm_demo.\nENDFUNCTION.\n",
+        )
+        .expect("function module");
+
+        let mut resolver = LocalExportResolver::default();
+        let roots = vec![root.clone()];
+
+        assert!(
+            resolve_local_export_dependency_document(&roots, &mut resolver, "zcl_demo", "static")
+                .is_some()
+        );
+        assert!(
+            resolve_local_export_dependency_document(&roots, &mut resolver, "zzd_status", "type")
+                .is_some()
+        );
+        assert!(
+            resolve_local_export_dependency_document(&roots, &mut resolver, "zrep", "report")
+                .is_some()
+        );
+        assert!(
+            resolve_local_export_dependency_document(&roots, &mut resolver, "zrep_top", "include")
+                .is_some()
+        );
+        assert!(
+            resolve_local_export_dependency_document(
+                &roots,
+                &mut resolver,
+                "z_fm_demo",
+                "function"
+            )
+            .is_some()
         );
 
         let _ = fs::remove_dir_all(&root);

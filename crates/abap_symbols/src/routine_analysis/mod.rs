@@ -1496,19 +1496,23 @@ fn build_routine_dataflow(
         });
     }
 
-    let mut reference_uses = Vec::new();
-    for instruction in &routine.ir.instructions {
-        if let RoutineInstructionSite::ValueRead { reference } = instruction.site
-            && let Some(value) =
-                resolved_value_id_for_reference(unit, reference, &value_ids_by_symbol)
-        {
-            reference_uses.push(ReferenceUse {
-                reference,
-                range: instruction.range.clone(),
-                value,
-            });
-        }
-    }
+    let mut reference_uses = unit
+        .references
+        .iter()
+        .filter(|reference| {
+            reference.namespace == Namespace::Value
+                && !matches!(reference.kind, crate::ReferenceKind::TypeRef)
+        })
+        .filter_map(|reference| {
+            resolved_value_id_for_reference(unit, reference.id, &value_ids_by_symbol).map(
+                |value| ReferenceUse {
+                    reference: reference.id,
+                    range: reference.range.clone(),
+                    value,
+                },
+            )
+        })
+        .collect::<Vec<_>>();
     reference_uses.sort_by(|left, right| {
         left.range
             .start
